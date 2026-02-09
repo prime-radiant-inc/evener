@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -868,5 +869,46 @@ func TestAdapter_ProviderOptions_PassThrough(t *testing.T) {
 	}
 	if got, want := gotBody["x-test-opt"], float64(123); got != want {
 		t.Fatalf("x-test-opt: got %#v want %#v", got, want)
+	}
+}
+
+func TestAdapter_Complete_FinishReason_Normalized(t *testing.T) {
+	cases := []struct {
+		name         string
+		finishReason string
+		wantReason   string
+		wantRaw      string
+	}{
+		{"STOP", "STOP", "stop", "STOP"},
+		{"MAX_TOKENS", "MAX_TOKENS", "length", "MAX_TOKENS"},
+		{"SAFETY", "SAFETY", "content_filter", "SAFETY"},
+		{"RECITATION", "RECITATION", "content_filter", "RECITATION"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{
+  "candidates": [{"content": {"parts": [{"text":"ok"}]}, "finishReason":%q}],
+  "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2}
+}`, tc.finishReason)
+			}))
+			t.Cleanup(srv.Close)
+
+			a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+
+			resp, err := a.Complete(ctx, llm.Request{Model: "gemini-test", Messages: []llm.Message{llm.User("hi")}})
+			if err != nil {
+				t.Fatalf("Complete: %v", err)
+			}
+			if resp.Finish.Reason != tc.wantReason {
+				t.Fatalf("Finish.Reason = %q, want %q", resp.Finish.Reason, tc.wantReason)
+			}
+			if resp.Finish.Raw != tc.wantRaw {
+				t.Fatalf("Finish.Raw = %q, want %q", resp.Finish.Raw, tc.wantRaw)
+			}
+		})
 	}
 }

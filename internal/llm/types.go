@@ -183,6 +183,56 @@ type FinishReason struct {
 	Raw    string `json:"raw,omitempty"`
 }
 
+// Canonical finish reason values per spec section 3.8.
+const (
+	FinishReasonStop          = "stop"
+	FinishReasonLength        = "length"
+	FinishReasonToolCalls     = "tool_calls"
+	FinishReasonContentFilter = "content_filter"
+	FinishReasonError         = "error"
+	FinishReasonOther         = "other"
+)
+
+// NormalizeFinishReason maps a provider-specific finish reason to a canonical value.
+// The raw value is always preserved in .Raw.
+func NormalizeFinishReason(provider, raw string) FinishReason {
+	if raw == "" {
+		return FinishReason{Reason: FinishReasonStop}
+	}
+	reason := normalizeFinish(provider, raw)
+	return FinishReason{Reason: reason, Raw: raw}
+}
+
+func normalizeFinish(provider, raw string) string {
+	switch provider {
+	case "anthropic":
+		switch raw {
+		case "end_turn", "stop_sequence":
+			return FinishReasonStop
+		case "max_tokens":
+			return FinishReasonLength
+		case "tool_use":
+			return FinishReasonToolCalls
+		}
+	case "google":
+		switch raw {
+		case "STOP":
+			return FinishReasonStop
+		case "MAX_TOKENS":
+			return FinishReasonLength
+		case "SAFETY", "RECITATION":
+			return FinishReasonContentFilter
+		}
+	default:
+		// OpenAI already uses canonical values.
+		switch raw {
+		case "stop", "length", "tool_calls", "content_filter":
+			return raw
+		}
+	}
+	return FinishReasonOther
+}
+
 type Usage struct {
 	InputTokens      int  `json:"input_tokens"`
 	OutputTokens     int  `json:"output_tokens"`
