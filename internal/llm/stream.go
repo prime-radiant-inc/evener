@@ -21,6 +21,7 @@ const (
 	StreamEventToolCallDelta  StreamEventType = "TOOL_CALL_DELTA"
 	StreamEventToolCallEnd    StreamEventType = "TOOL_CALL_END"
 	StreamEventStepFinish     StreamEventType = "STEP_FINISH"
+	StreamEventObjectDelta    StreamEventType = "OBJECT_DELTA"
 	StreamEventFinish         StreamEventType = "FINISH"
 	StreamEventError          StreamEventType = "ERROR"
 	StreamEventProviderEvent  StreamEventType = "PROVIDER_EVENT"
@@ -35,6 +36,9 @@ type StreamEvent struct {
 
 	// Reasoning events
 	ReasoningDelta string `json:"reasoning_delta,omitempty"`
+
+	// Object delta events (streaming structured output)
+	ObjectDelta any `json:"object_delta,omitempty"`
 
 	// Tool call events
 	ToolCall *ToolCallData `json:"tool_call,omitempty"`
