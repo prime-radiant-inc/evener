@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"regexp"
 	"testing"
 	"time"
 
@@ -190,5 +191,24 @@ func TestSessionConfig_JSONOmitsFunctionFields(t *testing.T) {
 	}
 	if got.LLMSleep != nil {
 		t.Fatalf("expected LLMSleep to be nil after round-trip")
+	}
+}
+
+func TestSession_ID_ReturnsULID(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	id := sess.ID()
+	if id == "" {
+		t.Fatalf("ID() returned empty string")
+	}
+	// ULID is 26 uppercase alphanumeric characters.
+	if !regexp.MustCompile(`^[0-9A-Z]{26}$`).MatchString(id) {
+		t.Fatalf("ID() %q is not a valid ULID", id)
 	}
 }

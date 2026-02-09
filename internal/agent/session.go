@@ -157,6 +157,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 	return s, nil
 }
 
+func (s *Session) ID() string                  { return s.id }
 func (s *Session) Events() <-chan SessionEvent { return s.events }
 
 // SetReasoningEffort updates the reasoning effort used for future LLM calls.
