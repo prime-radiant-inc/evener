@@ -265,7 +265,7 @@ func TestRestoreSession_RestoresHistoryAndID(t *testing.T) {
 	adapter := &snapshotFakeAdapter{name: "openai"}
 	c.Register(adapter)
 
-	sess, err := RestoreSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), snap)
+	sess, err := RestoreSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), snap, "")
 	if err != nil {
 		t.Fatalf("RestoreSession: %v", err)
 	}
@@ -369,6 +369,88 @@ func TestSession_AutoSave_WritesSnapshotAfterProcessInput(t *testing.T) {
 	}
 }
 
+func TestRestoreSession_AutoSaveContinues(t *testing.T) {
+	dir := t.TempDir()
+
+	c := llm.NewClient()
+	c.Register(&snapshotFakeAdapter{name: "openai"})
+
+	// Phase 1: Create a new session with auto-save and process input.
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxToolRoundsPerInput: 200,
+		AutoSaveDir:           dir,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() { for range sess.Events() {} }()
+
+	ctx := context.Background()
+	if _, err := sess.ProcessInput(ctx, "first task"); err != nil {
+		t.Fatalf("ProcessInput #1: %v", err)
+	}
+	sess.Close()
+
+	// Verify initial snapshot was saved.
+	list, err := ListSessions(dir)
+	if err != nil {
+		t.Fatalf("ListSessions after phase 1: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 session after phase 1, got %d", len(list))
+	}
+	initialTurnCount := list[0].TurnCount
+	initialHistoryLen := len(list[0].History)
+	if initialHistoryLen < 2 {
+		t.Fatalf("expected at least 2 history entries after phase 1, got %d", initialHistoryLen)
+	}
+
+	// Phase 2: Restore the session (with auto-save) and process more input.
+	snap := list[0]
+	sess2, err := RestoreSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), snap, dir)
+	if err != nil {
+		t.Fatalf("RestoreSession: %v", err)
+	}
+	go func() { for range sess2.Events() {} }()
+
+	if _, err := sess2.ProcessInput(ctx, "second task"); err != nil {
+		t.Fatalf("ProcessInput #2: %v", err)
+	}
+	sess2.Close()
+
+	// Verify the snapshot was updated with new turns.
+	list2, err := ListSessions(dir)
+	if err != nil {
+		t.Fatalf("ListSessions after phase 2: %v", err)
+	}
+	if len(list2) != 1 {
+		t.Fatalf("expected 1 session after phase 2, got %d", len(list2))
+	}
+	if list2[0].TurnCount <= initialTurnCount {
+		t.Fatalf("turn count did not increase after resume: got %d, was %d", list2[0].TurnCount, initialTurnCount)
+	}
+	if len(list2[0].History) <= initialHistoryLen {
+		t.Fatalf("history did not grow after resume: got %d entries, was %d", len(list2[0].History), initialHistoryLen)
+	}
+
+	// Verify the new history has both original and new user inputs.
+	var userTexts []string
+	for _, turn := range list2[0].History {
+		if turn.Kind == TurnUserInput {
+			userTexts = append(userTexts, turn.Message.Text())
+		}
+	}
+	if len(userTexts) < 2 {
+		t.Fatalf("expected at least 2 user turns, got %d", len(userTexts))
+	}
+	if userTexts[0] != "first task" {
+		t.Fatalf("first user text: got %q want %q", userTexts[0], "first task")
+	}
+	if userTexts[1] != "second task" {
+		t.Fatalf("second user text: got %q want %q", userTexts[1], "second task")
+	}
+}
+
 func TestRestoreSession_CanProcessInput(t *testing.T) {
 	dir := t.TempDir()
 	// Minimal snapshot with no history.
@@ -386,7 +468,7 @@ func TestRestoreSession_CanProcessInput(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&snapshotFakeAdapter{name: "openai"})
 
-	sess, err := RestoreSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), snap)
+	sess, err := RestoreSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), snap, "")
 	if err != nil {
 		t.Fatalf("RestoreSession: %v", err)
 	}

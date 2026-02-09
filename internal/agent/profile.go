@@ -29,6 +29,8 @@ type ProviderProfile interface {
 	ContextWindowSize() int
 	ProjectDocFiles() []string
 	BuildSystemPrompt(env EnvironmentInfo, docs []ProjectDoc) string
+	CheapModel() string
+	WithModel(model string) ProviderProfile
 }
 
 type baseProfile struct {
@@ -50,6 +52,27 @@ func (p *baseProfile) SupportsParallelToolCalls() bool { return p.parallel }
 func (p *baseProfile) ContextWindowSize() int          { return p.contextWindow }
 func (p *baseProfile) ProjectDocFiles() []string {
 	return append([]string{}, p.docFiles...)
+}
+func (p *baseProfile) CheapModel() string {
+	switch p.id {
+	case "openai":
+		return "gpt-4.1-nano"
+	case "anthropic":
+		return "claude-haiku-4-5-20251001"
+	case "google":
+		return "gemini-2.5-flash-lite"
+	default:
+		return p.model
+	}
+}
+func (p *baseProfile) WithModel(model string) ProviderProfile {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = p.model
+	}
+	clone := *p
+	clone.model = model
+	return &clone
 }
 
 func (p *baseProfile) BuildSystemPrompt(env EnvironmentInfo, docs []ProjectDoc) string {
@@ -363,7 +386,8 @@ func defSpawnAgent() llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"task": map[string]any{"type": "string"},
+				"task":  map[string]any{"type": "string"},
+				"model": map[string]any{"type": "string", "description": "Model override (default: parent model)"},
 			},
 			"required": []string{"task"},
 		},

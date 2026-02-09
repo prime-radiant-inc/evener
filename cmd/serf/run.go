@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -15,11 +16,13 @@ import (
 )
 
 type runConfig struct {
-	task    string
-	model   string
-	workDir string
-	stdout  io.Writer
-	stderr  io.Writer
+	task     string
+	model    string
+	provider string
+	workDir  string
+	verbose  bool
+	stdout   io.Writer
+	stderr   io.Writer
 
 	// Resume options.
 	resume       string // session ID to resume
@@ -68,21 +71,44 @@ func run(ctx context.Context, cfg runConfig) error {
 		return fmt.Errorf("no task provided")
 	}
 
+	// Resolve provider: explicit flag > snapshot > SERF_PROVIDER env var.
+	provider := cfg.provider
+	if provider == "" && snap != nil {
+		provider = snap.ProfileID
+	}
+	if provider == "" {
+		provider = os.Getenv("SERF_PROVIDER")
+	}
+	if provider == "" {
+		return fmt.Errorf("no provider specified: use --provider or set SERF_PROVIDER (openai, anthropic, google)")
+	}
+
+	// Resolve model: explicit flag > snapshot > SERF_MODEL env var.
+	model := cfg.model
+	if model == "" && snap != nil {
+		model = snap.Model
+	}
+	if model == "" {
+		model = os.Getenv("SERF_MODEL")
+	}
+	if model == "" {
+		return fmt.Errorf("no model specified: use --model or set SERF_MODEL")
+	}
+
 	client, err := llm.NewFromEnv()
 	if err != nil {
 		return fmt.Errorf("LLM client setup: %w", err)
 	}
 
-	model := cfg.model
-	if model == "" && snap != nil {
-		model = snap.Model
+	profile, err := selectProfile(provider, model)
+	if err != nil {
+		return err
 	}
-	profile := selectProfile(client, model)
 	env := agent.NewLocalExecutionEnvironment(cfg.workDir)
 
 	var sess *agent.Session
 	if snap != nil {
-		sess, err = agent.RestoreSession(client, profile, env, *snap)
+		sess, err = agent.RestoreSession(client, profile, env, *snap, cfg.workDir)
 		if err != nil {
 			return fmt.Errorf("restore session: %w", err)
 		}
@@ -98,7 +124,12 @@ func run(ctx context.Context, cfg runConfig) error {
 	}
 	defer sess.Close()
 
-	done := drainEvents(sess, cfg.stderr)
+	var done <-chan struct{}
+	if cfg.verbose {
+		done = drainEventsVerbose(sess.Events(), cfg.stderr)
+	} else {
+		done = drainEventsHuman(sess.Events(), cfg.stderr)
+	}
 
 	result, err := sess.ProcessInput(ctx, task)
 	sess.Close()
@@ -112,17 +143,58 @@ func run(ctx context.Context, cfg runConfig) error {
 	return nil
 }
 
-// drainEvents starts a goroutine that reads session events and prints tool
-// activity to w. Returns a channel that closes when draining completes.
-func drainEvents(sess *agent.Session, w io.Writer) <-chan struct{} {
+// drainEventsVerbose writes every event as a JSON line (NDJSON) to w.
+func drainEventsVerbose(events <-chan agent.SessionEvent, w io.Writer) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for ev := range sess.Events() {
+		enc := json.NewEncoder(w)
+		enc.SetEscapeHTML(false)
+		for ev := range events {
+			enc.Encode(ev) //nolint:errcheck
+		}
+	}()
+	return done
+}
+
+// drainEventsHuman writes human-readable status lines to w.
+func drainEventsHuman(events <-chan agent.SessionEvent, w io.Writer) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range events {
 			switch ev.Kind {
+			case agent.EventSessionStart:
+				model, _ := ev.Data["model"].(string)
+				profile, _ := ev.Data["profile"].(string)
+				if model != "" {
+					fmt.Fprintf(w, "[model] %s (%s)\n", model, profile)
+				}
+			case agent.EventAssistantTextEnd:
+				txt, _ := ev.Data["text"].(string)
+				if strings.TrimSpace(txt) != "" {
+					fmt.Fprintf(w, "[assistant] %s\n", txt)
+				}
+				if reasoning, _ := ev.Data["reasoning"].(string); reasoning != "" {
+					fmt.Fprintf(w, "[thinking] (%d chars)\n", len(reasoning))
+				}
+				if usage, ok := ev.Data["usage"].(llm.Usage); ok {
+					line := fmt.Sprintf("[usage] in=%d out=%d total=%d", usage.InputTokens, usage.OutputTokens, usage.TotalTokens)
+					if usage.CacheReadTokens != nil {
+						line += fmt.Sprintf(" cache_read=%d", *usage.CacheReadTokens)
+					}
+					if usage.CacheWriteTokens != nil {
+						line += fmt.Sprintf(" cache_write=%d", *usage.CacheWriteTokens)
+					}
+					fmt.Fprintln(w, line)
+				}
 			case agent.EventToolCallStart:
 				name, _ := ev.Data["tool_name"].(string)
-				fmt.Fprintf(w, "[tool] %s\n", name)
+				args, _ := ev.Data["arguments_json"].(string)
+				if len(args) > 100 {
+					args = args[:97] + "..."
+				}
+				fmt.Fprintf(w, "[tool] %s %s\n", name, args)
 			case agent.EventToolCallEnd:
 				name, _ := ev.Data["tool_name"].(string)
 				isErr, _ := ev.Data["is_error"].(bool)
@@ -131,6 +203,9 @@ func drainEvents(sess *agent.Session, w io.Writer) <-chan struct{} {
 				} else {
 					fmt.Fprintf(w, "[tool] %s: done\n", name)
 				}
+			case agent.EventWarning:
+				msg, _ := ev.Data["message"].(string)
+				fmt.Fprintf(w, "[warning] %s\n", msg)
 			case agent.EventError:
 				errMsg, _ := ev.Data["error"].(string)
 				fmt.Fprintf(w, "[error] %s\n", errMsg)
@@ -191,51 +266,16 @@ func listSessions(cfg runConfig) error {
 	return nil
 }
 
-// selectProfile picks the right ProviderProfile based on available providers and model.
-func selectProfile(client *llm.Client, model string) agent.ProviderProfile {
-	providers := client.ProviderNames()
-
-	// If model is specified, try to infer provider from model name.
-	if model != "" {
-		lower := strings.ToLower(model)
-		switch {
-		case strings.Contains(lower, "gpt") || strings.Contains(lower, "codex") || strings.Contains(lower, "o1") || strings.Contains(lower, "o3") || strings.Contains(lower, "o4"):
-			return agent.NewOpenAIProfile(model)
-		case strings.Contains(lower, "claude") || strings.Contains(lower, "sonnet") || strings.Contains(lower, "opus") || strings.Contains(lower, "haiku"):
-			return agent.NewAnthropicProfile(model)
-		case strings.Contains(lower, "gemini"):
-			return agent.NewGeminiProfile(model)
-		}
+// selectProfile creates the ProviderProfile for the given provider and model.
+func selectProfile(provider, model string) (agent.ProviderProfile, error) {
+	switch strings.ToLower(provider) {
+	case "openai":
+		return agent.NewOpenAIProfile(model), nil
+	case "anthropic":
+		return agent.NewAnthropicProfile(model), nil
+	case "google", "gemini":
+		return agent.NewGeminiProfile(model), nil
+	default:
+		return nil, fmt.Errorf("unknown provider %q: must be openai, anthropic, or google", provider)
 	}
-
-	// Fall back to first available provider.
-	for _, p := range providers {
-		switch p {
-		case "openai":
-			m := model
-			if m == "" {
-				m = "gpt-5.2"
-			}
-			return agent.NewOpenAIProfile(m)
-		case "anthropic":
-			m := model
-			if m == "" {
-				m = "claude-opus-4-6"
-			}
-			return agent.NewAnthropicProfile(m)
-		case "google":
-			m := model
-			if m == "" {
-				m = "gemini-3-flash-preview"
-			}
-			return agent.NewGeminiProfile(m)
-		}
-	}
-
-	// Should not happen if NewFromEnv succeeded, but fallback.
-	m := model
-	if m == "" {
-		m = "gpt-5.2"
-	}
-	return agent.NewOpenAIProfile(m)
 }

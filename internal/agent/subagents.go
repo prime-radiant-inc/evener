@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -19,7 +20,7 @@ type subagent struct {
 	err     error
 }
 
-func (s *Session) spawnAgent(ctx context.Context, task string) (any, error) {
+func (s *Session) spawnAgent(ctx context.Context, task string, model string) (any, error) {
 	s.mu.Lock()
 	depth := s.depth
 	maxDepth := s.cfg.MaxSubagentDepth
@@ -29,6 +30,9 @@ func (s *Session) spawnAgent(ctx context.Context, task string) (any, error) {
 	}
 
 	subProfile := s.profile
+	if model = strings.TrimSpace(model); model != "" {
+		subProfile = s.profile.WithModel(model)
+	}
 	subSess, err := NewSession(s.client, subProfile, s.env, s.cfg)
 	if err != nil {
 		return "", err

@@ -164,8 +164,9 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 // RestoreSession creates a Session from a saved snapshot, restoring the
 // conversation history while reconstructing non-serializable parts (tools,
 // client, profile) fresh. The session retains the original snapshot ID.
-func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEnvironment, snap SessionSnapshot) (*Session, error) {
+func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEnvironment, snap SessionSnapshot, autoSaveDir string) (*Session, error) {
 	cfg := snap.Config
+	cfg.AutoSaveDir = autoSaveDir
 	cfg.applyDefaults()
 
 	if client == nil {
@@ -579,7 +580,16 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			if strings.TrimSpace(txt) != "" {
 				s.emit(EventAssistantTextDelta, map[string]any{"delta": txt})
 			}
-			s.emit(EventAssistantTextEnd, map[string]any{"text": txt})
+			endData := map[string]any{
+				"text":          txt,
+				"usage":         resp.Usage,
+				"finish_reason": resp.Finish.Reason,
+				"model":         resp.Model,
+			}
+			if reasoning := resp.ReasoningText(); reasoning != "" {
+				endData["reasoning"] = reasoning
+			}
+			s.emit(EventAssistantTextEnd, endData)
 			s.maybeAutoSave()
 
 		calls := resp.ToolCalls()
@@ -885,7 +895,11 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			task := fmt.Sprint(args["task"])
-			return s.spawnAgent(ctx, task)
+			model := ""
+			if v, ok := args["model"]; ok && v != nil {
+				model = fmt.Sprint(v)
+			}
+			return s.spawnAgent(ctx, task, model)
 		},
 	})
 	_ = reg.Register(RegisteredTool{

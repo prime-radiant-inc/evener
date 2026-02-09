@@ -494,6 +494,10 @@ func (p tinyProfile) SupportsParallelToolCalls() bool           { return false }
 func (p tinyProfile) ContextWindowSize() int                    { return p.cw }
 func (p tinyProfile) ProjectDocFiles() []string                 { return nil }
 func (p tinyProfile) BuildSystemPrompt(EnvironmentInfo, []ProjectDoc) string { return "" }
+func (p tinyProfile) CheapModel() string                                     { return p.mod }
+func (p tinyProfile) WithModel(model string) ProviderProfile {
+	return tinyProfile{id: p.id, cw: p.cw, mod: model}
+}
 
 func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) {
 	dir := t.TempDir()
@@ -972,7 +976,7 @@ func TestSession_Subagents_SpawnWaitClose_AndDepthLimit(t *testing.T) {
 	if sub == nil || sub.sess == nil {
 		t.Fatalf("missing subagent session for %q", agentID)
 	}
-	if _, err := sub.sess.spawnAgent(context.Background(), "nested"); err == nil {
+	if _, err := sub.sess.spawnAgent(context.Background(), "nested", ""); err == nil {
 		t.Fatalf("expected depth limit error, got nil")
 	}
 
@@ -985,6 +989,62 @@ func TestSession_Subagents_SpawnWaitClose_AndDepthLimit(t *testing.T) {
 		t.Fatalf("close_agent error: %s", closeRes.Output)
 	}
 	sess.Close()
+}
+
+func TestSession_SpawnAgent_ModelOverride(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("sub done")} },
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// Spawn with model override.
+	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"hello","model":"gpt-4.1-nano"}`),
+	})
+	if spawnRes.IsError {
+		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
+	}
+	var spawned map[string]any
+	if err := json.Unmarshal([]byte(spawnRes.Output), &spawned); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	agentID := fmt.Sprint(spawned["agent_id"])
+
+	// Wait for sub-agent.
+	waitRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c2",
+		Name:      "wait",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":2000}`, agentID)),
+	})
+	if waitRes.IsError {
+		t.Fatalf("wait error: %s", waitRes.Output)
+	}
+
+	// The fakeAdapter records all requests. The sub-agent's request should use overridden model.
+	reqs := f.Requests()
+	if len(reqs) == 0 {
+		t.Fatalf("no requests recorded")
+	}
+	subReq := reqs[len(reqs)-1]
+	if subReq.Model != "gpt-4.1-nano" {
+		t.Fatalf("sub-agent model: got %q want %q", subReq.Model, "gpt-4.1-nano")
+	}
 }
 
 func TestSession_ShellTool_UsesDefaultTimeoutAndAllowsOverride(t *testing.T) {

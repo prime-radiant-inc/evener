@@ -128,6 +128,56 @@ func TestProviderProfiles_BuildSystemPrompt_IncludesProviderSpecificBaseInstruct
 	}
 }
 
+func TestProviderProfile_CheapModel(t *testing.T) {
+	cases := []struct {
+		profile ProviderProfile
+		want    string
+	}{
+		{NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano"},
+		{NewAnthropicProfile("claude-opus-4-6"), "claude-haiku-4-5-20251001"},
+		{NewGeminiProfile("gemini-3-pro"), "gemini-2.5-flash-lite"},
+	}
+	for _, tc := range cases {
+		got := tc.profile.CheapModel()
+		if got != tc.want {
+			t.Fatalf("profile %q CheapModel: got %q want %q", tc.profile.ID(), got, tc.want)
+		}
+	}
+}
+
+func TestProviderProfile_WithModel(t *testing.T) {
+	orig := NewOpenAIProfile("gpt-5.2")
+	cloned := orig.WithModel("gpt-4.1-mini")
+
+	if cloned.Model() != "gpt-4.1-mini" {
+		t.Fatalf("cloned model: got %q want %q", cloned.Model(), "gpt-4.1-mini")
+	}
+	if cloned.ID() != orig.ID() {
+		t.Fatalf("cloned ID should match original: got %q want %q", cloned.ID(), orig.ID())
+	}
+	// Original must be unchanged.
+	if orig.Model() != "gpt-5.2" {
+		t.Fatalf("original model mutated: got %q", orig.Model())
+	}
+	// Tool definitions preserved.
+	if len(cloned.ToolDefinitions()) != len(orig.ToolDefinitions()) {
+		t.Fatalf("tool count mismatch: cloned=%d orig=%d", len(cloned.ToolDefinitions()), len(orig.ToolDefinitions()))
+	}
+	// System prompt preserved.
+	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux"}
+	if cloned.BuildSystemPrompt(env, nil) == "" {
+		t.Fatalf("cloned profile has empty system prompt")
+	}
+}
+
+func TestProviderProfile_WithModel_EmptyStringKeepsOriginal(t *testing.T) {
+	orig := NewAnthropicProfile("claude-opus-4-6")
+	cloned := orig.WithModel("")
+	if cloned.Model() != "claude-opus-4-6" {
+		t.Fatalf("WithModel('') should keep original model, got %q", cloned.Model())
+	}
+}
+
 func assertHasTool(t *testing.T, p ProviderProfile, name string) {
 	t.Helper()
 	for _, td := range p.ToolDefinitions() {

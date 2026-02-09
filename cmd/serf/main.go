@@ -11,28 +11,36 @@ import (
 )
 
 func main() {
-	model := flag.String("model", "", "LLM model identifier (e.g., gpt-5-mini-2025-08-07, claude-opus-4-6)")
+	model := flag.String("model", "", "LLM model identifier")
+	provider := flag.String("provider", "", "LLM provider (openai, anthropic, google)")
 	workDir := flag.String("dir", "", "working directory (default: current directory)")
 	resume := flag.String("resume", "", "resume a previous session by ID")
 	resumeWith := flag.String("resume-with", "", "start a new task using a previous session's context")
 	resumeLast := flag.Bool("resume-last", false, "resume the most recent session")
 	listSessionsFlag := flag.Bool("list-sessions", false, "list saved sessions and exit")
+	verbose := flag.Bool("verbose", false, "emit NDJSON events to stderr")
 
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: serf [flags] <task>\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: serf --provider <provider> --model <model> [flags] <task>\n\n")
 		fmt.Fprintf(os.Stderr, "A non-interactive coding agent.\n\n")
 		fmt.Fprintf(os.Stderr, "The task can be passed as arguments or piped via stdin.\n\n")
+		fmt.Fprintf(os.Stderr, "Required:\n")
+		fmt.Fprintf(os.Stderr, "  --provider <name>    LLM provider: openai, anthropic, google\n")
+		fmt.Fprintf(os.Stderr, "  --model <name>       LLM model (e.g. gpt-5.2, claude-opus-4-6, gemini-3-flash-preview)\n\n")
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		fmt.Fprintf(os.Stderr, "  --dir <path>         Working directory (default: current directory)\n")
+		fmt.Fprintf(os.Stderr, "  --verbose            Emit NDJSON events to stderr (replaces human-readable output)\n\n")
 		fmt.Fprintf(os.Stderr, "Session resume:\n")
 		fmt.Fprintf(os.Stderr, "  --resume <id>        Resume a previous session\n")
 		fmt.Fprintf(os.Stderr, "  --resume-with <id>   New task using a previous session's context\n")
 		fmt.Fprintf(os.Stderr, "  --resume-last        Resume the most recent session\n")
 		fmt.Fprintf(os.Stderr, "  --list-sessions      List saved sessions\n\n")
 		fmt.Fprintf(os.Stderr, "Environment variables:\n")
+		fmt.Fprintf(os.Stderr, "  SERF_MODEL           Default model (used when --model is omitted)\n")
+		fmt.Fprintf(os.Stderr, "  SERF_PROVIDER        Default provider (used when --provider is omitted)\n")
 		fmt.Fprintf(os.Stderr, "  OPENAI_API_KEY       OpenAI API key\n")
 		fmt.Fprintf(os.Stderr, "  ANTHROPIC_API_KEY    Anthropic API key\n")
-		fmt.Fprintf(os.Stderr, "  GEMINI_API_KEY       Google Gemini API key\n\n")
-		fmt.Fprintf(os.Stderr, "Flags:\n")
-		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "  GEMINI_API_KEY       Google Gemini API key\n")
 	}
 	flag.Parse()
 
@@ -61,7 +69,9 @@ func main() {
 	err := run(ctx, runConfig{
 		task:         task,
 		model:        *model,
+		provider:     *provider,
 		workDir:      *workDir,
+		verbose:      *verbose,
 		stdout:       os.Stdout,
 		stderr:       os.Stderr,
 		resume:       *resume,

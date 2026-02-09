@@ -686,3 +686,107 @@ func anyToString(v any) string {
 		return string(b)
 	}
 }
+
+func TestAssistantTextEnd_EnrichedData(t *testing.T) {
+	dir := t.TempDir()
+
+	reasoningTokens := 42
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Model: "gpt-5.2",
+					Finish: llm.FinishReason{Reason: "stop"},
+					Usage: llm.Usage{
+						InputTokens:     100,
+						OutputTokens:    50,
+						TotalTokens:     150,
+						ReasoningTokens: &reasoningTokens,
+					},
+					Message: llm.Message{
+						Role: llm.RoleAssistant,
+						Content: []llm.ContentPart{
+							{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "let me think about this"}},
+							{Kind: llm.ContentText, Text: "here is my answer"},
+						},
+					},
+				}
+			},
+		},
+	})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	// Collect events.
+	var events []SessionEvent
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range sess.Events() {
+			events = append(events, ev)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err = sess.ProcessInput(ctx, "test")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+	<-done
+
+	// Find the ASSISTANT_TEXT_END event.
+	var found *SessionEvent
+	for i, ev := range events {
+		if ev.Kind == EventAssistantTextEnd {
+			found = &events[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("no ASSISTANT_TEXT_END event found; events: %v", events)
+	}
+
+	// Verify text.
+	if txt, _ := found.Data["text"].(string); txt != "here is my answer" {
+		t.Fatalf("text: got %q want %q", txt, "here is my answer")
+	}
+
+	// Verify reasoning.
+	reasoning, _ := found.Data["reasoning"].(string)
+	if reasoning != "let me think about this" {
+		t.Fatalf("reasoning: got %q want %q", reasoning, "let me think about this")
+	}
+
+	// Verify finish_reason.
+	if fr, _ := found.Data["finish_reason"].(string); fr != "stop" {
+		t.Fatalf("finish_reason: got %q want %q", fr, "stop")
+	}
+
+	// Verify model.
+	if m, _ := found.Data["model"].(string); m != "gpt-5.2" {
+		t.Fatalf("model: got %q want %q", m, "gpt-5.2")
+	}
+
+	// Verify usage is present and has expected values.
+	usage, ok := found.Data["usage"].(llm.Usage)
+	if !ok {
+		t.Fatalf("usage: expected llm.Usage, got %T", found.Data["usage"])
+	}
+	if usage.InputTokens != 100 {
+		t.Fatalf("usage.input_tokens: got %d want 100", usage.InputTokens)
+	}
+	if usage.OutputTokens != 50 {
+		t.Fatalf("usage.output_tokens: got %d want 50", usage.OutputTokens)
+	}
+	if usage.ReasoningTokens == nil || *usage.ReasoningTokens != 42 {
+		t.Fatalf("usage.reasoning_tokens: got %v want 42", usage.ReasoningTokens)
+	}
+}
