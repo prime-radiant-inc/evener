@@ -313,6 +313,62 @@ func TestRestoreSession_RestoresHistoryAndID(t *testing.T) {
 	}
 }
 
+func TestSession_AutoSave_WritesSnapshotAfterProcessInput(t *testing.T) {
+	dir := t.TempDir()
+
+	c := llm.NewClient()
+	c.Register(&snapshotFakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxToolRoundsPerInput: 200,
+		AutoSaveDir:           dir,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	// Drain events to prevent channel blocking.
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err = sess.ProcessInput(ctx, "hello")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+
+	// A snapshot file should exist.
+	list, err := ListSessions(dir)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 saved session, got %d", len(list))
+	}
+	snap := list[0]
+	if snap.ID != sess.ID() {
+		t.Fatalf("saved id: got %q want %q", snap.ID, sess.ID())
+	}
+	// Should have user + assistant turns.
+	if len(snap.History) < 2 {
+		t.Fatalf("expected at least 2 history turns, got %d", len(snap.History))
+	}
+	if snap.History[0].Kind != TurnUserInput {
+		t.Fatalf("history[0].kind: got %q want %q", snap.History[0].Kind, TurnUserInput)
+	}
+	if snap.History[1].Kind != TurnAssistant {
+		t.Fatalf("history[1].kind: got %q want %q", snap.History[1].Kind, TurnAssistant)
+	}
+	if snap.ProfileID != "openai" {
+		t.Fatalf("profile_id: got %q want %q", snap.ProfileID, "openai")
+	}
+}
+
 func TestRestoreSession_CanProcessInput(t *testing.T) {
 	dir := t.TempDir()
 	// Minimal snapshot with no history.

@@ -39,6 +39,10 @@ type SessionConfig struct {
 	// Nil means use llm.DefaultRetryPolicy().
 	LLMRetryPolicy *llm.RetryPolicy `json:"-"`
 	LLMSleep       llm.SleepFunc    `json:"-"`
+
+	// AutoSaveDir, when non-empty, enables incremental session persistence.
+	// Snapshots are written to <AutoSaveDir>/.serf/sessions/ after each assistant turn.
+	AutoSaveDir string `json:"-"`
 }
 
 func (c *SessionConfig) applyDefaults() {
@@ -234,6 +238,24 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 func (s *Session) ID() string                  { return s.id }
 func (s *Session) Events() <-chan SessionEvent { return s.events }
 
+// Snapshot captures the current session state as a SessionSnapshot.
+func (s *Session) Snapshot() SessionSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UTC()
+	return SessionSnapshot{
+		ID:        s.id,
+		ProfileID: s.profile.ID(),
+		Model:     s.profile.Model(),
+		Config:    s.cfg,
+		EnvInfo:   s.envInfo,
+		History:   append([]Turn{}, s.history...),
+		CreatedAt: now, // overwritten by existing file if already saved
+		UpdatedAt: now,
+		TurnCount: s.turns,
+	}
+}
+
 // SetReasoningEffort updates the reasoning effort used for future LLM calls.
 // Takes effect on the next request (spec).
 func (s *Session) SetReasoningEffort(effort string) {
@@ -347,6 +369,20 @@ func (s *Session) appendTurn(kind TurnKind, m llm.Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.history = append(s.history, Turn{Kind: kind, Message: m})
+}
+
+// maybeAutoSave persists the session state if AutoSaveDir is configured.
+// Errors are emitted as warnings but do not interrupt the session.
+func (s *Session) maybeAutoSave() {
+	if s.cfg.AutoSaveDir == "" {
+		return
+	}
+	snap := s.Snapshot()
+	if err := SaveSession(s.cfg.AutoSaveDir, snap); err != nil {
+		s.emit(EventWarning, map[string]any{
+			"message": fmt.Sprintf("auto-save failed: %v", err),
+		})
+	}
 }
 
 func (s *Session) maybeWarnContextUsage(msgs []llm.Message) bool {
@@ -544,6 +580,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 				s.emit(EventAssistantTextDelta, map[string]any{"delta": txt})
 			}
 			s.emit(EventAssistantTextEnd, map[string]any{"text": txt})
+			s.maybeAutoSave()
 
 		calls := resp.ToolCalls()
 		if len(calls) == 0 {
