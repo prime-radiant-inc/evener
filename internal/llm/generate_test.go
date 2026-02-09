@@ -652,6 +652,55 @@ func TestGenerate_RetriesApplyPerStep_NotWholeOperation(t *testing.T) {
 	}
 }
 
+func TestGenerate_ToolCallContext_AvailableInHandler(t *testing.T) {
+	c := NewClient()
+	a := &scriptedAdapter{
+		name: "openai",
+		steps: []func(req Request) (Response, error){
+			func(req Request) (Response, error) {
+				call := ToolCallData{ID: "call1", Name: "t1", Arguments: json.RawMessage(`{}`), Type: "function"}
+				return Response{Message: Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}}}, nil
+			},
+			func(req Request) (Response, error) {
+				return Response{Message: Assistant("ok")}, nil
+			},
+		},
+	}
+	c.Register(a)
+
+	var gotCtx ToolCallContext
+	var gotOK bool
+	prompt := "do"
+	rounds := 1
+	_, err := Generate(context.Background(), GenerateOptions{
+		Client:        c,
+		Model:         "m",
+		Prompt:        &prompt,
+		MaxToolRounds: &rounds,
+		Tools: []Tool{
+			{
+				Definition: ToolDefinition{Name: "t1"},
+				Execute: func(ctx context.Context, args any) (any, error) {
+					gotCtx, gotOK = ToolCallContextFromCtx(ctx)
+					return "done", nil
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !gotOK {
+		t.Fatalf("ToolCallContextFromCtx returned ok=false")
+	}
+	if gotCtx.ToolCallID != "call1" {
+		t.Fatalf("ToolCallID: %q, want %q", gotCtx.ToolCallID, "call1")
+	}
+	if len(gotCtx.Messages) == 0 {
+		t.Fatalf("Messages is empty")
+	}
+}
+
 func TestGenerate_UnknownToolCall_SendsErrorResultToModel(t *testing.T) {
 	c := NewClient()
 	var sawErrorResult atomic.Bool

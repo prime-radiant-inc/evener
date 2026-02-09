@@ -18,6 +18,20 @@ type Tool struct {
 	schema     *jsonschema.Schema
 }
 
+// ToolCallContext provides additional context to tool handlers via context.Value.
+type ToolCallContext struct {
+	Messages   []Message
+	ToolCallID string
+}
+
+type toolCallContextKey struct{}
+
+// ToolCallContextFromCtx extracts the ToolCallContext from a context, if present.
+func ToolCallContextFromCtx(ctx context.Context) (ToolCallContext, bool) {
+	v, ok := ctx.Value(toolCallContextKey{}).(ToolCallContext)
+	return v, ok
+}
+
 type GenerateOptions struct {
 	Client *Client
 
@@ -217,7 +231,7 @@ func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error
 		}
 
 		// Execute tools (in parallel) and continue.
-		results := executeToolCalls(ctx, toolIndex, calls)
+		results := executeToolCalls(ctx, toolIndex, calls, history)
 		step.ToolResults = results
 		steps = append(steps, step)
 
@@ -268,7 +282,7 @@ func compileSchema(params map[string]any) (*jsonschema.Schema, error) {
 	return c.Compile("schema.json")
 }
 
-func executeToolCalls(ctx context.Context, toolIndex map[string]Tool, calls []ToolCallData) []ToolResultData {
+func executeToolCalls(ctx context.Context, toolIndex map[string]Tool, calls []ToolCallData, messages []Message) []ToolResultData {
 	results := make([]ToolResultData, len(calls))
 	var wg sync.WaitGroup
 	wg.Add(len(calls))
@@ -298,7 +312,11 @@ func executeToolCalls(ctx context.Context, toolIndex map[string]Tool, calls []To
 				return
 			}
 
-			out, err := t.Execute(ctx, args)
+			tcCtx := context.WithValue(ctx, toolCallContextKey{}, ToolCallContext{
+				Messages:   messages,
+				ToolCallID: call.ID,
+			})
+			out, err := t.Execute(tcCtx, args)
 			if err != nil {
 				r.IsError = true
 				r.Content = err.Error()
