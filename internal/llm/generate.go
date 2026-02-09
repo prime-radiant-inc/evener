@@ -59,6 +59,11 @@ type GenerateOptions struct {
 	Metadata        map[string]string
 	ProviderOptions map[string]any
 
+	// RepairToolCall is called when tool argument validation fails. If it returns
+	// repaired args (nil error), they are re-validated and used. If nil, validation
+	// errors are sent directly to the model as error results.
+	RepairToolCall func(ctx context.Context, call ToolCallData, validationError error) (json.RawMessage, error)
+
 	// Retry policy for each individual LLM call within generate().
 	RetryPolicy *RetryPolicy
 	Sleep       SleepFunc
@@ -231,7 +236,7 @@ func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error
 		}
 
 		// Execute tools (in parallel) and continue.
-		results := executeToolCalls(ctx, toolIndex, calls, history)
+		results := executeToolCalls(ctx, toolIndex, calls, history, opts.RepairToolCall)
 		step.ToolResults = results
 		steps = append(steps, step)
 
@@ -282,7 +287,7 @@ func compileSchema(params map[string]any) (*jsonschema.Schema, error) {
 	return c.Compile("schema.json")
 }
 
-func executeToolCalls(ctx context.Context, toolIndex map[string]Tool, calls []ToolCallData, messages []Message) []ToolResultData {
+func executeToolCalls(ctx context.Context, toolIndex map[string]Tool, calls []ToolCallData, messages []Message, repairFn func(context.Context, ToolCallData, error) (json.RawMessage, error)) []ToolResultData {
 	results := make([]ToolResultData, len(calls))
 	var wg sync.WaitGroup
 	wg.Add(len(calls))
@@ -306,10 +311,18 @@ func executeToolCalls(ctx context.Context, toolIndex map[string]Tool, calls []To
 
 			args, err := parseAndValidateArgs(t.schema, call.Arguments)
 			if err != nil {
-				r.IsError = true
-				r.Content = fmt.Sprintf("invalid tool arguments: %v", err)
-				results[i] = r
-				return
+				if repairFn != nil {
+					repaired, repairErr := repairFn(ctx, call, err)
+					if repairErr == nil {
+						args, err = parseAndValidateArgs(t.schema, repaired)
+					}
+				}
+				if err != nil {
+					r.IsError = true
+					r.Content = fmt.Sprintf("invalid tool arguments: %v", err)
+					results[i] = r
+					return
+				}
 			}
 
 			tcCtx := context.WithValue(ctx, toolCallContextKey{}, ToolCallContext{

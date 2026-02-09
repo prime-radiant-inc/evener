@@ -272,7 +272,7 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 			// Continue the tool loop.
 			history = append(history, stepResp.Message)
 
-			results := executeToolCalls(sctx, toolIndex, calls, history)
+			results := executeToolCalls(sctx, toolIndex, calls, history, opts.RepairToolCall)
 			for _, r := range results {
 				history = append(history, ToolResultNamed(r.ToolCallID, r.Name, r.Content, r.IsError))
 			}

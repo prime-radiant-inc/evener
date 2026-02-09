@@ -701,6 +701,127 @@ func TestGenerate_ToolCallContext_AvailableInHandler(t *testing.T) {
 	}
 }
 
+func TestGenerate_RepairToolCall_FixesInvalidArgs(t *testing.T) {
+	c := NewClient()
+	a := &scriptedAdapter{
+		name: "openai",
+		steps: []func(req Request) (Response, error){
+			func(req Request) (Response, error) {
+				// Model sends invalid args (a should be integer).
+				call := ToolCallData{ID: "call1", Name: "add", Arguments: json.RawMessage(`{"a":"nope","b":2}`), Type: "function"}
+				return Response{Message: Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}}}, nil
+			},
+			func(req Request) (Response, error) {
+				// Should receive the repaired tool result, not an error.
+				for _, m := range req.Messages {
+					if m.Role != RoleTool {
+						continue
+					}
+					for _, p := range m.Content {
+						if p.Kind == ContentToolResult && p.ToolResult != nil && p.ToolResult.ToolCallID == "call1" {
+							if p.ToolResult.IsError {
+								return Response{}, fmt.Errorf("expected non-error tool result after repair; got %+v", p.ToolResult)
+							}
+							return Response{Message: Assistant("ok")}, nil
+						}
+					}
+				}
+				return Response{}, fmt.Errorf("expected tool result for call1")
+			},
+		},
+	}
+	c.Register(a)
+
+	var repairCalled bool
+	prompt := "compute"
+	rounds := 1
+	_, err := Generate(context.Background(), GenerateOptions{
+		Client:        c,
+		Model:         "m",
+		Prompt:        &prompt,
+		MaxToolRounds: &rounds,
+		RepairToolCall: func(ctx context.Context, call ToolCallData, validationError error) (json.RawMessage, error) {
+			repairCalled = true
+			// Fix the args.
+			return json.RawMessage(`{"a":1,"b":2}`), nil
+		},
+		Tools: []Tool{
+			{
+				Definition: ToolDefinition{
+					Name:       "add",
+					Parameters: map[string]any{"type": "object", "properties": map[string]any{"a": map[string]any{"type": "integer"}, "b": map[string]any{"type": "integer"}}, "required": []string{"a", "b"}},
+				},
+				Execute: func(ctx context.Context, args any) (any, error) {
+					m, _ := args.(map[string]any)
+					ai, _ := m["a"].(float64)
+					bi, _ := m["b"].(float64)
+					return int(ai) + int(bi), nil
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !repairCalled {
+		t.Fatalf("RepairToolCall was not called")
+	}
+}
+
+func TestGenerate_RepairToolCall_FailedRepair_SendsErrorToModel(t *testing.T) {
+	c := NewClient()
+	a := &scriptedAdapter{
+		name: "openai",
+		steps: []func(req Request) (Response, error){
+			func(req Request) (Response, error) {
+				call := ToolCallData{ID: "call1", Name: "add", Arguments: json.RawMessage(`{"a":"nope","b":2}`), Type: "function"}
+				return Response{Message: Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}}}, nil
+			},
+			func(req Request) (Response, error) {
+				// Should receive an error tool result since repair failed.
+				for _, m := range req.Messages {
+					if m.Role != RoleTool {
+						continue
+					}
+					for _, p := range m.Content {
+						if p.Kind == ContentToolResult && p.ToolResult != nil && p.ToolResult.IsError {
+							return Response{Message: Assistant("ok")}, nil
+						}
+					}
+				}
+				return Response{}, fmt.Errorf("expected error tool result")
+			},
+		},
+	}
+	c.Register(a)
+
+	prompt := "compute"
+	rounds := 1
+	_, err := Generate(context.Background(), GenerateOptions{
+		Client:        c,
+		Model:         "m",
+		Prompt:        &prompt,
+		MaxToolRounds: &rounds,
+		RepairToolCall: func(ctx context.Context, call ToolCallData, validationError error) (json.RawMessage, error) {
+			return nil, fmt.Errorf("cannot repair")
+		},
+		Tools: []Tool{
+			{
+				Definition: ToolDefinition{
+					Name:       "add",
+					Parameters: map[string]any{"type": "object", "properties": map[string]any{"a": map[string]any{"type": "integer"}, "b": map[string]any{"type": "integer"}}, "required": []string{"a", "b"}},
+				},
+				Execute: func(ctx context.Context, args any) (any, error) {
+					return 0, nil
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+}
+
 func TestGenerate_UnknownToolCall_SendsErrorResultToModel(t *testing.T) {
 	c := NewClient()
 	var sawErrorResult atomic.Bool
