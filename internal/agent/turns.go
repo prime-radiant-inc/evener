@@ -14,7 +14,7 @@ const (
 // Turn is the Session's typed history item. Steering turns are kept distinct for observability,
 // but are converted to user-role messages when building the LLM request.
 type Turn struct {
-	Kind    TurnKind
-	Message llm.Message
+	Kind    TurnKind    `json:"kind"`
+	Message llm.Message `json:"message"`
 }
 

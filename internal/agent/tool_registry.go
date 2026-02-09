@@ -22,9 +22,9 @@ const (
 )
 
 type ToolOutputLimit struct {
-	MaxChars int
-	MaxLines int
-	Strategy TruncationStrategy
+	MaxChars int                `json:"max_chars,omitempty"`
+	MaxLines int                `json:"max_lines,omitempty"`
+	Strategy TruncationStrategy `json:"strategy,omitempty"`
 }
 
 type ToolExecResult struct {

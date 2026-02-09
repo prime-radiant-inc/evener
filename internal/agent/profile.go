@@ -9,16 +9,16 @@ import (
 )
 
 type EnvironmentInfo struct {
-	WorkingDir            string
-	Platform              string
-	OSVersion             string
-	Today                 string // YYYY-MM-DD
-	KnowledgeCutoff       string // YYYY-MM-DD
-	IsGitRepo             bool
-	GitBranch             string
-	GitModifiedFiles      int
-	GitUntrackedFiles     int
-	GitRecentCommitTitles []string
+	WorkingDir            string   `json:"working_dir"`
+	Platform              string   `json:"platform"`
+	OSVersion             string   `json:"os_version"`
+	Today                 string   `json:"today"`                    // YYYY-MM-DD
+	KnowledgeCutoff       string   `json:"knowledge_cutoff"`         // YYYY-MM-DD
+	IsGitRepo             bool     `json:"is_git_repo"`
+	GitBranch             string   `json:"git_branch,omitempty"`
+	GitModifiedFiles      int      `json:"git_modified_files"`
+	GitUntrackedFiles     int      `json:"git_untracked_files"`
+	GitRecentCommitTitles []string `json:"git_recent_commit_titles,omitempty"`
 }
 
 type ProviderProfile interface {

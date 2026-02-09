@@ -16,29 +16,29 @@ import (
 )
 
 type SessionConfig struct {
-	MaxToolRoundsPerInput   int
-	MaxTurns                int
-	DefaultCommandTimeoutMS int
-	MaxCommandTimeoutMS     int
-	MaxSubagentDepth        int
+	MaxToolRoundsPerInput   int `json:"max_tool_rounds_per_input,omitempty"`
+	MaxTurns                int `json:"max_turns,omitempty"`
+	DefaultCommandTimeoutMS int `json:"default_command_timeout_ms,omitempty"`
+	MaxCommandTimeoutMS     int `json:"max_command_timeout_ms,omitempty"`
+	MaxSubagentDepth        int `json:"max_subagent_depth,omitempty"`
 
 	// ToolOutputLimits overrides default per-tool truncation behavior.
-	ToolOutputLimits map[string]ToolOutputLimit
+	ToolOutputLimits map[string]ToolOutputLimit `json:"tool_output_limits,omitempty"`
 
 	// UserInstructionOverride is appended to the end of the system prompt (highest priority).
-	UserInstructionOverride string
+	UserInstructionOverride string `json:"user_instruction_override,omitempty"`
 
 	// ReasoningEffort is passed through to the Unified LLM request when non-empty.
 	// Valid values are provider-dependent but typically include: low|medium|high.
-	ReasoningEffort string
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 
-	EnableLoopDetection *bool
-	LoopDetectionWindow int
+	EnableLoopDetection *bool `json:"enable_loop_detection,omitempty"`
+	LoopDetectionWindow int   `json:"loop_detection_window,omitempty"`
 
 	// LLMRetryPolicy controls retries for retryable Unified LLM errors (429, 5xx, etc).
 	// Nil means use llm.DefaultRetryPolicy().
-	LLMRetryPolicy *llm.RetryPolicy
-	LLMSleep       llm.SleepFunc
+	LLMRetryPolicy *llm.RetryPolicy `json:"-"`
+	LLMSleep       llm.SleepFunc    `json:"-"`
 }
 
 func (c *SessionConfig) applyDefaults() {
