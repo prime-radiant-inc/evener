@@ -6,6 +6,10 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/prime-radiant/serf/internal/agent"
+	"github.com/prime-radiant/serf/internal/llm"
 )
 
 // TestRunWithArgs verifies that the run function processes a task from CLI args
@@ -111,5 +115,112 @@ func TestRunMissingAPIKey(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error when no API keys configured")
+	}
+}
+
+// --- Session resume tests ---
+
+func TestListSessions_PrintsFormattedList(t *testing.T) {
+	dir := t.TempDir()
+
+	snap1 := agent.SessionSnapshot{
+		ID:        "01JTEST000000000000000001",
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		History: []agent.Turn{
+			{Kind: agent.TurnUserInput, Message: llm.User("hello")},
+			{Kind: agent.TurnAssistant, Message: llm.Assistant("hi")},
+		},
+		CreatedAt: time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC),
+		UpdatedAt: time.Date(2025, 1, 15, 10, 5, 0, 0, time.UTC),
+		TurnCount: 2,
+	}
+	snap2 := agent.SessionSnapshot{
+		ID:        "01JTEST000000000000000002",
+		ProfileID: "anthropic",
+		Model:     "claude-opus-4-6",
+		History: []agent.Turn{
+			{Kind: agent.TurnUserInput, Message: llm.User("world")},
+		},
+		CreatedAt: time.Date(2025, 1, 15, 11, 0, 0, 0, time.UTC),
+		UpdatedAt: time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC),
+		TurnCount: 1,
+	}
+	for _, s := range []agent.SessionSnapshot{snap1, snap2} {
+		if err := agent.SaveSession(dir, s); err != nil {
+			t.Fatalf("SaveSession: %v", err)
+		}
+	}
+
+	var out bytes.Buffer
+	cfg := runConfig{
+		listSessions: true,
+		workDir:      dir,
+		stdout:       &out,
+		stderr:       &bytes.Buffer{},
+	}
+	err := run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	output := out.String()
+	// Most recent first (snap2).
+	if !strings.Contains(output, "01JTEST000000000000000002") {
+		t.Fatalf("expected snap2 ID in output, got:\n%s", output)
+	}
+	if !strings.Contains(output, "01JTEST000000000000000001") {
+		t.Fatalf("expected snap1 ID in output, got:\n%s", output)
+	}
+}
+
+func TestListSessions_EmptyDir(t *testing.T) {
+	dir := t.TempDir()
+	var out bytes.Buffer
+	cfg := runConfig{
+		listSessions: true,
+		workDir:      dir,
+		stdout:       &out,
+		stderr:       &bytes.Buffer{},
+	}
+	err := run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !strings.Contains(out.String(), "No saved sessions") {
+		t.Fatalf("expected 'No saved sessions' message, got: %q", out.String())
+	}
+}
+
+func TestResume_NonexistentID(t *testing.T) {
+	dir := t.TempDir()
+	cfg := runConfig{
+		resume:  "NONEXISTENT",
+		workDir: dir,
+		stdout:  &bytes.Buffer{},
+		stderr:  &bytes.Buffer{},
+	}
+	err := run(context.Background(), cfg)
+	if err == nil {
+		t.Fatalf("expected error for nonexistent session")
+	}
+	if !strings.Contains(err.Error(), "NONEXISTENT") {
+		t.Fatalf("expected error to mention session ID, got: %v", err)
+	}
+}
+
+func TestResumeLast_NoSessions(t *testing.T) {
+	dir := t.TempDir()
+	cfg := runConfig{
+		resumeLast: true,
+		workDir:    dir,
+		stdout:     &bytes.Buffer{},
+		stderr:     &bytes.Buffer{},
+	}
+	err := run(context.Background(), cfg)
+	if err == nil {
+		t.Fatalf("expected error when no sessions exist")
+	}
+	if !strings.Contains(err.Error(), "no saved sessions") {
+		t.Fatalf("expected error about no sessions, got: %v", err)
 	}
 }
