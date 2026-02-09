@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -86,6 +87,34 @@ func TestErrorFromHTTPStatus_MappingAndRetryable(t *testing.T) {
 		if e.Retryable() != tc.retryable {
 			t.Fatalf("status %d: retryable=%t want %t", tc.status, e.Retryable(), tc.retryable)
 		}
+	}
+}
+
+func TestContentFilterError_ImplementsErrorInterface(t *testing.T) {
+	err := &ContentFilterError{httpErrorBase{provider: "test", statusCode: 400, message: "blocked", retryable: false}}
+	var llmErr Error
+	if !errors.As(err, &llmErr) {
+		t.Fatalf("ContentFilterError does not implement Error interface")
+	}
+	if llmErr.Provider() != "test" {
+		t.Fatalf("Provider: %q", llmErr.Provider())
+	}
+	if llmErr.Retryable() {
+		t.Fatalf("expected non-retryable")
+	}
+}
+
+func TestQuotaExceededError_ImplementsErrorInterface(t *testing.T) {
+	err := &QuotaExceededError{httpErrorBase{provider: "test", statusCode: 429, message: "quota exceeded", retryable: false}}
+	var llmErr Error
+	if !errors.As(err, &llmErr) {
+		t.Fatalf("QuotaExceededError does not implement Error interface")
+	}
+	if llmErr.Provider() != "test" {
+		t.Fatalf("Provider: %q", llmErr.Provider())
+	}
+	if llmErr.Retryable() {
+		t.Fatalf("expected non-retryable")
 	}
 }
 

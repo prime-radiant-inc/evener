@@ -57,6 +57,8 @@ type AccessDeniedError struct{ httpErrorBase }
 type NotFoundError struct{ httpErrorBase }
 type RequestTimeoutError struct{ httpErrorBase }
 type ContextLengthError struct{ httpErrorBase }
+type ContentFilterError struct{ httpErrorBase }
+type QuotaExceededError struct{ httpErrorBase }
 type RateLimitError struct{ httpErrorBase }
 type ServerError struct{ httpErrorBase }
 type UnknownHTTPError struct{ httpErrorBase }
