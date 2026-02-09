@@ -1035,6 +1035,49 @@ func TestAdapter_UsageCacheTokens_Mapped(t *testing.T) {
 	}
 }
 
+func TestAdapter_Complete_DefaultMaxTokens_Is4096(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "msg_1",
+  "model": "claude-test",
+  "content": [{"type":"text","text":"ok"}],
+  "stop_reason": "end_turn",
+  "usage": {"input_tokens": 1, "output_tokens": 1}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model:    "claude-test",
+		Messages: []llm.Message{llm.User("hi")},
+		// No MaxTokens set - should default to 4096.
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if gotBody == nil {
+		t.Fatalf("server did not capture request body")
+	}
+	mt, ok := gotBody["max_tokens"].(float64)
+	if !ok {
+		t.Fatalf("max_tokens not found or not a number: %#v", gotBody["max_tokens"])
+	}
+	if int(mt) != 4096 {
+		t.Fatalf("max_tokens: got %d want 4096", int(mt))
+	}
+}
+
 func TestAdapter_Complete_FinishReason_Normalized(t *testing.T) {
 	cases := []struct {
 		name       string

@@ -69,7 +69,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	}
 	autoCache := anthropicAutoCacheEnabled(req.ProviderOptions)
 
-	maxTokens := 2048
+	maxTokens := 4096
 	if req.MaxTokens != nil && *req.MaxTokens > 0 {
 		maxTokens = *req.MaxTokens
 	}
