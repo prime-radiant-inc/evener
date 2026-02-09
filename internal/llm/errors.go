@@ -73,7 +73,11 @@ func ErrorFromHTTPStatus(provider string, statusCode int, message string, raw an
 	}
 	switch statusCode {
 	case 400, 422:
+		// Ambiguous status codes: check message for more specific classification.
 		base.retryable = false
+		if err := classifyByMessage(base); err != nil {
+			return err
+		}
 		return &InvalidRequestError{base}
 	case 401:
 		base.retryable = false
@@ -101,6 +105,25 @@ func ErrorFromHTTPStatus(provider string, statusCode int, message string, raw an
 		base.retryable = true
 		return &UnknownHTTPError{base}
 	}
+}
+
+// classifyByMessage checks the error message for classification signals when
+// the HTTP status code is ambiguous (e.g., 400/422). Returns nil if no match.
+func classifyByMessage(base httpErrorBase) error {
+	lower := strings.ToLower(base.message)
+	switch {
+	case strings.Contains(lower, "content filter") || strings.Contains(lower, "safety"):
+		return &ContentFilterError{base}
+	case strings.Contains(lower, "context length") || strings.Contains(lower, "too many tokens"):
+		return &ContextLengthError{base}
+	case strings.Contains(lower, "quota") || strings.Contains(lower, "billing"):
+		return &QuotaExceededError{base}
+	case strings.Contains(lower, "not found") || strings.Contains(lower, "does not exist"):
+		return &NotFoundError{base}
+	case strings.Contains(lower, "unauthorized") || strings.Contains(lower, "invalid key"):
+		return &AuthenticationError{base}
+	}
+	return nil
 }
 
 // NewRequestTimeoutError constructs a non-HTTP timeout error (e.g., context deadline

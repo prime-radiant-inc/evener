@@ -2,6 +2,7 @@ package llm
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -115,6 +116,43 @@ func TestQuotaExceededError_ImplementsErrorInterface(t *testing.T) {
 	}
 	if llmErr.Retryable() {
 		t.Fatalf("expected non-retryable")
+	}
+}
+
+func TestErrorFromHTTPStatus_MessageBasedClassification(t *testing.T) {
+	cases := []struct {
+		name    string
+		status  int
+		message string
+		want    string // expected error type name
+	}{
+		// Ambiguous 400 classified by message.
+		{"400 content filter", 400, "content filter policy violated", "*llm.ContentFilterError"},
+		{"400 safety", 400, "blocked by safety settings", "*llm.ContentFilterError"},
+		{"400 context length", 400, "context length exceeded", "*llm.ContextLengthError"},
+		{"400 too many tokens", 400, "too many tokens in request", "*llm.ContextLengthError"},
+		{"400 quota", 400, "quota exceeded for billing account", "*llm.QuotaExceededError"},
+		{"400 billing", 400, "billing issue on account", "*llm.QuotaExceededError"},
+		{"400 not found", 400, "model does not exist", "*llm.NotFoundError"},
+		{"400 plain", 400, "bad request", "*llm.InvalidRequestError"},
+
+		// Unambiguous status codes should NOT be overridden by message.
+		{"401 always auth", 401, "content filter something", "*llm.AuthenticationError"},
+		{"429 always rate", 429, "quota exceeded", "*llm.RateLimitError"},
+		{"404 always notfound", 404, "quota exceeded", "*llm.NotFoundError"},
+
+		// 422 is ambiguous like 400.
+		{"422 content filter", 422, "this violates safety policy", "*llm.ContentFilterError"},
+		{"422 plain", 422, "invalid field", "*llm.InvalidRequestError"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ErrorFromHTTPStatus("p", tc.status, tc.message, nil, nil)
+			got := fmt.Sprintf("%T", err)
+			if got != tc.want {
+				t.Fatalf("ErrorFromHTTPStatus(%d, %q) = %s, want %s", tc.status, tc.message, got, tc.want)
+			}
+		})
 	}
 }
 
