@@ -1,0 +1,349 @@
+digraph dttf {
+    graph [
+        goal="Build DTTF: a Go tool that converts bitmap PNG glyphs into a valid TrueType font file with a custom quadratic-Bezier tracer",
+        rankdir=LR,
+        default_max_retry=3,
+        max_restarts=120,
+        retry_target="impl_setup",
+        fallback_retry_target="impl_loader",
+        model_stylesheet="
+            * { llm_model: gpt-5.3-codex; llm_provider: openai; reasoning_effort: high; }
+            .hard { llm_model: gpt-5.3-codex; llm_provider: openai; reasoning_effort: high; }
+            .verify { llm_model: gpt-5.3-codex; llm_provider: openai; reasoning_effort: high; }
+            .review { llm_model: gpt-5.3-codex; llm_provider: openai; reasoning_effort: high; }
+        "
+    ]
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    // =========================================================================
+    // Unit 1: Project Setup
+    // =========================================================================
+    impl_setup [
+        shape=box,
+        prompt="Goal: $goal\n\nImplement the project setup for DTTF.\n\nSpec: demo/dttf/dttf-v1.md, sections 4 (Architecture) and 7 (Data Structures).\n\nCreate:\n- go.mod (module github.com/kilroy-au/dttf, Go 1.22+)\n- cmd/dttf/main.go (stub main with placeholder subcommands)\n- pkg/dttf/types.go (all core types from section 7.1: GlyphBitmap, Point, Contour, TracedGlyph, FontMetadata, Options, TraceOptions, RasterizeOptions, CharsetSpec)\n- pkg/dttf/dttf.go (stub API functions from section 4.2: Build, LoadGlyphs, TraceGlyph, AssembleFont, WriteFont, Rasterize)\n- pkg/dttf/errors.go (error types for section 9)\n\nAcceptance:\n- `go build ./...` must pass\n- `go vet ./...` must pass\n\nWrite status.json: outcome=success if all pass, outcome=fail with failure_reason otherwise."
+    ]
+
+    verify_setup [
+        shape=box,
+        class="verify",
+        timeout="900s",
+        prompt="Verify DTTF project setup.\n\nRun:\n1. `go build ./...`\n2. `go vet ./...`\n3. Check that go.mod, cmd/dttf/main.go, pkg/dttf/types.go, pkg/dttf/dttf.go, pkg/dttf/errors.go all exist\n4. Check that types.go defines GlyphBitmap, Point, Contour, TracedGlyph, FontMetadata\n\nWrite results to .ai/verify_setup.md.\nWrite status.json: outcome=success if ALL pass, outcome=fail with a non-empty failure_reason (details optional)."
+    ]
+
+    check_setup [shape=diamond, label="Setup OK?"]
+
+    // =========================================================================
+    // Unit 2: PNG Loader
+    // =========================================================================
+    impl_loader [
+        shape=box,
+        prompt="Goal: $goal\n\nImplement the PNG loader for DTTF.\n\nSpec: demo/dttf/dttf-v1.md, sections 1.1-1.5 (Input).\nRead: pkg/dttf/types.go for GlyphBitmap, FontMetadata types.\n\nCreate/modify:\n- pkg/dttf/loader.go: LoadGlyphs function that:\n  - Scans input directory for PNG files\n  - Parses filenames to extract Unicode codepoints (U+XXXX pattern)\n  - Loads each PNG, converts to grayscale\n  - Applies configurable threshold (default 128) to produce 1-bit bitmap\n  - Reads optional font.json sidecar for metadata\n  - Returns []GlyphBitmap and *FontMetadata with sensible defaults\n  - Handles errors per section 9 (skip bad glyphs with warnings, fatal on zero valid glyphs)\n- pkg/dttf/loader_test.go: Tests for filename parsing, grayscale conversion, thresholding, metadata loading, error cases\n\nAcceptance:\n- `go build ./...` must pass\n- `go test ./pkg/dttf/... -run TestLoad` must pass\n\nWrite status.json: outcome=success if all pass, outcome=fail with failure_reason otherwise."
+    ]
+
+    verify_loader [
+        shape=box,
+        class="verify",
+        timeout="900s",
+        prompt="Verify DTTF PNG loader implementation.\n\nRun:\n1. `go build ./...`\n2. `go vet ./...`\n3. `go test ./pkg/dttf/... -v -run TestLoad`\n4. Check that pkg/dttf/loader.go exists and implements LoadGlyphs\n5. Verify filename parsing handles all formats from spec section 1.2\n\nWrite results to .ai/verify_loader.md.\nWrite status.json: outcome=success if ALL pass, outcome=fail with a non-empty failure_reason (details optional)."
+    ]
+
+    check_loader [shape=diamond, label="Loader OK?"]
+
+    // =========================================================================
+    // Unit 3: Tracer (HARD, PARALLEL — 3 branches)
+    // =========================================================================
+    par_tracer [shape=component]
+
+    impl_tracer_a [
+        shape=box,
+        class="hard",
+        max_retries=2,
+        llm_model="claude-opus-4-6",
+        llm_provider="anthropic",
+        prompt="Goal: $goal\n\nImplement the bitmap-to-vector tracer for DTTF (branch A).\n\nSpec: demo/dttf/dttf-v1.md, section 3 (Tracer) — all subsections.\nRead: pkg/dttf/types.go for Point, Contour, TracedGlyph, TraceOptions types.\n\nThis is the hardest unit. Implement a custom 4-phase Potrace-based algorithm adapted for font output:\n\nPhase 1 — Path Decomposition: Decompose binary image into closed boundary paths (outer contours and inner counters) using contour-following on the 1-bit raster.\n\nPhase 2 — Optimal Polygon: For each path, compute optimal polygon approximation converting pixel staircases into minimal straight-line segments.\n\nPhase 3 — Quadratic Bezier Fitting: Fit quadratic Bezier curves (NOT cubic) directly to polygon segments. This produces TrueType-native splines with 3 control points per curve.\n\nPhase 4 — Font-Aware Optimization: Insert points at extrema, ensure correct winding direction (CW outer, CCW inner), remove self-intersections, eliminate short segments (<2 font units), enforce hard cap of 1000 control points per glyph.\n\nCoordinate mapping per section 3.3. Configuration parameters per section 3.4.\n\nCreate/modify:\n- pkg/dttf/tracer.go: TraceGlyph function implementing all 4 phases\n- pkg/dttf/tracer_path.go: Phase 1 path decomposition\n- pkg/dttf/tracer_polygon.go: Phase 2 optimal polygon\n- pkg/dttf/tracer_bezier.go: Phase 3 quadratic Bezier fitting\n- pkg/dttf/tracer_optimize.go: Phase 4 font-aware optimization\n- pkg/dttf/tracer_test.go: Tests for each phase and end-to-end tracing\n\nAcceptance:\n- `go build ./...` must pass\n- `go test ./pkg/dttf/... -v -run TestTrace` must pass\n- Traced output must have correct winding direction and points at extrema\n\nWrite status.json: outcome=success if all pass, outcome=fail with failure_reason otherwise."
+    ]
+
+    impl_tracer_b [
+        shape=box,
+        class="hard",
+        max_retries=2,
+        llm_model="gemini-3-pro-preview",
+        llm_provider="google",
+        prompt="Goal: $goal\n\nImplement the bitmap-to-vector tracer for DTTF (branch B).\n\nSpec: demo/dttf/dttf-v1.md, section 3 (Tracer) — all subsections.\nRead: pkg/dttf/types.go for Point, Contour, TracedGlyph, TraceOptions types.\n\nThis is the hardest unit. Implement a custom 4-phase Potrace-based algorithm adapted for font output:\n\nPhase 1 — Path Decomposition: Decompose binary image into closed boundary paths (outer contours and inner counters) using contour-following on the 1-bit raster.\n\nPhase 2 — Optimal Polygon: For each path, compute optimal polygon approximation converting pixel staircases into minimal straight-line segments.\n\nPhase 3 — Quadratic Bezier Fitting: Fit quadratic Bezier curves (NOT cubic) directly to polygon segments. This produces TrueType-native splines with 3 control points per curve.\n\nPhase 4 — Font-Aware Optimization: Insert points at extrema, ensure correct winding direction (CW outer, CCW inner), remove self-intersections, eliminate short segments (<2 font units), enforce hard cap of 1000 control points per glyph.\n\nCoordinate mapping per section 3.3. Configuration parameters per section 3.4.\n\nCreate/modify:\n- pkg/dttf/tracer.go: TraceGlyph function implementing all 4 phases\n- pkg/dttf/tracer_path.go: Phase 1 path decomposition\n- pkg/dttf/tracer_polygon.go: Phase 2 optimal polygon\n- pkg/dttf/tracer_bezier.go: Phase 3 quadratic Bezier fitting\n- pkg/dttf/tracer_optimize.go: Phase 4 font-aware optimization\n- pkg/dttf/tracer_test.go: Tests for each phase and end-to-end tracing\n\nAcceptance:\n- `go build ./...` must pass\n- `go test ./pkg/dttf/... -v -run TestTrace` must pass\n- Traced output must have correct winding direction and points at extrema\n\nWrite status.json: outcome=success if all pass, outcome=fail with failure_reason otherwise."
+    ]
+
+    impl_tracer_c [
+        shape=box,
+        class="hard",
+        max_retries=2,
+        llm_model="gpt-5.3-codex",
+        llm_provider="openai",
+        prompt="Goal: $goal\n\nImplement the bitmap-to-vector tracer for DTTF (branch C).\n\nSpec: demo/dttf/dttf-v1.md, section 3 (Tracer) — all subsections.\nRead: pkg/dttf/types.go for Point, Contour, TracedGlyph, TraceOptions types.\n\nThis is the hardest unit. Implement a custom 4-phase Potrace-based algorithm adapted for font output:\n\nPhase 1 — Path Decomposition: Decompose binary image into closed boundary paths (outer contours and inner counters) using contour-following on the 1-bit raster.\n\nPhase 2 — Optimal Polygon: For each path, compute optimal polygon approximation converting pixel staircases into minimal straight-line segments.\n\nPhase 3 — Quadratic Bezier Fitting: Fit quadratic Bezier curves (NOT cubic) directly to polygon segments. This produces TrueType-native splines with 3 control points per curve.\n\nPhase 4 — Font-Aware Optimization: Insert points at extrema, ensure correct winding direction (CW outer, CCW inner), remove self-intersections, eliminate short segments (<2 font units), enforce hard cap of 1000 control points per glyph.\n\nCoordinate mapping per section 3.3. Configuration parameters per section 3.4.\n\nCreate/modify:\n- pkg/dttf/tracer.go: TraceGlyph function implementing all 4 phases\n- pkg/dttf/tracer_path.go: Phase 1 path decomposition\n- pkg/dttf/tracer_polygon.go: Phase 2 optimal polygon\n- pkg/dttf/tracer_bezier.go: Phase 3 quadratic Bezier fitting\n- pkg/dttf/tracer_optimize.go: Phase 4 font-aware optimization\n- pkg/dttf/tracer_test.go: Tests for each phase and end-to-end tracing\n\nAcceptance:\n- `go build ./...` must pass\n- `go test ./pkg/dttf/... -v -run TestTrace` must pass\n- Traced output must have correct winding direction and points at extrema\n\nWrite status.json: outcome=success if all pass, outcome=fail with failure_reason otherwise."
+    ]
+
+    join_tracer [shape=tripleoctagon]
+
+    verify_tracer [
+        shape=box,
+        class="verify",
+        timeout="900s",
+        prompt="Verify DTTF tracer implementation.\n\nRun:\n1. `go build ./...`\n2. `go vet ./...`\n3. `go test ./pkg/dttf/... -v -run TestTrace`\n4. Check that tracer produces closed contours with correct winding direction\n5. Check that points at extrema are present in output\n6. Check that control point count per glyph is <= 1000\n\nWrite results to .ai/verify_tracer.md.\nWrite status.json: outcome=success if ALL pass, outcome=fail with a non-empty failure_reason (details optional)."
+    ]
+
+    check_tracer [shape=diamond, label="Tracer OK?"]
+
+    // =========================================================================
+    // Unit 4: Metrics
+    // =========================================================================
+    impl_metrics [
+        shape=box,
+        prompt="Goal: $goal\n\nImplement glyph metrics computation for DTTF.\n\nSpec: demo/dttf/dttf-v1.md, sections 2.5 (Vertical Metrics) and 2.6 (Glyph Metrics).\nRead: pkg/dttf/types.go for TracedGlyph, FontMetadata types.\nRead: pkg/dttf/tracer.go for the traced contour output format.\n\nCreate/modify:\n- pkg/dttf/metrics.go: Functions to compute per-glyph metrics from traced contours:\n  - Bounding boxes (xMin, yMin, xMax, yMax) from contour points\n  - Advance widths based on bounding box width plus sidebearings\n  - Left sidebearing (xMin of glyph outline)\n  - Default sidebearing strategy proportional to UPEm\n  - Populate TracedGlyph fields: AdvanceWidth, LSB, XMin, YMin, XMax, YMax\n- pkg/dttf/metrics_test.go: Tests for bounding box computation, advance width calculation, sidebearing computation\n\nAcceptance:\n- `go build ./...` must pass\n- `go test ./pkg/dttf/... -v -run TestMetric` must pass\n\nWrite status.json: outcome=success if all pass, outcome=fail with failure_reason otherwise."
+    ]
+
+    verify_metrics [
+        shape=box,
+        class="verify",
+        timeout="900s",
+        prompt="Verify DTTF metrics implementation.\n\nRun:\n1. `go build ./...`\n2. `go vet ./...`\n3. `go test ./pkg/dttf/... -v -run TestMetric`\n4. Check that metrics.go correctly computes bounding boxes and advance widths per spec section 2.6\n\nWrite results to .ai/verify_metrics.md.\nWrite status.json: outcome=success if ALL pass, outcome=fail with a non-empty failure_reason (details optional)."
+    ]
+
+    check_metrics [shape=diamond, label="Metrics OK?"]
+
+    // =========================================================================
+    // Unit 5: TrueType Table Assembly (HARD, PARALLEL — 3 branches)
+    // =========================================================================
+    par_tables [shape=component]
+
+    impl_tables_a [
+        shape=box,
+        class="hard",
+        max_retries=2,
+        llm_model="claude-opus-4-6",
+        llm_provider="anthropic",
+        prompt="Goal: $goal\n\nImplement TrueType table assembly for DTTF (branch A).\n\nSpec: demo/dttf/dttf-v1.md, sections 2.2 (Required Tables), 2.3 (Recommended Table), 2.5 (Vertical Metrics), and 8 (File Assembly).\nRead: pkg/dttf/types.go for TracedGlyph, FontMetadata types.\n\nImplement the AssembleFont function that builds all required TrueType tables from traced glyphs and metadata. This is a complex binary format task requiring precise byte-level encoding.\n\nTables to implement (11 total):\n- head: Font header with UPEm, creation date, flags, global bounding box, checksumAdjustment placeholder\n- maxp: Maximum profile with glyph count, max points/contours per glyph\n- hhea: Horizontal header with ascender, descender, line gap, max advance width\n- hmtx: Horizontal metrics with advance width and LSB per glyph\n- OS/2: Platform metrics with weight class, width class, Panose, Unicode ranges, vertical metrics (section 2.5), fsSelection bit 7\n- name: Naming table with family name, style, version string, copyright\n- post: PostScript table format 3.0 (32 bytes, no glyph names)\n- cmap: Character map format 4 (BMP Unicode to glyph index mapping with sorted segments)\n- glyf: Glyph outlines with numberOfContours, bounding box, endPtsOfContours, flags (packed with repeat optimization), delta-encoded coordinates\n- loca: Glyph location index with offsets into glyf table\n- gasp: Grid-fitting table (12 bytes) enabling smoothing at all sizes\n\nAlso generate a .notdef glyph (simple rectangle) as glyph index 0.\n\nEach table must compute a uint32 checksum (sum of 4-byte words). Tables padded to 4-byte boundaries.\n\nCreate/modify:\n- pkg/dttf/tables.go: AssembleFont function and table builders\n- pkg/dttf/tables_head.go: head table\n- pkg/dttf/tables_metrics.go: maxp, hhea, hmtx tables\n- pkg/dttf/tables_os2.go: OS/2 table\n- pkg/dttf/tables_name.go: name table\n- pkg/dttf/tables_post.go: post table\n- pkg/dttf/tables_cmap.go: cmap format 4 table\n- pkg/dttf/tables_glyf.go: glyf and loca tables\n- pkg/dttf/tables_gasp.go: gasp table\n- pkg/dttf/tables_test.go: Tests for each table builder and assembly\n\nAcceptance:\n- `go build ./...` must pass\n- `go test ./pkg/dttf/... -v -run TestTable` must pass\n\nWrite status.json: outcome=success if all pass, outcome=fail with failure_reason otherwise."
+    ]
+
+    impl_tables_b [
+        shape=box,
+        class="hard",
+        max_retries=2,
+        llm_model="gemini-3-pro-preview",
+        llm_provider="google",
+        prompt="Goal: $goal\n\nImplement TrueType table assembly for DTTF (branch B).\n\nSpec: demo/dttf/dttf-v1.md, sections 2.2 (Required Tables), 2.3 (Recommended Table), 2.5 (Vertical Metrics), and 8 (File Assembly).\nRead: pkg/dttf/types.go for TracedGlyph, FontMetadata types.\n\nImplement the AssembleFont function that builds all required TrueType tables from traced glyphs and metadata. This is a complex binary format task requiring precise byte-level encoding.\n\nTables to implement (11 total):\n- head: Font header with UPEm, creation date, flags, global bounding box, checksumAdjustment placeholder\n- maxp: Maximum profile with glyph count, max points/contours per glyph\n- hhea: Horizontal header with ascender, descender, line gap, max advance width\n- hmtx: Horizontal metrics with advance width and LSB per glyph\n- OS/2: Platform metrics with weight class, width class, Panose, Unicode ranges, vertical metrics (section 2.5), fsSelection bit 7\n- name: Naming table with family name, style, version string, copyright\n- post: PostScript table format 3.0 (32 bytes, no glyph names)\n- cmap: Character map format 4 (BMP Unicode to glyph index mapping with sorted segments)\n- glyf: Glyph outlines with numberOfContours, bounding box, endPtsOfContours, flags (packed with repeat optimization), delta-encoded coordinates\n- loca: Glyph location index with offsets into glyf table\n- gasp: Grid-fitting table (12 bytes) enabling smoothing at all sizes\n\nAlso generate a .notdef glyph (simple rectangle) as glyph index 0.\n\nEach table must compute a uint32 checksum (sum of 4-byte words). Tables padded to 4-byte boundaries.\n\nCreate/modify:\n- pkg/dttf/tables.go: AssembleFont function and table builders\n- pkg/dttf/tables_head.go: head table\n- pkg/dttf/tables_metrics.go: maxp, hhea, hmtx tables\n- pkg/dttf/tables_os2.go: OS/2 table\n- pkg/dttf/tables_name.go: name table\n- pkg/dttf/tables_post.go: post table\n- pkg/dttf/tables_cmap.go: cmap format 4 table\n- pkg/dttf/tables_glyf.go: glyf and loca tables\n- pkg/dttf/tables_gasp.go: gasp table\n- pkg/dttf/tables_test.go: Tests for each table builder and assembly\n\nAcceptance:\n- `go build ./...` must pass\n- `go test ./pkg/dttf/... -v -run TestTable` must pass\n\nWrite status.json: outcome=success if all pass, outcome=fail with failure_reason otherwise."
+    ]
+
+    impl_tables_c [
+        shape=box,
+        class="hard",
+        max_retries=2,
+        llm_model="gpt-5.3-codex",
+        llm_provider="openai",
+        prompt="Goal: $goal\n\nImplement TrueType table assembly for DTTF (branch C).\n\nSpec: demo/dttf/dttf-v1.md, sections 2.2 (Required Tables), 2.3 (Recommended Table), 2.5 (Vertical Metrics), and 8 (File Assembly).\nRead: pkg/dttf/types.go for TracedGlyph, FontMetadata types.\n\nImplement the AssembleFont function that builds all required TrueType tables from traced glyphs and metadata. This is a complex binary format task requiring precise byte-level encoding.\n\nTables to implement (11 total):\n- head: Font header with UPEm, creation date, flags, global bounding box, checksumAdjustment placeholder\n- maxp: Maximum profile with glyph count, max points/contours per glyph\n- hhea: Horizontal header with ascender, descender, line gap, max advance width\n- hmtx: Horizontal metrics with advance width and LSB per glyph\n- OS/2: Platform metrics with weight class, width class, Panose, Unicode ranges, vertical metrics (section 2.5), fsSelection bit 7\n- name: Naming table with family name, style, version string, copyright\n- post: PostScript table format 3.0 (32 bytes, no glyph names)\n- cmap: Character map format 4 (BMP Unicode to glyph index mapping with sorted segments)\n- glyf: Glyph outlines with numberOfContours, bounding box, endPtsOfContours, flags (packed with repeat optimization), delta-encoded coordinates\n- loca: Glyph location index with offsets into glyf table\n- gasp: Grid-fitting table (12 bytes) enabling smoothing at all sizes\n\nAlso generate a .notdef glyph (simple rectangle) as glyph index 0.\n\nEach table must compute a uint32 checksum (sum of 4-byte words). Tables padded to 4-byte boundaries.\n\nCreate/modify:\n- pkg/dttf/tables.go: AssembleFont function and table builders\n- pkg/dttf/tables_head.go: head table\n- pkg/dttf/tables_metrics.go: maxp, hhea, hmtx tables\n- pkg/dttf/tables_os2.go: OS/2 table\n- pkg/dttf/tables_name.go: name table\n- pkg/dttf/tables_post.go: post table\n- pkg/dttf/tables_cmap.go: cmap format 4 table\n- pkg/dttf/tables_glyf.go: glyf and loca tables\n- pkg/dttf/tables_gasp.go: gasp table\n- pkg/dttf/tables_test.go: Tests for each table builder and assembly\n\nAcceptance:\n- `go build ./...` must pass\n- `go test ./pkg/dttf/... -v -run TestTable` must pass\n\nWrite status.json: outcome=success if all pass, outcome=fail with failure_reason otherwise."
+    ]
+
+    join_tables [shape=tripleoctagon]
+
+    verify_tables [
+        shape=box,
+        class="verify",
+        timeout="900s",
+        prompt="Verify DTTF TrueType table assembly implementation.\n\nRun:\n1. `go build ./...`\n2. `go vet ./...`\n3. `go test ./pkg/dttf/... -v -run TestTable`\n4. Check that all 11 tables are implemented: head, maxp, hhea, hmtx, OS/2, name, post, cmap, glyf, loca, gasp\n5. Check that .notdef glyph is generated\n6. Check that checksums are computed for each table\n\nWrite results to .ai/verify_tables.md.\nWrite status.json: outcome=success if ALL pass, outcome=fail with a non-empty failure_reason (details optional)."
+    ]
+
+    check_tables [shape=diamond, label="Tables OK?"]
+
+    // =========================================================================
+    // Unit 6: Font Writer
+    // =========================================================================
+    impl_writer [
+        shape=box,
+        prompt="Goal: $goal\n\nImplement the font file writer for DTTF.\n\nSpec: demo/dttf/dttf-v1.md, section 8 (File Assembly).\nRead: pkg/dttf/types.go for Font type.\nRead: pkg/dttf/tables.go for assembled table data.\n\nCreate/modify:\n- pkg/dttf/writer.go: WriteFont function that:\n  - Writes the Offset Table (12 bytes): numTables, searchRange, entrySelector, rangeShift\n  - Writes the Table Directory (16 bytes per table): tag, checksum, offset, length\n  - Writes table data in alphabetical order by tag\n  - Pads each table to 4-byte boundaries\n  - Computes and writes checksumAdjustment in head table: 0xB1B0AFBA minus checksum of entire file\n- pkg/dttf/writer_test.go: Tests for file structure, table ordering, padding, checksumAdjustment\n\nAcceptance:\n- `go build ./...` must pass\n- `go test ./pkg/dttf/... -v -run TestWrite` must pass\n\nWrite status.json: outcome=success if all pass, outcome=fail with failure_reason otherwise."
+    ]
+
+    verify_writer [
+        shape=box,
+        class="verify",
+        timeout="900s",
+        prompt="Verify DTTF font writer implementation.\n\nRun:\n1. `go build ./...`\n2. `go vet ./...`\n3. `go test ./pkg/dttf/... -v -run TestWrite`\n4. Check that writer.go produces correct TrueType file structure\n5. Check that tables are alphabetically ordered and padded to 4-byte boundaries\n6. Check that checksumAdjustment is computed correctly\n\nWrite results to .ai/verify_writer.md.\nWrite status.json: outcome=success if ALL pass, outcome=fail with a non-empty failure_reason (details optional)."
+    ]
+
+    check_writer [shape=diamond, label="Writer OK?"]
+
+    // =========================================================================
+    // Unit 7: Validator
+    // =========================================================================
+    impl_validator [
+        shape=box,
+        prompt="Goal: $goal\n\nImplement the font validator for DTTF.\n\nSpec: demo/dttf/dttf-v1.md, section 5.1 (Font Validity) and section 5.4 (Curve Quality).\nRead: pkg/dttf/types.go for types.\nRead: pkg/dttf/tracer.go for contour format.\n\nCreate/modify:\n- pkg/dttf/validator.go: ValidateFont function that performs all validity checks:\n  - Loadable by standard parser: parse with Go sfnt package (golang.org/x/image/font/sfnt)\n  - Contours closed: verify all paths return to origin\n  - Correct winding direction: signed area negative=CW (outer), positive=CCW (inner)\n  - No self-intersections: segment-segment intersection test\n  - Points at extrema: check curve derivatives for roots in [0,1]\n  - Control point count per glyph <= 1000\n  - No short segments (<2 font units)\n  - Returns structured validation result with per-check pass/fail\n- pkg/dttf/validator_test.go: Tests with valid and invalid font data\n\nAcceptance:\n- `go build ./...` must pass\n- `go test ./pkg/dttf/... -v -run TestValidat` must pass\n\nWrite status.json: outcome=success if all pass, outcome=fail with failure_reason otherwise."
+    ]
+
+    verify_validator [
+        shape=box,
+        class="verify",
+        timeout="900s",
+        prompt="Verify DTTF validator implementation.\n\nRun:\n1. `go build ./...`\n2. `go vet ./...`\n3. `go test ./pkg/dttf/... -v -run TestValidat`\n4. Check that validator.go implements all 5 validity checks from spec section 5.1\n5. Check that it uses golang.org/x/image/font/sfnt for loadability check\n\nWrite results to .ai/verify_validator.md.\nWrite status.json: outcome=success if ALL pass, outcome=fail with a non-empty failure_reason (details optional)."
+    ]
+
+    check_validator [shape=diamond, label="Validator OK?"]
+
+    // =========================================================================
+    // Unit 8: Rasterizer
+    // =========================================================================
+    impl_rasterizer [
+        shape=box,
+        prompt="Goal: $goal\n\nImplement the font-to-bitmap rasterizer for DTTF.\n\nSpec: demo/dttf/dttf-v1.md, section 11 (Rasterizer).\nRead: pkg/dttf/types.go for RasterizeOptions, CharsetSpec types.\n\nCreate/modify:\n- pkg/dttf/rasterizer.go: Rasterize function that:\n  - Takes a .ttf/.otf font file path and output directory\n  - Renders selected glyphs to individual PNGs matching DTTF input format\n  - Uses golang.org/x/image/font/opentype for rasterization\n  - Supports character set selection: --ascii (default U+0020-U+007E), --all, --chars, --range\n  - Renders at configurable height (default 400px per em)\n  - Produces grayscale PNGs with black glyphs on white background\n  - Names files as FontName-GlyphLabel-U+XXXX.png\n  - Writes font.json sidecar with source font metrics per section 11.5\n  - Handles space glyph (U+0020) as all-white image at correct advance width\n- pkg/dttf/rasterizer_test.go: Tests for rendering, charset selection, metric extraction\n\nAcceptance:\n- `go build ./...` must pass\n- `go test ./pkg/dttf/... -v -run TestRaster` must pass\n\nWrite status.json: outcome=success if all pass, outcome=fail with failure_reason otherwise."
+    ]
+
+    verify_rasterizer [
+        shape=box,
+        class="verify",
+        timeout="900s",
+        prompt="Verify DTTF rasterizer implementation.\n\nRun:\n1. `go build ./...`\n2. `go vet ./...`\n3. `go test ./pkg/dttf/... -v -run TestRaster`\n4. Check that rasterizer.go implements all charset selection modes from spec section 11.3\n5. Check that font.json sidecar is written with correct metrics\n\nWrite results to .ai/verify_rasterizer.md.\nWrite status.json: outcome=success if ALL pass, outcome=fail with a non-empty failure_reason (details optional)."
+    ]
+
+    check_rasterizer [shape=diamond, label="Rasterizer OK?"]
+
+    // =========================================================================
+    // Unit 9: CLI
+    // =========================================================================
+    impl_cli [
+        shape=box,
+        prompt="Goal: $goal\n\nImplement the CLI for DTTF.\n\nSpec: demo/dttf/dttf-v1.md, section 12 (CLI Reference).\nRead: pkg/dttf/dttf.go for Build, Rasterize API functions.\nRead: pkg/dttf/validator.go for ValidateFont function.\nRead: cmd/dttf/main.go for existing stub.\n\nCreate/modify:\n- cmd/dttf/main.go: Complete CLI with all four subcommands:\n  - `dttf build <input-dir>` with flags: -o/--output, --family, --style, --units-per-em, --threshold, --corner-threshold, --optimization-tolerance, --verbose\n  - `dttf rasterize <font.ttf>` with flags: -o/--output-dir, --ascii, --all, --chars, --range, --height, --verbose\n  - `dttf validate <font.ttf>` with exit code 0=valid, 1=invalid\n  - `dttf test --reference <font.ttf>` with flags: --sizes, --threshold, --output-dir\n  - `dttf test --reference-dir <dir>` to test all fonts in directory\n  - Proper error handling, usage messages, and flag validation\n- cmd/dttf/main_test.go: Tests for CLI flag parsing and subcommand routing\n\nAcceptance:\n- `go build ./cmd/dttf/` must produce a working binary\n- `go test ./cmd/dttf/... -v` must pass\n- `./dttf --help` must show usage\n\nWrite status.json: outcome=success if all pass, outcome=fail with failure_reason otherwise."
+    ]
+
+    verify_cli [
+        shape=box,
+        class="verify",
+        timeout="900s",
+        prompt="Verify DTTF CLI implementation.\n\nRun:\n1. `go build -o dttf ./cmd/dttf/`\n2. `./dttf --help` (should show usage)\n3. `./dttf build --help` (should show build flags)\n4. `./dttf rasterize --help` (should show rasterize flags)\n5. `./dttf validate --help` (should show validate usage)\n6. `./dttf test --help` (should show test flags)\n7. `go test ./cmd/dttf/... -v`\n\nWrite results to .ai/verify_cli.md.\nWrite status.json: outcome=success if ALL pass, outcome=fail with a non-empty failure_reason (details optional)."
+    ]
+
+    check_cli [shape=diamond, label="CLI OK?"]
+
+    // =========================================================================
+    // Unit 10: Quality / Test Harness
+    // =========================================================================
+    impl_quality [
+        shape=box,
+        prompt="Goal: $goal\n\nImplement the quality function and test harness for DTTF.\n\nSpec: demo/dttf/dttf-v1.md, sections 5 (Quality Function) and 6 (Test Harness).\nRead: pkg/dttf/types.go for types.\nRead: pkg/dttf/validator.go for validity checks.\nRead: pkg/dttf/rasterizer.go for rendering.\n\nCreate/modify:\n- pkg/dttf/ssim.go: SSIM (Structural Similarity Index) computation in pure Go\n  - Takes two grayscale images, returns float64 in [0.0, 1.0]\n  - Windowed approach with standard parameters\n- pkg/dttf/quality.go: Composite quality scoring per section 5.7:\n  - Layer 1: Font validity (binary gate from validator)\n  - Layer 2: Pixel fidelity at input resolution (SSIM at 400px/em)\n  - Layer 3: Multi-scale fidelity (SSIM at 12, 16, 24, 48, 96px per em)\n  - Layer 4: Curve quality metrics (control points, extrema, winding, intersections, short segments)\n  - Layer 5: Metric accuracy (advance widths, sidebearings, bounding boxes within 2% UPEm)\n  - Layer 6: Text-level coherence (full-page SSIM, string width difference, line break positions)\n  - Composite score with configurable weights\n- pkg/dttf/testharness.go: Round-trip test per section 6.1:\n  - Render reference font to PNGs at 400px/em\n  - Run DTTF pipeline on rendered PNGs\n  - Render output font, compute per-glyph SSIM\n  - Report per-glyph scores, aggregate, failing glyphs\n  - Support reference font download from Google Fonts\n- pkg/dttf/ssim_test.go: Tests for SSIM computation\n- pkg/dttf/quality_test.go: Tests for quality scoring\n- pkg/dttf/testharness_test.go: Tests for round-trip harness\n\nAcceptance:\n- `go build ./...` must pass\n- `go test ./pkg/dttf/... -v -run 'TestSSIM|TestQuality|TestHarness'` must pass\n\nWrite status.json: outcome=success if all pass, outcome=fail with failure_reason otherwise."
+    ]
+
+    verify_quality [
+        shape=box,
+        class="verify",
+        timeout="900s",
+        prompt="Verify DTTF quality function and test harness implementation.\n\nRun:\n1. `go build ./...`\n2. `go vet ./...`\n3. `go test ./pkg/dttf/... -v -run 'TestSSIM|TestQuality|TestHarness'`\n4. Check that ssim.go implements SSIM correctly\n5. Check that quality.go implements all 6 layers from spec section 5\n6. Check that testharness.go implements the round-trip test from spec section 6.1\n\nWrite results to .ai/verify_quality.md.\nWrite status.json: outcome=success if ALL pass, outcome=fail with a non-empty failure_reason (details optional)."
+    ]
+
+    check_quality [shape=diamond, label="Quality OK?"]
+
+    // =========================================================================
+    // Unit 11: Integration Test
+    // =========================================================================
+    impl_integration [
+        shape=box,
+        goal_gate=true,
+        prompt="Goal: $goal\n\nImplement the end-to-end integration test for DTTF.\n\nSpec: demo/dttf/dttf-v1.md, sections 6 (Test Harness) and 12 (CLI Reference).\nRead: pkg/dttf/dttf.go for the full pipeline API.\nRead: pkg/dttf/testharness.go for the round-trip test.\nRead: cmd/dttf/main.go for CLI usage.\n\nCreate/modify:\n- pkg/dttf/integration_test.go: Full end-to-end integration tests:\n  - Test 1: Create synthetic test PNG glyphs (simple shapes like rectangles, circles)\n  - Test 2: Run full pipeline: LoadGlyphs -> TraceGlyph (per glyph) -> compute metrics -> AssembleFont -> WriteFont\n  - Test 3: Validate the output .ttf with ValidateFont\n  - Test 4: Run round-trip test: rasterize a test font -> build -> validate -> compare with SSIM\n  - Test 5: CLI smoke test: build the binary, run `dttf build` on test input, verify output exists and is valid\n  - All tests must be self-contained (no external font files required)\n  - Tests must clean up temporary directories\n\nAlso wire up the Build function in pkg/dttf/dttf.go to call all pipeline stages end-to-end if not already done.\n\nAcceptance:\n- `go build ./...` must pass\n- `go test ./pkg/dttf/... -v -run TestIntegration` must pass\n- `go build -o dttf ./cmd/dttf/ && ./dttf validate` must work\n\nWrite status.json: outcome=success if all pass, outcome=fail with failure_reason otherwise."
+    ]
+
+    verify_integration [
+        shape=box,
+        class="verify",
+        timeout="900s",
+        prompt="Verify DTTF end-to-end integration tests.\n\nRun:\n1. `go build ./...`\n2. `go vet ./...`\n3. `go test ./pkg/dttf/... -v -run TestIntegration`\n4. `go build -o dttf ./cmd/dttf/`\n5. Check that the full pipeline produces a valid .ttf file\n6. `go test ./... -v` (run ALL tests to catch any regressions)\n\nWrite results to .ai/verify_integration.md.\nWrite status.json: outcome=success if ALL pass, outcome=fail with a non-empty failure_reason (details optional)."
+    ]
+
+    check_integration [shape=diamond, label="Integration OK?"]
+
+    // =========================================================================
+    // Final Review
+    // =========================================================================
+    review [
+        shape=box,
+        class="review",
+        timeout="1800s",
+        goal_gate=true,
+        prompt="Goal: $goal\n\nFinal review of the complete DTTF implementation against the spec.\n\nRead: demo/dttf/dttf-v1.md (entire spec).\nReview the full implementation for completeness and correctness:\n\n1. Section 1 (Input): PNG loader handles all naming formats, grayscale conversion, thresholding, font.json sidecar\n2. Section 2 (Output): All 11 TrueType tables implemented, vertical metrics consistent across hhea/OS2, glyph metrics correct\n3. Section 3 (Tracer): Custom 4-phase tracer with quadratic Bezier output, font-aware optimization, all constraints enforced\n4. Section 4 (Architecture): Go package structure matches spec, API surface complete\n5. Section 5 (Quality): All 6 layers implemented, composite scoring works\n6. Section 6 (Test Harness): Round-trip test works end-to-end\n7. Section 7 (Data Structures): All types match spec\n8. Section 8 (File Assembly): Correct TrueType binary format, checksums, padding\n9. Section 9 (Error Handling): Fails loudly and early per spec\n10. Section 11 (Rasterizer): All charset modes, metric extraction, font.json output\n11. Section 12 (CLI): All 4 subcommands with all flags\n\nRun:\n1. `go build ./...`\n2. `go vet ./...`\n3. `go test ./... -v`\n\nWrite review to .ai/final_review.md with per-section assessment.\nWrite status.json: outcome=success if complete and correct, outcome=fail with what is missing or broken."
+    ]
+
+    check_review [shape=diamond, label="Review OK?"]
+
+    // =========================================================================
+    // Flow: Linear with parallel fan-out/fan-in for tracer and tables
+    // =========================================================================
+
+    // Setup
+    start -> impl_setup
+    impl_setup -> verify_setup -> check_setup
+    check_setup -> impl_loader       [condition="outcome=success"]
+    check_setup -> impl_setup        [condition="outcome=fail", label="retry", loop_restart=true]
+
+    // Loader
+    impl_loader -> verify_loader -> check_loader
+    check_loader -> par_tracer       [condition="outcome=success"]
+    check_loader -> impl_loader      [condition="outcome=fail", label="retry", loop_restart=true]
+
+    // Tracer (parallel fan-out / fan-in)
+    par_tracer -> impl_tracer_a
+    par_tracer -> impl_tracer_b
+    par_tracer -> impl_tracer_c
+    impl_tracer_a -> join_tracer
+    impl_tracer_b -> join_tracer
+    impl_tracer_c -> join_tracer
+    join_tracer -> verify_tracer -> check_tracer
+    check_tracer -> impl_metrics     [condition="outcome=success"]
+    check_tracer -> par_tracer       [condition="outcome=fail", label="retry", loop_restart=true]
+
+    // Metrics
+    impl_metrics -> verify_metrics -> check_metrics
+    check_metrics -> par_tables      [condition="outcome=success"]
+    check_metrics -> impl_metrics    [condition="outcome=fail", label="retry", loop_restart=true]
+
+    // Tables (parallel fan-out / fan-in)
+    par_tables -> impl_tables_a
+    par_tables -> impl_tables_b
+    par_tables -> impl_tables_c
+    impl_tables_a -> join_tables
+    impl_tables_b -> join_tables
+    impl_tables_c -> join_tables
+    join_tables -> verify_tables -> check_tables
+    check_tables -> impl_writer      [condition="outcome=success"]
+    check_tables -> par_tables       [condition="outcome=fail", label="retry", loop_restart=true]
+
+    // Writer
+    impl_writer -> verify_writer -> check_writer
+    check_writer -> impl_validator   [condition="outcome=success"]
+    check_writer -> impl_writer      [condition="outcome=fail", label="retry", loop_restart=true]
+
+    // Validator
+    impl_validator -> verify_validator -> check_validator
+    check_validator -> impl_rasterizer  [condition="outcome=success"]
+    check_validator -> impl_validator   [condition="outcome=fail", label="retry", loop_restart=true]
+
+    // Rasterizer
+    impl_rasterizer -> verify_rasterizer -> check_rasterizer
+    check_rasterizer -> impl_cli         [condition="outcome=success"]
+    check_rasterizer -> impl_rasterizer  [condition="outcome=fail", label="retry", loop_restart=true]
+
+    // CLI
+    impl_cli -> verify_cli -> check_cli
+    check_cli -> impl_quality        [condition="outcome=success"]
+    check_cli -> impl_cli            [condition="outcome=fail", label="retry", loop_restart=true]
+
+    // Quality / Test Harness
+    impl_quality -> verify_quality -> check_quality
+    check_quality -> impl_integration  [condition="outcome=success"]
+    check_quality -> impl_quality      [condition="outcome=fail", label="retry", loop_restart=true]
+
+    // Integration
+    impl_integration -> verify_integration -> check_integration
+    check_integration -> review          [condition="outcome=success"]
+    check_integration -> impl_integration [condition="outcome=fail", label="retry", loop_restart=true]
+
+    // Review
+    review -> check_review
+    check_review -> exit                 [condition="outcome=success"]
+    check_review -> impl_integration     [condition="outcome=fail", label="fix", loop_restart=true]
+}

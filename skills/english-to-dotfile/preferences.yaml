@@ -1,0 +1,57 @@
+# ==========================================================================
+# Pipeline Model & Executor Preferences
+# ==========================================================================
+#
+# This file controls model and executor defaults for the english-to-dotfile
+# skill when generating .dot pipeline files.
+#
+# The skill reads this file at the start of Phase 0B (model selection),
+# BEFORE fetching the Weather Report or LiteLLM catalog. Values here act
+# as defaults that the Weather Report and user overrides can supersede.
+#
+# To lock a choice, set the value. To let the skill pick dynamically,
+# leave it blank ("").
+#
+
+# --------------------------------------------------------------------------
+# Default models per pipeline role
+# --------------------------------------------------------------------------
+#
+# Each pipeline node has a "class" that determines which model runs it.
+# Set a model ID here to lock that role to a specific model. Leave blank
+# to let the skill choose from the Weather Report + LiteLLM catalog.
+#
+# Roles:
+#   default — general implementation nodes (no class attribute)
+#   hard    — complex implementation nodes (class="hard")
+#   verify  — verification/test-runner nodes (class="verify")
+#   review  — final review nodes (class="review")
+#
+# Example values: "gpt-5.3-codex", "claude-opus-4-6", "gemini/gemini-3-pro-preview"
+
+defaults:
+  models:
+    default: ""
+    hard: ""
+    verify: ""
+    review: ""
+
+# --------------------------------------------------------------------------
+# Executor preference
+# --------------------------------------------------------------------------
+#
+# Whether pipeline nodes should execute via CLI agents or direct API calls.
+# This is a single global setting — individual providers handle it via their
+# own CLI binaries (codex for OpenAI, claude for Anthropic, gemini for Google).
+#
+# Supported values: "cli" or "api"
+#
+# "cli" means the Attractor engine invokes a CLI agent (codex, claude, etc.)
+# that manages its own tool use, file I/O, and retries.
+#
+# "api" means the engine calls the provider's HTTP API directly and manages
+# tool use itself.
+#
+# The skill falls back to API if the preferred CLI binary isn't installed.
+
+executor: "cli"
