@@ -157,6 +157,80 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 	return s, nil
 }
 
+// RestoreSession creates a Session from a saved snapshot, restoring the
+// conversation history while reconstructing non-serializable parts (tools,
+// client, profile) fresh. The session retains the original snapshot ID.
+func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEnvironment, snap SessionSnapshot) (*Session, error) {
+	cfg := snap.Config
+	cfg.applyDefaults()
+
+	if client == nil {
+		return nil, fmt.Errorf("llm client is nil")
+	}
+	if profile == nil {
+		return nil, fmt.Errorf("profile is nil")
+	}
+	if env == nil {
+		return nil, fmt.Errorf("execution environment is nil")
+	}
+
+	s := &Session{
+		id:        snap.ID,
+		cfg:       cfg,
+		client:    client,
+		profile:   profile,
+		env:       env,
+		events:    make(chan SessionEvent, 256),
+		history:   append([]Turn{}, snap.History...),
+		turns:     snap.TurnCount,
+		subagents: map[string]*subagent{},
+	}
+
+	// Refresh environment context for the current state.
+	ei := envInfoFromEnv(env)
+	if inRepo, branch, mod, untracked, commits := snapshotGit(env, ei.WorkingDir); inRepo {
+		ei.IsGitRepo = true
+		ei.GitBranch = branch
+		ei.GitModifiedFiles = mod
+		ei.GitUntrackedFiles = untracked
+		ei.GitRecentCommitTitles = commits
+	}
+	s.envInfo = ei
+
+	reg := NewToolRegistry()
+	if err := registerCoreTools(reg, s); err != nil {
+		return nil, err
+	}
+	if len(cfg.ToolOutputLimits) > 0 {
+		reg.mu.Lock()
+		for name, lim := range cfg.ToolOutputLimits {
+			t, ok := reg.tools[name]
+			if !ok {
+				continue
+			}
+			if lim.MaxChars > 0 {
+				t.Limit.MaxChars = lim.MaxChars
+			}
+			if lim.MaxLines > 0 {
+				t.Limit.MaxLines = lim.MaxLines
+			}
+			if lim.Strategy != "" {
+				t.Limit.Strategy = lim.Strategy
+			}
+			reg.tools[name] = t
+		}
+		reg.mu.Unlock()
+	}
+	s.reg = reg
+
+	s.emit(EventSessionStart, map[string]any{
+		"profile":  profile.ID(),
+		"model":    profile.Model(),
+		"restored": true,
+	})
+	return s, nil
+}
+
 func (s *Session) ID() string                  { return s.id }
 func (s *Session) Events() <-chan SessionEvent { return s.events }
 

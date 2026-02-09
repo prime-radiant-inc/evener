@@ -1,9 +1,13 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -224,5 +228,122 @@ func TestListSessions_SkipsCorruptFiles(t *testing.T) {
 	}
 	if list[0].ID != snap.ID {
 		t.Fatalf("id: got %q want %q", list[0].ID, snap.ID)
+	}
+}
+
+// snapshotFakeAdapter is a minimal adapter for RestoreSession tests.
+type snapshotFakeAdapter struct {
+	name string
+
+	mu       sync.Mutex
+	requests []llm.Request
+}
+
+func (a *snapshotFakeAdapter) Name() string { return a.name }
+func (a *snapshotFakeAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	_ = ctx
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.requests = append(a.requests, req)
+	return llm.Response{Provider: a.name, Model: req.Model, Message: llm.Assistant("restored response")}, nil
+}
+func (a *snapshotFakeAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	return nil, errors.New("not implemented")
+}
+func (a *snapshotFakeAdapter) Requests() []llm.Request {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]llm.Request{}, a.requests...)
+}
+
+func TestRestoreSession_RestoresHistoryAndID(t *testing.T) {
+	dir := t.TempDir()
+	snap := testSnapshot()
+	snap.EnvInfo.WorkingDir = dir
+
+	c := llm.NewClient()
+	adapter := &snapshotFakeAdapter{name: "openai"}
+	c.Register(adapter)
+
+	sess, err := RestoreSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), snap)
+	if err != nil {
+		t.Fatalf("RestoreSession: %v", err)
+	}
+	defer sess.Close()
+
+	// Session should have the snapshot's ID.
+	if sess.ID() != snap.ID {
+		t.Fatalf("id: got %q want %q", sess.ID(), snap.ID)
+	}
+
+	// Send a new input and verify it includes the restored history.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := sess.ProcessInput(ctx, "continue please")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if strings.TrimSpace(result) != "restored response" {
+		t.Fatalf("result: %q", result)
+	}
+
+	// The LLM request should contain the restored history turns.
+	reqs := adapter.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(reqs))
+	}
+	// Messages should be: system + restored history (user "hello", assistant "hi there") + new user "continue please"
+	msgs := reqs[0].Messages
+	// Find the user messages.
+	var userTexts []string
+	for _, m := range msgs {
+		if m.Role == llm.RoleUser {
+			userTexts = append(userTexts, m.Text())
+		}
+	}
+	if len(userTexts) < 2 {
+		t.Fatalf("expected at least 2 user messages (restored + new), got %d: %v", len(userTexts), userTexts)
+	}
+	if userTexts[0] != "hello" {
+		t.Fatalf("first user message: got %q want %q", userTexts[0], "hello")
+	}
+	if userTexts[len(userTexts)-1] != "continue please" {
+		t.Fatalf("last user message: got %q want %q", userTexts[len(userTexts)-1], "continue please")
+	}
+}
+
+func TestRestoreSession_CanProcessInput(t *testing.T) {
+	dir := t.TempDir()
+	// Minimal snapshot with no history.
+	snap := SessionSnapshot{
+		ID:        "01JTEST000000000000000099",
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config:    SessionConfig{MaxToolRoundsPerInput: 200},
+		EnvInfo:   EnvironmentInfo{WorkingDir: dir},
+		History:   []Turn{},
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+
+	c := llm.NewClient()
+	c.Register(&snapshotFakeAdapter{name: "openai"})
+
+	sess, err := RestoreSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), snap)
+	if err != nil {
+		t.Fatalf("RestoreSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := sess.ProcessInput(ctx, "test")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if strings.TrimSpace(result) == "" {
+		t.Fatalf("expected non-empty result")
 	}
 }
