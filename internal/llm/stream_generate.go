@@ -24,6 +24,21 @@ type StreamResult struct {
 func (r *StreamResult) Events() <-chan StreamEvent { return r.stream.Events() }
 func (r *StreamResult) Close() error               { return r.stream.Close() }
 
+// TextStream returns a channel that yields only the text delta strings from the
+// stream. The channel is closed when the underlying event stream ends.
+func (r *StreamResult) TextStream() <-chan string {
+	ch := make(chan string, 16)
+	go func() {
+		defer close(ch)
+		for ev := range r.stream.Events() {
+			if ev.Type == StreamEventTextDelta {
+				ch <- ev.Delta
+			}
+		}
+	}()
+	return ch
+}
+
 func (r *StreamResult) Response() (*Response, error) {
 	if r == nil {
 		return nil, fmt.Errorf("stream result is nil")

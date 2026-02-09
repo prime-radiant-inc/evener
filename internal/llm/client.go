@@ -105,6 +105,73 @@ func (c *Client) Use(mw ...Middleware) {
 	c.middleware = append(c.middleware, mw...)
 }
 
+// Optional adapter interfaces. Adapters may implement these for additional lifecycle
+// and capability management.
+
+// Closer is implemented by adapters that hold resources requiring cleanup.
+type Closer interface {
+	Close() error
+}
+
+// Initializer is implemented by adapters that need explicit initialization.
+type Initializer interface {
+	Initialize(ctx context.Context) error
+}
+
+// ToolChoiceSupporter is implemented by adapters that want to declare which
+// tool choice modes they support. If not implemented, all modes are assumed supported.
+type ToolChoiceSupporter interface {
+	SupportsToolChoice(mode string) bool
+}
+
+// Close closes all registered adapters that implement the Closer interface.
+func (c *Client) Close() error {
+	if c == nil {
+		return nil
+	}
+	var firstErr error
+	for _, a := range c.providers {
+		if cl, ok := a.(Closer); ok {
+			if err := cl.Close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
+}
+
+// Initialize calls Initialize on all registered adapters that implement the Initializer interface.
+func (c *Client) Initialize(ctx context.Context) error {
+	if c == nil {
+		return nil
+	}
+	for _, a := range c.providers {
+		if init, ok := a.(Initializer); ok {
+			if err := init.Initialize(ctx); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// SupportsToolChoice checks whether the named provider supports the given tool choice mode.
+// Returns true if the adapter does not implement ToolChoiceSupporter (assumed supported).
+func (c *Client) SupportsToolChoice(provider, mode string) bool {
+	if c == nil {
+		return false
+	}
+	provider = normalizeProviderName(provider)
+	a, ok := c.providers[provider]
+	if !ok {
+		return false
+	}
+	if tc, ok := a.(ToolChoiceSupporter); ok {
+		return tc.SupportsToolChoice(mode)
+	}
+	return true
+}
+
 func normalizeProviderName(name string) string {
 	switch name {
 	case "gemini":

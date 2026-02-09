@@ -252,6 +252,86 @@ func TestClient_Stream_DoesNotRetryAutomatically(t *testing.T) {
 	}
 }
 
+// --- 9a: Optional adapter interfaces ---
+
+type closableFakeAdapter struct {
+	fakeAdapter
+	closed bool
+}
+
+func (a *closableFakeAdapter) Close() error {
+	a.closed = true
+	return nil
+}
+
+type initializableFakeAdapter struct {
+	fakeAdapter
+	initialized bool
+}
+
+func (a *initializableFakeAdapter) Initialize(ctx context.Context) error {
+	a.initialized = true
+	return nil
+}
+
+type toolChoiceFakeAdapter struct {
+	fakeAdapter
+}
+
+func (a *toolChoiceFakeAdapter) SupportsToolChoice(mode string) bool {
+	return mode == "auto" || mode == "required"
+}
+
+func TestClient_Close_CallsClosableAdapters(t *testing.T) {
+	c := NewClient()
+	closable := &closableFakeAdapter{fakeAdapter: fakeAdapter{name: "closable"}}
+	nonClosable := &fakeAdapter{name: "nonclosable"}
+	c.Register(closable)
+	c.Register(nonClosable)
+
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !closable.closed {
+		t.Fatalf("expected closable adapter to be closed")
+	}
+}
+
+func TestClient_Initialize_CallsInitializableAdapters(t *testing.T) {
+	c := NewClient()
+	initable := &initializableFakeAdapter{fakeAdapter: fakeAdapter{name: "initable"}}
+	nonInitable := &fakeAdapter{name: "plain"}
+	c.Register(initable)
+	c.Register(nonInitable)
+
+	if err := c.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if !initable.initialized {
+		t.Fatalf("expected initializable adapter to be initialized")
+	}
+}
+
+func TestClient_SupportsToolChoice(t *testing.T) {
+	c := NewClient()
+	c.Register(&toolChoiceFakeAdapter{fakeAdapter: fakeAdapter{name: "openai"}})
+
+	if !c.SupportsToolChoice("openai", "auto") {
+		t.Fatalf("expected auto to be supported")
+	}
+	if !c.SupportsToolChoice("openai", "required") {
+		t.Fatalf("expected required to be supported")
+	}
+	if c.SupportsToolChoice("openai", "named") {
+		t.Fatalf("expected named to be unsupported")
+	}
+	// Non-implementing adapter returns true by default.
+	c.Register(&fakeAdapter{name: "plain"})
+	if !c.SupportsToolChoice("plain", "auto") {
+		t.Fatalf("expected default true for non-implementing adapter")
+	}
+}
+
 func TestClient_Stream_MiddlewareChainOrder(t *testing.T) {
 	c := NewClient()
 	a := &streamAdapter{name: "openai"}

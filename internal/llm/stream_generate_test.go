@@ -595,3 +595,55 @@ func TestStreamGenerate_Cancellation_EmitsAbortError(t *testing.T) {
 		t.Fatalf("expected AbortError, got %T (%v)", rerr, rerr)
 	}
 }
+
+func TestStreamResult_TextStream_FiltersToTextDeltasOnly(t *testing.T) {
+	c := NewClient()
+	a := &scriptedStreamAdapter{
+		name: "openai",
+		scripts: []func(ctx context.Context, req Request) (Stream, error){
+			func(ctx context.Context, req Request) (Stream, error) {
+				_ = req
+				sctx, cancel := context.WithCancel(ctx)
+				st := NewChanStream(cancel)
+				go func() {
+					defer st.CloseSend()
+					st.Send(StreamEvent{Type: StreamEventStreamStart})
+					st.Send(StreamEvent{Type: StreamEventTextStart, TextID: "text_1"})
+					st.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "Hel"})
+					st.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "lo"})
+					st.Send(StreamEvent{Type: StreamEventTextEnd, TextID: "text_1"})
+					resp := Response{Provider: "openai", Model: "m", Message: Assistant("Hello"), Finish: FinishReason{Reason: "stop"}}
+					rp := resp
+					st.Send(StreamEvent{Type: StreamEventFinish, FinishReason: &resp.Finish, Response: &rp})
+					cancel()
+				}()
+				_ = sctx
+				return st, nil
+			},
+		},
+	}
+	c.Register(a)
+
+	prompt := "hi"
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	res, err := StreamGenerate(ctx, GenerateOptions{
+		Client:   c,
+		Model:    "m",
+		Provider: "openai",
+		Prompt:   &prompt,
+	})
+	if err != nil {
+		t.Fatalf("StreamGenerate: %v", err)
+	}
+	defer res.Close()
+
+	var deltas []string
+	for delta := range res.TextStream() {
+		deltas = append(deltas, delta)
+	}
+	if strings.Join(deltas, "") != "Hello" {
+		t.Fatalf("TextStream deltas: %q", strings.Join(deltas, ""))
+	}
+}

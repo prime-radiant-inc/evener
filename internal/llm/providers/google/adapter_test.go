@@ -386,6 +386,93 @@ func TestAdapter_Complete_HTTPErrorMapping_ServerErrorWithRetryAfter(t *testing.
 	}
 }
 
+func TestAdapter_Complete_GRPCStatusMapping(t *testing.T) {
+	// Gemini returns gRPC status codes in error response bodies. When the HTTP
+	// status is ambiguous (e.g. 400), the gRPC status provides more specific
+	// classification. When HTTP status is already specific (e.g. 429), the
+	// existing mapping is correct.
+	cases := []struct {
+		name       string
+		httpStatus int
+		grpcStatus string
+		message    string
+		checkErr   func(t *testing.T, err error)
+	}{
+		{
+			name:       "RESOURCE_EXHAUSTED via 429 maps to RateLimitError",
+			httpStatus: 429,
+			grpcStatus: "RESOURCE_EXHAUSTED",
+			message:    "quota exceeded",
+			checkErr: func(t *testing.T, err error) {
+				var target *llm.RateLimitError
+				if !errors.As(err, &target) {
+					t.Fatalf("expected RateLimitError, got %T (%v)", err, err)
+				}
+			},
+		},
+		{
+			name:       "NOT_FOUND via 404 maps to NotFoundError",
+			httpStatus: 404,
+			grpcStatus: "NOT_FOUND",
+			message:    "model not found",
+			checkErr: func(t *testing.T, err error) {
+				var target *llm.NotFoundError
+				if !errors.As(err, &target) {
+					t.Fatalf("expected NotFoundError, got %T (%v)", err, err)
+				}
+			},
+		},
+		{
+			name:       "INVALID_ARGUMENT via 400 maps to InvalidRequestError",
+			httpStatus: 400,
+			grpcStatus: "INVALID_ARGUMENT",
+			message:    "invalid argument",
+			checkErr: func(t *testing.T, err error) {
+				var target *llm.InvalidRequestError
+				if !errors.As(err, &target) {
+					t.Fatalf("expected InvalidRequestError, got %T (%v)", err, err)
+				}
+			},
+		},
+		{
+			name:       "PERMISSION_DENIED via 403 maps to AccessDeniedError",
+			httpStatus: 403,
+			grpcStatus: "PERMISSION_DENIED",
+			message:    "permission denied",
+			checkErr: func(t *testing.T, err error) {
+				var target *llm.AccessDeniedError
+				if !errors.As(err, &target) {
+					t.Fatalf("expected AccessDeniedError, got %T (%v)", err, err)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.httpStatus)
+				_, _ = w.Write([]byte(fmt.Sprintf(
+					`{"error":{"code":%d,"message":"%s","status":"%s"}}`,
+					tc.httpStatus, tc.message, tc.grpcStatus,
+				)))
+			}))
+			t.Cleanup(srv.Close)
+
+			a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+
+			_, err := a.Complete(ctx, llm.Request{Model: "gemini-test", Messages: []llm.Message{llm.User("hi")}})
+			if err == nil {
+				t.Fatalf("expected error")
+			}
+			tc.checkErr(t, err)
+		})
+	}
+}
+
 func TestAdapter_Stream_YieldsTextDeltasAndFinish(t *testing.T) {
 	var gotBody map[string]any
 	gotKey := ""
