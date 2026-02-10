@@ -734,8 +734,21 @@ func fromResponses(raw map[string]any, requestedModel string) llm.Response {
 						Type:      "function",
 					},
 				})
+			case "web_search_call":
+				query := ""
+				if action, _ := item["action"].(map[string]any); action != nil {
+					query, _ = action["query"].(string)
+				}
+				raw, _ := json.Marshal(item)
+				msg.Content = append(msg.Content, llm.ContentPart{
+					Kind: llm.ContentWebSearch,
+					WebSearch: &llm.WebSearchData{
+						Query: query,
+						Raw:   raw,
+					},
+				})
 			default:
-				// ignore (reasoning, web_search_call, etc.)
+				// ignore (reasoning, etc.)
 			}
 		}
 	}

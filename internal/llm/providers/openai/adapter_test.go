@@ -803,3 +803,70 @@ func TestAdapter_Complete_WebSearch_DisabledByDefault(t *testing.T) {
 		t.Fatalf("tools count: got %d want 1 (no web_search)", len(toolsAny))
 	}
 }
+
+func TestAdapter_Complete_WebSearch_ParsesWebSearchCall(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "resp_1",
+  "model": "gpt-5.2",
+  "output": [
+    {
+      "type": "web_search_call",
+      "id": "ws_abc123",
+      "status": "completed",
+      "action": {"type": "search", "query": "Go generics tutorial"}
+    },
+    {
+      "type": "message",
+      "content": [{"type":"output_text", "text":"Here is what I found about Go generics."}]
+    }
+  ],
+  "usage": {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	resp, err := a.Complete(ctx, llm.Request{
+		Model:     "gpt-5.2",
+		Messages:  []llm.Message{llm.User("search for Go generics")},
+		WebSearch: true,
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	if len(resp.Message.Content) != 2 {
+		t.Fatalf("content parts: got %d want 2", len(resp.Message.Content))
+	}
+
+	ws := resp.Message.Content[0]
+	if ws.Kind != llm.ContentWebSearch {
+		t.Fatalf("part[0] kind: got %q want %q", ws.Kind, llm.ContentWebSearch)
+	}
+	if ws.WebSearch == nil {
+		t.Fatalf("part[0] web_search is nil")
+	}
+	if ws.WebSearch.Query != "Go generics tutorial" {
+		t.Fatalf("query: got %q", ws.WebSearch.Query)
+	}
+	if len(ws.WebSearch.Raw) == 0 {
+		t.Fatalf("raw is empty")
+	}
+
+	txt := resp.Message.Content[1]
+	if txt.Kind != llm.ContentText {
+		t.Fatalf("part[1] kind: got %q want %q", txt.Kind, llm.ContentText)
+	}
+	if !strings.Contains(txt.Text, "Go generics") {
+		t.Fatalf("text: %q", txt.Text)
+	}
+
+	if resp.Finish.Reason != "stop" {
+		t.Fatalf("finish: got %q want stop", resp.Finish.Reason)
+	}
+}
