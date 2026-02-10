@@ -1251,6 +1251,69 @@ func TestAdapter_Integration_WebSearch(t *testing.T) {
 	t.Logf("response text (truncated): %.200s", resp.Text())
 }
 
+func TestAdapter_Integration_WebSearch_WithFunctionTools(t *testing.T) {
+	if os.Getenv("GEMINI_API_KEY") == "" && os.Getenv("GOOGLE_API_KEY") == "" {
+		t.Skip("GEMINI_API_KEY not set")
+	}
+
+	a, err := NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	funcTool := llm.ToolDefinition{
+		Name:        "shell",
+		Description: "Run a shell command",
+		Parameters:  map[string]any{"type": "object", "properties": map[string]any{"command": map[string]any{"type": "string"}}},
+	}
+
+	// First call: function tools + WebSearch:true. The adapter skips google_search
+	// due to the Gemini API limitation, so this should succeed without error.
+	resp1, err := a.Complete(ctx, llm.Request{
+		Model:     "gemini-2.5-flash",
+		Messages:  []llm.Message{llm.User("What is 2+2?")},
+		Tools:     []llm.ToolDefinition{funcTool},
+		WebSearch: true,
+	})
+	if err != nil {
+		t.Fatalf("First call (function tools + WebSearch): %v", err)
+	}
+	t.Logf("First call response (truncated): %.200s", resp1.Text())
+
+	// Second call: WebSearch:true with NO function tools. This simulates the
+	// web_search tool's grounding call — the adapter sends google_search and
+	// the response should include grounding metadata.
+	resp2, err := a.Complete(ctx, llm.Request{
+		Model:     "gemini-2.5-flash",
+		Messages:  []llm.Message{llm.User("Search the web: what is the current population of Tokyo?")},
+		WebSearch: true,
+	})
+	if err != nil {
+		t.Fatalf("Second call (WebSearch only): %v", err)
+	}
+
+	if strings.TrimSpace(resp2.Text()) == "" {
+		t.Fatalf("expected non-empty text response from grounding call")
+	}
+
+	var wsCount int
+	for _, p := range resp2.Message.Content {
+		if p.Kind == llm.ContentWebSearch {
+			wsCount++
+			if p.WebSearch == nil {
+				t.Fatalf("ContentWebSearch part has nil WebSearch data")
+			}
+			t.Logf("web_search query=%q raw_len=%d", p.WebSearch.Query, len(p.WebSearch.Raw))
+		}
+	}
+	if wsCount == 0 {
+		t.Fatalf("expected at least one ContentWebSearch part; got content kinds: %v", contentKinds(resp2.Message.Content))
+	}
+	t.Logf("Grounding response (truncated): %.200s", resp2.Text())
+}
+
 func contentKinds(parts []llm.ContentPart) []string {
 	var kinds []string
 	for _, p := range parts {
