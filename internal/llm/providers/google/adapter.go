@@ -109,10 +109,19 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 			"parts": []map[string]any{{"text": system}},
 		}
 	}
-	if len(req.Tools) > 0 {
-		body["tools"] = []map[string]any{{
-			"functionDeclarations": toGeminiFunctionDecls(req.Tools),
-		}}
+	if len(req.Tools) > 0 || req.WebSearch {
+		var toolEntries []map[string]any
+		if len(req.Tools) > 0 {
+			toolEntries = append(toolEntries, map[string]any{
+				"functionDeclarations": toGeminiFunctionDecls(req.Tools),
+			})
+		}
+		if req.WebSearch {
+			toolEntries = append(toolEntries, map[string]any{
+				"google_search": map[string]any{},
+			})
+		}
+		body["tools"] = toolEntries
 	}
 	if req.ToolChoice != nil {
 		mode := strings.ToLower(strings.TrimSpace(req.ToolChoice.Mode))
@@ -788,6 +797,26 @@ func fromGeminiResponse(raw map[string]any, requestedModel string) llm.Response 
 			}
 			if fr, _ := c0["finishReason"].(string); fr != "" {
 				r.Finish = llm.NormalizeFinishReason("google", fr)
+			}
+			if gm, ok := c0["groundingMetadata"].(map[string]any); ok && len(gm) > 0 {
+				query := ""
+				if wq, ok := gm["webSearchQueries"].([]any); ok && len(wq) > 0 {
+					qs := make([]string, 0, len(wq))
+					for _, q := range wq {
+						if s, ok := q.(string); ok {
+							qs = append(qs, s)
+						}
+					}
+					query = strings.Join(qs, "; ")
+				}
+				raw, _ := json.Marshal(gm)
+				msg.Content = append(msg.Content, llm.ContentPart{
+					Kind: llm.ContentWebSearch,
+					WebSearch: &llm.WebSearchData{
+						Query: query,
+						Raw:   raw,
+					},
+				})
 			}
 		}
 	}

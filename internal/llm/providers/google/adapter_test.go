@@ -959,6 +959,163 @@ func TestAdapter_ProviderOptions_PassThrough(t *testing.T) {
 	}
 }
 
+func TestAdapter_Complete_WebSearch_AddsSeparateToolEntry(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "candidates": [{
+    "content": {"parts": [{"text": "ok"}], "role": "model"},
+    "finishReason": "STOP"
+  }],
+  "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model:    "gemini-2.5-flash",
+		Messages: []llm.Message{llm.User("search for docs")},
+		Tools: []llm.ToolDefinition{{
+			Name:       "shell",
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{}},
+		}},
+		WebSearch: true,
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	toolsAny, ok := gotBody["tools"].([]any)
+	if !ok {
+		t.Fatalf("tools not array: %#v", gotBody["tools"])
+	}
+
+	// Should have 2 entries: {functionDeclarations: [...]} and {google_search: {}}
+	if len(toolsAny) != 2 {
+		t.Fatalf("tools count: got %d want 2", len(toolsAny))
+	}
+
+	entry1, _ := toolsAny[1].(map[string]any)
+	if _, ok := entry1["google_search"]; !ok {
+		t.Fatalf("second tools entry missing google_search: %#v", entry1)
+	}
+}
+
+func TestAdapter_Complete_WebSearch_DisabledByDefault(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "candidates": [{
+    "content": {"parts": [{"text": "ok"}], "role": "model"},
+    "finishReason": "STOP"
+  }],
+  "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model:    "gemini-2.5-flash",
+		Messages: []llm.Message{llm.User("hello")},
+		Tools: []llm.ToolDefinition{{
+			Name:       "shell",
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{}},
+		}},
+		// WebSearch: false (default)
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	toolsAny, ok := gotBody["tools"].([]any)
+	if !ok {
+		t.Fatalf("tools not array: %#v", gotBody["tools"])
+	}
+	if len(toolsAny) != 1 {
+		t.Fatalf("tools count: got %d want 1 (no google_search)", len(toolsAny))
+	}
+}
+
+func TestAdapter_Complete_WebSearch_ParsesGroundingMetadata(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "candidates": [{
+    "content": {"parts": [{"text": "Spain won Euro 2024."}], "role": "model"},
+    "finishReason": "STOP",
+    "groundingMetadata": {
+      "webSearchQueries": ["Euro 2024 winner", "who won euro 2024"],
+      "groundingChunks": [
+        {"web": {"uri": "https://example.com/euro", "title": "Euro Results"}}
+      ],
+      "groundingSupports": [
+        {"segment": {"startIndex": 0, "endIndex": 20, "text": "Spain won Euro 2024."}, "groundingChunkIndices": [0], "confidenceScores": [0.95]}
+      ]
+    }
+  }],
+  "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 20, "totalTokenCount": 30}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	resp, err := a.Complete(ctx, llm.Request{
+		Model:     "gemini-2.5-flash",
+		Messages:  []llm.Message{llm.User("who won euro 2024")},
+		WebSearch: true,
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	// Should have 2 content parts: text + web_search (grounding metadata)
+	if len(resp.Message.Content) != 2 {
+		t.Fatalf("content parts: got %d want 2", len(resp.Message.Content))
+	}
+
+	txt := resp.Message.Content[0]
+	if txt.Kind != llm.ContentText || !strings.Contains(txt.Text, "Spain") {
+		t.Fatalf("part[0]: kind=%q text=%q", txt.Kind, txt.Text)
+	}
+
+	ws := resp.Message.Content[1]
+	if ws.Kind != llm.ContentWebSearch {
+		t.Fatalf("part[1] kind: got %q want web_search", ws.Kind)
+	}
+	if ws.WebSearch == nil {
+		t.Fatalf("part[1] web_search is nil")
+	}
+	if !strings.Contains(ws.WebSearch.Query, "Euro 2024") {
+		t.Fatalf("query: got %q", ws.WebSearch.Query)
+	}
+	if len(ws.WebSearch.Raw) == 0 {
+		t.Fatalf("raw is empty")
+	}
+}
+
 func TestAdapter_Complete_FinishReason_Normalized(t *testing.T) {
 	cases := []struct {
 		name         string
