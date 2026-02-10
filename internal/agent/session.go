@@ -87,6 +87,10 @@ type Session struct {
 	steeringQueue []string
 	followups     []string
 
+	// communicate tool state (transient, reset each processOneInput call)
+	resultDelivered bool
+	resultText      string
+
 	// subagents
 	depth     int
 	subagents map[string]*subagent
@@ -488,6 +492,8 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		s.mu.Unlock()
 		return "", fmt.Errorf("session is closed")
 	}
+	s.resultDelivered = false
+	s.resultText = ""
 	s.mu.Unlock()
 
 	select {
@@ -539,10 +545,11 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			}
 
 		req := llm.Request{
-			Model:    s.profile.Model(),
-			Provider: s.profile.ID(),
-			Messages: append([]llm.Message{llm.System(sys)}, history...),
-			Tools:    s.profile.ToolDefinitions(),
+			Model:      s.profile.Model(),
+			Provider:   s.profile.ID(),
+			Messages:   append([]llm.Message{llm.System(sys)}, history...),
+			Tools:      s.profile.ToolDefinitions(),
+			ToolChoice: &llm.ToolChoice{Mode: "required"},
 		}
 			if strings.TrimSpace(s.cfg.ReasoningEffort) != "" {
 				v := strings.TrimSpace(s.cfg.ReasoningEffort)
@@ -646,6 +653,15 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 				s.appendTurn(TurnSteering, llm.User(msg))
 				s.emit(EventSteeringInjected, map[string]any{"text": msg})
 			}
+
+		// communicate(result) sets the flag; exit the loop with the result message.
+		s.mu.Lock()
+		delivered := s.resultDelivered
+		text := s.resultText
+		s.mu.Unlock()
+		if delivered {
+			return text, nil
+		}
 	}
 
 	return "", fmt.Errorf("max tool rounds reached")
@@ -993,6 +1009,39 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			rawURL := fmt.Sprint(args["url"])
 			question := fmt.Sprint(args["question"])
 			return s.webFetch(ctx, rawURL, question)
+		},
+	})
+
+	// Communicate (structured I/O).
+	_ = reg.Register(RegisteredTool{
+		Definition: defCommunicate(),
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			_ = ctx
+			_ = env
+			action := fmt.Sprint(args["action"])
+			message := fmt.Sprint(args["message"])
+
+			s.emit(EventCommunicate, map[string]any{
+				"action":  action,
+				"message": message,
+			})
+
+			// Drain steering queue into the inbox.
+			inbox := s.drainSteering()
+
+			if action == "result" {
+				s.mu.Lock()
+				s.resultDelivered = true
+				s.resultText = message
+				s.mu.Unlock()
+			}
+
+			resp := map[string]any{
+				"delivered": true,
+				"inbox":     inbox,
+			}
+			b, _ := json.Marshal(resp)
+			return string(b), nil
 		},
 	})
 

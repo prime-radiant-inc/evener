@@ -59,6 +59,7 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"close_agent",
 			"task_list",
 			"web_fetch",
+			"communicate",
 		})
 	})
 	t.Run("anthropic", func(t *testing.T) {
@@ -76,6 +77,7 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"close_agent",
 			"task_list",
 			"web_fetch",
+			"communicate",
 		})
 	})
 	t.Run("gemini", func(t *testing.T) {
@@ -96,6 +98,7 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"close_agent",
 			"task_list",
 			"web_fetch",
+			"communicate",
 		})
 	})
 }
@@ -275,6 +278,34 @@ func TestAllProfiles_SystemPromptContainsTaskListGuidance(t *testing.T) {
 		// Must include guidance about task statuses.
 		if !strings.Contains(prompt, "done") || !strings.Contains(prompt, "undone") {
 			t.Errorf("profile %q system prompt missing task status guidance (done/undone)", name)
+		}
+	}
+}
+
+// TestAllProfiles_SystemPromptContainsCommunicateGuidance verifies that all
+// profiles include behavioral guidance for the communicate tool.
+func TestAllProfiles_SystemPromptContainsCommunicateGuidance(t *testing.T) {
+	profiles := map[string]ProviderProfile{
+		"openai":    NewOpenAIProfile("gpt-5.2"),
+		"anthropic": NewAnthropicProfile("claude-test"),
+		"gemini":    NewGeminiProfile("gemini-test"),
+	}
+	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux", Today: "2026-02-09"}
+
+	for name, p := range profiles {
+		prompt := p.BuildSystemPrompt(env, nil)
+
+		if !strings.Contains(prompt, "communicate") {
+			t.Errorf("profile %q system prompt missing communicate guidance", name)
+		}
+		if !strings.Contains(prompt, "communicate(status)") {
+			t.Errorf("profile %q system prompt missing communicate(status) guidance", name)
+		}
+		if !strings.Contains(prompt, "communicate(result)") {
+			t.Errorf("profile %q system prompt missing communicate(result) guidance", name)
+		}
+		if !strings.Contains(prompt, "inbox") {
+			t.Errorf("profile %q system prompt missing inbox guidance", name)
 		}
 	}
 }

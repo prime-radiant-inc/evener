@@ -203,6 +203,13 @@ func drainEventsHuman(events <-chan agent.SessionEvent, w io.Writer) <-chan stru
 				} else {
 					fmt.Fprintf(w, "[tool] %s: done\n", name)
 				}
+			case agent.EventCommunicate:
+				action, _ := ev.Data["action"].(string)
+				msg, _ := ev.Data["message"].(string)
+				if action == "status" {
+					fmt.Fprintf(w, "[status] %s\n", msg)
+				}
+				// result is printed via ProcessInput return value on stdout
 			case agent.EventWarning:
 				msg, _ := ev.Data["message"].(string)
 				fmt.Fprintf(w, "[warning] %s\n", msg)

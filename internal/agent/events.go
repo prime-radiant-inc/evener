@@ -17,6 +17,7 @@ const (
 	EventSteeringInjected   EventKind = "STEERING_INJECTED"
 	EventTurnLimit          EventKind = "TURN_LIMIT"
 	EventLoopDetection      EventKind = "LOOP_DETECTION"
+	EventCommunicate        EventKind = "COMMUNICATE"
 	EventWarning            EventKind = "WARNING"
 	EventError              EventKind = "ERROR"
 )

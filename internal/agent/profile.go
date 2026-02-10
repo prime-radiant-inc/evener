@@ -8,6 +8,18 @@ import (
 	"github.com/prime-radiant/serf/internal/llm"
 )
 
+// communicateGuidance is behavioral guidance for the communicate tool, shared by all profiles.
+const communicateGuidance = `
+## communicate
+
+You MUST use the communicate tool for ALL output to the user. Never respond with bare text.
+
+- communicate(status): Progress updates while working. Use sparingly — only for meaningful milestones.
+- communicate(result): Final answer when the task is complete. You must call this exactly once to finish.
+- Every response includes an inbox with pending user messages. Read them and adjust your approach.
+- If the inbox contains a message, acknowledge it in your next status or result.
+`
+
 // taskListGuidance is behavioral guidance for the task_list tool, shared by all profiles.
 const taskListGuidance = `
 ## task_list
@@ -103,7 +115,7 @@ Important:
 - Prefix every new line with + even when creating a new file.
 - File paths must be relative, NEVER absolute.
 - Do NOT use standard unified diff format (--- a/ +++ b/). Use only the format above.
-` + taskListGuidance + `
+` + taskListGuidance + communicateGuidance + `
 ## Workflow
 - Read files before editing. Use grep and glob to explore the codebase.
 - After making changes, run tests to verify correctness.
@@ -118,7 +130,7 @@ You persist until the task is fully resolved. Do not stop at analysis or partial
 ## edit_file
 Prefer edit_file with old_string/new_string for precise edits. Read files before editing
 and keep diffs minimal and safe. The old_string must be an exact match of existing content.
-` + taskListGuidance + `
+` + taskListGuidance + communicateGuidance + `
 ## Workflow
 - Read files before editing. Use grep and glob to explore the codebase.
 - After making changes, run tests to verify correctness.
@@ -133,7 +145,7 @@ You persist until the task is fully resolved. Do not stop at analysis or partial
 ## edit_file
 Prefer edit_file with old_string/new_string for precise edits. Use tools to inspect
 before changing code and validate by running tests.
-` + taskListGuidance + `
+` + taskListGuidance + communicateGuidance + `
 ## Workflow
 - Read files before editing. Use grep, glob, and list_dir to explore the codebase.
 - After making changes, run tests to verify correctness.
@@ -293,6 +305,7 @@ func NewOpenAIProfile(model string) ProviderProfile {
 			defCloseAgent(),
 			defTaskList(),
 			defWebFetch(),
+			defCommunicate(),
 		},
 	}
 }
@@ -318,6 +331,7 @@ func NewAnthropicProfile(model string) ProviderProfile {
 			defCloseAgent(),
 			defTaskList(),
 			defWebFetch(),
+			defCommunicate(),
 		},
 	}
 }
@@ -345,6 +359,7 @@ func NewGeminiProfile(model string) ProviderProfile {
 			defCloseAgent(),
 			defTaskList(),
 			defWebFetch(),
+			defCommunicate(),
 		},
 	}
 }
@@ -592,6 +607,25 @@ func defWebFetch() llm.ToolDefinition {
 				"question": map[string]any{"type": "string", "description": "What you want to know about the page content."},
 			},
 			"required": []string{"url", "question"},
+		},
+	}
+}
+
+func defCommunicate() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name:        "communicate",
+		Description: "Send a message to the user. Use action=status for progress updates, action=result for the final answer (exits the session).",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"action": map[string]any{
+					"type": "string",
+					"enum": []string{"status", "result"},
+				},
+				"message": map[string]any{"type": "string"},
+			},
+			"required": []string{"action", "message"},
 		},
 	}
 }
