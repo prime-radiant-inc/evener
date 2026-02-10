@@ -57,6 +57,7 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"send_input",
 			"wait",
 			"close_agent",
+			"task_list",
 		})
 	})
 	t.Run("anthropic", func(t *testing.T) {
@@ -72,6 +73,7 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"send_input",
 			"wait",
 			"close_agent",
+			"task_list",
 		})
 	})
 	t.Run("gemini", func(t *testing.T) {
@@ -90,6 +92,7 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"send_input",
 			"wait",
 			"close_agent",
+			"task_list",
 		})
 	})
 }

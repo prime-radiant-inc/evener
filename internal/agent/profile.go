@@ -158,6 +158,7 @@ func NewOpenAIProfile(model string) ProviderProfile {
 			defSendInput(),
 			defWait(),
 			defCloseAgent(),
+			defTaskList(),
 		},
 	}
 }
@@ -181,6 +182,7 @@ func NewAnthropicProfile(model string) ProviderProfile {
 			defSendInput(),
 			defWait(),
 			defCloseAgent(),
+			defTaskList(),
 		},
 	}
 }
@@ -206,6 +208,7 @@ func NewGeminiProfile(model string) ProviderProfile {
 			defSendInput(),
 			defWait(),
 			defCloseAgent(),
+			defTaskList(),
 		},
 	}
 }
@@ -437,6 +440,48 @@ func defCloseAgent() llm.ToolDefinition {
 				"agent_id": map[string]any{"type": "string"},
 			},
 			"required": []string{"agent_id"},
+		},
+	}
+}
+
+func defTaskList() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name:        "task_list",
+		Description: "Manage a persistent task list. Actions: view (show all tasks), append (add new tasks), update (change task status to done/undone/cancelled).",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"action": map[string]any{
+					"type": "string",
+					"enum": []string{"view", "append", "update"},
+				},
+				"tasks": map[string]any{
+					"type":        "array",
+					"description": "For append: tasks to add. Each has a brief description (<10 words) and a detailed prompt.",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"description": map[string]any{"type": "string"},
+							"prompt":      map[string]any{"type": "string"},
+						},
+						"required": []string{"description", "prompt"},
+					},
+				},
+				"updates": map[string]any{
+					"type":        "array",
+					"description": "For update: list of {id, status} pairs. Status must be done, undone, or cancelled.",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"id":     map[string]any{"type": "integer"},
+							"status": map[string]any{"type": "string", "enum": []string{"done", "undone", "cancelled"}},
+						},
+						"required": []string{"id", "status"},
+					},
+				},
+			},
+			"required": []string{"action"},
 		},
 	}
 }

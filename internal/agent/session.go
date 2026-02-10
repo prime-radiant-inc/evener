@@ -90,6 +90,10 @@ type Session struct {
 	// subagents
 	depth     int
 	subagents map[string]*subagent
+
+	// task list (lazy-init)
+	taskStore     *TaskStore
+	taskStoreOnce sync.Once
 }
 
 func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnvironment, cfg SessionConfig) (*Session, error) {
@@ -928,5 +932,67 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 		},
 	})
 
+	// Task management.
+	_ = reg.Register(RegisteredTool{
+		Definition: defTaskList(),
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			_ = ctx
+			store := s.getOrCreateTaskStore()
+			action := fmt.Sprint(args["action"])
+			switch action {
+			case "view":
+				return store.View(), nil
+			case "append":
+				raw, ok := args["tasks"].([]any)
+				if !ok || len(raw) == 0 {
+					return nil, fmt.Errorf("append requires a non-empty 'tasks' array")
+				}
+				var items []TaskInput
+				for _, r := range raw {
+					m, ok := r.(map[string]any)
+					if !ok {
+						return nil, fmt.Errorf("each task must be an object with description and prompt")
+					}
+					items = append(items, TaskInput{
+						Description: fmt.Sprint(m["description"]),
+						Prompt:      fmt.Sprint(m["prompt"]),
+					})
+				}
+				return store.Append(items)
+			case "update":
+				raw, ok := args["updates"].([]any)
+				if !ok || len(raw) == 0 {
+					return nil, fmt.Errorf("update requires a non-empty 'updates' array")
+				}
+				var updates []TaskUpdate
+				for _, r := range raw {
+					m, ok := r.(map[string]any)
+					if !ok {
+						return nil, fmt.Errorf("each update must be an object with id and status")
+					}
+					id := 0
+					if v, ok := m["id"].(float64); ok {
+						id = int(v)
+					}
+					updates = append(updates, TaskUpdate{
+						ID:     id,
+						Status: TaskStatus(fmt.Sprint(m["status"])),
+					})
+				}
+				return nil, store.Update(updates)
+			default:
+				return nil, fmt.Errorf("unknown task_list action %q: use view, append, or update", action)
+			}
+		},
+	})
+
 	return nil
+}
+
+func (s *Session) getOrCreateTaskStore() *TaskStore {
+	s.taskStoreOnce.Do(func() {
+		s.taskStore = NewTaskStore(s.env.WorkingDirectory())
+		_ = s.taskStore.Load()
+	})
+	return s.taskStore
 }

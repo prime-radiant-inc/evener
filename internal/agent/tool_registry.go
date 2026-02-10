@@ -209,6 +209,8 @@ func defaultToolLimit(toolName string) ToolOutputLimit {
 		return ToolOutputLimit{MaxChars: 1_000, Strategy: TruncTail}
 	case "spawn_agent":
 		return ToolOutputLimit{MaxChars: 20_000, Strategy: TruncHeadTail}
+	case "task_list":
+		return ToolOutputLimit{MaxChars: 20_000, Strategy: TruncTail}
 	default:
 		return ToolOutputLimit{MaxChars: 20_000, Strategy: TruncHeadTail}
 	}
