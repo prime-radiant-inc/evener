@@ -542,12 +542,19 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			return "", ctx.Err()
 		default:
 		}
-			// Apply context management before each LLM request.
+		// Apply context management before each LLM request.
+		// Copy history out to avoid holding s.mu during potential LLM calls (Layer 4).
 		if s.contextMgr != nil {
 			s.mu.Lock()
-			if err := s.contextMgr.MaybeCompact(ctx, &s.history, len(sys), s.emit); err != nil {
+			histCopy := append([]Turn{}, s.history...)
+			s.mu.Unlock()
+
+			if err := s.contextMgr.MaybeCompact(ctx, &histCopy, len(sys), s.emit); err != nil {
 				s.emit(EventWarning, map[string]any{"message": "context compaction failed: " + err.Error()})
 			}
+
+			s.mu.Lock()
+			s.history = histCopy
 			s.mu.Unlock()
 		}
 
