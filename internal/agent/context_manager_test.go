@@ -1003,6 +1003,224 @@ func TestMaybeCompact_RespectsSysPromptSize(t *testing.T) {
 	}
 }
 
+// --- Phase 7: Wire into Session ---
+
+func TestSession_ContextManager_Created(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("ok")} },
+		},
+	})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	if sess.contextMgr == nil {
+		t.Fatal("expected contextMgr to be created")
+	}
+}
+
+func TestSession_ContextManager_AccumulatesUsage(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	reasoningTokens := 10
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Message: llm.Assistant("ok"),
+					Usage: llm.Usage{
+						InputTokens:     100,
+						OutputTokens:    50,
+						TotalTokens:     150,
+						ReasoningTokens: &reasoningTokens,
+					},
+				}
+			},
+		},
+	})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx := context.Background()
+	_, err = sess.ProcessInput(ctx, "hi")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	usage := sess.contextMgr.CumulativeUsage()
+	if usage.InputTokens != 100 {
+		t.Fatalf("InputTokens = %d, want 100", usage.InputTokens)
+	}
+	if usage.OutputTokens != 50 {
+		t.Fatalf("OutputTokens = %d, want 50", usage.OutputTokens)
+	}
+}
+
+func TestSession_ContextManager_CompactsWhenNeeded(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	// Create an adapter that returns a tool call first, then "ok".
+	callCount := 0
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			// First round: return a read_file tool call with a big result.
+			func(req llm.Request) llm.Response {
+				callCount++
+				return llm.Response{
+					Message: llm.Message{
+						Role: llm.RoleAssistant,
+						Content: []llm.ContentPart{
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+								ID:        "c1",
+								Name:      "read_file",
+								Arguments: json.RawMessage(`{"file_path":"big.txt"}`),
+							}},
+						},
+					},
+				}
+			},
+			// Second round: just return text.
+			func(req llm.Request) llm.Response {
+				callCount++
+				return llm.Response{Message: llm.Assistant("done")}
+			},
+		},
+	})
+
+	// Write a big file that will fill a small context window.
+	bigContent := strings.Repeat("line of content\n", 200)
+	env := NewLocalExecutionEnvironment(dir)
+	if _, err := env.WriteFile("big.txt", bigContent); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Use a very small context window profile.
+	profile := &baseProfile{
+		id:            "openai",
+		model:         "gpt-5.2",
+		contextWindow: 500,
+		basePrompt:    "You are a test agent.",
+		toolDefs: []llm.ToolDefinition{
+			defReadFile(),
+			defCommunicate(),
+		},
+	}
+
+	sess, err := NewSession(c, profile, env, SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// Verify context manager is configured with the small window.
+	if sess.contextMgr.profile.ContextWindowSize() != 500 {
+		t.Fatalf("expected context window 500, got %d", sess.contextMgr.profile.ContextWindowSize())
+	}
+
+	ctx := context.Background()
+	_, err = sess.ProcessInput(ctx, "read the file")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	if callCount != 2 {
+		t.Fatalf("expected 2 LLM calls, got %d", callCount)
+	}
+}
+
+func TestSession_ContextManager_EmitsEvents(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	// Return a tool call that produces big output, then "done".
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Message: llm.Message{
+						Role: llm.RoleAssistant,
+						Content: []llm.ContentPart{
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+								ID:        "c1",
+								Name:      "read_file",
+								Arguments: json.RawMessage(`{"file_path":"big.txt"}`),
+							}},
+						},
+					},
+				}
+			},
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("done")}
+			},
+		},
+	})
+
+	bigContent := strings.Repeat("line of content\n", 300)
+	env := NewLocalExecutionEnvironment(dir)
+	if _, err := env.WriteFile("big.txt", bigContent); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	profile := &baseProfile{
+		id:            "openai",
+		model:         "gpt-5.2",
+		contextWindow: 500, // Tiny window to force compaction.
+		basePrompt:    "Agent.",
+		toolDefs: []llm.ToolDefinition{
+			defReadFile(),
+			defCommunicate(),
+		},
+	}
+
+	sess, err := NewSession(c, profile, env, SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	var events []SessionEvent
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range sess.Events() {
+			events = append(events, ev)
+		}
+	}()
+
+	ctx := context.Background()
+	_, err = sess.ProcessInput(ctx, "read the file")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+	<-done
+
+	foundCompaction := false
+	for _, e := range events {
+		if e.Kind == EventContextCompaction {
+			foundCompaction = true
+		}
+	}
+	if !foundCompaction {
+		t.Fatal("expected CONTEXT_COMPACTION event when using small context window")
+	}
+}
+
 // --- helpers ---
 
 func assistantWithToolCall(id, name, argsJSON string) llm.Message {

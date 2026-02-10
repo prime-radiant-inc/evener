@@ -99,6 +99,9 @@ type Session struct {
 	depth     int
 	subagents map[string]*subagent
 
+	// context management
+	contextMgr *ContextManager
+
 	// skills discovered at session startup
 	skills map[string]SkillMeta
 
@@ -141,6 +144,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 	}
 	s.envInfo = ei
 	s.skills = DiscoverSkills(env, cfg.SkillsDirs...)
+	s.contextMgr = NewContextManager(profile, client)
 
 	reg := NewToolRegistry()
 	if err := registerCoreTools(reg, s); err != nil {
@@ -218,6 +222,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 	}
 	s.envInfo = ei
 	s.skills = DiscoverSkills(env, cfg.SkillsDirs...)
+	s.contextMgr = NewContextManager(profile, client)
 
 	reg := NewToolRegistry()
 	if err := registerCoreTools(reg, s); err != nil {
@@ -537,7 +542,16 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			return "", ctx.Err()
 		default:
 		}
+			// Apply context management before each LLM request.
+		if s.contextMgr != nil {
 			s.mu.Lock()
+			if err := s.contextMgr.MaybeCompact(ctx, &s.history, len(sys), s.emit); err != nil {
+				s.emit(EventWarning, map[string]any{"message": "context compaction failed: " + err.Error()})
+			}
+			s.mu.Unlock()
+		}
+
+		s.mu.Lock()
 			s.turns++
 			turns := s.turns
 			historyTurns := append([]Turn{}, s.history...)
@@ -590,6 +604,11 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 				}
 				return "", err
 			}
+
+		// Accumulate usage from this response.
+		if s.contextMgr != nil {
+			s.contextMgr.AddUsage(resp.Usage)
+		}
 
 		// Context window awareness: emit a warning when we exceed ~80% of the profile's context window.
 		if !ctxWarned {
