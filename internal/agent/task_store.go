@@ -12,9 +12,10 @@ import (
 type TaskStatus string
 
 const (
-	TaskUndone    TaskStatus = "undone"
-	TaskDone      TaskStatus = "done"
-	TaskCancelled TaskStatus = "cancelled"
+	TaskUndone     TaskStatus = "undone"
+	TaskInProgress TaskStatus = "in_progress"
+	TaskDone       TaskStatus = "done"
+	TaskCancelled  TaskStatus = "cancelled"
 )
 
 // Task is a single work item in the agent's task list.
@@ -139,14 +140,17 @@ func (s *TaskStore) Append(items []TaskInput) ([]Task, error) {
 	return added, nil
 }
 
-// Update changes the status of existing tasks. Only done/undone/cancelled are valid.
+// Update changes the status of existing tasks.
 func (s *TaskStore) Update(updates []TaskUpdate) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	for _, u := range updates {
-		if u.Status != TaskDone && u.Status != TaskUndone && u.Status != TaskCancelled {
-			return fmt.Errorf("invalid status %q for task %d: must be done, undone, or cancelled", u.Status, u.ID)
+		switch u.Status {
+		case TaskUndone, TaskInProgress, TaskDone, TaskCancelled:
+			// valid
+		default:
+			return fmt.Errorf("invalid status %q for task %d: must be undone, in_progress, done, or cancelled", u.Status, u.ID)
 		}
 		found := false
 		for i := range s.tasks {

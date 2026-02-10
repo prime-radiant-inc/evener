@@ -82,6 +82,23 @@ func TestTaskStore_UpdateRejectsUnknownID(t *testing.T) {
 	}
 }
 
+func TestTaskStore_UpdateInProgress(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTaskStore(dir)
+
+	s.Append([]TaskInput{{Description: "Task A", Prompt: "Do A"}})
+
+	err := s.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress}})
+	if err != nil {
+		t.Fatalf("Update to in_progress: %v", err)
+	}
+
+	all := s.View()
+	if all[0].Status != TaskInProgress {
+		t.Fatalf("task 1 status: got %q want %q", all[0].Status, TaskInProgress)
+	}
+}
+
 func TestTaskStore_UpdateRejectsInvalidStatus(t *testing.T) {
 	dir := t.TempDir()
 	s := NewTaskStore(dir)

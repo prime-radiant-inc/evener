@@ -203,6 +203,82 @@ func assertMissingTool(t *testing.T, p ProviderProfile, name string) {
 	}
 }
 
+// TestOpenAIProfile_SystemPromptContainsApplyPatchFormat verifies that the
+// OpenAI profile's system prompt includes the full v4a patch format specification
+// so the model knows how to emit correctly-formatted patches.
+func TestOpenAIProfile_SystemPromptContainsApplyPatchFormat(t *testing.T) {
+	p := NewOpenAIProfile("gpt-5.2")
+	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux", Today: "2026-02-09"}
+	prompt := p.BuildSystemPrompt(env, nil)
+
+	// Must contain the patch envelope syntax.
+	mustContain := []string{
+		"*** Begin Patch",
+		"*** End Patch",
+		"*** Add File:",
+		"*** Delete File:",
+		"*** Update File:",
+	}
+	for _, s := range mustContain {
+		if !strings.Contains(prompt, s) {
+			t.Errorf("OpenAI system prompt missing %q", s)
+		}
+	}
+
+	// Must contain the grammar definition so the model understands the format structurally.
+	grammarKeywords := []string{
+		"Patch :=",
+		"AddFile :=",
+		"UpdateFile :=",
+		"HunkLine :=",
+	}
+	for _, s := range grammarKeywords {
+		if !strings.Contains(prompt, s) {
+			t.Errorf("OpenAI system prompt missing grammar rule %q", s)
+		}
+	}
+
+	// Must contain a complete example showing how to create a file with + prefix lines.
+	if !strings.Contains(prompt, "+Hello") {
+		t.Errorf("OpenAI system prompt missing example with + prefixed lines")
+	}
+
+	// Must contain hunk line syntax explanation.
+	if !strings.Contains(prompt, "@@") {
+		t.Errorf("OpenAI system prompt missing @@ hunk header syntax")
+	}
+}
+
+// TestAllProfiles_SystemPromptContainsTaskListGuidance verifies that all
+// profiles include behavioral guidance for when and how to use the task_list tool.
+func TestAllProfiles_SystemPromptContainsTaskListGuidance(t *testing.T) {
+	profiles := map[string]ProviderProfile{
+		"openai":    NewOpenAIProfile("gpt-5.2"),
+		"anthropic": NewAnthropicProfile("claude-test"),
+		"gemini":    NewGeminiProfile("gemini-test"),
+	}
+	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux", Today: "2026-02-09"}
+
+	for name, p := range profiles {
+		prompt := p.BuildSystemPrompt(env, nil)
+
+		// Must mention task_list tool by name in behavioral guidance (not just the tool list).
+		if !strings.Contains(prompt, "task_list") {
+			t.Errorf("profile %q system prompt missing task_list guidance", name)
+		}
+
+		// Must include guidance about when to use task_list.
+		if !strings.Contains(prompt, "in_progress") {
+			t.Errorf("profile %q system prompt missing 'in_progress' status guidance", name)
+		}
+
+		// Must include guidance about task statuses.
+		if !strings.Contains(prompt, "done") || !strings.Contains(prompt, "undone") {
+			t.Errorf("profile %q system prompt missing task status guidance (done/undone)", name)
+		}
+	}
+}
+
 func assertToolListExact(t *testing.T, p ProviderProfile, want []string) {
 	t.Helper()
 	got := make([]string, 0, len(p.ToolDefinitions()))
