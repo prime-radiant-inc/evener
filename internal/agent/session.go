@@ -582,6 +582,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			Messages:   append([]llm.Message{llm.System(sys)}, history...),
 			Tools:      s.profile.ToolDefinitions(),
 			ToolChoice: &llm.ToolChoice{Mode: "required"},
+			WebSearch:  true,
 		}
 			if strings.TrimSpace(s.cfg.ReasoningEffort) != "" {
 				v := strings.TrimSpace(s.cfg.ReasoningEffort)
@@ -645,6 +646,11 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			}
 			s.emit(EventAssistantTextEnd, endData)
 			s.maybeAutoSave()
+
+		// pause_turn: model needs another turn (e.g. server-side web search still running).
+		if resp.Finish.Reason == llm.FinishReasonPauseTurn {
+			continue
+		}
 
 		calls := resp.ToolCalls()
 		if len(calls) == 0 {

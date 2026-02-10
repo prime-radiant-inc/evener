@@ -790,3 +790,99 @@ func TestAssistantTextEnd_EnrichedData(t *testing.T) {
 		t.Fatalf("usage.reasoning_tokens: got %v want 42", usage.ReasoningTokens)
 	}
 }
+
+func TestSession_WebSearch_FlagSetOnRequest(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Message: llm.Message{
+						Role:    llm.RoleAssistant,
+						Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "done"}},
+					},
+					Finish: llm.FinishReason{Reason: "stop"},
+					Usage:  llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
+				}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "hello")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	reqs := f.Requests()
+	if len(reqs) == 0 {
+		t.Fatalf("no requests captured")
+	}
+	if !reqs[0].WebSearch {
+		t.Fatalf("WebSearch flag not set on request")
+	}
+}
+
+func TestSession_PauseTurn_ContinuesLoop(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				// First call: return pause_turn (model needs more time for search)
+				return llm.Response{
+					Message: llm.Message{
+						Role:    llm.RoleAssistant,
+						Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "Searching..."}},
+					},
+					Finish: llm.FinishReason{Reason: llm.FinishReasonPauseTurn, Raw: "pause_turn"},
+					Usage:  llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
+				}
+			},
+			func(req llm.Request) llm.Response {
+				// Second call: return final answer
+				return llm.Response{
+					Message: llm.Message{
+						Role:    llm.RoleAssistant,
+						Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "Here is the answer."}},
+					},
+					Finish: llm.FinishReason{Reason: "stop"},
+					Usage:  llm.Usage{InputTokens: 20, OutputTokens: 10, TotalTokens: 30},
+				}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result, err := sess.ProcessInput(ctx, "search for something")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	reqs := f.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("expected 2 LLM calls, got %d", len(reqs))
+	}
+	if !strings.Contains(result, "Here is the answer.") {
+		t.Fatalf("result: %q", result)
+	}
+}
