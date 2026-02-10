@@ -406,9 +406,17 @@ func TestBuildSystemPrompt_SubagentGuidanceContent(t *testing.T) {
 			t.Errorf("subagent guidance missing %q keyword", keyword)
 		}
 	}
-	// Should mention task_list for coordination.
+	// Should mention task_list for parent coordination.
 	if !strings.Contains(prompt, "task_list") {
 		t.Error("subagent guidance should mention task_list for coordination")
+	}
+	// Should clarify that task_list is for the parent agent, not shared across subagents.
+	if !strings.Contains(prompt, "communicate(result)") {
+		t.Error("subagent guidance should mention communicate(result) for subagent results")
+	}
+	// Should NOT imply shared task_list across subagents.
+	if strings.Contains(prompt, "coordinate work across subagents") {
+		t.Error("subagent guidance should not imply shared task_list across subagents")
 	}
 }
 

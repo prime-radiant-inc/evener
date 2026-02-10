@@ -48,7 +48,9 @@ You have spawn_agent available to delegate work. Use it aggressively:
   Spawn a subagent rather than running commands that produce large output.
 
 Keep your own context for coordination: planning, reviewing subagent results, making decisions.
-The task_list tool helps coordinate work across subagents.
+Use task_list to track your plan and subagent assignments. Each subagent has its own private
+context — it cannot see your task_list or other subagents. Subagents report back via
+communicate(result), which you receive as a tool result.
 
 When a task involves touching more than 2-3 files, consider breaking it into subagent-sized pieces.
 `
