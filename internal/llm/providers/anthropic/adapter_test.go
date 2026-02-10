@@ -1290,3 +1290,70 @@ func TestAdapter_Complete_WebSearch_ParsesServerToolUseAndResult(t *testing.T) {
 		t.Fatalf("part[3] kind: %q", resp.Message.Content[3].Kind)
 	}
 }
+
+func TestToAnthropicMessages_WebSearch_ReplayedAsBlocks(t *testing.T) {
+	serverToolUseRaw := json.RawMessage(`{"type":"server_tool_use","id":"srvtoolu_abc","name":"web_search","input":{"query":"test"}}`)
+	resultRaw := json.RawMessage(`{"type":"web_search_tool_result","tool_use_id":"srvtoolu_abc","content":[{"type":"web_search_result","url":"https://example.com","encrypted_content":"ENC_DATA"}]}`)
+
+	msgs := []llm.Message{
+		llm.User("search something"),
+		{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentText, Text: "I'll search."},
+				{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Query: "test", Raw: serverToolUseRaw}},
+				{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Raw: resultRaw}},
+				{Kind: llm.ContentText, Text: "Found it."},
+			},
+		},
+		llm.User("thanks"),
+	}
+
+	_, messages, err := toAnthropicMessages(msgs)
+	if err != nil {
+		t.Fatalf("toAnthropicMessages: %v", err)
+	}
+
+	var assistantBlocks []any
+	for _, msgAny := range messages {
+		if msgAny["role"] == "assistant" {
+			switch c := msgAny["content"].(type) {
+			case []map[string]any:
+				for _, b := range c {
+					assistantBlocks = append(assistantBlocks, b)
+				}
+			case []any:
+				assistantBlocks = c
+			}
+			break
+		}
+	}
+	if assistantBlocks == nil {
+		t.Fatalf("no assistant message found")
+	}
+
+	if len(assistantBlocks) != 4 {
+		t.Fatalf("assistant blocks: got %d want 4", len(assistantBlocks))
+	}
+
+	block1, _ := assistantBlocks[1].(map[string]any)
+	if block1["type"] != "server_tool_use" {
+		t.Fatalf("block[1] type: %v", block1["type"])
+	}
+	if block1["id"] != "srvtoolu_abc" {
+		t.Fatalf("block[1] id: %v", block1["id"])
+	}
+
+	block2, _ := assistantBlocks[2].(map[string]any)
+	if block2["type"] != "web_search_tool_result" {
+		t.Fatalf("block[2] type: %v", block2["type"])
+	}
+	content, _ := block2["content"].([]any)
+	if len(content) == 0 {
+		t.Fatalf("block[2] content empty")
+	}
+	result, _ := content[0].(map[string]any)
+	if result["encrypted_content"] != "ENC_DATA" {
+		t.Fatalf("encrypted_content: got %v", result["encrypted_content"])
+	}
+}

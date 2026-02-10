@@ -890,6 +890,14 @@ func toAnthropicMessages(msgs []llm.Message) (system string, messages []map[stri
 						"type": "redacted_thinking",
 						"data": p.Thinking.Text,
 					})
+				case llm.ContentWebSearch:
+					if p.WebSearch == nil || len(p.WebSearch.Raw) == 0 {
+						continue
+					}
+					var rawBlock map[string]any
+					if err := json.Unmarshal(p.WebSearch.Raw, &rawBlock); err == nil {
+						blocks = append(blocks, rawBlock)
+					}
 				case llm.ContentAudio, llm.ContentDocument:
 					return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("unsupported content kind for anthropic: %s", p.Kind)}
 				default:
