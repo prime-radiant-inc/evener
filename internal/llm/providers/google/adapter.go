@@ -116,7 +116,9 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 				"functionDeclarations": toGeminiFunctionDecls(req.Tools),
 			})
 		}
-		if req.WebSearch {
+		// Gemini does not support google_search combined with functionDeclarations.
+		// Only include google_search when no function tools are present.
+		if req.WebSearch && len(req.Tools) == 0 {
 			toolEntries = append(toolEntries, map[string]any{
 				"google_search": map[string]any{},
 			})

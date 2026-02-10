@@ -1357,3 +1357,59 @@ func TestToAnthropicMessages_WebSearch_ReplayedAsBlocks(t *testing.T) {
 		t.Fatalf("encrypted_content: got %v", result["encrypted_content"])
 	}
 }
+
+func TestAdapter_Integration_WebSearch(t *testing.T) {
+	if os.Getenv("ANTHROPIC_API_KEY") == "" {
+		t.Skip("ANTHROPIC_API_KEY not set")
+	}
+
+	a, err := NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := a.Complete(ctx, llm.Request{
+		Model:    "claude-sonnet-4-5-20250929",
+		Messages: []llm.Message{llm.User("Search the web and tell me: what is the current population of Tokyo?")},
+		Tools: []llm.ToolDefinition{{
+			Name:        "shell",
+			Description: "run a shell command",
+			Parameters:  map[string]any{"type": "object", "properties": map[string]any{"command": map[string]any{"type": "string"}}},
+		}},
+		ToolChoice: &llm.ToolChoice{Mode: "auto"},
+		WebSearch:  true,
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	if strings.TrimSpace(resp.Text()) == "" {
+		t.Fatalf("expected non-empty text response")
+	}
+
+	// Verify we got web search content parts back (server_tool_use + web_search_tool_result).
+	var wsCount int
+	for _, p := range resp.Message.Content {
+		if p.Kind == llm.ContentWebSearch {
+			wsCount++
+			if p.WebSearch == nil {
+				t.Fatalf("ContentWebSearch part has nil WebSearch data")
+			}
+			t.Logf("web_search query=%q raw_len=%d", p.WebSearch.Query, len(p.WebSearch.Raw))
+		}
+	}
+	if wsCount == 0 {
+		t.Fatalf("expected at least one ContentWebSearch part in response; got content kinds: %v", contentKinds(resp.Message.Content))
+	}
+	t.Logf("response text (truncated): %.200s", resp.Text())
+}
+
+func contentKinds(parts []llm.ContentPart) []string {
+	var kinds []string
+	for _, p := range parts {
+		kinds = append(kinds, string(p.Kind))
+	}
+	return kinds
+}

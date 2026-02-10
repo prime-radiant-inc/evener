@@ -959,7 +959,9 @@ func TestAdapter_ProviderOptions_PassThrough(t *testing.T) {
 	}
 }
 
-func TestAdapter_Complete_WebSearch_AddsSeparateToolEntry(t *testing.T) {
+func TestAdapter_Complete_WebSearch_SkippedWithFunctionTools(t *testing.T) {
+	// Gemini does not support google_search combined with functionDeclarations.
+	// When both are requested, only functionDeclarations should be sent.
 	var gotBody map[string]any
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1000,14 +1002,62 @@ func TestAdapter_Complete_WebSearch_AddsSeparateToolEntry(t *testing.T) {
 		t.Fatalf("tools not array: %#v", gotBody["tools"])
 	}
 
-	// Should have 2 entries: {functionDeclarations: [...]} and {google_search: {}}
-	if len(toolsAny) != 2 {
-		t.Fatalf("tools count: got %d want 2", len(toolsAny))
+	// Should have only 1 entry: functionDeclarations (google_search excluded)
+	if len(toolsAny) != 1 {
+		t.Fatalf("tools count: got %d want 1 (google_search should be excluded)", len(toolsAny))
 	}
 
-	entry1, _ := toolsAny[1].(map[string]any)
-	if _, ok := entry1["google_search"]; !ok {
-		t.Fatalf("second tools entry missing google_search: %#v", entry1)
+	entry0, _ := toolsAny[0].(map[string]any)
+	if _, ok := entry0["functionDeclarations"]; !ok {
+		t.Fatalf("first tools entry missing functionDeclarations: %#v", entry0)
+	}
+}
+
+func TestAdapter_Complete_WebSearch_SentWithoutFunctionTools(t *testing.T) {
+	// When WebSearch is true and no function tools, google_search should be sent.
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "candidates": [{
+    "content": {"parts": [{"text": "ok"}], "role": "model"},
+    "finishReason": "STOP"
+  }],
+  "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model:     "gemini-2.5-flash",
+		Messages:  []llm.Message{llm.User("search for docs")},
+		WebSearch: true,
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	toolsAny, ok := gotBody["tools"].([]any)
+	if !ok {
+		t.Fatalf("tools not array: %#v", gotBody["tools"])
+	}
+
+	if len(toolsAny) != 1 {
+		t.Fatalf("tools count: got %d want 1", len(toolsAny))
+	}
+
+	entry0, _ := toolsAny[0].(map[string]any)
+	if _, ok := entry0["google_search"]; !ok {
+		t.Fatalf("tools entry missing google_search: %#v", entry0)
 	}
 }
 
@@ -1155,4 +1205,56 @@ func TestAdapter_Complete_FinishReason_Normalized(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAdapter_Integration_WebSearch(t *testing.T) {
+	if os.Getenv("GEMINI_API_KEY") == "" && os.Getenv("GOOGLE_API_KEY") == "" {
+		t.Skip("GEMINI_API_KEY not set")
+	}
+
+	a, err := NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Gemini does not support google_search combined with functionDeclarations,
+	// so we test web search without function tools.
+	resp, err := a.Complete(ctx, llm.Request{
+		Model:     "gemini-2.5-flash",
+		Messages:  []llm.Message{llm.User("Search the web and tell me: what is the current population of Tokyo?")},
+		WebSearch: true,
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	if strings.TrimSpace(resp.Text()) == "" {
+		t.Fatalf("expected non-empty text response")
+	}
+
+	// Verify we got web search content parts (groundingMetadata).
+	var wsCount int
+	for _, p := range resp.Message.Content {
+		if p.Kind == llm.ContentWebSearch {
+			wsCount++
+			if p.WebSearch == nil {
+				t.Fatalf("ContentWebSearch part has nil WebSearch data")
+			}
+			t.Logf("web_search query=%q raw_len=%d", p.WebSearch.Query, len(p.WebSearch.Raw))
+		}
+	}
+	if wsCount == 0 {
+		t.Fatalf("expected at least one ContentWebSearch part in response; got content kinds: %v", contentKinds(resp.Message.Content))
+	}
+	t.Logf("response text (truncated): %.200s", resp.Text())
+}
+
+func contentKinds(parts []llm.ContentPart) []string {
+	var kinds []string
+	for _, p := range parts {
+		kinds = append(kinds, string(p.Kind))
+	}
+	return kinds
 }
