@@ -870,3 +870,41 @@ func TestAdapter_Complete_WebSearch_ParsesWebSearchCall(t *testing.T) {
 		t.Fatalf("finish: got %q want stop", resp.Finish.Reason)
 	}
 }
+
+func TestToResponsesInput_WebSearch_ReplayedAsItem(t *testing.T) {
+	raw := json.RawMessage(`{"type":"web_search_call","id":"ws_abc","status":"completed","action":{"type":"search","query":"test"}}`)
+	msgs := []llm.Message{
+		llm.User("search something"),
+		{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Query: "test", Raw: raw}},
+				{Kind: llm.ContentText, Text: "Here are the results."},
+			},
+		},
+		llm.User("thanks"),
+	}
+
+	_, items, err := toResponsesInput(msgs)
+	if err != nil {
+		t.Fatalf("toResponsesInput: %v", err)
+	}
+
+	found := false
+	for _, itemAny := range items {
+		item, ok := itemAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		if item["type"] == "web_search_call" {
+			found = true
+			if item["id"] != "ws_abc" {
+				t.Fatalf("web_search_call id: %v", item["id"])
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("web_search_call item not found in input items: %v", items)
+	}
+}

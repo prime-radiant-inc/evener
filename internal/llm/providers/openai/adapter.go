@@ -654,6 +654,14 @@ func toResponsesInput(msgs []llm.Message) (instructions string, items []any, _ e
 					})
 				}
 			}
+			for _, p := range m.Content {
+				if p.Kind == llm.ContentWebSearch && p.WebSearch != nil && len(p.WebSearch.Raw) > 0 {
+					var rawItem map[string]any
+					if err := json.Unmarshal(p.WebSearch.Raw, &rawItem); err == nil {
+						items = append(items, rawItem)
+					}
+				}
+			}
 		case llm.RoleTool:
 			for _, p := range m.Content {
 				if p.Kind != llm.ContentToolResult || p.ToolResult == nil {
