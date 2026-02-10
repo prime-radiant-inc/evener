@@ -19,8 +19,10 @@ type SkillMeta struct {
 }
 
 // DiscoverSkills walks from git root to cwd looking for skills/ directories.
-// Returns a deduplicated map[name]SkillMeta (deeper paths shadow shallower).
-func DiscoverSkills(env ExecutionEnvironment) map[string]SkillMeta {
+// Extra directories are scanned after the root→cwd walk, so they shadow
+// project skills with the same name.
+// Returns a deduplicated map[name]SkillMeta (later entries shadow earlier).
+func DiscoverSkills(env ExecutionEnvironment, extraDirs ...string) map[string]SkillMeta {
 	if env == nil {
 		return nil
 	}
@@ -42,28 +44,35 @@ func DiscoverSkills(env ExecutionEnvironment) map[string]SkillMeta {
 	out := map[string]SkillMeta{}
 
 	for _, dir := range dirs {
-		skillsDir := filepath.Join(dir, "skills")
-		entries, err := os.ReadDir(skillsDir)
-		if err != nil {
-			continue // no skills/ directory at this level
-		}
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-			skillFile := filepath.Join(skillsDir, entry.Name(), "SKILL.md")
-			meta, ok := parseSkillFile(skillFile)
-			if !ok {
-				continue
-			}
-			meta.Dir = filepath.Join(skillsDir, entry.Name())
-			meta.SkillFile = skillFile
-			// Deeper paths shadow shallower ones (map overwrite).
-			out[meta.Name] = meta
-		}
+		scanSkillsDir(filepath.Join(dir, "skills"), out)
+	}
+	for _, dir := range extraDirs {
+		scanSkillsDir(dir, out)
 	}
 
 	return out
+}
+
+// scanSkillsDir scans a directory for skill subdirectories containing SKILL.md.
+// Found skills are added to out, overwriting any existing entry with the same name.
+func scanSkillsDir(dir string, out map[string]SkillMeta) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		skillFile := filepath.Join(dir, entry.Name(), "SKILL.md")
+		meta, ok := parseSkillFile(skillFile)
+		if !ok {
+			continue
+		}
+		meta.Dir = filepath.Join(dir, entry.Name())
+		meta.SkillFile = skillFile
+		out[meta.Name] = meta
+	}
 }
 
 // LoadSkillBody reads a SKILL.md and returns the markdown body (after frontmatter).

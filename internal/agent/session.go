@@ -32,6 +32,10 @@ type SessionConfig struct {
 	// Valid values are provider-dependent but typically include: low|medium|high.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 
+	// SkillsDirs are extra directories to scan for skills (each is treated
+	// as a directory whose subdirectories contain SKILL.md files).
+	SkillsDirs []string `json:"skills_dirs,omitempty"`
+
 	EnableLoopDetection *bool `json:"enable_loop_detection,omitempty"`
 	LoopDetectionWindow int   `json:"loop_detection_window,omitempty"`
 
@@ -136,7 +140,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		ei.GitRecentCommitTitles = commits
 	}
 	s.envInfo = ei
-	s.skills = DiscoverSkills(env)
+	s.skills = DiscoverSkills(env, cfg.SkillsDirs...)
 
 	reg := NewToolRegistry()
 	if err := registerCoreTools(reg, s); err != nil {
@@ -213,7 +217,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		ei.GitRecentCommitTitles = commits
 	}
 	s.envInfo = ei
-	s.skills = DiscoverSkills(env)
+	s.skills = DiscoverSkills(env, cfg.SkillsDirs...)
 
 	reg := NewToolRegistry()
 	if err := registerCoreTools(reg, s); err != nil {

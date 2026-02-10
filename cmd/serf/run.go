@@ -24,6 +24,8 @@ type runConfig struct {
 	stdout   io.Writer
 	stderr   io.Writer
 
+	skillsDirs []string // extra skill directories
+
 	// Resume options.
 	resume       string // session ID to resume
 	resumeWith   string // session ID whose context to reuse with a new task
@@ -117,6 +119,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		sess, err = agent.NewSession(client, profile, env, agent.SessionConfig{
 			MaxToolRoundsPerInput: 200,
 			AutoSaveDir:           cfg.workDir,
+			SkillsDirs:            cfg.skillsDirs,
 		})
 		if err != nil {
 			return fmt.Errorf("session creation: %w", err)

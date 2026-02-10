@@ -6,6 +6,21 @@ import (
 	"testing"
 )
 
+// writeSkillDirect writes a SKILL.md directly into <dir>/<name>/SKILL.md.
+// Use for extra dirs where the dir itself is the skills directory.
+func writeSkillDirect(t *testing.T, dir, name, content string) {
+	t.Helper()
+	skillDir := filepath.Join(dir, name)
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
+// writeSkillMD writes a SKILL.md into <dir>/skills/<name>/SKILL.md.
+// Use for project directories where skills live in a skills/ subdirectory.
 func writeSkillMD(t *testing.T, dir, name, content string) {
 	t.Helper()
 	skillDir := filepath.Join(dir, "skills", name)
@@ -151,6 +166,65 @@ func TestDiscoverSkills_AllowedTools(t *testing.T) {
 	}
 	if s.AllowedTools[0] != "shell" || s.AllowedTools[1] != "read_file" {
 		t.Errorf("AllowedTools = %v, want [shell read_file]", s.AllowedTools)
+	}
+}
+
+func TestDiscoverSkills_ExtraDirs(t *testing.T) {
+	root := t.TempDir()
+	initGitRepo(t, root)
+
+	// No skills in the project itself. Extra dir points directly at a
+	// directory whose subdirectories contain SKILL.md files.
+	extraDir := t.TempDir()
+	writeSkillDirect(t, extraDir, "external", "---\nname: external\ndescription: \"External skill\"\n---\nExternal instructions.\n")
+
+	env := NewLocalExecutionEnvironment(root)
+	skills := DiscoverSkills(env, extraDir)
+
+	if len(skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d: %v", len(skills), skills)
+	}
+	if _, ok := skills["external"]; !ok {
+		t.Error("expected skill 'external' from extra dir")
+	}
+}
+
+func TestDiscoverSkills_ExtraDirShadows(t *testing.T) {
+	root := t.TempDir()
+	initGitRepo(t, root)
+
+	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Project greeting\"\n---\nProject.\n")
+
+	extraDir := t.TempDir()
+	writeSkillDirect(t, extraDir, "greet", "---\nname: greet\ndescription: \"External greeting\"\n---\nExternal.\n")
+
+	env := NewLocalExecutionEnvironment(root)
+	skills := DiscoverSkills(env, extraDir)
+
+	if len(skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d: %v", len(skills), skills)
+	}
+	s := skills["greet"]
+	if s.Description != "External greeting" {
+		t.Errorf("description = %q, want %q (extra dir should shadow)", s.Description, "External greeting")
+	}
+}
+
+func TestDiscoverSkills_ExtraDirMissing(t *testing.T) {
+	root := t.TempDir()
+	initGitRepo(t, root)
+
+	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting\"\n---\nGreet.\n")
+
+	env := NewLocalExecutionEnvironment(root)
+	// Nonexistent extra dir should be silently skipped.
+	skills := DiscoverSkills(env, "/nonexistent/path/that/does/not/exist")
+
+	if len(skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d: %v", len(skills), skills)
+	}
+	if _, ok := skills["greet"]; !ok {
+		t.Error("expected skill 'greet'")
 	}
 }
 
