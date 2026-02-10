@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -354,6 +355,284 @@ func TestMaskObservations_PreservesAssistantTurns(t *testing.T) {
 	}
 }
 
+// --- Phase 3: Thinking clearing ---
+
+func TestClearThinking_RemovesOldThinkingText(t *testing.T) {
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("task")},
+		{Kind: TurnAssistant, Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "long reasoning about the problem"}},
+				{Kind: llm.ContentText, Text: "my answer"},
+			},
+		}},
+		{Kind: TurnAssistant, Message: llm.Assistant("final answer")},
+	}
+
+	freed := clearThinking(history, 1)
+
+	// Index 1 is old enough to be cleared. Check thinking was replaced.
+	var thinkingText string
+	for _, p := range history[1].Message.Content {
+		if p.Kind == llm.ContentThinking && p.Thinking != nil {
+			thinkingText = p.Thinking.Text
+		}
+	}
+	want := fmt.Sprintf("[thinking: %d chars]", len("long reasoning about the problem"))
+	if thinkingText != want {
+		t.Fatalf("thinking text = %q, want %q", thinkingText, want)
+	}
+
+	// Text content should be preserved.
+	if history[1].Message.Text() != "my answer" {
+		t.Fatalf("text content should be preserved, got: %q", history[1].Message.Text())
+	}
+
+	if freed <= 0 {
+		t.Fatalf("expected positive freed tokens, got %d", freed)
+	}
+}
+
+func TestClearThinking_PreservesRecentThinking(t *testing.T) {
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("task")},
+		{Kind: TurnAssistant, Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "recent thinking"}},
+				{Kind: llm.ContentText, Text: "answer"},
+			},
+		}},
+	}
+
+	freed := clearThinking(history, 2)
+
+	// All turns are within the recent window, so thinking should be preserved.
+	var thinkingText string
+	for _, p := range history[1].Message.Content {
+		if p.Kind == llm.ContentThinking && p.Thinking != nil {
+			thinkingText = p.Thinking.Text
+		}
+	}
+	if thinkingText != "recent thinking" {
+		t.Fatalf("recent thinking should be preserved, got: %q", thinkingText)
+	}
+	if freed != 0 {
+		t.Fatalf("expected 0 freed for recent turns, got %d", freed)
+	}
+}
+
+func TestClearThinking_PreservesRedactedThinking(t *testing.T) {
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("task")},
+		{Kind: TurnAssistant, Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentRedThinking, Thinking: &llm.ThinkingData{
+					Text:     "",
+					Redacted: true,
+				}},
+				{Kind: llm.ContentText, Text: "answer"},
+			},
+		}},
+		{Kind: TurnAssistant, Message: llm.Assistant("final")},
+	}
+
+	freed := clearThinking(history, 0)
+
+	// Redacted thinking should remain untouched.
+	for _, p := range history[1].Message.Content {
+		if p.Kind == llm.ContentRedThinking && p.Thinking != nil {
+			if p.Thinking.Redacted != true {
+				t.Fatalf("redacted thinking should be preserved")
+			}
+		}
+	}
+	if freed != 0 {
+		t.Fatalf("expected 0 freed for redacted thinking, got %d", freed)
+	}
+}
+
+func TestClearThinking_NoThinkingBlocks(t *testing.T) {
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("task")},
+		{Kind: TurnAssistant, Message: llm.Assistant("answer")},
+	}
+
+	freed := clearThinking(history, 0)
+	if freed != 0 {
+		t.Fatalf("expected 0 freed for no thinking blocks, got %d", freed)
+	}
+}
+
+func TestClearThinking_MixedContent(t *testing.T) {
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("task")},
+		{Kind: TurnAssistant, Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "thought one"}},
+				{Kind: llm.ContentText, Text: "text one"},
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c1", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"a.go"}`)}},
+			},
+		}},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
+		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	}
+
+	clearThinking(history, 1)
+
+	// Thinking should be cleared in turn 1 (old).
+	for _, p := range history[1].Message.Content {
+		if p.Kind == llm.ContentThinking && p.Thinking != nil {
+			if p.Thinking.Text == "thought one" {
+				t.Fatalf("old thinking should be cleared")
+			}
+		}
+	}
+	// Text and tool call should be preserved.
+	if history[1].Message.Text() != "text one" {
+		t.Fatalf("text should be preserved, got: %q", history[1].Message.Text())
+	}
+	found := false
+	for _, p := range history[1].Message.Content {
+		if p.Kind == llm.ContentToolCall {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("tool call should be preserved")
+	}
+}
+
+// --- Phase 4: Deterministic checkpoint ---
+
+func TestCheckpoint_CreatesValidMessage(t *testing.T) {
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("Fix the auth bug in login.go")},
+		{Kind: TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"login.go"}`)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "1 | package main\n", false)},
+		{Kind: TurnAssistant, Message: assistantWithToolCall("c2", "edit_file", `{"file_path":"login.go","old_string":"old","new_string":"new"}`)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c2", "edit_file", "OK", false)},
+		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	}
+
+	result := checkpoint(history, 2)
+
+	// Should have checkpoint message + 2 preserved recent turns.
+	if len(result) != 3 {
+		t.Fatalf("expected 3 turns, got %d", len(result))
+	}
+	// First turn should be the checkpoint.
+	if result[0].Kind != TurnUserInput {
+		t.Fatalf("checkpoint should be TurnUserInput, got %s", result[0].Kind)
+	}
+	text := result[0].Message.Text()
+	if !strings.Contains(text, "[CONTEXT CHECKPOINT]") {
+		t.Fatalf("checkpoint missing header: %q", text)
+	}
+	if !strings.Contains(text, "[END CHECKPOINT]") {
+		t.Fatalf("checkpoint missing footer: %q", text)
+	}
+}
+
+func TestCheckpoint_IncludesOriginalTask(t *testing.T) {
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("Fix the auth bug in login.go")},
+		{Kind: TurnAssistant, Message: llm.Assistant("on it")},
+		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	}
+
+	result := checkpoint(history, 1)
+	text := result[0].Message.Text()
+	if !strings.Contains(text, "Fix the auth bug in login.go") {
+		t.Fatalf("checkpoint missing original task: %q", text)
+	}
+}
+
+func TestCheckpoint_TracksModifiedFiles(t *testing.T) {
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("task")},
+		{Kind: TurnAssistant, Message: assistantWithToolCall("c1", "edit_file", `{"file_path":"auth.go"}`)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "edit_file", "OK", false)},
+		{Kind: TurnAssistant, Message: assistantWithToolCall("c2", "write_file", `{"file_path":"user.go"}`)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c2", "write_file", "OK", false)},
+		{Kind: TurnAssistant, Message: assistantWithToolCall("c3", "apply_patch", `{"patch":"*** Begin Patch\n*** Update File: test.go\n*** End Patch"}`)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c3", "apply_patch", "OK", false)},
+		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	}
+
+	result := checkpoint(history, 1)
+	text := result[0].Message.Text()
+	if !strings.Contains(text, "Files modified:") {
+		t.Fatalf("checkpoint missing files modified: %q", text)
+	}
+	for _, f := range []string{"auth.go", "user.go"} {
+		if !strings.Contains(text, f) {
+			t.Fatalf("checkpoint missing file %q: %q", f, text)
+		}
+	}
+}
+
+func TestCheckpoint_SummarizesActions(t *testing.T) {
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("task")},
+		{Kind: TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"a.go"}`)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
+		{Kind: TurnAssistant, Message: assistantWithToolCall("c2", "read_file", `{"file_path":"b.go"}`)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c2", "read_file", "content", false)},
+		{Kind: TurnAssistant, Message: assistantWithToolCall("c3", "shell", `{"command":"go test"}`)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c3", "shell", "ok\nexit_code=0 duration_ms=1 timed_out=false\n", false)},
+		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	}
+
+	result := checkpoint(history, 1)
+	text := result[0].Message.Text()
+	if !strings.Contains(text, "3 tool calls") {
+		t.Fatalf("checkpoint missing action summary: %q", text)
+	}
+	if !strings.Contains(text, "2 read_file") {
+		t.Fatalf("checkpoint missing read_file count: %q", text)
+	}
+	if !strings.Contains(text, "1 shell") {
+		t.Fatalf("checkpoint missing shell count: %q", text)
+	}
+}
+
+func TestCheckpoint_PreservesRecentTurns(t *testing.T) {
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("task")},
+		{Kind: TurnAssistant, Message: llm.Assistant("old answer")},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
+	}
+
+	result := checkpoint(history, 2)
+	// Checkpoint + 2 recent.
+	if len(result) != 3 {
+		t.Fatalf("expected 3 turns, got %d", len(result))
+	}
+	if result[1].Message.Text() != "recent1" {
+		t.Fatalf("expected recent1, got %q", result[1].Message.Text())
+	}
+	if result[2].Message.Text() != "recent2" {
+		t.Fatalf("expected recent2, got %q", result[2].Message.Text())
+	}
+}
+
+func TestCheckpoint_NoHistoryToCheckpoint(t *testing.T) {
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("task")},
+		{Kind: TurnAssistant, Message: llm.Assistant("answer")},
+	}
+
+	result := checkpoint(history, 6)
+	if len(result) != len(history) {
+		t.Fatalf("expected unchanged history length %d, got %d", len(history), len(result))
+	}
+}
+
 // --- helpers ---
 
 func assistantWithToolCall(id, name, argsJSON string) llm.Message {
@@ -369,16 +648,6 @@ func assistantWithToolCall(id, name, argsJSON string) llm.Message {
 	}
 }
 
-func toolResultContent(t Turn) string {
-	for _, p := range t.Message.Content {
-		if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
-			if s, ok := p.ToolResult.Content.(string); ok {
-				return s
-			}
-		}
-	}
-	return ""
-}
 
 func startsWith(s, prefix string) bool {
 	return len(s) >= len(prefix) && s[:len(prefix)] == prefix

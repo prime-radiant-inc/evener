@@ -234,6 +234,205 @@ func summarizeToolResult(toolName string, content any, isError bool, args json.R
 	}
 }
 
+// --- Thinking clearing (Layer 2) ---
+
+// clearThinking removes thinking text from old assistant turns, replacing it
+// with a placeholder. Redacted thinking blocks are left untouched.
+// Returns estimated tokens freed.
+func clearThinking(history []Turn, preserveRecent int) int {
+	if len(history) == 0 {
+		return 0
+	}
+
+	cutoff := len(history) - preserveRecent
+	if cutoff <= 0 {
+		return 0
+	}
+
+	freed := 0
+	for i := 0; i < cutoff; i++ {
+		t := &history[i]
+		if t.Kind != TurnAssistant {
+			continue
+		}
+		for j := range t.Message.Content {
+			p := &t.Message.Content[j]
+			if p.Kind != llm.ContentThinking || p.Thinking == nil {
+				continue
+			}
+			// Skip redacted thinking blocks.
+			if p.Thinking.Redacted {
+				continue
+			}
+			// Skip already-cleared thinking.
+			if strings.HasPrefix(p.Thinking.Text, "[thinking:") {
+				continue
+			}
+			oldLen := len(p.Thinking.Text)
+			if oldLen == 0 {
+				continue
+			}
+			placeholder := fmt.Sprintf("[thinking: %d chars]", oldLen)
+			freed += (oldLen - len(placeholder)) / 4
+			p.Thinking.Text = placeholder
+		}
+	}
+	return freed
+}
+
+// --- Deterministic checkpoint (Layer 3) ---
+
+// checkpoint replaces old history with a structured state snapshot.
+// Returns a new history slice: [checkpoint_message, ...preserved_recent_turns].
+func checkpoint(history []Turn, preserveRecent int) []Turn {
+	if len(history) <= preserveRecent {
+		return history
+	}
+
+	cutoff := len(history) - preserveRecent
+
+	// Extract original task (first user input).
+	originalTask := ""
+	for _, t := range history {
+		if t.Kind == TurnUserInput {
+			originalTask = t.Message.Text()
+			break
+		}
+	}
+	if len(originalTask) > 500 {
+		originalTask = originalTask[:500] + "..."
+	}
+
+	// Collect modified files from edit_file/write_file/apply_patch tool calls.
+	modifiedFiles := map[string]bool{}
+	toolCounts := map[string]int{}
+	var lastShellResults []string
+
+	for i := 0; i < cutoff; i++ {
+		t := history[i]
+		if t.Kind != TurnAssistant {
+			continue
+		}
+		for _, p := range t.Message.Content {
+			if p.Kind != llm.ContentToolCall || p.ToolCall == nil {
+				continue
+			}
+			name := p.ToolCall.Name
+			toolCounts[name]++
+
+			var args map[string]any
+			if len(p.ToolCall.Arguments) > 0 {
+				_ = json.Unmarshal(p.ToolCall.Arguments, &args)
+			}
+
+			switch name {
+			case "edit_file", "write_file":
+				if path, ok := args["file_path"]; ok {
+					modifiedFiles[fmt.Sprint(path)] = true
+				}
+			case "apply_patch":
+				// Extract file paths from patch content (lines with "*** Update File:" etc).
+				if patch, ok := args["patch"]; ok {
+					for _, line := range strings.Split(fmt.Sprint(patch), "\n") {
+						line = strings.TrimSpace(line)
+						for _, prefix := range []string{"*** Update File: ", "*** Add File: ", "*** Delete File: "} {
+							if strings.HasPrefix(line, prefix) {
+								modifiedFiles[strings.TrimPrefix(line, prefix)] = true
+							}
+						}
+					}
+				}
+			case "shell":
+				// Track last few shell commands and their exit codes.
+				if cmd, ok := args["command"]; ok {
+					cmdStr := fmt.Sprint(cmd)
+					if len(cmdStr) > 60 {
+						cmdStr = cmdStr[:60] + "..."
+					}
+					// Find the matching tool result to get exit code.
+					for j := i + 1; j < len(history) && j < i+3; j++ {
+						if history[j].Kind == TurnTool {
+							content := toolResultContent(history[j])
+							exitCode := parseExitCode(content)
+							lastShellResults = append(lastShellResults, fmt.Sprintf("  %q → exit %s", cmdStr, exitCode))
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("[CONTEXT CHECKPOINT]\n")
+	b.WriteString(fmt.Sprintf("Original task: %s\n", originalTask))
+
+	if len(modifiedFiles) > 0 {
+		files := make([]string, 0, len(modifiedFiles))
+		for f := range modifiedFiles {
+			files = append(files, f)
+		}
+		b.WriteString(fmt.Sprintf("Files modified: %s\n", strings.Join(files, ", ")))
+	}
+
+	if total := sumCounts(toolCounts); total > 0 {
+		b.WriteString(fmt.Sprintf("Actions taken: %d tool calls (", total))
+		first := true
+		for name, count := range toolCounts {
+			if !first {
+				b.WriteString(", ")
+			}
+			b.WriteString(fmt.Sprintf("%d %s", count, name))
+			first = false
+		}
+		b.WriteString(")\n")
+	}
+
+	// Include only the last 3 shell results.
+	if len(lastShellResults) > 0 {
+		start := 0
+		if len(lastShellResults) > 3 {
+			start = len(lastShellResults) - 3
+		}
+		b.WriteString("Last shell results:\n")
+		for _, r := range lastShellResults[start:] {
+			b.WriteString(r + "\n")
+		}
+	}
+
+	b.WriteString("[END CHECKPOINT]\n")
+
+	checkpointTurn := Turn{
+		Kind:    TurnUserInput,
+		Message: llm.User(b.String()),
+	}
+
+	result := make([]Turn, 0, 1+preserveRecent)
+	result = append(result, checkpointTurn)
+	result = append(result, history[cutoff:]...)
+	return result
+}
+
+// toolResultContent extracts string content from a TurnTool.
+func toolResultContent(t Turn) string {
+	for _, p := range t.Message.Content {
+		if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
+			if s, ok := p.ToolResult.Content.(string); ok {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+func sumCounts(m map[string]int) int {
+	total := 0
+	for _, v := range m {
+		total += v
+	}
+	return total
+}
+
 func countLines(s string) int {
 	s = strings.TrimRight(s, "\n")
 	if s == "" {
