@@ -986,6 +986,27 @@ func fromAnthropicResponse(raw map[string]any, requestedModel string) llm.Respon
 						},
 					})
 				}
+			case "server_tool_use":
+				query := ""
+				if input, _ := it["input"].(map[string]any); input != nil {
+					query, _ = input["query"].(string)
+				}
+				raw, _ := json.Marshal(it)
+				msg.Content = append(msg.Content, llm.ContentPart{
+					Kind: llm.ContentWebSearch,
+					WebSearch: &llm.WebSearchData{
+						Query: query,
+						Raw:   raw,
+					},
+				})
+			case "web_search_tool_result":
+				raw, _ := json.Marshal(it)
+				msg.Content = append(msg.Content, llm.ContentPart{
+					Kind: llm.ContentWebSearch,
+					WebSearch: &llm.WebSearchData{
+						Raw: raw,
+					},
+				})
 			default:
 				// ignore
 			}

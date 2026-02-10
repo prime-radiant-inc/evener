@@ -1207,3 +1207,86 @@ func TestAdapter_Complete_WebSearch_AddsServerTool(t *testing.T) {
 		t.Fatalf("ws tool name: got %v", wsTool["name"])
 	}
 }
+
+func TestAdapter_Complete_WebSearch_ParsesServerToolUseAndResult(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "msg_1",
+  "model": "claude-test",
+  "content": [
+    {"type": "text", "text": "I'll search for that."},
+    {
+      "type": "server_tool_use",
+      "id": "srvtoolu_abc",
+      "name": "web_search",
+      "input": {"query": "Go error handling best practices"}
+    },
+    {
+      "type": "web_search_tool_result",
+      "tool_use_id": "srvtoolu_abc",
+      "content": [
+        {
+          "type": "web_search_result",
+          "url": "https://go.dev/blog/error-handling",
+          "title": "Error Handling in Go",
+          "encrypted_content": "ENCRYPTED_DATA_HERE",
+          "page_age": "2024-01-15"
+        }
+      ]
+    },
+    {"type": "text", "text": "Based on search results, here is the info."}
+  ],
+  "stop_reason": "end_turn",
+  "usage": {"input_tokens": 100, "output_tokens": 200}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	resp, err := a.Complete(ctx, llm.Request{
+		Model:     "claude-test",
+		Messages:  []llm.Message{llm.User("search")},
+		WebSearch: true,
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	if len(resp.Message.Content) != 4 {
+		t.Fatalf("content parts: got %d want 4", len(resp.Message.Content))
+	}
+
+	if resp.Message.Content[0].Kind != llm.ContentText {
+		t.Fatalf("part[0] kind: %q", resp.Message.Content[0].Kind)
+	}
+
+	ws1 := resp.Message.Content[1]
+	if ws1.Kind != llm.ContentWebSearch {
+		t.Fatalf("part[1] kind: got %q want web_search", ws1.Kind)
+	}
+	if ws1.WebSearch == nil {
+		t.Fatalf("part[1] web_search is nil")
+	}
+	if ws1.WebSearch.Query != "Go error handling best practices" {
+		t.Fatalf("query: got %q", ws1.WebSearch.Query)
+	}
+
+	ws2 := resp.Message.Content[2]
+	if ws2.Kind != llm.ContentWebSearch {
+		t.Fatalf("part[2] kind: got %q want web_search", ws2.Kind)
+	}
+	if ws2.WebSearch == nil {
+		t.Fatalf("part[2] web_search is nil")
+	}
+	if !strings.Contains(string(ws2.WebSearch.Raw), "ENCRYPTED_DATA_HERE") {
+		t.Fatalf("encrypted_content not preserved in Raw: %s", ws2.WebSearch.Raw)
+	}
+
+	if resp.Message.Content[3].Kind != llm.ContentText {
+		t.Fatalf("part[3] kind: %q", resp.Message.Content[3].Kind)
+	}
+}
