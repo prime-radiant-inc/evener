@@ -1061,6 +1061,15 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 		},
 	})
 
+	// Web search (Gemini only — see tool_web_search.go for why).
+	_ = reg.Register(RegisteredTool{
+		Definition: defWebSearch(),
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			query := fmt.Sprint(args["query"])
+			return s.webSearch(ctx, query)
+		},
+	})
+
 	// Communicate (structured I/O).
 	_ = reg.Register(RegisteredTool{
 		Definition: defCommunicate(),
