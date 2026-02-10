@@ -115,10 +115,10 @@ func (cm *ContextManager) MaybeCompact(
 	history *[]Turn,
 	sysPromptChars int,
 	emitFn func(EventKind, map[string]any),
-) error {
+) {
 	cw := cm.profile.ContextWindowSize()
 	if cw <= 0 {
-		return nil
+		return
 	}
 
 	pressure := func() float64 {
@@ -127,6 +127,17 @@ func (cm *ContextManager) MaybeCompact(
 
 	p := pressure()
 	compacted := false
+
+	// Invalidate API token measurement before running any layer so that
+	// between-layer pressure() calls use char/4 (which reflects in-place
+	// mutations). Without this, stale lastInputTokens causes all layers
+	// to cascade in a single pass.
+	if p >= cm.ObservationMaskThreshold {
+		cm.mu.Lock()
+		cm.lastInputTokens = 0
+		cm.historyLenAtMeasure = 0
+		cm.mu.Unlock()
+	}
 
 	// Layer 1: Observation masking at ≥60%.
 	if p >= cm.ObservationMaskThreshold {
@@ -208,26 +219,22 @@ func (cm *ContextManager) MaybeCompact(
 		cm.historyLenAtMeasure = 0
 		cm.mu.Unlock()
 	}
-
-	return nil
 }
 
 // --- Observation masking (Layer 1) ---
 
 // maskObservations replaces tool result content in old turns with one-line summaries.
-// Preserves: error results, communicate results, already-masked results, and recent turns.
-// Returns estimated tokens freed.
-func maskObservations(history []Turn, preserveRecent int) int {
+// Preserves: error results, communicate results, already-masked results, recent turns,
+// and results where the summary would be longer than the original.
+func maskObservations(history []Turn, preserveRecent int) {
 	if len(history) == 0 {
-		return 0
+		return
 	}
 
 	cutoff := len(history) - preserveRecent
 	if cutoff <= 0 {
-		return 0
+		return
 	}
-
-	freed := 0
 	for i := 0; i < cutoff; i++ {
 		t := &history[i]
 		if t.Kind != TurnTool {
@@ -261,14 +268,14 @@ func maskObservations(history []Turn, preserveRecent int) int {
 			// Find the tool call arguments from the preceding assistant turn.
 			args := findToolCallArgs(history[:i], tr.ToolCallID)
 
-			summary := summarizeToolResult(tr.Name, content, tr.IsError, args)
-			oldLen := len(content)
-			newLen := len(summary)
-			freed += (oldLen - newLen) / 4 // may be negative for tiny results; net effect is still positive
+			summary := summarizeToolResult(tr.Name, content, args)
+			// Skip masking if the summary is not shorter than the original.
+			if len(summary) >= len(content) {
+				continue
+			}
 			tr.Content = summary
 		}
 	}
-	return freed
 }
 
 // findToolCallArgs looks backward from the tool result to find the matching
@@ -289,7 +296,7 @@ func findToolCallArgs(history []Turn, toolCallID string) json.RawMessage {
 }
 
 // summarizeToolResult generates a one-line summary for a tool result.
-func summarizeToolResult(toolName string, content any, isError bool, args json.RawMessage) string {
+func summarizeToolResult(toolName string, content any, args json.RawMessage) string {
 	contentStr := fmt.Sprint(content)
 	var argsMap map[string]any
 	if len(args) > 0 {
@@ -336,22 +343,13 @@ func summarizeToolResult(toolName string, content any, isError bool, args json.R
 
 	case "edit_file":
 		path := getArg("file_path")
-		if isError {
-			return fmt.Sprintf("[edit_file: %s → error]", path)
-		}
 		return fmt.Sprintf("[edit_file: %s → OK]", path)
 
 	case "apply_patch":
-		if isError {
-			return "[apply_patch → error]"
-		}
 		return "[apply_patch → OK]"
 
 	case "write_file":
 		path := getArg("file_path")
-		if isError {
-			return fmt.Sprintf("[write_file: %s → error]", path)
-		}
 		return fmt.Sprintf("[write_file: %s → OK]", path)
 
 	case "web_fetch":
@@ -388,18 +386,16 @@ func summarizeToolResult(toolName string, content any, isError bool, args json.R
 
 // clearThinking removes thinking text from old assistant turns, replacing it
 // with a placeholder. Redacted thinking blocks are left untouched.
-// Returns estimated tokens freed.
-func clearThinking(history []Turn, preserveRecent int) int {
+func clearThinking(history []Turn, preserveRecent int) {
 	if len(history) == 0 {
-		return 0
+		return
 	}
 
 	cutoff := len(history) - preserveRecent
 	if cutoff <= 0 {
-		return 0
+		return
 	}
 
-	freed := 0
 	for i := 0; i < cutoff; i++ {
 		t := &history[i]
 		if t.Kind != TurnAssistant {
@@ -422,12 +418,9 @@ func clearThinking(history []Turn, preserveRecent int) int {
 			if oldLen == 0 {
 				continue
 			}
-			placeholder := fmt.Sprintf("[thinking: %d chars]", oldLen)
-			freed += (oldLen - len(placeholder)) / 4
-			p.Thinking.Text = placeholder
+			p.Thinking.Text = fmt.Sprintf("[thinking: %d chars]", oldLen)
 		}
 	}
-	return freed
 }
 
 // --- Deterministic checkpoint (Layer 3) ---
@@ -440,11 +433,14 @@ func checkpoint(history []Turn, preserveRecent int) []Turn {
 	}
 
 	cutoff := safeCutoff(history, len(history)-preserveRecent)
+	if cutoff < 0 {
+		return history
+	}
 
 	// Extract original task (first user input that isn't a previous checkpoint/summary).
 	// If all user inputs are checkpoints, extract the task from the checkpoint text.
 	originalTask := ""
-	for _, t := range history {
+	for _, t := range history[:cutoff] {
 		if t.Kind != TurnUserInput {
 			continue
 		}
@@ -632,6 +628,9 @@ func (cm *ContextManager) summarizeWithLLM(ctx context.Context, history []Turn, 
 		return history, nil
 	}
 	cutoff := safeCutoff(history, len(history)-preserveRecent)
+	if cutoff < 0 {
+		return history, nil
+	}
 
 	// Cap the history text to avoid exceeding the cheap model's context window.
 	// ~50k chars ≈ 12.5k tokens, leaving room for the instruction prefix and response.
@@ -700,12 +699,22 @@ func (cm *ContextManager) summarizeWithLLM(ctx context.Context, history []Turn, 
 }
 
 // safeCutoff adjusts a cutoff index so the preserved turns don't start with a
-// TurnTool, which would produce invalid message ordering (user → tool without
-// a preceding assistant tool_call). Walks the cutoff backward to include the
-// preceding assistant turn.
+// TurnTool or TurnSteering, which would produce invalid message ordering.
+// TurnTool without a preceding assistant tool_call is invalid. TurnSteering
+// after a checkpoint/summary (both user-role) produces consecutive user messages
+// that some APIs reject.
+// Returns -1 if no safe position exists; callers should skip compaction.
 func safeCutoff(history []Turn, cutoff int) int {
-	for cutoff > 0 && cutoff < len(history) && history[cutoff].Kind == TurnTool {
-		cutoff--
+	for cutoff > 0 && cutoff < len(history) {
+		k := history[cutoff].Kind
+		if k == TurnTool || k == TurnSteering {
+			cutoff--
+			continue
+		}
+		break
+	}
+	if cutoff <= 0 {
+		return -1
 	}
 	return cutoff
 }

@@ -111,7 +111,7 @@ func TestContextManager_CumulativeUsage_ThreadSafe(t *testing.T) {
 func TestSummarizeToolResult_ReadFile(t *testing.T) {
 	// Simulate a read_file result: line-numbered content.
 	lines := "1 | package main\n2 | func main() {}\n"
-	got := summarizeToolResult("read_file", lines, false, json.RawMessage(`{"file_path":"auth.go"}`))
+	got := summarizeToolResult("read_file", lines, json.RawMessage(`{"file_path":"auth.go"}`))
 	want := "[read_file: auth.go, 2 lines]"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -120,7 +120,7 @@ func TestSummarizeToolResult_ReadFile(t *testing.T) {
 
 func TestSummarizeToolResult_Shell_Success(t *testing.T) {
 	output := "ok\nexit_code=0 duration_ms=42 timed_out=false\n"
-	got := summarizeToolResult("shell", output, false, json.RawMessage(`{"command":"go test"}`))
+	got := summarizeToolResult("shell", output, json.RawMessage(`{"command":"go test"}`))
 	want := `[shell: "go test" → exit 0]`
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -129,7 +129,7 @@ func TestSummarizeToolResult_Shell_Success(t *testing.T) {
 
 func TestSummarizeToolResult_Shell_Failure(t *testing.T) {
 	output := "FAIL\nexit_code=1 duration_ms=42 timed_out=false\n"
-	got := summarizeToolResult("shell", output, false, json.RawMessage(`{"command":"go test"}`))
+	got := summarizeToolResult("shell", output, json.RawMessage(`{"command":"go test"}`))
 	want := `[shell: "go test" → exit 1]`
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -139,7 +139,7 @@ func TestSummarizeToolResult_Shell_Failure(t *testing.T) {
 func TestSummarizeToolResult_Shell_LongCommand(t *testing.T) {
 	longCmd := "this is a very long command that exceeds sixty characters in length and should be truncated"
 	output := "ok\nexit_code=0 duration_ms=1 timed_out=false\n"
-	got := summarizeToolResult("shell", output, false, json.RawMessage(`{"command":"`+longCmd+`"}`))
+	got := summarizeToolResult("shell", output, json.RawMessage(`{"command":"`+longCmd+`"}`))
 	// Command should be truncated to 60 chars.
 	if len(got) > 100 {
 		t.Fatalf("summary too long: %q", got)
@@ -151,7 +151,7 @@ func TestSummarizeToolResult_Shell_LongCommand(t *testing.T) {
 
 func TestSummarizeToolResult_Grep(t *testing.T) {
 	output := "file1.go:10:TODO fix\nfile2.go:20:TODO cleanup\n"
-	got := summarizeToolResult("grep", output, false, json.RawMessage(`{"pattern":"TODO"}`))
+	got := summarizeToolResult("grep", output, json.RawMessage(`{"pattern":"TODO"}`))
 	want := `[grep: "TODO" → 2 matches]`
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -160,7 +160,7 @@ func TestSummarizeToolResult_Grep(t *testing.T) {
 
 func TestSummarizeToolResult_Glob(t *testing.T) {
 	output := "a.go\nb.go\nc.go\n"
-	got := summarizeToolResult("glob", output, false, json.RawMessage(`{"pattern":"*.go"}`))
+	got := summarizeToolResult("glob", output, json.RawMessage(`{"pattern":"*.go"}`))
 	want := `[glob: "*.go" → 3 files]`
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -168,23 +168,15 @@ func TestSummarizeToolResult_Glob(t *testing.T) {
 }
 
 func TestSummarizeToolResult_EditFile(t *testing.T) {
-	got := summarizeToolResult("edit_file", "OK", false, json.RawMessage(`{"file_path":"auth.go"}`))
+	got := summarizeToolResult("edit_file", "OK", json.RawMessage(`{"file_path":"auth.go"}`))
 	want := "[edit_file: auth.go → OK]"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
 
-func TestSummarizeToolResult_EditFile_Error(t *testing.T) {
-	got := summarizeToolResult("edit_file", "not found", true, json.RawMessage(`{"file_path":"auth.go"}`))
-	want := "[edit_file: auth.go → error]"
-	if got != want {
-		t.Fatalf("got %q, want %q", got, want)
-	}
-}
-
 func TestSummarizeToolResult_WriteFile(t *testing.T) {
-	got := summarizeToolResult("write_file", "OK", false, json.RawMessage(`{"file_path":"new.go"}`))
+	got := summarizeToolResult("write_file", "OK", json.RawMessage(`{"file_path":"new.go"}`))
 	want := "[write_file: new.go → OK]"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -192,16 +184,8 @@ func TestSummarizeToolResult_WriteFile(t *testing.T) {
 }
 
 func TestSummarizeToolResult_ApplyPatch(t *testing.T) {
-	got := summarizeToolResult("apply_patch", "OK", false, json.RawMessage(`{"patch":"*** Begin Patch\n*** Update File: auth.go\n"}`))
+	got := summarizeToolResult("apply_patch", "OK", json.RawMessage(`{"patch":"*** Begin Patch\n*** Update File: auth.go\n"}`))
 	want := "[apply_patch → OK]"
-	if got != want {
-		t.Fatalf("got %q, want %q", got, want)
-	}
-}
-
-func TestSummarizeToolResult_ApplyPatch_Error(t *testing.T) {
-	got := summarizeToolResult("apply_patch", "failed to apply", true, json.RawMessage(`{"patch":"bad"}`))
-	want := "[apply_patch → error]"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -209,7 +193,7 @@ func TestSummarizeToolResult_ApplyPatch_Error(t *testing.T) {
 
 func TestSummarizeToolResult_WebFetch(t *testing.T) {
 	content := "Here is some fetched content from the web page"
-	got := summarizeToolResult("web_fetch", content, false, json.RawMessage(`{"url":"https://example.com"}`))
+	got := summarizeToolResult("web_fetch", content, json.RawMessage(`{"url":"https://example.com"}`))
 	want := fmt.Sprintf("[web_fetch: https://example.com → %d chars]", len(content))
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -217,7 +201,7 @@ func TestSummarizeToolResult_WebFetch(t *testing.T) {
 }
 
 func TestSummarizeToolResult_SpawnAgent(t *testing.T) {
-	got := summarizeToolResult("spawn_agent", `{"agent_id":"abc123"}`, false, json.RawMessage(`{"task":"do stuff"}`))
+	got := summarizeToolResult("spawn_agent", `{"agent_id":"abc123"}`, json.RawMessage(`{"task":"do stuff"}`))
 	want := "[spawn_agent: abc123]"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -225,7 +209,7 @@ func TestSummarizeToolResult_SpawnAgent(t *testing.T) {
 }
 
 func TestSummarizeToolResult_TaskList(t *testing.T) {
-	got := summarizeToolResult("task_list", `[{"id":1},{"id":2},{"id":3}]`, false, json.RawMessage(`{"action":"view"}`))
+	got := summarizeToolResult("task_list", `[{"id":1},{"id":2},{"id":3}]`, json.RawMessage(`{"action":"view"}`))
 	want := "[task_list: view → 3 tasks]"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -234,7 +218,7 @@ func TestSummarizeToolResult_TaskList(t *testing.T) {
 
 func TestSummarizeToolResult_UseSkill(t *testing.T) {
 	body := "This is the skill body with instructions"
-	got := summarizeToolResult("use_skill", body, false, json.RawMessage(`{"skill_name":"tdd"}`))
+	got := summarizeToolResult("use_skill", body, json.RawMessage(`{"skill_name":"tdd"}`))
 	want := fmt.Sprintf("[use_skill: tdd → %d chars]", len(body))
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -243,7 +227,7 @@ func TestSummarizeToolResult_UseSkill(t *testing.T) {
 
 func TestSummarizeToolResult_UnknownTool(t *testing.T) {
 	content := "some output"
-	got := summarizeToolResult("custom_tool", content, false, json.RawMessage(`{}`))
+	got := summarizeToolResult("custom_tool", content, json.RawMessage(`{}`))
 	want := "[custom_tool: 11 chars]"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -252,16 +236,17 @@ func TestSummarizeToolResult_UnknownTool(t *testing.T) {
 
 func TestMaskObservations_PreservesRecentTurns(t *testing.T) {
 	// 4 turns: 2 old tool results + 2 recent. With preserveRecent=2, only the first 2 should be masked.
+	bigContent := strings.Repeat("x", 200)
 	history := []Turn{
 		{Kind: TurnUserInput, Message: llm.User("task")},
 		{Kind: TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"a.go"}`)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "1 | line1\n2 | line2\n", false)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", bigContent, false)},
 		{Kind: TurnAssistant, Message: assistantWithToolCall("c2", "read_file", `{"file_path":"b.go"}`)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c2", "read_file", "1 | stuff\n", false)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c2", "read_file", bigContent, false)},
 		{Kind: TurnAssistant, Message: llm.Assistant("done")},
 	}
 
-	freed := maskObservations(history, 2)
+	maskObservations(history, 2)
 
 	// Last 2 turns (index 4,5) should be untouched.
 	toolContent := toolResultContent(history[4])
@@ -274,9 +259,6 @@ func TestMaskObservations_PreservesRecentTurns(t *testing.T) {
 	if !startsWith(masked, "[read_file:") {
 		t.Fatalf("old tool result should be masked, got: %q", masked)
 	}
-
-	// freed may be small or even negative for tiny test data; just verify masking occurred.
-	_ = freed
 }
 
 func TestMaskObservations_SkipsAlreadyMasked(t *testing.T) {
@@ -286,13 +268,10 @@ func TestMaskObservations_SkipsAlreadyMasked(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("done")},
 	}
 
-	freed := maskObservations(history, 0)
+	maskObservations(history, 0)
 	got := toolResultContent(history[1])
 	if got != "[read_file: a.go, 10 lines]" {
 		t.Fatalf("already-masked result should be unchanged, got: %q", got)
-	}
-	if freed != 0 {
-		t.Fatalf("expected 0 freed tokens for already-masked, got %d", freed)
 	}
 }
 
@@ -303,13 +282,10 @@ func TestMaskObservations_SkipsErrorResults(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("done")},
 	}
 
-	freed := maskObservations(history, 0)
+	maskObservations(history, 0)
 	got := toolResultContent(history[1])
 	if startsWith(got, "[shell:") {
 		t.Fatalf("error result should NOT be masked, got: %q", got)
-	}
-	if freed != 0 {
-		t.Fatalf("expected 0 freed for error results, got %d", freed)
 	}
 }
 
@@ -320,25 +296,16 @@ func TestMaskObservations_PreservesCommunicate(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("done")},
 	}
 
-	freed := maskObservations(history, 0)
+	maskObservations(history, 0)
 	got := toolResultContent(history[1])
 	if startsWith(got, "[communicate:") {
 		t.Fatalf("communicate result should NOT be masked, got: %q", got)
 	}
-	if freed != 0 {
-		t.Fatalf("expected 0 freed for communicate, got %d", freed)
-	}
 }
 
 func TestMaskObservations_EmptyHistory(t *testing.T) {
-	freed := maskObservations(nil, 6)
-	if freed != 0 {
-		t.Fatalf("expected 0 freed for nil history, got %d", freed)
-	}
-	freed = maskObservations([]Turn{}, 6)
-	if freed != 0 {
-		t.Fatalf("expected 0 freed for empty history, got %d", freed)
-	}
+	maskObservations(nil, 6)
+	maskObservations([]Turn{}, 6)
 }
 
 func TestMaskObservations_PreservesAssistantTurns(t *testing.T) {
@@ -371,7 +338,7 @@ func TestClearThinking_RemovesOldThinkingText(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("final answer")},
 	}
 
-	freed := clearThinking(history, 1)
+	clearThinking(history, 1)
 
 	// Index 1 is old enough to be cleared. Check thinking was replaced.
 	var thinkingText string
@@ -389,10 +356,6 @@ func TestClearThinking_RemovesOldThinkingText(t *testing.T) {
 	if history[1].Message.Text() != "my answer" {
 		t.Fatalf("text content should be preserved, got: %q", history[1].Message.Text())
 	}
-
-	if freed <= 0 {
-		t.Fatalf("expected positive freed tokens, got %d", freed)
-	}
 }
 
 func TestClearThinking_PreservesRecentThinking(t *testing.T) {
@@ -407,7 +370,7 @@ func TestClearThinking_PreservesRecentThinking(t *testing.T) {
 		}},
 	}
 
-	freed := clearThinking(history, 2)
+	clearThinking(history, 2)
 
 	// All turns are within the recent window, so thinking should be preserved.
 	var thinkingText string
@@ -418,9 +381,6 @@ func TestClearThinking_PreservesRecentThinking(t *testing.T) {
 	}
 	if thinkingText != "recent thinking" {
 		t.Fatalf("recent thinking should be preserved, got: %q", thinkingText)
-	}
-	if freed != 0 {
-		t.Fatalf("expected 0 freed for recent turns, got %d", freed)
 	}
 }
 
@@ -440,7 +400,7 @@ func TestClearThinking_PreservesRedactedThinking(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("final")},
 	}
 
-	freed := clearThinking(history, 0)
+	clearThinking(history, 0)
 
 	// Redacted thinking should remain untouched.
 	for _, p := range history[1].Message.Content {
@@ -450,9 +410,6 @@ func TestClearThinking_PreservesRedactedThinking(t *testing.T) {
 			}
 		}
 	}
-	if freed != 0 {
-		t.Fatalf("expected 0 freed for redacted thinking, got %d", freed)
-	}
 }
 
 func TestClearThinking_NoThinkingBlocks(t *testing.T) {
@@ -461,10 +418,7 @@ func TestClearThinking_NoThinkingBlocks(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("answer")},
 	}
 
-	freed := clearThinking(history, 0)
-	if freed != 0 {
-		t.Fatalf("expected 0 freed for no thinking blocks, got %d", freed)
-	}
+	clearThinking(history, 0)
 }
 
 func TestClearThinking_MixedContent(t *testing.T) {
@@ -810,10 +764,7 @@ func TestMaybeCompact_BelowThreshold_NoAction(t *testing.T) {
 		events = append(events, SessionEvent{Kind: kind, Data: data})
 	}
 
-	err := cm.MaybeCompact(context.Background(), &history, 100, emitFn)
-	if err != nil {
-		t.Fatalf("MaybeCompact: %v", err)
-	}
+	cm.MaybeCompact(context.Background(), &history, 100, emitFn)
 	// No compaction events should have been emitted.
 	for _, e := range events {
 		if e.Kind == EventContextCompaction {
@@ -845,10 +796,7 @@ func TestMaybeCompact_ObservationMaskThreshold(t *testing.T) {
 		events = append(events, SessionEvent{Kind: kind, Data: data})
 	}
 
-	err := cm.MaybeCompact(context.Background(), &history, 0, emitFn)
-	if err != nil {
-		t.Fatalf("MaybeCompact: %v", err)
-	}
+	cm.MaybeCompact(context.Background(), &history, 0, emitFn)
 
 	// Should have emitted at least an observation_mask event.
 	foundMask := false
@@ -887,10 +835,7 @@ func TestMaybeCompact_CheckpointThreshold(t *testing.T) {
 		events = append(events, SessionEvent{Kind: kind, Data: data})
 	}
 
-	err := cm.MaybeCompact(context.Background(), &history, 0, emitFn)
-	if err != nil {
-		t.Fatalf("MaybeCompact: %v", err)
-	}
+	cm.MaybeCompact(context.Background(), &history, 0, emitFn)
 
 	// At 85%, observation mask and thinking clear won't help (no tool results or thinking).
 	// So checkpoint should trigger.
@@ -929,10 +874,7 @@ func TestMaybeCompact_EmitsEvents(t *testing.T) {
 		events = append(events, SessionEvent{Kind: kind, Data: data})
 	}
 
-	err := cm.MaybeCompact(context.Background(), &history, 0, emitFn)
-	if err != nil {
-		t.Fatalf("MaybeCompact: %v", err)
-	}
+	cm.MaybeCompact(context.Background(), &history, 0, emitFn)
 
 	// Should have at least one compaction event.
 	compactionCount := 0
@@ -973,10 +915,7 @@ func TestMaybeCompact_RespectsSysPromptSize(t *testing.T) {
 	}
 
 	// sys prompt is 2400 chars ≈ 600 tokens + history ~100 tokens = 700/1000 = 70%
-	err := cm.MaybeCompact(context.Background(), &history, 2400, emitFn)
-	if err != nil {
-		t.Fatalf("MaybeCompact: %v", err)
-	}
+	cm.MaybeCompact(context.Background(), &history, 2400, emitFn)
 
 	// With sys prompt, we're at ~70%, should trigger observation masking.
 	foundMask := false
@@ -1527,7 +1466,7 @@ func TestContextManager_ResetsAfterCompaction(t *testing.T) {
 		events = append(events, SessionEvent{Kind: kind, Data: data})
 	}
 
-	_ = cm.MaybeCompact(context.Background(), &history, 0, emitFn)
+	cm.MaybeCompact(context.Background(), &history, 0, emitFn)
 
 	// After compaction, lastInputTokens should be reset.
 	cm.mu.Lock()
@@ -1535,6 +1474,321 @@ func TestContextManager_ResetsAfterCompaction(t *testing.T) {
 	cm.mu.Unlock()
 	if lit != 0 {
 		t.Fatalf("lastInputTokens should be reset after compaction, got %d", lit)
+	}
+}
+
+// --- Fix: safeCutoff robustness (H1 + H2) ---
+
+func TestSafeCutoff_NoAdjustmentNeeded(t *testing.T) {
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("task")},
+		{Kind: TurnAssistant, Message: llm.Assistant("answer")},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	}
+	got := safeCutoff(history, 2)
+	if got != 2 {
+		t.Fatalf("safeCutoff = %d, want 2 (no adjustment needed)", got)
+	}
+}
+
+func TestSafeCutoff_WalksToZero_ReturnsNegative(t *testing.T) {
+	// All turns after index 0 are TurnTool — walking back from any cutoff
+	// should reach 0, which is not a safe position.
+	history := []Turn{
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c2", "read_file", "content", false)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c3", "read_file", "content", false)},
+	}
+	got := safeCutoff(history, 2)
+	if got != -1 {
+		t.Fatalf("safeCutoff = %d, want -1 (no safe position)", got)
+	}
+}
+
+func TestSafeCutoff_SkipsSteering(t *testing.T) {
+	// TurnSteering at the cutoff position should be walked back, just like TurnTool.
+	// Otherwise, preserved turns would start with a steering message that becomes
+	// a consecutive user-role message after the checkpoint's user-role message.
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("task")},
+		{Kind: TurnAssistant, Message: llm.Assistant("answer")},
+		{Kind: TurnSteering, Message: llm.User("you should do X")},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	}
+	// preserveRecent=1 → cutoff = len(history)-1 = 3.
+	// history[3] is TurnAssistant (OK), so normally no adjustment.
+	// But if cutoff = len(history)-2 = 2, history[2] is TurnSteering → walk to 1.
+	got := safeCutoff(history, 2)
+	// cutoff=2 → TurnSteering → walk back to 1 → TurnAssistant → stop.
+	if got != 1 {
+		t.Fatalf("safeCutoff = %d, want 1 (should skip TurnSteering)", got)
+	}
+}
+
+func TestCheckpoint_SafeCutoffNegative_ReturnsUnchanged(t *testing.T) {
+	// When safeCutoff returns -1, checkpoint should return history unchanged.
+	// Use preserveRecent=3 with 4 turns so cutoff=1, and history[1] is TurnTool
+	// which walks back to 0 → return -1.
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("task")},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
+		{Kind: TurnAssistant, Message: llm.Assistant("answer")},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	}
+	// preserveRecent=3 → cutoff=1 → TurnTool → walk to 0 → return -1
+	result := checkpoint(history, 3)
+	if len(result) != len(history) {
+		t.Fatalf("expected unchanged history (len %d), got len %d", len(history), len(result))
+	}
+}
+
+func TestSummarizeWithLLM_SafeCutoffNegative_ReturnsUnchanged(t *testing.T) {
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				t.Fatal("LLM should not be called when safeCutoff returns -1")
+				return llm.Response{}
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), client)
+
+	// Same scenario as checkpoint test: cutoff walks to 0 → return -1.
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("task")},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
+		{Kind: TurnAssistant, Message: llm.Assistant("answer")},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	}
+	result, err := cm.summarizeWithLLM(context.Background(), history, 3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != len(history) {
+		t.Fatalf("expected unchanged history (len %d), got len %d", len(history), len(result))
+	}
+}
+
+// --- Fix: Short result masking (M2) ---
+
+func TestMaskObservations_SkipsShortResults(t *testing.T) {
+	// For short tool results like "OK", the summary "[edit_file: auth.go → OK]"
+	// is longer than the original content. Masking should be skipped to avoid
+	// increasing pressure.
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("task")},
+		{Kind: TurnAssistant, Message: assistantWithToolCall("c1", "edit_file", `{"file_path":"auth.go"}`)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "edit_file", "OK", false)},
+		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	}
+
+	maskObservations(history, 0)
+
+	// "OK" (2 chars) should not be replaced with "[edit_file: auth.go → OK]" (25 chars).
+	got := toolResultContent(history[2])
+	if got != "OK" {
+		t.Fatalf("short result should not be masked, got: %q", got)
+	}
+}
+
+// --- Fix: Checkpoint task extraction (M1) ---
+
+func TestCheckpoint_OriginalTaskNotOverriddenByFollowup(t *testing.T) {
+	// After a previous checkpoint, history starts with the checkpoint message
+	// (which embeds "Original task: Fix the auth bug"). A follow-up user message
+	// "Also update the tests" appears in the preserved recent turns.
+	// The second checkpoint should extract "Fix the auth bug" from the first
+	// checkpoint, NOT replace it with the follow-up.
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("[CONTEXT CHECKPOINT]\nOriginal task: Fix the auth bug\nFiles modified: auth.go\n[END CHECKPOINT]\n")},
+		{Kind: TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"auth.go"}`)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
+		{Kind: TurnAssistant, Message: llm.Assistant("I've analyzed the code")},
+		// Follow-up user message in preserved region:
+		{Kind: TurnUserInput, Message: llm.User("Also update the tests")},
+		{Kind: TurnAssistant, Message: llm.Assistant("Will do")},
+	}
+
+	// preserveRecent=2 → cutoff=4 → history[4] is TurnUserInput → safe, stays 4.
+	// Bug: the scan visits history[4] ("Also update the tests") which is in the
+	// preserved section and overrides the original task extracted from the checkpoint.
+	result := checkpoint(history, 2)
+	text := result[0].Message.Text()
+
+	if strings.Contains(text, "Also update the tests") {
+		t.Fatalf("checkpoint should use original task from compacted region, not follow-up:\n%s", text)
+	}
+	if !strings.Contains(text, "Fix the auth bug") {
+		t.Fatalf("checkpoint missing original task:\n%s", text)
+	}
+}
+
+// --- Fix: Pressure cascade (C1) ---
+
+// TestMaybeCompact_L1StopsCascade verifies that when observation masking alone
+// frees enough tokens, higher layers (L2/L3/L4) do not fire. This catches the
+// bug where stale lastInputTokens caused all layers to cascade in a single pass.
+func TestMaybeCompact_L1StopsCascade(t *testing.T) {
+	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1000}
+	cm := NewContextManager(profile, nil)
+	cm.PreserveRecentTurns = 2
+
+	// Build history with large tool results that L1 can mask down significantly.
+	// Target ~75% pressure via char/4 (750 tokens). Tool results are big so
+	// masking will free a lot.
+	history := makeBigHistory(750)
+	history = append(history,
+		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
+		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
+	)
+
+	// Simulate a previous API call that reported 750 input tokens.
+	// Bug: after L1 masks tool results in-place, the between-layer pressure()
+	// call still uses lastInputTokens=750 (stale), so pressure stays at 75%
+	// and L2 (thinking_clear, threshold=70%) fires unnecessarily.
+	cm.RecordInputTokens(750, len(history))
+
+	var layers []string
+	emitFn := func(kind EventKind, data map[string]any) {
+		if kind == EventContextCompaction {
+			if layer, ok := data["layer"].(string); ok {
+				layers = append(layers, layer)
+			}
+		}
+	}
+
+	cm.MaybeCompact(context.Background(), &history, 0, emitFn)
+
+	// L1 (observation_mask) should fire.
+	if len(layers) == 0 || layers[0] != "observation_mask" {
+		t.Fatalf("expected observation_mask as first layer, got %v", layers)
+	}
+
+	// After L1 masks the big tool results, char/4 pressure should drop well
+	// below 70%. L2 (thinking_clear) and higher should NOT fire.
+	for _, l := range layers[1:] {
+		if l == "thinking_clear" || l == "checkpoint" || l == "summarize" {
+			t.Fatalf("layer %q should not fire after L1 freed enough tokens; layers=%v", l, layers)
+		}
+	}
+}
+
+// --- Integration tests ---
+
+// TestMaybeCompact_L1ThenL3_MaskedShellParsed verifies that when L1 masks
+// shell results, L3 checkpoint still extracts correct exit codes from the
+// masked "[shell: ... → exit N]" format.
+func TestMaybeCompact_L1ThenL3_MaskedShellParsed(t *testing.T) {
+	// Use a context window where L1 masking reduces tool output but still
+	// leaves history above the 80% checkpoint threshold, so both fire.
+	profile := &baseProfile{id: "openai", model: "test", contextWindow: 80}
+	cm := NewContextManager(profile, nil)
+	cm.PreserveRecentTurns = 2
+
+	// Build history with shell tool calls (big output so L1 masks them)
+	// plus assistant text that L1 can't touch, keeping pressure above 80%.
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("run tests")},
+		{Kind: TurnAssistant, Message: assistantWithToolCall("c1", "shell", `{"command":"go test ./..."}`)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "shell", strings.Repeat("output\n", 20)+"exit_code=0 duration_ms=100 timed_out=false\n", false)},
+		{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("analysis ", 30))},
+		{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("more ", 30))},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
+	}
+
+	var layers []string
+	emitFn := func(kind EventKind, data map[string]any) {
+		if kind == EventContextCompaction {
+			if layer, ok := data["layer"].(string); ok {
+				layers = append(layers, layer)
+			}
+		}
+	}
+
+	cm.MaybeCompact(context.Background(), &history, 0, emitFn)
+
+	// With this small window, L1 and L3 should both fire.
+	foundL1, foundL3 := false, false
+	for _, l := range layers {
+		if l == "observation_mask" {
+			foundL1 = true
+		}
+		if l == "checkpoint" {
+			foundL3 = true
+		}
+	}
+	if !foundL1 {
+		t.Fatalf("expected observation_mask layer; got %v", layers)
+	}
+	if !foundL3 {
+		t.Fatalf("expected checkpoint layer; got %v", layers)
+	}
+
+	// The checkpoint should contain "exit 0" from the shell call.
+	text := history[0].Message.Text()
+	if !strings.Contains(text, "exit 0") {
+		t.Fatalf("checkpoint should contain 'exit 0' from masked shell result:\n%s", text)
+	}
+}
+
+// TestMaybeCompact_SummarizeThreshold verifies L4 fires through the orchestrator.
+func TestMaybeCompact_SummarizeThreshold(t *testing.T) {
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("Summary: tests were run and passed")}
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+
+	// Small window. L3 (checkpoint) replaces old history with a checkpoint
+	// message, but the preserved recent turns are large enough to keep
+	// pressure above 90% after checkpoint, forcing L4.
+	profile := &baseProfile{id: "openai", model: "test", contextWindow: 50}
+	cm := NewContextManager(profile, client)
+	cm.PreserveRecentTurns = 1
+
+	// History with pure text (so L1/L2 can't help much).
+	// After L3 checkpoint, result = [checkpoint_msg, recent_turn].
+	// The recent turn alone needs to be ~90% of 50 tokens = 45 tokens = ~180 chars.
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User(strings.Repeat("task ", 50))},
+		{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("work ", 30))},
+		{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("recent content ", 15))},
+	}
+
+	var layers []string
+	emitFn := func(kind EventKind, data map[string]any) {
+		if kind == EventContextCompaction {
+			if layer, ok := data["layer"].(string); ok {
+				layers = append(layers, layer)
+			}
+		}
+	}
+
+	cm.MaybeCompact(context.Background(), &history, 0, emitFn)
+
+	foundSummarize := false
+	for _, l := range layers {
+		if l == "summarize" {
+			foundSummarize = true
+		}
+	}
+	if !foundSummarize {
+		t.Fatalf("expected summarize layer; got %v", layers)
+	}
+
+	// First turn should be the LLM summary.
+	text := history[0].Message.Text()
+	if !strings.Contains(text, "[CONTEXT SUMMARY]") {
+		t.Fatalf("expected summary in first turn, got: %q", text)
 	}
 }
 

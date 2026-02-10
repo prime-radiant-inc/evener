@@ -13,7 +13,7 @@ import (
 
 func TestTaskStore_AppendAndView(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir)
+	s := NewTaskStore(dir, "test-session")
 
 	added, err := s.Append([]TaskInput{
 		{Description: "Read auth code", Prompt: "Read internal/auth/*.go and summarize the token flow."},
@@ -46,7 +46,7 @@ func TestTaskStore_AppendAndView(t *testing.T) {
 
 func TestTaskStore_UpdateStatus(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir)
+	s := NewTaskStore(dir, "test-session")
 
 	s.Append([]TaskInput{
 		{Description: "Task A", Prompt: "Do A"},
@@ -72,7 +72,7 @@ func TestTaskStore_UpdateStatus(t *testing.T) {
 
 func TestTaskStore_UpdateRejectsUnknownID(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir)
+	s := NewTaskStore(dir, "test-session")
 
 	s.Append([]TaskInput{{Description: "Task A", Prompt: "Do A"}})
 
@@ -84,7 +84,7 @@ func TestTaskStore_UpdateRejectsUnknownID(t *testing.T) {
 
 func TestTaskStore_UpdateInProgress(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir)
+	s := NewTaskStore(dir, "test-session")
 
 	s.Append([]TaskInput{{Description: "Task A", Prompt: "Do A"}})
 
@@ -101,7 +101,7 @@ func TestTaskStore_UpdateInProgress(t *testing.T) {
 
 func TestTaskStore_UpdateRejectsInvalidStatus(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir)
+	s := NewTaskStore(dir, "test-session")
 
 	s.Append([]TaskInput{{Description: "Task A", Prompt: "Do A"}})
 
@@ -113,7 +113,7 @@ func TestTaskStore_UpdateRejectsInvalidStatus(t *testing.T) {
 
 func TestTaskStore_IDsAreMonotonic(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir)
+	s := NewTaskStore(dir, "test-session")
 
 	s.Append([]TaskInput{{Description: "First", Prompt: "1"}})
 	s.Append([]TaskInput{{Description: "Second", Prompt: "2"}})
@@ -131,14 +131,14 @@ func TestTaskStore_PersistsAcrossLoads(t *testing.T) {
 	dir := t.TempDir()
 
 	// Create and populate store.
-	s1 := NewTaskStore(dir)
+	s1 := NewTaskStore(dir, "test-session")
 	s1.Append([]TaskInput{
 		{Description: "Persisted task", Prompt: "Should survive reload"},
 	})
 	s1.Update([]TaskUpdate{{ID: 1, Status: TaskDone}})
 
 	// Load fresh store from same directory.
-	s2 := NewTaskStore(dir)
+	s2 := NewTaskStore(dir, "test-session")
 	if err := s2.Load(); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestTaskStore_PersistsAcrossLoads(t *testing.T) {
 
 func TestTaskStore_UpdateOnlyChangesStatus(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir)
+	s := NewTaskStore(dir, "test-session")
 
 	s.Append([]TaskInput{
 		{Description: "Original desc", Prompt: "Original prompt"},
@@ -182,7 +182,7 @@ func TestTaskStore_UpdateOnlyChangesStatus(t *testing.T) {
 
 func TestTaskStore_LoadNonexistentFile(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir)
+	s := NewTaskStore(dir, "test-session")
 
 	// Load should succeed with empty store when no file exists.
 	if err := s.Load(); err != nil {
@@ -195,11 +195,11 @@ func TestTaskStore_LoadNonexistentFile(t *testing.T) {
 
 func TestTaskStore_FileExistsOnDisk(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir)
+	s := NewTaskStore(dir, "test-session")
 
 	s.Append([]TaskInput{{Description: "Test", Prompt: "p"}})
 
-	path := filepath.Join(dir, ".serf", "tasks.json")
+	path := filepath.Join(dir, ".serf", "tasks", "test-session.json")
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		t.Fatalf("expected tasks.json to exist at %s", path)
 	}
@@ -207,7 +207,7 @@ func TestTaskStore_FileExistsOnDisk(t *testing.T) {
 
 func TestTaskStore_ViewReturnsCopy(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir)
+	s := NewTaskStore(dir, "test-session")
 
 	s.Append([]TaskInput{{Description: "Original", Prompt: "p"}})
 
@@ -223,6 +223,36 @@ func TestTaskStore_ViewReturnsCopy(t *testing.T) {
 	}
 	if fresh[0].Status != TaskUndone {
 		t.Fatalf("View did not return a defensive copy: status is %q", fresh[0].Status)
+	}
+}
+
+func TestTaskStore_ScopedBySessionID(t *testing.T) {
+	dir := t.TempDir()
+
+	s1 := NewTaskStore(dir, "session-aaa")
+	s2 := NewTaskStore(dir, "session-bbb")
+
+	// Add a task in session 1.
+	s1.Append([]TaskInput{{Description: "Task for session A", Prompt: "A"}})
+
+	// Session 2 should not see it.
+	if err := s2.Load(); err != nil {
+		t.Fatalf("s2.Load: %v", err)
+	}
+	if len(s2.View()) != 0 {
+		t.Fatalf("session-bbb should have 0 tasks, got %d", len(s2.View()))
+	}
+
+	// Add a task in session 2.
+	s2.Append([]TaskInput{{Description: "Task for session B", Prompt: "B"}})
+
+	// Reload session 1 — should still have only its task.
+	s1r := NewTaskStore(dir, "session-aaa")
+	if err := s1r.Load(); err != nil {
+		t.Fatalf("s1r.Load: %v", err)
+	}
+	if len(s1r.View()) != 1 || s1r.View()[0].Description != "Task for session A" {
+		t.Fatalf("session-aaa should have 1 task, got %v", s1r.View())
 	}
 }
 

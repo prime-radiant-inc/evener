@@ -549,9 +549,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			histCopy := append([]Turn{}, s.history...)
 			s.mu.Unlock()
 
-			if err := s.contextMgr.MaybeCompact(ctx, &histCopy, len(sys), s.emit); err != nil {
-				s.emit(EventWarning, map[string]any{"message": "context compaction failed: " + err.Error()})
-			}
+			s.contextMgr.MaybeCompact(ctx, &histCopy, len(sys), s.emit)
 
 			s.mu.Lock()
 			s.history = histCopy
@@ -1115,7 +1113,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 
 func (s *Session) getOrCreateTaskStore() *TaskStore {
 	s.taskStoreOnce.Do(func() {
-		s.taskStore = NewTaskStore(s.env.WorkingDirectory())
+		s.taskStore = NewTaskStore(s.env.WorkingDirectory(), s.id)
 		_ = s.taskStore.Load()
 	})
 	return s.taskStore
