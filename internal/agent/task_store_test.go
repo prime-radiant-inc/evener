@@ -188,6 +188,27 @@ func TestTaskStore_FileExistsOnDisk(t *testing.T) {
 	}
 }
 
+func TestTaskStore_ViewReturnsCopy(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTaskStore(dir)
+
+	s.Append([]TaskInput{{Description: "Original", Prompt: "p"}})
+
+	// Mutate the returned slice.
+	view := s.View()
+	view[0].Description = "Mutated"
+	view[0].Status = TaskDone
+
+	// Store should be unchanged.
+	fresh := s.View()
+	if fresh[0].Description != "Original" {
+		t.Fatalf("View did not return a defensive copy: description is %q", fresh[0].Description)
+	}
+	if fresh[0].Status != TaskUndone {
+		t.Fatalf("View did not return a defensive copy: status is %q", fresh[0].Status)
+	}
+}
+
 func TestTaskListTool_AppendViewUpdate(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prime-radiant/serf/internal/llm"
 )
@@ -32,6 +33,33 @@ func TestWebFetchCacheKey(t *testing.T) {
 	}
 }
 
+func TestWebFetchCachePath(t *testing.T) {
+	p := webFetchCachePath("https://example.com/docs")
+
+	// Should contain today's date.
+	today := time.Now().UTC().Format("2006-01-02")
+	if !strings.Contains(p, today) {
+		t.Fatalf("cache path %q missing today's date %q", p, today)
+	}
+
+	// Should be structured as .serf/web_cache/date/hash.
+	parts := strings.Split(filepath.ToSlash(p), "/")
+	if len(parts) != 4 {
+		t.Fatalf("expected 4-part path (.serf/web_cache/date/hash), got %q", p)
+	}
+	if parts[0] != ".serf" || parts[1] != "web_cache" {
+		t.Fatalf("unexpected prefix in %q", p)
+	}
+	if parts[2] != today {
+		t.Fatalf("date segment: got %q want %q", parts[2], today)
+	}
+	// Hash segment should be the cache key.
+	wantKey := webFetchCacheKey("https://example.com/docs")
+	if parts[3] != wantKey {
+		t.Fatalf("hash segment: got %q want %q", parts[3], wantKey)
+	}
+}
+
 func TestWebFetchHTMLToMarkdown(t *testing.T) {
 	html := `<html><body><h1>Hello</h1><p>World</p><ul><li>one</li><li>two</li></ul></body></html>`
 	md, err := htmlToMarkdown(html)
@@ -47,6 +75,28 @@ func TestWebFetchHTMLToMarkdown(t *testing.T) {
 	// Should not contain raw HTML tags.
 	if strings.Contains(md, "<h1>") || strings.Contains(md, "<p>") {
 		t.Fatalf("markdown still contains HTML tags: %s", md)
+	}
+}
+
+func TestExtFromContentType(t *testing.T) {
+	cases := []struct {
+		ct   string
+		want string
+	}{
+		{"text/html; charset=utf-8", ".html"},
+		{"text/HTML", ".html"},
+		{"application/json", ".json"},
+		{"text/plain", ".txt"},
+		{"text/xml", ".xml"},
+		{"application/xml", ".xml"},
+		{"application/octet-stream", ".bin"},
+		{"", ".bin"},
+	}
+	for _, tc := range cases {
+		got := extFromContentType(tc.ct)
+		if got != tc.want {
+			t.Errorf("extFromContentType(%q) = %q, want %q", tc.ct, got, tc.want)
+		}
 	}
 }
 
@@ -142,26 +192,95 @@ func TestWebFetchTool_Integration(t *testing.T) {
 		t.Fatalf("cheap model user message missing page content: %s", userText)
 	}
 
-	// Verify cache files were written.
-	cacheDir := filepath.Join(dir, ".serf", "web_cache")
-	entries, err := os.ReadDir(cacheDir)
+	// Verify cache files use date-bucketed directory structure.
+	today := time.Now().UTC().Format("2006-01-02")
+	cacheKey := webFetchCacheKey(srv.URL)
+	fetchDir := filepath.Join(dir, ".serf", "web_cache", today, cacheKey)
+
+	rawPath := filepath.Join(fetchDir, "raw.html")
+	if _, err := os.Stat(rawPath); os.IsNotExist(err) {
+		t.Fatalf("raw.html not found at %s", rawPath)
+	}
+
+	mdPath := filepath.Join(fetchDir, "rendered.md")
+	if _, err := os.Stat(mdPath); os.IsNotExist(err) {
+		t.Fatalf("rendered.md not found at %s", mdPath)
+	}
+
+	// Verify rendered.md contains converted content, not raw HTML.
+	mdContent, err := os.ReadFile(mdPath)
 	if err != nil {
-		t.Fatalf("reading cache dir: %v", err)
+		t.Fatalf("reading rendered.md: %v", err)
 	}
-	var hasRaw, hasMD bool
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), "-raw.html") {
-			hasRaw = true
-		}
-		if strings.HasSuffix(e.Name(), ".md") {
-			hasMD = true
-		}
+	if strings.Contains(string(mdContent), "<h1>") {
+		t.Fatalf("rendered.md contains raw HTML tags")
 	}
-	if !hasRaw {
-		t.Fatalf("no raw HTML file in cache dir: %v", entries)
+	if !strings.Contains(string(mdContent), "Test Page") {
+		t.Fatalf("rendered.md missing page content")
 	}
-	if !hasMD {
-		t.Fatalf("no markdown file in cache dir: %v", entries)
+}
+
+func TestWebFetchTool_ResultContainsFilePaths(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<html><body><h1>Paths Test</h1></body></html>`)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	fa := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(llm.ToolCallData{
+					ID:        "wf1",
+					Name:      "web_fetch",
+					Arguments: json.RawMessage(fmt.Sprintf(`{"url": %q, "question": "test"}`, srv.URL)),
+				})
+			},
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("answer")}
+			},
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("done")}
+			},
+		},
+	}
+
+	c := llm.NewClient()
+	c.Register(fa)
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// Execute the web_fetch tool directly via the registry so we can inspect the output.
+	ctx := context.Background()
+	res := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
+		ID:        "wf1",
+		Name:      "web_fetch",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"url": %q, "question": "test"}`, srv.URL)),
+	})
+	if res.IsError {
+		t.Fatalf("web_fetch returned error: %s", res.Output)
+	}
+
+	// The tool output should contain file paths and the answer.
+	if !strings.Contains(res.Output, "raw_file") {
+		t.Fatalf("output missing raw_file key: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "markdown_file") {
+		t.Fatalf("output missing markdown_file key: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "rendered.md") {
+		t.Fatalf("output missing rendered.md path: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "raw.html") {
+		t.Fatalf("output missing raw.html path: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "answer") {
+		t.Fatalf("output missing answer key: %s", res.Output)
 	}
 }
 
@@ -211,42 +330,26 @@ func TestWebFetchTool_JSONContent(t *testing.T) {
 		t.Fatalf("unexpected output: %s", out)
 	}
 
-	// Verify raw file was written (no markdown conversion for JSON).
-	cacheDir := filepath.Join(dir, ".serf", "web_cache")
-	entries, err := os.ReadDir(cacheDir)
-	if err != nil {
-		t.Fatalf("reading cache dir: %v", err)
+	// Verify raw.json was written (no rendered.md for JSON).
+	today := time.Now().UTC().Format("2006-01-02")
+	cacheKey := webFetchCacheKey(srv.URL)
+	fetchDir := filepath.Join(dir, ".serf", "web_cache", today, cacheKey)
+
+	rawPath := filepath.Join(fetchDir, "raw.json")
+	if _, err := os.Stat(rawPath); os.IsNotExist(err) {
+		t.Fatalf("raw.json not found at %s", rawPath)
 	}
-	var hasRaw bool
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), "-raw.json") {
-			hasRaw = true
-		}
-	}
-	if !hasRaw {
-		t.Fatalf("no raw JSON file in cache dir: %v", entries)
+
+	mdPath := filepath.Join(fetchDir, "rendered.md")
+	if _, err := os.Stat(mdPath); !os.IsNotExist(err) {
+		t.Fatalf("rendered.md should not exist for JSON content, but found at %s", mdPath)
 	}
 }
 
 func TestWebFetchTool_InvalidURL(t *testing.T) {
 	dir := t.TempDir()
 
-	fa := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return toolCallResponse(llm.ToolCallData{
-					ID:        "wf1",
-					Name:      "web_fetch",
-					Arguments: json.RawMessage(`{"url": "ftp://example.com", "question": "test"}`),
-				})
-			},
-			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("Got an error.")}
-			},
-		},
-	}
-
+	fa := &fakeAdapter{name: "openai"}
 	c := llm.NewClient()
 	c.Register(fa)
 
@@ -256,9 +359,46 @@ func TestWebFetchTool_InvalidURL(t *testing.T) {
 	}
 	defer sess.Close()
 
-	// Should not crash; the tool should return an error for non-http(s) URLs.
-	_, err = sess.ProcessInput(context.Background(), "Fetch ftp site")
+	// Execute web_fetch directly with an invalid scheme.
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "wf1",
+		Name:      "web_fetch",
+		Arguments: json.RawMessage(`{"url": "ftp://example.com", "question": "test"}`),
+	})
+	if !res.IsError {
+		t.Fatalf("expected error for ftp:// URL, got success: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "unsupported URL scheme") {
+		t.Fatalf("error should mention unsupported scheme: %s", res.Output)
+	}
+}
+
+func TestWebFetchTool_HTTPErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	fa := &fakeAdapter{name: "openai"}
+	c := llm.NewClient()
+	c.Register(fa)
+
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
-		t.Fatalf("ProcessInput: %v", err)
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "wf1",
+		Name:      "web_fetch",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"url": %q, "question": "test"}`, srv.URL)),
+	})
+	if !res.IsError {
+		t.Fatalf("expected error for 404, got success: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "404") {
+		t.Fatalf("error should mention 404: %s", res.Output)
 	}
 }

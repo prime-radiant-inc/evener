@@ -36,6 +36,13 @@ func htmlToMarkdown(html string) (string, error) {
 	return htmltomarkdown.ConvertString(html)
 }
 
+// webFetchCachePath returns the per-fetch directory path: .serf/web_cache/yyyy-mm-dd/<hash>
+func webFetchCachePath(rawURL string) string {
+	date := time.Now().UTC().Format("2006-01-02")
+	key := webFetchCacheKey(rawURL)
+	return filepath.Join(webCacheDir, date, key)
+}
+
 // webFetch performs the full web_fetch operation: HTTP GET, cache files, cheap model Q&A.
 func (s *Session) webFetch(ctx context.Context, rawURL string, question string) (any, error) {
 	// Validate URL scheme.
@@ -77,21 +84,18 @@ func (s *Session) webFetch(ctx context.Context, rawURL string, question string) 
 	isHTML := strings.Contains(contentType, "text/html")
 	sizeBytes := len(body)
 
-	// Determine file extension for raw file.
-	rawExt := extFromContentType(contentType)
-	cacheKey := webFetchCacheKey(rawURL)
-
-	// Ensure cache directory exists.
-	cacheDir := filepath.Join(s.env.WorkingDirectory(), webCacheDir)
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+	// Per-fetch cache directory: .serf/web_cache/yyyy-mm-dd/<hash>/
+	fetchDir := webFetchCachePath(rawURL)
+	fetchAbsDir := filepath.Join(s.env.WorkingDirectory(), fetchDir)
+	if err := os.MkdirAll(fetchAbsDir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating cache dir: %w", err)
 	}
 
 	// Write raw file.
-	rawFileName := cacheKey + "-raw" + rawExt
-	rawPath := filepath.Join(webCacheDir, rawFileName)
-	rawAbsPath := filepath.Join(cacheDir, rawFileName)
-	if err := os.WriteFile(rawAbsPath, body, 0o644); err != nil {
+	rawExt := extFromContentType(contentType)
+	rawName := "raw" + rawExt
+	rawPath := filepath.Join(fetchDir, rawName)
+	if err := os.WriteFile(filepath.Join(fetchAbsDir, rawName), body, 0o644); err != nil {
 		return nil, fmt.Errorf("writing raw file: %w", err)
 	}
 
@@ -105,11 +109,9 @@ func (s *Session) webFetch(ctx context.Context, rawURL string, question string) 
 			readableContent = string(body)
 		} else {
 			readableContent = md
-			mdFileName := cacheKey + ".md"
-			mdPath = filepath.Join(webCacheDir, mdFileName)
-			mdAbsPath := filepath.Join(cacheDir, mdFileName)
-			if err := os.WriteFile(mdAbsPath, []byte(md), 0o644); err != nil {
-				return nil, fmt.Errorf("writing markdown file: %w", err)
+			mdPath = filepath.Join(fetchDir, "rendered.md")
+			if err := os.WriteFile(filepath.Join(fetchAbsDir, "rendered.md"), []byte(md), 0o644); err != nil {
+				return nil, fmt.Errorf("writing rendered markdown: %w", err)
 			}
 		}
 	} else {
