@@ -98,6 +98,6 @@ serf --provider openai --model gpt-5.2 --resume-with 01JTEST000000000000000001 "
 
 When resuming, the provider and model from the original session are used by default. You can override them with `--provider` and `--model`.
 
-## Relationship to Kilroy
+## Acknowledgments
 
-Serf is the low-level coding agent — one model, one task, one session. [Kilroy](README-kilroy.md) is a pipeline orchestrator that can run multi-step Attractor graphs, where each node may invoke a coding agent like serf. They share the same unified LLM client (`internal/llm/`) and agent loop (`internal/agent/`).
+Serf is forked from [Kilroy](https://github.com/danshapiro/kilroy) by Dan Shapiro, originally built as part of the [StrongDM Attractor](https://github.com/strongdm/attractor) project. The unified LLM client, provider adapters, and agentic tool-calling loop all trace their lineage to that work. Kilroy is licensed under the MIT License (see `LICENSE-kilroy`).

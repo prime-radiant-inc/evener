@@ -175,7 +175,7 @@ func (c *Client) SupportsToolChoice(provider, mode string) bool {
 func normalizeProviderName(name string) string {
 	switch name {
 	case "gemini":
-		// Kilroy uses "google" as the canonical provider key for Gemini.
+		// Serf uses "google" as the canonical provider key for Gemini.
 		return "google"
 	default:
 		return name

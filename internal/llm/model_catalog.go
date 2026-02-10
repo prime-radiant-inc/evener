@@ -10,7 +10,7 @@ import (
 )
 
 // ModelInfo is the normalized model metadata entry, primarily sourced from the LiteLLM catalog
-// in Kilroy. This is metadata-only and is not used as a provider call path.
+// in serf. This is metadata-only and is not used as a provider call path.
 type ModelInfo struct {
 	ID              string   `json:"id"`
 	Provider        string   `json:"provider"`

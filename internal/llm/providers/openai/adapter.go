@@ -68,7 +68,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		"instructions":        instructions,
 		"input":               inputItems,
 		"parallel_tool_calls": false, // safer default; can be overridden later per profile
-		"store":               false, // local-first logging is handled by Kilroy; don't retain server-side by default
+		"store":               false, // local-first logging is handled by serf; don't retain server-side by default
 	}
 
 	if len(req.Tools) > 0 {
