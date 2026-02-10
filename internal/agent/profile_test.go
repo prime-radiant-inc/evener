@@ -60,6 +60,7 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"task_list",
 			"web_fetch",
 			"communicate",
+			"use_skill",
 		})
 	})
 	t.Run("anthropic", func(t *testing.T) {
@@ -78,6 +79,7 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"task_list",
 			"web_fetch",
 			"communicate",
+			"use_skill",
 		})
 	})
 	t.Run("gemini", func(t *testing.T) {
@@ -99,6 +101,7 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"task_list",
 			"web_fetch",
 			"communicate",
+			"use_skill",
 		})
 	})
 }
@@ -113,7 +116,7 @@ func TestProviderProfiles_BuildSystemPrompt_IncludesProviderSpecificBaseInstruct
 	}
 
 	openai := NewOpenAIProfile("gpt-5.2")
-	sysO := openai.BuildSystemPrompt(env, nil)
+	sysO := openai.BuildSystemPrompt(env, nil, nil)
 	if !strings.Contains(sysO, "OpenAI profile") || !strings.Contains(sysO, "apply_patch") {
 		t.Fatalf("openai system prompt missing expected base instructions:\n%s", sysO)
 	}
@@ -122,7 +125,7 @@ func TestProviderProfiles_BuildSystemPrompt_IncludesProviderSpecificBaseInstruct
 	}
 
 	anthropic := NewAnthropicProfile("claude-test")
-	sysA := anthropic.BuildSystemPrompt(env, nil)
+	sysA := anthropic.BuildSystemPrompt(env, nil, nil)
 	if !strings.Contains(sysA, "Anthropic profile") || !strings.Contains(sysA, "edit_file") {
 		t.Fatalf("anthropic system prompt missing expected base instructions:\n%s", sysA)
 	}
@@ -131,7 +134,7 @@ func TestProviderProfiles_BuildSystemPrompt_IncludesProviderSpecificBaseInstruct
 	}
 
 	gemini := NewGeminiProfile("gemini-test")
-	sysG := gemini.BuildSystemPrompt(env, nil)
+	sysG := gemini.BuildSystemPrompt(env, nil, nil)
 	if !strings.Contains(sysG, "Gemini profile") || !strings.Contains(sysG, "edit_file") {
 		t.Fatalf("gemini system prompt missing expected base instructions:\n%s", sysG)
 	}
@@ -174,7 +177,7 @@ func TestProviderProfile_WithModel(t *testing.T) {
 	}
 	// System prompt preserved.
 	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux"}
-	if cloned.BuildSystemPrompt(env, nil) == "" {
+	if cloned.BuildSystemPrompt(env, nil, nil) == "" {
 		t.Fatalf("cloned profile has empty system prompt")
 	}
 }
@@ -212,7 +215,7 @@ func assertMissingTool(t *testing.T, p ProviderProfile, name string) {
 func TestOpenAIProfile_SystemPromptContainsApplyPatchFormat(t *testing.T) {
 	p := NewOpenAIProfile("gpt-5.2")
 	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux", Today: "2026-02-09"}
-	prompt := p.BuildSystemPrompt(env, nil)
+	prompt := p.BuildSystemPrompt(env, nil, nil)
 
 	// Must contain the patch envelope syntax.
 	mustContain := []string{
@@ -263,7 +266,7 @@ func TestAllProfiles_SystemPromptContainsTaskListGuidance(t *testing.T) {
 	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux", Today: "2026-02-09"}
 
 	for name, p := range profiles {
-		prompt := p.BuildSystemPrompt(env, nil)
+		prompt := p.BuildSystemPrompt(env, nil, nil)
 
 		// Must mention task_list tool by name in behavioral guidance (not just the tool list).
 		if !strings.Contains(prompt, "task_list") {
@@ -293,7 +296,7 @@ func TestAllProfiles_SystemPromptContainsCommunicateGuidance(t *testing.T) {
 	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux", Today: "2026-02-09"}
 
 	for name, p := range profiles {
-		prompt := p.BuildSystemPrompt(env, nil)
+		prompt := p.BuildSystemPrompt(env, nil, nil)
 
 		if !strings.Contains(prompt, "communicate") {
 			t.Errorf("profile %q system prompt missing communicate guidance", name)
@@ -307,6 +310,66 @@ func TestAllProfiles_SystemPromptContainsCommunicateGuidance(t *testing.T) {
 		if !strings.Contains(prompt, "inbox") {
 			t.Errorf("profile %q system prompt missing inbox guidance", name)
 		}
+	}
+}
+
+// TestAllProfiles_SystemPromptContainsSkillsGuidance verifies that all
+// profiles include behavioral guidance for the use_skill tool.
+func TestAllProfiles_SystemPromptContainsSkillsGuidance(t *testing.T) {
+	profiles := map[string]ProviderProfile{
+		"openai":    NewOpenAIProfile("gpt-5.2"),
+		"anthropic": NewAnthropicProfile("claude-test"),
+		"gemini":    NewGeminiProfile("gemini-test"),
+	}
+	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux", Today: "2026-02-09"}
+
+	for name, p := range profiles {
+		prompt := p.BuildSystemPrompt(env, nil, nil)
+
+		if !strings.Contains(prompt, "use_skill") {
+			t.Errorf("profile %q system prompt missing use_skill guidance", name)
+		}
+		if !strings.Contains(prompt, "<skills>") || !strings.Contains(prompt, "Skills extend") {
+			t.Errorf("profile %q system prompt missing skills guidance text", name)
+		}
+	}
+}
+
+func TestBuildSystemPrompt_IncludesSkillsList(t *testing.T) {
+	p := NewOpenAIProfile("gpt-5.2")
+	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux", Today: "2026-02-09"}
+
+	skills := []SkillMeta{
+		{Name: "greet", Description: "Greeting skill"},
+		{Name: "deploy", Description: "Deploy skill"},
+	}
+	prompt := p.BuildSystemPrompt(env, nil, skills)
+
+	if !strings.Contains(prompt, "<skills>") {
+		t.Error("prompt missing <skills> section")
+	}
+	if !strings.Contains(prompt, "- greet: Greeting skill") {
+		t.Error("prompt missing greet skill entry")
+	}
+	if !strings.Contains(prompt, "- deploy: Deploy skill") {
+		t.Error("prompt missing deploy skill entry")
+	}
+	if !strings.Contains(prompt, "</skills>") {
+		t.Error("prompt missing </skills> closing tag")
+	}
+}
+
+func TestBuildSystemPrompt_NoSkills_NoSkillsSection(t *testing.T) {
+	p := NewOpenAIProfile("gpt-5.2")
+	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux", Today: "2026-02-09"}
+
+	prompt := p.BuildSystemPrompt(env, nil, nil)
+
+	// The guidance text mentions <skills> as a reference, but the actual
+	// structured block starts with "<skills>\n- " (a skill entry). Verify
+	// no structured block is present by checking for "</skills>".
+	if strings.Contains(prompt, "</skills>") {
+		t.Error("prompt should not contain </skills> section when no skills present")
 	}
 }
 

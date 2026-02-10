@@ -215,6 +215,8 @@ func defaultToolLimit(toolName string) ToolOutputLimit {
 		return ToolOutputLimit{MaxChars: 20_000, Strategy: TruncHeadTail}
 	case "communicate":
 		return ToolOutputLimit{MaxChars: 5_000, Strategy: TruncTail}
+	case "use_skill":
+		return ToolOutputLimit{MaxChars: 32_000, Strategy: TruncTail}
 	default:
 		return ToolOutputLimit{MaxChars: 20_000, Strategy: TruncHeadTail}
 	}

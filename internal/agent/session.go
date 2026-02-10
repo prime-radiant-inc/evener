@@ -95,6 +95,9 @@ type Session struct {
 	depth     int
 	subagents map[string]*subagent
 
+	// skills discovered at session startup
+	skills map[string]SkillMeta
+
 	// task list (lazy-init)
 	taskStore     *TaskStore
 	taskStoreOnce sync.Once
@@ -133,6 +136,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		ei.GitRecentCommitTitles = commits
 	}
 	s.envInfo = ei
+	s.skills = DiscoverSkills(env)
 
 	reg := NewToolRegistry()
 	if err := registerCoreTools(reg, s); err != nil {
@@ -209,6 +213,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		ei.GitRecentCommitTitles = commits
 	}
 	s.envInfo = ei
+	s.skills = DiscoverSkills(env)
 
 	reg := NewToolRegistry()
 	if err := registerCoreTools(reg, s); err != nil {
@@ -507,7 +512,11 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 	s.appendTurn(TurnUserInput, llm.User(input))
 
 		docs, _ := LoadProjectDocs(s.env, s.profile.ProjectDocFiles()...)
-		sys := s.profile.BuildSystemPrompt(s.envInfo, docs)
+		var skillList []SkillMeta
+		for _, sm := range s.skills {
+			skillList = append(skillList, sm)
+		}
+		sys := s.profile.BuildSystemPrompt(s.envInfo, docs, skillList)
 		if strings.TrimSpace(s.cfg.UserInstructionOverride) != "" {
 			sys = sys + "\n\n" + strings.TrimSpace(s.cfg.UserInstructionOverride) + "\n"
 		}
@@ -1042,6 +1051,26 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			}
 			b, _ := json.Marshal(resp)
 			return string(b), nil
+		},
+	})
+
+	// use_skill (progressive disclosure of skill instructions).
+	_ = reg.Register(RegisteredTool{
+		Definition: defUseSkill(),
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			_ = ctx
+			_ = env
+			skillName := fmt.Sprint(args["skill_name"])
+			meta, ok := s.skills[skillName]
+			if !ok {
+				return nil, fmt.Errorf("skill %q not found", skillName)
+			}
+			s.emit(EventSkillActivated, map[string]any{"name": skillName})
+			body, err := LoadSkillBody(meta)
+			if err != nil {
+				return nil, fmt.Errorf("loading skill %q: %w", skillName, err)
+			}
+			return body, nil
 		},
 	})
 

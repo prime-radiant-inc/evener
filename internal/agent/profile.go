@@ -20,6 +20,19 @@ You MUST use the communicate tool for ALL output to the user. Never respond with
 - If the inbox contains a message, acknowledge it in your next status or result.
 `
 
+// skillsGuidance is behavioral guidance for the use_skill tool, shared by all profiles.
+const skillsGuidance = `
+## use_skill
+
+Skills extend your capabilities with domain-specific instructions. Available skills
+are listed in the <skills> section of your system prompt. When a skill is relevant
+to the current task, call use_skill to load its full instructions.
+
+- Only activate a skill when you need its guidance for the current task.
+- After activating a skill, follow its instructions for the remainder of the task.
+- You can activate multiple skills if needed.
+`
+
 // taskListGuidance is behavioral guidance for the task_list tool, shared by all profiles.
 const taskListGuidance = `
 ## task_list
@@ -115,7 +128,7 @@ Important:
 - Prefix every new line with + even when creating a new file.
 - File paths must be relative, NEVER absolute.
 - Do NOT use standard unified diff format (--- a/ +++ b/). Use only the format above.
-` + taskListGuidance + communicateGuidance + `
+` + taskListGuidance + communicateGuidance + skillsGuidance + `
 ## Workflow
 - Read files before editing. Use grep and glob to explore the codebase.
 - After making changes, run tests to verify correctness.
@@ -130,7 +143,7 @@ You persist until the task is fully resolved. Do not stop at analysis or partial
 ## edit_file
 Prefer edit_file with old_string/new_string for precise edits. Read files before editing
 and keep diffs minimal and safe. The old_string must be an exact match of existing content.
-` + taskListGuidance + communicateGuidance + `
+` + taskListGuidance + communicateGuidance + skillsGuidance + `
 ## Workflow
 - Read files before editing. Use grep and glob to explore the codebase.
 - After making changes, run tests to verify correctness.
@@ -145,7 +158,7 @@ You persist until the task is fully resolved. Do not stop at analysis or partial
 ## edit_file
 Prefer edit_file with old_string/new_string for precise edits. Use tools to inspect
 before changing code and validate by running tests.
-` + taskListGuidance + communicateGuidance + `
+` + taskListGuidance + communicateGuidance + skillsGuidance + `
 ## Workflow
 - Read files before editing. Use grep, glob, and list_dir to explore the codebase.
 - After making changes, run tests to verify correctness.
@@ -173,7 +186,7 @@ type ProviderProfile interface {
 	SupportsParallelToolCalls() bool
 	ContextWindowSize() int
 	ProjectDocFiles() []string
-	BuildSystemPrompt(env EnvironmentInfo, docs []ProjectDoc) string
+	BuildSystemPrompt(env EnvironmentInfo, docs []ProjectDoc, skills []SkillMeta) string
 	CheapModel() string
 	WithModel(model string) ProviderProfile
 }
@@ -220,7 +233,7 @@ func (p *baseProfile) WithModel(model string) ProviderProfile {
 	return &clone
 }
 
-func (p *baseProfile) BuildSystemPrompt(env EnvironmentInfo, docs []ProjectDoc) string {
+func (p *baseProfile) BuildSystemPrompt(env EnvironmentInfo, docs []ProjectDoc, skills []SkillMeta) string {
 	var b strings.Builder
 
 	base := strings.TrimSpace(p.basePrompt)
@@ -255,6 +268,14 @@ func (p *baseProfile) BuildSystemPrompt(env EnvironmentInfo, docs []ProjectDoc) 
 			}
 		}
 		b.WriteString("</git>\n\n")
+	}
+
+	if len(skills) > 0 {
+		b.WriteString("<skills>\n")
+		for _, s := range skills {
+			b.WriteString(fmt.Sprintf("- %s: %s\n", s.Name, s.Description))
+		}
+		b.WriteString("</skills>\n\n")
 	}
 
 	b.WriteString("Tools:\n")
@@ -306,6 +327,7 @@ func NewOpenAIProfile(model string) ProviderProfile {
 			defTaskList(),
 			defWebFetch(),
 			defCommunicate(),
+			defUseSkill(),
 		},
 	}
 }
@@ -332,6 +354,7 @@ func NewAnthropicProfile(model string) ProviderProfile {
 			defTaskList(),
 			defWebFetch(),
 			defCommunicate(),
+			defUseSkill(),
 		},
 	}
 }
@@ -360,6 +383,7 @@ func NewGeminiProfile(model string) ProviderProfile {
 			defTaskList(),
 			defWebFetch(),
 			defCommunicate(),
+			defUseSkill(),
 		},
 	}
 }
@@ -668,6 +692,21 @@ func defTaskList() llm.ToolDefinition {
 				},
 			},
 			"required": []string{"action"},
+		},
+	}
+}
+
+func defUseSkill() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name:        "use_skill",
+		Description: "Activate a skill to load its full instructions into context. Available skills are listed in the <skills> section of the system prompt.",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"skill_name": map[string]any{"type": "string", "description": "Name of the skill to activate."},
+			},
+			"required": []string{"skill_name"},
 		},
 	}
 }

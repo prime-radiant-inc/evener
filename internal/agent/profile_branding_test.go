@@ -17,7 +17,7 @@ func TestProfileSystemPromptsSaySerf(t *testing.T) {
 	}
 
 	for _, p := range profiles {
-		prompt := p.BuildSystemPrompt(env, nil)
+		prompt := p.BuildSystemPrompt(env, nil, nil)
 		if containsIgnoreCase(prompt, "kilroy") {
 			t.Errorf("profile %q system prompt still references Kilroy:\n%s", p.ID(), prompt)
 		}

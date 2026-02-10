@@ -18,6 +18,7 @@ const (
 	EventTurnLimit          EventKind = "TURN_LIMIT"
 	EventLoopDetection      EventKind = "LOOP_DETECTION"
 	EventCommunicate        EventKind = "COMMUNICATE"
+	EventSkillActivated     EventKind = "SKILL_ACTIVATED"
 	EventWarning            EventKind = "WARNING"
 	EventError              EventKind = "ERROR"
 )
