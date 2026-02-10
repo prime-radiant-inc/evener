@@ -127,6 +127,12 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	}
 	if includeTools && len(req.Tools) > 0 {
 		tools := toAnthropicTools(req.Tools)
+		if req.WebSearch {
+			tools = append(tools, map[string]any{
+				"type": "web_search_20250305",
+				"name": "web_search",
+			})
+		}
 		if autoCache && len(tools) > 0 {
 			// Only mark the last tool so the entire tools block is cached as a
 			// prefix. Marking every tool would exceed Anthropic's 4-block limit.

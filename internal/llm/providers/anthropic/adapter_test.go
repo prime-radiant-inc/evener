@@ -1149,3 +1149,61 @@ func TestAdapter_Complete_FinishReason_ToolUse_Normalized(t *testing.T) {
 		t.Fatalf("Finish.Raw = %q, want %q", resp.Finish.Raw, "tool_use")
 	}
 }
+
+func TestAdapter_Complete_WebSearch_AddsServerTool(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "msg_1",
+  "model": "claude-test",
+  "content": [{"type":"text","text":"ok"}],
+  "stop_reason": "end_turn",
+  "usage": {"input_tokens": 1, "output_tokens": 1}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model:    "claude-test",
+		Messages: []llm.Message{llm.User("search for auth docs")},
+		Tools: []llm.ToolDefinition{{
+			Name:       "shell",
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{}},
+		}},
+		ToolChoice: &llm.ToolChoice{Mode: "auto"},
+		WebSearch:  true,
+		ProviderOptions: map[string]any{
+			"anthropic": map[string]any{"auto_cache": false},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	toolsAny, ok := gotBody["tools"].([]any)
+	if !ok {
+		t.Fatalf("tools not array: %#v", gotBody["tools"])
+	}
+
+	if len(toolsAny) != 2 {
+		t.Fatalf("tools count: got %d want 2", len(toolsAny))
+	}
+
+	wsTool, _ := toolsAny[1].(map[string]any)
+	if wsTool["type"] != "web_search_20250305" {
+		t.Fatalf("ws tool type: got %v", wsTool["type"])
+	}
+	if wsTool["name"] != "web_search" {
+		t.Fatalf("ws tool name: got %v", wsTool["name"])
+	}
+}
