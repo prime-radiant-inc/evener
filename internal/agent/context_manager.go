@@ -478,6 +478,10 @@ func checkpoint(history []Turn, preserveRecent int) []Turn {
 			continue
 		}
 		for _, p := range t.Message.Content {
+			if p.Kind == llm.ContentWebSearch {
+				toolCounts["web_search"]++
+				continue
+			}
 			if p.Kind != llm.ContentToolCall || p.ToolCall == nil {
 				continue
 			}

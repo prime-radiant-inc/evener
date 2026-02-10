@@ -1401,6 +1401,40 @@ func TestCheckpoint_TracksFilesFromApplyPatch(t *testing.T) {
 	}
 }
 
+func TestCheckpoint_IncludesWebSearchCount(t *testing.T) {
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("search for docs")},
+		{Kind: TurnAssistant, Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Query: "Go docs"}},
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c1", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"a.go"}`)}},
+				{Kind: llm.ContentText, Text: "Found the docs."},
+			},
+		}},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "file contents", false)},
+		// Preserved recent turns:
+		{Kind: TurnUserInput, Message: llm.User("next question")},
+		{Kind: TurnAssistant, Message: llm.Message{
+			Role:    llm.RoleAssistant,
+			Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "answer"}},
+		}},
+	}
+
+	result := checkpoint(history, 2) // preserve last 2 turns
+
+	if len(result) < 1 {
+		t.Fatalf("checkpoint returned empty")
+	}
+	cpText := result[0].Message.Text()
+	if !strings.Contains(cpText, "web_search") {
+		t.Fatalf("checkpoint missing web_search count: %s", cpText)
+	}
+	if !strings.Contains(cpText, "1 read_file") {
+		t.Fatalf("checkpoint missing read_file count: %s", cpText)
+	}
+}
+
 // Token-based pressure: ContextManager should use actual InputTokens from API
 // responses for pressure calculation instead of relying solely on char/4.
 func TestContextManager_UsesLastInputTokensForPressure(t *testing.T) {
