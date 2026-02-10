@@ -19,6 +19,7 @@ const (
 	EventLoopDetection      EventKind = "LOOP_DETECTION"
 	EventCommunicate        EventKind = "COMMUNICATE"
 	EventSkillActivated     EventKind = "SKILL_ACTIVATED"
+	EventContextCompaction  EventKind = "CONTEXT_COMPACTION"
 	EventWarning            EventKind = "WARNING"
 	EventError              EventKind = "ERROR"
 )

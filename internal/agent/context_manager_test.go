@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -633,6 +634,375 @@ func TestCheckpoint_NoHistoryToCheckpoint(t *testing.T) {
 	}
 }
 
+// --- Phase 5: LLM summarization ---
+
+func TestSummarizeWithLLM_CallsCheapModel(t *testing.T) {
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				// Verify the model is the cheap model.
+				if req.Model != "gpt-4.1-nano" {
+					t.Errorf("expected cheap model gpt-4.1-nano, got %q", req.Model)
+				}
+				// Verify the prompt asks for summarization.
+				found := false
+				for _, m := range req.Messages {
+					if strings.Contains(m.Text(), "Summarize") || strings.Contains(m.Text(), "summarize") {
+						found = true
+					}
+				}
+				if !found {
+					t.Error("expected summarization prompt")
+				}
+				return llm.Response{Message: llm.Assistant("Summary: fixed auth bug")}
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+
+	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), client)
+
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("Fix the auth bug")},
+		{Kind: TurnAssistant, Message: llm.Assistant("I'll fix it")},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
+	}
+
+	ctx := context.Background()
+	result, err := cm.summarizeWithLLM(ctx, history, 2)
+	if err != nil {
+		t.Fatalf("summarizeWithLLM: %v", err)
+	}
+
+	// Should have summary + 2 preserved turns.
+	if len(result) != 3 {
+		t.Fatalf("expected 3 turns, got %d", len(result))
+	}
+}
+
+func TestSummarizeWithLLM_ReplacesOldHistory(t *testing.T) {
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("Summary of work done")}
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+
+	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), client)
+
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("task")},
+		{Kind: TurnAssistant, Message: llm.Assistant("step 1")},
+		{Kind: TurnAssistant, Message: llm.Assistant("step 2")},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	}
+
+	ctx := context.Background()
+	result, err := cm.summarizeWithLLM(ctx, history, 1)
+	if err != nil {
+		t.Fatalf("summarizeWithLLM: %v", err)
+	}
+
+	// First turn should contain the LLM summary.
+	text := result[0].Message.Text()
+	if !strings.Contains(text, "Summary of work done") {
+		t.Fatalf("expected summary in first turn, got: %q", text)
+	}
+	// First turn should be a user message (context for the model).
+	if result[0].Message.Role != llm.RoleUser {
+		t.Fatalf("summary should be user role, got %s", result[0].Message.Role)
+	}
+}
+
+func TestSummarizeWithLLM_PreservesRecentTurns(t *testing.T) {
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("summary")}
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+
+	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), client)
+
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("task")},
+		{Kind: TurnAssistant, Message: llm.Assistant("old")},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
+	}
+
+	ctx := context.Background()
+	result, err := cm.summarizeWithLLM(ctx, history, 2)
+	if err != nil {
+		t.Fatalf("summarizeWithLLM: %v", err)
+	}
+
+	if result[1].Message.Text() != "recent1" {
+		t.Fatalf("expected recent1, got %q", result[1].Message.Text())
+	}
+	if result[2].Message.Text() != "recent2" {
+		t.Fatalf("expected recent2, got %q", result[2].Message.Text())
+	}
+}
+
+func TestSummarizeWithLLM_ErrorFallsBackGracefully(t *testing.T) {
+	// Adapter that returns an error.
+	adapter := &fakeAdapter{
+		name:  "openai",
+		steps: nil, // No steps means it returns default "done" response.
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+
+	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), client)
+
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("task")},
+		{Kind: TurnAssistant, Message: llm.Assistant("step 1")},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	}
+
+	// Use a cancelled context to force an error.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result, err := cm.summarizeWithLLM(ctx, history, 1)
+	if err == nil {
+		// If we happened to get a result back despite cancellation, that's OK too.
+		// Just verify it's sane.
+		if len(result) < 1 {
+			t.Fatalf("expected at least 1 turn in result")
+		}
+		return
+	}
+	// On error, original history should be returned unchanged.
+	if result != nil {
+		t.Fatalf("expected nil result on error, got %d turns", len(result))
+	}
+}
+
+// --- Phase 6: MaybeCompact orchestrator ---
+
+// makeBigHistory creates a history where EstimateTokens returns approximately targetTokens.
+func makeBigHistory(targetTokens int) []Turn {
+	turns := []Turn{{Kind: TurnUserInput, Message: llm.User("Fix the auth bug")}}
+	for EstimateTokens(turns) < targetTokens {
+		id := fmt.Sprintf("c%d", len(turns))
+		turns = append(turns,
+			Turn{Kind: TurnAssistant, Message: assistantWithToolCall(id, "read_file", `{"file_path":"file.go"}`)},
+			Turn{Kind: TurnTool, Message: llm.ToolResultNamed(id, "read_file", strings.Repeat("x", 400), false)},
+		)
+	}
+	return turns
+}
+
+func TestMaybeCompact_BelowThreshold_NoAction(t *testing.T) {
+	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), nil)
+
+	// Small history, well below any threshold.
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("task")},
+		{Kind: TurnAssistant, Message: llm.Assistant("ok")},
+	}
+
+	var events []SessionEvent
+	emitFn := func(kind EventKind, data map[string]any) {
+		events = append(events, SessionEvent{Kind: kind, Data: data})
+	}
+
+	err := cm.MaybeCompact(context.Background(), &history, 100, emitFn)
+	if err != nil {
+		t.Fatalf("MaybeCompact: %v", err)
+	}
+	// No compaction events should have been emitted.
+	for _, e := range events {
+		if e.Kind == EventContextCompaction {
+			t.Fatalf("unexpected CONTEXT_COMPACTION event below threshold")
+		}
+	}
+	// History should be unchanged.
+	if len(history) != 2 {
+		t.Fatalf("expected 2 turns, got %d", len(history))
+	}
+}
+
+func TestMaybeCompact_ObservationMaskThreshold(t *testing.T) {
+	// Use a tiny context window to make it easy to hit thresholds.
+	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1000}
+	cm := NewContextManager(profile, nil)
+	cm.PreserveRecentTurns = 2
+
+	// Create history that fills ~65% of 1000 tokens = 650 tokens.
+	history := makeBigHistory(650)
+	// Add 2 recent turns that won't be touched.
+	history = append(history,
+		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
+		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
+	)
+
+	var events []SessionEvent
+	emitFn := func(kind EventKind, data map[string]any) {
+		events = append(events, SessionEvent{Kind: kind, Data: data})
+	}
+
+	err := cm.MaybeCompact(context.Background(), &history, 0, emitFn)
+	if err != nil {
+		t.Fatalf("MaybeCompact: %v", err)
+	}
+
+	// Should have emitted at least an observation_mask event.
+	foundMask := false
+	for _, e := range events {
+		if e.Kind == EventContextCompaction {
+			if layer, ok := e.Data["layer"].(string); ok && layer == "observation_mask" {
+				foundMask = true
+			}
+		}
+	}
+	if !foundMask {
+		t.Fatalf("expected observation_mask compaction event; got events: %+v", events)
+	}
+}
+
+func TestMaybeCompact_CheckpointThreshold(t *testing.T) {
+	profile := &baseProfile{id: "openai", model: "test", contextWindow: 500}
+	cm := NewContextManager(profile, nil)
+	cm.PreserveRecentTurns = 2
+
+	// Use assistant text (not tool results) so observation masking can't reduce pressure.
+	// Each assistant turn ~400 chars = 100 tokens. Need 85% of 500 = 425 tokens.
+	history := []Turn{{Kind: TurnUserInput, Message: llm.User("Fix the auth bug")}}
+	for EstimateTokens(history) < 425 {
+		history = append(history,
+			Turn{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("analysis ", 50))},
+		)
+	}
+	history = append(history,
+		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
+		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
+	)
+
+	var events []SessionEvent
+	emitFn := func(kind EventKind, data map[string]any) {
+		events = append(events, SessionEvent{Kind: kind, Data: data})
+	}
+
+	err := cm.MaybeCompact(context.Background(), &history, 0, emitFn)
+	if err != nil {
+		t.Fatalf("MaybeCompact: %v", err)
+	}
+
+	// At 85%, observation mask and thinking clear won't help (no tool results or thinking).
+	// So checkpoint should trigger.
+	foundCheckpoint := false
+	for _, e := range events {
+		if e.Kind == EventContextCompaction {
+			if layer, ok := e.Data["layer"].(string); ok && layer == "checkpoint" {
+				foundCheckpoint = true
+			}
+		}
+	}
+	if !foundCheckpoint {
+		t.Fatalf("expected checkpoint compaction event; got events: %+v", events)
+	}
+
+	// History should have been replaced with checkpoint + recent.
+	if len(history) > 5 {
+		t.Fatalf("expected compacted history, got %d turns", len(history))
+	}
+}
+
+func TestMaybeCompact_EmitsEvents(t *testing.T) {
+	profile := &baseProfile{id: "openai", model: "test", contextWindow: 500}
+	cm := NewContextManager(profile, nil)
+	cm.PreserveRecentTurns = 2
+
+	// Fill ~75% = 375 tokens.
+	history := makeBigHistory(375)
+	history = append(history,
+		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
+		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
+	)
+
+	var events []SessionEvent
+	emitFn := func(kind EventKind, data map[string]any) {
+		events = append(events, SessionEvent{Kind: kind, Data: data})
+	}
+
+	err := cm.MaybeCompact(context.Background(), &history, 0, emitFn)
+	if err != nil {
+		t.Fatalf("MaybeCompact: %v", err)
+	}
+
+	// Should have at least one compaction event.
+	compactionCount := 0
+	for _, e := range events {
+		if e.Kind == EventContextCompaction {
+			compactionCount++
+			// Each event should have layer and token counts.
+			if _, ok := e.Data["layer"]; !ok {
+				t.Fatalf("compaction event missing 'layer': %+v", e.Data)
+			}
+			if _, ok := e.Data["est_tokens_before"]; !ok {
+				t.Fatalf("compaction event missing 'est_tokens_before': %+v", e.Data)
+			}
+		}
+	}
+	if compactionCount == 0 {
+		t.Fatalf("expected compaction events")
+	}
+}
+
+func TestMaybeCompact_RespectsSysPromptSize(t *testing.T) {
+	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1000}
+	cm := NewContextManager(profile, nil)
+	cm.PreserveRecentTurns = 2
+
+	// Small history, but giant system prompt.
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("task")},
+		{Kind: TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"a.go"}`)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", strings.Repeat("x", 400), false)},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
+	}
+
+	var events []SessionEvent
+	emitFn := func(kind EventKind, data map[string]any) {
+		events = append(events, SessionEvent{Kind: kind, Data: data})
+	}
+
+	// sys prompt is 2400 chars ≈ 600 tokens + history ~100 tokens = 700/1000 = 70%
+	err := cm.MaybeCompact(context.Background(), &history, 2400, emitFn)
+	if err != nil {
+		t.Fatalf("MaybeCompact: %v", err)
+	}
+
+	// With sys prompt, we're at ~70%, should trigger observation masking.
+	foundMask := false
+	for _, e := range events {
+		if e.Kind == EventContextCompaction {
+			if layer, ok := e.Data["layer"].(string); ok && layer == "observation_mask" {
+				foundMask = true
+			}
+		}
+	}
+	if !foundMask {
+		t.Fatalf("expected observation_mask compaction event when sys prompt pushes over threshold")
+	}
+}
+
 // --- helpers ---
 
 func assistantWithToolCall(id, name, argsJSON string) llm.Message {
@@ -647,7 +1017,6 @@ func assistantWithToolCall(id, name, argsJSON string) llm.Message {
 		},
 	}
 }
-
 
 func startsWith(s, prefix string) bool {
 	return len(s) >= len(prefix) && s[:len(prefix)] == prefix

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -60,6 +61,102 @@ func EstimateTokens(turns []Turn) int {
 		chars += messageCharCount(t.Message)
 	}
 	return chars / 4
+}
+
+// --- MaybeCompact orchestrator ---
+
+// MaybeCompact checks context pressure and applies compaction layers progressively.
+// It modifies history in place and emits events for each layer applied.
+// Called before each LLM request.
+func (cm *ContextManager) MaybeCompact(
+	ctx context.Context,
+	history *[]Turn,
+	sysPromptChars int,
+	emitFn func(EventKind, map[string]any),
+) error {
+	cw := cm.profile.ContextWindowSize()
+	if cw <= 0 {
+		return nil
+	}
+
+	pressure := func() float64 {
+		histTokens := EstimateTokens(*history)
+		sysTokens := sysPromptChars / 4
+		return float64(histTokens+sysTokens) / float64(cw)
+	}
+
+	p := pressure()
+
+	// Layer 1: Observation masking at ≥60%.
+	if p >= cm.ObservationMaskThreshold {
+		before := EstimateTokens(*history)
+		maskObservations(*history, cm.PreserveRecentTurns)
+		after := EstimateTokens(*history)
+		emitFn(EventContextCompaction, map[string]any{
+			"layer":            "observation_mask",
+			"turns_before":     len(*history),
+			"turns_after":      len(*history),
+			"est_tokens_before": before,
+			"est_tokens_after":  after,
+		})
+		p = pressure()
+	}
+
+	// Layer 2: Thinking clearing at ≥70%.
+	if p >= cm.ThinkingClearThreshold {
+		before := EstimateTokens(*history)
+		clearThinking(*history, cm.PreserveRecentTurns)
+		after := EstimateTokens(*history)
+		emitFn(EventContextCompaction, map[string]any{
+			"layer":            "thinking_clear",
+			"turns_before":     len(*history),
+			"turns_after":      len(*history),
+			"est_tokens_before": before,
+			"est_tokens_after":  after,
+		})
+		p = pressure()
+	}
+
+	// Layer 3: Deterministic checkpoint at ≥80%.
+	if p >= cm.CheckpointThreshold {
+		turnsBefore := len(*history)
+		before := EstimateTokens(*history)
+		*history = checkpoint(*history, cm.PreserveRecentTurns)
+		after := EstimateTokens(*history)
+		emitFn(EventContextCompaction, map[string]any{
+			"layer":            "checkpoint",
+			"turns_before":     turnsBefore,
+			"turns_after":      len(*history),
+			"est_tokens_before": before,
+			"est_tokens_after":  after,
+		})
+		p = pressure()
+	}
+
+	// Layer 4: LLM summarization at ≥90%.
+	if p >= cm.SummarizeThreshold && cm.client != nil {
+		turnsBefore := len(*history)
+		before := EstimateTokens(*history)
+		result, err := cm.summarizeWithLLM(ctx, *history, cm.PreserveRecentTurns)
+		if err != nil {
+			// On error, emit warning but continue with current history.
+			emitFn(EventWarning, map[string]any{
+				"message": "LLM summarization failed: " + err.Error(),
+			})
+		} else {
+			*history = result
+			after := EstimateTokens(*history)
+			emitFn(EventContextCompaction, map[string]any{
+				"layer":            "summarize",
+				"turns_before":     turnsBefore,
+				"turns_after":      len(*history),
+				"est_tokens_before": before,
+				"est_tokens_after":  after,
+			})
+		}
+	}
+
+	return nil
 }
 
 // --- Observation masking (Layer 1) ---
@@ -278,6 +375,70 @@ func clearThinking(history []Turn, preserveRecent int) int {
 		}
 	}
 	return freed
+}
+
+// --- LLM summarization (Layer 4) ---
+
+// summarizeWithLLM calls the cheap model to generate a narrative summary of
+// old history. Replaces old history with a single user message containing the
+// summary, preserving the most recent turns.
+func (cm *ContextManager) summarizeWithLLM(ctx context.Context, history []Turn, preserveRecent int) ([]Turn, error) {
+	if len(history) <= preserveRecent {
+		return history, nil
+	}
+
+	cutoff := len(history) - preserveRecent
+
+	// Build a text representation of old history for the summarizer.
+	var b strings.Builder
+	for i := 0; i < cutoff; i++ {
+		t := history[i]
+		switch t.Kind {
+		case TurnUserInput:
+			b.WriteString("User: " + t.Message.Text() + "\n")
+		case TurnAssistant:
+			b.WriteString("Assistant: " + t.Message.Text() + "\n")
+		case TurnTool:
+			for _, p := range t.Message.Content {
+				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
+					content := fmt.Sprint(p.ToolResult.Content)
+					if len(content) > 200 {
+						content = content[:200] + "..."
+					}
+					b.WriteString(fmt.Sprintf("Tool(%s): %s\n", p.ToolResult.Name, content))
+				}
+			}
+		case TurnSteering:
+			b.WriteString("System: " + t.Message.Text() + "\n")
+		}
+	}
+
+	prompt := "Summarize this coding agent conversation history concisely. " +
+		"Focus on: what task was requested, what actions were taken, what files were modified, " +
+		"what the current state is, and any errors encountered. Be brief but complete.\n\n" +
+		b.String()
+
+	req := llm.Request{
+		Model:    cm.profile.CheapModel(),
+		Provider: cm.profile.ID(),
+		Messages: []llm.Message{llm.User(prompt)},
+	}
+
+	resp, err := cm.client.Complete(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	summaryText := "[CONTEXT SUMMARY]\n" + resp.Text() + "\n[END SUMMARY]"
+	summaryTurn := Turn{
+		Kind:    TurnUserInput,
+		Message: llm.User(summaryText),
+	}
+
+	result := make([]Turn, 0, 1+preserveRecent)
+	result = append(result, summaryTurn)
+	result = append(result, history[cutoff:]...)
+	return result, nil
 }
 
 // --- Deterministic checkpoint (Layer 3) ---
