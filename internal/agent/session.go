@@ -612,9 +612,15 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 				return "", err
 			}
 
-		// Accumulate usage from this response.
+		// Accumulate usage and record exact input token count for pressure calculation.
 		if s.contextMgr != nil {
 			s.contextMgr.AddUsage(resp.Usage)
+			if resp.Usage.InputTokens > 0 {
+				s.mu.Lock()
+				hLen := len(s.history)
+				s.mu.Unlock()
+				s.contextMgr.RecordInputTokens(resp.Usage.InputTokens, hLen)
+			}
 		}
 
 		// Context window awareness: emit a warning when we exceed ~80% of the profile's context window.

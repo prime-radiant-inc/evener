@@ -1462,6 +1462,82 @@ func TestCheckpoint_TracksFilesFromApplyPatch(t *testing.T) {
 	}
 }
 
+// Token-based pressure: ContextManager should use actual InputTokens from API
+// responses for pressure calculation instead of relying solely on char/4.
+func TestContextManager_UsesLastInputTokensForPressure(t *testing.T) {
+	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1000}
+	cm := NewContextManager(profile, nil)
+
+	// Record that the last API response reported 550 input tokens for a 10-turn history.
+	cm.RecordInputTokens(550, 10)
+
+	// Add 2 new turns since the measurement (~20 chars = ~5 tokens).
+	history := make([]Turn, 12)
+	for i := 0; i < 10; i++ {
+		history[i] = Turn{Kind: TurnAssistant, Message: llm.Assistant("x")}
+	}
+	history[10] = Turn{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("y", 20))}
+	history[11] = Turn{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("z", 20))}
+
+	// Pressure should be based on: 550 (known) + ~10 (new turns) = ~560 tokens
+	// Not char/4 of entire history which would be much less.
+	pressure := cm.estimatePressure(history, 0)
+
+	// With 1000 token window, pressure should be ~0.56 (not the ~0.03 from char/4).
+	if pressure < 0.5 {
+		t.Fatalf("pressure should use lastInputTokens, got %.2f (expected ~0.56)", pressure)
+	}
+}
+
+func TestContextManager_FallsBackToCharHeuristicWithoutMeasurement(t *testing.T) {
+	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1000}
+	cm := NewContextManager(profile, nil)
+
+	// No RecordInputTokens called — should fall back to char/4.
+	history := []Turn{
+		{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("x", 400))},
+	}
+
+	pressure := cm.estimatePressure(history, 0)
+
+	// 400 chars / 4 = 100 tokens, 100/1000 = 0.10
+	if pressure < 0.09 || pressure > 0.11 {
+		t.Fatalf("expected pressure ~0.10 from char/4 fallback, got %.2f", pressure)
+	}
+}
+
+func TestContextManager_ResetsAfterCompaction(t *testing.T) {
+	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1000}
+	cm := NewContextManager(profile, nil)
+	cm.PreserveRecentTurns = 2
+
+	// Record high token count.
+	cm.RecordInputTokens(700, 5)
+
+	// After compaction modifies history, the measurement should reset.
+	// Build a history that's big enough to trigger observation masking.
+	history := makeBigHistory(650)
+	history = append(history,
+		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
+		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
+	)
+
+	var events []SessionEvent
+	emitFn := func(kind EventKind, data map[string]any) {
+		events = append(events, SessionEvent{Kind: kind, Data: data})
+	}
+
+	_ = cm.MaybeCompact(context.Background(), &history, 0, emitFn)
+
+	// After compaction, lastInputTokens should be reset.
+	cm.mu.Lock()
+	lit := cm.lastInputTokens
+	cm.mu.Unlock()
+	if lit != 0 {
+		t.Fatalf("lastInputTokens should be reset after compaction, got %d", lit)
+	}
+}
+
 // --- helpers ---
 
 // errorAdapter always returns an error from Complete.

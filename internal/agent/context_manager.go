@@ -19,6 +19,11 @@ type ContextManager struct {
 	cumUsage llm.Usage
 	mu       sync.Mutex
 
+	// Token measurement from the last API response. When available, used instead
+	// of char/4 for the bulk of history. Reset to 0 after compaction.
+	lastInputTokens    int // exact input token count from last API response
+	historyLenAtMeasure int // number of turns when lastInputTokens was recorded
+
 	// Thresholds are fractions (0.0–1.0) of the context window.
 	ObservationMaskThreshold float64
 	ThinkingClearThreshold   float64
@@ -55,6 +60,42 @@ func (cm *ContextManager) CumulativeUsage() llm.Usage {
 	return cm.cumUsage
 }
 
+// RecordInputTokens stores the exact input token count from an API response,
+// along with the history length at that point. This enables accurate pressure
+// calculation for subsequent turns without relying on the char/4 heuristic.
+func (cm *ContextManager) RecordInputTokens(tokens int, historyLen int) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.lastInputTokens = tokens
+	cm.historyLenAtMeasure = historyLen
+}
+
+// estimatePressure calculates what fraction of the context window is in use.
+// Uses actual API-reported token counts when available, falling back to char/4.
+func (cm *ContextManager) estimatePressure(history []Turn, sysPromptChars int) float64 {
+	cw := cm.profile.ContextWindowSize()
+	if cw <= 0 {
+		return 0
+	}
+
+	cm.mu.Lock()
+	lastTokens := cm.lastInputTokens
+	measuredLen := cm.historyLenAtMeasure
+	cm.mu.Unlock()
+
+	var totalTokens int
+	if lastTokens > 0 && measuredLen <= len(history) {
+		// Use the known token count as baseline, then estimate only new turns.
+		newTurns := history[measuredLen:]
+		totalTokens = lastTokens + EstimateTokens(newTurns)
+	} else {
+		// Fall back to char/4 for everything.
+		totalTokens = EstimateTokens(history) + sysPromptChars/4
+	}
+
+	return float64(totalTokens) / float64(cw)
+}
+
 // EstimateTokens estimates token count for turns using the char/4 heuristic.
 func EstimateTokens(turns []Turn) int {
 	chars := 0
@@ -81,12 +122,11 @@ func (cm *ContextManager) MaybeCompact(
 	}
 
 	pressure := func() float64 {
-		histTokens := EstimateTokens(*history)
-		sysTokens := sysPromptChars / 4
-		return float64(histTokens+sysTokens) / float64(cw)
+		return cm.estimatePressure(*history, sysPromptChars)
 	}
 
 	p := pressure()
+	compacted := false
 
 	// Layer 1: Observation masking at ≥60%.
 	if p >= cm.ObservationMaskThreshold {
@@ -100,6 +140,7 @@ func (cm *ContextManager) MaybeCompact(
 			"est_tokens_before": before,
 			"est_tokens_after":  after,
 		})
+		compacted = true
 		p = pressure()
 	}
 
@@ -115,6 +156,7 @@ func (cm *ContextManager) MaybeCompact(
 			"est_tokens_before": before,
 			"est_tokens_after":  after,
 		})
+		compacted = true
 		p = pressure()
 	}
 
@@ -131,6 +173,7 @@ func (cm *ContextManager) MaybeCompact(
 			"est_tokens_before": before,
 			"est_tokens_after":  after,
 		})
+		compacted = true
 		p = pressure()
 	}
 
@@ -154,7 +197,16 @@ func (cm *ContextManager) MaybeCompact(
 				"est_tokens_before": before,
 				"est_tokens_after":  after,
 			})
+			compacted = true
 		}
+	}
+
+	// Reset token measurement after compaction since history content changed.
+	if compacted {
+		cm.mu.Lock()
+		cm.lastInputTokens = 0
+		cm.historyLenAtMeasure = 0
+		cm.mu.Unlock()
 	}
 
 	return nil
