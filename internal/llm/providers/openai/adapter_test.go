@@ -712,3 +712,94 @@ func TestAdapter_ProviderOptions_PassThrough(t *testing.T) {
 		t.Fatalf("parallel_tool_calls: %#v", gotBody["parallel_tool_calls"])
 	}
 }
+
+func TestAdapter_Complete_WebSearch_AddsToolToRequest(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "resp_1",
+  "model": "gpt-5.2",
+  "output": [{"type": "message", "content": [{"type":"output_text", "text":"ok"}]}],
+  "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model:    "gpt-5.2",
+		Messages: []llm.Message{llm.User("search for go errors")},
+		Tools: []llm.ToolDefinition{{
+			Name:       "shell",
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{}},
+		}},
+		WebSearch: true,
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	toolsAny, ok := gotBody["tools"].([]any)
+	if !ok {
+		t.Fatalf("tools not array: %#v", gotBody["tools"])
+	}
+	if len(toolsAny) != 2 {
+		t.Fatalf("tools count: got %d want 2", len(toolsAny))
+	}
+	lastTool, _ := toolsAny[len(toolsAny)-1].(map[string]any)
+	if lastTool["type"] != "web_search" {
+		t.Fatalf("last tool type: got %v want web_search", lastTool["type"])
+	}
+}
+
+func TestAdapter_Complete_WebSearch_DisabledByDefault(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "resp_1",
+  "model": "gpt-5.2",
+  "output": [{"type": "message", "content": [{"type":"output_text", "text":"ok"}]}],
+  "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model:    "gpt-5.2",
+		Messages: []llm.Message{llm.User("hello")},
+		Tools: []llm.ToolDefinition{{
+			Name:       "shell",
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	toolsAny, ok := gotBody["tools"].([]any)
+	if !ok {
+		t.Fatalf("tools not array: %#v", gotBody["tools"])
+	}
+	if len(toolsAny) != 1 {
+		t.Fatalf("tools count: got %d want 1 (no web_search)", len(toolsAny))
+	}
+}

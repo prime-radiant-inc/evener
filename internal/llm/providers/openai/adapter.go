@@ -71,8 +71,15 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		"store":               false, // local-first logging is handled by serf; don't retain server-side by default
 	}
 
+	var tools []map[string]any
 	if len(req.Tools) > 0 {
-		body["tools"] = toResponsesTools(req.Tools)
+		tools = toResponsesTools(req.Tools)
+	}
+	if req.WebSearch {
+		tools = append(tools, map[string]any{"type": "web_search"})
+	}
+	if len(tools) > 0 {
+		body["tools"] = tools
 	}
 	if req.ToolChoice != nil {
 		tc, err := toResponsesToolChoice(*req.ToolChoice)
