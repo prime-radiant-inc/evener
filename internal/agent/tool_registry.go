@@ -211,6 +211,8 @@ func defaultToolLimit(toolName string) ToolOutputLimit {
 		return ToolOutputLimit{MaxChars: 20_000, Strategy: TruncHeadTail}
 	case "task_list":
 		return ToolOutputLimit{MaxChars: 20_000, Strategy: TruncTail}
+	case "web_fetch":
+		return ToolOutputLimit{MaxChars: 20_000, Strategy: TruncHeadTail}
 	default:
 		return ToolOutputLimit{MaxChars: 20_000, Strategy: TruncHeadTail}
 	}

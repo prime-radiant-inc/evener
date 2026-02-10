@@ -986,6 +986,16 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 		},
 	})
 
+	// Web fetch.
+	_ = reg.Register(RegisteredTool{
+		Definition: defWebFetch(),
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			rawURL := fmt.Sprint(args["url"])
+			question := fmt.Sprint(args["question"])
+			return s.webFetch(ctx, rawURL, question)
+		},
+	})
+
 	return nil
 }
 

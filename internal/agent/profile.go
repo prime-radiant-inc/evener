@@ -159,6 +159,7 @@ func NewOpenAIProfile(model string) ProviderProfile {
 			defWait(),
 			defCloseAgent(),
 			defTaskList(),
+			defWebFetch(),
 		},
 	}
 }
@@ -183,6 +184,7 @@ func NewAnthropicProfile(model string) ProviderProfile {
 			defWait(),
 			defCloseAgent(),
 			defTaskList(),
+			defWebFetch(),
 		},
 	}
 }
@@ -209,6 +211,7 @@ func NewGeminiProfile(model string) ProviderProfile {
 			defWait(),
 			defCloseAgent(),
 			defTaskList(),
+			defWebFetch(),
 		},
 	}
 }
@@ -440,6 +443,22 @@ func defCloseAgent() llm.ToolDefinition {
 				"agent_id": map[string]any{"type": "string"},
 			},
 			"required": []string{"agent_id"},
+		},
+	}
+}
+
+func defWebFetch() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name:        "web_fetch",
+		Description: "Fetch a URL, convert HTML to markdown, cache the results, and answer a question about the content using a cheap model.",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"url":      map[string]any{"type": "string", "description": "The URL to fetch (http or https)."},
+				"question": map[string]any{"type": "string", "description": "What you want to know about the page content."},
+			},
+			"required": []string{"url", "question"},
 		},
 	}
 }
