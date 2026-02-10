@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prime-radiant/serf/internal/llm"
+	"primeradiant.com/serf/internal/llm"
 )
 
 func TestAdapter_Complete_MapsToMessagesAPI_AndSetsBetaHeaders(t *testing.T) {

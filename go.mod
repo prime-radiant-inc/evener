@@ -1,4 +1,4 @@
-module github.com/prime-radiant/serf
+module primeradiant.com/serf
 
 go 1.25
 

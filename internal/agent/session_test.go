@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prime-radiant/serf/internal/llm"
+	"primeradiant.com/serf/internal/llm"
 )
 
 type fakeAdapter struct {

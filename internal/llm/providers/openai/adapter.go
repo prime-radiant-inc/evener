@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/prime-radiant/serf/internal/llm"
+	"primeradiant.com/serf/internal/llm"
 )
 
 type Adapter struct {

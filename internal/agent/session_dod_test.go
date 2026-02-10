@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prime-radiant/serf/internal/llm"
+	"primeradiant.com/serf/internal/llm"
 )
 
 func TestSession_MaxToolRoundsPerInput_StopsLoop(t *testing.T) {

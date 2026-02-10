@@ -12,7 +12,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
-	"github.com/prime-radiant/serf/internal/llm"
+	"primeradiant.com/serf/internal/llm"
 )
 
 type SessionConfig struct {

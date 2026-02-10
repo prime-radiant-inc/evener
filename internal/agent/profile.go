@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/prime-radiant/serf/internal/llm"
+	"primeradiant.com/serf/internal/llm"
 )
 
 // communicateGuidance is behavioral guidance for the communicate tool, shared by all profiles.

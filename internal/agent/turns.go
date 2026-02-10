@@ -1,6 +1,6 @@
 package agent
 
-import "github.com/prime-radiant/serf/internal/llm"
+import "primeradiant.com/serf/internal/llm"
 
 type TurnKind string
 

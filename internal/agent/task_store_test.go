@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/prime-radiant/serf/internal/llm"
+	"primeradiant.com/serf/internal/llm"
 )
 
 func TestTaskStore_AppendAndView(t *testing.T) {

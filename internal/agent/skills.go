@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/prime-radiant/serf/internal/frontmatter"
+	"primeradiant.com/serf/internal/frontmatter"
 )
 
 // SkillMeta holds discovery-time metadata for a single skill.

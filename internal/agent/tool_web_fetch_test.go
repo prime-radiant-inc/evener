@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prime-radiant/serf/internal/llm"
+	"primeradiant.com/serf/internal/llm"
 )
 
 func TestWebFetchCacheKey(t *testing.T) {

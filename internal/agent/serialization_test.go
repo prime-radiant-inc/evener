@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prime-radiant/serf/internal/llm"
+	"primeradiant.com/serf/internal/llm"
 )
 
 func TestTurn_JSONRoundTrip(t *testing.T) {

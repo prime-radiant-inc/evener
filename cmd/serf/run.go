@@ -8,11 +8,11 @@ import (
 	"os"
 	"strings"
 
-	"github.com/prime-radiant/serf/internal/agent"
-	"github.com/prime-radiant/serf/internal/llm"
-	_ "github.com/prime-radiant/serf/internal/llm/providers/anthropic"
-	_ "github.com/prime-radiant/serf/internal/llm/providers/google"
-	_ "github.com/prime-radiant/serf/internal/llm/providers/openai"
+	"primeradiant.com/serf/internal/agent"
+	"primeradiant.com/serf/internal/llm"
+	_ "primeradiant.com/serf/internal/llm/providers/anthropic"
+	_ "primeradiant.com/serf/internal/llm/providers/google"
+	_ "primeradiant.com/serf/internal/llm/providers/openai"
 )
 
 type runConfig struct {

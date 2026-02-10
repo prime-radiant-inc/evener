@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prime-radiant/serf/internal/agent"
-	"github.com/prime-radiant/serf/internal/llm"
+	"primeradiant.com/serf/internal/agent"
+	"primeradiant.com/serf/internal/llm"
 )
 
 // TestRunWithArgs verifies that the run function processes a task from CLI args

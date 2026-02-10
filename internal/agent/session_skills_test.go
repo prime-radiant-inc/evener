@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prime-radiant/serf/internal/llm"
+	"primeradiant.com/serf/internal/llm"
 )
 
 // useSkillCall builds a tool call to the use_skill tool.

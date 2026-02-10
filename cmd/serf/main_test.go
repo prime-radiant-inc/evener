@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/prime-radiant/serf/internal/agent"
-	"github.com/prime-radiant/serf/internal/llm"
-	_ "github.com/prime-radiant/serf/internal/llm/providers/openai"
+	"primeradiant.com/serf/internal/agent"
+	"primeradiant.com/serf/internal/llm"
+	_ "primeradiant.com/serf/internal/llm/providers/openai"
 )
 
 // TestNewSessionFromEnv verifies that we can create a working session

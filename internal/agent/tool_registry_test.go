@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/prime-radiant/serf/internal/llm"
+	"primeradiant.com/serf/internal/llm"
 )
 
 func TestToolRegistry_UnknownTool_ReturnsErrorResult(t *testing.T) {
