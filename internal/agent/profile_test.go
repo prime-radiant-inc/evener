@@ -84,7 +84,6 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 	})
 	t.Run("gemini", func(t *testing.T) {
 		p := NewGeminiProfile("gemini-test")
-		// coding-agent-loop-spec.md 3.6: "Profile tool list for Gemini".
 		assertToolListExact(t, p, []string{
 			"read_file",
 			"read_many_files",
@@ -100,6 +99,7 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"close_agent",
 			"task_list",
 			"web_fetch",
+			"web_search",
 			"communicate",
 			"use_skill",
 		})
@@ -418,6 +418,12 @@ func TestBuildSystemPrompt_SubagentGuidanceContent(t *testing.T) {
 	if strings.Contains(prompt, "coordinate work across subagents") {
 		t.Error("subagent guidance should not imply shared task_list across subagents")
 	}
+}
+
+func TestGeminiProfile_IncludesWebSearch(t *testing.T) {
+	assertHasTool(t, NewGeminiProfile("gemini-test"), "web_search")
+	assertMissingTool(t, NewOpenAIProfile("gpt-5.2"), "web_search")
+	assertMissingTool(t, NewAnthropicProfile("claude-test"), "web_search")
 }
 
 func assertToolListExact(t *testing.T, p ProviderProfile, want []string) {

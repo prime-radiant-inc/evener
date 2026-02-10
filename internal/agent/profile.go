@@ -404,6 +404,7 @@ func NewGeminiProfile(model string) ProviderProfile {
 			defCloseAgent(),
 			defTaskList(),
 			defWebFetch(),
+			defWebSearch(),
 			defCommunicate(),
 			defUseSkill(),
 		},
@@ -653,6 +654,24 @@ func defWebFetch() llm.ToolDefinition {
 				"question": map[string]any{"type": "string", "description": "What you want to know about the page content."},
 			},
 			"required": []string{"url", "question"},
+		},
+	}
+}
+
+func defWebSearch() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name:        "web_search",
+		Description: "Search the web for current information. Returns grounded results from Google Search. Use when you need up-to-date facts, documentation, error messages, or API references.",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"query": map[string]any{
+					"type":        "string",
+					"description": "The search query.",
+				},
+			},
+			"required": []string{"query"},
 		},
 	}
 }
