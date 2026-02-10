@@ -33,6 +33,26 @@ to the current task, call use_skill to load its full instructions.
 - You can activate multiple skills if needed.
 `
 
+// subagentGuidance is behavioral guidance for subagent delegation, shared by all profiles.
+const subagentGuidance = `
+## Subagent delegation
+
+You have spawn_agent available to delegate work. Use it aggressively:
+
+- **Research tasks**: Reading multiple files, exploring directory structure, understanding APIs,
+  grepping across the codebase. Spawn a subagent with a focused research question. It returns
+  findings without consuming your context with raw file contents.
+- **Implementation tasks**: Making a specific, well-defined change (add a function, fix a bug,
+  write a test). Describe exactly what to do and the subagent executes with a clean context.
+- **Verification tasks**: Running tests, checking build output, validating changes.
+  Spawn a subagent rather than running commands that produce large output.
+
+Keep your own context for coordination: planning, reviewing subagent results, making decisions.
+The task_list tool helps coordinate work across subagents.
+
+When a task involves touching more than 2-3 files, consider breaking it into subagent-sized pieces.
+`
+
 // taskListGuidance is behavioral guidance for the task_list tool, shared by all profiles.
 const taskListGuidance = `
 ## task_list
@@ -128,7 +148,7 @@ Important:
 - Prefix every new line with + even when creating a new file.
 - File paths must be relative, NEVER absolute.
 - Do NOT use standard unified diff format (--- a/ +++ b/). Use only the format above.
-` + taskListGuidance + communicateGuidance + skillsGuidance + `
+` + taskListGuidance + communicateGuidance + skillsGuidance + subagentGuidance + `
 ## Workflow
 - Read files before editing. Use grep and glob to explore the codebase.
 - After making changes, run tests to verify correctness.
@@ -143,7 +163,7 @@ You persist until the task is fully resolved. Do not stop at analysis or partial
 ## edit_file
 Prefer edit_file with old_string/new_string for precise edits. Read files before editing
 and keep diffs minimal and safe. The old_string must be an exact match of existing content.
-` + taskListGuidance + communicateGuidance + skillsGuidance + `
+` + taskListGuidance + communicateGuidance + skillsGuidance + subagentGuidance + `
 ## Workflow
 - Read files before editing. Use grep and glob to explore the codebase.
 - After making changes, run tests to verify correctness.
@@ -158,7 +178,7 @@ You persist until the task is fully resolved. Do not stop at analysis or partial
 ## edit_file
 Prefer edit_file with old_string/new_string for precise edits. Use tools to inspect
 before changing code and validate by running tests.
-` + taskListGuidance + communicateGuidance + skillsGuidance + `
+` + taskListGuidance + communicateGuidance + skillsGuidance + subagentGuidance + `
 ## Workflow
 - Read files before editing. Use grep, glob, and list_dir to explore the codebase.
 - After making changes, run tests to verify correctness.

@@ -373,6 +373,45 @@ func TestBuildSystemPrompt_NoSkills_NoSkillsSection(t *testing.T) {
 	}
 }
 
+// TestAllProfiles_SystemPromptContainsSubagentGuidance verifies that all
+// profiles include behavioral guidance for subagent delegation.
+func TestAllProfiles_SystemPromptContainsSubagentGuidance(t *testing.T) {
+	profiles := map[string]ProviderProfile{
+		"openai":    NewOpenAIProfile("gpt-5.2"),
+		"anthropic": NewAnthropicProfile("claude-test"),
+		"gemini":    NewGeminiProfile("gemini-test"),
+	}
+	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux", Today: "2026-02-09"}
+
+	for name, p := range profiles {
+		prompt := p.BuildSystemPrompt(env, nil, nil)
+
+		if !strings.Contains(prompt, "spawn_agent") {
+			t.Errorf("profile %q system prompt missing spawn_agent guidance", name)
+		}
+		if !strings.Contains(prompt, "Subagent delegation") {
+			t.Errorf("profile %q system prompt missing subagent delegation section", name)
+		}
+	}
+}
+
+func TestBuildSystemPrompt_SubagentGuidanceContent(t *testing.T) {
+	p := NewOpenAIProfile("gpt-5.2")
+	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux", Today: "2026-02-09"}
+	prompt := p.BuildSystemPrompt(env, nil, nil)
+
+	// Should mention research, implementation, and verification use cases.
+	for _, keyword := range []string{"Research", "Implementation", "Verification"} {
+		if !strings.Contains(prompt, keyword) {
+			t.Errorf("subagent guidance missing %q keyword", keyword)
+		}
+	}
+	// Should mention task_list for coordination.
+	if !strings.Contains(prompt, "task_list") {
+		t.Error("subagent guidance should mention task_list for coordination")
+	}
+}
+
 func assertToolListExact(t *testing.T, p ProviderProfile, want []string) {
 	t.Helper()
 	got := make([]string, 0, len(p.ToolDefinitions()))

@@ -1221,6 +1221,9 @@ func TestSession_ContextManager_EmitsEvents(t *testing.T) {
 	}
 }
 
+// --- Phase 8: System prompt subagent guidance ---
+// (Tests in profile_test.go)
+
 // --- helpers ---
 
 func assistantWithToolCall(id, name, argsJSON string) llm.Message {
