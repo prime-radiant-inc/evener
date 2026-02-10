@@ -2,13 +2,6 @@
 
 Items that need to happen to the product but aren't being worked on right now.
 
-## Compaction / context management
-
-Serf has no way to handle running out of context. The spec (Section 8) calls
-this out as out-of-scope-but-important. If a task fills the context window, serf
-fails. The EventWarning for "context window 80% full" exists, but nothing acts
-on it. Real compaction (summarize and truncate history) is the fix.
-
 ## System prompts need to be richer
 
 The system prompts for all three profiles are one-sentence stubs. They don't
