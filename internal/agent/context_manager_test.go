@@ -521,9 +521,11 @@ func TestCheckpoint_CreatesValidMessage(t *testing.T) {
 
 	result := checkpoint(history, 2)
 
-	// Should have checkpoint message + 2 preserved recent turns.
-	if len(result) != 3 {
-		t.Fatalf("expected 3 turns, got %d", len(result))
+	// Should have checkpoint message + preserved turns.
+	// safeCutoff may back up the cutoff to avoid orphaned TurnTool, so we
+	// may get more than 2 preserved turns.
+	if len(result) < 3 {
+		t.Fatalf("expected at least 3 turns, got %d", len(result))
 	}
 	// First turn should be the checkpoint.
 	if result[0].Kind != TurnUserInput {
@@ -757,11 +759,8 @@ func TestSummarizeWithLLM_PreservesRecentTurns(t *testing.T) {
 }
 
 func TestSummarizeWithLLM_ErrorFallsBackGracefully(t *testing.T) {
-	// Adapter that returns an error.
-	adapter := &fakeAdapter{
-		name:  "openai",
-		steps: nil, // No steps means it returns default "done" response.
-	}
+	// Use errorAdapter for a reliable error path test.
+	adapter := &errorAdapter{name: "openai"}
 	client := llm.NewClient()
 	client.Register(adapter)
 
@@ -773,20 +772,10 @@ func TestSummarizeWithLLM_ErrorFallsBackGracefully(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
 	}
 
-	// Use a cancelled context to force an error.
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	result, err := cm.summarizeWithLLM(ctx, history, 1)
+	result, err := cm.summarizeWithLLM(context.Background(), history, 1)
 	if err == nil {
-		// If we happened to get a result back despite cancellation, that's OK too.
-		// Just verify it's sane.
-		if len(result) < 1 {
-			t.Fatalf("expected at least 1 turn in result")
-		}
-		return
+		t.Fatal("expected error from summarizeWithLLM when adapter fails")
 	}
-	// On error, original history should be returned unchanged.
 	if result != nil {
 		t.Fatalf("expected nil result on error, got %d turns", len(result))
 	}
@@ -1224,7 +1213,269 @@ func TestSession_ContextManager_EmitsEvents(t *testing.T) {
 // --- Phase 8: System prompt subagent guidance ---
 // (Tests in profile_test.go)
 
+// --- Review fix tests ---
+
+// H1: checkpoint and summarizeWithLLM must not produce invalid message ordering.
+// If preserveRecent falls mid-pair (e.g., starts on a TurnTool), the cutoff must
+// be adjusted backward to include the preceding assistant turn.
+func TestCheckpoint_AdjustsCutoffToAvoidOrphanedToolTurn(t *testing.T) {
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("fix the bug")},
+		{Kind: TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"a.go"}`)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
+		{Kind: TurnAssistant, Message: assistantWithToolCall("c2", "edit_file", `{"file_path":"b.go"}`)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c2", "edit_file", "OK", false)},
+		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	}
+
+	// preserveRecent=3 → cutoff=3, preserved turns start at index 3 (TurnAssistant) — OK.
+	// preserveRecent=2 → cutoff=4, preserved turns start at index 4 (TurnTool) — BAD.
+	result := checkpoint(history, 2)
+
+	// First preserved turn after checkpoint must NOT be a TurnTool.
+	if len(result) < 2 {
+		t.Fatalf("expected at least 2 turns, got %d", len(result))
+	}
+	if result[0].Kind != TurnUserInput {
+		t.Fatalf("first turn should be checkpoint (TurnUserInput), got %s", result[0].Kind)
+	}
+	if result[1].Kind == TurnTool {
+		t.Fatalf("second turn must not be TurnTool — invalid message ordering for LLM APIs")
+	}
+}
+
+func TestSummarizeWithLLM_AdjustsCutoffToAvoidOrphanedToolTurn(t *testing.T) {
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("summary")}
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), client)
+
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("task")},
+		{Kind: TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"a.go"}`)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
+		{Kind: TurnAssistant, Message: assistantWithToolCall("c2", "shell", `{"command":"go test"}`)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c2", "shell", "ok\nexit_code=0\n", false)},
+		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	}
+
+	// preserveRecent=2 → cutoff=4, preserved starts at TurnTool — BAD.
+	result, err := cm.summarizeWithLLM(context.Background(), history, 2)
+	if err != nil {
+		t.Fatalf("summarizeWithLLM: %v", err)
+	}
+
+	if len(result) < 2 {
+		t.Fatalf("expected at least 2 turns, got %d", len(result))
+	}
+	if result[1].Kind == TurnTool {
+		t.Fatalf("second turn must not be TurnTool — invalid message ordering for LLM APIs")
+	}
+}
+
+// H2: After L1 masks shell results, L3 checkpoint's parseExitCode must still
+// extract exit codes from the masked format [shell: "cmd" → exit N].
+func TestParseExitCode_MaskedFormat(t *testing.T) {
+	// After L1 masking, shell results look like: [shell: "go test" → exit 0]
+	masked := `[shell: "go test" → exit 0]`
+	got := parseExitCode(masked)
+	if got != "0" {
+		t.Fatalf("parseExitCode on masked format: got %q, want %q", got, "0")
+	}
+
+	masked2 := `[shell: "go test" → exit 1]`
+	got2 := parseExitCode(masked2)
+	if got2 != "1" {
+		t.Fatalf("parseExitCode on masked format: got %q, want %q", got2, "1")
+	}
+}
+
+// H2: Checkpoint should match shell tool results by ToolCallID and respect cutoff.
+func TestCheckpoint_ShellResultMatchesByToolCallID(t *testing.T) {
+	// Assistant calls read_file + shell in same turn. Tool results follow.
+	// Checkpoint should pair shell command with the shell result, not the read_file result.
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("task")},
+		{Kind: TurnAssistant, Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+					ID: "c1", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"a.go"}`),
+				}},
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+					ID: "c2", Name: "shell", Arguments: json.RawMessage(`{"command":"go test"}`),
+				}},
+			},
+		}},
+		// read_file result comes first
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "package main\n", false)},
+		// shell result comes second
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c2", "shell", "PASS\nexit_code=0 duration_ms=100 timed_out=false\n", false)},
+		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	}
+
+	result := checkpoint(history, 1)
+	text := result[0].Message.Text()
+
+	// The checkpoint should show exit 0, not "?" from the read_file result.
+	if !strings.Contains(text, "exit 0") {
+		t.Fatalf("checkpoint should contain 'exit 0' for shell result, got:\n%s", text)
+	}
+	if strings.Contains(text, "exit ?") {
+		t.Fatalf("checkpoint should NOT contain 'exit ?' — shell result not matched correctly:\n%s", text)
+	}
+}
+
+// H4: summarizeWithLLM should truncate the prompt to avoid exceeding the cheap model's context.
+func TestSummarizeWithLLM_TruncatesPromptForCheapModel(t *testing.T) {
+	var receivedPromptLen int
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				for _, m := range req.Messages {
+					receivedPromptLen += len(m.Text())
+				}
+				return llm.Response{Message: llm.Assistant("summary")}
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), client)
+
+	// Build history with enormous user messages — many times larger than any cheap model can handle.
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User(strings.Repeat("x", 100_000))},
+		{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("y", 100_000))},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	}
+
+	_, err := cm.summarizeWithLLM(context.Background(), history, 1)
+	if err != nil {
+		t.Fatalf("summarizeWithLLM: %v", err)
+	}
+
+	// The prompt sent to the cheap model should be bounded, not 200k+ chars.
+	// A reasonable max is ~50k chars (~12.5k tokens) for a cheap model.
+	if receivedPromptLen > 60_000 {
+		t.Fatalf("prompt sent to cheap model is too large: %d chars (should be truncated)", receivedPromptLen)
+	}
+}
+
+// H5: summarizeWithLLM error path must be reliably testable.
+func TestSummarizeWithLLM_AdapterError_ReturnsError(t *testing.T) {
+	adapter := &errorAdapter{name: "openai"}
+	client := llm.NewClient()
+	client.Register(adapter)
+	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), client)
+
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("task")},
+		{Kind: TurnAssistant, Message: llm.Assistant("step 1")},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	}
+
+	result, err := cm.summarizeWithLLM(context.Background(), history, 1)
+	if err == nil {
+		t.Fatal("expected error from summarizeWithLLM when adapter fails")
+	}
+	if result != nil {
+		t.Fatalf("expected nil result on error, got %d turns", len(result))
+	}
+}
+
+// M1: Repeated checkpoint should still find the real original task, not the checkpoint message.
+func TestCheckpoint_RepeatedCheckpoint_PreservesOriginalTask(t *testing.T) {
+	// Simulate first checkpoint output.
+	firstCheckpoint := Turn{
+		Kind:    TurnUserInput,
+		Message: llm.User("[CONTEXT CHECKPOINT]\nOriginal task: Fix the auth bug\nFiles modified: auth.go\n[END CHECKPOINT]\n"),
+	}
+	history := []Turn{
+		firstCheckpoint,
+		{Kind: TurnAssistant, Message: assistantWithToolCall("c3", "read_file", `{"file_path":"auth.go"}`)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c3", "read_file", "content", false)},
+		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	}
+
+	result := checkpoint(history, 1)
+	text := result[0].Message.Text()
+
+	// The original task should be "Fix the auth bug", NOT the checkpoint message itself.
+	if strings.Contains(text, "Original task: [CONTEXT CHECKPOINT]") {
+		t.Fatalf("repeated checkpoint should extract real original task, not checkpoint text:\n%s", text)
+	}
+	if !strings.Contains(text, "Fix the auth bug") {
+		t.Fatalf("repeated checkpoint should preserve real original task:\n%s", text)
+	}
+}
+
+// M2: Checkpoint tool counts must be deterministic (sorted).
+func TestCheckpoint_ToolCountsAreDeterministic(t *testing.T) {
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("task")},
+		{Kind: TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"a.go"}`)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
+		{Kind: TurnAssistant, Message: assistantWithToolCall("c2", "shell", `{"command":"go test"}`)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c2", "shell", "ok\nexit_code=0\n", false)},
+		{Kind: TurnAssistant, Message: assistantWithToolCall("c3", "edit_file", `{"file_path":"a.go"}`)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c3", "edit_file", "OK", false)},
+		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	}
+
+	// Run checkpoint 20 times and verify output is identical each time.
+	var first string
+	for i := 0; i < 20; i++ {
+		cp := make([]Turn, len(history))
+		copy(cp, history)
+		result := checkpoint(cp, 1)
+		text := result[0].Message.Text()
+		if i == 0 {
+			first = text
+		} else if text != first {
+			t.Fatalf("checkpoint output is non-deterministic!\nfirst: %q\nthis:  %q", first, text)
+		}
+	}
+}
+
+// M5: Checkpoint should include files from apply_patch.
+func TestCheckpoint_TracksFilesFromApplyPatch(t *testing.T) {
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("task")},
+		{Kind: TurnAssistant, Message: assistantWithToolCall("c1", "apply_patch", `{"patch":"*** Begin Patch\n*** Update File: test.go\n*** End Patch"}`)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "apply_patch", "OK", false)},
+		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	}
+
+	result := checkpoint(history, 1)
+	text := result[0].Message.Text()
+	if !strings.Contains(text, "test.go") {
+		t.Fatalf("checkpoint should include test.go from apply_patch:\n%s", text)
+	}
+}
+
 // --- helpers ---
+
+// errorAdapter always returns an error from Complete.
+type errorAdapter struct {
+	name string
+}
+
+func (a *errorAdapter) Name() string { return a.name }
+func (a *errorAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	return llm.Response{}, fmt.Errorf("simulated LLM error")
+}
+func (a *errorAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	return nil, fmt.Errorf("stream not implemented")
+}
 
 func assistantWithToolCall(id, name, argsJSON string) llm.Message {
 	return llm.Message{

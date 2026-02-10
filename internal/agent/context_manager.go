@@ -387,15 +387,33 @@ func checkpoint(history []Turn, preserveRecent int) []Turn {
 		return history
 	}
 
-	cutoff := len(history) - preserveRecent
+	cutoff := safeCutoff(history, len(history)-preserveRecent)
 
-	// Extract original task (first user input).
+	// Extract original task (first user input that isn't a previous checkpoint/summary).
+	// If all user inputs are checkpoints, extract the task from the checkpoint text.
 	originalTask := ""
 	for _, t := range history {
-		if t.Kind == TurnUserInput {
-			originalTask = t.Message.Text()
-			break
+		if t.Kind != TurnUserInput {
+			continue
 		}
+		text := t.Message.Text()
+		if strings.HasPrefix(text, "[CONTEXT CHECKPOINT]") {
+			// Extract "Original task: ..." from the previous checkpoint.
+			if idx := strings.Index(text, "Original task: "); idx >= 0 {
+				rest := text[idx+len("Original task: "):]
+				if nl := strings.Index(rest, "\n"); nl >= 0 {
+					originalTask = rest[:nl]
+				} else {
+					originalTask = rest
+				}
+			}
+			continue
+		}
+		if strings.HasPrefix(text, "[CONTEXT SUMMARY]") {
+			continue
+		}
+		originalTask = text
+		break
 	}
 	if len(originalTask) > 500 {
 		originalTask = originalTask[:500] + "..."
@@ -447,15 +465,19 @@ func checkpoint(history []Turn, preserveRecent int) []Turn {
 					if len(cmdStr) > 60 {
 						cmdStr = cmdStr[:60] + "..."
 					}
-					// Find the matching tool result to get exit code.
-					for j := i + 1; j < len(history) && j < i+3; j++ {
-						if history[j].Kind == TurnTool {
-							content := toolResultContent(history[j])
-							exitCode := parseExitCode(content)
-							lastShellResults = append(lastShellResults, fmt.Sprintf("  %q → exit %s", cmdStr, exitCode))
+					// Find the matching tool result by ToolCallID, within cutoff.
+					exitCode := "?"
+					for j := i + 1; j < cutoff; j++ {
+						if history[j].Kind != TurnTool {
+							continue
+						}
+						content := findToolResultByCallID(history[j], p.ToolCall.ID)
+						if content != "" {
+							exitCode = parseExitCode(content)
 							break
 						}
 					}
+					lastShellResults = append(lastShellResults, fmt.Sprintf("  %q → exit %s", cmdStr, exitCode))
 				}
 			}
 		}
@@ -476,13 +498,16 @@ func checkpoint(history []Turn, preserveRecent int) []Turn {
 
 	if total := sumCounts(toolCounts); total > 0 {
 		b.WriteString(fmt.Sprintf("Actions taken: %d tool calls (", total))
-		first := true
-		for name, count := range toolCounts {
-			if !first {
+		toolNames := make([]string, 0, len(toolCounts))
+		for name := range toolCounts {
+			toolNames = append(toolNames, name)
+		}
+		sort.Strings(toolNames)
+		for i, name := range toolNames {
+			if i > 0 {
 				b.WriteString(", ")
 			}
-			b.WriteString(fmt.Sprintf("%d %s", count, name))
-			first = false
+			b.WriteString(fmt.Sprintf("%d %s", toolCounts[name], name))
 		}
 		b.WriteString(")\n")
 	}
@@ -510,6 +535,19 @@ func checkpoint(history []Turn, preserveRecent int) []Turn {
 	result = append(result, checkpointTurn)
 	result = append(result, history[cutoff:]...)
 	return result
+}
+
+// findToolResultByCallID finds a tool result in a TurnTool by its ToolCallID
+// and returns the string content, or "" if not found.
+func findToolResultByCallID(t Turn, toolCallID string) string {
+	for _, p := range t.Message.Content {
+		if p.Kind == llm.ContentToolResult && p.ToolResult != nil && p.ToolResult.ToolCallID == toolCallID {
+			if s, ok := p.ToolResult.Content.(string); ok {
+				return s
+			}
+		}
+	}
+	return ""
 }
 
 // toolResultContent extracts string content from a TurnTool.
@@ -541,16 +579,27 @@ func (cm *ContextManager) summarizeWithLLM(ctx context.Context, history []Turn, 
 	if len(history) <= preserveRecent {
 		return history, nil
 	}
-	cutoff := len(history) - preserveRecent
+	cutoff := safeCutoff(history, len(history)-preserveRecent)
+
+	// Cap the history text to avoid exceeding the cheap model's context window.
+	// ~50k chars ≈ 12.5k tokens, leaving room for the instruction prefix and response.
+	const maxHistoryChars = 50_000
+
+	truncText := func(s string, max int) string {
+		if len(s) > max {
+			return s[:max] + "..."
+		}
+		return s
+	}
 
 	var b strings.Builder
 	for i := 0; i < cutoff; i++ {
 		t := history[i]
 		switch t.Kind {
 		case TurnUserInput:
-			b.WriteString("User: " + t.Message.Text() + "\n")
+			b.WriteString("User: " + truncText(t.Message.Text(), 500) + "\n")
 		case TurnAssistant:
-			b.WriteString("Assistant: " + t.Message.Text() + "\n")
+			b.WriteString("Assistant: " + truncText(t.Message.Text(), 500) + "\n")
 		case TurnTool:
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
@@ -564,12 +613,16 @@ func (cm *ContextManager) summarizeWithLLM(ctx context.Context, history []Turn, 
 		case TurnSteering:
 			b.WriteString("System: " + t.Message.Text() + "\n")
 		}
+		if b.Len() > maxHistoryChars {
+			b.WriteString("\n[... truncated ...]\n")
+			break
+		}
 	}
 
-	prompt := "Summarize this coding agent conversation history concisely. " +
+	prefix := "Summarize this coding agent conversation history concisely. " +
 		"Focus on: what task was requested, what actions were taken, what files were modified, " +
-		"what the current state is, and any errors encountered. Be brief but complete.\n\n" +
-		b.String()
+		"what the current state is, and any errors encountered. Be brief but complete.\n\n"
+	prompt := prefix + b.String()
 
 	req := llm.Request{
 		Model:    cm.profile.CheapModel(),
@@ -594,6 +647,17 @@ func (cm *ContextManager) summarizeWithLLM(ctx context.Context, history []Turn, 
 	return result, nil
 }
 
+// safeCutoff adjusts a cutoff index so the preserved turns don't start with a
+// TurnTool, which would produce invalid message ordering (user → tool without
+// a preceding assistant tool_call). Walks the cutoff backward to include the
+// preceding assistant turn.
+func safeCutoff(history []Turn, cutoff int) int {
+	for cutoff > 0 && cutoff < len(history) && history[cutoff].Kind == TurnTool {
+		cutoff--
+	}
+	return cutoff
+}
+
 // --- Helper functions ---
 
 func countLines(s string) int {
@@ -615,11 +679,22 @@ func countNonEmptyLines(s string) int {
 }
 
 func parseExitCode(shellOutput string) string {
-	// Look for "exit_code=N" in the output.
+	// Look for "exit_code=N" (raw shell output) or "exit N" (masked summary format).
 	for _, line := range strings.Split(shellOutput, "\n") {
+		// Raw format: exit_code=0
 		if idx := strings.Index(line, "exit_code="); idx >= 0 {
 			rest := line[idx+len("exit_code="):]
-			// Take digits up to next space.
+			end := 0
+			for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
+				end++
+			}
+			if end > 0 {
+				return rest[:end]
+			}
+		}
+		// Masked format: → exit 0] or "exit 0"
+		if idx := strings.Index(line, "exit "); idx >= 0 {
+			rest := line[idx+len("exit "):]
 			end := 0
 			for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
 				end++
