@@ -127,10 +127,10 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	}
 	if includeTools && len(req.Tools) > 0 {
 		tools := toAnthropicTools(req.Tools)
-		if autoCache {
-			for i := range tools {
-				tools[i]["cache_control"] = map[string]any{"type": "ephemeral"}
-			}
+		if autoCache && len(tools) > 0 {
+			// Only mark the last tool so the entire tools block is cached as a
+			// prefix. Marking every tool would exceed Anthropic's 4-block limit.
+			tools[len(tools)-1]["cache_control"] = map[string]any{"type": "ephemeral"}
 		}
 		body["tools"] = tools
 	}
@@ -266,10 +266,8 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	}
 	if includeTools && len(req.Tools) > 0 {
 		tools := toAnthropicTools(req.Tools)
-		if autoCache {
-			for i := range tools {
-				tools[i]["cache_control"] = map[string]any{"type": "ephemeral"}
-			}
+		if autoCache && len(tools) > 0 {
+			tools[len(tools)-1]["cache_control"] = map[string]any{"type": "ephemeral"}
 		}
 		body["tools"] = tools
 	}
