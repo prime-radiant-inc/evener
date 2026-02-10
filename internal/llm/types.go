@@ -27,6 +27,7 @@ const (
 	ContentToolResult  ContentKind = "tool_result"
 	ContentThinking    ContentKind = "thinking"
 	ContentRedThinking ContentKind = "redacted_thinking"
+	ContentWebSearch   ContentKind = "web_search"
 )
 
 type Message struct {
@@ -94,6 +95,7 @@ type ContentPart struct {
 	ToolCall   *ToolCallData   `json:"tool_call,omitempty"`
 	ToolResult *ToolResultData `json:"tool_result,omitempty"`
 	Thinking   *ThinkingData   `json:"thinking,omitempty"`
+	WebSearch  *WebSearchData  `json:"web_search,omitempty"`
 }
 
 type ImageData struct {
@@ -142,6 +144,11 @@ type ThinkingData struct {
 	Redacted  bool   `json:"redacted,omitempty"`
 }
 
+type WebSearchData struct {
+	Query string          `json:"query,omitempty"`
+	Raw   json.RawMessage `json:"raw"`
+}
+
 type ToolDefinition struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
@@ -176,6 +183,8 @@ type Request struct {
 	Metadata        map[string]string `json:"metadata,omitempty"`
 
 	ProviderOptions map[string]any `json:"provider_options,omitempty"`
+
+	WebSearch bool `json:"web_search,omitempty"`
 }
 
 type FinishReason struct {
@@ -191,6 +200,7 @@ const (
 	FinishReasonContentFilter = "content_filter"
 	FinishReasonError         = "error"
 	FinishReasonOther         = "other"
+	FinishReasonPauseTurn     = "pause_turn"
 )
 
 // NormalizeFinishReason maps a provider-specific finish reason to a canonical value.
@@ -213,6 +223,8 @@ func normalizeFinish(provider, raw string) string {
 			return FinishReasonLength
 		case "tool_use":
 			return FinishReasonToolCalls
+		case "pause_turn":
+			return FinishReasonPauseTurn
 		}
 	case "google":
 		switch raw {
