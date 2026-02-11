@@ -15,6 +15,16 @@ import (
 	"primeradiant.com/serf/internal/llm"
 )
 
+// SessionState represents the current lifecycle state of a session.
+type SessionState string
+
+const (
+	SessionIdle          SessionState = "IDLE"
+	SessionProcessing    SessionState = "PROCESSING"
+	SessionAwaitingInput SessionState = "AWAITING_INPUT"
+	SessionClosed        SessionState = "CLOSED"
+)
+
 type SessionConfig struct {
 	MaxToolRoundsPerInput   int `json:"max_tool_rounds_per_input,omitempty"`
 	MaxTurns                int `json:"max_turns,omitempty"`
@@ -96,9 +106,9 @@ type Session struct {
 	events chan SessionEvent
 	envInfo EnvironmentInfo
 
-	mu      sync.Mutex
-	closed  bool
-	turns   int
+	mu    sync.Mutex
+	state SessionState
+	turns int
 	history []Turn
 
 	reg *ToolRegistry
@@ -148,6 +158,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		profile:   profile,
 		env:       env,
 		stateDir:  cfg.StateDir,
+		state:     SessionIdle,
 		events:    make(chan SessionEvent, 256),
 		history:   []Turn{},
 		subagents: map[string]*subagent{},
@@ -247,6 +258,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		profile:   profile,
 		env:       env,
 		stateDir:  cfg.StateDir,
+		state:     SessionIdle,
 		events:    make(chan SessionEvent, 256),
 		history:   append([]Turn{}, snap.History...),
 		turns:     snap.TurnCount,
@@ -324,6 +336,13 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 func (s *Session) ID() string                  { return s.id }
 func (s *Session) Events() <-chan SessionEvent { return s.events }
 
+// State returns the current session state.
+func (s *Session) State() SessionState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state
+}
+
 // Snapshot captures the current session state as a SessionSnapshot.
 func (s *Session) Snapshot() SessionSnapshot {
 	s.mu.Lock()
@@ -347,7 +366,7 @@ func (s *Session) Snapshot() SessionSnapshot {
 func (s *Session) SetReasoningEffort(effort string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed {
+	if s.state == SessionClosed {
 		return
 	}
 	s.cfg.ReasoningEffort = strings.TrimSpace(effort)
@@ -357,7 +376,7 @@ func (s *Session) SetReasoningEffort(effort string) {
 func (s *Session) Steer(msg string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed {
+	if s.state == SessionClosed {
 		return
 	}
 	if strings.TrimSpace(msg) == "" {
@@ -370,7 +389,7 @@ func (s *Session) Steer(msg string) {
 func (s *Session) FollowUp(msg string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed {
+	if s.state == SessionClosed {
 		return
 	}
 	if strings.TrimSpace(msg) == "" {
@@ -381,11 +400,11 @@ func (s *Session) FollowUp(msg string) {
 
 func (s *Session) Close() {
 	s.mu.Lock()
-	if s.closed {
+	if s.state == SessionClosed {
 		s.mu.Unlock()
 		return
 	}
-	s.closed = true
+	s.state = SessionClosed
 	s.mu.Unlock()
 
 	if s.mcpMgr != nil {
@@ -569,10 +588,11 @@ func (s *Session) emit(kind EventKind, data map[string]any) {
 
 func (s *Session) processOneInput(ctx context.Context, input string) (string, error) {
 	s.mu.Lock()
-	if s.closed {
+	if s.state == SessionClosed {
 		s.mu.Unlock()
 		return "", fmt.Errorf("session is closed")
 	}
+	s.state = SessionProcessing
 	s.resultDelivered = false
 	s.resultText = ""
 	s.mu.Unlock()
@@ -734,6 +754,9 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 
 		calls := resp.ToolCalls()
 		if len(calls) == 0 {
+			s.mu.Lock()
+			s.state = SessionIdle
+			s.mu.Unlock()
 			return txt, nil
 		}
 
@@ -789,10 +812,16 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		text := s.resultText
 		s.mu.Unlock()
 		if delivered {
+			s.mu.Lock()
+			s.state = SessionIdle
+			s.mu.Unlock()
 			return text, nil
 		}
 	}
 
+	s.mu.Lock()
+	s.state = SessionIdle
+	s.mu.Unlock()
 	return "", fmt.Errorf("max tool rounds reached")
 }
 

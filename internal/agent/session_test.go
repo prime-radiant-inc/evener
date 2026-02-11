@@ -928,3 +928,19 @@ func TestSession_PauseTurn_ContinuesLoop(t *testing.T) {
 		t.Fatalf("result: %q", result)
 	}
 }
+
+func TestSessionState_Transitions(t *testing.T) {
+	// Verify state type and constants exist
+	if SessionIdle != SessionState("IDLE") {
+		t.Fatal("SessionIdle wrong")
+	}
+	if SessionProcessing != SessionState("PROCESSING") {
+		t.Fatal("SessionProcessing wrong")
+	}
+	if SessionAwaitingInput != SessionState("AWAITING_INPUT") {
+		t.Fatal("SessionAwaitingInput wrong")
+	}
+	if SessionClosed != SessionState("CLOSED") {
+		t.Fatal("SessionClosed wrong")
+	}
+}

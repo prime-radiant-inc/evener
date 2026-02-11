@@ -638,7 +638,7 @@ func TestSession_AbortSignal_ClosesSessionAndEmitsSessionEnd(t *testing.T) {
 	}
 
 	sess.mu.Lock()
-	closed := sess.closed
+	closed := sess.state == SessionClosed
 	sess.mu.Unlock()
 	if !closed {
 		t.Fatalf("expected session to be closed on abort signal")
@@ -780,7 +780,7 @@ func TestSession_AuthenticationError_ClosesSession(t *testing.T) {
 	}
 
 	sess.mu.Lock()
-	closed := sess.closed
+	closed := sess.state == SessionClosed
 	sess.mu.Unlock()
 	if !closed {
 		t.Fatalf("expected session to be closed on authentication error")
