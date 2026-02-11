@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 type Role string
@@ -296,6 +297,22 @@ type RateLimitInfo struct {
 	TokensRemaining   *int   `json:"tokens_remaining,omitempty"`
 	TokensLimit       *int   `json:"tokens_limit,omitempty"`
 	ResetAt           string `json:"reset_at,omitempty"`
+}
+
+// AdapterTimeout defines granular timeout configuration for adapter-level HTTP operations.
+type AdapterTimeout struct {
+	Connect    time.Duration `json:"connect"`     // time to establish HTTP connection (default: 10s)
+	Request    time.Duration `json:"request"`     // time for entire request/response cycle (default: 120s)
+	StreamRead time.Duration `json:"stream_read"` // max time between consecutive stream events (default: 30s)
+}
+
+// DefaultAdapterTimeout returns the spec-recommended defaults.
+func DefaultAdapterTimeout() AdapterTimeout {
+	return AdapterTimeout{
+		Connect:    10 * time.Second,
+		Request:    120 * time.Second,
+		StreamRead: 30 * time.Second,
+	}
 }
 
 type Response struct {

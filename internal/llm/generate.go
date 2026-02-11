@@ -72,6 +72,10 @@ type GenerateOptions struct {
 	// If it returns true, the tool loop terminates early.
 	StopWhen func(steps []StepResult) bool
 
+	// AdapterTimeout configures adapter-level HTTP timeouts.
+	// If nil, adapters use their own defaults.
+	AdapterTimeout *AdapterTimeout
+
 	// Optional timeouts for the multi-step operation.
 	TimeoutTotal   time.Duration
 	TimeoutPerStep time.Duration
