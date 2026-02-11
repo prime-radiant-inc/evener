@@ -173,6 +173,9 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		return llm.Response{}, err
 	}
 
+	ctx, adapterCancel := llm.ApplyAdapterTimeout(ctx, req.AdapterTimeout, false)
+	defer adapterCancel()
+
 	endpoint := fmt.Sprintf("%s/v1beta/models/%s:generateContent", a.BaseURL, url.PathEscape(req.Model))
 	u, err := url.Parse(endpoint)
 	if err != nil {

@@ -63,6 +63,9 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		return llm.Response{}, err
 	}
 
+	ctx, adapterCancel := llm.ApplyAdapterTimeout(ctx, req.AdapterTimeout, false)
+	defer adapterCancel()
+
 	raw, statusCode, headers, err := a.doHTTP(ctx, body)
 	if err != nil {
 		return llm.Response{}, err

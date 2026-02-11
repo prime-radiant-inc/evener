@@ -1960,6 +1960,37 @@ func TestComplete_WrapsContextCanceled(t *testing.T) {
 	}
 }
 
+func TestAdapterTimeout_Request_EnforcedOnComplete(t *testing.T) {
+	done := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-done
+	}))
+	t.Cleanup(func() {
+		close(done)
+		srv.Close()
+	})
+
+	a := &Adapter{APIKey: "test", BaseURL: srv.URL, Client: srv.Client()}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "claude-test",
+		Messages: []llm.Message{llm.User("hi")},
+		AdapterTimeout: &llm.AdapterTimeout{
+			Request: 100 * time.Millisecond,
+		},
+	})
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	var rte *llm.RequestTimeoutError
+	if errors.As(err, &rte) {
+		return // correct error type
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	t.Errorf("expected RequestTimeoutError or DeadlineExceeded, got %T: %v", err, err)
+}
+
 func contentKinds(parts []llm.ContentPart) []string {
 	var kinds []string
 	for _, p := range parts {
