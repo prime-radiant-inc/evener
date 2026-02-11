@@ -1321,3 +1321,50 @@ func contentKinds(parts []llm.ContentPart) []string {
 	}
 	return kinds
 }
+
+func TestComplete_WrapsContextCanceled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(5 * time.Second)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model:    "gemini-test",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var abortErr *llm.AbortError
+	if !errors.As(err, &abortErr) {
+		t.Fatalf("expected AbortError, got %T: %v", err, err)
+	}
+}
+
+func TestComplete_WrapsContextDeadlineExceeded(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(5 * time.Second)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
+	defer cancel()
+	time.Sleep(5 * time.Millisecond) // ensure deadline expires
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model:    "gemini-test",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var rte *llm.RequestTimeoutError
+	if !errors.As(err, &rte) {
+		t.Fatalf("expected RequestTimeoutError, got %T: %v", err, err)
+	}
+}

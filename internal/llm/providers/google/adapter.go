@@ -182,7 +182,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 
 	resp, err := a.Client.Do(httpReq)
 	if err != nil {
-		return llm.Response{}, err
+		return llm.Response{}, llm.WrapContextError("google", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
