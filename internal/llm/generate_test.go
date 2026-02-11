@@ -152,7 +152,10 @@ func TestGenerate_ToolLoop_ExecutesToolsAndContinues(t *testing.T) {
 		steps: []func(req Request) (Response, error){
 			func(req Request) (Response, error) {
 				call := ToolCallData{ID: "call1", Name: "add", Arguments: json.RawMessage(`{"a":1,"b":2}`), Type: "function"}
-				return Response{Message: Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}}}, nil
+				return Response{
+					Message: Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}},
+					Finish:  FinishReason{Reason: FinishReasonToolCalls},
+				}, nil
 			},
 			func(req Request) (Response, error) {
 				// Expect tool result in the continuation request.
@@ -226,7 +229,10 @@ func TestGenerate_PassiveToolCall_ReturnsToolCallsWithoutLooping(t *testing.T) {
 		steps: []func(req Request) (Response, error){
 			func(req Request) (Response, error) {
 				call := ToolCallData{ID: "call1", Name: "t1", Arguments: json.RawMessage(`{}`), Type: "function"}
-				return Response{Message: Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}}}, nil
+				return Response{
+					Message: Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}},
+					Finish:  FinishReason{Reason: FinishReasonToolCalls},
+				}, nil
 			},
 		},
 	}
@@ -268,7 +274,10 @@ func TestGenerate_ToolArgsSchemaValidationError_SentAsErrorResult_AndDoesNotExec
 		steps: []func(req Request) (Response, error){
 			func(req Request) (Response, error) {
 				call := ToolCallData{ID: "call1", Name: "add", Arguments: json.RawMessage(`{"a":"nope","b":2}`), Type: "function"}
-				return Response{Message: Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}}}, nil
+				return Response{
+					Message: Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}},
+					Finish:  FinishReason{Reason: FinishReasonToolCalls},
+				}, nil
 			},
 			func(req Request) (Response, error) {
 				// The continuation should include an is_error tool result, and the tool should not have executed.
@@ -341,7 +350,10 @@ func TestGenerate_MaxToolRoundsZero_DisablesAutoExecution(t *testing.T) {
 		steps: []func(req Request) (Response, error){
 			func(req Request) (Response, error) {
 				call := ToolCallData{ID: "call1", Name: "add", Arguments: json.RawMessage(`{"a":1,"b":2}`), Type: "function"}
-				return Response{Message: Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}}}, nil
+				return Response{
+					Message: Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}},
+					Finish:  FinishReason{Reason: FinishReasonToolCalls},
+				}, nil
 			},
 		},
 	}
@@ -380,10 +392,13 @@ func TestGenerate_ParallelToolCalls_ExecuteConcurrently(t *testing.T) {
 			func(req Request) (Response, error) {
 				call1 := ToolCallData{ID: "c1", Name: "t1", Arguments: json.RawMessage(`{}`), Type: "function"}
 				call2 := ToolCallData{ID: "c2", Name: "t2", Arguments: json.RawMessage(`{}`), Type: "function"}
-				return Response{Message: Message{Role: RoleAssistant, Content: []ContentPart{
-					{Kind: ContentToolCall, ToolCall: &call1},
-					{Kind: ContentToolCall, ToolCall: &call2},
-				}}}, nil
+				return Response{
+					Message: Message{Role: RoleAssistant, Content: []ContentPart{
+						{Kind: ContentToolCall, ToolCall: &call1},
+						{Kind: ContentToolCall, ToolCall: &call2},
+					}},
+					Finish: FinishReason{Reason: FinishReasonToolCalls},
+				}, nil
 			},
 			func(req Request) (Response, error) { return Response{Message: Assistant("ok")}, nil },
 		},
@@ -584,7 +599,10 @@ func TestGenerate_RetriesApplyPerStep_NotWholeOperation(t *testing.T) {
 					}
 				}
 				call := ToolCallData{ID: "call1", Name: "t1", Arguments: json.RawMessage(`{}`), Type: "function"}
-				return Response{Message: Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}}}, nil
+				return Response{
+					Message: Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}},
+					Finish:  FinishReason{Reason: FinishReasonToolCalls},
+				}, nil
 			},
 			// Step 2 attempt 1: transient error.
 			func(req Request) (Response, error) {
@@ -659,7 +677,10 @@ func TestGenerate_ToolCallContext_AvailableInHandler(t *testing.T) {
 		steps: []func(req Request) (Response, error){
 			func(req Request) (Response, error) {
 				call := ToolCallData{ID: "call1", Name: "t1", Arguments: json.RawMessage(`{}`), Type: "function"}
-				return Response{Message: Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}}}, nil
+				return Response{
+					Message: Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}},
+					Finish:  FinishReason{Reason: FinishReasonToolCalls},
+				}, nil
 			},
 			func(req Request) (Response, error) {
 				return Response{Message: Assistant("ok")}, nil
@@ -709,7 +730,10 @@ func TestGenerate_RepairToolCall_FixesInvalidArgs(t *testing.T) {
 			func(req Request) (Response, error) {
 				// Model sends invalid args (a should be integer).
 				call := ToolCallData{ID: "call1", Name: "add", Arguments: json.RawMessage(`{"a":"nope","b":2}`), Type: "function"}
-				return Response{Message: Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}}}, nil
+				return Response{
+					Message: Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}},
+					Finish:  FinishReason{Reason: FinishReasonToolCalls},
+				}, nil
 			},
 			func(req Request) (Response, error) {
 				// Should receive the repaired tool result, not an error.
@@ -775,7 +799,10 @@ func TestGenerate_RepairToolCall_FailedRepair_SendsErrorToModel(t *testing.T) {
 		steps: []func(req Request) (Response, error){
 			func(req Request) (Response, error) {
 				call := ToolCallData{ID: "call1", Name: "add", Arguments: json.RawMessage(`{"a":"nope","b":2}`), Type: "function"}
-				return Response{Message: Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}}}, nil
+				return Response{
+					Message: Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}},
+					Finish:  FinishReason{Reason: FinishReasonToolCalls},
+				}, nil
 			},
 			func(req Request) (Response, error) {
 				// Should receive an error tool result since repair failed.
@@ -830,7 +857,10 @@ func TestGenerate_UnknownToolCall_SendsErrorResultToModel(t *testing.T) {
 		steps: []func(req Request) (Response, error){
 			func(req Request) (Response, error) {
 				call := ToolCallData{ID: "c1", Name: "missing", Arguments: json.RawMessage(`{}`), Type: "function"}
-				return Response{Message: Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}}}, nil
+				return Response{
+					Message: Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}},
+					Finish:  FinishReason{Reason: FinishReasonToolCalls},
+				}, nil
 			},
 			func(req Request) (Response, error) {
 				for _, m := range req.Messages {
@@ -879,30 +909,39 @@ func TestGenerate_StopWhen(t *testing.T) {
 		steps: []func(req Request) (Response, error){
 			func(req Request) (Response, error) {
 				callCount++
-				return Response{Message: Message{Role: RoleAssistant, Content: []ContentPart{
-					{Kind: ContentToolCall, ToolCall: &ToolCallData{
-						ID: fmt.Sprintf("call_%d", callCount), Name: "my_tool",
-						Arguments: json.RawMessage(`{}`), Type: "function",
+				return Response{
+					Message: Message{Role: RoleAssistant, Content: []ContentPart{
+						{Kind: ContentToolCall, ToolCall: &ToolCallData{
+							ID: fmt.Sprintf("call_%d", callCount), Name: "my_tool",
+							Arguments: json.RawMessage(`{}`), Type: "function",
+						}},
 					}},
-				}}}, nil
+					Finish: FinishReason{Reason: FinishReasonToolCalls},
+				}, nil
 			},
 			func(req Request) (Response, error) {
 				callCount++
-				return Response{Message: Message{Role: RoleAssistant, Content: []ContentPart{
-					{Kind: ContentToolCall, ToolCall: &ToolCallData{
-						ID: fmt.Sprintf("call_%d", callCount), Name: "my_tool",
-						Arguments: json.RawMessage(`{}`), Type: "function",
+				return Response{
+					Message: Message{Role: RoleAssistant, Content: []ContentPart{
+						{Kind: ContentToolCall, ToolCall: &ToolCallData{
+							ID: fmt.Sprintf("call_%d", callCount), Name: "my_tool",
+							Arguments: json.RawMessage(`{}`), Type: "function",
+						}},
 					}},
-				}}}, nil
+					Finish: FinishReason{Reason: FinishReasonToolCalls},
+				}, nil
 			},
 			func(req Request) (Response, error) {
 				callCount++
-				return Response{Message: Message{Role: RoleAssistant, Content: []ContentPart{
-					{Kind: ContentToolCall, ToolCall: &ToolCallData{
-						ID: fmt.Sprintf("call_%d", callCount), Name: "my_tool",
-						Arguments: json.RawMessage(`{}`), Type: "function",
+				return Response{
+					Message: Message{Role: RoleAssistant, Content: []ContentPart{
+						{Kind: ContentToolCall, ToolCall: &ToolCallData{
+							ID: fmt.Sprintf("call_%d", callCount), Name: "my_tool",
+							Arguments: json.RawMessage(`{}`), Type: "function",
+						}},
 					}},
-				}}}, nil
+					Finish: FinishReason{Reason: FinishReasonToolCalls},
+				}, nil
 			},
 			func(req Request) (Response, error) {
 				callCount++
@@ -1159,7 +1198,10 @@ func TestGenerate_StepResult_ToolCallsHaveParsedArguments(t *testing.T) {
 					Arguments: json.RawMessage(`{"city":"Seattle"}`),
 					Type:      "function",
 				}
-				return Response{Message: Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}}}, nil
+				return Response{
+					Message: Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}},
+					Finish:  FinishReason{Reason: FinishReasonToolCalls},
+				}, nil
 			},
 		},
 	}
@@ -1199,5 +1241,59 @@ func TestGenerate_StepResult_ToolCallsHaveParsedArguments(t *testing.T) {
 	}
 	if stc.ParsedArguments["city"] != "Seattle" {
 		t.Fatalf("step ParsedArguments[city] = %v", stc.ParsedArguments["city"])
+	}
+}
+
+func TestGenerate_ToolCallsWithStopFinish_DoesNotExecute(t *testing.T) {
+	// Model returns tool call content parts BUT with finish_reason="stop" (not "tool_calls").
+	// Per spec section 5.6, tools should NOT be executed.
+	c := NewClient()
+	executed := false
+	a := &scriptedAdapter{
+		name: "openai",
+		steps: []func(req Request) (Response, error){
+			func(req Request) (Response, error) {
+				call := ToolCallData{ID: "call_1", Name: "get_weather", Arguments: json.RawMessage(`{}`), Type: "function"}
+				return Response{
+					Message: Message{Role: RoleAssistant, Content: []ContentPart{
+						{Kind: ContentText, Text: "Here is the weather"},
+						{Kind: ContentToolCall, ToolCall: &call},
+					}},
+					Finish: FinishReason{Reason: FinishReasonStop, Raw: "stop"},
+					Usage:  Usage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30},
+				}, nil
+			},
+		},
+	}
+	c.Register(a)
+
+	prompt := "weather?"
+	rounds := 1
+	result, err := Generate(context.Background(), GenerateOptions{
+		Client:        c,
+		Model:         "m",
+		Prompt:        &prompt,
+		MaxToolRounds: &rounds,
+		Tools: []Tool{{
+			Definition: ToolDefinition{
+				Name:        "get_weather",
+				Description: "Get weather",
+				Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+			},
+			Execute: func(ctx context.Context, args any) (any, error) {
+				executed = true
+				return "sunny", nil
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executed {
+		t.Error("tool was executed but finish_reason was 'stop', not 'tool_calls'")
+	}
+	// The tool calls should still be in the result (for the caller to see).
+	if len(result.ToolCalls) == 0 {
+		t.Error("expected tool calls in result even though they weren't executed")
 	}
 }

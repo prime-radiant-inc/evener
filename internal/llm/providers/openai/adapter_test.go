@@ -609,6 +609,65 @@ func TestAdapter_Complete_ImageInput_URL_Data_AndFilePath(t *testing.T) {
 	}
 }
 
+func TestImageInput_DetailHintPassedThrough(t *testing.T) {
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &captured)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":     "resp_1",
+			"status": "completed",
+			"output": []any{map[string]any{
+				"type":    "message",
+				"role":    "assistant",
+				"content": []any{map[string]any{"type": "output_text", "text": "I see an image"}},
+			}},
+			"usage": map[string]any{"input_tokens": 10, "output_tokens": 5},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test", BaseURL: srv.URL, Client: srv.Client()}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model: "gpt-5.2",
+		Messages: []llm.Message{{
+			Role: llm.RoleUser,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentImage, Image: &llm.ImageData{
+					URL:    "https://example.com/img.png",
+					Detail: "low",
+				}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Navigate to the image item in the captured request.
+	input, _ := captured["input"].([]any)
+	var imageItem map[string]any
+	for _, item := range input {
+		m, _ := item.(map[string]any)
+		if m["type"] == "message" {
+			content, _ := m["content"].([]any)
+			for _, c := range content {
+				cm, _ := c.(map[string]any)
+				if cm["type"] == "input_image" {
+					imageItem = cm
+				}
+			}
+		}
+	}
+	if imageItem == nil {
+		t.Fatal("no input_image item found in request")
+	}
+	if imageItem["detail"] != "low" {
+		t.Errorf("detail = %v, want \"low\"", imageItem["detail"])
+	}
+}
+
 func TestAdapter_Complete_ResponseFormat_JSONSchema(t *testing.T) {
 	var gotBody map[string]any
 
@@ -1273,6 +1332,144 @@ func TestParseUsage_ReasoningTokensDistinctFromOutputTokens(t *testing.T) {
 	// Reasoning tokens must NOT inflate OutputTokens
 	if resp.Usage.OutputTokens == 50+30 {
 		t.Fatal("OutputTokens includes reasoning tokens — they should be distinct")
+	}
+}
+
+func TestAdapterTimeout_Request_EnforcedOnComplete(t *testing.T) {
+	done := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-done
+	}))
+	t.Cleanup(func() {
+		close(done)
+		srv.Close()
+	})
+
+	a := &Adapter{APIKey: "test", BaseURL: srv.URL, Client: srv.Client()}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gpt-5.2",
+		Messages: []llm.Message{llm.User("hi")},
+		AdapterTimeout: &llm.AdapterTimeout{
+			Request: 100 * time.Millisecond,
+		},
+	})
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	var rte *llm.RequestTimeoutError
+	if errors.As(err, &rte) {
+		return // correct error type
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	t.Errorf("expected RequestTimeoutError or DeadlineExceeded, got %T: %v", err, err)
+}
+
+func TestDefaultHeaders_SentOnCompleteRequests(t *testing.T) {
+	var capturedHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedHeaders = r.Header
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r1","model":"gpt-5.2","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey:  "test-key",
+		BaseURL: srv.URL,
+		Client:  srv.Client(),
+		DefaultHeaders: map[string]string{
+			"X-Custom-Header": "custom-value",
+			"X-Another":       "another-value",
+		},
+	}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gpt-5.2",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capturedHeaders.Get("X-Custom-Header") != "custom-value" {
+		t.Errorf("X-Custom-Header = %q, want %q", capturedHeaders.Get("X-Custom-Header"), "custom-value")
+	}
+	if capturedHeaders.Get("X-Another") != "another-value" {
+		t.Errorf("X-Another = %q, want %q", capturedHeaders.Get("X-Another"), "another-value")
+	}
+	// Provider-specific headers must still be present.
+	if capturedHeaders.Get("Authorization") != "Bearer test-key" {
+		t.Errorf("Authorization = %q, want %q", capturedHeaders.Get("Authorization"), "Bearer test-key")
+	}
+}
+
+func TestDefaultHeaders_SentOnStreamRequests(t *testing.T) {
+	var capturedHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedHeaders = r.Header
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, "event: response.completed\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"r1","model":"gpt-5.2","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+		if f != nil {
+			f.Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey:  "test-key",
+		BaseURL: srv.URL,
+		Client:  srv.Client(),
+		DefaultHeaders: map[string]string{
+			"X-Custom-Header": "custom-value",
+		},
+	}
+	stream, err := a.Stream(context.Background(), llm.Request{
+		Model:    "gpt-5.2",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	for range stream.Events() {
+	}
+	if capturedHeaders.Get("X-Custom-Header") != "custom-value" {
+		t.Errorf("X-Custom-Header = %q, want %q", capturedHeaders.Get("X-Custom-Header"), "custom-value")
+	}
+	if capturedHeaders.Get("Authorization") != "Bearer test-key" {
+		t.Errorf("Authorization = %q, want %q", capturedHeaders.Get("Authorization"), "Bearer test-key")
+	}
+}
+
+func TestDefaultHeaders_CannotOverrideProviderHeaders(t *testing.T) {
+	var capturedHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedHeaders = r.Header
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r1","model":"gpt-5.2","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey:  "real-key",
+		BaseURL: srv.URL,
+		Client:  srv.Client(),
+		DefaultHeaders: map[string]string{
+			"Authorization": "Bearer evil-key",
+		},
+	}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gpt-5.2",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Provider-specific Authorization must take precedence over DefaultHeaders.
+	if capturedHeaders.Get("Authorization") != "Bearer real-key" {
+		t.Errorf("Authorization = %q, want %q (provider auth must take precedence)", capturedHeaders.Get("Authorization"), "Bearer real-key")
 	}
 }
 

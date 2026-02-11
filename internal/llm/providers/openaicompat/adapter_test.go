@@ -375,3 +375,205 @@ func TestAdapter_Stream_ToolCalls(t *testing.T) {
 		t.Fatalf("expected TOOL_CALL_END (kinds=%v)", kinds)
 	}
 }
+
+func TestHTTPErrorMapping_IncludesRetryAfter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "30")
+		w.WriteHeader(429)
+		json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": "rate limited"}})
+	}))
+	defer srv.Close()
+
+	a := &Adapter{BaseURL: srv.URL, Client: srv.Client()}
+	_, err := a.Complete(context.Background(), llm.Request{Model: "test", Messages: []llm.Message{llm.User("hi")}})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var rlErr *llm.RateLimitError
+	if !errors.As(err, &rlErr) {
+		t.Fatalf("expected RateLimitError, got %T: %v", err, err)
+	}
+	if rlErr.RetryAfter() == nil {
+		t.Fatal("RetryAfter is nil, want 30s")
+	}
+	if *rlErr.RetryAfter() != 30*time.Second {
+		t.Errorf("RetryAfter = %v, want 30s", *rlErr.RetryAfter())
+	}
+}
+
+func TestComplete_PopulatesTotalTokens(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "chatcmpl-1", "model": "test",
+			"choices": []any{map[string]any{
+				"index":         0,
+				"finish_reason": "stop",
+				"message":       map[string]any{"role": "assistant", "content": "hi"},
+			}},
+			"usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+		})
+	}))
+	defer srv.Close()
+
+	a := &Adapter{BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{Model: "test", Messages: []llm.Message{llm.User("hi")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Usage.TotalTokens != 30 {
+		t.Errorf("TotalTokens = %d, want 30", resp.Usage.TotalTokens)
+	}
+}
+
+func TestComplete_WrapsContextCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	a := &Adapter{BaseURL: "http://127.0.0.1:1", Client: &http.Client{Timeout: time.Millisecond}}
+	_, err := a.Complete(ctx, llm.Request{Model: "test", Messages: []llm.Message{llm.User("hi")}})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var abortErr *llm.AbortError
+	if !errors.As(err, &abortErr) {
+		t.Errorf("expected AbortError, got %T: %v", err, err)
+	}
+}
+
+func TestAdapterTimeout_Request_EnforcedOnComplete(t *testing.T) {
+	done := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-done
+	}))
+	t.Cleanup(func() {
+		close(done)
+		srv.Close()
+	})
+
+	a := &Adapter{APIKey: "test", BaseURL: srv.URL, Client: srv.Client()}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "test",
+		Messages: []llm.Message{llm.User("hi")},
+		AdapterTimeout: &llm.AdapterTimeout{
+			Request: 100 * time.Millisecond,
+		},
+	})
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	var rte *llm.RequestTimeoutError
+	if errors.As(err, &rte) {
+		return // correct error type
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	t.Errorf("expected RequestTimeoutError or DeadlineExceeded, got %T: %v", err, err)
+}
+
+func TestDefaultHeaders_SentOnCompleteRequests(t *testing.T) {
+	var capturedHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedHeaders = r.Header
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","model":"test","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey:  "test-key",
+		BaseURL: srv.URL,
+		Client:  srv.Client(),
+		DefaultHeaders: map[string]string{
+			"X-Custom-Header": "custom-value",
+			"X-Another":       "another-value",
+		},
+	}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "test",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capturedHeaders.Get("X-Custom-Header") != "custom-value" {
+		t.Errorf("X-Custom-Header = %q, want %q", capturedHeaders.Get("X-Custom-Header"), "custom-value")
+	}
+	if capturedHeaders.Get("X-Another") != "another-value" {
+		t.Errorf("X-Another = %q, want %q", capturedHeaders.Get("X-Another"), "another-value")
+	}
+	// Provider-specific headers must still be present.
+	if capturedHeaders.Get("Authorization") != "Bearer test-key" {
+		t.Errorf("Authorization = %q, want %q", capturedHeaders.Get("Authorization"), "Bearer test-key")
+	}
+}
+
+func TestDefaultHeaders_SentOnStreamRequests(t *testing.T) {
+	var capturedHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedHeaders = r.Header
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, "data: "+`{"id":"chatcmpl-1","model":"test","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		if f != nil {
+			f.Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey:  "test-key",
+		BaseURL: srv.URL,
+		Client:  srv.Client(),
+		DefaultHeaders: map[string]string{
+			"X-Custom-Header": "custom-value",
+		},
+	}
+	stream, err := a.Stream(context.Background(), llm.Request{
+		Model:    "test",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	for range stream.Events() {
+	}
+	if capturedHeaders.Get("X-Custom-Header") != "custom-value" {
+		t.Errorf("X-Custom-Header = %q, want %q", capturedHeaders.Get("X-Custom-Header"), "custom-value")
+	}
+	if capturedHeaders.Get("Authorization") != "Bearer test-key" {
+		t.Errorf("Authorization = %q, want %q", capturedHeaders.Get("Authorization"), "Bearer test-key")
+	}
+}
+
+func TestDefaultHeaders_CannotOverrideProviderHeaders(t *testing.T) {
+	var capturedHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedHeaders = r.Header
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","model":"test","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey:  "real-key",
+		BaseURL: srv.URL,
+		Client:  srv.Client(),
+		DefaultHeaders: map[string]string{
+			"Authorization": "Bearer evil-key",
+		},
+	}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "test",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Provider-specific Authorization must take precedence over DefaultHeaders.
+	if capturedHeaders.Get("Authorization") != "Bearer real-key" {
+		t.Errorf("Authorization = %q, want %q (provider auth must take precedence)", capturedHeaders.Get("Authorization"), "Bearer real-key")
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -324,7 +325,184 @@ func TestIntegration_ErrorHandling(t *testing.T) {
 	}
 }
 
+func TestIntegration_ImageInputURL(t *testing.T) {
+	skipIfNoProviders(t)
+	client, err := llm.NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+
+	// Small, publicly accessible PNG with transparency.
+	imageURL := "https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/280px-PNG_transparency_demonstration_1.png"
+
+	for _, p := range providers {
+		if os.Getenv(p.envKey) == "" {
+			continue
+		}
+		t.Run(p.provider, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			res, err := llm.Generate(ctx, llm.GenerateOptions{
+				Client:    client,
+				Model:     p.model,
+				Provider:  p.provider,
+				MaxTokens: intPtr(200),
+				Messages: []llm.Message{{
+					Role: llm.RoleUser,
+					Content: []llm.ContentPart{
+						{Kind: llm.ContentText, Text: "Describe this image in one sentence."},
+						{Kind: llm.ContentImage, Image: &llm.ImageData{URL: imageURL}},
+					},
+				}},
+			})
+			if err != nil {
+				t.Fatalf("Generate: %v", err)
+			}
+			if strings.TrimSpace(res.Text) == "" {
+				t.Fatal("expected non-empty response text")
+			}
+			t.Logf("text (truncated): %.100s", res.Text)
+		})
+	}
+}
+
+func TestIntegration_StreamingWithTools(t *testing.T) {
+	skipIfNoProviders(t)
+	client, err := llm.NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+
+	weatherTool := llm.Tool{
+		Definition: llm.ToolDefinition{
+			Name:        "get_weather",
+			Description: "Get weather for a city",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"city": map[string]any{"type": "string"}},
+				"required":   []any{"city"},
+			},
+		},
+		Execute: func(ctx context.Context, args any) (any, error) {
+			return "72F and sunny", nil
+		},
+	}
+
+	for _, p := range providers {
+		if os.Getenv(p.envKey) == "" {
+			continue
+		}
+		t.Run(p.provider, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+
+			sr, err := llm.StreamGenerate(ctx, llm.GenerateOptions{
+				Client:        client,
+				Model:         p.model,
+				Provider:      p.provider,
+				Prompt:        strPtr("What is the weather in Paris?"),
+				Tools:         []llm.Tool{weatherTool},
+				MaxToolRounds: intPtr(3),
+				MaxTokens:     intPtr(300),
+			})
+			if err != nil {
+				t.Fatalf("StreamGenerate: %v", err)
+			}
+
+			var hasStepFinish bool
+			for ev := range sr.Events() {
+				if ev.Type == llm.StreamEventStepFinish {
+					hasStepFinish = true
+				}
+			}
+			resp, err := sr.Response()
+			if err != nil {
+				t.Fatalf("Response: %v", err)
+			}
+			if resp == nil {
+				t.Fatal("no response after stream")
+			}
+			if resp.Text() == "" {
+				t.Error("expected non-empty final text")
+			}
+			if !hasStepFinish {
+				t.Error("expected at least one STEP_FINISH event (tool was called)")
+			}
+			t.Logf("text (truncated): %.100s", resp.Text())
+		})
+	}
+}
+
+func TestIntegration_PromptCaching_MultiTurn(t *testing.T) {
+	skipIfNoProviders(t)
+	if testing.Short() {
+		t.Skip("skipping multi-turn caching test in short mode")
+	}
+	client, err := llm.NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+
+	// Use a large system prompt to make caching worthwhile.
+	systemPrompt := strings.Repeat("You are a helpful assistant. ", 200) // ~1200 words
+
+	for _, p := range providers {
+		t.Run(p.provider, func(t *testing.T) {
+			if os.Getenv(p.envKey) == "" {
+				t.Skipf("no %s key", p.envKey)
+			}
+
+			history := []llm.Message{llm.System(systemPrompt)}
+			var lastUsage llm.Usage
+
+			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+			defer cancel()
+
+			for turn := 1; turn <= 6; turn++ {
+				history = append(history, llm.User(fmt.Sprintf("Turn %d: What is %d + %d?", turn, turn, turn*2)))
+				result, err := llm.Generate(ctx, llm.GenerateOptions{
+					Client:    client,
+					Model:     p.model,
+					Provider:  p.provider,
+					Messages:  history,
+					MaxTokens: intPtr(50),
+				})
+				if err != nil {
+					t.Fatalf("turn %d: %v", turn, err)
+				}
+				history = append(history, llm.Assistant(result.Text))
+				lastUsage = result.Usage
+
+				if turn >= 5 {
+					// Gemini's cachedContentTokenCount only reflects explicit CachedContent
+					// resources, not implicit prompt caching. Skip the ratio assertion.
+					if p.provider == "google" {
+						t.Logf("turn %d: skipping cache ratio check for Gemini (no implicit cache reporting)", turn)
+						continue
+					}
+					cacheRead := 0
+					if lastUsage.CacheReadTokens != nil {
+						cacheRead = *lastUsage.CacheReadTokens
+					}
+					inputTokens := lastUsage.InputTokens
+					if inputTokens > 0 {
+						cacheRatio := float64(cacheRead) / float64(inputTokens)
+						t.Logf("turn %d: input=%d cache_read=%d ratio=%.1f%%",
+							turn, inputTokens, cacheRead, cacheRatio*100)
+						if cacheRatio < 0.5 {
+							t.Errorf("turn %d: cache_read_tokens (%d) < 50%% of input_tokens (%d)",
+								turn, cacheRead, inputTokens)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
 func strPtr(s string) *string { return &s }
+func intPtr(i int) *int       { return &i }
 
 // Ensure json import is used (for GenerateObject output assertions).
 var _ = json.Marshal

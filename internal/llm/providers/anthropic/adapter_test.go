@@ -1960,6 +1960,154 @@ func TestComplete_WrapsContextCanceled(t *testing.T) {
 	}
 }
 
+func TestAdapterTimeout_Request_EnforcedOnComplete(t *testing.T) {
+	done := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-done
+	}))
+	t.Cleanup(func() {
+		close(done)
+		srv.Close()
+	})
+
+	a := &Adapter{APIKey: "test", BaseURL: srv.URL, Client: srv.Client()}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "claude-test",
+		Messages: []llm.Message{llm.User("hi")},
+		AdapterTimeout: &llm.AdapterTimeout{
+			Request: 100 * time.Millisecond,
+		},
+	})
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	var rte *llm.RequestTimeoutError
+	if errors.As(err, &rte) {
+		return // correct error type
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	t.Errorf("expected RequestTimeoutError or DeadlineExceeded, got %T: %v", err, err)
+}
+
+func TestDefaultHeaders_SentOnCompleteRequests(t *testing.T) {
+	var capturedHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedHeaders = r.Header
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_1","model":"claude-test","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey:  "test-key",
+		BaseURL: srv.URL,
+		Client:  srv.Client(),
+		DefaultHeaders: map[string]string{
+			"X-Custom-Header": "custom-value",
+			"X-Another":       "another-value",
+		},
+	}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "claude-test",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capturedHeaders.Get("X-Custom-Header") != "custom-value" {
+		t.Errorf("X-Custom-Header = %q, want %q", capturedHeaders.Get("X-Custom-Header"), "custom-value")
+	}
+	if capturedHeaders.Get("X-Another") != "another-value" {
+		t.Errorf("X-Another = %q, want %q", capturedHeaders.Get("X-Another"), "another-value")
+	}
+	// Provider-specific headers must still be present.
+	if capturedHeaders.Get("x-api-key") != "test-key" {
+		t.Errorf("x-api-key = %q, want %q", capturedHeaders.Get("x-api-key"), "test-key")
+	}
+	if capturedHeaders.Get("anthropic-version") != "2023-06-01" {
+		t.Errorf("anthropic-version = %q, want %q", capturedHeaders.Get("anthropic-version"), "2023-06-01")
+	}
+}
+
+func TestDefaultHeaders_SentOnStreamRequests(t *testing.T) {
+	var capturedHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedHeaders = r.Header
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		write := func(event, data string) {
+			_, _ = io.WriteString(w, "event: "+event+"\n")
+			_, _ = io.WriteString(w, "data: "+data+"\n\n")
+			if f != nil {
+				f.Flush()
+			}
+		}
+		write("content_block_start", `{"index":0,"content_block":{"type":"text"}}`)
+		write("content_block_delta", `{"index":0,"delta":{"type":"text_delta","text":"hi"}}`)
+		write("content_block_stop", `{"index":0}`)
+		write("message_delta", `{"stop_reason":"end_turn","usage":{"output_tokens":1}}`)
+		write("message_stop", `{}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey:  "test-key",
+		BaseURL: srv.URL,
+		Client:  srv.Client(),
+		DefaultHeaders: map[string]string{
+			"X-Custom-Header": "custom-value",
+		},
+	}
+	stream, err := a.Stream(context.Background(), llm.Request{
+		Model:    "claude-test",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	for range stream.Events() {
+	}
+	if capturedHeaders.Get("X-Custom-Header") != "custom-value" {
+		t.Errorf("X-Custom-Header = %q, want %q", capturedHeaders.Get("X-Custom-Header"), "custom-value")
+	}
+	if capturedHeaders.Get("x-api-key") != "test-key" {
+		t.Errorf("x-api-key = %q, want %q", capturedHeaders.Get("x-api-key"), "test-key")
+	}
+}
+
+func TestDefaultHeaders_CannotOverrideProviderHeaders(t *testing.T) {
+	var capturedHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedHeaders = r.Header
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_1","model":"claude-test","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey:  "real-key",
+		BaseURL: srv.URL,
+		Client:  srv.Client(),
+		DefaultHeaders: map[string]string{
+			"x-api-key": "evil-key",
+		},
+	}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "claude-test",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Provider-specific x-api-key must take precedence over DefaultHeaders.
+	if capturedHeaders.Get("x-api-key") != "real-key" {
+		t.Errorf("x-api-key = %q, want %q (provider auth must take precedence)", capturedHeaders.Get("x-api-key"), "real-key")
+	}
+}
+
 func contentKinds(parts []llm.ContentPart) []string {
 	var kinds []string
 	for _, p := range parts {

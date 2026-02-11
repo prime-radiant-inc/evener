@@ -18,9 +18,10 @@ import (
 )
 
 type Adapter struct {
-	APIKey  string
-	BaseURL string
-	Client  *http.Client
+	APIKey         string
+	BaseURL        string
+	Client         *http.Client
+	DefaultHeaders map[string]string
 }
 
 func init() {
@@ -63,13 +64,16 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		return llm.Response{}, err
 	}
 
-	raw, statusCode, err := a.doHTTP(ctx, body)
+	ctx, adapterCancel := llm.ApplyAdapterTimeout(ctx, req.AdapterTimeout, false)
+	defer adapterCancel()
+
+	raw, statusCode, headers, err := a.doHTTP(ctx, body)
 	if err != nil {
 		return llm.Response{}, err
 	}
 	if statusCode != http.StatusOK {
 		msg := extractErrorMessage(raw)
-		retryAfter := parseRetryAfter(raw)
+		retryAfter := llm.ParseRetryAfter(headers.Get("Retry-After"), time.Now())
 		return llm.Response{}, llm.ErrorFromHTTPStatus("openai-compatible", statusCode, msg, raw, retryAfter)
 	}
 
@@ -96,6 +100,10 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	if err != nil {
 		return nil, err
 	}
+	// Apply default headers first so provider-specific headers take precedence.
+	for k, v := range a.DefaultHeaders {
+		httpReq.Header.Set(k, v)
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	if a.APIKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+a.APIKey)
@@ -103,7 +111,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 
 	resp, err := a.Client.Do(httpReq)
 	if err != nil {
-		return nil, err
+		return nil, llm.WrapContextError("openai-compatible", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -112,7 +120,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		var raw map[string]any
 		_ = json.Unmarshal(b, &raw)
 		msg := extractErrorMessage(raw)
-		retryAfter := parseRetryAfter(raw)
+		retryAfter := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		return nil, llm.ErrorFromHTTPStatus("openai-compatible", resp.StatusCode, msg, raw, retryAfter)
 	}
 
@@ -139,10 +147,12 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		var model string
 		var finishReason string
 		var usage *llm.Usage
+		finished := false
 
 		llm.ParseSSE(sctx, resp.Body, func(ev llm.SSEEvent) error {
 			data := string(ev.Data)
 			if data == "[DONE]" {
+				finished = true
 				// Emit tool call end events for any open tool calls.
 				for idx, tc := range toolCalls {
 					s.Send(llm.StreamEvent{
@@ -197,6 +207,10 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 					InputTokens:  intFromAny(chunk.Usage["prompt_tokens"]),
 					OutputTokens: intFromAny(chunk.Usage["completion_tokens"]),
 					Raw:          chunk.Usage,
+				}
+				u.TotalTokens = u.InputTokens + u.OutputTokens
+				if v := intFromAny(chunk.Usage["total_tokens"]); v > 0 {
+					u.TotalTokens = v
 				}
 				usage = &u
 			}
@@ -258,6 +272,12 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 
 			return nil
 		})
+
+		if !finished {
+			if err := sctx.Err(); err != nil {
+				s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.WrapContextError("openai-compatible", err)})
+			}
+		}
 	}()
 
 	return s, nil
@@ -565,6 +585,10 @@ func fromChatCompletionResponse(raw map[string]any) (llm.Response, error) {
 			OutputTokens: intFromAny(parsed.Usage["completion_tokens"]),
 			Raw:          parsed.Usage,
 		}
+		resp.Usage.TotalTokens = resp.Usage.InputTokens + resp.Usage.OutputTokens
+		if v := intFromAny(parsed.Usage["total_tokens"]); v > 0 {
+			resp.Usage.TotalTokens = v
+		}
 	}
 
 	return resp, nil
@@ -572,15 +596,19 @@ func fromChatCompletionResponse(raw map[string]any) (llm.Response, error) {
 
 // --- HTTP helpers ---
 
-func (a *Adapter) doHTTP(ctx context.Context, body map[string]any) (map[string]any, int, error) {
+func (a *Adapter) doHTTP(ctx context.Context, body map[string]any) (map[string]any, int, http.Header, error) {
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.BaseURL+"/v1/chat/completions", bytes.NewReader(jsonBody))
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
+	}
+	// Apply default headers first so provider-specific headers take precedence.
+	for k, v := range a.DefaultHeaders {
+		httpReq.Header.Set(k, v)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	if a.APIKey != "" {
@@ -589,13 +617,13 @@ func (a *Adapter) doHTTP(ctx context.Context, body map[string]any) (map[string]a
 
 	resp, err := a.Client.Do(httpReq)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, llm.WrapContextError("openai-compatible", err)
 	}
 	defer resp.Body.Close()
 
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, resp.StatusCode, err
+		return nil, resp.StatusCode, resp.Header, err
 	}
 
 	var raw map[string]any
@@ -603,10 +631,10 @@ func (a *Adapter) doHTTP(ctx context.Context, body map[string]any) (map[string]a
 	dec.UseNumber()
 	if err := dec.Decode(&raw); err != nil {
 		// If we can't parse JSON, return what we have.
-		return nil, resp.StatusCode, nil
+		return nil, resp.StatusCode, resp.Header, nil
 	}
 
-	return raw, resp.StatusCode, nil
+	return raw, resp.StatusCode, resp.Header, nil
 }
 
 func extractErrorMessage(raw map[string]any) string {
@@ -619,12 +647,6 @@ func extractErrorMessage(raw map[string]any) string {
 		}
 	}
 	return ""
-}
-
-func parseRetryAfter(raw map[string]any) *time.Duration {
-	// Chat Completions API typically uses HTTP headers for retry-after,
-	// not the JSON body. Return nil since we don't have access to headers here.
-	return nil
 }
 
 func intFromAny(v any) int {

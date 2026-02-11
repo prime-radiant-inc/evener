@@ -1,6 +1,7 @@
 package google
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -2018,5 +2019,259 @@ func TestStream_ParsesGroundingMetadata(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("no web search content part found; content kinds = %v", contentKinds(resp.Message.Content))
+	}
+}
+
+func TestParseUsage_HandlesJSONNumber(t *testing.T) {
+	// Simulate what dec.UseNumber() produces during streaming.
+	raw := []byte(`{"promptTokenCount": 100, "candidatesTokenCount": 50, "totalTokenCount": 150, "thoughtsTokenCount": 20, "cachedContentTokenCount": 30}`)
+	var m map[string]any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&m); err != nil {
+		t.Fatal(err)
+	}
+	usage := parseUsage(m)
+	if usage.InputTokens != 100 {
+		t.Errorf("InputTokens = %d, want 100", usage.InputTokens)
+	}
+	if usage.OutputTokens != 50 {
+		t.Errorf("OutputTokens = %d, want 50", usage.OutputTokens)
+	}
+	if usage.TotalTokens != 150 {
+		t.Errorf("TotalTokens = %d, want 150", usage.TotalTokens)
+	}
+	if usage.ReasoningTokens == nil || *usage.ReasoningTokens != 20 {
+		t.Errorf("ReasoningTokens = %v, want 20", usage.ReasoningTokens)
+	}
+	if usage.CacheReadTokens == nil || *usage.CacheReadTokens != 30 {
+		t.Errorf("CacheReadTokens = %v, want 30", usage.CacheReadTokens)
+	}
+}
+
+func TestParseUsage_HandlesFloat64(t *testing.T) {
+	// Standard json.Unmarshal (non-streaming path) produces float64 values.
+	raw := []byte(`{"promptTokenCount": 200, "candidatesTokenCount": 75, "totalTokenCount": 275}`)
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	usage := parseUsage(m)
+	if usage.InputTokens != 200 {
+		t.Errorf("InputTokens = %d, want 200", usage.InputTokens)
+	}
+	if usage.OutputTokens != 75 {
+		t.Errorf("OutputTokens = %d, want 75", usage.OutputTokens)
+	}
+	if usage.TotalTokens != 275 {
+		t.Errorf("TotalTokens = %d, want 275", usage.TotalTokens)
+	}
+}
+
+func TestStream_EmitsReasoningEventsForThoughtParts(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		write := func(data string) {
+			_, _ = io.WriteString(w, "data: "+data+"\n\n")
+			if f != nil {
+				f.Flush()
+			}
+		}
+		// Chunk 1: thought part
+		write(`{"candidates":[{"content":{"parts":[{"thought":true,"text":"Let me think..."}]}}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`)
+		// Chunk 2: text part with finishReason
+		write(`{"candidates":[{"content":{"parts":[{"text":"The answer is 42."}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	stream, err := a.Stream(context.Background(), llm.Request{
+		Model:    "gemini-2.5-flash",
+		Messages: []llm.Message{llm.User("test")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	var types []llm.StreamEventType
+	for ev := range stream.Events() {
+		types = append(types, ev.Type)
+	}
+
+	// Verify reasoning and text stream events appear in the correct order.
+	wantTypes := []llm.StreamEventType{
+		llm.StreamEventStreamStart,
+		llm.StreamEventReasoningStart,
+		llm.StreamEventReasoningDelta,
+		llm.StreamEventReasoningEnd,
+		llm.StreamEventTextStart,
+		llm.StreamEventTextDelta,
+		llm.StreamEventTextEnd,
+		llm.StreamEventFinish,
+	}
+	// Check that all wanted types appear in order (allow provider events between them).
+	wi := 0
+	for _, got := range types {
+		if wi < len(wantTypes) && got == wantTypes[wi] {
+			wi++
+		}
+	}
+	if wi != len(wantTypes) {
+		t.Errorf("missing expected stream event types\ngot:  %v\nwant: %v", types, wantTypes)
+	}
+
+	// Also verify the reasoning delta content is correct.
+	stream2, err := a.Stream(context.Background(), llm.Request{
+		Model:    "gemini-2.5-flash",
+		Messages: []llm.Message{llm.User("test")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream2.Close()
+
+	var reasoningText string
+	for ev := range stream2.Events() {
+		if ev.Type == llm.StreamEventReasoningDelta {
+			reasoningText += ev.ReasoningDelta
+		}
+	}
+	if reasoningText != "Let me think..." {
+		t.Errorf("reasoning delta = %q, want %q", reasoningText, "Let me think...")
+	}
+}
+
+func TestAdapterTimeout_Request_EnforcedOnComplete(t *testing.T) {
+	done := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-done
+	}))
+	t.Cleanup(func() {
+		close(done)
+		srv.Close()
+	})
+
+	a := &Adapter{APIKey: "test", BaseURL: srv.URL, Client: srv.Client()}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gemini-test",
+		Messages: []llm.Message{llm.User("hi")},
+		AdapterTimeout: &llm.AdapterTimeout{
+			Request: 100 * time.Millisecond,
+		},
+	})
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	var rte *llm.RequestTimeoutError
+	if errors.As(err, &rte) {
+		return // correct error type
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	t.Errorf("expected RequestTimeoutError or DeadlineExceeded, got %T: %v", err, err)
+}
+
+func TestDefaultHeaders_SentOnCompleteRequests(t *testing.T) {
+	var capturedHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedHeaders = r.Header
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey:  "test-key",
+		BaseURL: srv.URL,
+		Client:  srv.Client(),
+		DefaultHeaders: map[string]string{
+			"X-Custom-Header": "custom-value",
+			"X-Another":       "another-value",
+		},
+	}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gemini-test",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capturedHeaders.Get("X-Custom-Header") != "custom-value" {
+		t.Errorf("X-Custom-Header = %q, want %q", capturedHeaders.Get("X-Custom-Header"), "custom-value")
+	}
+	if capturedHeaders.Get("X-Another") != "another-value" {
+		t.Errorf("X-Another = %q, want %q", capturedHeaders.Get("X-Another"), "another-value")
+	}
+	if capturedHeaders.Get("Content-Type") != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", capturedHeaders.Get("Content-Type"), "application/json")
+	}
+}
+
+func TestDefaultHeaders_SentOnStreamRequests(t *testing.T) {
+	var capturedHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedHeaders = r.Header
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, "data: "+`{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`+"\n\n")
+		if f != nil {
+			f.Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey:  "test-key",
+		BaseURL: srv.URL,
+		Client:  srv.Client(),
+		DefaultHeaders: map[string]string{
+			"X-Custom-Header": "custom-value",
+		},
+	}
+	stream, err := a.Stream(context.Background(), llm.Request{
+		Model:    "gemini-test",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	for range stream.Events() {
+	}
+	if capturedHeaders.Get("X-Custom-Header") != "custom-value" {
+		t.Errorf("X-Custom-Header = %q, want %q", capturedHeaders.Get("X-Custom-Header"), "custom-value")
+	}
+}
+
+func TestDefaultHeaders_CannotOverrideContentType(t *testing.T) {
+	var capturedHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedHeaders = r.Header
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey:  "test-key",
+		BaseURL: srv.URL,
+		Client:  srv.Client(),
+		DefaultHeaders: map[string]string{
+			"Content-Type": "text/plain",
+		},
+	}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gemini-test",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Provider-specific Content-Type must take precedence.
+	if capturedHeaders.Get("Content-Type") != "application/json" {
+		t.Errorf("Content-Type = %q, want %q (provider must take precedence)", capturedHeaders.Get("Content-Type"), "application/json")
 	}
 }

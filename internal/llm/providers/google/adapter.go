@@ -19,9 +19,10 @@ import (
 )
 
 type Adapter struct {
-	APIKey  string
-	BaseURL string
-	Client  *http.Client
+	APIKey         string
+	BaseURL        string
+	Client         *http.Client
+	DefaultHeaders map[string]string
 }
 
 func init() {
@@ -173,6 +174,9 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		return llm.Response{}, err
 	}
 
+	ctx, adapterCancel := llm.ApplyAdapterTimeout(ctx, req.AdapterTimeout, false)
+	defer adapterCancel()
+
 	endpoint := fmt.Sprintf("%s/v1beta/models/%s:generateContent", a.BaseURL, url.PathEscape(req.Model))
 	u, err := url.Parse(endpoint)
 	if err != nil {
@@ -185,6 +189,10 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(b))
 	if err != nil {
 		return llm.Response{}, err
+	}
+	// Apply default headers first so provider-specific headers take precedence.
+	for k, v := range a.DefaultHeaders {
+		httpReq.Header.Set(k, v)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
@@ -340,6 +348,10 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		cancel()
 		return nil, err
 	}
+	// Apply default headers first so provider-specific headers take precedence.
+	for k, v := range a.DefaultHeaders {
+		httpReq.Header.Set(k, v)
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := a.Client.Do(httpReq)
@@ -411,6 +423,9 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 									text, _ := p["text"].(string)
 									if text != "" {
 										flushTextPart()
+										s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningStart})
+										s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: text})
+										s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningEnd})
 										contentParts = append(contentParts, llm.ContentPart{
 											Kind: llm.ContentThinking,
 											Thinking: &llm.ThinkingData{
@@ -937,6 +952,14 @@ func parseUsage(u map[string]any) llm.Usage {
 			return int(x)
 		case int:
 			return x
+		case json.Number:
+			if i, err := x.Int64(); err == nil {
+				return int(i)
+			}
+			if f, err := x.Float64(); err == nil {
+				return int(f)
+			}
+			return 0
 		default:
 			return 0
 		}

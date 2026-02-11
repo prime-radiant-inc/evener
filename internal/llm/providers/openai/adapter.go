@@ -15,11 +15,12 @@ import (
 )
 
 type Adapter struct {
-	APIKey    string
-	BaseURL   string
-	OrgID     string
-	ProjectID string
-	Client    *http.Client
+	APIKey         string
+	BaseURL        string
+	OrgID          string
+	ProjectID      string
+	Client         *http.Client
+	DefaultHeaders map[string]string
 }
 
 func init() {
@@ -57,6 +58,10 @@ func NewFromEnv() (*Adapter, error) {
 func (a *Adapter) Name() string { return "openai" }
 
 func (a *Adapter) setHeaders(req *http.Request) {
+	// Apply default headers first so provider-specific headers take precedence.
+	for k, v := range a.DefaultHeaders {
+		req.Header.Set(k, v)
+	}
 	req.Header.Set("Authorization", "Bearer "+a.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 	if a.OrgID != "" {
@@ -139,6 +144,9 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	if err != nil {
 		return llm.Response{}, err
 	}
+
+	ctx, adapterCancel := llm.ApplyAdapterTimeout(ctx, req.AdapterTimeout, false)
+	defer adapterCancel()
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.BaseURL+"/v1/responses", bytes.NewReader(b))
 	if err != nil {
@@ -654,10 +662,14 @@ func toResponsesInput(msgs []llm.Message) (instructions string, items []any, _ e
 						url = llm.DataURI(mt, b)
 					}
 					if url != "" {
-						content = append(content, map[string]any{
+						img := map[string]any{
 							"type":      "input_image",
 							"image_url": url,
-						})
+						}
+						if p.Image.Detail != "" {
+							img["detail"] = p.Image.Detail
+						}
+						content = append(content, img)
 					}
 				case llm.ContentAudio, llm.ContentDocument:
 					return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("unsupported content kind for openai: %s", p.Kind)}
