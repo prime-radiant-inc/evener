@@ -370,6 +370,45 @@ func TestGrepNative_InvalidRegex(t *testing.T) {
 	}
 }
 
+func TestExecCommand_UsesNonLoginShell(t *testing.T) {
+	env := NewLocalExecutionEnvironment(t.TempDir())
+	ctx := context.Background()
+
+	// $0 in a login shell is "-bash" (with leading dash), in a non-login shell it's "/bin/bash" or "bash".
+	// A login shell also sources ~/.bash_profile which can introduce side effects.
+	res, err := env.ExecCommand(ctx, "echo $0", 5000, "", nil)
+	if err != nil {
+		t.Fatalf("ExecCommand: %v", err)
+	}
+	// Non-login shell should report /bin/bash, not -bash.
+	out := strings.TrimSpace(res.Stdout)
+	if strings.HasPrefix(out, "-") {
+		t.Fatalf("expected non-login shell, but $0 = %q (leading dash = login shell)", out)
+	}
+}
+
+func TestEnvVarPolicy_CoreOnly_IncludesLanguageToolchainPaths(t *testing.T) {
+	// Set language toolchain vars and verify they pass through CoreOnly policy.
+	t.Setenv("CARGO_HOME", "/home/user/.cargo")
+	t.Setenv("NVM_DIR", "/home/user/.nvm")
+	t.Setenv("RUSTUP_HOME", "/home/user/.rustup")
+	t.Setenv("PYENV_ROOT", "/home/user/.pyenv")
+
+	env := NewLocalExecutionEnvironment(t.TempDir())
+	env.EnvPolicy = EnvPolicyCoreOnly
+
+	ctx := context.Background()
+	res, err := env.ExecCommand(ctx, "env", 5000, "", nil)
+	if err != nil {
+		t.Fatalf("ExecCommand: %v", err)
+	}
+	for _, v := range []string{"CARGO_HOME=", "NVM_DIR=", "RUSTUP_HOME=", "PYENV_ROOT="} {
+		if !strings.Contains(res.Stdout, v) {
+			t.Errorf("CoreOnly policy should include %s", v)
+		}
+	}
+}
+
 func TestLocalExecutionEnvironment_InitializeCleanup(t *testing.T) {
 	env := NewLocalExecutionEnvironment(t.TempDir())
 	if err := env.Initialize(); err != nil {

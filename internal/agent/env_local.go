@@ -336,7 +336,7 @@ func (e *LocalExecutionEnvironment) ExecCommand(ctx context.Context, command str
 	}
 
 	start := time.Now()
-	cmd := exec.Command("bash", "-lc", command)
+	cmd := exec.Command("/bin/bash", "-c", command)
 	cmd.Dir = dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Env = filteredEnvWithPolicy(e.EnvPolicy, envVars)
@@ -444,6 +444,8 @@ func filteredEnvWithPolicy(policy EnvVarPolicy, extra map[string]string) []strin
 			"PATH": true, "HOME": true, "USER": true,
 			"SHELL": true, "LANG": true, "TERM": true,
 			"TMPDIR": true, "GOPATH": true, "GOMODCACHE": true,
+			"CARGO_HOME": true, "RUSTUP_HOME": true,
+			"NVM_DIR": true, "PYENV_ROOT": true,
 		}
 		out := []string{}
 		for _, kv := range os.Environ() {
