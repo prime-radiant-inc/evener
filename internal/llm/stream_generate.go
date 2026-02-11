@@ -170,6 +170,7 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 				ReasoningEffort: opts.ReasoningEffort,
 				Metadata:        opts.Metadata,
 				ProviderOptions: opts.ProviderOptions,
+				WebSearch:       opts.WebSearch,
 				AdapterTimeout:  opts.AdapterTimeout,
 			}
 

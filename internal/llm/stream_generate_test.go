@@ -823,6 +823,69 @@ func TestStreamGenerate_ToolCallsWithStopFinish_DoesNotExecute(t *testing.T) {
 	}
 }
 
+func TestStreamGenerate_WebSearch_PropagatedToRequest(t *testing.T) {
+	c := NewClient()
+	a := &scriptedStreamAdapter{
+		name: "openai",
+		scripts: []func(ctx context.Context, req Request) (Stream, error){
+			func(ctx context.Context, req Request) (Stream, error) {
+				_, cancel := context.WithCancel(ctx)
+				st := NewChanStream(cancel)
+				go func() {
+					defer st.CloseSend()
+					st.Send(StreamEvent{Type: StreamEventStreamStart})
+					st.Send(StreamEvent{Type: StreamEventTextStart, TextID: "text_1"})
+					st.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "searched"})
+					st.Send(StreamEvent{Type: StreamEventTextEnd, TextID: "text_1"})
+					resp := Response{Provider: "openai", Model: "m", Message: Assistant("searched"), Finish: FinishReason{Reason: "stop"}}
+					rp := resp
+					st.Send(StreamEvent{Type: StreamEventFinish, FinishReason: &resp.Finish, Response: &rp})
+					cancel()
+				}()
+				return st, nil
+			},
+		},
+	}
+	c.Register(a)
+
+	prompt := "search the web"
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	res, err := StreamGenerate(ctx, GenerateOptions{
+		Client:    c,
+		Model:     "m",
+		Provider:  "openai",
+		Prompt:    &prompt,
+		WebSearch: true,
+	})
+	if err != nil {
+		t.Fatalf("StreamGenerate: %v", err)
+	}
+	defer res.Close()
+
+	// Drain events.
+	for range res.Events() {
+	}
+
+	gotResp, err := res.Response()
+	if err != nil {
+		t.Fatalf("Response: %v", err)
+	}
+	if gotResp == nil || strings.TrimSpace(gotResp.Text()) != "searched" {
+		t.Fatalf("final response: %+v", gotResp)
+	}
+
+	// Verify WebSearch was propagated to the adapter request.
+	reqs := a.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("adapter calls: got %d want 1", len(reqs))
+	}
+	if !reqs[0].WebSearch {
+		t.Fatal("Request.WebSearch should be true")
+	}
+}
+
 func TestStreamGenerate_StopWhen_TerminatesToolLoopEarly(t *testing.T) {
 	// Setup: 3 scripted rounds. StopWhen fires after 2 tool rounds.
 	// Round 1: tool call -> execute -> StopWhen([step1]) = false
