@@ -1051,9 +1051,15 @@ func detectLoop(signatures []string, windowSize int) bool {
 // customToolDescriptions returns formatted descriptions of tools in the registry
 // that were registered after session initialization (not core or MCP tools).
 func (s *Session) customToolDescriptions() string {
+	// Build MCP tool name set for exclusion (MCP tools have their own section).
+	mcpNames := make(map[string]bool, len(s.mcpTools))
+	for _, td := range s.mcpTools {
+		mcpNames[td.Name] = true
+	}
+
 	var b strings.Builder
 	for _, td := range s.reg.Definitions() {
-		if s.coreToolNames[td.Name] {
+		if s.coreToolNames[td.Name] || mcpNames[td.Name] {
 			continue
 		}
 		desc := strings.TrimSpace(td.Description)

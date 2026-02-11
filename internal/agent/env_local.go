@@ -33,11 +33,24 @@ const (
 type LocalExecutionEnvironment struct {
 	RootDir     string
 	EnvPolicy   EnvVarPolicy
-	runningPIDs sync.Map // pid (int) → struct{}
+	runningPIDs *sync.Map // pid (int) → struct{}
 }
 
 func NewLocalExecutionEnvironment(rootDir string) *LocalExecutionEnvironment {
-	return &LocalExecutionEnvironment{RootDir: rootDir}
+	return &LocalExecutionEnvironment{
+		RootDir:     rootDir,
+		runningPIDs: &sync.Map{},
+	}
+}
+
+// WithWorkingDirectory returns a new LocalExecutionEnvironment that uses the
+// given directory as its root but shares PID tracking with the parent.
+func (e *LocalExecutionEnvironment) WithWorkingDirectory(dir string) *LocalExecutionEnvironment {
+	return &LocalExecutionEnvironment{
+		RootDir:     dir,
+		EnvPolicy:   e.EnvPolicy,
+		runningPIDs: e.runningPIDs,
+	}
 }
 
 func (e *LocalExecutionEnvironment) Initialize() error {

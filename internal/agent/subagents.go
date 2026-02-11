@@ -61,7 +61,11 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 
 	subEnv := s.env
 	if workingDir = strings.TrimSpace(workingDir); workingDir != "" {
-		subEnv = NewLocalExecutionEnvironment(workingDir)
+		if le, ok := s.env.(*LocalExecutionEnvironment); ok {
+			subEnv = le.WithWorkingDirectory(workingDir)
+		} else {
+			subEnv = NewLocalExecutionEnvironment(workingDir)
+		}
 	}
 
 	subSess, err := NewSession(s.client, subProfile, subEnv, subCfg)

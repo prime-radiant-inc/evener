@@ -3233,6 +3233,30 @@ func TestCloseAgent_ReturnsStructuredStatus(t *testing.T) {
 	}
 }
 
+func TestSubagent_WorkingDir_SharesParentPIDTracking(t *testing.T) {
+	dir := t.TempDir()
+	subDir := filepath.Join(dir, "sub")
+	os.MkdirAll(subDir, 0755)
+
+	env := NewLocalExecutionEnvironment(dir)
+	defer env.Cleanup()
+
+	childEnv := env.WithWorkingDirectory(subDir)
+	if childEnv.WorkingDirectory() != subDir {
+		t.Fatalf("child working dir: %q, want %q", childEnv.WorkingDirectory(), subDir)
+	}
+
+	// Store a PID in the child and verify it's visible from the parent.
+	childEnv.runningPIDs.Store(12345, struct{}{})
+	_, ok := env.runningPIDs.Load(12345)
+	if !ok {
+		t.Fatal("PID stored in child env not visible in parent env — PID tracking is not shared")
+	}
+
+	// Clean up fake PID to avoid Cleanup() trying to signal it.
+	env.runningPIDs.Delete(12345)
+}
+
 func TestSendInput_SteersRunningAgent(t *testing.T) {
 	// Create a minimal subagent entry with a running session to verify
 	// sendInput uses Steer() on running agents instead of rejecting them.
