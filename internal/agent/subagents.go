@@ -93,10 +93,17 @@ func (s *Session) sendInput(ctx context.Context, agentID string, input string) (
 		return "", fmt.Errorf("unknown agent_id: %s", agentID)
 	}
 	sub.mu.Lock()
-	if sub.running {
-		sub.mu.Unlock()
-		return "", fmt.Errorf("agent is already running")
+	running := sub.running
+	sub.mu.Unlock()
+
+	if running {
+		// Inject as steering message into the running session.
+		sub.sess.Steer(input)
+		return "ok", nil
 	}
+
+	// Agent is idle — start a new ProcessInput round.
+	sub.mu.Lock()
 	sub.done = make(chan struct{})
 	sub.running = true
 	sub.mu.Unlock()

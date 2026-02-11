@@ -3233,6 +3233,61 @@ func TestCloseAgent_ReturnsStructuredStatus(t *testing.T) {
 	}
 }
 
+func TestSendInput_SteersRunningAgent(t *testing.T) {
+	// Create a minimal subagent entry with a running session to verify
+	// sendInput uses Steer() on running agents instead of rejecting them.
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("ok")} },
+	}}
+	c.Register(f)
+	dir := t.TempDir()
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	// Create a subagent session manually.
+	subSess, err := NewSession(c, NewOpenAIProfile("test-model"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sub := &subagent{
+		id:      subSess.id,
+		sess:    subSess,
+		status:  SubAgentRunning,
+		running: true,
+		done:    make(chan struct{}),
+	}
+	sess.mu.Lock()
+	sess.subagents[sub.id] = sub
+	sess.mu.Unlock()
+
+	// sendInput on a running agent should Steer instead of erroring.
+	_, err = sess.sendInput(context.Background(), sub.id, "steered message")
+	if err != nil {
+		t.Fatalf("sendInput on running agent should not error, got: %v", err)
+	}
+
+	// Verify the steering message was queued.
+	subSess.mu.Lock()
+	queue := append([]string{}, subSess.steeringQueue...)
+	subSess.mu.Unlock()
+
+	if len(queue) != 1 || queue[0] != "steered message" {
+		t.Fatalf("expected steering queue=[\"steered message\"], got %v", queue)
+	}
+
+	// Clean up.
+	sub.mu.Lock()
+	sub.running = false
+	close(sub.done)
+	sub.mu.Unlock()
+	subSess.Close()
+}
+
 func TestDetectLoop_Patterns(t *testing.T) {
 	tests := []struct {
 		name   string
