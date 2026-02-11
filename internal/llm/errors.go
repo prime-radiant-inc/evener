@@ -14,8 +14,10 @@ type Error interface {
 	error
 	Provider() string
 	StatusCode() int
+	ErrorCode() string
 	Retryable() bool
 	RetryAfter() *time.Duration
+	Raw() any
 }
 
 type ConfigurationError struct {
@@ -27,16 +29,20 @@ func (e *ConfigurationError) Error() string {
 }
 func (e *ConfigurationError) Provider() string           { return "" }
 func (e *ConfigurationError) StatusCode() int            { return 0 }
+func (e *ConfigurationError) ErrorCode() string          { return "" }
 func (e *ConfigurationError) Retryable() bool            { return false }
 func (e *ConfigurationError) RetryAfter() *time.Duration { return nil }
+func (e *ConfigurationError) Raw() any                   { return nil }
 
 type httpErrorBase struct {
 	provider    string
 	statusCode  int
 	message     string
+	errorCode   string
 	retryable   bool
 	retryAfter  *time.Duration
 	rawResponse any
+	cause       error
 }
 
 func (e *httpErrorBase) Error() string {
@@ -48,8 +54,11 @@ func (e *httpErrorBase) Error() string {
 }
 func (e *httpErrorBase) Provider() string           { return e.provider }
 func (e *httpErrorBase) StatusCode() int            { return e.statusCode }
+func (e *httpErrorBase) ErrorCode() string          { return e.errorCode }
 func (e *httpErrorBase) Retryable() bool            { return e.retryable }
 func (e *httpErrorBase) RetryAfter() *time.Duration { return e.retryAfter }
+func (e *httpErrorBase) Raw() any                   { return e.rawResponse }
+func (e *httpErrorBase) Unwrap() error              { return e.cause }
 
 type InvalidRequestError struct{ httpErrorBase }
 type AuthenticationError struct{ httpErrorBase }
@@ -63,11 +72,30 @@ type RateLimitError struct{ httpErrorBase }
 type ServerError struct{ httpErrorBase }
 type UnknownHTTPError struct{ httpErrorBase }
 
+// extractErrorCode attempts to find an error code from a raw API response body.
+// Supports OpenAI ({"error":{"code":"..."}}) and Anthropic ({"error":{"type":"..."}}) formats.
+func extractErrorCode(raw any) string {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return ""
+	}
+	if errObj, ok := m["error"].(map[string]any); ok {
+		if code, _ := errObj["code"].(string); code != "" {
+			return code
+		}
+		if typ, _ := errObj["type"].(string); typ != "" {
+			return typ
+		}
+	}
+	return ""
+}
+
 func ErrorFromHTTPStatus(provider string, statusCode int, message string, raw any, retryAfter *time.Duration) error {
 	base := httpErrorBase{
 		provider:    strings.TrimSpace(provider),
 		statusCode:  statusCode,
 		message:     message,
+		errorCode:   extractErrorCode(raw),
 		retryAfter:  retryAfter,
 		rawResponse: raw,
 	}

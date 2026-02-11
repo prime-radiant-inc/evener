@@ -11,6 +11,7 @@ type nonHTTPErrorBase struct {
 	message    string
 	retryable  bool
 	retryAfter *time.Duration
+	cause      error
 }
 
 func (e *nonHTTPErrorBase) Error() string {
@@ -23,10 +24,13 @@ func (e *nonHTTPErrorBase) Error() string {
 	}
 	return fmt.Sprintf("%s error: %s", e.provider, msg)
 }
-func (e *nonHTTPErrorBase) Provider() string          { return e.provider }
-func (e *nonHTTPErrorBase) StatusCode() int           { return 0 }
-func (e *nonHTTPErrorBase) Retryable() bool           { return e.retryable }
+func (e *nonHTTPErrorBase) Provider() string           { return e.provider }
+func (e *nonHTTPErrorBase) StatusCode() int            { return 0 }
+func (e *nonHTTPErrorBase) ErrorCode() string          { return "" }
+func (e *nonHTTPErrorBase) Retryable() bool            { return e.retryable }
 func (e *nonHTTPErrorBase) RetryAfter() *time.Duration { return e.retryAfter }
+func (e *nonHTTPErrorBase) Raw() any                   { return nil }
+func (e *nonHTTPErrorBase) Unwrap() error              { return e.cause }
 
 type AbortError struct{ nonHTTPErrorBase }
 type NetworkError struct{ nonHTTPErrorBase }
