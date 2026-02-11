@@ -459,6 +459,27 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 							}
 						}
 					}
+					// Parse groundingMetadata for web search results (mirrors fromGeminiResponse).
+					if gm, ok := c0["groundingMetadata"].(map[string]any); ok && len(gm) > 0 {
+						query := ""
+						if wq, ok := gm["webSearchQueries"].([]any); ok && len(wq) > 0 {
+							qs := make([]string, 0, len(wq))
+							for _, q := range wq {
+								if s, ok := q.(string); ok {
+									qs = append(qs, s)
+								}
+							}
+							query = strings.Join(qs, "; ")
+						}
+						gmRaw, _ := json.Marshal(gm)
+						contentParts = append(contentParts, llm.ContentPart{
+							Kind: llm.ContentWebSearch,
+							WebSearch: &llm.WebSearchData{
+								Query: query,
+								Raw:   gmRaw,
+							},
+						})
+					}
 					if fr, _ := c0["finishReason"].(string); fr != "" {
 						finish = llm.NormalizeFinishReason("google", fr)
 						if textStarted {

@@ -1780,3 +1780,60 @@ func TestStream_ParsesThoughtParts(t *testing.T) {
 		t.Fatalf("text parts = %d, want 1; content = %+v", textParts, finish.Message.Content)
 	}
 }
+
+func TestStream_ParsesGroundingMetadata(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		write := func(data string) {
+			_, _ = io.WriteString(w, "data: "+data+"\n\n")
+			if f != nil {
+				f.Flush()
+			}
+		}
+		write(`{"candidates":[{"content":{"parts":[{"text":"search result"}]},"finishReason":"STOP","groundingMetadata":{"webSearchQueries":["test query"],"searchEntryPoint":{"renderedContent":"<div>results</div>"}}}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":5,"totalTokenCount":10}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	stream, err := a.Stream(context.Background(), llm.Request{
+		Model:     "gemini-2.0-flash",
+		Messages:  []llm.Message{llm.User("search")},
+		WebSearch: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	var resp *llm.Response
+	for ev := range stream.Events() {
+		if ev.Response != nil {
+			resp = ev.Response
+		}
+	}
+	if resp == nil {
+		t.Fatal("no response")
+	}
+	found := false
+	for _, p := range resp.Message.Content {
+		if p.Kind == llm.ContentWebSearch {
+			found = true
+			if p.WebSearch == nil {
+				t.Fatal("WebSearch data is nil")
+			}
+			if p.WebSearch.Query == "" {
+				t.Fatal("WebSearch.Query is empty")
+			}
+			if !strings.Contains(p.WebSearch.Query, "test query") {
+				t.Fatalf("WebSearch.Query = %q, want to contain 'test query'", p.WebSearch.Query)
+			}
+			if len(p.WebSearch.Raw) == 0 {
+				t.Fatal("WebSearch.Raw is empty")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no web search content part found; content kinds = %v", contentKinds(resp.Message.Content))
+	}
+}
