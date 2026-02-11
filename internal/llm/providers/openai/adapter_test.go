@@ -1182,6 +1182,72 @@ func TestComplete_WrapsContextCanceled(t *testing.T) {
 	}
 }
 
+func TestComplete_ProviderOptions_PassedThrough(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r1","model":"gpt-5.2","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gpt-5.2",
+		Messages: []llm.Message{llm.User("hi")},
+		ProviderOptions: map[string]any{
+			"openai": map[string]any{
+				"custom_field": "custom_value",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotBody["custom_field"] != "custom_value" {
+		t.Fatalf("custom_field not passed through: %v", gotBody)
+	}
+}
+
+func TestParseUsage_ReasoningTokensDistinctFromOutputTokens(t *testing.T) {
+	// Test via a full response to verify parseUsage behavior indirectly.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "r1",
+  "model": "gpt-5.2",
+  "output": [{"type": "message", "content": [{"type": "output_text", "text": "hi"}]}],
+  "usage": {
+    "input_tokens": 100,
+    "output_tokens": 50,
+    "total_tokens": 150,
+    "output_tokens_details": {"reasoning_tokens": 30}
+  }
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gpt-5.2",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Usage.OutputTokens != 50 {
+		t.Fatalf("OutputTokens = %d, want 50", resp.Usage.OutputTokens)
+	}
+	if resp.Usage.ReasoningTokens == nil || *resp.Usage.ReasoningTokens != 30 {
+		t.Fatalf("ReasoningTokens = %v, want 30", resp.Usage.ReasoningTokens)
+	}
+	// Reasoning tokens must NOT inflate OutputTokens
+	if resp.Usage.OutputTokens == 50+30 {
+		t.Fatal("OutputTokens includes reasoning tokens — they should be distinct")
+	}
+}
+
 func contentKinds(parts []llm.ContentPart) []string {
 	var kinds []string
 	for _, p := range parts {
