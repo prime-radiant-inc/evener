@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -251,6 +252,121 @@ func TestEnvVarPolicy_Default_FiltersSensitive(t *testing.T) {
 	}
 	if !strings.Contains(res.Stdout, "SERF_TEST_MARKER=should_appear") {
 		t.Fatal("default policy should pass through non-sensitive vars")
+	}
+}
+
+func TestGrep_FallbackWithoutRipgrep(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("hello world\ngoodbye world\nhello again\n"), 0o644)
+
+	env := NewLocalExecutionEnvironment(dir)
+	// Test the native fallback directly
+	result, err := env.grepNative("hello", dir, "", false, 100)
+	if err != nil {
+		t.Fatalf("grepNative: %v", err)
+	}
+	if !strings.Contains(result, "hello.txt") {
+		t.Fatalf("expected match in hello.txt, got: %q", result)
+	}
+	if !strings.Contains(result, "hello world") {
+		t.Fatalf("expected 'hello world' in output, got: %q", result)
+	}
+}
+
+func TestGrepNative_CaseInsensitiveAndGlob(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "test.go"), []byte("Hello World\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "test.txt"), []byte("hello world\n"), 0o644)
+
+	env := NewLocalExecutionEnvironment(dir)
+
+	// Case insensitive should match both files
+	result, err := env.grepNative("HELLO", dir, "", true, 100)
+	if err != nil {
+		t.Fatalf("case-insensitive: %v", err)
+	}
+	if !strings.Contains(result, "test.go") || !strings.Contains(result, "test.txt") {
+		t.Fatalf("case-insensitive should match both files, got: %q", result)
+	}
+
+	// Glob filter should restrict to *.go only
+	result, err = env.grepNative("hello", dir, "*.go", false, 100)
+	if err != nil {
+		t.Fatalf("glob filter: %v", err)
+	}
+	if strings.Contains(result, "test.txt") {
+		t.Fatalf("glob *.go should not match .txt, got: %q", result)
+	}
+}
+
+func TestGrepNative_SkipsHiddenDirs(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".hidden"), 0o755)
+	os.WriteFile(filepath.Join(dir, ".hidden", "secret.txt"), []byte("hello hidden\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "visible.txt"), []byte("hello visible\n"), 0o644)
+
+	env := NewLocalExecutionEnvironment(dir)
+	result, err := env.grepNative("hello", dir, "", false, 100)
+	if err != nil {
+		t.Fatalf("grepNative: %v", err)
+	}
+	if strings.Contains(result, "secret.txt") {
+		t.Fatalf("should skip hidden dirs, got: %q", result)
+	}
+	if !strings.Contains(result, "visible.txt") {
+		t.Fatalf("should match visible.txt, got: %q", result)
+	}
+}
+
+func TestGrepNative_SkipsBinaryFiles(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "binary.bin"), []byte("hello\x00world\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "text.txt"), []byte("hello world\n"), 0o644)
+
+	env := NewLocalExecutionEnvironment(dir)
+	result, err := env.grepNative("hello", dir, "", false, 100)
+	if err != nil {
+		t.Fatalf("grepNative: %v", err)
+	}
+	if strings.Contains(result, "binary.bin") {
+		t.Fatalf("should skip binary files, got: %q", result)
+	}
+	if !strings.Contains(result, "text.txt") {
+		t.Fatalf("should match text.txt, got: %q", result)
+	}
+}
+
+func TestGrepNative_MaxResults(t *testing.T) {
+	dir := t.TempDir()
+	// Create file with many matching lines
+	var content strings.Builder
+	for i := 0; i < 20; i++ {
+		content.WriteString("match line\n")
+	}
+	os.WriteFile(filepath.Join(dir, "many.txt"), []byte(content.String()), 0o644)
+
+	env := NewLocalExecutionEnvironment(dir)
+	result, err := env.grepNative("match", dir, "", false, 5)
+	if err != nil {
+		t.Fatalf("grepNative: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(result), "\n")
+	if len(lines) > 5 {
+		t.Fatalf("expected at most 5 results, got %d", len(lines))
+	}
+}
+
+func TestGrepNative_InvalidRegex(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello\n"), 0o644)
+
+	env := NewLocalExecutionEnvironment(dir)
+	_, err := env.grepNative("[invalid", dir, "", false, 100)
+	if err == nil {
+		t.Fatal("expected error for invalid regex")
+	}
+	if !strings.Contains(err.Error(), "invalid regex") {
+		t.Fatalf("expected 'invalid regex' error, got: %v", err)
 	}
 }
 

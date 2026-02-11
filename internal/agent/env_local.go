@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -210,7 +212,15 @@ func (e *LocalExecutionEnvironment) Glob(pattern string, basePath string) ([]str
 func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int) (string, error) {
 	rg, err := exec.LookPath("rg")
 	if err != nil {
-		return "", fmt.Errorf("rg not found in PATH")
+		// Fallback to native Go regex search when ripgrep is absent
+		dir := strings.TrimSpace(path)
+		if dir == "" {
+			dir = e.RootDir
+		}
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(e.RootDir, dir)
+		}
+		return e.grepNative(pattern, dir, globFilter, caseInsensitive, maxResults)
 	}
 	dir := strings.TrimSpace(path)
 	if dir == "" {
@@ -247,6 +257,70 @@ func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter
 		return "", nil
 	}
 	return res.Stdout + res.Stderr, err
+}
+
+func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string, caseInsensitive bool, maxResults int) (string, error) {
+	flags := ""
+	if caseInsensitive {
+		flags = "(?i)"
+	}
+	re, err := regexp.Compile(flags + pattern)
+	if err != nil {
+		return "", fmt.Errorf("invalid regex: %w", err)
+	}
+
+	if maxResults <= 0 {
+		maxResults = 100
+	}
+
+	var matches []string
+	count := 0
+
+	err = filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // skip unreadable entries
+		}
+		if d.IsDir() {
+			if strings.HasPrefix(d.Name(), ".") && p != path {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		// Skip hidden files
+		if strings.HasPrefix(d.Name(), ".") {
+			return nil
+		}
+		if globFilter != "" {
+			matched, _ := filepath.Match(globFilter, filepath.Base(p))
+			if !matched {
+				return nil
+			}
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return nil // skip unreadable files
+		}
+		// Skip binary files
+		if bytes.IndexByte(data, 0) >= 0 {
+			return nil
+		}
+		relPath, _ := filepath.Rel(path, p)
+		lines := strings.Split(string(data), "\n")
+		for i, line := range lines {
+			if re.MatchString(line) {
+				matches = append(matches, fmt.Sprintf("%s:%d:%s", relPath, i+1, line))
+				count++
+				if count >= maxResults {
+					return filepath.SkipAll
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return strings.Join(matches, "\n"), nil
 }
 
 func (e *LocalExecutionEnvironment) ExecCommand(ctx context.Context, command string, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error) {
