@@ -67,6 +67,39 @@ func TestTurn_JSONRoundTrip_ToolResult(t *testing.T) {
 	}
 }
 
+func TestTurn_JSONRoundTrip_ToolResults(t *testing.T) {
+	orig := Turn{
+		Kind: TurnToolResults,
+		Message: llm.Message{
+			Role: llm.RoleTool,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "c1", Name: "read_file", Content: "file A contents", IsError: false}},
+				{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "c2", Name: "write_file", Content: "wrote ok", IsError: false}},
+			},
+		},
+	}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got Turn
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Kind != TurnToolResults {
+		t.Fatalf("kind: got %q want %q", got.Kind, TurnToolResults)
+	}
+	if len(got.Message.Content) != 2 {
+		t.Fatalf("content parts: got %d want 2", len(got.Message.Content))
+	}
+	if got.Message.Content[0].ToolResult.ToolCallID != "c1" {
+		t.Fatalf("content[0].tool_call_id: got %q want %q", got.Message.Content[0].ToolResult.ToolCallID, "c1")
+	}
+	if got.Message.Content[1].ToolResult.ToolCallID != "c2" {
+		t.Fatalf("content[1].tool_call_id: got %q want %q", got.Message.Content[1].ToolResult.ToolCallID, "c2")
+	}
+}
+
 func TestToolOutputLimit_JSONRoundTrip(t *testing.T) {
 	orig := ToolOutputLimit{
 		MaxChars: 50000,

@@ -237,7 +237,7 @@ func maskObservations(history []Turn, preserveRecent int) {
 	}
 	for i := 0; i < cutoff; i++ {
 		t := &history[i]
-		if t.Kind != TurnTool {
+		if t.Kind != TurnTool && t.Kind != TurnToolResults {
 			continue
 		}
 		for j := range t.Message.Content {
@@ -520,7 +520,7 @@ func checkpoint(history []Turn, preserveRecent int) []Turn {
 					// Find the matching tool result by ToolCallID, within cutoff.
 					exitCode := "?"
 					for j := i + 1; j < cutoff; j++ {
-						if history[j].Kind != TurnTool {
+						if history[j].Kind != TurnTool && history[j].Kind != TurnToolResults {
 							continue
 						}
 						content := findToolResultByCallID(history[j], p.ToolCall.ID)
@@ -652,7 +652,7 @@ func (cm *ContextManager) summarizeWithLLM(ctx context.Context, history []Turn, 
 			b.WriteString("User: " + truncText(t.Message.Text(), 500) + "\n")
 		case TurnAssistant:
 			b.WriteString("Assistant: " + truncText(t.Message.Text(), 500) + "\n")
-		case TurnTool:
+		case TurnTool, TurnToolResults:
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
 					content := fmt.Sprint(p.ToolResult.Content)
@@ -705,7 +705,7 @@ func (cm *ContextManager) summarizeWithLLM(ctx context.Context, history []Turn, 
 func safeCutoff(history []Turn, cutoff int) int {
 	for cutoff > 0 && cutoff < len(history) {
 		k := history[cutoff].Kind
-		if k == TurnTool || k == TurnSteering {
+		if k == TurnTool || k == TurnToolResults || k == TurnSteering {
 			cutoff--
 			continue
 		}

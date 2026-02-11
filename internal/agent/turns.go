@@ -9,11 +9,12 @@ import (
 type TurnKind string
 
 const (
-	TurnUserInput TurnKind = "USER_INPUT"
-	TurnSteering  TurnKind = "STEERING"
-	TurnAssistant TurnKind = "ASSISTANT"
-	TurnTool      TurnKind = "TOOL"
-	TurnSystem    TurnKind = "SYSTEM"
+	TurnUserInput   TurnKind = "USER_INPUT"
+	TurnSteering    TurnKind = "STEERING"
+	TurnAssistant   TurnKind = "ASSISTANT"
+	TurnTool        TurnKind = "TOOL"        // Deprecated: use TurnToolResults for new code.
+	TurnToolResults TurnKind = "TOOL_RESULTS" // Aggregated tool results from one round.
+	TurnSystem      TurnKind = "SYSTEM"
 )
 
 // Turn is the Session's typed history item. Steering turns are kept distinct for observability,

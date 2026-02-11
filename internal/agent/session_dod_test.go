@@ -2019,6 +2019,185 @@ func TestSession_GracefulShutdown_SessionEndIncludesStateAndTurns(t *testing.T) 
 	}
 }
 
+func TestSession_ToolResults_AggregatedIntoSingleTurn(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	// Model returns two parallel tool calls, then text.
+	f := &fakeAdapter{
+		name: "anthropic",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Message: llm.Message{
+						Role: llm.RoleAssistant,
+						Content: []llm.ContentPart{
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c1", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"a.txt","content":"A"}`)}},
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c2", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"b.txt","content":"B"}`)}},
+						},
+					},
+				}
+			},
+			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("done")} },
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err = sess.ProcessInput(ctx, "write two files")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	// After parallel tool calls, history should contain exactly one TurnToolResults turn (not two TurnTool turns).
+	sess.mu.Lock()
+	var toolResultTurns int
+	var toolResultsTurns int
+	for _, turn := range sess.history {
+		if turn.Kind == TurnTool {
+			toolResultTurns++
+		}
+		if turn.Kind == TurnToolResults {
+			toolResultsTurns++
+		}
+	}
+	sess.mu.Unlock()
+	sess.Close()
+
+	if toolResultTurns != 0 {
+		t.Fatalf("expected 0 individual TurnTool turns, got %d", toolResultTurns)
+	}
+	if toolResultsTurns != 1 {
+		t.Fatalf("expected 1 TurnToolResults turn, got %d", toolResultsTurns)
+	}
+}
+
+func TestSession_ToolResults_ContainsAllCallIDs(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	f := &fakeAdapter{
+		name: "anthropic",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Message: llm.Message{
+						Role: llm.RoleAssistant,
+						Content: []llm.ContentPart{
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c1", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"a.txt","content":"A"}`)}},
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c2", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"b.txt","content":"B"}`)}},
+						},
+					},
+				}
+			},
+			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("done")} },
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err = sess.ProcessInput(ctx, "write two files")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	// The aggregated turn should contain both call IDs.
+	sess.mu.Lock()
+	var callIDs []string
+	for _, turn := range sess.history {
+		if turn.Kind == TurnToolResults {
+			for _, p := range turn.Message.Content {
+				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
+					callIDs = append(callIDs, p.ToolResult.ToolCallID)
+				}
+			}
+		}
+	}
+	sess.mu.Unlock()
+	sess.Close()
+
+	if len(callIDs) != 2 {
+		t.Fatalf("expected 2 call IDs in aggregated turn, got %d: %v", len(callIDs), callIDs)
+	}
+	foundC1, foundC2 := false, false
+	for _, id := range callIDs {
+		if id == "c1" {
+			foundC1 = true
+		}
+		if id == "c2" {
+			foundC2 = true
+		}
+	}
+	if !foundC1 || !foundC2 {
+		t.Fatalf("expected call IDs c1 and c2, got %v", callIDs)
+	}
+}
+
+func TestSession_ToolResults_SingleCallAlsoAggregated(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Message: llm.Message{
+						Role: llm.RoleAssistant,
+						Content: []llm.ContentPart{
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c1", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"a.txt","content":"A"}`)}},
+						},
+					},
+				}
+			},
+			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("done")} },
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err = sess.ProcessInput(ctx, "write file")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	// Even a single tool call should use TurnToolResults.
+	sess.mu.Lock()
+	var foundToolResults bool
+	for _, turn := range sess.history {
+		if turn.Kind == TurnToolResults {
+			foundToolResults = true
+		}
+		if turn.Kind == TurnTool {
+			t.Fatalf("found individual TurnTool; expected TurnToolResults")
+		}
+	}
+	sess.mu.Unlock()
+	sess.Close()
+
+	if !foundToolResults {
+		t.Fatalf("expected TurnToolResults turn in history")
+	}
+}
+
 func TestDetectLoop_Patterns(t *testing.T) {
 	tests := []struct {
 		name   string

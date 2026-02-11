@@ -725,6 +725,20 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 					history = append(history, llm.User(t.Message.Text()))
 					continue
 				}
+				if t.Kind == TurnToolResults {
+					// Expand aggregated tool results into individual messages.
+					for _, p := range t.Message.Content {
+						if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
+							history = append(history, llm.ToolResultNamed(
+								p.ToolResult.ToolCallID,
+								p.ToolResult.Name,
+								p.ToolResult.Content,
+								p.ToolResult.IsError,
+							))
+						}
+					}
+					continue
+				}
 				history = append(history, t.Message)
 			}
 
@@ -834,9 +848,20 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			}
 		}
 
+			// Aggregate all tool results into a single TurnToolResults turn.
+			var parts []llm.ContentPart
 			for _, r := range results {
-				s.appendTurn(TurnTool, llm.ToolResultNamed(r.CallID, r.ToolName, r.Output, r.IsError))
+				parts = append(parts, llm.ContentPart{
+					Kind: llm.ContentToolResult,
+					ToolResult: &llm.ToolResultData{
+						ToolCallID: r.CallID,
+						Name:       r.ToolName,
+						Content:    r.Output,
+						IsError:    r.IsError,
+					},
+				})
 			}
+			s.appendTurn(TurnToolResults, llm.Message{Role: llm.RoleTool, Content: parts})
 
 		// Loop detection: track per-call signatures and check for repeating patterns.
 		for _, call := range calls {
