@@ -1880,6 +1880,54 @@ func TestMaxTurns_CountsConversationTurns(t *testing.T) {
 	}
 }
 
+func TestAssistantTurn_CapturesUsageAndResponseID(t *testing.T) {
+	c := llm.NewClient()
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					ID:      "resp-123",
+					Message: llm.Assistant("hello"),
+					Finish:  llm.FinishReason{Reason: "stop"},
+					Usage:   llm.Usage{InputTokens: 10, OutputTokens: 5},
+				}
+			},
+		},
+	}
+	c.Register(f)
+
+	dir := t.TempDir()
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	go func() { for range sess.Events() {} }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "hi")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	for _, turn := range sess.history {
+		if turn.Kind == TurnAssistant {
+			if turn.ResponseID == "" {
+				t.Fatal("expected non-empty ResponseID on assistant turn")
+			}
+			if turn.Usage.InputTokens == 0 {
+				t.Fatal("expected non-zero usage on assistant turn")
+			}
+			return
+		}
+	}
+	t.Fatal("no assistant turn found")
+}
+
 func TestDetectLoop_Patterns(t *testing.T) {
 	tests := []struct {
 		name   string

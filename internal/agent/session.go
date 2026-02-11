@@ -490,6 +490,20 @@ func (s *Session) appendTurn(kind TurnKind, m llm.Message) {
 	s.history = append(s.history, NewTurn(kind, m))
 }
 
+// appendAssistantTurn appends an assistant turn that carries the full response
+// metadata (usage stats and response ID) alongside the message content.
+func (s *Session) appendAssistantTurn(resp llm.Response) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.history = append(s.history, Turn{
+		Kind:       TurnAssistant,
+		Message:    resp.Message,
+		Timestamp:  time.Now().UTC(),
+		Usage:      resp.Usage,
+		ResponseID: resp.ID,
+	})
+}
+
 // maybeAutoSave persists the session state if StateDir is configured.
 // Errors are emitted as warnings but do not interrupt the session.
 func (s *Session) maybeAutoSave() {
@@ -752,7 +766,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 
 			txt := resp.Text()
 			s.emit(EventAssistantTextStart, map[string]any{})
-			s.appendTurn(TurnAssistant, resp.Message)
+			s.appendAssistantTurn(resp)
 			if strings.TrimSpace(txt) != "" {
 				s.emit(EventAssistantTextDelta, map[string]any{"delta": txt})
 			}

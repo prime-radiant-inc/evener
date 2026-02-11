@@ -19,9 +19,11 @@ const (
 // Turn is the Session's typed history item. Steering turns are kept distinct for observability,
 // but are converted to user-role messages when building the LLM request.
 type Turn struct {
-	Kind      TurnKind    `json:"kind"`
-	Message   llm.Message `json:"message"`
-	Timestamp time.Time   `json:"timestamp"`
+	Kind       TurnKind    `json:"kind"`
+	Message    llm.Message `json:"message"`
+	Timestamp  time.Time   `json:"timestamp"`
+	Usage      llm.Usage   `json:"usage,omitempty"`
+	ResponseID string      `json:"response_id,omitempty"`
 }
 
 // NewTurn creates a Turn with the current UTC time.
