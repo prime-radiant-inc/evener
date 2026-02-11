@@ -29,6 +29,9 @@ func (c *Client) Register(adapter ProviderAdapter) {
 	if c.defaultProvider == "" {
 		c.defaultProvider = adapter.Name()
 	}
+	if init, ok := adapter.(Initializer); ok {
+		_ = init.Initialize(context.Background())
+	}
 }
 
 func (c *Client) SetDefaultProvider(name string) {

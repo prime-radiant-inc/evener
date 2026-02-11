@@ -312,6 +312,21 @@ func TestClient_Initialize_CallsInitializableAdapters(t *testing.T) {
 	}
 }
 
+func TestClient_Register_CallsInitialize(t *testing.T) {
+	adapter := &initializableFakeAdapter{fakeAdapter: fakeAdapter{name: "test"}}
+	c := NewClient()
+	c.Register(adapter)
+	if !adapter.initialized {
+		t.Fatal("Register should call Initialize on adapters that implement Initializer")
+	}
+}
+
+func TestClient_Register_NonInitializable_NoPanic(t *testing.T) {
+	// Registering a plain adapter that does not implement Initializer should not panic.
+	c := NewClient()
+	c.Register(&fakeAdapter{name: "plain"})
+}
+
 func TestClient_SupportsToolChoice(t *testing.T) {
 	c := NewClient()
 	c.Register(&toolChoiceFakeAdapter{fakeAdapter: fakeAdapter{name: "openai"}})
