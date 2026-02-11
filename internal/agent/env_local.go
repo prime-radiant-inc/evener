@@ -560,15 +560,19 @@ func filteredEnv(extra map[string]string) []string {
 		return false
 	}
 	allow := map[string]bool{
-		"PATH":       true,
-		"HOME":       true,
-		"USER":       true,
-		"SHELL":      true,
-		"LANG":       true,
-		"TERM":       true,
-		"TMPDIR":     true,
-		"GOPATH":     true,
-		"GOMODCACHE": true,
+		"PATH":        true,
+		"HOME":        true,
+		"USER":        true,
+		"SHELL":       true,
+		"LANG":        true,
+		"TERM":        true,
+		"TMPDIR":      true,
+		"GOPATH":      true,
+		"GOMODCACHE":  true,
+		"CARGO_HOME":  true,
+		"NVM_DIR":     true,
+		"RUSTUP_HOME": true,
+		"PYENV_ROOT":  true,
 	}
 	out := []string{}
 	for _, kv := range os.Environ() {

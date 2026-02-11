@@ -530,6 +530,23 @@ func TestExecCommand_SIGTERM_ThenSIGKILL_Escalation(t *testing.T) {
 	}
 }
 
+func TestFilteredEnv_AllowListIncludesLanguageToolchainVars(t *testing.T) {
+	for _, k := range []string{"CARGO_HOME", "NVM_DIR", "RUSTUP_HOME", "PYENV_ROOT"} {
+		t.Setenv(k, "/test/"+k)
+	}
+	env := filteredEnv(nil)
+	envMap := map[string]string{}
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		envMap[k] = v
+	}
+	for _, k := range []string{"CARGO_HOME", "NVM_DIR", "RUSTUP_HOME", "PYENV_ROOT"} {
+		if _, ok := envMap[k]; !ok {
+			t.Errorf("missing %s in default filtered env", k)
+		}
+	}
+}
+
 func TestLocalExecutionEnvironment_InitializeCleanup(t *testing.T) {
 	env := NewLocalExecutionEnvironment(t.TempDir())
 	if err := env.Initialize(); err != nil {
