@@ -615,6 +615,12 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 	s.emit(EventUserInput, map[string]any{"text": input})
 	s.appendTurn(TurnUserInput, llm.User(input))
 
+	// Drain any pending steering messages before the first LLM call (spec 2.5).
+	for _, msg := range s.drainSteering() {
+		s.appendTurn(TurnSteering, llm.User(msg))
+		s.emit(EventSteeringInjected, map[string]any{"text": msg})
+	}
+
 		docs, _ := LoadProjectDocs(s.env, s.profile.ProjectDocFiles()...)
 		var skillList []SkillMeta
 		for _, sm := range s.skills {

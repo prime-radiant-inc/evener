@@ -1352,3 +1352,44 @@ func TestProcessInput_ToolChoiceIsAuto(t *testing.T) {
 	go func() { for range sess.Events() {} }()
 	_, _ = sess.ProcessInput(context.Background(), "hello")
 }
+
+func TestProcessInput_DrainsSteeringBeforeFirstLLMCall(t *testing.T) {
+	c := llm.NewClient()
+	var firstReqMessages []llm.Message
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				firstReqMessages = req.Messages
+				return llm.Response{
+					Message: llm.Assistant("done"),
+					Finish:  llm.FinishReason{Reason: "stop"},
+				}
+			},
+		},
+	}
+	c.Register(f)
+
+	dir := t.TempDir()
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	go func() { for range sess.Events() {} }()
+
+	// Queue steering BEFORE ProcessInput
+	sess.Steer("do it differently")
+	_, _ = sess.ProcessInput(context.Background(), "hello")
+
+	// The steering message should appear in the first LLM request
+	found := false
+	for _, m := range firstReqMessages {
+		if m.Role == llm.RoleUser && strings.Contains(m.Text(), "do it differently") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("steering message not in first LLM request")
+	}
+}
