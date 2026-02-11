@@ -1022,8 +1022,15 @@ func TestSession_Subagents_SpawnWaitClose_AndDepthLimit(t *testing.T) {
 	if waitRes.IsError {
 		t.Fatalf("wait error: %s", waitRes.Output)
 	}
-	if strings.TrimSpace(waitRes.Output) != "subok" {
-		t.Fatalf("wait output: %q", waitRes.Output)
+	var waitResult SubAgentResult
+	if err := json.Unmarshal([]byte(waitRes.Output), &waitResult); err != nil {
+		t.Fatalf("unmarshal wait result: %v (out=%q)", err, waitRes.Output)
+	}
+	if waitResult.Output != "subok" {
+		t.Fatalf("wait output: got %q want %q", waitResult.Output, "subok")
+	}
+	if !waitResult.Success {
+		t.Fatalf("expected success=true")
 	}
 
 	// Depth limiting: subagent cannot spawn further subagents when MaxSubagentDepth=1.
@@ -1031,7 +1038,7 @@ func TestSession_Subagents_SpawnWaitClose_AndDepthLimit(t *testing.T) {
 	if sub == nil || sub.sess == nil {
 		t.Fatalf("missing subagent session for %q", agentID)
 	}
-	if _, err := sub.sess.spawnAgent(context.Background(), "nested", ""); err == nil {
+	if _, err := sub.sess.spawnAgent(context.Background(), "nested", "", "", 0); err == nil {
 		t.Fatalf("expected depth limit error, got nil")
 	}
 
@@ -1044,6 +1051,230 @@ func TestSession_Subagents_SpawnWaitClose_AndDepthLimit(t *testing.T) {
 		t.Fatalf("close_agent error: %s", closeRes.Output)
 	}
 	sess.Close()
+}
+
+func TestSession_SpawnAgent_ReturnsStatus(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("done")} },
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"do it"}`),
+	})
+	if spawnRes.IsError {
+		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
+	}
+	var spawned map[string]any
+	if err := json.Unmarshal([]byte(spawnRes.Output), &spawned); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if spawned["status"] != "running" {
+		t.Fatalf("expected status 'running', got %v", spawned["status"])
+	}
+}
+
+func TestSession_WaitAgent_ReturnsSubAgentResult(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("result text")} },
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"do it"}`),
+	})
+	if spawnRes.IsError {
+		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
+	}
+	var spawned map[string]any
+	json.Unmarshal([]byte(spawnRes.Output), &spawned)
+	agentID := fmt.Sprint(spawned["agent_id"])
+
+	waitRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c2",
+		Name:      "wait",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":2000}`, agentID)),
+	})
+	if waitRes.IsError {
+		t.Fatalf("wait error: %s", waitRes.Output)
+	}
+
+	var result SubAgentResult
+	if err := json.Unmarshal([]byte(waitRes.Output), &result); err != nil {
+		t.Fatalf("unmarshal SubAgentResult: %v (out=%q)", err, waitRes.Output)
+	}
+	if !result.Success {
+		t.Fatalf("expected success=true, got false")
+	}
+	if result.Output != "result text" {
+		t.Fatalf("expected output='result text', got %q", result.Output)
+	}
+	if result.TurnsUsed < 1 {
+		t.Fatalf("expected turns_used >= 1, got %d", result.TurnsUsed)
+	}
+}
+
+func TestSession_SendInput_UsesMessageParam(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	callNum := 0
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				callNum++
+				return llm.Response{Message: llm.Assistant("first")}
+			},
+			func(req llm.Request) llm.Response {
+				callNum++
+				return llm.Response{Message: llm.Assistant("second")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// Spawn agent.
+	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"start"}`),
+	})
+	if spawnRes.IsError {
+		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
+	}
+	var spawned map[string]any
+	json.Unmarshal([]byte(spawnRes.Output), &spawned)
+	agentID := fmt.Sprint(spawned["agent_id"])
+
+	// Wait for first task to finish.
+	sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c2",
+		Name:      "wait",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":2000}`, agentID)),
+	})
+
+	// Send input using "message" parameter (not "input").
+	sendRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c3",
+		Name:      "send_input",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"message":"do more"}`, agentID)),
+	})
+	if sendRes.IsError {
+		t.Fatalf("send_input error: %s", sendRes.Output)
+	}
+
+	// Wait again and verify it ran.
+	waitRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c4",
+		Name:      "wait",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":2000}`, agentID)),
+	})
+	if waitRes.IsError {
+		t.Fatalf("wait error: %s", waitRes.Output)
+	}
+}
+
+func TestSession_SpawnAgent_MaxTurns(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("done")} },
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"do it","max_turns":10}`),
+	})
+	if spawnRes.IsError {
+		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
+	}
+
+	var spawned map[string]any
+	json.Unmarshal([]byte(spawnRes.Output), &spawned)
+	agentID := fmt.Sprint(spawned["agent_id"])
+
+	sub := sess.getSub(agentID)
+	if sub == nil {
+		t.Fatalf("missing subagent")
+	}
+
+	// Wait for it to finish so we can inspect the config.
+	sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c2",
+		Name:      "wait",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":2000}`, agentID)),
+	})
+
+	if sub.sess.cfg.MaxTurns != 10 {
+		t.Fatalf("expected MaxTurns=10, got %d", sub.sess.cfg.MaxTurns)
+	}
+}
+
+func TestSubAgentStatus_Values(t *testing.T) {
+	if SubAgentRunning != "running" {
+		t.Fatalf("SubAgentRunning = %q, want 'running'", SubAgentRunning)
+	}
+	if SubAgentCompleted != "completed" {
+		t.Fatalf("SubAgentCompleted = %q, want 'completed'", SubAgentCompleted)
+	}
+	if SubAgentFailed != "failed" {
+		t.Fatalf("SubAgentFailed = %q, want 'failed'", SubAgentFailed)
+	}
 }
 
 func TestSession_SpawnAgent_ModelOverride(t *testing.T) {

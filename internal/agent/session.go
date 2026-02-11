@@ -1145,14 +1145,22 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			if v, ok := args["model"]; ok && v != nil {
 				model = fmt.Sprint(v)
 			}
-			return s.spawnAgent(ctx, task, model)
+			workingDir := ""
+			if v, ok := args["working_dir"]; ok && v != nil {
+				workingDir = fmt.Sprint(v)
+			}
+			maxTurns := 0
+			if v, ok := args["max_turns"].(float64); ok {
+				maxTurns = int(v)
+			}
+			return s.spawnAgent(ctx, task, model, workingDir, maxTurns)
 		},
 	})
 	_ = reg.Register(RegisteredTool{
 		Definition: defSendInput(),
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
-			return s.sendInput(ctx, fmt.Sprint(args["agent_id"]), fmt.Sprint(args["input"]))
+			return s.sendInput(ctx, fmt.Sprint(args["agent_id"]), fmt.Sprint(args["message"]))
 		},
 	})
 	_ = reg.Register(RegisteredTool{

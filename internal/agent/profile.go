@@ -452,8 +452,10 @@ func defSpawnAgent() llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"task":  map[string]any{"type": "string"},
-				"model": map[string]any{"type": "string", "description": "Model override (default: parent model)"},
+				"task":        map[string]any{"type": "string"},
+				"model":       map[string]any{"type": "string", "description": "Model override (default: parent model)"},
+				"working_dir": map[string]any{"type": "string", "description": "Subdirectory to scope the agent to"},
+				"max_turns":   map[string]any{"type": "integer", "description": "Turn limit for the subagent (default: 50)"},
 			},
 			"required": []string{"task"},
 		},
@@ -469,9 +471,9 @@ func defSendInput() llm.ToolDefinition {
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"agent_id": map[string]any{"type": "string"},
-				"input":    map[string]any{"type": "string"},
+				"message":  map[string]any{"type": "string"},
 			},
-			"required": []string{"agent_id", "input"},
+			"required": []string{"agent_id", "message"},
 		},
 	}
 }

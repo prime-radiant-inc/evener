@@ -521,6 +521,69 @@ func TestProviderProfile_KnowledgeCutoff(t *testing.T) {
 	}
 }
 
+func TestSendInput_UsesMessageParam(t *testing.T) {
+	profiles := []ProviderProfile{
+		NewOpenAIProfile("gpt-5.2"),
+		NewAnthropicProfile("claude-sonnet-4-20250514"),
+		NewGeminiProfile("gemini-2.5-pro"),
+	}
+	for _, p := range profiles {
+		t.Run(p.ID(), func(t *testing.T) {
+			for _, td := range p.ToolDefinitions() {
+				if td.Name == "send_input" {
+					props := td.Parameters["properties"].(map[string]any)
+					if _, ok := props["message"]; !ok {
+						t.Fatal("send_input should have 'message' parameter")
+					}
+					if _, ok := props["input"]; ok {
+						t.Fatal("send_input should not have 'input' parameter")
+					}
+					req := td.Parameters["required"].([]string)
+					found := false
+					for _, r := range req {
+						if r == "message" {
+							found = true
+						}
+						if r == "input" {
+							t.Fatal("required should not contain 'input'")
+						}
+					}
+					if !found {
+						t.Fatal("required should contain 'message'")
+					}
+					return
+				}
+			}
+			t.Fatal("send_input tool not found")
+		})
+	}
+}
+
+func TestSpawnAgent_HasWorkingDirAndMaxTurns(t *testing.T) {
+	profiles := []ProviderProfile{
+		NewOpenAIProfile("gpt-5.2"),
+		NewAnthropicProfile("claude-sonnet-4-20250514"),
+		NewGeminiProfile("gemini-2.5-pro"),
+	}
+	for _, p := range profiles {
+		t.Run(p.ID(), func(t *testing.T) {
+			for _, td := range p.ToolDefinitions() {
+				if td.Name == "spawn_agent" {
+					props := td.Parameters["properties"].(map[string]any)
+					if _, ok := props["working_dir"]; !ok {
+						t.Fatal("spawn_agent missing working_dir parameter")
+					}
+					if _, ok := props["max_turns"]; !ok {
+						t.Fatal("spawn_agent missing max_turns parameter")
+					}
+					return
+				}
+			}
+			t.Fatal("spawn_agent tool not found")
+		})
+	}
+}
+
 func assertToolListExact(t *testing.T, p ProviderProfile, want []string) {
 	t.Helper()
 	got := make([]string, 0, len(p.ToolDefinitions()))

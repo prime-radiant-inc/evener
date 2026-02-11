@@ -9,18 +9,36 @@ import (
 	"time"
 )
 
+// SubAgentStatus tracks the lifecycle of a sub-agent.
+type SubAgentStatus string
+
+const (
+	SubAgentRunning   SubAgentStatus = "running"
+	SubAgentCompleted SubAgentStatus = "completed"
+	SubAgentFailed    SubAgentStatus = "failed"
+)
+
+// SubAgentResult is the structured output from a completed sub-agent.
+type SubAgentResult struct {
+	Output    string `json:"output"`
+	Success   bool   `json:"success"`
+	TurnsUsed int    `json:"turns_used"`
+}
+
 type subagent struct {
 	id   string
 	sess *Session
 
-	mu      sync.Mutex
-	running bool
-	done    chan struct{}
-	result  string
-	err     error
+	mu        sync.Mutex
+	running   bool
+	status    SubAgentStatus
+	turnsUsed int
+	done      chan struct{}
+	result    string
+	err       error
 }
 
-func (s *Session) spawnAgent(ctx context.Context, task string, model string) (any, error) {
+func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string, maxTurns int) (any, error) {
 	s.mu.Lock()
 	depth := s.depth
 	maxDepth := s.cfg.MaxSubagentDepth
@@ -33,16 +51,30 @@ func (s *Session) spawnAgent(ctx context.Context, task string, model string) (an
 	if model = strings.TrimSpace(model); model != "" {
 		subProfile = s.profile.WithModel(model)
 	}
-	subSess, err := NewSession(s.client, subProfile, s.env, s.cfg)
+
+	subCfg := s.cfg
+	if maxTurns > 0 {
+		subCfg.MaxTurns = maxTurns
+	} else if subCfg.MaxTurns <= 0 {
+		subCfg.MaxTurns = 50
+	}
+
+	subEnv := s.env
+	if workingDir = strings.TrimSpace(workingDir); workingDir != "" {
+		subEnv = NewLocalExecutionEnvironment(workingDir)
+	}
+
+	subSess, err := NewSession(s.client, subProfile, subEnv, subCfg)
 	if err != nil {
 		return "", err
 	}
 	subSess.depth = depth + 1
 
 	sub := &subagent{
-		id:   subSess.id,
-		sess: subSess,
-		done: make(chan struct{}),
+		id:     subSess.id,
+		sess:   subSess,
+		status: SubAgentRunning,
+		done:   make(chan struct{}),
 	}
 
 	s.mu.Lock()
@@ -51,7 +83,7 @@ func (s *Session) spawnAgent(ctx context.Context, task string, model string) (an
 
 	go sub.run(ctx, task)
 
-	b, _ := json.Marshal(map[string]any{"agent_id": sub.id})
+	b, _ := json.Marshal(map[string]any{"agent_id": sub.id, "status": string(SubAgentRunning)})
 	return string(b), nil
 }
 
@@ -101,10 +133,17 @@ func (s *Session) waitAgent(ctx context.Context, agentID string, timeoutMS int) 
 	}
 	sub.mu.Lock()
 	defer sub.mu.Unlock()
-	if sub.err != nil {
-		return sub.result, sub.err
+
+	result := SubAgentResult{
+		Output:    sub.result,
+		Success:   sub.err == nil,
+		TurnsUsed: sub.turnsUsed,
 	}
-	return sub.result, nil
+	b, _ := json.Marshal(result)
+	if sub.err != nil {
+		return string(b), sub.err
+	}
+	return string(b), nil
 }
 
 func (s *Session) closeAgent(agentID string) (any, error) {
@@ -128,6 +167,7 @@ func (s *Session) getSub(agentID string) *subagent {
 func (a *subagent) run(ctx context.Context, input string) {
 	a.mu.Lock()
 	a.running = true
+	a.status = SubAgentRunning
 	a.mu.Unlock()
 
 	res, err := a.sess.ProcessInput(ctx, input)
@@ -136,6 +176,12 @@ func (a *subagent) run(ctx context.Context, input string) {
 	a.result = res
 	a.err = err
 	a.running = false
+	a.turnsUsed = a.sess.turns
+	if err != nil {
+		a.status = SubAgentFailed
+	} else {
+		a.status = SubAgentCompleted
+	}
 	if a.done != nil {
 		close(a.done)
 	}
