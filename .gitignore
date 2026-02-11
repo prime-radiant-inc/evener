@@ -1,5 +1,6 @@
 .ai/
 .env
+.worktrees/
 /.serf/sessions/
 /.serf/tasks/
 /.serf/web_cache/
