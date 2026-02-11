@@ -121,10 +121,7 @@ func TestParity_ReadFileThenEdit(t *testing.T) {
 						Message: llm.Message{
 							Role: llm.RoleAssistant,
 							Content: []llm.ContentPart{
-								{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-									ID: "c2", Name: canonicalEditFile(pc.name), Type: "function",
-									Arguments: json.RawMessage(`{"file_path":"target.txt","old_string":"foo","new_string":"bar"}`),
-								}},
+								makeEditCall(pc.name, "c2", "target.txt", "foo", "bar"),
 							},
 						},
 					}
@@ -322,10 +319,7 @@ func TestParity_MultiStepTask(t *testing.T) {
 						Message: llm.Message{
 							Role: llm.RoleAssistant,
 							Content: []llm.ContentPart{
-								{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-									ID: "c2", Name: canonicalEditFile(pc.name), Type: "function",
-									Arguments: json.RawMessage(`{"file_path":"config.txt","old_string":"debug=false","new_string":"debug=true"}`),
-								}},
+								makeEditCall(pc.name, "c2", "config.txt", "debug=false", "debug=true"),
 							},
 						},
 					}
@@ -582,11 +576,85 @@ func TestParity_SteeringMidTask(t *testing.T) {
 	}
 }
 
+func TestParity_MultiFileEdit(t *testing.T) {
+	for _, pc := range providerCases {
+		t.Run(pc.name, func(t *testing.T) {
+			steps := []func(llm.Request) llm.Response{
+				// Round 1: Read both files.
+				func(req llm.Request) llm.Response {
+					return llm.Response{Message: llm.Message{
+						Role: llm.RoleAssistant,
+						Content: []llm.ContentPart{
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+								ID: "r1", Name: canonicalReadFile(pc.name), Type: "function",
+								Arguments: json.RawMessage(`{"file_path":"a.txt"}`),
+							}},
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+								ID: "r2", Name: canonicalReadFile(pc.name), Type: "function",
+								Arguments: json.RawMessage(`{"file_path":"b.txt"}`),
+							}},
+						},
+					}}
+				},
+				// Round 2: Edit both files.
+				func(req llm.Request) llm.Response {
+					return llm.Response{Message: llm.Message{
+						Role: llm.RoleAssistant,
+						Content: []llm.ContentPart{
+							makeEditCall(pc.name, "e1", "a.txt", "alpha", "ALPHA"),
+							makeEditCall(pc.name, "e2", "b.txt", "beta", "BETA"),
+						},
+					}}
+				},
+				// Round 3: Done.
+				func(req llm.Request) llm.Response {
+					return llm.Response{Message: llm.Assistant("done")}
+				},
+			}
+
+			sess, _ := newParitySession(t, pc, steps)
+			defer sess.Close()
+
+			// Pre-create both files.
+			dir := sess.env.WorkingDirectory()
+			os.WriteFile(filepath.Join(dir, "a.txt"), []byte("alpha"), 0644)
+			os.WriteFile(filepath.Join(dir, "b.txt"), []byte("beta"), 0644)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			sess.ProcessInput(ctx, "edit both files")
+			sess.Close()
+
+			// Verify both files were edited.
+			dataA, err := os.ReadFile(filepath.Join(dir, "a.txt"))
+			if err != nil {
+				t.Fatalf("a.txt: %v", err)
+			}
+			if string(dataA) != "ALPHA" {
+				t.Errorf("a.txt: got %q, want %q", string(dataA), "ALPHA")
+			}
+
+			dataB, err := os.ReadFile(filepath.Join(dir, "b.txt"))
+			if err != nil {
+				t.Fatalf("b.txt: %v", err)
+			}
+			if string(dataB) != "BETA" {
+				t.Errorf("b.txt: got %q, want %q", string(dataB), "BETA")
+			}
+		})
+	}
+}
+
 // canonicalXxx returns the wire-name for a tool given the provider name.
 // This mirrors the ToolNameMap applied by each profile.
 func canonicalWriteFile(provider string) string { return "write_file" }
 func canonicalReadFile(provider string) string  { return "read_file" }
-func canonicalEditFile(provider string) string  { return "edit_file" }
+func canonicalEditFile(provider string) string {
+	if provider == "openai" {
+		return "apply_patch"
+	}
+	return "edit_file"
+}
 
 func canonicalShell(provider string) string {
 	switch provider {
@@ -619,4 +687,20 @@ func canonicalGrep(provider string) string {
 	default:
 		return "grep"
 	}
+}
+
+// makeEditCall constructs a tool call for editing a file, using the provider-aligned tool.
+// OpenAI uses apply_patch with v4a format; Anthropic/Gemini use edit_file.
+func makeEditCall(provider, id, file, old, new_ string) llm.ContentPart {
+	if provider == "openai" {
+		patch := fmt.Sprintf("*** Begin Patch\n*** Update File: %s\n@@\n-%s\n+%s\n*** End Patch", file, old, new_)
+		return llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+			ID: id, Name: "apply_patch", Type: "function",
+			Arguments: json.RawMessage(fmt.Sprintf(`{"patch":%q}`, patch)),
+		}}
+	}
+	return llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+		ID: id, Name: "edit_file", Type: "function",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"file_path":%q,"old_string":%q,"new_string":%q}`, file, old, new_)),
+	}}
 }
