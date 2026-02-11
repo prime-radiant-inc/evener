@@ -109,6 +109,48 @@ func TestSession_NaturalCompletion_LoadsOnlyProfileDocs(t *testing.T) {
 	}
 }
 
+func TestSession_SystemPromptFile_OverridesBasePrompt(t *testing.T) {
+	dir := t.TempDir()
+	promptFile := filepath.Join(dir, "custom-prompt.md")
+	os.WriteFile(promptFile, []byte("You are a custom test agent."), 0644)
+
+	c := llm.NewClient()
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("ok")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		SystemPromptFile: promptFile,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sess.ProcessInput(ctx, "hello")
+
+	reqs := f.Requests()
+	if len(reqs) == 0 {
+		t.Fatal("no LLM requests captured")
+	}
+	sys := reqs[0].Messages[0].Text()
+	if !strings.Contains(sys, "You are a custom test agent.") {
+		t.Errorf("custom system prompt not found in LLM request")
+	}
+	// The default embedded prompt should be fully replaced.
+	if strings.Contains(sys, "OpenAI profile") {
+		t.Errorf("default prompt should have been overridden but OpenAI profile text still present")
+	}
+}
+
 func TestSession_CoreTools_ReadManyFiles_And_ListDir(t *testing.T) {
 	dir := t.TempDir()
 	env := NewLocalExecutionEnvironment(dir)

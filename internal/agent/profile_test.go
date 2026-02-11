@@ -426,6 +426,46 @@ func TestGeminiProfile_IncludesWebSearch(t *testing.T) {
 	assertMissingTool(t, NewAnthropicProfile("claude-test"), "web_search")
 }
 
+func TestProviderProfile_WithBasePrompt(t *testing.T) {
+	orig := NewOpenAIProfile("gpt-5.2")
+	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux"}
+
+	custom := orig.WithBasePrompt("Custom base prompt for testing.")
+
+	// Custom prompt should appear in the system prompt output.
+	prompt := custom.BuildSystemPrompt(env, nil, nil)
+	if !strings.Contains(prompt, "Custom base prompt for testing.") {
+		t.Error("custom base prompt not found in system prompt")
+	}
+
+	// Original should be unmodified.
+	origPrompt := orig.BuildSystemPrompt(env, nil, nil)
+	if strings.Contains(origPrompt, "Custom base prompt for testing.") {
+		t.Error("original profile was mutated")
+	}
+	if !strings.Contains(origPrompt, "OpenAI profile") {
+		t.Error("original profile lost its embedded prompt")
+	}
+}
+
+func TestProviderProfile_WithBasePrompt_PreservesOtherFields(t *testing.T) {
+	orig := NewOpenAIProfile("gpt-5.2")
+	custom := orig.WithBasePrompt("different prompt")
+
+	if custom.ID() != orig.ID() {
+		t.Errorf("ID changed: got %q want %q", custom.ID(), orig.ID())
+	}
+	if custom.Model() != orig.Model() {
+		t.Errorf("Model changed: got %q want %q", custom.Model(), orig.Model())
+	}
+	if len(custom.ToolDefinitions()) != len(orig.ToolDefinitions()) {
+		t.Errorf("tool count changed: got %d want %d", len(custom.ToolDefinitions()), len(orig.ToolDefinitions()))
+	}
+	if custom.ContextWindowSize() != orig.ContextWindowSize() {
+		t.Errorf("context window changed: got %d want %d", custom.ContextWindowSize(), orig.ContextWindowSize())
+	}
+}
+
 func assertToolListExact(t *testing.T, p ProviderProfile, want []string) {
 	t.Helper()
 	got := make([]string, 0, len(p.ToolDefinitions()))

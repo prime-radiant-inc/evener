@@ -42,6 +42,10 @@ type SessionConfig struct {
 	// MCPInline are inline MCP server specs (--mcp flag, format: name:command args...).
 	MCPInline []string `json:"mcp_inline,omitempty"`
 
+	// SystemPromptFile overrides the embedded system prompt with the contents of this file.
+	// Highest priority in the prompt resolution chain (CLI --system-prompt flag).
+	SystemPromptFile string `json:"system_prompt_file,omitempty"`
+
 	EnableLoopDetection *bool `json:"enable_loop_detection,omitempty"`
 	LoopDetectionWindow int   `json:"loop_detection_window,omitempty"`
 
@@ -153,8 +157,22 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		ei.GitRecentCommitTitles = commits
 	}
 	s.envInfo = ei
+
+	// Resolve system prompt: CLI override → project .serf/prompts/ → global → embedded.
+	gitRoot := gitRootOrEmpty(env, ei.WorkingDir)
+	resolvedPrompt, err := ResolveSystemPrompt(
+		profile.ID(), profile.Model(),
+		cfg.SystemPromptFile,
+		ProjectPromptsDir(gitRoot),
+		GlobalPromptsDir(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("resolve system prompt: %w", err)
+	}
+	s.profile = profile.WithBasePrompt(resolvedPrompt)
+
 	s.skills = DiscoverSkills(env, cfg.SkillsDirs...)
-	s.contextMgr = NewContextManager(profile, client)
+	s.contextMgr = NewContextManager(s.profile, client)
 
 	reg := NewToolRegistry()
 	if err := registerCoreTools(reg, s); err != nil {
@@ -236,8 +254,22 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		ei.GitRecentCommitTitles = commits
 	}
 	s.envInfo = ei
+
+	// Resolve system prompt (same layered resolution as NewSession).
+	gitRoot := gitRootOrEmpty(env, ei.WorkingDir)
+	resolvedPrompt, err := ResolveSystemPrompt(
+		profile.ID(), profile.Model(),
+		cfg.SystemPromptFile,
+		ProjectPromptsDir(gitRoot),
+		GlobalPromptsDir(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("resolve system prompt: %w", err)
+	}
+	s.profile = profile.WithBasePrompt(resolvedPrompt)
+
 	s.skills = DiscoverSkills(env, cfg.SkillsDirs...)
-	s.contextMgr = NewContextManager(profile, client)
+	s.contextMgr = NewContextManager(s.profile, client)
 
 	reg := NewToolRegistry()
 	if err := registerCoreTools(reg, s); err != nil {

@@ -498,6 +498,7 @@ func (p tinyProfile) CheapModel() string                                     { r
 func (p tinyProfile) WithModel(model string) ProviderProfile {
 	return tinyProfile{id: p.id, cw: p.cw, mod: model}
 }
+func (p tinyProfile) WithBasePrompt(string) ProviderProfile { return p }
 
 func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) {
 	dir := t.TempDir()

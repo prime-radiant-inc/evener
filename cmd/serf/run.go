@@ -16,13 +16,14 @@ import (
 )
 
 type runConfig struct {
-	task     string
-	model    string
-	provider string
-	workDir  string
-	verbose  bool
-	stdout   io.Writer
-	stderr   io.Writer
+	task         string
+	model        string
+	provider     string
+	workDir      string
+	systemPrompt string // --system-prompt file path
+	verbose      bool
+	stdout       io.Writer
+	stderr       io.Writer
 
 	skillsDirs []string // extra skill directories
 	mcpServers []string // --mcp inline specs
@@ -121,6 +122,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		sess, err = agent.NewSession(client, profile, env, agent.SessionConfig{
 			MaxToolRoundsPerInput: 200,
 			AutoSaveDir:           cfg.workDir,
+			SystemPromptFile:      cfg.systemPrompt,
 			SkillsDirs:            cfg.skillsDirs,
 			MCPConfigFiles:        cfg.mcpConfigs,
 			MCPInline:             cfg.mcpServers,
