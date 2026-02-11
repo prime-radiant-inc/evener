@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -429,6 +430,73 @@ func TestIntegration_StreamingWithTools(t *testing.T) {
 				t.Error("expected at least one STEP_FINISH event (tool was called)")
 			}
 			t.Logf("text (truncated): %.100s", resp.Text())
+		})
+	}
+}
+
+func TestIntegration_PromptCaching_MultiTurn(t *testing.T) {
+	skipIfNoProviders(t)
+	if testing.Short() {
+		t.Skip("skipping multi-turn caching test in short mode")
+	}
+	client, err := llm.NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+
+	// Use a large system prompt to make caching worthwhile.
+	systemPrompt := strings.Repeat("You are a helpful assistant. ", 200) // ~1200 words
+
+	for _, p := range providers {
+		t.Run(p.provider, func(t *testing.T) {
+			if os.Getenv(p.envKey) == "" {
+				t.Skipf("no %s key", p.envKey)
+			}
+
+			history := []llm.Message{llm.System(systemPrompt)}
+			var lastUsage llm.Usage
+
+			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+			defer cancel()
+
+			for turn := 1; turn <= 6; turn++ {
+				history = append(history, llm.User(fmt.Sprintf("Turn %d: What is %d + %d?", turn, turn, turn*2)))
+				result, err := llm.Generate(ctx, llm.GenerateOptions{
+					Client:    client,
+					Model:     p.model,
+					Provider:  p.provider,
+					Messages:  history,
+					MaxTokens: intPtr(50),
+				})
+				if err != nil {
+					t.Fatalf("turn %d: %v", turn, err)
+				}
+				history = append(history, llm.Assistant(result.Text))
+				lastUsage = result.Usage
+
+				if turn >= 5 {
+					// Gemini's cachedContentTokenCount only reflects explicit CachedContent
+					// resources, not implicit prompt caching. Skip the ratio assertion.
+					if p.provider == "google" {
+						t.Logf("turn %d: skipping cache ratio check for Gemini (no implicit cache reporting)", turn)
+						continue
+					}
+					cacheRead := 0
+					if lastUsage.CacheReadTokens != nil {
+						cacheRead = *lastUsage.CacheReadTokens
+					}
+					inputTokens := lastUsage.InputTokens
+					if inputTokens > 0 {
+						cacheRatio := float64(cacheRead) / float64(inputTokens)
+						t.Logf("turn %d: input=%d cache_read=%d ratio=%.1f%%",
+							turn, inputTokens, cacheRead, cacheRatio*100)
+						if cacheRatio < 0.5 {
+							t.Errorf("turn %d: cache_read_tokens (%d) < 50%% of input_tokens (%d)",
+								turn, cacheRead, inputTokens)
+						}
+					}
+				}
+			}
 		})
 	}
 }
