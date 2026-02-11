@@ -1991,6 +1991,54 @@ func TestAdapterTimeout_Request_EnforcedOnComplete(t *testing.T) {
 	t.Errorf("expected RequestTimeoutError or DeadlineExceeded, got %T: %v", err, err)
 }
 
+func TestAdapterTimeout_Stream_AcceptsAdapterTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		write := func(event, data string) {
+			_, _ = io.WriteString(w, "event: "+event+"\n")
+			_, _ = io.WriteString(w, "data: "+data+"\n\n")
+			if f != nil {
+				f.Flush()
+			}
+		}
+		write("message_start", `{"type":"message_start","message":{"id":"msg_1","model":"claude-test","usage":{"input_tokens":1,"output_tokens":0}}}`)
+		write("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`)
+		write("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`)
+		write("content_block_stop", `{"type":"content_block_stop","index":0}`)
+		write("message_delta", `{"type":"message_delta","stop_reason":"end_turn","usage":{"output_tokens":1}}`)
+		write("message_stop", `{"type":"message_stop"}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	stream, err := a.Stream(ctx, llm.Request{
+		Model:    "claude-test",
+		Messages: []llm.Message{llm.User("hi")},
+		AdapterTimeout: &llm.AdapterTimeout{
+			Request:    30 * time.Second,
+			StreamRead: 5 * time.Second,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	var gotFinish bool
+	for ev := range stream.Events() {
+		if ev.Type == llm.StreamEventFinish {
+			gotFinish = true
+		}
+	}
+	if !gotFinish {
+		t.Fatal("expected FINISH event")
+	}
+}
+
 func TestDefaultHeaders_SentOnCompleteRequests(t *testing.T) {
 	var capturedHeaders http.Header
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

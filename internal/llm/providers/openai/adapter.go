@@ -182,6 +182,8 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		a.Client = &http.Client{Timeout: 0} // streaming uses request context for cancellation
 	}
 	sctx, cancel := context.WithCancel(ctx)
+	sctx, timeoutCancel := llm.ApplyAdapterTimeout(sctx, req.AdapterTimeout, true)
+	defer timeoutCancel()
 
 	instructions, inputItems, err := toResponsesInput(req.Messages)
 	if err != nil {

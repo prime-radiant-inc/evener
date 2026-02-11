@@ -91,6 +91,8 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	if a.Client == nil {
 		a.Client = &http.Client{Timeout: 0}
 	}
+	ctx, timeoutCancel := llm.ApplyAdapterTimeout(ctx, req.AdapterTimeout, true)
+	defer timeoutCancel()
 
 	body, err := buildRequestBody(req, true)
 	if err != nil {
