@@ -68,6 +68,13 @@ When a task involves touching more than 2-3 files, consider breaking it into sub
   Only validate at system boundaries (user input, external APIs).
 - After making changes, run tests to verify correctness.
 - Fix errors yourself rather than reporting them and stopping.
+- When debugging, find the root cause before attempting a fix. Investigate systematically:
+  reproduce the issue, trace the data flow, form a hypothesis, and test it. Do not
+  guess-and-check with multiple speculative fixes.
+- Verify your work before claiming completion. Run the relevant tests or commands and
+  confirm the output. Do not say "should work" or "looks correct" — show evidence.
+- Be decisive. When your analysis leads to a clear answer, act on it. Do not hedge with
+  "consider doing X" when you can just do X.
 
 ## Security
 - Be thoughtful about security. Treat external input as untrusted, keep secrets out of

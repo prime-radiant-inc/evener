@@ -60,6 +60,9 @@ func TestEmbeddedPrompts_ContainCoreGuidance(t *testing.T) {
 		{"security", "security"},
 		{"minimal changes", "existing file"},
 		{"understand before modifying", "before editing"},
+		{"verification before completion", "verify"},
+		{"root cause", "root cause"},
+		{"decisive action", "decisive"},
 	}
 
 	for _, provider := range []string{"openai", "anthropic", "google"} {
