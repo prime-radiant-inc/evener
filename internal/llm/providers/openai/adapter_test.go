@@ -956,6 +956,55 @@ func TestAdapter_Integration_WebSearch(t *testing.T) {
 	t.Logf("response text (truncated): %.200s", resp.Text())
 }
 
+func TestStream_IncludesWebSearchTool(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, "event: response.completed\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"r1","model":"gpt-5.2","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+		if f != nil {
+			f.Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	stream, err := a.Stream(ctx, llm.Request{
+		Model:     "gpt-5.2",
+		Messages:  []llm.Message{llm.User("search the web")},
+		WebSearch: true,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	for range stream.Events() {
+	}
+
+	tools, ok := gotBody["tools"].([]any)
+	if !ok || len(tools) == 0 {
+		t.Fatalf("expected tools with web_search, got: %v", gotBody["tools"])
+	}
+	found := false
+	for _, tool := range tools {
+		tm, _ := tool.(map[string]any)
+		if tm["type"] == "web_search" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("web_search tool not found in tools: %v", tools)
+	}
+}
+
 func TestComplete_WrapsContextCanceled(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(5 * time.Second)

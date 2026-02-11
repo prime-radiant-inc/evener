@@ -170,8 +170,15 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		"store":               false,
 		"stream":              true,
 	}
+	var tools []map[string]any
 	if len(req.Tools) > 0 {
-		body["tools"] = toResponsesTools(req.Tools)
+		tools = toResponsesTools(req.Tools)
+	}
+	if req.WebSearch {
+		tools = append(tools, map[string]any{"type": "web_search"})
+	}
+	if len(tools) > 0 {
+		body["tools"] = tools
 	}
 	if req.ToolChoice != nil {
 		tc, err := toResponsesToolChoice(*req.ToolChoice)
