@@ -109,6 +109,108 @@ func TestSession_NaturalCompletion_LoadsOnlyProfileDocs(t *testing.T) {
 	}
 }
 
+func TestSession_NaturalCompletion_LoadsOnlyProfileDocs_Anthropic(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	_ = os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("AGENTS\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("CLAUDE\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "GEMINI.md"), []byte("GEMINI\n"), 0o644)
+	_ = os.MkdirAll(filepath.Join(dir, ".codex"), 0o755)
+	_ = os.WriteFile(filepath.Join(dir, ".codex", "instructions.md"), []byte("CODEX\n"), 0o644)
+
+	c := llm.NewClient()
+	f := &fakeAdapter{
+		name: "anthropic",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("ok")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := sess.ProcessInput(ctx, "hi")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if strings.TrimSpace(out) != "ok" {
+		t.Fatalf("out: %q", out)
+	}
+	sess.Close()
+
+	reqs := f.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("requests: got %d want 1", len(reqs))
+	}
+	if len(reqs[0].Messages) == 0 || reqs[0].Messages[0].Role != llm.RoleSystem {
+		t.Fatalf("expected leading system message, got %+v", reqs[0].Messages)
+	}
+	sys := reqs[0].Messages[0].Text()
+	if !strings.Contains(sys, "BEGIN CLAUDE.md") || !strings.Contains(sys, "BEGIN AGENTS.md") {
+		t.Fatalf("Anthropic profile should load CLAUDE.md and AGENTS.md:\n%s", sys)
+	}
+	if strings.Contains(sys, "BEGIN GEMINI.md") || strings.Contains(sys, "BEGIN .codex/instructions.md") {
+		t.Fatalf("Anthropic profile should NOT load GEMINI.md or .codex/instructions.md:\n%s", sys)
+	}
+}
+
+func TestSession_NaturalCompletion_LoadsOnlyProfileDocs_Gemini(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	_ = os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("AGENTS\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("CLAUDE\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "GEMINI.md"), []byte("GEMINI\n"), 0o644)
+	_ = os.MkdirAll(filepath.Join(dir, ".codex"), 0o755)
+	_ = os.WriteFile(filepath.Join(dir, ".codex", "instructions.md"), []byte("CODEX\n"), 0o644)
+
+	c := llm.NewClient()
+	f := &fakeAdapter{
+		name: "google",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("ok")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewGeminiProfile("gemini-test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := sess.ProcessInput(ctx, "hi")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if strings.TrimSpace(out) != "ok" {
+		t.Fatalf("out: %q", out)
+	}
+	sess.Close()
+
+	reqs := f.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("requests: got %d want 1", len(reqs))
+	}
+	if len(reqs[0].Messages) == 0 || reqs[0].Messages[0].Role != llm.RoleSystem {
+		t.Fatalf("expected leading system message, got %+v", reqs[0].Messages)
+	}
+	sys := reqs[0].Messages[0].Text()
+	if !strings.Contains(sys, "BEGIN GEMINI.md") || !strings.Contains(sys, "BEGIN AGENTS.md") {
+		t.Fatalf("Gemini profile should load GEMINI.md and AGENTS.md:\n%s", sys)
+	}
+	if strings.Contains(sys, "BEGIN CLAUDE.md") || strings.Contains(sys, "BEGIN .codex/instructions.md") {
+		t.Fatalf("Gemini profile should NOT load CLAUDE.md or .codex/instructions.md:\n%s", sys)
+	}
+}
+
 func TestSession_SystemPromptFile_OverridesBasePrompt(t *testing.T) {
 	dir := t.TempDir()
 	promptFile := filepath.Join(dir, "custom-prompt.md")
@@ -943,4 +1045,204 @@ func TestSessionState_Transitions(t *testing.T) {
 	if SessionClosed != SessionState("CLOSED") {
 		t.Fatal("SessionClosed wrong")
 	}
+}
+
+func TestSession_SessionEnd_EmittedExactlyOnce(t *testing.T) {
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("done")}
+		},
+	}}
+	c.Register(f)
+	dir := t.TempDir()
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventsPtr, mu, doneCh := collectEvents(sess)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sess.ProcessInput(ctx, "hello")
+	sess.Close()
+	<-doneCh
+
+	mu.Lock()
+	defer mu.Unlock()
+	count := 0
+	for _, ev := range *eventsPtr {
+		if ev.Kind == EventSessionEnd {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly 1 SESSION_END event, got %d", count)
+	}
+}
+
+func TestSession_SystemPromptRebuiltPerRound(t *testing.T) {
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			// Round 1: write AGENTS.md via tool call.
+			return llm.Response{
+				Message: llm.Message{
+					Role: llm.RoleAssistant,
+					Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+						ID: "c1", Name: "write_file", Type: "function",
+						Arguments: json.RawMessage(`{"file_path":"AGENTS.md","content":"# New agent instructions"}`),
+					}}},
+				},
+			}
+		},
+		func(req llm.Request) llm.Response {
+			// Round 2: the system prompt should now include the freshly-written AGENTS.md.
+			sys := req.Messages[0].Text()
+			if !strings.Contains(sys, "New agent instructions") {
+				t.Error("system prompt not rebuilt after tool execution -- AGENTS.md changes not reflected")
+			}
+			return llm.Response{Message: llm.Assistant("done")}
+		},
+	}}
+	c.Register(f)
+	dir := t.TempDir()
+	env := NewLocalExecutionEnvironment(dir)
+	defer env.Cleanup()
+	ctx := context.Background()
+	env.ExecCommand(ctx, "git init", 5000, dir, nil)
+
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), env, SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	ctx2, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sess.ProcessInput(ctx2, "write agents.md then verify")
+}
+
+// blockingAdapter is a test adapter whose Complete blocks until context is cancelled.
+type blockingAdapter struct {
+	name      string
+	blocked   chan struct{} // closed when LLM call starts blocking
+}
+
+func (a *blockingAdapter) Name() string { return a.name }
+func (a *blockingAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	close(a.blocked)
+	<-ctx.Done()
+	return llm.Response{}, ctx.Err()
+}
+func (a *blockingAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	return nil, errors.New("stream not implemented")
+}
+
+func TestSession_Close_CancelsInFlightLLMCall(t *testing.T) {
+	blocked := make(chan struct{})
+	c := llm.NewClient()
+	c.Register(&blockingAdapter{name: "openai", blocked: blocked})
+	dir := t.TempDir()
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := sess.ProcessInput(context.Background(), "hello")
+		done <- err
+	}()
+
+	<-blocked // Wait until the LLM call is in-flight.
+	sess.Close() // Should cancel the LLM call.
+
+	select {
+	case <-done:
+		// ProcessInput returned -- Close() successfully cancelled it.
+	case <-time.After(5 * time.Second):
+		t.Fatal("ProcessInput did not return after Close() -- in-flight LLM call not cancelled")
+	}
+}
+
+func TestSession_GracefulShutdown_CorrectOrdering(t *testing.T) {
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			return llm.Response{Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+					ID: "c1", Name: "spawn_agent", Type: "function",
+					Arguments: json.RawMessage(`{"task":"long task"}`),
+				}}},
+			}}
+		},
+		// Subagent response
+		func(req llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("sub done")}
+		},
+		func(req llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("done")}
+		},
+	}}
+	c.Register(f)
+	dir := t.TempDir()
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventsPtr, mu, doneCh := collectEvents(sess)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	sess.ProcessInput(ctx, "spawn")
+	sess.Close()
+	<-doneCh
+
+	mu.Lock()
+	defer mu.Unlock()
+	found := false
+	for _, ev := range *eventsPtr {
+		if ev.Kind == EventSessionEnd {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("SESSION_END not emitted during shutdown")
+	}
+}
+
+func TestSession_CustomRegisteredTool_AppearsInSystemPrompt(t *testing.T) {
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			sys := req.Messages[0].Text()
+			if !strings.Contains(sys, "my_custom_tool") {
+				t.Error("custom tool not in system prompt")
+			}
+			if !strings.Contains(sys, "Does custom things") {
+				t.Error("custom tool description not in system prompt")
+			}
+			return llm.Response{Message: llm.Assistant("done")}
+		},
+	}}
+	c.Register(f)
+	dir := t.TempDir()
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	// Register a custom tool after session creation.
+	sess.reg.Register(RegisteredTool{
+		Definition: llm.ToolDefinition{Name: "my_custom_tool", Description: "Does custom things"},
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			return "ok", nil
+		},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sess.ProcessInput(ctx, "test")
 }

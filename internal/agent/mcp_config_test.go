@@ -391,5 +391,5 @@ func (f *fakeEnvForMCP) WriteFile(string, string) (string, error)               
 func (f *fakeEnvForMCP) EditFile(string, string, string, bool) (string, error)    { return "", nil }
 func (f *fakeEnvForMCP) FileExists(string) bool                                   { return false }
 func (f *fakeEnvForMCP) Glob(string, string) ([]string, error)                    { return nil, nil }
-func (f *fakeEnvForMCP) Grep(string, string, string, bool, int) (string, error)   { return "", nil }
+func (f *fakeEnvForMCP) Grep(string, string, string, bool, int, string) (string, error) { return "", nil }
 func (f *fakeEnvForMCP) ListDirectory(string, int) ([]DirEntry, error)            { return nil, nil }

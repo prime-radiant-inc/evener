@@ -645,6 +645,152 @@ func TestParity_MultiFileEdit(t *testing.T) {
 	}
 }
 
+func TestParity_ToolOutputTruncation(t *testing.T) {
+	for _, pc := range providerCases {
+		t.Run(pc.name, func(t *testing.T) {
+			steps := []func(llm.Request) llm.Response{
+				func(req llm.Request) llm.Response {
+					return llm.Response{Message: llm.Message{
+						Role: llm.RoleAssistant,
+						Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+							ID: "c1", Name: canonicalReadFile(pc.name), Type: "function",
+							Arguments: json.RawMessage(`{"file_path":"big.txt"}`),
+						}}},
+					}}
+				},
+				func(req llm.Request) llm.Response {
+					return llm.Response{Message: llm.Assistant("done")}
+				},
+			}
+			sess, f := newParitySession(t, pc, steps)
+			defer sess.Close()
+
+			// Create a file larger than the read_file limit (50,000 chars).
+			dir := sess.env.WorkingDirectory()
+			big := strings.Repeat("x", 60_000)
+			os.WriteFile(filepath.Join(dir, "big.txt"), []byte(big), 0644)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			sess.ProcessInput(ctx, "read big file")
+			sess.Close()
+
+			// Verify the tool result sent to the model was truncated.
+			reqs := f.Requests()
+			if len(reqs) < 2 {
+				t.Fatalf("expected at least 2 requests, got %d", len(reqs))
+			}
+			found := false
+			for _, m := range reqs[1].Messages {
+				for _, p := range m.Content {
+					if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
+						if s, ok := p.ToolResult.Content.(string); ok {
+							if strings.Contains(s, "Tool output was truncated") {
+								found = true
+							}
+						}
+					}
+				}
+			}
+			if !found {
+				t.Fatal("expected truncation marker in tool result for oversized read_file output")
+			}
+		})
+	}
+}
+
+func TestParity_ReasoningEffort(t *testing.T) {
+	for _, pc := range providerCases {
+		t.Run(pc.name, func(t *testing.T) {
+			steps := []func(llm.Request) llm.Response{
+				func(req llm.Request) llm.Response {
+					return llm.Response{Message: llm.Assistant("first")}
+				},
+				func(req llm.Request) llm.Response {
+					return llm.Response{Message: llm.Assistant("second")}
+				},
+			}
+			sess, f := newParitySession(t, pc, steps)
+			sess.cfg.ReasoningEffort = "low"
+			defer sess.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			sess.ProcessInput(ctx, "first")
+
+			sess.SetReasoningEffort("high")
+			sess.ProcessInput(ctx, "second")
+			sess.Close()
+
+			reqs := f.Requests()
+			if len(reqs) < 2 {
+				t.Fatalf("expected at least 2 requests, got %d", len(reqs))
+			}
+			if reqs[0].ReasoningEffort == nil || *reqs[0].ReasoningEffort != "low" {
+				t.Errorf("first call: got %v, want 'low'", reqs[0].ReasoningEffort)
+			}
+			if reqs[1].ReasoningEffort == nil || *reqs[1].ReasoningEffort != "high" {
+				t.Errorf("second call: got %v, want 'high'", reqs[1].ReasoningEffort)
+			}
+		})
+	}
+}
+
+func TestParity_SubagentSpawnAndWait(t *testing.T) {
+	for _, pc := range providerCases {
+		t.Run(pc.name, func(t *testing.T) {
+			// Use reg.ExecuteCall to drive subagent lifecycle deterministically,
+			// avoiding races from interleaved parent/subagent LLM calls.
+			steps := []func(llm.Request) llm.Response{
+				// Subagent's single LLM call — returns text.
+				func(req llm.Request) llm.Response {
+					return llm.Response{Message: llm.Assistant("subagent completed task")}
+				},
+			}
+			sess, _ := newParitySession(t, pc, steps)
+			defer sess.Close()
+			go func() { for range sess.Events() {} }()
+
+			// Spawn agent via registry.
+			spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+				ID: "c1", Name: "spawn_agent", Type: "function",
+				Arguments: json.RawMessage(`{"task":"hello from subagent"}`),
+			})
+			if spawnRes.IsError {
+				t.Fatalf("spawn_agent error: %s", spawnRes.Output)
+			}
+			var spawned map[string]any
+			if err := json.Unmarshal([]byte(spawnRes.Output), &spawned); err != nil {
+				t.Fatalf("unmarshal spawn output: %v (out=%q)", err, spawnRes.Output)
+			}
+			agentID := strings.TrimSpace(fmt.Sprint(spawned["agent_id"]))
+			if agentID == "" {
+				t.Fatalf("missing agent_id in spawn output: %v", spawned)
+			}
+
+			// Wait for the subagent to finish.
+			waitRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+				ID: "c2", Name: "wait", Type: "function",
+				Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":5000}`, agentID)),
+			})
+			if waitRes.IsError {
+				t.Fatalf("wait error: %s", waitRes.Output)
+			}
+
+			var result SubAgentResult
+			if err := json.Unmarshal([]byte(waitRes.Output), &result); err != nil {
+				t.Fatalf("unmarshal wait result: %v (out=%q)", err, waitRes.Output)
+			}
+			if !result.Success {
+				t.Fatalf("expected subagent success, got failure: %+v", result)
+			}
+			if !strings.Contains(result.Output, "subagent completed task") {
+				t.Errorf("expected subagent output in result, got: %q", result.Output)
+			}
+		})
+	}
+}
+
 // canonicalXxx returns the wire-name for a tool given the provider name.
 // This mirrors the ToolNameMap applied by each profile.
 func canonicalWriteFile(provider string) string { return "write_file" }

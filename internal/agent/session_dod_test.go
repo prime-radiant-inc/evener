@@ -1369,7 +1369,11 @@ func TestSession_ShellTool_UsesDefaultTimeoutAndAllowsOverride(t *testing.T) {
 	}
 	sess.Close()
 
-	if got := env.LastTimeoutMS(); got != 10_000 {
+	got, ok := env.TimeoutForCommand("echo hi")
+	if !ok {
+		t.Fatal("expected ExecCommand call with 'echo hi'")
+	}
+	if got != 10_000 {
 		t.Fatalf("default shell timeout: got %d want %d", got, 10_000)
 	}
 
@@ -1403,8 +1407,12 @@ func TestSession_ShellTool_UsesDefaultTimeoutAndAllowsOverride(t *testing.T) {
 		t.Fatalf("ProcessInput2: %v", err)
 	}
 	sess2.Close()
-	if got := env2.LastTimeoutMS(); got != 1234 {
-		t.Fatalf("override shell timeout: got %d want %d", got, 1234)
+	got2, ok2 := env2.TimeoutForCommand("echo hi")
+	if !ok2 {
+		t.Fatal("expected ExecCommand call with 'echo hi'")
+	}
+	if got2 != 1234 {
+		t.Fatalf("override shell timeout: got %d want %d", got2, 1234)
 	}
 }
 
@@ -1442,7 +1450,11 @@ func TestSession_ShellTool_CapsTimeoutToMaxCommandTimeoutMS(t *testing.T) {
 	}
 	sess.Close()
 
-	if got := env.LastTimeoutMS(); got != 5000 {
+	got, ok := env.TimeoutForCommand("echo hi")
+	if !ok {
+		t.Fatal("expected ExecCommand call with 'echo hi'")
+	}
+	if got != 5000 {
 		t.Fatalf("capped shell timeout: got %d want %d", got, 5000)
 	}
 }
@@ -1518,6 +1530,13 @@ type captureEnv struct {
 	lastCmd   string
 	lastTOms  int
 	lastWdArg string
+	calls     []captureCall // all ExecCommand invocations
+}
+
+type captureCall struct {
+	Command   string
+	TimeoutMS int
+	WorkDir   string
 }
 
 func (e *captureEnv) Initialize() error { return nil }
@@ -1540,7 +1559,7 @@ func (e *captureEnv) FileExists(path string) bool { return false }
 func (e *captureEnv) Glob(pattern string, basePath string) ([]string, error) {
 	return nil, fmt.Errorf("not implemented")
 }
-func (e *captureEnv) Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int) (string, error) {
+func (e *captureEnv) Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
 	return "", fmt.Errorf("not implemented")
 }
 func (e *captureEnv) ListDirectory(path string, depth int) ([]DirEntry, error) {
@@ -1553,6 +1572,7 @@ func (e *captureEnv) ExecCommand(ctx context.Context, command string, timeoutMS 
 	e.lastCmd = command
 	e.lastTOms = timeoutMS
 	e.lastWdArg = workingDir
+	e.calls = append(e.calls, captureCall{Command: command, TimeoutMS: timeoutMS, WorkDir: workingDir})
 	e.mu.Unlock()
 	return ExecResult{Stdout: "ok", Stderr: "", ExitCode: 0, TimedOut: false, DurationMS: 1}, nil
 }
@@ -1561,6 +1581,18 @@ func (e *captureEnv) LastTimeoutMS() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.lastTOms
+}
+
+// TimeoutForCommand returns the timeout used for the first ExecCommand call matching cmd.
+func (e *captureEnv) TimeoutForCommand(cmd string) (int, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, c := range e.calls {
+		if strings.Contains(c.Command, cmd) {
+			return c.TimeoutMS, true
+		}
+	}
+	return 0, false
 }
 
 type timeoutEnv struct {
@@ -1586,7 +1618,7 @@ func (e *timeoutEnv) FileExists(path string) bool { return false }
 func (e *timeoutEnv) Glob(pattern string, basePath string) ([]string, error) {
 	return nil, fmt.Errorf("not implemented")
 }
-func (e *timeoutEnv) Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int) (string, error) {
+func (e *timeoutEnv) Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
 	return "", fmt.Errorf("not implemented")
 }
 func (e *timeoutEnv) ListDirectory(path string, depth int) ([]DirEntry, error) {
@@ -2014,7 +2046,10 @@ func TestSession_GracefulShutdown_SessionEndIncludesStateAndTurns(t *testing.T) 
 	if endData == nil {
 		t.Fatal("expected SESSION_END event")
 	}
-	if state, ok := endData["state"].(string); !ok || state != string(SessionClosed) {
+	// SESSION_END is emitted exactly once (dedup). When ProcessInput completes
+	// successfully, it emits with the current state (IDLE); when only Close()
+	// fires it, the state is CLOSED. Either is valid.
+	if state, ok := endData["state"].(string); !ok || state == "" {
 		t.Fatalf("SESSION_END state: got %v", endData["state"])
 	}
 	if turns, ok := endData["turns"].(int); !ok || turns < 1 {
@@ -2397,26 +2432,26 @@ func TestSession_SessionEnd_AfterProcessInput(t *testing.T) {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 
-	// After ProcessInput returns, a SESSION_END with reason "input_complete" should be emitted.
+	// After ProcessInput returns, exactly one SESSION_END with reason "input_complete" should be emitted.
+	// Close() must not emit a second SESSION_END (dedup via sessionEndEmitted flag).
 	sess.Close()
 	<-done
 
-	var inputCompleteEnd, sessionClosedEnd bool
+	endCount := 0
+	var inputCompleteEnd bool
 	for _, ev := range events {
 		if ev.Kind == EventSessionEnd {
+			endCount++
 			if r, _ := ev.Data["reason"].(string); r == "input_complete" {
 				inputCompleteEnd = true
-			}
-			if r, _ := ev.Data["reason"].(string); r == "session_closed" {
-				sessionClosedEnd = true
 			}
 		}
 	}
 	if !inputCompleteEnd {
 		t.Fatalf("expected SESSION_END with reason=input_complete")
 	}
-	if !sessionClosedEnd {
-		t.Fatalf("expected SESSION_END with reason=session_closed")
+	if endCount != 1 {
+		t.Fatalf("expected exactly 1 SESSION_END event, got %d", endCount)
 	}
 }
 
@@ -3078,6 +3113,203 @@ func TestSession_Subagent_SharedFilesystem(t *testing.T) {
 	if !found {
 		t.Fatal("subagent did not receive parent-written file content via shared filesystem")
 	}
+}
+
+func TestSubagent_MaxTurns_DefaultsTo50_NotInheritedFromParent(t *testing.T) {
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			return llm.Response{
+				Message: llm.Message{
+					Role: llm.RoleAssistant,
+					Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+						ID: "c1", Name: "spawn_agent", Type: "function",
+						Arguments: json.RawMessage(`{"task":"test task"}`),
+					}}},
+				},
+			}
+		},
+		func(req llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("done")}
+		},
+	}}
+	c.Register(f)
+	dir := t.TempDir()
+	// Parent has MaxTurns=100.
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), NewLocalExecutionEnvironment(dir), SessionConfig{MaxTurns: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sess.ProcessInput(ctx, "spawn something")
+
+	// Check the subagent's MaxTurns.
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	for _, sub := range sess.subagents {
+		sub.sess.mu.Lock()
+		mt := sub.sess.cfg.MaxTurns
+		sub.sess.mu.Unlock()
+		if mt != 50 {
+			t.Fatalf("subagent MaxTurns=%d, want 50 (should not inherit parent's 100)", mt)
+		}
+	}
+}
+
+func TestCloseAgent_ReturnsStructuredStatus(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			// Subagent completes with a result.
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("subagent output text")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	// Spawn agent directly via registry.
+	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"do something"}`),
+	})
+	if spawnRes.IsError {
+		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
+	}
+	var spawned map[string]any
+	if err := json.Unmarshal([]byte(spawnRes.Output), &spawned); err != nil {
+		t.Fatalf("unmarshal spawn result: %v", err)
+	}
+	agentID := fmt.Sprint(spawned["agent_id"])
+
+	// Wait for subagent to finish.
+	waitRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c2",
+		Name:      "wait",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":5000}`, agentID)),
+	})
+	if waitRes.IsError {
+		t.Fatalf("wait error: %s", waitRes.Output)
+	}
+
+	// Close the agent.
+	closeRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c3",
+		Name:      "close_agent",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q}`, agentID)),
+	})
+	if closeRes.IsError {
+		t.Fatalf("close_agent error: %s", closeRes.Output)
+	}
+
+	// Verify close result is structured JSON with expected fields.
+	var result map[string]any
+	if err := json.Unmarshal([]byte(closeRes.Output), &result); err != nil {
+		t.Fatalf("close_agent result is not JSON: %q (err: %v)", closeRes.Output, err)
+	}
+	if _, ok := result["status"]; !ok {
+		t.Error("close_agent result missing 'status' field")
+	}
+	if _, ok := result["output"]; !ok {
+		t.Error("close_agent result missing 'output' field")
+	}
+	if _, ok := result["turns_used"]; !ok {
+		t.Error("close_agent result missing 'turns_used' field")
+	}
+	if result["status"] != "completed" {
+		t.Errorf("close_agent status=%v, want 'completed'", result["status"])
+	}
+}
+
+func TestSubagent_WorkingDir_SharesParentPIDTracking(t *testing.T) {
+	dir := t.TempDir()
+	subDir := filepath.Join(dir, "sub")
+	os.MkdirAll(subDir, 0755)
+
+	env := NewLocalExecutionEnvironment(dir)
+	defer env.Cleanup()
+
+	childEnv := env.WithWorkingDirectory(subDir)
+	if childEnv.WorkingDirectory() != subDir {
+		t.Fatalf("child working dir: %q, want %q", childEnv.WorkingDirectory(), subDir)
+	}
+
+	// Store a PID in the child and verify it's visible from the parent.
+	childEnv.runningPIDs.Store(12345, struct{}{})
+	_, ok := env.runningPIDs.Load(12345)
+	if !ok {
+		t.Fatal("PID stored in child env not visible in parent env — PID tracking is not shared")
+	}
+
+	// Clean up fake PID to avoid Cleanup() trying to signal it.
+	env.runningPIDs.Delete(12345)
+}
+
+func TestSendInput_SteersRunningAgent(t *testing.T) {
+	// Create a minimal subagent entry with a running session to verify
+	// sendInput uses Steer() on running agents instead of rejecting them.
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("ok")} },
+	}}
+	c.Register(f)
+	dir := t.TempDir()
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	// Create a subagent session manually.
+	subSess, err := NewSession(c, NewOpenAIProfile("test-model"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sub := &subagent{
+		id:      subSess.id,
+		sess:    subSess,
+		status:  SubAgentRunning,
+		running: true,
+		done:    make(chan struct{}),
+	}
+	sess.mu.Lock()
+	sess.subagents[sub.id] = sub
+	sess.mu.Unlock()
+
+	// sendInput on a running agent should Steer instead of erroring.
+	_, err = sess.sendInput(context.Background(), sub.id, "steered message")
+	if err != nil {
+		t.Fatalf("sendInput on running agent should not error, got: %v", err)
+	}
+
+	// Verify the steering message was queued.
+	subSess.mu.Lock()
+	queue := append([]string{}, subSess.steeringQueue...)
+	subSess.mu.Unlock()
+
+	if len(queue) != 1 || queue[0] != "steered message" {
+		t.Fatalf("expected steering queue=[\"steered message\"], got %v", queue)
+	}
+
+	// Clean up.
+	sub.mu.Lock()
+	sub.running = false
+	close(sub.done)
+	sub.mu.Unlock()
+	subSess.Close()
 }
 
 func TestDetectLoop_Patterns(t *testing.T) {

@@ -55,13 +55,17 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	subCfg := s.cfg
 	if maxTurns > 0 {
 		subCfg.MaxTurns = maxTurns
-	} else if subCfg.MaxTurns <= 0 {
+	} else {
 		subCfg.MaxTurns = 50
 	}
 
 	subEnv := s.env
 	if workingDir = strings.TrimSpace(workingDir); workingDir != "" {
-		subEnv = NewLocalExecutionEnvironment(workingDir)
+		if le, ok := s.env.(*LocalExecutionEnvironment); ok {
+			subEnv = le.WithWorkingDirectory(workingDir)
+		} else {
+			subEnv = NewLocalExecutionEnvironment(workingDir)
+		}
 	}
 
 	subSess, err := NewSession(s.client, subProfile, subEnv, subCfg)
@@ -93,10 +97,17 @@ func (s *Session) sendInput(ctx context.Context, agentID string, input string) (
 		return "", fmt.Errorf("unknown agent_id: %s", agentID)
 	}
 	sub.mu.Lock()
-	if sub.running {
-		sub.mu.Unlock()
-		return "", fmt.Errorf("agent is already running")
+	running := sub.running
+	sub.mu.Unlock()
+
+	if running {
+		// Inject as steering message into the running session.
+		sub.sess.Steer(input)
+		return "ok", nil
 	}
+
+	// Agent is idle — start a new ProcessInput round.
+	sub.mu.Lock()
 	sub.done = make(chan struct{})
 	sub.running = true
 	sub.mu.Unlock()
@@ -154,8 +165,21 @@ func (s *Session) closeAgent(agentID string) (any, error) {
 	if sub == nil {
 		return "", fmt.Errorf("unknown agent_id: %s", agentID)
 	}
+
+	sub.mu.Lock()
+	status := sub.status
+	result := sub.result
+	turnsUsed := sub.turnsUsed
+	sub.mu.Unlock()
+
 	sub.sess.Close()
-	return "closed", nil
+
+	b, _ := json.Marshal(map[string]any{
+		"status":     string(status),
+		"output":     result,
+		"turns_used": turnsUsed,
+	})
+	return string(b), nil
 }
 
 func (s *Session) getSub(agentID string) *subagent {

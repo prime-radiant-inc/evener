@@ -248,7 +248,11 @@ func NewAnthropicProfile(model string) ProviderProfile {
 		streaming:       true,
 		defaultTimeout:  120_000,
 		knowledgeCutoff: "2025-04-01",
-		providerOpts:    map[string]any{},
+		providerOpts: map[string]any{
+			"anthropic": map[string]any{
+				"beta_headers": "extended-thinking-2025-04-11,prompt-caching-2024-07-31",
+			},
+		},
 		toolDefs: []llm.ToolDefinition{
 			defReadFile(),
 			defWriteFile(),
@@ -447,6 +451,11 @@ func defGrep() llm.ToolDefinition {
 				"glob_filter":      map[string]any{"type": "string"},
 				"case_insensitive": map[string]any{"type": "boolean"},
 				"max_results":      map[string]any{"type": "integer"},
+				"output_mode": map[string]any{
+					"type": "string",
+					"enum": []any{"content", "files_with_matches", "count"},
+					"description": "Output format: content (default, matching lines), files_with_matches (file paths only), count (match counts per file)",
+				},
 			},
 			"required": []string{"pattern"},
 		},
@@ -472,7 +481,7 @@ func defGlob() llm.ToolDefinition {
 func defApplyPatch() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "apply_patch",
-		Description: "Apply code changes using the v4a patch format.",
+		Description: "Apply code changes using the v4a patch format. Supports creating, deleting, and modifying files in a single operation.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,

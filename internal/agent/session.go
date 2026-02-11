@@ -135,8 +135,18 @@ type Session struct {
 	mcpMgr   *MCPManager
 	mcpTools []llm.ToolDefinition
 
+	// Tool names registered during session initialization (not custom).
+	coreToolNames map[string]bool
+
 	// read-before-write guardrail
 	readFiles map[string]bool
+
+	// SESSION_END deduplication: emitted exactly once across ProcessInput and Close.
+	sessionEndEmitted bool
+
+	// Session-level cancel: Close() cancels in-flight LLM calls.
+	sessionCtx context.Context
+	cancelFunc context.CancelFunc
 
 	// task list (lazy-init)
 	taskStore     *TaskStore
@@ -162,18 +172,21 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		cfg.DefaultCommandTimeoutMS = profileTimeout
 	}
 
+	sessCtx, sessCancel := context.WithCancel(context.Background())
 	s := &Session{
-		id:        ulid.Make().String(),
-		cfg:       cfg,
-		client:    client,
-		profile:   profile,
-		env:       env,
-		stateDir:  cfg.StateDir,
-		state:     SessionIdle,
-		events:    make(chan SessionEvent, 256),
-		history:   []Turn{},
-		subagents: map[string]*subagent{},
-		readFiles: map[string]bool{},
+		id:         ulid.Make().String(),
+		cfg:        cfg,
+		client:     client,
+		profile:    profile,
+		env:        env,
+		stateDir:   cfg.StateDir,
+		state:      SessionIdle,
+		events:     make(chan SessionEvent, 256),
+		history:    []Turn{},
+		subagents:  map[string]*subagent{},
+		readFiles:  map[string]bool{},
+		sessionCtx: sessCtx,
+		cancelFunc: sessCancel,
 	}
 
 	// Snapshot environment context once per session (spec).
@@ -233,6 +246,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		reg.mu.Unlock()
 	}
 	s.reg = reg
+	s.coreToolNames = reg.nameSet()
 
 	// MCP server discovery and connection.
 	if err := s.initMCP(); err != nil {
@@ -267,19 +281,22 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		return nil, fmt.Errorf("env initialize: %w", err)
 	}
 
+	sessCtx, sessCancel := context.WithCancel(context.Background())
 	s := &Session{
-		id:        snap.ID,
-		cfg:       cfg,
-		client:    client,
-		profile:   profile,
-		env:       env,
-		stateDir:  cfg.StateDir,
-		state:     SessionIdle,
-		events:    make(chan SessionEvent, 256),
-		history:   append([]Turn{}, snap.History...),
-		turns:     snap.TurnCount,
-		subagents: map[string]*subagent{},
-		readFiles: map[string]bool{},
+		id:         snap.ID,
+		cfg:        cfg,
+		client:     client,
+		profile:    profile,
+		env:        env,
+		stateDir:   cfg.StateDir,
+		state:      SessionIdle,
+		events:     make(chan SessionEvent, 256),
+		history:    append([]Turn{}, snap.History...),
+		turns:      snap.TurnCount,
+		subagents:  map[string]*subagent{},
+		readFiles:  map[string]bool{},
+		sessionCtx: sessCtx,
+		cancelFunc: sessCancel,
 	}
 
 	// Refresh environment context for the current state.
@@ -337,6 +354,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		reg.mu.Unlock()
 	}
 	s.reg = reg
+	s.coreToolNames = reg.nameSet()
 
 	// MCP server discovery and connection.
 	if err := s.initMCP(); err != nil {
@@ -432,7 +450,23 @@ func (s *Session) Close() {
 		delete(s.subagents, id)
 	}
 	turns := s.turns
+	emitEnd := !s.sessionEndEmitted
+	s.sessionEndEmitted = true
 	s.mu.Unlock()
+
+	// Cancel in-flight LLM calls.
+	if s.cancelFunc != nil {
+		s.cancelFunc()
+	}
+
+	// Emit SESSION_END before cleanup (spec Appendix B: graceful shutdown ordering).
+	if emitEnd {
+		s.emit(EventSessionEnd, map[string]any{
+			"reason": "session_closed",
+			"state":  string(SessionClosed),
+			"turns":  turns,
+		})
+	}
 
 	for _, sub := range subs {
 		sub.sess.Close()
@@ -443,12 +477,6 @@ func (s *Session) Close() {
 	}
 
 	s.env.Cleanup()
-
-	s.emit(EventSessionEnd, map[string]any{
-		"reason": "session_closed",
-		"state":  string(SessionClosed),
-		"turns":  turns,
-	})
 	close(s.events)
 }
 
@@ -469,10 +497,20 @@ func (s *Session) ProcessInput(ctx context.Context, input string) (string, error
 		}
 		fu := s.popFollowUp()
 		if strings.TrimSpace(fu) == "" {
-			s.emit(EventSessionEnd, map[string]any{
-				"reason": "input_complete",
-				"state":  string(s.State()),
-			})
+			s.mu.Lock()
+			if !s.sessionEndEmitted {
+				s.sessionEndEmitted = true
+				turns := s.turns
+				state := s.state
+				s.mu.Unlock()
+				s.emit(EventSessionEnd, map[string]any{
+					"reason": "input_complete",
+					"state":  string(state),
+					"turns":  turns,
+				})
+			} else {
+				s.mu.Unlock()
+			}
 			return strings.Join(outputs, "\n"), nil
 		}
 		next = fu
@@ -651,6 +689,17 @@ func (s *Session) emit(kind EventKind, data map[string]any) {
 }
 
 func (s *Session) processOneInput(ctx context.Context, input string) (string, error) {
+	// Derive a context that cancels when either the caller's ctx or the session ctx cancels.
+	ctx, cancel := context.WithCancel(ctx)
+	go func() {
+		select {
+		case <-s.sessionCtx.Done():
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	defer cancel()
+
 	s.mu.Lock()
 	if s.state == SessionClosed {
 		s.mu.Unlock()
@@ -691,6 +740,18 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		s.emit(EventSteeringInjected, map[string]any{"text": msg})
 	}
 
+	var toolSigs []string
+	ctxWarned := false
+
+	for round := 0; round < s.cfg.MaxToolRoundsPerInput; round++ {
+		select {
+		case <-ctx.Done():
+			s.emit(EventError, map[string]any{"error": ctx.Err().Error()})
+			return "", ctx.Err()
+		default:
+		}
+
+		// Rebuild system prompt each iteration so tool side-effects (e.g. new AGENTS.md) are reflected.
 		docs, _ := LoadProjectDocs(s.env, s.profile.ProjectDocFiles()...)
 		var skillList []SkillMeta
 		for _, sm := range s.skills {
@@ -698,7 +759,6 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		}
 		sys := s.profile.BuildSystemPrompt(s.envInfo, docs, skillList)
 
-		// Append MCP tool descriptions to the system prompt so the model knows about them.
 		if len(s.mcpTools) > 0 {
 			sys += "\nMCP Tools (from external servers):\n"
 			for _, td := range s.mcpTools {
@@ -710,20 +770,16 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			}
 		}
 
+		// Include custom-registered tools not already described by the profile or MCP sections.
+		if extra := s.customToolDescriptions(); len(extra) > 0 {
+			sys += "\nAdditional tools:\n"
+			sys += extra
+		}
+
 		if strings.TrimSpace(s.cfg.UserInstructionOverride) != "" {
 			sys = sys + "\n\n" + strings.TrimSpace(s.cfg.UserInstructionOverride) + "\n"
 		}
 
-	var toolSigs []string
-	ctxWarned := false
-
-	for round := 0; round < s.cfg.MaxToolRoundsPerInput; round++ {
-		select {
-		case <-ctx.Done():
-			s.emit(EventError, map[string]any{"error": ctx.Err().Error()})
-			return "", ctx.Err()
-		default:
-		}
 		// Apply context management before each LLM request.
 		// Copy history out to avoid holding s.mu during potential LLM calls (Layer 4).
 		if s.contextMgr != nil {
@@ -992,6 +1048,29 @@ func detectLoop(signatures []string, windowSize int) bool {
 	return false
 }
 
+// customToolDescriptions returns formatted descriptions of tools in the registry
+// that were registered after session initialization (not core or MCP tools).
+func (s *Session) customToolDescriptions() string {
+	// Build MCP tool name set for exclusion (MCP tools have their own section).
+	mcpNames := make(map[string]bool, len(s.mcpTools))
+	for _, td := range s.mcpTools {
+		mcpNames[td.Name] = true
+	}
+
+	var b strings.Builder
+	for _, td := range s.reg.Definitions() {
+		if s.coreToolNames[td.Name] || mcpNames[td.Name] {
+			continue
+		}
+		desc := strings.TrimSpace(td.Description)
+		if desc == "" {
+			desc = "(no description)"
+		}
+		b.WriteString(fmt.Sprintf("- %s: %s\n", td.Name, desc))
+	}
+	return b.String()
+}
+
 // allToolDefinitions returns profile tool definitions plus any MCP tools.
 func (s *Session) allToolDefinitions() []llm.ToolDefinition {
 	defs := s.profile.ToolDefinitions()
@@ -1220,7 +1299,11 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			if v, ok := args["max_results"].(float64); ok && int(v) > 0 {
 				maxRes = int(v)
 			}
-			return env.Grep(pat, path, glob, ci, maxRes)
+			outputMode := ""
+			if v, ok := args["output_mode"].(string); ok {
+				outputMode = v
+			}
+			return env.Grep(pat, path, glob, ci, maxRes, outputMode)
 		},
 	}); err != nil {
 		return err

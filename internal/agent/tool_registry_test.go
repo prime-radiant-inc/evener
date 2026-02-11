@@ -269,6 +269,53 @@ func TestToolRegistry_Names(t *testing.T) {
 	}
 }
 
+func TestToolRegistry_Register_RejectsNonObjectRootSchema(t *testing.T) {
+	reg := NewToolRegistry()
+	err := reg.Register(RegisteredTool{
+		Definition: llm.ToolDefinition{
+			Name: "bad_tool",
+			Parameters: map[string]any{
+				"type": "string",
+			},
+		},
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			return "ok", nil
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for non-object root schema type")
+	}
+	if !strings.Contains(err.Error(), "object") {
+		t.Fatalf("error should mention 'object': %v", err)
+	}
+}
+
+func TestToolRegistry_Register_LatestWinsOnNameCollision(t *testing.T) {
+	reg := NewToolRegistry()
+	first := RegisteredTool{
+		Definition: llm.ToolDefinition{Name: "my_tool", Description: "first"},
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			return "first", nil
+		},
+	}
+	second := RegisteredTool{
+		Definition: llm.ToolDefinition{Name: "my_tool", Description: "second"},
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			return "second", nil
+		},
+	}
+	if err := reg.Register(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Register(second); err != nil {
+		t.Fatal(err)
+	}
+	got := reg.Get("my_tool")
+	if got == nil || got.Definition.Description != "second" {
+		t.Fatalf("expected latest-wins: got description=%q", got.Definition.Description)
+	}
+}
+
 func TestDefaultToolLimit_MatchesSpecTable(t *testing.T) {
 	type want struct {
 		tool   string
