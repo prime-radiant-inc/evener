@@ -995,10 +995,18 @@ func toAnthropicMessages(msgs []llm.Message) (system string, messages []map[stri
 				if p.Kind != llm.ContentToolResult || p.ToolResult == nil {
 					continue
 				}
+				var outStr string
+				switch v := p.ToolResult.Content.(type) {
+				case string:
+					outStr = v
+				default:
+					b, _ := json.Marshal(v)
+					outStr = string(b)
+				}
 				blocks = append(blocks, map[string]any{
 					"type":        "tool_result",
 					"tool_use_id": p.ToolResult.ToolCallID,
-					"content":     fmt.Sprint(p.ToolResult.Content),
+					"content":     outStr,
 					"is_error":    p.ToolResult.IsError,
 				})
 			}

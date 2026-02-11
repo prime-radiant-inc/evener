@@ -2108,6 +2108,74 @@ func TestDefaultHeaders_CannotOverrideProviderHeaders(t *testing.T) {
 	}
 }
 
+func TestAdapter_Complete_ToolResultStructuredContent_MarshaledAsJSON(t *testing.T) {
+	// When tool result content is a map (not a string), the adapter must
+	// JSON-marshal it rather than using fmt.Sprint which produces Go debug format.
+	var sentBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &sentBody)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":    "msg_1",
+			"type":  "message",
+			"role":  "assistant",
+			"model": "test",
+			"content": []any{
+				map[string]any{"type": "text", "text": "ok"},
+			},
+			"stop_reason": "end_turn",
+			"usage":       map[string]any{"input_tokens": 10, "output_tokens": 5},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL}
+	structuredContent := map[string]any{"temperature": 72, "unit": "F"}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model: "test",
+		Messages: []llm.Message{
+			llm.User("What's the weather?"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+				Kind:     llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{ID: "call_1", Name: "weather", Arguments: json.RawMessage(`{}`)},
+			}}},
+			llm.ToolResult("call_1", structuredContent, false),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	// Find the tool_result block in the sent messages.
+	msgs, _ := sentBody["messages"].([]any)
+	if len(msgs) == 0 {
+		t.Fatal("expected messages in sent body")
+	}
+	lastMsg, _ := msgs[len(msgs)-1].(map[string]any)
+	content, _ := lastMsg["content"].([]any)
+	if len(content) == 0 {
+		t.Fatal("expected content blocks in last message")
+	}
+	block, _ := content[0].(map[string]any)
+	contentStr, _ := block["content"].(string)
+
+	// Must be valid JSON, not Go fmt.Sprint output like "map[temperature:72 unit:F]".
+	if strings.Contains(contentStr, "map[") {
+		t.Errorf("content should be JSON, not Go fmt.Sprint output; got %q", contentStr)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(contentStr), &parsed); err != nil {
+		t.Fatalf("content should be valid JSON; got %q, error: %v", contentStr, err)
+	}
+	if temp, _ := parsed["temperature"].(float64); temp != 72 {
+		t.Errorf("temperature = %v, want 72", parsed["temperature"])
+	}
+	if unit, _ := parsed["unit"].(string); unit != "F" {
+		t.Errorf("unit = %q, want %q", parsed["unit"], "F")
+	}
+}
+
 func contentKinds(parts []llm.ContentPart) []string {
 	var kinds []string
 	for _, p := range parts {
