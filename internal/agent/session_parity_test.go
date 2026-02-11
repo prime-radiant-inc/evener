@@ -699,6 +699,43 @@ func TestParity_ToolOutputTruncation(t *testing.T) {
 	}
 }
 
+func TestParity_ReasoningEffort(t *testing.T) {
+	for _, pc := range providerCases {
+		t.Run(pc.name, func(t *testing.T) {
+			steps := []func(llm.Request) llm.Response{
+				func(req llm.Request) llm.Response {
+					return llm.Response{Message: llm.Assistant("first")}
+				},
+				func(req llm.Request) llm.Response {
+					return llm.Response{Message: llm.Assistant("second")}
+				},
+			}
+			sess, f := newParitySession(t, pc, steps)
+			sess.cfg.ReasoningEffort = "low"
+			defer sess.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			sess.ProcessInput(ctx, "first")
+
+			sess.SetReasoningEffort("high")
+			sess.ProcessInput(ctx, "second")
+			sess.Close()
+
+			reqs := f.Requests()
+			if len(reqs) < 2 {
+				t.Fatalf("expected at least 2 requests, got %d", len(reqs))
+			}
+			if reqs[0].ReasoningEffort == nil || *reqs[0].ReasoningEffort != "low" {
+				t.Errorf("first call: got %v, want 'low'", reqs[0].ReasoningEffort)
+			}
+			if reqs[1].ReasoningEffort == nil || *reqs[1].ReasoningEffort != "high" {
+				t.Errorf("second call: got %v, want 'high'", reqs[1].ReasoningEffort)
+			}
+		})
+	}
+}
+
 // canonicalXxx returns the wire-name for a tool given the provider name.
 // This mirrors the ToolNameMap applied by each profile.
 func canonicalWriteFile(provider string) string { return "write_file" }
