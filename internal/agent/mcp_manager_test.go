@@ -305,6 +305,24 @@ func TestTransportForConfig_Types(t *testing.T) {
 	}
 }
 
+func TestSanitizeToolName(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"echo", "echo"},
+		{"get-sum", "get_sum"},
+		{"server__get-tiny-image", "server__get_tiny_image"},
+		{"no-hyphens-at-all", "no_hyphens_at_all"},
+		{"already_underscores", "already_underscores"},
+	}
+	for _, tt := range tests {
+		got := sanitizeToolName(tt.in)
+		if got != tt.want {
+			t.Errorf("sanitizeToolName(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
 func TestMergeEnv(t *testing.T) {
 	// mergeEnv uses os.Environ so we can only test that extra vars appear
 	// and that overriding works correctly.

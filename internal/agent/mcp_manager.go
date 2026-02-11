@@ -20,9 +20,10 @@ type MCPManager struct {
 }
 
 type mcpConn struct {
-	name    string
-	session *mcp.ClientSession
-	tools   []llm.ToolDefinition // namespaced: servername__toolname
+	name      string
+	session   *mcp.ClientSession
+	tools     []llm.ToolDefinition // namespaced: servername__toolname
+	origNames map[string]string    // sanitized namespaced name → original MCP tool name
 }
 
 // NewMCPManager connects to all configured MCP servers, discovers their tools,
@@ -68,8 +69,10 @@ func NewMCPManager(ctx context.Context, configs []MCPServerConfig, transports []
 		}
 
 		var tools []llm.ToolDefinition
+		origNames := make(map[string]string, len(result.Tools))
 		for _, t := range result.Tools {
-			namespacedName := cfg.Name + "__" + t.Name
+			namespacedName := sanitizeToolName(cfg.Name + "__" + t.Name)
+			origNames[namespacedName] = t.Name
 			params := mcpSchemaToParams(t.InputSchema)
 			tools = append(tools, llm.ToolDefinition{
 				Name:        namespacedName,
@@ -79,9 +82,10 @@ func NewMCPManager(ctx context.Context, configs []MCPServerConfig, transports []
 		}
 
 		mgr.conns = append(mgr.conns, mcpConn{
-			name:    cfg.Name,
-			session: session,
-			tools:   tools,
+			name:      cfg.Name,
+			session:   session,
+			tools:     tools,
+			origNames: origNames,
 		})
 	}
 
@@ -124,8 +128,8 @@ func (m *MCPManager) RegisterTools(reg *ToolRegistry) error {
 				return fmt.Errorf("MCP tool %q collides with existing tool", td.Name)
 			}
 
-			// Extract the original tool name for CallTool.
-			origName := strings.TrimPrefix(td.Name, conn.name+"__")
+			// Look up the original MCP tool name for CallTool.
+			origName := conn.origNames[td.Name]
 			sess := conn.session
 
 			if err := reg.Register(RegisteredTool{
@@ -158,6 +162,13 @@ func (m *MCPManager) Close() {
 			c.session.Close()
 		}
 	}
+}
+
+// sanitizeToolName replaces characters invalid in LLM tool names (e.g. hyphens)
+// with underscores. MCP servers often use hyphens in tool names, but LLM
+// providers only accept [a-zA-Z0-9_].
+func sanitizeToolName(name string) string {
+	return strings.ReplaceAll(name, "-", "_")
 }
 
 // mcpSchemaToParams converts an MCP tool's InputSchema (any) to our
