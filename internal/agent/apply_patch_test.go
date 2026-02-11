@@ -117,6 +117,29 @@ func TestApplyPatch_ContextHintDisambiguates(t *testing.T) {
 	}
 }
 
+func TestApplyPatch_MultiHunkSingleFile(t *testing.T) {
+	dir := t.TempDir()
+	content := "alpha\nbeta\ngamma\ndelta\nepsilon\n"
+	os.WriteFile(filepath.Join(dir, "f.txt"), []byte(content), 0o644)
+
+	patch := "*** Begin Patch\n*** Update File: f.txt\n@@ alpha\n alpha\n-beta\n+BETA\n@@ delta\n delta\n-epsilon\n+EPSILON\n*** End Patch\n"
+	_, err := ApplyPatch(dir, patch)
+	if err != nil {
+		t.Fatalf("ApplyPatch multi-hunk: %v", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "f.txt"))
+	s := string(got)
+	if !strings.Contains(s, "BETA") {
+		t.Fatal("first hunk not applied")
+	}
+	if !strings.Contains(s, "EPSILON") {
+		t.Fatal("second hunk not applied")
+	}
+	if !strings.Contains(s, "gamma") {
+		t.Fatal("unchanged line gamma should be preserved")
+	}
+}
+
 func TestApplyPatch_RejectsPathTraversalAndAbsolutePaths(t *testing.T) {
 	dir := t.TempDir()
 	cases := []string{
