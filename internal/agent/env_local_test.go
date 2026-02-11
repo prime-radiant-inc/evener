@@ -508,6 +508,28 @@ func TestCleanup_TerminatesRunningProcesses(t *testing.T) {
 	}
 }
 
+func TestExecCommand_SIGTERM_ThenSIGKILL_Escalation(t *testing.T) {
+	// Process traps SIGTERM and ignores it; should be killed via SIGKILL after 2s.
+	env := NewLocalExecutionEnvironment(t.TempDir())
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	res, err := env.ExecCommand(ctx, "trap '' TERM; sleep 30", 50, "", nil)
+	dur := time.Since(start)
+
+	if err == nil {
+		t.Fatalf("expected error, got nil (res=%+v)", res)
+	}
+	if !res.TimedOut {
+		t.Fatalf("expected timed_out=true, got %+v", res)
+	}
+	// Should complete within ~5s: 50ms timeout + 2s SIGTERM wait + SIGKILL.
+	if dur > 6*time.Second {
+		t.Fatalf("expected SIGKILL escalation to complete within 6s; took %s", dur)
+	}
+}
+
 func TestLocalExecutionEnvironment_InitializeCleanup(t *testing.T) {
 	env := NewLocalExecutionEnvironment(t.TempDir())
 	if err := env.Initialize(); err != nil {

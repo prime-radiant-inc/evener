@@ -2867,6 +2867,219 @@ func TestSession_ReadBeforeWrite_NewFileNoWarning(t *testing.T) {
 	}
 }
 
+func TestSession_ReasoningEffort_MediumPassedThrough(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("done")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		ReasoningEffort: "medium",
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sess.ProcessInput(ctx, "hello")
+	sess.Close()
+
+	reqs := f.Requests()
+	if len(reqs) == 0 {
+		t.Fatal("no requests recorded")
+	}
+	if reqs[0].ReasoningEffort == nil || *reqs[0].ReasoningEffort != "medium" {
+		t.Fatalf("reasoning_effort: got %#v, want 'medium'", reqs[0].ReasoningEffort)
+	}
+}
+
+func TestSession_ReasoningEffort_EmptyMeansNoOverride(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("done")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		// ReasoningEffort left empty — no override.
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sess.ProcessInput(ctx, "hello")
+	sess.Close()
+
+	reqs := f.Requests()
+	if len(reqs) == 0 {
+		t.Fatal("no requests recorded")
+	}
+	if reqs[0].ReasoningEffort != nil {
+		t.Fatalf("expected nil ReasoningEffort (no override), got %#v", reqs[0].ReasoningEffort)
+	}
+}
+
+func TestSession_Subagent_IndependentHistory(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	callCount := 0
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			// Subagent gets a multi-tool conversation.
+			func(req llm.Request) llm.Response {
+				callCount++
+				return llm.Response{
+					Message: llm.Message{
+						Role: llm.RoleAssistant,
+						Content: []llm.ContentPart{
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "s1", Name: "shell", Arguments: json.RawMessage(`{"command":"echo sub"}`), Type: "function"}},
+						},
+					},
+				}
+			},
+			func(req llm.Request) llm.Response {
+				callCount++
+				return llm.Response{Message: llm.Assistant("subagent done")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// Parent starts with just the initial state — record history length.
+	parentHistBefore := len(sess.history)
+
+	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"do something"}`),
+	})
+	if spawnRes.IsError {
+		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
+	}
+	var spawned map[string]any
+	json.Unmarshal([]byte(spawnRes.Output), &spawned)
+	agentID := fmt.Sprint(spawned["agent_id"])
+
+	waitRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c2",
+		Name:      "wait",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":5000}`, agentID)),
+	})
+	if waitRes.IsError {
+		t.Fatalf("wait error: %s", waitRes.Output)
+	}
+
+	// Parent history should be unchanged — subagent history is separate.
+	parentHistAfter := len(sess.history)
+	if parentHistAfter != parentHistBefore {
+		t.Fatalf("parent history changed: before=%d after=%d; subagent history leaked into parent", parentHistBefore, parentHistAfter)
+	}
+}
+
+func TestSession_Subagent_SharedFilesystem(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	// Write a file in the parent's working directory.
+	os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("hello from parent"), 0644)
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			// Subagent reads the shared file.
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Message: llm.Message{
+						Role: llm.RoleAssistant,
+						Content: []llm.ContentPart{
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "s1", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"shared.txt"}`), Type: "function"}},
+						},
+					},
+				}
+			},
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("read it")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"read shared.txt"}`),
+	})
+	if spawnRes.IsError {
+		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
+	}
+	var spawned map[string]any
+	json.Unmarshal([]byte(spawnRes.Output), &spawned)
+	agentID := fmt.Sprint(spawned["agent_id"])
+
+	waitRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c2",
+		Name:      "wait",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":5000}`, agentID)),
+	})
+	if waitRes.IsError {
+		t.Fatalf("wait error: %s", waitRes.Output)
+	}
+
+	// The subagent's LLM should have received the file content in a tool result.
+	reqs := f.Requests()
+	found := false
+	for _, req := range reqs {
+		for _, msg := range req.Messages {
+			for _, p := range msg.Content {
+				if p.Kind == llm.ContentToolResult && strings.Contains(fmt.Sprint(p.ToolResult.Content), "hello from parent") {
+					found = true
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("subagent did not receive parent-written file content via shared filesystem")
+	}
+}
+
 func TestDetectLoop_Patterns(t *testing.T) {
 	tests := []struct {
 		name   string
