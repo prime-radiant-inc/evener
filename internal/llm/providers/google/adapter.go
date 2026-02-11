@@ -248,10 +248,21 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 			"parts": []map[string]any{{"text": system}},
 		}
 	}
-	if len(req.Tools) > 0 {
-		body["tools"] = []map[string]any{{
-			"functionDeclarations": toGeminiFunctionDecls(req.Tools),
-		}}
+	if len(req.Tools) > 0 || req.WebSearch {
+		var toolEntries []map[string]any
+		if len(req.Tools) > 0 {
+			toolEntries = append(toolEntries, map[string]any{
+				"functionDeclarations": toGeminiFunctionDecls(req.Tools),
+			})
+		}
+		// Gemini does not support google_search combined with functionDeclarations.
+		// Only include google_search when no function tools are present.
+		if req.WebSearch && len(req.Tools) == 0 {
+			toolEntries = append(toolEntries, map[string]any{
+				"google_search": map[string]any{},
+			})
+		}
+		body["tools"] = toolEntries
 	}
 	if req.ToolChoice != nil {
 		mode := strings.ToLower(strings.TrimSpace(req.ToolChoice.Mode))

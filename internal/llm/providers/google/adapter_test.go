@@ -1368,3 +1368,101 @@ func TestComplete_WrapsContextDeadlineExceeded(t *testing.T) {
 		t.Fatalf("expected RequestTimeoutError, got %T: %v", err, err)
 	}
 }
+
+func TestStream_IncludesWebSearchTool_NoFunctionTools(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, "data: "+`{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`+"\n\n")
+		if f != nil {
+			f.Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	stream, err := a.Stream(ctx, llm.Request{
+		Model:     "gemini-2.0-flash",
+		Messages:  []llm.Message{llm.User("search the web")},
+		WebSearch: true,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+	for range stream.Events() {
+	}
+
+	tools, ok := gotBody["tools"].([]any)
+	if !ok || len(tools) == 0 {
+		t.Fatalf("expected tools with google_search, got: %v", gotBody["tools"])
+	}
+	found := false
+	for _, tool := range tools {
+		tm, _ := tool.(map[string]any)
+		if _, ok := tm["google_search"]; ok {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("google_search tool not found in tools: %v", tools)
+	}
+}
+
+func TestStream_WebSearch_SkippedWithFunctionTools(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, "data: "+`{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`+"\n\n")
+		if f != nil {
+			f.Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	stream, err := a.Stream(ctx, llm.Request{
+		Model:    "gemini-2.0-flash",
+		Messages: []llm.Message{llm.User("search the web")},
+		Tools: []llm.ToolDefinition{{
+			Name:       "shell",
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{}},
+		}},
+		WebSearch: true,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+	for range stream.Events() {
+	}
+
+	tools, ok := gotBody["tools"].([]any)
+	if !ok {
+		t.Fatalf("tools not array: %#v", gotBody["tools"])
+	}
+	// Should have only 1 entry: functionDeclarations (google_search excluded)
+	if len(tools) != 1 {
+		t.Fatalf("tools count: got %d want 1 (google_search should be excluded)", len(tools))
+	}
+	entry0, _ := tools[0].(map[string]any)
+	if _, ok := entry0["functionDeclarations"]; !ok {
+		t.Fatalf("first tools entry missing functionDeclarations: %#v", entry0)
+	}
+}
