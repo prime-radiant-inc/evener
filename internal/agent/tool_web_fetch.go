@@ -19,7 +19,6 @@ import (
 )
 
 const (
-	webCacheDir        = ".serf/web_cache"
 	webFetchTimeout    = 30 * time.Second
 	webFetchMaxBytes   = 5 * 1024 * 1024 // 5 MiB
 	webFetchMaxContent = 100_000         // chars passed to cheap model
@@ -36,11 +35,11 @@ func htmlToMarkdown(html string) (string, error) {
 	return htmltomarkdown.ConvertString(html)
 }
 
-// webFetchCachePath returns the per-fetch directory path: .serf/web_cache/yyyy-mm-dd/<hash>
+// webFetchCachePath returns the absolute per-fetch directory path under the XDG cache dir.
 func webFetchCachePath(rawURL string) string {
 	date := time.Now().UTC().Format("2006-01-02")
 	key := webFetchCacheKey(rawURL)
-	return filepath.Join(webCacheDir, date, key)
+	return filepath.Join(CacheDir(), "web_cache", date, key)
 }
 
 // webFetch performs the full web_fetch operation: HTTP GET, cache files, cheap model Q&A.
@@ -84,10 +83,9 @@ func (s *Session) webFetch(ctx context.Context, rawURL string, question string) 
 	isHTML := strings.Contains(contentType, "text/html")
 	sizeBytes := len(body)
 
-	// Per-fetch cache directory: .serf/web_cache/yyyy-mm-dd/<hash>/
+	// Per-fetch cache directory (absolute XDG path).
 	fetchDir := webFetchCachePath(rawURL)
-	fetchAbsDir := filepath.Join(s.env.WorkingDirectory(), fetchDir)
-	if err := os.MkdirAll(fetchAbsDir, 0o755); err != nil {
+	if err := os.MkdirAll(fetchDir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating cache dir: %w", err)
 	}
 
@@ -95,7 +93,7 @@ func (s *Session) webFetch(ctx context.Context, rawURL string, question string) 
 	rawExt := extFromContentType(contentType)
 	rawName := "raw" + rawExt
 	rawPath := filepath.Join(fetchDir, rawName)
-	if err := os.WriteFile(filepath.Join(fetchAbsDir, rawName), body, 0o644); err != nil {
+	if err := os.WriteFile(rawPath, body, 0o644); err != nil {
 		return nil, fmt.Errorf("writing raw file: %w", err)
 	}
 
@@ -110,7 +108,7 @@ func (s *Session) webFetch(ctx context.Context, rawURL string, question string) 
 		} else {
 			readableContent = md
 			mdPath = filepath.Join(fetchDir, "rendered.md")
-			if err := os.WriteFile(filepath.Join(fetchAbsDir, "rendered.md"), []byte(md), 0o644); err != nil {
+			if err := os.WriteFile(mdPath, []byte(md), 0o644); err != nil {
 				return nil, fmt.Errorf("writing rendered markdown: %w", err)
 			}
 		}

@@ -34,6 +34,9 @@ func TestWebFetchCacheKey(t *testing.T) {
 }
 
 func TestWebFetchCachePath(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", xdg)
+
 	p := webFetchCachePath("https://example.com/docs")
 
 	// Should contain today's date.
@@ -42,21 +45,11 @@ func TestWebFetchCachePath(t *testing.T) {
 		t.Fatalf("cache path %q missing today's date %q", p, today)
 	}
 
-	// Should be structured as .serf/web_cache/date/hash.
-	parts := strings.Split(filepath.ToSlash(p), "/")
-	if len(parts) != 4 {
-		t.Fatalf("expected 4-part path (.serf/web_cache/date/hash), got %q", p)
-	}
-	if parts[0] != ".serf" || parts[1] != "web_cache" {
-		t.Fatalf("unexpected prefix in %q", p)
-	}
-	if parts[2] != today {
-		t.Fatalf("date segment: got %q want %q", parts[2], today)
-	}
-	// Hash segment should be the cache key.
+	// Should be an absolute path under $XDG_CACHE_HOME/serf/web_cache/date/hash.
 	wantKey := webFetchCacheKey("https://example.com/docs")
-	if parts[3] != wantKey {
-		t.Fatalf("hash segment: got %q want %q", parts[3], wantKey)
+	want := filepath.Join(xdg, "serf", "web_cache", today, wantKey)
+	if p != want {
+		t.Fatalf("cache path:\n  got  %q\n  want %q", p, want)
 	}
 }
 
@@ -120,6 +113,8 @@ func TestWebFetchTool_Integration(t *testing.T) {
 	defer srv.Close()
 
 	dir := t.TempDir()
+	cacheHome := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
 
 	// Set up fake adapter that captures requests and returns a canned answer.
 	var capturedReqs []llm.Request
@@ -192,10 +187,10 @@ func TestWebFetchTool_Integration(t *testing.T) {
 		t.Fatalf("cheap model user message missing page content: %s", userText)
 	}
 
-	// Verify cache files use date-bucketed directory structure.
+	// Verify cache files use date-bucketed directory structure under XDG cache.
 	today := time.Now().UTC().Format("2006-01-02")
 	cacheKey := webFetchCacheKey(srv.URL)
-	fetchDir := filepath.Join(dir, ".serf", "web_cache", today, cacheKey)
+	fetchDir := filepath.Join(cacheHome, "serf", "web_cache", today, cacheKey)
 
 	rawPath := filepath.Join(fetchDir, "raw.html")
 	if _, err := os.Stat(rawPath); os.IsNotExist(err) {
@@ -228,6 +223,7 @@ func TestWebFetchTool_ResultContainsFilePaths(t *testing.T) {
 	defer srv.Close()
 
 	dir := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	fa := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
@@ -292,6 +288,8 @@ func TestWebFetchTool_JSONContent(t *testing.T) {
 	defer srv.Close()
 
 	dir := t.TempDir()
+	cacheHome := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
 
 	fa := &fakeAdapter{
 		name: "openai",
@@ -333,7 +331,7 @@ func TestWebFetchTool_JSONContent(t *testing.T) {
 	// Verify raw.json was written (no rendered.md for JSON).
 	today := time.Now().UTC().Format("2006-01-02")
 	cacheKey := webFetchCacheKey(srv.URL)
-	fetchDir := filepath.Join(dir, ".serf", "web_cache", today, cacheKey)
+	fetchDir := filepath.Join(cacheHome, "serf", "web_cache", today, cacheKey)
 
 	rawPath := filepath.Join(fetchDir, "raw.json")
 	if _, err := os.Stat(rawPath); os.IsNotExist(err) {
