@@ -36,6 +36,12 @@ type SessionConfig struct {
 	// as a directory whose subdirectories contain SKILL.md files).
 	SkillsDirs []string `json:"skills_dirs,omitempty"`
 
+	// MCPConfigFiles are paths to .mcp.json files (--mcp-config flag).
+	MCPConfigFiles []string `json:"mcp_config_files,omitempty"`
+
+	// MCPInline are inline MCP server specs (--mcp flag, format: name:command args...).
+	MCPInline []string `json:"mcp_inline,omitempty"`
+
 	EnableLoopDetection *bool `json:"enable_loop_detection,omitempty"`
 	LoopDetectionWindow int   `json:"loop_detection_window,omitempty"`
 
@@ -105,6 +111,10 @@ type Session struct {
 	// skills discovered at session startup
 	skills map[string]SkillMeta
 
+	// MCP server connections
+	mcpMgr   *MCPManager
+	mcpTools []llm.ToolDefinition
+
 	// task list (lazy-init)
 	taskStore     *TaskStore
 	taskStoreOnce sync.Once
@@ -173,6 +183,11 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		reg.mu.Unlock()
 	}
 	s.reg = reg
+
+	// MCP server discovery and connection.
+	if err := s.initMCP(); err != nil {
+		return nil, fmt.Errorf("MCP initialization: %w", err)
+	}
 
 	s.emit(EventSessionStart, map[string]any{
 		"profile": profile.ID(),
@@ -250,6 +265,11 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 	}
 	s.reg = reg
 
+	// MCP server discovery and connection.
+	if err := s.initMCP(); err != nil {
+		return nil, fmt.Errorf("MCP initialization: %w", err)
+	}
+
 	s.emit(EventSessionStart, map[string]any{
 		"profile":  profile.ID(),
 		"model":    profile.Model(),
@@ -324,6 +344,10 @@ func (s *Session) Close() {
 	}
 	s.closed = true
 	s.mu.Unlock()
+
+	if s.mcpMgr != nil {
+		s.mcpMgr.Close()
+	}
 
 	s.emit(EventSessionEnd, map[string]any{})
 	close(s.events)
@@ -526,6 +550,19 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			skillList = append(skillList, sm)
 		}
 		sys := s.profile.BuildSystemPrompt(s.envInfo, docs, skillList)
+
+		// Append MCP tool descriptions to the system prompt so the model knows about them.
+		if len(s.mcpTools) > 0 {
+			sys += "\nMCP Tools (from external servers):\n"
+			for _, td := range s.mcpTools {
+				desc := strings.TrimSpace(td.Description)
+				if desc == "" {
+					desc = "(no description)"
+				}
+				sys += fmt.Sprintf("- %s: %s\n", td.Name, desc)
+			}
+		}
+
 		if strings.TrimSpace(s.cfg.UserInstructionOverride) != "" {
 			sys = sys + "\n\n" + strings.TrimSpace(s.cfg.UserInstructionOverride) + "\n"
 		}
@@ -580,7 +617,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			Model:      s.profile.Model(),
 			Provider:   s.profile.ID(),
 			Messages:   append([]llm.Message{llm.System(sys)}, history...),
-			Tools:      s.profile.ToolDefinitions(),
+			Tools:      s.allToolDefinitions(),
 			ToolChoice: &llm.ToolChoice{Mode: "required"},
 			WebSearch:  true,
 		}
@@ -750,6 +787,40 @@ func toolCallsFingerprint(calls []llm.ToolCallData) string {
 		b.WriteByte(';')
 	}
 	return b.String()
+}
+
+// allToolDefinitions returns profile tool definitions plus any MCP tools.
+func (s *Session) allToolDefinitions() []llm.ToolDefinition {
+	defs := s.profile.ToolDefinitions()
+	if len(s.mcpTools) > 0 {
+		defs = append(append([]llm.ToolDefinition{}, defs...), s.mcpTools...)
+	}
+	return defs
+}
+
+// initMCP discovers and connects to MCP servers if configured.
+func (s *Session) initMCP() error {
+	configs, err := DiscoverMCPConfigs(s.env, s.cfg.MCPConfigFiles, s.cfg.MCPInline)
+	if err != nil {
+		return err
+	}
+	if len(configs) == 0 {
+		return nil
+	}
+
+	mgr, err := NewMCPManager(context.Background(), configs, nil)
+	if err != nil {
+		return err
+	}
+
+	if err := mgr.RegisterTools(s.reg); err != nil {
+		mgr.Close()
+		return err
+	}
+
+	s.mcpMgr = mgr
+	s.mcpTools = mgr.ToolDefinitions()
+	return nil
 }
 
 // Tool registration.
