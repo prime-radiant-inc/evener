@@ -6,6 +6,25 @@ import (
 	"time"
 )
 
+// gitOriginURL returns the git remote origin URL for the repo at cwd,
+// or "" if not a git repo or no origin remote is configured.
+func gitOriginURL(env ExecutionEnvironment, cwd string) string {
+	if env == nil {
+		return ""
+	}
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		cwd = env.WorkingDirectory()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	res, err := env.ExecCommand(ctx, "git remote get-url origin", 2_000, cwd, nil)
+	if err != nil || res.ExitCode != 0 {
+		return ""
+	}
+	return strings.TrimSpace(res.Stdout)
+}
+
 func snapshotGit(env ExecutionEnvironment, cwd string) (inRepo bool, branch string, modifiedFiles int, untrackedFiles int, recentCommitTitles []string) {
 	if env == nil {
 		return false, "", 0, 0, nil

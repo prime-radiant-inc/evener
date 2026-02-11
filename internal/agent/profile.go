@@ -26,6 +26,7 @@ type EnvironmentInfo struct {
 	KnowledgeCutoff       string   `json:"knowledge_cutoff"`         // YYYY-MM-DD
 	IsGitRepo             bool     `json:"is_git_repo"`
 	GitBranch             string   `json:"git_branch,omitempty"`
+	GitOriginURL          string   `json:"git_origin_url,omitempty"`
 	GitModifiedFiles      int      `json:"git_modified_files"`
 	GitUntrackedFiles     int      `json:"git_untracked_files"`
 	GitRecentCommitTitles []string `json:"git_recent_commit_titles,omitempty"`

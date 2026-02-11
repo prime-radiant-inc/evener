@@ -155,6 +155,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		ei.GitModifiedFiles = mod
 		ei.GitUntrackedFiles = untracked
 		ei.GitRecentCommitTitles = commits
+		ei.GitOriginURL = gitOriginURL(env, ei.WorkingDir)
 	}
 	s.envInfo = ei
 
@@ -252,6 +253,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		ei.GitModifiedFiles = mod
 		ei.GitUntrackedFiles = untracked
 		ei.GitRecentCommitTitles = commits
+		ei.GitOriginURL = gitOriginURL(env, ei.WorkingDir)
 	}
 	s.envInfo = ei
 
