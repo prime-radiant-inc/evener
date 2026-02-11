@@ -207,7 +207,8 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		msg := fmt.Sprintf("generateContent failed: %s", strings.TrimSpace(string(rawBytes)))
-		return llm.Response{}, llm.ErrorFromHTTPStatus("google", resp.StatusCode, msg, raw, ra)
+		httpErr := llm.ErrorFromHTTPStatus("google", resp.StatusCode, msg, raw, ra)
+		return llm.Response{}, classifyGeminiError(resp.StatusCode, rawBytes, ra, httpErr)
 	}
 
 	r := fromGeminiResponse(raw, req.Model)
@@ -366,8 +367,9 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		_ = json.Unmarshal(rawBytes, &raw)
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		msg := fmt.Sprintf("streamGenerateContent failed: %s", strings.TrimSpace(string(rawBytes)))
+		httpErr := llm.ErrorFromHTTPStatus("google", resp.StatusCode, msg, raw, ra)
 		cancel()
-		return nil, llm.ErrorFromHTTPStatus("google", resp.StatusCode, msg, raw, ra)
+		return nil, classifyGeminiError(resp.StatusCode, rawBytes, ra, httpErr)
 	}
 
 	s := llm.NewChanStream(cancel)
@@ -980,4 +982,47 @@ func parseUsage(u map[string]any) llm.Usage {
 		usage.ReasoningTokens = &v
 	}
 	return usage
+}
+
+// classifyGeminiError reclassifies an HTTP-based error using the gRPC status
+// from the Gemini error response body. Gemini can return HTTP 400 with gRPC
+// statuses like RESOURCE_EXHAUSTED, which should map to RateLimitError rather
+// than InvalidRequestError. Only reclassifies when the HTTP status is ambiguous
+// (400, 422); specific HTTP codes like 429 or 503 already map correctly.
+func classifyGeminiError(httpStatus int, body []byte, retryAfter *time.Duration, httpErr error) error {
+	// Only reclassify ambiguous HTTP statuses. Specific statuses (401, 403,
+	// 404, 429, 5xx) already produce the correct error type.
+	if httpStatus != 400 && httpStatus != 422 {
+		return httpErr
+	}
+
+	var errResp struct {
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+			Status  string `json:"status"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &errResp); err != nil || errResp.Error.Status == "" {
+		return httpErr
+	}
+
+	// Map gRPC statuses to the HTTP status code that produces the correct
+	// error type via ErrorFromHTTPStatus.
+	var syntheticHTTP int
+	switch errResp.Error.Status {
+	case "RESOURCE_EXHAUSTED":
+		syntheticHTTP = 429
+	case "DEADLINE_EXCEEDED":
+		syntheticHTTP = 408
+	case "UNAVAILABLE", "INTERNAL":
+		syntheticHTTP = 503
+	default:
+		return httpErr
+	}
+
+	var raw map[string]any
+	_ = json.Unmarshal(body, &raw)
+
+	return llm.ErrorFromHTTPStatus("google", syntheticHTTP, errResp.Error.Message, raw, retryAfter)
 }

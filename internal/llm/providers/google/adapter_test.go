@@ -626,6 +626,67 @@ func TestAdapter_Complete_GRPCStatusMapping(t *testing.T) {
 				}
 			},
 		},
+		// Mismatched cases: gRPC status overrides HTTP status classification.
+		{
+			name:       "RESOURCE_EXHAUSTED via HTTP 400 maps to RateLimitError",
+			httpStatus: 400,
+			grpcStatus: "RESOURCE_EXHAUSTED",
+			message:    "Resource has been exhausted",
+			checkErr: func(t *testing.T, err error) {
+				var target *llm.RateLimitError
+				if !errors.As(err, &target) {
+					t.Fatalf("expected RateLimitError, got %T (%v)", err, err)
+				}
+				if !target.Retryable() {
+					t.Fatalf("expected retryable")
+				}
+			},
+		},
+		{
+			name:       "DEADLINE_EXCEEDED via HTTP 400 maps to RequestTimeoutError",
+			httpStatus: 400,
+			grpcStatus: "DEADLINE_EXCEEDED",
+			message:    "deadline exceeded",
+			checkErr: func(t *testing.T, err error) {
+				var target *llm.RequestTimeoutError
+				if !errors.As(err, &target) {
+					t.Fatalf("expected RequestTimeoutError, got %T (%v)", err, err)
+				}
+				if !target.Retryable() {
+					t.Fatalf("expected retryable")
+				}
+			},
+		},
+		{
+			name:       "UNAVAILABLE via HTTP 400 maps to ServerError retryable",
+			httpStatus: 400,
+			grpcStatus: "UNAVAILABLE",
+			message:    "service temporarily unavailable",
+			checkErr: func(t *testing.T, err error) {
+				var target *llm.ServerError
+				if !errors.As(err, &target) {
+					t.Fatalf("expected ServerError, got %T (%v)", err, err)
+				}
+				if !target.Retryable() {
+					t.Fatalf("expected retryable")
+				}
+			},
+		},
+		{
+			name:       "INTERNAL via HTTP 400 maps to ServerError retryable",
+			httpStatus: 400,
+			grpcStatus: "INTERNAL",
+			message:    "internal error",
+			checkErr: func(t *testing.T, err error) {
+				var target *llm.ServerError
+				if !errors.As(err, &target) {
+					t.Fatalf("expected ServerError, got %T (%v)", err, err)
+				}
+				if !target.Retryable() {
+					t.Fatalf("expected retryable")
+				}
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -1099,6 +1160,33 @@ func TestAdapter_Stream_ContextDeadline_EmitsRequestTimeoutError(t *testing.T) {
 	var rte *llm.RequestTimeoutError
 	if !errors.As(sawErr, &rte) {
 		t.Fatalf("expected RequestTimeoutError, got %T (%v)", sawErr, sawErr)
+	}
+}
+
+func TestAdapter_Stream_GRPCStatusMapping(t *testing.T) {
+	// Stream returns errors eagerly for non-2xx HTTP responses.
+	// gRPC status in the body should override HTTP status classification.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte(`{"error":{"code":400,"message":"Resource has been exhausted","status":"RESOURCE_EXHAUSTED"}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := a.Stream(ctx, llm.Request{Model: "gemini-test", Messages: []llm.Message{llm.User("hi")}})
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	var target *llm.RateLimitError
+	if !errors.As(err, &target) {
+		t.Fatalf("expected RateLimitError, got %T (%v)", err, err)
+	}
+	if !target.Retryable() {
+		t.Fatalf("expected retryable")
 	}
 }
 
