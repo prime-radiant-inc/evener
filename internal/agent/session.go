@@ -141,6 +141,10 @@ type Session struct {
 	// SESSION_END deduplication: emitted exactly once across ProcessInput and Close.
 	sessionEndEmitted bool
 
+	// Session-level cancel: Close() cancels in-flight LLM calls.
+	sessionCtx context.Context
+	cancelFunc context.CancelFunc
+
 	// task list (lazy-init)
 	taskStore     *TaskStore
 	taskStoreOnce sync.Once
@@ -165,18 +169,21 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		cfg.DefaultCommandTimeoutMS = profileTimeout
 	}
 
+	sessCtx, sessCancel := context.WithCancel(context.Background())
 	s := &Session{
-		id:        ulid.Make().String(),
-		cfg:       cfg,
-		client:    client,
-		profile:   profile,
-		env:       env,
-		stateDir:  cfg.StateDir,
-		state:     SessionIdle,
-		events:    make(chan SessionEvent, 256),
-		history:   []Turn{},
-		subagents: map[string]*subagent{},
-		readFiles: map[string]bool{},
+		id:         ulid.Make().String(),
+		cfg:        cfg,
+		client:     client,
+		profile:    profile,
+		env:        env,
+		stateDir:   cfg.StateDir,
+		state:      SessionIdle,
+		events:     make(chan SessionEvent, 256),
+		history:    []Turn{},
+		subagents:  map[string]*subagent{},
+		readFiles:  map[string]bool{},
+		sessionCtx: sessCtx,
+		cancelFunc: sessCancel,
 	}
 
 	// Snapshot environment context once per session (spec).
@@ -270,19 +277,22 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		return nil, fmt.Errorf("env initialize: %w", err)
 	}
 
+	sessCtx, sessCancel := context.WithCancel(context.Background())
 	s := &Session{
-		id:        snap.ID,
-		cfg:       cfg,
-		client:    client,
-		profile:   profile,
-		env:       env,
-		stateDir:  cfg.StateDir,
-		state:     SessionIdle,
-		events:    make(chan SessionEvent, 256),
-		history:   append([]Turn{}, snap.History...),
-		turns:     snap.TurnCount,
-		subagents: map[string]*subagent{},
-		readFiles: map[string]bool{},
+		id:         snap.ID,
+		cfg:        cfg,
+		client:     client,
+		profile:    profile,
+		env:        env,
+		stateDir:   cfg.StateDir,
+		state:      SessionIdle,
+		events:     make(chan SessionEvent, 256),
+		history:    append([]Turn{}, snap.History...),
+		turns:      snap.TurnCount,
+		subagents:  map[string]*subagent{},
+		readFiles:  map[string]bool{},
+		sessionCtx: sessCtx,
+		cancelFunc: sessCancel,
 	}
 
 	// Refresh environment context for the current state.
@@ -438,6 +448,11 @@ func (s *Session) Close() {
 	emitEnd := !s.sessionEndEmitted
 	s.sessionEndEmitted = true
 	s.mu.Unlock()
+
+	// Cancel in-flight LLM calls.
+	if s.cancelFunc != nil {
+		s.cancelFunc()
+	}
 
 	for _, sub := range subs {
 		sub.sess.Close()
@@ -668,6 +683,17 @@ func (s *Session) emit(kind EventKind, data map[string]any) {
 }
 
 func (s *Session) processOneInput(ctx context.Context, input string) (string, error) {
+	// Derive a context that cancels when either the caller's ctx or the session ctx cancels.
+	ctx, cancel := context.WithCancel(ctx)
+	go func() {
+		select {
+		case <-s.sessionCtx.Done():
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	defer cancel()
+
 	s.mu.Lock()
 	if s.state == SessionClosed {
 		s.mu.Unlock()

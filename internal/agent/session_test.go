@@ -1121,3 +1121,46 @@ func TestSession_SystemPromptRebuiltPerRound(t *testing.T) {
 	defer cancel()
 	sess.ProcessInput(ctx2, "write agents.md then verify")
 }
+
+// blockingAdapter is a test adapter whose Complete blocks until context is cancelled.
+type blockingAdapter struct {
+	name      string
+	blocked   chan struct{} // closed when LLM call starts blocking
+}
+
+func (a *blockingAdapter) Name() string { return a.name }
+func (a *blockingAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	close(a.blocked)
+	<-ctx.Done()
+	return llm.Response{}, ctx.Err()
+}
+func (a *blockingAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	return nil, errors.New("stream not implemented")
+}
+
+func TestSession_Close_CancelsInFlightLLMCall(t *testing.T) {
+	blocked := make(chan struct{})
+	c := llm.NewClient()
+	c.Register(&blockingAdapter{name: "openai", blocked: blocked})
+	dir := t.TempDir()
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := sess.ProcessInput(context.Background(), "hello")
+		done <- err
+	}()
+
+	<-blocked // Wait until the LLM call is in-flight.
+	sess.Close() // Should cancel the LLM call.
+
+	select {
+	case <-done:
+		// ProcessInput returned -- Close() successfully cancelled it.
+	case <-time.After(5 * time.Second):
+		t.Fatal("ProcessInput did not return after Close() -- in-flight LLM call not cancelled")
+	}
+}
