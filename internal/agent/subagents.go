@@ -55,7 +55,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	subCfg := s.cfg
 	if maxTurns > 0 {
 		subCfg.MaxTurns = maxTurns
-	} else if subCfg.MaxTurns <= 0 {
+	} else {
 		subCfg.MaxTurns = 50
 	}
 
