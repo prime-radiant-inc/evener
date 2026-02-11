@@ -219,6 +219,56 @@ func TestToolRegistry_TruncationLines_UsesHeadTailAndOmittedMarker(t *testing.T)
 	}
 }
 
+func TestToolRegistry_Unregister(t *testing.T) {
+	r := NewToolRegistry()
+	_ = r.Register(RegisteredTool{
+		Definition: llm.ToolDefinition{Name: "foo", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}},
+		Exec:       func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) { return "ok", nil },
+	})
+	r.Unregister("foo")
+	if r.Get("foo") != nil {
+		t.Fatal("expected nil after Unregister")
+	}
+}
+
+func TestToolRegistry_Get(t *testing.T) {
+	r := NewToolRegistry()
+	_ = r.Register(RegisteredTool{
+		Definition: llm.ToolDefinition{Name: "bar", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}},
+		Exec:       func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) { return "ok", nil },
+	})
+	got := r.Get("bar")
+	if got == nil {
+		t.Fatal("expected non-nil from Get")
+	}
+	if got.Definition.Name != "bar" {
+		t.Fatalf("got name %q, want bar", got.Definition.Name)
+	}
+	if r.Get("nonexistent") != nil {
+		t.Fatal("expected nil for unknown tool")
+	}
+}
+
+func TestToolRegistry_Names(t *testing.T) {
+	r := NewToolRegistry()
+	_ = r.Register(RegisteredTool{
+		Definition: llm.ToolDefinition{Name: "alpha", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}},
+		Exec:       func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) { return "", nil },
+	})
+	_ = r.Register(RegisteredTool{
+		Definition: llm.ToolDefinition{Name: "beta", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}},
+		Exec:       func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) { return "", nil },
+	})
+	names := r.Names()
+	if len(names) != 2 {
+		t.Fatalf("names count = %d, want 2", len(names))
+	}
+	// Names should be sorted for determinism
+	if names[0] != "alpha" || names[1] != "beta" {
+		t.Fatalf("unexpected names: %v", names)
+	}
+}
+
 func TestDefaultToolLimit_MatchesSpecTable(t *testing.T) {
 	type want struct {
 		tool   string

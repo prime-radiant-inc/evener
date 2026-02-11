@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -90,6 +91,33 @@ func (r *ToolRegistry) Definitions() []llm.ToolDefinition {
 	for _, t := range r.tools {
 		out = append(out, t.Definition)
 	}
+	return out
+}
+
+func (r *ToolRegistry) Unregister(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.tools, name)
+}
+
+func (r *ToolRegistry) Get(name string) *RegisteredTool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	t, ok := r.tools[name]
+	if !ok {
+		return nil
+	}
+	return &t
+}
+
+func (r *ToolRegistry) Names() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]string, 0, len(r.tools))
+	for name := range r.tools {
+		out = append(out, name)
+	}
+	sort.Strings(out)
 	return out
 }
 
