@@ -375,3 +375,67 @@ func TestAdapter_Stream_ToolCalls(t *testing.T) {
 		t.Fatalf("expected TOOL_CALL_END (kinds=%v)", kinds)
 	}
 }
+
+func TestHTTPErrorMapping_IncludesRetryAfter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "30")
+		w.WriteHeader(429)
+		json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": "rate limited"}})
+	}))
+	defer srv.Close()
+
+	a := &Adapter{BaseURL: srv.URL, Client: srv.Client()}
+	_, err := a.Complete(context.Background(), llm.Request{Model: "test", Messages: []llm.Message{llm.User("hi")}})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var rlErr *llm.RateLimitError
+	if !errors.As(err, &rlErr) {
+		t.Fatalf("expected RateLimitError, got %T: %v", err, err)
+	}
+	if rlErr.RetryAfter() == nil {
+		t.Fatal("RetryAfter is nil, want 30s")
+	}
+	if *rlErr.RetryAfter() != 30*time.Second {
+		t.Errorf("RetryAfter = %v, want 30s", *rlErr.RetryAfter())
+	}
+}
+
+func TestComplete_PopulatesTotalTokens(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "chatcmpl-1", "model": "test",
+			"choices": []any{map[string]any{
+				"index":         0,
+				"finish_reason": "stop",
+				"message":       map[string]any{"role": "assistant", "content": "hi"},
+			}},
+			"usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+		})
+	}))
+	defer srv.Close()
+
+	a := &Adapter{BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{Model: "test", Messages: []llm.Message{llm.User("hi")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Usage.TotalTokens != 30 {
+		t.Errorf("TotalTokens = %d, want 30", resp.Usage.TotalTokens)
+	}
+}
+
+func TestComplete_WrapsContextCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	a := &Adapter{BaseURL: "http://127.0.0.1:1", Client: &http.Client{Timeout: time.Millisecond}}
+	_, err := a.Complete(ctx, llm.Request{Model: "test", Messages: []llm.Message{llm.User("hi")}})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var abortErr *llm.AbortError
+	if !errors.As(err, &abortErr) {
+		t.Errorf("expected AbortError, got %T: %v", err, err)
+	}
+}
