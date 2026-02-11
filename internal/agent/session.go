@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -134,6 +135,9 @@ type Session struct {
 	mcpMgr   *MCPManager
 	mcpTools []llm.ToolDefinition
 
+	// read-before-write guardrail
+	readFiles map[string]bool
+
 	// task list (lazy-init)
 	taskStore     *TaskStore
 	taskStoreOnce sync.Once
@@ -169,6 +173,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		events:    make(chan SessionEvent, 256),
 		history:   []Turn{},
 		subagents: map[string]*subagent{},
+		readFiles: map[string]bool{},
 	}
 
 	// Snapshot environment context once per session (spec).
@@ -274,6 +279,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		history:   append([]Turn{}, snap.History...),
 		turns:     snap.TurnCount,
 		subagents: map[string]*subagent{},
+		readFiles: map[string]bool{},
 	}
 
 	// Refresh environment context for the current state.
@@ -1047,7 +1053,11 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 					limit = &ni
 				}
 			}
-			return env.ReadFile(path, offset, limit)
+			result, err := env.ReadFile(path, offset, limit)
+			if err == nil {
+				s.trackReadFile(path)
+			}
+			return result, err
 		},
 	}); err != nil {
 		return err
@@ -1094,6 +1104,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 				if err != nil {
 					b.WriteString("[ERROR] " + err.Error() + "\n")
 				} else {
+					s.trackReadFile(p)
 					b.WriteString(txt)
 					if !strings.HasSuffix(txt, "\n") {
 						b.WriteString("\n")
@@ -1110,7 +1121,13 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 		Definition: defWriteFile(),
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
-			return env.WriteFile(fmt.Sprint(args["file_path"]), fmt.Sprint(args["content"]))
+			path := fmt.Sprint(args["file_path"])
+			warn := s.readBeforeWriteWarning(path)
+			result, err := env.WriteFile(path, fmt.Sprint(args["content"]))
+			if err == nil && warn != "" {
+				return warn + fmt.Sprint(result), nil
+			}
+			return result, err
 		},
 	}); err != nil {
 		return err
@@ -1121,11 +1138,17 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 		Definition: defEditFile(),
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
+			path := fmt.Sprint(args["file_path"])
 			replaceAll := false
 			if v, ok := args["replace_all"].(bool); ok {
 				replaceAll = v
 			}
-			return env.EditFile(fmt.Sprint(args["file_path"]), fmt.Sprint(args["old_string"]), fmt.Sprint(args["new_string"]), replaceAll)
+			warn := s.readBeforeWriteWarning(path)
+			result, err := env.EditFile(path, fmt.Sprint(args["old_string"]), fmt.Sprint(args["new_string"]), replaceAll)
+			if err == nil && warn != "" {
+				return warn + fmt.Sprint(result), nil
+			}
+			return result, err
 		},
 	})
 
@@ -1404,6 +1427,33 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 	})
 
 	return nil
+}
+
+// trackReadFile records that a file has been read in this session.
+func (s *Session) trackReadFile(path string) {
+	s.readFiles[s.resolveFilePath(path)] = true
+}
+
+// readBeforeWriteWarning returns a warning string if the file exists but hasn't
+// been read in this session. Returns "" for new files or previously-read files.
+func (s *Session) readBeforeWriteWarning(path string) string {
+	abs := s.resolveFilePath(path)
+	if s.readFiles[abs] {
+		return ""
+	}
+	// New file creation is exempt from the warning.
+	if !s.env.FileExists(path) {
+		return ""
+	}
+	return "[WARNING: Writing to file that has not been read in this session. Consider reading first.]\n"
+}
+
+func (s *Session) resolveFilePath(path string) string {
+	p := strings.TrimSpace(path)
+	if p == "" || filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Join(s.env.WorkingDirectory(), p)
 }
 
 func (s *Session) getOrCreateTaskStore() *TaskStore {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -2649,6 +2651,220 @@ func TestSession_ShellDescription_IncludedInToolCallStartEvent(t *testing.T) {
 		}
 	}
 	t.Fatal("TOOL_CALL_START event should include 'description' field from shell args")
+}
+
+func TestSession_ReadBeforeWrite_WarnsOnUnreadFile(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	// Pre-create the file so it's not a new file.
+	os.WriteFile(filepath.Join(dir, "existing.txt"), []byte("original"), 0644)
+
+	// LLM writes to existing.txt without reading it first.
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				call := llm.ToolCallData{
+					ID:        "c1",
+					Name:      "write_file",
+					Arguments: json.RawMessage(`{"file_path":"existing.txt","content":"new content"}`),
+					Type:      "function",
+				}
+				return llm.Response{
+					Message: llm.Message{
+						Role:    llm.RoleAssistant,
+						Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
+					},
+				}
+			},
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("done")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	var events []SessionEvent
+	var mu sync.Mutex
+	done := make(chan struct{})
+	go func() {
+		for ev := range sess.Events() {
+			mu.Lock()
+			events = append(events, ev)
+			mu.Unlock()
+		}
+		close(done)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sess.ProcessInput(ctx, "write the file")
+	sess.Close()
+	<-done
+
+	// Check that the tool output contains a warning about writing to an unread file.
+	mu.Lock()
+	defer mu.Unlock()
+	for _, ev := range events {
+		if ev.Kind == EventToolCallEnd && fmt.Sprint(ev.Data["tool_name"]) == "write_file" {
+			output := fmt.Sprint(ev.Data["full_output"])
+			if strings.Contains(output, "WARNING") && strings.Contains(output, "not been read") {
+				return // success
+			}
+		}
+	}
+	t.Fatal("expected WARNING about writing to unread file")
+}
+
+func TestSession_ReadBeforeWrite_NoWarningAfterRead(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	os.WriteFile(filepath.Join(dir, "existing.txt"), []byte("original"), 0644)
+
+	// LLM reads the file first, then writes to it.
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				call := llm.ToolCallData{
+					ID:        "c1",
+					Name:      "read_file",
+					Arguments: json.RawMessage(`{"file_path":"existing.txt"}`),
+					Type:      "function",
+				}
+				return llm.Response{
+					Message: llm.Message{
+						Role:    llm.RoleAssistant,
+						Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
+					},
+				}
+			},
+			func(req llm.Request) llm.Response {
+				call := llm.ToolCallData{
+					ID:        "c2",
+					Name:      "write_file",
+					Arguments: json.RawMessage(`{"file_path":"existing.txt","content":"new content"}`),
+					Type:      "function",
+				}
+				return llm.Response{
+					Message: llm.Message{
+						Role:    llm.RoleAssistant,
+						Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
+					},
+				}
+			},
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("done")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	var events []SessionEvent
+	var mu sync.Mutex
+	done := make(chan struct{})
+	go func() {
+		for ev := range sess.Events() {
+			mu.Lock()
+			events = append(events, ev)
+			mu.Unlock()
+		}
+		close(done)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sess.ProcessInput(ctx, "read then write")
+	sess.Close()
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, ev := range events {
+		if ev.Kind == EventToolCallEnd && fmt.Sprint(ev.Data["tool_name"]) == "write_file" {
+			output := fmt.Sprint(ev.Data["full_output"])
+			if strings.Contains(output, "WARNING") {
+				t.Fatal("should not warn about write after read")
+			}
+		}
+	}
+}
+
+func TestSession_ReadBeforeWrite_NewFileNoWarning(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	// Do NOT pre-create the file — it's a new file.
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				call := llm.ToolCallData{
+					ID:        "c1",
+					Name:      "write_file",
+					Arguments: json.RawMessage(`{"file_path":"brand_new.txt","content":"new content"}`),
+					Type:      "function",
+				}
+				return llm.Response{
+					Message: llm.Message{
+						Role:    llm.RoleAssistant,
+						Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
+					},
+				}
+			},
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("done")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	var events []SessionEvent
+	var mu sync.Mutex
+	done := make(chan struct{})
+	go func() {
+		for ev := range sess.Events() {
+			mu.Lock()
+			events = append(events, ev)
+			mu.Unlock()
+		}
+		close(done)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sess.ProcessInput(ctx, "create new file")
+	sess.Close()
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, ev := range events {
+		if ev.Kind == EventToolCallEnd && fmt.Sprint(ev.Data["tool_name"]) == "write_file" {
+			output := fmt.Sprint(ev.Data["full_output"])
+			if strings.Contains(output, "WARNING") {
+				t.Fatal("should not warn when creating a new file")
+			}
+		}
+	}
 }
 
 func TestDetectLoop_Patterns(t *testing.T) {
