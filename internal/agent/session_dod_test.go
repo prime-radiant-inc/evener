@@ -499,6 +499,10 @@ func (p tinyProfile) WithModel(model string) ProviderProfile {
 	return tinyProfile{id: p.id, cw: p.cw, mod: model}
 }
 func (p tinyProfile) WithBasePrompt(string) ProviderProfile { return p }
+func (p tinyProfile) ProviderOptions() map[string]any       { return nil }
+func (p tinyProfile) SupportsReasoning() bool               { return false }
+func (p tinyProfile) SupportsStreaming() bool                { return false }
+func (p tinyProfile) DefaultCommandTimeoutMS() int           { return 10_000 }
 
 func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) {
 	dir := t.TempDir()

@@ -43,16 +43,24 @@ type ProviderProfile interface {
 	CheapModel() string
 	WithModel(model string) ProviderProfile
 	WithBasePrompt(prompt string) ProviderProfile
+	ProviderOptions() map[string]any
+	SupportsReasoning() bool
+	SupportsStreaming() bool
+	DefaultCommandTimeoutMS() int
 }
 
 type baseProfile struct {
-	id            string
-	model         string
-	parallel      bool
-	contextWindow int
-	basePrompt    string
-	toolDefs      []llm.ToolDefinition
-	docFiles      []string
+	id             string
+	model          string
+	parallel       bool
+	contextWindow  int
+	basePrompt     string
+	toolDefs       []llm.ToolDefinition
+	docFiles       []string
+	reasoning      bool
+	streaming      bool
+	defaultTimeout int
+	providerOpts   map[string]any
 }
 
 func (p *baseProfile) ID() string    { return p.id }
@@ -65,6 +73,10 @@ func (p *baseProfile) ContextWindowSize() int          { return p.contextWindow 
 func (p *baseProfile) ProjectDocFiles() []string {
 	return append([]string{}, p.docFiles...)
 }
+func (p *baseProfile) ProviderOptions() map[string]any    { return p.providerOpts }
+func (p *baseProfile) SupportsReasoning() bool            { return p.reasoning }
+func (p *baseProfile) SupportsStreaming() bool             { return p.streaming }
+func (p *baseProfile) DefaultCommandTimeoutMS() int       { return p.defaultTimeout }
 func (p *baseProfile) CheapModel() string {
 	switch p.id {
 	case "openai":
@@ -167,12 +179,15 @@ func (p *baseProfile) BuildSystemPrompt(env EnvironmentInfo, docs []ProjectDoc, 
 
 func NewOpenAIProfile(model string) ProviderProfile {
 	return &baseProfile{
-		id:            "openai",
-		model:         strings.TrimSpace(model),
-		parallel:      false,
-		contextWindow: 128_000,
-		basePrompt:    embeddedBasePrompt("openai"),
-		docFiles:      []string{"AGENTS.md", ".codex/instructions.md"},
+		id:             "openai",
+		model:          strings.TrimSpace(model),
+		parallel:       false,
+		contextWindow:  128_000,
+		basePrompt:     embeddedBasePrompt("openai"),
+		docFiles:       []string{"AGENTS.md", ".codex/instructions.md"},
+		reasoning:      true,
+		streaming:      true,
+		defaultTimeout: 10_000,
 		toolDefs: []llm.ToolDefinition{
 			defReadFile(),
 			defApplyPatch(),
@@ -194,12 +209,16 @@ func NewOpenAIProfile(model string) ProviderProfile {
 
 func NewAnthropicProfile(model string) ProviderProfile {
 	return &baseProfile{
-		id:            "anthropic",
-		model:         strings.TrimSpace(model),
-		parallel:      true,
-		contextWindow: 200_000,
-		basePrompt:    embeddedBasePrompt("anthropic"),
-		docFiles:      []string{"CLAUDE.md", "AGENTS.md"},
+		id:             "anthropic",
+		model:          strings.TrimSpace(model),
+		parallel:       true,
+		contextWindow:  200_000,
+		basePrompt:     embeddedBasePrompt("anthropic"),
+		docFiles:       []string{"CLAUDE.md", "AGENTS.md"},
+		reasoning:      true,
+		streaming:      true,
+		defaultTimeout: 120_000,
+		providerOpts:   map[string]any{},
 		toolDefs: []llm.ToolDefinition{
 			defReadFile(),
 			defWriteFile(),
@@ -221,12 +240,15 @@ func NewAnthropicProfile(model string) ProviderProfile {
 
 func NewGeminiProfile(model string) ProviderProfile {
 	return &baseProfile{
-		id:            "google",
-		model:         strings.TrimSpace(model),
-		parallel:      true,
-		contextWindow: 128_000,
-		basePrompt:    embeddedBasePrompt("google"),
-		docFiles:      []string{"GEMINI.md", "AGENTS.md"},
+		id:             "google",
+		model:          strings.TrimSpace(model),
+		parallel:       true,
+		contextWindow:  128_000,
+		basePrompt:     embeddedBasePrompt("google"),
+		docFiles:       []string{"GEMINI.md", "AGENTS.md"},
+		reasoning:      true,
+		streaming:      true,
+		defaultTimeout: 10_000,
 		toolDefs: []llm.ToolDefinition{
 			defReadFile(),
 			defReadManyFiles(),

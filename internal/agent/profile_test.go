@@ -466,6 +466,41 @@ func TestProviderProfile_WithBasePrompt_PreservesOtherFields(t *testing.T) {
 	}
 }
 
+func TestProviderProfile_ProviderOptions(t *testing.T) {
+	p := NewAnthropicProfile("claude-opus-4-6")
+	opts := p.ProviderOptions()
+	if opts == nil {
+		t.Fatal("expected non-nil ProviderOptions for Anthropic")
+	}
+}
+
+func TestProviderProfile_SupportsReasoning(t *testing.T) {
+	if !NewOpenAIProfile("gpt-5.2").SupportsReasoning() {
+		t.Fatal("OpenAI should support reasoning")
+	}
+	if !NewAnthropicProfile("claude-opus-4-6").SupportsReasoning() {
+		t.Fatal("Anthropic should support reasoning")
+	}
+}
+
+func TestProviderProfile_SupportsStreaming(t *testing.T) {
+	if !NewOpenAIProfile("gpt-5.2").SupportsStreaming() {
+		t.Fatal("OpenAI should support streaming")
+	}
+}
+
+func TestProviderProfile_DefaultCommandTimeout(t *testing.T) {
+	if got := NewOpenAIProfile("gpt-5.2").DefaultCommandTimeoutMS(); got != 10_000 {
+		t.Fatalf("OpenAI timeout = %d, want 10000", got)
+	}
+	if got := NewAnthropicProfile("claude-opus-4-6").DefaultCommandTimeoutMS(); got != 120_000 {
+		t.Fatalf("Anthropic timeout = %d, want 120000", got)
+	}
+	if got := NewGeminiProfile("gemini-2.5-pro").DefaultCommandTimeoutMS(); got != 10_000 {
+		t.Fatalf("Gemini timeout = %d, want 10000", got)
+	}
+}
+
 func assertToolListExact(t *testing.T, p ProviderProfile, want []string) {
 	t.Helper()
 	got := make([]string, 0, len(p.ToolDefinitions()))
