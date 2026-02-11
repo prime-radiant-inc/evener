@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io/fs"
 	"os"
@@ -65,6 +66,11 @@ func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limit
 	b, err := os.ReadFile(abs)
 	if err != nil {
 		return "", err
+	}
+	// Image files: return base64-encoded data instead of erroring on binary.
+	if format := detectImageFormat(path, b); format != "" {
+		encoded := base64.StdEncoding.EncodeToString(b)
+		return fmt.Sprintf("[image: %s, %d bytes, base64 data follows]\n%s", format, len(b), encoded), nil
 	}
 	// Basic binary detection.
 	if bytes.IndexByte(b, 0) >= 0 {
@@ -164,6 +170,31 @@ func findFuzzyMatch(content, oldString string) string {
 				return candidate
 			}
 		}
+	}
+	return ""
+}
+
+// detectImageFormat checks file extension and magic bytes to identify image files.
+// Returns the format name (e.g. "png", "jpeg") or "" if not an image.
+func detectImageFormat(path string, data []byte) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	imageExts := map[string]string{
+		".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg",
+		".gif": "gif", ".webp": "webp", ".bmp": "bmp",
+		".svg": "svg", ".ico": "ico",
+	}
+	if format, ok := imageExts[ext]; ok {
+		return format
+	}
+	// Check magic bytes for images without recognized extension.
+	if len(data) >= 8 && bytes.Equal(data[:8], []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}) {
+		return "png"
+	}
+	if len(data) >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF {
+		return "jpeg"
+	}
+	if len(data) >= 6 && (string(data[:6]) == "GIF87a" || string(data[:6]) == "GIF89a") {
+		return "gif"
 	}
 	return ""
 }

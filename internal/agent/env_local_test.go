@@ -107,6 +107,42 @@ func TestLocalExecutionEnvironment_ReadWriteEditFile(t *testing.T) {
 	}
 }
 
+func TestReadFile_ImageReturnsBase64(t *testing.T) {
+	dir := t.TempDir()
+	env := NewLocalExecutionEnvironment(dir)
+
+	// Write a minimal PNG (8-byte header is enough to detect).
+	pngHeader := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x01}
+	os.WriteFile(filepath.Join(dir, "test.png"), pngHeader, 0644)
+
+	result, err := env.ReadFile("test.png", nil, nil)
+	if err != nil {
+		t.Fatalf("ReadFile for PNG should not error: %v", err)
+	}
+	if !strings.Contains(result, "base64") {
+		t.Fatalf("expected base64 in output, got: %q", result)
+	}
+	if !strings.Contains(result, "image") {
+		t.Fatalf("expected 'image' indicator in output, got: %q", result)
+	}
+}
+
+func TestReadFile_NonImageBinaryStillErrors(t *testing.T) {
+	dir := t.TempDir()
+	env := NewLocalExecutionEnvironment(dir)
+
+	// Write a generic binary file (not an image).
+	os.WriteFile(filepath.Join(dir, "data.bin"), []byte{0x00, 0x01, 0x02, 0x03}, 0644)
+
+	_, err := env.ReadFile("data.bin", nil, nil)
+	if err == nil {
+		t.Fatal("expected error for non-image binary file")
+	}
+	if !strings.Contains(err.Error(), "binary") {
+		t.Fatalf("expected 'binary' in error message, got: %v", err)
+	}
+}
+
 func TestEditFile_FuzzyMatchWhitespace(t *testing.T) {
 	dir := t.TempDir()
 	env := NewLocalExecutionEnvironment(dir)
