@@ -1211,3 +1211,38 @@ func TestSession_GracefulShutdown_CorrectOrdering(t *testing.T) {
 		t.Fatal("SESSION_END not emitted during shutdown")
 	}
 }
+
+func TestSession_CustomRegisteredTool_AppearsInSystemPrompt(t *testing.T) {
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			sys := req.Messages[0].Text()
+			if !strings.Contains(sys, "my_custom_tool") {
+				t.Error("custom tool not in system prompt")
+			}
+			if !strings.Contains(sys, "Does custom things") {
+				t.Error("custom tool description not in system prompt")
+			}
+			return llm.Response{Message: llm.Assistant("done")}
+		},
+	}}
+	c.Register(f)
+	dir := t.TempDir()
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	// Register a custom tool after session creation.
+	sess.reg.Register(RegisteredTool{
+		Definition: llm.ToolDefinition{Name: "my_custom_tool", Description: "Does custom things"},
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			return "ok", nil
+		},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sess.ProcessInput(ctx, "test")
+}

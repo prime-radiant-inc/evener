@@ -110,6 +110,17 @@ func (r *ToolRegistry) Get(name string) *RegisteredTool {
 	return &t
 }
 
+// nameSet returns the current set of registered tool names as a map.
+func (r *ToolRegistry) nameSet() map[string]bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[string]bool, len(r.tools))
+	for name := range r.tools {
+		out[name] = true
+	}
+	return out
+}
+
 func (r *ToolRegistry) Names() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

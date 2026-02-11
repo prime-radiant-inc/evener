@@ -135,6 +135,9 @@ type Session struct {
 	mcpMgr   *MCPManager
 	mcpTools []llm.ToolDefinition
 
+	// Tool names registered during session initialization (not custom).
+	coreToolNames map[string]bool
+
 	// read-before-write guardrail
 	readFiles map[string]bool
 
@@ -243,6 +246,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		reg.mu.Unlock()
 	}
 	s.reg = reg
+	s.coreToolNames = reg.nameSet()
 
 	// MCP server discovery and connection.
 	if err := s.initMCP(); err != nil {
@@ -350,6 +354,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		reg.mu.Unlock()
 	}
 	s.reg = reg
+	s.coreToolNames = reg.nameSet()
 
 	// MCP server discovery and connection.
 	if err := s.initMCP(); err != nil {
@@ -765,6 +770,12 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			}
 		}
 
+		// Include custom-registered tools not already described by the profile or MCP sections.
+		if extra := s.customToolDescriptions(); len(extra) > 0 {
+			sys += "\nAdditional tools:\n"
+			sys += extra
+		}
+
 		if strings.TrimSpace(s.cfg.UserInstructionOverride) != "" {
 			sys = sys + "\n\n" + strings.TrimSpace(s.cfg.UserInstructionOverride) + "\n"
 		}
@@ -1035,6 +1046,23 @@ func detectLoop(signatures []string, windowSize int) bool {
 		}
 	}
 	return false
+}
+
+// customToolDescriptions returns formatted descriptions of tools in the registry
+// that were registered after session initialization (not core or MCP tools).
+func (s *Session) customToolDescriptions() string {
+	var b strings.Builder
+	for _, td := range s.reg.Definitions() {
+		if s.coreToolNames[td.Name] {
+			continue
+		}
+		desc := strings.TrimSpace(td.Description)
+		if desc == "" {
+			desc = "(no description)"
+		}
+		b.WriteString(fmt.Sprintf("- %s: %s\n", td.Name, desc))
+	}
+	return b.String()
 }
 
 // allToolDefinitions returns profile tool definitions plus any MCP tools.
