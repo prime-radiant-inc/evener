@@ -81,8 +81,6 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	}
 	if req.MaxTokens != nil && *req.MaxTokens > 0 {
 		genCfg["maxOutputTokens"] = *req.MaxTokens
-	} else {
-		genCfg["maxOutputTokens"] = 2048
 	}
 	if len(req.StopSequences) > 0 {
 		genCfg["stopSequences"] = req.StopSequences
@@ -237,8 +235,6 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	}
 	if req.MaxTokens != nil && *req.MaxTokens > 0 {
 		genCfg["maxOutputTokens"] = *req.MaxTokens
-	} else {
-		genCfg["maxOutputTokens"] = 2048
 	}
 	if len(req.StopSequences) > 0 {
 		genCfg["stopSequences"] = req.StopSequences

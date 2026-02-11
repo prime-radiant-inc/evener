@@ -2433,3 +2433,32 @@ func TestComplete_UsageRaw_ContainsProviderData(t *testing.T) {
 		t.Fatalf("Usage.Raw missing cachedContentTokenCount key; got %v", resp.Usage.Raw)
 	}
 }
+
+func TestAdapter_Complete_NoMaxTokens_OmitsMaxOutputTokens(t *testing.T) {
+	var sentBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &sentBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "candidates": [{"content": {"role": "model", "parts": [{"text": "hi"}]}, "finishReason": "STOP"}],
+  "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "test",
+		Messages: []llm.Message{llm.User("hi")},
+		// MaxTokens is nil — adapter should not send maxOutputTokens
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	genCfg, _ := sentBody["generationConfig"].(map[string]any)
+	if _, hasMaxOutput := genCfg["maxOutputTokens"]; hasMaxOutput {
+		t.Fatalf("maxOutputTokens should not be sent when MaxTokens is nil, but got %v", genCfg["maxOutputTokens"])
+	}
+}
