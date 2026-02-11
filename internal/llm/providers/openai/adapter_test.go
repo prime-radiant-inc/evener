@@ -313,6 +313,34 @@ func TestAdapter_Complete_HTTPErrorMapping_IncludesRetryAfter(t *testing.T) {
 	}
 }
 
+func TestAdapter_Complete_HTTPErrorMapping_AuthenticationError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"bad key"}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := a.Complete(ctx, llm.Request{Model: "gpt-5.2", Messages: []llm.Message{llm.User("hi")}})
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	var ae *llm.AuthenticationError
+	if !errors.As(err, &ae) {
+		t.Fatalf("expected AuthenticationError, got %T (%v)", err, err)
+	}
+	if ae.StatusCode() != 401 {
+		t.Fatalf("status_code: %d", ae.StatusCode())
+	}
+	if ae.Retryable() {
+		t.Fatalf("expected non-retryable auth error")
+	}
+}
+
 func TestAdapter_Stream_YieldsTextDeltasAndFinish(t *testing.T) {
 	var gotBody map[string]any
 

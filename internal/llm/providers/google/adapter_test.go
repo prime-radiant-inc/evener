@@ -332,6 +332,125 @@ func TestAdapter_Complete_StripsAdditionalPropertiesFromSchemas(t *testing.T) {
 	}
 }
 
+func TestAdapter_Complete_DeveloperRole_MergedWithSystemInstruction(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "candidates": [{"content": {"parts": [{"text":"ok"}]}, "finishReason":"STOP"}],
+  "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model: "gemini-test",
+		Messages: []llm.Message{
+			llm.System("sys-instruction"),
+			llm.Developer("dev-instruction"),
+			llm.User("hello"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	sysInstr, ok := gotBody["systemInstruction"].(map[string]any)
+	if !ok {
+		t.Fatalf("systemInstruction not present: %#v", gotBody["systemInstruction"])
+	}
+	parts, ok := sysInstr["parts"].([]any)
+	if !ok {
+		t.Fatalf("systemInstruction.parts not present: %#v", sysInstr["parts"])
+	}
+
+	// Both sys and dev instructions should be merged into systemInstruction
+	combined := ""
+	for _, pAny := range parts {
+		p, _ := pAny.(map[string]any)
+		if text, ok := p["text"].(string); ok {
+			combined += text + " "
+		}
+	}
+	if !strings.Contains(combined, "sys-instruction") {
+		t.Fatalf("systemInstruction parts missing sys-instruction: %q", combined)
+	}
+	if !strings.Contains(combined, "dev-instruction") {
+		t.Fatalf("systemInstruction parts missing dev-instruction: %q", combined)
+	}
+}
+
+func TestAdapter_Complete_ParallelFunctionCalls_ParsedCorrectly(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "candidates": [{"content": {"parts": [
+    {"functionCall":{"name":"get_weather","args":{"city":"NYC"}}},
+    {"functionCall":{"name":"get_time","args":{"tz":"UTC"}}}
+  ]}}],
+  "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 20, "totalTokenCount": 30}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	resp, err := a.Complete(ctx, llm.Request{Model: "gemini-test", Messages: []llm.Message{llm.User("hi")}})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	calls := resp.ToolCalls()
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 tool calls, got %d", len(calls))
+	}
+	if calls[0].Name != "get_weather" {
+		t.Fatalf("call[0].Name: %q", calls[0].Name)
+	}
+	if calls[1].Name != "get_time" {
+		t.Fatalf("call[1].Name: %q", calls[1].Name)
+	}
+
+	// Gemini generates synthetic IDs — verify they're non-empty and different
+	if calls[0].ID == "" {
+		t.Fatalf("call[0].ID is empty")
+	}
+	if calls[1].ID == "" {
+		t.Fatalf("call[1].ID is empty")
+	}
+	if calls[0].ID == calls[1].ID {
+		t.Fatalf("call IDs should be different: %q == %q", calls[0].ID, calls[1].ID)
+	}
+
+	// Verify arguments
+	var args0 map[string]any
+	if err := json.Unmarshal(calls[0].Arguments, &args0); err != nil {
+		t.Fatalf("unmarshal call[0] args: %v", err)
+	}
+	if args0["city"] != "NYC" {
+		t.Fatalf("call[0] args: %v", args0)
+	}
+
+	var args1 map[string]any
+	if err := json.Unmarshal(calls[1].Arguments, &args1); err != nil {
+		t.Fatalf("unmarshal call[1] args: %v", err)
+	}
+	if args1["tz"] != "UTC" {
+		t.Fatalf("call[1] args: %v", args1)
+	}
+}
+
 func TestAdapter_Complete_RejectsAudioAndDocumentParts(t *testing.T) {
 	a := &Adapter{APIKey: "k", BaseURL: "http://example.com"}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -443,6 +562,66 @@ func TestAdapter_Complete_GRPCStatusMapping(t *testing.T) {
 				var target *llm.AccessDeniedError
 				if !errors.As(err, &target) {
 					t.Fatalf("expected AccessDeniedError, got %T (%v)", err, err)
+				}
+			},
+		},
+		{
+			name:       "UNAUTHENTICATED via 401 maps to AuthenticationError",
+			httpStatus: 401,
+			grpcStatus: "UNAUTHENTICATED",
+			message:    "unauthenticated",
+			checkErr: func(t *testing.T, err error) {
+				var target *llm.AuthenticationError
+				if !errors.As(err, &target) {
+					t.Fatalf("expected AuthenticationError, got %T (%v)", err, err)
+				}
+				if target.Retryable() {
+					t.Fatalf("expected non-retryable")
+				}
+			},
+		},
+		{
+			name:       "UNAVAILABLE via 503 maps to ServerError retryable",
+			httpStatus: 503,
+			grpcStatus: "UNAVAILABLE",
+			message:    "service unavailable",
+			checkErr: func(t *testing.T, err error) {
+				var target *llm.ServerError
+				if !errors.As(err, &target) {
+					t.Fatalf("expected ServerError, got %T (%v)", err, err)
+				}
+				if !target.Retryable() {
+					t.Fatalf("expected retryable")
+				}
+			},
+		},
+		{
+			name:       "DEADLINE_EXCEEDED via 504 maps to ServerError retryable",
+			httpStatus: 504,
+			grpcStatus: "DEADLINE_EXCEEDED",
+			message:    "deadline exceeded",
+			checkErr: func(t *testing.T, err error) {
+				var target *llm.ServerError
+				if !errors.As(err, &target) {
+					t.Fatalf("expected ServerError, got %T (%v)", err, err)
+				}
+				if !target.Retryable() {
+					t.Fatalf("expected retryable")
+				}
+			},
+		},
+		{
+			name:       "INTERNAL via 500 maps to ServerError retryable",
+			httpStatus: 500,
+			grpcStatus: "INTERNAL",
+			message:    "internal error",
+			checkErr: func(t *testing.T, err error) {
+				var target *llm.ServerError
+				if !errors.As(err, &target) {
+					t.Fatalf("expected ServerError, got %T (%v)", err, err)
+				}
+				if !target.Retryable() {
+					t.Fatalf("expected retryable")
 				}
 			},
 		},

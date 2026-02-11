@@ -1150,6 +1150,60 @@ func TestAdapter_Complete_FinishReason_ToolUse_Normalized(t *testing.T) {
 	}
 }
 
+func TestAdapter_Complete_ParallelToolCalls_ParsedCorrectly(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "msg_1",
+  "model": "claude-test",
+  "content": [
+    {"type":"tool_use","id":"toolu_1","name":"get_weather","input":{"city":"NYC"}},
+    {"type":"tool_use","id":"toolu_2","name":"get_time","input":{"tz":"UTC"}}
+  ],
+  "stop_reason": "tool_use",
+  "usage": {"input_tokens": 10, "output_tokens": 20}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	resp, err := a.Complete(ctx, llm.Request{Model: "claude-test", Messages: []llm.Message{llm.User("hi")}})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	calls := resp.ToolCalls()
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 tool calls, got %d", len(calls))
+	}
+	if calls[0].ID != "toolu_1" || calls[0].Name != "get_weather" {
+		t.Fatalf("call[0]: %+v", calls[0])
+	}
+	if calls[1].ID != "toolu_2" || calls[1].Name != "get_time" {
+		t.Fatalf("call[1]: %+v", calls[1])
+	}
+
+	// Verify arguments are preserved
+	var args0 map[string]any
+	if err := json.Unmarshal(calls[0].Arguments, &args0); err != nil {
+		t.Fatalf("unmarshal call[0] args: %v", err)
+	}
+	if args0["city"] != "NYC" {
+		t.Fatalf("call[0] args: %v", args0)
+	}
+
+	var args1 map[string]any
+	if err := json.Unmarshal(calls[1].Arguments, &args1); err != nil {
+		t.Fatalf("unmarshal call[1] args: %v", err)
+	}
+	if args1["tz"] != "UTC" {
+		t.Fatalf("call[1] args: %v", args1)
+	}
+}
+
 func TestAdapter_Complete_WebSearch_AddsServerTool(t *testing.T) {
 	var gotBody map[string]any
 
