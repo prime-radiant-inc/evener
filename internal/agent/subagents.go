@@ -172,11 +172,15 @@ func (a *subagent) run(ctx context.Context, input string) {
 
 	res, err := a.sess.ProcessInput(ctx, input)
 
+	a.sess.mu.Lock()
+	turns := a.sess.turns
+	a.sess.mu.Unlock()
+
 	a.mu.Lock()
 	a.result = res
 	a.err = err
 	a.running = false
-	a.turnsUsed = a.sess.turns
+	a.turnsUsed = turns
 	if err != nil {
 		a.status = SubAgentFailed
 	} else {

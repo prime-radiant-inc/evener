@@ -153,6 +153,10 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		return nil, fmt.Errorf("env initialize: %w", err)
 	}
 	cfg.applyDefaults()
+	// Let the provider profile override the generic default command timeout.
+	if profileTimeout := profile.DefaultCommandTimeoutMS(); profileTimeout > 0 && cfg.DefaultCommandTimeoutMS == 10_000 {
+		cfg.DefaultCommandTimeoutMS = profileTimeout
+	}
 
 	s := &Session{
 		id:        ulid.Make().String(),
