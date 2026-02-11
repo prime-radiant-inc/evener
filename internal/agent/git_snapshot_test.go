@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -55,6 +56,84 @@ func TestGitOriginURL_NilEnv(t *testing.T) {
 	got := gitOriginURL(nil, "/tmp/whatever")
 	if got != "" {
 		t.Fatalf("gitOriginURL(nil): got %q, want empty", got)
+	}
+}
+
+func TestSnapshotGit_InGitRepo(t *testing.T) {
+	dir := t.TempDir()
+	env := NewLocalExecutionEnvironment(dir)
+	defer env.Cleanup()
+	ctx := context.Background()
+	env.ExecCommand(ctx, "git init", 5000, dir, nil)
+	env.ExecCommand(ctx, "git config user.email test@test.com", 5000, dir, nil)
+	env.ExecCommand(ctx, "git config user.name test", 5000, dir, nil)
+	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x"), 0644)
+	env.ExecCommand(ctx, "git add f.txt && git commit -m initial", 5000, dir, nil)
+
+	inRepo, branch, mod, untracked, commits := snapshotGit(env, dir)
+	if !inRepo {
+		t.Fatal("expected inRepo=true")
+	}
+	if branch == "" {
+		t.Fatal("expected non-empty branch")
+	}
+	if len(commits) == 0 {
+		t.Fatal("expected at least 1 commit")
+	}
+	if mod != 0 {
+		t.Errorf("expected 0 modified files, got %d", mod)
+	}
+	if untracked != 0 {
+		t.Errorf("expected 0 untracked files, got %d", untracked)
+	}
+}
+
+func TestSnapshotGit_NotAGitRepo(t *testing.T) {
+	dir := t.TempDir()
+	env := NewLocalExecutionEnvironment(dir)
+	defer env.Cleanup()
+	inRepo, _, _, _, _ := snapshotGit(env, dir)
+	if inRepo {
+		t.Fatal("expected inRepo=false for non-git directory")
+	}
+}
+
+func TestSnapshotGit_FreshRepoNoCommits(t *testing.T) {
+	dir := t.TempDir()
+	env := NewLocalExecutionEnvironment(dir)
+	defer env.Cleanup()
+	ctx := context.Background()
+	env.ExecCommand(ctx, "git init", 5000, dir, nil)
+
+	inRepo, _, _, _, commits := snapshotGit(env, dir)
+	if !inRepo {
+		t.Fatal("expected inRepo=true")
+	}
+	if len(commits) != 0 {
+		t.Errorf("expected 0 commits for fresh repo, got %d", len(commits))
+	}
+}
+
+func TestSnapshotGit_TracksModifiedAndUntracked(t *testing.T) {
+	dir := t.TempDir()
+	env := NewLocalExecutionEnvironment(dir)
+	defer env.Cleanup()
+	ctx := context.Background()
+	env.ExecCommand(ctx, "git init", 5000, dir, nil)
+	env.ExecCommand(ctx, "git config user.email test@test.com", 5000, dir, nil)
+	env.ExecCommand(ctx, "git config user.name test", 5000, dir, nil)
+	os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("x"), 0644)
+	env.ExecCommand(ctx, "git add tracked.txt && git commit -m initial", 5000, dir, nil)
+
+	os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("y"), 0644)
+	os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("modified"), 0644)
+
+	_, _, mod, untracked, _ := snapshotGit(env, dir)
+	if mod != 1 {
+		t.Errorf("expected 1 modified, got %d", mod)
+	}
+	if untracked != 1 {
+		t.Errorf("expected 1 untracked, got %d", untracked)
 	}
 }
 
