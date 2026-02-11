@@ -559,6 +559,7 @@ func (p tinyProfile) ProviderOptions() map[string]any       { return nil }
 func (p tinyProfile) SupportsReasoning() bool               { return false }
 func (p tinyProfile) SupportsStreaming() bool                { return false }
 func (p tinyProfile) DefaultCommandTimeoutMS() int           { return 10_000 }
+func (p tinyProfile) KnowledgeCutoff() string                { return "2025-01-01" }
 
 func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) {
 	dir := t.TempDir()

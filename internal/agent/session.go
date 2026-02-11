@@ -169,6 +169,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 
 	// Snapshot environment context once per session (spec).
 	ei := envInfoFromEnv(env)
+	ei.KnowledgeCutoff = profile.KnowledgeCutoff()
 	if inRepo, branch, mod, untracked, commits := snapshotGit(env, ei.WorkingDir); inRepo {
 		ei.IsGitRepo = true
 		ei.GitBranch = branch
@@ -273,6 +274,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 
 	// Refresh environment context for the current state.
 	ei := envInfoFromEnv(env)
+	ei.KnowledgeCutoff = profile.KnowledgeCutoff()
 	if inRepo, branch, mod, untracked, commits := snapshotGit(env, ei.WorkingDir); inRepo {
 		ei.IsGitRepo = true
 		ei.GitBranch = branch

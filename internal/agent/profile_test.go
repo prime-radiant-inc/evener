@@ -501,6 +501,26 @@ func TestProviderProfile_DefaultCommandTimeout(t *testing.T) {
 	}
 }
 
+func TestProviderProfile_KnowledgeCutoff(t *testing.T) {
+	tests := []struct {
+		name string
+		p    ProviderProfile
+		want string
+	}{
+		{"openai", NewOpenAIProfile("gpt-5.2"), "2025-06-01"},
+		{"anthropic", NewAnthropicProfile("claude-opus-4-6"), "2025-04-01"},
+		{"gemini", NewGeminiProfile("gemini-2.5-pro"), "2025-03-01"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.p.KnowledgeCutoff()
+			if got != tt.want {
+				t.Fatalf("KnowledgeCutoff() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func assertToolListExact(t *testing.T, p ProviderProfile, want []string) {
 	t.Helper()
 	got := make([]string, 0, len(p.ToolDefinitions()))

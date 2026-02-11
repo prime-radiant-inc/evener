@@ -47,6 +47,7 @@ type ProviderProfile interface {
 	SupportsReasoning() bool
 	SupportsStreaming() bool
 	DefaultCommandTimeoutMS() int
+	KnowledgeCutoff() string
 }
 
 type baseProfile struct {
@@ -57,10 +58,11 @@ type baseProfile struct {
 	basePrompt     string
 	toolDefs       []llm.ToolDefinition
 	docFiles       []string
-	reasoning      bool
-	streaming      bool
-	defaultTimeout int
-	providerOpts   map[string]any
+	reasoning       bool
+	streaming       bool
+	defaultTimeout  int
+	knowledgeCutoff string
+	providerOpts    map[string]any
 }
 
 func (p *baseProfile) ID() string    { return p.id }
@@ -77,6 +79,7 @@ func (p *baseProfile) ProviderOptions() map[string]any    { return p.providerOpt
 func (p *baseProfile) SupportsReasoning() bool            { return p.reasoning }
 func (p *baseProfile) SupportsStreaming() bool             { return p.streaming }
 func (p *baseProfile) DefaultCommandTimeoutMS() int       { return p.defaultTimeout }
+func (p *baseProfile) KnowledgeCutoff() string            { return p.knowledgeCutoff }
 func (p *baseProfile) CheapModel() string {
 	switch p.id {
 	case "openai":
@@ -179,15 +182,16 @@ func (p *baseProfile) BuildSystemPrompt(env EnvironmentInfo, docs []ProjectDoc, 
 
 func NewOpenAIProfile(model string) ProviderProfile {
 	return &baseProfile{
-		id:             "openai",
-		model:          strings.TrimSpace(model),
-		parallel:       false,
-		contextWindow:  128_000,
-		basePrompt:     embeddedBasePrompt("openai"),
-		docFiles:       []string{"AGENTS.md", ".codex/instructions.md"},
-		reasoning:      true,
-		streaming:      true,
-		defaultTimeout: 10_000,
+		id:              "openai",
+		model:           strings.TrimSpace(model),
+		parallel:        false,
+		contextWindow:   128_000,
+		basePrompt:      embeddedBasePrompt("openai"),
+		docFiles:        []string{"AGENTS.md", ".codex/instructions.md"},
+		reasoning:       true,
+		streaming:       true,
+		defaultTimeout:  10_000,
+		knowledgeCutoff: "2025-06-01",
 		toolDefs: []llm.ToolDefinition{
 			defReadFile(),
 			defApplyPatch(),
@@ -209,16 +213,17 @@ func NewOpenAIProfile(model string) ProviderProfile {
 
 func NewAnthropicProfile(model string) ProviderProfile {
 	return &baseProfile{
-		id:             "anthropic",
-		model:          strings.TrimSpace(model),
-		parallel:       true,
-		contextWindow:  200_000,
-		basePrompt:     embeddedBasePrompt("anthropic"),
-		docFiles:       []string{"CLAUDE.md", "AGENTS.md"},
-		reasoning:      true,
-		streaming:      true,
-		defaultTimeout: 120_000,
-		providerOpts:   map[string]any{},
+		id:              "anthropic",
+		model:           strings.TrimSpace(model),
+		parallel:        true,
+		contextWindow:   200_000,
+		basePrompt:      embeddedBasePrompt("anthropic"),
+		docFiles:        []string{"CLAUDE.md", "AGENTS.md"},
+		reasoning:       true,
+		streaming:       true,
+		defaultTimeout:  120_000,
+		knowledgeCutoff: "2025-04-01",
+		providerOpts:    map[string]any{},
 		toolDefs: []llm.ToolDefinition{
 			defReadFile(),
 			defWriteFile(),
@@ -240,15 +245,16 @@ func NewAnthropicProfile(model string) ProviderProfile {
 
 func NewGeminiProfile(model string) ProviderProfile {
 	return &baseProfile{
-		id:             "google",
-		model:          strings.TrimSpace(model),
-		parallel:       true,
-		contextWindow:  128_000,
-		basePrompt:     embeddedBasePrompt("google"),
-		docFiles:       []string{"GEMINI.md", "AGENTS.md"},
-		reasoning:      true,
-		streaming:      true,
-		defaultTimeout: 10_000,
+		id:              "google",
+		model:           strings.TrimSpace(model),
+		parallel:        true,
+		contextWindow:   128_000,
+		basePrompt:      embeddedBasePrompt("google"),
+		docFiles:        []string{"GEMINI.md", "AGENTS.md"},
+		reasoning:       true,
+		streaming:       true,
+		defaultTimeout:  10_000,
+		knowledgeCutoff: "2025-03-01",
 		toolDefs: []llm.ToolDefinition{
 			defReadFile(),
 			defReadManyFiles(),
@@ -281,11 +287,10 @@ func envInfoFromEnv(env ExecutionEnvironment) EnvironmentInfo {
 		osv = env.OSVersion()
 	}
 	return EnvironmentInfo{
-		WorkingDir:      wd,
-		Platform:        plat,
-		OSVersion:       osv,
-		Today:           time.Now().UTC().Format("2006-01-02"),
-		KnowledgeCutoff: "2024-06-01",
+		WorkingDir: wd,
+		Platform:   plat,
+		OSVersion:  osv,
+		Today:      time.Now().UTC().Format("2006-01-02"),
 	}
 }
 
