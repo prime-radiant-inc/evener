@@ -126,8 +126,11 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 			return llm.Response{}, llm.NewUnsupportedToolChoiceError("anthropic", req.ToolChoice.Mode)
 		}
 	}
-	if includeTools && len(req.Tools) > 0 {
-		tools := toAnthropicTools(req.Tools)
+	if includeTools || req.WebSearch {
+		var tools []map[string]any
+		if includeTools {
+			tools = toAnthropicTools(req.Tools)
+		}
 		if req.WebSearch {
 			tools = append(tools, map[string]any{
 				"type": "web_search_20250305",
@@ -281,8 +284,11 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 			return nil, llm.NewUnsupportedToolChoiceError("anthropic", req.ToolChoice.Mode)
 		}
 	}
-	if includeTools && len(req.Tools) > 0 {
-		tools := toAnthropicTools(req.Tools)
+	if includeTools || req.WebSearch {
+		var tools []map[string]any
+		if includeTools {
+			tools = toAnthropicTools(req.Tools)
+		}
 		if req.WebSearch {
 			tools = append(tools, map[string]any{
 				"type": "web_search_20250305",

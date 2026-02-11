@@ -2211,6 +2211,54 @@ func TestComplete_UsageRaw_ContainsProviderData(t *testing.T) {
 	}
 }
 
+func TestAdapter_Complete_WebSearchOnly_IncludesWebSearchTool(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "msg_1", "type": "message", "role": "assistant", "model": "test",
+  "content": [{"type":"text","text":"search result"}],
+  "stop_reason": "end_turn",
+  "usage": {"input_tokens": 10, "output_tokens": 5}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model:     "test",
+		Messages:  []llm.Message{llm.User("search the web")},
+		WebSearch: true,
+		// Note: no Tools
+		ProviderOptions: map[string]any{
+			"anthropic": map[string]any{"auto_cache": false},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	toolsAny, ok := gotBody["tools"].([]any)
+	if !ok {
+		t.Fatalf("tools must be present in request body; got %#v", gotBody["tools"])
+	}
+	if len(toolsAny) != 1 {
+		t.Fatalf("tools count: got %d want 1", len(toolsAny))
+	}
+	wsTool, _ := toolsAny[0].(map[string]any)
+	if wsTool["type"] != "web_search_20250305" {
+		t.Fatalf("ws tool type: got %v want web_search_20250305", wsTool["type"])
+	}
+}
+
 func contentKinds(parts []llm.ContentPart) []string {
 	var kinds []string
 	for _, p := range parts {
