@@ -1164,3 +1164,50 @@ func TestSession_Close_CancelsInFlightLLMCall(t *testing.T) {
 		t.Fatal("ProcessInput did not return after Close() -- in-flight LLM call not cancelled")
 	}
 }
+
+func TestSession_GracefulShutdown_CorrectOrdering(t *testing.T) {
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			return llm.Response{Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+					ID: "c1", Name: "spawn_agent", Type: "function",
+					Arguments: json.RawMessage(`{"task":"long task"}`),
+				}}},
+			}}
+		},
+		// Subagent response
+		func(req llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("sub done")}
+		},
+		func(req llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("done")}
+		},
+	}}
+	c.Register(f)
+	dir := t.TempDir()
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventsPtr, mu, doneCh := collectEvents(sess)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	sess.ProcessInput(ctx, "spawn")
+	sess.Close()
+	<-doneCh
+
+	mu.Lock()
+	defer mu.Unlock()
+	found := false
+	for _, ev := range *eventsPtr {
+		if ev.Kind == EventSessionEnd {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("SESSION_END not emitted during shutdown")
+	}
+}

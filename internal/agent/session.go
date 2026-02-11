@@ -454,6 +454,15 @@ func (s *Session) Close() {
 		s.cancelFunc()
 	}
 
+	// Emit SESSION_END before cleanup (spec Appendix B: graceful shutdown ordering).
+	if emitEnd {
+		s.emit(EventSessionEnd, map[string]any{
+			"reason": "session_closed",
+			"state":  string(SessionClosed),
+			"turns":  turns,
+		})
+	}
+
 	for _, sub := range subs {
 		sub.sess.Close()
 	}
@@ -463,14 +472,6 @@ func (s *Session) Close() {
 	}
 
 	s.env.Cleanup()
-
-	if emitEnd {
-		s.emit(EventSessionEnd, map[string]any{
-			"reason": "session_closed",
-			"state":  string(SessionClosed),
-			"turns":  turns,
-		})
-	}
 	close(s.events)
 }
 
