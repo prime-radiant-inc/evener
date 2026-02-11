@@ -22,8 +22,9 @@ type runConfig struct {
 	provider     string
 	workDir      string
 	stateDir     string // --state-dir override
-	systemPrompt string // --system-prompt file path
-	verbose      bool
+	systemPrompt       string   // --system-prompt file path
+	systemPromptAppend []string // --system-prompt-append file paths
+	verbose            bool
 	stdout       io.Writer
 	stderr       io.Writer
 
@@ -132,6 +133,7 @@ func run(ctx context.Context, cfg runConfig) error {
 			MaxToolRoundsPerInput: 200,
 			StateDir:              stateDir,
 			SystemPromptFile:      cfg.systemPrompt,
+			SystemPromptAppend:    cfg.systemPromptAppend,
 			SkillsDirs:            cfg.skillsDirs,
 			MCPConfigFiles:        cfg.mcpConfigs,
 			MCPInline:             cfg.mcpServers,

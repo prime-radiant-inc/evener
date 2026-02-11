@@ -36,6 +36,8 @@ func main() {
 	flag.Var(&mcpServers, "mcp", "MCP server (repeatable, format: name:command args...)")
 	var mcpConfigs stringSliceFlag
 	flag.Var(&mcpConfigs, "mcp-config", "path to .mcp.json file (repeatable)")
+	var systemPromptAppend stringSliceFlag
+	flag.Var(&systemPromptAppend, "system-prompt-append", "path to append to system prompt (repeatable)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: serf --provider <provider> --model <model> [flags] <task>\n\n")
@@ -46,7 +48,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  --model <name>       LLM model (e.g. gpt-5.2, claude-opus-4-6, gemini-3-flash-preview)\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		fmt.Fprintf(os.Stderr, "  --dir <path>         Working directory (default: current directory)\n")
-		fmt.Fprintf(os.Stderr, "  --system-prompt <path> Path to a custom system prompt file\n")
+		fmt.Fprintf(os.Stderr, "  --system-prompt <path> Path to a custom system prompt file (replaces default)\n")
+		fmt.Fprintf(os.Stderr, "  --system-prompt-append <path> Append to system prompt (repeatable)\n")
 		fmt.Fprintf(os.Stderr, "  --state-dir <path>   Override runtime state directory (sessions, tasks)\n")
 		fmt.Fprintf(os.Stderr, "  --verbose            Emit NDJSON events to stderr (replaces human-readable output)\n")
 		fmt.Fprintf(os.Stderr, "  --skills-dir <path>  Extra skill directory (repeatable)\n")
@@ -94,8 +97,9 @@ func main() {
 		provider:     *provider,
 		workDir:      *workDir,
 		stateDir:     *stateDir,
-		systemPrompt: *systemPrompt,
-		verbose:      *verbose,
+		systemPrompt:       *systemPrompt,
+		systemPromptAppend: []string(systemPromptAppend),
+		verbose:            *verbose,
 		skillsDirs:   []string(skillsDirs),
 		mcpServers:   []string(mcpServers),
 		mcpConfigs:   []string(mcpConfigs),
