@@ -833,6 +833,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		}
 	}
 
+	s.emit(EventTurnLimit, map[string]any{"max_tool_rounds_per_input": s.cfg.MaxToolRoundsPerInput})
 	s.mu.Lock()
 	s.state = SessionIdle
 	s.mu.Unlock()

@@ -59,6 +59,62 @@ func TestSession_MaxToolRoundsPerInput_StopsLoop(t *testing.T) {
 	}
 }
 
+func TestSession_MaxToolRoundsPerInput_EmitsTurnLimitEvent(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	toolMsg := func(id string) llm.Response {
+		call := llm.ToolCallData{
+			ID:        id,
+			Name:      "glob",
+			Arguments: json.RawMessage(`{"pattern":"*.go","path":"."}`),
+			Type:      "function",
+		}
+		return llm.Response{
+			Message: llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
+			},
+		}
+	}
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolMsg("1") },
+			func(req llm.Request) llm.Response { return toolMsg("2") },
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxToolRoundsPerInput: 2,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "loop")
+	if err == nil || !strings.Contains(err.Error(), "max tool rounds") {
+		t.Fatalf("expected max tool rounds error, got %v", err)
+	}
+	sess.Close()
+
+	turnLimit := false
+	for ev := range sess.Events() {
+		if ev.Kind == EventTurnLimit {
+			turnLimit = true
+			if v, ok := ev.Data["max_tool_rounds_per_input"].(int); !ok || v != 2 {
+				t.Fatalf("expected max_tool_rounds_per_input=2 in event data, got %v", ev.Data)
+			}
+		}
+	}
+	if !turnLimit {
+		t.Fatalf("expected TURN_LIMIT event when round limit reached")
+	}
+}
+
 func TestSession_LifecycleEvents_BracketSession(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
