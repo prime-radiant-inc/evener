@@ -178,7 +178,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 
 	resp, err := a.Client.Do(httpReq)
 	if err != nil {
-		return llm.Response{}, err
+		return llm.Response{}, llm.WrapContextError("anthropic", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -191,7 +191,9 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		return llm.Response{}, llm.ErrorFromHTTPStatus("anthropic", resp.StatusCode, msg, raw, ra)
 	}
 
-	return fromAnthropicResponse(raw, req.Model), nil
+	r := fromAnthropicResponse(raw, req.Model)
+	r.RateLimit = llm.ParseRateLimitHeaders(resp.Header)
+	return r, nil
 }
 
 func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
@@ -272,6 +274,12 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	}
 	if includeTools && len(req.Tools) > 0 {
 		tools := toAnthropicTools(req.Tools)
+		if req.WebSearch {
+			tools = append(tools, map[string]any{
+				"type": "web_search_20250305",
+				"name": "web_search",
+			})
+		}
 		if autoCache && len(tools) > 0 {
 			tools[len(tools)-1]["cache_control"] = map[string]any{"type": "ephemeral"}
 		}

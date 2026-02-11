@@ -1406,6 +1406,126 @@ func TestAdapter_Integration_WebSearch(t *testing.T) {
 	t.Logf("response text (truncated): %.200s", resp.Text())
 }
 
+func TestComplete_PopulatesRateLimitInfo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("x-ratelimit-remaining-requests", "99")
+		w.Header().Set("x-ratelimit-limit-requests", "100")
+		w.Header().Set("x-ratelimit-remaining-tokens", "9999")
+		w.Header().Set("x-ratelimit-limit-tokens", "10000")
+		w.Header().Set("x-ratelimit-reset-requests", "2026-02-10T12:00:00Z")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"msg_1","model":"claude-test","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "claude-test",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.RateLimit == nil {
+		t.Fatal("RateLimit is nil")
+	}
+	if resp.RateLimit.RequestsRemaining == nil || *resp.RateLimit.RequestsRemaining != 99 {
+		t.Fatalf("RequestsRemaining = %v", resp.RateLimit.RequestsRemaining)
+	}
+	if resp.RateLimit.TokensLimit == nil || *resp.RateLimit.TokensLimit != 10000 {
+		t.Fatalf("TokensLimit = %v", resp.RateLimit.TokensLimit)
+	}
+}
+
+func TestStream_IncludesWebSearchTool(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		write := func(event, data string) {
+			_, _ = io.WriteString(w, "event: "+event+"\n")
+			_, _ = io.WriteString(w, "data: "+data+"\n\n")
+			if f != nil {
+				f.Flush()
+			}
+		}
+		write("content_block_start", `{"index":0,"content_block":{"type":"text"}}`)
+		write("content_block_delta", `{"index":0,"delta":{"type":"text_delta","text":"hi"}}`)
+		write("content_block_stop", `{"index":0}`)
+		write("message_delta", `{"stop_reason":"end_turn","usage":{"output_tokens":1}}`)
+		write("message_stop", `{}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	stream, err := a.Stream(ctx, llm.Request{
+		Model:    "claude-3-5-sonnet-20241022",
+		Messages: []llm.Message{llm.User("search the web")},
+		Tools: []llm.ToolDefinition{{
+			Name:       "shell",
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{}},
+		}},
+		WebSearch: true,
+		ProviderOptions: map[string]any{
+			"anthropic": map[string]any{"auto_cache": false},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	// Drain events
+	for range stream.Events() {
+	}
+
+	toolsAny, ok := gotBody["tools"].([]any)
+	if !ok {
+		t.Fatalf("expected tools array, got: %v", gotBody["tools"])
+	}
+
+	found := false
+	for _, tool := range toolsAny {
+		tm, _ := tool.(map[string]any)
+		if tm["type"] == "web_search_20250305" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("web_search_20250305 tool not found in Stream() tools: %v", toolsAny)
+	}
+}
+
+func TestComplete_WrapsContextCanceled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(5 * time.Second)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model:    "claude-3-5-sonnet-20241022",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var abortErr *llm.AbortError
+	if !errors.As(err, &abortErr) {
+		t.Fatalf("expected AbortError, got %T: %v", err, err)
+	}
+}
+
 func contentKinds(parts []llm.ContentPart) []string {
 	var kinds []string
 	for _, p := range parts {
