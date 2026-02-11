@@ -689,7 +689,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			Provider:   s.profile.ID(),
 			Messages:   append([]llm.Message{llm.System(sys)}, history...),
 			Tools:      s.allToolDefinitions(),
-			ToolChoice: &llm.ToolChoice{Mode: "required"},
+			ToolChoice: &llm.ToolChoice{Mode: "auto"},
 			WebSearch:  true,
 		}
 			if strings.TrimSpace(s.cfg.ReasoningEffort) != "" {

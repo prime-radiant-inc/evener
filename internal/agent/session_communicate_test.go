@@ -23,7 +23,7 @@ func communicateCall(id, action, message string) llm.ToolCallData {
 
 // toolCallResponse is defined in tool_web_fetch_test.go (same package).
 
-func TestCommunicate_ToolChoiceRequired_SetOnRequest(t *testing.T) {
+func TestCommunicate_ToolChoiceAuto_SetOnRequest(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -56,10 +56,10 @@ func TestCommunicate_ToolChoiceRequired_SetOnRequest(t *testing.T) {
 	}
 	for i, req := range reqs {
 		if req.ToolChoice == nil {
-			t.Fatalf("request %d: ToolChoice is nil, expected required", i)
+			t.Fatalf("request %d: ToolChoice is nil, expected auto", i)
 		}
-		if req.ToolChoice.Mode != "required" {
-			t.Fatalf("request %d: ToolChoice.Mode = %q, want %q", i, req.ToolChoice.Mode, "required")
+		if req.ToolChoice.Mode != "auto" {
+			t.Fatalf("request %d: ToolChoice.Mode = %q, want %q", i, req.ToolChoice.Mode, "auto")
 		}
 	}
 }

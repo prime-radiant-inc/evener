@@ -1324,3 +1324,31 @@ func (e *timeoutEnv) ExecCommand(ctx context.Context, command string, timeoutMS 
 		DurationMS: int64(timeoutMS),
 	}, context.DeadlineExceeded
 }
+
+func TestProcessInput_ToolChoiceIsAuto(t *testing.T) {
+	c := llm.NewClient()
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				if req.ToolChoice == nil || req.ToolChoice.Mode != "auto" {
+					t.Fatalf("expected tool_choice auto, got %+v", req.ToolChoice)
+				}
+				return llm.Response{
+					Message: llm.Assistant("done"),
+					Finish:  llm.FinishReason{Reason: "stop"},
+				}
+			},
+		},
+	}
+	c.Register(f)
+
+	dir := t.TempDir()
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	go func() { for range sess.Events() {} }()
+	_, _ = sess.ProcessInput(context.Background(), "hello")
+}
