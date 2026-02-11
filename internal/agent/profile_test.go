@@ -584,6 +584,38 @@ func TestSpawnAgent_HasWorkingDirAndMaxTurns(t *testing.T) {
 	}
 }
 
+func TestAnthropicProfile_SystemPromptCoversSpecTopics(t *testing.T) {
+	p := NewAnthropicProfile("claude-opus-4-6")
+	prompt := p.BuildSystemPrompt(EnvironmentInfo{}, nil, nil)
+
+	required := []string{
+		"old_string must be unique",
+		"edit_file",
+		"edit existing files over creating",
+	}
+	for _, substr := range required {
+		if !strings.Contains(strings.ToLower(prompt), strings.ToLower(substr)) {
+			t.Fatalf("Anthropic prompt missing required topic: %q", substr)
+		}
+	}
+}
+
+func TestGeminiProfile_SystemPromptCoversSpecTopics(t *testing.T) {
+	p := NewGeminiProfile("gemini-2.5-pro")
+	prompt := p.BuildSystemPrompt(EnvironmentInfo{}, nil, nil)
+
+	required := []string{
+		"GEMINI.md",
+		"read_many_files",
+		"list_dir",
+	}
+	for _, substr := range required {
+		if !strings.Contains(prompt, substr) {
+			t.Fatalf("Gemini prompt missing required topic: %q", substr)
+		}
+	}
+}
+
 func assertToolListExact(t *testing.T, p ProviderProfile, want []string) {
 	t.Helper()
 	got := make([]string, 0, len(p.ToolDefinitions()))
