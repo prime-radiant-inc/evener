@@ -244,26 +244,15 @@ func TestSession_EventSystem_ToolCall_EmitsStartDeltaEnd(t *testing.T) {
 	}
 }
 
-func TestSession_MaxTurns_StopsAcrossRoundsAndEmitsEvent(t *testing.T) {
+func TestSession_MaxTurns_StopsAcrossInputsAndEmitsEvent(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	call := llm.ToolCallData{
-		ID:        "c1",
-		Name:      "glob",
-		Arguments: json.RawMessage(`{"pattern":"*.go","path":"."}`),
-		Type:      "function",
-	}
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{
-					Message: llm.Message{
-						Role:    llm.RoleAssistant,
-						Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
-					},
-				}
+				return llm.Response{Message: llm.Assistant("ok"), Finish: llm.FinishReason{Reason: "stop"}}
 			},
 		},
 	}
@@ -277,16 +266,19 @@ func TestSession_MaxTurns_StopsAcrossRoundsAndEmitsEvent(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "hit max turns")
+
+	// First input should succeed (turn 1 of 1).
+	_, err = sess.ProcessInput(ctx, "first input")
+	if err != nil {
+		t.Fatalf("expected first input to succeed, got %v", err)
+	}
+
+	// Second input should hit the turn limit.
+	_, err = sess.ProcessInput(ctx, "second input")
 	if err == nil || !strings.Contains(err.Error(), "turn limit") {
 		t.Fatalf("expected turn limit error, got %v", err)
 	}
 	sess.Close()
-
-	// Only one LLM request should have been sent (second round is blocked by the turn limit check).
-	if got := len(f.Requests()); got != 1 {
-		t.Fatalf("requests: got %d want 1", got)
-	}
 
 	turnLimit := false
 	for ev := range sess.Events() {
@@ -538,9 +530,10 @@ func TestSession_ReasoningEffort_PassedThroughAndCanChange(t *testing.T) {
 }
 
 type tinyProfile struct {
-	id  string
-	cw  int
-	mod string
+	id   string
+	cw   int
+	mod  string
+	opts map[string]any
 }
 
 func (p tinyProfile) ID() string                               { return p.id }
@@ -555,7 +548,7 @@ func (p tinyProfile) WithModel(model string) ProviderProfile {
 	return tinyProfile{id: p.id, cw: p.cw, mod: model}
 }
 func (p tinyProfile) WithBasePrompt(string) ProviderProfile { return p }
-func (p tinyProfile) ProviderOptions() map[string]any       { return nil }
+func (p tinyProfile) ProviderOptions() map[string]any       { return p.opts }
 func (p tinyProfile) SupportsReasoning() bool               { return false }
 func (p tinyProfile) SupportsStreaming() bool                { return false }
 func (p tinyProfile) DefaultCommandTimeoutMS() int           { return 10_000 }
@@ -1529,6 +1522,130 @@ func TestLoopDetection_PatternLength2(t *testing.T) {
 
 	if !loopDetected {
 		t.Fatal("expected loop detection for A-B-A-B pattern of length 2")
+	}
+}
+
+func TestProviderOptions_PassedToLLMRequest(t *testing.T) {
+	c := llm.NewClient()
+	f := &fakeAdapter{
+		name: "tiny",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Message: llm.Assistant("done"),
+					Finish:  llm.FinishReason{Reason: "stop"},
+				}
+			},
+		},
+	}
+	c.Register(f)
+
+	profile := tinyProfile{id: "tiny", mod: "m", cw: 100_000}
+	profile.opts = map[string]any{
+		"anthropic": map[string]any{"beta": "test-beta"},
+	}
+
+	dir := t.TempDir()
+	sess, err := NewSession(c, profile, NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	go func() { for range sess.Events() {} }()
+
+	_, err = sess.ProcessInput(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	reqs := f.Requests()
+	if len(reqs) == 0 {
+		t.Fatal("no requests recorded")
+	}
+	if reqs[0].ProviderOptions == nil {
+		t.Fatal("expected ProviderOptions to be set on request")
+	}
+	anth, ok := reqs[0].ProviderOptions["anthropic"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected anthropic key in ProviderOptions, got %v", reqs[0].ProviderOptions)
+	}
+	if anth["beta"] != "test-beta" {
+		t.Fatalf("expected beta=test-beta, got %v", anth["beta"])
+	}
+}
+
+func TestMaxTurns_CountsConversationTurns(t *testing.T) {
+	c := llm.NewClient()
+	callNum := 0
+	var mu sync.Mutex
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				mu.Lock()
+				callNum++
+				mu.Unlock()
+				// First input: return a tool call (round 1 of input 1)
+				call := llm.ToolCallData{
+					ID:        "c1",
+					Name:      "read_file",
+					Arguments: json.RawMessage(`{"file_path":"a.txt"}`),
+					Type:      "function",
+				}
+				return llm.Response{
+					Message: llm.Message{
+						Role:    llm.RoleAssistant,
+						Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
+					},
+				}
+			},
+			func(req llm.Request) llm.Response {
+				mu.Lock()
+				callNum++
+				mu.Unlock()
+				// First input: return text (round 2 of input 1)
+				return llm.Response{Message: llm.Assistant("done1"), Finish: llm.FinishReason{Reason: "stop"}}
+			},
+			func(req llm.Request) llm.Response {
+				mu.Lock()
+				callNum++
+				mu.Unlock()
+				// Second input: text only
+				return llm.Response{Message: llm.Assistant("done2"), Finish: llm.FinishReason{Reason: "stop"}}
+			},
+			func(req llm.Request) llm.Response {
+				mu.Lock()
+				callNum++
+				mu.Unlock()
+				return llm.Response{Message: llm.Assistant("done3"), Finish: llm.FinishReason{Reason: "stop"}}
+			},
+		},
+	}
+	c.Register(f)
+
+	dir := t.TempDir()
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir),
+		SessionConfig{MaxTurns: 2})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	go func() { for range sess.Events() {} }()
+
+	// First input (turn 1): should work (even with tool round)
+	_, err = sess.ProcessInput(context.Background(), "first")
+	if err != nil {
+		t.Fatalf("first input: %v", err)
+	}
+	// Second input (turn 2): should work
+	_, err = sess.ProcessInput(context.Background(), "second")
+	if err != nil {
+		t.Fatalf("second input: %v", err)
+	}
+	// Third input (turn 3): should hit limit
+	_, err = sess.ProcessInput(context.Background(), "third")
+	if err == nil {
+		t.Fatal("expected turn limit error on third input")
 	}
 }
 

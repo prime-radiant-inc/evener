@@ -617,6 +617,17 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 	s.emit(EventUserInput, map[string]any{"text": input})
 	s.appendTurn(TurnUserInput, llm.User(input))
 
+	// Count conversation turns (user input -> model response pairs), not LLM round-trips.
+	s.mu.Lock()
+	s.turns++
+	turns := s.turns
+	s.mu.Unlock()
+
+	if s.cfg.MaxTurns > 0 && turns > s.cfg.MaxTurns {
+		s.emit(EventTurnLimit, map[string]any{"max_turns": s.cfg.MaxTurns})
+		return "", fmt.Errorf("turn limit reached")
+	}
+
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
 	for _, msg := range s.drainSteering() {
 		s.appendTurn(TurnSteering, llm.User(msg))
@@ -671,8 +682,6 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		}
 
 		s.mu.Lock()
-			s.turns++
-			turns := s.turns
 			historyTurns := append([]Turn{}, s.history...)
 			s.mu.Unlock()
 
@@ -685,11 +694,6 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 				history = append(history, t.Message)
 			}
 
-			if s.cfg.MaxTurns > 0 && turns > s.cfg.MaxTurns {
-				s.emit(EventTurnLimit, map[string]any{"max_turns": s.cfg.MaxTurns})
-				return "", fmt.Errorf("turn limit reached")
-			}
-
 		req := llm.Request{
 			Model:      s.profile.Model(),
 			Provider:   s.profile.ID(),
@@ -698,6 +702,9 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			ToolChoice: &llm.ToolChoice{Mode: "auto"},
 			WebSearch:  true,
 		}
+			if opts := s.profile.ProviderOptions(); opts != nil {
+				req.ProviderOptions = opts
+			}
 			if strings.TrimSpace(s.cfg.ReasoningEffort) != "" {
 				v := strings.TrimSpace(s.cfg.ReasoningEffort)
 				req.ReasoningEffort = &v
