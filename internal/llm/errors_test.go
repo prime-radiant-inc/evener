@@ -213,6 +213,27 @@ func TestNonHTTPError_ErrorCode_Raw(t *testing.T) {
 	}
 }
 
+func TestConfigurationError_Unwrap_ExposesCause(t *testing.T) {
+	cause := fmt.Errorf("missing API key")
+	err := &ConfigurationError{Message: "bad config", Cause: cause}
+
+	// Unwrap returns cause.
+	if got := errors.Unwrap(err); got != cause {
+		t.Fatalf("Unwrap() = %v, want %v", got, cause)
+	}
+	// errors.Is traverses the chain.
+	if !errors.Is(err, cause) {
+		t.Fatal("errors.Is should find cause through Unwrap")
+	}
+}
+
+func TestConfigurationError_Unwrap_NilCause(t *testing.T) {
+	err := &ConfigurationError{Message: "no cause"}
+	if got := errors.Unwrap(err); got != nil {
+		t.Fatalf("Unwrap() = %v, want nil", got)
+	}
+}
+
 func TestConfigurationError_ErrorCode_Raw(t *testing.T) {
 	err := &ConfigurationError{Message: "bad config"}
 	var e Error
