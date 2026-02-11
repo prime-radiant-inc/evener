@@ -578,10 +578,7 @@ func checkpoint(history []Turn, preserveRecent int) []Turn {
 
 	b.WriteString("[END CHECKPOINT]\n")
 
-	checkpointTurn := Turn{
-		Kind:    TurnUserInput,
-		Message: llm.User(b.String()),
-	}
+	checkpointTurn := NewTurn(TurnUserInput, llm.User(b.String()))
 
 	result := make([]Turn, 0, 1+preserveRecent)
 	result = append(result, checkpointTurn)
@@ -691,10 +688,7 @@ func (cm *ContextManager) summarizeWithLLM(ctx context.Context, history []Turn, 
 	}
 
 	summaryText := "[CONTEXT SUMMARY]\n" + resp.Text() + "\n[END SUMMARY]"
-	summaryTurn := Turn{
-		Kind:    TurnUserInput,
-		Message: llm.User(summaryText),
-	}
+	summaryTurn := NewTurn(TurnUserInput, llm.User(summaryText))
 
 	result := make([]Turn, 0, 1+preserveRecent)
 	result = append(result, summaryTurn)
