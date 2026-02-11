@@ -2275,3 +2275,129 @@ func TestDefaultHeaders_CannotOverrideContentType(t *testing.T) {
 		t.Errorf("Content-Type = %q, want %q (provider must take precedence)", capturedHeaders.Get("Content-Type"), "application/json")
 	}
 }
+
+func TestComplete_ToolResultIsError_ConveyedInResponse(t *testing.T) {
+	var sentBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &sentBody)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"candidates": []any{map[string]any{
+				"content": map[string]any{
+					"role":  "model",
+					"parts": []any{map[string]any{"text": "ok"}},
+				},
+			}},
+			"usageMetadata": map[string]any{
+				"promptTokenCount":     10,
+				"candidatesTokenCount": 5,
+				"totalTokenCount":      15,
+			},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model: "gemini-test",
+		Messages: []llm.Message{
+			llm.User("call tool"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+				Kind:     llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{ID: "call_1", Name: "failing_tool", Arguments: json.RawMessage(`{}`)},
+			}}},
+			llm.ToolResultNamed("call_1", "failing_tool", "connection refused", true),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	// Find the functionResponse part in the sent body.
+	contents, ok := sentBody["contents"].([]any)
+	if !ok || len(contents) == 0 {
+		t.Fatalf("expected contents in sent body, got %v", sentBody["contents"])
+	}
+	lastContent, _ := contents[len(contents)-1].(map[string]any)
+	parts, _ := lastContent["parts"].([]any)
+	if len(parts) == 0 {
+		t.Fatalf("expected parts in last content, got %v", lastContent)
+	}
+	part, _ := parts[0].(map[string]any)
+	fr, _ := part["functionResponse"].(map[string]any)
+	resp, _ := fr["response"].(map[string]any)
+
+	// Error results should include an error indicator.
+	errVal, exists := resp["error"]
+	if !exists {
+		t.Fatalf("error tool results must include error key in response, got: %v", resp)
+	}
+	if errVal != true {
+		t.Errorf("error = %v, want true", errVal)
+	}
+}
+
+func TestComplete_ToolResultIsError_OmittedWhenFalse(t *testing.T) {
+	var sentBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &sentBody)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"candidates": []any{map[string]any{
+				"content": map[string]any{
+					"role":  "model",
+					"parts": []any{map[string]any{"text": "ok"}},
+				},
+			}},
+			"usageMetadata": map[string]any{
+				"promptTokenCount":     10,
+				"candidatesTokenCount": 5,
+				"totalTokenCount":      15,
+			},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model: "gemini-test",
+		Messages: []llm.Message{
+			llm.User("call tool"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+				Kind:     llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{ID: "call_1", Name: "good_tool", Arguments: json.RawMessage(`{}`)},
+			}}},
+			llm.ToolResultNamed("call_1", "good_tool", "success", false),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	// Find the functionResponse part in the sent body.
+	contents, ok := sentBody["contents"].([]any)
+	if !ok || len(contents) == 0 {
+		t.Fatalf("expected contents in sent body, got %v", sentBody["contents"])
+	}
+	lastContent, _ := contents[len(contents)-1].(map[string]any)
+	parts, _ := lastContent["parts"].([]any)
+	if len(parts) == 0 {
+		t.Fatalf("expected parts in last content, got %v", lastContent)
+	}
+	part, _ := parts[0].(map[string]any)
+	fr, _ := part["functionResponse"].(map[string]any)
+	resp, _ := fr["response"].(map[string]any)
+
+	// Non-error results must NOT include the error key.
+	if _, exists := resp["error"]; exists {
+		t.Fatalf("error key should be omitted for non-error results, but was present in response: %v", resp)
+	}
+}

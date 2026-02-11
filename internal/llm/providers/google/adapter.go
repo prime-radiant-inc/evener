@@ -761,6 +761,9 @@ func toGeminiContents(msgs []llm.Message) (system string, contents []map[string]
 					b, _ := json.Marshal(v)
 					respObj = map[string]any{"result": string(b)}
 				}
+				if p.ToolResult.IsError {
+					respObj["error"] = true
+				}
 				parts = append(parts, map[string]any{
 					"functionResponse": map[string]any{
 						"name":     name,
