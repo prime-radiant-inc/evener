@@ -886,6 +886,143 @@ func TestStreamGenerate_WebSearch_PropagatedToRequest(t *testing.T) {
 	}
 }
 
+func TestStreamGenerate_TotalUsage_AggregatesAcrossSteps(t *testing.T) {
+	// Two-step tool loop: step 1 (tool call) + step 2 (final response).
+	// Verify TotalUsage aggregates across both steps and Steps() returns both.
+	c := NewClient()
+	call := ToolCallData{ID: "c1", Name: "t1", Arguments: json.RawMessage(`{}`), Type: "function"}
+
+	a := &scriptedStreamAdapter{
+		name: "openai",
+		scripts: []func(ctx context.Context, req Request) (Stream, error){
+			// Step 1: tool call with usage {Input: 10, Output: 20, Total: 30}
+			func(ctx context.Context, req Request) (Stream, error) {
+				_, cancel := context.WithCancel(ctx)
+				st := NewChanStream(cancel)
+				go func() {
+					defer st.CloseSend()
+					st.Send(StreamEvent{Type: StreamEventStreamStart})
+					st.Send(StreamEvent{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{ID: call.ID, Name: call.Name, Type: "function"}})
+					st.Send(StreamEvent{Type: StreamEventToolCallEnd, ToolCall: &call})
+					resp := Response{
+						Provider: "openai",
+						Model:    "m",
+						Message: Message{Role: RoleAssistant, Content: []ContentPart{
+							{Kind: ContentToolCall, ToolCall: &call},
+						}},
+						Finish: FinishReason{Reason: FinishReasonToolCalls},
+						Usage:  Usage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30},
+					}
+					rp := resp
+					st.Send(StreamEvent{Type: StreamEventFinish, FinishReason: &resp.Finish, Response: &rp, Usage: &resp.Usage})
+					cancel()
+				}()
+				return st, nil
+			},
+			// Step 2: final text with usage {Input: 15, Output: 25, Total: 40}
+			func(ctx context.Context, req Request) (Stream, error) {
+				_, cancel := context.WithCancel(ctx)
+				st := NewChanStream(cancel)
+				go func() {
+					defer st.CloseSend()
+					st.Send(StreamEvent{Type: StreamEventStreamStart})
+					st.Send(StreamEvent{Type: StreamEventTextStart, TextID: "text_1"})
+					st.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "done"})
+					st.Send(StreamEvent{Type: StreamEventTextEnd, TextID: "text_1"})
+					resp := Response{
+						Provider: "openai",
+						Model:    "m",
+						Message:  Assistant("done"),
+						Finish:   FinishReason{Reason: FinishReasonStop},
+						Usage:    Usage{InputTokens: 15, OutputTokens: 25, TotalTokens: 40},
+					}
+					rp := resp
+					st.Send(StreamEvent{Type: StreamEventFinish, FinishReason: &resp.Finish, Response: &rp, Usage: &resp.Usage})
+					cancel()
+				}()
+				return st, nil
+			},
+		},
+	}
+	c.Register(a)
+
+	prompt := "hi"
+	rounds := 1
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	res, err := StreamGenerate(ctx, GenerateOptions{
+		Client:        c,
+		Model:         "m",
+		Provider:      "openai",
+		Prompt:        &prompt,
+		MaxToolRounds: &rounds,
+		Tools: []Tool{
+			{
+				Definition: ToolDefinition{Name: "t1", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}},
+				Execute: func(ctx context.Context, args any) (any, error) {
+					return "ok", nil
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamGenerate: %v", err)
+	}
+	defer res.Close()
+
+	// Drain all events.
+	for range res.Events() {
+	}
+
+	// Wait for response to ensure goroutine finished.
+	_, err = res.Response()
+	if err != nil {
+		t.Fatalf("Response: %v", err)
+	}
+
+	// TotalUsage should aggregate: 10+15=25 input, 20+25=45 output, 30+40=70 total.
+	total := res.TotalUsage()
+	if total.InputTokens != 25 {
+		t.Errorf("TotalUsage.InputTokens = %d, want 25", total.InputTokens)
+	}
+	if total.OutputTokens != 45 {
+		t.Errorf("TotalUsage.OutputTokens = %d, want 45", total.OutputTokens)
+	}
+	if total.TotalTokens != 70 {
+		t.Errorf("TotalUsage.TotalTokens = %d, want 70", total.TotalTokens)
+	}
+
+	// Steps should contain 2 entries.
+	steps := res.Steps()
+	if len(steps) != 2 {
+		t.Fatalf("Steps() len = %d, want 2", len(steps))
+	}
+
+	// Step 1: tool call step.
+	if steps[0].Usage.InputTokens != 10 {
+		t.Errorf("Steps[0].Usage.InputTokens = %d, want 10", steps[0].Usage.InputTokens)
+	}
+	if len(steps[0].ToolCalls) != 1 {
+		t.Errorf("Steps[0].ToolCalls len = %d, want 1", len(steps[0].ToolCalls))
+	}
+
+	// Step 2: final text step.
+	if steps[1].Usage.InputTokens != 15 {
+		t.Errorf("Steps[1].Usage.InputTokens = %d, want 15", steps[1].Usage.InputTokens)
+	}
+	if steps[1].Text != "done" {
+		t.Errorf("Steps[1].Text = %q, want %q", steps[1].Text, "done")
+	}
+
+	// Steps() should return a copy (modifying it shouldn't affect the original).
+	steps[0].Text = "modified"
+	steps2 := res.Steps()
+	if steps2[0].Text == "modified" {
+		t.Error("Steps() should return a copy, not a reference to internal slice")
+	}
+}
+
 func TestStreamGenerate_StopWhen_TerminatesToolLoopEarly(t *testing.T) {
 	// Setup: 3 scripted rounds. StopWhen fires after 2 tool rounds.
 	// Round 1: tool call -> execute -> StopWhen([step1]) = false
