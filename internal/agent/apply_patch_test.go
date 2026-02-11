@@ -95,6 +95,28 @@ func TestApplyPatch_FuzzyWhitespaceMatching(t *testing.T) {
 	}
 }
 
+func TestApplyPatch_ContextHintDisambiguates(t *testing.T) {
+	dir := t.TempDir()
+	content := "func foo():\n    return 1\n\nfunc bar():\n    return 1\n"
+	os.WriteFile(filepath.Join(dir, "f.py"), []byte(content), 0o644)
+
+	// Both functions have "    return 1" — the @@ hint disambiguates
+	patch := "*** Begin Patch\n*** Update File: f.py\n@@ func bar():\n-    return 1\n+    return 2\n*** End Patch\n"
+	_, err := ApplyPatch(dir, patch)
+	if err != nil {
+		t.Fatalf("ApplyPatch: %v", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "f.py"))
+	lines := strings.Split(string(got), "\n")
+	// foo should still return 1, bar should return 2
+	if !strings.Contains(lines[1], "return 1") {
+		t.Fatal("foo's return was modified")
+	}
+	if !strings.Contains(lines[4], "return 2") {
+		t.Fatal("bar's return was not modified")
+	}
+}
+
 func TestApplyPatch_RejectsPathTraversalAndAbsolutePaths(t *testing.T) {
 	dir := t.TempDir()
 	cases := []string{

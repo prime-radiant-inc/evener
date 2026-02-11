@@ -71,7 +71,7 @@ func (o deleteFileOp) apply(rootDir string) ([]string, error) {
 type updateFileOp struct {
 	path   string
 	moveTo string
-	hunks  [][]string // diff lines without @@ separators
+	hunks  [][]string // diff lines per hunk (may include leading @@ hint line)
 }
 
 func (o updateFileOp) apply(rootDir string) ([]string, error) {
@@ -93,7 +93,19 @@ func (o updateFileOp) apply(rootDir string) ([]string, error) {
 	for _, h := range o.hunks {
 		anchor := firstAnchor(h)
 		if anchor != "" {
-			k := indexOfLine(origLines, anchor, pos)
+			hint := hintFromHunk(h)
+			searchStart := pos
+			if hint != "" {
+				hintIdx := indexOfLine(origLines, hint, pos)
+				if hintIdx >= 0 {
+					searchStart = hintIdx
+				}
+			}
+			k := indexOfLine(origLines, anchor, searchStart)
+			if k < 0 {
+				// Fall back to searching from pos if hint-narrowed search failed
+				k = indexOfLine(origLines, anchor, pos)
+			}
 			if k < 0 {
 				return nil, fmt.Errorf("apply_patch: anchor not found in %s: %q", o.path, anchor)
 			}
@@ -225,7 +237,7 @@ func parseV4APatchLines(lines []string) ([]patchOp, error) {
 				}
 				if strings.HasPrefix(lines[i], "@@") && len(cur) > 0 {
 					hunks = append(hunks, cur)
-					cur = nil
+					cur = []string{lines[i]}
 					i++
 					continue
 				}
@@ -256,6 +268,18 @@ func safeJoin(rootDir, rel string) (string, error) {
 		return "", fmt.Errorf("path traversal not allowed: %s", rel)
 	}
 	return filepath.Join(rootDir, clean), nil
+}
+
+// hintFromHunk extracts the positioning hint text after @@ in a hunk.
+// The hint (typically a function signature) narrows where we search for the anchor.
+func hintFromHunk(hunkLines []string) string {
+	for _, l := range hunkLines {
+		if strings.HasPrefix(l, "@@") {
+			hint := strings.TrimSpace(strings.TrimPrefix(l, "@@"))
+			return hint
+		}
+	}
+	return ""
 }
 
 func firstAnchor(hunk []string) string {
