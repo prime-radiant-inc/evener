@@ -1466,3 +1466,63 @@ func TestStream_WebSearch_SkippedWithFunctionTools(t *testing.T) {
 		t.Fatalf("first tools entry missing functionDeclarations: %#v", entry0)
 	}
 }
+
+func TestComplete_PopulatesRateLimitInfo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("x-ratelimit-remaining-requests", "99")
+		w.Header().Set("x-ratelimit-limit-requests", "100")
+		w.Header().Set("x-ratelimit-remaining-tokens", "9999")
+		w.Header().Set("x-ratelimit-limit-tokens", "10000")
+		w.Header().Set("x-ratelimit-reset-requests", "2026-02-10T12:00:00Z")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gemini-test",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.RateLimit == nil {
+		t.Fatal("RateLimit is nil")
+	}
+	if resp.RateLimit.RequestsRemaining == nil || *resp.RateLimit.RequestsRemaining != 99 {
+		t.Fatalf("RequestsRemaining = %v", resp.RateLimit.RequestsRemaining)
+	}
+	if resp.RateLimit.RequestsLimit == nil || *resp.RateLimit.RequestsLimit != 100 {
+		t.Fatalf("RequestsLimit = %v", resp.RateLimit.RequestsLimit)
+	}
+	if resp.RateLimit.TokensRemaining == nil || *resp.RateLimit.TokensRemaining != 9999 {
+		t.Fatalf("TokensRemaining = %v", resp.RateLimit.TokensRemaining)
+	}
+	if resp.RateLimit.TokensLimit == nil || *resp.RateLimit.TokensLimit != 10000 {
+		t.Fatalf("TokensLimit = %v", resp.RateLimit.TokensLimit)
+	}
+	if resp.RateLimit.ResetAt != "2026-02-10T12:00:00Z" {
+		t.Fatalf("ResetAt = %q", resp.RateLimit.ResetAt)
+	}
+}
+
+func TestComplete_NoRateLimitHeaders_ReturnsNil(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gemini-test",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.RateLimit != nil {
+		t.Fatalf("RateLimit should be nil when no headers present, got %+v", resp.RateLimit)
+	}
+}

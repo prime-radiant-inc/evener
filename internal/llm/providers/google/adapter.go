@@ -195,7 +195,9 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		return llm.Response{}, llm.ErrorFromHTTPStatus("google", resp.StatusCode, msg, raw, ra)
 	}
 
-	return fromGeminiResponse(raw, req.Model), nil
+	r := fromGeminiResponse(raw, req.Model)
+	r.RateLimit = llm.ParseRateLimitHeaders(resp.Header)
+	return r, nil
 }
 
 func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
