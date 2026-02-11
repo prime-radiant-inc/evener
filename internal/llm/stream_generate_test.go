@@ -822,3 +822,118 @@ func TestStreamGenerate_ToolCallsWithStopFinish_DoesNotExecute(t *testing.T) {
 		t.Error("expected tool calls in response even though they weren't executed")
 	}
 }
+
+func TestStreamGenerate_StopWhen_TerminatesToolLoopEarly(t *testing.T) {
+	// Setup: 3 scripted rounds. StopWhen fires after 2 tool rounds.
+	// Round 1: tool call -> execute -> StopWhen([step1]) = false
+	// Round 2: tool call -> execute -> StopWhen([step1,step2]) = true -> STOP
+	// Round 3: should never be reached.
+	c := NewClient()
+
+	makeToolCallStream := func(callID string) func(ctx context.Context, req Request) (Stream, error) {
+		return func(ctx context.Context, req Request) (Stream, error) {
+			call := ToolCallData{ID: callID, Name: "t1", Arguments: json.RawMessage(`{}`), Type: "function"}
+			_, cancel := context.WithCancel(ctx)
+			st := NewChanStream(cancel)
+			go func() {
+				defer st.CloseSend()
+				st.Send(StreamEvent{Type: StreamEventStreamStart})
+				st.Send(StreamEvent{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{ID: call.ID, Name: call.Name, Type: "function"}})
+				st.Send(StreamEvent{Type: StreamEventToolCallEnd, ToolCall: &call})
+				resp := Response{
+					Provider: "openai",
+					Model:    "m",
+					Message: Message{Role: RoleAssistant, Content: []ContentPart{
+						{Kind: ContentToolCall, ToolCall: &call},
+					}},
+					Finish: FinishReason{Reason: FinishReasonToolCalls},
+				}
+				rp := resp
+				st.Send(StreamEvent{Type: StreamEventFinish, FinishReason: &resp.Finish, Response: &rp})
+				cancel()
+			}()
+			return st, nil
+		}
+	}
+
+	a := &scriptedStreamAdapter{
+		name: "openai",
+		scripts: []func(ctx context.Context, req Request) (Stream, error){
+			makeToolCallStream("c1"),
+			makeToolCallStream("c2"),
+			// Round 3: should never be reached.
+			func(ctx context.Context, req Request) (Stream, error) {
+				t.Fatal("StopWhen should have prevented round 3")
+				return nil, fmt.Errorf("unreachable")
+			},
+		},
+	}
+	c.Register(a)
+
+	prompt := "hi"
+	rounds := 5 // plenty of budget; StopWhen should stop us at 2
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	res, err := StreamGenerate(ctx, GenerateOptions{
+		Client:        c,
+		Model:         "m",
+		Provider:      "openai",
+		Prompt:        &prompt,
+		MaxToolRounds: &rounds,
+		Tools: []Tool{
+			{
+				Definition: ToolDefinition{Name: "t1", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}},
+				Execute: func(ctx context.Context, args any) (any, error) {
+					return "ok", nil
+				},
+			},
+		},
+		StopWhen: func(steps []StepResult) bool {
+			return len(steps) >= 2
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamGenerate: %v", err)
+	}
+	defer res.Close()
+
+	var kinds []StreamEventType
+	stepFinishCount := 0
+	for ev := range res.Events() {
+		kinds = append(kinds, ev.Type)
+		if ev.Type == StreamEventStepFinish {
+			stepFinishCount++
+		}
+	}
+
+	// Should have exactly 2 STEP_FINISH events (one per tool round).
+	if stepFinishCount != 2 {
+		t.Fatalf("expected 2 STEP_FINISH events, got %d (kinds=%v)", stepFinishCount, kinds)
+	}
+
+	// Should have a FINISH event (emitted when StopWhen triggers).
+	foundFinish := false
+	for _, k := range kinds {
+		if k == StreamEventFinish {
+			foundFinish = true
+		}
+	}
+	if !foundFinish {
+		t.Fatalf("expected FINISH event after StopWhen triggered (kinds=%v)", kinds)
+	}
+
+	// Adapter should have been called exactly 2 times, not 3.
+	if got := len(a.Requests()); got != 2 {
+		t.Fatalf("adapter calls: got %d want 2", got)
+	}
+
+	// Response() should succeed (not error).
+	gotResp, err := res.Response()
+	if err != nil {
+		t.Fatalf("Response: %v", err)
+	}
+	if gotResp == nil {
+		t.Fatal("response is nil")
+	}
+}

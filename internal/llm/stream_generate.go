@@ -144,6 +144,7 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 
 		stepIndex := 0
 		toolRoundsUsed := 0
+		var steps []StepResult
 
 		for {
 			if sctx.Err() != nil {
@@ -294,6 +295,19 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 			}
 			toolRoundsUsed++
 
+			// Build step result for StopWhen tracking.
+			step := StepResult{
+				Text:         stepResp.Text(),
+				Reasoning:    stepResp.ReasoningText(),
+				ToolCalls:    calls,
+				ToolResults:  results,
+				FinishReason: stepResp.Finish,
+				Usage:        stepResp.Usage,
+				Response:     *stepResp,
+				Warnings:     append([]Warning{}, stepResp.Warnings...),
+			}
+			steps = append(steps, step)
+
 			// Step boundary (spec): emit STEP_FINISH after tool execution, before next model call.
 			stepCopy := *stepResp
 			outStream.Send(StreamEvent{
@@ -309,6 +323,21 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 				},
 			})
 			stepIndex++
+
+			// Check custom stop condition (spec 4.3).
+			if opts.StopWhen != nil && opts.StopWhen(steps) {
+				outStream.Send(StreamEvent{
+					Type:         StreamEventFinish,
+					FinishReason: finishEv.FinishReason,
+					Usage:        finishEv.Usage,
+					Response:     &stepCopy,
+				})
+				res.mu.Lock()
+				res.final = &stepCopy
+				res.partial = &stepCopy
+				res.mu.Unlock()
+				return
+			}
 		}
 	}()
 
