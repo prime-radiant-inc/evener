@@ -2014,7 +2014,10 @@ func TestSession_GracefulShutdown_SessionEndIncludesStateAndTurns(t *testing.T) 
 	if endData == nil {
 		t.Fatal("expected SESSION_END event")
 	}
-	if state, ok := endData["state"].(string); !ok || state != string(SessionClosed) {
+	// SESSION_END is emitted exactly once (dedup). When ProcessInput completes
+	// successfully, it emits with the current state (IDLE); when only Close()
+	// fires it, the state is CLOSED. Either is valid.
+	if state, ok := endData["state"].(string); !ok || state == "" {
 		t.Fatalf("SESSION_END state: got %v", endData["state"])
 	}
 	if turns, ok := endData["turns"].(int); !ok || turns < 1 {
@@ -2397,26 +2400,26 @@ func TestSession_SessionEnd_AfterProcessInput(t *testing.T) {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 
-	// After ProcessInput returns, a SESSION_END with reason "input_complete" should be emitted.
+	// After ProcessInput returns, exactly one SESSION_END with reason "input_complete" should be emitted.
+	// Close() must not emit a second SESSION_END (dedup via sessionEndEmitted flag).
 	sess.Close()
 	<-done
 
-	var inputCompleteEnd, sessionClosedEnd bool
+	endCount := 0
+	var inputCompleteEnd bool
 	for _, ev := range events {
 		if ev.Kind == EventSessionEnd {
+			endCount++
 			if r, _ := ev.Data["reason"].(string); r == "input_complete" {
 				inputCompleteEnd = true
-			}
-			if r, _ := ev.Data["reason"].(string); r == "session_closed" {
-				sessionClosedEnd = true
 			}
 		}
 	}
 	if !inputCompleteEnd {
 		t.Fatalf("expected SESSION_END with reason=input_complete")
 	}
-	if !sessionClosedEnd {
-		t.Fatalf("expected SESSION_END with reason=session_closed")
+	if endCount != 1 {
+		t.Fatalf("expected exactly 1 SESSION_END event, got %d", endCount)
 	}
 }
 

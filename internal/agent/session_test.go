@@ -1046,3 +1046,37 @@ func TestSessionState_Transitions(t *testing.T) {
 		t.Fatal("SessionClosed wrong")
 	}
 }
+
+func TestSession_SessionEnd_EmittedExactlyOnce(t *testing.T) {
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("done")}
+		},
+	}}
+	c.Register(f)
+	dir := t.TempDir()
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventsPtr, mu, doneCh := collectEvents(sess)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sess.ProcessInput(ctx, "hello")
+	sess.Close()
+	<-doneCh
+
+	mu.Lock()
+	defer mu.Unlock()
+	count := 0
+	for _, ev := range *eventsPtr {
+		if ev.Kind == EventSessionEnd {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly 1 SESSION_END event, got %d", count)
+	}
+}

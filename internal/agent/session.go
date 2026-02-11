@@ -138,6 +138,9 @@ type Session struct {
 	// read-before-write guardrail
 	readFiles map[string]bool
 
+	// SESSION_END deduplication: emitted exactly once across ProcessInput and Close.
+	sessionEndEmitted bool
+
 	// task list (lazy-init)
 	taskStore     *TaskStore
 	taskStoreOnce sync.Once
@@ -432,6 +435,8 @@ func (s *Session) Close() {
 		delete(s.subagents, id)
 	}
 	turns := s.turns
+	emitEnd := !s.sessionEndEmitted
+	s.sessionEndEmitted = true
 	s.mu.Unlock()
 
 	for _, sub := range subs {
@@ -444,11 +449,13 @@ func (s *Session) Close() {
 
 	s.env.Cleanup()
 
-	s.emit(EventSessionEnd, map[string]any{
-		"reason": "session_closed",
-		"state":  string(SessionClosed),
-		"turns":  turns,
-	})
+	if emitEnd {
+		s.emit(EventSessionEnd, map[string]any{
+			"reason": "session_closed",
+			"state":  string(SessionClosed),
+			"turns":  turns,
+		})
+	}
 	close(s.events)
 }
 
@@ -469,10 +476,20 @@ func (s *Session) ProcessInput(ctx context.Context, input string) (string, error
 		}
 		fu := s.popFollowUp()
 		if strings.TrimSpace(fu) == "" {
-			s.emit(EventSessionEnd, map[string]any{
-				"reason": "input_complete",
-				"state":  string(s.State()),
-			})
+			s.mu.Lock()
+			if !s.sessionEndEmitted {
+				s.sessionEndEmitted = true
+				turns := s.turns
+				state := s.state
+				s.mu.Unlock()
+				s.emit(EventSessionEnd, map[string]any{
+					"reason": "input_complete",
+					"state":  string(state),
+					"turns":  turns,
+				})
+			} else {
+				s.mu.Unlock()
+			}
 			return strings.Join(outputs, "\n"), nil
 		}
 		next = fu
