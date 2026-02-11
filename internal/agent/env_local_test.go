@@ -482,6 +482,32 @@ func TestEnvVarPolicy_CoreOnly_IncludesLanguageToolchainPaths(t *testing.T) {
 	}
 }
 
+func TestCleanup_TerminatesRunningProcesses(t *testing.T) {
+	env := NewLocalExecutionEnvironment(t.TempDir())
+	ctx := context.Background()
+
+	// Start a long-running command in a goroutine.
+	done := make(chan struct{})
+	go func() {
+		_, _ = env.ExecCommand(ctx, "sleep 60", 120_000, "", nil)
+		close(done)
+	}()
+
+	// Give the process a moment to start.
+	time.Sleep(200 * time.Millisecond)
+
+	// Cleanup should terminate the process.
+	env.Cleanup()
+
+	// The goroutine should finish promptly (within 5s, which includes the 2s SIGTERM wait).
+	select {
+	case <-done:
+		// success
+	case <-time.After(5 * time.Second):
+		t.Fatal("ExecCommand did not return after Cleanup()")
+	}
+}
+
 func TestLocalExecutionEnvironment_InitializeCleanup(t *testing.T) {
 	env := NewLocalExecutionEnvironment(t.TempDir())
 	if err := env.Initialize(); err != nil {

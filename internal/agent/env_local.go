@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"sync"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -30,8 +31,9 @@ const (
 )
 
 type LocalExecutionEnvironment struct {
-	RootDir   string
-	EnvPolicy EnvVarPolicy
+	RootDir     string
+	EnvPolicy   EnvVarPolicy
+	runningPIDs sync.Map // pid (int) → struct{}
 }
 
 func NewLocalExecutionEnvironment(rootDir string) *LocalExecutionEnvironment {
@@ -43,7 +45,23 @@ func (e *LocalExecutionEnvironment) Initialize() error {
 }
 
 func (e *LocalExecutionEnvironment) Cleanup() {
-	// Local env needs no teardown
+	// Collect running PIDs and send SIGTERM.
+	var pids []int
+	e.runningPIDs.Range(func(key, _ any) bool {
+		pids = append(pids, key.(int))
+		return true
+	})
+	if len(pids) == 0 {
+		return
+	}
+	for _, pid := range pids {
+		terminateProcessGroup(pid)
+	}
+	// Wait for graceful shutdown, then SIGKILL survivors.
+	time.Sleep(2 * time.Second)
+	for _, pid := range pids {
+		killProcessGroup(pid)
+	}
 }
 
 func (e *LocalExecutionEnvironment) WorkingDirectory() string { return e.RootDir }
@@ -415,6 +433,9 @@ func (e *LocalExecutionEnvironment) ExecCommand(ctx context.Context, command str
 	if err := cmd.Start(); err != nil {
 		return ExecResult{ExitCode: 127}, err
 	}
+	pid := cmd.Process.Pid
+	e.runningPIDs.Store(pid, struct{}{})
+	defer e.runningPIDs.Delete(pid)
 
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
