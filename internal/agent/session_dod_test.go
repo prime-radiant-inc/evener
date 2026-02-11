@@ -3123,6 +3123,81 @@ func TestSubagent_MaxTurns_DefaultsTo50_NotInheritedFromParent(t *testing.T) {
 	}
 }
 
+func TestCloseAgent_ReturnsStructuredStatus(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			// Subagent completes with a result.
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("subagent output text")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	// Spawn agent directly via registry.
+	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"do something"}`),
+	})
+	if spawnRes.IsError {
+		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
+	}
+	var spawned map[string]any
+	if err := json.Unmarshal([]byte(spawnRes.Output), &spawned); err != nil {
+		t.Fatalf("unmarshal spawn result: %v", err)
+	}
+	agentID := fmt.Sprint(spawned["agent_id"])
+
+	// Wait for subagent to finish.
+	waitRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c2",
+		Name:      "wait",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":5000}`, agentID)),
+	})
+	if waitRes.IsError {
+		t.Fatalf("wait error: %s", waitRes.Output)
+	}
+
+	// Close the agent.
+	closeRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c3",
+		Name:      "close_agent",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q}`, agentID)),
+	})
+	if closeRes.IsError {
+		t.Fatalf("close_agent error: %s", closeRes.Output)
+	}
+
+	// Verify close result is structured JSON with expected fields.
+	var result map[string]any
+	if err := json.Unmarshal([]byte(closeRes.Output), &result); err != nil {
+		t.Fatalf("close_agent result is not JSON: %q (err: %v)", closeRes.Output, err)
+	}
+	if _, ok := result["status"]; !ok {
+		t.Error("close_agent result missing 'status' field")
+	}
+	if _, ok := result["output"]; !ok {
+		t.Error("close_agent result missing 'output' field")
+	}
+	if _, ok := result["turns_used"]; !ok {
+		t.Error("close_agent result missing 'turns_used' field")
+	}
+	if result["status"] != "completed" {
+		t.Errorf("close_agent status=%v, want 'completed'", result["status"])
+	}
+}
+
 func TestDetectLoop_Patterns(t *testing.T) {
 	tests := []struct {
 		name   string

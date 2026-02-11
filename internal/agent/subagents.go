@@ -154,8 +154,21 @@ func (s *Session) closeAgent(agentID string) (any, error) {
 	if sub == nil {
 		return "", fmt.Errorf("unknown agent_id: %s", agentID)
 	}
+
+	sub.mu.Lock()
+	status := sub.status
+	result := sub.result
+	turnsUsed := sub.turnsUsed
+	sub.mu.Unlock()
+
 	sub.sess.Close()
-	return "closed", nil
+
+	b, _ := json.Marshal(map[string]any{
+		"status":     string(status),
+		"output":     result,
+		"turns_used": turnsUsed,
+	})
+	return string(b), nil
 }
 
 func (s *Session) getSub(agentID string) *subagent {
