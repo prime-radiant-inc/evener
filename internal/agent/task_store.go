@@ -46,12 +46,12 @@ type TaskStore struct {
 	path   string
 }
 
-// NewTaskStore creates a TaskStore that persists to <workDir>/.serf/tasks/<sessionID>.json.
+// NewTaskStore creates a TaskStore that persists to <stateDir>/tasks/<sessionID>.json.
 // Each session (parent or subagent) gets its own task file, ensuring isolation.
-func NewTaskStore(workDir, sessionID string) *TaskStore {
+func NewTaskStore(stateDir, sessionID string) *TaskStore {
 	return &TaskStore{
 		nextID: 1,
-		path:   filepath.Join(workDir, ".serf", "tasks", sessionID+".json"),
+		path:   filepath.Join(stateDir, "tasks", sessionID+".json"),
 	}
 }
 

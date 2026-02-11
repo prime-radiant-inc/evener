@@ -199,7 +199,7 @@ func TestTaskStore_FileExistsOnDisk(t *testing.T) {
 
 	s.Append([]TaskInput{{Description: "Test", Prompt: "p"}})
 
-	path := filepath.Join(dir, ".serf", "tasks", "test-session.json")
+	path := filepath.Join(dir, "tasks", "test-session.json")
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		t.Fatalf("expected tasks.json to exist at %s", path)
 	}
