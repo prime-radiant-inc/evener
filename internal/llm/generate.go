@@ -210,7 +210,7 @@ func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error
 			Warnings:     append([]Warning{}, resp.Warnings...),
 		}
 		totalUsage = totalUsage.Add(resp.Usage)
-		if len(calls) == 0 || !hasActiveTool || maxToolRounds == 0 || toolRoundsUsed >= maxToolRounds {
+		if len(calls) == 0 || (resp.Finish.Reason != FinishReasonToolCalls && resp.Finish.Reason != FinishReasonPauseTurn) || !hasActiveTool || maxToolRounds == 0 || toolRoundsUsed >= maxToolRounds {
 			// No tool loop (natural completion, tool loops disabled, or budget exhausted).
 			steps = append(steps, step)
 			return &GenerateResult{

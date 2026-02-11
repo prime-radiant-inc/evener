@@ -711,3 +711,114 @@ func TestStreamGenerate_AdapterTimeout_FlowsToRequest(t *testing.T) {
 		t.Fatalf("StreamRead = %v, want 15s", got.StreamRead)
 	}
 }
+
+func TestStreamGenerate_ToolCallsWithStopFinish_DoesNotExecute(t *testing.T) {
+	// Model returns tool call content parts BUT with finish_reason="stop" (not "tool_calls").
+	// Per spec section 5.6, tools should NOT be executed; response should be returned as-is.
+	c := NewClient()
+	executed := false
+	call := ToolCallData{ID: "call_1", Name: "get_weather", Arguments: json.RawMessage(`{}`), Type: "function"}
+
+	a := &scriptedStreamAdapter{
+		name: "openai",
+		scripts: []func(ctx context.Context, req Request) (Stream, error){
+			func(ctx context.Context, req Request) (Stream, error) {
+				sctx, cancel := context.WithCancel(ctx)
+				st := NewChanStream(cancel)
+				go func() {
+					defer st.CloseSend()
+					st.Send(StreamEvent{Type: StreamEventStreamStart})
+					st.Send(StreamEvent{Type: StreamEventTextStart, TextID: "text_1"})
+					st.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "Here is the weather"})
+					st.Send(StreamEvent{Type: StreamEventTextEnd, TextID: "text_1"})
+					st.Send(StreamEvent{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{ID: call.ID, Name: call.Name, Type: "function"}})
+					st.Send(StreamEvent{Type: StreamEventToolCallEnd, ToolCall: &call})
+					resp := Response{
+						Provider: "openai",
+						Model:    "m",
+						Message: Message{Role: RoleAssistant, Content: []ContentPart{
+							{Kind: ContentText, Text: "Here is the weather"},
+							{Kind: ContentToolCall, ToolCall: &call},
+						}},
+						Finish: FinishReason{Reason: FinishReasonStop, Raw: "stop"},
+						Usage:  Usage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30},
+					}
+					rp := resp
+					st.Send(StreamEvent{Type: StreamEventFinish, FinishReason: &resp.Finish, Response: &rp})
+					cancel()
+				}()
+				_ = sctx
+				return st, nil
+			},
+		},
+	}
+	c.Register(a)
+
+	prompt := "weather?"
+	rounds := 1
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	res, err := StreamGenerate(ctx, GenerateOptions{
+		Client:        c,
+		Model:         "m",
+		Provider:      "openai",
+		Prompt:        &prompt,
+		MaxToolRounds: &rounds,
+		Tools: []Tool{{
+			Definition: ToolDefinition{
+				Name:        "get_weather",
+				Description: "Get weather",
+				Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+			},
+			Execute: func(ctx context.Context, args any) (any, error) {
+				executed = true
+				return "sunny", nil
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("StreamGenerate: %v", err)
+	}
+	defer res.Close()
+
+	// Drain all events.
+	var kinds []StreamEventType
+	for ev := range res.Events() {
+		kinds = append(kinds, ev.Type)
+	}
+
+	if executed {
+		t.Error("tool was executed but finish_reason was 'stop', not 'tool_calls'")
+	}
+
+	// Should get a FINISH, not a STEP_FINISH (no tool round happened).
+	foundStepFinish := false
+	foundFinish := false
+	for _, k := range kinds {
+		if k == StreamEventStepFinish {
+			foundStepFinish = true
+		}
+		if k == StreamEventFinish {
+			foundFinish = true
+		}
+	}
+	if foundStepFinish {
+		t.Error("should not emit STEP_FINISH when finish_reason != tool_calls")
+	}
+	if !foundFinish {
+		t.Errorf("expected FINISH event (kinds=%v)", kinds)
+	}
+
+	// Should still have tool calls in the final response.
+	gotResp, err := res.Response()
+	if err != nil {
+		t.Fatalf("Response: %v", err)
+	}
+	if gotResp == nil {
+		t.Fatal("response is nil")
+	}
+	if len(gotResp.ToolCalls()) == 0 {
+		t.Error("expected tool calls in response even though they weren't executed")
+	}
+}

@@ -257,7 +257,7 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 			// Stop if there are no tool calls, tool looping is disabled, we lack active tools,
 			// or we've exhausted the tool-round budget.
 			stopNow := false
-			if len(calls) == 0 || !hasActiveTool || maxToolRounds == 0 || toolRoundsUsed >= maxToolRounds {
+			if len(calls) == 0 || (stepResp.Finish.Reason != FinishReasonToolCalls && stepResp.Finish.Reason != FinishReasonPauseTurn) || !hasActiveTool || maxToolRounds == 0 || toolRoundsUsed >= maxToolRounds {
 				stopNow = true
 			}
 			// Passive tool call: if a tool is defined but has no execute handler, return to caller.
