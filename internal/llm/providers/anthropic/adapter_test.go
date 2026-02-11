@@ -2259,6 +2259,148 @@ func TestAdapter_Complete_WebSearchOnly_IncludesWebSearchTool(t *testing.T) {
 	}
 }
 
+func TestComplete_ReasoningEffort_MappedToThinking(t *testing.T) {
+	cases := []struct {
+		effort     string
+		wantBudget float64
+	}{
+		{"low", 1024},
+		{"medium", 8192},
+		{"high", 32768},
+	}
+	for _, tc := range cases {
+		t.Run(tc.effort, func(t *testing.T) {
+			var gotBody map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(b, &gotBody)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{
+					"id": "msg_1", "type": "message", "role": "assistant", "model": "test",
+					"content": [{"type": "text", "text": "thought"}],
+					"stop_reason": "end_turn",
+					"usage": {"input_tokens": 10, "output_tokens": 5}
+				}`))
+			}))
+			t.Cleanup(srv.Close)
+
+			a := &Adapter{APIKey: "test-key", BaseURL: srv.URL}
+			effort := tc.effort
+			_, err := a.Complete(context.Background(), llm.Request{
+				Model:           "test",
+				Messages:        []llm.Message{llm.User("think hard")},
+				ReasoningEffort: &effort,
+				ProviderOptions: map[string]any{
+					"anthropic": map[string]any{"auto_cache": false},
+				},
+			})
+			if err != nil {
+				t.Fatalf("Complete: %v", err)
+			}
+
+			thinking, ok := gotBody["thinking"].(map[string]any)
+			if !ok {
+				t.Fatalf("thinking parameter must be present; body keys: %v", gotBody)
+			}
+			if thinking["type"] != "enabled" {
+				t.Fatalf("thinking.type = %v, want enabled", thinking["type"])
+			}
+			budget, ok := thinking["budget_tokens"].(float64)
+			if !ok {
+				t.Fatalf("budget_tokens type = %T, want float64", thinking["budget_tokens"])
+			}
+			if budget != tc.wantBudget {
+				t.Fatalf("budget_tokens = %v, want %v", budget, tc.wantBudget)
+			}
+		})
+	}
+}
+
+func TestComplete_ReasoningEffort_None_NoThinking(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": "msg_1", "type": "message", "role": "assistant", "model": "test",
+			"content": [{"type": "text", "text": "ok"}],
+			"stop_reason": "end_turn",
+			"usage": {"input_tokens": 10, "output_tokens": 5}
+		}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL}
+	effort := "none"
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:           "test",
+		Messages:        []llm.Message{llm.User("hi")},
+		ReasoningEffort: &effort,
+		ProviderOptions: map[string]any{
+			"anthropic": map[string]any{"auto_cache": false},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if _, ok := gotBody["thinking"]; ok {
+		t.Fatalf("thinking should not be set for effort=none, got %v", gotBody["thinking"])
+	}
+}
+
+func TestStream_ReasoningEffort_MappedToThinking(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		_, _ = fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"test\",\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n")
+		_, _ = fmt.Fprint(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n")
+		_, _ = fmt.Fprint(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n")
+		_, _ = fmt.Fprint(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+		_, _ = fmt.Fprint(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n")
+		_, _ = fmt.Fprint(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		if f != nil {
+			f.Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL}
+	effort := "high"
+	stream, err := a.Stream(context.Background(), llm.Request{
+		Model:           "test",
+		Messages:        []llm.Message{llm.User("think")},
+		ReasoningEffort: &effort,
+		ProviderOptions: map[string]any{
+			"anthropic": map[string]any{"auto_cache": false},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+	for range stream.Events() {
+	}
+
+	thinking, ok := gotBody["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("thinking parameter must be present; body keys: %v", gotBody)
+	}
+	if thinking["type"] != "enabled" {
+		t.Fatalf("thinking.type = %v, want enabled", thinking["type"])
+	}
+	budget, ok := thinking["budget_tokens"].(float64)
+	if !ok {
+		t.Fatalf("budget_tokens type = %T, want float64", thinking["budget_tokens"])
+	}
+	if budget != 32768 {
+		t.Fatalf("budget_tokens = %v, want 32768", budget)
+	}
+}
+
 func contentKinds(parts []llm.ContentPart) []string {
 	var kinds []string
 	for _, p := range parts {
