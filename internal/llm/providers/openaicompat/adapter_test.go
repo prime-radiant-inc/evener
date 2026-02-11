@@ -731,6 +731,37 @@ func TestAdapter_Complete_TextOnly_StaysString(t *testing.T) {
 	}
 }
 
+func TestAdapter_Complete_UnknownToolChoiceMode_ReturnsError(t *testing.T) {
+	a := &Adapter{APIKey: "k", BaseURL: "http://unused"}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:      "m",
+		Messages:   []llm.Message{llm.User("hi")},
+		Tools:      []llm.ToolDefinition{{Name: "t", Parameters: map[string]any{"type": "object"}}},
+		ToolChoice: &llm.ToolChoice{Mode: "bogus"},
+	})
+	var unsupported *llm.UnsupportedToolChoiceError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("expected UnsupportedToolChoiceError, got %T: %v", err, err)
+	}
+}
+
+func TestAdapter_Complete_NamedToolChoice_EmptyName_ReturnsError(t *testing.T) {
+	a := &Adapter{APIKey: "k", BaseURL: "http://unused"}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:      "m",
+		Messages:   []llm.Message{llm.User("hi")},
+		Tools:      []llm.ToolDefinition{{Name: "t", Parameters: map[string]any{"type": "object"}}},
+		ToolChoice: &llm.ToolChoice{Mode: "named", Name: ""},
+	})
+	if err == nil {
+		t.Fatal("expected error for named mode with empty name")
+	}
+	var configErr *llm.ConfigurationError
+	if !errors.As(err, &configErr) {
+		t.Fatalf("expected ConfigurationError, got %T: %v", err, err)
+	}
+}
+
 func TestDefaultHeaders_CannotOverrideProviderHeaders(t *testing.T) {
 	var capturedHeaders http.Header
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

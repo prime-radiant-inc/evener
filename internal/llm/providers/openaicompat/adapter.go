@@ -301,7 +301,11 @@ func buildRequestBody(req llm.Request, stream bool) (map[string]any, error) {
 		body["tools"] = toChatTools(req.Tools)
 	}
 	if req.ToolChoice != nil {
-		body["tool_choice"] = toChatToolChoice(*req.ToolChoice)
+		tc, err := toChatToolChoice(*req.ToolChoice)
+		if err != nil {
+			return nil, err
+		}
+		body["tool_choice"] = tc
 	}
 	if req.Temperature != nil {
 		body["temperature"] = *req.Temperature
@@ -487,22 +491,24 @@ func toChatTools(tools []llm.ToolDefinition) []map[string]any {
 	return out
 }
 
-func toChatToolChoice(tc llm.ToolChoice) any {
-	switch tc.Mode {
-	case "auto":
-		return "auto"
+func toChatToolChoice(tc llm.ToolChoice) (any, error) {
+	switch strings.ToLower(strings.TrimSpace(tc.Mode)) {
+	case "", "auto":
+		return "auto", nil
 	case "none":
-		return "none"
+		return "none", nil
 	case "required":
-		return "required"
-	default:
-		if tc.Name != "" {
-			return map[string]any{
-				"type":     "function",
-				"function": map[string]any{"name": tc.Name},
-			}
+		return "required", nil
+	case "named":
+		if strings.TrimSpace(tc.Name) == "" {
+			return nil, &llm.ConfigurationError{Message: "tool_choice mode=named requires name"}
 		}
-		return "auto"
+		return map[string]any{
+			"type":     "function",
+			"function": map[string]any{"name": tc.Name},
+		}, nil
+	default:
+		return nil, llm.NewUnsupportedToolChoiceError("openai-compatible", tc.Mode)
 	}
 }
 
