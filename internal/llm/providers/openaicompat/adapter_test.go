@@ -791,3 +791,102 @@ func TestDefaultHeaders_CannotOverrideProviderHeaders(t *testing.T) {
 		t.Errorf("Authorization = %q, want %q (provider auth must take precedence)", capturedHeaders.Get("Authorization"), "Bearer real-key")
 	}
 }
+
+func TestAdapter_Complete_RateLimitHeaders_Parsed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("x-ratelimit-remaining-requests", "99")
+		w.Header().Set("x-ratelimit-limit-requests", "100")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "c1", "object": "chat.completion",
+			"choices": []any{map[string]any{
+				"index": 0, "finish_reason": "stop",
+				"message": map[string]any{"role": "assistant", "content": "hi"},
+			}},
+			"usage": map[string]any{"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+		})
+	}))
+	defer srv.Close()
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model: "m", Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.RateLimit == nil {
+		t.Fatal("RateLimit is nil, want parsed rate limit info")
+	}
+	if resp.RateLimit.RequestsRemaining == nil || *resp.RateLimit.RequestsRemaining != 99 {
+		t.Errorf("RequestsRemaining = %v, want 99", resp.RateLimit.RequestsRemaining)
+	}
+	if resp.RateLimit.RequestsLimit == nil || *resp.RateLimit.RequestsLimit != 100 {
+		t.Errorf("RequestsLimit = %v, want 100", resp.RateLimit.RequestsLimit)
+	}
+}
+
+func TestAdapter_Complete_ReasoningEffort_Propagated(t *testing.T) {
+	var sentBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		json.Unmarshal(b, &sentBody)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "c1", "object": "chat.completion",
+			"choices": []any{map[string]any{
+				"index": 0, "finish_reason": "stop",
+				"message": map[string]any{"role": "assistant", "content": "hi"},
+			}},
+			"usage": map[string]any{"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+		})
+	}))
+	defer srv.Close()
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL}
+	effort := "high"
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model: "m", Messages: []llm.Message{llm.User("hi")},
+		ReasoningEffort: &effort,
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if sentBody["reasoning_effort"] != "high" {
+		t.Errorf("reasoning_effort = %v, want %q", sentBody["reasoning_effort"], "high")
+	}
+}
+
+func TestAdapter_Complete_Metadata_Propagated(t *testing.T) {
+	var sentBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		json.Unmarshal(b, &sentBody)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "c1", "object": "chat.completion",
+			"choices": []any{map[string]any{
+				"index": 0, "finish_reason": "stop",
+				"message": map[string]any{"role": "assistant", "content": "hi"},
+			}},
+			"usage": map[string]any{"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+		})
+	}))
+	defer srv.Close()
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model: "m", Messages: []llm.Message{llm.User("hi")},
+		Metadata: map[string]string{"user_id": "u123"},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	md, ok := sentBody["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata not map[string]any: %T %v", sentBody["metadata"], sentBody["metadata"])
+	}
+	if md["user_id"] != "u123" {
+		t.Errorf("metadata[user_id] = %v, want %q", md["user_id"], "u123")
+	}
+}

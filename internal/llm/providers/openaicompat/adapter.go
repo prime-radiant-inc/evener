@@ -78,7 +78,12 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		return llm.Response{}, llm.ErrorFromHTTPStatus("openai-compatible", statusCode, msg, raw, retryAfter)
 	}
 
-	return fromChatCompletionResponse(raw)
+	resp, err := fromChatCompletionResponse(raw)
+	if err != nil {
+		return resp, err
+	}
+	resp.RateLimit = llm.ParseRateLimitHeaders(headers)
+	return resp, nil
 }
 
 // Stream sends a streaming Chat Completions request.
@@ -127,6 +132,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 
 	sctx, cancel := context.WithCancel(ctx)
 	s := llm.NewChanStream(cancel)
+	rl := llm.ParseRateLimitHeaders(resp.Header)
 
 	s.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
 
@@ -179,10 +185,11 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 				}
 				finish := llm.NormalizeFinishReason("", finishReason)
 				finalResp := &llm.Response{
-					Provider: "openai-compatible",
-					Model:    model,
-					Message:  msg,
-					Finish:   finish,
+					Provider:  "openai-compatible",
+					Model:     model,
+					Message:   msg,
+					Finish:    finish,
+					RateLimit: rl,
 				}
 				if usage != nil {
 					finalResp.Usage = *usage
@@ -321,6 +328,12 @@ func buildRequestBody(req llm.Request, stream bool) (map[string]any, error) {
 	}
 	if req.ResponseFormat != nil {
 		body["response_format"] = toChatResponseFormat(*req.ResponseFormat)
+	}
+	if req.ReasoningEffort != nil {
+		body["reasoning_effort"] = *req.ReasoningEffort
+	}
+	if len(req.Metadata) > 0 {
+		body["metadata"] = req.Metadata
 	}
 	if stream {
 		body["stream"] = true
