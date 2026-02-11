@@ -501,6 +501,175 @@ func TestIntegration_PromptCaching_MultiTurn(t *testing.T) {
 	}
 }
 
+func TestIntegration_ParallelToolCalls(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+	skipIfNoProviders(t)
+	client, err := llm.NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+
+	weatherTool := llm.Tool{
+		Definition: llm.ToolDefinition{
+			Name:        "get_weather",
+			Description: "Get the current weather for a city.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"city": map[string]any{"type": "string", "description": "City name"},
+				},
+				"required": []any{"city"},
+			},
+		},
+	}
+
+	for _, p := range providers {
+		if os.Getenv(p.envKey) == "" {
+			continue
+		}
+		t.Run(p.provider, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			maxRounds := 0 // passive mode: return tool calls without executing
+			res, err := llm.Generate(ctx, llm.GenerateOptions{
+				Client:        client,
+				Model:         p.model,
+				Provider:      p.provider,
+				Prompt:        strPtr("What is the weather in both Paris and Tokyo? Use the get_weather tool for each city."),
+				Tools:         []llm.Tool{weatherTool},
+				MaxToolRounds: &maxRounds,
+				MaxTokens:     intPtr(300),
+			})
+			if err != nil {
+				t.Fatalf("Generate: %v", err)
+			}
+			if len(res.ToolCalls) < 2 {
+				t.Fatalf("expected at least 2 parallel tool calls, got %d", len(res.ToolCalls))
+			}
+			for i, tc := range res.ToolCalls {
+				if tc.Name != "get_weather" {
+					t.Errorf("tool call %d: expected get_weather, got %q", i, tc.Name)
+				}
+				t.Logf("tool call %d: %s(%s)", i, tc.Name, string(tc.Arguments))
+			}
+		})
+	}
+}
+
+func TestIntegration_MultiStepToolLoop(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+	skipIfNoProviders(t)
+	client, err := llm.NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+
+	// A counter tool: starts at 0, each call increments by 1, returns current value.
+	// The model must call it 3 times to reach the target of 3.
+	counterTool := llm.Tool{
+		Definition: llm.ToolDefinition{
+			Name:        "increment_counter",
+			Description: "Increments a counter by 1 and returns the new value. Start value is 0.",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+		},
+	}
+
+	for _, p := range providers {
+		if os.Getenv(p.envKey) == "" {
+			continue
+		}
+		t.Run(p.provider, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+			defer cancel()
+
+			counter := 0
+			counterTool.Execute = func(ctx context.Context, args any) (any, error) {
+				counter++
+				return fmt.Sprintf("counter is now %d", counter), nil
+			}
+
+			res, err := llm.Generate(ctx, llm.GenerateOptions{
+				Client:        client,
+				Model:         p.model,
+				Provider:      p.provider,
+				Prompt:        strPtr("Call the increment_counter tool exactly 3 times to reach 3. After 3 calls, report the final value."),
+				Tools:         []llm.Tool{counterTool},
+				MaxToolRounds: intPtr(5),
+				MaxTokens:     intPtr(300),
+			})
+			if err != nil {
+				t.Fatalf("Generate: %v", err)
+			}
+			if len(res.Steps) < 2 {
+				t.Errorf("expected at least 2 steps (multiple tool rounds), got %d", len(res.Steps))
+			}
+			if counter < 3 {
+				t.Errorf("expected counter >= 3, got %d", counter)
+			}
+			t.Logf("steps=%d counter=%d text=%.100s", len(res.Steps), counter, res.Text)
+		})
+	}
+}
+
+// reasoningProviders lists models that support extended thinking / reasoning.
+var reasoningProviders = []providerConfig{
+	{"OPENAI_API_KEY", "o4-mini", "openai"},
+	{"ANTHROPIC_API_KEY", "claude-sonnet-4-5-20250929", "anthropic"},
+	{"GEMINI_API_KEY", "gemini-2.5-flash", "google"},
+}
+
+func TestIntegration_ReasoningTokens(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	client, err := llm.NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+
+	for _, p := range reasoningProviders {
+		if os.Getenv(p.envKey) == "" {
+			continue
+		}
+		t.Run(p.provider, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+
+			effort := "medium"
+			res, err := llm.Generate(ctx, llm.GenerateOptions{
+				Client:          client,
+				Model:           p.model,
+				Provider:        p.provider,
+				Prompt:          strPtr("What is 137 * 251? Think step by step."),
+				ReasoningEffort: &effort,
+				MaxTokens:       intPtr(1024),
+			})
+			if err != nil {
+				t.Fatalf("Generate: %v", err)
+			}
+			if strings.TrimSpace(res.Text) == "" {
+				t.Fatal("expected non-empty response text")
+			}
+			if res.Usage.ReasoningTokens == nil || *res.Usage.ReasoningTokens == 0 {
+				t.Errorf("expected ReasoningTokens > 0, got %v", res.Usage.ReasoningTokens)
+			}
+			if res.Usage.ReasoningTokens != nil {
+				t.Logf("reasoning_tokens=%d output_tokens=%d", *res.Usage.ReasoningTokens, res.Usage.OutputTokens)
+			}
+			t.Logf("text (truncated): %.100s", res.Text)
+		})
+	}
+}
+
 func strPtr(s string) *string { return &s }
 func intPtr(i int) *int       { return &i }
 
