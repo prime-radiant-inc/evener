@@ -248,7 +248,11 @@ func NewAnthropicProfile(model string) ProviderProfile {
 		streaming:       true,
 		defaultTimeout:  120_000,
 		knowledgeCutoff: "2025-04-01",
-		providerOpts:    map[string]any{},
+		providerOpts: map[string]any{
+			"anthropic": map[string]any{
+				"beta_headers": "extended-thinking-2025-04-11,prompt-caching-2024-07-31",
+			},
+		},
 		toolDefs: []llm.ToolDefinition{
 			defReadFile(),
 			defWriteFile(),

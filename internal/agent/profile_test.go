@@ -474,6 +474,19 @@ func TestProviderProfile_ProviderOptions(t *testing.T) {
 	}
 }
 
+func TestAnthropicProfile_ProviderOptions_HasBetaHeaders(t *testing.T) {
+	p := NewAnthropicProfile("test-model")
+	opts := p.ProviderOptions()
+	anth, ok := opts["anthropic"].(map[string]any)
+	if !ok {
+		t.Fatal("missing anthropic key in provider options")
+	}
+	bh, ok := anth["beta_headers"].(string)
+	if !ok || bh == "" {
+		t.Fatal("missing or empty beta_headers in anthropic provider options")
+	}
+}
+
 func TestProviderProfile_SupportsReasoning(t *testing.T) {
 	if !NewOpenAIProfile("gpt-5.2").SupportsReasoning() {
 		t.Fatal("OpenAI should support reasoning")
