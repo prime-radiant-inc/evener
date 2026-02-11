@@ -324,7 +324,117 @@ func TestIntegration_ErrorHandling(t *testing.T) {
 	}
 }
 
+func TestIntegration_ImageInputURL(t *testing.T) {
+	skipIfNoProviders(t)
+	client, err := llm.NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+
+	// Small, publicly accessible PNG with transparency.
+	imageURL := "https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/280px-PNG_transparency_demonstration_1.png"
+
+	for _, p := range providers {
+		if os.Getenv(p.envKey) == "" {
+			continue
+		}
+		t.Run(p.provider, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			res, err := llm.Generate(ctx, llm.GenerateOptions{
+				Client:    client,
+				Model:     p.model,
+				Provider:  p.provider,
+				MaxTokens: intPtr(200),
+				Messages: []llm.Message{{
+					Role: llm.RoleUser,
+					Content: []llm.ContentPart{
+						{Kind: llm.ContentText, Text: "Describe this image in one sentence."},
+						{Kind: llm.ContentImage, Image: &llm.ImageData{URL: imageURL}},
+					},
+				}},
+			})
+			if err != nil {
+				t.Fatalf("Generate: %v", err)
+			}
+			if strings.TrimSpace(res.Text) == "" {
+				t.Fatal("expected non-empty response text")
+			}
+			t.Logf("text (truncated): %.100s", res.Text)
+		})
+	}
+}
+
+func TestIntegration_StreamingWithTools(t *testing.T) {
+	skipIfNoProviders(t)
+	client, err := llm.NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+
+	weatherTool := llm.Tool{
+		Definition: llm.ToolDefinition{
+			Name:        "get_weather",
+			Description: "Get weather for a city",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"city": map[string]any{"type": "string"}},
+				"required":   []any{"city"},
+			},
+		},
+		Execute: func(ctx context.Context, args any) (any, error) {
+			return "72F and sunny", nil
+		},
+	}
+
+	for _, p := range providers {
+		if os.Getenv(p.envKey) == "" {
+			continue
+		}
+		t.Run(p.provider, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+
+			sr, err := llm.StreamGenerate(ctx, llm.GenerateOptions{
+				Client:        client,
+				Model:         p.model,
+				Provider:      p.provider,
+				Prompt:        strPtr("What is the weather in Paris?"),
+				Tools:         []llm.Tool{weatherTool},
+				MaxToolRounds: intPtr(3),
+				MaxTokens:     intPtr(300),
+			})
+			if err != nil {
+				t.Fatalf("StreamGenerate: %v", err)
+			}
+
+			var hasStepFinish bool
+			for ev := range sr.Events() {
+				if ev.Type == llm.StreamEventStepFinish {
+					hasStepFinish = true
+				}
+			}
+			resp, err := sr.Response()
+			if err != nil {
+				t.Fatalf("Response: %v", err)
+			}
+			if resp == nil {
+				t.Fatal("no response after stream")
+			}
+			if resp.Text() == "" {
+				t.Error("expected non-empty final text")
+			}
+			if !hasStepFinish {
+				t.Error("expected at least one STEP_FINISH event (tool was called)")
+			}
+			t.Logf("text (truncated): %.100s", resp.Text())
+		})
+	}
+}
+
 func strPtr(s string) *string { return &s }
+func intPtr(i int) *int       { return &i }
 
 // Ensure json import is used (for GenerateObject output assertions).
 var _ = json.Marshal
