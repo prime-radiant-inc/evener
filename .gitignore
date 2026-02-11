@@ -1,5 +1,7 @@
 .ai/
 .env
-/.serf/
+/.serf/sessions/
+/.serf/tasks/
+/.serf/web_cache/
 /serf
 inspo/
