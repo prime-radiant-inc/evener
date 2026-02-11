@@ -350,7 +350,8 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 
 		finished := false
 		type blockState struct {
-			typ string
+			typ      string
+			rawStart map[string]any // raw content_block from content_block_start
 
 			// text
 			textID      string
@@ -399,6 +400,9 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 
 		var usage llm.Usage
 		finish := llm.FinishReason{Reason: "stop"}
+		var msgID string
+		var actualModel string
+		var rawMessage map[string]any
 
 		_ = llm.ParseSSE(sctx, resp.Body, func(ev llm.SSEEvent) error {
 			if len(ev.Data) == 0 {
@@ -414,13 +418,16 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 
 			switch ev.Event {
 			case "message_start":
-				// Capture input token usage when present.
 				if msgAny, ok := payload["message"].(map[string]any); ok {
+					if id, _ := msgAny["id"].(string); id != "" {
+						msgID = id
+					}
+					if m, _ := msgAny["model"].(string); m != "" {
+						actualModel = m
+					}
+					rawMessage = msgAny
 					if u, ok := msgAny["usage"].(map[string]any); ok {
-						u2 := parseUsage(u)
-						if u2.InputTokens > 0 {
-							usage.InputTokens = u2.InputTokens
-						}
+						usage = parseUsage(u)
 					}
 				}
 			case "content_block_start":
@@ -429,6 +436,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 				typ, _ := cb["type"].(string)
 				st := getBlock(idx)
 				st.typ = typ
+				st.rawStart = cb
 				if cb, ok := payload["content_block"].(map[string]any); ok {
 					switch typ {
 					case "text":
@@ -477,6 +485,11 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 							st.thinking.WriteString(t)
 							s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: t})
 						}
+					case "server_tool_use":
+						st.toolID, _ = cb["id"].(string)
+						st.toolName, _ = cb["name"].(string)
+					case "web_search_tool_result":
+						// raw payload stored in st.rawStart above
 					}
 				}
 			case "content_block_delta":
@@ -619,16 +632,47 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 								},
 							})
 						}
+					case "server_tool_use":
+						if st.rawStart != nil {
+							query := ""
+							if input, _ := st.rawStart["input"].(map[string]any); input != nil {
+								query, _ = input["query"].(string)
+							}
+							raw, _ := json.Marshal(st.rawStart)
+							parts = append(parts, llm.ContentPart{
+								Kind: llm.ContentWebSearch,
+								WebSearch: &llm.WebSearchData{
+									Query: query,
+									Raw:   raw,
+								},
+							})
+						}
+					case "web_search_tool_result":
+						if st.rawStart != nil {
+							raw, _ := json.Marshal(st.rawStart)
+							parts = append(parts, llm.ContentPart{
+								Kind: llm.ContentWebSearch,
+								WebSearch: &llm.WebSearchData{
+									Raw: raw,
+								},
+							})
+						}
 					}
 				}
 
 				msg := llm.Message{Role: llm.RoleAssistant, Content: parts}
+				model := actualModel
+				if model == "" {
+					model = req.Model
+				}
 				r := llm.Response{
+					ID:       msgID,
 					Provider: "anthropic",
-					Model:    req.Model,
+					Model:    model,
 					Message:  msg,
 					Finish:   finish,
 					Usage:    usage,
+					Raw:      rawMessage,
 				}
 				if len(r.ToolCalls()) > 0 {
 					r.Finish = llm.FinishReason{Reason: "tool_calls", Raw: "tool_use"}
@@ -1157,6 +1201,9 @@ func parseUsage(u map[string]any) llm.Usage {
 			return int(x)
 		case int:
 			return x
+		case json.Number:
+			n, _ := x.Int64()
+			return int(n)
 		default:
 			return 0
 		}
