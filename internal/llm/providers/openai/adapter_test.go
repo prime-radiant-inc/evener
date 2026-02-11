@@ -1473,6 +1473,118 @@ func TestDefaultHeaders_CannotOverrideProviderHeaders(t *testing.T) {
 	}
 }
 
+func TestComplete_ToolResultIsError_SentToAPI(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "resp_1",
+  "model": "gpt-5.2",
+  "output": [{"type": "message", "content": [{"type":"output_text", "text":"ok"}]}],
+  "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model: "gpt-5.2",
+		Messages: []llm.Message{
+			llm.User("call tool"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+				Kind:     llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{ID: "call_1", Name: "failing_tool", Arguments: json.RawMessage(`{}`)},
+			}}},
+			llm.ToolResult("call_1", "connection refused", true),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	// Find the function_call_output item in the sent request body.
+	input, ok := gotBody["input"].([]any)
+	if !ok {
+		t.Fatalf("input not array: %#v", gotBody["input"])
+	}
+	var found bool
+	for _, item := range input {
+		m, _ := item.(map[string]any)
+		if m["type"] == "function_call_output" {
+			isErr, present := m["is_error"]
+			if !present {
+				t.Fatalf("is_error field must be present on error tool results")
+			}
+			if isErr != true {
+				t.Fatalf("is_error must be true for error results, got %v", isErr)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("must find a function_call_output item in input: %#v", input)
+	}
+}
+
+func TestComplete_ToolResultIsError_OmittedWhenFalse(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "resp_1",
+  "model": "gpt-5.2",
+  "output": [{"type": "message", "content": [{"type":"output_text", "text":"ok"}]}],
+  "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model: "gpt-5.2",
+		Messages: []llm.Message{
+			llm.User("call tool"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+				Kind:     llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{ID: "call_1", Name: "good_tool", Arguments: json.RawMessage(`{}`)},
+			}}},
+			llm.ToolResult("call_1", "success", false),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	input, ok := gotBody["input"].([]any)
+	if !ok {
+		t.Fatalf("input not array: %#v", gotBody["input"])
+	}
+	for _, item := range input {
+		m, _ := item.(map[string]any)
+		if m["type"] == "function_call_output" {
+			if _, present := m["is_error"]; present {
+				t.Fatalf("is_error should be omitted for non-error results, but was present: %v", m["is_error"])
+			}
+		}
+	}
+}
+
 func contentKinds(parts []llm.ContentPart) []string {
 	var kinds []string
 	for _, p := range parts {

@@ -715,11 +715,15 @@ func toResponsesInput(msgs []llm.Message) (instructions string, items []any, _ e
 					b, _ := json.Marshal(v)
 					outStr = string(b)
 				}
-				items = append(items, map[string]any{
+				item := map[string]any{
 					"type":    "function_call_output",
 					"call_id": p.ToolResult.ToolCallID,
 					"output":  outStr,
-				})
+				}
+				if p.ToolResult.IsError {
+					item["is_error"] = true
+				}
+				items = append(items, item)
 			}
 		default:
 			// ignore unknown roles
