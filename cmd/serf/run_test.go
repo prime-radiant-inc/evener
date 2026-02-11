@@ -215,6 +215,7 @@ func TestListSessions_PrintsFormattedList(t *testing.T) {
 	cfg := runConfig{
 		listSessions: true,
 		workDir:      dir,
+		stateDir:     dir,
 		stdout:       &out,
 		stderr:       &bytes.Buffer{},
 	}
@@ -238,6 +239,7 @@ func TestListSessions_EmptyDir(t *testing.T) {
 	cfg := runConfig{
 		listSessions: true,
 		workDir:      dir,
+		stateDir:     dir,
 		stdout:       &out,
 		stderr:       &bytes.Buffer{},
 	}
@@ -253,10 +255,11 @@ func TestListSessions_EmptyDir(t *testing.T) {
 func TestResume_NonexistentID(t *testing.T) {
 	dir := t.TempDir()
 	cfg := runConfig{
-		resume:  "NONEXISTENT",
-		workDir: dir,
-		stdout:  &bytes.Buffer{},
-		stderr:  &bytes.Buffer{},
+		resume:   "NONEXISTENT",
+		workDir:  dir,
+		stateDir: dir,
+		stdout:   &bytes.Buffer{},
+		stderr:   &bytes.Buffer{},
 	}
 	err := run(context.Background(), cfg)
 	if err == nil {
@@ -272,6 +275,7 @@ func TestResumeLast_NoSessions(t *testing.T) {
 	cfg := runConfig{
 		resumeLast: true,
 		workDir:    dir,
+		stateDir:   dir,
 		stdout:     &bytes.Buffer{},
 		stderr:     &bytes.Buffer{},
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 
 	"primeradiant.com/serf/internal/agent"
@@ -20,6 +21,7 @@ type runConfig struct {
 	model        string
 	provider     string
 	workDir      string
+	stateDir     string // --state-dir override
 	systemPrompt string // --system-prompt file path
 	verbose      bool
 	stdout       io.Writer
@@ -51,15 +53,22 @@ func run(ctx context.Context, cfg runConfig) error {
 		cfg.workDir = wd
 	}
 
+	// Compute runtime state directory.
+	stateDir := cfg.stateDir
+	if stateDir == "" {
+		originURL := gitOriginURLFromDir(cfg.workDir)
+		stateDir = agent.RuntimeDir(originURL, cfg.workDir, "")
+	}
+
 	// --list-sessions: print and exit.
 	if cfg.listSessions {
-		return listSessions(cfg)
+		return listSessions(cfg, stateDir)
 	}
 
 	// Resolve resume target.
 	var snap *agent.SessionSnapshot
 	if cfg.resume != "" || cfg.resumeWith != "" || cfg.resumeLast {
-		s, err := resolveSnapshot(cfg)
+		s, err := resolveSnapshot(cfg, stateDir)
 		if err != nil {
 			return err
 		}
@@ -113,7 +122,7 @@ func run(ctx context.Context, cfg runConfig) error {
 
 	var sess *agent.Session
 	if snap != nil {
-		sess, err = agent.RestoreSession(client, profile, env, *snap, cfg.workDir)
+		sess, err = agent.RestoreSession(client, profile, env, *snap, stateDir)
 		if err != nil {
 			return fmt.Errorf("restore session: %w", err)
 		}
@@ -121,7 +130,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	} else {
 		sess, err = agent.NewSession(client, profile, env, agent.SessionConfig{
 			MaxToolRoundsPerInput: 200,
-			StateDir:           cfg.workDir,
+			StateDir:              stateDir,
 			SystemPromptFile:      cfg.systemPrompt,
 			SkillsDirs:            cfg.skillsDirs,
 			MCPConfigFiles:        cfg.mcpConfigs,
@@ -235,14 +244,14 @@ func drainEventsHuman(events <-chan agent.SessionEvent, w io.Writer) <-chan stru
 }
 
 // resolveSnapshot loads the session snapshot for the given resume configuration.
-func resolveSnapshot(cfg runConfig) (agent.SessionSnapshot, error) {
+func resolveSnapshot(cfg runConfig, stateDir string) (agent.SessionSnapshot, error) {
 	if cfg.resumeLast {
-		list, err := agent.ListSessions(cfg.workDir)
+		list, err := agent.ListSessions(stateDir)
 		if err != nil {
 			return agent.SessionSnapshot{}, fmt.Errorf("list sessions: %w", err)
 		}
 		if len(list) == 0 {
-			return agent.SessionSnapshot{}, fmt.Errorf("no saved sessions in %s", cfg.workDir)
+			return agent.SessionSnapshot{}, fmt.Errorf("no saved sessions in %s", stateDir)
 		}
 		return list[0], nil
 	}
@@ -251,7 +260,7 @@ func resolveSnapshot(cfg runConfig) (agent.SessionSnapshot, error) {
 	if id == "" {
 		id = cfg.resumeWith
 	}
-	snap, err := agent.LoadSession(cfg.workDir, id)
+	snap, err := agent.LoadSession(stateDir, id)
 	if err != nil {
 		return agent.SessionSnapshot{}, fmt.Errorf("load session %s: %w", id, err)
 	}
@@ -259,8 +268,8 @@ func resolveSnapshot(cfg runConfig) (agent.SessionSnapshot, error) {
 }
 
 // listSessions prints all saved sessions and returns.
-func listSessions(cfg runConfig) error {
-	list, err := agent.ListSessions(cfg.workDir)
+func listSessions(cfg runConfig, stateDir string) error {
+	list, err := agent.ListSessions(stateDir)
 	if err != nil {
 		return fmt.Errorf("list sessions: %w", err)
 	}
@@ -283,6 +292,18 @@ func listSessions(cfg runConfig) error {
 			s.ID, s.Model, s.UpdatedAt.Format("2006-01-02 15:04:05"), s.TurnCount, firstInput)
 	}
 	return nil
+}
+
+// gitOriginURLFromDir runs "git remote get-url origin" in dir and returns the
+// URL, or "" if not a git repo or no origin remote.
+func gitOriginURLFromDir(dir string) string {
+	cmd := exec.Command("git", "remote", "get-url", "origin")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // selectProfile creates the ProviderProfile for the given provider and model.

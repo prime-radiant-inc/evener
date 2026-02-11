@@ -24,6 +24,7 @@ func main() {
 	provider := flag.String("provider", "", "LLM provider (openai, anthropic, google)")
 	workDir := flag.String("dir", "", "working directory (default: current directory)")
 	systemPrompt := flag.String("system-prompt", "", "path to a custom system prompt file")
+	stateDir := flag.String("state-dir", "", "override runtime state directory (default: XDG-computed)")
 	resume := flag.String("resume", "", "resume a previous session by ID")
 	resumeWith := flag.String("resume-with", "", "start a new task using a previous session's context")
 	resumeLast := flag.Bool("resume-last", false, "resume the most recent session")
@@ -46,6 +47,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		fmt.Fprintf(os.Stderr, "  --dir <path>         Working directory (default: current directory)\n")
 		fmt.Fprintf(os.Stderr, "  --system-prompt <path> Path to a custom system prompt file\n")
+		fmt.Fprintf(os.Stderr, "  --state-dir <path>   Override runtime state directory (sessions, tasks)\n")
 		fmt.Fprintf(os.Stderr, "  --verbose            Emit NDJSON events to stderr (replaces human-readable output)\n")
 		fmt.Fprintf(os.Stderr, "  --skills-dir <path>  Extra skill directory (repeatable)\n")
 		fmt.Fprintf(os.Stderr, "  --mcp <spec>         MCP server (repeatable, format: name:command args...)\n")
@@ -91,6 +93,7 @@ func main() {
 		model:        *model,
 		provider:     *provider,
 		workDir:      *workDir,
+		stateDir:     *stateDir,
 		systemPrompt: *systemPrompt,
 		verbose:      *verbose,
 		skillsDirs:   []string(skillsDirs),
