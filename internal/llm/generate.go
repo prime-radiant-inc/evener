@@ -182,6 +182,7 @@ func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error
 			ReasoningEffort: opts.ReasoningEffort,
 			Metadata:        opts.Metadata,
 			ProviderOptions: opts.ProviderOptions,
+			AdapterTimeout:  opts.AdapterTimeout,
 		}
 
 		callCtx, cancelStep := WithTimeout(ctx, opts.TimeoutPerStep)

@@ -1102,6 +1102,51 @@ func TestGenerate_MultiStepToolLoop_ThreeRounds(t *testing.T) {
 	}
 }
 
+func TestGenerate_AdapterTimeout_FlowsToRequest(t *testing.T) {
+	c := NewClient()
+	a := &scriptedAdapter{
+		name: "openai",
+		steps: []func(req Request) (Response, error){
+			func(req Request) (Response, error) {
+				return Response{Message: Assistant("hi")}, nil
+			},
+		},
+	}
+	c.Register(a)
+
+	prompt := "hello"
+	timeout := AdapterTimeout{
+		Connect:    5 * time.Second,
+		Request:    60 * time.Second,
+		StreamRead: 15 * time.Second,
+	}
+	_, err := Generate(context.Background(), GenerateOptions{
+		Client:         c,
+		Model:          "m",
+		Prompt:         &prompt,
+		AdapterTimeout: &timeout,
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if len(a.reqs) != 1 {
+		t.Fatalf("adapter calls: got %d want 1", len(a.reqs))
+	}
+	got := a.reqs[0].AdapterTimeout
+	if got == nil {
+		t.Fatal("Request.AdapterTimeout is nil")
+	}
+	if got.Connect != 5*time.Second {
+		t.Fatalf("Connect = %v, want 5s", got.Connect)
+	}
+	if got.Request != 60*time.Second {
+		t.Fatalf("Request = %v, want 60s", got.Request)
+	}
+	if got.StreamRead != 15*time.Second {
+		t.Fatalf("StreamRead = %v, want 15s", got.StreamRead)
+	}
+}
+
 func TestGenerate_StepResult_ToolCallsHaveParsedArguments(t *testing.T) {
 	c := NewClient()
 	a := &scriptedAdapter{

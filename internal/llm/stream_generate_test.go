@@ -647,3 +647,67 @@ func TestStreamResult_TextStream_FiltersToTextDeltasOnly(t *testing.T) {
 		t.Fatalf("TextStream deltas: %q", strings.Join(deltas, ""))
 	}
 }
+
+func TestStreamGenerate_AdapterTimeout_FlowsToRequest(t *testing.T) {
+	c := NewClient()
+	a := &scriptedStreamAdapter{
+		name: "openai",
+		scripts: []func(ctx context.Context, req Request) (Stream, error){
+			func(ctx context.Context, req Request) (Stream, error) {
+				_ = req
+				_, cancel := context.WithCancel(ctx)
+				st := NewChanStream(cancel)
+				go func() {
+					defer st.CloseSend()
+					st.Send(StreamEvent{Type: StreamEventStreamStart})
+					st.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "ok"})
+					resp := Response{Provider: "openai", Model: "m", Message: Assistant("ok"), Finish: FinishReason{Reason: "stop"}}
+					rp := resp
+					st.Send(StreamEvent{Type: StreamEventFinish, FinishReason: &resp.Finish, Response: &rp})
+					cancel()
+				}()
+				return st, nil
+			},
+		},
+	}
+	c.Register(a)
+
+	prompt := "hi"
+	timeout := AdapterTimeout{
+		Connect:    5 * time.Second,
+		Request:    60 * time.Second,
+		StreamRead: 15 * time.Second,
+	}
+	res, err := StreamGenerate(context.Background(), GenerateOptions{
+		Client:         c,
+		Model:          "m",
+		Provider:       "openai",
+		Prompt:         &prompt,
+		AdapterTimeout: &timeout,
+	})
+	if err != nil {
+		t.Fatalf("StreamGenerate: %v", err)
+	}
+	// Drain events.
+	for range res.Events() {
+	}
+	_, _ = res.Response()
+
+	reqs := a.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("adapter calls: got %d want 1", len(reqs))
+	}
+	got := reqs[0].AdapterTimeout
+	if got == nil {
+		t.Fatal("Request.AdapterTimeout is nil")
+	}
+	if got.Connect != 5*time.Second {
+		t.Fatalf("Connect = %v, want 5s", got.Connect)
+	}
+	if got.Request != 60*time.Second {
+		t.Fatalf("Request = %v, want 60s", got.Request)
+	}
+	if got.StreamRead != 15*time.Second {
+		t.Fatalf("StreamRead = %v, want 15s", got.StreamRead)
+	}
+}

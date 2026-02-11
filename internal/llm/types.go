@@ -202,6 +202,8 @@ type Request struct {
 	ProviderOptions map[string]any `json:"provider_options,omitempty"`
 
 	WebSearch bool `json:"web_search,omitempty"`
+
+	AdapterTimeout *AdapterTimeout `json:"adapter_timeout,omitempty"`
 }
 
 type FinishReason struct {

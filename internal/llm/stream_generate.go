@@ -169,6 +169,7 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 				ReasoningEffort: opts.ReasoningEffort,
 				Metadata:        opts.Metadata,
 				ProviderOptions: opts.ProviderOptions,
+				AdapterTimeout:  opts.AdapterTimeout,
 			}
 
 			callCtx, cancelStep := WithTimeout(sctx, opts.TimeoutPerStep)
