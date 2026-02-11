@@ -956,6 +956,29 @@ func TestAdapter_Integration_WebSearch(t *testing.T) {
 	t.Logf("response text (truncated): %.200s", resp.Text())
 }
 
+func TestComplete_WrapsContextCanceled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(5 * time.Second)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model:    "gpt-5.2",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var abortErr *llm.AbortError
+	if !errors.As(err, &abortErr) {
+		t.Fatalf("expected AbortError, got %T: %v", err, err)
+	}
+}
+
 func contentKinds(parts []llm.ContentPart) []string {
 	var kinds []string
 	for _, p := range parts {
