@@ -84,7 +84,7 @@ func TestSaveSession_CreatesFileAtomically(t *testing.T) {
 	}
 
 	// File should exist at .serf/sessions/<id>.json
-	path := filepath.Join(dir, ".serf", "sessions", snap.ID+".json")
+	path := filepath.Join(dir, "sessions", snap.ID+".json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
@@ -98,7 +98,7 @@ func TestSaveSession_CreatesFileAtomically(t *testing.T) {
 	}
 
 	// No .tmp files should remain.
-	entries, _ := os.ReadDir(filepath.Join(dir, ".serf", "sessions"))
+	entries, _ := os.ReadDir(filepath.Join(dir, "sessions"))
 	for _, e := range entries {
 		if filepath.Ext(e.Name()) == ".tmp" {
 			t.Fatalf("temp file not cleaned up: %s", e.Name())
@@ -140,7 +140,7 @@ func TestLoadSession_NotFound(t *testing.T) {
 
 func TestLoadSession_CorruptJSON(t *testing.T) {
 	dir := t.TempDir()
-	sessDir := filepath.Join(dir, ".serf", "sessions")
+	sessDir := filepath.Join(dir, "sessions")
 	if err := os.MkdirAll(sessDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestListSessions_SkipsCorruptFiles(t *testing.T) {
 	}
 
 	// Add a corrupt file.
-	sessDir := filepath.Join(dir, ".serf", "sessions")
+	sessDir := filepath.Join(dir, "sessions")
 	if err := os.WriteFile(filepath.Join(sessDir, "CORRUPT.json"), []byte("{bad"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}

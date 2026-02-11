@@ -23,9 +23,9 @@ type SessionSnapshot struct {
 	TurnCount int            `json:"turn_count"`
 }
 
-const sessionsSubdir = ".serf/sessions"
+const sessionsSubdir = "sessions"
 
-// SaveSession writes a snapshot to .serf/sessions/<id>.json using atomic rename.
+// SaveSession writes a snapshot to <dir>/sessions/<id>.json using atomic rename.
 func SaveSession(dir string, snap SessionSnapshot) error {
 	sessDir := filepath.Join(dir, sessionsSubdir)
 	if err := os.MkdirAll(sessDir, 0o755); err != nil {
@@ -50,7 +50,7 @@ func SaveSession(dir string, snap SessionSnapshot) error {
 	return nil
 }
 
-// LoadSession reads a snapshot from .serf/sessions/<id>.json.
+// LoadSession reads a snapshot from <dir>/sessions/<id>.json.
 func LoadSession(dir, id string) (SessionSnapshot, error) {
 	path := filepath.Join(dir, sessionsSubdir, id+".json")
 	data, err := os.ReadFile(path)
