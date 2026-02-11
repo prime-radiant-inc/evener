@@ -182,6 +182,8 @@ func parseV4APatchLines(lines []string) ([]patchOp, error) {
 			continue
 		}
 		switch {
+		case strings.TrimSpace(l) == "*** End of File":
+			continue
 		case strings.HasPrefix(l, "*** Add File: "):
 			path := strings.TrimSpace(strings.TrimPrefix(l, "*** Add File: "))
 			var content []string

@@ -64,6 +64,21 @@ func TestApplyPatch_AddUpdateMoveDelete(t *testing.T) {
 	}
 }
 
+func TestApplyPatch_EndOfFileMarker(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("line1\nline2\nline3\n"), 0o644)
+
+	patch := "*** Begin Patch\n*** Update File: f.txt\n@@ line1\n line1\n-line2\n+replaced\n line3\n*** End of File\n*** End Patch\n"
+	_, err := ApplyPatch(dir, patch)
+	if err != nil {
+		t.Fatalf("ApplyPatch with End of File marker: %v", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "f.txt"))
+	if !strings.Contains(string(got), "replaced") {
+		t.Fatal("patch not applied")
+	}
+}
+
 func TestApplyPatch_RejectsPathTraversalAndAbsolutePaths(t *testing.T) {
 	dir := t.TempDir()
 	cases := []string{
