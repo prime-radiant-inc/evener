@@ -107,6 +107,43 @@ func TestLocalExecutionEnvironment_ReadWriteEditFile(t *testing.T) {
 	}
 }
 
+func TestEditFile_FuzzyMatchWhitespace(t *testing.T) {
+	dir := t.TempDir()
+	env := NewLocalExecutionEnvironment(dir)
+	// Write a file with specific indentation.
+	original := "func foo() {\n\tbar := 1\n\tbaz  :=  2\n}\n"
+	if _, err := env.WriteFile("a.go", original); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Try to edit with slightly different whitespace (spaces vs tabs, extra spaces).
+	// Exact match fails, but fuzzy (whitespace-normalized) match should succeed.
+	result, err := env.EditFile("a.go", "baz := 2", "baz := 42", false)
+	if err != nil {
+		t.Fatalf("EditFile with whitespace difference should succeed via fuzzy match: %v", err)
+	}
+	if !strings.Contains(result, "whitespace normalization") {
+		t.Errorf("expected note about whitespace normalization in result: %q", result)
+	}
+	// Verify the replacement was applied.
+	b, _ := os.ReadFile(filepath.Join(dir, "a.go"))
+	if !strings.Contains(string(b), "baz := 42") {
+		t.Fatalf("edit did not apply fuzzy match: %q", string(b))
+	}
+}
+
+func TestEditFile_FuzzyMatch_CompletelyWrongString_StillFails(t *testing.T) {
+	dir := t.TempDir()
+	env := NewLocalExecutionEnvironment(dir)
+	if _, err := env.WriteFile("a.go", "func foo() {}\n"); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	_, err := env.EditFile("a.go", "completely_nonexistent_string", "replacement", false)
+	if err == nil {
+		t.Fatal("expected error for completely wrong old_string, got nil")
+	}
+}
+
 func TestLocalExecutionEnvironment_ListDirectory_Depth(t *testing.T) {
 	dir := t.TempDir()
 	env := NewLocalExecutionEnvironment(dir)

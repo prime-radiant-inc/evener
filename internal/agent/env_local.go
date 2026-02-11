@@ -113,8 +113,15 @@ func (e *LocalExecutionEnvironment) EditFile(path string, oldString string, newS
 		return "", err
 	}
 	s := string(b)
+	fuzzyNote := ""
 	if !strings.Contains(s, oldString) {
-		return "", fmt.Errorf("old_string not found in %s", path)
+		// Fuzzy fallback: try whitespace-normalized matching.
+		match := findFuzzyMatch(s, oldString)
+		if match == "" {
+			return "", fmt.Errorf("old_string not found in %s", path)
+		}
+		oldString = match
+		fuzzyNote = " [NOTE: Matched with whitespace normalization]"
 	}
 	if !replaceAll && strings.Count(s, oldString) != 1 {
 		return "", fmt.Errorf("old_string not unique in %s; use replace_all=true or provide a more specific old_string", path)
@@ -129,7 +136,36 @@ func (e *LocalExecutionEnvironment) EditFile(path string, oldString string, newS
 	if err := os.WriteFile(abs, []byte(s), 0o644); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("edited %s: %d replacement(s)", path, n), nil
+	return fmt.Sprintf("edited %s: %d replacement(s)%s", path, n, fuzzyNote), nil
+}
+
+// findFuzzyMatch scans the file content for a substring that matches
+// oldString when whitespace is normalized (using normalizeWS from apply_patch.go).
+// Returns the actual substring from the file, or "" if no match.
+func findFuzzyMatch(content, oldString string) string {
+	normOld := normalizeWS(oldString)
+	if normOld == "" {
+		return ""
+	}
+	// Scan lines for single-line matches.
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		if normalizeWS(line) == normOld {
+			return line
+		}
+	}
+	// Multi-line: try sliding window of the same line count.
+	oldLines := strings.Split(oldString, "\n")
+	wSize := len(oldLines)
+	if wSize > 1 && wSize <= len(lines) {
+		for i := 0; i <= len(lines)-wSize; i++ {
+			candidate := strings.Join(lines[i:i+wSize], "\n")
+			if normalizeWS(candidate) == normOld {
+				return candidate
+			}
+		}
+	}
+	return ""
 }
 
 func (e *LocalExecutionEnvironment) FileExists(path string) bool {

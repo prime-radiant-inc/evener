@@ -475,11 +475,20 @@ func (s *Session) ProcessInput(ctx context.Context, input string) (string, error
 
 func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecResult {
 	argsJSON, _ := json.Marshal(call.Arguments)
-	s.emit(EventToolCallStart, map[string]any{
+	startData := map[string]any{
 		"tool_name":      call.Name,
 		"call_id":        call.ID,
 		"arguments_json": string(argsJSON),
-	})
+	}
+	// Promote description to top-level event field for observability (shell tool).
+	var args map[string]any
+	if len(call.Arguments) > 0 {
+		_ = json.Unmarshal(call.Arguments, &args)
+	}
+	if desc, ok := args["description"].(string); ok && desc != "" {
+		startData["description"] = desc
+	}
+	s.emit(EventToolCallStart, startData)
 
 	// Session-level tools (subagents) are registered in the registry with closures.
 	res := s.reg.ExecuteCall(ctx, s.env, call)

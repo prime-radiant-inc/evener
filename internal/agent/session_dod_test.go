@@ -2583,6 +2583,74 @@ func TestSession_ToolNameMapping_EventsUseCanonicalName(t *testing.T) {
 	}
 }
 
+func TestSession_ShellDescription_IncludedInToolCallStartEvent(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				call := llm.ToolCallData{
+					ID:        "call-sh",
+					Name:      "exec_command",
+					Arguments: json.RawMessage(`{"command":"ls","description":"List project files"}`),
+					Type:      "function",
+				}
+				return llm.Response{
+					Message: llm.Message{
+						Role:    llm.RoleAssistant,
+						Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
+					},
+				}
+			},
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("done")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	var events []SessionEvent
+	var mu sync.Mutex
+	done := make(chan struct{})
+	go func() {
+		for ev := range sess.Events() {
+			mu.Lock()
+			events = append(events, ev)
+			mu.Unlock()
+		}
+		close(done)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "list files")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, ev := range events {
+		if ev.Kind == EventToolCallStart {
+			desc, ok := ev.Data["description"].(string)
+			if ok && desc == "List project files" {
+				return // success
+			}
+		}
+	}
+	t.Fatal("TOOL_CALL_START event should include 'description' field from shell args")
+}
+
 func TestDetectLoop_Patterns(t *testing.T) {
 	tests := []struct {
 		name   string
