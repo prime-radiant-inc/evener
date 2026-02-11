@@ -1449,3 +1449,108 @@ func TestProcessInput_DrainsSteeringBeforeFirstLLMCall(t *testing.T) {
 		t.Fatal("steering message not in first LLM request")
 	}
 }
+
+func TestLoopDetection_PatternLength2(t *testing.T) {
+	c := llm.NewClient()
+
+	toolA := func(id string) llm.Response {
+		call := llm.ToolCallData{
+			ID:        id,
+			Name:      "read_file",
+			Arguments: json.RawMessage(`{"file_path":"a.txt"}`),
+			Type:      "function",
+		}
+		return llm.Response{
+			Message: llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
+			},
+		}
+	}
+	toolB := func(id string) llm.Response {
+		call := llm.ToolCallData{
+			ID:        id,
+			Name:      "glob",
+			Arguments: json.RawMessage(`{"pattern":"*.go","path":"."}`),
+			Type:      "function",
+		}
+		return llm.Response{
+			Message: llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
+			},
+		}
+	}
+
+	// 6 alternating tool calls (A-B-A-B-A-B) then auto-"done" on step exhaustion.
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolA("c1") },
+			func(req llm.Request) llm.Response { return toolB("c2") },
+			func(req llm.Request) llm.Response { return toolA("c3") },
+			func(req llm.Request) llm.Response { return toolB("c4") },
+			func(req llm.Request) llm.Response { return toolA("c5") },
+			func(req llm.Request) llm.Response { return toolB("c6") },
+		},
+	}
+	c.Register(f)
+
+	enableLoop := true
+	dir := t.TempDir()
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir),
+		SessionConfig{
+			EnableLoopDetection: &enableLoop,
+			LoopDetectionWindow: 6,
+			MaxToolRoundsPerInput: 20,
+		})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	var loopDetected bool
+	go func() {
+		for ev := range sess.Events() {
+			if ev.Kind == EventLoopDetection {
+				loopDetected = true
+			}
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "test")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	if !loopDetected {
+		t.Fatal("expected loop detection for A-B-A-B pattern of length 2")
+	}
+}
+
+func TestDetectLoop_Patterns(t *testing.T) {
+	tests := []struct {
+		name   string
+		sigs   []string
+		window int
+		want   bool
+	}{
+		{"len1_match", []string{"A", "A", "A", "A"}, 4, true},
+		{"len2_match", []string{"A", "B", "A", "B", "A", "B"}, 6, true},
+		{"len3_match", []string{"A", "B", "C", "A", "B", "C"}, 6, true},
+		{"no_pattern", []string{"A", "B", "C", "D", "E", "F"}, 6, false},
+		{"too_short", []string{"A", "A"}, 4, false},
+		{"len1_window4", []string{"X", "X", "A", "A", "A", "A"}, 4, true},
+		{"len2_window6", []string{"X", "A", "B", "A", "B", "A", "B"}, 6, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := detectLoop(tt.sigs, tt.window); got != tt.want {
+				t.Fatalf("detectLoop(%v, %d) = %v, want %v", tt.sigs, tt.window, got, tt.want)
+			}
+		})
+	}
+}

@@ -644,9 +644,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			sys = sys + "\n\n" + strings.TrimSpace(s.cfg.UserInstructionOverride) + "\n"
 		}
 
-	var lastToolFP string
-	repeats := 0
-	loopWarned := false
+	var toolSigs []string
 	ctxWarned := false
 
 	for round := 0; round < s.cfg.MaxToolRoundsPerInput; round++ {
@@ -774,23 +772,6 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			return txt, nil
 		}
 
-		// Loop detection: if the model keeps emitting identical tool call patterns, warn once.
-		if s.cfg.EnableLoopDetection != nil && *s.cfg.EnableLoopDetection && !loopWarned {
-			fp := toolCallsFingerprint(calls)
-			if fp != "" && fp == lastToolFP {
-				repeats++
-			} else {
-				lastToolFP = fp
-				repeats = 1
-			}
-				if repeats >= s.cfg.LoopDetectionWindow {
-					loopWarned = true
-					s.emit(EventLoopDetection, map[string]any{"fingerprint": fp, "repeats": repeats})
-					s.appendTurn(TurnSteering, llm.User("Loop detection: you are repeating the same tool calls. Stop and change approach."))
-					s.emit(EventSteeringInjected, map[string]any{"text": "Loop detection: you are repeating the same tool calls. Stop and change approach."})
-				}
-			}
-
 		// Execute tool calls (possibly in parallel) and send results back.
 		results := make([]ToolExecResult, len(calls))
 		if s.profile.SupportsParallelToolCalls() && len(calls) > 1 {
@@ -813,6 +794,19 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			for _, r := range results {
 				s.appendTurn(TurnTool, llm.ToolResultNamed(r.CallID, r.ToolName, r.Output, r.IsError))
 			}
+
+		// Loop detection: track per-call signatures and check for repeating patterns.
+		for _, call := range calls {
+			toolSigs = append(toolSigs, call.Name+":"+shortHash(call.Arguments))
+		}
+		if s.cfg.EnableLoopDetection != nil && *s.cfg.EnableLoopDetection {
+			if detectLoop(toolSigs, s.cfg.LoopDetectionWindow) {
+				warning := fmt.Sprintf("Loop detected: repeating pattern in the last %d tool calls. Try a different approach.", s.cfg.LoopDetectionWindow)
+				s.emit(EventLoopDetection, map[string]any{"message": warning})
+				s.appendTurn(TurnSteering, llm.User(warning))
+				s.emit(EventSteeringInjected, map[string]any{"text": warning})
+			}
+		}
 
 			// Inject any queued steering messages before the next model call.
 			for _, msg := range s.drainSteering() {
@@ -862,18 +856,30 @@ func (s *Session) popFollowUp() string {
 	return msg
 }
 
-func toolCallsFingerprint(calls []llm.ToolCallData) string {
-	if len(calls) == 0 {
-		return ""
+// detectLoop checks the last windowSize tool call signatures for repeating
+// patterns of length 1, 2, or 3.
+func detectLoop(signatures []string, windowSize int) bool {
+	if len(signatures) < windowSize {
+		return false
 	}
-	var b strings.Builder
-	for _, c := range calls {
-		b.WriteString(strings.TrimSpace(c.Name))
-		b.WriteByte(':')
-		b.WriteString(shortHash(c.Arguments))
-		b.WriteByte(';')
+	recent := signatures[len(signatures)-windowSize:]
+	for patLen := 1; patLen <= 3; patLen++ {
+		if windowSize%patLen != 0 {
+			continue
+		}
+		pattern := recent[:patLen]
+		allMatch := true
+		for i := patLen; i < windowSize; i++ {
+			if recent[i] != pattern[i%patLen] {
+				allMatch = false
+				break
+			}
+		}
+		if allMatch {
+			return true
+		}
 	}
-	return b.String()
+	return false
 }
 
 // allToolDefinitions returns profile tool definitions plus any MCP tools.

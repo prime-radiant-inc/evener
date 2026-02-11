@@ -673,7 +673,7 @@ func TestSession_LoopDetection_EmitsEventAndInjectsSteering(t *testing.T) {
 		sess.mu.Unlock()
 		foundSteering := false
 		for _, tr := range turns {
-			if tr.Kind == TurnSteering && tr.Message.Role == llm.RoleUser && strings.Contains(tr.Message.Text(), "Loop detection:") {
+			if tr.Kind == TurnSteering && tr.Message.Role == llm.RoleUser && strings.Contains(tr.Message.Text(), "Loop detected:") {
 				foundSteering = true
 			}
 		}
@@ -690,7 +690,7 @@ func TestSession_LoopDetection_EmitsEventAndInjectsSteering(t *testing.T) {
 			loopEv = true
 		}
 		if ev.Kind == EventSteeringInjected {
-			if s, _ := ev.Data["text"].(string); strings.Contains(s, "Loop detection:") {
+			if s, _ := ev.Data["text"].(string); strings.Contains(s, "Loop detected:") {
 				steerEv = true
 			}
 		}
@@ -707,7 +707,7 @@ func TestSession_LoopDetection_EmitsEventAndInjectsSteering(t *testing.T) {
 	found := false
 	for _, req := range reqs {
 		for _, m := range req.Messages {
-			if m.Role == llm.RoleUser && strings.Contains(m.Text(), "Loop detection:") {
+			if m.Role == llm.RoleUser && strings.Contains(m.Text(), "Loop detected:") {
 				found = true
 			}
 		}
