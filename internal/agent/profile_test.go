@@ -680,6 +680,36 @@ func TestToolNameMapping_Anthropic_NoMapping(t *testing.T) {
 	}
 }
 
+func TestGeminiProfile_ProviderOptions_HasSafetySettings(t *testing.T) {
+	p := NewGeminiProfile("gemini-2.5-flash")
+	opts := p.ProviderOptions()
+	if opts == nil {
+		t.Fatal("expected non-nil ProviderOptions for Gemini")
+	}
+	gemini, ok := opts["gemini"].(map[string]any)
+	if !ok {
+		t.Fatal("expected opts[\"gemini\"] to be map[string]any")
+	}
+	ss, ok := gemini["safetySettings"]
+	if !ok || ss == nil {
+		t.Fatal("expected safetySettings in gemini provider_options")
+	}
+	settings, ok := ss.([]map[string]any)
+	if !ok {
+		t.Fatalf("safetySettings type: got %T, want []map[string]any", ss)
+	}
+	if len(settings) == 0 {
+		t.Fatal("expected at least one safety setting")
+	}
+	// Verify all settings use a permissive threshold for coding agent use.
+	for _, s := range settings {
+		threshold, _ := s["threshold"].(string)
+		if threshold != "BLOCK_ONLY_HIGH" {
+			t.Errorf("safety threshold for %v: got %q, want BLOCK_ONLY_HIGH", s["category"], threshold)
+		}
+	}
+}
+
 func assertToolListExact(t *testing.T, p ProviderProfile, want []string) {
 	t.Helper()
 	got := make([]string, 0, len(p.ToolDefinitions()))

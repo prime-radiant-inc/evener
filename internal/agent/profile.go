@@ -280,6 +280,16 @@ func NewGeminiProfile(model string) ProviderProfile {
 		streaming:       true,
 		defaultTimeout:  10_000,
 		knowledgeCutoff: "2025-03-01",
+		providerOpts: map[string]any{
+			"gemini": map[string]any{
+				"safetySettings": []map[string]any{
+					{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
+					{"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"},
+					{"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_ONLY_HIGH"},
+					{"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
+				},
+			},
+		},
 		toolNameMap: map[string]string{
 			"shell":    "run_shell_command",
 			"grep":     "grep_search",
