@@ -1101,3 +1101,58 @@ func TestGenerate_MultiStepToolLoop_ThreeRounds(t *testing.T) {
 		t.Fatalf("callCount = %d, want 4", callCount)
 	}
 }
+
+func TestGenerate_StepResult_ToolCallsHaveParsedArguments(t *testing.T) {
+	c := NewClient()
+	a := &scriptedAdapter{
+		name: "openai",
+		steps: []func(req Request) (Response, error){
+			func(req Request) (Response, error) {
+				call := ToolCallData{
+					ID:        "call1",
+					Name:      "get_weather",
+					Arguments: json.RawMessage(`{"city":"Seattle"}`),
+					Type:      "function",
+				}
+				return Response{Message: Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}}}, nil
+			},
+		},
+	}
+	c.Register(a)
+
+	prompt := "what's the weather?"
+	zero := 0
+	res, err := Generate(context.Background(), GenerateOptions{
+		Client:        c,
+		Model:         "m",
+		Prompt:        &prompt,
+		MaxToolRounds: &zero,
+		Tools: []Tool{
+			{Definition: ToolDefinition{Name: "get_weather", Parameters: map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string"}}}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if len(res.ToolCalls) != 1 {
+		t.Fatalf("tool_calls: got %d want 1", len(res.ToolCalls))
+	}
+	tc := res.ToolCalls[0]
+	if tc.ParsedArguments == nil {
+		t.Fatal("ParsedArguments is nil on result ToolCall")
+	}
+	if tc.ParsedArguments["city"] != "Seattle" {
+		t.Fatalf("ParsedArguments[city] = %v", tc.ParsedArguments["city"])
+	}
+	// Also check the step's copy.
+	if len(res.Steps) != 1 {
+		t.Fatalf("steps: got %d want 1", len(res.Steps))
+	}
+	stc := res.Steps[0].ToolCalls[0]
+	if stc.ParsedArguments == nil {
+		t.Fatal("step ToolCall ParsedArguments is nil")
+	}
+	if stc.ParsedArguments["city"] != "Seattle" {
+		t.Fatalf("step ParsedArguments[city] = %v", stc.ParsedArguments["city"])
+	}
+}

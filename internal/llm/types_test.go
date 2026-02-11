@@ -105,6 +105,70 @@ func TestAdapterTimeout_Defaults(t *testing.T) {
 	}
 }
 
+func TestToolCallData_Parse_PopulatesParsedArguments(t *testing.T) {
+	tc := ToolCallData{
+		ID:        "call_1",
+		Name:      "get_weather",
+		Arguments: json.RawMessage(`{"city":"Seattle","units":"celsius"}`),
+	}
+	if err := tc.Parse(); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if tc.ParsedArguments == nil {
+		t.Fatal("ParsedArguments is nil after Parse()")
+	}
+	if tc.ParsedArguments["city"] != "Seattle" {
+		t.Fatalf("city = %v", tc.ParsedArguments["city"])
+	}
+	if tc.ParsedArguments["units"] != "celsius" {
+		t.Fatalf("units = %v", tc.ParsedArguments["units"])
+	}
+}
+
+func TestToolCallData_Parse_EmptyArguments(t *testing.T) {
+	tc := ToolCallData{
+		ID:        "call_2",
+		Name:      "get_time",
+		Arguments: json.RawMessage(`{}`),
+	}
+	if err := tc.Parse(); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if tc.ParsedArguments == nil {
+		t.Fatal("ParsedArguments is nil after Parse() with empty object")
+	}
+	if len(tc.ParsedArguments) != 0 {
+		t.Fatalf("expected empty map, got %v", tc.ParsedArguments)
+	}
+}
+
+func TestToolCallData_Parse_NilArguments(t *testing.T) {
+	tc := ToolCallData{
+		ID:   "call_3",
+		Name: "no_args",
+	}
+	if err := tc.Parse(); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if tc.ParsedArguments == nil {
+		t.Fatal("ParsedArguments is nil after Parse() with nil arguments")
+	}
+	if len(tc.ParsedArguments) != 0 {
+		t.Fatalf("expected empty map, got %v", tc.ParsedArguments)
+	}
+}
+
+func TestToolCallData_Parse_InvalidJSON(t *testing.T) {
+	tc := ToolCallData{
+		ID:        "call_4",
+		Name:      "broken",
+		Arguments: json.RawMessage(`{not valid json`),
+	}
+	if err := tc.Parse(); err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+}
+
 func TestRequest_Validate_WithWebSearch(t *testing.T) {
 	req := Request{
 		Model:     "test-model",

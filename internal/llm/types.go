@@ -120,13 +120,29 @@ type DocumentData struct {
 }
 
 type ToolCallData struct {
-	ID        string          `json:"id"`
-	Name      string          `json:"name"`
-	Arguments json.RawMessage `json:"arguments,omitempty"` // raw JSON object
-	Type      string          `json:"type,omitempty"`      // usually "function"
+	ID              string          `json:"id"`
+	Name            string          `json:"name"`
+	Arguments       json.RawMessage `json:"arguments,omitempty"`        // raw JSON object
+	ParsedArguments map[string]any  `json:"parsed_arguments,omitempty"` // populated by Parse()
+	Type            string          `json:"type,omitempty"`             // usually "function"
 	// ThoughtSignature carries provider-specific thought-signature state (e.g., Gemini)
 	// required to continue tool-calling turns safely.
 	ThoughtSignature string `json:"thought_signature,omitempty"`
+}
+
+// Parse unmarshals Arguments into ParsedArguments. If Arguments is nil or empty,
+// ParsedArguments is set to an empty map.
+func (tc *ToolCallData) Parse() error {
+	if len(tc.Arguments) == 0 {
+		tc.ParsedArguments = map[string]any{}
+		return nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(tc.Arguments, &m); err != nil {
+		return err
+	}
+	tc.ParsedArguments = m
+	return nil
 }
 
 type ToolResultData struct {
