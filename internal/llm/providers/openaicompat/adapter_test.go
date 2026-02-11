@@ -548,6 +548,189 @@ func TestDefaultHeaders_SentOnStreamRequests(t *testing.T) {
 	}
 }
 
+func TestAdapter_Complete_ImageContent_IncludedInRequest(t *testing.T) {
+	var sentBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		json.Unmarshal(b, &sentBody)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "c1", "object": "chat.completion",
+			"choices": []any{map[string]any{
+				"index": 0, "finish_reason": "stop",
+				"message": map[string]any{"role": "assistant", "content": "I see an image"},
+			}},
+			"usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+		})
+	}))
+	defer srv.Close()
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model: "m",
+		Messages: []llm.Message{{
+			Role: llm.RoleUser,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentText, Text: "What's in this image?"},
+				{Kind: llm.ContentImage, Image: &llm.ImageData{URL: "https://example.com/img.png"}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	msgs, _ := sentBody["messages"].([]any)
+	if len(msgs) == 0 {
+		t.Fatal("no messages in request body")
+	}
+	userMsg, _ := msgs[0].(map[string]any)
+	content, ok := userMsg["content"].([]any)
+	if !ok {
+		t.Fatalf("content should be an array for multimodal messages, got %T: %v", userMsg["content"], userMsg["content"])
+	}
+	if len(content) != 2 {
+		t.Fatalf("expected 2 content parts (text + image), got %d", len(content))
+	}
+	textPart, _ := content[0].(map[string]any)
+	if textPart["type"] != "text" {
+		t.Fatalf("first part type: %v, want text", textPart["type"])
+	}
+	if textPart["text"] != "What's in this image?" {
+		t.Fatalf("first part text: %v", textPart["text"])
+	}
+	imgPart, _ := content[1].(map[string]any)
+	if imgPart["type"] != "image_url" {
+		t.Fatalf("second part type: %v, want image_url", imgPart["type"])
+	}
+	imgURL, _ := imgPart["image_url"].(map[string]any)
+	if imgURL["url"] != "https://example.com/img.png" {
+		t.Fatalf("image url: %v", imgURL["url"])
+	}
+}
+
+func TestAdapter_Complete_ImageContent_Base64(t *testing.T) {
+	var sentBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		json.Unmarshal(b, &sentBody)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "c1", "object": "chat.completion",
+			"choices": []any{map[string]any{
+				"index": 0, "finish_reason": "stop",
+				"message": map[string]any{"role": "assistant", "content": "ok"},
+			}},
+			"usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11},
+		})
+	}))
+	defer srv.Close()
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model: "m",
+		Messages: []llm.Message{{
+			Role: llm.RoleUser,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentText, Text: "describe"},
+				{Kind: llm.ContentImage, Image: &llm.ImageData{Data: []byte{0x89, 0x50, 0x4E, 0x47}, MediaType: "image/png"}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	msgs, _ := sentBody["messages"].([]any)
+	userMsg, _ := msgs[0].(map[string]any)
+	content, ok := userMsg["content"].([]any)
+	if !ok {
+		t.Fatalf("content should be array, got %T", userMsg["content"])
+	}
+	imgPart, _ := content[1].(map[string]any)
+	imgURL, _ := imgPart["image_url"].(map[string]any)
+	url, _ := imgURL["url"].(string)
+	if !strings.HasPrefix(url, "data:image/png;base64,") {
+		t.Fatalf("expected data URI, got %q", url)
+	}
+}
+
+func TestAdapter_Complete_ImageContent_Detail(t *testing.T) {
+	var sentBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		json.Unmarshal(b, &sentBody)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "c1", "object": "chat.completion",
+			"choices": []any{map[string]any{
+				"index": 0, "finish_reason": "stop",
+				"message": map[string]any{"role": "assistant", "content": "ok"},
+			}},
+			"usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11},
+		})
+	}))
+	defer srv.Close()
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model: "m",
+		Messages: []llm.Message{{
+			Role: llm.RoleUser,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentImage, Image: &llm.ImageData{URL: "https://example.com/img.png", Detail: "high"}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	msgs, _ := sentBody["messages"].([]any)
+	userMsg, _ := msgs[0].(map[string]any)
+	content, _ := userMsg["content"].([]any)
+	imgPart, _ := content[0].(map[string]any)
+	imgURL, _ := imgPart["image_url"].(map[string]any)
+	if imgURL["detail"] != "high" {
+		t.Fatalf("detail: %v, want high", imgURL["detail"])
+	}
+}
+
+func TestAdapter_Complete_TextOnly_StaysString(t *testing.T) {
+	// Text-only user messages should remain a plain string, not an array.
+	var sentBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		json.Unmarshal(b, &sentBody)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "c1", "object": "chat.completion",
+			"choices": []any{map[string]any{
+				"index": 0, "finish_reason": "stop",
+				"message": map[string]any{"role": "assistant", "content": "hi"},
+			}},
+			"usage": map[string]any{"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
+		})
+	}))
+	defer srv.Close()
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "m",
+		Messages: []llm.Message{llm.User("hello")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	msgs, _ := sentBody["messages"].([]any)
+	userMsg, _ := msgs[0].(map[string]any)
+	// Text-only should be a string, not an array.
+	if _, ok := userMsg["content"].(string); !ok {
+		t.Fatalf("text-only content should be string, got %T", userMsg["content"])
+	}
+}
+
 func TestDefaultHeaders_CannotOverrideProviderHeaders(t *testing.T) {
 	var capturedHeaders http.Header
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

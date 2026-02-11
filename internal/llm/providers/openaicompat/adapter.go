@@ -6,6 +6,7 @@ package openaicompat
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -344,10 +345,17 @@ func toChatMessages(messages []llm.Message) ([]map[string]any, error) {
 				"content": textFromParts(m.Content),
 			})
 		case llm.RoleUser:
-			out = append(out, map[string]any{
-				"role":    "user",
-				"content": textFromParts(m.Content),
-			})
+			if hasImageContent(m.Content) {
+				out = append(out, map[string]any{
+					"role":    "user",
+					"content": buildMultimodalParts(m.Content),
+				})
+			} else {
+				out = append(out, map[string]any{
+					"role":    "user",
+					"content": textFromParts(m.Content),
+				})
+			}
 		case llm.RoleAssistant:
 			msg := map[string]any{
 				"role": "assistant",
@@ -397,6 +405,49 @@ func textFromParts(parts []llm.ContentPart) string {
 		}
 	}
 	return b.String()
+}
+
+// hasImageContent returns true if any content part is an image.
+func hasImageContent(parts []llm.ContentPart) bool {
+	for _, p := range parts {
+		if p.Kind == llm.ContentImage {
+			return true
+		}
+	}
+	return false
+}
+
+// buildMultimodalParts converts content parts to Chat Completions content array format
+// with {"type": "text", ...} and {"type": "image_url", ...} objects.
+func buildMultimodalParts(parts []llm.ContentPart) []map[string]any {
+	var out []map[string]any
+	for _, p := range parts {
+		switch p.Kind {
+		case llm.ContentText:
+			out = append(out, map[string]any{"type": "text", "text": p.Text})
+		case llm.ContentImage:
+			if p.Image == nil {
+				continue
+			}
+			imgURL := p.Image.URL
+			if imgURL == "" && len(p.Image.Data) > 0 {
+				mt := p.Image.MediaType
+				if mt == "" {
+					mt = "image/png"
+				}
+				imgURL = "data:" + mt + ";base64," + base64.StdEncoding.EncodeToString(p.Image.Data)
+			}
+			if imgURL == "" {
+				continue
+			}
+			urlObj := map[string]any{"url": imgURL}
+			if p.Image.Detail != "" {
+				urlObj["detail"] = p.Image.Detail
+			}
+			out = append(out, map[string]any{"type": "image_url", "image_url": urlObj})
+		}
+	}
+	return out
 }
 
 func toolCallsFromParts(parts []llm.ContentPart) []map[string]any {
