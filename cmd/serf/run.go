@@ -25,6 +25,8 @@ type runConfig struct {
 	stderr   io.Writer
 
 	skillsDirs []string // extra skill directories
+	mcpServers []string // --mcp inline specs
+	mcpConfigs []string // --mcp-config file paths
 
 	// Resume options.
 	resume       string // session ID to resume
@@ -120,6 +122,8 @@ func run(ctx context.Context, cfg runConfig) error {
 			MaxToolRoundsPerInput: 200,
 			AutoSaveDir:           cfg.workDir,
 			SkillsDirs:            cfg.skillsDirs,
+			MCPConfigFiles:        cfg.mcpConfigs,
+			MCPInline:             cfg.mcpServers,
 		})
 		if err != nil {
 			return fmt.Errorf("session creation: %w", err)

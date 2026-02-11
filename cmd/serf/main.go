@@ -30,6 +30,10 @@ func main() {
 	verbose := flag.Bool("verbose", false, "emit NDJSON events to stderr")
 	var skillsDirs stringSliceFlag
 	flag.Var(&skillsDirs, "skills-dir", "extra skill directory (repeatable)")
+	var mcpServers stringSliceFlag
+	flag.Var(&mcpServers, "mcp", "MCP server (repeatable, format: name:command args...)")
+	var mcpConfigs stringSliceFlag
+	flag.Var(&mcpConfigs, "mcp-config", "path to .mcp.json file (repeatable)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: serf --provider <provider> --model <model> [flags] <task>\n\n")
@@ -41,7 +45,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		fmt.Fprintf(os.Stderr, "  --dir <path>         Working directory (default: current directory)\n")
 		fmt.Fprintf(os.Stderr, "  --verbose            Emit NDJSON events to stderr (replaces human-readable output)\n")
-		fmt.Fprintf(os.Stderr, "  --skills-dir <path>  Extra skill directory (repeatable)\n\n")
+		fmt.Fprintf(os.Stderr, "  --skills-dir <path>  Extra skill directory (repeatable)\n")
+		fmt.Fprintf(os.Stderr, "  --mcp <spec>         MCP server (repeatable, format: name:command args...)\n")
+		fmt.Fprintf(os.Stderr, "  --mcp-config <path>  Path to .mcp.json file (repeatable)\n\n")
 		fmt.Fprintf(os.Stderr, "Session resume:\n")
 		fmt.Fprintf(os.Stderr, "  --resume <id>        Resume a previous session\n")
 		fmt.Fprintf(os.Stderr, "  --resume-with <id>   New task using a previous session's context\n")
@@ -85,6 +91,8 @@ func main() {
 		workDir:      *workDir,
 		verbose:      *verbose,
 		skillsDirs:   []string(skillsDirs),
+		mcpServers:   []string(mcpServers),
+		mcpConfigs:   []string(mcpConfigs),
 		stdout:       os.Stdout,
 		stderr:       os.Stderr,
 		resume:       *resume,
