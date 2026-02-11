@@ -413,7 +413,20 @@ func (s *Session) Close() {
 		return
 	}
 	s.state = SessionClosed
+
+	// Collect subagents and clear the map under the lock, then close outside
+	// the lock to avoid deadlock (sub.sess.Close() also acquires its own mu).
+	subs := make([]*subagent, 0, len(s.subagents))
+	for id, sub := range s.subagents {
+		subs = append(subs, sub)
+		delete(s.subagents, id)
+	}
+	turns := s.turns
 	s.mu.Unlock()
+
+	for _, sub := range subs {
+		sub.sess.Close()
+	}
 
 	if s.mcpMgr != nil {
 		s.mcpMgr.Close()
@@ -421,7 +434,10 @@ func (s *Session) Close() {
 
 	s.env.Cleanup()
 
-	s.emit(EventSessionEnd, map[string]any{})
+	s.emit(EventSessionEnd, map[string]any{
+		"state": string(SessionClosed),
+		"turns": turns,
+	})
 	close(s.events)
 }
 

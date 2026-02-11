@@ -1928,6 +1928,97 @@ func TestAssistantTurn_CapturesUsageAndResponseID(t *testing.T) {
 	t.Fatal("no assistant turn found")
 }
 
+func TestSession_GracefulShutdown_ClosesSubagents(t *testing.T) {
+	c := llm.NewClient()
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("done"), Finish: llm.FinishReason{Reason: "stop"}}
+			},
+		},
+	}
+	c.Register(f)
+
+	dir := t.TempDir()
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() { for range sess.Events() {} }()
+
+	// Create a sub-session and manually register it as a subagent.
+	subSess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession (sub): %v", err)
+	}
+	go func() { for range subSess.Events() {} }()
+
+	sub := &subagent{
+		id:   "test-sub",
+		sess: subSess,
+		done: make(chan struct{}),
+	}
+	sess.mu.Lock()
+	sess.subagents["test-sub"] = sub
+	sess.mu.Unlock()
+
+	sess.Close()
+
+	// Verify subagent was cleaned up from the map.
+	sess.mu.Lock()
+	remaining := len(sess.subagents)
+	sess.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("expected 0 subagents after Close, got %d", remaining)
+	}
+
+	// Verify sub-session was closed.
+	if subSess.State() != SessionClosed {
+		t.Fatalf("subagent session state: got %q want %q", subSess.State(), SessionClosed)
+	}
+}
+
+func TestSession_GracefulShutdown_SessionEndIncludesStateAndTurns(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("hello"), Finish: llm.FinishReason{Reason: "stop"}}
+			},
+		},
+	})
+
+	dir := t.TempDir()
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hi"); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+
+	var endData map[string]any
+	for ev := range sess.Events() {
+		if ev.Kind == EventSessionEnd {
+			endData = ev.Data
+		}
+	}
+	if endData == nil {
+		t.Fatal("expected SESSION_END event")
+	}
+	if state, ok := endData["state"].(string); !ok || state != string(SessionClosed) {
+		t.Fatalf("SESSION_END state: got %v", endData["state"])
+	}
+	if turns, ok := endData["turns"].(int); !ok || turns < 1 {
+		t.Fatalf("SESSION_END turns: got %v", endData["turns"])
+	}
+}
+
 func TestDetectLoop_Patterns(t *testing.T) {
 	tests := []struct {
 		name   string
