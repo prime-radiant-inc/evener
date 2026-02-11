@@ -2176,6 +2176,41 @@ func TestAdapter_Complete_ToolResultStructuredContent_MarshaledAsJSON(t *testing
 	}
 }
 
+func TestComplete_UsageRaw_ContainsProviderData(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "msg_1",
+  "model": "claude-test",
+  "content": [{"type":"text","text":"hi"}],
+  "stop_reason": "end_turn",
+  "usage": {
+    "input_tokens": 10, "output_tokens": 5,
+    "cache_read_input_tokens": 3
+  }
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "claude-test",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if len(resp.Usage.Raw) == 0 {
+		t.Fatal("Usage.Raw must contain provider data, got empty map")
+	}
+	if _, ok := resp.Usage.Raw["input_tokens"]; !ok {
+		t.Fatalf("Usage.Raw missing input_tokens key; got %v", resp.Usage.Raw)
+	}
+	if _, ok := resp.Usage.Raw["cache_read_input_tokens"]; !ok {
+		t.Fatalf("Usage.Raw missing cache_read_input_tokens key; got %v", resp.Usage.Raw)
+	}
+}
+
 func contentKinds(parts []llm.ContentPart) []string {
 	var kinds []string
 	for _, p := range parts {

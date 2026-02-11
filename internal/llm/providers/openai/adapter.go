@@ -855,7 +855,7 @@ func parseUsage(u map[string]any) llm.Usage {
 		InputTokens:  getInt(u["input_tokens"]),
 		OutputTokens: getInt(u["output_tokens"]),
 		TotalTokens:  getInt(u["total_tokens"]),
-		Raw:          map[string]any{},
+		Raw:          u,
 	}
 	if outDetails, ok := u["output_tokens_details"].(map[string]any); ok {
 		rt := getInt(outDetails["reasoning_tokens"])

@@ -1585,6 +1585,40 @@ func TestComplete_ToolResultIsError_OmittedWhenFalse(t *testing.T) {
 	}
 }
 
+func TestComplete_UsageRaw_ContainsProviderData(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "resp_1",
+  "model": "gpt-5.2",
+  "output": [{"type": "message", "content": [{"type":"output_text", "text":"hi"}]}],
+  "usage": {
+    "input_tokens": 10, "output_tokens": 5, "total_tokens": 15,
+    "output_tokens_details": {"reasoning_tokens": 2}
+  }
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gpt-5.2",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if len(resp.Usage.Raw) == 0 {
+		t.Fatal("Usage.Raw must contain provider data, got empty map")
+	}
+	if _, ok := resp.Usage.Raw["input_tokens"]; !ok {
+		t.Fatalf("Usage.Raw missing input_tokens key; got %v", resp.Usage.Raw)
+	}
+	if _, ok := resp.Usage.Raw["output_tokens_details"]; !ok {
+		t.Fatalf("Usage.Raw missing output_tokens_details key; got %v", resp.Usage.Raw)
+	}
+}
+
 func contentKinds(parts []llm.ContentPart) []string {
 	var kinds []string
 	for _, p := range parts {

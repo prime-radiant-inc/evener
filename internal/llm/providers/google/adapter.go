@@ -971,7 +971,7 @@ func parseUsage(u map[string]any) llm.Usage {
 		InputTokens:  getInt(u["promptTokenCount"]),
 		OutputTokens: getInt(u["candidatesTokenCount"]),
 		TotalTokens:  getInt(u["totalTokenCount"]),
-		Raw:          map[string]any{},
+		Raw:          u,
 	}
 	if v := getInt(u["cachedContentTokenCount"]); v > 0 {
 		usage.CacheReadTokens = &v

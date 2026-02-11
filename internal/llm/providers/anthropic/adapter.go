@@ -1269,7 +1269,7 @@ func parseUsage(u map[string]any) llm.Usage {
 		InputTokens:  getInt(u["input_tokens"]),
 		OutputTokens: getInt(u["output_tokens"]),
 		TotalTokens:  getInt(u["input_tokens"]) + getInt(u["output_tokens"]),
-		Raw:          map[string]any{},
+		Raw:          u,
 	}
 	if vAny, ok := u["cache_read_input_tokens"]; ok {
 		v := getInt(vAny)

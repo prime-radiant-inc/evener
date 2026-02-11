@@ -2401,3 +2401,35 @@ func TestComplete_ToolResultIsError_OmittedWhenFalse(t *testing.T) {
 		t.Fatalf("error key should be omitted for non-error results, but was present in response: %v", resp)
 	}
 }
+
+func TestComplete_UsageRaw_ContainsProviderData(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "candidates": [{"content": {"parts": [{"text":"hi"}]}, "finishReason":"STOP"}],
+  "usageMetadata": {
+    "promptTokenCount": 10, "candidatesTokenCount": 5, "totalTokenCount": 15,
+    "cachedContentTokenCount": 3
+  }
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gemini-test",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if len(resp.Usage.Raw) == 0 {
+		t.Fatal("Usage.Raw must contain provider data, got empty map")
+	}
+	if _, ok := resp.Usage.Raw["promptTokenCount"]; !ok {
+		t.Fatalf("Usage.Raw missing promptTokenCount key; got %v", resp.Usage.Raw)
+	}
+	if _, ok := resp.Usage.Raw["cachedContentTokenCount"]; !ok {
+		t.Fatalf("Usage.Raw missing cachedContentTokenCount key; got %v", resp.Usage.Raw)
+	}
+}
