@@ -485,6 +485,12 @@ func TestAnthropicProfile_ProviderOptions_HasBetaHeaders(t *testing.T) {
 	if !ok || bh == "" {
 		t.Fatal("missing or empty beta_headers in anthropic provider options")
 	}
+	if strings.Contains(bh, "extended-thinking-2025-04-11") {
+		t.Fatalf("deprecated beta header must not be present: %q", bh)
+	}
+	if !strings.Contains(bh, "prompt-caching-2024-07-31") {
+		t.Fatalf("expected prompt-caching beta header, got %q", bh)
+	}
 }
 
 func TestProviderProfile_SupportsReasoning(t *testing.T) {
