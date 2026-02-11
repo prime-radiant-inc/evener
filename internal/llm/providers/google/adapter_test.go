@@ -1526,3 +1526,257 @@ func TestComplete_NoRateLimitHeaders_ReturnsNil(t *testing.T) {
 		t.Fatalf("RateLimit should be nil when no headers present, got %+v", resp.RateLimit)
 	}
 }
+
+func TestComplete_ParsesThoughtParts(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{
+  "candidates": [{"content": {"parts": [
+    {"text": "Let me think...", "thought": true},
+    {"text": "The answer is 42."}
+  ]}, "finishReason": "STOP"}],
+  "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 20, "totalTokenCount": 30, "thoughtsTokenCount": 15}
+}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gemini-2.0-flash-thinking-exp",
+		Messages: []llm.Message{llm.User("think hard")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	thinkingParts := 0
+	textParts := 0
+	for _, p := range resp.Message.Content {
+		if p.Kind == llm.ContentThinking {
+			thinkingParts++
+			if p.Thinking == nil || p.Thinking.Text != "Let me think..." {
+				t.Fatalf("thinking text = %v", p.Thinking)
+			}
+		}
+		if p.Kind == llm.ContentText {
+			textParts++
+			if p.Text != "The answer is 42." {
+				t.Fatalf("text = %q", p.Text)
+			}
+		}
+	}
+	if thinkingParts != 1 {
+		t.Fatalf("thinking parts = %d, want 1; content = %+v", thinkingParts, resp.Message.Content)
+	}
+	if textParts != 1 {
+		t.Fatalf("text parts = %d, want 1; content = %+v", textParts, resp.Message.Content)
+	}
+}
+
+func TestComplete_ThoughtPartWithEmptyText_Ignored(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{
+  "candidates": [{"content": {"parts": [
+    {"text": "", "thought": true},
+    {"text": "Only this."}
+  ]}, "finishReason": "STOP"}],
+  "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2}
+}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gemini-2.0-flash-thinking-exp",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Empty thought should be ignored, only 1 text part
+	if len(resp.Message.Content) != 1 {
+		t.Fatalf("content parts = %d, want 1; content = %+v", len(resp.Message.Content), resp.Message.Content)
+	}
+	if resp.Message.Content[0].Kind != llm.ContentText {
+		t.Fatalf("expected text part, got %q", resp.Message.Content[0].Kind)
+	}
+}
+
+func TestComplete_PassesReasoningEffortAsThinkingConfig(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	cases := []struct {
+		effort     string
+		wantBudget float64
+	}{
+		{"low", 1024},
+		{"medium", 8192},
+		{"high", 32768},
+	}
+	for _, tc := range cases {
+		t.Run(tc.effort, func(t *testing.T) {
+			gotBody = nil
+			effort := tc.effort
+			_, err := a.Complete(context.Background(), llm.Request{
+				Model:           "gemini-2.0-flash-thinking-exp",
+				Messages:        []llm.Message{llm.User("think")},
+				ReasoningEffort: &effort,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			genCfg, ok := gotBody["generationConfig"].(map[string]any)
+			if !ok {
+				t.Fatal("no generationConfig")
+			}
+			tc2, ok := genCfg["thinkingConfig"].(map[string]any)
+			if !ok {
+				t.Fatalf("no thinkingConfig in generationConfig: %v", genCfg)
+			}
+			budget, ok := tc2["thinkingBudget"]
+			if !ok {
+				t.Fatal("no thinkingBudget")
+			}
+			budgetNum, ok := budget.(float64)
+			if !ok {
+				t.Fatalf("thinkingBudget type = %T, want float64", budget)
+			}
+			if budgetNum != tc.wantBudget {
+				t.Fatalf("thinkingBudget = %v, want %v", budgetNum, tc.wantBudget)
+			}
+		})
+	}
+}
+
+func TestComplete_ReasoningEffort_None_NoThinkingConfig(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	effort := "none"
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:           "gemini-2.0-flash-thinking-exp",
+		Messages:        []llm.Message{llm.User("think")},
+		ReasoningEffort: &effort,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	genCfg, _ := gotBody["generationConfig"].(map[string]any)
+	if _, ok := genCfg["thinkingConfig"]; ok {
+		t.Fatalf("thinkingConfig should not be set for effort=none, got %v", genCfg["thinkingConfig"])
+	}
+}
+
+func TestStream_PassesReasoningEffortAsThinkingConfig(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, "data: "+`{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`+"\n\n")
+		if f != nil {
+			f.Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	effort := "high"
+	stream, err := a.Stream(context.Background(), llm.Request{
+		Model:           "gemini-2.0-flash-thinking-exp",
+		Messages:        []llm.Message{llm.User("think")},
+		ReasoningEffort: &effort,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	for range stream.Events() {
+	}
+
+	genCfg, ok := gotBody["generationConfig"].(map[string]any)
+	if !ok {
+		t.Fatal("no generationConfig")
+	}
+	tc, ok := genCfg["thinkingConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("no thinkingConfig in generationConfig: %v", genCfg)
+	}
+	if tc["thinkingBudget"] == nil {
+		t.Fatal("thinkingBudget is nil")
+	}
+}
+
+func TestStream_ParsesThoughtParts(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		write := func(data string) {
+			_, _ = io.WriteString(w, "data: "+data+"\n\n")
+			if f != nil {
+				f.Flush()
+			}
+		}
+		write(`{"candidates":[{"content":{"parts":[{"text":"thinking...","thought":true}]}}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`)
+		write(`{"candidates":[{"content":{"parts":[{"text":"The answer."}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2,"totalTokenCount":3,"thoughtsTokenCount":5}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	stream, err := a.Stream(context.Background(), llm.Request{
+		Model:    "gemini-2.0-flash-thinking-exp",
+		Messages: []llm.Message{llm.User("think")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	var finish *llm.Response
+	for ev := range stream.Events() {
+		if ev.Type == llm.StreamEventFinish && ev.Response != nil {
+			finish = ev.Response
+		}
+	}
+	if finish == nil {
+		t.Fatal("no finish response")
+	}
+	thinkingParts := 0
+	textParts := 0
+	for _, p := range finish.Message.Content {
+		if p.Kind == llm.ContentThinking {
+			thinkingParts++
+			if p.Thinking == nil || p.Thinking.Text != "thinking..." {
+				t.Fatalf("thinking text = %v", p.Thinking)
+			}
+		}
+		if p.Kind == llm.ContentText {
+			textParts++
+		}
+	}
+	if thinkingParts != 1 {
+		t.Fatalf("thinking parts = %d, want 1; content = %+v", thinkingParts, finish.Message.Content)
+	}
+	if textParts != 1 {
+		t.Fatalf("text parts = %d, want 1; content = %+v", textParts, finish.Message.Content)
+	}
+}

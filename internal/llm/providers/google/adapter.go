@@ -99,6 +99,14 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 			}
 		}
 	}
+	if req.ReasoningEffort != nil {
+		budget := reasoningEffortToBudget(*req.ReasoningEffort)
+		if budget > 0 {
+			genCfg["thinkingConfig"] = map[string]any{
+				"thinkingBudget": budget,
+			}
+		}
+	}
 
 	body := map[string]any{
 		"contents":         contents,
@@ -237,6 +245,14 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 				// Gemini's Schema is a restricted subset; strip JSON-schema-only fields
 				// (e.g., additionalProperties) so requests don't fail validation.
 				genCfg["responseSchema"] = sanitizeGeminiSchema(req.ResponseFormat.JSONSchema)
+			}
+		}
+	}
+	if req.ReasoningEffort != nil {
+		budget := reasoningEffortToBudget(*req.ReasoningEffort)
+		if budget > 0 {
+			genCfg["thinkingConfig"] = map[string]any{
+				"thinkingBudget": budget,
 			}
 		}
 	}
@@ -387,6 +403,21 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 							for _, pAny := range parts {
 								p, ok := pAny.(map[string]any)
 								if !ok {
+									continue
+								}
+								// Thought parts must be checked BEFORE text parts
+								// because thought parts also have a "text" field.
+								if thought, _ := p["thought"].(bool); thought {
+									text, _ := p["text"].(string)
+									if text != "" {
+										flushTextPart()
+										contentParts = append(contentParts, llm.ContentPart{
+											Kind: llm.ContentThinking,
+											Thinking: &llm.ThinkingData{
+												Text: text,
+											},
+										})
+									}
 									continue
 								}
 								if t, _ := p["text"].(string); t != "" {
@@ -741,6 +772,19 @@ func geminiThoughtSignature(part map[string]any, fc map[string]any) string {
 	return ""
 }
 
+func reasoningEffortToBudget(effort string) int {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "low":
+		return 1024
+	case "medium":
+		return 8192
+	case "high":
+		return 32768
+	default:
+		return 0
+	}
+}
+
 func normalizeJSONNumbers(v any) any {
 	switch x := v.(type) {
 	case map[string]any:
@@ -785,6 +829,20 @@ func fromGeminiResponse(raw map[string]any, requestedModel string) llm.Response 
 					for _, pAny := range parts {
 						p, ok := pAny.(map[string]any)
 						if !ok {
+							continue
+						}
+						// Thought parts must be checked BEFORE text parts
+						// because thought parts also have a "text" field.
+						if thought, _ := p["thought"].(bool); thought {
+							text, _ := p["text"].(string)
+							if text != "" {
+								msg.Content = append(msg.Content, llm.ContentPart{
+									Kind: llm.ContentThinking,
+									Thinking: &llm.ThinkingData{
+										Text: text,
+									},
+								})
+							}
 							continue
 						}
 						if t, _ := p["text"].(string); t != "" {
