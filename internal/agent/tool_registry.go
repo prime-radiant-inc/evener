@@ -258,6 +258,9 @@ func compileSchema(params map[string]any) (*jsonschema.Schema, error) {
 			"properties": map[string]any{},
 		}
 	}
+	if t, ok := params["type"].(string); ok && t != "object" {
+		return nil, fmt.Errorf("tool schema root type must be \"object\", got %q", t)
+	}
 	b, err := json.Marshal(params)
 	if err != nil {
 		return nil, err

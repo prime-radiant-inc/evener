@@ -269,6 +269,27 @@ func TestToolRegistry_Names(t *testing.T) {
 	}
 }
 
+func TestToolRegistry_Register_RejectsNonObjectRootSchema(t *testing.T) {
+	reg := NewToolRegistry()
+	err := reg.Register(RegisteredTool{
+		Definition: llm.ToolDefinition{
+			Name: "bad_tool",
+			Parameters: map[string]any{
+				"type": "string",
+			},
+		},
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			return "ok", nil
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for non-object root schema type")
+	}
+	if !strings.Contains(err.Error(), "object") {
+		t.Fatalf("error should mention 'object': %v", err)
+	}
+}
+
 func TestDefaultToolLimit_MatchesSpecTable(t *testing.T) {
 	type want struct {
 		tool   string
