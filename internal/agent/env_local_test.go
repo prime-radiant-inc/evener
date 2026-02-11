@@ -334,7 +334,7 @@ func TestGrep_FallbackWithoutRipgrep(t *testing.T) {
 
 	env := NewLocalExecutionEnvironment(dir)
 	// Test the native fallback directly
-	result, err := env.grepNative("hello", dir, "", false, 100)
+	result, err := env.grepNative("hello", dir, "", false, 100, "")
 	if err != nil {
 		t.Fatalf("grepNative: %v", err)
 	}
@@ -354,7 +354,7 @@ func TestGrepNative_CaseInsensitiveAndGlob(t *testing.T) {
 	env := NewLocalExecutionEnvironment(dir)
 
 	// Case insensitive should match both files
-	result, err := env.grepNative("HELLO", dir, "", true, 100)
+	result, err := env.grepNative("HELLO", dir, "", true, 100, "")
 	if err != nil {
 		t.Fatalf("case-insensitive: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestGrepNative_CaseInsensitiveAndGlob(t *testing.T) {
 	}
 
 	// Glob filter should restrict to *.go only
-	result, err = env.grepNative("hello", dir, "*.go", false, 100)
+	result, err = env.grepNative("hello", dir, "*.go", false, 100, "")
 	if err != nil {
 		t.Fatalf("glob filter: %v", err)
 	}
@@ -379,7 +379,7 @@ func TestGrepNative_SkipsHiddenDirs(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "visible.txt"), []byte("hello visible\n"), 0o644)
 
 	env := NewLocalExecutionEnvironment(dir)
-	result, err := env.grepNative("hello", dir, "", false, 100)
+	result, err := env.grepNative("hello", dir, "", false, 100, "")
 	if err != nil {
 		t.Fatalf("grepNative: %v", err)
 	}
@@ -397,7 +397,7 @@ func TestGrepNative_SkipsBinaryFiles(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "text.txt"), []byte("hello world\n"), 0o644)
 
 	env := NewLocalExecutionEnvironment(dir)
-	result, err := env.grepNative("hello", dir, "", false, 100)
+	result, err := env.grepNative("hello", dir, "", false, 100, "")
 	if err != nil {
 		t.Fatalf("grepNative: %v", err)
 	}
@@ -419,7 +419,7 @@ func TestGrepNative_MaxResults(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "many.txt"), []byte(content.String()), 0o644)
 
 	env := NewLocalExecutionEnvironment(dir)
-	result, err := env.grepNative("match", dir, "", false, 5)
+	result, err := env.grepNative("match", dir, "", false, 5, "")
 	if err != nil {
 		t.Fatalf("grepNative: %v", err)
 	}
@@ -434,7 +434,7 @@ func TestGrepNative_InvalidRegex(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello\n"), 0o644)
 
 	env := NewLocalExecutionEnvironment(dir)
-	_, err := env.grepNative("[invalid", dir, "", false, 100)
+	_, err := env.grepNative("[invalid", dir, "", false, 100, "")
 	if err == nil {
 		t.Fatal("expected error for invalid regex")
 	}
@@ -576,4 +576,114 @@ func TestLocalExecutionEnvironment_InitializeCleanup(t *testing.T) {
 	}
 	env.Cleanup()
 	// Should not panic or error
+}
+
+func TestGrep_OutputMode_FilesWithMatches(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello world"), 0644)
+	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("hello again"), 0644)
+	os.WriteFile(filepath.Join(dir, "c.txt"), []byte("no match"), 0644)
+
+	env := NewLocalExecutionEnvironment(dir)
+	defer env.Cleanup()
+
+	result, err := env.Grep("hello", dir, "", false, 100, "files_with_matches")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "a.txt") || !strings.Contains(result, "b.txt") {
+		t.Errorf("expected file names in result: %q", result)
+	}
+	// Should NOT contain matching line content.
+	if strings.Contains(result, "hello world") {
+		t.Error("files_with_matches should not include line content")
+	}
+	if strings.Contains(result, "hello again") {
+		t.Error("files_with_matches should not include line content")
+	}
+}
+
+func TestGrep_OutputMode_Count(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello\nhello"), 0644)
+
+	env := NewLocalExecutionEnvironment(dir)
+	defer env.Cleanup()
+
+	result, err := env.Grep("hello", dir, "", false, 100, "count")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "2") {
+		t.Errorf("expected count of 2: %q", result)
+	}
+}
+
+func TestGrep_OutputMode_ContentDefault(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello world\n"), 0644)
+
+	env := NewLocalExecutionEnvironment(dir)
+	defer env.Cleanup()
+
+	// Empty string should behave as "content" (default)
+	result, err := env.Grep("hello", dir, "", false, 100, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "hello world") {
+		t.Errorf("expected line content in default mode: %q", result)
+	}
+
+	// Explicit "content" should also work
+	result2, err := env.Grep("hello", dir, "", false, 100, "content")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result2, "hello world") {
+		t.Errorf("expected line content in explicit content mode: %q", result2)
+	}
+}
+
+func TestGrepNative_OutputMode_FilesWithMatches(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello world"), 0644)
+	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("hello again"), 0644)
+	os.WriteFile(filepath.Join(dir, "c.txt"), []byte("no match"), 0644)
+
+	env := NewLocalExecutionEnvironment(dir)
+
+	result, err := env.grepNative("hello", dir, "", false, 100, "files_with_matches")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "a.txt") || !strings.Contains(result, "b.txt") {
+		t.Errorf("expected file names in result: %q", result)
+	}
+	if strings.Contains(result, "hello world") {
+		t.Error("files_with_matches should not include line content")
+	}
+	if strings.Contains(result, "c.txt") {
+		t.Error("non-matching file should not appear")
+	}
+}
+
+func TestGrepNative_OutputMode_Count(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello\nhello\ngoodbye"), 0644)
+	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("hello once"), 0644)
+
+	env := NewLocalExecutionEnvironment(dir)
+
+	result, err := env.grepNative("hello", dir, "", false, 100, "count")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Should contain file:count format
+	if !strings.Contains(result, "a.txt:2") {
+		t.Errorf("expected a.txt:2 in count output: %q", result)
+	}
+	if !strings.Contains(result, "b.txt:1") {
+		t.Errorf("expected b.txt:1 in count output: %q", result)
+	}
 }

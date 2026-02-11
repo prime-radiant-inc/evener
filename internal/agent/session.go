@@ -1265,7 +1265,11 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			if v, ok := args["max_results"].(float64); ok && int(v) > 0 {
 				maxRes = int(v)
 			}
-			return env.Grep(pat, path, glob, ci, maxRes)
+			outputMode := ""
+			if v, ok := args["output_mode"].(string); ok {
+				outputMode = v
+			}
+			return env.Grep(pat, path, glob, ci, maxRes, outputMode)
 		},
 	}); err != nil {
 		return err

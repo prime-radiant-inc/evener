@@ -33,7 +33,7 @@ type ExecutionEnvironment interface {
 	FileExists(path string) bool
 
 	Glob(pattern string, basePath string) ([]string, error)
-	Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int) (string, error)
+	Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error)
 	ListDirectory(path string, depth int) ([]DirEntry, error)
 
 	ExecCommand(ctx context.Context, command string, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error)

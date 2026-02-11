@@ -451,6 +451,11 @@ func defGrep() llm.ToolDefinition {
 				"glob_filter":      map[string]any{"type": "string"},
 				"case_insensitive": map[string]any{"type": "boolean"},
 				"max_results":      map[string]any{"type": "integer"},
+				"output_mode": map[string]any{
+					"type": "string",
+					"enum": []any{"content", "files_with_matches", "count"},
+					"description": "Output format: content (default, matching lines), files_with_matches (file paths only), count (match counts per file)",
+				},
 			},
 			"required": []string{"pattern"},
 		},

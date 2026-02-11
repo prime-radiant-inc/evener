@@ -294,7 +294,7 @@ func (e *LocalExecutionEnvironment) Glob(pattern string, basePath string) ([]str
 	return abs, nil
 }
 
-func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int) (string, error) {
+func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
 	rg, err := exec.LookPath("rg")
 	if err != nil {
 		// Fallback to native Go regex search when ripgrep is absent
@@ -305,7 +305,7 @@ func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter
 		if !filepath.IsAbs(dir) {
 			dir = filepath.Join(e.RootDir, dir)
 		}
-		return e.grepNative(pattern, dir, globFilter, caseInsensitive, maxResults)
+		return e.grepNative(pattern, dir, globFilter, caseInsensitive, maxResults, outputMode)
 	}
 	dir := strings.TrimSpace(path)
 	if dir == "" {
@@ -315,7 +315,15 @@ func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter
 		dir = filepath.Join(e.RootDir, dir)
 	}
 
-	args := []string{"--no-heading", "--line-number", "--color", "never"}
+	args := []string{"--no-heading", "--color", "never"}
+	switch outputMode {
+	case "files_with_matches":
+		args = append(args, "--files-with-matches")
+	case "count":
+		args = append(args, "--count")
+	default:
+		args = append(args, "--line-number")
+	}
 	if caseInsensitive {
 		args = append(args, "-i")
 	}
@@ -344,7 +352,7 @@ func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter
 	return res.Stdout + res.Stderr, err
 }
 
-func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string, caseInsensitive bool, maxResults int) (string, error) {
+func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
 	flags := ""
 	if caseInsensitive {
 		flags = "(?i)"
@@ -358,8 +366,10 @@ func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string,
 		maxResults = 100
 	}
 
-	var matches []string
-	count := 0
+	var results []string
+	fileCounts := map[string]int{}      // for "count" mode
+	filesSeen := map[string]struct{}{}   // for "files_with_matches" mode
+	totalResults := 0
 
 	err = filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -393,10 +403,26 @@ func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string,
 		lines := strings.Split(string(data), "\n")
 		for i, line := range lines {
 			if re.MatchString(line) {
-				matches = append(matches, fmt.Sprintf("%s:%d:%s", relPath, i+1, line))
-				count++
-				if count >= maxResults {
-					return filepath.SkipAll
+				switch outputMode {
+				case "files_with_matches":
+					if _, seen := filesSeen[relPath]; !seen {
+						filesSeen[relPath] = struct{}{}
+						results = append(results, relPath)
+						totalResults++
+						if totalResults >= maxResults {
+							return filepath.SkipAll
+						}
+					}
+					// Once we've recorded this file, skip to next file
+					return nil
+				case "count":
+					fileCounts[relPath]++
+				default: // "content" or ""
+					results = append(results, fmt.Sprintf("%s:%d:%s", relPath, i+1, line))
+					totalResults++
+					if totalResults >= maxResults {
+						return filepath.SkipAll
+					}
 				}
 			}
 		}
@@ -405,7 +431,17 @@ func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string,
 	if err != nil {
 		return "", err
 	}
-	return strings.Join(matches, "\n"), nil
+
+	if outputMode == "count" {
+		// Build sorted output from fileCounts
+		var countResults []string
+		for file, cnt := range fileCounts {
+			countResults = append(countResults, fmt.Sprintf("%s:%d", file, cnt))
+		}
+		sort.Strings(countResults)
+		return strings.Join(countResults, "\n"), nil
+	}
+	return strings.Join(results, "\n"), nil
 }
 
 func (e *LocalExecutionEnvironment) ExecCommand(ctx context.Context, command string, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error) {
