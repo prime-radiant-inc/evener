@@ -2067,3 +2067,78 @@ func TestParseUsage_HandlesFloat64(t *testing.T) {
 		t.Errorf("TotalTokens = %d, want 275", usage.TotalTokens)
 	}
 }
+
+func TestStream_EmitsReasoningEventsForThoughtParts(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		write := func(data string) {
+			_, _ = io.WriteString(w, "data: "+data+"\n\n")
+			if f != nil {
+				f.Flush()
+			}
+		}
+		// Chunk 1: thought part
+		write(`{"candidates":[{"content":{"parts":[{"thought":true,"text":"Let me think..."}]}}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`)
+		// Chunk 2: text part with finishReason
+		write(`{"candidates":[{"content":{"parts":[{"text":"The answer is 42."}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	stream, err := a.Stream(context.Background(), llm.Request{
+		Model:    "gemini-2.5-flash",
+		Messages: []llm.Message{llm.User("test")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	var types []llm.StreamEventType
+	for ev := range stream.Events() {
+		types = append(types, ev.Type)
+	}
+
+	// Verify reasoning and text stream events appear in the correct order.
+	wantTypes := []llm.StreamEventType{
+		llm.StreamEventStreamStart,
+		llm.StreamEventReasoningStart,
+		llm.StreamEventReasoningDelta,
+		llm.StreamEventReasoningEnd,
+		llm.StreamEventTextStart,
+		llm.StreamEventTextDelta,
+		llm.StreamEventTextEnd,
+		llm.StreamEventFinish,
+	}
+	// Check that all wanted types appear in order (allow provider events between them).
+	wi := 0
+	for _, got := range types {
+		if wi < len(wantTypes) && got == wantTypes[wi] {
+			wi++
+		}
+	}
+	if wi != len(wantTypes) {
+		t.Errorf("missing expected stream event types\ngot:  %v\nwant: %v", types, wantTypes)
+	}
+
+	// Also verify the reasoning delta content is correct.
+	stream2, err := a.Stream(context.Background(), llm.Request{
+		Model:    "gemini-2.5-flash",
+		Messages: []llm.Message{llm.User("test")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream2.Close()
+
+	var reasoningText string
+	for ev := range stream2.Events() {
+		if ev.Type == llm.StreamEventReasoningDelta {
+			reasoningText += ev.ReasoningDelta
+		}
+	}
+	if reasoningText != "Let me think..." {
+		t.Errorf("reasoning delta = %q, want %q", reasoningText, "Let me think...")
+	}
+}

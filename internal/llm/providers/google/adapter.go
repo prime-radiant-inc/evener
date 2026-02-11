@@ -411,6 +411,9 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 									text, _ := p["text"].(string)
 									if text != "" {
 										flushTextPart()
+										s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningStart})
+										s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: text})
+										s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningEnd})
 										contentParts = append(contentParts, llm.ContentPart{
 											Kind: llm.ContentThinking,
 											Thinking: &llm.ThinkingData{
