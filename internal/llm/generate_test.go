@@ -870,3 +870,67 @@ func TestGenerate_UnknownToolCall_SendsErrorResultToModel(t *testing.T) {
 		t.Fatalf("expected error tool result to be sent to model for unknown tool call")
 	}
 }
+
+func TestGenerate_StopWhen(t *testing.T) {
+	c := NewClient()
+	callCount := 0
+	a := &scriptedAdapter{
+		name: "openai",
+		steps: []func(req Request) (Response, error){
+			func(req Request) (Response, error) {
+				callCount++
+				return Response{Message: Message{Role: RoleAssistant, Content: []ContentPart{
+					{Kind: ContentToolCall, ToolCall: &ToolCallData{
+						ID: fmt.Sprintf("call_%d", callCount), Name: "my_tool",
+						Arguments: json.RawMessage(`{}`), Type: "function",
+					}},
+				}}}, nil
+			},
+			func(req Request) (Response, error) {
+				callCount++
+				return Response{Message: Message{Role: RoleAssistant, Content: []ContentPart{
+					{Kind: ContentToolCall, ToolCall: &ToolCallData{
+						ID: fmt.Sprintf("call_%d", callCount), Name: "my_tool",
+						Arguments: json.RawMessage(`{}`), Type: "function",
+					}},
+				}}}, nil
+			},
+			func(req Request) (Response, error) {
+				callCount++
+				return Response{Message: Message{Role: RoleAssistant, Content: []ContentPart{
+					{Kind: ContentToolCall, ToolCall: &ToolCallData{
+						ID: fmt.Sprintf("call_%d", callCount), Name: "my_tool",
+						Arguments: json.RawMessage(`{}`), Type: "function",
+					}},
+				}}}, nil
+			},
+			func(req Request) (Response, error) {
+				callCount++
+				return Response{Message: Assistant("done")}, nil
+			},
+		},
+	}
+	c.Register(a)
+
+	prompt := "go"
+	maxRounds := 10
+	result, err := Generate(context.Background(), GenerateOptions{
+		Client:        c,
+		Model:         "m",
+		Prompt:        &prompt,
+		MaxToolRounds: &maxRounds,
+		Tools: []Tool{{
+			Definition: ToolDefinition{Name: "my_tool", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}},
+			Execute:    func(ctx context.Context, args any) (any, error) { return "ok", nil },
+		}},
+		StopWhen: func(steps []StepResult) bool {
+			return len(steps) >= 2 // stop after 2 tool rounds
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Steps) != 2 {
+		t.Fatalf("steps = %d, want 2 (StopWhen should have stopped)", len(result.Steps))
+	}
+}

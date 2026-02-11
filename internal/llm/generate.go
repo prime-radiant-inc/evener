@@ -68,6 +68,10 @@ type GenerateOptions struct {
 	RetryPolicy *RetryPolicy
 	Sleep       SleepFunc
 
+	// StopWhen is an optional predicate called after each tool execution round.
+	// If it returns true, the tool loop terminates early.
+	StopWhen func(steps []StepResult) bool
+
 	// Optional timeouts for the multi-step operation.
 	TimeoutTotal   time.Duration
 	TimeoutPerStep time.Duration
@@ -245,6 +249,21 @@ func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error
 			history = append(history, ToolResultNamed(r.ToolCallID, r.Name, r.Content, r.IsError))
 		}
 		toolRoundsUsed++
+
+		// Check custom stop condition (spec 4.3).
+		if opts.StopWhen != nil && opts.StopWhen(steps) {
+			return &GenerateResult{
+				Text:         step.Text,
+				Reasoning:    step.Reasoning,
+				ToolCalls:    step.ToolCalls,
+				ToolResults:  step.ToolResults,
+				FinishReason: step.FinishReason,
+				Usage:        step.Usage,
+				TotalUsage:   totalUsage,
+				Steps:        steps,
+				Response:     resp,
+			}, nil
+		}
 	}
 }
 
