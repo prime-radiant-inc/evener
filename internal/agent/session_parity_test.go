@@ -645,6 +645,60 @@ func TestParity_MultiFileEdit(t *testing.T) {
 	}
 }
 
+func TestParity_ToolOutputTruncation(t *testing.T) {
+	for _, pc := range providerCases {
+		t.Run(pc.name, func(t *testing.T) {
+			steps := []func(llm.Request) llm.Response{
+				func(req llm.Request) llm.Response {
+					return llm.Response{Message: llm.Message{
+						Role: llm.RoleAssistant,
+						Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+							ID: "c1", Name: canonicalReadFile(pc.name), Type: "function",
+							Arguments: json.RawMessage(`{"file_path":"big.txt"}`),
+						}}},
+					}}
+				},
+				func(req llm.Request) llm.Response {
+					return llm.Response{Message: llm.Assistant("done")}
+				},
+			}
+			sess, f := newParitySession(t, pc, steps)
+			defer sess.Close()
+
+			// Create a file larger than the read_file limit (50,000 chars).
+			dir := sess.env.WorkingDirectory()
+			big := strings.Repeat("x", 60_000)
+			os.WriteFile(filepath.Join(dir, "big.txt"), []byte(big), 0644)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			sess.ProcessInput(ctx, "read big file")
+			sess.Close()
+
+			// Verify the tool result sent to the model was truncated.
+			reqs := f.Requests()
+			if len(reqs) < 2 {
+				t.Fatalf("expected at least 2 requests, got %d", len(reqs))
+			}
+			found := false
+			for _, m := range reqs[1].Messages {
+				for _, p := range m.Content {
+					if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
+						if s, ok := p.ToolResult.Content.(string); ok {
+							if strings.Contains(s, "Tool output was truncated") {
+								found = true
+							}
+						}
+					}
+				}
+			}
+			if !found {
+				t.Fatal("expected truncation marker in tool result for oversized read_file output")
+			}
+		})
+	}
+}
+
 // canonicalXxx returns the wire-name for a tool given the provider name.
 // This mirrors the ToolNameMap applied by each profile.
 func canonicalWriteFile(provider string) string { return "write_file" }
