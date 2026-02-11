@@ -143,3 +143,12 @@ func TestLocalExecutionEnvironment_ListDirectory_Depth(t *testing.T) {
 		t.Fatalf("expected nested entry at depth=2: %+v", ents2)
 	}
 }
+
+func TestLocalExecutionEnvironment_InitializeCleanup(t *testing.T) {
+	env := NewLocalExecutionEnvironment(t.TempDir())
+	if err := env.Initialize(); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	env.Cleanup()
+	// Should not panic or error
+}

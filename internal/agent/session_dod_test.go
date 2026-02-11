@@ -1232,6 +1232,9 @@ type captureEnv struct {
 	lastWdArg string
 }
 
+func (e *captureEnv) Initialize() error { return nil }
+func (e *captureEnv) Cleanup()          {}
+
 func (e *captureEnv) WorkingDirectory() string { return e.wd }
 func (e *captureEnv) Platform() string         { return "linux" }
 func (e *captureEnv) OSVersion() string        { return "test" }
@@ -1275,6 +1278,9 @@ func (e *captureEnv) LastTimeoutMS() int {
 type timeoutEnv struct {
 	wd string
 }
+
+func (e *timeoutEnv) Initialize() error { return nil }
+func (e *timeoutEnv) Cleanup()          {}
 
 func (e *timeoutEnv) WorkingDirectory() string { return e.wd }
 func (e *timeoutEnv) Platform() string         { return "linux" }

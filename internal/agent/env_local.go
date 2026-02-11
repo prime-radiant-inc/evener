@@ -24,6 +24,14 @@ func NewLocalExecutionEnvironment(rootDir string) *LocalExecutionEnvironment {
 	return &LocalExecutionEnvironment{RootDir: rootDir}
 }
 
+func (e *LocalExecutionEnvironment) Initialize() error {
+	return nil // Local env needs no setup
+}
+
+func (e *LocalExecutionEnvironment) Cleanup() {
+	// Local env needs no teardown
+}
+
 func (e *LocalExecutionEnvironment) WorkingDirectory() string { return e.RootDir }
 
 func (e *LocalExecutionEnvironment) Platform() string {

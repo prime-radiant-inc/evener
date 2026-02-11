@@ -149,6 +149,9 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 	if env == nil {
 		return nil, fmt.Errorf("execution environment is nil")
 	}
+	if err := env.Initialize(); err != nil {
+		return nil, fmt.Errorf("env initialize: %w", err)
+	}
 	cfg.applyDefaults()
 
 	s := &Session{
@@ -249,6 +252,9 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 	}
 	if env == nil {
 		return nil, fmt.Errorf("execution environment is nil")
+	}
+	if err := env.Initialize(); err != nil {
+		return nil, fmt.Errorf("env initialize: %w", err)
 	}
 
 	s := &Session{
@@ -410,6 +416,8 @@ func (s *Session) Close() {
 	if s.mcpMgr != nil {
 		s.mcpMgr.Close()
 	}
+
+	s.env.Cleanup()
 
 	s.emit(EventSessionEnd, map[string]any{})
 	close(s.events)

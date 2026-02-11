@@ -372,6 +372,9 @@ type fakeEnvForMCP struct {
 	gitRoot string
 }
 
+func (f *fakeEnvForMCP) Initialize() error { return nil }
+func (f *fakeEnvForMCP) Cleanup()          {}
+
 func (f *fakeEnvForMCP) WorkingDirectory() string { return f.workDir }
 func (f *fakeEnvForMCP) Platform() string          { return "test" }
 func (f *fakeEnvForMCP) OSVersion() string         { return "test" }

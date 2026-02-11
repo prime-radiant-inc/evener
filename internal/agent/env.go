@@ -18,6 +18,11 @@ type DirEntry struct {
 
 // ExecutionEnvironment abstracts the filesystem and command runner used by tools.
 type ExecutionEnvironment interface {
+	// Initialize performs any setup required before the environment is used.
+	Initialize() error
+	// Cleanup releases resources held by the environment.
+	Cleanup()
+
 	WorkingDirectory() string
 	Platform() string
 	OSVersion() string
