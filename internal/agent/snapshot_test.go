@@ -321,7 +321,7 @@ func TestSession_AutoSave_WritesSnapshotAfterProcessInput(t *testing.T) {
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 200,
-		AutoSaveDir:           dir,
+		StateDir:           dir,
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -378,7 +378,7 @@ func TestRestoreSession_AutoSaveContinues(t *testing.T) {
 	// Phase 1: Create a new session with auto-save and process input.
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 200,
-		AutoSaveDir:           dir,
+		StateDir:           dir,
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

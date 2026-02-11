@@ -121,7 +121,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	} else {
 		sess, err = agent.NewSession(client, profile, env, agent.SessionConfig{
 			MaxToolRoundsPerInput: 200,
-			AutoSaveDir:           cfg.workDir,
+			StateDir:           cfg.workDir,
 			SystemPromptFile:      cfg.systemPrompt,
 			SkillsDirs:            cfg.skillsDirs,
 			MCPConfigFiles:        cfg.mcpConfigs,

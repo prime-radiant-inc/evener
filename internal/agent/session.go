@@ -54,9 +54,9 @@ type SessionConfig struct {
 	LLMRetryPolicy *llm.RetryPolicy `json:"-"`
 	LLMSleep       llm.SleepFunc    `json:"-"`
 
-	// AutoSaveDir, when non-empty, enables incremental session persistence.
-	// Snapshots are written to <AutoSaveDir>/.serf/sessions/ after each assistant turn.
-	AutoSaveDir string `json:"-"`
+	// StateDir, when non-empty, enables incremental session persistence.
+	// Snapshots are written to <StateDir>/sessions/ and tasks to <StateDir>/tasks/.
+	StateDir string `json:"-"`
 }
 
 func (c *SessionConfig) applyDefaults() {
@@ -82,11 +82,12 @@ func (c *SessionConfig) applyDefaults() {
 }
 
 type Session struct {
-	id      string
-	cfg     SessionConfig
-	client  *llm.Client
-	profile ProviderProfile
-	env     ExecutionEnvironment
+	id       string
+	cfg      SessionConfig
+	client   *llm.Client
+	profile  ProviderProfile
+	env      ExecutionEnvironment
+	stateDir string
 
 	events chan SessionEvent
 	envInfo EnvironmentInfo
@@ -142,6 +143,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		client:    client,
 		profile:   profile,
 		env:       env,
+		stateDir:  cfg.StateDir,
 		events:    make(chan SessionEvent, 256),
 		history:   []Turn{},
 		subagents: map[string]*subagent{},
@@ -218,9 +220,9 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 // RestoreSession creates a Session from a saved snapshot, restoring the
 // conversation history while reconstructing non-serializable parts (tools,
 // client, profile) fresh. The session retains the original snapshot ID.
-func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEnvironment, snap SessionSnapshot, autoSaveDir string) (*Session, error) {
+func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEnvironment, snap SessionSnapshot, stateDir string) (*Session, error) {
 	cfg := snap.Config
-	cfg.AutoSaveDir = autoSaveDir
+	cfg.StateDir = stateDir
 	cfg.applyDefaults()
 
 	if client == nil {
@@ -239,6 +241,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		client:    client,
 		profile:   profile,
 		env:       env,
+		stateDir:  cfg.StateDir,
 		events:    make(chan SessionEvent, 256),
 		history:   append([]Turn{}, snap.History...),
 		turns:     snap.TurnCount,
@@ -452,14 +455,14 @@ func (s *Session) appendTurn(kind TurnKind, m llm.Message) {
 	s.history = append(s.history, Turn{Kind: kind, Message: m})
 }
 
-// maybeAutoSave persists the session state if AutoSaveDir is configured.
+// maybeAutoSave persists the session state if StateDir is configured.
 // Errors are emitted as warnings but do not interrupt the session.
 func (s *Session) maybeAutoSave() {
-	if s.cfg.AutoSaveDir == "" {
+	if s.stateDir == "" {
 		return
 	}
 	snap := s.Snapshot()
-	if err := SaveSession(s.cfg.AutoSaveDir, snap); err != nil {
+	if err := SaveSession(s.stateDir, snap); err != nil {
 		s.emit(EventWarning, map[string]any{
 			"message": fmt.Sprintf("auto-save failed: %v", err),
 		})
@@ -1237,7 +1240,11 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 
 func (s *Session) getOrCreateTaskStore() *TaskStore {
 	s.taskStoreOnce.Do(func() {
-		s.taskStore = NewTaskStore(s.env.WorkingDirectory(), s.id)
+		dir := s.stateDir
+		if dir == "" {
+			dir = s.env.WorkingDirectory()
+		}
+		s.taskStore = NewTaskStore(dir, s.id)
 		_ = s.taskStore.Load()
 	})
 	return s.taskStore

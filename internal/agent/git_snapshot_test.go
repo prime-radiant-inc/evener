@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"testing"
 )
@@ -63,9 +62,7 @@ func TestGitOriginURL_NilEnv(t *testing.T) {
 func mustExec(t *testing.T, env ExecutionEnvironment, dir, cmd string) {
 	t.Helper()
 	// Set HOME to temp dir so git doesn't try to read user config.
-	homeDir := t.TempDir()
-	os.Setenv("HOME", homeDir)
-	defer os.Unsetenv("HOME")
+	t.Setenv("HOME", t.TempDir())
 
 	res, err := env.ExecCommand(context.Background(), cmd, 5000, dir, nil)
 	if err != nil {
