@@ -677,6 +677,24 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 				if len(r.ToolCalls()) > 0 {
 					r.Finish = llm.FinishReason{Reason: "tool_calls", Raw: "tool_use"}
 				}
+
+				// Estimate reasoning_tokens from thinking blocks.
+				if r.Usage.ReasoningTokens == nil {
+					var thinkingChars int
+					for _, p := range parts {
+						if (p.Kind == llm.ContentThinking || p.Kind == llm.ContentRedThinking) && p.Thinking != nil {
+							thinkingChars += len(p.Thinking.Text)
+						}
+					}
+					if thinkingChars > 0 {
+						estimated := thinkingChars / 4
+						if estimated < 1 {
+							estimated = 1
+						}
+						r.Usage.ReasoningTokens = &estimated
+					}
+				}
+
 				rp := r
 				s.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp})
 				finished = true
@@ -1084,6 +1102,24 @@ func fromAnthropicResponse(raw map[string]any, requestedModel string) llm.Respon
 	if u, ok := raw["usage"].(map[string]any); ok {
 		r.Usage = parseUsage(u)
 	}
+
+	// Estimate reasoning_tokens from thinking blocks when provider doesn't give a native count.
+	if r.Usage.ReasoningTokens == nil {
+		var thinkingChars int
+		for _, p := range msg.Content {
+			if (p.Kind == llm.ContentThinking || p.Kind == llm.ContentRedThinking) && p.Thinking != nil {
+				thinkingChars += len(p.Thinking.Text)
+			}
+		}
+		if thinkingChars > 0 {
+			estimated := thinkingChars / 4
+			if estimated < 1 {
+				estimated = 1
+			}
+			r.Usage.ReasoningTokens = &estimated
+		}
+	}
+
 	return r
 }
 

@@ -1659,6 +1659,133 @@ func TestStream_HandlesWebSearchBlocks(t *testing.T) {
 	}
 }
 
+func TestComplete_EstimatesReasoningTokens(t *testing.T) {
+	thinkingText := "Let me think about this step by step..."
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		resp := map[string]any{
+			"id":    "msg_1",
+			"model": "claude-3-5-sonnet-20241022",
+			"content": []any{
+				map[string]any{"type": "thinking", "thinking": thinkingText, "signature": "sig_abc"},
+				map[string]any{"type": "text", "text": "The answer is 42."},
+			},
+			"stop_reason": "end_turn",
+			"usage":       map[string]any{"input_tokens": 10, "output_tokens": 20},
+		}
+		b, _ := json.Marshal(resp)
+		w.Write(b)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "claude-3-5-sonnet-20241022",
+		Messages: []llm.Message{llm.User("think hard")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Usage.ReasoningTokens == nil {
+		t.Fatal("ReasoningTokens should be estimated, got nil")
+	}
+	expected := len(thinkingText) / 4
+	if *resp.Usage.ReasoningTokens != expected {
+		t.Fatalf("ReasoningTokens = %d, want %d (len=%d / 4)", *resp.Usage.ReasoningTokens, expected, len(thinkingText))
+	}
+}
+
+func TestStream_EstimatesReasoningTokens(t *testing.T) {
+	srv := newAnthropicStreamServer(t, []string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"id":"msg_t","model":"claude-test","usage":{"input_tokens":10}}}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","signature":"sig1"}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me think step by step about this problem..."}}`,
+		``,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":0}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"text"}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"42"}}`,
+		``,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":1}`,
+		``,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	})
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	stream, err := a.Stream(context.Background(), llm.Request{
+		Model:    "claude-test",
+		Messages: []llm.Message{llm.User("think")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	var resp *llm.Response
+	for ev := range stream.Events() {
+		if ev.Response != nil {
+			resp = ev.Response
+		}
+	}
+	if resp == nil {
+		t.Fatal("no response")
+	}
+	if resp.Usage.ReasoningTokens == nil {
+		t.Fatal("ReasoningTokens should be estimated in streaming, got nil")
+	}
+	if *resp.Usage.ReasoningTokens <= 0 {
+		t.Fatalf("ReasoningTokens = %d, want > 0", *resp.Usage.ReasoningTokens)
+	}
+}
+
+func TestComplete_ParsesRetryAfterHeader(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "30")
+		w.WriteHeader(429)
+		fmt.Fprint(w, `{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "claude-3-5-sonnet-20241022",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var e llm.Error
+	if !errors.As(err, &e) {
+		t.Fatalf("expected llm.Error, got %T", err)
+	}
+	if !e.Retryable() {
+		t.Fatal("429 should be retryable")
+	}
+	ra := e.RetryAfter()
+	if ra == nil {
+		t.Fatal("RetryAfter should be set from header")
+	}
+	if *ra != 30*time.Second {
+		t.Fatalf("RetryAfter = %v, want 30s", *ra)
+	}
+}
+
 func TestComplete_PopulatesRateLimitInfo(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("x-ratelimit-remaining-requests", "99")
