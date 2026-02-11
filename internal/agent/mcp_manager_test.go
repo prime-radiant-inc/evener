@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -266,5 +267,70 @@ func TestMCPManager_Empty(t *testing.T) {
 	}
 	if mgr != nil {
 		t.Error("expected nil manager for empty config")
+	}
+}
+
+func TestTransportForConfig_Types(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     MCPServerConfig
+		wantErr bool
+	}{
+		{"stdio valid", MCPServerConfig{Type: "stdio", Command: "cmd"}, false},
+		{"stdio empty command", MCPServerConfig{Type: "stdio"}, true},
+		{"sse valid", MCPServerConfig{Type: "sse", URL: "http://localhost:8080"}, false},
+		{"sse empty url", MCPServerConfig{Type: "sse"}, true},
+		{"http valid", MCPServerConfig{Type: "http", URL: "http://localhost:8080"}, false},
+		{"http empty url", MCPServerConfig{Type: "http"}, true},
+		{"unknown type", MCPServerConfig{Type: "websocket"}, true},
+		{"default (empty type) with command", MCPServerConfig{Command: "cmd"}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			transport, err := transportForConfig(tt.cfg)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if transport == nil {
+				t.Error("expected non-nil transport")
+			}
+		})
+	}
+}
+
+func TestMergeEnv(t *testing.T) {
+	// mergeEnv uses os.Environ so we can only test that extra vars appear
+	// and that overriding works correctly.
+	result := mergeEnv(map[string]string{"MCP_TEST_UNIQUE_KEY_42": "value42"})
+
+	found := false
+	for _, e := range result {
+		if e == "MCP_TEST_UNIQUE_KEY_42=value42" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected MCP_TEST_UNIQUE_KEY_42=value42 in merged env")
+	}
+
+	// Setting PATH should replace, not duplicate.
+	result2 := mergeEnv(map[string]string{"PATH": "/custom/path"})
+	pathCount := 0
+	for _, e := range result2 {
+		key, _, _ := strings.Cut(e, "=")
+		if key == "PATH" {
+			pathCount++
+		}
+	}
+	if pathCount != 1 {
+		t.Errorf("expected exactly 1 PATH entry, got %d", pathCount)
 	}
 }

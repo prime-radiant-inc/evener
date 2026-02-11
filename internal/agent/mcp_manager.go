@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -113,7 +114,9 @@ func (m *MCPManager) RegisterTools(reg *ToolRegistry) error {
 				return fmt.Errorf("MCP tool %q: %w", td.Name, err)
 			}
 
-			// Check for collision with existing tools.
+			// Check for collision with existing tools. This is safe because
+			// RegisterTools is called only during single-threaded session init,
+			// after registerCoreTools has already completed.
 			reg.mu.RLock()
 			_, exists := reg.tools[td.Name]
 			reg.mu.RUnlock()
@@ -237,24 +240,73 @@ func transportForConfig(cfg MCPServerConfig) (mcp.Transport, error) {
 		if cfg.URL == "" {
 			return nil, fmt.Errorf("sse transport requires a url")
 		}
-		return &mcp.SSEClientTransport{Endpoint: cfg.URL}, nil
+		t := &mcp.SSEClientTransport{Endpoint: cfg.URL}
+		if len(cfg.Headers) > 0 {
+			t.HTTPClient = httpClientWithHeaders(cfg.Headers)
+		}
+		return t, nil
 
 	case "http":
 		if cfg.URL == "" {
 			return nil, fmt.Errorf("http transport requires a url")
 		}
-		return &mcp.StreamableClientTransport{Endpoint: cfg.URL}, nil
+		t := &mcp.StreamableClientTransport{Endpoint: cfg.URL}
+		if len(cfg.Headers) > 0 {
+			t.HTTPClient = httpClientWithHeaders(cfg.Headers)
+		}
+		return t, nil
 
 	default:
 		return nil, fmt.Errorf("unknown MCP transport type %q", cfg.Type)
 	}
 }
 
-// mergeEnv creates a combined environment from os.Environ() plus extra vars.
+// mergeEnv creates a combined environment from os.Environ() with extra vars
+// merged in. Existing keys are replaced rather than duplicated.
 func mergeEnv(extra map[string]string) []string {
 	env := os.Environ()
-	for k, v := range extra {
-		env = append(env, k+"="+v)
+
+	// Build a set of extra keys for quick lookup.
+	overrides := make(map[string]bool, len(extra))
+	for k := range extra {
+		overrides[k] = true
 	}
-	return env
+
+	// Filter out existing entries that will be overridden.
+	filtered := env[:0]
+	for _, e := range env {
+		key, _, _ := strings.Cut(e, "=")
+		if !overrides[key] {
+			filtered = append(filtered, e)
+		}
+	}
+
+	// Append the overrides.
+	for k, v := range extra {
+		filtered = append(filtered, k+"="+v)
+	}
+	return filtered
+}
+
+// headerRoundTripper wraps an http.RoundTripper to inject headers into requests.
+type headerRoundTripper struct {
+	base    http.RoundTripper
+	headers map[string]string
+}
+
+func (h *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	for k, v := range h.headers {
+		req.Header.Set(k, v)
+	}
+	return h.base.RoundTrip(req)
+}
+
+// httpClientWithHeaders returns an *http.Client that injects the given headers.
+func httpClientWithHeaders(headers map[string]string) *http.Client {
+	return &http.Client{
+		Transport: &headerRoundTripper{
+			base:    http.DefaultTransport,
+			headers: headers,
+		},
+	}
 }

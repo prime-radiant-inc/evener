@@ -799,6 +799,7 @@ func (s *Session) allToolDefinitions() []llm.ToolDefinition {
 }
 
 // initMCP discovers and connects to MCP servers if configured.
+// Uses a 30-second timeout since NewSession doesn't take a context.
 func (s *Session) initMCP() error {
 	configs, err := DiscoverMCPConfigs(s.env, s.cfg.MCPConfigFiles, s.cfg.MCPInline)
 	if err != nil {
@@ -808,7 +809,10 @@ func (s *Session) initMCP() error {
 		return nil
 	}
 
-	mgr, err := NewMCPManager(context.Background(), configs, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	mgr, err := NewMCPManager(ctx, configs, nil)
 	if err != nil {
 		return err
 	}
