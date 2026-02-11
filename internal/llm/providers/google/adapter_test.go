@@ -1,6 +1,7 @@
 package google
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -2018,5 +2019,51 @@ func TestStream_ParsesGroundingMetadata(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("no web search content part found; content kinds = %v", contentKinds(resp.Message.Content))
+	}
+}
+
+func TestParseUsage_HandlesJSONNumber(t *testing.T) {
+	// Simulate what dec.UseNumber() produces during streaming.
+	raw := []byte(`{"promptTokenCount": 100, "candidatesTokenCount": 50, "totalTokenCount": 150, "thoughtsTokenCount": 20, "cachedContentTokenCount": 30}`)
+	var m map[string]any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&m); err != nil {
+		t.Fatal(err)
+	}
+	usage := parseUsage(m)
+	if usage.InputTokens != 100 {
+		t.Errorf("InputTokens = %d, want 100", usage.InputTokens)
+	}
+	if usage.OutputTokens != 50 {
+		t.Errorf("OutputTokens = %d, want 50", usage.OutputTokens)
+	}
+	if usage.TotalTokens != 150 {
+		t.Errorf("TotalTokens = %d, want 150", usage.TotalTokens)
+	}
+	if usage.ReasoningTokens == nil || *usage.ReasoningTokens != 20 {
+		t.Errorf("ReasoningTokens = %v, want 20", usage.ReasoningTokens)
+	}
+	if usage.CacheReadTokens == nil || *usage.CacheReadTokens != 30 {
+		t.Errorf("CacheReadTokens = %v, want 30", usage.CacheReadTokens)
+	}
+}
+
+func TestParseUsage_HandlesFloat64(t *testing.T) {
+	// Standard json.Unmarshal (non-streaming path) produces float64 values.
+	raw := []byte(`{"promptTokenCount": 200, "candidatesTokenCount": 75, "totalTokenCount": 275}`)
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	usage := parseUsage(m)
+	if usage.InputTokens != 200 {
+		t.Errorf("InputTokens = %d, want 200", usage.InputTokens)
+	}
+	if usage.OutputTokens != 75 {
+		t.Errorf("OutputTokens = %d, want 75", usage.OutputTokens)
+	}
+	if usage.TotalTokens != 275 {
+		t.Errorf("TotalTokens = %d, want 275", usage.TotalTokens)
 	}
 }

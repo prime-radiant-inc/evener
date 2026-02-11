@@ -937,6 +937,14 @@ func parseUsage(u map[string]any) llm.Usage {
 			return int(x)
 		case int:
 			return x
+		case json.Number:
+			if i, err := x.Int64(); err == nil {
+				return int(i)
+			}
+			if f, err := x.Float64(); err == nil {
+				return int(f)
+			}
+			return 0
 		default:
 			return 0
 		}
