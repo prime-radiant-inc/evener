@@ -79,6 +79,22 @@ func TestApplyPatch_EndOfFileMarker(t *testing.T) {
 	}
 }
 
+func TestApplyPatch_FuzzyWhitespaceMatching(t *testing.T) {
+	dir := t.TempDir()
+	// File has trailing spaces and tabs mixed in
+	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("  hello world  \n  goodbye\t\n"), 0o644)
+
+	patch := "*** Begin Patch\n*** Update File: f.txt\n@@ hello\n hello world\n-goodbye\n+farewell\n*** End Patch\n"
+	_, err := ApplyPatch(dir, patch)
+	if err != nil {
+		t.Fatalf("ApplyPatch with whitespace mismatch: %v", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "f.txt"))
+	if !strings.Contains(string(got), "farewell") {
+		t.Fatal("fuzzy match patch not applied")
+	}
+}
+
 func TestApplyPatch_RejectsPathTraversalAndAbsolutePaths(t *testing.T) {
 	dir := t.TempDir()
 	cases := []string{

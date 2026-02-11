@@ -116,13 +116,19 @@ func (o updateFileOp) apply(rootDir string) ([]string, error) {
 			}
 			switch prefix {
 			case ' ':
-				if pos >= len(origLines) || origLines[pos] != body {
+				if pos >= len(origLines) {
 					return nil, fmt.Errorf("apply_patch: context mismatch in %s: want %q at line %d", o.path, body, pos+1)
 				}
-				out = append(out, body)
+				if origLines[pos] != body && normalizeWS(origLines[pos]) != normalizeWS(body) {
+					return nil, fmt.Errorf("apply_patch: context mismatch in %s: want %q at line %d", o.path, body, pos+1)
+				}
+				out = append(out, origLines[pos])
 				pos++
 			case '-':
-				if pos >= len(origLines) || origLines[pos] != body {
+				if pos >= len(origLines) {
+					return nil, fmt.Errorf("apply_patch: delete mismatch in %s: want %q at line %d", o.path, body, pos+1)
+				}
+				if origLines[pos] != body && normalizeWS(origLines[pos]) != normalizeWS(body) {
 					return nil, fmt.Errorf("apply_patch: delete mismatch in %s: want %q at line %d", o.path, body, pos+1)
 				}
 				pos++
@@ -267,9 +273,25 @@ func firstAnchor(hunk []string) string {
 	return ""
 }
 
+// normalizeWS collapses all whitespace runs to single spaces and trims ends.
+func normalizeWS(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
 func indexOfLine(lines []string, want string, start int) int {
+	// Try exact match first.
 	for i := start; i < len(lines); i++ {
 		if lines[i] == want {
+			return i
+		}
+	}
+	// Fuzzy: whitespace-normalized match.
+	normWant := normalizeWS(want)
+	if normWant == "" {
+		return -1
+	}
+	for i := start; i < len(lines); i++ {
+		if normalizeWS(lines[i]) == normWant {
 			return i
 		}
 	}
