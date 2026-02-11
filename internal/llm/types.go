@@ -312,7 +312,7 @@ type RateLimitInfo struct {
 	RequestsLimit     *int   `json:"requests_limit,omitempty"`
 	TokensRemaining   *int   `json:"tokens_remaining,omitempty"`
 	TokensLimit       *int   `json:"tokens_limit,omitempty"`
-	ResetAt           string `json:"reset_at,omitempty"`
+	ResetAt           *time.Time `json:"reset_at,omitempty"`
 }
 
 // AdapterTimeout defines granular timeout configuration for adapter-level HTTP operations.

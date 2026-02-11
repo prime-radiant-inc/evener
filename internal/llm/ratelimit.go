@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ParseRateLimitHeaders extracts rate limit info from standard x-ratelimit-*
@@ -29,17 +30,33 @@ func ParseRateLimitHeaders(h http.Header) *RateLimitInfo {
 		found = true
 	}
 	if v := strings.TrimSpace(h.Get("x-ratelimit-reset-requests")); v != "" {
-		info.ResetAt = v
-		found = true
+		if t := parseResetTime(v); t != nil {
+			info.ResetAt = t
+			found = true
+		}
 	} else if v := strings.TrimSpace(h.Get("x-ratelimit-reset-tokens")); v != "" {
-		info.ResetAt = v
-		found = true
+		if t := parseResetTime(v); t != nil {
+			info.ResetAt = t
+			found = true
+		}
 	}
 
 	if !found {
 		return nil
 	}
 	return &info
+}
+
+// parseResetTime attempts to parse a time string as RFC3339 or HTTP-date.
+// Returns nil if neither format matches.
+func parseResetTime(v string) *time.Time {
+	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		return &t
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		return &t
+	}
+	return nil
 }
 
 func parseHeaderInt(h http.Header, key string) *int {

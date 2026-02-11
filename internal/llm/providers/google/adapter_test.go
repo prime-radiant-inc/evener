@@ -1681,8 +1681,12 @@ func TestComplete_PopulatesRateLimitInfo(t *testing.T) {
 	if resp.RateLimit.TokensLimit == nil || *resp.RateLimit.TokensLimit != 10000 {
 		t.Fatalf("TokensLimit = %v", resp.RateLimit.TokensLimit)
 	}
-	if resp.RateLimit.ResetAt != "2026-02-10T12:00:00Z" {
-		t.Fatalf("ResetAt = %q", resp.RateLimit.ResetAt)
+	wantReset := time.Date(2026, 2, 10, 12, 0, 0, 0, time.UTC)
+	if resp.RateLimit.ResetAt == nil {
+		t.Fatal("ResetAt is nil")
+	}
+	if !resp.RateLimit.ResetAt.Equal(wantReset) {
+		t.Fatalf("ResetAt = %v, want %v", resp.RateLimit.ResetAt, wantReset)
 	}
 }
 
