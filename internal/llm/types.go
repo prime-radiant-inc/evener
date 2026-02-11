@@ -120,13 +120,29 @@ type DocumentData struct {
 }
 
 type ToolCallData struct {
-	ID        string          `json:"id"`
-	Name      string          `json:"name"`
-	Arguments json.RawMessage `json:"arguments,omitempty"` // raw JSON object
-	Type      string          `json:"type,omitempty"`      // usually "function"
+	ID              string          `json:"id"`
+	Name            string          `json:"name"`
+	Arguments       json.RawMessage `json:"arguments,omitempty"`        // raw JSON object
+	ParsedArguments map[string]any  `json:"parsed_arguments,omitempty"` // populated by Parse()
+	Type            string          `json:"type,omitempty"`             // usually "function"
 	// ThoughtSignature carries provider-specific thought-signature state (e.g., Gemini)
 	// required to continue tool-calling turns safely.
 	ThoughtSignature string `json:"thought_signature,omitempty"`
+}
+
+// Parse unmarshals Arguments into ParsedArguments. If Arguments is nil or empty,
+// ParsedArguments is set to an empty map.
+func (tc *ToolCallData) Parse() error {
+	if len(tc.Arguments) == 0 {
+		tc.ParsedArguments = map[string]any{}
+		return nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(tc.Arguments, &m); err != nil {
+		return err
+	}
+	tc.ParsedArguments = m
+	return nil
 }
 
 type ToolResultData struct {
@@ -186,6 +202,8 @@ type Request struct {
 	ProviderOptions map[string]any `json:"provider_options,omitempty"`
 
 	WebSearch bool `json:"web_search,omitempty"`
+
+	AdapterTimeout *AdapterTimeout `json:"adapter_timeout,omitempty"`
 }
 
 type FinishReason struct {
@@ -296,7 +314,7 @@ type RateLimitInfo struct {
 	RequestsLimit     *int   `json:"requests_limit,omitempty"`
 	TokensRemaining   *int   `json:"tokens_remaining,omitempty"`
 	TokensLimit       *int   `json:"tokens_limit,omitempty"`
-	ResetAt           string `json:"reset_at,omitempty"`
+	ResetAt           *time.Time `json:"reset_at,omitempty"`
 }
 
 // AdapterTimeout defines granular timeout configuration for adapter-level HTTP operations.

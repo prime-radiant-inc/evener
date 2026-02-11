@@ -182,6 +182,7 @@ func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error
 			ReasoningEffort: opts.ReasoningEffort,
 			Metadata:        opts.Metadata,
 			ProviderOptions: opts.ProviderOptions,
+			AdapterTimeout:  opts.AdapterTimeout,
 		}
 
 		callCtx, cancelStep := WithTimeout(ctx, opts.TimeoutPerStep)
@@ -193,10 +194,15 @@ func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error
 			return nil, wrapContextError(req.Provider, err)
 		}
 
+		calls := resp.ToolCalls()
+		for i := range calls {
+			_ = calls[i].Parse() // best-effort; invalid JSON handled later in validation
+		}
+
 		step := StepResult{
 			Text:         resp.Text(),
 			Reasoning:    resp.ReasoningText(),
-			ToolCalls:    resp.ToolCalls(),
+			ToolCalls:    calls,
 			ToolResults:  nil,
 			FinishReason: resp.Finish,
 			Usage:        resp.Usage,
@@ -204,8 +210,6 @@ func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error
 			Warnings:     append([]Warning{}, resp.Warnings...),
 		}
 		totalUsage = totalUsage.Add(resp.Usage)
-
-		calls := resp.ToolCalls()
 		if len(calls) == 0 || !hasActiveTool || maxToolRounds == 0 || toolRoundsUsed >= maxToolRounds {
 			// No tool loop (natural completion, tool loops disabled, or budget exhausted).
 			steps = append(steps, step)

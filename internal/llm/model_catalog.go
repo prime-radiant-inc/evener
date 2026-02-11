@@ -112,6 +112,14 @@ func (c *ModelCatalog) buildIndex() {
 		}
 		by[m.ID] = m
 	}
+	// Index aliases, but don't shadow existing model IDs.
+	for _, m := range c.Models {
+		for _, alias := range m.Aliases {
+			if _, exists := by[alias]; !exists {
+				by[alias] = m
+			}
+		}
+	}
 	c.byID = by
 }
 

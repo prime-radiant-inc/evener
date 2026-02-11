@@ -117,6 +117,43 @@ func TestParseLiteLLMCatalog(t *testing.T) {
 	}
 }
 
+func TestModelCatalog_AliasLookup(t *testing.T) {
+	cat := &ModelCatalog{
+		Models: []ModelInfo{
+			{ID: "gpt-5.2", Provider: "openai", ContextWindow: 1000, Aliases: []string{"gpt-latest", "gpt"}},
+			{ID: "claude-opus-4-6", Provider: "anthropic", ContextWindow: 200000},
+		},
+	}
+
+	// Lookup by primary ID still works.
+	mi := cat.GetModelInfo("gpt-5.2")
+	if mi == nil || mi.ID != "gpt-5.2" {
+		t.Fatalf("GetModelInfo by ID: got %v", mi)
+	}
+
+	// Lookup by alias returns the same model.
+	mi = cat.GetModelInfo("gpt-latest")
+	if mi == nil || mi.ID != "gpt-5.2" {
+		t.Fatalf("GetModelInfo by alias 'gpt-latest': got %v", mi)
+	}
+	mi = cat.GetModelInfo("gpt")
+	if mi == nil || mi.ID != "gpt-5.2" {
+		t.Fatalf("GetModelInfo by alias 'gpt': got %v", mi)
+	}
+
+	// Alias doesn't shadow an existing model ID.
+	cat2 := &ModelCatalog{
+		Models: []ModelInfo{
+			{ID: "model-a", Provider: "openai", Aliases: []string{"model-b"}},
+			{ID: "model-b", Provider: "openai"},
+		},
+	}
+	mi = cat2.GetModelInfo("model-b")
+	if mi == nil || mi.ID != "model-b" {
+		t.Fatalf("alias should not shadow existing model ID; got %v", mi)
+	}
+}
+
 func TestEmbeddedModelCatalog(t *testing.T) {
 	cat := EmbeddedModelCatalog()
 	if cat == nil {

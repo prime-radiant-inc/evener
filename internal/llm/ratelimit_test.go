@@ -3,6 +3,7 @@ package llm
 import (
 	"net/http"
 	"testing"
+	"time"
 )
 
 func TestParseRateLimitHeaders_AllPresent(t *testing.T) {
@@ -29,8 +30,12 @@ func TestParseRateLimitHeaders_AllPresent(t *testing.T) {
 	if info.TokensLimit == nil || *info.TokensLimit != 10000 {
 		t.Fatalf("TokensLimit = %v, want 10000", info.TokensLimit)
 	}
-	if info.ResetAt != "2026-02-10T12:00:00Z" {
-		t.Fatalf("ResetAt = %q, want %q", info.ResetAt, "2026-02-10T12:00:00Z")
+	wantReset := time.Date(2026, 2, 10, 12, 0, 0, 0, time.UTC)
+	if info.ResetAt == nil {
+		t.Fatal("ResetAt is nil")
+	}
+	if !info.ResetAt.Equal(wantReset) {
+		t.Fatalf("ResetAt = %v, want %v", info.ResetAt, wantReset)
 	}
 }
 
@@ -83,7 +88,42 @@ func TestParseRateLimitHeaders_ResetTokensFallback(t *testing.T) {
 	if info == nil {
 		t.Fatal("expected non-nil RateLimitInfo")
 	}
-	if info.ResetAt != "2026-02-10T13:00:00Z" {
-		t.Fatalf("ResetAt = %q, want fallback from reset-tokens", info.ResetAt)
+	wantReset := time.Date(2026, 2, 10, 13, 0, 0, 0, time.UTC)
+	if info.ResetAt == nil {
+		t.Fatal("ResetAt is nil")
+	}
+	if !info.ResetAt.Equal(wantReset) {
+		t.Fatalf("ResetAt = %v, want %v", info.ResetAt, wantReset)
+	}
+}
+
+func TestParseRateLimitHeaders_ResetAt_HTTPDate(t *testing.T) {
+	h := http.Header{}
+	h.Set("x-ratelimit-reset-requests", "Tue, 10 Feb 2026 14:00:00 GMT")
+
+	info := ParseRateLimitHeaders(h)
+	if info == nil {
+		t.Fatal("expected non-nil RateLimitInfo")
+	}
+	wantReset := time.Date(2026, 2, 10, 14, 0, 0, 0, time.UTC)
+	if info.ResetAt == nil {
+		t.Fatal("ResetAt is nil for HTTP-date format")
+	}
+	if !info.ResetAt.Equal(wantReset) {
+		t.Fatalf("ResetAt = %v, want %v", info.ResetAt, wantReset)
+	}
+}
+
+func TestParseRateLimitHeaders_ResetAt_InvalidTimeIgnored(t *testing.T) {
+	h := http.Header{}
+	h.Set("x-ratelimit-reset-requests", "not-a-time")
+	h.Set("x-ratelimit-remaining-requests", "5")
+
+	info := ParseRateLimitHeaders(h)
+	if info == nil {
+		t.Fatal("expected non-nil (remaining-requests is valid)")
+	}
+	if info.ResetAt != nil {
+		t.Fatalf("ResetAt should be nil for invalid time, got %v", info.ResetAt)
 	}
 }

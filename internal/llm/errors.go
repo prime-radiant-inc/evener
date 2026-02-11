@@ -22,6 +22,7 @@ type Error interface {
 
 type ConfigurationError struct {
 	Message string
+	Cause   error
 }
 
 func (e *ConfigurationError) Error() string {
@@ -33,6 +34,7 @@ func (e *ConfigurationError) ErrorCode() string          { return "" }
 func (e *ConfigurationError) Retryable() bool            { return false }
 func (e *ConfigurationError) RetryAfter() *time.Duration { return nil }
 func (e *ConfigurationError) Raw() any                   { return nil }
+func (e *ConfigurationError) Unwrap() error              { return e.Cause }
 
 type httpErrorBase struct {
 	provider    string
