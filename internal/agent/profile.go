@@ -48,6 +48,9 @@ type ProviderProfile interface {
 	SupportsStreaming() bool
 	DefaultCommandTimeoutMS() int
 	KnowledgeCutoff() string
+	// ToolNameMap returns the canonical→provider-specific tool name mapping.
+	// Returns nil for providers that use canonical names (e.g. Anthropic).
+	ToolNameMap() map[string]string
 }
 
 type baseProfile struct {
@@ -57,6 +60,7 @@ type baseProfile struct {
 	contextWindow  int
 	basePrompt     string
 	toolDefs       []llm.ToolDefinition
+	toolNameMap    map[string]string // canonical → provider-specific
 	docFiles       []string
 	reasoning       bool
 	streaming       bool
@@ -68,7 +72,23 @@ type baseProfile struct {
 func (p *baseProfile) ID() string    { return p.id }
 func (p *baseProfile) Model() string { return p.model }
 func (p *baseProfile) ToolDefinitions() []llm.ToolDefinition {
-	return append([]llm.ToolDefinition{}, p.toolDefs...)
+	defs := append([]llm.ToolDefinition{}, p.toolDefs...)
+	for i, d := range defs {
+		if mapped, ok := p.toolNameMap[d.Name]; ok {
+			defs[i].Name = mapped
+		}
+	}
+	return defs
+}
+func (p *baseProfile) ToolNameMap() map[string]string {
+	if len(p.toolNameMap) == 0 {
+		return nil
+	}
+	m := make(map[string]string, len(p.toolNameMap))
+	for k, v := range p.toolNameMap {
+		m[k] = v
+	}
+	return m
 }
 func (p *baseProfile) SupportsParallelToolCalls() bool { return p.parallel }
 func (p *baseProfile) ContextWindowSize() int          { return p.contextWindow }
@@ -154,7 +174,7 @@ func (p *baseProfile) BuildSystemPrompt(env EnvironmentInfo, docs []ProjectDoc, 
 	}
 
 	b.WriteString("Tools:\n")
-	for _, td := range p.toolDefs {
+	for _, td := range p.ToolDefinitions() {
 		desc := strings.TrimSpace(td.Description)
 		if desc == "" {
 			desc = "(no description)"
@@ -192,6 +212,11 @@ func NewOpenAIProfile(model string) ProviderProfile {
 		streaming:       true,
 		defaultTimeout:  10_000,
 		knowledgeCutoff: "2025-06-01",
+		toolNameMap: map[string]string{
+			"shell": "exec_command",
+			"grep":  "grep_files",
+			"glob":  "list_dir",
+		},
 		toolDefs: []llm.ToolDefinition{
 			defReadFile(),
 			defApplyPatch(),
@@ -255,6 +280,11 @@ func NewGeminiProfile(model string) ProviderProfile {
 		streaming:       true,
 		defaultTimeout:  10_000,
 		knowledgeCutoff: "2025-03-01",
+		toolNameMap: map[string]string{
+			"shell":    "run_shell_command",
+			"grep":     "grep_search",
+			"list_dir": "list_directory",
+		},
 		toolDefs: []llm.ToolDefinition{
 			defReadFile(),
 			defReadManyFiles(),

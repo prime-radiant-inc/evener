@@ -830,6 +830,20 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		}
 
 		calls := resp.ToolCalls()
+
+		// Reverse-map provider-specific tool names to canonical names for registry lookup.
+		if nameMap := s.profile.ToolNameMap(); len(nameMap) > 0 {
+			reverse := make(map[string]string, len(nameMap))
+			for canonical, provider := range nameMap {
+				reverse[provider] = canonical
+			}
+			for i := range calls {
+				if canonical, ok := reverse[calls[i].Name]; ok {
+					calls[i].Name = canonical
+				}
+			}
+		}
+
 		if len(calls) == 0 {
 			s.mu.Lock()
 			trimmed := strings.TrimSpace(txt)

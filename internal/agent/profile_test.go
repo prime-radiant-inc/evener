@@ -39,7 +39,7 @@ func TestProviderProfiles_ToolsetsAndDocSelection(t *testing.T) {
 	}
 	assertHasTool(t, gemini, "edit_file")
 	assertHasTool(t, gemini, "read_many_files")
-	assertHasTool(t, gemini, "list_dir")
+	assertHasTool(t, gemini, "list_directory")
 	assertMissingTool(t, gemini, "apply_patch")
 }
 
@@ -50,9 +50,9 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"read_file",
 			"apply_patch",
 			"write_file",
-			"shell",
-			"grep",
-			"glob",
+			"exec_command",
+			"grep_files",
+			"list_dir",
 			"spawn_agent",
 			"send_input",
 			"wait",
@@ -89,10 +89,10 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"read_many_files",
 			"write_file",
 			"edit_file",
-			"shell",
-			"grep",
+			"run_shell_command",
+			"grep_search",
 			"glob",
-			"list_dir",
+			"list_directory",
 			"spawn_agent",
 			"send_input",
 			"wait",
@@ -607,12 +607,76 @@ func TestGeminiProfile_SystemPromptCoversSpecTopics(t *testing.T) {
 	required := []string{
 		"GEMINI.md",
 		"read_many_files",
-		"list_dir",
+		"list_directory",
 	}
 	for _, substr := range required {
 		if !strings.Contains(prompt, substr) {
 			t.Fatalf("Gemini prompt missing required topic: %q", substr)
 		}
+	}
+}
+
+// WS3: Tool name mapping
+func TestToolNameMapping_OpenAI(t *testing.T) {
+	p := NewOpenAIProfile("gpt-5.2")
+	toolNames := map[string]bool{}
+	for _, td := range p.ToolDefinitions() {
+		toolNames[td.Name] = true
+	}
+	// OpenAI should use provider-specific names.
+	if !toolNames["exec_command"] {
+		t.Fatal("OpenAI ToolDefinitions should contain exec_command (mapped from shell)")
+	}
+	if !toolNames["grep_files"] {
+		t.Fatal("OpenAI ToolDefinitions should contain grep_files (mapped from grep)")
+	}
+	if !toolNames["list_dir"] {
+		t.Fatal("OpenAI ToolDefinitions should contain list_dir (mapped from glob)")
+	}
+	// Should NOT contain canonical names for mapped tools.
+	if toolNames["shell"] {
+		t.Fatal("OpenAI ToolDefinitions should not contain canonical 'shell'")
+	}
+	if toolNames["grep"] {
+		t.Fatal("OpenAI ToolDefinitions should not contain canonical 'grep'")
+	}
+	if toolNames["glob"] {
+		t.Fatal("OpenAI ToolDefinitions should not contain canonical 'glob'")
+	}
+}
+
+func TestToolNameMapping_Gemini(t *testing.T) {
+	p := NewGeminiProfile("gemini-test")
+	toolNames := map[string]bool{}
+	for _, td := range p.ToolDefinitions() {
+		toolNames[td.Name] = true
+	}
+	if !toolNames["run_shell_command"] {
+		t.Fatal("Gemini ToolDefinitions should contain run_shell_command (mapped from shell)")
+	}
+	if !toolNames["grep_search"] {
+		t.Fatal("Gemini ToolDefinitions should contain grep_search (mapped from grep)")
+	}
+	if !toolNames["list_directory"] {
+		t.Fatal("Gemini ToolDefinitions should contain list_directory (mapped from list_dir)")
+	}
+}
+
+func TestToolNameMapping_Anthropic_NoMapping(t *testing.T) {
+	p := NewAnthropicProfile("claude-test")
+	toolNames := map[string]bool{}
+	for _, td := range p.ToolDefinitions() {
+		toolNames[td.Name] = true
+	}
+	// Anthropic uses canonical names.
+	if !toolNames["shell"] {
+		t.Fatal("Anthropic ToolDefinitions should contain canonical 'shell'")
+	}
+	if !toolNames["grep"] {
+		t.Fatal("Anthropic ToolDefinitions should contain canonical 'grep'")
+	}
+	if !toolNames["glob"] {
+		t.Fatal("Anthropic ToolDefinitions should contain canonical 'glob'")
 	}
 }
 

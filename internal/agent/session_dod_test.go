@@ -553,6 +553,7 @@ func (p tinyProfile) SupportsReasoning() bool               { return false }
 func (p tinyProfile) SupportsStreaming() bool                { return false }
 func (p tinyProfile) DefaultCommandTimeoutMS() int           { return 10_000 }
 func (p tinyProfile) KnowledgeCutoff() string                { return "2025-01-01" }
+func (p tinyProfile) ToolNameMap() map[string]string          { return nil }
 
 func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) {
 	dir := t.TempDir()
@@ -2414,6 +2415,171 @@ func TestSession_SessionEnd_AfterProcessInput(t *testing.T) {
 	}
 	if !sessionClosedEnd {
 		t.Fatalf("expected SESSION_END with reason=session_closed")
+	}
+}
+
+func TestSession_ToolNameMapping_ReverseDispatch(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	// Fake adapter returns a tool call using the OpenAI provider-specific name "exec_command".
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				call := llm.ToolCallData{
+					ID:        "call-1",
+					Name:      "exec_command",
+					Arguments: json.RawMessage(`{"command":"echo hello"}`),
+					Type:      "function",
+				}
+				return llm.Response{
+					Message: llm.Message{
+						Role:    llm.RoleAssistant,
+						Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
+					},
+				}
+			},
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("done")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	var events []SessionEvent
+	var mu sync.Mutex
+	done := make(chan struct{})
+	go func() {
+		for ev := range sess.Events() {
+			mu.Lock()
+			events = append(events, ev)
+			mu.Unlock()
+		}
+		close(done)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "run a command")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+	<-done
+
+	// Verify tool call events use the canonical name "shell" (not "exec_command").
+	mu.Lock()
+	defer mu.Unlock()
+	var toolStartNames, toolEndNames []string
+	for _, ev := range events {
+		if ev.Kind == EventToolCallStart {
+			toolStartNames = append(toolStartNames, fmt.Sprint(ev.Data["tool_name"]))
+		}
+		if ev.Kind == EventToolCallEnd {
+			toolEndNames = append(toolEndNames, fmt.Sprint(ev.Data["tool_name"]))
+		}
+	}
+	if len(toolStartNames) != 1 || toolStartNames[0] != "shell" {
+		t.Fatalf("TOOL_CALL_START tool_name: got %v, want [shell]", toolStartNames)
+	}
+	if len(toolEndNames) != 1 || toolEndNames[0] != "shell" {
+		t.Fatalf("TOOL_CALL_END tool_name: got %v, want [shell]", toolEndNames)
+	}
+
+	// Verify the LLM request contained "exec_command" (mapped name) in tool definitions.
+	reqs := f.Requests()
+	if len(reqs) < 1 {
+		t.Fatal("expected at least 1 request")
+	}
+	foundExecCommand := false
+	for _, td := range reqs[0].Tools {
+		if td.Name == "exec_command" {
+			foundExecCommand = true
+		}
+		if td.Name == "shell" {
+			t.Fatal("LLM request should not contain canonical 'shell' — should be mapped to 'exec_command'")
+		}
+	}
+	if !foundExecCommand {
+		t.Fatal("LLM request tools should contain 'exec_command'")
+	}
+}
+
+func TestSession_ToolNameMapping_EventsUseCanonicalName(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	// Fake adapter returns grep_files (OpenAI provider name for grep).
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				call := llm.ToolCallData{
+					ID:        "call-g",
+					Name:      "grep_files",
+					Arguments: json.RawMessage(`{"pattern":"foo"}`),
+					Type:      "function",
+				}
+				return llm.Response{
+					Message: llm.Message{
+						Role:    llm.RoleAssistant,
+						Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
+					},
+				}
+			},
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("done")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	var events []SessionEvent
+	var mu sync.Mutex
+	done := make(chan struct{})
+	go func() {
+		for ev := range sess.Events() {
+			mu.Lock()
+			events = append(events, ev)
+			mu.Unlock()
+		}
+		close(done)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "search files")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, ev := range events {
+		if ev.Kind == EventToolCallStart || ev.Kind == EventToolCallEnd {
+			name := fmt.Sprint(ev.Data["tool_name"])
+			if name == "grep_files" {
+				t.Fatalf("event %s should use canonical name 'grep', got provider name 'grep_files'", ev.Kind)
+			}
+			if name != "grep" {
+				continue // other tools (from other events)
+			}
+		}
 	}
 }
 
