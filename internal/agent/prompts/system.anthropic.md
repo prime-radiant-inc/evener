@@ -77,8 +77,6 @@ When a task involves touching more than 2-3 files, consider breaking it into sub
 - Fix errors yourself rather than reporting them and stopping.
 
 ## Security
-- Do not introduce security vulnerabilities: command injection, path traversal, XSS,
-  SQL injection, hardcoded credentials, or insecure deserialization.
-- Sanitize external input. Never pass user-controlled strings directly to shell commands,
-  SQL queries, or file paths without validation.
+- Be thoughtful about security. Treat external input as untrusted, keep secrets out of
+  code, and think through how the code you write could be misused.
 - If you notice insecure code while working, fix it.
