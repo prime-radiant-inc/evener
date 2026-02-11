@@ -751,6 +751,13 @@ func TestGeminiProfile_ProviderPromptUsesMappedToolNames(t *testing.T) {
 	}
 }
 
+func TestApplyPatch_DescriptionIncludesCapabilities(t *testing.T) {
+	d := defApplyPatch()
+	if !strings.Contains(d.Description, "creating") || !strings.Contains(d.Description, "deleting") || !strings.Contains(d.Description, "modifying") {
+		t.Fatalf("apply_patch description missing capability summary: %q", d.Description)
+	}
+}
+
 func assertToolListExact(t *testing.T, p ProviderProfile, want []string) {
 	t.Helper()
 	got := make([]string, 0, len(p.ToolDefinitions()))

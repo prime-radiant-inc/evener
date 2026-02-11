@@ -476,7 +476,7 @@ func defGlob() llm.ToolDefinition {
 func defApplyPatch() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "apply_patch",
-		Description: "Apply code changes using the v4a patch format.",
+		Description: "Apply code changes using the v4a patch format. Supports creating, deleting, and modifying files in a single operation.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
