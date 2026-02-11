@@ -13,6 +13,7 @@ const (
 	TurnSteering  TurnKind = "STEERING"
 	TurnAssistant TurnKind = "ASSISTANT"
 	TurnTool      TurnKind = "TOOL"
+	TurnSystem    TurnKind = "SYSTEM"
 )
 
 // Turn is the Session's typed history item. Steering turns are kept distinct for observability,

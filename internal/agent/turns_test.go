@@ -7,6 +7,12 @@ import (
 	"primeradiant.com/serf/internal/llm"
 )
 
+func TestTurnKind_SystemExists(t *testing.T) {
+	if TurnSystem != "SYSTEM" {
+		t.Fatalf("TurnSystem = %q, want SYSTEM", TurnSystem)
+	}
+}
+
 func TestTurn_HasTimestamp(t *testing.T) {
 	before := time.Now().UTC()
 	turn := NewTurn(TurnUserInput, llm.User("hello"))
