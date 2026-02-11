@@ -1005,6 +1005,37 @@ func TestStream_IncludesWebSearchTool(t *testing.T) {
 	}
 }
 
+func TestComplete_PopulatesRateLimitInfo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("x-ratelimit-remaining-requests", "99")
+		w.Header().Set("x-ratelimit-limit-requests", "100")
+		w.Header().Set("x-ratelimit-remaining-tokens", "9999")
+		w.Header().Set("x-ratelimit-limit-tokens", "10000")
+		w.Header().Set("x-ratelimit-reset-requests", "2026-02-10T12:00:00Z")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r1","model":"gpt-5.2","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gpt-5.2",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.RateLimit == nil {
+		t.Fatal("RateLimit is nil")
+	}
+	if resp.RateLimit.RequestsRemaining == nil || *resp.RateLimit.RequestsRemaining != 99 {
+		t.Fatalf("RequestsRemaining = %v", resp.RateLimit.RequestsRemaining)
+	}
+	if resp.RateLimit.TokensLimit == nil || *resp.RateLimit.TokensLimit != 10000 {
+		t.Fatalf("TokensLimit = %v", resp.RateLimit.TokensLimit)
+	}
+}
+
 func TestComplete_WrapsContextCanceled(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(5 * time.Second)
