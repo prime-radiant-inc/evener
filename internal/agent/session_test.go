@@ -1080,3 +1080,44 @@ func TestSession_SessionEnd_EmittedExactlyOnce(t *testing.T) {
 		t.Fatalf("expected exactly 1 SESSION_END event, got %d", count)
 	}
 }
+
+func TestSession_SystemPromptRebuiltPerRound(t *testing.T) {
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			// Round 1: write AGENTS.md via tool call.
+			return llm.Response{
+				Message: llm.Message{
+					Role: llm.RoleAssistant,
+					Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+						ID: "c1", Name: "write_file", Type: "function",
+						Arguments: json.RawMessage(`{"file_path":"AGENTS.md","content":"# New agent instructions"}`),
+					}}},
+				},
+			}
+		},
+		func(req llm.Request) llm.Response {
+			// Round 2: the system prompt should now include the freshly-written AGENTS.md.
+			sys := req.Messages[0].Text()
+			if !strings.Contains(sys, "New agent instructions") {
+				t.Error("system prompt not rebuilt after tool execution -- AGENTS.md changes not reflected")
+			}
+			return llm.Response{Message: llm.Assistant("done")}
+		},
+	}}
+	c.Register(f)
+	dir := t.TempDir()
+	env := NewLocalExecutionEnvironment(dir)
+	defer env.Cleanup()
+	ctx := context.Background()
+	env.ExecCommand(ctx, "git init", 5000, dir, nil)
+
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), env, SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	ctx2, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sess.ProcessInput(ctx2, "write agents.md then verify")
+}

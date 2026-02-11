@@ -708,6 +708,18 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		s.emit(EventSteeringInjected, map[string]any{"text": msg})
 	}
 
+	var toolSigs []string
+	ctxWarned := false
+
+	for round := 0; round < s.cfg.MaxToolRoundsPerInput; round++ {
+		select {
+		case <-ctx.Done():
+			s.emit(EventError, map[string]any{"error": ctx.Err().Error()})
+			return "", ctx.Err()
+		default:
+		}
+
+		// Rebuild system prompt each iteration so tool side-effects (e.g. new AGENTS.md) are reflected.
 		docs, _ := LoadProjectDocs(s.env, s.profile.ProjectDocFiles()...)
 		var skillList []SkillMeta
 		for _, sm := range s.skills {
@@ -715,7 +727,6 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		}
 		sys := s.profile.BuildSystemPrompt(s.envInfo, docs, skillList)
 
-		// Append MCP tool descriptions to the system prompt so the model knows about them.
 		if len(s.mcpTools) > 0 {
 			sys += "\nMCP Tools (from external servers):\n"
 			for _, td := range s.mcpTools {
@@ -731,16 +742,6 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			sys = sys + "\n\n" + strings.TrimSpace(s.cfg.UserInstructionOverride) + "\n"
 		}
 
-	var toolSigs []string
-	ctxWarned := false
-
-	for round := 0; round < s.cfg.MaxToolRoundsPerInput; round++ {
-		select {
-		case <-ctx.Done():
-			s.emit(EventError, map[string]any{"error": ctx.Err().Error()})
-			return "", ctx.Err()
-		default:
-		}
 		// Apply context management before each LLM request.
 		// Copy history out to avoid holding s.mu during potential LLM calls (Layer 4).
 		if s.contextMgr != nil {

@@ -1369,7 +1369,11 @@ func TestSession_ShellTool_UsesDefaultTimeoutAndAllowsOverride(t *testing.T) {
 	}
 	sess.Close()
 
-	if got := env.LastTimeoutMS(); got != 10_000 {
+	got, ok := env.TimeoutForCommand("echo hi")
+	if !ok {
+		t.Fatal("expected ExecCommand call with 'echo hi'")
+	}
+	if got != 10_000 {
 		t.Fatalf("default shell timeout: got %d want %d", got, 10_000)
 	}
 
@@ -1403,8 +1407,12 @@ func TestSession_ShellTool_UsesDefaultTimeoutAndAllowsOverride(t *testing.T) {
 		t.Fatalf("ProcessInput2: %v", err)
 	}
 	sess2.Close()
-	if got := env2.LastTimeoutMS(); got != 1234 {
-		t.Fatalf("override shell timeout: got %d want %d", got, 1234)
+	got2, ok2 := env2.TimeoutForCommand("echo hi")
+	if !ok2 {
+		t.Fatal("expected ExecCommand call with 'echo hi'")
+	}
+	if got2 != 1234 {
+		t.Fatalf("override shell timeout: got %d want %d", got2, 1234)
 	}
 }
 
@@ -1442,7 +1450,11 @@ func TestSession_ShellTool_CapsTimeoutToMaxCommandTimeoutMS(t *testing.T) {
 	}
 	sess.Close()
 
-	if got := env.LastTimeoutMS(); got != 5000 {
+	got, ok := env.TimeoutForCommand("echo hi")
+	if !ok {
+		t.Fatal("expected ExecCommand call with 'echo hi'")
+	}
+	if got != 5000 {
 		t.Fatalf("capped shell timeout: got %d want %d", got, 5000)
 	}
 }
@@ -1518,6 +1530,13 @@ type captureEnv struct {
 	lastCmd   string
 	lastTOms  int
 	lastWdArg string
+	calls     []captureCall // all ExecCommand invocations
+}
+
+type captureCall struct {
+	Command   string
+	TimeoutMS int
+	WorkDir   string
 }
 
 func (e *captureEnv) Initialize() error { return nil }
@@ -1553,6 +1572,7 @@ func (e *captureEnv) ExecCommand(ctx context.Context, command string, timeoutMS 
 	e.lastCmd = command
 	e.lastTOms = timeoutMS
 	e.lastWdArg = workingDir
+	e.calls = append(e.calls, captureCall{Command: command, TimeoutMS: timeoutMS, WorkDir: workingDir})
 	e.mu.Unlock()
 	return ExecResult{Stdout: "ok", Stderr: "", ExitCode: 0, TimedOut: false, DurationMS: 1}, nil
 }
@@ -1561,6 +1581,18 @@ func (e *captureEnv) LastTimeoutMS() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.lastTOms
+}
+
+// TimeoutForCommand returns the timeout used for the first ExecCommand call matching cmd.
+func (e *captureEnv) TimeoutForCommand(cmd string) (int, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, c := range e.calls {
+		if strings.Contains(c.Command, cmd) {
+			return c.TimeoutMS, true
+		}
+	}
+	return 0, false
 }
 
 type timeoutEnv struct {
