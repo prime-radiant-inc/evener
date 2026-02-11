@@ -1321,3 +1321,519 @@ func contentKinds(parts []llm.ContentPart) []string {
 	}
 	return kinds
 }
+
+func TestComplete_WrapsContextCanceled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(5 * time.Second)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model:    "gemini-test",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var abortErr *llm.AbortError
+	if !errors.As(err, &abortErr) {
+		t.Fatalf("expected AbortError, got %T: %v", err, err)
+	}
+}
+
+func TestComplete_WrapsContextDeadlineExceeded(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(5 * time.Second)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
+	defer cancel()
+	time.Sleep(5 * time.Millisecond) // ensure deadline expires
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model:    "gemini-test",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var rte *llm.RequestTimeoutError
+	if !errors.As(err, &rte) {
+		t.Fatalf("expected RequestTimeoutError, got %T: %v", err, err)
+	}
+}
+
+func TestStream_IncludesWebSearchTool_NoFunctionTools(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, "data: "+`{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`+"\n\n")
+		if f != nil {
+			f.Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	stream, err := a.Stream(ctx, llm.Request{
+		Model:     "gemini-2.0-flash",
+		Messages:  []llm.Message{llm.User("search the web")},
+		WebSearch: true,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+	for range stream.Events() {
+	}
+
+	tools, ok := gotBody["tools"].([]any)
+	if !ok || len(tools) == 0 {
+		t.Fatalf("expected tools with google_search, got: %v", gotBody["tools"])
+	}
+	found := false
+	for _, tool := range tools {
+		tm, _ := tool.(map[string]any)
+		if _, ok := tm["google_search"]; ok {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("google_search tool not found in tools: %v", tools)
+	}
+}
+
+func TestStream_WebSearch_SkippedWithFunctionTools(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, "data: "+`{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`+"\n\n")
+		if f != nil {
+			f.Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	stream, err := a.Stream(ctx, llm.Request{
+		Model:    "gemini-2.0-flash",
+		Messages: []llm.Message{llm.User("search the web")},
+		Tools: []llm.ToolDefinition{{
+			Name:       "shell",
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{}},
+		}},
+		WebSearch: true,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+	for range stream.Events() {
+	}
+
+	tools, ok := gotBody["tools"].([]any)
+	if !ok {
+		t.Fatalf("tools not array: %#v", gotBody["tools"])
+	}
+	// Should have only 1 entry: functionDeclarations (google_search excluded)
+	if len(tools) != 1 {
+		t.Fatalf("tools count: got %d want 1 (google_search should be excluded)", len(tools))
+	}
+	entry0, _ := tools[0].(map[string]any)
+	if _, ok := entry0["functionDeclarations"]; !ok {
+		t.Fatalf("first tools entry missing functionDeclarations: %#v", entry0)
+	}
+}
+
+func TestComplete_PopulatesRateLimitInfo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("x-ratelimit-remaining-requests", "99")
+		w.Header().Set("x-ratelimit-limit-requests", "100")
+		w.Header().Set("x-ratelimit-remaining-tokens", "9999")
+		w.Header().Set("x-ratelimit-limit-tokens", "10000")
+		w.Header().Set("x-ratelimit-reset-requests", "2026-02-10T12:00:00Z")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gemini-test",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.RateLimit == nil {
+		t.Fatal("RateLimit is nil")
+	}
+	if resp.RateLimit.RequestsRemaining == nil || *resp.RateLimit.RequestsRemaining != 99 {
+		t.Fatalf("RequestsRemaining = %v", resp.RateLimit.RequestsRemaining)
+	}
+	if resp.RateLimit.RequestsLimit == nil || *resp.RateLimit.RequestsLimit != 100 {
+		t.Fatalf("RequestsLimit = %v", resp.RateLimit.RequestsLimit)
+	}
+	if resp.RateLimit.TokensRemaining == nil || *resp.RateLimit.TokensRemaining != 9999 {
+		t.Fatalf("TokensRemaining = %v", resp.RateLimit.TokensRemaining)
+	}
+	if resp.RateLimit.TokensLimit == nil || *resp.RateLimit.TokensLimit != 10000 {
+		t.Fatalf("TokensLimit = %v", resp.RateLimit.TokensLimit)
+	}
+	if resp.RateLimit.ResetAt != "2026-02-10T12:00:00Z" {
+		t.Fatalf("ResetAt = %q", resp.RateLimit.ResetAt)
+	}
+}
+
+func TestComplete_NoRateLimitHeaders_ReturnsNil(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gemini-test",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.RateLimit != nil {
+		t.Fatalf("RateLimit should be nil when no headers present, got %+v", resp.RateLimit)
+	}
+}
+
+func TestComplete_ParsesThoughtParts(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{
+  "candidates": [{"content": {"parts": [
+    {"text": "Let me think...", "thought": true},
+    {"text": "The answer is 42."}
+  ]}, "finishReason": "STOP"}],
+  "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 20, "totalTokenCount": 30, "thoughtsTokenCount": 15}
+}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gemini-2.0-flash-thinking-exp",
+		Messages: []llm.Message{llm.User("think hard")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	thinkingParts := 0
+	textParts := 0
+	for _, p := range resp.Message.Content {
+		if p.Kind == llm.ContentThinking {
+			thinkingParts++
+			if p.Thinking == nil || p.Thinking.Text != "Let me think..." {
+				t.Fatalf("thinking text = %v", p.Thinking)
+			}
+		}
+		if p.Kind == llm.ContentText {
+			textParts++
+			if p.Text != "The answer is 42." {
+				t.Fatalf("text = %q", p.Text)
+			}
+		}
+	}
+	if thinkingParts != 1 {
+		t.Fatalf("thinking parts = %d, want 1; content = %+v", thinkingParts, resp.Message.Content)
+	}
+	if textParts != 1 {
+		t.Fatalf("text parts = %d, want 1; content = %+v", textParts, resp.Message.Content)
+	}
+}
+
+func TestComplete_ThoughtPartWithEmptyText_Ignored(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{
+  "candidates": [{"content": {"parts": [
+    {"text": "", "thought": true},
+    {"text": "Only this."}
+  ]}, "finishReason": "STOP"}],
+  "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2}
+}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gemini-2.0-flash-thinking-exp",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Empty thought should be ignored, only 1 text part
+	if len(resp.Message.Content) != 1 {
+		t.Fatalf("content parts = %d, want 1; content = %+v", len(resp.Message.Content), resp.Message.Content)
+	}
+	if resp.Message.Content[0].Kind != llm.ContentText {
+		t.Fatalf("expected text part, got %q", resp.Message.Content[0].Kind)
+	}
+}
+
+func TestComplete_PassesReasoningEffortAsThinkingConfig(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	cases := []struct {
+		effort     string
+		wantBudget float64
+	}{
+		{"low", 1024},
+		{"medium", 8192},
+		{"high", 32768},
+	}
+	for _, tc := range cases {
+		t.Run(tc.effort, func(t *testing.T) {
+			gotBody = nil
+			effort := tc.effort
+			_, err := a.Complete(context.Background(), llm.Request{
+				Model:           "gemini-2.0-flash-thinking-exp",
+				Messages:        []llm.Message{llm.User("think")},
+				ReasoningEffort: &effort,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			genCfg, ok := gotBody["generationConfig"].(map[string]any)
+			if !ok {
+				t.Fatal("no generationConfig")
+			}
+			tc2, ok := genCfg["thinkingConfig"].(map[string]any)
+			if !ok {
+				t.Fatalf("no thinkingConfig in generationConfig: %v", genCfg)
+			}
+			budget, ok := tc2["thinkingBudget"]
+			if !ok {
+				t.Fatal("no thinkingBudget")
+			}
+			budgetNum, ok := budget.(float64)
+			if !ok {
+				t.Fatalf("thinkingBudget type = %T, want float64", budget)
+			}
+			if budgetNum != tc.wantBudget {
+				t.Fatalf("thinkingBudget = %v, want %v", budgetNum, tc.wantBudget)
+			}
+		})
+	}
+}
+
+func TestComplete_ReasoningEffort_None_NoThinkingConfig(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	effort := "none"
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:           "gemini-2.0-flash-thinking-exp",
+		Messages:        []llm.Message{llm.User("think")},
+		ReasoningEffort: &effort,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	genCfg, _ := gotBody["generationConfig"].(map[string]any)
+	if _, ok := genCfg["thinkingConfig"]; ok {
+		t.Fatalf("thinkingConfig should not be set for effort=none, got %v", genCfg["thinkingConfig"])
+	}
+}
+
+func TestStream_PassesReasoningEffortAsThinkingConfig(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, "data: "+`{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`+"\n\n")
+		if f != nil {
+			f.Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	effort := "high"
+	stream, err := a.Stream(context.Background(), llm.Request{
+		Model:           "gemini-2.0-flash-thinking-exp",
+		Messages:        []llm.Message{llm.User("think")},
+		ReasoningEffort: &effort,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	for range stream.Events() {
+	}
+
+	genCfg, ok := gotBody["generationConfig"].(map[string]any)
+	if !ok {
+		t.Fatal("no generationConfig")
+	}
+	tc, ok := genCfg["thinkingConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("no thinkingConfig in generationConfig: %v", genCfg)
+	}
+	if tc["thinkingBudget"] == nil {
+		t.Fatal("thinkingBudget is nil")
+	}
+}
+
+func TestStream_ParsesThoughtParts(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		write := func(data string) {
+			_, _ = io.WriteString(w, "data: "+data+"\n\n")
+			if f != nil {
+				f.Flush()
+			}
+		}
+		write(`{"candidates":[{"content":{"parts":[{"text":"thinking...","thought":true}]}}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`)
+		write(`{"candidates":[{"content":{"parts":[{"text":"The answer."}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2,"totalTokenCount":3,"thoughtsTokenCount":5}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	stream, err := a.Stream(context.Background(), llm.Request{
+		Model:    "gemini-2.0-flash-thinking-exp",
+		Messages: []llm.Message{llm.User("think")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	var finish *llm.Response
+	for ev := range stream.Events() {
+		if ev.Type == llm.StreamEventFinish && ev.Response != nil {
+			finish = ev.Response
+		}
+	}
+	if finish == nil {
+		t.Fatal("no finish response")
+	}
+	thinkingParts := 0
+	textParts := 0
+	for _, p := range finish.Message.Content {
+		if p.Kind == llm.ContentThinking {
+			thinkingParts++
+			if p.Thinking == nil || p.Thinking.Text != "thinking..." {
+				t.Fatalf("thinking text = %v", p.Thinking)
+			}
+		}
+		if p.Kind == llm.ContentText {
+			textParts++
+		}
+	}
+	if thinkingParts != 1 {
+		t.Fatalf("thinking parts = %d, want 1; content = %+v", thinkingParts, finish.Message.Content)
+	}
+	if textParts != 1 {
+		t.Fatalf("text parts = %d, want 1; content = %+v", textParts, finish.Message.Content)
+	}
+}
+
+func TestStream_ParsesGroundingMetadata(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		write := func(data string) {
+			_, _ = io.WriteString(w, "data: "+data+"\n\n")
+			if f != nil {
+				f.Flush()
+			}
+		}
+		write(`{"candidates":[{"content":{"parts":[{"text":"search result"}]},"finishReason":"STOP","groundingMetadata":{"webSearchQueries":["test query"],"searchEntryPoint":{"renderedContent":"<div>results</div>"}}}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":5,"totalTokenCount":10}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	stream, err := a.Stream(context.Background(), llm.Request{
+		Model:     "gemini-2.0-flash",
+		Messages:  []llm.Message{llm.User("search")},
+		WebSearch: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	var resp *llm.Response
+	for ev := range stream.Events() {
+		if ev.Response != nil {
+			resp = ev.Response
+		}
+	}
+	if resp == nil {
+		t.Fatal("no response")
+	}
+	found := false
+	for _, p := range resp.Message.Content {
+		if p.Kind == llm.ContentWebSearch {
+			found = true
+			if p.WebSearch == nil {
+				t.Fatal("WebSearch data is nil")
+			}
+			if p.WebSearch.Query == "" {
+				t.Fatal("WebSearch.Query is empty")
+			}
+			if !strings.Contains(p.WebSearch.Query, "test query") {
+				t.Fatalf("WebSearch.Query = %q, want to contain 'test query'", p.WebSearch.Query)
+			}
+			if len(p.WebSearch.Raw) == 0 {
+				t.Fatal("WebSearch.Raw is empty")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no web search content part found; content kinds = %v", contentKinds(resp.Message.Content))
+	}
+}

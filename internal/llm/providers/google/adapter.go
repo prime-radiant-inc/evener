@@ -99,6 +99,14 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 			}
 		}
 	}
+	if req.ReasoningEffort != nil {
+		budget := reasoningEffortToBudget(*req.ReasoningEffort)
+		if budget > 0 {
+			genCfg["thinkingConfig"] = map[string]any{
+				"thinkingBudget": budget,
+			}
+		}
+	}
 
 	body := map[string]any{
 		"contents":         contents,
@@ -182,7 +190,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 
 	resp, err := a.Client.Do(httpReq)
 	if err != nil {
-		return llm.Response{}, err
+		return llm.Response{}, llm.WrapContextError("google", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -195,7 +203,9 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		return llm.Response{}, llm.ErrorFromHTTPStatus("google", resp.StatusCode, msg, raw, ra)
 	}
 
-	return fromGeminiResponse(raw, req.Model), nil
+	r := fromGeminiResponse(raw, req.Model)
+	r.RateLimit = llm.ParseRateLimitHeaders(resp.Header)
+	return r, nil
 }
 
 func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
@@ -238,6 +248,14 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 			}
 		}
 	}
+	if req.ReasoningEffort != nil {
+		budget := reasoningEffortToBudget(*req.ReasoningEffort)
+		if budget > 0 {
+			genCfg["thinkingConfig"] = map[string]any{
+				"thinkingBudget": budget,
+			}
+		}
+	}
 
 	body := map[string]any{
 		"contents":         contents,
@@ -248,10 +266,21 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 			"parts": []map[string]any{{"text": system}},
 		}
 	}
-	if len(req.Tools) > 0 {
-		body["tools"] = []map[string]any{{
-			"functionDeclarations": toGeminiFunctionDecls(req.Tools),
-		}}
+	if len(req.Tools) > 0 || req.WebSearch {
+		var toolEntries []map[string]any
+		if len(req.Tools) > 0 {
+			toolEntries = append(toolEntries, map[string]any{
+				"functionDeclarations": toGeminiFunctionDecls(req.Tools),
+			})
+		}
+		// Gemini does not support google_search combined with functionDeclarations.
+		// Only include google_search when no function tools are present.
+		if req.WebSearch && len(req.Tools) == 0 {
+			toolEntries = append(toolEntries, map[string]any{
+				"google_search": map[string]any{},
+			})
+		}
+		body["tools"] = toolEntries
 	}
 	if req.ToolChoice != nil {
 		mode := strings.ToLower(strings.TrimSpace(req.ToolChoice.Mode))
@@ -376,6 +405,21 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 								if !ok {
 									continue
 								}
+								// Thought parts must be checked BEFORE text parts
+								// because thought parts also have a "text" field.
+								if thought, _ := p["thought"].(bool); thought {
+									text, _ := p["text"].(string)
+									if text != "" {
+										flushTextPart()
+										contentParts = append(contentParts, llm.ContentPart{
+											Kind: llm.ContentThinking,
+											Thinking: &llm.ThinkingData{
+												Text: text,
+											},
+										})
+									}
+									continue
+								}
 								if t, _ := p["text"].(string); t != "" {
 									if !textStarted {
 										textStarted = true
@@ -414,6 +458,27 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 								}
 							}
 						}
+					}
+					// Parse groundingMetadata for web search results (mirrors fromGeminiResponse).
+					if gm, ok := c0["groundingMetadata"].(map[string]any); ok && len(gm) > 0 {
+						query := ""
+						if wq, ok := gm["webSearchQueries"].([]any); ok && len(wq) > 0 {
+							qs := make([]string, 0, len(wq))
+							for _, q := range wq {
+								if s, ok := q.(string); ok {
+									qs = append(qs, s)
+								}
+							}
+							query = strings.Join(qs, "; ")
+						}
+						gmRaw, _ := json.Marshal(gm)
+						contentParts = append(contentParts, llm.ContentPart{
+							Kind: llm.ContentWebSearch,
+							WebSearch: &llm.WebSearchData{
+								Query: query,
+								Raw:   gmRaw,
+							},
+						})
 					}
 					if fr, _ := c0["finishReason"].(string); fr != "" {
 						finish = llm.NormalizeFinishReason("google", fr)
@@ -728,6 +793,19 @@ func geminiThoughtSignature(part map[string]any, fc map[string]any) string {
 	return ""
 }
 
+func reasoningEffortToBudget(effort string) int {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "low":
+		return 1024
+	case "medium":
+		return 8192
+	case "high":
+		return 32768
+	default:
+		return 0
+	}
+}
+
 func normalizeJSONNumbers(v any) any {
 	switch x := v.(type) {
 	case map[string]any:
@@ -772,6 +850,20 @@ func fromGeminiResponse(raw map[string]any, requestedModel string) llm.Response 
 					for _, pAny := range parts {
 						p, ok := pAny.(map[string]any)
 						if !ok {
+							continue
+						}
+						// Thought parts must be checked BEFORE text parts
+						// because thought parts also have a "text" field.
+						if thought, _ := p["thought"].(bool); thought {
+							text, _ := p["text"].(string)
+							if text != "" {
+								msg.Content = append(msg.Content, llm.ContentPart{
+									Kind: llm.ContentThinking,
+									Thinking: &llm.ThinkingData{
+										Text: text,
+									},
+								})
+							}
 							continue
 						}
 						if t, _ := p["text"].(string); t != "" {

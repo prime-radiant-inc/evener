@@ -178,7 +178,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 
 	resp, err := a.Client.Do(httpReq)
 	if err != nil {
-		return llm.Response{}, err
+		return llm.Response{}, llm.WrapContextError("anthropic", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -191,7 +191,9 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		return llm.Response{}, llm.ErrorFromHTTPStatus("anthropic", resp.StatusCode, msg, raw, ra)
 	}
 
-	return fromAnthropicResponse(raw, req.Model), nil
+	r := fromAnthropicResponse(raw, req.Model)
+	r.RateLimit = llm.ParseRateLimitHeaders(resp.Header)
+	return r, nil
 }
 
 func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
@@ -272,6 +274,12 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	}
 	if includeTools && len(req.Tools) > 0 {
 		tools := toAnthropicTools(req.Tools)
+		if req.WebSearch {
+			tools = append(tools, map[string]any{
+				"type": "web_search_20250305",
+				"name": "web_search",
+			})
+		}
 		if autoCache && len(tools) > 0 {
 			tools[len(tools)-1]["cache_control"] = map[string]any{"type": "ephemeral"}
 		}
@@ -342,7 +350,8 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 
 		finished := false
 		type blockState struct {
-			typ string
+			typ      string
+			rawStart map[string]any // raw content_block from content_block_start
 
 			// text
 			textID      string
@@ -391,6 +400,9 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 
 		var usage llm.Usage
 		finish := llm.FinishReason{Reason: "stop"}
+		var msgID string
+		var actualModel string
+		var rawMessage map[string]any
 
 		_ = llm.ParseSSE(sctx, resp.Body, func(ev llm.SSEEvent) error {
 			if len(ev.Data) == 0 {
@@ -406,13 +418,16 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 
 			switch ev.Event {
 			case "message_start":
-				// Capture input token usage when present.
 				if msgAny, ok := payload["message"].(map[string]any); ok {
+					if id, _ := msgAny["id"].(string); id != "" {
+						msgID = id
+					}
+					if m, _ := msgAny["model"].(string); m != "" {
+						actualModel = m
+					}
+					rawMessage = msgAny
 					if u, ok := msgAny["usage"].(map[string]any); ok {
-						u2 := parseUsage(u)
-						if u2.InputTokens > 0 {
-							usage.InputTokens = u2.InputTokens
-						}
+						usage = parseUsage(u)
 					}
 				}
 			case "content_block_start":
@@ -421,6 +436,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 				typ, _ := cb["type"].(string)
 				st := getBlock(idx)
 				st.typ = typ
+				st.rawStart = cb
 				if cb, ok := payload["content_block"].(map[string]any); ok {
 					switch typ {
 					case "text":
@@ -469,6 +485,11 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 							st.thinking.WriteString(t)
 							s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: t})
 						}
+					case "server_tool_use":
+						st.toolID, _ = cb["id"].(string)
+						st.toolName, _ = cb["name"].(string)
+					case "web_search_tool_result":
+						// raw payload stored in st.rawStart above
 					}
 				}
 			case "content_block_delta":
@@ -611,20 +632,69 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 								},
 							})
 						}
+					case "server_tool_use":
+						if st.rawStart != nil {
+							query := ""
+							if input, _ := st.rawStart["input"].(map[string]any); input != nil {
+								query, _ = input["query"].(string)
+							}
+							raw, _ := json.Marshal(st.rawStart)
+							parts = append(parts, llm.ContentPart{
+								Kind: llm.ContentWebSearch,
+								WebSearch: &llm.WebSearchData{
+									Query: query,
+									Raw:   raw,
+								},
+							})
+						}
+					case "web_search_tool_result":
+						if st.rawStart != nil {
+							raw, _ := json.Marshal(st.rawStart)
+							parts = append(parts, llm.ContentPart{
+								Kind: llm.ContentWebSearch,
+								WebSearch: &llm.WebSearchData{
+									Raw: raw,
+								},
+							})
+						}
 					}
 				}
 
 				msg := llm.Message{Role: llm.RoleAssistant, Content: parts}
+				model := actualModel
+				if model == "" {
+					model = req.Model
+				}
 				r := llm.Response{
+					ID:       msgID,
 					Provider: "anthropic",
-					Model:    req.Model,
+					Model:    model,
 					Message:  msg,
 					Finish:   finish,
 					Usage:    usage,
+					Raw:      rawMessage,
 				}
 				if len(r.ToolCalls()) > 0 {
 					r.Finish = llm.FinishReason{Reason: "tool_calls", Raw: "tool_use"}
 				}
+
+				// Estimate reasoning_tokens from thinking blocks.
+				if r.Usage.ReasoningTokens == nil {
+					var thinkingChars int
+					for _, p := range parts {
+						if (p.Kind == llm.ContentThinking || p.Kind == llm.ContentRedThinking) && p.Thinking != nil {
+							thinkingChars += len(p.Thinking.Text)
+						}
+					}
+					if thinkingChars > 0 {
+						estimated := thinkingChars / 4
+						if estimated < 1 {
+							estimated = 1
+						}
+						r.Usage.ReasoningTokens = &estimated
+					}
+				}
+
 				rp := r
 				s.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp})
 				finished = true
@@ -1032,6 +1102,24 @@ func fromAnthropicResponse(raw map[string]any, requestedModel string) llm.Respon
 	if u, ok := raw["usage"].(map[string]any); ok {
 		r.Usage = parseUsage(u)
 	}
+
+	// Estimate reasoning_tokens from thinking blocks when provider doesn't give a native count.
+	if r.Usage.ReasoningTokens == nil {
+		var thinkingChars int
+		for _, p := range msg.Content {
+			if (p.Kind == llm.ContentThinking || p.Kind == llm.ContentRedThinking) && p.Thinking != nil {
+				thinkingChars += len(p.Thinking.Text)
+			}
+		}
+		if thinkingChars > 0 {
+			estimated := thinkingChars / 4
+			if estimated < 1 {
+				estimated = 1
+			}
+			r.Usage.ReasoningTokens = &estimated
+		}
+	}
+
 	return r
 }
 
@@ -1149,6 +1237,9 @@ func parseUsage(u map[string]any) llm.Usage {
 			return int(x)
 		case int:
 			return x
+		case json.Number:
+			n, _ := x.Int64()
+			return int(n)
 		default:
 			return 0
 		}

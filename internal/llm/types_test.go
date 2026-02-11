@@ -3,6 +3,7 @@ package llm
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 func TestNormalizeFinishReason(t *testing.T) {
@@ -88,6 +89,19 @@ func TestNormalizeFinishReason_PauseTurn(t *testing.T) {
 	}
 	if got.Raw != "pause_turn" {
 		t.Fatalf("Raw = %q, want %q", got.Raw, "pause_turn")
+	}
+}
+
+func TestAdapterTimeout_Defaults(t *testing.T) {
+	at := DefaultAdapterTimeout()
+	if at.Connect != 10*time.Second {
+		t.Fatalf("Connect = %v, want 10s", at.Connect)
+	}
+	if at.Request != 120*time.Second {
+		t.Fatalf("Request = %v, want 120s", at.Request)
+	}
+	if at.StreamRead != 30*time.Second {
+		t.Fatalf("StreamRead = %v, want 30s", at.StreamRead)
 	}
 }
 

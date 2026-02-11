@@ -1406,6 +1406,506 @@ func TestAdapter_Integration_WebSearch(t *testing.T) {
 	t.Logf("response text (truncated): %.200s", resp.Text())
 }
 
+func newAnthropicStreamServer(t *testing.T, lines []string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		for _, line := range lines {
+			_, _ = io.WriteString(w, line+"\n")
+		}
+		if f != nil {
+			f.Flush()
+		}
+	}))
+}
+
+func TestStream_CapturesIDAndModel(t *testing.T) {
+	srv := newAnthropicStreamServer(t, []string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"id":"msg_123","model":"claude-3-5-sonnet-20241022","usage":{"input_tokens":10}}}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`,
+		``,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":0}`,
+		``,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	})
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	stream, err := a.Stream(context.Background(), llm.Request{
+		Model:    "claude-3-5-sonnet-20241022",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	var resp *llm.Response
+	for ev := range stream.Events() {
+		if ev.Response != nil {
+			resp = ev.Response
+		}
+	}
+	if resp == nil {
+		t.Fatal("no response in finish event")
+	}
+	if resp.ID != "msg_123" {
+		t.Fatalf("ID = %q, want %q", resp.ID, "msg_123")
+	}
+	if resp.Model != "claude-3-5-sonnet-20241022" {
+		t.Fatalf("Model = %q, want actual model from message_start", resp.Model)
+	}
+}
+
+func TestStream_CapturesCacheTokens(t *testing.T) {
+	srv := newAnthropicStreamServer(t, []string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"id":"msg_1","model":"claude-3-5-sonnet-20241022","usage":{"input_tokens":100,"cache_read_input_tokens":80,"cache_creation_input_tokens":20}}}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"cached"}}`,
+		``,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":0}`,
+		``,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	})
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	stream, err := a.Stream(context.Background(), llm.Request{
+		Model:    "claude-3-5-sonnet-20241022",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	var resp *llm.Response
+	for ev := range stream.Events() {
+		if ev.Response != nil {
+			resp = ev.Response
+		}
+	}
+	if resp == nil {
+		t.Fatal("no response")
+	}
+	if resp.Usage.CacheReadTokens == nil || *resp.Usage.CacheReadTokens != 80 {
+		t.Fatalf("CacheReadTokens = %v, want 80", resp.Usage.CacheReadTokens)
+	}
+	if resp.Usage.CacheWriteTokens == nil || *resp.Usage.CacheWriteTokens != 20 {
+		t.Fatalf("CacheWriteTokens = %v, want 20", resp.Usage.CacheWriteTokens)
+	}
+}
+
+func TestStream_IncludesRaw(t *testing.T) {
+	srv := newAnthropicStreamServer(t, []string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"id":"msg_raw","model":"claude-test","usage":{"input_tokens":5}}}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`,
+		``,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":0}`,
+		``,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	})
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	stream, err := a.Stream(context.Background(), llm.Request{
+		Model:    "claude-test",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	var resp *llm.Response
+	for ev := range stream.Events() {
+		if ev.Response != nil {
+			resp = ev.Response
+		}
+	}
+	if resp == nil {
+		t.Fatal("no response")
+	}
+	if resp.Raw == nil {
+		t.Fatal("Raw is nil, expected message_start raw message")
+	}
+	if id, _ := resp.Raw["id"].(string); id != "msg_raw" {
+		t.Fatalf("Raw[id] = %q, want %q", id, "msg_raw")
+	}
+}
+
+func TestStream_HandlesWebSearchBlocks(t *testing.T) {
+	srv := newAnthropicStreamServer(t, []string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"id":"msg_ws","model":"claude-test","usage":{"input_tokens":10}}}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Searching..."}}`,
+		``,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":0}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{"query":"Go error handling"}}}`,
+		``,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":1}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":2,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[{"type":"web_search_result","url":"https://go.dev","title":"Go Docs","encrypted_content":"ENC"}]}}`,
+		``,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":2}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":3,"content_block":{"type":"text"}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":3,"delta":{"type":"text_delta","text":"Here is the info."}}`,
+		``,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":3}`,
+		``,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":20}}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	})
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	stream, err := a.Stream(context.Background(), llm.Request{
+		Model:    "claude-test",
+		Messages: []llm.Message{llm.User("search")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	var resp *llm.Response
+	for ev := range stream.Events() {
+		if ev.Response != nil {
+			resp = ev.Response
+		}
+	}
+	if resp == nil {
+		t.Fatal("no response")
+	}
+
+	// Should have 4 content parts: text, server_tool_use (web_search), web_search_tool_result (web_search), text
+	if len(resp.Message.Content) != 4 {
+		t.Fatalf("content parts = %d, want 4; parts = %+v", len(resp.Message.Content), resp.Message.Content)
+	}
+
+	ws1 := resp.Message.Content[1]
+	if ws1.Kind != llm.ContentWebSearch {
+		t.Fatalf("part[1] kind = %q, want web_search", ws1.Kind)
+	}
+	if ws1.WebSearch == nil || ws1.WebSearch.Query != "Go error handling" {
+		t.Fatalf("part[1] query = %v", ws1.WebSearch)
+	}
+
+	ws2 := resp.Message.Content[2]
+	if ws2.Kind != llm.ContentWebSearch {
+		t.Fatalf("part[2] kind = %q, want web_search", ws2.Kind)
+	}
+	if ws2.WebSearch == nil || len(ws2.WebSearch.Raw) == 0 {
+		t.Fatalf("part[2] raw is empty")
+	}
+	if !strings.Contains(string(ws2.WebSearch.Raw), "ENC") {
+		t.Fatalf("part[2] raw should contain encrypted content: %s", ws2.WebSearch.Raw)
+	}
+}
+
+func TestComplete_EstimatesReasoningTokens(t *testing.T) {
+	thinkingText := "Let me think about this step by step..."
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		resp := map[string]any{
+			"id":    "msg_1",
+			"model": "claude-3-5-sonnet-20241022",
+			"content": []any{
+				map[string]any{"type": "thinking", "thinking": thinkingText, "signature": "sig_abc"},
+				map[string]any{"type": "text", "text": "The answer is 42."},
+			},
+			"stop_reason": "end_turn",
+			"usage":       map[string]any{"input_tokens": 10, "output_tokens": 20},
+		}
+		b, _ := json.Marshal(resp)
+		w.Write(b)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "claude-3-5-sonnet-20241022",
+		Messages: []llm.Message{llm.User("think hard")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Usage.ReasoningTokens == nil {
+		t.Fatal("ReasoningTokens should be estimated, got nil")
+	}
+	expected := len(thinkingText) / 4
+	if *resp.Usage.ReasoningTokens != expected {
+		t.Fatalf("ReasoningTokens = %d, want %d (len=%d / 4)", *resp.Usage.ReasoningTokens, expected, len(thinkingText))
+	}
+}
+
+func TestStream_EstimatesReasoningTokens(t *testing.T) {
+	srv := newAnthropicStreamServer(t, []string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"id":"msg_t","model":"claude-test","usage":{"input_tokens":10}}}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","signature":"sig1"}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me think step by step about this problem..."}}`,
+		``,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":0}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"text"}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"42"}}`,
+		``,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":1}`,
+		``,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	})
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	stream, err := a.Stream(context.Background(), llm.Request{
+		Model:    "claude-test",
+		Messages: []llm.Message{llm.User("think")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	var resp *llm.Response
+	for ev := range stream.Events() {
+		if ev.Response != nil {
+			resp = ev.Response
+		}
+	}
+	if resp == nil {
+		t.Fatal("no response")
+	}
+	if resp.Usage.ReasoningTokens == nil {
+		t.Fatal("ReasoningTokens should be estimated in streaming, got nil")
+	}
+	if *resp.Usage.ReasoningTokens <= 0 {
+		t.Fatalf("ReasoningTokens = %d, want > 0", *resp.Usage.ReasoningTokens)
+	}
+}
+
+func TestComplete_ParsesRetryAfterHeader(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "30")
+		w.WriteHeader(429)
+		fmt.Fprint(w, `{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "claude-3-5-sonnet-20241022",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var e llm.Error
+	if !errors.As(err, &e) {
+		t.Fatalf("expected llm.Error, got %T", err)
+	}
+	if !e.Retryable() {
+		t.Fatal("429 should be retryable")
+	}
+	ra := e.RetryAfter()
+	if ra == nil {
+		t.Fatal("RetryAfter should be set from header")
+	}
+	if *ra != 30*time.Second {
+		t.Fatalf("RetryAfter = %v, want 30s", *ra)
+	}
+}
+
+func TestComplete_PopulatesRateLimitInfo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("x-ratelimit-remaining-requests", "99")
+		w.Header().Set("x-ratelimit-limit-requests", "100")
+		w.Header().Set("x-ratelimit-remaining-tokens", "9999")
+		w.Header().Set("x-ratelimit-limit-tokens", "10000")
+		w.Header().Set("x-ratelimit-reset-requests", "2026-02-10T12:00:00Z")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"msg_1","model":"claude-test","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "claude-test",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.RateLimit == nil {
+		t.Fatal("RateLimit is nil")
+	}
+	if resp.RateLimit.RequestsRemaining == nil || *resp.RateLimit.RequestsRemaining != 99 {
+		t.Fatalf("RequestsRemaining = %v", resp.RateLimit.RequestsRemaining)
+	}
+	if resp.RateLimit.TokensLimit == nil || *resp.RateLimit.TokensLimit != 10000 {
+		t.Fatalf("TokensLimit = %v", resp.RateLimit.TokensLimit)
+	}
+}
+
+func TestStream_IncludesWebSearchTool(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		write := func(event, data string) {
+			_, _ = io.WriteString(w, "event: "+event+"\n")
+			_, _ = io.WriteString(w, "data: "+data+"\n\n")
+			if f != nil {
+				f.Flush()
+			}
+		}
+		write("content_block_start", `{"index":0,"content_block":{"type":"text"}}`)
+		write("content_block_delta", `{"index":0,"delta":{"type":"text_delta","text":"hi"}}`)
+		write("content_block_stop", `{"index":0}`)
+		write("message_delta", `{"stop_reason":"end_turn","usage":{"output_tokens":1}}`)
+		write("message_stop", `{}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	stream, err := a.Stream(ctx, llm.Request{
+		Model:    "claude-3-5-sonnet-20241022",
+		Messages: []llm.Message{llm.User("search the web")},
+		Tools: []llm.ToolDefinition{{
+			Name:       "shell",
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{}},
+		}},
+		WebSearch: true,
+		ProviderOptions: map[string]any{
+			"anthropic": map[string]any{"auto_cache": false},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	// Drain events
+	for range stream.Events() {
+	}
+
+	toolsAny, ok := gotBody["tools"].([]any)
+	if !ok {
+		t.Fatalf("expected tools array, got: %v", gotBody["tools"])
+	}
+
+	found := false
+	for _, tool := range toolsAny {
+		tm, _ := tool.(map[string]any)
+		if tm["type"] == "web_search_20250305" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("web_search_20250305 tool not found in Stream() tools: %v", toolsAny)
+	}
+}
+
+func TestComplete_WrapsContextCanceled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(5 * time.Second)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model:    "claude-3-5-sonnet-20241022",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var abortErr *llm.AbortError
+	if !errors.As(err, &abortErr) {
+		t.Fatalf("expected AbortError, got %T: %v", err, err)
+	}
+}
+
 func contentKinds(parts []llm.ContentPart) []string {
 	var kinds []string
 	for _, p := range parts {

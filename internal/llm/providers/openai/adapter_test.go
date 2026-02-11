@@ -956,6 +956,298 @@ func TestAdapter_Integration_WebSearch(t *testing.T) {
 	t.Logf("response text (truncated): %.200s", resp.Text())
 }
 
+func TestStream_IncludesWebSearchTool(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, "event: response.completed\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"r1","model":"gpt-5.2","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+		if f != nil {
+			f.Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	stream, err := a.Stream(ctx, llm.Request{
+		Model:     "gpt-5.2",
+		Messages:  []llm.Message{llm.User("search the web")},
+		WebSearch: true,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	for range stream.Events() {
+	}
+
+	tools, ok := gotBody["tools"].([]any)
+	if !ok || len(tools) == 0 {
+		t.Fatalf("expected tools with web_search, got: %v", gotBody["tools"])
+	}
+	found := false
+	for _, tool := range tools {
+		tm, _ := tool.(map[string]any)
+		if tm["type"] == "web_search" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("web_search tool not found in tools: %v", tools)
+	}
+}
+
+func TestComplete_PopulatesRateLimitInfo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("x-ratelimit-remaining-requests", "99")
+		w.Header().Set("x-ratelimit-limit-requests", "100")
+		w.Header().Set("x-ratelimit-remaining-tokens", "9999")
+		w.Header().Set("x-ratelimit-limit-tokens", "10000")
+		w.Header().Set("x-ratelimit-reset-requests", "2026-02-10T12:00:00Z")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r1","model":"gpt-5.2","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gpt-5.2",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.RateLimit == nil {
+		t.Fatal("RateLimit is nil")
+	}
+	if resp.RateLimit.RequestsRemaining == nil || *resp.RateLimit.RequestsRemaining != 99 {
+		t.Fatalf("RequestsRemaining = %v", resp.RateLimit.RequestsRemaining)
+	}
+	if resp.RateLimit.TokensLimit == nil || *resp.RateLimit.TokensLimit != 10000 {
+		t.Fatalf("TokensLimit = %v", resp.RateLimit.TokensLimit)
+	}
+}
+
+func TestNewFromEnv_ReadsOrgAndProjectID(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "sk-test")
+	t.Setenv("OPENAI_ORG_ID", "org-123")
+	t.Setenv("OPENAI_PROJECT_ID", "proj-456")
+
+	a, err := NewFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.OrgID != "org-123" {
+		t.Fatalf("OrgID = %q", a.OrgID)
+	}
+	if a.ProjectID != "proj-456" {
+		t.Fatalf("ProjectID = %q", a.ProjectID)
+	}
+}
+
+func TestComplete_SendsOrgAndProjectHeaders(t *testing.T) {
+	var gotHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeaders = r.Header
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r1","model":"gpt-5.2","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client(), OrgID: "org-123", ProjectID: "proj-456"}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gpt-5.2",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotHeaders.Get("OpenAI-Organization") != "org-123" {
+		t.Fatalf("OpenAI-Organization header = %q", gotHeaders.Get("OpenAI-Organization"))
+	}
+	if gotHeaders.Get("OpenAI-Project") != "proj-456" {
+		t.Fatalf("OpenAI-Project header = %q", gotHeaders.Get("OpenAI-Project"))
+	}
+}
+
+func TestFromResponses_IncompleteStatus(t *testing.T) {
+	raw := map[string]any{
+		"id":    "r1",
+		"model": "gpt-5.2",
+		"status": "incomplete",
+		"incomplete_details": map[string]any{"reason": "max_output_tokens"},
+		"output": []any{
+			map[string]any{"type": "message", "content": []any{
+				map[string]any{"type": "output_text", "text": "partial"},
+			}},
+		},
+		"usage": map[string]any{"input_tokens": float64(10), "output_tokens": float64(100), "total_tokens": float64(110)},
+	}
+	r := fromResponses(raw, "gpt-5.2")
+	if r.Finish.Reason != "length" {
+		t.Fatalf("Finish.Reason = %q, want %q", r.Finish.Reason, "length")
+	}
+}
+
+func TestComplete_PassesStopSequences(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r1","model":"gpt-5.2","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:         "gpt-5.2",
+		Messages:      []llm.Message{llm.User("hi")},
+		StopSequences: []string{"STOP", "END"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop, ok := gotBody["stop"].([]any)
+	if !ok || len(stop) != 2 {
+		t.Fatalf("stop = %v", gotBody["stop"])
+	}
+}
+
+func TestStream_PassesStopSequences(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, "event: response.completed\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"r1","model":"gpt-5.2","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+		if f != nil {
+			f.Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	stream, err := a.Stream(ctx, llm.Request{
+		Model:         "gpt-5.2",
+		Messages:      []llm.Message{llm.User("hi")},
+		StopSequences: []string{"STOP", "END"},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+	for range stream.Events() {
+	}
+
+	stop, ok := gotBody["stop"].([]any)
+	if !ok || len(stop) != 2 {
+		t.Fatalf("stop = %v", gotBody["stop"])
+	}
+}
+
+func TestComplete_WrapsContextCanceled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(5 * time.Second)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model:    "gpt-5.2",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var abortErr *llm.AbortError
+	if !errors.As(err, &abortErr) {
+		t.Fatalf("expected AbortError, got %T: %v", err, err)
+	}
+}
+
+func TestComplete_ProviderOptions_PassedThrough(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r1","model":"gpt-5.2","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gpt-5.2",
+		Messages: []llm.Message{llm.User("hi")},
+		ProviderOptions: map[string]any{
+			"openai": map[string]any{
+				"custom_field": "custom_value",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotBody["custom_field"] != "custom_value" {
+		t.Fatalf("custom_field not passed through: %v", gotBody)
+	}
+}
+
+func TestParseUsage_ReasoningTokensDistinctFromOutputTokens(t *testing.T) {
+	// Test via a full response to verify parseUsage behavior indirectly.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "r1",
+  "model": "gpt-5.2",
+  "output": [{"type": "message", "content": [{"type": "output_text", "text": "hi"}]}],
+  "usage": {
+    "input_tokens": 100,
+    "output_tokens": 50,
+    "total_tokens": 150,
+    "output_tokens_details": {"reasoning_tokens": 30}
+  }
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gpt-5.2",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Usage.OutputTokens != 50 {
+		t.Fatalf("OutputTokens = %d, want 50", resp.Usage.OutputTokens)
+	}
+	if resp.Usage.ReasoningTokens == nil || *resp.Usage.ReasoningTokens != 30 {
+		t.Fatalf("ReasoningTokens = %v, want 30", resp.Usage.ReasoningTokens)
+	}
+	// Reasoning tokens must NOT inflate OutputTokens
+	if resp.Usage.OutputTokens == 50+30 {
+		t.Fatal("OutputTokens includes reasoning tokens — they should be distinct")
+	}
+}
+
 func contentKinds(parts []llm.ContentPart) []string {
 	var kinds []string
 	for _, p := range parts {

@@ -870,3 +870,234 @@ func TestGenerate_UnknownToolCall_SendsErrorResultToModel(t *testing.T) {
 		t.Fatalf("expected error tool result to be sent to model for unknown tool call")
 	}
 }
+
+func TestGenerate_StopWhen(t *testing.T) {
+	c := NewClient()
+	callCount := 0
+	a := &scriptedAdapter{
+		name: "openai",
+		steps: []func(req Request) (Response, error){
+			func(req Request) (Response, error) {
+				callCount++
+				return Response{Message: Message{Role: RoleAssistant, Content: []ContentPart{
+					{Kind: ContentToolCall, ToolCall: &ToolCallData{
+						ID: fmt.Sprintf("call_%d", callCount), Name: "my_tool",
+						Arguments: json.RawMessage(`{}`), Type: "function",
+					}},
+				}}}, nil
+			},
+			func(req Request) (Response, error) {
+				callCount++
+				return Response{Message: Message{Role: RoleAssistant, Content: []ContentPart{
+					{Kind: ContentToolCall, ToolCall: &ToolCallData{
+						ID: fmt.Sprintf("call_%d", callCount), Name: "my_tool",
+						Arguments: json.RawMessage(`{}`), Type: "function",
+					}},
+				}}}, nil
+			},
+			func(req Request) (Response, error) {
+				callCount++
+				return Response{Message: Message{Role: RoleAssistant, Content: []ContentPart{
+					{Kind: ContentToolCall, ToolCall: &ToolCallData{
+						ID: fmt.Sprintf("call_%d", callCount), Name: "my_tool",
+						Arguments: json.RawMessage(`{}`), Type: "function",
+					}},
+				}}}, nil
+			},
+			func(req Request) (Response, error) {
+				callCount++
+				return Response{Message: Assistant("done")}, nil
+			},
+		},
+	}
+	c.Register(a)
+
+	prompt := "go"
+	maxRounds := 10
+	result, err := Generate(context.Background(), GenerateOptions{
+		Client:        c,
+		Model:         "m",
+		Prompt:        &prompt,
+		MaxToolRounds: &maxRounds,
+		Tools: []Tool{{
+			Definition: ToolDefinition{Name: "my_tool", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}},
+			Execute:    func(ctx context.Context, args any) (any, error) { return "ok", nil },
+		}},
+		StopWhen: func(steps []StepResult) bool {
+			return len(steps) >= 2 // stop after 2 tool rounds
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Steps) != 2 {
+		t.Fatalf("steps = %d, want 2 (StopWhen should have stopped)", len(result.Steps))
+	}
+}
+
+func TestGenerate_ToolExecuteError_SentAsIsError(t *testing.T) {
+	callCount := 0
+	c := NewClient()
+	a := &scriptedAdapter{
+		name: "mock",
+		steps: []func(req Request) (Response, error){
+			func(req Request) (Response, error) {
+				callCount++
+				return Response{
+					Message: Message{Role: RoleAssistant, Content: []ContentPart{
+						{Kind: ContentToolCall, ToolCall: &ToolCallData{
+							ID: "call_1", Name: "failing_tool",
+							Arguments: json.RawMessage(`{}`), Type: "function",
+						}},
+					}},
+					Finish: FinishReason{Reason: "tool_calls"},
+				}, nil
+			},
+			func(req Request) (Response, error) {
+				callCount++
+				// Verify tool result was sent as is_error
+				for _, m := range req.Messages {
+					if m.Role == RoleTool {
+						for _, p := range m.Content {
+							if p.Kind == ContentToolResult && p.ToolResult != nil {
+								if !p.ToolResult.IsError {
+									t.Error("expected is_error=true in tool result")
+								}
+								content, _ := p.ToolResult.Content.(string)
+								if !strings.Contains(content, "something went wrong") {
+									t.Errorf("error content = %q, want to contain 'something went wrong'", content)
+								}
+							}
+						}
+					}
+				}
+				return Response{
+					Message: Assistant("recovered"),
+					Finish:  FinishReason{Reason: "stop"},
+				}, nil
+			},
+		},
+	}
+	c.Register(a)
+
+	prompt := "use the tool"
+	maxRounds := 2
+	result, err := Generate(context.Background(), GenerateOptions{
+		Client:        c,
+		Model:         "test",
+		Prompt:        &prompt,
+		MaxToolRounds: &maxRounds,
+		Tools: []Tool{{
+			Definition: ToolDefinition{Name: "failing_tool", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}},
+			Execute: func(ctx context.Context, args any) (any, error) {
+				return nil, fmt.Errorf("something went wrong")
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Generate should NOT error when tool fails: %v", err)
+	}
+	if result.Text != "recovered" {
+		t.Fatalf("text = %q, want %q", result.Text, "recovered")
+	}
+	if callCount != 2 {
+		t.Fatalf("callCount = %d, want 2", callCount)
+	}
+}
+
+func TestGenerate_MultiStepToolLoop_ThreeRounds(t *testing.T) {
+	callCount := 0
+	c := NewClient()
+	a := &scriptedAdapter{
+		name: "mock",
+		steps: []func(req Request) (Response, error){
+			func(req Request) (Response, error) {
+				callCount++
+				return Response{
+					Message: Message{Role: RoleAssistant, Content: []ContentPart{
+						{Kind: ContentToolCall, ToolCall: &ToolCallData{
+							ID: fmt.Sprintf("call_%d", callCount), Name: "step_tool",
+							Arguments: json.RawMessage(fmt.Sprintf(`{"step":%d}`, callCount)), Type: "function",
+						}},
+					}},
+					Finish: FinishReason{Reason: "tool_calls"},
+				}, nil
+			},
+			func(req Request) (Response, error) {
+				callCount++
+				return Response{
+					Message: Message{Role: RoleAssistant, Content: []ContentPart{
+						{Kind: ContentToolCall, ToolCall: &ToolCallData{
+							ID: fmt.Sprintf("call_%d", callCount), Name: "step_tool",
+							Arguments: json.RawMessage(fmt.Sprintf(`{"step":%d}`, callCount)), Type: "function",
+						}},
+					}},
+					Finish: FinishReason{Reason: "tool_calls"},
+				}, nil
+			},
+			func(req Request) (Response, error) {
+				callCount++
+				return Response{
+					Message: Message{Role: RoleAssistant, Content: []ContentPart{
+						{Kind: ContentToolCall, ToolCall: &ToolCallData{
+							ID: fmt.Sprintf("call_%d", callCount), Name: "step_tool",
+							Arguments: json.RawMessage(fmt.Sprintf(`{"step":%d}`, callCount)), Type: "function",
+						}},
+					}},
+					Finish: FinishReason{Reason: "tool_calls"},
+				}, nil
+			},
+			func(req Request) (Response, error) {
+				callCount++
+				return Response{
+					Message: Assistant("done after 3 rounds"),
+					Finish:  FinishReason{Reason: "stop"},
+				}, nil
+			},
+		},
+	}
+	c.Register(a)
+
+	prompt := "run steps"
+	maxRounds := 5
+	result, err := Generate(context.Background(), GenerateOptions{
+		Client:        c,
+		Model:         "test",
+		Prompt:        &prompt,
+		MaxToolRounds: &maxRounds,
+		Tools: []Tool{{
+			Definition: ToolDefinition{
+				Name:        "step_tool",
+				Description: "a multi-step tool",
+				Parameters:  map[string]any{"type": "object", "properties": map[string]any{"step": map[string]any{"type": "integer"}}},
+			},
+			Execute: func(ctx context.Context, args any) (any, error) {
+				m, _ := args.(map[string]any)
+				return fmt.Sprintf("completed step %v", m["step"]), nil
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 4 total LLM calls: 3 tool rounds + 1 final
+	if len(result.Steps) != 4 {
+		t.Fatalf("steps = %d, want 4", len(result.Steps))
+	}
+	// 3 steps should have tool results
+	for i := 0; i < 3; i++ {
+		if len(result.Steps[i].ToolResults) != 1 {
+			t.Fatalf("step %d tool results = %d, want 1", i, len(result.Steps[i].ToolResults))
+		}
+		if result.Steps[i].ToolResults[0].IsError {
+			t.Fatalf("step %d tool result is_error", i)
+		}
+	}
+	// Final step should be text only
+	if result.Text != "done after 3 rounds" {
+		t.Fatalf("final text = %q", result.Text)
+	}
+	if callCount != 4 {
+		t.Fatalf("callCount = %d, want 4", callCount)
+	}
+}

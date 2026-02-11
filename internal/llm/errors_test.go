@@ -119,6 +119,114 @@ func TestQuotaExceededError_ImplementsErrorInterface(t *testing.T) {
 	}
 }
 
+func TestErrorCode_OnHTTPErrors(t *testing.T) {
+	raw := map[string]any{"error": map[string]any{"code": "model_not_found"}}
+	err := ErrorFromHTTPStatus("openai", 404, "not found", raw, nil)
+	var e Error
+	if !errors.As(err, &e) {
+		t.Fatal("expected Error interface")
+	}
+	if e.ErrorCode() != "model_not_found" {
+		t.Fatalf("ErrorCode() = %q, want %q", e.ErrorCode(), "model_not_found")
+	}
+}
+
+func TestErrorCode_FallsBackToType(t *testing.T) {
+	raw := map[string]any{"error": map[string]any{"type": "invalid_request_error"}}
+	err := ErrorFromHTTPStatus("anthropic", 400, "bad request", raw, nil)
+	var e Error
+	if !errors.As(err, &e) {
+		t.Fatal("expected Error interface")
+	}
+	if e.ErrorCode() != "invalid_request_error" {
+		t.Fatalf("ErrorCode() = %q, want %q", e.ErrorCode(), "invalid_request_error")
+	}
+}
+
+func TestErrorCode_EmptyWhenNoRaw(t *testing.T) {
+	err := ErrorFromHTTPStatus("openai", 500, "server error", nil, nil)
+	var e Error
+	if !errors.As(err, &e) {
+		t.Fatal("expected Error interface")
+	}
+	if e.ErrorCode() != "" {
+		t.Fatalf("ErrorCode() = %q, want empty", e.ErrorCode())
+	}
+}
+
+func TestRaw_ExposesRawResponse(t *testing.T) {
+	raw := map[string]any{"error": "details"}
+	err := ErrorFromHTTPStatus("openai", 500, "server error", raw, nil)
+	var e Error
+	if !errors.As(err, &e) {
+		t.Fatal("expected Error interface")
+	}
+	got := e.Raw()
+	if got == nil {
+		t.Fatal("Raw() returned nil")
+	}
+	rawMap, ok := got.(map[string]any)
+	if !ok {
+		t.Fatalf("Raw() type = %T, want map[string]any", got)
+	}
+	if rawMap["error"] != "details" {
+		t.Fatalf("Raw() = %v", rawMap)
+	}
+}
+
+func TestUnwrap_ErrorChain(t *testing.T) {
+	cause := fmt.Errorf("underlying network problem")
+	err := &ServerError{httpErrorBase{
+		provider:   "openai",
+		statusCode: 500,
+		message:    "server error",
+		retryable:  true,
+		cause:      cause,
+	}}
+	if !errors.Is(err, cause) {
+		t.Fatal("errors.Is should find cause through Unwrap")
+	}
+}
+
+func TestNonHTTPError_Unwrap(t *testing.T) {
+	cause := fmt.Errorf("context canceled")
+	err := &AbortError{nonHTTPErrorBase{
+		message: "aborted",
+		cause:   cause,
+	}}
+	if !errors.Is(err, cause) {
+		t.Fatal("errors.Is should find cause through Unwrap on non-HTTP errors")
+	}
+}
+
+func TestNonHTTPError_ErrorCode_Raw(t *testing.T) {
+	err := &AbortError{nonHTTPErrorBase{message: "aborted"}}
+	var e Error
+	if !errors.As(err, &e) {
+		t.Fatal("expected Error interface")
+	}
+	if e.ErrorCode() != "" {
+		t.Fatalf("ErrorCode() = %q, want empty", e.ErrorCode())
+	}
+	if e.Raw() != nil {
+		t.Fatalf("Raw() = %v, want nil", e.Raw())
+	}
+}
+
+func TestConfigurationError_ErrorCode_Raw(t *testing.T) {
+	err := &ConfigurationError{Message: "bad config"}
+	var e Error
+	if !errors.As(err, &e) {
+		t.Fatal("expected Error interface")
+	}
+	if e.ErrorCode() != "" {
+		t.Fatalf("ErrorCode() = %q, want empty", e.ErrorCode())
+	}
+	if e.Raw() != nil {
+		t.Fatalf("Raw() = %v, want nil", e.Raw())
+	}
+}
+
 func TestErrorFromHTTPStatus_MessageBasedClassification(t *testing.T) {
 	cases := []struct {
 		name    string

@@ -15,9 +15,11 @@ import (
 )
 
 type Adapter struct {
-	APIKey  string
-	BaseURL string
-	Client  *http.Client
+	APIKey    string
+	BaseURL   string
+	OrgID     string
+	ProjectID string
+	Client    *http.Client
 }
 
 func init() {
@@ -43,14 +45,27 @@ func NewFromEnv() (*Adapter, error) {
 		base = "https://api.openai.com"
 	}
 	return &Adapter{
-		APIKey:  key,
-		BaseURL: strings.TrimRight(base, "/"),
+		APIKey:    key,
+		BaseURL:   strings.TrimRight(base, "/"),
+		OrgID:     strings.TrimSpace(os.Getenv("OPENAI_ORG_ID")),
+		ProjectID: strings.TrimSpace(os.Getenv("OPENAI_PROJECT_ID")),
 		// Avoid short client-level timeouts; rely on request context deadlines instead.
 		Client: &http.Client{Timeout: 0},
 	}, nil
 }
 
 func (a *Adapter) Name() string { return "openai" }
+
+func (a *Adapter) setHeaders(req *http.Request) {
+	req.Header.Set("Authorization", "Bearer "+a.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+	if a.OrgID != "" {
+		req.Header.Set("OpenAI-Organization", a.OrgID)
+	}
+	if a.ProjectID != "" {
+		req.Header.Set("OpenAI-Project", a.ProjectID)
+	}
+}
 
 func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	if a.Client == nil {
@@ -97,6 +112,9 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	if req.MaxTokens != nil {
 		body["max_output_tokens"] = *req.MaxTokens
 	}
+	if len(req.StopSequences) > 0 {
+		body["stop"] = req.StopSequences
+	}
 	if len(req.Metadata) > 0 {
 		body["metadata"] = req.Metadata
 	}
@@ -126,12 +144,11 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	if err != nil {
 		return llm.Response{}, err
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+a.APIKey)
-	httpReq.Header.Set("Content-Type", "application/json")
+	a.setHeaders(httpReq)
 
 	resp, err := a.Client.Do(httpReq)
 	if err != nil {
-		return llm.Response{}, err
+		return llm.Response{}, llm.WrapContextError("openai", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -147,7 +164,9 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		return llm.Response{}, llm.ErrorFromHTTPStatus("openai", resp.StatusCode, msg, raw, ra)
 	}
 
-	return fromResponses(raw, req.Model), nil
+	r := fromResponses(raw, req.Model)
+	r.RateLimit = llm.ParseRateLimitHeaders(resp.Header)
+	return r, nil
 }
 
 func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
@@ -170,8 +189,15 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		"store":               false,
 		"stream":              true,
 	}
+	var tools []map[string]any
 	if len(req.Tools) > 0 {
-		body["tools"] = toResponsesTools(req.Tools)
+		tools = toResponsesTools(req.Tools)
+	}
+	if req.WebSearch {
+		tools = append(tools, map[string]any{"type": "web_search"})
+	}
+	if len(tools) > 0 {
+		body["tools"] = tools
 	}
 	if req.ToolChoice != nil {
 		tc, err := toResponsesToolChoice(*req.ToolChoice)
@@ -189,6 +215,9 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	}
 	if req.MaxTokens != nil {
 		body["max_output_tokens"] = *req.MaxTokens
+	}
+	if len(req.StopSequences) > 0 {
+		body["stop"] = req.StopSequences
 	}
 	if len(req.Metadata) > 0 {
 		body["metadata"] = req.Metadata
@@ -220,8 +249,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		cancel()
 		return nil, err
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+a.APIKey)
-	httpReq.Header.Set("Content-Type", "application/json")
+	a.setHeaders(httpReq)
 
 	resp, err := a.Client.Do(httpReq)
 	if err != nil {
@@ -762,7 +790,25 @@ func fromResponses(raw map[string]any, requestedModel string) llm.Response {
 	}
 
 	r.Message = msg
-	if len(r.ToolCalls()) > 0 {
+
+	// Check Responses API status/incomplete_details for finish reason.
+	status, _ := raw["status"].(string)
+	if status == "incomplete" {
+		reason := "length" // default for incomplete
+		if details, ok := raw["incomplete_details"].(map[string]any); ok {
+			if dr, _ := details["reason"].(string); dr != "" {
+				switch dr {
+				case "max_output_tokens":
+					reason = "length"
+				case "content_filter":
+					reason = "content_filter"
+				default:
+					reason = "other"
+				}
+			}
+		}
+		r.Finish = llm.FinishReason{Reason: reason, Raw: status}
+	} else if len(r.ToolCalls()) > 0 {
 		r.Finish = llm.FinishReason{Reason: "tool_calls"}
 	} else {
 		r.Finish = llm.FinishReason{Reason: "stop"}
