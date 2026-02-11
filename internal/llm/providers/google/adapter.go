@@ -194,7 +194,8 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := a.Client.Do(httpReq)
+	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return llm.Response{}, llm.WrapContextError("google", err)
 	}
@@ -352,7 +353,8 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := a.Client.Do(httpReq)
+	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		cancel()
 		return nil, llm.WrapContextError("google", err)

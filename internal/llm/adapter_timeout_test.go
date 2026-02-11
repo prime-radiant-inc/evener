@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"net/http"
 	"testing"
 	"time"
 )
@@ -49,5 +50,63 @@ func TestApplyAdapterTimeout_Streaming(t *testing.T) {
 	_, ok := ctx.Deadline()
 	if ok {
 		t.Error("expected no deadline for streaming (stream_read is per-event)")
+	}
+}
+
+func TestAdapterTransport_ConnectTimeout_ReturnsTransport(t *testing.T) {
+	at := &AdapterTimeout{Connect: 5 * time.Second}
+	transport := AdapterTransport(at)
+	if transport == nil {
+		t.Fatal("expected non-nil transport")
+	}
+	if transport.DialContext == nil {
+		t.Error("transport should have a DialContext with timeout")
+	}
+}
+
+func TestAdapterTransport_NilTimeout_ReturnsNil(t *testing.T) {
+	transport := AdapterTransport(nil)
+	if transport != nil {
+		t.Error("expected nil transport for nil AdapterTimeout")
+	}
+}
+
+func TestAdapterTransport_ZeroConnect_ReturnsNil(t *testing.T) {
+	at := &AdapterTimeout{Connect: 0}
+	transport := AdapterTransport(at)
+	if transport != nil {
+		t.Error("expected nil transport for zero Connect timeout")
+	}
+}
+
+func TestClientWithConnectTimeout_AppliesTransport(t *testing.T) {
+	orig := &http.Client{Timeout: 30 * time.Second}
+	at := &AdapterTimeout{Connect: 5 * time.Second}
+	client := ClientWithConnectTimeout(orig, at)
+	if client == orig {
+		t.Error("expected a new client copy, not the original")
+	}
+	if client.Transport == nil {
+		t.Fatal("expected Transport to be set")
+	}
+	if client.Timeout != 30*time.Second {
+		t.Errorf("expected original timeout preserved, got %v", client.Timeout)
+	}
+}
+
+func TestClientWithConnectTimeout_NilTimeout_ReturnsOriginal(t *testing.T) {
+	orig := &http.Client{Timeout: 30 * time.Second}
+	client := ClientWithConnectTimeout(orig, nil)
+	if client != orig {
+		t.Error("expected the original client when AdapterTimeout is nil")
+	}
+}
+
+func TestClientWithConnectTimeout_ZeroConnect_ReturnsOriginal(t *testing.T) {
+	orig := &http.Client{Timeout: 30 * time.Second}
+	at := &AdapterTimeout{Connect: 0}
+	client := ClientWithConnectTimeout(orig, at)
+	if client != orig {
+		t.Error("expected the original client when Connect is zero")
 	}
 }

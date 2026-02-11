@@ -154,7 +154,8 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	}
 	a.setHeaders(httpReq)
 
-	resp, err := a.Client.Do(httpReq)
+	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return llm.Response{}, llm.WrapContextError("openai", err)
 	}
@@ -261,7 +262,8 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	}
 	a.setHeaders(httpReq)
 
-	resp, err := a.Client.Do(httpReq)
+	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		cancel()
 		return nil, llm.WrapContextError("openai", err)

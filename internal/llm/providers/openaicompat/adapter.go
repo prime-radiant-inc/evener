@@ -68,7 +68,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	ctx, adapterCancel := llm.ApplyAdapterTimeout(ctx, req.AdapterTimeout, false)
 	defer adapterCancel()
 
-	raw, statusCode, headers, err := a.doHTTP(ctx, body)
+	raw, statusCode, headers, err := a.doHTTP(ctx, body, req.AdapterTimeout)
 	if err != nil {
 		return llm.Response{}, err
 	}
@@ -117,7 +117,8 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		httpReq.Header.Set("Authorization", "Bearer "+a.APIKey)
 	}
 
-	resp, err := a.Client.Do(httpReq)
+	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, llm.WrapContextError("openai-compatible", err)
 	}
@@ -668,7 +669,7 @@ func fromChatCompletionResponse(raw map[string]any) (llm.Response, error) {
 
 // --- HTTP helpers ---
 
-func (a *Adapter) doHTTP(ctx context.Context, body map[string]any) (map[string]any, int, http.Header, error) {
+func (a *Adapter) doHTTP(ctx context.Context, body map[string]any, at *llm.AdapterTimeout) (map[string]any, int, http.Header, error) {
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
 		return nil, 0, nil, err
@@ -687,7 +688,8 @@ func (a *Adapter) doHTTP(ctx context.Context, body map[string]any) (map[string]a
 		httpReq.Header.Set("Authorization", "Bearer "+a.APIKey)
 	}
 
-	resp, err := a.Client.Do(httpReq)
+	client := llm.ClientWithConnectTimeout(a.Client, at)
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, 0, nil, llm.WrapContextError("openai-compatible", err)
 	}
