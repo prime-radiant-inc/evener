@@ -609,6 +609,65 @@ func TestAdapter_Complete_ImageInput_URL_Data_AndFilePath(t *testing.T) {
 	}
 }
 
+func TestImageInput_DetailHintPassedThrough(t *testing.T) {
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &captured)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":     "resp_1",
+			"status": "completed",
+			"output": []any{map[string]any{
+				"type":    "message",
+				"role":    "assistant",
+				"content": []any{map[string]any{"type": "output_text", "text": "I see an image"}},
+			}},
+			"usage": map[string]any{"input_tokens": 10, "output_tokens": 5},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test", BaseURL: srv.URL, Client: srv.Client()}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model: "gpt-5.2",
+		Messages: []llm.Message{{
+			Role: llm.RoleUser,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentImage, Image: &llm.ImageData{
+					URL:    "https://example.com/img.png",
+					Detail: "low",
+				}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Navigate to the image item in the captured request.
+	input, _ := captured["input"].([]any)
+	var imageItem map[string]any
+	for _, item := range input {
+		m, _ := item.(map[string]any)
+		if m["type"] == "message" {
+			content, _ := m["content"].([]any)
+			for _, c := range content {
+				cm, _ := c.(map[string]any)
+				if cm["type"] == "input_image" {
+					imageItem = cm
+				}
+			}
+		}
+	}
+	if imageItem == nil {
+		t.Fatal("no input_image item found in request")
+	}
+	if imageItem["detail"] != "low" {
+		t.Errorf("detail = %v, want \"low\"", imageItem["detail"])
+	}
+}
+
 func TestAdapter_Complete_ResponseFormat_JSONSchema(t *testing.T) {
 	var gotBody map[string]any
 

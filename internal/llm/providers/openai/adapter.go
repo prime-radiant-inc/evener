@@ -654,10 +654,14 @@ func toResponsesInput(msgs []llm.Message) (instructions string, items []any, _ e
 						url = llm.DataURI(mt, b)
 					}
 					if url != "" {
-						content = append(content, map[string]any{
+						img := map[string]any{
 							"type":      "input_image",
 							"image_url": url,
-						})
+						}
+						if p.Image.Detail != "" {
+							img["detail"] = p.Image.Detail
+						}
+						content = append(content, img)
 					}
 				case llm.ContentAudio, llm.ContentDocument:
 					return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("unsupported content kind for openai: %s", p.Kind)}
