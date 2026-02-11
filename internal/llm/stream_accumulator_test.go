@@ -1,6 +1,9 @@
 package llm
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestStreamAccumulator_FinishWithResponse_UsesIt(t *testing.T) {
 	acc := NewStreamAccumulator()
@@ -53,3 +56,154 @@ func TestStreamAccumulator_NoFinishResponse_BuildsFromText(t *testing.T) {
 	}
 }
 
+func TestStreamAccumulator_ReasoningEvents_AccumulatedInResponse(t *testing.T) {
+	acc := NewStreamAccumulator()
+	acc.Process(StreamEvent{Type: StreamEventStreamStart})
+	acc.Process(StreamEvent{Type: StreamEventReasoningStart})
+	acc.Process(StreamEvent{Type: StreamEventReasoningDelta, ReasoningDelta: "Let me think"})
+	acc.Process(StreamEvent{Type: StreamEventReasoningDelta, ReasoningDelta: " about this."})
+	acc.Process(StreamEvent{Type: StreamEventReasoningEnd})
+	acc.Process(StreamEvent{Type: StreamEventTextStart, TextID: "t1"})
+	acc.Process(StreamEvent{Type: StreamEventTextDelta, TextID: "t1", Delta: "Result"})
+	acc.Process(StreamEvent{Type: StreamEventTextEnd, TextID: "t1"})
+	f := FinishReason{Reason: "stop"}
+	acc.Process(StreamEvent{Type: StreamEventFinish, FinishReason: &f})
+
+	resp := acc.Response()
+	if resp == nil {
+		t.Fatalf("expected response, got nil")
+	}
+	if got := resp.Text(); got != "Result" {
+		t.Fatalf("text: got %q, want %q", got, "Result")
+	}
+	if got := resp.ReasoningText(); got != "Let me think about this." {
+		t.Fatalf("reasoning: got %q, want %q", got, "Let me think about this.")
+	}
+}
+
+func TestStreamAccumulator_ToolCallEvents_AccumulatedInResponse(t *testing.T) {
+	acc := NewStreamAccumulator()
+	acc.Process(StreamEvent{Type: StreamEventStreamStart})
+	acc.Process(StreamEvent{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{
+		ID: "call_1", Name: "get_weather", Type: "function",
+	}})
+	acc.Process(StreamEvent{Type: StreamEventToolCallDelta, ToolCall: &ToolCallData{
+		ID: "call_1", Arguments: json.RawMessage(`{"city":`),
+	}})
+	acc.Process(StreamEvent{Type: StreamEventToolCallDelta, ToolCall: &ToolCallData{
+		ID: "call_1", Arguments: json.RawMessage(`"SF"}`),
+	}})
+	acc.Process(StreamEvent{Type: StreamEventToolCallEnd, ToolCall: &ToolCallData{ID: "call_1"}})
+	f := FinishReason{Reason: "tool_calls"}
+	acc.Process(StreamEvent{Type: StreamEventFinish, FinishReason: &f})
+
+	resp := acc.Response()
+	if resp == nil {
+		t.Fatalf("expected response, got nil")
+	}
+	calls := resp.ToolCalls()
+	if len(calls) != 1 {
+		t.Fatalf("tool calls: got %d, want 1", len(calls))
+	}
+	if calls[0].ID != "call_1" {
+		t.Fatalf("tool call ID: got %q, want %q", calls[0].ID, "call_1")
+	}
+	if calls[0].Name != "get_weather" {
+		t.Fatalf("tool call name: got %q, want %q", calls[0].Name, "get_weather")
+	}
+	if got := string(calls[0].Arguments); got != `{"city":"SF"}` {
+		t.Fatalf("tool call arguments: got %q, want %q", got, `{"city":"SF"}`)
+	}
+}
+
+func TestStreamAccumulator_MultipleToolCalls(t *testing.T) {
+	acc := NewStreamAccumulator()
+	acc.Process(StreamEvent{Type: StreamEventStreamStart})
+
+	// First tool call
+	acc.Process(StreamEvent{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{
+		ID: "call_1", Name: "read_file", Type: "function",
+	}})
+	acc.Process(StreamEvent{Type: StreamEventToolCallDelta, ToolCall: &ToolCallData{
+		ID: "call_1", Arguments: json.RawMessage(`{"path":"a.go"}`),
+	}})
+	acc.Process(StreamEvent{Type: StreamEventToolCallEnd, ToolCall: &ToolCallData{ID: "call_1"}})
+
+	// Second tool call
+	acc.Process(StreamEvent{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{
+		ID: "call_2", Name: "read_file", Type: "function",
+	}})
+	acc.Process(StreamEvent{Type: StreamEventToolCallDelta, ToolCall: &ToolCallData{
+		ID: "call_2", Arguments: json.RawMessage(`{"path":"b.go"}`),
+	}})
+	acc.Process(StreamEvent{Type: StreamEventToolCallEnd, ToolCall: &ToolCallData{ID: "call_2"}})
+
+	f := FinishReason{Reason: "tool_calls"}
+	acc.Process(StreamEvent{Type: StreamEventFinish, FinishReason: &f})
+
+	resp := acc.Response()
+	if resp == nil {
+		t.Fatalf("expected response, got nil")
+	}
+	calls := resp.ToolCalls()
+	if len(calls) != 2 {
+		t.Fatalf("tool calls: got %d, want 2", len(calls))
+	}
+	if calls[0].ID != "call_1" {
+		t.Fatalf("first tool call ID: got %q, want %q", calls[0].ID, "call_1")
+	}
+	if calls[1].ID != "call_2" {
+		t.Fatalf("second tool call ID: got %q, want %q", calls[1].ID, "call_2")
+	}
+	if got := string(calls[0].Arguments); got != `{"path":"a.go"}` {
+		t.Fatalf("first tool call args: got %q, want %q", got, `{"path":"a.go"}`)
+	}
+	if got := string(calls[1].Arguments); got != `{"path":"b.go"}` {
+		t.Fatalf("second tool call args: got %q, want %q", got, `{"path":"b.go"}`)
+	}
+}
+
+func TestStreamAccumulator_ReasoningAndToolCallsTogether(t *testing.T) {
+	acc := NewStreamAccumulator()
+	acc.Process(StreamEvent{Type: StreamEventStreamStart})
+
+	// Reasoning
+	acc.Process(StreamEvent{Type: StreamEventReasoningStart})
+	acc.Process(StreamEvent{Type: StreamEventReasoningDelta, ReasoningDelta: "I need to check the weather."})
+	acc.Process(StreamEvent{Type: StreamEventReasoningEnd})
+
+	// Text
+	acc.Process(StreamEvent{Type: StreamEventTextStart, TextID: "t1"})
+	acc.Process(StreamEvent{Type: StreamEventTextDelta, TextID: "t1", Delta: "Checking weather..."})
+	acc.Process(StreamEvent{Type: StreamEventTextEnd, TextID: "t1"})
+
+	// Tool call
+	acc.Process(StreamEvent{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{
+		ID: "call_1", Name: "get_weather", Type: "function",
+	}})
+	acc.Process(StreamEvent{Type: StreamEventToolCallDelta, ToolCall: &ToolCallData{
+		ID: "call_1", Arguments: json.RawMessage(`{"city":"NYC"}`),
+	}})
+	acc.Process(StreamEvent{Type: StreamEventToolCallEnd, ToolCall: &ToolCallData{ID: "call_1"}})
+
+	f := FinishReason{Reason: "tool_calls"}
+	acc.Process(StreamEvent{Type: StreamEventFinish, FinishReason: &f})
+
+	resp := acc.Response()
+	if resp == nil {
+		t.Fatalf("expected response, got nil")
+	}
+	if got := resp.Text(); got != "Checking weather..." {
+		t.Fatalf("text: got %q, want %q", got, "Checking weather...")
+	}
+	if got := resp.ReasoningText(); got != "I need to check the weather." {
+		t.Fatalf("reasoning: got %q, want %q", got, "I need to check the weather.")
+	}
+	calls := resp.ToolCalls()
+	if len(calls) != 1 {
+		t.Fatalf("tool calls: got %d, want 1", len(calls))
+	}
+	if calls[0].Name != "get_weather" {
+		t.Fatalf("tool call name: got %q, want %q", calls[0].Name, "get_weather")
+	}
+}
