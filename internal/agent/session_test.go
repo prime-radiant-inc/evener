@@ -109,6 +109,108 @@ func TestSession_NaturalCompletion_LoadsOnlyProfileDocs(t *testing.T) {
 	}
 }
 
+func TestSession_NaturalCompletion_LoadsOnlyProfileDocs_Anthropic(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	_ = os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("AGENTS\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("CLAUDE\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "GEMINI.md"), []byte("GEMINI\n"), 0o644)
+	_ = os.MkdirAll(filepath.Join(dir, ".codex"), 0o755)
+	_ = os.WriteFile(filepath.Join(dir, ".codex", "instructions.md"), []byte("CODEX\n"), 0o644)
+
+	c := llm.NewClient()
+	f := &fakeAdapter{
+		name: "anthropic",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("ok")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := sess.ProcessInput(ctx, "hi")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if strings.TrimSpace(out) != "ok" {
+		t.Fatalf("out: %q", out)
+	}
+	sess.Close()
+
+	reqs := f.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("requests: got %d want 1", len(reqs))
+	}
+	if len(reqs[0].Messages) == 0 || reqs[0].Messages[0].Role != llm.RoleSystem {
+		t.Fatalf("expected leading system message, got %+v", reqs[0].Messages)
+	}
+	sys := reqs[0].Messages[0].Text()
+	if !strings.Contains(sys, "BEGIN CLAUDE.md") || !strings.Contains(sys, "BEGIN AGENTS.md") {
+		t.Fatalf("Anthropic profile should load CLAUDE.md and AGENTS.md:\n%s", sys)
+	}
+	if strings.Contains(sys, "BEGIN GEMINI.md") || strings.Contains(sys, "BEGIN .codex/instructions.md") {
+		t.Fatalf("Anthropic profile should NOT load GEMINI.md or .codex/instructions.md:\n%s", sys)
+	}
+}
+
+func TestSession_NaturalCompletion_LoadsOnlyProfileDocs_Gemini(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	_ = os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("AGENTS\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("CLAUDE\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "GEMINI.md"), []byte("GEMINI\n"), 0o644)
+	_ = os.MkdirAll(filepath.Join(dir, ".codex"), 0o755)
+	_ = os.WriteFile(filepath.Join(dir, ".codex", "instructions.md"), []byte("CODEX\n"), 0o644)
+
+	c := llm.NewClient()
+	f := &fakeAdapter{
+		name: "google",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("ok")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewGeminiProfile("gemini-test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := sess.ProcessInput(ctx, "hi")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if strings.TrimSpace(out) != "ok" {
+		t.Fatalf("out: %q", out)
+	}
+	sess.Close()
+
+	reqs := f.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("requests: got %d want 1", len(reqs))
+	}
+	if len(reqs[0].Messages) == 0 || reqs[0].Messages[0].Role != llm.RoleSystem {
+		t.Fatalf("expected leading system message, got %+v", reqs[0].Messages)
+	}
+	sys := reqs[0].Messages[0].Text()
+	if !strings.Contains(sys, "BEGIN GEMINI.md") || !strings.Contains(sys, "BEGIN AGENTS.md") {
+		t.Fatalf("Gemini profile should load GEMINI.md and AGENTS.md:\n%s", sys)
+	}
+	if strings.Contains(sys, "BEGIN CLAUDE.md") || strings.Contains(sys, "BEGIN .codex/instructions.md") {
+		t.Fatalf("Gemini profile should NOT load CLAUDE.md or .codex/instructions.md:\n%s", sys)
+	}
+}
+
 func TestSession_SystemPromptFile_OverridesBasePrompt(t *testing.T) {
 	dir := t.TempDir()
 	promptFile := filepath.Join(dir, "custom-prompt.md")
