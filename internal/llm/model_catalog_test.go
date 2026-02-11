@@ -3,6 +3,7 @@ package llm
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -92,6 +93,45 @@ func TestLoadModelCatalogFromLiteLLMJSON_GetListLatest(t *testing.T) {
 	latestReasoning := c.GetLatestModel("google", "reasoning")
 	if latestReasoning != nil {
 		t.Fatalf("expected no google reasoning model in sample catalog; got %+v", latestReasoning)
+	}
+}
+
+func TestParseLiteLLMCatalog(t *testing.T) {
+	body := `{
+  "sample_spec": {"litellm_provider":"openai","mode":"chat"},
+  "gpt-5.2": {
+    "litellm_provider":"openai","mode":"chat",
+    "max_input_tokens":1000,"max_output_tokens":2000,
+    "supports_function_calling":true
+  }
+}`
+	cat, err := parseLiteLLMCatalog([]byte(body))
+	if err != nil {
+		t.Fatalf("parseLiteLLMCatalog: %v", err)
+	}
+	if len(cat.Models) != 1 {
+		t.Fatalf("models: got %d want 1", len(cat.Models))
+	}
+	if cat.Models[0].ID != "gpt-5.2" {
+		t.Fatalf("model ID = %q", cat.Models[0].ID)
+	}
+}
+
+func TestEmbeddedModelCatalog(t *testing.T) {
+	cat := EmbeddedModelCatalog()
+	if cat == nil {
+		t.Fatal("EmbeddedModelCatalog returned nil")
+	}
+	if len(cat.Models) == 0 {
+		t.Fatal("embedded catalog is empty")
+	}
+	// Spot-check a well-known model.
+	info := cat.GetModelInfo("gpt-4o")
+	if info == nil {
+		t.Fatal("gpt-4o not found in embedded catalog")
+	}
+	if !strings.EqualFold(info.Provider, "openai") {
+		t.Fatalf("gpt-4o provider = %q", info.Provider)
 	}
 }
 

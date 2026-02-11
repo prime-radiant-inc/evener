@@ -122,15 +122,19 @@ func LoadModelCatalogFromLiteLLMJSON(path string) (*ModelCatalog, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseLiteLLMCatalog(b)
+}
 
+// parseLiteLLMCatalog parses LiteLLM catalog JSON bytes into a ModelCatalog.
+func parseLiteLLMCatalog(data []byte) (*ModelCatalog, error) {
 	var raw map[string]map[string]any
-	dec := json.NewDecoder(strings.NewReader(string(b)))
+	dec := json.NewDecoder(strings.NewReader(string(data)))
 	dec.UseNumber()
 	if err := dec.Decode(&raw); err != nil {
 		return nil, err
 	}
 	if len(raw) == 0 {
-		return nil, fmt.Errorf("litellm catalog is empty: %s", path)
+		return nil, fmt.Errorf("litellm catalog is empty")
 	}
 
 	var models []ModelInfo
@@ -164,17 +168,17 @@ func LoadModelCatalogFromLiteLLMJSON(path string) (*ModelCatalog, error) {
 		outPerM := scalePerMillion(outCost)
 
 		models = append(models, ModelInfo{
-			ID:                id,
-			Provider:          prov,
-			DisplayName:       id,
-			ContextWindow:     ctxWindow,
-			MaxOutputTokens:   maxOutPtr,
-			SupportsTools:     parseBool(v["supports_function_calling"]),
-			SupportsVision:    parseBool(v["supports_vision"]),
-			SupportsReasoning: parseBool(v["supports_reasoning"]),
+			ID:                   id,
+			Provider:             prov,
+			DisplayName:          id,
+			ContextWindow:        ctxWindow,
+			MaxOutputTokens:      maxOutPtr,
+			SupportsTools:        parseBool(v["supports_function_calling"]),
+			SupportsVision:       parseBool(v["supports_vision"]),
+			SupportsReasoning:    parseBool(v["supports_reasoning"]),
 			InputCostPerMillion:  inPerM,
 			OutputCostPerMillion: outPerM,
-			Aliases:           nil,
+			Aliases:              nil,
 		})
 	}
 
