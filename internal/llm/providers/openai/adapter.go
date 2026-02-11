@@ -443,7 +443,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
 			}
 			return nil
-		})
+		}, llm.StreamReadSSEOptions(req.AdapterTimeout)...)
 
 		if !finished {
 			if err := sctx.Err(); err != nil {

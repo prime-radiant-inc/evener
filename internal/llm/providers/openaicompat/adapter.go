@@ -282,7 +282,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 			}
 
 			return nil
-		})
+		}, llm.StreamReadSSEOptions(req.AdapterTimeout)...)
 
 		if !finished {
 			if err := sctx.Err(); err != nil {
