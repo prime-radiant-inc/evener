@@ -710,6 +710,34 @@ func TestGeminiProfile_ProviderOptions_HasSafetySettings(t *testing.T) {
 	}
 }
 
+func TestGeminiProfile_ProviderPromptUsesMappedToolNames(t *testing.T) {
+	// Read the embedded Gemini provider prompt directly to verify it uses
+	// mapped tool names. The Gemini profile maps:
+	//   list_dir→list_directory, grep→grep_search, shell→run_shell_command
+	// The provider prompt must use mapped names so the model sees consistent
+	// names between the tool list and the behavioral guidance.
+	b, err := embeddedPrompts.ReadFile("prompts/system.gemini.md")
+	if err != nil {
+		t.Fatalf("reading embedded gemini prompt: %v", err)
+	}
+	prompt := string(b)
+
+	checks := []struct {
+		canonical string
+		mapped    string
+	}{
+		{"list_dir", "list_directory"},
+		{"grep", "grep_search"},
+		{"shell", "run_shell_command"},
+	}
+	for _, c := range checks {
+		stripped := strings.ReplaceAll(prompt, c.mapped, "")
+		if strings.Contains(stripped, c.canonical) {
+			t.Errorf("Gemini provider prompt contains bare %q — should use %q to match the mapped tool name", c.canonical, c.mapped)
+		}
+	}
+}
+
 func assertToolListExact(t *testing.T, p ProviderProfile, want []string) {
 	t.Helper()
 	got := make([]string, 0, len(p.ToolDefinitions()))
