@@ -1,6 +1,10 @@
 package agent
 
-import "primeradiant.com/serf/internal/llm"
+import (
+	"time"
+
+	"primeradiant.com/serf/internal/llm"
+)
 
 type TurnKind string
 
@@ -14,7 +18,13 @@ const (
 // Turn is the Session's typed history item. Steering turns are kept distinct for observability,
 // but are converted to user-role messages when building the LLM request.
 type Turn struct {
-	Kind    TurnKind    `json:"kind"`
-	Message llm.Message `json:"message"`
+	Kind      TurnKind    `json:"kind"`
+	Message   llm.Message `json:"message"`
+	Timestamp time.Time   `json:"timestamp"`
+}
+
+// NewTurn creates a Turn with the current UTC time.
+func NewTurn(kind TurnKind, msg llm.Message) Turn {
+	return Turn{Kind: kind, Message: msg, Timestamp: time.Now().UTC()}
 }
 

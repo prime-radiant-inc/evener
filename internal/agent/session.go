@@ -458,7 +458,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecR
 func (s *Session) appendTurn(kind TurnKind, m llm.Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.history = append(s.history, Turn{Kind: kind, Message: m})
+	s.history = append(s.history, NewTurn(kind, m))
 }
 
 // maybeAutoSave persists the session state if StateDir is configured.
