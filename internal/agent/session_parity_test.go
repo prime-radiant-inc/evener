@@ -736,6 +736,61 @@ func TestParity_ReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestParity_SubagentSpawnAndWait(t *testing.T) {
+	for _, pc := range providerCases {
+		t.Run(pc.name, func(t *testing.T) {
+			// Use reg.ExecuteCall to drive subagent lifecycle deterministically,
+			// avoiding races from interleaved parent/subagent LLM calls.
+			steps := []func(llm.Request) llm.Response{
+				// Subagent's single LLM call — returns text.
+				func(req llm.Request) llm.Response {
+					return llm.Response{Message: llm.Assistant("subagent completed task")}
+				},
+			}
+			sess, _ := newParitySession(t, pc, steps)
+			defer sess.Close()
+			go func() { for range sess.Events() {} }()
+
+			// Spawn agent via registry.
+			spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+				ID: "c1", Name: "spawn_agent", Type: "function",
+				Arguments: json.RawMessage(`{"task":"hello from subagent"}`),
+			})
+			if spawnRes.IsError {
+				t.Fatalf("spawn_agent error: %s", spawnRes.Output)
+			}
+			var spawned map[string]any
+			if err := json.Unmarshal([]byte(spawnRes.Output), &spawned); err != nil {
+				t.Fatalf("unmarshal spawn output: %v (out=%q)", err, spawnRes.Output)
+			}
+			agentID := strings.TrimSpace(fmt.Sprint(spawned["agent_id"]))
+			if agentID == "" {
+				t.Fatalf("missing agent_id in spawn output: %v", spawned)
+			}
+
+			// Wait for the subagent to finish.
+			waitRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+				ID: "c2", Name: "wait", Type: "function",
+				Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":5000}`, agentID)),
+			})
+			if waitRes.IsError {
+				t.Fatalf("wait error: %s", waitRes.Output)
+			}
+
+			var result SubAgentResult
+			if err := json.Unmarshal([]byte(waitRes.Output), &result); err != nil {
+				t.Fatalf("unmarshal wait result: %v (out=%q)", err, waitRes.Output)
+			}
+			if !result.Success {
+				t.Fatalf("expected subagent success, got failure: %+v", result)
+			}
+			if !strings.Contains(result.Output, "subagent completed task") {
+				t.Errorf("expected subagent output in result, got: %q", result.Output)
+			}
+		})
+	}
+}
+
 // canonicalXxx returns the wire-name for a tool given the provider name.
 // This mirrors the ToolNameMap applied by each profile.
 func canonicalWriteFile(provider string) string { return "write_file" }
