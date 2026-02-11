@@ -2198,6 +2198,225 @@ func TestSession_ToolResults_SingleCallAlsoAggregated(t *testing.T) {
 	}
 }
 
+// WS2a: AWAITING_INPUT state
+func TestSession_AwaitingInput_QuestionMarkResponse(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Message: llm.Assistant("What file would you like me to edit?"),
+					Finish:  llm.FinishReason{Reason: "stop"},
+				}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() { for range sess.Events() {} }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "hello")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	if got := sess.State(); got != SessionAwaitingInput {
+		t.Fatalf("state after question: got %q want %q", got, SessionAwaitingInput)
+	}
+	sess.Close()
+}
+
+func TestSession_AwaitingInput_DeclarativeResponse_GoesIdle(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Message: llm.Assistant("I have completed the task."),
+					Finish:  llm.FinishReason{Reason: "stop"},
+				}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() { for range sess.Events() {} }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "do something")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after declarative response: got %q want %q", got, SessionIdle)
+	}
+	sess.Close()
+}
+
+func TestSession_AwaitingInput_TransitionsToProcessing(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Message: llm.Assistant("What language?"),
+					Finish:  llm.FinishReason{Reason: "stop"},
+				}
+			},
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Message: llm.Assistant("Done writing Go code."),
+					Finish:  llm.FinishReason{Reason: "stop"},
+				}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() { for range sess.Events() {} }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// First input: question → AWAITING_INPUT
+	_, err = sess.ProcessInput(ctx, "write code")
+	if err != nil {
+		t.Fatalf("ProcessInput #1: %v", err)
+	}
+	if got := sess.State(); got != SessionAwaitingInput {
+		t.Fatalf("state after question: got %q want %q", got, SessionAwaitingInput)
+	}
+
+	// Second input: AWAITING_INPUT → PROCESSING → IDLE
+	_, err = sess.ProcessInput(ctx, "Go")
+	if err != nil {
+		t.Fatalf("ProcessInput #2: %v", err)
+	}
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after answer: got %q want %q", got, SessionIdle)
+	}
+	sess.Close()
+}
+
+// WS2b: MaxTurns → IDLE transition
+func TestSession_MaxTurns_SetsStateToIdle(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("ok"), Finish: llm.FinishReason{Reason: "stop"}}
+			},
+		},
+	})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{MaxTurns: 1})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() { for range sess.Events() {} }()
+
+	ctx := context.Background()
+	// First input succeeds (turn 1 of 1).
+	_, err = sess.ProcessInput(ctx, "first")
+	if err != nil {
+		t.Fatalf("first input: %v", err)
+	}
+
+	// Second input hits the turn limit.
+	_, err = sess.ProcessInput(ctx, "second")
+	if err == nil {
+		t.Fatalf("expected error on turn limit")
+	}
+
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after MaxTurns: got %q want %q", got, SessionIdle)
+	}
+	sess.Close()
+}
+
+// WS2c: SESSION_END after process_input
+func TestSession_SessionEnd_AfterProcessInput(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("hello"), Finish: llm.FinishReason{Reason: "stop"}}
+			},
+		},
+	})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	var events []SessionEvent
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range sess.Events() {
+			events = append(events, ev)
+		}
+	}()
+
+	ctx := context.Background()
+	_, err = sess.ProcessInput(ctx, "hi")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	// After ProcessInput returns, a SESSION_END with reason "input_complete" should be emitted.
+	sess.Close()
+	<-done
+
+	var inputCompleteEnd, sessionClosedEnd bool
+	for _, ev := range events {
+		if ev.Kind == EventSessionEnd {
+			if r, _ := ev.Data["reason"].(string); r == "input_complete" {
+				inputCompleteEnd = true
+			}
+			if r, _ := ev.Data["reason"].(string); r == "session_closed" {
+				sessionClosedEnd = true
+			}
+		}
+	}
+	if !inputCompleteEnd {
+		t.Fatalf("expected SESSION_END with reason=input_complete")
+	}
+	if !sessionClosedEnd {
+		t.Fatalf("expected SESSION_END with reason=session_closed")
+	}
+}
+
 func TestDetectLoop_Patterns(t *testing.T) {
 	tests := []struct {
 		name   string

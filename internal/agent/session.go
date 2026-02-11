@@ -439,8 +439,9 @@ func (s *Session) Close() {
 	s.env.Cleanup()
 
 	s.emit(EventSessionEnd, map[string]any{
-		"state": string(SessionClosed),
-		"turns": turns,
+		"reason": "session_closed",
+		"state":  string(SessionClosed),
+		"turns":  turns,
 	})
 	close(s.events)
 }
@@ -462,6 +463,10 @@ func (s *Session) ProcessInput(ctx context.Context, input string) (string, error
 		}
 		fu := s.popFollowUp()
 		if strings.TrimSpace(fu) == "" {
+			s.emit(EventSessionEnd, map[string]any{
+				"reason": "input_complete",
+				"state":  string(s.State()),
+			})
 			return strings.Join(outputs, "\n"), nil
 		}
 		next = fu
@@ -659,6 +664,9 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 
 	if s.cfg.MaxTurns > 0 && turns > s.cfg.MaxTurns {
 		s.emit(EventTurnLimit, map[string]any{"max_turns": s.cfg.MaxTurns})
+		s.mu.Lock()
+		s.state = SessionIdle
+		s.mu.Unlock()
 		return "", fmt.Errorf("turn limit reached")
 	}
 
@@ -824,7 +832,12 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		calls := resp.ToolCalls()
 		if len(calls) == 0 {
 			s.mu.Lock()
-			s.state = SessionIdle
+			trimmed := strings.TrimSpace(txt)
+			if strings.HasSuffix(trimmed, "?") {
+				s.state = SessionAwaitingInput
+			} else {
+				s.state = SessionIdle
+			}
 			s.mu.Unlock()
 			return txt, nil
 		}
