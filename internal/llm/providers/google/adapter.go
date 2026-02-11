@@ -19,9 +19,10 @@ import (
 )
 
 type Adapter struct {
-	APIKey  string
-	BaseURL string
-	Client  *http.Client
+	APIKey         string
+	BaseURL        string
+	Client         *http.Client
+	DefaultHeaders map[string]string
 }
 
 func init() {
@@ -189,6 +190,10 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	if err != nil {
 		return llm.Response{}, err
 	}
+	// Apply default headers first so provider-specific headers take precedence.
+	for k, v := range a.DefaultHeaders {
+		httpReq.Header.Set(k, v)
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := a.Client.Do(httpReq)
@@ -342,6 +347,10 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	if err != nil {
 		cancel()
 		return nil, err
+	}
+	// Apply default headers first so provider-specific headers take precedence.
+	for k, v := range a.DefaultHeaders {
+		httpReq.Header.Set(k, v)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 

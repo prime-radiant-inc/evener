@@ -15,11 +15,12 @@ import (
 )
 
 type Adapter struct {
-	APIKey    string
-	BaseURL   string
-	OrgID     string
-	ProjectID string
-	Client    *http.Client
+	APIKey         string
+	BaseURL        string
+	OrgID          string
+	ProjectID      string
+	Client         *http.Client
+	DefaultHeaders map[string]string
 }
 
 func init() {
@@ -57,6 +58,10 @@ func NewFromEnv() (*Adapter, error) {
 func (a *Adapter) Name() string { return "openai" }
 
 func (a *Adapter) setHeaders(req *http.Request) {
+	// Apply default headers first so provider-specific headers take precedence.
+	for k, v := range a.DefaultHeaders {
+		req.Header.Set(k, v)
+	}
 	req.Header.Set("Authorization", "Bearer "+a.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 	if a.OrgID != "" {

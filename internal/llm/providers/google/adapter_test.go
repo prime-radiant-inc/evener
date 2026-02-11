@@ -2173,3 +2173,105 @@ func TestAdapterTimeout_Request_EnforcedOnComplete(t *testing.T) {
 	}
 	t.Errorf("expected RequestTimeoutError or DeadlineExceeded, got %T: %v", err, err)
 }
+
+func TestDefaultHeaders_SentOnCompleteRequests(t *testing.T) {
+	var capturedHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedHeaders = r.Header
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey:  "test-key",
+		BaseURL: srv.URL,
+		Client:  srv.Client(),
+		DefaultHeaders: map[string]string{
+			"X-Custom-Header": "custom-value",
+			"X-Another":       "another-value",
+		},
+	}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gemini-test",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capturedHeaders.Get("X-Custom-Header") != "custom-value" {
+		t.Errorf("X-Custom-Header = %q, want %q", capturedHeaders.Get("X-Custom-Header"), "custom-value")
+	}
+	if capturedHeaders.Get("X-Another") != "another-value" {
+		t.Errorf("X-Another = %q, want %q", capturedHeaders.Get("X-Another"), "another-value")
+	}
+	if capturedHeaders.Get("Content-Type") != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", capturedHeaders.Get("Content-Type"), "application/json")
+	}
+}
+
+func TestDefaultHeaders_SentOnStreamRequests(t *testing.T) {
+	var capturedHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedHeaders = r.Header
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, "data: "+`{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`+"\n\n")
+		if f != nil {
+			f.Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey:  "test-key",
+		BaseURL: srv.URL,
+		Client:  srv.Client(),
+		DefaultHeaders: map[string]string{
+			"X-Custom-Header": "custom-value",
+		},
+	}
+	stream, err := a.Stream(context.Background(), llm.Request{
+		Model:    "gemini-test",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	for range stream.Events() {
+	}
+	if capturedHeaders.Get("X-Custom-Header") != "custom-value" {
+		t.Errorf("X-Custom-Header = %q, want %q", capturedHeaders.Get("X-Custom-Header"), "custom-value")
+	}
+}
+
+func TestDefaultHeaders_CannotOverrideContentType(t *testing.T) {
+	var capturedHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedHeaders = r.Header
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey:  "test-key",
+		BaseURL: srv.URL,
+		Client:  srv.Client(),
+		DefaultHeaders: map[string]string{
+			"Content-Type": "text/plain",
+		},
+	}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gemini-test",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Provider-specific Content-Type must take precedence.
+	if capturedHeaders.Get("Content-Type") != "application/json" {
+		t.Errorf("Content-Type = %q, want %q (provider must take precedence)", capturedHeaders.Get("Content-Type"), "application/json")
+	}
+}

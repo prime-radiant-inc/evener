@@ -18,9 +18,10 @@ import (
 )
 
 type Adapter struct {
-	APIKey  string
-	BaseURL string
-	Client  *http.Client
+	APIKey         string
+	BaseURL        string
+	Client         *http.Client
+	DefaultHeaders map[string]string
 }
 
 func init() {
@@ -98,6 +99,10 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.BaseURL+"/v1/chat/completions", bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, err
+	}
+	// Apply default headers first so provider-specific headers take precedence.
+	for k, v := range a.DefaultHeaders {
+		httpReq.Header.Set(k, v)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	if a.APIKey != "" {
@@ -600,6 +605,10 @@ func (a *Adapter) doHTTP(ctx context.Context, body map[string]any) (map[string]a
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.BaseURL+"/v1/chat/completions", bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, 0, nil, err
+	}
+	// Apply default headers first so provider-specific headers take precedence.
+	for k, v := range a.DefaultHeaders {
+		httpReq.Header.Set(k, v)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	if a.APIKey != "" {
