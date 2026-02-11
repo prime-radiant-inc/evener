@@ -32,6 +32,31 @@ func TestResolveSystemPrompt_EmbeddedDefaults(t *testing.T) {
 	}
 }
 
+func TestEmbeddedPrompts_ContainCoreGuidance(t *testing.T) {
+	// All embedded prompts must include security, code quality, and
+	// change discipline guidance regardless of provider.
+	required := []struct {
+		label   string
+		snippet string
+	}{
+		{"security", "security"},
+		{"minimal changes", "existing file"},
+		{"understand before modifying", "before editing"},
+	}
+
+	for _, provider := range []string{"openai", "anthropic", "google"} {
+		prompt, err := ResolveSystemPrompt(provider, "some-model", "", "", "")
+		if err != nil {
+			t.Fatalf("%s: %v", provider, err)
+		}
+		for _, r := range required {
+			if !contains(prompt, r.snippet) {
+				t.Errorf("%s prompt missing %s guidance (looked for %q)", provider, r.label, r.snippet)
+			}
+		}
+	}
+}
+
 func TestResolveSystemPrompt_CLIOverride(t *testing.T) {
 	// CLI flag should take highest priority.
 	tmp := t.TempDir()

@@ -127,7 +127,18 @@ communicate(result), which you receive as a tool result.
 When a task involves touching more than 2-3 files, consider breaking it into subagent-sized pieces.
 
 ## Workflow
-- Read files before editing. Use grep and glob to explore the codebase.
+- Understand code before modifying it. Read files before editing. Use grep and glob to explore.
+- Prefer editing an existing file over creating a new one. Only create files when necessary.
+- Keep changes minimal and focused on the task. Do not add features, refactoring, or
+  abstractions beyond what was asked.
+- Do not add error handling, validation, or fallbacks for scenarios that cannot occur.
+  Only validate at system boundaries (user input, external APIs).
 - After making changes, run tests to verify correctness.
 - Fix errors yourself rather than reporting them and stopping.
-- Keep changes minimal and focused on the task.
+
+## Security
+- Do not introduce security vulnerabilities: command injection, path traversal, XSS,
+  SQL injection, hardcoded credentials, or insecure deserialization.
+- Sanitize external input. Never pass user-controlled strings directly to shell commands,
+  SQL queries, or file paths without validation.
+- If you notice insecure code while working, fix it.
