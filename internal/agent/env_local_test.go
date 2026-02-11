@@ -547,6 +547,28 @@ func TestFilteredEnv_AllowListIncludesLanguageToolchainVars(t *testing.T) {
 	}
 }
 
+func TestFilteredEnv_ExcludesTOKEN_PASSWORD_CREDENTIAL(t *testing.T) {
+	t.Setenv("MY_TOKEN", "secret")
+	t.Setenv("DB_PASSWORD", "secret")
+	t.Setenv("AWS_CREDENTIAL", "secret")
+	t.Setenv("SAFE_VAR", "visible")
+
+	env := filteredEnv(nil)
+	envMap := map[string]string{}
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		envMap[k] = v
+	}
+	for _, k := range []string{"MY_TOKEN", "DB_PASSWORD", "AWS_CREDENTIAL"} {
+		if _, ok := envMap[k]; ok {
+			t.Errorf("%s should be excluded but was present", k)
+		}
+	}
+	if _, ok := envMap["SAFE_VAR"]; !ok {
+		t.Error("SAFE_VAR should be present but was excluded")
+	}
+}
+
 func TestLocalExecutionEnvironment_InitializeCleanup(t *testing.T) {
 	env := NewLocalExecutionEnvironment(t.TempDir())
 	if err := env.Initialize(); err != nil {
