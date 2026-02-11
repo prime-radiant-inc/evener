@@ -16,7 +16,7 @@ func TestResolveSystemPrompt_ComposesBaseAndProvider(t *testing.T) {
 	}{
 		{"openai", "apply_patch", "task_list"},
 		{"anthropic", "edit_file", "communicate"},
-		{"google", "edit_file", "Subagent delegation"},
+		{"gemini", "edit_file", "Subagent delegation"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.provider, func(t *testing.T) {
@@ -65,7 +65,7 @@ func TestEmbeddedPrompts_ContainCoreGuidance(t *testing.T) {
 		{"decisive action", "decisive"},
 	}
 
-	for _, provider := range []string{"openai", "anthropic", "google"} {
+	for _, provider := range []string{"openai", "anthropic", "gemini"} {
 		prompt, err := ResolveSystemPrompt(provider, "some-model", "", "", "", nil)
 		if err != nil {
 			t.Fatalf("%s: %v", provider, err)

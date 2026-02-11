@@ -106,7 +106,7 @@ func (p *baseProfile) CheapModel() string {
 		return "gpt-4.1-nano"
 	case "anthropic":
 		return "claude-haiku-4-5-20251001"
-	case "google":
+	case "gemini":
 		return "gemini-2.5-flash-lite"
 	default:
 		return p.model
@@ -270,11 +270,11 @@ func NewAnthropicProfile(model string) ProviderProfile {
 
 func NewGeminiProfile(model string) ProviderProfile {
 	return &baseProfile{
-		id:              "google",
+		id:              "gemini",
 		model:           strings.TrimSpace(model),
 		parallel:        true,
 		contextWindow:   128_000,
-		basePrompt:      embeddedBasePrompt("google"),
+		basePrompt:      embeddedBasePrompt("gemini"),
 		docFiles:        []string{"GEMINI.md", "AGENTS.md"},
 		reasoning:       true,
 		streaming:       true,
