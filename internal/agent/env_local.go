@@ -16,8 +16,19 @@ import (
 	"github.com/bmatcuk/doublestar/v4"
 )
 
+// EnvVarPolicy controls which environment variables are inherited by child processes.
+type EnvVarPolicy int
+
+const (
+	EnvPolicyDefault  EnvVarPolicy = iota // Inherit all non-sensitive (current behavior)
+	EnvPolicyAll                          // Inherit everything including sensitive
+	EnvPolicyNone                         // Start clean, only explicitly passed vars
+	EnvPolicyCoreOnly                     // Only PATH, HOME, USER, SHELL, LANG, TERM, TMPDIR + language paths
+)
+
 type LocalExecutionEnvironment struct {
-	RootDir string
+	RootDir   string
+	EnvPolicy EnvVarPolicy
 }
 
 func NewLocalExecutionEnvironment(rootDir string) *LocalExecutionEnvironment {
@@ -254,7 +265,7 @@ func (e *LocalExecutionEnvironment) ExecCommand(ctx context.Context, command str
 	cmd := exec.Command("bash", "-lc", command)
 	cmd.Dir = dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = filteredEnv(envVars)
+	cmd.Env = filteredEnvWithPolicy(e.EnvPolicy, envVars)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -338,6 +349,42 @@ func killProcessGroup(pid int) {
 		return
 	}
 	_ = syscall.Kill(-pid, syscall.SIGKILL)
+}
+
+func filteredEnvWithPolicy(policy EnvVarPolicy, extra map[string]string) []string {
+	switch policy {
+	case EnvPolicyAll:
+		out := os.Environ()
+		for k, v := range extra {
+			out = append(out, k+"="+v)
+		}
+		return out
+	case EnvPolicyNone:
+		out := make([]string, 0, len(extra))
+		for k, v := range extra {
+			out = append(out, k+"="+v)
+		}
+		return out
+	case EnvPolicyCoreOnly:
+		core := map[string]bool{
+			"PATH": true, "HOME": true, "USER": true,
+			"SHELL": true, "LANG": true, "TERM": true,
+			"TMPDIR": true, "GOPATH": true, "GOMODCACHE": true,
+		}
+		out := []string{}
+		for _, kv := range os.Environ() {
+			k, _, ok := strings.Cut(kv, "=")
+			if ok && core[k] {
+				out = append(out, kv)
+			}
+		}
+		for k, v := range extra {
+			out = append(out, k+"="+v)
+		}
+		return out
+	default: // EnvPolicyDefault
+		return filteredEnv(extra)
+	}
 }
 
 func filteredEnv(extra map[string]string) []string {

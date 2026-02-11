@@ -144,6 +144,116 @@ func TestLocalExecutionEnvironment_ListDirectory_Depth(t *testing.T) {
 	}
 }
 
+func TestEnvVarPolicy_InheritNone(t *testing.T) {
+	t.Setenv("SERF_TEST_MARKER", "should_not_appear")
+
+	env := NewLocalExecutionEnvironment(t.TempDir())
+	env.EnvPolicy = EnvPolicyNone
+
+	ctx := context.Background()
+	res, err := env.ExecCommand(ctx, "env", 5000, "", nil)
+	if err != nil {
+		t.Fatalf("ExecCommand: %v", err)
+	}
+	if strings.Contains(res.Stdout, "SERF_TEST_MARKER=") {
+		t.Fatal("inherit-none should not pass through parent env vars")
+	}
+	// PATH won't be inherited either (bash may set its own default)
+	if strings.Contains(res.Stdout, "HOME=") {
+		t.Fatal("inherit-none should not include HOME")
+	}
+}
+
+func TestEnvVarPolicy_InheritNone_AllowsExtraVars(t *testing.T) {
+	env := NewLocalExecutionEnvironment(t.TempDir())
+	env.EnvPolicy = EnvPolicyNone
+
+	ctx := context.Background()
+	extra := map[string]string{"MY_CUSTOM": "hello"}
+	res, err := env.ExecCommand(ctx, "env", 5000, "", extra)
+	if err != nil {
+		t.Fatalf("ExecCommand: %v", err)
+	}
+	if !strings.Contains(res.Stdout, "MY_CUSTOM=hello") {
+		t.Fatal("inherit-none should still allow explicitly passed vars")
+	}
+}
+
+func TestEnvVarPolicy_CoreOnly(t *testing.T) {
+	t.Setenv("SERF_TEST_MARKER", "should_not_appear")
+
+	env := NewLocalExecutionEnvironment(t.TempDir())
+	env.EnvPolicy = EnvPolicyCoreOnly
+
+	ctx := context.Background()
+	res, err := env.ExecCommand(ctx, "env", 5000, "", nil)
+	if err != nil {
+		t.Fatalf("ExecCommand: %v", err)
+	}
+	out := res.Stdout
+	if !strings.Contains(out, "PATH=") {
+		t.Fatal("core-only should include PATH")
+	}
+	if !strings.Contains(out, "HOME=") {
+		t.Fatal("core-only should include HOME")
+	}
+	if strings.Contains(out, "SERF_TEST_MARKER=") {
+		t.Fatal("core-only should not include arbitrary parent vars")
+	}
+}
+
+func TestEnvVarPolicy_CoreOnly_AllowsExtraVars(t *testing.T) {
+	env := NewLocalExecutionEnvironment(t.TempDir())
+	env.EnvPolicy = EnvPolicyCoreOnly
+
+	ctx := context.Background()
+	extra := map[string]string{"MY_CUSTOM": "hello"}
+	res, err := env.ExecCommand(ctx, "env", 5000, "", extra)
+	if err != nil {
+		t.Fatalf("ExecCommand: %v", err)
+	}
+	if !strings.Contains(res.Stdout, "MY_CUSTOM=hello") {
+		t.Fatal("core-only should allow explicitly passed extra vars")
+	}
+}
+
+func TestEnvVarPolicy_All(t *testing.T) {
+	t.Setenv("MY_API_KEY", "secret123")
+
+	env := NewLocalExecutionEnvironment(t.TempDir())
+	env.EnvPolicy = EnvPolicyAll
+
+	ctx := context.Background()
+	res, err := env.ExecCommand(ctx, "env", 5000, "", nil)
+	if err != nil {
+		t.Fatalf("ExecCommand: %v", err)
+	}
+	// All policy should include even sensitive vars that Default would filter
+	if !strings.Contains(res.Stdout, "MY_API_KEY=secret123") {
+		t.Fatal("all policy should include sensitive vars like API keys")
+	}
+}
+
+func TestEnvVarPolicy_Default_FiltersSensitive(t *testing.T) {
+	t.Setenv("MY_API_KEY", "secret123")
+	t.Setenv("SERF_TEST_MARKER", "should_appear")
+
+	env := NewLocalExecutionEnvironment(t.TempDir())
+	// EnvPolicy zero value is EnvPolicyDefault
+
+	ctx := context.Background()
+	res, err := env.ExecCommand(ctx, "env", 5000, "", nil)
+	if err != nil {
+		t.Fatalf("ExecCommand: %v", err)
+	}
+	if strings.Contains(res.Stdout, "MY_API_KEY=") {
+		t.Fatal("default policy should filter sensitive vars")
+	}
+	if !strings.Contains(res.Stdout, "SERF_TEST_MARKER=should_appear") {
+		t.Fatal("default policy should pass through non-sensitive vars")
+	}
+}
+
 func TestLocalExecutionEnvironment_InitializeCleanup(t *testing.T) {
 	env := NewLocalExecutionEnvironment(t.TempDir())
 	if err := env.Initialize(); err != nil {
