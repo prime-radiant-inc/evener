@@ -3,32 +3,50 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-func TestResolveSystemPrompt_EmbeddedDefaults(t *testing.T) {
-	// With no overrides, should return the embedded default for each provider.
+func TestResolveSystemPrompt_ComposesBaseAndProvider(t *testing.T) {
+	// Embedded result must contain both base.md content and provider-specific content.
 	tests := []struct {
-		provider string
-		contains string // substring that must appear in the result
+		provider        string
+		providerSnippet string // from provider file
+		baseSnippet     string // from base.md
 	}{
-		{"openai", "apply_patch"},
-		{"anthropic", "edit_file"},
-		{"google", "edit_file"},
+		{"openai", "apply_patch", "task_list"},
+		{"anthropic", "edit_file", "communicate"},
+		{"google", "edit_file", "Subagent delegation"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.provider, func(t *testing.T) {
-			prompt, err := ResolveSystemPrompt(tt.provider, "some-model", "", "", "")
+			prompt, err := ResolveSystemPrompt(tt.provider, "some-model", "", "", "", nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if prompt == "" {
-				t.Fatal("expected non-empty prompt")
+			if !strings.Contains(prompt, tt.providerSnippet) {
+				t.Errorf("prompt missing provider content %q", tt.providerSnippet)
 			}
-			if !contains(prompt, tt.contains) {
-				t.Errorf("prompt for %s missing %q", tt.provider, tt.contains)
+			if !strings.Contains(prompt, tt.baseSnippet) {
+				t.Errorf("prompt missing base content %q", tt.baseSnippet)
 			}
 		})
+	}
+}
+
+func TestResolveSystemPrompt_ProviderBeforeBase(t *testing.T) {
+	// Provider identity and tool docs should come before base guidance.
+	prompt, err := ResolveSystemPrompt("openai", "some-model", "", "", "", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	providerIdx := strings.Index(prompt, "apply_patch")
+	baseIdx := strings.Index(prompt, "## task_list")
+	if providerIdx < 0 || baseIdx < 0 {
+		t.Fatal("prompt missing expected content")
+	}
+	if providerIdx >= baseIdx {
+		t.Error("provider content should appear before base content")
 	}
 }
 
@@ -45,12 +63,12 @@ func TestEmbeddedPrompts_ContainCoreGuidance(t *testing.T) {
 	}
 
 	for _, provider := range []string{"openai", "anthropic", "google"} {
-		prompt, err := ResolveSystemPrompt(provider, "some-model", "", "", "")
+		prompt, err := ResolveSystemPrompt(provider, "some-model", "", "", "", nil)
 		if err != nil {
 			t.Fatalf("%s: %v", provider, err)
 		}
 		for _, r := range required {
-			if !contains(prompt, r.snippet) {
+			if !strings.Contains(prompt, r.snippet) {
 				t.Errorf("%s prompt missing %s guidance (looked for %q)", provider, r.label, r.snippet)
 			}
 		}
@@ -58,126 +76,209 @@ func TestEmbeddedPrompts_ContainCoreGuidance(t *testing.T) {
 }
 
 func TestResolveSystemPrompt_CLIOverride(t *testing.T) {
-	// CLI flag should take highest priority.
+	// CLI flag replaces the entire embedded base.
 	tmp := t.TempDir()
 	cliFile := filepath.Join(tmp, "custom.md")
 	os.WriteFile(cliFile, []byte("custom CLI prompt"), 0644)
 
-	prompt, err := ResolveSystemPrompt("openai", "gpt-4o", cliFile, "", "")
+	prompt, err := ResolveSystemPrompt("openai", "gpt-4o", cliFile, "", "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if prompt != "custom CLI prompt" {
 		t.Errorf("got %q, want %q", prompt, "custom CLI prompt")
 	}
+	// Should NOT contain embedded content.
+	if strings.Contains(prompt, "task_list") {
+		t.Error("CLI override should replace embedded content, not append to it")
+	}
 }
 
 func TestResolveSystemPrompt_CLIOverrideMissing(t *testing.T) {
-	_, err := ResolveSystemPrompt("openai", "gpt-4o", "/nonexistent/path.md", "", "")
+	_, err := ResolveSystemPrompt("openai", "gpt-4o", "/nonexistent/path.md", "", "", nil)
 	if err == nil {
 		t.Fatal("expected error for missing CLI prompt file")
 	}
 }
 
-func TestResolveSystemPrompt_ProjectOverride(t *testing.T) {
-	// Project-level override with provider-specific naming.
+func TestResolveSystemPrompt_ProjectAddsToEmbedded(t *testing.T) {
+	// Project-level file is appended to the embedded prompt, not replacing it.
 	tmp := t.TempDir()
 	projDir := filepath.Join(tmp, ".serf", "prompts")
 	os.MkdirAll(projDir, 0755)
-	os.WriteFile(filepath.Join(projDir, "system.openai.md"), []byte("project openai prompt"), 0644)
+	os.WriteFile(filepath.Join(projDir, "system.openai.md"), []byte("project openai rules"), 0644)
 
-	prompt, err := ResolveSystemPrompt("openai", "gpt-4o", "", projDir, "")
+	prompt, err := ResolveSystemPrompt("openai", "gpt-4o", "", projDir, "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if prompt != "project openai prompt" {
-		t.Errorf("got %q, want %q", prompt, "project openai prompt")
+	// Must contain both embedded and project content.
+	if !strings.Contains(prompt, "apply_patch") {
+		t.Error("missing embedded provider content")
+	}
+	if !strings.Contains(prompt, "task_list") {
+		t.Error("missing embedded base content")
+	}
+	if !strings.Contains(prompt, "project openai rules") {
+		t.Error("missing project addition")
 	}
 }
 
-func TestResolveSystemPrompt_ProjectModelSpecific(t *testing.T) {
-	// Model-specific override should win over provider-only.
+func TestResolveSystemPrompt_ProjectGenericAndProviderBothAppended(t *testing.T) {
+	// Both system.md and system.<provider>.md in a project dir should be appended.
 	tmp := t.TempDir()
-	projDir := filepath.Join(tmp, ".serf", "prompts")
+	projDir := filepath.Join(tmp, "prompts")
 	os.MkdirAll(projDir, 0755)
-	os.WriteFile(filepath.Join(projDir, "system.openai.md"), []byte("provider prompt"), 0644)
-	os.WriteFile(filepath.Join(projDir, "system.openai.gpt-4o.md"), []byte("model prompt"), 0644)
+	os.WriteFile(filepath.Join(projDir, "system.md"), []byte("generic project rules"), 0644)
+	os.WriteFile(filepath.Join(projDir, "system.openai.md"), []byte("openai project rules"), 0644)
 
-	prompt, err := ResolveSystemPrompt("openai", "gpt-4o", "", projDir, "")
+	prompt, err := ResolveSystemPrompt("openai", "gpt-4o", "", projDir, "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if prompt != "model prompt" {
-		t.Errorf("got %q, want %q", prompt, "model prompt")
+	if !strings.Contains(prompt, "generic project rules") {
+		t.Error("missing generic project addition")
+	}
+	if !strings.Contains(prompt, "openai project rules") {
+		t.Error("missing provider-specific project addition")
+	}
+	// Generic should come before provider-specific.
+	genIdx := strings.Index(prompt, "generic project rules")
+	provIdx := strings.Index(prompt, "openai project rules")
+	if genIdx >= provIdx {
+		t.Error("generic addition should come before provider-specific addition")
 	}
 }
 
-func TestResolveSystemPrompt_GlobalOverride(t *testing.T) {
-	// Global override should be used when no project override exists.
-	tmp := t.TempDir()
-	globalDir := filepath.Join(tmp, "prompts")
-	os.MkdirAll(globalDir, 0755)
-	os.WriteFile(filepath.Join(globalDir, "system.anthropic.md"), []byte("global anthropic prompt"), 0644)
-
-	prompt, err := ResolveSystemPrompt("anthropic", "claude-sonnet", "", "", globalDir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if prompt != "global anthropic prompt" {
-		t.Errorf("got %q, want %q", prompt, "global anthropic prompt")
-	}
-}
-
-func TestResolveSystemPrompt_ProjectShadowsGlobal(t *testing.T) {
-	// Project override should shadow global.
+func TestResolveSystemPrompt_GlobalAndProjectBothAppended(t *testing.T) {
+	// Both global and project additions should be present, global first.
 	tmp := t.TempDir()
 	projDir := filepath.Join(tmp, "project", "prompts")
 	globalDir := filepath.Join(tmp, "global", "prompts")
 	os.MkdirAll(projDir, 0755)
 	os.MkdirAll(globalDir, 0755)
-	os.WriteFile(filepath.Join(projDir, "system.openai.md"), []byte("project wins"), 0644)
-	os.WriteFile(filepath.Join(globalDir, "system.openai.md"), []byte("global loses"), 0644)
+	os.WriteFile(filepath.Join(globalDir, "system.openai.md"), []byte("global rules"), 0644)
+	os.WriteFile(filepath.Join(projDir, "system.openai.md"), []byte("project rules"), 0644)
 
-	prompt, err := ResolveSystemPrompt("openai", "gpt-4o", "", projDir, globalDir)
+	prompt, err := ResolveSystemPrompt("openai", "gpt-4o", "", projDir, globalDir, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if prompt != "project wins" {
-		t.Errorf("got %q, want %q", prompt, "project wins")
+	if !strings.Contains(prompt, "global rules") {
+		t.Error("missing global addition")
+	}
+	if !strings.Contains(prompt, "project rules") {
+		t.Error("missing project addition")
+	}
+	// Global before project.
+	globalIdx := strings.Index(prompt, "global rules")
+	projIdx := strings.Index(prompt, "project rules")
+	if globalIdx >= projIdx {
+		t.Error("global addition should come before project addition")
 	}
 }
 
-func TestResolveSystemPrompt_GenericFallback(t *testing.T) {
-	// A system.md (no provider) should be used as ultimate override fallback.
+func TestResolveSystemPrompt_GlobalOverride(t *testing.T) {
+	// Global addition appended to embedded prompt.
 	tmp := t.TempDir()
-	projDir := filepath.Join(tmp, "prompts")
-	os.MkdirAll(projDir, 0755)
-	os.WriteFile(filepath.Join(projDir, "system.md"), []byte("generic prompt"), 0644)
+	globalDir := filepath.Join(tmp, "prompts")
+	os.MkdirAll(globalDir, 0755)
+	os.WriteFile(filepath.Join(globalDir, "system.anthropic.md"), []byte("global anthropic rules"), 0644)
 
-	prompt, err := ResolveSystemPrompt("openai", "gpt-4o", "", projDir, "")
+	prompt, err := ResolveSystemPrompt("anthropic", "claude-sonnet", "", "", globalDir, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if prompt != "generic prompt" {
-		t.Errorf("got %q, want %q", prompt, "generic prompt")
+	if !strings.Contains(prompt, "edit_file") {
+		t.Error("missing embedded provider content")
+	}
+	if !strings.Contains(prompt, "global anthropic rules") {
+		t.Error("missing global addition")
 	}
 }
 
-func TestResolveSystemPrompt_UnknownProviderFallsToGenericEmbed(t *testing.T) {
-	// Unknown provider with no overrides should still get a reasonable default.
-	prompt, err := ResolveSystemPrompt("unknown-provider", "some-model", "", "", "")
+func TestResolveSystemPrompt_AppendPaths(t *testing.T) {
+	// CLI --system-prompt-append files are always appended.
+	tmp := t.TempDir()
+	f1 := filepath.Join(tmp, "extra1.md")
+	f2 := filepath.Join(tmp, "extra2.md")
+	os.WriteFile(f1, []byte("append one"), 0644)
+	os.WriteFile(f2, []byte("append two"), 0644)
+
+	prompt, err := ResolveSystemPrompt("openai", "gpt-4o", "", "", "", []string{f1, f2})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Should fall back to the generic embedded prompt.
+	if !strings.Contains(prompt, "apply_patch") {
+		t.Error("missing embedded content")
+	}
+	if !strings.Contains(prompt, "append one") {
+		t.Error("missing first append")
+	}
+	if !strings.Contains(prompt, "append two") {
+		t.Error("missing second append")
+	}
+	// Appends should come after embedded content.
+	embIdx := strings.Index(prompt, "task_list")
+	app1Idx := strings.Index(prompt, "append one")
+	app2Idx := strings.Index(prompt, "append two")
+	if embIdx >= app1Idx {
+		t.Error("embedded content should come before appends")
+	}
+	if app1Idx >= app2Idx {
+		t.Error("appends should be in order")
+	}
+}
+
+func TestResolveSystemPrompt_AppendWithCLIOverride(t *testing.T) {
+	// CLI override + append should both work together.
+	tmp := t.TempDir()
+	cliFile := filepath.Join(tmp, "base.md")
+	appendFile := filepath.Join(tmp, "extra.md")
+	os.WriteFile(cliFile, []byte("custom base"), 0644)
+	os.WriteFile(appendFile, []byte("extra guidance"), 0644)
+
+	prompt, err := ResolveSystemPrompt("openai", "gpt-4o", cliFile, "", "", []string{appendFile})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(prompt, "custom base") {
+		t.Error("missing CLI override content")
+	}
+	if !strings.Contains(prompt, "extra guidance") {
+		t.Error("missing append content")
+	}
+	// Should NOT contain embedded content.
+	if strings.Contains(prompt, "task_list") {
+		t.Error("CLI override should replace embedded, not include it")
+	}
+}
+
+func TestResolveSystemPrompt_AppendMissingFile(t *testing.T) {
+	_, err := ResolveSystemPrompt("openai", "gpt-4o", "", "", "", []string{"/nonexistent/path.md"})
+	if err == nil {
+		t.Fatal("expected error for missing append file")
+	}
+}
+
+func TestResolveSystemPrompt_UnknownProviderGetsBase(t *testing.T) {
+	// Unknown provider should still get the base prompt.
+	prompt, err := ResolveSystemPrompt("unknown-provider", "some-model", "", "", "", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if prompt == "" {
 		t.Fatal("expected non-empty prompt for unknown provider")
 	}
+	// Should have base content.
+	if !strings.Contains(prompt, "task_list") {
+		t.Error("unknown provider should still get base prompt")
+	}
 }
 
-func TestPromptCandidateNames(t *testing.T) {
-	names := promptCandidateNames("openai", "gpt-4o")
-	want := []string{"system.openai.gpt-4o.md", "system.openai.md", "system.md"}
+func TestEmbeddedProviderCandidates(t *testing.T) {
+	names := embeddedProviderCandidates("openai", "gpt-4o")
+	want := []string{"system.openai.gpt-4o.md", "system.openai.md"}
 	if len(names) != len(want) {
 		t.Fatalf("got %v, want %v", names, want)
 	}
@@ -188,15 +289,15 @@ func TestPromptCandidateNames(t *testing.T) {
 	}
 }
 
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && searchString(s, substr)
-}
-
-func searchString(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
+func TestAdditionCandidateNames(t *testing.T) {
+	names := additionCandidateNames("openai")
+	want := []string{"system.md", "system.openai.md"}
+	if len(names) != len(want) {
+		t.Fatalf("got %v, want %v", names, want)
+	}
+	for i, n := range names {
+		if n != want[i] {
+			t.Errorf("names[%d] = %q, want %q", i, n, want[i])
 		}
 	}
-	return false
 }

@@ -11,7 +11,7 @@ import (
 // embeddedBasePrompt resolves the embedded default system prompt for a provider.
 // Used by profile constructors; overridden at session creation with full resolution.
 func embeddedBasePrompt(provider string) string {
-	prompt, err := ResolveSystemPrompt(provider, "", "", "", "")
+	prompt, err := ResolveSystemPrompt(provider, "", "", "", "", nil)
 	if err != nil {
 		return ""
 	}

@@ -46,6 +46,10 @@ type SessionConfig struct {
 	// Highest priority in the prompt resolution chain (CLI --system-prompt flag).
 	SystemPromptFile string `json:"system_prompt_file,omitempty"`
 
+	// SystemPromptAppend are file paths whose contents are appended to the system prompt.
+	// Always applied, even when SystemPromptFile is set (CLI --system-prompt-append flag).
+	SystemPromptAppend []string `json:"system_prompt_append,omitempty"`
+
 	EnableLoopDetection *bool `json:"enable_loop_detection,omitempty"`
 	LoopDetectionWindow int   `json:"loop_detection_window,omitempty"`
 
@@ -161,13 +165,14 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 	}
 	s.envInfo = ei
 
-	// Resolve system prompt: CLI override → project .serf/prompts/ → global → embedded.
+	// Resolve system prompt: embedded base+provider, global/project additions, CLI overrides.
 	gitRoot := gitRootOrEmpty(env, ei.WorkingDir)
 	resolvedPrompt, err := ResolveSystemPrompt(
 		profile.ID(), profile.Model(),
 		cfg.SystemPromptFile,
 		ProjectPromptsDir(gitRoot),
 		GlobalPromptsDir(),
+		cfg.SystemPromptAppend,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("resolve system prompt: %w", err)
@@ -267,6 +272,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		cfg.SystemPromptFile,
 		ProjectPromptsDir(gitRoot),
 		GlobalPromptsDir(),
+		cfg.SystemPromptAppend,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("resolve system prompt: %w", err)

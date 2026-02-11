@@ -11,76 +11,104 @@ import (
 //go:embed prompts/*.md
 var embeddedPrompts embed.FS
 
-// ResolveSystemPrompt finds the best system prompt file using layered resolution.
-// Priority (first match wins):
-//  1. cliPath — explicit file path from --system-prompt flag
-//  2. projectPromptsDir — .serf/prompts/ at project root
-//  3. globalPromptsDir — ~/.config/serf/prompts/
-//  4. Embedded defaults compiled into the binary
+// ResolveSystemPrompt composes the system prompt from layered sources.
 //
-// Within each directory source, candidate filenames are tried most-specific first:
+// When cliPath is set (--system-prompt flag), it replaces the embedded base entirely.
+// Otherwise, the prompt is composed from:
+//  1. Embedded provider file (identity + tool docs)
+//  2. Embedded base.md (common guidance)
+//  3. Global additions (~/.config/serf/prompts/system.md, system.<provider>.md)
+//  4. Project additions (.serf/prompts/system.md, system.<provider>.md)
 //
-//	system.<provider>.<model>.md → system.<provider>.md → system.md
-func ResolveSystemPrompt(provider, model, cliPath, projectPromptsDir, globalPromptsDir string) (string, error) {
-	// 1. CLI override — exact file, no naming convention.
+// appendPaths (--system-prompt-append) are always appended last, regardless of
+// whether cliPath is set. This allows orchestrators to layer guidance on any base.
+func ResolveSystemPrompt(provider, model, cliPath, projectPromptsDir, globalPromptsDir string, appendPaths []string) (string, error) {
+	var sections []string
+
 	if cliPath != "" {
+		// CLI override replaces the embedded base + all directory additions.
 		b, err := os.ReadFile(cliPath)
 		if err != nil {
 			return "", fmt.Errorf("reading --system-prompt %s: %w", cliPath, err)
 		}
-		return string(b), nil
-	}
+		sections = append(sections, string(b))
+	} else {
+		// Compose from embedded files + directory additions.
 
-	candidates := promptCandidateNames(provider, model)
+		// Embedded provider-specific (identity + tool docs, comes first).
+		candidates := embeddedProviderCandidates(provider, model)
+		if prompt, ok := firstEmbedMatch(candidates); ok {
+			sections = append(sections, prompt)
+		}
 
-	// 2. Project-level overrides.
-	if projectPromptsDir != "" {
-		if prompt, ok := firstMatch(projectPromptsDir, candidates); ok {
-			return prompt, nil
+		// Embedded base (common guidance).
+		if base, err := embeddedPrompts.ReadFile("prompts/base.md"); err == nil {
+			sections = append(sections, string(base))
+		}
+
+		// Global additions (general → provider-specific).
+		addCandidates := additionCandidateNames(provider)
+		if globalPromptsDir != "" {
+			sections = append(sections, collectAdditions(globalPromptsDir, addCandidates)...)
+		}
+
+		// Project additions (general → provider-specific).
+		if projectPromptsDir != "" {
+			sections = append(sections, collectAdditions(projectPromptsDir, addCandidates)...)
 		}
 	}
 
-	// 3. Global overrides.
-	if globalPromptsDir != "" {
-		if prompt, ok := firstMatch(globalPromptsDir, candidates); ok {
-			return prompt, nil
+	// CLI appends always apply, even with --system-prompt override.
+	for _, p := range appendPaths {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return "", fmt.Errorf("reading --system-prompt-append %s: %w", p, err)
 		}
+		sections = append(sections, string(b))
 	}
 
-	// 4. Embedded defaults.
-	if prompt, ok := firstEmbedMatch(candidates); ok {
-		return prompt, nil
+	if len(sections) == 0 {
+		return "", fmt.Errorf("no system prompt available")
 	}
 
-	// Final fallback: generic embedded default (shouldn't normally be reached
-	// since we always have provider-specific embedded files, but handles
-	// unknown providers gracefully).
-	return genericEmbeddedFallback()
+	return strings.Join(sections, "\n\n"), nil
 }
 
-// promptCandidateNames returns filenames to try, most-specific first.
-func promptCandidateNames(provider, model string) []string {
+// embeddedProviderCandidates returns filenames for embedded provider lookup,
+// most-specific first. Does not include base.md (that's loaded separately).
+func embeddedProviderCandidates(provider, model string) []string {
 	var names []string
-	if model != "" {
+	if model != "" && provider != "" {
 		names = append(names, fmt.Sprintf("system.%s.%s.md", provider, model))
 	}
 	if provider != "" {
 		names = append(names, fmt.Sprintf("system.%s.md", provider))
 	}
-	names = append(names, "system.md")
 	return names
 }
 
-// firstMatch checks a directory for the first existing candidate file.
-func firstMatch(dir string, candidates []string) (string, bool) {
+// additionCandidateNames returns filenames for directory additions,
+// ordered general → provider-specific so broader rules come first.
+func additionCandidateNames(provider string) []string {
+	names := []string{"system.md"}
+	if provider != "" {
+		names = append(names, fmt.Sprintf("system.%s.md", provider))
+	}
+	return names
+}
+
+// collectAdditions reads all matching candidate files from dir.
+// Files that don't exist are silently skipped.
+func collectAdditions(dir string, candidates []string) []string {
+	var parts []string
 	for _, name := range candidates {
 		path := filepath.Join(dir, name)
 		b, err := os.ReadFile(path)
 		if err == nil {
-			return string(b), true
+			parts = append(parts, string(b))
 		}
 	}
-	return "", false
+	return parts
 }
 
 // firstEmbedMatch checks the embedded filesystem for the first matching candidate.
@@ -92,23 +120,6 @@ func firstEmbedMatch(candidates []string) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-// genericEmbeddedFallback returns any available embedded prompt as a last resort.
-func genericEmbeddedFallback() (string, error) {
-	entries, err := embeddedPrompts.ReadDir("prompts")
-	if err != nil {
-		return "", fmt.Errorf("no embedded prompts available")
-	}
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
-			b, err := embeddedPrompts.ReadFile("prompts/" + e.Name())
-			if err == nil {
-				return string(b), nil
-			}
-		}
-	}
-	return "", fmt.Errorf("no embedded prompts available")
 }
 
 // GlobalPromptsDir returns the path to the global prompts directory.
