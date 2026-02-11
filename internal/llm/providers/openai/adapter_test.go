@@ -1036,6 +1036,129 @@ func TestComplete_PopulatesRateLimitInfo(t *testing.T) {
 	}
 }
 
+func TestNewFromEnv_ReadsOrgAndProjectID(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "sk-test")
+	t.Setenv("OPENAI_ORG_ID", "org-123")
+	t.Setenv("OPENAI_PROJECT_ID", "proj-456")
+
+	a, err := NewFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.OrgID != "org-123" {
+		t.Fatalf("OrgID = %q", a.OrgID)
+	}
+	if a.ProjectID != "proj-456" {
+		t.Fatalf("ProjectID = %q", a.ProjectID)
+	}
+}
+
+func TestComplete_SendsOrgAndProjectHeaders(t *testing.T) {
+	var gotHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeaders = r.Header
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r1","model":"gpt-5.2","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client(), OrgID: "org-123", ProjectID: "proj-456"}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gpt-5.2",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotHeaders.Get("OpenAI-Organization") != "org-123" {
+		t.Fatalf("OpenAI-Organization header = %q", gotHeaders.Get("OpenAI-Organization"))
+	}
+	if gotHeaders.Get("OpenAI-Project") != "proj-456" {
+		t.Fatalf("OpenAI-Project header = %q", gotHeaders.Get("OpenAI-Project"))
+	}
+}
+
+func TestFromResponses_IncompleteStatus(t *testing.T) {
+	raw := map[string]any{
+		"id":    "r1",
+		"model": "gpt-5.2",
+		"status": "incomplete",
+		"incomplete_details": map[string]any{"reason": "max_output_tokens"},
+		"output": []any{
+			map[string]any{"type": "message", "content": []any{
+				map[string]any{"type": "output_text", "text": "partial"},
+			}},
+		},
+		"usage": map[string]any{"input_tokens": float64(10), "output_tokens": float64(100), "total_tokens": float64(110)},
+	}
+	r := fromResponses(raw, "gpt-5.2")
+	if r.Finish.Reason != "length" {
+		t.Fatalf("Finish.Reason = %q, want %q", r.Finish.Reason, "length")
+	}
+}
+
+func TestComplete_PassesStopSequences(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r1","model":"gpt-5.2","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:         "gpt-5.2",
+		Messages:      []llm.Message{llm.User("hi")},
+		StopSequences: []string{"STOP", "END"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop, ok := gotBody["stop"].([]any)
+	if !ok || len(stop) != 2 {
+		t.Fatalf("stop = %v", gotBody["stop"])
+	}
+}
+
+func TestStream_PassesStopSequences(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, "event: response.completed\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"r1","model":"gpt-5.2","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+		if f != nil {
+			f.Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	stream, err := a.Stream(ctx, llm.Request{
+		Model:         "gpt-5.2",
+		Messages:      []llm.Message{llm.User("hi")},
+		StopSequences: []string{"STOP", "END"},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+	for range stream.Events() {
+	}
+
+	stop, ok := gotBody["stop"].([]any)
+	if !ok || len(stop) != 2 {
+		t.Fatalf("stop = %v", gotBody["stop"])
+	}
+}
+
 func TestComplete_WrapsContextCanceled(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(5 * time.Second)
