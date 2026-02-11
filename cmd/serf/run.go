@@ -288,8 +288,12 @@ func listSessions(cfg runConfig, stateDir string) error {
 		if len(firstInput) > 80 {
 			firstInput = firstInput[:77] + "..."
 		}
-		fmt.Fprintf(cfg.stdout, "%s  %-16s  %-20s  turns=%d  %q\n",
-			s.ID, s.Model, s.UpdatedAt.Format("2006-01-02 15:04:05"), s.TurnCount, firstInput)
+		branch := s.EnvInfo.GitBranch
+		if branch == "" {
+			branch = "-"
+		}
+		fmt.Fprintf(cfg.stdout, "%s  %-16s  %-20s  %-20s  turns=%d  %q\n",
+			s.ID, s.Model, branch, s.UpdatedAt.Format("2006-01-02 15:04:05"), s.TurnCount, firstInput)
 	}
 	return nil
 }
