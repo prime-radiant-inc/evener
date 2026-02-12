@@ -773,24 +773,27 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		for _, sm := range s.skills {
 			skillList = append(skillList, sm)
 		}
-		sys := s.profile.BuildSystemPrompt(s.envInfo, docs, skillList)
-
+		// Build extra tool descriptions (MCP + custom-registered) for layer 3 insertion.
+		var extraTools strings.Builder
 		if len(s.mcpTools) > 0 {
-			sys += "\nMCP Tools (from external servers):\n"
+			extraTools.WriteString("MCP Tools (from external servers):\n")
 			for _, td := range s.mcpTools {
 				desc := strings.TrimSpace(td.Description)
 				if desc == "" {
 					desc = "(no description)"
 				}
-				sys += fmt.Sprintf("- %s: %s\n", td.Name, desc)
+				extraTools.WriteString(fmt.Sprintf("- %s: %s\n", td.Name, desc))
 			}
 		}
-
-		// Include custom-registered tools not already described by the profile or MCP sections.
 		if extra := s.customToolDescriptions(); len(extra) > 0 {
-			sys += "\nAdditional tools:\n"
-			sys += extra
+			if extraTools.Len() > 0 {
+				extraTools.WriteString("\n")
+			}
+			extraTools.WriteString("Additional tools:\n")
+			extraTools.WriteString(extra)
 		}
+
+		sys := s.profile.BuildSystemPrompt(s.envInfo, docs, skillList, extraTools.String())
 
 		if strings.TrimSpace(s.cfg.UserInstructionOverride) != "" {
 			sys = sys + "\n\n" + strings.TrimSpace(s.cfg.UserInstructionOverride) + "\n"

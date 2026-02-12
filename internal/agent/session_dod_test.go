@@ -556,7 +556,7 @@ func (p tinyProfile) ToolDefinitions() []llm.ToolDefinition     { return nil }
 func (p tinyProfile) SupportsParallelToolCalls() bool           { return false }
 func (p tinyProfile) ContextWindowSize() int                    { return p.cw }
 func (p tinyProfile) ProjectDocFiles() []string                 { return nil }
-func (p tinyProfile) BuildSystemPrompt(EnvironmentInfo, []ProjectDoc, []SkillMeta) string { return "" }
+func (p tinyProfile) BuildSystemPrompt(EnvironmentInfo, []ProjectDoc, []SkillMeta, string) string { return "" }
 func (p tinyProfile) CheapModel() string                                     { return p.mod }
 func (p tinyProfile) WithModel(model string) ProviderProfile {
 	return tinyProfile{id: p.id, cw: p.cw, mod: model}

@@ -39,7 +39,7 @@ type ProviderProfile interface {
 	SupportsParallelToolCalls() bool
 	ContextWindowSize() int
 	ProjectDocFiles() []string
-	BuildSystemPrompt(env EnvironmentInfo, docs []ProjectDoc, skills []SkillMeta) string
+	BuildSystemPrompt(env EnvironmentInfo, docs []ProjectDoc, skills []SkillMeta, extraTools string) string
 	CheapModel() string
 	WithModel(model string) ProviderProfile
 	WithBasePrompt(prompt string) ProviderProfile
@@ -128,7 +128,7 @@ func (p *baseProfile) WithBasePrompt(prompt string) ProviderProfile {
 	return &clone
 }
 
-func (p *baseProfile) BuildSystemPrompt(env EnvironmentInfo, docs []ProjectDoc, skills []SkillMeta) string {
+func (p *baseProfile) BuildSystemPrompt(env EnvironmentInfo, docs []ProjectDoc, skills []SkillMeta, extraTools string) string {
 	var b strings.Builder
 
 	base := strings.TrimSpace(p.basePrompt)
@@ -185,6 +185,14 @@ func (p *baseProfile) BuildSystemPrompt(env EnvironmentInfo, docs []ProjectDoc, 
 	b.WriteString("- Use tools to inspect the codebase before editing.\n")
 	b.WriteString("- When editing code, prefer the provider-aligned edit tool for this profile.\n")
 	b.WriteString("- After running commands, read errors carefully and fix them.\n")
+
+	if extra := strings.TrimSpace(extraTools); extra != "" {
+		b.WriteString("\n")
+		b.WriteString(extra)
+		if !strings.HasSuffix(extra, "\n") {
+			b.WriteString("\n")
+		}
+	}
 
 	for _, d := range docs {
 		if strings.TrimSpace(d.Path) == "" {
