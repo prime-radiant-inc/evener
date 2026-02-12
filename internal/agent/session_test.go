@@ -1673,6 +1673,29 @@ func TestSession_LoopDetection_WarningWording(t *testing.T) {
 	}
 }
 
+func TestLooksLikeQuestion(t *testing.T) {
+	tests := []struct {
+		text     string
+		expected bool
+	}{
+		{"What file should I edit?", true},
+		{"Done.", false},
+		{"Please provide the API key:", true},
+		{"Which approach do you prefer?\n", true},
+		{"I need more information.", false},
+		{"", false},
+		{"Result: success", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.text, func(t *testing.T) {
+			got := looksLikeQuestion(tc.text)
+			if got != tc.expected {
+				t.Errorf("looksLikeQuestion(%q) = %v, want %v", tc.text, got, tc.expected)
+			}
+		})
+	}
+}
+
 func TestSession_SetModel_TakesEffectOnNextCall(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()

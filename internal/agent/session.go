@@ -970,8 +970,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 
 		if len(calls) == 0 {
 			s.mu.Lock()
-			trimmed := strings.TrimSpace(txt)
-			if strings.HasSuffix(trimmed, "?") {
+			if looksLikeQuestion(txt) {
 				s.state = SessionAwaitingInput
 			} else {
 				s.state = SessionIdle
@@ -1073,6 +1072,16 @@ func (s *Session) popFollowUp() string {
 	msg := s.followups[0]
 	s.followups = s.followups[1:]
 	return msg
+}
+
+// looksLikeQuestion returns true when the assistant text appears to be asking
+// the user a question or requesting input (ends with "?" or ":").
+func looksLikeQuestion(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	return strings.HasSuffix(trimmed, "?") || strings.HasSuffix(trimmed, ":")
 }
 
 // detectLoop checks the last windowSize tool call signatures for repeating
