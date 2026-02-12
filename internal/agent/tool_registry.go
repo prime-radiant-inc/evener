@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -74,6 +75,9 @@ func (r *ToolRegistry) Use(mw ToolMiddleware) {
 func (r *ToolRegistry) Register(t RegisteredTool) error {
 	if err := llm.ValidateToolName(t.Definition.Name); err != nil {
 		return err
+	}
+	if strings.TrimSpace(t.Definition.Description) == "" {
+		log.Printf("WARNING: tool %q registered with empty description", t.Definition.Name)
 	}
 	if t.Exec == nil {
 		return fmt.Errorf("tool %s missing executor", t.Definition.Name)

@@ -1,9 +1,12 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"os"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -409,6 +412,39 @@ func TestToolRegistry_Middleware_CanBlockExecution(t *testing.T) {
 	}
 	if execCalled {
 		t.Error("tool should not have been executed when middleware blocked")
+	}
+}
+
+func TestToolRegistry_Register_WarnsOnEmptyDescription(t *testing.T) {
+	reg := NewToolRegistry()
+	// Capture log output.
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	err := reg.Register(RegisteredTool{
+		Definition: llm.ToolDefinition{
+			Name:        "no_desc_tool",
+			Description: "",
+			Parameters:  map[string]any{"type": "object"},
+		},
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected registration to succeed, got: %v", err)
+	}
+
+	// Tool should still be registered.
+	tool := reg.Get("no_desc_tool")
+	if tool == nil {
+		t.Error("tool should still be registered despite empty description")
+	}
+
+	// Should have logged a warning.
+	if !strings.Contains(buf.String(), "WARNING") || !strings.Contains(buf.String(), "no_desc_tool") {
+		t.Errorf("expected warning about empty description, got log: %q", buf.String())
 	}
 }
 
