@@ -3,6 +3,8 @@ package agent
 import (
 	"encoding/json"
 	"time"
+
+	"primeradiant.com/serf/internal/llm"
 )
 
 type EventKind string
@@ -52,6 +54,40 @@ func (e SessionEvent) DataMap() map[string]any {
 	var m map[string]any
 	_ = json.Unmarshal(b, &m)
 	return m
+}
+
+// ToStreamEvent maps this agent-level event to an llm.StreamEvent.
+// Returns nil for agent-only events that have no LLM-layer equivalent.
+func (e SessionEvent) ToStreamEvent() *llm.StreamEvent {
+	switch e.Kind {
+	case EventAssistantTextStart:
+		return &llm.StreamEvent{Type: llm.StreamEventTextStart}
+	case EventAssistantTextDelta:
+		if d, ok := e.Data.(AssistantTextDeltaData); ok {
+			return &llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: d.Delta}
+		}
+	case EventAssistantTextEnd:
+		return &llm.StreamEvent{Type: llm.StreamEventTextEnd}
+	case EventToolCallStart:
+		if d, ok := e.Data.(ToolCallStartData); ok {
+			return &llm.StreamEvent{
+				Type:     llm.StreamEventToolCallStart,
+				ToolCall: &llm.ToolCallData{ID: d.CallID, Name: d.ToolName},
+			}
+		}
+	case EventToolCallEnd:
+		if d, ok := e.Data.(ToolCallEndData); ok {
+			return &llm.StreamEvent{
+				Type:     llm.StreamEventToolCallEnd,
+				ToolCall: &llm.ToolCallData{ID: d.CallID, Name: d.ToolName},
+			}
+		}
+	case EventSessionStart:
+		return &llm.StreamEvent{Type: llm.StreamEventStreamStart}
+	case EventSessionEnd:
+		return &llm.StreamEvent{Type: llm.StreamEventFinish}
+	}
+	return nil // Agent-only events don't map to StreamEvent.
 }
 
 // Typed event payload structs. JSON tags match the map keys used previously.

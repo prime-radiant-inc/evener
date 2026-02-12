@@ -570,13 +570,13 @@ func TestSession_ParallelToolCalls_RunConcurrentlyWhenSupported(t *testing.T) {
 	}
 	// Register a slow tool that blocks until the test releases it.
 	_ = sess.reg.Register(RegisteredTool{
-		Definition: llm.ToolDefinition{
+		Tool: llm.Tool{Definition: llm.ToolDefinition{
 			Name: "slow",
 			Parameters: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{"n": map[string]any{"type": "integer"}},
 			},
-		},
+		}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			_ = env
@@ -1328,7 +1328,7 @@ func TestSession_CustomRegisteredTool_AppearsInSystemPrompt(t *testing.T) {
 
 	// Register a custom tool after session creation.
 	sess.reg.Register(RegisteredTool{
-		Definition: llm.ToolDefinition{Name: "my_custom_tool", Description: "Does custom things"},
+		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "my_custom_tool", Description: "Does custom things"}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil
 		},

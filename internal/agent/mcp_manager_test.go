@@ -209,7 +209,7 @@ func TestMCPManager_BuiltinCollision(t *testing.T) {
 	// Pre-register s__echo in the registry to simulate collision.
 	reg := NewToolRegistry()
 	reg.Register(RegisteredTool{
-		Definition: llm.ToolDefinition{Name: "s__echo", Description: "pre-existing"},
+		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "s__echo", Description: "pre-existing"}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			return "built-in", nil
 		},

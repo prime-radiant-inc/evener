@@ -43,11 +43,11 @@ type ToolExecResult struct {
 }
 
 type RegisteredTool struct {
-	Definition llm.ToolDefinition
-	Schema     *jsonschema.Schema
-	Exec       func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error)
-
-	Limit ToolOutputLimit
+	llm.Tool // embeds Definition + Execute
+	Schema   *jsonschema.Schema
+	Limit    ToolOutputLimit
+	// Agent-layer executor with environment context.
+	Exec func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error)
 }
 
 // ToolMiddleware is called after argument validation but before tool execution.
@@ -91,6 +91,17 @@ func (r *ToolRegistry) Register(t RegisteredTool) error {
 			return fmt.Errorf("tool %s schema: %w", t.Definition.Name, err)
 		}
 		t.Schema = s
+	}
+	// Bridge llm.Tool.Execute from Exec if not already set.
+	if t.Execute == nil && t.Exec != nil {
+		exec := t.Exec // capture for closure
+		t.Execute = func(ctx context.Context, args any) (any, error) {
+			parsed, ok := args.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("expected map[string]any, got %T", args)
+			}
+			return exec(ctx, nil, parsed) // nil env for standalone usage
+		}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()

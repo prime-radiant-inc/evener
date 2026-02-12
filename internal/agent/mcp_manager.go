@@ -133,7 +133,7 @@ func (m *MCPManager) RegisterTools(reg *ToolRegistry) error {
 			sess := conn.session
 
 			if err := reg.Register(RegisteredTool{
-				Definition: td,
+				Tool: llm.Tool{Definition: td},
 				Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 					result, err := sess.CallTool(ctx, &mcp.CallToolParams{
 						Name:      origName,

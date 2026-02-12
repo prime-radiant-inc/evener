@@ -430,10 +430,12 @@ func (s *Session) SetTimeout(timeoutMS int) {
 // RegisterTool registers a custom tool at runtime.
 func (s *Session) RegisterTool(name, description string, params map[string]any, fn func(ctx context.Context, args any) (any, error)) {
 	s.reg.Register(RegisteredTool{
-		Definition: llm.ToolDefinition{
-			Name:        name,
-			Description: description,
-			Parameters:  params,
+		Tool: llm.Tool{
+			Definition: llm.ToolDefinition{
+				Name:        name,
+				Description: description,
+				Parameters:  params,
+			},
 		},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			return fn(ctx, args)
@@ -1176,7 +1178,7 @@ func (s *Session) initMCP() error {
 func registerCoreTools(reg *ToolRegistry, s *Session) error {
 	// read_file
 	if err := reg.Register(RegisteredTool{
-		Definition: defReadFile(),
+		Tool: llm.Tool{Definition: defReadFile()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			path := fmt.Sprint(args["file_path"])
@@ -1206,7 +1208,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 
 	// read_many_files (Gemini-aligned; safe to register globally)
 	_ = reg.Register(RegisteredTool{
-		Definition: defReadManyFiles(),
+		Tool: llm.Tool{Definition: defReadManyFiles()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			pathsAny := args["file_paths"]
@@ -1259,7 +1261,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 
 	// write_file
 	if err := reg.Register(RegisteredTool{
-		Definition: defWriteFile(),
+		Tool: llm.Tool{Definition: defWriteFile()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			path := fmt.Sprint(args["file_path"])
@@ -1276,7 +1278,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 
 	// edit_file
 	_ = reg.Register(RegisteredTool{
-		Definition: defEditFile(),
+		Tool: llm.Tool{Definition: defEditFile()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			path := fmt.Sprint(args["file_path"])
@@ -1295,7 +1297,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 
 	// shell
 		if err := reg.Register(RegisteredTool{
-			Definition: defShell(),
+			Tool: llm.Tool{Definition: defShell()},
 			Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 				cmd := fmt.Sprint(args["command"])
 				timeout := s.cfg.DefaultCommandTimeoutMS
@@ -1333,7 +1335,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 
 	// list_dir (Gemini-aligned)
 	_ = reg.Register(RegisteredTool{
-		Definition: defListDir(),
+		Tool: llm.Tool{Definition: defListDir()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			path := fmt.Sprint(args["path"])
@@ -1347,7 +1349,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 
 	// grep
 	if err := reg.Register(RegisteredTool{
-		Definition: defGrep(),
+		Tool: llm.Tool{Definition: defGrep()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			pat := fmt.Sprint(args["pattern"])
@@ -1373,7 +1375,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 
 		// glob
 		if err := reg.Register(RegisteredTool{
-			Definition: defGlob(),
+			Tool: llm.Tool{Definition: defGlob()},
 			Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 				_ = ctx
 				pat := fmt.Sprint(args["pattern"])
@@ -1390,7 +1392,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 
 	// apply_patch (OpenAI-specific; best-effort implementation lives in this repo)
 	_ = reg.Register(RegisteredTool{
-		Definition: defApplyPatch(),
+		Tool: llm.Tool{Definition: defApplyPatch()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			patch := fmt.Sprint(args["patch"])
@@ -1400,7 +1402,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 
 	// Subagent tools (best-effort; synchronous completion for v1).
 	_ = reg.Register(RegisteredTool{
-		Definition: defSpawnAgent(),
+		Tool: llm.Tool{Definition: defSpawnAgent()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			task := fmt.Sprint(args["task"])
@@ -1420,14 +1422,14 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 		},
 	})
 	_ = reg.Register(RegisteredTool{
-		Definition: defSendInput(),
+		Tool: llm.Tool{Definition: defSendInput()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			return s.sendInput(ctx, fmt.Sprint(args["agent_id"]), fmt.Sprint(args["message"]))
 		},
 	})
 	_ = reg.Register(RegisteredTool{
-		Definition: defWait(),
+		Tool: llm.Tool{Definition: defWait()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			timeout := 0
@@ -1438,7 +1440,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 		},
 	})
 	_ = reg.Register(RegisteredTool{
-		Definition: defCloseAgent(),
+		Tool: llm.Tool{Definition: defCloseAgent()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			return s.closeAgent(fmt.Sprint(args["agent_id"]))
@@ -1447,7 +1449,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 
 	// Task management.
 	_ = reg.Register(RegisteredTool{
-		Definition: defTaskList(),
+		Tool: llm.Tool{Definition: defTaskList()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			store := s.getOrCreateTaskStore()
@@ -1501,7 +1503,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 
 	// Web fetch.
 	_ = reg.Register(RegisteredTool{
-		Definition: defWebFetch(),
+		Tool: llm.Tool{Definition: defWebFetch()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			rawURL := fmt.Sprint(args["url"])
 			question := fmt.Sprint(args["question"])
@@ -1511,7 +1513,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 
 	// Web search (Gemini only — see tool_web_search.go for why).
 	_ = reg.Register(RegisteredTool{
-		Definition: defWebSearch(),
+		Tool: llm.Tool{Definition: defWebSearch()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			query := fmt.Sprint(args["query"])
 			return s.webSearch(ctx, query)
@@ -1520,7 +1522,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 
 	// Communicate (structured I/O).
 	_ = reg.Register(RegisteredTool{
-		Definition: defCommunicate(),
+		Tool: llm.Tool{Definition: defCommunicate()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			_ = env
@@ -1553,7 +1555,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 
 	// use_skill (progressive disclosure of skill instructions).
 	_ = reg.Register(RegisteredTool{
-		Definition: defUseSkill(),
+		Tool: llm.Tool{Definition: defUseSkill()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			_ = env

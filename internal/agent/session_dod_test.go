@@ -377,7 +377,7 @@ func TestSession_Steer_IsInjectedAfterCurrentToolRound(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	_ = sess.reg.Register(RegisteredTool{
-		Definition: llm.ToolDefinition{Name: "slow"},
+		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "slow"}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			_ = args
@@ -495,7 +495,7 @@ func TestSession_ReasoningEffort_PassedThroughAndCanChange(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	_ = sess.reg.Register(RegisteredTool{
-		Definition: llm.ToolDefinition{Name: "slow"},
+		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "slow"}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			_ = args
@@ -671,7 +671,7 @@ func TestSession_AbortSignal_ClosesSessionAndEmitsSessionEnd(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	_ = sess.reg.Register(RegisteredTool{
-		Definition: llm.ToolDefinition{Name: "slow"},
+		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "slow"}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			_ = args
@@ -758,14 +758,14 @@ func TestSession_CustomToolRegistration_OverridesExistingTool(t *testing.T) {
 	}
 	// Override a built-in tool implementation.
 	if err := sess.reg.Register(RegisteredTool{
-		Definition: llm.ToolDefinition{
+		Tool: llm.Tool{Definition: llm.ToolDefinition{
 			Name: "read_file",
 			Parameters: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{"file_path": map[string]any{"type": "string"}},
 				"required":   []string{"file_path"},
 			},
-		},
+		}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			_ = env
