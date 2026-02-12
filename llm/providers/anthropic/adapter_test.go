@@ -752,6 +752,72 @@ func TestAdapter_Complete_ToolParameters_DefaultToEmptyObjectSchema(t *testing.T
 	}
 }
 
+func TestAdapter_Complete_ToolParameters_DropsTopLevelCombinators(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "msg_1",
+  "model": "claude-test",
+  "content": [{"type":"text","text":"ok"}],
+  "stop_reason": "end_turn",
+  "usage": {"input_tokens": 1, "output_tokens": 1}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model:    "claude-test",
+		Messages: []llm.Message{llm.User("hi")},
+		Tools: []llm.ToolDefinition{{
+			Name: "t1",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"action": map[string]any{"type": "string"},
+				},
+				"oneOf": []any{
+					map[string]any{"properties": map[string]any{"action": map[string]any{"const": "status"}}},
+				},
+				"anyOf": []any{
+					map[string]any{"properties": map[string]any{"action": map[string]any{"const": "result"}}},
+				},
+				"allOf": []any{
+					map[string]any{"properties": map[string]any{"action": map[string]any{"const": "result"}}},
+				},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	tools, _ := gotBody["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("tools: %#v", gotBody["tools"])
+	}
+	t0, _ := tools[0].(map[string]any)
+	schema, _ := t0["input_schema"].(map[string]any)
+	if _, ok := schema["oneOf"]; ok {
+		t.Fatalf("expected input_schema.oneOf to be removed; got: %#v", schema["oneOf"])
+	}
+	if _, ok := schema["anyOf"]; ok {
+		t.Fatalf("expected input_schema.anyOf to be removed; got: %#v", schema["anyOf"])
+	}
+	if _, ok := schema["allOf"]; ok {
+		t.Fatalf("expected input_schema.allOf to be removed; got: %#v", schema["allOf"])
+	}
+}
+
 func TestAdapter_Complete_RejectsAudioAndDocumentParts(t *testing.T) {
 	a := &Adapter{APIKey: "k", BaseURL: "http://example.com"}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

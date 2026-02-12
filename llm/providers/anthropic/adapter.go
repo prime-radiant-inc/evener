@@ -822,11 +822,41 @@ func toAnthropicTools(tools []llm.ToolDefinition) []map[string]any {
 		if params == nil {
 			params = map[string]any{"type": "object", "properties": map[string]any{}}
 		}
+		copied := false
+		// Anthropic rejects input_schema with oneOf/anyOf/allOf at the top level.
+		// (They're fine for other providers; we relax only the top-level contract here.)
+		if _, hasAnyOf := params["anyOf"]; hasAnyOf {
+			params = shallowCopyMap(params)
+			copied = true
+			delete(params, "anyOf")
+		}
+		if _, hasOneOf := params["oneOf"]; hasOneOf {
+			if !copied {
+				params = shallowCopyMap(params)
+				copied = true
+			}
+			delete(params, "oneOf")
+		}
+		if _, hasAllOf := params["allOf"]; hasAllOf {
+			if !copied {
+				params = shallowCopyMap(params)
+				copied = true
+			}
+			delete(params, "allOf")
+		}
 		out = append(out, map[string]any{
 			"name":         t.Name,
 			"description":  t.Description,
 			"input_schema": params,
 		})
+	}
+	return out
+}
+
+func shallowCopyMap(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
 	}
 	return out
 }

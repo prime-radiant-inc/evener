@@ -630,6 +630,7 @@ func TestIntegration_ReasoningTokens(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")
 	}
+	skipIfNoProviders(t)
 
 	client, err := llm.NewFromEnv()
 	if err != nil {
