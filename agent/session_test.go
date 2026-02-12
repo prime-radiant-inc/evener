@@ -214,7 +214,9 @@ func TestSession_NaturalCompletion_LoadsOnlyProfileDocs_Gemini(t *testing.T) {
 func TestSession_SystemPromptFile_OverridesBasePrompt(t *testing.T) {
 	dir := t.TempDir()
 	promptFile := filepath.Join(dir, "custom-prompt.md")
-	os.WriteFile(promptFile, []byte("You are a custom test agent."), 0644)
+	if err := os.WriteFile(promptFile, []byte("You are a custom test agent."), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	c := llm.NewClient()
 	f := &fakeAdapter{
@@ -237,7 +239,9 @@ func TestSession_SystemPromptFile_OverridesBasePrompt(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	sess.ProcessInput(ctx, "hello")
+	if _, err := sess.ProcessInput(ctx, "hello"); err != nil {
+		t.Fatal(err)
+	}
 
 	reqs := f.Requests()
 	if len(reqs) == 0 {
@@ -616,7 +620,7 @@ func TestSession_SystemPrompt_IncludesGitSnapshot_WhenInGitRepo(t *testing.T) {
 
 	// Make the repo dirty before session start so the snapshot reflects it.
 	_ = os.WriteFile(filepath.Join(dir, "README.md"), []byte("hi\nmore\n"), 0o644) // modified tracked file
-	_ = os.WriteFile(filepath.Join(dir, "UNTRACKED.txt"), []byte("u\n"), 0o644)   // untracked file
+	_ = os.WriteFile(filepath.Join(dir, "UNTRACKED.txt"), []byte("u\n"), 0o644)    // untracked file
 
 	c := llm.NewClient()
 	f := &fakeAdapter{
@@ -768,25 +772,25 @@ func TestSession_LoopDetection_EmitsEventAndInjectsSteering(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-		_, err = sess.ProcessInput(ctx, "loop")
-		if err != nil {
-			t.Fatalf("ProcessInput: %v", err)
-		}
+	_, err = sess.ProcessInput(ctx, "loop")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
 
-		// Spec: loop detection warning is recorded as a SteeringTurn in history.
-		sess.mu.Lock()
-		turns := append([]Turn{}, sess.history...)
-		sess.mu.Unlock()
-		foundSteering := false
-		for _, tr := range turns {
-			if tr.Kind == TurnSteering && tr.Message.Role == llm.RoleUser && strings.Contains(tr.Message.Text(), "Warning: Loop detected") && strings.Contains(tr.Message.Text(), "Consider changing approach") {
-				foundSteering = true
-			}
+	// Spec: loop detection warning is recorded as a SteeringTurn in history.
+	sess.mu.Lock()
+	turns := append([]Turn{}, sess.history...)
+	sess.mu.Unlock()
+	foundSteering := false
+	for _, tr := range turns {
+		if tr.Kind == TurnSteering && tr.Message.Role == llm.RoleUser && strings.Contains(tr.Message.Text(), "Warning: Loop detected") && strings.Contains(tr.Message.Text(), "Consider changing approach") {
+			foundSteering = true
 		}
-		if !foundSteering {
-			t.Fatalf("expected loop detection steering turn in history; got %+v", turns)
-		}
-		sess.Close()
+	}
+	if !foundSteering {
+		t.Fatalf("expected loop detection steering turn in history; got %+v", turns)
+	}
+	sess.Close()
 
 	// Verify loop detection event was emitted.
 	loopEv := false
@@ -845,7 +849,7 @@ func TestAssistantTextEnd_EnrichedData(t *testing.T) {
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
 				return llm.Response{
-					Model: "gpt-5.2",
+					Model:  "gpt-5.2",
 					Finish: llm.FinishReason{Reason: "stop"},
 					Usage: llm.Usage{
 						InputTokens:     100,
@@ -1073,7 +1077,9 @@ func TestSession_SessionEnd_EmittedExactlyOnce(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	sess.ProcessInput(ctx, "hello")
+	if _, err := sess.ProcessInput(ctx, "hello"); err != nil {
+		t.Fatal(err)
+	}
 	sess.Close()
 	<-doneCh
 
@@ -1119,7 +1125,9 @@ func TestSession_SystemPromptRebuiltPerRound(t *testing.T) {
 	env := NewLocalExecutionEnvironment(dir)
 	defer env.Cleanup()
 	ctx := context.Background()
-	env.ExecCommand(ctx, "git init", 5000, dir, nil)
+	if _, err := env.ExecCommand(ctx, "git init", 5000, dir, nil); err != nil {
+		t.Fatal(err)
+	}
 
 	sess, err := NewSession(c, NewOpenAIProfile("test-model"), env, SessionConfig{})
 	if err != nil {
@@ -1128,13 +1136,15 @@ func TestSession_SystemPromptRebuiltPerRound(t *testing.T) {
 	defer sess.Close()
 	ctx2, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	sess.ProcessInput(ctx2, "write agents.md then verify")
+	if _, err := sess.ProcessInput(ctx2, "write agents.md then verify"); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // blockingAdapter is a test adapter whose Complete blocks until context is cancelled.
 type blockingAdapter struct {
-	name      string
-	blocked   chan struct{} // closed when LLM call starts blocking
+	name    string
+	blocked chan struct{} // closed when LLM call starts blocking
 }
 
 func (a *blockingAdapter) Name() string { return a.name }
@@ -1163,7 +1173,7 @@ func TestSession_Close_CancelsInFlightLLMCall(t *testing.T) {
 		done <- err
 	}()
 
-	<-blocked // Wait until the LLM call is in-flight.
+	<-blocked    // Wait until the LLM call is in-flight.
 	sess.Close() // Should cancel the LLM call.
 
 	select {
@@ -1249,7 +1259,7 @@ func TestSession_GracefulShutdown_CorrectOrdering(t *testing.T) {
 	processDone := make(chan struct{})
 	go func() {
 		defer close(processDone)
-		sess.ProcessInput(context.Background(), "hello")
+		_, _ = sess.ProcessInput(context.Background(), "hello")
 	}()
 
 	// Wait until the LLM call is in-flight, then abort via Close().
@@ -1327,16 +1337,20 @@ func TestSession_CustomRegisteredTool_AppearsInSystemPrompt(t *testing.T) {
 	defer sess.Close()
 
 	// Register a custom tool after session creation.
-	sess.reg.Register(RegisteredTool{
+	if err := sess.reg.Register(RegisteredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "my_custom_tool", Description: "Does custom things"}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil
 		},
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	sess.ProcessInput(ctx, "test")
+	if _, err := sess.ProcessInput(ctx, "test"); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestSession_ToolCallEnd_UsesOutputKeyOnSuccess(t *testing.T) {
@@ -1383,7 +1397,9 @@ func TestSession_ToolCallEnd_UsesOutputKeyOnSuccess(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	sess.ProcessInput(ctx, "test")
+	if _, err := sess.ProcessInput(ctx, "test"); err != nil {
+		t.Fatal(err)
+	}
 	sess.Close()
 	<-done
 
@@ -1461,7 +1477,9 @@ func TestSession_ToolCallEnd_UsesErrorKeyOnFailure(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	sess.ProcessInput(ctx, "read missing file")
+	if _, err := sess.ProcessInput(ctx, "read missing file"); err != nil {
+		t.Fatal(err)
+	}
 	sess.Close()
 	<-done
 
@@ -1528,7 +1546,9 @@ func TestSession_AssistantTextStart_IncludesModel(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	sess.ProcessInput(ctx, "hi")
+	if _, err := sess.ProcessInput(ctx, "hi"); err != nil {
+		t.Fatal(err)
+	}
 	sess.Close()
 	<-done
 
@@ -1662,7 +1682,9 @@ func TestSession_LoopDetection_WarningWording(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	sess.ProcessInput(ctx, "loop")
+	if _, err := sess.ProcessInput(ctx, "loop"); err != nil {
+		t.Fatal(err)
+	}
 	sess.Close()
 	<-done
 
@@ -1739,13 +1761,17 @@ func TestSession_SetModel_TakesEffectOnNextCall(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	sess.ProcessInput(ctx, "first")
+	if _, err := sess.ProcessInput(ctx, "first"); err != nil {
+		t.Fatal(err)
+	}
 	if capturedModel != "test-model" {
 		t.Errorf("expected 'test-model', got %q", capturedModel)
 	}
 
 	sess.SetModel("new-model")
-	sess.ProcessInput(ctx, "second")
+	if _, err := sess.ProcessInput(ctx, "second"); err != nil {
+		t.Fatal(err)
+	}
 	if capturedModel != "new-model" {
 		t.Errorf("expected 'new-model', got %q", capturedModel)
 	}

@@ -21,7 +21,7 @@ type ContextManager struct {
 
 	// Token measurement from the last API response. When available, used instead
 	// of char/4 for the bulk of history. Reset to 0 after compaction.
-	lastInputTokens    int // exact input token count from last API response
+	lastInputTokens     int // exact input token count from last API response
 	historyLenAtMeasure int // number of turns when lastInputTokens was recorded
 
 	// Thresholds are fractions (0.0–1.0) of the context window.

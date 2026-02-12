@@ -228,7 +228,9 @@ func TestToolRegistry_Unregister(t *testing.T) {
 	r := NewToolRegistry()
 	_ = r.Register(RegisteredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "foo", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}}},
-		Exec:       func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) { return "ok", nil },
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			return "ok", nil
+		},
 	})
 	r.Unregister("foo")
 	if r.Get("foo") != nil {
@@ -240,7 +242,9 @@ func TestToolRegistry_Get(t *testing.T) {
 	r := NewToolRegistry()
 	_ = r.Register(RegisteredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "bar", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}}},
-		Exec:       func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) { return "ok", nil },
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			return "ok", nil
+		},
 	})
 	got := r.Get("bar")
 	if got == nil {
@@ -258,11 +262,11 @@ func TestToolRegistry_Names(t *testing.T) {
 	r := NewToolRegistry()
 	_ = r.Register(RegisteredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "alpha", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}}},
-		Exec:       func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) { return "", nil },
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) { return "", nil },
 	})
 	_ = r.Register(RegisteredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "beta", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}}},
-		Exec:       func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) { return "", nil },
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) { return "", nil },
 	})
 	names := r.Names()
 	if len(names) != 2 {
@@ -358,7 +362,7 @@ func TestTruncateChars_UTF8Aware(t *testing.T) {
 
 func TestToolRegistry_Middleware_CalledBeforeExecution(t *testing.T) {
 	reg := NewToolRegistry()
-	reg.Register(RegisteredTool{
+	if err := reg.Register(RegisteredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{
 			Name:        "test_tool",
 			Description: "test",
@@ -367,7 +371,9 @@ func TestToolRegistry_Middleware_CalledBeforeExecution(t *testing.T) {
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			return "executed", nil
 		},
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	var middlewareCalled bool
 	reg.Use(func(ctx context.Context, name string, args map[string]any) error {
@@ -387,7 +393,7 @@ func TestToolRegistry_Middleware_CalledBeforeExecution(t *testing.T) {
 func TestToolRegistry_Middleware_CanBlockExecution(t *testing.T) {
 	reg := NewToolRegistry()
 	var execCalled bool
-	reg.Register(RegisteredTool{
+	if err := reg.Register(RegisteredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{
 			Name:        "test_tool",
 			Description: "test",
@@ -397,7 +403,9 @@ func TestToolRegistry_Middleware_CanBlockExecution(t *testing.T) {
 			execCalled = true
 			return "executed", nil
 		},
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	reg.Use(func(ctx context.Context, name string, args map[string]any) error {
 		return fmt.Errorf("permission denied: tool blocked by policy")
@@ -450,10 +458,10 @@ func TestToolRegistry_Register_WarnsOnEmptyDescription(t *testing.T) {
 
 func TestDefaultToolLimit_MatchesSpecTable(t *testing.T) {
 	type want struct {
-		tool   string
-		chars  int
-		lines  int
-		strat  TruncationStrategy
+		tool  string
+		chars int
+		lines int
+		strat TruncationStrategy
 	}
 	cases := []want{
 		{tool: "read_file", chars: 50_000, lines: 0, strat: TruncHeadTail},

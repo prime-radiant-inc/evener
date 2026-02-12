@@ -1,4 +1,4 @@
-.PHONY: build test test-short vet clean
+.PHONY: build test test-short vet lint clean
 
 build:
 	go build -o serf ./cmd/serf/
@@ -11,6 +11,9 @@ test-short:
 
 vet:
 	go vet ./...
+
+lint:
+	golangci-lint run ./...
 
 clean:
 	rm -f serf

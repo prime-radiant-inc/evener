@@ -23,8 +23,8 @@ type EnvironmentInfo struct {
 	WorkingDir            string   `json:"working_dir"`
 	Platform              string   `json:"platform"`
 	OSVersion             string   `json:"os_version"`
-	Today                 string   `json:"today"`                    // YYYY-MM-DD
-	KnowledgeCutoff       string   `json:"knowledge_cutoff"`         // YYYY-MM-DD
+	Today                 string   `json:"today"`            // YYYY-MM-DD
+	KnowledgeCutoff       string   `json:"knowledge_cutoff"` // YYYY-MM-DD
 	IsGitRepo             bool     `json:"is_git_repo"`
 	GitBranch             string   `json:"git_branch,omitempty"`
 	GitOriginURL          string   `json:"git_origin_url,omitempty"`
@@ -59,14 +59,14 @@ type ProviderProfile interface {
 }
 
 type baseProfile struct {
-	id             string
-	model          string
-	parallel       bool
-	contextWindow  int
-	basePrompt     string
-	toolDefs       []llm.ToolDefinition
-	toolNameMap    map[string]string // canonical → provider-specific
-	docFiles       []string
+	id              string
+	model           string
+	parallel        bool
+	contextWindow   int
+	basePrompt      string
+	toolDefs        []llm.ToolDefinition
+	toolNameMap     map[string]string // canonical → provider-specific
+	docFiles        []string
 	reasoning       bool
 	streaming       bool
 	defaultTimeout  int
@@ -113,11 +113,11 @@ func (p *baseProfile) ContextWindowSize() int          { return p.contextWindow 
 func (p *baseProfile) ProjectDocFiles() []string {
 	return append([]string{}, p.docFiles...)
 }
-func (p *baseProfile) ProviderOptions() map[string]any    { return p.providerOpts }
-func (p *baseProfile) SupportsReasoning() bool            { return p.reasoning }
-func (p *baseProfile) SupportsStreaming() bool             { return p.streaming }
-func (p *baseProfile) DefaultCommandTimeoutMS() int       { return p.defaultTimeout }
-func (p *baseProfile) KnowledgeCutoff() string            { return p.knowledgeCutoff }
+func (p *baseProfile) ProviderOptions() map[string]any { return p.providerOpts }
+func (p *baseProfile) SupportsReasoning() bool         { return p.reasoning }
+func (p *baseProfile) SupportsStreaming() bool         { return p.streaming }
+func (p *baseProfile) DefaultCommandTimeoutMS() int    { return p.defaultTimeout }
+func (p *baseProfile) KnowledgeCutoff() string         { return p.knowledgeCutoff }
 func (p *baseProfile) CheapModel() string {
 	switch p.id {
 	case "openai":
@@ -480,8 +480,8 @@ func defGrep() llm.ToolDefinition {
 				"case_insensitive": map[string]any{"type": "boolean"},
 				"max_results":      map[string]any{"type": "integer"},
 				"output_mode": map[string]any{
-					"type": "string",
-					"enum": []any{"content", "files_with_matches", "count"},
+					"type":        "string",
+					"enum":        []any{"content", "files_with_matches", "count"},
 					"description": "Output format: content (default, matching lines), files_with_matches (file paths only), count (match counts per file)",
 				},
 			},

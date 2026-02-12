@@ -63,7 +63,7 @@ func NewMCPManager(ctx context.Context, configs []MCPServerConfig, transports []
 		// Discover tools from the server.
 		result, err := session.ListTools(ctx, nil)
 		if err != nil {
-			session.Close()
+			_ = session.Close()
 			mgr.Close()
 			return nil, fmt.Errorf("MCP server %q list tools: %w", cfg.Name, err)
 		}
@@ -159,7 +159,7 @@ func (m *MCPManager) Close() {
 	}
 	for _, c := range m.conns {
 		if c.session != nil {
-			c.session.Close()
+			_ = c.session.Close()
 		}
 	}
 }

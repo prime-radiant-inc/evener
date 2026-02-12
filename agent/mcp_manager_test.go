@@ -129,8 +129,12 @@ func TestMCPManager_MultipleServers(t *testing.T) {
 
 	st1, ct1 := mcp.NewInMemoryTransports()
 	st2, ct2 := mcp.NewInMemoryTransports()
-	server1.Connect(ctx, st1, nil)
-	server2.Connect(ctx, st2, nil)
+	if _, err := server1.Connect(ctx, st1, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server2.Connect(ctx, st2, nil); err != nil {
+		t.Fatal(err)
+	}
 
 	mgr, err := NewMCPManager(ctx, []MCPServerConfig{
 		{Name: "alpha", Type: "stdio"},
@@ -159,7 +163,9 @@ func TestMCPManager_MultipleServers(t *testing.T) {
 
 	// Verify invocation routes to correct server.
 	reg := NewToolRegistry()
-	mgr.RegisterTools(reg)
+	if err := mgr.RegisterTools(reg); err != nil {
+		t.Fatal(err)
+	}
 	env := &fakeEnvForMCP{workDir: t.TempDir()}
 
 	r1 := reg.ExecuteCall(ctx, env, llm.ToolCallData{
@@ -196,7 +202,9 @@ func TestMCPManager_BuiltinCollision(t *testing.T) {
 	})
 
 	st, ct := mcp.NewInMemoryTransports()
-	server.Connect(ctx, st, nil)
+	if _, err := server.Connect(ctx, st, nil); err != nil {
+		t.Fatal(err)
+	}
 
 	mgr, err := NewMCPManager(ctx, []MCPServerConfig{
 		{Name: "s", Type: "stdio"},
@@ -208,12 +216,14 @@ func TestMCPManager_BuiltinCollision(t *testing.T) {
 
 	// Pre-register s__echo in the registry to simulate collision.
 	reg := NewToolRegistry()
-	reg.Register(RegisteredTool{
+	if err := reg.Register(RegisteredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "s__echo", Description: "pre-existing"}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			return "built-in", nil
 		},
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	err = mgr.RegisterTools(reg)
 	if err == nil {
@@ -240,7 +250,9 @@ func TestMCPManager_ToolNameTooLong(t *testing.T) {
 	})
 
 	st, ct := mcp.NewInMemoryTransports()
-	server.Connect(ctx, st, nil)
+	if _, err := server.Connect(ctx, st, nil); err != nil {
+		t.Fatal(err)
+	}
 
 	// "longservername__" (16) + 60 = 76 chars > 64 limit
 	mgr, err := NewMCPManager(ctx, []MCPServerConfig{

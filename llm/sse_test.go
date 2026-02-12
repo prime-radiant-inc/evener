@@ -70,9 +70,9 @@ func TestParseSSE_ContextCancellation_WithTimeout(t *testing.T) {
 	// ReadString. When a StreamReadTimeout is configured, context cancellation
 	// is handled via select, so it works reliably.
 	pr, pw := io.Pipe()
-	defer pw.Close()
+	defer pw.Close() //nolint:errcheck
 	go func() {
-		pw.Write([]byte("data: hello\n\n"))
+		_, _ = pw.Write([]byte("data: hello\n\n"))
 		// Stall forever.
 	}()
 
@@ -97,7 +97,7 @@ func TestParseSSE_StreamReadTimeout_FiresOnStall(t *testing.T) {
 	// Create a reader that sends one event then stalls.
 	pr, pw := io.Pipe()
 	go func() {
-		pw.Write([]byte("data: hello\n\n"))
+		_, _ = pw.Write([]byte("data: hello\n\n"))
 		// Stall forever (don't write anything else, don't close).
 	}()
 
@@ -119,7 +119,7 @@ func TestParseSSE_StreamReadTimeout_FiresOnStall(t *testing.T) {
 	if len(events) != 1 {
 		t.Errorf("expected 1 event before timeout, got %d", len(events))
 	}
-	pw.Close()
+	_ = pw.Close()
 }
 
 func TestParseSSE_StreamReadTimeout_ResetsOnData(t *testing.T) {
@@ -127,13 +127,13 @@ func TestParseSSE_StreamReadTimeout_ResetsOnData(t *testing.T) {
 	pr, pw := io.Pipe()
 	go func() {
 		// Write lines slowly but within the timeout window.
-		pw.Write([]byte("data: first\n\n"))
+		_, _ = pw.Write([]byte("data: first\n\n"))
 		time.Sleep(100 * time.Millisecond)
-		pw.Write([]byte("data: second\n\n"))
+		_, _ = pw.Write([]byte("data: second\n\n"))
 		time.Sleep(100 * time.Millisecond)
-		pw.Write([]byte("data: third\n\n"))
+		_, _ = pw.Write([]byte("data: third\n\n"))
 		time.Sleep(100 * time.Millisecond)
-		pw.Close()
+		_ = pw.Close()
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

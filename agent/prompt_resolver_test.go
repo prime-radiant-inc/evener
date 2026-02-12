@@ -82,7 +82,9 @@ func TestResolveSystemPrompt_CLIOverride(t *testing.T) {
 	// CLI flag replaces the entire embedded base.
 	tmp := t.TempDir()
 	cliFile := filepath.Join(tmp, "custom.md")
-	os.WriteFile(cliFile, []byte("custom CLI prompt"), 0644)
+	if err := os.WriteFile(cliFile, []byte("custom CLI prompt"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	prompt, err := ResolveSystemPrompt("openai", "gpt-4o", cliFile, "", "", nil)
 	if err != nil {
@@ -108,8 +110,12 @@ func TestResolveSystemPrompt_ProjectAddsToEmbedded(t *testing.T) {
 	// Project-level file is appended to the embedded prompt, not replacing it.
 	tmp := t.TempDir()
 	projDir := filepath.Join(tmp, ".serf", "prompts")
-	os.MkdirAll(projDir, 0755)
-	os.WriteFile(filepath.Join(projDir, "system.openai.md"), []byte("project openai rules"), 0644)
+	if err := os.MkdirAll(projDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projDir, "system.openai.md"), []byte("project openai rules"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	prompt, err := ResolveSystemPrompt("openai", "gpt-4o", "", projDir, "", nil)
 	if err != nil {
@@ -131,9 +137,15 @@ func TestResolveSystemPrompt_ProjectGenericAndProviderBothAppended(t *testing.T)
 	// Both system.md and system.<provider>.md in a project dir should be appended.
 	tmp := t.TempDir()
 	projDir := filepath.Join(tmp, "prompts")
-	os.MkdirAll(projDir, 0755)
-	os.WriteFile(filepath.Join(projDir, "system.md"), []byte("generic project rules"), 0644)
-	os.WriteFile(filepath.Join(projDir, "system.openai.md"), []byte("openai project rules"), 0644)
+	if err := os.MkdirAll(projDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projDir, "system.md"), []byte("generic project rules"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projDir, "system.openai.md"), []byte("openai project rules"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	prompt, err := ResolveSystemPrompt("openai", "gpt-4o", "", projDir, "", nil)
 	if err != nil {
@@ -158,10 +170,18 @@ func TestResolveSystemPrompt_GlobalAndProjectBothAppended(t *testing.T) {
 	tmp := t.TempDir()
 	projDir := filepath.Join(tmp, "project", "prompts")
 	globalDir := filepath.Join(tmp, "global", "prompts")
-	os.MkdirAll(projDir, 0755)
-	os.MkdirAll(globalDir, 0755)
-	os.WriteFile(filepath.Join(globalDir, "system.openai.md"), []byte("global rules"), 0644)
-	os.WriteFile(filepath.Join(projDir, "system.openai.md"), []byte("project rules"), 0644)
+	if err := os.MkdirAll(projDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(globalDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(globalDir, "system.openai.md"), []byte("global rules"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projDir, "system.openai.md"), []byte("project rules"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	prompt, err := ResolveSystemPrompt("openai", "gpt-4o", "", projDir, globalDir, nil)
 	if err != nil {
@@ -185,8 +205,12 @@ func TestResolveSystemPrompt_GlobalOverride(t *testing.T) {
 	// Global addition appended to embedded prompt.
 	tmp := t.TempDir()
 	globalDir := filepath.Join(tmp, "prompts")
-	os.MkdirAll(globalDir, 0755)
-	os.WriteFile(filepath.Join(globalDir, "system.anthropic.md"), []byte("global anthropic rules"), 0644)
+	if err := os.MkdirAll(globalDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(globalDir, "system.anthropic.md"), []byte("global anthropic rules"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	prompt, err := ResolveSystemPrompt("anthropic", "claude-sonnet", "", "", globalDir, nil)
 	if err != nil {
@@ -205,8 +229,12 @@ func TestResolveSystemPrompt_AppendPaths(t *testing.T) {
 	tmp := t.TempDir()
 	f1 := filepath.Join(tmp, "extra1.md")
 	f2 := filepath.Join(tmp, "extra2.md")
-	os.WriteFile(f1, []byte("append one"), 0644)
-	os.WriteFile(f2, []byte("append two"), 0644)
+	if err := os.WriteFile(f1, []byte("append one"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f2, []byte("append two"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	prompt, err := ResolveSystemPrompt("openai", "gpt-4o", "", "", "", []string{f1, f2})
 	if err != nil {
@@ -238,8 +266,12 @@ func TestResolveSystemPrompt_AppendWithCLIOverride(t *testing.T) {
 	tmp := t.TempDir()
 	cliFile := filepath.Join(tmp, "base.md")
 	appendFile := filepath.Join(tmp, "extra.md")
-	os.WriteFile(cliFile, []byte("custom base"), 0644)
-	os.WriteFile(appendFile, []byte("extra guidance"), 0644)
+	if err := os.WriteFile(cliFile, []byte("custom base"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(appendFile, []byte("extra guidance"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	prompt, err := ResolveSystemPrompt("openai", "gpt-4o", cliFile, "", "", []string{appendFile})
 	if err != nil {

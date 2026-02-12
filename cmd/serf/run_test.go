@@ -100,12 +100,16 @@ func TestRunMissingAPIKey(t *testing.T) {
 	saved := map[string]string{}
 	for _, k := range keys {
 		saved[k] = os.Getenv(k)
-		os.Unsetenv(k)
+		if err := os.Unsetenv(k); err != nil {
+			t.Fatal(err)
+		}
 	}
 	defer func() {
 		for k, v := range saved {
 			if v != "" {
-				os.Setenv(k, v)
+				if err := os.Setenv(k, v); err != nil {
+					t.Fatal(err)
+				}
 			}
 		}
 	}()
@@ -127,10 +131,14 @@ func TestRunMissingAPIKey(t *testing.T) {
 // is specified and SERF_PROVIDER is unset.
 func TestRunMissingProvider(t *testing.T) {
 	old := os.Getenv("SERF_PROVIDER")
-	os.Unsetenv("SERF_PROVIDER")
+	if err := os.Unsetenv("SERF_PROVIDER"); err != nil {
+		t.Fatal(err)
+	}
 	defer func() {
 		if old != "" {
-			os.Setenv("SERF_PROVIDER", old)
+			if err := os.Setenv("SERF_PROVIDER", old); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}()
 
@@ -154,10 +162,14 @@ func TestRunMissingProvider(t *testing.T) {
 // provided and SERF_MODEL is unset.
 func TestRunMissingModel(t *testing.T) {
 	old := os.Getenv("SERF_MODEL")
-	os.Unsetenv("SERF_MODEL")
+	if err := os.Unsetenv("SERF_MODEL"); err != nil {
+		t.Fatal(err)
+	}
 	defer func() {
 		if old != "" {
-			os.Setenv("SERF_MODEL", old)
+			if err := os.Setenv("SERF_MODEL", old); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}()
 
@@ -350,14 +362,18 @@ func TestDrainEventsVerbose(t *testing.T) {
 
 	// Verify first line is SESSION_START.
 	var first map[string]any
-	json.Unmarshal([]byte(lines[0]), &first)
+	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
+		t.Fatal(err)
+	}
 	if first["kind"] != "SESSION_START" {
 		t.Fatalf("first event kind: got %q want SESSION_START", first["kind"])
 	}
 
 	// Verify usage data is present in ASSISTANT_TEXT_END line.
 	var assistantEnd map[string]any
-	json.Unmarshal([]byte(lines[1]), &assistantEnd)
+	if err := json.Unmarshal([]byte(lines[1]), &assistantEnd); err != nil {
+		t.Fatal(err)
+	}
 	data, _ := assistantEnd["data"].(map[string]any)
 	if data == nil {
 		t.Fatalf("ASSISTANT_TEXT_END missing data field")

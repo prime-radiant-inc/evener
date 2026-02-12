@@ -261,10 +261,10 @@ func TestAdapter_Stream_YieldsTextDeltasAndFinish(t *testing.T) {
 			`{"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}`,
 		}
 		for _, c := range chunks {
-			fmt.Fprintf(w, "data: %s\n\n", c)
+			fmt.Fprintf(w, "data: %s\n\n", c) //nolint:errcheck
 			flusher.Flush()
 		}
-		fmt.Fprintf(w, "data: [DONE]\n\n")
+		fmt.Fprintf(w, "data: [DONE]\n\n") //nolint:errcheck
 		flusher.Flush()
 	}))
 	t.Cleanup(srv.Close)
@@ -280,7 +280,7 @@ func TestAdapter_Stream_YieldsTextDeltasAndFinish(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	defer st.Close()
+	defer st.Close() //nolint:errcheck
 
 	var deltas []string
 	var kinds []llm.StreamEventType
@@ -325,10 +325,10 @@ func TestAdapter_Stream_ToolCalls(t *testing.T) {
 			`{"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`,
 		}
 		for _, c := range chunks {
-			fmt.Fprintf(w, "data: %s\n\n", c)
+			fmt.Fprintf(w, "data: %s\n\n", c) //nolint:errcheck
 			flusher.Flush()
 		}
-		fmt.Fprintf(w, "data: [DONE]\n\n")
+		fmt.Fprintf(w, "data: [DONE]\n\n") //nolint:errcheck
 		flusher.Flush()
 	}))
 	t.Cleanup(srv.Close)
@@ -349,7 +349,7 @@ func TestAdapter_Stream_ToolCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	defer st.Close()
+	defer st.Close() //nolint:errcheck
 
 	var kinds []llm.StreamEventType
 	var toolStartSeen, toolEndSeen bool
@@ -380,7 +380,7 @@ func TestHTTPErrorMapping_IncludesRetryAfter(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "30")
 		w.WriteHeader(429)
-		json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": "rate limited"}})
+		json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": "rate limited"}}) //nolint:errcheck
 	}))
 	defer srv.Close()
 
@@ -403,7 +403,7 @@ func TestHTTPErrorMapping_IncludesRetryAfter(t *testing.T) {
 
 func TestComplete_PopulatesTotalTokens(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
 			"id": "chatcmpl-1", "model": "test",
 			"choices": []any{map[string]any{
 				"index":         0,
@@ -505,7 +505,7 @@ func TestAdapterTimeout_Stream_AcceptsAdapterTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
 	var gotFinish bool
 	for ev := range stream.Events() {
@@ -584,7 +584,7 @@ func TestDefaultHeaders_SentOnStreamRequests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 	for range stream.Events() {
 	}
 	if capturedHeaders.Get("X-Custom-Header") != "custom-value" {
@@ -599,9 +599,9 @@ func TestAdapter_Complete_ImageContent_IncludedInRequest(t *testing.T) {
 	var sentBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
-		json.Unmarshal(b, &sentBody)
+		_ = json.Unmarshal(b, &sentBody)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
 			"id": "c1", "object": "chat.completion",
 			"choices": []any{map[string]any{
 				"index": 0, "finish_reason": "stop",
@@ -660,9 +660,9 @@ func TestAdapter_Complete_ImageContent_Base64(t *testing.T) {
 	var sentBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
-		json.Unmarshal(b, &sentBody)
+		_ = json.Unmarshal(b, &sentBody)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
 			"id": "c1", "object": "chat.completion",
 			"choices": []any{map[string]any{
 				"index": 0, "finish_reason": "stop",
@@ -706,9 +706,9 @@ func TestAdapter_Complete_ImageContent_Detail(t *testing.T) {
 	var sentBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
-		json.Unmarshal(b, &sentBody)
+		_ = json.Unmarshal(b, &sentBody)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
 			"id": "c1", "object": "chat.completion",
 			"choices": []any{map[string]any{
 				"index": 0, "finish_reason": "stop",
@@ -748,9 +748,9 @@ func TestAdapter_Complete_TextOnly_StaysString(t *testing.T) {
 	var sentBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
-		json.Unmarshal(b, &sentBody)
+		_ = json.Unmarshal(b, &sentBody)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
 			"id": "c1", "object": "chat.completion",
 			"choices": []any{map[string]any{
 				"index": 0, "finish_reason": "stop",
@@ -844,7 +844,7 @@ func TestAdapter_Complete_RateLimitHeaders_Parsed(t *testing.T) {
 		w.Header().Set("x-ratelimit-remaining-requests", "99")
 		w.Header().Set("x-ratelimit-limit-requests", "100")
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
 			"id": "c1", "object": "chat.completion",
 			"choices": []any{map[string]any{
 				"index": 0, "finish_reason": "stop",
@@ -877,9 +877,9 @@ func TestAdapter_Complete_ReasoningEffort_Propagated(t *testing.T) {
 	var sentBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
-		json.Unmarshal(b, &sentBody)
+		_ = json.Unmarshal(b, &sentBody)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
 			"id": "c1", "object": "chat.completion",
 			"choices": []any{map[string]any{
 				"index": 0, "finish_reason": "stop",
@@ -908,9 +908,9 @@ func TestAdapter_Complete_Metadata_Propagated(t *testing.T) {
 	var sentBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
-		json.Unmarshal(b, &sentBody)
+		_ = json.Unmarshal(b, &sentBody)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
 			"id": "c1", "object": "chat.completion",
 			"choices": []any{map[string]any{
 				"index": 0, "finish_reason": "stop",

@@ -36,7 +36,9 @@ func TestMCPIntegration_ToolCallThroughSession(t *testing.T) {
 		},
 	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var args map[string]any
-		json.Unmarshal(req.Params.Arguments, &args)
+		if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+			return nil, err
+		}
 		name := args["name"].(string)
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: "Hello, " + name + "!"}},
@@ -127,7 +129,9 @@ func TestMCPIntegration_ToolCallThroughSession(t *testing.T) {
 	}
 
 	// Manually inject the MCPManager into the session (since we don't go through config discovery).
-	mgr.RegisterTools(sess.reg)
+	if err := mgr.RegisterTools(sess.reg); err != nil {
+		t.Fatal(err)
+	}
 	sess.mcpMgr = mgr
 	sess.mcpTools = mgr.ToolDefinitions()
 

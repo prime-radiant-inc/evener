@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"sync"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -14,6 +13,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -399,8 +399,8 @@ func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string,
 	}
 
 	var results []string
-	fileCounts := map[string]int{}      // for "count" mode
-	filesSeen := map[string]struct{}{}   // for "files_with_matches" mode
+	fileCounts := map[string]int{}     // for "count" mode
+	filesSeen := map[string]struct{}{} // for "files_with_matches" mode
 	totalResults := 0
 
 	err = filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {

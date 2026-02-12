@@ -12,17 +12,17 @@ import (
 // ModelInfo is the normalized model metadata entry, primarily sourced from the LiteLLM catalog
 // in serf. This is metadata-only and is not used as a provider call path.
 type ModelInfo struct {
-	ID              string   `json:"id"`
-	Provider        string   `json:"provider"`
-	DisplayName     string   `json:"display_name"`
-	ContextWindow   int      `json:"context_window"`
-	MaxOutputTokens *int     `json:"max_output_tokens,omitempty"`
-	SupportsTools   bool     `json:"supports_tools"`
-	SupportsVision  bool     `json:"supports_vision"`
-	SupportsReasoning bool   `json:"supports_reasoning"`
+	ID                   string   `json:"id"`
+	Provider             string   `json:"provider"`
+	DisplayName          string   `json:"display_name"`
+	ContextWindow        int      `json:"context_window"`
+	MaxOutputTokens      *int     `json:"max_output_tokens,omitempty"`
+	SupportsTools        bool     `json:"supports_tools"`
+	SupportsVision       bool     `json:"supports_vision"`
+	SupportsReasoning    bool     `json:"supports_reasoning"`
 	InputCostPerMillion  *float64 `json:"input_cost_per_million,omitempty"`
 	OutputCostPerMillion *float64 `json:"output_cost_per_million,omitempty"`
-	Aliases         []string `json:"aliases,omitempty"`
+	Aliases              []string `json:"aliases,omitempty"`
 }
 
 type ModelCatalog struct {
@@ -270,4 +270,3 @@ func scalePerMillion(perToken *float64) *float64 {
 	v := *perToken * 1_000_000
 	return &v
 }
-

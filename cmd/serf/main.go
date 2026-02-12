@@ -92,26 +92,27 @@ func main() {
 	defer cancel()
 
 	err := run(ctx, runConfig{
-		task:         task,
-		model:        *model,
-		provider:     *provider,
-		workDir:      *workDir,
-		stateDir:     *stateDir,
+		task:               task,
+		model:              *model,
+		provider:           *provider,
+		workDir:            *workDir,
+		stateDir:           *stateDir,
 		systemPrompt:       *systemPrompt,
 		systemPromptAppend: []string(systemPromptAppend),
 		verbose:            *verbose,
-		skillsDirs:   []string(skillsDirs),
-		mcpServers:   []string(mcpServers),
-		mcpConfigs:   []string(mcpConfigs),
-		stdout:       os.Stdout,
-		stderr:       os.Stderr,
-		resume:       *resume,
-		resumeWith:   *resumeWith,
-		resumeLast:   *resumeLast,
-		listSessions: *listSessionsFlag,
+		skillsDirs:         []string(skillsDirs),
+		mcpServers:         []string(mcpServers),
+		mcpConfigs:         []string(mcpConfigs),
+		stdout:             os.Stdout,
+		stderr:             os.Stderr,
+		resume:             *resume,
+		resumeWith:         *resumeWith,
+		resumeLast:         *resumeLast,
+		listSessions:       *listSessionsFlag,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "serf: %v\n", err)
-		os.Exit(1)
+		cancel()
+		os.Exit(1) //nolint:gocritic // cancel() called explicitly above
 	}
 }

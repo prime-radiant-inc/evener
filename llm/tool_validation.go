@@ -16,7 +16,7 @@ func ValidateToolName(name string) error {
 		return &ConfigurationError{Message: fmt.Sprintf("tool name too long: %d > 64", len(n))}
 	}
 	b0 := n[0]
-	if !((b0 >= 'a' && b0 <= 'z') || (b0 >= 'A' && b0 <= 'Z')) {
+	if (b0 < 'a' || b0 > 'z') && (b0 < 'A' || b0 > 'Z') {
 		return &ConfigurationError{Message: fmt.Sprintf("invalid tool name %q: must start with a letter", n)}
 	}
 	for i := 1; i < len(n); i++ {
@@ -51,4 +51,3 @@ func validateToolParameters(params map[string]any) error {
 	}
 	return nil
 }
-

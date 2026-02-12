@@ -64,11 +64,21 @@ func TestSnapshotGit_InGitRepo(t *testing.T) {
 	env := NewLocalExecutionEnvironment(dir)
 	defer env.Cleanup()
 	ctx := context.Background()
-	env.ExecCommand(ctx, "git init", 5000, dir, nil)
-	env.ExecCommand(ctx, "git config user.email test@test.com", 5000, dir, nil)
-	env.ExecCommand(ctx, "git config user.name test", 5000, dir, nil)
-	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x"), 0644)
-	env.ExecCommand(ctx, "git add f.txt && git commit -m initial", 5000, dir, nil)
+	if _, err := env.ExecCommand(ctx, "git init", 5000, dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.ExecCommand(ctx, "git config user.email test@test.com", 5000, dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.ExecCommand(ctx, "git config user.name test", 5000, dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.ExecCommand(ctx, "git add f.txt && git commit -m initial", 5000, dir, nil); err != nil {
+		t.Fatal(err)
+	}
 
 	inRepo, branch, mod, untracked, commits := snapshotGit(env, dir)
 	if !inRepo {
@@ -103,7 +113,9 @@ func TestSnapshotGit_FreshRepoNoCommits(t *testing.T) {
 	env := NewLocalExecutionEnvironment(dir)
 	defer env.Cleanup()
 	ctx := context.Background()
-	env.ExecCommand(ctx, "git init", 5000, dir, nil)
+	if _, err := env.ExecCommand(ctx, "git init", 5000, dir, nil); err != nil {
+		t.Fatal(err)
+	}
 
 	inRepo, _, _, _, commits := snapshotGit(env, dir)
 	if !inRepo {
@@ -119,14 +131,28 @@ func TestSnapshotGit_TracksModifiedAndUntracked(t *testing.T) {
 	env := NewLocalExecutionEnvironment(dir)
 	defer env.Cleanup()
 	ctx := context.Background()
-	env.ExecCommand(ctx, "git init", 5000, dir, nil)
-	env.ExecCommand(ctx, "git config user.email test@test.com", 5000, dir, nil)
-	env.ExecCommand(ctx, "git config user.name test", 5000, dir, nil)
-	os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("x"), 0644)
-	env.ExecCommand(ctx, "git add tracked.txt && git commit -m initial", 5000, dir, nil)
+	if _, err := env.ExecCommand(ctx, "git init", 5000, dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.ExecCommand(ctx, "git config user.email test@test.com", 5000, dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.ExecCommand(ctx, "git config user.name test", 5000, dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.ExecCommand(ctx, "git add tracked.txt && git commit -m initial", 5000, dir, nil); err != nil {
+		t.Fatal(err)
+	}
 
-	os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("y"), 0644)
-	os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("modified"), 0644)
+	if err := os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("y"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("modified"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	_, _, mod, untracked, _ := snapshotGit(env, dir)
 	if mod != 1 {

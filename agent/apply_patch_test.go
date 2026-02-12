@@ -66,7 +66,9 @@ func TestApplyPatch_AddUpdateMoveDelete(t *testing.T) {
 
 func TestApplyPatch_EndOfFileMarker(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("line1\nline2\nline3\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("line1\nline2\nline3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	patch := "*** Begin Patch\n*** Update File: f.txt\n@@ line1\n line1\n-line2\n+replaced\n line3\n*** End of File\n*** End Patch\n"
 	_, err := ApplyPatch(dir, patch)
@@ -82,7 +84,9 @@ func TestApplyPatch_EndOfFileMarker(t *testing.T) {
 func TestApplyPatch_FuzzyWhitespaceMatching(t *testing.T) {
 	dir := t.TempDir()
 	// File has trailing spaces and tabs mixed in
-	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("  hello world  \n  goodbye\t\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("  hello world  \n  goodbye\t\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	patch := "*** Begin Patch\n*** Update File: f.txt\n@@ hello\n hello world\n-goodbye\n+farewell\n*** End Patch\n"
 	_, err := ApplyPatch(dir, patch)
@@ -98,7 +102,9 @@ func TestApplyPatch_FuzzyWhitespaceMatching(t *testing.T) {
 func TestApplyPatch_ContextHintDisambiguates(t *testing.T) {
 	dir := t.TempDir()
 	content := "func foo():\n    return 1\n\nfunc bar():\n    return 1\n"
-	os.WriteFile(filepath.Join(dir, "f.py"), []byte(content), 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "f.py"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	// Both functions have "    return 1" — the @@ hint disambiguates
 	patch := "*** Begin Patch\n*** Update File: f.py\n@@ func bar():\n-    return 1\n+    return 2\n*** End Patch\n"
@@ -120,7 +126,9 @@ func TestApplyPatch_ContextHintDisambiguates(t *testing.T) {
 func TestApplyPatch_MultiHunkSingleFile(t *testing.T) {
 	dir := t.TempDir()
 	content := "alpha\nbeta\ngamma\ndelta\nepsilon\n"
-	os.WriteFile(filepath.Join(dir, "f.txt"), []byte(content), 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	patch := "*** Begin Patch\n*** Update File: f.txt\n@@ alpha\n alpha\n-beta\n+BETA\n@@ delta\n delta\n-epsilon\n+EPSILON\n*** End Patch\n"
 	_, err := ApplyPatch(dir, patch)
@@ -143,7 +151,9 @@ func TestApplyPatch_MultiHunkSingleFile(t *testing.T) {
 func TestApplyPatch_FuzzyMatch_UnicodeQuotes(t *testing.T) {
 	// File uses straight quotes, patch uses curly quotes.
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "test.go"), []byte("fmt.Println(\"hello world\")\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "test.go"), []byte("fmt.Println(\"hello world\")\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	// Build a v4a-style patch that uses curly quotes in the delete line.
 	patch := "*** Begin Patch\n*** Update File: test.go\n@@\n-fmt.Println(\u201Chello world\u201D)\n+fmt.Println(\"goodbye world\")\n*** End Patch\n"

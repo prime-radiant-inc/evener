@@ -84,7 +84,9 @@ func TestParity_SimpleFileCreation(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			sess.ProcessInput(ctx, "create test.txt")
+			if _, err := sess.ProcessInput(ctx, "create test.txt"); err != nil {
+				t.Fatal(err)
+			}
 			sess.Close()
 
 			dir := sess.env.WorkingDirectory()
@@ -135,11 +137,15 @@ func TestParity_ReadFileThenEdit(t *testing.T) {
 
 			// Pre-create the file.
 			dir := sess.env.WorkingDirectory()
-			os.WriteFile(filepath.Join(dir, "target.txt"), []byte("foo"), 0644)
+			if err := os.WriteFile(filepath.Join(dir, "target.txt"), []byte("foo"), 0644); err != nil {
+				t.Fatal(err)
+			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			sess.ProcessInput(ctx, "edit target.txt")
+			if _, err := sess.ProcessInput(ctx, "edit target.txt"); err != nil {
+				t.Fatal(err)
+			}
 			sess.Close()
 
 			data, _ := os.ReadFile(filepath.Join(dir, "target.txt"))
@@ -176,7 +182,9 @@ func TestParity_ShellCommandExecution(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			sess.ProcessInput(ctx, "run echo")
+			if _, err := sess.ProcessInput(ctx, "run echo"); err != nil {
+				t.Fatal(err)
+			}
 			sess.Close()
 
 			// Tool result should contain shell output.
@@ -224,7 +232,9 @@ func TestParity_ShellCommandTimeout(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			sess.ProcessInput(ctx, "run slow")
+			if _, err := sess.ProcessInput(ctx, "run slow"); err != nil {
+				t.Fatal(err)
+			}
 			sess.Close()
 
 			// Tool result should mention timeout.
@@ -285,11 +295,15 @@ func TestParity_GrepAndGlob(t *testing.T) {
 
 			// Create files to find.
 			dir := sess.env.WorkingDirectory()
-			os.WriteFile(filepath.Join(dir, "haystack.txt"), []byte("needle in here"), 0644)
+			if err := os.WriteFile(filepath.Join(dir, "haystack.txt"), []byte("needle in here"), 0644); err != nil {
+				t.Fatal(err)
+			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			sess.ProcessInput(ctx, "search")
+			if _, err := sess.ProcessInput(ctx, "search"); err != nil {
+				t.Fatal(err)
+			}
 			sess.Close()
 		})
 	}
@@ -332,11 +346,15 @@ func TestParity_MultiStepTask(t *testing.T) {
 			defer sess.Close()
 
 			dir := sess.env.WorkingDirectory()
-			os.WriteFile(filepath.Join(dir, "config.txt"), []byte("debug=false"), 0644)
+			if err := os.WriteFile(filepath.Join(dir, "config.txt"), []byte("debug=false"), 0644); err != nil {
+				t.Fatal(err)
+			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			sess.ProcessInput(ctx, "update config")
+			if _, err := sess.ProcessInput(ctx, "update config"); err != nil {
+				t.Fatal(err)
+			}
 			sess.Close()
 
 			data, _ := os.ReadFile(filepath.Join(dir, "config.txt"))
@@ -377,7 +395,9 @@ func TestParity_ParallelToolCalls(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			sess.ProcessInput(ctx, "run both")
+			if _, err := sess.ProcessInput(ctx, "run both"); err != nil {
+				t.Fatal(err)
+			}
 			sess.Close()
 
 			// Both tool results should be in the second request.
@@ -491,7 +511,9 @@ func TestParity_LoopDetectionWarning(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			sess.ProcessInput(ctx, "do something")
+			if _, err := sess.ProcessInput(ctx, "do something"); err != nil {
+				t.Fatal(err)
+			}
 			sess.Close()
 			<-doneCh
 
@@ -617,12 +639,18 @@ func TestParity_MultiFileEdit(t *testing.T) {
 
 			// Pre-create both files.
 			dir := sess.env.WorkingDirectory()
-			os.WriteFile(filepath.Join(dir, "a.txt"), []byte("alpha"), 0644)
-			os.WriteFile(filepath.Join(dir, "b.txt"), []byte("beta"), 0644)
+			if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("alpha"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "b.txt"), []byte("beta"), 0644); err != nil {
+				t.Fatal(err)
+			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			sess.ProcessInput(ctx, "edit both files")
+			if _, err := sess.ProcessInput(ctx, "edit both files"); err != nil {
+				t.Fatal(err)
+			}
 			sess.Close()
 
 			// Verify both files were edited.
@@ -668,11 +696,15 @@ func TestParity_ToolOutputTruncation(t *testing.T) {
 			// Create a file larger than the read_file limit (50,000 chars).
 			dir := sess.env.WorkingDirectory()
 			big := strings.Repeat("x", 60_000)
-			os.WriteFile(filepath.Join(dir, "big.txt"), []byte(big), 0644)
+			if err := os.WriteFile(filepath.Join(dir, "big.txt"), []byte(big), 0644); err != nil {
+				t.Fatal(err)
+			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			sess.ProcessInput(ctx, "read big file")
+			if _, err := sess.ProcessInput(ctx, "read big file"); err != nil {
+				t.Fatal(err)
+			}
 			sess.Close()
 
 			// Verify the tool result sent to the model was truncated.
@@ -716,10 +748,14 @@ func TestParity_ReasoningEffort(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			sess.ProcessInput(ctx, "first")
+			if _, err := sess.ProcessInput(ctx, "first"); err != nil {
+				t.Fatal(err)
+			}
 
 			sess.SetReasoningEffort("high")
-			sess.ProcessInput(ctx, "second")
+			if _, err := sess.ProcessInput(ctx, "second"); err != nil {
+				t.Fatal(err)
+			}
 			sess.Close()
 
 			reqs := f.Requests()
@@ -749,7 +785,10 @@ func TestParity_SubagentSpawnAndWait(t *testing.T) {
 			}
 			sess, _ := newParitySession(t, pc, steps)
 			defer sess.Close()
-			go func() { for range sess.Events() {} }()
+			go func() {
+				for range sess.Events() {
+				}
+			}()
 
 			// Spawn agent via registry.
 			spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
@@ -804,7 +843,10 @@ func TestParity_CloseAgentWaitsForCompletion(t *testing.T) {
 			}
 			sess, _ := newParitySession(t, pc, steps)
 			defer sess.Close()
-			go func() { for range sess.Events() {} }()
+			go func() {
+				for range sess.Events() {
+				}
+			}()
 
 			// Spawn agent via registry.
 			spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
@@ -815,7 +857,9 @@ func TestParity_CloseAgentWaitsForCompletion(t *testing.T) {
 				t.Fatalf("spawn_agent error: %s", spawnRes.Output)
 			}
 			var spawned map[string]any
-			json.Unmarshal([]byte(spawnRes.Output), &spawned)
+			if err := json.Unmarshal([]byte(spawnRes.Output), &spawned); err != nil {
+				t.Fatal(err)
+			}
 			agentID := fmt.Sprint(spawned["agent_id"])
 
 			// Release the subagent after a short delay.
@@ -834,7 +878,9 @@ func TestParity_CloseAgentWaitsForCompletion(t *testing.T) {
 			}
 
 			var result map[string]any
-			json.Unmarshal([]byte(closeRes.Output), &result)
+			if err := json.Unmarshal([]byte(closeRes.Output), &result); err != nil {
+				t.Fatal(err)
+			}
 			status := fmt.Sprint(result["status"])
 			if status == "running" {
 				t.Fatalf("close_agent returned status 'running'; expected it to wait for completion")
@@ -855,7 +901,10 @@ func TestParity_SubagentNoMCPInheritance(t *testing.T) {
 	}
 	sess, _ := newParitySession(t, pc, steps)
 	defer sess.Close()
-	go func() { for range sess.Events() {} }()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
 
 	// Inject MCP config into the parent session config after creation.
 	sess.cfg.MCPConfigFiles = []string{"/fake/mcp.json"}
@@ -870,7 +919,9 @@ func TestParity_SubagentNoMCPInheritance(t *testing.T) {
 		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
 	}
 	var spawned map[string]any
-	json.Unmarshal([]byte(spawnRes.Output), &spawned)
+	if err := json.Unmarshal([]byte(spawnRes.Output), &spawned); err != nil {
+		t.Fatal(err)
+	}
 	agentID := fmt.Sprint(spawned["agent_id"])
 
 	// Get the subagent session and check its config.
@@ -904,8 +955,8 @@ type nonLocalEnv struct {
 	dir string
 }
 
-func (e *nonLocalEnv) Initialize() error   { return nil }
-func (e *nonLocalEnv) Cleanup()            {}
+func (e *nonLocalEnv) Initialize() error        { return nil }
+func (e *nonLocalEnv) Cleanup()                 {}
 func (e *nonLocalEnv) WorkingDirectory() string { return e.dir }
 func (e *nonLocalEnv) Platform() string         { return "test" }
 func (e *nonLocalEnv) OSVersion() string        { return "test/1.0" }
@@ -948,7 +999,10 @@ func TestParity_WorkingDirOverride_NonLocalEnv_ReturnsError(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-	go func() { for range sess.Events() {} }()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
 
 	// Spawn agent with working_dir — should fail.
 	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
@@ -967,13 +1021,6 @@ func TestParity_WorkingDirOverride_NonLocalEnv_ReturnsError(t *testing.T) {
 // This mirrors the ToolNameMap applied by each profile.
 func canonicalWriteFile(provider string) string { return "write_file" }
 func canonicalReadFile(provider string) string  { return "read_file" }
-func canonicalEditFile(provider string) string {
-	if provider == "openai" {
-		return "apply_patch"
-	}
-	return "edit_file"
-}
-
 func canonicalShell(provider string) string {
 	switch provider {
 	case "openai":

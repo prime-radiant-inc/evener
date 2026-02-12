@@ -111,7 +111,9 @@ func TestClient_Complete_DoesNotRetryAutomatically(t *testing.T) {
 		name: "openai",
 		steps: []func() (Response, error){
 			func() (Response, error) { return Response{}, err429 },
-			func() (Response, error) { return Response{Provider: "openai", Model: "m", Message: Assistant("ok")}, nil },
+			func() (Response, error) {
+				return Response{Provider: "openai", Model: "m", Message: Assistant("ok")}, nil
+			},
 		},
 	}
 	c.Register(a)
@@ -389,7 +391,7 @@ func TestClient_Stream_MiddlewareChainOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	defer st.Close()
+	defer st.Close() //nolint:errcheck
 
 	for range st.Events() {
 		// drain

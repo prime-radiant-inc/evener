@@ -115,7 +115,9 @@ func TestReadFile_ImageReturnsBase64(t *testing.T) {
 
 	// Write a minimal PNG (8-byte header is enough to detect).
 	pngHeader := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x01}
-	os.WriteFile(filepath.Join(dir, "test.png"), pngHeader, 0644)
+	if err := os.WriteFile(filepath.Join(dir, "test.png"), pngHeader, 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	result, err := env.ReadFile("test.png", nil, nil)
 	if err != nil {
@@ -134,7 +136,9 @@ func TestReadFile_NonImageBinaryStillErrors(t *testing.T) {
 	env := NewLocalExecutionEnvironment(dir)
 
 	// Write a generic binary file (not an image).
-	os.WriteFile(filepath.Join(dir, "data.bin"), []byte{0x00, 0x01, 0x02, 0x03}, 0644)
+	if err := os.WriteFile(filepath.Join(dir, "data.bin"), []byte{0x00, 0x01, 0x02, 0x03}, 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	_, err := env.ReadFile("data.bin", nil, nil)
 	if err == nil {
@@ -332,7 +336,9 @@ func TestEnvVarPolicy_Default_FiltersSensitive(t *testing.T) {
 
 func TestGrep_FallbackWithoutRipgrep(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("hello world\ngoodbye world\nhello again\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("hello world\ngoodbye world\nhello again\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	env := NewLocalExecutionEnvironment(dir)
 	// Test the native fallback directly
@@ -350,8 +356,12 @@ func TestGrep_FallbackWithoutRipgrep(t *testing.T) {
 
 func TestGrepNative_CaseInsensitiveAndGlob(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "test.go"), []byte("Hello World\n"), 0o644)
-	os.WriteFile(filepath.Join(dir, "test.txt"), []byte("hello world\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "test.go"), []byte("Hello World\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "test.txt"), []byte("hello world\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	env := NewLocalExecutionEnvironment(dir)
 
@@ -376,9 +386,15 @@ func TestGrepNative_CaseInsensitiveAndGlob(t *testing.T) {
 
 func TestGrepNative_SkipsHiddenDirs(t *testing.T) {
 	dir := t.TempDir()
-	os.MkdirAll(filepath.Join(dir, ".hidden"), 0o755)
-	os.WriteFile(filepath.Join(dir, ".hidden", "secret.txt"), []byte("hello hidden\n"), 0o644)
-	os.WriteFile(filepath.Join(dir, "visible.txt"), []byte("hello visible\n"), 0o644)
+	if err := os.MkdirAll(filepath.Join(dir, ".hidden"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".hidden", "secret.txt"), []byte("hello hidden\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "visible.txt"), []byte("hello visible\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	env := NewLocalExecutionEnvironment(dir)
 	result, err := env.grepNative("hello", dir, "", false, 100, "")
@@ -395,8 +411,12 @@ func TestGrepNative_SkipsHiddenDirs(t *testing.T) {
 
 func TestGrepNative_SkipsBinaryFiles(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "binary.bin"), []byte("hello\x00world\n"), 0o644)
-	os.WriteFile(filepath.Join(dir, "text.txt"), []byte("hello world\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "binary.bin"), []byte("hello\x00world\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "text.txt"), []byte("hello world\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	env := NewLocalExecutionEnvironment(dir)
 	result, err := env.grepNative("hello", dir, "", false, 100, "")
@@ -418,7 +438,9 @@ func TestGrepNative_MaxResults(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		content.WriteString("match line\n")
 	}
-	os.WriteFile(filepath.Join(dir, "many.txt"), []byte(content.String()), 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "many.txt"), []byte(content.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	env := NewLocalExecutionEnvironment(dir)
 	result, err := env.grepNative("match", dir, "", false, 5, "")
@@ -433,7 +455,9 @@ func TestGrepNative_MaxResults(t *testing.T) {
 
 func TestGrepNative_InvalidRegex(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	env := NewLocalExecutionEnvironment(dir)
 	_, err := env.grepNative("[invalid", dir, "", false, 100, "")
@@ -610,9 +634,15 @@ func TestLocalExecutionEnvironment_InitializeCleanup(t *testing.T) {
 
 func TestGrep_OutputMode_FilesWithMatches(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello world"), 0644)
-	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("hello again"), 0644)
-	os.WriteFile(filepath.Join(dir, "c.txt"), []byte("no match"), 0644)
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello world"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b.txt"), []byte("hello again"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "c.txt"), []byte("no match"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	env := NewLocalExecutionEnvironment(dir)
 	defer env.Cleanup()
@@ -635,7 +665,9 @@ func TestGrep_OutputMode_FilesWithMatches(t *testing.T) {
 
 func TestGrep_OutputMode_Count(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello\nhello"), 0644)
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello\nhello"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	env := NewLocalExecutionEnvironment(dir)
 	defer env.Cleanup()
@@ -651,7 +683,9 @@ func TestGrep_OutputMode_Count(t *testing.T) {
 
 func TestGrep_OutputMode_ContentDefault(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello world\n"), 0644)
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello world\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	env := NewLocalExecutionEnvironment(dir)
 	defer env.Cleanup()
@@ -677,9 +711,15 @@ func TestGrep_OutputMode_ContentDefault(t *testing.T) {
 
 func TestGrepNative_OutputMode_FilesWithMatches(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello world"), 0644)
-	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("hello again"), 0644)
-	os.WriteFile(filepath.Join(dir, "c.txt"), []byte("no match"), 0644)
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello world"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b.txt"), []byte("hello again"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "c.txt"), []byte("no match"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	env := NewLocalExecutionEnvironment(dir)
 
@@ -714,8 +754,12 @@ func TestLocalExecutionEnvironment_OSVersion_ReturnsActualVersion(t *testing.T) 
 
 func TestGrepNative_OutputMode_Count(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello\nhello\ngoodbye"), 0644)
-	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("hello once"), 0644)
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello\nhello\ngoodbye"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b.txt"), []byte("hello once"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	env := NewLocalExecutionEnvironment(dir)
 

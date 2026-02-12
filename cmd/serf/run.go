@@ -17,16 +17,16 @@ import (
 )
 
 type runConfig struct {
-	task         string
-	model        string
-	provider     string
-	workDir      string
-	stateDir     string // --state-dir override
+	task               string
+	model              string
+	provider           string
+	workDir            string
+	stateDir           string   // --state-dir override
 	systemPrompt       string   // --system-prompt file path
 	systemPromptAppend []string // --system-prompt-append file paths
 	verbose            bool
-	stdout       io.Writer
-	stderr       io.Writer
+	stdout             io.Writer
+	stderr             io.Writer
 
 	skillsDirs []string // extra skill directories
 	mcpServers []string // --mcp inline specs
@@ -127,7 +127,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		if err != nil {
 			return fmt.Errorf("restore session: %w", err)
 		}
-		fmt.Fprintf(cfg.stderr, "[resumed] session %s (%d turns)\n", snap.ID, snap.TurnCount)
+		fmt.Fprintf(cfg.stderr, "[resumed] session %s (%d turns)\n", snap.ID, snap.TurnCount) //nolint:errcheck
 	} else {
 		sess, err = agent.NewSession(client, profile, env, agent.SessionConfig{
 			MaxToolRoundsPerInput: 200,
@@ -159,7 +159,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		return err
 	}
 
-	fmt.Fprintln(cfg.stdout, result)
+	fmt.Fprintln(cfg.stdout, result) //nolint:errcheck
 	return nil
 }
 
@@ -186,15 +186,15 @@ func drainEventsHuman(events <-chan agent.SessionEvent, w io.Writer) <-chan stru
 			switch ev.Kind {
 			case agent.EventSessionStart:
 				if d, ok := ev.Data.(agent.SessionStartData); ok && d.Model != "" {
-					fmt.Fprintf(w, "[model] %s (%s)\n", d.Model, d.Profile)
+					fmt.Fprintf(w, "[model] %s (%s)\n", d.Model, d.Profile) //nolint:errcheck
 				}
 			case agent.EventAssistantTextEnd:
 				if d, ok := ev.Data.(agent.AssistantTextEndData); ok {
 					if strings.TrimSpace(d.Text) != "" {
-						fmt.Fprintf(w, "[assistant] %s\n", d.Text)
+						fmt.Fprintf(w, "[assistant] %s\n", d.Text) //nolint:errcheck
 					}
 					if d.Reasoning != "" {
-						fmt.Fprintf(w, "[thinking] (%d chars)\n", len(d.Reasoning))
+						fmt.Fprintf(w, "[thinking] (%d chars)\n", len(d.Reasoning)) //nolint:errcheck
 					}
 					if usage, ok := d.Usage.(llm.Usage); ok {
 						line := fmt.Sprintf("[usage] in=%d out=%d total=%d", usage.InputTokens, usage.OutputTokens, usage.TotalTokens)
@@ -204,7 +204,7 @@ func drainEventsHuman(events <-chan agent.SessionEvent, w io.Writer) <-chan stru
 						if usage.CacheWriteTokens != nil {
 							line += fmt.Sprintf(" cache_write=%d", *usage.CacheWriteTokens)
 						}
-						fmt.Fprintln(w, line)
+						fmt.Fprintln(w, line) //nolint:errcheck
 					}
 				}
 			case agent.EventToolCallStart:
@@ -213,32 +213,32 @@ func drainEventsHuman(events <-chan agent.SessionEvent, w io.Writer) <-chan stru
 					if len(args) > 100 {
 						args = args[:97] + "..."
 					}
-					fmt.Fprintf(w, "[tool] %s %s\n", d.ToolName, args)
+					fmt.Fprintf(w, "[tool] %s %s\n", d.ToolName, args) //nolint:errcheck
 				}
 			case agent.EventToolCallEnd:
 				if d, ok := ev.Data.(agent.ToolCallEndData); ok {
 					if d.Error != "" {
-						fmt.Fprintf(w, "[tool] %s: error\n", d.ToolName)
+						fmt.Fprintf(w, "[tool] %s: error\n", d.ToolName) //nolint:errcheck
 					} else {
-						fmt.Fprintf(w, "[tool] %s: done\n", d.ToolName)
+						fmt.Fprintf(w, "[tool] %s: done\n", d.ToolName) //nolint:errcheck
 					}
 				}
 			case agent.EventCommunicate:
 				if d, ok := ev.Data.(agent.CommunicateData); ok && d.Action == "status" {
-					fmt.Fprintf(w, "[status] %s\n", d.Message)
+					fmt.Fprintf(w, "[status] %s\n", d.Message) //nolint:errcheck
 				}
 				// result is printed via ProcessInput return value on stdout
 			case agent.EventSkillActivated:
 				if d, ok := ev.Data.(agent.SkillActivatedData); ok {
-					fmt.Fprintf(w, "[skill] activated %s\n", d.Name)
+					fmt.Fprintf(w, "[skill] activated %s\n", d.Name) //nolint:errcheck
 				}
 			case agent.EventWarning:
 				if d, ok := ev.Data.(agent.WarningData); ok {
-					fmt.Fprintf(w, "[warning] %s\n", d.Message)
+					fmt.Fprintf(w, "[warning] %s\n", d.Message) //nolint:errcheck
 				}
 			case agent.EventError:
 				if d, ok := ev.Data.(agent.ErrorData); ok {
-					fmt.Fprintf(w, "[error] %s\n", d.Error)
+					fmt.Fprintf(w, "[error] %s\n", d.Error) //nolint:errcheck
 				}
 			}
 		}
@@ -277,7 +277,7 @@ func listSessions(cfg runConfig, stateDir string) error {
 		return fmt.Errorf("list sessions: %w", err)
 	}
 	if len(list) == 0 {
-		fmt.Fprintln(cfg.stdout, "No saved sessions.")
+		fmt.Fprintln(cfg.stdout, "No saved sessions.") //nolint:errcheck
 		return nil
 	}
 	for _, s := range list {
@@ -295,7 +295,7 @@ func listSessions(cfg runConfig, stateDir string) error {
 		if branch == "" {
 			branch = "-"
 		}
-		fmt.Fprintf(cfg.stdout, "%s  %-16s  %-20s  %-20s  turns=%d  %q\n",
+		fmt.Fprintf(cfg.stdout, "%s  %-16s  %-20s  %-20s  turns=%d  %q\n", //nolint:errcheck
 			s.ID, s.Model, branch, s.UpdatedAt.Format("2006-01-02 15:04:05"), s.TurnCount, firstInput)
 	}
 	return nil

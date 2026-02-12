@@ -310,10 +310,10 @@ type Warning struct {
 }
 
 type RateLimitInfo struct {
-	RequestsRemaining *int   `json:"requests_remaining,omitempty"`
-	RequestsLimit     *int   `json:"requests_limit,omitempty"`
-	TokensRemaining   *int   `json:"tokens_remaining,omitempty"`
-	TokensLimit       *int   `json:"tokens_limit,omitempty"`
+	RequestsRemaining *int       `json:"requests_remaining,omitempty"`
+	RequestsLimit     *int       `json:"requests_limit,omitempty"`
+	TokensRemaining   *int       `json:"tokens_remaining,omitempty"`
+	TokensLimit       *int       `json:"tokens_limit,omitempty"`
 	ResetAt           *time.Time `json:"reset_at,omitempty"`
 }
 

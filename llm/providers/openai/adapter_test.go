@@ -378,7 +378,7 @@ func TestAdapter_Stream_YieldsTextDeltasAndFinish(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
 	var deltas []string
 	var kinds []llm.StreamEventType
@@ -464,7 +464,7 @@ func TestAdapter_Stream_TranslatesToolCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
 	starts := 0
 	deltas := 0
@@ -613,9 +613,9 @@ func TestImageInput_DetailHintPassedThrough(t *testing.T) {
 	var captured map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		json.Unmarshal(body, &captured)
+		json.Unmarshal(body, &captured) //nolint:errcheck
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
 			"id":     "resp_1",
 			"status": "completed",
 			"output": []any{map[string]any{
@@ -745,7 +745,7 @@ func TestAdapter_Stream_ContextDeadline_EmitsRequestTimeoutError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	defer st.Close()
+	defer st.Close() //nolint:errcheck
 
 	var sawErr error
 	for ev := range st.Events() {
@@ -1071,7 +1071,7 @@ func TestStream_IncludesWebSearchTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
 	for range stream.Events() {
 	}
@@ -1167,9 +1167,9 @@ func TestComplete_SendsOrgAndProjectHeaders(t *testing.T) {
 
 func TestFromResponses_IncompleteStatus(t *testing.T) {
 	raw := map[string]any{
-		"id":    "r1",
-		"model": "gpt-5.2",
-		"status": "incomplete",
+		"id":                 "r1",
+		"model":              "gpt-5.2",
+		"status":             "incomplete",
 		"incomplete_details": map[string]any{"reason": "max_output_tokens"},
 		"output": []any{
 			map[string]any{"type": "message", "content": []any{
@@ -1236,7 +1236,7 @@ func TestStream_PassesStopSequences(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 	for range stream.Events() {
 	}
 
@@ -1393,7 +1393,7 @@ func TestAdapterTimeout_Stream_AcceptsAdapterTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
 	var gotFinish bool
 	for ev := range stream.Events() {
@@ -1472,7 +1472,7 @@ func TestDefaultHeaders_SentOnStreamRequests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 	for range stream.Events() {
 	}
 	if capturedHeaders.Get("X-Custom-Header") != "custom-value" {

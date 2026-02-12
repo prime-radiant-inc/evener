@@ -372,9 +372,9 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 				tc := llm.ToolCallData{ID: st.id, Name: st.name, Arguments: []byte(st.args.String()), Type: "function"}
 				s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &tc})
 			case "response.output_item.done":
-				itemAny, _ := payload["item"]
+				itemAny := payload["item"]
 				if itemAny == nil {
-					itemAny, _ = payload["output_item"]
+					itemAny = payload["output_item"]
 				}
 				if item, ok := itemAny.(map[string]any); ok {
 					it, _ := item["type"].(string)
@@ -415,12 +415,10 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 							textStarted = false
 						}
 					}
-				} else {
+				} else if textStarted {
 					// Best-effort: treat as end-of-text.
-					if textStarted {
-						s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: textID})
-						textStarted = false
-					}
+					s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: textID})
+					textStarted = false
 				}
 			case "response.completed":
 				// Response object may be nested under "response" or be the payload itself.
@@ -813,7 +811,8 @@ func fromResponses(raw map[string]any, requestedModel string) llm.Response {
 
 	// Check Responses API status/incomplete_details for finish reason.
 	status, _ := raw["status"].(string)
-	if status == "incomplete" {
+	switch {
+	case status == "incomplete":
 		reason := "length" // default for incomplete
 		if details, ok := raw["incomplete_details"].(map[string]any); ok {
 			if dr, _ := details["reason"].(string); dr != "" {
@@ -828,9 +827,9 @@ func fromResponses(raw map[string]any, requestedModel string) llm.Response {
 			}
 		}
 		r.Finish = llm.FinishReason{Reason: reason, Raw: status}
-	} else if len(r.ToolCalls()) > 0 {
+	case len(r.ToolCalls()) > 0:
 		r.Finish = llm.FinishReason{Reason: "tool_calls"}
-	} else {
+	default:
 		r.Finish = llm.FinishReason{Reason: "stop"}
 	}
 

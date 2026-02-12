@@ -11,7 +11,7 @@ import (
 func TestLoadMCPConfigFile_Basic(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mcp.json")
-	os.WriteFile(path, []byte(`{
+	if err := os.WriteFile(path, []byte(`{
 		"mcpServers": {
 			"github": {
 				"command": "gh-mcp",
@@ -24,7 +24,9 @@ func TestLoadMCPConfigFile_Basic(t *testing.T) {
 				"headers": {"Authorization": "Bearer tok"}
 			}
 		}
-	}`), 0644)
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	configs, err := LoadMCPConfigFile(path)
 	if err != nil {
@@ -68,14 +70,16 @@ func TestLoadMCPConfigFile_Basic(t *testing.T) {
 func TestLoadMCPConfigFile_HTTPTransport(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mcp.json")
-	os.WriteFile(path, []byte(`{
+	if err := os.WriteFile(path, []byte(`{
 		"mcpServers": {
 			"api": {
 				"type": "http",
 				"url": "https://api.example.com/mcp"
 			}
 		}
-	}`), 0644)
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	configs, err := LoadMCPConfigFile(path)
 	if err != nil {
@@ -102,7 +106,9 @@ func TestLoadMCPConfigFile_MissingFile(t *testing.T) {
 func TestLoadMCPConfigFile_InvalidJSON(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mcp.json")
-	os.WriteFile(path, []byte(`{invalid`), 0644)
+	if err := os.WriteFile(path, []byte(`{invalid`), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	_, err := LoadMCPConfigFile(path)
 	if err == nil {
@@ -113,7 +119,9 @@ func TestLoadMCPConfigFile_InvalidJSON(t *testing.T) {
 func TestLoadMCPConfigFile_EmptyServers(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mcp.json")
-	os.WriteFile(path, []byte(`{"mcpServers": {}}`), 0644)
+	if err := os.WriteFile(path, []byte(`{"mcpServers": {}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	configs, err := LoadMCPConfigFile(path)
 	if err != nil {
@@ -247,22 +255,30 @@ func TestDiscoverMCPConfigs_GlobalAndProject(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", globalDir)
 
 	serfDir := filepath.Join(globalDir, "serf")
-	os.MkdirAll(serfDir, 0755)
-	os.WriteFile(filepath.Join(serfDir, "mcp.json"), []byte(`{
+	if err := os.MkdirAll(serfDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(serfDir, "mcp.json"), []byte(`{
 		"mcpServers": {
 			"global-tool": {"command": "gtool"}
 		}
-	}`), 0644)
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	// Set up a project directory with .serf/mcp.json.
 	projDir := t.TempDir()
-	os.MkdirAll(filepath.Join(projDir, ".serf"), 0755)
-	os.WriteFile(filepath.Join(projDir, ".serf", "mcp.json"), []byte(`{
+	if err := os.MkdirAll(filepath.Join(projDir, ".serf"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projDir, ".serf", "mcp.json"), []byte(`{
 		"mcpServers": {
 			"project-tool": {"command": "ptool"},
 			"global-tool": {"command": "gtool-override"}
 		}
-	}`), 0644)
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	// Use a fake env that returns projDir as git root.
 	env := &fakeEnvForMCP{workDir: projDir, gitRoot: projDir}
@@ -294,11 +310,13 @@ func TestDiscoverMCPConfigs_CLIOverrides(t *testing.T) {
 
 	dir := t.TempDir()
 	cliFile := filepath.Join(dir, "cli-mcp.json")
-	os.WriteFile(cliFile, []byte(`{
+	if err := os.WriteFile(cliFile, []byte(`{
 		"mcpServers": {
 			"cli-tool": {"command": "ctool"}
 		}
-	}`), 0644)
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	env := &fakeEnvForMCP{workDir: dir, gitRoot: ""}
 
@@ -331,14 +349,16 @@ func TestExpandEnvVars_InConfigLoading(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mcp.json")
-	os.WriteFile(path, []byte(`{
+	if err := os.WriteFile(path, []byte(`{
 		"mcpServers": {
 			"test": {
 				"command": "server",
 				"env": {"TOKEN": "${MCP_TEST_TOKEN}"}
 			}
 		}
-	}`), 0644)
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	configs, err := LoadMCPConfigFile(path)
 	if err != nil {
@@ -352,13 +372,15 @@ func TestExpandEnvVars_InConfigLoading(t *testing.T) {
 func TestExpandEnvVars_MissingVarInConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mcp.json")
-	os.WriteFile(path, []byte(`{
+	if err := os.WriteFile(path, []byte(`{
 		"mcpServers": {
 			"test": {
 				"command": "${DEFINITELY_UNSET_VAR_98765}"
 			}
 		}
-	}`), 0644)
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	_, err := LoadMCPConfigFile(path)
 	if err == nil {
@@ -376,8 +398,8 @@ func (f *fakeEnvForMCP) Initialize() error { return nil }
 func (f *fakeEnvForMCP) Cleanup()          {}
 
 func (f *fakeEnvForMCP) WorkingDirectory() string { return f.workDir }
-func (f *fakeEnvForMCP) Platform() string          { return "test" }
-func (f *fakeEnvForMCP) OSVersion() string         { return "test" }
+func (f *fakeEnvForMCP) Platform() string         { return "test" }
+func (f *fakeEnvForMCP) OSVersion() string        { return "test" }
 
 func (f *fakeEnvForMCP) ExecCommand(_ context.Context, command string, _ int, _ string, _ map[string]string) (ExecResult, error) {
 	if f.gitRoot != "" && strings.Contains(command, "git rev-parse --show-toplevel") {
@@ -386,10 +408,12 @@ func (f *fakeEnvForMCP) ExecCommand(_ context.Context, command string, _ int, _ 
 	return ExecResult{ExitCode: 1}, nil
 }
 
-func (f *fakeEnvForMCP) ReadFile(string, *int, *int) (string, error)              { return "", nil }
-func (f *fakeEnvForMCP) WriteFile(string, string) (string, error)                 { return "", nil }
-func (f *fakeEnvForMCP) EditFile(string, string, string, bool) (string, error)    { return "", nil }
-func (f *fakeEnvForMCP) FileExists(string) bool                                   { return false }
-func (f *fakeEnvForMCP) Glob(string, string) ([]string, error)                    { return nil, nil }
-func (f *fakeEnvForMCP) Grep(string, string, string, bool, int, string) (string, error) { return "", nil }
-func (f *fakeEnvForMCP) ListDirectory(string, int) ([]DirEntry, error)            { return nil, nil }
+func (f *fakeEnvForMCP) ReadFile(string, *int, *int) (string, error)           { return "", nil }
+func (f *fakeEnvForMCP) WriteFile(string, string) (string, error)              { return "", nil }
+func (f *fakeEnvForMCP) EditFile(string, string, string, bool) (string, error) { return "", nil }
+func (f *fakeEnvForMCP) FileExists(string) bool                                { return false }
+func (f *fakeEnvForMCP) Glob(string, string) ([]string, error)                 { return nil, nil }
+func (f *fakeEnvForMCP) Grep(string, string, string, bool, int, string) (string, error) {
+	return "", nil
+}
+func (f *fakeEnvForMCP) ListDirectory(string, int) ([]DirEntry, error) { return nil, nil }

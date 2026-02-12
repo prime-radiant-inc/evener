@@ -67,7 +67,7 @@ func (s *Session) webFetch(ctx context.Context, rawURL string, question string) 
 	if err != nil {
 		return nil, fmt.Errorf("fetching URL: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("HTTP %d %s", resp.StatusCode, resp.Status)

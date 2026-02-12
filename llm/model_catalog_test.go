@@ -171,4 +171,3 @@ func TestEmbeddedModelCatalog(t *testing.T) {
 		t.Fatalf("gpt-4o provider = %q", info.Provider)
 	}
 }
-

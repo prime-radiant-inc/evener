@@ -136,7 +136,7 @@ func TestStreamGenerateObject_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StreamGenerateObject: %v", err)
 	}
-	defer res.Close()
+	defer res.Close() //nolint:errcheck
 
 	var objectDeltas int
 	for ev := range res.Events() {
@@ -214,7 +214,7 @@ func TestStreamGenerateObject_ParseFailure_ReturnsNoObjectGeneratedError(t *test
 	if err != nil {
 		t.Fatalf("StreamGenerateObject: %v", err)
 	}
-	defer res.Close()
+	defer res.Close() //nolint:errcheck
 
 	// Drain events
 	for range res.Events() {
@@ -232,4 +232,3 @@ func TestStreamGenerateObject_ParseFailure_ReturnsNoObjectGeneratedError(t *test
 		t.Fatalf("expected RawText to be set")
 	}
 }
-

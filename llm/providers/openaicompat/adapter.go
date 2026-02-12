@@ -124,7 +124,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
+		defer resp.Body.Close() //nolint:errcheck
 		b, _ := io.ReadAll(resp.Body)
 		var raw map[string]any
 		_ = json.Unmarshal(b, &raw)
@@ -141,7 +141,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 
 	go func() {
 		defer func() {
-			resp.Body.Close()
+			resp.Body.Close() //nolint:errcheck
 			s.CloseSend()
 		}()
 
@@ -159,7 +159,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		var usage *llm.Usage
 		finished := false
 
-		llm.ParseSSE(sctx, resp.Body, func(ev llm.SSEEvent) error {
+		_ = llm.ParseSSE(sctx, resp.Body, func(ev llm.SSEEvent) error {
 			data := string(ev.Data)
 			if data == "[DONE]" {
 				finished = true
@@ -553,22 +553,22 @@ func toChatResponseFormat(rf llm.ResponseFormat) map[string]any {
 // --- Response parsing ---
 
 type chatCompletionResponse struct {
-	ID      string            `json:"id"`
-	Model   string            `json:"model"`
-	Choices []chatChoice      `json:"choices"`
-	Usage   map[string]any    `json:"usage"`
+	ID      string         `json:"id"`
+	Model   string         `json:"model"`
+	Choices []chatChoice   `json:"choices"`
+	Usage   map[string]any `json:"usage"`
 }
 
 type chatChoice struct {
-	Index        int               `json:"index"`
-	Message      chatMessage       `json:"message"`
-	FinishReason string            `json:"finish_reason"`
+	Index        int         `json:"index"`
+	Message      chatMessage `json:"message"`
+	FinishReason string      `json:"finish_reason"`
 }
 
 type chatMessage struct {
-	Role      string            `json:"role"`
-	Content   string            `json:"content"`
-	ToolCalls []chatToolCall    `json:"tool_calls,omitempty"`
+	Role      string         `json:"role"`
+	Content   string         `json:"content"`
+	ToolCalls []chatToolCall `json:"tool_calls,omitempty"`
 }
 
 type chatToolCall struct {
@@ -583,16 +583,16 @@ type chatFunctionCall struct {
 }
 
 type chatCompletionChunk struct {
-	ID      string              `json:"id"`
-	Model   string              `json:"model"`
-	Choices []chatChunkChoice   `json:"choices"`
-	Usage   map[string]any      `json:"usage"`
+	ID      string            `json:"id"`
+	Model   string            `json:"model"`
+	Choices []chatChunkChoice `json:"choices"`
+	Usage   map[string]any    `json:"usage"`
 }
 
 type chatChunkChoice struct {
-	Index        int              `json:"index"`
-	Delta        chatDelta        `json:"delta"`
-	FinishReason string           `json:"finish_reason"`
+	Index        int       `json:"index"`
+	Delta        chatDelta `json:"delta"`
+	FinishReason string    `json:"finish_reason"`
 }
 
 type chatDelta struct {
@@ -693,7 +693,7 @@ func (a *Adapter) doHTTP(ctx context.Context, body map[string]any, at *llm.Adapt
 	if err != nil {
 		return nil, 0, nil, llm.WrapContextError("openai-compatible", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {

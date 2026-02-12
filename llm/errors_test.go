@@ -284,4 +284,3 @@ func TestErrorFromHTTPStatus_MessageBasedClassification(t *testing.T) {
 		})
 	}
 }
-

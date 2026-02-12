@@ -117,11 +117,12 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 	if opts.System != nil && *opts.System != "" {
 		history = append(history, System(*opts.System))
 	}
-	if opts.Prompt != nil {
+	switch {
+	case opts.Prompt != nil:
 		history = append(history, User(*opts.Prompt))
-	} else if len(opts.Messages) > 0 {
+	case len(opts.Messages) > 0:
 		history = append(history, opts.Messages...)
-	} else {
+	default:
 		return nil, &ConfigurationError{Message: "prompt/messages required"}
 	}
 

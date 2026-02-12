@@ -694,10 +694,10 @@ func TestAdapter_Complete_GRPCStatusMapping(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(tc.httpStatus)
-				_, _ = w.Write([]byte(fmt.Sprintf(
+				_, _ = fmt.Fprintf(w,
 					`{"error":{"code":%d,"message":"%s","status":"%s"}}`,
 					tc.httpStatus, tc.message, tc.grpcStatus,
-				)))
+				)
 			}))
 			t.Cleanup(srv.Close)
 
@@ -754,7 +754,7 @@ func TestAdapter_Stream_YieldsTextDeltasAndFinish(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
 	var deltas []string
 	var kinds []llm.StreamEventType
@@ -843,7 +843,7 @@ func TestAdapter_Stream_TranslatesFunctionCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
 	var startID, endID string
 	var startSig, endSig string
@@ -1146,7 +1146,7 @@ func TestAdapter_Stream_ContextDeadline_EmitsRequestTimeoutError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	defer st.Close()
+	defer st.Close() //nolint:errcheck
 
 	var sawErr error
 	for ev := range st.Events() {
@@ -1665,7 +1665,7 @@ func TestStream_IncludesWebSearchTool_NoFunctionTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 	for range stream.Events() {
 	}
 
@@ -1717,7 +1717,7 @@ func TestStream_WebSearch_SkippedWithFunctionTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 	for range stream.Events() {
 	}
 
@@ -1743,7 +1743,7 @@ func TestComplete_PopulatesRateLimitInfo(t *testing.T) {
 		w.Header().Set("x-ratelimit-limit-tokens", "10000")
 		w.Header().Set("x-ratelimit-reset-requests", "2026-02-10T12:00:00Z")
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`)
+		fmt.Fprint(w, `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`) //nolint:errcheck
 	}))
 	t.Cleanup(srv.Close)
 
@@ -1782,7 +1782,7 @@ func TestComplete_PopulatesRateLimitInfo(t *testing.T) {
 func TestComplete_NoRateLimitHeaders_ReturnsNil(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`)
+		fmt.Fprint(w, `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`) //nolint:errcheck
 	}))
 	t.Cleanup(srv.Close)
 
@@ -1802,13 +1802,7 @@ func TestComplete_NoRateLimitHeaders_ReturnsNil(t *testing.T) {
 func TestComplete_ParsesThoughtParts(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{
-  "candidates": [{"content": {"parts": [
-    {"text": "Let me think...", "thought": true},
-    {"text": "The answer is 42."}
-  ]}, "finishReason": "STOP"}],
-  "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 20, "totalTokenCount": 30, "thoughtsTokenCount": 15}
-}`)
+		fmt.Fprint(w, `{"candidates": [{"content": {"parts": [{"text": "Let me think...", "thought": true}, {"text": "The answer is 42."}]}, "finishReason": "STOP"}], "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 20, "totalTokenCount": 30, "thoughtsTokenCount": 15}}`) //nolint:errcheck
 	}))
 	t.Cleanup(srv.Close)
 
@@ -1848,13 +1842,7 @@ func TestComplete_ParsesThoughtParts(t *testing.T) {
 func TestComplete_ThoughtPartWithEmptyText_Ignored(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{
-  "candidates": [{"content": {"parts": [
-    {"text": "", "thought": true},
-    {"text": "Only this."}
-  ]}, "finishReason": "STOP"}],
-  "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2}
-}`)
+		fmt.Fprint(w, `{"candidates": [{"content": {"parts": [{"text": "", "thought": true}, {"text": "Only this."}]}, "finishReason": "STOP"}], "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2}}`) //nolint:errcheck
 	}))
 	t.Cleanup(srv.Close)
 
@@ -1881,7 +1869,7 @@ func TestComplete_PassesReasoningEffortAsThinkingConfig(t *testing.T) {
 		b, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(b, &gotBody)
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`)
+		fmt.Fprint(w, `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`) //nolint:errcheck
 	}))
 	t.Cleanup(srv.Close)
 
@@ -1935,7 +1923,7 @@ func TestComplete_ReasoningEffort_None_NoThinkingConfig(t *testing.T) {
 		b, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(b, &gotBody)
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`)
+		fmt.Fprint(w, `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`) //nolint:errcheck
 	}))
 	t.Cleanup(srv.Close)
 
@@ -1981,7 +1969,7 @@ func TestStream_PassesReasoningEffortAsThinkingConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 	for range stream.Events() {
 	}
 
@@ -2021,7 +2009,7 @@ func TestStream_ParsesThoughtParts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
 	var finish *llm.Response
 	for ev := range stream.Events() {
@@ -2076,7 +2064,7 @@ func TestStream_ParsesGroundingMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
 	var resp *llm.Response
 	for ev := range stream.Events() {
@@ -2181,7 +2169,7 @@ func TestStream_EmitsReasoningEventsForThoughtParts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
 	var types []llm.StreamEventType
 	for ev := range stream.Events() {
@@ -2218,7 +2206,7 @@ func TestStream_EmitsReasoningEventsForThoughtParts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream2.Close()
+	defer stream2.Close() //nolint:errcheck
 
 	var reasoningText string
 	for ev := range stream2.Events() {
@@ -2288,7 +2276,7 @@ func TestAdapterTimeout_Stream_AcceptsAdapterTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
 	var gotFinish bool
 	for ev := range stream.Events() {
@@ -2365,7 +2353,7 @@ func TestDefaultHeaders_SentOnStreamRequests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 	for range stream.Events() {
 	}
 	if capturedHeaders.Get("X-Custom-Header") != "custom-value" {

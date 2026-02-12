@@ -187,7 +187,7 @@ func TestSessionConfig_JSONOmitsFunctionFields(t *testing.T) {
 		DefaultCommandTimeoutMS: 10000,
 		UserInstructionOverride: "be helpful",
 		ReasoningEffort:         "high",
-		LLMSleep: func(ctx context.Context, d time.Duration) error { return nil }, // function field; should be omitted
+		LLMSleep:                func(ctx context.Context, d time.Duration) error { return nil }, // function field; should be omitted
 	}
 	data, err := json.Marshal(cfg)
 	if err != nil {

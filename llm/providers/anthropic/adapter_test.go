@@ -182,7 +182,7 @@ func TestAdapter_Stream_YieldsTextDeltasAndFinish(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
 	var deltas []string
 	var kinds []llm.StreamEventType
@@ -271,7 +271,7 @@ func TestAdapter_Stream_TranslatesToolUseAndThinkingBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
 	seenReasonStart := false
 	seenReasonDelta := false
@@ -984,7 +984,7 @@ func TestAdapter_Stream_ContextDeadline_EmitsRequestTimeoutError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	defer st.Close()
+	defer st.Close() //nolint:errcheck
 
 	var sawErr error
 	for ev := range st.Events() {
@@ -1505,7 +1505,7 @@ func TestStream_CapturesIDAndModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
 	var resp *llm.Response
 	for ev := range stream.Events() {
@@ -1555,7 +1555,7 @@ func TestStream_CapturesCacheTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
 	var resp *llm.Response
 	for ev := range stream.Events() {
@@ -1605,7 +1605,7 @@ func TestStream_IncludesRaw(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
 	var resp *llm.Response
 	for ev := range stream.Events() {
@@ -1676,7 +1676,7 @@ func TestStream_HandlesWebSearchBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
 	var resp *llm.Response
 	for ev := range stream.Events() {
@@ -1728,7 +1728,7 @@ func TestComplete_EstimatesReasoningTokens(t *testing.T) {
 			"usage":       map[string]any{"input_tokens": 10, "output_tokens": 20},
 		}
 		b, _ := json.Marshal(resp)
-		w.Write(b)
+		w.Write(b) //nolint:errcheck
 	}))
 	t.Cleanup(srv.Close)
 
@@ -1789,7 +1789,7 @@ func TestStream_EstimatesReasoningTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
 	var resp *llm.Response
 	for ev := range stream.Events() {
@@ -1812,7 +1812,7 @@ func TestComplete_ParsesRetryAfterHeader(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "30")
 		w.WriteHeader(429)
-		fmt.Fprint(w, `{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`)
+		fmt.Fprint(w, `{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`) //nolint:errcheck
 	}))
 	t.Cleanup(srv.Close)
 
@@ -1848,7 +1848,7 @@ func TestComplete_PopulatesRateLimitInfo(t *testing.T) {
 		w.Header().Set("x-ratelimit-limit-tokens", "10000")
 		w.Header().Set("x-ratelimit-reset-requests", "2026-02-10T12:00:00Z")
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"id":"msg_1","model":"claude-test","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+		fmt.Fprint(w, `{"id":"msg_1","model":"claude-test","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`) //nolint:errcheck
 	}))
 	t.Cleanup(srv.Close)
 
@@ -1914,7 +1914,7 @@ func TestStream_IncludesWebSearchTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
 	// Drain events
 	for range stream.Events() {
@@ -2026,7 +2026,7 @@ func TestAdapterTimeout_Stream_AcceptsAdapterTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
 	var gotFinish bool
 	for ev := range stream.Events() {
@@ -2115,7 +2115,7 @@ func TestDefaultHeaders_SentOnStreamRequests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 	for range stream.Events() {
 	}
 	if capturedHeaders.Get("X-Custom-Header") != "custom-value" {
@@ -2429,7 +2429,7 @@ func TestStream_ReasoningEffort_MappedToThinking(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 	for range stream.Events() {
 	}
 

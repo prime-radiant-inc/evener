@@ -12,7 +12,7 @@ const (
 	TurnUserInput   TurnKind = "USER_INPUT"
 	TurnSteering    TurnKind = "STEERING"
 	TurnAssistant   TurnKind = "ASSISTANT"
-	TurnTool        TurnKind = "TOOL"        // Deprecated: use TurnToolResults for new code.
+	TurnTool        TurnKind = "TOOL"         // Deprecated: use TurnToolResults for new code.
 	TurnToolResults TurnKind = "TOOL_RESULTS" // Aggregated tool results from one round.
 	TurnSystem      TurnKind = "SYSTEM"
 )
@@ -31,4 +31,3 @@ type Turn struct {
 func NewTurn(kind TurnKind, msg llm.Message) Turn {
 	return Turn{Kind: kind, Message: msg, Timestamp: time.Now().UTC()}
 }
-

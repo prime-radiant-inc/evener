@@ -108,7 +108,7 @@ func TestWebFetchTool_Integration(t *testing.T) {
 	// Serve HTML via httptest.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `<html><body><h1>Test Page</h1><p>This is a test document about Go programming.</p></body></html>`)
+		_, _ = fmt.Fprint(w, `<html><body><h1>Test Page</h1><p>This is a test document about Go programming.</p></body></html>`)
 	}))
 	defer srv.Close()
 
@@ -218,7 +218,7 @@ func TestWebFetchTool_Integration(t *testing.T) {
 func TestWebFetchTool_ResultContainsFilePaths(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprint(w, `<html><body><h1>Paths Test</h1></body></html>`)
+		_, _ = fmt.Fprint(w, `<html><body><h1>Paths Test</h1></body></html>`)
 	}))
 	defer srv.Close()
 
@@ -283,7 +283,7 @@ func TestWebFetchTool_ResultContainsFilePaths(t *testing.T) {
 func TestWebFetchTool_JSONContent(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"status": "ok", "data": [1, 2, 3]}`)
+		_, _ = fmt.Fprint(w, `{"status": "ok", "data": [1, 2, 3]}`)
 	}))
 	defer srv.Close()
 

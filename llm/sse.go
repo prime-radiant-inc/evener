@@ -79,23 +79,22 @@ func parseSSEBlocking(ctx context.Context, r io.Reader, fn func(ev SSEEvent) err
 		}
 		line = strings.TrimRight(line, "\r\n")
 
-		if line == "" {
+		switch {
+		case line == "":
 			if err := flush(); err != nil {
 				return err
 			}
-		} else if strings.HasPrefix(line, ":") {
+		case strings.HasPrefix(line, ":"):
 			// Comment; ignore.
-		} else if strings.HasPrefix(line, "event:") {
+		case strings.HasPrefix(line, "event:"):
 			curEvent = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-		} else if strings.HasPrefix(line, "data:") {
+		case strings.HasPrefix(line, "data:"):
 			data := strings.TrimPrefix(line, "data:")
 			data = strings.TrimLeft(data, " ")
 			dataBuf.WriteString(data)
 			dataBuf.WriteString("\n")
-		} else if strings.HasPrefix(line, "retry:") {
-			// Ignore reconnection hint.
-		} else {
-			// Unknown field; ignore.
+		default:
+			// retry, unknown fields; ignore.
 		}
 
 		if err == io.EOF {
@@ -157,23 +156,22 @@ func parseSSEWithTimeout(ctx context.Context, r io.Reader, fn func(ev SSEEvent) 
 			}
 			line = strings.TrimRight(line, "\r\n")
 
-			if line == "" {
+			switch {
+			case line == "":
 				if err := flush(); err != nil {
 					return err
 				}
-			} else if strings.HasPrefix(line, ":") {
+			case strings.HasPrefix(line, ":"):
 				// Comment; ignore.
-			} else if strings.HasPrefix(line, "event:") {
+			case strings.HasPrefix(line, "event:"):
 				curEvent = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-			} else if strings.HasPrefix(line, "data:") {
+			case strings.HasPrefix(line, "data:"):
 				data := strings.TrimPrefix(line, "data:")
 				data = strings.TrimLeft(data, " ")
 				dataBuf.WriteString(data)
 				dataBuf.WriteString("\n")
-			} else if strings.HasPrefix(line, "retry:") {
-				// Ignore reconnection hint.
-			} else {
-				// Unknown field; ignore.
+			default:
+				// retry, unknown fields; ignore.
 			}
 
 			if err == io.EOF {

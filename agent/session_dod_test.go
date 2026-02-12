@@ -430,36 +430,36 @@ func TestSession_Steer_IsInjectedAfterCurrentToolRound(t *testing.T) {
 			foundSteering = true
 		}
 	}
-		if !foundSteering {
-			t.Fatalf("expected steering turn in history; got %+v", turns)
-		}
-		sess.Close()
-
-		toolEndIdx := -1
-		steerIdx := -1
-		i := 0
-		for ev := range sess.Events() {
-			switch ev.Kind {
-			case EventToolCallEnd:
-				toolEndIdx = i
-			case EventSteeringInjected:
-				if ev.DataMap()["text"] != "steer: do X" {
-					t.Fatalf("STEERING_INJECTED data: %+v", ev.Data)
-				}
-				steerIdx = i
-			}
-			i++
-		}
-		if toolEndIdx == -1 {
-			t.Fatalf("expected TOOL_CALL_END event")
-		}
-		if steerIdx == -1 {
-			t.Fatalf("expected STEERING_INJECTED event")
-		}
-		if steerIdx <= toolEndIdx {
-			t.Fatalf("expected steering injection after tool round; TOOL_CALL_END=%d STEERING_INJECTED=%d", toolEndIdx, steerIdx)
-		}
+	if !foundSteering {
+		t.Fatalf("expected steering turn in history; got %+v", turns)
 	}
+	sess.Close()
+
+	toolEndIdx := -1
+	steerIdx := -1
+	i := 0
+	for ev := range sess.Events() {
+		switch ev.Kind {
+		case EventToolCallEnd:
+			toolEndIdx = i
+		case EventSteeringInjected:
+			if ev.DataMap()["text"] != "steer: do X" {
+				t.Fatalf("STEERING_INJECTED data: %+v", ev.Data)
+			}
+			steerIdx = i
+		}
+		i++
+	}
+	if toolEndIdx == -1 {
+		t.Fatalf("expected TOOL_CALL_END event")
+	}
+	if steerIdx == -1 {
+		t.Fatalf("expected STEERING_INJECTED event")
+	}
+	if steerIdx <= toolEndIdx {
+		t.Fatalf("expected steering injection after tool round; TOOL_CALL_END=%d STEERING_INJECTED=%d", toolEndIdx, steerIdx)
+	}
+}
 
 func TestSession_ReasoningEffort_PassedThroughAndCanChange(t *testing.T) {
 	dir := t.TempDir()
@@ -550,25 +550,27 @@ type tinyProfile struct {
 	opts map[string]any
 }
 
-func (p tinyProfile) ID() string                               { return p.id }
-func (p tinyProfile) Model() string                            { return p.mod }
-func (p tinyProfile) ToolDefinitions() []llm.ToolDefinition     { return nil }
-func (p tinyProfile) SupportsParallelToolCalls() bool           { return false }
-func (p tinyProfile) ContextWindowSize() int                    { return p.cw }
-func (p tinyProfile) ProjectDocFiles() []string                 { return nil }
-func (p tinyProfile) BuildSystemPrompt(EnvironmentInfo, []ProjectDoc, []SkillMeta, string) string { return "" }
-func (p tinyProfile) CheapModel() string                                     { return p.mod }
+func (p tinyProfile) ID() string                            { return p.id }
+func (p tinyProfile) Model() string                         { return p.mod }
+func (p tinyProfile) ToolDefinitions() []llm.ToolDefinition { return nil }
+func (p tinyProfile) SupportsParallelToolCalls() bool       { return false }
+func (p tinyProfile) ContextWindowSize() int                { return p.cw }
+func (p tinyProfile) ProjectDocFiles() []string             { return nil }
+func (p tinyProfile) BuildSystemPrompt(EnvironmentInfo, []ProjectDoc, []SkillMeta, string) string {
+	return ""
+}
+func (p tinyProfile) CheapModel() string { return p.mod }
 func (p tinyProfile) WithModel(model string) ProviderProfile {
 	return tinyProfile{id: p.id, cw: p.cw, mod: model}
 }
 func (p tinyProfile) WithBasePrompt(string) ProviderProfile { return p }
 func (p tinyProfile) ProviderOptions() map[string]any       { return p.opts }
 func (p tinyProfile) SupportsReasoning() bool               { return false }
-func (p tinyProfile) SupportsStreaming() bool                { return false }
-func (p tinyProfile) DefaultCommandTimeoutMS() int           { return 10_000 }
-func (p tinyProfile) KnowledgeCutoff() string                { return "2025-01-01" }
-func (p tinyProfile) ToolNameMap() map[string]string          { return nil }
-func (p tinyProfile) NewToolRegistry() *ToolRegistry           { return NewToolRegistry() }
+func (p tinyProfile) SupportsStreaming() bool               { return false }
+func (p tinyProfile) DefaultCommandTimeoutMS() int          { return 10_000 }
+func (p tinyProfile) KnowledgeCutoff() string               { return "2025-01-01" }
+func (p tinyProfile) ToolNameMap() map[string]string        { return nil }
+func (p tinyProfile) NewToolRegistry() *ToolRegistry        { return NewToolRegistry() }
 
 func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) {
 	dir := t.TempDir()
@@ -1135,7 +1137,9 @@ func TestSession_WaitAgent_ReturnsSubAgentResult(t *testing.T) {
 		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
 	}
 	var spawned map[string]any
-	json.Unmarshal([]byte(spawnRes.Output), &spawned)
+	if err := json.Unmarshal([]byte(spawnRes.Output), &spawned); err != nil {
+		t.Fatal(err)
+	}
 	agentID := fmt.Sprint(spawned["agent_id"])
 
 	waitRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
@@ -1200,7 +1204,9 @@ func TestSession_SendInput_UsesMessageParam(t *testing.T) {
 		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
 	}
 	var spawned map[string]any
-	json.Unmarshal([]byte(spawnRes.Output), &spawned)
+	if err := json.Unmarshal([]byte(spawnRes.Output), &spawned); err != nil {
+		t.Fatal(err)
+	}
 	agentID := fmt.Sprint(spawned["agent_id"])
 
 	// Wait for first task to finish.
@@ -1261,7 +1267,9 @@ func TestSession_SpawnAgent_MaxTurns(t *testing.T) {
 	}
 
 	var spawned map[string]any
-	json.Unmarshal([]byte(spawnRes.Output), &spawned)
+	if err := json.Unmarshal([]byte(spawnRes.Output), &spawned); err != nil {
+		t.Fatal(err)
+	}
 	agentID := fmt.Sprint(spawned["agent_id"])
 
 	sub := sess.getSub(agentID)
@@ -1678,7 +1686,10 @@ func TestProcessInput_ToolChoiceIsAuto(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-	go func() { for range sess.Events() {} }()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
 	_, _ = sess.ProcessInput(context.Background(), "hello")
 }
 
@@ -1705,7 +1716,10 @@ func TestProcessInput_DrainsSteeringBeforeFirstLLMCall(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-	go func() { for range sess.Events() {} }()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
 
 	// Queue steering BEFORE ProcessInput
 	sess.Steer("do it differently")
@@ -1773,8 +1787,8 @@ func TestLoopDetection_PatternLength2(t *testing.T) {
 	dir := t.TempDir()
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir),
 		SessionConfig{
-			EnableLoopDetection: &enableLoop,
-			LoopDetectionWindow: 6,
+			EnableLoopDetection:   &enableLoop,
+			LoopDetectionWindow:   6,
 			MaxToolRoundsPerInput: 20,
 		})
 	if err != nil {
@@ -1830,7 +1844,10 @@ func TestProviderOptions_PassedToLLMRequest(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-	go func() { for range sess.Events() {} }()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
 
 	_, err = sess.ProcessInput(context.Background(), "hello")
 	if err != nil {
@@ -1909,7 +1926,10 @@ func TestMaxTurns_CountsConversationTurns(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-	go func() { for range sess.Events() {} }()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
 
 	// First input (turn 1): should work (even with tool round)
 	_, err = sess.ProcessInput(context.Background(), "first")
@@ -1951,7 +1971,10 @@ func TestAssistantTurn_CapturesUsageAndResponseID(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-	go func() { for range sess.Events() {} }()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1993,14 +2016,20 @@ func TestSession_GracefulShutdown_ClosesSubagents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() { for range sess.Events() {} }()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
 
 	// Create a sub-session and manually register it as a subagent.
 	subSess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession (sub): %v", err)
 	}
-	go func() { for range subSess.Events() {} }()
+	go func() {
+		for range subSess.Events() {
+		}
+	}()
 
 	sub := &subagent{
 		id:   "test-sub",
@@ -2273,7 +2302,10 @@ func TestSession_AwaitingInput_QuestionMarkResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() { for range sess.Events() {} }()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -2309,7 +2341,10 @@ func TestSession_AwaitingInput_DeclarativeResponse_GoesIdle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() { for range sess.Events() {} }()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -2351,7 +2386,10 @@ func TestSession_AwaitingInput_TransitionsToProcessing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() { for range sess.Events() {} }()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -2393,7 +2431,10 @@ func TestSession_MaxTurns_SetsStateToIdle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() { for range sess.Events() {} }()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
 
 	ctx := context.Background()
 	// First input succeeds (turn 1 of 1).
@@ -2707,7 +2748,9 @@ func TestSession_ReadBeforeWrite_WarnsOnUnreadFile(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	// Pre-create the file so it's not a new file.
-	os.WriteFile(filepath.Join(dir, "existing.txt"), []byte("original"), 0644)
+	if err := os.WriteFile(filepath.Join(dir, "existing.txt"), []byte("original"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	// LLM writes to existing.txt without reading it first.
 	f := &fakeAdapter{
@@ -2754,7 +2797,9 @@ func TestSession_ReadBeforeWrite_WarnsOnUnreadFile(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	sess.ProcessInput(ctx, "write the file")
+	if _, err := sess.ProcessInput(ctx, "write the file"); err != nil {
+		t.Fatal(err)
+	}
 	sess.Close()
 	<-done
 
@@ -2775,7 +2820,9 @@ func TestSession_ReadBeforeWrite_WarnsOnUnreadFile(t *testing.T) {
 func TestSession_ReadBeforeWrite_NoWarningAfterRead(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
-	os.WriteFile(filepath.Join(dir, "existing.txt"), []byte("original"), 0644)
+	if err := os.WriteFile(filepath.Join(dir, "existing.txt"), []byte("original"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	// LLM reads the file first, then writes to it.
 	f := &fakeAdapter{
@@ -2836,7 +2883,9 @@ func TestSession_ReadBeforeWrite_NoWarningAfterRead(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	sess.ProcessInput(ctx, "read then write")
+	if _, err := sess.ProcessInput(ctx, "read then write"); err != nil {
+		t.Fatal(err)
+	}
 	sess.Close()
 	<-done
 
@@ -2901,7 +2950,9 @@ func TestSession_ReadBeforeWrite_NewFileNoWarning(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	sess.ProcessInput(ctx, "create new file")
+	if _, err := sess.ProcessInput(ctx, "create new file"); err != nil {
+		t.Fatal(err)
+	}
 	sess.Close()
 	<-done
 
@@ -2941,7 +2992,9 @@ func TestSession_ReasoningEffort_MediumPassedThrough(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	sess.ProcessInput(ctx, "hello")
+	if _, err := sess.ProcessInput(ctx, "hello"); err != nil {
+		t.Fatal(err)
+	}
 	sess.Close()
 
 	reqs := f.Requests()
@@ -2977,7 +3030,9 @@ func TestSession_ReasoningEffort_EmptyMeansNoOverride(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	sess.ProcessInput(ctx, "hello")
+	if _, err := sess.ProcessInput(ctx, "hello"); err != nil {
+		t.Fatal(err)
+	}
 	sess.Close()
 
 	reqs := f.Requests()
@@ -3037,7 +3092,9 @@ func TestSession_Subagent_IndependentHistory(t *testing.T) {
 		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
 	}
 	var spawned map[string]any
-	json.Unmarshal([]byte(spawnRes.Output), &spawned)
+	if err := json.Unmarshal([]byte(spawnRes.Output), &spawned); err != nil {
+		t.Fatal(err)
+	}
 	agentID := fmt.Sprint(spawned["agent_id"])
 
 	waitRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
@@ -3061,7 +3118,9 @@ func TestSession_Subagent_SharedFilesystem(t *testing.T) {
 	c := llm.NewClient()
 
 	// Write a file in the parent's working directory.
-	os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("hello from parent"), 0644)
+	if err := os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("hello from parent"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	f := &fakeAdapter{
 		name: "openai",
@@ -3101,7 +3160,9 @@ func TestSession_Subagent_SharedFilesystem(t *testing.T) {
 		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
 	}
 	var spawned map[string]any
-	json.Unmarshal([]byte(spawnRes.Output), &spawned)
+	if err := json.Unmarshal([]byte(spawnRes.Output), &spawned); err != nil {
+		t.Fatal(err)
+	}
 	agentID := fmt.Sprint(spawned["agent_id"])
 
 	waitRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
@@ -3158,7 +3219,9 @@ func TestSubagent_MaxTurns_DefaultsTo50_NotInheritedFromParent(t *testing.T) {
 	defer sess.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	sess.ProcessInput(ctx, "spawn something")
+	if _, err := sess.ProcessInput(ctx, "spawn something"); err != nil {
+		t.Fatal(err)
+	}
 
 	// Check the subagent's MaxTurns.
 	sess.mu.Lock()
@@ -3251,7 +3314,9 @@ func TestCloseAgent_ReturnsStructuredStatus(t *testing.T) {
 func TestSubagent_WorkingDir_SharesParentPIDTracking(t *testing.T) {
 	dir := t.TempDir()
 	subDir := filepath.Join(dir, "sub")
-	os.MkdirAll(subDir, 0755)
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	env := NewLocalExecutionEnvironment(dir)
 	defer env.Cleanup()
@@ -3389,7 +3454,10 @@ func TestSession_RoundLimit_ReturnsNilError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() { for range sess.Events() {} }()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
 	defer sess.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -3425,7 +3493,10 @@ func TestSession_TurnLimit_UsesGreaterEqual(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() { for range sess.Events() {} }()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
 	defer sess.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -3472,7 +3543,10 @@ func TestSession_TurnLimit_ReturnsNilError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() { for range sess.Events() {} }()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
 	defer sess.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

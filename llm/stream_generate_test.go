@@ -100,7 +100,7 @@ func TestStreamGenerate_TimeoutPerStep_EmitsRequestTimeoutError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StreamGenerate: %v", err)
 	}
-	defer res.Close()
+	defer res.Close() //nolint:errcheck
 
 	var sawErr error
 	for ev := range res.Events() {
@@ -156,7 +156,7 @@ func TestStreamGenerate_TimeoutTotal_EmitsRequestTimeoutError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StreamGenerate: %v", err)
 	}
-	defer res.Close()
+	defer res.Close() //nolint:errcheck
 
 	var sawErr error
 	for ev := range res.Events() {
@@ -218,7 +218,7 @@ func TestStreamGenerate_SimpleStreaming_YieldsDeltasAndFinish(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StreamGenerate: %v", err)
 	}
-	defer res.Close()
+	defer res.Close() //nolint:errcheck
 
 	var deltas []string
 	var kinds []StreamEventType
@@ -357,7 +357,7 @@ func TestStreamGenerate_ToolLoop_EmitsStepFinishAndContinues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StreamGenerate: %v", err)
 	}
-	defer res.Close()
+	defer res.Close() //nolint:errcheck
 
 	var kinds []StreamEventType
 	for ev := range res.Events() {
@@ -445,7 +445,7 @@ func TestStreamGenerate_PassiveToolCall_StopsWithoutStepFinish(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StreamGenerate: %v", err)
 	}
-	defer res.Close()
+	defer res.Close() //nolint:errcheck
 
 	var kinds []StreamEventType
 	for ev := range res.Events() {
@@ -506,7 +506,7 @@ func TestStreamGenerate_DoesNotRetryAfterPartialDataDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StreamGenerate: %v", err)
 	}
-	defer res.Close()
+	defer res.Close() //nolint:errcheck
 
 	var sawError bool
 	for ev := range res.Events() {
@@ -563,7 +563,7 @@ func TestStreamGenerate_Cancellation_EmitsAbortError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StreamGenerate: %v", err)
 	}
-	defer res.Close()
+	defer res.Close() //nolint:errcheck
 
 	seenStart := false
 	seenAbort := false
@@ -637,7 +637,7 @@ func TestStreamResult_TextStream_FiltersToTextDeltasOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StreamGenerate: %v", err)
 	}
-	defer res.Close()
+	defer res.Close() //nolint:errcheck
 
 	var deltas []string
 	for delta := range res.TextStream() {
@@ -780,7 +780,7 @@ func TestStreamGenerate_ToolCallsWithStopFinish_DoesNotExecute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StreamGenerate: %v", err)
 	}
-	defer res.Close()
+	defer res.Close() //nolint:errcheck
 
 	// Drain all events.
 	var kinds []StreamEventType
@@ -862,7 +862,7 @@ func TestStreamGenerate_WebSearch_PropagatedToRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StreamGenerate: %v", err)
 	}
-	defer res.Close()
+	defer res.Close() //nolint:errcheck
 
 	// Drain events.
 	for range res.Events() {
@@ -969,7 +969,7 @@ func TestStreamGenerate_TotalUsage_AggregatesAcrossSteps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StreamGenerate: %v", err)
 	}
-	defer res.Close()
+	defer res.Close() //nolint:errcheck
 
 	// Drain all events.
 	for range res.Events() {
@@ -1096,7 +1096,7 @@ func TestStreamGenerate_StopWhen_TerminatesToolLoopEarly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StreamGenerate: %v", err)
 	}
-	defer res.Close()
+	defer res.Close() //nolint:errcheck
 
 	var kinds []StreamEventType
 	stepFinishCount := 0
