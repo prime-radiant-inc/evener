@@ -1449,3 +1449,19 @@ When an abort signal fires or an unrecoverable error occurs:
 **Why 10-second default command timeout?** This matches codex-rs. Most developer commands (compile, lint, test a single file, git operations) complete in under 10 seconds. Long-running commands (full test suites, builds) should be explicitly requested with a longer timeout. The default protects against runaway processes without being so short that normal operations fail.
 
 **Why exclude sensitive environment variables by default?** API keys, secrets, and tokens in the environment should not be visible to the LLM (which might include them in responses or log them). The default excludes `*_API_KEY`, `*_SECRET`, `*_TOKEN`, `*_PASSWORD` patterns. This is a safety default, not a security boundary -- the agent can still run commands that access these variables through the shell's own environment if needed.
+
+## Appendix D: Go Implementation Notes
+
+The following deviations from this spec's pseudocode are intentional Go language idioms:
+
+- `ExecutionEnvironment.WriteFile` returns `(string, error)` (Go convention for returning status)
+- `ExecutionEnvironment.Initialize` returns `error` (Go convention)
+- `ExecutionEnvironment.ExecCommand` takes `context.Context` and returns `(ExecResult, error)` (Go idiom)
+- `ExecutionEnvironment.EditFile` is an extension not in this spec (used by Anthropic/Gemini profiles)
+- `Grep` uses inline parameters instead of a `GrepOptions` struct (style choice)
+- Method is named `ToolDefinitions()` rather than `tools()` (Go naming convention)
+- Follow-up processing uses iteration instead of recursion (functionally equivalent, avoids stack growth)
+- System prompt is rebuilt every tool round (enhancement: picks up newly-created AGENTS.md files)
+- `grep` output_mode is available across all profiles, not just Anthropic (consistency)
+- Shell tool does not expose working_dir/env_vars parameters to the model (security decision)
+- Gemini grounding is enabled via the WebSearch flag rather than provider_options (adequate)
