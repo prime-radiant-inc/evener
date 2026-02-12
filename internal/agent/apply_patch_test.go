@@ -140,6 +140,24 @@ func TestApplyPatch_MultiHunkSingleFile(t *testing.T) {
 	}
 }
 
+func TestApplyPatch_FuzzyMatch_UnicodeQuotes(t *testing.T) {
+	// File uses straight quotes, patch uses curly quotes.
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "test.go"), []byte("fmt.Println(\"hello world\")\n"), 0o644)
+
+	// Build a v4a-style patch that uses curly quotes in the delete line.
+	patch := "*** Begin Patch\n*** Update File: test.go\n@@\n-fmt.Println(\u201Chello world\u201D)\n+fmt.Println(\"goodbye world\")\n*** End Patch\n"
+
+	result, err := ApplyPatch(dir, patch)
+	if err != nil {
+		t.Fatalf("expected patch to apply with Unicode fuzzy matching: %v", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "test.go"))
+	if !strings.Contains(string(got), "goodbye world") {
+		t.Errorf("expected result to contain 'goodbye world', got:\n%s\nresult: %s", string(got), result)
+	}
+}
+
 func TestApplyPatch_RejectsPathTraversalAndAbsolutePaths(t *testing.T) {
 	dir := t.TempDir()
 	cases := []string{

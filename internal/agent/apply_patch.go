@@ -131,7 +131,7 @@ func (o updateFileOp) apply(rootDir string) ([]string, error) {
 				if pos >= len(origLines) {
 					return nil, fmt.Errorf("apply_patch: context mismatch in %s: want %q at line %d", o.path, body, pos+1)
 				}
-				if origLines[pos] != body && normalizeWS(origLines[pos]) != normalizeWS(body) {
+				if !fuzzyLineMatch(origLines[pos], body) {
 					return nil, fmt.Errorf("apply_patch: context mismatch in %s: want %q at line %d", o.path, body, pos+1)
 				}
 				out = append(out, origLines[pos])
@@ -140,7 +140,7 @@ func (o updateFileOp) apply(rootDir string) ([]string, error) {
 				if pos >= len(origLines) {
 					return nil, fmt.Errorf("apply_patch: delete mismatch in %s: want %q at line %d", o.path, body, pos+1)
 				}
-				if origLines[pos] != body && normalizeWS(origLines[pos]) != normalizeWS(body) {
+				if !fuzzyLineMatch(origLines[pos], body) {
 					return nil, fmt.Errorf("apply_patch: delete mismatch in %s: want %q at line %d", o.path, body, pos+1)
 				}
 				pos++
@@ -302,6 +302,34 @@ func normalizeWS(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
+var unicodePunctReplacer = strings.NewReplacer(
+	"\u2018", "'", "\u2019", "'", // left/right single quote
+	"\u201C", "\"", "\u201D", "\"", // left/right double quote
+	"\u2013", "-", "\u2014", "-", // en-dash, em-dash
+	"\u2026", "...", // ellipsis
+	"\u00A0", " ", // non-breaking space
+)
+
+func normalizeUnicode(s string) string {
+	return unicodePunctReplacer.Replace(s)
+}
+
+// fuzzyLineMatch returns true if a and b match after whitespace normalization
+// and (if needed) Unicode punctuation normalization.
+func fuzzyLineMatch(a, b string) bool {
+	if a == b {
+		return true
+	}
+	na, nb := normalizeWS(a), normalizeWS(b)
+	if na == nb {
+		return true
+	}
+	if na == "" {
+		return false
+	}
+	return normalizeUnicode(na) == normalizeUnicode(nb)
+}
+
 func indexOfLine(lines []string, want string, start int) int {
 	// Try exact match first.
 	for i := start; i < len(lines); i++ {
@@ -316,6 +344,13 @@ func indexOfLine(lines []string, want string, start int) int {
 	}
 	for i := start; i < len(lines); i++ {
 		if normalizeWS(lines[i]) == normWant {
+			return i
+		}
+	}
+	// Fuzzy: Unicode punctuation equivalence.
+	normUniWant := normalizeUnicode(normWant)
+	for i := start; i < len(lines); i++ {
+		if normalizeUnicode(normalizeWS(lines[i])) == normUniWant {
 			return i
 		}
 	}
