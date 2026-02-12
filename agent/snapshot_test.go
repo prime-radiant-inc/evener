@@ -369,6 +369,80 @@ func TestSession_AutoSave_WritesSnapshotAfterProcessInput(t *testing.T) {
 	}
 }
 
+func TestSession_AutoSave_PersistsToolResults(t *testing.T) {
+	dir := t.TempDir()
+
+	c := llm.NewClient()
+	comm := communicateCall("c1", "result", "done")
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(comm)
+			},
+		},
+	})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxToolRoundsPerInput: 200,
+		StateDir:              dir,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	out, err := sess.ProcessInput(ctx, "hello")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if strings.TrimSpace(out) != "done" {
+		t.Fatalf("ProcessInput returned %q, want %q", out, "done")
+	}
+	sess.Close()
+
+	list, err := ListSessions(dir)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 saved session, got %d", len(list))
+	}
+
+	pendingToolCalls := map[string]struct{}{}
+	seenToolResult := false
+	for _, turn := range list[0].History {
+		for _, part := range turn.Message.Content {
+			switch part.Kind {
+			case llm.ContentToolCall:
+				if part.ToolCall != nil && part.ToolCall.ID != "" {
+					pendingToolCalls[part.ToolCall.ID] = struct{}{}
+				}
+			case llm.ContentToolResult:
+				if part.ToolResult != nil && part.ToolResult.ToolCallID != "" {
+					delete(pendingToolCalls, part.ToolResult.ToolCallID)
+					if part.ToolResult.ToolCallID == "c1" {
+						seenToolResult = true
+					}
+				}
+			}
+		}
+	}
+
+	if !seenToolResult {
+		t.Fatal("expected snapshot history to include communicate tool_result")
+	}
+	if len(pendingToolCalls) != 0 {
+		t.Fatalf("expected no dangling tool calls in snapshot history, got %d", len(pendingToolCalls))
+	}
+}
+
 func TestRestoreSession_AutoSaveContinues(t *testing.T) {
 	dir := t.TempDir()
 

@@ -1014,6 +1014,9 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			})
 		}
 		s.appendTurn(TurnToolResults, llm.Message{Role: llm.RoleTool, Content: parts})
+		// Persist the completed tool round so resumed sessions always include
+		// tool_result turns for any prior assistant tool calls.
+		s.maybeAutoSave()
 
 		// Loop detection: track per-call signatures and check for repeating patterns.
 		for _, call := range calls {
