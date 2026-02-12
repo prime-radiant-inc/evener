@@ -1165,50 +1165,133 @@ func TestSession_Close_CancelsInFlightLLMCall(t *testing.T) {
 	}
 }
 
+// cleanupTrackingEnv wraps an ExecutionEnvironment and records the order
+// of operations during shutdown. Cleanup() pauses briefly so that any
+// SESSION_END event already in the buffered channel has time to be consumed,
+// which lets us prove the ordering via a shared log.
+type cleanupTrackingEnv struct {
+	ExecutionEnvironment
+	mu  sync.Mutex
+	log []string
+}
+
+func (e *cleanupTrackingEnv) Cleanup() {
+	e.mu.Lock()
+	e.log = append(e.log, "cleanup_start")
+	e.mu.Unlock()
+
+	// Pause to give the consumer goroutine time to drain any events that
+	// were already in the buffered channel. If SESSION_END was sent before
+	// Cleanup, the consumer will record "session_end_received" during this
+	// sleep, causing it to appear before "cleanup_end" in the log.
+	time.Sleep(100 * time.Millisecond)
+
+	e.ExecutionEnvironment.Cleanup()
+
+	e.mu.Lock()
+	e.log = append(e.log, "cleanup_end")
+	e.mu.Unlock()
+}
+
+func (e *cleanupTrackingEnv) Log() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]string{}, e.log...)
+}
+
+func (e *cleanupTrackingEnv) Append(op string) {
+	e.mu.Lock()
+	e.log = append(e.log, op)
+	e.mu.Unlock()
+}
+
 func TestSession_GracefulShutdown_CorrectOrdering(t *testing.T) {
+	// Use a blocking adapter so we can call Close() while the LLM call is
+	// in-flight. This ensures Close() is the one that emits SESSION_END
+	// (not ProcessInput), exercising the abort/shutdown path.
+	blocked := make(chan struct{})
 	c := llm.NewClient()
-	f := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response {
-			return llm.Response{Message: llm.Message{
-				Role: llm.RoleAssistant,
-				Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-					ID: "c1", Name: "spawn_agent", Type: "function",
-					Arguments: json.RawMessage(`{"task":"long task"}`),
-				}}},
-			}}
-		},
-		// Subagent response
-		func(req llm.Request) llm.Response {
-			return llm.Response{Message: llm.Assistant("sub done")}
-		},
-		func(req llm.Request) llm.Response {
-			return llm.Response{Message: llm.Assistant("done")}
-		},
-	}}
-	c.Register(f)
+	c.Register(&blockingAdapter{name: "openai", blocked: blocked})
 	dir := t.TempDir()
-	sess, err := NewSession(c, NewOpenAIProfile("test-model"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+
+	inner := NewLocalExecutionEnvironment(dir)
+	trackEnv := &cleanupTrackingEnv{ExecutionEnvironment: inner}
+
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), trackEnv, SessionConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	eventsPtr, mu, doneCh := collectEvents(sess)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	sess.ProcessInput(ctx, "spawn")
+	// The event consumer records when SESSION_END is received and when the
+	// channel closes. Because Close() is synchronous and we share the log
+	// with Cleanup(), we can verify the ordering of operations in Close().
+	doneCh := make(chan struct{})
+	go func() {
+		defer close(doneCh)
+		for ev := range sess.Events() {
+			if ev.Kind == EventSessionEnd {
+				trackEnv.Append("session_end_received")
+			}
+		}
+		trackEnv.Append("channel_closed")
+	}()
+
+	// Start ProcessInput in the background; it will block on the LLM call.
+	processDone := make(chan struct{})
+	go func() {
+		defer close(processDone)
+		sess.ProcessInput(context.Background(), "hello")
+	}()
+
+	// Wait until the LLM call is in-flight, then abort via Close().
+	<-blocked
 	sess.Close()
+	<-processDone
 	<-doneCh
 
-	mu.Lock()
-	defer mu.Unlock()
-	found := false
-	for _, ev := range *eventsPtr {
-		if ev.Kind == EventSessionEnd {
-			found = true
+	log := trackEnv.Log()
+
+	// Find positions of key operations.
+	indexOf := func(op string) int {
+		for i, v := range log {
+			if v == op {
+				return i
+			}
 		}
+		return -1
 	}
-	if !found {
-		t.Fatal("SESSION_END not emitted during shutdown")
+
+	cleanupStart := indexOf("cleanup_start")
+	cleanupEnd := indexOf("cleanup_end")
+	sessionEnd := indexOf("session_end_received")
+	channelClosed := indexOf("channel_closed")
+
+	if cleanupStart == -1 || cleanupEnd == -1 {
+		t.Fatalf("env.Cleanup() was never called; log: %v", log)
+	}
+	if sessionEnd == -1 {
+		t.Fatalf("SESSION_END event was never emitted; log: %v", log)
+	}
+	if channelClosed == -1 {
+		t.Fatalf("events channel was never closed; log: %v", log)
+	}
+
+	// Spec Appendix B ordering: Cleanup (kill processes) must complete
+	// before SESSION_END is emitted.
+	if cleanupEnd >= sessionEnd {
+		t.Fatalf("env.Cleanup() must complete before SESSION_END is emitted (spec Appendix B);\n"+
+			"cleanup_end at %d, session_end at %d; log: %v", cleanupEnd, sessionEnd, log)
+	}
+
+	// SESSION_END must be emitted before the events channel is closed.
+	if sessionEnd >= channelClosed {
+		t.Fatalf("SESSION_END must be emitted before events channel closes;\n"+
+			"session_end at %d, channel_closed at %d; log: %v", sessionEnd, channelClosed, log)
+	}
+
+	// State should be CLOSED after Close() returns.
+	if sess.State() != SessionClosed {
+		t.Fatalf("state after Close(): got %s, want CLOSED", sess.State())
 	}
 }
 

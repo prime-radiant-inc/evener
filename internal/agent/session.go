@@ -144,6 +144,9 @@ type Session struct {
 	// SESSION_END deduplication: emitted exactly once across ProcessInput and Close.
 	sessionEndEmitted bool
 
+	// closeOnce ensures Close() body runs exactly once.
+	closeOnce sync.Once
+
 	// Session-level cancel: Close() cancels in-flight LLM calls.
 	sessionCtx context.Context
 	cancelFunc context.CancelFunc
@@ -435,49 +438,53 @@ func (s *Session) FollowUp(msg string) {
 }
 
 func (s *Session) Close() {
-	s.mu.Lock()
-	if s.state == SessionClosed {
+	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		// Collect subagents and clear the map under the lock, then close
+		// outside the lock to avoid deadlock (sub.sess.Close() acquires its own mu).
+		subs := make([]*subagent, 0, len(s.subagents))
+		for id, sub := range s.subagents {
+			subs = append(subs, sub)
+			delete(s.subagents, id)
+		}
+		turns := s.turns
+		emitEnd := !s.sessionEndEmitted
+		s.sessionEndEmitted = true
 		s.mu.Unlock()
-		return
-	}
-	s.state = SessionClosed
 
-	// Collect subagents and clear the map under the lock, then close outside
-	// the lock to avoid deadlock (sub.sess.Close() also acquires its own mu).
-	subs := make([]*subagent, 0, len(s.subagents))
-	for id, sub := range s.subagents {
-		subs = append(subs, sub)
-		delete(s.subagents, id)
-	}
-	turns := s.turns
-	emitEnd := !s.sessionEndEmitted
-	s.sessionEndEmitted = true
-	s.mu.Unlock()
+		// Spec Appendix B graceful shutdown ordering:
+		// 1. Cancel in-flight LLM calls.
+		if s.cancelFunc != nil {
+			s.cancelFunc()
+		}
 
-	// Cancel in-flight LLM calls.
-	if s.cancelFunc != nil {
-		s.cancelFunc()
-	}
+		// 2-4. Kill running child processes (SIGTERM → wait 2s → SIGKILL).
+		s.env.Cleanup()
 
-	// Emit SESSION_END before cleanup (spec Appendix B: graceful shutdown ordering).
-	if emitEnd {
-		s.emit(EventSessionEnd, map[string]any{
-			"reason": "session_closed",
-			"state":  string(SessionClosed),
-			"turns":  turns,
-		})
-	}
+		// 5-6. Emit SESSION_END with final state.
+		if emitEnd {
+			s.emit(EventSessionEnd, map[string]any{
+				"reason": "session_closed",
+				"state":  string(SessionClosed),
+				"turns":  turns,
+			})
+		}
 
-	for _, sub := range subs {
-		sub.sess.Close()
-	}
+		// 7. Close subagents.
+		for _, sub := range subs {
+			sub.sess.Close()
+		}
 
-	if s.mcpMgr != nil {
-		s.mcpMgr.Close()
-	}
+		if s.mcpMgr != nil {
+			s.mcpMgr.Close()
+		}
 
-	s.env.Cleanup()
-	close(s.events)
+		// 8. Transition to CLOSED last, then close the events channel.
+		s.mu.Lock()
+		s.state = SessionClosed
+		s.mu.Unlock()
+		close(s.events)
+	})
 }
 
 func (s *Session) ProcessInput(ctx context.Context, input string) (string, error) {
