@@ -4,5 +4,6 @@
 /.serf/sessions/
 /.serf/tasks/
 /.serf/web_cache/
+/.serf/prompts/
 /serf
 inspo/
