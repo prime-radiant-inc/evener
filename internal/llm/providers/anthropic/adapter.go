@@ -126,8 +126,11 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 			return llm.Response{}, llm.NewUnsupportedToolChoiceError("anthropic", req.ToolChoice.Mode)
 		}
 	}
-	if includeTools && len(req.Tools) > 0 {
-		tools := toAnthropicTools(req.Tools)
+	if includeTools || req.WebSearch {
+		var tools []map[string]any
+		if includeTools {
+			tools = toAnthropicTools(req.Tools)
+		}
 		if req.WebSearch {
 			tools = append(tools, map[string]any{
 				"type": "web_search_20250305",
@@ -140,6 +143,15 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 			tools[len(tools)-1]["cache_control"] = map[string]any{"type": "ephemeral"}
 		}
 		body["tools"] = tools
+	}
+	if req.ReasoningEffort != nil {
+		budget := anthropicReasoningBudget(*req.ReasoningEffort)
+		if budget > 0 {
+			body["thinking"] = map[string]any{
+				"type":          "enabled",
+				"budget_tokens": budget,
+			}
+		}
 	}
 	if req.ProviderOptions != nil {
 		if ov, ok := req.ProviderOptions["anthropic"].(map[string]any); ok {
@@ -185,7 +197,8 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		httpReq.Header.Set("anthropic-beta", beta)
 	}
 
-	resp, err := a.Client.Do(httpReq)
+	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return llm.Response{}, llm.WrapContextError("anthropic", err)
 	}
@@ -210,6 +223,8 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		a.Client = &http.Client{Timeout: 0}
 	}
 	sctx, cancel := context.WithCancel(ctx)
+	sctx, timeoutCancel := llm.ApplyAdapterTimeout(sctx, req.AdapterTimeout, true)
+	defer timeoutCancel()
 
 	system, messages, err := toAnthropicMessages(req.Messages)
 	if err != nil {
@@ -281,8 +296,11 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 			return nil, llm.NewUnsupportedToolChoiceError("anthropic", req.ToolChoice.Mode)
 		}
 	}
-	if includeTools && len(req.Tools) > 0 {
-		tools := toAnthropicTools(req.Tools)
+	if includeTools || req.WebSearch {
+		var tools []map[string]any
+		if includeTools {
+			tools = toAnthropicTools(req.Tools)
+		}
 		if req.WebSearch {
 			tools = append(tools, map[string]any{
 				"type": "web_search_20250305",
@@ -293,6 +311,15 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 			tools[len(tools)-1]["cache_control"] = map[string]any{"type": "ephemeral"}
 		}
 		body["tools"] = tools
+	}
+	if req.ReasoningEffort != nil {
+		budget := anthropicReasoningBudget(*req.ReasoningEffort)
+		if budget > 0 {
+			body["thinking"] = map[string]any{
+				"type":          "enabled",
+				"budget_tokens": budget,
+			}
+		}
 	}
 	if req.ProviderOptions != nil {
 		if ov, ok := req.ProviderOptions["anthropic"].(map[string]any); ok {
@@ -336,7 +363,8 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		httpReq.Header.Set("anthropic-beta", beta)
 	}
 
-	resp, err := a.Client.Do(httpReq)
+	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		cancel()
 		return nil, llm.WrapContextError("anthropic", err)
@@ -716,7 +744,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
 			}
 			return nil
-		})
+		}, llm.StreamReadSSEOptions(req.AdapterTimeout)...)
 
 		if !finished {
 			if err := sctx.Err(); err != nil {
@@ -995,10 +1023,18 @@ func toAnthropicMessages(msgs []llm.Message) (system string, messages []map[stri
 				if p.Kind != llm.ContentToolResult || p.ToolResult == nil {
 					continue
 				}
+				var outStr string
+				switch v := p.ToolResult.Content.(type) {
+				case string:
+					outStr = v
+				default:
+					b, _ := json.Marshal(v)
+					outStr = string(b)
+				}
 				blocks = append(blocks, map[string]any{
 					"type":        "tool_result",
 					"tool_use_id": p.ToolResult.ToolCallID,
-					"content":     fmt.Sprint(p.ToolResult.Content),
+					"content":     outStr,
 					"is_error":    p.ToolResult.IsError,
 				})
 			}
@@ -1136,6 +1172,19 @@ func fromAnthropicResponse(raw map[string]any, requestedModel string) llm.Respon
 	return r
 }
 
+func anthropicReasoningBudget(effort string) int {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "low":
+		return 1024
+	case "medium":
+		return 8192
+	case "high":
+		return 32768
+	default:
+		return 0
+	}
+}
+
 func anthropicAutoCacheEnabled(opts map[string]any) bool {
 	if opts == nil {
 		return true
@@ -1261,7 +1310,7 @@ func parseUsage(u map[string]any) llm.Usage {
 		InputTokens:  getInt(u["input_tokens"]),
 		OutputTokens: getInt(u["output_tokens"]),
 		TotalTokens:  getInt(u["input_tokens"]) + getInt(u["output_tokens"]),
-		Raw:          map[string]any{},
+		Raw:          u,
 	}
 	if vAny, ok := u["cache_read_input_tokens"]; ok {
 		v := getInt(vAny)

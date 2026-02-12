@@ -1297,3 +1297,69 @@ func TestGenerate_ToolCallsWithStopFinish_DoesNotExecute(t *testing.T) {
 		t.Error("expected tool calls in result even though they weren't executed")
 	}
 }
+
+func TestGenerate_WebSearch_PropagatedToRequest(t *testing.T) {
+	c := NewClient()
+	a := &scriptedAdapter{
+		name: "openai",
+		steps: []func(req Request) (Response, error){
+			func(req Request) (Response, error) {
+				if !req.WebSearch {
+					return Response{}, fmt.Errorf("expected req.WebSearch=true, got false")
+				}
+				return Response{Message: Assistant("searched")}, nil
+			},
+		},
+	}
+	c.Register(a)
+
+	prompt := "search the web"
+	res, err := Generate(context.Background(), GenerateOptions{
+		Client:    c,
+		Model:     "m",
+		Prompt:    &prompt,
+		WebSearch: true,
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if strings.TrimSpace(res.Text) != "searched" {
+		t.Fatalf("text: %q", res.Text)
+	}
+	// Also verify via captured request.
+	if len(a.reqs) != 1 {
+		t.Fatalf("adapter calls: got %d want 1", len(a.reqs))
+	}
+	if !a.reqs[0].WebSearch {
+		t.Fatal("Request.WebSearch should be true")
+	}
+}
+
+func TestGenerate_WebSearch_DefaultFalse(t *testing.T) {
+	c := NewClient()
+	a := &scriptedAdapter{
+		name: "openai",
+		steps: []func(req Request) (Response, error){
+			func(req Request) (Response, error) {
+				if req.WebSearch {
+					return Response{}, fmt.Errorf("expected req.WebSearch=false by default, got true")
+				}
+				return Response{Message: Assistant("ok")}, nil
+			},
+		},
+	}
+	c.Register(a)
+
+	prompt := "hello"
+	_, err := Generate(context.Background(), GenerateOptions{
+		Client: c,
+		Model:  "m",
+		Prompt: &prompt,
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if a.reqs[0].WebSearch {
+		t.Fatal("Request.WebSearch should be false by default")
+	}
+}

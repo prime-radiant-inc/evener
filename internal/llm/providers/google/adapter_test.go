@@ -626,6 +626,67 @@ func TestAdapter_Complete_GRPCStatusMapping(t *testing.T) {
 				}
 			},
 		},
+		// Mismatched cases: gRPC status overrides HTTP status classification.
+		{
+			name:       "RESOURCE_EXHAUSTED via HTTP 400 maps to RateLimitError",
+			httpStatus: 400,
+			grpcStatus: "RESOURCE_EXHAUSTED",
+			message:    "Resource has been exhausted",
+			checkErr: func(t *testing.T, err error) {
+				var target *llm.RateLimitError
+				if !errors.As(err, &target) {
+					t.Fatalf("expected RateLimitError, got %T (%v)", err, err)
+				}
+				if !target.Retryable() {
+					t.Fatalf("expected retryable")
+				}
+			},
+		},
+		{
+			name:       "DEADLINE_EXCEEDED via HTTP 400 maps to RequestTimeoutError",
+			httpStatus: 400,
+			grpcStatus: "DEADLINE_EXCEEDED",
+			message:    "deadline exceeded",
+			checkErr: func(t *testing.T, err error) {
+				var target *llm.RequestTimeoutError
+				if !errors.As(err, &target) {
+					t.Fatalf("expected RequestTimeoutError, got %T (%v)", err, err)
+				}
+				if !target.Retryable() {
+					t.Fatalf("expected retryable")
+				}
+			},
+		},
+		{
+			name:       "UNAVAILABLE via HTTP 400 maps to ServerError retryable",
+			httpStatus: 400,
+			grpcStatus: "UNAVAILABLE",
+			message:    "service temporarily unavailable",
+			checkErr: func(t *testing.T, err error) {
+				var target *llm.ServerError
+				if !errors.As(err, &target) {
+					t.Fatalf("expected ServerError, got %T (%v)", err, err)
+				}
+				if !target.Retryable() {
+					t.Fatalf("expected retryable")
+				}
+			},
+		},
+		{
+			name:       "INTERNAL via HTTP 400 maps to ServerError retryable",
+			httpStatus: 400,
+			grpcStatus: "INTERNAL",
+			message:    "internal error",
+			checkErr: func(t *testing.T, err error) {
+				var target *llm.ServerError
+				if !errors.As(err, &target) {
+					t.Fatalf("expected ServerError, got %T (%v)", err, err)
+				}
+				if !target.Retryable() {
+					t.Fatalf("expected retryable")
+				}
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -1099,6 +1160,33 @@ func TestAdapter_Stream_ContextDeadline_EmitsRequestTimeoutError(t *testing.T) {
 	var rte *llm.RequestTimeoutError
 	if !errors.As(sawErr, &rte) {
 		t.Fatalf("expected RequestTimeoutError, got %T (%v)", sawErr, sawErr)
+	}
+}
+
+func TestAdapter_Stream_GRPCStatusMapping(t *testing.T) {
+	// Stream returns errors eagerly for non-2xx HTTP responses.
+	// gRPC status in the body should override HTTP status classification.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte(`{"error":{"code":400,"message":"Resource has been exhausted","status":"RESOURCE_EXHAUSTED"}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := a.Stream(ctx, llm.Request{Model: "gemini-test", Messages: []llm.Message{llm.User("hi")}})
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	var target *llm.RateLimitError
+	if !errors.As(err, &target) {
+		t.Fatalf("expected RateLimitError, got %T (%v)", err, err)
+	}
+	if !target.Retryable() {
+		t.Fatalf("expected retryable")
 	}
 }
 
@@ -2174,6 +2262,45 @@ func TestAdapterTimeout_Request_EnforcedOnComplete(t *testing.T) {
 	t.Errorf("expected RequestTimeoutError or DeadlineExceeded, got %T: %v", err, err)
 }
 
+func TestAdapterTimeout_Stream_AcceptsAdapterTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, "data: "+`{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`+"\n\n")
+		if f != nil {
+			f.Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	stream, err := a.Stream(ctx, llm.Request{
+		Model:    "gemini-test",
+		Messages: []llm.Message{llm.User("hi")},
+		AdapterTimeout: &llm.AdapterTimeout{
+			Request:    30 * time.Second,
+			StreamRead: 5 * time.Second,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	var gotFinish bool
+	for ev := range stream.Events() {
+		if ev.Type == llm.StreamEventFinish {
+			gotFinish = true
+		}
+	}
+	if !gotFinish {
+		t.Fatal("expected FINISH event")
+	}
+}
+
 func TestDefaultHeaders_SentOnCompleteRequests(t *testing.T) {
 	var capturedHeaders http.Header
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2273,5 +2400,192 @@ func TestDefaultHeaders_CannotOverrideContentType(t *testing.T) {
 	// Provider-specific Content-Type must take precedence.
 	if capturedHeaders.Get("Content-Type") != "application/json" {
 		t.Errorf("Content-Type = %q, want %q (provider must take precedence)", capturedHeaders.Get("Content-Type"), "application/json")
+	}
+}
+
+func TestComplete_ToolResultIsError_ConveyedInResponse(t *testing.T) {
+	var sentBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &sentBody)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"candidates": []any{map[string]any{
+				"content": map[string]any{
+					"role":  "model",
+					"parts": []any{map[string]any{"text": "ok"}},
+				},
+			}},
+			"usageMetadata": map[string]any{
+				"promptTokenCount":     10,
+				"candidatesTokenCount": 5,
+				"totalTokenCount":      15,
+			},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model: "gemini-test",
+		Messages: []llm.Message{
+			llm.User("call tool"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+				Kind:     llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{ID: "call_1", Name: "failing_tool", Arguments: json.RawMessage(`{}`)},
+			}}},
+			llm.ToolResultNamed("call_1", "failing_tool", "connection refused", true),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	// Find the functionResponse part in the sent body.
+	contents, ok := sentBody["contents"].([]any)
+	if !ok || len(contents) == 0 {
+		t.Fatalf("expected contents in sent body, got %v", sentBody["contents"])
+	}
+	lastContent, _ := contents[len(contents)-1].(map[string]any)
+	parts, _ := lastContent["parts"].([]any)
+	if len(parts) == 0 {
+		t.Fatalf("expected parts in last content, got %v", lastContent)
+	}
+	part, _ := parts[0].(map[string]any)
+	fr, _ := part["functionResponse"].(map[string]any)
+	resp, _ := fr["response"].(map[string]any)
+
+	// Error results should include an error indicator.
+	errVal, exists := resp["error"]
+	if !exists {
+		t.Fatalf("error tool results must include error key in response, got: %v", resp)
+	}
+	if errVal != true {
+		t.Errorf("error = %v, want true", errVal)
+	}
+}
+
+func TestComplete_ToolResultIsError_OmittedWhenFalse(t *testing.T) {
+	var sentBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &sentBody)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"candidates": []any{map[string]any{
+				"content": map[string]any{
+					"role":  "model",
+					"parts": []any{map[string]any{"text": "ok"}},
+				},
+			}},
+			"usageMetadata": map[string]any{
+				"promptTokenCount":     10,
+				"candidatesTokenCount": 5,
+				"totalTokenCount":      15,
+			},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model: "gemini-test",
+		Messages: []llm.Message{
+			llm.User("call tool"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+				Kind:     llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{ID: "call_1", Name: "good_tool", Arguments: json.RawMessage(`{}`)},
+			}}},
+			llm.ToolResultNamed("call_1", "good_tool", "success", false),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	// Find the functionResponse part in the sent body.
+	contents, ok := sentBody["contents"].([]any)
+	if !ok || len(contents) == 0 {
+		t.Fatalf("expected contents in sent body, got %v", sentBody["contents"])
+	}
+	lastContent, _ := contents[len(contents)-1].(map[string]any)
+	parts, _ := lastContent["parts"].([]any)
+	if len(parts) == 0 {
+		t.Fatalf("expected parts in last content, got %v", lastContent)
+	}
+	part, _ := parts[0].(map[string]any)
+	fr, _ := part["functionResponse"].(map[string]any)
+	resp, _ := fr["response"].(map[string]any)
+
+	// Non-error results must NOT include the error key.
+	if _, exists := resp["error"]; exists {
+		t.Fatalf("error key should be omitted for non-error results, but was present in response: %v", resp)
+	}
+}
+
+func TestComplete_UsageRaw_ContainsProviderData(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "candidates": [{"content": {"parts": [{"text":"hi"}]}, "finishReason":"STOP"}],
+  "usageMetadata": {
+    "promptTokenCount": 10, "candidatesTokenCount": 5, "totalTokenCount": 15,
+    "cachedContentTokenCount": 3
+  }
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gemini-test",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if len(resp.Usage.Raw) == 0 {
+		t.Fatal("Usage.Raw must contain provider data, got empty map")
+	}
+	if _, ok := resp.Usage.Raw["promptTokenCount"]; !ok {
+		t.Fatalf("Usage.Raw missing promptTokenCount key; got %v", resp.Usage.Raw)
+	}
+	if _, ok := resp.Usage.Raw["cachedContentTokenCount"]; !ok {
+		t.Fatalf("Usage.Raw missing cachedContentTokenCount key; got %v", resp.Usage.Raw)
+	}
+}
+
+func TestAdapter_Complete_NoMaxTokens_OmitsMaxOutputTokens(t *testing.T) {
+	var sentBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &sentBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "candidates": [{"content": {"role": "model", "parts": [{"text": "hi"}]}, "finishReason": "STOP"}],
+  "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "test",
+		Messages: []llm.Message{llm.User("hi")},
+		// MaxTokens is nil — adapter should not send maxOutputTokens
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	genCfg, _ := sentBody["generationConfig"].(map[string]any)
+	if _, hasMaxOutput := genCfg["maxOutputTokens"]; hasMaxOutput {
+		t.Fatalf("maxOutputTokens should not be sent when MaxTokens is nil, but got %v", genCfg["maxOutputTokens"])
 	}
 }

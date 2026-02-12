@@ -471,6 +471,53 @@ func TestAdapterTimeout_Request_EnforcedOnComplete(t *testing.T) {
 	t.Errorf("expected RequestTimeoutError or DeadlineExceeded, got %T: %v", err, err)
 }
 
+func TestAdapterTimeout_Stream_AcceptsAdapterTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", `{"id":"chatcmpl-1","model":"test","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}`)
+		if f != nil {
+			f.Flush()
+		}
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", `{"id":"chatcmpl-1","model":"test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		if f != nil {
+			f.Flush()
+		}
+		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+		if f != nil {
+			f.Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	stream, err := a.Stream(ctx, llm.Request{
+		Model:    "test",
+		Messages: []llm.Message{llm.User("hi")},
+		AdapterTimeout: &llm.AdapterTimeout{
+			Request:    30 * time.Second,
+			StreamRead: 5 * time.Second,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	var gotFinish bool
+	for ev := range stream.Events() {
+		if ev.Type == llm.StreamEventFinish {
+			gotFinish = true
+		}
+	}
+	if !gotFinish {
+		t.Fatal("expected FINISH event")
+	}
+}
+
 func TestDefaultHeaders_SentOnCompleteRequests(t *testing.T) {
 	var capturedHeaders http.Header
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -548,6 +595,220 @@ func TestDefaultHeaders_SentOnStreamRequests(t *testing.T) {
 	}
 }
 
+func TestAdapter_Complete_ImageContent_IncludedInRequest(t *testing.T) {
+	var sentBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		json.Unmarshal(b, &sentBody)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "c1", "object": "chat.completion",
+			"choices": []any{map[string]any{
+				"index": 0, "finish_reason": "stop",
+				"message": map[string]any{"role": "assistant", "content": "I see an image"},
+			}},
+			"usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+		})
+	}))
+	defer srv.Close()
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model: "m",
+		Messages: []llm.Message{{
+			Role: llm.RoleUser,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentText, Text: "What's in this image?"},
+				{Kind: llm.ContentImage, Image: &llm.ImageData{URL: "https://example.com/img.png"}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	msgs, _ := sentBody["messages"].([]any)
+	if len(msgs) == 0 {
+		t.Fatal("no messages in request body")
+	}
+	userMsg, _ := msgs[0].(map[string]any)
+	content, ok := userMsg["content"].([]any)
+	if !ok {
+		t.Fatalf("content should be an array for multimodal messages, got %T: %v", userMsg["content"], userMsg["content"])
+	}
+	if len(content) != 2 {
+		t.Fatalf("expected 2 content parts (text + image), got %d", len(content))
+	}
+	textPart, _ := content[0].(map[string]any)
+	if textPart["type"] != "text" {
+		t.Fatalf("first part type: %v, want text", textPart["type"])
+	}
+	if textPart["text"] != "What's in this image?" {
+		t.Fatalf("first part text: %v", textPart["text"])
+	}
+	imgPart, _ := content[1].(map[string]any)
+	if imgPart["type"] != "image_url" {
+		t.Fatalf("second part type: %v, want image_url", imgPart["type"])
+	}
+	imgURL, _ := imgPart["image_url"].(map[string]any)
+	if imgURL["url"] != "https://example.com/img.png" {
+		t.Fatalf("image url: %v", imgURL["url"])
+	}
+}
+
+func TestAdapter_Complete_ImageContent_Base64(t *testing.T) {
+	var sentBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		json.Unmarshal(b, &sentBody)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "c1", "object": "chat.completion",
+			"choices": []any{map[string]any{
+				"index": 0, "finish_reason": "stop",
+				"message": map[string]any{"role": "assistant", "content": "ok"},
+			}},
+			"usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11},
+		})
+	}))
+	defer srv.Close()
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model: "m",
+		Messages: []llm.Message{{
+			Role: llm.RoleUser,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentText, Text: "describe"},
+				{Kind: llm.ContentImage, Image: &llm.ImageData{Data: []byte{0x89, 0x50, 0x4E, 0x47}, MediaType: "image/png"}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	msgs, _ := sentBody["messages"].([]any)
+	userMsg, _ := msgs[0].(map[string]any)
+	content, ok := userMsg["content"].([]any)
+	if !ok {
+		t.Fatalf("content should be array, got %T", userMsg["content"])
+	}
+	imgPart, _ := content[1].(map[string]any)
+	imgURL, _ := imgPart["image_url"].(map[string]any)
+	url, _ := imgURL["url"].(string)
+	if !strings.HasPrefix(url, "data:image/png;base64,") {
+		t.Fatalf("expected data URI, got %q", url)
+	}
+}
+
+func TestAdapter_Complete_ImageContent_Detail(t *testing.T) {
+	var sentBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		json.Unmarshal(b, &sentBody)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "c1", "object": "chat.completion",
+			"choices": []any{map[string]any{
+				"index": 0, "finish_reason": "stop",
+				"message": map[string]any{"role": "assistant", "content": "ok"},
+			}},
+			"usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11},
+		})
+	}))
+	defer srv.Close()
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model: "m",
+		Messages: []llm.Message{{
+			Role: llm.RoleUser,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentImage, Image: &llm.ImageData{URL: "https://example.com/img.png", Detail: "high"}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	msgs, _ := sentBody["messages"].([]any)
+	userMsg, _ := msgs[0].(map[string]any)
+	content, _ := userMsg["content"].([]any)
+	imgPart, _ := content[0].(map[string]any)
+	imgURL, _ := imgPart["image_url"].(map[string]any)
+	if imgURL["detail"] != "high" {
+		t.Fatalf("detail: %v, want high", imgURL["detail"])
+	}
+}
+
+func TestAdapter_Complete_TextOnly_StaysString(t *testing.T) {
+	// Text-only user messages should remain a plain string, not an array.
+	var sentBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		json.Unmarshal(b, &sentBody)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "c1", "object": "chat.completion",
+			"choices": []any{map[string]any{
+				"index": 0, "finish_reason": "stop",
+				"message": map[string]any{"role": "assistant", "content": "hi"},
+			}},
+			"usage": map[string]any{"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
+		})
+	}))
+	defer srv.Close()
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "m",
+		Messages: []llm.Message{llm.User("hello")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	msgs, _ := sentBody["messages"].([]any)
+	userMsg, _ := msgs[0].(map[string]any)
+	// Text-only should be a string, not an array.
+	if _, ok := userMsg["content"].(string); !ok {
+		t.Fatalf("text-only content should be string, got %T", userMsg["content"])
+	}
+}
+
+func TestAdapter_Complete_UnknownToolChoiceMode_ReturnsError(t *testing.T) {
+	a := &Adapter{APIKey: "k", BaseURL: "http://unused"}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:      "m",
+		Messages:   []llm.Message{llm.User("hi")},
+		Tools:      []llm.ToolDefinition{{Name: "t", Parameters: map[string]any{"type": "object"}}},
+		ToolChoice: &llm.ToolChoice{Mode: "bogus"},
+	})
+	var unsupported *llm.UnsupportedToolChoiceError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("expected UnsupportedToolChoiceError, got %T: %v", err, err)
+	}
+}
+
+func TestAdapter_Complete_NamedToolChoice_EmptyName_ReturnsError(t *testing.T) {
+	a := &Adapter{APIKey: "k", BaseURL: "http://unused"}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:      "m",
+		Messages:   []llm.Message{llm.User("hi")},
+		Tools:      []llm.ToolDefinition{{Name: "t", Parameters: map[string]any{"type": "object"}}},
+		ToolChoice: &llm.ToolChoice{Mode: "named", Name: ""},
+	})
+	if err == nil {
+		t.Fatal("expected error for named mode with empty name")
+	}
+	var configErr *llm.ConfigurationError
+	if !errors.As(err, &configErr) {
+		t.Fatalf("expected ConfigurationError, got %T: %v", err, err)
+	}
+}
+
 func TestDefaultHeaders_CannotOverrideProviderHeaders(t *testing.T) {
 	var capturedHeaders http.Header
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -575,5 +836,104 @@ func TestDefaultHeaders_CannotOverrideProviderHeaders(t *testing.T) {
 	// Provider-specific Authorization must take precedence over DefaultHeaders.
 	if capturedHeaders.Get("Authorization") != "Bearer real-key" {
 		t.Errorf("Authorization = %q, want %q (provider auth must take precedence)", capturedHeaders.Get("Authorization"), "Bearer real-key")
+	}
+}
+
+func TestAdapter_Complete_RateLimitHeaders_Parsed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("x-ratelimit-remaining-requests", "99")
+		w.Header().Set("x-ratelimit-limit-requests", "100")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "c1", "object": "chat.completion",
+			"choices": []any{map[string]any{
+				"index": 0, "finish_reason": "stop",
+				"message": map[string]any{"role": "assistant", "content": "hi"},
+			}},
+			"usage": map[string]any{"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+		})
+	}))
+	defer srv.Close()
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model: "m", Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.RateLimit == nil {
+		t.Fatal("RateLimit is nil, want parsed rate limit info")
+	}
+	if resp.RateLimit.RequestsRemaining == nil || *resp.RateLimit.RequestsRemaining != 99 {
+		t.Errorf("RequestsRemaining = %v, want 99", resp.RateLimit.RequestsRemaining)
+	}
+	if resp.RateLimit.RequestsLimit == nil || *resp.RateLimit.RequestsLimit != 100 {
+		t.Errorf("RequestsLimit = %v, want 100", resp.RateLimit.RequestsLimit)
+	}
+}
+
+func TestAdapter_Complete_ReasoningEffort_Propagated(t *testing.T) {
+	var sentBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		json.Unmarshal(b, &sentBody)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "c1", "object": "chat.completion",
+			"choices": []any{map[string]any{
+				"index": 0, "finish_reason": "stop",
+				"message": map[string]any{"role": "assistant", "content": "hi"},
+			}},
+			"usage": map[string]any{"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+		})
+	}))
+	defer srv.Close()
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL}
+	effort := "high"
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model: "m", Messages: []llm.Message{llm.User("hi")},
+		ReasoningEffort: &effort,
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if sentBody["reasoning_effort"] != "high" {
+		t.Errorf("reasoning_effort = %v, want %q", sentBody["reasoning_effort"], "high")
+	}
+}
+
+func TestAdapter_Complete_Metadata_Propagated(t *testing.T) {
+	var sentBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		json.Unmarshal(b, &sentBody)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "c1", "object": "chat.completion",
+			"choices": []any{map[string]any{
+				"index": 0, "finish_reason": "stop",
+				"message": map[string]any{"role": "assistant", "content": "hi"},
+			}},
+			"usage": map[string]any{"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+		})
+	}))
+	defer srv.Close()
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model: "m", Messages: []llm.Message{llm.User("hi")},
+		Metadata: map[string]string{"user_id": "u123"},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	md, ok := sentBody["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata not map[string]any: %T %v", sentBody["metadata"], sentBody["metadata"])
+	}
+	if md["user_id"] != "u123" {
+		t.Errorf("metadata[user_id] = %v, want %q", md["user_id"], "u123")
 	}
 }

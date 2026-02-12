@@ -13,10 +13,12 @@ import (
 type StreamResult struct {
 	stream *ChanStream
 
-	mu      sync.Mutex
-	final   *Response
-	partial *Response
-	err     error
+	mu         sync.Mutex
+	final      *Response
+	partial    *Response
+	err        error
+	totalUsage Usage
+	steps      []StepResult
 
 	done chan struct{}
 }
@@ -64,6 +66,22 @@ func (r *StreamResult) PartialResponse() *Response {
 	}
 	cp := *r.partial
 	return &cp
+}
+
+// TotalUsage returns the aggregated token usage across all steps. It is safe to
+// call after Response() returns (i.e., after the stream is complete).
+func (r *StreamResult) TotalUsage() Usage {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.totalUsage
+}
+
+// Steps returns a copy of the per-step results accumulated during the stream.
+// Each tool-execution round is one step, plus the final completion step.
+func (r *StreamResult) Steps() []StepResult {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]StepResult{}, r.steps...)
 }
 
 // StreamGenerate is the high-level streaming API (spec stream()). It is equivalent
@@ -144,6 +162,8 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 
 		stepIndex := 0
 		toolRoundsUsed := 0
+		var steps []StepResult
+		totalUsage := Usage{Raw: map[string]any{}}
 
 		for {
 			if sctx.Err() != nil {
@@ -169,6 +189,7 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 				ReasoningEffort: opts.ReasoningEffort,
 				Metadata:        opts.Metadata,
 				ProviderOptions: opts.ProviderOptions,
+				WebSearch:       opts.WebSearch,
 				AdapterTimeout:  opts.AdapterTimeout,
 			}
 
@@ -271,6 +292,19 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 			}
 
 			if stopNow {
+				// Build final step and aggregate usage.
+				finalStep := StepResult{
+					Text:         stepResp.Text(),
+					Reasoning:    stepResp.ReasoningText(),
+					ToolCalls:    calls,
+					FinishReason: stepResp.Finish,
+					Usage:        stepResp.Usage,
+					Response:     *stepResp,
+					Warnings:     append([]Warning{}, stepResp.Warnings...),
+				}
+				steps = append(steps, finalStep)
+				totalUsage = totalUsage.Add(stepResp.Usage)
+
 				// Final completion: forward FINISH and close.
 				if finishEv.Response == nil {
 					cp := *stepResp
@@ -281,6 +315,8 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 				cp := *stepResp
 				res.final = &cp
 				res.partial = &cp
+				res.totalUsage = totalUsage
+				res.steps = steps
 				res.mu.Unlock()
 				return
 			}
@@ -293,6 +329,20 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 				history = append(history, ToolResultNamed(r.ToolCallID, r.Name, r.Content, r.IsError))
 			}
 			toolRoundsUsed++
+
+			// Build step result and aggregate usage.
+			step := StepResult{
+				Text:         stepResp.Text(),
+				Reasoning:    stepResp.ReasoningText(),
+				ToolCalls:    calls,
+				ToolResults:  results,
+				FinishReason: stepResp.Finish,
+				Usage:        stepResp.Usage,
+				Response:     *stepResp,
+				Warnings:     append([]Warning{}, stepResp.Warnings...),
+			}
+			steps = append(steps, step)
+			totalUsage = totalUsage.Add(stepResp.Usage)
 
 			// Step boundary (spec): emit STEP_FINISH after tool execution, before next model call.
 			stepCopy := *stepResp
@@ -309,6 +359,23 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 				},
 			})
 			stepIndex++
+
+			// Check custom stop condition (spec 4.3).
+			if opts.StopWhen != nil && opts.StopWhen(steps) {
+				outStream.Send(StreamEvent{
+					Type:         StreamEventFinish,
+					FinishReason: finishEv.FinishReason,
+					Usage:        finishEv.Usage,
+					Response:     &stepCopy,
+				})
+				res.mu.Lock()
+				res.final = &stepCopy
+				res.partial = &stepCopy
+				res.totalUsage = totalUsage
+				res.steps = steps
+				res.mu.Unlock()
+				return
+			}
 		}
 	}()
 

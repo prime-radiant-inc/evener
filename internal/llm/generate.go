@@ -72,6 +72,9 @@ type GenerateOptions struct {
 	// If it returns true, the tool loop terminates early.
 	StopWhen func(steps []StepResult) bool
 
+	// WebSearch enables provider-native web search for the request.
+	WebSearch bool
+
 	// AdapterTimeout configures adapter-level HTTP timeouts.
 	// If nil, adapters use their own defaults.
 	AdapterTimeout *AdapterTimeout
@@ -182,6 +185,7 @@ func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error
 			ReasoningEffort: opts.ReasoningEffort,
 			Metadata:        opts.Metadata,
 			ProviderOptions: opts.ProviderOptions,
+			WebSearch:       opts.WebSearch,
 			AdapterTimeout:  opts.AdapterTimeout,
 		}
 

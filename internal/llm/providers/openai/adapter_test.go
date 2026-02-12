@@ -1366,6 +1366,46 @@ func TestAdapterTimeout_Request_EnforcedOnComplete(t *testing.T) {
 	t.Errorf("expected RequestTimeoutError or DeadlineExceeded, got %T: %v", err, err)
 }
 
+func TestAdapterTimeout_Stream_AcceptsAdapterTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, "event: response.completed\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"r1","model":"gpt-5.2","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+		if f != nil {
+			f.Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	stream, err := a.Stream(ctx, llm.Request{
+		Model:    "gpt-5.2",
+		Messages: []llm.Message{llm.User("hi")},
+		AdapterTimeout: &llm.AdapterTimeout{
+			Request:    30 * time.Second,
+			StreamRead: 5 * time.Second,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	var gotFinish bool
+	for ev := range stream.Events() {
+		if ev.Type == llm.StreamEventFinish {
+			gotFinish = true
+		}
+	}
+	if !gotFinish {
+		t.Fatal("expected FINISH event")
+	}
+}
+
 func TestDefaultHeaders_SentOnCompleteRequests(t *testing.T) {
 	var capturedHeaders http.Header
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1470,6 +1510,152 @@ func TestDefaultHeaders_CannotOverrideProviderHeaders(t *testing.T) {
 	// Provider-specific Authorization must take precedence over DefaultHeaders.
 	if capturedHeaders.Get("Authorization") != "Bearer real-key" {
 		t.Errorf("Authorization = %q, want %q (provider auth must take precedence)", capturedHeaders.Get("Authorization"), "Bearer real-key")
+	}
+}
+
+func TestComplete_ToolResultIsError_SentToAPI(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "resp_1",
+  "model": "gpt-5.2",
+  "output": [{"type": "message", "content": [{"type":"output_text", "text":"ok"}]}],
+  "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model: "gpt-5.2",
+		Messages: []llm.Message{
+			llm.User("call tool"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+				Kind:     llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{ID: "call_1", Name: "failing_tool", Arguments: json.RawMessage(`{}`)},
+			}}},
+			llm.ToolResult("call_1", "connection refused", true),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	// Find the function_call_output item in the sent request body.
+	input, ok := gotBody["input"].([]any)
+	if !ok {
+		t.Fatalf("input not array: %#v", gotBody["input"])
+	}
+	var found bool
+	for _, item := range input {
+		m, _ := item.(map[string]any)
+		if m["type"] == "function_call_output" {
+			isErr, present := m["is_error"]
+			if !present {
+				t.Fatalf("is_error field must be present on error tool results")
+			}
+			if isErr != true {
+				t.Fatalf("is_error must be true for error results, got %v", isErr)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("must find a function_call_output item in input: %#v", input)
+	}
+}
+
+func TestComplete_ToolResultIsError_OmittedWhenFalse(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "resp_1",
+  "model": "gpt-5.2",
+  "output": [{"type": "message", "content": [{"type":"output_text", "text":"ok"}]}],
+  "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model: "gpt-5.2",
+		Messages: []llm.Message{
+			llm.User("call tool"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+				Kind:     llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{ID: "call_1", Name: "good_tool", Arguments: json.RawMessage(`{}`)},
+			}}},
+			llm.ToolResult("call_1", "success", false),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	input, ok := gotBody["input"].([]any)
+	if !ok {
+		t.Fatalf("input not array: %#v", gotBody["input"])
+	}
+	for _, item := range input {
+		m, _ := item.(map[string]any)
+		if m["type"] == "function_call_output" {
+			if _, present := m["is_error"]; present {
+				t.Fatalf("is_error should be omitted for non-error results, but was present: %v", m["is_error"])
+			}
+		}
+	}
+}
+
+func TestComplete_UsageRaw_ContainsProviderData(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "resp_1",
+  "model": "gpt-5.2",
+  "output": [{"type": "message", "content": [{"type":"output_text", "text":"hi"}]}],
+  "usage": {
+    "input_tokens": 10, "output_tokens": 5, "total_tokens": 15,
+    "output_tokens_details": {"reasoning_tokens": 2}
+  }
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gpt-5.2",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if len(resp.Usage.Raw) == 0 {
+		t.Fatal("Usage.Raw must contain provider data, got empty map")
+	}
+	if _, ok := resp.Usage.Raw["input_tokens"]; !ok {
+		t.Fatalf("Usage.Raw missing input_tokens key; got %v", resp.Usage.Raw)
+	}
+	if _, ok := resp.Usage.Raw["output_tokens_details"]; !ok {
+		t.Fatalf("Usage.Raw missing output_tokens_details key; got %v", resp.Usage.Raw)
 	}
 }
 

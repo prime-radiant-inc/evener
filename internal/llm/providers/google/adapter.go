@@ -81,8 +81,6 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	}
 	if req.MaxTokens != nil && *req.MaxTokens > 0 {
 		genCfg["maxOutputTokens"] = *req.MaxTokens
-	} else {
-		genCfg["maxOutputTokens"] = 2048
 	}
 	if len(req.StopSequences) > 0 {
 		genCfg["stopSequences"] = req.StopSequences
@@ -196,7 +194,8 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := a.Client.Do(httpReq)
+	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return llm.Response{}, llm.WrapContextError("google", err)
 	}
@@ -208,7 +207,8 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		msg := fmt.Sprintf("generateContent failed: %s", strings.TrimSpace(string(rawBytes)))
-		return llm.Response{}, llm.ErrorFromHTTPStatus("google", resp.StatusCode, msg, raw, ra)
+		httpErr := llm.ErrorFromHTTPStatus("google", resp.StatusCode, msg, raw, ra)
+		return llm.Response{}, classifyGeminiError(resp.StatusCode, rawBytes, ra, httpErr)
 	}
 
 	r := fromGeminiResponse(raw, req.Model)
@@ -221,6 +221,8 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		a.Client = &http.Client{Timeout: 0}
 	}
 	sctx, cancel := context.WithCancel(ctx)
+	sctx, timeoutCancel := llm.ApplyAdapterTimeout(sctx, req.AdapterTimeout, true)
+	defer timeoutCancel()
 
 	system, contents, err := toGeminiContents(req.Messages)
 	if err != nil {
@@ -237,8 +239,6 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	}
 	if req.MaxTokens != nil && *req.MaxTokens > 0 {
 		genCfg["maxOutputTokens"] = *req.MaxTokens
-	} else {
-		genCfg["maxOutputTokens"] = 2048
 	}
 	if len(req.StopSequences) > 0 {
 		genCfg["stopSequences"] = req.StopSequences
@@ -354,7 +354,8 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := a.Client.Do(httpReq)
+	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		cancel()
 		return nil, llm.WrapContextError("google", err)
@@ -366,8 +367,9 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		_ = json.Unmarshal(rawBytes, &raw)
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		msg := fmt.Sprintf("streamGenerateContent failed: %s", strings.TrimSpace(string(rawBytes)))
+		httpErr := llm.ErrorFromHTTPStatus("google", resp.StatusCode, msg, raw, ra)
 		cancel()
-		return nil, llm.ErrorFromHTTPStatus("google", resp.StatusCode, msg, raw, ra)
+		return nil, classifyGeminiError(resp.StatusCode, rawBytes, ra, httpErr)
 	}
 
 	s := llm.NewChanStream(cancel)
@@ -534,7 +536,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 
 			s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: raw})
 			return nil
-		})
+		}, llm.StreamReadSSEOptions(req.AdapterTimeout)...)
 
 		if !finished {
 			if err := sctx.Err(); err != nil {
@@ -761,6 +763,9 @@ func toGeminiContents(msgs []llm.Message) (system string, contents []map[string]
 					b, _ := json.Marshal(v)
 					respObj = map[string]any{"result": string(b)}
 				}
+				if p.ToolResult.IsError {
+					respObj["error"] = true
+				}
 				parts = append(parts, map[string]any{
 					"functionResponse": map[string]any{
 						"name":     name,
@@ -968,7 +973,7 @@ func parseUsage(u map[string]any) llm.Usage {
 		InputTokens:  getInt(u["promptTokenCount"]),
 		OutputTokens: getInt(u["candidatesTokenCount"]),
 		TotalTokens:  getInt(u["totalTokenCount"]),
-		Raw:          map[string]any{},
+		Raw:          u,
 	}
 	if v := getInt(u["cachedContentTokenCount"]); v > 0 {
 		usage.CacheReadTokens = &v
@@ -977,4 +982,47 @@ func parseUsage(u map[string]any) llm.Usage {
 		usage.ReasoningTokens = &v
 	}
 	return usage
+}
+
+// classifyGeminiError reclassifies an HTTP-based error using the gRPC status
+// from the Gemini error response body. Gemini can return HTTP 400 with gRPC
+// statuses like RESOURCE_EXHAUSTED, which should map to RateLimitError rather
+// than InvalidRequestError. Only reclassifies when the HTTP status is ambiguous
+// (400, 422); specific HTTP codes like 429 or 503 already map correctly.
+func classifyGeminiError(httpStatus int, body []byte, retryAfter *time.Duration, httpErr error) error {
+	// Only reclassify ambiguous HTTP statuses. Specific statuses (401, 403,
+	// 404, 429, 5xx) already produce the correct error type.
+	if httpStatus != 400 && httpStatus != 422 {
+		return httpErr
+	}
+
+	var errResp struct {
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+			Status  string `json:"status"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &errResp); err != nil || errResp.Error.Status == "" {
+		return httpErr
+	}
+
+	// Map gRPC statuses to the HTTP status code that produces the correct
+	// error type via ErrorFromHTTPStatus.
+	var syntheticHTTP int
+	switch errResp.Error.Status {
+	case "RESOURCE_EXHAUSTED":
+		syntheticHTTP = 429
+	case "DEADLINE_EXCEEDED":
+		syntheticHTTP = 408
+	case "UNAVAILABLE", "INTERNAL":
+		syntheticHTTP = 503
+	default:
+		return httpErr
+	}
+
+	var raw map[string]any
+	_ = json.Unmarshal(body, &raw)
+
+	return llm.ErrorFromHTTPStatus("google", syntheticHTTP, errResp.Error.Message, raw, retryAfter)
 }

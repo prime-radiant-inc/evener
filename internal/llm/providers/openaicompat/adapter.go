@@ -6,6 +6,7 @@ package openaicompat
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -67,7 +68,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	ctx, adapterCancel := llm.ApplyAdapterTimeout(ctx, req.AdapterTimeout, false)
 	defer adapterCancel()
 
-	raw, statusCode, headers, err := a.doHTTP(ctx, body)
+	raw, statusCode, headers, err := a.doHTTP(ctx, body, req.AdapterTimeout)
 	if err != nil {
 		return llm.Response{}, err
 	}
@@ -77,7 +78,12 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		return llm.Response{}, llm.ErrorFromHTTPStatus("openai-compatible", statusCode, msg, raw, retryAfter)
 	}
 
-	return fromChatCompletionResponse(raw)
+	resp, err := fromChatCompletionResponse(raw)
+	if err != nil {
+		return resp, err
+	}
+	resp.RateLimit = llm.ParseRateLimitHeaders(headers)
+	return resp, nil
 }
 
 // Stream sends a streaming Chat Completions request.
@@ -85,6 +91,8 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	if a.Client == nil {
 		a.Client = &http.Client{Timeout: 0}
 	}
+	ctx, timeoutCancel := llm.ApplyAdapterTimeout(ctx, req.AdapterTimeout, true)
+	defer timeoutCancel()
 
 	body, err := buildRequestBody(req, true)
 	if err != nil {
@@ -109,7 +117,8 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		httpReq.Header.Set("Authorization", "Bearer "+a.APIKey)
 	}
 
-	resp, err := a.Client.Do(httpReq)
+	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, llm.WrapContextError("openai-compatible", err)
 	}
@@ -126,6 +135,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 
 	sctx, cancel := context.WithCancel(ctx)
 	s := llm.NewChanStream(cancel)
+	rl := llm.ParseRateLimitHeaders(resp.Header)
 
 	s.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
 
@@ -178,10 +188,11 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 				}
 				finish := llm.NormalizeFinishReason("", finishReason)
 				finalResp := &llm.Response{
-					Provider: "openai-compatible",
-					Model:    model,
-					Message:  msg,
-					Finish:   finish,
+					Provider:  "openai-compatible",
+					Model:     model,
+					Message:   msg,
+					Finish:    finish,
+					RateLimit: rl,
 				}
 				if usage != nil {
 					finalResp.Usage = *usage
@@ -271,7 +282,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 			}
 
 			return nil
-		})
+		}, llm.StreamReadSSEOptions(req.AdapterTimeout)...)
 
 		if !finished {
 			if err := sctx.Err(); err != nil {
@@ -300,7 +311,11 @@ func buildRequestBody(req llm.Request, stream bool) (map[string]any, error) {
 		body["tools"] = toChatTools(req.Tools)
 	}
 	if req.ToolChoice != nil {
-		body["tool_choice"] = toChatToolChoice(*req.ToolChoice)
+		tc, err := toChatToolChoice(*req.ToolChoice)
+		if err != nil {
+			return nil, err
+		}
+		body["tool_choice"] = tc
 	}
 	if req.Temperature != nil {
 		body["temperature"] = *req.Temperature
@@ -316,6 +331,12 @@ func buildRequestBody(req llm.Request, stream bool) (map[string]any, error) {
 	}
 	if req.ResponseFormat != nil {
 		body["response_format"] = toChatResponseFormat(*req.ResponseFormat)
+	}
+	if req.ReasoningEffort != nil {
+		body["reasoning_effort"] = *req.ReasoningEffort
+	}
+	if len(req.Metadata) > 0 {
+		body["metadata"] = req.Metadata
 	}
 	if stream {
 		body["stream"] = true
@@ -344,10 +365,17 @@ func toChatMessages(messages []llm.Message) ([]map[string]any, error) {
 				"content": textFromParts(m.Content),
 			})
 		case llm.RoleUser:
-			out = append(out, map[string]any{
-				"role":    "user",
-				"content": textFromParts(m.Content),
-			})
+			if hasImageContent(m.Content) {
+				out = append(out, map[string]any{
+					"role":    "user",
+					"content": buildMultimodalParts(m.Content),
+				})
+			} else {
+				out = append(out, map[string]any{
+					"role":    "user",
+					"content": textFromParts(m.Content),
+				})
+			}
 		case llm.RoleAssistant:
 			msg := map[string]any{
 				"role": "assistant",
@@ -399,6 +427,49 @@ func textFromParts(parts []llm.ContentPart) string {
 	return b.String()
 }
 
+// hasImageContent returns true if any content part is an image.
+func hasImageContent(parts []llm.ContentPart) bool {
+	for _, p := range parts {
+		if p.Kind == llm.ContentImage {
+			return true
+		}
+	}
+	return false
+}
+
+// buildMultimodalParts converts content parts to Chat Completions content array format
+// with {"type": "text", ...} and {"type": "image_url", ...} objects.
+func buildMultimodalParts(parts []llm.ContentPart) []map[string]any {
+	var out []map[string]any
+	for _, p := range parts {
+		switch p.Kind {
+		case llm.ContentText:
+			out = append(out, map[string]any{"type": "text", "text": p.Text})
+		case llm.ContentImage:
+			if p.Image == nil {
+				continue
+			}
+			imgURL := p.Image.URL
+			if imgURL == "" && len(p.Image.Data) > 0 {
+				mt := p.Image.MediaType
+				if mt == "" {
+					mt = "image/png"
+				}
+				imgURL = "data:" + mt + ";base64," + base64.StdEncoding.EncodeToString(p.Image.Data)
+			}
+			if imgURL == "" {
+				continue
+			}
+			urlObj := map[string]any{"url": imgURL}
+			if p.Image.Detail != "" {
+				urlObj["detail"] = p.Image.Detail
+			}
+			out = append(out, map[string]any{"type": "image_url", "image_url": urlObj})
+		}
+	}
+	return out
+}
+
 func toolCallsFromParts(parts []llm.ContentPart) []map[string]any {
 	var calls []map[string]any
 	for _, p := range parts {
@@ -436,22 +507,24 @@ func toChatTools(tools []llm.ToolDefinition) []map[string]any {
 	return out
 }
 
-func toChatToolChoice(tc llm.ToolChoice) any {
-	switch tc.Mode {
-	case "auto":
-		return "auto"
+func toChatToolChoice(tc llm.ToolChoice) (any, error) {
+	switch strings.ToLower(strings.TrimSpace(tc.Mode)) {
+	case "", "auto":
+		return "auto", nil
 	case "none":
-		return "none"
+		return "none", nil
 	case "required":
-		return "required"
-	default:
-		if tc.Name != "" {
-			return map[string]any{
-				"type":     "function",
-				"function": map[string]any{"name": tc.Name},
-			}
+		return "required", nil
+	case "named":
+		if strings.TrimSpace(tc.Name) == "" {
+			return nil, &llm.ConfigurationError{Message: "tool_choice mode=named requires name"}
 		}
-		return "auto"
+		return map[string]any{
+			"type":     "function",
+			"function": map[string]any{"name": tc.Name},
+		}, nil
+	default:
+		return nil, llm.NewUnsupportedToolChoiceError("openai-compatible", tc.Mode)
 	}
 }
 
@@ -596,7 +669,7 @@ func fromChatCompletionResponse(raw map[string]any) (llm.Response, error) {
 
 // --- HTTP helpers ---
 
-func (a *Adapter) doHTTP(ctx context.Context, body map[string]any) (map[string]any, int, http.Header, error) {
+func (a *Adapter) doHTTP(ctx context.Context, body map[string]any, at *llm.AdapterTimeout) (map[string]any, int, http.Header, error) {
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
 		return nil, 0, nil, err
@@ -615,7 +688,8 @@ func (a *Adapter) doHTTP(ctx context.Context, body map[string]any) (map[string]a
 		httpReq.Header.Set("Authorization", "Bearer "+a.APIKey)
 	}
 
-	resp, err := a.Client.Do(httpReq)
+	client := llm.ClientWithConnectTimeout(a.Client, at)
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, 0, nil, llm.WrapContextError("openai-compatible", err)
 	}

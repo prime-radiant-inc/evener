@@ -154,7 +154,8 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	}
 	a.setHeaders(httpReq)
 
-	resp, err := a.Client.Do(httpReq)
+	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return llm.Response{}, llm.WrapContextError("openai", err)
 	}
@@ -182,6 +183,8 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		a.Client = &http.Client{Timeout: 0} // streaming uses request context for cancellation
 	}
 	sctx, cancel := context.WithCancel(ctx)
+	sctx, timeoutCancel := llm.ApplyAdapterTimeout(sctx, req.AdapterTimeout, true)
+	defer timeoutCancel()
 
 	instructions, inputItems, err := toResponsesInput(req.Messages)
 	if err != nil {
@@ -259,7 +262,8 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	}
 	a.setHeaders(httpReq)
 
-	resp, err := a.Client.Do(httpReq)
+	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		cancel()
 		return nil, llm.WrapContextError("openai", err)
@@ -439,7 +443,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
 			}
 			return nil
-		})
+		}, llm.StreamReadSSEOptions(req.AdapterTimeout)...)
 
 		if !finished {
 			if err := sctx.Err(); err != nil {
@@ -715,11 +719,15 @@ func toResponsesInput(msgs []llm.Message) (instructions string, items []any, _ e
 					b, _ := json.Marshal(v)
 					outStr = string(b)
 				}
-				items = append(items, map[string]any{
+				item := map[string]any{
 					"type":    "function_call_output",
 					"call_id": p.ToolResult.ToolCallID,
 					"output":  outStr,
-				})
+				}
+				if p.ToolResult.IsError {
+					item["is_error"] = true
+				}
+				items = append(items, item)
 			}
 		default:
 			// ignore unknown roles
@@ -851,7 +859,7 @@ func parseUsage(u map[string]any) llm.Usage {
 		InputTokens:  getInt(u["input_tokens"]),
 		OutputTokens: getInt(u["output_tokens"]),
 		TotalTokens:  getInt(u["total_tokens"]),
-		Raw:          map[string]any{},
+		Raw:          u,
 	}
 	if outDetails, ok := u["output_tokens_details"].(map[string]any); ok {
 		rt := getInt(outDetails["reasoning_tokens"])
