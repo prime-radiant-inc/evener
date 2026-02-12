@@ -256,9 +256,9 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		return nil, fmt.Errorf("MCP initialization: %w", err)
 	}
 
-	s.emit(EventSessionStart, map[string]any{
-		"profile": profile.ID(),
-		"model":   profile.Model(),
+	s.emit(EventSessionStart, SessionStartData{
+		Profile: profile.ID(),
+		Model:   profile.Model(),
 	})
 	return s, nil
 }
@@ -364,10 +364,10 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		return nil, fmt.Errorf("MCP initialization: %w", err)
 	}
 
-	s.emit(EventSessionStart, map[string]any{
-		"profile":  profile.ID(),
-		"model":    profile.Model(),
-		"restored": true,
+	s.emit(EventSessionStart, SessionStartData{
+		Profile:  profile.ID(),
+		Model:    profile.Model(),
+		Restored: true,
 	})
 	return s, nil
 }
@@ -493,10 +493,10 @@ func (s *Session) Close() {
 
 		// 5-6. Emit SESSION_END with final state.
 		if emitEnd {
-			s.emit(EventSessionEnd, map[string]any{
-				"reason": "session_closed",
-				"state":  string(SessionClosed),
-				"turns":  turns,
+			s.emit(EventSessionEnd, SessionEndData{
+				Reason: "session_closed",
+				State:  string(SessionClosed),
+				Turns:  turns,
 			})
 		}
 
@@ -540,10 +540,10 @@ func (s *Session) ProcessInput(ctx context.Context, input string) (string, error
 				turns := s.turns
 				state := s.state
 				s.mu.Unlock()
-				s.emit(EventSessionEnd, map[string]any{
-					"reason": "input_complete",
-					"state":  string(state),
-					"turns":  turns,
+				s.emit(EventSessionEnd, SessionEndData{
+					Reason: "input_complete",
+					State:  string(state),
+					Turns:  turns,
 				})
 			} else {
 				s.mu.Unlock()
@@ -556,10 +556,10 @@ func (s *Session) ProcessInput(ctx context.Context, input string) (string, error
 
 func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecResult {
 	argsJSON, _ := json.Marshal(call.Arguments)
-	startData := map[string]any{
-		"tool_name":      call.Name,
-		"call_id":        call.ID,
-		"arguments_json": string(argsJSON),
+	startData := ToolCallStartData{
+		ToolName:      call.Name,
+		CallID:        call.ID,
+		ArgumentsJSON: string(argsJSON),
 	}
 	// Promote description to top-level event field for observability (shell tool).
 	var args map[string]any
@@ -567,7 +567,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecR
 		_ = json.Unmarshal(call.Arguments, &args)
 	}
 	if desc, ok := args["description"].(string); ok && desc != "" {
-		startData["description"] = desc
+		startData.Description = desc
 	}
 	s.emit(EventToolCallStart, startData)
 
@@ -583,21 +583,21 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecR
 		if j > len(full) {
 			j = len(full)
 		}
-		s.emit(EventToolCallOutputDelta, map[string]any{
-			"tool_name": res.ToolName,
-			"call_id":   res.CallID,
-			"delta":     full[i:j],
+		s.emit(EventToolCallOutputDelta, ToolCallOutputDeltaData{
+			ToolName: res.ToolName,
+			CallID:   res.CallID,
+			Delta:    full[i:j],
 		})
 	}
 
-	endData := map[string]any{
-		"tool_name": res.ToolName,
-		"call_id":   res.CallID,
+	endData := ToolCallEndData{
+		ToolName: res.ToolName,
+		CallID:   res.CallID,
 	}
 	if res.IsError {
-		endData["error"] = res.FullOutput
+		endData.Error = res.FullOutput
 	} else {
-		endData["output"] = res.FullOutput
+		endData.Output = res.FullOutput
 	}
 	s.emit(EventToolCallEnd, endData)
 	return res
@@ -631,8 +631,8 @@ func (s *Session) maybeAutoSave() {
 	}
 	snap := s.Snapshot()
 	if err := SaveSession(s.stateDir, snap); err != nil {
-		s.emit(EventWarning, map[string]any{
-			"message": fmt.Sprintf("auto-save failed: %v", err),
+		s.emit(EventWarning, WarningData{
+			Message: fmt.Sprintf("auto-save failed: %v", err),
 		})
 	}
 }
@@ -658,11 +658,11 @@ func (s *Session) maybeWarnContextUsage(msgs []llm.Message) bool {
 
 	pct := int(math.Round((approxTokens / float64(cw)) * 100.0))
 	msg := fmt.Sprintf("Context usage at ~%d%% of context window", pct)
-	s.emit(EventWarning, map[string]any{
-		"message":             msg,
-		"approx_tokens":       int(math.Round(approxTokens)),
-		"context_window_size": cw,
-		"percent":             pct,
+	s.emit(EventWarning, WarningData{
+		Message:           msg,
+		ApproxTokens:      int(math.Round(approxTokens)),
+		ContextWindowSize: cw,
+		Percent:           pct,
 	})
 	return true
 }
@@ -709,7 +709,7 @@ func messageCharCount(m llm.Message) int {
 	return n
 }
 
-func (s *Session) emit(kind EventKind, data map[string]any) {
+func (s *Session) emit(kind EventKind, data any) {
 	if s == nil || s.events == nil {
 		return
 	}
@@ -753,12 +753,12 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 
 	select {
 	case <-ctx.Done():
-		s.emit(EventError, map[string]any{"error": ctx.Err().Error()})
+		s.emit(EventError, ErrorData{Error: ctx.Err().Error()})
 		return "", ctx.Err()
 	default:
 	}
 
-	s.emit(EventUserInput, map[string]any{"text": input})
+	s.emit(EventUserInput, UserInputData{Text: input})
 	s.appendTurn(TurnUserInput, llm.User(input))
 
 	// Count conversation turns (user input -> model response pairs), not LLM round-trips.
@@ -768,7 +768,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 	s.mu.Unlock()
 
 	if s.cfg.MaxTurns > 0 && turns >= s.cfg.MaxTurns {
-		s.emit(EventTurnLimit, map[string]any{"max_turns": s.cfg.MaxTurns})
+		s.emit(EventTurnLimit, TurnLimitData{MaxTurns: s.cfg.MaxTurns})
 		s.mu.Lock()
 		s.state = SessionIdle
 		s.mu.Unlock()
@@ -782,7 +782,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
 	for _, msg := range s.drainSteering() {
 		s.appendTurn(TurnSteering, llm.User(msg))
-		s.emit(EventSteeringInjected, map[string]any{"text": msg})
+		s.emit(EventSteeringInjected, SteeringInjectedData{Text: msg})
 	}
 
 	var toolSigs []string
@@ -792,7 +792,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 	for round := 0; round < s.cfg.MaxToolRoundsPerInput; round++ {
 		select {
 		case <-ctx.Done():
-			s.emit(EventError, map[string]any{"error": ctx.Err().Error()})
+			s.emit(EventError, ErrorData{Error: ctx.Err().Error()})
 			return "", ctx.Err()
 		default:
 		}
@@ -894,11 +894,11 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 				return s.client.Complete(ctx, req)
 			})
 			if err != nil {
-				s.emit(EventError, map[string]any{"error": err.Error()})
+				s.emit(EventError, ErrorData{Error: err.Error()})
 				// Spec: context overflow should emit a warning (no automatic compaction).
 				var cle *llm.ContextLengthError
 				if errors.As(err, &cle) {
-					s.emit(EventWarning, map[string]any{"message": "Context length exceeded"})
+					s.emit(EventWarning, WarningData{Message: "Context length exceeded"})
 				}
 				// Spec: non-retryable/unrecoverable errors transition the session to CLOSED.
 				var le llm.Error
@@ -928,23 +928,23 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 
 			txt := resp.Text()
 			lastText = txt
-			s.emit(EventAssistantTextStart, map[string]any{
-				"model": resp.Model,
+			s.emit(EventAssistantTextStart, AssistantTextStartData{
+				Model: resp.Model,
 			})
 			s.appendAssistantTurn(resp)
 			if strings.TrimSpace(txt) != "" {
-				s.emit(EventAssistantTextDelta, map[string]any{"delta": txt})
+				s.emit(EventAssistantTextDelta, AssistantTextDeltaData{Delta: txt})
 			}
-			endData := map[string]any{
-				"text":          txt,
-				"usage":         resp.Usage,
-				"finish_reason": resp.Finish.Reason,
-				"model":         resp.Model,
+			textEndData := AssistantTextEndData{
+				Text:         txt,
+				Usage:        resp.Usage,
+				FinishReason: resp.Finish.Reason,
+				Model:        resp.Model,
 			}
 			if reasoning := resp.ReasoningText(); reasoning != "" {
-				endData["reasoning"] = reasoning
+				textEndData.Reasoning = reasoning
 			}
-			s.emit(EventAssistantTextEnd, endData)
+			s.emit(EventAssistantTextEnd, textEndData)
 			s.maybeAutoSave()
 
 		// pause_turn: model needs another turn (e.g. server-side web search still running).
@@ -1020,16 +1020,16 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		if s.cfg.EnableLoopDetection != nil && *s.cfg.EnableLoopDetection {
 			if detectLoop(toolSigs, s.cfg.LoopDetectionWindow) {
 				warning := fmt.Sprintf("Warning: Loop detected — the same tool call pattern has repeated %d times. Consider changing approach.", s.cfg.LoopDetectionWindow)
-				s.emit(EventLoopDetection, map[string]any{"message": warning})
+				s.emit(EventLoopDetection, LoopDetectionData{Message: warning})
 				s.appendTurn(TurnSteering, llm.User(warning))
-				s.emit(EventSteeringInjected, map[string]any{"text": warning})
+				s.emit(EventSteeringInjected, SteeringInjectedData{Text: warning})
 			}
 		}
 
 			// Inject any queued steering messages before the next model call.
 			for _, msg := range s.drainSteering() {
 				s.appendTurn(TurnSteering, llm.User(msg))
-				s.emit(EventSteeringInjected, map[string]any{"text": msg})
+				s.emit(EventSteeringInjected, SteeringInjectedData{Text: msg})
 			}
 
 		// communicate(result) sets the flag; exit the loop with the result message.
@@ -1045,7 +1045,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		}
 	}
 
-	s.emit(EventTurnLimit, map[string]any{"max_tool_rounds_per_input": s.cfg.MaxToolRoundsPerInput})
+	s.emit(EventTurnLimit, TurnLimitData{MaxToolRoundsPerInput: s.cfg.MaxToolRoundsPerInput})
 	s.mu.Lock()
 	s.state = SessionIdle
 	s.mu.Unlock()
@@ -1527,9 +1527,9 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			action := fmt.Sprint(args["action"])
 			message := fmt.Sprint(args["message"])
 
-			s.emit(EventCommunicate, map[string]any{
-				"action":  action,
-				"message": message,
+			s.emit(EventCommunicate, CommunicateData{
+				Action:  action,
+				Message: message,
 			})
 
 			// Drain steering queue into the inbox.
@@ -1562,7 +1562,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			if !ok {
 				return nil, fmt.Errorf("skill %q not found", skillName)
 			}
-			s.emit(EventSkillActivated, map[string]any{"name": skillName})
+			s.emit(EventSkillActivated, SkillActivatedData{Name: skillName})
 			body, err := LoadSkillBody(meta)
 			if err != nil {
 				return nil, fmt.Errorf("loading skill %q: %w", skillName, err)

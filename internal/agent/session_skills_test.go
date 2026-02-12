@@ -152,7 +152,7 @@ func TestUseSkill_EmitsEvent(t *testing.T) {
 	if len(skillEvents) != 1 {
 		t.Fatalf("expected 1 SKILL_ACTIVATED event, got %d", len(skillEvents))
 	}
-	if name, _ := skillEvents[0].Data["name"].(string); name != "deploy" {
+	if name, _ := skillEvents[0].DataMap()["name"].(string); name != "deploy" {
 		t.Fatalf("event name: got %q want %q", name, "deploy")
 	}
 }

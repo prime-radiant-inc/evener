@@ -114,7 +114,7 @@ func (cm *ContextManager) MaybeCompact(
 	ctx context.Context,
 	history *[]Turn,
 	sysPromptChars int,
-	emitFn func(EventKind, map[string]any),
+	emitFn func(EventKind, any),
 ) {
 	cw := cm.profile.ContextWindowSize()
 	if cw <= 0 {
@@ -144,12 +144,12 @@ func (cm *ContextManager) MaybeCompact(
 		before := EstimateTokens(*history)
 		maskObservations(*history, cm.PreserveRecentTurns)
 		after := EstimateTokens(*history)
-		emitFn(EventContextCompaction, map[string]any{
-			"layer":            "observation_mask",
-			"turns_before":     len(*history),
-			"turns_after":      len(*history),
-			"est_tokens_before": before,
-			"est_tokens_after":  after,
+		emitFn(EventContextCompaction, ContextCompactionData{
+			Layer:           "observation_mask",
+			TurnsBefore:     len(*history),
+			TurnsAfter:      len(*history),
+			EstTokensBefore: before,
+			EstTokensAfter:  after,
 		})
 		compacted = true
 		p = pressure()
@@ -160,12 +160,12 @@ func (cm *ContextManager) MaybeCompact(
 		before := EstimateTokens(*history)
 		clearThinking(*history, cm.PreserveRecentTurns)
 		after := EstimateTokens(*history)
-		emitFn(EventContextCompaction, map[string]any{
-			"layer":            "thinking_clear",
-			"turns_before":     len(*history),
-			"turns_after":      len(*history),
-			"est_tokens_before": before,
-			"est_tokens_after":  after,
+		emitFn(EventContextCompaction, ContextCompactionData{
+			Layer:           "thinking_clear",
+			TurnsBefore:     len(*history),
+			TurnsAfter:      len(*history),
+			EstTokensBefore: before,
+			EstTokensAfter:  after,
 		})
 		compacted = true
 		p = pressure()
@@ -177,12 +177,12 @@ func (cm *ContextManager) MaybeCompact(
 		before := EstimateTokens(*history)
 		*history = checkpoint(*history, cm.PreserveRecentTurns)
 		after := EstimateTokens(*history)
-		emitFn(EventContextCompaction, map[string]any{
-			"layer":            "checkpoint",
-			"turns_before":     turnsBefore,
-			"turns_after":      len(*history),
-			"est_tokens_before": before,
-			"est_tokens_after":  after,
+		emitFn(EventContextCompaction, ContextCompactionData{
+			Layer:           "checkpoint",
+			TurnsBefore:     turnsBefore,
+			TurnsAfter:      len(*history),
+			EstTokensBefore: before,
+			EstTokensAfter:  after,
 		})
 		compacted = true
 		p = pressure()
@@ -195,18 +195,18 @@ func (cm *ContextManager) MaybeCompact(
 		result, err := cm.summarizeWithLLM(ctx, *history, cm.PreserveRecentTurns)
 		if err != nil {
 			// On error, emit warning but continue with current history.
-			emitFn(EventWarning, map[string]any{
-				"message": "LLM summarization failed: " + err.Error(),
+			emitFn(EventWarning, WarningData{
+				Message: "LLM summarization failed: " + err.Error(),
 			})
 		} else {
 			*history = result
 			after := EstimateTokens(*history)
-			emitFn(EventContextCompaction, map[string]any{
-				"layer":            "summarize",
-				"turns_before":     turnsBefore,
-				"turns_after":      len(*history),
-				"est_tokens_before": before,
-				"est_tokens_after":  after,
+			emitFn(EventContextCompaction, ContextCompactionData{
+				Layer:           "summarize",
+				TurnsBefore:     turnsBefore,
+				TurnsAfter:      len(*history),
+				EstTokensBefore: before,
+				EstTokensAfter:  after,
 			})
 			compacted = true
 		}

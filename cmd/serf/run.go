@@ -185,60 +185,61 @@ func drainEventsHuman(events <-chan agent.SessionEvent, w io.Writer) <-chan stru
 		for ev := range events {
 			switch ev.Kind {
 			case agent.EventSessionStart:
-				model, _ := ev.Data["model"].(string)
-				profile, _ := ev.Data["profile"].(string)
-				if model != "" {
-					fmt.Fprintf(w, "[model] %s (%s)\n", model, profile)
+				if d, ok := ev.Data.(agent.SessionStartData); ok && d.Model != "" {
+					fmt.Fprintf(w, "[model] %s (%s)\n", d.Model, d.Profile)
 				}
 			case agent.EventAssistantTextEnd:
-				txt, _ := ev.Data["text"].(string)
-				if strings.TrimSpace(txt) != "" {
-					fmt.Fprintf(w, "[assistant] %s\n", txt)
-				}
-				if reasoning, _ := ev.Data["reasoning"].(string); reasoning != "" {
-					fmt.Fprintf(w, "[thinking] (%d chars)\n", len(reasoning))
-				}
-				if usage, ok := ev.Data["usage"].(llm.Usage); ok {
-					line := fmt.Sprintf("[usage] in=%d out=%d total=%d", usage.InputTokens, usage.OutputTokens, usage.TotalTokens)
-					if usage.CacheReadTokens != nil {
-						line += fmt.Sprintf(" cache_read=%d", *usage.CacheReadTokens)
+				if d, ok := ev.Data.(agent.AssistantTextEndData); ok {
+					if strings.TrimSpace(d.Text) != "" {
+						fmt.Fprintf(w, "[assistant] %s\n", d.Text)
 					}
-					if usage.CacheWriteTokens != nil {
-						line += fmt.Sprintf(" cache_write=%d", *usage.CacheWriteTokens)
+					if d.Reasoning != "" {
+						fmt.Fprintf(w, "[thinking] (%d chars)\n", len(d.Reasoning))
 					}
-					fmt.Fprintln(w, line)
+					if usage, ok := d.Usage.(llm.Usage); ok {
+						line := fmt.Sprintf("[usage] in=%d out=%d total=%d", usage.InputTokens, usage.OutputTokens, usage.TotalTokens)
+						if usage.CacheReadTokens != nil {
+							line += fmt.Sprintf(" cache_read=%d", *usage.CacheReadTokens)
+						}
+						if usage.CacheWriteTokens != nil {
+							line += fmt.Sprintf(" cache_write=%d", *usage.CacheWriteTokens)
+						}
+						fmt.Fprintln(w, line)
+					}
 				}
 			case agent.EventToolCallStart:
-				name, _ := ev.Data["tool_name"].(string)
-				args, _ := ev.Data["arguments_json"].(string)
-				if len(args) > 100 {
-					args = args[:97] + "..."
+				if d, ok := ev.Data.(agent.ToolCallStartData); ok {
+					args := d.ArgumentsJSON
+					if len(args) > 100 {
+						args = args[:97] + "..."
+					}
+					fmt.Fprintf(w, "[tool] %s %s\n", d.ToolName, args)
 				}
-				fmt.Fprintf(w, "[tool] %s %s\n", name, args)
 			case agent.EventToolCallEnd:
-				name, _ := ev.Data["tool_name"].(string)
-				isErr, _ := ev.Data["is_error"].(bool)
-				if isErr {
-					fmt.Fprintf(w, "[tool] %s: error\n", name)
-				} else {
-					fmt.Fprintf(w, "[tool] %s: done\n", name)
+				if d, ok := ev.Data.(agent.ToolCallEndData); ok {
+					if d.Error != "" {
+						fmt.Fprintf(w, "[tool] %s: error\n", d.ToolName)
+					} else {
+						fmt.Fprintf(w, "[tool] %s: done\n", d.ToolName)
+					}
 				}
 			case agent.EventCommunicate:
-				action, _ := ev.Data["action"].(string)
-				msg, _ := ev.Data["message"].(string)
-				if action == "status" {
-					fmt.Fprintf(w, "[status] %s\n", msg)
+				if d, ok := ev.Data.(agent.CommunicateData); ok && d.Action == "status" {
+					fmt.Fprintf(w, "[status] %s\n", d.Message)
 				}
 				// result is printed via ProcessInput return value on stdout
 			case agent.EventSkillActivated:
-				name, _ := ev.Data["name"].(string)
-				fmt.Fprintf(w, "[skill] activated %s\n", name)
+				if d, ok := ev.Data.(agent.SkillActivatedData); ok {
+					fmt.Fprintf(w, "[skill] activated %s\n", d.Name)
+				}
 			case agent.EventWarning:
-				msg, _ := ev.Data["message"].(string)
-				fmt.Fprintf(w, "[warning] %s\n", msg)
+				if d, ok := ev.Data.(agent.WarningData); ok {
+					fmt.Fprintf(w, "[warning] %s\n", d.Message)
+				}
 			case agent.EventError:
-				errMsg, _ := ev.Data["error"].(string)
-				fmt.Fprintf(w, "[error] %s\n", errMsg)
+				if d, ok := ev.Data.(agent.ErrorData); ok {
+					fmt.Fprintf(w, "[error] %s\n", d.Error)
+				}
 			}
 		}
 	}()

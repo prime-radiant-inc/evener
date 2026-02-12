@@ -760,7 +760,7 @@ func TestMaybeCompact_BelowThreshold_NoAction(t *testing.T) {
 	}
 
 	var events []SessionEvent
-	emitFn := func(kind EventKind, data map[string]any) {
+	emitFn := func(kind EventKind, data any) {
 		events = append(events, SessionEvent{Kind: kind, Data: data})
 	}
 
@@ -792,7 +792,7 @@ func TestMaybeCompact_ObservationMaskThreshold(t *testing.T) {
 	)
 
 	var events []SessionEvent
-	emitFn := func(kind EventKind, data map[string]any) {
+	emitFn := func(kind EventKind, data any) {
 		events = append(events, SessionEvent{Kind: kind, Data: data})
 	}
 
@@ -802,7 +802,7 @@ func TestMaybeCompact_ObservationMaskThreshold(t *testing.T) {
 	foundMask := false
 	for _, e := range events {
 		if e.Kind == EventContextCompaction {
-			if layer, ok := e.Data["layer"].(string); ok && layer == "observation_mask" {
+			if layer, ok := e.DataMap()["layer"].(string); ok && layer == "observation_mask" {
 				foundMask = true
 			}
 		}
@@ -831,7 +831,7 @@ func TestMaybeCompact_CheckpointThreshold(t *testing.T) {
 	)
 
 	var events []SessionEvent
-	emitFn := func(kind EventKind, data map[string]any) {
+	emitFn := func(kind EventKind, data any) {
 		events = append(events, SessionEvent{Kind: kind, Data: data})
 	}
 
@@ -842,7 +842,7 @@ func TestMaybeCompact_CheckpointThreshold(t *testing.T) {
 	foundCheckpoint := false
 	for _, e := range events {
 		if e.Kind == EventContextCompaction {
-			if layer, ok := e.Data["layer"].(string); ok && layer == "checkpoint" {
+			if layer, ok := e.DataMap()["layer"].(string); ok && layer == "checkpoint" {
 				foundCheckpoint = true
 			}
 		}
@@ -870,7 +870,7 @@ func TestMaybeCompact_EmitsEvents(t *testing.T) {
 	)
 
 	var events []SessionEvent
-	emitFn := func(kind EventKind, data map[string]any) {
+	emitFn := func(kind EventKind, data any) {
 		events = append(events, SessionEvent{Kind: kind, Data: data})
 	}
 
@@ -882,10 +882,10 @@ func TestMaybeCompact_EmitsEvents(t *testing.T) {
 		if e.Kind == EventContextCompaction {
 			compactionCount++
 			// Each event should have layer and token counts.
-			if _, ok := e.Data["layer"]; !ok {
+			if _, ok := e.DataMap()["layer"]; !ok {
 				t.Fatalf("compaction event missing 'layer': %+v", e.Data)
 			}
-			if _, ok := e.Data["est_tokens_before"]; !ok {
+			if _, ok := e.DataMap()["est_tokens_before"]; !ok {
 				t.Fatalf("compaction event missing 'est_tokens_before': %+v", e.Data)
 			}
 		}
@@ -910,7 +910,7 @@ func TestMaybeCompact_RespectsSysPromptSize(t *testing.T) {
 	}
 
 	var events []SessionEvent
-	emitFn := func(kind EventKind, data map[string]any) {
+	emitFn := func(kind EventKind, data any) {
 		events = append(events, SessionEvent{Kind: kind, Data: data})
 	}
 
@@ -921,7 +921,7 @@ func TestMaybeCompact_RespectsSysPromptSize(t *testing.T) {
 	foundMask := false
 	for _, e := range events {
 		if e.Kind == EventContextCompaction {
-			if layer, ok := e.Data["layer"].(string); ok && layer == "observation_mask" {
+			if layer, ok := e.DataMap()["layer"].(string); ok && layer == "observation_mask" {
 				foundMask = true
 			}
 		}
@@ -1496,7 +1496,7 @@ func TestContextManager_ResetsAfterCompaction(t *testing.T) {
 	)
 
 	var events []SessionEvent
-	emitFn := func(kind EventKind, data map[string]any) {
+	emitFn := func(kind EventKind, data any) {
 		events = append(events, SessionEvent{Kind: kind, Data: data})
 	}
 
@@ -1686,10 +1686,10 @@ func TestMaybeCompact_L1StopsCascade(t *testing.T) {
 	cm.RecordInputTokens(750, len(history))
 
 	var layers []string
-	emitFn := func(kind EventKind, data map[string]any) {
+	emitFn := func(kind EventKind, data any) {
 		if kind == EventContextCompaction {
-			if layer, ok := data["layer"].(string); ok {
-				layers = append(layers, layer)
+			if cd, ok := data.(ContextCompactionData); ok {
+				layers = append(layers, cd.Layer)
 			}
 		}
 	}
@@ -1735,10 +1735,10 @@ func TestMaybeCompact_L1ThenL3_MaskedShellParsed(t *testing.T) {
 	}
 
 	var layers []string
-	emitFn := func(kind EventKind, data map[string]any) {
+	emitFn := func(kind EventKind, data any) {
 		if kind == EventContextCompaction {
-			if layer, ok := data["layer"].(string); ok {
-				layers = append(layers, layer)
+			if cd, ok := data.(ContextCompactionData); ok {
+				layers = append(layers, cd.Layer)
 			}
 		}
 	}
@@ -1799,10 +1799,10 @@ func TestMaybeCompact_SummarizeThreshold(t *testing.T) {
 	}
 
 	var layers []string
-	emitFn := func(kind EventKind, data map[string]any) {
+	emitFn := func(kind EventKind, data any) {
 		if kind == EventContextCompaction {
-			if layer, ok := data["layer"].(string); ok {
-				layers = append(layers, layer)
+			if cd, ok := data.(ContextCompactionData); ok {
+				layers = append(layers, cd.Layer)
 			}
 		}
 	}

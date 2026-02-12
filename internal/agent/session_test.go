@@ -447,10 +447,10 @@ func TestSession_ToolOutputTruncation_OverridesLimitsAndKeepsFullOutputInEvents(
 	var full string
 	for ev := range sess.Events() {
 		if ev.Kind == EventToolCallEnd {
-			if v := anyToString(ev.Data["output"]); v != "" {
+			if v := anyToString(ev.DataMap()["output"]); v != "" {
 				full = v
 			} else {
-				full = anyToString(ev.Data["error"])
+				full = anyToString(ev.DataMap()["error"])
 			}
 		}
 	}
@@ -796,7 +796,7 @@ func TestSession_LoopDetection_EmitsEventAndInjectsSteering(t *testing.T) {
 			loopEv = true
 		}
 		if ev.Kind == EventSteeringInjected {
-			if s, _ := ev.Data["text"].(string); strings.Contains(s, "Warning: Loop detected") && strings.Contains(s, "Consider changing approach") {
+			if s, _ := ev.DataMap()["text"].(string); strings.Contains(s, "Warning: Loop detected") && strings.Contains(s, "Consider changing approach") {
 				steerEv = true
 			}
 		}
@@ -902,31 +902,36 @@ func TestAssistantTextEnd_EnrichedData(t *testing.T) {
 		t.Fatalf("no ASSISTANT_TEXT_END event found; events: %v", events)
 	}
 
+	// Type-assert to the typed payload struct.
+	endData, ok := found.Data.(AssistantTextEndData)
+	if !ok {
+		t.Fatalf("expected AssistantTextEndData, got %T", found.Data)
+	}
+
 	// Verify text.
-	if txt, _ := found.Data["text"].(string); txt != "here is my answer" {
-		t.Fatalf("text: got %q want %q", txt, "here is my answer")
+	if endData.Text != "here is my answer" {
+		t.Fatalf("text: got %q want %q", endData.Text, "here is my answer")
 	}
 
 	// Verify reasoning.
-	reasoning, _ := found.Data["reasoning"].(string)
-	if reasoning != "let me think about this" {
-		t.Fatalf("reasoning: got %q want %q", reasoning, "let me think about this")
+	if endData.Reasoning != "let me think about this" {
+		t.Fatalf("reasoning: got %q want %q", endData.Reasoning, "let me think about this")
 	}
 
 	// Verify finish_reason.
-	if fr, _ := found.Data["finish_reason"].(string); fr != "stop" {
-		t.Fatalf("finish_reason: got %q want %q", fr, "stop")
+	if endData.FinishReason != "stop" {
+		t.Fatalf("finish_reason: got %q want %q", endData.FinishReason, "stop")
 	}
 
 	// Verify model.
-	if m, _ := found.Data["model"].(string); m != "gpt-5.2" {
-		t.Fatalf("model: got %q want %q", m, "gpt-5.2")
+	if endData.Model != "gpt-5.2" {
+		t.Fatalf("model: got %q want %q", endData.Model, "gpt-5.2")
 	}
 
 	// Verify usage is present and has expected values.
-	usage, ok := found.Data["usage"].(llm.Usage)
-	if !ok {
-		t.Fatalf("usage: expected llm.Usage, got %T", found.Data["usage"])
+	usage, ok2 := endData.Usage.(llm.Usage)
+	if !ok2 {
+		t.Fatalf("usage: expected llm.Usage, got %T", endData.Usage)
 	}
 	if usage.InputTokens != 100 {
 		t.Fatalf("usage.input_tokens: got %d want 100", usage.InputTokens)
@@ -1393,18 +1398,22 @@ func TestSession_ToolCallEnd_UsesOutputKeyOnSuccess(t *testing.T) {
 		t.Fatal("no TOOL_CALL_END event found")
 	}
 
-	// Success: should have "output" key, not "full_output" or "is_error".
-	if _, ok := found.Data["output"]; !ok {
-		t.Fatalf("expected 'output' key in TOOL_CALL_END data, got: %v", found.Data)
+	// Success: Output is populated, Error is empty (not present).
+	d, ok := found.Data.(ToolCallEndData)
+	if !ok {
+		t.Fatalf("expected ToolCallEndData, got %T", found.Data)
 	}
-	if _, ok := found.Data["full_output"]; ok {
+	// For success, Error should be empty.
+	if d.Error != "" {
+		t.Fatalf("TOOL_CALL_END for success should not have error, got %q", d.Error)
+	}
+	// DataMap should not have legacy keys "full_output" or "is_error".
+	dm := found.DataMap()
+	if _, ok := dm["full_output"]; ok {
 		t.Fatal("TOOL_CALL_END should not have 'full_output' key")
 	}
-	if _, ok := found.Data["is_error"]; ok {
+	if _, ok := dm["is_error"]; ok {
 		t.Fatal("TOOL_CALL_END should not have 'is_error' key")
-	}
-	if _, ok := found.Data["error"]; ok {
-		t.Fatal("TOOL_CALL_END for success should not have 'error' key")
 	}
 }
 
@@ -1467,17 +1476,23 @@ func TestSession_ToolCallEnd_UsesErrorKeyOnFailure(t *testing.T) {
 		t.Fatal("no TOOL_CALL_END event found")
 	}
 
-	// Error: should have "error" key, not "output", "full_output", or "is_error".
-	if _, ok := found.Data["error"]; !ok {
-		t.Fatalf("expected 'error' key in TOOL_CALL_END data for error case, got: %v", found.Data)
+	// Error: Error field should be populated, Output empty.
+	d, ok := found.Data.(ToolCallEndData)
+	if !ok {
+		t.Fatalf("expected ToolCallEndData, got %T", found.Data)
 	}
-	if _, ok := found.Data["output"]; ok {
-		t.Fatal("TOOL_CALL_END for error should not have 'output' key")
+	if d.Error == "" {
+		t.Fatalf("expected non-empty error in TOOL_CALL_END data for error case")
 	}
-	if _, ok := found.Data["full_output"]; ok {
+	if d.Output != "" {
+		t.Fatalf("TOOL_CALL_END for error should not have output, got %q", d.Output)
+	}
+	// DataMap should not have legacy keys "full_output" or "is_error".
+	dm := found.DataMap()
+	if _, ok := dm["full_output"]; ok {
 		t.Fatal("TOOL_CALL_END should not have 'full_output' key")
 	}
-	if _, ok := found.Data["is_error"]; ok {
+	if _, ok := dm["is_error"]; ok {
 		t.Fatal("TOOL_CALL_END should not have 'is_error' key")
 	}
 }
@@ -1527,7 +1542,7 @@ func TestSession_AssistantTextStart_IncludesModel(t *testing.T) {
 	if found == nil {
 		t.Fatal("no ASSISTANT_TEXT_START event found")
 	}
-	model, ok := found.Data["model"].(string)
+	model, ok := found.DataMap()["model"].(string)
 	if !ok || model != "test-model-42" {
 		t.Fatalf("expected model 'test-model-42' in ASSISTANT_TEXT_START, got: %v", found.Data)
 	}
@@ -1655,7 +1670,7 @@ func TestSession_LoopDetection_WarningWording(t *testing.T) {
 	var loopMsg string
 	for _, ev := range events {
 		if ev.Kind == EventLoopDetection {
-			loopMsg, _ = ev.Data["message"].(string)
+			loopMsg, _ = ev.DataMap()["message"].(string)
 			break
 		}
 	}

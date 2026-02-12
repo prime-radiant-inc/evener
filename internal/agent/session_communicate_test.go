@@ -266,18 +266,18 @@ func TestCommunicate_EmitsEvent(t *testing.T) {
 	}
 
 	// First should be status.
-	if action, _ := commEvents[0].Data["action"].(string); action != "status" {
+	if action, _ := commEvents[0].DataMap()["action"].(string); action != "status" {
 		t.Fatalf("event 0 action: got %q want %q", action, "status")
 	}
-	if msg, _ := commEvents[0].Data["message"].(string); msg != "Progress update" {
+	if msg, _ := commEvents[0].DataMap()["message"].(string); msg != "Progress update" {
 		t.Fatalf("event 0 message: got %q want %q", msg, "Progress update")
 	}
 
 	// Second should be result.
-	if action, _ := commEvents[1].Data["action"].(string); action != "result" {
+	if action, _ := commEvents[1].DataMap()["action"].(string); action != "result" {
 		t.Fatalf("event 1 action: got %q want %q", action, "result")
 	}
-	if msg, _ := commEvents[1].Data["message"].(string); msg != "Final answer" {
+	if msg, _ := commEvents[1].DataMap()["message"].(string); msg != "Final answer" {
 		t.Fatalf("event 1 message: got %q want %q", msg, "Final answer")
 	}
 }

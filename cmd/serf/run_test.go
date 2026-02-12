@@ -293,26 +293,25 @@ func TestResumeLast_NoSessions(t *testing.T) {
 func testEvents() []agent.SessionEvent {
 	now := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
 	return []agent.SessionEvent{
-		{Kind: agent.EventSessionStart, Timestamp: now, SessionID: "sess1", Data: map[string]any{"model": "gpt-5.2", "profile": "openai"}},
-		{Kind: agent.EventAssistantTextEnd, Timestamp: now, SessionID: "sess1", Data: map[string]any{
-			"text":          "here is my answer",
-			"reasoning":     "let me think carefully",
-			"finish_reason": "stop",
-			"model":         "gpt-5.2",
-			"usage":         llm.Usage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150, CacheReadTokens: intPtr(80), CacheWriteTokens: intPtr(20)},
+		{Kind: agent.EventSessionStart, Timestamp: now, SessionID: "sess1", Data: agent.SessionStartData{Model: "gpt-5.2", Profile: "openai"}},
+		{Kind: agent.EventAssistantTextEnd, Timestamp: now, SessionID: "sess1", Data: agent.AssistantTextEndData{
+			Text:         "here is my answer",
+			Reasoning:    "let me think carefully",
+			FinishReason: "stop",
+			Model:        "gpt-5.2",
+			Usage:        llm.Usage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150, CacheReadTokens: intPtr(80), CacheWriteTokens: intPtr(20)},
 		}},
-		{Kind: agent.EventToolCallStart, Timestamp: now, SessionID: "sess1", Data: map[string]any{
-			"tool_name":      "write_file",
-			"call_id":        "call_1",
-			"arguments_json": `{"file_path":"/tmp/test.txt","content":"hello world this is a longer argument string for testing truncation behavior"}`,
+		{Kind: agent.EventToolCallStart, Timestamp: now, SessionID: "sess1", Data: agent.ToolCallStartData{
+			ToolName:      "write_file",
+			CallID:        "call_1",
+			ArgumentsJSON: `{"file_path":"/tmp/test.txt","content":"hello world this is a longer argument string for testing truncation behavior"}`,
 		}},
-		{Kind: agent.EventToolCallEnd, Timestamp: now, SessionID: "sess1", Data: map[string]any{
-			"tool_name": "write_file",
-			"call_id":   "call_1",
-			"is_error":  false,
+		{Kind: agent.EventToolCallEnd, Timestamp: now, SessionID: "sess1", Data: agent.ToolCallEndData{
+			ToolName: "write_file",
+			CallID:   "call_1",
 		}},
-		{Kind: agent.EventWarning, Timestamp: now, SessionID: "sess1", Data: map[string]any{"message": "context window 80% full"}},
-		{Kind: agent.EventError, Timestamp: now, SessionID: "sess1", Data: map[string]any{"error": "something went wrong"}},
+		{Kind: agent.EventWarning, Timestamp: now, SessionID: "sess1", Data: agent.WarningData{Message: "context window 80% full"}},
+		{Kind: agent.EventError, Timestamp: now, SessionID: "sess1", Data: agent.ErrorData{Error: "something went wrong"}},
 	}
 }
 

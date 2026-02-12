@@ -154,7 +154,7 @@ func TestIntegration_ShellCommand(t *testing.T) {
 	var shellCalled bool
 	for _, ev := range events {
 		if ev.Kind == EventToolCallStart {
-			name, _ := ev.Data["tool_name"].(string)
+			name, _ := ev.DataMap()["tool_name"].(string)
 			// OpenAI profile maps "shell" to "exec_command"
 			if name == "shell" || name == "exec_command" {
 				shellCalled = true
@@ -170,7 +170,7 @@ func TestIntegration_ShellCommand(t *testing.T) {
 	var sawHello bool
 	for _, ev := range events {
 		if ev.Kind == EventToolCallEnd {
-			fullOutput, _ := ev.Data["output"].(string)
+			fullOutput, _ := ev.DataMap()["output"].(string)
 			if strings.Contains(fullOutput, "hello from shell") {
 				sawHello = true
 				break
@@ -291,7 +291,7 @@ func TestIntegration_Subagent(t *testing.T) {
 	var sawSpawn bool
 	for _, ev := range events {
 		if ev.Kind == EventToolCallStart {
-			name, _ := ev.Data["tool_name"].(string)
+			name, _ := ev.DataMap()["tool_name"].(string)
 			if name == "spawn_agent" {
 				sawSpawn = true
 				break

@@ -89,6 +89,11 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 
 	go sub.run(ctx, task)
 
+	s.emit(EventSubagentStart, SubagentStartData{
+		AgentID: sub.id,
+		Task:    task,
+	})
+
 	b, _ := json.Marshal(map[string]any{"agent_id": sub.id, "status": string(SubAgentRunning)})
 	return string(b), nil
 }
@@ -145,16 +150,24 @@ func (s *Session) waitAgent(ctx context.Context, agentID string, timeoutMS int) 
 		}
 	}
 	sub.mu.Lock()
-	defer sub.mu.Unlock()
-
 	result := SubAgentResult{
 		Output:    sub.result,
 		Success:   sub.err == nil,
 		TurnsUsed: sub.turnsUsed,
 	}
+	status := sub.status
+	subErr := sub.err
+	sub.mu.Unlock()
+
+	s.emit(EventSubagentEnd, SubagentEndData{
+		AgentID:   agentID,
+		Status:    string(status),
+		TurnsUsed: result.TurnsUsed,
+	})
+
 	b, _ := json.Marshal(result)
-	if sub.err != nil {
-		return string(b), sub.err
+	if subErr != nil {
+		return string(b), subErr
 	}
 	return string(b), nil
 }
@@ -181,6 +194,12 @@ func (s *Session) closeAgent(agentID string) (any, error) {
 	result := sub.result
 	turnsUsed := sub.turnsUsed
 	sub.mu.Unlock()
+
+	s.emit(EventSubagentEnd, SubagentEndData{
+		AgentID:   agentID,
+		Status:    string(status),
+		TurnsUsed: turnsUsed,
+	})
 
 	b, _ := json.Marshal(map[string]any{
 		"status":     string(status),
