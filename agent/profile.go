@@ -95,6 +95,7 @@ func (p *baseProfile) ToolNameMap() map[string]string {
 	}
 	return m
 }
+
 func (p *baseProfile) NewToolRegistry() *ToolRegistry {
 	reg := NewToolRegistry()
 	for _, td := range p.toolDefs {
@@ -276,6 +277,8 @@ func NewAnthropicProfile(model string) ProviderProfile {
 		providerOpts: map[string]any{
 			"anthropic": map[string]any{
 				"beta_headers": "prompt-caching-2024-07-31",
+				// Prevent truncated tool-call JSON on large code/test edits.
+				"max_tokens": 12288,
 			},
 		},
 		toolDefs: []llm.ToolDefinition{

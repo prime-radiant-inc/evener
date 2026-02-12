@@ -83,7 +83,7 @@ func TestSaveSession_CreatesFileAtomically(t *testing.T) {
 		t.Fatalf("SaveSession: %v", err)
 	}
 
-	// File should exist at .serf/sessions/<id>.json
+	// File should exist at sessions/<id>.json
 	path := filepath.Join(dir, "sessions", snap.ID+".json")
 	data, err := os.ReadFile(path)
 	if err != nil {
