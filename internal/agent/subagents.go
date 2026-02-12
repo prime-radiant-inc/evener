@@ -53,6 +53,8 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	}
 
 	subCfg := s.cfg
+	subCfg.MCPConfigFiles = nil
+	subCfg.MCPInline = nil
 	if maxTurns > 0 {
 		subCfg.MaxTurns = maxTurns
 	} else {
@@ -64,7 +66,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		if le, ok := s.env.(*LocalExecutionEnvironment); ok {
 			subEnv = le.WithWorkingDirectory(workingDir)
 		} else {
-			subEnv = NewLocalExecutionEnvironment(workingDir)
+			return "", fmt.Errorf("execution environment does not support working_dir override")
 		}
 	}
 
@@ -166,13 +168,19 @@ func (s *Session) closeAgent(agentID string) (any, error) {
 		return "", fmt.Errorf("unknown agent_id: %s", agentID)
 	}
 
+	sub.sess.Close()
+
+	// Wait for the goroutine to finish.
+	select {
+	case <-sub.done:
+	case <-time.After(5 * time.Second):
+	}
+
 	sub.mu.Lock()
 	status := sub.status
 	result := sub.result
 	turnsUsed := sub.turnsUsed
 	sub.mu.Unlock()
-
-	sub.sess.Close()
 
 	b, _ := json.Marshal(map[string]any{
 		"status":     string(status),

@@ -791,6 +791,178 @@ func TestParity_SubagentSpawnAndWait(t *testing.T) {
 	}
 }
 
+func TestParity_CloseAgentWaitsForCompletion(t *testing.T) {
+	for _, pc := range providerCases {
+		t.Run(pc.name, func(t *testing.T) {
+			release := make(chan struct{})
+			steps := []func(llm.Request) llm.Response{
+				// Subagent's LLM call blocks until released.
+				func(req llm.Request) llm.Response {
+					<-release
+					return llm.Response{Message: llm.Assistant("subagent done")}
+				},
+			}
+			sess, _ := newParitySession(t, pc, steps)
+			defer sess.Close()
+			go func() { for range sess.Events() {} }()
+
+			// Spawn agent via registry.
+			spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+				ID: "c1", Name: "spawn_agent", Type: "function",
+				Arguments: json.RawMessage(`{"task":"blocking task"}`),
+			})
+			if spawnRes.IsError {
+				t.Fatalf("spawn_agent error: %s", spawnRes.Output)
+			}
+			var spawned map[string]any
+			json.Unmarshal([]byte(spawnRes.Output), &spawned)
+			agentID := fmt.Sprint(spawned["agent_id"])
+
+			// Release the subagent after a short delay.
+			go func() {
+				time.Sleep(100 * time.Millisecond)
+				close(release)
+			}()
+
+			// close_agent should wait for the goroutine to finish.
+			closeRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+				ID: "c2", Name: "close_agent", Type: "function",
+				Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q}`, agentID)),
+			})
+			if closeRes.IsError {
+				t.Fatalf("close_agent error: %s", closeRes.Output)
+			}
+
+			var result map[string]any
+			json.Unmarshal([]byte(closeRes.Output), &result)
+			status := fmt.Sprint(result["status"])
+			if status == "running" {
+				t.Fatalf("close_agent returned status 'running'; expected it to wait for completion")
+			}
+		})
+	}
+}
+
+func TestParity_SubagentNoMCPInheritance(t *testing.T) {
+	// Subagent config should not inherit parent MCP config.
+	// We set MCP fields on the parent config AFTER session creation
+	// (directly on sess.cfg) to avoid MCP initialization failures.
+	pc := providerCases[0] // openai is sufficient
+	steps := []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("subagent done")}
+		},
+	}
+	sess, _ := newParitySession(t, pc, steps)
+	defer sess.Close()
+	go func() { for range sess.Events() {} }()
+
+	// Inject MCP config into the parent session config after creation.
+	sess.cfg.MCPConfigFiles = []string{"/fake/mcp.json"}
+	sess.cfg.MCPInline = []string{"test:echo hello"}
+
+	// Spawn agent.
+	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID: "c1", Name: "spawn_agent", Type: "function",
+		Arguments: json.RawMessage(`{"task":"check mcp"}`),
+	})
+	if spawnRes.IsError {
+		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
+	}
+	var spawned map[string]any
+	json.Unmarshal([]byte(spawnRes.Output), &spawned)
+	agentID := fmt.Sprint(spawned["agent_id"])
+
+	// Get the subagent session and check its config.
+	sess.mu.Lock()
+	sub := sess.subagents[agentID]
+	sess.mu.Unlock()
+	if sub == nil {
+		t.Fatal("subagent not found")
+	}
+	if len(sub.sess.cfg.MCPConfigFiles) != 0 {
+		t.Errorf("subagent should not inherit MCPConfigFiles, got: %v", sub.sess.cfg.MCPConfigFiles)
+	}
+	if len(sub.sess.cfg.MCPInline) != 0 {
+		t.Errorf("subagent should not inherit MCPInline, got: %v", sub.sess.cfg.MCPInline)
+	}
+
+	// Wait and close.
+	sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID: "c2", Name: "wait", Type: "function",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":5000}`, agentID)),
+	})
+	sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID: "c3", Name: "close_agent", Type: "function",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q}`, agentID)),
+	})
+}
+
+// nonLocalEnv is a minimal ExecutionEnvironment that is NOT *LocalExecutionEnvironment.
+// Used to test that working_dir override fails gracefully for non-local envs.
+type nonLocalEnv struct {
+	dir string
+}
+
+func (e *nonLocalEnv) Initialize() error   { return nil }
+func (e *nonLocalEnv) Cleanup()            {}
+func (e *nonLocalEnv) WorkingDirectory() string { return e.dir }
+func (e *nonLocalEnv) Platform() string         { return "test" }
+func (e *nonLocalEnv) OSVersion() string        { return "test/1.0" }
+func (e *nonLocalEnv) ReadFile(path string, offsetLine *int, limitLines *int) (string, error) {
+	return "", fmt.Errorf("not implemented")
+}
+func (e *nonLocalEnv) WriteFile(path string, content string) (string, error) {
+	return "", fmt.Errorf("not implemented")
+}
+func (e *nonLocalEnv) EditFile(path string, oldString string, newString string, replaceAll bool) (string, error) {
+	return "", fmt.Errorf("not implemented")
+}
+func (e *nonLocalEnv) FileExists(path string) bool { return false }
+func (e *nonLocalEnv) Glob(pattern string, basePath string) ([]string, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+func (e *nonLocalEnv) Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
+	return "", fmt.Errorf("not implemented")
+}
+func (e *nonLocalEnv) ListDirectory(path string, depth int) ([]DirEntry, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+func (e *nonLocalEnv) ExecCommand(ctx context.Context, command string, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error) {
+	return ExecResult{}, fmt.Errorf("not implemented")
+}
+
+func TestParity_WorkingDirOverride_NonLocalEnv_ReturnsError(t *testing.T) {
+	pc := providerCases[0] // openai
+	steps := []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("done")}
+		},
+	}
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{name: pc.adapterName, steps: steps}
+	c.Register(f)
+	sess, err := NewSession(c, pc.profile("test-model"), &nonLocalEnv{dir: dir}, SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	go func() { for range sess.Events() {} }()
+
+	// Spawn agent with working_dir — should fail.
+	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID: "c1", Name: "spawn_agent", Type: "function",
+		Arguments: json.RawMessage(`{"task":"test","working_dir":"/tmp/somewhere"}`),
+	})
+	if !spawnRes.IsError {
+		t.Fatalf("expected error when using working_dir with non-local env, got: %s", spawnRes.Output)
+	}
+	if !strings.Contains(spawnRes.Output, "does not support working_dir") {
+		t.Fatalf("expected 'does not support working_dir' in error, got: %s", spawnRes.Output)
+	}
+}
+
 // canonicalXxx returns the wire-name for a tool given the provider name.
 // This mirrors the ToolNameMap applied by each profile.
 func canonicalWriteFile(provider string) string { return "write_file" }
