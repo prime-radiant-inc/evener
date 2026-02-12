@@ -1527,7 +1527,22 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			_ = ctx
 			_ = env
 			action := fmt.Sprint(args["action"])
-			message := fmt.Sprint(args["message"])
+			message := ""
+			if v, ok := args["message"]; ok {
+				message = fmt.Sprint(v)
+			}
+
+			resultText := message
+			if action == "result" {
+				if output, ok := args["output"]; ok && output != nil {
+					resultText = canonicalNodeOutputText(output)
+					if message == "" {
+						if outMsg := communicateOutputMessage(output); outMsg != "" {
+							message = outMsg
+						}
+					}
+				}
+			}
 
 			s.emit(EventCommunicate, CommunicateData{
 				Action:  action,
@@ -1540,7 +1555,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			if action == "result" {
 				s.mu.Lock()
 				s.resultDelivered = true
-				s.resultText = message
+				s.resultText = resultText
 				s.mu.Unlock()
 			}
 
@@ -1574,6 +1589,57 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 	})
 
 	return nil
+}
+
+type nodeOutput struct {
+	Decision  string         `json:"decision"`
+	Message   string         `json:"message"`
+	Data      map[string]any `json:"data"`
+	Artifacts []string       `json:"artifacts"`
+}
+
+func canonicalNodeOutputText(raw any) string {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return "{}"
+	}
+
+	out := nodeOutput{
+		Decision:  fmt.Sprint(m["decision"]),
+		Message:   fmt.Sprint(m["message"]),
+		Data:      map[string]any{},
+		Artifacts: []string{},
+	}
+
+	if data, ok := m["data"].(map[string]any); ok {
+		out.Data = data
+	}
+	if arts, ok := m["artifacts"]; ok {
+		switch v := arts.(type) {
+		case []string:
+			out.Artifacts = append([]string{}, v...)
+		case []any:
+			out.Artifacts = make([]string, 0, len(v))
+			for _, a := range v {
+				out.Artifacts = append(out.Artifacts, fmt.Sprint(a))
+			}
+		}
+	}
+
+	b, err := json.Marshal(out)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
+}
+
+func communicateOutputMessage(raw any) string {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return ""
+	}
+	msg, _ := m["message"].(string)
+	return msg
 }
 
 // trackReadFile records that a file has been read in this session.

@@ -27,6 +27,9 @@ You MUST use the communicate tool for ALL output to the user. Never respond with
 
 - communicate(status): Progress updates while working. Use sparingly — only for meaningful milestones.
 - communicate(result): Final answer when the task is complete. You must call this exactly once to finish.
+- For automation workflows, prefer communicate(result) with an `output` object:
+  `{decision, message, data, artifacts}`.
+- Legacy compatibility: communicate(result) with only `message` is still accepted.
 - Every response includes an inbox with pending user messages. Read them and adjust your approach.
 - If the inbox contains a message, acknowledge it in your next status or result.
 

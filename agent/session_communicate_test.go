@@ -12,11 +12,15 @@ import (
 
 // communicateCall builds a tool call to the communicate tool.
 func communicateCall(id, action, message string) llm.ToolCallData {
-	args, _ := json.Marshal(map[string]string{"action": action, "message": message})
+	return communicateCallArgs(id, map[string]any{"action": action, "message": message})
+}
+
+func communicateCallArgs(id string, args map[string]any) llm.ToolCallData {
+	raw, _ := json.Marshal(args)
 	return llm.ToolCallData{
 		ID:        id,
 		Name:      "communicate",
-		Arguments: args,
+		Arguments: raw,
 		Type:      "function",
 	}
 }
@@ -100,6 +104,56 @@ func TestCommunicate_ResultExitsLoop(t *testing.T) {
 	sess.Close()
 
 	// Only one LLM request should have been made.
+	if got := len(f.Requests()); got != 1 {
+		t.Fatalf("requests: got %d want 1", got)
+	}
+}
+
+func TestCommunicate_ResultStructuredOutputExitsLoop(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	comm := communicateCallArgs("c1", map[string]any{
+		"action": "result",
+		"output": map[string]any{
+			"decision": "approve",
+			"message":  "Structured final answer.",
+			"data": map[string]any{
+				"z": 1,
+				"a": "x",
+			},
+		},
+	})
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(comm)
+			},
+			func(req llm.Request) llm.Response {
+				t.Fatalf("should not reach second LLM call after communicate(result)")
+				return llm.Response{}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := sess.ProcessInput(ctx, "hi")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	want := `{"decision":"approve","message":"Structured final answer.","data":{"a":"x","z":1},"artifacts":[]}`
+	if strings.TrimSpace(out) != want {
+		t.Fatalf("ProcessInput returned %q, want %q", out, want)
+	}
+	sess.Close()
+
 	if got := len(f.Requests()); got != 1 {
 		t.Fatalf("requests: got %d want 1", got)
 	}
@@ -212,6 +266,32 @@ func TestCommunicate_InboxDrainsSteering(t *testing.T) {
 	inbox2, _ := resp2["inbox"].([]any)
 	if len(inbox2) != 0 {
 		t.Fatalf("expected empty inbox on second call, got: %v", inbox2)
+	}
+}
+
+func TestCommunicate_ResultSchemaRejectsMalformedOutput(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, communicateCallArgs("c1", map[string]any{
+		"action": "result",
+		"output": map[string]any{
+			"decision": "approve",
+			"message":  "missing data field",
+		},
+	}))
+	if !res.IsError {
+		t.Fatalf("expected schema error, got success: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "schema validation failed") {
+		t.Fatalf("expected schema validation error, got: %s", res.Output)
 	}
 }
 

@@ -623,7 +623,7 @@ func defWebSearch() llm.ToolDefinition {
 func defCommunicate() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "communicate",
-		Description: "Send a message to the user. Use action=status for progress updates, action=result for the final answer (exits the session).",
+		Description: "Send output to the user. Use action=status for progress updates. Use action=result for the final answer (exits the session), with either a legacy message or a structured output object.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -632,9 +632,53 @@ func defCommunicate() llm.ToolDefinition {
 					"type": "string",
 					"enum": []string{"status", "result"},
 				},
-				"message": map[string]any{"type": "string"},
+				"message": map[string]any{
+					"type":        "string",
+					"description": "Human-readable text. Required for action=status; optional for action=result when output is provided.",
+				},
+				"output": map[string]any{
+					"type":                 "object",
+					"description":          "Structured final output for automation workflows (action=result).",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"decision": map[string]any{"type": "string"},
+						"message":  map[string]any{"type": "string"},
+						"data":     map[string]any{"type": "object"},
+						"artifacts": map[string]any{
+							"type":  "array",
+							"items": map[string]any{"type": "string"},
+						},
+					},
+					"required": []string{"decision", "message", "data"},
+				},
 			},
-			"required": []string{"action", "message"},
+			"required": []string{"action"},
+			"oneOf": []any{
+				map[string]any{
+					"properties": map[string]any{
+						"action": map[string]any{"const": "status"},
+					},
+					"required": []string{"message"},
+					"not": map[string]any{
+						"required": []string{"output"},
+					},
+				},
+				map[string]any{
+					"properties": map[string]any{
+						"action": map[string]any{"const": "result"},
+					},
+					"required": []string{"message"},
+					"not": map[string]any{
+						"required": []string{"output"},
+					},
+				},
+				map[string]any{
+					"properties": map[string]any{
+						"action": map[string]any{"const": "result"},
+					},
+					"required": []string{"output"},
+				},
+			},
 		},
 	}
 }
