@@ -14,6 +14,18 @@ import (
 	"primeradiant.com/serf/internal/llm"
 )
 
+// toolCallEndOutput extracts the output from a TOOL_CALL_END event,
+// checking both "output" (success) and "error" (failure) keys.
+func toolCallEndOutput(ev SessionEvent) string {
+	if v, ok := ev.Data["output"]; ok {
+		return fmt.Sprint(v)
+	}
+	if v, ok := ev.Data["error"]; ok {
+		return fmt.Sprint(v)
+	}
+	return ""
+}
+
 func TestSession_MaxToolRoundsPerInput_StopsLoop(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -2748,7 +2760,7 @@ func TestSession_ReadBeforeWrite_WarnsOnUnreadFile(t *testing.T) {
 	defer mu.Unlock()
 	for _, ev := range events {
 		if ev.Kind == EventToolCallEnd && fmt.Sprint(ev.Data["tool_name"]) == "write_file" {
-			output := fmt.Sprint(ev.Data["full_output"])
+			output := toolCallEndOutput(ev)
 			if strings.Contains(output, "WARNING") && strings.Contains(output, "not been read") {
 				return // success
 			}
@@ -2829,7 +2841,7 @@ func TestSession_ReadBeforeWrite_NoWarningAfterRead(t *testing.T) {
 	defer mu.Unlock()
 	for _, ev := range events {
 		if ev.Kind == EventToolCallEnd && fmt.Sprint(ev.Data["tool_name"]) == "write_file" {
-			output := fmt.Sprint(ev.Data["full_output"])
+			output := toolCallEndOutput(ev)
 			if strings.Contains(output, "WARNING") {
 				t.Fatal("should not warn about write after read")
 			}
@@ -2894,7 +2906,7 @@ func TestSession_ReadBeforeWrite_NewFileNoWarning(t *testing.T) {
 	defer mu.Unlock()
 	for _, ev := range events {
 		if ev.Kind == EventToolCallEnd && fmt.Sprint(ev.Data["tool_name"]) == "write_file" {
-			output := fmt.Sprint(ev.Data["full_output"])
+			output := toolCallEndOutput(ev)
 			if strings.Contains(output, "WARNING") {
 				t.Fatal("should not warn when creating a new file")
 			}

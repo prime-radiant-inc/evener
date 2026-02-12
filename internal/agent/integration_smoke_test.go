@@ -170,7 +170,7 @@ func TestIntegration_ShellCommand(t *testing.T) {
 	var sawHello bool
 	for _, ev := range events {
 		if ev.Kind == EventToolCallEnd {
-			fullOutput, _ := ev.Data["full_output"].(string)
+			fullOutput, _ := ev.Data["output"].(string)
 			if strings.Contains(fullOutput, "hello from shell") {
 				sawHello = true
 				break

@@ -447,7 +447,11 @@ func TestSession_ToolOutputTruncation_OverridesLimitsAndKeepsFullOutputInEvents(
 	var full string
 	for ev := range sess.Events() {
 		if ev.Kind == EventToolCallEnd {
-			full = anyToString(ev.Data["full_output"])
+			if v := anyToString(ev.Data["output"]); v != "" {
+				full = v
+			} else {
+				full = anyToString(ev.Data["error"])
+			}
 		}
 	}
 	if strings.TrimSpace(full) == "" {
@@ -775,7 +779,7 @@ func TestSession_LoopDetection_EmitsEventAndInjectsSteering(t *testing.T) {
 		sess.mu.Unlock()
 		foundSteering := false
 		for _, tr := range turns {
-			if tr.Kind == TurnSteering && tr.Message.Role == llm.RoleUser && strings.Contains(tr.Message.Text(), "Loop detected:") {
+			if tr.Kind == TurnSteering && tr.Message.Role == llm.RoleUser && strings.Contains(tr.Message.Text(), "Warning: Loop detected") && strings.Contains(tr.Message.Text(), "Consider changing approach") {
 				foundSteering = true
 			}
 		}
@@ -792,7 +796,7 @@ func TestSession_LoopDetection_EmitsEventAndInjectsSteering(t *testing.T) {
 			loopEv = true
 		}
 		if ev.Kind == EventSteeringInjected {
-			if s, _ := ev.Data["text"].(string); strings.Contains(s, "Loop detected:") {
+			if s, _ := ev.Data["text"].(string); strings.Contains(s, "Warning: Loop detected") && strings.Contains(s, "Consider changing approach") {
 				steerEv = true
 			}
 		}
@@ -809,7 +813,7 @@ func TestSession_LoopDetection_EmitsEventAndInjectsSteering(t *testing.T) {
 	found := false
 	for _, req := range reqs {
 		for _, m := range req.Messages {
-			if m.Role == llm.RoleUser && strings.Contains(m.Text(), "Loop detected:") {
+			if m.Role == llm.RoleUser && strings.Contains(m.Text(), "Warning: Loop detected") {
 				found = true
 			}
 		}
@@ -1328,4 +1332,343 @@ func TestSession_CustomRegisteredTool_AppearsInSystemPrompt(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	sess.ProcessInput(ctx, "test")
+}
+
+func TestSession_ToolCallEnd_UsesOutputKeyOnSuccess(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	call := llm.ToolCallData{
+		ID:        "c1",
+		Name:      "glob",
+		Arguments: json.RawMessage(`{"pattern":"*.go","path":"."}`),
+		Type:      "function",
+	}
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Message: llm.Message{
+						Role:    llm.RoleAssistant,
+						Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
+					},
+				}
+			},
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("done")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	var events []SessionEvent
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range sess.Events() {
+			events = append(events, ev)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sess.ProcessInput(ctx, "test")
+	sess.Close()
+	<-done
+
+	var found *SessionEvent
+	for i, ev := range events {
+		if ev.Kind == EventToolCallEnd {
+			found = &events[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("no TOOL_CALL_END event found")
+	}
+
+	// Success: should have "output" key, not "full_output" or "is_error".
+	if _, ok := found.Data["output"]; !ok {
+		t.Fatalf("expected 'output' key in TOOL_CALL_END data, got: %v", found.Data)
+	}
+	if _, ok := found.Data["full_output"]; ok {
+		t.Fatal("TOOL_CALL_END should not have 'full_output' key")
+	}
+	if _, ok := found.Data["is_error"]; ok {
+		t.Fatal("TOOL_CALL_END should not have 'is_error' key")
+	}
+	if _, ok := found.Data["error"]; ok {
+		t.Fatal("TOOL_CALL_END for success should not have 'error' key")
+	}
+}
+
+func TestSession_ToolCallEnd_UsesErrorKeyOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	call := llm.ToolCallData{
+		ID:        "c1",
+		Name:      "read_file",
+		Arguments: json.RawMessage(`{"file_path":"/nonexistent/path/xyz.txt"}`),
+		Type:      "function",
+	}
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Message: llm.Message{
+						Role:    llm.RoleAssistant,
+						Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
+					},
+				}
+			},
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("done")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	var events []SessionEvent
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range sess.Events() {
+			events = append(events, ev)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sess.ProcessInput(ctx, "read missing file")
+	sess.Close()
+	<-done
+
+	var found *SessionEvent
+	for i, ev := range events {
+		if ev.Kind == EventToolCallEnd {
+			found = &events[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("no TOOL_CALL_END event found")
+	}
+
+	// Error: should have "error" key, not "output", "full_output", or "is_error".
+	if _, ok := found.Data["error"]; !ok {
+		t.Fatalf("expected 'error' key in TOOL_CALL_END data for error case, got: %v", found.Data)
+	}
+	if _, ok := found.Data["output"]; ok {
+		t.Fatal("TOOL_CALL_END for error should not have 'output' key")
+	}
+	if _, ok := found.Data["full_output"]; ok {
+		t.Fatal("TOOL_CALL_END should not have 'full_output' key")
+	}
+	if _, ok := found.Data["is_error"]; ok {
+		t.Fatal("TOOL_CALL_END should not have 'is_error' key")
+	}
+}
+
+func TestSession_AssistantTextStart_IncludesModel(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Model:   "test-model-42",
+					Message: llm.Assistant("hello"),
+				}
+			},
+		},
+	})
+
+	sess, err := NewSession(c, NewOpenAIProfile("test-model-42"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	var events []SessionEvent
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range sess.Events() {
+			events = append(events, ev)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sess.ProcessInput(ctx, "hi")
+	sess.Close()
+	<-done
+
+	var found *SessionEvent
+	for i, ev := range events {
+		if ev.Kind == EventAssistantTextStart {
+			found = &events[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("no ASSISTANT_TEXT_START event found")
+	}
+	model, ok := found.Data["model"].(string)
+	if !ok || model != "test-model-42" {
+		t.Fatalf("expected model 'test-model-42' in ASSISTANT_TEXT_START, got: %v", found.Data)
+	}
+}
+
+func TestSession_PauseTurn_DoesNotCountAsToolRound(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	// Return 3 pause_turns, then a final stop. With MaxToolRoundsPerInput=2,
+	// this should succeed because pause_turns are not counted.
+	callNum := 0
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				callNum++
+				return llm.Response{
+					Model:   "gpt-5.2",
+					Message: llm.Assistant("searching..."),
+					Finish:  llm.FinishReason{Reason: llm.FinishReasonPauseTurn, Raw: "pause_turn"},
+				}
+			},
+			func(req llm.Request) llm.Response {
+				callNum++
+				return llm.Response{
+					Model:   "gpt-5.2",
+					Message: llm.Assistant("still searching..."),
+					Finish:  llm.FinishReason{Reason: llm.FinishReasonPauseTurn, Raw: "pause_turn"},
+				}
+			},
+			func(req llm.Request) llm.Response {
+				callNum++
+				return llm.Response{
+					Model:   "gpt-5.2",
+					Message: llm.Assistant("more searching..."),
+					Finish:  llm.FinishReason{Reason: llm.FinishReasonPauseTurn, Raw: "pause_turn"},
+				}
+			},
+			func(req llm.Request) llm.Response {
+				callNum++
+				return llm.Response{
+					Model:   "gpt-5.2",
+					Message: llm.Assistant("here is the answer"),
+					Finish:  llm.FinishReason{Reason: "stop"},
+				}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxToolRoundsPerInput: 2, // Only 2 real rounds allowed.
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result, err := sess.ProcessInput(ctx, "search for something")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	if !strings.Contains(result, "here is the answer") {
+		t.Fatalf("expected final answer in result, got: %q", result)
+	}
+	// All 4 LLM calls should have been made (3 pause_turns + 1 stop).
+	reqs := f.Requests()
+	if len(reqs) != 4 {
+		t.Fatalf("expected 4 LLM calls (3 pause_turns + 1 stop), got %d", len(reqs))
+	}
+}
+
+func TestSession_LoopDetection_WarningWording(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	toolMsg := func() llm.Response {
+		return llm.Response{
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "glob", Arguments: json.RawMessage(`{"pattern":"*.go","path":"."}`)}},
+				},
+			},
+		}
+	}
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolMsg() },
+			func(req llm.Request) llm.Response { return toolMsg() },
+			func(req llm.Request) llm.Response { return toolMsg() },
+			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("ok")} },
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		LoopDetectionWindow: 3,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	var events []SessionEvent
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range sess.Events() {
+			events = append(events, ev)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sess.ProcessInput(ctx, "loop")
+	sess.Close()
+	<-done
+
+	// Verify the LOOP_DETECTION event message matches the spec wording.
+	var loopMsg string
+	for _, ev := range events {
+		if ev.Kind == EventLoopDetection {
+			loopMsg, _ = ev.Data["message"].(string)
+			break
+		}
+	}
+	if loopMsg == "" {
+		t.Fatal("no LOOP_DETECTION event found")
+	}
+	if !strings.Contains(loopMsg, "Warning: Loop detected") {
+		t.Fatalf("loop message should contain 'Warning: Loop detected', got: %q", loopMsg)
+	}
+	if !strings.Contains(loopMsg, "Consider changing approach") {
+		t.Fatalf("loop message should contain 'Consider changing approach', got: %q", loopMsg)
+	}
+	if strings.Contains(loopMsg, "Try a different approach") {
+		t.Fatalf("loop message should not contain old wording 'Try a different approach', got: %q", loopMsg)
+	}
 }

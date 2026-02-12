@@ -560,12 +560,16 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecR
 		})
 	}
 
-	s.emit(EventToolCallEnd, map[string]any{
-		"tool_name":   res.ToolName,
-		"call_id":     res.CallID,
-		"is_error":    res.IsError,
-		"full_output": res.FullOutput,
-	})
+	endData := map[string]any{
+		"tool_name": res.ToolName,
+		"call_id":   res.CallID,
+	}
+	if res.IsError {
+		endData["error"] = res.FullOutput
+	} else {
+		endData["output"] = res.FullOutput
+	}
+	s.emit(EventToolCallEnd, endData)
 	return res
 }
 
@@ -891,7 +895,9 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 
 			txt := resp.Text()
 			lastText = txt
-			s.emit(EventAssistantTextStart, map[string]any{})
+			s.emit(EventAssistantTextStart, map[string]any{
+				"model": resp.Model,
+			})
 			s.appendAssistantTurn(resp)
 			if strings.TrimSpace(txt) != "" {
 				s.emit(EventAssistantTextDelta, map[string]any{"delta": txt})
@@ -910,6 +916,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 
 		// pause_turn: model needs another turn (e.g. server-side web search still running).
 		if resp.Finish.Reason == llm.FinishReasonPauseTurn {
+			round-- // Don't count pause_turn as a tool round.
 			continue
 		}
 
@@ -980,7 +987,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		}
 		if s.cfg.EnableLoopDetection != nil && *s.cfg.EnableLoopDetection {
 			if detectLoop(toolSigs, s.cfg.LoopDetectionWindow) {
-				warning := fmt.Sprintf("Loop detected: repeating pattern in the last %d tool calls. Try a different approach.", s.cfg.LoopDetectionWindow)
+				warning := fmt.Sprintf("Warning: Loop detected — the same tool call pattern has repeated %d times. Consider changing approach.", s.cfg.LoopDetectionWindow)
 				s.emit(EventLoopDetection, map[string]any{"message": warning})
 				s.appendTurn(TurnSteering, llm.User(warning))
 				s.emit(EventSteeringInjected, map[string]any{"text": warning})
