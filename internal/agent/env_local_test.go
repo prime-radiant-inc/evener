@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -665,6 +667,20 @@ func TestGrepNative_OutputMode_FilesWithMatches(t *testing.T) {
 	}
 	if strings.Contains(result, "c.txt") {
 		t.Error("non-matching file should not appear")
+	}
+}
+
+func TestLocalExecutionEnvironment_OSVersion_ReturnsActualVersion(t *testing.T) {
+	env := NewLocalExecutionEnvironment(t.TempDir())
+	version := env.OSVersion()
+	// Should NOT be just "darwin/arm64" or "linux/amd64".
+	if version == runtime.GOOS+"/"+runtime.GOARCH {
+		t.Errorf("OSVersion should return actual version, not GOOS/GOARCH, got %q", version)
+	}
+	// Should contain something that looks like a version number.
+	matched, _ := regexp.MatchString(`\d+\.\d+`, version)
+	if !matched {
+		t.Errorf("OSVersion should contain a version number, got %q", version)
 	}
 }
 

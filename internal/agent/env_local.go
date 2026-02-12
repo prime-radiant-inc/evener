@@ -90,7 +90,26 @@ func (e *LocalExecutionEnvironment) Platform() string {
 	}
 }
 
-func (e *LocalExecutionEnvironment) OSVersion() string { return runtime.GOOS + "/" + runtime.GOARCH }
+func (e *LocalExecutionEnvironment) OSVersion() string {
+	switch runtime.GOOS {
+	case "darwin":
+		out, err := exec.Command("uname", "-rs").Output()
+		if err == nil {
+			return strings.TrimSpace(string(out))
+		}
+	case "linux":
+		out, err := exec.Command("uname", "-rs").Output()
+		if err == nil {
+			return strings.TrimSpace(string(out))
+		}
+	case "windows":
+		out, err := exec.Command("cmd", "/c", "ver").Output()
+		if err == nil {
+			return strings.TrimSpace(string(out))
+		}
+	}
+	return runtime.GOOS + "/" + runtime.GOARCH // fallback
+}
 
 func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limitLines *int) (string, error) {
 	abs := e.resolve(path)
