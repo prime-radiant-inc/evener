@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -349,6 +350,65 @@ func TestTruncateChars_UTF8Aware(t *testing.T) {
 	}
 	if !strings.Contains(result2, "😂🤣😃") {
 		t.Error("TruncTail should keep last 3 emojis")
+	}
+}
+
+func TestToolRegistry_Middleware_CalledBeforeExecution(t *testing.T) {
+	reg := NewToolRegistry()
+	reg.Register(RegisteredTool{
+		Definition: llm.ToolDefinition{
+			Name:        "test_tool",
+			Description: "test",
+			Parameters:  map[string]any{"type": "object"},
+		},
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			return "executed", nil
+		},
+	})
+
+	var middlewareCalled bool
+	reg.Use(func(ctx context.Context, name string, args map[string]any) error {
+		middlewareCalled = true
+		return nil
+	})
+
+	result := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "test_tool", ID: "c1"})
+	if !middlewareCalled {
+		t.Error("middleware must be called before execution")
+	}
+	if result.IsError {
+		t.Errorf("expected success, got error: %s", result.Output)
+	}
+}
+
+func TestToolRegistry_Middleware_CanBlockExecution(t *testing.T) {
+	reg := NewToolRegistry()
+	var execCalled bool
+	reg.Register(RegisteredTool{
+		Definition: llm.ToolDefinition{
+			Name:        "test_tool",
+			Description: "test",
+			Parameters:  map[string]any{"type": "object"},
+		},
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			execCalled = true
+			return "executed", nil
+		},
+	})
+
+	reg.Use(func(ctx context.Context, name string, args map[string]any) error {
+		return fmt.Errorf("permission denied: tool blocked by policy")
+	})
+
+	result := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "test_tool", ID: "c1"})
+	if !result.IsError {
+		t.Error("middleware rejection should produce error result")
+	}
+	if !strings.Contains(result.Output, "permission denied") {
+		t.Errorf("expected 'permission denied' in output, got: %s", result.Output)
+	}
+	if execCalled {
+		t.Error("tool should not have been executed when middleware blocked")
 	}
 }
 

@@ -49,13 +49,26 @@ type RegisteredTool struct {
 	Limit ToolOutputLimit
 }
 
+// ToolMiddleware is called after argument validation but before tool execution.
+// Return a non-nil error to block execution (the error message is returned to the LLM).
+type ToolMiddleware func(ctx context.Context, toolName string, args map[string]any) error
+
 type ToolRegistry struct {
-	mu    sync.RWMutex
-	tools map[string]RegisteredTool
+	mu         sync.RWMutex
+	tools      map[string]RegisteredTool
+	middleware []ToolMiddleware
 }
 
 func NewToolRegistry() *ToolRegistry {
 	return &ToolRegistry{tools: map[string]RegisteredTool{}}
+}
+
+// Use appends a middleware to the tool execution pipeline.
+// Middleware runs after argument validation but before tool execution.
+func (r *ToolRegistry) Use(mw ToolMiddleware) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.middleware = append(r.middleware, mw)
 }
 
 func (r *ToolRegistry) Register(t RegisteredTool) error {
@@ -161,6 +174,15 @@ func (r *ToolRegistry) ExecuteCall(ctx context.Context, env ExecutionEnvironment
 	if err := t.Schema.Validate(args); err != nil {
 		msg := fmt.Sprintf("tool args schema validation failed: %v", err)
 		return truncateResult(name, callID, msg, true, t.Limit)
+	}
+
+	r.mu.RLock()
+	mws := r.middleware
+	r.mu.RUnlock()
+	for _, mw := range mws {
+		if err := mw(ctx, name, args); err != nil {
+			return truncateResult(name, callID, err.Error(), true, t.Limit)
+		}
 	}
 
 	v, err := t.Exec(ctx, env, args)
