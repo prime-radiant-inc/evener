@@ -445,6 +445,34 @@ func TestGrepNative_InvalidRegex(t *testing.T) {
 	}
 }
 
+func TestExecCommand_ShellSelection(t *testing.T) {
+	env := NewLocalExecutionEnvironment(t.TempDir())
+	result, err := env.ExecCommand(context.Background(), "echo hello", 5000, "", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result.Stdout, "hello") {
+		t.Errorf("expected stdout to contain 'hello', got: %q", result.Stdout)
+	}
+}
+
+func TestShellCommand_ReturnsValidCmd(t *testing.T) {
+	cmd := shellCommand("echo test")
+	if cmd == nil {
+		t.Fatal("shellCommand returned nil")
+	}
+	if runtime.GOOS == "windows" {
+		if cmd.Path == "" || !strings.Contains(cmd.Path, "cmd") {
+			t.Errorf("on windows, expected cmd.exe, got: %s", cmd.Path)
+		}
+	} else {
+		// Should use bash or sh
+		if !strings.Contains(cmd.Path, "sh") {
+			t.Errorf("on unix, expected bash or sh, got: %s", cmd.Path)
+		}
+	}
+}
+
 func TestExecCommand_UsesNonLoginShell(t *testing.T) {
 	env := NewLocalExecutionEnvironment(t.TempDir())
 	ctx := context.Background()

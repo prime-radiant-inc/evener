@@ -489,7 +489,7 @@ func (e *LocalExecutionEnvironment) ExecCommand(ctx context.Context, command str
 	}
 
 	start := time.Now()
-	cmd := exec.Command("/bin/bash", "-c", command)
+	cmd := shellCommand(command)
 	cmd.Dir = dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Env = filteredEnvWithPolicy(e.EnvPolicy, envVars)
@@ -554,6 +554,19 @@ func (e *LocalExecutionEnvironment) ExecCommand(ctx context.Context, command str
 		TimedOut:   timedOut,
 		DurationMS: time.Since(start).Milliseconds(),
 	}, waitErr
+}
+
+// shellCommand returns an *exec.Cmd that runs the given command string
+// through the platform's default shell.
+func shellCommand(command string) *exec.Cmd {
+	if runtime.GOOS == "windows" {
+		return exec.Command("cmd.exe", "/c", command)
+	}
+	shell := "/bin/bash"
+	if _, err := os.Stat(shell); err != nil {
+		shell = "/bin/sh"
+	}
+	return exec.Command(shell, "-c", command)
 }
 
 func (e *LocalExecutionEnvironment) resolve(path string) string {
