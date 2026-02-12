@@ -1672,3 +1672,84 @@ func TestSession_LoopDetection_WarningWording(t *testing.T) {
 		t.Fatalf("loop message should not contain old wording 'Try a different approach', got: %q", loopMsg)
 	}
 }
+
+func TestSession_SetModel_TakesEffectOnNextCall(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	var capturedModel string
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				capturedModel = req.Model
+				return llm.Response{Message: llm.Assistant("ok")}
+			},
+			func(req llm.Request) llm.Response {
+				capturedModel = req.Model
+				return llm.Response{Message: llm.Assistant("ok")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sess.ProcessInput(ctx, "first")
+	if capturedModel != "test-model" {
+		t.Errorf("expected 'test-model', got %q", capturedModel)
+	}
+
+	sess.SetModel("new-model")
+	sess.ProcessInput(ctx, "second")
+	if capturedModel != "new-model" {
+		t.Errorf("expected 'new-model', got %q", capturedModel)
+	}
+}
+
+func TestSession_SetTimeout(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	sess.SetTimeout(30000)
+	if sess.cfg.DefaultCommandTimeoutMS != 30000 {
+		t.Errorf("expected 30000, got %d", sess.cfg.DefaultCommandTimeoutMS)
+	}
+}
+
+func TestSession_RegisterTool(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	sess.RegisterTool("my_tool", "a custom tool", map[string]any{"type": "object"}, func(ctx context.Context, args any) (any, error) {
+		return "hello from custom", nil
+	})
+
+	tool := sess.reg.Get("my_tool")
+	if tool == nil {
+		t.Fatal("expected tool to be registered")
+	}
+	if tool.Definition.Description != "a custom tool" {
+		t.Errorf("expected description 'a custom tool', got %q", tool.Definition.Description)
+	}
+}

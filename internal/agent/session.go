@@ -411,6 +411,36 @@ func (s *Session) SetReasoningEffort(effort string) {
 	s.cfg.ReasoningEffort = strings.TrimSpace(effort)
 }
 
+// SetModel changes the model used for future LLM calls.
+// Takes effect on the next request.
+func (s *Session) SetModel(model string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.profile = s.profile.WithModel(model)
+}
+
+// SetTimeout changes the default command timeout for shell tool invocations.
+// Takes effect on the next tool execution.
+func (s *Session) SetTimeout(timeoutMS int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cfg.DefaultCommandTimeoutMS = timeoutMS
+}
+
+// RegisterTool registers a custom tool at runtime.
+func (s *Session) RegisterTool(name, description string, params map[string]any, fn func(ctx context.Context, args any) (any, error)) {
+	s.reg.Register(RegisteredTool{
+		Definition: llm.ToolDefinition{
+			Name:        name,
+			Description: description,
+			Parameters:  params,
+		},
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			return fn(ctx, args)
+		},
+	})
+}
+
 // Steer queues a message to inject after the current tool round completes.
 func (s *Session) Steer(msg string) {
 	s.mu.Lock()
