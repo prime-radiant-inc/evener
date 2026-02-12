@@ -129,6 +129,81 @@ func TestSession_MaxToolRoundsPerInput_EmitsTurnLimitEvent(t *testing.T) {
 	}
 }
 
+func TestSession_MaxToolRoundsPerInput_NegativeMeansUnlimited(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	toolMsg := func(id string) llm.Response {
+		call := llm.ToolCallData{
+			ID:        id,
+			Name:      "glob",
+			Arguments: json.RawMessage(`{"pattern":"*.go","path":"."}`),
+			Type:      "function",
+		}
+		return llm.Response{
+			Message: llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
+			},
+		}
+	}
+
+	// 3 rounds of tool calls, then fall through to fakeAdapter's default "done" response.
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolMsg("1") },
+			func(req llm.Request) llm.Response { return toolMsg("2") },
+			func(req llm.Request) llm.Response { return toolMsg("3") },
+			// Step 4 not defined → fakeAdapter returns default "done" text.
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxToolRoundsPerInput: -1, // unlimited
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	result, err := sess.ProcessInput(ctx, "do stuff")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	sess.Close()
+
+	if result != "done" {
+		t.Fatalf("expected result 'done', got %q", result)
+	}
+	// 4 total LLM calls: 3 tool rounds + 1 final text.
+	if got := len(f.Requests()); got != 4 {
+		t.Fatalf("expected 4 LLM requests, got %d", got)
+	}
+}
+
+func TestSessionConfig_ApplyDefaults_MaxToolRounds(t *testing.T) {
+	tests := []struct {
+		name  string
+		input int
+		want  int
+	}{
+		{"zero defaults to 200", 0, 200},
+		{"positive preserved", 50, 50},
+		{"negative preserved (unlimited)", -1, -1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := SessionConfig{MaxToolRoundsPerInput: tt.input}
+			cfg.applyDefaults()
+			if cfg.MaxToolRoundsPerInput != tt.want {
+				t.Fatalf("MaxToolRoundsPerInput: got %d, want %d", cfg.MaxToolRoundsPerInput, tt.want)
+			}
+		})
+	}
+}
+
 func TestSession_LifecycleEvents_BracketSession(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()

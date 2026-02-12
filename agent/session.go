@@ -75,7 +75,7 @@ type SessionConfig struct {
 }
 
 func (c *SessionConfig) applyDefaults() {
-	if c.MaxToolRoundsPerInput <= 0 {
+	if c.MaxToolRoundsPerInput == 0 {
 		c.MaxToolRoundsPerInput = 200
 	}
 	if c.DefaultCommandTimeoutMS <= 0 {
@@ -791,7 +791,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 	var lastText string // accumulated assistant text for round-limit return
 	ctxWarned := false
 
-	for round := 0; round < s.cfg.MaxToolRoundsPerInput; round++ {
+	for round := 0; s.cfg.MaxToolRoundsPerInput < 0 || round < s.cfg.MaxToolRoundsPerInput; round++ {
 		select {
 		case <-ctx.Done():
 			s.emit(EventError, ErrorData{Error: ctx.Err().Error()})

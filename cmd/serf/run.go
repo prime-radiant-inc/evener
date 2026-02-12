@@ -24,6 +24,7 @@ type runConfig struct {
 	stateDir           string   // --state-dir override
 	systemPrompt       string   // --system-prompt file path
 	systemPromptAppend []string // --system-prompt-append file paths
+	maxRounds          int      // --max-rounds (-1=default, 0=unlimited, >0=limit)
 	verbose            bool
 	stdout             io.Writer
 	stderr             io.Writer
@@ -129,15 +130,16 @@ func run(ctx context.Context, cfg runConfig) error {
 		}
 		fmt.Fprintf(cfg.stderr, "[resumed] session %s (%d turns)\n", snap.ID, snap.TurnCount) //nolint:errcheck
 	} else {
-		sess, err = agent.NewSession(client, profile, env, agent.SessionConfig{
-			MaxToolRoundsPerInput: 200,
+		sessionCfg := agent.SessionConfig{
+			MaxToolRoundsPerInput: maxRoundsToConfig(cfg.maxRounds),
 			StateDir:              stateDir,
 			SystemPromptFile:      cfg.systemPrompt,
 			SystemPromptAppend:    cfg.systemPromptAppend,
 			SkillsDirs:            cfg.skillsDirs,
 			MCPConfigFiles:        cfg.mcpConfigs,
 			MCPInline:             cfg.mcpServers,
-		})
+		}
+		sess, err = agent.NewSession(client, profile, env, sessionCfg)
 		if err != nil {
 			return fmt.Errorf("session creation: %w", err)
 		}
@@ -324,5 +326,21 @@ func selectProfile(provider, model string) (agent.ProviderProfile, error) {
 		return agent.NewGeminiProfile(model), nil
 	default:
 		return nil, fmt.Errorf("unknown provider %q: must be openai, anthropic, or google", provider)
+	}
+}
+
+// maxRoundsToConfig converts a --max-rounds CLI value to a SessionConfig value.
+//
+//	-1 (not specified) → 0 (applyDefaults sets to 200)
+//	 0 (unlimited)     → -1 (negative means no limit)
+//	>0 (explicit)      → that value
+func maxRoundsToConfig(cliValue int) int {
+	switch {
+	case cliValue > 0:
+		return cliValue
+	case cliValue == 0:
+		return -1
+	default:
+		return 0
 	}
 }

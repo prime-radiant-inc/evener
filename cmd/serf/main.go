@@ -29,6 +29,7 @@ func main() {
 	resumeWith := flag.String("resume-with", "", "start a new task using a previous session's context")
 	resumeLast := flag.Bool("resume-last", false, "resume the most recent session")
 	listSessionsFlag := flag.Bool("list-sessions", false, "list saved sessions and exit")
+	maxRounds := flag.Int("max-rounds", -1, "max tool rounds per input (0=unlimited, default: 200)")
 	verbose := flag.Bool("verbose", false, "emit NDJSON events to stderr")
 	var skillsDirs stringSliceFlag
 	flag.Var(&skillsDirs, "skills-dir", "extra skill directory (repeatable)")
@@ -51,6 +52,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  --system-prompt <path> Path to a custom system prompt file (replaces default)\n")
 		fmt.Fprintf(os.Stderr, "  --system-prompt-append <path> Append to system prompt (repeatable)\n")
 		fmt.Fprintf(os.Stderr, "  --state-dir <path>   Override runtime state directory (sessions, tasks)\n")
+		fmt.Fprintf(os.Stderr, "  --max-rounds <n>     Max tool rounds per input (0=unlimited, default: 200)\n")
 		fmt.Fprintf(os.Stderr, "  --verbose            Emit NDJSON events to stderr (replaces human-readable output)\n")
 		fmt.Fprintf(os.Stderr, "  --skills-dir <path>  Extra skill directory (repeatable)\n")
 		fmt.Fprintf(os.Stderr, "  --mcp <spec>         MCP server (repeatable, format: name:command args...)\n")
@@ -99,6 +101,7 @@ func main() {
 		stateDir:           *stateDir,
 		systemPrompt:       *systemPrompt,
 		systemPromptAppend: []string(systemPromptAppend),
+		maxRounds:          *maxRounds,
 		verbose:            *verbose,
 		skillsDirs:         []string(skillsDirs),
 		mcpServers:         []string(mcpServers),

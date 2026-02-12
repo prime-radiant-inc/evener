@@ -448,3 +448,25 @@ func TestDrainEventsHuman(t *testing.T) {
 }
 
 func intPtr(v int) *int { return &v }
+
+func TestMaxRoundsToConfig(t *testing.T) {
+	tests := []struct {
+		name     string
+		cli      int
+		wantConf int
+	}{
+		{"not specified", -1, 0},   // 0 → applyDefaults sets to 200
+		{"unlimited", 0, -1},       // -1 → no limit in session loop
+		{"explicit limit", 50, 50}, // pass through
+		{"explicit limit 1", 1, 1}, // edge case
+		{"very negative", -999, 0}, // any negative → not specified
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := maxRoundsToConfig(tt.cli)
+			if got != tt.wantConf {
+				t.Fatalf("maxRoundsToConfig(%d) = %d, want %d", tt.cli, got, tt.wantConf)
+			}
+		})
+	}
+}
