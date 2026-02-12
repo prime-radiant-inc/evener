@@ -757,6 +757,20 @@ func TestGeminiProfile_ProviderPromptUsesMappedToolNames(t *testing.T) {
 	}
 }
 
+func TestAnthropicProfile_ContextWindow_Is1M(t *testing.T) {
+	p := NewAnthropicProfile("claude-sonnet-4-5-20250929")
+	if p.ContextWindowSize() != 1_000_000 {
+		t.Errorf("expected 1000000, got %d", p.ContextWindowSize())
+	}
+}
+
+func TestGeminiProfile_ContextWindow_Is1M(t *testing.T) {
+	p := NewGeminiProfile("gemini-2.5-flash")
+	if p.ContextWindowSize() != 1_000_000 {
+		t.Errorf("expected 1000000, got %d", p.ContextWindowSize())
+	}
+}
+
 func TestBuildSystemPrompt_ExtraToolsBeforeProjectDocs(t *testing.T) {
 	p := NewOpenAIProfile("gpt-5.2")
 	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux", Today: "2026-02-11"}
