@@ -51,8 +51,8 @@ func TestSession_MaxToolRoundsPerInput_StopsLoop(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err = sess.ProcessInput(ctx, "loop")
-	if err == nil || !strings.Contains(err.Error(), "max tool rounds") {
-		t.Fatalf("expected max tool rounds error, got %v", err)
+	if err != nil {
+		t.Fatalf("round limit should return nil error, got %v", err)
 	}
 	sess.Close()
 
@@ -98,8 +98,8 @@ func TestSession_MaxToolRoundsPerInput_EmitsTurnLimitEvent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err = sess.ProcessInput(ctx, "loop")
-	if err == nil || !strings.Contains(err.Error(), "max tool rounds") {
-		t.Fatalf("expected max tool rounds error, got %v", err)
+	if err != nil {
+		t.Fatalf("round limit should return nil error, got %v", err)
 	}
 	sess.Close()
 
@@ -275,10 +275,10 @@ func TestSession_MaxTurns_StopsAcrossInputsAndEmitsEvent(t *testing.T) {
 		t.Fatalf("expected first input to succeed, got %v", err)
 	}
 
-	// Second input should hit the turn limit.
+	// Second input should hit the turn limit but return nil error.
 	_, err = sess.ProcessInput(ctx, "second input")
-	if err == nil || !strings.Contains(err.Error(), "turn limit") {
-		t.Fatalf("expected turn limit error, got %v", err)
+	if err != nil {
+		t.Fatalf("turn limit should return nil error, got %v", err)
 	}
 	sess.Close()
 
@@ -1908,10 +1908,10 @@ func TestMaxTurns_CountsConversationTurns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second input: %v", err)
 	}
-	// Third input (turn 3): should hit limit
+	// Third input (turn 3): should hit limit but return nil error
 	_, err = sess.ProcessInput(context.Background(), "third")
-	if err == nil {
-		t.Fatal("expected turn limit error on third input")
+	if err != nil {
+		t.Fatalf("turn limit should return nil error, got: %v", err)
 	}
 }
 
@@ -2387,10 +2387,10 @@ func TestSession_MaxTurns_SetsStateToIdle(t *testing.T) {
 		t.Fatalf("first input: %v", err)
 	}
 
-	// Second input hits the turn limit.
+	// Second input hits the turn limit but returns nil error.
 	_, err = sess.ProcessInput(ctx, "second")
-	if err == nil {
-		t.Fatalf("expected error on turn limit")
+	if err != nil {
+		t.Fatalf("turn limit should return nil error, got %v", err)
 	}
 
 	if got := sess.State(); got != SessionIdle {
@@ -3333,5 +3333,145 @@ func TestDetectLoop_Patterns(t *testing.T) {
 				t.Fatalf("detectLoop(%v, %d) = %v, want %v", tt.sigs, tt.window, got, tt.want)
 			}
 		})
+	}
+}
+
+// GAP-2.16: Round limit returns nil error and accumulated text (not an error).
+func TestSession_RoundLimit_ReturnsNilError(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	toolMsg := func(id, text string) llm.Response {
+		call := llm.ToolCallData{
+			ID:        id,
+			Name:      "glob",
+			Arguments: json.RawMessage(`{"pattern":"*.go","path":"."}`),
+			Type:      "function",
+		}
+		return llm.Response{
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentText, Text: text},
+					{Kind: llm.ContentToolCall, ToolCall: &call},
+				},
+			},
+		}
+	}
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolMsg("1", "round one") },
+			func(req llm.Request) llm.Response { return toolMsg("2", "round two") },
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxToolRoundsPerInput: 2,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() { for range sess.Events() {} }()
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err = sess.ProcessInput(ctx, "loop")
+	if err != nil {
+		t.Fatalf("round limit should return nil error, got: %v", err)
+	}
+}
+
+// GAP-2.17: Turn limit uses >= so MaxTurns=2 allows exactly 2 inputs.
+func TestSession_TurnLimit_UsesGreaterEqual(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("ok1"), Finish: llm.FinishReason{Reason: "stop"}}
+			},
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("ok2"), Finish: llm.FinishReason{Reason: "stop"}}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxTurns: 2,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() { for range sess.Events() {} }()
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Turn 1 succeeds.
+	_, err = sess.ProcessInput(ctx, "first")
+	if err != nil {
+		t.Fatalf("first input should succeed: %v", err)
+	}
+
+	// Turn 2 succeeds.
+	_, err = sess.ProcessInput(ctx, "second")
+	if err != nil {
+		t.Fatalf("second input should succeed: %v", err)
+	}
+
+	// Turn 3 should be blocked (turns=3 >= MaxTurns=2).
+	_, err = sess.ProcessInput(ctx, "third")
+	// Under GAP-2.04, the turn limit returns nil error, not an error.
+	if err != nil {
+		t.Fatalf("turn limit should return nil error, got: %v", err)
+	}
+}
+
+// GAP-2.04: Turn limit returns nil error (not an error).
+func TestSession_TurnLimit_ReturnsNilError(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("ok"), Finish: llm.FinishReason{Reason: "stop"}}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxTurns: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() { for range sess.Events() {} }()
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Turn 1 succeeds.
+	_, err = sess.ProcessInput(ctx, "first")
+	if err != nil {
+		t.Fatalf("first input should succeed: %v", err)
+	}
+
+	// Turn 2 should be blocked but return nil error.
+	_, err = sess.ProcessInput(ctx, "second")
+	if err != nil {
+		t.Fatalf("turn limit should return nil error, got: %v", err)
 	}
 }

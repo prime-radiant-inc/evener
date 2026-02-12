@@ -728,18 +728,22 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 	s.appendTurn(TurnUserInput, llm.User(input))
 
 	// Count conversation turns (user input -> model response pairs), not LLM round-trips.
+	// Check the limit before incrementing so MaxTurns=N allows exactly N inputs.
 	s.mu.Lock()
-	s.turns++
 	turns := s.turns
 	s.mu.Unlock()
 
-	if s.cfg.MaxTurns > 0 && turns > s.cfg.MaxTurns {
+	if s.cfg.MaxTurns > 0 && turns >= s.cfg.MaxTurns {
 		s.emit(EventTurnLimit, map[string]any{"max_turns": s.cfg.MaxTurns})
 		s.mu.Lock()
 		s.state = SessionIdle
 		s.mu.Unlock()
-		return "", fmt.Errorf("turn limit reached")
+		return "", nil
 	}
+
+	s.mu.Lock()
+	s.turns++
+	s.mu.Unlock()
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
 	for _, msg := range s.drainSteering() {
@@ -748,6 +752,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 	}
 
 	var toolSigs []string
+	var lastText string // accumulated assistant text for round-limit return
 	ctxWarned := false
 
 	for round := 0; round < s.cfg.MaxToolRoundsPerInput; round++ {
@@ -885,6 +890,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		}
 
 			txt := resp.Text()
+			lastText = txt
 			s.emit(EventAssistantTextStart, map[string]any{})
 			s.appendAssistantTurn(resp)
 			if strings.TrimSpace(txt) != "" {
@@ -1004,7 +1010,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 	s.mu.Lock()
 	s.state = SessionIdle
 	s.mu.Unlock()
-	return "", fmt.Errorf("max tool rounds reached")
+	return lastText, nil
 }
 
 func (s *Session) drainSteering() []string {
