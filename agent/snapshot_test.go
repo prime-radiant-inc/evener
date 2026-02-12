@@ -1,0 +1,487 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"primeradiant.com/serf/llm"
+)
+
+func testSnapshot() SessionSnapshot {
+	return SessionSnapshot{
+		ID:        "01JTEST000000000000000001",
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config: SessionConfig{
+			MaxToolRoundsPerInput: 200,
+			ReasoningEffort:       "high",
+		},
+		EnvInfo: EnvironmentInfo{
+			WorkingDir: "/tmp/test",
+			Platform:   "linux",
+			IsGitRepo:  true,
+			GitBranch:  "main",
+		},
+		History: []Turn{
+			{Kind: TurnUserInput, Message: llm.User("hello")},
+			{Kind: TurnAssistant, Message: llm.Assistant("hi there")},
+		},
+		CreatedAt: time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC),
+		UpdatedAt: time.Date(2025, 1, 15, 10, 5, 0, 0, time.UTC),
+		TurnCount: 2,
+	}
+}
+
+func TestSessionSnapshot_JSONRoundTrip(t *testing.T) {
+	orig := testSnapshot()
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got SessionSnapshot
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.ID != orig.ID {
+		t.Fatalf("id: got %q want %q", got.ID, orig.ID)
+	}
+	if got.ProfileID != orig.ProfileID {
+		t.Fatalf("profile_id: got %q want %q", got.ProfileID, orig.ProfileID)
+	}
+	if got.Model != orig.Model {
+		t.Fatalf("model: got %q want %q", got.Model, orig.Model)
+	}
+	if len(got.History) != len(orig.History) {
+		t.Fatalf("history length: got %d want %d", len(got.History), len(orig.History))
+	}
+	if got.History[0].Kind != TurnUserInput {
+		t.Fatalf("history[0].kind: got %q want %q", got.History[0].Kind, TurnUserInput)
+	}
+	if got.History[1].Message.Text() != "hi there" {
+		t.Fatalf("history[1].text: got %q want %q", got.History[1].Message.Text(), "hi there")
+	}
+	if got.TurnCount != 2 {
+		t.Fatalf("turn_count: got %d want %d", got.TurnCount, 2)
+	}
+	if !got.CreatedAt.Equal(orig.CreatedAt) {
+		t.Fatalf("created_at: got %v want %v", got.CreatedAt, orig.CreatedAt)
+	}
+}
+
+func TestSaveSession_CreatesFileAtomically(t *testing.T) {
+	dir := t.TempDir()
+	snap := testSnapshot()
+
+	if err := SaveSession(dir, snap); err != nil {
+		t.Fatalf("SaveSession: %v", err)
+	}
+
+	// File should exist at .serf/sessions/<id>.json
+	path := filepath.Join(dir, "sessions", snap.ID+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var got SessionSnapshot
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal saved file: %v", err)
+	}
+	if got.ID != snap.ID {
+		t.Fatalf("saved id: got %q want %q", got.ID, snap.ID)
+	}
+
+	// No .tmp files should remain.
+	entries, _ := os.ReadDir(filepath.Join(dir, "sessions"))
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) == ".tmp" {
+			t.Fatalf("temp file not cleaned up: %s", e.Name())
+		}
+	}
+}
+
+func TestSaveSession_OverwritesExisting(t *testing.T) {
+	dir := t.TempDir()
+	snap := testSnapshot()
+
+	if err := SaveSession(dir, snap); err != nil {
+		t.Fatalf("SaveSession first: %v", err)
+	}
+
+	// Update and save again.
+	snap.TurnCount = 10
+	snap.UpdatedAt = time.Date(2025, 1, 15, 11, 0, 0, 0, time.UTC)
+	if err := SaveSession(dir, snap); err != nil {
+		t.Fatalf("SaveSession second: %v", err)
+	}
+
+	loaded, err := LoadSession(dir, snap.ID)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if loaded.TurnCount != 10 {
+		t.Fatalf("turn_count after overwrite: got %d want 10", loaded.TurnCount)
+	}
+}
+
+func TestLoadSession_NotFound(t *testing.T) {
+	dir := t.TempDir()
+	_, err := LoadSession(dir, "NONEXISTENT")
+	if err == nil {
+		t.Fatalf("expected error for nonexistent session")
+	}
+}
+
+func TestLoadSession_CorruptJSON(t *testing.T) {
+	dir := t.TempDir()
+	sessDir := filepath.Join(dir, "sessions")
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sessDir, "CORRUPT.json"), []byte("{invalid"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	_, err := LoadSession(dir, "CORRUPT")
+	if err == nil {
+		t.Fatalf("expected error for corrupt JSON")
+	}
+}
+
+func TestListSessions_SortedByUpdatedAt(t *testing.T) {
+	dir := t.TempDir()
+
+	snap1 := testSnapshot()
+	snap1.ID = "01JTEST000000000000000001"
+	snap1.UpdatedAt = time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC)
+
+	snap2 := testSnapshot()
+	snap2.ID = "01JTEST000000000000000002"
+	snap2.UpdatedAt = time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
+
+	snap3 := testSnapshot()
+	snap3.ID = "01JTEST000000000000000003"
+	snap3.UpdatedAt = time.Date(2025, 1, 15, 11, 0, 0, 0, time.UTC)
+
+	for _, s := range []SessionSnapshot{snap1, snap2, snap3} {
+		if err := SaveSession(dir, s); err != nil {
+			t.Fatalf("SaveSession %s: %v", s.ID, err)
+		}
+	}
+
+	list, err := ListSessions(dir)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(list) != 3 {
+		t.Fatalf("list length: got %d want 3", len(list))
+	}
+	// Most recently updated first.
+	if list[0].ID != snap2.ID {
+		t.Fatalf("list[0].id: got %q want %q", list[0].ID, snap2.ID)
+	}
+	if list[1].ID != snap3.ID {
+		t.Fatalf("list[1].id: got %q want %q", list[1].ID, snap3.ID)
+	}
+	if list[2].ID != snap1.ID {
+		t.Fatalf("list[2].id: got %q want %q", list[2].ID, snap1.ID)
+	}
+}
+
+func TestListSessions_EmptyDir(t *testing.T) {
+	dir := t.TempDir()
+	list, err := ListSessions(dir)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("expected empty list, got %d", len(list))
+	}
+}
+
+func TestListSessions_SkipsCorruptFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	// Save a valid snapshot.
+	snap := testSnapshot()
+	if err := SaveSession(dir, snap); err != nil {
+		t.Fatalf("SaveSession: %v", err)
+	}
+
+	// Add a corrupt file.
+	sessDir := filepath.Join(dir, "sessions")
+	if err := os.WriteFile(filepath.Join(sessDir, "CORRUPT.json"), []byte("{bad"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	list, err := ListSessions(dir)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 valid session, got %d", len(list))
+	}
+	if list[0].ID != snap.ID {
+		t.Fatalf("id: got %q want %q", list[0].ID, snap.ID)
+	}
+}
+
+// snapshotFakeAdapter is a minimal adapter for RestoreSession tests.
+type snapshotFakeAdapter struct {
+	name string
+
+	mu       sync.Mutex
+	requests []llm.Request
+}
+
+func (a *snapshotFakeAdapter) Name() string { return a.name }
+func (a *snapshotFakeAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	_ = ctx
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.requests = append(a.requests, req)
+	return llm.Response{Provider: a.name, Model: req.Model, Message: llm.Assistant("restored response")}, nil
+}
+func (a *snapshotFakeAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	return nil, errors.New("not implemented")
+}
+func (a *snapshotFakeAdapter) Requests() []llm.Request {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]llm.Request{}, a.requests...)
+}
+
+func TestRestoreSession_RestoresHistoryAndID(t *testing.T) {
+	dir := t.TempDir()
+	snap := testSnapshot()
+	snap.EnvInfo.WorkingDir = dir
+
+	c := llm.NewClient()
+	adapter := &snapshotFakeAdapter{name: "openai"}
+	c.Register(adapter)
+
+	sess, err := RestoreSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), snap, "")
+	if err != nil {
+		t.Fatalf("RestoreSession: %v", err)
+	}
+	defer sess.Close()
+
+	// Session should have the snapshot's ID.
+	if sess.ID() != snap.ID {
+		t.Fatalf("id: got %q want %q", sess.ID(), snap.ID)
+	}
+
+	// Send a new input and verify it includes the restored history.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := sess.ProcessInput(ctx, "continue please")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if strings.TrimSpace(result) != "restored response" {
+		t.Fatalf("result: %q", result)
+	}
+
+	// The LLM request should contain the restored history turns.
+	reqs := adapter.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(reqs))
+	}
+	// Messages should be: system + restored history (user "hello", assistant "hi there") + new user "continue please"
+	msgs := reqs[0].Messages
+	// Find the user messages.
+	var userTexts []string
+	for _, m := range msgs {
+		if m.Role == llm.RoleUser {
+			userTexts = append(userTexts, m.Text())
+		}
+	}
+	if len(userTexts) < 2 {
+		t.Fatalf("expected at least 2 user messages (restored + new), got %d: %v", len(userTexts), userTexts)
+	}
+	if userTexts[0] != "hello" {
+		t.Fatalf("first user message: got %q want %q", userTexts[0], "hello")
+	}
+	if userTexts[len(userTexts)-1] != "continue please" {
+		t.Fatalf("last user message: got %q want %q", userTexts[len(userTexts)-1], "continue please")
+	}
+}
+
+func TestSession_AutoSave_WritesSnapshotAfterProcessInput(t *testing.T) {
+	dir := t.TempDir()
+
+	c := llm.NewClient()
+	c.Register(&snapshotFakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxToolRoundsPerInput: 200,
+		StateDir:           dir,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	// Drain events to prevent channel blocking.
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err = sess.ProcessInput(ctx, "hello")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+
+	// A snapshot file should exist.
+	list, err := ListSessions(dir)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 saved session, got %d", len(list))
+	}
+	snap := list[0]
+	if snap.ID != sess.ID() {
+		t.Fatalf("saved id: got %q want %q", snap.ID, sess.ID())
+	}
+	// Should have user + assistant turns.
+	if len(snap.History) < 2 {
+		t.Fatalf("expected at least 2 history turns, got %d", len(snap.History))
+	}
+	if snap.History[0].Kind != TurnUserInput {
+		t.Fatalf("history[0].kind: got %q want %q", snap.History[0].Kind, TurnUserInput)
+	}
+	if snap.History[1].Kind != TurnAssistant {
+		t.Fatalf("history[1].kind: got %q want %q", snap.History[1].Kind, TurnAssistant)
+	}
+	if snap.ProfileID != "openai" {
+		t.Fatalf("profile_id: got %q want %q", snap.ProfileID, "openai")
+	}
+}
+
+func TestRestoreSession_AutoSaveContinues(t *testing.T) {
+	dir := t.TempDir()
+
+	c := llm.NewClient()
+	c.Register(&snapshotFakeAdapter{name: "openai"})
+
+	// Phase 1: Create a new session with auto-save and process input.
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxToolRoundsPerInput: 200,
+		StateDir:           dir,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() { for range sess.Events() {} }()
+
+	ctx := context.Background()
+	if _, err := sess.ProcessInput(ctx, "first task"); err != nil {
+		t.Fatalf("ProcessInput #1: %v", err)
+	}
+	sess.Close()
+
+	// Verify initial snapshot was saved.
+	list, err := ListSessions(dir)
+	if err != nil {
+		t.Fatalf("ListSessions after phase 1: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 session after phase 1, got %d", len(list))
+	}
+	initialTurnCount := list[0].TurnCount
+	initialHistoryLen := len(list[0].History)
+	if initialHistoryLen < 2 {
+		t.Fatalf("expected at least 2 history entries after phase 1, got %d", initialHistoryLen)
+	}
+
+	// Phase 2: Restore the session (with auto-save) and process more input.
+	snap := list[0]
+	sess2, err := RestoreSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), snap, dir)
+	if err != nil {
+		t.Fatalf("RestoreSession: %v", err)
+	}
+	go func() { for range sess2.Events() {} }()
+
+	if _, err := sess2.ProcessInput(ctx, "second task"); err != nil {
+		t.Fatalf("ProcessInput #2: %v", err)
+	}
+	sess2.Close()
+
+	// Verify the snapshot was updated with new turns.
+	list2, err := ListSessions(dir)
+	if err != nil {
+		t.Fatalf("ListSessions after phase 2: %v", err)
+	}
+	if len(list2) != 1 {
+		t.Fatalf("expected 1 session after phase 2, got %d", len(list2))
+	}
+	if list2[0].TurnCount <= initialTurnCount {
+		t.Fatalf("turn count did not increase after resume: got %d, was %d", list2[0].TurnCount, initialTurnCount)
+	}
+	if len(list2[0].History) <= initialHistoryLen {
+		t.Fatalf("history did not grow after resume: got %d entries, was %d", len(list2[0].History), initialHistoryLen)
+	}
+
+	// Verify the new history has both original and new user inputs.
+	var userTexts []string
+	for _, turn := range list2[0].History {
+		if turn.Kind == TurnUserInput {
+			userTexts = append(userTexts, turn.Message.Text())
+		}
+	}
+	if len(userTexts) < 2 {
+		t.Fatalf("expected at least 2 user turns, got %d", len(userTexts))
+	}
+	if userTexts[0] != "first task" {
+		t.Fatalf("first user text: got %q want %q", userTexts[0], "first task")
+	}
+	if userTexts[1] != "second task" {
+		t.Fatalf("second user text: got %q want %q", userTexts[1], "second task")
+	}
+}
+
+func TestRestoreSession_CanProcessInput(t *testing.T) {
+	dir := t.TempDir()
+	// Minimal snapshot with no history.
+	snap := SessionSnapshot{
+		ID:        "01JTEST000000000000000099",
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config:    SessionConfig{MaxToolRoundsPerInput: 200},
+		EnvInfo:   EnvironmentInfo{WorkingDir: dir},
+		History:   []Turn{},
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+
+	c := llm.NewClient()
+	c.Register(&snapshotFakeAdapter{name: "openai"})
+
+	sess, err := RestoreSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), snap, "")
+	if err != nil {
+		t.Fatalf("RestoreSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := sess.ProcessInput(ctx, "test")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if strings.TrimSpace(result) == "" {
+		t.Fatalf("expected non-empty result")
+	}
+}

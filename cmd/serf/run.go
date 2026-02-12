@@ -9,11 +9,11 @@ import (
 	"os/exec"
 	"strings"
 
-	"primeradiant.com/serf/internal/agent"
-	"primeradiant.com/serf/internal/llm"
-	_ "primeradiant.com/serf/internal/llm/providers/anthropic"
-	_ "primeradiant.com/serf/internal/llm/providers/google"
-	_ "primeradiant.com/serf/internal/llm/providers/openai"
+	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/llm"
+	_ "primeradiant.com/serf/llm/providers/anthropic"
+	_ "primeradiant.com/serf/llm/providers/google"
+	_ "primeradiant.com/serf/llm/providers/openai"
 )
 
 type runConfig struct {
