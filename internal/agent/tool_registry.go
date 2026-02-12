@@ -195,21 +195,22 @@ func truncateResult(toolName, callID, full string, isErr bool, lim ToolOutputLim
 }
 
 func truncateChars(s string, max int, strat TruncationStrategy) string {
-	if max <= 0 || len(s) <= max {
+	runes := []rune(s)
+	if max <= 0 || len(runes) <= max {
 		return s
 	}
-	removed := len(s) - max
+	removed := len(runes) - max
 	switch strat {
 	case TruncTail:
 		// Spec: keep the last max_chars characters and prepend a warning.
 		marker := fmt.Sprintf("[WARNING: Tool output was truncated. First %d characters were removed. The full output is available in the event stream.]\n\n", removed)
-		return marker + s[len(s)-max:]
+		return marker + string(runes[len(runes)-max:])
 	default:
 		// Spec: head/tail split plus an explicit warning about omitted middle.
 		headCount := max / 2
 		tailCount := max - headCount
 		marker := fmt.Sprintf("\n\n[WARNING: Tool output was truncated. %d characters were removed from the middle. The full output is available in the event stream. If you need to see specific parts, re-run the tool with more targeted parameters.]\n\n", removed)
-		return s[:headCount] + marker + s[len(s)-tailCount:]
+		return string(runes[:headCount]) + marker + string(runes[len(runes)-tailCount:])
 	}
 }
 

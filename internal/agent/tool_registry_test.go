@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"primeradiant.com/serf/internal/llm"
 )
@@ -313,6 +314,41 @@ func TestToolRegistry_Register_LatestWinsOnNameCollision(t *testing.T) {
 	got := reg.Get("my_tool")
 	if got == nil || got.Definition.Description != "second" {
 		t.Fatalf("expected latest-wins: got description=%q", got.Definition.Description)
+	}
+}
+
+func TestTruncateChars_UTF8Aware(t *testing.T) {
+	// 5 emoji characters, each 4 bytes in UTF-8: 20 bytes but 5 runes.
+	input := "😀😁😂🤣😃"
+	if utf8.RuneCountInString(input) != 5 {
+		t.Fatal("test setup: expected 5 runes")
+	}
+	if len(input) != 20 {
+		t.Fatal("test setup: expected 20 bytes")
+	}
+
+	// Truncate to 3 characters (runes), not 3 bytes.
+	result := truncateChars(input, 3, TruncHeadTail)
+	// Should contain valid UTF-8 (no broken characters).
+	if !utf8.ValidString(result) {
+		t.Error("truncated result must be valid UTF-8")
+	}
+	// The marker separates head and tail. With max=3, head=1, tail=2.
+	// So we should see the first emoji and last two emojis, with a marker in between.
+	if !strings.Contains(result, "😀") {
+		t.Error("expected first emoji in head portion")
+	}
+	if !strings.Contains(result, "😃") {
+		t.Error("expected last emoji in tail portion")
+	}
+
+	// TruncTail: keep last 3 characters
+	result2 := truncateChars(input, 3, TruncTail)
+	if !utf8.ValidString(result2) {
+		t.Error("TruncTail result must be valid UTF-8")
+	}
+	if !strings.Contains(result2, "😂🤣😃") {
+		t.Error("TruncTail should keep last 3 emojis")
 	}
 }
 
