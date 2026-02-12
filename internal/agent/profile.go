@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -51,6 +52,10 @@ type ProviderProfile interface {
 	// ToolNameMap returns the canonical→provider-specific tool name mapping.
 	// Returns nil for providers that use canonical names (e.g. Anthropic).
 	ToolNameMap() map[string]string
+	// NewToolRegistry returns a ToolRegistry pre-populated with the profile's
+	// tool definitions and placeholder executors. The Session wires real
+	// executors after construction.
+	NewToolRegistry() *ToolRegistry
 }
 
 type baseProfile struct {
@@ -89,6 +94,18 @@ func (p *baseProfile) ToolNameMap() map[string]string {
 		m[k] = v
 	}
 	return m
+}
+func (p *baseProfile) NewToolRegistry() *ToolRegistry {
+	reg := NewToolRegistry()
+	for _, td := range p.toolDefs {
+		_ = reg.Register(RegisteredTool{
+			Tool: llm.Tool{Definition: td},
+			Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+				return nil, fmt.Errorf("tool executor not wired")
+			},
+		})
+	}
+	return reg
 }
 func (p *baseProfile) SupportsParallelToolCalls() bool { return p.parallel }
 func (p *baseProfile) ContextWindowSize() int          { return p.contextWindow }

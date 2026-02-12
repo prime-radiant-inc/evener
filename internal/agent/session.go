@@ -222,7 +222,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 	s.skills = DiscoverSkills(env, cfg.SkillsDirs...)
 	s.contextMgr = NewContextManager(s.profile, client)
 
-	reg := NewToolRegistry()
+	reg := s.profile.NewToolRegistry()
 	if err := registerCoreTools(reg, s); err != nil {
 		return nil, err
 	}
@@ -332,7 +332,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 	s.skills = DiscoverSkills(env, cfg.SkillsDirs...)
 	s.contextMgr = NewContextManager(s.profile, client)
 
-	reg := NewToolRegistry()
+	reg := s.profile.NewToolRegistry()
 	if err := registerCoreTools(reg, s); err != nil {
 		return nil, err
 	}

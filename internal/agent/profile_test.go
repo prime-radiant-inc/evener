@@ -806,6 +806,70 @@ func TestApplyPatch_DescriptionIncludesCapabilities(t *testing.T) {
 	}
 }
 
+func TestProviderProfile_NewToolRegistry_ContainsProfileTools(t *testing.T) {
+	profiles := []ProviderProfile{
+		NewOpenAIProfile("gpt-5.2"),
+		NewAnthropicProfile("claude-test"),
+		NewGeminiProfile("gemini-test"),
+	}
+	for _, p := range profiles {
+		t.Run(p.ID(), func(t *testing.T) {
+			reg := p.NewToolRegistry()
+			if reg == nil {
+				t.Fatal("NewToolRegistry() returned nil")
+			}
+
+			// Build the set of canonical names from p.toolDefs (the internal
+			// field). We can derive them by reverse-mapping ToolDefinitions()
+			// through ToolNameMap().
+			reverseMap := map[string]string{} // provider-name → canonical
+			if nm := p.ToolNameMap(); nm != nil {
+				for canon, prov := range nm {
+					reverseMap[prov] = canon
+				}
+			}
+
+			for _, td := range p.ToolDefinitions() {
+				canonical := td.Name
+				if c, ok := reverseMap[td.Name]; ok {
+					canonical = c
+				}
+				tool := reg.Get(canonical)
+				if tool == nil {
+					t.Errorf("tool %q (canonical) should be in registry", canonical)
+					continue
+				}
+				if tool.Exec == nil {
+					t.Errorf("tool %q should have a non-nil placeholder Exec", canonical)
+				}
+			}
+
+			// Registry should contain exactly the profile's tools, no more.
+			names := reg.Names()
+			if len(names) != len(p.ToolDefinitions()) {
+				t.Errorf("registry has %d tools, profile defines %d: got %v",
+					len(names), len(p.ToolDefinitions()), names)
+			}
+		})
+	}
+}
+
+func TestProviderProfile_NewToolRegistry_PlaceholderExecReturnsError(t *testing.T) {
+	p := NewAnthropicProfile("claude-test")
+	reg := p.NewToolRegistry()
+	tool := reg.Get("read_file")
+	if tool == nil {
+		t.Fatal("read_file not found")
+	}
+	_, err := tool.Exec(nil, nil, map[string]any{})
+	if err == nil {
+		t.Fatal("placeholder Exec should return an error")
+	}
+	if !strings.Contains(err.Error(), "not wired") {
+		t.Fatalf("expected 'not wired' error, got: %v", err)
+	}
+}
+
 func assertToolListExact(t *testing.T, p ProviderProfile, want []string) {
 	t.Helper()
 	got := make([]string, 0, len(p.ToolDefinitions()))
