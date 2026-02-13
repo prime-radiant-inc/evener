@@ -4,7 +4,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -71,19 +70,10 @@ func main() {
 	}
 	flag.Parse()
 
-	task := strings.TrimSpace(strings.Join(flag.Args(), " "))
-
-	// If no args, try reading from stdin (piped input).
 	isResume := *resume != "" || *resumeWith != "" || *resumeLast || *listSessionsFlag
-	if task == "" && !isResume {
-		stat, _ := os.Stdin.Stat()
-		if (stat.Mode() & os.ModeCharDevice) == 0 {
-			b, err := io.ReadAll(os.Stdin)
-			if err == nil {
-				task = strings.TrimSpace(string(b))
-			}
-		}
-	}
+	stat, _ := os.Stdin.Stat()
+	stdinIsCharDevice := stat != nil && (stat.Mode()&os.ModeCharDevice) != 0
+	task := readTaskFromArgsOrStdin(flag.Args(), isResume, *listSessionsFlag, os.Stdin, stdinIsCharDevice)
 
 	if task == "" && !isResume {
 		flag.Usage()
