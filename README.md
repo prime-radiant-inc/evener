@@ -10,6 +10,12 @@ Serf uses the LLM's native tool-calling to read files, write files, run commands
 make build
 ```
 
+Build the standalone one-shot client (no agent loop):
+
+```bash
+make build-llmcall
+```
+
 ## Usage
 
 ```
@@ -25,6 +31,39 @@ serf --provider openai --model gpt-5.2 "add input validation to the signup handl
 # Task piped via stdin
 echo "refactor auth to use JWT" | serf --provider anthropic --model claude-opus-4-6
 ```
+
+## llmcall (One-Shot LLM Client)
+
+This repo also includes `llmcall`, a minimal CLI wrapper around the unified `llm` library for single “throwaway” calls.
+
+Properties:
+
+- Exactly one LLM call (no agent loop).
+- Tool calls are forbidden (`tool_choice=none`). If the model returns tool calls, `llmcall` fails.
+- No system prompt by default. You can optionally provide one, or force-disable with `--no-system`.
+
+Build:
+
+```bash
+make build-llmcall
+```
+
+Examples:
+
+```bash
+./llmcall --provider openai --model gpt-5-mini-2025-08-07 "Write a haiku about build pipelines."
+
+# JSON mode: parses and re-prints as JSON (fails if output isn't valid JSON)
+echo 'Return JSON: {"ok": true}' | ./llmcall --provider openai --model gpt-5-mini-2025-08-07 --format json
+
+# JSON Schema mode: enforces + validates structured output
+./llmcall --provider openai --model gpt-5-mini-2025-08-07 --schema /path/to/schema.json "Return an object matching the schema."
+```
+
+`llmcall` resolves provider/model from env if omitted:
+
+- `LLM_PROVIDER` or `SERF_PROVIDER`
+- `LLM_MODEL` or `SERF_MODEL`
 
 ### Provider and model (required)
 
