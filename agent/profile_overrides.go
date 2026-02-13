@@ -104,6 +104,10 @@ func defCommunicateWithRequiredDataKeys(requiredKeys []string) llm.ToolDefinitio
 		case k == "components":
 			// Special-case used by orchestration workflows: list of component descriptors.
 			propSchema = componentsSchema()
+		case k == "tasks":
+			propSchema = tasksSchema()
+		case strings.HasSuffix(k, "_doc") || strings.HasSuffix(k, "_document") || strings.HasSuffix(k, "_markdown"):
+			propSchema = map[string]any{"type": "string"}
 		case propType == "array":
 			// OpenAI requires array schemas to include `items`.
 			propSchema = map[string]any{
@@ -161,6 +165,28 @@ func componentsSchema() map[string]any {
 				"dependencies": stringArray(),
 			},
 			"required": []string{"id", "name", "spec_slice", "relevant_stories", "interfaces", "dependencies"},
+		},
+	}
+}
+
+func tasksSchema() map[string]any {
+	stringArray := func() map[string]any {
+		return map[string]any{"type": "array", "items": map[string]any{"type": "string"}}
+	}
+	return map[string]any{
+		"type": "array",
+		"items": map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"id":                map[string]any{"type": "string"},
+				"name":              map[string]any{"type": "string"},
+				"steps":             stringArray(),
+				"files":             stringArray(),
+				"acceptance_criteria": stringArray(),
+				"dependencies":       stringArray(),
+			},
+			"required": []string{"id", "name", "steps", "files", "acceptance_criteria", "dependencies"},
 		},
 	}
 }
