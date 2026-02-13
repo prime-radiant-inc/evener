@@ -99,11 +99,22 @@ func defCommunicateWithRequiredDataKeys(requiredKeys []string) llm.ToolDefinitio
 		if strings.HasSuffix(k, "s") || strings.HasSuffix(k, "_list") || strings.HasSuffix(k, "_ids") {
 			propType = "array"
 		}
-		propSchema := map[string]any{
-			"type": propType,
-		}
-		if propType == "object" {
-			propSchema["additionalProperties"] = false
+		var propSchema map[string]any
+		switch {
+		case k == "components":
+			// Special-case used by orchestration workflows: list of component descriptors.
+			propSchema = componentsSchema()
+		case propType == "array":
+			// OpenAI requires array schemas to include `items`.
+			propSchema = map[string]any{
+				"type":  "array",
+				"items": map[string]any{"type": "string"},
+			}
+		default:
+			propSchema = map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+			}
 		}
 		dataProps[k] = propSchema
 	}
@@ -122,4 +133,34 @@ func defCommunicateWithRequiredDataKeys(requiredKeys []string) llm.ToolDefinitio
 	dataSchema["required"] = required
 
 	return td
+}
+
+func componentsSchema() map[string]any {
+	stringArray := func() map[string]any {
+		return map[string]any{"type": "array", "items": map[string]any{"type": "string"}}
+	}
+	return map[string]any{
+		"type": "array",
+		"items": map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"id":              map[string]any{"type": "string"},
+				"name":            map[string]any{"type": "string"},
+				"spec_slice":      map[string]any{"type": "string"},
+				"relevant_stories": stringArray(),
+				"interfaces": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"exposes":  stringArray(),
+						"consumes": stringArray(),
+					},
+					"required": []string{"exposes", "consumes"},
+				},
+				"dependencies": stringArray(),
+			},
+			"required": []string{"id", "name", "spec_slice", "relevant_stories", "interfaces", "dependencies"},
+		},
+	}
 }

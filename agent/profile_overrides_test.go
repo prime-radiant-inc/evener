@@ -36,8 +36,12 @@ func TestWithCommunicateRequiredDataKeys_AddsRequiredKeysToSchema(t *testing.T) 
 		if compSchema["type"] != "array" {
 			t.Fatalf("components.type=%v, want %q", compSchema["type"], "array")
 		}
-		if _, ok := compSchema["type"]; !ok {
-			t.Fatalf("components schema missing type: %#v", compSchema)
+		items, ok := compSchema["items"].(map[string]any)
+		if !ok {
+			t.Fatalf("components.items missing or not object: %#v", compSchema["items"])
+		}
+		if items["type"] != "object" {
+			t.Fatalf("components.items.type=%v, want %q", items["type"], "object")
 		}
 	}
 	if !communicateFound {
