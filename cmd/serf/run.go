@@ -317,16 +317,43 @@ func gitOriginURLFromDir(dir string) string {
 
 // selectProfile creates the ProviderProfile for the given provider and model.
 func selectProfile(provider, model string) (agent.ProviderProfile, error) {
+	requiredKeys := parseCommunicateRequiredDataKeys(os.Getenv("SERF_COMMUNICATE_REQUIRED_DATA_KEYS"))
+
 	switch strings.ToLower(provider) {
 	case "openai":
-		return agent.NewOpenAIProfile(model), nil
+		return agent.WithCommunicateRequiredDataKeys(agent.NewOpenAIProfile(model), requiredKeys), nil
 	case "anthropic":
-		return agent.NewAnthropicProfile(model), nil
+		return agent.WithCommunicateRequiredDataKeys(agent.NewAnthropicProfile(model), requiredKeys), nil
 	case "google", "gemini":
-		return agent.NewGeminiProfile(model), nil
+		return agent.WithCommunicateRequiredDataKeys(agent.NewGeminiProfile(model), requiredKeys), nil
 	default:
 		return nil, fmt.Errorf("unknown provider %q: must be openai, anthropic, or google", provider)
 	}
+}
+
+func parseCommunicateRequiredDataKeys(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	// Allow JSON array form for callers that want a stable encoding.
+	if strings.HasPrefix(raw, "[") {
+		var keys []string
+		if err := json.Unmarshal([]byte(raw), &keys); err == nil && len(keys) > 0 {
+			return keys
+		}
+		// Fall through to comma-separated parsing on malformed JSON.
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 // maxRoundsToConfig converts a --max-rounds CLI value to a SessionConfig value.
