@@ -3,6 +3,9 @@
 build:
 	go build -o serf ./cmd/serf/
 
+build-llmcall:
+	go build -o llmcall ./cmd/llmcall/
+
 test:
 	go test -count=1 ./...
 

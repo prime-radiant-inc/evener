@@ -6,4 +6,5 @@
 /.serf/web_cache/
 /.serf/prompts/
 /serf
+/llmcall
 inspo/
