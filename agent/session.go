@@ -61,6 +61,9 @@ type SessionConfig struct {
 	// Always applied, even when SystemPromptFile is set (CLI --system-prompt-append flag).
 	SystemPromptAppend []string `json:"system_prompt_append,omitempty"`
 
+	// ContextStrategy selects the context management strategy: compact|recall|session-log|ooda.
+	ContextStrategy string `json:"context_strategy,omitempty"`
+
 	EnableLoopDetection *bool `json:"enable_loop_detection,omitempty"`
 	LoopDetectionWindow int   `json:"loop_detection_window,omitempty"`
 
@@ -68,6 +71,10 @@ type SessionConfig struct {
 	// Nil means use llm.DefaultRetryPolicy().
 	LLMRetryPolicy *llm.RetryPolicy `json:"-"`
 	LLMSleep       llm.SleepFunc    `json:"-"`
+
+	// ContextStrategyOverride, when non-nil, is used instead of creating
+	// a strategy from the ContextStrategy string. For testing.
+	ContextStrategyOverride ContextStrategy `json:"-"`
 
 	// StateDir, when non-empty, enables incremental session persistence.
 	// Snapshots are written to <StateDir>/sessions/ and tasks to <StateDir>/tasks/.
@@ -127,6 +134,7 @@ type Session struct {
 
 	// context management
 	contextMgr *ContextManager
+	strategy   ContextStrategy
 
 	// skills discovered at session startup
 	skills map[string]SkillMeta
@@ -223,6 +231,18 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 	s.skills = DiscoverSkills(env, cfg.SkillsDirs...)
 	s.contextMgr = NewContextManager(s.profile, client)
 
+	// Create context strategy.
+	if cfg.ContextStrategyOverride != nil {
+		s.strategy = cfg.ContextStrategyOverride
+	} else {
+		switch cfg.ContextStrategy {
+		case "", "compact":
+			s.strategy = NewCompactStrategy(s.contextMgr)
+		default:
+			return nil, fmt.Errorf("unknown context strategy: %q", cfg.ContextStrategy)
+		}
+	}
+
 	reg := s.profile.NewToolRegistry()
 	if err := registerCoreTools(reg, s); err != nil {
 		return nil, err
@@ -251,6 +271,15 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 	}
 	s.reg = reg
 	s.coreToolNames = reg.nameSet()
+
+	// Register any tools provided by the context strategy.
+	if s.strategy != nil {
+		for _, tool := range s.strategy.Tools() {
+			if err := reg.Register(tool); err != nil {
+				return nil, fmt.Errorf("register strategy tool: %w", err)
+			}
+		}
+	}
 
 	// MCP server discovery and connection.
 	if err := s.initMCP(); err != nil {
@@ -333,6 +362,18 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 	s.skills = DiscoverSkills(env, cfg.SkillsDirs...)
 	s.contextMgr = NewContextManager(s.profile, client)
 
+	// Create context strategy (same logic as NewSession).
+	if cfg.ContextStrategyOverride != nil {
+		s.strategy = cfg.ContextStrategyOverride
+	} else {
+		switch cfg.ContextStrategy {
+		case "", "compact":
+			s.strategy = NewCompactStrategy(s.contextMgr)
+		default:
+			return nil, fmt.Errorf("unknown context strategy: %q", cfg.ContextStrategy)
+		}
+	}
+
 	reg := s.profile.NewToolRegistry()
 	if err := registerCoreTools(reg, s); err != nil {
 		return nil, err
@@ -359,6 +400,15 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 	}
 	s.reg = reg
 	s.coreToolNames = reg.nameSet()
+
+	// Register any tools provided by the context strategy.
+	if s.strategy != nil {
+		for _, tool := range s.strategy.Tools() {
+			if err := reg.Register(tool); err != nil {
+				return nil, fmt.Errorf("register strategy tool: %w", err)
+			}
+		}
+	}
 
 	// MCP server discovery and connection.
 	if err := s.initMCP(); err != nil {
@@ -834,12 +884,14 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 
 		// Apply context management before each LLM request.
 		// Copy history out to avoid holding s.mu during potential LLM calls (Layer 4).
-		if s.contextMgr != nil {
+		if s.strategy != nil {
 			s.mu.Lock()
 			histCopy := append([]Turn{}, s.history...)
 			s.mu.Unlock()
 
-			s.contextMgr.MaybeCompact(ctx, &histCopy, len(sys), s.emit)
+			if err := s.strategy.ManageContext(ctx, &histCopy, 0, len(sys), s.emit); err != nil {
+				s.emit(EventWarning, WarningData{Message: "context strategy error: " + err.Error()})
+			}
 
 			s.mu.Lock()
 			s.history = histCopy
@@ -1017,6 +1069,16 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		// Persist the completed tool round so resumed sessions always include
 		// tool_result turns for any prior assistant tool calls.
 		s.maybeAutoSave()
+
+		// Notify the context strategy that a tool round completed.
+		if s.strategy != nil {
+			s.mu.Lock()
+			histCopy := append([]Turn{}, s.history...)
+			s.mu.Unlock()
+			if err := s.strategy.AfterAction(ctx, histCopy, s.client); err != nil {
+				s.emit(EventWarning, WarningData{Message: "strategy AfterAction error: " + err.Error()})
+			}
+		}
 
 		// Loop detection: track per-call signatures and check for repeating patterns.
 		for _, call := range calls {

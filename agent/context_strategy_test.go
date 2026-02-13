@@ -2,10 +2,50 @@ package agent
 
 import (
 	"context"
+	"sync"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/llm"
 )
+
+// spyStrategy records calls to ManageContext and AfterAction for test assertions.
+type spyStrategy struct {
+	mu                  sync.Mutex
+	manageContextCalls  int
+	afterActionCalls    int
+	toolsDefs           []RegisteredTool
+}
+
+func (s *spyStrategy) Name() string { return "spy" }
+
+func (s *spyStrategy) Tools() []RegisteredTool { return s.toolsDefs }
+
+func (s *spyStrategy) ManageContext(ctx context.Context, history *[]Turn, pressure float64, sysPromptChars int, emitFn func(EventKind, any)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.manageContextCalls++
+	return nil
+}
+
+func (s *spyStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.afterActionCalls++
+	return nil
+}
+
+func (s *spyStrategy) ManageContextCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.manageContextCalls
+}
+
+func (s *spyStrategy) AfterActionCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.afterActionCalls
+}
 
 func TestContextStrategyInterface(t *testing.T) {
 	// Verify that CompactStrategy satisfies the ContextStrategy interface.
@@ -94,5 +134,100 @@ func TestCompactStrategyManageContext_Delegation(t *testing.T) {
 	toolResult := history[2].Message.Content[0].ToolResult
 	if content, ok := toolResult.Content.(string); !ok || content[0] != '[' {
 		t.Fatalf("expected tool result to be masked, got content: %v", toolResult.Content)
+	}
+}
+
+func TestSession_ContextStrategy_SpyHooks(t *testing.T) {
+	// Verify that ManageContext is called before LLM requests and
+	// AfterAction is called after tool execution rounds.
+	dir := t.TempDir()
+
+	spy := &spyStrategy{}
+
+	c := llm.NewClient()
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			// Round 1: model issues a tool call.
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Message{
+					Role: llm.RoleAssistant,
+					Content: []llm.ContentPart{
+						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+							ID:        "call_1",
+							Name:      "read_file",
+							Arguments: []byte(`{"file_path": "` + dir + `/test.txt"}`),
+						}},
+					},
+				}}
+			},
+			// Round 2: model gives a final text response.
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("done")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		ContextStrategyOverride: spy,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	out, err := sess.ProcessInput(ctx, "hi")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if out != "done" {
+		t.Fatalf("expected output %q, got %q", "done", out)
+	}
+
+	// ManageContext is called once per LLM round (2 rounds = 2 calls).
+	if got := spy.ManageContextCount(); got != 2 {
+		t.Errorf("ManageContext call count: got %d, want 2", got)
+	}
+
+	// AfterAction is called once per completed tool round (1 tool round = 1 call).
+	if got := spy.AfterActionCount(); got != 1 {
+		t.Errorf("AfterAction call count: got %d, want 1", got)
+	}
+}
+
+func TestSession_ContextStrategy_UnknownStrategyError(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	_, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		ContextStrategy: "nonexistent",
+	})
+	if err == nil {
+		t.Fatal("expected error for unknown context strategy, got nil")
+	}
+}
+
+func TestSession_ContextStrategy_DefaultIsCompact(t *testing.T) {
+	// When no strategy is specified, default to CompactStrategy.
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	if sess.strategy == nil {
+		t.Fatal("expected strategy to be set")
+	}
+	if sess.strategy.Name() != "compact" {
+		t.Errorf("expected default strategy name %q, got %q", "compact", sess.strategy.Name())
 	}
 }
