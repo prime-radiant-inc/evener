@@ -238,6 +238,8 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		switch cfg.ContextStrategy {
 		case "", "compact":
 			s.strategy = NewCompactStrategy(s.contextMgr)
+		case "recall":
+			s.strategy = NewRecallStrategy(s.contextMgr, s)
 		default:
 			return nil, fmt.Errorf("unknown context strategy: %q", cfg.ContextStrategy)
 		}
@@ -369,6 +371,8 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		switch cfg.ContextStrategy {
 		case "", "compact":
 			s.strategy = NewCompactStrategy(s.contextMgr)
+		case "recall":
+			s.strategy = NewRecallStrategy(s.contextMgr, s)
 		default:
 			return nil, fmt.Errorf("unknown context strategy: %q", cfg.ContextStrategy)
 		}
