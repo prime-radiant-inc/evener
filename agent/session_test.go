@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -158,6 +159,39 @@ func TestSession_NaturalCompletion_LoadsOnlyProfileDocs_Anthropic(t *testing.T) 
 	if strings.Contains(sys, "BEGIN GEMINI.md") || strings.Contains(sys, "BEGIN .codex/instructions.md") {
 		t.Fatalf("Anthropic profile should NOT load GEMINI.md or .codex/instructions.md:\n%s", sys)
 	}
+}
+
+func TestSession_TrackReadFile_Concurrent(t *testing.T) {
+	dir := t.TempDir()
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	workers := 32
+	iterations := 500
+
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			<-start
+			for j := 0; j < iterations; j++ {
+				sess.trackReadFile(fmt.Sprintf("file-%d-%d.txt", i, j))
+			}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
 }
 
 func TestSession_NaturalCompletion_LoadsOnlyProfileDocs_Gemini(t *testing.T) {

@@ -443,6 +443,110 @@ func TestSession_AutoSave_PersistsToolResults(t *testing.T) {
 	}
 }
 
+func TestSession_AutoSave_DoesNotPersistMidToolRound(t *testing.T) {
+	dir := t.TempDir()
+
+	c := llm.NewClient()
+	blockCall := llm.ToolCallData{
+		ID:        "block-1",
+		Name:      "block_tool",
+		Arguments: json.RawMessage(`{}`),
+	}
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(blockCall)
+			},
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("done")}
+			},
+		},
+	})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxToolRoundsPerInput: 200,
+		StateDir:              dir,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	sess.RegisterTool("block_tool", "blocks until released", map[string]any{}, func(ctx context.Context, args any) (any, error) {
+		select {
+		case <-started:
+		default:
+			close(started)
+		}
+		<-release
+		return "ok", nil
+	})
+
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := sess.ProcessInput(ctx, "hello")
+		done <- err
+	}()
+
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatalf("tool did not start: %v", ctx.Err())
+	}
+
+	list, err := ListSessions(dir)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("expected no snapshot before tool result, got %d", len(list))
+	}
+
+	close(release)
+
+	if err := <-done; err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	list2, err := ListSessions(dir)
+	if err != nil {
+		t.Fatalf("ListSessions after completion: %v", err)
+	}
+	if len(list2) != 1 {
+		t.Fatalf("expected 1 snapshot after completion, got %d", len(list2))
+	}
+
+	pending := map[string]struct{}{}
+	for _, turn := range list2[0].History {
+		for _, part := range turn.Message.Content {
+			switch part.Kind {
+			case llm.ContentToolCall:
+				if part.ToolCall != nil && part.ToolCall.ID != "" {
+					pending[part.ToolCall.ID] = struct{}{}
+				}
+			case llm.ContentToolResult:
+				if part.ToolResult != nil && part.ToolResult.ToolCallID != "" {
+					delete(pending, part.ToolResult.ToolCallID)
+				}
+			}
+		}
+	}
+	if len(pending) != 0 {
+		t.Fatalf("expected no dangling tool calls in snapshot, got %d", len(pending))
+	}
+}
+
 func TestRestoreSession_AutoSaveContinues(t *testing.T) {
 	dir := t.TempDir()
 

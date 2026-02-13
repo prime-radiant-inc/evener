@@ -140,6 +140,7 @@ type Session struct {
 
 	// read-before-write guardrail
 	readFiles map[string]bool
+	readFilesMu sync.RWMutex
 
 	// SESSION_END deduplication: emitted exactly once across ProcessInput and Close.
 	sessionEndEmitted bool
@@ -947,8 +948,6 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			textEndData.Reasoning = reasoning
 		}
 		s.emit(EventAssistantTextEnd, textEndData)
-		s.maybeAutoSave()
-
 		// pause_turn: model needs another turn (e.g. server-side web search still running).
 		if resp.Finish.Reason == llm.FinishReasonPauseTurn {
 			round-- // Don't count pause_turn as a tool round.
@@ -978,6 +977,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 				s.state = SessionIdle
 			}
 			s.mu.Unlock()
+			s.maybeAutoSave()
 			return txt, nil
 		}
 
@@ -1647,14 +1647,19 @@ func communicateOutputMessage(raw any) string {
 
 // trackReadFile records that a file has been read in this session.
 func (s *Session) trackReadFile(path string) {
+	s.readFilesMu.Lock()
 	s.readFiles[s.resolveFilePath(path)] = true
+	s.readFilesMu.Unlock()
 }
 
 // readBeforeWriteWarning returns a warning string if the file exists but hasn't
 // been read in this session. Returns "" for new files or previously-read files.
 func (s *Session) readBeforeWriteWarning(path string) string {
 	abs := s.resolveFilePath(path)
-	if s.readFiles[abs] {
+	s.readFilesMu.RLock()
+	_, seen := s.readFiles[abs]
+	s.readFilesMu.RUnlock()
+	if seen {
 		return ""
 	}
 	// New file creation is exempt from the warning.
