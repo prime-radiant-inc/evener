@@ -24,6 +24,36 @@ func (a *fakeAdapter) Stream(ctx context.Context, req Request) (Stream, error) {
 	return nil, errors.New("stream not implemented in fakeAdapter")
 }
 
+type recordReqAdapter struct {
+	name    string
+	lastReq Request
+	mu      sync.Mutex
+}
+
+func (a *recordReqAdapter) Name() string { return a.name }
+func (a *recordReqAdapter) Complete(ctx context.Context, req Request) (Response, error) {
+	_ = ctx
+	a.mu.Lock()
+	a.lastReq = req
+	a.mu.Unlock()
+	return Response{Provider: a.name, Model: req.Model, Message: Assistant("ok")}, nil
+}
+func (a *recordReqAdapter) Stream(ctx context.Context, req Request) (Stream, error) {
+	a.mu.Lock()
+	a.lastReq = req
+	a.mu.Unlock()
+
+	sctx, cancel := context.WithCancel(ctx)
+	_ = sctx
+	s := NewChanStream(cancel)
+	go func() {
+		defer s.CloseSend()
+		s.Send(StreamEvent{Type: StreamEventStreamStart})
+		s.Send(StreamEvent{Type: StreamEventFinish, Response: &Response{Provider: a.name, Model: req.Model, Message: Assistant("ok")}})
+	}()
+	return s, nil
+}
+
 type stepAdapter struct {
 	name  string
 	i     int
@@ -58,6 +88,51 @@ func TestClient_DefaultProviderRouting(t *testing.T) {
 	}
 	if resp.Provider != "openai" {
 		t.Fatalf("provider: %q", resp.Provider)
+	}
+}
+
+func TestClient_DefaultAdapterTimeout_AppliedWhenNil(t *testing.T) {
+	c := NewClient()
+	a := &recordReqAdapter{name: "openai"}
+	c.Register(a)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := c.Complete(ctx, Request{Model: "m", Messages: []Message{User("hi")}}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	a.mu.Lock()
+	got := a.lastReq.AdapterTimeout
+	a.mu.Unlock()
+
+	if got == nil {
+		t.Fatal("expected AdapterTimeout to be set by default")
+	}
+	want := DefaultAdapterTimeout()
+	if got.Connect != want.Connect || got.Request != want.Request || got.StreamRead != want.StreamRead {
+		t.Fatalf("AdapterTimeout: got=%+v want=%+v", *got, want)
+	}
+}
+
+func TestClient_DefaultAdapterTimeout_DoesNotOverrideExplicit(t *testing.T) {
+	c := NewClient()
+	a := &recordReqAdapter{name: "openai"}
+	c.Register(a)
+
+	explicit := &AdapterTimeout{Connect: 123 * time.Millisecond}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := c.Complete(ctx, Request{Model: "m", Messages: []Message{User("hi")}, AdapterTimeout: explicit}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	a.mu.Lock()
+	got := a.lastReq.AdapterTimeout
+	a.mu.Unlock()
+
+	if got != explicit {
+		t.Fatalf("expected explicit AdapterTimeout pointer to be preserved")
 	}
 }
 

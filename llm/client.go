@@ -53,6 +53,12 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 	if err := req.Validate(); err != nil {
 		return Response{}, err
 	}
+	// Default to a bounded network profile. Adapters use request context deadlines and
+	// connect timeouts, so leaving this nil can hang indefinitely on stalled networks.
+	if req.AdapterTimeout == nil {
+		at := DefaultAdapterTimeout()
+		req.AdapterTimeout = &at
+	}
 	prov := req.Provider
 	if prov == "" {
 		prov = c.defaultProvider
@@ -77,6 +83,12 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 	if err := req.Validate(); err != nil {
 		return nil, err
+	}
+	// Default to a bounded network profile. For streaming requests this primarily
+	// enforces connect + stream read timeouts.
+	if req.AdapterTimeout == nil {
+		at := DefaultAdapterTimeout()
+		req.AdapterTimeout = &at
 	}
 	prov := req.Provider
 	if prov == "" {
