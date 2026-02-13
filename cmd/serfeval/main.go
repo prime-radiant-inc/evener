@@ -112,7 +112,10 @@ func runEval(provider, model, strategy, task, workDir, output, probesFile string
 		if loadErr != nil {
 			return fmt.Errorf("load probes: %w", loadErr)
 		}
-		retScore, probeErr := agent.RunRetentionProbes(ctx, client, profile, probeQuestions, snap.History)
+		// Use a fresh context for probes -- the task context may have been cancelled.
+		probeCtx, probeCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer probeCancel()
+		retScore, probeErr := agent.RunRetentionProbes(probeCtx, client, profile, probeQuestions, snap.History)
 		if probeErr != nil {
 			return fmt.Errorf("retention probes: %w", probeErr)
 		}
@@ -144,8 +147,8 @@ func loadProbeQuestions(path string) ([]string, error) {
 	return questions, nil
 }
 
-// selectProfile creates the ProviderProfile for the given provider and model.
-// Mirrors cmd/serf/run.go selectProfile.
+// selectProfile creates a ProviderProfile for the given provider name.
+// NOTE: Simplified version of cmd/serf/run.go:selectProfile. Keep in sync.
 func selectProfile(provider, model string) (agent.ProviderProfile, error) {
 	switch strings.ToLower(provider) {
 	case "openai":

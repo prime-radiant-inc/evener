@@ -208,6 +208,7 @@ func TestParseJudgeScore(t *testing.T) {
 		{"0", 0, false},
 		{"5", 5, false},
 		{" 2 \n", 2, false},
+		{"3\nThe response was mostly accurate", 3, false},
 		{"not a number", 0, true},
 		{"6", 0, true},  // out of range
 		{"-1", 0, true}, // out of range

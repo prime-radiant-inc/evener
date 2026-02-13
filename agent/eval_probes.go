@@ -95,12 +95,16 @@ func parseJudgeScore(raw string) (int, error) {
 	if trimmed == "" {
 		return 0, fmt.Errorf("empty judge response")
 	}
+	// Take only the first line -- models often add explanations after the number.
+	if idx := strings.IndexByte(trimmed, '\n'); idx >= 0 {
+		trimmed = strings.TrimSpace(trimmed[:idx])
+	}
 	score, err := strconv.Atoi(trimmed)
 	if err != nil {
-		return 0, fmt.Errorf("non-numeric judge response: %q", trimmed)
+		return 0, fmt.Errorf("parse judge score %q: %w", raw, err)
 	}
 	if score < 0 || score > 5 {
-		return 0, fmt.Errorf("judge score %d out of range 0-5", score)
+		return 0, fmt.Errorf("judge score %d out of range [0,5]", score)
 	}
 	return score, nil
 }
