@@ -17,6 +17,10 @@ func TestWithCommunicateRequiredDataKeys_AddsRequiredKeysToSchema(t *testing.T) 
 		outProps, _ := output["properties"].(map[string]any)
 		data, _ := outProps["data"].(map[string]any)
 
+		if data["additionalProperties"] != false {
+			t.Fatalf("data.additionalProperties=%v, want false", data["additionalProperties"])
+		}
+
 		required, ok := data["required"].([]string)
 		if !ok {
 			t.Fatalf("data.required not []string: %#v", data["required"])
@@ -28,6 +32,9 @@ func TestWithCommunicateRequiredDataKeys_AddsRequiredKeysToSchema(t *testing.T) 
 		compSchema, ok := dataProps["components"].(map[string]any)
 		if !ok {
 			t.Fatalf("data.properties missing components: %#v", dataProps)
+		}
+		if compSchema["type"] != "array" {
+			t.Fatalf("components.type=%v, want %q", compSchema["type"], "array")
 		}
 		if _, ok := compSchema["type"]; !ok {
 			t.Fatalf("components schema missing type: %#v", compSchema)
