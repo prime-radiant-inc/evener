@@ -493,6 +493,7 @@ func (e *LocalExecutionEnvironment) ExecCommand(ctx context.Context, command str
 	cmd.Dir = dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Env = filteredEnvWithPolicy(e.EnvPolicy, envVars)
+	cmd.Env = injectLocalVenvPath(cmd.Env, []string{dir, e.RootDir})
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -554,6 +555,106 @@ func (e *LocalExecutionEnvironment) ExecCommand(ctx context.Context, command str
 		TimedOut:   timedOut,
 		DurationMS: time.Since(start).Milliseconds(),
 	}, waitErr
+}
+
+func injectLocalVenvPath(env []string, roots []string) []string {
+	if len(env) == 0 || len(roots) == 0 {
+		return env
+	}
+
+	seenRoots := map[string]struct{}{}
+	var uniqueRoots []string
+	for _, r := range roots {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			continue
+		}
+		r = filepath.Clean(r)
+		if _, ok := seenRoots[r]; ok {
+			continue
+		}
+		seenRoots[r] = struct{}{}
+		uniqueRoots = append(uniqueRoots, r)
+	}
+	if len(uniqueRoots) == 0 {
+		return env
+	}
+
+	binDir := "bin"
+	if runtime.GOOS == "windows" {
+		binDir = "Scripts"
+	}
+
+	seenDirs := map[string]struct{}{}
+	var prefixDirs []string
+	for _, root := range uniqueRoots {
+		candidates := []string{
+			filepath.Join(root, ".venv", binDir),
+			filepath.Join(root, "venv", binDir),
+		}
+		for _, cand := range candidates {
+			info, err := os.Stat(cand)
+			if err != nil || !info.IsDir() {
+				continue
+			}
+			if _, ok := seenDirs[cand]; ok {
+				continue
+			}
+			seenDirs[cand] = struct{}{}
+			prefixDirs = append(prefixDirs, cand)
+		}
+	}
+	if len(prefixDirs) == 0 {
+		return env
+	}
+
+	sep := string(os.PathListSeparator)
+	findPath := func(env []string) (int, string) {
+		for i, kv := range env {
+			if strings.HasPrefix(kv, "PATH=") {
+				return i, strings.TrimPrefix(kv, "PATH=")
+			}
+		}
+		return -1, ""
+	}
+
+	idx, existing := findPath(env)
+	if existing != "" {
+		parts := strings.Split(existing, sep)
+		existingSet := map[string]struct{}{}
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			existingSet[p] = struct{}{}
+		}
+		var filteredPrefix []string
+		for _, d := range prefixDirs {
+			if _, ok := existingSet[d]; ok {
+				continue
+			}
+			filteredPrefix = append(filteredPrefix, d)
+		}
+		prefixDirs = filteredPrefix
+	}
+	if len(prefixDirs) == 0 {
+		return env
+	}
+
+	prefix := strings.Join(prefixDirs, sep)
+	var newPath string
+	if existing == "" {
+		newPath = prefix
+	} else {
+		newPath = prefix + sep + existing
+	}
+
+	if idx >= 0 {
+		env[idx] = "PATH=" + newPath
+		return env
+	}
+	return append(env, "PATH="+newPath)
 }
 
 // shellCommand returns an *exec.Cmd that runs the given command string

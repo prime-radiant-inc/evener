@@ -334,6 +334,55 @@ func TestEnvVarPolicy_Default_FiltersSensitive(t *testing.T) {
 	}
 }
 
+func TestExecCommand_AddsVenvBinToPATH_WhenPresent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell/path semantics differ on windows")
+	}
+
+	dir := t.TempDir()
+	venvBin := filepath.Join(dir, "venv", "bin")
+	if err := os.MkdirAll(venvBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmdName := "_serf_venv_marker_cmd"
+	scriptPath := filepath.Join(venvBin, cmdName)
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho venv_ok\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	env := NewLocalExecutionEnvironment(dir)
+	res, err := env.ExecCommand(context.Background(), cmdName, 5_000, "", nil)
+	if err != nil {
+		t.Fatalf("ExecCommand: %v (stdout=%q stderr=%q)", err, res.Stdout, res.Stderr)
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("exit_code=%d want 0 (stdout=%q stderr=%q)", res.ExitCode, res.Stdout, res.Stderr)
+	}
+	if strings.TrimSpace(res.Stdout) != "venv_ok" {
+		t.Fatalf("stdout=%q want %q", res.Stdout, "venv_ok\n")
+	}
+}
+
+func TestExecCommand_DoesNotInventVenvBinPATH_WhenAbsent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell/path semantics differ on windows")
+	}
+
+	dir := t.TempDir()
+	env := NewLocalExecutionEnvironment(dir)
+
+	cmdName := "_serf_nonexistent_venv_cmd"
+	res, err := env.ExecCommand(context.Background(), cmdName, 5_000, "", nil)
+	if err == nil {
+		t.Fatalf("expected error (stdout=%q stderr=%q)", res.Stdout, res.Stderr)
+	}
+	// /bin/bash uses 127 for command-not-found.
+	if res.ExitCode != 127 {
+		t.Fatalf("exit_code=%d want 127 (stdout=%q stderr=%q)", res.ExitCode, res.Stdout, res.Stderr)
+	}
+}
+
 func TestGrep_FallbackWithoutRipgrep(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("hello world\ngoodbye world\nhello again\n"), 0o644); err != nil {
