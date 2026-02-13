@@ -710,15 +710,22 @@ func TestAdapter_Complete_ResponseFormat_JSONSchema(t *testing.T) {
 		t.Fatalf("Complete: %v", err)
 	}
 
-	rf, ok := gotBody["response_format"].(map[string]any)
+	text, _ := gotBody["text"].(map[string]any)
+	if text == nil {
+		t.Fatalf("text: %#v", gotBody["text"])
+	}
+	rf, ok := text["format"].(map[string]any)
 	if !ok || rf == nil {
-		t.Fatalf("response_format: %#v", gotBody["response_format"])
+		t.Fatalf("text.format: %#v", text["format"])
 	}
 	if rf["type"] != "json_schema" {
-		t.Fatalf("response_format.type: %#v", rf["type"])
+		t.Fatalf("text.format.type: %#v", rf["type"])
 	}
-	if _, ok := rf["json_schema"].(map[string]any); !ok {
-		t.Fatalf("response_format.json_schema: %#v", rf["json_schema"])
+	if rf["name"] == "" {
+		t.Fatalf("text.format.name: %#v", rf["name"])
+	}
+	if _, ok := rf["schema"].(map[string]any); !ok {
+		t.Fatalf("text.format.schema: %#v", rf["schema"])
 	}
 }
 

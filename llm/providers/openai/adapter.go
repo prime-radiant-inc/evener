@@ -128,7 +128,13 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	}
 	if req.ResponseFormat != nil {
 		if rf := toResponsesResponseFormat(*req.ResponseFormat); rf != nil {
-			body["response_format"] = rf
+			// OpenAI Responses API moved response_format under text.format.
+			text, _ := body["text"].(map[string]any)
+			if text == nil {
+				text = map[string]any{}
+			}
+			text["format"] = rf
+			body["text"] = text
 		}
 	}
 	// provider_options escape hatch (unified-llm spec).
@@ -238,7 +244,13 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	}
 	if req.ResponseFormat != nil {
 		if rf := toResponsesResponseFormat(*req.ResponseFormat); rf != nil {
-			body["response_format"] = rf
+			// OpenAI Responses API moved response_format under text.format.
+			text, _ := body["text"].(map[string]any)
+			if text == nil {
+				text = map[string]any{}
+			}
+			text["format"] = rf
+			body["text"] = text
 		}
 	}
 	if req.ProviderOptions != nil {
@@ -460,10 +472,13 @@ func toResponsesResponseFormat(rf llm.ResponseFormat) any {
 	case "json":
 		return map[string]any{"type": "json"}
 	case "json_schema":
+		// Responses API requires a name for json_schema output and expects the
+		// actual JSON Schema under "schema".
 		return map[string]any{
-			"type":        "json_schema",
-			"json_schema": rf.JSONSchema,
-			"strict":      rf.Strict,
+			"type":   "json_schema",
+			"name":   "output",
+			"schema": rf.JSONSchema,
+			"strict": rf.Strict,
 		}
 	default:
 		return nil
