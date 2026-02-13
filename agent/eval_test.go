@@ -171,6 +171,61 @@ func TestEvalCollector_HandlesUsageAsMapFallback(t *testing.T) {
 	}
 }
 
+func TestEvalCollector_TotalTokensComputed(t *testing.T) {
+	c := NewEvalCollector("compact", "gpt-4", "task")
+
+	c.ProcessEvent(SessionEvent{
+		Kind: EventAssistantTextEnd,
+		Data: AssistantTextEndData{
+			Usage: llm.Usage{InputTokens: 100, OutputTokens: 50},
+		},
+	})
+	c.ProcessEvent(SessionEvent{
+		Kind: EventAssistantTextEnd,
+		Data: AssistantTextEndData{
+			Usage: llm.Usage{InputTokens: 200, OutputTokens: 30},
+		},
+	})
+
+	m := c.Metrics()
+	if m.TotalTokens != 380 {
+		t.Errorf("expected TotalTokens 380, got %d", m.TotalTokens)
+	}
+	// Granular fields should still be populated.
+	if m.TotalInputTokens != 300 {
+		t.Errorf("expected 300 input tokens, got %d", m.TotalInputTokens)
+	}
+	if m.TotalOutputTokens != 80 {
+		t.Errorf("expected 80 output tokens, got %d", m.TotalOutputTokens)
+	}
+}
+
+func TestEvalCollector_CountsForkSummaryCalls(t *testing.T) {
+	c := NewEvalCollector("session-log", "gpt-4", "task")
+
+	c.ProcessEvent(SessionEvent{
+		Kind: EventForkSummary,
+		Data: ForkSummaryData{Turn: 3},
+	})
+	c.ProcessEvent(SessionEvent{
+		Kind: EventForkSummary,
+		Data: ForkSummaryData{Turn: 7},
+	})
+
+	m := c.Metrics()
+	if m.ForkSummaryCalls != 2 {
+		t.Errorf("expected 2 fork summary calls, got %d", m.ForkSummaryCalls)
+	}
+}
+
+func TestEvalCollector_RetentionScoreDefaultsToZero(t *testing.T) {
+	c := NewEvalCollector("compact", "gpt-4", "task")
+	m := c.Metrics()
+	if m.RetentionScore != 0.0 {
+		t.Errorf("expected RetentionScore 0.0, got %f", m.RetentionScore)
+	}
+}
+
 func TestEvalCollector_ConcurrentAccess(t *testing.T) {
 	c := NewEvalCollector("compact", "gpt-4", "task")
 

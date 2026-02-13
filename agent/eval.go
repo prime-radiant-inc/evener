@@ -15,9 +15,12 @@ type EvalMetrics struct {
 	TurnCount         int      `json:"turn_count"`
 	TotalInputTokens  int      `json:"total_input_tokens"`
 	TotalOutputTokens int      `json:"total_output_tokens"`
+	TotalTokens       int      `json:"total_tokens"`
 	RecallCalls       int      `json:"recall_calls"`
+	ForkSummaryCalls  int      `json:"fork_summary_calls"`
 	CompactionEvents  int      `json:"compaction_events"`
 	CompactionLayers  []string `json:"compaction_layers"`
+	RetentionScore    float64  `json:"retention_score"`
 	DurationSeconds   float64  `json:"duration_seconds"`
 	Result            string   `json:"result"`
 }
@@ -63,6 +66,9 @@ func (c *EvalCollector) ProcessEvent(ev SessionEvent) {
 		if d, ok := ev.Data.(ToolCallStartData); ok && d.ToolName == "recall" {
 			c.metrics.RecallCalls++
 		}
+
+	case EventForkSummary:
+		c.metrics.ForkSummaryCalls++
 	}
 }
 
@@ -91,5 +97,7 @@ func (c *EvalCollector) Metrics() EvalMetrics {
 	m := c.metrics
 	// Return a copy of the layers slice to prevent mutation.
 	m.CompactionLayers = append([]string{}, c.metrics.CompactionLayers...)
+	// Compute TotalTokens for spec compliance.
+	m.TotalTokens = m.TotalInputTokens + m.TotalOutputTokens
 	return m
 }

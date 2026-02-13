@@ -26,6 +26,7 @@ func main() {
 	task := flag.String("task", "", "task description")
 	workDir := flag.String("dir", ".", "working directory")
 	output := flag.String("output", "", "output JSON file (default: stdout)")
+	probes := flag.String("probes", "", "path to JSON file with retention probe questions")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: serfeval --provider <p> --model <m> --task <task> [flags]\n\n")
@@ -38,6 +39,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  --strategy <name>    Context strategy (default: compact)\n")
 		fmt.Fprintf(os.Stderr, "  --dir <path>         Working directory (default: .)\n")
 		fmt.Fprintf(os.Stderr, "  --output <path>      Write JSON to file instead of stdout\n")
+		fmt.Fprintf(os.Stderr, "  --probes <path>      JSON file with retention probe questions\n")
 	}
 	flag.Parse()
 
@@ -46,13 +48,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := runEval(*provider, *model, *strategy, *task, *workDir, *output); err != nil {
+	if err := runEval(*provider, *model, *strategy, *task, *workDir, *output, *probes); err != nil {
 		fmt.Fprintf(os.Stderr, "serfeval: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func runEval(provider, model, strategy, task, workDir, output string) error {
+func runEval(provider, model, strategy, task, workDir, output, probesFile string) error {
 	client, err := llm.NewFromEnv()
 	if err != nil {
 		return fmt.Errorf("LLM client setup: %w", err)
@@ -93,6 +95,9 @@ func runEval(provider, model, strategy, task, workDir, output string) error {
 	result, err := sess.ProcessInput(ctx, task)
 	elapsed := time.Since(start)
 
+	// Grab session history before closing for retention probes.
+	snap := sess.Snapshot()
+
 	sess.Close()
 	<-eventsDone
 
@@ -100,6 +105,19 @@ func runEval(provider, model, strategy, task, workDir, output string) error {
 	metrics.DurationSeconds = elapsed.Seconds()
 	metrics.Completed = err == nil
 	metrics.Result = result
+
+	// Run retention probes if a probes file was provided.
+	if probesFile != "" {
+		probeQuestions, loadErr := loadProbeQuestions(probesFile)
+		if loadErr != nil {
+			return fmt.Errorf("load probes: %w", loadErr)
+		}
+		retScore, probeErr := agent.RunRetentionProbes(ctx, client, profile, probeQuestions, snap.History)
+		if probeErr != nil {
+			return fmt.Errorf("retention probes: %w", probeErr)
+		}
+		metrics.RetentionScore = retScore
+	}
 
 	data, marshalErr := json.MarshalIndent(metrics, "", "  ")
 	if marshalErr != nil {
@@ -111,6 +129,19 @@ func runEval(provider, model, strategy, task, workDir, output string) error {
 	}
 	fmt.Println(string(data))
 	return nil
+}
+
+// loadProbeQuestions reads a JSON file containing an array of probe question strings.
+func loadProbeQuestions(path string) ([]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var questions []string
+	if err := json.Unmarshal(data, &questions); err != nil {
+		return nil, fmt.Errorf("parse probes JSON: %w", err)
+	}
+	return questions, nil
 }
 
 // selectProfile creates the ProviderProfile for the given provider and model.

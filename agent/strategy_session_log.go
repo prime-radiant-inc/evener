@@ -265,5 +265,6 @@ func (s *SessionLogStrategy) AfterAction(ctx context.Context, history []Turn, cl
 		// Non-fatal: log the error but don't fail the session.
 		return nil
 	}
+	s.session.emit(EventForkSummary, ForkSummaryData{Turn: entry.Turn})
 	return s.log.Append(entry)
 }

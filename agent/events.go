@@ -29,6 +29,7 @@ const (
 	EventError               EventKind = "ERROR"
 	EventSubagentStart       EventKind = "SUBAGENT_START"
 	EventSubagentEnd         EventKind = "SUBAGENT_END"
+	EventForkSummary         EventKind = "FORK_SUMMARY"
 )
 
 type SessionEvent struct {
@@ -194,4 +195,8 @@ type SubagentEndData struct {
 	AgentID   string `json:"agent_id"`
 	Status    string `json:"status"`
 	TurnsUsed int    `json:"turns_used"`
+}
+
+type ForkSummaryData struct {
+	Turn int `json:"turn"`
 }
