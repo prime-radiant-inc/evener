@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"primeradiant.com/serf/llm"
 )
@@ -15,19 +16,23 @@ type OODAStrategy struct {
 
 // NewOODAStrategy creates an OODAStrategy backed by the given ContextManager
 // and Session.
-func NewOODAStrategy(cm *ContextManager, session *Session) *OODAStrategy {
-	return &OODAStrategy{
-		SessionLogStrategy: NewSessionLogStrategy(cm, session),
+func NewOODAStrategy(cm *ContextManager, session *Session) (*OODAStrategy, error) {
+	sls, err := NewSessionLogStrategy(cm, session)
+	if err != nil {
+		return nil, err
 	}
+	return &OODAStrategy{
+		SessionLogStrategy: sls,
+	}, nil
 }
 
 func (s *OODAStrategy) Name() string { return "ooda" }
 
 // ManageContext applies normal compaction layers from SessionLogStrategy,
 // then injects the session log as an orientation message at the end of history.
-func (s *OODAStrategy) ManageContext(ctx context.Context, history *[]Turn, pressure float64, sysPromptChars int, emitFn func(EventKind, any)) error {
+func (s *OODAStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
 	// Apply normal compaction layers.
-	if err := s.SessionLogStrategy.ManageContext(ctx, history, pressure, sysPromptChars, emitFn); err != nil {
+	if err := s.SessionLogStrategy.ManageContext(ctx, history, sysPromptChars, emitFn); err != nil {
 		return err
 	}
 
@@ -47,6 +52,17 @@ func (s *OODAStrategy) ManageContext(ctx context.Context, history *[]Turn, press
 	}
 
 	orient := fmt.Sprintf("[SESSION ORIENTATION]\nHere is a log of your session actions so far. Use the recall tool if you need details about any entry.\n\n%s\n[END ORIENTATION]", logText)
+
+	// Remove any previous orient turns so they don't accumulate
+	// across repeated ManageContext calls.
+	filtered := (*history)[:0]
+	for _, t := range *history {
+		if t.Kind == TurnSteering && strings.Contains(t.Message.Text(), "[SESSION ORIENTATION]") {
+			continue
+		}
+		filtered = append(filtered, t)
+	}
+	*history = filtered
 
 	// Append the orient message to the end of history.
 	// The model will see it just before generating its next response.

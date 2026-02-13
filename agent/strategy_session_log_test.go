@@ -61,7 +61,7 @@ func TestSessionLogStrategy_ManageContext_ObservationMaskAtHighPressure(t *testi
 	logPath := filepath.Join(dir, "test.log.jsonl")
 	sls := &SessionLogStrategy{
 		cm:  cm,
-		log: NewSessionLog(logPath),
+		log: mustNewSessionLog(t, logPath),
 	}
 
 	// Build a history with a large tool result that will exceed 5% threshold.
@@ -98,7 +98,7 @@ func TestSessionLogStrategy_ManageContext_ObservationMaskAtHighPressure(t *testi
 		}
 	}
 
-	err := sls.ManageContext(context.Background(), &history, 0, 0, emitFn)
+	err := sls.ManageContext(context.Background(), &history, 0, emitFn)
 	if err != nil {
 		t.Fatalf("ManageContext returned error: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestSessionLogStrategy_ManageContext_SessionLogCheckpointAtHighPressure(t *
 
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log.jsonl")
-	sessionLog := NewSessionLog(logPath)
+	sessionLog := mustNewSessionLog(t, logPath)
 
 	// Pre-populate the session log with entries.
 	_ = sessionLog.Append(SessionLogEntry{
@@ -193,7 +193,7 @@ func TestSessionLogStrategy_ManageContext_SessionLogCheckpointAtHighPressure(t *
 		}
 	}
 
-	err := sls.ManageContext(context.Background(), &history, 0, 0, emitFn)
+	err := sls.ManageContext(context.Background(), &history, 0, emitFn)
 	if err != nil {
 		t.Fatalf("ManageContext returned error: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestSessionLogStrategy_AfterAction_CallsForkSummarizeAndAppendsToLog(t *tes
 
 	sls := &SessionLogStrategy{
 		cm:      NewContextManager(profile, client),
-		log:     NewSessionLog(logPath),
+		log:     mustNewSessionLog(t, logPath),
 		session: &Session{profile: profile},
 	}
 
@@ -315,7 +315,7 @@ func TestSessionLogStrategy_AfterAction_LLMErrorIsNonFatal(t *testing.T) {
 
 	sls := &SessionLogStrategy{
 		cm:      NewContextManager(profile, client),
-		log:     NewSessionLog(logPath),
+		log:     mustNewSessionLog(t, logPath),
 		session: &Session{profile: profile},
 	}
 
@@ -340,7 +340,7 @@ func TestSessionLogStrategy_SessionLogCheckpoint_EmptyLog(t *testing.T) {
 	logPath := filepath.Join(dir, "test.log.jsonl")
 
 	sls := &SessionLogStrategy{
-		log: NewSessionLog(logPath),
+		log: mustNewSessionLog(t, logPath),
 	}
 
 	history := []Turn{
@@ -371,7 +371,7 @@ func TestSessionLogStrategy_SessionLogCheckpoint_PreservesRecentTurns(t *testing
 	logPath := filepath.Join(dir, "test.log.jsonl")
 
 	sls := &SessionLogStrategy{
-		log: NewSessionLog(logPath),
+		log: mustNewSessionLog(t, logPath),
 	}
 
 	history := []Turn{
@@ -402,7 +402,7 @@ func TestSessionLogStrategy_SessionLogCheckpoint_TooFewTurns(t *testing.T) {
 	logPath := filepath.Join(dir, "test.log.jsonl")
 
 	sls := &SessionLogStrategy{
-		log: NewSessionLog(logPath),
+		log: mustNewSessionLog(t, logPath),
 	}
 
 	history := []Turn{

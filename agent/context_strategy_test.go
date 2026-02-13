@@ -21,7 +21,7 @@ func (s *spyStrategy) Name() string { return "spy" }
 
 func (s *spyStrategy) Tools() []RegisteredTool { return s.toolsDefs }
 
-func (s *spyStrategy) ManageContext(ctx context.Context, history *[]Turn, pressure float64, sysPromptChars int, emitFn func(EventKind, any)) error {
+func (s *spyStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.manageContextCalls++
@@ -118,7 +118,7 @@ func TestCompactStrategyManageContext_Delegation(t *testing.T) {
 	// ManageContext should delegate to ContextManager.MaybeCompact, which should
 	// emit a compaction event because pressure exceeds the threshold.
 	ctx := context.Background()
-	err := cs.ManageContext(ctx, &history, 0.0, 0, emitFn)
+	err := cs.ManageContext(ctx, &history, 0, emitFn)
 	if err != nil {
 		t.Fatalf("ManageContext returned error: %v", err)
 	}

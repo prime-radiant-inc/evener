@@ -165,6 +165,25 @@ type Session struct {
 	taskStoreOnce sync.Once
 }
 
+// selectStrategy creates the appropriate ContextStrategy from config.
+func selectStrategy(cfg SessionConfig, cm *ContextManager, sess *Session) (ContextStrategy, error) {
+	if cfg.ContextStrategyOverride != nil {
+		return cfg.ContextStrategyOverride, nil
+	}
+	switch cfg.ContextStrategy {
+	case "", "compact":
+		return NewCompactStrategy(cm), nil
+	case "recall":
+		return NewRecallStrategy(cm, sess), nil
+	case "session-log":
+		return NewSessionLogStrategy(cm, sess)
+	case "ooda":
+		return NewOODAStrategy(cm, sess)
+	default:
+		return nil, fmt.Errorf("unknown context strategy: %q", cfg.ContextStrategy)
+	}
+}
+
 func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnvironment, cfg SessionConfig) (*Session, error) {
 	if client == nil {
 		return nil, fmt.Errorf("llm client is nil")
@@ -232,22 +251,11 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 	s.contextMgr = NewContextManager(s.profile, client)
 
 	// Create context strategy.
-	if cfg.ContextStrategyOverride != nil {
-		s.strategy = cfg.ContextStrategyOverride
-	} else {
-		switch cfg.ContextStrategy {
-		case "", "compact":
-			s.strategy = NewCompactStrategy(s.contextMgr)
-		case "recall":
-			s.strategy = NewRecallStrategy(s.contextMgr, s)
-		case "session-log":
-			s.strategy = NewSessionLogStrategy(s.contextMgr, s)
-		case "ooda":
-			s.strategy = NewOODAStrategy(s.contextMgr, s)
-		default:
-			return nil, fmt.Errorf("unknown context strategy: %q", cfg.ContextStrategy)
-		}
+	strat, err := selectStrategy(cfg, s.contextMgr, s)
+	if err != nil {
+		return nil, err
 	}
+	s.strategy = strat
 
 	reg := s.profile.NewToolRegistry()
 	if err := registerCoreTools(reg, s); err != nil {
@@ -368,23 +376,12 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 	s.skills = DiscoverSkills(env, cfg.SkillsDirs...)
 	s.contextMgr = NewContextManager(s.profile, client)
 
-	// Create context strategy (same logic as NewSession).
-	if cfg.ContextStrategyOverride != nil {
-		s.strategy = cfg.ContextStrategyOverride
-	} else {
-		switch cfg.ContextStrategy {
-		case "", "compact":
-			s.strategy = NewCompactStrategy(s.contextMgr)
-		case "recall":
-			s.strategy = NewRecallStrategy(s.contextMgr, s)
-		case "session-log":
-			s.strategy = NewSessionLogStrategy(s.contextMgr, s)
-		case "ooda":
-			s.strategy = NewOODAStrategy(s.contextMgr, s)
-		default:
-			return nil, fmt.Errorf("unknown context strategy: %q", cfg.ContextStrategy)
-		}
+	// Create context strategy.
+	strat, err := selectStrategy(cfg, s.contextMgr, s)
+	if err != nil {
+		return nil, err
 	}
+	s.strategy = strat
 
 	reg := s.profile.NewToolRegistry()
 	if err := registerCoreTools(reg, s); err != nil {
@@ -901,7 +898,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			histCopy := append([]Turn{}, s.history...)
 			s.mu.Unlock()
 
-			if err := s.strategy.ManageContext(ctx, &histCopy, 0, len(sys), s.emit); err != nil {
+			if err := s.strategy.ManageContext(ctx, &histCopy, len(sys), s.emit); err != nil {
 				s.emit(EventWarning, WarningData{Message: "context strategy error: " + err.Error()})
 			}
 

@@ -27,19 +27,21 @@ type SessionLog struct {
 }
 
 // NewSessionLog creates a new SessionLog that persists to the given path.
-// If the file exists, loads existing entries.
-func NewSessionLog(path string) *SessionLog {
+// If the file exists, loads existing entries. Returns an error if an
+// existing log file cannot be read.
+func NewSessionLog(path string) (*SessionLog, error) {
 	log := &SessionLog{
 		path:    path,
 		entries: []SessionLogEntry{},
 	}
 
-	// Load existing entries if file exists
 	if _, err := os.Stat(path); err == nil {
-		log.loadFromDisk()
+		if loadErr := log.loadFromDisk(); loadErr != nil {
+			return nil, fmt.Errorf("load session log: %w", loadErr)
+		}
 	}
 
-	return log
+	return log, nil
 }
 
 // loadFromDisk reads entries from the log file.
@@ -59,7 +61,9 @@ func (l *SessionLog) loadFromDisk() error {
 
 		var entry SessionLogEntry
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			// Skip malformed lines
+			// Malformed lines are skipped to tolerate partial writes
+			// (e.g., crash mid-append). The scanner.Err() check below
+			// catches true I/O errors.
 			continue
 		}
 		l.entries = append(l.entries, entry)

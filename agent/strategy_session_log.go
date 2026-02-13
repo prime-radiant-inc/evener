@@ -22,13 +22,17 @@ type SessionLogStrategy struct {
 // NewSessionLogStrategy creates a SessionLogStrategy backed by the given
 // ContextManager and Session. The session log is persisted alongside the
 // session snapshot.
-func NewSessionLogStrategy(cm *ContextManager, session *Session) *SessionLogStrategy {
+func NewSessionLogStrategy(cm *ContextManager, session *Session) (*SessionLogStrategy, error) {
 	logPath := filepath.Join(session.stateDir, "sessions", session.id+".log.jsonl")
+	log, err := NewSessionLog(logPath)
+	if err != nil {
+		return nil, fmt.Errorf("session log strategy: %w", err)
+	}
 	return &SessionLogStrategy{
 		cm:      cm,
 		session: session,
-		log:     NewSessionLog(logPath),
-	}
+		log:     log,
+	}, nil
 }
 
 func (s *SessionLogStrategy) Name() string { return "session-log" }
@@ -38,42 +42,8 @@ func (s *SessionLogStrategy) Tools() []RegisteredTool {
 }
 
 // sessionLogRecallToolDef builds the recall RegisteredTool for this strategy.
-// Uses the same pattern as RecallStrategy's recallToolDef.
 func sessionLogRecallToolDef(strategy *SessionLogStrategy) RegisteredTool {
-	return RegisteredTool{
-		Tool: llm.Tool{
-			Definition: llm.ToolDefinition{
-				Name:        "recall",
-				Description: "Search through earlier parts of this session's history that may have been compacted away. Use this when you need to remember details from earlier in the session.",
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"question": map[string]any{
-							"type":        "string",
-							"description": "What you want to recall from earlier in the session",
-						},
-					},
-					"required": []string{"question"},
-				},
-			},
-		},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
-			question, ok := args["question"].(string)
-			if !ok || question == "" {
-				return nil, fmt.Errorf("recall requires a non-empty 'question' string")
-			}
-
-			sess := strategy.session
-			if sess == nil {
-				return nil, fmt.Errorf("recall: no session reference available")
-			}
-
-			sess.maybeAutoSave()
-
-			path := transcriptPath(sess.stateDir, sess.id)
-			return recallExecute(ctx, sess.client, sess.profile.ID(), sess.profile.Model(), path, question)
-		},
-	}
+	return buildRecallTool(func() *Session { return strategy.session })
 }
 
 // ManageContext applies compaction layers selectively:
@@ -81,7 +51,7 @@ func sessionLogRecallToolDef(strategy *SessionLogStrategy) RegisteredTool {
 //   - Layer 2: thinking clearing
 //   - Layer 3 (replaced): session-log checkpoint instead of deterministic checkpoint
 //   - Layer 4: LLM summarization fallback
-func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]Turn, pressure float64, sysPromptChars int, emitFn func(EventKind, any)) error {
+func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
 	if s.cm == nil {
 		return nil
 	}
@@ -260,7 +230,13 @@ func (s *SessionLogStrategy) AfterAction(ctx context.Context, history []Turn, cl
 	if s.session == nil || s.session.profile == nil {
 		return nil
 	}
-	entry, err := ForkSummarize(ctx, client, s.session.profile, history, len(history))
+	// Pass only the last ~10 turns so the cheap model summarizes
+	// what just happened rather than processing the entire session.
+	recent := history
+	if len(recent) > 10 {
+		recent = recent[len(recent)-10:]
+	}
+	entry, err := ForkSummarize(ctx, client, s.session.profile, recent, len(history))
 	if err != nil {
 		// Non-fatal: log the error but don't fail the session.
 		return nil

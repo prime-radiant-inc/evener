@@ -11,7 +11,7 @@ func TestSessionLog_AppendAndRead(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.log")
 
-	log := NewSessionLog(path)
+	log := mustNewSessionLog(t, path)
 
 	entry1 := SessionLogEntry{
 		Turn:    1,
@@ -52,7 +52,7 @@ func TestSessionLog_Persistence(t *testing.T) {
 	path := filepath.Join(dir, "session.log")
 
 	// Create log and append entries
-	log1 := NewSessionLog(path)
+	log1 := mustNewSessionLog(t, path)
 	entry1 := SessionLogEntry{
 		Turn:    1,
 		Action:  "shell",
@@ -75,7 +75,7 @@ func TestSessionLog_Persistence(t *testing.T) {
 	}
 
 	// Create new log from same path
-	log2 := NewSessionLog(path)
+	log2 := mustNewSessionLog(t, path)
 	entries := log2.Entries()
 
 	if len(entries) != 2 {
@@ -94,7 +94,7 @@ func TestSessionLog_Range(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.log")
 
-	log := NewSessionLog(path)
+	log := mustNewSessionLog(t, path)
 
 	for i := 0; i < 10; i++ {
 		entry := SessionLogEntry{
@@ -137,7 +137,7 @@ func TestSessionLog_String(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.log")
 
-	log := NewSessionLog(path)
+	log := mustNewSessionLog(t, path)
 
 	entry1 := SessionLogEntry{
 		Turn:    47,
@@ -189,7 +189,7 @@ func TestSessionLog_ConcurrentAppend(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.log")
 
-	log := NewSessionLog(path)
+	log := mustNewSessionLog(t, path)
 
 	const numGoroutines = 10
 	const entriesPerGoroutine = 10
@@ -227,7 +227,7 @@ func TestSessionLog_EmptyLog(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.log")
 
-	log := NewSessionLog(path)
+	log := mustNewSessionLog(t, path)
 
 	entries := log.Entries()
 	if len(entries) != 0 {
@@ -253,7 +253,7 @@ func TestSessionLog_Len(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.log")
 
-	log := NewSessionLog(path)
+	log := mustNewSessionLog(t, path)
 
 	if log.Len() != 0 {
 		t.Errorf("new log should have length 0, got %d", log.Len())
@@ -273,5 +273,15 @@ func TestSessionLog_Len(t *testing.T) {
 			t.Errorf("after appending %d entries, Len() = %d, want %d", i, log.Len(), i)
 		}
 	}
+}
+
+// mustNewSessionLog is a test helper that creates a SessionLog or fails the test.
+func mustNewSessionLog(t *testing.T, path string) *SessionLog {
+	t.Helper()
+	log, err := NewSessionLog(path)
+	if err != nil {
+		t.Fatalf("NewSessionLog(%q): %v", path, err)
+	}
+	return log
 }
 

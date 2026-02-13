@@ -25,7 +25,7 @@ func TestOODAStrategy_Tools_InheritsFromSessionLogStrategy(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log.jsonl")
 	sls := &SessionLogStrategy{
-		log: NewSessionLog(logPath),
+		log: mustNewSessionLog(t, logPath),
 	}
 	ooda := &OODAStrategy{
 		SessionLogStrategy: sls,
@@ -54,7 +54,7 @@ func TestOODAStrategy_ManageContext_NoOrientMessageWhenLogEmpty(t *testing.T) {
 
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log.jsonl")
-	sessionLog := NewSessionLog(logPath)
+	sessionLog := mustNewSessionLog(t, logPath)
 
 	ooda := &OODAStrategy{
 		SessionLogStrategy: &SessionLogStrategy{
@@ -68,7 +68,7 @@ func TestOODAStrategy_ManageContext_NoOrientMessageWhenLogEmpty(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("world")},
 	}
 
-	err := ooda.ManageContext(context.Background(), &history, 0, 0, func(EventKind, any) {})
+	err := ooda.ManageContext(context.Background(), &history, 0, func(EventKind, any) {})
 	if err != nil {
 		t.Fatalf("ManageContext returned error: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestOODAStrategy_ManageContext_InjectsOrientMessageWhenLogHasEntries(t *tes
 
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log.jsonl")
-	sessionLog := NewSessionLog(logPath)
+	sessionLog := mustNewSessionLog(t, logPath)
 
 	// Pre-populate the session log with entries.
 	_ = sessionLog.Append(SessionLogEntry{
@@ -122,7 +122,7 @@ func TestOODAStrategy_ManageContext_InjectsOrientMessageWhenLogHasEntries(t *tes
 		{Kind: TurnAssistant, Message: llm.Assistant("world")},
 	}
 
-	err := ooda.ManageContext(context.Background(), &history, 0, 0, func(EventKind, any) {})
+	err := ooda.ManageContext(context.Background(), &history, 0, func(EventKind, any) {})
 	if err != nil {
 		t.Fatalf("ManageContext returned error: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestOODAStrategy_ManageContext_TruncatesVeryLargeLog(t *testing.T) {
 
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log.jsonl")
-	sessionLog := NewSessionLog(logPath)
+	sessionLog := mustNewSessionLog(t, logPath)
 
 	// Create a large log entry that exceeds 80k chars.
 	largeSummary := strings.Repeat("x", 85000)
@@ -190,7 +190,7 @@ func TestOODAStrategy_ManageContext_TruncatesVeryLargeLog(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("world")},
 	}
 
-	err := ooda.ManageContext(context.Background(), &history, 0, 0, func(EventKind, any) {})
+	err := ooda.ManageContext(context.Background(), &history, 0, func(EventKind, any) {})
 	if err != nil {
 		t.Fatalf("ManageContext returned error: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestOODAStrategy_ManageContext_AppliesCompactionLayers(t *testing.T) {
 
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log.jsonl")
-	sessionLog := NewSessionLog(logPath)
+	sessionLog := mustNewSessionLog(t, logPath)
 
 	_ = sessionLog.Append(SessionLogEntry{
 		Turn:    1,
@@ -270,7 +270,7 @@ func TestOODAStrategy_ManageContext_AppliesCompactionLayers(t *testing.T) {
 		}
 	}
 
-	err := ooda.ManageContext(context.Background(), &history, 0, 0, emitFn)
+	err := ooda.ManageContext(context.Background(), &history, 0, emitFn)
 	if err != nil {
 		t.Fatalf("ManageContext returned error: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestOODAStrategy_AfterAction_InheritsFromSessionLogStrategy(t *testing.T) {
 	ooda := &OODAStrategy{
 		SessionLogStrategy: &SessionLogStrategy{
 			cm:      NewContextManager(profile, client),
-			log:     NewSessionLog(logPath),
+			log:     mustNewSessionLog(t, logPath),
 			session: &Session{profile: profile},
 		},
 	}

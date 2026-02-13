@@ -28,8 +28,8 @@ func NewRecallStrategy(cm *ContextManager, session *Session) *RecallStrategy {
 
 func (s *RecallStrategy) Name() string { return "recall" }
 
-func (s *RecallStrategy) ManageContext(ctx context.Context, history *[]Turn, pressure float64, sysPromptChars int, emitFn func(EventKind, any)) error {
-	return s.compact.ManageContext(ctx, history, pressure, sysPromptChars, emitFn)
+func (s *RecallStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
+	return s.compact.ManageContext(ctx, history, sysPromptChars, emitFn)
 }
 
 func (s *RecallStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
@@ -47,6 +47,13 @@ func transcriptPath(stateDir, sessionID string) string {
 
 // recallToolDef builds the RegisteredTool for the "recall" tool.
 func recallToolDef(strategy *RecallStrategy) RegisteredTool {
+	return buildRecallTool(func() *Session { return strategy.session })
+}
+
+// buildRecallTool creates a recall RegisteredTool that uses getSession to
+// obtain the parent session at call time. Shared by RecallStrategy and
+// SessionLogStrategy.
+func buildRecallTool(getSession func() *Session) RegisteredTool {
 	return RegisteredTool{
 		Tool: llm.Tool{
 			Definition: llm.ToolDefinition{
@@ -70,12 +77,11 @@ func recallToolDef(strategy *RecallStrategy) RegisteredTool {
 				return nil, fmt.Errorf("recall requires a non-empty 'question' string")
 			}
 
-			sess := strategy.session
+			sess := getSession()
 			if sess == nil {
 				return nil, fmt.Errorf("recall: no session reference available")
 			}
 
-			// Save session state so the transcript includes recent history.
 			sess.maybeAutoSave()
 
 			path := transcriptPath(sess.stateDir, sess.id)

@@ -10,7 +10,7 @@ import (
 type ContextStrategy interface {
 	// ManageContext is called before each LLM request. It may modify history
 	// in place to reduce context pressure.
-	ManageContext(ctx context.Context, history *[]Turn, pressure float64, sysPromptChars int, emitFn func(EventKind, any)) error
+	ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error
 
 	// AfterAction is called after each completed tool round.
 	AfterAction(ctx context.Context, history []Turn, client *llm.Client) error
@@ -39,7 +39,7 @@ func (s *CompactStrategy) AfterAction(ctx context.Context, history []Turn, clien
 	return nil
 }
 
-func (s *CompactStrategy) ManageContext(ctx context.Context, history *[]Turn, pressure float64, sysPromptChars int, emitFn func(EventKind, any)) error {
+func (s *CompactStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
 	s.cm.MaybeCompact(ctx, history, sysPromptChars, emitFn)
 	return nil
 }

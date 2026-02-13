@@ -85,7 +85,7 @@ func TestRecallStrategy_ManageContext_DelegatesToCompact(t *testing.T) {
 		emitted = true
 	}
 
-	err := rs.ManageContext(context.Background(), &history, 0, 0, emitFn)
+	err := rs.ManageContext(context.Background(), &history, 0, emitFn)
 	if err != nil {
 		t.Fatalf("ManageContext returned error: %v", err)
 	}
