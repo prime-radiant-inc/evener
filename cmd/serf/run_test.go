@@ -506,3 +506,26 @@ func TestResolveReasoningEffort(t *testing.T) {
 		})
 	}
 }
+
+func TestRunWithContextStrategy(t *testing.T) {
+	if os.Getenv("OPENAI_API_KEY") == "" {
+		t.Skip("OPENAI_API_KEY not set")
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), runConfig{
+		task:            "Reply with exactly the word PONG and nothing else.",
+		provider:        "openai",
+		model:           "gpt-5-mini-2025-08-07",
+		workDir:         t.TempDir(),
+		contextStrategy: "compact",
+		stdout:          &stdout,
+		stderr:          &stderr,
+	})
+	if err != nil {
+		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
+	}
+	if !strings.Contains(strings.ToUpper(stdout.String()), "PONG") {
+		t.Fatalf("expected stdout to contain PONG, got: %q", stdout.String())
+	}
+}

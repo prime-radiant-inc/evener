@@ -30,6 +30,7 @@ func main() {
 	listSessionsFlag := flag.Bool("list-sessions", false, "list saved sessions and exit")
 	maxRounds := flag.Int("max-rounds", -1, "max tool rounds per input (0=unlimited, default: 200)")
 	reasoningEffort := flag.String("reasoning-effort", "", "reasoning effort: low|medium|high|none")
+	contextStrategy := flag.String("context-strategy", "", "context management strategy: compact|recall|session-log|ooda (default: compact)")
 	verbose := flag.Bool("verbose", false, "emit NDJSON events to stderr")
 	var skillsDirs stringSliceFlag
 	flag.Var(&skillsDirs, "skills-dir", "extra skill directory (repeatable)")
@@ -53,6 +54,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  --system-prompt-append <path> Append to system prompt (repeatable)\n")
 		fmt.Fprintf(os.Stderr, "  --state-dir <path>   Override runtime state directory (sessions, tasks)\n")
 		fmt.Fprintf(os.Stderr, "  --max-rounds <n>     Max tool rounds per input (0=unlimited, default: 200)\n")
+		fmt.Fprintf(os.Stderr, "  --context-strategy <name> Context management strategy: compact|recall|session-log|ooda (default: compact)\n")
 		fmt.Fprintf(os.Stderr, "  --verbose            Emit NDJSON events to stderr (replaces human-readable output)\n")
 		fmt.Fprintf(os.Stderr, "  --skills-dir <path>  Extra skill directory (repeatable)\n")
 		fmt.Fprintf(os.Stderr, "  --mcp <spec>         MCP server (repeatable, format: name:command args...)\n")
@@ -95,6 +97,7 @@ func main() {
 		systemPromptAppend: []string(systemPromptAppend),
 		maxRounds:          *maxRounds,
 		reasoningEffort:    *reasoningEffort,
+		contextStrategy:    *contextStrategy,
 		verbose:            *verbose,
 		skillsDirs:         []string(skillsDirs),
 		mcpServers:         []string(mcpServers),
