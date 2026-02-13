@@ -25,12 +25,15 @@ func TestWithCommunicateRequiredDataKeys_AddsRequiredKeysToSchema(t *testing.T) 
 			t.Fatalf("data.required=%v, want [components]", required)
 		}
 		dataProps, _ := data["properties"].(map[string]any)
-		if _, ok := dataProps["components"]; !ok {
+		compSchema, ok := dataProps["components"].(map[string]any)
+		if !ok {
 			t.Fatalf("data.properties missing components: %#v", dataProps)
+		}
+		if _, ok := compSchema["type"]; !ok {
+			t.Fatalf("components schema missing type: %#v", compSchema)
 		}
 	}
 	if !communicateFound {
 		t.Fatal("communicate tool not found")
 	}
 }
-

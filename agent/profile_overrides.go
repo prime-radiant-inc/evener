@@ -83,12 +83,17 @@ func defCommunicateWithRequiredDataKeys(requiredKeys []string) llm.ToolDefinitio
 	}
 
 	// Ensure required keys are present in the schema. Use empty schemas for each
-	// key (any type), since Toil's node.outputs only specifies key presence.
+	// key (any JSON type), since Toil's node.outputs only specifies key presence.
+	//
+	// NOTE: OpenAI Responses requires every property schema to include a `type`.
+	// Using a union type here keeps the schema permissive while satisfying that constraint.
 	dataSchema["type"] = "object"
 	dataSchema["additionalProperties"] = true
 	dataProps := map[string]any{}
 	for _, k := range requiredKeys {
-		dataProps[k] = map[string]any{}
+		dataProps[k] = map[string]any{
+			"type": []string{"object", "array", "string", "number", "boolean"},
+		}
 	}
 	dataSchema["properties"] = dataProps
 
