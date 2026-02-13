@@ -710,20 +710,32 @@ func toResponsesInput(msgs []llm.Message) (instructions string, items []any, _ e
 					continue
 				}
 				outStr := ""
-				switch v := p.ToolResult.Content.(type) {
-				case string:
-					outStr = v
-				default:
-					b, _ := json.Marshal(v)
-					outStr = string(b)
+				if p.ToolResult.IsError {
+					// OpenAI Responses API rejects unknown params like "is_error" on
+					// function_call_output items. Preserve error semantics by wrapping
+					// the original content in a JSON string.
+					wrapped := map[string]any{
+						"is_error": true,
+						"content":  p.ToolResult.Content,
+					}
+					if b, err := json.Marshal(wrapped); err == nil {
+						outStr = string(b)
+					} else {
+						outStr = fmt.Sprintf(`{"is_error":true,"content":%q}`, fmt.Sprint(p.ToolResult.Content))
+					}
+				} else {
+					switch v := p.ToolResult.Content.(type) {
+					case string:
+						outStr = v
+					default:
+						b, _ := json.Marshal(v)
+						outStr = string(b)
+					}
 				}
 				item := map[string]any{
 					"type":    "function_call_output",
 					"call_id": p.ToolResult.ToolCallID,
 					"output":  outStr,
-				}
-				if p.ToolResult.IsError {
-					item["is_error"] = true
 				}
 				items = append(items, item)
 			}

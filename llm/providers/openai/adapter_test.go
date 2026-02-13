@@ -1559,12 +1559,22 @@ func TestComplete_ToolResultIsError_SentToAPI(t *testing.T) {
 	for _, item := range input {
 		m, _ := item.(map[string]any)
 		if m["type"] == "function_call_output" {
-			isErr, present := m["is_error"]
-			if !present {
-				t.Fatalf("is_error field must be present on error tool results")
+			if _, present := m["is_error"]; present {
+				t.Fatalf("OpenAI Responses input must not include is_error on function_call_output items (API rejects unknown params)")
 			}
-			if isErr != true {
-				t.Fatalf("is_error must be true for error results, got %v", isErr)
+			outStr, ok := m["output"].(string)
+			if !ok {
+				t.Fatalf("function_call_output.output not string: %#v", m["output"])
+			}
+			var wrapped map[string]any
+			if err := json.Unmarshal([]byte(outStr), &wrapped); err != nil {
+				t.Fatalf("expected wrapped JSON output for error tool result, got %q: %v", outStr, err)
+			}
+			if wrapped["is_error"] != true {
+				t.Fatalf("wrapped output is_error=%v, want true; wrapped=%#v", wrapped["is_error"], wrapped)
+			}
+			if wrapped["content"] != "connection refused" {
+				t.Fatalf("wrapped output content=%v, want %q; wrapped=%#v", wrapped["content"], "connection refused", wrapped)
 			}
 			found = true
 		}
@@ -1619,7 +1629,10 @@ func TestComplete_ToolResultIsError_OmittedWhenFalse(t *testing.T) {
 		m, _ := item.(map[string]any)
 		if m["type"] == "function_call_output" {
 			if _, present := m["is_error"]; present {
-				t.Fatalf("is_error should be omitted for non-error results, but was present: %v", m["is_error"])
+				t.Fatalf("OpenAI Responses input must not include is_error on function_call_output items (API rejects unknown params)")
+			}
+			if got := m["output"]; got != "success" {
+				t.Fatalf("function_call_output.output=%#v, want %q", got, "success")
 			}
 		}
 	}
