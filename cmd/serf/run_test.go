@@ -470,3 +470,39 @@ func TestMaxRoundsToConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveReasoningEffort(t *testing.T) {
+	tests := []struct {
+		name    string
+		cli     string
+		env     string
+		wantSet bool
+		wantVal string
+		wantErr bool
+	}{
+		{name: "unset", cli: "", env: "", wantSet: false},
+		{name: "env medium", cli: "", env: "medium", wantSet: true, wantVal: "medium"},
+		{name: "cli overrides env", cli: "HIGH", env: "low", wantSet: true, wantVal: "high"},
+		{name: "cli none clears", cli: "none", env: "high", wantSet: true, wantVal: ""},
+		{name: "env none clears", cli: "", env: "none", wantSet: true, wantVal: ""},
+		{name: "invalid", cli: "banana", env: "", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveReasoningEffort(tt.cli, tt.env)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err=%v wantErr=%v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if got.Set != tt.wantSet {
+				t.Fatalf("Set=%v want %v", got.Set, tt.wantSet)
+			}
+			if got.Value != tt.wantVal {
+				t.Fatalf("Value=%q want %q", got.Value, tt.wantVal)
+			}
+		})
+	}
+}

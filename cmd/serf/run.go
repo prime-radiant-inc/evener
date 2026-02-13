@@ -25,6 +25,7 @@ type runConfig struct {
 	systemPrompt       string   // --system-prompt file path
 	systemPromptAppend []string // --system-prompt-append file paths
 	maxRounds          int      // --max-rounds (-1=default, 0=unlimited, >0=limit)
+	reasoningEffort    string   // --reasoning-effort override (or SERF_REASONING_EFFORT)
 	verbose            bool
 	stdout             io.Writer
 	stderr             io.Writer
@@ -38,6 +39,13 @@ type runConfig struct {
 	resumeWith   string // session ID whose context to reuse with a new task
 	resumeLast   bool   // resume the most recent session
 	listSessions bool   // print saved sessions and exit
+}
+
+type reasoningEffortResolution struct {
+	// Set indicates a CLI/env override was provided (even if it resolves to "").
+	Set bool
+	// Value is the normalized effort: "low"|"medium"|"high" or "" (meaning none/clear).
+	Value string
 }
 
 func run(ctx context.Context, cfg runConfig) error {
@@ -87,6 +95,11 @@ func run(ctx context.Context, cfg runConfig) error {
 		return fmt.Errorf("no task provided")
 	}
 
+	effort, err := resolveReasoningEffort(cfg.reasoningEffort, os.Getenv("SERF_REASONING_EFFORT"))
+	if err != nil {
+		return err
+	}
+
 	// Resolve provider: explicit flag > snapshot > SERF_PROVIDER env var.
 	provider := cfg.provider
 	if provider == "" && snap != nil {
@@ -128,6 +141,9 @@ func run(ctx context.Context, cfg runConfig) error {
 		if err != nil {
 			return fmt.Errorf("restore session: %w", err)
 		}
+		if effort.Set {
+			sess.SetReasoningEffort(effort.Value)
+		}
 		fmt.Fprintf(cfg.stderr, "[resumed] session %s (%d turns)\n", snap.ID, snap.TurnCount) //nolint:errcheck
 	} else {
 		sessionCfg := agent.SessionConfig{
@@ -138,6 +154,9 @@ func run(ctx context.Context, cfg runConfig) error {
 			SkillsDirs:            cfg.skillsDirs,
 			MCPConfigFiles:        cfg.mcpConfigs,
 			MCPInline:             cfg.mcpServers,
+		}
+		if effort.Set {
+			sessionCfg.ReasoningEffort = effort.Value
 		}
 		sess, err = agent.NewSession(client, profile, env, sessionCfg)
 		if err != nil {
@@ -163,6 +182,28 @@ func run(ctx context.Context, cfg runConfig) error {
 
 	fmt.Fprintln(cfg.stdout, result) //nolint:errcheck
 	return nil
+}
+
+func resolveReasoningEffort(cliValue, envValue string) (reasoningEffortResolution, error) {
+	raw := strings.TrimSpace(cliValue)
+	set := raw != ""
+	if raw == "" {
+		raw = strings.TrimSpace(envValue)
+		set = raw != ""
+	}
+	if !set {
+		return reasoningEffortResolution{}, nil
+	}
+
+	v := strings.ToLower(strings.TrimSpace(raw))
+	switch v {
+	case "none", "null", "off", "false", "0":
+		return reasoningEffortResolution{Set: true, Value: ""}, nil
+	case "low", "medium", "high":
+		return reasoningEffortResolution{Set: true, Value: v}, nil
+	default:
+		return reasoningEffortResolution{}, fmt.Errorf("invalid reasoning effort %q (expected low|medium|high|none)", raw)
+	}
 }
 
 // drainEventsVerbose writes every event as a JSON line (NDJSON) to w.
