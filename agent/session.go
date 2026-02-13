@@ -1537,11 +1537,17 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 
 			switch action {
 			case "status":
+				// Some workflows accidentally include an output object with status updates.
+				// Treat it as ignorable noise and proceed as long as we have a message.
 				if strings.TrimSpace(message) == "" {
-					return nil, fmt.Errorf("communicate(status) requires a non-empty message")
-				}
-				if v, ok := args["output"]; ok && v != nil {
-					return nil, fmt.Errorf("communicate(status) does not allow output; use action=result")
+					if output, ok := args["output"]; ok && output != nil {
+						if outMsg := communicateOutputMessage(output); strings.TrimSpace(outMsg) != "" {
+							message = outMsg
+						}
+					}
+					if strings.TrimSpace(message) == "" {
+						return nil, fmt.Errorf("communicate(status) requires a non-empty message")
+					}
 				}
 			case "result":
 				if v, ok := args["output"]; (!ok || v == nil) && strings.TrimSpace(message) == "" {

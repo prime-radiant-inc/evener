@@ -196,6 +196,50 @@ func TestCommunicate_StatusContinuesLoop(t *testing.T) {
 	}
 }
 
+func TestCommunicate_StatusWithOutputContinuesLoop(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	status := communicateCallArgs("c1", map[string]any{
+		"action":  "status",
+		"message": "Working on it...",
+		"output": map[string]any{
+			"decision": "noop",
+			"message":  "ignored",
+			"data":     map[string]any{},
+		},
+	})
+	result := communicateCall("c2", "result", "All done.")
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(status) },
+			func(req llm.Request) llm.Response { return toolCallResponse(result) },
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := sess.ProcessInput(ctx, "hi")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if strings.TrimSpace(out) != "All done." {
+		t.Fatalf("out: %q, want %q", out, "All done.")
+	}
+	sess.Close()
+
+	if got := len(f.Requests()); got != 2 {
+		t.Fatalf("requests: got %d want 2", got)
+	}
+}
+
 func TestCommunicate_BareTextFallback(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
