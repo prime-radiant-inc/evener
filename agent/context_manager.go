@@ -96,6 +96,11 @@ func (cm *ContextManager) estimatePressure(history []Turn, sysPromptChars int) f
 	return float64(totalTokens) / float64(cw)
 }
 
+// EstimatePressure returns the estimated fraction of context window in use.
+func (cm *ContextManager) EstimatePressure(history []Turn, sysPromptChars int) float64 {
+	return cm.estimatePressure(history, sysPromptChars)
+}
+
 // EstimateTokens estimates token count for turns using the char/4 heuristic.
 func EstimateTokens(turns []Turn) int {
 	chars := 0
