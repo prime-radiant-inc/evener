@@ -1535,6 +1535,22 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 				message = fmt.Sprint(v)
 			}
 
+			switch action {
+			case "status":
+				if strings.TrimSpace(message) == "" {
+					return nil, fmt.Errorf("communicate(status) requires a non-empty message")
+				}
+				if v, ok := args["output"]; ok && v != nil {
+					return nil, fmt.Errorf("communicate(status) does not allow output; use action=result")
+				}
+			case "result":
+				if v, ok := args["output"]; (!ok || v == nil) && strings.TrimSpace(message) == "" {
+					return nil, fmt.Errorf("communicate(result) requires either message or output")
+				}
+			default:
+				return nil, fmt.Errorf("unknown communicate action %q: use status or result", action)
+			}
+
 			resultText := message
 			if action == "result" {
 				if output, ok := args["output"]; ok && output != nil {

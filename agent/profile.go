@@ -653,32 +653,6 @@ func defCommunicate() llm.ToolDefinition {
 				},
 			},
 			"required": []string{"action"},
-			"oneOf": []any{
-				map[string]any{
-					"properties": map[string]any{
-						"action": map[string]any{"const": "status"},
-					},
-					"required": []string{"message"},
-					"not": map[string]any{
-						"required": []string{"output"},
-					},
-				},
-				map[string]any{
-					"properties": map[string]any{
-						"action": map[string]any{"const": "result"},
-					},
-					"required": []string{"message"},
-					"not": map[string]any{
-						"required": []string{"output"},
-					},
-				},
-				map[string]any{
-					"properties": map[string]any{
-						"action": map[string]any{"const": "result"},
-					},
-					"required": []string{"output"},
-				},
-			},
 		},
 	}
 }
