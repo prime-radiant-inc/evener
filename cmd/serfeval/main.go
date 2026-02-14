@@ -69,9 +69,16 @@ func runEval(provider, model, strategy, task, workDir, output, probesFile string
 
 	env := agent.NewLocalExecutionEnvironment(workDir)
 
+	stateDir, err := os.MkdirTemp("", "serfeval-state-")
+	if err != nil {
+		return fmt.Errorf("create state dir: %w", err)
+	}
+	defer os.RemoveAll(stateDir)
+
 	cfg := agent.SessionConfig{
 		ContextStrategy:          strategy,
 		CompactionThresholdScale: thresholdScale,
+		StateDir:                 stateDir,
 	}
 
 	sess, err := agent.NewSession(client, profile, env, cfg)
