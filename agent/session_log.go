@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -86,6 +87,9 @@ func (l *SessionLog) Append(entry SessionLogEntry) error {
 
 // appendToDisk writes a single entry to the log file.
 func (l *SessionLog) appendToDisk(entry SessionLogEntry) error {
+	if err := os.MkdirAll(filepath.Dir(l.path), 0o755); err != nil {
+		return fmt.Errorf("create log directory: %w", err)
+	}
 	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return err
