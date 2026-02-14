@@ -90,6 +90,38 @@ func TestSessionLog_Persistence(t *testing.T) {
 	}
 }
 
+func TestSessionLog_AppendCreatesDirectory(t *testing.T) {
+	base := t.TempDir()
+	path := filepath.Join(base, "nested", "deep", "session.log")
+
+	log := mustNewSessionLog(t, path)
+
+	entry := SessionLogEntry{
+		Turn:    1,
+		Action:  "shell",
+		Summary: "Ran git status",
+		Outcome: "success",
+	}
+	if err := log.Append(entry); err != nil {
+		t.Fatalf("Append failed when directory did not exist: %v", err)
+	}
+
+	entries := log.Entries()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+
+	// Reload from disk to verify persistence through non-existent directory path
+	log2 := mustNewSessionLog(t, path)
+	reloaded := log2.Entries()
+	if len(reloaded) != 1 {
+		t.Fatalf("expected 1 entry after reload, got %d", len(reloaded))
+	}
+	if reloaded[0].Summary != "Ran git status" {
+		t.Errorf("reloaded entry mismatch: got %+v", reloaded[0])
+	}
+}
+
 func TestSessionLog_Range(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.log")
