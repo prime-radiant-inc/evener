@@ -28,6 +28,7 @@ func main() {
 	output := flag.String("output", "", "output JSON file (default: stdout)")
 	probes := flag.String("probes", "", "path to JSON file with retention probe questions")
 	thresholdScale := flag.Float64("threshold-scale", 0, "multiply compaction thresholds (e.g., 0.1 = trigger at 10% of normal)")
+	maxTurns := flag.Int("max-turns", 0, "maximum agent turns before stopping (0 = unlimited)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: serfeval --provider <p> --model <m> --task <task> [flags]\n\n")
@@ -42,6 +43,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  --output <path>      Write JSON to file instead of stdout\n")
 		fmt.Fprintf(os.Stderr, "  --probes <path>      JSON file with retention probe questions\n")
 		fmt.Fprintf(os.Stderr, "  --threshold-scale <f> Multiply compaction thresholds (e.g., 0.1)\n")
+		fmt.Fprintf(os.Stderr, "  --max-turns <n>      Maximum agent turns (0 = unlimited)\n")
 	}
 	flag.Parse()
 
@@ -50,13 +52,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := runEval(*provider, *model, *strategy, *task, *workDir, *output, *probes, *thresholdScale); err != nil {
+	if err := runEval(*provider, *model, *strategy, *task, *workDir, *output, *probes, *thresholdScale, *maxTurns); err != nil {
 		fmt.Fprintf(os.Stderr, "serfeval: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func runEval(provider, model, strategy, task, workDir, output, probesFile string, thresholdScale float64) error {
+func runEval(provider, model, strategy, task, workDir, output, probesFile string, thresholdScale float64, maxTurns int) error {
 	client, err := llm.NewFromEnv()
 	if err != nil {
 		return fmt.Errorf("LLM client setup: %w", err)
@@ -79,6 +81,7 @@ func runEval(provider, model, strategy, task, workDir, output, probesFile string
 		ContextStrategy:          strategy,
 		CompactionThresholdScale: thresholdScale,
 		StateDir:                 stateDir,
+		MaxTurns:                 maxTurns,
 	}
 
 	sess, err := agent.NewSession(client, profile, env, cfg)
