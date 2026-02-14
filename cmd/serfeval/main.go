@@ -27,6 +27,7 @@ func main() {
 	workDir := flag.String("dir", ".", "working directory")
 	output := flag.String("output", "", "output JSON file (default: stdout)")
 	probes := flag.String("probes", "", "path to JSON file with retention probe questions")
+	thresholdScale := flag.Float64("threshold-scale", 0, "multiply compaction thresholds (e.g., 0.1 = trigger at 10% of normal)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: serfeval --provider <p> --model <m> --task <task> [flags]\n\n")
@@ -40,6 +41,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  --dir <path>         Working directory (default: .)\n")
 		fmt.Fprintf(os.Stderr, "  --output <path>      Write JSON to file instead of stdout\n")
 		fmt.Fprintf(os.Stderr, "  --probes <path>      JSON file with retention probe questions\n")
+		fmt.Fprintf(os.Stderr, "  --threshold-scale <f> Multiply compaction thresholds (e.g., 0.1)\n")
 	}
 	flag.Parse()
 
@@ -48,13 +50,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := runEval(*provider, *model, *strategy, *task, *workDir, *output, *probes); err != nil {
+	if err := runEval(*provider, *model, *strategy, *task, *workDir, *output, *probes, *thresholdScale); err != nil {
 		fmt.Fprintf(os.Stderr, "serfeval: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func runEval(provider, model, strategy, task, workDir, output, probesFile string) error {
+func runEval(provider, model, strategy, task, workDir, output, probesFile string, thresholdScale float64) error {
 	client, err := llm.NewFromEnv()
 	if err != nil {
 		return fmt.Errorf("LLM client setup: %w", err)
@@ -68,7 +70,8 @@ func runEval(provider, model, strategy, task, workDir, output, probesFile string
 	env := agent.NewLocalExecutionEnvironment(workDir)
 
 	cfg := agent.SessionConfig{
-		ContextStrategy: strategy,
+		ContextStrategy:          strategy,
+		CompactionThresholdScale: thresholdScale,
 	}
 
 	sess, err := agent.NewSession(client, profile, env, cfg)

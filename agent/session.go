@@ -76,6 +76,11 @@ type SessionConfig struct {
 	// a strategy from the ContextStrategy string. For testing.
 	ContextStrategyOverride ContextStrategy `json:"-"`
 
+	// CompactionThresholdScale multiplies all compaction thresholds by this
+	// factor. 1.0 = defaults, 0.1 = trigger at 10% of normal pressure.
+	// Used for evaluation testing. 0 means use defaults.
+	CompactionThresholdScale float64 `json:"compaction_threshold_scale,omitempty"`
+
 	// StateDir, when non-empty, enables incremental session persistence.
 	// Snapshots are written to <StateDir>/sessions/ and tasks to <StateDir>/tasks/.
 	StateDir string `json:"-"`
@@ -249,6 +254,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 
 	s.skills = DiscoverSkills(env, cfg.SkillsDirs...)
 	s.contextMgr = NewContextManager(s.profile, client)
+	applyThresholdScale(s.contextMgr, cfg.CompactionThresholdScale)
 
 	// Create context strategy.
 	strat, err := selectStrategy(cfg, s.contextMgr, s)
@@ -375,6 +381,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 
 	s.skills = DiscoverSkills(env, cfg.SkillsDirs...)
 	s.contextMgr = NewContextManager(s.profile, client)
+	applyThresholdScale(s.contextMgr, cfg.CompactionThresholdScale)
 
 	// Create context strategy.
 	strat, err := selectStrategy(cfg, s.contextMgr, s)
@@ -1768,6 +1775,17 @@ func (s *Session) resolveFilePath(path string) string {
 		return p
 	}
 	return filepath.Join(s.env.WorkingDirectory(), p)
+}
+
+// applyThresholdScale scales all compaction thresholds on cm by the given
+// factor. A factor of 0 or 1 leaves defaults unchanged.
+func applyThresholdScale(cm *ContextManager, scale float64) {
+	if scale > 0 && scale != 1.0 {
+		cm.ObservationMaskThreshold *= scale
+		cm.ThinkingClearThreshold *= scale
+		cm.CheckpointThreshold *= scale
+		cm.SummarizeThreshold *= scale
+	}
 }
 
 func (s *Session) getOrCreateTaskStore() *TaskStore {

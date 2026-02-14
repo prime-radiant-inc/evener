@@ -212,6 +212,35 @@ func TestSession_ContextStrategy_UnknownStrategyError(t *testing.T) {
 	}
 }
 
+func TestCompactionThresholdScale(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		CompactionThresholdScale: 0.1,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	cm := sess.contextMgr
+
+	// Verify thresholds are 10% of defaults.
+	check := func(name string, got, want float64) {
+		t.Helper()
+		// Allow small floating-point tolerance.
+		if diff := got - want; diff > 0.001 || diff < -0.001 {
+			t.Errorf("%s: got %.4f, want %.4f", name, got, want)
+		}
+	}
+	check("ObservationMaskThreshold", cm.ObservationMaskThreshold, 0.06)  // 0.60 * 0.1
+	check("ThinkingClearThreshold", cm.ThinkingClearThreshold, 0.07)      // 0.70 * 0.1
+	check("CheckpointThreshold", cm.CheckpointThreshold, 0.08)            // 0.80 * 0.1
+	check("SummarizeThreshold", cm.SummarizeThreshold, 0.09)              // 0.90 * 0.1
+}
+
 func TestSession_ContextStrategy_DefaultIsCompact(t *testing.T) {
 	// When no strategy is specified, default to CompactStrategy.
 	dir := t.TempDir()
