@@ -22,7 +22,7 @@ import (
 func main() {
 	provider := flag.String("provider", "", "LLM provider (openai, anthropic, google)")
 	model := flag.String("model", "", "LLM model identifier")
-	strategy := flag.String("strategy", "compact", "context strategy: compact|recall|session-log|ooda")
+	strategy := flag.String("strategy", "compact", "context strategy: compact|recall|session-log|ooda|obs-mask|checkpoint-pred|memory-crystals|recursive-distill")
 	task := flag.String("task", "", "task description")
 	workDir := flag.String("dir", ".", "working directory")
 	output := flag.String("output", "", "output JSON file (default: stdout)")
