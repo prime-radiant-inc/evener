@@ -23,6 +23,21 @@ type EvalMetrics struct {
 	RetentionScore    float64  `json:"retention_score"`
 	DurationSeconds   float64  `json:"duration_seconds"`
 	Result            string   `json:"result"`
+
+	// F2P test evaluation results (when --test-patch is used).
+	F2PResults *F2PResults `json:"f2p_results,omitempty"`
+
+	// Per-question retention probe breakdown (when new probe format is used).
+	RetentionBreakdown []ProbeResult `json:"retention_breakdown,omitempty"`
+}
+
+// F2PResults captures fail-to-pass test evaluation outcomes.
+type F2PResults struct {
+	Resolved     bool     `json:"resolved"`
+	TestsPassed  []string `json:"tests_passed"`
+	TestsFailed  []string `json:"tests_failed"`
+	TestErrors   string   `json:"test_errors,omitempty"`
+	PatchApplied bool     `json:"patch_applied"`
 }
 
 // EvalCollector collects metrics from session events during an evaluation run.

@@ -3,41 +3,65 @@ package agent
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"primeradiant.com/serf/llm"
 )
 
+// ProbeQuestion represents a retention probe question with its expected answer
+// and metadata for evaluation.
+type ProbeQuestion struct {
+	Question   string `json:"question"`
+	Expected   string `json:"expected"`
+	Difficulty string `json:"difficulty"` // "easy", "medium", "hard", "distractor"
+	Type       string `json:"type"`       // "factual", "distractor"
+}
+
+// ProbeResult captures the outcome of a single retention probe.
+type ProbeResult struct {
+	Question   string `json:"question"`
+	Expected   string `json:"expected"`
+	Difficulty string `json:"difficulty"`
+	Correct    bool   `json:"correct"`
+}
+
 // RunRetentionProbes injects probe questions about earlier decisions into a
-// completed session and scores the agent's ability to recall information.
-// Each probe question is sent to the LLM with the session history, then a
-// cheap judge model scores the response on a 0-5 scale. Returns the average
-// normalized score (0.0-1.0).
-func RunRetentionProbes(ctx context.Context, client *llm.Client, profile ProviderProfile, probeQuestions []string, sessionHistory []Turn) (float64, error) {
+// completed session and judges the agent's answers against expected values.
+// Returns the fraction of correct answers (0.0-1.0) and per-question results.
+func RunRetentionProbes(ctx context.Context, client *llm.Client, profile ProviderProfile, probeQuestions []ProbeQuestion, sessionHistory []Turn) (float64, []ProbeResult, error) {
 	if len(probeQuestions) == 0 {
-		return 0.0, nil
+		return 0.0, nil, nil
 	}
 
 	// Build message history from session turns.
 	history := turnsToMessages(sessionHistory)
 
-	var totalScore float64
-	for _, question := range probeQuestions {
-		score, err := runOneProbe(ctx, client, profile, history, question)
+	var correct int
+	results := make([]ProbeResult, 0, len(probeQuestions))
+	for _, pq := range probeQuestions {
+		isCorrect, err := runOneProbe(ctx, client, profile, history, pq)
 		if err != nil {
-			return 0, fmt.Errorf("retention probe %q: %w", question, err)
+			return 0, nil, fmt.Errorf("retention probe %q: %w", pq.Question, err)
 		}
-		totalScore += score
+		results = append(results, ProbeResult{
+			Question:   pq.Question,
+			Expected:   pq.Expected,
+			Difficulty: pq.Difficulty,
+			Correct:    isCorrect,
+		})
+		if isCorrect {
+			correct++
+		}
 	}
 
-	return totalScore / float64(len(probeQuestions)), nil
+	return float64(correct) / float64(len(probeQuestions)), results, nil
 }
 
-// runOneProbe sends a single probe question to the agent, then judges the response.
-func runOneProbe(ctx context.Context, client *llm.Client, profile ProviderProfile, history []llm.Message, question string) (float64, error) {
+// runOneProbe sends a single probe question to the agent, then judges the
+// response against the expected answer. Returns true if the judge says correct.
+func runOneProbe(ctx context.Context, client *llm.Client, profile ProviderProfile, history []llm.Message, pq ProbeQuestion) (bool, error) {
 	// Step 1: Ask the agent the probe question with the session history.
-	agentMessages := append(append([]llm.Message{}, history...), llm.User(question))
+	agentMessages := append(append([]llm.Message{}, history...), llm.User(pq.Question))
 	agentReq := llm.Request{
 		Model:    profile.Model(),
 		Provider: profile.ID(),
@@ -46,12 +70,12 @@ func runOneProbe(ctx context.Context, client *llm.Client, profile ProviderProfil
 
 	agentResp, err := client.Complete(ctx, agentReq)
 	if err != nil {
-		return 0, fmt.Errorf("agent call: %w", err)
+		return false, fmt.Errorf("agent call: %w", err)
 	}
 	agentAnswer := strings.TrimSpace(agentResp.Text())
 
-	// Step 2: Judge the response using the cheap model.
-	judgePrompt := buildJudgePrompt(question, agentAnswer)
+	// Step 2: Judge the response using the cheap model with binary scoring.
+	judgePrompt := buildBinaryJudgePrompt(pq.Question, pq.Expected, agentAnswer)
 	judgeReq := llm.Request{
 		Model:    profile.CheapModel(),
 		Provider: profile.ID(),
@@ -60,53 +84,33 @@ func runOneProbe(ctx context.Context, client *llm.Client, profile ProviderProfil
 
 	judgeResp, err := client.Complete(ctx, judgeReq)
 	if err != nil {
-		return 0, fmt.Errorf("judge call: %w", err)
+		return false, fmt.Errorf("judge call: %w", err)
 	}
 
-	score, err := parseJudgeScore(judgeResp.Text())
-	if err != nil {
-		return 0, fmt.Errorf("parse judge score: %w", err)
-	}
-
-	return float64(score) / 5.0, nil
+	return parseBinaryJudge(judgeResp.Text()), nil
 }
 
-// buildJudgePrompt constructs the evaluation prompt for the judge model.
-func buildJudgePrompt(question, response string) string {
-	return fmt.Sprintf(`You are evaluating whether an AI agent retained information from its earlier work session.
+// buildBinaryJudgePrompt constructs a YES/NO evaluation prompt.
+func buildBinaryJudgePrompt(question, expected, response string) string {
+	return fmt.Sprintf(`You are evaluating whether an AI agent's response matches the expected answer.
 
-Question asked: %s
+Question: %s
+Expected answer: %s
 Agent's response: %s
 
-Score on a 0-5 scale:
-0 = No relevant information, completely wrong or "I don't know"
-1 = Vague or mostly incorrect
-2 = Some relevant details but significant gaps
-3 = Mostly accurate with minor gaps
-4 = Accurate and fairly complete
-5 = Accurate, complete, and detailed
+Does the agent's response contain or match the expected answer? The response does not need to be exact — it just needs to convey the same information.
 
-Respond with just the number.`, question, response)
+Respond with just YES or NO.`, question, expected, response)
 }
 
-// parseJudgeScore parses a judge model's response into a 0-5 integer score.
-func parseJudgeScore(raw string) (int, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return 0, fmt.Errorf("empty judge response")
-	}
-	// Take only the first line -- models often add explanations after the number.
+// parseBinaryJudge extracts a YES/NO verdict from the judge response.
+// Defaults to false (NO) for ambiguous responses.
+func parseBinaryJudge(raw string) bool {
+	trimmed := strings.TrimSpace(strings.ToUpper(raw))
 	if idx := strings.IndexByte(trimmed, '\n'); idx >= 0 {
 		trimmed = strings.TrimSpace(trimmed[:idx])
 	}
-	score, err := strconv.Atoi(trimmed)
-	if err != nil {
-		return 0, fmt.Errorf("parse judge score %q: %w", raw, err)
-	}
-	if score < 0 || score > 5 {
-		return 0, fmt.Errorf("judge score %d out of range [0,5]", score)
-	}
-	return score, nil
+	return trimmed == "YES"
 }
 
 // turnsToMessages converts session Turn history into llm.Message slice

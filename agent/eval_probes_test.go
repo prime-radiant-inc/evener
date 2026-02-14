@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"primeradiant.com/serf/llm"
@@ -33,15 +34,15 @@ func (a *stubProbeAdapter) Stream(_ context.Context, _ llm.Request) (llm.Stream,
 	return nil, fmt.Errorf("stream not implemented")
 }
 
-func TestRunRetentionProbes_SingleQuestion(t *testing.T) {
+func TestRunRetentionProbes_SingleQuestion_Correct(t *testing.T) {
 	// For a single probe question, there are 2 LLM calls:
 	// 1. Agent responds to the probe question
-	// 2. Judge scores the response
+	// 2. Judge says YES or NO
 	adapter := &stubProbeAdapter{
 		name: "openai",
 		responses: []llm.Response{
-			{Message: llm.Assistant("I encountered a type error in main.go when modifying the handler function.")},
-			{Message: llm.Assistant("4")},
+			{Message: llm.Assistant("I was working on django/django")},
+			{Message: llm.Assistant("YES")},
 		},
 	}
 	client := llm.NewClient()
@@ -49,20 +50,59 @@ func TestRunRetentionProbes_SingleQuestion(t *testing.T) {
 
 	profile := NewOpenAIProfile("gpt-5.2")
 	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("Fix the bug in main.go")},
-		{Kind: TurnAssistant, Message: llm.Assistant("I'll read main.go first.")},
+		{Kind: TurnUserInput, Message: llm.User("Fix the bug in django")},
+		{Kind: TurnAssistant, Message: llm.Assistant("I'll fix it.")},
 	}
 
-	score, err := RunRetentionProbes(context.Background(), client, profile,
-		[]string{"What error did you encounter when modifying main.go?"},
-		history,
+	probes := []ProbeQuestion{
+		{Question: "What repo are you working on?", Expected: "django/django", Difficulty: "easy", Type: "factual"},
+	}
+
+	score, results, err := RunRetentionProbes(context.Background(), client, profile, probes, history)
+	if err != nil {
+		t.Fatalf("RunRetentionProbes: %v", err)
+	}
+	if score != 1.0 {
+		t.Errorf("expected score 1.0, got %f", score)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if !results[0].Correct {
+		t.Error("expected result to be correct")
+	}
+	if results[0].Difficulty != "easy" {
+		t.Errorf("expected difficulty 'easy', got %q", results[0].Difficulty)
+	}
+}
+
+func TestRunRetentionProbes_SingleQuestion_Incorrect(t *testing.T) {
+	adapter := &stubProbeAdapter{
+		name: "openai",
+		responses: []llm.Response{
+			{Message: llm.Assistant("I don't remember")},
+			{Message: llm.Assistant("NO")},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+
+	profile := NewOpenAIProfile("gpt-5.2")
+	probes := []ProbeQuestion{
+		{Question: "What repo?", Expected: "django/django", Difficulty: "easy", Type: "factual"},
+	}
+
+	score, results, err := RunRetentionProbes(context.Background(), client, profile, probes,
+		[]Turn{{Kind: TurnUserInput, Message: llm.User("task")}},
 	)
 	if err != nil {
 		t.Fatalf("RunRetentionProbes: %v", err)
 	}
-	// Judge scored 4 out of 5 = 0.8
-	if score != 0.8 {
-		t.Errorf("expected score 0.8, got %f", score)
+	if score != 0.0 {
+		t.Errorf("expected score 0.0, got %f", score)
+	}
+	if results[0].Correct {
+		t.Error("expected result to be incorrect")
 	}
 }
 
@@ -70,54 +110,46 @@ func TestRunRetentionProbes_MultipleQuestions(t *testing.T) {
 	adapter := &stubProbeAdapter{
 		name: "openai",
 		responses: []llm.Response{
-			{Message: llm.Assistant("response 1")},
-			{Message: llm.Assistant("3")},
-			{Message: llm.Assistant("response 2")},
-			{Message: llm.Assistant("5")},
+			{Message: llm.Assistant("django/django")},
+			{Message: llm.Assistant("YES")},
+			{Message: llm.Assistant("I don't know")},
+			{Message: llm.Assistant("NO")},
+			{Message: llm.Assistant("python")},
+			{Message: llm.Assistant("YES")},
 		},
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
 
 	profile := NewOpenAIProfile("gpt-5.2")
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
+	probes := []ProbeQuestion{
+		{Question: "What repo?", Expected: "django/django", Difficulty: "easy", Type: "factual"},
+		{Question: "What function?", Expected: "escape()", Difficulty: "medium", Type: "factual"},
+		{Question: "What language?", Expected: "python", Difficulty: "easy", Type: "factual"},
 	}
 
-	score, err := RunRetentionProbes(context.Background(), client, profile,
-		[]string{"question 1", "question 2"},
-		history,
-	)
-	if err != nil {
-		t.Fatalf("RunRetentionProbes: %v", err)
-	}
-	// (3/5 + 5/5) / 2 = (0.6 + 1.0) / 2 = 0.8
-	if score != 0.8 {
-		t.Errorf("expected score 0.8, got %f", score)
-	}
-}
-
-func TestRunRetentionProbes_ParsesWhitespace(t *testing.T) {
-	adapter := &stubProbeAdapter{
-		name: "openai",
-		responses: []llm.Response{
-			{Message: llm.Assistant("some answer")},
-			{Message: llm.Assistant("  4  ")},
-		},
-	}
-	client := llm.NewClient()
-	client.Register(adapter)
-
-	profile := NewOpenAIProfile("gpt-5.2")
-	score, err := RunRetentionProbes(context.Background(), client, profile,
-		[]string{"q1"},
+	score, results, err := RunRetentionProbes(context.Background(), client, profile, probes,
 		[]Turn{{Kind: TurnUserInput, Message: llm.User("task")}},
 	)
 	if err != nil {
 		t.Fatalf("RunRetentionProbes: %v", err)
 	}
-	if score != 0.8 {
-		t.Errorf("expected score 0.8, got %f", score)
+	// 2 out of 3 correct
+	expected := 2.0 / 3.0
+	if score < expected-0.001 || score > expected+0.001 {
+		t.Errorf("expected score ~%f, got %f", expected, score)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+	if !results[0].Correct {
+		t.Error("expected result 0 correct")
+	}
+	if results[1].Correct {
+		t.Error("expected result 1 incorrect")
+	}
+	if !results[2].Correct {
+		t.Error("expected result 2 correct")
 	}
 }
 
@@ -125,8 +157,8 @@ func TestRunRetentionProbes_NoQuestions(t *testing.T) {
 	client := llm.NewClient()
 	profile := NewOpenAIProfile("gpt-5.2")
 
-	score, err := RunRetentionProbes(context.Background(), client, profile,
-		[]string{},
+	score, results, err := RunRetentionProbes(context.Background(), client, profile,
+		[]ProbeQuestion{},
 		[]Turn{{Kind: TurnUserInput, Message: llm.User("task")}},
 	)
 	if err != nil {
@@ -134,6 +166,9 @@ func TestRunRetentionProbes_NoQuestions(t *testing.T) {
 	}
 	if score != 0.0 {
 		t.Errorf("expected score 0.0 for empty questions, got %f", score)
+	}
+	if results != nil {
+		t.Errorf("expected nil results, got %v", results)
 	}
 }
 
@@ -146,8 +181,8 @@ func TestRunRetentionProbes_AgentCallFails(t *testing.T) {
 	client.Register(adapter)
 
 	profile := NewOpenAIProfile("gpt-5.2")
-	_, err := RunRetentionProbes(context.Background(), client, profile,
-		[]string{"question"},
+	_, _, err := RunRetentionProbes(context.Background(), client, profile,
+		[]ProbeQuestion{{Question: "q", Expected: "a", Difficulty: "easy", Type: "factual"}},
 		[]Turn{{Kind: TurnUserInput, Message: llm.User("task")}},
 	)
 	if err == nil {
@@ -167,8 +202,8 @@ func TestRunRetentionProbes_JudgeCallFails(t *testing.T) {
 	client.Register(adapter)
 
 	profile := NewOpenAIProfile("gpt-5.2")
-	_, err := RunRetentionProbes(context.Background(), client, profile,
-		[]string{"question"},
+	_, _, err := RunRetentionProbes(context.Background(), client, profile,
+		[]ProbeQuestion{{Question: "q", Expected: "a", Difficulty: "easy", Type: "factual"}},
 		[]Turn{{Kind: TurnUserInput, Message: llm.User("task")}},
 	)
 	if err == nil {
@@ -176,55 +211,85 @@ func TestRunRetentionProbes_JudgeCallFails(t *testing.T) {
 	}
 }
 
-func TestRunRetentionProbes_JudgeReturnsNonNumeric(t *testing.T) {
+func TestParseBinaryJudge(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"YES", true},
+		{"yes", true},
+		{"Yes", true},
+		{"  YES  ", true},
+		{"YES\nThe response matches", true},
+		{"NO", false},
+		{"no", false},
+		{"No", false},
+		{"  NO  ", false},
+		{"NO\nThe response does not match", false},
+		{"maybe", false},
+		{"", false},
+		{"YESNO", false},
+	}
+
+	for _, tt := range tests {
+		got := parseBinaryJudge(tt.input)
+		if got != tt.want {
+			t.Errorf("parseBinaryJudge(%q) = %v, want %v", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestBuildBinaryJudgePrompt(t *testing.T) {
+	prompt := buildBinaryJudgePrompt("What repo?", "django/django", "I was working on django")
+	if !probeContainsAll(prompt, "What repo?", "django/django", "I was working on django", "YES or NO") {
+		t.Errorf("judge prompt missing expected content: %s", prompt)
+	}
+}
+
+func probeContainsAll(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if !probeContains(s, sub) {
+			return false
+		}
+	}
+	return true
+}
+
+func probeContains(s, sub string) bool {
+	return strings.Contains(s, sub)
+}
+
+func TestRunRetentionProbes_DistractorScoring(t *testing.T) {
+	// A distractor question where the expected answer is "no" —
+	// if the agent correctly says "no", the judge should say YES.
 	adapter := &stubProbeAdapter{
 		name: "openai",
 		responses: []llm.Response{
-			{Message: llm.Assistant("some answer")},
-			{Message: llm.Assistant("not a number")},
+			{Message: llm.Assistant("No, I did not create any database migrations.")},
+			{Message: llm.Assistant("YES")}, // Judge: agent's answer matches expected ("no")
 		},
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
 
 	profile := NewOpenAIProfile("gpt-5.2")
-	_, err := RunRetentionProbes(context.Background(), client, profile,
-		[]string{"question"},
+	probes := []ProbeQuestion{
+		{Question: "Did you create a database migration?", Expected: "no", Difficulty: "distractor", Type: "distractor"},
+	}
+
+	score, results, err := RunRetentionProbes(context.Background(), client, profile, probes,
 		[]Turn{{Kind: TurnUserInput, Message: llm.User("task")}},
 	)
-	if err == nil {
-		t.Fatal("expected error when judge returns non-numeric score")
+	if err != nil {
+		t.Fatalf("RunRetentionProbes: %v", err)
 	}
-}
-
-func TestParseJudgeScore(t *testing.T) {
-	tests := []struct {
-		input string
-		want  int
-		err   bool
-	}{
-		{"3", 3, false},
-		{"  4  ", 4, false},
-		{"0", 0, false},
-		{"5", 5, false},
-		{" 2 \n", 2, false},
-		{"3\nThe response was mostly accurate", 3, false},
-		{"not a number", 0, true},
-		{"6", 0, true},  // out of range
-		{"-1", 0, true}, // out of range
-		{"", 0, true},
+	if score != 1.0 {
+		t.Errorf("expected score 1.0, got %f", score)
 	}
-
-	for _, tt := range tests {
-		got, err := parseJudgeScore(tt.input)
-		if tt.err && err == nil {
-			t.Errorf("parseJudgeScore(%q): expected error, got nil", tt.input)
-		}
-		if !tt.err && err != nil {
-			t.Errorf("parseJudgeScore(%q): unexpected error: %v", tt.input, err)
-		}
-		if !tt.err && got != tt.want {
-			t.Errorf("parseJudgeScore(%q) = %d, want %d", tt.input, got, tt.want)
-		}
+	if !results[0].Correct {
+		t.Error("expected distractor result to be correct")
+	}
+	if results[0].Difficulty != "distractor" {
+		t.Errorf("expected difficulty 'distractor', got %q", results[0].Difficulty)
 	}
 }
