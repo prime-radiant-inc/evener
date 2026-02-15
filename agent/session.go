@@ -386,13 +386,8 @@ func (s *Session) Close() {
 
 		// SessionEnd hooks (best-effort, bounded timeout)
 		if s.hookRunner != nil {
-			hookInput := HookInput{
-				SessionID:     s.id,
-				CWD:           s.env.WorkingDirectory(),
-				HookEventName: string(HookSessionEnd),
-			}
 			hookCtx, hookCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			s.hookRunner.RunSessionEnd(hookCtx, hookInput)
+			s.hookRunner.RunSessionEnd(hookCtx, s.hookInput(HookSessionEnd))
 			hookCancel()
 		}
 
@@ -462,19 +457,13 @@ func (s *Session) ProcessInput(ctx context.Context, input string) (string, error
 func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecResult {
 	// PreToolUse hooks
 	if s.hookRunner != nil {
-		hookInput := HookInput{
-			SessionID:     s.id,
-			CWD:           s.env.WorkingDirectory(),
-			HookEventName: string(HookPreToolUse),
-			ToolName:      MapSerfToolNameToClaude(call.Name),
-		}
-		var toolInputMap map[string]any
+		hi := s.hookInput(HookPreToolUse)
+		hi.ToolName = MapSerfToolNameToClaude(call.Name)
 		if len(call.Arguments) > 0 {
-			_ = json.Unmarshal(call.Arguments, &toolInputMap)
+			_ = json.Unmarshal(call.Arguments, &hi.ToolInput)
 		}
-		hookInput.ToolInput = toolInputMap
 
-		preResult := s.hookRunner.RunPreToolUse(ctx, hookInput)
+		preResult := s.hookRunner.RunPreToolUse(ctx, hi)
 		for _, msg := range preResult.SystemMessages {
 			s.Steer(msg)
 		}
@@ -541,14 +530,10 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecR
 
 	// PostToolUse hooks
 	if s.hookRunner != nil {
-		hookInput := HookInput{
-			SessionID:     s.id,
-			CWD:           s.env.WorkingDirectory(),
-			HookEventName: string(HookPostToolUse),
-			ToolName:      MapSerfToolNameToClaude(call.Name),
-			ToolResult:    res.FullOutput,
-		}
-		postResult := s.hookRunner.RunPostToolUse(ctx, hookInput)
+		hi := s.hookInput(HookPostToolUse)
+		hi.ToolName = MapSerfToolNameToClaude(call.Name)
+		hi.ToolResult = res.FullOutput
+		postResult := s.hookRunner.RunPostToolUse(ctx, hi)
 		for _, msg := range postResult.SystemMessages {
 			s.Steer(msg)
 		}
@@ -683,6 +668,15 @@ func (s *Session) emit(kind EventKind, data any) {
 	}
 }
 
+// hookInput creates a HookInput with the session's ID and working directory pre-filled.
+func (s *Session) hookInput(event HookEvent) HookInput {
+	return HookInput{
+		SessionID:     s.id,
+		CWD:           s.env.WorkingDirectory(),
+		HookEventName: string(event),
+	}
+}
+
 func (s *Session) processOneInput(ctx context.Context, input string) (string, error) {
 	// Derive a context that cancels when either the caller's ctx or the session ctx cancels.
 	ctx, cancel := context.WithCancel(ctx)
@@ -717,13 +711,9 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 
 	// UserPromptSubmit hooks
 	if s.hookRunner != nil {
-		hookInput := HookInput{
-			SessionID:     s.id,
-			CWD:           s.env.WorkingDirectory(),
-			HookEventName: string(HookUserPromptSubmit),
-			UserPrompt:    input,
-		}
-		result := s.hookRunner.RunUserPromptSubmit(ctx, hookInput)
+		hi := s.hookInput(HookUserPromptSubmit)
+		hi.UserPrompt = input
+		result := s.hookRunner.RunUserPromptSubmit(ctx, hi)
 		for _, msg := range result.SystemMessages {
 			s.Steer(msg)
 		}
@@ -804,12 +794,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 
 		// PreCompact hooks
 		if s.hookRunner != nil {
-			hookInput := HookInput{
-				SessionID:     s.id,
-				CWD:           s.env.WorkingDirectory(),
-				HookEventName: string(HookPreCompact),
-			}
-			preCompactResult := s.hookRunner.RunPreCompact(ctx, hookInput)
+			preCompactResult := s.hookRunner.RunPreCompact(ctx, s.hookInput(HookPreCompact))
 			for _, msg := range preCompactResult.SystemMessages {
 				s.Steer(msg)
 			}
@@ -1027,13 +1012,9 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		if delivered {
 			// Stop hooks
 			if s.hookRunner != nil {
-				hookInput := HookInput{
-					SessionID:     s.id,
-					CWD:           s.env.WorkingDirectory(),
-					HookEventName: string(HookStop),
-					Reason:        "communicate_result",
-				}
-				stopResult := s.hookRunner.RunStop(ctx, hookInput)
+				hi := s.hookInput(HookStop)
+				hi.Reason = "communicate_result"
+				stopResult := s.hookRunner.RunStop(ctx, hi)
 				for _, msg := range stopResult.SystemMessages {
 					s.Steer(msg)
 				}
@@ -1235,7 +1216,7 @@ func (s *Session) initSessionState() error {
 		reg.mu.Unlock()
 	}
 	s.reg = reg
-	s.coreToolNames = reg.nameSet()
+	s.coreToolNames = reg.RegisteredNames()
 
 	if err := s.initMCP(); err != nil {
 		return fmt.Errorf("MCP initialization: %w", err)
@@ -1287,12 +1268,7 @@ func (s *Session) initPlugins() error {
 	s.pluginAgents = allAgents
 
 	// Fire SessionStart hooks
-	hookInput := HookInput{
-		SessionID:     s.id,
-		CWD:           s.env.WorkingDirectory(),
-		HookEventName: string(HookSessionStart),
-	}
-	result := s.hookRunner.RunSessionStart(context.Background(), hookInput)
+	result := s.hookRunner.RunSessionStart(context.Background(), s.hookInput(HookSessionStart))
 	for _, msg := range result.SystemMessages {
 		s.Steer(msg)
 	}

@@ -150,7 +150,7 @@ func ParsePluginHooks(data []byte, pluginDir, pluginName string) (map[HookEvent]
 // Otherwise, reads <pluginDir>/hooks/hooks.json if it exists.
 func discoverPluginHooks(pluginDir string, manifestHooks json.RawMessage, pluginName string) (map[HookEvent][]RegisteredHook, error) {
 	if len(manifestHooks) > 0 {
-		trimmed := trimJSONWhitespace(manifestHooks)
+		trimmed := bytes.TrimLeft(manifestHooks, " \t\n\r")
 		if len(trimmed) > 0 && trimmed[0] == '"' {
 			// String value: path to hooks file
 			var path string
@@ -185,10 +185,6 @@ func discoverPluginHooks(pluginDir string, manifestHooks json.RawMessage, plugin
 	return ParsePluginHooks(data, pluginDir, pluginName)
 }
 
-// trimJSONWhitespace returns the input with leading JSON whitespace removed.
-func trimJSONWhitespace(data []byte) []byte {
-	return bytes.TrimLeft(data, " \t\n\r")
-}
 
 // HookInput is the JSON payload piped to command hooks via stdin.
 type HookInput struct {
@@ -432,20 +428,14 @@ func parseHookOutput(stdout string, exitCode int) ParsedHookOutput {
 	}
 
 	// Extract standard fields
-	if v, ok := parsed["continue"]; ok {
-		if b, ok := v.(bool); ok {
-			result.Continue = b
-		}
+	if b, ok := parsed["continue"].(bool); ok {
+		result.Continue = b
 	}
-	if v, ok := parsed["suppressOutput"]; ok {
-		if b, ok := v.(bool); ok {
-			result.SuppressOutput = b
-		}
+	if b, ok := parsed["suppressOutput"].(bool); ok {
+		result.SuppressOutput = b
 	}
-	if v, ok := parsed["systemMessage"]; ok {
-		if s, ok := v.(string); ok {
-			result.SystemMessage = s
-		}
+	if s, ok := parsed["systemMessage"].(string); ok {
+		result.SystemMessage = s
 	}
 
 	// Extract hookSpecificOutput
@@ -471,8 +461,8 @@ func parseHookOutput(stdout string, exitCode int) ParsedHookOutput {
 		}
 	}
 
-	// Extract decision/reason for Stop hooks
-	if decision, ok := parsed["decision"].(string); ok && decision == "block" {
+	// Stop hooks: "block" decision prevents the session from ending.
+	if parsed["decision"] == "block" {
 		result.Blocked = true
 		if reason, ok := parsed["reason"].(string); ok {
 			result.BlockReason = reason

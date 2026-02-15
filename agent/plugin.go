@@ -93,31 +93,20 @@ func discoverPluginMCPConfigs(pluginDir string, manifestMCPServers json.RawMessa
 	var layers [][]MCPServerConfig
 
 	// Layer 1: .mcp.json file in the plugin directory.
-	// We read the file ourselves and expand ${CLAUDE_PLUGIN_ROOT} in the raw
-	// JSON before parsing, because serverJSONToConfig calls expandEnvVars
-	// which errors on unknown env vars like CLAUDE_PLUGIN_ROOT.
 	mcpPath := filepath.Join(pluginDir, ".mcp.json")
 	if fileConfigs, err := loadPluginMCPFile(mcpPath, pluginDir); err == nil {
 		layers = append(layers, fileConfigs)
 	}
 	// Missing file is not an error.
 
-	// Layer 2: Inline mcpServers from the manifest (no wrapper, directly a map of server defs).
+	// Layer 2: Inline mcpServers from the manifest.
 	if len(manifestMCPServers) > 0 {
 		expanded := expandPluginRoot(string(manifestMCPServers), pluginDir)
 		var servers map[string]json.RawMessage
 		if err := json.Unmarshal([]byte(expanded), &servers); err == nil && len(servers) > 0 {
-			var inlineConfigs []MCPServerConfig
-			for name, raw := range servers {
-				var sj mcpServerJSON
-				if err := json.Unmarshal(raw, &sj); err != nil {
-					return nil, fmt.Errorf("parsing inline MCP server %q: %w", name, err)
-				}
-				cfg, err := serverJSONToConfig(name, sj)
-				if err != nil {
-					return nil, fmt.Errorf("inline MCP server %q: %w", name, err)
-				}
-				inlineConfigs = append(inlineConfigs, cfg)
+			inlineConfigs, err := parseMCPServerMap(servers, "inline")
+			if err != nil {
+				return nil, err
 			}
 			layers = append(layers, inlineConfigs)
 		}
@@ -155,15 +144,21 @@ func loadPluginMCPFile(path, pluginDir string) ([]MCPServerConfig, error) {
 		return nil, fmt.Errorf("parsing MCP config %s: %w", path, err)
 	}
 
+	return parseMCPServerMap(cf.MCPServers, path)
+}
+
+// parseMCPServerMap converts a map of server names to raw JSON into
+// MCPServerConfig slices. The source string is used for error context.
+func parseMCPServerMap(servers map[string]json.RawMessage, source string) ([]MCPServerConfig, error) {
 	var configs []MCPServerConfig
-	for name, raw := range cf.MCPServers {
+	for name, raw := range servers {
 		var sj mcpServerJSON
 		if err := json.Unmarshal(raw, &sj); err != nil {
-			return nil, fmt.Errorf("parsing MCP server %q in %s: %w", name, path, err)
+			return nil, fmt.Errorf("parsing MCP server %q in %s: %w", name, source, err)
 		}
 		cfg, err := serverJSONToConfig(name, sj)
 		if err != nil {
-			return nil, fmt.Errorf("MCP server %q in %s: %w", name, path, err)
+			return nil, fmt.Errorf("MCP server %q in %s: %w", name, source, err)
 		}
 		configs = append(configs, cfg)
 	}
