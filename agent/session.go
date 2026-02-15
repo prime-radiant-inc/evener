@@ -1185,20 +1185,8 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			path := fmt.Sprint(args["file_path"])
-			var offset *int
-			var limit *int
-			if v, ok := args["offset"]; ok {
-				if n, ok := v.(float64); ok {
-					ni := int(n)
-					offset = &ni
-				}
-			}
-			if v, ok := args["limit"]; ok {
-				if n, ok := v.(float64); ok {
-					ni := int(n)
-					limit = &ni
-				}
-			}
+			offset := optionalIntArg(args, "offset")
+			limit := optionalIntArg(args, "limit")
 			result, err := env.ReadFile(path, offset, limit)
 			if err == nil {
 				s.trackReadFile(path)
@@ -1224,20 +1212,8 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			case []string:
 				paths = append(paths, x...)
 			}
-			var offset *int
-			var limit *int
-			if v, ok := args["offset"]; ok {
-				if n, ok := v.(float64); ok {
-					ni := int(n)
-					offset = &ni
-				}
-			}
-			if v, ok := args["limit"]; ok {
-				if n, ok := v.(float64); ok {
-					ni := int(n)
-					limit = &ni
-				}
-			}
+			offset := optionalIntArg(args, "offset")
+			limit := optionalIntArg(args, "limit")
 
 			var b strings.Builder
 			for _, p := range paths {
@@ -1709,4 +1685,17 @@ func (s *Session) getOrCreateTaskStore() *TaskStore {
 		_ = s.taskStore.Load()
 	})
 	return s.taskStore
+}
+
+// optionalIntArg extracts an optional integer pointer from tool arguments.
+func optionalIntArg(args map[string]any, key string) *int {
+	v, ok := args[key]
+	if !ok {
+		return nil
+	}
+	if n, ok := v.(float64); ok {
+		ni := int(n)
+		return &ni
+	}
+	return nil
 }
