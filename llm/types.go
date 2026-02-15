@@ -384,3 +384,19 @@ func (req Request) Validate() error {
 	}
 	return nil
 }
+
+// IntFromAny extracts an integer from a JSON-decoded value.
+// Handles json.Number, float64, and int; returns 0 for other types.
+func IntFromAny(v any) int {
+	switch x := v.(type) {
+	case json.Number:
+		n, _ := x.Int64()
+		return int(n)
+	case float64:
+		return int(x)
+	case int:
+		return x
+	default:
+		return 0
+	}
+}

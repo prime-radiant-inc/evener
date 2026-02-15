@@ -215,12 +215,12 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 			}
 			if chunk.Usage != nil {
 				u := llm.Usage{
-					InputTokens:  intFromAny(chunk.Usage["prompt_tokens"]),
-					OutputTokens: intFromAny(chunk.Usage["completion_tokens"]),
+					InputTokens:  llm.IntFromAny(chunk.Usage["prompt_tokens"]),
+					OutputTokens: llm.IntFromAny(chunk.Usage["completion_tokens"]),
 					Raw:          chunk.Usage,
 				}
 				u.TotalTokens = u.InputTokens + u.OutputTokens
-				if v := intFromAny(chunk.Usage["total_tokens"]); v > 0 {
+				if v := llm.IntFromAny(chunk.Usage["total_tokens"]); v > 0 {
 					u.TotalTokens = v
 				}
 				usage = &u
@@ -654,12 +654,12 @@ func fromChatCompletionResponse(raw map[string]any) (llm.Response, error) {
 
 	if parsed.Usage != nil {
 		resp.Usage = llm.Usage{
-			InputTokens:  intFromAny(parsed.Usage["prompt_tokens"]),
-			OutputTokens: intFromAny(parsed.Usage["completion_tokens"]),
+			InputTokens:  llm.IntFromAny(parsed.Usage["prompt_tokens"]),
+			OutputTokens: llm.IntFromAny(parsed.Usage["completion_tokens"]),
 			Raw:          parsed.Usage,
 		}
 		resp.Usage.TotalTokens = resp.Usage.InputTokens + resp.Usage.OutputTokens
-		if v := intFromAny(parsed.Usage["total_tokens"]); v > 0 {
+		if v := llm.IntFromAny(parsed.Usage["total_tokens"]); v > 0 {
 			resp.Usage.TotalTokens = v
 		}
 	}
@@ -723,16 +723,4 @@ func extractErrorMessage(raw map[string]any) string {
 	return ""
 }
 
-func intFromAny(v any) int {
-	switch n := v.(type) {
-	case float64:
-		return int(n)
-	case json.Number:
-		i, _ := n.Int64()
-		return int(i)
-	case int:
-		return n
-	default:
-		return 0
-	}
-}
+

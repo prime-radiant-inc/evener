@@ -951,34 +951,16 @@ func fromGeminiResponse(raw map[string]any, requestedModel string) llm.Response 
 }
 
 func parseUsage(u map[string]any) llm.Usage {
-	getInt := func(v any) int {
-		switch x := v.(type) {
-		case float64:
-			return int(x)
-		case int:
-			return x
-		case json.Number:
-			if i, err := x.Int64(); err == nil {
-				return int(i)
-			}
-			if f, err := x.Float64(); err == nil {
-				return int(f)
-			}
-			return 0
-		default:
-			return 0
-		}
-	}
 	usage := llm.Usage{
-		InputTokens:  getInt(u["promptTokenCount"]),
-		OutputTokens: getInt(u["candidatesTokenCount"]),
-		TotalTokens:  getInt(u["totalTokenCount"]),
+		InputTokens:  llm.IntFromAny(u["promptTokenCount"]),
+		OutputTokens: llm.IntFromAny(u["candidatesTokenCount"]),
+		TotalTokens:  llm.IntFromAny(u["totalTokenCount"]),
 		Raw:          u,
 	}
-	if v := getInt(u["cachedContentTokenCount"]); v > 0 {
+	if v := llm.IntFromAny(u["cachedContentTokenCount"]); v > 0 {
 		usage.CacheReadTokens = &v
 	}
-	if v := getInt(u["thoughtsTokenCount"]); v > 0 {
+	if v := llm.IntFromAny(u["thoughtsTokenCount"]); v > 0 {
 		usage.ReasoningTokens = &v
 	}
 	return usage

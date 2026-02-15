@@ -414,19 +414,6 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		blocks := map[int]*blockState{}
 		maxIdx := -1
 
-		getInt := func(v any) int {
-			switch x := v.(type) {
-			case json.Number:
-				n, _ := x.Int64()
-				return int(n)
-			case float64:
-				return int(x)
-			case int:
-				return x
-			default:
-				return 0
-			}
-		}
 		getBlock := func(idx int) *blockState {
 			st := blocks[idx]
 			if st == nil {
@@ -472,7 +459,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 					}
 				}
 			case "content_block_start":
-				idx := getInt(payload["index"])
+				idx := llm.IntFromAny(payload["index"])
 				cb, _ := payload["content_block"].(map[string]any)
 				typ, _ := cb["type"].(string)
 				st := getBlock(idx)
@@ -534,7 +521,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 					}
 				}
 			case "content_block_delta":
-				idx := getInt(payload["index"])
+				idx := llm.IntFromAny(payload["index"])
 				st := getBlock(idx)
 				if d, ok := payload["delta"].(map[string]any); ok {
 					switch typ, _ := d["type"].(string); typ {
@@ -583,7 +570,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 					}
 				}
 			case "content_block_stop":
-				idx := getInt(payload["index"])
+				idx := llm.IntFromAny(payload["index"])
 				st := blocks[idx]
 				if st == nil {
 					return nil
@@ -1323,31 +1310,18 @@ func addCacheControlBreakpoint(messages []map[string]any) {
 }
 
 func parseUsage(u map[string]any) llm.Usage {
-	getInt := func(v any) int {
-		switch x := v.(type) {
-		case float64:
-			return int(x)
-		case int:
-			return x
-		case json.Number:
-			n, _ := x.Int64()
-			return int(n)
-		default:
-			return 0
-		}
-	}
 	usage := llm.Usage{
-		InputTokens:  getInt(u["input_tokens"]),
-		OutputTokens: getInt(u["output_tokens"]),
-		TotalTokens:  getInt(u["input_tokens"]) + getInt(u["output_tokens"]),
+		InputTokens:  llm.IntFromAny(u["input_tokens"]),
+		OutputTokens: llm.IntFromAny(u["output_tokens"]),
+		TotalTokens:  llm.IntFromAny(u["input_tokens"]) + llm.IntFromAny(u["output_tokens"]),
 		Raw:          u,
 	}
 	if vAny, ok := u["cache_read_input_tokens"]; ok {
-		v := getInt(vAny)
+		v := llm.IntFromAny(vAny)
 		usage.CacheReadTokens = &v
 	}
 	if vAny, ok := u["cache_creation_input_tokens"]; ok {
-		v := getInt(vAny)
+		v := llm.IntFromAny(vAny)
 		usage.CacheWriteTokens = &v
 	}
 	return usage

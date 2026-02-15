@@ -868,31 +868,18 @@ func fromResponses(raw map[string]any, requestedModel string) llm.Response {
 }
 
 func parseUsage(u map[string]any) llm.Usage {
-	getInt := func(v any) int {
-		switch x := v.(type) {
-		case json.Number:
-			n, _ := x.Int64()
-			return int(n)
-		case float64:
-			return int(x)
-		case int:
-			return x
-		default:
-			return 0
-		}
-	}
 	usage := llm.Usage{
-		InputTokens:  getInt(u["input_tokens"]),
-		OutputTokens: getInt(u["output_tokens"]),
-		TotalTokens:  getInt(u["total_tokens"]),
+		InputTokens:  llm.IntFromAny(u["input_tokens"]),
+		OutputTokens: llm.IntFromAny(u["output_tokens"]),
+		TotalTokens:  llm.IntFromAny(u["total_tokens"]),
 		Raw:          u,
 	}
 	if outDetails, ok := u["output_tokens_details"].(map[string]any); ok {
-		rt := getInt(outDetails["reasoning_tokens"])
+		rt := llm.IntFromAny(outDetails["reasoning_tokens"])
 		usage.ReasoningTokens = &rt
 	}
 	if inDetails, ok := u["input_tokens_details"].(map[string]any); ok {
-		ct := getInt(inDetails["cached_tokens"])
+		ct := llm.IntFromAny(inDetails["cached_tokens"])
 		usage.CacheReadTokens = &ct
 	}
 	return usage
