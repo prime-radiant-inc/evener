@@ -149,13 +149,8 @@ func TestRealPlugin_Superpowers_Hooks(t *testing.T) {
 		t.Fatalf("LoadPlugin: %v", err)
 	}
 
-	hooks, err := discoverPluginHooks(dir, lp.Manifest.Hooks, lp.Manifest.Name)
-	if err != nil {
-		t.Fatalf("discoverPluginHooks: %v", err)
-	}
-
 	// Superpowers has SessionStart hooks
-	startHooks, ok := hooks[HookSessionStart]
+	startHooks, ok := lp.Hooks[HookSessionStart]
 	if !ok || len(startHooks) == 0 {
 		t.Fatal("SessionStart hooks not found")
 	}
@@ -196,15 +191,7 @@ func TestRealPlugin_Superpowers_HookExecution(t *testing.T) {
 		t.Fatalf("LoadPlugin: %v", err)
 	}
 
-	hooks, err := discoverPluginHooks(dir, lp.Manifest.Hooks, lp.Manifest.Name)
-	if err != nil {
-		t.Fatalf("discoverPluginHooks: %v", err)
-	}
-
-	runner := NewHookRunner(nil, "")
-	for event, eventHooks := range hooks {
-		runner.Add(event, eventHooks...)
-	}
+	runner := newHookRunnerFromPlugin(lp)
 
 	// Track events
 	var events []EventKind
@@ -290,13 +277,8 @@ func TestRealPlugin_SecurityGuidance_Hooks(t *testing.T) {
 		t.Fatalf("LoadPlugin: %v", err)
 	}
 
-	hooks, err := discoverPluginHooks(dir, lp.Manifest.Hooks, lp.Manifest.Name)
-	if err != nil {
-		t.Fatalf("discoverPluginHooks: %v", err)
-	}
-
 	// security-guidance has PreToolUse hooks
-	preHooks, ok := hooks[HookPreToolUse]
+	preHooks, ok := lp.Hooks[HookPreToolUse]
 	if !ok || len(preHooks) == 0 {
 		t.Fatal("PreToolUse hooks not found")
 	}
@@ -334,15 +316,7 @@ func TestRealPlugin_SecurityGuidance_HookMatching(t *testing.T) {
 		t.Fatalf("LoadPlugin: %v", err)
 	}
 
-	hooks, err := discoverPluginHooks(dir, lp.Manifest.Hooks, lp.Manifest.Name)
-	if err != nil {
-		t.Fatalf("discoverPluginHooks: %v", err)
-	}
-
-	runner := NewHookRunner(nil, "")
-	for event, eventHooks := range hooks {
-		runner.Add(event, eventHooks...)
-	}
+	runner := newHookRunnerFromPlugin(lp)
 
 	// The matcher "Edit|Write|MultiEdit" should match these Claude Code tool names.
 	// Our runAll maps serf names → Claude names for matching, so we test with serf names.
@@ -369,15 +343,7 @@ func TestRealPlugin_SecurityGuidance_HookExecution(t *testing.T) {
 		t.Fatalf("LoadPlugin: %v", err)
 	}
 
-	hooks, err := discoverPluginHooks(dir, lp.Manifest.Hooks, lp.Manifest.Name)
-	if err != nil {
-		t.Fatalf("discoverPluginHooks: %v", err)
-	}
-
-	runner := NewHookRunner(nil, "")
-	for event, eventHooks := range hooks {
-		runner.Add(event, eventHooks...)
-	}
+	runner := newHookRunnerFromPlugin(lp)
 
 	// Use a unique session ID to avoid state file conflicts from previous runs.
 	sessionID := fmt.Sprintf("serf-test-%d", os.Getpid())
@@ -466,14 +432,9 @@ func TestRealPlugin_CodeSimplifier_NoHooks(t *testing.T) {
 		t.Fatalf("LoadPlugin: %v", err)
 	}
 
-	hooks, err := discoverPluginHooks(dir, lp.Manifest.Hooks, lp.Manifest.Name)
-	if err != nil {
-		t.Fatalf("discoverPluginHooks: %v", err)
-	}
-
 	// code-simplifier has no hooks
 	total := 0
-	for _, eventHooks := range hooks {
+	for _, eventHooks := range lp.Hooks {
 		total += len(eventHooks)
 	}
 	if total != 0 {
@@ -650,16 +611,7 @@ func TestRealPlugin_AggregateHooks(t *testing.T) {
 	}
 
 	// Build a runner with hooks from both plugins
-	runner := NewHookRunner(nil, "")
-	for _, p := range plugins {
-		hooks, err := discoverPluginHooks(p.Dir, p.Manifest.Hooks, p.Manifest.Name)
-		if err != nil {
-			t.Fatalf("discoverPluginHooks(%s): %v", p.Manifest.Name, err)
-		}
-		for event, eventHooks := range hooks {
-			runner.Add(event, eventHooks...)
-		}
-	}
+	runner := newHookRunnerFromPlugins(plugins)
 
 	// Both SessionStart (superpowers) and PreToolUse (security-guidance) should exist.
 	// SessionStart matcher target is "startup" (matching Claude Code convention).
@@ -796,6 +748,26 @@ func TestRealPlugin_Settings_WithFile(t *testing.T) {
 }
 
 // ---------- Helpers ----------
+
+// newHookRunnerFromPlugin creates a HookRunner populated with a single plugin's hooks.
+func newHookRunnerFromPlugin(p LoadedPlugin) *HookRunner {
+	runner := NewHookRunner(nil, "")
+	for event, eventHooks := range p.Hooks {
+		runner.Add(event, eventHooks...)
+	}
+	return runner
+}
+
+// newHookRunnerFromPlugins creates a HookRunner populated with hooks from multiple plugins.
+func newHookRunnerFromPlugins(plugins []LoadedPlugin) *HookRunner {
+	runner := NewHookRunner(nil, "")
+	for _, p := range plugins {
+		for event, eventHooks := range p.Hooks {
+			runner.Add(event, eventHooks...)
+		}
+	}
+	return runner
+}
 
 func skillNames(m map[string]SkillMeta) []string {
 	names := make([]string, 0, len(m))

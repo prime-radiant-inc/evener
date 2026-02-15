@@ -185,14 +185,9 @@ func discoverPluginHooks(pluginDir string, manifestHooks json.RawMessage, plugin
 	return ParsePluginHooks(data, pluginDir, pluginName)
 }
 
-// trimJSONWhitespace returns the input with leading whitespace removed.
+// trimJSONWhitespace returns the input with leading JSON whitespace removed.
 func trimJSONWhitespace(data []byte) []byte {
-	for i, b := range data {
-		if b != ' ' && b != '\t' && b != '\n' && b != '\r' {
-			return data[i:]
-		}
-	}
-	return nil
+	return bytes.TrimLeft(data, " \t\n\r")
 }
 
 // HookInput is the JSON payload piped to command hooks via stdin.

@@ -68,25 +68,6 @@ func setupFullTestPlugin(t *testing.T) string {
 	return dir
 }
 
-// setupMinimalTestPlugin creates a bare-minimum plugin with only a manifest.
-func setupMinimalTestPlugin(t *testing.T, name string) string {
-	t.Helper()
-	dir := t.TempDir()
-	dir, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		t.Fatalf("EvalSymlinks: %v", err)
-	}
-	metaDir := filepath.Join(dir, ".claude-plugin")
-	if err := os.MkdirAll(metaDir, 0755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(metaDir, "plugin.json"),
-		[]byte(`{"name": "`+name+`"}`), 0644); err != nil {
-		t.Fatalf("write manifest: %v", err)
-	}
-	return dir
-}
-
 func TestPlugin_EndToEnd(t *testing.T) {
 	pluginDir := setupFullTestPlugin(t)
 	workDir := t.TempDir()
@@ -164,11 +145,7 @@ func TestPlugin_EndToEnd(t *testing.T) {
 	}
 
 	// 5. Hooks discovered
-	hooks, err := discoverPluginHooks(pluginDir, lp.Manifest.Hooks, lp.Manifest.Name)
-	if err != nil {
-		t.Fatalf("discoverPluginHooks: %v", err)
-	}
-	if sessionStartHooks, ok := hooks[HookSessionStart]; !ok || len(sessionStartHooks) == 0 {
+	if sessionStartHooks, ok := lp.Hooks[HookSessionStart]; !ok || len(sessionStartHooks) == 0 {
 		t.Error("SessionStart hook not found")
 	}
 
@@ -205,7 +182,7 @@ func TestPlugin_EndToEnd(t *testing.T) {
 	}
 
 	// 9. Multiple plugins with unique names work
-	dir2 := setupMinimalTestPlugin(t, "second-plugin")
+	dir2 := makePluginDir(t, "second-plugin")
 	plugins, err := LoadPlugins([]string{pluginDir, dir2})
 	if err != nil {
 		t.Fatalf("LoadPlugins: %v", err)
@@ -218,13 +195,13 @@ func TestPlugin_EndToEnd(t *testing.T) {
 func TestPlugin_EndToEnd_HookExecution(t *testing.T) {
 	pluginDir := setupFullTestPlugin(t)
 
-	hooks, err := discoverPluginHooks(pluginDir, nil, "e2e-plugin")
+	lp, err := LoadPlugin(pluginDir)
 	if err != nil {
-		t.Fatalf("discoverPluginHooks: %v", err)
+		t.Fatalf("LoadPlugin: %v", err)
 	}
 
 	runner := NewHookRunner(nil, "") // no prompt client needed for command hooks
-	for event, eventHooks := range hooks {
+	for event, eventHooks := range lp.Hooks {
 		runner.Add(event, eventHooks...)
 	}
 

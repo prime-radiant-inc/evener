@@ -64,10 +64,11 @@ func expandPluginRoot(s string, pluginDir string) string {
 // LoadedPlugin represents a plugin that has been loaded from disk.
 type LoadedPlugin struct {
 	Manifest   PluginManifest
-	Dir        string                   // absolute path = CLAUDE_PLUGIN_ROOT
-	Skills     map[string]SkillMeta     // namespaced as "plugin-name:skill-name"
-	Agents     map[string]PluginAgent   // namespaced as "plugin-name:agent-name"
-	MCPConfigs []MCPServerConfig        // namespaced as "plugin_<name>_<server>"
+	Dir        string                        // absolute path = CLAUDE_PLUGIN_ROOT
+	Skills     map[string]SkillMeta          // namespaced as "plugin-name:skill-name"
+	Agents     map[string]PluginAgent        // namespaced as "plugin-name:agent-name"
+	Hooks      map[HookEvent][]RegisteredHook // keyed by event type
+	MCPConfigs []MCPServerConfig              // namespaced as "plugin_<name>_<server>"
 }
 
 // discoverPluginSkills scans a plugin's skills directories and returns
@@ -200,6 +201,12 @@ func LoadPlugin(dir string) (LoadedPlugin, error) {
 		return LoadedPlugin{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
 	}
 	lp.Agents = agents
+
+	hooks, err := discoverPluginHooks(resolved, manifest.Hooks, manifest.Name)
+	if err != nil {
+		return LoadedPlugin{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
+	}
+	lp.Hooks = hooks
 
 	mcpConfigs, err := discoverPluginMCPConfigs(resolved, manifest.MCPServers, manifest.Name)
 	if err != nil {

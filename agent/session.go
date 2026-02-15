@@ -1265,12 +1265,7 @@ func (s *Session) initPlugins() error {
 		for name, agent := range p.Agents {
 			allAgents[name] = agent
 		}
-
-		hooks, err := discoverPluginHooks(p.Dir, p.Manifest.Hooks, p.Manifest.Name)
-		if err != nil {
-			return fmt.Errorf("plugin %q hooks: %w", p.Manifest.Name, err)
-		}
-		for event, eventHooks := range hooks {
+		for event, eventHooks := range p.Hooks {
 			runner.Add(event, eventHooks...)
 		}
 

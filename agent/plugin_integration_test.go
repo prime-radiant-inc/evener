@@ -67,11 +67,7 @@ func TestInitPlugins_BuildsHookRunner(t *testing.T) {
 	// Simulate what initPlugins does: build runner from plugin hooks
 	runner := NewHookRunner(nil, "test-model")
 	for _, p := range plugins {
-		hooks, err := discoverPluginHooks(p.Dir, p.Manifest.Hooks, p.Manifest.Name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for event, eventHooks := range hooks {
+		for event, eventHooks := range p.Hooks {
 			runner.Add(event, eventHooks...)
 		}
 	}
@@ -145,11 +141,7 @@ func TestInitPlugins_CombinesMultiplePlugins(t *testing.T) {
 		for name, agent := range p.Agents {
 			allAgents[name] = agent
 		}
-		hooks, err := discoverPluginHooks(p.Dir, p.Manifest.Hooks, p.Manifest.Name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for event, eventHooks := range hooks {
+		for event, eventHooks := range p.Hooks {
 			runner.Add(event, eventHooks...)
 		}
 	}
