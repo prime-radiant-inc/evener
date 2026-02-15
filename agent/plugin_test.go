@@ -363,6 +363,74 @@ func TestResolveComponentDirs_CustomDirDoesNotExist(t *testing.T) {
 	}
 }
 
+// keys returns sorted map keys for test diagnostics.
+func keys[V any](m map[string]V) []string {
+	ks := make([]string, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
+	}
+	return ks
+}
+
+func TestDiscoverPluginSkills(t *testing.T) {
+	dir := makePluginDir(t, "my-plugin")
+	// Create a skill
+	skillDir := filepath.Join(dir, "skills", "my-skill")
+	os.MkdirAll(skillDir, 0755)
+	os.WriteFile(filepath.Join(skillDir, "SKILL.md"),
+		[]byte("---\nname: my-skill\ndescription: A test skill\n---\nSkill body"), 0644)
+
+	plugin, err := LoadPlugin(dir)
+	if err != nil {
+		t.Fatalf("LoadPlugin: %v", err)
+	}
+
+	// Skills should be namespaced
+	if _, ok := plugin.Skills["my-plugin:my-skill"]; !ok {
+		t.Errorf("expected 'my-plugin:my-skill', got keys: %v", keys(plugin.Skills))
+	}
+	// Verify the meta has correct values
+	meta := plugin.Skills["my-plugin:my-skill"]
+	if meta.Description != "A test skill" {
+		t.Errorf("Description = %q", meta.Description)
+	}
+}
+
+func TestDiscoverPluginSkills_NoSkillsDir(t *testing.T) {
+	dir := makePluginDir(t, "empty-plugin")
+	plugin, err := LoadPlugin(dir)
+	if err != nil {
+		t.Fatalf("LoadPlugin: %v", err)
+	}
+	if len(plugin.Skills) != 0 {
+		t.Errorf("expected 0 skills, got %d", len(plugin.Skills))
+	}
+}
+
+func TestDiscoverPluginSkills_MultipleSkills(t *testing.T) {
+	dir := makePluginDir(t, "multi-plugin")
+	for _, name := range []string{"skill-a", "skill-b"} {
+		skillDir := filepath.Join(dir, "skills", name)
+		os.MkdirAll(skillDir, 0755)
+		os.WriteFile(filepath.Join(skillDir, "SKILL.md"),
+			[]byte("---\nname: "+name+"\ndescription: desc-"+name+"\n---\nbody"), 0644)
+	}
+
+	plugin, err := LoadPlugin(dir)
+	if err != nil {
+		t.Fatalf("LoadPlugin: %v", err)
+	}
+	if len(plugin.Skills) != 2 {
+		t.Fatalf("expected 2 skills, got %d: %v", len(plugin.Skills), keys(plugin.Skills))
+	}
+	if _, ok := plugin.Skills["multi-plugin:skill-a"]; !ok {
+		t.Error("missing multi-plugin:skill-a")
+	}
+	if _, ok := plugin.Skills["multi-plugin:skill-b"]; !ok {
+		t.Error("missing multi-plugin:skill-b")
+	}
+}
+
 func TestResolveComponentDirs_MissingDefaultDir(t *testing.T) {
 	dir := t.TempDir()
 	dir, _ = filepath.EvalSymlinks(dir)

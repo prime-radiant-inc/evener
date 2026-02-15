@@ -64,7 +64,23 @@ func expandPluginRoot(s string, pluginDir string) string {
 // LoadedPlugin represents a plugin that has been loaded from disk.
 type LoadedPlugin struct {
 	Manifest PluginManifest
-	Dir      string // absolute path = CLAUDE_PLUGIN_ROOT
+	Dir      string                // absolute path = CLAUDE_PLUGIN_ROOT
+	Skills   map[string]SkillMeta  // namespaced as "plugin-name:skill-name"
+}
+
+// discoverPluginSkills scans a plugin's skills directories and returns
+// skills namespaced as "pluginName:skillName".
+func discoverPluginSkills(pluginDir, pluginName string) map[string]SkillMeta {
+	dirs := resolveComponentDirs(pluginDir, "skills", nil)
+	raw := map[string]SkillMeta{}
+	for _, dir := range dirs {
+		scanSkillsDir(dir, raw)
+	}
+	namespaced := make(map[string]SkillMeta, len(raw))
+	for name, meta := range raw {
+		namespaced[pluginName+":"+name] = meta
+	}
+	return namespaced
 }
 
 // LoadPlugin reads a plugin manifest from <dir>/.claude-plugin/plugin.json,
@@ -90,7 +106,9 @@ func LoadPlugin(dir string) (LoadedPlugin, error) {
 		return LoadedPlugin{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
 	}
 
-	return LoadedPlugin{Manifest: manifest, Dir: resolved}, nil
+	lp := LoadedPlugin{Manifest: manifest, Dir: resolved}
+	lp.Skills = discoverPluginSkills(resolved, manifest.Name)
+	return lp, nil
 }
 
 // LoadPlugins loads plugins from multiple directories and checks for
