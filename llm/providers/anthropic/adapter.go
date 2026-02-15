@@ -726,6 +726,51 @@ func shallowCopyMap(in map[string]any) map[string]any {
 	return out
 }
 
+func anthropicImageBlock(p llm.ContentPart) (map[string]any, error) {
+	u := strings.TrimSpace(p.Image.URL)
+	if len(p.Image.Data) > 0 || llm.IsLocalPath(u) {
+		var b []byte
+		var err error
+		mt := strings.TrimSpace(p.Image.MediaType)
+		if len(p.Image.Data) > 0 {
+			b = p.Image.Data
+			if mt == "" {
+				mt = "image/png"
+			}
+		} else {
+			path := llm.ExpandTilde(u)
+			b, err = os.ReadFile(path)
+			if err != nil {
+				return nil, err
+			}
+			if mt == "" {
+				mt = llm.InferMimeTypeFromPath(path)
+			}
+			if mt == "" {
+				mt = "image/png"
+			}
+		}
+		return map[string]any{
+			"type": "image",
+			"source": map[string]any{
+				"type":       "base64",
+				"media_type": mt,
+				"data":       base64.StdEncoding.EncodeToString(b),
+			},
+		}, nil
+	}
+	if u != "" {
+		return map[string]any{
+			"type": "image",
+			"source": map[string]any{
+				"type": "url",
+				"url":  u,
+			},
+		}, nil
+	}
+	return nil, nil
+}
+
 func toAnthropicMessages(msgs []llm.Message) (system string, messages []map[string]any, _ error) {
 	var sysParts []string
 	appendMessage := func(role string, content []map[string]any) {
@@ -766,45 +811,12 @@ func toAnthropicMessages(msgs []llm.Message) (system string, messages []map[stri
 					if p.Image == nil {
 						continue
 					}
-					u := strings.TrimSpace(p.Image.URL)
-					if len(p.Image.Data) > 0 || llm.IsLocalPath(u) {
-						var b []byte
-						var err error
-						mt := strings.TrimSpace(p.Image.MediaType)
-						if len(p.Image.Data) > 0 {
-							b = p.Image.Data
-							if mt == "" {
-								mt = "image/png"
-							}
-						} else {
-							path := llm.ExpandTilde(u)
-							b, err = os.ReadFile(path)
-							if err != nil {
-								return "", nil, err
-							}
-							if mt == "" {
-								mt = llm.InferMimeTypeFromPath(path)
-							}
-							if mt == "" {
-								mt = "image/png"
-							}
-						}
-						blocks = append(blocks, map[string]any{
-							"type": "image",
-							"source": map[string]any{
-								"type":       "base64",
-								"media_type": mt,
-								"data":       base64.StdEncoding.EncodeToString(b),
-							},
-						})
-					} else if u != "" {
-						blocks = append(blocks, map[string]any{
-							"type": "image",
-							"source": map[string]any{
-								"type": "url",
-								"url":  u,
-							},
-						})
+					block, err := anthropicImageBlock(p)
+					if err != nil {
+						return "", nil, err
+					}
+					if block != nil {
+						blocks = append(blocks, block)
 					}
 				case llm.ContentAudio, llm.ContentDocument:
 					return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("unsupported content kind for anthropic: %s", p.Kind)}
@@ -825,45 +837,12 @@ func toAnthropicMessages(msgs []llm.Message) (system string, messages []map[stri
 					if p.Image == nil {
 						continue
 					}
-					u := strings.TrimSpace(p.Image.URL)
-					if len(p.Image.Data) > 0 || llm.IsLocalPath(u) {
-						var b []byte
-						var err error
-						mt := strings.TrimSpace(p.Image.MediaType)
-						if len(p.Image.Data) > 0 {
-							b = p.Image.Data
-							if mt == "" {
-								mt = "image/png"
-							}
-						} else {
-							path := llm.ExpandTilde(u)
-							b, err = os.ReadFile(path)
-							if err != nil {
-								return "", nil, err
-							}
-							if mt == "" {
-								mt = llm.InferMimeTypeFromPath(path)
-							}
-							if mt == "" {
-								mt = "image/png"
-							}
-						}
-						blocks = append(blocks, map[string]any{
-							"type": "image",
-							"source": map[string]any{
-								"type":       "base64",
-								"media_type": mt,
-								"data":       base64.StdEncoding.EncodeToString(b),
-							},
-						})
-					} else if u != "" {
-						blocks = append(blocks, map[string]any{
-							"type": "image",
-							"source": map[string]any{
-								"type": "url",
-								"url":  u,
-							},
-						})
+					block, err := anthropicImageBlock(p)
+					if err != nil {
+						return "", nil, err
+					}
+					if block != nil {
+						blocks = append(blocks, block)
 					}
 				case llm.ContentToolCall:
 					if p.ToolCall == nil {

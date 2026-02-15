@@ -503,6 +503,48 @@ func sanitizeGeminiSchema(v any) any {
 	}
 }
 
+func geminiImagePart(p llm.ContentPart) (map[string]any, error) {
+	u := strings.TrimSpace(p.Image.URL)
+	mt := strings.TrimSpace(p.Image.MediaType)
+	if len(p.Image.Data) > 0 || llm.IsLocalPath(u) {
+		var b []byte
+		var err error
+		if len(p.Image.Data) > 0 {
+			b = p.Image.Data
+		} else {
+			path := llm.ExpandTilde(u)
+			b, err = os.ReadFile(path)
+			if err != nil {
+				return nil, err
+			}
+			if mt == "" {
+				mt = llm.InferMimeTypeFromPath(path)
+			}
+		}
+		if mt == "" {
+			mt = "image/png"
+		}
+		return map[string]any{
+			"inlineData": map[string]any{
+				"mimeType": mt,
+				"data":     base64.StdEncoding.EncodeToString(b),
+			},
+		}, nil
+	}
+	if u != "" {
+		if mt == "" {
+			mt = "image/png"
+		}
+		return map[string]any{
+			"fileData": map[string]any{
+				"mimeType": mt,
+				"fileUri":  u,
+			},
+		}, nil
+	}
+	return nil, nil
+}
+
 func toGeminiContents(msgs []llm.Message) (system string, contents []map[string]any, _ error) {
 	var sysParts []string
 	appendContent := func(role string, parts []map[string]any) {
@@ -533,42 +575,12 @@ func toGeminiContents(msgs []llm.Message) (system string, contents []map[string]
 					if p.Image == nil {
 						continue
 					}
-					u := strings.TrimSpace(p.Image.URL)
-					mt := strings.TrimSpace(p.Image.MediaType)
-					if len(p.Image.Data) > 0 || llm.IsLocalPath(u) {
-						var b []byte
-						var err error
-						if len(p.Image.Data) > 0 {
-							b = p.Image.Data
-						} else {
-							path := llm.ExpandTilde(u)
-							b, err = os.ReadFile(path)
-							if err != nil {
-								return "", nil, err
-							}
-							if mt == "" {
-								mt = llm.InferMimeTypeFromPath(path)
-							}
-						}
-						if mt == "" {
-							mt = "image/png"
-						}
-						parts = append(parts, map[string]any{
-							"inlineData": map[string]any{
-								"mimeType": mt,
-								"data":     base64.StdEncoding.EncodeToString(b),
-							},
-						})
-					} else if u != "" {
-						if mt == "" {
-							mt = "image/png"
-						}
-						parts = append(parts, map[string]any{
-							"fileData": map[string]any{
-								"mimeType": mt,
-								"fileUri":  u,
-							},
-						})
+					part, err := geminiImagePart(p)
+					if err != nil {
+						return "", nil, err
+					}
+					if part != nil {
+						parts = append(parts, part)
 					}
 				case llm.ContentAudio, llm.ContentDocument:
 					return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("unsupported content kind for google: %s", p.Kind)}
@@ -589,42 +601,12 @@ func toGeminiContents(msgs []llm.Message) (system string, contents []map[string]
 					if p.Image == nil {
 						continue
 					}
-					u := strings.TrimSpace(p.Image.URL)
-					mt := strings.TrimSpace(p.Image.MediaType)
-					if len(p.Image.Data) > 0 || llm.IsLocalPath(u) {
-						var b []byte
-						var err error
-						if len(p.Image.Data) > 0 {
-							b = p.Image.Data
-						} else {
-							path := llm.ExpandTilde(u)
-							b, err = os.ReadFile(path)
-							if err != nil {
-								return "", nil, err
-							}
-							if mt == "" {
-								mt = llm.InferMimeTypeFromPath(path)
-							}
-						}
-						if mt == "" {
-							mt = "image/png"
-						}
-						parts = append(parts, map[string]any{
-							"inlineData": map[string]any{
-								"mimeType": mt,
-								"data":     base64.StdEncoding.EncodeToString(b),
-							},
-						})
-					} else if u != "" {
-						if mt == "" {
-							mt = "image/png"
-						}
-						parts = append(parts, map[string]any{
-							"fileData": map[string]any{
-								"mimeType": mt,
-								"fileUri":  u,
-							},
-						})
+					part, err := geminiImagePart(p)
+					if err != nil {
+						return "", nil, err
+					}
+					if part != nil {
+						parts = append(parts, part)
 					}
 				case llm.ContentToolCall:
 					if p.ToolCall == nil {
