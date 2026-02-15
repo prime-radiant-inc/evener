@@ -1,0 +1,64 @@
+{
+  "questions": [
+    {
+      "question": "What repository are you working on?",
+      "expected": "astropy/astropy",
+      "difficulty": "easy",
+      "type": "factual"
+    },
+    {
+      "question": "What programming language is this project written in?",
+      "expected": "Python",
+      "difficulty": "easy",
+      "type": "factual"
+    },
+    {
+      "question": "Which file contains the __array_ufunc__ method that needs to be fixed?",
+      "expected": "astropy/units/quantity.py",
+      "difficulty": "easy",
+      "type": "factual"
+    },
+    {
+      "question": "What should __array_ufunc__ return when it encounters an input it cannot handle, instead of raising an exception?",
+      "expected": "NotImplemented",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "What type of exception was incorrectly being raised instead of returning NotImplemented?",
+      "expected": "ValueError",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "What internal function raises the ValueError when it fails to convert an unrecognized input?",
+      "expected": "_condition_arg()",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "What custom class in the bug report wraps a Quantity and demonstrates the broken behavior?",
+      "expected": "DuckArray",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "Why does returning NotImplemented instead of raising ValueError fix the interoperability problem with duck-typed arrays?",
+      "expected": "It allows Python to fall back to the reflected operator (__radd__) on the other object",
+      "difficulty": "hard",
+      "type": "factual"
+    },
+    {
+      "question": "Besides ValueError during input conversion, does the fix also need to handle unrecognized types in the ufunc outputs (out kwarg)?",
+      "expected": "yes",
+      "difficulty": "hard",
+      "type": "factual"
+    },
+    {
+      "question": "Did this fix require changes to NumPy's ufunc dispatch mechanism?",
+      "expected": "no",
+      "difficulty": "distractor",
+      "type": "distractor"
+    }
+  ]
+}

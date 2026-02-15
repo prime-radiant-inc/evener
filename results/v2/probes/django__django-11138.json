@@ -1,0 +1,64 @@
+{
+  "questions": [
+    {
+      "question": "What repository are you working on?",
+      "expected": "django/django",
+      "difficulty": "easy",
+      "type": "factual"
+    },
+    {
+      "question": "What programming language is this project written in?",
+      "expected": "Python",
+      "difficulty": "easy",
+      "type": "factual"
+    },
+    {
+      "question": "Which database backends need to be fixed?",
+      "expected": "MySQL, SQLite, and Oracle",
+      "difficulty": "easy",
+      "type": "factual"
+    },
+    {
+      "question": "What value was being hardcoded as the source timezone instead of using the database TIME_ZONE setting?",
+      "expected": "UTC",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "What Django setting key within DATABASES controls the per-database timezone?",
+      "expected": "TIME_ZONE",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "What MySQL function is used for timezone conversion in the generated SQL?",
+      "expected": "CONVERT_TZ",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "What property on the connection object should be used instead of hardcoded 'UTC' for the source timezone?",
+      "expected": "self.connection.timezone_name",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "When the database timezone equals the app timezone, why should the conversion be skipped entirely?",
+      "expected": "It avoids unnecessary conversion and avoids requiring MySQL timezone tables to be populated",
+      "difficulty": "hard",
+      "type": "factual"
+    },
+    {
+      "question": "For the SQLite backend, how does the fix change the custom datetime functions registered in get_new_connection?",
+      "expected": "Each function gains an additional connection timezone parameter (e.g., django_datetime_cast_date goes from 2 args to 3)",
+      "difficulty": "hard",
+      "type": "factual"
+    },
+    {
+      "question": "Did this bug affect the PostgreSQL backend?",
+      "expected": "no",
+      "difficulty": "distractor",
+      "type": "distractor"
+    }
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "questions": [
+    {
+      "question": "What repository are you working on?",
+      "expected": "sphinx-doc/sphinx",
+      "difficulty": "easy",
+      "type": "factual"
+    },
+    {
+      "question": "What programming language is this project written in?",
+      "expected": "Python",
+      "difficulty": "easy",
+      "type": "factual"
+    },
+    {
+      "question": "Which file contains the Include directive class that needs to be modified?",
+      "expected": "sphinx/directives/other.py",
+      "difficulty": "easy",
+      "type": "factual"
+    },
+    {
+      "question": "What Sphinx event is not being applied to files brought in via the include directive?",
+      "expected": "source-read",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "What method on the state machine is monkey-patched to emit the source-read event for included files?",
+      "expected": "insert_input",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "How many marker lines does docutils 0.18+ append at the end of included content that must be preserved?",
+      "expected": "2",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "What class from docutils.statemachine needs to be imported to call the original unpatched insert_input?",
+      "expected": "StateMachine",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "Why does the source-read event work on top-level files but not on included files?",
+      "expected": "The include directive reads files separately during directive execution, after the source-read event has already been processed for top-level files",
+      "difficulty": "hard",
+      "type": "factual"
+    },
+    {
+      "question": "Should the insert_input patching be skipped if there are no listeners registered for the source-read event?",
+      "expected": "yes",
+      "difficulty": "hard",
+      "type": "factual"
+    },
+    {
+      "question": "Did this fix require changes to the docutils library itself?",
+      "expected": "no",
+      "difficulty": "distractor",
+      "type": "distractor"
+    }
+  ]
+}

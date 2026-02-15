@@ -1,0 +1,47 @@
+You are working on the Django web framework repository (django/django).
+
+## Issue
+
+Django's `django.utils.html.escape()` function manually implements HTML escaping using a translation table. Python's standard library provides `html.escape()` (available since Python 3.2) which does the same thing but faster. The function should be replaced to use the stdlib version.
+
+Key details:
+- `django.utils.html.escape()` currently uses `str.translate()` with a manually-defined translation table to escape `&`, `<`, `>`, `"`, and `'`.
+- Python's `html.escape()` does the same escaping but uses `str.replace()` which is faster.
+- The one behavioral difference: `html.escape()` converts single quotes `'` to `&#x27;` rather than `&#39;`. Both are functionally equivalent HTML entities, but this changes the literal text output.
+- Performance improvement: approximately 2.45 usec vs 4.03 usec per call.
+
+## What to do
+
+1. Read the file `django/utils/html.py` and understand the current `escape()` implementation.
+2. Modify `escape()` to use Python's `html.escape()` from the standard library instead of the custom implementation.
+3. The function must still return a `SafeData` / `SafeString` type (i.e., the return value must be marked safe for Django's template system).
+4. Ensure all existing tests pass. The single-quote entity representation will change from `&#39;` to `&#x27;` in the output, so tests that check for the old form will need to be updated.
+
+## Failing tests
+
+The following test files contain assertions that reference `&#39;` which will need to change to `&#x27;`:
+
+- tests/utils_tests/test_html.py
+- tests/admin_docs/test_views.py
+- tests/auth_tests/test_forms.py
+- tests/forms_tests/tests/test_forms.py
+- tests/forms_tests/widget_tests/base.py
+- tests/forms_tests/widget_tests/test_clearablefileinput.py
+- tests/model_forms/tests.py
+- tests/template_tests/filter_tests/test_addslashes.py
+- tests/template_tests/filter_tests/test_make_list.py
+- tests/template_tests/filter_tests/test_title.py
+- tests/template_tests/filter_tests/test_urlize.py
+- tests/template_tests/syntax_tests/test_url.py
+- tests/view_tests/tests/test_csrf.py
+- tests/view_tests/tests/test_debug.py
+
+Run the core test to verify your implementation:
+
+    python -m pytest tests/utils_tests/test_html.py -x -v
+
+Then run the broader set of affected tests:
+
+    python -m pytest tests/admin_docs/test_views.py tests/auth_tests/test_forms.py tests/forms_tests/tests/test_forms.py tests/model_forms/tests.py tests/template_tests/filter_tests/ tests/template_tests/syntax_tests/test_url.py tests/view_tests/tests/test_csrf.py tests/view_tests/tests/test_debug.py -x -v
+
+Make sure no existing tests break.

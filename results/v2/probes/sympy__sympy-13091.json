@@ -1,0 +1,64 @@
+{
+  "questions": [
+    {
+      "question": "What repository are you working on?",
+      "expected": "sympy/sympy",
+      "difficulty": "easy",
+      "type": "factual"
+    },
+    {
+      "question": "What programming language is this project written in?",
+      "expected": "Python",
+      "difficulty": "easy",
+      "type": "factual"
+    },
+    {
+      "question": "Which file contains the primary Basic.__eq__ method that needs modification?",
+      "expected": "sympy/core/basic.py",
+      "difficulty": "easy",
+      "type": "factual"
+    },
+    {
+      "question": "What should rich comparison methods return when they encounter an unrecognized type, instead of returning False?",
+      "expected": "NotImplemented",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "Which rich comparison methods on Basic and its subclasses are affected by this bug?",
+      "expected": "__eq__, __ne__, __lt__, __gt__, __le__, __ge__",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "Besides sympy/core/basic.py, what other files may need similar changes to comparison methods?",
+      "expected": "sympy/core/numbers.py and sympy/core/expr.py",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "In the example, what does s == f return before the fix, where s is a Symbol and f is a Foo instance?",
+      "expected": "False",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "Why does returning False instead of NotImplemented break the Python data model for comparisons?",
+      "expected": "It prevents Python from trying the reflected comparison method on the other object",
+      "difficulty": "hard",
+      "type": "factual"
+    },
+    {
+      "question": "If both sides of a comparison return NotImplemented for __eq__, what does Python default to?",
+      "expected": "Identity comparison (returns False for ==)",
+      "difficulty": "hard",
+      "type": "factual"
+    },
+    {
+      "question": "Did this fix involve changes to the Octave or Julia code printers?",
+      "expected": "no",
+      "difficulty": "distractor",
+      "type": "distractor"
+    }
+  ]
+}
