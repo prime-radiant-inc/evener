@@ -29,6 +29,7 @@ const (
 	EventError               EventKind = "ERROR"
 	EventSubagentStart       EventKind = "SUBAGENT_START"
 	EventSubagentEnd         EventKind = "SUBAGENT_END"
+	EventPluginLoaded        EventKind = "PLUGIN_LOADED"
 )
 
 type SessionEvent struct {
@@ -194,4 +195,11 @@ type SubagentEndData struct {
 	AgentID   string `json:"agent_id"`
 	Status    string `json:"status"`
 	TurnsUsed int    `json:"turns_used"`
+}
+
+type PluginLoadedData struct {
+	Name       string `json:"name"`
+	Dir        string `json:"dir"`
+	SkillCount int    `json:"skill_count"`
+	AgentCount int    `json:"agent_count"`
 }

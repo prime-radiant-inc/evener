@@ -138,6 +138,10 @@ type Session struct {
 	mcpMgr   *MCPManager
 	mcpTools []llm.ToolDefinition
 
+	// Plugin-provided components
+	hookRunner   *HookRunner
+	pluginAgents map[string]PluginAgent
+
 	// Tool names registered during session initialization (not custom).
 	coreToolNames map[string]bool
 
@@ -379,6 +383,18 @@ func (s *Session) Close() {
 		// 2-4. Kill running child processes (SIGTERM → wait 2s → SIGKILL).
 		s.env.Cleanup()
 
+		// SessionEnd hooks (best-effort, bounded timeout)
+		if s.hookRunner != nil {
+			hookInput := HookInput{
+				SessionID:     s.id,
+				CWD:           s.env.WorkingDirectory(),
+				HookEventName: string(HookSessionEnd),
+			}
+			hookCtx, hookCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			s.hookRunner.RunSessionEnd(hookCtx, hookInput)
+			hookCancel()
+		}
+
 		// 5-6. Emit SESSION_END with final state.
 		if emitEnd {
 			s.emit(EventSessionEnd, SessionEndData{
@@ -443,6 +459,39 @@ func (s *Session) ProcessInput(ctx context.Context, input string) (string, error
 }
 
 func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecResult {
+	// PreToolUse hooks
+	if s.hookRunner != nil {
+		hookInput := HookInput{
+			SessionID:     s.id,
+			CWD:           s.env.WorkingDirectory(),
+			HookEventName: string(HookPreToolUse),
+			ToolName:      MapSerfToolNameToClaude(call.Name),
+		}
+		var toolInputMap map[string]any
+		if len(call.Arguments) > 0 {
+			_ = json.Unmarshal(call.Arguments, &toolInputMap)
+		}
+		hookInput.ToolInput = toolInputMap
+
+		preResult := s.hookRunner.RunPreToolUse(ctx, hookInput)
+		for _, msg := range preResult.SystemMessages {
+			s.Steer(msg)
+		}
+		if preResult.Denied {
+			denyMsg := "Tool call denied by hook"
+			if preResult.DenyMessage != "" {
+				denyMsg = preResult.DenyMessage
+			}
+			return ToolExecResult{
+				ToolName:   call.Name,
+				CallID:     call.ID,
+				Output:     denyMsg,
+				FullOutput: denyMsg,
+				IsError:    true,
+			}
+		}
+	}
+
 	argsJSON, _ := json.Marshal(call.Arguments)
 	startData := ToolCallStartData{
 		ToolName:      call.Name,
@@ -488,6 +537,22 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecR
 		endData.Output = res.FullOutput
 	}
 	s.emit(EventToolCallEnd, endData)
+
+	// PostToolUse hooks
+	if s.hookRunner != nil {
+		hookInput := HookInput{
+			SessionID:     s.id,
+			CWD:           s.env.WorkingDirectory(),
+			HookEventName: string(HookPostToolUse),
+			ToolName:      MapSerfToolNameToClaude(call.Name),
+			ToolResult:    res.FullOutput,
+		}
+		postResult := s.hookRunner.RunPostToolUse(ctx, hookInput)
+		for _, msg := range postResult.SystemMessages {
+			s.Steer(msg)
+		}
+	}
+
 	return res
 }
 
@@ -649,6 +714,20 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 	s.emit(EventUserInput, UserInputData{Text: input})
 	s.appendTurn(TurnUserInput, llm.User(input))
 
+	// UserPromptSubmit hooks
+	if s.hookRunner != nil {
+		hookInput := HookInput{
+			SessionID:     s.id,
+			CWD:           s.env.WorkingDirectory(),
+			HookEventName: string(HookUserPromptSubmit),
+			UserPrompt:    input,
+		}
+		result := s.hookRunner.RunUserPromptSubmit(ctx, hookInput)
+		for _, msg := range result.SystemMessages {
+			s.Steer(msg)
+		}
+	}
+
 	// Count conversation turns (user input -> model response pairs), not LLM round-trips.
 	// Check the limit before incrementing so MaxTurns=N allows exactly N inputs.
 	s.mu.Lock()
@@ -715,6 +794,19 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 
 		if strings.TrimSpace(s.cfg.UserInstructionOverride) != "" {
 			sys = sys + "\n\n" + strings.TrimSpace(s.cfg.UserInstructionOverride) + "\n"
+		}
+
+		// PreCompact hooks
+		if s.hookRunner != nil {
+			hookInput := HookInput{
+				SessionID:     s.id,
+				CWD:           s.env.WorkingDirectory(),
+				HookEventName: string(HookPreCompact),
+			}
+			preCompactResult := s.hookRunner.RunPreCompact(ctx, hookInput)
+			for _, msg := range preCompactResult.SystemMessages {
+				s.Steer(msg)
+			}
 		}
 
 		// Apply context management before each LLM request.
@@ -927,6 +1019,23 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		text := s.resultText
 		s.mu.Unlock()
 		if delivered {
+			// Stop hooks
+			if s.hookRunner != nil {
+				hookInput := HookInput{
+					SessionID:     s.id,
+					CWD:           s.env.WorkingDirectory(),
+					HookEventName: string(HookStop),
+					Reason:        "communicate_result",
+				}
+				stopResult := s.hookRunner.RunStop(ctx, hookInput)
+				for _, msg := range stopResult.SystemMessages {
+					s.Steer(msg)
+				}
+				if stopResult.Blocked {
+					// Don't return — continue the loop
+					continue
+				}
+			}
 			s.mu.Lock()
 			s.state = SessionIdle
 			s.mu.Unlock()
@@ -1062,6 +1171,12 @@ func (s *Session) initSessionState() error {
 	s.profile = s.profile.WithBasePrompt(resolvedPrompt)
 
 	s.skills = DiscoverSkills(s.env, s.cfg.SkillsDirs...)
+
+	// Initialize plugins (skills, agents, hooks)
+	if err := s.initPlugins(); err != nil {
+		return fmt.Errorf("plugin initialization: %w", err)
+	}
+
 	s.contextMgr = NewContextManager(s.profile, s.client)
 
 	reg := s.profile.NewToolRegistry()
@@ -1094,6 +1209,62 @@ func (s *Session) initSessionState() error {
 	if err := s.initMCP(); err != nil {
 		return fmt.Errorf("MCP initialization: %w", err)
 	}
+	return nil
+}
+
+// initPlugins loads plugins from configured directories, merging their skills,
+// agents, and hooks into the session. Fires SessionStart hooks after setup.
+func (s *Session) initPlugins() error {
+	if len(s.cfg.PluginDirs) == 0 {
+		return nil
+	}
+
+	plugins, err := LoadPlugins(s.cfg.PluginDirs)
+	if err != nil {
+		return err
+	}
+
+	runner := NewHookRunner(clientAdapter{s.client}, s.profile.Model())
+	allAgents := map[string]PluginAgent{}
+
+	for _, p := range plugins {
+		for name, meta := range p.Skills {
+			s.skills[name] = meta
+		}
+		for name, agent := range p.Agents {
+			allAgents[name] = agent
+		}
+
+		hooks, err := discoverPluginHooks(p.Dir, p.Manifest.Hooks, p.Manifest.Name)
+		if err != nil {
+			return fmt.Errorf("plugin %q hooks: %w", p.Manifest.Name, err)
+		}
+		for event, eventHooks := range hooks {
+			runner.Add(event, eventHooks...)
+		}
+
+		s.emit(EventPluginLoaded, PluginLoadedData{
+			Name:       p.Manifest.Name,
+			Dir:        p.Dir,
+			SkillCount: len(p.Skills),
+			AgentCount: len(p.Agents),
+		})
+	}
+
+	s.hookRunner = runner
+	s.pluginAgents = allAgents
+
+	// Fire SessionStart hooks
+	hookInput := HookInput{
+		SessionID:     s.id,
+		CWD:           s.env.WorkingDirectory(),
+		HookEventName: string(HookSessionStart),
+	}
+	result := s.hookRunner.RunSessionStart(context.Background(), hookInput)
+	for _, msg := range result.SystemMessages {
+		s.Steer(msg)
+	}
+
 	return nil
 }
 

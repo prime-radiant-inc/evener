@@ -264,6 +264,16 @@ type PromptHookClient interface {
 	Generate(ctx context.Context, req llm.Request) (llm.Response, error)
 }
 
+// clientAdapter wraps *llm.Client to satisfy PromptHookClient by delegating
+// Generate to the Client's Complete method.
+type clientAdapter struct {
+	client *llm.Client
+}
+
+func (a clientAdapter) Generate(ctx context.Context, req llm.Request) (llm.Response, error) {
+	return a.client.Complete(ctx, req)
+}
+
 // substituteHookVariables replaces $TOOL_INPUT, $TOOL_RESULT, $USER_PROMPT,
 // and $TOOL_NAME placeholders in a prompt string with values from the input.
 func substituteHookVariables(prompt string, input HookInput) string {
