@@ -333,9 +333,16 @@ func executePromptHook(ctx context.Context, client PromptHookClient, model strin
 
 // HookRunner orchestrates hook matching and parallel dispatch.
 type HookRunner struct {
-	hooks  map[HookEvent][]RegisteredHook
-	client PromptHookClient
-	model  string
+	hooks   map[HookEvent][]RegisteredHook
+	client  PromptHookClient
+	model   string
+	onEvent func(EventKind, any) // optional event callback
+}
+
+// SetEventCallback sets an optional callback that is invoked for hook
+// lifecycle events (HookStart, HookEnd).
+func (r *HookRunner) SetEventCallback(fn func(EventKind, any)) {
+	r.onEvent = fn
 }
 
 // NewHookRunner creates a HookRunner with the given LLM client and default model
@@ -403,11 +410,12 @@ type ParsedHookOutput struct {
 	Blocked        bool
 	BlockReason    string
 	IsError        bool
+	RawExitCode    int
 }
 
 // parseHookOutput interprets hook stdout and exit code into structured output.
 func parseHookOutput(stdout string, exitCode int) ParsedHookOutput {
-	result := ParsedHookOutput{Continue: true}
+	result := ParsedHookOutput{Continue: true, RawExitCode: exitCode}
 
 	if exitCode == 2 {
 		result.IsError = true
@@ -510,7 +518,27 @@ func (r *HookRunner) runAll(ctx context.Context, event HookEvent, toolName strin
 	for i, hook := range matched {
 		go func(idx int, h RegisteredHook) {
 			defer wg.Done()
+			if r.onEvent != nil {
+				r.onEvent(EventHookStart, HookStartData{
+					Event:      string(event),
+					HookType:   h.Type,
+					Matcher:    h.Matcher,
+					PluginName: h.PluginName,
+				})
+			}
+			start := time.Now()
 			results[idx] = r.runHook(ctx, h, input)
+			elapsed := time.Since(start)
+			if r.onEvent != nil {
+				r.onEvent(EventHookEnd, HookEndData{
+					Event:      string(event),
+					HookType:   h.Type,
+					Matcher:    h.Matcher,
+					PluginName: h.PluginName,
+					ExitCode:   results[idx].RawExitCode,
+					DurationMS: elapsed.Milliseconds(),
+				})
+			}
 		}(i, hook)
 	}
 

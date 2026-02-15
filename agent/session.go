@@ -1281,9 +1281,13 @@ func (s *Session) initPlugins() error {
 			Dir:        p.Dir,
 			SkillCount: len(p.Skills),
 			AgentCount: len(p.Agents),
+			MCPCount:   len(p.MCPConfigs),
 		})
 	}
 
+	runner.SetEventCallback(func(kind EventKind, data any) {
+		s.emit(kind, data)
+	})
 	s.hookRunner = runner
 	s.pluginAgents = allAgents
 

@@ -491,6 +491,42 @@ func TestRunConfig_PluginDirsPassthrough(t *testing.T) {
 	}
 }
 
+func TestDrainEventsHuman_PluginEvents(t *testing.T) {
+	ch := make(chan agent.SessionEvent, 3)
+	ch <- agent.SessionEvent{Kind: agent.EventPluginLoaded, Data: agent.PluginLoadedData{
+		Name: "test-plugin", SkillCount: 2, AgentCount: 1, MCPCount: 0,
+	}}
+	ch <- agent.SessionEvent{Kind: agent.EventHookStart, Data: agent.HookStartData{
+		Event: "PreToolUse", HookType: "command", Matcher: "Write",
+	}}
+	ch <- agent.SessionEvent{Kind: agent.EventHookEnd, Data: agent.HookEndData{
+		Event: "PreToolUse", HookType: "command", Matcher: "Write", DurationMS: 42,
+	}}
+	close(ch)
+	var buf bytes.Buffer
+	done := drainEventsHuman(ch, &buf)
+	<-done
+	out := buf.String()
+	if !strings.Contains(out, "test-plugin") {
+		t.Errorf("expected plugin name in output, got: %q", out)
+	}
+	if !strings.Contains(out, "2 skills") {
+		t.Errorf("expected skill count in output, got: %q", out)
+	}
+	if !strings.Contains(out, "1 agents") {
+		t.Errorf("expected agent count in output, got: %q", out)
+	}
+	if !strings.Contains(out, "PreToolUse") {
+		t.Errorf("expected hook event name in output, got: %q", out)
+	}
+	if !strings.Contains(out, "Write") {
+		t.Errorf("expected matcher in output, got: %q", out)
+	}
+	if !strings.Contains(out, "42ms") {
+		t.Errorf("expected duration in output, got: %q", out)
+	}
+}
+
 func TestResolveReasoningEffort(t *testing.T) {
 	tests := []struct {
 		name    string

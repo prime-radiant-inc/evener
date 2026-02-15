@@ -734,3 +734,93 @@ func TestHookInput_JSON(t *testing.T) {
 		t.Errorf("empty user_prompt should be omitted: %s", s)
 	}
 }
+
+// --- Task 17: HookRunner event callback ---
+
+func TestHookRunner_EmitsHookEvents(t *testing.T) {
+	runner := NewHookRunner(nil, "")
+	runner.Add(HookSessionStart, RegisteredHook{
+		Matcher:    "*",
+		Type:       "command",
+		Command:    "echo hello",
+		Timeout:    5,
+		PluginName: "my-plugin",
+	})
+
+	var collected []SessionEvent
+	runner.SetEventCallback(func(kind EventKind, data any) {
+		collected = append(collected, SessionEvent{Kind: kind, Data: data})
+	})
+
+	input := HookInput{
+		CWD:           "/tmp",
+		HookEventName: "SessionStart",
+	}
+	runner.RunSessionStart(context.Background(), input)
+
+	// Should have emitted HookStart and HookEnd
+	var starts, ends int
+	for _, ev := range collected {
+		switch ev.Kind {
+		case EventHookStart:
+			starts++
+			d, ok := ev.Data.(HookStartData)
+			if !ok {
+				t.Fatal("HookStart data wrong type")
+			}
+			if d.Event != "SessionStart" {
+				t.Errorf("Event = %q, want %q", d.Event, "SessionStart")
+			}
+			if d.HookType != "command" {
+				t.Errorf("HookType = %q, want %q", d.HookType, "command")
+			}
+			if d.Matcher != "*" {
+				t.Errorf("Matcher = %q, want %q", d.Matcher, "*")
+			}
+			if d.PluginName != "my-plugin" {
+				t.Errorf("PluginName = %q, want %q", d.PluginName, "my-plugin")
+			}
+		case EventHookEnd:
+			ends++
+			d, ok := ev.Data.(HookEndData)
+			if !ok {
+				t.Fatal("HookEnd data wrong type")
+			}
+			if d.Event != "SessionStart" {
+				t.Errorf("Event = %q, want %q", d.Event, "SessionStart")
+			}
+			if d.HookType != "command" {
+				t.Errorf("HookType = %q, want %q", d.HookType, "command")
+			}
+			if d.PluginName != "my-plugin" {
+				t.Errorf("PluginName = %q, want %q", d.PluginName, "my-plugin")
+			}
+			if d.DurationMS < 0 {
+				t.Errorf("DurationMS = %d, want >= 0", d.DurationMS)
+			}
+		}
+	}
+	if starts != 1 {
+		t.Errorf("expected 1 HookStart event, got %d", starts)
+	}
+	if ends != 1 {
+		t.Errorf("expected 1 HookEnd event, got %d", ends)
+	}
+}
+
+func TestHookRunner_NoCallbackNoEvents(t *testing.T) {
+	runner := NewHookRunner(nil, "")
+	runner.Add(HookSessionStart, RegisteredHook{
+		Matcher: "*",
+		Type:    "command",
+		Command: "echo hello",
+		Timeout: 5,
+	})
+
+	// Should not panic when no callback is set
+	input := HookInput{
+		CWD:           "/tmp",
+		HookEventName: "SessionStart",
+	}
+	runner.RunSessionStart(context.Background(), input)
+}

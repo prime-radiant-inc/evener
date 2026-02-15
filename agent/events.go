@@ -30,6 +30,8 @@ const (
 	EventSubagentStart       EventKind = "SUBAGENT_START"
 	EventSubagentEnd         EventKind = "SUBAGENT_END"
 	EventPluginLoaded        EventKind = "PLUGIN_LOADED"
+	EventHookStart           EventKind = "HOOK_START"
+	EventHookEnd             EventKind = "HOOK_END"
 )
 
 type SessionEvent struct {
@@ -202,4 +204,21 @@ type PluginLoadedData struct {
 	Dir        string `json:"dir"`
 	SkillCount int    `json:"skill_count"`
 	AgentCount int    `json:"agent_count"`
+	MCPCount   int    `json:"mcp_count"`
+}
+
+type HookStartData struct {
+	Event      string `json:"event"`
+	HookType   string `json:"hook_type"`
+	Matcher    string `json:"matcher"`
+	PluginName string `json:"plugin_name"`
+}
+
+type HookEndData struct {
+	Event      string `json:"event"`
+	HookType   string `json:"hook_type"`
+	Matcher    string `json:"matcher"`
+	PluginName string `json:"plugin_name"`
+	ExitCode   int    `json:"exit_code"`
+	DurationMS int64  `json:"duration_ms"`
 }
