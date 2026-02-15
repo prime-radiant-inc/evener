@@ -108,6 +108,20 @@ type GenerateResult struct {
 	Output       any
 }
 
+func newResult(step StepResult, totalUsage Usage, steps []StepResult, resp Response) *GenerateResult {
+	return &GenerateResult{
+		Text:         step.Text,
+		Reasoning:    step.Reasoning,
+		ToolCalls:    step.ToolCalls,
+		ToolResults:  step.ToolResults,
+		FinishReason: step.FinishReason,
+		Usage:        step.Usage,
+		TotalUsage:   totalUsage,
+		Steps:        steps,
+		Response:     resp,
+	}
+}
+
 func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error) {
 	client := opts.Client
 	if client == nil {
@@ -218,17 +232,7 @@ func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error
 		if len(calls) == 0 || (resp.Finish.Reason != FinishReasonToolCalls && resp.Finish.Reason != FinishReasonPauseTurn) || !hasActiveTool || maxToolRounds == 0 || toolRoundsUsed >= maxToolRounds {
 			// No tool loop (natural completion, tool loops disabled, or budget exhausted).
 			steps = append(steps, step)
-			return &GenerateResult{
-				Text:         step.Text,
-				Reasoning:    step.Reasoning,
-				ToolCalls:    step.ToolCalls,
-				ToolResults:  step.ToolResults,
-				FinishReason: step.FinishReason,
-				Usage:        step.Usage,
-				TotalUsage:   totalUsage,
-				Steps:        steps,
-				Response:     resp,
-			}, nil
+			return newResult(step, totalUsage, steps, resp), nil
 		}
 
 		// Add assistant message (including tool calls/thinking) before tool results.
@@ -238,17 +242,7 @@ func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error
 		for _, call := range calls {
 			if t, ok := toolIndex[call.Name]; ok && t.Execute == nil {
 				steps = append(steps, step)
-				return &GenerateResult{
-					Text:         step.Text,
-					Reasoning:    step.Reasoning,
-					ToolCalls:    step.ToolCalls,
-					ToolResults:  step.ToolResults,
-					FinishReason: step.FinishReason,
-					Usage:        step.Usage,
-					TotalUsage:   totalUsage,
-					Steps:        steps,
-					Response:     resp,
-				}, nil
+				return newResult(step, totalUsage, steps, resp), nil
 			}
 		}
 
@@ -265,17 +259,7 @@ func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error
 
 		// Check custom stop condition (spec 4.3).
 		if opts.StopWhen != nil && opts.StopWhen(steps) {
-			return &GenerateResult{
-				Text:         step.Text,
-				Reasoning:    step.Reasoning,
-				ToolCalls:    step.ToolCalls,
-				ToolResults:  step.ToolResults,
-				FinishReason: step.FinishReason,
-				Usage:        step.Usage,
-				TotalUsage:   totalUsage,
-				Steps:        steps,
-				Response:     resp,
-			}, nil
+			return newResult(step, totalUsage, steps, resp), nil
 		}
 	}
 }
