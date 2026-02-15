@@ -63,10 +63,11 @@ func expandPluginRoot(s string, pluginDir string) string {
 
 // LoadedPlugin represents a plugin that has been loaded from disk.
 type LoadedPlugin struct {
-	Manifest PluginManifest
-	Dir      string                   // absolute path = CLAUDE_PLUGIN_ROOT
-	Skills   map[string]SkillMeta     // namespaced as "plugin-name:skill-name"
-	Agents   map[string]PluginAgent   // namespaced as "plugin-name:agent-name"
+	Manifest   PluginManifest
+	Dir        string                   // absolute path = CLAUDE_PLUGIN_ROOT
+	Skills     map[string]SkillMeta     // namespaced as "plugin-name:skill-name"
+	Agents     map[string]PluginAgent   // namespaced as "plugin-name:agent-name"
+	MCPConfigs []MCPServerConfig        // namespaced as "plugin_<name>_<server>"
 }
 
 // discoverPluginSkills scans a plugin's skills directories and returns
@@ -82,6 +83,119 @@ func discoverPluginSkills(pluginDir, pluginName string) map[string]SkillMeta {
 		namespaced[pluginName+":"+name] = meta
 	}
 	return namespaced
+}
+
+// expandPluginRootInConfig replaces ${CLAUDE_PLUGIN_ROOT} with pluginDir
+// in all string fields of an MCPServerConfig.
+func expandPluginRootInConfig(cfg MCPServerConfig, pluginDir string) MCPServerConfig {
+	cfg.Command = expandPluginRoot(cfg.Command, pluginDir)
+	if len(cfg.Args) > 0 {
+		args := make([]string, len(cfg.Args))
+		for i, a := range cfg.Args {
+			args[i] = expandPluginRoot(a, pluginDir)
+		}
+		cfg.Args = args
+	}
+	if len(cfg.Env) > 0 {
+		env := make(map[string]string, len(cfg.Env))
+		for k, v := range cfg.Env {
+			env[k] = expandPluginRoot(v, pluginDir)
+		}
+		cfg.Env = env
+	}
+	cfg.URL = expandPluginRoot(cfg.URL, pluginDir)
+	if len(cfg.Headers) > 0 {
+		headers := make(map[string]string, len(cfg.Headers))
+		for k, v := range cfg.Headers {
+			headers[k] = expandPluginRoot(v, pluginDir)
+		}
+		cfg.Headers = headers
+	}
+	return cfg
+}
+
+// discoverPluginMCPConfigs reads MCP server configs from a plugin's .mcp.json
+// file and/or inline manifest mcpServers field. Server names are prefixed with
+// "plugin_<pluginName>_" and ${CLAUDE_PLUGIN_ROOT} is expanded to pluginDir.
+func discoverPluginMCPConfigs(pluginDir string, manifestMCPServers json.RawMessage, pluginName string) ([]MCPServerConfig, error) {
+	var layers [][]MCPServerConfig
+
+	// Layer 1: .mcp.json file in the plugin directory.
+	// We read the file ourselves and expand ${CLAUDE_PLUGIN_ROOT} in the raw
+	// JSON before parsing, because serverJSONToConfig calls expandEnvVars
+	// which errors on unknown env vars like CLAUDE_PLUGIN_ROOT.
+	mcpPath := filepath.Join(pluginDir, ".mcp.json")
+	if fileConfigs, err := loadPluginMCPFile(mcpPath, pluginDir); err == nil {
+		layers = append(layers, fileConfigs)
+	}
+	// Missing file is not an error.
+
+	// Layer 2: Inline mcpServers from the manifest (no wrapper, directly a map of server defs).
+	if len(manifestMCPServers) > 0 {
+		expanded := expandPluginRoot(string(manifestMCPServers), pluginDir)
+		var servers map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(expanded), &servers); err == nil && len(servers) > 0 {
+			var inlineConfigs []MCPServerConfig
+			for name, raw := range servers {
+				var sj mcpServerJSON
+				if err := json.Unmarshal(raw, &sj); err != nil {
+					return nil, fmt.Errorf("parsing inline MCP server %q: %w", name, err)
+				}
+				cfg, err := serverJSONToConfig(name, sj)
+				if err != nil {
+					return nil, fmt.Errorf("inline MCP server %q: %w", name, err)
+				}
+				inlineConfigs = append(inlineConfigs, cfg)
+			}
+			layers = append(layers, inlineConfigs)
+		}
+	}
+
+	merged := MergeMCPConfigs(layers...)
+	if len(merged) == 0 {
+		return nil, nil
+	}
+
+	// Namespace server names.
+	prefix := "plugin_" + pluginName + "_"
+	for i := range merged {
+		merged[i].Name = prefix + merged[i].Name
+	}
+	return merged, nil
+}
+
+// loadPluginMCPFile reads a plugin's .mcp.json file, expands
+// ${CLAUDE_PLUGIN_ROOT} in the raw JSON, then parses server configs.
+func loadPluginMCPFile(path, pluginDir string) ([]MCPServerConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	// Expand ${CLAUDE_PLUGIN_ROOT} before env-var expansion so
+	// expandEnvVars (called by serverJSONToConfig) doesn't fail on it.
+	expanded := expandPluginRoot(string(data), pluginDir)
+
+	var cf struct {
+		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(expanded), &cf); err != nil {
+		return nil, fmt.Errorf("parsing MCP config %s: %w", path, err)
+	}
+
+	var configs []MCPServerConfig
+	for name, raw := range cf.MCPServers {
+		var sj mcpServerJSON
+		if err := json.Unmarshal(raw, &sj); err != nil {
+			return nil, fmt.Errorf("parsing MCP server %q in %s: %w", name, path, err)
+		}
+		cfg, err := serverJSONToConfig(name, sj)
+		if err != nil {
+			return nil, fmt.Errorf("MCP server %q in %s: %w", name, path, err)
+		}
+		configs = append(configs, cfg)
+	}
+	return configs, nil
 }
 
 // LoadPlugin reads a plugin manifest from <dir>/.claude-plugin/plugin.json,
@@ -115,6 +229,12 @@ func LoadPlugin(dir string) (LoadedPlugin, error) {
 		return LoadedPlugin{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
 	}
 	lp.Agents = agents
+
+	mcpConfigs, err := discoverPluginMCPConfigs(resolved, manifest.MCPServers, manifest.Name)
+	if err != nil {
+		return LoadedPlugin{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
+	}
+	lp.MCPConfigs = mcpConfigs
 
 	return lp, nil
 }

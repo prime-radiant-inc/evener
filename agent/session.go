@@ -139,8 +139,9 @@ type Session struct {
 	mcpTools []llm.ToolDefinition
 
 	// Plugin-provided components
-	hookRunner   *HookRunner
-	pluginAgents map[string]PluginAgent
+	hookRunner       *HookRunner
+	pluginAgents     map[string]PluginAgent
+	pluginMCPConfigs []MCPServerConfig
 
 	// Tool names registered during session initialization (not custom).
 	coreToolNames map[string]bool
@@ -1243,6 +1244,8 @@ func (s *Session) initPlugins() error {
 			runner.Add(event, eventHooks...)
 		}
 
+		s.pluginMCPConfigs = append(s.pluginMCPConfigs, p.MCPConfigs...)
+
 		s.emit(EventPluginLoaded, PluginLoadedData{
 			Name:       p.Manifest.Name,
 			Dir:        p.Dir,
@@ -1274,6 +1277,10 @@ func (s *Session) initMCP() error {
 	configs, err := DiscoverMCPConfigs(s.env, s.cfg.MCPConfigFiles, s.cfg.MCPInline)
 	if err != nil {
 		return err
+	}
+	// Merge plugin MCP configs as a base layer (global/project/CLI can shadow them).
+	if len(s.pluginMCPConfigs) > 0 {
+		configs = MergeMCPConfigs(s.pluginMCPConfigs, configs)
 	}
 	if len(configs) == 0 {
 		return nil

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -445,5 +446,210 @@ func TestResolveComponentDirs_MissingDefaultDir(t *testing.T) {
 	}
 	if dirs[0] != customDir {
 		t.Errorf("dirs[0] = %q, want %q", dirs[0], customDir)
+	}
+}
+
+func TestExpandPluginRootInConfig(t *testing.T) {
+	cfg := MCPServerConfig{
+		Name:    "test",
+		Command: "${CLAUDE_PLUGIN_ROOT}/bin/server",
+		Args:    []string{"--config", "${CLAUDE_PLUGIN_ROOT}/config.json"},
+		Env:     map[string]string{"HOME": "${CLAUDE_PLUGIN_ROOT}"},
+		URL:     "${CLAUDE_PLUGIN_ROOT}/api",
+		Headers: map[string]string{"X-Root": "${CLAUDE_PLUGIN_ROOT}"},
+	}
+	result := expandPluginRootInConfig(cfg, "/plugins/my-plugin")
+	if result.Command != "/plugins/my-plugin/bin/server" {
+		t.Errorf("Command = %q", result.Command)
+	}
+	if result.Args[0] != "--config" {
+		t.Errorf("Args[0] = %q, want --config", result.Args[0])
+	}
+	if result.Args[1] != "/plugins/my-plugin/config.json" {
+		t.Errorf("Args[1] = %q", result.Args[1])
+	}
+	if result.Env["HOME"] != "/plugins/my-plugin" {
+		t.Errorf("Env[HOME] = %q", result.Env["HOME"])
+	}
+	if result.URL != "/plugins/my-plugin/api" {
+		t.Errorf("URL = %q", result.URL)
+	}
+	if result.Headers["X-Root"] != "/plugins/my-plugin" {
+		t.Errorf("Headers[X-Root] = %q", result.Headers["X-Root"])
+	}
+}
+
+func TestExpandPluginRootInConfig_NilMaps(t *testing.T) {
+	cfg := MCPServerConfig{
+		Name:    "test",
+		Command: "${CLAUDE_PLUGIN_ROOT}/bin/server",
+	}
+	result := expandPluginRootInConfig(cfg, "/plugins/x")
+	if result.Command != "/plugins/x/bin/server" {
+		t.Errorf("Command = %q", result.Command)
+	}
+	if result.Env != nil {
+		t.Errorf("Env should be nil, got %v", result.Env)
+	}
+	if result.Headers != nil {
+		t.Errorf("Headers should be nil, got %v", result.Headers)
+	}
+}
+
+func TestDiscoverPluginMCPConfigs_FromFile(t *testing.T) {
+	pluginDir := t.TempDir()
+	pluginDir, _ = filepath.EvalSymlinks(pluginDir)
+	os.WriteFile(filepath.Join(pluginDir, ".mcp.json"),
+		[]byte(`{"mcpServers": {"my-server": {"command": "echo", "args": ["hello"]}}}`), 0644)
+
+	configs, err := discoverPluginMCPConfigs(pluginDir, nil, "test-plugin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(configs) != 1 {
+		t.Fatalf("got %d configs, want 1", len(configs))
+	}
+	if configs[0].Name != "plugin_test-plugin_my-server" {
+		t.Errorf("Name = %q", configs[0].Name)
+	}
+	if configs[0].Command != "echo" {
+		t.Errorf("Command = %q", configs[0].Command)
+	}
+	if len(configs[0].Args) != 1 || configs[0].Args[0] != "hello" {
+		t.Errorf("Args = %v", configs[0].Args)
+	}
+}
+
+func TestDiscoverPluginMCPConfigs_ExpandsRoot(t *testing.T) {
+	pluginDir := t.TempDir()
+	pluginDir, _ = filepath.EvalSymlinks(pluginDir)
+	os.WriteFile(filepath.Join(pluginDir, ".mcp.json"),
+		[]byte(`{"mcpServers": {"srv": {"command": "${CLAUDE_PLUGIN_ROOT}/server"}}}`), 0644)
+
+	configs, err := discoverPluginMCPConfigs(pluginDir, nil, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(configs) != 1 {
+		t.Fatalf("got %d configs, want 1", len(configs))
+	}
+	if configs[0].Command != pluginDir+"/server" {
+		t.Errorf("Command = %q, want %q", configs[0].Command, pluginDir+"/server")
+	}
+}
+
+func TestDiscoverPluginMCPConfigs_InlineManifest(t *testing.T) {
+	pluginDir := t.TempDir()
+	pluginDir, _ = filepath.EvalSymlinks(pluginDir)
+	inline := json.RawMessage(`{"inline-srv": {"command": "inline-cmd"}}`)
+
+	configs, err := discoverPluginMCPConfigs(pluginDir, inline, "myplugin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(configs) != 1 {
+		t.Fatalf("got %d configs, want 1", len(configs))
+	}
+	if configs[0].Name != "plugin_myplugin_inline-srv" {
+		t.Errorf("Name = %q", configs[0].Name)
+	}
+	if configs[0].Command != "inline-cmd" {
+		t.Errorf("Command = %q", configs[0].Command)
+	}
+}
+
+func TestDiscoverPluginMCPConfigs_NoConfig(t *testing.T) {
+	pluginDir := t.TempDir()
+	configs, err := discoverPluginMCPConfigs(pluginDir, nil, "empty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(configs) != 0 {
+		t.Fatalf("got %d configs, want 0", len(configs))
+	}
+}
+
+func TestDiscoverPluginMCPConfigs_FilePlusInline(t *testing.T) {
+	pluginDir := t.TempDir()
+	pluginDir, _ = filepath.EvalSymlinks(pluginDir)
+	os.WriteFile(filepath.Join(pluginDir, ".mcp.json"),
+		[]byte(`{"mcpServers": {"file-srv": {"command": "from-file"}}}`), 0644)
+	inline := json.RawMessage(`{"inline-srv": {"command": "from-inline"}}`)
+
+	configs, err := discoverPluginMCPConfigs(pluginDir, inline, "combo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(configs) != 2 {
+		t.Fatalf("got %d configs, want 2", len(configs))
+	}
+	byName := map[string]MCPServerConfig{}
+	for _, c := range configs {
+		byName[c.Name] = c
+	}
+	if _, ok := byName["plugin_combo_file-srv"]; !ok {
+		t.Error("missing file-srv")
+	}
+	if _, ok := byName["plugin_combo_inline-srv"]; !ok {
+		t.Error("missing inline-srv")
+	}
+}
+
+func TestDiscoverPluginMCPConfigs_InlineShadowsFile(t *testing.T) {
+	pluginDir := t.TempDir()
+	pluginDir, _ = filepath.EvalSymlinks(pluginDir)
+	os.WriteFile(filepath.Join(pluginDir, ".mcp.json"),
+		[]byte(`{"mcpServers": {"srv": {"command": "from-file"}}}`), 0644)
+	inline := json.RawMessage(`{"srv": {"command": "from-inline"}}`)
+
+	configs, err := discoverPluginMCPConfigs(pluginDir, inline, "shadow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(configs) != 1 {
+		t.Fatalf("got %d configs, want 1", len(configs))
+	}
+	// Inline should shadow file (inline is higher priority)
+	if configs[0].Command != "from-inline" {
+		t.Errorf("Command = %q, want from-inline (inline shadows file)", configs[0].Command)
+	}
+}
+
+func TestLoadPlugin_WithMCPConfigs(t *testing.T) {
+	dir := makePluginDir(t, "mcp-plugin")
+	os.WriteFile(filepath.Join(dir, ".mcp.json"),
+		[]byte(`{"mcpServers": {"my-mcp": {"command": "mcp-server"}}}`), 0644)
+
+	plugin, err := LoadPlugin(dir)
+	if err != nil {
+		t.Fatalf("LoadPlugin: %v", err)
+	}
+	if len(plugin.MCPConfigs) != 1 {
+		t.Fatalf("got %d MCP configs, want 1", len(plugin.MCPConfigs))
+	}
+	if plugin.MCPConfigs[0].Name != "plugin_mcp-plugin_my-mcp" {
+		t.Errorf("Name = %q", plugin.MCPConfigs[0].Name)
+	}
+	if plugin.MCPConfigs[0].Command != "mcp-server" {
+		t.Errorf("Command = %q", plugin.MCPConfigs[0].Command)
+	}
+}
+
+func TestLoadPlugin_WithInlineMCPServers(t *testing.T) {
+	dir := makePluginDir(t, "inline-mcp")
+	// Overwrite manifest with inline mcpServers
+	metaDir := filepath.Join(dir, ".claude-plugin")
+	manifest := `{"name": "inline-mcp", "mcpServers": {"isrv": {"command": "inline-server"}}}`
+	os.WriteFile(filepath.Join(metaDir, "plugin.json"), []byte(manifest), 0644)
+
+	plugin, err := LoadPlugin(dir)
+	if err != nil {
+		t.Fatalf("LoadPlugin: %v", err)
+	}
+	if len(plugin.MCPConfigs) != 1 {
+		t.Fatalf("got %d MCP configs, want 1", len(plugin.MCPConfigs))
+	}
+	if plugin.MCPConfigs[0].Name != "plugin_inline-mcp_isrv" {
+		t.Errorf("Name = %q", plugin.MCPConfigs[0].Name)
 	}
 }
