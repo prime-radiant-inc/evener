@@ -2,8 +2,6 @@ package agent
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,8 +24,7 @@ const (
 
 // webFetchCacheKey returns a deterministic 16-char hex key for a URL.
 func webFetchCacheKey(rawURL string) string {
-	sum := sha256.Sum256([]byte(rawURL))
-	return hex.EncodeToString(sum[:8])
+	return hexHash(rawURL)
 }
 
 // htmlToMarkdown converts an HTML string to markdown.

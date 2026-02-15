@@ -8,23 +8,23 @@ import (
 )
 
 func TestProjectHash_Deterministic(t *testing.T) {
-	h1 := projectHash("https://github.com/example/repo.git")
-	h2 := projectHash("https://github.com/example/repo.git")
+	h1 := hexHash("https://github.com/example/repo.git")
+	h2 := hexHash("https://github.com/example/repo.git")
 	if h1 != h2 {
 		t.Fatalf("same input produced different hashes: %q vs %q", h1, h2)
 	}
 }
 
 func TestProjectHash_DifferentInputs(t *testing.T) {
-	h1 := projectHash("https://github.com/example/repo.git")
-	h2 := projectHash("https://github.com/other/repo.git")
+	h1 := hexHash("https://github.com/example/repo.git")
+	h2 := hexHash("https://github.com/other/repo.git")
 	if h1 == h2 {
 		t.Fatalf("different inputs produced same hash: %q", h1)
 	}
 }
 
 func TestProjectHash_Length(t *testing.T) {
-	h := projectHash("any-string")
+	h := hexHash("any-string")
 	if len(h) != 16 {
 		t.Fatalf("expected 16-char hex hash, got %d chars: %q", len(h), h)
 	}
@@ -36,7 +36,7 @@ func TestRuntimeDir_GitOrigin(t *testing.T) {
 
 	origin := "https://github.com/example/repo.git"
 	got := RuntimeDir(origin, "/some/work/dir", "")
-	want := filepath.Join(xdg, "serf", "projects", projectHash(origin))
+	want := filepath.Join(xdg, "serf", "projects", hexHash(origin))
 	if got != want {
 		t.Fatalf("RuntimeDir with origin:\n  got  %q\n  want %q", got, want)
 	}
@@ -48,7 +48,7 @@ func TestRuntimeDir_NoGit(t *testing.T) {
 
 	workDir := "/home/user/my-project"
 	got := RuntimeDir("", workDir, "")
-	want := filepath.Join(xdg, "serf", "projects", projectHash(workDir))
+	want := filepath.Join(xdg, "serf", "projects", hexHash(workDir))
 	if got != want {
 		t.Fatalf("RuntimeDir without origin:\n  got  %q\n  want %q", got, want)
 	}

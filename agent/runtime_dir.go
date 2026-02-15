@@ -20,7 +20,7 @@ func RuntimeDir(originURL, workDir, overrideDir string) string {
 	if key == "" {
 		key = workDir
 	}
-	return filepath.Join(base, "serf", "projects", projectHash(key))
+	return filepath.Join(base, "serf", "projects", hexHash(key))
 }
 
 // CacheDir returns the global cache directory: $XDG_CACHE_HOME/serf/
@@ -28,8 +28,8 @@ func CacheDir() string {
 	return filepath.Join(xdgCacheHome(), "serf")
 }
 
-// projectHash returns SHA256(input)[:16] as hex (16 hex chars = 8 bytes).
-func projectHash(input string) string {
+// hexHash returns SHA256(input)[:8] as hex (16 hex chars).
+func hexHash(input string) string {
 	sum := sha256.Sum256([]byte(input))
 	return hex.EncodeToString(sum[:8])
 }
