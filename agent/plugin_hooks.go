@@ -8,7 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
+
+	"primeradiant.com/serf/llm"
 )
 
 // HookEvent identifies when a hook fires.
@@ -252,4 +255,66 @@ func executeCommandHook(ctx context.Context, hook RegisteredHook, input HookInpu
 	}
 
 	return result, nil
+}
+
+// PromptHookClient is the interface for LLM calls used by prompt hooks.
+type PromptHookClient interface {
+	Generate(ctx context.Context, req llm.Request) (llm.Response, error)
+}
+
+// substituteHookVariables replaces $TOOL_INPUT, $TOOL_RESULT, $USER_PROMPT,
+// and $TOOL_NAME placeholders in a prompt string with values from the input.
+func substituteHookVariables(prompt string, input HookInput) string {
+	// $TOOL_INPUT -> JSON-encoded ToolInput or "null"
+	toolInputStr := "null"
+	if input.ToolInput != nil {
+		if b, err := json.Marshal(input.ToolInput); err == nil {
+			toolInputStr = string(b)
+		}
+	}
+
+	// $TOOL_RESULT -> ToolResult or "null"
+	toolResultStr := "null"
+	if input.ToolResult != "" {
+		toolResultStr = input.ToolResult
+	}
+
+	// $USER_PROMPT -> UserPrompt or "null"
+	userPromptStr := "null"
+	if input.UserPrompt != "" {
+		userPromptStr = input.UserPrompt
+	}
+
+	r := strings.NewReplacer(
+		"$TOOL_INPUT", toolInputStr,
+		"$TOOL_RESULT", toolResultStr,
+		"$USER_PROMPT", userPromptStr,
+		"$TOOL_NAME", input.ToolName,
+	)
+	return r.Replace(prompt)
+}
+
+// executePromptHook runs a prompt hook by calling the LLM with the substituted prompt.
+func executePromptHook(ctx context.Context, client PromptHookClient, model string, hook RegisteredHook, input HookInput) (HookResult, error) {
+	prompt := substituteHookVariables(hook.Prompt, input)
+
+	reqModel := model
+	if hook.Model != "" {
+		reqModel = hook.Model
+	}
+
+	req := llm.Request{
+		Model: reqModel,
+		Messages: []llm.Message{
+			llm.User(prompt),
+		},
+	}
+
+	resp, err := client.Generate(ctx, req)
+	if err != nil {
+		return HookResult{}, fmt.Errorf("prompt hook LLM call: %w", err)
+	}
+
+	text := resp.Message.Text()
+	return HookResult{Stdout: text, ExitCode: 0}, nil
 }

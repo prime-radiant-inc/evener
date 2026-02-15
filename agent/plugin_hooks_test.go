@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/llm"
 )
 
 func TestParsePluginHooks_WrapperFormat(t *testing.T) {
@@ -343,6 +345,114 @@ func TestExecuteCommandHook_Environment(t *testing.T) {
 	}
 	if !strings.Contains(result.Stdout, "PROJECT=/my/project") {
 		t.Errorf("stdout should contain PROJECT=/my/project, got %q", result.Stdout)
+	}
+}
+
+// --- Task 9: Prompt Hook Execution ---
+
+type mockPromptHookClient struct {
+	response string
+	err      error
+	lastReq  llm.Request // captured for inspection
+}
+
+func (m *mockPromptHookClient) Generate(ctx context.Context, req llm.Request) (llm.Response, error) {
+	m.lastReq = req
+	if m.err != nil {
+		return llm.Response{}, m.err
+	}
+	return llm.Response{
+		Message: llm.Message{
+			Role:    llm.RoleAssistant,
+			Content: []llm.ContentPart{{Kind: llm.ContentText, Text: m.response}},
+		},
+	}, nil
+}
+
+func TestSubstituteHookVariables(t *testing.T) {
+	input := HookInput{
+		ToolName:   "Write",
+		ToolInput:  map[string]any{"file": "test.go", "content": "hello"},
+		ToolResult: "file written successfully",
+		UserPrompt: "write a test",
+	}
+
+	prompt := "Tool: $TOOL_NAME, Input: $TOOL_INPUT, Result: $TOOL_RESULT, Prompt: $USER_PROMPT"
+	result := substituteHookVariables(prompt, input)
+
+	if !strings.Contains(result, "Tool: Write") {
+		t.Errorf("expected TOOL_NAME substitution, got %q", result)
+	}
+	if !strings.Contains(result, `"file":"test.go"`) {
+		t.Errorf("expected TOOL_INPUT JSON substitution, got %q", result)
+	}
+	if !strings.Contains(result, "Result: file written successfully") {
+		t.Errorf("expected TOOL_RESULT substitution, got %q", result)
+	}
+	if !strings.Contains(result, "Prompt: write a test") {
+		t.Errorf("expected USER_PROMPT substitution, got %q", result)
+	}
+}
+
+func TestSubstituteHookVariables_EmptyValues(t *testing.T) {
+	input := HookInput{} // all zero values
+
+	prompt := "Tool: $TOOL_NAME, Input: $TOOL_INPUT, Result: $TOOL_RESULT, Prompt: $USER_PROMPT"
+	result := substituteHookVariables(prompt, input)
+
+	if !strings.Contains(result, "Tool: ") {
+		t.Errorf("expected empty TOOL_NAME, got %q", result)
+	}
+	if !strings.Contains(result, "Input: null") {
+		t.Errorf("expected null TOOL_INPUT, got %q", result)
+	}
+	if !strings.Contains(result, "Result: null") {
+		t.Errorf("expected null TOOL_RESULT, got %q", result)
+	}
+	if !strings.Contains(result, "Prompt: null") {
+		t.Errorf("expected null USER_PROMPT, got %q", result)
+	}
+}
+
+func TestExecutePromptHook(t *testing.T) {
+	client := &mockPromptHookClient{response: "approve"}
+	hook := RegisteredHook{
+		Type:    "prompt",
+		Prompt:  "Check $TOOL_NAME usage",
+		Timeout: 30,
+	}
+	input := HookInput{
+		ToolName:      "Write",
+		HookEventName: "PreToolUse",
+	}
+
+	result, err := executePromptHook(context.Background(), client, "default-model", hook, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Stdout != "approve" {
+		t.Errorf("Stdout = %q, want %q", result.Stdout, "approve")
+	}
+	if result.ExitCode != 0 {
+		t.Errorf("ExitCode = %d, want 0", result.ExitCode)
+	}
+}
+
+func TestExecutePromptHook_UsesHookModel(t *testing.T) {
+	client := &mockPromptHookClient{response: "ok"}
+	hook := RegisteredHook{
+		Type:   "prompt",
+		Prompt: "check",
+		Model:  "custom-model-v2",
+	}
+	input := HookInput{HookEventName: "PreToolUse"}
+
+	_, err := executePromptHook(context.Background(), client, "default-model", hook, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if client.lastReq.Model != "custom-model-v2" {
+		t.Errorf("Model = %q, want %q", client.lastReq.Model, "custom-model-v2")
 	}
 }
 
