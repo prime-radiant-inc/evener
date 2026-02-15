@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -315,7 +316,7 @@ func compileSchema(params map[string]any) (*jsonschema.Schema, error) {
 		return nil, err
 	}
 	c := jsonschema.NewCompiler()
-	if err := c.AddResource("schema.json", strings.NewReader(string(b))); err != nil {
+	if err := c.AddResource("schema.json", bytes.NewReader(b)); err != nil {
 		return nil, err
 	}
 	return c.Compile("schema.json")
