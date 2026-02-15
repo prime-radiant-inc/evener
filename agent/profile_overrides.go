@@ -139,10 +139,11 @@ func defCommunicateWithRequiredDataKeys(requiredKeys []string) llm.ToolDefinitio
 	return td
 }
 
+func stringArraySchema() map[string]any {
+	return map[string]any{"type": "array", "items": map[string]any{"type": "string"}}
+}
+
 func componentsSchema() map[string]any {
-	stringArray := func() map[string]any {
-		return map[string]any{"type": "array", "items": map[string]any{"type": "string"}}
-	}
 	return map[string]any{
 		"type": "array",
 		"items": map[string]any{
@@ -152,17 +153,17 @@ func componentsSchema() map[string]any {
 				"id":              map[string]any{"type": "string"},
 				"name":            map[string]any{"type": "string"},
 				"spec_slice":      map[string]any{"type": "string"},
-				"relevant_stories": stringArray(),
+				"relevant_stories": stringArraySchema(),
 				"interfaces": map[string]any{
 					"type":                 "object",
 					"additionalProperties": false,
 					"properties": map[string]any{
-						"exposes":  stringArray(),
-						"consumes": stringArray(),
+						"exposes":  stringArraySchema(),
+						"consumes": stringArraySchema(),
 					},
 					"required": []string{"exposes", "consumes"},
 				},
-				"dependencies": stringArray(),
+				"dependencies": stringArraySchema(),
 			},
 			"required": []string{"id", "name", "spec_slice", "relevant_stories", "interfaces", "dependencies"},
 		},
@@ -170,9 +171,6 @@ func componentsSchema() map[string]any {
 }
 
 func tasksSchema() map[string]any {
-	stringArray := func() map[string]any {
-		return map[string]any{"type": "array", "items": map[string]any{"type": "string"}}
-	}
 	return map[string]any{
 		"type": "array",
 		"items": map[string]any{
@@ -181,10 +179,10 @@ func tasksSchema() map[string]any {
 			"properties": map[string]any{
 				"id":                map[string]any{"type": "string"},
 				"name":              map[string]any{"type": "string"},
-				"steps":             stringArray(),
-				"files":             stringArray(),
-				"acceptance_criteria": stringArray(),
-				"dependencies":       stringArray(),
+				"steps":             stringArraySchema(),
+				"files":             stringArraySchema(),
+				"acceptance_criteria": stringArraySchema(),
+				"dependencies":       stringArraySchema(),
 			},
 			"required": []string{"id", "name", "steps", "files", "acceptance_criteria", "dependencies"},
 		},
