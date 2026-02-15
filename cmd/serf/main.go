@@ -75,7 +75,7 @@ func main() {
 	isResume := *resume != "" || *resumeWith != "" || *resumeLast || *listSessionsFlag
 	stat, _ := os.Stdin.Stat()
 	stdinIsCharDevice := stat != nil && (stat.Mode()&os.ModeCharDevice) != 0
-	task := readTaskFromArgsOrStdin(flag.Args(), isResume, *listSessionsFlag, os.Stdin, stdinIsCharDevice)
+	task := readTaskFromArgsOrStdin(flag.Args(), *listSessionsFlag, os.Stdin, stdinIsCharDevice)
 
 	if task == "" && !isResume {
 		flag.Usage()

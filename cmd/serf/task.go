@@ -5,8 +5,7 @@ import (
 	"strings"
 )
 
-func readTaskFromArgsOrStdin(args []string, isResume bool, listSessions bool, stdin io.Reader, stdinIsCharDevice bool) string {
-	_ = isResume // kept for clarity at callsites
+func readTaskFromArgsOrStdin(args []string, listSessions bool, stdin io.Reader, stdinIsCharDevice bool) string {
 	task := strings.TrimSpace(strings.Join(args, " "))
 	if task != "" {
 		return task
