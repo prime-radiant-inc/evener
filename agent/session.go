@@ -793,6 +793,11 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 
 		sys := s.profile.BuildSystemPrompt(s.envInfo, docs, skillList, extraTools.String())
 
+		// Add plugin agents section if any are available.
+		if agentSection := FormatPluginAgentsPrompt(s.pluginAgents); agentSection != "" {
+			sys += agentSection
+		}
+
 		if strings.TrimSpace(s.cfg.UserInstructionOverride) != "" {
 			sys = sys + "\n\n" + strings.TrimSpace(s.cfg.UserInstructionOverride) + "\n"
 		}
