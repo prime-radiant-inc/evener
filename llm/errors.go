@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -190,9 +189,4 @@ func ParseRetryAfter(v string, now time.Time) *time.Duration {
 		return &d
 	}
 	return nil
-}
-
-func IsAuthenticationError(err error) bool {
-	var e *AuthenticationError
-	return errors.As(err, &e)
 }

@@ -46,16 +46,8 @@ func NewAbortError(message string) error {
 	return &AbortError{nonHTTPErrorBase{message: message, retryable: false}}
 }
 
-func NewNetworkError(provider, message string) error {
-	return &NetworkError{nonHTTPErrorBase{provider: provider, message: message, retryable: true}}
-}
-
 func NewStreamError(provider, message string) error {
 	return &StreamError{nonHTTPErrorBase{provider: provider, message: message, retryable: true}}
-}
-
-func NewInvalidToolCallError(message string) error {
-	return &InvalidToolCallError{nonHTTPErrorBase{message: message, retryable: false}}
 }
 
 func NewNoObjectGeneratedError(message string, rawText string) error {
