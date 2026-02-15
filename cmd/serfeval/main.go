@@ -201,7 +201,16 @@ func runEval(cfg evalConfig) error {
 	}
 
 	if cfg.output != "" {
-		return os.WriteFile(cfg.output, append(data, '\n'), 0o644)
+		if err := os.WriteFile(cfg.output, append(data, '\n'), 0o644); err != nil {
+			return err
+		}
+		// Save session snapshot alongside the output for post-hoc analysis.
+		snapPath := strings.TrimSuffix(cfg.output, ".json") + ".session.json"
+		snapData, snapErr := json.MarshalIndent(snap, "", "  ")
+		if snapErr == nil {
+			os.WriteFile(snapPath, append(snapData, '\n'), 0o644) //nolint:errcheck
+		}
+		return nil
 	}
 	fmt.Println(string(data))
 	return nil

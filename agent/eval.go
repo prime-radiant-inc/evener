@@ -16,6 +16,8 @@ type EvalMetrics struct {
 	TotalInputTokens  int      `json:"total_input_tokens"`
 	TotalOutputTokens int      `json:"total_output_tokens"`
 	TotalTokens       int      `json:"total_tokens"`
+	CacheReadTokens   int      `json:"cache_read_tokens"`
+	CacheWriteTokens  int      `json:"cache_write_tokens"`
 	RecallCalls       int      `json:"recall_calls"`
 	ForkSummaryCalls  int      `json:"fork_summary_calls"`
 	CompactionEvents  int      `json:"compaction_events"`
@@ -97,12 +99,24 @@ func (c *EvalCollector) addUsage(usage any) {
 	case llm.Usage:
 		c.metrics.TotalInputTokens += u.InputTokens
 		c.metrics.TotalOutputTokens += u.OutputTokens
+		if u.CacheReadTokens != nil {
+			c.metrics.CacheReadTokens += *u.CacheReadTokens
+		}
+		if u.CacheWriteTokens != nil {
+			c.metrics.CacheWriteTokens += *u.CacheWriteTokens
+		}
 	case map[string]any:
 		if v, ok := u["input_tokens"].(float64); ok {
 			c.metrics.TotalInputTokens += int(v)
 		}
 		if v, ok := u["output_tokens"].(float64); ok {
 			c.metrics.TotalOutputTokens += int(v)
+		}
+		if v, ok := u["cache_read_tokens"].(float64); ok {
+			c.metrics.CacheReadTokens += int(v)
+		}
+		if v, ok := u["cache_write_tokens"].(float64); ok {
+			c.metrics.CacheWriteTokens += int(v)
 		}
 	}
 }
