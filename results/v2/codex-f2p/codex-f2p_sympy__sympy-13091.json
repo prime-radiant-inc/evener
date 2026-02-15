@@ -1,0 +1,12 @@
+{
+  "task": "sympy__sympy-13091",
+  "strategy": "codex",
+  "model": "gpt-5.3-codex",
+  "resolved": false,
+  "test_exit_code": 1,
+  "test_output_tail": "============================= test session starts ==============================\ncollected 98 items\n\nsympy/core/tests/test_basic.py ................                          [ 16%]\nsympy/core/tests/test_numbers.py ....................................... [ 56%]\n.......................x..................F\n\n=================================== FAILURES ===================================\n_________________________ test_NumberSymbol_comparison _________________________\n\n    def test_NumberSymbol_comparison():\n        rpi = Rational('905502432259640373/288230376151711744')\n        fpi = Float(float(pi))\n    \n        assert (rpi == pi) == (pi == rpi)\n        assert (rpi != pi) == (pi != rpi)\n        assert (rpi < pi) == (pi > rpi)\n        assert (rpi <= pi) == (pi >= rpi)\n>       assert (rpi > pi) == (pi < rpi)\nE       assert (905502432259640373/288230376151711744 > pi) == (pi < 905502432259640373/288230376151711744)\n\nsympy/core/tests/test_numbers.py:1731: AssertionError\n=============================== warnings summary ===============================\nsympy/core/basic.py:3\n  /private/tmp/serfeval-v2/repos/sympy__sympy-13091/sympy/core/basic.py:3: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working\n    from collections import Mapping, defaultdict\n\nsympy/plotting/plot.py:28\n  /private/tmp/serfeval-v2/repos/sympy__sympy-13091/sympy/plotting/plot.py:28: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working\n    from collections import Callable\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n                                DO *NOT* COMMIT!                                \n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!\n============= 1 failed, 96 passed, 1 xfailed, 2 warnings in 0.77s ==============\n/Users/jesse/Library/Python/3.9/lib/python/site-packages/setuptools_scm/git.py:202: UserWarning: \"/private/tmp/serfeval-v2/repos/astropy__astropy-13398\" is shallow and may cause errors\n  warnings.warn(f'\"{wd.path}\" is shallow and may cause errors')\n",
+  "stripped_test_files": [
+    "sympy/core/tests/test_basic.py",
+    "sympy/core/tests/test_numbers.py"
+  ]
+}
