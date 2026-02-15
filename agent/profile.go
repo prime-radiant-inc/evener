@@ -533,6 +533,7 @@ func defSpawnAgent() llm.ToolDefinition {
 				"model":       map[string]any{"type": "string", "description": "Model override (default: parent model)"},
 				"working_dir": map[string]any{"type": "string", "description": "Subdirectory to scope the agent to"},
 				"max_turns":   map[string]any{"type": "integer", "description": "Turn limit for the subagent (default: 50)"},
+				"agent_type":  map[string]any{"type": "string", "description": "Plugin agent type (e.g. 'plugin-name:agent-name')"},
 			},
 			"required": []string{"task"},
 		},

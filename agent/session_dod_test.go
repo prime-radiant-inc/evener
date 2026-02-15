@@ -1131,7 +1131,7 @@ func TestSession_Subagents_SpawnWaitClose_AndDepthLimit(t *testing.T) {
 	if sub == nil || sub.sess == nil {
 		t.Fatalf("missing subagent session for %q", agentID)
 	}
-	if _, err := sub.sess.spawnAgent(context.Background(), "nested", "", "", 0); err == nil {
+	if _, err := sub.sess.spawnAgent(context.Background(), "nested", "", "", 0, ""); err == nil {
 		t.Fatalf("expected depth limit error, got nil")
 	}
 

@@ -1525,7 +1525,11 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			if v, ok := args["max_turns"].(float64); ok {
 				maxTurns = int(v)
 			}
-			return s.spawnAgent(ctx, task, model, workingDir, maxTurns)
+			agentType := ""
+			if v, ok := args["agent_type"]; ok && v != nil {
+				agentType = fmt.Sprint(v)
+			}
+			return s.spawnAgent(ctx, task, model, workingDir, maxTurns, agentType)
 		},
 	})
 	_ = reg.Register(RegisteredTool{

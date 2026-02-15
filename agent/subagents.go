@@ -38,7 +38,7 @@ type subagent struct {
 	err       error
 }
 
-func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string, maxTurns int) (any, error) {
+func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string, maxTurns int, agentType string) (any, error) {
 	s.mu.Lock()
 	depth := s.depth
 	maxDepth := s.cfg.MaxSubagentDepth
@@ -47,9 +47,23 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		return "", fmt.Errorf("subagent depth limit reached")
 	}
 
+	// Look up plugin agent configuration when agent_type is specified.
+	var agent *PluginAgent
+	if agentType = strings.TrimSpace(agentType); agentType != "" {
+		a, ok := s.pluginAgents[agentType]
+		if !ok {
+			return "", fmt.Errorf("unknown plugin agent type: %s", agentType)
+		}
+		agent = &a
+	}
+
 	subProfile := s.profile
 	if model = strings.TrimSpace(model); model != "" {
 		subProfile = s.profile.WithModel(model)
+	}
+	// Plugin agent model takes precedence (unless "inherit" or empty).
+	if agent != nil && agent.Model != "inherit" && agent.Model != "" {
+		subProfile = s.profile.WithModel(agent.Model)
 	}
 
 	subCfg := s.cfg
@@ -59,6 +73,10 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		subCfg.MaxTurns = maxTurns
 	} else {
 		subCfg.MaxTurns = 50
+	}
+	// Apply plugin agent system prompt.
+	if agent != nil && strings.TrimSpace(agent.SystemPrompt) != "" {
+		subCfg.UserInstructionOverride = agent.SystemPrompt
 	}
 
 	subEnv := s.env
@@ -75,6 +93,15 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		return "", err
 	}
 	subSess.depth = depth + 1
+
+	// Restrict subagent tools to the plugin agent's allow list.
+	if agent != nil && len(agent.Tools) > 0 {
+		allowed := make(map[string]bool, len(agent.Tools))
+		for _, t := range agent.Tools {
+			allowed[t] = true
+		}
+		subSess.reg.Restrict(allowed)
+	}
 
 	sub := &subagent{
 		id:     subSess.id,

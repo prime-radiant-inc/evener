@@ -121,6 +121,19 @@ func (r *ToolRegistry) Definitions() []llm.ToolDefinition {
 	return out
 }
 
+// Restrict removes all tools except those in the allowed set.
+// The "communicate" tool is always kept (subagents need it to return results).
+func (r *ToolRegistry) Restrict(allowed map[string]bool) {
+	allowed["communicate"] = true
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for name := range r.tools {
+		if !allowed[name] {
+			delete(r.tools, name)
+		}
+	}
+}
+
 func (r *ToolRegistry) Unregister(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
