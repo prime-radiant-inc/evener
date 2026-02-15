@@ -449,53 +449,6 @@ func TestResolveComponentDirs_MissingDefaultDir(t *testing.T) {
 	}
 }
 
-func TestExpandPluginRootInConfig(t *testing.T) {
-	cfg := MCPServerConfig{
-		Name:    "test",
-		Command: "${CLAUDE_PLUGIN_ROOT}/bin/server",
-		Args:    []string{"--config", "${CLAUDE_PLUGIN_ROOT}/config.json"},
-		Env:     map[string]string{"HOME": "${CLAUDE_PLUGIN_ROOT}"},
-		URL:     "${CLAUDE_PLUGIN_ROOT}/api",
-		Headers: map[string]string{"X-Root": "${CLAUDE_PLUGIN_ROOT}"},
-	}
-	result := expandPluginRootInConfig(cfg, "/plugins/my-plugin")
-	if result.Command != "/plugins/my-plugin/bin/server" {
-		t.Errorf("Command = %q", result.Command)
-	}
-	if result.Args[0] != "--config" {
-		t.Errorf("Args[0] = %q, want --config", result.Args[0])
-	}
-	if result.Args[1] != "/plugins/my-plugin/config.json" {
-		t.Errorf("Args[1] = %q", result.Args[1])
-	}
-	if result.Env["HOME"] != "/plugins/my-plugin" {
-		t.Errorf("Env[HOME] = %q", result.Env["HOME"])
-	}
-	if result.URL != "/plugins/my-plugin/api" {
-		t.Errorf("URL = %q", result.URL)
-	}
-	if result.Headers["X-Root"] != "/plugins/my-plugin" {
-		t.Errorf("Headers[X-Root] = %q", result.Headers["X-Root"])
-	}
-}
-
-func TestExpandPluginRootInConfig_NilMaps(t *testing.T) {
-	cfg := MCPServerConfig{
-		Name:    "test",
-		Command: "${CLAUDE_PLUGIN_ROOT}/bin/server",
-	}
-	result := expandPluginRootInConfig(cfg, "/plugins/x")
-	if result.Command != "/plugins/x/bin/server" {
-		t.Errorf("Command = %q", result.Command)
-	}
-	if result.Env != nil {
-		t.Errorf("Env should be nil, got %v", result.Env)
-	}
-	if result.Headers != nil {
-		t.Errorf("Headers should be nil, got %v", result.Headers)
-	}
-}
-
 func TestDiscoverPluginMCPConfigs_FromFile(t *testing.T) {
 	pluginDir := t.TempDir()
 	pluginDir, _ = filepath.EvalSymlinks(pluginDir)

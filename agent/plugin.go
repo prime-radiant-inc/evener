@@ -85,35 +85,6 @@ func discoverPluginSkills(pluginDir, pluginName string) map[string]SkillMeta {
 	return namespaced
 }
 
-// expandPluginRootInConfig replaces ${CLAUDE_PLUGIN_ROOT} with pluginDir
-// in all string fields of an MCPServerConfig.
-func expandPluginRootInConfig(cfg MCPServerConfig, pluginDir string) MCPServerConfig {
-	cfg.Command = expandPluginRoot(cfg.Command, pluginDir)
-	if len(cfg.Args) > 0 {
-		args := make([]string, len(cfg.Args))
-		for i, a := range cfg.Args {
-			args[i] = expandPluginRoot(a, pluginDir)
-		}
-		cfg.Args = args
-	}
-	if len(cfg.Env) > 0 {
-		env := make(map[string]string, len(cfg.Env))
-		for k, v := range cfg.Env {
-			env[k] = expandPluginRoot(v, pluginDir)
-		}
-		cfg.Env = env
-	}
-	cfg.URL = expandPluginRoot(cfg.URL, pluginDir)
-	if len(cfg.Headers) > 0 {
-		headers := make(map[string]string, len(cfg.Headers))
-		for k, v := range cfg.Headers {
-			headers[k] = expandPluginRoot(v, pluginDir)
-		}
-		cfg.Headers = headers
-	}
-	return cfg
-}
-
 // discoverPluginMCPConfigs reads MCP server configs from a plugin's .mcp.json
 // file and/or inline manifest mcpServers field. Server names are prefixed with
 // "plugin_<pluginName>_" and ${CLAUDE_PLUGIN_ROOT} is expanded to pluginDir.
