@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -183,5 +185,197 @@ func TestExpandPluginRoot(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("expandPluginRoot(%q, %q) = %q, want %q", tt.input, tt.pluginDir, got, tt.want)
 		}
+	}
+}
+
+// makePluginDir creates a temp dir with a .claude-plugin/plugin.json manifest.
+// Returns the resolved (EvalSymlinks) path to the plugin dir.
+func makePluginDir(t *testing.T, name string) string {
+	t.Helper()
+	dir := t.TempDir()
+	dir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	metaDir := filepath.Join(dir, ".claude-plugin")
+	if err := os.MkdirAll(metaDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	manifest := `{"name": "` + name + `"}`
+	if err := os.WriteFile(filepath.Join(metaDir, "plugin.json"), []byte(manifest), 0644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	return dir
+}
+
+func TestLoadPlugin_Valid(t *testing.T) {
+	dir := makePluginDir(t, "test-plugin")
+	lp, err := LoadPlugin(dir)
+	if err != nil {
+		t.Fatalf("LoadPlugin: %v", err)
+	}
+	if lp.Manifest.Name != "test-plugin" {
+		t.Errorf("Name = %q, want %q", lp.Manifest.Name, "test-plugin")
+	}
+	if lp.Dir != dir {
+		t.Errorf("Dir = %q, want %q", lp.Dir, dir)
+	}
+	// Dir should be absolute
+	if !filepath.IsAbs(lp.Dir) {
+		t.Errorf("Dir %q is not absolute", lp.Dir)
+	}
+}
+
+func TestLoadPlugin_MissingManifest(t *testing.T) {
+	dir := t.TempDir()
+	_, err := LoadPlugin(dir)
+	if err == nil {
+		t.Fatal("expected error for missing manifest")
+	}
+}
+
+func TestLoadPlugin_NonExistentDir(t *testing.T) {
+	_, err := LoadPlugin("/nonexistent/path/that/does/not/exist")
+	if err == nil {
+		t.Fatal("expected error for non-existent dir")
+	}
+}
+
+func TestLoadPlugins_Multiple(t *testing.T) {
+	dir1 := makePluginDir(t, "plugin-a")
+	dir2 := makePluginDir(t, "plugin-b")
+
+	plugins, err := LoadPlugins([]string{dir1, dir2})
+	if err != nil {
+		t.Fatalf("LoadPlugins: %v", err)
+	}
+	if len(plugins) != 2 {
+		t.Fatalf("got %d plugins, want 2", len(plugins))
+	}
+	if plugins[0].Manifest.Name != "plugin-a" {
+		t.Errorf("plugins[0].Name = %q, want %q", plugins[0].Manifest.Name, "plugin-a")
+	}
+	if plugins[1].Manifest.Name != "plugin-b" {
+		t.Errorf("plugins[1].Name = %q, want %q", plugins[1].Manifest.Name, "plugin-b")
+	}
+}
+
+func TestLoadPlugins_DuplicateName(t *testing.T) {
+	dir1 := makePluginDir(t, "same-name")
+	dir2 := makePluginDir(t, "same-name")
+
+	_, err := LoadPlugins([]string{dir1, dir2})
+	if err == nil {
+		t.Fatal("expected error for duplicate plugin name")
+	}
+	if !strings.Contains(err.Error(), "same-name") {
+		t.Errorf("error %q should mention duplicate name", err.Error())
+	}
+}
+
+func TestLoadPlugins_Empty(t *testing.T) {
+	plugins, err := LoadPlugins(nil)
+	if err != nil {
+		t.Fatalf("LoadPlugins(nil): %v", err)
+	}
+	if len(plugins) != 0 {
+		t.Errorf("got %d plugins, want 0", len(plugins))
+	}
+}
+
+func TestResolveComponentDirs_DefaultOnly(t *testing.T) {
+	dir := t.TempDir()
+	dir, _ = filepath.EvalSymlinks(dir)
+	// Create the default "commands" subdir
+	defaultDir := filepath.Join(dir, "commands")
+	if err := os.MkdirAll(defaultDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	dirs := resolveComponentDirs(dir, "commands", nil)
+	if len(dirs) != 1 {
+		t.Fatalf("got %d dirs, want 1", len(dirs))
+	}
+	if dirs[0] != defaultDir {
+		t.Errorf("dirs[0] = %q, want %q", dirs[0], defaultDir)
+	}
+}
+
+func TestResolveComponentDirs_DefaultPlusCustomString(t *testing.T) {
+	dir := t.TempDir()
+	dir, _ = filepath.EvalSymlinks(dir)
+	// Create both default and custom dirs
+	defaultDir := filepath.Join(dir, "commands")
+	customDir := filepath.Join(dir, "my-cmds")
+	os.MkdirAll(defaultDir, 0755)
+	os.MkdirAll(customDir, 0755)
+
+	dirs := resolveComponentDirs(dir, "commands", "./my-cmds")
+	if len(dirs) != 2 {
+		t.Fatalf("got %d dirs, want 2: %v", len(dirs), dirs)
+	}
+	if dirs[0] != defaultDir {
+		t.Errorf("dirs[0] = %q, want %q", dirs[0], defaultDir)
+	}
+	if dirs[1] != customDir {
+		t.Errorf("dirs[1] = %q, want %q", dirs[1], customDir)
+	}
+}
+
+func TestResolveComponentDirs_DefaultPlusCustomArray(t *testing.T) {
+	dir := t.TempDir()
+	dir, _ = filepath.EvalSymlinks(dir)
+	defaultDir := filepath.Join(dir, "agents")
+	custom1 := filepath.Join(dir, "extra1")
+	custom2 := filepath.Join(dir, "extra2")
+	os.MkdirAll(defaultDir, 0755)
+	os.MkdirAll(custom1, 0755)
+	os.MkdirAll(custom2, 0755)
+
+	override := []any{"./extra1", "./extra2"}
+	dirs := resolveComponentDirs(dir, "agents", override)
+	if len(dirs) != 3 {
+		t.Fatalf("got %d dirs, want 3: %v", len(dirs), dirs)
+	}
+	if dirs[0] != defaultDir {
+		t.Errorf("dirs[0] = %q, want %q", dirs[0], defaultDir)
+	}
+	if dirs[1] != custom1 {
+		t.Errorf("dirs[1] = %q, want %q", dirs[1], custom1)
+	}
+	if dirs[2] != custom2 {
+		t.Errorf("dirs[2] = %q, want %q", dirs[2], custom2)
+	}
+}
+
+func TestResolveComponentDirs_CustomDirDoesNotExist(t *testing.T) {
+	dir := t.TempDir()
+	dir, _ = filepath.EvalSymlinks(dir)
+
+	// No default dir, custom doesn't exist either — caller decides what to do
+	dirs := resolveComponentDirs(dir, "commands", "./nonexistent")
+	if len(dirs) != 1 {
+		t.Fatalf("got %d dirs, want 1: %v", len(dirs), dirs)
+	}
+	expected := filepath.Join(dir, "nonexistent")
+	if dirs[0] != expected {
+		t.Errorf("dirs[0] = %q, want %q", dirs[0], expected)
+	}
+}
+
+func TestResolveComponentDirs_MissingDefaultDir(t *testing.T) {
+	dir := t.TempDir()
+	dir, _ = filepath.EvalSymlinks(dir)
+	// Don't create the default dir, but create a custom one
+	customDir := filepath.Join(dir, "my-agents")
+	os.MkdirAll(customDir, 0755)
+
+	dirs := resolveComponentDirs(dir, "agents", "./my-agents")
+	// Default doesn't exist on disk, so only custom is returned
+	if len(dirs) != 1 {
+		t.Fatalf("got %d dirs, want 1: %v", len(dirs), dirs)
+	}
+	if dirs[0] != customDir {
+		t.Errorf("dirs[0] = %q, want %q", dirs[0], customDir)
 	}
 }
