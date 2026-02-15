@@ -61,17 +61,7 @@ func NewFromEnv() (*Adapter, error) {
 
 func (a *Adapter) Name() string { return "google" }
 
-func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
-	if a.Client == nil {
-		// Avoid short client-level timeouts; rely on request context deadlines instead.
-		a.Client = &http.Client{Timeout: 0}
-	}
-
-	system, contents, err := toGeminiContents(req.Messages)
-	if err != nil {
-		return llm.Response{}, err
-	}
-
+func (a *Adapter) buildRequestBody(req llm.Request, system string, contents []map[string]any) (map[string]any, error) {
 	genCfg := map[string]any{}
 	if req.Temperature != nil {
 		genCfg["temperature"] = *req.Temperature
@@ -92,8 +82,6 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		case "json_schema":
 			genCfg["responseMimeType"] = "application/json"
 			if req.ResponseFormat.JSONSchema != nil {
-				// Gemini's Schema is a restricted subset; strip JSON-schema-only fields
-				// (e.g., additionalProperties) so requests don't fail validation.
 				genCfg["responseSchema"] = sanitizeGeminiSchema(req.ResponseFormat.JSONSchema)
 			}
 		}
@@ -124,7 +112,6 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 			})
 		}
 		// Gemini does not support google_search combined with functionDeclarations.
-		// Only include google_search when no function tools are present.
 		if req.WebSearch && len(req.Tools) == 0 {
 			toolEntries = append(toolEntries, map[string]any{
 				"google_search": map[string]any{},
@@ -144,16 +131,15 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 			cfg["mode"] = "ANY"
 		case "named":
 			if strings.TrimSpace(req.ToolChoice.Name) == "" {
-				return llm.Response{}, &llm.ConfigurationError{Message: "tool_choice mode=named requires name"}
+				return nil, &llm.ConfigurationError{Message: "tool_choice mode=named requires name"}
 			}
 			cfg["mode"] = "ANY"
 			cfg["allowedFunctionNames"] = []string{req.ToolChoice.Name}
 		default:
-			return llm.Response{}, llm.NewUnsupportedToolChoiceError("google", req.ToolChoice.Mode)
+			return nil, llm.NewUnsupportedToolChoiceError("google", req.ToolChoice.Mode)
 		}
 		body["toolConfig"] = map[string]any{"functionCallingConfig": cfg}
 	}
-	// provider_options escape hatch (unified-llm spec).
 	if req.ProviderOptions != nil {
 		if ov, ok := req.ProviderOptions["google"].(map[string]any); ok {
 			for k, v := range ov {
@@ -165,6 +151,23 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 				body[k] = v
 			}
 		}
+	}
+	return body, nil
+}
+
+func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	if a.Client == nil {
+		a.Client = &http.Client{Timeout: 0}
+	}
+
+	system, contents, err := toGeminiContents(req.Messages)
+	if err != nil {
+		return llm.Response{}, err
+	}
+
+	body, err := a.buildRequestBody(req, system, contents)
+	if err != nil {
+		return llm.Response{}, err
 	}
 
 	b, err := json.Marshal(body)
@@ -230,100 +233,10 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		return nil, err
 	}
 
-	genCfg := map[string]any{}
-	if req.Temperature != nil {
-		genCfg["temperature"] = *req.Temperature
-	}
-	if req.TopP != nil {
-		genCfg["topP"] = *req.TopP
-	}
-	if req.MaxTokens != nil && *req.MaxTokens > 0 {
-		genCfg["maxOutputTokens"] = *req.MaxTokens
-	}
-	if len(req.StopSequences) > 0 {
-		genCfg["stopSequences"] = req.StopSequences
-	}
-	if req.ResponseFormat != nil {
-		switch strings.ToLower(strings.TrimSpace(req.ResponseFormat.Type)) {
-		case "json":
-			genCfg["responseMimeType"] = "application/json"
-		case "json_schema":
-			genCfg["responseMimeType"] = "application/json"
-			if req.ResponseFormat.JSONSchema != nil {
-				// Gemini's Schema is a restricted subset; strip JSON-schema-only fields
-				// (e.g., additionalProperties) so requests don't fail validation.
-				genCfg["responseSchema"] = sanitizeGeminiSchema(req.ResponseFormat.JSONSchema)
-			}
-		}
-	}
-	if req.ReasoningEffort != nil {
-		budget := llm.ReasoningBudget(*req.ReasoningEffort)
-		if budget > 0 {
-			genCfg["thinkingConfig"] = map[string]any{
-				"thinkingBudget": budget,
-			}
-		}
-	}
-
-	body := map[string]any{
-		"contents":         contents,
-		"generationConfig": genCfg,
-	}
-	if strings.TrimSpace(system) != "" {
-		body["systemInstruction"] = map[string]any{
-			"parts": []map[string]any{{"text": system}},
-		}
-	}
-	if len(req.Tools) > 0 || req.WebSearch {
-		var toolEntries []map[string]any
-		if len(req.Tools) > 0 {
-			toolEntries = append(toolEntries, map[string]any{
-				"functionDeclarations": toGeminiFunctionDecls(req.Tools),
-			})
-		}
-		// Gemini does not support google_search combined with functionDeclarations.
-		// Only include google_search when no function tools are present.
-		if req.WebSearch && len(req.Tools) == 0 {
-			toolEntries = append(toolEntries, map[string]any{
-				"google_search": map[string]any{},
-			})
-		}
-		body["tools"] = toolEntries
-	}
-	if req.ToolChoice != nil {
-		mode := strings.ToLower(strings.TrimSpace(req.ToolChoice.Mode))
-		cfg := map[string]any{}
-		switch mode {
-		case "", "auto":
-			cfg["mode"] = "AUTO"
-		case "none":
-			cfg["mode"] = "NONE"
-		case "required":
-			cfg["mode"] = "ANY"
-		case "named":
-			if strings.TrimSpace(req.ToolChoice.Name) == "" {
-				cancel()
-				return nil, &llm.ConfigurationError{Message: "tool_choice mode=named requires name"}
-			}
-			cfg["mode"] = "ANY"
-			cfg["allowedFunctionNames"] = []string{req.ToolChoice.Name}
-		default:
-			cancel()
-			return nil, llm.NewUnsupportedToolChoiceError("google", req.ToolChoice.Mode)
-		}
-		body["toolConfig"] = map[string]any{"functionCallingConfig": cfg}
-	}
-	if req.ProviderOptions != nil {
-		if ov, ok := req.ProviderOptions["google"].(map[string]any); ok {
-			for k, v := range ov {
-				body[k] = v
-			}
-		}
-		if ov, ok := req.ProviderOptions["gemini"].(map[string]any); ok {
-			for k, v := range ov {
-				body[k] = v
-			}
-		}
+	body, err := a.buildRequestBody(req, system, contents)
+	if err != nil {
+		cancel()
+		return nil, err
 	}
 
 	b, err := json.Marshal(body)

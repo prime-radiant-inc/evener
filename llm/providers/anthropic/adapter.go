@@ -54,19 +54,17 @@ func NewFromEnv() (*Adapter, error) {
 
 func (a *Adapter) Name() string { return "anthropic" }
 
-func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
-	if a.Client == nil {
-		// Avoid short client-level timeouts; rely on request context deadlines instead.
-		a.Client = &http.Client{Timeout: 0}
-	}
-
+// buildRequestBody constructs the Anthropic Messages API request body from a
+// unified llm.Request. It returns the body map and the autoCache flag (needed
+// for header selection).
+func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, bool, error) {
 	system, messages, err := toAnthropicMessages(req.Messages)
 	if err != nil {
-		return llm.Response{}, err
+		return nil, false, err
 	}
 	system, err = applyAnthropicResponseFormat(system, req.ResponseFormat)
 	if err != nil {
-		return llm.Response{}, err
+		return nil, false, err
 	}
 	autoCache := anthropicAutoCacheEnabled(req.ProviderOptions)
 
@@ -109,7 +107,6 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 				body["tool_choice"] = map[string]any{"type": "auto"}
 			}
 		case "none":
-			// Spec: Anthropic none mode requires omitting tools entirely.
 			includeTools = false
 		case "required":
 			if includeTools {
@@ -117,13 +114,13 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 			}
 		case "named":
 			if strings.TrimSpace(req.ToolChoice.Name) == "" {
-				return llm.Response{}, &llm.ConfigurationError{Message: "tool_choice mode=named requires name"}
+				return nil, false, &llm.ConfigurationError{Message: "tool_choice mode=named requires name"}
 			}
 			if includeTools {
 				body["tool_choice"] = map[string]any{"type": "tool", "name": req.ToolChoice.Name}
 			}
 		default:
-			return llm.Response{}, llm.NewUnsupportedToolChoiceError("anthropic", req.ToolChoice.Mode)
+			return nil, false, llm.NewUnsupportedToolChoiceError("anthropic", req.ToolChoice.Mode)
 		}
 	}
 	if includeTools || req.WebSearch {
@@ -138,8 +135,6 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 			})
 		}
 		if autoCache && len(tools) > 0 {
-			// Only mark the last tool so the entire tools block is cached as a
-			// prefix. Marking every tool would exceed Anthropic's 4-block limit.
 			tools[len(tools)-1]["cache_control"] = map[string]any{"type": "ephemeral"}
 		}
 		body["tools"] = tools
@@ -156,10 +151,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	if req.ProviderOptions != nil {
 		if ov, ok := req.ProviderOptions["anthropic"].(map[string]any); ok {
 			for k, v := range ov {
-				if k == "beta_headers" {
-					continue
-				}
-				if k == "auto_cache" {
+				if k == "beta_headers" || k == "auto_cache" {
 					continue
 				}
 				body[k] = v
@@ -168,6 +160,34 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	}
 	if autoCache {
 		addCacheControlBreakpoint(messages)
+	}
+	return body, autoCache, nil
+}
+
+func (a *Adapter) setAnthropicHeaders(httpReq *http.Request, providerOptions map[string]any, autoCache bool) {
+	for k, v := range a.DefaultHeaders {
+		httpReq.Header.Set(k, v)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-api-key", a.APIKey)
+	httpReq.Header.Set("anthropic-version", "2023-06-01")
+	beta := betaHeaderFromProviderOptions(providerOptions)
+	if autoCache {
+		beta = appendBetaHeader(beta, "prompt-caching-2024-07-31")
+	}
+	if strings.TrimSpace(beta) != "" {
+		httpReq.Header.Set("anthropic-beta", beta)
+	}
+}
+
+func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	if a.Client == nil {
+		a.Client = &http.Client{Timeout: 0}
+	}
+
+	body, autoCache, err := a.buildRequestBody(req)
+	if err != nil {
+		return llm.Response{}, err
 	}
 
 	b, err := json.Marshal(body)
@@ -182,20 +202,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	if err != nil {
 		return llm.Response{}, err
 	}
-	// Apply default headers first so provider-specific headers take precedence.
-	for k, v := range a.DefaultHeaders {
-		httpReq.Header.Set(k, v)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", a.APIKey)
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
-	beta := betaHeaderFromProviderOptions(req.ProviderOptions)
-	if autoCache {
-		beta = appendBetaHeader(beta, "prompt-caching-2024-07-31")
-	}
-	if strings.TrimSpace(beta) != "" {
-		httpReq.Header.Set("anthropic-beta", beta)
-	}
+	a.setAnthropicHeaders(httpReq, req.ProviderOptions, autoCache)
 
 	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
@@ -226,117 +233,12 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	sctx, timeoutCancel := llm.ApplyAdapterTimeout(sctx, req.AdapterTimeout, true)
 	defer timeoutCancel()
 
-	system, messages, err := toAnthropicMessages(req.Messages)
+	body, autoCache, err := a.buildRequestBody(req)
 	if err != nil {
 		cancel()
 		return nil, err
 	}
-	system, err = applyAnthropicResponseFormat(system, req.ResponseFormat)
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-	autoCache := anthropicAutoCacheEnabled(req.ProviderOptions)
-
-	maxTokens := 4096
-	if req.MaxTokens != nil && *req.MaxTokens > 0 {
-		maxTokens = *req.MaxTokens
-	}
-
-	body := map[string]any{
-		"model":      req.Model,
-		"max_tokens": maxTokens,
-		"messages":   messages,
-		"stream":     true,
-	}
-	if strings.TrimSpace(system) != "" {
-		if autoCache {
-			body["system"] = []map[string]any{{
-				"type":          "text",
-				"text":          system,
-				"cache_control": map[string]any{"type": "ephemeral"},
-			}}
-		} else {
-			body["system"] = system
-		}
-	}
-	if req.Temperature != nil {
-		body["temperature"] = *req.Temperature
-	}
-	if req.TopP != nil {
-		body["top_p"] = *req.TopP
-	}
-	if len(req.StopSequences) > 0 {
-		body["stop_sequences"] = req.StopSequences
-	}
-
-	includeTools := len(req.Tools) > 0
-	if req.ToolChoice != nil {
-		switch strings.ToLower(strings.TrimSpace(req.ToolChoice.Mode)) {
-		case "", "auto":
-			if includeTools {
-				body["tool_choice"] = map[string]any{"type": "auto"}
-			}
-		case "none":
-			includeTools = false
-		case "required":
-			if includeTools {
-				body["tool_choice"] = map[string]any{"type": "any"}
-			}
-		case "named":
-			if strings.TrimSpace(req.ToolChoice.Name) == "" {
-				cancel()
-				return nil, &llm.ConfigurationError{Message: "tool_choice mode=named requires name"}
-			}
-			if includeTools {
-				body["tool_choice"] = map[string]any{"type": "tool", "name": req.ToolChoice.Name}
-			}
-		default:
-			cancel()
-			return nil, llm.NewUnsupportedToolChoiceError("anthropic", req.ToolChoice.Mode)
-		}
-	}
-	if includeTools || req.WebSearch {
-		var tools []map[string]any
-		if includeTools {
-			tools = toAnthropicTools(req.Tools)
-		}
-		if req.WebSearch {
-			tools = append(tools, map[string]any{
-				"type": "web_search_20250305",
-				"name": "web_search",
-			})
-		}
-		if autoCache && len(tools) > 0 {
-			tools[len(tools)-1]["cache_control"] = map[string]any{"type": "ephemeral"}
-		}
-		body["tools"] = tools
-	}
-	if req.ReasoningEffort != nil {
-		budget := llm.ReasoningBudget(*req.ReasoningEffort)
-		if budget > 0 {
-			body["thinking"] = map[string]any{
-				"type":          "enabled",
-				"budget_tokens": budget,
-			}
-		}
-	}
-	if req.ProviderOptions != nil {
-		if ov, ok := req.ProviderOptions["anthropic"].(map[string]any); ok {
-			for k, v := range ov {
-				if k == "beta_headers" {
-					continue
-				}
-				if k == "auto_cache" {
-					continue
-				}
-				body[k] = v
-			}
-		}
-	}
-	if autoCache {
-		addCacheControlBreakpoint(messages)
-	}
+	body["stream"] = true
 
 	b, err := json.Marshal(body)
 	if err != nil {
@@ -348,20 +250,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		cancel()
 		return nil, err
 	}
-	// Apply default headers first so provider-specific headers take precedence.
-	for k, v := range a.DefaultHeaders {
-		httpReq.Header.Set(k, v)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", a.APIKey)
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
-	beta := betaHeaderFromProviderOptions(req.ProviderOptions)
-	if autoCache {
-		beta = appendBetaHeader(beta, "prompt-caching-2024-07-31")
-	}
-	if strings.TrimSpace(beta) != "" {
-		httpReq.Header.Set("anthropic-beta", beta)
-	}
+	a.setAnthropicHeaders(httpReq, req.ProviderOptions, autoCache)
 
 	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)

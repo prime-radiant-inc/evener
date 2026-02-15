@@ -72,23 +72,18 @@ func (a *Adapter) setHeaders(req *http.Request) {
 	}
 }
 
-func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
-	if a.Client == nil {
-		// Avoid short client-level timeouts; rely on request context deadlines instead.
-		a.Client = &http.Client{Timeout: 0}
-	}
-
+func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 	instructions, inputItems, err := toResponsesInput(req.Messages)
 	if err != nil {
-		return llm.Response{}, err
+		return nil, err
 	}
 
 	body := map[string]any{
 		"model":               req.Model,
 		"instructions":        instructions,
 		"input":               inputItems,
-		"parallel_tool_calls": false, // safer default; can be overridden later per profile
-		"store":               false, // local-first logging is handled by serf; don't retain server-side by default
+		"parallel_tool_calls": false,
+		"store":               false,
 	}
 
 	var tools []map[string]any
@@ -104,7 +99,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	if req.ToolChoice != nil {
 		tc, err := toResponsesToolChoice(*req.ToolChoice)
 		if err != nil {
-			return llm.Response{}, err
+			return nil, err
 		}
 		body["tool_choice"] = tc
 	}
@@ -128,7 +123,6 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	}
 	if req.ResponseFormat != nil {
 		if rf := toResponsesResponseFormat(*req.ResponseFormat); rf != nil {
-			// OpenAI Responses API moved response_format under text.format.
 			text, _ := body["text"].(map[string]any)
 			if text == nil {
 				text = map[string]any{}
@@ -137,13 +131,24 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 			body["text"] = text
 		}
 	}
-	// provider_options escape hatch (unified-llm spec).
 	if req.ProviderOptions != nil {
 		if ov, ok := req.ProviderOptions["openai"].(map[string]any); ok {
 			for k, v := range ov {
 				body[k] = v
 			}
 		}
+	}
+	return body, nil
+}
+
+func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	if a.Client == nil {
+		a.Client = &http.Client{Timeout: 0}
+	}
+
+	body, err := a.buildRequestBody(req)
+	if err != nil {
+		return llm.Response{}, err
 	}
 
 	b, err := json.Marshal(body)
@@ -192,74 +197,12 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	sctx, timeoutCancel := llm.ApplyAdapterTimeout(sctx, req.AdapterTimeout, true)
 	defer timeoutCancel()
 
-	instructions, inputItems, err := toResponsesInput(req.Messages)
+	body, err := a.buildRequestBody(req)
 	if err != nil {
 		cancel()
 		return nil, err
 	}
-
-	body := map[string]any{
-		"model":               req.Model,
-		"instructions":        instructions,
-		"input":               inputItems,
-		"parallel_tool_calls": false,
-		"store":               false,
-		"stream":              true,
-	}
-	var tools []map[string]any
-	if len(req.Tools) > 0 {
-		tools = toResponsesTools(req.Tools)
-	}
-	if req.WebSearch {
-		tools = append(tools, map[string]any{"type": "web_search"})
-	}
-	if len(tools) > 0 {
-		body["tools"] = tools
-	}
-	if req.ToolChoice != nil {
-		tc, err := toResponsesToolChoice(*req.ToolChoice)
-		if err != nil {
-			cancel()
-			return nil, err
-		}
-		body["tool_choice"] = tc
-	}
-	if req.Temperature != nil {
-		body["temperature"] = *req.Temperature
-	}
-	if req.TopP != nil {
-		body["top_p"] = *req.TopP
-	}
-	if req.MaxTokens != nil {
-		body["max_output_tokens"] = *req.MaxTokens
-	}
-	if len(req.StopSequences) > 0 {
-		body["stop"] = req.StopSequences
-	}
-	if len(req.Metadata) > 0 {
-		body["metadata"] = req.Metadata
-	}
-	if req.ReasoningEffort != nil {
-		body["reasoning"] = map[string]any{"effort": *req.ReasoningEffort}
-	}
-	if req.ResponseFormat != nil {
-		if rf := toResponsesResponseFormat(*req.ResponseFormat); rf != nil {
-			// OpenAI Responses API moved response_format under text.format.
-			text, _ := body["text"].(map[string]any)
-			if text == nil {
-				text = map[string]any{}
-			}
-			text["format"] = rf
-			body["text"] = text
-		}
-	}
-	if req.ProviderOptions != nil {
-		if ov, ok := req.ProviderOptions["openai"].(map[string]any); ok {
-			for k, v := range ov {
-				body[k] = v
-			}
-		}
-	}
+	body["stream"] = true
 
 	b, err := json.Marshal(body)
 	if err != nil {
