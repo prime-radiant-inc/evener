@@ -222,7 +222,6 @@ func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error
 			Text:         resp.Text(),
 			Reasoning:    resp.ReasoningText(),
 			ToolCalls:    calls,
-			ToolResults:  nil,
 			FinishReason: resp.Finish,
 			Usage:        resp.Usage,
 			Response:     resp,
@@ -308,7 +307,6 @@ func executeToolCalls(ctx context.Context, toolIndex map[string]Tool, calls []To
 	var wg sync.WaitGroup
 	wg.Add(len(calls))
 	for i := range calls {
-		i := i
 		go func() {
 			defer wg.Done()
 			call := calls[i]

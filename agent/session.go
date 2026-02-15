@@ -987,7 +987,6 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			var wg sync.WaitGroup
 			wg.Add(len(calls))
 			for i := range calls {
-				i := i
 				go func() {
 					defer wg.Done()
 					results[i] = s.execTool(ctx, calls[i])

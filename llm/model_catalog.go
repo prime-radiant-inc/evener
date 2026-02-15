@@ -187,7 +187,6 @@ func parseLiteLLMCatalog(data []byte) (*ModelCatalog, error) {
 			SupportsReasoning:    parseBool(v["supports_reasoning"]),
 			InputCostPerMillion:  inPerM,
 			OutputCostPerMillion: outPerM,
-			Aliases:              nil,
 		})
 	}
 

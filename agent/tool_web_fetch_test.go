@@ -96,7 +96,6 @@ func TestExtFromContentType(t *testing.T) {
 func toolCallResponse(calls ...llm.ToolCallData) llm.Response {
 	parts := make([]llm.ContentPart, len(calls))
 	for i, c := range calls {
-		c := c
 		parts[i] = llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &c}
 	}
 	return llm.Response{
