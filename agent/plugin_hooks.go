@@ -8,7 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"primeradiant.com/serf/llm"
@@ -317,4 +319,287 @@ func executePromptHook(ctx context.Context, client PromptHookClient, model strin
 
 	text := resp.Message.Text()
 	return HookResult{Stdout: text, ExitCode: 0}, nil
+}
+
+// HookRunner orchestrates hook matching and parallel dispatch.
+type HookRunner struct {
+	hooks  map[HookEvent][]RegisteredHook
+	client PromptHookClient
+	model  string
+}
+
+// NewHookRunner creates a HookRunner with the given LLM client and default model
+// for prompt hooks.
+func NewHookRunner(client PromptHookClient, model string) *HookRunner {
+	return &HookRunner{
+		hooks:  make(map[HookEvent][]RegisteredHook),
+		client: client,
+		model:  model,
+	}
+}
+
+// Add registers hooks for an event.
+func (r *HookRunner) Add(event HookEvent, hooks ...RegisteredHook) {
+	r.hooks[event] = append(r.hooks[event], hooks...)
+}
+
+// matchHooks returns hooks registered for the event whose Matcher matches toolName.
+// "*" matches everything; other matchers are compiled as regex.
+func (r *HookRunner) matchHooks(event HookEvent, toolName string) []RegisteredHook {
+	var matched []RegisteredHook
+	for _, hook := range r.hooks[event] {
+		if hook.Matcher == "*" {
+			matched = append(matched, hook)
+			continue
+		}
+		re, err := regexp.Compile(hook.Matcher)
+		if err != nil {
+			continue // skip invalid regex
+		}
+		if re.MatchString(toolName) {
+			matched = append(matched, hook)
+		}
+	}
+	return matched
+}
+
+// HookRunResult contains the aggregated output from running hooks.
+type HookRunResult struct {
+	SystemMessages []string
+}
+
+// PreToolUseResult contains aggregated output from PreToolUse hooks.
+type PreToolUseResult struct {
+	Denied         bool
+	DenyMessage    string
+	SystemMessages []string
+	UpdatedInput   map[string]any
+}
+
+// StopResult contains aggregated output from Stop/SubagentStop hooks.
+type StopResult struct {
+	Blocked        bool
+	BlockReason    string
+	SystemMessages []string
+}
+
+// ParsedHookOutput is the structured interpretation of a hook's stdout and exit code.
+type ParsedHookOutput struct {
+	Continue       bool
+	SuppressOutput bool
+	SystemMessage  string
+	Denied         bool
+	UpdatedInput   map[string]any
+	Blocked        bool
+	BlockReason    string
+	IsError        bool
+}
+
+// parseHookOutput interprets hook stdout and exit code into structured output.
+func parseHookOutput(stdout string, exitCode int) ParsedHookOutput {
+	result := ParsedHookOutput{Continue: true}
+
+	if exitCode == 2 {
+		result.IsError = true
+		result.SystemMessage = stdout
+		return result
+	}
+
+	stdout = strings.TrimSpace(stdout)
+	if stdout == "" {
+		return result
+	}
+
+	// Try JSON parse
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
+		// Plain text: treat as system message
+		result.SystemMessage = stdout
+		return result
+	}
+
+	// Extract standard fields
+	if v, ok := parsed["continue"]; ok {
+		if b, ok := v.(bool); ok {
+			result.Continue = b
+		}
+	}
+	if v, ok := parsed["suppressOutput"]; ok {
+		if b, ok := v.(bool); ok {
+			result.SuppressOutput = b
+		}
+	}
+	if v, ok := parsed["systemMessage"]; ok {
+		if s, ok := v.(string); ok {
+			result.SystemMessage = s
+		}
+	}
+
+	// Extract hookSpecificOutput
+	if hso, ok := parsed["hookSpecificOutput"].(map[string]any); ok {
+		if pd, ok := hso["permissionDecision"].(string); ok && pd == "deny" {
+			result.Denied = true
+			if reason, ok := hso["reason"].(string); ok {
+				if result.SystemMessage == "" {
+					result.SystemMessage = reason
+				}
+			}
+		}
+		if ui, ok := hso["updatedInput"].(map[string]any); ok {
+			result.UpdatedInput = ui
+		}
+	}
+
+	// Extract decision/reason for Stop hooks
+	if decision, ok := parsed["decision"].(string); ok && decision == "block" {
+		result.Blocked = true
+		if reason, ok := parsed["reason"].(string); ok {
+			result.BlockReason = reason
+		}
+	}
+
+	return result
+}
+
+// runHook executes a single hook (command or prompt) and returns the parsed output.
+func (r *HookRunner) runHook(ctx context.Context, hook RegisteredHook, input HookInput) ParsedHookOutput {
+	var hr HookResult
+	var err error
+
+	switch hook.Type {
+	case "command":
+		hr, err = executeCommandHook(ctx, hook, input)
+	case "prompt":
+		if r.client == nil {
+			return ParsedHookOutput{Continue: true, SystemMessage: "prompt hook skipped: no LLM client"}
+		}
+		hr, err = executePromptHook(ctx, r.client, r.model, hook, input)
+	default:
+		return ParsedHookOutput{Continue: true}
+	}
+
+	if err != nil {
+		return ParsedHookOutput{Continue: true, IsError: true, SystemMessage: err.Error()}
+	}
+
+	return parseHookOutput(hr.Stdout, hr.ExitCode)
+}
+
+// runAll executes all matched hooks in parallel and returns their parsed outputs.
+func (r *HookRunner) runAll(ctx context.Context, event HookEvent, toolName string, input HookInput) []ParsedHookOutput {
+	claudeName := MapSerfToolNameToClaude(toolName)
+	matched := r.matchHooks(event, claudeName)
+	if len(matched) == 0 {
+		return nil
+	}
+
+	results := make([]ParsedHookOutput, len(matched))
+	var wg sync.WaitGroup
+	wg.Add(len(matched))
+
+	for i, hook := range matched {
+		go func(idx int, h RegisteredHook) {
+			defer wg.Done()
+			results[idx] = r.runHook(ctx, h, input)
+		}(i, hook)
+	}
+
+	wg.Wait()
+	return results
+}
+
+// RunPreToolUse dispatches PreToolUse hooks and aggregates results.
+// Any deny from any hook means denied.
+func (r *HookRunner) RunPreToolUse(ctx context.Context, input HookInput) PreToolUseResult {
+	outputs := r.runAll(ctx, HookPreToolUse, input.ToolName, input)
+	var result PreToolUseResult
+	for _, o := range outputs {
+		if o.SystemMessage != "" {
+			result.SystemMessages = append(result.SystemMessages, o.SystemMessage)
+		}
+		if o.Denied {
+			result.Denied = true
+			if result.DenyMessage == "" {
+				result.DenyMessage = o.SystemMessage
+			}
+		}
+		if o.UpdatedInput != nil {
+			result.UpdatedInput = o.UpdatedInput
+		}
+	}
+	return result
+}
+
+// RunPostToolUse dispatches PostToolUse hooks and aggregates system messages.
+func (r *HookRunner) RunPostToolUse(ctx context.Context, input HookInput) HookRunResult {
+	outputs := r.runAll(ctx, HookPostToolUse, input.ToolName, input)
+	return collectSystemMessages(outputs)
+}
+
+// RunStop dispatches Stop hooks and aggregates results.
+// Any block from any hook means blocked.
+func (r *HookRunner) RunStop(ctx context.Context, input HookInput) StopResult {
+	return r.runStopEvent(ctx, HookStop, input)
+}
+
+// RunSubagentStop dispatches SubagentStop hooks and aggregates results.
+func (r *HookRunner) RunSubagentStop(ctx context.Context, input HookInput) StopResult {
+	return r.runStopEvent(ctx, HookSubagentStop, input)
+}
+
+func (r *HookRunner) runStopEvent(ctx context.Context, event HookEvent, input HookInput) StopResult {
+	outputs := r.runAll(ctx, event, input.ToolName, input)
+	var result StopResult
+	for _, o := range outputs {
+		if o.SystemMessage != "" {
+			result.SystemMessages = append(result.SystemMessages, o.SystemMessage)
+		}
+		if o.Blocked {
+			result.Blocked = true
+			if result.BlockReason == "" {
+				result.BlockReason = o.BlockReason
+			}
+		}
+	}
+	return result
+}
+
+// RunUserPromptSubmit dispatches UserPromptSubmit hooks.
+func (r *HookRunner) RunUserPromptSubmit(ctx context.Context, input HookInput) HookRunResult {
+	outputs := r.runAll(ctx, HookUserPromptSubmit, "", input)
+	return collectSystemMessages(outputs)
+}
+
+// RunSessionStart dispatches SessionStart hooks.
+func (r *HookRunner) RunSessionStart(ctx context.Context, input HookInput) HookRunResult {
+	outputs := r.runAll(ctx, HookSessionStart, "", input)
+	return collectSystemMessages(outputs)
+}
+
+// RunSessionEnd dispatches SessionEnd hooks. No return value needed.
+func (r *HookRunner) RunSessionEnd(ctx context.Context, input HookInput) {
+	r.runAll(ctx, HookSessionEnd, "", input)
+}
+
+// RunPreCompact dispatches PreCompact hooks.
+func (r *HookRunner) RunPreCompact(ctx context.Context, input HookInput) HookRunResult {
+	outputs := r.runAll(ctx, HookPreCompact, "", input)
+	return collectSystemMessages(outputs)
+}
+
+// RunNotification dispatches Notification hooks.
+func (r *HookRunner) RunNotification(ctx context.Context, input HookInput) HookRunResult {
+	outputs := r.runAll(ctx, HookNotification, "", input)
+	return collectSystemMessages(outputs)
+}
+
+// collectSystemMessages aggregates system messages from parsed outputs.
+func collectSystemMessages(outputs []ParsedHookOutput) HookRunResult {
+	var result HookRunResult
+	for _, o := range outputs {
+		if o.SystemMessage != "" {
+			result.SystemMessages = append(result.SystemMessages, o.SystemMessage)
+		}
+	}
+	return result
 }

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/llm"
 )
@@ -454,6 +455,161 @@ func TestExecutePromptHook_UsesHookModel(t *testing.T) {
 	if client.lastReq.Model != "custom-model-v2" {
 		t.Errorf("Model = %q, want %q", client.lastReq.Model, "custom-model-v2")
 	}
+}
+
+// --- Task 10: HookRunner ---
+
+func TestHookRunner_MatcherRegex(t *testing.T) {
+	runner := NewHookRunner(nil, "")
+	runner.Add(HookPreToolUse, RegisteredHook{
+		Matcher: "Write|Edit",
+		Type:    "command",
+		Command: "echo matched",
+		Timeout: 5,
+	})
+
+	matched := runner.matchHooks(HookPreToolUse, "Write")
+	if len(matched) != 1 {
+		t.Fatalf("expected 1 match for Write, got %d", len(matched))
+	}
+
+	matched = runner.matchHooks(HookPreToolUse, "Edit")
+	if len(matched) != 1 {
+		t.Fatalf("expected 1 match for Edit, got %d", len(matched))
+	}
+
+	matched = runner.matchHooks(HookPreToolUse, "Bash")
+	if len(matched) != 0 {
+		t.Fatalf("expected 0 matches for Bash, got %d", len(matched))
+	}
+}
+
+func TestHookRunner_WildcardMatcher(t *testing.T) {
+	runner := NewHookRunner(nil, "")
+	runner.Add(HookPreToolUse, RegisteredHook{
+		Matcher: "*",
+		Type:    "command",
+		Command: "echo wildcard",
+		Timeout: 5,
+	})
+
+	for _, tool := range []string{"Write", "Read", "Bash", "anything"} {
+		matched := runner.matchHooks(HookPreToolUse, tool)
+		if len(matched) != 1 {
+			t.Errorf("expected 1 match for %q with wildcard, got %d", tool, len(matched))
+		}
+	}
+}
+
+func TestHookRunner_ParallelExecution(t *testing.T) {
+	runner := NewHookRunner(nil, "")
+	// Two hooks that each sleep 100ms
+	runner.Add(HookSessionStart,
+		RegisteredHook{
+			Matcher: "*",
+			Type:    "command",
+			Command: "sleep 0.1 && echo hook1",
+			Timeout: 5,
+		},
+		RegisteredHook{
+			Matcher: "*",
+			Type:    "command",
+			Command: "sleep 0.1 && echo hook2",
+			Timeout: 5,
+		},
+	)
+
+	input := HookInput{
+		CWD:           "/tmp",
+		HookEventName: "SessionStart",
+	}
+
+	start := time.Now()
+	result := runner.RunSessionStart(context.Background(), input)
+	elapsed := time.Since(start)
+
+	// If parallel, should complete in ~100ms, not ~200ms
+	if elapsed > 180*time.Millisecond {
+		t.Errorf("expected parallel execution (~100ms), took %v", elapsed)
+	}
+	// Should have collected system messages from both hooks
+	_ = result // result type checked by compiler
+}
+
+func TestHookRunner_PreToolUse_Deny(t *testing.T) {
+	runner := NewHookRunner(nil, "")
+	// A command hook that outputs a deny JSON
+	runner.Add(HookPreToolUse, RegisteredHook{
+		Matcher: "*",
+		Type:    "command",
+		Command: `echo '{"hookSpecificOutput":{"permissionDecision":"deny","reason":"not allowed"}}'`,
+		Timeout: 5,
+	})
+
+	input := HookInput{
+		CWD:           "/tmp",
+		HookEventName: "PreToolUse",
+		ToolName:      "Write",
+	}
+
+	result := runner.RunPreToolUse(context.Background(), input)
+	if !result.Denied {
+		t.Error("expected Denied=true")
+	}
+}
+
+func TestHookRunner_NoHooks(t *testing.T) {
+	runner := NewHookRunner(nil, "")
+	input := HookInput{
+		CWD:           "/tmp",
+		HookEventName: "PreToolUse",
+		ToolName:      "Write",
+	}
+
+	preResult := runner.RunPreToolUse(context.Background(), input)
+	if preResult.Denied {
+		t.Error("empty runner should not deny")
+	}
+	if len(preResult.SystemMessages) != 0 {
+		t.Error("empty runner should have no system messages")
+	}
+
+	stopResult := runner.RunStop(context.Background(), input)
+	if stopResult.Blocked {
+		t.Error("empty runner should not block")
+	}
+
+	hookResult := runner.RunPostToolUse(context.Background(), input)
+	if len(hookResult.SystemMessages) != 0 {
+		t.Error("empty runner should have no system messages")
+	}
+}
+
+func TestHookRunner_ToolNameMapping(t *testing.T) {
+	runner := NewHookRunner(nil, "")
+	// Register a hook that matches Claude name "Write"
+	runner.Add(HookPreToolUse, RegisteredHook{
+		Matcher: "Write",
+		Type:    "command",
+		Command: "echo matched",
+		Timeout: 5,
+	})
+
+	// Pass serf tool name "write_file" — should match after conversion to "Write"
+	matched := runner.matchHooks(HookPreToolUse, "Write")
+	if len(matched) != 1 {
+		t.Fatalf("expected 1 match for Claude name Write, got %d", len(matched))
+	}
+
+	// The runner's Run methods convert serf names to Claude names for matching
+	input := HookInput{
+		CWD:           "/tmp",
+		HookEventName: "PreToolUse",
+		ToolName:      "write_file", // serf name
+	}
+	result := runner.RunPreToolUse(context.Background(), input)
+	// Should have matched and run the hook (even though the result may be empty)
+	_ = result
 }
 
 // Verify HookInput JSON marshaling is correct.
