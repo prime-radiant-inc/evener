@@ -14,7 +14,6 @@ const (
 	TurnAssistant   TurnKind = "ASSISTANT"
 	TurnTool        TurnKind = "TOOL"         // Deprecated: use TurnToolResults for new code.
 	TurnToolResults TurnKind = "TOOL_RESULTS" // Aggregated tool results from one round.
-	TurnSystem      TurnKind = "SYSTEM"
 )
 
 // Turn is the Session's typed history item. Steering turns are kept distinct for observability,
