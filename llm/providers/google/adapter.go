@@ -427,12 +427,10 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 							Usage:    usage,
 							Raw:      raw,
 						}
-						if r.Finish.Reason == "" {
-							if len(r.ToolCalls()) > 0 {
-								r.Finish = llm.FinishReason{Reason: "tool_calls"}
-							} else {
-								r.Finish = llm.FinishReason{Reason: "stop"}
-							}
+						if len(r.ToolCalls()) > 0 {
+							r.Finish = llm.FinishReason{Reason: "tool_calls", Raw: r.Finish.Raw}
+						} else if r.Finish.Reason == "" {
+							r.Finish = llm.FinishReason{Reason: "stop"}
 						}
 						rp := r
 						s.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp})
@@ -818,12 +816,13 @@ func fromGeminiResponse(raw map[string]any, requestedModel string) llm.Response 
 	}
 
 	r.Message = msg
-	if r.Finish.Reason == "" {
-		if len(r.ToolCalls()) > 0 {
-			r.Finish = llm.FinishReason{Reason: "tool_calls"}
-		} else {
-			r.Finish = llm.FinishReason{Reason: "stop"}
-		}
+	// Gemini returns finishReason "STOP" even when making tool calls (it has no
+	// distinct tool-call finish reason). Override to "tool_calls" so the Generate
+	// loop correctly continues with tool execution.
+	if len(r.ToolCalls()) > 0 {
+		r.Finish = llm.FinishReason{Reason: "tool_calls", Raw: r.Finish.Raw}
+	} else if r.Finish.Reason == "" {
+		r.Finish = llm.FinishReason{Reason: "stop"}
 	}
 
 	if um, ok := raw["usageMetadata"].(map[string]any); ok {

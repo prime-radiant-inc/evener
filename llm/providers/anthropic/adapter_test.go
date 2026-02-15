@@ -2463,6 +2463,67 @@ func TestComplete_ReasoningEffort_None_NoThinking(t *testing.T) {
 	}
 }
 
+func TestComplete_ReasoningEffort_AdjustsMaxTokens(t *testing.T) {
+	cases := []struct {
+		effort        string
+		maxTokens     *int
+		wantMaxTokens float64
+	}{
+		// Default maxTokens (4096) < medium budget (8192): adjusted to budget + default.
+		{"medium", nil, 8192 + 4096},
+		// Explicit maxTokens (1024) < medium budget (8192): adjusted to budget + explicit.
+		{"medium", ptrInt(1024), 8192 + 1024},
+		// Explicit maxTokens (10000) > medium budget (8192): no adjustment.
+		{"medium", ptrInt(10000), 10000},
+		// Low budget (1024) < default maxTokens (4096): no adjustment.
+		{"low", nil, 4096},
+	}
+	for _, tc := range cases {
+		name := tc.effort
+		if tc.maxTokens != nil {
+			name += fmt.Sprintf("_max%d", *tc.maxTokens)
+		}
+		t.Run(name, func(t *testing.T) {
+			var gotBody map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(b, &gotBody)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{
+					"id": "msg_1", "type": "message", "role": "assistant", "model": "test",
+					"content": [{"type": "text", "text": "ok"}],
+					"stop_reason": "end_turn",
+					"usage": {"input_tokens": 10, "output_tokens": 5}
+				}`))
+			}))
+			t.Cleanup(srv.Close)
+
+			a := &Adapter{APIKey: "test-key", BaseURL: srv.URL}
+			effort := tc.effort
+			req := llm.Request{
+				Model:           "test",
+				Messages:        []llm.Message{llm.User("think")},
+				ReasoningEffort: &effort,
+				MaxTokens:       tc.maxTokens,
+				ProviderOptions: map[string]any{
+					"anthropic": map[string]any{"auto_cache": false},
+				},
+			}
+			_, err := a.Complete(context.Background(), req)
+			if err != nil {
+				t.Fatalf("Complete: %v", err)
+			}
+			gotMax, ok := gotBody["max_tokens"].(float64)
+			if !ok {
+				t.Fatalf("max_tokens type = %T", gotBody["max_tokens"])
+			}
+			if gotMax != tc.wantMaxTokens {
+				t.Fatalf("max_tokens = %v, want %v", gotMax, tc.wantMaxTokens)
+			}
+		})
+	}
+}
+
 func TestStream_ReasoningEffort_MappedToThinking(t *testing.T) {
 	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2522,3 +2583,145 @@ func contentKinds(parts []llm.ContentPart) []string {
 	}
 	return kinds
 }
+
+func TestToAnthropicMessages_ToolCallInput_NeverNull(t *testing.T) {
+	// Anthropic requires tool_use input to be a dictionary, never null.
+	tests := []struct {
+		name string
+		args json.RawMessage
+	}{
+		{"valid args", json.RawMessage(`{"city":"Paris"}`)},
+		{"empty object", json.RawMessage(`{}`)},
+		{"nil args", nil},
+		{"empty bytes", json.RawMessage(``)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msgs := []llm.Message{
+				llm.User("hi"),
+				{
+					Role: llm.RoleAssistant,
+					Content: []llm.ContentPart{
+						{
+							Kind: llm.ContentToolCall,
+							ToolCall: &llm.ToolCallData{
+								ID:        "toolu_1",
+								Name:      "get_weather",
+								Arguments: tt.args,
+								Type:      "function",
+							},
+						},
+					},
+				},
+			}
+
+			_, messages, err := toAnthropicMessages(msgs)
+			if err != nil {
+				t.Fatalf("toAnthropicMessages: %v", err)
+			}
+
+			// Find the assistant message and check the tool_use input field.
+			for _, msg := range messages {
+				if msg["role"] != "assistant" {
+					continue
+				}
+				blocks, _ := msg["content"].([]map[string]any)
+				for _, block := range blocks {
+					if block["type"] != "tool_use" {
+						continue
+					}
+					input := block["input"]
+					if input == nil {
+						t.Fatalf("tool_use input is nil; Anthropic requires a dictionary")
+					}
+					// Must be a map (dictionary), not a string or other type.
+					if _, ok := input.(map[string]any); !ok {
+						t.Fatalf("tool_use input is %T, want map[string]any", input)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestStream_ToolCall_ArgsNotCorrupted(t *testing.T) {
+	// Regression: content_block_start sends input:{} as placeholder. If captured,
+	// it prefixes actual args from input_json_delta, producing invalid JSON.
+	sseLines := []string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"id":"msg_1","type":"message","model":"claude-test","content":[],"usage":{"input_tokens":10,"output_tokens":0}}}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"get_weather","input":{}}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"city\":"}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"Paris\"}"}}`,
+		``,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":0}`,
+		``,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":20}}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, line := range sseLines {
+			fmt.Fprintln(w, line)
+		}
+	}))
+	defer srv.Close()
+
+	a := &Adapter{BaseURL: srv.URL, APIKey: "test"}
+
+	ctx := context.Background()
+	st, err := a.Stream(ctx, llm.Request{Model: "claude-test", Messages: []llm.Message{llm.User("weather in Paris")}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	acc := llm.NewStreamAccumulator()
+	for ev := range st.Events() {
+		acc.Process(ev)
+	}
+	_ = st.Close()
+
+	resp := acc.Response()
+	if resp == nil {
+		t.Fatal("no response")
+	}
+
+	calls := resp.ToolCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(calls))
+	}
+	if calls[0].Name != "get_weather" {
+		t.Fatalf("tool call name: %s", calls[0].Name)
+	}
+
+	// The key assertion: Arguments must be valid JSON {"city":"Paris"},
+	// NOT corrupted with a leading {} from the content_block_start placeholder.
+	var args map[string]any
+	if err := json.Unmarshal(calls[0].Arguments, &args); err != nil {
+		t.Fatalf("unmarshal tool args %q: %v", string(calls[0].Arguments), err)
+	}
+	if args["city"] != "Paris" {
+		t.Fatalf("tool args: %v", args)
+	}
+
+	// Also verify args don't start with the placeholder {}.
+	argsStr := string(calls[0].Arguments)
+	if strings.HasPrefix(argsStr, "{}") {
+		t.Fatalf("tool args corrupted with placeholder: %s", argsStr)
+	}
+}
+
+func ptrInt(i int) *int { return &i }

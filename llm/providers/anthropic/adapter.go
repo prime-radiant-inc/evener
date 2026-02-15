@@ -146,6 +146,11 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, bool, error
 				"type":          "enabled",
 				"budget_tokens": budget,
 			}
+			// Anthropic requires max_tokens > budget_tokens. The unified MaxTokens
+			// represents desired output tokens, so add the budget on top.
+			if maxTokens <= budget {
+				body["max_tokens"] = budget + maxTokens
+			}
 		}
 	}
 	if req.ProviderOptions != nil {
@@ -367,19 +372,13 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 					case "tool_use":
 						st.toolID, _ = cb["id"].(string)
 						st.toolName, _ = cb["name"].(string)
-						if inAny, ok := cb["input"]; ok && inAny != nil && st.toolArgs.Len() == 0 {
-							if b, err := json.Marshal(inAny); err == nil && len(b) > 0 && string(b) != "null" {
-								st.toolArgs.Write(b)
-							}
-						}
+						// Note: content_block_start always has input:{} as a placeholder.
+						// Actual arguments arrive via input_json_delta events; capturing
+						// the placeholder here would corrupt them (e.g. {}{"city":"Paris"}).
 						if !st.toolStarted && strings.TrimSpace(st.toolID) != "" {
 							st.toolStarted = true
 							tc := llm.ToolCallData{ID: st.toolID, Name: st.toolName, Type: "function"}
 							s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
-							if st.toolArgs.Len() > 0 {
-								tc2 := llm.ToolCallData{ID: st.toolID, Name: st.toolName, Arguments: []byte(st.toolArgs.String()), Type: "function"}
-								s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &tc2})
-							}
 						}
 					case "thinking", "redacted_thinking":
 						st.redacted = (typ == "redacted_thinking")
@@ -518,6 +517,9 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 					case "tool_use":
 						if strings.TrimSpace(st.toolID) != "" {
 							args := st.toolArgs.String()
+							if args == "" {
+								args = "{}"
+							}
 							parts = append(parts, llm.ContentPart{
 								Kind: llm.ContentToolCall,
 								ToolCall: &llm.ToolCallData{
@@ -851,6 +853,10 @@ func toAnthropicMessages(msgs []llm.Message) (system string, messages []map[stri
 					var in any
 					if len(p.ToolCall.Arguments) > 0 {
 						_ = json.Unmarshal(p.ToolCall.Arguments, &in)
+					}
+					// Anthropic requires input to be a dictionary, never null.
+					if in == nil {
+						in = map[string]any{}
 					}
 					blocks = append(blocks, map[string]any{
 						"type":  "tool_use",

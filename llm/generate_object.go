@@ -30,11 +30,13 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateR
 		return nil, err
 	}
 
+	text := stripMarkdownCodeFence(res.Text)
+
 	var out any
-	dec := json.NewDecoder(bytes.NewReader([]byte(res.Text)))
+	dec := json.NewDecoder(bytes.NewReader([]byte(text)))
 	dec.UseNumber()
 	if err := dec.Decode(&out); err != nil {
-		return nil, NewNoObjectGeneratedError(fmt.Sprintf("failed to parse JSON output: %v", err), res.Text)
+		return nil, NewNoObjectGeneratedError(fmt.Sprintf("failed to parse JSON output: %v", err), text)
 	}
 
 	schema, err := compileSchema(opts.Schema)
@@ -150,9 +152,9 @@ func StreamGenerateObject(ctx context.Context, opts GenerateObjectOptions) (*Str
 			return
 		}
 
-		text := buf.String()
+		text := stripMarkdownCodeFence(buf.String())
 		if text == "" && resp != nil {
-			text = resp.Text()
+			text = stripMarkdownCodeFence(resp.Text())
 		}
 
 		var out any
@@ -245,6 +247,26 @@ func tryParsePartialJSON(s string) any {
 	}
 
 	return tryUnmarshal(attempt)
+}
+
+// stripMarkdownCodeFence removes markdown code fences (```json ... ```) that
+// models sometimes wrap around JSON output despite being asked not to.
+func stripMarkdownCodeFence(s string) string {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "```") {
+		return s
+	}
+	// Strip opening fence line (```json, ```, etc.)
+	firstNewline := strings.IndexByte(s, '\n')
+	if firstNewline == -1 {
+		return s
+	}
+	s = s[firstNewline+1:]
+	// Strip closing fence
+	if idx := strings.LastIndex(s, "```"); idx != -1 {
+		s = s[:idx]
+	}
+	return strings.TrimSpace(s)
 }
 
 func tryUnmarshal(s string) any {
