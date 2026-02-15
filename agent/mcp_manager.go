@@ -174,32 +174,24 @@ func sanitizeToolName(name string) string {
 // mcpSchemaToParams converts an MCP tool's InputSchema (any) to our
 // map[string]any format used by llm.ToolDefinition.Parameters.
 func mcpSchemaToParams(schema any) map[string]any {
-	if schema == nil {
-		return map[string]any{
-			"type":       "object",
-			"properties": map[string]any{},
-		}
+	emptySchema := func() map[string]any {
+		return map[string]any{"type": "object", "properties": map[string]any{}}
 	}
-
+	if schema == nil {
+		return emptySchema()
+	}
 	// The MCP SDK returns InputSchema as a map[string]any from JSON unmarshaling.
 	if m, ok := schema.(map[string]any); ok {
 		return m
 	}
-
 	// Fallback: re-marshal and unmarshal.
 	b, err := json.Marshal(schema)
 	if err != nil {
-		return map[string]any{
-			"type":       "object",
-			"properties": map[string]any{},
-		}
+		return emptySchema()
 	}
 	var m map[string]any
 	if err := json.Unmarshal(b, &m); err != nil {
-		return map[string]any{
-			"type":       "object",
-			"properties": map[string]any{},
-		}
+		return emptySchema()
 	}
 	return m
 }
@@ -284,7 +276,7 @@ func mergeEnv(extra map[string]string) []string {
 	}
 
 	// Filter out existing entries that will be overridden.
-	filtered := env[:0]
+	filtered := make([]string, 0, len(env)+len(extra))
 	for _, e := range env {
 		key, _, _ := strings.Cut(e, "=")
 		if !overrides[key] {
