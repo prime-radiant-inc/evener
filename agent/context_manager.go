@@ -599,18 +599,6 @@ func findToolResultByCallID(t Turn, toolCallID string) string {
 	return ""
 }
 
-// toolResultContent extracts string content from a TurnTool.
-func toolResultContent(t Turn) string {
-	for _, p := range t.Message.Content {
-		if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
-			if s, ok := p.ToolResult.Content.(string); ok {
-				return s
-			}
-		}
-	}
-	return ""
-}
-
 func sumCounts(m map[string]int) int {
 	total := 0
 	for _, v := range m {
