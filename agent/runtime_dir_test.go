@@ -100,7 +100,7 @@ func TestCacheDir_Default(t *testing.T) {
 	}
 
 	got := CacheDir()
-	want := filepath.Join(home, ".local", "cache", "serf")
+	want := filepath.Join(home, ".cache", "serf")
 	if got != want {
 		t.Fatalf("CacheDir default:\n  got  %q\n  want %q", got, want)
 	}

@@ -46,7 +46,7 @@ func xdgStateHome() string {
 	return filepath.Join(home, ".local", "state")
 }
 
-// xdgCacheHome returns $XDG_CACHE_HOME or ~/.local/cache as default.
+// xdgCacheHome returns $XDG_CACHE_HOME or ~/.cache per the XDG spec.
 func xdgCacheHome() string {
 	if v := os.Getenv("XDG_CACHE_HOME"); v != "" {
 		return v
@@ -55,5 +55,5 @@ func xdgCacheHome() string {
 	if err != nil {
 		home = os.TempDir()
 	}
-	return filepath.Join(home, ".local", "cache")
+	return filepath.Join(home, ".cache")
 }
