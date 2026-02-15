@@ -64,8 +64,6 @@ func TestParsePluginAgent_MissingRequired(t *testing.T) {
 	}{
 		{"missing name", "---\ndescription: foo\nmodel: inherit\ncolor: blue\n---\nbody"},
 		{"missing description", "---\nname: test\nmodel: inherit\ncolor: blue\n---\nbody"},
-		{"missing model", "---\nname: test\ndescription: foo\ncolor: blue\n---\nbody"},
-		{"missing color", "---\nname: test\ndescription: foo\nmodel: inherit\n---\nbody"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -74,6 +72,21 @@ func TestParsePluginAgent_MissingRequired(t *testing.T) {
 				t.Fatal("expected error")
 			}
 		})
+	}
+}
+
+func TestParsePluginAgent_OptionalModelAndColor(t *testing.T) {
+	// Model and color are optional — default to "inherit" and "blue".
+	content := "---\nname: test\ndescription: does things\n---\nbody"
+	agent, err := parsePluginAgent([]byte(content), "p")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if agent.Model != "inherit" {
+		t.Errorf("Model = %q, want inherit", agent.Model)
+	}
+	if agent.Color != "blue" {
+		t.Errorf("Color = %q, want blue", agent.Color)
 	}
 }
 

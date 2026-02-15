@@ -50,13 +50,15 @@ func parsePluginAgent(data []byte, pluginName string) (PluginAgent, error) {
 	if err != nil {
 		return PluginAgent{}, err
 	}
-	model, err := getString("model")
-	if err != nil {
-		return PluginAgent{}, err
+
+	// Model and color are optional; default to "inherit" and "blue".
+	model := "inherit"
+	if v, ok := doc.Meta["model"].(string); ok && v != "" {
+		model = v
 	}
-	color, err := getString("color")
-	if err != nil {
-		return PluginAgent{}, err
+	color := "blue"
+	if v, ok := doc.Meta["color"].(string); ok && v != "" {
+		color = v
 	}
 
 	var tools []string

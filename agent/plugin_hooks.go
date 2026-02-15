@@ -466,6 +466,14 @@ func parseHookOutput(stdout string, exitCode int) ParsedHookOutput {
 		if ui, ok := hso["updatedInput"].(map[string]any); ok {
 			result.UpdatedInput = ui
 		}
+		// SessionStart hooks inject context via additionalContext.
+		if ac, ok := hso["additionalContext"].(string); ok && ac != "" {
+			if result.SystemMessage == "" {
+				result.SystemMessage = ac
+			} else {
+				result.SystemMessage += "\n" + ac
+			}
+		}
 	}
 
 	// Extract decision/reason for Stop hooks
@@ -500,7 +508,12 @@ func (r *HookRunner) runHook(ctx context.Context, hook RegisteredHook, input Hoo
 		return ParsedHookOutput{Continue: true, IsError: true, SystemMessage: err.Error()}
 	}
 
-	return parseHookOutput(hr.Stdout, hr.ExitCode)
+	// Per Claude Code spec: exit code 2 means stderr is fed back to Claude.
+	output := hr.Stdout
+	if hr.ExitCode == 2 && strings.TrimSpace(hr.Stderr) != "" {
+		output = hr.Stderr
+	}
+	return parseHookOutput(output, hr.ExitCode)
 }
 
 // runAll executes all matched hooks in parallel and returns their parsed outputs.
@@ -609,8 +622,10 @@ func (r *HookRunner) RunUserPromptSubmit(ctx context.Context, input HookInput) H
 }
 
 // RunSessionStart dispatches SessionStart hooks.
+// The matchTarget is "startup" to match Claude Code's convention where
+// SessionStart matchers match startup types (startup|resume|clear|compact).
 func (r *HookRunner) RunSessionStart(ctx context.Context, input HookInput) HookRunResult {
-	outputs := r.runAll(ctx, HookSessionStart, "", input)
+	outputs := r.runAll(ctx, HookSessionStart, "startup", input)
 	return collectSystemMessages(outputs)
 }
 
