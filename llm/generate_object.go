@@ -7,32 +7,23 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-
-	"github.com/santhosh-tekuri/jsonschema/v5"
 )
 
 type GenerateObjectOptions struct {
 	GenerateOptions
 	Schema map[string]any
-	Strict bool
 }
 
 func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateResult, error) {
 	if opts.Schema == nil {
 		return nil, &ConfigurationError{Message: "schema is required"}
 	}
-	strict := opts.Strict
-	if !opts.Strict {
-		// default
-		strict = true
-	}
-
 	// Provider-specific structured output configuration is handled at the adapter layer.
 	ro := opts.GenerateOptions
 	ro.ResponseFormat = &ResponseFormat{
 		Type:       "json_schema",
 		JSONSchema: opts.Schema,
-		Strict:     strict,
+		Strict:     true,
 	}
 	res, err := Generate(ctx, ro)
 	if err != nil {
@@ -46,7 +37,7 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateR
 		return nil, NewNoObjectGeneratedError(fmt.Sprintf("failed to parse JSON output: %v", err), res.Text)
 	}
 
-	schema, err := compileJSONSchema(opts.Schema)
+	schema, err := compileSchema(opts.Schema)
 	if err != nil {
 		return nil, err
 	}
@@ -55,19 +46,6 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateR
 	}
 	res.Output = out
 	return res, nil
-}
-
-func compileJSONSchema(schema map[string]any) (*jsonschema.Schema, error) {
-	c := jsonschema.NewCompiler()
-	c.Draft = jsonschema.Draft2020
-	b, err := json.Marshal(schema)
-	if err != nil {
-		return nil, err
-	}
-	if err := c.AddResource("schema.json", bytes.NewReader(b)); err != nil {
-		return nil, err
-	}
-	return c.Compile("schema.json")
 }
 
 // StreamObjectResult wraps a StreamResult and adds schema-validated output.
@@ -123,12 +101,7 @@ func StreamGenerateObject(ctx context.Context, opts GenerateObjectOptions) (*Str
 	if opts.Schema == nil {
 		return nil, &ConfigurationError{Message: "schema is required"}
 	}
-	strict := opts.Strict
-	if !opts.Strict {
-		strict = true
-	}
-
-	compiledSchema, err := compileJSONSchema(opts.Schema)
+	compiledSchema, err := compileSchema(opts.Schema)
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +110,7 @@ func StreamGenerateObject(ctx context.Context, opts GenerateObjectOptions) (*Str
 	ro.ResponseFormat = &ResponseFormat{
 		Type:       "json_schema",
 		JSONSchema: opts.Schema,
-		Strict:     strict,
+		Strict:     true,
 	}
 
 	inner, err := StreamGenerate(ctx, ro)

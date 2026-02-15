@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -258,7 +259,6 @@ func runLLMCall(ctx context.Context, cfg llmCallConfig) error {
 		res, err := llm.GenerateObject(ctx, llm.GenerateObjectOptions{
 			GenerateOptions: opts,
 			Schema:          schema,
-			Strict:          true,
 		})
 		if err != nil {
 			return err
@@ -347,7 +347,7 @@ func readJSONSchemaFile(path string) (map[string]any, error) {
 		return nil, fmt.Errorf("read --schema %s: %w", path, err)
 	}
 	var out map[string]any
-	dec := json.NewDecoder(strings.NewReader(string(b)))
+	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.UseNumber()
 	if err := dec.Decode(&out); err != nil {
 		return nil, fmt.Errorf("parse JSON schema %s: %w", path, err)
