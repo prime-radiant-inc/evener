@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -68,7 +69,7 @@ func (c *ModelCatalog) GetLatestModel(provider string, capability string) *Model
 	models := c.ListModels(provider)
 	capability = strings.ToLower(strings.TrimSpace(capability))
 
-	filtered := models[:0]
+	var filtered []ModelInfo
 	for _, m := range models {
 		switch capability {
 		case "":
@@ -136,7 +137,7 @@ func LoadModelCatalogFromLiteLLMJSON(path string) (*ModelCatalog, error) {
 // parseLiteLLMCatalog parses LiteLLM catalog JSON bytes into a ModelCatalog.
 func parseLiteLLMCatalog(data []byte) (*ModelCatalog, error) {
 	var raw map[string]map[string]any
-	dec := json.NewDecoder(strings.NewReader(string(data)))
+	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
 	if err := dec.Decode(&raw); err != nil {
 		return nil, err
