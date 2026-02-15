@@ -385,6 +385,21 @@ func (req Request) Validate() error {
 	return nil
 }
 
+// ReasoningBudget converts a reasoning effort level (low/medium/high) to a
+// token budget. Returns 0 for unrecognized values.
+func ReasoningBudget(effort string) int {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "low":
+		return 1024
+	case "medium":
+		return 8192
+	case "high":
+		return 32768
+	default:
+		return 0
+	}
+}
+
 // IntFromAny extracts an integer from a JSON-decoded value.
 // Handles json.Number, float64, and int; returns 0 for other types.
 func IntFromAny(v any) int {

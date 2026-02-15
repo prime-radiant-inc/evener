@@ -145,7 +145,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		body["tools"] = tools
 	}
 	if req.ReasoningEffort != nil {
-		budget := anthropicReasoningBudget(*req.ReasoningEffort)
+		budget := llm.ReasoningBudget(*req.ReasoningEffort)
 		if budget > 0 {
 			body["thinking"] = map[string]any{
 				"type":          "enabled",
@@ -313,7 +313,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		body["tools"] = tools
 	}
 	if req.ReasoningEffort != nil {
-		budget := anthropicReasoningBudget(*req.ReasoningEffort)
+		budget := llm.ReasoningBudget(*req.ReasoningEffort)
 		if budget > 0 {
 			body["thinking"] = map[string]any{
 				"type":          "enabled",
@@ -1187,19 +1187,6 @@ func fromAnthropicResponse(raw map[string]any, requestedModel string) llm.Respon
 	}
 
 	return r
-}
-
-func anthropicReasoningBudget(effort string) int {
-	switch strings.ToLower(strings.TrimSpace(effort)) {
-	case "low":
-		return 1024
-	case "medium":
-		return 8192
-	case "high":
-		return 32768
-	default:
-		return 0
-	}
 }
 
 func anthropicAutoCacheEnabled(opts map[string]any) bool {

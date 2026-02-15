@@ -99,7 +99,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		}
 	}
 	if req.ReasoningEffort != nil {
-		budget := reasoningEffortToBudget(*req.ReasoningEffort)
+		budget := llm.ReasoningBudget(*req.ReasoningEffort)
 		if budget > 0 {
 			genCfg["thinkingConfig"] = map[string]any{
 				"thinkingBudget": budget,
@@ -257,7 +257,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		}
 	}
 	if req.ReasoningEffort != nil {
-		budget := reasoningEffortToBudget(*req.ReasoningEffort)
+		budget := llm.ReasoningBudget(*req.ReasoningEffort)
 		if budget > 0 {
 			genCfg["thinkingConfig"] = map[string]any{
 				"thinkingBudget": budget,
@@ -811,19 +811,6 @@ func geminiThoughtSignature(part map[string]any, fc map[string]any) string {
 		return strings.TrimSpace(v)
 	}
 	return ""
-}
-
-func reasoningEffortToBudget(effort string) int {
-	switch strings.ToLower(strings.TrimSpace(effort)) {
-	case "low":
-		return 1024
-	case "medium":
-		return 8192
-	case "high":
-		return 32768
-	default:
-		return 0
-	}
 }
 
 func normalizeJSONNumbers(v any) any {
