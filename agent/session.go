@@ -53,6 +53,9 @@ type SessionConfig struct {
 	// MCPInline are inline MCP server specs (--mcp flag, format: name:command args...).
 	MCPInline []string `json:"mcp_inline,omitempty"`
 
+	// PluginDirs are directories to scan for plugins (each contains a plugin.yaml manifest).
+	PluginDirs []string `json:"plugin_dirs,omitempty"`
+
 	// SystemPromptFile overrides the embedded system prompt with the contents of this file.
 	// Highest priority in the prompt resolution chain (CLI --system-prompt flag).
 	SystemPromptFile string `json:"system_prompt_file,omitempty"`

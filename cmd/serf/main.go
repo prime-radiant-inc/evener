@@ -37,6 +37,8 @@ func main() {
 	flag.Var(&mcpServers, "mcp", "MCP server (repeatable, format: name:command args...)")
 	var mcpConfigs stringSliceFlag
 	flag.Var(&mcpConfigs, "mcp-config", "path to .mcp.json file (repeatable)")
+	var pluginDirs stringSliceFlag
+	flag.Var(&pluginDirs, "plugin-dir", "plugin directory (repeatable)")
 	var systemPromptAppend stringSliceFlag
 	flag.Var(&systemPromptAppend, "system-prompt-append", "path to append to system prompt (repeatable)")
 
@@ -56,7 +58,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  --verbose            Emit NDJSON events to stderr (replaces human-readable output)\n")
 		fmt.Fprintf(os.Stderr, "  --skills-dir <path>  Extra skill directory (repeatable)\n")
 		fmt.Fprintf(os.Stderr, "  --mcp <spec>         MCP server (repeatable, format: name:command args...)\n")
-		fmt.Fprintf(os.Stderr, "  --mcp-config <path>  Path to .mcp.json file (repeatable)\n\n")
+		fmt.Fprintf(os.Stderr, "  --mcp-config <path>  Path to .mcp.json file (repeatable)\n")
+		fmt.Fprintf(os.Stderr, "  --plugin-dir <path>  Plugin directory (repeatable)\n\n")
 		fmt.Fprintf(os.Stderr, "Session resume:\n")
 		fmt.Fprintf(os.Stderr, "  --resume <id>        Resume a previous session\n")
 		fmt.Fprintf(os.Stderr, "  --resume-with <id>   New task using a previous session's context\n")
@@ -99,6 +102,7 @@ func main() {
 		skillsDirs:         []string(skillsDirs),
 		mcpServers:         []string(mcpServers),
 		mcpConfigs:         []string(mcpConfigs),
+		pluginDirs:         []string(pluginDirs),
 		stdout:             os.Stdout,
 		stderr:             os.Stderr,
 		resume:             *resume,

@@ -471,6 +471,26 @@ func TestMaxRoundsToConfig(t *testing.T) {
 	}
 }
 
+func TestRunConfig_PluginDirsPassthrough(t *testing.T) {
+	// Verify that pluginDirs on runConfig flows through to SessionConfig.PluginDirs.
+	cfg := runConfig{
+		pluginDirs: []string{"/a", "/b"},
+	}
+	if len(cfg.pluginDirs) != 2 {
+		t.Fatalf("pluginDirs: got %d, want 2", len(cfg.pluginDirs))
+	}
+
+	sessionCfg := agent.SessionConfig{
+		PluginDirs: cfg.pluginDirs,
+	}
+	if len(sessionCfg.PluginDirs) != 2 {
+		t.Fatalf("SessionConfig.PluginDirs: got %d, want 2", len(sessionCfg.PluginDirs))
+	}
+	if sessionCfg.PluginDirs[0] != "/a" || sessionCfg.PluginDirs[1] != "/b" {
+		t.Fatalf("SessionConfig.PluginDirs: got %v, want [/a /b]", sessionCfg.PluginDirs)
+	}
+}
+
 func TestResolveReasoningEffort(t *testing.T) {
 	tests := []struct {
 		name    string

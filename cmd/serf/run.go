@@ -33,6 +33,7 @@ type runConfig struct {
 	skillsDirs []string // extra skill directories
 	mcpServers []string // --mcp inline specs
 	mcpConfigs []string // --mcp-config file paths
+	pluginDirs []string // --plugin-dir directories
 
 	// Resume options.
 	resume       string // session ID to resume
@@ -154,6 +155,7 @@ func run(ctx context.Context, cfg runConfig) error {
 			SkillsDirs:            cfg.skillsDirs,
 			MCPConfigFiles:        cfg.mcpConfigs,
 			MCPInline:             cfg.mcpServers,
+			PluginDirs:            cfg.pluginDirs,
 		}
 		if effort.Set {
 			sessionCfg.ReasoningEffort = effort.Value
