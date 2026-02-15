@@ -29,6 +29,9 @@ type EvalMetrics struct {
 
 	// Per-question retention probe breakdown (when new probe format is used).
 	RetentionBreakdown []ProbeResult `json:"retention_breakdown,omitempty"`
+
+	// Diff captures the agent's code changes (git diff) after the run.
+	Diff string `json:"diff,omitempty"`
 }
 
 // F2PResults captures fail-to-pass test evaluation outcomes.

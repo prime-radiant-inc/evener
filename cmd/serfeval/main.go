@@ -157,6 +157,21 @@ func runEval(cfg evalConfig) error {
 	metrics.Completed = taskErr == nil
 	metrics.Result = result
 
+	// Capture git diff of agent's changes (before F2P test patch or cleanup).
+	// Use git add -N to track new files, then diff shows everything.
+	addNCmd := exec.Command("git", "add", "-N", ".")
+	addNCmd.Dir = cfg.workDir
+	addNCmd.Run() //nolint:errcheck // best effort
+	diffCmd := exec.Command("git", "diff")
+	diffCmd.Dir = cfg.workDir
+	if diffOut, diffErr := diffCmd.Output(); diffErr == nil {
+		metrics.Diff = string(diffOut)
+	}
+	// Reset the intent-to-add so it doesn't interfere with F2P tests.
+	resetCmd := exec.Command("git", "reset", "-q")
+	resetCmd.Dir = cfg.workDir
+	resetCmd.Run() //nolint:errcheck // best effort
+
 	// Run F2P test evaluation if test patch was provided.
 	if cfg.testPatch != "" && cfg.testCmd != "" {
 		f2p := runF2PTests(cfg.workDir, cfg.testPatch, cfg.testCmd, cfg.f2pTests)
