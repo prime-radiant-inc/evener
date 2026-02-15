@@ -35,6 +35,45 @@ type readResult struct {
 	err  error
 }
 
+// sseParser holds state for parsing SSE lines into events.
+type sseParser struct {
+	curEvent string
+	dataBuf  bytes.Buffer
+}
+
+// flush emits the buffered event (if any) and resets state.
+func (p *sseParser) flush(fn func(SSEEvent) error) error {
+	if p.curEvent == "" && p.dataBuf.Len() == 0 {
+		return nil
+	}
+	b := bytes.TrimSuffix(p.dataBuf.Bytes(), []byte("\n"))
+	ev := SSEEvent{Event: p.curEvent, Data: append([]byte{}, b...)}
+	p.curEvent = ""
+	p.dataBuf.Reset()
+	return fn(ev)
+}
+
+// processLine handles a single trimmed SSE line. Returns true if flush was
+// triggered (on blank lines).
+func (p *sseParser) processLine(line string, fn func(SSEEvent) error) (bool, error) {
+	switch {
+	case line == "":
+		return true, p.flush(fn)
+	case strings.HasPrefix(line, ":"):
+		// Comment; ignore.
+	case strings.HasPrefix(line, "event:"):
+		p.curEvent = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+	case strings.HasPrefix(line, "data:"):
+		data := strings.TrimPrefix(line, "data:")
+		data = strings.TrimLeft(data, " ")
+		p.dataBuf.WriteString(data)
+		p.dataBuf.WriteString("\n")
+	default:
+		// retry, unknown fields; ignore.
+	}
+	return false, nil
+}
+
 // ParseSSE parses Server-Sent Events from r and invokes fn for each complete event.
 // It handles "event:" and "data:" lines and emits an event on blank-line boundaries.
 func ParseSSE(ctx context.Context, r io.Reader, fn func(ev SSEEvent) error, opts ...SSEOption) error {
@@ -55,19 +94,7 @@ func ParseSSE(ctx context.Context, r io.Reader, fn func(ev SSEEvent) error, opts
 // stream-read timeout is configured.
 func parseSSEBlocking(ctx context.Context, r io.Reader, fn func(ev SSEEvent) error) error {
 	br := bufio.NewReader(r)
-
-	var curEvent string
-	var dataBuf bytes.Buffer
-	flush := func() error {
-		if curEvent == "" && dataBuf.Len() == 0 {
-			return nil
-		}
-		b := bytes.TrimSuffix(dataBuf.Bytes(), []byte("\n"))
-		ev := SSEEvent{Event: curEvent, Data: append([]byte{}, b...)}
-		curEvent = ""
-		dataBuf.Reset()
-		return fn(ev)
-	}
+	var p sseParser
 
 	for {
 		if ctx.Err() != nil {
@@ -79,27 +106,12 @@ func parseSSEBlocking(ctx context.Context, r io.Reader, fn func(ev SSEEvent) err
 		}
 		line = strings.TrimRight(line, "\r\n")
 
-		switch {
-		case line == "":
-			if err := flush(); err != nil {
-				return err
-			}
-		case strings.HasPrefix(line, ":"):
-			// Comment; ignore.
-		case strings.HasPrefix(line, "event:"):
-			curEvent = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-		case strings.HasPrefix(line, "data:"):
-			data := strings.TrimPrefix(line, "data:")
-			data = strings.TrimLeft(data, " ")
-			dataBuf.WriteString(data)
-			dataBuf.WriteString("\n")
-		default:
-			// retry, unknown fields; ignore.
+		if _, perr := p.processLine(line, fn); perr != nil {
+			return perr
 		}
 
 		if err == io.EOF {
-			// Flush final partial event.
-			return flush()
+			return p.flush(fn)
 		}
 	}
 }
@@ -121,19 +133,7 @@ func parseSSEWithTimeout(ctx context.Context, r io.Reader, fn func(ev SSEEvent) 
 		}
 	}()
 
-	var curEvent string
-	var dataBuf bytes.Buffer
-	flush := func() error {
-		if curEvent == "" && dataBuf.Len() == 0 {
-			return nil
-		}
-		b := bytes.TrimSuffix(dataBuf.Bytes(), []byte("\n"))
-		ev := SSEEvent{Event: curEvent, Data: append([]byte{}, b...)}
-		curEvent = ""
-		dataBuf.Reset()
-		return fn(ev)
-	}
-
+	var p sseParser
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
@@ -141,7 +141,6 @@ func parseSSEWithTimeout(ctx context.Context, r io.Reader, fn func(ev SSEEvent) 
 		select {
 		case res := <-lineCh:
 			if !timer.Stop() {
-				// Drain the timer channel if it already fired.
 				select {
 				case <-timer.C:
 				default:
@@ -156,26 +155,12 @@ func parseSSEWithTimeout(ctx context.Context, r io.Reader, fn func(ev SSEEvent) 
 			}
 			line = strings.TrimRight(line, "\r\n")
 
-			switch {
-			case line == "":
-				if err := flush(); err != nil {
-					return err
-				}
-			case strings.HasPrefix(line, ":"):
-				// Comment; ignore.
-			case strings.HasPrefix(line, "event:"):
-				curEvent = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-			case strings.HasPrefix(line, "data:"):
-				data := strings.TrimPrefix(line, "data:")
-				data = strings.TrimLeft(data, " ")
-				dataBuf.WriteString(data)
-				dataBuf.WriteString("\n")
-			default:
-				// retry, unknown fields; ignore.
+			if _, perr := p.processLine(line, fn); perr != nil {
+				return perr
 			}
 
 			if err == io.EOF {
-				return flush()
+				return p.flush(fn)
 			}
 
 		case <-timer.C:
