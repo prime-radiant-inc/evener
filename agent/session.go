@@ -193,68 +193,8 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		cancelFunc: sessCancel,
 	}
 
-	// Snapshot environment context once per session (spec).
-	ei := envInfoFromEnv(env)
-	ei.KnowledgeCutoff = profile.KnowledgeCutoff()
-	if inRepo, branch, mod, untracked, commits := snapshotGit(env, ei.WorkingDir); inRepo {
-		ei.IsGitRepo = true
-		ei.GitBranch = branch
-		ei.GitModifiedFiles = mod
-		ei.GitUntrackedFiles = untracked
-		ei.GitRecentCommitTitles = commits
-		ei.GitOriginURL = gitOriginURL(env, ei.WorkingDir)
-	}
-	s.envInfo = ei
-
-	// Resolve system prompt: embedded base+provider, global/project additions, CLI overrides.
-	gitRoot := gitRootOrEmpty(env, ei.WorkingDir)
-	resolvedPrompt, err := ResolveSystemPrompt(
-		profile.ID(), profile.Model(),
-		cfg.SystemPromptFile,
-		ProjectPromptsDir(gitRoot),
-		GlobalPromptsDir(),
-		cfg.SystemPromptAppend,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("resolve system prompt: %w", err)
-	}
-	s.profile = profile.WithBasePrompt(resolvedPrompt)
-
-	s.skills = DiscoverSkills(env, cfg.SkillsDirs...)
-	s.contextMgr = NewContextManager(s.profile, client)
-
-	reg := s.profile.NewToolRegistry()
-	if err := registerCoreTools(reg, s); err != nil {
+	if err := s.initSessionState(); err != nil {
 		return nil, err
-	}
-	// Allow SessionConfig to override default tool output limits (spec).
-	if len(cfg.ToolOutputLimits) > 0 {
-		reg.mu.Lock()
-		for name, lim := range cfg.ToolOutputLimits {
-			t, ok := reg.tools[name]
-			if !ok {
-				continue
-			}
-			// Merge: only positive overrides take effect.
-			if lim.MaxChars > 0 {
-				t.Limit.MaxChars = lim.MaxChars
-			}
-			if lim.MaxLines > 0 {
-				t.Limit.MaxLines = lim.MaxLines
-			}
-			if lim.Strategy != "" {
-				t.Limit.Strategy = lim.Strategy
-			}
-			reg.tools[name] = t
-		}
-		reg.mu.Unlock()
-	}
-	s.reg = reg
-	s.coreToolNames = reg.nameSet()
-
-	// MCP server discovery and connection.
-	if err := s.initMCP(); err != nil {
-		return nil, fmt.Errorf("MCP initialization: %w", err)
 	}
 
 	s.emit(EventSessionStart, SessionStartData{
@@ -303,66 +243,8 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		cancelFunc: sessCancel,
 	}
 
-	// Refresh environment context for the current state.
-	ei := envInfoFromEnv(env)
-	ei.KnowledgeCutoff = profile.KnowledgeCutoff()
-	if inRepo, branch, mod, untracked, commits := snapshotGit(env, ei.WorkingDir); inRepo {
-		ei.IsGitRepo = true
-		ei.GitBranch = branch
-		ei.GitModifiedFiles = mod
-		ei.GitUntrackedFiles = untracked
-		ei.GitRecentCommitTitles = commits
-		ei.GitOriginURL = gitOriginURL(env, ei.WorkingDir)
-	}
-	s.envInfo = ei
-
-	// Resolve system prompt (same layered resolution as NewSession).
-	gitRoot := gitRootOrEmpty(env, ei.WorkingDir)
-	resolvedPrompt, err := ResolveSystemPrompt(
-		profile.ID(), profile.Model(),
-		cfg.SystemPromptFile,
-		ProjectPromptsDir(gitRoot),
-		GlobalPromptsDir(),
-		cfg.SystemPromptAppend,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("resolve system prompt: %w", err)
-	}
-	s.profile = profile.WithBasePrompt(resolvedPrompt)
-
-	s.skills = DiscoverSkills(env, cfg.SkillsDirs...)
-	s.contextMgr = NewContextManager(s.profile, client)
-
-	reg := s.profile.NewToolRegistry()
-	if err := registerCoreTools(reg, s); err != nil {
+	if err := s.initSessionState(); err != nil {
 		return nil, err
-	}
-	if len(cfg.ToolOutputLimits) > 0 {
-		reg.mu.Lock()
-		for name, lim := range cfg.ToolOutputLimits {
-			t, ok := reg.tools[name]
-			if !ok {
-				continue
-			}
-			if lim.MaxChars > 0 {
-				t.Limit.MaxChars = lim.MaxChars
-			}
-			if lim.MaxLines > 0 {
-				t.Limit.MaxLines = lim.MaxLines
-			}
-			if lim.Strategy != "" {
-				t.Limit.Strategy = lim.Strategy
-			}
-			reg.tools[name] = t
-		}
-		reg.mu.Unlock()
-	}
-	s.reg = reg
-	s.coreToolNames = reg.nameSet()
-
-	// MCP server discovery and connection.
-	if err := s.initMCP(); err != nil {
-		return nil, fmt.Errorf("MCP initialization: %w", err)
 	}
 
 	s.emit(EventSessionStart, SessionStartData{
@@ -1144,6 +1026,72 @@ func (s *Session) allToolDefinitions() []llm.ToolDefinition {
 		defs = append(append([]llm.ToolDefinition{}, defs...), s.mcpTools...)
 	}
 	return defs
+}
+
+// initSessionState performs the shared initialization steps for both
+// NewSession and RestoreSession: environment snapshot, system prompt
+// resolution, skills discovery, tool registry setup, and MCP connection.
+// The Session struct fields (client, profile, env, cfg) must already be set.
+func (s *Session) initSessionState() error {
+	ei := envInfoFromEnv(s.env)
+	ei.KnowledgeCutoff = s.profile.KnowledgeCutoff()
+	if inRepo, branch, mod, untracked, commits := snapshotGit(s.env, ei.WorkingDir); inRepo {
+		ei.IsGitRepo = true
+		ei.GitBranch = branch
+		ei.GitModifiedFiles = mod
+		ei.GitUntrackedFiles = untracked
+		ei.GitRecentCommitTitles = commits
+		ei.GitOriginURL = gitOriginURL(s.env, ei.WorkingDir)
+	}
+	s.envInfo = ei
+
+	gitRoot := gitRootOrEmpty(s.env, ei.WorkingDir)
+	resolvedPrompt, err := ResolveSystemPrompt(
+		s.profile.ID(), s.profile.Model(),
+		s.cfg.SystemPromptFile,
+		ProjectPromptsDir(gitRoot),
+		GlobalPromptsDir(),
+		s.cfg.SystemPromptAppend,
+	)
+	if err != nil {
+		return fmt.Errorf("resolve system prompt: %w", err)
+	}
+	s.profile = s.profile.WithBasePrompt(resolvedPrompt)
+
+	s.skills = DiscoverSkills(s.env, s.cfg.SkillsDirs...)
+	s.contextMgr = NewContextManager(s.profile, s.client)
+
+	reg := s.profile.NewToolRegistry()
+	if err := registerCoreTools(reg, s); err != nil {
+		return err
+	}
+	if len(s.cfg.ToolOutputLimits) > 0 {
+		reg.mu.Lock()
+		for name, lim := range s.cfg.ToolOutputLimits {
+			t, ok := reg.tools[name]
+			if !ok {
+				continue
+			}
+			if lim.MaxChars > 0 {
+				t.Limit.MaxChars = lim.MaxChars
+			}
+			if lim.MaxLines > 0 {
+				t.Limit.MaxLines = lim.MaxLines
+			}
+			if lim.Strategy != "" {
+				t.Limit.Strategy = lim.Strategy
+			}
+			reg.tools[name] = t
+		}
+		reg.mu.Unlock()
+	}
+	s.reg = reg
+	s.coreToolNames = reg.nameSet()
+
+	if err := s.initMCP(); err != nil {
+		return fmt.Errorf("MCP initialization: %w", err)
+	}
+	return nil
 }
 
 // initMCP discovers and connects to MCP servers if configured.
