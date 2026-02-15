@@ -196,7 +196,7 @@ func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error
 		})
 		cancelStep()
 		if err != nil {
-			return nil, wrapContextError(req.Provider, err)
+			return nil, WrapContextError(req.Provider, err)
 		}
 
 		calls := resp.ToolCalls()

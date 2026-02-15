@@ -168,7 +168,7 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 
 		for {
 			if sctx.Err() != nil {
-				err := wrapContextError(opts.Provider, sctx.Err())
+				err := WrapContextError(opts.Provider, sctx.Err())
 				outStream.Send(StreamEvent{Type: StreamEventError, Err: err})
 				res.mu.Lock()
 				res.err = err
@@ -200,7 +200,7 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 			})
 			if err != nil {
 				cancelStep()
-				err = wrapContextError(req.Provider, err)
+				err = WrapContextError(req.Provider, err)
 				outStream.Send(StreamEvent{Type: StreamEventError, Err: err})
 				res.mu.Lock()
 				res.err = err
@@ -250,7 +250,7 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 			cancelStep()
 
 			if finishEv == nil {
-				err := wrapContextError(req.Provider, callCtx.Err())
+				err := WrapContextError(req.Provider, callCtx.Err())
 				if err == nil {
 					err = NewStreamError(strings.TrimSpace(req.Provider), "stream ended without finish event")
 				}
