@@ -134,6 +134,17 @@ func (r *ToolRegistry) Restrict(allowed map[string]bool) {
 	}
 }
 
+// RegisteredNames returns a set of all currently registered tool names.
+func (r *ToolRegistry) RegisteredNames() map[string]bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	names := make(map[string]bool, len(r.tools))
+	for name := range r.tools {
+		names[name] = true
+	}
+	return names
+}
+
 func (r *ToolRegistry) Unregister(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -1132,11 +1132,36 @@ func (s *Session) customToolDescriptions() string {
 	return b.String()
 }
 
-// allToolDefinitions returns profile tool definitions plus any MCP tools.
+// allToolDefinitions returns tool definitions for tools registered in the
+// session's tool registry, plus any MCP tools. Only tools present in the
+// registry are included, ensuring tool restrictions (e.g. from plugin agents)
+// are reflected in what the LLM sees.
 func (s *Session) allToolDefinitions() []llm.ToolDefinition {
-	defs := s.profile.ToolDefinitions()
-	if len(s.mcpTools) > 0 {
-		defs = append(append([]llm.ToolDefinition{}, defs...), s.mcpTools...)
+	registered := s.reg.RegisteredNames()
+
+	// Profile tool definitions use provider-specific names (e.g. "exec_command"
+	// for OpenAI). Build a reverse map from provider name → canonical name so
+	// we can filter against the registry which uses canonical names.
+	nameMap := s.profile.ToolNameMap() // canonical → provider, may be nil
+	reverseMap := make(map[string]string, len(nameMap))
+	for canonical, provider := range nameMap {
+		reverseMap[provider] = canonical
+	}
+
+	var defs []llm.ToolDefinition
+	for _, td := range s.profile.ToolDefinitions() {
+		canonical := td.Name
+		if c, ok := reverseMap[td.Name]; ok {
+			canonical = c
+		}
+		if registered[canonical] {
+			defs = append(defs, td)
+		}
+	}
+	for _, td := range s.mcpTools {
+		if registered[td.Name] {
+			defs = append(defs, td)
+		}
 	}
 	return defs
 }
