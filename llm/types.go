@@ -364,11 +364,7 @@ func (r Response) ReasoningText() string {
 			b.WriteString(p.Thinking.Text)
 		}
 	}
-	s := b.String()
-	if s == "" {
-		return ""
-	}
-	return s
+	return b.String()
 }
 
 func (req Request) Validate() error {
