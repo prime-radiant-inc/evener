@@ -1,8 +1,11 @@
 package agent
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -241,5 +244,130 @@ func TestDiscoverPluginHooks_NoFile(t *testing.T) {
 	}
 	if len(hooks) != 0 {
 		t.Errorf("expected empty map, got %d entries", len(hooks))
+	}
+}
+
+// --- Task 8: Command Hook Execution ---
+
+func TestExecuteCommandHook(t *testing.T) {
+	hook := RegisteredHook{
+		Type:      "command",
+		Command:   "cat",
+		Timeout:   5,
+		PluginDir: "/tmp",
+	}
+	input := HookInput{
+		SessionID:     "sess-123",
+		CWD:           "/tmp",
+		HookEventName: "PreToolUse",
+		ToolName:      "Write",
+	}
+
+	result, err := executeCommandHook(context.Background(), hook, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Errorf("ExitCode = %d, want 0", result.ExitCode)
+	}
+	// cat echoes stdin, so output should contain the JSON input
+	if !strings.Contains(result.Stdout, "sess-123") {
+		t.Errorf("stdout should contain session_id, got %q", result.Stdout)
+	}
+	if !strings.Contains(result.Stdout, "PreToolUse") {
+		t.Errorf("stdout should contain hook_event_name, got %q", result.Stdout)
+	}
+}
+
+func TestExecuteCommandHook_Timeout(t *testing.T) {
+	hook := RegisteredHook{
+		Type:      "command",
+		Command:   "sleep 60",
+		Timeout:   1,
+		PluginDir: "/tmp",
+	}
+	input := HookInput{
+		CWD:           "/tmp",
+		HookEventName: "PreToolUse",
+	}
+
+	_, err := executeCommandHook(context.Background(), hook, input)
+	if err == nil {
+		t.Fatal("expected error for timeout")
+	}
+	if !strings.Contains(err.Error(), "killed") && !strings.Contains(err.Error(), "deadline") {
+		t.Errorf("error should indicate timeout/kill, got %q", err.Error())
+	}
+}
+
+func TestExecuteCommandHook_ExitCode2(t *testing.T) {
+	hook := RegisteredHook{
+		Type:      "command",
+		Command:   "exit 2",
+		Timeout:   5,
+		PluginDir: "/tmp",
+	}
+	input := HookInput{
+		CWD:           "/tmp",
+		HookEventName: "PreToolUse",
+	}
+
+	result, err := executeCommandHook(context.Background(), hook, input)
+	// Non-zero exit is not a Go error — it's captured in ExitCode
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.ExitCode != 2 {
+		t.Errorf("ExitCode = %d, want 2", result.ExitCode)
+	}
+}
+
+func TestExecuteCommandHook_Environment(t *testing.T) {
+	hook := RegisteredHook{
+		Type:      "command",
+		Command:   "echo PLUGIN=$CLAUDE_PLUGIN_ROOT PROJECT=$CLAUDE_PROJECT_DIR",
+		Timeout:   5,
+		PluginDir: "/my/plugin/dir",
+	}
+	input := HookInput{
+		CWD:           "/my/project",
+		HookEventName: "PreToolUse",
+	}
+
+	result, err := executeCommandHook(context.Background(), hook, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result.Stdout, "PLUGIN=/my/plugin/dir") {
+		t.Errorf("stdout should contain PLUGIN=/my/plugin/dir, got %q", result.Stdout)
+	}
+	if !strings.Contains(result.Stdout, "PROJECT=/my/project") {
+		t.Errorf("stdout should contain PROJECT=/my/project, got %q", result.Stdout)
+	}
+}
+
+// Verify HookInput JSON marshaling is correct.
+func TestHookInput_JSON(t *testing.T) {
+	input := HookInput{
+		SessionID:     "s1",
+		CWD:           "/tmp",
+		HookEventName: "PreToolUse",
+		ToolName:      "Write",
+		ToolInput:     map[string]any{"file": "test.go"},
+	}
+	data, err := json.Marshal(input)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	s := string(data)
+	if !strings.Contains(s, `"session_id":"s1"`) {
+		t.Errorf("missing session_id in JSON: %s", s)
+	}
+	if !strings.Contains(s, `"tool_name":"Write"`) {
+		t.Errorf("missing tool_name in JSON: %s", s)
+	}
+	// Empty fields should be omitted
+	if strings.Contains(s, `"user_prompt"`) {
+		t.Errorf("empty user_prompt should be omitted: %s", s)
 	}
 }

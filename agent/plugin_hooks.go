@@ -1,10 +1,14 @@
 package agent
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"time"
 )
 
 // HookEvent identifies when a hook fires.
@@ -184,4 +188,68 @@ func trimJSONWhitespace(data []byte) []byte {
 		}
 	}
 	return nil
+}
+
+// HookInput is the JSON payload piped to command hooks via stdin.
+type HookInput struct {
+	SessionID     string         `json:"session_id"`
+	CWD           string         `json:"cwd"`
+	HookEventName string         `json:"hook_event_name"`
+	ToolName      string         `json:"tool_name,omitempty"`
+	ToolInput     map[string]any `json:"tool_input,omitempty"`
+	ToolResult    string         `json:"tool_result,omitempty"`
+	UserPrompt    string         `json:"user_prompt,omitempty"`
+	Reason        string         `json:"reason,omitempty"`
+}
+
+// HookResult captures the output of a hook execution.
+type HookResult struct {
+	Stdout   string
+	Stderr   string
+	ExitCode int
+}
+
+// executeCommandHook runs a command hook with the given input piped as JSON to stdin.
+// Non-zero exit codes are captured in HookResult.ExitCode, not returned as Go errors.
+// Only returns an error for infrastructure failures (timeout, process start failure).
+func executeCommandHook(ctx context.Context, hook RegisteredHook, input HookInput) (HookResult, error) {
+	inputJSON, err := json.Marshal(input)
+	if err != nil {
+		return HookResult{}, fmt.Errorf("marshaling hook input: %w", err)
+	}
+
+	timeout := time.Duration(hook.Timeout) * time.Second
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "bash", "-c", hook.Command)
+	cmd.Stdin = bytes.NewReader(inputJSON)
+	cmd.Env = append(os.Environ(),
+		"CLAUDE_PLUGIN_ROOT="+hook.PluginDir,
+		"CLAUDE_PROJECT_DIR="+input.CWD,
+	)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err = cmd.Run()
+	result := HookResult{
+		Stdout: stdout.String(),
+		Stderr: stderr.String(),
+	}
+
+	if err != nil {
+		// Check if context timed out or was canceled — report as infrastructure error.
+		if ctx.Err() != nil {
+			return result, fmt.Errorf("hook command killed: %w", ctx.Err())
+		}
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			result.ExitCode = exitErr.ExitCode()
+			return result, nil
+		}
+		return result, fmt.Errorf("running hook command: %w", err)
+	}
+
+	return result, nil
 }
