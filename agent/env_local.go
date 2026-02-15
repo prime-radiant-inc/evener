@@ -92,12 +92,7 @@ func (e *LocalExecutionEnvironment) Platform() string {
 
 func (e *LocalExecutionEnvironment) OSVersion() string {
 	switch runtime.GOOS {
-	case "darwin":
-		out, err := exec.Command("uname", "-rs").Output()
-		if err == nil {
-			return strings.TrimSpace(string(out))
-		}
-	case "linux":
+	case "darwin", "linux":
 		out, err := exec.Command("uname", "-rs").Output()
 		if err == nil {
 			return strings.TrimSpace(string(out))
@@ -736,25 +731,7 @@ func filteredEnvWithPolicy(policy EnvVarPolicy, extra map[string]string) []strin
 func filteredEnv(extra map[string]string) []string {
 	deny := func(k string) bool {
 		uk := strings.ToUpper(k)
-		if strings.Contains(uk, "API_KEY") || strings.Contains(uk, "SECRET") || strings.Contains(uk, "TOKEN") || strings.Contains(uk, "PASSWORD") || strings.Contains(uk, "CREDENTIAL") {
-			return true
-		}
-		return false
-	}
-	allow := map[string]bool{
-		"PATH":        true,
-		"HOME":        true,
-		"USER":        true,
-		"SHELL":       true,
-		"LANG":        true,
-		"TERM":        true,
-		"TMPDIR":      true,
-		"GOPATH":      true,
-		"GOMODCACHE":  true,
-		"CARGO_HOME":  true,
-		"NVM_DIR":     true,
-		"RUSTUP_HOME": true,
-		"PYENV_ROOT":  true,
+		return strings.Contains(uk, "API_KEY") || strings.Contains(uk, "SECRET") || strings.Contains(uk, "TOKEN") || strings.Contains(uk, "PASSWORD") || strings.Contains(uk, "CREDENTIAL")
 	}
 	out := []string{}
 	for _, kv := range os.Environ() {
@@ -762,14 +739,9 @@ func filteredEnv(extra map[string]string) []string {
 		if !ok {
 			continue
 		}
-		if allow[k] && !deny(k) {
-			out = append(out, kv)
-			continue
-		}
 		if deny(k) {
 			continue
 		}
-		// Keep non-sensitive env vars by default.
 		out = append(out, kv)
 	}
 	for k, v := range extra {
