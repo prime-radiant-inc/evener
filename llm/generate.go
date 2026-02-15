@@ -122,7 +122,18 @@ func newResult(step StepResult, totalUsage Usage, steps []StepResult, resp Respo
 	}
 }
 
-func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error) {
+// generationState holds the resolved/validated state shared by Generate and StreamGenerate.
+type generationState struct {
+	client        *Client
+	history       []Message
+	toolIndex     map[string]Tool
+	toolDefs      []ToolDefinition
+	hasActiveTool bool
+	maxToolRounds int
+	policy        RetryPolicy
+}
+
+func prepareGeneration(opts GenerateOptions) (*generationState, error) {
 	client := opts.Client
 	if client == nil {
 		var err error
@@ -135,10 +146,6 @@ func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error
 		return nil, err
 	}
 
-	ctx, cancelTotal := WithTimeout(ctx, opts.TimeoutTotal)
-	defer cancelTotal()
-
-	// Spec default.
 	maxToolRounds := 1
 	if opts.MaxToolRounds != nil {
 		maxToolRounds = *opts.MaxToolRounds
@@ -147,11 +154,10 @@ func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error
 		maxToolRounds = 0
 	}
 
-	// Prompt standardization.
 	if opts.Prompt != nil && len(opts.Messages) > 0 {
 		return nil, &ConfigurationError{Message: "provide either prompt or messages, not both"}
 	}
-	var history []Message // includes system prefix (if any)
+	var history []Message
 	if opts.System != nil && *opts.System != "" {
 		history = append(history, System(*opts.System))
 	}
@@ -181,6 +187,27 @@ func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error
 		policy = *opts.RetryPolicy
 	}
 
+	return &generationState{
+		client:        client,
+		history:       history,
+		toolIndex:     toolIndex,
+		toolDefs:      toolDefs,
+		hasActiveTool: hasActiveTool,
+		maxToolRounds: maxToolRounds,
+		policy:        policy,
+	}, nil
+}
+
+func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error) {
+	gs, err := prepareGeneration(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	ctx, cancelTotal := WithTimeout(ctx, opts.TimeoutTotal)
+	defer cancelTotal()
+
+	history := gs.history
 	steps := []StepResult{}
 	totalUsage := Usage{Raw: map[string]any{}}
 
@@ -190,7 +217,7 @@ func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error
 			Model:           opts.Model,
 			Provider:        opts.Provider,
 			Messages:        append([]Message{}, history...),
-			Tools:           toolDefs,
+			Tools:           gs.toolDefs,
 			ToolChoice:      opts.ToolChoice,
 			ResponseFormat:  opts.ResponseFormat,
 			Temperature:     opts.Temperature,
@@ -205,8 +232,8 @@ func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error
 		}
 
 		callCtx, cancelStep := WithTimeout(ctx, opts.TimeoutPerStep)
-		resp, err := Retry(callCtx, policy, opts.Sleep, nil, func() (Response, error) {
-			return client.Complete(callCtx, req)
+		resp, err := Retry(callCtx, gs.policy, opts.Sleep, nil, func() (Response, error) {
+			return gs.client.Complete(callCtx, req)
 		})
 		cancelStep()
 		if err != nil {
@@ -228,7 +255,7 @@ func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error
 			Warnings:     append([]Warning{}, resp.Warnings...),
 		}
 		totalUsage = totalUsage.Add(resp.Usage)
-		if len(calls) == 0 || (resp.Finish.Reason != FinishReasonToolCalls && resp.Finish.Reason != FinishReasonPauseTurn) || !hasActiveTool || maxToolRounds == 0 || toolRoundsUsed >= maxToolRounds {
+		if len(calls) == 0 || (resp.Finish.Reason != FinishReasonToolCalls && resp.Finish.Reason != FinishReasonPauseTurn) || !gs.hasActiveTool || gs.maxToolRounds == 0 || toolRoundsUsed >= gs.maxToolRounds {
 			// No tool loop (natural completion, tool loops disabled, or budget exhausted).
 			steps = append(steps, step)
 			return newResult(step, totalUsage, steps, resp), nil
@@ -239,14 +266,14 @@ func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error
 
 		// Passive tool call: return tool calls to the caller when we lack an execute handler.
 		for _, call := range calls {
-			if t, ok := toolIndex[call.Name]; ok && t.Execute == nil {
+			if t, ok := gs.toolIndex[call.Name]; ok && t.Execute == nil {
 				steps = append(steps, step)
 				return newResult(step, totalUsage, steps, resp), nil
 			}
 		}
 
 		// Execute tools (in parallel) and continue.
-		results := executeToolCalls(ctx, toolIndex, calls, history, opts.RepairToolCall)
+		results := executeToolCalls(ctx, gs.toolIndex, calls, history, opts.RepairToolCall)
 		step.ToolResults = results
 		steps = append(steps, step)
 

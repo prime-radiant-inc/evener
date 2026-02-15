@@ -88,59 +88,9 @@ func (r *StreamResult) Steps() []StepResult {
 // to Generate(), but yields StreamEvent values incrementally and continues across
 // tool-execution steps. Between tool steps it emits a STEP_FINISH event.
 func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, error) {
-	client := opts.Client
-	if client == nil {
-		var err error
-		client, err = DefaultClient()
-		if err != nil {
-			return nil, err
-		}
-	}
-	if err := opts.validate(); err != nil {
-		return nil, err
-	}
-
-	// Spec default.
-	maxToolRounds := 1
-	if opts.MaxToolRounds != nil {
-		maxToolRounds = *opts.MaxToolRounds
-	}
-	if maxToolRounds < 0 {
-		maxToolRounds = 0
-	}
-
-	// Prompt standardization.
-	if opts.Prompt != nil && len(opts.Messages) > 0 {
-		return nil, &ConfigurationError{Message: "provide either prompt or messages, not both"}
-	}
-	var history []Message // includes system prefix (if any)
-	if opts.System != nil && *opts.System != "" {
-		history = append(history, System(*opts.System))
-	}
-	switch {
-	case opts.Prompt != nil:
-		history = append(history, User(*opts.Prompt))
-	case len(opts.Messages) > 0:
-		history = append(history, opts.Messages...)
-	default:
-		return nil, &ConfigurationError{Message: "prompt/messages required"}
-	}
-
-	toolIndex, toolDefs, err := prepareTools(opts.Tools)
+	gs, err := prepareGeneration(opts)
 	if err != nil {
 		return nil, err
-	}
-	hasActiveTool := false
-	for _, t := range opts.Tools {
-		if t.Execute != nil {
-			hasActiveTool = true
-			break
-		}
-	}
-
-	policy := DefaultRetryPolicy()
-	if opts.RetryPolicy != nil {
-		policy = *opts.RetryPolicy
 	}
 
 	ctxTotal, cancelTotal := WithTimeout(ctx, opts.TimeoutTotal)
@@ -161,6 +111,7 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 		defer cancelTotal()
 		defer outStream.CloseSend()
 
+		history := gs.history
 		stepIndex := 0
 		toolRoundsUsed := 0
 		var steps []StepResult
@@ -180,7 +131,7 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 				Model:           opts.Model,
 				Provider:        opts.Provider,
 				Messages:        append([]Message{}, history...),
-				Tools:           toolDefs,
+				Tools:           gs.toolDefs,
 				ToolChoice:      opts.ToolChoice,
 				ResponseFormat:  opts.ResponseFormat,
 				Temperature:     opts.Temperature,
@@ -195,8 +146,8 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 			}
 
 			callCtx, cancelStep := WithTimeout(sctx, opts.TimeoutPerStep)
-			st, err := Retry(callCtx, policy, opts.Sleep, nil, func() (Stream, error) {
-				return client.Stream(callCtx, req)
+			st, err := Retry(callCtx, gs.policy, opts.Sleep, nil, func() (Stream, error) {
+				return gs.client.Stream(callCtx, req)
 			})
 			if err != nil {
 				cancelStep()
@@ -279,13 +230,13 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 			// Stop if there are no tool calls, tool looping is disabled, we lack active tools,
 			// or we've exhausted the tool-round budget.
 			stopNow := false
-			if len(calls) == 0 || (stepResp.Finish.Reason != FinishReasonToolCalls && stepResp.Finish.Reason != FinishReasonPauseTurn) || !hasActiveTool || maxToolRounds == 0 || toolRoundsUsed >= maxToolRounds {
+			if len(calls) == 0 || (stepResp.Finish.Reason != FinishReasonToolCalls && stepResp.Finish.Reason != FinishReasonPauseTurn) || !gs.hasActiveTool || gs.maxToolRounds == 0 || toolRoundsUsed >= gs.maxToolRounds {
 				stopNow = true
 			}
 			// Passive tool call: if a tool is defined but has no execute handler, return to caller.
 			if !stopNow {
 				for _, call := range calls {
-					if t, ok := toolIndex[call.Name]; ok && t.Execute == nil {
+					if t, ok := gs.toolIndex[call.Name]; ok && t.Execute == nil {
 						stopNow = true
 						break
 					}
@@ -325,7 +276,7 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 			// Continue the tool loop.
 			history = append(history, stepResp.Message)
 
-			results := executeToolCalls(sctx, toolIndex, calls, history, opts.RepairToolCall)
+			results := executeToolCalls(sctx, gs.toolIndex, calls, history, opts.RepairToolCall)
 			for _, r := range results {
 				history = append(history, ToolResultNamed(r.ToolCallID, r.Name, r.Content, r.IsError))
 			}
