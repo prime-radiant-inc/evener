@@ -612,6 +612,103 @@ func TestHookRunner_ToolNameMapping(t *testing.T) {
 	_ = result
 }
 
+// --- Task 11: Hook Output Parsing ---
+
+func TestParseHookOutput_PlainText(t *testing.T) {
+	result := parseHookOutput("some plain text output", 0)
+	if result.SystemMessage != "some plain text output" {
+		t.Errorf("SystemMessage = %q, want %q", result.SystemMessage, "some plain text output")
+	}
+	if result.Denied {
+		t.Error("plain text should not be denied")
+	}
+	if result.Blocked {
+		t.Error("plain text should not be blocked")
+	}
+	if result.IsError {
+		t.Error("plain text should not be error")
+	}
+	if !result.Continue {
+		t.Error("plain text should have Continue=true")
+	}
+}
+
+func TestParseHookOutput_StructuredJSON(t *testing.T) {
+	output := `{"continue": false, "suppressOutput": true, "systemMessage": "pausing"}`
+	result := parseHookOutput(output, 0)
+	if result.Continue {
+		t.Error("expected Continue=false")
+	}
+	if !result.SuppressOutput {
+		t.Error("expected SuppressOutput=true")
+	}
+	if result.SystemMessage != "pausing" {
+		t.Errorf("SystemMessage = %q, want %q", result.SystemMessage, "pausing")
+	}
+}
+
+func TestParseHookOutput_PreToolUseDeny(t *testing.T) {
+	output := `{"hookSpecificOutput":{"permissionDecision":"deny","reason":"dangerous operation"}}`
+	result := parseHookOutput(output, 0)
+	if !result.Denied {
+		t.Error("expected Denied=true")
+	}
+	if result.SystemMessage != "dangerous operation" {
+		t.Errorf("SystemMessage = %q, want %q", result.SystemMessage, "dangerous operation")
+	}
+}
+
+func TestParseHookOutput_StopBlock(t *testing.T) {
+	output := `{"decision": "block", "reason": "not ready to stop"}`
+	result := parseHookOutput(output, 0)
+	if !result.Blocked {
+		t.Error("expected Blocked=true")
+	}
+	if result.BlockReason != "not ready to stop" {
+		t.Errorf("BlockReason = %q, want %q", result.BlockReason, "not ready to stop")
+	}
+}
+
+func TestParseHookOutput_ExitCode2(t *testing.T) {
+	result := parseHookOutput("error details here", 2)
+	if !result.IsError {
+		t.Error("expected IsError=true for exit code 2")
+	}
+	if result.SystemMessage != "error details here" {
+		t.Errorf("SystemMessage = %q, want %q", result.SystemMessage, "error details here")
+	}
+}
+
+func TestParseHookOutput_UpdatedInput(t *testing.T) {
+	output := `{"hookSpecificOutput":{"updatedInput":{"file_path":"/safe/path","content":"sanitized"}}}`
+	result := parseHookOutput(output, 0)
+	if result.UpdatedInput == nil {
+		t.Fatal("expected UpdatedInput to be non-nil")
+	}
+	if result.UpdatedInput["file_path"] != "/safe/path" {
+		t.Errorf("file_path = %v, want %q", result.UpdatedInput["file_path"], "/safe/path")
+	}
+	if result.UpdatedInput["content"] != "sanitized" {
+		t.Errorf("content = %v, want %q", result.UpdatedInput["content"], "sanitized")
+	}
+}
+
+func TestParseHookOutput_EmptyOutput(t *testing.T) {
+	result := parseHookOutput("", 0)
+	if result.SystemMessage != "" {
+		t.Errorf("SystemMessage = %q, want empty", result.SystemMessage)
+	}
+	if result.Denied {
+		t.Error("empty output should not deny")
+	}
+	if result.Blocked {
+		t.Error("empty output should not block")
+	}
+	if !result.Continue {
+		t.Error("empty output should have Continue=true")
+	}
+}
+
 // Verify HookInput JSON marshaling is correct.
 func TestHookInput_JSON(t *testing.T) {
 	input := HookInput{
