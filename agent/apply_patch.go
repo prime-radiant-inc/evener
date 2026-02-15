@@ -275,8 +275,7 @@ func safeJoin(rootDir, rel string) (string, error) {
 func hintFromHunk(hunkLines []string) string {
 	for _, l := range hunkLines {
 		if strings.HasPrefix(l, "@@") {
-			hint := strings.TrimSpace(strings.TrimPrefix(l, "@@"))
-			return hint
+			return strings.TrimSpace(strings.TrimPrefix(l, "@@"))
 		}
 	}
 	return ""
