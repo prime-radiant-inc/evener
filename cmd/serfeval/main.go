@@ -123,7 +123,7 @@ func runEval(cfg evalConfig) error {
 		ContextStrategy:          cfg.strategy,
 		CompactionThresholdScale: cfg.thresholdScale,
 		StateDir:                 stateDir,
-		MaxTurns:                 cfg.maxTurns,
+		MaxToolRoundsPerInput:    cfg.maxTurns,
 		ReasoningEffort:          cfg.reasoningEffort,
 	}
 
