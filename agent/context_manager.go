@@ -676,9 +676,15 @@ func (cm *ContextManager) summarizeWithLLM(ctx context.Context, history []Turn, 
 		}
 	}
 
-	prefix := "Summarize this coding agent conversation history concisely. " +
-		"Focus on: what task was requested, what actions were taken, what files were modified, " +
-		"what the current state is, and any errors encountered. Be brief but complete.\n\n"
+	prefix := "You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume this task.\n\n" +
+		"Include:\n" +
+		"- The original task/goal\n" +
+		"- Current progress: what has been accomplished so far (specific files modified, specific changes made)\n" +
+		"- Key decisions made and why\n" +
+		"- What remains to be done (clear, actionable next steps)\n" +
+		"- Any critical data, file paths, variable names, or error messages needed to continue\n" +
+		"- Important constraints or user preferences discovered\n\n" +
+		"Be concise and structured. Focus on helping the next LLM seamlessly continue WITHOUT re-reading files or re-discovering what was already done.\n\n"
 	prompt := prefix + b.String()
 
 	req := llm.Request{

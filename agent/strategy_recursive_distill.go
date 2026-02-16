@@ -139,10 +139,13 @@ func (s *RecursiveDistillStrategy) microSummarize(ctx context.Context, client *l
 		}
 	}
 
-	prompt := fmt.Sprintf(`Summarize these coding agent actions in 1-2 sentences. Focus on what was accomplished, what files were changed, and any errors.
+	prompt := fmt.Sprintf(`Summarize these coding agent actions as a structured status update (2-4 sentences). Include:
+- What was accomplished (specific files modified, specific changes applied)
+- What remains to be done (concrete next steps)
+- Any errors or blockers encountered
 
 %s
-Summary (1-2 sentences):`, b.String())
+Status update:`, b.String())
 
 	req := llm.Request{
 		Model:    s.cm.profile.CheapModel(),
@@ -165,10 +168,13 @@ func (s *RecursiveDistillStrategy) macroSummarize(ctx context.Context, client *l
 		b.WriteString(fmt.Sprintf("%d. %s\n", i+1, m))
 	}
 
-	prompt := fmt.Sprintf(`Distill these action summaries into a single 1-2 sentence overview of the agent's progress:
+	prompt := fmt.Sprintf(`Consolidate these action summaries into a structured progress report (3-5 sentences). Preserve:
+- All specific files that were modified and what changes were made
+- What concrete work remains (do NOT generalize — list specific files/tasks)
+- Any errors or blockers
 
 %s
-Overview (1-2 sentences):`, b.String())
+Progress report:`, b.String())
 
 	req := llm.Request{
 		Model:    s.cm.profile.CheapModel(),

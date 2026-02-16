@@ -34,6 +34,7 @@ func main() {
 	testPatch := flag.String("test-patch", "", "path to SWE-bench test patch file for F2P evaluation")
 	testCmd := flag.String("test-cmd", "", "command to run F2P tests (e.g., 'python -m pytest tests/test_foo.py')")
 	f2pTests := flag.String("f2p-tests", "", "comma-separated fail-to-pass test names")
+	reasoningEffort := flag.String("reasoning-effort", "", "reasoning effort: none|low|medium|high|xhigh")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: serfeval --provider <p> --model <m> --task <task> [flags]\n\n")
@@ -52,6 +53,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  --test-patch <path>  SWE-bench test patch for F2P evaluation\n")
 		fmt.Fprintf(os.Stderr, "  --test-cmd <cmd>     Command to run F2P tests\n")
 		fmt.Fprintf(os.Stderr, "  --f2p-tests <names>  Comma-separated fail-to-pass test names\n")
+		fmt.Fprintf(os.Stderr, "  --reasoning-effort <level> Reasoning effort: none|low|medium|high|xhigh\n")
 	}
 	flag.Parse()
 
@@ -71,8 +73,9 @@ func main() {
 		thresholdScale: *thresholdScale,
 		maxTurns:       *maxTurns,
 		testPatch:      *testPatch,
-		testCmd:        *testCmd,
-		f2pTests:       *f2pTests,
+		testCmd:         *testCmd,
+		f2pTests:        *f2pTests,
+		reasoningEffort: *reasoningEffort,
 	}
 
 	if err := runEval(cfg); err != nil {
@@ -91,9 +94,10 @@ type evalConfig struct {
 	probesFile     string
 	thresholdScale float64
 	maxTurns       int
-	testPatch      string
-	testCmd        string
-	f2pTests       string
+	testPatch       string
+	testCmd         string
+	f2pTests        string
+	reasoningEffort string
 }
 
 func runEval(cfg evalConfig) error {
@@ -120,6 +124,7 @@ func runEval(cfg evalConfig) error {
 		CompactionThresholdScale: cfg.thresholdScale,
 		StateDir:                 stateDir,
 		MaxTurns:                 cfg.maxTurns,
+		ReasoningEffort:          cfg.reasoningEffort,
 	}
 
 	sess, err := agent.NewSession(client, profile, env, sessCfg)

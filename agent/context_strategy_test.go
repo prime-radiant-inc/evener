@@ -217,28 +217,40 @@ func TestCompactionThresholdScale(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
+	check := func(name string, got, want float64) {
+		t.Helper()
+		if diff := got - want; diff > 0.001 || diff < -0.001 {
+			t.Errorf("%s: got %.4f, want %.4f", name, got, want)
+		}
+	}
+
+	// Scale=0.5 applies normally (all results ≥ 0.20 floor).
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		CompactionThresholdScale: 0.5,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	cm := sess.contextMgr
+	check("ObservationMaskThreshold", cm.ObservationMaskThreshold, 0.30) // 0.60 * 0.5
+	check("ThinkingClearThreshold", cm.ThinkingClearThreshold, 0.35)     // 0.70 * 0.5
+	check("CheckpointThreshold", cm.CheckpointThreshold, 0.40)          // 0.80 * 0.5
+	check("SummarizeThreshold", cm.SummarizeThreshold, 0.45)            // 0.90 * 0.5
+	sess.Close()
+
+	// Scale=0.1 clamps to 0.20 floor.
+	sess2, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
 		CompactionThresholdScale: 0.1,
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	defer sess.Close()
-
-	cm := sess.contextMgr
-
-	// Verify thresholds are 10% of defaults.
-	check := func(name string, got, want float64) {
-		t.Helper()
-		// Allow small floating-point tolerance.
-		if diff := got - want; diff > 0.001 || diff < -0.001 {
-			t.Errorf("%s: got %.4f, want %.4f", name, got, want)
-		}
-	}
-	check("ObservationMaskThreshold", cm.ObservationMaskThreshold, 0.06)  // 0.60 * 0.1
-	check("ThinkingClearThreshold", cm.ThinkingClearThreshold, 0.07)      // 0.70 * 0.1
-	check("CheckpointThreshold", cm.CheckpointThreshold, 0.08)            // 0.80 * 0.1
-	check("SummarizeThreshold", cm.SummarizeThreshold, 0.09)              // 0.90 * 0.1
+	cm2 := sess2.contextMgr
+	check("ObservationMaskThreshold clamped", cm2.ObservationMaskThreshold, 0.20)
+	check("ThinkingClearThreshold clamped", cm2.ThinkingClearThreshold, 0.20)
+	check("CheckpointThreshold clamped", cm2.CheckpointThreshold, 0.20)
+	check("SummarizeThreshold clamped", cm2.SummarizeThreshold, 0.20)
+	sess2.Close()
 }
 
 func TestSession_ContextStrategy_DefaultIsCompact(t *testing.T) {

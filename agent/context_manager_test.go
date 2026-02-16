@@ -601,15 +601,16 @@ func TestSummarizeWithLLM_CallsCheapModel(t *testing.T) {
 				if req.Model != "gpt-4.1-nano" {
 					t.Errorf("expected cheap model gpt-4.1-nano, got %q", req.Model)
 				}
-				// Verify the prompt asks for summarization.
+				// Verify the prompt asks for compaction/summarization.
 				found := false
 				for _, m := range req.Messages {
-					if strings.Contains(m.Text(), "Summarize") || strings.Contains(m.Text(), "summarize") {
+					text := m.Text()
+					if strings.Contains(text, "COMPACTION") || strings.Contains(text, "handoff summary") {
 						found = true
 					}
 				}
 				if !found {
-					t.Error("expected summarization prompt")
+					t.Error("expected compaction/handoff prompt")
 				}
 				return llm.Response{Message: llm.Assistant("Summary: fixed auth bug")}
 			},
