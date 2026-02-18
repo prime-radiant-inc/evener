@@ -180,6 +180,50 @@ func (e *embeddedServer) wireSession(sess *agent.Session) {
 	e.srv.SetContextPressureFunc(sess.ContextPressure)
 	e.srv.SetModelFunc(sess.SetModel)
 	e.srv.SetClearFunc(e.clearSession)
+	e.srv.SetDetailedStatusFunc(func() server.DetailedStatus {
+		return agentToServerStatus(sess.DetailedStatus())
+	})
+}
+
+// agentToServerStatus converts an agent.DetailedStatus to a server.DetailedStatus.
+func agentToServerStatus(ds agent.DetailedStatus) server.DetailedStatus {
+	var out server.DetailedStatus
+
+	for _, t := range ds.Tools {
+		out.Tools = append(out.Tools, server.ToolInfo{Name: t.Name, Source: t.Source})
+	}
+	for _, m := range ds.MCP {
+		out.MCP = append(out.MCP, server.MCPServerInfo{Name: m.Name, Tools: m.Tools})
+	}
+	for _, s := range ds.Skills {
+		out.Skills = append(out.Skills, server.SkillInfo{Name: s.Name, Description: s.Description})
+	}
+	for _, p := range ds.Plugins {
+		out.Plugins = append(out.Plugins, server.PluginStatusInfo{
+			Name:       p.Name,
+			Version:    p.Version,
+			SkillCount: p.SkillCount,
+			AgentCount: p.AgentCount,
+			HookCount:  p.HookCount,
+			MCPCount:   p.MCPCount,
+		})
+	}
+	if len(ds.Hooks) > 0 {
+		out.Hooks = make(map[string]int, len(ds.Hooks))
+		for event, count := range ds.Hooks {
+			out.Hooks[string(event)] = count
+		}
+	}
+	for _, s := range ds.Subagents {
+		out.Subagents = append(out.Subagents, server.SubagentStatusInfo{
+			ID:        s.ID,
+			Status:    string(s.Status),
+			TurnsUsed: s.TurnsUsed,
+		})
+	}
+	out.Agents = ds.Agents
+
+	return out
 }
 
 // currentSession returns the current session under lock.

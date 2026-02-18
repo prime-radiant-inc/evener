@@ -9,14 +9,61 @@ import (
 	"sync"
 )
 
+// ToolInfo describes a registered tool and its source.
+type ToolInfo struct {
+	Name   string `json:"name"`
+	Source string `json:"source"`
+}
+
+// MCPServerInfo describes a connected MCP server.
+type MCPServerInfo struct {
+	Name  string   `json:"name"`
+	Tools []string `json:"tools"`
+}
+
+// SkillInfo describes a discovered skill.
+type SkillInfo struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// PluginStatusInfo summarizes a loaded plugin.
+type PluginStatusInfo struct {
+	Name       string `json:"name"`
+	Version    string `json:"version,omitempty"`
+	SkillCount int    `json:"skill_count"`
+	AgentCount int    `json:"agent_count"`
+	HookCount  int    `json:"hook_count"`
+	MCPCount   int    `json:"mcp_count"`
+}
+
+// SubagentStatusInfo describes an active sub-agent.
+type SubagentStatusInfo struct {
+	ID        string `json:"id"`
+	Status    string `json:"status"`
+	TurnsUsed int    `json:"turns_used"`
+}
+
+// DetailedStatus captures the full session configuration for /status display.
+type DetailedStatus struct {
+	Tools     []ToolInfo           `json:"tools,omitempty"`
+	MCP       []MCPServerInfo      `json:"mcp,omitempty"`
+	Skills    []SkillInfo          `json:"skills,omitempty"`
+	Plugins   []PluginStatusInfo   `json:"plugins,omitempty"`
+	Hooks     map[string]int       `json:"hooks,omitempty"`
+	Subagents []SubagentStatusInfo `json:"subagents,omitempty"`
+	Agents    []string             `json:"agents,omitempty"`
+}
+
 // StatusInfo is the JSON response for GET /status.
 type StatusInfo struct {
-	SessionID       string  `json:"session_id"`
-	State           string  `json:"state"`
-	Turns           int     `json:"turns"`
-	Model           string  `json:"model"`
-	Profile         string  `json:"profile"`
-	ContextPressure float64 `json:"context_pressure"`
+	SessionID       string          `json:"session_id"`
+	State           string          `json:"state"`
+	Turns           int             `json:"turns"`
+	Model           string          `json:"model"`
+	Profile         string          `json:"profile"`
+	ContextPressure float64         `json:"context_pressure"`
+	Detailed        *DetailedStatus `json:"detailed,omitempty"`
 }
 
 // ServerConfig holds configuration for the HTTP server.
@@ -29,15 +76,16 @@ type Server struct {
 	mux         *http.ServeMux
 	broadcaster *Broadcaster
 
-	mu          sync.RWMutex
-	status      StatusInfo
-	cancelFunc  context.CancelFunc
-	compactFunc func(context.Context) error
-	clearFunc   func(context.Context) error
-	pressureFn  func() float64
-	modelFunc   func(string)
-	processing  bool
-	inputCh     chan string
+	mu               sync.RWMutex
+	status           StatusInfo
+	cancelFunc       context.CancelFunc
+	compactFunc      func(context.Context) error
+	clearFunc        func(context.Context) error
+	pressureFn       func() float64
+	detailedStatusFn func() DetailedStatus
+	modelFunc        func(string)
+	processing       bool
+	inputCh          chan string
 }
 
 // NewServer creates a new Server.
@@ -115,6 +163,13 @@ func (s *Server) SetCancelFunc(cancel context.CancelFunc) {
 func (s *Server) SetContextPressureFunc(fn func() float64) {
 	s.mu.Lock()
 	s.pressureFn = fn
+	s.mu.Unlock()
+}
+
+// SetDetailedStatusFunc sets a callback to retrieve detailed session status.
+func (s *Server) SetDetailedStatusFunc(fn func() DetailedStatus) {
+	s.mu.Lock()
+	s.detailedStatusFn = fn
 	s.mu.Unlock()
 }
 
@@ -219,10 +274,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	status := s.status
 	pfn := s.pressureFn
+	dfn := s.detailedStatusFn
 	s.mu.RUnlock()
 
 	if pfn != nil {
 		status.ContextPressure = pfn()
+	}
+	if dfn != nil {
+		ds := dfn()
+		status.Detailed = &ds
 	}
 
 	w.Header().Set("Content-Type", "application/json")

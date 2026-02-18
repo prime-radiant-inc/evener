@@ -144,6 +144,52 @@ func TestFetchStatus(t *testing.T) {
 	}
 }
 
+func TestFetchStatus_WithDetailedFields(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"session_id":"xyz","state":"IDLE","turns":10,"model":"gpt-5","profile":"openai",
+			"context_pressure":0.42,
+			"detailed":{
+				"tools":[{"name":"shell","source":"core"},{"name":"linear__search","source":"mcp:streamlinear"}],
+				"mcp":[{"name":"streamlinear","tools":["linear__search"]}],
+				"skills":[{"name":"brainstorming","description":"brainstorm"}],
+				"plugins":[{"name":"superpowers","version":"4.3.0","skill_count":8,"agent_count":0,"hook_count":12,"mcp_count":0}],
+				"hooks":{"PreToolUse":3,"SessionStart":1},
+				"agents":["superpowers:code-reviewer"]
+			}
+		}`))
+	}))
+	defer ts.Close()
+
+	addr := ts.URL[len("http://"):]
+	cmd := fetchStatus(addr)
+	msg := cmd()
+
+	result, ok := msg.(statusResult)
+	if !ok {
+		t.Fatalf("expected statusResult, got %T", msg)
+	}
+	if result.err != nil {
+		t.Fatalf("unexpected error: %v", result.err)
+	}
+	if result.info.Detailed == nil {
+		t.Fatal("expected detailed status")
+	}
+	if len(result.info.Detailed.Tools) != 2 {
+		t.Errorf("tools: got %d, want 2", len(result.info.Detailed.Tools))
+	}
+	if len(result.info.Detailed.MCP) != 1 {
+		t.Errorf("mcp: got %d, want 1", len(result.info.Detailed.MCP))
+	}
+	if len(result.info.Detailed.Plugins) != 1 {
+		t.Errorf("plugins: got %d, want 1", len(result.info.Detailed.Plugins))
+	}
+	if result.info.Detailed.Hooks["PreToolUse"] != 3 {
+		t.Errorf("hooks PreToolUse: got %d, want 3", result.info.Detailed.Hooks["PreToolUse"])
+	}
+}
+
 func TestSlashCommandHelp(t *testing.T) {
 	help := slashCommandHelp()
 	for _, cmd := range []string{"/help", "/compact", "/status", "/model", "/clear", "/quit"} {

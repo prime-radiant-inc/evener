@@ -337,6 +337,103 @@ func TestModelEndpoint_NoFunc(t *testing.T) {
 	}
 }
 
+func TestStatusEndpoint_DetailedStatus(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetStatus(StatusInfo{
+		SessionID: "test-789",
+		State:     "IDLE",
+		Model:     "gpt-5",
+		Profile:   "openai",
+	})
+
+	srv.SetDetailedStatusFunc(func() DetailedStatus {
+		return DetailedStatus{
+			Tools: []ToolInfo{
+				{Name: "shell", Source: "core"},
+				{Name: "linear__search", Source: "mcp:streamlinear"},
+			},
+			MCP: []MCPServerInfo{
+				{Name: "streamlinear", Tools: []string{"linear__search"}},
+			},
+			Skills: []SkillInfo{
+				{Name: "brainstorming", Description: "brainstorm stuff"},
+			},
+			Plugins: []PluginStatusInfo{
+				{Name: "superpowers", Version: "4.3.0", SkillCount: 8, HookCount: 12},
+			},
+			Hooks: map[string]int{
+				"PreToolUse":   3,
+				"SessionStart": 1,
+			},
+			Agents: []string{"superpowers:code-reviewer"},
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status code: got %d, want 200", w.Code)
+	}
+
+	var status StatusInfo
+	if err := json.NewDecoder(w.Body).Decode(&status); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if status.SessionID != "test-789" {
+		t.Errorf("session_id: got %q, want test-789", status.SessionID)
+	}
+	if status.Detailed == nil {
+		t.Fatal("expected detailed status to be present")
+	}
+	if len(status.Detailed.Tools) != 2 {
+		t.Errorf("tools: got %d, want 2", len(status.Detailed.Tools))
+	}
+	if len(status.Detailed.MCP) != 1 {
+		t.Errorf("mcp: got %d, want 1", len(status.Detailed.MCP))
+	}
+	if status.Detailed.MCP[0].Name != "streamlinear" {
+		t.Errorf("mcp name: got %q, want streamlinear", status.Detailed.MCP[0].Name)
+	}
+	if len(status.Detailed.Skills) != 1 {
+		t.Errorf("skills: got %d, want 1", len(status.Detailed.Skills))
+	}
+	if len(status.Detailed.Plugins) != 1 {
+		t.Errorf("plugins: got %d, want 1", len(status.Detailed.Plugins))
+	}
+	if status.Detailed.Hooks["PreToolUse"] != 3 {
+		t.Errorf("hooks PreToolUse: got %d, want 3", status.Detailed.Hooks["PreToolUse"])
+	}
+	if len(status.Detailed.Agents) != 1 {
+		t.Errorf("agents: got %d, want 1", len(status.Detailed.Agents))
+	}
+}
+
+func TestStatusEndpoint_NoDetailedStatusFunc(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetStatus(StatusInfo{
+		SessionID: "test-no-detail",
+		State:     "IDLE",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status code: got %d, want 200", w.Code)
+	}
+
+	var status StatusInfo
+	if err := json.NewDecoder(w.Body).Decode(&status); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if status.Detailed != nil {
+		t.Error("expected nil detailed status when no func set")
+	}
+}
+
 func TestEventsEndpoint_MethodNotAllowed(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	req := httptest.NewRequest(http.MethodPost, "/events", nil)

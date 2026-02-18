@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"primeradiant.com/serf/server"
 )
 
 type model struct {
@@ -183,12 +185,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				Text: fmt.Sprintf("Status error: %s", msg.err),
 			})
 		} else {
-			pressure := fmt.Sprintf("%.0f%%", msg.info.ContextPressure*100)
 			m.messages = append(m.messages, chatMessage{
 				Kind: msgSystem,
-				Text: fmt.Sprintf("Session:  %s\nModel:    %s\nProfile:  %s\nTurns:    %d\nState:    %s\nContext:  %s used",
-					msg.info.SessionID, msg.info.Model, msg.info.Profile,
-					msg.info.Turns, msg.info.State, pressure),
+				Text: renderDetailedStatus(msg.info),
 			})
 		}
 		m.refreshViewport()
@@ -378,4 +377,109 @@ func (m model) View() string {
 		m.viewport.View(),
 		inputView,
 	)
+}
+
+// renderDetailedStatus formats a StatusInfo into a multi-panel text display.
+// Sections with no items are omitted.
+func renderDetailedStatus(info server.StatusInfo) string {
+	var b strings.Builder
+
+	// Header section (always shown).
+	pressure := fmt.Sprintf("%.0f%%", info.ContextPressure*100)
+	b.WriteString(fmt.Sprintf("Session:  %s\nModel:    %s (%s)\nTurns:    %d\nContext:  %s used",
+		info.SessionID, info.Model, info.Profile, info.Turns, pressure))
+
+	ds := info.Detailed
+	if ds == nil {
+		return b.String()
+	}
+
+	// Tools section — group by source.
+	if len(ds.Tools) > 0 {
+		core := []string{}
+		mcp := map[string][]string{}  // server name → tool names
+		custom := []string{}
+
+		for _, t := range ds.Tools {
+			switch {
+			case t.Source == "core":
+				core = append(core, t.Name)
+			case strings.HasPrefix(t.Source, "mcp:"):
+				srv := t.Source[4:]
+				mcp[srv] = append(mcp[srv], t.Name)
+			default:
+				custom = append(custom, t.Name)
+			}
+		}
+
+		b.WriteString(fmt.Sprintf("\n\nTools (%d):", len(ds.Tools)))
+		if len(core) > 0 {
+			b.WriteString("\n  Core: " + strings.Join(core, ", "))
+		}
+		for srv, tools := range mcp {
+			b.WriteString(fmt.Sprintf("\n  MCP:  %s (%s)", strings.Join(tools, ", "), srv))
+		}
+		if len(custom) > 0 {
+			b.WriteString("\n  Custom: " + strings.Join(custom, ", "))
+		}
+	}
+
+	// MCP Servers section.
+	if len(ds.MCP) > 0 {
+		b.WriteString(fmt.Sprintf("\n\nMCP Servers (%d):", len(ds.MCP)))
+		for _, srv := range ds.MCP {
+			b.WriteString(fmt.Sprintf("\n  %s (%d tools)", srv.Name, len(srv.Tools)))
+		}
+	}
+
+	// Skills section.
+	if len(ds.Skills) > 0 {
+		b.WriteString(fmt.Sprintf("\n\nSkills (%d):", len(ds.Skills)))
+		for _, skill := range ds.Skills {
+			b.WriteString(fmt.Sprintf("\n  %s", skill.Name))
+		}
+	}
+
+	// Plugins section.
+	if len(ds.Plugins) > 0 {
+		b.WriteString(fmt.Sprintf("\n\nPlugins (%d):", len(ds.Plugins)))
+		for _, p := range ds.Plugins {
+			version := p.Version
+			if version == "" {
+				version = "?"
+			}
+			b.WriteString(fmt.Sprintf("\n  %s v%s (%d skills, %d agents, %d hooks)",
+				p.Name, version, p.SkillCount, p.AgentCount, p.HookCount))
+		}
+	}
+
+	// Hooks section.
+	if len(ds.Hooks) > 0 {
+		b.WriteString("\n\nHooks:")
+		parts := []string{}
+		for event, count := range ds.Hooks {
+			parts = append(parts, fmt.Sprintf("%s: %d", event, count))
+		}
+		// Sort for stable output.
+		sort.Strings(parts)
+		b.WriteString("\n  " + strings.Join(parts, "  "))
+	}
+
+	// Subagents section.
+	if len(ds.Subagents) > 0 {
+		b.WriteString(fmt.Sprintf("\n\nSubagents (%d):", len(ds.Subagents)))
+		for _, sub := range ds.Subagents {
+			b.WriteString(fmt.Sprintf("\n  %s (%s, %d turns)", sub.ID, sub.Status, sub.TurnsUsed))
+		}
+	}
+
+	// Plugin agents section.
+	if len(ds.Agents) > 0 {
+		b.WriteString(fmt.Sprintf("\n\nAgents (%d):", len(ds.Agents)))
+		for _, name := range ds.Agents {
+			b.WriteString(fmt.Sprintf("\n  %s", name))
+		}
+	}
+
+	return b.String()
 }
