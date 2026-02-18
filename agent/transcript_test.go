@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -388,6 +389,279 @@ func TestTranscriptWriter_ValidJSONL(t *testing.T) {
 		}
 		if entry.Seq != i-1 {
 			t.Errorf("entry %d seq = %d, want %d", i-1, entry.Seq, i-1)
+		}
+	}
+}
+
+// --- ReadTranscript tests ---
+
+func TestReadTranscript_ReturnsHeaderAndEntries(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "transcript.jsonl")
+
+	header := TranscriptHeader{
+		Kind:          "header",
+		FormatVersion: 1,
+		SessionID:     "sess-read-001",
+		CreatedAt:     time.Date(2026, 2, 18, 12, 0, 0, 0, time.UTC),
+		ProfileID:     "anthropic-default",
+		Model:         "claude-opus-4-6",
+		WorkingDir:    "/tmp/test",
+	}
+
+	w, err := NewTranscriptWriter(path, header)
+	if err != nil {
+		t.Fatalf("NewTranscriptWriter: %v", err)
+	}
+
+	turns := []Turn{
+		NewTurn(TurnUserInput, llm.User("Hello")),
+		NewTurn(TurnAssistant, llm.Assistant("Hi there")),
+		NewTurn(TurnToolResults, llm.ToolResult("call-1", "result", false)),
+		NewTurn(TurnAssistant, llm.Assistant("Done")),
+		NewTurn(TurnUserInput, llm.User("Thanks")),
+	}
+	for _, turn := range turns {
+		if err := w.Append(turn); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+	w.Close()
+
+	gotHeader, entries, err := ReadTranscript(path)
+	if err != nil {
+		t.Fatalf("ReadTranscript: %v", err)
+	}
+
+	if gotHeader.SessionID != "sess-read-001" {
+		t.Errorf("header session_id = %q, want %q", gotHeader.SessionID, "sess-read-001")
+	}
+	if gotHeader.ProfileID != "anthropic-default" {
+		t.Errorf("header profile_id = %q, want %q", gotHeader.ProfileID, "anthropic-default")
+	}
+	if gotHeader.Model != "claude-opus-4-6" {
+		t.Errorf("header model = %q, want %q", gotHeader.Model, "claude-opus-4-6")
+	}
+
+	if len(entries) != 5 {
+		t.Fatalf("expected 5 entries, got %d", len(entries))
+	}
+
+	for i, entry := range entries {
+		if entry.Seq != i {
+			t.Errorf("entry %d seq = %d, want %d", i, entry.Seq, i)
+		}
+		if entry.Turn.Kind != turns[i].Kind {
+			t.Errorf("entry %d turn kind = %q, want %q", i, entry.Turn.Kind, turns[i].Kind)
+		}
+	}
+}
+
+func TestReadTranscript_PartialLastLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "transcript.jsonl")
+
+	header := TranscriptHeader{
+		Kind:          "header",
+		FormatVersion: 1,
+		SessionID:     "sess-partial",
+		CreatedAt:     time.Now().UTC(),
+		ProfileID:     "test",
+		Model:         "test-model",
+	}
+
+	w, err := NewTranscriptWriter(path, header)
+	if err != nil {
+		t.Fatalf("NewTranscriptWriter: %v", err)
+	}
+
+	for i := 0; i < 3; i++ {
+		if err := w.Append(NewTurn(TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
+			t.Fatalf("Append %d: %v", i, err)
+		}
+	}
+	w.Close()
+
+	// Append a partial JSON line (no closing brace, no trailing newline) to simulate crash.
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	f.WriteString(`{"kind":"entry","seq":3,"turn":{"kind":"ASSISTANT"`)
+	f.Close()
+
+	gotHeader, entries, err := ReadTranscript(path)
+	if err != nil {
+		t.Fatalf("ReadTranscript: %v", err)
+	}
+
+	if gotHeader.SessionID != "sess-partial" {
+		t.Errorf("header session_id = %q, want %q", gotHeader.SessionID, "sess-partial")
+	}
+
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries (partial line skipped), got %d", len(entries))
+	}
+
+	for i, entry := range entries {
+		if entry.Seq != i {
+			t.Errorf("entry %d seq = %d, want %d", i, entry.Seq, i)
+		}
+	}
+}
+
+func TestReadTranscript_EmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "empty.jsonl")
+
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, _, err := ReadTranscript(path)
+	if err == nil {
+		t.Fatal("expected error for empty file, got nil")
+	}
+}
+
+func TestReadTranscript_HeaderOnly(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "transcript.jsonl")
+
+	header := TranscriptHeader{
+		Kind:          "header",
+		FormatVersion: 1,
+		SessionID:     "sess-header-only",
+		CreatedAt:     time.Now().UTC(),
+		ProfileID:     "test",
+		Model:         "test-model",
+	}
+
+	w, err := NewTranscriptWriter(path, header)
+	if err != nil {
+		t.Fatalf("NewTranscriptWriter: %v", err)
+	}
+	w.Close()
+
+	gotHeader, entries, err := ReadTranscript(path)
+	if err != nil {
+		t.Fatalf("ReadTranscript: %v", err)
+	}
+
+	if gotHeader.SessionID != "sess-header-only" {
+		t.Errorf("header session_id = %q, want %q", gotHeader.SessionID, "sess-header-only")
+	}
+
+	if len(entries) != 0 {
+		t.Errorf("expected 0 entries, got %d", len(entries))
+	}
+}
+
+// --- ResumeHistory tests ---
+
+func TestResumeHistoryFromTranscript_NoCompaction(t *testing.T) {
+	entries := []TranscriptEntry{
+		{Kind: "entry", Seq: 0, Turn: NewTurn(TurnUserInput, llm.User("Hello"))},
+		{Kind: "entry", Seq: 1, Turn: NewTurn(TurnAssistant, llm.Assistant("Hi"))},
+		{Kind: "entry", Seq: 2, Turn: NewTurn(TurnToolResults, llm.ToolResult("call-1", "ok", false))},
+		{Kind: "entry", Seq: 3, Turn: NewTurn(TurnAssistant, llm.Assistant("Done"))},
+		{Kind: "entry", Seq: 4, Turn: NewTurn(TurnUserInput, llm.User("Thanks"))},
+	}
+
+	history := ResumeHistory(entries)
+
+	if len(history) != 5 {
+		t.Fatalf("expected 5 turns, got %d", len(history))
+	}
+
+	expectedKinds := []TurnKind{TurnUserInput, TurnAssistant, TurnToolResults, TurnAssistant, TurnUserInput}
+	for i, turn := range history {
+		if turn.Kind != expectedKinds[i] {
+			t.Errorf("turn %d kind = %q, want %q", i, turn.Kind, expectedKinds[i])
+		}
+	}
+}
+
+func TestResumeHistoryFromTranscript_WithCheckpoint(t *testing.T) {
+	entries := make([]TranscriptEntry, 10)
+	for i := 0; i < 10; i++ {
+		kind := TurnAssistant
+		msg := llm.Assistant(fmt.Sprintf("msg %d", i))
+		switch i {
+		case 0, 4, 9:
+			kind = TurnUserInput
+			msg = llm.User(fmt.Sprintf("input %d", i))
+		case 2, 5, 8:
+			kind = TurnToolResults
+			msg = llm.ToolResult(fmt.Sprintf("call-%d", i), "ok", false)
+		case 6:
+			kind = TurnCheckpoint
+			msg = llm.User("checkpoint summary")
+		}
+		entries[i] = TranscriptEntry{Kind: "entry", Seq: i, Turn: NewTurn(kind, msg)}
+	}
+
+	history := ResumeHistory(entries)
+
+	// Should return: checkpoint (index 6), plus entries 7, 8, 9 = 4 turns total
+	if len(history) != 4 {
+		t.Fatalf("expected 4 turns (checkpoint + 3 after), got %d", len(history))
+	}
+
+	if history[0].Kind != TurnCheckpoint {
+		t.Errorf("first turn kind = %q, want %q", history[0].Kind, TurnCheckpoint)
+	}
+	if history[0].Message.Text() != "checkpoint summary" {
+		t.Errorf("first turn text = %q, want %q", history[0].Message.Text(), "checkpoint summary")
+	}
+
+	// Entries 7, 8, 9 follow the checkpoint
+	expectedAfter := []TurnKind{TurnAssistant, TurnToolResults, TurnUserInput}
+	for i, want := range expectedAfter {
+		if history[i+1].Kind != want {
+			t.Errorf("turn %d kind = %q, want %q", i+1, history[i+1].Kind, want)
+		}
+	}
+}
+
+func TestResumeHistoryFromTranscript_WithSummary(t *testing.T) {
+	entries := make([]TranscriptEntry, 10)
+	for i := 0; i < 10; i++ {
+		kind := TurnAssistant
+		msg := llm.Assistant(fmt.Sprintf("msg %d", i))
+		switch i {
+		case 0, 4, 9:
+			kind = TurnUserInput
+			msg = llm.User(fmt.Sprintf("input %d", i))
+		case 2, 5, 8:
+			kind = TurnToolResults
+			msg = llm.ToolResult(fmt.Sprintf("call-%d", i), "ok", false)
+		case 6:
+			kind = TurnSummary
+			msg = llm.User("LLM summary of conversation")
+		}
+		entries[i] = TranscriptEntry{Kind: "entry", Seq: i, Turn: NewTurn(kind, msg)}
+	}
+
+	history := ResumeHistory(entries)
+
+	// Should return: summary (index 6), plus entries 7, 8, 9 = 4 turns total
+	if len(history) != 4 {
+		t.Fatalf("expected 4 turns (summary + 3 after), got %d", len(history))
+	}
+
+	if history[0].Kind != TurnSummary {
+		t.Errorf("first turn kind = %q, want %q", history[0].Kind, TurnSummary)
+	}
+	if history[0].Message.Text() != "LLM summary of conversation" {
+		t.Errorf("first turn text = %q, want %q", history[0].Message.Text(), "LLM summary of conversation")
+	}
+
+	// Entries 7, 8, 9 follow the summary
+	expectedAfter := []TurnKind{TurnAssistant, TurnToolResults, TurnUserInput}
+	for i, want := range expectedAfter {
+		if history[i+1].Kind != want {
+			t.Errorf("turn %d kind = %q, want %q", i+1, history[i+1].Kind, want)
 		}
 	}
 }

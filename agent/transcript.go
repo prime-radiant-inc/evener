@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -115,4 +117,81 @@ func (w *TranscriptWriter) Close() error {
 		}
 	})
 	return closeErr
+}
+
+// ReadTranscript reads a transcript JSONL file, returning the header and all valid entries.
+// Partial or corrupt lines are silently skipped (crash recovery).
+func ReadTranscript(path string) (TranscriptHeader, []TranscriptEntry, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return TranscriptHeader{}, nil, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+
+	// First line must be the header.
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return TranscriptHeader{}, nil, fmt.Errorf("reading transcript header: %w", err)
+		}
+		return TranscriptHeader{}, nil, fmt.Errorf("transcript file is empty: no header")
+	}
+
+	var header TranscriptHeader
+	if err := json.Unmarshal(scanner.Bytes(), &header); err != nil {
+		return TranscriptHeader{}, nil, fmt.Errorf("parsing transcript header: %w", err)
+	}
+
+	// Remaining lines are entries. Skip any that fail to parse.
+	var entries []TranscriptEntry
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var entry TranscriptEntry
+		if err := json.Unmarshal(line, &entry); err != nil {
+			// Skip corrupt/partial lines (crash recovery).
+			continue
+		}
+		entries = append(entries, entry)
+	}
+	if err := scanner.Err(); err != nil {
+		return TranscriptHeader{}, nil, fmt.Errorf("reading transcript: %w", err)
+	}
+
+	return header, entries, nil
+}
+
+// ResumeHistory extracts the history needed for session resume from transcript entries.
+// If a compaction turn (CHECKPOINT or SUMMARY) exists, returns [last compaction turn, ...subsequent turns].
+// Otherwise returns all turns.
+func ResumeHistory(entries []TranscriptEntry) []Turn {
+	// Scan backward for the last compaction turn.
+	compactionIdx := -1
+	for i := len(entries) - 1; i >= 0; i-- {
+		kind := entries[i].Turn.Kind
+		if kind == TurnCheckpoint || kind == TurnSummary {
+			compactionIdx = i
+			break
+		}
+	}
+
+	if compactionIdx < 0 {
+		// No compaction: return all turns.
+		turns := make([]Turn, len(entries))
+		for i, e := range entries {
+			turns[i] = e.Turn
+		}
+		return turns
+	}
+
+	// Return compaction turn + everything after it.
+	result := make([]Turn, 0, len(entries)-compactionIdx)
+	for i := compactionIdx; i < len(entries); i++ {
+		result = append(result, entries[i].Turn)
+	}
+	return result
 }
