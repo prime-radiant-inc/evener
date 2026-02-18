@@ -984,6 +984,13 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			histCopy := append([]Turn{}, s.history...)
 			s.mu.Unlock()
 
+			// Record compaction turns in the transcript.
+			s.contextMgr.OnCompactionTurn = func(t Turn) {
+				if err := s.transcript.Append(t); err != nil {
+					s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
+				}
+			}
+
 			if err := s.strategy.ManageContext(ctx, &histCopy, len(sys), s.emit); err != nil {
 				s.emit(EventWarning, WarningData{Message: "context strategy error: " + err.Error()})
 			}

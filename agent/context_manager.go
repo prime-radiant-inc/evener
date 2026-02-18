@@ -31,6 +31,10 @@ type ContextManager struct {
 	SummarizeThreshold       float64
 
 	PreserveRecentTurns int
+
+	// OnCompactionTurn is called for each compaction turn created (CHECKPOINT or SUMMARY).
+	// Set by the session before ManageContext to record compaction turns in the transcript.
+	OnCompactionTurn func(Turn)
 }
 
 // NewContextManager creates a ContextManager with default thresholds.
@@ -189,6 +193,9 @@ func (cm *ContextManager) MaybeCompact(
 			EstTokensBefore: before,
 			EstTokensAfter:  after,
 		})
+		if cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == TurnCheckpoint {
+			cm.OnCompactionTurn((*history)[0])
+		}
 		compacted = true
 		p = pressure()
 	}
@@ -213,6 +220,9 @@ func (cm *ContextManager) MaybeCompact(
 				EstTokensBefore: before,
 				EstTokensAfter:  after,
 			})
+			if cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == TurnSummary {
+				cm.OnCompactionTurn((*history)[0])
+			}
 			compacted = true
 		}
 	}
@@ -446,12 +456,25 @@ func checkpoint(history []Turn, preserveRecent int) []Turn {
 	// If all user inputs are checkpoints, extract the task from the checkpoint text.
 	originalTask := ""
 	for _, t := range history[:cutoff] {
+		// Handle typed compaction turns (new TurnKinds).
+		if t.Kind == TurnCheckpoint || t.Kind == TurnSummary {
+			text := t.Message.Text()
+			if idx := strings.Index(text, "Original task: "); idx >= 0 {
+				rest := text[idx+len("Original task: "):]
+				if nl := strings.Index(rest, "\n"); nl >= 0 {
+					originalTask = rest[:nl]
+				} else {
+					originalTask = rest
+				}
+			}
+			continue
+		}
 		if t.Kind != TurnUserInput {
 			continue
 		}
+		// Backward compat: handle old TurnUserInput checkpoints/summaries by text prefix.
 		text := t.Message.Text()
 		if strings.HasPrefix(text, "[CONTEXT CHECKPOINT]") {
-			// Extract "Original task: ..." from the previous checkpoint.
 			if idx := strings.Index(text, "Original task: "); idx >= 0 {
 				rest := text[idx+len("Original task: "):]
 				if nl := strings.Index(rest, "\n"); nl >= 0 {
@@ -583,7 +606,7 @@ func checkpoint(history []Turn, preserveRecent int) []Turn {
 
 	b.WriteString("[END CHECKPOINT]\n")
 
-	checkpointTurn := NewTurn(TurnUserInput, llm.User(b.String()))
+	checkpointTurn := NewTurn(TurnCheckpoint, llm.User(b.String()))
 
 	result := make([]Turn, 0, 1+preserveRecent)
 	result = append(result, checkpointTurn)
@@ -655,6 +678,8 @@ func (cm *ContextManager) summarizeWithLLM(ctx context.Context, history []Turn, 
 		switch t.Kind {
 		case TurnUserInput:
 			b.WriteString("User: " + truncText(t.Message.Text(), 500) + "\n")
+		case TurnCheckpoint, TurnSummary:
+			b.WriteString("Previous compaction: " + truncText(t.Message.Text(), 500) + "\n")
 		case TurnAssistant:
 			b.WriteString("Assistant: " + truncText(t.Message.Text(), 500) + "\n")
 		case TurnTool, TurnToolResults:
@@ -699,7 +724,7 @@ func (cm *ContextManager) summarizeWithLLM(ctx context.Context, history []Turn, 
 	}
 
 	summaryText := "[CONTEXT SUMMARY]\n" + resp.Text() + "\n[END SUMMARY]"
-	summaryTurn := NewTurn(TurnUserInput, llm.User(summaryText))
+	summaryTurn := NewTurn(TurnSummary, llm.User(summaryText))
 
 	result := make([]Turn, 0, 1+preserveRecent)
 	result = append(result, summaryTurn)

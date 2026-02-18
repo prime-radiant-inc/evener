@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1097,5 +1098,110 @@ func TestSubagent_DepthSetFromConfig(t *testing.T) {
 
 	if sess.depth != 3 {
 		t.Errorf("sess.depth = %d, want 3", sess.depth)
+	}
+}
+
+// --- Compaction turns flow through transcript ---
+
+func TestCheckpoint_UsesTurnCheckpointKind(t *testing.T) {
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("Fix the auth bug in login.go")},
+		{Kind: TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"login.go"}`)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "1 | package main\n", false)},
+		{Kind: TurnAssistant, Message: assistantWithToolCall("c2", "edit_file", `{"file_path":"login.go","old_string":"old","new_string":"new"}`)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c2", "edit_file", "OK", false)},
+		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	}
+
+	result := checkpoint(history, 2)
+
+	if len(result) < 2 {
+		t.Fatalf("expected at least 2 turns, got %d", len(result))
+	}
+	if result[0].Kind != TurnCheckpoint {
+		t.Fatalf("checkpoint turn kind = %q, want %q", result[0].Kind, TurnCheckpoint)
+	}
+	// The text content should still have [CONTEXT CHECKPOINT] header.
+	text := result[0].Message.Text()
+	if !strings.Contains(text, "[CONTEXT CHECKPOINT]") {
+		t.Fatalf("checkpoint missing header: %q", text)
+	}
+}
+
+func TestSummarizeWithLLM_UsesTurnSummaryKind(t *testing.T) {
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("Summary: fixed auth bug")}
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+
+	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), client)
+
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("Fix the auth bug")},
+		{Kind: TurnAssistant, Message: llm.Assistant("I'll fix it")},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
+	}
+
+	result, err := cm.summarizeWithLLM(context.Background(), history, 2)
+	if err != nil {
+		t.Fatalf("summarizeWithLLM: %v", err)
+	}
+
+	if len(result) < 1 {
+		t.Fatalf("expected at least 1 turn, got %d", len(result))
+	}
+	if result[0].Kind != TurnSummary {
+		t.Fatalf("summary turn kind = %q, want %q", result[0].Kind, TurnSummary)
+	}
+	// The text content should still have [CONTEXT SUMMARY] header.
+	text := result[0].Message.Text()
+	if !strings.Contains(text, "[CONTEXT SUMMARY]") {
+		t.Fatalf("summary missing header: %q", text)
+	}
+}
+
+func TestMaybeCompact_CallsOnCompactionTurn(t *testing.T) {
+	// Use a tiny context window to force checkpoint (L3).
+	profile := &baseProfile{id: "openai", model: "test", contextWindow: 500}
+	cm := NewContextManager(profile, nil)
+	cm.PreserveRecentTurns = 2
+
+	// Use assistant text (not tool results) so observation masking can't reduce pressure.
+	// Need >80% of 500 = 400 tokens.
+	history := []Turn{{Kind: TurnUserInput, Message: llm.User("Fix the auth bug")}}
+	for EstimateTokens(history) < 425 {
+		history = append(history,
+			Turn{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("analysis ", 50))},
+		)
+	}
+	history = append(history,
+		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
+		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
+	)
+
+	var callbackTurns []Turn
+	cm.OnCompactionTurn = func(turn Turn) {
+		callbackTurns = append(callbackTurns, turn)
+	}
+
+	emitFn := func(kind EventKind, data any) {}
+
+	cm.MaybeCompact(context.Background(), &history, 0, emitFn)
+
+	if len(callbackTurns) == 0 {
+		t.Fatal("expected OnCompactionTurn callback to be called")
+	}
+	if callbackTurns[0].Kind != TurnCheckpoint {
+		t.Fatalf("callback turn kind = %q, want %q", callbackTurns[0].Kind, TurnCheckpoint)
+	}
+	if !strings.Contains(callbackTurns[0].Message.Text(), "[CONTEXT CHECKPOINT]") {
+		t.Fatalf("callback turn missing checkpoint text: %q", callbackTurns[0].Message.Text())
 	}
 }
