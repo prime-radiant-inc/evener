@@ -557,6 +557,176 @@ func TestReadTranscript_HeaderOnly(t *testing.T) {
 	}
 }
 
+// --- OpenTranscriptWriter tests ---
+
+func TestOpenTranscriptWriter_AppendsToExisting(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "transcript.jsonl")
+
+	header := TranscriptHeader{
+		Kind:          "header",
+		FormatVersion: 1,
+		SessionID:     "sess-open-001",
+		CreatedAt:     time.Now().UTC(),
+		ProfileID:     "test",
+		Model:         "test-model",
+	}
+
+	// Write header + 5 entries, then close.
+	w, err := NewTranscriptWriter(path, header)
+	if err != nil {
+		t.Fatalf("NewTranscriptWriter: %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		if err := w.Append(NewTurn(TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
+			t.Fatalf("Append %d: %v", i, err)
+		}
+	}
+	w.Close()
+
+	// Reopen for appending.
+	w2, err := OpenTranscriptWriter(path)
+	if err != nil {
+		t.Fatalf("OpenTranscriptWriter: %v", err)
+	}
+	defer w2.Close()
+
+	// Append 3 more turns.
+	for i := 0; i < 3; i++ {
+		if err := w2.Append(NewTurn(TurnUserInput, llm.User(fmt.Sprintf("input %d", i)))); err != nil {
+			t.Fatalf("Append (resumed) %d: %v", i, err)
+		}
+	}
+
+	// Read back and verify.
+	_, entries, err := ReadTranscript(path)
+	if err != nil {
+		t.Fatalf("ReadTranscript: %v", err)
+	}
+
+	if len(entries) != 8 {
+		t.Fatalf("expected 8 entries, got %d", len(entries))
+	}
+
+	for i, entry := range entries {
+		if entry.Seq != i {
+			t.Errorf("entry %d seq = %d, want %d", i, entry.Seq, i)
+		}
+	}
+}
+
+func TestOpenTranscriptWriter_TruncatesPartialLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "transcript.jsonl")
+
+	header := TranscriptHeader{
+		Kind:          "header",
+		FormatVersion: 1,
+		SessionID:     "sess-open-002",
+		CreatedAt:     time.Now().UTC(),
+		ProfileID:     "test",
+		Model:         "test-model",
+	}
+
+	// Write header + 3 entries, then close.
+	w, err := NewTranscriptWriter(path, header)
+	if err != nil {
+		t.Fatalf("NewTranscriptWriter: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := w.Append(NewTurn(TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
+			t.Fatalf("Append %d: %v", i, err)
+		}
+	}
+	w.Close()
+
+	// Manually append a partial JSON line (no newline) to simulate crash.
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	f.WriteString(`{"kind":"ent`)
+	f.Close()
+
+	// Reopen — partial line should be truncated.
+	w2, err := OpenTranscriptWriter(path)
+	if err != nil {
+		t.Fatalf("OpenTranscriptWriter: %v", err)
+	}
+	defer w2.Close()
+
+	// Append 1 more turn.
+	if err := w2.Append(NewTurn(TurnUserInput, llm.User("after crash"))); err != nil {
+		t.Fatalf("Append (after crash): %v", err)
+	}
+
+	// Read back and verify.
+	_, entries, err := ReadTranscript(path)
+	if err != nil {
+		t.Fatalf("ReadTranscript: %v", err)
+	}
+
+	if len(entries) != 4 {
+		t.Fatalf("expected 4 entries (3 original + 1 new), got %d", len(entries))
+	}
+
+	for i, entry := range entries {
+		if entry.Seq != i {
+			t.Errorf("entry %d seq = %d, want %d", i, entry.Seq, i)
+		}
+	}
+}
+
+func TestOpenTranscriptWriter_HeaderOnlyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "transcript.jsonl")
+
+	header := TranscriptHeader{
+		Kind:          "header",
+		FormatVersion: 1,
+		SessionID:     "sess-open-003",
+		CreatedAt:     time.Now().UTC(),
+		ProfileID:     "test",
+		Model:         "test-model",
+	}
+
+	// Write header only, no entries.
+	w, err := NewTranscriptWriter(path, header)
+	if err != nil {
+		t.Fatalf("NewTranscriptWriter: %v", err)
+	}
+	w.Close()
+
+	// Reopen.
+	w2, err := OpenTranscriptWriter(path)
+	if err != nil {
+		t.Fatalf("OpenTranscriptWriter: %v", err)
+	}
+	defer w2.Close()
+
+	// Append one turn.
+	if err := w2.Append(NewTurn(TurnUserInput, llm.User("first after header"))); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	// Read back and verify.
+	_, entries, err := ReadTranscript(path)
+	if err != nil {
+		t.Fatalf("ReadTranscript: %v", err)
+	}
+
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+
+	if entries[0].Seq != 0 {
+		t.Errorf("entry 0 seq = %d, want 0", entries[0].Seq)
+	}
+	if entries[0].Turn.Message.Text() != "first after header" {
+		t.Errorf("entry 0 text = %q, want %q", entries[0].Turn.Message.Text(), "first after header")
+	}
+}
+
 // --- ResumeHistory tests ---
 
 func TestResumeHistoryFromTranscript_NoCompaction(t *testing.T) {

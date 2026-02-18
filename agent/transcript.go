@@ -119,6 +119,52 @@ func (w *TranscriptWriter) Close() error {
 	return closeErr
 }
 
+// OpenTranscriptWriter opens an existing transcript file for appending.
+// Counts valid entries to determine the next seq number.
+// Truncates any partial last line for crash recovery.
+func OpenTranscriptWriter(path string) (*TranscriptWriter, error) {
+	// Read existing entries to determine seq count.
+	_, entries, err := ReadTranscript(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading transcript for resume: %w", err)
+	}
+
+	// Truncate any trailing partial line: if the file doesn't end with '\n',
+	// find the last newline and truncate there.
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > 0 {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		if raw[len(raw)-1] != '\n' {
+			// Find last newline and truncate after it.
+			lastNL := -1
+			for i := len(raw) - 1; i >= 0; i-- {
+				if raw[i] == '\n' {
+					lastNL = i
+					break
+				}
+			}
+			if lastNL >= 0 {
+				if err := os.Truncate(path, int64(lastNL+1)); err != nil {
+					return nil, fmt.Errorf("truncating partial line: %w", err)
+				}
+			}
+		}
+	}
+
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, err
+	}
+
+	return &TranscriptWriter{file: f, seq: len(entries)}, nil
+}
+
 // ReadTranscript reads a transcript JSONL file, returning the header and all valid entries.
 // Partial or corrupt lines are silently skipped (crash recovery).
 func ReadTranscript(path string) (TranscriptHeader, []TranscriptEntry, error) {
