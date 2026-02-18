@@ -147,6 +147,16 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 		m.sessionModel = d.Model
 		m.sessionProfile = d.Profile
 
+	case "COMMUNICATE":
+		var d struct {
+			Action  string `json:"action"`
+			Message string `json:"message"`
+		}
+		json.Unmarshal([]byte(ev.Data), &d)
+		if d.Message != "" {
+			m.messages = append(m.messages, chatMessage{Kind: msgAssistant, Text: d.Message})
+		}
+
 	case "ASSISTANT_TEXT_END":
 		m.turns++
 
@@ -179,6 +189,7 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 			Tool: &toolCallInfo{
 				Name:        d.ToolName,
 				Description: desc,
+				Hidden:      d.ToolName == "communicate",
 			},
 		})
 		m.activeTools[d.CallID] = idx

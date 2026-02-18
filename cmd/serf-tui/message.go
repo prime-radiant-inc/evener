@@ -49,6 +49,7 @@ type toolCallInfo struct {
 	Duration    time.Duration
 	Expanded    bool
 	Done        bool
+	Hidden      bool // suppress from display (e.g. communicate)
 }
 
 const toolCollapseThreshold = 5
@@ -62,7 +63,7 @@ func renderMessage(msg chatMessage, width int) string {
 		label := assistantLabelStyle.Render("▌ Assistant")
 		return fmt.Sprintf("%s\n%s", label, renderMarkdown(msg.Text))
 	case msgTool:
-		if msg.Tool == nil {
+		if msg.Tool == nil || msg.Tool.Hidden {
 			return ""
 		}
 		return renderToolCall(*msg.Tool, width)
