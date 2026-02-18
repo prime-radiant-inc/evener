@@ -1004,3 +1004,98 @@ func TestSession_TranscriptClosedOnSessionClose(t *testing.T) {
 		t.Fatalf("transcript not readable after Close: %v", err)
 	}
 }
+
+func TestSubagent_TranscriptHasParentLinkage(t *testing.T) {
+	stateDir := t.TempDir()
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	cfg := SessionConfig{
+		StateDir:        stateDir,
+		ParentSessionID: "parent-session-123",
+		SubagentTask:    "implement auth middleware",
+		Depth:           2,
+	}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(t.TempDir()), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	// Drain the event channel so Close doesn't block.
+	go func() { for range sess.Events() {} }()
+
+	// Read the transcript and verify parent linkage fields.
+	files, _ := filepath.Glob(filepath.Join(stateDir, sessionsSubdir, "*.transcript.jsonl"))
+	if len(files) != 1 {
+		t.Fatalf("expected 1 transcript, got %d", len(files))
+	}
+	hdr, _, err := ReadTranscript(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hdr.ParentSessionID != "parent-session-123" {
+		t.Errorf("ParentSessionID = %q, want %q", hdr.ParentSessionID, "parent-session-123")
+	}
+	if hdr.Task != "implement auth middleware" {
+		t.Errorf("Task = %q, want %q", hdr.Task, "implement auth middleware")
+	}
+	if hdr.Depth != 2 {
+		t.Errorf("Depth = %d, want 2", hdr.Depth)
+	}
+}
+
+func TestRootSession_TranscriptHasEmptyParentFields(t *testing.T) {
+	stateDir := t.TempDir()
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	// Root session: no parent fields set.
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+		StateDir: stateDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	go func() { for range sess.Events() {} }()
+
+	files, _ := filepath.Glob(filepath.Join(stateDir, sessionsSubdir, "*.transcript.jsonl"))
+	if len(files) != 1 {
+		t.Fatalf("expected 1 transcript, got %d", len(files))
+	}
+	hdr, _, err := ReadTranscript(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hdr.ParentSessionID != "" {
+		t.Errorf("ParentSessionID = %q, want empty", hdr.ParentSessionID)
+	}
+	if hdr.Task != "" {
+		t.Errorf("Task = %q, want empty", hdr.Task)
+	}
+	if hdr.Depth != 0 {
+		t.Errorf("Depth = %d, want 0", hdr.Depth)
+	}
+}
+
+func TestSubagent_DepthSetFromConfig(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+		Depth: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	go func() { for range sess.Events() {} }()
+
+	if sess.depth != 3 {
+		t.Errorf("sess.depth = %d, want 3", sess.depth)
+	}
+}

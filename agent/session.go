@@ -81,6 +81,15 @@ type SessionConfig struct {
 	// Used for evaluation testing. 0 means use defaults.
 	CompactionThresholdScale float64 `json:"compaction_threshold_scale,omitempty"`
 
+	// ParentSessionID links sub-agent sessions to their parent (set by spawnAgent).
+	ParentSessionID string `json:"-"`
+
+	// SubagentTask is the task description passed to spawn_agent.
+	SubagentTask string `json:"-"`
+
+	// Depth is the sub-agent nesting depth (0 for root sessions).
+	Depth int `json:"-"`
+
 	// StateDir, when non-empty, enables incremental session persistence.
 	// Snapshots are written to <StateDir>/sessions/ and tasks to <StateDir>/tasks/.
 	StateDir string `json:"-"`
@@ -249,16 +258,21 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 	}
 	s.envInfo = ei
 
+	s.depth = cfg.Depth
+
 	// Create transcript writer if state persistence is enabled.
 	if s.stateDir != "" {
 		hdr := TranscriptHeader{
-			Kind:          "header",
-			FormatVersion: 1,
-			SessionID:     s.id,
-			CreatedAt:     time.Now().UTC(),
-			ProfileID:     profile.ID(),
-			Model:         profile.Model(),
-			WorkingDir:    ei.WorkingDir,
+			Kind:            "header",
+			FormatVersion:   1,
+			SessionID:       s.id,
+			ParentSessionID: cfg.ParentSessionID,
+			Task:            cfg.SubagentTask,
+			CreatedAt:       time.Now().UTC(),
+			ProfileID:       profile.ID(),
+			Model:           profile.Model(),
+			WorkingDir:      ei.WorkingDir,
+			Depth:           cfg.Depth,
 		}
 		tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
 		tw, twErr := NewTranscriptWriter(tpath, hdr)

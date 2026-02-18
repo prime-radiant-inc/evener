@@ -55,6 +55,9 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	subCfg := s.cfg
 	subCfg.MCPConfigFiles = nil
 	subCfg.MCPInline = nil
+	subCfg.ParentSessionID = s.id
+	subCfg.SubagentTask = task
+	subCfg.Depth = depth + 1
 	if maxTurns > 0 {
 		subCfg.MaxTurns = maxTurns
 	} else {
@@ -74,7 +77,6 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	if err != nil {
 		return "", err
 	}
-	subSess.depth = depth + 1
 
 	sub := &subagent{
 		id:     subSess.id,
