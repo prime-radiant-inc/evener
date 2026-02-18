@@ -42,6 +42,7 @@ type embeddedServer struct {
 	sess     *agent.Session
 	listener net.Listener
 	cancel   context.CancelFunc
+	history  []agent.Turn // non-nil when session was restored
 }
 
 // startEmbedded creates an agent session and HTTP server in-process,
@@ -89,11 +90,13 @@ func startEmbedded(ctx context.Context, cfg embeddedConfig) (*embeddedServer, er
 	env := agent.NewLocalExecutionEnvironment(wd)
 
 	var sess *agent.Session
+	var history []agent.Turn
 	if cfg.resume != "" || cfg.resumeLast {
 		snap, snapErr := cmdutil.ResolveSnapshot(sd, cfg.resume, cfg.resumeLast)
 		if snapErr != nil {
 			return nil, snapErr
 		}
+		history = snap.History
 		sess, err = agent.RestoreSession(client, profile, env, snap, sd)
 		if err != nil {
 			return nil, fmt.Errorf("restore session: %w", err)
@@ -167,6 +170,7 @@ func startEmbedded(ctx context.Context, cfg embeddedConfig) (*embeddedServer, er
 		sess:     sess,
 		listener: listener,
 		cancel:   cancel,
+		history:  history,
 	}, nil
 }
 

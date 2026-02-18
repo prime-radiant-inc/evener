@@ -34,7 +34,7 @@ type model struct {
 	activeTools map[string]int
 }
 
-func newModel(addr string) model {
+func newModel(addr string, initialMessages []chatMessage) model {
 	ta := textarea.New()
 	ta.Placeholder = "Type a message..."
 	ta.Prompt = inputPromptStyle.Render("> ")
@@ -46,6 +46,7 @@ func newModel(addr string) model {
 	return model{
 		addr:        addr,
 		input:       ta,
+		messages:    initialMessages,
 		activeTools: make(map[string]int),
 	}
 }

@@ -1,12 +1,15 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/llm"
 )
 
 var markdownRenderer *glamour.TermRenderer
@@ -111,4 +114,86 @@ type chatMessage struct {
 	Kind messageKind
 	Text string
 	Tool *toolCallInfo
+}
+
+// historyToMessages converts session history turns into TUI chat messages
+// for display when resuming a session.
+func historyToMessages(turns []agent.Turn) []chatMessage {
+	// Collect tool results keyed by call ID for matching with tool calls.
+	toolResults := make(map[string]llm.ToolResultData)
+	for _, t := range turns {
+		if t.Kind != agent.TurnToolResults && t.Kind != agent.TurnTool {
+			continue
+		}
+		for _, p := range t.Message.Content {
+			if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
+				toolResults[p.ToolResult.ToolCallID] = *p.ToolResult
+			}
+		}
+	}
+
+	var msgs []chatMessage
+	for _, t := range turns {
+		switch t.Kind {
+		case agent.TurnUserInput:
+			text := t.Message.Text()
+			if strings.TrimSpace(text) != "" {
+				msgs = append(msgs, chatMessage{Kind: msgUser, Text: text})
+			}
+
+		case agent.TurnAssistant:
+			for _, p := range t.Message.Content {
+				switch p.Kind {
+				case llm.ContentText:
+					// Skip empty text (common in tool-only responses).
+					if strings.TrimSpace(p.Text) != "" {
+						msgs = append(msgs, chatMessage{Kind: msgAssistant, Text: p.Text})
+					}
+
+				case llm.ContentToolCall:
+					if p.ToolCall == nil {
+						continue
+					}
+					tc := p.ToolCall
+					if tc.Name == "communicate" {
+						msg := extractCommunicateMessage(tc)
+						if msg != "" {
+							msgs = append(msgs, chatMessage{Kind: msgCommunicate, Text: msg})
+						}
+						continue
+					}
+
+					// Non-communicate tool call: show as collapsed tool entry.
+					desc := string(tc.Arguments)
+					if len(desc) > 60 {
+						desc = desc[:57] + "..."
+					}
+					result := toolResults[tc.ID]
+					output := fmt.Sprintf("%v", result.Content)
+					info := &toolCallInfo{
+						Name:        tc.Name,
+						Description: desc,
+						Output:      output,
+						Done:        true,
+					}
+					if result.IsError {
+						info.Error = output
+					}
+					msgs = append(msgs, chatMessage{Kind: msgTool, Tool: info})
+				}
+			}
+		}
+	}
+	return msgs
+}
+
+// extractCommunicateMessage pulls the message field from a communicate tool call's arguments.
+func extractCommunicateMessage(tc *llm.ToolCallData) string {
+	var args struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(tc.Arguments, &args); err == nil && args.Message != "" {
+		return args.Message
+	}
+	return ""
 }
