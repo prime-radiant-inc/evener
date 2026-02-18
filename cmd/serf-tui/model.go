@@ -187,7 +187,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.messages = append(m.messages, chatMessage{
 				Kind: msgSystem,
-				Text: renderDetailedStatus(msg.info),
+				Text: renderDetailedStatus(msg.info, m.width),
 			})
 		}
 		m.refreshViewport()
@@ -380,8 +380,13 @@ func (m model) View() string {
 }
 
 // renderDetailedStatus formats a StatusInfo into a multi-panel text display.
-// Sections with no items are omitted.
-func renderDetailedStatus(info server.StatusInfo) string {
+// All sections are shown (with counts) even when empty.
+// Tool lists wrap at width to avoid horizontal scrolling.
+func renderDetailedStatus(info server.StatusInfo, width int) string {
+	if width <= 0 {
+		width = 80
+	}
+
 	var b strings.Builder
 
 	// Header section (always shown).
@@ -395,91 +400,107 @@ func renderDetailedStatus(info server.StatusInfo) string {
 	}
 
 	// Tools section — group by source.
-	if len(ds.Tools) > 0 {
-		core := []string{}
-		mcp := map[string][]string{}  // server name → tool names
-		custom := []string{}
+	core := []string{}
+	mcp := map[string][]string{} // server name → tool names
+	custom := []string{}
 
-		for _, t := range ds.Tools {
-			switch {
-			case t.Source == "core":
-				core = append(core, t.Name)
-			case strings.HasPrefix(t.Source, "mcp:"):
-				srv := t.Source[4:]
-				mcp[srv] = append(mcp[srv], t.Name)
-			default:
-				custom = append(custom, t.Name)
-			}
+	for _, t := range ds.Tools {
+		switch {
+		case t.Source == "core":
+			core = append(core, t.Name)
+		case strings.HasPrefix(t.Source, "mcp:"):
+			srv := t.Source[4:]
+			mcp[srv] = append(mcp[srv], t.Name)
+		default:
+			custom = append(custom, t.Name)
 		}
+	}
 
-		b.WriteString(fmt.Sprintf("\n\nTools (%d):", len(ds.Tools)))
-		if len(core) > 0 {
-			b.WriteString("\n  Core: " + strings.Join(core, ", "))
-		}
-		for srv, tools := range mcp {
-			b.WriteString(fmt.Sprintf("\n  MCP:  %s (%s)", strings.Join(tools, ", "), srv))
-		}
-		if len(custom) > 0 {
-			b.WriteString("\n  Custom: " + strings.Join(custom, ", "))
-		}
+	b.WriteString(fmt.Sprintf("\n\nTools (%d):", len(ds.Tools)))
+	if len(core) > 0 {
+		writeWrappedList(&b, "Core:", core, width)
+	}
+	for srv, tools := range mcp {
+		writeWrappedList(&b, fmt.Sprintf("MCP [%s]:", srv), tools, width)
+	}
+	if len(custom) > 0 {
+		writeWrappedList(&b, "Custom:", custom, width)
 	}
 
 	// MCP Servers section.
-	if len(ds.MCP) > 0 {
-		b.WriteString(fmt.Sprintf("\n\nMCP Servers (%d):", len(ds.MCP)))
-		for _, srv := range ds.MCP {
-			b.WriteString(fmt.Sprintf("\n  %s (%d tools)", srv.Name, len(srv.Tools)))
-		}
+	b.WriteString(fmt.Sprintf("\n\nMCP Servers (%d):", len(ds.MCP)))
+	for _, srv := range ds.MCP {
+		b.WriteString(fmt.Sprintf("\n  %s (%d tools)", srv.Name, len(srv.Tools)))
 	}
 
 	// Skills section.
-	if len(ds.Skills) > 0 {
-		b.WriteString(fmt.Sprintf("\n\nSkills (%d):", len(ds.Skills)))
-		for _, skill := range ds.Skills {
-			b.WriteString(fmt.Sprintf("\n  %s", skill.Name))
-		}
+	b.WriteString(fmt.Sprintf("\n\nSkills (%d):", len(ds.Skills)))
+	for _, skill := range ds.Skills {
+		b.WriteString(fmt.Sprintf("\n  %s", skill.Name))
 	}
 
 	// Plugins section.
-	if len(ds.Plugins) > 0 {
-		b.WriteString(fmt.Sprintf("\n\nPlugins (%d):", len(ds.Plugins)))
-		for _, p := range ds.Plugins {
-			version := p.Version
-			if version == "" {
-				version = "?"
-			}
-			b.WriteString(fmt.Sprintf("\n  %s v%s (%d skills, %d agents, %d hooks)",
-				p.Name, version, p.SkillCount, p.AgentCount, p.HookCount))
+	b.WriteString(fmt.Sprintf("\n\nPlugins (%d):", len(ds.Plugins)))
+	for _, p := range ds.Plugins {
+		version := p.Version
+		if version == "" {
+			version = "?"
 		}
+		b.WriteString(fmt.Sprintf("\n  %s v%s (%d skills, %d agents, %d hooks)",
+			p.Name, version, p.SkillCount, p.AgentCount, p.HookCount))
 	}
 
 	// Hooks section.
+	b.WriteString(fmt.Sprintf("\n\nHooks (%d):", len(ds.Hooks)))
 	if len(ds.Hooks) > 0 {
-		b.WriteString("\n\nHooks:")
 		parts := []string{}
 		for event, count := range ds.Hooks {
 			parts = append(parts, fmt.Sprintf("%s: %d", event, count))
 		}
-		// Sort for stable output.
 		sort.Strings(parts)
 		b.WriteString("\n  " + strings.Join(parts, "  "))
 	}
 
 	// Subagents section.
-	if len(ds.Subagents) > 0 {
-		b.WriteString(fmt.Sprintf("\n\nSubagents (%d):", len(ds.Subagents)))
-		for _, sub := range ds.Subagents {
-			b.WriteString(fmt.Sprintf("\n  %s (%s, %d turns)", sub.ID, sub.Status, sub.TurnsUsed))
-		}
+	b.WriteString(fmt.Sprintf("\n\nSubagents (%d):", len(ds.Subagents)))
+	for _, sub := range ds.Subagents {
+		b.WriteString(fmt.Sprintf("\n  %s (%s, %d turns)", sub.ID, sub.Status, sub.TurnsUsed))
 	}
 
 	// Plugin agents section.
-	if len(ds.Agents) > 0 {
-		b.WriteString(fmt.Sprintf("\n\nAgents (%d):", len(ds.Agents)))
-		for _, name := range ds.Agents {
-			b.WriteString(fmt.Sprintf("\n  %s", name))
-		}
+	b.WriteString(fmt.Sprintf("\n\nAgents (%d):", len(ds.Agents)))
+	for _, name := range ds.Agents {
+		b.WriteString(fmt.Sprintf("\n  %s", name))
 	}
 
 	return b.String()
+}
+
+// writeWrappedList writes a labeled comma-separated list that wraps at width.
+// Output format: "\n  Label: item1, item2,\n         item3, item4"
+func writeWrappedList(b *strings.Builder, label string, items []string, width int) {
+	prefix := "  " + label + " "
+	indent := strings.Repeat(" ", len(prefix))
+
+	b.WriteString("\n" + prefix)
+	col := len(prefix)
+	for i, item := range items {
+		entry := item
+		if i < len(items)-1 {
+			entry += ","
+		}
+		needed := len(entry)
+		if i > 0 {
+			needed++ // space before item
+		}
+		if col+needed > width && col > len(prefix) {
+			b.WriteString("\n" + indent)
+			col = len(indent)
+		} else if i > 0 {
+			b.WriteString(" ")
+			col++
+		}
+		b.WriteString(entry)
+		col += len(entry)
+	}
 }
