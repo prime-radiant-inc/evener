@@ -11,11 +11,12 @@ import (
 
 // StatusInfo is the JSON response for GET /status.
 type StatusInfo struct {
-	SessionID string `json:"session_id"`
-	State     string `json:"state"`
-	Turns     int    `json:"turns"`
-	Model     string `json:"model"`
-	Profile   string `json:"profile"`
+	SessionID       string  `json:"session_id"`
+	State           string  `json:"state"`
+	Turns           int     `json:"turns"`
+	Model           string  `json:"model"`
+	Profile         string  `json:"profile"`
+	ContextPressure float64 `json:"context_pressure"`
 }
 
 // ServerConfig holds configuration for the HTTP server.
@@ -32,6 +33,7 @@ type Server struct {
 	status      StatusInfo
 	cancelFunc  context.CancelFunc
 	compactFunc func(context.Context) error
+	pressureFn  func() float64
 	processing  bool
 	inputCh     chan string
 }
@@ -105,6 +107,13 @@ func (s *Server) SetCancelFunc(cancel context.CancelFunc) {
 	s.mu.Unlock()
 }
 
+// SetContextPressureFunc sets a callback to retrieve live context pressure.
+func (s *Server) SetContextPressureFunc(fn func() float64) {
+	s.mu.Lock()
+	s.pressureFn = fn
+	s.mu.Unlock()
+}
+
 // SetCompactFunc sets the function called by POST /compact.
 func (s *Server) SetCompactFunc(fn func(context.Context) error) {
 	s.mu.Lock()
@@ -139,7 +148,12 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.RLock()
 	status := s.status
+	pfn := s.pressureFn
 	s.mu.RUnlock()
+
+	if pfn != nil {
+		status.ContextPressure = pfn()
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)

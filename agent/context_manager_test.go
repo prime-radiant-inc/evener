@@ -1870,6 +1870,33 @@ func startsWith(s, prefix string) bool {
 	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
 }
 
+// --- Pressure (public) tests ---
+
+func TestPressure_ReturnsEstimate(t *testing.T) {
+	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1000}
+	cm := NewContextManager(profile, nil)
+
+	history := []Turn{
+		{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("x", 400))},
+	}
+
+	p := cm.Pressure(history, 0)
+	// 400 chars / 4 = 100 tokens, 100/1000 = 0.10
+	if p < 0.09 || p > 0.11 {
+		t.Fatalf("Pressure() = %.2f, want ~0.10", p)
+	}
+}
+
+func TestPressure_ZeroContextWindow(t *testing.T) {
+	profile := &baseProfile{id: "openai", model: "test", contextWindow: 0}
+	cm := NewContextManager(profile, nil)
+
+	p := cm.Pressure(nil, 0)
+	if p != 0 {
+		t.Fatalf("Pressure() = %.2f, want 0 for zero context window", p)
+	}
+}
+
 // --- ForceCompact tests ---
 
 func TestForceCompact_RunsAllLayers(t *testing.T) {

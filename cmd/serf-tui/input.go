@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/server"
 )
 
 type inputSentMsg struct{ err error }
@@ -26,6 +27,19 @@ func parseSlashCommand(input string) (cmd, args string) {
 		args = parts[1]
 	}
 	return cmd, args
+}
+
+// slashCommandHelp returns the help text for all available slash commands.
+func slashCommandHelp() string {
+	return strings.Join([]string{
+		"Available commands:",
+		"  /help      Show this help",
+		"  /compact   Compact context (free up token space)",
+		"  /status    Show session info and context pressure",
+		"  /model     Switch model (e.g. /model gpt-4o)",
+		"  /clear     Start a new session",
+		"  /quit      Exit the TUI",
+	}, "\n")
 }
 
 func sendInput(addr, text string) tea.Cmd {
@@ -59,6 +73,27 @@ func sendCompact(addr string) tea.Cmd {
 			return compactDoneMsg{fmt.Errorf("server returned %d", resp.StatusCode)}
 		}
 		return compactDoneMsg{}
+	}
+}
+
+type statusResult struct {
+	info server.StatusInfo
+	err  error
+}
+
+func fetchStatus(addr string) tea.Cmd {
+	return func() tea.Msg {
+		url := fmt.Sprintf("http://%s/status", addr)
+		resp, err := http.Get(url)
+		if err != nil {
+			return statusResult{err: err}
+		}
+		defer resp.Body.Close()
+		var info server.StatusInfo
+		if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+			return statusResult{err: err}
+		}
+		return statusResult{info: info}
 	}
 }
 

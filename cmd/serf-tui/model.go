@@ -31,7 +31,8 @@ type model struct {
 	messages []chatMessage
 
 	// Track active tool calls by call ID -> index in messages
-	activeTools map[string]int
+	activeTools   map[string]int
+	lastInterrupt time.Time
 }
 
 func newModel(addr string, initialMessages []chatMessage) model {
@@ -62,7 +63,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":
-			return m, tea.Sequence(sendInterrupt(m.addr), tea.Quit)
+			now := time.Now()
+			if now.Sub(m.lastInterrupt) < time.Second {
+				return m, tea.Quit
+			}
+			m.lastInterrupt = now
+			m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "Interrupted. Press ctrl+c again to quit, or use /quit."})
+			m.refreshViewport()
+			return m, sendInterrupt(m.addr)
 		case "tab":
 			// Toggle the most recent tool call's expanded state
 			for i := len(m.messages) - 1; i >= 0; i-- {
@@ -81,6 +89,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Check for slash commands.
 			if cmd, _ := parseSlashCommand(text); cmd != "" {
 				switch cmd {
+				case "quit":
+					return m, tea.Quit
+				case "help":
+					m.input.Reset()
+					m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: slashCommandHelp()})
+					m.refreshViewport()
+					return m, tea.Batch(cmds...)
+				case "status":
+					m.input.Reset()
+					return m, fetchStatus(m.addr)
 				case "compact":
 					m.input.Reset()
 					m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "Compacting context..."})
@@ -139,6 +157,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 			m.refreshViewport()
 		}
+		return m, nil
+
+	case statusResult:
+		if msg.err != nil {
+			m.messages = append(m.messages, chatMessage{
+				Kind: msgSystem,
+				Text: fmt.Sprintf("Status error: %s", msg.err),
+			})
+		} else {
+			pressure := fmt.Sprintf("%.0f%%", msg.info.ContextPressure*100)
+			m.messages = append(m.messages, chatMessage{
+				Kind: msgSystem,
+				Text: fmt.Sprintf("Session:  %s\nModel:    %s\nProfile:  %s\nTurns:    %d\nState:    %s\nContext:  %s used",
+					msg.info.SessionID, msg.info.Model, msg.info.Profile,
+					msg.info.Turns, msg.info.State, pressure),
+			})
+		}
+		m.refreshViewport()
 		return m, nil
 
 	case compactDoneMsg:

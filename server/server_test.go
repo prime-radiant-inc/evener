@@ -42,6 +42,32 @@ func TestStatusEndpoint_Idle(t *testing.T) {
 	}
 }
 
+func TestStatusEndpoint_ContextPressure(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetStatus(StatusInfo{
+		SessionID: "test-456",
+		State:     "IDLE",
+		Model:     "gpt-4o",
+	})
+	srv.SetContextPressureFunc(func() float64 { return 0.42 })
+
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status code: got %d, want 200", w.Code)
+	}
+
+	var status StatusInfo
+	if err := json.NewDecoder(w.Body).Decode(&status); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if status.ContextPressure != 0.42 {
+		t.Errorf("context_pressure: got %f, want 0.42", status.ContextPressure)
+	}
+}
+
 func TestInterruptEndpoint(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

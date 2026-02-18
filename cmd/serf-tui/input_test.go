@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -57,26 +58,71 @@ func TestSendCompact_ServerError(t *testing.T) {
 	}
 }
 
-func TestSlashCompactInterception(t *testing.T) {
-	// Verify that /compact is recognized as a slash command.
+func TestFetchStatus(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" || r.Method != http.MethodGet {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"session_id":"abc","state":"IDLE","turns":5,"model":"gpt-4o","profile":"openai","context_pressure":0.35}`))
+	}))
+	defer ts.Close()
+
+	addr := ts.URL[len("http://"):]
+	cmd := fetchStatus(addr)
+	msg := cmd()
+
+	result, ok := msg.(statusResult)
+	if !ok {
+		t.Fatalf("expected statusResult, got %T", msg)
+	}
+	if result.err != nil {
+		t.Fatalf("unexpected error: %v", result.err)
+	}
+	if result.info.SessionID != "abc" {
+		t.Errorf("session_id = %q, want abc", result.info.SessionID)
+	}
+	if result.info.ContextPressure != 0.35 {
+		t.Errorf("context_pressure = %f, want 0.35", result.info.ContextPressure)
+	}
+}
+
+func TestSlashCommandHelp(t *testing.T) {
+	help := slashCommandHelp()
+	for _, cmd := range []string{"/help", "/compact", "/status", "/model", "/clear", "/quit"} {
+		if !strings.Contains(help, cmd) {
+			t.Errorf("help text missing %q", cmd)
+		}
+	}
+}
+
+func TestParseSlashCommand(t *testing.T) {
 	tests := []struct {
-		input string
-		want  bool
+		input   string
+		wantCmd string
+		wantArg string
 	}{
-		{"/compact", true},
-		{" /compact ", true},
-		{"/compact extra args", true},
-		{"hello /compact", false},
-		{"/notacommand", false},
-		{"", false},
+		{"/compact", "compact", ""},
+		{" /compact ", "compact", ""},
+		{"/compact extra args", "compact", "extra args"},
+		{"/quit", "quit", ""},
+		{"/help", "help", ""},
+		{"/model gpt-4o", "model", "gpt-4o"},
+		{"/clear", "clear", ""},
+		{"/status", "status", ""},
+		{"hello /compact", "", ""},
+		{"", "", ""},
+		{"no slash", "", ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("%q", tt.input), func(t *testing.T) {
-			cmd, _ := parseSlashCommand(tt.input)
-			got := cmd == "compact"
-			if got != tt.want {
-				t.Errorf("parseSlashCommand(%q) compact = %v, want %v", tt.input, got, tt.want)
+			cmd, args := parseSlashCommand(tt.input)
+			if cmd != tt.wantCmd {
+				t.Errorf("parseSlashCommand(%q) cmd = %q, want %q", tt.input, cmd, tt.wantCmd)
+			}
+			if args != tt.wantArg {
+				t.Errorf("parseSlashCommand(%q) args = %q, want %q", tt.input, args, tt.wantArg)
 			}
 		})
 	}

@@ -70,6 +70,11 @@ func (cm *ContextManager) RecordInputTokens(tokens int, historyLen int) {
 	cm.historyLenAtMeasure = historyLen
 }
 
+// Pressure returns the current context pressure as a fraction (0.0–1.0).
+func (cm *ContextManager) Pressure(history []Turn, sysPromptChars int) float64 {
+	return cm.estimatePressure(history, sysPromptChars)
+}
+
 // estimatePressure calculates what fraction of the context window is in use.
 // Uses actual API-reported token counts when available, falling back to char/4.
 func (cm *ContextManager) estimatePressure(history []Turn, sysPromptChars int) float64 {

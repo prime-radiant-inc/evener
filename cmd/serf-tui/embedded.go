@@ -126,6 +126,7 @@ func startEmbedded(ctx context.Context, cfg embeddedConfig) (*embeddedServer, er
 
 	srv := server.NewServer(server.ServerConfig{})
 	srv.SetCompactFunc(sess.Compact)
+	srv.SetContextPressureFunc(sess.ContextPressure)
 
 	// Bridge session events to SSE broadcaster.
 	go server.Bridge(srv, sess.Events())

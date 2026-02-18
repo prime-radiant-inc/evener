@@ -324,6 +324,18 @@ func (s *Session) Compact(ctx context.Context) error {
 	return nil
 }
 
+// ContextPressure returns the estimated context pressure as a fraction (0.0–1.0).
+// Returns 0 if the context manager is not initialized.
+func (s *Session) ContextPressure() float64 {
+	if s.contextMgr == nil {
+		return 0
+	}
+	s.mu.Lock()
+	hist := append([]Turn{}, s.history...)
+	s.mu.Unlock()
+	return s.contextMgr.Pressure(hist, 0)
+}
+
 // SetModel changes the model used for future LLM calls.
 // Takes effect on the next request.
 func (s *Session) SetModel(model string) {
