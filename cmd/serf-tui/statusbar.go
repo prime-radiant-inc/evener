@@ -1,0 +1,30 @@
+package main
+
+import (
+	"fmt"
+
+	"github.com/charmbracelet/lipgloss"
+)
+
+func renderStatusBar(connected bool, model, sessionID string, turns, width int) string {
+	var connIndicator string
+	if connected {
+		connIndicator = statusConnected.Render("● connected")
+	} else {
+		connIndicator = statusDisconnected.Render("○ disconnected")
+	}
+
+	left := fmt.Sprintf("serf %s", connIndicator)
+	right := ""
+	if model != "" {
+		right = fmt.Sprintf("model: %s  turns: %d", model, turns)
+	}
+
+	gap := width - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 1 {
+		gap = 1
+	}
+
+	content := left + fmt.Sprintf("%*s", gap, "") + right
+	return statusBarStyle.Width(width).Render(content)
+}
