@@ -19,6 +19,15 @@ func (f *stringSliceFlag) Set(val string) error {
 }
 
 func main() {
+	// Subcommand dispatch — before flag.Parse() so serve gets its own flag set.
+	if len(os.Args) > 1 && os.Args[1] == "serve" {
+		if err := runServe(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "serf serve: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	model := flag.String("model", "", "LLM model identifier")
 	provider := flag.String("provider", "", "LLM provider (openai, anthropic, google)")
 	workDir := flag.String("dir", "", "working directory (default: current directory)")
