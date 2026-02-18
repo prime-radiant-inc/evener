@@ -49,14 +49,14 @@ func (b *Broadcaster) Subscribe(lastID uint64) (<-chan BufferItem, func()) {
 	b.subscribers[id] = ch
 	b.mu.Unlock()
 
-	// Send catchup events from ring buffer
-	if lastID > 0 {
-		items := b.ring.After(lastID)
-		for _, item := range items {
-			select {
-			case ch <- item:
-			default:
-			}
+	// Send catchup events from ring buffer.
+	// After(0) returns all buffered events — correct for first-time clients.
+	// After(N) returns events after ID N — correct for reconnecting clients.
+	items := b.ring.After(lastID)
+	for _, item := range items {
+		select {
+		case ch <- item:
+		default:
 		}
 	}
 
