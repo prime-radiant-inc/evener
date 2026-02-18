@@ -1422,3 +1422,135 @@ func TestMaybeCompact_CallsOnCompactionTurn(t *testing.T) {
 		t.Fatalf("callback turn missing checkpoint text: %q", callbackTurns[0].Message.Text())
 	}
 }
+
+// --- Sub-agent transcript persistence ---
+
+func TestSubagent_TranscriptPersistsAfterCloseAgent(t *testing.T) {
+	stateDir := t.TempDir()
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			// Sub-agent's response (consumed by the spawned child session).
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("sub-agent done")}
+			},
+		},
+	})
+
+	parentSess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+		StateDir:         stateDir,
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	// Drain parent events so Close doesn't block.
+	go func() { for range parentSess.Events() {} }()
+
+	// Spawn a sub-agent via the tool registry (matches existing test patterns).
+	spawnRes := parentSess.reg.ExecuteCall(context.Background(), parentSess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"implement auth middleware"}`),
+	})
+	if spawnRes.IsError {
+		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
+	}
+	var spawned map[string]any
+	if err := json.Unmarshal([]byte(spawnRes.Output), &spawned); err != nil {
+		t.Fatalf("unmarshal spawn_agent output: %v (out=%q)", err, spawnRes.Output)
+	}
+	agentID := fmt.Sprint(spawned["agent_id"])
+	if agentID == "" {
+		t.Fatalf("missing agent_id in spawn output: %v", spawned)
+	}
+
+	// Wait for the sub-agent to complete.
+	waitRes := parentSess.reg.ExecuteCall(context.Background(), parentSess.env, llm.ToolCallData{
+		ID:        "c2",
+		Name:      "wait",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":5000}`, agentID)),
+	})
+	if waitRes.IsError {
+		t.Fatalf("wait error: %s", waitRes.Output)
+	}
+
+	// Close the sub-agent (this calls sub.sess.Close(), closing the transcript).
+	closeRes := parentSess.reg.ExecuteCall(context.Background(), parentSess.env, llm.ToolCallData{
+		ID:        "c3",
+		Name:      "close_agent",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q}`, agentID)),
+	})
+	if closeRes.IsError {
+		t.Fatalf("close_agent error: %s", closeRes.Output)
+	}
+
+	// Close the parent session.
+	parentSess.Close()
+
+	// Both sessions should have transcript files in the shared stateDir.
+	files, _ := filepath.Glob(filepath.Join(stateDir, sessionsSubdir, "*.transcript.jsonl"))
+	if len(files) != 2 {
+		t.Fatalf("expected 2 transcript files, got %d", len(files))
+	}
+
+	// Identify parent and sub-agent transcripts by checking ParentSessionID.
+	var parentHeader, subHeader TranscriptHeader
+	var subEntries []TranscriptEntry
+	foundParent, foundSub := false, false
+	for _, f := range files {
+		hdr, entries, err := ReadTranscript(f)
+		if err != nil {
+			t.Fatalf("ReadTranscript(%s): %v", f, err)
+		}
+		if hdr.ParentSessionID == "" {
+			parentHeader = hdr
+			foundParent = true
+		} else {
+			subHeader = hdr
+			subEntries = entries
+			foundSub = true
+		}
+	}
+	if !foundParent {
+		t.Fatal("no parent transcript found (expected one with empty ParentSessionID)")
+	}
+	if !foundSub {
+		t.Fatal("no sub-agent transcript found (expected one with non-empty ParentSessionID)")
+	}
+
+	// The parent transcript's SessionID should match the parent session's ID.
+	if parentHeader.SessionID != parentSess.ID() {
+		t.Errorf("parent SessionID = %q, want %q", parentHeader.SessionID, parentSess.ID())
+	}
+
+	// The sub-agent's ParentSessionID should point to the parent's actual ID.
+	if subHeader.ParentSessionID != parentSess.ID() {
+		t.Errorf("sub-agent ParentSessionID = %q, want %q", subHeader.ParentSessionID, parentSess.ID())
+	}
+
+	// The sub-agent's Task should match what was passed to spawn_agent.
+	if subHeader.Task != "implement auth middleware" {
+		t.Errorf("sub-agent Task = %q, want %q", subHeader.Task, "implement auth middleware")
+	}
+
+	// The sub-agent's Depth should be 1 (parent is depth 0).
+	if subHeader.Depth != 1 {
+		t.Errorf("sub-agent Depth = %d, want 1", subHeader.Depth)
+	}
+
+	// The sub-agent transcript should contain at least a user input and assistant response.
+	if len(subEntries) < 2 {
+		t.Fatalf("expected at least 2 sub-agent transcript entries, got %d", len(subEntries))
+	}
+	if subEntries[0].Turn.Kind != TurnUserInput {
+		t.Errorf("sub-agent entry 0 kind = %q, want %q", subEntries[0].Turn.Kind, TurnUserInput)
+	}
+	// The sub-agent's first input should be the task.
+	if subEntries[0].Turn.Message.Text() != "implement auth middleware" {
+		t.Errorf("sub-agent entry 0 text = %q, want %q", subEntries[0].Turn.Message.Text(), "implement auth middleware")
+	}
+}
