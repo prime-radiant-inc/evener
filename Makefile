@@ -1,7 +1,12 @@
-.PHONY: build test test-short vet lint clean
+.PHONY: build build-tui build-all test test-short vet lint clean
 
 build:
 	go build -o serf ./cmd/serf/
+
+build-tui:
+	go build -o serf-tui ./cmd/serf-tui/
+
+build-all: build build-tui
 
 build-llmcall:
 	go build -o llmcall ./cmd/llmcall/
@@ -19,4 +24,4 @@ lint:
 	golangci-lint run ./...
 
 clean:
-	rm -f serf
+	rm -f serf serf-tui llmcall

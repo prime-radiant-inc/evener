@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"strings"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/anthropic"
 	_ "primeradiant.com/serf/llm/providers/google"
@@ -67,7 +67,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	// Compute runtime state directory.
 	stateDir := cfg.stateDir
 	if stateDir == "" {
-		originURL := gitOriginURLFromDir(cfg.workDir)
+		originURL := cmdutil.GitOriginURLFromDir(cfg.workDir)
 		stateDir = agent.RuntimeDir(originURL, cfg.workDir, "")
 	}
 
@@ -130,7 +130,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		return fmt.Errorf("LLM client setup: %w", err)
 	}
 
-	profile, err := selectProfile(provider, model)
+	profile, err := cmdutil.SelectProfile(provider, model)
 	if err != nil {
 		return err
 	}
@@ -357,59 +357,6 @@ func listSessions(cfg runConfig, stateDir string) error {
 			s.ID, s.Model, branch, s.UpdatedAt.Format("2006-01-02 15:04:05"), s.TurnCount, firstInput)
 	}
 	return nil
-}
-
-// gitOriginURLFromDir runs "git remote get-url origin" in dir and returns the
-// URL, or "" if not a git repo or no origin remote.
-func gitOriginURLFromDir(dir string) string {
-	cmd := exec.Command("git", "remote", "get-url", "origin")
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
-}
-
-// selectProfile creates the ProviderProfile for the given provider and model.
-func selectProfile(provider, model string) (agent.ProviderProfile, error) {
-	requiredKeys := parseCommunicateRequiredDataKeys(os.Getenv("SERF_COMMUNICATE_REQUIRED_DATA_KEYS"))
-
-	switch strings.ToLower(provider) {
-	case "openai":
-		return agent.WithCommunicateRequiredDataKeys(agent.NewOpenAIProfile(model), requiredKeys), nil
-	case "anthropic":
-		return agent.WithCommunicateRequiredDataKeys(agent.NewAnthropicProfile(model), requiredKeys), nil
-	case "google", "gemini":
-		return agent.WithCommunicateRequiredDataKeys(agent.NewGeminiProfile(model), requiredKeys), nil
-	default:
-		return nil, fmt.Errorf("unknown provider %q: must be openai, anthropic, or google", provider)
-	}
-}
-
-func parseCommunicateRequiredDataKeys(raw string) []string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil
-	}
-	// Allow JSON array form for callers that want a stable encoding.
-	if strings.HasPrefix(raw, "[") {
-		var keys []string
-		if err := json.Unmarshal([]byte(raw), &keys); err == nil && len(keys) > 0 {
-			return keys
-		}
-		// Fall through to comma-separated parsing on malformed JSON.
-	}
-	parts := strings.Split(raw, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		out = append(out, p)
-	}
-	return out
 }
 
 // maxRoundsToConfig converts a --max-rounds CLI value to a SessionConfig value.

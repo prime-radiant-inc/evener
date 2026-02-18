@@ -10,6 +10,7 @@ import (
 	"os/signal"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/anthropic"
 	_ "primeradiant.com/serf/llm/providers/google"
@@ -49,24 +50,18 @@ func runServe(args []string) error {
 	// Resolve state directory.
 	sd := *stateDir
 	if sd == "" {
-		originURL := gitOriginURLFromDir(wd)
+		originURL := cmdutil.GitOriginURLFromDir(wd)
 		sd = agent.RuntimeDir(originURL, wd, "")
 	}
 
 	// Resolve provider and model (flag > env var).
-	prov := *provider
-	if prov == "" {
-		prov = os.Getenv("SERF_PROVIDER")
+	prov, err := cmdutil.ResolveProvider(*provider)
+	if err != nil {
+		return err
 	}
-	if prov == "" {
-		return fmt.Errorf("no provider: use --provider or set SERF_PROVIDER")
-	}
-	mod := *model
-	if mod == "" {
-		mod = os.Getenv("SERF_MODEL")
-	}
-	if mod == "" {
-		return fmt.Errorf("no model: use --model or set SERF_MODEL")
+	mod, err := cmdutil.ResolveModel(*model)
+	if err != nil {
+		return err
 	}
 
 	// Create LLM client and session.
@@ -74,7 +69,7 @@ func runServe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("LLM client: %w", err)
 	}
-	profile, err := selectProfile(prov, mod)
+	profile, err := cmdutil.SelectProfile(prov, mod)
 	if err != nil {
 		return err
 	}
