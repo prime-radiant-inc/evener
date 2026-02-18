@@ -36,7 +36,8 @@ type messageKind int
 
 const (
 	msgUser messageKind = iota
-	msgAssistant
+	msgAssistant    // LLM thinking/reasoning text
+	msgCommunicate  // agent's communicate output (the actual response)
 	msgTool
 	msgSystem
 )
@@ -57,11 +58,15 @@ const toolCollapseThreshold = 5
 func renderMessage(msg chatMessage, width int) string {
 	switch msg.Kind {
 	case msgUser:
-		label := userLabelStyle.Render("▌ User")
-		return fmt.Sprintf("%s\n%s", label, msg.Text)
+		return userBlockStyle.Width(width).Render("> " + msg.Text)
 	case msgAssistant:
-		label := assistantLabelStyle.Render("▌ Assistant")
-		return fmt.Sprintf("%s\n%s", label, renderMarkdown(msg.Text))
+		text := strings.TrimSpace(msg.Text)
+		if text == "" {
+			return ""
+		}
+		return thinkingStyle.Render(text)
+	case msgCommunicate:
+		return communicateStyle.Render(renderMarkdown(msg.Text))
 	case msgTool:
 		if msg.Tool == nil || msg.Tool.Hidden {
 			return ""

@@ -16,13 +16,17 @@ var (
 		Foreground(lipgloss.Color("196")).
 		Bold(true)
 
-	userLabelStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("33")).
-		Bold(true)
+	userBlockStyle = lipgloss.NewStyle().
+		Background(lipgloss.Color("236")).
+		PaddingLeft(1).
+		PaddingRight(1)
 
-	assistantLabelStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("213")).
-		Bold(true)
+	thinkingStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("244")).
+		Italic(true)
+
+	communicateStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("255"))
 
 	toolCollapsedStyle = lipgloss.NewStyle().
 		Foreground(lipgloss.Color("244"))

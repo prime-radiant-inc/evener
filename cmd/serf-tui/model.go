@@ -154,7 +154,7 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 		}
 		json.Unmarshal([]byte(ev.Data), &d)
 		if d.Message != "" {
-			m.messages = append(m.messages, chatMessage{Kind: msgAssistant, Text: d.Message})
+			m.messages = append(m.messages, chatMessage{Kind: msgCommunicate, Text: d.Message})
 		}
 
 	case "ASSISTANT_TEXT_END":
