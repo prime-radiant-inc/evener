@@ -77,8 +77,7 @@ func runServe(args []string) error {
 
 	var sess *agent.Session
 	if *resume != "" || *resumeLast {
-		cfg := runConfig{resume: *resume, resumeLast: *resumeLast}
-		snap, snapErr := resolveSnapshot(cfg, sd)
+		snap, snapErr := cmdutil.ResolveSnapshot(sd, *resume, *resumeLast)
 		if snapErr != nil {
 			return snapErr
 		}

@@ -18,10 +18,20 @@ import (
 
 // embeddedConfig holds options for the embedded server.
 type embeddedConfig struct {
-	provider string
-	model    string
-	workDir  string
-	stateDir string
+	provider           string
+	model              string
+	workDir            string
+	stateDir           string
+	systemPrompt       string
+	systemPromptAppend []string
+	maxRounds          int
+	reasoningEffort    string
+	skillsDirs         []string
+	mcpServers         []string
+	mcpConfigs         []string
+	pluginDirs         []string
+	resume             string
+	resumeLast         bool
 }
 
 // embeddedServer wraps an in-process agent session and HTTP server.
@@ -61,6 +71,11 @@ func startEmbedded(ctx context.Context, cfg embeddedConfig) (*embeddedServer, er
 		return nil, err
 	}
 
+	effort, err := cmdutil.ResolveReasoningEffort(cfg.reasoningEffort, os.Getenv("SERF_REASONING_EFFORT"))
+	if err != nil {
+		return nil, err
+	}
+
 	client, err := llm.NewFromEnv()
 	if err != nil {
 		return nil, fmt.Errorf("LLM client: %w", err)
@@ -72,10 +87,38 @@ func startEmbedded(ctx context.Context, cfg embeddedConfig) (*embeddedServer, er
 	}
 
 	env := agent.NewLocalExecutionEnvironment(wd)
-	sessionCfg := agent.SessionConfig{StateDir: sd}
-	sess, err := agent.NewSession(client, profile, env, sessionCfg)
-	if err != nil {
-		return nil, fmt.Errorf("session creation: %w", err)
+
+	var sess *agent.Session
+	if cfg.resume != "" || cfg.resumeLast {
+		snap, snapErr := cmdutil.ResolveSnapshot(sd, cfg.resume, cfg.resumeLast)
+		if snapErr != nil {
+			return nil, snapErr
+		}
+		sess, err = agent.RestoreSession(client, profile, env, snap, sd)
+		if err != nil {
+			return nil, fmt.Errorf("restore session: %w", err)
+		}
+		if effort.Set {
+			sess.SetReasoningEffort(effort.Value)
+		}
+	} else {
+		sessionCfg := agent.SessionConfig{
+			StateDir:              sd,
+			SystemPromptFile:      cfg.systemPrompt,
+			SystemPromptAppend:    cfg.systemPromptAppend,
+			MaxToolRoundsPerInput: cmdutil.MaxRoundsToConfig(cfg.maxRounds),
+			SkillsDirs:            cfg.skillsDirs,
+			MCPConfigFiles:        cfg.mcpConfigs,
+			MCPInline:             cfg.mcpServers,
+			PluginDirs:            cfg.pluginDirs,
+		}
+		if effort.Set {
+			sessionCfg.ReasoningEffort = effort.Value
+		}
+		sess, err = agent.NewSession(client, profile, env, sessionCfg)
+		if err != nil {
+			return nil, fmt.Errorf("session creation: %w", err)
+		}
 	}
 
 	srv := server.NewServer(server.ServerConfig{})

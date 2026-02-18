@@ -6,17 +6,12 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strings"
+
+	"primeradiant.com/serf/cmdutil"
 )
 
-// stringSliceFlag implements flag.Value for a repeatable string flag.
-type stringSliceFlag []string
-
-func (f *stringSliceFlag) String() string { return strings.Join(*f, ",") }
-func (f *stringSliceFlag) Set(val string) error {
-	*f = append(*f, val)
-	return nil
-}
+// Alias for brevity within flag definitions.
+type stringSliceFlag = cmdutil.StringSliceFlag
 
 func main() {
 	// Subcommand dispatch — before flag.Parse() so serve gets its own flag set.

@@ -13,6 +13,6 @@ go build -o serf-tui ./cmd/serf-tui/
 
 # Run
 exec ./serf-tui \
-  --provider "${SERF_PROVIDER:-openai}" \
-  --model "${SERF_MODEL:-gpt-4o-mini}" \
+  --provider "${SERF_PROVIDER:-anthropic}" \
+  --model "${SERF_MODEL:-claude-haiku-4-5-20251001}" \
   "$@"

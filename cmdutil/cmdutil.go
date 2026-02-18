@@ -61,6 +61,81 @@ func ResolveModel(flagValue string) (string, error) {
 	return "", fmt.Errorf("no model: use --model or set SERF_MODEL")
 }
 
+// StringSliceFlag implements flag.Value for a repeatable string flag.
+type StringSliceFlag []string
+
+func (f *StringSliceFlag) String() string { return strings.Join(*f, ",") }
+func (f *StringSliceFlag) Set(val string) error {
+	*f = append(*f, val)
+	return nil
+}
+
+// ReasoningEffortResolution holds the result of resolving reasoning effort from CLI/env.
+type ReasoningEffortResolution struct {
+	// Set indicates a CLI/env override was provided (even if it resolves to "").
+	Set bool
+	// Value is the normalized effort: "low"|"medium"|"high" or "" (meaning none/clear).
+	Value string
+}
+
+// ResolveReasoningEffort resolves reasoning effort from a CLI flag value and env var.
+func ResolveReasoningEffort(cliValue, envValue string) (ReasoningEffortResolution, error) {
+	raw := strings.TrimSpace(cliValue)
+	set := raw != ""
+	if raw == "" {
+		raw = strings.TrimSpace(envValue)
+		set = raw != ""
+	}
+	if !set {
+		return ReasoningEffortResolution{}, nil
+	}
+
+	v := strings.ToLower(strings.TrimSpace(raw))
+	switch v {
+	case "none", "null", "off", "false", "0":
+		return ReasoningEffortResolution{Set: true, Value: ""}, nil
+	case "low", "medium", "high":
+		return ReasoningEffortResolution{Set: true, Value: v}, nil
+	default:
+		return ReasoningEffortResolution{}, fmt.Errorf("invalid reasoning effort %q (expected low|medium|high|none)", raw)
+	}
+}
+
+// MaxRoundsToConfig converts a --max-rounds CLI value to a SessionConfig value.
+//
+//	-1 (not specified) → 0 (applyDefaults sets to 200)
+//	 0 (unlimited)     → -1 (negative means no limit)
+//	>0 (explicit)      → that value
+func MaxRoundsToConfig(cliValue int) int {
+	switch {
+	case cliValue > 0:
+		return cliValue
+	case cliValue == 0:
+		return -1
+	default:
+		return 0
+	}
+}
+
+// ResolveSnapshot loads a session snapshot by ID or finds the most recent one.
+func ResolveSnapshot(stateDir, sessionID string, resumeLast bool) (agent.SessionSnapshot, error) {
+	if resumeLast {
+		list, err := agent.ListSessions(stateDir)
+		if err != nil {
+			return agent.SessionSnapshot{}, fmt.Errorf("list sessions: %w", err)
+		}
+		if len(list) == 0 {
+			return agent.SessionSnapshot{}, fmt.Errorf("no saved sessions in %s", stateDir)
+		}
+		return list[0], nil
+	}
+	snap, err := agent.LoadSession(stateDir, sessionID)
+	if err != nil {
+		return agent.SessionSnapshot{}, fmt.Errorf("load session %s: %w", sessionID, err)
+	}
+	return snap, nil
+}
+
 func parseCommunicateRequiredDataKeys(raw string) []string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

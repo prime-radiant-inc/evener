@@ -42,13 +42,6 @@ type runConfig struct {
 	listSessions bool   // print saved sessions and exit
 }
 
-type reasoningEffortResolution struct {
-	// Set indicates a CLI/env override was provided (even if it resolves to "").
-	Set bool
-	// Value is the normalized effort: "low"|"medium"|"high" or "" (meaning none/clear).
-	Value string
-}
-
 func run(ctx context.Context, cfg runConfig) error {
 	if cfg.stdout == nil {
 		cfg.stdout = os.Stdout
@@ -96,7 +89,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		return fmt.Errorf("no task provided")
 	}
 
-	effort, err := resolveReasoningEffort(cfg.reasoningEffort, os.Getenv("SERF_REASONING_EFFORT"))
+	effort, err := cmdutil.ResolveReasoningEffort(cfg.reasoningEffort, os.Getenv("SERF_REASONING_EFFORT"))
 	if err != nil {
 		return err
 	}
@@ -148,7 +141,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		fmt.Fprintf(cfg.stderr, "[resumed] session %s (%d turns)\n", snap.ID, snap.TurnCount) //nolint:errcheck
 	} else {
 		sessionCfg := agent.SessionConfig{
-			MaxToolRoundsPerInput: maxRoundsToConfig(cfg.maxRounds),
+			MaxToolRoundsPerInput: cmdutil.MaxRoundsToConfig(cfg.maxRounds),
 			StateDir:              stateDir,
 			SystemPromptFile:      cfg.systemPrompt,
 			SystemPromptAppend:    cfg.systemPromptAppend,
@@ -186,27 +179,6 @@ func run(ctx context.Context, cfg runConfig) error {
 	return nil
 }
 
-func resolveReasoningEffort(cliValue, envValue string) (reasoningEffortResolution, error) {
-	raw := strings.TrimSpace(cliValue)
-	set := raw != ""
-	if raw == "" {
-		raw = strings.TrimSpace(envValue)
-		set = raw != ""
-	}
-	if !set {
-		return reasoningEffortResolution{}, nil
-	}
-
-	v := strings.ToLower(strings.TrimSpace(raw))
-	switch v {
-	case "none", "null", "off", "false", "0":
-		return reasoningEffortResolution{Set: true, Value: ""}, nil
-	case "low", "medium", "high":
-		return reasoningEffortResolution{Set: true, Value: v}, nil
-	default:
-		return reasoningEffortResolution{}, fmt.Errorf("invalid reasoning effort %q (expected low|medium|high|none)", raw)
-	}
-}
 
 // drainEventsVerbose writes every event as a JSON line (NDJSON) to w.
 func drainEventsVerbose(events <-chan agent.SessionEvent, w io.Writer) <-chan struct{} {
@@ -306,26 +278,11 @@ func drainEventsHuman(events <-chan agent.SessionEvent, w io.Writer) <-chan stru
 
 // resolveSnapshot loads the session snapshot for the given resume configuration.
 func resolveSnapshot(cfg runConfig, stateDir string) (agent.SessionSnapshot, error) {
-	if cfg.resumeLast {
-		list, err := agent.ListSessions(stateDir)
-		if err != nil {
-			return agent.SessionSnapshot{}, fmt.Errorf("list sessions: %w", err)
-		}
-		if len(list) == 0 {
-			return agent.SessionSnapshot{}, fmt.Errorf("no saved sessions in %s", stateDir)
-		}
-		return list[0], nil
-	}
-
 	id := cfg.resume
 	if id == "" {
 		id = cfg.resumeWith
 	}
-	snap, err := agent.LoadSession(stateDir, id)
-	if err != nil {
-		return agent.SessionSnapshot{}, fmt.Errorf("load session %s: %w", id, err)
-	}
-	return snap, nil
+	return cmdutil.ResolveSnapshot(stateDir, id, cfg.resumeLast)
 }
 
 // listSessions prints all saved sessions and returns.
@@ -359,18 +316,3 @@ func listSessions(cfg runConfig, stateDir string) error {
 	return nil
 }
 
-// maxRoundsToConfig converts a --max-rounds CLI value to a SessionConfig value.
-//
-//	-1 (not specified) → 0 (applyDefaults sets to 200)
-//	 0 (unlimited)     → -1 (negative means no limit)
-//	>0 (explicit)      → that value
-func maxRoundsToConfig(cliValue int) int {
-	switch {
-	case cliValue > 0:
-		return cliValue
-	case cliValue == 0:
-		return -1
-	default:
-		return 0
-	}
-}

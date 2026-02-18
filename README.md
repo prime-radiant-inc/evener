@@ -137,6 +137,64 @@ serf --provider openai --model gpt-5.2 --resume-with 01JTEST000000000000000001 "
 
 When resuming, the provider and model from the original session are used by default. You can override them with `--provider` and `--model`.
 
+## Serf TUI (Terminal User Interface)
+
+`serf-tui` is an interactive terminal interface for Serf, providing a real-time view of agent progress with markdown rendering, tool call inspection, and user input handling.
+
+### Build
+
+```bash
+make build-tui
+```
+
+### Usage
+
+Start with an embedded agent server (auto-starts Serf):
+
+```bash
+serf-tui --provider openai --model gpt-5.2 --dir /path/to/work
+```
+
+Or connect to an existing Serf server:
+
+```bash
+# In one terminal, start a Serf server
+serf serve --provider openai --model gpt-5.2 --port 8080
+
+# In another, connect the TUI
+serf-tui --addr localhost:8080
+```
+
+### Flags
+
+All flags from the `serf` CLI are supported, plus `--addr` for remote connections:
+
+| Flag | Description |
+|---|---|
+| `--provider <name>` | LLM provider: openai, anthropic, google |
+| `--model <name>` | LLM model identifier |
+| `--dir <path>` | Working directory for the agent |
+| `--state-dir <path>` | Override runtime state directory |
+| `--system-prompt <path>` | Path to a custom system prompt file |
+| `--system-prompt-append <path>` | Append to system prompt (repeatable) |
+| `--max-rounds <n>` | Max tool rounds per input (0=unlimited, default: 200) |
+| `--reasoning-effort <level>` | Reasoning effort: low\|medium\|high\|none |
+| `--skills-dir <path>` | Extra skill directory (repeatable) |
+| `--mcp <spec>` | MCP server (repeatable, format: name:command args...) |
+| `--mcp-config <path>` | Path to .mcp.json file (repeatable) |
+| `--plugin-dir <path>` | Plugin directory (repeatable) |
+| `--resume <id>` | Resume a previous session by ID |
+| `--resume-last` | Resume the most recent session |
+| `--addr <host:port>` | Connect to existing server (skip embedded startup) |
+
+### Features
+
+- **Real-time streaming**: Watch agent progress as it unfolds via SSE
+- **Markdown rendering**: Format-aware display of assistant messages
+- **Tool inspection**: Collapse/expand tool calls and view arguments
+- **User input**: Send messages and provide input to the agent
+- **Session support**: Full session persistence and resume capabilities
+
 ## Acknowledgments
 
 Serf is forked from [Kilroy](https://github.com/danshapiro/kilroy) by Dan Shapiro, originally built as part of the [StrongDM Attractor](https://github.com/strongdm/attractor) project. The unified LLM client, provider adapters, and agentic tool-calling loop all trace their lineage to that work. Kilroy is licensed under the MIT License (see `LICENSE-kilroy`).
