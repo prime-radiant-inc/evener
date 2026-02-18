@@ -1101,6 +1101,223 @@ func TestSubagent_DepthSetFromConfig(t *testing.T) {
 	}
 }
 
+// --- Full lifecycle integration test ---
+
+func TestSession_TranscriptFullLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+
+	c := llm.NewClient()
+
+	// Adapter: first call returns a read_file tool call, second call returns "done".
+	// This pattern repeats for each ProcessInput.
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			// Round 1, input 1: read a big file.
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Message: llm.Message{
+						Role: llm.RoleAssistant,
+						Content: []llm.ContentPart{
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+								ID:        "c1",
+								Name:      "read_file",
+								Arguments: json.RawMessage(`{"file_path":"big.txt"}`),
+							}},
+						},
+					},
+				}
+			},
+			// Round 1, after tool result: finish.
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("finished reading")}
+			},
+			// Round 2, input 2: read again.
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Message: llm.Message{
+						Role: llm.RoleAssistant,
+						Content: []llm.ContentPart{
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+								ID:        "c2",
+								Name:      "read_file",
+								Arguments: json.RawMessage(`{"file_path":"big.txt"}`),
+							}},
+						},
+					},
+				}
+			},
+			// Round 2, after tool result: finish.
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("done with second read")}
+			},
+		},
+	})
+
+	// Write a big file that will fill a small context window.
+	bigContent := strings.Repeat("line of content\n", 200)
+	env := NewLocalExecutionEnvironment(dir)
+	if _, err := env.WriteFile("big.txt", bigContent); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Use a very small context window to force compaction.
+	profile := &baseProfile{
+		id:            "openai",
+		model:         "gpt-5.2",
+		contextWindow: 500,
+		basePrompt:    "You are a test agent.",
+		toolDefs: []llm.ToolDefinition{
+			defReadFile(),
+			defCommunicate(),
+		},
+	}
+
+	sess, err := NewSession(c, profile, env, SessionConfig{
+		StateDir: stateDir,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	// Drain events in background to prevent blocking.
+	var events []SessionEvent
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range sess.Events() {
+			events = append(events, ev)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// First input: reads big file, fills context.
+	out1, err := sess.ProcessInput(ctx, "read the big file")
+	if err != nil {
+		t.Fatalf("ProcessInput 1: %v", err)
+	}
+	if out1 == "" {
+		t.Fatal("ProcessInput 1 returned empty")
+	}
+
+	// Second input: reads again, should trigger compaction.
+	out2, err := sess.ProcessInput(ctx, "read it again")
+	if err != nil {
+		t.Fatalf("ProcessInput 2: %v", err)
+	}
+	if out2 == "" {
+		t.Fatal("ProcessInput 2 returned empty")
+	}
+
+	sess.Close()
+	<-done
+
+	// --- Verify compaction occurred ---
+	foundCompaction := false
+	for _, e := range events {
+		if e.Kind == EventContextCompaction {
+			foundCompaction = true
+		}
+	}
+	if !foundCompaction {
+		t.Fatal("expected CONTEXT_COMPACTION event with small context window")
+	}
+
+	// --- Read the transcript ---
+	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
+	hdr, entries, err := ReadTranscript(tpath)
+	if err != nil {
+		t.Fatalf("ReadTranscript: %v", err)
+	}
+
+	// --- Verify header ---
+	if hdr.Kind != "header" {
+		t.Errorf("header kind = %q, want %q", hdr.Kind, "header")
+	}
+	if hdr.FormatVersion != 1 {
+		t.Errorf("FormatVersion = %d, want 1", hdr.FormatVersion)
+	}
+	if hdr.SessionID != sess.ID() {
+		t.Errorf("SessionID = %q, want %q", hdr.SessionID, sess.ID())
+	}
+	if hdr.ProfileID != "openai" {
+		t.Errorf("ProfileID = %q, want %q", hdr.ProfileID, "openai")
+	}
+	if hdr.Model != "gpt-5.2" {
+		t.Errorf("Model = %q, want %q", hdr.Model, "gpt-5.2")
+	}
+
+	// --- Verify seq numbers are monotonically increasing ---
+	for i, e := range entries {
+		if e.Seq != i {
+			t.Errorf("entry %d: seq = %d, want %d", i, e.Seq, i)
+		}
+		if e.Kind != "entry" {
+			t.Errorf("entry %d: kind = %q, want %q", i, e.Kind, "entry")
+		}
+	}
+
+	// --- Collect turn kinds ---
+	kinds := map[TurnKind]int{}
+	for _, e := range entries {
+		kinds[e.Turn.Kind]++
+	}
+
+	// Must have user input, assistant, and tool results turns.
+	if kinds[TurnUserInput] == 0 {
+		t.Error("no USER_INPUT turns in transcript")
+	}
+	if kinds[TurnAssistant] == 0 {
+		t.Error("no ASSISTANT turns in transcript")
+	}
+	if kinds[TurnToolResults] == 0 {
+		t.Error("no TOOL_RESULTS turns in transcript")
+	}
+
+	// Must have at least one compaction turn (checkpoint or summary).
+	if kinds[TurnCheckpoint]+kinds[TurnSummary] == 0 {
+		t.Errorf("no compaction turns (CHECKPOINT or SUMMARY) in transcript; kinds: %v", kinds)
+	}
+
+	// --- Verify compaction turn is sequenced correctly ---
+	// The compaction turn should appear after the turns that preceded it, not at the very start.
+	var firstCompactionSeq int = -1
+	for _, e := range entries {
+		if e.Turn.Kind == TurnCheckpoint || e.Turn.Kind == TurnSummary {
+			firstCompactionSeq = e.Seq
+			break
+		}
+	}
+	if firstCompactionSeq < 1 {
+		t.Errorf("compaction turn at seq %d; expected after at least one regular turn", firstCompactionSeq)
+	}
+
+	// --- Verify original tool output is preserved in transcript (not masked) ---
+	// Observation masking is ephemeral (modifies in-memory history); the transcript
+	// should contain the full original content from before masking.
+	for _, e := range entries {
+		if e.Turn.Kind == TurnToolResults {
+			text := toolResultContent(e.Turn)
+			// The original tool output should contain the actual file content,
+			// not a masked summary like "[read_file: big.txt, N lines]".
+			if strings.HasPrefix(text, "[read_file:") {
+				t.Errorf("tool result at seq %d appears masked in transcript: %q", e.Seq, text[:min(len(text), 60)])
+			}
+			break // check just the first tool result
+		}
+	}
+
+	// --- Verify total entry count is reasonable ---
+	// Two ProcessInput calls, each with: user_input, assistant (tool call), tool_results, assistant (text)
+	// = 8 regular turns + at least 1 compaction turn = 9+
+	if len(entries) < 5 {
+		t.Errorf("expected at least 5 transcript entries, got %d", len(entries))
+	}
+}
+
 // --- Compaction turns flow through transcript ---
 
 func TestCheckpoint_UsesTurnCheckpointKind(t *testing.T) {
