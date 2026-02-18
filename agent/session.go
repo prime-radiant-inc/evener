@@ -302,6 +302,28 @@ func (s *Session) SetReasoningEffort(effort string) {
 	s.cfg.ReasoningEffort = strings.TrimSpace(effort)
 }
 
+// Compact forces context compaction regardless of current pressure.
+// Runs all compaction layers (observation masking, thinking clearing,
+// checkpoint, and LLM summarization). Safe to call while idle.
+func (s *Session) Compact(ctx context.Context) error {
+	if s.contextMgr == nil {
+		return fmt.Errorf("context manager not initialized")
+	}
+
+	s.mu.Lock()
+	histCopy := append([]Turn{}, s.history...)
+	s.mu.Unlock()
+
+	s.contextMgr.ForceCompact(ctx, &histCopy, s.emit)
+
+	s.mu.Lock()
+	s.history = histCopy
+	s.mu.Unlock()
+
+	s.maybeAutoSave()
+	return nil
+}
+
 // SetModel changes the model used for future LLM calls.
 // Takes effect on the next request.
 func (s *Session) SetModel(model string) {

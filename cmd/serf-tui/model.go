@@ -75,12 +75,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "enter":
 			text := strings.TrimSpace(m.input.Value())
-			if text != "" {
-				m.messages = append(m.messages, chatMessage{Kind: msgUser, Text: text})
-				m.input.Reset()
-				m.refreshViewport()
-				cmds = append(cmds, sendInput(m.addr, text))
+			if text == "" {
+				return m, tea.Batch(cmds...)
 			}
+			// Check for slash commands.
+			if cmd, _ := parseSlashCommand(text); cmd != "" {
+				switch cmd {
+				case "compact":
+					m.input.Reset()
+					m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "Compacting context..."})
+					m.refreshViewport()
+					cmds = append(cmds, sendCompact(m.addr))
+					return m, tea.Batch(cmds...)
+				default:
+					m.input.Reset()
+					m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: fmt.Sprintf("Unknown command: /%s", cmd)})
+					m.refreshViewport()
+					return m, tea.Batch(cmds...)
+				}
+			}
+			m.messages = append(m.messages, chatMessage{Kind: msgUser, Text: text})
+			m.input.Reset()
+			m.refreshViewport()
+			cmds = append(cmds, sendInput(m.addr, text))
 			return m, tea.Batch(cmds...)
 		}
 
@@ -122,6 +139,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 			m.refreshViewport()
 		}
+		return m, nil
+
+	case compactDoneMsg:
+		if msg.err != nil {
+			m.messages = append(m.messages, chatMessage{
+				Kind: msgSystem,
+				Text: fmt.Sprintf("Compact failed: %s", msg.err),
+			})
+		} else {
+			m.messages = append(m.messages, chatMessage{
+				Kind: msgSystem,
+				Text: "Context compacted.",
+			})
+		}
+		m.refreshViewport()
 		return m, nil
 	}
 

@@ -28,11 +28,12 @@ type Server struct {
 	mux         *http.ServeMux
 	broadcaster *Broadcaster
 
-	mu         sync.RWMutex
-	status     StatusInfo
-	cancelFunc context.CancelFunc
-	processing bool
-	inputCh    chan string
+	mu          sync.RWMutex
+	status      StatusInfo
+	cancelFunc  context.CancelFunc
+	compactFunc func(context.Context) error
+	processing  bool
+	inputCh     chan string
 }
 
 // NewServer creates a new Server.
@@ -49,6 +50,7 @@ func NewServer(cfg ServerConfig) *Server {
 	}
 	s.mux.HandleFunc("/status", s.handleStatus)
 	s.mux.HandleFunc("/interrupt", s.handleInterrupt)
+	s.mux.HandleFunc("/compact", s.handleCompact)
 	s.mux.HandleFunc("/input", s.handleInput)
 	s.mux.HandleFunc("/events", s.handleEvents)
 	return s
@@ -101,6 +103,33 @@ func (s *Server) SetCancelFunc(cancel context.CancelFunc) {
 	s.mu.Lock()
 	s.cancelFunc = cancel
 	s.mu.Unlock()
+}
+
+// SetCompactFunc sets the function called by POST /compact.
+func (s *Server) SetCompactFunc(fn func(context.Context) error) {
+	s.mu.Lock()
+	s.compactFunc = fn
+	s.mu.Unlock()
+}
+
+func (s *Server) handleCompact(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.mu.RLock()
+	fn := s.compactFunc
+	s.mu.RUnlock()
+
+	if fn == nil {
+		http.Error(w, "compact not available", http.StatusServiceUnavailable)
+		return
+	}
+	if err := fn(r.Context()); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {

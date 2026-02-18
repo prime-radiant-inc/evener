@@ -221,6 +221,85 @@ func (cm *ContextManager) MaybeCompact(
 	}
 }
 
+// ForceCompact runs all compaction layers unconditionally, regardless of context pressure.
+// Used for user-initiated compaction (e.g. /compact command).
+func (cm *ContextManager) ForceCompact(
+	ctx context.Context,
+	history *[]Turn,
+	emitFn func(EventKind, any),
+) {
+	// Reset token measurement so inter-layer estimates use char/4.
+	cm.mu.Lock()
+	cm.lastInputTokens = 0
+	cm.historyLenAtMeasure = 0
+	cm.mu.Unlock()
+
+	// Layer 1: Observation masking.
+	before := EstimateTokens(*history)
+	maskObservations(*history, cm.PreserveRecentTurns)
+	after := EstimateTokens(*history)
+	emitFn(EventContextCompaction, ContextCompactionData{
+		Layer:           "observation_mask",
+		TurnsBefore:     len(*history),
+		TurnsAfter:      len(*history),
+		EstTokensBefore: before,
+		EstTokensAfter:  after,
+	})
+
+	// Layer 2: Thinking clearing.
+	before = EstimateTokens(*history)
+	clearThinking(*history, cm.PreserveRecentTurns)
+	after = EstimateTokens(*history)
+	emitFn(EventContextCompaction, ContextCompactionData{
+		Layer:           "thinking_clear",
+		TurnsBefore:     len(*history),
+		TurnsAfter:      len(*history),
+		EstTokensBefore: before,
+		EstTokensAfter:  after,
+	})
+
+	// Layer 3: Deterministic checkpoint.
+	turnsBefore := len(*history)
+	before = EstimateTokens(*history)
+	*history = checkpoint(*history, cm.PreserveRecentTurns)
+	after = EstimateTokens(*history)
+	emitFn(EventContextCompaction, ContextCompactionData{
+		Layer:           "checkpoint",
+		TurnsBefore:     turnsBefore,
+		TurnsAfter:      len(*history),
+		EstTokensBefore: before,
+		EstTokensAfter:  after,
+	})
+
+	// Layer 4: LLM summarization (only if client is available).
+	if cm.client != nil {
+		turnsBefore = len(*history)
+		before = EstimateTokens(*history)
+		result, err := cm.summarizeWithLLM(ctx, *history, cm.PreserveRecentTurns)
+		if err != nil {
+			emitFn(EventWarning, WarningData{
+				Message: "LLM summarization failed: " + err.Error(),
+			})
+		} else {
+			*history = result
+			after = EstimateTokens(*history)
+			emitFn(EventContextCompaction, ContextCompactionData{
+				Layer:           "summarize",
+				TurnsBefore:     turnsBefore,
+				TurnsAfter:      len(*history),
+				EstTokensBefore: before,
+				EstTokensAfter:  after,
+			})
+		}
+	}
+
+	// Reset token measurement after compaction.
+	cm.mu.Lock()
+	cm.lastInputTokens = 0
+	cm.historyLenAtMeasure = 0
+	cm.mu.Unlock()
+}
+
 // --- Observation masking (Layer 1) ---
 
 // maskObservations replaces tool result content in old turns with one-line summaries.

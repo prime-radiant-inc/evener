@@ -99,6 +99,7 @@ func runServe(args []string) error {
 	defer cancel()
 
 	srv := server.NewServer(server.ServerConfig{})
+	srv.SetCompactFunc(sess.Compact)
 
 	// Bridge session events to SSE broadcaster.
 	go server.Bridge(srv, sess.Events())

@@ -1869,3 +1869,100 @@ func assistantWithToolCall(id, name, argsJSON string) llm.Message {
 func startsWith(s, prefix string) bool {
 	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
 }
+
+// --- ForceCompact tests ---
+
+func TestForceCompact_RunsAllLayers(t *testing.T) {
+	// Use a fake LLM adapter so L4 (summarize) can run.
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY] forced")}
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	profile := &baseProfile{id: "openai", model: "test", contextWindow: 100_000}
+	cm := NewContextManager(profile, client)
+	cm.PreserveRecentTurns = 2
+
+	// Build history with tool results (for L1) and thinking (for L2).
+	history := []Turn{
+		NewTurn(TurnUserInput, llm.User("first question")),
+		NewTurn(TurnAssistant, llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "deep thoughts"}},
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c1", Name: "shell", Arguments: json.RawMessage(`{"command":"ls"}`)}},
+			},
+		}),
+		NewTurn(TurnToolResults, llm.ToolResult("c1", strings.Repeat("x", 500), false)),
+		NewTurn(TurnUserInput, llm.User("second question")),
+		NewTurn(TurnAssistant, llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c2", Name: "communicate", Arguments: json.RawMessage(`{"action":"result","message":"done"}`)}},
+			},
+		}),
+		NewTurn(TurnToolResults, llm.ToolResult("c2", "ok", false)),
+	}
+
+	var layers []string
+	emitFn := func(kind EventKind, data any) {
+		if kind == EventContextCompaction {
+			if d, ok := data.(ContextCompactionData); ok {
+				layers = append(layers, d.Layer)
+			}
+		}
+	}
+
+	cm.ForceCompact(context.Background(), &history, emitFn)
+
+	// All 4 layers should have fired.
+	if len(layers) < 4 {
+		t.Fatalf("expected all 4 layers to fire, got %d: %v", len(layers), layers)
+	}
+	expected := []string{"observation_mask", "thinking_clear", "checkpoint", "summarize"}
+	for i, want := range expected {
+		if i >= len(layers) || layers[i] != want {
+			t.Errorf("layer[%d] = %q, want %q (all: %v)", i, layers[i], want, layers)
+		}
+	}
+}
+
+func TestForceCompact_BelowThreshold(t *testing.T) {
+	// Even with tiny history well below auto-compact thresholds,
+	// ForceCompact should still run the layers.
+	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1_000_000}
+	cm := NewContextManager(profile, nil) // no LLM client → L4 skipped
+	cm.PreserveRecentTurns = 2
+
+	history := []Turn{
+		NewTurn(TurnUserInput, llm.User("hi")),
+		NewTurn(TurnAssistant, llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c1", Name: "shell", Arguments: json.RawMessage(`{"command":"echo hi"}`)}},
+			},
+		}),
+		NewTurn(TurnToolResults, llm.ToolResult("c1", "hello world", false)),
+	}
+
+	var layers []string
+	emitFn := func(kind EventKind, data any) {
+		if kind == EventContextCompaction {
+			if d, ok := data.(ContextCompactionData); ok {
+				layers = append(layers, d.Layer)
+			}
+		}
+	}
+
+	cm.ForceCompact(context.Background(), &history, emitFn)
+
+	// L1-L3 should fire. L4 skipped (no client).
+	if len(layers) < 3 {
+		t.Fatalf("expected at least 3 layers, got %d: %v", len(layers), layers)
+	}
+}

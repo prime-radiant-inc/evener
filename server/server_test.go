@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -163,6 +164,66 @@ func TestEventsEndpoint_SSE(t *testing.T) {
 	}
 	if !strings.Contains(output, `"msg":"hello"`) {
 		t.Errorf("expected data in output, got: %s", output)
+	}
+}
+
+func TestCompactEndpoint(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+
+	called := false
+	srv.SetCompactFunc(func(ctx context.Context) error {
+		called = true
+		return nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/compact", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status code: got %d, want 204", w.Code)
+	}
+	if !called {
+		t.Error("compact function should have been called")
+	}
+}
+
+func TestCompactEndpoint_NoFunc(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+
+	req := httptest.NewRequest(http.MethodPost, "/compact", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status code: got %d, want 503", w.Code)
+	}
+}
+
+func TestCompactEndpoint_Error(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetCompactFunc(func(ctx context.Context) error {
+		return fmt.Errorf("compaction failed")
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/compact", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status code: got %d, want 500", w.Code)
+	}
+}
+
+func TestCompactEndpoint_MethodNotAllowed(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+
+	req := httptest.NewRequest(http.MethodGet, "/compact", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status code: got %d, want 405", w.Code)
 	}
 }
 
