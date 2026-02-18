@@ -824,3 +824,35 @@ func TestHookRunner_NoCallbackNoEvents(t *testing.T) {
 	}
 	runner.RunSessionStart(context.Background(), input)
 }
+
+func TestHookRunner_Summary(t *testing.T) {
+	runner := NewHookRunner(nil, "")
+	runner.Add(HookPreToolUse, RegisteredHook{Matcher: "*", Type: "command", Command: "echo a"})
+	runner.Add(HookPreToolUse, RegisteredHook{Matcher: "Write", Type: "command", Command: "echo b"})
+	runner.Add(HookPostToolUse, RegisteredHook{Matcher: "*", Type: "prompt", Prompt: "check"})
+	runner.Add(HookSessionStart, RegisteredHook{Matcher: "*", Type: "command", Command: "echo start"})
+
+	summary := runner.Summary()
+
+	if summary[HookPreToolUse] != 2 {
+		t.Errorf("PreToolUse count = %d, want 2", summary[HookPreToolUse])
+	}
+	if summary[HookPostToolUse] != 1 {
+		t.Errorf("PostToolUse count = %d, want 1", summary[HookPostToolUse])
+	}
+	if summary[HookSessionStart] != 1 {
+		t.Errorf("SessionStart count = %d, want 1", summary[HookSessionStart])
+	}
+	// Events with no hooks should not appear.
+	if _, ok := summary[HookStop]; ok {
+		t.Error("Stop should not be in summary when no hooks registered")
+	}
+}
+
+func TestHookRunner_Summary_Empty(t *testing.T) {
+	runner := NewHookRunner(nil, "")
+	summary := runner.Summary()
+	if len(summary) != 0 {
+		t.Errorf("expected empty summary, got %v", summary)
+	}
+}

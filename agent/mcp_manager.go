@@ -152,6 +152,22 @@ func (m *MCPManager) RegisterTools(reg *ToolRegistry) error {
 	return nil
 }
 
+// Servers returns per-server info including name and namespaced tool names.
+func (m *MCPManager) Servers() []MCPServerInfo {
+	if m == nil {
+		return nil
+	}
+	out := make([]MCPServerInfo, len(m.conns))
+	for i, c := range m.conns {
+		tools := make([]string, len(c.tools))
+		for j, td := range c.tools {
+			tools[j] = td.Name
+		}
+		out[i] = MCPServerInfo{Name: c.name, Tools: tools}
+	}
+	return out
+}
+
 // Close shuts down all MCP server connections.
 func (m *MCPManager) Close() {
 	if m == nil {

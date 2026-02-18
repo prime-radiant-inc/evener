@@ -139,6 +139,7 @@ type Session struct {
 	mcpTools []llm.ToolDefinition
 
 	// Plugin-provided components
+	plugins          []LoadedPlugin
 	hookRunner       *HookRunner
 	pluginAgents     map[string]PluginAgent
 	pluginMCPConfigs []MCPServerConfig
@@ -1269,6 +1270,8 @@ func (s *Session) initPlugins() error {
 	if err != nil {
 		return err
 	}
+
+	s.plugins = plugins
 
 	runner := NewHookRunner(clientAdapter{s.client}, s.profile.Model())
 	allAgents := map[string]PluginAgent{}

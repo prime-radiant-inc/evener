@@ -335,6 +335,94 @@ func TestSanitizeToolName(t *testing.T) {
 	}
 }
 
+// TestMCPManager_Servers verifies that Servers() returns per-server info
+// with names and namespaced tool names.
+func TestMCPManager_Servers(t *testing.T) {
+	ctx := context.Background()
+
+	server1 := mcp.NewServer(&mcp.Implementation{Name: "s1", Version: "v1"}, nil)
+	server1.AddTool(&mcp.Tool{
+		Name:        "greet",
+		Description: "Greets",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{}, nil
+	})
+	server1.AddTool(&mcp.Tool{
+		Name:        "farewell",
+		Description: "Says bye",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{}, nil
+	})
+
+	server2 := mcp.NewServer(&mcp.Implementation{Name: "s2", Version: "v1"}, nil)
+	server2.AddTool(&mcp.Tool{
+		Name:        "search",
+		Description: "Search",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{}, nil
+	})
+
+	st1, ct1 := mcp.NewInMemoryTransports()
+	st2, ct2 := mcp.NewInMemoryTransports()
+	if _, err := server1.Connect(ctx, st1, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server2.Connect(ctx, st2, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr, err := NewMCPManager(ctx, []MCPServerConfig{
+		{Name: "alpha", Type: "stdio"},
+		{Name: "beta", Type: "stdio"},
+	}, []mcp.Transport{ct1, ct2})
+	if err != nil {
+		t.Fatalf("NewMCPManager: %v", err)
+	}
+	defer mgr.Close()
+
+	servers := mgr.Servers()
+	if len(servers) != 2 {
+		t.Fatalf("expected 2 servers, got %d", len(servers))
+	}
+
+	// Find alpha and beta.
+	byName := map[string]MCPServerInfo{}
+	for _, s := range servers {
+		byName[s.Name] = s
+	}
+
+	alpha, ok := byName["alpha"]
+	if !ok {
+		t.Fatal("missing server alpha")
+	}
+	if len(alpha.Tools) != 2 {
+		t.Errorf("alpha tools: got %d, want 2", len(alpha.Tools))
+	}
+
+	beta, ok := byName["beta"]
+	if !ok {
+		t.Fatal("missing server beta")
+	}
+	if len(beta.Tools) != 1 {
+		t.Errorf("beta tools: got %d, want 1", len(beta.Tools))
+	}
+	if beta.Tools[0] != "beta__search" {
+		t.Errorf("beta tool name = %q, want beta__search", beta.Tools[0])
+	}
+}
+
+// TestMCPManager_Servers_Nil verifies Servers() on nil manager returns nil.
+func TestMCPManager_Servers_Nil(t *testing.T) {
+	var mgr *MCPManager
+	servers := mgr.Servers()
+	if servers != nil {
+		t.Errorf("expected nil, got %v", servers)
+	}
+}
+
 func TestMergeEnv(t *testing.T) {
 	// mergeEnv uses os.Environ so we can only test that extra vars appear
 	// and that overriding works correctly.

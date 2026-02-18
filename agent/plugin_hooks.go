@@ -346,6 +346,18 @@ func NewHookRunner(client PromptHookClient, model string) *HookRunner {
 	}
 }
 
+// Summary returns the number of registered hooks per event.
+// Events with zero hooks are omitted.
+func (r *HookRunner) Summary() map[HookEvent]int {
+	out := make(map[HookEvent]int)
+	for event, hooks := range r.hooks {
+		if len(hooks) > 0 {
+			out[event] = len(hooks)
+		}
+	}
+	return out
+}
+
 // Add registers hooks for an event.
 func (r *HookRunner) Add(event HookEvent, hooks ...RegisteredHook) {
 	r.hooks[event] = append(r.hooks[event], hooks...)
