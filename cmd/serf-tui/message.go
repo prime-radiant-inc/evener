@@ -2,10 +2,35 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 )
+
+var markdownRenderer *glamour.TermRenderer
+
+func initMarkdownRenderer(width int) {
+	r, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(width-4),
+	)
+	if err == nil {
+		markdownRenderer = r
+	}
+}
+
+func renderMarkdown(text string) string {
+	if markdownRenderer == nil {
+		return text
+	}
+	rendered, err := markdownRenderer.Render(text)
+	if err != nil {
+		return text
+	}
+	return strings.TrimSpace(rendered)
+}
 
 type messageKind int
 
@@ -35,7 +60,7 @@ func renderMessage(msg chatMessage, width int) string {
 		return fmt.Sprintf("%s\n%s", label, msg.Text)
 	case msgAssistant:
 		label := assistantLabelStyle.Render("▌ Assistant")
-		return fmt.Sprintf("%s\n%s", label, msg.Text)
+		return fmt.Sprintf("%s\n%s", label, renderMarkdown(msg.Text))
 	case msgTool:
 		if msg.Tool == nil {
 			return ""

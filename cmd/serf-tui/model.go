@@ -61,7 +61,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":
-			return m, tea.Quit
+			return m, tea.Sequence(sendInterrupt(m.addr), tea.Quit)
+		case "tab":
+			// Toggle the most recent tool call's expanded state
+			for i := len(m.messages) - 1; i >= 0; i-- {
+				if m.messages[i].Kind == msgTool && m.messages[i].Tool != nil && m.messages[i].Tool.Done {
+					m.messages[i].Tool.Expanded = !m.messages[i].Tool.Expanded
+					m.refreshViewport()
+					break
+				}
+			}
+			return m, nil
 		case "enter":
 			text := strings.TrimSpace(m.input.Value())
 			if text != "" {
@@ -76,6 +86,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		initMarkdownRenderer(m.width)
 		headerHeight := 1
 		inputHeight := 3
 		vpHeight := m.height - headerHeight - inputHeight
