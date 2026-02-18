@@ -120,8 +120,10 @@ func runServe(args []string) error {
 					return
 				}
 				srv.SetProcessing(true)
+				srv.SetState("PROCESSING")
 				result, processErr := sess.ProcessInput(ctx, text)
 				srv.SetProcessing(false)
+				srv.SetState("IDLE")
 				if processErr != nil {
 					fmt.Fprintf(os.Stderr, "[serve] error: %v\n", processErr)
 				}

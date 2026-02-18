@@ -58,10 +58,41 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
-// SetStatus updates the current session status.
+// SetStatus replaces the full session status.
 func (s *Server) SetStatus(info StatusInfo) {
 	s.mu.Lock()
 	s.status = info
+	s.mu.Unlock()
+}
+
+// GetStatus returns the current session status.
+func (s *Server) GetStatus() StatusInfo {
+	s.mu.RLock()
+	status := s.status
+	s.mu.RUnlock()
+	return status
+}
+
+// UpdateSessionInfo sets session identity fields.
+func (s *Server) UpdateSessionInfo(sessionID, model, profile string) {
+	s.mu.Lock()
+	s.status.SessionID = sessionID
+	s.status.Model = model
+	s.status.Profile = profile
+	s.mu.Unlock()
+}
+
+// SetState updates the session state string (IDLE, PROCESSING, CLOSED).
+func (s *Server) SetState(state string) {
+	s.mu.Lock()
+	s.status.State = state
+	s.mu.Unlock()
+}
+
+// IncrementTurns increments the turn counter.
+func (s *Server) IncrementTurns() {
+	s.mu.Lock()
+	s.status.Turns++
 	s.mu.Unlock()
 }
 

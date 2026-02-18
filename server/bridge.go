@@ -6,41 +6,42 @@ import (
 	"primeradiant.com/serf/agent"
 )
 
+// sessionStartSSE enriches SessionStartData with session_id from the event envelope.
+type sessionStartSSE struct {
+	SessionID string `json:"session_id"`
+	Profile   string `json:"profile"`
+	Model     string `json:"model"`
+	Restored  bool   `json:"restored,omitempty"`
+}
+
 // Bridge reads events from a session event channel, stores them in the
 // server's ring buffer via the broadcaster, and updates server status.
 // It blocks until the events channel is closed.
 func Bridge(srv *Server, events <-chan agent.SessionEvent) {
 	for ev := range events {
-		// Marshal event data to JSON for SSE transport.
-		// Using json.RawMessage prevents double-encoding in the SSE handler.
 		data, _ := json.Marshal(ev.Data)
-
-		srv.Broadcast(string(ev.Kind), json.RawMessage(data))
 
 		switch ev.Kind {
 		case agent.EventSessionStart:
 			if d, ok := ev.Data.(agent.SessionStartData); ok {
-				srv.mu.Lock()
-				srv.status.SessionID = ev.SessionID
-				srv.status.Model = d.Model
-				srv.status.Profile = d.Profile
-				srv.status.State = "IDLE"
-				srv.mu.Unlock()
+				srv.UpdateSessionInfo(ev.SessionID, d.Model, d.Profile)
+				srv.SetState("IDLE")
+				// Enrich SSE payload with session_id from event envelope.
+				enriched := sessionStartSSE{
+					SessionID: ev.SessionID,
+					Profile:   d.Profile,
+					Model:     d.Model,
+					Restored:  d.Restored,
+				}
+				data, _ = json.Marshal(enriched)
 			}
-		case agent.EventUserInput:
-			srv.SetProcessing(true)
-			srv.mu.Lock()
-			srv.status.State = "PROCESSING"
-			srv.mu.Unlock()
 		case agent.EventAssistantTextEnd:
-			srv.mu.Lock()
-			srv.status.Turns++
-			srv.mu.Unlock()
+			srv.IncrementTurns()
 		case agent.EventSessionEnd:
 			srv.SetProcessing(false)
-			srv.mu.Lock()
-			srv.status.State = "CLOSED"
-			srv.mu.Unlock()
+			srv.SetState("CLOSED")
 		}
+
+		srv.Broadcast(string(ev.Kind), json.RawMessage(data))
 	}
 }
