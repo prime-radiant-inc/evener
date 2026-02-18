@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -49,6 +50,7 @@ func NewServer(cfg ServerConfig) *Server {
 	s.mux.HandleFunc("/status", s.handleStatus)
 	s.mux.HandleFunc("/interrupt", s.handleInterrupt)
 	s.mux.HandleFunc("/input", s.handleInput)
+	s.mux.HandleFunc("/events", s.handleEvents)
 	return s
 }
 
@@ -145,5 +147,63 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 	default:
 		http.Error(w, "input buffer full", http.StatusConflict)
+	}
+}
+
+// sseEvent wraps an event type and data for SSE serialization.
+type sseEvent struct {
+	Type string
+	Data any
+}
+
+// Broadcast sends an event to all SSE subscribers via the broadcaster.
+// The event type becomes the SSE `event:` field, and data is JSON-encoded for the `data:` field.
+func (s *Server) Broadcast(eventType string, data any) {
+	s.broadcaster.Send(sseEvent{Type: eventType, Data: data})
+}
+
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	// Parse Last-Event-ID for catchup
+	var lastID uint64
+	if idStr := r.Header.Get("Last-Event-ID"); idStr != "" {
+		fmt.Sscanf(idStr, "%d", &lastID)
+	}
+
+	ch, unsub := s.broadcaster.Subscribe(lastID)
+	defer unsub()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case item, ok := <-ch:
+			if !ok {
+				return
+			}
+			ev, _ := item.Value.(sseEvent)
+			data, err := json.Marshal(ev.Data)
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", item.ID, ev.Type, data)
+			flusher.Flush()
+		}
 	}
 }
