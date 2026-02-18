@@ -7,6 +7,7 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmdutil"
 )
 
@@ -21,6 +22,7 @@ func main() {
 	reasoningEffort := flag.String("reasoning-effort", "", "reasoning effort: low|medium|high|none")
 	resume := flag.String("resume", "", "resume a previous session by ID")
 	resumeLast := flag.Bool("resume-last", false, "resume the most recent session")
+	listSessions := flag.Bool("list-sessions", false, "pick a session to resume interactively")
 
 	var systemPromptAppend cmdutil.StringSliceFlag
 	flag.Var(&systemPromptAppend, "system-prompt-append", "path to append to system prompt (repeatable)")
@@ -34,6 +36,20 @@ func main() {
 	flag.Var(&pluginDirs, "plugin-dir", "plugin directory (repeatable)")
 
 	flag.Parse()
+
+	// If --list-sessions, show interactive picker before starting anything else.
+	if *listSessions {
+		sessionID, err := pickSession(*workDir, *stateDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "serf-tui: %v\n", err)
+			os.Exit(1)
+		}
+		if sessionID == "" {
+			// User cancelled.
+			return
+		}
+		*resume = sessionID
+	}
 
 	var serverAddr string
 
@@ -82,4 +98,29 @@ func main() {
 		os.Exit(1)
 	}
 	cancel()
+}
+
+// pickSession resolves the state directory and shows an interactive session picker.
+func pickSession(workDir, stateDirFlag string) (string, error) {
+	wd := workDir
+	if wd == "" {
+		var err error
+		wd, err = os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("cannot determine working directory: %w", err)
+		}
+	}
+
+	sd := stateDirFlag
+	if sd == "" {
+		originURL := cmdutil.GitOriginURLFromDir(wd)
+		sd = agent.RuntimeDir(originURL, wd, "")
+	}
+
+	sessions, err := agent.ListSessions(sd)
+	if err != nil {
+		return "", fmt.Errorf("list sessions: %w", err)
+	}
+
+	return runSessionPicker(sessions)
 }
