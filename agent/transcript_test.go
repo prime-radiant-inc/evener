@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -833,5 +834,173 @@ func TestResumeHistoryFromTranscript_WithSummary(t *testing.T) {
 		if history[i+1].Kind != want {
 			t.Errorf("turn %d kind = %q, want %q", i+1, history[i+1].Kind, want)
 		}
+	}
+}
+
+// --- Session-integration tests ---
+
+func TestSession_TranscriptCreatedOnNewSession(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir: stateDir,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// Verify the transcript file exists at the expected path.
+	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
+	if _, err := os.Stat(tpath); os.IsNotExist(err) {
+		t.Fatalf("transcript file not created at %s", tpath)
+	}
+
+	// Read it back and verify the header.
+	header, entries, err := ReadTranscript(tpath)
+	if err != nil {
+		t.Fatalf("ReadTranscript: %v", err)
+	}
+	if header.SessionID != sess.ID() {
+		t.Errorf("header session_id: got %q want %q", header.SessionID, sess.ID())
+	}
+	if header.ProfileID != "openai" {
+		t.Errorf("header profile_id: got %q want %q", header.ProfileID, "openai")
+	}
+	if header.Model != "gpt-5.2" {
+		t.Errorf("header model: got %q want %q", header.Model, "gpt-5.2")
+	}
+	if header.FormatVersion != 1 {
+		t.Errorf("header format_version: got %d want 1", header.FormatVersion)
+	}
+	if header.Kind != "header" {
+		t.Errorf("header kind: got %q want %q", header.Kind, "header")
+	}
+	if header.WorkingDir == "" {
+		t.Error("header working_dir should not be empty")
+	}
+	if len(entries) != 0 {
+		t.Errorf("expected 0 entries in fresh transcript, got %d", len(entries))
+	}
+}
+
+func TestSession_NoTranscriptWithoutStateDir(t *testing.T) {
+	dir := t.TempDir()
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// The transcript field should be nil.
+	if sess.transcript != nil {
+		t.Fatal("expected nil transcript when StateDir is empty")
+	}
+}
+
+func TestSession_TranscriptRecordsTurns(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("hello back")}
+			},
+		},
+	})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir: stateDir,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := sess.ProcessInput(ctx, "hello")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if out != "hello back" {
+		t.Fatalf("unexpected output: %q", out)
+	}
+	sess.Close()
+
+	// Read the transcript and verify entries were recorded.
+	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
+	header, entries, err := ReadTranscript(tpath)
+	if err != nil {
+		t.Fatalf("ReadTranscript: %v", err)
+	}
+	if header.SessionID != sess.ID() {
+		t.Errorf("header session_id mismatch")
+	}
+
+	// Expect at least a user input turn and an assistant turn.
+	if len(entries) < 2 {
+		t.Fatalf("expected at least 2 transcript entries, got %d", len(entries))
+	}
+
+	// First entry should be user input.
+	if entries[0].Turn.Kind != TurnUserInput {
+		t.Errorf("first entry kind: got %q want %q", entries[0].Turn.Kind, TurnUserInput)
+	}
+	if entries[0].Turn.Message.Text() != "hello" {
+		t.Errorf("first entry text: got %q want %q", entries[0].Turn.Message.Text(), "hello")
+	}
+
+	// Second entry should be assistant response.
+	if entries[1].Turn.Kind != TurnAssistant {
+		t.Errorf("second entry kind: got %q want %q", entries[1].Turn.Kind, TurnAssistant)
+	}
+	if entries[1].Turn.Message.Text() != "hello back" {
+		t.Errorf("second entry text: got %q want %q", entries[1].Turn.Message.Text(), "hello back")
+	}
+
+	// Sequence numbers should be monotonically increasing.
+	for i := 0; i < len(entries); i++ {
+		if entries[i].Seq != i {
+			t.Errorf("entry[%d].Seq = %d, want %d", i, entries[i].Seq, i)
+		}
+	}
+}
+
+func TestSession_TranscriptClosedOnSessionClose(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir: stateDir,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	if sess.transcript == nil {
+		t.Fatal("expected non-nil transcript")
+	}
+
+	sess.Close()
+
+	// After Close, the transcript file should be readable (properly flushed).
+	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
+	_, _, err = ReadTranscript(tpath)
+	if err != nil {
+		t.Fatalf("transcript not readable after Close: %v", err)
 	}
 }

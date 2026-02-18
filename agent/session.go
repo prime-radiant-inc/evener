@@ -168,6 +168,9 @@ type Session struct {
 	// task list (lazy-init)
 	taskStore     *TaskStore
 	taskStoreOnce sync.Once
+
+	// transcript writer (nil when StateDir is empty)
+	transcript *TranscriptWriter
 }
 
 // selectStrategy creates the appropriate ContextStrategy from config.
@@ -245,6 +248,25 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		ei.GitOriginURL = gitOriginURL(env, ei.WorkingDir)
 	}
 	s.envInfo = ei
+
+	// Create transcript writer if state persistence is enabled.
+	if s.stateDir != "" {
+		hdr := TranscriptHeader{
+			Kind:          "header",
+			FormatVersion: 1,
+			SessionID:     s.id,
+			CreatedAt:     time.Now().UTC(),
+			ProfileID:     profile.ID(),
+			Model:         profile.Model(),
+			WorkingDir:    ei.WorkingDir,
+		}
+		tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
+		tw, twErr := NewTranscriptWriter(tpath, hdr)
+		if twErr != nil {
+			s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript create failed: %v", twErr)})
+		}
+		s.transcript = tw
+	}
 
 	// Resolve system prompt: embedded base+provider, global/project additions, CLI overrides.
 	gitRoot := gitRootOrEmpty(env, ei.WorkingDir)
@@ -372,6 +394,29 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		ei.GitOriginURL = gitOriginURL(env, ei.WorkingDir)
 	}
 	s.envInfo = ei
+
+	// Open or create transcript for appending.
+	if s.stateDir != "" {
+		tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
+		tw, twErr := OpenTranscriptWriter(tpath)
+		if twErr != nil {
+			// Transcript might not exist (old session). Create new.
+			hdr := TranscriptHeader{
+				Kind:          "header",
+				FormatVersion: 1,
+				SessionID:     s.id,
+				CreatedAt:     time.Now().UTC(),
+				ProfileID:     profile.ID(),
+				Model:         profile.Model(),
+				WorkingDir:    ei.WorkingDir,
+			}
+			tw, twErr = NewTranscriptWriter(tpath, hdr)
+			if twErr != nil {
+				s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript open failed: %v", twErr)})
+			}
+		}
+		s.transcript = tw
+	}
 
 	// Resolve system prompt (same layered resolution as NewSession).
 	gitRoot := gitRootOrEmpty(env, ei.WorkingDir)
@@ -586,6 +631,10 @@ func (s *Session) Close() {
 			s.mcpMgr.Close()
 		}
 
+		if s.transcript != nil {
+			_ = s.transcript.Close()
+		}
+
 		// 8. Transition to CLOSED last, then close the events channel.
 		s.mu.Lock()
 		s.state = SessionClosed
@@ -681,23 +730,31 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecR
 }
 
 func (s *Session) appendTurn(kind TurnKind, m llm.Message) {
+	t := NewTurn(kind, m)
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.history = append(s.history, NewTurn(kind, m))
+	s.history = append(s.history, t)
+	s.mu.Unlock()
+	if err := s.transcript.Append(t); err != nil {
+		s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+	}
 }
 
 // appendAssistantTurn appends an assistant turn that carries the full response
 // metadata (usage stats and response ID) alongside the message content.
 func (s *Session) appendAssistantTurn(resp llm.Response) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.history = append(s.history, Turn{
+	t := Turn{
 		Kind:       TurnAssistant,
 		Message:    resp.Message,
 		Timestamp:  time.Now().UTC(),
 		Usage:      resp.Usage,
 		ResponseID: resp.ID,
-	})
+	}
+	s.mu.Lock()
+	s.history = append(s.history, t)
+	s.mu.Unlock()
+	if err := s.transcript.Append(t); err != nil {
+		s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+	}
 }
 
 // maybeAutoSave persists the session state if StateDir is configured.
