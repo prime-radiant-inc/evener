@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestStatusEndpoint_Idle(t *testing.T) {
@@ -71,5 +73,59 @@ func TestStatusEndpoint_MethodNotAllowed(t *testing.T) {
 
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status code: got %d, want 405", w.Code)
+	}
+}
+
+func TestInputEndpoint_Accepted(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetProcessing(false)
+
+	body := strings.NewReader(`{"text":"hello world"}`)
+	req := httptest.NewRequest(http.MethodPost, "/input", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status code: got %d, want 202", w.Code)
+	}
+
+	select {
+	case text := <-srv.InputCh():
+		if text != "hello world" {
+			t.Errorf("input: got %q, want %q", text, "hello world")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout reading input")
+	}
+}
+
+func TestInputEndpoint_Conflict(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetProcessing(true)
+
+	body := strings.NewReader(`{"text":"hello"}`)
+	req := httptest.NewRequest(http.MethodPost, "/input", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status code: got %d, want 409", w.Code)
+	}
+}
+
+func TestInputEndpoint_EmptyText(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetProcessing(false)
+
+	body := strings.NewReader(`{"text":""}`)
+	req := httptest.NewRequest(http.MethodPost, "/input", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status code: got %d, want 400", w.Code)
 	}
 }

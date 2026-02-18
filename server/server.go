@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"sync"
 )
 
@@ -47,6 +48,7 @@ func NewServer(cfg ServerConfig) *Server {
 	}
 	s.mux.HandleFunc("/status", s.handleStatus)
 	s.mux.HandleFunc("/interrupt", s.handleInterrupt)
+	s.mux.HandleFunc("/input", s.handleInput)
 	return s
 }
 
@@ -94,4 +96,54 @@ func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {
 		cancel()
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// InputRequest is the JSON body for POST /input.
+type InputRequest struct {
+	Text string `json:"text"`
+}
+
+// SetProcessing marks whether the session is currently processing input.
+func (s *Server) SetProcessing(processing bool) {
+	s.mu.Lock()
+	s.processing = processing
+	s.mu.Unlock()
+}
+
+// InputCh returns the channel that receives user input text.
+func (s *Server) InputCh() <-chan string {
+	return s.inputCh
+}
+
+func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	s.mu.RLock()
+	processing := s.processing
+	s.mu.RUnlock()
+
+	if processing {
+		http.Error(w, "session is processing", http.StatusConflict)
+		return
+	}
+
+	var req InputRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Text) == "" {
+		http.Error(w, "text is required", http.StatusBadRequest)
+		return
+	}
+
+	select {
+	case s.inputCh <- req.Text:
+		w.WriteHeader(http.StatusAccepted)
+	default:
+		http.Error(w, "input buffer full", http.StatusConflict)
+	}
 }
