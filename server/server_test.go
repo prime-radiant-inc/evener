@@ -253,6 +253,90 @@ func TestCompactEndpoint_MethodNotAllowed(t *testing.T) {
 	}
 }
 
+func TestClearEndpoint(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+
+	called := false
+	srv.SetClearFunc(func(ctx context.Context) error {
+		called = true
+		return nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/clear", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status code: got %d, want 204", w.Code)
+	}
+	if !called {
+		t.Error("clear function not called")
+	}
+}
+
+func TestClearEndpoint_NoFunc(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+
+	req := httptest.NewRequest(http.MethodPost, "/clear", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status code: got %d, want 503", w.Code)
+	}
+}
+
+func TestModelEndpoint(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+
+	var gotModel string
+	srv.SetModelFunc(func(model string) {
+		gotModel = model
+	})
+
+	body := strings.NewReader(`{"model":"gpt-4o-mini"}`)
+	req := httptest.NewRequest(http.MethodPost, "/model", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status code: got %d, want 204", w.Code)
+	}
+	if gotModel != "gpt-4o-mini" {
+		t.Errorf("model = %q, want gpt-4o-mini", gotModel)
+	}
+}
+
+func TestModelEndpoint_EmptyModel(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetModelFunc(func(model string) {})
+
+	body := strings.NewReader(`{"model":""}`)
+	req := httptest.NewRequest(http.MethodPost, "/model", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status code: got %d, want 400", w.Code)
+	}
+}
+
+func TestModelEndpoint_NoFunc(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+
+	body := strings.NewReader(`{"model":"gpt-4o"}`)
+	req := httptest.NewRequest(http.MethodPost, "/model", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status code: got %d, want 503", w.Code)
+	}
+}
+
 func TestEventsEndpoint_MethodNotAllowed(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	req := httptest.NewRequest(http.MethodPost, "/events", nil)

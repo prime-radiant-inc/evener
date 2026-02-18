@@ -97,6 +97,40 @@ func fetchStatus(addr string) tea.Cmd {
 	}
 }
 
+type modelDoneMsg struct{ err error }
+type clearDoneMsg struct{ err error }
+
+func sendModel(addr, model string) tea.Cmd {
+	return func() tea.Msg {
+		body, _ := json.Marshal(map[string]string{"model": model})
+		url := fmt.Sprintf("http://%s/model", addr)
+		resp, err := http.Post(url, "application/json", bytes.NewReader(body))
+		if err != nil {
+			return modelDoneMsg{err}
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent {
+			return modelDoneMsg{fmt.Errorf("server returned %d", resp.StatusCode)}
+		}
+		return modelDoneMsg{}
+	}
+}
+
+func sendClear(addr string) tea.Cmd {
+	return func() tea.Msg {
+		url := fmt.Sprintf("http://%s/clear", addr)
+		resp, err := http.Post(url, "", nil)
+		if err != nil {
+			return clearDoneMsg{err}
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent {
+			return clearDoneMsg{fmt.Errorf("server returned %d", resp.StatusCode)}
+		}
+		return clearDoneMsg{}
+	}
+}
+
 func sendInterrupt(addr string) tea.Cmd {
 	return func() tea.Msg {
 		url := fmt.Sprintf("http://%s/interrupt", addr)

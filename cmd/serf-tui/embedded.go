@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync"
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmdutil"
@@ -39,10 +40,19 @@ type embeddedServer struct {
 	addr     string
 	srv      *server.Server
 	httpSrv  *http.Server
-	sess     *agent.Session
 	listener net.Listener
 	cancel   context.CancelFunc
 	history  []agent.Turn // non-nil when session was restored
+
+	// Mutable session state, protected by mu.
+	mu   sync.Mutex
+	sess *agent.Session
+
+	// Stored for session recreation on /clear.
+	client     *llm.Client
+	profile    agent.ProviderProfile
+	env        agent.ExecutionEnvironment
+	sessionCfg agent.SessionConfig
 }
 
 // startEmbedded creates an agent session and HTTP server in-process,
@@ -89,6 +99,20 @@ func startEmbedded(ctx context.Context, cfg embeddedConfig) (*embeddedServer, er
 
 	env := agent.NewLocalExecutionEnvironment(wd)
 
+	sessionCfg := agent.SessionConfig{
+		StateDir:              sd,
+		SystemPromptFile:      cfg.systemPrompt,
+		SystemPromptAppend:    cfg.systemPromptAppend,
+		MaxToolRoundsPerInput: cmdutil.MaxRoundsToConfig(cfg.maxRounds),
+		SkillsDirs:            cfg.skillsDirs,
+		MCPConfigFiles:        cfg.mcpConfigs,
+		MCPInline:             cfg.mcpServers,
+		PluginDirs:            cfg.pluginDirs,
+	}
+	if effort.Set {
+		sessionCfg.ReasoningEffort = effort.Value
+	}
+
 	var sess *agent.Session
 	var history []agent.Turn
 	if cfg.resume != "" || cfg.resumeLast {
@@ -105,19 +129,6 @@ func startEmbedded(ctx context.Context, cfg embeddedConfig) (*embeddedServer, er
 			sess.SetReasoningEffort(effort.Value)
 		}
 	} else {
-		sessionCfg := agent.SessionConfig{
-			StateDir:              sd,
-			SystemPromptFile:      cfg.systemPrompt,
-			SystemPromptAppend:    cfg.systemPromptAppend,
-			MaxToolRoundsPerInput: cmdutil.MaxRoundsToConfig(cfg.maxRounds),
-			SkillsDirs:            cfg.skillsDirs,
-			MCPConfigFiles:        cfg.mcpConfigs,
-			MCPInline:             cfg.mcpServers,
-			PluginDirs:            cfg.pluginDirs,
-		}
-		if effort.Set {
-			sessionCfg.ReasoningEffort = effort.Value
-		}
 		sess, err = agent.NewSession(client, profile, env, sessionCfg)
 		if err != nil {
 			return nil, fmt.Errorf("session creation: %w", err)
@@ -125,60 +136,108 @@ func startEmbedded(ctx context.Context, cfg embeddedConfig) (*embeddedServer, er
 	}
 
 	srv := server.NewServer(server.ServerConfig{})
-	srv.SetCompactFunc(sess.Compact)
-	srv.SetContextPressureFunc(sess.ContextPressure)
+
+	// Listen on random localhost port.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		sess.Close()
+		return nil, fmt.Errorf("listen: %w", err)
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+
+	e := &embeddedServer{
+		addr:       listener.Addr().String(),
+		srv:        srv,
+		listener:   listener,
+		cancel:     cancel,
+		history:    history,
+		sess:       sess,
+		client:     client,
+		profile:    profile,
+		env:        env,
+		sessionCfg: sessionCfg,
+	}
+
+	e.wireSession(sess)
 
 	// Bridge session events to SSE broadcaster.
 	go server.Bridge(srv, sess.Events())
 
 	// Input processing loop.
-	ctx, cancel := context.WithCancel(ctx)
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case text, ok := <-srv.InputCh():
-				if !ok {
-					return
-				}
-				srv.SetProcessing(true)
-				srv.SetState("PROCESSING")
-				_, processErr := sess.ProcessInput(ctx, text)
-				srv.SetProcessing(false)
-				srv.SetState("IDLE")
-				if processErr != nil {
-					fmt.Fprintf(os.Stderr, "[embedded] error: %v\n", processErr)
-				}
-			}
-		}
-	}()
-
-	// Listen on random localhost port.
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		cancel()
-		sess.Close()
-		return nil, fmt.Errorf("listen: %w", err)
-	}
+	go e.inputLoop(ctx)
 
 	httpSrv := &http.Server{Handler: srv}
+	e.httpSrv = httpSrv
 	go httpSrv.Serve(listener) //nolint:errcheck
 
-	return &embeddedServer{
-		addr:     listener.Addr().String(),
-		srv:      srv,
-		httpSrv:  httpSrv,
-		sess:     sess,
-		listener: listener,
-		cancel:   cancel,
-		history:  history,
-	}, nil
+	return e, nil
+}
+
+// wireSession updates server callbacks to point at the given session.
+func (e *embeddedServer) wireSession(sess *agent.Session) {
+	e.srv.SetCompactFunc(sess.Compact)
+	e.srv.SetContextPressureFunc(sess.ContextPressure)
+	e.srv.SetModelFunc(sess.SetModel)
+	e.srv.SetClearFunc(e.clearSession)
+}
+
+// currentSession returns the current session under lock.
+func (e *embeddedServer) currentSession() *agent.Session {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.sess
+}
+
+// inputLoop reads from the server's input channel and processes with the current session.
+func (e *embeddedServer) inputLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case text, ok := <-e.srv.InputCh():
+			if !ok {
+				return
+			}
+			sess := e.currentSession()
+			e.srv.SetProcessing(true)
+			e.srv.SetState("PROCESSING")
+			_, processErr := sess.ProcessInput(ctx, text)
+			e.srv.SetProcessing(false)
+			e.srv.SetState("IDLE")
+			if processErr != nil {
+				fmt.Fprintf(os.Stderr, "[embedded] error: %v\n", processErr)
+			}
+		}
+	}
+}
+
+// clearSession closes the current session and creates a new one with the same config.
+func (e *embeddedServer) clearSession(ctx context.Context) error {
+	e.mu.Lock()
+	oldSess := e.sess
+	e.mu.Unlock()
+
+	oldSess.Close()
+
+	newSess, err := agent.NewSession(e.client, e.profile, e.env, e.sessionCfg)
+	if err != nil {
+		return fmt.Errorf("new session: %w", err)
+	}
+
+	e.mu.Lock()
+	e.sess = newSess
+	e.mu.Unlock()
+
+	e.wireSession(newSess)
+	go server.Bridge(e.srv, newSess.Events())
+
+	return nil
 }
 
 // Close shuts down the embedded server and session.
 func (e *embeddedServer) Close() {
 	e.cancel()
 	e.httpSrv.Close()
-	e.sess.Close()
+	e.currentSession().Close()
 }

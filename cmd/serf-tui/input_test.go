@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -55,6 +56,62 @@ func TestSendCompact_ServerError(t *testing.T) {
 	}
 	if result.err == nil {
 		t.Error("expected error, got nil")
+	}
+}
+
+func TestSendClear_Success(t *testing.T) {
+	called := false
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/clear" || r.Method != http.MethodPost {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer ts.Close()
+
+	addr := ts.URL[len("http://"):]
+	cmd := sendClear(addr)
+	msg := cmd()
+
+	result, ok := msg.(clearDoneMsg)
+	if !ok {
+		t.Fatalf("expected clearDoneMsg, got %T", msg)
+	}
+	if result.err != nil {
+		t.Errorf("unexpected error: %v", result.err)
+	}
+	if !called {
+		t.Error("server handler not called")
+	}
+}
+
+func TestSendModel_Success(t *testing.T) {
+	var gotModel string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/model" || r.Method != http.MethodPost {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		var req struct{ Model string }
+		json.NewDecoder(r.Body).Decode(&req)
+		gotModel = req.Model
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer ts.Close()
+
+	addr := ts.URL[len("http://"):]
+	cmd := sendModel(addr, "gpt-4o-mini")
+	msg := cmd()
+
+	result, ok := msg.(modelDoneMsg)
+	if !ok {
+		t.Fatalf("expected modelDoneMsg, got %T", msg)
+	}
+	if result.err != nil {
+		t.Errorf("unexpected error: %v", result.err)
+	}
+	if gotModel != "gpt-4o-mini" {
+		t.Errorf("model = %q, want gpt-4o-mini", gotModel)
 	}
 }
 

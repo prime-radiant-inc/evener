@@ -33,7 +33,9 @@ type Server struct {
 	status      StatusInfo
 	cancelFunc  context.CancelFunc
 	compactFunc func(context.Context) error
+	clearFunc   func(context.Context) error
 	pressureFn  func() float64
+	modelFunc   func(string)
 	processing  bool
 	inputCh     chan string
 }
@@ -53,6 +55,8 @@ func NewServer(cfg ServerConfig) *Server {
 	s.mux.HandleFunc("/status", s.handleStatus)
 	s.mux.HandleFunc("/interrupt", s.handleInterrupt)
 	s.mux.HandleFunc("/compact", s.handleCompact)
+	s.mux.HandleFunc("/model", s.handleModel)
+	s.mux.HandleFunc("/clear", s.handleClear)
 	s.mux.HandleFunc("/input", s.handleInput)
 	s.mux.HandleFunc("/events", s.handleEvents)
 	return s
@@ -138,6 +142,72 @@ func (s *Server) handleCompact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// SetClearFunc sets the function called by POST /clear.
+func (s *Server) SetClearFunc(fn func(context.Context) error) {
+	s.mu.Lock()
+	s.clearFunc = fn
+	s.mu.Unlock()
+}
+
+func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.mu.RLock()
+	fn := s.clearFunc
+	s.mu.RUnlock()
+
+	if fn == nil {
+		http.Error(w, "clear not available", http.StatusServiceUnavailable)
+		return
+	}
+	if err := fn(r.Context()); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// SetModelFunc sets the function called by POST /model.
+func (s *Server) SetModelFunc(fn func(string)) {
+	s.mu.Lock()
+	s.modelFunc = fn
+	s.mu.Unlock()
+}
+
+// ModelRequest is the JSON body for POST /model.
+type ModelRequest struct {
+	Model string `json:"model"`
+}
+
+func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.mu.RLock()
+	fn := s.modelFunc
+	s.mu.RUnlock()
+
+	if fn == nil {
+		http.Error(w, "model change not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req ModelRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Model) == "" {
+		http.Error(w, "model is required", http.StatusBadRequest)
+		return
+	}
+	fn(req.Model)
 	w.WriteHeader(http.StatusNoContent)
 }
 

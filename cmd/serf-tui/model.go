@@ -87,7 +87,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(cmds...)
 			}
 			// Check for slash commands.
-			if cmd, _ := parseSlashCommand(text); cmd != "" {
+			if cmd, args := parseSlashCommand(text); cmd != "" {
 				switch cmd {
 				case "quit":
 					return m, tea.Quit
@@ -99,6 +99,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "status":
 					m.input.Reset()
 					return m, fetchStatus(m.addr)
+				case "model":
+					m.input.Reset()
+					if args == "" {
+						m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "Usage: /model <model-name>"})
+						m.refreshViewport()
+						return m, tea.Batch(cmds...)
+					}
+					m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: fmt.Sprintf("Switching to model %s...", args)})
+					m.refreshViewport()
+					cmds = append(cmds, sendModel(m.addr, args))
+					return m, tea.Batch(cmds...)
+				case "clear":
+					m.input.Reset()
+					m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "Starting new session..."})
+					m.refreshViewport()
+					cmds = append(cmds, sendClear(m.addr))
+					return m, tea.Batch(cmds...)
 				case "compact":
 					m.input.Reset()
 					m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "Compacting context..."})
@@ -172,6 +189,39 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				Text: fmt.Sprintf("Session:  %s\nModel:    %s\nProfile:  %s\nTurns:    %d\nState:    %s\nContext:  %s used",
 					msg.info.SessionID, msg.info.Model, msg.info.Profile,
 					msg.info.Turns, msg.info.State, pressure),
+			})
+		}
+		m.refreshViewport()
+		return m, nil
+
+	case clearDoneMsg:
+		if msg.err != nil {
+			m.messages = append(m.messages, chatMessage{
+				Kind: msgSystem,
+				Text: fmt.Sprintf("Clear failed: %s", msg.err),
+			})
+		} else {
+			m.messages = nil
+			m.activeTools = make(map[string]int)
+			m.turns = 0
+			m.messages = append(m.messages, chatMessage{
+				Kind: msgSystem,
+				Text: "New session started.",
+			})
+		}
+		m.refreshViewport()
+		return m, nil
+
+	case modelDoneMsg:
+		if msg.err != nil {
+			m.messages = append(m.messages, chatMessage{
+				Kind: msgSystem,
+				Text: fmt.Sprintf("Model switch failed: %s", msg.err),
+			})
+		} else {
+			m.messages = append(m.messages, chatMessage{
+				Kind: msgSystem,
+				Text: "Model updated.",
 			})
 		}
 		m.refreshViewport()

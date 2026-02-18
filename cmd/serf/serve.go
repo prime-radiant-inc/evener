@@ -101,6 +101,7 @@ func runServe(args []string) error {
 	srv := server.NewServer(server.ServerConfig{})
 	srv.SetCompactFunc(sess.Compact)
 	srv.SetContextPressureFunc(sess.ContextPressure)
+	srv.SetModelFunc(sess.SetModel)
 
 	// Bridge session events to SSE broadcaster.
 	go server.Bridge(srv, sess.Events())
