@@ -139,6 +139,12 @@ type ToolChoiceSupporter interface {
 	SupportsToolChoice(mode string) bool
 }
 
+// ModelLister is implemented by adapters that can list available models from
+// the provider API.
+type ModelLister interface {
+	ListModels(ctx context.Context) ([]ModelInfo, error)
+}
+
 // Close closes all registered adapters that implement the Closer interface.
 func (c *Client) Close() error {
 	if c == nil {
@@ -185,6 +191,24 @@ func (c *Client) SupportsToolChoice(provider, mode string) bool {
 		return tc.SupportsToolChoice(mode)
 	}
 	return true
+}
+
+// ListModels returns available models from the named provider. The adapter
+// must implement the ModelLister interface.
+func (c *Client) ListModels(ctx context.Context, provider string) ([]ModelInfo, error) {
+	if c == nil {
+		return nil, &ConfigurationError{Message: "client is nil"}
+	}
+	provider = normalizeProviderName(provider)
+	a, ok := c.providers[provider]
+	if !ok {
+		return nil, &ConfigurationError{Message: fmt.Sprintf("unknown provider: %s", provider)}
+	}
+	lister, ok := a.(ModelLister)
+	if !ok {
+		return nil, &ConfigurationError{Message: fmt.Sprintf("provider %s does not support listing models", provider)}
+	}
+	return lister.ListModels(ctx)
 }
 
 func normalizeProviderName(name string) string {
