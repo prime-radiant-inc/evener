@@ -8,10 +8,12 @@ import (
 
 // sessionStartSSE enriches SessionStartData with session_id from the event envelope.
 type sessionStartSSE struct {
-	SessionID string `json:"session_id"`
-	Profile   string `json:"profile"`
-	Model     string `json:"model"`
-	Restored  bool   `json:"restored,omitempty"`
+	SessionID       string `json:"session_id"`
+	Profile         string `json:"profile"`
+	Model           string `json:"model"`
+	Restored        bool   `json:"restored,omitempty"`
+	Turns           int    `json:"turns,omitempty"`
+	LastInputTokens int    `json:"last_input_tokens,omitempty"`
 }
 
 // Bridge reads events from a session event channel, stores them in the
@@ -28,10 +30,12 @@ func Bridge(srv *Server, events <-chan agent.SessionEvent) {
 				srv.SetState("IDLE")
 				// Enrich SSE payload with session_id from event envelope.
 				enriched := sessionStartSSE{
-					SessionID: ev.SessionID,
-					Profile:   d.Profile,
-					Model:     d.Model,
-					Restored:  d.Restored,
+					SessionID:       ev.SessionID,
+					Profile:         d.Profile,
+					Model:           d.Model,
+					Restored:        d.Restored,
+					Turns:           d.Turns,
+					LastInputTokens: d.LastInputTokens,
 				}
 				data, _ = json.Marshal(enriched)
 			}
