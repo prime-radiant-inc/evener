@@ -183,20 +183,7 @@ func (e *embeddedServer) wireSession(sess *agent.Session) {
 	e.srv.SetDetailedStatusFunc(func() server.DetailedStatus {
 		return agentToServerStatus(sess.DetailedStatus())
 	})
-	e.srv.SetListModelsFunc(func(ctx context.Context) ([]server.ModelsResponseItem, error) {
-		models, err := e.client.ListModels(ctx, e.profile.ID())
-		if err != nil {
-			return nil, err
-		}
-		items := make([]server.ModelsResponseItem, len(models))
-		for i, m := range models {
-			items[i] = server.ModelsResponseItem{
-				ID:          m.ID,
-				DisplayName: m.DisplayName,
-			}
-		}
-		return items, nil
-	})
+	e.srv.SetListModelsFunc(cmdutil.ListModelsFunc(e.client, e.profile.ID()))
 }
 
 // agentToServerStatus converts an agent.DetailedStatus to a server.DetailedStatus.

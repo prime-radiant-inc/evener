@@ -102,20 +102,7 @@ func runServe(args []string) error {
 	srv.SetCompactFunc(sess.Compact)
 	srv.SetContextPressureFunc(sess.ContextPressure)
 	srv.SetModelFunc(sess.SetModel)
-	srv.SetListModelsFunc(func(ctx context.Context) ([]server.ModelsResponseItem, error) {
-		models, err := client.ListModels(ctx, profile.ID())
-		if err != nil {
-			return nil, err
-		}
-		items := make([]server.ModelsResponseItem, len(models))
-		for i, m := range models {
-			items[i] = server.ModelsResponseItem{
-				ID:          m.ID,
-				DisplayName: m.DisplayName,
-			}
-		}
-		return items, nil
-	})
+	srv.SetListModelsFunc(cmdutil.ListModelsFunc(client, profile.ID()))
 
 	// Bridge session events to SSE broadcaster.
 	go server.Bridge(srv, sess.Events())

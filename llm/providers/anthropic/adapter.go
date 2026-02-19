@@ -64,11 +64,11 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	httpReq.Header.Set("x-api-key", a.APIKey)
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
 	for k, v := range a.DefaultHeaders {
 		httpReq.Header.Set(k, v)
 	}
+	httpReq.Header.Set("x-api-key", a.APIKey)
+	httpReq.Header.Set("anthropic-version", "2023-06-01")
 
 	resp, err := a.Client.Do(httpReq)
 	if err != nil {

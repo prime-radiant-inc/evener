@@ -2,6 +2,7 @@
 package cmdutil
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,6 +10,8 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/server"
 )
 
 // GitOriginURLFromDir runs "git remote get-url origin" in dir and returns the
@@ -134,6 +137,25 @@ func ResolveSnapshot(stateDir, sessionID string, resumeLast bool) (agent.Session
 		return agent.SessionSnapshot{}, fmt.Errorf("load session %s: %w", sessionID, err)
 	}
 	return snap, nil
+}
+
+// ListModelsFunc returns a function suitable for server.SetListModelsFunc that
+// fetches models from the given client and provider.
+func ListModelsFunc(client *llm.Client, providerID string) func(context.Context) ([]server.ModelsResponseItem, error) {
+	return func(ctx context.Context) ([]server.ModelsResponseItem, error) {
+		models, err := client.ListModels(ctx, providerID)
+		if err != nil {
+			return nil, err
+		}
+		items := make([]server.ModelsResponseItem, len(models))
+		for i, m := range models {
+			items[i] = server.ModelsResponseItem{
+				ID:          m.ID,
+				DisplayName: m.DisplayName,
+			}
+		}
+		return items, nil
+	}
 }
 
 func parseCommunicateRequiredDataKeys(raw string) []string {
