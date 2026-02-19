@@ -33,6 +33,7 @@ type colorTheme struct {
 	// Input / borders
 	inputBorderFg lipgloss.Color
 	inputPromptFg lipgloss.Color
+	inputFg       lipgloss.Color
 
 	// Pickers
 	pickerTitleFg    lipgloss.Color
@@ -64,6 +65,7 @@ var darkTheme = colorTheme{
 
 	inputBorderFg: lipgloss.Color("238"),
 	inputPromptFg: lipgloss.Color("42"),
+	inputFg:       lipgloss.Color("252"),
 
 	pickerTitleFg:    lipgloss.Color("42"),
 	pickerSelectedFg: lipgloss.Color("42"),
@@ -94,6 +96,7 @@ var lightTheme = colorTheme{
 
 	inputBorderFg: lipgloss.Color("250"),
 	inputPromptFg: lipgloss.Color("28"),
+	inputFg:       lipgloss.Color("236"),
 
 	pickerTitleFg:    lipgloss.Color("28"),
 	pickerSelectedFg: lipgloss.Color("28"),
@@ -113,6 +116,7 @@ var (
 	statusBarStyle     lipgloss.Style
 	statusConnected    lipgloss.Style
 	statusDisconnected lipgloss.Style
+	scrollModeStyle    lipgloss.Style
 
 	userBlockStyle    lipgloss.Style
 	thinkingStyle     lipgloss.Style
@@ -190,6 +194,11 @@ func applyTheme(t colorTheme) {
 
 	statusDisconnected = lipgloss.NewStyle().
 		Foreground(t.disconnected).
+		Bold(true)
+
+	scrollModeStyle = lipgloss.NewStyle().
+		Foreground(t.statusBarBg).
+		Background(t.connected).
 		Bold(true)
 
 	userBlockStyle = lipgloss.NewStyle().

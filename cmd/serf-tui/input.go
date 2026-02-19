@@ -40,6 +40,11 @@ func slashCommandHelp() string {
 		"  /theme     Pick a theme (dark/light)",
 		"  /clear     Start a new session",
 		"  /quit      Exit the TUI",
+		"",
+		"Keys:",
+		"  pgup / ctrl+u   Enter scroll mode (browse history)",
+		"  esc / i         Exit scroll mode",
+		"  tab             Expand/collapse most recent tool call",
 	}, "\n")
 }
 

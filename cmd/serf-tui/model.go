@@ -37,6 +37,21 @@ type model struct {
 	lastInterrupt time.Time
 	picker        *modelPicker // non-nil when model picker is active
 	themePicker   *themePicker // non-nil when theme picker is active
+	scrollMode    bool         // true when scrolling history; input is blurred
+}
+
+// applyInputTheme sets the textarea's style to match the active theme colours.
+// Must be called after initTheme() and again whenever the theme changes.
+func applyInputTheme(ta *textarea.Model) {
+	base := lipgloss.NewStyle().
+		Background(activeTheme.inputBg).
+		Foreground(activeTheme.inputFg)
+	textStyle := lipgloss.NewStyle().Foreground(activeTheme.inputFg)
+	for _, s := range []*textarea.Style{&ta.FocusedStyle, &ta.BlurredStyle} {
+		s.Base = base
+		s.Text = textStyle
+		s.CursorLine = base
+	}
 }
 
 func newModel(addr string, initialMessages []chatMessage) model {
@@ -91,12 +106,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if p.done {
 				m.themePicker = nil
 				if p.selected != "" {
-					setTheme(p.selected)
-					initMarkdownRenderer(m.width)
-					m.viewport.Style = viewportStyle
-					inputBg := lipgloss.NewStyle().Background(activeTheme.inputBg)
-					m.input.FocusedStyle.Base = inputBg
-					m.input.BlurredStyle.Base = inputBg
+				setTheme(p.selected)
+				initMarkdownRenderer(m.width)
+				m.viewport.Style = viewportStyle
+				applyInputTheme(&m.input)
 					m.messages = append(m.messages, chatMessage{
 						Kind: msgSystem,
 						Text: fmt.Sprintf("Switched to %s theme.", p.selected),
@@ -105,6 +118,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.refreshViewport()
 			}
 			return m, cmd
+		}
+
+		// In scroll mode, route keys to the viewport; esc/i/q return to input.
+		if m.scrollMode {
+			switch msg.String() {
+			case "esc", "i", "q":
+				m.scrollMode = false
+				m.input.Focus()
+			default:
+				m.viewport, _ = m.viewport.Update(msg)
+			}
+			return m, nil
 		}
 
 		switch msg.String() {
@@ -117,6 +142,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "Interrupted. Press ctrl+c again to quit, or use /quit."})
 			m.refreshViewport()
 			return m, sendInterrupt(m.addr)
+		case "pgup", "ctrl+u":
+			m.scrollMode = true
+			m.input.Blur()
+			m.viewport, _ = m.viewport.Update(msg)
+			return m, nil
 		case "tab":
 			// Toggle the most recent tool call's expanded state
 			for i := len(m.messages) - 1; i >= 0; i-- {
@@ -202,10 +232,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.YPosition = 0
 		m.viewport.Style = viewportStyle
 		m.input.SetWidth(m.width - 2) // -2 for the prompt "> "
-		// Paint textarea rows with the theme background.
-		inputBg := lipgloss.NewStyle().Background(activeTheme.inputBg)
-		m.input.FocusedStyle.Base = inputBg
-		m.input.BlurredStyle.Base = inputBg
+		// Paint textarea rows with the theme background and foreground.
+		applyInputTheme(&m.input)
 		m.refreshViewport()
 		return m, nil
 
@@ -323,12 +351,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Update sub-components
-	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
-	cmds = append(cmds, cmd)
-	m.viewport, cmd = m.viewport.Update(msg)
-	cmds = append(cmds, cmd)
+	// Update sub-components — only pass non-key messages so the viewport's
+	// built-in key bindings don't fire while the user is typing.
+	if _, isKey := msg.(tea.KeyMsg); !isKey {
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		cmds = append(cmds, cmd)
+		m.viewport, cmd = m.viewport.Update(msg)
+		cmds = append(cmds, cmd)
+	} else {
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		cmds = append(cmds, cmd)
+	}
 
 	return m, tea.Batch(cmds...)
 }
@@ -452,7 +487,7 @@ func (m model) View() string {
 		Width(m.width).
 		Height(m.height)
 
-	statusBar := renderStatusBar(m.connected, m.sessionModel, m.sessionID, m.turns, m.width)
+	statusBar := renderStatusBar(m.connected, m.sessionModel, m.sessionID, m.turns, m.scrollMode, m.width)
 
 	var body string
 	if m.picker != nil {
