@@ -26,6 +26,7 @@ func readTranscriptLines(t *testing.T, path string) []string {
 
 	var lines []string
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
@@ -1491,8 +1492,10 @@ func TestSubagent_TranscriptPersistsAfterCloseAgent(t *testing.T) {
 	go func() { for range parentSess.Events() {} }()
 
 	// Spawn a sub-agent via the tool registry (matches existing test patterns).
-	spawnRes := parentSess.reg.ExecuteCall(context.Background(), parentSess.env, llm.ToolCallData{
-		ID:        "c1",
+	// Inject the tool call ID via context so spawnAgent can record it in the transcript header.
+	spawnCtx := context.WithValue(context.Background(), ctxToolCallID, "call_spawn_1")
+	spawnRes := parentSess.reg.ExecuteCall(spawnCtx, parentSess.env, llm.ToolCallData{
+		ID:        "call_spawn_1",
 		Name:      "spawn_agent",
 		Arguments: json.RawMessage(`{"task":"implement auth middleware"}`),
 	})
@@ -1580,6 +1583,11 @@ func TestSubagent_TranscriptPersistsAfterCloseAgent(t *testing.T) {
 	// The sub-agent's Depth should be 1 (parent is depth 0).
 	if subHeader.Depth != 1 {
 		t.Errorf("sub-agent Depth = %d, want 1", subHeader.Depth)
+	}
+
+	// The sub-agent's ParentToolCallID should match the tool call that spawned it.
+	if subHeader.ParentToolCallID != "call_spawn_1" {
+		t.Errorf("sub-agent ParentToolCallID = %q, want %q", subHeader.ParentToolCallID, "call_spawn_1")
 	}
 
 	// The sub-agent transcript should contain at least a user input and assistant response.

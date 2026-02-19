@@ -16,6 +16,12 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// ctxKey is a private type for context keys in this package.
+type ctxKey string
+
+// ctxToolCallID carries the tool call ID into tool execution closures via context.
+const ctxToolCallID ctxKey = "toolCallID"
+
 // SessionState represents the current lifecycle state of a session.
 type SessionState string
 
@@ -83,6 +89,9 @@ type SessionConfig struct {
 
 	// ParentSessionID links sub-agent sessions to their parent (set by spawnAgent).
 	ParentSessionID string `json:"-"`
+
+	// ParentToolCallID is the tool call ID that spawned this sub-agent session.
+	ParentToolCallID string `json:"-"`
 
 	// SubagentTask is the task description passed to spawn_agent.
 	SubagentTask string `json:"-"`
@@ -263,14 +272,15 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 	// Create transcript writer if state persistence is enabled.
 	if s.stateDir != "" {
 		hdr := TranscriptHeader{
-			SessionID:       s.id,
-			ParentSessionID: cfg.ParentSessionID,
-			Task:            cfg.SubagentTask,
-			CreatedAt:       time.Now().UTC(),
-			ProfileID:       profile.ID(),
-			Model:           profile.Model(),
-			WorkingDir:      ei.WorkingDir,
-			Depth:           cfg.Depth,
+			SessionID:        s.id,
+			ParentSessionID:  cfg.ParentSessionID,
+			ParentToolCallID: cfg.ParentToolCallID,
+			Task:             cfg.SubagentTask,
+			CreatedAt:        time.Now().UTC(),
+			ProfileID:        profile.ID(),
+			Model:            profile.Model(),
+			WorkingDir:       ei.WorkingDir,
+			Depth:            cfg.Depth,
 		}
 		tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
 		tw, twErr := NewTranscriptWriter(tpath, hdr)
@@ -419,14 +429,15 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		if twErr != nil {
 			// Transcript might not exist (old session). Create new.
 			hdr := TranscriptHeader{
-				SessionID:       s.id,
-				ParentSessionID: cfg.ParentSessionID,
-				Task:            cfg.SubagentTask,
-				CreatedAt:       time.Now().UTC(),
-				ProfileID:       profile.ID(),
-				Model:           profile.Model(),
-				WorkingDir:      ei.WorkingDir,
-				Depth:           cfg.Depth,
+				SessionID:        s.id,
+				ParentSessionID:  cfg.ParentSessionID,
+				ParentToolCallID: cfg.ParentToolCallID,
+				Task:             cfg.SubagentTask,
+				CreatedAt:        snap.CreatedAt,
+				ProfileID:        profile.ID(),
+				Model:            profile.Model(),
+				WorkingDir:       ei.WorkingDir,
+				Depth:            cfg.Depth,
 			}
 			tw, twErr = NewTranscriptWriter(tpath, hdr)
 			if twErr != nil {
@@ -721,6 +732,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecR
 	s.emit(EventToolCallStart, startData)
 
 	// Session-level tools (subagents) are registered in the registry with closures.
+	ctx = context.WithValue(ctx, ctxToolCallID, call.ID)
 	res := s.reg.ExecuteCall(ctx, s.env, call)
 
 	// Emit output deltas (best-effort). Even for non-streaming tools, this gives consumers a uniform
