@@ -1695,10 +1695,18 @@ func TestAdapter_ListModels(t *testing.T) {
 			"data": [
 				{"id": "gpt-4o", "object": "model", "owned_by": "openai"},
 				{"id": "gpt-4o-mini", "object": "model", "owned_by": "openai"},
+				{"id": "o3", "object": "model", "owned_by": "openai"},
 				{"id": "text-embedding-3-small", "object": "model", "owned_by": "openai"},
 				{"id": "dall-e-3", "object": "model", "owned_by": "openai"},
 				{"id": "tts-1", "object": "model", "owned_by": "openai"},
+				{"id": "gpt-4o-mini-tts", "object": "model", "owned_by": "openai"},
 				{"id": "whisper-1", "object": "model", "owned_by": "openai"},
+				{"id": "gpt-4o-audio-preview", "object": "model", "owned_by": "openai"},
+				{"id": "gpt-4o-realtime-preview", "object": "model", "owned_by": "openai"},
+				{"id": "gpt-4o-transcribe", "object": "model", "owned_by": "openai"},
+				{"id": "gpt-image-1", "object": "model", "owned_by": "openai"},
+				{"id": "omni-moderation-latest", "object": "model", "owned_by": "openai"},
+				{"id": "sora-2", "object": "model", "owned_by": "openai"},
 				{"id": "ft:gpt-4o:my-org:custom:id", "object": "model", "owned_by": "user"}
 			]
 		}`))
@@ -1715,23 +1723,24 @@ func TestAdapter_ListModels(t *testing.T) {
 	for _, m := range models {
 		ids[m.ID] = true
 	}
-	if !ids["gpt-4o"] {
-		t.Error("missing gpt-4o")
+
+	// Chat models should be present.
+	for _, want := range []string{"gpt-4o", "gpt-4o-mini", "o3", "ft:gpt-4o:my-org:custom:id"} {
+		if !ids[want] {
+			t.Errorf("missing expected chat model %q", want)
+		}
 	}
-	if !ids["gpt-4o-mini"] {
-		t.Error("missing gpt-4o-mini")
+
+	// Non-chat models should be filtered out.
+	filtered := []string{
+		"text-embedding-3-small", "dall-e-3", "tts-1", "gpt-4o-mini-tts",
+		"whisper-1", "gpt-4o-audio-preview", "gpt-4o-realtime-preview",
+		"gpt-4o-transcribe", "gpt-image-1", "omni-moderation-latest", "sora-2",
 	}
-	if ids["text-embedding-3-small"] {
-		t.Error("should filter out embedding model")
-	}
-	if ids["dall-e-3"] {
-		t.Error("should filter out dall-e model")
-	}
-	if ids["tts-1"] {
-		t.Error("should filter out tts model")
-	}
-	if ids["whisper-1"] {
-		t.Error("should filter out whisper model")
+	for _, bad := range filtered {
+		if ids[bad] {
+			t.Errorf("should filter out %q", bad)
+		}
 	}
 	for _, m := range models {
 		if m.Provider != "openai" {

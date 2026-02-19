@@ -858,9 +858,13 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 
 func skipOpenAIModel(id string) bool {
 	lower := strings.ToLower(id)
-	prefixes := []string{"text-embedding", "dall-e", "tts-", "whisper", "davinci", "babbage", "embedding"}
-	for _, p := range prefixes {
-		if strings.HasPrefix(lower, p) || strings.Contains(lower, p) {
+	skip := []string{
+		"embedding", "dall-e", "whisper", "davinci", "babbage",
+		"tts", "audio", "realtime", "transcribe", "image",
+		"moderation", "sora",
+	}
+	for _, s := range skip {
+		if strings.Contains(lower, s) {
 			return true
 		}
 	}
