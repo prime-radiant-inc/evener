@@ -121,18 +121,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "status":
 					m.input.Reset()
 					return m, fetchStatus(m.addr)
-				case "model":
-					m.input.Reset()
-					if args == "" {
-						m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "Fetching available models..."})
-						m.refreshViewport()
-						cmds = append(cmds, fetchModels(m.addr))
-						return m, tea.Batch(cmds...)
-					}
-					m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: fmt.Sprintf("Switching to model %s...", args)})
+			case "model":
+				m.input.Reset()
+				if args == "" {
+					m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "Fetching available models..."})
 					m.refreshViewport()
-					cmds = append(cmds, sendModel(m.addr, args))
+					cmds = append(cmds, fetchModels(m.addr))
 					return m, tea.Batch(cmds...)
+				}
+				m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: fmt.Sprintf("Switching to model %s...", args)})
+				m.refreshViewport()
+				cmds = append(cmds, sendModel(m.addr, args))
+				return m, tea.Batch(cmds...)
+			case "theme":
+				m.input.Reset()
+				if args == "" {
+					m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: fmt.Sprintf("Current theme: %s  (use /theme dark or /theme light to switch)", currentThemeName())})
+				} else if setTheme(args) {
+					initMarkdownRenderer(m.width)
+					m.viewport.Style = viewportStyle
+					m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: fmt.Sprintf("Switched to %s theme.", args)})
+				} else {
+					m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: fmt.Sprintf("Unknown theme %q. Use 'dark' or 'light'.", args)})
+				}
+				m.refreshViewport()
+				return m, tea.Batch(cmds...)
 				case "clear":
 					m.input.Reset()
 					m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "Starting new session..."})
@@ -163,14 +176,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		initMarkdownRenderer(m.width)
-		headerHeight := 1
+		statusBarHeight := 1
 		inputHeight := 3
-		vpHeight := m.height - headerHeight - inputHeight
+		vpHeight := m.height - statusBarHeight - inputHeight
 		if vpHeight < 1 {
 			vpHeight = 1
 		}
 		m.viewport = viewport.New(m.width, vpHeight)
-		m.viewport.YPosition = headerHeight
+		m.viewport.YPosition = 0
+		m.viewport.Style = viewportStyle
 		m.input.SetWidth(m.width - 4)
 		m.refreshViewport()
 		return m, nil
@@ -418,6 +432,7 @@ func (m model) View() string {
 	if m.picker != nil {
 		pickerView := m.picker.View()
 		return lipgloss.JoinVertical(lipgloss.Left,
+			m.viewport.View(),
 			statusBar,
 			pickerView,
 		)
@@ -426,8 +441,8 @@ func (m model) View() string {
 	inputView := inputBorderStyle.Width(m.width).Render(m.input.View())
 
 	return lipgloss.JoinVertical(lipgloss.Left,
-		statusBar,
 		m.viewport.View(),
+		statusBar,
 		inputView,
 	)
 }

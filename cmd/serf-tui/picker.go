@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/serf/agent"
 )
 
@@ -54,23 +53,6 @@ func (m sessionPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	return m, nil
 }
-
-var (
-	pickerTitle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("42")).
-			MarginBottom(1)
-
-	pickerSelected = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("42")).
-			Bold(true)
-
-	pickerNormal = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("252"))
-
-	pickerDim = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("240"))
-)
 
 func (m sessionPicker) View() string {
 	if len(m.sessions) == 0 {

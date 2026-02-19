@@ -76,7 +76,7 @@ func renderMessage(msg chatMessage, width int) string {
 		}
 		return renderToolCall(*msg.Tool, width)
 	case msgSystem:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Italic(true).Render(msg.Text)
+		return systemStyle.Render(msg.Text)
 	}
 	return ""
 }

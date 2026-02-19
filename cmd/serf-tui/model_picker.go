@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
 type modelPickerItem struct {
@@ -90,29 +89,21 @@ func (m modelPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m modelPicker) View() string {
 	var b strings.Builder
 
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42"))
-	filterStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	activeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)
-	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	cursorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	activeTag := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-
-	b.WriteString(titleStyle.Render("Select model"))
+	b.WriteString(mpTitleStyle.Render("Select model"))
 	b.WriteString("\n")
 
 	filterText := m.filter
 	if filterText == "" {
-		filterText = dimStyle.Render("type to filter...")
+		filterText = mpDimStyle.Render("type to filter...")
 	} else {
-		filterText = filterStyle.Render(filterText)
+		filterText = mpFilterStyle.Render(filterText)
 	}
 	b.WriteString(fmt.Sprintf("Filter: %s", filterText))
 	b.WriteString("\n\n")
 
 	filtered := m.filtered()
 	if len(filtered) == 0 {
-		b.WriteString(dimStyle.Render("  No matching models."))
+		b.WriteString(mpDimStyle.Render("  No matching models."))
 		b.WriteString("\n")
 	} else {
 		maxVisible := 15
@@ -134,31 +125,31 @@ func (m modelPicker) View() string {
 		for i := start; i < end; i++ {
 			item := filtered[i]
 			cursor := "  "
-			style := normalStyle
+			style := mpNormalStyle
 			if i == m.cursor {
 				cursor = "> "
-				style = cursorStyle
+				style = mpCursorStyle
 			} else if item.id == m.active {
-				style = activeStyle
+				style = mpActiveStyle
 			}
 			line := cursor + style.Render(item.display)
 			if item.id != item.display && item.display != "" {
-				line += "  " + dimStyle.Render(item.id)
+				line += "  " + mpDimStyle.Render(item.id)
 			}
 			if item.id == m.active {
-				line += "  " + activeTag.Render("(active)")
+				line += "  " + mpActiveTag.Render("(active)")
 			}
 			b.WriteString(line)
 			b.WriteString("\n")
 		}
 
 		if len(filtered) > maxVisible {
-			b.WriteString(dimStyle.Render(fmt.Sprintf("  ... %d models total", len(filtered))))
+			b.WriteString(mpDimStyle.Render(fmt.Sprintf("  ... %d models total", len(filtered))))
 			b.WriteString("\n")
 		}
 	}
 
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("↑/↓ navigate  enter select  esc cancel"))
+	b.WriteString(mpDimStyle.Render("↑/↓ navigate  enter select  esc cancel"))
 	return b.String()
 }
