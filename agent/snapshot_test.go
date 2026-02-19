@@ -669,3 +669,256 @@ func TestRestoreSession_CanProcessInput(t *testing.T) {
 		t.Fatalf("expected non-empty result")
 	}
 }
+
+func TestRestoreSession_UsesTranscriptOverSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+
+	// Snapshot has old history that should be ignored when a transcript exists.
+	snap := SessionSnapshot{
+		ID:        "01JTEST_TRANSCRIPT_001",
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config:    SessionConfig{MaxToolRoundsPerInput: 200},
+		EnvInfo:   EnvironmentInfo{WorkingDir: dir},
+		History: []Turn{
+			NewTurn(TurnUserInput, llm.User("snapshot-old-message")),
+			NewTurn(TurnAssistant, llm.Assistant("snapshot-old-reply")),
+		},
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		TurnCount: 2,
+	}
+
+	// Write a transcript file with different history.
+	tpath := filepath.Join(stateDir, sessionsSubdir, snap.ID+".transcript.jsonl")
+	tw, err := NewTranscriptWriter(tpath, TranscriptHeader{
+		SessionID: snap.ID,
+		CreatedAt: snap.CreatedAt,
+		ProfileID: snap.ProfileID,
+		Model:     snap.Model,
+	})
+	if err != nil {
+		t.Fatalf("NewTranscriptWriter: %v", err)
+	}
+	if err := tw.Append(NewTurn(TurnUserInput, llm.User("transcript-message"))); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := tw.Append(NewTurn(TurnAssistant, llm.Assistant("transcript-reply"))); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	tw.Close()
+
+	c := llm.NewClient()
+	adapter := &snapshotFakeAdapter{name: "openai"}
+	c.Register(adapter)
+
+	sess, err := RestoreSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), snap, stateDir)
+	if err != nil {
+		t.Fatalf("RestoreSession: %v", err)
+	}
+	defer sess.Close()
+
+	// Process a new input so we can inspect the history sent to the LLM.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "continue"); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	reqs := adapter.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(reqs))
+	}
+
+	// The restored history should come from the transcript, not the snapshot.
+	var userTexts []string
+	for _, m := range reqs[0].Messages {
+		if m.Role == llm.RoleUser {
+			userTexts = append(userTexts, m.Text())
+		}
+	}
+
+	// Should contain "transcript-message" (from transcript), not "snapshot-old-message".
+	foundTranscript := false
+	foundSnapshot := false
+	for _, text := range userTexts {
+		if text == "transcript-message" {
+			foundTranscript = true
+		}
+		if text == "snapshot-old-message" {
+			foundSnapshot = true
+		}
+	}
+	if !foundTranscript {
+		t.Fatalf("expected transcript history in restored session, got user texts: %v", userTexts)
+	}
+	if foundSnapshot {
+		t.Fatalf("snapshot history should not appear when transcript exists, got user texts: %v", userTexts)
+	}
+}
+
+func TestRestoreSession_FallsBackToSnapshotWithoutTranscript(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+
+	// No transcript file exists -- should fall back to snapshot history.
+	snap := SessionSnapshot{
+		ID:        "01JTEST_FALLBACK_001",
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config:    SessionConfig{MaxToolRoundsPerInput: 200},
+		EnvInfo:   EnvironmentInfo{WorkingDir: dir},
+		History: []Turn{
+			NewTurn(TurnUserInput, llm.User("snapshot-fallback")),
+			NewTurn(TurnAssistant, llm.Assistant("snapshot-reply")),
+		},
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		TurnCount: 2,
+	}
+
+	c := llm.NewClient()
+	adapter := &snapshotFakeAdapter{name: "openai"}
+	c.Register(adapter)
+
+	sess, err := RestoreSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), snap, stateDir)
+	if err != nil {
+		t.Fatalf("RestoreSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "continue"); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	reqs := adapter.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(reqs))
+	}
+
+	// Should contain snapshot history since no transcript exists.
+	var userTexts []string
+	for _, m := range reqs[0].Messages {
+		if m.Role == llm.RoleUser {
+			userTexts = append(userTexts, m.Text())
+		}
+	}
+
+	foundSnapshot := false
+	for _, text := range userTexts {
+		if text == "snapshot-fallback" {
+			foundSnapshot = true
+		}
+	}
+	if !foundSnapshot {
+		t.Fatalf("expected snapshot history in restored session, got user texts: %v", userTexts)
+	}
+}
+
+func TestRestoreSession_TranscriptWithCompaction(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+
+	snap := SessionSnapshot{
+		ID:        "01JTEST_COMPACT_001",
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config:    SessionConfig{MaxToolRoundsPerInput: 200},
+		EnvInfo:   EnvironmentInfo{WorkingDir: dir},
+		History: []Turn{
+			NewTurn(TurnUserInput, llm.User("snapshot-should-not-appear")),
+		},
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		TurnCount: 5,
+	}
+
+	// Write a transcript with a checkpoint in the middle.
+	tpath := filepath.Join(stateDir, sessionsSubdir, snap.ID+".transcript.jsonl")
+	tw, err := NewTranscriptWriter(tpath, TranscriptHeader{
+		SessionID: snap.ID,
+		CreatedAt: snap.CreatedAt,
+		ProfileID: snap.ProfileID,
+		Model:     snap.Model,
+	})
+	if err != nil {
+		t.Fatalf("NewTranscriptWriter: %v", err)
+	}
+	// Pre-compaction turns (should be discarded by ResumeHistory).
+	tw.Append(NewTurn(TurnUserInput, llm.User("old-message-1")))
+	tw.Append(NewTurn(TurnAssistant, llm.Assistant("old-reply-1")))
+	tw.Append(NewTurn(TurnUserInput, llm.User("old-message-2")))
+	tw.Append(NewTurn(TurnAssistant, llm.Assistant("old-reply-2")))
+	// Checkpoint turn.
+	tw.Append(NewTurn(TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT] Summary of prior work")))
+	// Post-compaction turns (should be kept).
+	tw.Append(NewTurn(TurnUserInput, llm.User("post-compact-message")))
+	tw.Append(NewTurn(TurnAssistant, llm.Assistant("post-compact-reply")))
+	tw.Close()
+
+	c := llm.NewClient()
+	adapter := &snapshotFakeAdapter{name: "openai"}
+	c.Register(adapter)
+
+	sess, err := RestoreSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), snap, stateDir)
+	if err != nil {
+		t.Fatalf("RestoreSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "continue after compaction"); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	reqs := adapter.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(reqs))
+	}
+
+	// Collect all user-role message texts.
+	var userTexts []string
+	for _, m := range reqs[0].Messages {
+		if m.Role == llm.RoleUser {
+			userTexts = append(userTexts, m.Text())
+		}
+	}
+
+	// Should have: checkpoint summary, post-compact-message, continue after compaction
+	// Should NOT have: old-message-1, old-message-2, snapshot-should-not-appear
+	foundCheckpoint := false
+	foundPostCompact := false
+	foundOld := false
+	foundSnapshot := false
+	for _, text := range userTexts {
+		if strings.Contains(text, "[CONTEXT CHECKPOINT]") {
+			foundCheckpoint = true
+		}
+		if text == "post-compact-message" {
+			foundPostCompact = true
+		}
+		if text == "old-message-1" || text == "old-message-2" {
+			foundOld = true
+		}
+		if text == "snapshot-should-not-appear" {
+			foundSnapshot = true
+		}
+	}
+
+	if !foundCheckpoint {
+		t.Fatalf("expected checkpoint in resumed history, got user texts: %v", userTexts)
+	}
+	if !foundPostCompact {
+		t.Fatalf("expected post-compaction message in resumed history, got user texts: %v", userTexts)
+	}
+	if foundOld {
+		t.Fatalf("pre-compaction messages should not appear in resumed history, got user texts: %v", userTexts)
+	}
+	if foundSnapshot {
+		t.Fatalf("snapshot history should not appear when transcript exists, got user texts: %v", userTexts)
+	}
+}

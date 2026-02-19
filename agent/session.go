@@ -391,6 +391,19 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		return nil, fmt.Errorf("env initialize: %w", err)
 	}
 
+	// Try transcript-based resume first, fall back to snapshot history.
+	var resumeHistory []Turn
+	if stateDir != "" {
+		tpath := filepath.Join(stateDir, sessionsSubdir, snap.ID+".transcript.jsonl")
+		_, entries, readErr := ReadTranscript(tpath)
+		if readErr == nil && len(entries) > 0 {
+			resumeHistory = ResumeHistory(entries)
+		}
+	}
+	if resumeHistory == nil {
+		resumeHistory = append([]Turn{}, snap.History...)
+	}
+
 	sessCtx, sessCancel := context.WithCancel(context.Background())
 	s := &Session{
 		id:         snap.ID,
@@ -401,7 +414,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		stateDir:   cfg.StateDir,
 		state:      SessionIdle,
 		events:     make(chan SessionEvent, 256),
-		history:    append([]Turn{}, snap.History...),
+		history:    resumeHistory,
 		turns:      snap.TurnCount,
 		subagents:  map[string]*subagent{},
 		readFiles:  map[string]bool{},
