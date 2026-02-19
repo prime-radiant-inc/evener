@@ -1,21 +1,27 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/alecthomas/chroma/v2"
+	"github.com/alecthomas/chroma/v2/formatters"
+	"github.com/alecthomas/chroma/v2/lexers"
+	"github.com/alecthomas/chroma/v2/styles"
 )
 
-// summarizeArgs returns a concise human-readable description of a tool call
-// given the tool name and its raw argument JSON.
-func summarizeArgs(toolName, argsJSON string) string {
+// summarizeTool returns a compact one-line description and an optional
+// multi-line detail body for a tool call.
+func summarizeTool(toolName, argsJSON string) (desc, detail string) {
 	if argsJSON == "" {
-		return ""
+		return "", ""
 	}
 	var args map[string]any
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return argsJSON
+		return argsJSON, ""
 	}
 
 	str := func(key string) string {
@@ -26,12 +32,8 @@ func summarizeArgs(toolName, argsJSON string) string {
 		v, ok := args[key].(float64)
 		return int(v), ok
 	}
-	truncate := func(s string, n int) string {
+	trunc := func(s string, n int) string {
 		s = strings.TrimSpace(s)
-		// Use only the first line for display.
-		if i := strings.IndexByte(s, '\n'); i >= 0 {
-			s = s[:i] + "…"
-		}
 		if len(s) > n {
 			return s[:n] + "…"
 		}
@@ -40,10 +42,22 @@ func summarizeArgs(toolName, argsJSON string) string {
 
 	switch toolName {
 	case "shell":
-		if desc := str("description"); desc != "" {
-			return truncate(desc, 80)
+		cmd := str("command")
+		if d := str("description"); d != "" {
+			desc = trunc(d, 80)
+		} else {
+			// Show first line as desc; full command as detail if multi-line.
+			firstLine := cmd
+			if i := strings.IndexByte(cmd, '\n'); i >= 0 {
+				firstLine = cmd[:i]
+			}
+			desc = trunc(firstLine, 80)
 		}
-		return truncate(str("command"), 80)
+		// Always show the full command in detail.
+		if strings.Contains(cmd, "\n") || len(cmd) > 80 {
+			detail = cmd
+		}
+		return
 
 	case "read_file":
 		path := shortPath(str("file_path"))
@@ -51,14 +65,15 @@ func summarizeArgs(toolName, argsJSON string) string {
 		limit, hasLimit := num("limit")
 		switch {
 		case hasOffset && hasLimit:
-			return fmt.Sprintf("%s :%d+%d", path, offset, limit)
+			desc = fmt.Sprintf("%s :%d+%d", path, offset, limit)
 		case hasOffset:
-			return fmt.Sprintf("%s :%d+", path, offset)
+			desc = fmt.Sprintf("%s :%d+", path, offset)
 		case hasLimit:
-			return fmt.Sprintf("%s :%d", path, limit)
+			desc = fmt.Sprintf("%s :%d", path, limit)
 		default:
-			return path
+			desc = path
 		}
+		return
 
 	case "write_file":
 		path := shortPath(str("file_path"))
@@ -67,79 +82,97 @@ func summarizeArgs(toolName, argsJSON string) string {
 		if content == "" {
 			lines = 0
 		}
-		return fmt.Sprintf("%s (%d lines)", path, lines)
+		desc = fmt.Sprintf("%s (%d lines)", path, lines)
+		return
 
 	case "edit_file":
-		path := shortPath(str("file_path"))
-		old := truncate(str("old_string"), 40)
-		if old != "" {
-			return fmt.Sprintf("%s  %q", path, old)
-		}
-		return path
+		path := str("file_path")
+		old := str("old_string")
+		new_ := str("new_string")
+		desc = shortPath(path)
+		detail = unifiedDiff(path, old, new_)
+		return
 
 	case "glob":
 		pattern := str("pattern")
 		if path := str("path"); path != "" {
-			return fmt.Sprintf("%s in %s", pattern, shortPath(path))
+			desc = fmt.Sprintf("%s in %s", pattern, shortPath(path))
+		} else {
+			desc = pattern
 		}
-		return pattern
+		return
 
 	case "grep":
 		pattern := str("pattern")
 		if path := str("path"); path != "" {
-			return fmt.Sprintf("%q in %s", pattern, shortPath(path))
+			desc = fmt.Sprintf("%q in %s", pattern, shortPath(path))
+		} else {
+			desc = fmt.Sprintf("%q", pattern)
 		}
-		return fmt.Sprintf("%q", pattern)
+		return
 
 	case "task_list":
 		action := str("action")
 		switch action {
 		case "append":
-			if tasks, ok := args["tasks"].([]any); ok {
-				return fmt.Sprintf("append %d tasks", len(tasks))
-			}
-			return "append"
+			tasks, _ := args["tasks"].([]any)
+			desc = fmt.Sprintf("append %d tasks", len(tasks))
+			detail = renderTaskAppend(tasks)
 		case "update":
-			if updates, ok := args["updates"].([]any); ok {
-				return fmt.Sprintf("update %d tasks", len(updates))
-			}
-			return "update"
+			updates, _ := args["updates"].([]any)
+			desc = fmt.Sprintf("update %d tasks", len(updates))
+			detail = renderTaskUpdate(updates)
 		default:
-			return action
+			desc = action
 		}
+		return
 
 	case "web_search":
-		return fmt.Sprintf("%q", str("query"))
+		desc = fmt.Sprintf("%q", str("query"))
+		return
 
 	case "web_fetch":
 		url := str("url")
-		if len(url) > 60 {
-			url = url[:60] + "…"
-		}
-		return url
+		desc = trunc(url, 80)
+		return
 
 	case "spawn_agent":
-		return truncate(str("task"), 80)
+		task := str("task")
+		firstLine := task
+		if i := strings.IndexByte(task, '\n'); i >= 0 {
+			firstLine = task[:i]
+		}
+		desc = trunc(firstLine, 80)
+		if strings.Contains(task, "\n") || len(task) > 80 {
+			detail = task
+		}
+		return
 
 	case "send_input":
-		return str("agent_id")
+		desc = str("agent_id")
+		return
 
 	case "wait", "close_agent":
-		return str("agent_id")
+		desc = str("agent_id")
+		return
 
 	case "use_skill":
-		return str("skill_name")
+		desc = str("skill_name")
+		return
 
 	case "communicate":
 		action := str("action")
-		msg := truncate(str("message"), 60)
+		msg := trunc(str("message"), 60)
 		if msg != "" {
-			return fmt.Sprintf("%s: %s", action, msg)
+			desc = fmt.Sprintf("%s: %s", action, msg)
+		} else {
+			desc = action
 		}
-		return action
+		return
 
 	default:
-		return fallbackSummary(args)
+		desc = fallbackSummary(args)
+		return
 	}
 }
 
@@ -178,4 +211,109 @@ func fallbackSummary(args map[string]any) string {
 		parts = append(parts, s)
 	}
 	return strings.Join(parts, "  ")
+}
+
+// unifiedDiff generates a unified diff of old→new and syntax-highlights it.
+func unifiedDiff(filename, old, new_ string) string {
+	oldLines := strings.Split(old, "\n")
+	newLines := strings.Split(new_, "\n")
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("--- %s\n+++ %s\n@@ -%d,%d +%d,%d @@\n",
+		filename, filename, 1, len(oldLines), 1, len(newLines)))
+	for _, l := range oldLines {
+		b.WriteString("-" + l + "\n")
+	}
+	for _, l := range newLines {
+		b.WriteString("+" + l + "\n")
+	}
+	raw := b.String()
+
+	return highlightDiff(raw)
+}
+
+// highlightDiff applies chroma syntax highlighting to a unified diff string.
+func highlightDiff(diff string) string {
+	lexer := lexers.Get("diff")
+	if lexer == nil {
+		return diff
+	}
+	lexer = chroma.Coalesce(lexer)
+
+	style := styles.Get("monokai")
+	if style == nil {
+		style = styles.Fallback
+	}
+
+	formatter := formatters.Get("terminal256")
+	if formatter == nil {
+		return diff
+	}
+
+	it, err := lexer.Tokenise(nil, diff)
+	if err != nil {
+		return diff
+	}
+
+	var buf bytes.Buffer
+	if err := formatter.Format(&buf, style, it); err != nil {
+		return diff
+	}
+	return buf.String()
+}
+
+// renderTaskAppend renders a list of tasks to be appended.
+func renderTaskAppend(tasks []any) string {
+	if len(tasks) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, t := range tasks {
+		m, _ := t.(map[string]any)
+		if m == nil {
+			continue
+		}
+		desc, _ := m["description"].(string)
+		b.WriteString(fmt.Sprintf("  %d. %s\n", i+1, desc))
+		if prompt, _ := m["prompt"].(string); prompt != "" {
+			// Show first line of prompt indented.
+			first := prompt
+			if idx := strings.IndexByte(prompt, '\n'); idx >= 0 {
+				first = prompt[:idx] + "…"
+			}
+			if len(first) > 72 {
+				first = first[:72] + "…"
+			}
+			b.WriteString(fmt.Sprintf("     %s\n", first))
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// renderTaskUpdate renders a list of task status updates.
+func renderTaskUpdate(updates []any) string {
+	if len(updates) == 0 {
+		return ""
+	}
+	statusIcon := map[string]string{
+		"done":        "✓",
+		"in_progress": "→",
+		"undone":      "○",
+		"cancelled":   "✕",
+	}
+	var b strings.Builder
+	for _, u := range updates {
+		m, _ := u.(map[string]any)
+		if m == nil {
+			continue
+		}
+		id := int(m["id"].(float64))
+		status, _ := m["status"].(string)
+		icon := statusIcon[status]
+		if icon == "" {
+			icon = "·"
+		}
+		b.WriteString(fmt.Sprintf("  %s task %d → %s\n", icon, id, status))
+	}
+	return strings.TrimRight(b.String(), "\n")
 }

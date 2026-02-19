@@ -47,7 +47,8 @@ const (
 
 type toolCallInfo struct {
 	Name        string
-	Description string
+	Description string // compact one-liner header
+	Detail      string // rich multi-line body shown when expanded
 	Output      string
 	Error       string
 	Duration    time.Duration
@@ -137,12 +138,21 @@ func renderToolCall(tc toolCallInfo, width int) string {
 
 	header := strings.Join(headerLines, "\n")
 
-	if !tc.Expanded || tc.Output == "" {
+	if !tc.Expanded || (tc.Detail == "" && tc.Output == "") {
 		return toolCollapsedStyle.Render(header)
 	}
 
-	output := toolExpandedStyle.Width(width - 4).Render(tc.Output)
-	return header + "\n" + output
+	var body strings.Builder
+	if tc.Detail != "" {
+		body.WriteString(toolExpandedStyle.Width(width - 4).Render(tc.Detail))
+	}
+	if tc.Output != "" {
+		if body.Len() > 0 {
+			body.WriteString("\n")
+		}
+		body.WriteString(toolExpandedStyle.Width(width - 4).Render(tc.Output))
+	}
+	return header + "\n" + body.String()
 }
 
 // wrapText splits text into lines. The first line is at most firstBudget runes

@@ -5,39 +5,46 @@ import (
 	"testing"
 )
 
-func TestSummarizeArgs_Shell(t *testing.T) {
-	got := summarizeArgs("shell", `{"command":"ls -la /tmp","description":"list temp files"}`)
-	if got != "list temp files" {
-		t.Errorf("got %q", got)
-	}
-	got = summarizeArgs("shell", `{"command":"go build ./..."}`)
-	if got != "go build ./..." {
-		t.Errorf("got %q", got)
+func TestSummarizeTool_Shell_WithDescription(t *testing.T) {
+	desc, _ := summarizeTool("shell", `{"command":"ls -la /tmp","description":"list temp files"}`)
+	if desc != "list temp files" {
+		t.Errorf("got %q", desc)
 	}
 }
 
-func TestSummarizeArgs_ShellTruncates(t *testing.T) {
+func TestSummarizeTool_Shell_MultiLine(t *testing.T) {
+	cmd := "line one\nline two\nline three"
+	desc, detail := summarizeTool("shell", `{"command":"`+strings.ReplaceAll(cmd, "\n", `\n`)+`"}`)
+	if desc != "line one" {
+		t.Errorf("desc: got %q, want first line", desc)
+	}
+	if !strings.Contains(detail, "line two") {
+		t.Errorf("detail should contain full command, got %q", detail)
+	}
+}
+
+func TestSummarizeTool_Shell_Short(t *testing.T) {
+	desc, detail := summarizeTool("shell", `{"command":"go build ./..."}`)
+	if desc != "go build ./..." {
+		t.Errorf("got %q", desc)
+	}
+	if detail != "" {
+		t.Errorf("short single-line should have no detail, got %q", detail)
+	}
+}
+
+func TestSummarizeTool_Shell_LongSingleLine(t *testing.T) {
 	long := strings.Repeat("x", 100)
-	got := summarizeArgs("shell", `{"command":"`+long+`"}`)
-	if len(got) > 83 { // 80 chars + "…"
-		t.Errorf("not truncated: len=%d", len(got))
+	desc, detail := summarizeTool("shell", `{"command":"`+long+`"}`)
+	if !strings.HasSuffix(desc, "…") {
+		t.Errorf("long desc should be truncated: %q", desc)
 	}
-	if !strings.HasSuffix(got, "…") {
-		t.Errorf("missing ellipsis: %q", got)
-	}
-}
-
-func TestSummarizeArgs_ShellMultiline(t *testing.T) {
-	got := summarizeArgs("shell", `{"command":"line one\nline two"}`)
-	if strings.Contains(got, "\n") {
-		t.Errorf("should not contain newline: %q", got)
-	}
-	if !strings.Contains(got, "line one") {
-		t.Errorf("should contain first line: %q", got)
+	if !strings.Contains(detail, long) {
+		t.Errorf("detail should contain full command")
 	}
 }
 
-func TestSummarizeArgs_ReadFile(t *testing.T) {
+func TestSummarizeTool_ReadFile(t *testing.T) {
 	tests := []struct {
 		json string
 		want string
@@ -48,108 +55,137 @@ func TestSummarizeArgs_ReadFile(t *testing.T) {
 		{`{"file_path":"/foo/bar/baz.go","offset":100,"limit":50}`, "…/bar/baz.go :100+50"},
 	}
 	for _, tt := range tests {
-		got := summarizeArgs("read_file", tt.json)
-		if got != tt.want {
-			t.Errorf("read_file %s → %q, want %q", tt.json, got, tt.want)
+		desc, _ := summarizeTool("read_file", tt.json)
+		if desc != tt.want {
+			t.Errorf("read_file %s → %q, want %q", tt.json, desc, tt.want)
 		}
 	}
 }
 
-func TestSummarizeArgs_WriteFile(t *testing.T) {
-	got := summarizeArgs("write_file", `{"file_path":"/a/b/c.go","content":"line1\nline2\nline3"}`)
-	if !strings.Contains(got, "c.go") {
-		t.Errorf("missing filename: %q", got)
+func TestSummarizeTool_WriteFile(t *testing.T) {
+	desc, _ := summarizeTool("write_file", `{"file_path":"/a/b/c.go","content":"line1\nline2\nline3"}`)
+	if !strings.Contains(desc, "c.go") {
+		t.Errorf("missing filename: %q", desc)
 	}
-	if !strings.Contains(got, "3 lines") {
-		t.Errorf("missing line count: %q", got)
-	}
-}
-
-func TestSummarizeArgs_EditFile(t *testing.T) {
-	got := summarizeArgs("edit_file", `{"file_path":"/a/b/c.go","old_string":"func foo()","new_string":"func bar()"}`)
-	if !strings.Contains(got, "c.go") {
-		t.Errorf("missing filename: %q", got)
-	}
-	if !strings.Contains(got, "func foo()") {
-		t.Errorf("missing old_string preview: %q", got)
+	if !strings.Contains(desc, "3 lines") {
+		t.Errorf("missing line count: %q", desc)
 	}
 }
 
-func TestSummarizeArgs_Glob(t *testing.T) {
-	got := summarizeArgs("glob", `{"pattern":"**/*.go","path":"/some/dir"}`)
-	if !strings.Contains(got, "**/*.go") {
-		t.Errorf("missing pattern: %q", got)
+func TestSummarizeTool_EditFile_DescAndDiff(t *testing.T) {
+	desc, detail := summarizeTool("edit_file", `{"file_path":"/a/b/c.go","old_string":"func foo()","new_string":"func bar()"}`)
+	if !strings.Contains(desc, "c.go") {
+		t.Errorf("desc missing filename: %q", desc)
 	}
-	if !strings.Contains(got, "dir") {
-		t.Errorf("missing path: %q", got)
+	// detail should be a unified diff
+	if !strings.Contains(detail, "-func foo()") {
+		t.Errorf("detail missing removed line: %q", detail)
 	}
-}
-
-func TestSummarizeArgs_Grep(t *testing.T) {
-	got := summarizeArgs("grep", `{"pattern":"func.*Error","path":"/src"}`)
-	if !strings.Contains(got, "func.*Error") {
-		t.Errorf("missing pattern: %q", got)
+	if !strings.Contains(detail, "+func bar()") {
+		t.Errorf("detail missing added line: %q", detail)
 	}
 }
 
-func TestSummarizeArgs_TaskList(t *testing.T) {
-	tests := []struct {
-		json string
-		want string
-	}{
-		{`{"action":"view"}`, "view"},
-		{`{"action":"append","tasks":[{},{}]}`, "append 2 tasks"},
-		{`{"action":"update","updates":[{},{},{}]}`, "update 3 tasks"},
+func TestSummarizeTool_Glob(t *testing.T) {
+	desc, _ := summarizeTool("glob", `{"pattern":"**/*.go","path":"/some/dir"}`)
+	if !strings.Contains(desc, "**/*.go") {
+		t.Errorf("missing pattern: %q", desc)
 	}
-	for _, tt := range tests {
-		got := summarizeArgs("task_list", tt.json)
-		if got != tt.want {
-			t.Errorf("task_list %s → %q, want %q", tt.json, got, tt.want)
-		}
+	if !strings.Contains(desc, "dir") {
+		t.Errorf("missing path: %q", desc)
 	}
 }
 
-func TestSummarizeArgs_WebSearch(t *testing.T) {
-	got := summarizeArgs("web_search", `{"query":"golang context timeout"}`)
-	if !strings.Contains(got, "golang context timeout") {
-		t.Errorf("got %q", got)
+func TestSummarizeTool_Grep(t *testing.T) {
+	desc, _ := summarizeTool("grep", `{"pattern":"func.*Error","path":"/src"}`)
+	if !strings.Contains(desc, "func.*Error") {
+		t.Errorf("missing pattern: %q", desc)
 	}
 }
 
-func TestSummarizeArgs_SpawnAgent(t *testing.T) {
-	got := summarizeArgs("spawn_agent", `{"task":"Explore the codebase and find all usages of the Foo interface"}`)
-	if !strings.Contains(got, "Explore") {
-		t.Errorf("got %q", got)
+func TestSummarizeTool_TaskList_View(t *testing.T) {
+	desc, detail := summarizeTool("task_list", `{"action":"view"}`)
+	if desc != "view" {
+		t.Errorf("got %q", desc)
+	}
+	if detail != "" {
+		t.Errorf("view should have no detail: %q", detail)
 	}
 }
 
-func TestSummarizeArgs_Communicate(t *testing.T) {
-	got := summarizeArgs("communicate", `{"action":"status","message":"Building..."}`)
-	if !strings.Contains(got, "status") {
-		t.Errorf("got %q", got)
+func TestSummarizeTool_TaskList_Append(t *testing.T) {
+	desc, detail := summarizeTool("task_list", `{"action":"append","tasks":[{"description":"do thing A","prompt":"do A fully"},{"description":"do thing B","prompt":"do B fully"}]}`)
+	if desc != "append 2 tasks" {
+		t.Errorf("desc: got %q", desc)
 	}
-	if !strings.Contains(got, "Building") {
-		t.Errorf("got %q", got)
+	if !strings.Contains(detail, "do thing A") {
+		t.Errorf("detail missing task A: %q", detail)
 	}
-}
-
-func TestSummarizeArgs_Fallback(t *testing.T) {
-	got := summarizeArgs("unknown_tool", `{"foo":"bar","num":42}`)
-	if !strings.Contains(got, "bar") && !strings.Contains(got, "42") {
-		t.Errorf("fallback should show short values: %q", got)
+	if !strings.Contains(detail, "do thing B") {
+		t.Errorf("detail missing task B: %q", detail)
 	}
 }
 
-func TestSummarizeArgs_Empty(t *testing.T) {
-	got := summarizeArgs("shell", "")
-	if got != "" {
-		t.Errorf("empty args should return empty: %q", got)
+func TestSummarizeTool_TaskList_Update(t *testing.T) {
+	desc, detail := summarizeTool("task_list", `{"action":"update","updates":[{"id":1,"status":"done"},{"id":2,"status":"in_progress"}]}`)
+	if desc != "update 2 tasks" {
+		t.Errorf("desc: got %q", desc)
+	}
+	if !strings.Contains(detail, "done") {
+		t.Errorf("detail missing status: %q", detail)
+	}
+	if !strings.Contains(detail, "in_progress") {
+		t.Errorf("detail missing status: %q", detail)
+	}
+	if !strings.Contains(detail, "✓") {
+		t.Errorf("detail missing done icon: %q", detail)
+	}
+	if !strings.Contains(detail, "→") {
+		t.Errorf("detail missing in_progress icon: %q", detail)
 	}
 }
 
-func TestSummarizeArgs_InvalidJSON(t *testing.T) {
-	got := summarizeArgs("shell", "not json")
-	if got != "not json" {
-		t.Errorf("invalid JSON should return raw: %q", got)
+func TestSummarizeTool_WebSearch(t *testing.T) {
+	desc, _ := summarizeTool("web_search", `{"query":"golang context timeout"}`)
+	if !strings.Contains(desc, "golang context timeout") {
+		t.Errorf("got %q", desc)
+	}
+}
+
+func TestSummarizeTool_SpawnAgent(t *testing.T) {
+	desc, _ := summarizeTool("spawn_agent", `{"task":"Explore the codebase and find all usages of the Foo interface"}`)
+	if !strings.Contains(desc, "Explore") {
+		t.Errorf("got %q", desc)
+	}
+}
+
+func TestSummarizeTool_Communicate(t *testing.T) {
+	desc, _ := summarizeTool("communicate", `{"action":"status","message":"Building..."}`)
+	if !strings.Contains(desc, "status") {
+		t.Errorf("got %q", desc)
+	}
+	if !strings.Contains(desc, "Building") {
+		t.Errorf("got %q", desc)
+	}
+}
+
+func TestSummarizeTool_Fallback(t *testing.T) {
+	desc, _ := summarizeTool("unknown_tool", `{"foo":"bar","num":42}`)
+	if !strings.Contains(desc, "bar") && !strings.Contains(desc, "42") {
+		t.Errorf("fallback should show short values: %q", desc)
+	}
+}
+
+func TestSummarizeTool_Empty(t *testing.T) {
+	desc, detail := summarizeTool("shell", "")
+	if desc != "" || detail != "" {
+		t.Errorf("empty args should return empty: %q %q", desc, detail)
+	}
+}
+
+func TestSummarizeTool_InvalidJSON(t *testing.T) {
+	desc, _ := summarizeTool("shell", "not json")
+	if desc != "not json" {
+		t.Errorf("invalid JSON should return raw: %q", desc)
 	}
 }

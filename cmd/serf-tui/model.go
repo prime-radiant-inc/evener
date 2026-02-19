@@ -542,12 +542,14 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 			ArgumentsJSON string `json:"arguments_json"`
 		}
 		json.Unmarshal([]byte(ev.Data), &d)
+		toolDesc, toolDetail := summarizeTool(d.ToolName, d.ArgumentsJSON)
 		idx := len(m.messages)
 		m.messages = append(m.messages, chatMessage{
 			Kind: msgTool,
 			Tool: &toolCallInfo{
 				Name:        d.ToolName,
-				Description: summarizeArgs(d.ToolName, d.ArgumentsJSON),
+				Description: toolDesc,
+				Detail:      toolDetail,
 				Hidden:      d.ToolName == "communicate",
 			},
 		})
