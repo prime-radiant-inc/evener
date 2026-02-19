@@ -268,15 +268,15 @@ const anthropicBeta1M = "context-1m-2025-08-07"
 // anthropicProviderOpts builds a fresh providerOpts map for the Anthropic
 // profile. When has1M is true the 1M-context beta header is included.
 func anthropicProviderOpts(has1M bool) map[string]any {
-	beta := "prompt-caching-2024-07-31"
+	opts := map[string]any{
+		// Prevent truncated tool-call JSON on large code/test edits.
+		"max_tokens": 12288,
+	}
 	if has1M {
-		beta += "," + anthropicBeta1M
+		opts["beta_headers"] = anthropicBeta1M
 	}
 	return map[string]any{
-		"anthropic": map[string]any{
-			"beta_headers": beta,
-			"max_tokens":   12288,
-		},
+		"anthropic": opts,
 	}
 }
 

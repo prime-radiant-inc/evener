@@ -474,22 +474,16 @@ func TestProviderProfile_ProviderOptions(t *testing.T) {
 	}
 }
 
-func TestAnthropicProfile_ProviderOptions_HasBetaHeaders(t *testing.T) {
+func TestAnthropicProfile_ProviderOptions_NoBetaHeadersByDefault(t *testing.T) {
 	p := NewAnthropicProfile("test-model")
 	opts := p.ProviderOptions()
 	anth, ok := opts["anthropic"].(map[string]any)
 	if !ok {
 		t.Fatal("missing anthropic key in provider options")
 	}
-	bh, ok := anth["beta_headers"].(string)
-	if !ok || bh == "" {
-		t.Fatal("missing or empty beta_headers in anthropic provider options")
-	}
-	if strings.Contains(bh, "extended-thinking-2025-04-11") {
-		t.Fatalf("deprecated beta header must not be present: %q", bh)
-	}
-	if !strings.Contains(bh, "prompt-caching-2024-07-31") {
-		t.Fatalf("expected prompt-caching beta header, got %q", bh)
+	// Default (non-1M) profile should not have beta_headers — caching is GA.
+	if bh, ok := anth["beta_headers"]; ok {
+		t.Fatalf("default profile should not have beta_headers, got %v", bh)
 	}
 }
 
@@ -838,9 +832,9 @@ func TestAnthropicProfile_1M_BetaHeader(t *testing.T) {
 	if !strings.Contains(bh, "context-1m-2025-08-07") {
 		t.Fatalf("expected 1M beta header, got %q", bh)
 	}
-	// Should still have prompt-caching.
-	if !strings.Contains(bh, "prompt-caching-2024-07-31") {
-		t.Fatalf("expected prompt-caching header, got %q", bh)
+	// Should NOT have prompt-caching — caching is GA.
+	if strings.Contains(bh, "prompt-caching-2024-07-31") {
+		t.Fatalf("prompt-caching beta header should not be present (GA), got %q", bh)
 	}
 }
 

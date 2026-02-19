@@ -67,12 +67,19 @@ func TestAdapter_Complete_MapsToMessagesAPI_AndSetsBetaHeaders(t *testing.T) {
 	if strings.TrimSpace(resp.Text()) != "Hello" {
 		t.Fatalf("resp text: %q", resp.Text())
 	}
+	// Beta header should pass through from providerOptions (no auto-injection of prompt-caching).
 	if gotBeta != "prompt-caching-2024-07-31" {
-		t.Fatalf("anthropic-beta header: %q", gotBeta)
+		t.Fatalf("anthropic-beta header: got %q want pass-through of provider option", gotBeta)
 	}
 	if gotBody == nil {
 		t.Fatalf("server did not capture request body")
 	}
+
+	// Top-level cache_control for automatic caching.
+	if cc, ok := gotBody["cache_control"].(map[string]any); !ok || cc["type"] != "ephemeral" {
+		t.Fatalf("expected top-level cache_control; got %#v", gotBody["cache_control"])
+	}
+
 	sysBlocks, ok := gotBody["system"].([]any)
 	if !ok || len(sysBlocks) == 0 {
 		t.Fatalf("system blocks: %#v", gotBody["system"])
@@ -88,15 +95,11 @@ func TestAdapter_Complete_MapsToMessagesAPI_AndSetsBetaHeaders(t *testing.T) {
 		t.Fatalf("messages: %#v", gotBody["messages"])
 	}
 
-	// Conversation prefix breakpoint should be set on the message immediately before the last user message.
-	seenPrefixCC := false
+	// No manual conversation prefix breakpoints — automatic caching handles this.
 	msgsAny, _ := gotBody["messages"].([]any)
 	for _, mAny := range msgsAny {
 		m, ok := mAny.(map[string]any)
 		if !ok {
-			continue
-		}
-		if m["role"] != "assistant" {
 			continue
 		}
 		blocks, _ := m["content"].([]any)
@@ -105,13 +108,10 @@ func TestAdapter_Complete_MapsToMessagesAPI_AndSetsBetaHeaders(t *testing.T) {
 			if !ok {
 				continue
 			}
-			if cc, ok := bm["cache_control"].(map[string]any); ok && cc["type"] == "ephemeral" {
-				seenPrefixCC = true
+			if _, ok := bm["cache_control"]; ok {
+				t.Fatalf("unexpected manual cache_control breakpoint in messages; automatic caching should handle this: %#v", bm)
 			}
 		}
-	}
-	if !seenPrefixCC {
-		t.Fatalf("expected cache_control breakpoint on conversation prefix; messages=%#v", gotBody["messages"])
 	}
 }
 
@@ -843,188 +843,103 @@ func TestAdapter_Complete_RejectsAudioAndDocumentParts(t *testing.T) {
 	}
 }
 
-func TestAdapter_PromptCaching_AutoCacheDefaultAndDisable(t *testing.T) {
-	t.Run("default_enabled_injects_cache_control_and_beta", func(t *testing.T) {
-		var gotBody map[string]any
-		gotBeta := ""
+func TestAdapter_PromptCaching_AutomaticCaching(t *testing.T) {
+	var gotBody map[string]any
+	gotBeta := ""
 
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			gotBeta = r.Header.Get("anthropic-beta")
-			b, _ := io.ReadAll(r.Body)
-			_ = r.Body.Close()
-			_ = json.Unmarshal(b, &gotBody)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBeta = r.Header.Get("anthropic-beta")
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		_ = json.Unmarshal(b, &gotBody)
 
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
   "id": "msg_1",
   "model": "claude-test",
   "content": [{"type":"text","text":"ok"}],
   "stop_reason": "end_turn",
   "usage": {"input_tokens": 1, "output_tokens": 1}
 }`))
-		}))
-		t.Cleanup(srv.Close)
+	}))
+	t.Cleanup(srv.Close)
 
-		a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 
-		_, err := a.Complete(ctx, llm.Request{
-			Model: "claude-test",
-			Messages: []llm.Message{
-				llm.System("sys"),
-				llm.User("u1"),
-				llm.Assistant("a1"),
-				llm.User("u2"),
+	_, err := a.Complete(ctx, llm.Request{
+		Model: "claude-test",
+		Messages: []llm.Message{
+			llm.System("sys"),
+			llm.User("u1"),
+			llm.Assistant("a1"),
+			llm.User("u2"),
+		},
+		Tools: []llm.ToolDefinition{
+			{
+				Name:        "t1",
+				Description: "d",
+				Parameters:  map[string]any{"type": "object"},
 			},
-			Tools: []llm.ToolDefinition{
-				{
-					Name:        "t1",
-					Description: "d",
-					Parameters:  map[string]any{"type": "object"},
-				},
-			},
-		})
-		if err != nil {
-			t.Fatalf("Complete: %v", err)
-		}
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
 
-		if gotBeta != "prompt-caching-2024-07-31" {
-			t.Fatalf("anthropic-beta: got %q want %q", gotBeta, "prompt-caching-2024-07-31")
-		}
+	// No prompt-caching beta header (caching is GA).
+	if gotBeta != "" {
+		t.Fatalf("anthropic-beta: got %q, want empty (caching is GA, no beta header needed)", gotBeta)
+	}
 
-		sysBlocks, ok := gotBody["system"].([]any)
-		if !ok || len(sysBlocks) == 0 {
-			t.Fatalf("system blocks: %#v", gotBody["system"])
-		}
-		sb0, _ := sysBlocks[0].(map[string]any)
-		if cc, _ := sb0["cache_control"].(map[string]any); cc["type"] != "ephemeral" {
-			t.Fatalf("expected cache_control on system block; got %#v", sb0["cache_control"])
-		}
+	// Top-level cache_control for automatic caching.
+	cc, ok := gotBody["cache_control"].(map[string]any)
+	if !ok || cc["type"] != "ephemeral" {
+		t.Fatalf("expected top-level cache_control; got %#v", gotBody["cache_control"])
+	}
 
-		toolsAny, ok := gotBody["tools"].([]any)
-		if !ok || len(toolsAny) != 1 {
-			t.Fatalf("tools: %#v", gotBody["tools"])
-		}
-		t0, _ := toolsAny[0].(map[string]any)
-		if cc, _ := t0["cache_control"].(map[string]any); cc["type"] != "ephemeral" {
-			t.Fatalf("expected cache_control on tool def; got %#v", t0["cache_control"])
-		}
+	// System block has explicit cache_control breakpoint.
+	sysBlocks, ok := gotBody["system"].([]any)
+	if !ok || len(sysBlocks) == 0 {
+		t.Fatalf("system blocks: %#v", gotBody["system"])
+	}
+	sb0, _ := sysBlocks[0].(map[string]any)
+	if scc, _ := sb0["cache_control"].(map[string]any); scc["type"] != "ephemeral" {
+		t.Fatalf("expected cache_control on system block; got %#v", sb0["cache_control"])
+	}
 
-		// Breakpoint on conversation prefix (message before last user message: assistant "a1").
-		msgs, ok := gotBody["messages"].([]any)
-		if !ok || len(msgs) == 0 {
-			t.Fatalf("messages: %#v", gotBody["messages"])
+	// Last tool has explicit cache_control breakpoint.
+	toolsAny, ok := gotBody["tools"].([]any)
+	if !ok || len(toolsAny) != 1 {
+		t.Fatalf("tools: %#v", gotBody["tools"])
+	}
+	t0, _ := toolsAny[0].(map[string]any)
+	if tcc, _ := t0["cache_control"].(map[string]any); tcc["type"] != "ephemeral" {
+		t.Fatalf("expected cache_control on tool def; got %#v", t0["cache_control"])
+	}
+
+	// No manual conversation prefix breakpoints in messages.
+	msgs, ok := gotBody["messages"].([]any)
+	if !ok || len(msgs) == 0 {
+		t.Fatalf("messages: %#v", gotBody["messages"])
+	}
+	for _, mAny := range msgs {
+		m, ok := mAny.(map[string]any)
+		if !ok {
+			continue
 		}
-		seenPrefixCC := false
-		for _, mAny := range msgs {
-			m, ok := mAny.(map[string]any)
+		blocks, _ := m["content"].([]any)
+		for _, bAny := range blocks {
+			bm, ok := bAny.(map[string]any)
 			if !ok {
 				continue
 			}
-			if m["role"] != "assistant" {
-				continue
-			}
-			blocks, _ := m["content"].([]any)
-			for _, bAny := range blocks {
-				bm, ok := bAny.(map[string]any)
-				if !ok {
-					continue
-				}
-				if cc, ok := bm["cache_control"].(map[string]any); ok && cc["type"] == "ephemeral" {
-					seenPrefixCC = true
-				}
+			if _, ok := bm["cache_control"]; ok {
+				t.Fatalf("unexpected manual cache_control in messages: %#v", bm)
 			}
 		}
-		if !seenPrefixCC {
-			t.Fatalf("expected cache_control breakpoint on conversation prefix; messages=%#v", gotBody["messages"])
-		}
-	})
-
-	t.Run("disabled_does_not_inject_cache_control_or_beta", func(t *testing.T) {
-		var gotBody map[string]any
-		gotBeta := ""
-
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			gotBeta = r.Header.Get("anthropic-beta")
-			b, _ := io.ReadAll(r.Body)
-			_ = r.Body.Close()
-			_ = json.Unmarshal(b, &gotBody)
-
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{
-  "id": "msg_1",
-  "model": "claude-test",
-  "content": [{"type":"text","text":"ok"}],
-  "stop_reason": "end_turn",
-  "usage": {"input_tokens": 1, "output_tokens": 1}
-}`))
-		}))
-		t.Cleanup(srv.Close)
-
-		a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-
-		_, err := a.Complete(ctx, llm.Request{
-			Model: "claude-test",
-			Messages: []llm.Message{
-				llm.System("sys"),
-				llm.User("u1"),
-				llm.Assistant("a1"),
-				llm.User("u2"),
-			},
-			Tools: []llm.ToolDefinition{
-				{
-					Name:        "t1",
-					Description: "d",
-					Parameters:  map[string]any{"type": "object"},
-				},
-			},
-			ProviderOptions: map[string]any{
-				"anthropic": map[string]any{
-					"auto_cache":   false,
-					"beta_headers": "x-test-beta",
-				},
-			},
-		})
-		if err != nil {
-			t.Fatalf("Complete: %v", err)
-		}
-
-		if gotBeta != "x-test-beta" {
-			t.Fatalf("anthropic-beta: got %q want %q", gotBeta, "x-test-beta")
-		}
-
-		if _, ok := gotBody["system"].(string); !ok {
-			t.Fatalf("expected system string when auto_cache=false; got %#v", gotBody["system"])
-		}
-
-		if toolsAny, ok := gotBody["tools"].([]any); ok && len(toolsAny) > 0 {
-			t0, _ := toolsAny[0].(map[string]any)
-			if _, ok := t0["cache_control"]; ok {
-				t.Fatalf("unexpected cache_control on tool def when auto_cache=false: %#v", t0["cache_control"])
-			}
-		}
-
-		msgs, _ := gotBody["messages"].([]any)
-		for _, mAny := range msgs {
-			m, ok := mAny.(map[string]any)
-			if !ok {
-				continue
-			}
-			blocks, _ := m["content"].([]any)
-			for _, bAny := range blocks {
-				bm, ok := bAny.(map[string]any)
-				if !ok {
-					continue
-				}
-				if _, ok := bm["cache_control"]; ok {
-					t.Fatalf("unexpected cache_control in messages when auto_cache=false: %#v", bm["cache_control"])
-				}
-			}
-		}
-	})
+	}
 }
 
 func TestAdapter_Stream_ContextDeadline_EmitsRequestTimeoutError(t *testing.T) {
@@ -2848,7 +2763,7 @@ func TestAdapter_ListModels_Pagination(t *testing.T) {
 
 func TestBuildRequestBody_Strips1MSuffix(t *testing.T) {
 	a := &Adapter{APIKey: "k", BaseURL: "http://localhost"}
-	body, _, err := a.buildRequestBody(llm.Request{
+	body, err := a.buildRequestBody(llm.Request{
 		Model:    "claude-opus-4-6[1m]",
 		Messages: []llm.Message{llm.User("hi")},
 	})
@@ -2863,7 +2778,7 @@ func TestBuildRequestBody_Strips1MSuffix(t *testing.T) {
 
 func TestBuildRequestBody_NoSuffix_Unchanged(t *testing.T) {
 	a := &Adapter{APIKey: "k", BaseURL: "http://localhost"}
-	body, _, err := a.buildRequestBody(llm.Request{
+	body, err := a.buildRequestBody(llm.Request{
 		Model:    "claude-opus-4-6",
 		Messages: []llm.Message{llm.User("hi")},
 	})

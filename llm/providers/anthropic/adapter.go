@@ -144,18 +144,16 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 }
 
 // buildRequestBody constructs the Anthropic Messages API request body from a
-// unified llm.Request. It returns the body map and the autoCache flag (needed
-// for header selection).
-func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, bool, error) {
+// unified llm.Request.
+func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 	system, messages, err := toAnthropicMessages(req.Messages)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	system, err = applyAnthropicResponseFormat(system, req.ResponseFormat)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
-	autoCache := anthropicAutoCacheEnabled(req.ProviderOptions)
 
 	maxTokens := 4096
 	if req.MaxTokens != nil && *req.MaxTokens > 0 {
@@ -166,20 +164,17 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, bool, error
 	apiModel := strings.TrimSuffix(req.Model, "[1m]")
 
 	body := map[string]any{
-		"model":      apiModel,
-		"max_tokens": maxTokens,
-		"messages":   messages,
+		"model":         apiModel,
+		"max_tokens":    maxTokens,
+		"messages":      messages,
+		"cache_control": map[string]any{"type": "ephemeral"},
 	}
 	if strings.TrimSpace(system) != "" {
-		if autoCache {
-			body["system"] = []map[string]any{{
-				"type":          "text",
-				"text":          system,
-				"cache_control": map[string]any{"type": "ephemeral"},
-			}}
-		} else {
-			body["system"] = system
-		}
+		body["system"] = []map[string]any{{
+			"type":          "text",
+			"text":          system,
+			"cache_control": map[string]any{"type": "ephemeral"},
+		}}
 	}
 	if req.Temperature != nil {
 		body["temperature"] = *req.Temperature
@@ -206,13 +201,13 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, bool, error
 			}
 		case "named":
 			if strings.TrimSpace(req.ToolChoice.Name) == "" {
-				return nil, false, &llm.ConfigurationError{Message: "tool_choice mode=named requires name"}
+				return nil, &llm.ConfigurationError{Message: "tool_choice mode=named requires name"}
 			}
 			if includeTools {
 				body["tool_choice"] = map[string]any{"type": "tool", "name": req.ToolChoice.Name}
 			}
 		default:
-			return nil, false, llm.NewUnsupportedToolChoiceError("anthropic", req.ToolChoice.Mode)
+			return nil, llm.NewUnsupportedToolChoiceError("anthropic", req.ToolChoice.Mode)
 		}
 	}
 	if includeTools || req.WebSearch {
@@ -226,7 +221,7 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, bool, error
 				"name": "web_search",
 			})
 		}
-		if autoCache && len(tools) > 0 {
+		if len(tools) > 0 {
 			tools[len(tools)-1]["cache_control"] = map[string]any{"type": "ephemeral"}
 		}
 		body["tools"] = tools
@@ -248,31 +243,24 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, bool, error
 	if req.ProviderOptions != nil {
 		if ov, ok := req.ProviderOptions["anthropic"].(map[string]any); ok {
 			for k, v := range ov {
-				if k == "beta_headers" || k == "auto_cache" {
+				if k == "beta_headers" {
 					continue
 				}
 				body[k] = v
 			}
 		}
 	}
-	if autoCache {
-		addCacheControlBreakpoint(messages)
-	}
-	return body, autoCache, nil
+	return body, nil
 }
 
-func (a *Adapter) setAnthropicHeaders(httpReq *http.Request, providerOptions map[string]any, autoCache bool) {
+func (a *Adapter) setAnthropicHeaders(httpReq *http.Request, providerOptions map[string]any) {
 	for k, v := range a.DefaultHeaders {
 		httpReq.Header.Set(k, v)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-api-key", a.APIKey)
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
-	beta := betaHeaderFromProviderOptions(providerOptions)
-	if autoCache {
-		beta = appendBetaHeader(beta, "prompt-caching-2024-07-31")
-	}
-	if strings.TrimSpace(beta) != "" {
+	if beta := betaHeaderFromProviderOptions(providerOptions); strings.TrimSpace(beta) != "" {
 		httpReq.Header.Set("anthropic-beta", beta)
 	}
 }
@@ -282,7 +270,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		a.Client = &http.Client{Timeout: 0}
 	}
 
-	body, autoCache, err := a.buildRequestBody(req)
+	body, err := a.buildRequestBody(req)
 	if err != nil {
 		return llm.Response{}, err
 	}
@@ -299,7 +287,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	if err != nil {
 		return llm.Response{}, err
 	}
-	a.setAnthropicHeaders(httpReq, req.ProviderOptions, autoCache)
+	a.setAnthropicHeaders(httpReq, req.ProviderOptions)
 
 	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
@@ -330,7 +318,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	sctx, timeoutCancel := llm.ApplyAdapterTimeout(sctx, req.AdapterTimeout, true)
 	defer timeoutCancel()
 
-	body, autoCache, err := a.buildRequestBody(req)
+	body, err := a.buildRequestBody(req)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -347,7 +335,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		cancel()
 		return nil, err
 	}
-	a.setAnthropicHeaders(httpReq, req.ProviderOptions, autoCache)
+	a.setAnthropicHeaders(httpReq, req.ProviderOptions)
 
 	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
@@ -1142,113 +1130,6 @@ func fromAnthropicResponse(raw map[string]any, requestedModel string) llm.Respon
 	}
 
 	return r
-}
-
-func anthropicAutoCacheEnabled(opts map[string]any) bool {
-	if opts == nil {
-		return true
-	}
-	aAny, ok := opts["anthropic"]
-	if !ok {
-		return true
-	}
-	m, ok := aAny.(map[string]any)
-	if !ok {
-		return true
-	}
-	vAny, ok := m["auto_cache"]
-	if !ok {
-		return true
-	}
-	v, ok := vAny.(bool)
-	if !ok {
-		return true
-	}
-	return v
-}
-
-func appendBetaHeader(existing, add string) string {
-	existing = strings.TrimSpace(existing)
-	add = strings.TrimSpace(add)
-	if add == "" {
-		return existing
-	}
-
-	seen := map[string]struct{}{}
-	var parts []string
-	for _, p := range strings.Split(existing, ",") {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		if _, ok := seen[p]; ok {
-			continue
-		}
-		seen[p] = struct{}{}
-		parts = append(parts, p)
-	}
-	if _, ok := seen[add]; !ok {
-		parts = append(parts, add)
-	}
-	return strings.Join(parts, ",")
-}
-
-func addCacheControlBreakpoint(messages []map[string]any) {
-	// Heuristic: cache everything up to (but excluding) the last user message,
-	// since that last user message is typically the only new content per turn.
-	lastUser := -1
-	for i := len(messages) - 1; i >= 0; i-- {
-		role, _ := messages[i]["role"].(string)
-		if role == "user" {
-			lastUser = i
-			break
-		}
-	}
-	if lastUser <= 0 {
-		return
-	}
-
-	target := lastUser - 1
-	contentAny, ok := messages[target]["content"]
-	if !ok {
-		return
-	}
-
-	setOnBlocks := func(blocks []map[string]any) {
-		if len(blocks) == 0 {
-			return
-		}
-		// Prefer a text block so we don't attach cache_control to tool/image blocks
-		// unless we have to.
-		idx := len(blocks) - 1
-		for i := len(blocks) - 1; i >= 0; i-- {
-			if typ, _ := blocks[i]["type"].(string); typ == "text" {
-				idx = i
-				break
-			}
-		}
-		if _, exists := blocks[idx]["cache_control"]; exists {
-			return
-		}
-		blocks[idx]["cache_control"] = map[string]any{"type": "ephemeral"}
-	}
-
-	switch c := contentAny.(type) {
-	case []map[string]any:
-		setOnBlocks(c)
-	case []any:
-		var blocks []map[string]any
-		for _, it := range c {
-			bm, ok := it.(map[string]any)
-			if !ok {
-				continue
-			}
-			blocks = append(blocks, bm)
-		}
-		setOnBlocks(blocks)
-	default:
-		return
-	}
 }
 
 func parseUsage(u map[string]any) llm.Usage {
