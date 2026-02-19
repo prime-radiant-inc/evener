@@ -120,6 +120,26 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 	}
 
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
+
+	// Generate synthetic [1m] variants for models that support 1M context.
+	// Eligible: claude-opus-4- and claude-sonnet-4- prefixes (not haiku).
+	eligible1M := []string{"claude-opus-4-", "claude-sonnet-4-"}
+	var extras []llm.ModelInfo
+	for _, m := range models {
+		for _, prefix := range eligible1M {
+			if strings.HasPrefix(m.ID, prefix) {
+				extras = append(extras, llm.ModelInfo{
+					ID:          m.ID + "[1m]",
+					Provider:    "anthropic",
+					DisplayName: m.DisplayName + " (1M context)",
+				})
+				break
+			}
+		}
+	}
+	models = append(models, extras...)
+	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
+
 	return models, nil
 }
 
@@ -142,8 +162,11 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, bool, error
 		maxTokens = *req.MaxTokens
 	}
 
+	// Strip the [1m] suffix — it's a client-side convention, not an API model ID.
+	apiModel := strings.TrimSuffix(req.Model, "[1m]")
+
 	body := map[string]any{
-		"model":      req.Model,
+		"model":      apiModel,
 		"max_tokens": maxTokens,
 		"messages":   messages,
 	}

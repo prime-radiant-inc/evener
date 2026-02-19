@@ -757,10 +757,133 @@ func TestGeminiProfile_ProviderPromptUsesMappedToolNames(t *testing.T) {
 	}
 }
 
-func TestAnthropicProfile_ContextWindow_Is1M(t *testing.T) {
+func TestAnthropicProfile_ContextWindow_Default200K(t *testing.T) {
 	p := NewAnthropicProfile("claude-sonnet-4-5-20250929")
+	if p.ContextWindowSize() != 200_000 {
+		t.Errorf("expected 200000, got %d", p.ContextWindowSize())
+	}
+}
+
+func TestAnthropicProfile_ContextWindow_1MSuffix(t *testing.T) {
+	p := NewAnthropicProfile("claude-opus-4-6[1m]")
 	if p.ContextWindowSize() != 1_000_000 {
 		t.Errorf("expected 1000000, got %d", p.ContextWindowSize())
+	}
+	// Model string should retain the suffix for downstream use.
+	if p.Model() != "claude-opus-4-6[1m]" {
+		t.Errorf("model: got %q, want %q", p.Model(), "claude-opus-4-6[1m]")
+	}
+}
+
+func TestAnthropicProfile_WithModel_RoundTrip(t *testing.T) {
+	// Start at 200K, switch to 1M model.
+	orig := NewAnthropicProfile("claude-opus-4-6")
+	if orig.ContextWindowSize() != 200_000 {
+		t.Fatalf("orig context: got %d, want 200000", orig.ContextWindowSize())
+	}
+
+	upgraded := orig.WithModel("claude-opus-4-6[1m]")
+	if upgraded.ContextWindowSize() != 1_000_000 {
+		t.Fatalf("upgraded context: got %d, want 1000000", upgraded.ContextWindowSize())
+	}
+	if upgraded.Model() != "claude-opus-4-6[1m]" {
+		t.Fatalf("upgraded model: got %q", upgraded.Model())
+	}
+
+	// Switch back to 200K.
+	downgraded := upgraded.WithModel("claude-opus-4-6")
+	if downgraded.ContextWindowSize() != 200_000 {
+		t.Fatalf("downgraded context: got %d, want 200000", downgraded.ContextWindowSize())
+	}
+
+	// Original untouched.
+	if orig.ContextWindowSize() != 200_000 {
+		t.Fatalf("orig mutated: context = %d", orig.ContextWindowSize())
+	}
+}
+
+func TestAnthropicProfile_WithModel_NoProviderOptsAliasing(t *testing.T) {
+	orig := NewAnthropicProfile("claude-opus-4-6")
+	cloned := orig.WithModel("claude-opus-4-6[1m]")
+
+	// Mutating the clone's providerOpts must not affect the original.
+	clonedOpts := cloned.ProviderOptions()
+	if clonedOpts == nil {
+		t.Fatal("cloned providerOpts nil")
+	}
+	anthClone, ok := clonedOpts["anthropic"].(map[string]any)
+	if !ok {
+		t.Fatal("cloned missing anthropic key")
+	}
+	anthClone["injected"] = "bad"
+
+	origOpts := orig.ProviderOptions()
+	anthOrig, ok := origOpts["anthropic"].(map[string]any)
+	if !ok {
+		t.Fatal("orig missing anthropic key")
+	}
+	if _, found := anthOrig["injected"]; found {
+		t.Fatal("mutating cloned providerOpts affected original — aliasing bug")
+	}
+}
+
+func TestAnthropicProfile_1M_BetaHeader(t *testing.T) {
+	p := NewAnthropicProfile("claude-opus-4-6[1m]")
+	opts := p.ProviderOptions()
+	anth, ok := opts["anthropic"].(map[string]any)
+	if !ok {
+		t.Fatal("missing anthropic key")
+	}
+	bh, _ := anth["beta_headers"].(string)
+	if !strings.Contains(bh, "context-1m-2025-08-07") {
+		t.Fatalf("expected 1M beta header, got %q", bh)
+	}
+	// Should still have prompt-caching.
+	if !strings.Contains(bh, "prompt-caching-2024-07-31") {
+		t.Fatalf("expected prompt-caching header, got %q", bh)
+	}
+}
+
+func TestAnthropicProfile_Default_NoBeta1MHeader(t *testing.T) {
+	p := NewAnthropicProfile("claude-opus-4-6")
+	opts := p.ProviderOptions()
+	anth, ok := opts["anthropic"].(map[string]any)
+	if !ok {
+		t.Fatal("missing anthropic key")
+	}
+	bh, _ := anth["beta_headers"].(string)
+	if strings.Contains(bh, "context-1m-2025-08-07") {
+		t.Fatalf("default model should not have 1M beta header, got %q", bh)
+	}
+}
+
+func TestAnthropicProfile_WithCommunicateRequiredDataKeys(t *testing.T) {
+	p := NewAnthropicProfile("claude-opus-4-6")
+	p2 := WithCommunicateRequiredDataKeys(p, []string{"tasks"})
+	if p2 == nil {
+		t.Fatal("WithCommunicateRequiredDataKeys returned nil")
+	}
+	// Should still be a valid profile with correct ID.
+	if p2.ID() != "anthropic" {
+		t.Fatalf("got ID %q", p2.ID())
+	}
+	if p2.Model() != "claude-opus-4-6" {
+		t.Fatalf("got model %q", p2.Model())
+	}
+}
+
+func TestAnthropicProfile_WithBasePrompt(t *testing.T) {
+	orig := NewAnthropicProfile("claude-opus-4-6")
+	custom := orig.WithBasePrompt("Custom anthropic prompt.")
+	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux"}
+
+	prompt := custom.BuildSystemPrompt(env, nil, nil, "")
+	if !strings.Contains(prompt, "Custom anthropic prompt.") {
+		t.Error("custom base prompt not found")
+	}
+	// Should preserve anthropic-specific context window.
+	if custom.ContextWindowSize() != 200_000 {
+		t.Errorf("context window changed: got %d", custom.ContextWindowSize())
 	}
 }
 

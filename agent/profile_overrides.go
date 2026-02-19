@@ -33,8 +33,13 @@ func WithCommunicateRequiredDataKeys(p ProviderProfile, requiredKeys []string) P
 		return p
 	}
 
-	bp, ok := p.(*baseProfile)
-	if !ok {
+	var bp *baseProfile
+	switch v := p.(type) {
+	case *baseProfile:
+		bp = v
+	case *anthropicProfile:
+		bp = &v.baseProfile
+	default:
 		return p
 	}
 
@@ -46,6 +51,13 @@ func WithCommunicateRequiredDataKeys(p ProviderProfile, requiredKeys []string) P
 		}
 	}
 	clone.toolDefs = defs
+
+	// Return the same wrapper type as input.
+	if ap, ok := p.(*anthropicProfile); ok {
+		apClone := *ap
+		apClone.baseProfile = clone
+		return &apClone
+	}
 	return &clone
 }
 

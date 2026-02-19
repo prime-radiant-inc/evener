@@ -2750,8 +2750,13 @@ func TestAdapter_ListModels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListModels: %v", err)
 	}
-	if len(models) != 2 {
-		t.Fatalf("got %d models, want 2", len(models))
+	// 2 API models + 1 synthetic [1m] variant (sonnet, not haiku).
+	if len(models) != 3 {
+		ids := make([]string, len(models))
+		for i, m := range models {
+			ids[i] = m.ID
+		}
+		t.Fatalf("got %d models, want 3: %v", len(models), ids)
 	}
 	// Sorted alphabetically by ID
 	if models[0].ID != "claude-haiku-4-5-20251001" {
@@ -2814,18 +2819,114 @@ func TestAdapter_ListModels_Pagination(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListModels: %v", err)
 	}
-	if len(models) != 3 {
-		t.Fatalf("got %d models, want 3 (should paginate)", len(models))
+	// 3 API models + 2 synthetic [1m] variants (opus + sonnet, not haiku).
+	if len(models) != 5 {
+		allIDs := make([]string, len(models))
+		for i, m := range models {
+			allIDs[i] = m.ID
+		}
+		t.Fatalf("got %d models, want 5 (should paginate + generate 1M variants): %v", len(models), allIDs)
 	}
-	// All three models present, sorted.
+	// All models present and sorted.
 	ids := make([]string, len(models))
 	for i, m := range models {
 		ids[i] = m.ID
 	}
-	want := []string{"claude-haiku-4-5-20251001", "claude-opus-4-6-20260205", "claude-sonnet-4-6-20260205"}
+	want := []string{
+		"claude-haiku-4-5-20251001",
+		"claude-opus-4-6-20260205",
+		"claude-opus-4-6-20260205[1m]",
+		"claude-sonnet-4-6-20260205",
+		"claude-sonnet-4-6-20260205[1m]",
+	}
 	for i, id := range ids {
 		if id != want[i] {
 			t.Errorf("models[%d].ID = %q, want %q", i, id, want[i])
+		}
+	}
+}
+
+func TestBuildRequestBody_Strips1MSuffix(t *testing.T) {
+	a := &Adapter{APIKey: "k", BaseURL: "http://localhost"}
+	body, _, err := a.buildRequestBody(llm.Request{
+		Model:    "claude-opus-4-6[1m]",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+	model, _ := body["model"].(string)
+	if model != "claude-opus-4-6" {
+		t.Fatalf("model in body: got %q, want %q", model, "claude-opus-4-6")
+	}
+}
+
+func TestBuildRequestBody_NoSuffix_Unchanged(t *testing.T) {
+	a := &Adapter{APIKey: "k", BaseURL: "http://localhost"}
+	body, _, err := a.buildRequestBody(llm.Request{
+		Model:    "claude-opus-4-6",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+	model, _ := body["model"].(string)
+	if model != "claude-opus-4-6" {
+		t.Fatalf("model in body: got %q, want %q", model, "claude-opus-4-6")
+	}
+}
+
+func TestListModels_Generates1MVariants(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"data": [
+				{"id": "claude-opus-4-6-20260205", "display_name": "Claude Opus 4.6"},
+				{"id": "claude-sonnet-4-6-20260205", "display_name": "Claude Sonnet 4.6"},
+				{"id": "claude-haiku-4-5-20251001", "display_name": "Claude Haiku 4.5"}
+			],
+			"has_more": false
+		}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	models, err := a.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+
+	// Should have original 3 + 2 synthetic [1m] variants (opus + sonnet, not haiku).
+	if len(models) != 5 {
+		ids := make([]string, len(models))
+		for i, m := range models {
+			ids[i] = m.ID
+		}
+		t.Fatalf("got %d models, want 5: %v", len(models), ids)
+	}
+
+	// Check that [1m] variants exist for opus and sonnet.
+	idSet := map[string]bool{}
+	for _, m := range models {
+		idSet[m.ID] = true
+	}
+	if !idSet["claude-opus-4-6-20260205[1m]"] {
+		t.Error("missing claude-opus-4-6-20260205[1m]")
+	}
+	if !idSet["claude-sonnet-4-6-20260205[1m]"] {
+		t.Error("missing claude-sonnet-4-6-20260205[1m]")
+	}
+	// Haiku should NOT have a 1M variant.
+	if idSet["claude-haiku-4-5-20251001[1m]"] {
+		t.Error("haiku should not have a [1m] variant")
+	}
+
+	// Check display name for a 1M variant.
+	for _, m := range models {
+		if m.ID == "claude-opus-4-6-20260205[1m]" {
+			if !strings.Contains(m.DisplayName, "1M context") {
+				t.Errorf("1M variant display name: %q", m.DisplayName)
+			}
 		}
 	}
 }

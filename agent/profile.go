@@ -262,40 +262,89 @@ func NewOpenAIProfile(model string) ProviderProfile {
 	}
 }
 
-func NewAnthropicProfile(model string) ProviderProfile {
-	return &baseProfile{
-		id:              "anthropic",
-		model:           strings.TrimSpace(model),
-		parallel:        true,
-		contextWindow:   1_000_000,
-		basePrompt:      embeddedBasePrompt("anthropic"),
-		docFiles:        []string{"CLAUDE.md", "AGENTS.md"},
-		reasoning:       true,
-		streaming:       true,
-		defaultTimeout:  120_000,
-		knowledgeCutoff: "2025-04-01",
-		providerOpts: map[string]any{
-			"anthropic": map[string]any{
-				"beta_headers": "prompt-caching-2024-07-31",
-				// Prevent truncated tool-call JSON on large code/test edits.
-				"max_tokens": 12288,
-			},
+const anthropicSuffix1M = "[1m]"
+const anthropicBeta1M = "context-1m-2025-08-07"
+
+// anthropicProviderOpts builds a fresh providerOpts map for the Anthropic
+// profile. When has1M is true the 1M-context beta header is included.
+func anthropicProviderOpts(has1M bool) map[string]any {
+	beta := "prompt-caching-2024-07-31"
+	if has1M {
+		beta += "," + anthropicBeta1M
+	}
+	return map[string]any{
+		"anthropic": map[string]any{
+			"beta_headers": beta,
+			"max_tokens":   12288,
 		},
-		toolDefs: []llm.ToolDefinition{
-			defReadFile(),
-			defWriteFile(),
-			defEditFile(),
-			defShell(),
-			defGrep(),
-			defGlob(),
-			defSpawnAgent(),
-			defSendInput(),
-			defWait(),
-			defCloseAgent(),
-			defTaskList(),
-			defWebFetch(),
-			defCommunicate(),
-			defUseSkill(),
+	}
+}
+
+// anthropicProfile embeds baseProfile and overrides WithModel / WithBasePrompt
+// to re-derive contextWindow and providerOpts from the model string.
+type anthropicProfile struct {
+	baseProfile
+}
+
+func (p *anthropicProfile) WithModel(model string) ProviderProfile {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = p.model
+	}
+	clone := *p
+	clone.model = model
+	has1M := strings.HasSuffix(model, anthropicSuffix1M)
+	if has1M {
+		clone.contextWindow = 1_000_000
+	} else {
+		clone.contextWindow = 200_000
+	}
+	clone.providerOpts = anthropicProviderOpts(has1M)
+	return &clone
+}
+
+func (p *anthropicProfile) WithBasePrompt(prompt string) ProviderProfile {
+	clone := *p
+	clone.basePrompt = prompt
+	return &clone
+}
+
+func NewAnthropicProfile(model string) ProviderProfile {
+	model = strings.TrimSpace(model)
+	has1M := strings.HasSuffix(model, anthropicSuffix1M)
+	ctxWindow := 200_000
+	if has1M {
+		ctxWindow = 1_000_000
+	}
+	return &anthropicProfile{
+		baseProfile: baseProfile{
+			id:              "anthropic",
+			model:           model,
+			parallel:        true,
+			contextWindow:   ctxWindow,
+			basePrompt:      embeddedBasePrompt("anthropic"),
+			docFiles:        []string{"CLAUDE.md", "AGENTS.md"},
+			reasoning:       true,
+			streaming:       true,
+			defaultTimeout:  120_000,
+			knowledgeCutoff: "2025-04-01",
+			providerOpts:    anthropicProviderOpts(has1M),
+			toolDefs: []llm.ToolDefinition{
+				defReadFile(),
+				defWriteFile(),
+				defEditFile(),
+				defShell(),
+				defGrep(),
+				defGlob(),
+				defSpawnAgent(),
+				defSendInput(),
+				defWait(),
+				defCloseAgent(),
+				defTaskList(),
+				defWebFetch(),
+				defCommunicate(),
+				defUseSkill(),
+			},
 		},
 	}
 }
