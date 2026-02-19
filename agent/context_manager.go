@@ -25,6 +25,11 @@ type ContextManager struct {
 	historyLenAtMeasure int // number of turns when lastInputTokens was recorded
 
 	// Thresholds are fractions (0.0–1.0) of the context window.
+	// ObservationMaskThreshold and ThinkingClearThreshold are not used by the
+	// default compaction path (MaybeCompact/ForceCompact) because in-place
+	// modifications bust the prompt cache for all providers. They remain here
+	// for experimental ContextStrategy implementations that call
+	// maskObservations/clearThinking directly.
 	ObservationMaskThreshold float64
 	ThinkingClearThreshold   float64
 	CheckpointThreshold      float64
@@ -159,48 +164,16 @@ func (cm *ContextManager) MaybeCompact(
 
 	// Invalidate API token measurement before running any layer so that
 	// between-layer pressure() calls use char/4 (which reflects in-place
-	// mutations). Without this, stale lastInputTokens causes all layers
+	// mutations). Without this, stale lastInputTokens causes both layers
 	// to cascade in a single pass.
-	if p >= cm.ObservationMaskThreshold {
+	if p >= cm.CheckpointThreshold {
 		cm.mu.Lock()
 		cm.lastInputTokens = 0
 		cm.historyLenAtMeasure = 0
 		cm.mu.Unlock()
 	}
 
-	// Layer 1: Observation masking at ≥60%.
-	if p >= cm.ObservationMaskThreshold {
-		before := EstimateTokens(*history)
-		maskObservations(*history, cm.PreserveRecentTurns)
-		after := EstimateTokens(*history)
-		emitFn(EventContextCompaction, ContextCompactionData{
-			Layer:           "observation_mask",
-			TurnsBefore:     len(*history),
-			TurnsAfter:      len(*history),
-			EstTokensBefore: before,
-			EstTokensAfter:  after,
-		})
-		compacted = true
-		p = pressure()
-	}
-
-	// Layer 2: Thinking clearing at ≥70%.
-	if p >= cm.ThinkingClearThreshold {
-		before := EstimateTokens(*history)
-		clearThinking(*history, cm.PreserveRecentTurns)
-		after := EstimateTokens(*history)
-		emitFn(EventContextCompaction, ContextCompactionData{
-			Layer:           "thinking_clear",
-			TurnsBefore:     len(*history),
-			TurnsAfter:      len(*history),
-			EstTokensBefore: before,
-			EstTokensAfter:  after,
-		})
-		compacted = true
-		p = pressure()
-	}
-
-	// Layer 3: Deterministic checkpoint at ≥80%.
+	// Layer 1: Deterministic checkpoint at ≥80%.
 	if p >= cm.CheckpointThreshold {
 		turnsBefore := len(*history)
 		before := EstimateTokens(*history)
@@ -220,7 +193,7 @@ func (cm *ContextManager) MaybeCompact(
 		p = pressure()
 	}
 
-	// Layer 4: LLM summarization at ≥90%.
+	// Layer 2: LLM summarization at ≥90%.
 	if p >= cm.SummarizeThreshold && cm.client != nil {
 		turnsBefore := len(*history)
 		before := EstimateTokens(*history)
@@ -269,35 +242,11 @@ func (cm *ContextManager) ForceCompact(
 	cm.historyLenAtMeasure = 0
 	cm.mu.Unlock()
 
-	// Layer 1: Observation masking.
-	before := EstimateTokens(*history)
-	maskObservations(*history, cm.PreserveRecentTurns)
-	after := EstimateTokens(*history)
-	emitFn(EventContextCompaction, ContextCompactionData{
-		Layer:           "observation_mask",
-		TurnsBefore:     len(*history),
-		TurnsAfter:      len(*history),
-		EstTokensBefore: before,
-		EstTokensAfter:  after,
-	})
-
-	// Layer 2: Thinking clearing.
-	before = EstimateTokens(*history)
-	clearThinking(*history, cm.PreserveRecentTurns)
-	after = EstimateTokens(*history)
-	emitFn(EventContextCompaction, ContextCompactionData{
-		Layer:           "thinking_clear",
-		TurnsBefore:     len(*history),
-		TurnsAfter:      len(*history),
-		EstTokensBefore: before,
-		EstTokensAfter:  after,
-	})
-
-	// Layer 3: Deterministic checkpoint.
+	// Layer 1: Deterministic checkpoint.
 	turnsBefore := len(*history)
-	before = EstimateTokens(*history)
+	before := EstimateTokens(*history)
 	*history = checkpoint(*history, cm.PreserveRecentTurns)
-	after = EstimateTokens(*history)
+	after := EstimateTokens(*history)
 	emitFn(EventContextCompaction, ContextCompactionData{
 		Layer:           "checkpoint",
 		TurnsBefore:     turnsBefore,
@@ -309,7 +258,7 @@ func (cm *ContextManager) ForceCompact(
 		cm.OnCompactionTurn((*history)[0])
 	}
 
-	// Layer 4: LLM summarization (only if client is available).
+	// Layer 2: LLM summarization (only if client is available).
 	if cm.client != nil {
 		turnsBefore = len(*history)
 		before = EstimateTokens(*history)
@@ -320,7 +269,7 @@ func (cm *ContextManager) ForceCompact(
 			})
 		} else {
 			*history = result
-			after = EstimateTokens(*history)
+			after := EstimateTokens(*history)
 			emitFn(EventContextCompaction, ContextCompactionData{
 				Layer:           "summarize",
 				TurnsBefore:     turnsBefore,

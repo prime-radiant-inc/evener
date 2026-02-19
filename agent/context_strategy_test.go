@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -67,46 +68,21 @@ func TestCompactStrategyTools(t *testing.T) {
 }
 
 func TestCompactStrategyManageContext_Delegation(t *testing.T) {
-	// Create a mock client and context manager.
+	// Create a context manager with a small window so history exceeds
+	// the 80% checkpoint threshold.
 	client := llm.NewClient()
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := &baseProfile{id: "openai", model: "test", contextWindow: 500}
 	cm := NewContextManager(profile, client)
-
-	// Set a low observation mask threshold to ensure compaction triggers.
-	// OpenAI gpt-5.2 has 128k context window, so at 5% we need ~6.4k tokens.
-	cm.ObservationMaskThreshold = 0.05
 	cm.PreserveRecentTurns = 2
 
 	cs := NewCompactStrategy(cm)
 
-	// Build a history that will exceed the 5% threshold.
-	// We need ~6.4k tokens = ~25.6k chars total.
-	// Create tool result with 30k chars to ensure we exceed the threshold.
-	largeContent := make([]byte, 30000)
-	for i := range largeContent {
-		largeContent[i] = 'x'
-	}
-
+	// ~425 tokens (85% of 500) to exceed checkpoint threshold.
 	history := []Turn{
 		{Kind: TurnUserInput, Message: llm.User("read some files")},
-		{Kind: TurnAssistant, Message: llm.Message{
-			Role: llm.RoleAssistant,
-			Content: []llm.ContentPart{
-				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-					ID:        "call1",
-					Name:      "read_file",
-					Arguments: []byte(`{"file_path": "/tmp/test.txt"}`),
-				}},
-			},
-		}},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("call1", "read_file", string(largeContent), false)},
-		{Kind: TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-			{Kind: llm.ContentText, Text: "Done reading"},
-		}}},
-		{Kind: TurnUserInput, Message: llm.User("another task")},
-		{Kind: TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-			{Kind: llm.ContentText, Text: "working on it"},
-		}}},
+		{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("analysis ", 200))},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
 	}
 
 	// Track emitted events.
@@ -128,12 +104,9 @@ func TestCompactStrategyManageContext_Delegation(t *testing.T) {
 		t.Fatalf("expected EventContextCompaction to be emitted, got %v", emittedEvent)
 	}
 
-	// Verify that the tool result was masked (observation masking is the first layer).
-	// The content should now start with "[" indicating it was masked.
-	// The old turn (index 2) should be masked; recent turns are preserved.
-	toolResult := history[2].Message.Content[0].ToolResult
-	if content, ok := toolResult.Content.(string); !ok || content[0] != '[' {
-		t.Fatalf("expected tool result to be masked, got content: %v", toolResult.Content)
+	// Verify checkpoint replaced old history.
+	if history[0].Kind != TurnCheckpoint {
+		t.Fatalf("expected checkpoint turn, got %v", history[0].Kind)
 	}
 }
 

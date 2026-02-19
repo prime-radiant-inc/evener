@@ -763,6 +763,33 @@ func makeBigHistory(targetTokens int) []Turn {
 	return turns
 }
 
+func TestMaybeCompact_NoCompactionBelow80Percent(t *testing.T) {
+	// At 70% pressure, no compaction should fire. Compaction starts at 80% (checkpoint).
+	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1000}
+	cm := NewContextManager(profile, nil)
+	cm.PreserveRecentTurns = 2
+
+	// Create history filling ~70% of 1000 tokens = 700 tokens via tool results.
+	history := makeBigHistory(700)
+	history = append(history,
+		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
+		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
+	)
+
+	var events []SessionEvent
+	emitFn := func(kind EventKind, data any) {
+		events = append(events, SessionEvent{Kind: kind, Data: data})
+	}
+
+	cm.MaybeCompact(context.Background(), &history, 0, emitFn)
+
+	for _, e := range events {
+		if e.Kind == EventContextCompaction {
+			t.Fatalf("no compaction should fire at 70%% pressure, got event: %+v", e.Data)
+		}
+	}
+}
+
 func TestMaybeCompact_BelowThreshold_NoAction(t *testing.T) {
 	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), nil)
 
@@ -790,47 +817,12 @@ func TestMaybeCompact_BelowThreshold_NoAction(t *testing.T) {
 	}
 }
 
-func TestMaybeCompact_ObservationMaskThreshold(t *testing.T) {
-	// Use a tiny context window to make it easy to hit thresholds.
-	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1000}
-	cm := NewContextManager(profile, nil)
-	cm.PreserveRecentTurns = 2
-
-	// Create history that fills ~65% of 1000 tokens = 650 tokens.
-	history := makeBigHistory(650)
-	// Add 2 recent turns that won't be touched.
-	history = append(history,
-		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
-		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
-	)
-
-	var events []SessionEvent
-	emitFn := func(kind EventKind, data any) {
-		events = append(events, SessionEvent{Kind: kind, Data: data})
-	}
-
-	cm.MaybeCompact(context.Background(), &history, 0, emitFn)
-
-	// Should have emitted at least an observation_mask event.
-	foundMask := false
-	for _, e := range events {
-		if e.Kind == EventContextCompaction {
-			if layer, ok := e.DataMap()["layer"].(string); ok && layer == "observation_mask" {
-				foundMask = true
-			}
-		}
-	}
-	if !foundMask {
-		t.Fatalf("expected observation_mask compaction event; got events: %+v", events)
-	}
-}
 
 func TestMaybeCompact_CheckpointThreshold(t *testing.T) {
 	profile := &baseProfile{id: "openai", model: "test", contextWindow: 500}
 	cm := NewContextManager(profile, nil)
 	cm.PreserveRecentTurns = 2
 
-	// Use assistant text (not tool results) so observation masking can't reduce pressure.
 	// Each assistant turn ~400 chars = 100 tokens. Need 85% of 500 = 425 tokens.
 	history := []Turn{{Kind: TurnUserInput, Message: llm.User("Fix the auth bug")}}
 	for EstimateTokens(history) < 425 {
@@ -850,8 +842,7 @@ func TestMaybeCompact_CheckpointThreshold(t *testing.T) {
 
 	cm.MaybeCompact(context.Background(), &history, 0, emitFn)
 
-	// At 85%, observation mask and thinking clear won't help (no tool results or thinking).
-	// So checkpoint should trigger.
+	// At 85%, checkpoint should trigger (threshold is 80%).
 	foundCheckpoint := false
 	for _, e := range events {
 		if e.Kind == EventContextCompaction {
@@ -875,8 +866,8 @@ func TestMaybeCompact_EmitsEvents(t *testing.T) {
 	cm := NewContextManager(profile, nil)
 	cm.PreserveRecentTurns = 2
 
-	// Fill ~75% = 375 tokens.
-	history := makeBigHistory(375)
+	// Fill ~85% = 425 tokens (above 80% checkpoint threshold).
+	history := makeBigHistory(425)
 	history = append(history,
 		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
 		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
@@ -927,20 +918,20 @@ func TestMaybeCompact_RespectsSysPromptSize(t *testing.T) {
 		events = append(events, SessionEvent{Kind: kind, Data: data})
 	}
 
-	// sys prompt is 2400 chars ≈ 600 tokens + history ~100 tokens = 700/1000 = 70%
-	cm.MaybeCompact(context.Background(), &history, 2400, emitFn)
+	// sys prompt is 2800 chars ≈ 700 tokens + history ~100 tokens = 800/1000 = 80%
+	cm.MaybeCompact(context.Background(), &history, 2800, emitFn)
 
-	// With sys prompt, we're at ~70%, should trigger observation masking.
-	foundMask := false
+	// With sys prompt, we're at ~80%, should trigger checkpoint.
+	foundCheckpoint := false
 	for _, e := range events {
 		if e.Kind == EventContextCompaction {
-			if layer, ok := e.DataMap()["layer"].(string); ok && layer == "observation_mask" {
-				foundMask = true
+			if layer, ok := e.DataMap()["layer"].(string); ok && layer == "checkpoint" {
+				foundCheckpoint = true
 			}
 		}
 	}
-	if !foundMask {
-		t.Fatalf("expected observation_mask compaction event when sys prompt pushes over threshold")
+	if !foundCheckpoint {
+		t.Fatalf("expected checkpoint compaction event when sys prompt pushes over threshold; got events: %+v", events)
 	}
 }
 
@@ -1675,114 +1666,7 @@ func TestCheckpoint_OriginalTaskNotOverriddenByFollowup(t *testing.T) {
 
 // --- Fix: Pressure cascade (C1) ---
 
-// TestMaybeCompact_L1StopsCascade verifies that when observation masking alone
-// frees enough tokens, higher layers (L2/L3/L4) do not fire. This catches the
-// bug where stale lastInputTokens caused all layers to cascade in a single pass.
-func TestMaybeCompact_L1StopsCascade(t *testing.T) {
-	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1000}
-	cm := NewContextManager(profile, nil)
-	cm.PreserveRecentTurns = 2
-
-	// Build history with large tool results that L1 can mask down significantly.
-	// Target ~75% pressure via char/4 (750 tokens). Tool results are big so
-	// masking will free a lot.
-	history := makeBigHistory(750)
-	history = append(history,
-		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
-		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
-	)
-
-	// Simulate a previous API call that reported 750 input tokens.
-	// Bug: after L1 masks tool results in-place, the between-layer pressure()
-	// call still uses lastInputTokens=750 (stale), so pressure stays at 75%
-	// and L2 (thinking_clear, threshold=70%) fires unnecessarily.
-	cm.RecordInputTokens(750, len(history))
-
-	var layers []string
-	emitFn := func(kind EventKind, data any) {
-		if kind == EventContextCompaction {
-			if cd, ok := data.(ContextCompactionData); ok {
-				layers = append(layers, cd.Layer)
-			}
-		}
-	}
-
-	cm.MaybeCompact(context.Background(), &history, 0, emitFn)
-
-	// L1 (observation_mask) should fire.
-	if len(layers) == 0 || layers[0] != "observation_mask" {
-		t.Fatalf("expected observation_mask as first layer, got %v", layers)
-	}
-
-	// After L1 masks the big tool results, char/4 pressure should drop well
-	// below 70%. L2 (thinking_clear) and higher should NOT fire.
-	for _, l := range layers[1:] {
-		if l == "thinking_clear" || l == "checkpoint" || l == "summarize" {
-			t.Fatalf("layer %q should not fire after L1 freed enough tokens; layers=%v", l, layers)
-		}
-	}
-}
-
-// --- Integration tests ---
-
-// TestMaybeCompact_L1ThenL3_MaskedShellParsed verifies that when L1 masks
-// shell results, L3 checkpoint still extracts correct exit codes from the
-// masked "[shell: ... → exit N]" format.
-func TestMaybeCompact_L1ThenL3_MaskedShellParsed(t *testing.T) {
-	// Use a context window where L1 masking reduces tool output but still
-	// leaves history above the 80% checkpoint threshold, so both fire.
-	profile := &baseProfile{id: "openai", model: "test", contextWindow: 80}
-	cm := NewContextManager(profile, nil)
-	cm.PreserveRecentTurns = 2
-
-	// Build history with shell tool calls (big output so L1 masks them)
-	// plus assistant text that L1 can't touch, keeping pressure above 80%.
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("run tests")},
-		{Kind: TurnAssistant, Message: assistantWithToolCall("c1", "shell", `{"command":"go test ./..."}`)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "shell", strings.Repeat("output\n", 20)+"exit_code=0 duration_ms=100 timed_out=false\n", false)},
-		{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("analysis ", 30))},
-		{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("more ", 30))},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
-	}
-
-	var layers []string
-	emitFn := func(kind EventKind, data any) {
-		if kind == EventContextCompaction {
-			if cd, ok := data.(ContextCompactionData); ok {
-				layers = append(layers, cd.Layer)
-			}
-		}
-	}
-
-	cm.MaybeCompact(context.Background(), &history, 0, emitFn)
-
-	// With this small window, L1 and L3 should both fire.
-	foundL1, foundL3 := false, false
-	for _, l := range layers {
-		if l == "observation_mask" {
-			foundL1 = true
-		}
-		if l == "checkpoint" {
-			foundL3 = true
-		}
-	}
-	if !foundL1 {
-		t.Fatalf("expected observation_mask layer; got %v", layers)
-	}
-	if !foundL3 {
-		t.Fatalf("expected checkpoint layer; got %v", layers)
-	}
-
-	// The checkpoint should contain "exit 0" from the shell call.
-	text := history[0].Message.Text()
-	if !strings.Contains(text, "exit 0") {
-		t.Fatalf("checkpoint should contain 'exit 0' from masked shell result:\n%s", text)
-	}
-}
-
-// TestMaybeCompact_SummarizeThreshold verifies L4 fires through the orchestrator.
+// TestMaybeCompact_SummarizeThreshold verifies summarize fires through the orchestrator.
 func TestMaybeCompact_SummarizeThreshold(t *testing.T) {
 	adapter := &fakeAdapter{
 		name: "openai",
@@ -1795,15 +1679,14 @@ func TestMaybeCompact_SummarizeThreshold(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	// Small window. L3 (checkpoint) replaces old history with a checkpoint
+	// Small window. Checkpoint replaces old history with a checkpoint
 	// message, but the preserved recent turns are large enough to keep
-	// pressure above 90% after checkpoint, forcing L4.
+	// pressure above 90% after checkpoint, forcing summarize.
 	profile := &baseProfile{id: "openai", model: "test", contextWindow: 50}
 	cm := NewContextManager(profile, client)
 	cm.PreserveRecentTurns = 1
 
-	// History with pure text (so L1/L2 can't help much).
-	// After L3 checkpoint, result = [checkpoint_msg, recent_turn].
+	// After checkpoint, result = [checkpoint_msg, recent_turn].
 	// The recent turn alone needs to be ~90% of 50 tokens = 45 tokens = ~180 chars.
 	history := []Turn{
 		{Kind: TurnUserInput, Message: llm.User(strings.Repeat("task ", 50))},
@@ -1932,7 +1815,6 @@ func TestContextManager_SetProfile_UpdatesContextWindow(t *testing.T) {
 // --- ForceCompact tests ---
 
 func TestForceCompact_RunsAllLayers(t *testing.T) {
-	// Use a fake LLM adapter so L4 (summarize) can run.
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
@@ -1947,25 +1829,12 @@ func TestForceCompact_RunsAllLayers(t *testing.T) {
 	cm := NewContextManager(profile, client)
 	cm.PreserveRecentTurns = 2
 
-	// Build history with tool results (for L1) and thinking (for L2).
 	history := []Turn{
 		NewTurn(TurnUserInput, llm.User("first question")),
-		NewTurn(TurnAssistant, llm.Message{
-			Role: llm.RoleAssistant,
-			Content: []llm.ContentPart{
-				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "deep thoughts"}},
-				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c1", Name: "shell", Arguments: json.RawMessage(`{"command":"ls"}`)}},
-			},
-		}),
-		NewTurn(TurnToolResults, llm.ToolResult("c1", strings.Repeat("x", 500), false)),
+		NewTurn(TurnAssistant, llm.Assistant("working on it")),
 		NewTurn(TurnUserInput, llm.User("second question")),
-		NewTurn(TurnAssistant, llm.Message{
-			Role: llm.RoleAssistant,
-			Content: []llm.ContentPart{
-				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c2", Name: "communicate", Arguments: json.RawMessage(`{"action":"result","message":"done"}`)}},
-			},
-		}),
-		NewTurn(TurnToolResults, llm.ToolResult("c2", "ok", false)),
+		NewTurn(TurnAssistant, llm.Assistant("recent1")),
+		NewTurn(TurnAssistant, llm.Assistant("recent2")),
 	}
 
 	var layers []string
@@ -1979,13 +1848,13 @@ func TestForceCompact_RunsAllLayers(t *testing.T) {
 
 	cm.ForceCompact(context.Background(), &history, emitFn)
 
-	// All 4 layers should have fired.
-	if len(layers) < 4 {
-		t.Fatalf("expected all 4 layers to fire, got %d: %v", len(layers), layers)
+	// Both layers should fire: checkpoint then summarize.
+	if len(layers) != 2 {
+		t.Fatalf("expected 2 layers to fire, got %d: %v", len(layers), layers)
 	}
-	expected := []string{"observation_mask", "thinking_clear", "checkpoint", "summarize"}
+	expected := []string{"checkpoint", "summarize"}
 	for i, want := range expected {
-		if i >= len(layers) || layers[i] != want {
+		if layers[i] != want {
 			t.Errorf("layer[%d] = %q, want %q (all: %v)", i, layers[i], want, layers)
 		}
 	}
@@ -2080,18 +1949,14 @@ func TestForceCompact_BelowThreshold(t *testing.T) {
 	// Even with tiny history well below auto-compact thresholds,
 	// ForceCompact should still run the layers.
 	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1_000_000}
-	cm := NewContextManager(profile, nil) // no LLM client → L4 skipped
+	cm := NewContextManager(profile, nil) // no LLM client → summarize skipped
 	cm.PreserveRecentTurns = 2
 
 	history := []Turn{
 		NewTurn(TurnUserInput, llm.User("hi")),
-		NewTurn(TurnAssistant, llm.Message{
-			Role: llm.RoleAssistant,
-			Content: []llm.ContentPart{
-				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c1", Name: "shell", Arguments: json.RawMessage(`{"command":"echo hi"}`)}},
-			},
-		}),
-		NewTurn(TurnToolResults, llm.ToolResult("c1", "hello world", false)),
+		NewTurn(TurnAssistant, llm.Assistant("working on it")),
+		NewTurn(TurnAssistant, llm.Assistant("recent1")),
+		NewTurn(TurnAssistant, llm.Assistant("recent2")),
 	}
 
 	var layers []string
@@ -2105,8 +1970,8 @@ func TestForceCompact_BelowThreshold(t *testing.T) {
 
 	cm.ForceCompact(context.Background(), &history, emitFn)
 
-	// L1-L3 should fire. L4 skipped (no client).
-	if len(layers) < 3 {
-		t.Fatalf("expected at least 3 layers, got %d: %v", len(layers), layers)
+	// Checkpoint should fire. Summarize skipped (no client).
+	if len(layers) != 1 || layers[0] != "checkpoint" {
+		t.Fatalf("expected [checkpoint], got %v", layers)
 	}
 }

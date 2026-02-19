@@ -2091,8 +2091,7 @@ func (s *Session) resolveFilePath(path string) string {
 // factor. A factor of 0 or 1 leaves defaults unchanged.
 //
 // Thresholds are clamped to a minimum of 0.20 so that aggressive scaling
-// (e.g., 0.1) doesn't collapse all layers into a narrow band where only
-// the weakest layer (observation mask) fires repeatedly.
+// doesn't collapse all layers into a narrow band.
 func applyThresholdScale(cm *ContextManager, scale float64) {
 	if scale > 0 && scale != 1.0 {
 		clamp := func(v float64) float64 {
