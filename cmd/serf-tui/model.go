@@ -193,15 +193,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "quit":
 					return m, tea.Quit
 				case "help":
-					m.input.Reset()
+					m.resetInput()
 					m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: slashCommandHelp()})
 					m.refreshViewport()
 					return m, tea.Batch(cmds...)
 				case "status":
-					m.input.Reset()
+					m.resetInput()
 					return m, fetchStatus(m.addr)
 				case "model":
-					m.input.Reset()
+					m.resetInput()
 					if args == "" {
 						m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "Fetching available models..."})
 						m.refreshViewport()
@@ -213,31 +213,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					cmds = append(cmds, sendModel(m.addr, args))
 					return m, tea.Batch(cmds...)
 				case "theme":
-					m.input.Reset()
+					m.resetInput()
 					p := newThemePicker()
 					m.themePicker = &p
 					return m, tea.Batch(cmds...)
 				case "clear":
-					m.input.Reset()
+					m.resetInput()
 					m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "Starting new session..."})
 					m.refreshViewport()
 					cmds = append(cmds, sendClear(m.addr))
 					return m, tea.Batch(cmds...)
 				case "compact":
-					m.input.Reset()
+					m.resetInput()
 					m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "Compacting context..."})
 					m.refreshViewport()
 					cmds = append(cmds, sendCompact(m.addr))
 					return m, tea.Batch(cmds...)
 				default:
-					m.input.Reset()
+					m.resetInput()
 					m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: fmt.Sprintf("Unknown command: /%s", cmd)})
 					m.refreshViewport()
 					return m, tea.Batch(cmds...)
 				}
 			}
 			m.messages = append(m.messages, chatMessage{Kind: msgUser, Text: text})
-			m.input.Reset()
+			m.resetInput()
 			m.refreshViewport()
 			cmds = append(cmds, sendInput(m.addr, text))
 			return m, tea.Batch(cmds...)
@@ -496,7 +496,12 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 	}
 }
 
-// vpHeight returns the height the viewport should occupy given current terminal
+// resetInput clears the input and shrinks it back to one line.
+func (m *model) resetInput() {
+	m.input.Reset()
+	m.input.SetHeight(1)
+	m.viewport.Height = m.vpHeight()
+}
 // and input dimensions. statusBar=1, border=1, textarea rows=input.Height().
 func (m model) vpHeight() int {
 	h := m.height - 1 - 1 - m.input.Height()
