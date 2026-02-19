@@ -314,8 +314,9 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 	}
 
 	s.emit(EventSessionStart, SessionStartData{
-		Profile: profile.ID(),
-		Model:   profile.Model(),
+		Profile:           profile.ID(),
+		Model:             profile.Model(),
+		ContextWindowSize: profile.ContextWindowSize(),
 	})
 	return s, nil
 }
@@ -431,11 +432,12 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 	}
 
 	s.emit(EventSessionStart, SessionStartData{
-		Profile:         profile.ID(),
-		Model:           profile.Model(),
-		Restored:        true,
-		Turns:           s.turns,
-		LastInputTokens: snap.LastInputTokens,
+		Profile:           profile.ID(),
+		Model:             profile.Model(),
+		Restored:          true,
+		Turns:             s.turns,
+		LastInputTokens:   snap.LastInputTokens,
+		ContextWindowSize: profile.ContextWindowSize(),
 	})
 	return s, nil
 }

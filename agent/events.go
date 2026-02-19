@@ -97,11 +97,12 @@ func (e SessionEvent) ToStreamEvent() *llm.StreamEvent {
 // Typed event payload structs. JSON tags match the map keys used previously.
 
 type SessionStartData struct {
-	Profile         string `json:"profile"`
-	Model           string `json:"model"`
-	Restored        bool   `json:"restored,omitempty"`
-	Turns           int    `json:"turns,omitempty"`
-	LastInputTokens int    `json:"last_input_tokens,omitempty"`
+	Profile           string `json:"profile"`
+	Model             string `json:"model"`
+	Restored          bool   `json:"restored,omitempty"`
+	Turns             int    `json:"turns,omitempty"`
+	LastInputTokens   int    `json:"last_input_tokens,omitempty"`
+	ContextWindowSize int    `json:"context_window_size,omitempty"`
 }
 
 type SessionEndData struct {

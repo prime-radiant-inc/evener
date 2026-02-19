@@ -26,9 +26,10 @@ type model struct {
 	sessionModel   string
 	sessionProfile string
 	sessionID      string
-	turns          int
-	contextTokens  int // input tokens from last ASSISTANT_TEXT_END
-	processing     bool
+	turns              int
+	contextTokens      int // input tokens from last ASSISTANT_TEXT_END
+	contextWindowSize  int // context window size from SESSION_START
+	processing         bool
 	turnInputTokens  int // input tokens accumulated since last USER_INPUT
 	turnOutputTokens int // output tokens accumulated since last USER_INPUT
 
@@ -465,17 +466,21 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 	switch ev.Event {
 	case "SESSION_START":
 		var d struct {
-			SessionID       string `json:"session_id"`
-			Model           string `json:"model"`
-			Profile         string `json:"profile"`
-			Restored        bool   `json:"restored"`
-			Turns           int    `json:"turns"`
-			LastInputTokens int    `json:"last_input_tokens"`
+			SessionID         string `json:"session_id"`
+			Model             string `json:"model"`
+			Profile           string `json:"profile"`
+			Restored          bool   `json:"restored"`
+			Turns             int    `json:"turns"`
+			LastInputTokens   int    `json:"last_input_tokens"`
+			ContextWindowSize int    `json:"context_window_size"`
 		}
 		json.Unmarshal([]byte(ev.Data), &d)
 		m.sessionID = d.SessionID
 		m.sessionModel = d.Model
 		m.sessionProfile = d.Profile
+		if d.ContextWindowSize > 0 {
+			m.contextWindowSize = d.ContextWindowSize
+		}
 		if d.Restored {
 			m.turns = d.Turns
 			m.contextTokens = d.LastInputTokens
@@ -667,7 +672,7 @@ func (m model) View() string {
 		Width(m.width).
 		Height(m.height)
 
-	statusBar := renderStatusBar(m.connected, m.sessionModel, m.sessionID, m.turns, m.contextTokens, m.processing, m.turnInputTokens, m.turnOutputTokens, m.scrollMode, m.width)
+	statusBar := renderStatusBar(m.connected, m.sessionModel, m.sessionID, m.turns, m.contextTokens, m.contextWindowSize, m.processing, m.turnInputTokens, m.turnOutputTokens, m.scrollMode, m.width)
 
 	var body string
 	if m.picker != nil {
