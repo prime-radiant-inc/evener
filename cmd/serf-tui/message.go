@@ -238,14 +238,17 @@ func historyToMessages(turns []agent.Turn) []chatMessage {
 					}
 
 				// Non-communicate tool call: show as collapsed tool entry.
-				desc := string(tc.Arguments)
+				argsJSON := string(tc.Arguments)
+				toolDesc, toolDetail := summarizeTool(tc.Name, argsJSON)
 					result := toolResults[tc.ID]
 					output := fmt.Sprintf("%v", result.Content)
 					info := &toolCallInfo{
 						Name:        tc.Name,
-						Description: desc,
+						Description: toolDesc,
+						Detail:      toolDetail,
 						Output:      output,
 						Done:        true,
+						Expanded:    toolDetail != "",
 					}
 					if result.IsError {
 						info.Error = output
