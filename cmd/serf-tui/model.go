@@ -35,6 +35,7 @@ type model struct {
 	// Track active tool calls by call ID -> index in messages
 	activeTools   map[string]int
 	lastInterrupt time.Time
+	picker        *modelPicker // non-nil when model picker is active
 }
 
 func newModel(addr string, initialMessages []chatMessage) model {
@@ -63,6 +64,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.picker != nil {
+			updated, cmd := m.picker.Update(msg)
+			p := updated.(modelPicker)
+			m.picker = &p
+			if p.done {
+				m.picker = nil
+				if p.selected != "" && p.selected != m.sessionModel {
+					m.messages = append(m.messages, chatMessage{
+						Kind: msgSystem,
+						Text: fmt.Sprintf("Switching to model %s...", p.selected),
+					})
+					m.refreshViewport()
+					return m, sendModel(m.addr, p.selected)
+				}
+				m.refreshViewport()
+			}
+			return m, cmd
+		}
+
 		switch msg.String() {
 		case "ctrl+c":
 			now := time.Now()
@@ -104,8 +124,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "model":
 					m.input.Reset()
 					if args == "" {
-						m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "Usage: /model <model-name>"})
+						m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "Fetching available models..."})
 						m.refreshViewport()
+						cmds = append(cmds, fetchModels(m.addr))
 						return m, tea.Batch(cmds...)
 					}
 					m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: fmt.Sprintf("Switching to model %s...", args)})
@@ -240,6 +261,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.refreshViewport()
 		return m, nil
+
+	case modelsResult:
+		if msg.err != nil {
+			m.messages = append(m.messages, chatMessage{
+				Kind: msgSystem,
+				Text: fmt.Sprintf("Could not fetch models: %s\nUse /model <name> to switch manually.", msg.err),
+			})
+			m.refreshViewport()
+			return m, nil
+		}
+		if len(msg.models) == 0 {
+			m.messages = append(m.messages, chatMessage{
+				Kind: msgSystem,
+				Text: "No models available from provider.",
+			})
+			m.refreshViewport()
+			return m, nil
+		}
+		picker := newModelPicker(msg.models, m.sessionModel, m.width)
+		m.picker = &picker
+		// Remove the "Fetching..." message.
+		if len(m.messages) > 0 && m.messages[len(m.messages)-1].Text == "Fetching available models..." {
+			m.messages = m.messages[:len(m.messages)-1]
+		}
+		m.refreshViewport()
+		return m, nil
 	}
 
 	// Update sub-components
@@ -370,6 +417,15 @@ func (m model) View() string {
 	}
 
 	statusBar := renderStatusBar(m.connected, m.sessionModel, m.sessionID, m.turns, m.width)
+
+	if m.picker != nil {
+		pickerView := m.picker.View()
+		return lipgloss.JoinVertical(lipgloss.Left,
+			statusBar,
+			pickerView,
+		)
+	}
+
 	inputView := inputBorderStyle.Width(m.width).Render(m.input.View())
 
 	return lipgloss.JoinVertical(lipgloss.Left,

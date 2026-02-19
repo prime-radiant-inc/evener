@@ -36,7 +36,7 @@ func slashCommandHelp() string {
 		"  /help      Show this help",
 		"  /compact   Compact context (free up token space)",
 		"  /status    Show session info and context pressure",
-		"  /model     Switch model (e.g. /model gpt-4o)",
+		"  /model     Switch model (picker) or /model <name>",
 		"  /clear     Start a new session",
 		"  /quit      Exit the TUI",
 	}, "\n")
@@ -140,5 +140,42 @@ func sendInterrupt(addr string) tea.Cmd {
 		}
 		resp.Body.Close()
 		return nil
+	}
+}
+
+type modelsResult struct {
+	models []modelPickerItem
+	err    error
+}
+
+func fetchModels(addr string) tea.Cmd {
+	return func() tea.Msg {
+		url := fmt.Sprintf("http://%s/models", addr)
+		resp, err := http.Get(url)
+		if err != nil {
+			return modelsResult{err: err}
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return modelsResult{err: fmt.Errorf("server returned %d", resp.StatusCode)}
+		}
+		var result struct {
+			Models []struct {
+				ID          string `json:"id"`
+				DisplayName string `json:"display_name"`
+			} `json:"models"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return modelsResult{err: err}
+		}
+		items := make([]modelPickerItem, len(result.Models))
+		for i, m := range result.Models {
+			display := m.DisplayName
+			if display == "" {
+				display = m.ID
+			}
+			items[i] = modelPickerItem{id: m.ID, display: display}
+		}
+		return modelsResult{models: items}
 	}
 }
