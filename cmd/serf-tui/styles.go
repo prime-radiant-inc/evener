@@ -32,7 +32,6 @@ type colorTheme struct {
 
 	// Input / borders
 	inputBorderFg lipgloss.Color
-	inputPromptFg lipgloss.Color
 	inputFg       lipgloss.Color
 
 	// Pickers
@@ -64,7 +63,6 @@ var darkTheme = colorTheme{
 	toolDurFg:    lipgloss.Color("240"),
 
 	inputBorderFg: lipgloss.Color("238"),
-	inputPromptFg: lipgloss.Color("42"),
 	inputFg:       lipgloss.Color("252"),
 
 	pickerTitleFg:    lipgloss.Color("42"),
@@ -95,7 +93,6 @@ var lightTheme = colorTheme{
 	toolDurFg:    lipgloss.Color("246"),
 
 	inputBorderFg: lipgloss.Color("250"),
-	inputPromptFg: lipgloss.Color("28"),
 	inputFg:       lipgloss.Color("236"),
 
 	pickerTitleFg:    lipgloss.Color("28"),
@@ -129,7 +126,6 @@ var (
 	toolDurationStyle  lipgloss.Style
 
 	inputBorderStyle lipgloss.Style
-	inputPromptStyle lipgloss.Style
 
 	viewportStyle lipgloss.Style
 
@@ -237,9 +233,6 @@ func applyTheme(t colorTheme) {
 	inputBorderStyle = lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder(), true, false, false, false).
 		BorderForeground(t.inputBorderFg)
-
-	inputPromptStyle = lipgloss.NewStyle().
-		Foreground(t.inputPromptFg)
 
 	viewportStyle = lipgloss.NewStyle().
 		Background(t.viewportBg)

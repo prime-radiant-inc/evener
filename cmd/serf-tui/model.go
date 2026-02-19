@@ -62,7 +62,7 @@ func applyInputTheme(ta *textarea.Model) {
 func newModel(addr string, initialMessages []chatMessage) model {
 	ta := textarea.New()
 	ta.Placeholder = "Type a message..."
-	ta.Prompt = inputPromptStyle.Render("> ")
+	ta.Prompt = ""
 	ta.ShowLineNumbers = false
 	ta.SetHeight(1)
 	ta.MaxHeight = 5

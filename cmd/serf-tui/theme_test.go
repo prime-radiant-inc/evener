@@ -32,7 +32,6 @@ func TestInitTheme_SetsStyles(t *testing.T) {
 		{"toolCollapsedStyle", toolCollapsedStyle, "x"},
 		{"toolNameStyle", toolNameStyle, "x"},
 		{"inputBorderStyle", inputBorderStyle, "x"},
-		{"inputPromptStyle", inputPromptStyle, "x"},
 	}
 	for _, tt := range tests {
 		rendered := tt.style.Render(tt.input)
