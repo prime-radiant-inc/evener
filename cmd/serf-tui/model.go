@@ -465,14 +465,21 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 	switch ev.Event {
 	case "SESSION_START":
 		var d struct {
-			SessionID string `json:"session_id"`
-			Model     string `json:"model"`
-			Profile   string `json:"profile"`
+			SessionID       string `json:"session_id"`
+			Model           string `json:"model"`
+			Profile         string `json:"profile"`
+			Restored        bool   `json:"restored"`
+			Turns           int    `json:"turns"`
+			LastInputTokens int    `json:"last_input_tokens"`
 		}
 		json.Unmarshal([]byte(ev.Data), &d)
 		m.sessionID = d.SessionID
 		m.sessionModel = d.Model
 		m.sessionProfile = d.Profile
+		if d.Restored {
+			m.turns = d.Turns
+			m.contextTokens = d.LastInputTokens
+		}
 
 	case "USER_INPUT", "STEERING_INJECTED":
 		m.processing = true

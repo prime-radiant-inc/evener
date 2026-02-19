@@ -12,15 +12,16 @@ import (
 
 // SessionSnapshot holds the serializable state of a Session for persistence and resume.
 type SessionSnapshot struct {
-	ID        string          `json:"id"`
-	ProfileID string          `json:"profile_id"`
-	Model     string          `json:"model"`
-	Config    SessionConfig   `json:"config"`
-	EnvInfo   EnvironmentInfo `json:"env_info"`
-	History   []Turn          `json:"history"`
-	CreatedAt time.Time       `json:"created_at"`
-	UpdatedAt time.Time       `json:"updated_at"`
-	TurnCount int             `json:"turn_count"`
+	ID              string          `json:"id"`
+	ProfileID       string          `json:"profile_id"`
+	Model           string          `json:"model"`
+	Config          SessionConfig   `json:"config"`
+	EnvInfo         EnvironmentInfo `json:"env_info"`
+	History         []Turn          `json:"history"`
+	CreatedAt       time.Time       `json:"created_at"`
+	UpdatedAt       time.Time       `json:"updated_at"`
+	TurnCount       int             `json:"turn_count"`
+	LastInputTokens int             `json:"last_input_tokens,omitempty"`
 }
 
 const sessionsSubdir = "sessions"

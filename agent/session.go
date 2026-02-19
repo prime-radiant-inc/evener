@@ -425,9 +425,11 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 	}
 
 	s.emit(EventSessionStart, SessionStartData{
-		Profile:  profile.ID(),
-		Model:    profile.Model(),
-		Restored: true,
+		Profile:         profile.ID(),
+		Model:           profile.Model(),
+		Restored:        true,
+		Turns:           s.turns,
+		LastInputTokens: snap.LastInputTokens,
 	})
 	return s, nil
 }
@@ -448,15 +450,16 @@ func (s *Session) Snapshot() SessionSnapshot {
 	defer s.mu.Unlock()
 	now := time.Now().UTC()
 	return SessionSnapshot{
-		ID:        s.id,
-		ProfileID: s.profile.ID(),
-		Model:     s.profile.Model(),
-		Config:    s.cfg,
-		EnvInfo:   s.envInfo,
-		History:   append([]Turn{}, s.history...),
-		CreatedAt: now, // overwritten by existing file if already saved
-		UpdatedAt: now,
-		TurnCount: s.turns,
+		ID:              s.id,
+		ProfileID:       s.profile.ID(),
+		Model:           s.profile.Model(),
+		Config:          s.cfg,
+		EnvInfo:         s.envInfo,
+		History:         append([]Turn{}, s.history...),
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		TurnCount:       s.turns,
+		LastInputTokens: s.contextMgr.LastInputTokens(),
 	}
 }
 

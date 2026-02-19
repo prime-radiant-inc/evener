@@ -74,6 +74,13 @@ func (cm *ContextManager) RecordInputTokens(tokens int, historyLen int) {
 	cm.historyLenAtMeasure = historyLen
 }
 
+// LastInputTokens returns the most recently recorded input token count.
+func (cm *ContextManager) LastInputTokens() int {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	return cm.lastInputTokens
+}
+
 // Pressure returns the current context pressure as a fraction (0.0–1.0).
 func (cm *ContextManager) Pressure(history []Turn, sysPromptChars int) float64 {
 	return cm.estimatePressure(history, sysPromptChars)
