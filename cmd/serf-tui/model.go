@@ -52,6 +52,11 @@ func applyInputTheme(ta *textarea.Model) {
 		s.Text = textStyle
 		s.CursorLine = base
 	}
+	// The cursor block uses Reverse(true) which swaps fg/bg. Set the cursor
+	// Style foreground to inputFg so the reversed block is visible on the
+	// themed background.
+	ta.Cursor.Style = lipgloss.NewStyle().Foreground(activeTheme.inputFg)
+	ta.Cursor.TextStyle = lipgloss.NewStyle().Foreground(activeTheme.inputFg)
 }
 
 func newModel(addr string, initialMessages []chatMessage) model {
@@ -60,7 +65,7 @@ func newModel(addr string, initialMessages []chatMessage) model {
 	ta.Prompt = inputPromptStyle.Render("> ")
 	ta.ShowLineNumbers = false
 	ta.SetHeight(1)
-	ta.MaxHeight = 1
+	ta.MaxHeight = 5
 	ta.Focus()
 	ta.CharLimit = 0
 
@@ -142,7 +147,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "Interrupted. Press ctrl+c again to quit, or use /quit."})
 			m.refreshViewport()
 			return m, sendInterrupt(m.addr)
-		case "pgup", "ctrl+u":
+		case "pgup":
 			m.scrollMode = true
 			m.input.Blur()
 			m.viewport, _ = m.viewport.Update(msg)
@@ -157,7 +162,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
-		case "enter":
+		case "ctrl+s":
 			text := strings.TrimSpace(m.input.Value())
 			if text == "" {
 				return m, tea.Batch(cmds...)
@@ -222,13 +227,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		initMarkdownRenderer(m.width)
-		statusBarHeight := 1
-		inputHeight := 2 // 1 border row + 1 textarea row
-		vpHeight := m.height - statusBarHeight - inputHeight
-		if vpHeight < 1 {
-			vpHeight = 1
-		}
-		m.viewport = viewport.New(m.width, vpHeight)
+		m.viewport = viewport.New(m.width, m.vpHeight())
 		m.viewport.YPosition = 0
 		m.viewport.Style = viewportStyle
 		m.input.SetWidth(m.width - 2) // -2 for the prompt "> "
@@ -351,17 +350,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Update sub-components — only pass non-key messages so the viewport's
-	// built-in key bindings don't fire while the user is typing.
-	if _, isKey := msg.(tea.KeyMsg); !isKey {
-		var cmd tea.Cmd
+	// Update sub-components — only pass non-key messages to the viewport so its
+	// built-in key bindings don't fire while the user is typing. Key events go
+	// only to the input; the viewport is updated via scroll mode above.
+	var cmd tea.Cmd
+	if _, isKey := msg.(tea.KeyMsg); isKey {
+		prevHeight := m.input.Height()
+		m.input, cmd = m.input.Update(msg)
+		cmds = append(cmds, cmd)
+		// If the textarea grew or shrank, update the viewport height.
+		if m.input.Height() != prevHeight {
+			m.viewport.Height = m.vpHeight()
+		}
+	} else {
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
 		m.viewport, cmd = m.viewport.Update(msg)
-		cmds = append(cmds, cmd)
-	} else {
-		var cmd tea.Cmd
-		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
 	}
 
@@ -464,7 +468,21 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 	}
 }
 
+// vpHeight returns the height the viewport should occupy given current terminal
+// and input dimensions. statusBar=1, border=1, textarea rows=input.Height().
+func (m model) vpHeight() int {
+	h := m.height - 1 - 1 - m.input.Height()
+	if h < 1 {
+		h = 1
+	}
+	return h
+}
+
 func (m *model) refreshViewport() {
+	// Resize viewport if input height changed (textarea grew or shrank).
+	if newH := m.vpHeight(); newH != m.viewport.Height {
+		m.viewport.Height = newH
+	}
 	var lines []string
 	for _, msg := range m.messages {
 		rendered := renderMessage(msg, m.width)

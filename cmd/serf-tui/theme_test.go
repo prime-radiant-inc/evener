@@ -96,7 +96,7 @@ func TestThemeCommand_OpensPicker(t *testing.T) {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 		m = updated.(model)
 	}
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
 	m = updated.(model)
 
 	if m.themePicker == nil {
@@ -117,7 +117,7 @@ func TestThemeCommand_PickerSelectDark(t *testing.T) {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 		m = updated.(model)
 	}
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
 	m = updated.(model)
 
 	if m.themePicker == nil {
@@ -163,7 +163,7 @@ func TestThemeCommand_PickerCancel(t *testing.T) {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 		m = updated.(model)
 	}
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
 	m = updated.(model)
 
 	// Press escape to cancel.
