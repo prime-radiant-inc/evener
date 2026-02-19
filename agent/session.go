@@ -1113,11 +1113,18 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		// Accumulate usage and record exact input token count for pressure calculation.
 		if s.contextMgr != nil {
 			s.contextMgr.AddUsage(resp.Usage)
-			if resp.Usage.InputTokens > 0 {
+			totalInput := resp.Usage.InputTokens
+			if resp.Usage.CacheReadTokens != nil {
+				totalInput += *resp.Usage.CacheReadTokens
+			}
+			if resp.Usage.CacheWriteTokens != nil {
+				totalInput += *resp.Usage.CacheWriteTokens
+			}
+			if totalInput > 0 {
 				s.mu.Lock()
 				hLen := len(s.history)
 				s.mu.Unlock()
-				s.contextMgr.RecordInputTokens(resp.Usage.InputTokens, hLen)
+				s.contextMgr.RecordInputTokens(totalInput, hLen)
 			}
 		}
 

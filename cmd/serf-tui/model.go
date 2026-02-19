@@ -503,14 +503,24 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 		m.turns++
 		var d struct {
 			Usage *struct {
-				InputTokens  int `json:"input_tokens"`
-				OutputTokens int `json:"output_tokens"`
+				InputTokens  int  `json:"input_tokens"`
+				OutputTokens int  `json:"output_tokens"`
+				CacheRead    *int `json:"cache_read_tokens"`
+				CacheWrite   *int `json:"cache_write_tokens"`
 			} `json:"usage"`
 		}
 		if err := json.Unmarshal([]byte(ev.Data), &d); err == nil && d.Usage != nil {
-			m.contextTokens = d.Usage.InputTokens
-			m.turnInputTokens += d.Usage.InputTokens
-			m.turnOutputTokens += d.Usage.OutputTokens
+			u := d.Usage
+			total := u.InputTokens
+			if u.CacheRead != nil {
+				total += *u.CacheRead
+			}
+			if u.CacheWrite != nil {
+				total += *u.CacheWrite
+			}
+			m.contextTokens = total
+			m.turnInputTokens += total
+			m.turnOutputTokens += u.OutputTokens
 		}
 
 	case "ASSISTANT_TEXT_DELTA":
