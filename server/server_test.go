@@ -443,3 +443,72 @@ func TestEventsEndpoint_MethodNotAllowed(t *testing.T) {
 		t.Fatalf("status code: got %d, want 405", w.Code)
 	}
 }
+
+func TestModelsEndpoint(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+
+	srv.SetListModelsFunc(func(ctx context.Context) ([]ModelsResponseItem, error) {
+		return []ModelsResponseItem{
+			{ID: "gpt-4o", DisplayName: "gpt-4o"},
+			{ID: "gpt-4o-mini", DisplayName: "gpt-4o-mini"},
+		}, nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/models", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status code: got %d, want 200", w.Code)
+	}
+
+	var resp ModelsResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Models) != 2 {
+		t.Fatalf("got %d models, want 2", len(resp.Models))
+	}
+	if resp.Models[0].ID != "gpt-4o" {
+		t.Errorf("models[0].id = %q", resp.Models[0].ID)
+	}
+}
+
+func TestModelsEndpoint_NoFunc(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+
+	req := httptest.NewRequest(http.MethodGet, "/models", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status code: got %d, want 503", w.Code)
+	}
+}
+
+func TestModelsEndpoint_Error(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetListModelsFunc(func(ctx context.Context) ([]ModelsResponseItem, error) {
+		return nil, fmt.Errorf("upstream error")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/models", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status code: got %d, want 502", w.Code)
+	}
+}
+
+func TestModelsEndpoint_MethodNotAllowed(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+
+	req := httptest.NewRequest(http.MethodPost, "/models", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status code: got %d, want 405", w.Code)
+	}
+}

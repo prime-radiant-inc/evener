@@ -84,6 +84,7 @@ type Server struct {
 	pressureFn       func() float64
 	detailedStatusFn func() DetailedStatus
 	modelFunc        func(string)
+	listModelsFunc   func(context.Context) ([]ModelsResponseItem, error)
 	processing       bool
 	inputCh          chan string
 }
@@ -104,6 +105,7 @@ func NewServer(cfg ServerConfig) *Server {
 	s.mux.HandleFunc("/interrupt", s.handleInterrupt)
 	s.mux.HandleFunc("/compact", s.handleCompact)
 	s.mux.HandleFunc("/model", s.handleModel)
+	s.mux.HandleFunc("/models", s.handleModels)
 	s.mux.HandleFunc("/clear", s.handleClear)
 	s.mux.HandleFunc("/input", s.handleInput)
 	s.mux.HandleFunc("/events", s.handleEvents)
@@ -264,6 +266,48 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 	}
 	fn(req.Model)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ModelsResponseItem is a single model entry in the GET /models response.
+type ModelsResponseItem struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+}
+
+// ModelsResponse is the JSON response for GET /models.
+type ModelsResponse struct {
+	Models []ModelsResponseItem `json:"models"`
+}
+
+// SetListModelsFunc sets the function called by GET /models.
+func (s *Server) SetListModelsFunc(fn func(context.Context) ([]ModelsResponseItem, error)) {
+	s.mu.Lock()
+	s.listModelsFunc = fn
+	s.mu.Unlock()
+}
+
+func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.mu.RLock()
+	fn := s.listModelsFunc
+	s.mu.RUnlock()
+
+	if fn == nil {
+		http.Error(w, "model listing not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	models, err := fn(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(ModelsResponse{Models: models})
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
