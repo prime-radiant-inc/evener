@@ -1,11 +1,32 @@
 package main
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 
 	"primeradiant.com/serf/server"
 )
+
+func TestPrintResumeHint_WithSessionID(t *testing.T) {
+	var buf bytes.Buffer
+	printResumeHint(&buf, "ses_abc123")
+	out := buf.String()
+	if !strings.Contains(out, "ses_abc123") {
+		t.Errorf("expected session ID in output, got: %q", out)
+	}
+	if !strings.Contains(out, "--resume ses_abc123") {
+		t.Errorf("expected --resume flag in output, got: %q", out)
+	}
+}
+
+func TestPrintResumeHint_EmptySessionID(t *testing.T) {
+	var buf bytes.Buffer
+	printResumeHint(&buf, "")
+	if buf.Len() != 0 {
+		t.Errorf("expected no output for empty session ID, got: %q", buf.String())
+	}
+}
 
 func TestRenderDetailedStatus_BasicFields(t *testing.T) {
 	info := server.StatusInfo{

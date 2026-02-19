@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -14,7 +15,7 @@ import (
 func main() {
 	addr := flag.String("addr", "", "connect to existing server (skip embedded startup)")
 	provider := flag.String("provider", "", "LLM provider (openai, anthropic, google)")
-	model := flag.String("model", "", "LLM model identifier")
+	modelFlag := flag.String("model", "", "LLM model identifier")
 	workDir := flag.String("dir", "", "working directory")
 	stateDir := flag.String("state-dir", "", "override runtime state directory")
 	systemPrompt := flag.String("system-prompt", "", "path to a custom system prompt file")
@@ -62,7 +63,7 @@ func main() {
 		ctx := context.Background()
 		embedded, err := startEmbedded(ctx, embeddedConfig{
 			provider:           *provider,
-			model:              *model,
+			model:              *modelFlag,
 			workDir:            *workDir,
 			stateDir:           *stateDir,
 			systemPrompt:       *systemPrompt,
@@ -97,12 +98,26 @@ func main() {
 		streamSSE(ctx, serverAddr, p.Send)
 	}()
 
-	if _, err := p.Run(); err != nil {
+	finalModel, err := p.Run()
+	cancel()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "serf-tui: %v\n", err)
-		cancel()
 		os.Exit(1)
 	}
-	cancel()
+
+	if m, ok := finalModel.(model); ok {
+		printResumeHint(os.Stderr, m.sessionID)
+	}
+}
+
+// printResumeHint writes session resumption instructions to w.
+// It is a no-op when sessionID is empty.
+func printResumeHint(w io.Writer, sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	fmt.Fprintf(w, "\nSession: %s\n", sessionID)
+	fmt.Fprintf(w, "Resume:  serf-tui --resume %s\n", sessionID)
 }
 
 // pickSession resolves the state directory and shows an interactive session picker.
