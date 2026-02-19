@@ -2,11 +2,13 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -34,38 +36,42 @@ type TranscriptEntry struct {
 
 // TranscriptWriter appends turns to an immutable JSONL transcript file.
 type TranscriptWriter struct {
-	file     *os.File
-	mu       sync.Mutex
-	seq      int
+	file      *os.File
+	mu        sync.Mutex
+	seq       int
 	closeOnce sync.Once
+	closed    atomic.Bool
 }
 
 // NewTranscriptWriter creates a transcript file at path, writes the header as the first line,
 // and returns a writer that keeps the file handle open for subsequent Append calls.
 func NewTranscriptWriter(path string, header TranscriptHeader) (*TranscriptWriter, error) {
+	header.Kind = "header"
+	header.FormatVersion = 1
+
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create transcript dir: %w", err)
 	}
 
 	f, err := os.Create(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create transcript file: %w", err)
 	}
 
 	data, err := json.Marshal(header)
 	if err != nil {
 		f.Close()
-		return nil, err
+		return nil, fmt.Errorf("marshal transcript header: %w", err)
 	}
 
 	if _, err := f.Write(append(data, '\n')); err != nil {
 		f.Close()
-		return nil, err
+		return nil, fmt.Errorf("write transcript header: %w", err)
 	}
 
 	if err := f.Sync(); err != nil {
 		f.Close()
-		return nil, err
+		return nil, fmt.Errorf("sync transcript header: %w", err)
 	}
 
 	return &TranscriptWriter{file: f}, nil
@@ -74,7 +80,7 @@ func NewTranscriptWriter(path string, header TranscriptHeader) (*TranscriptWrite
 // Append writes a turn as a TranscriptEntry to the JSONL file.
 // Safe for concurrent use. No-op if the receiver is nil.
 func (w *TranscriptWriter) Append(turn Turn) error {
-	if w == nil {
+	if w == nil || w.closed.Load() {
 		return nil
 	}
 
@@ -90,14 +96,17 @@ func (w *TranscriptWriter) Append(turn Turn) error {
 
 	data, err := json.Marshal(entry)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal transcript entry: %w", err)
 	}
 
 	if _, err := w.file.Write(append(data, '\n')); err != nil {
-		return err
+		return fmt.Errorf("write transcript entry: %w", err)
 	}
 
-	return w.file.Sync()
+	if err := w.file.Sync(); err != nil {
+		return fmt.Errorf("sync transcript entry: %w", err)
+	}
+	return nil
 }
 
 // Close syncs and closes the underlying file. Idempotent: safe to call multiple times.
@@ -107,62 +116,75 @@ func (w *TranscriptWriter) Close() error {
 		return nil
 	}
 
+	w.closed.Store(true)
+
 	var closeErr error
 	w.closeOnce.Do(func() {
 		if err := w.file.Sync(); err != nil {
-			closeErr = err
+			closeErr = fmt.Errorf("sync transcript on close: %w", err)
 		}
 		if err := w.file.Close(); err != nil && closeErr == nil {
-			closeErr = err
+			closeErr = fmt.Errorf("close transcript file: %w", err)
 		}
 	})
 	return closeErr
 }
 
 // OpenTranscriptWriter opens an existing transcript file for appending.
-// Counts valid entries to determine the next seq number.
+// Reads the file once to count valid entries and determine the next seq number.
 // Truncates any partial last line for crash recovery.
 func OpenTranscriptWriter(path string) (*TranscriptWriter, error) {
-	// Read existing entries to determine seq count.
-	_, entries, err := ReadTranscript(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading transcript for resume: %w", err)
+		return nil, fmt.Errorf("read transcript for resume: %w", err)
 	}
 
 	// Truncate any trailing partial line: if the file doesn't end with '\n',
 	// find the last newline and truncate there.
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, err
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		lastNL := bytes.LastIndexByte(data, '\n')
+		if lastNL < 0 {
+			return nil, fmt.Errorf("transcript has no complete lines")
+		}
+		data = data[:lastNL+1]
+		if err := os.Truncate(path, int64(lastNL+1)); err != nil {
+			return nil, fmt.Errorf("truncate partial line: %w", err)
+		}
 	}
-	if info.Size() > 0 {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return nil, err
+
+	// Parse entries to find the max seq number.
+	maxSeq := -1
+	entryCount := 0
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+	first := true
+	for scanner.Scan() {
+		if first {
+			first = false
+			continue // skip header
 		}
-		if raw[len(raw)-1] != '\n' {
-			// Find last newline and truncate after it.
-			lastNL := -1
-			for i := len(raw) - 1; i >= 0; i-- {
-				if raw[i] == '\n' {
-					lastNL = i
-					break
-				}
-			}
-			if lastNL >= 0 {
-				if err := os.Truncate(path, int64(lastNL+1)); err != nil {
-					return nil, fmt.Errorf("truncating partial line: %w", err)
-				}
+		var entry TranscriptEntry
+		if json.Unmarshal(scanner.Bytes(), &entry) == nil && entry.Kind == "entry" {
+			entryCount++
+			if entry.Seq > maxSeq {
+				maxSeq = entry.Seq
 			}
 		}
+	}
+
+	// Use max(seq)+1 so resumed writes never collide with existing entries,
+	// even if earlier entries were lost to crash recovery.
+	nextSeq := entryCount
+	if maxSeq >= 0 {
+		nextSeq = maxSeq + 1
 	}
 
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open transcript for append: %w", err)
 	}
 
-	return &TranscriptWriter{file: f, seq: len(entries)}, nil
+	return &TranscriptWriter{file: f, seq: nextSeq}, nil
 }
 
 // ReadTranscript reads a transcript JSONL file, returning the header and all valid entries.
@@ -170,7 +192,7 @@ func OpenTranscriptWriter(path string) (*TranscriptWriter, error) {
 func ReadTranscript(path string) (TranscriptHeader, []TranscriptEntry, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return TranscriptHeader{}, nil, err
+		return TranscriptHeader{}, nil, fmt.Errorf("open transcript: %w", err)
 	}
 	defer f.Close()
 

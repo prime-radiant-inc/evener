@@ -28,9 +28,10 @@ func readTranscriptLines(t *testing.T, path string) []string {
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if line != "" {
-			lines = append(lines, line)
+		if line == "" {
+			t.Fatal("unexpected blank line in transcript")
 		}
+		lines = append(lines, line)
 	}
 	if err := scanner.Err(); err != nil {
 		t.Fatalf("scan transcript file: %v", err)
@@ -43,13 +44,11 @@ func TestTranscriptWriter_CreatesFileAndWritesHeader(t *testing.T) {
 	path := filepath.Join(dir, "nested", "transcript.jsonl")
 
 	header := TranscriptHeader{
-		Kind:          "header",
-		FormatVersion: 1,
-		SessionID:     "sess-001",
-		CreatedAt:     time.Date(2026, 2, 18, 12, 0, 0, 0, time.UTC),
-		ProfileID:     "anthropic-default",
-		Model:         "claude-opus-4-6",
-		WorkingDir:    "/tmp/test",
+		SessionID:  "sess-001",
+		CreatedAt:  time.Date(2026, 2, 18, 12, 0, 0, 0, time.UTC),
+		ProfileID:  "anthropic-default",
+		Model:      "claude-opus-4-6",
+		WorkingDir: "/tmp/test",
 	}
 
 	w, err := NewTranscriptWriter(path, header)
@@ -92,12 +91,10 @@ func TestTranscriptWriter_AppendWritesEntries(t *testing.T) {
 	path := filepath.Join(dir, "transcript.jsonl")
 
 	header := TranscriptHeader{
-		Kind:          "header",
-		FormatVersion: 1,
-		SessionID:     "sess-002",
-		CreatedAt:     time.Now().UTC(),
-		ProfileID:     "openai-default",
-		Model:         "gpt-5",
+		SessionID: "sess-002",
+		CreatedAt: time.Now().UTC(),
+		ProfileID: "openai-default",
+		Model:     "gpt-5",
 	}
 
 	w, err := NewTranscriptWriter(path, header)
@@ -163,12 +160,10 @@ func TestTranscriptWriter_SeqMonotonicallyIncreasing(t *testing.T) {
 	path := filepath.Join(dir, "transcript.jsonl")
 
 	w, err := NewTranscriptWriter(path, TranscriptHeader{
-		Kind:          "header",
-		FormatVersion: 1,
-		SessionID:     "sess-003",
-		CreatedAt:     time.Now().UTC(),
-		ProfileID:     "test",
-		Model:         "test-model",
+		SessionID: "sess-003",
+		CreatedAt: time.Now().UTC(),
+		ProfileID: "test",
+		Model:     "test-model",
 	})
 	if err != nil {
 		t.Fatalf("NewTranscriptWriter: %v", err)
@@ -204,12 +199,10 @@ func TestTranscriptWriter_CloseClosesFile(t *testing.T) {
 	path := filepath.Join(dir, "transcript.jsonl")
 
 	w, err := NewTranscriptWriter(path, TranscriptHeader{
-		Kind:          "header",
-		FormatVersion: 1,
-		SessionID:     "sess-004",
-		CreatedAt:     time.Now().UTC(),
-		ProfileID:     "test",
-		Model:         "test-model",
+		SessionID: "sess-004",
+		CreatedAt: time.Now().UTC(),
+		ProfileID: "test",
+		Model:     "test-model",
 	})
 	if err != nil {
 		t.Fatalf("NewTranscriptWriter: %v", err)
@@ -255,12 +248,10 @@ func TestTranscriptWriter_ConcurrentAppend(t *testing.T) {
 	path := filepath.Join(dir, "transcript.jsonl")
 
 	w, err := NewTranscriptWriter(path, TranscriptHeader{
-		Kind:          "header",
-		FormatVersion: 1,
-		SessionID:     "sess-005",
-		CreatedAt:     time.Now().UTC(),
-		ProfileID:     "test",
-		Model:         "test-model",
+		SessionID: "sess-005",
+		CreatedAt: time.Now().UTC(),
+		ProfileID: "test",
+		Model:     "test-model",
 	})
 	if err != nil {
 		t.Fatalf("NewTranscriptWriter: %v", err)
@@ -300,6 +291,22 @@ func TestTranscriptWriter_ConcurrentAppend(t *testing.T) {
 			t.Errorf("line %d is not valid JSON: %v", i, err)
 		}
 	}
+
+	// Verify seq uniqueness
+	seqs := map[int]bool{}
+	for _, line := range lines[1:] { // skip header
+		var entry TranscriptEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("unmarshal entry: %v", err)
+		}
+		if seqs[entry.Seq] {
+			t.Errorf("duplicate seq %d", entry.Seq)
+		}
+		seqs[entry.Seq] = true
+	}
+	if len(seqs) != 100 {
+		t.Errorf("expected 100 unique seqs, got %d", len(seqs))
+	}
 }
 
 func TestTranscriptWriter_ValidJSONL(t *testing.T) {
@@ -307,12 +314,10 @@ func TestTranscriptWriter_ValidJSONL(t *testing.T) {
 	path := filepath.Join(dir, "transcript.jsonl")
 
 	w, err := NewTranscriptWriter(path, TranscriptHeader{
-		Kind:          "header",
-		FormatVersion: 1,
-		SessionID:     "sess-006",
-		CreatedAt:     time.Now().UTC(),
-		ProfileID:     "test",
-		Model:         "test-model",
+		SessionID: "sess-006",
+		CreatedAt: time.Now().UTC(),
+		ProfileID: "test",
+		Model:     "test-model",
 	})
 	if err != nil {
 		t.Fatalf("NewTranscriptWriter: %v", err)
@@ -395,6 +400,53 @@ func TestTranscriptWriter_ValidJSONL(t *testing.T) {
 	}
 }
 
+func TestTranscriptWriter_LargeEntry(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "large.transcript.jsonl")
+
+	hdr := TranscriptHeader{SessionID: "test-large"}
+	tw, err := NewTranscriptWriter(path, hdr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a 1MB tool result
+	bigContent := strings.Repeat("x", 1024*1024)
+	msg := llm.Message{
+		Role: llm.RoleTool,
+		Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_big",
+				Content:    bigContent,
+			},
+		}},
+	}
+	turn := NewTurn(TurnToolResults, msg)
+
+	if err := tw.Append(turn); err != nil {
+		t.Fatal(err)
+	}
+	tw.Close()
+
+	// Read back and verify
+	_, entries, err := ReadTranscript(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	// Verify the content survived the round-trip
+	got, ok := entries[0].Turn.Message.Content[0].ToolResult.Content.(string)
+	if !ok {
+		t.Fatalf("expected string content, got %T", entries[0].Turn.Message.Content[0].ToolResult.Content)
+	}
+	if got != bigContent {
+		t.Errorf("content length mismatch: got %d bytes, want %d", len(got), len(bigContent))
+	}
+}
+
 // --- ReadTranscript tests ---
 
 func TestReadTranscript_ReturnsHeaderAndEntries(t *testing.T) {
@@ -402,13 +454,11 @@ func TestReadTranscript_ReturnsHeaderAndEntries(t *testing.T) {
 	path := filepath.Join(dir, "transcript.jsonl")
 
 	header := TranscriptHeader{
-		Kind:          "header",
-		FormatVersion: 1,
-		SessionID:     "sess-read-001",
-		CreatedAt:     time.Date(2026, 2, 18, 12, 0, 0, 0, time.UTC),
-		ProfileID:     "anthropic-default",
-		Model:         "claude-opus-4-6",
-		WorkingDir:    "/tmp/test",
+		SessionID:  "sess-read-001",
+		CreatedAt:  time.Date(2026, 2, 18, 12, 0, 0, 0, time.UTC),
+		ProfileID:  "anthropic-default",
+		Model:      "claude-opus-4-6",
+		WorkingDir: "/tmp/test",
 	}
 
 	w, err := NewTranscriptWriter(path, header)
@@ -464,12 +514,10 @@ func TestReadTranscript_PartialLastLine(t *testing.T) {
 	path := filepath.Join(dir, "transcript.jsonl")
 
 	header := TranscriptHeader{
-		Kind:          "header",
-		FormatVersion: 1,
-		SessionID:     "sess-partial",
-		CreatedAt:     time.Now().UTC(),
-		ProfileID:     "test",
-		Model:         "test-model",
+		SessionID: "sess-partial",
+		CreatedAt: time.Now().UTC(),
+		ProfileID: "test",
+		Model:     "test-model",
 	}
 
 	w, err := NewTranscriptWriter(path, header)
@@ -531,12 +579,10 @@ func TestReadTranscript_HeaderOnly(t *testing.T) {
 	path := filepath.Join(dir, "transcript.jsonl")
 
 	header := TranscriptHeader{
-		Kind:          "header",
-		FormatVersion: 1,
-		SessionID:     "sess-header-only",
-		CreatedAt:     time.Now().UTC(),
-		ProfileID:     "test",
-		Model:         "test-model",
+		SessionID: "sess-header-only",
+		CreatedAt: time.Now().UTC(),
+		ProfileID: "test",
+		Model:     "test-model",
 	}
 
 	w, err := NewTranscriptWriter(path, header)
@@ -566,12 +612,10 @@ func TestOpenTranscriptWriter_AppendsToExisting(t *testing.T) {
 	path := filepath.Join(dir, "transcript.jsonl")
 
 	header := TranscriptHeader{
-		Kind:          "header",
-		FormatVersion: 1,
-		SessionID:     "sess-open-001",
-		CreatedAt:     time.Now().UTC(),
-		ProfileID:     "test",
-		Model:         "test-model",
+		SessionID: "sess-open-001",
+		CreatedAt: time.Now().UTC(),
+		ProfileID: "test",
+		Model:     "test-model",
 	}
 
 	// Write header + 5 entries, then close.
@@ -622,12 +666,10 @@ func TestOpenTranscriptWriter_TruncatesPartialLine(t *testing.T) {
 	path := filepath.Join(dir, "transcript.jsonl")
 
 	header := TranscriptHeader{
-		Kind:          "header",
-		FormatVersion: 1,
-		SessionID:     "sess-open-002",
-		CreatedAt:     time.Now().UTC(),
-		ProfileID:     "test",
-		Model:         "test-model",
+		SessionID: "sess-open-002",
+		CreatedAt: time.Now().UTC(),
+		ProfileID: "test",
+		Model:     "test-model",
 	}
 
 	// Write header + 3 entries, then close.
@@ -684,12 +726,10 @@ func TestOpenTranscriptWriter_HeaderOnlyFile(t *testing.T) {
 	path := filepath.Join(dir, "transcript.jsonl")
 
 	header := TranscriptHeader{
-		Kind:          "header",
-		FormatVersion: 1,
-		SessionID:     "sess-open-003",
-		CreatedAt:     time.Now().UTC(),
-		ProfileID:     "test",
-		Model:         "test-model",
+		SessionID: "sess-open-003",
+		CreatedAt: time.Now().UTC(),
+		ProfileID: "test",
+		Model:     "test-model",
 	}
 
 	// Write header only, no entries.
@@ -1552,5 +1592,77 @@ func TestSubagent_TranscriptPersistsAfterCloseAgent(t *testing.T) {
 	// The sub-agent's first input should be the task.
 	if subEntries[0].Turn.Message.Text() != "implement auth middleware" {
 		t.Errorf("sub-agent entry 0 text = %q, want %q", subEntries[0].Turn.Message.Text(), "implement auth middleware")
+	}
+}
+
+func TestSession_TranscriptWriteFailureEmitsWarning(t *testing.T) {
+	stateDir := t.TempDir()
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("first")}
+			},
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("second")}
+			},
+		},
+	})
+
+	env := NewLocalExecutionEnvironment(t.TempDir())
+	cfg := SessionConfig{StateDir: stateDir}
+	sess, err := NewSession(c, &baseProfile{
+		id:            "openai",
+		model:         "test",
+		contextWindow: 100000,
+		basePrompt:    "test",
+	}, env, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Force-close the transcript file to cause future writes to fail.
+	sess.transcript.file.Close()
+
+	// Collect events.
+	var warnings []string
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range sess.Events() {
+			if ev.Kind == EventWarning {
+				if wd, ok := ev.Data.(WarningData); ok {
+					warnings = append(warnings, wd.Message)
+				}
+			}
+		}
+	}()
+
+	// Process input: should succeed despite transcript failures.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := sess.ProcessInput(ctx, "hello")
+	if err != nil {
+		t.Fatalf("ProcessInput failed: %v", err)
+	}
+	if out == "" {
+		t.Error("expected non-empty output")
+	}
+
+	sess.Close()
+	<-done
+
+	// Should have at least one warning about transcript write failure.
+	hasTranscriptWarning := false
+	for _, w := range warnings {
+		if strings.Contains(w, "transcript") {
+			hasTranscriptWarning = true
+			break
+		}
+	}
+	if !hasTranscriptWarning {
+		t.Errorf("expected transcript write warning, got warnings: %v", warnings)
 	}
 }

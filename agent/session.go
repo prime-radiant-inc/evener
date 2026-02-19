@@ -263,8 +263,6 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 	// Create transcript writer if state persistence is enabled.
 	if s.stateDir != "" {
 		hdr := TranscriptHeader{
-			Kind:            "header",
-			FormatVersion:   1,
 			SessionID:       s.id,
 			ParentSessionID: cfg.ParentSessionID,
 			Task:            cfg.SubagentTask,
@@ -299,6 +297,11 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 	s.skills = DiscoverSkills(env, cfg.SkillsDirs...)
 	s.contextMgr = NewContextManager(s.profile, client)
 	applyThresholdScale(s.contextMgr, cfg.CompactionThresholdScale)
+	s.contextMgr.OnCompactionTurn = func(t Turn) {
+		if err := s.transcript.Append(t); err != nil {
+			s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
+		}
+	}
 
 	// Create context strategy.
 	strat, err := selectStrategy(cfg, s.contextMgr, s)
@@ -416,13 +419,14 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		if twErr != nil {
 			// Transcript might not exist (old session). Create new.
 			hdr := TranscriptHeader{
-				Kind:          "header",
-				FormatVersion: 1,
-				SessionID:     s.id,
-				CreatedAt:     time.Now().UTC(),
-				ProfileID:     profile.ID(),
-				Model:         profile.Model(),
-				WorkingDir:    ei.WorkingDir,
+				SessionID:       s.id,
+				ParentSessionID: cfg.ParentSessionID,
+				Task:            cfg.SubagentTask,
+				CreatedAt:       time.Now().UTC(),
+				ProfileID:       profile.ID(),
+				Model:           profile.Model(),
+				WorkingDir:      ei.WorkingDir,
+				Depth:           cfg.Depth,
 			}
 			tw, twErr = NewTranscriptWriter(tpath, hdr)
 			if twErr != nil {
@@ -449,6 +453,11 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 	s.skills = DiscoverSkills(env, cfg.SkillsDirs...)
 	s.contextMgr = NewContextManager(s.profile, client)
 	applyThresholdScale(s.contextMgr, cfg.CompactionThresholdScale)
+	s.contextMgr.OnCompactionTurn = func(t Turn) {
+		if err := s.transcript.Append(t); err != nil {
+			s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
+		}
+	}
 
 	// Create context strategy.
 	strat, err := selectStrategy(cfg, s.contextMgr, s)
@@ -984,13 +993,6 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			histCopy := append([]Turn{}, s.history...)
 			s.mu.Unlock()
 
-			// Record compaction turns in the transcript.
-			s.contextMgr.OnCompactionTurn = func(t Turn) {
-				if err := s.transcript.Append(t); err != nil {
-					s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
-				}
-			}
-
 			if err := s.strategy.ManageContext(ctx, &histCopy, len(sys), s.emit); err != nil {
 				s.emit(EventWarning, WarningData{Message: "context strategy error: " + err.Error()})
 			}
@@ -1022,6 +1024,11 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 						))
 					}
 				}
+				continue
+			}
+			if t.Kind == TurnCheckpoint || t.Kind == TurnSummary {
+				// Compaction turns carry user-role messages; include as-is.
+				history = append(history, t.Message)
 				continue
 			}
 			history = append(history, t.Message)
