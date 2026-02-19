@@ -416,3 +416,142 @@ func TestSessionLogStrategy_SessionLogCheckpoint_TooFewTurns(t *testing.T) {
 		t.Fatalf("expected original 2 turns when too few for checkpoint, got %d", len(result))
 	}
 }
+
+func TestSessionLogStrategy_SessionLogCheckpoint_TurnKind(t *testing.T) {
+	// sessionLogCheckpoint() should create TurnCheckpoint, not TurnUserInput.
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "test.log.jsonl")
+
+	sls := &SessionLogStrategy{
+		log: mustNewSessionLog(t, logPath),
+	}
+
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("do something")},
+		{Kind: TurnAssistant, Message: llm.Assistant("working")},
+		{Kind: TurnUserInput, Message: llm.User("recent")},
+		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	}
+
+	result := sls.sessionLogCheckpoint(history, 2)
+
+	if len(result) < 1 {
+		t.Fatal("expected at least 1 turn in result")
+	}
+	if result[0].Kind != TurnCheckpoint {
+		t.Errorf("expected TurnCheckpoint for session log checkpoint, got %s", result[0].Kind)
+	}
+}
+
+func TestSessionLogStrategy_FiresOnCompactionTurn_Checkpoint(t *testing.T) {
+	client := llm.NewClient()
+	profile := NewOpenAIProfile("gpt-5.2")
+	cm := NewContextManager(profile, client)
+	cm.ObservationMaskThreshold = 0.0001
+	cm.ThinkingClearThreshold = 0.0001
+	cm.CheckpointThreshold = 0.0001
+	cm.SummarizeThreshold = 2.0 // Disable layer 4.
+	cm.PreserveRecentTurns = 2
+
+	var callbackTurns []Turn
+	cm.OnCompactionTurn = func(t Turn) {
+		callbackTurns = append(callbackTurns, t)
+	}
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "test.log.jsonl")
+	sls := &SessionLogStrategy{
+		cm:  cm,
+		log: mustNewSessionLog(t, logPath),
+	}
+
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("fix the bug")},
+		{Kind: TurnAssistant, Message: llm.Assistant("I'll fix it")},
+		{Kind: TurnUserInput, Message: llm.User("also fix tests")},
+		{Kind: TurnAssistant, Message: llm.Assistant("fixing tests")},
+		{Kind: TurnUserInput, Message: llm.User("status")},
+		{Kind: TurnAssistant, Message: llm.Assistant("almost done")},
+	}
+
+	emitFn := func(kind EventKind, data any) {}
+
+	err := sls.ManageContext(context.Background(), &history, 0, emitFn)
+	if err != nil {
+		t.Fatalf("ManageContext returned error: %v", err)
+	}
+
+	// Callback should have fired with the checkpoint turn.
+	if len(callbackTurns) != 1 {
+		t.Fatalf("expected 1 callback turn, got %d", len(callbackTurns))
+	}
+	if callbackTurns[0].Kind != TurnCheckpoint {
+		t.Errorf("expected TurnCheckpoint, got %s", callbackTurns[0].Kind)
+	}
+	if !strings.Contains(callbackTurns[0].Message.Text(), "[CONTEXT CHECKPOINT - SESSION LOG]") {
+		t.Errorf("expected session log checkpoint content, got: %s", callbackTurns[0].Message.Text()[:80])
+	}
+}
+
+func TestSessionLogStrategy_FiresOnCompactionTurn_Summarize(t *testing.T) {
+	// When LLM summarization runs (layer 4), the callback should fire with summary turn.
+	client := llm.NewClient()
+	f := &stubSummarizeAdapter{
+		name: "openai",
+		respFn: func(req llm.Request) (llm.Response, error) {
+			return llm.Response{
+				Model:   "gpt-4.1-mini",
+				Message: llm.Assistant("Summary of the conversation so far."),
+			}, nil
+		},
+	}
+	client.Register(f)
+
+	profile := NewOpenAIProfile("gpt-5.2")
+	cm := NewContextManager(profile, client)
+	// All thresholds very low so all layers fire.
+	cm.ObservationMaskThreshold = 0.0001
+	cm.ThinkingClearThreshold = 0.0001
+	cm.CheckpointThreshold = 0.0001
+	cm.SummarizeThreshold = 0.0001
+	cm.PreserveRecentTurns = 2
+
+	var callbackTurns []Turn
+	cm.OnCompactionTurn = func(t Turn) {
+		callbackTurns = append(callbackTurns, t)
+	}
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "test.log.jsonl")
+	sls := &SessionLogStrategy{
+		cm:  cm,
+		log: mustNewSessionLog(t, logPath),
+	}
+
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("fix the bug")},
+		{Kind: TurnAssistant, Message: llm.Assistant("I'll fix it")},
+		{Kind: TurnUserInput, Message: llm.User("also fix tests")},
+		{Kind: TurnAssistant, Message: llm.Assistant("fixing tests")},
+		{Kind: TurnUserInput, Message: llm.User("status")},
+		{Kind: TurnAssistant, Message: llm.Assistant("almost done")},
+	}
+
+	emitFn := func(kind EventKind, data any) {}
+
+	err := sls.ManageContext(context.Background(), &history, 0, emitFn)
+	if err != nil {
+		t.Fatalf("ManageContext returned error: %v", err)
+	}
+
+	// Should have 2 callback turns: checkpoint + summary.
+	if len(callbackTurns) != 2 {
+		t.Fatalf("expected 2 callback turns (checkpoint+summary), got %d", len(callbackTurns))
+	}
+	if callbackTurns[0].Kind != TurnCheckpoint {
+		t.Errorf("expected first callback to be TurnCheckpoint, got %s", callbackTurns[0].Kind)
+	}
+	if callbackTurns[1].Kind != TurnSummary {
+		t.Errorf("expected second callback to be TurnSummary, got %s", callbackTurns[1].Kind)
+	}
+}

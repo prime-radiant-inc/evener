@@ -106,6 +106,9 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]T
 			EstTokensBefore: before,
 			EstTokensAfter:  after,
 		})
+		if s.cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == TurnCheckpoint {
+			s.cm.OnCompactionTurn((*history)[0])
+		}
 		compacted = true
 		p = pressure()
 	}
@@ -129,6 +132,9 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]T
 				EstTokensBefore: before,
 				EstTokensAfter:  after,
 			})
+			if s.cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == TurnSummary {
+				s.cm.OnCompactionTurn((*history)[0])
+			}
 			compacted = true
 		}
 	}
@@ -204,7 +210,7 @@ Write ONLY the checkpoint content. Be specific and concise (under 500 words). Fo
 	}
 
 	checkpointText := "[CONTEXT CHECKPOINT - PREDICTIVE]\n" + resp.Text() + "\n[END CHECKPOINT]"
-	checkpointTurn := NewTurn(TurnUserInput, llm.User(checkpointText))
+	checkpointTurn := NewTurn(TurnCheckpoint, llm.User(checkpointText))
 
 	result := make([]Turn, 0, 1+preserveRecent)
 	result = append(result, checkpointTurn)

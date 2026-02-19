@@ -121,6 +121,9 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]Turn,
 			EstTokensBefore: before,
 			EstTokensAfter:  after,
 		})
+		if s.cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == TurnCheckpoint {
+			s.cm.OnCompactionTurn((*history)[0])
+		}
 		compacted = true
 		p = estimatePressure()
 	}
@@ -144,6 +147,9 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]Turn,
 				EstTokensBefore: before,
 				EstTokensAfter:  after,
 			})
+			if s.cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == TurnSummary {
+				s.cm.OnCompactionTurn((*history)[0])
+			}
 			compacted = true
 		}
 	}
@@ -190,7 +196,7 @@ func (s *SessionLogStrategy) sessionLogCheckpoint(history []Turn, preserveRecent
 	}
 	b.WriteString("\n[END CHECKPOINT]\n")
 
-	checkpointTurn := NewTurn(TurnUserInput, llm.User(b.String()))
+	checkpointTurn := NewTurn(TurnCheckpoint, llm.User(b.String()))
 	result := make([]Turn, 0, 1+preserveRecent)
 	result = append(result, checkpointTurn)
 	result = append(result, history[cutoff:]...)

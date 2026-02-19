@@ -146,3 +146,47 @@ func TestAggressiveMaskObservations_SkipsAlreadyMasked(t *testing.T) {
 		t.Errorf("already-masked content should be unchanged, got: %s", content)
 	}
 }
+
+func TestObsMaskStrategy_ManageContext_FiresOnCompactionTurn_Checkpoint(t *testing.T) {
+	client := llm.NewClient()
+	profile := NewOpenAIProfile("gpt-5.2")
+	cm := NewContextManager(profile, client)
+	// Set thresholds so both layers fire.
+	cm.ObservationMaskThreshold = 0.0001
+	cm.CheckpointThreshold = 0.0001
+	cm.PreserveRecentTurns = 2
+
+	var callbackTurns []Turn
+	cm.OnCompactionTurn = func(t Turn) {
+		callbackTurns = append(callbackTurns, t)
+	}
+
+	s := NewObsMaskStrategy(cm)
+
+	history := []Turn{
+		NewTurn(TurnUserInput, llm.User("fix the bug in auth.go")),
+		NewTurn(TurnAssistant, llm.Assistant("I'll fix it")),
+		NewTurn(TurnUserInput, llm.User("also fix tests")),
+		NewTurn(TurnAssistant, llm.Assistant("fixing tests")),
+		NewTurn(TurnUserInput, llm.User("what's the status")),
+		NewTurn(TurnAssistant, llm.Assistant("almost done")),
+	}
+
+	emitFn := func(kind EventKind, data any) {}
+
+	err := s.ManageContext(context.Background(), &history, 0, emitFn)
+	if err != nil {
+		t.Fatalf("ManageContext returned error: %v", err)
+	}
+
+	// Callback should have been fired with the checkpoint turn.
+	if len(callbackTurns) != 1 {
+		t.Fatalf("expected 1 callback turn, got %d", len(callbackTurns))
+	}
+	if callbackTurns[0].Kind != TurnCheckpoint {
+		t.Errorf("expected TurnCheckpoint, got %s", callbackTurns[0].Kind)
+	}
+	if !strings.Contains(callbackTurns[0].Message.Text(), "[CONTEXT CHECKPOINT]") {
+		t.Errorf("expected checkpoint content, got: %s", callbackTurns[0].Message.Text()[:80])
+	}
+}

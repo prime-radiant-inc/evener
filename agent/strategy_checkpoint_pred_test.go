@@ -171,3 +171,230 @@ func TestCheckpointPredStrategy_PredictiveCheckpoint_WithLLM(t *testing.T) {
 		t.Errorf("expected LLM-generated checkpoint content, got: %s", first)
 	}
 }
+
+func TestCheckpointPredStrategy_PredictiveCheckpoint_TurnKind(t *testing.T) {
+	// predictiveCheckpoint() should create TurnCheckpoint, not TurnUserInput.
+	client := llm.NewClient()
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Model:   "gpt-4.1-mini",
+					Finish:  llm.FinishReason{Reason: llm.FinishReasonStop},
+					Message: llm.Assistant("Predicted checkpoint content."),
+				}
+			},
+		},
+	}
+	client.Register(f)
+
+	profile := NewOpenAIProfile("gpt-5.2")
+	cm := NewContextManager(profile, client)
+	cm.ObservationMaskThreshold = 0.0001
+	cm.ThinkingClearThreshold = 0.0001
+	cm.CheckpointThreshold = 0.0001
+	cm.SummarizeThreshold = 2.0
+	cm.PreserveRecentTurns = 2
+
+	s := NewCheckpointPredStrategy(cm)
+
+	history := []Turn{
+		NewTurn(TurnUserInput, llm.User("fix the bug")),
+		NewTurn(TurnAssistant, llm.Assistant("I'll fix it")),
+		NewTurn(TurnUserInput, llm.User("also fix tests")),
+		NewTurn(TurnAssistant, llm.Assistant("fixing tests")),
+		NewTurn(TurnUserInput, llm.User("status")),
+		NewTurn(TurnAssistant, llm.Assistant("almost done")),
+	}
+
+	emitFn := func(kind EventKind, data any) {}
+
+	err := s.ManageContext(context.Background(), &history, 0, emitFn)
+	if err != nil {
+		t.Fatalf("ManageContext returned error: %v", err)
+	}
+
+	// First turn should be TurnCheckpoint, not TurnUserInput.
+	if history[0].Kind != TurnCheckpoint {
+		t.Errorf("expected TurnCheckpoint for predictive checkpoint, got %s", history[0].Kind)
+	}
+}
+
+func TestCheckpointPredStrategy_FiresOnCompactionTurn_FallbackCheckpoint(t *testing.T) {
+	// When predictiveCheckpoint fails and falls back to deterministic checkpoint,
+	// the callback should fire with the checkpoint turn.
+	client := llm.NewClient()
+	profile := NewOpenAIProfile("gpt-5.2")
+	cm := NewContextManager(profile, client)
+	cm.ObservationMaskThreshold = 0.0001
+	cm.ThinkingClearThreshold = 0.0001
+	cm.CheckpointThreshold = 0.0001
+	cm.SummarizeThreshold = 2.0
+	cm.PreserveRecentTurns = 2
+
+	var callbackTurns []Turn
+	cm.OnCompactionTurn = func(t Turn) {
+		callbackTurns = append(callbackTurns, t)
+	}
+
+	// No adapter registered = LLM calls fail → fallback to deterministic checkpoint.
+	s := NewCheckpointPredStrategy(cm)
+
+	history := []Turn{
+		NewTurn(TurnUserInput, llm.User("fix the bug")),
+		NewTurn(TurnAssistant, llm.Assistant("I'll fix it")),
+		NewTurn(TurnUserInput, llm.User("also fix tests")),
+		NewTurn(TurnAssistant, llm.Assistant("fixing tests")),
+		NewTurn(TurnUserInput, llm.User("status")),
+		NewTurn(TurnAssistant, llm.Assistant("almost done")),
+	}
+
+	emitFn := func(kind EventKind, data any) {}
+
+	err := s.ManageContext(context.Background(), &history, 0, emitFn)
+	if err != nil {
+		t.Fatalf("ManageContext returned error: %v", err)
+	}
+
+	// Callback should have fired with the checkpoint turn.
+	if len(callbackTurns) != 1 {
+		t.Fatalf("expected 1 callback turn for fallback checkpoint, got %d", len(callbackTurns))
+	}
+	if callbackTurns[0].Kind != TurnCheckpoint {
+		t.Errorf("expected TurnCheckpoint, got %s", callbackTurns[0].Kind)
+	}
+}
+
+func TestCheckpointPredStrategy_FiresOnCompactionTurn_PredictiveCheckpoint(t *testing.T) {
+	// When predictiveCheckpoint succeeds, the callback should fire with the checkpoint turn.
+	client := llm.NewClient()
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Model:   "gpt-4.1-mini",
+					Finish:  llm.FinishReason{Reason: llm.FinishReasonStop},
+					Message: llm.Assistant("Predicted checkpoint content."),
+				}
+			},
+		},
+	}
+	client.Register(f)
+
+	profile := NewOpenAIProfile("gpt-5.2")
+	cm := NewContextManager(profile, client)
+	cm.ObservationMaskThreshold = 0.0001
+	cm.ThinkingClearThreshold = 0.0001
+	cm.CheckpointThreshold = 0.0001
+	cm.SummarizeThreshold = 2.0
+	cm.PreserveRecentTurns = 2
+
+	var callbackTurns []Turn
+	cm.OnCompactionTurn = func(t Turn) {
+		callbackTurns = append(callbackTurns, t)
+	}
+
+	s := NewCheckpointPredStrategy(cm)
+
+	history := []Turn{
+		NewTurn(TurnUserInput, llm.User("fix the bug")),
+		NewTurn(TurnAssistant, llm.Assistant("I'll fix it")),
+		NewTurn(TurnUserInput, llm.User("also fix tests")),
+		NewTurn(TurnAssistant, llm.Assistant("fixing tests")),
+		NewTurn(TurnUserInput, llm.User("status")),
+		NewTurn(TurnAssistant, llm.Assistant("almost done")),
+	}
+
+	emitFn := func(kind EventKind, data any) {}
+
+	err := s.ManageContext(context.Background(), &history, 0, emitFn)
+	if err != nil {
+		t.Fatalf("ManageContext returned error: %v", err)
+	}
+
+	// Callback should have fired with the predictive checkpoint turn.
+	if len(callbackTurns) != 1 {
+		t.Fatalf("expected 1 callback turn for predictive checkpoint, got %d", len(callbackTurns))
+	}
+	if callbackTurns[0].Kind != TurnCheckpoint {
+		t.Errorf("expected TurnCheckpoint, got %s", callbackTurns[0].Kind)
+	}
+	if !strings.Contains(callbackTurns[0].Message.Text(), "[CONTEXT CHECKPOINT - PREDICTIVE]") {
+		t.Errorf("expected predictive checkpoint content, got: %s", callbackTurns[0].Message.Text()[:80])
+	}
+}
+
+func TestCheckpointPredStrategy_FiresOnCompactionTurn_Summarize(t *testing.T) {
+	// When LLM summarization runs (layer 4), the callback should fire with the summary turn.
+	client := llm.NewClient()
+	callCount := 0
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			// First call: predictive checkpoint.
+			func(req llm.Request) llm.Response {
+				callCount++
+				return llm.Response{
+					Model:   "gpt-4.1-mini",
+					Finish:  llm.FinishReason{Reason: llm.FinishReasonStop},
+					Message: llm.Assistant("Predicted checkpoint."),
+				}
+			},
+			// Second call: LLM summarization.
+			func(req llm.Request) llm.Response {
+				callCount++
+				return llm.Response{
+					Model:   "gpt-4.1-mini",
+					Finish:  llm.FinishReason{Reason: llm.FinishReasonStop},
+					Message: llm.Assistant("Summary of the conversation so far."),
+				}
+			},
+		},
+	}
+	client.Register(f)
+
+	profile := NewOpenAIProfile("gpt-5.2")
+	cm := NewContextManager(profile, client)
+	// All thresholds very low so all layers fire.
+	cm.ObservationMaskThreshold = 0.0001
+	cm.ThinkingClearThreshold = 0.0001
+	cm.CheckpointThreshold = 0.0001
+	cm.SummarizeThreshold = 0.0001
+	cm.PreserveRecentTurns = 2
+
+	var callbackTurns []Turn
+	cm.OnCompactionTurn = func(t Turn) {
+		callbackTurns = append(callbackTurns, t)
+	}
+
+	s := NewCheckpointPredStrategy(cm)
+
+	history := []Turn{
+		NewTurn(TurnUserInput, llm.User("fix the bug")),
+		NewTurn(TurnAssistant, llm.Assistant("I'll fix it")),
+		NewTurn(TurnUserInput, llm.User("also fix tests")),
+		NewTurn(TurnAssistant, llm.Assistant("fixing tests")),
+		NewTurn(TurnUserInput, llm.User("status")),
+		NewTurn(TurnAssistant, llm.Assistant("almost done")),
+	}
+
+	emitFn := func(kind EventKind, data any) {}
+
+	err := s.ManageContext(context.Background(), &history, 0, emitFn)
+	if err != nil {
+		t.Fatalf("ManageContext returned error: %v", err)
+	}
+
+	// Should have 2 callback turns: checkpoint + summary.
+	if len(callbackTurns) != 2 {
+		t.Fatalf("expected 2 callback turns (checkpoint+summary), got %d", len(callbackTurns))
+	}
+	if callbackTurns[0].Kind != TurnCheckpoint {
+		t.Errorf("expected first callback to be TurnCheckpoint, got %s", callbackTurns[0].Kind)
+	}
+	if callbackTurns[1].Kind != TurnSummary {
+		t.Errorf("expected second callback to be TurnSummary, got %s", callbackTurns[1].Kind)
+	}
+}
