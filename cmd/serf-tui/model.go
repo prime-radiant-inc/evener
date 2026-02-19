@@ -585,9 +585,13 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 				if tc.Output == "" {
 					tc.Output = d.Result
 				}
-				// Smart collapse: expand if short
-				lines := strings.Count(tc.Output, "\n") + 1
-				tc.Expanded = lines <= toolCollapseThreshold
+				// Auto-expand: expand if Detail exists, or if output is short.
+				if tc.Detail != "" {
+					tc.Expanded = true
+				} else {
+					lines := strings.Count(tc.Output, "\n") + 1
+					tc.Expanded = lines <= toolCollapseThreshold
+				}
 			}
 		}
 		delete(m.activeTools, d.CallID)
