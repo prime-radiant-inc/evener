@@ -376,6 +376,12 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		return nil, err
 	}
 
+	// Seed the context manager with the snapshot's token count so pressure
+	// estimation is accurate on the very first turn after resume.
+	if snap.LastInputTokens > 0 && s.contextMgr != nil {
+		s.contextMgr.RecordInputTokens(snap.LastInputTokens, len(s.history))
+	}
+
 	// Open or create transcript for appending.
 	if s.stateDir != "" {
 		tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
