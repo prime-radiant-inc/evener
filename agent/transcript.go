@@ -87,6 +87,12 @@ func (w *TranscriptWriter) Append(turn Turn) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	// Re-check after acquiring lock: Close may have raced between the
+	// fast-path check above and the lock acquisition.
+	if w.closed.Load() {
+		return nil
+	}
+
 	entry := TranscriptEntry{
 		Kind: "entry",
 		Seq:  w.seq,
@@ -116,7 +122,10 @@ func (w *TranscriptWriter) Close() error {
 		return nil
 	}
 
+	// Acquire mu so any in-flight Append finishes before we close.
+	w.mu.Lock()
 	w.closed.Store(true)
+	w.mu.Unlock()
 
 	var closeErr error
 	w.closeOnce.Do(func() {
@@ -172,9 +181,13 @@ func OpenTranscriptWriter(path string) (*TranscriptWriter, error) {
 		}
 	}
 
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scanning transcript entries: %w", err)
+	}
+
 	// Use max(seq)+1 so resumed writes never collide with existing entries,
 	// even if earlier entries were lost to crash recovery.
-	nextSeq := entryCount
+	nextSeq := 0
 	if maxSeq >= 0 {
 		nextSeq = maxSeq + 1
 	}
