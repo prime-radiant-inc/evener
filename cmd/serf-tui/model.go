@@ -27,6 +27,7 @@ type model struct {
 	sessionProfile string
 	sessionID      string
 	turns          int
+	contextTokens  int // input tokens from last ASSISTANT_TEXT_END
 
 	// UI components
 	viewport viewport.Model
@@ -482,6 +483,14 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 
 	case "ASSISTANT_TEXT_END":
 		m.turns++
+		var d struct {
+			Usage *struct {
+				InputTokens int `json:"input_tokens"`
+			} `json:"usage"`
+		}
+		if err := json.Unmarshal([]byte(ev.Data), &d); err == nil && d.Usage != nil {
+			m.contextTokens = d.Usage.InputTokens
+		}
 
 	case "ASSISTANT_TEXT_DELTA":
 		var d struct {
@@ -622,7 +631,7 @@ func (m model) View() string {
 		Width(m.width).
 		Height(m.height)
 
-	statusBar := renderStatusBar(m.connected, m.sessionModel, m.sessionID, m.turns, m.scrollMode, m.width)
+	statusBar := renderStatusBar(m.connected, m.sessionModel, m.sessionID, m.turns, m.contextTokens, m.scrollMode, m.width)
 
 	var body string
 	if m.picker != nil {
