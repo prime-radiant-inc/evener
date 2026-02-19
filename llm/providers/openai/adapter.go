@@ -810,6 +810,63 @@ func fromResponses(raw map[string]any, requestedModel string) llm.Response {
 	return r
 }
 
+func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
+	if a.Client == nil {
+		a.Client = &http.Client{Timeout: 0}
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, a.BaseURL+"/v1/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	a.setHeaders(httpReq)
+
+	resp, err := a.Client.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("list models: HTTP %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Data []struct {
+			ID      string `json:"id"`
+			OwnedBy string `json:"owned_by"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	var models []llm.ModelInfo
+	for _, m := range result.Data {
+		if skipOpenAIModel(m.ID) {
+			continue
+		}
+		models = append(models, llm.ModelInfo{
+			ID:          m.ID,
+			Provider:    "openai",
+			DisplayName: m.ID,
+		})
+	}
+	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
+	return models, nil
+}
+
+func skipOpenAIModel(id string) bool {
+	lower := strings.ToLower(id)
+	prefixes := []string{"text-embedding", "dall-e", "tts-", "whisper", "davinci", "babbage", "embedding"}
+	for _, p := range prefixes {
+		if strings.HasPrefix(lower, p) || strings.Contains(lower, p) {
+			return true
+		}
+	}
+	return false
+}
+
 func parseUsage(u map[string]any) llm.Usage {
 	usage := llm.Usage{
 		InputTokens:  llm.IntFromAny(u["input_tokens"]),

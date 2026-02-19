@@ -1679,6 +1679,72 @@ func TestComplete_UsageRaw_ContainsProviderData(t *testing.T) {
 	}
 }
 
+func TestAdapter_ListModels(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/models" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer test-key" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"object": "list",
+			"data": [
+				{"id": "gpt-4o", "object": "model", "owned_by": "openai"},
+				{"id": "gpt-4o-mini", "object": "model", "owned_by": "openai"},
+				{"id": "text-embedding-3-small", "object": "model", "owned_by": "openai"},
+				{"id": "dall-e-3", "object": "model", "owned_by": "openai"},
+				{"id": "tts-1", "object": "model", "owned_by": "openai"},
+				{"id": "whisper-1", "object": "model", "owned_by": "openai"},
+				{"id": "ft:gpt-4o:my-org:custom:id", "object": "model", "owned_by": "user"}
+			]
+		}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	models, err := a.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+
+	ids := make(map[string]bool)
+	for _, m := range models {
+		ids[m.ID] = true
+	}
+	if !ids["gpt-4o"] {
+		t.Error("missing gpt-4o")
+	}
+	if !ids["gpt-4o-mini"] {
+		t.Error("missing gpt-4o-mini")
+	}
+	if ids["text-embedding-3-small"] {
+		t.Error("should filter out embedding model")
+	}
+	if ids["dall-e-3"] {
+		t.Error("should filter out dall-e model")
+	}
+	if ids["tts-1"] {
+		t.Error("should filter out tts model")
+	}
+	if ids["whisper-1"] {
+		t.Error("should filter out whisper model")
+	}
+	for _, m := range models {
+		if m.Provider != "openai" {
+			t.Errorf("model %s: provider = %q, want openai", m.ID, m.Provider)
+		}
+	}
+	for i := 1; i < len(models); i++ {
+		if models[i].ID < models[i-1].ID {
+			t.Errorf("models not sorted: %s before %s", models[i-1].ID, models[i].ID)
+		}
+	}
+}
+
 func contentKinds(parts []llm.ContentPart) []string {
 	var kinds []string
 	for _, p := range parts {
