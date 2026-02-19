@@ -6,7 +6,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-func renderStatusBar(connected bool, model, sessionID string, turns, contextTokens int, scrollMode bool, width int) string {
+func renderStatusBar(connected bool, model, sessionID string, turns, contextTokens int, processing bool, turnIn, turnOut int, scrollMode bool, width int) string {
 	var connIndicator string
 	if connected {
 		connIndicator = statusConnected.Render("● connected")
@@ -20,7 +20,9 @@ func renderStatusBar(connected bool, model, sessionID string, turns, contextToke
 		right = scrollModeStyle.Render(" SCROLL  esc to exit ")
 	} else if model != "" {
 		right = fmt.Sprintf("model: %s  turns: %d", model, turns)
-		if contextTokens > 0 {
+		if processing && (turnIn > 0 || turnOut > 0) {
+			right += fmt.Sprintf("  ↑%s ↓%s", formatTokens(turnIn), formatTokens(turnOut))
+		} else if contextTokens > 0 {
 			right += fmt.Sprintf("  ctx: %s", formatTokens(contextTokens))
 		}
 		right += " "

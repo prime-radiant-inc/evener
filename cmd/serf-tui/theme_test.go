@@ -214,7 +214,7 @@ func TestThemePicker_ViewContainsThemes(t *testing.T) {
 func TestRenderStatusBar_Width(t *testing.T) {
 	initTheme()
 	for _, w := range []int{40, 80, 120, 200} {
-		rendered := renderStatusBar(true, "claude-3-5-sonnet", "sess-abc", 5, 42000, false, w)
+		rendered := renderStatusBar(true, "claude-3-5-sonnet", "sess-abc", 5, 42000, false, 0, 0, false, w)
 		got := lipgloss.Width(rendered)
 		if got != w {
 			t.Errorf("renderStatusBar width=%d: lipgloss.Width = %d, want %d", w, got, w)
@@ -226,7 +226,7 @@ func TestRenderStatusBar_Width(t *testing.T) {
 func TestRenderStatusBar_Width_Disconnected(t *testing.T) {
 	initTheme()
 	for _, w := range []int{40, 80, 120} {
-		rendered := renderStatusBar(false, "", "", 0, 0, false, w)
+		rendered := renderStatusBar(false, "", "", 0, 0, false, 0, 0, false, w)
 		got := lipgloss.Width(rendered)
 		if got != w {
 			t.Errorf("renderStatusBar (disconnected) width=%d: lipgloss.Width = %d, want %d", w, got, w)

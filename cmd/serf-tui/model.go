@@ -28,6 +28,9 @@ type model struct {
 	sessionID      string
 	turns          int
 	contextTokens  int // input tokens from last ASSISTANT_TEXT_END
+	processing     bool
+	turnInputTokens  int // input tokens accumulated since last USER_INPUT
+	turnOutputTokens int // output tokens accumulated since last USER_INPUT
 
 	// UI components
 	viewport viewport.Model
@@ -471,6 +474,14 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 		m.sessionModel = d.Model
 		m.sessionProfile = d.Profile
 
+	case "USER_INPUT", "STEERING_INJECTED":
+		m.processing = true
+		m.turnInputTokens = 0
+		m.turnOutputTokens = 0
+
+	case "SESSION_END":
+		m.processing = false
+
 	case "COMMUNICATE":
 		var d struct {
 			Action  string `json:"action"`
@@ -485,11 +496,14 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 		m.turns++
 		var d struct {
 			Usage *struct {
-				InputTokens int `json:"input_tokens"`
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
 			} `json:"usage"`
 		}
 		if err := json.Unmarshal([]byte(ev.Data), &d); err == nil && d.Usage != nil {
 			m.contextTokens = d.Usage.InputTokens
+			m.turnInputTokens += d.Usage.InputTokens
+			m.turnOutputTokens += d.Usage.OutputTokens
 		}
 
 	case "ASSISTANT_TEXT_DELTA":
@@ -631,7 +645,7 @@ func (m model) View() string {
 		Width(m.width).
 		Height(m.height)
 
-	statusBar := renderStatusBar(m.connected, m.sessionModel, m.sessionID, m.turns, m.contextTokens, m.scrollMode, m.width)
+	statusBar := renderStatusBar(m.connected, m.sessionModel, m.sessionID, m.turns, m.contextTokens, m.processing, m.turnInputTokens, m.turnOutputTokens, m.scrollMode, m.width)
 
 	var body string
 	if m.picker != nil {
