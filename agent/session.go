@@ -628,6 +628,11 @@ func (s *Session) Close() {
 }
 
 func (s *Session) ProcessInput(ctx context.Context, input string) (string, error) {
+	// Reset so SESSION_END can fire at the end of this input's processing.
+	s.mu.Lock()
+	s.sessionEndEmitted = false
+	s.mu.Unlock()
+
 	outputs := []string{}
 	next := input
 	for {
