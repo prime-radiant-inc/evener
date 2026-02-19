@@ -182,8 +182,7 @@ func currentThemeName() string {
 func applyTheme(t colorTheme) {
 	statusBarStyle = lipgloss.NewStyle().
 		Background(t.statusBarBg).
-		Foreground(t.statusBarFg).
-		Padding(0, 1)
+		Foreground(t.statusBarFg)
 
 	statusConnected = lipgloss.NewStyle().
 		Foreground(t.connected).
@@ -227,7 +226,6 @@ func applyTheme(t colorTheme) {
 		Foreground(t.toolDurFg)
 
 	inputBorderStyle = lipgloss.NewStyle().
-		Background(t.inputBg).
 		Border(lipgloss.NormalBorder(), true, false, false, false).
 		BorderForeground(t.inputBorderFg)
 

@@ -210,18 +210,15 @@ func TestThemePicker_ViewContainsThemes(t *testing.T) {
 	}
 }
 
-// TestRenderStatusBar_Width verifies that the rendered status bar content is
-// (width - 2) columns wide. The statusBarStyle has Padding(0,1) which adds one
-// column on each side, making total visual width = width. lipgloss.Width()
-// measures only the content area (without padding), so expected = width-2.
+// TestRenderStatusBar_Width verifies that the rendered status bar is exactly
+// terminal-width columns wide (no padding — spacing is embedded in the content string).
 func TestRenderStatusBar_Width(t *testing.T) {
 	initTheme()
 	for _, w := range []int{40, 80, 120, 200} {
 		rendered := renderStatusBar(true, "claude-3-5-sonnet", "sess-abc", 5, w)
 		got := lipgloss.Width(rendered)
-		want := w - 2
-		if got != want {
-			t.Errorf("renderStatusBar width=%d: lipgloss.Width = %d, want %d (visual = %d)", w, got, want, w)
+		if got != w {
+			t.Errorf("renderStatusBar width=%d: lipgloss.Width = %d, want %d", w, got, w)
 		}
 	}
 }
@@ -232,9 +229,8 @@ func TestRenderStatusBar_Width_Disconnected(t *testing.T) {
 	for _, w := range []int{40, 80, 120} {
 		rendered := renderStatusBar(false, "", "", 0, w)
 		got := lipgloss.Width(rendered)
-		want := w - 2
-		if got != want {
-			t.Errorf("renderStatusBar (disconnected) width=%d: lipgloss.Width = %d, want %d", w, got, want)
+		if got != w {
+			t.Errorf("renderStatusBar (disconnected) width=%d: lipgloss.Width = %d, want %d", w, got, w)
 		}
 	}
 }

@@ -45,6 +45,7 @@ func newModel(addr string, initialMessages []chatMessage) model {
 	ta.Prompt = inputPromptStyle.Render("> ")
 	ta.ShowLineNumbers = false
 	ta.SetHeight(1)
+	ta.MaxHeight = 1
 	ta.Focus()
 	ta.CharLimit = 0
 
@@ -93,6 +94,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					setTheme(p.selected)
 					initMarkdownRenderer(m.width)
 					m.viewport.Style = viewportStyle
+					inputBg := lipgloss.NewStyle().Background(activeTheme.inputBg)
+					m.input.FocusedStyle.Base = inputBg
+					m.input.BlurredStyle.Base = inputBg
 					m.messages = append(m.messages, chatMessage{
 						Kind: msgSystem,
 						Text: fmt.Sprintf("Switched to %s theme.", p.selected),
@@ -189,7 +193,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		initMarkdownRenderer(m.width)
 		statusBarHeight := 1
-		inputHeight := 3
+		inputHeight := 2 // 1 border row + 1 textarea row
 		vpHeight := m.height - statusBarHeight - inputHeight
 		if vpHeight < 1 {
 			vpHeight = 1
@@ -197,7 +201,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport = viewport.New(m.width, vpHeight)
 		m.viewport.YPosition = 0
 		m.viewport.Style = viewportStyle
-		m.input.SetWidth(m.width - 4)
+		m.input.SetWidth(m.width - 2) // -2 for the prompt "> "
+		// Paint textarea rows with the theme background.
+		inputBg := lipgloss.NewStyle().Background(activeTheme.inputBg)
+		m.input.FocusedStyle.Base = inputBg
+		m.input.BlurredStyle.Base = inputBg
 		m.refreshViewport()
 		return m, nil
 
@@ -439,31 +447,36 @@ func (m model) View() string {
 		return "Loading..."
 	}
 
+	bgStyle := lipgloss.NewStyle().
+		Background(activeTheme.viewportBg).
+		Width(m.width).
+		Height(m.height)
+
 	statusBar := renderStatusBar(m.connected, m.sessionModel, m.sessionID, m.turns, m.width)
 
+	var body string
 	if m.picker != nil {
-		return lipgloss.JoinVertical(lipgloss.Left,
+		body = lipgloss.JoinVertical(lipgloss.Left,
 			m.viewport.View(),
 			statusBar,
 			m.picker.View(),
 		)
-	}
-
-	if m.themePicker != nil {
-		return lipgloss.JoinVertical(lipgloss.Left,
+	} else if m.themePicker != nil {
+		body = lipgloss.JoinVertical(lipgloss.Left,
 			m.viewport.View(),
 			statusBar,
 			m.themePicker.View(),
 		)
+	} else {
+		inputView := inputBorderStyle.Width(m.width).Render(m.input.View())
+		body = lipgloss.JoinVertical(lipgloss.Left,
+			m.viewport.View(),
+			statusBar,
+			inputView,
+		)
 	}
 
-	inputView := inputBorderStyle.Width(m.width).Render(m.input.View())
-
-	return lipgloss.JoinVertical(lipgloss.Left,
-		m.viewport.View(),
-		statusBar,
-		inputView,
-	)
+	return bgStyle.Render(body)
 }
 
 // renderDetailedStatus formats a StatusInfo into a multi-panel text display.
