@@ -2846,4 +2846,100 @@ func TestListModels_Generates1MVariants(t *testing.T) {
 	}
 }
 
+func TestAdapter_Integration_PromptCaching(t *testing.T) {
+	if os.Getenv("ANTHROPIC_API_KEY") == "" {
+		t.Skip("ANTHROPIC_API_KEY not set")
+	}
+
+	a, err := NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+
+	// System prompt must exceed the minimum cacheable token count.
+	// Haiku 4.5 requires 4096 tokens; at ~4 chars/token we need ~20K chars.
+	var sb strings.Builder
+	sb.WriteString("You are a helpful assistant.\n\n")
+	paragraph := "This is a test of the Anthropic prompt caching feature. " +
+		"The system prompt must be long enough to exceed the minimum token " +
+		"threshold for caching to activate. Prompt caching allows the API to " +
+		"reuse previously processed context across requests, reducing latency " +
+		"and cost for subsequent turns in a conversation. When caching is " +
+		"active, the API response includes cache_read_input_tokens and " +
+		"cache_creation_input_tokens in the usage object.\n\n"
+	for sb.Len() < 20000 {
+		sb.WriteString(paragraph)
+	}
+	systemPrompt := sb.String()
+
+	tools := []llm.ToolDefinition{{
+		Name:        "shell",
+		Description: "Run a shell command and return its output.",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"command": map[string]any{"type": "string", "description": "the shell command to run"},
+			},
+			"required": []string{"command"},
+		},
+	}}
+
+	req := llm.Request{
+		Model: "claude-haiku-4-5-20251001",
+		Messages: []llm.Message{
+			{Role: llm.RoleSystem, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: systemPrompt}}},
+			llm.User("Say hello in exactly one word."),
+		},
+		Tools:      tools,
+		ToolChoice: &llm.ToolChoice{Mode: "auto"},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	derefOr := func(p *int, fallback int) int {
+		if p == nil {
+			return fallback
+		}
+		return *p
+	}
+
+	// Turn 1: cache write (creates the cache entry).
+	resp1, err := a.Complete(ctx, req)
+	if err != nil {
+		t.Fatalf("Complete (turn 1): %v", err)
+	}
+	t.Logf("turn 1 usage: input=%d output=%d cache_write=%d cache_read=%d raw=%v",
+		resp1.Usage.InputTokens, resp1.Usage.OutputTokens,
+		derefOr(resp1.Usage.CacheWriteTokens, -1),
+		derefOr(resp1.Usage.CacheReadTokens, -1),
+		resp1.Usage.Raw)
+
+	if resp1.Usage.CacheWriteTokens == nil || *resp1.Usage.CacheWriteTokens == 0 {
+		t.Fatalf("turn 1: expected cache_creation_input_tokens > 0, got %d",
+			derefOr(resp1.Usage.CacheWriteTokens, 0))
+	}
+
+	// Turn 2: same system + tools, different user message → cache read.
+	req.Messages = []llm.Message{
+		{Role: llm.RoleSystem, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: systemPrompt}}},
+		llm.User("Say goodbye in exactly one word."),
+	}
+
+	resp2, err := a.Complete(ctx, req)
+	if err != nil {
+		t.Fatalf("Complete (turn 2): %v", err)
+	}
+	t.Logf("turn 2 usage: input=%d output=%d cache_write=%d cache_read=%d raw=%v",
+		resp2.Usage.InputTokens, resp2.Usage.OutputTokens,
+		derefOr(resp2.Usage.CacheWriteTokens, -1),
+		derefOr(resp2.Usage.CacheReadTokens, -1),
+		resp2.Usage.Raw)
+
+	if resp2.Usage.CacheReadTokens == nil || *resp2.Usage.CacheReadTokens == 0 {
+		t.Fatalf("turn 2: expected cache_read_input_tokens > 0, got %d",
+			derefOr(resp2.Usage.CacheReadTokens, 0))
+	}
+}
+
 func ptrInt(i int) *int { return &i }
