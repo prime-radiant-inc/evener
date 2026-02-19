@@ -95,9 +95,13 @@ func renderToolCall(tc toolCallInfo, width int) string {
 	}
 
 	name := toolNameStyle.Render(tc.Name)
+	// Reserve space for: "arrow sp name  desc  dur"
+	// Use lipgloss.Width to measure styled strings correctly (strips ANSI codes).
+	fixedLen := lipgloss.Width(arrow) + 1 + lipgloss.Width(name) + 2 + 2 + lipgloss.Width(dur)
+	budget := width - fixedLen
 	desc := tc.Description
-	if len(desc) > 40 {
-		desc = desc[:37] + "..."
+	if budget > 3 && len(desc) > budget {
+		desc = desc[:budget-3] + "..."
 	}
 
 	header := fmt.Sprintf("%s %s  %s  %s", arrow, name, desc, dur)
@@ -163,11 +167,8 @@ func historyToMessages(turns []agent.Turn) []chatMessage {
 						continue
 					}
 
-					// Non-communicate tool call: show as collapsed tool entry.
-					desc := string(tc.Arguments)
-					if len(desc) > 60 {
-						desc = desc[:57] + "..."
-					}
+				// Non-communicate tool call: show as collapsed tool entry.
+				desc := string(tc.Arguments)
 					result := toolResults[tc.ID]
 					output := fmt.Sprintf("%v", result.Content)
 					info := &toolCallInfo{

@@ -345,9 +345,6 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 		}
 		json.Unmarshal([]byte(ev.Data), &d)
 		desc := d.ArgumentsJSON
-		if len(desc) > 60 {
-			desc = desc[:57] + "..."
-		}
 		idx := len(m.messages)
 		m.messages = append(m.messages, chatMessage{
 			Kind: msgTool,
