@@ -19,3 +19,12 @@ func TestTurn_HasTimestamp(t *testing.T) {
 		t.Fatalf("timestamp %v not between %v and %v", turn.Timestamp, before, after)
 	}
 }
+
+func TestTurnKind_CheckpointAndSummary(t *testing.T) {
+	if TurnCheckpoint != "CHECKPOINT" {
+		t.Fatalf("TurnCheckpoint = %q, want CHECKPOINT", TurnCheckpoint)
+	}
+	if TurnSummary != "SUMMARY" {
+		t.Fatalf("TurnSummary = %q, want SUMMARY", TurnSummary)
+	}
+}

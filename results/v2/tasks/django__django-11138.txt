@@ -1,0 +1,64 @@
+You are working on the Django web framework repository (django/django).
+
+## Issue
+
+The `TIME_ZONE` value in `DATABASES` settings is not used when making dates timezone-aware on MySQL, SQLite, and Oracle backends. When performing date lookups (e.g. `__date`, `__year`, `__month`, datetime truncation, datetime extraction), Django hardcodes `'UTC'` as the source timezone for conversion, ignoring the per-database `TIME_ZONE` setting.
+
+For example, with this configuration:
+```python
+USE_TZ = True
+TIME_ZONE = 'Europe/Paris'
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.mysql',
+        'TIME_ZONE': 'Europe/Paris',
+    }
+}
+```
+
+A query like `MyModel.objects.filter(my_datetime_field__date=some_date)` generates:
+```sql
+SELECT ... WHERE DATE(CONVERT_TZ(`my_model`.`my_datetime_field`, 'UTC', 'Europe/Paris')) = '2017-07-06'
+```
+
+Two problems:
+1. The conversion should be from the database timezone (`'Europe/Paris'`) to the Django app timezone, not from `'UTC'`. The database `TIME_ZONE` setting specifies the timezone in which datetimes are stored.
+2. When the database timezone equals the app timezone, the conversion should be skipped entirely (no `CONVERT_TZ` needed), which also avoids requiring MySQL timezone tables to be populated.
+
+## What to do
+
+The fix must be applied to three database backends:
+
+### MySQL backend (`django/db/backends/mysql/operations.py`)
+1. Read the `_convert_field_to_tz` method. It currently hardcodes `'UTC'` as the source timezone.
+2. Change it to use `self.connection.timezone_name` as the source timezone instead of `'UTC'`.
+3. Add a check: if `self.connection.timezone_name == tzname`, skip the conversion entirely (return the field_name unchanged).
+
+### Oracle backend (`django/db/backends/oracle/operations.py`)
+1. Read the `_convert_field_to_tz` method. It currently hardcodes `'0:00'` (UTC) as the source timezone in the `FROM_TZ` call.
+2. Change it to use `self.connection.timezone_name` as the source timezone.
+3. Add a check: if `self.connection.timezone_name == tzname`, return field_name unchanged (skip the conversion).
+
+### SQLite backend
+Two files need changes:
+
+**`django/db/backends/sqlite3/operations.py`:**
+1. Read `_convert_tzname_to_sql`. Rename it to `_convert_tznames_to_sql` and change it to return a tuple of two SQL values: the target timezone and the connection timezone (`self.connection.timezone_name`).
+2. Update `datetime_cast_date_sql`, `datetime_cast_time_sql`, `datetime_extract_sql`, and `datetime_trunc_sql` to pass the additional connection timezone parameter to the SQLite custom functions (changing them from 2-arg or 3-arg to 3-arg or 4-arg functions).
+
+**`django/db/backends/sqlite3/base.py`:**
+1. Update `get_new_connection` to register the `django_datetime_*` custom functions with one additional parameter each (e.g., `django_datetime_cast_date` goes from 2 args to 3 args).
+2. Update `_sqlite_datetime_parse` to accept a `conn_tzname` parameter. When `conn_tzname` is provided, apply it as the timezone of the incoming datetime (using `dt.replace(tzinfo=pytz.timezone(conn_tzname))`). Only convert to `tzname` if `tzname != conn_tzname`.
+3. Update `_sqlite_datetime_cast_date`, `_sqlite_datetime_cast_time`, `_sqlite_datetime_extract`, and `_sqlite_datetime_trunc` to accept and pass through the `conn_tzname` parameter.
+
+## Failing tests
+
+Run the primary affected test:
+
+    python tests/runtests.py timezones.tests.NewDatabaseTests.test_query_convert_timezones
+
+Run the broader timezone test suite:
+
+    python tests/runtests.py timezones
+
+Make sure no existing tests break.

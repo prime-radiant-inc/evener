@@ -26,6 +26,7 @@ type runConfig struct {
 	systemPromptAppend []string // --system-prompt-append file paths
 	maxRounds          int      // --max-rounds (-1=default, 0=unlimited, >0=limit)
 	reasoningEffort    string   // --reasoning-effort override (or SERF_REASONING_EFFORT)
+	contextStrategy    string   // --context-strategy
 	verbose            bool
 	stdout             io.Writer
 	stderr             io.Writer
@@ -149,6 +150,7 @@ func run(ctx context.Context, cfg runConfig) error {
 			MCPConfigFiles:        cfg.mcpConfigs,
 			MCPInline:             cfg.mcpServers,
 			PluginDirs:            cfg.pluginDirs,
+			ContextStrategy:       cfg.contextStrategy,
 		}
 		if effort.Set {
 			sessionCfg.ReasoningEffort = effort.Value

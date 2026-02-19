@@ -1,0 +1,64 @@
+{
+  "questions": [
+    {
+      "question": "What repository are you working on?",
+      "expected": "scikit-learn/scikit-learn",
+      "difficulty": "easy",
+      "type": "factual"
+    },
+    {
+      "question": "What programming language is this project written in?",
+      "expected": "Python",
+      "difficulty": "easy",
+      "type": "factual"
+    },
+    {
+      "question": "Which file contains the SelectorMixin.transform method that needs modification?",
+      "expected": "sklearn/feature_selection/_base.py",
+      "difficulty": "easy",
+      "type": "factual"
+    },
+    {
+      "question": "What dtype do all output columns get incorrectly converted to?",
+      "expected": "float64",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "What causes the dtype loss: converting to NumPy array before selecting columns?",
+      "expected": "yes",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "What scikit-learn configuration method must be called to enable pandas output?",
+      "expected": "set_output(transform=\"pandas\")",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "What new parameter needs to be added to _validate_data to skip array conversion?",
+      "expected": "cast_to_ndarray",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "Why is it correct for feature selectors to bypass NumPy conversion, unlike other transformers?",
+      "expected": "Feature selectors only select a subset of columns without modifying values, so no numeric computation is needed",
+      "difficulty": "hard",
+      "type": "factual"
+    },
+    {
+      "question": "What utility function replaces the direct array indexing X[:, mask] to work with both arrays and DataFrames?",
+      "expected": "_safe_indexing",
+      "difficulty": "hard",
+      "type": "factual"
+    },
+    {
+      "question": "Did this bug affect transformers that modify column values, like StandardScaler?",
+      "expected": "no",
+      "difficulty": "distractor",
+      "type": "distractor"
+    }
+  ]
+}

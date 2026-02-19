@@ -1,0 +1,64 @@
+{
+  "questions": [
+    {
+      "question": "What repository are you working on?",
+      "expected": "pytest-dev/pytest",
+      "difficulty": "easy",
+      "type": "factual"
+    },
+    {
+      "question": "What programming language is this project written in?",
+      "expected": "Python",
+      "difficulty": "easy",
+      "type": "factual"
+    },
+    {
+      "question": "Which file contains the _to_json and _from_json serialization methods that need fixing?",
+      "expected": "src/_pytest/reports.py",
+      "difficulty": "easy",
+      "type": "factual"
+    },
+    {
+      "question": "What class represents chained exception information that was not being serialized?",
+      "expected": "ExceptionChainRepr",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "What pytest plugin triggers the bug by requiring serialization of test reports across processes?",
+      "expected": "pytest-xdist",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "What attribute of ExceptionChainRepr contains the list of traceback/crash/description tuples?",
+      "expected": "chain",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "What TWMock class needs to be refactored into a shared fixture in testing/conftest.py?",
+      "expected": "The TWMock class from testing/code/test_excinfo.py that mocks a terminal writer",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "Why are chained exceptions lost when using xdist but visible without it?",
+      "expected": "The serialization code treats longrepr as a simple ReprExceptionInfo, losing the chain of multiple traceback/crash tuples in ExceptionChainRepr",
+      "difficulty": "hard",
+      "type": "factual"
+    },
+    {
+      "question": "What Python syntax creates explicit chained exceptions that would be lost by this bug?",
+      "expected": "raise ... from ...",
+      "difficulty": "hard",
+      "type": "factual"
+    },
+    {
+      "question": "Did this fix require any changes to the xdist plugin itself?",
+      "expected": "no",
+      "difficulty": "distractor",
+      "type": "distractor"
+    }
+  ]
+}

@@ -1,0 +1,79 @@
+{
+  "strategy": "memory-crystals",
+  "model": "gpt-4.1-mini",
+  "task": "You are working on the Astropy library repository (astropy/astropy).\n\n## Issue\n\nThere is no direct ITRS to Observed (AltAz/HADec) transformation path that stays within the ITRS frame, which is needed for observations of near-Earth objects like satellites. The current approach requires going through ICRS/GCRS, which introduces geocentric stellar aberration and gives inaccurate results for nearby targets. Users have to manually subtract the observer's geocentric position and work around the system, which is unintuitive.\n\nThe fix adds:\n1. A `location` attribute to the ITRS frame (defaulting to the geocenter), enabling \"topocentric ITRS\" coordinates.\n2. Direct ITRS\u003c-\u003eAltAz and ITRS\u003c-\u003eHADec transformation functions that include proper refraction handling.\n3. Updates to the intermediate rotation transforms (CIRS\u003c-\u003eITRS and TETE\u003c-\u003eITRS) to propagate the `location` attribute.\n\n## What to do\n\n### 1. Modify `astropy/coordinates/builtin_frames/itrs.py`\n\n- Import `EarthLocationAttribute` from `astropy.coordinates.attributes` and `EARTH_CENTER` from `.utils`.\n- Add a `location = EarthLocationAttribute(default=EARTH_CENTER)` frame attribute to the `ITRS` class, alongside the existing `obstime` attribute.\n- Update the docstring to explain topocentric ITRS usage.\n- Add a `doc_footer` string documenting both the `obstime` and `location` parameters, and use it in the `@format_doc` decorator.\n\n### 2. Create `astropy/coordinates/builtin_frames/itrs_observed_transforms.py`\n\nThis new file implements direct ITRS\u003c-\u003eAltAz and ITRS\u003c-\u003eHADec transforms. It should contain:\n\n- Helper functions: `itrs_to_altaz_mat(lon, lat)`, `itrs_to_hadec_mat(lon)`, and `altaz_to_hadec_mat(lat)` that compute rotation matrices for converting between ITRS and observed coordinate systems.\n- `add_refraction(aa_crepr, observed_frame)` and `remove_refraction(aa_crepr, observed_frame)` functions that apply/remove atmospheric refraction using `erfa.refco()` and the approach from `erfa.atioq()`/`erfa.atoiq()`.\n- `itrs_to_observed(itrs_coo, observed_frame)`: Transform function registered for ITRS-\u003eAltAz and ITRS-\u003eHADec. If the ITRS coordinate's `location` or `obstime` differs from the observed frame's, it first transforms through CIRS (to handle aberration changes). Then applies the rotation matrix and optionally refraction.\n- `observed_to_itrs(observed_coo, itrs_frame)`: The reverse transform, registered for AltAz-\u003eITRS and HADec-\u003eITRS.\n\n### 3. Register the new transforms in `astropy/coordinates/builtin_frames/__init__.py`\n\nAdd `from . import itrs_observed_transforms` to the list of transform imports.\n\n### 4. Modify `astropy/coordinates/builtin_frames/intermediate_rotation_transforms.py`\n\nUpdate the CIRS\u003c-\u003eITRS and TETE\u003c-\u003eITRS transforms to propagate the `location` attribute:\n\n- In `tete_to_itrs`: Change `location=EARTH_CENTER` to `location=itrs_frame.location` when creating the intermediate TETE frame.\n- In `itrs_to_tete`: Pass `location=itrs_coo.location` when creating the intermediate TETE frame.\n- In `cirs_to_itrs`: Change `location=EARTH_CENTER` to `location=itrs_frame.location` when creating the intermediate CIRS frame.\n- In `itrs_to_cirs`: Pass `location=itrs_coo.location` when creating the intermediate CIRS frame.\n\n## Failing tests\n\nRun the primary affected tests:\n\n    python -m pytest astropy/coordinates/tests/test_intermediate_transformations.py::test_itrs_topo_to_altaz_with_refraction -x -v\n    python -m pytest astropy/coordinates/tests/test_intermediate_transformations.py::test_itrs_topo_to_hadec_with_refraction -x -v\n    python -m pytest astropy/coordinates/tests/test_intermediate_transformations.py::test_cirs_itrs_topo -x -v\n    python -m pytest astropy/coordinates/tests/test_intermediate_transformations.py::test_itrs_straight_overhead -x -v\n\nRun the full intermediate transformations test suite:\n\n    python -m pytest astropy/coordinates/tests/test_intermediate_transformations.py -x -v\n\nMake sure no existing tests break.",
+  "completed": true,
+  "turn_count": 16,
+  "total_input_tokens": 266899,
+  "total_output_tokens": 12750,
+  "total_tokens": 279649,
+  "recall_calls": 0,
+  "fork_summary_calls": 0,
+  "compaction_events": 0,
+  "compaction_layers": [],
+  "retention_score": 1,
+  "duration_seconds": 175.902665333,
+  "result": "The requested changes to the Astropy codebase have been implemented:\n\n1. The `ITRS` frame now includes a `location` attribute (defaulting to Earth center) for topocentric ITRS coordinates.\n2. A new module `itrs_observed_transforms.py` was created with direct transformations between ITRS and the observed coordinate frames (AltAz and HADec), including proper handling of atmospheric refraction.\n3. The transforms between CIRS \u003c-\u003e ITRS and TETE \u003c-\u003e ITRS were updated to propagate the `location` attribute.\n4. The new `itrs_observed_transforms` module was registered in the `builtin_frames` package.\n\nHowever, running the affected tests failed due to environment issues related to numpy deprecation warnings that break pytest execution in the current environment. The code itself is logically complete and ready for testing in a clean environment with up-to-date dependencies.\n\nWould you like me to assist with suggestions on how to fix the test environment or proceed otherwise?",
+  "retention_breakdown": [
+    {
+      "question": "What repository are you working on?",
+      "expected": "astropy/astropy",
+      "difficulty": "easy",
+      "correct": true
+    },
+    {
+      "question": "What programming language is this project written in?",
+      "expected": "Python",
+      "difficulty": "easy",
+      "correct": true
+    },
+    {
+      "question": "Which file defines the ITRS frame class that needs a new location attribute?",
+      "expected": "astropy/coordinates/builtin_frames/itrs.py",
+      "difficulty": "easy",
+      "correct": true
+    },
+    {
+      "question": "What new frame attribute is added to ITRS to enable topocentric coordinates?",
+      "expected": "location (an EarthLocationAttribute defaulting to EARTH_CENTER)",
+      "difficulty": "medium",
+      "correct": true
+    },
+    {
+      "question": "What two observed coordinate frames need direct transform paths from ITRS?",
+      "expected": "AltAz and HADec",
+      "difficulty": "medium",
+      "correct": true
+    },
+    {
+      "question": "What name is given to the new file that implements the direct ITRS to observed transforms?",
+      "expected": "itrs_observed_transforms.py",
+      "difficulty": "medium",
+      "correct": true
+    },
+    {
+      "question": "What ERFA function is used to compute atmospheric refraction coefficients in the new transform?",
+      "expected": "erfa.refco()",
+      "difficulty": "medium",
+      "correct": true
+    },
+    {
+      "question": "Why does the existing ICRS/GCRS transform path give inaccurate results for satellites?",
+      "expected": "It introduces geocentric stellar aberration which is incorrect for nearby targets in Earth orbit",
+      "difficulty": "hard",
+      "correct": true
+    },
+    {
+      "question": "In the intermediate rotation transforms, what must be changed so CIRS\u003c-\u003eITRS and TETE\u003c-\u003eITRS propagate the location attribute?",
+      "expected": "Replace hardcoded location=EARTH_CENTER with the actual frame's location attribute",
+      "difficulty": "hard",
+      "correct": true
+    },
+    {
+      "question": "Did this fix require adding a new coordinate frame class to astropy?",
+      "expected": "no",
+      "difficulty": "distractor",
+      "correct": true
+    }
+  ]
+}

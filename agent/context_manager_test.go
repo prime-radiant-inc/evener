@@ -494,8 +494,8 @@ func TestCheckpoint_CreatesValidMessage(t *testing.T) {
 		t.Fatalf("expected at least 3 turns, got %d", len(result))
 	}
 	// First turn should be the checkpoint.
-	if result[0].Kind != TurnUserInput {
-		t.Fatalf("checkpoint should be TurnUserInput, got %s", result[0].Kind)
+	if result[0].Kind != TurnCheckpoint {
+		t.Fatalf("checkpoint should be TurnCheckpoint, got %s", result[0].Kind)
 	}
 	text := result[0].Message.Text()
 	if !strings.Contains(text, "[CONTEXT CHECKPOINT]") {
@@ -613,15 +613,16 @@ func TestSummarizeWithLLM_CallsCheapModel(t *testing.T) {
 				if req.Model != "gpt-4.1-nano" {
 					t.Errorf("expected cheap model gpt-4.1-nano, got %q", req.Model)
 				}
-				// Verify the prompt asks for summarization.
+				// Verify the prompt asks for compaction/summarization.
 				found := false
 				for _, m := range req.Messages {
-					if strings.Contains(m.Text(), "Summarize") || strings.Contains(m.Text(), "summarize") {
+					text := m.Text()
+					if strings.Contains(text, "COMPACTION") || strings.Contains(text, "handoff summary") {
 						found = true
 					}
 				}
 				if !found {
-					t.Error("expected summarization prompt")
+					t.Error("expected compaction/handoff prompt")
 				}
 				return llm.Response{Message: llm.Assistant("Summary: fixed auth bug")}
 			},
@@ -1187,8 +1188,8 @@ func TestCheckpoint_AdjustsCutoffToAvoidOrphanedToolTurn(t *testing.T) {
 	if len(result) < 2 {
 		t.Fatalf("expected at least 2 turns, got %d", len(result))
 	}
-	if result[0].Kind != TurnUserInput {
-		t.Fatalf("first turn should be checkpoint (TurnUserInput), got %s", result[0].Kind)
+	if result[0].Kind != TurnCheckpoint {
+		t.Fatalf("first turn should be checkpoint (TurnCheckpoint), got %s", result[0].Kind)
 	}
 	if result[1].Kind == TurnTool {
 		t.Fatalf("second turn must not be TurnTool — invalid message ordering for LLM APIs")

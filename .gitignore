@@ -7,5 +7,7 @@
 /.serf/prompts/
 /serf
 /serf-tui
+/serfeval
 /llmcall
+/sessions/
 inspo/

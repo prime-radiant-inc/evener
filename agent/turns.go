@@ -14,6 +14,9 @@ const (
 	TurnAssistant   TurnKind = "ASSISTANT"
 	TurnTool        TurnKind = "TOOL"         // Deprecated: use TurnToolResults for new code.
 	TurnToolResults TurnKind = "TOOL_RESULTS" // Aggregated tool results from one round.
+	TurnSystem      TurnKind = "SYSTEM"
+	TurnCheckpoint  TurnKind = "CHECKPOINT" // Deterministic checkpoint from compaction Layer 3.
+	TurnSummary     TurnKind = "SUMMARY"    // LLM-generated summary from compaction Layer 4.
 )
 
 // Turn is the Session's typed history item. Steering turns are kept distinct for observability,

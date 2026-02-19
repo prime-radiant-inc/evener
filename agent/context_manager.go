@@ -31,6 +31,10 @@ type ContextManager struct {
 	SummarizeThreshold       float64
 
 	PreserveRecentTurns int
+
+	// OnCompactionTurn is called for each compaction turn created (CHECKPOINT or SUMMARY).
+	// Set by the session before ManageContext to record compaction turns in the transcript.
+	OnCompactionTurn func(Turn)
 }
 
 // NewContextManager creates a ContextManager with default thresholds.
@@ -99,6 +103,11 @@ func (cm *ContextManager) estimatePressure(history []Turn, sysPromptChars int) f
 	}
 
 	return float64(totalTokens) / float64(cw)
+}
+
+// EstimatePressure returns the estimated fraction of context window in use.
+func (cm *ContextManager) EstimatePressure(history []Turn, sysPromptChars int) float64 {
+	return cm.estimatePressure(history, sysPromptChars)
 }
 
 // EstimateTokens estimates token count for turns using the char/4 heuristic.
@@ -189,6 +198,9 @@ func (cm *ContextManager) MaybeCompact(
 			EstTokensBefore: before,
 			EstTokensAfter:  after,
 		})
+		if cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == TurnCheckpoint {
+			cm.OnCompactionTurn((*history)[0])
+		}
 		compacted = true
 		p = pressure()
 	}
@@ -213,6 +225,9 @@ func (cm *ContextManager) MaybeCompact(
 				EstTokensBefore: before,
 				EstTokensAfter:  after,
 			})
+			if cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == TurnSummary {
+				cm.OnCompactionTurn((*history)[0])
+			}
 			compacted = true
 		}
 	}
@@ -525,12 +540,25 @@ func checkpoint(history []Turn, preserveRecent int) []Turn {
 	// If all user inputs are checkpoints, extract the task from the checkpoint text.
 	originalTask := ""
 	for _, t := range history[:cutoff] {
+		// Handle typed compaction turns (new TurnKinds).
+		if t.Kind == TurnCheckpoint || t.Kind == TurnSummary {
+			text := t.Message.Text()
+			if idx := strings.Index(text, "Original task: "); idx >= 0 {
+				rest := text[idx+len("Original task: "):]
+				if nl := strings.Index(rest, "\n"); nl >= 0 {
+					originalTask = rest[:nl]
+				} else {
+					originalTask = rest
+				}
+			}
+			continue
+		}
 		if t.Kind != TurnUserInput {
 			continue
 		}
+		// Backward compat: handle old TurnUserInput checkpoints/summaries by text prefix.
 		text := t.Message.Text()
 		if strings.HasPrefix(text, "[CONTEXT CHECKPOINT]") {
-			// Extract "Original task: ..." from the previous checkpoint.
 			if idx := strings.Index(text, "Original task: "); idx >= 0 {
 				rest := text[idx+len("Original task: "):]
 				if nl := strings.Index(rest, "\n"); nl >= 0 {
@@ -662,7 +690,7 @@ func checkpoint(history []Turn, preserveRecent int) []Turn {
 
 	b.WriteString("[END CHECKPOINT]\n")
 
-	checkpointTurn := NewTurn(TurnUserInput, llm.User(b.String()))
+	checkpointTurn := NewTurn(TurnCheckpoint, llm.User(b.String()))
 
 	result := make([]Turn, 0, 1+preserveRecent)
 	result = append(result, checkpointTurn)
@@ -722,6 +750,8 @@ func (cm *ContextManager) summarizeWithLLM(ctx context.Context, history []Turn, 
 		switch t.Kind {
 		case TurnUserInput:
 			b.WriteString("User: " + truncText(t.Message.Text(), 500) + "\n")
+		case TurnCheckpoint, TurnSummary:
+			b.WriteString("Previous compaction: " + truncText(t.Message.Text(), 500) + "\n")
 		case TurnAssistant:
 			b.WriteString("Assistant: " + truncText(t.Message.Text(), 500) + "\n")
 		case TurnTool, TurnToolResults:
@@ -743,9 +773,15 @@ func (cm *ContextManager) summarizeWithLLM(ctx context.Context, history []Turn, 
 		}
 	}
 
-	prefix := "Summarize this coding agent conversation history concisely. " +
-		"Focus on: what task was requested, what actions were taken, what files were modified, " +
-		"what the current state is, and any errors encountered. Be brief but complete.\n\n"
+	prefix := "You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume this task.\n\n" +
+		"Include:\n" +
+		"- The original task/goal\n" +
+		"- Current progress: what has been accomplished so far (specific files modified, specific changes made)\n" +
+		"- Key decisions made and why\n" +
+		"- What remains to be done (clear, actionable next steps)\n" +
+		"- Any critical data, file paths, variable names, or error messages needed to continue\n" +
+		"- Important constraints or user preferences discovered\n\n" +
+		"Be concise and structured. Focus on helping the next LLM seamlessly continue WITHOUT re-reading files or re-discovering what was already done.\n\n"
 	prompt := prefix + b.String()
 
 	req := llm.Request{
@@ -760,7 +796,7 @@ func (cm *ContextManager) summarizeWithLLM(ctx context.Context, history []Turn, 
 	}
 
 	summaryText := "[CONTEXT SUMMARY]\n" + resp.Text() + "\n[END SUMMARY]"
-	summaryTurn := NewTurn(TurnUserInput, llm.User(summaryText))
+	summaryTurn := NewTurn(TurnSummary, llm.User(summaryText))
 
 	result := make([]Turn, 0, 1+preserveRecent)
 	result = append(result, summaryTurn)

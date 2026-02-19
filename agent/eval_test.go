@@ -1,0 +1,255 @@
+package agent
+
+import (
+	"testing"
+
+	"primeradiant.com/serf/llm"
+)
+
+func TestNewEvalCollector_SetsInitialFields(t *testing.T) {
+	c := NewEvalCollector("compact", "gpt-4", "write tests")
+	m := c.Metrics()
+	if m.Strategy != "compact" {
+		t.Errorf("expected strategy %q, got %q", "compact", m.Strategy)
+	}
+	if m.Model != "gpt-4" {
+		t.Errorf("expected model %q, got %q", "gpt-4", m.Model)
+	}
+	if m.Task != "write tests" {
+		t.Errorf("expected task %q, got %q", "write tests", m.Task)
+	}
+	if m.TurnCount != 0 {
+		t.Errorf("expected 0 turns, got %d", m.TurnCount)
+	}
+}
+
+func TestEvalCollector_CountsTurns(t *testing.T) {
+	c := NewEvalCollector("compact", "gpt-4", "task")
+
+	// Two assistant text end events = 2 turns.
+	c.ProcessEvent(SessionEvent{
+		Kind: EventAssistantTextEnd,
+		Data: AssistantTextEndData{
+			Text:  "hello",
+			Usage: llm.Usage{InputTokens: 10, OutputTokens: 5},
+		},
+	})
+	c.ProcessEvent(SessionEvent{
+		Kind: EventAssistantTextEnd,
+		Data: AssistantTextEndData{
+			Text:  "world",
+			Usage: llm.Usage{InputTokens: 20, OutputTokens: 8},
+		},
+	})
+
+	m := c.Metrics()
+	if m.TurnCount != 2 {
+		t.Errorf("expected 2 turns, got %d", m.TurnCount)
+	}
+}
+
+func TestEvalCollector_AccumulatesTokens(t *testing.T) {
+	c := NewEvalCollector("compact", "gpt-4", "task")
+
+	c.ProcessEvent(SessionEvent{
+		Kind: EventAssistantTextEnd,
+		Data: AssistantTextEndData{
+			Usage: llm.Usage{InputTokens: 100, OutputTokens: 50},
+		},
+	})
+	c.ProcessEvent(SessionEvent{
+		Kind: EventAssistantTextEnd,
+		Data: AssistantTextEndData{
+			Usage: llm.Usage{InputTokens: 200, OutputTokens: 30},
+		},
+	})
+
+	m := c.Metrics()
+	if m.TotalInputTokens != 300 {
+		t.Errorf("expected 300 input tokens, got %d", m.TotalInputTokens)
+	}
+	if m.TotalOutputTokens != 80 {
+		t.Errorf("expected 80 output tokens, got %d", m.TotalOutputTokens)
+	}
+}
+
+func TestEvalCollector_CountsCompactionEvents(t *testing.T) {
+	c := NewEvalCollector("compact", "gpt-4", "task")
+
+	c.ProcessEvent(SessionEvent{
+		Kind: EventContextCompaction,
+		Data: ContextCompactionData{Layer: "aggressive"},
+	})
+	c.ProcessEvent(SessionEvent{
+		Kind: EventContextCompaction,
+		Data: ContextCompactionData{Layer: "moderate"},
+	})
+
+	m := c.Metrics()
+	if m.CompactionEvents != 2 {
+		t.Errorf("expected 2 compaction events, got %d", m.CompactionEvents)
+	}
+	if len(m.CompactionLayers) != 2 {
+		t.Fatalf("expected 2 layers, got %d", len(m.CompactionLayers))
+	}
+	if m.CompactionLayers[0] != "aggressive" {
+		t.Errorf("expected layer %q, got %q", "aggressive", m.CompactionLayers[0])
+	}
+	if m.CompactionLayers[1] != "moderate" {
+		t.Errorf("expected layer %q, got %q", "moderate", m.CompactionLayers[1])
+	}
+}
+
+func TestEvalCollector_CountsRecallCalls(t *testing.T) {
+	c := NewEvalCollector("recall", "gpt-4", "task")
+
+	// recall via ToolCallStart
+	c.ProcessEvent(SessionEvent{
+		Kind: EventToolCallStart,
+		Data: ToolCallStartData{ToolName: "recall", CallID: "c1"},
+	})
+	// non-recall tool should not increment
+	c.ProcessEvent(SessionEvent{
+		Kind: EventToolCallStart,
+		Data: ToolCallStartData{ToolName: "shell", CallID: "c2"},
+	})
+	// another recall
+	c.ProcessEvent(SessionEvent{
+		Kind: EventToolCallStart,
+		Data: ToolCallStartData{ToolName: "recall", CallID: "c3"},
+	})
+
+	m := c.Metrics()
+	if m.RecallCalls != 2 {
+		t.Errorf("expected 2 recall calls, got %d", m.RecallCalls)
+	}
+}
+
+func TestEvalCollector_IgnoresUnrelatedEvents(t *testing.T) {
+	c := NewEvalCollector("compact", "gpt-4", "task")
+
+	c.ProcessEvent(SessionEvent{Kind: EventSessionStart, Data: SessionStartData{Profile: "openai", Model: "gpt-4"}})
+	c.ProcessEvent(SessionEvent{Kind: EventUserInput, Data: UserInputData{Text: "hello"}})
+	c.ProcessEvent(SessionEvent{Kind: EventAssistantTextDelta, Data: AssistantTextDeltaData{Delta: "hi"}})
+	c.ProcessEvent(SessionEvent{Kind: EventSessionEnd, Data: SessionEndData{Reason: "done"}})
+
+	m := c.Metrics()
+	if m.TurnCount != 0 {
+		t.Errorf("expected 0 turns from unrelated events, got %d", m.TurnCount)
+	}
+	if m.CompactionEvents != 0 {
+		t.Errorf("expected 0 compaction events, got %d", m.CompactionEvents)
+	}
+	if m.RecallCalls != 0 {
+		t.Errorf("expected 0 recall calls, got %d", m.RecallCalls)
+	}
+}
+
+func TestEvalCollector_HandlesUsageAsMapFallback(t *testing.T) {
+	// Usage could come through as a map[string]any if deserialized from JSON.
+	c := NewEvalCollector("compact", "gpt-4", "task")
+
+	c.ProcessEvent(SessionEvent{
+		Kind: EventAssistantTextEnd,
+		Data: AssistantTextEndData{
+			Usage: map[string]any{
+				"input_tokens":  float64(50),
+				"output_tokens": float64(25),
+			},
+		},
+	})
+
+	m := c.Metrics()
+	if m.TurnCount != 1 {
+		t.Errorf("expected 1 turn, got %d", m.TurnCount)
+	}
+	if m.TotalInputTokens != 50 {
+		t.Errorf("expected 50 input tokens, got %d", m.TotalInputTokens)
+	}
+	if m.TotalOutputTokens != 25 {
+		t.Errorf("expected 25 output tokens, got %d", m.TotalOutputTokens)
+	}
+}
+
+func TestEvalCollector_TotalTokensComputed(t *testing.T) {
+	c := NewEvalCollector("compact", "gpt-4", "task")
+
+	c.ProcessEvent(SessionEvent{
+		Kind: EventAssistantTextEnd,
+		Data: AssistantTextEndData{
+			Usage: llm.Usage{InputTokens: 100, OutputTokens: 50},
+		},
+	})
+	c.ProcessEvent(SessionEvent{
+		Kind: EventAssistantTextEnd,
+		Data: AssistantTextEndData{
+			Usage: llm.Usage{InputTokens: 200, OutputTokens: 30},
+		},
+	})
+
+	m := c.Metrics()
+	if m.TotalTokens != 380 {
+		t.Errorf("expected TotalTokens 380, got %d", m.TotalTokens)
+	}
+	// Granular fields should still be populated.
+	if m.TotalInputTokens != 300 {
+		t.Errorf("expected 300 input tokens, got %d", m.TotalInputTokens)
+	}
+	if m.TotalOutputTokens != 80 {
+		t.Errorf("expected 80 output tokens, got %d", m.TotalOutputTokens)
+	}
+}
+
+func TestEvalCollector_CountsForkSummaryCalls(t *testing.T) {
+	c := NewEvalCollector("session-log", "gpt-4", "task")
+
+	c.ProcessEvent(SessionEvent{
+		Kind: EventForkSummary,
+		Data: ForkSummaryData{Turn: 3},
+	})
+	c.ProcessEvent(SessionEvent{
+		Kind: EventForkSummary,
+		Data: ForkSummaryData{Turn: 7},
+	})
+
+	m := c.Metrics()
+	if m.ForkSummaryCalls != 2 {
+		t.Errorf("expected 2 fork summary calls, got %d", m.ForkSummaryCalls)
+	}
+}
+
+func TestEvalCollector_RetentionScoreDefaultsToZero(t *testing.T) {
+	c := NewEvalCollector("compact", "gpt-4", "task")
+	m := c.Metrics()
+	if m.RetentionScore != 0.0 {
+		t.Errorf("expected RetentionScore 0.0, got %f", m.RetentionScore)
+	}
+}
+
+func TestEvalCollector_ConcurrentAccess(t *testing.T) {
+	c := NewEvalCollector("compact", "gpt-4", "task")
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 100; i++ {
+			c.ProcessEvent(SessionEvent{
+				Kind: EventAssistantTextEnd,
+				Data: AssistantTextEndData{
+					Usage: llm.Usage{InputTokens: 1, OutputTokens: 1},
+				},
+			})
+		}
+	}()
+
+	// Read concurrently.
+	for i := 0; i < 50; i++ {
+		_ = c.Metrics()
+	}
+	<-done
+
+	m := c.Metrics()
+	if m.TurnCount != 100 {
+		t.Errorf("expected 100 turns, got %d", m.TurnCount)
+	}
+}

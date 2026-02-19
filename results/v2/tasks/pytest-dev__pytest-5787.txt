@@ -1,0 +1,40 @@
+You are working on the pytest repository (pytest-dev/pytest).
+
+## Issue
+
+Exception serialization in pytest does not include chained exceptions. When tests are run with pytest-xdist (parallel execution via `-n auto`), chained exceptions (those using `raise ... from ...` or implicit exception chaining) lose the full chain. Only the outermost exception is displayed, whereas running without xdist shows the complete chain including "The above exception was the direct cause of the following exception:" messages.
+
+The root cause is in the report serialization/deserialization code. When a test report is serialized (via `_to_json`) and then deserialized (via `_from_json`), the exception chain information is lost. The `longrepr` is an `ExceptionChainRepr` object that contains a `chain` attribute with multiple traceback/crash/description tuples, but the serialization code only handles it as a simple `ReprExceptionInfo` (which has just one traceback and one crash).
+
+## What to do
+
+1. Read `src/_pytest/reports.py` and understand the current `_to_json()` and `_from_json()` methods on the `BaseReport` class. These methods handle serialization of report objects for cross-process communication.
+
+2. The fix involves refactoring the serialization and deserialization logic into standalone functions `_report_to_json()` and `_report_kwargs_from_json()`. These functions must:
+
+   - During **serialization**: When the `longrepr` is an `ExceptionChainRepr` (imported from `_pytest._code.code`), serialize its `.chain` attribute. The chain is a list of `(ReprTraceback, ReprFileLocation, str)` tuples. Each traceback and crash in the chain must be serialized the same way the main traceback/crash are serialized. If the `longrepr` is not an `ExceptionChainRepr`, set `chain` to `None`.
+
+   - During **deserialization**: When `chain` is present and non-None in the serialized data, reconstruct each `(ReprTraceback, ReprFileLocation, description)` tuple in the chain, and create an `ExceptionChainRepr(chain)` instead of a `ReprExceptionInfo`. When `chain` is None, create a `ReprExceptionInfo` as before.
+
+3. You will also need to import `ExceptionChainRepr` from `_pytest._code.code` in `src/_pytest/reports.py`.
+
+4. Look at the `ExceptionChainRepr` class in `src/_pytest/_code/code.py` to understand how it wraps a chain of exception representations and how it relates to `ReprExceptionInfo`.
+
+5. A `tw_mock` fixture should be added to `testing/conftest.py` to provide a mock terminal writer. The `TWMock` class currently defined in `testing/code/test_excinfo.py` should be moved to this fixture so it can be shared across test files. Tests in `testing/code/test_excinfo.py` and `testing/code/test_code.py` that use `TWMock` should be updated to use the `tw_mock` fixture parameter instead.
+
+## Failing tests
+
+Run the primary test to verify serialization of chained exceptions:
+
+    python -m pytest testing/test_reports.py::TestReportSerialization::test_chained_exceptions -x -v
+
+Run the full report serialization tests:
+
+    python -m pytest testing/test_reports.py -x -v
+
+Run the excinfo tests (to verify TWMock refactoring doesn't break anything):
+
+    python -m pytest testing/code/test_excinfo.py -x -v
+    python -m pytest testing/code/test_code.py -x -v
+
+Make sure no existing tests break.

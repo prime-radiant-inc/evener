@@ -1,0 +1,64 @@
+{
+  "questions": [
+    {
+      "question": "What repository are you working on?",
+      "expected": "django/django",
+      "difficulty": "easy",
+      "type": "factual"
+    },
+    {
+      "question": "What programming language is this project written in?",
+      "expected": "Python",
+      "difficulty": "easy",
+      "type": "factual"
+    },
+    {
+      "question": "Which file contains the escape() function that needs to be modified?",
+      "expected": "django/utils/html.py",
+      "difficulty": "easy",
+      "type": "factual"
+    },
+    {
+      "question": "What standard library function should replace Django's custom escape implementation?",
+      "expected": "html.escape()",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "What entity representation does html.escape() use for single quotes instead of &#39;?",
+      "expected": "&#x27;",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "What string method does the old Django escape() use internally for escaping?",
+      "expected": "str.translate()",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "Must the return value of the modified escape() function still be marked as SafeData/SafeString?",
+      "expected": "yes",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "Why was the old custom escape implementation slower than html.escape()?",
+      "expected": "html.escape() uses str.replace() which is faster than str.translate() with a translation table",
+      "difficulty": "hard",
+      "type": "factual"
+    },
+    {
+      "question": "Are &#39; and &#x27; functionally equivalent as HTML entities for single quotes, even though the literal text differs?",
+      "expected": "yes",
+      "difficulty": "hard",
+      "type": "factual"
+    },
+    {
+      "question": "Did this change require modifying how Django escapes the ampersand character (&)?",
+      "expected": "no",
+      "difficulty": "distractor",
+      "type": "distractor"
+    }
+  ]
+}

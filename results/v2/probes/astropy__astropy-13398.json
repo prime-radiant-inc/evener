@@ -1,0 +1,64 @@
+{
+  "questions": [
+    {
+      "question": "What repository are you working on?",
+      "expected": "astropy/astropy",
+      "difficulty": "easy",
+      "type": "factual"
+    },
+    {
+      "question": "What programming language is this project written in?",
+      "expected": "Python",
+      "difficulty": "easy",
+      "type": "factual"
+    },
+    {
+      "question": "Which file defines the ITRS frame class that needs a new location attribute?",
+      "expected": "astropy/coordinates/builtin_frames/itrs.py",
+      "difficulty": "easy",
+      "type": "factual"
+    },
+    {
+      "question": "What new frame attribute is added to ITRS to enable topocentric coordinates?",
+      "expected": "location (an EarthLocationAttribute defaulting to EARTH_CENTER)",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "What two observed coordinate frames need direct transform paths from ITRS?",
+      "expected": "AltAz and HADec",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "What name is given to the new file that implements the direct ITRS to observed transforms?",
+      "expected": "itrs_observed_transforms.py",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "What ERFA function is used to compute atmospheric refraction coefficients in the new transform?",
+      "expected": "erfa.refco()",
+      "difficulty": "medium",
+      "type": "factual"
+    },
+    {
+      "question": "Why does the existing ICRS/GCRS transform path give inaccurate results for satellites?",
+      "expected": "It introduces geocentric stellar aberration which is incorrect for nearby targets in Earth orbit",
+      "difficulty": "hard",
+      "type": "factual"
+    },
+    {
+      "question": "In the intermediate rotation transforms, what must be changed so CIRS<->ITRS and TETE<->ITRS propagate the location attribute?",
+      "expected": "Replace hardcoded location=EARTH_CENTER with the actual frame's location attribute",
+      "difficulty": "hard",
+      "type": "factual"
+    },
+    {
+      "question": "Did this fix require adding a new coordinate frame class to astropy?",
+      "expected": "no",
+      "difficulty": "distractor",
+      "type": "distractor"
+    }
+  ]
+}

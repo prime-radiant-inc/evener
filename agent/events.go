@@ -32,6 +32,7 @@ const (
 	EventPluginLoaded        EventKind = "PLUGIN_LOADED"
 	EventHookStart           EventKind = "HOOK_START"
 	EventHookEnd             EventKind = "HOOK_END"
+	EventForkSummary         EventKind = "FORK_SUMMARY"
 )
 
 type SessionEvent struct {
@@ -221,4 +222,8 @@ type HookEndData struct {
 	PluginName string `json:"plugin_name"`
 	ExitCode   int    `json:"exit_code"`
 	DurationMS int64  `json:"duration_ms"`
+}
+
+type ForkSummaryData struct {
+	Turn int `json:"turn"`
 }

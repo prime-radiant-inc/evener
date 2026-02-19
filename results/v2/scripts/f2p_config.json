@@ -1,0 +1,154 @@
+{
+  "django__django-11276": {
+    "test_cmd": "python tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1 utils_tests.test_html",
+    "repo": "django/django",
+    "f2p_tests": [
+      "test_make_list02 (template_tests.filter_tests.test_make_list.MakeListTests)",
+      "test_password_help_text (auth_tests.test_forms.UserCreationFormTest)",
+      "test_url_split_chars (template_tests.filter_tests.test_urlize.FunctionTests)",
+      "test_wrapping_characters (template_tests.filter_tests.test_urlize.FunctionTests)",
+      "test_addslashes02 (template_tests.filter_tests.test_addslashes.AddslashesTests)",
+      "test_title1 (template_tests.filter_tests.test_title.TitleTests)",
+      "test_urlize01 (template_tests.filter_tests.test_urlize.UrlizeTests)",
+      "test_urlize06 (template_tests.filter_tests.test_urlize.UrlizeTests)",
+      "test_html_escaped (forms_tests.widget_tests.test_clearablefileinput.ClearableFileInputTest)",
+      "test_url12 (template_tests.syntax_tests.test_url.UrlTagTests)",
+      "test_initial_values (model_forms.tests.ModelFormBasicTests)",
+      "test_m2m_initial_callable (model_forms.tests.ModelFormBasicTests)",
+      "test_multi_fields (model_forms.tests.ModelFormBasicTests)",
+      "test_runtime_choicefield_populated (model_forms.tests.ModelFormBasicTests)",
+      "test_no_referer (view_tests.tests.test_csrf.CsrfViewTests)",
+      "test_escape (utils_tests.test_html.TestUtilsHtml)",
+      "test_escapejs (utils_tests.test_html.TestUtilsHtml)",
+      "test_escaping (forms_tests.tests.test_forms.FormsTestCase)",
+      "test_templates_with_forms (forms_tests.tests.test_forms.FormsTestCase)",
+      "An exception report can be generated without request",
+      "A simple exception report can be generated",
+      "A message can be provided in addition to a request",
+      "test_methods_with_arguments_display_arguments_default_value (admin_docs.test_views.TestModelDetailView)",
+      "Safe strings in local variables are escaped.",
+      "test_message_only (view_tests.tests.test_debug.ExceptionReporterTests)",
+      "test_request_with_items_key (view_tests.tests.test_debug.ExceptionReporterTests)"
+    ]
+  },
+  "astropy__astropy-13977": {
+    "test_cmd": "python -m pytest astropy/units/tests/test_quantity_ufuncs.py -rA -vv --tb=short",
+    "repo": "astropy/astropy",
+    "f2p_tests": [
+      "astropy/units/tests/test_quantity_ufuncs.py::TestUfuncReturnsNotImplemented::TestBinaryUfuncs::test_full[None-duck_quantity0-quantity0-add]",
+      "astropy/units/tests/test_quantity_ufuncs.py::TestUfuncReturnsNotImplemented::TestBinaryUfuncs::test_full[None-duck_quantity0-quantity0-less]",
+      "astropy/units/tests/test_quantity_ufuncs.py::TestUfuncReturnsNotImplemented::TestBinaryUfuncs::test_full[None-duck_quantity0-quantity1-add]",
+      "astropy/units/tests/test_quantity_ufuncs.py::TestUfuncReturnsNotImplemented::TestBinaryUfuncs::test_full[None-duck_quantity0-quantity1-less]",
+      "astropy/units/tests/test_quantity_ufuncs.py::TestUfuncReturnsNotImplemented::TestBinaryUfuncs::test_full[None-duck_quantity1-quantity0-add]",
+      "astropy/units/tests/test_quantity_ufuncs.py::TestUfuncReturnsNotImplemented::TestBinaryUfuncs::test_full[None-duck_quantity1-quantity0-less]",
+      "astropy/units/tests/test_quantity_ufuncs.py::TestUfuncReturnsNotImplemented::TestBinaryUfuncs::test_full[None-duck_quantity1-quantity1-add]",
+      "astropy/units/tests/test_quantity_ufuncs.py::TestUfuncReturnsNotImplemented::TestBinaryUfuncs::test_full[None-duck_quantity1-quantity1-less]",
+      "astropy/units/tests/test_quantity_ufuncs.py::TestUfuncReturnsNotImplemented::TestBinaryUfuncs::test_full[empty-duck_quantity0-quantity0-add]",
+      "astropy/units/tests/test_quantity_ufuncs.py::TestUfuncReturnsNotImplemented::TestBinaryUfuncs::test_full[empty-duck_quantity0-quantity0-multiply]",
+      "astropy/units/tests/test_quantity_ufuncs.py::TestUfuncReturnsNotImplemented::TestBinaryUfuncs::test_full[empty-duck_quantity0-quantity0-less]",
+      "astropy/units/tests/test_quantity_ufuncs.py::TestUfuncReturnsNotImplemented::TestBinaryUfuncs::test_full[empty-duck_quantity0-quantity1-add]",
+      "astropy/units/tests/test_quantity_ufuncs.py::TestUfuncReturnsNotImplemented::TestBinaryUfuncs::test_full[empty-duck_quantity0-quantity1-multiply]",
+      "astropy/units/tests/test_quantity_ufuncs.py::TestUfuncReturnsNotImplemented::TestBinaryUfuncs::test_full[empty-duck_quantity0-quantity1-less]",
+      "astropy/units/tests/test_quantity_ufuncs.py::TestUfuncReturnsNotImplemented::TestBinaryUfuncs::test_full[empty-duck_quantity1-quantity0-add]",
+      "astropy/units/tests/test_quantity_ufuncs.py::TestUfuncReturnsNotImplemented::TestBinaryUfuncs::test_full[empty-duck_quantity1-quantity0-multiply]",
+      "astropy/units/tests/test_quantity_ufuncs.py::TestUfuncReturnsNotImplemented::TestBinaryUfuncs::test_full[empty-duck_quantity1-quantity0-less]",
+      "astropy/units/tests/test_quantity_ufuncs.py::TestUfuncReturnsNotImplemented::TestBinaryUfuncs::test_full[empty-duck_quantity1-quantity1-add]",
+      "astropy/units/tests/test_quantity_ufuncs.py::TestUfuncReturnsNotImplemented::TestBinaryUfuncs::test_full[empty-duck_quantity1-quantity1-multiply]",
+      "astropy/units/tests/test_quantity_ufuncs.py::TestUfuncReturnsNotImplemented::TestBinaryUfuncs::test_full[empty-duck_quantity1-quantity1-less]"
+    ]
+  },
+  "pylint-dev__pylint-4604": {
+    "test_cmd": "python -m pytest tests/checkers/unittest_variables.py -rA --tb=short",
+    "repo": "pylint-dev/pylint",
+    "f2p_tests": [
+      "tests/checkers/unittest_variables.py::TestVariablesChecker::test_bitbucket_issue_78",
+      "tests/checkers/unittest_variables.py::TestVariablesChecker::test_no_name_in_module_skipped",
+      "tests/checkers/unittest_variables.py::TestVariablesChecker::test_all_elements_without_parent",
+      "tests/checkers/unittest_variables.py::TestVariablesChecker::test_redefined_builtin_ignored",
+      "tests/checkers/unittest_variables.py::TestVariablesChecker::test_redefined_builtin_custom_modules",
+      "tests/checkers/unittest_variables.py::TestVariablesChecker::test_redefined_builtin_modname_not_ignored",
+      "tests/checkers/unittest_variables.py::TestVariablesChecker::test_redefined_builtin_in_function",
+      "tests/checkers/unittest_variables.py::TestVariablesChecker::test_unassigned_global",
+      "tests/checkers/unittest_variables.py::TestVariablesChecker::test_listcomp_in_decorator",
+      "tests/checkers/unittest_variables.py::TestVariablesChecker::test_listcomp_in_ancestors",
+      "tests/checkers/unittest_variables.py::TestVariablesChecker::test_return_type_annotation",
+      "tests/checkers/unittest_variables.py::TestVariablesChecker::test_attribute_in_type_comment",
+      "tests/checkers/unittest_variables.py::TestVariablesCheckerWithTearDown::test_custom_callback_string",
+      "tests/checkers/unittest_variables.py::TestVariablesCheckerWithTearDown::test_redefined_builtin_modname_not_ignored",
+      "tests/checkers/unittest_variables.py::TestVariablesCheckerWithTearDown::test_redefined_builtin_in_function",
+      "tests/checkers/unittest_variables.py::TestVariablesCheckerWithTearDown::test_import_as_underscore",
+      "tests/checkers/unittest_variables.py::TestVariablesCheckerWithTearDown::test_lambda_in_classdef",
+      "tests/checkers/unittest_variables.py::TestVariablesCheckerWithTearDown::test_nested_lambda",
+      "tests/checkers/unittest_variables.py::TestVariablesCheckerWithTearDown::test_ignored_argument_names_no_message",
+      "tests/checkers/unittest_variables.py::TestVariablesCheckerWithTearDown::test_ignored_argument_names_starred_args",
+      "tests/checkers/unittest_variables.py::TestMissingSubmodule::test_package_all"
+    ]
+  },
+  "pydata__xarray-6992": {
+    "test_cmd": "python -m pytest xarray/tests/test_dataset.py xarray/tests/test_dataarray.py --no-header -rA --tb=no -p no:cacheprovider",
+    "repo": "pydata/xarray",
+    "f2p_tests": [
+      "xarray/tests/test_dataarray.py::TestDataArray::test_reset_index",
+      "xarray/tests/test_dataset.py::TestDataset::test_reset_index",
+      "xarray/tests/test_dataset.py::TestDataset::test_reset_index_drop_dims",
+      "xarray/tests/test_dataset.py::TestDataset::test_reset_index_drop_convert[foo-False-dropped0-converted0-renamed0]",
+      "xarray/tests/test_dataset.py::TestDataset::test_reset_index_drop_convert[foo-True-dropped1-converted1-renamed1]",
+      "xarray/tests/test_dataset.py::TestDataset::test_reset_index_drop_convert[x-False-dropped2-converted2-renamed2]",
+      "xarray/tests/test_dataset.py::TestDataset::test_reset_index_drop_convert[x-True-dropped3-converted3-renamed3]",
+      "xarray/tests/test_dataset.py::TestDataset::test_reset_index_drop_convert[arg4-False-dropped4-converted4-renamed4]",
+      "xarray/tests/test_dataset.py::TestDataset::test_reset_index_drop_convert[arg5-True-dropped5-converted5-renamed5]",
+      "xarray/tests/test_dataset.py::TestDataset::test_reset_index_drop_convert[arg6-False-dropped6-converted6-renamed6]",
+      "xarray/tests/test_dataset.py::TestDataset::test_reset_index_drop_convert[arg7-True-dropped7-converted7-renamed7]",
+      "xarray/tests/test_groupby.py::test_groupby_drops_nans"
+    ]
+  },
+  "sympy__sympy-13091": {
+    "test_cmd": "python -m pytest sympy/core/tests/ -rA --tb=short",
+    "repo": "sympy/sympy",
+    "f2p_tests": [
+      "test_equality",
+      "test_comparisons_with_unknown_type"
+    ]
+  },
+  "pytest-dev__pytest-5787": {
+    "test_cmd": "python -m pytest testing/test_reports.py -rA --tb=short",
+    "repo": "pytest-dev/pytest",
+    "f2p_tests": [
+      "testing/test_reports.py::TestReportSerialization::test_chained_exceptions[TestReport]",
+      "testing/test_reports.py::TestReportSerialization::test_chained_exceptions[CollectReport]"
+    ]
+  },
+  "django__django-11138": {
+    "test_cmd": "python tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1 timezones",
+    "repo": "django/django",
+    "f2p_tests": [
+      "test_query_convert_timezones (timezones.tests.NewDatabaseTests)"
+    ]
+  },
+  "scikit-learn__scikit-learn-25102": {
+    "test_cmd": "python -m pytest sklearn/feature_selection/tests/test_base.py sklearn/feature_selection/tests/test_feature_select.py -rA --tb=short",
+    "repo": "scikit-learn/scikit-learn",
+    "f2p_tests": [
+      "sklearn/feature_selection/tests/test_base.py::test_output_dataframe",
+      "sklearn/feature_selection/tests/test_feature_select.py::test_dataframe_output_dtypes"
+    ]
+  },
+  "sphinx-doc__sphinx-11510": {
+    "test_cmd": "python -m pytest tests/test_directive_other.py -rA --tb=short",
+    "repo": "sphinx-doc/sphinx",
+    "f2p_tests": [
+      "tests/test_directive_other.py::test_include_source_read_event",
+      "tests/test_directive_other.py::test_include_source_read_event_nested_includes"
+    ]
+  },
+  "astropy__astropy-13398": {
+    "test_cmd": "python -m pytest astropy/coordinates/tests/test_intermediate_transformations.py -rA --tb=short",
+    "repo": "astropy/astropy",
+    "f2p_tests": [
+      "astropy/coordinates/tests/test_intermediate_transformations.py::test_itrs_topo_to_altaz_with_refraction",
+      "astropy/coordinates/tests/test_intermediate_transformations.py::test_itrs_topo_to_hadec_with_refraction",
+      "astropy/coordinates/tests/test_intermediate_transformations.py::test_cirs_itrs_topo",
+      "astropy/coordinates/tests/test_intermediate_transformations.py::test_itrs_straight_overhead"
+    ]
+  }
+}

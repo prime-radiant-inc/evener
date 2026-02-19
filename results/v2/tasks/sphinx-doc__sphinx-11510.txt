@@ -1,0 +1,58 @@
+You are working on the Sphinx documentation generator repository (sphinx-doc/sphinx).
+
+## Issue
+
+The `source-read` event does not modify the source of files brought in via the `.. include::` directive. When a Sphinx extension connects to the `source-read` event to perform text substitutions, the substitutions work on top-level source files but not on files that are included via `.. include::` directives.
+
+The `source-read` event is emitted when a source file is initially read by Sphinx (before directives are processed). However, the `include` directive reads its target file separately during directive execution. Even though the event handler is called for the included file as a standalone source file, the result of that call is not used when the file is included into another document.
+
+For example, with a `source-read` handler that replaces `&REPLACE_ME;` with `REPLACED`:
+- In the main `index.rst` file, `&REPLACE_ME;` is correctly replaced.
+- In `something-to-include.rst` (included via `.. include:: something-to-include.rst`), `&REPLACE_ME;` is NOT replaced in the output.
+
+## What to do
+
+The fix goes in `sphinx/directives/other.py`, in the `Include` class (which extends docutils' `BaseInclude` directive).
+
+1. Read `sphinx/directives/other.py` and find the `Include` class and its `run` method.
+
+2. The approach: Monkey-patch the `self.state_machine.insert_input` instance method to emit the `source-read` event on included content before it gets inserted. The `insert_input` method is what docutils calls to insert the lines from an included file into the document being parsed.
+
+3. In the `run` method, before the existing code that processes the include arguments, add a nested function `_insert_input(include_lines, path)` that:
+   - Joins all lines except the last two into text (docutils 0.18+ appends two marker lines at the end that must be preserved).
+   - Determines the docname from the path using `self.env.path2doc(os_path(path))`.
+   - Emits the `source-read` event with `self.env.app.events.emit("source-read", docname, arg)` where `arg` is a single-element list `[text]`.
+   - Splits the modified text back into lines and reattaches the two marker lines.
+   - Calls the original (class-level) `StateMachine.insert_input(self.state_machine, include_lines, path)`.
+
+4. Only patch `self.state_machine.insert_input` if there are listeners registered for the `source-read` event (check `self.env.app.events.listeners.get('source-read')`).
+
+5. You will need to import `StateMachine` from `docutils.statemachine` and `os_path` from `sphinx.util.osutil`.
+
+## Failing tests
+
+Run the directive tests:
+
+    python -m pytest tests/test_directive_other.py -x -v
+
+Specifically the new tests that verify this behavior:
+
+    python -m pytest tests/test_directive_other.py::test_include_source_read_event -x -v
+    python -m pytest tests/test_directive_other.py::test_include_source_read_event_nested_includes -x -v
+
+These tests require test fixture files under `tests/roots/test-directive-include/`:
+- `conf.py` with `project = 'test-directive-include'` and `exclude_patterns = ['_build']`
+- `foo.rst` containing `The #magical foo.`
+- `text.txt` containing `This is plain text.`
+- `baz/baz.rst` containing:
+  ```
+  Baz
+  ===
+
+  .. include:: foo.rst
+
+  Baz was here.
+  ```
+  (note: no trailing newline on the last line)
+
+Make sure no existing tests break.

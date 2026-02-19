@@ -69,6 +69,12 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	subCfg := s.cfg
 	subCfg.MCPConfigFiles = nil
 	subCfg.MCPInline = nil
+	subCfg.ParentSessionID = s.id
+	subCfg.SubagentTask = task
+	subCfg.Depth = depth + 1
+	if callID, ok := ctx.Value(ctxToolCallID).(string); ok {
+		subCfg.ParentToolCallID = callID
+	}
 	if maxTurns > 0 {
 		subCfg.MaxTurns = maxTurns
 	} else {
@@ -92,7 +98,6 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	if err != nil {
 		return "", err
 	}
-	subSess.depth = depth + 1
 
 	// Restrict subagent tools to the plugin agent's allow list.
 	if agent != nil && len(agent.Tools) > 0 {

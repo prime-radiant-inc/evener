@@ -16,6 +16,12 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// ctxKey is a private type for context keys in this package.
+type ctxKey string
+
+// ctxToolCallID carries the tool call ID into tool execution closures via context.
+const ctxToolCallID ctxKey = "toolCallID"
+
 // SessionState represents the current lifecycle state of a session.
 type SessionState string
 
@@ -64,6 +70,9 @@ type SessionConfig struct {
 	// Always applied, even when SystemPromptFile is set (CLI --system-prompt-append flag).
 	SystemPromptAppend []string `json:"system_prompt_append,omitempty"`
 
+	// ContextStrategy selects the context management strategy: compact|recall|session-log|ooda.
+	ContextStrategy string `json:"context_strategy,omitempty"`
+
 	EnableLoopDetection *bool `json:"enable_loop_detection,omitempty"`
 	LoopDetectionWindow int   `json:"loop_detection_window,omitempty"`
 
@@ -71,6 +80,27 @@ type SessionConfig struct {
 	// Nil means use llm.DefaultRetryPolicy().
 	LLMRetryPolicy *llm.RetryPolicy `json:"-"`
 	LLMSleep       llm.SleepFunc    `json:"-"`
+
+	// ContextStrategyOverride, when non-nil, is used instead of creating
+	// a strategy from the ContextStrategy string. For testing.
+	ContextStrategyOverride ContextStrategy `json:"-"`
+
+	// CompactionThresholdScale multiplies all compaction thresholds by this
+	// factor. 1.0 = defaults, 0.1 = trigger at 10% of normal pressure.
+	// Used for evaluation testing. 0 means use defaults.
+	CompactionThresholdScale float64 `json:"compaction_threshold_scale,omitempty"`
+
+	// ParentSessionID links sub-agent sessions to their parent (set by spawnAgent).
+	ParentSessionID string `json:"-"`
+
+	// ParentToolCallID is the tool call ID that spawned this sub-agent session.
+	ParentToolCallID string `json:"-"`
+
+	// SubagentTask is the task description passed to spawn_agent.
+	SubagentTask string `json:"-"`
+
+	// Depth is the sub-agent nesting depth (0 for root sessions).
+	Depth int `json:"-"`
 
 	// StateDir, when non-empty, enables incremental session persistence.
 	// Snapshots are written to <StateDir>/sessions/ and tasks to <StateDir>/tasks/.
@@ -130,6 +160,7 @@ type Session struct {
 
 	// context management
 	contextMgr *ContextManager
+	strategy   ContextStrategy
 
 	// skills discovered at session startup
 	skills map[string]SkillMeta
@@ -164,6 +195,36 @@ type Session struct {
 	// task list (lazy-init)
 	taskStore     *TaskStore
 	taskStoreOnce sync.Once
+
+	// transcript writer (nil when StateDir is empty)
+	transcript *TranscriptWriter
+}
+
+// selectStrategy creates the appropriate ContextStrategy from config.
+func selectStrategy(cfg SessionConfig, cm *ContextManager, sess *Session) (ContextStrategy, error) {
+	if cfg.ContextStrategyOverride != nil {
+		return cfg.ContextStrategyOverride, nil
+	}
+	switch cfg.ContextStrategy {
+	case "", "compact":
+		return NewCompactStrategy(cm), nil
+	case "recall":
+		return NewRecallStrategy(cm, sess), nil
+	case "session-log":
+		return NewSessionLogStrategy(cm, sess)
+	case "ooda":
+		return NewOODAStrategy(cm, sess)
+	case "obs-mask":
+		return NewObsMaskStrategy(cm), nil
+	case "checkpoint-pred":
+		return NewCheckpointPredStrategy(cm), nil
+	case "memory-crystals":
+		return NewMemoryCrystalsStrategy(cm), nil
+	case "recursive-distill":
+		return NewRecursiveDistillStrategy(cm), nil
+	default:
+		return nil, fmt.Errorf("unknown context strategy: %q", cfg.ContextStrategy)
+	}
 }
 
 func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnvironment, cfg SessionConfig) (*Session, error) {
@@ -206,6 +267,52 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		return nil, err
 	}
 
+	s.depth = cfg.Depth
+
+	// Create transcript writer if state persistence is enabled.
+	if s.stateDir != "" {
+		hdr := TranscriptHeader{
+			SessionID:        s.id,
+			ParentSessionID:  cfg.ParentSessionID,
+			ParentToolCallID: cfg.ParentToolCallID,
+			Task:             cfg.SubagentTask,
+			CreatedAt:        time.Now().UTC(),
+			ProfileID:        profile.ID(),
+			Model:            profile.Model(),
+			WorkingDir:       s.envInfo.WorkingDir,
+			Depth:            cfg.Depth,
+		}
+		tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
+		tw, twErr := NewTranscriptWriter(tpath, hdr)
+		if twErr != nil {
+			s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript create failed: %v", twErr)})
+		}
+		s.transcript = tw
+	}
+
+	applyThresholdScale(s.contextMgr, cfg.CompactionThresholdScale)
+	s.contextMgr.OnCompactionTurn = func(t Turn) {
+		if err := s.transcript.Append(t); err != nil {
+			s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
+		}
+	}
+
+	// Create context strategy.
+	strat, err := selectStrategy(cfg, s.contextMgr, s)
+	if err != nil {
+		return nil, err
+	}
+	s.strategy = strat
+
+	// Register any tools provided by the context strategy.
+	if s.strategy != nil {
+		for _, tool := range s.strategy.Tools() {
+			if err := s.reg.Register(tool); err != nil {
+				return nil, fmt.Errorf("register strategy tool: %w", err)
+			}
+		}
+	}
+
 	s.emit(EventSessionStart, SessionStartData{
 		Profile: profile.ID(),
 		Model:   profile.Model(),
@@ -234,6 +341,19 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		return nil, fmt.Errorf("env initialize: %w", err)
 	}
 
+	// Try transcript-based resume first, fall back to snapshot history.
+	var resumeHistory []Turn
+	if stateDir != "" {
+		tpath := filepath.Join(stateDir, sessionsSubdir, snap.ID+".transcript.jsonl")
+		_, entries, _, readErr := ReadTranscript(tpath)
+		if readErr == nil && len(entries) > 0 {
+			resumeHistory = ResumeHistory(entries)
+		}
+	}
+	if resumeHistory == nil {
+		resumeHistory = append([]Turn{}, snap.History...)
+	}
+
 	sessCtx, sessCancel := context.WithCancel(context.Background())
 	s := &Session{
 		id:         snap.ID,
@@ -244,7 +364,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		stateDir:   cfg.StateDir,
 		state:      SessionIdle,
 		events:     make(chan SessionEvent, 256),
-		history:    append([]Turn{}, snap.History...),
+		history:    resumeHistory,
 		turns:      snap.TurnCount,
 		subagents:  map[string]*subagent{},
 		readFiles:  map[string]bool{},
@@ -254,6 +374,54 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 
 	if err := s.initSessionState(); err != nil {
 		return nil, err
+	}
+
+	// Open or create transcript for appending.
+	if s.stateDir != "" {
+		tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
+		tw, twErr := OpenTranscriptWriter(tpath)
+		if twErr != nil {
+			// Transcript might not exist (old session). Create new.
+			hdr := TranscriptHeader{
+				SessionID:        s.id,
+				ParentSessionID:  cfg.ParentSessionID,
+				ParentToolCallID: cfg.ParentToolCallID,
+				Task:             cfg.SubagentTask,
+				CreatedAt:        snap.CreatedAt,
+				ProfileID:        profile.ID(),
+				Model:            profile.Model(),
+				WorkingDir:       s.envInfo.WorkingDir,
+				Depth:            cfg.Depth,
+			}
+			tw, twErr = NewTranscriptWriter(tpath, hdr)
+			if twErr != nil {
+				s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript open failed: %v", twErr)})
+			}
+		}
+		s.transcript = tw
+	}
+
+	applyThresholdScale(s.contextMgr, cfg.CompactionThresholdScale)
+	s.contextMgr.OnCompactionTurn = func(t Turn) {
+		if err := s.transcript.Append(t); err != nil {
+			s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
+		}
+	}
+
+	// Create context strategy.
+	strat, err := selectStrategy(cfg, s.contextMgr, s)
+	if err != nil {
+		return nil, err
+	}
+	s.strategy = strat
+
+	// Register any tools provided by the context strategy.
+	if s.strategy != nil {
+		for _, tool := range s.strategy.Tools() {
+			if err := s.reg.Register(tool); err != nil {
+				return nil, fmt.Errorf("register strategy tool: %w", err)
+			}
+		}
 	}
 
 	s.emit(EventSessionStart, SessionStartData{
@@ -444,6 +612,10 @@ func (s *Session) Close() {
 			s.mcpMgr.Close()
 		}
 
+		if s.transcript != nil {
+			_ = s.transcript.Close()
+		}
+
 		// 8. Transition to CLOSED last, then close the events channel.
 		s.mu.Lock()
 		s.state = SessionClosed
@@ -534,6 +706,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecR
 	s.emit(EventToolCallStart, startData)
 
 	// Session-level tools (subagents) are registered in the registry with closures.
+	ctx = context.WithValue(ctx, ctxToolCallID, call.ID)
 	res := s.reg.ExecuteCall(ctx, s.env, call)
 
 	// Emit output deltas (best-effort). Even for non-streaming tools, this gives consumers a uniform
@@ -578,23 +751,31 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecR
 }
 
 func (s *Session) appendTurn(kind TurnKind, m llm.Message) {
+	t := NewTurn(kind, m)
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.history = append(s.history, NewTurn(kind, m))
+	s.history = append(s.history, t)
+	s.mu.Unlock()
+	if err := s.transcript.Append(t); err != nil {
+		s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+	}
 }
 
 // appendAssistantTurn appends an assistant turn that carries the full response
 // metadata (usage stats and response ID) alongside the message content.
 func (s *Session) appendAssistantTurn(resp llm.Response) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.history = append(s.history, Turn{
+	t := Turn{
 		Kind:       TurnAssistant,
 		Message:    resp.Message,
 		Timestamp:  time.Now().UTC(),
 		Usage:      resp.Usage,
 		ResponseID: resp.ID,
-	})
+	}
+	s.mu.Lock()
+	s.history = append(s.history, t)
+	s.mu.Unlock()
+	if err := s.transcript.Append(t); err != nil {
+		s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+	}
 }
 
 // maybeAutoSave persists the session state if StateDir is configured.
@@ -837,12 +1018,14 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 
 		// Apply context management before each LLM request.
 		// Copy history out to avoid holding s.mu during potential LLM calls (Layer 4).
-		if s.contextMgr != nil {
+		if s.strategy != nil {
 			s.mu.Lock()
 			histCopy := append([]Turn{}, s.history...)
 			s.mu.Unlock()
 
-			s.contextMgr.MaybeCompact(ctx, &histCopy, len(sys), s.emit)
+			if err := s.strategy.ManageContext(ctx, &histCopy, len(sys), s.emit); err != nil {
+				s.emit(EventWarning, WarningData{Message: "context strategy error: " + err.Error()})
+			}
 
 			s.mu.Lock()
 			s.history = histCopy
@@ -871,6 +1054,11 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 						))
 					}
 				}
+				continue
+			}
+			if t.Kind == TurnCheckpoint || t.Kind == TurnSummary {
+				// Compaction turns carry user-role messages; include as-is.
+				history = append(history, t.Message)
 				continue
 			}
 			history = append(history, t.Message)
@@ -1019,6 +1207,16 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		// Persist the completed tool round so resumed sessions always include
 		// tool_result turns for any prior assistant tool calls.
 		s.maybeAutoSave()
+
+		// Notify the context strategy that a tool round completed.
+		if s.strategy != nil {
+			s.mu.Lock()
+			histCopy := append([]Turn{}, s.history...)
+			s.mu.Unlock()
+			if err := s.strategy.AfterAction(ctx, histCopy, s.client); err != nil {
+				s.emit(EventWarning, WarningData{Message: "strategy AfterAction error: " + err.Error()})
+			}
+		}
 
 		// Loop detection: track per-call signatures and check for repeating patterns.
 		for _, call := range calls {
@@ -1847,6 +2045,27 @@ func (s *Session) resolveFilePath(path string) string {
 		return p
 	}
 	return filepath.Join(s.env.WorkingDirectory(), p)
+}
+
+// applyThresholdScale scales all compaction thresholds on cm by the given
+// factor. A factor of 0 or 1 leaves defaults unchanged.
+//
+// Thresholds are clamped to a minimum of 0.20 so that aggressive scaling
+// (e.g., 0.1) doesn't collapse all layers into a narrow band where only
+// the weakest layer (observation mask) fires repeatedly.
+func applyThresholdScale(cm *ContextManager, scale float64) {
+	if scale > 0 && scale != 1.0 {
+		clamp := func(v float64) float64 {
+			if v < 0.20 {
+				return 0.20
+			}
+			return v
+		}
+		cm.ObservationMaskThreshold = clamp(cm.ObservationMaskThreshold * scale)
+		cm.ThinkingClearThreshold = clamp(cm.ThinkingClearThreshold * scale)
+		cm.CheckpointThreshold = clamp(cm.CheckpointThreshold * scale)
+		cm.SummarizeThreshold = clamp(cm.SummarizeThreshold * scale)
+	}
 }
 
 func (s *Session) getOrCreateTaskStore() *TaskStore {
