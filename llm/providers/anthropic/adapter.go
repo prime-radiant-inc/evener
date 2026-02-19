@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -53,6 +54,57 @@ func NewFromEnv() (*Adapter, error) {
 }
 
 func (a *Adapter) Name() string { return "anthropic" }
+
+func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
+	if a.Client == nil {
+		a.Client = &http.Client{Timeout: 0}
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, a.BaseURL+"/v1/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("x-api-key", a.APIKey)
+	httpReq.Header.Set("anthropic-version", "2023-06-01")
+	for k, v := range a.DefaultHeaders {
+		httpReq.Header.Set(k, v)
+	}
+
+	resp, err := a.Client.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("list models: HTTP %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Data []struct {
+			ID          string `json:"id"`
+			DisplayName string `json:"display_name"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	models := make([]llm.ModelInfo, 0, len(result.Data))
+	for _, m := range result.Data {
+		displayName := m.DisplayName
+		if displayName == "" {
+			displayName = m.ID
+		}
+		models = append(models, llm.ModelInfo{
+			ID:          m.ID,
+			Provider:    "anthropic",
+			DisplayName: displayName,
+		})
+	}
+	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
+	return models, nil
+}
 
 // buildRequestBody constructs the Anthropic Messages API request body from a
 // unified llm.Request. It returns the body map and the autoCache flag (needed

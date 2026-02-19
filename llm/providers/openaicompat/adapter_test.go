@@ -904,6 +904,38 @@ func TestAdapter_Complete_ReasoningEffort_Propagated(t *testing.T) {
 	}
 }
 
+func TestAdapter_ListModels(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/models" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"object": "list",
+			"data": [
+				{"id": "llama3.1:latest", "object": "model"},
+				{"id": "codellama:latest", "object": "model"}
+			]
+		}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{BaseURL: srv.URL, Client: srv.Client()}
+	models, err := a.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("got %d models, want 2", len(models))
+	}
+	for _, m := range models {
+		if m.Provider != "openai-compatible" {
+			t.Errorf("model %s: provider = %q, want openai-compatible", m.ID, m.Provider)
+		}
+	}
+}
+
 func TestAdapter_Complete_Metadata_Propagated(t *testing.T) {
 	var sentBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

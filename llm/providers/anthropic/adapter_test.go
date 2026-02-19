@@ -2724,4 +2724,47 @@ func TestStream_ToolCall_ArgsNotCorrupted(t *testing.T) {
 	}
 }
 
+func TestAdapter_ListModels(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/models" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Header.Get("x-api-key") != "test-key" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"data": [
+				{"id": "claude-sonnet-4-6-20250514", "display_name": "Claude Sonnet 4.6", "type": "model"},
+				{"id": "claude-haiku-4-5-20251001", "display_name": "Claude Haiku 4.5", "type": "model"}
+			],
+			"has_more": false
+		}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	models, err := a.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("got %d models, want 2", len(models))
+	}
+	// Sorted alphabetically by ID
+	if models[0].ID != "claude-haiku-4-5-20251001" {
+		t.Errorf("models[0].ID = %q, want claude-haiku-4-5-20251001 (sorted)", models[0].ID)
+	}
+	if models[0].DisplayName != "Claude Haiku 4.5" {
+		t.Errorf("models[0].DisplayName = %q, want 'Claude Haiku 4.5'", models[0].DisplayName)
+	}
+	for _, m := range models {
+		if m.Provider != "anthropic" {
+			t.Errorf("model %s: provider = %q, want anthropic", m.ID, m.Provider)
+		}
+	}
+}
+
 func ptrInt(i int) *int { return &i }
