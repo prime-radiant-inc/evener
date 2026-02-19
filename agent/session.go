@@ -522,6 +522,9 @@ func (s *Session) SetModel(model string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.profile = s.profile.WithModel(model)
+	if s.contextMgr != nil {
+		s.contextMgr.SetProfile(s.profile)
+	}
 }
 
 // SetTimeout changes the default command timeout for shell tool invocations.
@@ -1121,18 +1124,32 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		// Accumulate usage and record exact input token count for pressure calculation.
 		if s.contextMgr != nil {
 			s.contextMgr.AddUsage(resp.Usage)
-			totalInput := resp.Usage.InputTokens
-			if resp.Usage.CacheReadTokens != nil {
-				totalInput += *resp.Usage.CacheReadTokens
+
+			// Detect server-side web search in the response. Anthropic makes
+			// multiple forward passes for server tools, reporting combined usage
+			// (~2x actual). Skip recording the inflated baseline; the previous
+			// lastInputTokens value remains valid for pressure estimation.
+			hasServerWebSearch := false
+			for _, p := range resp.Message.Content {
+				if p.Kind == llm.ContentWebSearch {
+					hasServerWebSearch = true
+					break
+				}
 			}
-			if resp.Usage.CacheWriteTokens != nil {
-				totalInput += *resp.Usage.CacheWriteTokens
-			}
-			if totalInput > 0 {
-				s.mu.Lock()
-				hLen := len(s.history)
-				s.mu.Unlock()
-				s.contextMgr.RecordInputTokens(totalInput, hLen)
+			if !hasServerWebSearch {
+				totalInput := resp.Usage.InputTokens
+				if resp.Usage.CacheReadTokens != nil {
+					totalInput += *resp.Usage.CacheReadTokens
+				}
+				if resp.Usage.CacheWriteTokens != nil {
+					totalInput += *resp.Usage.CacheWriteTokens
+				}
+				if totalInput > 0 {
+					s.mu.Lock()
+					hLen := len(s.history)
+					s.mu.Unlock()
+					s.contextMgr.RecordInputTokens(totalInput, hLen)
+				}
 			}
 		}
 

@@ -1850,3 +1850,113 @@ func TestSession_RegisterTool(t *testing.T) {
 		t.Errorf("expected description 'a custom tool', got %q", tool.Definition.Description)
 	}
 }
+
+func TestSession_RecordInputTokens_SkipsWebSearchResponse(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	// Response 1: contains ContentWebSearch — inflated tokens should NOT be recorded.
+	// Response 2: no web search — tokens should be recorded normally.
+	c.Register(&fakeAdapter{
+		name: "anthropic",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Message: llm.Message{
+						Role: llm.RoleAssistant,
+						Content: []llm.ContentPart{
+							{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Query: "test query"}},
+							{Kind: llm.ContentText, Text: "Found results via web search."},
+						},
+					},
+					Usage: llm.Usage{InputTokens: 200_000}, // inflated ~2x
+				}
+			},
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Message: llm.Message{
+						Role:    llm.RoleAssistant,
+						Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "done"}},
+					},
+					Usage: llm.Usage{InputTokens: 100_000}, // real count
+				}
+			},
+		},
+	})
+
+	sess, err := NewSession(c, NewAnthropicProfile("claude-opus-4-6"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx := context.Background()
+
+	// First call: web search response with inflated tokens.
+	if _, err := sess.ProcessInput(ctx, "search something"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The inflated 200K should NOT have been recorded as lastInputTokens.
+	lit := sess.contextMgr.LastInputTokens()
+	if lit == 200_000 {
+		t.Fatalf("lastInputTokens = %d; inflated web search tokens should not be recorded", lit)
+	}
+
+	// Second call: normal response.
+	if _, err := sess.ProcessInput(ctx, "follow up"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now the real 100K should be recorded.
+	lit2 := sess.contextMgr.LastInputTokens()
+	if lit2 != 100_000 {
+		t.Fatalf("lastInputTokens after normal response = %d, want 100000", lit2)
+	}
+}
+
+func TestSession_SetModel_UpdatesContextManager(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "anthropic",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Message: llm.Assistant("ok"),
+					Usage:   llm.Usage{InputTokens: 100_000},
+				}
+			},
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("ok")}
+			},
+		},
+	})
+
+	sess, err := NewSession(c, NewAnthropicProfile("claude-opus-4-6"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// After first ProcessInput, contextMgr has InputTokens from 200K profile.
+	ctx := context.Background()
+	if _, err := sess.ProcessInput(ctx, "hello"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pressure with 200K window: 100K/200K = 0.50
+	p1 := sess.ContextPressure()
+	if p1 < 0.40 || p1 > 0.60 {
+		t.Fatalf("pressure before SetModel = %.2f, expected ~0.50", p1)
+	}
+
+	// Switch to 1M context model. Context manager should see the new window.
+	sess.SetModel("claude-opus-4-6[1m]")
+
+	// Pressure with 1M window: 100K/1M = 0.10
+	p2 := sess.ContextPressure()
+	if p2 > 0.20 {
+		t.Fatalf("pressure after SetModel to 1M = %.2f, expected < 0.20 (stale profile?)", p2)
+	}
+}

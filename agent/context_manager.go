@@ -74,6 +74,14 @@ func (cm *ContextManager) RecordInputTokens(tokens int, historyLen int) {
 	cm.historyLenAtMeasure = historyLen
 }
 
+// SetProfile replaces the provider profile so that ContextWindowSize() and
+// other profile-derived values stay current after a model change.
+func (cm *ContextManager) SetProfile(profile ProviderProfile) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.profile = profile
+}
+
 // LastInputTokens returns the most recently recorded input token count.
 func (cm *ContextManager) LastInputTokens() int {
 	cm.mu.Lock()
@@ -297,6 +305,9 @@ func (cm *ContextManager) ForceCompact(
 		EstTokensBefore: before,
 		EstTokensAfter:  after,
 	})
+	if cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == TurnCheckpoint {
+		cm.OnCompactionTurn((*history)[0])
+	}
 
 	// Layer 4: LLM summarization (only if client is available).
 	if cm.client != nil {
@@ -317,6 +328,9 @@ func (cm *ContextManager) ForceCompact(
 				EstTokensBefore: before,
 				EstTokensAfter:  after,
 			})
+			if cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == TurnSummary {
+				cm.OnCompactionTurn((*history)[0])
+			}
 		}
 	}
 

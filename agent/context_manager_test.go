@@ -1898,6 +1898,37 @@ func TestPressure_ZeroContextWindow(t *testing.T) {
 	}
 }
 
+// --- SetProfile tests ---
+
+func TestContextManager_SetProfile_UpdatesContextWindow(t *testing.T) {
+	// Start with a 200K profile, switch to 1M. Pressure should reflect new window.
+	smallProfile := &baseProfile{id: "anthropic", model: "claude-opus-4-6", contextWindow: 200_000}
+	cm := NewContextManager(smallProfile, nil)
+
+	// Record 100K tokens.
+	cm.RecordInputTokens(100_000, 5)
+	history := make([]Turn, 5)
+	for i := range history {
+		history[i] = Turn{Kind: TurnAssistant, Message: llm.Assistant("x")}
+	}
+
+	// With 200K window: pressure ≈ 100K/200K = 0.50
+	p1 := cm.estimatePressure(history, 0)
+	if p1 < 0.45 || p1 > 0.55 {
+		t.Fatalf("pressure before SetProfile = %.2f, expected ~0.50", p1)
+	}
+
+	// Switch to 1M profile.
+	bigProfile := &baseProfile{id: "anthropic", model: "claude-opus-4-6[1m]", contextWindow: 1_000_000}
+	cm.SetProfile(bigProfile)
+
+	// With 1M window: pressure ≈ 100K/1M = 0.10
+	p2 := cm.estimatePressure(history, 0)
+	if p2 < 0.08 || p2 > 0.12 {
+		t.Fatalf("pressure after SetProfile = %.2f, expected ~0.10", p2)
+	}
+}
+
 // --- ForceCompact tests ---
 
 func TestForceCompact_RunsAllLayers(t *testing.T) {
@@ -1957,6 +1988,91 @@ func TestForceCompact_RunsAllLayers(t *testing.T) {
 		if i >= len(layers) || layers[i] != want {
 			t.Errorf("layer[%d] = %q, want %q (all: %v)", i, layers[i], want, layers)
 		}
+	}
+}
+
+func TestForceCompact_FiresOnCompactionTurn_Checkpoint(t *testing.T) {
+	// ForceCompact should fire OnCompactionTurn for TurnCheckpoint (L3).
+	profile := &baseProfile{id: "openai", model: "test", contextWindow: 100_000}
+	cm := NewContextManager(profile, nil) // no LLM client → L4 skipped
+	cm.PreserveRecentTurns = 2
+
+	var callbackTurns []TurnKind
+	cm.OnCompactionTurn = func(t Turn) {
+		callbackTurns = append(callbackTurns, t.Kind)
+	}
+
+	history := []Turn{
+		NewTurn(TurnUserInput, llm.User("fix the bug")),
+		NewTurn(TurnAssistant, llm.Assistant("I'll fix it")),
+		NewTurn(TurnAssistant, llm.Assistant("analysis done")),
+		NewTurn(TurnAssistant, llm.Assistant("recent1")),
+		NewTurn(TurnAssistant, llm.Assistant("recent2")),
+	}
+
+	emitFn := func(kind EventKind, data any) {}
+	cm.ForceCompact(context.Background(), &history, emitFn)
+
+	// L3 creates a checkpoint turn. OnCompactionTurn should have been called.
+	found := false
+	for _, k := range callbackTurns {
+		if k == TurnCheckpoint {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected OnCompactionTurn to be called with TurnCheckpoint; got %v", callbackTurns)
+	}
+}
+
+func TestForceCompact_FiresOnCompactionTurn_Summary(t *testing.T) {
+	// ForceCompact should fire OnCompactionTurn for TurnSummary (L4).
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY] forced summary")}
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+
+	profile := &baseProfile{id: "openai", model: "test", contextWindow: 100_000}
+	cm := NewContextManager(profile, client)
+	cm.PreserveRecentTurns = 2
+
+	var callbackTurns []TurnKind
+	cm.OnCompactionTurn = func(t Turn) {
+		callbackTurns = append(callbackTurns, t.Kind)
+	}
+
+	history := []Turn{
+		NewTurn(TurnUserInput, llm.User("fix the bug")),
+		NewTurn(TurnAssistant, llm.Assistant("I'll fix it")),
+		NewTurn(TurnAssistant, llm.Assistant("analysis done")),
+		NewTurn(TurnAssistant, llm.Assistant("recent1")),
+		NewTurn(TurnAssistant, llm.Assistant("recent2")),
+	}
+
+	emitFn := func(kind EventKind, data any) {}
+	cm.ForceCompact(context.Background(), &history, emitFn)
+
+	// Both L3 (checkpoint) and L4 (summary) should fire callbacks.
+	foundCheckpoint, foundSummary := false, false
+	for _, k := range callbackTurns {
+		if k == TurnCheckpoint {
+			foundCheckpoint = true
+		}
+		if k == TurnSummary {
+			foundSummary = true
+		}
+	}
+	if !foundCheckpoint {
+		t.Fatalf("expected OnCompactionTurn for TurnCheckpoint; got %v", callbackTurns)
+	}
+	if !foundSummary {
+		t.Fatalf("expected OnCompactionTurn for TurnSummary; got %v", callbackTurns)
 	}
 }
 
