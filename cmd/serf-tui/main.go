@@ -89,8 +89,8 @@ func main() {
 		}
 	}
 
-	m := newModel(serverAddr, initialMessages)
 	initTheme()
+	m := newModel(serverAddr, initialMessages)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	// Start SSE streaming in background, sending events to Bubble Tea.

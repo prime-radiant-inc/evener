@@ -68,6 +68,7 @@ func newModel(addr string, initialMessages []chatMessage) model {
 	ta.MaxHeight = 5
 	ta.Focus()
 	ta.CharLimit = 0
+	applyInputTheme(&ta)
 
 	return model{
 		addr:        addr,
@@ -230,7 +231,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport = viewport.New(m.width, m.vpHeight())
 		m.viewport.YPosition = 0
 		m.viewport.Style = viewportStyle
-		m.input.SetWidth(m.width - 2) // -2 for the prompt "> "
+		m.input.SetWidth(m.width) // textarea accounts for prompt width internally
 		// Paint textarea rows with the theme background and foreground.
 		applyInputTheme(&m.input)
 		m.refreshViewport()
@@ -358,8 +359,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		prevHeight := m.input.Height()
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
-		// If the textarea grew or shrank, update the viewport height.
-		if m.input.Height() != prevHeight {
+		// Auto-grow the textarea up to MaxHeight based on line count.
+		wantHeight := m.input.LineCount()
+		if wantHeight < 1 {
+			wantHeight = 1
+		}
+		if wantHeight > m.input.MaxHeight {
+			wantHeight = m.input.MaxHeight
+		}
+		if wantHeight != prevHeight {
+			m.input.SetHeight(wantHeight)
 			m.viewport.Height = m.vpHeight()
 		}
 	} else {

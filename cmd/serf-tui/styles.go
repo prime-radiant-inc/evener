@@ -46,8 +46,8 @@ type colorTheme struct {
 var darkTheme = colorTheme{
 	statusBarBg: lipgloss.Color("235"),
 	statusBarFg: lipgloss.Color("252"),
-	viewportBg:  lipgloss.Color("233"),
-	inputBg:     lipgloss.Color("233"),
+	viewportBg:  lipgloss.Color(""),
+	inputBg:     lipgloss.Color(""),
 
 	connected:    lipgloss.Color("42"),
 	disconnected: lipgloss.Color("196"),
@@ -77,8 +77,8 @@ var darkTheme = colorTheme{
 var lightTheme = colorTheme{
 	statusBarBg: lipgloss.Color("254"),
 	statusBarFg: lipgloss.Color("236"),
-	viewportBg:  lipgloss.Color("231"),
-	inputBg:     lipgloss.Color("231"),
+	viewportBg:  lipgloss.Color(""),
+	inputBg:     lipgloss.Color(""),
 
 	connected:    lipgloss.Color("28"),
 	disconnected: lipgloss.Color("160"),
