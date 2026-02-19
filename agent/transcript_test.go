@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -431,7 +432,7 @@ func TestTranscriptWriter_LargeEntry(t *testing.T) {
 	tw.Close()
 
 	// Read back and verify
-	_, entries, err := ReadTranscript(path)
+	_, entries, _, err := ReadTranscript(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -481,7 +482,7 @@ func TestReadTranscript_ReturnsHeaderAndEntries(t *testing.T) {
 	}
 	w.Close()
 
-	gotHeader, entries, err := ReadTranscript(path)
+	gotHeader, entries, _, err := ReadTranscript(path)
 	if err != nil {
 		t.Fatalf("ReadTranscript: %v", err)
 	}
@@ -541,7 +542,7 @@ func TestReadTranscript_PartialLastLine(t *testing.T) {
 	f.WriteString(`{"kind":"entry","seq":3,"turn":{"kind":"ASSISTANT"`)
 	f.Close()
 
-	gotHeader, entries, err := ReadTranscript(path)
+	gotHeader, entries, _, err := ReadTranscript(path)
 	if err != nil {
 		t.Fatalf("ReadTranscript: %v", err)
 	}
@@ -569,7 +570,7 @@ func TestReadTranscript_EmptyFile(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	_, _, err := ReadTranscript(path)
+	_, _, _, err := ReadTranscript(path)
 	if err == nil {
 		t.Fatal("expected error for empty file, got nil")
 	}
@@ -592,7 +593,7 @@ func TestReadTranscript_HeaderOnly(t *testing.T) {
 	}
 	w.Close()
 
-	gotHeader, entries, err := ReadTranscript(path)
+	gotHeader, entries, _, err := ReadTranscript(path)
 	if err != nil {
 		t.Fatalf("ReadTranscript: %v", err)
 	}
@@ -646,7 +647,7 @@ func TestOpenTranscriptWriter_AppendsToExisting(t *testing.T) {
 	}
 
 	// Read back and verify.
-	_, entries, err := ReadTranscript(path)
+	_, entries, _, err := ReadTranscript(path)
 	if err != nil {
 		t.Fatalf("ReadTranscript: %v", err)
 	}
@@ -706,7 +707,7 @@ func TestOpenTranscriptWriter_TruncatesPartialLine(t *testing.T) {
 	}
 
 	// Read back and verify.
-	_, entries, err := ReadTranscript(path)
+	_, entries, _, err := ReadTranscript(path)
 	if err != nil {
 		t.Fatalf("ReadTranscript: %v", err)
 	}
@@ -753,7 +754,7 @@ func TestOpenTranscriptWriter_HeaderOnlyFile(t *testing.T) {
 	}
 
 	// Read back and verify.
-	_, entries, err := ReadTranscript(path)
+	_, entries, _, err := ReadTranscript(path)
 	if err != nil {
 		t.Fatalf("ReadTranscript: %v", err)
 	}
@@ -903,7 +904,7 @@ func TestSession_TranscriptCreatedOnNewSession(t *testing.T) {
 	}
 
 	// Read it back and verify the header.
-	header, entries, err := ReadTranscript(tpath)
+	header, entries, _, err := ReadTranscript(tpath)
 	if err != nil {
 		t.Fatalf("ReadTranscript: %v", err)
 	}
@@ -982,7 +983,7 @@ func TestSession_TranscriptRecordsTurns(t *testing.T) {
 
 	// Read the transcript and verify entries were recorded.
 	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
-	header, entries, err := ReadTranscript(tpath)
+	header, entries, _, err := ReadTranscript(tpath)
 	if err != nil {
 		t.Fatalf("ReadTranscript: %v", err)
 	}
@@ -1041,7 +1042,7 @@ func TestSession_TranscriptClosedOnSessionClose(t *testing.T) {
 
 	// After Close, the transcript file should be readable (properly flushed).
 	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
-	_, _, err = ReadTranscript(tpath)
+	_, _, _, err = ReadTranscript(tpath)
 	if err != nil {
 		t.Fatalf("transcript not readable after Close: %v", err)
 	}
@@ -1073,7 +1074,7 @@ func TestSubagent_TranscriptHasParentLinkage(t *testing.T) {
 	if len(files) != 1 {
 		t.Fatalf("expected 1 transcript, got %d", len(files))
 	}
-	hdr, _, err := ReadTranscript(files[0])
+	hdr, _, _, err := ReadTranscript(files[0])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1109,7 +1110,7 @@ func TestRootSession_TranscriptHasEmptyParentFields(t *testing.T) {
 	if len(files) != 1 {
 		t.Fatalf("expected 1 transcript, got %d", len(files))
 	}
-	hdr, _, err := ReadTranscript(files[0])
+	hdr, _, _, err := ReadTranscript(files[0])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1269,7 +1270,7 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 
 	// --- Read the transcript ---
 	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
-	hdr, entries, err := ReadTranscript(tpath)
+	hdr, entries, _, err := ReadTranscript(tpath)
 	if err != nil {
 		t.Fatalf("ReadTranscript: %v", err)
 	}
@@ -1545,7 +1546,7 @@ func TestSubagent_TranscriptPersistsAfterCloseAgent(t *testing.T) {
 	var subEntries []TranscriptEntry
 	foundParent, foundSub := false, false
 	for _, f := range files {
-		hdr, entries, err := ReadTranscript(f)
+		hdr, entries, _, err := ReadTranscript(f)
 		if err != nil {
 			t.Fatalf("ReadTranscript(%s): %v", f, err)
 		}
@@ -1672,5 +1673,210 @@ func TestSession_TranscriptWriteFailureEmitsWarning(t *testing.T) {
 	}
 	if !hasTranscriptWarning {
 		t.Errorf("expected transcript write warning, got warnings: %v", warnings)
+	}
+}
+
+// --- Fix 1: seq increment after successful write ---
+
+func TestTranscriptWriter_SeqNotIncrementedOnWriteFailure(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "transcript.jsonl")
+
+	w, err := NewTranscriptWriter(path, TranscriptHeader{
+		SessionID: "sess-seq-fix",
+		CreatedAt: time.Now().UTC(),
+		ProfileID: "test",
+		Model:     "test-model",
+	})
+	if err != nil {
+		t.Fatalf("NewTranscriptWriter: %v", err)
+	}
+	defer w.Close()
+
+	// Write one successful entry (seq 0).
+	if err := w.Append(NewTurn(TurnAssistant, llm.Assistant("first"))); err != nil {
+		t.Fatalf("Append 0: %v", err)
+	}
+
+	// Close the underlying file to force the next write to fail.
+	w.mu.Lock()
+	w.file.Close()
+	w.mu.Unlock()
+
+	// This Append should fail (file is closed).
+	err = w.Append(NewTurn(TurnAssistant, llm.Assistant("should fail")))
+	if err == nil {
+		t.Fatal("expected error from Append on closed file")
+	}
+
+	// Reopen the file so future writes succeed.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	w.mu.Lock()
+	w.file = f
+	w.mu.Unlock()
+
+	// The next successful write should use seq 1 (not seq 2, which would
+	// indicate the failed write incremented seq).
+	if err := w.Append(NewTurn(TurnAssistant, llm.Assistant("after failure"))); err != nil {
+		t.Fatalf("Append after reopen: %v", err)
+	}
+
+	// Read back and check seq numbers.
+	lines := readTranscriptLines(t, path)
+	// header + 2 successful entries
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines, got %d", len(lines))
+	}
+
+	var entry0, entry1 TranscriptEntry
+	json.Unmarshal([]byte(lines[1]), &entry0)
+	json.Unmarshal([]byte(lines[2]), &entry1)
+
+	if entry0.Seq != 0 {
+		t.Errorf("entry0 seq = %d, want 0", entry0.Seq)
+	}
+	if entry1.Seq != 1 {
+		t.Errorf("entry1 seq = %d, want 1 (no gap from failed write)", entry1.Seq)
+	}
+}
+
+// --- Fix 2: ReadTranscript returns corrupt line count ---
+
+func TestReadTranscript_ReturnsCorruptLineCount(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "transcript.jsonl")
+
+	// Write a valid transcript with 3 entries.
+	w, err := NewTranscriptWriter(path, TranscriptHeader{
+		SessionID: "sess-corrupt",
+		CreatedAt: time.Now().UTC(),
+		ProfileID: "test",
+		Model:     "test-model",
+	})
+	if err != nil {
+		t.Fatalf("NewTranscriptWriter: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		w.Append(NewTurn(TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i))))
+	}
+	w.Close()
+
+	// Insert two corrupt lines into the middle.
+	data, _ := os.ReadFile(path)
+	lines := bytes.Split(data, []byte("\n"))
+	// lines: header, entry0, entry1, entry2, "" (trailing)
+	// Insert corrupt lines between entry1 and entry2.
+	var rebuilt [][]byte
+	rebuilt = append(rebuilt, lines[0]) // header
+	rebuilt = append(rebuilt, lines[1]) // entry0
+	rebuilt = append(rebuilt, []byte(`{not valid json`))
+	rebuilt = append(rebuilt, lines[2]) // entry1
+	rebuilt = append(rebuilt, []byte(`also corrupt`))
+	rebuilt = append(rebuilt, lines[3]) // entry2
+	os.WriteFile(path, bytes.Join(rebuilt, []byte("\n")), 0o644)
+	// Append final newline.
+	f, _ := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+	f.WriteString("\n")
+	f.Close()
+
+	_, entries, skipped, err := ReadTranscript(path)
+	if err != nil {
+		t.Fatalf("ReadTranscript: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 valid entries, got %d", len(entries))
+	}
+	if skipped != 2 {
+		t.Errorf("expected 2 skipped lines, got %d", skipped)
+	}
+}
+
+func TestReadTranscript_ZeroCorruptLinesOnCleanFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "transcript.jsonl")
+
+	w, err := NewTranscriptWriter(path, TranscriptHeader{
+		SessionID: "sess-clean",
+		CreatedAt: time.Now().UTC(),
+		ProfileID: "test",
+		Model:     "test-model",
+	})
+	if err != nil {
+		t.Fatalf("NewTranscriptWriter: %v", err)
+	}
+	w.Append(NewTurn(TurnAssistant, llm.Assistant("msg")))
+	w.Close()
+
+	_, entries, skipped, err := ReadTranscript(path)
+	if err != nil {
+		t.Fatalf("ReadTranscript: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if skipped != 0 {
+		t.Errorf("expected 0 skipped lines, got %d", skipped)
+	}
+}
+
+// --- Fix 3: OpenTranscriptWriter single file handle ---
+
+func TestOpenTranscriptWriter_SingleFileHandle(t *testing.T) {
+	// This test verifies that OpenTranscriptWriter uses a single file handle
+	// for read-truncate-append, not separate open calls. We do this by
+	// verifying that a partial-line truncation + append works correctly
+	// even in a single operation. If there were separate open calls, we
+	// couldn't observe a difference directly, but we verify the behavior
+	// is correct (truncation + append with correct seq).
+	dir := t.TempDir()
+	path := filepath.Join(dir, "transcript.jsonl")
+
+	// Write header + 2 entries.
+	w, err := NewTranscriptWriter(path, TranscriptHeader{
+		SessionID: "sess-handle",
+		CreatedAt: time.Now().UTC(),
+		ProfileID: "test",
+		Model:     "test-model",
+	})
+	if err != nil {
+		t.Fatalf("NewTranscriptWriter: %v", err)
+	}
+	w.Append(NewTurn(TurnAssistant, llm.Assistant("msg 0")))
+	w.Append(NewTurn(TurnAssistant, llm.Assistant("msg 1")))
+	w.Close()
+
+	// Append a partial line to simulate a crash.
+	f, _ := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+	f.WriteString(`{"kind":"entry","seq":2`)
+	f.Close()
+
+	// Open for resume: should truncate partial line and continue at seq 2.
+	w2, err := OpenTranscriptWriter(path)
+	if err != nil {
+		t.Fatalf("OpenTranscriptWriter: %v", err)
+	}
+	if err := w2.Append(NewTurn(TurnAssistant, llm.Assistant("msg 2"))); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	w2.Close()
+
+	// Read back: should have header + 3 clean entries, no partial line.
+	_, entries, skipped, err := ReadTranscript(path)
+	if err != nil {
+		t.Fatalf("ReadTranscript: %v", err)
+	}
+	if skipped != 0 {
+		t.Errorf("expected 0 skipped, got %d", skipped)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(entries))
+	}
+	for i, e := range entries {
+		if e.Seq != i {
+			t.Errorf("entry %d seq = %d, want %d", i, e.Seq, i)
+		}
 	}
 }

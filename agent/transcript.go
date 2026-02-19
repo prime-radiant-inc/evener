@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -98,7 +99,6 @@ func (w *TranscriptWriter) Append(turn Turn) error {
 		Seq:  w.seq,
 		Turn: turn,
 	}
-	w.seq++
 
 	data, err := json.Marshal(entry)
 	if err != nil {
@@ -112,6 +112,8 @@ func (w *TranscriptWriter) Append(turn Turn) error {
 	if err := w.file.Sync(); err != nil {
 		return fmt.Errorf("sync transcript entry: %w", err)
 	}
+
+	w.seq++
 	return nil
 }
 
@@ -141,29 +143,39 @@ func (w *TranscriptWriter) Close() error {
 
 // OpenTranscriptWriter opens an existing transcript file for appending.
 // Reads the file once to count valid entries and determine the next seq number.
-// Truncates any partial last line for crash recovery.
+// Truncates any partial last line for crash recovery. Uses a single file handle
+// for the entire read-truncate-append sequence to avoid TOCTOU races.
 func OpenTranscriptWriter(path string) (*TranscriptWriter, error) {
-	data, err := os.ReadFile(path)
+	f, err := os.OpenFile(path, os.O_RDWR, 0o644)
 	if err != nil {
+		return nil, fmt.Errorf("open transcript for resume: %w", err)
+	}
+
+	data, err := io.ReadAll(f)
+	if err != nil {
+		f.Close()
 		return nil, fmt.Errorf("read transcript for resume: %w", err)
 	}
 
 	// Truncate any trailing partial line: if the file doesn't end with '\n',
 	// find the last newline and truncate there.
+	validLen := int64(len(data))
 	if len(data) > 0 && data[len(data)-1] != '\n' {
 		lastNL := bytes.LastIndexByte(data, '\n')
 		if lastNL < 0 {
+			f.Close()
 			return nil, fmt.Errorf("transcript has no complete lines")
 		}
-		data = data[:lastNL+1]
-		if err := os.Truncate(path, int64(lastNL+1)); err != nil {
+		validLen = int64(lastNL + 1)
+		data = data[:validLen]
+		if err := f.Truncate(validLen); err != nil {
+			f.Close()
 			return nil, fmt.Errorf("truncate partial line: %w", err)
 		}
 	}
 
 	// Parse entries to find the max seq number.
 	maxSeq := -1
-	entryCount := 0
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
 	first := true
@@ -174,7 +186,6 @@ func OpenTranscriptWriter(path string) (*TranscriptWriter, error) {
 		}
 		var entry TranscriptEntry
 		if json.Unmarshal(scanner.Bytes(), &entry) == nil && entry.Kind == "entry" {
-			entryCount++
 			if entry.Seq > maxSeq {
 				maxSeq = entry.Seq
 			}
@@ -182,6 +193,7 @@ func OpenTranscriptWriter(path string) (*TranscriptWriter, error) {
 	}
 
 	if err := scanner.Err(); err != nil {
+		f.Close()
 		return nil, fmt.Errorf("scanning transcript entries: %w", err)
 	}
 
@@ -192,20 +204,22 @@ func OpenTranscriptWriter(path string) (*TranscriptWriter, error) {
 		nextSeq = maxSeq + 1
 	}
 
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return nil, fmt.Errorf("open transcript for append: %w", err)
+	// Seek to end for subsequent appends.
+	if _, err := f.Seek(0, io.SeekEnd); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("seek to end of transcript: %w", err)
 	}
 
 	return &TranscriptWriter{file: f, seq: nextSeq}, nil
 }
 
-// ReadTranscript reads a transcript JSONL file, returning the header and all valid entries.
-// Partial or corrupt lines are silently skipped (crash recovery).
-func ReadTranscript(path string) (TranscriptHeader, []TranscriptEntry, error) {
+// ReadTranscript reads a transcript JSONL file, returning the header, all valid entries,
+// and the count of skipped (corrupt/partial) lines. Callers can use the skipped count
+// to decide whether to warn about data loss from crash recovery.
+func ReadTranscript(path string) (TranscriptHeader, []TranscriptEntry, int, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return TranscriptHeader{}, nil, fmt.Errorf("open transcript: %w", err)
+		return TranscriptHeader{}, nil, 0, fmt.Errorf("open transcript: %w", err)
 	}
 	defer f.Close()
 
@@ -215,18 +229,19 @@ func ReadTranscript(path string) (TranscriptHeader, []TranscriptEntry, error) {
 	// First line must be the header.
 	if !scanner.Scan() {
 		if err := scanner.Err(); err != nil {
-			return TranscriptHeader{}, nil, fmt.Errorf("reading transcript header: %w", err)
+			return TranscriptHeader{}, nil, 0, fmt.Errorf("reading transcript header: %w", err)
 		}
-		return TranscriptHeader{}, nil, fmt.Errorf("transcript file is empty: no header")
+		return TranscriptHeader{}, nil, 0, fmt.Errorf("transcript file is empty: no header")
 	}
 
 	var header TranscriptHeader
 	if err := json.Unmarshal(scanner.Bytes(), &header); err != nil {
-		return TranscriptHeader{}, nil, fmt.Errorf("parsing transcript header: %w", err)
+		return TranscriptHeader{}, nil, 0, fmt.Errorf("parsing transcript header: %w", err)
 	}
 
 	// Remaining lines are entries. Skip any that fail to parse.
 	var entries []TranscriptEntry
+	skipped := 0
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
@@ -235,15 +250,16 @@ func ReadTranscript(path string) (TranscriptHeader, []TranscriptEntry, error) {
 		var entry TranscriptEntry
 		if err := json.Unmarshal(line, &entry); err != nil {
 			// Skip corrupt/partial lines (crash recovery).
+			skipped++
 			continue
 		}
 		entries = append(entries, entry)
 	}
 	if err := scanner.Err(); err != nil {
-		return TranscriptHeader{}, nil, fmt.Errorf("reading transcript: %w", err)
+		return TranscriptHeader{}, nil, 0, fmt.Errorf("reading transcript: %w", err)
 	}
 
-	return header, entries, nil
+	return header, entries, skipped, nil
 }
 
 // ResumeHistory extracts the history needed for session resume from transcript entries.
