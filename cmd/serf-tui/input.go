@@ -33,15 +33,13 @@ func parseSlashCommand(input string) (cmd, args string) {
 func slashCommandHelp() string {
 	return strings.Join([]string{
 		"Available commands:",
-		"  /help           Show this help",
-		"  /compact        Compact context (free up token space)",
-		"  /status         Show session info and context pressure",
-		"  /model          Switch model (picker) or /model <name>",
-		"  /theme          Show current theme",
-		"  /theme dark     Switch to dark theme",
-		"  /theme light    Switch to light theme",
-		"  /clear          Start a new session",
-		"  /quit           Exit the TUI",
+		"  /help      Show this help",
+		"  /compact   Compact context (free up token space)",
+		"  /status    Show session info and context pressure",
+		"  /model     Switch model (picker) or /model <name>",
+		"  /theme     Pick a theme (dark/light)",
+		"  /clear     Start a new session",
+		"  /quit      Exit the TUI",
 	}, "\n")
 }
 

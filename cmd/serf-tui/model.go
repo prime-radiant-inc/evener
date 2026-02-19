@@ -36,6 +36,7 @@ type model struct {
 	activeTools   map[string]int
 	lastInterrupt time.Time
 	picker        *modelPicker // non-nil when model picker is active
+	themePicker   *themePicker // non-nil when theme picker is active
 }
 
 func newModel(addr string, initialMessages []chatMessage) model {
@@ -83,6 +84,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		if m.themePicker != nil {
+			p, cmd := m.themePicker.Update(msg)
+			m.themePicker = &p
+			if p.done {
+				m.themePicker = nil
+				if p.selected != "" {
+					setTheme(p.selected)
+					initMarkdownRenderer(m.width)
+					m.viewport.Style = viewportStyle
+					m.messages = append(m.messages, chatMessage{
+						Kind: msgSystem,
+						Text: fmt.Sprintf("Switched to %s theme.", p.selected),
+					})
+				}
+				m.refreshViewport()
+			}
+			return m, cmd
+		}
+
 		switch msg.String() {
 		case "ctrl+c":
 			now := time.Now()
@@ -121,31 +141,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "status":
 					m.input.Reset()
 					return m, fetchStatus(m.addr)
-			case "model":
-				m.input.Reset()
-				if args == "" {
-					m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "Fetching available models..."})
+				case "model":
+					m.input.Reset()
+					if args == "" {
+						m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "Fetching available models..."})
+						m.refreshViewport()
+						cmds = append(cmds, fetchModels(m.addr))
+						return m, tea.Batch(cmds...)
+					}
+					m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: fmt.Sprintf("Switching to model %s...", args)})
 					m.refreshViewport()
-					cmds = append(cmds, fetchModels(m.addr))
+					cmds = append(cmds, sendModel(m.addr, args))
 					return m, tea.Batch(cmds...)
-				}
-				m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: fmt.Sprintf("Switching to model %s...", args)})
-				m.refreshViewport()
-				cmds = append(cmds, sendModel(m.addr, args))
-				return m, tea.Batch(cmds...)
-			case "theme":
-				m.input.Reset()
-				if args == "" {
-					m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: fmt.Sprintf("Current theme: %s  (use /theme dark or /theme light to switch)", currentThemeName())})
-				} else if setTheme(args) {
-					initMarkdownRenderer(m.width)
-					m.viewport.Style = viewportStyle
-					m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: fmt.Sprintf("Switched to %s theme.", args)})
-				} else {
-					m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: fmt.Sprintf("Unknown theme %q. Use 'dark' or 'light'.", args)})
-				}
-				m.refreshViewport()
-				return m, tea.Batch(cmds...)
+				case "theme":
+					m.input.Reset()
+					p := newThemePicker()
+					m.themePicker = &p
+					return m, tea.Batch(cmds...)
 				case "clear":
 					m.input.Reset()
 					m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "Starting new session..."})
@@ -430,11 +442,18 @@ func (m model) View() string {
 	statusBar := renderStatusBar(m.connected, m.sessionModel, m.sessionID, m.turns, m.width)
 
 	if m.picker != nil {
-		pickerView := m.picker.View()
 		return lipgloss.JoinVertical(lipgloss.Left,
 			m.viewport.View(),
 			statusBar,
-			pickerView,
+			m.picker.View(),
+		)
+	}
+
+	if m.themePicker != nil {
+		return lipgloss.JoinVertical(lipgloss.Left,
+			m.viewport.View(),
+			statusBar,
+			m.themePicker.View(),
 		)
 	}
 

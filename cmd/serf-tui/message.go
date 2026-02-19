@@ -95,16 +95,47 @@ func renderToolCall(tc toolCallInfo, width int) string {
 	}
 
 	name := toolNameStyle.Render(tc.Name)
-	// Reserve space for: "arrow sp name  desc  dur"
-	// Use lipgloss.Width to measure styled strings correctly (strips ANSI codes).
-	fixedLen := lipgloss.Width(arrow) + 1 + lipgloss.Width(name) + 2 + 2 + lipgloss.Width(dur)
-	budget := width - fixedLen
-	desc := tc.Description
-	if budget > 3 && len(desc) > budget {
-		desc = desc[:budget-3] + "..."
+
+	// Prefix width: "arrow SP name  " (2 spaces after name before desc)
+	prefixWidth := lipgloss.Width(arrow) + 1 + lipgloss.Width(name) + 2
+	durWidth := lipgloss.Width(dur)
+	indent := strings.Repeat(" ", prefixWidth)
+
+	// Wrap the description across lines.
+	// First line budget: width - prefixWidth - 2 (gap before dur) - durWidth
+	// Continuation line budget: width - prefixWidth
+	// dur is appended after a 2-space gap on the last line.
+	firstBudget := width - prefixWidth - 2 - durWidth
+	contBudget := width - prefixWidth
+	if firstBudget < 1 {
+		firstBudget = 1
+	}
+	if contBudget < 1 {
+		contBudget = 1
 	}
 
-	header := fmt.Sprintf("%s %s  %s  %s", arrow, name, desc, dur)
+	descLines := wrapText(tc.Description, firstBudget, contBudget)
+
+	var headerLines []string
+	for i, dl := range descLines {
+		var line string
+		if i == 0 {
+			line = fmt.Sprintf("%s %s  %s", arrow, name, dl)
+		} else {
+			line = indent + dl
+		}
+		// Append dur after the last description line.
+		if i == len(descLines)-1 {
+			line = line + "  " + dur
+		}
+		headerLines = append(headerLines, line)
+	}
+	// Edge case: empty description — just show arrow name dur.
+	if len(descLines) == 0 {
+		headerLines = []string{fmt.Sprintf("%s %s  %s", arrow, name, dur)}
+	}
+
+	header := strings.Join(headerLines, "\n")
 
 	if !tc.Expanded || tc.Output == "" {
 		return toolCollapsedStyle.Render(header)
@@ -112,6 +143,35 @@ func renderToolCall(tc toolCallInfo, width int) string {
 
 	output := toolExpandedStyle.Width(width - 4).Render(tc.Output)
 	return header + "\n" + output
+}
+
+// wrapText splits text into lines. The first line is at most firstBudget runes
+// wide; subsequent lines are at most contBudget runes wide. Splits on
+// whitespace boundaries when possible, otherwise hard-breaks.
+func wrapText(text string, firstBudget, contBudget int) []string {
+	if text == "" {
+		return nil
+	}
+	var lines []string
+	budget := firstBudget
+	for len(text) > 0 {
+		if len(text) <= budget {
+			lines = append(lines, text)
+			break
+		}
+		// If the character at budget is a space, split cleanly there.
+		split := budget
+		if text[budget] != ' ' {
+			// Find the last space within budget to avoid splitting a word.
+			if idx := strings.LastIndex(text[:budget], " "); idx > 0 {
+				split = idx
+			}
+		}
+		lines = append(lines, strings.TrimRight(text[:split], " "))
+		text = strings.TrimLeft(text[split:], " ")
+		budget = contBudget
+	}
+	return lines
 }
 
 type chatMessage struct {
