@@ -100,6 +100,7 @@ func runServe(args []string) error {
 
 	srv := server.NewServer(server.ServerConfig{})
 	srv.SetCompactFunc(sess.Compact)
+	srv.SetSteerFunc(sess.Steer)
 	srv.SetContextPressureFunc(sess.ContextPressure)
 	srv.SetModelFunc(sess.SetModel)
 	srv.SetListModelsFunc(cmdutil.ListModelsFunc(client, profile.ID()))

@@ -60,48 +60,65 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 		a.Client = &http.Client{Timeout: 0}
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, a.BaseURL+"/v1/models", nil)
-	if err != nil {
-		return nil, err
-	}
-	for k, v := range a.DefaultHeaders {
-		httpReq.Header.Set(k, v)
-	}
-	httpReq.Header.Set("x-api-key", a.APIKey)
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
-
-	resp, err := a.Client.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("list models: HTTP %d", resp.StatusCode)
-	}
-
-	var result struct {
-		Data []struct {
-			ID          string `json:"id"`
-			DisplayName string `json:"display_name"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
-	}
-
-	models := make([]llm.ModelInfo, 0, len(result.Data))
-	for _, m := range result.Data {
-		displayName := m.DisplayName
-		if displayName == "" {
-			displayName = m.ID
+	var models []llm.ModelInfo
+	var afterID string
+	for {
+		u := a.BaseURL + "/v1/models?limit=1000"
+		if afterID != "" {
+			u += "&after_id=" + afterID
 		}
-		models = append(models, llm.ModelInfo{
-			ID:          m.ID,
-			Provider:    "anthropic",
-			DisplayName: displayName,
-		})
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range a.DefaultHeaders {
+			httpReq.Header.Set(k, v)
+		}
+		httpReq.Header.Set("x-api-key", a.APIKey)
+		httpReq.Header.Set("anthropic-version", "2023-06-01")
+
+		resp, err := a.Client.Do(httpReq)
+		if err != nil {
+			return nil, err
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return nil, fmt.Errorf("list models: HTTP %d", resp.StatusCode)
+		}
+
+		var page struct {
+			Data []struct {
+				ID          string `json:"id"`
+				DisplayName string `json:"display_name"`
+			} `json:"data"`
+			HasMore bool   `json:"has_more"`
+			LastID  string `json:"last_id"`
+		}
+		err = json.NewDecoder(resp.Body).Decode(&page)
+		resp.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+
+		for _, m := range page.Data {
+			displayName := m.DisplayName
+			if displayName == "" {
+				displayName = m.ID
+			}
+			models = append(models, llm.ModelInfo{
+				ID:          m.ID,
+				Provider:    "anthropic",
+				DisplayName: displayName,
+			})
+		}
+
+		if !page.HasMore || page.LastID == "" {
+			break
+		}
+		afterID = page.LastID
 	}
+
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 	return models, nil
 }

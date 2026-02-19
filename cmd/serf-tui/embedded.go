@@ -177,6 +177,7 @@ func startEmbedded(ctx context.Context, cfg embeddedConfig) (*embeddedServer, er
 // wireSession updates server callbacks to point at the given session.
 func (e *embeddedServer) wireSession(sess *agent.Session) {
 	e.srv.SetCompactFunc(sess.Compact)
+	e.srv.SetSteerFunc(sess.Steer)
 	e.srv.SetContextPressureFunc(sess.ContextPressure)
 	e.srv.SetModelFunc(sess.SetModel)
 	e.srv.SetClearFunc(e.clearSession)

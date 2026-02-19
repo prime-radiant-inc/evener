@@ -79,6 +79,7 @@ type Server struct {
 	mu               sync.RWMutex
 	status           StatusInfo
 	cancelFunc       context.CancelFunc
+	steerFunc        func(string)
 	compactFunc      func(context.Context) error
 	clearFunc        func(context.Context) error
 	pressureFn       func() float64
@@ -103,6 +104,7 @@ func NewServer(cfg ServerConfig) *Server {
 	}
 	s.mux.HandleFunc("/status", s.handleStatus)
 	s.mux.HandleFunc("/interrupt", s.handleInterrupt)
+	s.mux.HandleFunc("/steer", s.handleSteer)
 	s.mux.HandleFunc("/compact", s.handleCompact)
 	s.mux.HandleFunc("/model", s.handleModel)
 	s.mux.HandleFunc("/models", s.handleModels)
@@ -159,6 +161,33 @@ func (s *Server) SetCancelFunc(cancel context.CancelFunc) {
 	s.mu.Lock()
 	s.cancelFunc = cancel
 	s.mu.Unlock()
+}
+
+// SetSteerFunc sets the function called by POST /steer. It is invoked
+// regardless of whether the session is currently processing.
+func (s *Server) SetSteerFunc(fn func(string)) {
+	s.mu.Lock()
+	s.steerFunc = fn
+	s.mu.Unlock()
+}
+
+func (s *Server) handleSteer(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req InputRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Text == "" {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	s.mu.RLock()
+	fn := s.steerFunc
+	s.mu.RUnlock()
+	if fn != nil {
+		fn(req.Text)
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // SetContextPressureFunc sets a callback to retrieve live context pressure.

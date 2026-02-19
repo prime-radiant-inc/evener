@@ -2767,4 +2767,67 @@ func TestAdapter_ListModels(t *testing.T) {
 	}
 }
 
+func TestAdapter_ListModels_Pagination(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/models" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Header.Get("x-api-key") != "test-key" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+
+		afterID := r.URL.Query().Get("after_id")
+		w.Header().Set("Content-Type", "application/json")
+
+		if afterID == "" {
+			// First page: return 2 models, signal more available.
+			w.Write([]byte(`{
+				"data": [
+					{"id": "claude-haiku-4-5-20251001", "display_name": "Claude Haiku 4.5", "type": "model"},
+					{"id": "claude-opus-4-6-20260205", "display_name": "Claude Opus 4.6", "type": "model"}
+				],
+				"has_more": true,
+				"first_id": "claude-haiku-4-5-20251001",
+				"last_id": "claude-opus-4-6-20260205"
+			}`))
+		} else if afterID == "claude-opus-4-6-20260205" {
+			// Second page: return 1 more model, no more pages.
+			w.Write([]byte(`{
+				"data": [
+					{"id": "claude-sonnet-4-6-20260205", "display_name": "Claude Sonnet 4.6", "type": "model"}
+				],
+				"has_more": false,
+				"first_id": "claude-sonnet-4-6-20260205",
+				"last_id": "claude-sonnet-4-6-20260205"
+			}`))
+		} else {
+			t.Errorf("unexpected after_id: %q", afterID)
+			w.Write([]byte(`{"data": [], "has_more": false}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	models, err := a.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if len(models) != 3 {
+		t.Fatalf("got %d models, want 3 (should paginate)", len(models))
+	}
+	// All three models present, sorted.
+	ids := make([]string, len(models))
+	for i, m := range models {
+		ids[i] = m.ID
+	}
+	want := []string{"claude-haiku-4-5-20251001", "claude-opus-4-6-20260205", "claude-sonnet-4-6-20260205"}
+	for i, id := range ids {
+		if id != want[i] {
+			t.Errorf("models[%d].ID = %q, want %q", i, id, want[i])
+		}
+	}
+}
+
 func ptrInt(i int) *int { return &i }
