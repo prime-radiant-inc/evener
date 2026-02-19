@@ -42,11 +42,12 @@ func slashCommandHelp() string {
 		"  /quit      Exit the TUI",
 		"",
 		"Keys:",
-		"  enter       New line in input",
-		"  ctrl+s      Send message",
-		"  pgup        Enter scroll mode (browse history)",
-		"  esc / i     Exit scroll mode",
-		"  tab         Expand/collapse most recent tool call",
+		"  enter            Send message",
+		"  alt+enter        New line in input",
+		"  ctrl+j           New line in input (alternative)",
+		"  pgup             Enter scroll mode (browse history)",
+		"  esc / i          Exit scroll mode",
+		"  tab              Expand/collapse most recent tool call",
 	}, "\n")
 }
 

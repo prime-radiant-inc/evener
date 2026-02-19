@@ -68,6 +68,8 @@ func newModel(addr string, initialMessages []chatMessage) model {
 	ta.MaxHeight = 5
 	ta.Focus()
 	ta.CharLimit = 0
+	// Disable the textarea's own newline binding — we handle enter ourselves.
+	ta.KeyMap.InsertNewline.SetEnabled(false)
 	applyInputTheme(&ta)
 
 	return model{
@@ -138,6 +140,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// alt+enter or ctrl+j inserts a newline without submitting.
+		if (msg.Type == tea.KeyEnter && msg.Alt) || msg.Type == tea.KeyCtrlJ {
+			m.input.InsertString("\n")
+			wantH := m.input.LineCount()
+			if wantH < 1 {
+				wantH = 1
+			}
+			if wantH > m.input.MaxHeight {
+				wantH = m.input.MaxHeight
+			}
+			if wantH != m.input.Height() {
+				m.input.SetHeight(wantH)
+				m.viewport.Height = m.vpHeight()
+			}
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "ctrl+c":
 			now := time.Now()
@@ -163,7 +182,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
-		case "ctrl+s":
+		case "enter":
 			text := strings.TrimSpace(m.input.Value())
 			if text == "" {
 				return m, tea.Batch(cmds...)
