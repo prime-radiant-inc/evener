@@ -54,6 +54,7 @@ func main() {
 
 	var serverAddr string
 	var initialMessages []chatMessage
+	var resolvedStateDir string
 
 	if *addr != "" {
 		// Connect to an existing server.
@@ -83,6 +84,7 @@ func main() {
 		}
 		defer embedded.Close()
 		serverAddr = embedded.addr
+		resolvedStateDir = embedded.stateDir()
 
 		if len(embedded.history) > 0 {
 			initialMessages = historyToMessages(embedded.history)
@@ -90,7 +92,7 @@ func main() {
 	}
 
 	initTheme()
-	m := newModel(serverAddr, initialMessages)
+	m := newModel(serverAddr, resolvedStateDir, initialMessages)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	// Start SSE streaming in background, sending events to Bubble Tea.

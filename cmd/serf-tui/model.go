@@ -16,6 +16,7 @@ import (
 
 type model struct {
 	addr      string
+	stateDir  string
 	connected bool
 	err       error
 	width     int
@@ -32,9 +33,15 @@ type model struct {
 	input    textarea.Model
 	messages []chatMessage
 
+	// Input history
+	history     []string // escaped entries (one per line)
+	historyIdx  int      // -1 = not browsing; len(history) = back to draft
+	historyDraft string  // saved current input when entering history browse
+
 	// Track active tool calls by call ID -> index in messages
 	activeTools   map[string]int
 	lastInterrupt time.Time
+	lastSentText  string       // last user input, used for auto-steer on busy
 	picker        *modelPicker // non-nil when model picker is active
 	themePicker   *themePicker // non-nil when theme picker is active
 	scrollMode    bool         // true when scrolling history; input is blurred
@@ -59,7 +66,7 @@ func applyInputTheme(ta *textarea.Model) {
 	ta.Cursor.TextStyle = lipgloss.NewStyle().Foreground(activeTheme.inputFg)
 }
 
-func newModel(addr string, initialMessages []chatMessage) model {
+func newModel(addr, stateDir string, initialMessages []chatMessage) model {
 	ta := textarea.New()
 	ta.Placeholder = "Type a message..."
 	ta.Prompt = ""
@@ -74,9 +81,12 @@ func newModel(addr string, initialMessages []chatMessage) model {
 
 	return model{
 		addr:        addr,
+		stateDir:    stateDir,
 		input:       ta,
 		messages:    initialMessages,
 		activeTools: make(map[string]int),
+		history:     loadHistory(stateDir),
+		historyIdx:  -1,
 	}
 }
 
@@ -167,6 +177,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "Interrupted. Press ctrl+c again to quit, or use /quit."})
 			m.refreshViewport()
 			return m, sendInterrupt(m.addr)
+		case "up":
+			if m.input.Line() == 0 && len(m.history) > 0 {
+				if m.historyIdx == -1 {
+					// Enter history mode: save current draft.
+					m.historyDraft = m.input.Value()
+					m.historyIdx = len(m.history) - 1
+				} else if m.historyIdx > 0 {
+					m.historyIdx--
+				}
+				m.setInputValue(unescapeHistory(m.history[m.historyIdx]))
+				return m, nil
+			}
+		case "down":
+			if m.historyIdx >= 0 {
+				if m.historyIdx < len(m.history)-1 {
+					m.historyIdx++
+					m.setInputValue(unescapeHistory(m.history[m.historyIdx]))
+				} else {
+					// Past end of history: restore draft.
+					m.historyIdx = -1
+					m.setInputValue(m.historyDraft)
+					m.historyDraft = ""
+				}
+				return m, nil
+			}
 		case "pgup":
 			m.scrollMode = true
 			m.input.Blur()
@@ -237,6 +272,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			m.messages = append(m.messages, chatMessage{Kind: msgUser, Text: text})
+			m.lastSentText = text
+			m.addHistory(text)
 			m.resetInput()
 			m.refreshViewport()
 			cmds = append(cmds, sendInput(m.addr, text))
@@ -272,9 +309,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case inputSentMsg:
 		if msg.err != nil {
+			if strings.Contains(msg.err.Error(), "busy") && m.lastSentText != "" {
+				text := m.lastSentText
+				m.lastSentText = ""
+				m.messages = append(m.messages, chatMessage{
+					Kind: msgSystem,
+					Text: "Steering...",
+				})
+				m.refreshViewport()
+				return m, sendSteer(m.addr, text)
+			}
 			m.messages = append(m.messages, chatMessage{
 				Kind: msgSystem,
 				Text: fmt.Sprintf("Error: %s", msg.err),
+			})
+			m.refreshViewport()
+		}
+		return m, nil
+
+	case steerSentMsg:
+		if msg.err != nil {
+			m.messages = append(m.messages, chatMessage{
+				Kind: msgSystem,
+				Text: fmt.Sprintf("Steer failed: %s", msg.err),
 			})
 			m.refreshViewport()
 		}
@@ -501,6 +558,33 @@ func (m *model) resetInput() {
 	m.input.Reset()
 	m.input.SetHeight(1)
 	m.viewport.Height = m.vpHeight()
+	m.historyIdx = -1
+	m.historyDraft = ""
+}
+
+// setInputValue replaces the textarea contents and adjusts its height.
+func (m *model) setInputValue(s string) {
+	m.input.Reset()
+	m.input.SetValue(s)
+	wantH := m.input.LineCount()
+	if wantH < 1 {
+		wantH = 1
+	}
+	if wantH > m.input.MaxHeight {
+		wantH = m.input.MaxHeight
+	}
+	m.input.SetHeight(wantH)
+	m.viewport.Height = m.vpHeight()
+}
+
+// addHistory appends text to the in-memory history and persists it to disk.
+func (m *model) addHistory(text string) {
+	escaped := strings.ReplaceAll(text, "\n", `\n`)
+	m.history = append(m.history, escaped)
+	if len(m.history) > maxHistoryEntries {
+		m.history = m.history[len(m.history)-maxHistoryEntries:]
+	}
+	appendHistory(m.stateDir, text)
 }
 // and input dimensions. statusBar=1, border=1, textarea rows=input.Height().
 func (m model) vpHeight() int {

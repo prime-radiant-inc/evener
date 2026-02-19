@@ -12,6 +12,7 @@ import (
 )
 
 type inputSentMsg struct{ err error }
+type steerSentMsg struct{ err error }
 type compactDoneMsg struct{ err error }
 
 // parseSlashCommand returns the command name and arguments if the input starts
@@ -67,6 +68,22 @@ func sendInput(addr, text string) tea.Cmd {
 			return inputSentMsg{fmt.Errorf("server returned %d", resp.StatusCode)}
 		}
 		return inputSentMsg{}
+	}
+}
+
+func sendSteer(addr, text string) tea.Cmd {
+	return func() tea.Msg {
+		body, _ := json.Marshal(map[string]string{"text": text})
+		url := fmt.Sprintf("http://%s/steer", addr)
+		resp, err := http.Post(url, "application/json", bytes.NewReader(body))
+		if err != nil {
+			return steerSentMsg{err}
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent {
+			return steerSentMsg{fmt.Errorf("server returned %d", resp.StatusCode)}
+		}
+		return steerSentMsg{}
 	}
 }
 

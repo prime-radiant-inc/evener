@@ -287,3 +287,8 @@ func (e *embeddedServer) Close() {
 	e.httpSrv.Close()
 	e.currentSession().Close()
 }
+
+// stateDir returns the resolved runtime state directory.
+func (e *embeddedServer) stateDir() string {
+	return e.sessionCfg.StateDir
+}

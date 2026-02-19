@@ -87,7 +87,7 @@ func TestSetTheme_Invalid(t *testing.T) {
 // TestThemeCommand_OpensPicker verifies that /theme opens the theme picker.
 func TestThemeCommand_OpensPicker(t *testing.T) {
 	initTheme()
-	m := newModel("localhost:0", nil)
+	m := newModel("localhost:0", "", nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(model)
 
@@ -107,7 +107,7 @@ func TestThemeCommand_OpensPicker(t *testing.T) {
 func TestThemeCommand_PickerSelectDark(t *testing.T) {
 	setTheme("light")
 
-	m := newModel("localhost:0", nil)
+	m := newModel("localhost:0", "", nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(model)
 
@@ -153,7 +153,7 @@ func TestThemeCommand_PickerCancel(t *testing.T) {
 	setTheme("light")
 	initialMsg := 0
 
-	m := newModel("localhost:0", nil)
+	m := newModel("localhost:0", "", nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(model)
 	initialMsg = len(m.messages)
