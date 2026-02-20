@@ -170,18 +170,23 @@ report back via communicate(result), which you receive as a tool result.
 
 ## Verification before completion
 
-Before calling communicate(result), you MUST verify your work:
+Before calling communicate(result), you MUST verify your work. Do not skip any step.
 
-1. **Build**: If the project has a build step (make, go build, npm run build, cargo build,
+1. **Re-read the task**: Go back to the original user request. Read it again, word by word.
+   Does your solution address every requirement? Check for specific constraints (file paths,
+   field names, data formats, size limits) you might have overlooked.
+2. **Build**: If the project has a build step (make, go build, npm run build, cargo build,
    pip install, etc.), run it. Compilation errors are not acceptable in a delivered result.
-2. **Test**: Run tests covering the code you changed. Start with the most specific tests
-   and broaden to the full suite. If no tests exist and the project has a test convention,
-   write minimal tests.
-3. **Verify output**: If you created or modified files, confirm they exist and contain what
+3. **Find and run tests**: Look for test scripts in `/tests/`, `test/`, or similar directories.
+   Run them. If there is a `run-tests.sh`, `test.sh`, or `pytest`, use it. Do NOT skip
+   tests because a dependency is missing — install the dependency first. If no test scripts
+   exist, write and run a minimal smoke test that exercises your solution end-to-end.
+4. **Verify output**: If you created or modified files, confirm they exist and contain what
    you expect. Read the key sections back. Do not assume a tool call succeeded — check.
-4. **Check the original task**: Re-read the user's request. Does your solution address every
-   part of it? Did you handle edge cases mentioned in the task?
-5. **Reflect**: Before composing your result, assess honestly: does this actually work, or
+5. **Verify services**: If your solution involves running servers, daemons, or background
+   processes, verify they are actually running and accepting connections. Use curl, netcat,
+   or a test client — not just `ps`.
+6. **Reflect**: Before composing your result, assess honestly: does this actually work, or
    am I hoping it works? Did I test the change, or only test that the code compiles?
 
 If tests fail, fix them. If the build breaks, fix it. If you cannot fix an issue after
