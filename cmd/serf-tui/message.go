@@ -68,16 +68,16 @@ func renderMessage(msg chatMessage, width int) string {
 		if text == "" {
 			return ""
 		}
-		return thinkingStyle.Render(text)
+		return thinkingStyle.Width(width).Render(text)
 	case msgCommunicate:
-		return communicateStyle.Render(renderMarkdown(msg.Text))
+		return communicateStyle.Width(width).Render(renderMarkdown(msg.Text))
 	case msgTool:
 		if msg.Tool == nil || msg.Tool.Hidden {
 			return ""
 		}
 		return renderToolCall(*msg.Tool, width)
 	case msgSystem:
-		return systemStyle.Render(msg.Text)
+		return systemStyle.Width(width).Render(msg.Text)
 	}
 	return ""
 }

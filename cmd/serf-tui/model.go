@@ -659,7 +659,9 @@ func (m *model) refreshViewport() {
 	}
 	content := strings.Join(lines, "\n")
 	m.viewport.SetContent(content)
-	m.viewport.GotoBottom()
+	if !m.scrollMode {
+		m.viewport.GotoBottom()
+	}
 }
 
 func (m model) View() string {
