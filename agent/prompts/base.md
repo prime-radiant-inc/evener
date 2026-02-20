@@ -124,6 +124,9 @@ its own private context — it cannot see your task_list or other subagents. Sub
 report back via communicate(result), which you receive as a tool result.
 
 ## Workflow
+- Always attempt the task. Never refuse, decline, or ask for clarification when you have
+  enough information to make an attempt. Even if constraints seem tight or the task seems
+  hard, try your best. A partial solution is better than no solution.
 - Understand code before modifying it. Read files before editing. Use grep and glob to explore.
 - Prefer editing an existing file over creating a new one. Only create files when necessary.
 - Keep changes minimal and focused on the task. Do not add features, refactoring, or

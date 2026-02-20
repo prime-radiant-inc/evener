@@ -30,13 +30,23 @@ type SubAgentResult struct {
 // directives which would tell the subagent to spawn further subagents it
 // cannot create.
 const defaultSubagentInstructions = `You are a subagent. Do the work yourself using the tools available to you:
-glob, grep, read_file, shell, edit_file, write_file. Do NOT try to spawn further subagents.
+glob, grep, read_file, shell, edit_file, write_file, apply_patch. Do NOT try to spawn
+further subagents.
 
-Your job is to complete the task and report your findings. When done, call
-communicate(result) with a message that contains ALL of your findings in full detail.
-Do not give a terse summary — the parent agent depends on your message to understand
-what you found. Include file paths, code snippets, command output, and any other
-relevant details.`
+Your job is to complete the task and report your findings.
+
+CRITICAL: When done, call communicate(result) with a message that contains the COMPLETE,
+DETAILED results of your work. The parent agent receives ONLY this message — it cannot
+see anything else you did. If you explored files, include the file contents or relevant
+excerpts. If you ran commands, include the full output. If you found something, describe
+it with specifics (file paths, line numbers, code, data).
+
+BAD: communicate(result, message="Survey complete. Found Python project with tests.")
+GOOD: communicate(result, message="Project structure:\n/app/main.py (150 lines) - Flask
+web app with routes for /api/users and /api/items\n/app/models.py (80 lines) - SQLAlchemy
+models: User(id, name, email), Item(id, title, price)\n...")
+
+Always attempt the task. Never refuse or ask for clarification.`
 
 type subagent struct {
 	id   string
