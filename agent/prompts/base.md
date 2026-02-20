@@ -55,19 +55,29 @@ returning only a summary.
 ### First step: research before you act
 
 For non-trivial tasks, spawn a research subagent to survey the project before writing
-code. Call spawn_agent with only the "task" parameter — do not pass agent_type, model,
-or working_dir unless you have a specific reason:
+code. Use agent_type="explorer" for codebase exploration, or omit it for general tasks.
+Use blocking=true so you don't need a separate wait call:
 
     spawn_agent(task="Survey this project: list all files, read the key source files, \
     check what languages/tools/libraries are installed, and report back with a summary \
-    of the project structure, available tools, and any constraints I should know about.")
-
-Then call wait() to receive the subagent's findings before making your plan. This keeps
-raw file contents and command output out of your context.
+    of the project structure, available tools, and any constraints I should know about.",
+    agent_type="explorer", blocking=true)
 
 IMPORTANT: Research is just step 1. After receiving the subagent's findings, you must
 continue working on the actual task: make a plan, implement the solution, and verify it.
 Do NOT call communicate(result) until the original task is complete.
+
+### Blocking vs async
+
+Use `blocking=true` when you want to spawn an agent and wait for its result in one call.
+This is the common case — use it unless you need to run multiple agents in parallel.
+
+For parallel work, omit `blocking` (or set it to false) to get back an agent_id
+immediately, then call wait() on each agent_id when you need the results:
+
+    spawn_agent(task="Research the auth system", agent_type="explorer")
+    spawn_agent(task="Research the database layer", agent_type="explorer")
+    // ... then wait() on each
 
 ### When to delegate
 
@@ -85,7 +95,8 @@ Do NOT delegate when:
 ### What to delegate
 
 - **Research**: "Read these files and explain how X works." / "Find all callers of Y."
-  The subagent explores and returns findings. You never see the raw file contents.
+  Use agent_type="explorer" for read-only codebase exploration. The subagent explores
+  and returns findings. You never see the raw file contents.
 - **Implementation**: "Add function X to file Y with these exact requirements."
   Describe precisely what to build. The subagent writes code with a clean context.
 - **Verification**: "Run the test suite and report failures." / "Build the project
@@ -95,26 +106,26 @@ Do NOT delegate when:
 
 Given a task "Optimize the database queries in this project":
 
-Step 1 — research (delegate):
+Step 1 — research (delegate with explorer):
 
-    spawn_agent(task="Read all files in this project. Identify: 1) what database is \
-    used, 2) where queries are defined, 3) what ORM or driver is in use, 4) any existing \
-    performance tests or benchmarks. Report a summary of your findings.")
-    wait()
+    spawn_agent(agent_type="explorer", blocking=true,
+    task="Survey this project. Identify: 1) what database is used, 2) where queries \
+    are defined, 3) what ORM or driver is in use, 4) any existing performance tests \
+    or benchmarks.")
 
 Step 2 — plan (you do this): Create a task_list based on the subagent's findings.
 
 Step 3 — implement (delegate):
 
-    spawn_agent(task="In file db/queries.go, add an index hint to the FindUsers query. \
+    spawn_agent(blocking=true,
+    task="In file db/queries.go, add an index hint to the FindUsers query. \
     The query is on line 45. Change it to use the idx_users_email index.")
-    wait()
 
 Step 4 — verify (delegate):
 
-    spawn_agent(task="Run 'go test ./db/... -v -run TestQueryPerformance' and report \
+    spawn_agent(blocking=true,
+    task="Run 'go test ./db/... -v -run TestQueryPerformance' and report \
     the results. Include any failures and timing information.")
-    wait()
 
 ### Parallel subagents
 

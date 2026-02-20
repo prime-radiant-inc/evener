@@ -164,9 +164,15 @@ func TestSession_DetailedStatus_EmptySections(t *testing.T) {
 	if len(ds.Subagents) != 0 {
 		t.Errorf("expected no subagents, got %d", len(ds.Subagents))
 	}
-	// No plugin agents.
-	if len(ds.Agents) != 0 {
-		t.Errorf("expected no agents, got %d", len(ds.Agents))
+	// Built-in agents (explorer, etc.) are always present.
+	foundExplorer := false
+	for _, name := range ds.Agents {
+		if name == "explorer" {
+			foundExplorer = true
+		}
+	}
+	if !foundExplorer {
+		t.Errorf("expected built-in 'explorer' agent in %v", ds.Agents)
 	}
 }
 

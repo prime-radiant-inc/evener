@@ -582,7 +582,8 @@ func defSpawnAgent() llm.ToolDefinition {
 				"model":       map[string]any{"type": "string", "description": "Model override (default: parent model)"},
 				"working_dir": map[string]any{"type": "string", "description": "Subdirectory to scope the agent to"},
 				"max_turns":   map[string]any{"type": "integer", "description": "Turn limit for the subagent (default: 50)"},
-				"agent_type":  map[string]any{"type": "string", "description": "Plugin agent type (e.g. 'plugin-name:agent-name')"},
+				"agent_type":  map[string]any{"type": "string", "description": "Agent type (e.g. 'explorer' for built-in, or 'plugin-name:agent-name' for plugin agents)"},
+				"blocking":    map[string]any{"type": "boolean", "description": "When true, spawns the agent and waits for completion in a single call, returning the result directly instead of an agent_id. Default is false (async)."},
 			},
 			"required": []string{"task"},
 		},
@@ -608,7 +609,7 @@ func defSendInput() llm.ToolDefinition {
 func defWait() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "wait",
-		Description: "Wait for a sub-agent to finish and return its result. Use timeout_ms of 120000 (2 minutes) or more — short timeouts waste rounds on retries.",
+		Description: "Wait for a sub-agent to finish and return its result. Use timeout_ms of 300000 (5 minutes) or more — short timeouts waste rounds on retries. For most tasks, omit timeout_ms to wait indefinitely.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,

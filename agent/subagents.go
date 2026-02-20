@@ -11,7 +11,7 @@ import (
 
 // minWaitTimeoutMS is the minimum timeout for the wait tool, preventing the model
 // from burning rounds with rapid 1-second retries.
-const minWaitTimeoutMS = 30_000 // 30 seconds
+const minWaitTimeoutMS = 120_000 // 2 minutes
 
 // SubAgentStatus tracks the lifecycle of a sub-agent.
 type SubAgentStatus string
@@ -29,10 +29,9 @@ type SubAgentResult struct {
 	TurnsUsed int    `json:"turns_used"`
 }
 
-// defaultSubagentInstructions is appended to the system prompt for default
-// subagents (no plugin agent_type). It overrides the parent's delegation
-// directives which would tell the subagent to spawn further subagents it
-// cannot create.
+// defaultSubagentInstructions is the complete base prompt for default
+// subagents (no agent_type). It replaces the parent's base.md entirely,
+// preventing the subagent from seeing delegation directives it cannot follow.
 const defaultSubagentInstructions = `You are a subagent. Do the work yourself using the tools available to you:
 glob, grep, read_file, shell, edit_file, write_file, apply_patch. Do NOT try to spawn
 further subagents.

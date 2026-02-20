@@ -34,8 +34,8 @@ func TestFormatPluginAgentsPrompt_WithAgents(t *testing.T) {
 	if !strings.Contains(result, "Generates test cases") {
 		t.Error("should contain second agent description")
 	}
-	if !strings.Contains(result, "plugin_agents") {
-		t.Error("should have plugin_agents XML tag")
+	if !strings.Contains(result, "available_agents") {
+		t.Error("should have available_agents XML tag")
 	}
 	if !strings.Contains(result, "spawn_agent") {
 		t.Error("should mention spawn_agent usage")

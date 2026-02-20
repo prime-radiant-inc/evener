@@ -658,8 +658,9 @@ func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) 
 	}
 	c.Register(f)
 
-	// 40 chars => approxTokens=10. With cw=10, warning should emit at ~100% usage (>80% threshold).
-	sess, err := NewSession(c, tinyProfile{id: "tiny", mod: "m", cw: 10}, NewLocalExecutionEnvironment(dir), SessionConfig{})
+	// With cw=100 and ~110 tokens of content (system prompt agents section + user input),
+	// warning should emit since usage exceeds the 80% threshold.
+	sess, err := NewSession(c, tinyProfile{id: "tiny", mod: "m", cw: 100}, NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -682,7 +683,7 @@ func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) 
 	if warn == "" {
 		t.Fatalf("expected WARNING event")
 	}
-	if !strings.Contains(warn, "~100% of context window") {
+	if !strings.Contains(warn, "of context window") {
 		t.Fatalf("warning message: %q", warn)
 	}
 }

@@ -1494,7 +1494,14 @@ func (s *Session) initSessionState() error {
 
 	s.skills = DiscoverSkills(s.env, s.cfg.SkillsDirs...)
 
-	// Initialize plugins (skills, agents, hooks)
+	// Load built-in agents (explorer, etc.) as a base layer.
+	builtins, err := builtinAgents()
+	if err != nil {
+		return fmt.Errorf("loading built-in agents: %w", err)
+	}
+	s.pluginAgents = builtins
+
+	// Initialize plugins (skills, agents, hooks). Plugin agents override builtins.
 	if err := s.initPlugins(); err != nil {
 		return fmt.Errorf("plugin initialization: %w", err)
 	}
@@ -1577,7 +1584,10 @@ func (s *Session) initPlugins() error {
 		s.emit(kind, data)
 	})
 	s.hookRunner = runner
-	s.pluginAgents = allAgents
+	// Merge plugin agents on top of built-in agents (plugin agents win on conflict).
+	for name, agent := range allAgents {
+		s.pluginAgents[name] = agent
+	}
 
 	// Fire SessionStart hooks
 	result := s.hookRunner.RunSessionStart(context.Background(), s.hookInput(HookSessionStart))
@@ -1846,7 +1856,24 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			if v, ok := args["agent_type"]; ok && v != nil {
 				agentType = fmt.Sprint(v)
 			}
-			return s.spawnAgent(ctx, task, model, workingDir, maxTurns, agentType)
+			blocking := false
+			if v, ok := args["blocking"].(bool); ok {
+				blocking = v
+			}
+			result, err := s.spawnAgent(ctx, task, model, workingDir, maxTurns, agentType)
+			if err != nil || !blocking {
+				return result, err
+			}
+			// Blocking mode: extract agent_id and wait for completion.
+			var spawnResult map[string]any
+			if err := json.Unmarshal([]byte(result.(string)), &spawnResult); err != nil {
+				return result, nil
+			}
+			agentID, _ := spawnResult["agent_id"].(string)
+			if agentID == "" {
+				return result, nil
+			}
+			return s.waitAgent(ctx, agentID, 0) // 0 = wait indefinitely
 		},
 	})
 	_ = reg.Register(RegisteredTool{
