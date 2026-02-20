@@ -25,6 +25,19 @@ type SubAgentResult struct {
 	TurnsUsed int    `json:"turns_used"`
 }
 
+// defaultSubagentInstructions is appended to the system prompt for default
+// subagents (no plugin agent_type). It overrides the parent's delegation
+// directives which would tell the subagent to spawn further subagents it
+// cannot create.
+const defaultSubagentInstructions = `You are a subagent. Do the work yourself using the tools available to you:
+glob, grep, read_file, shell, edit_file, write_file. Do NOT try to spawn further subagents.
+
+Your job is to complete the task and report your findings. When done, call
+communicate(result) with a message that contains ALL of your findings in full detail.
+Do not give a terse summary — the parent agent depends on your message to understand
+what you found. Include file paths, code snippets, command output, and any other
+relevant details.`
+
 type subagent struct {
 	id   string
 	sess *Session
@@ -80,9 +93,15 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	} else {
 		subCfg.MaxTurns = 50
 	}
-	// Apply plugin agent system prompt.
+	// Apply system prompt override.
 	if agent != nil && strings.TrimSpace(agent.SystemPrompt) != "" {
+		// Plugin agents get their custom system prompt.
 		subCfg.UserInstructionOverride = agent.SystemPrompt
+	} else {
+		// Default subagents get focused instructions that override the
+		// parent's delegation directives (which would tell them to spawn
+		// further subagents they cannot create due to depth limits).
+		subCfg.UserInstructionOverride = defaultSubagentInstructions
 	}
 
 	subEnv := s.env

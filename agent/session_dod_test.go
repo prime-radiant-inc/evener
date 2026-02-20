@@ -3639,3 +3639,64 @@ func TestSession_TurnLimit_ReturnsNilError(t *testing.T) {
 		t.Fatalf("turn limit should return nil error, got: %v", err)
 	}
 }
+
+func TestSession_Subagent_DefaultGetsSubagentInstructions(t *testing.T) {
+	// Bug: default subagents (no agent_type) inherit the parent's full system prompt
+	// including "MUST spawn a research subagent" — but subagents can't delegate further.
+	// They should get a UserInstructionOverride that tells them to do work directly.
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("done")} },
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"survey this project"}`),
+	})
+	if spawnRes.IsError {
+		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
+	}
+	var spawned map[string]any
+	if err := json.Unmarshal([]byte(spawnRes.Output), &spawned); err != nil {
+		t.Fatal(err)
+	}
+	agentID := fmt.Sprint(spawned["agent_id"])
+
+	sub := sess.getSub(agentID)
+	if sub == nil || sub.sess == nil {
+		t.Fatalf("missing subagent session for %q", agentID)
+	}
+
+	// Default subagent should have UserInstructionOverride set.
+	if sub.sess.cfg.UserInstructionOverride == "" {
+		t.Fatal("default subagent should have UserInstructionOverride set, got empty string")
+	}
+
+	// The override should instruct the subagent to work directly.
+	override := sub.sess.cfg.UserInstructionOverride
+	if !strings.Contains(override, "communicate(result)") {
+		t.Errorf("subagent override should mention communicate(result), got: %s", override)
+	}
+
+	// Wait for completion so goroutine doesn't leak.
+	sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c2",
+		Name:      "wait",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":2000}`, agentID)),
+	})
+}
