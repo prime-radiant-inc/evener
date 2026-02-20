@@ -3838,3 +3838,61 @@ func TestSession_Subagent_DoesNotGetParentDelegationPrompt(t *testing.T) {
 		t.Error("subagent system prompt should NOT contain the parent's 'Subagent delegation' section")
 	}
 }
+
+func TestSession_Wait_ClampsShortTimeout(t *testing.T) {
+	// The wait tool should clamp very short timeouts to minWaitTimeoutMS,
+	// preventing the model from burning rounds with rapid 1-second retries.
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			// Subagent needs one response to complete.
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("done")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Spawn a subagent.
+	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"test task"}`),
+	})
+	if spawnRes.IsError {
+		t.Fatal(spawnRes.Output)
+	}
+	var parsed map[string]any
+	json.Unmarshal([]byte(spawnRes.Output), &parsed)
+	agentID := fmt.Sprint(parsed["agent_id"])
+
+	// Wait with a 1-second timeout — should be clamped to minWaitTimeoutMS.
+	// Since the subagent completes immediately (fakeAdapter), the clamped
+	// timeout should be long enough to succeed. Without clamping, a 1s
+	// timeout would fail if the subagent takes >1s.
+	waitRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c2",
+		Name:      "wait",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":1000}`, agentID)),
+	})
+	if waitRes.IsError {
+		t.Errorf("wait with 1s timeout should succeed (clamped to %dms), got error: %s", minWaitTimeoutMS, waitRes.Output)
+	}
+	if !strings.Contains(waitRes.Output, `"success"`) {
+		t.Errorf("expected successful wait result, got: %s", waitRes.Output)
+	}
+
+	// Verify the constant is at least 30s.
+	if minWaitTimeoutMS < 30_000 {
+		t.Errorf("minWaitTimeoutMS should be at least 30000, got %d", minWaitTimeoutMS)
+	}
+}

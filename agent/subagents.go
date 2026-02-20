@@ -9,6 +9,10 @@ import (
 	"time"
 )
 
+// minWaitTimeoutMS is the minimum timeout for the wait tool, preventing the model
+// from burning rounds with rapid 1-second retries.
+const minWaitTimeoutMS = 30_000 // 30 seconds
+
 // SubAgentStatus tracks the lifecycle of a sub-agent.
 type SubAgentStatus string
 

@@ -1864,6 +1864,10 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			if v, ok := args["timeout_ms"].(float64); ok && int(v) > 0 {
 				timeout = int(v)
 			}
+			// Clamp to minimum to prevent rapid-retry burn.
+			if timeout > 0 && timeout < minWaitTimeoutMS {
+				timeout = minWaitTimeoutMS
+			}
 			return s.waitAgent(ctx, fmt.Sprint(args["agent_id"]), timeout)
 		},
 	})

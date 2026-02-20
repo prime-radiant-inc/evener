@@ -608,7 +608,7 @@ func defSendInput() llm.ToolDefinition {
 func defWait() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "wait",
-		Description: "Wait for a sub-agent to finish and return its result.",
+		Description: "Wait for a sub-agent to finish and return its result. Use timeout_ms of 120000 (2 minutes) or more — short timeouts waste rounds on retries.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
