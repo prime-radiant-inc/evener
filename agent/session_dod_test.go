@@ -3700,3 +3700,38 @@ func TestSession_Subagent_DefaultGetsSubagentInstructions(t *testing.T) {
 		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":2000}`, agentID)),
 	})
 }
+
+func TestSession_SetsGenerousRequestTimeout(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("done")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _ = sess.ProcessInput(context.Background(), "hello")
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.requests) == 0 {
+		t.Fatal("expected at least one request")
+	}
+	req := f.requests[0]
+	if req.AdapterTimeout == nil {
+		t.Fatal("Session should set AdapterTimeout on the LLM request")
+	}
+	if req.AdapterTimeout.Request < 5*time.Minute {
+		t.Errorf("Request timeout should be >= 5 minutes for agentic workloads, got %v", req.AdapterTimeout.Request)
+	}
+}

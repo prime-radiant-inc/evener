@@ -1112,6 +1112,11 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			Tools:      s.allToolDefinitions(),
 			ToolChoice: &llm.ToolChoice{Mode: "auto"},
 			WebSearch:  true,
+			AdapterTimeout: &llm.AdapterTimeout{
+				Connect:    10 * time.Second,
+				Request:    10 * time.Minute,
+				StreamRead: 30 * time.Second,
+			},
 		}
 		if opts := s.profile.ProviderOptions(); opts != nil {
 			req.ProviderOptions = opts
