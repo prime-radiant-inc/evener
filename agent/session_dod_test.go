@@ -3682,15 +3682,15 @@ func TestSession_Subagent_DefaultGetsSubagentInstructions(t *testing.T) {
 		t.Fatalf("missing subagent session for %q", agentID)
 	}
 
-	// Default subagent should have UserInstructionOverride set.
-	if sub.sess.cfg.UserInstructionOverride == "" {
-		t.Fatal("default subagent should have UserInstructionOverride set, got empty string")
+	// Default subagent should have BasePromptOverride set (not UserInstructionOverride).
+	if sub.sess.cfg.BasePromptOverride == "" {
+		t.Fatal("default subagent should have BasePromptOverride set, got empty string")
 	}
 
 	// The override should instruct the subagent to work directly.
-	override := sub.sess.cfg.UserInstructionOverride
+	override := sub.sess.cfg.BasePromptOverride
 	if !strings.Contains(override, "communicate(result)") {
-		t.Errorf("subagent override should mention communicate(result), got: %s", override)
+		t.Errorf("subagent base prompt should mention communicate(result), got: %s", override)
 	}
 
 	// Wait for completion so goroutine doesn't leak.
@@ -3733,5 +3733,108 @@ func TestSession_SetsGenerousRequestTimeout(t *testing.T) {
 	}
 	if req.AdapterTimeout.Request < 5*time.Minute {
 		t.Errorf("Request timeout should be >= 5 minutes for agentic workloads, got %v", req.AdapterTimeout.Request)
+	}
+}
+
+func TestSession_Subagent_DoesNotGetParentDelegationPrompt(t *testing.T) {
+	// Default subagents should NOT see the parent's "spawn a research subagent"
+	// instructions. Their system prompt should use BasePromptOverride to replace
+	// the parent's base.md entirely with focused subagent instructions.
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			// Subagent needs one response to complete.
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("done")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Spawn a default subagent.
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"test task"}`),
+	})
+	if res.IsError {
+		t.Fatal(res.Output)
+	}
+	var parsed map[string]any
+	json.Unmarshal([]byte(res.Output), &parsed)
+	agentID := fmt.Sprint(parsed["agent_id"])
+
+	sub := sess.getSub(agentID)
+	if sub == nil || sub.sess == nil {
+		t.Fatalf("missing subagent session for %q", agentID)
+	}
+
+	// The subagent should have BasePromptOverride set.
+	if sub.sess.cfg.BasePromptOverride == "" {
+		t.Fatal("default subagent should have BasePromptOverride set, not use parent's base.md")
+	}
+
+	// The BasePromptOverride should NOT contain delegation instructions.
+	if strings.Contains(sub.sess.cfg.BasePromptOverride, "spawn_agent") {
+		t.Error("subagent base prompt should not contain spawn_agent delegation instructions")
+	}
+
+	// It should contain communicate(result) guidance.
+	if !strings.Contains(sub.sess.cfg.BasePromptOverride, "communicate(result)") {
+		t.Error("subagent base prompt should mention communicate(result)")
+	}
+
+	// Wait for the subagent to complete so we can check the adapter's recorded requests.
+	sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c2",
+		Name:      "wait",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":2000}`, agentID)),
+	})
+
+	// Verify the subagent's LLM request does NOT include delegation tools.
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.requests) == 0 {
+		t.Fatal("expected subagent to make at least one LLM request")
+	}
+	// The subagent's request is the LAST one (after the parent's spawn_agent turn).
+	subReq := f.requests[len(f.requests)-1]
+
+	// Check API-level tool definitions — spawn_agent should NOT be callable.
+	toolNames := make(map[string]bool)
+	for _, td := range subReq.Tools {
+		toolNames[td.Name] = true
+	}
+	for _, forbidden := range []string{"spawn_agent", "send_input", "wait", "close_agent"} {
+		if toolNames[forbidden] {
+			t.Errorf("subagent should not have %q in its API tool list", forbidden)
+		}
+	}
+	// communicate should still be available.
+	if !toolNames["communicate"] {
+		t.Error("subagent should have communicate in its API tool list")
+	}
+
+	// Verify the base prompt (in system message) mentions communicate(result).
+	sysMsg := subReq.Messages[0]
+	if sysMsg.Role != "system" {
+		t.Fatalf("expected first message to be system, got %s", sysMsg.Role)
+	}
+	sysTxt := sysMsg.Content[0].Text
+	if !strings.Contains(sysTxt, "communicate(result)") {
+		t.Error("subagent system prompt should mention communicate(result)")
+	}
+	// Base prompt should NOT contain the parent's delegation section.
+	if strings.Contains(sysTxt, "Subagent delegation") {
+		t.Error("subagent system prompt should NOT contain the parent's 'Subagent delegation' section")
 	}
 }

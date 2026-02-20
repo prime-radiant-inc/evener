@@ -134,6 +134,13 @@ func (r *ToolRegistry) Restrict(allowed map[string]bool) {
 	}
 }
 
+// Remove deletes a single tool from the registry.
+func (r *ToolRegistry) Remove(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.tools, name)
+}
+
 // RegisteredNames returns a set of all currently registered tool names.
 func (r *ToolRegistry) RegisteredNames() map[string]bool {
 	r.mu.RLock()

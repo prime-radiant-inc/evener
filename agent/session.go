@@ -45,6 +45,10 @@ type SessionConfig struct {
 	// UserInstructionOverride is appended to the end of the system prompt (highest priority).
 	UserInstructionOverride string `json:"user_instruction_override,omitempty"`
 
+	// BasePromptOverride replaces the profile's base prompt entirely.
+	// Used by default subagents to avoid inheriting the parent's delegation instructions.
+	BasePromptOverride string `json:"base_prompt_override,omitempty"`
+
 	// ReasoningEffort is passed through to the Unified LLM request when non-empty.
 	// Valid values are provider-dependent but typically include: low|medium|high.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
@@ -1469,18 +1473,24 @@ func (s *Session) initSessionState() error {
 	}
 	s.envInfo = ei
 
-	gitRoot := gitRootOrEmpty(s.env, ei.WorkingDir)
-	resolvedPrompt, err := ResolveSystemPrompt(
-		s.profile.ID(), s.profile.Model(),
-		s.cfg.SystemPromptFile,
-		ProjectPromptsDir(gitRoot),
-		GlobalPromptsDir(),
-		s.cfg.SystemPromptAppend,
-	)
-	if err != nil {
-		return fmt.Errorf("resolve system prompt: %w", err)
+	if s.cfg.BasePromptOverride != "" {
+		// Subagents use BasePromptOverride to replace the parent's base.md entirely,
+		// avoiding inherited delegation instructions the subagent cannot follow.
+		s.profile = s.profile.WithBasePrompt(s.cfg.BasePromptOverride)
+	} else {
+		gitRoot := gitRootOrEmpty(s.env, ei.WorkingDir)
+		resolvedPrompt, err := ResolveSystemPrompt(
+			s.profile.ID(), s.profile.Model(),
+			s.cfg.SystemPromptFile,
+			ProjectPromptsDir(gitRoot),
+			GlobalPromptsDir(),
+			s.cfg.SystemPromptAppend,
+		)
+		if err != nil {
+			return fmt.Errorf("resolve system prompt: %w", err)
+		}
+		s.profile = s.profile.WithBasePrompt(resolvedPrompt)
 	}
-	s.profile = s.profile.WithBasePrompt(resolvedPrompt)
 
 	s.skills = DiscoverSkills(s.env, s.cfg.SkillsDirs...)
 

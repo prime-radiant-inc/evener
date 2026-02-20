@@ -108,10 +108,12 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		// Plugin agents get their custom system prompt.
 		subCfg.UserInstructionOverride = agent.SystemPrompt
 	} else {
-		// Default subagents get focused instructions that override the
-		// parent's delegation directives (which would tell them to spawn
-		// further subagents they cannot create due to depth limits).
-		subCfg.UserInstructionOverride = defaultSubagentInstructions
+		// Default subagents get focused instructions as their ENTIRE base prompt,
+		// replacing the parent's base.md. This prevents the subagent from seeing
+		// delegation directives (like "spawn a research subagent") that it cannot
+		// follow due to depth limits.
+		subCfg.BasePromptOverride = defaultSubagentInstructions
+		subProfile = subProfile.WithBasePrompt(defaultSubagentInstructions)
 	}
 
 	subEnv := s.env
@@ -128,13 +130,20 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		return "", err
 	}
 
-	// Restrict subagent tools to the plugin agent's allow list.
+	// Restrict subagent tools.
 	if agent != nil && len(agent.Tools) > 0 {
+		// Plugin agents get their explicit allow list.
 		allowed := make(map[string]bool, len(agent.Tools))
 		for _, t := range agent.Tools {
 			allowed[t] = true
 		}
 		subSess.reg.Restrict(allowed)
+	} else {
+		// Default subagents cannot delegate further — remove delegation tools.
+		subSess.reg.Remove("spawn_agent")
+		subSess.reg.Remove("send_input")
+		subSess.reg.Remove("wait")
+		subSess.reg.Remove("close_agent")
 	}
 
 	sub := &subagent{
