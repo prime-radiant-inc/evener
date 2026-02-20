@@ -248,6 +248,24 @@ func TestConfigurationError_ErrorCode_Raw(t *testing.T) {
 	}
 }
 
+func TestNewRequestTimeoutError_IsRetryable(t *testing.T) {
+	err := NewRequestTimeoutError("openai", `Post "https://api.openai.com/v1/responses": context deadline exceeded`)
+	var e Error
+	if !errors.As(err, &e) {
+		t.Fatal("expected Error interface")
+	}
+	if !e.Retryable() {
+		t.Fatal("NewRequestTimeoutError should be retryable (HTTP-level timeouts should be retried)")
+	}
+	if e.StatusCode() != 0 {
+		t.Fatalf("StatusCode() = %d, want 0", e.StatusCode())
+	}
+	// Verify the retry util also considers it retryable.
+	if !retryableError(err) {
+		t.Fatal("retryableError() should return true for NewRequestTimeoutError")
+	}
+}
+
 func TestErrorFromHTTPStatus_MessageBasedClassification(t *testing.T) {
 	cases := []struct {
 		name    string

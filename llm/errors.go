@@ -156,14 +156,15 @@ func classifyByMessage(base httpErrorBase) error {
 }
 
 // NewRequestTimeoutError constructs a non-HTTP timeout error (e.g., context deadline
-// exceeded) that matches the unified error hierarchy. These timeouts are not retried
-// by default (spec).
+// exceeded) that matches the unified error hierarchy. HTTP-level timeouts are retried
+// because the server may not have received the request. User-initiated cancellation
+// (context.Canceled) goes through NewAbortError instead and is not retried.
 func NewRequestTimeoutError(provider string, message string) error {
 	base := httpErrorBase{
 		provider:   strings.TrimSpace(provider),
 		statusCode: 0,
 		message:    message,
-		retryable:  false,
+		retryable:  true,
 	}
 	return &RequestTimeoutError{base}
 }

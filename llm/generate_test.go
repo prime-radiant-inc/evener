@@ -489,8 +489,8 @@ func TestGenerate_TimeoutPerStep_CancelsLLMCall(t *testing.T) {
 		if !errors.As(err, &te) {
 			t.Fatalf("expected RequestTimeoutError, got %T (%v)", err, err)
 		}
-		if te.Retryable() {
-			t.Fatalf("expected non-retryable timeout error")
+		if !te.Retryable() {
+			t.Fatalf("expected retryable timeout error")
 		}
 	case <-time.After(500 * time.Millisecond):
 		t.Fatalf("Generate did not time out promptly")
@@ -533,8 +533,8 @@ func TestGenerate_TimeoutTotal_CancelsOperation(t *testing.T) {
 		if !errors.As(err, &te) {
 			t.Fatalf("expected RequestTimeoutError, got %T (%v)", err, err)
 		}
-		if te.Retryable() {
-			t.Fatalf("expected non-retryable timeout error")
+		if !te.Retryable() {
+			t.Fatalf("expected retryable timeout error")
 		}
 	case <-time.After(500 * time.Millisecond):
 		t.Fatalf("Generate did not time out promptly")
