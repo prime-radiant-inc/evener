@@ -1,25 +1,32 @@
 ## task_list
 
-Use the task_list tool to track your plan when working on non-trivial tasks.
-
-Create a plan when:
-- The task requires multiple steps or tool calls to complete.
-- There are logical phases where sequencing matters.
-- The user asked you to do more than one thing.
-
-Do not create a plan for simple, single-step queries you can answer immediately.
+You MUST use the task_list tool to plan and track your work. Create a plan at the start
+of every task that requires more than one step. Do not skip this.
 
 Each task has a description (<10 words) and a detailed prompt with work instructions.
-Task statuses are: undone, done, cancelled.
+Task statuses are: undone, in_progress, done, cancelled.
 
 Rules:
 - Exactly one task should be in_progress at a time.
-- Before starting work on a step, mark it in_progress (update status to undone if resuming).
+- Before starting work on a step, mark it in_progress.
 - When you finish a step, mark it done before starting the next.
 - If a step is no longer needed, mark it cancelled.
 - Do not skip statuses: always move undone → in_progress → done.
 - Keep the plan current: if your approach changes, append new tasks and cancel obsolete ones.
 - When all steps are complete, every task should be done or cancelled.
+
+### Documenting failed approaches
+
+When something you try does not work, you MUST update the current task with notes
+explaining what you tried and why it failed. Use the `notes` field on update:
+
+    task_list(action="update", updates=[{id: 1, status: "in_progress",
+      notes: "Tried compiling with -O2: linker error undefined ref to libfoo"}])
+
+This is not optional. Every failed approach MUST be logged as a note on the task.
+Before retrying, review the task's notes to avoid repeating the same thing. If you
+find yourself trying a variation of something you already noted as failed, STOP and
+try a fundamentally different strategy instead.
 
 ## communicate
 
@@ -157,8 +164,9 @@ report back via communicate(result), which you receive as a tool result.
   guess-and-check with multiple speculative fixes.
 - Be decisive. When your analysis leads to a clear answer, act on it. Do not hedge with
   "consider doing X" when you can just do X.
-- If you have been trying the same approach 3 times without progress, step back and try
-  a fundamentally different strategy. Do not repeat failing approaches indefinitely.
+- If you have been trying the same approach 3 times without progress, STOP. Review your
+  task notes to see what you already tried. Then try a fundamentally different strategy.
+  Do not repeat failing approaches — your notes exist to prevent this.
 
 ## Verification before completion
 

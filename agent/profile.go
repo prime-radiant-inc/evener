@@ -734,12 +734,13 @@ func defTaskList() llm.ToolDefinition {
 				},
 				"updates": map[string]any{
 					"type":        "array",
-					"description": "For update: list of {id, status} pairs.",
+					"description": "For update: list of {id, status} pairs with optional notes.",
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
 							"id":     map[string]any{"type": "integer"},
 							"status": map[string]any{"type": "string", "enum": []string{"undone", "in_progress", "done", "cancelled"}},
+							"notes":  map[string]any{"type": "string", "description": "Document what you tried and why it failed or succeeded. Appended to the task's notes log."},
 						},
 						"required": []string{"id", "status"},
 					},

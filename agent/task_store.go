@@ -24,6 +24,7 @@ type Task struct {
 	Description string     `json:"description"`
 	Prompt      string     `json:"prompt"`
 	Status      TaskStatus `json:"status"`
+	Notes       []string   `json:"notes,omitempty"`
 }
 
 // TaskInput is the data needed to create a new task.
@@ -36,6 +37,7 @@ type TaskInput struct {
 type TaskUpdate struct {
 	ID     int        `json:"id"`
 	Status TaskStatus `json:"status"`
+	Notes  string     `json:"notes,omitempty"`
 }
 
 // TaskStore manages a persistent list of tasks stored as JSON.
@@ -155,6 +157,9 @@ func (s *TaskStore) Update(updates []TaskUpdate) error {
 		for i := range s.tasks {
 			if s.tasks[i].ID == u.ID {
 				s.tasks[i].Status = u.Status
+				if u.Notes != "" {
+					s.tasks[i].Notes = append(s.tasks[i].Notes, u.Notes)
+				}
 				found = true
 				break
 			}

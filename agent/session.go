@@ -1977,10 +1977,14 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 					if v, ok := m["id"].(float64); ok {
 						id = int(v)
 					}
-					updates = append(updates, TaskUpdate{
+					u := TaskUpdate{
 						ID:     id,
 						Status: TaskStatus(fmt.Sprint(m["status"])),
-					})
+					}
+					if n, ok := m["notes"].(string); ok {
+						u.Notes = n
+					}
+					updates = append(updates, u)
 				}
 				return nil, store.Update(updates)
 			default:

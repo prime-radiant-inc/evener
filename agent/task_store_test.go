@@ -286,6 +286,117 @@ func TestTaskStore_ScopedBySessionID(t *testing.T) {
 	}
 }
 
+func TestTaskStore_UpdateWithNotes(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTaskStore(dir, "test-session")
+
+	if _, err := s.Append([]TaskInput{
+		{Description: "Build the project", Prompt: "Run make and fix any errors"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// First note.
+	err := s.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress, Notes: "Tried make -j4, got linker error: undefined reference to libfoo"}})
+	if err != nil {
+		t.Fatalf("Update with notes: %v", err)
+	}
+	all := s.View()
+	if len(all[0].Notes) != 1 {
+		t.Fatalf("expected 1 note, got %d", len(all[0].Notes))
+	}
+	if all[0].Notes[0] != "Tried make -j4, got linker error: undefined reference to libfoo" {
+		t.Fatalf("note content: %q", all[0].Notes[0])
+	}
+
+	// Second note appends.
+	err = s.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress, Notes: "Installed libfoo-dev, retrying"}})
+	if err != nil {
+		t.Fatalf("Update second note: %v", err)
+	}
+	all = s.View()
+	if len(all[0].Notes) != 2 {
+		t.Fatalf("expected 2 notes, got %d", len(all[0].Notes))
+	}
+
+	// Empty notes field should not append.
+	err = s.Update([]TaskUpdate{{ID: 1, Status: TaskDone}})
+	if err != nil {
+		t.Fatalf("Update without notes: %v", err)
+	}
+	all = s.View()
+	if len(all[0].Notes) != 2 {
+		t.Fatalf("expected 2 notes after status-only update, got %d", len(all[0].Notes))
+	}
+}
+
+func TestTaskStore_NotesPersistAcrossLoads(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTaskStore(dir, "test-session")
+
+	if _, err := s.Append([]TaskInput{{Description: "Task", Prompt: "Do stuff"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress, Notes: "First approach failed"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reload from disk.
+	s2 := NewTaskStore(dir, "test-session")
+	if err := s2.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	all := s2.View()
+	if len(all[0].Notes) != 1 || all[0].Notes[0] != "First approach failed" {
+		t.Fatalf("notes after reload: %v", all[0].Notes)
+	}
+}
+
+func TestTaskListTool_UpdateWithNotes(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx := context.Background()
+	env := sess.env
+
+	// Append a task.
+	sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:   "c1",
+		Name: "task_list",
+		Arguments: json.RawMessage(`{
+			"action": "append",
+			"tasks": [{"description": "Build project", "prompt": "Run make"}]
+		}`),
+	})
+
+	// Update with notes.
+	updateRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:   "c2",
+		Name: "task_list",
+		Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 1, "status": "in_progress", "notes": "make failed with missing libfoo"}]}`),
+	})
+	if updateRes.IsError {
+		t.Fatalf("update with notes error: %s", updateRes.Output)
+	}
+
+	// View should show notes.
+	viewRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:        "c3",
+		Name:      "task_list",
+		Arguments: json.RawMessage(`{"action": "view"}`),
+	})
+	if !strings.Contains(viewRes.Output, "make failed with missing libfoo") {
+		t.Fatalf("view should contain notes: %s", viewRes.Output)
+	}
+}
+
 func TestTaskListTool_AppendViewUpdate(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
