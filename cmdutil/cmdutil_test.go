@@ -38,6 +38,7 @@ func TestResolveReasoningEffort(t *testing.T) {
 		{name: "cli overrides env", cli: "HIGH", env: "low", wantSet: true, wantVal: "high"},
 		{name: "cli none clears", cli: "none", env: "high", wantSet: true, wantVal: ""},
 		{name: "env none clears", cli: "", env: "none", wantSet: true, wantVal: ""},
+		{name: "xhigh", cli: "xhigh", env: "", wantSet: true, wantVal: "xhigh"},
 		{name: "invalid", cli: "banana", env: "", wantErr: true},
 	}
 

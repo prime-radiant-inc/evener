@@ -97,10 +97,10 @@ func ResolveReasoningEffort(cliValue, envValue string) (ReasoningEffortResolutio
 	switch v {
 	case "none", "null", "off", "false", "0":
 		return ReasoningEffortResolution{Set: true, Value: ""}, nil
-	case "low", "medium", "high":
+	case "low", "medium", "high", "xhigh":
 		return ReasoningEffortResolution{Set: true, Value: v}, nil
 	default:
-		return ReasoningEffortResolution{}, fmt.Errorf("invalid reasoning effort %q (expected low|medium|high|none)", raw)
+		return ReasoningEffortResolution{}, fmt.Errorf("invalid reasoning effort %q (expected low|medium|high|xhigh|none)", raw)
 	}
 }
 
