@@ -490,6 +490,8 @@ func (s *Session) Compact(ctx context.Context) error {
 		return fmt.Errorf("context manager not initialized")
 	}
 
+	s.contextMgr.Meta = s.buildCompactionMeta()
+
 	s.mu.Lock()
 	histCopy := append([]Turn{}, s.history...)
 	s.mu.Unlock()
@@ -502,6 +504,23 @@ func (s *Session) Compact(ctx context.Context) error {
 
 	s.maybeAutoSave()
 	return nil
+}
+
+// buildCompactionMeta gathers session-level metadata for enriching compaction summaries.
+func (s *Session) buildCompactionMeta() CompactionMeta {
+	meta := CompactionMeta{}
+
+	// Transcript path.
+	if s.stateDir != "" {
+		meta.TranscriptPath = filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
+	}
+
+	// Task list snapshot (if tasks have been used).
+	if s.taskStore != nil {
+		meta.TaskSnapshot = s.taskStore.View()
+	}
+
+	return meta
 }
 
 // ContextPressure returns the estimated context pressure as a fraction (0.0–1.0).
@@ -1038,6 +1057,9 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		// Apply context management before each LLM request.
 		// Copy history out to avoid holding s.mu during potential LLM calls (Layer 4).
 		if s.strategy != nil {
+			// Populate compaction metadata so checkpoint/summarize have session context.
+			s.contextMgr.Meta = s.buildCompactionMeta()
+
 			s.mu.Lock()
 			histCopy := append([]Turn{}, s.history...)
 			s.mu.Unlock()

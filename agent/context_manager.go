@@ -11,6 +11,15 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// CompactionMeta holds session-level metadata injected into compaction summaries.
+// The session populates this before each ManageContext call so that checkpoint
+// and summarize have access to data outside the turn history.
+type CompactionMeta struct {
+	TranscriptPath string   // path to the full session transcript JSONL
+	TaskSnapshot   []Task   // current task list state (nil = no tasks)
+	ActivatedSkills []string // skill names activated during this session
+}
+
 // ContextManager tracks cumulative token usage and applies progressive
 // compaction layers to conversation history as context fills up.
 type ContextManager struct {
@@ -40,6 +49,10 @@ type ContextManager struct {
 	// OnCompactionTurn is called for each compaction turn created (CHECKPOINT or SUMMARY).
 	// Set by the session before ManageContext to record compaction turns in the transcript.
 	OnCompactionTurn func(Turn)
+
+	// Meta holds session-level metadata for enriching compaction summaries.
+	// Set by the session before each ManageContext call.
+	Meta CompactionMeta
 }
 
 // NewContextManager creates a ContextManager with default thresholds.
@@ -177,7 +190,7 @@ func (cm *ContextManager) MaybeCompact(
 	if p >= cm.CheckpointThreshold {
 		turnsBefore := len(*history)
 		before := EstimateTokens(*history)
-		*history = checkpoint(*history, cm.PreserveRecentTurns)
+		*history = checkpoint(*history, cm.PreserveRecentTurns, &cm.Meta)
 		after := EstimateTokens(*history)
 		emitFn(EventContextCompaction, ContextCompactionData{
 			Layer:           "checkpoint",
@@ -245,7 +258,7 @@ func (cm *ContextManager) ForceCompact(
 	// Layer 1: Deterministic checkpoint.
 	turnsBefore := len(*history)
 	before := EstimateTokens(*history)
-	*history = checkpoint(*history, cm.PreserveRecentTurns)
+	*history = checkpoint(*history, cm.PreserveRecentTurns, &cm.Meta)
 	after := EstimateTokens(*history)
 	emitFn(EventContextCompaction, ContextCompactionData{
 		Layer:           "checkpoint",
@@ -496,7 +509,12 @@ func clearThinking(history []Turn, preserveRecent int) {
 
 // checkpoint replaces old history with a structured state snapshot.
 // Returns a new history slice: [checkpoint_message, ...preserved_recent_turns].
-func checkpoint(history []Turn, preserveRecent int) []Turn {
+//
+// The checkpoint is a deterministic extraction — no LLM call. It captures user
+// messages verbatim, agent responses, file/tool metadata, task list, and skills.
+// User messages are stored as JSON arrays for lossless round-tripping across
+// repeated compactions.
+func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta) []Turn {
 	if len(history) <= preserveRecent {
 		return history
 	}
@@ -506,132 +524,151 @@ func checkpoint(history []Turn, preserveRecent int) []Turn {
 		return history
 	}
 
-	// Extract original task (first user input that isn't a previous checkpoint/summary).
-	// If all user inputs are checkpoints, extract the task from the checkpoint text.
-	originalTask := ""
-	for _, t := range history[:cutoff] {
-		// Handle typed compaction turns (new TurnKinds).
-		if t.Kind == TurnCheckpoint || t.Kind == TurnSummary {
-			text := t.Message.Text()
-			if idx := strings.Index(text, "Original task: "); idx >= 0 {
-				rest := text[idx+len("Original task: "):]
-				if nl := strings.Index(rest, "\n"); nl >= 0 {
-					originalTask = rest[:nl]
-				} else {
-					originalTask = rest
-				}
-			}
-			continue
-		}
-		if t.Kind != TurnUserInput {
-			continue
-		}
-		// Backward compat: handle old TurnUserInput checkpoints/summaries by text prefix.
-		text := t.Message.Text()
-		if strings.HasPrefix(text, "[CONTEXT CHECKPOINT]") {
-			if idx := strings.Index(text, "Original task: "); idx >= 0 {
-				rest := text[idx+len("Original task: "):]
-				if nl := strings.Index(rest, "\n"); nl >= 0 {
-					originalTask = rest[:nl]
-				} else {
-					originalTask = rest
-				}
-			}
-			continue
-		}
-		if strings.HasPrefix(text, "[CONTEXT SUMMARY]") {
-			continue
-		}
-		originalTask = text
-		break
-	}
-	if len(originalTask) > 500 {
-		originalTask = originalTask[:500] + "..."
-	}
+	// Budget: cap the checkpoint to avoid ballooning the context. The checkpoint
+	// either feeds into the LLM summarizer (which replaces it) or — if the
+	// summarizer is unavailable — becomes the sole history the main model sees.
+	// 60k chars ≈ 15k tokens: fits comfortably in the cheap model's context
+	// alongside the instruction prefix, and leaves room for preserved recent
+	// turns in the main model's context.
+	const maxCheckpointChars = 60_000
 
-	// Collect modified files from edit_file/write_file/apply_patch tool calls.
+	// Collect: modified files, tool counts, shell results, user messages,
+	// agent final responses (communicate results), activated skills.
 	modifiedFiles := map[string]bool{}
+	activatedSkills := map[string]bool{}
 	toolCounts := map[string]int{}
 	var lastShellResults []string
+	var userMessages []string
+	var agentResponses []string
 
 	for i := 0; i < cutoff; i++ {
 		t := history[i]
-		if t.Kind != TurnAssistant {
-			continue
-		}
-		for _, p := range t.Message.Content {
-			if p.Kind == llm.ContentWebSearch {
-				toolCounts["web_search"]++
+		switch t.Kind {
+		case TurnCheckpoint, TurnSummary:
+			// Extract user messages from previous compaction turns so they survive
+			// across repeated compactions.
+			userMessages = append(userMessages, extractCheckpointJSON(t.Message.Text(), "user_messages")...)
+
+		case TurnUserInput:
+			text := t.Message.Text()
+			if text == "" {
 				continue
 			}
-			if p.Kind != llm.ContentToolCall || p.ToolCall == nil {
+			// Old-format checkpoint/summary stored as TurnUserInput — extract
+			// user messages from them just like typed compaction turns.
+			if strings.HasPrefix(text, "[CONTEXT CHECKPOINT]") || strings.HasPrefix(text, "[CONTEXT SUMMARY]") {
+				userMessages = append(userMessages, extractCheckpointJSON(text, "user_messages")...)
 				continue
 			}
-			name := p.ToolCall.Name
-			toolCounts[name]++
+			userMessages = append(userMessages, text)
 
-			var args map[string]any
-			if len(p.ToolCall.Arguments) > 0 {
-				_ = json.Unmarshal(p.ToolCall.Arguments, &args)
-			}
-
-			switch name {
-			case "edit_file", "write_file":
-				if path, ok := args["file_path"]; ok {
-					modifiedFiles[fmt.Sprint(path)] = true
+		case TurnTool, TurnToolResults:
+			// Extract communicate results (agent's final responses to user).
+			for _, p := range t.Message.Content {
+				if p.Kind != llm.ContentToolResult || p.ToolResult == nil {
+					continue
 				}
-			case "apply_patch":
-				// Extract file paths from patch content (lines with "*** Update File:" etc).
-				if patch, ok := args["patch"]; ok {
-					for _, line := range strings.Split(fmt.Sprint(patch), "\n") {
-						line = strings.TrimSpace(line)
-						for _, prefix := range []string{"*** Update File: ", "*** Add File: ", "*** Delete File: "} {
-							if strings.HasPrefix(line, prefix) {
-								modifiedFiles[strings.TrimPrefix(line, prefix)] = true
+				if p.ToolResult.Name == "communicate" {
+					content := fmt.Sprint(p.ToolResult.Content)
+					if strings.Contains(content, `"delivered":true`) || strings.Contains(content, `"delivered": true`) {
+						args := findToolCallArgs(history[:i+1], p.ToolResult.ToolCallID)
+						var argsMap map[string]any
+						if len(args) > 0 {
+							_ = json.Unmarshal(args, &argsMap)
+						}
+						if msg, ok := argsMap["message"]; ok {
+							action, _ := argsMap["action"].(string)
+							if action == "result" {
+								agentResponses = append(agentResponses, fmt.Sprint(msg))
 							}
 						}
 					}
 				}
-			case "shell":
-				// Track last few shell commands and their exit codes.
-				if cmd, ok := args["command"]; ok {
-					cmdStr := fmt.Sprint(cmd)
-					if len(cmdStr) > 60 {
-						cmdStr = cmdStr[:60] + "..."
+			}
+
+		case TurnAssistant:
+			for _, p := range t.Message.Content {
+				if p.Kind == llm.ContentWebSearch {
+					toolCounts["web_search"]++
+					continue
+				}
+				if p.Kind != llm.ContentToolCall || p.ToolCall == nil {
+					continue
+				}
+				name := p.ToolCall.Name
+				toolCounts[name]++
+
+				var args map[string]any
+				if len(p.ToolCall.Arguments) > 0 {
+					_ = json.Unmarshal(p.ToolCall.Arguments, &args)
+				}
+
+				switch name {
+				case "edit_file", "write_file":
+					if path, ok := args["file_path"]; ok {
+						modifiedFiles[fmt.Sprint(path)] = true
 					}
-					// Find the matching tool result by ToolCallID, within cutoff.
-					exitCode := "?"
-					for j := i + 1; j < cutoff; j++ {
-						if history[j].Kind != TurnTool && history[j].Kind != TurnToolResults {
-							continue
-						}
-						content := findToolResultByCallID(history[j], p.ToolCall.ID)
-						if content != "" {
-							exitCode = parseExitCode(content)
-							break
+				case "apply_patch":
+					if patch, ok := args["patch"]; ok {
+						for _, line := range strings.Split(fmt.Sprint(patch), "\n") {
+							line = strings.TrimSpace(line)
+							for _, prefix := range []string{"*** Update File: ", "*** Add File: ", "*** Delete File: "} {
+								if strings.HasPrefix(line, prefix) {
+									modifiedFiles[strings.TrimPrefix(line, prefix)] = true
+								}
+							}
 						}
 					}
-					lastShellResults = append(lastShellResults, fmt.Sprintf("  %q → exit %s", cmdStr, exitCode))
+				case "shell":
+					if cmd, ok := args["command"]; ok {
+						cmdStr := fmt.Sprint(cmd)
+						if len(cmdStr) > 60 {
+							cmdStr = cmdStr[:60] + "..."
+						}
+						exitCode := "?"
+						for j := i + 1; j < cutoff; j++ {
+							if history[j].Kind != TurnTool && history[j].Kind != TurnToolResults {
+								continue
+							}
+							content := findToolResultByCallID(history[j], p.ToolCall.ID)
+							if content != "" {
+								exitCode = parseExitCode(content)
+								break
+							}
+						}
+						lastShellResults = append(lastShellResults, fmt.Sprintf("  %q → exit %s", cmdStr, exitCode))
+					}
+				case "use_skill":
+					if sn, ok := args["skill_name"]; ok {
+						activatedSkills[fmt.Sprint(sn)] = true
+					}
 				}
 			}
 		}
 	}
 
-	var b strings.Builder
-	b.WriteString("[CONTEXT CHECKPOINT]\n")
-	b.WriteString(fmt.Sprintf("Original task: %s\n", originalTask))
+	// Build the fixed-size sections first (metadata), then fill remaining
+	// budget with user messages and agent responses.
+	var fixed strings.Builder
 
+	// Transcript pointer — tells the model how to access full history.
+	if meta != nil && meta.TranscriptPath != "" {
+		fixed.WriteString(fmt.Sprintf("Full transcript: %s (use read_file to review earlier context if needed)\n", meta.TranscriptPath))
+	}
+
+	// Files modified.
 	if len(modifiedFiles) > 0 {
 		files := make([]string, 0, len(modifiedFiles))
 		for f := range modifiedFiles {
 			files = append(files, f)
 		}
 		sort.Strings(files)
-		b.WriteString(fmt.Sprintf("Files modified: %s\n", strings.Join(files, ", ")))
+		fixed.WriteString(fmt.Sprintf("Files modified: %s\n", strings.Join(files, ", ")))
 	}
 
+	// Tool call counts.
 	if total := sumCounts(toolCounts); total > 0 {
-		b.WriteString(fmt.Sprintf("Actions taken: %d tool calls (", total))
+		fixed.WriteString(fmt.Sprintf("Actions taken: %d tool calls (", total))
 		toolNames := make([]string, 0, len(toolCounts))
 		for name := range toolCounts {
 			toolNames = append(toolNames, name)
@@ -639,25 +676,83 @@ func checkpoint(history []Turn, preserveRecent int) []Turn {
 		sort.Strings(toolNames)
 		for i, name := range toolNames {
 			if i > 0 {
-				b.WriteString(", ")
+				fixed.WriteString(", ")
 			}
-			b.WriteString(fmt.Sprintf("%d %s", toolCounts[name], name))
+			fixed.WriteString(fmt.Sprintf("%d %s", toolCounts[name], name))
 		}
-		b.WriteString(")\n")
+		fixed.WriteString(")\n")
 	}
 
-	// Include only the last 3 shell results.
+	// Last 3 shell results.
 	if len(lastShellResults) > 0 {
 		start := 0
 		if len(lastShellResults) > 3 {
 			start = len(lastShellResults) - 3
 		}
-		b.WriteString("Last shell results:\n")
+		fixed.WriteString("Last shell results:\n")
 		for _, r := range lastShellResults[start:] {
-			b.WriteString(r + "\n")
+			fixed.WriteString(r + "\n")
 		}
 	}
 
+	// Task list status.
+	if meta != nil && len(meta.TaskSnapshot) > 0 {
+		fixed.WriteString("\nTask list:\n")
+		for _, t := range meta.TaskSnapshot {
+			fixed.WriteString(fmt.Sprintf("  [%s] #%d: %s\n", string(t.Status), t.ID, t.Description))
+		}
+	}
+
+	// Activated skills.
+	allSkills := map[string]bool{}
+	for s := range activatedSkills {
+		allSkills[s] = true
+	}
+	if meta != nil {
+		for _, s := range meta.ActivatedSkills {
+			allSkills[s] = true
+		}
+	}
+	if len(allSkills) > 0 {
+		skillNames := make([]string, 0, len(allSkills))
+		for s := range allSkills {
+			skillNames = append(skillNames, s)
+		}
+		sort.Strings(skillNames)
+		fixed.WriteString(fmt.Sprintf("Activated skills: %s\n", strings.Join(skillNames, ", ")))
+	}
+
+	fixedStr := fixed.String()
+
+	// Budget for variable content (user messages + agent responses as JSON).
+	// Reserve space for [CONTEXT CHECKPOINT], [END CHECKPOINT], fixed sections,
+	// and the JSON key names.
+	overhead := len("[CONTEXT CHECKPOINT]\n") + len(fixedStr) + len("[END CHECKPOINT]\n") + 200
+	variableBudget := maxCheckpointChars - overhead
+	if variableBudget < 1000 {
+		variableBudget = 1000
+	}
+
+	// Encode user messages and agent responses as JSON for lossless round-tripping.
+	// Shed oldest user messages if needed to fit budget.
+	userJSON := marshalJSONCompact(userMessages)
+	respJSON := marshalJSONCompact(agentResponses)
+
+	for len(userJSON)+len(respJSON) > variableBudget && len(userMessages) > 1 {
+		userMessages = userMessages[1:] // drop oldest
+		userJSON = marshalJSONCompact(userMessages)
+	}
+
+	// Assemble final checkpoint.
+	var b strings.Builder
+	b.WriteString("[CONTEXT CHECKPOINT]\n")
+	b.WriteString(fixedStr)
+	if len(userMessages) > 0 {
+		b.WriteString(fmt.Sprintf("\n<user_messages>%s</user_messages>\n", userJSON))
+	}
+	if len(agentResponses) > 0 {
+		b.WriteString(fmt.Sprintf("\n<agent_responses>%s</agent_responses>\n", respJSON))
+	}
 	b.WriteString("[END CHECKPOINT]\n")
 
 	checkpointTurn := NewTurn(TurnCheckpoint, llm.User(b.String()))
@@ -704,8 +799,8 @@ func (cm *ContextManager) summarizeWithLLM(ctx context.Context, history []Turn, 
 	}
 
 	// Cap the history text to avoid exceeding the cheap model's context window.
-	// ~50k chars ≈ 12.5k tokens, leaving room for the instruction prefix and response.
-	const maxHistoryChars = 50_000
+	// ~80k chars ≈ 20k tokens, leaving room for the instruction prefix and response.
+	const maxHistoryChars = 80_000
 
 	truncText := func(s string, max int) string {
 		if len(s) > max {
@@ -719,11 +814,33 @@ func (cm *ContextManager) summarizeWithLLM(ctx context.Context, history []Turn, 
 		t := history[i]
 		switch t.Kind {
 		case TurnUserInput:
-			b.WriteString("User: " + truncText(t.Message.Text(), 500) + "\n")
+			// Preserve user messages verbatim. Cap at 5k to protect the cheap
+			// model's context — normal messages are well under this.
+			text := t.Message.Text()
+			if len(text) > 5000 {
+				text = text[:5000] + "..."
+			}
+			b.WriteString("User: " + text + "\n")
 		case TurnCheckpoint, TurnSummary:
-			b.WriteString("Previous compaction: " + truncText(t.Message.Text(), 500) + "\n")
+			b.WriteString("Previous compaction: " + truncText(t.Message.Text(), 1000) + "\n")
 		case TurnAssistant:
-			b.WriteString("Assistant: " + truncText(t.Message.Text(), 500) + "\n")
+			// Extract communicate calls to show agent responses prominently.
+			text := t.Message.Text()
+			if text != "" {
+				b.WriteString("Assistant: " + truncText(text, 500) + "\n")
+			}
+			for _, p := range t.Message.Content {
+				if p.Kind == llm.ContentToolCall && p.ToolCall != nil && p.ToolCall.Name == "communicate" {
+					var args map[string]any
+					if len(p.ToolCall.Arguments) > 0 {
+						_ = json.Unmarshal(p.ToolCall.Arguments, &args)
+					}
+					if msg, ok := args["message"]; ok {
+						action, _ := args["action"].(string)
+						b.WriteString(fmt.Sprintf("Agent→User (%s): %s\n", action, fmt.Sprint(msg)))
+					}
+				}
+			}
 		case TurnTool, TurnToolResults:
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
@@ -743,15 +860,44 @@ func (cm *ContextManager) summarizeWithLLM(ctx context.Context, history []Turn, 
 		}
 	}
 
-	prefix := "You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume this task.\n\n" +
-		"Include:\n" +
-		"- The original task/goal\n" +
-		"- Current progress: what has been accomplished so far (specific files modified, specific changes made)\n" +
-		"- Key decisions made and why\n" +
-		"- What remains to be done (clear, actionable next steps)\n" +
-		"- Any critical data, file paths, variable names, or error messages needed to continue\n" +
-		"- Important constraints or user preferences discovered\n\n" +
-		"Be concise and structured. Focus on helping the next LLM seamlessly continue WITHOUT re-reading files or re-discovering what was already done.\n\n"
+	prefix := `You are performing a CONTEXT CHECKPOINT COMPACTION. This session is being continued from a previous conversation that ran out of context. Create a detailed handoff summary that another instance of yourself will use to seamlessly continue the work.
+
+Your summary MUST include ALL of the following sections:
+
+## User Messages
+Reproduce ALL user messages verbatim. The next instance needs the full conversation context to understand the user's evolving intent across the session.
+
+## Progress
+What has been accomplished so far. Be specific about:
+- Files created or modified (full paths)
+- Specific changes made to each file
+- Tests written or run and their results
+- Commands executed and their outcomes
+
+## Key Decisions
+Important decisions made during the session and why. Include:
+- Architecture or design choices
+- Trade-offs considered
+- User preferences or constraints discovered
+
+## Agent Responses
+Summarize key agent responses to the user, especially final answers, status updates, and any commitments made.
+
+## Current State
+Precisely what was being worked on when context ran out:
+- What file was being edited
+- What problem was being debugged
+- What test was failing
+
+## Pending Work
+Clear, actionable next steps that remain. Be specific enough that the next instance can immediately start working.
+
+## Critical Context
+Any data, file paths, variable names, error messages, API details, or other specific information needed to continue. Focus on information that CANNOT be re-derived from reading the codebase.
+
+Be thorough and structured. Err on the side of including too much rather than too little — lost context is expensive, extra tokens are cheap.
+
+`
 	prompt := prefix + b.String()
 
 	req := llm.Request{
@@ -796,6 +942,45 @@ func safeCutoff(history []Turn, cutoff int) int {
 }
 
 // --- Helper functions ---
+
+// extractCheckpointJSON extracts a JSON string array from a checkpoint text
+// stored in XML-style tags like <user_messages>[...]</user_messages>.
+// Falls back to legacy "Original task:" format for backward compatibility.
+func extractCheckpointJSON(text, tag string) []string {
+	// New format: <tag>[...]</tag>
+	open := "<" + tag + ">"
+	close := "</" + tag + ">"
+	if idx := strings.Index(text, open); idx >= 0 {
+		rest := text[idx+len(open):]
+		if end := strings.Index(rest, close); end >= 0 {
+			var msgs []string
+			if err := json.Unmarshal([]byte(rest[:end]), &msgs); err == nil {
+				return msgs
+			}
+		}
+	}
+
+	// Legacy format: "Original task: ..." line (only for user_messages tag).
+	if tag == "user_messages" {
+		if idx := strings.Index(text, "Original task: "); idx >= 0 {
+			rest := text[idx+len("Original task: "):]
+			if nl := strings.Index(rest, "\n"); nl >= 0 {
+				rest = rest[:nl]
+			}
+			if rest != "" {
+				return []string{rest}
+			}
+		}
+	}
+
+	return nil
+}
+
+// marshalJSONCompact marshals a string slice as compact JSON.
+func marshalJSONCompact(ss []string) string {
+	b, _ := json.Marshal(ss)
+	return string(b)
+}
 
 func countLines(s string) int {
 	s = strings.TrimRight(s, "\n")

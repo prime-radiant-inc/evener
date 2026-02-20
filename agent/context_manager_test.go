@@ -485,7 +485,7 @@ func TestCheckpoint_CreatesValidMessage(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("done")},
 	}
 
-	result := checkpoint(history, 2)
+	result := checkpoint(history, 2, nil)
 
 	// Should have checkpoint message + preserved turns.
 	// safeCutoff may back up the cutoff to avoid orphaned TurnTool, so we
@@ -513,7 +513,7 @@ func TestCheckpoint_IncludesOriginalTask(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("done")},
 	}
 
-	result := checkpoint(history, 1)
+	result := checkpoint(history, 1, nil)
 	text := result[0].Message.Text()
 	if !strings.Contains(text, "Fix the auth bug in login.go") {
 		t.Fatalf("checkpoint missing original task: %q", text)
@@ -532,7 +532,7 @@ func TestCheckpoint_TracksModifiedFiles(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("done")},
 	}
 
-	result := checkpoint(history, 1)
+	result := checkpoint(history, 1, nil)
 	text := result[0].Message.Text()
 	if !strings.Contains(text, "Files modified:") {
 		t.Fatalf("checkpoint missing files modified: %q", text)
@@ -556,7 +556,7 @@ func TestCheckpoint_SummarizesActions(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("done")},
 	}
 
-	result := checkpoint(history, 1)
+	result := checkpoint(history, 1, nil)
 	text := result[0].Message.Text()
 	if !strings.Contains(text, "3 tool calls") {
 		t.Fatalf("checkpoint missing action summary: %q", text)
@@ -577,7 +577,7 @@ func TestCheckpoint_PreservesRecentTurns(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
 	}
 
-	result := checkpoint(history, 2)
+	result := checkpoint(history, 2, nil)
 	// Checkpoint + 2 recent.
 	if len(result) != 3 {
 		t.Fatalf("expected 3 turns, got %d", len(result))
@@ -596,7 +596,7 @@ func TestCheckpoint_NoHistoryToCheckpoint(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("answer")},
 	}
 
-	result := checkpoint(history, 6)
+	result := checkpoint(history, 6, nil)
 	if len(result) != len(history) {
 		t.Fatalf("expected unchanged history length %d, got %d", len(history), len(result))
 	}
@@ -1173,7 +1173,7 @@ func TestCheckpoint_AdjustsCutoffToAvoidOrphanedToolTurn(t *testing.T) {
 
 	// preserveRecent=3 → cutoff=3, preserved turns start at index 3 (TurnAssistant) — OK.
 	// preserveRecent=2 → cutoff=4, preserved turns start at index 4 (TurnTool) — BAD.
-	result := checkpoint(history, 2)
+	result := checkpoint(history, 2, nil)
 
 	// First preserved turn after checkpoint must NOT be a TurnTool.
 	if len(result) < 2 {
@@ -1264,7 +1264,7 @@ func TestCheckpoint_ShellResultMatchesByToolCallID(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("done")},
 	}
 
-	result := checkpoint(history, 1)
+	result := checkpoint(history, 1, nil)
 	text := result[0].Message.Text()
 
 	// The checkpoint should show exit 0, not "?" from the read_file result.
@@ -1307,8 +1307,8 @@ func TestSummarizeWithLLM_TruncatesPromptForCheapModel(t *testing.T) {
 	}
 
 	// The prompt sent to the cheap model should be bounded, not 200k+ chars.
-	// A reasonable max is ~50k chars (~12.5k tokens) for a cheap model.
-	if receivedPromptLen > 60_000 {
+	// The history serializer caps at ~80k chars, plus the instruction prefix.
+	if receivedPromptLen > 95_000 {
 		t.Fatalf("prompt sent to cheap model is too large: %d chars (should be truncated)", receivedPromptLen)
 	}
 }
@@ -1337,7 +1337,7 @@ func TestSummarizeWithLLM_AdapterError_ReturnsError(t *testing.T) {
 
 // M1: Repeated checkpoint should still find the real original task, not the checkpoint message.
 func TestCheckpoint_RepeatedCheckpoint_PreservesOriginalTask(t *testing.T) {
-	// Simulate first checkpoint output.
+	// Simulate first checkpoint output (legacy format with "Original task:").
 	firstCheckpoint := Turn{
 		Kind:    TurnUserInput,
 		Message: llm.User("[CONTEXT CHECKPOINT]\nOriginal task: Fix the auth bug\nFiles modified: auth.go\n[END CHECKPOINT]\n"),
@@ -1349,15 +1349,55 @@ func TestCheckpoint_RepeatedCheckpoint_PreservesOriginalTask(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("done")},
 	}
 
-	result := checkpoint(history, 1)
+	result := checkpoint(history, 1, nil)
 	text := result[0].Message.Text()
 
-	// The original task should be "Fix the auth bug", NOT the checkpoint message itself.
-	if strings.Contains(text, "Original task: [CONTEXT CHECKPOINT]") {
-		t.Fatalf("repeated checkpoint should extract real original task, not checkpoint text:\n%s", text)
-	}
+	// The original task text should be preserved in the User messages section,
+	// extracted from the legacy "Original task:" line.
 	if !strings.Contains(text, "Fix the auth bug") {
-		t.Fatalf("repeated checkpoint should preserve real original task:\n%s", text)
+		t.Fatalf("repeated checkpoint should preserve user messages from prior checkpoint:\n%s", text)
+	}
+}
+
+// Verify user messages round-trip through JSON across repeated compactions,
+// including messages with newlines and special characters.
+func TestCheckpoint_UserMessages_JSONRoundTrip(t *testing.T) {
+	// First compaction: two user messages, one with embedded newline.
+	h1 := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("hi! ls the cwd please")},
+		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+		{Kind: TurnUserInput, Message: llm.User("now fix the bug\nwith newlines")},
+		{Kind: TurnAssistant, Message: llm.Assistant("ok")},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	}
+	r1 := checkpoint(h1, 1, nil)
+	text1 := r1[0].Message.Text()
+
+	if !strings.Contains(text1, `"hi! ls the cwd please"`) {
+		t.Fatalf("first checkpoint missing first user message:\n%s", text1)
+	}
+	if !strings.Contains(text1, `now fix the bug\nwith newlines`) {
+		t.Fatalf("first checkpoint missing second user message with newline:\n%s", text1)
+	}
+
+	// Second compaction: feed checkpoint back in + new user message.
+	h2 := []Turn{
+		r1[0], // the checkpoint turn
+		{Kind: TurnUserInput, Message: llm.User("also add tests")},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
+	}
+	r2 := checkpoint(h2, 1, nil)
+	text2 := r2[0].Message.Text()
+
+	// All three user messages should survive.
+	if !strings.Contains(text2, "hi! ls the cwd please") {
+		t.Fatalf("second checkpoint lost first user message:\n%s", text2)
+	}
+	if !strings.Contains(text2, "now fix the bug") {
+		t.Fatalf("second checkpoint lost second user message:\n%s", text2)
+	}
+	if !strings.Contains(text2, "also add tests") {
+		t.Fatalf("second checkpoint lost third user message:\n%s", text2)
 	}
 }
 
@@ -1379,7 +1419,7 @@ func TestCheckpoint_ToolCountsAreDeterministic(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		cp := make([]Turn, len(history))
 		copy(cp, history)
-		result := checkpoint(cp, 1)
+		result := checkpoint(cp, 1, nil)
 		text := result[0].Message.Text()
 		if i == 0 {
 			first = text
@@ -1398,7 +1438,7 @@ func TestCheckpoint_TracksFilesFromApplyPatch(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("done")},
 	}
 
-	result := checkpoint(history, 1)
+	result := checkpoint(history, 1, nil)
 	text := result[0].Message.Text()
 	if !strings.Contains(text, "test.go") {
 		t.Fatalf("checkpoint should include test.go from apply_patch:\n%s", text)
@@ -1425,7 +1465,7 @@ func TestCheckpoint_IncludesWebSearchCount(t *testing.T) {
 		}},
 	}
 
-	result := checkpoint(history, 2) // preserve last 2 turns
+	result := checkpoint(history, 2, nil) // preserve last 2 turns
 
 	if len(result) < 1 {
 		t.Fatalf("checkpoint returned empty")
@@ -1574,7 +1614,7 @@ func TestCheckpoint_SafeCutoffNegative_ReturnsUnchanged(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
 	}
 	// preserveRecent=3 → cutoff=1 → TurnTool → walk to 0 → return -1
-	result := checkpoint(history, 3)
+	result := checkpoint(history, 3, nil)
 	if len(result) != len(history) {
 		t.Fatalf("expected unchanged history (len %d), got len %d", len(history), len(result))
 	}
@@ -1638,8 +1678,8 @@ func TestCheckpoint_OriginalTaskNotOverriddenByFollowup(t *testing.T) {
 	// After a previous checkpoint, history starts with the checkpoint message
 	// (which embeds "Original task: Fix the auth bug"). A follow-up user message
 	// "Also update the tests" appears in the preserved recent turns.
-	// The second checkpoint should extract "Fix the auth bug" from the first
-	// checkpoint, NOT replace it with the follow-up.
+	// The second checkpoint should preserve "Fix the auth bug" from the first
+	// checkpoint AND include the follow-up in user messages.
 	history := []Turn{
 		{Kind: TurnUserInput, Message: llm.User("[CONTEXT CHECKPOINT]\nOriginal task: Fix the auth bug\nFiles modified: auth.go\n[END CHECKPOINT]\n")},
 		{Kind: TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"auth.go"}`)},
@@ -1650,17 +1690,13 @@ func TestCheckpoint_OriginalTaskNotOverriddenByFollowup(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("Will do")},
 	}
 
-	// preserveRecent=2 → cutoff=4 → history[4] is TurnUserInput → safe, stays 4.
-	// Bug: the scan visits history[4] ("Also update the tests") which is in the
-	// preserved section and overrides the original task extracted from the checkpoint.
-	result := checkpoint(history, 2)
+	// preserveRecent=2 → cutoff=4 → history[:4] is compacted.
+	result := checkpoint(history, 2, nil)
 	text := result[0].Message.Text()
 
-	if strings.Contains(text, "Also update the tests") {
-		t.Fatalf("checkpoint should use original task from compacted region, not follow-up:\n%s", text)
-	}
+	// The original task from the prior checkpoint should be preserved as a user message.
 	if !strings.Contains(text, "Fix the auth bug") {
-		t.Fatalf("checkpoint missing original task:\n%s", text)
+		t.Fatalf("checkpoint should preserve user messages from prior checkpoint:\n%s", text)
 	}
 }
 
