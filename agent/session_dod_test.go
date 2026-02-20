@@ -1072,6 +1072,22 @@ func TestSession_LLMTransientErrors_RetryWithBackoff(t *testing.T) {
 	}
 }
 
+// communicateResultResponse returns a fake LLM response that calls communicate(result).
+func communicateResultResponse(msg string) llm.Response {
+	return llm.Response{
+		Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+					ID:        "comm_nudge",
+					Name:      "communicate",
+					Arguments: json.RawMessage(fmt.Sprintf(`{"action":"result","message":%q}`, msg)),
+				}},
+			},
+		},
+	}
+}
+
 func TestSession_Subagents_SpawnWaitClose_AndDepthLimit(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -1080,6 +1096,8 @@ func TestSession_Subagents_SpawnWaitClose_AndDepthLimit(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("subok")} },
+			// Auto-nudge: default subagents get nudged to call communicate(result).
+			func(req llm.Request) llm.Response { return communicateResultResponse("subok") },
 		},
 	}
 	c.Register(f)
@@ -1192,6 +1210,8 @@ func TestSession_WaitAgent_ReturnsSubAgentResult(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("result text")} },
+			// Auto-nudge: default subagents get nudged to call communicate(result).
+			func(req llm.Request) llm.Response { return communicateResultResponse("result text") },
 		},
 	}
 	c.Register(f)
@@ -3895,5 +3915,240 @@ func TestSession_Wait_ClampsShortTimeout(t *testing.T) {
 	// Verify the constant is at least 30s.
 	if minWaitTimeoutMS < 30_000 {
 		t.Errorf("minWaitTimeoutMS should be at least 30000, got %d", minWaitTimeoutMS)
+	}
+}
+
+func TestSession_BudgetAwareness_InjectsSteering(t *testing.T) {
+	// When the session approaches its MaxToolRoundsPerInput limit,
+	// it should inject steering messages warning about remaining rounds.
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	maxRounds := 10
+
+	// The model always returns a tool call so the round loop keeps going.
+	f := &fakeAdapter{
+		name: "openai",
+		steps: func() []func(req llm.Request) llm.Response {
+			var steps []func(req llm.Request) llm.Response
+			for i := 0; i < maxRounds+1; i++ {
+				id := fmt.Sprintf("tc_%d", i)
+				steps = append(steps, func(req llm.Request) llm.Response {
+					return llm.Response{
+						Message: llm.Message{
+							Role: llm.RoleAssistant,
+							Content: []llm.ContentPart{
+								{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+									ID:        id,
+									Name:      "shell",
+									Arguments: json.RawMessage(`{"command":"echo hi"}`),
+								}},
+							},
+						},
+					}
+				})
+			}
+			return steps
+		}(),
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxToolRoundsPerInput: maxRounds,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	var steeringTexts []string
+	go func() {
+		for ev := range sess.Events() {
+			if ev.Kind == EventSteeringInjected {
+				if d, ok := ev.Data.(SteeringInjectedData); ok {
+					mu.Lock()
+					steeringTexts = append(steeringTexts, d.Text)
+					mu.Unlock()
+				}
+			}
+		}
+	}()
+
+	sess.ProcessInput(context.Background(), "do some work")
+	sess.Close()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Should have at least one budget warning steering message.
+	var budgetWarnings []string
+	for _, txt := range steeringTexts {
+		if strings.Contains(txt, "rounds remaining") || strings.Contains(txt, "BUDGET") {
+			budgetWarnings = append(budgetWarnings, txt)
+		}
+	}
+	if len(budgetWarnings) == 0 {
+		t.Errorf("expected at least one budget awareness steering message, got none.\nAll steering: %v", steeringTexts)
+	}
+
+	// Should include a critical warning near the end.
+	var hasCritical bool
+	for _, txt := range budgetWarnings {
+		if strings.Contains(strings.ToUpper(txt), "CRITICAL") || strings.Contains(txt, "immediately") {
+			hasCritical = true
+		}
+	}
+	if !hasCritical {
+		t.Errorf("expected a critical/immediate budget warning near the end, got: %v", budgetWarnings)
+	}
+}
+
+func TestSession_WaitAgent_ErrorsOnReWait(t *testing.T) {
+	// After a subagent's results have been consumed via wait, subsequent
+	// wait calls should return an error instead of silently returning
+	// empty success (closed-channel polling bug).
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("subagent done")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	// Spawn a subagent.
+	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"test task"}`),
+	})
+	if spawnRes.IsError {
+		t.Fatal(spawnRes.Output)
+	}
+	var parsed map[string]any
+	json.Unmarshal([]byte(spawnRes.Output), &parsed)
+	agentID := fmt.Sprint(parsed["agent_id"])
+
+	// First wait should succeed.
+	wait1 := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c2",
+		Name:      "wait",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":120000}`, agentID)),
+	})
+	if wait1.IsError {
+		t.Fatalf("first wait should succeed, got error: %s", wait1.Output)
+	}
+
+	// Second wait should return an error.
+	wait2 := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c3",
+		Name:      "wait",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":120000}`, agentID)),
+	})
+	if !wait2.IsError {
+		t.Errorf("second wait should error (results already consumed), got success: %s", wait2.Output)
+	}
+	if !strings.Contains(wait2.Output, "already") {
+		t.Errorf("error should mention results already consumed, got: %s", wait2.Output)
+	}
+}
+
+func TestSession_Subagent_AutoNudgeOnMissingCommunicate(t *testing.T) {
+	// When a subagent stops without calling communicate(result), the runner
+	// should automatically send a nudge message and let it try again once.
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	var mu sync.Mutex
+	callCount := 0
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			// First call: subagent returns text without communicate(result).
+			func(req llm.Request) llm.Response {
+				mu.Lock()
+				callCount++
+				mu.Unlock()
+				return llm.Response{Message: llm.Assistant("I found some stuff")}
+			},
+			// Second call (after nudge): subagent calls communicate(result).
+			func(req llm.Request) llm.Response {
+				mu.Lock()
+				callCount++
+				mu.Unlock()
+				return llm.Response{
+					Message: llm.Message{
+						Role: llm.RoleAssistant,
+						Content: []llm.ContentPart{
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+								ID:        "comm1",
+								Name:      "communicate",
+								Arguments: json.RawMessage(`{"action":"result","message":"Here are my findings"}`),
+							}},
+						},
+					},
+				}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { for range sess.Events() {} }()
+	defer sess.Close()
+
+	// Spawn a subagent.
+	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"survey the project"}`),
+	})
+	if spawnRes.IsError {
+		t.Fatal(spawnRes.Output)
+	}
+	var parsed map[string]any
+	json.Unmarshal([]byte(spawnRes.Output), &parsed)
+	agentID := fmt.Sprint(parsed["agent_id"])
+
+	// Wait for the subagent.
+	waitRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c2",
+		Name:      "wait",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":120000}`, agentID)),
+	})
+	if waitRes.IsError {
+		t.Fatalf("wait error: %s", waitRes.Output)
+	}
+
+	var result SubAgentResult
+	json.Unmarshal([]byte(waitRes.Output), &result)
+
+	// The auto-nudge should have caused a second ProcessInput call,
+	// resulting in the communicate(result) output.
+	if !strings.Contains(result.Output, "Here are my findings") {
+		t.Errorf("expected nudged subagent to report findings via communicate(result), got: %q", result.Output)
+	}
+	mu.Lock()
+	cc := callCount
+	mu.Unlock()
+	if cc < 2 {
+		t.Errorf("expected at least 2 LLM calls (original + nudge), got %d", cc)
 	}
 }

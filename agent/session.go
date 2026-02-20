@@ -600,6 +600,14 @@ func (s *Session) FollowUp(msg string) {
 	s.followups = append(s.followups, msg)
 }
 
+// ResultDelivered reports whether communicate(result) was called during the
+// most recent ProcessInput invocation.
+func (s *Session) ResultDelivered() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.resultDelivered
+}
+
 func (s *Session) Close() {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
@@ -1004,6 +1012,8 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 	var toolSigs []string
 	var lastText string // accumulated assistant text for round-limit return
 	ctxWarned := false
+	budgetWarned := false  // track whether 80% warning was injected
+	budgetCritical := false // track whether critical warning was injected
 
 	for round := 0; s.cfg.MaxToolRoundsPerInput < 0 || round < s.cfg.MaxToolRoundsPerInput; round++ {
 		select {
@@ -1011,6 +1021,25 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			s.emit(EventError, ErrorData{Error: ctx.Err().Error()})
 			return "", ctx.Err()
 		default:
+		}
+
+		// Budget awareness: inject steering when approaching round limit.
+		if max := s.cfg.MaxToolRoundsPerInput; max > 0 {
+			remaining := max - round
+			pctUsed := float64(round) / float64(max)
+			if !budgetCritical && remaining <= 3 {
+				budgetCritical = true
+				msg := fmt.Sprintf("CRITICAL BUDGET WARNING: Only %d rounds remaining out of %d. "+
+					"You must call communicate(result) immediately with whatever you have. "+
+					"Do not start new work.", remaining, max)
+				s.Steer(msg)
+			} else if !budgetWarned && pctUsed >= 0.80 {
+				budgetWarned = true
+				msg := fmt.Sprintf("BUDGET WARNING: You have used %d of %d tool rounds (%d remaining). "+
+					"Focus on completing your current approach and call communicate(result) soon.",
+					round, max, remaining)
+				s.Steer(msg)
+			}
 		}
 
 		// Rebuild system prompt each iteration so tool side-effects (e.g. new AGENTS.md) are reflected.

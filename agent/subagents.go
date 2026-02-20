@@ -55,13 +55,15 @@ type subagent struct {
 	id   string
 	sess *Session
 
-	mu        sync.Mutex
-	running   bool
-	status    SubAgentStatus
-	turnsUsed int
-	done      chan struct{}
-	result    string
-	err       error
+	mu             sync.Mutex
+	running        bool
+	status         SubAgentStatus
+	turnsUsed      int
+	done           chan struct{}
+	result         string
+	err            error
+	resultConsumed bool // true after first successful wait returns results
+	nudgeEnabled   bool // true for default subagents that should be nudged to communicate
 }
 
 func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string, maxTurns int, agentType string) (any, error) {
@@ -150,10 +152,11 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	}
 
 	sub := &subagent{
-		id:     subSess.id,
-		sess:   subSess,
-		status: SubAgentRunning,
-		done:   make(chan struct{}),
+		id:           subSess.id,
+		sess:         subSess,
+		status:       SubAgentRunning,
+		done:         make(chan struct{}),
+		nudgeEnabled: agent == nil, // default subagents get nudged to communicate
 	}
 
 	s.mu.Lock()
@@ -190,6 +193,7 @@ func (s *Session) sendInput(ctx context.Context, agentID string, input string) (
 	sub.mu.Lock()
 	sub.done = make(chan struct{})
 	sub.running = true
+	sub.resultConsumed = false
 	sub.mu.Unlock()
 
 	go sub.run(ctx, input)
@@ -201,6 +205,17 @@ func (s *Session) waitAgent(ctx context.Context, agentID string, timeoutMS int) 
 	if sub == nil {
 		return "", fmt.Errorf("unknown agent_id: %s", agentID)
 	}
+
+	// Prevent closed-channel polling: if results were already consumed and
+	// the agent is not running, return an error instead of silently returning
+	// stale data. This prevents the model from burning rounds re-waiting.
+	sub.mu.Lock()
+	if sub.resultConsumed && !sub.running {
+		sub.mu.Unlock()
+		return "", fmt.Errorf("agent %s already completed and results already consumed; use send_input to resume or close_agent to clean up", agentID)
+	}
+	sub.mu.Unlock()
+
 	done := sub.done
 	if done == nil {
 		return "", fmt.Errorf("agent has no running task")
@@ -230,6 +245,7 @@ func (s *Session) waitAgent(ctx context.Context, agentID string, timeoutMS int) 
 	}
 	status := sub.status
 	subErr := sub.err
+	sub.resultConsumed = true
 	sub.mu.Unlock()
 
 	s.emit(EventSubagentEnd, SubagentEndData{
@@ -288,6 +304,13 @@ func (s *Session) getSub(agentID string) *subagent {
 	return s.subagents[agentID]
 }
 
+// communicateNudge is the message sent to a subagent that stops without
+// calling communicate(result). Sent at most once.
+const communicateNudge = `You stopped without calling communicate(result). ` +
+	`You MUST call communicate(result) with a message summarizing your complete findings ` +
+	`before stopping. The parent agent receives ONLY the communicate(result) message — ` +
+	`it cannot see anything else you did. Report your results now.`
+
 func (a *subagent) run(ctx context.Context, input string) {
 	a.mu.Lock()
 	a.running = true
@@ -295,6 +318,13 @@ func (a *subagent) run(ctx context.Context, input string) {
 	a.mu.Unlock()
 
 	res, err := a.sess.ProcessInput(ctx, input)
+
+	// Auto-nudge: if a default subagent stopped without calling communicate(result),
+	// send one reminder and let it try again. This addresses the empty-result
+	// failure mode where subagents do work but forget to report back.
+	if a.nudgeEnabled && err == nil && !a.sess.ResultDelivered() {
+		res, err = a.sess.ProcessInput(ctx, communicateNudge)
+	}
 
 	a.sess.mu.Lock()
 	turns := a.sess.turns

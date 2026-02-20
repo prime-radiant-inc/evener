@@ -782,6 +782,21 @@ func TestParity_SubagentSpawnAndWait(t *testing.T) {
 				func(req llm.Request) llm.Response {
 					return llm.Response{Message: llm.Assistant("subagent completed task")}
 				},
+				// Auto-nudge: default subagents get nudged to call communicate(result).
+				func(req llm.Request) llm.Response {
+					return llm.Response{
+						Message: llm.Message{
+							Role: llm.RoleAssistant,
+							Content: []llm.ContentPart{
+								{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+									ID:        "comm_nudge",
+									Name:      "communicate",
+									Arguments: json.RawMessage(`{"action":"result","message":"subagent completed task"}`),
+								}},
+							},
+						},
+					}
+				},
 			}
 			sess, _ := newParitySession(t, pc, steps)
 			defer sess.Close()
@@ -840,6 +855,21 @@ func TestParity_CloseAgentWaitsForCompletion(t *testing.T) {
 					<-release
 					return llm.Response{Message: llm.Assistant("subagent done")}
 				},
+				// Auto-nudge response.
+				func(req llm.Request) llm.Response {
+					return llm.Response{
+						Message: llm.Message{
+							Role: llm.RoleAssistant,
+							Content: []llm.ContentPart{
+								{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+									ID:        "comm_nudge",
+									Name:      "communicate",
+									Arguments: json.RawMessage(`{"action":"result","message":"subagent done"}`),
+								}},
+							},
+						},
+					}
+				},
 			}
 			sess, _ := newParitySession(t, pc, steps)
 			defer sess.Close()
@@ -897,6 +927,10 @@ func TestParity_SubagentNoMCPInheritance(t *testing.T) {
 	steps := []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
 			return llm.Response{Message: llm.Assistant("subagent done")}
+		},
+		// Auto-nudge response.
+		func(req llm.Request) llm.Response {
+			return communicateResultResponse("subagent done")
 		},
 	}
 	sess, _ := newParitySession(t, pc, steps)
