@@ -3,6 +3,7 @@ package google
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2630,5 +2631,204 @@ func TestAdapter_Complete_NoMaxTokens_OmitsMaxOutputTokens(t *testing.T) {
 	genCfg, _ := sentBody["generationConfig"].(map[string]any)
 	if _, hasMaxOutput := genCfg["maxOutputTokens"]; hasMaxOutput {
 		t.Fatalf("maxOutputTokens should not be sent when MaxTokens is nil, but got %v", genCfg["maxOutputTokens"])
+	}
+}
+
+func TestComplete_ToolResultWithImageData(t *testing.T) {
+	imgBytes := []byte{0x89, 0x50, 0x4E, 0x47} // fake PNG header bytes
+	wantBase64 := base64.StdEncoding.EncodeToString(imgBytes)
+
+	var sentBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &sentBody)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"candidates": []any{map[string]any{
+				"content": map[string]any{
+					"role":  "model",
+					"parts": []any{map[string]any{"text": "I see the image"}},
+				},
+			}},
+			"usageMetadata": map[string]any{
+				"promptTokenCount":     10,
+				"candidatesTokenCount": 5,
+				"totalTokenCount":      15,
+			},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	toolResultMsg := llm.ToolResultNamed("call_1", "read_file", "file contents", false)
+	toolResultMsg.Content[0].ToolResult.ImageData = imgBytes
+	toolResultMsg.Content[0].ToolResult.ImageMediaType = "image/png"
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model: "gemini-test",
+		Messages: []llm.Message{
+			llm.User("read the image"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+				Kind:     llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{ID: "call_1", Name: "read_file", Arguments: json.RawMessage(`{"path":"test.png"}`)},
+			}}},
+			toolResultMsg,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	// Find the tool result content entry (last content in the array).
+	contents, ok := sentBody["contents"].([]any)
+	if !ok || len(contents) == 0 {
+		t.Fatalf("expected contents in sent body, got %v", sentBody["contents"])
+	}
+	lastContent, _ := contents[len(contents)-1].(map[string]any)
+	parts, _ := lastContent["parts"].([]any)
+
+	// Should have exactly 2 parts: functionResponse + inlineData.
+	if len(parts) != 2 {
+		t.Fatalf("expected 2 parts (functionResponse + inlineData), got %d: %v", len(parts), parts)
+	}
+
+	// First part: functionResponse.
+	part0, _ := parts[0].(map[string]any)
+	if _, ok := part0["functionResponse"]; !ok {
+		t.Fatalf("first part should be functionResponse, got %v", part0)
+	}
+
+	// Second part: inlineData.
+	part1, _ := parts[1].(map[string]any)
+	inlineData, ok := part1["inlineData"].(map[string]any)
+	if !ok {
+		t.Fatalf("second part should have inlineData, got %v", part1)
+	}
+	if gotMime, _ := inlineData["mimeType"].(string); gotMime != "image/png" {
+		t.Errorf("inlineData.mimeType = %q, want %q", gotMime, "image/png")
+	}
+	if gotData, _ := inlineData["data"].(string); gotData != wantBase64 {
+		t.Errorf("inlineData.data = %q, want %q", gotData, wantBase64)
+	}
+}
+
+func TestComplete_ToolResultWithImageData_DefaultMediaType(t *testing.T) {
+	imgBytes := []byte{0xFF, 0xD8, 0xFF} // fake JPEG header bytes
+
+	var sentBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &sentBody)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"candidates": []any{map[string]any{
+				"content": map[string]any{
+					"role":  "model",
+					"parts": []any{map[string]any{"text": "ok"}},
+				},
+			}},
+			"usageMetadata": map[string]any{
+				"promptTokenCount":     10,
+				"candidatesTokenCount": 5,
+				"totalTokenCount":      15,
+			},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Image data with NO media type set — should default to "image/png".
+	toolResultMsg := llm.ToolResultNamed("call_1", "read_file", "file contents", false)
+	toolResultMsg.Content[0].ToolResult.ImageData = imgBytes
+	// ImageMediaType deliberately left empty.
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model: "gemini-test",
+		Messages: []llm.Message{
+			llm.User("read the image"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+				Kind:     llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{ID: "call_1", Name: "read_file", Arguments: json.RawMessage(`{}`)},
+			}}},
+			toolResultMsg,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	contents, _ := sentBody["contents"].([]any)
+	lastContent, _ := contents[len(contents)-1].(map[string]any)
+	parts, _ := lastContent["parts"].([]any)
+	if len(parts) != 2 {
+		t.Fatalf("expected 2 parts, got %d", len(parts))
+	}
+
+	part1, _ := parts[1].(map[string]any)
+	inlineData, _ := part1["inlineData"].(map[string]any)
+	if gotMime, _ := inlineData["mimeType"].(string); gotMime != "image/png" {
+		t.Errorf("default mimeType = %q, want %q", gotMime, "image/png")
+	}
+}
+
+func TestComplete_ToolResultWithoutImageData_NoInlinePart(t *testing.T) {
+	var sentBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &sentBody)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"candidates": []any{map[string]any{
+				"content": map[string]any{
+					"role":  "model",
+					"parts": []any{map[string]any{"text": "ok"}},
+				},
+			}},
+			"usageMetadata": map[string]any{
+				"promptTokenCount":     10,
+				"candidatesTokenCount": 5,
+				"totalTokenCount":      15,
+			},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Normal tool result with NO image data — should have only 1 part.
+	_, err := a.Complete(ctx, llm.Request{
+		Model: "gemini-test",
+		Messages: []llm.Message{
+			llm.User("call tool"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+				Kind:     llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{ID: "call_1", Name: "some_tool", Arguments: json.RawMessage(`{}`)},
+			}}},
+			llm.ToolResultNamed("call_1", "some_tool", "result text", false),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	contents, _ := sentBody["contents"].([]any)
+	lastContent, _ := contents[len(contents)-1].(map[string]any)
+	parts, _ := lastContent["parts"].([]any)
+
+	// Should be exactly 1 part: just functionResponse.
+	if len(parts) != 1 {
+		t.Fatalf("expected 1 part (functionResponse only), got %d: %v", len(parts), parts)
+	}
+	part0, _ := parts[0].(map[string]any)
+	if _, ok := part0["functionResponse"]; !ok {
+		t.Fatalf("only part should be functionResponse, got %v", part0)
 	}
 }

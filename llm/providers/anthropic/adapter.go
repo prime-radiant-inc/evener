@@ -991,10 +991,28 @@ func toAnthropicMessages(msgs []llm.Message) (system string, messages []map[stri
 					b, _ := json.Marshal(v)
 					outStr = string(b)
 				}
+				var resultContent any
+				if len(p.ToolResult.ImageData) > 0 {
+					mediaType := p.ToolResult.ImageMediaType
+					if mediaType == "" {
+						mediaType = "image/png"
+					}
+					resultContent = []map[string]any{
+						{"type": "text", "text": outStr},
+						{"type": "image", "source": map[string]any{
+							"type":       "base64",
+							"media_type": mediaType,
+							"data":       base64.StdEncoding.EncodeToString(p.ToolResult.ImageData),
+						}},
+					}
+				} else {
+					resultContent = outStr
+				}
+
 				blocks = append(blocks, map[string]any{
 					"type":        "tool_result",
 					"tool_use_id": p.ToolResult.ToolCallID,
-					"content":     outStr,
+					"content":     resultContent,
 					"is_error":    p.ToolResult.IsError,
 				})
 			}

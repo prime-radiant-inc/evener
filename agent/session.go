@@ -1296,10 +1296,12 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			parts = append(parts, llm.ContentPart{
 				Kind: llm.ContentToolResult,
 				ToolResult: &llm.ToolResultData{
-					ToolCallID: r.CallID,
-					Name:       r.ToolName,
-					Content:    r.Output,
-					IsError:    r.IsError,
+					ToolCallID:     r.CallID,
+					Name:           r.ToolName,
+					Content:        r.Output,
+					IsError:        r.IsError,
+					ImageData:      r.ImageData,
+					ImageMediaType: r.ImageMediaType,
 				},
 			})
 		}
@@ -1674,6 +1676,11 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			result, err := env.ReadFile(path, offset, limit)
 			if err == nil {
 				s.trackReadFile(path)
+				// If the file is an image, return an ImageResult so the
+				// model receives the image as a proper content part.
+				if img := parseImageResult(path, result); img != nil {
+					return *img, nil
+				}
 			}
 			return result, err
 		},

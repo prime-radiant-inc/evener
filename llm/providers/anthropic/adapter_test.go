@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2939,6 +2940,163 @@ func TestAdapter_Integration_PromptCaching(t *testing.T) {
 	if resp2.Usage.CacheReadTokens == nil || *resp2.Usage.CacheReadTokens == 0 {
 		t.Fatalf("turn 2: expected cache_read_input_tokens > 0, got %d",
 			derefOr(resp2.Usage.CacheReadTokens, 0))
+	}
+}
+
+func TestAdapter_Complete_ToolResultWithImageData(t *testing.T) {
+	var sentBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		_ = json.Unmarshal(b, &sentBody)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "msg_1",
+  "model": "claude-test",
+  "content": [{"type":"text","text":"I see an image"}],
+  "stop_reason": "end_turn",
+  "usage": {"input_tokens": 10, "output_tokens": 5}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	imgBytes := []byte{0x89, 0x50, 0x4e, 0x47} // PNG magic bytes
+
+	// Build a tool result message with image data.
+	toolResultMsg := llm.ToolResult("call_img", "Image file: photo.png (PNG, 4 bytes)", false)
+	toolResultMsg.Content[0].ToolResult.ImageData = imgBytes
+	toolResultMsg.Content[0].ToolResult.ImageMediaType = "image/png"
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model: "claude-test",
+		Messages: []llm.Message{
+			llm.User("Read this image"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+				Kind:     llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{ID: "call_img", Name: "read_file", Arguments: json.RawMessage(`{"path":"photo.png"}`)},
+			}}},
+			toolResultMsg,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	// Find the tool_result block in the sent request body.
+	msgs, _ := sentBody["messages"].([]any)
+	if len(msgs) == 0 {
+		t.Fatal("expected messages in sent body")
+	}
+	lastMsg, _ := msgs[len(msgs)-1].(map[string]any)
+	content, _ := lastMsg["content"].([]any)
+	if len(content) == 0 {
+		t.Fatal("expected content blocks in last message")
+	}
+	block, _ := content[0].(map[string]any)
+	if block["type"] != "tool_result" {
+		t.Fatalf("block type: got %v want tool_result", block["type"])
+	}
+	if block["tool_use_id"] != "call_img" {
+		t.Fatalf("tool_use_id: got %v want call_img", block["tool_use_id"])
+	}
+
+	// Content must be an array (not a string) when image data is present.
+	contentArr, ok := block["content"].([]any)
+	if !ok {
+		t.Fatalf("tool_result content should be an array when image data is present; got %T: %v", block["content"], block["content"])
+	}
+	if len(contentArr) != 2 {
+		t.Fatalf("tool_result content array: got %d items want 2", len(contentArr))
+	}
+
+	// First element: text block.
+	textBlock, _ := contentArr[0].(map[string]any)
+	if textBlock["type"] != "text" {
+		t.Fatalf("content[0] type: got %v want text", textBlock["type"])
+	}
+	if textBlock["text"] != "Image file: photo.png (PNG, 4 bytes)" {
+		t.Fatalf("content[0] text: got %v", textBlock["text"])
+	}
+
+	// Second element: image block.
+	imgBlock, _ := contentArr[1].(map[string]any)
+	if imgBlock["type"] != "image" {
+		t.Fatalf("content[1] type: got %v want image", imgBlock["type"])
+	}
+	src, _ := imgBlock["source"].(map[string]any)
+	if src["type"] != "base64" {
+		t.Fatalf("image source type: got %v want base64", src["type"])
+	}
+	if src["media_type"] != "image/png" {
+		t.Fatalf("image media_type: got %v want image/png", src["media_type"])
+	}
+	wantB64 := base64.StdEncoding.EncodeToString(imgBytes)
+	if src["data"] != wantB64 {
+		t.Fatalf("image data: got %v want %v", src["data"], wantB64)
+	}
+}
+
+func TestAdapter_Complete_ToolResultWithImageData_DefaultMediaType(t *testing.T) {
+	var sentBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		_ = json.Unmarshal(b, &sentBody)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "msg_1",
+  "model": "claude-test",
+  "content": [{"type":"text","text":"ok"}],
+  "stop_reason": "end_turn",
+  "usage": {"input_tokens": 10, "output_tokens": 5}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	imgBytes := []byte{0x89, 0x50, 0x4e, 0x47}
+
+	// Build a tool result message with image data but NO media type set.
+	toolResultMsg := llm.ToolResult("call_img2", "screenshot.png", false)
+	toolResultMsg.Content[0].ToolResult.ImageData = imgBytes
+	// ImageMediaType left empty — should default to "image/png".
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := a.Complete(ctx, llm.Request{
+		Model: "claude-test",
+		Messages: []llm.Message{
+			llm.User("Read this"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+				Kind:     llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{ID: "call_img2", Name: "read_file", Arguments: json.RawMessage(`{}`)},
+			}}},
+			toolResultMsg,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	msgs, _ := sentBody["messages"].([]any)
+	lastMsg, _ := msgs[len(msgs)-1].(map[string]any)
+	content, _ := lastMsg["content"].([]any)
+	block, _ := content[0].(map[string]any)
+	contentArr, ok := block["content"].([]any)
+	if !ok {
+		t.Fatalf("tool_result content should be an array; got %T", block["content"])
+	}
+	imgBlock, _ := contentArr[1].(map[string]any)
+	src, _ := imgBlock["source"].(map[string]any)
+	if src["media_type"] != "image/png" {
+		t.Fatalf("default media_type: got %v want image/png", src["media_type"])
 	}
 }
 

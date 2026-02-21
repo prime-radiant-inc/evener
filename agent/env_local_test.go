@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -128,6 +131,34 @@ func TestReadFile_ImageReturnsBase64(t *testing.T) {
 	}
 	if !strings.Contains(result, "image") {
 		t.Fatalf("expected 'image' indicator in output, got: %q", result)
+	}
+}
+
+func TestParseImageResult_ExtractsImageData(t *testing.T) {
+	// Simulate what ReadFile returns for an image.
+	pngHeader := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x01}
+	encoded := base64.StdEncoding.EncodeToString(pngHeader)
+	readOutput := fmt.Sprintf("[image: png, %d bytes, base64 data follows]\n%s", len(pngHeader), encoded)
+
+	got := parseImageResult("photo.png", readOutput)
+	if got == nil {
+		t.Fatal("expected non-nil ImageResult")
+	}
+	if !bytes.Equal(got.Data, pngHeader) {
+		t.Fatalf("Data mismatch: got %v, want %v", got.Data, pngHeader)
+	}
+	if got.MediaType != "image/png" {
+		t.Fatalf("MediaType = %q, want image/png", got.MediaType)
+	}
+	if !strings.Contains(got.Text, "[image: png") {
+		t.Fatalf("Text should contain header, got: %q", got.Text)
+	}
+}
+
+func TestParseImageResult_ReturnsNilForNonImage(t *testing.T) {
+	got := parseImageResult("code.go", "1 | package main\n2 | func main() {}\n")
+	if got != nil {
+		t.Fatal("expected nil for non-image content")
 	}
 }
 

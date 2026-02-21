@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -39,6 +40,48 @@ type ToolExecResult struct {
 	FullOutput string
 
 	IsError bool
+
+	// ImageData and ImageMediaType carry image bytes when a tool returns
+	// an ImageResult (e.g. read_file on a PNG). Providers include these
+	// alongside the text output so the model can "see" the image.
+	ImageData      []byte
+	ImageMediaType string
+}
+
+// ImageResult is returned by tool executors (e.g. read_file) when a file is
+// an image. Text is the human-readable description sent as the tool output;
+// Data and MediaType carry the raw image for multimodal models.
+type ImageResult struct {
+	Text      string
+	Data      []byte
+	MediaType string
+}
+
+// parseImageResult checks if ReadFile output is an image response (the [image: ...]
+// format produced by LocalExecutionEnvironment) and extracts the raw bytes.
+// Returns nil if the output is not an image.
+func parseImageResult(path, readFileOutput string) *ImageResult {
+	if !strings.HasPrefix(readFileOutput, "[image:") {
+		return nil
+	}
+	idx := strings.Index(readFileOutput, "\n")
+	if idx < 0 {
+		return nil
+	}
+	b64 := strings.TrimSpace(readFileOutput[idx+1:])
+	data, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return nil
+	}
+	mt := llm.InferMimeTypeFromPath(path)
+	if mt == "" {
+		mt = "image/png"
+	}
+	return &ImageResult{
+		Text:      readFileOutput[:idx],
+		Data:      data,
+		MediaType: mt,
+	}
 }
 
 type RegisteredTool struct {
@@ -230,6 +273,14 @@ func (r *ToolRegistry) ExecuteCall(ctx context.Context, env ExecutionEnvironment
 			full = fmt.Sprintf("%v", err)
 		}
 		return truncateResult(name, callID, full, true, t.Limit)
+	}
+
+	// ImageResult carries both text and raw image bytes.
+	if img, ok := v.(ImageResult); ok {
+		res := truncateResult(name, callID, img.Text, false, t.Limit)
+		res.ImageData = img.Data
+		res.ImageMediaType = img.MediaType
+		return res
 	}
 
 	full := toolValueToString(v)

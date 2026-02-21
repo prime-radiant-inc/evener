@@ -738,6 +738,18 @@ func toGeminiContents(msgs []llm.Message) (system string, contents []map[string]
 						"response": respObj,
 					},
 				})
+				if len(p.ToolResult.ImageData) > 0 {
+					mt := p.ToolResult.ImageMediaType
+					if mt == "" {
+						mt = "image/png"
+					}
+					parts = append(parts, map[string]any{
+						"inlineData": map[string]any{
+							"mimeType": mt,
+							"data":     base64.StdEncoding.EncodeToString(p.ToolResult.ImageData),
+						},
+					})
+				}
 			}
 			appendContent("user", parts)
 		default:

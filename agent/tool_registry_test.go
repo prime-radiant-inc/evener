@@ -456,6 +456,43 @@ func TestToolRegistry_Register_WarnsOnEmptyDescription(t *testing.T) {
 	}
 }
 
+func TestExecuteCall_ImageResult_PopulatesImageFields(t *testing.T) {
+	reg := NewToolRegistry()
+	imgData := []byte{0x89, 0x50, 0x4E, 0x47} // PNG magic bytes
+	if err := reg.Register(RegisteredTool{
+		Tool: llm.Tool{Definition: llm.ToolDefinition{
+			Name:       "read_file",
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{"file_path": map[string]any{"type": "string"}}, "required": []string{"file_path"}},
+		}},
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			return ImageResult{
+				Text:      "Image file: photo.png (PNG, 4 bytes)",
+				Data:      imgData,
+				MediaType: "image/png",
+			}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res := reg.ExecuteCall(context.Background(), NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
+		ID:        "c1",
+		Name:      "read_file",
+		Arguments: json.RawMessage(`{"file_path": "photo.png"}`),
+	})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "Image file: photo.png") {
+		t.Fatalf("expected text in output, got: %q", res.Output)
+	}
+	if !bytes.Equal(res.ImageData, imgData) {
+		t.Fatalf("ImageData mismatch: got %v, want %v", res.ImageData, imgData)
+	}
+	if res.ImageMediaType != "image/png" {
+		t.Fatalf("ImageMediaType = %q, want image/png", res.ImageMediaType)
+	}
+}
+
 func TestDefaultToolLimit_MatchesSpecTable(t *testing.T) {
 	type want struct {
 		tool  string

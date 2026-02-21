@@ -418,7 +418,7 @@ func envInfoFromEnv(env ExecutionEnvironment) EnvironmentInfo {
 func defReadFile() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "read_file",
-		Description: "Read a file from the filesystem. Returns line-numbered content.",
+		Description: "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,

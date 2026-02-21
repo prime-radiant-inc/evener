@@ -39,6 +39,16 @@ func InferMimeTypeFromPath(path string) string {
 	return strings.TrimSpace(mt)
 }
 
+// IsImageFile returns true if the file path has a raster image extension.
+func IsImageFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp":
+		return true
+	}
+	return false
+}
+
 func DataURI(mimeType string, data []byte) string {
 	mimeType = strings.TrimSpace(mimeType)
 	if mimeType == "" {

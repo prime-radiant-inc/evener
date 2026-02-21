@@ -1645,6 +1645,138 @@ func TestComplete_ToolResultIsError_OmittedWhenFalse(t *testing.T) {
 	}
 }
 
+func TestToResponsesInput_ToolResultWithImage(t *testing.T) {
+	imgBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a} // PNG header
+	msgs := []llm.Message{
+		llm.User("read this file"),
+		{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+			Kind:     llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{ID: "call_img", Name: "read_file", Arguments: json.RawMessage(`{"path":"img.png"}`)},
+		}}},
+		{Role: llm.RoleTool, ToolCallID: "call_img", Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID:     "call_img",
+				Content:        "image content below",
+				ImageData:      imgBytes,
+				ImageMediaType: "image/png",
+			},
+		}}},
+	}
+
+	_, items, err := toResponsesInput(msgs)
+	if err != nil {
+		t.Fatalf("toResponsesInput: %v", err)
+	}
+
+	// Find the function_call_output and input_image items.
+	var foundOutput, foundImage bool
+	var imageURL string
+	for _, itemAny := range items {
+		item, ok := itemAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch item["type"] {
+		case "function_call_output":
+			if item["call_id"] == "call_img" {
+				foundOutput = true
+			}
+		case "input_image":
+			foundImage = true
+			imageURL, _ = item["image_url"].(string)
+		}
+	}
+
+	if !foundOutput {
+		t.Fatalf("expected function_call_output item with call_id=call_img; items=%v", items)
+	}
+	if !foundImage {
+		t.Fatalf("expected input_image item after function_call_output; items=%v", items)
+	}
+
+	// Verify the data URI format.
+	wantPrefix := "data:image/png;base64,"
+	if !strings.HasPrefix(imageURL, wantPrefix) {
+		t.Fatalf("image_url should start with %q, got %q", wantPrefix, imageURL)
+	}
+
+	// Verify the data URI matches what DataURI would produce.
+	wantURI := llm.DataURI("image/png", imgBytes)
+	if imageURL != wantURI {
+		t.Fatalf("image_url = %q, want %q", imageURL, wantURI)
+	}
+}
+
+func TestToResponsesInput_ToolResultWithImage_DefaultMediaType(t *testing.T) {
+	imgBytes := []byte{0x89, 0x50, 0x4e, 0x47}
+	msgs := []llm.Message{
+		llm.User("read this"),
+		{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+			Kind:     llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{ID: "call_2", Name: "read_file", Arguments: json.RawMessage(`{}`)},
+		}}},
+		{Role: llm.RoleTool, ToolCallID: "call_2", Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_2",
+				Content:    "image",
+				ImageData:  imgBytes,
+				// ImageMediaType intentionally omitted — should default to image/png.
+			},
+		}}},
+	}
+
+	_, items, err := toResponsesInput(msgs)
+	if err != nil {
+		t.Fatalf("toResponsesInput: %v", err)
+	}
+
+	var imageURL string
+	for _, itemAny := range items {
+		item, ok := itemAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		if item["type"] == "input_image" {
+			imageURL, _ = item["image_url"].(string)
+		}
+	}
+	if imageURL == "" {
+		t.Fatalf("expected input_image item; items=%v", items)
+	}
+	wantPrefix := "data:image/png;base64,"
+	if !strings.HasPrefix(imageURL, wantPrefix) {
+		t.Fatalf("image_url should default to image/png; got %q", imageURL)
+	}
+}
+
+func TestToResponsesInput_ToolResultWithoutImage_NoInputImage(t *testing.T) {
+	msgs := []llm.Message{
+		llm.User("run this"),
+		{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+			Kind:     llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{ID: "call_3", Name: "shell", Arguments: json.RawMessage(`{}`)},
+		}}},
+		llm.ToolResult("call_3", "done", false),
+	}
+
+	_, items, err := toResponsesInput(msgs)
+	if err != nil {
+		t.Fatalf("toResponsesInput: %v", err)
+	}
+
+	for _, itemAny := range items {
+		item, ok := itemAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		if item["type"] == "input_image" {
+			t.Fatalf("should not emit input_image for tool result without image data; items=%v", items)
+		}
+	}
+}
+
 func TestComplete_UsageRaw_ContainsProviderData(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

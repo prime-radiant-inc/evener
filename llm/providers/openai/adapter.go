@@ -696,6 +696,17 @@ func toResponsesInput(msgs []llm.Message) (instructions string, items []any, _ e
 					"output":  outStr,
 				}
 				items = append(items, item)
+
+				if len(p.ToolResult.ImageData) > 0 {
+					mt := p.ToolResult.ImageMediaType
+					if mt == "" {
+						mt = "image/png"
+					}
+					items = append(items, map[string]any{
+						"type":      "input_image",
+						"image_url": llm.DataURI(mt, p.ToolResult.ImageData),
+					})
+				}
 			}
 		default:
 			// ignore unknown roles
