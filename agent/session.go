@@ -1012,10 +1012,11 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 	var toolSigs []string
 	var lastText string // accumulated assistant text for round-limit return
 	ctxWarned := false
-	synthesisNudged := false // track whether 40% synthesis nudge was injected
-	outputNudged := false    // track whether 60% output check was injected
-	budgetWarned := false    // track whether 80% warning was injected
-	budgetCritical := false  // track whether critical warning was injected
+	contentFilterRetried := false // track whether we've already tried recovering from a content filter error
+	synthesisNudged := false      // track whether 40% synthesis nudge was injected
+	outputNudged := false         // track whether 60% output check was injected
+	budgetWarned := false         // track whether 80% warning was injected
+	budgetCritical := false       // track whether critical warning was injected
 
 	for round := 0; s.cfg.MaxToolRoundsPerInput < 0 || round < s.cfg.MaxToolRoundsPerInput; round++ {
 		select {
@@ -1185,6 +1186,19 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		})
 		if err != nil {
 			s.emit(EventError, ErrorData{Error: err.Error()})
+
+			// Content filter recovery: compaction often removes the offending
+			// content, allowing the next request to succeed. Try once.
+			var cfe *llm.ContentFilterError
+			if errors.As(err, &cfe) && !contentFilterRetried && s.contextMgr != nil {
+				contentFilterRetried = true
+				s.emit(EventWarning, WarningData{Message: "Content filter hit — compacting context and retrying"})
+				s.mu.Lock()
+				s.contextMgr.ForceCompact(ctx, &s.history, s.emit)
+				s.mu.Unlock()
+				continue
+			}
+
 			// Spec: context overflow should emit a warning (no automatic compaction).
 			var cle *llm.ContextLengthError
 			if errors.As(err, &cle) {

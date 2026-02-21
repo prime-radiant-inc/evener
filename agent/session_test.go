@@ -56,6 +56,48 @@ func (a *fakeAdapter) Requests() []llm.Request {
 	return append([]llm.Request{}, a.requests...)
 }
 
+// fakeErrAdapter is like fakeAdapter but supports steps that return errors.
+type fakeErrAdapter struct {
+	name string
+
+	mu       sync.Mutex
+	requests []llm.Request
+	steps    []func(req llm.Request) (llm.Response, error)
+	i        int
+}
+
+func (a *fakeErrAdapter) Name() string { return a.name }
+
+func (a *fakeErrAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	_ = ctx
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.requests = append(a.requests, req)
+	if a.i >= len(a.steps) {
+		return llm.Response{Provider: a.name, Model: req.Model, Message: llm.Assistant("done")}, nil
+	}
+	resp, err := a.steps[a.i](req)
+	a.i++
+	if err != nil {
+		return resp, err
+	}
+	resp.Provider = a.name
+	if resp.Model == "" {
+		resp.Model = req.Model
+	}
+	return resp, nil
+}
+
+func (a *fakeErrAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	return nil, errors.New("stream not implemented in fakeErrAdapter")
+}
+
+func (a *fakeErrAdapter) Requests() []llm.Request {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]llm.Request{}, a.requests...)
+}
+
 func TestSession_NaturalCompletion_LoadsOnlyProfileDocs(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("AGENTS\n"), 0o644)
@@ -2171,4 +2213,157 @@ func TestSession_SteeringTiers_EachFiresOnce(t *testing.T) {
 	if criticalCount != 1 {
 		t.Errorf("critical warning fired %d times, want 1", criticalCount)
 	}
+}
+
+func TestSession_ContentFilterRecovery_CompactsAndRetries(t *testing.T) {
+	dir := t.TempDir()
+
+	// Build a content filter error (HTTP 400 with invalid_prompt code).
+	contentFilterErr := llm.ErrorFromHTTPStatus(
+		"openai", 400, "content filter triggered",
+		map[string]any{"error": map[string]any{"code": "invalid_prompt"}},
+		nil,
+	)
+
+	callCount := 0
+	f := &fakeErrAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) (llm.Response, error){
+			// First call succeeds with a tool call to build up history.
+			func(req llm.Request) (llm.Response, error) {
+				callCount++
+				return llm.Response{Message: llm.Message{
+					Role: "assistant",
+					Content: []llm.ContentPart{
+						{Kind: llm.ContentText, Text: "Let me read the file."},
+						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+							ID: "call_1", Name: "exec_command",
+							Arguments: json.RawMessage(`{"command":"echo hello","workdir":"/tmp"}`),
+						}},
+					},
+				}}, nil
+			},
+			// Second call: content filter error.
+			func(req llm.Request) (llm.Response, error) {
+				callCount++
+				return llm.Response{}, contentFilterErr
+			},
+			// Third call (after compaction): succeeds.
+			func(req llm.Request) (llm.Response, error) {
+				callCount++
+				return llm.Response{Message: llm.Assistant("recovered after compaction")}, nil
+			},
+		},
+	}
+
+	c := llm.NewClient()
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxToolRoundsPerInput: 20,
+		LLMRetryPolicy:       &llm.RetryPolicy{MaxRetries: 0}, // no transport retries
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	// Collect events in background.
+	var compactionCount int
+	evDone := make(chan struct{})
+	go func() {
+		for ev := range sess.Events() {
+			if ev.Kind == EventContextCompaction {
+				compactionCount++
+			}
+		}
+		close(evDone)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	out, err := sess.ProcessInput(ctx, "trigger content filter")
+	if err != nil {
+		t.Fatalf("ProcessInput should have recovered, got error: %v", err)
+	}
+	sess.Close()
+	<-evDone
+
+	if !strings.Contains(out, "recovered after compaction") {
+		t.Errorf("expected recovery text, got: %q", out)
+	}
+	if callCount != 3 {
+		t.Errorf("expected 3 LLM calls (initial + filter + recovery), got %d", callCount)
+	}
+	if compactionCount == 0 {
+		t.Error("expected at least one compaction event from content filter recovery")
+	}
+}
+
+func TestSession_ContentFilterRecovery_FailsOnSecondFilterHit(t *testing.T) {
+	dir := t.TempDir()
+
+	contentFilterErr := llm.ErrorFromHTTPStatus(
+		"openai", 400, "content filter triggered",
+		map[string]any{"error": map[string]any{"code": "invalid_prompt"}},
+		nil,
+	)
+
+	f := &fakeErrAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) (llm.Response, error){
+			// First call succeeds with a tool call.
+			func(req llm.Request) (llm.Response, error) {
+				return llm.Response{Message: llm.Message{
+					Role: "assistant",
+					Content: []llm.ContentPart{
+						{Kind: llm.ContentText, Text: "working..."},
+						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+							ID: "call_1", Name: "exec_command",
+							Arguments: json.RawMessage(`{"command":"echo hello","workdir":"/tmp"}`),
+						}},
+					},
+				}}, nil
+			},
+			// Second call: content filter error.
+			func(req llm.Request) (llm.Response, error) {
+				return llm.Response{}, contentFilterErr
+			},
+			// Third call (after compaction): content filter AGAIN.
+			func(req llm.Request) (llm.Response, error) {
+				return llm.Response{}, contentFilterErr
+			},
+		},
+	}
+
+	c := llm.NewClient()
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxToolRoundsPerInput: 20,
+		LLMRetryPolicy:       &llm.RetryPolicy{MaxRetries: 0},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() { for range sess.Events() {} }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err = sess.ProcessInput(ctx, "trigger content filter twice")
+	if err == nil {
+		t.Fatal("expected error on second content filter hit, got nil")
+	}
+
+	var cfe *llm.ContentFilterError
+	if !errors.As(err, &cfe) {
+		t.Errorf("expected ContentFilterError, got: %T: %v", err, err)
+	}
+	// All 3 steps should have been called: success, filter, recovery-filter.
+	reqs := f.Requests()
+	if len(reqs) != 3 {
+		t.Errorf("expected 3 LLM calls (success + filter + recovery-filter), got %d", len(reqs))
+	}
+	sess.Close()
 }
