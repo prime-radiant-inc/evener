@@ -1960,3 +1960,215 @@ func TestSession_SetModel_UpdatesContextManager(t *testing.T) {
 		t.Fatalf("pressure after SetModel to 1M = %.2f, expected < 0.20 (stale profile?)", p2)
 	}
 }
+
+// --- Graduated steering warnings ---
+
+func TestSession_SteeringTiers_SynthesisNudgeAt40Pct(t *testing.T) {
+	// With MaxToolRoundsPerInput=10, the 40% threshold fires at round 4.
+	// We need 5 tool-call rounds (rounds 0-4) before we can see the steering.
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	// Build adapter that returns tool calls for rounds 0-4, then "done" on round 5.
+	// The 40% steering should be injected after round 4 (round/max = 4/10 = 0.40).
+	steps := make([]func(req llm.Request) llm.Response, 6)
+	for i := 0; i < 5; i++ {
+		steps[i] = func(req llm.Request) llm.Response {
+			return llm.Response{
+				Message: llm.Message{
+					Role: llm.RoleAssistant,
+					Content: []llm.ContentPart{
+						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+							ID: fmt.Sprintf("c%d", i), Name: "glob",
+							Arguments: json.RawMessage(`{"pattern":"*.go","path":"."}`),
+						}},
+					},
+				},
+			}
+		}
+	}
+	steps[5] = func(req llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("done")}
+	}
+
+	f := &fakeAdapter{name: "openai", steps: steps}
+	c.Register(f)
+
+	cfg := SessionConfig{MaxToolRoundsPerInput: 10}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "search everything")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	// Check for synthesis steering in request messages.
+	reqs := f.Requests()
+	found := false
+	for _, req := range reqs {
+		for _, m := range req.Messages {
+			if m.Role == llm.RoleUser && strings.Contains(m.Text(), "NOT yet written any output files") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected synthesis nudge steering message at ~40% budget")
+	}
+}
+
+func TestSession_SteeringTiers_OutputCheckAt60Pct(t *testing.T) {
+	// With MaxToolRoundsPerInput=10, the 60% threshold fires at round 6.
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	steps := make([]func(req llm.Request) llm.Response, 8)
+	for i := 0; i < 7; i++ {
+		steps[i] = func(req llm.Request) llm.Response {
+			return llm.Response{
+				Message: llm.Message{
+					Role: llm.RoleAssistant,
+					Content: []llm.ContentPart{
+						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+							ID: fmt.Sprintf("c%d", i), Name: "glob",
+							Arguments: json.RawMessage(`{"pattern":"*.go","path":"."}`),
+						}},
+					},
+				},
+			}
+		}
+	}
+	steps[7] = func(req llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("done")}
+	}
+
+	f := &fakeAdapter{name: "openai", steps: steps}
+	c.Register(f)
+
+	cfg := SessionConfig{MaxToolRoundsPerInput: 10}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "search everything")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	reqs := f.Requests()
+	found := false
+	for _, req := range reqs {
+		for _, m := range req.Messages {
+			if m.Role == llm.RoleUser && strings.Contains(m.Text(), "Ensure all required output files exist on disk") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected output check steering message at ~60% budget")
+	}
+}
+
+func TestSession_SteeringTiers_EachFiresOnce(t *testing.T) {
+	// Run a session with enough rounds to trigger all tiers.
+	// With MaxToolRoundsPerInput=10, we need:
+	// - 40% at round 4 (synthesis)
+	// - 60% at round 6 (output check)
+	// - 80% at round 8 (budget warning)
+	// - <=3 remaining at round 8+ (critical)
+	// Each should fire exactly once.
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	roundCount := 10
+	steps := make([]func(req llm.Request) llm.Response, roundCount+1)
+	for i := 0; i < roundCount; i++ {
+		steps[i] = func(req llm.Request) llm.Response {
+			return llm.Response{
+				Message: llm.Message{
+					Role: llm.RoleAssistant,
+					Content: []llm.ContentPart{
+						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+							ID: fmt.Sprintf("c%d", i), Name: "glob",
+							Arguments: json.RawMessage(`{"pattern":"*.go","path":"."}`),
+						}},
+					},
+				},
+			}
+		}
+	}
+	// Final round: just text.
+	steps[roundCount] = func(req llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("done")}
+	}
+
+	f := &fakeAdapter{name: "openai", steps: steps}
+	c.Register(f)
+
+	cfg := SessionConfig{MaxToolRoundsPerInput: roundCount}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "analyze")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	// Count how many times each steering message was injected (as steering turns
+	// in history), not how many times it appears in requests (it persists in history).
+	sess.mu.Lock()
+	turns := append([]Turn{}, sess.history...)
+	sess.mu.Unlock()
+
+	synthesisCount := 0
+	outputCheckCount := 0
+	budgetCount := 0
+	criticalCount := 0
+	for _, tr := range turns {
+		if tr.Kind != TurnSteering {
+			continue
+		}
+		txt := tr.Message.Text()
+		if strings.Contains(txt, "NOT yet written any output files") {
+			synthesisCount++
+		}
+		if strings.Contains(txt, "Ensure all required output files exist on disk") {
+			outputCheckCount++
+		}
+		// Match "BUDGET WARNING" but not "CRITICAL BUDGET WARNING"
+		if strings.Contains(txt, "BUDGET WARNING") && !strings.Contains(txt, "CRITICAL") {
+			budgetCount++
+		}
+		if strings.Contains(txt, "CRITICAL BUDGET WARNING") {
+			criticalCount++
+		}
+	}
+
+	if synthesisCount != 1 {
+		t.Errorf("synthesis nudge fired %d times, want 1", synthesisCount)
+	}
+	if outputCheckCount != 1 {
+		t.Errorf("output check fired %d times, want 1", outputCheckCount)
+	}
+	if budgetCount != 1 {
+		t.Errorf("budget warning fired %d times, want 1", budgetCount)
+	}
+	if criticalCount != 1 {
+		t.Errorf("critical warning fired %d times, want 1", criticalCount)
+	}
+}

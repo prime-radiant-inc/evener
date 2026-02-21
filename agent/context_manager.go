@@ -533,21 +533,23 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta) []Turn
 	const maxCheckpointChars = 60_000
 
 	// Collect: modified files, tool counts, shell results, user messages,
-	// agent final responses (communicate results), activated skills.
+	// agent final responses (communicate results), working notes, activated skills.
 	modifiedFiles := map[string]bool{}
 	activatedSkills := map[string]bool{}
 	toolCounts := map[string]int{}
 	var lastShellResults []string
 	var userMessages []string
 	var agentResponses []string
+	var workingNotes []string
 
 	for i := 0; i < cutoff; i++ {
 		t := history[i]
 		switch t.Kind {
 		case TurnCheckpoint, TurnSummary:
-			// Extract user messages from previous compaction turns so they survive
-			// across repeated compactions.
+			// Extract user messages and working notes from previous compaction turns
+			// so they survive across repeated compactions.
 			userMessages = append(userMessages, extractCheckpointJSON(t.Message.Text(), "user_messages")...)
+			workingNotes = append(workingNotes, extractCheckpointJSON(t.Message.Text(), "working_notes")...)
 
 		case TurnUserInput:
 			text := t.Message.Text()
@@ -587,6 +589,14 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta) []Turn
 			}
 
 		case TurnAssistant:
+			// Capture assistant analytical text as working notes.
+			if text := t.Message.Text(); len(text) > 50 {
+				note := text
+				if len(note) > 500 {
+					note = note[:500] + "..."
+				}
+				workingNotes = append(workingNotes, note)
+			}
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentWebSearch {
 					toolCounts["web_search"]++
@@ -733,14 +743,25 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta) []Turn
 		variableBudget = 1000
 	}
 
-	// Encode user messages and agent responses as JSON for lossless round-tripping.
-	// Shed oldest user messages if needed to fit budget.
+	// Encode user messages, agent responses, and working notes as JSON for
+	// lossless round-tripping. Shed oldest notes first, then oldest user
+	// messages if needed to fit budget.
 	userJSON := marshalJSONCompact(userMessages)
 	respJSON := marshalJSONCompact(agentResponses)
+	notesJSON := marshalJSONCompact(workingNotes)
 
-	for len(userJSON)+len(respJSON) > variableBudget && len(userMessages) > 1 {
-		userMessages = userMessages[1:] // drop oldest
-		userJSON = marshalJSONCompact(userMessages)
+	for len(userJSON)+len(respJSON)+len(notesJSON) > variableBudget {
+		if len(workingNotes) > 1 {
+			workingNotes = workingNotes[1:] // drop oldest note first
+			notesJSON = marshalJSONCompact(workingNotes)
+			continue
+		}
+		if len(userMessages) > 1 {
+			userMessages = userMessages[1:] // then drop oldest user message
+			userJSON = marshalJSONCompact(userMessages)
+			continue
+		}
+		break
 	}
 
 	// Assemble final checkpoint.
@@ -752,6 +773,9 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta) []Turn
 	}
 	if len(agentResponses) > 0 {
 		b.WriteString(fmt.Sprintf("\n<agent_responses>%s</agent_responses>\n", respJSON))
+	}
+	if len(workingNotes) > 0 {
+		b.WriteString(fmt.Sprintf("\n<working_notes>%s</working_notes>\n", notesJSON))
 	}
 	b.WriteString("[END CHECKPOINT]\n")
 
@@ -891,6 +915,13 @@ Precisely what was being worked on when context ran out:
 
 ## Pending Work
 Clear, actionable next steps that remain. Be specific enough that the next instance can immediately start working.
+
+## Analytical Findings
+Specific technical discoveries made during the session:
+- What algorithms, approaches, or parameter values were found to work
+- What debugging insights were gained (root causes, validated hypotheses)
+- What code patterns, data structures, or API behaviors were discovered
+- Include specific values, numbers, and names — not vague summaries
 
 ## Critical Context
 Any data, file paths, variable names, error messages, API details, or other specific information needed to continue. Focus on information that CANNOT be re-derived from reading the codebase.

@@ -53,27 +53,30 @@ to the current task, call use_skill to load its full instructions.
 - After activating a skill, follow its instructions for the remainder of the task.
 - You can activate multiple skills if needed.
 
+## Write output before researching thoroughly
+
+Do NOT spend your budget on research and analysis before writing deliverables. The single
+most common failure mode is exhausting your context window with nothing on disk.
+
+**Rules:**
+- Within your first 3-5 tool calls, write a first draft of output files to disk.
+- Do NOT spend more than 20% of tool rounds on analysis before producing output.
+- Do NOT spawn research subagents for tasks you can solve directly.
+- A partial solution on disk is infinitely better than no solution.
+- If the task asks you to create `/app/solution.txt`, write something to that file FIRST,
+  then iterate. If the task asks for a server, get it running FIRST, then refine.
+
+**Pattern:**
+1. Read the task requirements. Identify the deliverables (files, services, etc.).
+2. Write a first draft of each deliverable immediately.
+3. Then research, debug, and iterate to improve.
+
 ## Subagent delegation
 
 Your context window is a finite resource. Every file you read, every command output you
 receive, every tool result — all of it accumulates and eventually forces compaction or
 exhaustion. Subagents protect your context by doing work in an isolated window and
 returning only a summary.
-
-### First step: research before you act
-
-For non-trivial tasks, spawn a research subagent to survey the project before writing
-code. Use agent_type="explorer" for codebase exploration, or omit it for general tasks.
-Use blocking=true so you don't need a separate wait call:
-
-    spawn_agent(task="Survey this project: list all files, read the key source files, \
-    check what languages/tools/libraries are installed, and report back with a summary \
-    of the project structure, available tools, and any constraints I should know about.",
-    agent_type="explorer", blocking=true)
-
-IMPORTANT: Research is just step 1. After receiving the subagent's findings, you must
-continue working on the actual task: make a plan, implement the solution, and verify it.
-Do NOT call communicate(result) until the original task is complete.
 
 ### Blocking vs async
 
@@ -91,11 +94,10 @@ immediately, then call wait() on each agent_id when you need the results:
 
 You MUST delegate to spawn_agent when:
 - A shell command will produce large output (test suites, build logs, verbose commands).
-- You need to read or search more than 3 files to answer a question.
-- You are exploring unfamiliar code (directory structure, API surface, dependencies).
 - A task is self-contained and can be described in a single prompt.
 
 Do NOT delegate when:
+- You have NOT yet produced any output files — write deliverables first, delegate later.
 - You need to read one specific file — use read_file directly.
 - You need a single grep or glob — use those tools directly.
 - The task requires back-and-forth iteration that depends on your current context.
@@ -167,21 +169,6 @@ report back via communicate(result), which you receive as a tool result.
 - If you have been trying the same approach 3 times without progress, STOP. Review your
   task notes to see what you already tried. Then try a fundamentally different strategy.
   Do not repeat failing approaches — your notes exist to prevent this.
-
-### Produce output early
-
-Do NOT spend all your time researching and analyzing before writing any output. Follow this
-pattern:
-
-1. **Read the task requirements** and identify the deliverables (files, running services, etc.)
-2. **Produce a working first draft early** — write the output files, start the services,
-   compile the code. Even a partial or imperfect deliverable is infinitely better than none.
-3. **Then iterate** to improve correctness, fix bugs, and refine.
-
-If the task asks you to create `/app/solution.txt`, write something to that file within
-your first few steps, then improve it. If the task asks you to start a server, get it running
-first, then fix issues. Never spend more than 30% of your time on analysis before producing
-your first output.
 
 ### Clean up before finishing
 

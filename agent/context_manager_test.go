@@ -2011,3 +2011,131 @@ func TestForceCompact_BelowThreshold(t *testing.T) {
 		t.Fatalf("expected [checkpoint], got %v", layers)
 	}
 }
+
+// --- Working notes in checkpoint ---
+
+func TestCheckpoint_ExtractsWorkingNotes(t *testing.T) {
+	// Assistant turns with text > 50 chars should be captured as working notes.
+	longAnalysis := "After analyzing the codebase, I found that the auth module uses JWT tokens with RS256 signing"
+	shortText := "ok"
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("fix the auth bug")},
+		{Kind: TurnAssistant, Message: llm.Assistant(longAnalysis)},
+		{Kind: TurnAssistant, Message: llm.Assistant(shortText)},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	}
+
+	result := checkpoint(history, 1, nil)
+	text := result[0].Message.Text()
+
+	// Should contain working_notes tag with the long analysis.
+	if !strings.Contains(text, "<working_notes>") {
+		t.Fatalf("checkpoint should contain <working_notes> tag:\n%s", text)
+	}
+	if !strings.Contains(text, longAnalysis) {
+		t.Fatalf("checkpoint should contain the long assistant analysis:\n%s", text)
+	}
+	// Short text should NOT appear in working notes.
+	if strings.Contains(text, `"ok"`) {
+		// Be careful — "ok" could appear in other contexts; check within the working_notes tag.
+		open := "<working_notes>"
+		close := "</working_notes>"
+		idx := strings.Index(text, open)
+		endIdx := strings.Index(text, close)
+		if idx >= 0 && endIdx > idx {
+			notes := text[idx+len(open) : endIdx]
+			if strings.Contains(notes, `"ok"`) {
+				t.Fatalf("working_notes should not contain short assistant text 'ok':\n%s", notes)
+			}
+		}
+	}
+}
+
+func TestCheckpoint_WorkingNotes_CappedAt500Chars(t *testing.T) {
+	// A very long assistant text should be truncated to 500 chars in working notes.
+	longText := strings.Repeat("analysis ", 100) // 900 chars
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("task")},
+		{Kind: TurnAssistant, Message: llm.Assistant(longText)},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	}
+
+	result := checkpoint(history, 1, nil)
+	text := result[0].Message.Text()
+
+	// Extract the notes JSON.
+	notes := extractCheckpointJSON(text, "working_notes")
+	if len(notes) == 0 {
+		t.Fatalf("expected working notes in checkpoint:\n%s", text)
+	}
+	for _, note := range notes {
+		if len(note) > 503 { // 500 + "..." suffix
+			t.Fatalf("working note should be capped at ~500 chars, got %d", len(note))
+		}
+	}
+}
+
+func TestCheckpoint_WorkingNotes_SurviveCrossCompaction(t *testing.T) {
+	// Working notes from a previous checkpoint should be preserved in the next one.
+	firstCheckpoint := `[CONTEXT CHECKPOINT]
+Files modified: auth.go
+
+<user_messages>["fix the auth bug"]</user_messages>
+
+<working_notes>["JWT tokens use RS256 signing and the key rotation is broken"]</working_notes>
+[END CHECKPOINT]`
+
+	history := []Turn{
+		{Kind: TurnCheckpoint, Message: llm.User(firstCheckpoint)},
+		{Kind: TurnAssistant, Message: llm.Assistant("I found the root cause in key_manager.go — the rotation interval is set to 0")},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	}
+
+	result := checkpoint(history, 1, nil)
+	text := result[0].Message.Text()
+
+	// Both the old note and the new analysis should be present.
+	if !strings.Contains(text, "JWT tokens use RS256") {
+		t.Fatalf("old working note should survive cross-compaction:\n%s", text)
+	}
+	if !strings.Contains(text, "root cause in key_manager.go") {
+		t.Fatalf("new working note should be included:\n%s", text)
+	}
+}
+
+func TestCheckpoint_WorkingNotes_ShedOldestFirst(t *testing.T) {
+	// When over budget, oldest notes should be shed before user messages.
+	// Build a history with many long assistant notes to exceed the 60k budget.
+	// Each note ≈ 503 chars (capped at 500+...), need >120 to exceed 60k.
+	var history []Turn
+	history = append(history, Turn{Kind: TurnUserInput, Message: llm.User("important task description")})
+	for i := 0; i < 150; i++ {
+		history = append(history, Turn{
+			Kind:    TurnAssistant,
+			Message: llm.Assistant(fmt.Sprintf("Note %03d: %s", i, strings.Repeat("detailed analysis ", 40))),
+		})
+	}
+	history = append(history, Turn{Kind: TurnAssistant, Message: llm.Assistant("recent")})
+
+	result := checkpoint(history, 1, nil)
+	text := result[0].Message.Text()
+
+	// User message should survive.
+	if !strings.Contains(text, "important task description") {
+		t.Fatalf("user message should survive budget shedding:\n%s", text)
+	}
+
+	// Working notes should exist but some should be shed (not all 50 can fit).
+	notes := extractCheckpointJSON(text, "working_notes")
+	if len(notes) == 0 {
+		t.Fatalf("expected working notes in checkpoint:\n%s", text)
+	}
+	if len(notes) >= 150 {
+		t.Fatalf("expected some notes to be shed, but all %d survived", len(notes))
+	}
+	// Latest notes should be preserved over oldest.
+	lastNote := notes[len(notes)-1]
+	if !strings.Contains(lastNote, "Note 149:") {
+		t.Fatalf("latest note should be preserved, got: %q", lastNote)
+	}
+}

@@ -1012,8 +1012,10 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 	var toolSigs []string
 	var lastText string // accumulated assistant text for round-limit return
 	ctxWarned := false
-	budgetWarned := false  // track whether 80% warning was injected
-	budgetCritical := false // track whether critical warning was injected
+	synthesisNudged := false // track whether 40% synthesis nudge was injected
+	outputNudged := false    // track whether 60% output check was injected
+	budgetWarned := false    // track whether 80% warning was injected
+	budgetCritical := false  // track whether critical warning was injected
 
 	for round := 0; s.cfg.MaxToolRoundsPerInput < 0 || round < s.cfg.MaxToolRoundsPerInput; round++ {
 		select {
@@ -1023,21 +1025,35 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		default:
 		}
 
-		// Budget awareness: inject steering when approaching round limit.
+		// Budget awareness: inject graduated steering when approaching round limit.
 		if max := s.cfg.MaxToolRoundsPerInput; max > 0 {
 			remaining := max - round
 			pctUsed := float64(round) / float64(max)
 			if !budgetCritical && remaining <= 3 {
 				budgetCritical = true
 				msg := fmt.Sprintf("CRITICAL BUDGET WARNING: Only %d rounds remaining out of %d. "+
-					"You must call communicate(result) immediately with whatever you have. "+
-					"Do not start new work.", remaining, max)
+					"Write any unfinished output files NOW with your best-effort solution. "+
+					"Then call communicate(result).", remaining, max)
 				s.Steer(msg)
 			} else if !budgetWarned && pctUsed >= 0.80 {
 				budgetWarned = true
 				msg := fmt.Sprintf("BUDGET WARNING: You have used %d of %d tool rounds (%d remaining). "+
+					"Ensure all deliverable files are written to disk. "+
 					"Focus on completing your current approach and call communicate(result) soon.",
 					round, max, remaining)
+				s.Steer(msg)
+			} else if !outputNudged && pctUsed >= 0.60 {
+				outputNudged = true
+				msg := fmt.Sprintf("OUTPUT CHECK: You have used %d of %d tool rounds. "+
+					"Ensure all required output files exist on disk. If any are missing, write them now.",
+					round, max)
+				s.Steer(msg)
+			} else if !synthesisNudged && pctUsed >= 0.40 {
+				synthesisNudged = true
+				msg := fmt.Sprintf("SYNTHESIS REMINDER: You have used %d of %d tool rounds. "+
+					"If you have NOT yet written any output files, STOP analyzing and write your best solution now. "+
+					"A partial solution on disk is infinitely better than a perfect solution that was never written.",
+					round, max)
 				s.Steer(msg)
 			}
 		}
