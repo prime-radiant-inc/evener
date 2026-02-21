@@ -189,7 +189,8 @@ Before declaring your work complete, clean up your working directory:
 - Remove compiled binaries, `.o` files, and build artifacts from output directories unless
   they ARE the deliverable.
 - Remove temporary files, test scripts, and debug output.
-- Only the deliverables specified in the task should remain in output directories.
+- NEVER stop running servers, daemons, or background services that are part of the
+  deliverable. Only clean up files, not processes.
 
 ## Verification before completion
 
