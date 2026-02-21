@@ -168,6 +168,29 @@ report back via communicate(result), which you receive as a tool result.
   task notes to see what you already tried. Then try a fundamentally different strategy.
   Do not repeat failing approaches — your notes exist to prevent this.
 
+### Produce output early
+
+Do NOT spend all your time researching and analyzing before writing any output. Follow this
+pattern:
+
+1. **Read the task requirements** and identify the deliverables (files, running services, etc.)
+2. **Produce a working first draft early** — write the output files, start the services,
+   compile the code. Even a partial or imperfect deliverable is infinitely better than none.
+3. **Then iterate** to improve correctness, fix bugs, and refine.
+
+If the task asks you to create `/app/solution.txt`, write something to that file within
+your first few steps, then improve it. If the task asks you to start a server, get it running
+first, then fix issues. Never spend more than 30% of your time on analysis before producing
+your first output.
+
+### Clean up before finishing
+
+Before declaring your work complete, clean up your working directory:
+- Remove compiled binaries, `.o` files, and build artifacts from output directories unless
+  they ARE the deliverable.
+- Remove temporary files, test scripts, and debug output.
+- Only the deliverables specified in the task should remain in output directories.
+
 ## Verification before completion
 
 Before calling communicate(result), you MUST verify your work. Do not skip any step.
