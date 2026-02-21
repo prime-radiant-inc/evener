@@ -2013,7 +2013,7 @@ func TestSession_SteeringTiers_SynthesisNudgeAt40Pct(t *testing.T) {
 	found := false
 	for _, req := range reqs {
 		for _, m := range req.Messages {
-			if m.Role == llm.RoleUser && strings.Contains(m.Text(), "NOT yet written any output files") {
+			if m.Role == llm.RoleUser && strings.Contains(m.Text(), "start building") {
 				found = true
 			}
 		}
@@ -2069,7 +2069,7 @@ func TestSession_SteeringTiers_OutputCheckAt60Pct(t *testing.T) {
 	found := false
 	for _, req := range reqs {
 		for _, m := range req.Messages {
-			if m.Role == llm.RoleUser && strings.Contains(m.Text(), "Ensure all required output files exist on disk") {
+			if m.Role == llm.RoleUser && strings.Contains(m.Text(), "protects your progress") {
 				found = true
 			}
 		}
@@ -2144,17 +2144,17 @@ func TestSession_SteeringTiers_EachFiresOnce(t *testing.T) {
 			continue
 		}
 		txt := tr.Message.Text()
-		if strings.Contains(txt, "NOT yet written any output files") {
+		if strings.Contains(txt, "start building") {
 			synthesisCount++
 		}
-		if strings.Contains(txt, "Ensure all required output files exist on disk") {
+		if strings.Contains(txt, "protects your progress") {
 			outputCheckCount++
 		}
-		// Match "BUDGET WARNING" but not "CRITICAL BUDGET WARNING"
-		if strings.Contains(txt, "BUDGET WARNING") && !strings.Contains(txt, "CRITICAL") {
+		// Match "TIME CHECK" but not "WRAPPING UP"
+		if strings.Contains(txt, "TIME CHECK") {
 			budgetCount++
 		}
-		if strings.Contains(txt, "CRITICAL BUDGET WARNING") {
+		if strings.Contains(txt, "WRAPPING UP") {
 			criticalCount++
 		}
 	}

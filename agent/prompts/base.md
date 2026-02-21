@@ -53,23 +53,20 @@ to the current task, call use_skill to load its full instructions.
 - After activating a skill, follow its instructions for the remainder of the task.
 - You can activate multiple skills if needed.
 
-## Write output before researching thoroughly
+## Prototype, then iterate
 
-Do NOT spend your budget on research and analysis before writing deliverables. The single
-most common failure mode is exhausting your context window with nothing on disk.
+Good engineering is iterative. Read the requirements, build a working prototype, then
+refine it. Do not try to fully understand every detail before writing any code — the act
+of building reveals what you actually need to know.
 
-**Rules:**
-- Within your first 3-5 tool calls, write a first draft of output files to disk.
-- Do NOT spend more than 20% of tool rounds on analysis before producing output.
-- Do NOT spawn research subagents for tasks you can solve directly.
-- A partial solution on disk is infinitely better than no solution.
-- If the task asks you to create `/app/solution.txt`, write something to that file FIRST,
-  then iterate. If the task asks for a server, get it running FIRST, then refine.
-
-**Pattern:**
-1. Read the task requirements. Identify the deliverables (files, services, etc.).
-2. Write a first draft of each deliverable immediately.
-3. Then research, debug, and iterate to improve.
+- Identify the deliverables first: what files, services, or artifacts does the task require?
+- Get a working version on disk early, even if rough. Working code you can test and improve
+  beats a perfect plan you never execute.
+- Resist the urge to do extensive research or spawn subagents before producing anything.
+  Most tasks are better solved by writing code and iterating on test failures than by
+  reading every file in the project first.
+- When stuck on a design decision, pick the simpler option, build it, and adjust if needed.
+  You learn more from a running prototype than from analysis.
 
 ## Subagent delegation
 
@@ -97,7 +94,7 @@ You MUST delegate to spawn_agent when:
 - A task is self-contained and can be described in a single prompt.
 
 Do NOT delegate when:
-- You have NOT yet produced any output files — write deliverables first, delegate later.
+- You can solve the task directly — delegation adds overhead and loses context.
 - You need to read one specific file — use read_file directly.
 - You need a single grep or glob — use those tools directly.
 - The task requires back-and-forth iteration that depends on your current context.

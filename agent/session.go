@@ -1031,28 +1031,29 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			pctUsed := float64(round) / float64(max)
 			if !budgetCritical && remaining <= 3 {
 				budgetCritical = true
-				msg := fmt.Sprintf("CRITICAL BUDGET WARNING: Only %d rounds remaining out of %d. "+
-					"Write any unfinished output files NOW with your best-effort solution. "+
-					"Then call communicate(result).", remaining, max)
+				msg := fmt.Sprintf("WRAPPING UP: Only %d rounds remaining out of %d. "+
+					"Finish what you're working on — write your best solution to disk "+
+					"and call communicate(result).", remaining, max)
 				s.Steer(msg)
 			} else if !budgetWarned && pctUsed >= 0.80 {
 				budgetWarned = true
-				msg := fmt.Sprintf("BUDGET WARNING: You have used %d of %d tool rounds (%d remaining). "+
-					"Ensure all deliverable files are written to disk. "+
-					"Focus on completing your current approach and call communicate(result) soon.",
+				msg := fmt.Sprintf("TIME CHECK: You have used %d of %d tool rounds (%d remaining). "+
+					"Start wrapping up — make sure your deliverables are written to disk "+
+					"and prepare to call communicate(result).",
 					round, max, remaining)
 				s.Steer(msg)
 			} else if !outputNudged && pctUsed >= 0.60 {
 				outputNudged = true
-				msg := fmt.Sprintf("OUTPUT CHECK: You have used %d of %d tool rounds. "+
-					"Ensure all required output files exist on disk. If any are missing, write them now.",
+				msg := fmt.Sprintf("PROGRESS CHECK: You have used %d of %d tool rounds. "+
+					"Do your deliverables exist on disk? If not, write what you have now — "+
+					"you can keep iterating, but having something on disk protects your progress.",
 					round, max)
 				s.Steer(msg)
 			} else if !synthesisNudged && pctUsed >= 0.40 {
 				synthesisNudged = true
-				msg := fmt.Sprintf("SYNTHESIS REMINDER: You have used %d of %d tool rounds. "+
-					"If you have NOT yet written any output files, STOP analyzing and write your best solution now. "+
-					"A partial solution on disk is infinitely better than a perfect solution that was never written.",
+				msg := fmt.Sprintf("PROGRESS CHECK: You have used %d of %d tool rounds. "+
+					"If you've been researching or analyzing, now is a good time to start building. "+
+					"Write a working prototype and iterate from there.",
 					round, max)
 				s.Steer(msg)
 			}

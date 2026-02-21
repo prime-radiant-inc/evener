@@ -3991,15 +3991,15 @@ func TestSession_BudgetAwareness_InjectsSteering(t *testing.T) {
 		t.Errorf("expected at least one budget awareness steering message, got none.\nAll steering: %v", steeringTexts)
 	}
 
-	// Should include a critical warning near the end.
-	var hasCritical bool
+	// Should include a wrap-up warning near the end.
+	var hasWrapUp bool
 	for _, txt := range budgetWarnings {
-		if strings.Contains(strings.ToUpper(txt), "CRITICAL") || strings.Contains(txt, "immediately") {
-			hasCritical = true
+		if strings.Contains(txt, "WRAPPING UP") || strings.Contains(txt, "Finish what you") {
+			hasWrapUp = true
 		}
 	}
-	if !hasCritical {
-		t.Errorf("expected a critical/immediate budget warning near the end, got: %v", budgetWarnings)
+	if !hasWrapUp {
+		t.Errorf("expected a wrap-up budget warning near the end, got: %v", budgetWarnings)
 	}
 }
 
