@@ -139,9 +139,16 @@ func ErrorFromHTTPStatus(provider string, statusCode int, message string, raw an
 // classifyByMessage checks the error message for classification signals when
 // the HTTP status code is ambiguous (e.g., 400/422). Returns nil if no match.
 func classifyByMessage(base httpErrorBase) error {
+	// Check error code first — more reliable than message parsing.
+	switch base.errorCode {
+	case "invalid_prompt", "content_policy_violation":
+		return &ContentFilterError{base}
+	}
+
 	lower := strings.ToLower(base.message)
 	switch {
-	case strings.Contains(lower, "content filter") || strings.Contains(lower, "safety"):
+	case strings.Contains(lower, "content filter") || strings.Contains(lower, "safety") ||
+		strings.Contains(lower, "usage policy"):
 		return &ContentFilterError{base}
 	case strings.Contains(lower, "context length") || strings.Contains(lower, "too many tokens"):
 		return &ContextLengthError{base}

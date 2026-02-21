@@ -213,6 +213,48 @@ func TestNonHTTPError_ErrorCode_Raw(t *testing.T) {
 	}
 }
 
+func TestErrorFromHTTPStatus_ErrorCodeClassification(t *testing.T) {
+	cases := []struct {
+		name      string
+		status    int
+		message   string
+		errorCode string
+		want      string
+	}{
+		{
+			"invalid_prompt code",
+			400,
+			"some generic message",
+			"invalid_prompt",
+			"*llm.ContentFilterError",
+		},
+		{
+			"content_policy_violation code",
+			400,
+			"some generic message",
+			"content_policy_violation",
+			"*llm.ContentFilterError",
+		},
+		{
+			"unrecognized code falls through",
+			400,
+			"bad request",
+			"some_other_code",
+			"*llm.InvalidRequestError",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := map[string]any{"error": map[string]any{"code": tc.errorCode}}
+			err := ErrorFromHTTPStatus("openai", tc.status, tc.message, raw, nil)
+			got := fmt.Sprintf("%T", err)
+			if got != tc.want {
+				t.Fatalf("ErrorFromHTTPStatus(%d, code=%q) = %s, want %s", tc.status, tc.errorCode, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestConfigurationError_Unwrap_ExposesCause(t *testing.T) {
 	cause := fmt.Errorf("missing API key")
 	err := &ConfigurationError{Message: "bad config", Cause: cause}
@@ -291,6 +333,9 @@ func TestErrorFromHTTPStatus_MessageBasedClassification(t *testing.T) {
 		// 422 is ambiguous like 400.
 		{"422 content filter", 422, "this violates safety policy", "*llm.ContentFilterError"},
 		{"422 plain", 422, "invalid field", "*llm.InvalidRequestError"},
+
+		// OpenAI usage policy violation (invalid_prompt).
+		{"400 usage policy", 400, "Your prompt was flagged as potentially violating our usage policy", "*llm.ContentFilterError"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
