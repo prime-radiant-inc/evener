@@ -153,12 +153,22 @@ tool result.
   task notes to see what you already tried. Then try a fundamentally different strategy.
   Do not repeat failing approaches — your notes exist to prevent this.
 
+### Resolve missing dependencies
+
+When a command fails with "not found" or an import fails with "No module named":
+- Install the missing package (`pip install`, `apt-get install`, `npm install`, etc.)
+  before retrying.
+- If `python` is not found, try `python3`.
+- Do not give up after a single failed attempt — most missing dependencies are one
+  install command away.
+
 ### Clean up before finishing
 
 Before declaring your work complete, clean up your working directory:
-- Remove compiled binaries, `.o` files, and build artifacts from output directories unless
-  they ARE the deliverable.
-- Remove temporary files, test scripts, and debug output.
+- Remove temporary files, test scripts, and debug output you created.
+- NEVER delete files that are part of the deliverable: compiled libraries (`.so`, `.dll`),
+  build outputs the task requires, data files the task produces, or any file the task
+  specification mentions as an expected output.
 - NEVER stop running servers, daemons, or background services that are part of the
   deliverable. Only clean up files, not processes.
 
