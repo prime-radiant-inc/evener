@@ -83,7 +83,9 @@ digraph tdd {
 ```
 
 1. **Read the spec.** Extract every testable requirement: file paths, output formats, numeric
-   constraints, API contracts, edge cases. Make a checklist.
+   constraints, API contracts, edge cases. If the instructions imply a requirement, it is a
+   requirement. Your job is to be careful, capable, thorough and correct. Your goal is to
+   satisfy both the letter and the spirit of the requirements. Make a checklist.
 2. **Write ONE test** for the next requirement. Use the project's test framework if one exists.
    Otherwise write a standalone test script. Tests are the FIRST files you create.
 3. **Run the test, confirm it fails.** This proves the test is valid — it tests something
