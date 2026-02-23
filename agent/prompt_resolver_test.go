@@ -324,6 +324,124 @@ func TestEmbeddedProviderCandidates(t *testing.T) {
 	}
 }
 
+func TestResolveSystemPromptWithSources_ReturnsCorrectSources(t *testing.T) {
+	// The WithSources variant must return labeled sources matching each section.
+	prompt, sources, err := ResolveSystemPromptWithSources("openai", "some-model", "", "", "", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if prompt == "" {
+		t.Fatal("expected non-empty prompt")
+	}
+	// Expect at least 2 sources: embedded provider + embedded base.
+	if len(sources) < 2 {
+		t.Fatalf("expected at least 2 sources, got %d: %+v", len(sources), sources)
+	}
+
+	// First source should be the embedded provider file.
+	if sources[0].Label != "embedded:system.openai.md" {
+		t.Errorf("sources[0].Label = %q, want %q", sources[0].Label, "embedded:system.openai.md")
+	}
+	if sources[0].Size <= 0 {
+		t.Errorf("sources[0].Size = %d, want > 0", sources[0].Size)
+	}
+
+	// Second source should be the embedded base.
+	if sources[1].Label != "embedded:base.md" {
+		t.Errorf("sources[1].Label = %q, want %q", sources[1].Label, "embedded:base.md")
+	}
+	if sources[1].Size <= 0 {
+		t.Errorf("sources[1].Size = %d, want > 0", sources[1].Size)
+	}
+}
+
+func TestResolveSystemPromptWithSources_ProjectAndGlobalLabels(t *testing.T) {
+	// Project and global additions should appear with correct label prefixes.
+	tmp := t.TempDir()
+	projDir := filepath.Join(tmp, "project")
+	globalDir := filepath.Join(tmp, "global")
+	if err := os.MkdirAll(projDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(globalDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(globalDir, "system.md"), []byte("global generic"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projDir, "system.openai.md"), []byte("project openai"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, sources, err := ResolveSystemPromptWithSources("openai", "gpt-4o", "", projDir, globalDir, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Collect labels for validation.
+	labels := make([]string, len(sources))
+	for i, s := range sources {
+		labels[i] = s.Label
+	}
+
+	// Must include global and project labels.
+	found := map[string]bool{}
+	for _, s := range sources {
+		found[s.Label] = true
+	}
+	if !found["global:system.md"] {
+		t.Errorf("missing global:system.md in sources: %v", labels)
+	}
+	if !found["project:system.openai.md"] {
+		t.Errorf("missing project:system.openai.md in sources: %v", labels)
+	}
+}
+
+func TestResolveSystemPromptWithSources_CLIOverrideLabel(t *testing.T) {
+	tmp := t.TempDir()
+	cliFile := filepath.Join(tmp, "custom.md")
+	if err := os.WriteFile(cliFile, []byte("custom"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, sources, err := ResolveSystemPromptWithSources("openai", "gpt-4o", cliFile, "", "", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sources) != 1 {
+		t.Fatalf("expected 1 source, got %d: %+v", len(sources), sources)
+	}
+	wantLabel := "cli:" + cliFile
+	if sources[0].Label != wantLabel {
+		t.Errorf("source label = %q, want %q", sources[0].Label, wantLabel)
+	}
+	if sources[0].Size != 6 { // len("custom")
+		t.Errorf("source size = %d, want 6", sources[0].Size)
+	}
+}
+
+func TestResolveSystemPromptWithSources_AppendLabels(t *testing.T) {
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "extra.md")
+	if err := os.WriteFile(f, []byte("extra stuff"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, sources, err := ResolveSystemPromptWithSources("openai", "gpt-4o", "", "", "", []string{f})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	last := sources[len(sources)-1]
+	wantLabel := "append:" + f
+	if last.Label != wantLabel {
+		t.Errorf("last source label = %q, want %q", last.Label, wantLabel)
+	}
+	if last.Size != len("extra stuff") {
+		t.Errorf("last source size = %d, want %d", last.Size, len("extra stuff"))
+	}
+}
+
 func TestAdditionCandidateNames(t *testing.T) {
 	names := additionCandidateNames("openai")
 	want := []string{"system.md", "system.openai.md"}

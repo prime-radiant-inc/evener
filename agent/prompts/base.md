@@ -243,6 +243,9 @@ tool result.
   deliverable file, you are in analysis paralysis. The cure is to write code NOW — even a
   rough first attempt you will revise. You learn more from a failing implementation than
   from a 50th analysis script. Analysis that does not produce deliverable files is waste.
+- When you have multiple independent actions (reading files, running commands, researching),
+  issue them as parallel tool calls in a single round rather than one at a time. Each round
+  costs time and context. Five reads in one round are far cheaper than five sequential rounds.
 - You have 100 rounds. If you have used fewer than 20 and your tests are not all passing,
   you are quitting too early. The rounds exist for iteration — use them. An agent that uses
   90 rounds and gets the right answer is far more valuable than one that uses 5 rounds and

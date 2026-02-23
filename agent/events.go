@@ -33,6 +33,7 @@ const (
 	EventHookStart           EventKind = "HOOK_START"
 	EventHookEnd             EventKind = "HOOK_END"
 	EventForkSummary         EventKind = "FORK_SUMMARY"
+	EventPromptLoaded        EventKind = "PROMPT_LOADED"
 )
 
 type SessionEvent struct {
@@ -229,4 +230,9 @@ type HookEndData struct {
 
 type ForkSummaryData struct {
 	Turn int `json:"turn"`
+}
+
+type PromptLoadedData struct {
+	Label string `json:"label"`
+	Size  int    `json:"size"`
 }

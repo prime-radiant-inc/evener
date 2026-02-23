@@ -28,6 +28,7 @@ type runConfig struct {
 	reasoningEffort    string   // --reasoning-effort override (or SERF_REASONING_EFFORT)
 	contextStrategy    string   // --context-strategy
 	verbose            bool
+	noProjectPrompts   bool
 	stdout             io.Writer
 	stderr             io.Writer
 
@@ -146,6 +147,7 @@ func run(ctx context.Context, cfg runConfig) error {
 			StateDir:              stateDir,
 			SystemPromptFile:      cfg.systemPrompt,
 			SystemPromptAppend:    cfg.systemPromptAppend,
+			NoProjectPrompts:      cfg.noProjectPrompts,
 			SkillsDirs:            cfg.skillsDirs,
 			MCPConfigFiles:        cfg.mcpConfigs,
 			MCPInline:             cfg.mcpServers,
@@ -206,6 +208,10 @@ func drainEventsHuman(events <-chan agent.SessionEvent, w io.Writer) <-chan stru
 			case agent.EventSessionStart:
 				if d, ok := ev.Data.(agent.SessionStartData); ok && d.Model != "" {
 					fmt.Fprintf(w, "[model] %s (%s)\n", d.Model, d.Profile) //nolint:errcheck
+				}
+			case agent.EventPromptLoaded:
+				if d, ok := ev.Data.(agent.PromptLoadedData); ok {
+					fmt.Fprintf(w, "[prompt] %s (%dB)\n", d.Label, d.Size) //nolint:errcheck
 				}
 			case agent.EventAssistantTextEnd:
 				if d, ok := ev.Data.(agent.AssistantTextEndData); ok {

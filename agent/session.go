@@ -74,6 +74,10 @@ type SessionConfig struct {
 	// Always applied, even when SystemPromptFile is set (CLI --system-prompt-append flag).
 	SystemPromptAppend []string `json:"system_prompt_append,omitempty"`
 
+	// NoProjectPrompts suppresses loading .serf/prompts/ from the project directory.
+	// Useful for A/B testing to match Docker container behavior (no project prompts).
+	NoProjectPrompts bool `json:"no_project_prompts,omitempty"`
+
 	// ContextStrategy selects the context management strategy: compact|recall|session-log|ooda.
 	ContextStrategy string `json:"context_strategy,omitempty"`
 
@@ -267,7 +271,8 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		cancelFunc: sessCancel,
 	}
 
-	if err := s.initSessionState(); err != nil {
+	promptSources, err := s.initSessionState()
+	if err != nil {
 		return nil, err
 	}
 
@@ -322,6 +327,9 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		Model:             profile.Model(),
 		ContextWindowSize: profile.ContextWindowSize(),
 	})
+	for _, src := range promptSources {
+		s.emit(EventPromptLoaded, PromptLoadedData{Label: src.Label, Size: src.Size})
+	}
 	return s, nil
 }
 
@@ -377,7 +385,8 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		cancelFunc: sessCancel,
 	}
 
-	if err := s.initSessionState(); err != nil {
+	promptSources, err := s.initSessionState()
+	if err != nil {
 		return nil, err
 	}
 
@@ -443,6 +452,9 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		LastInputTokens:   snap.LastInputTokens,
 		ContextWindowSize: profile.ContextWindowSize(),
 	})
+	for _, src := range promptSources {
+		s.emit(EventPromptLoaded, PromptLoadedData{Label: src.Label, Size: src.Size})
+	}
 	return s, nil
 }
 
@@ -1522,7 +1534,8 @@ func (s *Session) allToolDefinitions() []llm.ToolDefinition {
 // NewSession and RestoreSession: environment snapshot, system prompt
 // resolution, skills discovery, tool registry setup, and MCP connection.
 // The Session struct fields (client, profile, env, cfg) must already be set.
-func (s *Session) initSessionState() error {
+// Returns the prompt sources so the caller can emit events after SessionStart.
+func (s *Session) initSessionState() ([]PromptSource, error) {
 	ei := envInfoFromEnv(s.env)
 	ei.KnowledgeCutoff = s.profile.KnowledgeCutoff()
 	if inRepo, branch, mod, untracked, commits := snapshotGit(s.env, ei.WorkingDir); inRepo {
@@ -1535,23 +1548,29 @@ func (s *Session) initSessionState() error {
 	}
 	s.envInfo = ei
 
+	var promptSources []PromptSource
 	if s.cfg.BasePromptOverride != "" {
 		// Subagents use BasePromptOverride to replace the parent's base.md entirely,
 		// avoiding inherited delegation instructions the subagent cannot follow.
 		s.profile = s.profile.WithBasePrompt(s.cfg.BasePromptOverride)
 	} else {
 		gitRoot := gitRootOrEmpty(s.env, ei.WorkingDir)
-		resolvedPrompt, err := ResolveSystemPrompt(
+		projDir := ProjectPromptsDir(gitRoot)
+		if s.cfg.NoProjectPrompts {
+			projDir = ""
+		}
+		resolvedPrompt, sources, err := ResolveSystemPromptWithSources(
 			s.profile.ID(), s.profile.Model(),
 			s.cfg.SystemPromptFile,
-			ProjectPromptsDir(gitRoot),
+			projDir,
 			GlobalPromptsDir(),
 			s.cfg.SystemPromptAppend,
 		)
 		if err != nil {
-			return fmt.Errorf("resolve system prompt: %w", err)
+			return nil, fmt.Errorf("resolve system prompt: %w", err)
 		}
 		s.profile = s.profile.WithBasePrompt(resolvedPrompt)
+		promptSources = sources
 	}
 
 	s.skills = DiscoverSkills(s.env, s.cfg.SkillsDirs...)
@@ -1559,20 +1578,20 @@ func (s *Session) initSessionState() error {
 	// Load built-in agents (explorer, etc.) as a base layer.
 	builtins, err := builtinAgents()
 	if err != nil {
-		return fmt.Errorf("loading built-in agents: %w", err)
+		return nil, fmt.Errorf("loading built-in agents: %w", err)
 	}
 	s.pluginAgents = builtins
 
 	// Initialize plugins (skills, agents, hooks). Plugin agents override builtins.
 	if err := s.initPlugins(); err != nil {
-		return fmt.Errorf("plugin initialization: %w", err)
+		return nil, fmt.Errorf("plugin initialization: %w", err)
 	}
 
 	s.contextMgr = NewContextManager(s.profile, s.client)
 
 	reg := s.profile.NewToolRegistry()
 	if err := registerCoreTools(reg, s); err != nil {
-		return err
+		return nil, err
 	}
 	if len(s.cfg.ToolOutputLimits) > 0 {
 		reg.mu.Lock()
@@ -1598,9 +1617,9 @@ func (s *Session) initSessionState() error {
 	s.coreToolNames = reg.RegisteredNames()
 
 	if err := s.initMCP(); err != nil {
-		return fmt.Errorf("MCP initialization: %w", err)
+		return nil, fmt.Errorf("MCP initialization: %w", err)
 	}
-	return nil
+	return promptSources, nil
 }
 
 // initPlugins loads plugins from configured directories, merging their skills,
