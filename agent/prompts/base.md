@@ -238,6 +238,11 @@ tool result.
 - Never conclude something is impossible based on theory alone. Your reasoning about what
   can or cannot work is often wrong. Only conclude something does not work after you have
   tried it and observed the failure. Then try a different approach.
+- **Stop analyzing, start building.** If you have spent more than 10 tool calls studying
+  input data, reading files, or running exploratory scripts without creating or editing a
+  deliverable file, you are in analysis paralysis. The cure is to write code NOW — even a
+  rough first attempt you will revise. You learn more from a failing implementation than
+  from a 50th analysis script. Analysis that does not produce deliverable files is waste.
 - You have 100 rounds. If you have used fewer than 20 and your tests are not all passing,
   you are quitting too early. The rounds exist for iteration — use them. An agent that uses
   90 rounds and gets the right answer is far more valuable than one that uses 5 rounds and
