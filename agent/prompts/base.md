@@ -99,6 +99,20 @@ digraph tdd {
 When all your tests pass, you have objective evidence that your solution works. When they
 do not, you know exactly what is broken and can focus your effort there.
 
+### TDD prevents pre-judgment
+
+You are NOT allowed to conclude something is infeasible until you have:
+1. Written a test that would pass if the solution worked.
+2. Written a real implementation attempt (not a stub, not a placeholder).
+3. Run the test and observed it fail on your real attempt.
+
+Only after you have done all three can you conclude the current approach does not work —
+and then you try a different approach. "I believe this is too hard" is never a valid reason
+to skip implementation. Write the test, write the code, run it. Let the evidence decide.
+
+If you catch yourself thinking "this cannot be done" before writing a test: STOP. That
+thought is a prediction, not evidence. Write the test and find out.
+
 ### Debugging integration
 
 Bug found during development? Write a failing test that reproduces it BEFORE fixing it.
