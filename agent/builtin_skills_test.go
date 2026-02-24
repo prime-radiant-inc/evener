@@ -211,6 +211,146 @@ func TestEmbeddedSkills_ProjectShadowsEmbedded(t *testing.T) {
 	}
 }
 
+func TestEmbeddedSkills_UseSkillReturnsTDDBody(t *testing.T) {
+	root := t.TempDir()
+	initGitRepo(t, root)
+
+	c := llm.NewClient()
+
+	// Agent calls use_skill("test-driven-development"), then communicates result.
+	skill := useSkillCall("s1", "test-driven-development")
+	comm := communicateCall("c1", "result", "done")
+
+	var skillResultContent string
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			// First turn: agent calls use_skill.
+			func(req llm.Request) llm.Response { return toolCallResponse(skill) },
+			// Second turn: agent sees the skill body in tool result, then finishes.
+			func(req llm.Request) llm.Response {
+				// Capture the tool result from the use_skill call.
+				for _, msg := range req.Messages {
+					for _, part := range msg.Content {
+						if part.Kind == llm.ContentToolResult {
+							if content, ok := part.ToolResult.Content.(string); ok {
+								if strings.Contains(content, "TDD") || strings.Contains(content, "Test-Driven") {
+									skillResultContent = content
+								}
+							}
+						}
+					}
+				}
+				return toolCallResponse(comm)
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "implement a feature")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+
+	if skillResultContent == "" {
+		t.Fatal("use_skill('test-driven-development') did not return the TDD skill body")
+	}
+
+	// Verify key content from the real superpowers TDD skill is present.
+	if !strings.Contains(skillResultContent, "NO PRODUCTION CODE WITHOUT A FAILING TEST FIRST") {
+		t.Error("TDD skill body missing 'NO PRODUCTION CODE WITHOUT A FAILING TEST FIRST'")
+	}
+	if !strings.Contains(skillResultContent, "Red-Green-Refactor") {
+		t.Error("TDD skill body missing 'Red-Green-Refactor'")
+	}
+}
+
+func TestEmbeddedSkills_UseSkillReturnsVerificationBody(t *testing.T) {
+	root := t.TempDir()
+	initGitRepo(t, root)
+
+	c := llm.NewClient()
+
+	skill := useSkillCall("s1", "verification-before-completion")
+	comm := communicateCall("c1", "result", "done")
+
+	var skillResultContent string
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(skill) },
+			func(req llm.Request) llm.Response {
+				for _, msg := range req.Messages {
+					for _, part := range msg.Content {
+						if part.Kind == llm.ContentToolResult {
+							if content, ok := part.ToolResult.Content.(string); ok {
+								if strings.Contains(content, "verification") || strings.Contains(content, "Verification") {
+									skillResultContent = content
+								}
+							}
+						}
+					}
+				}
+				return toolCallResponse(comm)
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "check my work")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+
+	if skillResultContent == "" {
+		t.Fatal("use_skill('verification-before-completion') did not return the skill body")
+	}
+	if !strings.Contains(skillResultContent, "Evidence before claims") {
+		t.Error("verification skill body missing 'Evidence before claims'")
+	}
+}
+
+func TestEmbeddedSkills_AllSkillsLoadable(t *testing.T) {
+	// Verify every embedded skill can be discovered and its body loaded.
+	dir, err := extractEmbeddedSkills()
+	if err != nil {
+		t.Fatalf("extractEmbeddedSkills: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	skills := make(map[string]SkillMeta)
+	scanSkillsDir(dir, skills)
+
+	if len(skills) < 14 {
+		t.Fatalf("expected at least 14 embedded skills, got %d", len(skills))
+	}
+
+	for name, meta := range skills {
+		body, err := LoadSkillBody(meta)
+		if err != nil {
+			t.Errorf("skill %q: LoadSkillBody failed: %v", name, err)
+			continue
+		}
+		if len(body) == 0 {
+			t.Errorf("skill %q: body is empty", name)
+		}
+	}
+}
+
 // builtinSkillNames returns a slice of skill names for test output.
 func builtinSkillNames(skills map[string]SkillMeta) []string {
 	names := make([]string, 0, len(skills))
