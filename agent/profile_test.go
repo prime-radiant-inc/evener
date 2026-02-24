@@ -11,8 +11,8 @@ func TestProviderProfiles_ToolsetsAndDocSelection(t *testing.T) {
 	if openai.ID() != "openai" {
 		t.Fatalf("openai id: %q", openai.ID())
 	}
-	if openai.SupportsParallelToolCalls() {
-		t.Fatalf("openai should not support parallel tool calls by default")
+	if !openai.SupportsParallelToolCalls() {
+		t.Fatalf("openai should support parallel tool calls")
 	}
 	if got := strings.Join(openai.ProjectDocFiles(), ","); got != "AGENTS.md,.codex/instructions.md" {
 		t.Fatalf("openai docs: %q", got)
@@ -471,6 +471,25 @@ func TestProviderProfile_ProviderOptions(t *testing.T) {
 	opts := p.ProviderOptions()
 	if opts == nil {
 		t.Fatal("expected non-nil ProviderOptions for Anthropic")
+	}
+}
+
+func TestOpenAIProfile_ProviderOptions_ParallelToolCalls(t *testing.T) {
+	p := NewOpenAIProfile("gpt-5.2")
+	opts := p.ProviderOptions()
+	if opts == nil {
+		t.Fatal("expected non-nil ProviderOptions for OpenAI")
+	}
+	oai, ok := opts["openai"].(map[string]any)
+	if !ok {
+		t.Fatal("missing openai key in provider options")
+	}
+	ptc, ok := oai["parallel_tool_calls"]
+	if !ok {
+		t.Fatal("missing parallel_tool_calls in openai provider options")
+	}
+	if ptc != true {
+		t.Fatalf("parallel_tool_calls = %v, want true", ptc)
 	}
 }
 

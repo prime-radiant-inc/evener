@@ -230,7 +230,7 @@ func NewOpenAIProfile(model string) ProviderProfile {
 	return &baseProfile{
 		id:              "openai",
 		model:           strings.TrimSpace(model),
-		parallel:        false,
+		parallel:        true,
 		contextWindow:   128_000,
 		basePrompt:      embeddedBasePrompt("openai"),
 		docFiles:        []string{"AGENTS.md", ".codex/instructions.md"},
@@ -238,6 +238,11 @@ func NewOpenAIProfile(model string) ProviderProfile {
 		streaming:       true,
 		defaultTimeout:  10_000,
 		knowledgeCutoff: "2025-06-01",
+		providerOpts: map[string]any{
+			"openai": map[string]any{
+				"parallel_tool_calls": true,
+			},
+		},
 		toolNameMap: map[string]string{
 			"shell": "exec_command",
 			"grep":  "grep_files",

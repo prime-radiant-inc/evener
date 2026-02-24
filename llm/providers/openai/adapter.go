@@ -82,7 +82,7 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 		"model":               req.Model,
 		"instructions":        instructions,
 		"input":               inputItems,
-		"parallel_tool_calls": false,
+		"parallel_tool_calls": true,
 		"store":               false,
 	}
 
