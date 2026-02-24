@@ -1057,10 +1057,6 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 	var lastText string // accumulated assistant text for round-limit return
 	ctxWarned := false
 	contentFilterRetried := false // track whether we've already tried recovering from a content filter error
-	synthesisNudged := false      // track whether 40% synthesis nudge was injected
-	outputNudged := false         // track whether 60% output check was injected
-	budgetWarned := false         // track whether 80% warning was injected
-	budgetCritical := false       // track whether critical warning was injected
 
 	for round := 0; s.cfg.MaxToolRoundsPerInput < 0 || round < s.cfg.MaxToolRoundsPerInput; round++ {
 		select {
@@ -1068,40 +1064,6 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			s.emit(EventError, ErrorData{Error: ctx.Err().Error()})
 			return "", ctx.Err()
 		default:
-		}
-
-		// Budget awareness: inject graduated steering when approaching round limit.
-		if max := s.cfg.MaxToolRoundsPerInput; max > 0 {
-			remaining := max - round
-			pctUsed := float64(round) / float64(max)
-			if !budgetCritical && remaining <= 3 {
-				budgetCritical = true
-				msg := fmt.Sprintf("WRAPPING UP: Only %d rounds remaining out of %d. "+
-					"Finish what you're working on — write your best solution to disk "+
-					"and call communicate(result).", remaining, max)
-				s.Steer(msg)
-			} else if !budgetWarned && pctUsed >= 0.80 {
-				budgetWarned = true
-				msg := fmt.Sprintf("TIME CHECK: You have used %d of %d tool rounds (%d remaining). "+
-					"Start wrapping up — make sure your deliverables are written to disk "+
-					"and prepare to call communicate(result).",
-					round, max, remaining)
-				s.Steer(msg)
-			} else if !outputNudged && pctUsed >= 0.60 {
-				outputNudged = true
-				msg := fmt.Sprintf("PROGRESS CHECK: You have used %d of %d tool rounds. "+
-					"Do your deliverables exist on disk? If not, write what you have now — "+
-					"you can keep iterating, but having something on disk protects your progress.",
-					round, max)
-				s.Steer(msg)
-			} else if !synthesisNudged && pctUsed >= 0.40 {
-				synthesisNudged = true
-				msg := fmt.Sprintf("PROGRESS CHECK: You have used %d of %d tool rounds. "+
-					"If you've been researching or analyzing, now is a good time to start building. "+
-					"Write a working prototype and iterate from there.",
-					round, max)
-				s.Steer(msg)
-			}
 		}
 
 		// Rebuild system prompt each iteration so tool side-effects (e.g. new AGENTS.md) are reflected.
