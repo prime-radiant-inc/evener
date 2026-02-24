@@ -116,8 +116,7 @@ func TestCommunicate_ResultStructuredOutputExitsLoop(t *testing.T) {
 	comm := communicateCallArgs("c1", map[string]any{
 		"action": "result",
 		"output": map[string]any{
-			"decision": "approve",
-			"message":  "Structured final answer.",
+			"message": "Structured final answer.",
 			"data": map[string]any{
 				"z": 1,
 				"a": "x",
@@ -148,7 +147,7 @@ func TestCommunicate_ResultStructuredOutputExitsLoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
-	want := `{"decision":"approve","message":"Structured final answer.","data":{"a":"x","z":1},"artifacts":[]}`
+	want := `{"message":"Structured final answer.","data":{"a":"x","z":1},"artifacts":[]}`
 	if strings.TrimSpace(out) != want {
 		t.Fatalf("ProcessInput returned %q, want %q", out, want)
 	}
@@ -204,9 +203,8 @@ func TestCommunicate_StatusWithOutputContinuesLoop(t *testing.T) {
 		"action":  "status",
 		"message": "Working on it...",
 		"output": map[string]any{
-			"decision": "noop",
-			"message":  "ignored",
-			"data":     map[string]any{},
+			"message": "ignored",
+			"data":    map[string]any{},
 		},
 	})
 	result := communicateCall("c2", "result", "All done.")
@@ -327,8 +325,7 @@ func TestCommunicate_ResultSchemaRejectsMalformedOutput(t *testing.T) {
 	res := sess.reg.ExecuteCall(context.Background(), sess.env, communicateCallArgs("c1", map[string]any{
 		"action": "result",
 		"output": map[string]any{
-			"decision": "approve",
-			"message":  "missing data field",
+			"message": "missing data field",
 		},
 	}))
 	if !res.IsError {

@@ -94,6 +94,17 @@ func defCommunicateWithRequiredDataKeys(requiredKeys []string) llm.ToolDefinitio
 		return td
 	}
 
+	// Orchestrated mode: add the decision field back (removed from default schema
+	// to prevent standalone agents from using it to rationalize giving up).
+	outProps["decision"] = map[string]any{"type": "string"}
+	if existing, ok := outputSchema["required"].([]string); ok {
+		if !slices.Contains(existing, "decision") {
+			outputSchema["required"] = append(existing, "decision")
+		}
+	} else {
+		outputSchema["required"] = []string{"message", "data", "decision"}
+	}
+
 	// Ensure required keys are present in the schema. Use empty schemas for each
 	// key, since Toil's node.outputs only specifies key presence.
 	//

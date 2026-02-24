@@ -70,6 +70,63 @@ func TestWithCommunicateRequiredDataKeys_PlanDocIsString(t *testing.T) {
 	t.Fatal("communicate tool not found")
 }
 
+func TestDefCommunicate_DefaultSchema_NoDecisionField(t *testing.T) {
+	// Default communicate schema should NOT include the decision field.
+	// Decision is only needed for orchestration (toil) and gives the model
+	// an escape hatch to rationalize giving up in standalone mode.
+	td := defCommunicate()
+	props, _ := td.Parameters["properties"].(map[string]any)
+	output, _ := props["output"].(map[string]any)
+	outProps, _ := output["properties"].(map[string]any)
+
+	if _, exists := outProps["decision"]; exists {
+		t.Fatal("default communicate schema should not have decision field")
+	}
+
+	// output.required should not include "decision"
+	required, _ := output["required"].([]string)
+	for _, r := range required {
+		if r == "decision" {
+			t.Fatal("default communicate output.required should not include decision")
+		}
+	}
+}
+
+func TestWithCommunicateRequiredDataKeys_AddsDecisionField(t *testing.T) {
+	// When orchestration keys are set (toil mode), decision field must be present.
+	p := WithCommunicateRequiredDataKeys(NewOpenAIProfile("gpt-5.2"), []string{"components"})
+
+	for _, td := range p.ToolDefinitions() {
+		if td.Name != "communicate" {
+			continue
+		}
+		props, _ := td.Parameters["properties"].(map[string]any)
+		output, _ := props["output"].(map[string]any)
+		outProps, _ := output["properties"].(map[string]any)
+
+		decisionSchema, exists := outProps["decision"].(map[string]any)
+		if !exists {
+			t.Fatal("orchestrated communicate schema should have decision field")
+		}
+		if decisionSchema["type"] != "string" {
+			t.Fatalf("decision.type=%v, want string", decisionSchema["type"])
+		}
+
+		required, _ := output["required"].([]string)
+		hasDecision := false
+		for _, r := range required {
+			if r == "decision" {
+				hasDecision = true
+			}
+		}
+		if !hasDecision {
+			t.Fatal("orchestrated communicate output.required should include decision")
+		}
+		return
+	}
+	t.Fatal("communicate tool not found")
+}
+
 func TestWithCommunicateRequiredDataKeys_TasksSchemaHasItems(t *testing.T) {
 	p := WithCommunicateRequiredDataKeys(NewOpenAIProfile("gpt-5.2"), []string{"tasks"})
 

@@ -2163,7 +2163,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 }
 
 type nodeOutput struct {
-	Decision  string         `json:"decision"`
+	Decision  string         `json:"decision,omitempty"`
 	Message   string         `json:"message"`
 	Data      map[string]any `json:"data"`
 	Artifacts []string       `json:"artifacts"`
@@ -2175,8 +2175,12 @@ func canonicalNodeOutputText(raw any) string {
 		return "{}"
 	}
 
+	var decision string
+	if d, ok := m["decision"].(string); ok {
+		decision = d
+	}
 	out := nodeOutput{
-		Decision:  fmt.Sprint(m["decision"]),
+		Decision:  decision,
 		Message:   fmt.Sprint(m["message"]),
 		Data:      map[string]any{},
 		Artifacts: []string{},

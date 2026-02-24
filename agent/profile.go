@@ -679,7 +679,7 @@ func defWebSearch() llm.ToolDefinition {
 func defCommunicate() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "communicate",
-		Description: "Send output to the user. Use action=status for progress updates. Use action=result for the final answer (exits the session), with either a legacy message or a structured output object.",
+		Description: "Send output to the user. action=status: progress update. action=result: final output (exits the session).",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -694,18 +694,17 @@ func defCommunicate() llm.ToolDefinition {
 				},
 				"output": map[string]any{
 					"type":                 "object",
-					"description":          "Structured final output for automation workflows (action=result).",
+					"description":          "Structured output (optional, for action=result).",
 					"additionalProperties": false,
 					"properties": map[string]any{
-						"decision": map[string]any{"type": "string"},
-						"message":  map[string]any{"type": "string"},
-						"data":     map[string]any{"type": "object"},
+						"message": map[string]any{"type": "string"},
+						"data":    map[string]any{"type": "object"},
 						"artifacts": map[string]any{
 							"type":  "array",
 							"items": map[string]any{"type": "string"},
 						},
 					},
-					"required": []string{"decision", "message", "data"},
+					"required": []string{"message", "data"},
 				},
 			},
 			"required": []string{"action"},
