@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -171,7 +172,8 @@ type Session struct {
 	strategy   ContextStrategy
 
 	// skills discovered at session startup
-	skills map[string]SkillMeta
+	skills            map[string]SkillMeta
+	embeddedSkillsDir string // temp dir for extracted embedded skills; cleaned up in Close
 
 	// MCP server connections
 	mcpMgr   *MCPManager
@@ -671,6 +673,10 @@ func (s *Session) Close() {
 
 		if s.transcript != nil {
 			_ = s.transcript.Close()
+		}
+
+		if s.embeddedSkillsDir != "" {
+			os.RemoveAll(s.embeddedSkillsDir)
 		}
 
 		// 8. Transition to CLOSED last, then close the events channel.
@@ -1573,7 +1579,17 @@ func (s *Session) initSessionState() ([]PromptSource, error) {
 		promptSources = sources
 	}
 
-	s.skills = DiscoverSkills(s.env, s.cfg.SkillsDirs...)
+	// Extract embedded skills to a temp dir as the base layer.
+	// Filesystem-discovered skills (project + extraDirs) shadow embedded ones.
+	s.skills = make(map[string]SkillMeta)
+	if dir, err := extractEmbeddedSkills(); err == nil {
+		s.embeddedSkillsDir = dir
+		// Scan extracted dir directly (skill subdirs are immediate children).
+		scanSkillsDir(dir, s.skills)
+	}
+	for name, meta := range DiscoverSkills(s.env, s.cfg.SkillsDirs...) {
+		s.skills[name] = meta // filesystem shadows embedded
+	}
 
 	// Load built-in agents (explorer, etc.) as a base layer.
 	builtins, err := builtinAgents()
