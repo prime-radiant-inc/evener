@@ -51,7 +51,7 @@ This structure informs the task decomposition. Each task should produce self-con
 ```markdown
 # [Feature Name] Implementation Plan
 
-> **For Claude:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For Claude:** REQUIRED: Use superpowers:subagent-driven-development to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** [One sentence describing what this builds]
 
@@ -171,14 +171,4 @@ After saving the plan:
 - Plan document path
 - Key architectural decisions, constraints, or user preferences that affect implementation but aren't captured in the plan — add them to the plan now
 
-**2. Advise compaction.** Execution works better with a fresh window. Tell the user:
-
-> "The plan is saved to `docs/superpowers/plans/<filename>.md`. Before we start implementation, I recommend compacting this session — execution works better with a fresh window."
-
-**3. Give exact continuation prompt.** Tell the user exactly what to say after compacting. Use the actual filename, not a placeholder.
-
-If you can dispatch subagents (Claude Code, etc.):
-
-> "After compacting, say: **Execute the plan at `docs/superpowers/plans/<filename>.md` using subagent-driven-development.**"
-
-If you cannot dispatch subagents, ask the user: "The plan is ready. I can't dispatch subagents in this environment — should I execute the tasks in this thread?"
+**2. Execute.** Load the subagent-driven-development skill and begin implementation immediately. Dispatch a fresh subagent per task with two-stage review (spec compliance, then code quality) after each.
