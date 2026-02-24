@@ -35,20 +35,23 @@ const (
 
 const nonInteractiveGuidance = `
 
-## Non-interactive mode
+## Non-interactive mode — CRITICAL
 
-You are running in a non-interactive environment. There is no human available to
-answer questions, provide clarification, or confirm your approach.
+You are running in a non-interactive, headless environment. There is no human available to
+answer questions, provide clarification, or confirm your approach. Nobody will ever respond
+to you. Any attempt to ask a question or wait for confirmation wastes your limited rounds.
 
-- The task prompt you received is the complete specification. Read it carefully —
-  every requirement is in there.
-- Do not ask for clarification. Make reasonable assumptions and proceed.
-- Do not wait for confirmation before implementing. Start building immediately.
-- Skills that reference "your human partner" or suggest asking questions: make those
-  judgment calls yourself. You are both the implementer and the decision-maker.
-- The brainstorming skill's "explore user intent" step means carefully re-reading
-  the spec and extracting requirements — not asking questions.
-- Focus on: read the spec → plan → test → implement → verify → deliver.
+RULES (these override ANY skill instructions that conflict):
+- NEVER use communicate(result) to ask a question or request confirmation.
+- NEVER use communicate(status) to summarize your understanding and ask "is that correct?"
+- The ONLY valid use of communicate(result) is to deliver FINAL work output.
+- The task prompt IS the complete specification. Read it carefully, then BUILD.
+- If a skill says "ask your human partner", "confirm with user", or "explore user intent":
+  make those judgment calls yourself. You are both the implementer and the decision-maker.
+- The brainstorming skill's "explore user intent" step means carefully re-reading the spec
+  and extracting every requirement — NOT asking questions.
+- Start coding within your first 3 tool calls. Read the spec, read relevant files, then write code.
+- Focus on: read spec → plan internally → test → implement → verify → deliver.
 `
 
 type SessionConfig struct {
