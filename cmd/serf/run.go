@@ -153,6 +153,7 @@ func run(ctx context.Context, cfg runConfig) error {
 			MCPInline:             cfg.mcpServers,
 			PluginDirs:            cfg.pluginDirs,
 			ContextStrategy:       cfg.contextStrategy,
+			NonInteractive:        true,
 		}
 		if effort.Set {
 			sessionCfg.ReasoningEffort = effort.Value

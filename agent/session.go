@@ -33,6 +33,24 @@ const (
 	SessionClosed        SessionState = "CLOSED"
 )
 
+const nonInteractiveGuidance = `
+
+## Non-interactive mode
+
+You are running in a non-interactive environment. There is no human available to
+answer questions, provide clarification, or confirm your approach.
+
+- The task prompt you received is the complete specification. Read it carefully —
+  every requirement is in there.
+- Do not ask for clarification. Make reasonable assumptions and proceed.
+- Do not wait for confirmation before implementing. Start building immediately.
+- Skills that reference "your human partner" or suggest asking questions: make those
+  judgment calls yourself. You are both the implementer and the decision-maker.
+- The brainstorming skill's "explore user intent" step means carefully re-reading
+  the spec and extracting requirements — not asking questions.
+- Focus on: read the spec → plan → test → implement → verify → deliver.
+`
+
 type SessionConfig struct {
 	MaxToolRoundsPerInput   int `json:"max_tool_rounds_per_input,omitempty"`
 	MaxTurns                int `json:"max_turns,omitempty"`
@@ -78,6 +96,11 @@ type SessionConfig struct {
 	// NoProjectPrompts suppresses loading .serf/prompts/ from the project directory.
 	// Useful for A/B testing to match Docker container behavior (no project prompts).
 	NoProjectPrompts bool `json:"no_project_prompts,omitempty"`
+
+	// NonInteractive indicates no human is available for questions or confirmation.
+	// The task prompt is the complete specification; the agent must make all decisions
+	// autonomously. Appends guidance to the system prompt adapting skill behavior.
+	NonInteractive bool `json:"non_interactive,omitempty"`
 
 	// ContextStrategy selects the context management strategy: compact|recall|session-log|ooda.
 	ContextStrategy string `json:"context_strategy,omitempty"`
@@ -1109,6 +1132,10 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		// Add plugin agents section if any are available.
 		if agentSection := FormatPluginAgentsPrompt(s.pluginAgents); agentSection != "" {
 			sys += agentSection
+		}
+
+		if s.cfg.NonInteractive {
+			sys += nonInteractiveGuidance
 		}
 
 		if strings.TrimSpace(s.cfg.UserInstructionOverride) != "" {

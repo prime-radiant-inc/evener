@@ -87,7 +87,7 @@ func runServe(args []string) error {
 		}
 		fmt.Fprintf(os.Stderr, "[serve] resumed session %s (%d turns)\n", snap.ID, snap.TurnCount)
 	} else {
-		sessionCfg := agent.SessionConfig{StateDir: sd}
+		sessionCfg := agent.SessionConfig{StateDir: sd, NonInteractive: true}
 		sess, err = agent.NewSession(client, profile, env, sessionCfg)
 		if err != nil {
 			return fmt.Errorf("session creation: %w", err)

@@ -351,6 +351,83 @@ func TestEmbeddedSkills_AllSkillsLoadable(t *testing.T) {
 	}
 }
 
+func TestNonInteractive_SystemPromptContainsGuidance(t *testing.T) {
+	root := t.TempDir()
+	initGitRepo(t, root)
+
+	c := llm.NewClient()
+	comm := communicateCall("c1", "result", "done")
+
+	var capturedSystem string
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				if len(req.Messages) > 0 && req.Messages[0].Role == llm.RoleSystem {
+					capturedSystem = req.Messages[0].Text()
+				}
+				return toolCallResponse(comm)
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(root), SessionConfig{
+		NonInteractive: true,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = sess.ProcessInput(ctx, "hi")
+	sess.Close()
+
+	if !strings.Contains(capturedSystem, "non-interactive") {
+		t.Error("system prompt missing non-interactive guidance")
+	}
+	if !strings.Contains(capturedSystem, "no human available") {
+		t.Error("system prompt missing 'no human available' note")
+	}
+}
+
+func TestNonInteractive_NotPresentWhenFalse(t *testing.T) {
+	root := t.TempDir()
+	initGitRepo(t, root)
+
+	c := llm.NewClient()
+	comm := communicateCall("c1", "result", "done")
+
+	var capturedSystem string
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				if len(req.Messages) > 0 && req.Messages[0].Role == llm.RoleSystem {
+					capturedSystem = req.Messages[0].Text()
+				}
+				return toolCallResponse(comm)
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(root), SessionConfig{
+		NonInteractive: false,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = sess.ProcessInput(ctx, "hi")
+	sess.Close()
+
+	if strings.Contains(capturedSystem, "no human available") {
+		t.Error("system prompt should NOT contain non-interactive guidance when NonInteractive is false")
+	}
+}
+
 // builtinSkillNames returns a slice of skill names for test output.
 func builtinSkillNames(skills map[string]SkillMeta) []string {
 	names := make([]string, 0, len(skills))
