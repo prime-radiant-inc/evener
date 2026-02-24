@@ -344,7 +344,7 @@ func defaultToolLimit(toolName string) ToolOutputLimit {
 	case "read_file":
 		return ToolOutputLimit{MaxChars: 50_000, Strategy: TruncHeadTail}
 	case "shell":
-		return ToolOutputLimit{MaxChars: 30_000, MaxLines: 256, Strategy: TruncHeadTail}
+		return ToolOutputLimit{MaxChars: 30_000, MaxLines: 512, Strategy: TruncHeadTail}
 	case "grep":
 		return ToolOutputLimit{MaxChars: 20_000, MaxLines: 200, Strategy: TruncTail}
 	case "glob":

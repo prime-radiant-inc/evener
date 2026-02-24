@@ -229,3 +229,22 @@ func TestRetry_UnknownErrors_DefaultRetryable(t *testing.T) {
 		t.Fatalf("attempts: got %d want 3", attempts)
 	}
 }
+
+func TestDefaultRetryPolicy_Values(t *testing.T) {
+	p := DefaultRetryPolicy()
+	if p.MaxRetries != 4 {
+		t.Fatalf("MaxRetries = %d, want 4", p.MaxRetries)
+	}
+	if p.BaseDelay != 1*time.Second {
+		t.Fatalf("BaseDelay = %v, want 1s", p.BaseDelay)
+	}
+	if p.MaxDelay != 60*time.Second {
+		t.Fatalf("MaxDelay = %v, want 60s", p.MaxDelay)
+	}
+	if p.BackoffMultiplier != 2.0 {
+		t.Fatalf("BackoffMultiplier = %v, want 2.0", p.BackoffMultiplier)
+	}
+	if !p.Jitter {
+		t.Fatal("Jitter should be true")
+	}
+}

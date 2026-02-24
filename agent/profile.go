@@ -236,7 +236,7 @@ func NewOpenAIProfile(model string) ProviderProfile {
 		docFiles:        []string{"AGENTS.md", ".codex/instructions.md"},
 		reasoning:       true,
 		streaming:       true,
-		defaultTimeout:  10_000,
+		defaultTimeout:  120_000,
 		knowledgeCutoff: "2025-06-01",
 		providerOpts: map[string]any{
 			"openai": map[string]any{
@@ -275,7 +275,7 @@ const anthropicBeta1M = "context-1m-2025-08-07"
 func anthropicProviderOpts(has1M bool) map[string]any {
 	opts := map[string]any{
 		// Prevent truncated tool-call JSON on large code/test edits.
-		"max_tokens": 12288,
+		"max_tokens": 16384,
 	}
 	if has1M {
 		opts["beta_headers"] = anthropicBeta1M
@@ -364,7 +364,7 @@ func NewGeminiProfile(model string) ProviderProfile {
 		docFiles:        []string{"GEMINI.md", "AGENTS.md"},
 		reasoning:       true,
 		streaming:       true,
-		defaultTimeout:  10_000,
+		defaultTimeout:  120_000,
 		knowledgeCutoff: "2025-03-01",
 		providerOpts: map[string]any{
 			"gemini": map[string]any{

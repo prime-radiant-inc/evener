@@ -24,7 +24,7 @@ type RetryPolicy struct {
 
 func DefaultRetryPolicy() RetryPolicy {
 	return RetryPolicy{
-		MaxRetries:        2,
+		MaxRetries:        4,
 		BaseDelay:         1 * time.Second,
 		MaxDelay:          60 * time.Second,
 		BackoffMultiplier: 2.0,

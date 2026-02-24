@@ -502,7 +502,7 @@ func TestDefaultToolLimit_MatchesSpecTable(t *testing.T) {
 	}
 	cases := []want{
 		{tool: "read_file", chars: 50_000, lines: 0, strat: TruncHeadTail},
-		{tool: "shell", chars: 30_000, lines: 256, strat: TruncHeadTail},
+		{tool: "shell", chars: 30_000, lines: 512, strat: TruncHeadTail},
 		{tool: "grep", chars: 20_000, lines: 200, strat: TruncTail},
 		{tool: "glob", chars: 20_000, lines: 500, strat: TruncTail},
 		{tool: "edit_file", chars: 10_000, lines: 0, strat: TruncTail},

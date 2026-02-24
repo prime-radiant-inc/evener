@@ -493,6 +493,22 @@ func TestOpenAIProfile_ProviderOptions_ParallelToolCalls(t *testing.T) {
 	}
 }
 
+func TestAnthropicProfile_ProviderOptions_MaxTokens(t *testing.T) {
+	p := NewAnthropicProfile("claude-opus-4-6")
+	opts := p.ProviderOptions()
+	anth, ok := opts["anthropic"].(map[string]any)
+	if !ok {
+		t.Fatal("missing anthropic key in provider options")
+	}
+	mt, ok := anth["max_tokens"]
+	if !ok {
+		t.Fatal("missing max_tokens in anthropic provider options")
+	}
+	if mt != 16384 {
+		t.Fatalf("max_tokens = %v, want 16384", mt)
+	}
+}
+
 func TestAnthropicProfile_ProviderOptions_NoBetaHeadersByDefault(t *testing.T) {
 	p := NewAnthropicProfile("test-model")
 	opts := p.ProviderOptions()
@@ -522,14 +538,14 @@ func TestProviderProfile_SupportsStreaming(t *testing.T) {
 }
 
 func TestProviderProfile_DefaultCommandTimeout(t *testing.T) {
-	if got := NewOpenAIProfile("gpt-5.2").DefaultCommandTimeoutMS(); got != 10_000 {
-		t.Fatalf("OpenAI timeout = %d, want 10000", got)
+	if got := NewOpenAIProfile("gpt-5.2").DefaultCommandTimeoutMS(); got != 120_000 {
+		t.Fatalf("OpenAI timeout = %d, want 120000", got)
 	}
 	if got := NewAnthropicProfile("claude-opus-4-6").DefaultCommandTimeoutMS(); got != 120_000 {
 		t.Fatalf("Anthropic timeout = %d, want 120000", got)
 	}
-	if got := NewGeminiProfile("gemini-2.5-pro").DefaultCommandTimeoutMS(); got != 10_000 {
-		t.Fatalf("Gemini timeout = %d, want 10000", got)
+	if got := NewGeminiProfile("gemini-2.5-pro").DefaultCommandTimeoutMS(); got != 120_000 {
+		t.Fatalf("Gemini timeout = %d, want 120000", got)
 	}
 }
 
