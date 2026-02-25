@@ -199,7 +199,7 @@ func TestUseSkill_SystemPromptContainsSkillList(t *testing.T) {
 	}
 }
 
-func TestOpenAI_SkillsListedWithFilePaths(t *testing.T) {
+func TestOpenAI_NoSkillsSection(t *testing.T) {
 	root := t.TempDir()
 	initGitRepo(t, root)
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nBody.\n")
@@ -230,15 +230,10 @@ func TestOpenAI_SkillsListedWithFilePaths(t *testing.T) {
 	_, _ = sess.ProcessInput(ctx, "hi")
 	sess.Close()
 
-	// OpenAI skills should include file paths for read_file loading.
-	if !strings.Contains(capturedSystem, "<skills>") {
-		t.Error("system prompt missing <skills> section")
-	}
-	if !strings.Contains(capturedSystem, "(file:") {
-		t.Error("OpenAI skills listing should include file paths")
-	}
-	if !strings.Contains(capturedSystem, "read_file") {
-		t.Error("OpenAI system prompt should mention read_file for loading skills")
+	// OpenAI should NOT have skills in system prompt — listing skill file paths
+	// causes the model to read all of them on the first turn, wasting context.
+	if strings.Contains(capturedSystem, "<skills>") {
+		t.Error("OpenAI system prompt should NOT contain <skills> section")
 	}
 	// OpenAI should NOT have use_skill tool listed.
 	if strings.Contains(capturedSystem, "- use_skill:") {

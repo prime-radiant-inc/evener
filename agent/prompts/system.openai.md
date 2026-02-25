@@ -70,11 +70,6 @@ Important:
 - File paths must be relative, NEVER absolute.
 - Do NOT use standard unified diff format (--- a/ +++ b/). Use only the format above.
 
-## Loading skills
-
-Each skill in the <skills> section includes a file path. To load a skill, use
-read_file to read its SKILL.md in full, then follow the instructions it contains.
-
 ## Exploration and reading files
 
 - Think first: before any tool call, decide ALL files/resources you need.

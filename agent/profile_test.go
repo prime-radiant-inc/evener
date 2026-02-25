@@ -312,8 +312,9 @@ func TestAllProfiles_SystemPromptContainsCommunicateGuidance(t *testing.T) {
 	}
 }
 
-// TestAllProfiles_SystemPromptContainsSkillsGuidance verifies that all
-// profiles include behavioral guidance for loading skills.
+// TestAllProfiles_SystemPromptContainsSkillsGuidance verifies that
+// Anthropic/Gemini include use_skill guidance and OpenAI does not
+// include skills guidance (skills are not rendered for OpenAI).
 func TestAllProfiles_SystemPromptContainsSkillsGuidance(t *testing.T) {
 	profiles := map[string]ProviderProfile{
 		"openai":    NewOpenAIProfile("gpt-5.2"),
@@ -325,25 +326,21 @@ func TestAllProfiles_SystemPromptContainsSkillsGuidance(t *testing.T) {
 	for name, p := range profiles {
 		prompt := p.BuildSystemPrompt(env, nil, nil, "")
 
-		// All profiles must have general skills guidance.
-		if !strings.Contains(prompt, "Skills extend") {
-			t.Errorf("profile %q system prompt missing skills guidance text", name)
-		}
-
 		// Anthropic and Gemini use the use_skill tool.
 		if name != "openai" && !strings.Contains(prompt, "use_skill") {
 			t.Errorf("profile %q system prompt missing use_skill guidance", name)
 		}
 
-		// OpenAI uses read_file on SKILL.md paths instead.
-		if name == "openai" && !strings.Contains(prompt, "read_file") {
-			t.Errorf("profile %q system prompt missing read_file skill loading guidance", name)
+		// OpenAI should NOT have skills-related guidance.
+		if name == "openai" && strings.Contains(prompt, "<skills>") {
+			t.Errorf("profile %q system prompt should NOT contain <skills> section", name)
 		}
 	}
 }
 
 func TestBuildSystemPrompt_IncludesSkillsList(t *testing.T) {
-	p := NewOpenAIProfile("gpt-5.2")
+	// Anthropic profile has use_skill, so skills are rendered in system prompt.
+	p := NewAnthropicProfile("claude-test")
 	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux", Today: "2026-02-09"}
 
 	skills := []SkillMeta{
@@ -355,14 +352,28 @@ func TestBuildSystemPrompt_IncludesSkillsList(t *testing.T) {
 	if !strings.Contains(prompt, "<skills>") {
 		t.Error("prompt missing <skills> section")
 	}
-	if !strings.Contains(prompt, "- greet: Greeting skill (file: /tmp/skills/greet/SKILL.md)") {
-		t.Error("prompt missing greet skill entry with file path")
+	if !strings.Contains(prompt, "- greet: Greeting skill") {
+		t.Error("prompt missing greet skill entry")
 	}
-	if !strings.Contains(prompt, "- deploy: Deploy skill (file: /tmp/skills/deploy/SKILL.md)") {
-		t.Error("prompt missing deploy skill entry with file path")
+	if !strings.Contains(prompt, "- deploy: Deploy skill") {
+		t.Error("prompt missing deploy skill entry")
 	}
 	if !strings.Contains(prompt, "</skills>") {
 		t.Error("prompt missing </skills> closing tag")
+	}
+}
+
+func TestBuildSystemPrompt_OpenAI_NoSkillsList(t *testing.T) {
+	p := NewOpenAIProfile("gpt-5.2")
+	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux", Today: "2026-02-09"}
+
+	skills := []SkillMeta{
+		{Name: "greet", Description: "Greeting skill", SkillFile: "/tmp/skills/greet/SKILL.md"},
+	}
+	prompt := p.BuildSystemPrompt(env, nil, skills, "")
+
+	if strings.Contains(prompt, "<skills>") {
+		t.Error("OpenAI prompt should NOT contain <skills> section")
 	}
 }
 

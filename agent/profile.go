@@ -183,10 +183,21 @@ func (p *baseProfile) BuildSystemPrompt(env EnvironmentInfo, docs []ProjectDoc, 
 		b.WriteString("</git>\n\n")
 	}
 
-	if len(skills) > 0 {
+	// Skills section is only rendered for profiles that use the use_skill tool
+	// (Anthropic, Gemini). OpenAI models read skills via read_file, and listing
+	// skill file paths in the system prompt causes the model to read all of them
+	// on the first turn, wasting context.
+	hasUseSkill := false
+	for _, td := range p.ToolDefinitions() {
+		if td.Name == "use_skill" {
+			hasUseSkill = true
+			break
+		}
+	}
+	if len(skills) > 0 && hasUseSkill {
 		b.WriteString("<skills>\n")
 		for _, s := range skills {
-			b.WriteString(fmt.Sprintf("- %s: %s (file: %s)\n", s.Name, s.Description, s.SkillFile))
+			b.WriteString(fmt.Sprintf("- %s: %s\n", s.Name, s.Description))
 		}
 		b.WriteString("</skills>\n\n")
 	}

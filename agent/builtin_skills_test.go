@@ -136,7 +136,7 @@ func TestEmbeddedSkills_InSystemPrompt(t *testing.T) {
 
 	var capturedSystem string
 	f := &fakeAdapter{
-		name: "openai",
+		name: "anthropic",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
 				if len(req.Messages) > 0 && req.Messages[0].Role == llm.RoleSystem {
@@ -148,7 +148,8 @@ func TestEmbeddedSkills_InSystemPrompt(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	// Anthropic profile has use_skill tool, so skills are listed in system prompt.
+	sess, err := NewSession(c, NewAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -171,13 +172,9 @@ func TestEmbeddedSkills_InSystemPrompt(t *testing.T) {
 	}
 }
 
-func TestEmbeddedSkills_ProjectShadowsEmbedded(t *testing.T) {
+func TestOpenAI_NoSkillsInSystemPrompt(t *testing.T) {
 	root := t.TempDir()
 	initGitRepo(t, root)
-
-	// Project has a custom TDD skill that should shadow the embedded one.
-	writeSkillMD(t, root, "test-driven-development",
-		"---\nname: test-driven-development\ndescription: \"Custom project TDD\"\n---\nCustom TDD body.\n")
 
 	c := llm.NewClient()
 	comm := communicateCall("c1", "result", "done")
@@ -196,7 +193,49 @@ func TestEmbeddedSkills_ProjectShadowsEmbedded(t *testing.T) {
 	}
 	c.Register(f)
 
+	// OpenAI profile does not list skills in system prompt to avoid
+	// the model wasting rounds reading skill files.
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = sess.ProcessInput(ctx, "hi")
+	sess.Close()
+
+	if strings.Contains(capturedSystem, "<skills>") {
+		t.Error("OpenAI system prompt should NOT contain <skills> section")
+	}
+}
+
+func TestEmbeddedSkills_ProjectShadowsEmbedded(t *testing.T) {
+	root := t.TempDir()
+	initGitRepo(t, root)
+
+	// Project has a custom TDD skill that should shadow the embedded one.
+	writeSkillMD(t, root, "test-driven-development",
+		"---\nname: test-driven-development\ndescription: \"Custom project TDD\"\n---\nCustom TDD body.\n")
+
+	c := llm.NewClient()
+	comm := communicateCall("c1", "result", "done")
+
+	var capturedSystem string
+	f := &fakeAdapter{
+		name: "anthropic",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				if len(req.Messages) > 0 && req.Messages[0].Role == llm.RoleSystem {
+					capturedSystem = req.Messages[0].Text()
+				}
+				return toolCallResponse(comm)
+			},
+		},
+	}
+	c.Register(f)
+
+	// Anthropic profile renders skills in system prompt, so we can verify shadowing.
+	sess, err := NewSession(c, NewAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
