@@ -34,7 +34,7 @@ Start from benchmark results. Categorize the failure:
 | Pattern | Symptoms | Likely Fix |
 |---------|----------|------------|
 | Empty/null response | Transcript ends with empty assistant turn, ~4 output tokens | Code: retry logic in session.go |
-| One-shot-and-quit | 1-5 rounds, communicate(result) immediately, no iteration | Prompt: verification/iteration guidance |
+| One-shot-and-quit | 1-5 rounds, communicate(success) immediately, no iteration | Prompt: verification/iteration guidance |
 | Wrong approach | Many rounds but fundamentally wrong strategy | Prompt: exploration/planning guidance |
 | Gave up early | 5-10 rounds, reasonable start, then premature submit | Prompt: persistence directives |
 | Timeout | 900s wallclock, task still running | Code: efficiency, or accept as hard |
@@ -112,7 +112,7 @@ The transcript parser (`/tmp/parse_transcript.py` on flower-garden, or write you
 
 **What to look for:**
 1. **How many rounds?** If < 5 of 100, the model is giving up early
-2. **Did it call communicate(result)?** If yes, what did it submit? If no, did it emit bare text or null?
+2. **Did it call communicate(success)?** If yes, what did it submit? If no, did it emit bare text or null?
 3. **Did it run tests?** Good agents test their work. One-shot agents don't.
 4. **Did it iterate on failures?** After a test failure, did it try to fix the issue?
 5. **What was the final state?** Read the files the agent wrote — compare against verifier expectations
@@ -206,9 +206,10 @@ GOOS=linux GOARCH=amd64 go build -o serf-linux-amd64 ./cmd/serf/
 scp serf-linux-amd64 jesse@192.168.118.101:~/git/terminal-bench/serf-linux-amd64
 ```
 
-Then SSH and launch harbor — **you must source the `.env` file first** or the API key won't reach containers:
+Then SSH and launch harbor — **you must export the API key AND add harbor to PATH**:
 ```bash
 ssh jesse@192.168.118.101
+export PATH="$HOME/.local/bin:$PATH"
 cd ~/git/terminal-bench
 export $(cat .env | xargs)   # CRITICAL: loads OPENAI_API_KEY into environment
 harbor run -d 'terminal-bench@2.0' \
@@ -220,22 +221,29 @@ harbor run -d 'terminal-bench@2.0' \
   -n 2 --delete --debug
 ```
 
-For non-interactive launch via SSH:
+For non-interactive launch via SSH (use `bash -s` heredoc — regular SSH quoting breaks `$!`):
 ```bash
-ssh jesse@192.168.118.101 'export PATH="$HOME/.local/bin:$PATH" && \
-  cd ~/git/terminal-bench && \
-  export $(cat .env | xargs) && \
-  nohup harbor run -d "terminal-bench@2.0" \
-    -t task1 -t task2 \
-    --agent-import-path "serf_agent:SerfAgent" \
-    -m openai/gpt-5.3-codex \
-    --ak max_rounds=100 \
-    -o /tmp/serf-runN \
-    -n 2 --delete --debug \
-    > /tmp/serf-runN.log 2>&1 &'
+ssh 192.168.118.101 bash -s <<'REMOTE'
+export PATH="$HOME/.local/bin:$PATH"
+cd ~/git/terminal-bench
+export $(cat .env | xargs)
+nohup harbor run \
+  -d "terminal-bench@2.0" \
+  -t task1 -t task2 \
+  --agent-import-path "serf_agent:SerfAgent" \
+  -m openai/gpt-5.3-codex \
+  --ak max_rounds=100 \
+  -o /tmp/serf-runN \
+  -n 4 --delete --debug \
+  > /tmp/serf-runN.log 2>&1 &
+echo "PID=$!"
+REMOTE
 ```
 
-**Common pitfall:** If all tasks fail with "no LLM providers configured", the API key wasn't loaded. Check with `echo $OPENAI_API_KEY` before running harbor.
+**Common pitfalls:**
+- If all tasks fail with "no LLM providers configured", the API key wasn't exported. Use `export $(cat .env | xargs)`, NOT `source .env`.
+- If `harbor: command not found`, add `$HOME/.local/bin` to PATH. Harbor is installed via uv at `~/.local/bin/harbor`.
+- Flower-garden hostname may not resolve via Tailscale MagicDNS — use `192.168.118.101`.
 
 ## Benchmark Result Transcripts
 
