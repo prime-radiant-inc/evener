@@ -695,27 +695,28 @@ func defCommunicate() llm.ToolDefinition {
 		Name: "communicate",
 		Description: "Send output to the user.\n\n" +
 			"action=status: brief progress update. Use sparingly — do NOT use as a stopping point.\n\n" +
-			"action=result: final output (EXITS THE SESSION). Before calling with action=result, you MUST:\n" +
+			"action=success: assert that the task is COMPLETE and VERIFIED (EXITS THE SESSION). " +
+			"Before calling with action=success, you MUST:\n" +
 			"1. Run the project's test suite or write and run your own tests.\n" +
-			"2. Verify ALL tests pass — if any test fails, fix it first, do NOT call result.\n" +
+			"2. Verify ALL tests pass — if any test fails, fix it first, do NOT call success.\n" +
 			"3. Re-read the original task spec and confirm every requirement is met.\n" +
-			"Calling communicate(result) with untested or broken work scores 0%. " +
-			"A working solution after 80 rounds scores 100%.",
+			"Calling communicate(success) with failing tests or unfinished work is a lie. " +
+			"A working solution after 80 rounds scores 100%. A broken submission scores 0%.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"action": map[string]any{
 					"type": "string",
-					"enum": []string{"status", "result"},
+					"enum": []string{"status", "success"},
 				},
 				"message": map[string]any{
 					"type":        "string",
-					"description": "Human-readable text. Required for action=status; optional for action=result when output is provided.",
+					"description": "Human-readable text. Required for action=status; optional for action=success when output is provided.",
 				},
 				"output": map[string]any{
 					"type":                 "object",
-					"description":          "Structured output (optional, for action=result).",
+					"description":          "Structured output (optional, for action=success).",
 					"additionalProperties": false,
 					"properties": map[string]any{
 						"message": map[string]any{"type": "string"},

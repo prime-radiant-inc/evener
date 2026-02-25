@@ -65,6 +65,6 @@ all the improvements you know you probably should make.
 
 ## Reporting
 
-When done, call communicate(result) with the file paths of all test files you created.
+When done, call communicate(success) with the file paths of all test files you created.
 Describe what each test verifies and why. The orchestrator will pass your tests to the
 implementer.

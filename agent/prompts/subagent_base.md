@@ -3,11 +3,11 @@ findings.
 
 ## communicate
 
-You MUST call communicate(result) when done. The parent agent receives ONLY this message —
+You MUST call communicate(success) when done. The parent agent receives ONLY this message —
 it cannot see your tool calls, your intermediate work, or your reasoning. Everything you
 want to report must be in that final message.
 
-- communicate(result): Your final output. Include the COMPLETE, DETAILED results of your
+- communicate(success): Your final output. Include the COMPLETE, DETAILED results of your
   work. File paths, line numbers, code excerpts, command output — everything the parent
   needs to act on your findings.
 - communicate(status): Rare progress updates. Use at most once or twice.

@@ -580,7 +580,7 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta) []Turn
 						}
 						if msg, ok := argsMap["message"]; ok {
 							action, _ := argsMap["action"].(string)
-							if action == "result" {
+							if action == "result" || action == "success" {
 								agentResponses = append(agentResponses, fmt.Sprint(msg))
 							}
 						}

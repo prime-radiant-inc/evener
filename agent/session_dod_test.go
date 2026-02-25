@@ -1072,7 +1072,7 @@ func TestSession_LLMTransientErrors_RetryWithBackoff(t *testing.T) {
 	}
 }
 
-// communicateResultResponse returns a fake LLM response that calls communicate(result).
+// communicateResultResponse returns a fake LLM response that calls communicate(success).
 func communicateResultResponse(msg string) llm.Response {
 	return llm.Response{
 		Message: llm.Message{
@@ -1081,7 +1081,7 @@ func communicateResultResponse(msg string) llm.Response {
 				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
 					ID:        "comm_nudge",
 					Name:      "communicate",
-					Arguments: json.RawMessage(fmt.Sprintf(`{"action":"result","message":%q}`, msg)),
+					Arguments: json.RawMessage(fmt.Sprintf(`{"action":"success","message":%q}`, msg)),
 				}},
 			},
 		},
@@ -1096,7 +1096,7 @@ func TestSession_Subagents_SpawnWaitClose_AndDepthLimit(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("subok")} },
-			// Auto-nudge: default subagents get nudged to call communicate(result).
+			// Auto-nudge: default subagents get nudged to call communicate(success).
 			func(req llm.Request) llm.Response { return communicateResultResponse("subok") },
 		},
 	}
@@ -1210,7 +1210,7 @@ func TestSession_WaitAgent_ReturnsSubAgentResult(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("result text")} },
-			// Auto-nudge: default subagents get nudged to call communicate(result).
+			// Auto-nudge: default subagents get nudged to call communicate(success).
 			func(req llm.Request) llm.Response { return communicateResultResponse("result text") },
 		},
 	}
@@ -3710,8 +3710,8 @@ func TestSession_Subagent_DefaultGetsSubagentInstructions(t *testing.T) {
 
 	// The override should instruct the subagent to work directly.
 	override := sub.sess.cfg.BasePromptOverride
-	if !strings.Contains(override, "communicate(result)") {
-		t.Errorf("subagent base prompt should mention communicate(result), got: %s", override)
+	if !strings.Contains(override, "communicate(success)") {
+		t.Errorf("subagent base prompt should mention communicate(success), got: %s", override)
 	}
 
 	// Wait for completion so goroutine doesn't leak.
@@ -3809,9 +3809,9 @@ func TestSession_Subagent_DoesNotGetParentDelegationPrompt(t *testing.T) {
 		t.Error("subagent base prompt should not contain spawn_agent delegation instructions")
 	}
 
-	// It should contain communicate(result) guidance.
-	if !strings.Contains(sub.sess.cfg.BasePromptOverride, "communicate(result)") {
-		t.Error("subagent base prompt should mention communicate(result)")
+	// It should contain communicate(success) guidance.
+	if !strings.Contains(sub.sess.cfg.BasePromptOverride, "communicate(success)") {
+		t.Error("subagent base prompt should mention communicate(success)")
 	}
 
 	// Wait for the subagent to complete so we can check the adapter's recorded requests.
@@ -3845,14 +3845,14 @@ func TestSession_Subagent_DoesNotGetParentDelegationPrompt(t *testing.T) {
 		t.Error("subagent should have communicate in its API tool list")
 	}
 
-	// Verify the base prompt (in system message) mentions communicate(result).
+	// Verify the base prompt (in system message) mentions communicate(success).
 	sysMsg := subReq.Messages[0]
 	if sysMsg.Role != "system" {
 		t.Fatalf("expected first message to be system, got %s", sysMsg.Role)
 	}
 	sysTxt := sysMsg.Content[0].Text
-	if !strings.Contains(sysTxt, "communicate(result)") {
-		t.Error("subagent system prompt should mention communicate(result)")
+	if !strings.Contains(sysTxt, "communicate(success)") {
+		t.Error("subagent system prompt should mention communicate(success)")
 	}
 	// Base prompt should NOT contain the parent's delegation section.
 	if strings.Contains(sysTxt, "Subagent delegation") {
@@ -3981,7 +3981,7 @@ func TestSession_WaitAgent_ErrorsOnReWait(t *testing.T) {
 }
 
 func TestSession_Subagent_AutoNudgeOnMissingCommunicate(t *testing.T) {
-	// When a subagent stops without calling communicate(result), the runner
+	// When a subagent stops without calling communicate(success), the runner
 	// should automatically send a nudge message and let it try again once.
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -3991,14 +3991,14 @@ func TestSession_Subagent_AutoNudgeOnMissingCommunicate(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			// First call: subagent returns text without communicate(result).
+			// First call: subagent returns text without communicate(success).
 			func(req llm.Request) llm.Response {
 				mu.Lock()
 				callCount++
 				mu.Unlock()
 				return llm.Response{Message: llm.Assistant("I found some stuff")}
 			},
-			// Second call (after nudge): subagent calls communicate(result).
+			// Second call (after nudge): subagent calls communicate(success).
 			func(req llm.Request) llm.Response {
 				mu.Lock()
 				callCount++
@@ -4010,7 +4010,7 @@ func TestSession_Subagent_AutoNudgeOnMissingCommunicate(t *testing.T) {
 							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
 								ID:        "comm1",
 								Name:      "communicate",
-								Arguments: json.RawMessage(`{"action":"result","message":"Here are my findings"}`),
+								Arguments: json.RawMessage(`{"action":"success","message":"Here are my findings"}`),
 							}},
 						},
 					},
@@ -4056,9 +4056,9 @@ func TestSession_Subagent_AutoNudgeOnMissingCommunicate(t *testing.T) {
 	json.Unmarshal([]byte(waitRes.Output), &result)
 
 	// The auto-nudge should have caused a second ProcessInput call,
-	// resulting in the communicate(result) output.
+	// resulting in the communicate(success) output.
 	if !strings.Contains(result.Output, "Here are my findings") {
-		t.Errorf("expected nudged subagent to report findings via communicate(result), got: %q", result.Output)
+		t.Errorf("expected nudged subagent to report findings via communicate(success), got: %q", result.Output)
 	}
 	mu.Lock()
 	cc := callCount

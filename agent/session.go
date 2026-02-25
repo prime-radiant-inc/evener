@@ -1341,7 +1341,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 					})
 					steering := "You responded with bare text instead of a tool call. " +
 						"You must use the communicate tool to deliver results. " +
-						"If you are done, call communicate(action=result). " +
+						"If you are done, call communicate(action=success). " +
 						"If you still have work to do, call your next tool."
 					s.appendTurn(TurnSteering, llm.User(steering))
 					s.emit(EventSteeringInjected, SteeringInjectedData{Text: steering})
@@ -2200,16 +2200,16 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 						return nil, fmt.Errorf("communicate(status) requires a non-empty message")
 					}
 				}
-			case "result":
+			case "success", "result": // "result" accepted for backward compat
 				if v, ok := args["output"]; (!ok || v == nil) && strings.TrimSpace(message) == "" {
-					return nil, fmt.Errorf("communicate(result) requires either message or output")
+					return nil, fmt.Errorf("communicate(success) requires either message or output")
 				}
 			default:
-				return nil, fmt.Errorf("unknown communicate action %q: use status or result", action)
+				return nil, fmt.Errorf("unknown communicate action %q: use status or success", action)
 			}
 
 			resultText := message
-			if action == "result" {
+			if action == "success" || action == "result" {
 				if output, ok := args["output"]; ok && output != nil {
 					// Only use canonicalized output when there's no top-level message.
 					// When both message and output are provided, message is the detailed
@@ -2231,7 +2231,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			// Drain steering queue into the inbox.
 			inbox := s.drainSteering()
 
-			if action == "result" {
+			if action == "success" || action == "result" {
 				s.mu.Lock()
 				s.resultDelivered = true
 				s.resultText = resultText

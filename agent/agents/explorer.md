@@ -41,7 +41,7 @@ If no thoroughness level is specified, default to **moderate**.
 
 ## Reporting
 
-The caller receives ONLY your communicate(result) message — nothing else. Be terse but
+The caller receives ONLY your communicate(success) message — nothing else. Be terse but
 precise. Every sentence should carry information. No filler, no preamble, no "I found
 that..." or "Let me summarize...".
 

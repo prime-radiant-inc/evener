@@ -293,10 +293,10 @@ func (s *Session) getSub(agentID string) *subagent {
 }
 
 // communicateNudge is the message sent to a subagent that stops without
-// calling communicate(result). Sent at most once.
-const communicateNudge = `You stopped without calling communicate(result). ` +
-	`You MUST call communicate(result) with a message summarizing your complete findings ` +
-	`before stopping. The parent agent receives ONLY the communicate(result) message — ` +
+// calling communicate(success). Sent at most once.
+const communicateNudge = `You stopped without calling communicate(success). ` +
+	`You MUST call communicate(success) with a message summarizing your complete findings ` +
+	`before stopping. The parent agent receives ONLY the communicate(success) message — ` +
 	`it cannot see anything else you did. Report your results now.`
 
 func (a *subagent) run(ctx context.Context, input string) {
@@ -307,7 +307,7 @@ func (a *subagent) run(ctx context.Context, input string) {
 
 	res, err := a.sess.ProcessInput(ctx, input)
 
-	// Auto-nudge: if a default subagent stopped without calling communicate(result),
+	// Auto-nudge: if a default subagent stopped without calling communicate(success),
 	// send one reminder and let it try again. This addresses the empty-result
 	// failure mode where subagents do work but forget to report back.
 	if a.nudgeEnabled && err == nil && !a.sess.ResultDelivered() {

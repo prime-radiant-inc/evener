@@ -8,7 +8,7 @@ import (
 )
 
 // WithCommunicateRequiredDataKeys returns a cloned profile where the `communicate`
-// tool schema requires specific `output.data.*` keys for action=result.
+// tool schema requires specific `output.data.*` keys for action=success.
 //
 // This is intended for orchestration systems (like Toil) that can provide the
 // required output keys per task/node.

@@ -54,7 +54,7 @@ Given the spec, tests, and implementation, check for:
 
 ## Verdict
 
-Your communicate(result) message must contain:
+Your communicate(success) message must contain:
 
 **PASS** or **FAIL**
 

@@ -791,7 +791,7 @@ func TestParity_SubagentSpawnAndWait(t *testing.T) {
 								{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
 									ID:        "comm_nudge",
 									Name:      "communicate",
-									Arguments: json.RawMessage(`{"action":"result","message":"subagent completed task"}`),
+									Arguments: json.RawMessage(`{"action":"success","message":"subagent completed task"}`),
 								}},
 							},
 						},
@@ -864,7 +864,7 @@ func TestParity_CloseAgentWaitsForCompletion(t *testing.T) {
 								{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
 									ID:        "comm_nudge",
 									Name:      "communicate",
-									Arguments: json.RawMessage(`{"action":"result","message":"subagent done"}`),
+									Arguments: json.RawMessage(`{"action":"success","message":"subagent done"}`),
 								}},
 							},
 						},

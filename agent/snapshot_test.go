@@ -373,7 +373,7 @@ func TestSession_AutoSave_PersistsToolResults(t *testing.T) {
 	dir := t.TempDir()
 
 	c := llm.NewClient()
-	comm := communicateCall("c1", "result", "done")
+	comm := communicateCall("c1", "success", "done")
 	c.Register(&fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{

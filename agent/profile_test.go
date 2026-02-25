@@ -303,8 +303,8 @@ func TestAllProfiles_SystemPromptContainsCommunicateGuidance(t *testing.T) {
 		if !strings.Contains(prompt, "communicate(status)") {
 			t.Errorf("profile %q system prompt missing communicate(status) guidance", name)
 		}
-		if !strings.Contains(prompt, "communicate(result)") {
-			t.Errorf("profile %q system prompt missing communicate(result) guidance", name)
+		if !strings.Contains(prompt, "communicate(success)") {
+			t.Errorf("profile %q system prompt missing communicate(success) guidance", name)
 		}
 		if !strings.Contains(prompt, "inbox") {
 			t.Errorf("profile %q system prompt missing inbox guidance", name)
@@ -429,8 +429,8 @@ func TestBuildSystemPrompt_SubagentGuidanceContent(t *testing.T) {
 		t.Error("subagent guidance should mention task_list for coordination")
 	}
 	// Should clarify that task_list is for the parent agent, not shared across subagents.
-	if !strings.Contains(prompt, "communicate(result)") {
-		t.Error("subagent guidance should mention communicate(result) for subagent results")
+	if !strings.Contains(prompt, "communicate(success)") {
+		t.Error("subagent guidance should mention communicate(success) for subagent results")
 	}
 	// Should NOT imply shared task_list across subagents.
 	if strings.Contains(prompt, "coordinate work across subagents") {

@@ -20,7 +20,7 @@ func TestEmptyResponse_RetriesWithSteering(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	result := communicateCall("c1", "result", "final answer")
+	result := communicateCall("c1", "success", "final answer")
 
 	f := &fakeAdapter{
 		name: "openai",
@@ -124,7 +124,7 @@ func TestEmptyResponse_ResetsOnProgress(t *testing.T) {
 		})
 		return llm.ToolCallData{ID: id, Name: "exec_command", Arguments: raw, Type: "function"}
 	}
-	result := communicateCall("c1", "result", "done")
+	result := communicateCall("c1", "success", "done")
 
 	f := &fakeAdapter{
 		name: "openai",
@@ -165,7 +165,7 @@ func TestBareText_RedirectsToCommunicate(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	result := communicateCall("c1", "result", "final answer")
+	result := communicateCall("c1", "success", "final answer")
 
 	f := &fakeAdapter{
 		name: "openai",

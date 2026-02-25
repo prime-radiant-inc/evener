@@ -31,7 +31,7 @@ func TestCommunicate_ToolChoiceAuto_SetOnRequest(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	comm := communicateCall("c1", "result", "done")
+	comm := communicateCall("c1", "success", "done")
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
@@ -72,7 +72,7 @@ func TestCommunicate_ResultExitsLoop(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	comm := communicateCall("c1", "result", "Here is your answer.")
+	comm := communicateCall("c1", "success", "Here is your answer.")
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
@@ -114,7 +114,7 @@ func TestCommunicate_ResultStructuredOutputExitsLoop(t *testing.T) {
 	c := llm.NewClient()
 
 	comm := communicateCallArgs("c1", map[string]any{
-		"action": "result",
+		"action": "success",
 		"output": map[string]any{
 			"message": "Structured final answer.",
 			"data": map[string]any{
@@ -163,7 +163,7 @@ func TestCommunicate_StatusContinuesLoop(t *testing.T) {
 	c := llm.NewClient()
 
 	status := communicateCall("c1", "status", "Working on it...")
-	result := communicateCall("c2", "result", "All done.")
+	result := communicateCall("c2", "success", "All done.")
 
 	f := &fakeAdapter{
 		name: "openai",
@@ -207,7 +207,7 @@ func TestCommunicate_StatusWithOutputContinuesLoop(t *testing.T) {
 			"data":    map[string]any{},
 		},
 	})
-	result := communicateCall("c2", "result", "All done.")
+	result := communicateCall("c2", "success", "All done.")
 
 	f := &fakeAdapter{
 		name: "openai",
@@ -323,7 +323,7 @@ func TestCommunicate_ResultSchemaRejectsMalformedOutput(t *testing.T) {
 	defer sess.Close()
 
 	res := sess.reg.ExecuteCall(context.Background(), sess.env, communicateCallArgs("c1", map[string]any{
-		"action": "result",
+		"action": "success",
 		"output": map[string]any{
 			"message": "missing data field",
 		},
@@ -341,7 +341,7 @@ func TestCommunicate_EmitsEvent(t *testing.T) {
 	c := llm.NewClient()
 
 	status := communicateCall("c1", "status", "Progress update")
-	result := communicateCall("c2", "result", "Final answer")
+	result := communicateCall("c2", "success", "Final answer")
 
 	f := &fakeAdapter{
 		name: "openai",
@@ -395,8 +395,8 @@ func TestCommunicate_EmitsEvent(t *testing.T) {
 	}
 
 	// Second should be result.
-	if action, _ := commEvents[1].DataMap()["action"].(string); action != "result" {
-		t.Fatalf("event 1 action: got %q want %q", action, "result")
+	if action, _ := commEvents[1].DataMap()["action"].(string); action != "success" {
+		t.Fatalf("event 1 action: got %q want %q", action, "success")
 	}
 	if msg, _ := commEvents[1].DataMap()["message"].(string); msg != "Final answer" {
 		t.Fatalf("event 1 message: got %q want %q", msg, "Final answer")
@@ -407,7 +407,7 @@ func TestCommunicate_MinResultRound_HidesToolBeforeThreshold(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	lateResult := communicateCall("c3", "result", "verified answer")
+	lateResult := communicateCall("c3", "success", "verified answer")
 
 	shellCall := func(id string) llm.ToolCallData {
 		raw, _ := json.Marshal(map[string]any{
@@ -488,7 +488,7 @@ func TestCommunicate_MinResultRound_ZeroAllowsImmediate(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	result := communicateCall("c1", "result", "immediate answer")
+	result := communicateCall("c1", "success", "immediate answer")
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
