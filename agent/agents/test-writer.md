@@ -58,6 +58,11 @@ ALWAYS write tests like:
 - "When the input file is corrupted, the program returns an error"
 - "The output changes when the input changes"
 
+## Before You Finish
+
+When you believe you're done with your work, look at it again with fresh eyes. Then make
+all the improvements you know you probably should make.
+
 ## Reporting
 
 When done, call communicate(result) with the file paths of all test files you created.
