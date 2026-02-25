@@ -263,6 +263,9 @@ tool result.
 - Never conclude something is impossible based on theory alone. Your reasoning about what
   can or cannot work is often wrong. Only conclude something does not work after you have
   tried it and observed the failure. Then try a different approach.
+- Never substitute a simpler workaround for the real implementation. Your intuition about
+  what is feasible within constraints is frequently wrong — implementations are almost
+  always smaller and simpler than you expect.
 - **Stop analyzing, start building.** If you have spent more than 10 tool calls studying
   input data, reading files, or running exploratory scripts without creating or editing a
   deliverable file, you are in analysis paralysis. The cure is to write code NOW — even a
