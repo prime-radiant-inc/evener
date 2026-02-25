@@ -169,6 +169,18 @@ func firstEmbedMatchNamed(candidates []string) (string, string, bool) {
 	return "", "", false
 }
 
+// SubagentBasePrompt returns the common base prompt for all subagents.
+// This is a stripped-down version of base.md covering communicate(result),
+// tool basics, and workflow essentials. Agent-specific instructions are
+// appended after this base.
+func SubagentBasePrompt() string {
+	b, err := embeddedPrompts.ReadFile("prompts/subagent_base.md")
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
 // GlobalPromptsDir returns the path to the global prompts directory.
 // Uses XDG_CONFIG_HOME if set, otherwise ~/.config.
 func GlobalPromptsDir() string {

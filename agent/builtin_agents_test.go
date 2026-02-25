@@ -13,6 +13,27 @@ import (
 
 // --- builtinAgents() ---
 
+func TestBuiltinAgents_LoadsAllRoles(t *testing.T) {
+	agents, err := builtinAgents()
+	if err != nil {
+		t.Fatalf("builtinAgents: %v", err)
+	}
+	want := []string{"explorer", "planner", "test-writer", "implementer", "reviewer"}
+	for _, name := range want {
+		agent, ok := agents[name]
+		if !ok {
+			t.Errorf("missing built-in agent %q", name)
+			continue
+		}
+		if agent.SystemPrompt == "" {
+			t.Errorf("agent %q has empty system prompt", name)
+		}
+		if agent.Description == "" {
+			t.Errorf("agent %q has empty description", name)
+		}
+	}
+}
+
 func TestBuiltinAgents_LoadsExplorer(t *testing.T) {
 	agents, err := builtinAgents()
 	if err != nil {
@@ -231,9 +252,9 @@ func TestSpawnAgent_BlockingMode(t *testing.T) {
 	if result.TurnsUsed < 1 {
 		t.Error("expected turns_used >= 1")
 	}
-	// Should NOT contain agent_id (that's the async response).
-	if strings.Contains(res.Output, "agent_id") {
-		t.Errorf("blocking result should not contain agent_id, got: %s", res.Output)
+	// Blocking result should include agent_id so the caller can use resume_agent later.
+	if !strings.Contains(res.Output, "agent_id") {
+		t.Errorf("blocking result should contain agent_id for resume_agent, got: %s", res.Output)
 	}
 }
 
@@ -325,6 +346,142 @@ func TestSpawnAgent_BlockingWithExplorerAgent(t *testing.T) {
 	// Should have used the explorer's system prompt.
 	if !strings.Contains(subagentSystemPrompt, "codebase exploration specialist") {
 		t.Errorf("subagent should use explorer prompt, got:\n%.200s...", subagentSystemPrompt)
+	}
+}
+
+// --- subagent prompt composition ---
+
+func TestSubagentBasePrompt_IsNonEmpty(t *testing.T) {
+	base := SubagentBasePrompt()
+	if base == "" {
+		t.Fatal("SubagentBasePrompt() should return non-empty string")
+	}
+}
+
+func TestSubagentBasePrompt_ContainsCommunicateGuidance(t *testing.T) {
+	base := SubagentBasePrompt()
+	if !strings.Contains(base, "communicate") {
+		t.Error("subagent base prompt should mention communicate(result)")
+	}
+}
+
+func TestSubagentBasePrompt_DoesNotContainSkillGuidance(t *testing.T) {
+	base := SubagentBasePrompt()
+	if strings.Contains(base, "use_skill") {
+		t.Error("subagent base prompt should NOT mention use_skill (subagents don't have it)")
+	}
+}
+
+func TestSubagentBasePrompt_DoesNotContainDelegation(t *testing.T) {
+	base := SubagentBasePrompt()
+	if strings.Contains(base, "spawn_agent") {
+		t.Error("subagent base prompt should NOT mention spawn_agent (subagents can't delegate)")
+	}
+}
+
+func TestSpawnAgent_PluginAgentGetsComposedPrompt(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	var subagentSystemPrompt string
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				for _, m := range req.Messages {
+					if m.Role == llm.RoleSystem {
+						subagentSystemPrompt = m.Text()
+					}
+				}
+				return llm.Response{Message: llm.Assistant("done")}
+			},
+		},
+	}
+	c.Register(adapter)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	res := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"survey the project","agent_type":"explorer","blocking":true}`),
+	})
+	if res.IsError {
+		t.Fatalf("blocking explorer spawn error: %s", res.Output)
+	}
+
+	// Subagent prompt should contain BOTH the subagent base AND the agent-specific prompt.
+	base := SubagentBasePrompt()
+	if !strings.Contains(subagentSystemPrompt, "communicate") {
+		t.Error("subagent prompt should contain communicate guidance from subagent base")
+	}
+	if !strings.Contains(subagentSystemPrompt, "codebase exploration specialist") {
+		t.Error("subagent prompt should contain agent-specific prompt (explorer)")
+	}
+	// The base should appear before the agent-specific part.
+	baseIdx := strings.Index(subagentSystemPrompt, base[:50])
+	agentIdx := strings.Index(subagentSystemPrompt, "codebase exploration specialist")
+	if baseIdx >= agentIdx {
+		t.Error("subagent base should appear before agent-specific prompt")
+	}
+}
+
+func TestSpawnAgent_DefaultSubagentGetsComposedPrompt(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	var subagentSystemPrompt string
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				for _, m := range req.Messages {
+					if m.Role == llm.RoleSystem {
+						subagentSystemPrompt = m.Text()
+					}
+				}
+				return llm.Response{Message: llm.Assistant("done")}
+			},
+		},
+	}
+	c.Register(adapter)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// No agent_type = default subagent.
+	res := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"do something","blocking":true}`),
+	})
+	if res.IsError {
+		t.Fatalf("blocking spawn error: %s", res.Output)
+	}
+
+	// Default subagent should get subagent base + defaultSubagentInstructions.
+	if !strings.Contains(subagentSystemPrompt, "communicate") {
+		t.Error("default subagent prompt should contain communicate guidance from subagent base")
+	}
+	if !strings.Contains(subagentSystemPrompt, "general-purpose subagent") {
+		t.Error("default subagent prompt should contain default subagent instructions")
 	}
 }
 

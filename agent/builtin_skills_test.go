@@ -335,8 +335,8 @@ func TestEmbeddedSkills_AllSkillsLoadable(t *testing.T) {
 	skills := make(map[string]SkillMeta)
 	scanSkillsDir(dir, skills)
 
-	if len(skills) < 14 {
-		t.Fatalf("expected at least 14 embedded skills, got %d", len(skills))
+	if len(skills) < 15 {
+		t.Fatalf("expected at least 15 embedded skills, got %d", len(skills))
 	}
 
 	for name, meta := range skills {

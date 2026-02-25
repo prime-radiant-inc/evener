@@ -1315,11 +1315,11 @@ func TestSession_SendInput_UsesMessageParam(t *testing.T) {
 	// Send input using "message" parameter (not "input").
 	sendRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
 		ID:        "c3",
-		Name:      "send_input",
+		Name:      "resume_agent",
 		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"message":"do more"}`, agentID)),
 	})
 	if sendRes.IsError {
-		t.Fatalf("send_input error: %s", sendRes.Output)
+		t.Fatalf("resume_agent error: %s", sendRes.Output)
 	}
 
 	// Wait again and verify it ran.
@@ -3835,7 +3835,7 @@ func TestSession_Subagent_DoesNotGetParentDelegationPrompt(t *testing.T) {
 	for _, td := range subReq.Tools {
 		toolNames[td.Name] = true
 	}
-	for _, forbidden := range []string{"spawn_agent", "send_input", "wait", "close_agent"} {
+	for _, forbidden := range []string{"spawn_agent", "resume_agent", "wait", "close_agent"} {
 		if toolNames[forbidden] {
 			t.Errorf("subagent should not have %q in its API tool list", forbidden)
 		}

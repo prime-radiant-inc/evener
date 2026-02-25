@@ -54,7 +54,7 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"grep_files",
 			"list_dir",
 			"spawn_agent",
-			"send_input",
+			"resume_agent",
 			"wait",
 			"close_agent",
 			"task_list",
@@ -73,7 +73,7 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"grep",
 			"glob",
 			"spawn_agent",
-			"send_input",
+			"resume_agent",
 			"wait",
 			"close_agent",
 			"task_list",
@@ -94,7 +94,7 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"glob",
 			"list_directory",
 			"spawn_agent",
-			"send_input",
+			"resume_agent",
 			"wait",
 			"close_agent",
 			"task_list",
@@ -578,13 +578,13 @@ func TestSendInput_UsesMessageParam(t *testing.T) {
 	for _, p := range profiles {
 		t.Run(p.ID(), func(t *testing.T) {
 			for _, td := range p.ToolDefinitions() {
-				if td.Name == "send_input" {
+				if td.Name == "resume_agent" {
 					props := td.Parameters["properties"].(map[string]any)
 					if _, ok := props["message"]; !ok {
-						t.Fatal("send_input should have 'message' parameter")
+						t.Fatal("resume_agent should have 'message' parameter")
 					}
 					if _, ok := props["input"]; ok {
-						t.Fatal("send_input should not have 'input' parameter")
+						t.Fatal("resume_agent should not have 'input' parameter")
 					}
 					req := td.Parameters["required"].([]string)
 					found := false
@@ -602,7 +602,7 @@ func TestSendInput_UsesMessageParam(t *testing.T) {
 					return
 				}
 			}
-			t.Fatal("send_input tool not found")
+			t.Fatal("resume_agent tool not found")
 		})
 	}
 }

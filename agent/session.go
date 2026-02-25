@@ -1573,14 +1573,18 @@ func (s *Session) initSessionState() ([]PromptSource, error) {
 
 	// Extract embedded skills to a temp dir as the base layer.
 	// Filesystem-discovered skills (project + extraDirs) shadow embedded ones.
+	// Skip skill discovery for subagents with BasePromptOverride — they don't have
+	// use_skill and would get confused by <skills> listings in their system prompt.
 	s.skills = make(map[string]SkillMeta)
-	if dir, err := extractEmbeddedSkills(); err == nil {
-		s.embeddedSkillsDir = dir
-		// Scan extracted dir directly (skill subdirs are immediate children).
-		scanSkillsDir(dir, s.skills)
-	}
-	for name, meta := range DiscoverSkills(s.env, s.cfg.SkillsDirs...) {
-		s.skills[name] = meta // filesystem shadows embedded
+	if s.cfg.BasePromptOverride == "" {
+		if dir, err := extractEmbeddedSkills(); err == nil {
+			s.embeddedSkillsDir = dir
+			// Scan extracted dir directly (skill subdirs are immediate children).
+			scanSkillsDir(dir, s.skills)
+		}
+		for name, meta := range DiscoverSkills(s.env, s.cfg.SkillsDirs...) {
+			s.skills[name] = meta // filesystem shadows embedded
+		}
 	}
 
 	// Load built-in agents (explorer, etc.) as a base layer.
@@ -1967,14 +1971,44 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			if agentID == "" {
 				return result, nil
 			}
-			return s.waitAgent(ctx, agentID, 0) // 0 = wait indefinitely
+			waitResult, waitErr := s.waitAgent(ctx, agentID, 0) // 0 = wait indefinitely
+			// Include agent_id in the blocking result so the caller can
+			// use resume_agent later if needed (e.g. to iterate with a planner).
+			if waitStr, ok := waitResult.(string); ok {
+				var parsed map[string]any
+				if err := json.Unmarshal([]byte(waitStr), &parsed); err == nil {
+					parsed["agent_id"] = agentID
+					b, _ := json.Marshal(parsed)
+					return string(b), waitErr
+				}
+			}
+			return waitResult, waitErr
 		},
 	})
 	_ = reg.Register(RegisteredTool{
 		Tool: llm.Tool{Definition: defSendInput()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
-			return s.sendInput(ctx, fmt.Sprint(args["agent_id"]), fmt.Sprint(args["message"]))
+			agentID := fmt.Sprint(args["agent_id"])
+			result, err := s.sendInput(ctx, agentID, fmt.Sprint(args["message"]))
+			if err != nil {
+				return result, err
+			}
+			blocking, _ := args["blocking"].(bool)
+			if !blocking {
+				return result, nil
+			}
+			// Blocking mode: wait for the agent to finish and return its result.
+			waitResult, waitErr := s.waitAgent(ctx, agentID, 0)
+			if waitStr, ok := waitResult.(string); ok {
+				var parsed map[string]any
+				if err := json.Unmarshal([]byte(waitStr), &parsed); err == nil {
+					parsed["agent_id"] = agentID
+					b, _ := json.Marshal(parsed)
+					return string(b), waitErr
+				}
+			}
+			return waitResult, waitErr
 		},
 	})
 	_ = reg.Register(RegisteredTool{
@@ -2114,8 +2148,11 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			resultText := message
 			if action == "result" {
 				if output, ok := args["output"]; ok && output != nil {
-					resultText = canonicalNodeOutputText(output)
-					if message == "" {
+					// Only use canonicalized output when there's no top-level message.
+					// When both message and output are provided, message is the detailed
+					// text intended for the parent; output is structured metadata.
+					if strings.TrimSpace(message) == "" {
+						resultText = canonicalNodeOutputText(output)
 						if outMsg := communicateOutputMessage(output); outMsg != "" {
 							message = outMsg
 						}

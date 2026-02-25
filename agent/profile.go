@@ -588,7 +588,7 @@ func defSpawnAgent() llm.ToolDefinition {
 				"working_dir": map[string]any{"type": "string", "description": "Subdirectory to scope the agent to"},
 				"max_turns":   map[string]any{"type": "integer", "description": "Turn limit for the subagent (default: 50)"},
 				"agent_type":  map[string]any{"type": "string", "description": "Agent type (e.g. 'explorer' for built-in, or 'plugin-name:agent-name' for plugin agents)"},
-				"blocking":    map[string]any{"type": "boolean", "description": "When true, spawns the agent and waits for completion in a single call, returning the result directly instead of an agent_id. Default is false (async)."},
+				"blocking":    map[string]any{"type": "boolean", "description": "When true, spawns the agent and waits for completion in a single call, returning the result directly. Do NOT call wait() after a blocking spawn — the result is already in the response. Default is false (async). Use blocking=false only when you need to run multiple agents in parallel, then call wait() on each agent_id."},
 			},
 			"required": []string{"task"},
 		},
@@ -597,14 +597,18 @@ func defSpawnAgent() llm.ToolDefinition {
 
 func defSendInput() llm.ToolDefinition {
 	return llm.ToolDefinition{
-		Name:        "send_input",
-		Description: "Send input to a sub-agent.",
+		Name:        "resume_agent",
+		Description: "Resume a sub-agent with new instructions. The agent keeps all its previous context (files read, analysis done, code written) and continues from where it left off. Use this instead of spawning a new agent when you want to iterate — e.g. send reviewer feedback to an implementer, or ask a planner to revise. Use blocking=true (recommended) to wait for the result in one call.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"agent_id": map[string]any{"type": "string"},
 				"message":  map[string]any{"type": "string"},
+				"blocking": map[string]any{
+					"type":        "boolean",
+					"description": "When true, sends the message and waits for the agent to finish, returning the result directly. Do NOT call wait() after a blocking resume. Default is false.",
+				},
 			},
 			"required": []string{"agent_id", "message"},
 		},
@@ -614,7 +618,7 @@ func defSendInput() llm.ToolDefinition {
 func defWait() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "wait",
-		Description: "Wait for a sub-agent to finish and return its result. Use timeout_ms of 300000 (5 minutes) or more — short timeouts waste rounds on retries. For most tasks, omit timeout_ms to wait indefinitely.",
+		Description: "Wait for a non-blocking sub-agent to finish and return its result. Only use this after spawn_agent with blocking=false. Do NOT use after blocking=true — that already returned the result. Use timeout_ms of 300000 (5 minutes) or more — short timeouts waste rounds on retries.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,

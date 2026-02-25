@@ -29,27 +29,13 @@ type SubAgentResult struct {
 	TurnsUsed int    `json:"turns_used"`
 }
 
-// defaultSubagentInstructions is the complete base prompt for default
-// subagents (no agent_type). It replaces the parent's base.md entirely,
-// preventing the subagent from seeing delegation directives it cannot follow.
-const defaultSubagentInstructions = `You are a subagent. Do the work yourself using the tools available to you:
-glob, grep, read_file, shell, edit_file, write_file, apply_patch. Do NOT try to spawn
-further subagents.
+// defaultSubagentInstructions is the role-specific prompt for default subagents
+// (no agent_type). Appended after the common subagent base prompt.
+const defaultSubagentInstructions = `You are a general-purpose subagent. Do the work yourself using the tools
+available to you: glob, grep, read_file, shell, edit_file, write_file, apply_patch.
+Do NOT try to spawn further subagents.
 
-Your job is to complete the task and report your findings.
-
-CRITICAL: When done, call communicate(result) with a message that contains the COMPLETE,
-DETAILED results of your work. The parent agent receives ONLY this message — it cannot
-see anything else you did. If you explored files, include the file contents or relevant
-excerpts. If you ran commands, include the full output. If you found something, describe
-it with specifics (file paths, line numbers, code, data).
-
-BAD: communicate(result, message="Survey complete. Found Python project with tests.")
-GOOD: communicate(result, message="Project structure:\n/app/main.py (150 lines) - Flask
-web app with routes for /api/users and /api/items\n/app/models.py (80 lines) - SQLAlchemy
-models: User(id, name, email), Item(id, title, price)\n...")
-
-Always attempt the task. Never refuse or ask for clarification.`
+Your job is to complete the task and report your findings.`
 
 type subagent struct {
 	id   string
@@ -108,18 +94,20 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	} else {
 		subCfg.MaxTurns = 50
 	}
-	// Apply system prompt override.
+	// Compose subagent system prompt: common base + role-specific instructions.
+	// All subagents get the subagent base (communicate, workflow, non-interactive)
+	// followed by their role-specific guidance. This replaces the parent's base.md
+	// to avoid inherited delegation/skill instructions the subagent can't follow.
+	subBase := SubagentBasePrompt()
+	var rolePrompt string
 	if agent != nil && strings.TrimSpace(agent.SystemPrompt) != "" {
-		// Plugin agents get their custom system prompt.
-		subCfg.UserInstructionOverride = agent.SystemPrompt
+		rolePrompt = agent.SystemPrompt
 	} else {
-		// Default subagents get focused instructions as their ENTIRE base prompt,
-		// replacing the parent's base.md. This prevents the subagent from seeing
-		// delegation directives (like "spawn a research subagent") that it cannot
-		// follow due to depth limits.
-		subCfg.BasePromptOverride = defaultSubagentInstructions
-		subProfile = subProfile.WithBasePrompt(defaultSubagentInstructions)
+		rolePrompt = defaultSubagentInstructions
 	}
+	composed := subBase + "\n\n" + rolePrompt
+	subCfg.BasePromptOverride = composed
+	subProfile = subProfile.WithBasePrompt(composed)
 
 	subEnv := s.env
 	if workingDir = strings.TrimSpace(workingDir); workingDir != "" {
@@ -146,7 +134,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	} else {
 		// Default subagents cannot delegate further — remove delegation tools.
 		subSess.reg.Remove("spawn_agent")
-		subSess.reg.Remove("send_input")
+		subSess.reg.Remove("resume_agent")
 		subSess.reg.Remove("wait")
 		subSess.reg.Remove("close_agent")
 	}
@@ -212,7 +200,7 @@ func (s *Session) waitAgent(ctx context.Context, agentID string, timeoutMS int) 
 	sub.mu.Lock()
 	if sub.resultConsumed && !sub.running {
 		sub.mu.Unlock()
-		return "", fmt.Errorf("agent %s already completed and results already consumed; use send_input to resume or close_agent to clean up", agentID)
+		return "", fmt.Errorf("agent %s already completed and results already consumed; use resume_agent to resume or close_agent to clean up", agentID)
 	}
 	sub.mu.Unlock()
 

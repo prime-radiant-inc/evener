@@ -148,7 +148,7 @@ func summarizeTool(toolName, argsJSON string) (desc, detail string) {
 		}
 		return
 
-	case "send_input":
+	case "resume_agent":
 		desc = str("agent_id")
 		return
 
