@@ -90,6 +90,7 @@ type ContentPart struct {
 	Kind ContentKind `json:"kind"`
 
 	Text       string          `json:"text,omitempty"`
+	Phase      string          `json:"phase,omitempty"` // OpenAI Responses API phase ("commentary", "final_answer")
 	Image      *ImageData      `json:"image,omitempty"`
 	Audio      *AudioData      `json:"audio,omitempty"`
 	Document   *DocumentData   `json:"document,omitempty"`

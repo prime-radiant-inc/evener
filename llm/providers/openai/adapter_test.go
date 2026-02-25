@@ -1886,6 +1886,203 @@ func TestAdapter_ListModels(t *testing.T) {
 	}
 }
 
+func TestFromResponses_PreservesPhase(t *testing.T) {
+	raw := map[string]any{
+		"id":    "r1",
+		"model": "gpt-5.3-codex",
+		"output": []any{
+			map[string]any{
+				"type":  "message",
+				"phase": "commentary",
+				"content": []any{
+					map[string]any{"type": "output_text", "text": "Let me think about this..."},
+				},
+			},
+			map[string]any{
+				"type":  "message",
+				"phase": "final_answer",
+				"content": []any{
+					map[string]any{"type": "output_text", "text": "The answer is 42."},
+				},
+			},
+		},
+		"usage": map[string]any{"input_tokens": float64(10), "output_tokens": float64(20), "total_tokens": float64(30)},
+	}
+
+	r := fromResponses(raw, "gpt-5.3-codex")
+	if len(r.Message.Content) != 2 {
+		t.Fatalf("content parts: got %d want 2", len(r.Message.Content))
+	}
+	if r.Message.Content[0].Phase != "commentary" {
+		t.Fatalf("part[0] phase: got %q want %q", r.Message.Content[0].Phase, "commentary")
+	}
+	if r.Message.Content[1].Phase != "final_answer" {
+		t.Fatalf("part[1] phase: got %q want %q", r.Message.Content[1].Phase, "final_answer")
+	}
+}
+
+func TestFromResponses_NullPhase(t *testing.T) {
+	raw := map[string]any{
+		"id":    "r1",
+		"model": "gpt-5.2",
+		"output": []any{
+			map[string]any{
+				"type": "message",
+				"content": []any{
+					map[string]any{"type": "output_text", "text": "Hello"},
+				},
+			},
+		},
+		"usage": map[string]any{"input_tokens": float64(1), "output_tokens": float64(2), "total_tokens": float64(3)},
+	}
+
+	r := fromResponses(raw, "gpt-5.2")
+	if len(r.Message.Content) != 1 {
+		t.Fatalf("content parts: got %d want 1", len(r.Message.Content))
+	}
+	if r.Message.Content[0].Phase != "" {
+		t.Fatalf("phase: got %q want empty string", r.Message.Content[0].Phase)
+	}
+}
+
+func TestToResponsesInput_PhaseReplayed(t *testing.T) {
+	msgs := []llm.Message{
+		llm.User("hello"),
+		{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentText, Text: "Thinking...", Phase: "commentary"},
+				{Kind: llm.ContentText, Text: "The answer.", Phase: "final_answer"},
+			},
+		},
+	}
+
+	_, items, err := toResponsesInput(msgs)
+	if err != nil {
+		t.Fatalf("toResponsesInput: %v", err)
+	}
+
+	// Should produce: user message, then two separate assistant message items (one per phase).
+	var assistantItems []map[string]any
+	for _, itemAny := range items {
+		item, ok := itemAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		if item["role"] == "assistant" && item["type"] == "message" {
+			assistantItems = append(assistantItems, item)
+		}
+	}
+	if len(assistantItems) != 2 {
+		t.Fatalf("assistant message items: got %d want 2; items=%v", len(assistantItems), items)
+	}
+	if assistantItems[0]["phase"] != "commentary" {
+		t.Fatalf("item[0] phase: got %v want %q", assistantItems[0]["phase"], "commentary")
+	}
+	if assistantItems[1]["phase"] != "final_answer" {
+		t.Fatalf("item[1] phase: got %v want %q", assistantItems[1]["phase"], "final_answer")
+	}
+}
+
+func TestToResponsesInput_EmptyPhase_SingleItem(t *testing.T) {
+	msgs := []llm.Message{
+		llm.User("hello"),
+		{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentText, Text: "Part one."},
+				{Kind: llm.ContentText, Text: "Part two."},
+			},
+		},
+	}
+
+	_, items, err := toResponsesInput(msgs)
+	if err != nil {
+		t.Fatalf("toResponsesInput: %v", err)
+	}
+
+	// With empty phase, all text parts should be in a single message item (backward compat).
+	var assistantItems []map[string]any
+	for _, itemAny := range items {
+		item, ok := itemAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		if item["role"] == "assistant" && item["type"] == "message" {
+			assistantItems = append(assistantItems, item)
+		}
+	}
+	if len(assistantItems) != 1 {
+		t.Fatalf("assistant message items: got %d want 1 (single item for empty phase); items=%v", len(assistantItems), items)
+	}
+	// Should NOT have a phase key when empty.
+	if _, hasPhase := assistantItems[0]["phase"]; hasPhase {
+		t.Fatalf("empty-phase message should not have phase key; got %v", assistantItems[0]["phase"])
+	}
+	content, _ := assistantItems[0]["content"].([]any)
+	if len(content) != 2 {
+		t.Fatalf("content entries: got %d want 2", len(content))
+	}
+}
+
+func TestPhaseRoundTrip(t *testing.T) {
+	// Simulate API response with phase annotations.
+	raw := map[string]any{
+		"id":    "r1",
+		"model": "gpt-5.3-codex",
+		"output": []any{
+			map[string]any{
+				"type":  "message",
+				"phase": "commentary",
+				"content": []any{
+					map[string]any{"type": "output_text", "text": "Reasoning here."},
+				},
+			},
+			map[string]any{
+				"type":  "message",
+				"phase": "final_answer",
+				"content": []any{
+					map[string]any{"type": "output_text", "text": "Final result."},
+				},
+			},
+		},
+		"usage": map[string]any{"input_tokens": float64(10), "output_tokens": float64(20), "total_tokens": float64(30)},
+	}
+
+	// Parse response.
+	r := fromResponses(raw, "gpt-5.3-codex")
+
+	// Re-serialize the assistant message as input for next turn.
+	nextMsgs := []llm.Message{
+		llm.User("initial"),
+		r.Message,
+		llm.User("follow-up"),
+	}
+	_, items, err := toResponsesInput(nextMsgs)
+	if err != nil {
+		t.Fatalf("toResponsesInput: %v", err)
+	}
+
+	// Find the two assistant message items.
+	var phases []string
+	for _, itemAny := range items {
+		item, ok := itemAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		if item["role"] == "assistant" && item["type"] == "message" {
+			phase, _ := item["phase"].(string)
+			phases = append(phases, phase)
+		}
+	}
+	if len(phases) != 2 {
+		t.Fatalf("round-trip assistant items: got %d want 2; items=%v", len(phases), items)
+	}
+	if phases[0] != "commentary" || phases[1] != "final_answer" {
+		t.Fatalf("round-trip phases: got %v want [commentary final_answer]", phases)
+	}
+}
+
 func contentKinds(parts []llm.ContentPart) []string {
 	var kinds []string
 	for _, p := range parts {

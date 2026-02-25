@@ -580,69 +580,104 @@ func toResponsesInput(msgs []llm.Message) (instructions string, items []any, _ e
 		case llm.RoleSystem, llm.RoleDeveloper:
 			continue
 		case llm.RoleUser, llm.RoleAssistant:
-			content := make([]any, 0, len(m.Content))
-			for _, p := range m.Content {
-				switch p.Kind {
-				case llm.ContentText:
-					if strings.TrimSpace(p.Text) == "" {
-						continue
-					}
-					typ := "input_text"
-					if m.Role == llm.RoleAssistant {
-						typ = "output_text"
-					}
-					content = append(content, map[string]any{
-						"type": typ,
-						"text": p.Text,
-					})
-				case llm.ContentImage:
-					if p.Image == nil {
-						continue
-					}
-					url := strings.TrimSpace(p.Image.URL)
-					if len(p.Image.Data) > 0 {
-						mt := strings.TrimSpace(p.Image.MediaType)
-						if mt == "" {
-							mt = "image/png"
-						}
-						url = llm.DataURI(mt, p.Image.Data)
-					} else if llm.IsLocalPath(url) {
-						path := llm.ExpandTilde(url)
-						b, err := os.ReadFile(path)
-						if err != nil {
-							return "", nil, err
-						}
-						mt := strings.TrimSpace(p.Image.MediaType)
-						if mt == "" {
-							mt = llm.InferMimeTypeFromPath(path)
-						}
-						if mt == "" {
-							mt = "image/png"
-						}
-						url = llm.DataURI(mt, b)
-					}
-					if url != "" {
-						img := map[string]any{
-							"type":      "input_image",
-							"image_url": url,
-						}
-						if p.Image.Detail != "" {
-							img["detail"] = p.Image.Detail
-						}
-						content = append(content, img)
-					}
-				case llm.ContentAudio, llm.ContentDocument:
-					return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("unsupported content kind for openai: %s", p.Kind)}
-				default:
-					// ignore (tool calls are top-level items)
+			if m.Role == llm.RoleAssistant {
+				// Group text parts by phase, emitting one message item per group.
+				type textGroup struct {
+					phase   string
+					content []any
 				}
-			}
-			if len(content) > 0 {
-				items = append(items, map[string]any{
-					"type":    "message",
-					"role":    string(m.Role),
-					"content": content,
-				})
+				var groups []textGroup
+				for _, p := range m.Content {
+					switch p.Kind {
+					case llm.ContentText:
+						if strings.TrimSpace(p.Text) == "" {
+							continue
+						}
+						entry := map[string]any{"type": "output_text", "text": p.Text}
+						if len(groups) > 0 && groups[len(groups)-1].phase == p.Phase {
+							groups[len(groups)-1].content = append(groups[len(groups)-1].content, entry)
+						} else {
+							groups = append(groups, textGroup{phase: p.Phase, content: []any{entry}})
+						}
+					case llm.ContentAudio, llm.ContentDocument:
+						return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("unsupported content kind for openai: %s", p.Kind)}
+					default:
+						// ignore (tool calls, images, web search handled separately)
+					}
+				}
+				for _, g := range groups {
+					item := map[string]any{
+						"type":    "message",
+						"role":    "assistant",
+						"content": g.content,
+					}
+					if g.phase != "" {
+						item["phase"] = g.phase
+					}
+					items = append(items, item)
+				}
+			} else {
+				// User messages: no phase grouping needed.
+				content := make([]any, 0, len(m.Content))
+				for _, p := range m.Content {
+					switch p.Kind {
+					case llm.ContentText:
+						if strings.TrimSpace(p.Text) == "" {
+							continue
+						}
+						content = append(content, map[string]any{
+							"type": "input_text",
+							"text": p.Text,
+						})
+					case llm.ContentImage:
+						if p.Image == nil {
+							continue
+						}
+						url := strings.TrimSpace(p.Image.URL)
+						if len(p.Image.Data) > 0 {
+							mt := strings.TrimSpace(p.Image.MediaType)
+							if mt == "" {
+								mt = "image/png"
+							}
+							url = llm.DataURI(mt, p.Image.Data)
+						} else if llm.IsLocalPath(url) {
+							path := llm.ExpandTilde(url)
+							b, err := os.ReadFile(path)
+							if err != nil {
+								return "", nil, err
+							}
+							mt := strings.TrimSpace(p.Image.MediaType)
+							if mt == "" {
+								mt = llm.InferMimeTypeFromPath(path)
+							}
+							if mt == "" {
+								mt = "image/png"
+							}
+							url = llm.DataURI(mt, b)
+						}
+						if url != "" {
+							img := map[string]any{
+								"type":      "input_image",
+								"image_url": url,
+							}
+							if p.Image.Detail != "" {
+								img["detail"] = p.Image.Detail
+							}
+							content = append(content, img)
+						}
+					case llm.ContentAudio, llm.ContentDocument:
+						return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("unsupported content kind for openai: %s", p.Kind)}
+					default:
+						// ignore (tool calls are top-level items)
+					}
+				}
+				if len(content) > 0 {
+					items = append(items, map[string]any{
+						"type":    "message",
+						"role":    "user",
+						"content": content,
+					})
+				}
 			}
 			for _, p := range m.Content {
 				if p.Kind == llm.ContentToolCall && p.ToolCall != nil {
@@ -741,6 +776,7 @@ func fromResponses(raw map[string]any, requestedModel string) llm.Response {
 			typ, _ := item["type"].(string)
 			switch typ {
 			case "message":
+				phase, _ := item["phase"].(string)
 				// content: [{type:"output_text", text:"..."}]
 				if content, ok := item["content"].([]any); ok {
 					for _, cAny := range content {
@@ -751,7 +787,7 @@ func fromResponses(raw map[string]any, requestedModel string) llm.Response {
 						ct, _ := c["type"].(string)
 						if ct == "output_text" {
 							if text, _ := c["text"].(string); text != "" {
-								msg.Content = append(msg.Content, llm.ContentPart{Kind: llm.ContentText, Text: text})
+								msg.Content = append(msg.Content, llm.ContentPart{Kind: llm.ContentText, Text: text, Phase: phase})
 							}
 						}
 					}
