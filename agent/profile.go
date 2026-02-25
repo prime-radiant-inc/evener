@@ -692,8 +692,15 @@ func defWebSearch() llm.ToolDefinition {
 
 func defCommunicate() llm.ToolDefinition {
 	return llm.ToolDefinition{
-		Name:        "communicate",
-		Description: "Send output to the user. action=status: progress update. action=result: final output (exits the session).",
+		Name: "communicate",
+		Description: "Send output to the user.\n\n" +
+			"action=status: brief progress update. Use sparingly — do NOT use as a stopping point.\n\n" +
+			"action=result: final output (EXITS THE SESSION). Before calling with action=result, you MUST:\n" +
+			"1. Run the project's test suite or write and run your own tests.\n" +
+			"2. Verify ALL tests pass — if any test fails, fix it first, do NOT call result.\n" +
+			"3. Re-read the original task spec and confirm every requirement is met.\n" +
+			"Calling communicate(result) with untested or broken work scores 0%. " +
+			"A working solution after 80 rounds scores 100%.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
