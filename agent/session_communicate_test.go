@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -400,5 +401,118 @@ func TestCommunicate_EmitsEvent(t *testing.T) {
 	}
 	if msg, _ := commEvents[1].DataMap()["message"].(string); msg != "Final answer" {
 		t.Fatalf("event 1 message: got %q want %q", msg, "Final answer")
+	}
+}
+
+func TestCommunicate_MinResultRound_RejectsEarlySubmission(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	earlyResult := communicateCall("c1", "result", "premature answer")
+	lateResult := communicateCall("c3", "result", "verified answer")
+
+	shellCall := func(id string) llm.ToolCallData {
+		raw, _ := json.Marshal(map[string]any{
+			"command":     "echo ok",
+			"description": "filler",
+		})
+		return llm.ToolCallData{ID: id, Name: "exec_command", Arguments: raw, Type: "function"}
+	}
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			// Round 0: model tries to submit result early.
+			func(req llm.Request) llm.Response { return toolCallResponse(earlyResult) },
+			// Round 1: model gets rejection error, does filler work.
+			func(req llm.Request) llm.Response {
+				// Verify the rejection error was returned as a tool result.
+				found := false
+				for _, m := range req.Messages {
+					for _, p := range m.Content {
+						if p.Kind == llm.ContentToolResult && p.ToolResult != nil && p.ToolResult.ToolCallID == "c1" {
+							found = true
+							content := fmt.Sprint(p.ToolResult.Content)
+							if !strings.Contains(content, "rejected") {
+								t.Errorf("expected rejection message for early result, got: %s", content)
+							}
+							if !p.ToolResult.IsError {
+								t.Errorf("expected IsError=true for rejection")
+							}
+						}
+					}
+				}
+				if !found {
+					t.Errorf("expected to find rejected tool result for c1")
+				}
+				return toolCallResponse(shellCall("s1"))
+			},
+			// Round 2: more filler.
+			func(req llm.Request) llm.Response { return toolCallResponse(shellCall("s2")) },
+			// Round 3: model re-submits (now at round 3, which meets MinResultRound=3).
+			func(req llm.Request) llm.Response { return toolCallResponse(lateResult) },
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MinResultRound: 3,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := sess.ProcessInput(ctx, "do the task")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if strings.TrimSpace(out) != "verified answer" {
+		t.Fatalf("ProcessInput returned %q, want %q", out, "verified answer")
+	}
+	sess.Close()
+
+	// All 4 LLM requests should have been made (rejected + 2 filler + accepted).
+	if got := len(f.Requests()); got != 4 {
+		t.Fatalf("requests: got %d want 4", got)
+	}
+}
+
+func TestCommunicate_MinResultRound_ZeroAllowsImmediate(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	result := communicateCall("c1", "result", "immediate answer")
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(result) },
+			func(req llm.Request) llm.Response {
+				t.Fatalf("should not reach second step with MinResultRound=0")
+				return llm.Response{}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MinResultRound: 0, // default, no minimum
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := sess.ProcessInput(ctx, "quick task")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if strings.TrimSpace(out) != "immediate answer" {
+		t.Fatalf("ProcessInput returned %q, want %q", out, "immediate answer")
+	}
+	sess.Close()
+
+	if got := len(f.Requests()); got != 1 {
+		t.Fatalf("requests: got %d want 1", got)
 	}
 }

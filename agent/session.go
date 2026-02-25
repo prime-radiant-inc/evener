@@ -108,6 +108,11 @@ type SessionConfig struct {
 	// ContextStrategy selects the context management strategy: compact|recall|session-log|ooda.
 	ContextStrategy string `json:"context_strategy,omitempty"`
 
+	// MinResultRound sets the minimum tool round before communicate(result)
+	// is accepted. Before this round, the tool returns an error asking the
+	// model to verify its solution. 0 means no minimum (accept immediately).
+	MinResultRound int `json:"min_result_round,omitempty"`
+
 	EnableLoopDetection *bool `json:"enable_loop_detection,omitempty"`
 	LoopDetectionWindow int   `json:"loop_detection_window,omitempty"`
 
@@ -188,6 +193,7 @@ type Session struct {
 	// communicate tool state (transient, reset each processOneInput call)
 	resultDelivered bool
 	resultText      string
+	currentRound    int // updated each tool loop iteration for MinResultRound gate
 
 	// subagents
 	depth     int
@@ -1059,6 +1065,10 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 	contentFilterRetried := false // track whether we've already tried recovering from a content filter error
 
 	for round := 0; s.cfg.MaxToolRoundsPerInput < 0 || round < s.cfg.MaxToolRoundsPerInput; round++ {
+		s.mu.Lock()
+		s.currentRound = round
+		s.mu.Unlock()
+
 		select {
 		case <-ctx.Done():
 			s.emit(EventError, ErrorData{Error: ctx.Err().Error()})
@@ -2140,6 +2150,25 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			case "result":
 				if v, ok := args["output"]; (!ok || v == nil) && strings.TrimSpace(message) == "" {
 					return nil, fmt.Errorf("communicate(result) requires either message or output")
+				}
+				// Early-submission gate: bounce back if model hasn't used enough rounds.
+				if s.cfg.MinResultRound > 0 {
+					s.mu.Lock()
+					round := s.currentRound
+					s.mu.Unlock()
+					if round < s.cfg.MinResultRound {
+						return nil, fmt.Errorf(
+							"communicate(result) rejected: you are on round %d of %d maximum. "+
+								"Submitting this early almost always means incomplete work. "+
+								"Before calling communicate(result), verify your solution: "+
+								"(1) run the evaluation/tests and confirm they PASS, "+
+								"(2) confirm you meet ALL requirements including performance, "+
+								"(3) if anything fails, fix it and try again. "+
+								"You have %d rounds remaining — use them",
+							round+1, s.cfg.MaxToolRoundsPerInput,
+							s.cfg.MaxToolRoundsPerInput-round-1,
+						)
+					}
 				}
 			default:
 				return nil, fmt.Errorf("unknown communicate action %q: use status or result", action)

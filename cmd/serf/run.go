@@ -25,6 +25,7 @@ type runConfig struct {
 	systemPrompt       string   // --system-prompt file path
 	systemPromptAppend []string // --system-prompt-append file paths
 	maxRounds          int      // --max-rounds (-1=default, 0=unlimited, >0=limit)
+	minResultRound     int      // --min-result-round (0=no minimum)
 	reasoningEffort    string   // --reasoning-effort override (or SERF_REASONING_EFFORT)
 	contextStrategy    string   // --context-strategy
 	verbose            bool
@@ -144,6 +145,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	} else {
 		sessionCfg := agent.SessionConfig{
 			MaxToolRoundsPerInput: cmdutil.MaxRoundsToConfig(cfg.maxRounds),
+			MinResultRound:        cfg.minResultRound,
 			StateDir:              stateDir,
 			SystemPromptFile:      cfg.systemPrompt,
 			SystemPromptAppend:    cfg.systemPromptAppend,

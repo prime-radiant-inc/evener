@@ -33,6 +33,7 @@ func main() {
 	resumeLast := flag.Bool("resume-last", false, "resume the most recent session")
 	listSessionsFlag := flag.Bool("list-sessions", false, "list saved sessions and exit")
 	maxRounds := flag.Int("max-rounds", -1, "max tool rounds per input (0=unlimited, default: 200)")
+	minResultRound := flag.Int("min-result-round", 0, "minimum round before communicate(result) is accepted (0=no minimum)")
 	reasoningEffort := flag.String("reasoning-effort", "", "reasoning effort: low|medium|high|xhigh|none")
 	contextStrategy := flag.String("context-strategy", "", "context management strategy: compact|recall|session-log|ooda (default: compact)")
 	verbose := flag.Bool("verbose", false, "emit NDJSON events to stderr")
@@ -61,6 +62,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  --system-prompt-append <path> Append to system prompt (repeatable)\n")
 		fmt.Fprintf(os.Stderr, "  --state-dir <path>   Override runtime state directory (sessions, tasks)\n")
 		fmt.Fprintf(os.Stderr, "  --max-rounds <n>     Max tool rounds per input (0=unlimited, default: 200)\n")
+		fmt.Fprintf(os.Stderr, "  --min-result-round <n> Minimum round before result submission accepted (default: 0=no minimum)\n")
 		fmt.Fprintf(os.Stderr, "  --context-strategy <name> Context management strategy: compact|recall|session-log|ooda (default: compact)\n")
 		fmt.Fprintf(os.Stderr, "  --verbose            Emit NDJSON events to stderr (replaces human-readable output)\n")
 		fmt.Fprintf(os.Stderr, "  --no-project-prompts Suppress .serf/prompts/ loading (match Docker container behavior)\n")
@@ -105,6 +107,7 @@ func main() {
 		systemPrompt:       *systemPrompt,
 		systemPromptAppend: []string(systemPromptAppend),
 		maxRounds:          *maxRounds,
+		minResultRound:     *minResultRound,
 		reasoningEffort:    *reasoningEffort,
 		contextStrategy:    *contextStrategy,
 		verbose:            *verbose,
