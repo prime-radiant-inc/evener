@@ -1064,7 +1064,9 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 	ctxWarned := false
 	contentFilterRetried := false // track whether we've already tried recovering from a content filter error
 	consecutiveEmptyResponses := 0
+	consecutiveBareTextResponses := 0
 	const maxEmptyRetries = 3
+	const maxBareTextRetries = 3
 
 	for round := 0; s.cfg.MaxToolRoundsPerInput < 0 || round < s.cfg.MaxToolRoundsPerInput; round++ {
 		s.mu.Lock()
@@ -1328,8 +1330,26 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 					continue
 				}
 				// Exhausted retries — fall through to exit.
+			} else if s.cfg.NonInteractive {
+				// Non-empty bare text without tool calls in non-interactive mode.
+				// The model should use communicate(result) instead. Redirect it.
+				consecutiveEmptyResponses = 0
+				consecutiveBareTextResponses++
+				if consecutiveBareTextResponses <= maxBareTextRetries {
+					s.emit(EventWarning, WarningData{
+						Message: fmt.Sprintf("bare text response without tool call (retry %d/%d)", consecutiveBareTextResponses, maxBareTextRetries),
+					})
+					steering := "You responded with bare text instead of a tool call. " +
+						"You must use the communicate tool to deliver results. " +
+						"If you are done, call communicate(action=result). " +
+						"If you still have work to do, call your next tool."
+					s.appendTurn(TurnSteering, llm.User(steering))
+					s.emit(EventSteeringInjected, SteeringInjectedData{Text: steering})
+					continue
+				}
+				// Exhausted retries — fall through to exit with last text.
 			} else {
-				// Non-empty bare text — genuine response, exit normally.
+				// Interactive mode: bare text is a normal response.
 				consecutiveEmptyResponses = 0
 			}
 
@@ -1344,8 +1364,9 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			return txt, nil
 		}
 
-		// Model produced tool calls — reset empty-response counter.
+		// Model produced tool calls — reset retry counters.
 		consecutiveEmptyResponses = 0
+		consecutiveBareTextResponses = 0
 
 		// Execute tool calls (possibly in parallel) and send results back.
 		results := make([]ToolExecResult, len(calls))
