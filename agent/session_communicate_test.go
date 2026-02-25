@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -404,7 +403,7 @@ func TestCommunicate_EmitsEvent(t *testing.T) {
 	}
 }
 
-func TestCommunicate_MinResultRound_RejectsEarlySubmission(t *testing.T) {
+func TestCommunicate_MinResultRound_DowngradesEarlySubmission(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -422,28 +421,24 @@ func TestCommunicate_MinResultRound_RejectsEarlySubmission(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			// Round 0: model tries to submit result early.
+			// Round 0: model tries to submit result early — downgraded to status.
 			func(req llm.Request) llm.Response { return toolCallResponse(earlyResult) },
-			// Round 1: model gets rejection error, does filler work.
+			// Round 1: model sees tool result with verification_required message.
 			func(req llm.Request) llm.Response {
-				// Verify the rejection error was returned as a tool result.
-				found := false
+				// Verify the tool result contains the verification challenge.
 				for _, m := range req.Messages {
 					for _, p := range m.Content {
 						if p.Kind == llm.ContentToolResult && p.ToolResult != nil && p.ToolResult.ToolCallID == "c1" {
-							found = true
-							content := fmt.Sprint(p.ToolResult.Content)
-							if !strings.Contains(content, "rejected") {
-								t.Errorf("expected rejection message for early result, got: %s", content)
+							if p.ToolResult.IsError {
+								t.Errorf("expected non-error tool result for downgraded communicate, got error")
 							}
-							if !p.ToolResult.IsError {
-								t.Errorf("expected IsError=true for rejection")
+							// The response should contain "verification_required".
+							content, _ := p.ToolResult.Content.(string)
+							if !strings.Contains(content, "verification_required") {
+								t.Errorf("expected verification_required in tool result, got: %s", content)
 							}
 						}
 					}
-				}
-				if !found {
-					t.Errorf("expected to find rejected tool result for c1")
 				}
 				return toolCallResponse(shellCall("s1"))
 			},
@@ -472,7 +467,7 @@ func TestCommunicate_MinResultRound_RejectsEarlySubmission(t *testing.T) {
 	}
 	sess.Close()
 
-	// All 4 LLM requests should have been made (rejected + 2 filler + accepted).
+	// All 4 LLM requests should have been made (downgraded + 2 filler + accepted).
 	if got := len(f.Requests()); got != 4 {
 		t.Fatalf("requests: got %d want 4", got)
 	}

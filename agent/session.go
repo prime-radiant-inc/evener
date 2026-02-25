@@ -2133,6 +2133,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 				message = fmt.Sprint(v)
 			}
 
+			earlyGated := false // true when early-submission gate downgrades result→status
 			switch action {
 			case "status":
 				// Some workflows accidentally include an output object with status updates.
@@ -2151,23 +2152,17 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 				if v, ok := args["output"]; (!ok || v == nil) && strings.TrimSpace(message) == "" {
 					return nil, fmt.Errorf("communicate(result) requires either message or output")
 				}
-				// Early-submission gate: bounce back if model hasn't used enough rounds.
+				// Early-submission gate: if model tries to submit before MinResultRound,
+				// downgrade to a status update. The tool returns a verification challenge
+				// instead of confirming delivery. This avoids returning an error (which
+				// causes gpt-5.3-codex to stop) while still preventing premature submission.
 				if s.cfg.MinResultRound > 0 {
 					s.mu.Lock()
 					round := s.currentRound
 					s.mu.Unlock()
 					if round < s.cfg.MinResultRound {
-						return nil, fmt.Errorf(
-							"communicate(result) rejected: you are on round %d of %d maximum. "+
-								"Submitting this early almost always means incomplete work. "+
-								"Before calling communicate(result), verify your solution: "+
-								"(1) run the evaluation/tests and confirm they PASS, "+
-								"(2) confirm you meet ALL requirements including performance, "+
-								"(3) if anything fails, fix it and try again. "+
-								"You have %d rounds remaining — use them",
-							round+1, s.cfg.MaxToolRoundsPerInput,
-							s.cfg.MaxToolRoundsPerInput-round-1,
-						)
+						action = "status" // downgrade to status so loop continues
+						earlyGated = true
 					}
 				}
 			default:
@@ -2202,6 +2197,26 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 				s.resultDelivered = true
 				s.resultText = resultText
 				s.mu.Unlock()
+			}
+
+			if earlyGated {
+				s.mu.Lock()
+				round := s.currentRound
+				s.mu.Unlock()
+				resp := map[string]any{
+					"delivered": false,
+					"verification_required": fmt.Sprintf(
+						"Submission intercepted at round %d of %d. "+
+							"Early submissions are almost always incomplete. "+
+							"You MUST verify your solution works before resubmitting: "+
+							"(1) run tests/evaluation and confirm PASS, "+
+							"(2) verify ALL requirements including performance, "+
+							"(3) fix any failures before calling communicate(result) again.",
+						round+1, s.cfg.MaxToolRoundsPerInput,
+					),
+				}
+				b, _ := json.Marshal(resp)
+				return string(b), nil
 			}
 
 			resp := map[string]any{
