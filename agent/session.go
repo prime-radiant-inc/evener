@@ -1063,6 +1063,8 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 	var lastText string // accumulated assistant text for round-limit return
 	ctxWarned := false
 	contentFilterRetried := false // track whether we've already tried recovering from a content filter error
+	consecutiveEmptyResponses := 0
+	const maxEmptyRetries = 3
 
 	for round := 0; s.cfg.MaxToolRoundsPerInput < 0 || round < s.cfg.MaxToolRoundsPerInput; round++ {
 		s.mu.Lock()
@@ -1312,6 +1314,25 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		}
 
 		if len(calls) == 0 {
+			// Truly empty response (no text, no tool calls): likely a model glitch
+			// (e.g. gpt-5.3-codex null-content). Inject a steering nudge and retry.
+			if strings.TrimSpace(txt) == "" {
+				consecutiveEmptyResponses++
+				if consecutiveEmptyResponses <= maxEmptyRetries {
+					s.emit(EventWarning, WarningData{
+						Message: fmt.Sprintf("empty response from model (retry %d/%d)", consecutiveEmptyResponses, maxEmptyRetries),
+					})
+					steering := "Your previous response was empty. Please continue working on the task."
+					s.appendTurn(TurnSteering, llm.User(steering))
+					s.emit(EventSteeringInjected, SteeringInjectedData{Text: steering})
+					continue
+				}
+				// Exhausted retries — fall through to exit.
+			} else {
+				// Non-empty bare text — genuine response, exit normally.
+				consecutiveEmptyResponses = 0
+			}
+
 			s.mu.Lock()
 			if looksLikeQuestion(txt) {
 				s.state = SessionAwaitingInput
@@ -1322,6 +1343,9 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			s.maybeAutoSave()
 			return txt, nil
 		}
+
+		// Model produced tool calls — reset empty-response counter.
+		consecutiveEmptyResponses = 0
 
 		// Execute tool calls (possibly in parallel) and send results back.
 		results := make([]ToolExecResult, len(calls))
