@@ -52,6 +52,26 @@ You MUST use the communicate tool for ALL output to the user. Never respond with
 Write tests first. The spec defines testable requirements — extract them, write tests for
 them, THEN implement. Tests are how you know you are done.
 
+### Delegate test writing to a subagent
+
+You MUST delegate test writing to a `test-writer` subagent. The test-writer is an adversarial
+specialist — it writes tests assuming the implementer (you) will cut corners. This separation
+is critical: if you write your own tests, you unconsciously make them easy to pass.
+
+```
+spawn_agent(
+  agent_type="test-writer",
+  blocking=true,
+  task="Read the task spec below and write comprehensive adversarial tests. \
+        The tests must catch lazy implementations: stubs, hardcoded values, \
+        happy-path-only code, and missing edge cases. \
+        SPEC: <paste the full task requirements here>"
+)
+```
+
+After the test-writer returns, run the tests to confirm they fail (nothing is implemented
+yet). Then implement against those tests. Do NOT modify the tests to make them easier.
+
 ### Why tests first
 
 Tests written after implementation pass immediately — which proves nothing. You never see
@@ -63,50 +83,41 @@ implementation fail first, proving they actually test what the spec requires.
 ```dot
 digraph tdd {
     rankdir=TB;
-    "Read spec, extract every testable requirement into a checklist" [shape=box];
-    "Write ONE test for the next requirement" [shape=box style=filled fillcolor="#ffcccc"];
-    "Run test — does it fail?" [shape=diamond];
-    "Fix the test — it should fail because the feature is missing, not because of a typo" [shape=box];
-    "Write MINIMUM code to pass the test" [shape=box style=filled fillcolor="#ccffcc"];
-    "Run test — does it pass?" [shape=diamond];
+    "Read spec, extract every testable requirement" [shape=box];
+    "Spawn test-writer subagent with full spec" [shape=box style=filled fillcolor="#ffffcc"];
+    "Run all tests — confirm they FAIL (nothing implemented yet)" [shape=box style=filled fillcolor="#ffcccc"];
+    "Implement MINIMUM code to pass ONE failing test" [shape=box style=filled fillcolor="#ccffcc"];
+    "Run tests — does the target test pass?" [shape=diamond];
     "Fix your code, NOT the test" [shape=box];
-    "Refactor — clean up duplication and naming while keeping tests green" [shape=box style=filled fillcolor="#ccccff"];
-    "More requirements on your checklist?" [shape=diamond];
+    "More failing tests?" [shape=diamond];
     "All tests pass — you are done" [shape=doublecircle];
 
-    "Read spec, extract every testable requirement into a checklist" -> "Write ONE test for the next requirement";
-    "Write ONE test for the next requirement" -> "Run test — does it fail?";
-    "Run test — does it fail?" -> "Write MINIMUM code to pass the test" [label="yes"];
-    "Run test — does it fail?" -> "Fix the test — it should fail because the feature is missing, not because of a typo" [label="no — passes immediately, tests nothing"];
-    "Fix the test — it should fail because the feature is missing, not because of a typo" -> "Run test — does it fail?";
-    "Write MINIMUM code to pass the test" -> "Run test — does it pass?";
-    "Run test — does it pass?" -> "Refactor — clean up duplication and naming while keeping tests green" [label="yes"];
-    "Run test — does it pass?" -> "Fix your code, NOT the test" [label="no"];
-    "Fix your code, NOT the test" -> "Run test — does it pass?";
-    "Refactor — clean up duplication and naming while keeping tests green" -> "More requirements on your checklist?";
-    "More requirements on your checklist?" -> "Write ONE test for the next requirement" [label="yes"];
-    "More requirements on your checklist?" -> "All tests pass — you are done" [label="no"];
+    "Read spec, extract every testable requirement" -> "Spawn test-writer subagent with full spec";
+    "Spawn test-writer subagent with full spec" -> "Run all tests — confirm they FAIL (nothing implemented yet)";
+    "Run all tests — confirm they FAIL (nothing implemented yet)" -> "Implement MINIMUM code to pass ONE failing test";
+    "Implement MINIMUM code to pass ONE failing test" -> "Run tests — does the target test pass?";
+    "Run tests — does the target test pass?" -> "More failing tests?" [label="yes"];
+    "Run tests — does the target test pass?" -> "Fix your code, NOT the test" [label="no"];
+    "Fix your code, NOT the test" -> "Run tests — does the target test pass?";
+    "More failing tests?" -> "Implement MINIMUM code to pass ONE failing test" [label="yes"];
+    "More failing tests?" -> "All tests pass — you are done" [label="no"];
 }
 ```
 
 1. **Read the spec.** Extract every testable requirement: file paths, output formats, numeric
    constraints, API contracts, edge cases. If the instructions imply a requirement, it is a
    requirement. Your job is to be careful, capable, thorough and correct. Your goal is to
-   satisfy both the letter and the spirit of the requirements. Make a checklist.
-2. **Write adversarial tests.** You are writing tests for another developer who is known to
-   cut corners and submit incomplete work. Your tests must catch their shortcuts: hardcoded
-   values, happy-path-only implementations, missing edge cases, off-by-one errors, ignored
-   error handling. For each requirement, ask: "How would a lazy implementer fake this?" and
-   write a test that catches the fake. Test boundary conditions, not just the golden path.
-   Use the project's test framework if one exists. Otherwise write a standalone test script.
-   Tests are the FIRST files you create.
-3. **Run the test, confirm it fails.** This proves the test is valid — it tests something
-   that does not exist yet. If it passes immediately, it tests nothing useful — fix it.
-4. **Implement the minimum code to pass the test.** Do not over-engineer. Do not add features
-   the tests do not require. Get to green.
-5. **Run all tests.** All pass? Refactor if needed (clean up duplication, improve names), then
-   move to the next requirement. Any fail? Fix your code, not the test.
-6. **Repeat** until every requirement on your checklist is covered and all tests pass.
+   satisfy both the letter and the spirit of the requirements.
+2. **Spawn a test-writer subagent.** Delegate test writing to a `test-writer` subagent with the
+   full spec requirements. The test-writer is adversarial — it writes tests assuming YOU will
+   cut corners. This separation is critical: you must not write your own tests.
+3. **Run all tests, confirm they fail.** Every test should fail because nothing is implemented
+   yet. If a test passes immediately, it tests nothing useful — ask the test-writer to fix it.
+4. **Implement the minimum code to pass ONE failing test.** Do not over-engineer. Do not add
+   features the tests do not require. Get to green on that one test.
+5. **Run all tests.** Did the target test pass? Good. Are other tests still failing? Pick the
+   next one and implement. Any test you already passed now failing? Fix your code, not the test.
+6. **Repeat** until every test passes. Do NOT modify the tests to make them easier to pass.
 
 When all your tests pass, you have objective evidence that your solution works. When they
 do not, you know exactly what is broken and can focus your effort there.
