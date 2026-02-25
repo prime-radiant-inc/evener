@@ -1573,8 +1573,8 @@ func (s *Session) initSessionState() ([]PromptSource, error) {
 
 	// Extract embedded skills to a temp dir as the base layer.
 	// Filesystem-discovered skills (project + extraDirs) shadow embedded ones.
-	// Skip skill discovery for subagents with BasePromptOverride — they don't have
-	// use_skill and would get confused by <skills> listings in their system prompt.
+	// Skip skill discovery for subagents with BasePromptOverride — they have
+	// their own focused prompts and would get confused by <skills> listings.
 	s.skills = make(map[string]SkillMeta)
 	if s.cfg.BasePromptOverride == "" {
 		if dir, err := extractEmbeddedSkills(); err == nil {
@@ -2185,24 +2185,28 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 	})
 
 	// use_skill (progressive disclosure of skill instructions).
-	_ = reg.Register(RegisteredTool{
-		Tool: llm.Tool{Definition: defUseSkill()},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
-			_ = ctx
-			_ = env
-			skillName := fmt.Sprint(args["skill_name"])
-			meta, ok := s.skills[skillName]
-			if !ok {
-				return nil, fmt.Errorf("skill %q not found", skillName)
-			}
-			s.emit(EventSkillActivated, SkillActivatedData{Name: skillName})
-			body, err := LoadSkillBody(meta)
-			if err != nil {
-				return nil, fmt.Errorf("loading skill %q: %w", skillName, err)
-			}
-			return body, nil
-		},
-	})
+	// Only present for profiles that include the use_skill tool definition
+	// (Anthropic, Gemini). OpenAI models use read_file on SKILL.md paths instead.
+	if reg.Get("use_skill") != nil {
+		_ = reg.Register(RegisteredTool{
+			Tool: llm.Tool{Definition: defUseSkill()},
+			Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+				_ = ctx
+				_ = env
+				skillName := fmt.Sprint(args["skill_name"])
+				meta, ok := s.skills[skillName]
+				if !ok {
+					return nil, fmt.Errorf("skill %q not found", skillName)
+				}
+				s.emit(EventSkillActivated, SkillActivatedData{Name: skillName})
+				body, err := LoadSkillBody(meta)
+				if err != nil {
+					return nil, fmt.Errorf("loading skill %q: %w", skillName, err)
+				}
+				return body, nil
+			},
+		})
+	}
 
 	return nil
 }

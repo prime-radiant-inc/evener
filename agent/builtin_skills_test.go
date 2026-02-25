@@ -218,12 +218,13 @@ func TestEmbeddedSkills_UseSkillReturnsTDDBody(t *testing.T) {
 	c := llm.NewClient()
 
 	// Agent calls use_skill("test-driven-development"), then communicates result.
+	// Uses Anthropic profile because OpenAI uses read_file for skills.
 	skill := useSkillCall("s1", "test-driven-development")
 	comm := communicateCall("c1", "result", "done")
 
 	var skillResultContent string
 	f := &fakeAdapter{
-		name: "openai",
+		name: "anthropic",
 		steps: []func(req llm.Request) llm.Response{
 			// First turn: agent calls use_skill.
 			func(req llm.Request) llm.Response { return toolCallResponse(skill) },
@@ -247,7 +248,7 @@ func TestEmbeddedSkills_UseSkillReturnsTDDBody(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	sess, err := NewSession(c, NewAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -283,7 +284,7 @@ func TestEmbeddedSkills_UseSkillReturnsVerificationBody(t *testing.T) {
 
 	var skillResultContent string
 	f := &fakeAdapter{
-		name: "openai",
+		name: "anthropic",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response { return toolCallResponse(skill) },
 			func(req llm.Request) llm.Response {
@@ -304,7 +305,7 @@ func TestEmbeddedSkills_UseSkillReturnsVerificationBody(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	sess, err := NewSession(c, NewAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

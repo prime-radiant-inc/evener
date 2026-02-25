@@ -23,6 +23,8 @@ func useSkillCall(id, skillName string) llm.ToolCallData {
 	}
 }
 
+// use_skill tests use Anthropic profile because OpenAI uses read_file for skills.
+
 func TestUseSkill_ReturnsBody(t *testing.T) {
 	root := t.TempDir()
 	initGitRepo(t, root)
@@ -33,7 +35,7 @@ func TestUseSkill_ReturnsBody(t *testing.T) {
 	comm := communicateCall("c1", "result", "done")
 
 	f := &fakeAdapter{
-		name: "openai",
+		name: "anthropic",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response { return toolCallResponse(skill) },
 			func(req llm.Request) llm.Response { return toolCallResponse(comm) },
@@ -41,7 +43,7 @@ func TestUseSkill_ReturnsBody(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	sess, err := NewSession(c, NewAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -85,9 +87,9 @@ func TestUseSkill_NotFound_ReturnsError(t *testing.T) {
 	// No skills directory — use_skill("nonexistent") should return error.
 
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
+	c.Register(&fakeAdapter{name: "anthropic"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	sess, err := NewSession(c, NewAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -112,7 +114,7 @@ func TestUseSkill_EmitsEvent(t *testing.T) {
 	comm := communicateCall("c1", "result", "done")
 
 	f := &fakeAdapter{
-		name: "openai",
+		name: "anthropic",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response { return toolCallResponse(skill) },
 			func(req llm.Request) llm.Response { return toolCallResponse(comm) },
@@ -120,7 +122,7 @@ func TestUseSkill_EmitsEvent(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	sess, err := NewSession(c, NewAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -167,10 +169,49 @@ func TestUseSkill_SystemPromptContainsSkillList(t *testing.T) {
 
 	var capturedSystem string
 	f := &fakeAdapter{
-		name: "openai",
+		name: "anthropic",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
 				// Capture the system prompt from the first message.
+				if len(req.Messages) > 0 && req.Messages[0].Role == llm.RoleSystem {
+					capturedSystem = req.Messages[0].Text()
+				}
+				return toolCallResponse(comm)
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = sess.ProcessInput(ctx, "hi")
+	sess.Close()
+
+	if !strings.Contains(capturedSystem, "<skills>") {
+		t.Error("system prompt missing <skills> section")
+	}
+	if !strings.Contains(capturedSystem, "greet: Greeting skill") {
+		t.Error("system prompt missing greet skill entry")
+	}
+}
+
+func TestOpenAI_SkillsListedWithFilePaths(t *testing.T) {
+	root := t.TempDir()
+	initGitRepo(t, root)
+	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nBody.\n")
+
+	c := llm.NewClient()
+	comm := communicateCall("c1", "result", "done")
+
+	var capturedSystem string
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
 				if len(req.Messages) > 0 && req.Messages[0].Role == llm.RoleSystem {
 					capturedSystem = req.Messages[0].Text()
 				}
@@ -189,11 +230,28 @@ func TestUseSkill_SystemPromptContainsSkillList(t *testing.T) {
 	_, _ = sess.ProcessInput(ctx, "hi")
 	sess.Close()
 
+	// OpenAI skills should include file paths for read_file loading.
 	if !strings.Contains(capturedSystem, "<skills>") {
 		t.Error("system prompt missing <skills> section")
 	}
-	if !strings.Contains(capturedSystem, "- greet: Greeting skill") {
-		t.Error("system prompt missing greet skill entry")
+	if !strings.Contains(capturedSystem, "(file:") {
+		t.Error("OpenAI skills listing should include file paths")
+	}
+	if !strings.Contains(capturedSystem, "read_file") {
+		t.Error("OpenAI system prompt should mention read_file for loading skills")
+	}
+	// OpenAI should NOT have use_skill tool listed.
+	if strings.Contains(capturedSystem, "- use_skill:") {
+		t.Error("OpenAI should not have use_skill tool")
+	}
+}
+
+func TestOpenAI_NoUseSkillTool(t *testing.T) {
+	p := NewOpenAIProfile("gpt-5.2")
+	for _, td := range p.ToolDefinitions() {
+		if td.Name == "use_skill" {
+			t.Error("OpenAI profile should not include use_skill tool definition")
+		}
 	}
 }
 

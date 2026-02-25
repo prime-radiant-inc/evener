@@ -186,7 +186,7 @@ func (p *baseProfile) BuildSystemPrompt(env EnvironmentInfo, docs []ProjectDoc, 
 	if len(skills) > 0 {
 		b.WriteString("<skills>\n")
 		for _, s := range skills {
-			b.WriteString(fmt.Sprintf("- %s: %s\n", s.Name, s.Description))
+			b.WriteString(fmt.Sprintf("- %s: %s (file: %s)\n", s.Name, s.Description, s.SkillFile))
 		}
 		b.WriteString("</skills>\n\n")
 	}
@@ -262,7 +262,6 @@ func NewOpenAIProfile(model string) ProviderProfile {
 			defTaskList(),
 			defWebFetch(),
 			defCommunicate(),
-			defUseSkill(),
 		},
 	}
 }
@@ -773,3 +772,4 @@ func defUseSkill() llm.ToolDefinition {
 		},
 	}
 }
+
