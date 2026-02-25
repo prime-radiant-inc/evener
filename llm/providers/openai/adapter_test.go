@@ -1003,6 +1003,79 @@ func TestToResponsesInput_WebSearch_ReplayedAsItem(t *testing.T) {
 	}
 }
 
+func TestAdapter_Integration_PhaseAnnotation(t *testing.T) {
+	if os.Getenv("OPENAI_API_KEY") == "" {
+		t.Skip("OPENAI_API_KEY not set")
+	}
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	a, err := NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	resp, err := a.Complete(ctx, llm.Request{
+		Model:    "gpt-5.3-codex",
+		Messages: []llm.Message{llm.User("What is 2+2? Answer in one word.")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	// gpt-5.3-codex should emit phase annotations on message items.
+	var phases []string
+	for _, p := range resp.Message.Content {
+		if p.Kind == llm.ContentText {
+			phases = append(phases, p.Phase)
+			t.Logf("text part: phase=%q text=%.60s", p.Phase, p.Text)
+		}
+	}
+	if len(phases) == 0 {
+		t.Fatalf("expected at least one text content part")
+	}
+	// Verify at least one part has a non-empty phase.
+	hasPhase := false
+	for _, ph := range phases {
+		if ph != "" {
+			hasPhase = true
+		}
+	}
+	if !hasPhase {
+		t.Fatalf("expected at least one phase annotation from gpt-5.3-codex; got phases=%v", phases)
+	}
+
+	// Verify phase survives round-trip serialization.
+	nextMsgs := []llm.Message{
+		llm.User("initial"),
+		resp.Message,
+		llm.User("follow-up"),
+	}
+	_, items, err := toResponsesInput(nextMsgs)
+	if err != nil {
+		t.Fatalf("toResponsesInput: %v", err)
+	}
+	var replayedPhases []string
+	for _, itemAny := range items {
+		item, ok := itemAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		if item["role"] == "assistant" && item["type"] == "message" {
+			if ph, ok := item["phase"].(string); ok {
+				replayedPhases = append(replayedPhases, ph)
+			}
+		}
+	}
+	t.Logf("replayed phases: %v", replayedPhases)
+	if len(replayedPhases) == 0 {
+		t.Fatalf("phase not replayed in toResponsesInput; items=%v", items)
+	}
+}
+
 func TestAdapter_Integration_WebSearch(t *testing.T) {
 	if os.Getenv("OPENAI_API_KEY") == "" {
 		t.Skip("OPENAI_API_KEY not set")
