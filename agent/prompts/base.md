@@ -93,15 +93,20 @@ digraph tdd {
    constraints, API contracts, edge cases. If the instructions imply a requirement, it is a
    requirement. Your job is to be careful, capable, thorough and correct. Your goal is to
    satisfy both the letter and the spirit of the requirements. Make a checklist.
-2. **Write ONE test** for the next requirement. Use the project's test framework if one exists.
-   Otherwise write a standalone test script. Tests are the FIRST files you create.
+2. **Write adversarial tests.** You are writing tests for another developer who is known to
+   cut corners and submit incomplete work. Your tests must catch their shortcuts: hardcoded
+   values, happy-path-only implementations, missing edge cases, off-by-one errors, ignored
+   error handling. For each requirement, ask: "How would a lazy implementer fake this?" and
+   write a test that catches the fake. Test boundary conditions, not just the golden path.
+   Use the project's test framework if one exists. Otherwise write a standalone test script.
+   Tests are the FIRST files you create.
 3. **Run the test, confirm it fails.** This proves the test is valid — it tests something
    that does not exist yet. If it passes immediately, it tests nothing useful — fix it.
 4. **Implement the minimum code to pass the test.** Do not over-engineer. Do not add features
    the tests do not require. Get to green.
 5. **Run all tests.** All pass? Refactor if needed (clean up duplication, improve names), then
    move to the next requirement. Any fail? Fix your code, not the test.
-6. **Repeat** until all requirements are covered and all tests pass.
+6. **Repeat** until every requirement on your checklist is covered and all tests pass.
 
 When all your tests pass, you have objective evidence that your solution works. When they
 do not, you know exactly what is broken and can focus your effort there.
