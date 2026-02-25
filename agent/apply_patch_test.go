@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -186,5 +187,44 @@ func TestApplyPatch_RejectsPathTraversalAndAbsolutePaths(t *testing.T) {
 		if _, err := ApplyPatch(dir, p); err == nil {
 			t.Fatalf("expected error for patch:\n%s", p)
 		}
+	}
+}
+
+func TestApplyPatch_AbsolutePathUnderRootDir(t *testing.T) {
+	dir := t.TempDir()
+	// Write a file at dir/hello.txt
+	os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("hello\n"), 0644)
+
+	// Patch using an absolute path that is under rootDir — should succeed.
+	patch := fmt.Sprintf(`*** Begin Patch
+*** Update File: %s/hello.txt
+@@
+-hello
++world
+*** End Patch
+`, dir)
+	touched, err := ApplyPatch(dir, patch)
+	if err != nil {
+		t.Fatalf("absolute path under rootDir should succeed: %v", err)
+	}
+	if !strings.Contains(touched, "hello.txt") {
+		t.Fatalf("unexpected touched files: %v", touched)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "hello.txt"))
+	if string(got) != "world\n" {
+		t.Fatalf("file content: %q", string(got))
+	}
+}
+
+func TestApplyPatch_AbsolutePathOutsideRootDir(t *testing.T) {
+	dir := t.TempDir()
+	// An absolute path that is NOT under rootDir — should still be rejected.
+	patch := `*** Begin Patch
+*** Add File: /etc/shadow
++nope
+*** End Patch
+`
+	if _, err := ApplyPatch(dir, patch); err == nil {
+		t.Fatal("absolute path outside rootDir should be rejected")
 	}
 }

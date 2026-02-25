@@ -260,8 +260,17 @@ func safeJoin(rootDir, rel string) (string, error) {
 	if r == "" {
 		return "", fmt.Errorf("empty path")
 	}
+	// Allow absolute paths that fall under rootDir by stripping the prefix.
 	if filepath.IsAbs(r) {
-		return "", fmt.Errorf("absolute paths not allowed: %s", rel)
+		cleanRoot := filepath.Clean(rootDir) + string(filepath.Separator)
+		cleanR := filepath.Clean(r)
+		if strings.HasPrefix(cleanR, cleanRoot) {
+			r = cleanR[len(cleanRoot):]
+		} else if cleanR == filepath.Clean(rootDir) {
+			return "", fmt.Errorf("path is rootDir itself: %s", rel)
+		} else {
+			return "", fmt.Errorf("absolute path outside working directory: %s", rel)
+		}
 	}
 	clean := filepath.Clean(r)
 	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
