@@ -42,9 +42,8 @@ answer questions, provide clarification, or confirm your approach. Nobody will e
 to you. Any attempt to ask a question or wait for confirmation wastes your limited rounds.
 
 RULES (these override ANY skill instructions that conflict):
-- NEVER use communicate(result) to ask a question or request confirmation.
-- NEVER use communicate(status) to summarize your understanding and ask "is that correct?"
-- The ONLY valid use of communicate(result) is to deliver FINAL work output.
+- NEVER use submit_result to ask a question or request confirmation.
+- The ONLY valid use of submit_result is to deliver FINAL work output.
 - The task prompt IS the complete specification. Read it carefully, then BUILD.
 - If a skill says "ask your human partner", "confirm with user", or "explore user intent":
   make those judgment calls yourself. You are both the implementer and the decision-maker.
@@ -108,7 +107,7 @@ type SessionConfig struct {
 	// ContextStrategy selects the context management strategy: compact|recall|session-log|ooda.
 	ContextStrategy string `json:"context_strategy,omitempty"`
 
-	// MinResultRound sets the minimum tool round before communicate(result)
+	// MinResultRound sets the minimum tool round before submit_result
 	// is accepted. Before this round, the tool returns an error asking the
 	// model to verify its solution. 0 means no minimum (accept immediately).
 	MinResultRound int `json:"min_result_round,omitempty"`
@@ -190,7 +189,7 @@ type Session struct {
 	steeringQueue []string
 	followups     []string
 
-	// communicate tool state (transient, reset each processOneInput call)
+	// submit_result tool state (transient, reset each processOneInput call)
 	resultDelivered bool
 	resultText      string
 	currentRound    int // updated each tool loop iteration for MinResultRound gate
@@ -646,7 +645,7 @@ func (s *Session) FollowUp(msg string) {
 	s.followups = append(s.followups, msg)
 }
 
-// ResultDelivered reports whether communicate(result) was called during the
+// ResultDelivered reports whether submit_result was called during the
 // most recent ProcessInput invocation.
 func (s *Session) ResultDelivered() bool {
 	s.mu.Lock()
@@ -1332,7 +1331,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 				// Exhausted retries — fall through to exit.
 			} else if s.cfg.NonInteractive {
 				// Non-empty bare text without tool calls in non-interactive mode.
-				// The model should use communicate(result) instead. Redirect it.
+				// The model should use submit_result instead. Redirect it.
 				consecutiveEmptyResponses = 0
 				consecutiveBareTextResponses++
 				if consecutiveBareTextResponses <= maxBareTextRetries {
@@ -1340,8 +1339,8 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 						Message: fmt.Sprintf("bare text response without tool call (retry %d/%d)", consecutiveBareTextResponses, maxBareTextRetries),
 					})
 					steering := "You responded with bare text instead of a tool call. " +
-						"You must use the communicate tool to deliver results. " +
-						"If you are done, call communicate(action=success). " +
+						"You must use the submit_result tool to deliver results. " +
+						"If you are done, call submit_result. " +
 						"If you still have work to do, call your next tool."
 					s.appendTurn(TurnSteering, llm.User(steering))
 					s.emit(EventSteeringInjected, SteeringInjectedData{Text: steering})
@@ -1435,7 +1434,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			s.emit(EventSteeringInjected, SteeringInjectedData{Text: msg})
 		}
 
-		// communicate(result) sets the flag; exit the loop with the result message.
+		// submit_result sets the flag; exit the loop with the result message.
 		s.mu.Lock()
 		delivered := s.resultDelivered
 		text := s.resultText
@@ -1444,7 +1443,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			// Stop hooks
 			if s.hookRunner != nil {
 				hi := s.hookInput(HookStop)
-				hi.Reason = "communicate_result"
+				hi.Reason = "submit_result"
 				stopResult := s.hookRunner.RunStop(ctx, hi)
 				for _, msg := range stopResult.SystemMessages {
 					s.Steer(msg)
@@ -1555,10 +1554,10 @@ func (s *Session) customToolDescriptions() string {
 // are reflected in what the LLM sees.
 //
 // When MinResultRound is configured and round < MinResultRound, the
-// "communicate" tool is excluded from the returned list so the model
+// "submit_result" tool is excluded from the returned list so the model
 // cannot attempt premature result submission.
 func (s *Session) allToolDefinitions(round int) []llm.ToolDefinition {
-	hideCommunicate := s.cfg.MinResultRound > 0 && round < s.cfg.MinResultRound
+	hideSubmitResult := s.cfg.MinResultRound > 0 && round < s.cfg.MinResultRound
 	registered := s.reg.RegisteredNames()
 
 	// Profile tool definitions use provider-specific names (e.g. "exec_command"
@@ -1577,7 +1576,7 @@ func (s *Session) allToolDefinitions(round int) []llm.ToolDefinition {
 			canonical = c
 		}
 		if registered[canonical] {
-			if hideCommunicate && canonical == "communicate" {
+			if hideSubmitResult && canonical == "submit_result" {
 				continue
 			}
 			defs = append(defs, td)
@@ -2174,69 +2173,45 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 		},
 	})
 
-	// Communicate (structured I/O).
+	// Submit result (exits session).
 	_ = reg.Register(RegisteredTool{
-		Tool: llm.Tool{Definition: defCommunicate()},
+		Tool: llm.Tool{Definition: defSubmitResult()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			_ = env
-			action := fmt.Sprint(args["action"])
 			message := ""
 			if v, ok := args["message"]; ok {
 				message = fmt.Sprint(v)
 			}
 
-			switch action {
-			case "status":
-				// Some workflows accidentally include an output object with status updates.
-				// Treat it as ignorable noise and proceed as long as we have a message.
-				if strings.TrimSpace(message) == "" {
-					if output, ok := args["output"]; ok && output != nil {
-						if outMsg := communicateOutputMessage(output); strings.TrimSpace(outMsg) != "" {
-							message = outMsg
-						}
-					}
-					if strings.TrimSpace(message) == "" {
-						return nil, fmt.Errorf("communicate(status) requires a non-empty message")
-					}
-				}
-			case "success", "result": // "result" accepted for backward compat
-				if v, ok := args["output"]; (!ok || v == nil) && strings.TrimSpace(message) == "" {
-					return nil, fmt.Errorf("communicate(success) requires either message or output")
-				}
-			default:
-				return nil, fmt.Errorf("unknown communicate action %q: use status or success", action)
+			if v, ok := args["output"]; (!ok || v == nil) && strings.TrimSpace(message) == "" {
+				return nil, fmt.Errorf("submit_result requires either message or output")
 			}
 
 			resultText := message
-			if action == "success" || action == "result" {
-				if output, ok := args["output"]; ok && output != nil {
-					// Only use canonicalized output when there's no top-level message.
-					// When both message and output are provided, message is the detailed
-					// text intended for the parent; output is structured metadata.
-					if strings.TrimSpace(message) == "" {
-						resultText = canonicalNodeOutputText(output)
-						if outMsg := communicateOutputMessage(output); outMsg != "" {
-							message = outMsg
-						}
+			if output, ok := args["output"]; ok && output != nil {
+				// Only use canonicalized output when there's no top-level message.
+				// When both message and output are provided, message is the detailed
+				// text intended for the parent; output is structured metadata.
+				if strings.TrimSpace(message) == "" {
+					resultText = canonicalNodeOutputText(output)
+					if outMsg := submitResultOutputMessage(output); outMsg != "" {
+						message = outMsg
 					}
 				}
 			}
 
-			s.emit(EventCommunicate, CommunicateData{
-				Action:  action,
+			s.emit(EventSubmitResult, SubmitResultData{
 				Message: message,
 			})
 
 			// Drain steering queue into the inbox.
 			inbox := s.drainSteering()
 
-			if action == "success" || action == "result" {
-				s.mu.Lock()
-				s.resultDelivered = true
-				s.resultText = resultText
-				s.mu.Unlock()
-			}
+			s.mu.Lock()
+			s.resultDelivered = true
+			s.resultText = resultText
+			s.mu.Unlock()
 
 			resp := map[string]any{
 				"delivered": true,
@@ -2320,7 +2295,7 @@ func canonicalNodeOutputText(raw any) string {
 	return string(b)
 }
 
-func communicateOutputMessage(raw any) string {
+func submitResultOutputMessage(raw any) string {
 	m, ok := raw.(map[string]any)
 	if !ok {
 		return ""

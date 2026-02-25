@@ -30,7 +30,7 @@ requirements and passes all tests.
    stop after one attempt. Do not report failures you haven't tried to fix. Your job is to
    grind through the red-green cycle until the tests are green.
 
-Only call communicate(success) when:
+Only call submit_result when:
 - All tests pass, OR
 - You have genuinely exhausted your approaches and cannot make further progress
 
@@ -46,7 +46,7 @@ approaches and understand why none of them can work" is a reason to stop.
 
 ## Reporting
 
-When done, call communicate(success) with:
+When done, call submit_result with:
 - The file paths of all files you created or modified
 - Test results (which pass, which fail, and why any failures occur)
 - If all tests pass, say so clearly

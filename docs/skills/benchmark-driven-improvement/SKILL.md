@@ -34,7 +34,7 @@ Start from benchmark results. Categorize the failure:
 | Pattern | Symptoms | Likely Fix |
 |---------|----------|------------|
 | Empty/null response | Transcript ends with empty assistant turn, ~4 output tokens | Code: retry logic in session.go |
-| One-shot-and-quit | 1-5 rounds, communicate(success) immediately, no iteration | Prompt: verification/iteration guidance |
+| One-shot-and-quit | 1-5 rounds, submit_result immediately, no iteration | Prompt: verification/iteration guidance |
 | Wrong approach | Many rounds but fundamentally wrong strategy | Prompt: exploration/planning guidance |
 | Gave up early | 5-10 rounds, reasonable start, then premature submit | Prompt: persistence directives |
 | Timeout | 900s wallclock, task still running | Code: efficiency, or accept as hard |
@@ -112,7 +112,7 @@ The transcript parser (`/tmp/parse_transcript.py` on flower-garden, or write you
 
 **What to look for:**
 1. **How many rounds?** If < 5 of 100, the model is giving up early
-2. **Did it call communicate(success)?** If yes, what did it submit? If no, did it emit bare text or null?
+2. **Did it call submit_result?** If yes, what did it submit? If no, did it emit bare text or null?
 3. **Did it run tests?** Good agents test their work. One-shot agents don't.
 4. **Did it iterate on failures?** After a test failure, did it try to fix the issue?
 5. **What was the final state?** Read the files the agent wrote — compare against verifier expectations

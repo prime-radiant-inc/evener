@@ -12,7 +12,7 @@ import (
 
 func TestToolRegistry_Restrict(t *testing.T) {
 	reg := NewToolRegistry()
-	for _, name := range []string{"read_file", "write_file", "grep", "shell", "communicate"} {
+	for _, name := range []string{"read_file", "write_file", "grep", "shell", "submit_result"} {
 		_ = reg.Register(RegisteredTool{
 			Tool: llm.Tool{Definition: llm.ToolDefinition{Name: name, Description: name}},
 			Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
@@ -24,7 +24,7 @@ func TestToolRegistry_Restrict(t *testing.T) {
 	reg.Restrict(map[string]bool{"read_file": true, "grep": true})
 
 	names := reg.Names()
-	want := map[string]bool{"read_file": true, "grep": true, "communicate": true}
+	want := map[string]bool{"read_file": true, "grep": true, "submit_result": true}
 	if len(names) != len(want) {
 		t.Fatalf("expected %d tools, got %d: %v", len(want), len(names), names)
 	}
@@ -35,10 +35,10 @@ func TestToolRegistry_Restrict(t *testing.T) {
 	}
 }
 
-func TestToolRegistry_Restrict_KeepsCommunicate(t *testing.T) {
+func TestToolRegistry_Restrict_KeepsSubmitResult(t *testing.T) {
 	reg := NewToolRegistry()
 	_ = reg.Register(RegisteredTool{
-		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "communicate", Description: "communicate"}},
+		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "submit_result", Description: "submit_result"}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil
 		},
@@ -50,11 +50,11 @@ func TestToolRegistry_Restrict_KeepsCommunicate(t *testing.T) {
 		},
 	})
 
-	// Restrict to only "shell" -- communicate should still be kept
+	// Restrict to only "shell" -- submit_result should still be kept
 	reg.Restrict(map[string]bool{"shell": true})
 
-	if reg.Get("communicate") == nil {
-		t.Error("communicate should always be kept after Restrict")
+	if reg.Get("submit_result") == nil {
+		t.Error("submit_result should always be kept after Restrict")
 	}
 	if reg.Get("shell") == nil {
 		t.Error("shell should be in allowed set")
@@ -312,8 +312,8 @@ func TestSpawnAgent_PluginAgentType_RestrictsTools(t *testing.T) {
 	agentID := parsed["agent_id"].(string)
 	_, _ = sess.waitAgent(ctx, agentID, 5000)
 
-	// The subagent should only have read_file, grep, and communicate (always kept)
-	allowed := map[string]bool{"read_file": true, "grep": true, "communicate": true}
+	// The subagent should only have read_file, grep, and submit_result (always kept)
+	allowed := map[string]bool{"read_file": true, "grep": true, "submit_result": true}
 
 	// Check tool names against the allowed set.
 	// Note: OpenAI profile maps tool names (shell->exec_command, etc.), so we
@@ -329,7 +329,7 @@ func TestSpawnAgent_PluginAgentType_RestrictsTools(t *testing.T) {
 	regNames := sub.sess.reg.Names()
 	for _, name := range regNames {
 		if !allowed[name] {
-			t.Errorf("unexpected tool %q in restricted subagent (allowed: read_file, grep, communicate)", name)
+			t.Errorf("unexpected tool %q in restricted subagent (allowed: read_file, grep, submit_result)", name)
 		}
 	}
 	// Ensure the allowed tools are present

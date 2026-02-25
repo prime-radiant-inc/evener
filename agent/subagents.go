@@ -49,7 +49,7 @@ type subagent struct {
 	result         string
 	err            error
 	resultConsumed bool // true after first successful wait returns results
-	nudgeEnabled   bool // true for default subagents that should be nudged to communicate
+	nudgeEnabled   bool // true for default subagents that should be nudged to submit_result
 }
 
 func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string, maxTurns int, agentType string) (any, error) {
@@ -95,7 +95,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		subCfg.MaxTurns = 50
 	}
 	// Compose subagent system prompt: common base + role-specific instructions.
-	// All subagents get the subagent base (communicate, workflow, non-interactive)
+	// All subagents get the subagent base (submit_result, workflow, non-interactive)
 	// followed by their role-specific guidance. This replaces the parent's base.md
 	// to avoid inherited delegation/skill instructions the subagent can't follow.
 	subBase := SubagentBasePrompt()
@@ -144,7 +144,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		sess:         subSess,
 		status:       SubAgentRunning,
 		done:         make(chan struct{}),
-		nudgeEnabled: agent == nil, // default subagents get nudged to communicate
+		nudgeEnabled: agent == nil, // default subagents get nudged to submit_result
 	}
 
 	s.mu.Lock()
@@ -292,11 +292,11 @@ func (s *Session) getSub(agentID string) *subagent {
 	return s.subagents[agentID]
 }
 
-// communicateNudge is the message sent to a subagent that stops without
-// calling communicate(success). Sent at most once.
-const communicateNudge = `You stopped without calling communicate(success). ` +
-	`You MUST call communicate(success) with a message summarizing your complete findings ` +
-	`before stopping. The parent agent receives ONLY the communicate(success) message — ` +
+// submitResultNudge is the message sent to a subagent that stops without
+// calling submit_result. Sent at most once.
+const submitResultNudge = `You stopped without calling submit_result. ` +
+	`You MUST call submit_result with a message summarizing your complete findings ` +
+	`before stopping. The parent agent receives ONLY the submit_result message — ` +
 	`it cannot see anything else you did. Report your results now.`
 
 func (a *subagent) run(ctx context.Context, input string) {
@@ -307,11 +307,11 @@ func (a *subagent) run(ctx context.Context, input string) {
 
 	res, err := a.sess.ProcessInput(ctx, input)
 
-	// Auto-nudge: if a default subagent stopped without calling communicate(success),
+	// Auto-nudge: if a default subagent stopped without calling submit_result,
 	// send one reminder and let it try again. This addresses the empty-result
 	// failure mode where subagents do work but forget to report back.
 	if a.nudgeEnabled && err == nil && !a.sess.ResultDelivered() {
-		res, err = a.sess.ProcessInput(ctx, communicateNudge)
+		res, err = a.sess.ProcessInput(ctx, submitResultNudge)
 	}
 
 	a.sess.mu.Lock()

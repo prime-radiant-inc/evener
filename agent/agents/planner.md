@@ -35,7 +35,7 @@ When resumed via resume_agent with failure information:
 
 ## Reporting
 
-When done, call communicate(success) with your complete task breakdown. The orchestrator
+When done, call submit_result with your complete task breakdown. The orchestrator
 receives ONLY this message. Include:
 - Ordered list of tasks with clear descriptions
 - File paths and acceptance criteria for each

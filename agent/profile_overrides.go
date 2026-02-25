@@ -7,12 +7,12 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// WithCommunicateRequiredDataKeys returns a cloned profile where the `communicate`
-// tool schema requires specific `output.data.*` keys for action=success.
+// WithSubmitResultRequiredDataKeys returns a cloned profile where the `submit_result`
+// tool schema requires specific `output.data.*` keys.
 //
 // This is intended for orchestration systems (like Toil) that can provide the
 // required output keys per task/node.
-func WithCommunicateRequiredDataKeys(p ProviderProfile, requiredKeys []string) ProviderProfile {
+func WithSubmitResultRequiredDataKeys(p ProviderProfile, requiredKeys []string) ProviderProfile {
 	if p == nil {
 		return p
 	}
@@ -46,8 +46,8 @@ func WithCommunicateRequiredDataKeys(p ProviderProfile, requiredKeys []string) P
 	clone := *bp
 	defs := append([]llm.ToolDefinition{}, bp.toolDefs...)
 	for i := range defs {
-		if defs[i].Name == "communicate" {
-			defs[i] = defCommunicateWithRequiredDataKeys(keys)
+		if defs[i].Name == "submit_result" {
+			defs[i] = defSubmitResultWithRequiredDataKeys(keys)
 		}
 	}
 	clone.toolDefs = defs
@@ -61,8 +61,8 @@ func WithCommunicateRequiredDataKeys(p ProviderProfile, requiredKeys []string) P
 	return &clone
 }
 
-func defCommunicateWithRequiredDataKeys(requiredKeys []string) llm.ToolDefinition {
-	td := defCommunicate()
+func defSubmitResultWithRequiredDataKeys(requiredKeys []string) llm.ToolDefinition {
+	td := defSubmitResult()
 
 	// Navigate: parameters.properties.output.properties.data
 	params := td.Parameters

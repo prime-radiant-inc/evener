@@ -20,14 +20,14 @@ func TestEmptyResponse_RetriesWithSteering(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	result := communicateCall("c1", "success", "final answer")
+	result := submitResultCall("c1", "final answer")
 
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			// Round 0: model returns empty response.
 			func(req llm.Request) llm.Response { return emptyResponse() },
-			// Round 1: after steering nudge, model resumes with communicate(result).
+			// Round 1: after steering nudge, model resumes with submit_result.
 			func(req llm.Request) llm.Response {
 				// Verify a steering message was injected into the conversation.
 				lastMsg := req.Messages[len(req.Messages)-1]
@@ -124,7 +124,7 @@ func TestEmptyResponse_ResetsOnProgress(t *testing.T) {
 		})
 		return llm.ToolCallData{ID: id, Name: "exec_command", Arguments: raw, Type: "function"}
 	}
-	result := communicateCall("c1", "success", "done")
+	result := submitResultCall("c1", "done")
 
 	f := &fakeAdapter{
 		name: "openai",
@@ -161,11 +161,11 @@ func TestEmptyResponse_ResetsOnProgress(t *testing.T) {
 	}
 }
 
-func TestBareText_RedirectsToCommunicate(t *testing.T) {
+func TestBareText_RedirectsToSubmitResult(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	result := communicateCall("c1", "success", "final answer")
+	result := submitResultCall("c1", "final answer")
 
 	f := &fakeAdapter{
 		name: "openai",
@@ -174,7 +174,7 @@ func TestBareText_RedirectsToCommunicate(t *testing.T) {
 			func(req llm.Request) llm.Response {
 				return llm.Response{Message: llm.Assistant("here is my answer")}
 			},
-			// Round 1: after steering, model uses communicate(result).
+			// Round 1: after steering, model uses submit_result.
 			func(req llm.Request) llm.Response {
 				// Verify a steering message was injected.
 				lastMsg := req.Messages[len(req.Messages)-1]
@@ -183,12 +183,12 @@ func TestBareText_RedirectsToCommunicate(t *testing.T) {
 				}
 				foundSteering := false
 				for _, p := range lastMsg.Content {
-					if p.Kind == llm.ContentText && strings.Contains(p.Text, "communicate") {
+					if p.Kind == llm.ContentText && strings.Contains(p.Text, "submit_result") {
 						foundSteering = true
 					}
 				}
 				if !foundSteering {
-					t.Errorf("expected steering mentioning communicate, got: %+v", lastMsg.Content)
+					t.Errorf("expected steering mentioning submit_result, got: %+v", lastMsg.Content)
 				}
 				return toolCallResponse(result)
 			},

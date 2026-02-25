@@ -170,7 +170,7 @@ func firstEmbedMatchNamed(candidates []string) (string, string, bool) {
 }
 
 // SubagentBasePrompt returns the common base prompt for all subagents.
-// This is a stripped-down version of base.md covering communicate(result),
+// This is a stripped-down version of base.md covering submit_result,
 // tool basics, and workflow essentials. Agent-specific instructions are
 // appended after this base.
 func SubagentBasePrompt() string {

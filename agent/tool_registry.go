@@ -165,9 +165,9 @@ func (r *ToolRegistry) Definitions() []llm.ToolDefinition {
 }
 
 // Restrict removes all tools except those in the allowed set.
-// The "communicate" tool is always kept (subagents need it to return results).
+// The "submit_result" tool is always kept (subagents need it to return results).
 func (r *ToolRegistry) Restrict(allowed map[string]bool) {
-	allowed["communicate"] = true
+	allowed["submit_result"] = true
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for name := range r.tools {
@@ -361,7 +361,7 @@ func defaultToolLimit(toolName string) ToolOutputLimit {
 		return ToolOutputLimit{MaxChars: 20_000, Strategy: TruncTail}
 	case "web_fetch":
 		return ToolOutputLimit{MaxChars: 20_000, Strategy: TruncHeadTail}
-	case "communicate":
+	case "submit_result":
 		return ToolOutputLimit{MaxChars: 5_000, Strategy: TruncTail}
 	case "use_skill":
 		return ToolOutputLimit{MaxChars: 32_000, Strategy: TruncTail}

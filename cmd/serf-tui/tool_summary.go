@@ -160,13 +160,12 @@ func summarizeTool(toolName, argsJSON string) (desc, detail string) {
 		desc = str("skill_name")
 		return
 
-	case "communicate":
-		action := str("action")
+	case "submit_result":
 		msg := trunc(str("message"), 60)
 		if msg != "" {
-			desc = fmt.Sprintf("%s: %s", action, msg)
+			desc = msg
 		} else {
-			desc = action
+			desc = "(submitting result)"
 		}
 		return
 

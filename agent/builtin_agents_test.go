@@ -358,10 +358,10 @@ func TestSubagentBasePrompt_IsNonEmpty(t *testing.T) {
 	}
 }
 
-func TestSubagentBasePrompt_ContainsCommunicateGuidance(t *testing.T) {
+func TestSubagentBasePrompt_ContainsSubmitResultGuidance(t *testing.T) {
 	base := SubagentBasePrompt()
-	if !strings.Contains(base, "communicate") {
-		t.Error("subagent base prompt should mention communicate(result)")
+	if !strings.Contains(base, "submit_result") {
+		t.Error("subagent base prompt should mention submit_result")
 	}
 }
 
@@ -421,8 +421,8 @@ func TestSpawnAgent_PluginAgentGetsComposedPrompt(t *testing.T) {
 
 	// Subagent prompt should contain BOTH the subagent base AND the agent-specific prompt.
 	base := SubagentBasePrompt()
-	if !strings.Contains(subagentSystemPrompt, "communicate") {
-		t.Error("subagent prompt should contain communicate guidance from subagent base")
+	if !strings.Contains(subagentSystemPrompt, "submit_result") {
+		t.Error("subagent prompt should contain submit_result guidance from subagent base")
 	}
 	if !strings.Contains(subagentSystemPrompt, "codebase exploration specialist") {
 		t.Error("subagent prompt should contain agent-specific prompt (explorer)")
@@ -477,8 +477,8 @@ func TestSpawnAgent_DefaultSubagentGetsComposedPrompt(t *testing.T) {
 	}
 
 	// Default subagent should get subagent base + defaultSubagentInstructions.
-	if !strings.Contains(subagentSystemPrompt, "communicate") {
-		t.Error("default subagent prompt should contain communicate guidance from subagent base")
+	if !strings.Contains(subagentSystemPrompt, "submit_result") {
+		t.Error("default subagent prompt should contain submit_result guidance from subagent base")
 	}
 	if !strings.Contains(subagentSystemPrompt, "general-purpose subagent") {
 		t.Error("default subagent prompt should contain default subagent instructions")

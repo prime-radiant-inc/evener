@@ -132,7 +132,7 @@ func TestEmbeddedSkills_InSystemPrompt(t *testing.T) {
 	initGitRepo(t, root)
 
 	c := llm.NewClient()
-	comm := communicateCall("c1", "success", "done")
+	comm := submitResultCall("c1", "done")
 
 	var capturedSystem string
 	f := &fakeAdapter{
@@ -177,7 +177,7 @@ func TestOpenAI_NoSkillsInSystemPrompt(t *testing.T) {
 	initGitRepo(t, root)
 
 	c := llm.NewClient()
-	comm := communicateCall("c1", "success", "done")
+	comm := submitResultCall("c1", "done")
 
 	var capturedSystem string
 	f := &fakeAdapter{
@@ -218,7 +218,7 @@ func TestEmbeddedSkills_ProjectShadowsEmbedded(t *testing.T) {
 		"---\nname: test-driven-development\ndescription: \"Custom project TDD\"\n---\nCustom TDD body.\n")
 
 	c := llm.NewClient()
-	comm := communicateCall("c1", "success", "done")
+	comm := submitResultCall("c1", "done")
 
 	var capturedSystem string
 	f := &fakeAdapter{
@@ -256,10 +256,10 @@ func TestEmbeddedSkills_UseSkillReturnsTDDBody(t *testing.T) {
 
 	c := llm.NewClient()
 
-	// Agent calls use_skill("test-driven-development"), then communicates result.
+	// Agent calls use_skill("test-driven-development"), then calls submit_result.
 	// Uses Anthropic profile because OpenAI uses read_file for skills.
 	skill := useSkillCall("s1", "test-driven-development")
-	comm := communicateCall("c1", "success", "done")
+	comm := submitResultCall("c1", "done")
 
 	var skillResultContent string
 	f := &fakeAdapter{
@@ -319,7 +319,7 @@ func TestEmbeddedSkills_UseSkillReturnsVerificationBody(t *testing.T) {
 	c := llm.NewClient()
 
 	skill := useSkillCall("s1", "verification-before-completion")
-	comm := communicateCall("c1", "success", "done")
+	comm := submitResultCall("c1", "done")
 
 	var skillResultContent string
 	f := &fakeAdapter{
@@ -396,7 +396,7 @@ func TestNonInteractive_SystemPromptContainsGuidance(t *testing.T) {
 	initGitRepo(t, root)
 
 	c := llm.NewClient()
-	comm := communicateCall("c1", "success", "done")
+	comm := submitResultCall("c1", "done")
 
 	var capturedSystem string
 	f := &fakeAdapter{
@@ -436,7 +436,7 @@ func TestNonInteractive_NotPresentWhenFalse(t *testing.T) {
 	initGitRepo(t, root)
 
 	c := llm.NewClient()
-	comm := communicateCall("c1", "success", "done")
+	comm := submitResultCall("c1", "done")
 
 	var capturedSystem string
 	f := &fakeAdapter{

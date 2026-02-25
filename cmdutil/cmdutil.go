@@ -28,15 +28,15 @@ func GitOriginURLFromDir(dir string) string {
 
 // SelectProfile creates the ProviderProfile for the given provider and model.
 func SelectProfile(provider, model string) (agent.ProviderProfile, error) {
-	requiredKeys := parseCommunicateRequiredDataKeys(os.Getenv("SERF_COMMUNICATE_REQUIRED_DATA_KEYS"))
+	requiredKeys := parseSubmitResultRequiredDataKeys(os.Getenv("SERF_SUBMIT_RESULT_REQUIRED_DATA_KEYS"))
 
 	switch strings.ToLower(provider) {
 	case "openai":
-		return agent.WithCommunicateRequiredDataKeys(agent.NewOpenAIProfile(model), requiredKeys), nil
+		return agent.WithSubmitResultRequiredDataKeys(agent.NewOpenAIProfile(model), requiredKeys), nil
 	case "anthropic":
-		return agent.WithCommunicateRequiredDataKeys(agent.NewAnthropicProfile(model), requiredKeys), nil
+		return agent.WithSubmitResultRequiredDataKeys(agent.NewAnthropicProfile(model), requiredKeys), nil
 	case "google", "gemini":
-		return agent.WithCommunicateRequiredDataKeys(agent.NewGeminiProfile(model), requiredKeys), nil
+		return agent.WithSubmitResultRequiredDataKeys(agent.NewGeminiProfile(model), requiredKeys), nil
 	default:
 		return nil, fmt.Errorf("unknown provider %q: must be openai, anthropic, or google", provider)
 	}
@@ -158,7 +158,7 @@ func ListModelsFunc(client *llm.Client, providerID string) func(context.Context)
 	}
 }
 
-func parseCommunicateRequiredDataKeys(raw string) []string {
+func parseSubmitResultRequiredDataKeys(raw string) []string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil

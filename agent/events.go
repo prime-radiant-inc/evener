@@ -22,7 +22,7 @@ const (
 	EventSteeringInjected    EventKind = "STEERING_INJECTED"
 	EventTurnLimit           EventKind = "TURN_LIMIT"
 	EventLoopDetection       EventKind = "LOOP_DETECTION"
-	EventCommunicate         EventKind = "COMMUNICATE"
+	EventSubmitResult        EventKind = "SUBMIT_RESULT"
 	EventSkillActivated      EventKind = "SKILL_ACTIVATED"
 	EventContextCompaction   EventKind = "CONTEXT_COMPACTION"
 	EventWarning             EventKind = "WARNING"
@@ -165,8 +165,7 @@ type LoopDetectionData struct {
 	Message string `json:"message"`
 }
 
-type CommunicateData struct {
-	Action  string `json:"action"`
+type SubmitResultData struct {
 	Message string `json:"message"`
 }
 

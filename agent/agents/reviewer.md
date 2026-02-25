@@ -54,7 +54,7 @@ Given the spec, tests, and implementation, check for:
 
 ## Verdict
 
-Your communicate(success) message must contain:
+Your submit_result message must contain:
 
 **PASS** or **FAIL**
 

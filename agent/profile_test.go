@@ -59,7 +59,7 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"close_agent",
 			"task_list",
 			"web_fetch",
-			"communicate",
+			"submit_result",
 		})
 	})
 	t.Run("anthropic", func(t *testing.T) {
@@ -77,7 +77,7 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"close_agent",
 			"task_list",
 			"web_fetch",
-			"communicate",
+			"submit_result",
 			"use_skill",
 		})
 	})
@@ -99,7 +99,7 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"task_list",
 			"web_fetch",
 			"web_search",
-			"communicate",
+			"submit_result",
 			"use_skill",
 		})
 	})
@@ -284,9 +284,9 @@ func TestAllProfiles_SystemPromptContainsTaskListGuidance(t *testing.T) {
 	}
 }
 
-// TestAllProfiles_SystemPromptContainsCommunicateGuidance verifies that all
-// profiles include behavioral guidance for the communicate tool.
-func TestAllProfiles_SystemPromptContainsCommunicateGuidance(t *testing.T) {
+// TestAllProfiles_SystemPromptContainsSubmitResultGuidance verifies that all
+// profiles include behavioral guidance for the submit_result tool.
+func TestAllProfiles_SystemPromptContainsSubmitResultGuidance(t *testing.T) {
 	profiles := map[string]ProviderProfile{
 		"openai":    NewOpenAIProfile("gpt-5.2"),
 		"anthropic": NewAnthropicProfile("claude-test"),
@@ -297,14 +297,8 @@ func TestAllProfiles_SystemPromptContainsCommunicateGuidance(t *testing.T) {
 	for name, p := range profiles {
 		prompt := p.BuildSystemPrompt(env, nil, nil, "")
 
-		if !strings.Contains(prompt, "communicate") {
-			t.Errorf("profile %q system prompt missing communicate guidance", name)
-		}
-		if !strings.Contains(prompt, "communicate(status)") {
-			t.Errorf("profile %q system prompt missing communicate(status) guidance", name)
-		}
-		if !strings.Contains(prompt, "communicate(success)") {
-			t.Errorf("profile %q system prompt missing communicate(success) guidance", name)
+		if !strings.Contains(prompt, "submit_result") {
+			t.Errorf("profile %q system prompt missing submit_result guidance", name)
 		}
 		if !strings.Contains(prompt, "inbox") {
 			t.Errorf("profile %q system prompt missing inbox guidance", name)
@@ -429,8 +423,8 @@ func TestBuildSystemPrompt_SubagentGuidanceContent(t *testing.T) {
 		t.Error("subagent guidance should mention task_list for coordination")
 	}
 	// Should clarify that task_list is for the parent agent, not shared across subagents.
-	if !strings.Contains(prompt, "communicate(success)") {
-		t.Error("subagent guidance should mention communicate(success) for subagent results")
+	if !strings.Contains(prompt, "submit_result") {
+		t.Error("subagent guidance should mention submit_result for subagent results")
 	}
 	// Should NOT imply shared task_list across subagents.
 	if strings.Contains(prompt, "coordinate work across subagents") {
@@ -904,11 +898,11 @@ func TestAnthropicProfile_Default_NoBeta1MHeader(t *testing.T) {
 	}
 }
 
-func TestAnthropicProfile_WithCommunicateRequiredDataKeys(t *testing.T) {
+func TestAnthropicProfile_WithSubmitResultRequiredDataKeys(t *testing.T) {
 	p := NewAnthropicProfile("claude-opus-4-6")
-	p2 := WithCommunicateRequiredDataKeys(p, []string{"tasks"})
+	p2 := WithSubmitResultRequiredDataKeys(p, []string{"tasks"})
 	if p2 == nil {
-		t.Fatal("WithCommunicateRequiredDataKeys returned nil")
+		t.Fatal("WithSubmitResultRequiredDataKeys returned nil")
 	}
 	// Should still be a valid profile with correct ID.
 	if p2.ID() != "anthropic" {

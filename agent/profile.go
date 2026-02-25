@@ -272,7 +272,7 @@ func NewOpenAIProfile(model string) ProviderProfile {
 			defCloseAgent(),
 			defTaskList(),
 			defWebFetch(),
-			defCommunicate(),
+			defSubmitResult(),
 		},
 	}
 }
@@ -357,7 +357,7 @@ func NewAnthropicProfile(model string) ProviderProfile {
 				defCloseAgent(),
 				defTaskList(),
 				defWebFetch(),
-				defCommunicate(),
+				defSubmitResult(),
 				defUseSkill(),
 			},
 		},
@@ -407,7 +407,7 @@ func NewGeminiProfile(model string) ProviderProfile {
 			defTaskList(),
 			defWebFetch(),
 			defWebSearch(),
-			defCommunicate(),
+			defSubmitResult(),
 			defUseSkill(),
 		},
 	}
@@ -690,33 +690,27 @@ func defWebSearch() llm.ToolDefinition {
 	}
 }
 
-func defCommunicate() llm.ToolDefinition {
+func defSubmitResult() llm.ToolDefinition {
 	return llm.ToolDefinition{
-		Name: "communicate",
-		Description: "Send output to the user.\n\n" +
-			"action=status: brief progress update. Use sparingly — do NOT use as a stopping point.\n\n" +
-			"action=success: assert that the task is COMPLETE and VERIFIED (EXITS THE SESSION). " +
-			"Before calling with action=success, you MUST:\n" +
+		Name: "submit_result",
+		Description: "Submit your result and exit the session. " +
+			"Before calling this tool, you MUST:\n" +
 			"1. Run the project's test suite or write and run your own tests.\n" +
-			"2. Verify ALL tests pass — if any test fails, fix it first, do NOT call success.\n" +
+			"2. Verify ALL tests pass — if any test fails, fix it first, do NOT call submit_result.\n" +
 			"3. Re-read the original task spec and confirm every requirement is met.\n" +
-			"Calling communicate(success) with failing tests or unfinished work is a lie. " +
+			"Calling submit_result with failing tests or unfinished work is a lie. " +
 			"A working solution after 80 rounds scores 100%. A broken submission scores 0%.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"action": map[string]any{
-					"type": "string",
-					"enum": []string{"status", "success"},
-				},
 				"message": map[string]any{
 					"type":        "string",
-					"description": "Human-readable text. Required for action=status; optional for action=success when output is provided.",
+					"description": "Human-readable summary of what was accomplished.",
 				},
 				"output": map[string]any{
 					"type":                 "object",
-					"description":          "Structured output (optional, for action=success).",
+					"description":          "Structured output (optional).",
 					"additionalProperties": false,
 					"properties": map[string]any{
 						"message": map[string]any{"type": "string"},
@@ -729,7 +723,6 @@ func defCommunicate() llm.ToolDefinition {
 					"required": []string{"message", "data"},
 				},
 			},
-			"required": []string{"action"},
 		},
 	}
 }

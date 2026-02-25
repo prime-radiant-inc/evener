@@ -251,12 +251,11 @@ func drainEventsHuman(events <-chan agent.SessionEvent, w io.Writer) <-chan stru
 						fmt.Fprintf(w, "[tool] %s: done\n", d.ToolName) //nolint:errcheck
 					}
 				}
-			case agent.EventCommunicate:
-				if d, ok := ev.Data.(agent.CommunicateData); ok && d.Action == "status" {
-					fmt.Fprintf(w, "[status] %s\n", d.Message) //nolint:errcheck
+			case agent.EventSubmitResult:
+				if d, ok := ev.Data.(agent.SubmitResultData); ok {
+					fmt.Fprintf(w, "[submit_result] %s\n", d.Message) //nolint:errcheck
 				}
-				// result is printed via ProcessInput return value on stdout
-				case agent.EventPluginLoaded:
+			case agent.EventPluginLoaded:
 				if d, ok := ev.Data.(agent.PluginLoadedData); ok {
 					fmt.Fprintf(w, "[plugin] loaded %s (%d skills, %d agents, %d mcp)\n", //nolint:errcheck
 						d.Name, d.SkillCount, d.AgentCount, d.MCPCount)

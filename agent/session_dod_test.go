@@ -1072,16 +1072,16 @@ func TestSession_LLMTransientErrors_RetryWithBackoff(t *testing.T) {
 	}
 }
 
-// communicateResultResponse returns a fake LLM response that calls communicate(success).
-func communicateResultResponse(msg string) llm.Response {
+// submitResultResponse returns a fake LLM response that calls submit_result.
+func submitResultResponse(msg string) llm.Response {
 	return llm.Response{
 		Message: llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
 					ID:        "comm_nudge",
-					Name:      "communicate",
-					Arguments: json.RawMessage(fmt.Sprintf(`{"action":"success","message":%q}`, msg)),
+					Name:      "submit_result",
+					Arguments: json.RawMessage(fmt.Sprintf(`{"message":%q}`, msg)),
 				}},
 			},
 		},
@@ -1096,8 +1096,8 @@ func TestSession_Subagents_SpawnWaitClose_AndDepthLimit(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("subok")} },
-			// Auto-nudge: default subagents get nudged to call communicate(success).
-			func(req llm.Request) llm.Response { return communicateResultResponse("subok") },
+			// Auto-nudge: default subagents get nudged to call submit_result.
+			func(req llm.Request) llm.Response { return submitResultResponse("subok") },
 		},
 	}
 	c.Register(f)
@@ -1210,8 +1210,8 @@ func TestSession_WaitAgent_ReturnsSubAgentResult(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("result text")} },
-			// Auto-nudge: default subagents get nudged to call communicate(success).
-			func(req llm.Request) llm.Response { return communicateResultResponse("result text") },
+			// Auto-nudge: default subagents get nudged to call submit_result.
+			func(req llm.Request) llm.Response { return submitResultResponse("result text") },
 		},
 	}
 	c.Register(f)
@@ -3710,8 +3710,8 @@ func TestSession_Subagent_DefaultGetsSubagentInstructions(t *testing.T) {
 
 	// The override should instruct the subagent to work directly.
 	override := sub.sess.cfg.BasePromptOverride
-	if !strings.Contains(override, "communicate(success)") {
-		t.Errorf("subagent base prompt should mention communicate(success), got: %s", override)
+	if !strings.Contains(override, "submit_result") {
+		t.Errorf("subagent base prompt should mention submit_result, got: %s", override)
 	}
 
 	// Wait for completion so goroutine doesn't leak.
@@ -3809,9 +3809,9 @@ func TestSession_Subagent_DoesNotGetParentDelegationPrompt(t *testing.T) {
 		t.Error("subagent base prompt should not contain spawn_agent delegation instructions")
 	}
 
-	// It should contain communicate(success) guidance.
-	if !strings.Contains(sub.sess.cfg.BasePromptOverride, "communicate(success)") {
-		t.Error("subagent base prompt should mention communicate(success)")
+	// It should contain submit_result guidance.
+	if !strings.Contains(sub.sess.cfg.BasePromptOverride, "submit_result") {
+		t.Error("subagent base prompt should mention submit_result")
 	}
 
 	// Wait for the subagent to complete so we can check the adapter's recorded requests.
@@ -3840,19 +3840,19 @@ func TestSession_Subagent_DoesNotGetParentDelegationPrompt(t *testing.T) {
 			t.Errorf("subagent should not have %q in its API tool list", forbidden)
 		}
 	}
-	// communicate should still be available.
-	if !toolNames["communicate"] {
-		t.Error("subagent should have communicate in its API tool list")
+	// submit_result should still be available.
+	if !toolNames["submit_result"] {
+		t.Error("subagent should have submit_result in its API tool list")
 	}
 
-	// Verify the base prompt (in system message) mentions communicate(success).
+	// Verify the base prompt (in system message) mentions submit_result.
 	sysMsg := subReq.Messages[0]
 	if sysMsg.Role != "system" {
 		t.Fatalf("expected first message to be system, got %s", sysMsg.Role)
 	}
 	sysTxt := sysMsg.Content[0].Text
-	if !strings.Contains(sysTxt, "communicate(success)") {
-		t.Error("subagent system prompt should mention communicate(success)")
+	if !strings.Contains(sysTxt, "submit_result") {
+		t.Error("subagent system prompt should mention submit_result")
 	}
 	// Base prompt should NOT contain the parent's delegation section.
 	if strings.Contains(sysTxt, "Subagent delegation") {
@@ -3980,8 +3980,8 @@ func TestSession_WaitAgent_ErrorsOnReWait(t *testing.T) {
 	}
 }
 
-func TestSession_Subagent_AutoNudgeOnMissingCommunicate(t *testing.T) {
-	// When a subagent stops without calling communicate(success), the runner
+func TestSession_Subagent_AutoNudgeOnMissingSubmitResult(t *testing.T) {
+	// When a subagent stops without calling submit_result, the runner
 	// should automatically send a nudge message and let it try again once.
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -3991,14 +3991,14 @@ func TestSession_Subagent_AutoNudgeOnMissingCommunicate(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			// First call: subagent returns text without communicate(success).
+			// First call: subagent returns text without submit_result.
 			func(req llm.Request) llm.Response {
 				mu.Lock()
 				callCount++
 				mu.Unlock()
 				return llm.Response{Message: llm.Assistant("I found some stuff")}
 			},
-			// Second call (after nudge): subagent calls communicate(success).
+			// Second call (after nudge): subagent calls submit_result.
 			func(req llm.Request) llm.Response {
 				mu.Lock()
 				callCount++
@@ -4009,8 +4009,8 @@ func TestSession_Subagent_AutoNudgeOnMissingCommunicate(t *testing.T) {
 						Content: []llm.ContentPart{
 							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
 								ID:        "comm1",
-								Name:      "communicate",
-								Arguments: json.RawMessage(`{"action":"success","message":"Here are my findings"}`),
+								Name:      "submit_result",
+								Arguments: json.RawMessage(`{"message":"Here are my findings"}`),
 							}},
 						},
 					},
@@ -4056,9 +4056,9 @@ func TestSession_Subagent_AutoNudgeOnMissingCommunicate(t *testing.T) {
 	json.Unmarshal([]byte(waitRes.Output), &result)
 
 	// The auto-nudge should have caused a second ProcessInput call,
-	// resulting in the communicate(success) output.
+	// resulting in the submit_result output.
 	if !strings.Contains(result.Output, "Here are my findings") {
-		t.Errorf("expected nudged subagent to report findings via communicate(success), got: %q", result.Output)
+		t.Errorf("expected nudged subagent to report findings via submit_result, got: %q", result.Output)
 	}
 	mu.Lock()
 	cc := callCount

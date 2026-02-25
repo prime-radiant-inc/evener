@@ -33,7 +33,7 @@ func main() {
 	resumeLast := flag.Bool("resume-last", false, "resume the most recent session")
 	listSessionsFlag := flag.Bool("list-sessions", false, "list saved sessions and exit")
 	maxRounds := flag.Int("max-rounds", -1, "max tool rounds per input (0=unlimited, default: 200)")
-	minResultRound := flag.Int("min-result-round", 0, "minimum round before communicate(result) is accepted (0=no minimum)")
+	minResultRound := flag.Int("min-result-round", 0, "minimum round before submit_result is accepted (0=no minimum)")
 	reasoningEffort := flag.String("reasoning-effort", "", "reasoning effort: low|medium|high|xhigh|none")
 	contextStrategy := flag.String("context-strategy", "", "context management strategy: compact|recall|session-log|ooda (default: compact)")
 	verbose := flag.Bool("verbose", false, "emit NDJSON events to stderr")

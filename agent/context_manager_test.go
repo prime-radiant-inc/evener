@@ -301,17 +301,17 @@ func TestMaskObservations_SkipsErrorResults(t *testing.T) {
 	}
 }
 
-func TestMaskObservations_PreservesCommunicate(t *testing.T) {
+func TestMaskObservations_PreservesSubmitResult(t *testing.T) {
 	history := []Turn{
 		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "communicate", `{"delivered":true,"inbox":[]}`, false)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "submit_result", `{"delivered":true,"inbox":[]}`, false)},
 		{Kind: TurnAssistant, Message: llm.Assistant("done")},
 	}
 
 	maskObservations(history, 0)
 	got := toolResultContent(history[1])
-	if startsWith(got, "[communicate:") {
-		t.Fatalf("communicate result should NOT be masked, got: %q", got)
+	if startsWith(got, "[submit_result:") {
+		t.Fatalf("submit_result result should NOT be masked, got: %q", got)
 	}
 }
 
@@ -1049,7 +1049,7 @@ func TestSession_ContextManager_CompactsWhenNeeded(t *testing.T) {
 		basePrompt:    "You are a test agent.",
 		toolDefs: []llm.ToolDefinition{
 			defReadFile(),
-			defCommunicate(),
+			defSubmitResult(),
 		},
 	}
 
@@ -1116,7 +1116,7 @@ func TestSession_ContextManager_EmitsEvents(t *testing.T) {
 		basePrompt:    "Agent.",
 		toolDefs: []llm.ToolDefinition{
 			defReadFile(),
-			defCommunicate(),
+			defSubmitResult(),
 		},
 	}
 

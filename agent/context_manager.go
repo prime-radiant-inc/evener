@@ -306,7 +306,7 @@ func (cm *ContextManager) ForceCompact(
 // --- Observation masking (Layer 1) ---
 
 // maskObservations replaces tool result content in old turns with one-line summaries.
-// Preserves: error results, communicate results, already-masked results, recent turns,
+// Preserves: error results, submit_result results, already-masked results, recent turns,
 // and results where the summary would be longer than the original.
 func maskObservations(history []Turn, preserveRecent int) {
 	if len(history) == 0 {
@@ -333,8 +333,8 @@ func maskObservations(history []Turn, preserveRecent int) {
 			if tr.IsError {
 				continue
 			}
-			// Never mask communicate results.
-			if tr.Name == "communicate" {
+			// Never mask submit_result results.
+			if tr.Name == "submit_result" {
 				continue
 			}
 
@@ -455,9 +455,9 @@ func summarizeToolResult(toolName string, content any, args json.RawMessage) str
 		name := getArg("skill_name")
 		return fmt.Sprintf("[use_skill: %s → %d chars]", name, len(contentStr))
 
-	case "communicate":
+	case "submit_result":
 		// Should never reach here (masked in caller), but be safe.
-		return fmt.Sprintf("[communicate: %d chars]", len(contentStr))
+		return fmt.Sprintf("[submit_result: %d chars]", len(contentStr))
 
 	default:
 		return fmt.Sprintf("[%s: %d chars]", toolName, len(contentStr))
@@ -533,7 +533,7 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta) []Turn
 	const maxCheckpointChars = 60_000
 
 	// Collect: modified files, tool counts, shell results, user messages,
-	// agent final responses (communicate results), working notes, activated skills.
+	// agent final responses (submit_result results), working notes, activated skills.
 	modifiedFiles := map[string]bool{}
 	activatedSkills := map[string]bool{}
 	toolCounts := map[string]int{}
@@ -565,12 +565,12 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta) []Turn
 			userMessages = append(userMessages, text)
 
 		case TurnTool, TurnToolResults:
-			// Extract communicate results (agent's final responses to user).
+			// Extract submit_result results (agent's final responses to user).
 			for _, p := range t.Message.Content {
 				if p.Kind != llm.ContentToolResult || p.ToolResult == nil {
 					continue
 				}
-				if p.ToolResult.Name == "communicate" {
+				if p.ToolResult.Name == "submit_result" {
 					content := fmt.Sprint(p.ToolResult.Content)
 					if strings.Contains(content, `"delivered":true`) || strings.Contains(content, `"delivered": true`) {
 						args := findToolCallArgs(history[:i+1], p.ToolResult.ToolCallID)
@@ -848,20 +848,19 @@ func (cm *ContextManager) summarizeWithLLM(ctx context.Context, history []Turn, 
 		case TurnCheckpoint, TurnSummary:
 			b.WriteString("Previous compaction: " + truncText(t.Message.Text(), 1000) + "\n")
 		case TurnAssistant:
-			// Extract communicate calls to show agent responses prominently.
+			// Extract submit_result calls to show agent responses prominently.
 			text := t.Message.Text()
 			if text != "" {
 				b.WriteString("Assistant: " + truncText(text, 500) + "\n")
 			}
 			for _, p := range t.Message.Content {
-				if p.Kind == llm.ContentToolCall && p.ToolCall != nil && p.ToolCall.Name == "communicate" {
+				if p.Kind == llm.ContentToolCall && p.ToolCall != nil && p.ToolCall.Name == "submit_result" {
 					var args map[string]any
 					if len(p.ToolCall.Arguments) > 0 {
 						_ = json.Unmarshal(p.ToolCall.Arguments, &args)
 					}
 					if msg, ok := args["message"]; ok {
-						action, _ := args["action"].(string)
-						b.WriteString(fmt.Sprintf("Agent→User (%s): %s\n", action, fmt.Sprint(msg)))
+						b.WriteString(fmt.Sprintf("Agent→User: %s\n", fmt.Sprint(msg)))
 					}
 				}
 			}

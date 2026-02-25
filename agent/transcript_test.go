@@ -1212,7 +1212,7 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 		basePrompt:    "You are a test agent.",
 		toolDefs: []llm.ToolDefinition{
 			defReadFile(),
-			defCommunicate(),
+			defSubmitResult(),
 		},
 	}
 

@@ -494,14 +494,13 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 	case "SESSION_END":
 		m.processing = false
 
-	case "COMMUNICATE":
+	case "SUBMIT_RESULT":
 		var d struct {
-			Action  string `json:"action"`
 			Message string `json:"message"`
 		}
 		json.Unmarshal([]byte(ev.Data), &d)
 		if d.Message != "" {
-			m.messages = append(m.messages, chatMessage{Kind: msgCommunicate, Text: d.Message})
+			m.messages = append(m.messages, chatMessage{Kind: msgSubmitResult, Text: d.Message})
 		}
 
 	case "ASSISTANT_TEXT_END":
@@ -555,7 +554,7 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 				Name:        d.ToolName,
 				Description: toolDesc,
 				Detail:      toolDetail,
-				Hidden:      d.ToolName == "communicate",
+				Hidden:      d.ToolName == "submit_result",
 			},
 		})
 		m.activeTools[d.CallID] = idx

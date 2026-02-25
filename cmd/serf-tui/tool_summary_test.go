@@ -159,11 +159,8 @@ func TestSummarizeTool_SpawnAgent(t *testing.T) {
 	}
 }
 
-func TestSummarizeTool_Communicate(t *testing.T) {
-	desc, _ := summarizeTool("communicate", `{"action":"status","message":"Building..."}`)
-	if !strings.Contains(desc, "status") {
-		t.Errorf("got %q", desc)
-	}
+func TestSummarizeTool_SubmitResult(t *testing.T) {
+	desc, _ := summarizeTool("submit_result", `{"message":"Building..."}`)
 	if !strings.Contains(desc, "Building") {
 		t.Errorf("got %q", desc)
 	}

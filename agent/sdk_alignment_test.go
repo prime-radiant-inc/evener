@@ -230,7 +230,7 @@ func TestSessionEvent_ToStreamEvent_SessionEnd(t *testing.T) {
 
 func TestSessionEvent_ToStreamEvent_AgentOnlyEvent_ReturnsNil(t *testing.T) {
 	agentOnlyKinds := []EventKind{
-		EventCommunicate,
+		EventSubmitResult,
 		EventSteeringInjected,
 		EventTurnLimit,
 		EventLoopDetection,

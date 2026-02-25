@@ -40,7 +40,7 @@ type messageKind int
 const (
 	msgUser messageKind = iota
 	msgAssistant    // LLM thinking/reasoning text
-	msgCommunicate  // agent's communicate output (the actual response)
+	msgSubmitResult // agent's submit_result output (the actual response)
 	msgTool
 	msgSystem
 )
@@ -54,7 +54,7 @@ type toolCallInfo struct {
 	Duration    time.Duration
 	Expanded    bool
 	Done        bool
-	Hidden      bool // suppress from display (e.g. communicate)
+	Hidden      bool // suppress from display (e.g. submit_result)
 }
 
 const toolCollapseThreshold = 5
@@ -69,8 +69,8 @@ func renderMessage(msg chatMessage, width int) string {
 			return ""
 		}
 		return thinkingStyle.Width(width).Render(text)
-	case msgCommunicate:
-		return communicateStyle.Width(width).Render(renderMarkdown(msg.Text))
+	case msgSubmitResult:
+		return submitResultStyle.Width(width).Render(renderMarkdown(msg.Text))
 	case msgTool:
 		if msg.Tool == nil || msg.Tool.Hidden {
 			return ""
@@ -229,15 +229,15 @@ func historyToMessages(turns []agent.Turn) []chatMessage {
 						continue
 					}
 					tc := p.ToolCall
-					if tc.Name == "communicate" {
-						msg := extractCommunicateMessage(tc)
+					if tc.Name == "submit_result" {
+						msg := extractSubmitResultMessage(tc)
 						if msg != "" {
-							msgs = append(msgs, chatMessage{Kind: msgCommunicate, Text: msg})
+							msgs = append(msgs, chatMessage{Kind: msgSubmitResult, Text: msg})
 						}
 						continue
 					}
 
-				// Non-communicate tool call: show as collapsed tool entry.
+				// Non-submit_result tool call: show as collapsed tool entry.
 				argsJSON := string(tc.Arguments)
 				toolDesc, toolDetail := summarizeTool(tc.Name, argsJSON)
 					result := toolResults[tc.ID]
@@ -261,8 +261,8 @@ func historyToMessages(turns []agent.Turn) []chatMessage {
 	return msgs
 }
 
-// extractCommunicateMessage pulls the message field from a communicate tool call's arguments.
-func extractCommunicateMessage(tc *llm.ToolCallData) string {
+// extractSubmitResultMessage pulls the message field from a submit_result tool call's arguments.
+func extractSubmitResultMessage(tc *llm.ToolCallData) string {
 	var args struct {
 		Message string `json:"message"`
 	}
