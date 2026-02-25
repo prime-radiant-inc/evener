@@ -23,7 +23,8 @@ Systematic process for diagnosing and fixing serf failures on terminal-bench tas
 
 - serf repo checked out at `/Users/jesse/prime-radiant/serf/`
 - `OPENAI_API_KEY` in `.env` file (load with `export $(cat .env | xargs)`)
-- SSH access to flower-garden (`jesse@192.168.118.101`) for task extraction
+- SSH access to flower-garden (`jesse@192.168.118.101`) for task extraction. Use the IP
+  address, not the hostname — Tailscale MagicDNS may not resolve `flower-garden`.
 - Go toolchain for building serf
 
 ## Step 1: Pick a Failure to Investigate
@@ -201,10 +202,40 @@ If the fix helps the target task but hurts others, it's not general enough — r
 
 For full validation, deploy to flower-garden and run the 89-task suite:
 ```bash
-GOOS=linux GOARCH=amd64 go build -o /tmp/serf-linux-amd64 ./cmd/serf/
-scp /tmp/serf-linux-amd64 jesse@192.168.118.101:~/git/terminal-bench/serf-linux-amd64
-# Then run harbor on flower-garden (see docs/terminal-bench.md)
+GOOS=linux GOARCH=amd64 go build -o serf-linux-amd64 ./cmd/serf/
+scp serf-linux-amd64 jesse@192.168.118.101:~/git/terminal-bench/serf-linux-amd64
 ```
+
+Then SSH and launch harbor — **you must source the `.env` file first** or the API key won't reach containers:
+```bash
+ssh jesse@192.168.118.101
+cd ~/git/terminal-bench
+export $(cat .env | xargs)   # CRITICAL: loads OPENAI_API_KEY into environment
+harbor run -d 'terminal-bench@2.0' \
+  -t task1 -t task2 \
+  --agent-import-path 'serf_agent:SerfAgent' \
+  -m openai/gpt-5.3-codex \
+  --ak max_rounds=100 \
+  -o /tmp/serf-runN \
+  -n 2 --delete --debug
+```
+
+For non-interactive launch via SSH:
+```bash
+ssh jesse@192.168.118.101 'export PATH="$HOME/.local/bin:$PATH" && \
+  cd ~/git/terminal-bench && \
+  export $(cat .env | xargs) && \
+  nohup harbor run -d "terminal-bench@2.0" \
+    -t task1 -t task2 \
+    --agent-import-path "serf_agent:SerfAgent" \
+    -m openai/gpt-5.3-codex \
+    --ak max_rounds=100 \
+    -o /tmp/serf-runN \
+    -n 2 --delete --debug \
+    > /tmp/serf-runN.log 2>&1 &'
+```
+
+**Common pitfall:** If all tasks fail with "no LLM providers configured", the API key wasn't loaded. Check with `echo $OPENAI_API_KEY` before running harbor.
 
 ## Benchmark Result Transcripts
 
