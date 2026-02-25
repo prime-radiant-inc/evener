@@ -403,11 +403,10 @@ func TestCommunicate_EmitsEvent(t *testing.T) {
 	}
 }
 
-func TestCommunicate_MinResultRound_DowngradesEarlySubmission(t *testing.T) {
+func TestCommunicate_MinResultRound_HidesToolBeforeThreshold(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	earlyResult := communicateCall("c1", "result", "premature answer")
 	lateResult := communicateCall("c3", "result", "verified answer")
 
 	shellCall := func(id string) llm.ToolCallData {
@@ -418,34 +417,46 @@ func TestCommunicate_MinResultRound_DowngradesEarlySubmission(t *testing.T) {
 		return llm.ToolCallData{ID: id, Name: "exec_command", Arguments: raw, Type: "function"}
 	}
 
+	hasCommunicate := func(req llm.Request) bool {
+		for _, td := range req.Tools {
+			if td.Name == "communicate" {
+				return true
+			}
+		}
+		return false
+	}
+
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			// Round 0: model tries to submit result early — downgraded to status.
-			func(req llm.Request) llm.Response { return toolCallResponse(earlyResult) },
-			// Round 1: model sees tool result with verification_required message.
+			// Round 0: communicate should NOT be in tool list.
 			func(req llm.Request) llm.Response {
-				// Verify the tool result contains the verification challenge.
-				for _, m := range req.Messages {
-					for _, p := range m.Content {
-						if p.Kind == llm.ContentToolResult && p.ToolResult != nil && p.ToolResult.ToolCallID == "c1" {
-							if p.ToolResult.IsError {
-								t.Errorf("expected non-error tool result for downgraded communicate, got error")
-							}
-							// The response should contain "verification_required".
-							content, _ := p.ToolResult.Content.(string)
-							if !strings.Contains(content, "verification_required") {
-								t.Errorf("expected verification_required in tool result, got: %s", content)
-							}
-						}
-					}
+				if hasCommunicate(req) {
+					t.Errorf("round 0: communicate should not be in tool list before MinResultRound")
+				}
+				return toolCallResponse(shellCall("s0"))
+			},
+			// Round 1: still before threshold.
+			func(req llm.Request) llm.Response {
+				if hasCommunicate(req) {
+					t.Errorf("round 1: communicate should not be in tool list before MinResultRound")
 				}
 				return toolCallResponse(shellCall("s1"))
 			},
-			// Round 2: more filler.
-			func(req llm.Request) llm.Response { return toolCallResponse(shellCall("s2")) },
-			// Round 3: model re-submits (now at round 3, which meets MinResultRound=3).
-			func(req llm.Request) llm.Response { return toolCallResponse(lateResult) },
+			// Round 2: still before threshold (MinResultRound=3 means rounds 0,1,2 hidden).
+			func(req llm.Request) llm.Response {
+				if hasCommunicate(req) {
+					t.Errorf("round 2: communicate should not be in tool list before MinResultRound")
+				}
+				return toolCallResponse(shellCall("s2"))
+			},
+			// Round 3: at threshold — communicate should now be available.
+			func(req llm.Request) llm.Response {
+				if !hasCommunicate(req) {
+					t.Errorf("round 3: communicate should be in tool list at MinResultRound")
+				}
+				return toolCallResponse(lateResult)
+			},
 		},
 	}
 	c.Register(f)
@@ -467,7 +478,7 @@ func TestCommunicate_MinResultRound_DowngradesEarlySubmission(t *testing.T) {
 	}
 	sess.Close()
 
-	// All 4 LLM requests should have been made (downgraded + 2 filler + accepted).
+	// All 4 LLM requests should have been made.
 	if got := len(f.Requests()); got != 4 {
 		t.Fatalf("requests: got %d want 4", got)
 	}

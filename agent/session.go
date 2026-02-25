@@ -1180,7 +1180,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			Model:      s.profile.Model(),
 			Provider:   s.profile.ID(),
 			Messages:   append([]llm.Message{llm.System(sys)}, history...),
-			Tools:      s.allToolDefinitions(),
+			Tools:      s.allToolDefinitions(round),
 			ToolChoice: &llm.ToolChoice{Mode: "auto"},
 			WebSearch:  true,
 			AdapterTimeout: &llm.AdapterTimeout{
@@ -1508,7 +1508,12 @@ func (s *Session) customToolDescriptions() string {
 // session's tool registry, plus any MCP tools. Only tools present in the
 // registry are included, ensuring tool restrictions (e.g. from plugin agents)
 // are reflected in what the LLM sees.
-func (s *Session) allToolDefinitions() []llm.ToolDefinition {
+//
+// When MinResultRound is configured and round < MinResultRound, the
+// "communicate" tool is excluded from the returned list so the model
+// cannot attempt premature result submission.
+func (s *Session) allToolDefinitions(round int) []llm.ToolDefinition {
+	hideCommunicate := s.cfg.MinResultRound > 0 && round < s.cfg.MinResultRound
 	registered := s.reg.RegisteredNames()
 
 	// Profile tool definitions use provider-specific names (e.g. "exec_command"
@@ -1527,6 +1532,9 @@ func (s *Session) allToolDefinitions() []llm.ToolDefinition {
 			canonical = c
 		}
 		if registered[canonical] {
+			if hideCommunicate && canonical == "communicate" {
+				continue
+			}
 			defs = append(defs, td)
 		}
 	}
@@ -2133,7 +2141,6 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 				message = fmt.Sprint(v)
 			}
 
-			earlyGated := false // true when early-submission gate downgrades result→status
 			switch action {
 			case "status":
 				// Some workflows accidentally include an output object with status updates.
@@ -2151,19 +2158,6 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			case "result":
 				if v, ok := args["output"]; (!ok || v == nil) && strings.TrimSpace(message) == "" {
 					return nil, fmt.Errorf("communicate(result) requires either message or output")
-				}
-				// Early-submission gate: if model tries to submit before MinResultRound,
-				// downgrade to a status update. The tool returns a verification challenge
-				// instead of confirming delivery. This avoids returning an error (which
-				// causes gpt-5.3-codex to stop) while still preventing premature submission.
-				if s.cfg.MinResultRound > 0 {
-					s.mu.Lock()
-					round := s.currentRound
-					s.mu.Unlock()
-					if round < s.cfg.MinResultRound {
-						action = "status" // downgrade to status so loop continues
-						earlyGated = true
-					}
 				}
 			default:
 				return nil, fmt.Errorf("unknown communicate action %q: use status or result", action)
@@ -2197,26 +2191,6 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 				s.resultDelivered = true
 				s.resultText = resultText
 				s.mu.Unlock()
-			}
-
-			if earlyGated {
-				s.mu.Lock()
-				round := s.currentRound
-				s.mu.Unlock()
-				resp := map[string]any{
-					"delivered": false,
-					"verification_required": fmt.Sprintf(
-						"Submission intercepted at round %d of %d. "+
-							"Early submissions are almost always incomplete. "+
-							"You MUST verify your solution works before resubmitting: "+
-							"(1) run tests/evaluation and confirm PASS, "+
-							"(2) verify ALL requirements including performance, "+
-							"(3) fix any failures before calling communicate(result) again.",
-						round+1, s.cfg.MaxToolRoundsPerInput,
-					),
-				}
-				b, _ := json.Marshal(resp)
-				return string(b), nil
 			}
 
 			resp := map[string]any{
