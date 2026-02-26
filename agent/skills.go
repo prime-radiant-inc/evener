@@ -88,6 +88,22 @@ func LoadSkillBody(meta SkillMeta) (string, error) {
 	return doc.Body, nil
 }
 
+// ResolveSkillContent looks up a skill by name in a skills map and returns its body content.
+// Tries exact match first, then tries unnamespaced match (e.g., "tdd" matches "myplugin:tdd").
+// Returns ("", nil) if not found.
+func ResolveSkillContent(skills map[string]SkillMeta, name string) (string, error) {
+	if meta, ok := skills[name]; ok {
+		return LoadSkillBody(meta)
+	}
+	for key, meta := range skills {
+		parts := strings.SplitN(key, ":", 2)
+		if len(parts) == 2 && parts[1] == name {
+			return LoadSkillBody(meta)
+		}
+	}
+	return "", nil
+}
+
 // parseSkillFile reads a SKILL.md, parses frontmatter, and extracts required fields.
 // Returns (meta, true) on success or (zero, false) if the file is missing, unparseable,
 // or lacks required fields.

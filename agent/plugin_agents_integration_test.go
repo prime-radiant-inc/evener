@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -337,6 +339,82 @@ func TestSpawnAgent_PluginAgentType_RestrictsTools(t *testing.T) {
 		if sub.sess.reg.Get(name) == nil {
 			t.Errorf("expected tool %q to be present in restricted subagent", name)
 		}
+	}
+}
+
+func TestSpawnAgent_PluginAgentType_InjectsSkillContent(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	var subagentSystemPrompt string
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				for _, m := range req.Messages {
+					if m.Role == llm.RoleSystem {
+						subagentSystemPrompt = m.Text()
+					}
+				}
+				return llm.Response{Message: llm.Assistant("done")}
+			},
+		},
+	}
+	c.Register(adapter)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	// Create a temp skill directory with a SKILL.md
+	skillDir := filepath.Join(dir, "skills", "test-skill")
+	os.MkdirAll(skillDir, 0755)
+	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: test-skill\ndescription: A test skill\n---\nThis is the test skill body content for injection.\n"), 0644)
+
+	// Register the skill in the session's skills map
+	sess.skills["test-skill"] = SkillMeta{
+		Name:        "test-skill",
+		Description: "A test skill",
+		Dir:         skillDir,
+		SkillFile:   filepath.Join(skillDir, "SKILL.md"),
+	}
+
+	// Register a plugin agent that references this skill
+	sess.pluginAgents = map[string]PluginAgent{
+		"my-plugin:test-eng": {
+			Name:         "test-eng",
+			Description:  "Test engineer",
+			Model:        "inherit",
+			Skills:       []string{"test-skill"},
+			SystemPrompt: "You are a test engineer.",
+			PluginName:   "my-plugin",
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := sess.spawnAgent(ctx, "write tests", "", "", 10, "my-plugin:test-eng")
+	if err != nil {
+		t.Fatalf("spawnAgent: %v", err)
+	}
+
+	var parsed map[string]any
+	json.Unmarshal([]byte(result.(string)), &parsed)
+	agentID := parsed["agent_id"].(string)
+	_, _ = sess.waitAgent(ctx, agentID, 5000)
+
+	// The subagent's system prompt should contain the injected skill body
+	if !strings.Contains(subagentSystemPrompt, "test skill body content for injection") {
+		t.Errorf("subagent system prompt should contain skill body, got:\n%s", subagentSystemPrompt)
+	}
+	// Also should still contain the agent's own system prompt
+	if !strings.Contains(subagentSystemPrompt, "test engineer") {
+		t.Errorf("subagent system prompt should contain agent system prompt, got:\n%s", subagentSystemPrompt)
 	}
 }
 

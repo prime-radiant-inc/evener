@@ -106,6 +106,20 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		rolePrompt = defaultSubagentInstructions
 	}
 	composed := subBase + "\n\n" + rolePrompt
+
+	// Inject skill content referenced by the plugin agent.
+	if agent != nil && len(agent.Skills) > 0 {
+		for _, skillName := range agent.Skills {
+			body, err := ResolveSkillContent(s.skills, skillName)
+			if err != nil {
+				continue
+			}
+			if body != "" {
+				composed += "\n\n" + body
+			}
+		}
+	}
+
 	subCfg.BasePromptOverride = composed
 	subProfile = subProfile.WithBasePrompt(composed)
 
