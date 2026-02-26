@@ -797,11 +797,13 @@ func (s *Session) spawnReviewer(ctx context.Context, claimedResult string) (revi
 		return reviewVerdict{Pass: true}, fmt.Errorf("reviewer ProcessInput: %w", err)
 	}
 
-	// Parse verdict from result text.
-	if strings.Contains(result, "**PASS**") {
+	// Parse verdict from result text. The reviewer prompt asks for **PASS**/**FAIL**
+	// but models sometimes omit the bold markers, so match both forms.
+	upper := strings.ToUpper(strings.TrimSpace(result))
+	if strings.Contains(upper, "**PASS**") || strings.HasPrefix(upper, "PASS") {
 		return reviewVerdict{Pass: true, Feedback: result}, nil
 	}
-	if strings.Contains(result, "**FAIL**") {
+	if strings.Contains(upper, "**FAIL**") || strings.HasPrefix(upper, "FAIL") {
 		return reviewVerdict{Pass: false, Feedback: result}, nil
 	}
 

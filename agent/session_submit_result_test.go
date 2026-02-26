@@ -501,7 +501,7 @@ func TestSubmitResult_Depth0_ReviewerFail(t *testing.T) {
 			},
 			// Reviewer: returns FAIL
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(submitResultCall("review-1", "**FAIL**\n\nTests are still failing. Run pytest to verify."))
+				return toolCallResponse(submitResultCall("review-1", "FAIL\n\nTests are still failing. Run pytest to verify."))
 			},
 			// Main agent: receives rejection feedback, tries again
 			func(req llm.Request) llm.Response {
