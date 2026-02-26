@@ -1240,8 +1240,10 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 	ctxWarned := false
 	contentFilterRetried := false // track whether we've already tried recovering from a content filter error
 	consecutiveEmptyResponses := 0
+	totalEmptyResponses := 0
 	consecutiveBareTextResponses := 0
 	const maxEmptyRetries = 3
+	const maxTotalEmptyResponses = 8 // prevent repeated burst-and-recover spirals
 	const maxBareTextRetries = 3
 
 	for round := 0; s.cfg.MaxToolRoundsPerInput < 0 || round < s.cfg.MaxToolRoundsPerInput; round++ {
@@ -1453,10 +1455,19 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 
 		txt := resp.Text()
 		lastText = txt
+		calls := resp.ToolCalls()
+
+		// Detect truly empty response (no text, no tool calls) before appending
+		// to history. Appending ghost turns creates consecutive user messages in
+		// the API, which reinforces the empty-response pattern.
+		isTrulyEmpty := strings.TrimSpace(txt) == "" && len(calls) == 0
+
 		s.emit(EventAssistantTextStart, AssistantTextStartData{
 			Model: resp.Model,
 		})
-		s.appendAssistantTurn(resp)
+		if !isTrulyEmpty {
+			s.appendAssistantTurn(resp)
+		}
 		if strings.TrimSpace(txt) != "" {
 			s.emit(EventAssistantTextDelta, AssistantTextDeltaData{Delta: txt})
 		}
@@ -1476,8 +1487,6 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			continue
 		}
 
-		calls := resp.ToolCalls()
-
 		// Reverse-map provider-specific tool names to canonical names for registry lookup.
 		if nameMap := s.profile.ToolNameMap(); len(nameMap) > 0 {
 			reverse := make(map[string]string, len(nameMap))
@@ -1493,14 +1502,26 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 
 		if len(calls) == 0 {
 			// Truly empty response (no text, no tool calls): likely a model glitch
-			// (e.g. gpt-5.3-codex null-content). Inject a steering nudge and retry.
-			if strings.TrimSpace(txt) == "" {
+			// (e.g. gpt-5.3-codex null-content). Inject escalating steering and retry.
+			if isTrulyEmpty {
 				consecutiveEmptyResponses++
-				if consecutiveEmptyResponses <= maxEmptyRetries {
+				totalEmptyResponses++
+				if consecutiveEmptyResponses <= maxEmptyRetries && totalEmptyResponses <= maxTotalEmptyResponses {
 					s.emit(EventWarning, WarningData{
 						Message: fmt.Sprintf("empty response from model (retry %d/%d)", consecutiveEmptyResponses, maxEmptyRetries),
 					})
-					steering := "Your previous response was empty. Please continue working on the task."
+					var steering string
+					switch consecutiveEmptyResponses {
+					case 1:
+						steering = "Your previous response was empty. Please continue working on the task."
+					case 2:
+						steering = "Your response was empty again. If you're stuck, write what you've tried so far " +
+							"to notes.txt, then try a different approach. You have plenty of rounds left."
+					default:
+						steering = "You've produced multiple empty responses. You MUST either call a tool to continue " +
+							"working, or call submit_result with your best effort so far. Take a breath — you've " +
+							"got this. Try a completely different approach."
+					}
 					s.appendTurn(TurnSteering, llm.User(steering))
 					s.emit(EventSteeringInjected, SteeringInjectedData{Text: steering})
 					continue
@@ -2409,10 +2430,16 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 					// Fail-open: reviewer error should not block result delivery.
 					_ = err // reviewer error logged via event system if needed
 				} else if !verdict.Pass {
-					// Reviewer rejected: return feedback, do NOT set resultDelivered.
+					// Reviewer rejected: return encouragement + feedback, do NOT set resultDelivered.
+					guidance := "\n\n---\n" +
+						"Take a breath. You've got this — we trust you and we know you're capable.\n\n" +
+						"Before your next attempt:\n" +
+						"1. Write down what you tried and why it didn't work in notes.txt\n" +
+						"2. Read notes.txt to see the full picture of what's been attempted\n" +
+						"3. Step back and try a fundamentally different approach\n"
 					resp := map[string]any{
 						"accepted": false,
-						"feedback": verdict.Feedback,
+						"feedback": verdict.Feedback + guidance,
 					}
 					b, _ := json.Marshal(resp)
 					return string(b), nil
