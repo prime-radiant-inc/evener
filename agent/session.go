@@ -787,8 +787,10 @@ func (s *Session) spawnReviewer(ctx context.Context, claimedResult string) (revi
 	// Register approve/reject tools on the reviewer session.
 	// The tool name IS the verdict — no text parsing needed.
 	verdict := reviewVerdict{Pass: true} // default fail-open
+	verdictSet := false
 	deliverResult := func(v reviewVerdict) {
 		verdict = v
+		verdictSet = true
 		subSess.mu.Lock()
 		subSess.resultDelivered = true
 		subSess.resultText = v.Feedback
@@ -843,10 +845,21 @@ func (s *Session) spawnReviewer(ctx context.Context, claimedResult string) (revi
 	// must use approve/reject (the tool name IS the verdict).
 	subSess.reg.Remove("submit_result")
 
-	// Run reviewer synchronously.
-	_, err = subSess.ProcessInput(ctx, reviewPrompt)
-	if err != nil {
-		return reviewVerdict{Pass: true}, fmt.Errorf("reviewer ProcessInput: %w", err)
+	// Run reviewer synchronously. If the reviewer outputs text instead of
+	// calling approve/reject, nudge it to use the tools.
+	const maxReviewerAttempts = 3
+	for attempt := 0; attempt < maxReviewerAttempts; attempt++ {
+		prompt := reviewPrompt
+		if attempt > 0 {
+			prompt = "You must call either the `approve` or `reject` tool to deliver your verdict. Do not write your verdict as text — only a tool call counts."
+		}
+		_, err = subSess.ProcessInput(ctx, prompt)
+		if err != nil {
+			return reviewVerdict{Pass: true}, fmt.Errorf("reviewer ProcessInput: %w", err)
+		}
+		if verdictSet {
+			break
+		}
 	}
 
 	return verdict, nil

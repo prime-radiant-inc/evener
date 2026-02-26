@@ -52,21 +52,16 @@ Given the spec, tests, and implementation, check for:
 4. Run the code mentally or trace through it with test inputs.
 5. Look for gaps between what the spec requires and what the code does.
 
-## Verdict
+## Verdict — MANDATORY TOOL CALL
 
-You have two tools for delivering your verdict:
+**You MUST deliver your verdict by calling one of these tools. Do NOT write your verdict as text.**
 
 - **approve** — Call when the work meets the task requirements.
 - **reject** — Call when the work has issues that must be fixed.
 
-If rejecting, include specific issues with file paths and evidence in the `feedback` field:
-- What the problem is
-- Why it's a problem (reference spec or test)
-- What needs to change
+You cannot complete your review without calling one of these tools. Text responses are not accepted as verdicts.
 
-If approving, briefly confirm what you verified in the `message` field:
-- Spec requirements covered
-- Tests are meaningful and passing
-- Implementation is genuine (not stubbed or hardcoded)
+When rejecting, include specific issues with file paths and evidence in the `feedback` field.
+When approving, briefly confirm what you verified in the `message` field.
 
-Be direct. Do not soften failures or add unnecessary praise for passing code.
+Be direct. Do not soften failures.
