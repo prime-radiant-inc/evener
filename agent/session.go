@@ -723,6 +723,31 @@ func (s *Session) Close() {
 	})
 }
 
+// stripPromptSection removes a markdown ## section by heading from text.
+// It removes from "## <heading>" (case-insensitive) through the next ## heading
+// or end of string, including any trailing blank lines.
+func stripPromptSection(text, heading string) string {
+	lines := strings.Split(text, "\n")
+	var out []string
+	skipping := false
+	target := strings.ToLower(heading)
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "## ") {
+			sectionName := strings.TrimSpace(strings.TrimPrefix(trimmed, "## "))
+			if strings.EqualFold(sectionName, target) {
+				skipping = true
+				continue
+			}
+			skipping = false
+		}
+		if !skipping {
+			out = append(out, line)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
 // reviewVerdict is the result of a reviewer subagent evaluation.
 type reviewVerdict struct {
 	Pass     bool
@@ -767,9 +792,14 @@ func (s *Session) spawnReviewer(ctx context.Context, claimedResult string) (revi
 	subCfg.SubagentTask = reviewPrompt
 	subCfg.Depth = s.depth + 1
 	subCfg.MaxTurns = 20
+	subCfg.MaxToolRoundsPerInput = 30 // reviewer shouldn't need many rounds
 
 	// Compose system prompt: subagent base + reviewer role.
-	subBase := SubagentBasePrompt()
+	// The standard subagent base tells agents to call submit_result, but the
+	// reviewer must use approve/reject instead. Strip the ## submit_result
+	// section so the model isn't confused by contradictory instructions —
+	// reviewer.md has its own "Verdict — MANDATORY TOOL CALL" section.
+	subBase := stripPromptSection(SubagentBasePrompt(), "submit_result")
 	composed := subBase + "\n\n" + agent.SystemPrompt
 	subCfg.BasePromptOverride = composed
 

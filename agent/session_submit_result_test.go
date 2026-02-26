@@ -698,6 +698,85 @@ func TestSubmitResult_ReviewerError_FailOpen(t *testing.T) {
 	}
 }
 
+func TestStripPromptSection(t *testing.T) {
+	input := "Preamble text.\n\n## keep_me\n\nKeep this section.\n\n## submit_result\n\nYou MUST call submit_result when done.\nMore submit_result details.\n\n## workflow\n\nWorkflow section.\n"
+	got := stripPromptSection(input, "submit_result")
+
+	if strings.Contains(got, "submit_result") {
+		t.Errorf("stripped text still contains submit_result:\n%s", got)
+	}
+	if !strings.Contains(got, "keep_me") {
+		t.Errorf("stripped text lost keep_me section")
+	}
+	if !strings.Contains(got, "workflow") {
+		t.Errorf("stripped text lost workflow section")
+	}
+	if !strings.Contains(got, "Preamble text.") {
+		t.Errorf("stripped text lost preamble")
+	}
+}
+
+func TestStripPromptSection_CaseInsensitive(t *testing.T) {
+	input := "## Submit_Result\n\nContent.\n\n## Other\n\nKept.\n"
+	got := stripPromptSection(input, "submit_result")
+
+	if strings.Contains(got, "Content.") {
+		t.Errorf("case-insensitive strip failed:\n%s", got)
+	}
+	if !strings.Contains(got, "Kept.") {
+		t.Errorf("lost other section")
+	}
+}
+
+// TestSubmitResult_ReviewerPromptNoSubmitResult verifies the reviewer's system
+// prompt does NOT mention submit_result (which would confuse the model since
+// the reviewer must use approve/reject instead).
+func TestSubmitResult_ReviewerPromptNoSubmitResult(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			// Main agent: call submit_result
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(submitResultCall("call-1", "done"))
+			},
+			// Reviewer subagent: check system prompt
+			func(req llm.Request) llm.Response {
+				// The system prompt is the first message (role=system)
+				for _, m := range req.Messages {
+					if m.Role == "system" {
+						for _, p := range m.Content {
+							if p.Kind == llm.ContentText && strings.Contains(p.Text, "MUST call submit_result") {
+								t.Errorf("reviewer system prompt still tells model to call submit_result:\n%s", p.Text[:min(len(p.Text), 500)])
+							}
+						}
+					}
+				}
+				return toolCallResponse(approveCall("review-1", "ok"))
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		Depth:              0,
+		MaxSubagentDepth:   3,
+		EnableReviewerGate: true,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "do the task")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+}
+
 // TestSubmitResult_ReviewerGetsOriginalTask verifies that the reviewer receives
 // the original task text in its prompt so it can evaluate the work in context.
 func TestSubmitResult_ReviewerGetsOriginalTask(t *testing.T) {
