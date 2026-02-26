@@ -17,13 +17,14 @@ type PluginAgent struct {
 	Model        string   // "inherit", "sonnet", "opus", "haiku"
 	Color        string
 	Tools        []string // serf canonical names (mapped at load time)
+	Skills       []string // skill names to auto-inject at dispatch time
 	SystemPrompt string   // markdown body
 	PluginName   string   // owning plugin
 }
 
 // parsePluginAgent parses a markdown file with YAML frontmatter into a PluginAgent.
-// Required frontmatter fields: name, description, model, color.
-// Optional: tools (list of Claude Code tool names, mapped to serf canonical names).
+// Required frontmatter fields: name, description.
+// Optional: model, color, tools (mapped to serf canonical names), skills (plain strings).
 func parsePluginAgent(data []byte, pluginName string) (PluginAgent, error) {
 	doc, err := frontmatter.Parse(string(data))
 	if err != nil {
@@ -76,12 +77,28 @@ func parsePluginAgent(data []byte, pluginName string) (PluginAgent, error) {
 		}
 	}
 
+	var skills []string
+	if raw, ok := doc.Meta["skills"]; ok {
+		items, ok := raw.([]any)
+		if !ok {
+			return PluginAgent{}, fmt.Errorf("agent field \"skills\" must be a list of strings")
+		}
+		for _, item := range items {
+			s, ok := item.(string)
+			if !ok {
+				return PluginAgent{}, fmt.Errorf("agent skill name must be a string, got %T", item)
+			}
+			skills = append(skills, s)
+		}
+	}
+
 	return PluginAgent{
 		Name:         name,
 		Description:  description,
 		Model:        model,
 		Color:        color,
 		Tools:        tools,
+		Skills:       skills,
 		SystemPrompt: doc.Body,
 		PluginName:   pluginName,
 	}, nil

@@ -101,6 +101,31 @@ func TestParsePluginAgent_NoTools(t *testing.T) {
 	}
 }
 
+func TestParsePluginAgent_Skills(t *testing.T) {
+	data := []byte("---\nname: test-eng\ndescription: test engineer\nskills: [test-engineering, debugging]\n---\nYou write tests.\n")
+	agent, err := parsePluginAgent(data, "builtin")
+	if err != nil {
+		t.Fatalf("parsePluginAgent: %v", err)
+	}
+	if len(agent.Skills) != 2 {
+		t.Fatalf("Skills = %v, want 2 items", agent.Skills)
+	}
+	if agent.Skills[0] != "test-engineering" || agent.Skills[1] != "debugging" {
+		t.Errorf("Skills = %v, want [test-engineering debugging]", agent.Skills)
+	}
+}
+
+func TestParsePluginAgent_NoSkills(t *testing.T) {
+	data := []byte("---\nname: explorer\ndescription: explore\n---\nRead-only.\n")
+	agent, err := parsePluginAgent(data, "builtin")
+	if err != nil {
+		t.Fatalf("parsePluginAgent: %v", err)
+	}
+	if len(agent.Skills) != 0 {
+		t.Errorf("Skills = %v, want empty", agent.Skills)
+	}
+}
+
 func TestDiscoverPluginAgents(t *testing.T) {
 	dir := makePluginDir(t, "my-plugin")
 	agentsDir := filepath.Join(dir, "agents")
