@@ -41,7 +41,7 @@ You have four specialized agents available via `spawn_agent`:
 | Agent | `agent_type` | Role |
 |-------|-------------|------|
 | **Planner** | `planner` | Reads spec + codebase, produces task breakdown |
-| **Test Writer** | `test-writer` | Writes adversarial tests from spec (does NOT know implementation approach) |
+| **Test Engineer** | `test-engineer` | Writes adversarial tests from spec (does NOT know implementation approach) |
 | **Implementer** | `implementer` | Writes code to pass pre-written tests |
 | **Reviewer** | `reviewer` | Checks for stubs, hardcoded output, test-gaming, spec violations |
 
@@ -51,7 +51,7 @@ You have four specialized agents available via `spawn_agent`:
 1. Read the spec yourself (understand what you're orchestrating)
 2. Spawn planner → get task breakdown
 3. For each task:
-   a. Spawn test-writer with task requirements → get tests
+   a. Spawn test-engineer with task requirements → get tests
    b. Read the tests, sanity-check them (do they test real things?)
    c. Spawn implementer with task requirements + test file paths → get implementation
    d. Spawn reviewer with spec + test paths + implementation paths → get verdict
@@ -139,7 +139,7 @@ Do not evaluate or second-guess the plan yourself — that is not your job.
 
 #### 3a: Get Tests
 
-Give the test-writer ONLY the task requirements and acceptance criteria.
+Give the test-engineer ONLY the task requirements and acceptance criteria.
 Do NOT tell it what implementation approach to use.
 
 ```
@@ -158,7 +158,7 @@ Write tests that verify these requirements are genuinely met.
 Remember: a separate engineer will implement this. Your tests must
 catch stubs, hardcoded outputs, and incomplete implementations.
 Test with multiple inputs. Verify outputs change when inputs change.",
-  agent_type: "test-writer",
+  agent_type: "test-engineer",
   blocking: true
 )
 ```
@@ -261,7 +261,7 @@ Call `submit_result` with:
    not called `spawn_agent` at least once, STOP. You skipped the entire workflow. Go back
    and dispatch a planner. A plan is not a deliverable — implemented, tested code is.
 
-2. **Test-writer and implementer are separate.** The test-writer does not know what
+2. **Test-writer and implementer are separate.** The test-engineer does not know what
    approach the implementer will take. This separation prevents weak tests.
 
 3. **The reviewer is adversarial.** Its job is to catch problems, not to approve.

@@ -18,7 +18,7 @@ func TestBuiltinAgents_LoadsAllRoles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("builtinAgents: %v", err)
 	}
-	want := []string{"explorer", "planner", "test-writer", "implementer", "reviewer"}
+	want := []string{"explorer", "planner", "test-engineer", "implementer", "reviewer"}
 	for _, name := range want {
 		agent, ok := agents[name]
 		if !ok {
@@ -344,7 +344,7 @@ func TestSpawnAgent_BlockingWithExplorerAgent(t *testing.T) {
 	}
 
 	// Should have used the explorer's system prompt.
-	if !strings.Contains(subagentSystemPrompt, "codebase exploration specialist") {
+	if !strings.Contains(subagentSystemPrompt, "read-only exploration agent") {
 		t.Errorf("subagent should use explorer prompt, got:\n%.200s...", subagentSystemPrompt)
 	}
 }
@@ -424,12 +424,12 @@ func TestSpawnAgent_PluginAgentGetsComposedPrompt(t *testing.T) {
 	if !strings.Contains(subagentSystemPrompt, "submit_result") {
 		t.Error("subagent prompt should contain submit_result guidance from subagent base")
 	}
-	if !strings.Contains(subagentSystemPrompt, "codebase exploration specialist") {
+	if !strings.Contains(subagentSystemPrompt, "read-only exploration agent") {
 		t.Error("subagent prompt should contain agent-specific prompt (explorer)")
 	}
 	// The base should appear before the agent-specific part.
 	baseIdx := strings.Index(subagentSystemPrompt, base[:50])
-	agentIdx := strings.Index(subagentSystemPrompt, "codebase exploration specialist")
+	agentIdx := strings.Index(subagentSystemPrompt, "read-only exploration agent")
 	if baseIdx >= agentIdx {
 		t.Error("subagent base should appear before agent-specific prompt")
 	}
