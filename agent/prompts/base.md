@@ -81,8 +81,9 @@ submit_result — go back and fix it.
 - If the inbox contains a message, acknowledge it in your next action.
 
 **HARD GATE**: You MUST NOT call submit_result while tests are failing or requirements
-are unmet. A task with 90 rounds used and a working solution scores 100%. A task with
-8 rounds used and a broken solution scores 0%.
+are unmet. Before submitting, run any test suite you can find — if it exists, it will be
+used to judge your work. A task with 90 rounds used and a working solution scores 100%.
+A task with 8 rounds used and a broken solution scores 0%.
 
 ## Workflow
 
@@ -103,6 +104,9 @@ are unmet. A task with 90 rounds used and a working solution scores 100%. A task
   stub functions, and shortcuts that bypass the actual problem are not solutions.
 - Stop analyzing, start building. If you have spent more than 10 tool calls without
   creating or editing a deliverable file, you are in analysis paralysis. Write code NOW.
+- Before submitting, look for existing test suites (/tests/, test/, tests.py, test.sh)
+  and run them. If they fail, fix your code — do not submit with failing tests.
+- Examine ALL files and tools in the working directory. They were provided for a reason.
 
 ## Security
 
