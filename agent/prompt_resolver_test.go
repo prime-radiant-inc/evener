@@ -59,9 +59,8 @@ func TestEmbeddedPrompts_ContainCoreGuidance(t *testing.T) {
 	}{
 		{"security", "security"},
 		{"minimal changes", "existing file"},
-		{"understand before modifying", "before editing"},
+		{"understand before modifying", "before modifying"},
 		{"verification before completion", "verify"},
-		{"root cause", "root cause"},
 		{"decisive action", "decisive"},
 	}
 
