@@ -1,7 +1,15 @@
-# Prompt Redesign: Soul + Skills
+# Prompt Redesign: Soul + Skills — Implementation Plan
+
+> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+
+**Goal:** Separate serf's monolithic base.md into a lean soul prompt + methodology skills loaded on demand.
+
+**Architecture:** base.md becomes ~80 lines (identity, values, coordinator role). TDD, debugging, verification, and delegation methodology move to embedded skills. Agent types get a `skills` frontmatter field for auto-injection per the Claude Code subagent spec.
+
+**Tech Stack:** Go (agent package), embedded markdown files, YAML frontmatter parsing.
 
 **Date**: 2026-02-26
-**Status**: Design
+**Status**: Plan
 **Branch**: feat/gpt-5.3-codex-phase-support
 
 ## Problem
@@ -168,15 +176,440 @@ The following content is **removed entirely**:
 - Redundant statements that appear in multiple places
 - "Round awareness" guidance (causes anxiety, not productive behavior)
 
-## Migration
+---
 
-1. Write new base.md (~80 lines)
-2. Write 5 core skill files
-3. Slim agent type prompts, add `skills` frontmatter
-4. Implement `skills` frontmatter parsing + injection in Go
-5. Trim system.openai.md
-6. Update tests
-7. Benchmark: run terminal-bench to compare pass rate
+## Implementation Tasks
+
+### Task 1: Add `Skills` field to PluginAgent and parse from frontmatter
+
+**Files:**
+- Modify: `agent/plugin_agents.go:13-22` (PluginAgent struct)
+- Modify: `agent/plugin_agents.go:27-88` (parsePluginAgent)
+- Test: `agent/plugin_agents_test.go`
+
+**Step 1: Write failing test for skills parsing**
+
+Add to `agent/plugin_agents_test.go`:
+
+```go
+func TestParsePluginAgent_Skills(t *testing.T) {
+	data := []byte("---\nname: test-eng\ndescription: test engineer\nskills: [test-engineering, debugging]\n---\nYou write tests.\n")
+	agent, err := parsePluginAgent(data, "builtin")
+	if err != nil {
+		t.Fatalf("parsePluginAgent: %v", err)
+	}
+	if len(agent.Skills) != 2 {
+		t.Fatalf("Skills = %v, want 2 items", agent.Skills)
+	}
+	if agent.Skills[0] != "test-engineering" || agent.Skills[1] != "debugging" {
+		t.Errorf("Skills = %v, want [test-engineering debugging]", agent.Skills)
+	}
+}
+
+func TestParsePluginAgent_NoSkills(t *testing.T) {
+	data := []byte("---\nname: explorer\ndescription: explore\n---\nRead-only.\n")
+	agent, err := parsePluginAgent(data, "builtin")
+	if err != nil {
+		t.Fatalf("parsePluginAgent: %v", err)
+	}
+	if len(agent.Skills) != 0 {
+		t.Errorf("Skills = %v, want empty", agent.Skills)
+	}
+}
+```
+
+**Step 2: Run test to verify it fails**
+
+Run: `go test ./agent/ -run TestParsePluginAgent_Skills -v`
+Expected: FAIL — PluginAgent has no Skills field.
+
+**Step 3: Implement Skills field and parsing**
+
+In `agent/plugin_agents.go`, add `Skills []string` to the PluginAgent struct.
+In `parsePluginAgent`, after the tools parsing block, add similar parsing for
+the `skills` field (list of strings, no mapping needed — skill names are plain strings).
+
+**Step 4: Run tests to verify they pass**
+
+Run: `go test ./agent/ -run TestParsePluginAgent -v`
+Expected: All TestParsePluginAgent* tests PASS.
+
+**Step 5: Commit**
+
+```
+git add agent/plugin_agents.go agent/plugin_agents_test.go
+git commit -m "feat: parse skills frontmatter field on PluginAgent"
+```
+
+---
+
+### Task 2: Inject skills content into subagent system prompt at dispatch
+
+**Files:**
+- Modify: `agent/subagents.go:55-163` (spawnAgent function)
+- Modify: `agent/skills.go` (add ResolveSkillContent helper)
+- Test: `agent/plugin_agents_integration_test.go`
+
+**Step 1: Write failing test for skill injection**
+
+Add to `agent/plugin_agents_integration_test.go`:
+
+```go
+func TestSpawnAgent_PluginAgentType_InjectsSkillContent(t *testing.T) {
+	// Create a session with a plugin agent that has skills: [test-skill]
+	// Create a skill "test-skill" with known body content
+	// Spawn the agent, capture its system prompt
+	// Assert the skill body appears in the composed prompt
+}
+```
+
+Use the existing test patterns from `TestSpawnAgent_PluginAgentType_SystemPrompt`
+(line 89) as a template. Create a temp skill dir with a SKILL.md, register it in
+the session's skills map, create a PluginAgent with `Skills: []string{"test-skill"}`,
+then verify the subagent's BasePromptOverride contains the skill body text.
+
+**Step 2: Run test to verify it fails**
+
+Run: `go test ./agent/ -run TestSpawnAgent_PluginAgentType_InjectsSkillContent -v`
+Expected: FAIL — spawnAgent doesn't resolve or inject skills.
+
+**Step 3: Implement skill resolution in spawnAgent**
+
+In `agent/skills.go`, add:
+
+```go
+// ResolveSkillContent looks up a skill by name in the session's skills map
+// and returns its body content. Returns ("", nil) if not found.
+func ResolveSkillContent(skills map[string]SkillMeta, name string) (string, error) {
+	// Try exact match first
+	if meta, ok := skills[name]; ok {
+		return LoadSkillBody(meta)
+	}
+	// Try unnamespaced match (skill name without plugin prefix)
+	for key, meta := range skills {
+		parts := strings.SplitN(key, ":", 2)
+		if len(parts) == 2 && parts[1] == name {
+			return LoadSkillBody(meta)
+		}
+	}
+	return "", nil
+}
+```
+
+In `agent/subagents.go` `spawnAgent`, after composing `subBase + rolePrompt`, resolve
+and append any skills from `agent.Skills`:
+
+```go
+if agent != nil && len(agent.Skills) > 0 {
+	for _, skillName := range agent.Skills {
+		body, err := ResolveSkillContent(s.skills, skillName)
+		if err != nil {
+			// log warning but continue
+			continue
+		}
+		if body != "" {
+			composed += "\n\n" + body
+		}
+	}
+}
+```
+
+**Step 4: Run tests**
+
+Run: `go test ./agent/ -run TestSpawnAgent -v`
+Expected: All PASS, including the new skill injection test.
+
+**Step 5: Commit**
+
+```
+git add agent/subagents.go agent/skills.go agent/plugin_agents_integration_test.go
+git commit -m "feat: inject skills content into subagent system prompt at dispatch"
+```
+
+---
+
+### Task 3: Rewrite base.md — The Soul
+
+**Files:**
+- Modify: `agent/prompts/base.md`
+- Test: `agent/prompt_resolver_test.go`, `agent/profile_test.go`
+
+**Step 1: Save current base.md to a backup for reference**
+
+```bash
+cp agent/prompts/base.md agent/prompts/base.md.bak
+```
+
+**Step 2: Write new base.md**
+
+~80 lines covering four sections:
+1. **Identity & Values** — You are serf. Honesty. Persistence. Correctness over speed.
+   Efficient and productive — don't waste time, don't rush.
+2. **Role: Coordinator** — Understand the task, break it down, dispatch subagents, verify
+   their output. Accountable for outcomes. Enforce values on subagents.
+3. **Skills** — You have skills for specialized methodologies. Consider which apply before
+   starting. List core skills with 1-line descriptions. Tell subagents which skills to use.
+4. **submit_result** — Trimmed: call when task is complete and verified. Must have evidence.
+
+Reference `agent/prompts/base.md.bak` for specific wording to preserve from the soul-relevant
+sections (principles, persistence, submit_result). Discard TDD cycle, debugging methodology,
+verification flowcharts, subagent delegation patterns, workflow details.
+
+**Step 3: Run existing tests and fix any that assert on removed content**
+
+Run: `go test ./agent/ -run TestResolveSystemPrompt -v`
+Run: `go test ./agent/ -run TestAllProfiles -v`
+Run: `go test ./agent/ -run TestEmbeddedPrompts -v`
+
+Tests that check for TDD keywords, debugging sections, or delegation patterns in base.md
+will fail. Update them to check for the new soul content instead. Key tests to update:
+
+- `TestEmbeddedPrompts_ContainCoreGuidance` (prompt_resolver_test.go:53) — update expected strings
+- `TestAllProfiles_SystemPromptContainsTaskListGuidance` (profile_test.go:259)
+- `TestAllProfiles_SystemPromptContainsSubmitResultGuidance` (profile_test.go:289)
+- `TestAllProfiles_SystemPromptContainsSubagentGuidance` (profile_test.go:390)
+
+**Step 4: Run full test suite**
+
+Run: `go test ./agent/ -short -count=1`
+Expected: All PASS.
+
+**Step 5: Commit**
+
+```
+git add agent/prompts/base.md agent/prompt_resolver_test.go agent/profile_test.go
+git commit -m "prompt: rewrite base.md as soul-only (identity, values, coordinator role)"
+```
+
+**Step 6: Remove backup**
+
+```bash
+rm agent/prompts/base.md.bak
+```
+
+---
+
+### Task 4: Write the ops-task core skill
+
+**Files:**
+- Create: `agent/skills/ops-task/SKILL.md`
+- Test: `agent/builtin_skills_test.go`
+
+**Step 1: Write SKILL.md**
+
+The ops-task skill covers fix/build/configure workflows — the kind of work that dominates
+benchmark tasks. Distill from base.md's workflow section (lines 296-418):
+
+- Install missing dependencies before retrying
+- Read the complete error message before attempting fixes
+- Try different approaches when stuck (3-strike rule)
+- Keep an approach log to survive compaction
+- Clean up temp files before finishing
+- Verify output exists and services respond
+
+Frontmatter:
+```yaml
+---
+name: ops-task
+description: "Fix, build, and configure tasks: install deps, try, read errors, fix, verify. Use for debugging broken builds, configuring services, and operational fixes."
+---
+```
+
+**Step 2: Run builtin skills discovery test**
+
+Run: `go test ./agent/ -run TestEmbeddedSkills -v`
+
+The count assertion (`TestAllEmbeddedSkills_CanBeLoaded`, expects ≥15) should now
+pass with one more skill. If it's a hard count, update it.
+
+**Step 3: Commit**
+
+```
+git add agent/skills/ops-task/SKILL.md
+git commit -m "skill: add ops-task for fix/build/configure workflows"
+```
+
+---
+
+### Task 5: Slim agent type prompts and rename test-writer → test-engineer
+
+**Files:**
+- Modify: `agent/agents/explorer.md`
+- Create: `agent/agents/test-engineer.md` (replacement for test-writer.md)
+- Delete: `agent/agents/test-writer.md`
+- Modify: `agent/agents/implementer.md`
+- Modify: `agent/agents/reviewer.md`
+- Test: `agent/builtin_agents_test.go`
+
+**Step 1: Write slim agent prompts**
+
+Each agent type becomes:
+- Frontmatter with name, description, tools, color, and optionally skills
+- 2-8 lines of identity and values (no methodology — that comes from skills)
+
+explorer.md — read-only, no skills needed, brief identity.
+test-engineer.md — skills: [test-driven-development], adversarial quality gate identity.
+implementer.md — DRY, YAGNI, careful, responsible, match surrounding style.
+reviewer.md — skills: [verification-before-completion], skeptical by default.
+
+**Step 2: Update tests for rename**
+
+In `agent/builtin_agents_test.go`:
+- Change all references from "test-writer" to "test-engineer"
+- Update `TestBuiltinAgents_LoadsAllRoles` expected agent count/names
+- Verify skill field is populated on test-engineer and reviewer
+- Update `TestBuiltinAgents_ExplorerTools` if tool lists changed
+
+**Step 3: Run tests**
+
+Run: `go test ./agent/ -run TestBuiltinAgents -v`
+Expected: All PASS.
+
+**Step 4: Run full suite to catch any other references to "test-writer"**
+
+Run: `grep -r "test-writer" agent/` — fix any remaining references.
+Run: `go test ./agent/ -short -count=1`
+Expected: All PASS.
+
+**Step 5: Commit**
+
+```
+git add agent/agents/ agent/builtin_agents_test.go
+git commit -m "prompt: slim agent types, rename test-writer to test-engineer, add skills frontmatter"
+```
+
+---
+
+### Task 6: Update subagent_base.md with skills awareness and value inheritance
+
+**Files:**
+- Modify: `agent/prompts/subagent_base.md`
+- Test: `agent/builtin_agents_test.go`
+
+**Step 1: Add two sections to subagent_base.md**
+
+After the existing "Non-interactive" section, add:
+
+**Skills** (~5 lines): If skills were loaded into your context, follow their methodology.
+The coordinator chose them for a reason.
+
+**Values** (~5 lines): You share the coordinator's values: honesty, correctness, thoroughness.
+Never fabricate results. A thorough partial result is more useful than a sloppy complete one.
+
+**Step 2: Run tests**
+
+Run: `go test ./agent/ -run TestSubagentBasePrompt -v`
+Expected: PASS. May need to update assertions if they check exact content.
+
+**Step 3: Commit**
+
+```
+git add agent/prompts/subagent_base.md
+git commit -m "prompt: add skills awareness and value inheritance to subagent base"
+```
+
+---
+
+### Task 7: Trim system.openai.md
+
+**Files:**
+- Modify: `agent/prompts/system.openai.md`
+- Test: `agent/profile_test.go`
+
+**Step 1: Remove duplicated behavioral guidance**
+
+Remove from system.openai.md:
+- "Bias to action" / persistence directives (now in base.md soul)
+- "If you are finishing in under 10 rounds" round-awareness (removed entirely)
+- Any content that duplicates what's in base.md or skills
+
+Keep:
+- "You are serf" identity line
+- apply_patch tool documentation and format
+- Exploration/reading files batching guidance
+- Editing constraints (ASCII default, no revert, no amend)
+- Code implementation standards
+
+Target: ~60 lines from current ~103.
+
+**Step 2: Run tests**
+
+Run: `go test ./agent/ -run TestOpenAI -v`
+Run: `go test ./agent/ -run TestResolveSystemPrompt -v`
+Expected: PASS (may need to update assertions checking for removed content).
+
+**Step 3: Commit**
+
+```
+git add agent/prompts/system.openai.md agent/profile_test.go
+git commit -m "prompt: trim system.openai.md, remove duplicated behavioral guidance"
+```
+
+---
+
+### Task 8: Full test suite + build verification
+
+**Files:** None (verification only)
+
+**Step 1: Run full test suite**
+
+```bash
+go test ./... -short -count=1
+```
+
+Expected: All PASS. Fix any failures.
+
+**Step 2: Build binary**
+
+```bash
+go build ./cmd/serf/
+```
+
+Expected: Clean build.
+
+**Step 3: Smoke test**
+
+Run serf on a simple task locally to verify the new prompts work:
+
+```bash
+./serf --provider openai --model gpt-5-mini -- "List the files in the current directory"
+```
+
+Verify it responds sensibly and submit_result works.
+
+**Step 4: Commit any remaining fixes**
+
+---
+
+### Task 9: Deploy and benchmark
+
+**Step 1: Cross-compile for Linux**
+
+```bash
+GOOS=linux GOARCH=amd64 go build -o serf-linux-amd64 ./cmd/serf/
+```
+
+**Step 2: Deploy to flower-garden**
+
+```bash
+scp serf-linux-amd64 192.168.118.101:~/git/terminal-bench/serf-linux-amd64
+```
+
+**Step 3: Run benchmark**
+
+Run a full 89-task benchmark with the new prompts. Compare against serf-reviewer-full2
+(41/89 = 46% with reviewer gate).
+
+```bash
+ssh 192.168.118.101 "export PATH=\"\$HOME/.local/bin:\$PATH\" && cd ~/git/terminal-bench && harbor run ... --job-name serf-soul-skills-1 ..."
+```
+
+**Step 4: Analyze results**
+
+Use `tools/transcript-viewer.py` to generate failure transcripts. Compare failure
+categories (timeout, wrong answer, no submit) against the baseline.
+
+---
 
 ## Risks
 
@@ -186,3 +619,5 @@ The following content is **removed entirely**:
   subagents to follow TDD. It just isn't mandatory for every task type.
 - **Token cost of skill injection**: Skills injected via frontmatter add to the subagent's
   system prompt. Keep skills concise to avoid bloat.
+- **Test churn**: Many existing tests assert on specific strings in system prompts.
+  Expect 10-20 test updates. Use `grep -r` to find all references before modifying.
