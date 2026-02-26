@@ -441,6 +441,60 @@ func TestSubmitResult_MinResultRound_ZeroAllowsImmediate(t *testing.T) {
 // Phase 2: Reviewer gate tests
 // ---------------------------------------------------------------------------
 
+// TestSubmitResult_Depth0_ReviewerToolsInRequest verifies that the approve and
+// reject tools are actually present in the API request sent to the reviewer
+// subagent. This guards against a regression where custom-registered tools
+// were in the registry (for execution) but not in allToolDefinitions() (so the
+// model never saw them).
+func TestSubmitResult_Depth0_ReviewerToolsInRequest(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			// Main agent: call submit_result
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(submitResultCall("call-1", "done"))
+			},
+			// Reviewer subagent: check that approve/reject are in the tools list
+			func(req llm.Request) llm.Response {
+				toolNames := make(map[string]bool)
+				for _, td := range req.Tools {
+					toolNames[td.Name] = true
+				}
+				if !toolNames["approve"] {
+					t.Errorf("reviewer request missing 'approve' tool; tools: %v", toolNames)
+				}
+				if !toolNames["reject"] {
+					t.Errorf("reviewer request missing 'reject' tool; tools: %v", toolNames)
+				}
+				if toolNames["submit_result"] {
+					t.Errorf("reviewer request should NOT have 'submit_result' tool; tools: %v", toolNames)
+				}
+				return toolCallResponse(approveCall("review-1", "looks good"))
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		Depth:              0,
+		MaxSubagentDepth:   3,
+		EnableReviewerGate: true,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "do the task")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+}
+
 // TestSubmitResult_Depth0_ReviewerPass verifies that at depth 0 (root session),
 // calling submit_result spawns a reviewer subagent. When the reviewer returns
 // PASS, the tool response should indicate accepted:true and the session should

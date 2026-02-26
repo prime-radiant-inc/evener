@@ -1717,6 +1717,7 @@ func (s *Session) allToolDefinitions(round int) []llm.ToolDefinition {
 	}
 
 	var defs []llm.ToolDefinition
+	included := make(map[string]bool) // track which tools we've added
 	for _, td := range s.profile.ToolDefinitions() {
 		canonical := td.Name
 		if c, ok := reverseMap[td.Name]; ok {
@@ -1727,12 +1728,33 @@ func (s *Session) allToolDefinitions(round int) []llm.ToolDefinition {
 				continue
 			}
 			defs = append(defs, td)
+			included[canonical] = true
 		}
 	}
 	for _, td := range s.mcpTools {
 		if registered[td.Name] {
 			defs = append(defs, td)
+			included[td.Name] = true
 		}
+	}
+	// Include any tools registered directly on the registry (e.g. approve/reject
+	// on reviewer sessions) that weren't already covered by profile or MCP.
+	for _, td := range s.reg.Definitions() {
+		if included[td.Name] {
+			continue
+		}
+		if hideSubmitResult && td.Name == "submit_result" {
+			continue
+		}
+		// Normalize empty parameters to a valid object schema so the LLM
+		// client doesn't reject the tool definition.
+		if td.Parameters != nil && td.Parameters["type"] == nil {
+			td.Parameters = map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			}
+		}
+		defs = append(defs, td)
 	}
 	return defs
 }
