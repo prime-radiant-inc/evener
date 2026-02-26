@@ -112,6 +112,11 @@ type SessionConfig struct {
 	// model to verify its solution. 0 means no minimum (accept immediately).
 	MinResultRound int `json:"min_result_round,omitempty"`
 
+	// EnableReviewerGate, when true, spawns a reviewer subagent at depth 0
+	// to validate the result before accepting it. At depth > 0 (subagents),
+	// submit_result always passes through directly.
+	EnableReviewerGate bool `json:"enable_reviewer_gate,omitempty"`
+
 	EnableLoopDetection *bool `json:"enable_loop_detection,omitempty"`
 	LoopDetectionWindow int   `json:"loop_detection_window,omitempty"`
 
@@ -716,6 +721,92 @@ func (s *Session) Close() {
 		s.mu.Unlock()
 		close(s.events)
 	})
+}
+
+// reviewVerdict is the result of a reviewer subagent evaluation.
+type reviewVerdict struct {
+	Pass     bool
+	Feedback string
+}
+
+// extractOriginalTask returns the text of the first user input in the session history.
+// If compaction removed it, falls back to the SubagentTask from config.
+func (s *Session) extractOriginalTask() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range s.history {
+		if t.Kind == TurnUserInput {
+			return t.Message.Text()
+		}
+	}
+	return s.cfg.SubagentTask
+}
+
+// spawnReviewer creates a synchronous reviewer subagent at depth+1 that evaluates
+// the claimed result. Returns a verdict with Pass/Fail and feedback.
+func (s *Session) spawnReviewer(ctx context.Context, claimedResult string) (reviewVerdict, error) {
+	// Look up the builtin reviewer agent.
+	agent, ok := s.pluginAgents["reviewer"]
+	if !ok {
+		return reviewVerdict{Pass: true}, fmt.Errorf("builtin reviewer agent not found")
+	}
+
+	originalTask := s.extractOriginalTask()
+
+	// Compose the reviewer prompt with task context and claimed result.
+	reviewPrompt := fmt.Sprintf(
+		"## Original Task\n\n%s\n\n## Claimed Result\n\n%s\n\nReview the work and provide your verdict.",
+		originalTask, claimedResult,
+	)
+
+	// Create reviewer session config.
+	subCfg := s.cfg
+	subCfg.MCPConfigFiles = nil
+	subCfg.MCPInline = nil
+	subCfg.ParentSessionID = s.id
+	subCfg.SubagentTask = reviewPrompt
+	subCfg.Depth = s.depth + 1
+	subCfg.MaxTurns = 20
+
+	// Compose system prompt: subagent base + reviewer role.
+	subBase := SubagentBasePrompt()
+	composed := subBase + "\n\n" + agent.SystemPrompt
+	subCfg.BasePromptOverride = composed
+
+	subProfile := s.profile.WithBasePrompt(composed)
+	if agent.Model != "inherit" && agent.Model != "" {
+		subProfile = subProfile.WithModel(agent.Model)
+	}
+
+	subSess, err := NewSession(s.client, subProfile, s.env, subCfg)
+	if err != nil {
+		return reviewVerdict{Pass: true}, fmt.Errorf("creating reviewer session: %w", err)
+	}
+	defer subSess.Close()
+
+	// Restrict reviewer tools to read-only + submit_result.
+	allowed := make(map[string]bool, len(agent.Tools))
+	for _, t := range agent.Tools {
+		allowed[t] = true
+	}
+	subSess.reg.Restrict(allowed)
+
+	// Run reviewer synchronously.
+	result, err := subSess.ProcessInput(ctx, reviewPrompt)
+	if err != nil {
+		return reviewVerdict{Pass: true}, fmt.Errorf("reviewer ProcessInput: %w", err)
+	}
+
+	// Parse verdict from result text.
+	if strings.Contains(result, "**PASS**") {
+		return reviewVerdict{Pass: true, Feedback: result}, nil
+	}
+	if strings.Contains(result, "**FAIL**") {
+		return reviewVerdict{Pass: false, Feedback: result}, nil
+	}
+
+	// No clear verdict — fail-open.
+	return reviewVerdict{Pass: true, Feedback: result}, nil
 }
 
 func (s *Session) ProcessInput(ctx context.Context, input string) (string, error) {
@@ -2201,6 +2292,25 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 				}
 			}
 
+			// Reviewer gate: at depth 0 (root session) with EnableReviewerGate,
+			// spawn a reviewer subagent to validate the work before accepting.
+			// At depth > 0 (subagent), pass through directly to prevent recursion.
+			if s.cfg.EnableReviewerGate && s.depth == 0 {
+				verdict, err := s.spawnReviewer(ctx, resultText)
+				if err != nil {
+					// Fail-open: reviewer error should not block result delivery.
+					_ = err // reviewer error logged via event system if needed
+				} else if !verdict.Pass {
+					// Reviewer rejected: return feedback, do NOT set resultDelivered.
+					resp := map[string]any{
+						"accepted": false,
+						"feedback": verdict.Feedback,
+					}
+					b, _ := json.Marshal(resp)
+					return string(b), nil
+				}
+			}
+
 			s.emit(EventSubmitResult, SubmitResultData{
 				Message: message,
 			})
@@ -2214,6 +2324,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			s.mu.Unlock()
 
 			resp := map[string]any{
+				"accepted":  true,
 				"delivered": true,
 				"inbox":     inbox,
 			}

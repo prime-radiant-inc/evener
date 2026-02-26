@@ -34,6 +34,7 @@ func main() {
 	listSessionsFlag := flag.Bool("list-sessions", false, "list saved sessions and exit")
 	maxRounds := flag.Int("max-rounds", -1, "max tool rounds per input (0=unlimited, default: 200)")
 	minResultRound := flag.Int("min-result-round", 0, "minimum round before submit_result is accepted (0=no minimum)")
+	enableReviewerGate := flag.Bool("enable-reviewer-gate", false, "spawn reviewer subagent to validate submit_result at depth 0")
 	reasoningEffort := flag.String("reasoning-effort", "", "reasoning effort: low|medium|high|xhigh|none")
 	contextStrategy := flag.String("context-strategy", "", "context management strategy: compact|recall|session-log|ooda (default: compact)")
 	verbose := flag.Bool("verbose", false, "emit NDJSON events to stderr")
@@ -108,6 +109,7 @@ func main() {
 		systemPromptAppend: []string(systemPromptAppend),
 		maxRounds:          *maxRounds,
 		minResultRound:     *minResultRound,
+		enableReviewerGate: *enableReviewerGate,
 		reasoningEffort:    *reasoningEffort,
 		contextStrategy:    *contextStrategy,
 		verbose:            *verbose,
