@@ -839,6 +839,9 @@ func (s *Session) spawnReviewer(ctx context.Context, claimedResult string) (revi
 	allowed["approve"] = true
 	allowed["reject"] = true
 	subSess.reg.Restrict(allowed)
+	// Restrict auto-adds submit_result; remove it so the reviewer
+	// must use approve/reject (the tool name IS the verdict).
+	subSess.reg.Remove("submit_result")
 
 	// Run reviewer synchronously.
 	_, err = subSess.ProcessInput(ctx, reviewPrompt)
