@@ -54,16 +54,17 @@ Given the spec, tests, and implementation, check for:
 
 ## Verdict
 
-Your submit_result message must contain:
+You have two tools for delivering your verdict:
 
-**PASS** or **FAIL**
+- **approve** — Call when the work meets the task requirements.
+- **reject** — Call when the work has issues that must be fixed.
 
-If FAIL, list specific issues with file paths and line numbers:
+If rejecting, include specific issues with file paths and evidence in the `feedback` field:
 - What the problem is
 - Why it's a problem (reference spec or test)
 - What needs to change
 
-If PASS, briefly confirm what you verified:
+If approving, briefly confirm what you verified in the `message` field:
 - Spec requirements covered
 - Tests are meaningful and passing
 - Implementation is genuine (not stubbed or hardcoded)

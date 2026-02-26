@@ -784,31 +784,69 @@ func (s *Session) spawnReviewer(ctx context.Context, claimedResult string) (revi
 	}
 	defer subSess.Close()
 
-	// Restrict reviewer tools to read-only + submit_result.
-	allowed := make(map[string]bool, len(agent.Tools))
+	// Register approve/reject tools on the reviewer session.
+	// The tool name IS the verdict — no text parsing needed.
+	verdict := reviewVerdict{Pass: true} // default fail-open
+	deliverResult := func(v reviewVerdict) {
+		verdict = v
+		subSess.mu.Lock()
+		subSess.resultDelivered = true
+		subSess.resultText = v.Feedback
+		subSess.mu.Unlock()
+	}
+	_ = subSess.reg.Register(RegisteredTool{
+		Tool: llm.Tool{Definition: llm.ToolDefinition{
+			Name:        "approve",
+			Description: "Approve the work. Call when the agent's implementation meets the task requirements.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"message": map[string]any{"type": "string", "description": "Brief summary of what you verified"},
+				},
+				"required": []string{"message"},
+			},
+		}},
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			msg, _ := args["message"].(string)
+			deliverResult(reviewVerdict{Pass: true, Feedback: msg})
+			return map[string]any{"accepted": true}, nil
+		},
+	})
+	_ = subSess.reg.Register(RegisteredTool{
+		Tool: llm.Tool{Definition: llm.ToolDefinition{
+			Name:        "reject",
+			Description: "Reject the work. Call when the agent's implementation has issues that must be fixed.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"feedback": map[string]any{"type": "string", "description": "Specific issues with file paths and evidence"},
+				},
+				"required": []string{"feedback"},
+			},
+		}},
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			fb, _ := args["feedback"].(string)
+			deliverResult(reviewVerdict{Pass: false, Feedback: fb})
+			return map[string]any{"accepted": true}, nil
+		},
+	})
+
+	// Restrict reviewer tools to read-only + approve/reject.
+	allowed := make(map[string]bool, len(agent.Tools)+2)
 	for _, t := range agent.Tools {
 		allowed[t] = true
 	}
+	allowed["approve"] = true
+	allowed["reject"] = true
 	subSess.reg.Restrict(allowed)
 
 	// Run reviewer synchronously.
-	result, err := subSess.ProcessInput(ctx, reviewPrompt)
+	_, err = subSess.ProcessInput(ctx, reviewPrompt)
 	if err != nil {
 		return reviewVerdict{Pass: true}, fmt.Errorf("reviewer ProcessInput: %w", err)
 	}
 
-	// Parse verdict from result text. The reviewer prompt asks for **PASS**/**FAIL**
-	// but models sometimes omit the bold markers, so match both forms.
-	upper := strings.ToUpper(strings.TrimSpace(result))
-	if strings.Contains(upper, "**PASS**") || strings.HasPrefix(upper, "PASS") {
-		return reviewVerdict{Pass: true, Feedback: result}, nil
-	}
-	if strings.Contains(upper, "**FAIL**") || strings.HasPrefix(upper, "FAIL") {
-		return reviewVerdict{Pass: false, Feedback: result}, nil
-	}
-
-	// No clear verdict — fail-open.
-	return reviewVerdict{Pass: true, Feedback: result}, nil
+	return verdict, nil
 }
 
 func (s *Session) ProcessInput(ctx context.Context, input string) (string, error) {

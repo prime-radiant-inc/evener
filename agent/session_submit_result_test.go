@@ -25,6 +25,16 @@ func submitResultCallArgs(id string, args map[string]any) llm.ToolCallData {
 	}
 }
 
+func approveCall(id, message string) llm.ToolCallData {
+	raw, _ := json.Marshal(map[string]any{"message": message})
+	return llm.ToolCallData{ID: id, Name: "approve", Arguments: raw, Type: "function"}
+}
+
+func rejectCall(id, feedback string) llm.ToolCallData {
+	raw, _ := json.Marshal(map[string]any{"feedback": feedback})
+	return llm.ToolCallData{ID: id, Name: "reject", Arguments: raw, Type: "function"}
+}
+
 // toolCallResponse is defined in tool_web_fetch_test.go (same package).
 
 func TestSubmitResult_ToolChoiceAuto_SetOnRequest(t *testing.T) {
@@ -440,8 +450,8 @@ func TestSubmitResult_Depth0_ReviewerPass(t *testing.T) {
 	c := llm.NewClient()
 
 	// Step 1: main agent calls submit_result
-	// Step 2: reviewer agent (spawned subagent) calls submit_result with PASS verdict
-	// After reviewer PASS, main session should exit.
+	// Step 2: reviewer agent (spawned subagent) calls approve
+	// After reviewer approve, main session should exit.
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
@@ -449,9 +459,9 @@ func TestSubmitResult_Depth0_ReviewerPass(t *testing.T) {
 			func(req llm.Request) llm.Response {
 				return toolCallResponse(submitResultCall("call-1", "I fixed the bug by patching main.go"))
 			},
-			// Reviewer subagent: return PASS verdict via submit_result
+			// Reviewer subagent: approve the work
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(submitResultCall("review-1", "**PASS**\n\nThe implementation correctly fixes the bug."))
+				return toolCallResponse(approveCall("review-1", "The implementation correctly fixes the bug."))
 			},
 		},
 	}
@@ -499,17 +509,17 @@ func TestSubmitResult_Depth0_ReviewerFail(t *testing.T) {
 			func(req llm.Request) llm.Response {
 				return toolCallResponse(submitResultCall("call-1", "I fixed the bug"))
 			},
-			// Reviewer: returns FAIL
+			// Reviewer: rejects the work
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(submitResultCall("review-1", "FAIL\n\nTests are still failing. Run pytest to verify."))
+				return toolCallResponse(rejectCall("review-1", "Tests are still failing. Run pytest to verify."))
 			},
 			// Main agent: receives rejection feedback, tries again
 			func(req llm.Request) llm.Response {
 				return toolCallResponse(submitResultCall("call-2", "Fixed the test failures too"))
 			},
-			// Reviewer: PASS on second attempt
+			// Reviewer: approves on second attempt
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(submitResultCall("review-2", "**PASS**\n\nAll tests pass now."))
+				return toolCallResponse(approveCall("review-2", "All tests pass now."))
 			},
 		},
 	}
@@ -667,7 +677,7 @@ func TestSubmitResult_ReviewerGetsOriginalTask(t *testing.T) {
 				if !found {
 					t.Errorf("reviewer prompt does not contain original task %q", originalTask)
 				}
-				return toolCallResponse(submitResultCall("review-1", "**PASS**\n\nVulnerability properly fixed."))
+				return toolCallResponse(approveCall("review-1", "Vulnerability properly fixed."))
 			},
 		},
 	}
