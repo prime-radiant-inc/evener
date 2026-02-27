@@ -22,10 +22,12 @@ Systematic process for diagnosing and fixing serf failures on terminal-bench tas
 ## Prerequisites
 
 - serf repo checked out at `/Users/jesse/prime-radiant/serf/`
-- `OPENAI_API_KEY` in `.env` file (load with `export $(cat .env | xargs)`)
-- SSH access to flower-garden (`jesse@192.168.118.101`) for task extraction. Use the IP
-  address, not the hostname — Tailscale MagicDNS may not resolve `flower-garden`.
+- `OPENAI_API_KEY` in `.env` file at repo root (for local runs) and in
+  `~/git/terminal-bench/.env` on flower-garden (for harbor runs)
+- SSH access to flower-garden (`jesse@192.168.118.101`). Use the IP address, not the
+  hostname — Tailscale MagicDNS may not resolve `flower-garden`.
 - Go toolchain for building serf
+- Helper scripts in `tools/`: `eval-task.sh`, `check-eval.sh`
 
 ## Step 1: Pick a Failure to Investigate
 
@@ -34,11 +36,13 @@ Start from benchmark results. Categorize the failure:
 | Pattern | Symptoms | Likely Fix |
 |---------|----------|------------|
 | Empty/null response | Transcript ends with empty assistant turn, ~4 output tokens | Code: retry logic in session.go |
-| One-shot-and-quit | 1-5 rounds, submit_result immediately, no iteration | Prompt: verification/iteration guidance |
+| One-shot-and-quit | 1-5 rounds, communicate immediately, no iteration | Prompt: verification/iteration guidance |
 | Wrong approach | Many rounds but fundamentally wrong strategy | Prompt: exploration/planning guidance |
 | Gave up early | 5-10 rounds, reasonable start, then premature submit | Prompt: persistence directives |
 | Timeout | 900s wallclock, task still running | Code: efficiency, or accept as hard |
 | Refusal | Model says "I can't help with..." | Prompt: task framing |
+| Reviewer-approved-but-wrong | Reviewer approves, verifier fails | Reviewer prompt: thoroughness |
+| Never submitted | Many rounds, no communicate call at all | Code: nudge logic, or prompt |
 
 Pick a task that USED TO PASS with the previous model/prompt — regressions are highest value.
 
@@ -97,22 +101,51 @@ go build ./cmd/serf/
 
 Transcripts are at `<state-dir>/sessions/<session-id>.transcript.jsonl`.
 
-```bash
-# Find the transcript
-ls /tmp/serf-bench-$TASK/sessions/*.transcript.jsonl
+### Transcript Viewer (batch analysis)
 
-# Parse with the transcript tool (deploy to flower-garden or use locally)
-python3 /tmp/parse_transcript.py /tmp/serf-bench-$TASK/sessions/*.transcript.jsonl
+For analyzing many failures at once, use the transcript viewer to generate an interactive HTML site:
+
+```bash
+# 1. Rsync job data from flower-garden to local
+JOB=serf-reviewer-full2
+rsync -avz --include='*/' \
+  --include='result.json' --include='reward.txt' --include='test-stdout.txt' \
+  --include='stdout.txt' --include='return-code.txt' --include='command.txt' \
+  --include='*.json' --include='*.jsonl' --exclude='*' \
+  192.168.118.101:~/git/terminal-bench/jobs/$JOB/ /tmp/$JOB/
+
+# 2. Generate the viewer
+python3 tools/transcript-viewer.py /tmp/$JOB --output /tmp/viewer --filter failed
+
+# 3. Open locally or scp to Jesse's machine
+open /tmp/viewer/index.html
+# Or: scp /tmp/viewer/index.html <target>:/tmp/serf-viewer.html
 ```
 
-The transcript parser (`/tmp/parse_transcript.py` on flower-garden, or write your own) shows:
-- `[seq] USER: ...` — input prompt
-- `[seq] ASSISTANT: call:tool_name(args)` — tool calls the model made
-- `[seq] TOOL(name): result` — tool execution results
+**Flags:**
+- `--filter failed` (default) — only show tasks with reward=0
+- `--filter passed` — only show tasks with reward=1
+- `--filter all` — show everything
+
+**The viewer provides:**
+- Table of contents with color-coded failure types (timeout/wrong answer/no submit/error)
+- Filter buttons to isolate one failure category
+- Expand All / Collapse All for quick scanning
+- Per-task: verifier test output, all sessions (main agent + subagents) with formatted transcripts
+- Tool calls, results, assistant text with collapsible large content
+- Session labels auto-detect reviewer vs test-writer subagents
+
+### Single-task analysis
+
+For a single transcript, read the JSONL directly:
+
+```bash
+ls /tmp/serf-bench-$TASK/sessions/*.transcript.jsonl
+```
 
 **What to look for:**
 1. **How many rounds?** If < 5 of 100, the model is giving up early
-2. **Did it call submit_result?** If yes, what did it submit? If no, did it emit bare text or null?
+2. **Did it call communicate?** If yes, what did it submit? If no, did it emit bare text or null?
 3. **Did it run tests?** Good agents test their work. One-shot agents don't.
 4. **Did it iterate on failures?** After a test failure, did it try to fix the issue?
 5. **What was the final state?** Read the files the agent wrote — compare against verifier expectations
@@ -160,6 +193,11 @@ Based on transcript analysis and interrogation, determine the fix category:
 - Tool not available → add/modify tool definitions
 - Wrong tool behavior → fix tool implementation
 
+### Reviewer Prompt Fix (agent/agents/reviewer.md)
+- Reviewer-approved-but-wrong → more thorough verification steps
+- Reviewer missed file types → search completeness guidance
+- Reviewer tested wrong artifact → verify installed/deployed state
+
 ## Step 7: Implement and Verify
 
 Follow TDD: write a test for the fix, watch it fail, implement, watch it pass.
@@ -182,84 +220,171 @@ Compare transcripts before/after:
 - Tests run before submitting? (verification fix working)
 - Correct output? (actual pass)
 
-## Step 8: Validate Generality
+## Step 8: Validate on Flower-Garden
 
-**Critical step — don't skip this.**
+**Use the helper scripts.** They handle building, deploying, env vars, and harbor flags
+correctly. Do not manually construct harbor commands — the flags are finicky and
+you will waste time on typos.
 
-Run the fix against 3-5 OTHER tasks to confirm it doesn't regress:
+### Deploy and run a focused eval
 
 ```bash
-# Pick tasks from different categories
-for TASK in crack-7z-hash cancel-async-tasks fix-code-vulnerability regex-log build-cython-ext; do
-  ./serf --provider openai --model gpt-5.3-codex \
-    --max-rounds 15 \
-    --state-dir /tmp/serf-validation-$TASK \
-    -- "$(cat /tmp/task-$TASK.md)"
-done
+# Single task, 3 repetitions, with reviewer gate
+./tools/eval-task.sh reviewer-v3 build-cython-ext 3 enable_reviewer_gate=true
+
+# Single task, 5 repetitions, no reviewer gate
+./tools/eval-task.sh baseline-test fix-code-vulnerability 5
+
+# Multiple agent kwargs
+./tools/eval-task.sh experiment-1 build-cython-ext 3 enable_reviewer_gate=true result_tool_name=done
 ```
 
-If the fix helps the target task but hurts others, it's not general enough — rethink the approach.
+### Check eval status and results
 
-For full validation, deploy to flower-garden and run the 89-task suite:
 ```bash
-GOOS=linux GOARCH=amd64 go build -o serf-linux-amd64 ./cmd/serf/
-scp serf-linux-amd64 jesse@192.168.118.101:~/git/terminal-bench/serf-linux-amd64
+./tools/check-eval.sh reviewer-v3
 ```
 
-Then SSH and launch harbor — **you must export the API key AND add harbor to PATH**:
+Output shows pass/fail/running for each rep, summary, and recent log.
+
+### Full 89-task suite
+
+For full validation after targeted testing:
+
 ```bash
-ssh jesse@192.168.118.101
-export PATH="$HOME/.local/bin:$PATH"
-cd ~/git/terminal-bench
-export $(cat .env | xargs)   # CRITICAL: loads OPENAI_API_KEY into environment
-harbor run -d 'terminal-bench@2.0' \
-  -t task1 -t task2 \
-  --agent-import-path 'serf_agent:SerfAgent' \
-  -m openai/gpt-5.3-codex \
-  --ak max_rounds=100 \
-  -o /tmp/serf-runN \
-  -n 2 --delete --debug
+# Build, deploy, and run all 89 tasks
+./tools/eval-task.sh full-run-v4 "" 1 enable_reviewer_gate=true
 ```
 
-For non-interactive launch via SSH (use `bash -s` heredoc — regular SSH quoting breaks `$!`):
+(Empty task name = all tasks. But prefer focused evals first — full runs take hours
+and cost real money.)
+
+### A/B testing
+
+To compare two configurations, run focused evals with different job names:
+
 ```bash
-ssh 192.168.118.101 bash -s <<'REMOTE'
-export PATH="$HOME/.local/bin:$PATH"
-cd ~/git/terminal-bench
+# Control: current behavior
+./tools/eval-task.sh ab-control build-cython-ext 5 enable_reviewer_gate=true
+
+# Treatment: with some change
+./tools/eval-task.sh ab-treatment build-cython-ext 5 enable_reviewer_gate=true result_tool_name=done
+```
+
+Then compare results:
+```bash
+./tools/check-eval.sh ab-control
+./tools/check-eval.sh ab-treatment
+```
+
+The `--result-tool-name` flag (`--ak result_tool_name=X`) lets you rename the result
+tool at runtime without code changes. Useful for testing whether tool naming affects
+model behavior. (Answer from our eval: it doesn't.)
+
+## Harbor CLI Reference
+
+Harbor is the benchmark runner. It's installed via uv at `~/.local/bin/harbor` on
+flower-garden. The helper scripts handle all of this, but if you need to run manually:
+
+### Correct flags (verified working)
+
+| Flag | Purpose | Example |
+|------|---------|---------|
+| `--dataset` | Dataset to run | `"terminal-bench@2.0"` |
+| `--task-name` | Filter to one task | `"build-cython-ext"` |
+| `-k` | Repetitions per task | `3` |
+| `--job-name` | Name for this run | `"my-eval"` |
+| `--jobs-dir` | Output directory | `"/tmp/my-eval"` |
+| `--agent-import-path` | Agent adapter | `"serf_agent:SerfAgent"` |
+| `--ak` | Agent kwargs (repeatable) | `enable_reviewer_gate=true` |
+
+### Wrong flags (will error)
+
+| Wrong | Correct | Error |
+|-------|---------|-------|
+| `--job-dir` | `--jobs-dir` | "No such option" |
+| `--agent serf` | `--agent-import-path "serf_agent:SerfAgent"` | serf is not a built-in agent |
+| File path as import | `module:ClassName` format | Import error |
+
+### Agent adapter (serf_agent.py)
+
+The serf adapter is at `~/git/terminal-bench/serf_agent.py` on flower-garden. It wraps
+the serf binary for harbor's agent interface:
+
+- Maps harbor agent kwargs to serf CLI flags (e.g., `enable_reviewer_gate` → `--enable-reviewer-gate`)
+- Custom kwargs like `result_tool_name` need explicit support in the adapter — check
+  that the adapter handles new flags before using them with `--ak`
+- The adapter must be importable from the working directory (`cd ~/git/terminal-bench`
+  before running harbor)
+
+### Environment variables
+
+**CRITICAL**: Background processes (`nohup`) do NOT inherit interactive shell env vars.
+You must explicitly source the env file before launching:
+
+```bash
+# Correct: set -a exports all vars, works with nohup
+set -a; source .env; set +a
+
+# Also works but messier with special characters in values
 export $(cat .env | xargs)
-nohup harbor run \
-  -d "terminal-bench@2.0" \
-  -t task1 -t task2 \
-  --agent-import-path "serf_agent:SerfAgent" \
-  -m openai/gpt-5.3-codex \
-  --ak max_rounds=100 \
-  -o /tmp/serf-runN \
-  -n 4 --delete --debug \
-  > /tmp/serf-runN.log 2>&1 &
-echo "PID=$!"
-REMOTE
+
+# WRONG: source without set -a does not export
+source .env  # vars set but not exported to child processes
 ```
 
-**Common pitfalls:**
-- If all tasks fail with "no LLM providers configured", the API key wasn't exported. Use `export $(cat .env | xargs)`, NOT `source .env`.
-- If `harbor: command not found`, add `$HOME/.local/bin` to PATH. Harbor is installed via uv at `~/.local/bin/harbor`.
-- Flower-garden hostname may not resolve via Tailscale MagicDNS — use `192.168.118.101`.
+The helper scripts handle this automatically.
 
-## Benchmark Result Transcripts
+## Job Data Structure
 
-After a harbor run, transcripts are at:
+After a harbor run, job data is at:
 ```
-/tmp/serf-<run-name>/<timestamp>/<task>__<hash>/agent/serf-state/sessions/<id>.transcript.jsonl
+/tmp/<job-name>/<task>__<hash>/
+  reward.txt                                     — 0.0 or 1.0 (ground truth)
+  result.json                                    — overall result, timing
+  agent/serf-state/sessions/<id>.json            — session metadata
+  agent/serf-state/sessions/<id>.transcript.jsonl — full transcript (all turns)
 ```
 
-To analyze all failures from a run:
+**Important:** `reward.txt` is the accurate per-task reward. `result.json` intermediate
+writes can be misleading — always check `reward.txt`.
+
+For batch analysis, use the transcript viewer (see Step 4). For quick failure listing:
 ```bash
-ssh jesse@192.168.118.101 'for f in /tmp/serf-<run>/*/*/result.json; do
-  task=$(basename $(dirname "$f") | sed "s/__.*//")
-  reward=$(python3 -c "import json; print(json.load(open(\"$f\")).get(\"verifier_result\",{}).get(\"rewards\",{}).get(\"reward\",0))")
-  if [ "$reward" = "0.0" ]; then echo "$task: FAIL"; fi
-done | sort'
+./tools/check-eval.sh <job-name>
 ```
+
+## Reviewer Gate Failure Patterns
+
+When running with `--enable-reviewer-gate`, failures fall into these categories:
+
+| Pattern | Frequency | Cause | Fix |
+|---------|-----------|-------|-----|
+| Reviewer-approved-but-wrong | ~40% | Reviewer approves work that verifier rejects | Improve reviewer thoroughness |
+| Timeout | ~33% | Task + reviewer overhead exceeds wallclock limit | Efficiency, or accept as hard |
+| Never submitted | ~23% | Agent never calls communicate | Nudge logic, prompt |
+| API error | ~2% | Transient provider failures | Retry logic |
+
+### Reviewer-approved-but-wrong deep dive
+
+From analyzing build-cython-ext failures (4/5 same root cause):
+
+1. **Missed file types**: Agent patched `.py` files but missed `.pyx` (Cython source).
+   The reviewer ran the project's own test suite (18/18 pass) but didn't grep for
+   remaining instances of the deprecated pattern in ALL file types. Fix: reviewer
+   prompt now says to search exhaustively across all file types.
+
+2. **Tested wrong artifact**: Agent built extensions in-place, then `pip install`
+   created a pure-Python wheel. Reviewer tested from source directory (where `.so`
+   files existed), but verifier tested the installed package (where they didn't).
+   Fix: reviewer prompt now says to test the final installed/deployed artifact.
+
+3. **All-or-nothing scoring**: Even 10/11 tests passing yields reward=0.
+   Tasks that look close are actually failures. The reviewer needs to be strict
+   about complete coverage.
+
+These fixes are in `agent/agents/reviewer.md` and encode general principles
+(search all file types, test final artifact) not task-specific knowledge.
 
 ## Common Pitfalls
 
@@ -267,3 +392,6 @@ done | sort'
 - **Don't ignore the verifier**: Read `tests/test.sh` and `tests/test_outputs.py` to understand exactly what's checked. Many failures are partial — the agent did 80% of the work but missed a specific requirement.
 - **Don't assume the model reads the prompt**: gpt-5.3-codex in tool-calling mode often skips system prompt directives. Structural interventions (tool availability, response handling) are more reliable than prompt text.
 - **Run multiple times**: Results are nondeterministic. A task that passes once may fail next time. Run 2-3 times before declaring a fix works.
+- **Don't build to the benchmark**: If a fix requires knowing the task answer, it's cheating. If it only helps one task and hurts others, it's overfitting. Every fix should be a general engineering principle.
+- **Don't skip the env vars**: The #1 cause of "all tasks fail immediately" is forgetting to export OPENAI_API_KEY. The helper scripts handle this, so use them.
+- **Use helper scripts**: `tools/eval-task.sh` and `tools/check-eval.sh` exist for a reason. They encode correct harbor flags, env var handling, and result checking. Don't hand-construct harbor commands.
