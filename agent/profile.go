@@ -691,14 +691,18 @@ func defWebSearch() llm.ToolDefinition {
 }
 
 func defSubmitResult() llm.ToolDefinition {
+	return defSubmitResultNamed("submit_result")
+}
+
+func defSubmitResultNamed(name string) llm.ToolDefinition {
 	return llm.ToolDefinition{
-		Name: "submit_result",
+		Name: name,
 		Description: "Submit your result and exit the session. " +
 			"Before calling this tool, you MUST:\n" +
 			"1. Run the project's test suite or write and run your own tests.\n" +
-			"2. Verify ALL tests pass — if any test fails, fix it first, do NOT call submit_result.\n" +
+			"2. Verify ALL tests pass — if any test fails, fix it first, do NOT call " + name + ".\n" +
 			"3. Re-read the original task spec and confirm every requirement is met.\n" +
-			"Calling submit_result with failing tests or unfinished work is a lie. " +
+			"Calling " + name + " with failing tests or unfinished work is a lie. " +
 			"A working solution after 80 rounds scores 100%. A broken submission scores 0%.",
 		Parameters: map[string]any{
 			"type":                 "object",

@@ -1372,7 +1372,7 @@ func TestCheckpoint_UsesTurnCheckpointKind(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("done")},
 	}
 
-	result := checkpoint(history, 2, nil)
+	result := checkpoint(history, 2, nil, "submit_result")
 
 	if len(result) < 2 {
 		t.Fatalf("expected at least 2 turns, got %d", len(result))

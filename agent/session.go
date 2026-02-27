@@ -33,7 +33,8 @@ const (
 	SessionClosed        SessionState = "CLOSED"
 )
 
-const nonInteractiveGuidance = `
+func nonInteractiveGuidance(resultToolName string) string {
+	return fmt.Sprintf(`
 
 ## Non-interactive mode — CRITICAL
 
@@ -42,8 +43,8 @@ answer questions, provide clarification, or confirm your approach. Nobody will e
 to you. Any attempt to ask a question or wait for confirmation wastes your limited rounds.
 
 RULES (these override ANY skill instructions that conflict):
-- NEVER use submit_result to ask a question or request confirmation.
-- The ONLY valid use of submit_result is to deliver FINAL work output.
+- NEVER use %s to ask a question or request confirmation.
+- The ONLY valid use of %s is to deliver FINAL work output.
 - The task prompt IS the complete specification. Read it carefully, then BUILD.
 - If a skill says "ask your human partner", "confirm with user", or "explore user intent":
   make those judgment calls yourself. You are both the implementer and the decision-maker.
@@ -51,7 +52,8 @@ RULES (these override ANY skill instructions that conflict):
   and extracting every requirement — NOT asking questions.
 - Start coding within your first 3 tool calls. Read the spec, read relevant files, then write code.
 - Focus on: read spec → plan internally → test → implement → verify → deliver.
-`
+`, resultToolName, resultToolName)
+}
 
 type SessionConfig struct {
 	MaxToolRoundsPerInput   int `json:"max_tool_rounds_per_input,omitempty"`
@@ -116,6 +118,11 @@ type SessionConfig struct {
 	// to validate the result before accepting it. At depth > 0 (subagents),
 	// submit_result always passes through directly.
 	EnableReviewerGate bool `json:"enable_reviewer_gate,omitempty"`
+
+	// ResultToolName overrides the name of the submit_result tool.
+	// When set, all internal references use this name instead of "submit_result".
+	// Used for A/B testing tool names. Empty means "submit_result".
+	ResultToolName string `json:"result_tool_name,omitempty"`
 
 	EnableLoopDetection *bool `json:"enable_loop_detection,omitempty"`
 	LoopDetectionWindow int   `json:"loop_detection_window,omitempty"`
@@ -499,6 +506,14 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 func (s *Session) ID() string                  { return s.id }
 func (s *Session) Events() <-chan SessionEvent { return s.events }
 
+// resultToolName returns the effective name for the submit_result tool.
+func (s *Session) resultToolName() string {
+	if s.cfg.ResultToolName != "" {
+		return s.cfg.ResultToolName
+	}
+	return "submit_result"
+}
+
 // State returns the current session state.
 func (s *Session) State() SessionState {
 	s.mu.Lock()
@@ -799,7 +814,7 @@ func (s *Session) spawnReviewer(ctx context.Context, claimedResult string) (revi
 	// reviewer must use approve/reject instead. Strip the ## submit_result
 	// section so the model isn't confused by contradictory instructions —
 	// reviewer.md has its own "Verdict — MANDATORY TOOL CALL" section.
-	subBase := stripPromptSection(SubagentBasePrompt(), "submit_result")
+	subBase := stripPromptSection(SubagentBasePrompt(), s.resultToolName())
 	composed := subBase + "\n\n" + agent.SystemPrompt
 	subCfg.BasePromptOverride = composed
 
@@ -870,10 +885,10 @@ func (s *Session) spawnReviewer(ctx context.Context, claimedResult string) (revi
 	}
 	allowed["approve"] = true
 	allowed["reject"] = true
-	subSess.reg.Restrict(allowed)
-	// Restrict auto-adds submit_result; remove it so the reviewer
+	subSess.reg.RestrictKeepingResultTool(allowed, s.resultToolName())
+	// Restrict auto-adds result tool; remove it so the reviewer
 	// must use approve/reject (the tool name IS the verdict).
-	subSess.reg.Remove("submit_result")
+	subSess.reg.Remove(s.resultToolName())
 
 	// Run reviewer synchronously. If the reviewer outputs text instead of
 	// calling approve/reject, nudge it to use the tools.
@@ -1292,7 +1307,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		}
 
 		if s.cfg.NonInteractive {
-			sys += nonInteractiveGuidance
+			sys += nonInteractiveGuidance(s.resultToolName())
 		}
 
 		if strings.TrimSpace(s.cfg.UserInstructionOverride) != "" {
@@ -1519,7 +1534,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 							"to notes.txt, then try a different approach. You have plenty of rounds left."
 					default:
 						steering = "You've produced multiple empty responses. You MUST either call a tool to continue " +
-							"working, or call submit_result with your best effort so far. Take a breath — you've " +
+							"working, or call " + s.resultToolName() + " with your best effort so far. Take a breath — you've " +
 							"got this. Try a completely different approach."
 					}
 					s.appendTurn(TurnSteering, llm.User(steering))
@@ -1537,8 +1552,8 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 						Message: fmt.Sprintf("bare text response without tool call (retry %d/%d)", consecutiveBareTextResponses, maxBareTextRetries),
 					})
 					steering := "You responded with bare text instead of a tool call. " +
-						"You must use the submit_result tool to deliver results. " +
-						"If you are done, call submit_result. " +
+						"You must use the " + s.resultToolName() + " tool to deliver results. " +
+						"If you are done, call " + s.resultToolName() + ". " +
 						"If you still have work to do, call your next tool."
 					s.appendTurn(TurnSteering, llm.User(steering))
 					s.emit(EventSteeringInjected, SteeringInjectedData{Text: steering})
@@ -1775,7 +1790,7 @@ func (s *Session) allToolDefinitions(round int) []llm.ToolDefinition {
 			canonical = c
 		}
 		if registered[canonical] {
-			if hideSubmitResult && canonical == "submit_result" {
+			if hideSubmitResult && canonical == s.resultToolName() {
 				continue
 			}
 			defs = append(defs, td)
@@ -1794,7 +1809,7 @@ func (s *Session) allToolDefinitions(round int) []llm.ToolDefinition {
 		if included[td.Name] {
 			continue
 		}
-		if hideSubmitResult && td.Name == "submit_result" {
+		if hideSubmitResult && td.Name == s.resultToolName() {
 			continue
 		}
 		// Normalize empty parameters to a valid object schema so the LLM
@@ -1829,10 +1844,11 @@ func (s *Session) initSessionState() ([]PromptSource, error) {
 	s.envInfo = ei
 
 	var promptSources []PromptSource
+	var basePrompt string
 	if s.cfg.BasePromptOverride != "" {
 		// Subagents use BasePromptOverride to replace the parent's base.md entirely,
 		// avoiding inherited delegation instructions the subagent cannot follow.
-		s.profile = s.profile.WithBasePrompt(s.cfg.BasePromptOverride)
+		basePrompt = s.cfg.BasePromptOverride
 	} else {
 		gitRoot := gitRootOrEmpty(s.env, ei.WorkingDir)
 		projDir := ProjectPromptsDir(gitRoot)
@@ -1849,9 +1865,15 @@ func (s *Session) initSessionState() ([]PromptSource, error) {
 		if err != nil {
 			return nil, fmt.Errorf("resolve system prompt: %w", err)
 		}
-		s.profile = s.profile.WithBasePrompt(resolvedPrompt)
+		basePrompt = resolvedPrompt
 		promptSources = sources
 	}
+
+	// If the result tool has been renamed, update all references in the system prompt.
+	if name := s.resultToolName(); name != "submit_result" {
+		basePrompt = strings.ReplaceAll(basePrompt, "submit_result", name)
+	}
+	s.profile = s.profile.WithBasePrompt(basePrompt)
 
 	// Extract embedded skills to a temp dir as the base layer.
 	// Filesystem-discovered skills (project + extraDirs) shadow embedded ones.
@@ -1882,6 +1904,7 @@ func (s *Session) initSessionState() ([]PromptSource, error) {
 	}
 
 	s.contextMgr = NewContextManager(s.profile, s.client)
+	s.contextMgr.ResultToolName = s.resultToolName()
 
 	reg := s.profile.NewToolRegistry()
 	if err := registerCoreTools(reg, s); err != nil {
@@ -2395,7 +2418,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 
 	// Submit result (exits session).
 	_ = reg.Register(RegisteredTool{
-		Tool: llm.Tool{Definition: defSubmitResult()},
+		Tool: llm.Tool{Definition: defSubmitResultNamed(s.resultToolName())},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			_ = env

@@ -27,6 +27,7 @@ type runConfig struct {
 	maxRounds          int      // --max-rounds (-1=default, 0=unlimited, >0=limit)
 	minResultRound     int      // --min-result-round (0=no minimum)
 	enableReviewerGate bool     // --enable-reviewer-gate
+	resultToolName     string   // --result-tool-name override
 	reasoningEffort    string   // --reasoning-effort override (or SERF_REASONING_EFFORT)
 	contextStrategy    string   // --context-strategy
 	verbose            bool
@@ -148,6 +149,7 @@ func run(ctx context.Context, cfg runConfig) error {
 			MaxToolRoundsPerInput: cmdutil.MaxRoundsToConfig(cfg.maxRounds),
 			MinResultRound:        cfg.minResultRound,
 			EnableReviewerGate:    cfg.enableReviewerGate,
+			ResultToolName:        cfg.resultToolName,
 			StateDir:              stateDir,
 			SystemPromptFile:      cfg.systemPrompt,
 			SystemPromptAppend:    cfg.systemPromptAppend,

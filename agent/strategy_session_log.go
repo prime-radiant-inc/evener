@@ -79,7 +79,7 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]Turn,
 	// Layer 1: Observation masking.
 	if p >= s.cm.ObservationMaskThreshold {
 		before := EstimateTokens(*history)
-		maskObservations(*history, s.cm.PreserveRecentTurns)
+		maskObservations(*history, s.cm.PreserveRecentTurns, s.cm.resultToolName())
 		after := EstimateTokens(*history)
 		emitFn(EventContextCompaction, ContextCompactionData{
 			Layer:           "observation_mask",

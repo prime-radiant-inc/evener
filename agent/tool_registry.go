@@ -165,9 +165,19 @@ func (r *ToolRegistry) Definitions() []llm.ToolDefinition {
 }
 
 // Restrict removes all tools except those in the allowed set.
-// The "submit_result" tool is always kept (subagents need it to return results).
+// The result tool (submit_result or its configured alias) is always kept
+// (subagents need it to return results). The resultToolName parameter
+// specifies the name to preserve; pass empty string for "submit_result".
 func (r *ToolRegistry) Restrict(allowed map[string]bool) {
-	allowed["submit_result"] = true
+	r.RestrictKeepingResultTool(allowed, "submit_result")
+}
+
+// RestrictKeepingResultTool is like Restrict but allows specifying the result tool name.
+func (r *ToolRegistry) RestrictKeepingResultTool(allowed map[string]bool, resultToolName string) {
+	if resultToolName == "" {
+		resultToolName = "submit_result"
+	}
+	allowed[resultToolName] = true
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for name := range r.tools {

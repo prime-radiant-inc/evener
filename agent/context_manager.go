@@ -28,6 +28,10 @@ type ContextManager struct {
 	cumUsage llm.Usage
 	mu       sync.Mutex
 
+	// ResultToolName is the name of the result submission tool (default "submit_result").
+	// Used to identify result tool calls during compaction.
+	ResultToolName string
+
 	// Token measurement from the last API response. When available, used instead
 	// of char/4 for the bulk of history. Reset to 0 after compaction.
 	lastInputTokens     int // exact input token count from last API response
@@ -66,6 +70,13 @@ func NewContextManager(profile ProviderProfile, client *llm.Client) *ContextMana
 		SummarizeThreshold:       0.90,
 		PreserveRecentTurns:      6,
 	}
+}
+
+func (cm *ContextManager) resultToolName() string {
+	if cm.ResultToolName != "" {
+		return cm.ResultToolName
+	}
+	return "submit_result"
 }
 
 // AddUsage records token usage from a completed LLM call.
@@ -190,7 +201,7 @@ func (cm *ContextManager) MaybeCompact(
 	if p >= cm.CheckpointThreshold {
 		turnsBefore := len(*history)
 		before := EstimateTokens(*history)
-		*history = checkpoint(*history, cm.PreserveRecentTurns, &cm.Meta)
+		*history = checkpoint(*history, cm.PreserveRecentTurns, &cm.Meta, cm.resultToolName())
 		after := EstimateTokens(*history)
 		emitFn(EventContextCompaction, ContextCompactionData{
 			Layer:           "checkpoint",
@@ -258,7 +269,7 @@ func (cm *ContextManager) ForceCompact(
 	// Layer 1: Deterministic checkpoint.
 	turnsBefore := len(*history)
 	before := EstimateTokens(*history)
-	*history = checkpoint(*history, cm.PreserveRecentTurns, &cm.Meta)
+	*history = checkpoint(*history, cm.PreserveRecentTurns, &cm.Meta, cm.resultToolName())
 	after := EstimateTokens(*history)
 	emitFn(EventContextCompaction, ContextCompactionData{
 		Layer:           "checkpoint",
@@ -308,7 +319,7 @@ func (cm *ContextManager) ForceCompact(
 // maskObservations replaces tool result content in old turns with one-line summaries.
 // Preserves: error results, submit_result results, already-masked results, recent turns,
 // and results where the summary would be longer than the original.
-func maskObservations(history []Turn, preserveRecent int) {
+func maskObservations(history []Turn, preserveRecent int, resultToolName string) {
 	if len(history) == 0 {
 		return
 	}
@@ -333,8 +344,8 @@ func maskObservations(history []Turn, preserveRecent int) {
 			if tr.IsError {
 				continue
 			}
-			// Never mask submit_result results.
-			if tr.Name == "submit_result" {
+			// Never mask result tool results.
+			if tr.Name == resultToolName {
 				continue
 			}
 
@@ -514,7 +525,7 @@ func clearThinking(history []Turn, preserveRecent int) {
 // messages verbatim, agent responses, file/tool metadata, task list, and skills.
 // User messages are stored as JSON arrays for lossless round-tripping across
 // repeated compactions.
-func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta) []Turn {
+func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, resultToolName string) []Turn {
 	if len(history) <= preserveRecent {
 		return history
 	}
@@ -570,7 +581,7 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta) []Turn
 				if p.Kind != llm.ContentToolResult || p.ToolResult == nil {
 					continue
 				}
-				if p.ToolResult.Name == "submit_result" {
+				if p.ToolResult.Name == resultToolName {
 					content := fmt.Sprint(p.ToolResult.Content)
 					if strings.Contains(content, `"delivered":true`) || strings.Contains(content, `"delivered": true`) {
 						args := findToolCallArgs(history[:i+1], p.ToolResult.ToolCallID)
@@ -854,7 +865,7 @@ func (cm *ContextManager) summarizeWithLLM(ctx context.Context, history []Turn, 
 				b.WriteString("Assistant: " + truncText(text, 500) + "\n")
 			}
 			for _, p := range t.Message.Content {
-				if p.Kind == llm.ContentToolCall && p.ToolCall != nil && p.ToolCall.Name == "submit_result" {
+				if p.Kind == llm.ContentToolCall && p.ToolCall != nil && p.ToolCall.Name == cm.resultToolName() {
 					var args map[string]any
 					if len(p.ToolCall.Arguments) > 0 {
 						_ = json.Unmarshal(p.ToolCall.Arguments, &args)

@@ -55,7 +55,7 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]T
 	// Layer 1: Observation masking (same as compact).
 	if p >= s.cm.ObservationMaskThreshold {
 		before := EstimateTokens(*history)
-		maskObservations(*history, s.cm.PreserveRecentTurns)
+		maskObservations(*history, s.cm.PreserveRecentTurns, s.cm.resultToolName())
 		after := EstimateTokens(*history)
 		emitFn(EventContextCompaction, ContextCompactionData{
 			Layer:           "observation_mask",
@@ -91,7 +91,7 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]T
 		result, err := s.predictiveCheckpoint(ctx, *history, s.cm.PreserveRecentTurns)
 		if err != nil {
 			// Fall back to deterministic checkpoint on error.
-			*history = checkpoint(*history, s.cm.PreserveRecentTurns, &s.cm.Meta)
+			*history = checkpoint(*history, s.cm.PreserveRecentTurns, &s.cm.Meta, s.cm.resultToolName())
 			emitFn(EventWarning, WarningData{
 				Message: "Predictive checkpoint failed, using deterministic: " + err.Error(),
 			})

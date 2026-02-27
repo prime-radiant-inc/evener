@@ -144,7 +144,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		for _, t := range agent.Tools {
 			allowed[t] = true
 		}
-		subSess.reg.Restrict(allowed)
+		subSess.reg.RestrictKeepingResultTool(allowed, subSess.resultToolName())
 	} else {
 		// Default subagents cannot delegate further — remove delegation tools.
 		subSess.reg.Remove("spawn_agent")
@@ -306,12 +306,14 @@ func (s *Session) getSub(agentID string) *subagent {
 	return s.subagents[agentID]
 }
 
-// submitResultNudge is the message sent to a subagent that stops without
-// calling submit_result. Sent at most once.
-const submitResultNudge = `You stopped without calling submit_result. ` +
-	`You MUST call submit_result with a message summarizing your complete findings ` +
-	`before stopping. The parent agent receives ONLY the submit_result message — ` +
-	`it cannot see anything else you did. Report your results now.`
+// submitResultNudge returns the message sent to a subagent that stops without
+// calling the result tool. Sent at most once.
+func submitResultNudge(toolName string) string {
+	return "You stopped without calling " + toolName + ". " +
+		"You MUST call " + toolName + " with a message summarizing your complete findings " +
+		"before stopping. The parent agent receives ONLY the " + toolName + " message — " +
+		"it cannot see anything else you did. Report your results now."
+}
 
 func (a *subagent) run(ctx context.Context, input string) {
 	a.mu.Lock()
@@ -325,7 +327,7 @@ func (a *subagent) run(ctx context.Context, input string) {
 	// send one reminder and let it try again. This addresses the empty-result
 	// failure mode where subagents do work but forget to report back.
 	if a.nudgeEnabled && err == nil && !a.sess.ResultDelivered() {
-		res, err = a.sess.ProcessInput(ctx, submitResultNudge)
+		res, err = a.sess.ProcessInput(ctx, submitResultNudge(a.sess.resultToolName()))
 	}
 
 	a.sess.mu.Lock()
