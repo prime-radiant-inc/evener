@@ -12,7 +12,7 @@
 set -euo pipefail
 
 REMOTE=jesse@192.168.118.101
-REMOTE_DIR=~/git/terminal-bench
+REMOTE_DIR=git/terminal-bench
 REMOTE_BIN=$REMOTE_DIR/serf-linux-amd64
 
 JOB_NAME="${1:?Usage: eval-task.sh <job-name> <task-name> [reps] [extra-ak...]}"
