@@ -22,19 +22,14 @@ Do not trust the implementer's report. Read the actual code, run the actual test
    them all. One passing does not mean another will.
 
 2. **Verify completeness — search for what was missed.** If the task involves fixing,
-   replacing, or migrating patterns across a codebase:
-   - Use grep/glob to search for remaining instances of the old pattern in ALL file types
-     (not just the obvious ones — check `.pyx`, `.pxd`, `.h`, `.c`, config files, etc.)
-   - A fix that covers `.py` files but misses `.pyx` or `.c` files is incomplete.
-   - The implementer's blind spot is usually file types or directories they didn't think to check.
+   replacing, or migrating patterns across a codebase, use grep/glob to search for
+   remaining instances of the old pattern. Search ALL file types in the project, not just
+   the primary language files. The implementer's blind spot is usually file types or
+   directories they didn't think to check.
 
 3. **Test the final artifact, not intermediate state.** Verify from the perspective of the
-   end user or verifier:
-   - If something was installed, test the installed version (import from site-packages, not
-     the source directory).
-   - If something was built, test the built artifact.
-   - If something was deployed, test the deployed service.
-   - In-place development state can differ from the final installed/built state.
+   end user or verifier. If the task produces a build, installation, or deployment, test
+   that — not the in-place development state. The two can differ.
 
 4. **Check the code.** Read what was actually written, not what was claimed.
    - Stubs and placeholders: hardcoded values, TODO comments, empty function bodies
