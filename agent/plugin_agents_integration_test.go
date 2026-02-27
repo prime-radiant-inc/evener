@@ -14,7 +14,7 @@ import (
 
 func TestToolRegistry_Restrict(t *testing.T) {
 	reg := NewToolRegistry()
-	for _, name := range []string{"read_file", "write_file", "grep", "shell", "submit_result"} {
+	for _, name := range []string{"read_file", "write_file", "grep", "shell", "communicate"} {
 		_ = reg.Register(RegisteredTool{
 			Tool: llm.Tool{Definition: llm.ToolDefinition{Name: name, Description: name}},
 			Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
@@ -26,7 +26,7 @@ func TestToolRegistry_Restrict(t *testing.T) {
 	reg.Restrict(map[string]bool{"read_file": true, "grep": true})
 
 	names := reg.Names()
-	want := map[string]bool{"read_file": true, "grep": true, "submit_result": true}
+	want := map[string]bool{"read_file": true, "grep": true, "communicate": true}
 	if len(names) != len(want) {
 		t.Fatalf("expected %d tools, got %d: %v", len(want), len(names), names)
 	}
@@ -40,7 +40,7 @@ func TestToolRegistry_Restrict(t *testing.T) {
 func TestToolRegistry_Restrict_KeepsSubmitResult(t *testing.T) {
 	reg := NewToolRegistry()
 	_ = reg.Register(RegisteredTool{
-		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "submit_result", Description: "submit_result"}},
+		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "communicate", Description: "communicate"}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil
 		},
@@ -55,7 +55,7 @@ func TestToolRegistry_Restrict_KeepsSubmitResult(t *testing.T) {
 	// Restrict to only "shell" -- submit_result should still be kept
 	reg.Restrict(map[string]bool{"shell": true})
 
-	if reg.Get("submit_result") == nil {
+	if reg.Get("communicate") == nil {
 		t.Error("submit_result should always be kept after Restrict")
 	}
 	if reg.Get("shell") == nil {
@@ -315,7 +315,7 @@ func TestSpawnAgent_PluginAgentType_RestrictsTools(t *testing.T) {
 	_, _ = sess.waitAgent(ctx, agentID, 5000)
 
 	// The subagent should only have read_file, grep, and submit_result (always kept)
-	allowed := map[string]bool{"read_file": true, "grep": true, "submit_result": true}
+	allowed := map[string]bool{"read_file": true, "grep": true, "communicate": true}
 
 	// Check tool names against the allowed set.
 	// Note: OpenAI profile maps tool names (shell->exec_command, etc.), so we

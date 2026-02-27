@@ -258,7 +258,7 @@ func TestMaskObservations_PreservesRecentTurns(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("done")},
 	}
 
-	maskObservations(history, 2, "submit_result")
+	maskObservations(history, 2, "communicate")
 
 	// Last 2 turns (index 4,5) should be untouched.
 	toolContent := toolResultContent(history[4])
@@ -280,7 +280,7 @@ func TestMaskObservations_SkipsAlreadyMasked(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("done")},
 	}
 
-	maskObservations(history, 0, "submit_result")
+	maskObservations(history, 0, "communicate")
 	got := toolResultContent(history[1])
 	if got != "[read_file: a.go, 10 lines]" {
 		t.Fatalf("already-masked result should be unchanged, got: %q", got)
@@ -294,7 +294,7 @@ func TestMaskObservations_SkipsErrorResults(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("done")},
 	}
 
-	maskObservations(history, 0, "submit_result")
+	maskObservations(history, 0, "communicate")
 	got := toolResultContent(history[1])
 	if startsWith(got, "[shell:") {
 		t.Fatalf("error result should NOT be masked, got: %q", got)
@@ -304,20 +304,20 @@ func TestMaskObservations_SkipsErrorResults(t *testing.T) {
 func TestMaskObservations_PreservesSubmitResult(t *testing.T) {
 	history := []Turn{
 		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "submit_result", `{"delivered":true,"inbox":[]}`, false)},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "communicate", `{"delivered":true,"inbox":[]}`, false)},
 		{Kind: TurnAssistant, Message: llm.Assistant("done")},
 	}
 
-	maskObservations(history, 0, "submit_result")
+	maskObservations(history, 0, "communicate")
 	got := toolResultContent(history[1])
-	if startsWith(got, "[submit_result:") {
+	if startsWith(got, "[communicate:") {
 		t.Fatalf("submit_result result should NOT be masked, got: %q", got)
 	}
 }
 
 func TestMaskObservations_EmptyHistory(t *testing.T) {
-	maskObservations(nil, 6, "submit_result")
-	maskObservations([]Turn{}, 6, "submit_result")
+	maskObservations(nil, 6, "communicate")
+	maskObservations([]Turn{}, 6, "communicate")
 }
 
 func TestMaskObservations_PreservesAssistantTurns(t *testing.T) {
@@ -328,7 +328,7 @@ func TestMaskObservations_PreservesAssistantTurns(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("done")},
 	}
 
-	maskObservations(history, 0, "submit_result")
+	maskObservations(history, 0, "communicate")
 	// Assistant turn text should be unchanged.
 	if history[1].Message.Text() != "thinking about it" {
 		t.Fatalf("assistant turn text should be preserved, got: %q", history[1].Message.Text())
@@ -485,7 +485,7 @@ func TestCheckpoint_CreatesValidMessage(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("done")},
 	}
 
-	result := checkpoint(history, 2, nil, "submit_result")
+	result := checkpoint(history, 2, nil, "communicate")
 
 	// Should have checkpoint message + preserved turns.
 	// safeCutoff may back up the cutoff to avoid orphaned TurnTool, so we
@@ -513,7 +513,7 @@ func TestCheckpoint_IncludesOriginalTask(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("done")},
 	}
 
-	result := checkpoint(history, 1, nil, "submit_result")
+	result := checkpoint(history, 1, nil, "communicate")
 	text := result[0].Message.Text()
 	if !strings.Contains(text, "Fix the auth bug in login.go") {
 		t.Fatalf("checkpoint missing original task: %q", text)
@@ -532,7 +532,7 @@ func TestCheckpoint_TracksModifiedFiles(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("done")},
 	}
 
-	result := checkpoint(history, 1, nil, "submit_result")
+	result := checkpoint(history, 1, nil, "communicate")
 	text := result[0].Message.Text()
 	if !strings.Contains(text, "Files modified:") {
 		t.Fatalf("checkpoint missing files modified: %q", text)
@@ -556,7 +556,7 @@ func TestCheckpoint_SummarizesActions(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("done")},
 	}
 
-	result := checkpoint(history, 1, nil, "submit_result")
+	result := checkpoint(history, 1, nil, "communicate")
 	text := result[0].Message.Text()
 	if !strings.Contains(text, "3 tool calls") {
 		t.Fatalf("checkpoint missing action summary: %q", text)
@@ -577,7 +577,7 @@ func TestCheckpoint_PreservesRecentTurns(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
 	}
 
-	result := checkpoint(history, 2, nil, "submit_result")
+	result := checkpoint(history, 2, nil, "communicate")
 	// Checkpoint + 2 recent.
 	if len(result) != 3 {
 		t.Fatalf("expected 3 turns, got %d", len(result))
@@ -596,7 +596,7 @@ func TestCheckpoint_NoHistoryToCheckpoint(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("answer")},
 	}
 
-	result := checkpoint(history, 6, nil, "submit_result")
+	result := checkpoint(history, 6, nil, "communicate")
 	if len(result) != len(history) {
 		t.Fatalf("expected unchanged history length %d, got %d", len(history), len(result))
 	}
@@ -1173,7 +1173,7 @@ func TestCheckpoint_AdjustsCutoffToAvoidOrphanedToolTurn(t *testing.T) {
 
 	// preserveRecent=3 → cutoff=3, preserved turns start at index 3 (TurnAssistant) — OK.
 	// preserveRecent=2 → cutoff=4, preserved turns start at index 4 (TurnTool) — BAD.
-	result := checkpoint(history, 2, nil, "submit_result")
+	result := checkpoint(history, 2, nil, "communicate")
 
 	// First preserved turn after checkpoint must NOT be a TurnTool.
 	if len(result) < 2 {
@@ -1264,7 +1264,7 @@ func TestCheckpoint_ShellResultMatchesByToolCallID(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("done")},
 	}
 
-	result := checkpoint(history, 1, nil, "submit_result")
+	result := checkpoint(history, 1, nil, "communicate")
 	text := result[0].Message.Text()
 
 	// The checkpoint should show exit 0, not "?" from the read_file result.
@@ -1349,7 +1349,7 @@ func TestCheckpoint_RepeatedCheckpoint_PreservesOriginalTask(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("done")},
 	}
 
-	result := checkpoint(history, 1, nil, "submit_result")
+	result := checkpoint(history, 1, nil, "communicate")
 	text := result[0].Message.Text()
 
 	// The original task text should be preserved in the User messages section,
@@ -1370,7 +1370,7 @@ func TestCheckpoint_UserMessages_JSONRoundTrip(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("ok")},
 		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
 	}
-	r1 := checkpoint(h1, 1, nil, "submit_result")
+	r1 := checkpoint(h1, 1, nil, "communicate")
 	text1 := r1[0].Message.Text()
 
 	if !strings.Contains(text1, `"hi! ls the cwd please"`) {
@@ -1386,7 +1386,7 @@ func TestCheckpoint_UserMessages_JSONRoundTrip(t *testing.T) {
 		{Kind: TurnUserInput, Message: llm.User("also add tests")},
 		{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
 	}
-	r2 := checkpoint(h2, 1, nil, "submit_result")
+	r2 := checkpoint(h2, 1, nil, "communicate")
 	text2 := r2[0].Message.Text()
 
 	// All three user messages should survive.
@@ -1419,7 +1419,7 @@ func TestCheckpoint_ToolCountsAreDeterministic(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		cp := make([]Turn, len(history))
 		copy(cp, history)
-		result := checkpoint(cp, 1, nil, "submit_result")
+		result := checkpoint(cp, 1, nil, "communicate")
 		text := result[0].Message.Text()
 		if i == 0 {
 			first = text
@@ -1438,7 +1438,7 @@ func TestCheckpoint_TracksFilesFromApplyPatch(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("done")},
 	}
 
-	result := checkpoint(history, 1, nil, "submit_result")
+	result := checkpoint(history, 1, nil, "communicate")
 	text := result[0].Message.Text()
 	if !strings.Contains(text, "test.go") {
 		t.Fatalf("checkpoint should include test.go from apply_patch:\n%s", text)
@@ -1465,7 +1465,7 @@ func TestCheckpoint_IncludesWebSearchCount(t *testing.T) {
 		}},
 	}
 
-	result := checkpoint(history, 2, nil, "submit_result") // preserve last 2 turns
+	result := checkpoint(history, 2, nil, "communicate") // preserve last 2 turns
 
 	if len(result) < 1 {
 		t.Fatalf("checkpoint returned empty")
@@ -1614,7 +1614,7 @@ func TestCheckpoint_SafeCutoffNegative_ReturnsUnchanged(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
 	}
 	// preserveRecent=3 → cutoff=1 → TurnTool → walk to 0 → return -1
-	result := checkpoint(history, 3, nil, "submit_result")
+	result := checkpoint(history, 3, nil, "communicate")
 	if len(result) != len(history) {
 		t.Fatalf("expected unchanged history (len %d), got len %d", len(history), len(result))
 	}
@@ -1663,7 +1663,7 @@ func TestMaskObservations_SkipsShortResults(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("done")},
 	}
 
-	maskObservations(history, 0, "submit_result")
+	maskObservations(history, 0, "communicate")
 
 	// "OK" (2 chars) should not be replaced with "[edit_file: auth.go → OK]" (25 chars).
 	got := toolResultContent(history[2])
@@ -1691,7 +1691,7 @@ func TestCheckpoint_OriginalTaskNotOverriddenByFollowup(t *testing.T) {
 	}
 
 	// preserveRecent=2 → cutoff=4 → history[:4] is compacted.
-	result := checkpoint(history, 2, nil, "submit_result")
+	result := checkpoint(history, 2, nil, "communicate")
 	text := result[0].Message.Text()
 
 	// The original task from the prior checkpoint should be preserved as a user message.
@@ -2025,7 +2025,7 @@ func TestCheckpoint_ExtractsWorkingNotes(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
 	}
 
-	result := checkpoint(history, 1, nil, "submit_result")
+	result := checkpoint(history, 1, nil, "communicate")
 	text := result[0].Message.Text()
 
 	// Should contain working_notes tag with the long analysis.
@@ -2060,7 +2060,7 @@ func TestCheckpoint_WorkingNotes_CappedAt500Chars(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
 	}
 
-	result := checkpoint(history, 1, nil, "submit_result")
+	result := checkpoint(history, 1, nil, "communicate")
 	text := result[0].Message.Text()
 
 	// Extract the notes JSON.
@@ -2091,7 +2091,7 @@ Files modified: auth.go
 		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
 	}
 
-	result := checkpoint(history, 1, nil, "submit_result")
+	result := checkpoint(history, 1, nil, "communicate")
 	text := result[0].Message.Text()
 
 	// Both the old note and the new analysis should be present.
@@ -2117,7 +2117,7 @@ func TestCheckpoint_WorkingNotes_ShedOldestFirst(t *testing.T) {
 	}
 	history = append(history, Turn{Kind: TurnAssistant, Message: llm.Assistant("recent")})
 
-	result := checkpoint(history, 1, nil, "submit_result")
+	result := checkpoint(history, 1, nil, "communicate")
 	text := result[0].Message.Text()
 
 	// User message should survive.

@@ -554,7 +554,7 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 				Name:        d.ToolName,
 				Description: toolDesc,
 				Detail:      toolDetail,
-				Hidden:      d.ToolName == "submit_result",
+				Hidden:      d.ToolName == "communicate",
 			},
 		})
 		m.activeTools[d.CallID] = idx

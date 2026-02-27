@@ -1080,7 +1080,7 @@ func submitResultResponse(msg string) llm.Response {
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
 					ID:        "comm_nudge",
-					Name:      "submit_result",
+					Name:      "communicate",
 					Arguments: json.RawMessage(fmt.Sprintf(`{"message":%q}`, msg)),
 				}},
 			},
@@ -3710,7 +3710,7 @@ func TestSession_Subagent_DefaultGetsSubagentInstructions(t *testing.T) {
 
 	// The override should instruct the subagent to work directly.
 	override := sub.sess.cfg.BasePromptOverride
-	if !strings.Contains(override, "submit_result") {
+	if !strings.Contains(override, "communicate") {
 		t.Errorf("subagent base prompt should mention submit_result, got: %s", override)
 	}
 
@@ -3810,7 +3810,7 @@ func TestSession_Subagent_DoesNotGetParentDelegationPrompt(t *testing.T) {
 	}
 
 	// It should contain submit_result guidance.
-	if !strings.Contains(sub.sess.cfg.BasePromptOverride, "submit_result") {
+	if !strings.Contains(sub.sess.cfg.BasePromptOverride, "communicate") {
 		t.Error("subagent base prompt should mention submit_result")
 	}
 
@@ -3841,7 +3841,7 @@ func TestSession_Subagent_DoesNotGetParentDelegationPrompt(t *testing.T) {
 		}
 	}
 	// submit_result should still be available.
-	if !toolNames["submit_result"] {
+	if !toolNames["communicate"] {
 		t.Error("subagent should have submit_result in its API tool list")
 	}
 
@@ -3851,7 +3851,7 @@ func TestSession_Subagent_DoesNotGetParentDelegationPrompt(t *testing.T) {
 		t.Fatalf("expected first message to be system, got %s", sysMsg.Role)
 	}
 	sysTxt := sysMsg.Content[0].Text
-	if !strings.Contains(sysTxt, "submit_result") {
+	if !strings.Contains(sysTxt, "communicate") {
 		t.Error("subagent system prompt should mention submit_result")
 	}
 	// Base prompt should NOT contain the parent's delegation section.
@@ -4009,7 +4009,7 @@ func TestSession_Subagent_AutoNudgeOnMissingSubmitResult(t *testing.T) {
 						Content: []llm.ContentPart{
 							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
 								ID:        "comm1",
-								Name:      "submit_result",
+								Name:      "communicate",
 								Arguments: json.RawMessage(`{"message":"Here are my findings"}`),
 							}},
 						},

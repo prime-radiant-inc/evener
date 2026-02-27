@@ -19,7 +19,7 @@ func submitResultCallArgs(id string, args map[string]any) llm.ToolCallData {
 	raw, _ := json.Marshal(args)
 	return llm.ToolCallData{
 		ID:        id,
-		Name:      "submit_result",
+		Name:      "communicate",
 		Arguments: raw,
 		Type:      "function",
 	}
@@ -333,7 +333,7 @@ func TestSubmitResult_MinResultRound_HidesToolBeforeThreshold(t *testing.T) {
 
 	hasSubmitResult := func(req llm.Request) bool {
 		for _, td := range req.Tools {
-			if td.Name == "submit_result" {
+			if td.Name == "communicate" {
 				return true
 			}
 		}
@@ -469,8 +469,8 @@ func TestSubmitResult_Depth0_ReviewerToolsInRequest(t *testing.T) {
 				if !toolNames["reject"] {
 					t.Errorf("reviewer request missing 'reject' tool; tools: %v", toolNames)
 				}
-				if toolNames["submit_result"] {
-					t.Errorf("reviewer request should NOT have 'submit_result' tool; tools: %v", toolNames)
+				if toolNames["communicate"] {
+					t.Errorf("reviewer request should NOT have 'communicate' tool; tools: %v", toolNames)
 				}
 				return toolCallResponse(approveCall("review-1", "looks good"))
 			},
@@ -699,11 +699,11 @@ func TestSubmitResult_ReviewerError_FailOpen(t *testing.T) {
 }
 
 func TestStripPromptSection(t *testing.T) {
-	input := "Preamble text.\n\n## keep_me\n\nKeep this section.\n\n## submit_result\n\nYou MUST call submit_result when done.\nMore submit_result details.\n\n## workflow\n\nWorkflow section.\n"
-	got := stripPromptSection(input, "submit_result")
+	input := "Preamble text.\n\n## keep_me\n\nKeep this section.\n\n## communicate\n\nYou MUST call communicate when done.\nMore communicate details.\n\n## workflow\n\nWorkflow section.\n"
+	got := stripPromptSection(input, "communicate")
 
-	if strings.Contains(got, "submit_result") {
-		t.Errorf("stripped text still contains submit_result:\n%s", got)
+	if strings.Contains(got, "communicate") {
+		t.Errorf("stripped text still contains communicate:\n%s", got)
 	}
 	if !strings.Contains(got, "keep_me") {
 		t.Errorf("stripped text lost keep_me section")
@@ -717,8 +717,8 @@ func TestStripPromptSection(t *testing.T) {
 }
 
 func TestStripPromptSection_CaseInsensitive(t *testing.T) {
-	input := "## Submit_Result\n\nContent.\n\n## Other\n\nKept.\n"
-	got := stripPromptSection(input, "submit_result")
+	input := "## Communicate\n\nContent.\n\n## Other\n\nKept.\n"
+	got := stripPromptSection(input, "communicate")
 
 	if strings.Contains(got, "Content.") {
 		t.Errorf("case-insensitive strip failed:\n%s", got)
@@ -748,7 +748,7 @@ func TestSubmitResult_ReviewerPromptNoSubmitResult(t *testing.T) {
 				for _, m := range req.Messages {
 					if m.Role == "system" {
 						for _, p := range m.Content {
-							if p.Kind == llm.ContentText && strings.Contains(p.Text, "MUST call submit_result") {
+							if p.Kind == llm.ContentText && strings.Contains(p.Text, "MUST call communicate") {
 								t.Errorf("reviewer system prompt still tells model to call submit_result:\n%s", p.Text[:min(len(p.Text), 500)])
 							}
 						}

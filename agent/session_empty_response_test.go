@@ -183,7 +183,7 @@ func TestBareText_RedirectsToSubmitResult(t *testing.T) {
 				}
 				foundSteering := false
 				for _, p := range lastMsg.Content {
-					if p.Kind == llm.ContentText && strings.Contains(p.Text, "submit_result") {
+					if p.Kind == llm.ContentText && strings.Contains(p.Text, "communicate") {
 						foundSteering = true
 					}
 				}

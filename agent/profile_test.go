@@ -59,7 +59,7 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"close_agent",
 			"task_list",
 			"web_fetch",
-			"submit_result",
+			"communicate",
 		})
 	})
 	t.Run("anthropic", func(t *testing.T) {
@@ -77,7 +77,7 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"close_agent",
 			"task_list",
 			"web_fetch",
-			"submit_result",
+			"communicate",
 			"use_skill",
 		})
 	})
@@ -99,7 +99,7 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"task_list",
 			"web_fetch",
 			"web_search",
-			"submit_result",
+			"communicate",
 			"use_skill",
 		})
 	})
@@ -297,7 +297,7 @@ func TestAllProfiles_SystemPromptContainsSubmitResultGuidance(t *testing.T) {
 	for name, p := range profiles {
 		prompt := p.BuildSystemPrompt(env, nil, nil, "")
 
-		if !strings.Contains(prompt, "submit_result") {
+		if !strings.Contains(prompt, "communicate") {
 			t.Errorf("profile %q system prompt missing submit_result guidance", name)
 		}
 		if !strings.Contains(prompt, "inbox") {
@@ -423,7 +423,7 @@ func TestBuildSystemPrompt_SubagentGuidanceContent(t *testing.T) {
 		t.Error("subagent guidance should mention task_list for coordination")
 	}
 	// Should clarify that task_list is for the parent agent, not shared across subagents.
-	if !strings.Contains(prompt, "submit_result") {
+	if !strings.Contains(prompt, "communicate") {
 		t.Error("subagent guidance should mention submit_result for subagent results")
 	}
 	// Should NOT imply shared task_list across subagents.

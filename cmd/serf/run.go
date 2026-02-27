@@ -257,7 +257,7 @@ func drainEventsHuman(events <-chan agent.SessionEvent, w io.Writer) <-chan stru
 				}
 			case agent.EventSubmitResult:
 				if d, ok := ev.Data.(agent.SubmitResultData); ok {
-					fmt.Fprintf(w, "[submit_result] %s\n", d.Message) //nolint:errcheck
+					fmt.Fprintf(w, "[communicate] %s\n", d.Message) //nolint:errcheck
 				}
 			case agent.EventPluginLoaded:
 				if d, ok := ev.Data.(agent.PluginLoadedData); ok {

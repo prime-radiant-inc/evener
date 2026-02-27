@@ -15,7 +15,7 @@ func TestResolveSystemPrompt_ComposesBaseAndProvider(t *testing.T) {
 		baseSnippet     string // from base.md
 	}{
 		{"openai", "apply_patch", "task_list"},
-		{"anthropic", "edit_file", "submit_result"},
+		{"anthropic", "edit_file", "communicate"},
 		{"gemini", "edit_file", "Subagent delegation"},
 	}
 	for _, tt := range tests {

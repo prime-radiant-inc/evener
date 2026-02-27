@@ -759,7 +759,7 @@ func TestLive_ToolRestriction_PluginAgent(t *testing.T) {
 	// Build a full tool registry
 	reg := NewToolRegistry()
 	// Register some dummy tools (including submit_result, which subagents always need)
-	for _, name := range []string{"read_file", "grep", "glob", "shell", "write_file", "edit_file", "submit_result"} {
+	for _, name := range []string{"read_file", "grep", "glob", "shell", "write_file", "edit_file", "communicate"} {
 		n := name
 		if err := reg.Register(RegisteredTool{
 			Tool: llm.Tool{Definition: llm.ToolDefinition{
@@ -800,7 +800,7 @@ func TestLive_ToolRestriction_PluginAgent(t *testing.T) {
 	if !restricted["glob"] {
 		t.Error("glob should survive restriction")
 	}
-	if !restricted["submit_result"] {
+	if !restricted["communicate"] {
 		t.Error("submit_result should always be kept")
 	}
 	if restricted["shell"] {

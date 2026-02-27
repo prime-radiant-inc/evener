@@ -31,5 +31,5 @@ Do not refactor what you were not asked to touch.
 
 ## Reporting
 
-When done, call submit_result with the file paths of all files you created or modified
+When done, call communicate with the file paths of all files you created or modified
 and test results.

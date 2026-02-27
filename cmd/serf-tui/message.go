@@ -40,7 +40,7 @@ type messageKind int
 const (
 	msgUser messageKind = iota
 	msgAssistant    // LLM thinking/reasoning text
-	msgSubmitResult // agent's submit_result output (the actual response)
+	msgSubmitResult // agent's communicate output (the actual response)
 	msgTool
 	msgSystem
 )
@@ -54,7 +54,7 @@ type toolCallInfo struct {
 	Duration    time.Duration
 	Expanded    bool
 	Done        bool
-	Hidden      bool // suppress from display (e.g. submit_result)
+	Hidden      bool // suppress from display (e.g. communicate)
 }
 
 const toolCollapseThreshold = 5
@@ -229,7 +229,7 @@ func historyToMessages(turns []agent.Turn) []chatMessage {
 						continue
 					}
 					tc := p.ToolCall
-					if tc.Name == "submit_result" {
+					if tc.Name == "communicate" {
 						msg := extractSubmitResultMessage(tc)
 						if msg != "" {
 							msgs = append(msgs, chatMessage{Kind: msgSubmitResult, Text: msg})
@@ -237,7 +237,7 @@ func historyToMessages(turns []agent.Turn) []chatMessage {
 						continue
 					}
 
-				// Non-submit_result tool call: show as collapsed tool entry.
+				// Non-communicate tool call: show as collapsed tool entry.
 				argsJSON := string(tc.Arguments)
 				toolDesc, toolDetail := summarizeTool(tc.Name, argsJSON)
 					result := toolResults[tc.ID]

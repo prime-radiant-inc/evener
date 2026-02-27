@@ -28,7 +28,7 @@ type ContextManager struct {
 	cumUsage llm.Usage
 	mu       sync.Mutex
 
-	// ResultToolName is the name of the result submission tool (default "submit_result").
+	// ResultToolName is the name of the result submission tool (default "communicate").
 	// Used to identify result tool calls during compaction.
 	ResultToolName string
 
@@ -76,7 +76,7 @@ func (cm *ContextManager) resultToolName() string {
 	if cm.ResultToolName != "" {
 		return cm.ResultToolName
 	}
-	return "submit_result"
+	return "communicate"
 }
 
 // AddUsage records token usage from a completed LLM call.
@@ -466,9 +466,9 @@ func summarizeToolResult(toolName string, content any, args json.RawMessage) str
 		name := getArg("skill_name")
 		return fmt.Sprintf("[use_skill: %s → %d chars]", name, len(contentStr))
 
-	case "submit_result":
+	case "communicate":
 		// Should never reach here (masked in caller), but be safe.
-		return fmt.Sprintf("[submit_result: %d chars]", len(contentStr))
+		return fmt.Sprintf("[communicate: %d chars]", len(contentStr))
 
 	default:
 		return fmt.Sprintf("[%s: %d chars]", toolName, len(contentStr))

@@ -7,7 +7,7 @@ func TestWithSubmitResultRequiredDataKeys_AddsRequiredKeysToSchema(t *testing.T)
 
 	var submitResultFound bool
 	for _, td := range p.ToolDefinitions() {
-		if td.Name != "submit_result" {
+		if td.Name != "communicate" {
 			continue
 		}
 		submitResultFound = true
@@ -53,7 +53,7 @@ func TestWithSubmitResultRequiredDataKeys_PlanDocIsString(t *testing.T) {
 	p := WithSubmitResultRequiredDataKeys(NewOpenAIProfile("gpt-5.2"), []string{"plan_doc"})
 
 	for _, td := range p.ToolDefinitions() {
-		if td.Name != "submit_result" {
+		if td.Name != "communicate" {
 			continue
 		}
 		props, _ := td.Parameters["properties"].(map[string]any)
@@ -97,7 +97,7 @@ func TestWithSubmitResultRequiredDataKeys_AddsDecisionField(t *testing.T) {
 	p := WithSubmitResultRequiredDataKeys(NewOpenAIProfile("gpt-5.2"), []string{"components"})
 
 	for _, td := range p.ToolDefinitions() {
-		if td.Name != "submit_result" {
+		if td.Name != "communicate" {
 			continue
 		}
 		props, _ := td.Parameters["properties"].(map[string]any)
@@ -131,7 +131,7 @@ func TestWithSubmitResultRequiredDataKeys_TasksSchemaHasItems(t *testing.T) {
 	p := WithSubmitResultRequiredDataKeys(NewOpenAIProfile("gpt-5.2"), []string{"tasks"})
 
 	for _, td := range p.ToolDefinitions() {
-		if td.Name != "submit_result" {
+		if td.Name != "communicate" {
 			continue
 		}
 		props, _ := td.Parameters["properties"].(map[string]any)

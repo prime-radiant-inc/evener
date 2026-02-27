@@ -160,7 +160,7 @@ func TestSummarizeTool_SpawnAgent(t *testing.T) {
 }
 
 func TestSummarizeTool_SubmitResult(t *testing.T) {
-	desc, _ := summarizeTool("submit_result", `{"message":"Building..."}`)
+	desc, _ := summarizeTool("communicate", `{"message":"Building..."}`)
 	if !strings.Contains(desc, "Building") {
 		t.Errorf("got %q", desc)
 	}

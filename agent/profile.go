@@ -691,7 +691,7 @@ func defWebSearch() llm.ToolDefinition {
 }
 
 func defSubmitResult() llm.ToolDefinition {
-	return defSubmitResultNamed("submit_result")
+	return defSubmitResultNamed("communicate")
 }
 
 func defSubmitResultNamed(name string) llm.ToolDefinition {

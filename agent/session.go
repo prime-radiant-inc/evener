@@ -119,9 +119,9 @@ type SessionConfig struct {
 	// submit_result always passes through directly.
 	EnableReviewerGate bool `json:"enable_reviewer_gate,omitempty"`
 
-	// ResultToolName overrides the name of the submit_result tool.
-	// When set, all internal references use this name instead of "submit_result".
-	// Used for A/B testing tool names. Empty means "submit_result".
+	// ResultToolName overrides the name of the result tool.
+	// When set, all internal references use this name instead of "communicate".
+	// Used for A/B testing tool names. Empty means "communicate".
 	ResultToolName string `json:"result_tool_name,omitempty"`
 
 	EnableLoopDetection *bool `json:"enable_loop_detection,omitempty"`
@@ -511,7 +511,7 @@ func (s *Session) resultToolName() string {
 	if s.cfg.ResultToolName != "" {
 		return s.cfg.ResultToolName
 	}
-	return "submit_result"
+	return "communicate"
 }
 
 // State returns the current session state.
@@ -874,7 +874,7 @@ func (s *Session) spawnReviewer(ctx context.Context, claimedResult string) (revi
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			fb, _ := args["feedback"].(string)
 			deliverResult(reviewVerdict{Pass: false, Feedback: fb})
-			return map[string]any{"accepted": true}, nil
+			return map[string]any{"rejected": true}, nil
 		},
 	})
 
@@ -1656,7 +1656,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			// Stop hooks
 			if s.hookRunner != nil {
 				hi := s.hookInput(HookStop)
-				hi.Reason = "submit_result"
+				hi.Reason = "communicate"
 				stopResult := s.hookRunner.RunStop(ctx, hi)
 				for _, msg := range stopResult.SystemMessages {
 					s.Steer(msg)
@@ -1767,7 +1767,7 @@ func (s *Session) customToolDescriptions() string {
 // are reflected in what the LLM sees.
 //
 // When MinResultRound is configured and round < MinResultRound, the
-// "submit_result" tool is excluded from the returned list so the model
+// result tool is excluded from the returned list so the model
 // cannot attempt premature result submission.
 func (s *Session) allToolDefinitions(round int) []llm.ToolDefinition {
 	hideSubmitResult := s.cfg.MinResultRound > 0 && round < s.cfg.MinResultRound
@@ -1870,8 +1870,8 @@ func (s *Session) initSessionState() ([]PromptSource, error) {
 	}
 
 	// If the result tool has been renamed, update all references in the system prompt.
-	if name := s.resultToolName(); name != "submit_result" {
-		basePrompt = strings.ReplaceAll(basePrompt, "submit_result", name)
+	if name := s.resultToolName(); name != "communicate" {
+		basePrompt = strings.ReplaceAll(basePrompt, "communicate", name)
 	}
 	s.profile = s.profile.WithBasePrompt(basePrompt)
 

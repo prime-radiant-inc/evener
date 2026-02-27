@@ -160,7 +160,7 @@ func summarizeTool(toolName, argsJSON string) (desc, detail string) {
 		desc = str("skill_name")
 		return
 
-	case "submit_result":
+	case "communicate":
 		msg := trunc(str("message"), 60)
 		if msg != "" {
 			desc = msg

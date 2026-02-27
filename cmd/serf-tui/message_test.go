@@ -16,7 +16,7 @@ func TestHistoryToMessages_UserAndSubmitResult(t *testing.T) {
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
 					ID:        "call_1",
-					Name:      "submit_result",
+					Name:      "communicate",
 					Arguments: json.RawMessage(`{"message":"The answer is 4."}`),
 				}},
 			},
@@ -57,7 +57,7 @@ func TestHistoryToMessages_ToolCalls(t *testing.T) {
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
 					ID:        "call_2",
-					Name:      "submit_result",
+					Name:      "communicate",
 					Arguments: json.RawMessage(`{"message":"Found 2 files."}`),
 				}},
 			},
@@ -96,7 +96,7 @@ func TestHistoryToMessages_ThinkingText(t *testing.T) {
 				{Kind: llm.ContentText, Text: "Let me think about this..."},
 				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
 					ID:        "call_1",
-					Name:      "submit_result",
+					Name:      "communicate",
 					Arguments: json.RawMessage(`{"message":"Done."}`),
 				}},
 			},

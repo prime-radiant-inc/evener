@@ -46,7 +46,7 @@ func WithSubmitResultRequiredDataKeys(p ProviderProfile, requiredKeys []string) 
 	clone := *bp
 	defs := append([]llm.ToolDefinition{}, bp.toolDefs...)
 	for i := range defs {
-		if defs[i].Name == "submit_result" {
+		if defs[i].Name == "communicate" {
 			defs[i] = defSubmitResultWithRequiredDataKeys(keys)
 		}
 	}
