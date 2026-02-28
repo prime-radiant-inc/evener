@@ -71,6 +71,12 @@ echo ""
 echo "=== Summary: \$pass/\$total pass, \$fail fail, \$pending running ==="
 
 echo ""
+echo "=== Build ==="
+cat /tmp/$JOB_NAME/manifest.json 2>/dev/null \
+  || cat /tmp/$JOB_NAME/$JOB_NAME/manifest.json 2>/dev/null \
+  || echo "(no manifest)"
+
+echo ""
 echo "=== Recent log ==="
 tail -10 /tmp/$JOB_NAME/$JOB_NAME/job.log 2>/dev/null \
   || tail -10 /tmp/$JOB_NAME.log 2>/dev/null \

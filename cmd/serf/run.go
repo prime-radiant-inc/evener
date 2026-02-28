@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"primeradiant.com/serf/agent"
@@ -126,6 +127,16 @@ func run(ctx context.Context, cfg runConfig) error {
 	client, err := llm.NewFromEnv()
 	if err != nil {
 		return fmt.Errorf("LLM client setup: %w", err)
+	}
+
+	// API call logging — one file per invocation, captures all sessions.
+	apiLogPath := filepath.Join(stateDir, "api.jsonl")
+	apiLog, apiLogErr := llm.NewAPILogger(apiLogPath)
+	if apiLogErr != nil {
+		fmt.Fprintf(cfg.stderr, "warning: API logging disabled: %v\n", apiLogErr) //nolint:errcheck
+	} else {
+		client.Use(apiLog)
+		defer apiLog.Close()
 	}
 
 	profile, err := cmdutil.SelectProfile(provider, model)

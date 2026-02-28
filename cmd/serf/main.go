@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 
+	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/cmdutil"
 )
 
@@ -14,6 +15,12 @@ import (
 type stringSliceFlag = cmdutil.StringSliceFlag
 
 func main() {
+	// Quick flags that don't need full flag.Parse().
+	if len(os.Args) > 1 && os.Args[1] == "--version" {
+		fmt.Println("serf", buildinfo.VersionLong())
+		return
+	}
+
 	// Subcommand dispatch — before flag.Parse() so serve gets its own flag set.
 	if len(os.Args) > 1 && os.Args[1] == "serve" {
 		if err := runServe(os.Args[2:]); err != nil {

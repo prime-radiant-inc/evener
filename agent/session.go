@@ -14,6 +14,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
+	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/llm"
 )
 
@@ -335,6 +336,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 			Model:            profile.Model(),
 			WorkingDir:       s.envInfo.WorkingDir,
 			Depth:            cfg.Depth,
+			BuildVersion:     buildinfo.Version(),
 		}
 		tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
 		tw, twErr := NewTranscriptWriter(tpath, hdr)
@@ -457,6 +459,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 				Model:            profile.Model(),
 				WorkingDir:       s.envInfo.WorkingDir,
 				Depth:            cfg.Depth,
+				BuildVersion:     buildinfo.Version(),
 			}
 			tw, twErr = NewTranscriptWriter(tpath, hdr)
 			if twErr != nil {
@@ -1398,8 +1401,9 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		if s.cfg.LLMRetryPolicy != nil {
 			policy = *s.cfg.LLMRetryPolicy
 		}
-		resp, err := llm.Retry(ctx, policy, s.cfg.LLMSleep, nil, func() (llm.Response, error) {
-			return s.client.Complete(ctx, req)
+		callCtx := llm.WithAPILogContext(ctx, s.id, round)
+		resp, err := llm.Retry(callCtx, policy, s.cfg.LLMSleep, nil, func() (llm.Response, error) {
+			return s.client.Complete(callCtx, req)
 		})
 		if err != nil {
 			s.emit(EventError, ErrorData{Error: err.Error()})
@@ -1476,18 +1480,6 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		// to history. Appending ghost turns creates consecutive user messages in
 		// the API, which reinforces the empty-response pattern.
 		isTrulyEmpty := strings.TrimSpace(txt) == "" && len(calls) == 0
-
-		// Diagnostic: log raw API output when the parsed response is empty.
-		// This helps identify whether the model is sending phase-only messages,
-		// null content, or something else we're not parsing.
-		if isTrulyEmpty && len(resp.Raw) > 0 {
-			if output, ok := resp.Raw["output"].([]any); ok && len(output) > 0 {
-				b, _ := json.Marshal(output)
-				s.emit(EventWarning, WarningData{
-					Message: fmt.Sprintf("empty response but API returned %d output items: %s", len(output), string(b)),
-				})
-			}
-		}
 
 		s.emit(EventAssistantTextStart, AssistantTextStartData{
 			Model: resp.Model,

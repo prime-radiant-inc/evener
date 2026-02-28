@@ -59,13 +59,39 @@ fi
 
 if [ "${NO_BUILD:-0}" != "1" ]; then
     echo "=== Building linux binary ==="
-    GOOS=linux GOARCH=amd64 go build -o /tmp/serf-linux-amd64 ./cmd/serf/
+    LDFLAGS="-X primeradiant.com/serf/buildinfo.GitSHA=$(git rev-parse --short HEAD) \
+             -X primeradiant.com/serf/buildinfo.GitDirty=$(git diff --quiet && echo '' || echo 'true') \
+             -X primeradiant.com/serf/buildinfo.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    GOOS=linux GOARCH=amd64 go build -ldflags "$LDFLAGS" -o /tmp/serf-linux-amd64 ./cmd/serf/
 
     echo "=== Deploying to flower-garden ==="
     scp /tmp/serf-linux-amd64 "$REMOTE:$REMOTE_BIN"
 else
     echo "=== Skipping build (NO_BUILD=1) ==="
 fi
+
+echo "=== Writing manifest ==="
+GIT_SHA=$(git rev-parse --short HEAD)
+GIT_DIRTY=$(git diff --quiet && echo "false" || echo "true")
+GIT_BRANCH=$(git branch --show-current)
+
+MANIFEST_DIR="/tmp/${JOB_NAME}-manifest"
+mkdir -p "$MANIFEST_DIR"
+cat > "$MANIFEST_DIR/manifest.json" <<MANIFEST
+{
+  "job_name": "$JOB_NAME",
+  "git_sha": "$GIT_SHA",
+  "git_dirty": $GIT_DIRTY,
+  "git_branch": "$GIT_BRANCH",
+  "model": "${MODEL:-}",
+  "adapter": "$AGENT_IMPORT_PATH",
+  "task_name": "${TASK_NAME:-all}",
+  "reps": $REPS,
+  "concurrency": ${CONCURRENCY:-2},
+  "started_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+MANIFEST
+cat "$MANIFEST_DIR/manifest.json"
 
 echo "=== Launching: $LABEL (job: $JOB_NAME, adapter: $AGENT_IMPORT_PATH) ==="
 ssh "$REMOTE" bash <<REMOTE
@@ -98,6 +124,9 @@ else
     exit 1
 fi
 REMOTE
+
+# Upload manifest to remote job directory.
+scp -q "$MANIFEST_DIR/manifest.json" "$REMOTE:/tmp/$JOB_NAME/manifest.json" 2>/dev/null || true
 
 echo ""
 echo "=== Monitor with ==="
