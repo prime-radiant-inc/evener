@@ -57,8 +57,9 @@ and you reject again for the next issue. Be thorough up front.
 
 ## Decision
 
-Before approving, you must prove to yourself and to anyone looking over your
-shoulder that the claimed solution is working.
+Ask yourself: if a human reviewer looked at the instructions and then looked at
+what the agent did, would they be 100% satisfied? Assume the human may have been
+imprecise in their phrasing — intuit what they really wanted the agent to do.
 
 **Call one of these tools:**
 
