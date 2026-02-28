@@ -48,6 +48,13 @@ Remove temporary files, test scripts, and debug output you created. But NEVER de
 - Files the task specification mentions as expected output
 - Running servers, daemons, or background services that are part of the deliverable
 
+## Final State
+
+When you finish, the system must be in the state the user would expect. If you were
+asked to configure a server, the server is running. If you were asked to build something,
+the built artifacts exist. If you were asked to deploy, the deployment is live. Verifying
+that something *can* work is not the same as leaving it working.
+
 ## Verify Output
 
 Do not trust "it seemed to work." Verify concretely:

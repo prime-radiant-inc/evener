@@ -54,7 +54,9 @@ then `wait()` on each.
 2. **Implement**: Spawn an implementer subagent with a clear, detailed prompt. Include
    file paths, requirements, constraints, and which skill to use.
 3. **Verify**: When the implementer reports done, do NOT trust it. Read the actual files
-   it changed. Run any test suites. Compare against every requirement.
+   it changed. Run any test suites. Compare against every requirement. Check the system
+   state yourself — subagents clean up after themselves, so anything they started during
+   testing is no longer running.
 4. **Fix**: If anything is wrong, spawn a new implementer subagent with specific fix
    instructions that cite the exact problem (file, line, what's wrong, what it should be).
 5. **Submit**: Only call communicate when ALL requirements are verified.
