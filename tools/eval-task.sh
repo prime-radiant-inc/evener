@@ -99,6 +99,7 @@ cd $REMOTE_DIR
 set -a; source .env; set +a
 export PATH="\$HOME/.local/bin:\$PATH"
 rm -rf /tmp/$JOB_NAME
+mkdir -p /tmp/$JOB_NAME
 
 nohup harbor run \\
   --agent-import-path "$AGENT_IMPORT_PATH" \\

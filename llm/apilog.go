@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -67,7 +68,11 @@ type APILogger struct {
 }
 
 // NewAPILogger creates an API logger that writes to the given path.
+// Creates the parent directory if it doesn't exist.
 func NewAPILogger(path string) (*APILogger, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, err
