@@ -27,7 +27,7 @@ Systematic process for diagnosing and fixing serf failures on terminal-bench tas
 - SSH access to flower-garden (`jesse@192.168.118.101`). Use the IP address, not the
   hostname — Tailscale MagicDNS may not resolve `flower-garden`.
 - Go toolchain for building serf
-- Helper scripts in `tools/`: `eval-task.sh`, `check-eval.sh`
+- Helper scripts in `tools/`: `eval-task.sh`, `check-eval.sh`, `api-log-analyze.py`, `compare-runs.sh`
 
 ## Step 1: Pick a Failure to Investigate
 
@@ -77,10 +77,10 @@ Read the instruction to understand what serf is asked to do. Read the tests to u
 Build and run serf against the task prompt:
 
 ```bash
-# Build
+# Build (includes git SHA, dirty state, build time via ldflags)
 cd /Users/jesse/prime-radiant/serf
 export $(cat .env | xargs)
-go build ./cmd/serf/
+make build
 
 # Run with limited rounds for fast iteration
 ./serf --provider openai --model gpt-5.3-codex \
@@ -134,6 +134,39 @@ open /tmp/viewer/index.html
 - Per-task: verifier test output, all sessions (main agent + subagents) with formatted transcripts
 - Tool calls, results, assistant text with collapsible large content
 - Session labels auto-detect reviewer vs test-writer subagents
+
+### API log analysis
+
+Every serf run writes `api.jsonl` alongside transcripts, logging every LLM API call
+with full raw provider response. This is the primary tool for diagnosing empty responses,
+parsing failures, and token usage.
+
+```bash
+# Show all API calls for a local run
+python3 tools/api-log-analyze.py /tmp/serf-bench-$TASK/
+
+# Show only empty responses (no text, no tool calls)
+python3 tools/api-log-analyze.py /tmp/serf-bench-$TASK/ --empty
+
+# Per-session summary (calls, empties, tokens, avg latency)
+python3 tools/api-log-analyze.py /tmp/serf-bench-$TASK/ --summary
+
+# Show full raw API response for empty responses
+python3 tools/api-log-analyze.py /tmp/serf-bench-$TASK/ --empty --raw
+
+# Filter to a specific session
+python3 tools/api-log-analyze.py /tmp/serf-bench-$TASK/ --session sess-abc
+
+# Show only errors (rate limits, timeouts)
+python3 tools/api-log-analyze.py /tmp/serf-bench-$TASK/ --errors
+```
+
+For flower-garden runs, rsync the `api.jsonl` files along with transcripts:
+```bash
+rsync -avz --include='*/' --include='api.jsonl' --include='*.jsonl' \
+  --include='reward.txt' --include='result.json' --exclude='*' \
+  192.168.118.101:/tmp/$JOB/ /tmp/$JOB/
+```
 
 ### Single-task analysis
 
@@ -207,7 +240,7 @@ For prompt fixes: the benchmark task IS the test — re-run serf against the sam
 
 ```bash
 # After making changes, rebuild and re-run
-go build ./cmd/serf/
+make build
 ./serf --provider openai --model gpt-5.3-codex \
   --max-rounds 15 \
   --state-dir /tmp/serf-bench-$TASK-v2 \
@@ -271,8 +304,12 @@ To compare two configurations, run focused evals with different job names:
 ./tools/eval-task.sh ab-treatment build-cython-ext 5 enable_reviewer_gate=true result_tool_name=done
 ```
 
-Then compare results:
+Then compare results side-by-side:
 ```bash
+# Structured comparison with regressions/improvements
+./tools/compare-runs.sh ab-control ab-treatment
+
+# Or check each individually
 ./tools/check-eval.sh ab-control
 ./tools/check-eval.sh ab-treatment
 ```
@@ -356,15 +393,23 @@ The helper scripts handle this automatically.
 
 After a harbor run, job data is at:
 ```
-/tmp/<job-name>/<task>__<hash>/
-  reward.txt                                     — 0.0 or 1.0 (ground truth)
-  result.json                                    — overall result, timing
-  agent/serf-state/sessions/<id>.json            — session metadata
-  agent/serf-state/sessions/<id>.transcript.jsonl — full transcript (all turns)
+/tmp/<job-name>/
+  manifest.json                                  — build provenance (git SHA, branch, model, adapter)
+  <task>__<hash>/
+    reward.txt                                   — 0.0 or 1.0 (ground truth)
+    result.json                                  — overall result, timing
+    agent/serf-state/api.jsonl                   — all LLM API calls with raw responses
+    agent/serf-state/sessions/<id>.json          — session metadata
+    agent/serf-state/sessions/<id>.transcript.jsonl — full transcript (all turns)
 ```
 
 **Important:** `reward.txt` is the accurate per-task reward. `result.json` intermediate
 writes can be misleading — always check `reward.txt`.
+
+The `manifest.json` ties the run to exact source code — `check-eval.sh` prints it.
+The `api.jsonl` captures every LLM API call with the full raw provider response,
+enabling postmortem analysis of empty responses, parsing failures, and token usage
+without throwaway scripts.
 
 For batch analysis, use the transcript viewer (see Step 4). For quick failure listing:
 ```bash
@@ -412,3 +457,4 @@ These fixes are in `agent/agents/reviewer.md` and encode general principles
 - **Don't build to the benchmark**: If a fix requires knowing the task answer, it's cheating. If it only helps one task and hurts others, it's overfitting. Every fix should be a general engineering principle.
 - **Don't skip the env vars**: The #1 cause of "all tasks fail immediately" is forgetting to export OPENAI_API_KEY. The helper scripts handle this, so use them.
 - **Use helper scripts**: `tools/eval-task.sh` and `tools/check-eval.sh` exist for a reason. They encode correct harbor flags, env var handling, and result checking. Don't hand-construct harbor commands.
+- **Check build provenance**: Run `./serf --version` to verify the binary you're testing. Every transcript header includes `build_version`. Every eval run writes a `manifest.json` with the git SHA. If you can't trace a result to the code that produced it, the result is worthless.
