@@ -281,6 +281,23 @@ The `--result-tool-name` flag (`--ak result_tool_name=X`) lets you rename the re
 tool at runtime without code changes. Useful for testing whether tool naming affects
 model behavior. (Answer from our eval: it doesn't.)
 
+### Custom adapters
+
+To test prompt variants or adapter changes without rebuilding the binary:
+
+```bash
+# 1. Create adapter variant on flower-garden (e.g., serf_agent_mytest.py)
+#    - Copy from serf_agent.py, change class name, modify as needed
+
+# 2. Run with NO_BUILD=1 and custom AGENT_IMPORT_PATH
+NO_BUILD=1 AGENT_IMPORT_PATH="serf_agent_mytest:MyTestAgent" \
+  ./tools/eval-task.sh my-test configure-git-webserver 1 enable_reviewer_gate=true
+```
+
+**NEVER manually run harbor commands.** The helper scripts handle env vars, PATH, and
+flags correctly. Manual harbor commands will forget `set -a; source .env; set +a` and
+silently fail with "no LLM providers configured."
+
 ## Harbor CLI Reference
 
 Harbor is the benchmark runner. It's installed via uv at `~/.local/bin/harbor` on

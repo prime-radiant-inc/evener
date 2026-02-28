@@ -795,7 +795,7 @@ func (s *Session) spawnReviewer(ctx context.Context, claimedResult string) (revi
 
 	// Compose the reviewer prompt with task context and claimed result.
 	reviewPrompt := fmt.Sprintf(
-		"## Original Task\n\n%s\n\n## Claimed Result\n\n%s\n\nReview the work and provide your verdict.",
+		"## Original Task\n\n%s\n\n## Claimed Result\n\n%s",
 		originalTask, claimedResult,
 	)
 

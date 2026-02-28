@@ -412,8 +412,8 @@ func TestBuildSystemPrompt_SubagentGuidanceContent(t *testing.T) {
 	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux", Today: "2026-02-09"}
 	prompt := p.BuildSystemPrompt(env, nil, nil, "")
 
-	// Should mention research, implementation, and verification use cases.
-	for _, keyword := range []string{"research", "implementation", "verification"} {
+	// Should mention exploration, implementation, and verification use cases.
+	for _, keyword := range []string{"Explore", "implementation", "verification"} {
 		if !strings.Contains(prompt, keyword) {
 			t.Errorf("subagent guidance missing %q keyword", keyword)
 		}
