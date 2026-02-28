@@ -24,7 +24,7 @@ pass=0; fail=0; pending=0
 #   /tmp/<job>/<task>__<hash>/         (flat --jobs-dir)
 #   jobs/<job>/<task>__<hash>/         (default cwd/jobs/)
 RESULTS_DIR=""
-for candidate in "/tmp/$JOB_NAME/$JOB_NAME" "/tmp/$JOB_NAME" "$HOME/$REMOTE_DIR/jobs/$JOB_NAME"; do
+for candidate in "/tmp/$JOB_NAME/$JOB_NAME" "/tmp/$JOB_NAME" "\$HOME/git/terminal-bench/jobs/$JOB_NAME"; do
     if [ -d "\$candidate" ]; then
         # Check if it has task subdirectories (not just job.log)
         if ls "\$candidate"/*/verifier/reward.txt >/dev/null 2>&1 || \
