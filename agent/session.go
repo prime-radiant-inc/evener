@@ -1477,6 +1477,18 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		// the API, which reinforces the empty-response pattern.
 		isTrulyEmpty := strings.TrimSpace(txt) == "" && len(calls) == 0
 
+		// Diagnostic: log raw API output when the parsed response is empty.
+		// This helps identify whether the model is sending phase-only messages,
+		// null content, or something else we're not parsing.
+		if isTrulyEmpty && len(resp.Raw) > 0 {
+			if output, ok := resp.Raw["output"].([]any); ok && len(output) > 0 {
+				b, _ := json.Marshal(output)
+				s.emit(EventWarning, WarningData{
+					Message: fmt.Sprintf("empty response but API returned %d output items: %s", len(output), string(b)),
+				})
+			}
+		}
+
 		s.emit(EventAssistantTextStart, AssistantTextStartData{
 			Model: resp.Model,
 		})
