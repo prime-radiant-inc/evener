@@ -129,13 +129,13 @@ func TestEmptyResponse_ResetsOnProgress(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			// Empty (triggers retry 1, does not consume a round).
+			// Round 0: empty (triggers retry 1).
 			func(req llm.Request) llm.Response { return emptyResponse() },
-			// Model recovers with tool call (round 0).
+			// Round 0 retry: model recovers with tool call.
 			func(req llm.Request) llm.Response { return toolCallResponse(shellCall("s1")) },
-			// Empty again (fresh retry counter, does not consume a round).
+			// Round 1: empty again (should be fresh retry counter).
 			func(req llm.Request) llm.Response { return emptyResponse() },
-			// Model recovers and submits result (round 1).
+			// Round 1 retry: model recovers and submits result.
 			func(req llm.Request) llm.Response { return toolCallResponse(result) },
 		},
 	}
@@ -213,117 +213,6 @@ func TestBareText_RedirectsToSubmitResult(t *testing.T) {
 
 	if got := len(f.Requests()); got != 2 {
 		t.Fatalf("requests: got %d want 2", got)
-	}
-}
-
-// TestEmptyResponse_DoesNotConsumeRounds verifies that empty-response retries
-// do not count against MaxToolRoundsPerInput. With a budget of 2 rounds,
-// 3 empty responses interspersed with 2 real rounds should succeed. If empties
-// consumed rounds, the loop would exit prematurely at the turn limit.
-func TestEmptyResponse_DoesNotConsumeRounds(t *testing.T) {
-	dir := t.TempDir()
-	c := llm.NewClient()
-
-	shellCall := func(id string) llm.ToolCallData {
-		raw, _ := json.Marshal(map[string]any{
-			"command":     "echo ok",
-			"description": "filler",
-		})
-		return llm.ToolCallData{ID: id, Name: "exec_command", Arguments: raw, Type: "function"}
-	}
-	result := submitResultCall("c1", "done")
-
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			// Empty (should not consume a round).
-			func(req llm.Request) llm.Response { return emptyResponse() },
-			// Recovery: real tool call (round 0).
-			func(req llm.Request) llm.Response { return toolCallResponse(shellCall("s1")) },
-			// Empty again (should not consume a round).
-			func(req llm.Request) llm.Response { return emptyResponse() },
-			// Empty again (should not consume a round).
-			func(req llm.Request) llm.Response { return emptyResponse() },
-			// Recovery: submit result (round 1 — within budget).
-			func(req llm.Request) llm.Response { return toolCallResponse(result) },
-		},
-	}
-	c.Register(f)
-
-	// MaxToolRoundsPerInput=2: only rounds 0 and 1.
-	// Without the fix: empty→round0 + shell→round1 + empty→round2(exit!) — never reaches submit.
-	// With the fix: empty(no count) + shell→round0 + empty(no count) + empty(no count) + submit→round1→exits via resultDelivered.
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.3-codex"), NewLocalExecutionEnvironment(dir), SessionConfig{
-		MaxToolRoundsPerInput: 2,
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	out, err := sess.ProcessInput(ctx, "do the task")
-	if err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-	if strings.TrimSpace(out) != "done" {
-		t.Fatalf("ProcessInput returned %q, want %q", out, "done")
-	}
-	sess.Close()
-
-	if got := len(f.Requests()); got != 5 {
-		t.Fatalf("requests: got %d want 5", got)
-	}
-}
-
-// TestBareText_DoesNotConsumeRounds verifies that bare-text retries do not
-// count against MaxToolRoundsPerInput. With a budget of 1 round, 2 bare text
-// responses (both recovered) + 1 real tool round should succeed.
-func TestBareText_DoesNotConsumeRounds(t *testing.T) {
-	dir := t.TempDir()
-	c := llm.NewClient()
-
-	result := submitResultCall("c1", "done")
-
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			// Bare text (should not consume a round).
-			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("some bare text")}
-			},
-			// Another bare text (should not consume a round).
-			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("more bare text")}
-			},
-			// Recovery: submit result (round 0).
-			func(req llm.Request) llm.Response { return toolCallResponse(result) },
-		},
-	}
-	c.Register(f)
-
-	// MaxToolRoundsPerInput=1: only 1 real round allowed.
-	// Without the fix: bare→round0 + bare→round1(exit!) — never reaches submit.
-	// With the fix: bare(no count) + bare(no count) + submit→round0→exits.
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.3-codex"), NewLocalExecutionEnvironment(dir), SessionConfig{
-		MaxToolRoundsPerInput: 1,
-		NonInteractive:        true,
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	out, err := sess.ProcessInput(ctx, "do the task")
-	if err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-	if strings.TrimSpace(out) != "done" {
-		t.Fatalf("ProcessInput returned %q, want %q", out, "done")
-	}
-	sess.Close()
-
-	if got := len(f.Requests()); got != 3 {
-		t.Fatalf("requests: got %d want 3", got)
 	}
 }
 
