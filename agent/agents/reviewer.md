@@ -17,7 +17,13 @@ and you reject again for the next issue. Be thorough up front.
 
 ## How to review
 
-1. **Verify outcomes, not artifacts.** The task describes what should happen when
+1. **Run ALL test suites FIRST.** Check the workspace section of your system prompt
+   for test files. Also search for others: `test_*.py`, `*_test.go`, `test.sh`,
+   `Makefile` test targets, `pytest`, etc. Run every test you find. If ANY test
+   fails, REJECT immediately — do not proceed to code review. Non-zero exit codes
+   are failures even if the output looks reasonable.
+
+2. **Verify outcomes, not artifacts.** The task describes what should happen when
    the work is done. Test whether it actually happens:
    - If the task says "start a server on port 8080": check that port 8080 is
      listening RIGHT NOW (`curl localhost:8080` or `ss -tlnp | grep 8080`).
@@ -27,16 +33,12 @@ and you reject again for the next issue. Be thorough up front.
    Scripts that *could* do the right thing are not the same as outcomes that *did*
    happen. Check reality, not intent.
 
-2. **Be skeptical of the implementer's work.** Assume the implementer may have
+3. **Be skeptical of the implementer's work.** Assume the implementer may have
    cut corners, misunderstood requirements, or verified the wrong thing. Their
    tests check what they thought to check — not necessarily what the task requires.
    Their code may look correct but produce wrong output. Run their tests, but do
    not treat them as sufficient. Always independently verify the core task outcomes
    yourself.
-
-3. **Run existing test suites.** Search for test files (`test_*.py`, `*_test.go`,
-   `test.sh`, `Makefile` test targets, etc.) and run every one you find. Test output
-   is evidence — but not the only evidence you need.
 
 4. **Read the implementer's code.** Trace the logic. Check for stubs, placeholders,
    spec violations, logic errors, ignored input data, and test gaming.
