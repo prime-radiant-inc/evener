@@ -41,7 +41,7 @@ REPO_ROOT = os.path.dirname(SCRIPT_DIR)
 
 
 def cmd_launch(args):
-    """Preflight, build, deploy, write manifest, launch harbor."""
+    """Preflight, build, deploy to per-run staging dir, write manifest, launch harbor."""
     # Preflight: clean tree check
     if not args.allow_dirty:
         info = git_info(REPO_ROOT)
@@ -51,6 +51,11 @@ def cmd_launch(args):
 
     info = git_info(REPO_ROOT)
 
+    # Per-run staging directory: each run gets its own isolated copy of the
+    # binary, adapter, and install template. This prevents concurrent runs
+    # from interfering with each other.
+    run_stage_dir = f"{REMOTE_DIR}/runs/{args.job}"
+
     # Build
     if not args.no_build and not args.dry_run:
         print("=== Building linux binary ===")
@@ -59,19 +64,29 @@ def cmd_launch(args):
             f'GOOS=linux GOARCH=amd64 go build -ldflags "{ldflags}" -o /tmp/serf-linux-amd64 ./cmd/serf/',
             shell=True, check=True, cwd=REPO_ROOT,
         )
-        print("=== Deploying binary ===")
-        subprocess.run(
-            ["scp", "/tmp/serf-linux-amd64", f"{REMOTE}:{REMOTE_DIR}/serf-linux-amd64"],
-            check=True,
-        )
     elif args.no_build:
         print("=== Skipping build (--no-build) ===")
 
-    # Deploy adapter
+    # Deploy to per-run staging directory
     if not args.dry_run:
-        print("=== Deploying adapter ===")
+        print(f"=== Staging run: {run_stage_dir} ===")
         subprocess.run(
-            ["scp", f"{REPO_ROOT}/tools/serf_agent.py", f"{REMOTE}:{REMOTE_DIR}/serf_agent.py"],
+            ["ssh", REMOTE, f"mkdir -p {run_stage_dir}"],
+            check=True,
+        )
+        files_to_deploy = [
+            (f"{REPO_ROOT}/tools/serf_agent.py", f"{REMOTE}:{run_stage_dir}/serf_agent.py"),
+            (f"{REPO_ROOT}/tools/install-serf.sh.j2", f"{REMOTE}:{run_stage_dir}/install-serf.sh.j2"),
+        ]
+        if not args.no_build:
+            files_to_deploy.insert(0,
+                ("/tmp/serf-linux-amd64", f"{REMOTE}:{run_stage_dir}/serf-linux-amd64"),
+            )
+        for src, dst in files_to_deploy:
+            subprocess.run(["scp", src, dst], check=True)
+        # Copy .env from base directory
+        subprocess.run(
+            ["ssh", REMOTE, f"cp {REMOTE_DIR}/.env {run_stage_dir}/.env"],
             check=True,
         )
 
@@ -124,7 +139,7 @@ def cmd_launch(args):
     label = args.task or "FULL SUITE"
     print(f"\n=== Launching: {label} x{args.reps} (job: {args.job}) ===")
 
-    launch_script = f"""cd {REMOTE_DIR}
+    launch_script = f"""cd {run_stage_dir}
 set -a; source .env; set +a
 export PATH="$HOME/.local/bin:$PATH"
 rm -rf /tmp/{args.job}
