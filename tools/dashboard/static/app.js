@@ -181,6 +181,48 @@ function parseArgs(tc) {
     return (raw && typeof raw === 'object') ? raw : {};
 }
 
+function metricBox(label, value) {
+    return h('div', { className: 'metric-box' },
+        h('div', { className: 'metric-label' }, label),
+        h('div', { className: 'metric-value' }, String(value != null ? value : '-'))
+    );
+}
+
+function twoStateSection(title, content, defaultOpen, accentColor, rawHref) {
+    const oneLiner = (content || '').split('\n')[0].slice(0, 100);
+    const section = h('div', { className: 'card two-state' + (accentColor ? ` accent-${accentColor}` : '') });
+    const headerItems = [
+        h('span', { className: 'card-title' }, title),
+        h('span', { className: 'one-liner' }, oneLiner),
+    ];
+    if (rawHref) {
+        headerItems.push(rawLink(rawHref));
+    }
+    const header = h('div', { className: 'card-header clickable' }, ...headerItems);
+    const body = h('pre', { className: 'card-body-pre' }, content);
+    section.appendChild(header);
+    section.appendChild(body);
+
+    if (!defaultOpen) {
+        section.classList.add('collapsed');
+    }
+
+    header.addEventListener('click', () => {
+        section.classList.toggle('collapsed');
+    });
+    return section;
+}
+
+function rawLink(href) {
+    return h('a', {
+        href: href,
+        target: '_blank',
+        className: 'raw-link',
+        title: 'Open raw file',
+        onClick: (e) => { e.stopPropagation(); }
+    }, '\u2197');
+}
+
 // ---------------------------------------------------------------------------
 // Dashboard page
 // ---------------------------------------------------------------------------
@@ -522,6 +564,8 @@ async function renderTaskDetail(container, jobName, taskName) {
             `/api/runs/${encodeURIComponent(jobName)}/tasks/${encodeURIComponent(taskName)}`
         );
 
+        const rawFiles = task.raw_files || {};
+
         // Header with result badge
         const resultBadge = h('span', {
             className: task.passed ? 'result-badge pass' : 'result-badge fail'
@@ -532,59 +576,66 @@ async function renderTaskDetail(container, jobName, taskName) {
             h('div', { className: 'subtitle' },
                 jobName,
                 task.model ? ` \u00b7 ${task.model}` : '',
-                task.failure_category ? ` \u00b7 ${failureCategoryLabel(task.failure_category)}` : ''
+                task.failure_category ? ` \u00b7 ${failureCategoryLabel(task.failure_category)}` : '',
+                rawFiles.result ? ' ' : null,
+                rawFiles.result ? rawLink(`/raw/${rawFiles.result}`) : null,
+                rawFiles.config ? rawLink(`/raw/${rawFiles.config}`) : null
             )
         );
 
         // ---------------------------------------------------------------
-        // Verifier output — full width, prominent, FIRST
+        // Summary card — key metrics at a glance
+        // ---------------------------------------------------------------
+        const summaryCard = h('div', { className: 'summary-card' },
+            h('div', { className: 'summary-metrics' },
+                metricBox('Rounds', task.total_rounds),
+                metricBox('Wasted', task.wasted_rounds),
+                metricBox('Tokens In', task.total_tokens_in ? (task.total_tokens_in / 1000).toFixed(1) + 'k' : '-'),
+                metricBox('Tokens Out', task.total_tokens_out ? (task.total_tokens_out / 1000).toFixed(1) + 'k' : '-'),
+                metricBox('Sessions', task.session_count),
+                metricBox('Depth', task.max_depth),
+                metricBox('Wall Time', formatWallTime(task.wall_time_sec)),
+                metricBox('Submit @', task.first_submit_round || '-'),
+            ),
+            task.submitted_value ? h('div', { className: 'submitted-value' },
+                h('span', { className: 'label' }, 'Submitted: '),
+                h('code', null, truncate(task.submitted_value, 200))
+            ) : null
+        );
+
+        // ---------------------------------------------------------------
+        // Verifier output — two-state expand, default open
         // ---------------------------------------------------------------
         let verifierSection = null;
         if (task.test_output) {
-            verifierSection = h('div', { className: 'card verifier-card' },
-                h('div', { className: 'card-header' },
-                    h('span', { className: 'card-title' }, 'Verifier Output'),
-                    h('button', {
-                        className: 'toggle-btn',
-                        onClick: (e) => {
-                            const pre = e.target.closest('.card').querySelector('.verifier-output');
-                            pre.classList.toggle('collapsed');
-                            e.target.textContent = pre.classList.contains('collapsed') ? 'Expand' : 'Collapse';
-                        }
-                    }, 'Collapse')
-                ),
-                h('pre', { className: 'verifier-output' }, task.test_output)
-            );
+            const accent = task.passed ? 'green' : 'red';
+            const verifierRawHref = rawFiles.verifier ? `/raw/${rawFiles.verifier}` : null;
+            verifierSection = twoStateSection('Verifier Output', task.test_output, true, accent, verifierRawHref);
         }
 
         // ---------------------------------------------------------------
-        // Agent stdout (if available)
+        // Agent stdout — two-state expand, default collapsed
         // ---------------------------------------------------------------
         let stdoutSection = null;
         if (task.agent_stdout && task.agent_stdout.trim()) {
-            stdoutSection = h('div', { className: 'card' },
-                h('div', { className: 'card-header' },
-                    h('span', { className: 'card-title' }, 'Agent Stdout'),
-                    h('button', {
-                        className: 'toggle-btn',
-                        onClick: (e) => {
-                            const pre = e.target.closest('.card').querySelector('.stdout-output');
-                            pre.classList.toggle('collapsed');
-                            e.target.textContent = pre.classList.contains('collapsed') ? 'Expand' : 'Collapse';
-                        }
-                    }, 'Expand')
-                ),
-                h('pre', { className: 'stdout-output collapsed' }, task.agent_stdout)
-            );
+            const stdoutRawHref = rawFiles.stdout ? `/raw/${rawFiles.stdout}` : null;
+            stdoutSection = twoStateSection('Agent Stdout', task.agent_stdout, false, null, stdoutRawHref);
         }
 
         // ---------------------------------------------------------------
         // Trajectory — full width
         // ---------------------------------------------------------------
+        const trajSearch = h('input', {
+            type: 'text',
+            placeholder: 'Search rounds...',
+            className: 'search-box traj-search',
+        });
+
         const trajectorySection = h('div', { className: 'card' },
             h('div', { className: 'card-header' },
                 h('span', { className: 'card-title' }, 'Trajectory'),
                 h('div', { className: 'trajectory-controls' },
+                    trajSearch,
                     h('button', {
                         className: 'toggle-btn',
                         onClick: () => {
@@ -599,6 +650,15 @@ async function renderTaskDetail(container, jobName, taskName) {
                 )
             )
         );
+
+        // Wire up search filtering after section is built
+        trajSearch.addEventListener('input', (e) => {
+            const term = e.target.value.toLowerCase();
+            const rounds = trajectorySection.querySelectorAll('.timeline-round');
+            rounds.forEach(r => {
+                r.style.display = (!term || r.textContent.toLowerCase().includes(term)) ? '' : 'none';
+            });
+        });
 
         const trajectoryBody = h('div', { className: 'card-body-flush' });
 
@@ -635,6 +695,7 @@ async function renderTaskDetail(container, jobName, taskName) {
         // Assemble page
         container.innerHTML = '';
         container.appendChild(header);
+        container.appendChild(summaryCard);
         if (verifierSection) container.appendChild(verifierSection);
         if (stdoutSection) container.appendChild(stdoutSection);
         container.appendChild(trajectorySection);
@@ -814,16 +875,12 @@ function prettyPrintJSON(obj) {
 
 function renderToolCall(tc, tr) {
     const block = h('div', { className: 'tool-block' });
-
     const name = tc.name || 'unknown';
     const argsRaw = tc.arguments;
     let argsStr = '';
     if (typeof argsRaw === 'string') {
-        try {
-            argsStr = prettyPrintJSON(JSON.parse(argsRaw));
-        } catch {
-            argsStr = argsRaw;
-        }
+        try { argsStr = prettyPrintJSON(JSON.parse(argsRaw)); }
+        catch { argsStr = argsRaw; }
     } else if (argsRaw && typeof argsRaw === 'object') {
         argsStr = prettyPrintJSON(argsRaw);
     }
@@ -833,10 +890,9 @@ function renderToolCall(tc, tr) {
     ));
 
     if (argsStr) {
-        block.appendChild(makeExpandable(argsStr, 'tool-content', 200));
+        block.appendChild(h('pre', { className: 'tool-content' }, argsStr));
     }
 
-    // Tool result
     if (tr) {
         const resultContent = tr.content || '';
         const isError = tr.is_error || false;
@@ -847,30 +903,9 @@ function renderToolCall(tc, tr) {
         block.appendChild(resultLabel);
         if (resultContent) {
             const cls = isError ? 'tool-content tool-error' : 'tool-content';
-            block.appendChild(makeExpandable(resultContent, cls, 200));
+            block.appendChild(h('pre', { className: cls }, resultContent));
         }
     }
 
     return block;
-}
-
-function makeExpandable(text, className, threshold) {
-    const isLong = text.length > threshold;
-    const pre = h('pre', { className: className + (isLong ? ' collapsed' : '') }, text);
-
-    if (isLong) {
-        const wrapper = h('div', { className: 'expandable-wrapper' });
-        wrapper.appendChild(pre);
-        const btn = h('button', { className: 'expand-btn' }, 'Show more');
-        btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const wasCollapsed = pre.classList.contains('collapsed');
-            pre.classList.toggle('collapsed');
-            btn.textContent = wasCollapsed ? 'Show less' : 'Show more';
-        });
-        wrapper.appendChild(btn);
-        return wrapper;
-    }
-
-    return pre;
 }

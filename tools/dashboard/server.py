@@ -115,6 +115,37 @@ def get_task(job_name: str, task_name: str, request: Request):
             task.update({k: v for k, v in task_stats.items()
                          if k not in ("action_sequence",)})
 
+        # Build raw file links (paths relative to data_dir for /raw/ endpoint)
+        task_dir = task.get("task_dir", "")
+        if task_dir:
+            task_path = Path(task_dir)
+            data_path = Path(store.data_dir).resolve()
+            try:
+                rel = task_path.resolve().relative_to(data_path)
+                raw_files = {}
+                for fname, key in [("result.json", "result"),
+                                   ("config.json", "config")]:
+                    if (task_path / fname).is_file():
+                        raw_files[key] = str(rel / fname)
+                stdout_file = task_path / "agent" / "command-0" / "stdout.txt"
+                if stdout_file.is_file():
+                    raw_files["stdout"] = str(rel / "agent" / "command-0" / "stdout.txt")
+                test_stdout = task_path / "verifier" / "test-stdout.txt"
+                if test_stdout.is_file():
+                    raw_files["verifier"] = str(rel / "verifier" / "test-stdout.txt")
+                state_dir = task_path / "agent" / "serf-state"
+                if state_dir.is_dir():
+                    for f in sorted(state_dir.glob("sessions/*.transcript.jsonl")):
+                        raw_files.setdefault("transcripts", []).append(
+                            str(rel / f.relative_to(task_path)))
+                    api_log = state_dir / "api.jsonl"
+                    if api_log.is_file():
+                        raw_files["api_log"] = str(
+                            rel / "agent" / "serf-state" / "api.jsonl")
+                task["raw_files"] = raw_files
+            except (ValueError, OSError):
+                pass
+
         return JSONResponse(task)
 
     main_trajectory = trajectories[0]["trajectory"] if trajectories else []
