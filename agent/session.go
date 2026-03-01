@@ -337,6 +337,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 			WorkingDir:       s.envInfo.WorkingDir,
 			Depth:            cfg.Depth,
 			BuildVersion:     buildinfo.Version(),
+			SystemPrompt:     s.buildInitialSystemPrompt(),
 		}
 		tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
 		tw, twErr := NewTranscriptWriter(tpath, hdr)
@@ -460,6 +461,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 				WorkingDir:       s.envInfo.WorkingDir,
 				Depth:            cfg.Depth,
 				BuildVersion:     buildinfo.Version(),
+				SystemPrompt:     s.buildInitialSystemPrompt(),
 			}
 			tw, twErr = NewTranscriptWriter(tpath, hdr)
 			if twErr != nil {
@@ -1956,6 +1958,45 @@ func (s *Session) initSessionState() ([]PromptSource, error) {
 		return nil, fmt.Errorf("MCP initialization: %w", err)
 	}
 	return promptSources, nil
+}
+
+// buildInitialSystemPrompt constructs the system prompt as the model would see
+// it on its first turn. Persisted in the transcript header for debugging.
+func (s *Session) buildInitialSystemPrompt() string {
+	docs, _ := LoadProjectDocs(s.env, s.profile.ProjectDocFiles()...)
+	var skillList []SkillMeta
+	for _, sm := range s.skills {
+		skillList = append(skillList, sm)
+	}
+	var extraTools strings.Builder
+	if len(s.mcpTools) > 0 {
+		extraTools.WriteString("MCP Tools (from external servers):\n")
+		for _, td := range s.mcpTools {
+			desc := strings.TrimSpace(td.Description)
+			if desc == "" {
+				desc = "(no description)"
+			}
+			extraTools.WriteString(fmt.Sprintf("- %s: %s\n", td.Name, desc))
+		}
+	}
+	if extra := s.customToolDescriptions(); len(extra) > 0 {
+		if extraTools.Len() > 0 {
+			extraTools.WriteString("\n")
+		}
+		extraTools.WriteString("Additional tools:\n")
+		extraTools.WriteString(extra)
+	}
+	sys := s.profile.BuildSystemPrompt(s.envInfo, docs, skillList, extraTools.String())
+	if agentSection := FormatPluginAgentsPrompt(s.pluginAgents); agentSection != "" {
+		sys += agentSection
+	}
+	if s.cfg.NonInteractive {
+		sys += nonInteractiveGuidance(s.resultToolName())
+	}
+	if strings.TrimSpace(s.cfg.UserInstructionOverride) != "" {
+		sys = sys + "\n\n" + strings.TrimSpace(s.cfg.UserInstructionOverride) + "\n"
+	}
+	return sys
 }
 
 // initPlugins loads plugins from configured directories, merging their skills,

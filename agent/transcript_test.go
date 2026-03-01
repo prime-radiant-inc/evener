@@ -1880,3 +1880,43 @@ func TestOpenTranscriptWriter_SingleFileHandle(t *testing.T) {
 		}
 	}
 }
+
+func TestSession_TranscriptHeaderContainsSystemPrompt(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir: stateDir,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
+	header, _, _, err := ReadTranscript(tpath)
+	if err != nil {
+		t.Fatalf("ReadTranscript: %v", err)
+	}
+
+	if header.SystemPrompt == "" {
+		t.Fatal("expected non-empty system_prompt in transcript header")
+	}
+
+	// System prompt should contain content from the profile's base prompt.
+	// OpenAI profile includes "apply_patch" in its system prompt.
+	if !strings.Contains(header.SystemPrompt, "apply_patch") {
+		t.Errorf("system_prompt missing expected content; got (first 200 chars): %s",
+			truncStr(header.SystemPrompt, 200))
+	}
+}
+
+func truncStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}

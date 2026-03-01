@@ -27,6 +27,7 @@ type TranscriptHeader struct {
 	WorkingDir       string    `json:"working_dir,omitempty"`
 	Depth            int       `json:"depth,omitempty"`
 	BuildVersion     string    `json:"build_version,omitempty"`
+	SystemPrompt     string    `json:"system_prompt,omitempty"`
 }
 
 // TranscriptEntry is a single turn in the transcript JSONL file.
