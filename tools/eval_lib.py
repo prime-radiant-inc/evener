@@ -20,7 +20,7 @@ DATASET = "terminal-bench@2.0"
 DEFAULT_MODEL = "openai/gpt-5.3-codex"
 DEFAULT_ADAPTER = "serf_agent:SerfAgent"
 DEFAULT_REPS = 3
-DEFAULT_CONCURRENCY = 4
+DEFAULT_CONCURRENCY = 10
 DEFAULT_ARCHIVE_ROOT = "/data/serf-evals"
 
 
