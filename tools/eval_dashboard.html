@@ -1,0 +1,1305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SERF EVAL CONTROL</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600;700&family=IBM+Plex+Mono:wght@300;400;500&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg-0: #08090d;
+  --bg-1: #0e1017;
+  --bg-2: #151720;
+  --bg-3: #1c1e28;
+  --bg-4: #242632;
+  --border: #2a2c38;
+  --border-bright: #3a3d4e;
+  --text: #cdd0dc;
+  --text-bright: #e8eaf0;
+  --text-dim: #6e7186;
+  --text-muted: #454860;
+  --accent: #e89b20;
+  --accent-bright: #f0b848;
+  --accent-dim: rgba(232, 155, 32, 0.15);
+  --pass: #2dd66a;
+  --pass-dim: rgba(45, 214, 106, 0.12);
+  --fail: #e84444;
+  --fail-dim: rgba(232, 68, 68, 0.12);
+  --running: #4898f0;
+  --running-dim: rgba(72, 152, 240, 0.12);
+  --timeout: #d4a020;
+  --timeout-dim: rgba(212, 160, 32, 0.12);
+  --error: #b050b8;
+  --error-dim: rgba(176, 80, 184, 0.12);
+}
+
+html, body {
+  height: 100%;
+  background: var(--bg-0);
+  color: var(--text);
+  font-family: 'Barlow', sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  overflow: hidden;
+}
+
+/* === TOP BAR === */
+.topbar {
+  height: 52px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  gap: 24px;
+  position: relative;
+  z-index: 100;
+}
+
+.topbar::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent-dim), transparent);
+}
+
+.logo {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 700;
+  font-size: 18px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.logo span {
+  color: var(--text-dim);
+  font-weight: 400;
+  margin-left: 4px;
+  letter-spacing: 1px;
+  font-size: 13px;
+}
+
+.run-select {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 5px 12px;
+  border-radius: 4px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+  cursor: pointer;
+  outline: none;
+  min-width: 200px;
+}
+.run-select:focus { border-color: var(--accent); }
+.run-select option { background: var(--bg-2); }
+
+.health-bar {
+  display: flex;
+  gap: 20px;
+  margin-left: auto;
+  align-items: center;
+}
+
+.health-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.health-item .label {
+  font-family: 'Barlow Condensed', sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.health-item .value {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.health-item .value.warn { color: var(--timeout); }
+.health-item .value.crit { color: var(--fail); }
+
+.led {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--pass);
+  box-shadow: 0 0 6px var(--pass);
+  flex-shrink: 0;
+}
+.led.off { background: var(--text-muted); box-shadow: none; }
+.led.warn { background: var(--timeout); box-shadow: 0 0 6px var(--timeout); }
+
+.refresh-indicator {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* === SUMMARY BAR === */
+.summary-bar {
+  height: 44px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  gap: 20px;
+}
+
+.stat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+}
+
+.stat .count {
+  font-weight: 600;
+  font-size: 16px;
+  font-family: 'Barlow Condensed', sans-serif;
+}
+
+.stat.pass .count { color: var(--pass); }
+.stat.fail .count { color: var(--fail); }
+.stat.running .count { color: var(--running); }
+.stat.timeout .count { color: var(--timeout); }
+.stat.error .count { color: var(--error); }
+
+.stat .label {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.progress-track {
+  flex: 1;
+  height: 6px;
+  background: var(--bg-3);
+  border-radius: 3px;
+  overflow: hidden;
+  display: flex;
+}
+
+.progress-seg {
+  height: 100%;
+  transition: width 0.6s ease;
+}
+.progress-seg.pass { background: var(--pass); }
+.progress-seg.fail { background: var(--fail); }
+.progress-seg.timeout { background: var(--timeout); }
+.progress-seg.error { background: var(--error); }
+.progress-seg.running { background: var(--running); opacity: 0.5; }
+
+.manifest-info {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: auto;
+  display: flex;
+  gap: 12px;
+}
+
+.manifest-info span { white-space: nowrap; }
+.manifest-info .val { color: var(--text-dim); }
+
+/* === MAIN LAYOUT === */
+.main {
+  display: flex;
+  height: calc(100vh - 96px);
+  overflow: hidden;
+}
+
+.task-panel {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.detail-panel {
+  width: 0;
+  overflow: hidden;
+  background: var(--bg-1);
+  border-left: 1px solid var(--border);
+  transition: width 0.25s ease;
+  display: flex;
+  flex-direction: column;
+}
+
+.detail-panel.open {
+  width: 55%;
+  min-width: 600px;
+}
+
+/* === TASK GRID === */
+.task-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 6px;
+}
+
+.task-card {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.task-card:hover {
+  border-color: var(--border-bright);
+  background: var(--bg-3);
+}
+
+.task-card.selected {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.task-card.pass { border-left: 3px solid var(--pass); }
+.task-card.fail { border-left: 3px solid var(--fail); }
+.task-card.running { border-left: 3px solid var(--running); }
+.task-card.timeout { border-left: 3px solid var(--timeout); }
+.task-card.error { border-left: 3px solid var(--error); }
+
+.task-card .name {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-bright);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task-card .meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.task-card .status-badge {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  padding: 1px 6px;
+  border-radius: 2px;
+}
+
+.task-card.pass .status-badge { color: var(--pass); background: var(--pass-dim); }
+.task-card.fail .status-badge { color: var(--fail); background: var(--fail-dim); }
+.task-card.running .status-badge { color: var(--running); background: var(--running-dim); }
+.task-card.timeout .status-badge { color: var(--timeout); background: var(--timeout-dim); }
+.task-card.error .status-badge { color: var(--error); background: var(--error-dim); }
+
+@keyframes pulse-running {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.task-card.running .status-badge {
+  animation: pulse-running 2s ease-in-out infinite;
+}
+
+/* === FILTER BAR === */
+.filter-bar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  align-items: center;
+}
+
+.filter-btn {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  padding: 4px 12px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.filter-btn:hover { border-color: var(--border-bright); color: var(--text); }
+.filter-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+
+.search-input {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 12px;
+  border-radius: 3px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  outline: none;
+  margin-left: auto;
+  width: 200px;
+}
+.search-input:focus { border-color: var(--accent); }
+.search-input::placeholder { color: var(--text-muted); }
+
+/* === DETAIL PANEL === */
+.detail-header {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.detail-header .task-name {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-bright);
+}
+
+.detail-header .close-btn {
+  margin-left: auto;
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.detail-header .close-btn:hover { border-color: var(--fail); color: var(--fail); }
+
+.detail-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.detail-tab {
+  padding: 8px 18px;
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.15s;
+}
+
+.detail-tab:hover { color: var(--text); }
+.detail-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+.detail-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0;
+}
+
+/* === TRANSCRIPT === */
+.session-block {
+  margin-bottom: 4px;
+}
+
+.session-header {
+  padding: 8px 16px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.session-header:hover { background: var(--bg-3); }
+.session-header .arrow { transition: transform 0.15s; }
+.session-header.collapsed .arrow { transform: rotate(-90deg); }
+.session-header .depth { color: var(--accent); }
+.session-header .model { color: var(--text-muted); }
+
+.transcript-entry {
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--bg-3);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.transcript-entry .entry-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.transcript-entry .seq {
+  color: var(--text-muted);
+  font-size: 11px;
+  min-width: 24px;
+}
+
+.transcript-entry .role-badge {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  padding: 1px 8px;
+  border-radius: 2px;
+}
+
+.role-user { color: #60a0e0; background: rgba(96, 160, 224, 0.1); }
+.role-assistant { color: var(--accent); background: var(--accent-dim); }
+.role-tool { color: #a0a0b0; background: rgba(160, 160, 176, 0.08); }
+.role-steering { color: var(--text-muted); background: rgba(100, 100, 120, 0.08); }
+.role-checkpoint { color: var(--text-muted); background: rgba(100, 100, 120, 0.08); }
+.role-summary { color: #80a0d0; background: rgba(128, 160, 208, 0.08); }
+
+.transcript-entry .usage-info {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.entry-content {
+  padding-left: 32px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.entry-content.collapsed {
+  max-height: 80px;
+  overflow: hidden;
+  position: relative;
+}
+
+.entry-content.collapsed::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 40px;
+  background: linear-gradient(transparent, var(--bg-1));
+  pointer-events: none;
+}
+
+.expand-btn {
+  display: inline-block;
+  padding: 2px 10px;
+  margin: 4px 0 4px 32px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--accent-dim);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.expand-btn:hover { border-color: var(--accent); }
+
+.tool-call-name {
+  color: var(--accent-bright);
+  font-weight: 500;
+}
+
+.tool-result-status {
+  font-size: 11px;
+  padding: 0 6px;
+  border-radius: 2px;
+}
+.tool-result-status.ok { color: var(--pass); background: var(--pass-dim); }
+.tool-result-status.err { color: var(--fail); background: var(--fail-dim); }
+
+/* === API LOG === */
+.apilog-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+}
+
+.apilog-table th {
+  padding: 8px 12px;
+  text-align: left;
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.apilog-table td {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--bg-3);
+  color: var(--text);
+}
+
+.apilog-table tr:hover td { background: var(--bg-2); }
+
+/* === VERIFIER / LOG === */
+.log-output {
+  padding: 16px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+  line-height: 1.6;
+}
+
+/* === HARBOR LOG PANEL === */
+.harbor-log-toggle {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 200;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: 6px 14px;
+  border-radius: 4px;
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  cursor: pointer;
+}
+.harbor-log-toggle:hover { border-color: var(--accent); color: var(--accent); }
+
+.harbor-log-panel {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 0;
+  background: var(--bg-1);
+  border-top: 1px solid var(--border);
+  z-index: 150;
+  transition: height 0.25s ease;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.harbor-log-panel.open {
+  height: 300px;
+}
+
+.harbor-log-header {
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.harbor-log-header .title {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.harbor-log-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+/* === EMPTY STATE === */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-muted);
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 18px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+/* === SCROLLBAR === */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg-0); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-bright); }
+
+/* === LOADING === */
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+</style>
+</head>
+<body>
+
+<!-- TOP BAR -->
+<div class="topbar">
+  <div class="logo">SERF EVAL<span>CONTROL</span></div>
+  <select class="run-select" id="runSelect">
+    <option value="">Loading runs...</option>
+  </select>
+  <div class="health-bar" id="healthBar">
+    <div class="health-item">
+      <div class="led" id="healthLed"></div>
+    </div>
+    <div class="health-item">
+      <span class="label">CPU</span>
+      <span class="value" id="hLoad">--</span>
+    </div>
+    <div class="health-item">
+      <span class="label">MEM</span>
+      <span class="value" id="hMem">--</span>
+    </div>
+    <div class="health-item">
+      <span class="label">DISK</span>
+      <span class="value" id="hDisk">--</span>
+    </div>
+    <div class="health-item">
+      <span class="label">CTNR</span>
+      <span class="value" id="hContainers">--</span>
+    </div>
+    <div class="refresh-indicator" id="refreshTimer"></div>
+  </div>
+</div>
+
+<!-- SUMMARY BAR -->
+<div class="summary-bar" id="summaryBar">
+  <div class="stat pass"><span class="count" id="sPass">-</span><span class="label">PASS</span></div>
+  <div class="stat fail"><span class="count" id="sFail">-</span><span class="label">FAIL</span></div>
+  <div class="stat timeout"><span class="count" id="sTimeout">-</span><span class="label">TIMEOUT</span></div>
+  <div class="stat error"><span class="count" id="sError">-</span><span class="label">ERROR</span></div>
+  <div class="stat running"><span class="count" id="sRunning">-</span><span class="label">RUNNING</span></div>
+  <div class="progress-track" id="progressTrack"></div>
+  <div class="manifest-info" id="manifestInfo"></div>
+</div>
+
+<!-- MAIN AREA -->
+<div class="main">
+  <div class="task-panel" id="taskPanel">
+    <div class="filter-bar">
+      <button class="filter-btn active" data-filter="all">All</button>
+      <button class="filter-btn" data-filter="pass">Pass</button>
+      <button class="filter-btn" data-filter="fail">Fail</button>
+      <button class="filter-btn" data-filter="running">Running</button>
+      <button class="filter-btn" data-filter="timeout">Timeout</button>
+      <input class="search-input" id="searchInput" placeholder="Filter tasks..." />
+    </div>
+    <div class="task-grid" id="taskGrid">
+      <div class="empty-state">Select a run</div>
+    </div>
+  </div>
+
+  <div class="detail-panel" id="detailPanel">
+    <div class="detail-header">
+      <span class="status-badge" id="detailStatus"></span>
+      <span class="task-name" id="detailName">-</span>
+      <button class="close-btn" id="detailClose">&times;</button>
+    </div>
+    <div class="detail-tabs">
+      <div class="detail-tab active" data-tab="transcript">Transcript</div>
+      <div class="detail-tab" data-tab="apilog">API Log</div>
+      <div class="detail-tab" data-tab="verifier">Verifier</div>
+      <div class="detail-tab" data-tab="agent-log">Agent Log</div>
+    </div>
+    <div class="detail-content" id="detailContent">
+    </div>
+  </div>
+</div>
+
+<!-- HARBOR LOG -->
+<button class="harbor-log-toggle" id="harborLogToggle">Harbor Log</button>
+<div class="harbor-log-panel" id="harborLogPanel">
+  <div class="harbor-log-header">
+    <span class="title">Harbor Log</span>
+    <button class="close-btn" id="harborLogClose" style="margin-left:auto">&times;</button>
+  </div>
+  <div class="harbor-log-content" id="harborLogContent">Loading...</div>
+</div>
+
+<script>
+// === STATE ===
+let currentRun = null;
+let currentTask = null;
+let currentTab = 'transcript';
+let currentFilter = 'all';
+let runs = [];
+let tasks = [];
+let refreshInterval = null;
+let lastRefresh = Date.now();
+
+// === API ===
+async function api(path) {
+  const res = await fetch('/api' + path);
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  return res.json();
+}
+
+// === SYSTEM HEALTH ===
+async function refreshHealth() {
+  try {
+    const sys = await api('/system');
+    const loadPer = sys.load[0] / sys.cores;
+    document.getElementById('hLoad').textContent = `${sys.load[0]}/${sys.cores}`;
+    document.getElementById('hLoad').className = 'value' + (loadPer > 0.8 ? ' crit' : loadPer > 0.5 ? ' warn' : '');
+    const memUsed = sys.mem_total_gb - sys.mem_available_gb;
+    document.getElementById('hMem').textContent = `${memUsed.toFixed(0)}/${sys.mem_total_gb}G`;
+    const memPct = memUsed / sys.mem_total_gb;
+    document.getElementById('hMem').className = 'value' + (memPct > 0.85 ? ' crit' : memPct > 0.7 ? ' warn' : '');
+    if (sys.disk_total_gb > 0) {
+      const diskUsed = sys.disk_total_gb - sys.disk_available_gb;
+      document.getElementById('hDisk').textContent = `${sys.disk_available_gb.toFixed(0)}G free`;
+      const diskPct = diskUsed / sys.disk_total_gb;
+      document.getElementById('hDisk').className = 'value' + (diskPct > 0.9 ? ' crit' : diskPct > 0.8 ? ' warn' : '');
+    }
+    document.getElementById('hContainers').textContent = sys.containers;
+    const led = document.getElementById('healthLed');
+    led.className = 'led' + (loadPer > 0.8 ? ' warn' : sys.containers === 0 ? ' off' : '');
+  } catch (e) {
+    console.error('Health refresh failed:', e);
+  }
+}
+
+// === RUNS ===
+async function refreshRuns() {
+  try {
+    runs = await api('/runs');
+    const select = document.getElementById('runSelect');
+    const prev = select.value;
+    select.innerHTML = '';
+    if (runs.length === 0) {
+      select.innerHTML = '<option value="">No runs found</option>';
+      return;
+    }
+    // Sort: active first, then by total tasks descending, then by name
+    runs.sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0)
+      || ((b.summary?.total || 0) - (a.summary?.total || 0))
+      || a.job_name.localeCompare(b.job_name));
+    for (const run of runs) {
+      const opt = document.createElement('option');
+      opt.value = run.job_name;
+      const status = run.active ? '' : ' (archived)';
+      const summary = run.summary ? ` [${run.summary.pass}/${run.summary.total}]` : '';
+      opt.textContent = run.job_name + summary + status;
+      select.appendChild(opt);
+    }
+    // Restore or auto-select
+    if (prev && runs.find(r => r.job_name === prev)) {
+      select.value = prev;
+    } else if (!currentRun && runs.length > 0) {
+      select.value = runs[0].job_name;
+    }
+    if (select.value !== currentRun) {
+      currentRun = select.value;
+      await refreshTasks();
+    } else if (currentRun) {
+      // Just refresh tasks without changing selection
+      await refreshTasks();
+    }
+    updateSummary();
+  } catch (e) {
+    console.error('Runs refresh failed:', e);
+  }
+}
+
+function updateSummary() {
+  const run = runs.find(r => r.job_name === currentRun);
+  if (!run || !run.summary) return;
+  const s = run.summary;
+  document.getElementById('sPass').textContent = s.pass;
+  document.getElementById('sFail').textContent = s.fail;
+  document.getElementById('sTimeout').textContent = s.timeout;
+  document.getElementById('sError').textContent = s.error;
+  document.getElementById('sRunning').textContent = s.running;
+
+  // Progress bar
+  const total = s.total || 1;
+  const track = document.getElementById('progressTrack');
+  track.innerHTML = '';
+  for (const [cls, count] of [['pass', s.pass], ['fail', s.fail], ['timeout', s.timeout], ['error', s.error], ['running', s.running]]) {
+    if (count > 0) {
+      const seg = document.createElement('div');
+      seg.className = 'progress-seg ' + cls;
+      seg.style.width = (count / total * 100) + '%';
+      track.appendChild(seg);
+    }
+  }
+
+  // Manifest info
+  const m = run.manifest || {};
+  const info = document.getElementById('manifestInfo');
+  info.innerHTML = '';
+  if (m.git_sha) info.innerHTML += `<span>SHA <span class="val">${m.git_sha}${m.git_dirty ? '*' : ''}</span></span>`;
+  if (m.model) info.innerHTML += `<span>Model <span class="val">${m.model.split('/').pop()}</span></span>`;
+  if (m.reps) info.innerHTML += `<span>Reps <span class="val">${m.reps}</span></span>`;
+  if (m.concurrency) info.innerHTML += `<span>N <span class="val">${m.concurrency}</span></span>`;
+  if (m.started_at) info.innerHTML += `<span>Started <span class="val">${m.started_at.replace('T', ' ').replace('Z', '')}</span></span>`;
+}
+
+// === TASKS ===
+async function refreshTasks() {
+  if (!currentRun) return;
+  try {
+    tasks = await api(`/runs/${currentRun}/tasks`);
+    renderTaskGrid();
+    updateSummary();
+  } catch (e) {
+    console.error('Tasks refresh failed:', e);
+  }
+}
+
+function renderTaskGrid() {
+  const grid = document.getElementById('taskGrid');
+  const search = document.getElementById('searchInput').value.toLowerCase();
+  let filtered = tasks;
+
+  if (currentFilter !== 'all') {
+    filtered = filtered.filter(t => t.status === currentFilter);
+  }
+  if (search) {
+    filtered = filtered.filter(t => t.name.toLowerCase().includes(search));
+  }
+
+  // Sort: fails first, then timeouts, then running, then pass
+  const order = { fail: 0, timeout: 1, error: 2, running: 3, pass: 4 };
+  filtered.sort((a, b) => (order[a.status] ?? 5) - (order[b.status] ?? 5) || a.name.localeCompare(b.name));
+
+  if (filtered.length === 0) {
+    grid.innerHTML = '<div class="empty-state">No matching tasks</div>';
+    return;
+  }
+
+  grid.innerHTML = filtered.map(t => `
+    <div class="task-card ${t.status} ${currentTask === t.dir_name ? 'selected' : ''}"
+         data-dir="${t.dir_name}" onclick="selectTask('${t.dir_name}')">
+      <div class="name" title="${t.name}">${t.name}</div>
+      <div class="meta">
+        <span class="status-badge">${t.status}</span>
+        <span>${t.sessions}s</span>
+        <span>${t.api_calls} calls</span>
+        ${t.total_tokens > 0 ? `<span>${(t.total_tokens/1000).toFixed(0)}k tok</span>` : ''}
+      </div>
+    </div>
+  `).join('');
+}
+
+// === TASK DETAIL ===
+async function selectTask(dirName) {
+  if (currentTask === dirName) {
+    // Toggle close
+    closeDetail();
+    return;
+  }
+  currentTask = dirName;
+  renderTaskGrid(); // update selected state
+  document.getElementById('detailPanel').classList.add('open');
+
+  const task = tasks.find(t => t.dir_name === dirName);
+  if (task) {
+    document.getElementById('detailName').textContent = task.name;
+    const badge = document.getElementById('detailStatus');
+    badge.textContent = task.status;
+    badge.className = 'status-badge';
+    const card = document.createElement('div');
+    card.className = `task-card ${task.status}`;
+    badge.classList.add(...Array.from(card.querySelectorAll('.status-badge')).length ? [] :
+      [`status-badge`]);
+    // Apply status color to badge
+    badge.style.cssText = '';
+    const colors = { pass: 'var(--pass)', fail: 'var(--fail)', running: 'var(--running)', timeout: 'var(--timeout)', error: 'var(--error)' };
+    const bgs = { pass: 'var(--pass-dim)', fail: 'var(--fail-dim)', running: 'var(--running-dim)', timeout: 'var(--timeout-dim)', error: 'var(--error-dim)' };
+    badge.style.color = colors[task.status] || 'var(--text)';
+    badge.style.background = bgs[task.status] || 'transparent';
+    badge.style.fontFamily = "'Barlow Condensed', sans-serif";
+    badge.style.fontWeight = '600';
+    badge.style.fontSize = '12px';
+    badge.style.textTransform = 'uppercase';
+    badge.style.letterSpacing = '1px';
+    badge.style.padding = '2px 8px';
+    badge.style.borderRadius = '2px';
+  }
+
+  loadTabContent();
+}
+
+function closeDetail() {
+  currentTask = null;
+  document.getElementById('detailPanel').classList.remove('open');
+  renderTaskGrid();
+}
+
+async function loadTabContent() {
+  if (!currentRun || !currentTask) return;
+  const content = document.getElementById('detailContent');
+  content.innerHTML = '<div style="padding:40px;text-align:center"><div class="loading"></div></div>';
+
+  try {
+    if (currentTab === 'transcript') {
+      const data = await api(`/runs/${currentRun}/tasks/${currentTask}/transcript`);
+      try { renderTranscript(data, content); } catch (re) {
+        content.innerHTML = `<div class="log-output" style="color:var(--fail)">Render error: ${escapeHtml(re.message)}\n\nRaw data: ${escapeHtml(JSON.stringify(data).substring(0, 2000))}</div>`;
+      }
+    } else if (currentTab === 'apilog') {
+      const data = await api(`/runs/${currentRun}/tasks/${currentTask}/apilog`);
+      renderApiLog(data, content);
+    } else if (currentTab === 'verifier') {
+      const data = await api(`/runs/${currentRun}/tasks/${currentTask}/verifier`);
+      content.innerHTML = data.output
+        ? `<div class="log-output">${escapeHtml(data.output)}</div>`
+        : '<div class="empty-state" style="padding:40px">No verifier output</div>';
+    } else if (currentTab === 'agent-log') {
+      const data = await api(`/runs/${currentRun}/tasks/${currentTask}/agent-log`);
+      content.innerHTML = data.output
+        ? `<div class="log-output">${escapeHtml(data.output)}</div>`
+        : '<div class="empty-state" style="padding:40px">No agent log</div>';
+    }
+  } catch (e) {
+    content.innerHTML = `<div class="empty-state" style="padding:40px">Error: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+// === TRANSCRIPT RENDERER ===
+function renderTranscript(data, container) {
+  if (!data.sessions || data.sessions.length === 0) {
+    container.innerHTML = '<div class="empty-state" style="padding:40px">No transcript data</div>';
+    return;
+  }
+
+  let html = '';
+  for (const session of data.sessions) {
+    const hdr = session.header || {};
+    const depth = hdr.depth || 0;
+    const depthLabel = depth > 0 ? ` (depth ${depth})` : ' (main)';
+    const model = hdr.model || '?';
+    const sid = (hdr.session_id || '').slice(0, 8);
+
+    html += `<div class="session-block">`;
+    html += `<div class="session-header" onclick="this.classList.toggle('collapsed');this.nextElementSibling.style.display=this.classList.contains('collapsed')?'none':'block'">`;
+    html += `<span class="arrow">&#9660;</span>`;
+    html += `<span class="depth">${sid}</span>`;
+    html += `<span>${depthLabel}</span>`;
+    html += `<span class="model">${model}</span>`;
+    html += `<span style="margin-left:auto;color:var(--text-muted)">${session.entries.length} turns</span>`;
+    html += `</div>`;
+    html += `<div class="session-entries">`;
+
+    for (const entry of session.entries) {
+      const turn = entry.turn || {};
+      const kind = turn.kind || '?';
+      const seq = entry.seq;
+      const msg = turn.message || {};
+      const usage = turn.usage;
+      const parts = msg.content || [];
+
+      // Determine role class
+      let roleClass = 'role-tool';
+      if (kind === 'USER_INPUT') roleClass = 'role-user';
+      else if (kind === 'ASSISTANT') roleClass = 'role-assistant';
+      else if (kind === 'STEERING') roleClass = 'role-steering';
+      else if (kind === 'CHECKPOINT') roleClass = 'role-checkpoint';
+      else if (kind === 'SUMMARY') roleClass = 'role-summary';
+
+      // Skip steering/checkpoint/summary for cleaner view (show toggle later)
+      if (kind === 'STEERING' || kind === 'CHECKPOINT' || kind === 'SUMMARY') continue;
+
+      html += `<div class="transcript-entry">`;
+      html += `<div class="entry-header">`;
+      html += `<span class="seq">${seq}</span>`;
+      html += `<span class="role-badge ${roleClass}">${kind}</span>`;
+
+      // Show tool name for tool results
+      if (kind === 'TOOL_RESULTS' && parts.length > 0) {
+        const names = parts.filter(p => p.tool_result).map(p => p.tool_result.name || '?').join(', ');
+        html += `<span style="color:var(--text-dim);font-size:11px">${escapeHtml(names)}</span>`;
+      }
+
+      // Usage
+      if (usage && usage.total_tokens) {
+        html += `<span class="usage-info">${usage.input_tokens || 0}in/${usage.output_tokens || 0}out`;
+        if (usage.reasoning_tokens) html += `/${usage.reasoning_tokens}reason`;
+        html += `</span>`;
+      }
+
+      html += `</div>`; // entry-header
+
+      // Content
+      for (const part of parts) {
+        if (part.kind === 'text' && part.text) {
+          const text = part.text;
+          const isLong = text.length > 500;
+          const id = 'ec_' + Math.random().toString(36).slice(2);
+          html += `<div class="entry-content ${isLong ? 'collapsed' : ''}" id="${id}">${escapeHtml(text)}</div>`;
+          if (isLong) {
+            html += `<button class="expand-btn" onclick="toggleExpand('${id}', this)">Show more (${text.length} chars)</button>`;
+          }
+        } else if (part.kind === 'tool_call' && part.tool_call) {
+          const tc = part.tool_call;
+          let args = tc.parsed_arguments || tc.arguments || '';
+          if (typeof args === 'object') {
+            args = JSON.stringify(args, null, 2);
+          } else if (typeof args === 'string') {
+            try { args = JSON.stringify(JSON.parse(args), null, 2); } catch {}
+          } else {
+            args = String(args);
+          }
+          const isLong = args.length > 300;
+          const id = 'ec_' + Math.random().toString(36).slice(2);
+          html += `<div class="entry-content ${isLong ? 'collapsed' : ''}" id="${id}">`;
+          html += `<span class="tool-call-name">${escapeHtml(tc.name || '?')}</span>(`;
+          html += escapeHtml(args);
+          html += `)</div>`;
+          if (isLong) {
+            html += `<button class="expand-btn" onclick="toggleExpand('${id}', this)">Show more</button>`;
+          }
+        } else if (part.kind === 'tool_result' && part.tool_result) {
+          const tr = part.tool_result;
+          const content = typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content, null, 2);
+          const isLong = content.length > 500;
+          const id = 'ec_' + Math.random().toString(36).slice(2);
+          const errClass = tr.is_error ? 'err' : 'ok';
+          html += `<div style="margin-left:32px;margin-bottom:2px">`;
+          html += `<span class="tool-result-status ${errClass}">${tr.is_error ? 'ERROR' : 'OK'}</span> `;
+          html += `<span style="color:var(--text-dim);font-size:11px">${escapeHtml(tr.name || '')}</span>`;
+          html += `</div>`;
+          html += `<div class="entry-content ${isLong ? 'collapsed' : ''}" id="${id}">${escapeHtml(content)}</div>`;
+          if (isLong) {
+            html += `<button class="expand-btn" onclick="toggleExpand('${id}', this)">Show more (${content.length} chars)</button>`;
+          }
+        } else if (part.kind === 'thinking' && part.thinking) {
+          const text = part.thinking.text || '';
+          if (text) {
+            const isLong = text.length > 300;
+            const id = 'ec_' + Math.random().toString(36).slice(2);
+            html += `<div class="entry-content ${isLong ? 'collapsed' : ''}" id="${id}" style="color:var(--text-muted);font-style:italic">[thinking] ${escapeHtml(text)}</div>`;
+            if (isLong) {
+              html += `<button class="expand-btn" onclick="toggleExpand('${id}', this)">Show more</button>`;
+            }
+          }
+        }
+      }
+
+      html += `</div>`; // transcript-entry
+    }
+
+    html += `</div></div>`; // session-entries, session-block
+  }
+
+  container.innerHTML = html;
+}
+
+function toggleExpand(id, btn) {
+  const el = document.getElementById(id);
+  if (el.classList.contains('collapsed')) {
+    el.classList.remove('collapsed');
+    el.style.maxHeight = 'none';
+    btn.textContent = 'Show less';
+  } else {
+    el.classList.add('collapsed');
+    el.style.maxHeight = '';
+    btn.textContent = 'Show more';
+  }
+}
+
+// === API LOG RENDERER ===
+function renderApiLog(entries, container) {
+  if (!entries || entries.length === 0) {
+    container.innerHTML = '<div class="empty-state" style="padding:40px">No API log data</div>';
+    return;
+  }
+
+  let html = '<table class="apilog-table"><thead><tr>';
+  html += '<th>#</th><th>Session</th><th>Round</th><th>Model</th>';
+  html += '<th>Latency</th><th>Finish</th><th>In Tok</th><th>Out Tok</th>';
+  html += '<th>Reason</th><th>Tools</th>';
+  html += '</tr></thead><tbody>';
+
+  entries.forEach((e, i) => {
+    const req = e.request || {};
+    const resp = e.response || {};
+    const usage = resp.usage || {};
+    const sid = (e.session_id || '').slice(0, 8);
+    const finish = resp.finish_reason || e.error || '-';
+    const finishColor = finish === 'stop' || finish === 'tool_calls' ? 'var(--text)' :
+      finish.includes('error') || e.error ? 'var(--fail)' : 'var(--timeout)';
+
+    html += `<tr>`;
+    html += `<td style="color:var(--text-muted)">${i + 1}</td>`;
+    html += `<td style="color:var(--accent)">${sid}</td>`;
+    html += `<td>${e.round || '-'}</td>`;
+    html += `<td style="color:var(--text-dim)">${(req.model || '').split('/').pop()}</td>`;
+    html += `<td>${e.latency_ms ? (e.latency_ms / 1000).toFixed(1) + 's' : '-'}</td>`;
+    html += `<td style="color:${finishColor}">${finish}</td>`;
+    html += `<td>${usage.input_tokens || '-'}</td>`;
+    html += `<td>${usage.output_tokens || '-'}</td>`;
+    html += `<td style="color:var(--text-dim)">${usage.reasoning_tokens || '-'}</td>`;
+    html += `<td>${resp.tool_call_count || 0}</td>`;
+    html += `</tr>`;
+  });
+
+  html += '</tbody></table>';
+  container.innerHTML = html;
+}
+
+// === HARBOR LOG ===
+let harborLogOpen = false;
+async function refreshHarborLog() {
+  if (!harborLogOpen || !currentRun) return;
+  try {
+    const data = await api(`/runs/${currentRun}/log?lines=200`);
+    document.getElementById('harborLogContent').textContent = data.log || 'No log data';
+    // Auto-scroll to bottom
+    const el = document.getElementById('harborLogContent');
+    el.scrollTop = el.scrollHeight;
+  } catch (e) {}
+}
+
+// === UTILS ===
+function escapeHtml(text) {
+  if (text === null || text === undefined) return '';
+  if (typeof text !== 'string') text = String(text);
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return bytes + 'B';
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + 'K';
+  return (bytes / 1048576).toFixed(1) + 'M';
+}
+
+// === REFRESH LOOP ===
+async function refresh() {
+  lastRefresh = Date.now();
+  await Promise.all([refreshHealth(), refreshRuns()]);
+  if (harborLogOpen) refreshHarborLog();
+}
+
+function updateRefreshTimer() {
+  const elapsed = Math.floor((Date.now() - lastRefresh) / 1000);
+  const remaining = Math.max(0, 10 - elapsed);
+  document.getElementById('refreshTimer').textContent = remaining + 's';
+}
+
+// === EVENT LISTENERS ===
+document.getElementById('runSelect').addEventListener('change', (e) => {
+  currentRun = e.target.value;
+  currentTask = null;
+  closeDetail();
+  refreshTasks();
+  updateSummary();
+});
+
+document.getElementById('detailClose').addEventListener('click', closeDetail);
+
+document.querySelectorAll('.detail-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.detail-tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    currentTab = tab.dataset.tab;
+    loadTabContent();
+  });
+});
+
+document.querySelectorAll('.filter-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentFilter = btn.dataset.filter;
+    renderTaskGrid();
+  });
+});
+
+document.getElementById('searchInput').addEventListener('input', renderTaskGrid);
+
+document.getElementById('harborLogToggle').addEventListener('click', () => {
+  harborLogOpen = !harborLogOpen;
+  document.getElementById('harborLogPanel').classList.toggle('open', harborLogOpen);
+  if (harborLogOpen) refreshHarborLog();
+});
+
+document.getElementById('harborLogClose').addEventListener('click', () => {
+  harborLogOpen = false;
+  document.getElementById('harborLogPanel').classList.remove('open');
+});
+
+// Keyboard shortcuts
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    if (harborLogOpen) {
+      harborLogOpen = false;
+      document.getElementById('harborLogPanel').classList.remove('open');
+    } else if (currentTask) {
+      closeDetail();
+    }
+  }
+});
+
+// === INIT ===
+refresh();
+refreshInterval = setInterval(refresh, 10000);
+setInterval(updateRefreshTimer, 1000);
+</script>
+</body>
+</html>
