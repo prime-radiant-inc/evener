@@ -608,9 +608,60 @@ function renderSession(session, depth) {
 
     const timeline = h('div', { className: 'timeline' });
     const rounds = session.trajectory || [];
+    const children = session.children || [];
+
+    // Build lookup: parent_tool_call_id → child
+    const childByToolCallId = {};
+    const unmatchedChildren = [];
+    for (const child of children) {
+        if (child.parent_tool_call_id) {
+            childByToolCallId[child.parent_tool_call_id] = child;
+        } else {
+            unmatchedChildren.push(child);
+        }
+    }
+
+    // For positional fallback: queue of unmatched children to assign to SPAWN rounds
+    let unmatchedIdx = 0;
 
     for (const round of rounds) {
         timeline.appendChild(renderRound(round));
+
+        // After a SPAWN round, inline the child session that was spawned
+        if (round.action === 'SPAWN' && round.tool_calls) {
+            for (const tc of round.tool_calls) {
+                const tcId = tc.id || tc.tool_call_id || '';
+                // Try to match by tool call ID first
+                if (tcId && childByToolCallId[tcId]) {
+                    const child = childByToolCallId[tcId];
+                    delete childByToolCallId[tcId];
+                    timeline.appendChild(renderSession(child, (session.depth || 0) + 1));
+                }
+            }
+            // Positional fallback: if no ID match happened, try next unmatched child
+            if (unmatchedChildren.length > unmatchedIdx) {
+                const matched = round.tool_calls.some(tc => {
+                    const tcId = tc.id || tc.tool_call_id || '';
+                    // Already consumed above — check if it was in the map
+                    return tcId && !childByToolCallId[tcId] && children.some(
+                        c => c.parent_tool_call_id === tcId
+                    );
+                });
+                if (!matched) {
+                    timeline.appendChild(
+                        renderSession(unmatchedChildren[unmatchedIdx++], (session.depth || 0) + 1)
+                    );
+                }
+            }
+        }
+    }
+
+    // Any remaining unmatched children (no SPAWN round found) — append at end
+    for (; unmatchedIdx < unmatchedChildren.length; unmatchedIdx++) {
+        timeline.appendChild(renderSession(unmatchedChildren[unmatchedIdx], (session.depth || 0) + 1));
+    }
+    for (const child of Object.values(childByToolCallId)) {
+        timeline.appendChild(renderSession(child, (session.depth || 0) + 1));
     }
 
     if (depth > 0) {
@@ -618,13 +669,6 @@ function renderSession(session, depth) {
         block.appendChild(wrapper);
     } else {
         block.appendChild(timeline);
-    }
-
-    // Render children
-    if (session.children && session.children.length > 0) {
-        for (const child of session.children) {
-            block.appendChild(renderSession(child, (session.depth || 0) + 1));
-        }
     }
 
     return block;
@@ -698,6 +742,24 @@ function renderRound(round) {
     return el;
 }
 
+function prettyPrintJSON(obj) {
+    // Format JSON for human reading: string values with embedded \n and \t
+    // are rendered with actual newlines/tabs so humans can read them.
+    const raw = JSON.stringify(obj, null, 2);
+    // Match JSON string values (respecting escaped quotes inside)
+    return raw.replace(/"((?:[^"\\]|\\.)*)"/g, (match, content) => {
+        if (!content.includes('\\n') && !content.includes('\\t')) return match;
+        // Unescape the string content for display
+        try {
+            const unescaped = JSON.parse('"' + content + '"');
+            // Use triple-quote style for multi-line values
+            return '"""\n' + unescaped + '\n"""';
+        } catch {
+            return match;
+        }
+    });
+}
+
 function renderToolCall(tc, tr) {
     const block = h('div', { className: 'tool-block' });
 
@@ -706,12 +768,12 @@ function renderToolCall(tc, tr) {
     let argsStr = '';
     if (typeof argsRaw === 'string') {
         try {
-            argsStr = JSON.stringify(JSON.parse(argsRaw), null, 2);
+            argsStr = prettyPrintJSON(JSON.parse(argsRaw));
         } catch {
             argsStr = argsRaw;
         }
     } else if (argsRaw && typeof argsRaw === 'object') {
-        argsStr = JSON.stringify(argsRaw, null, 2);
+        argsStr = prettyPrintJSON(argsRaw);
     }
 
     block.appendChild(h('div', { className: 'tool-header' },

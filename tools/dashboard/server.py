@@ -88,7 +88,9 @@ def get_task(job_name: str, task_name: str, request: Request):
             "children": [
                 {
                     "session_id": child["session_id"],
+                    "parent_tool_call_id": child.get("parent_tool_call_id", ""),
                     "depth": child["depth"],
+                    "model": child.get("model", ""),
                     "trajectory": build_trajectory(child),
                 }
                 for child in root_session.get("children", [])

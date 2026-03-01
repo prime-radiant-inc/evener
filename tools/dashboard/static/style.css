@@ -757,8 +757,10 @@ a.table-link:hover {
 .session-label {
     font-size: 11px;
     color: #8B5CF6;
-    padding: 8px 0 0 72px;
-    font-weight: 500;
+    padding: 8px 24px 4px 72px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
 }
 
 /* --------------------------------------------------------

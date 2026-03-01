@@ -276,6 +276,7 @@ class RunStore:
         return {
             "session_id": header.get("session_id", ""),
             "parent_session_id": header.get("parent_session_id", ""),
+            "parent_tool_call_id": header.get("parent_tool_call_id", ""),
             "model": header.get("model", ""),
             "depth": header.get("depth", 0),
             "profile_id": header.get("profile_id", ""),

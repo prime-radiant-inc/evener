@@ -271,6 +271,34 @@ class TestTranscriptLoading:
         assert len(sess["entries"]) > 0
         assert sess["entries"][0]["kind"] == "entry"
 
+    def test_session_has_parent_tool_call_id(self, harbor_job_dir):
+        """Child transcript header includes parent_tool_call_id."""
+        task_dir = harbor_job_dir / "full-test" / "build-widget__abc123"
+        sessions_dir = task_dir / "agent" / "serf-state" / "sessions"
+        child_entries = [
+            {"kind": "header", "format_version": 1, "session_id": "sess-child",
+             "parent_session_id": "sess-main",
+             "parent_tool_call_id": "call_spawn_42",
+             "created_at": "2026-03-01T12:01:00Z", "model": "gpt-5.3-codex",
+             "profile_id": "openai", "depth": 1},
+        ]
+        child_file = sessions_dir / "sess-child.transcript.jsonl"
+        child_file.write_text(json.dumps(child_entries[0]) + "\n")
+
+        store = RunStore(harbor_job_dir)
+        task = store.get_task("full-test", "build-widget")
+        sessions = store.load_transcripts(task["transcript_files"])
+        child = [s for s in sessions if s["session_id"] == "sess-child"][0]
+        assert child["parent_tool_call_id"] == "call_spawn_42"
+
+    def test_session_missing_parent_tool_call_id_defaults_empty(self, harbor_job_dir):
+        store = RunStore(harbor_job_dir)
+        task = store.get_task("full-test", "build-widget")
+        sessions = store.load_transcripts(task["transcript_files"])
+        # The main session has no parent_tool_call_id in its header
+        main = sessions[0]
+        assert main["parent_tool_call_id"] == ""
+
     def test_load_empty_file_list(self, harbor_job_dir):
         store = RunStore(harbor_job_dir)
         sessions = store.load_transcripts([])
