@@ -263,6 +263,18 @@ Compare transcripts before/after:
 correctly. Do not manually construct harbor commands — the flags are finicky and
 you will waste time on typos.
 
+### Per-run isolation
+
+Every `run_eval.py launch` creates an isolated staging directory on the eval server
+at `~/git/terminal-bench/runs/<job-name>/` containing its own copy of:
+- `serf-linux-amd64` — the binary built from the current commit
+- `serf_agent.py` — the harbor adapter
+- `install-serf.sh.j2` — the container install template
+- `.env` — copied from the base terminal-bench directory
+
+This means concurrent runs never interfere with each other. You can run a focused test
+and a full suite simultaneously without worrying about binary swaps or shared state.
+
 ### Deploy and run a focused eval
 
 ```bash
@@ -337,16 +349,19 @@ python3 tools/generate_report.py /data/serf-evals/runs/<run-id>
 
 ### Custom adapters
 
-To test prompt variants or adapter changes without rebuilding the binary:
+Each run gets its own staging directory, so adapter modifications won't affect other
+runs. To test adapter changes without rebuilding the binary:
 
 ```bash
-# 1. Create adapter variant on the eval server (e.g., serf_agent_mytest.py)
-#    - Copy from serf_agent.py, change class name, modify as needed
-
-# 2. Run with --no-build and custom --adapter
+# --no-build skips cross-compile; the staging dir won't have a binary, so ensure
+# a previous run's binary exists or copy one manually.
 ./tools/run_eval.py launch --job my-test --task configure-git-webserver --reps 1 \
-  --no-build --adapter "serf_agent_mytest:MyTestAgent" --ak enable_reviewer_gate=true
+  --no-build --adapter "serf_agent:SerfAgent" --ak enable_reviewer_gate=true
 ```
+
+For a completely different adapter class, modify `tools/serf_agent.py` locally and
+launch — `run_eval.py` will deploy your modified version to the run's isolated staging
+directory without touching any other run.
 
 ### Targeting a different server
 
@@ -388,9 +403,10 @@ all of this, but if you need to understand the flags:
 
 ### Agent adapter (serf_agent.py)
 
-The serf adapter is at `tools/serf_agent.py` in the repo and deployed to
-`~/git/terminal-bench/serf_agent.py` on the eval server. `run_eval.py launch`
-auto-deploys it. It wraps the serf binary for harbor's agent interface:
+The serf adapter is at `tools/serf_agent.py` in the repo. `run_eval.py launch`
+deploys it to each run's isolated staging directory at
+`~/git/terminal-bench/runs/<job-name>/`. It wraps the serf binary for harbor's
+agent interface:
 
 - Maps harbor agent kwargs to serf CLI flags (e.g., `enable_reviewer_gate` → `--enable-reviewer-gate`)
 - Custom kwargs like `result_tool_name` need explicit support in the adapter — check
