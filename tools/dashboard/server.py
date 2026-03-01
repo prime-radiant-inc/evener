@@ -3,12 +3,17 @@
 Markdown by default. Send Accept: application/json for JSON.
 """
 
+import html as html_mod
+import json
 import os
+from pathlib import Path
+
 from fastapi import FastAPI, Request
-from fastapi.responses import PlainTextResponse, JSONResponse
+from fastapi.responses import PlainTextResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from data import RunStore
+from stats import compute_run_stats, compute_task_stats, compute_task_history
 from trajectory import build_trajectory
 from markdown_render import render_run_list, render_run_detail, render_task_detail
 
@@ -17,6 +22,7 @@ app = FastAPI(title="Serf Eval Dashboard")
 # Configure data dir from env or default.
 _data_dir = os.environ.get("DASHBOARD_DATA_DIR", "/data/serf-evals/runs")
 store = RunStore(_data_dir)
+_cache_dir = os.path.join(_data_dir, ".cache")
 
 
 def _wants_json(request: Request) -> bool:
@@ -56,14 +62,15 @@ def get_run(job_name: str, request: Request):
 
 @app.get("/api/runs/{job_name}/tasks")
 def list_tasks(job_name: str, request: Request):
-    tasks = store.list_tasks(job_name)
-    if tasks is None:
+    run_stats = compute_run_stats(store, job_name, cache_dir=_cache_dir)
+    if run_stats is None:
         if _wants_json(request):
             return JSONResponse({"error": "not found"}, status_code=404)
         return _md_response(f"# Not Found\n\nRun `{job_name}` not found.\n")
     if _wants_json(request):
-        return JSONResponse(tasks)
-    return _md_response(render_run_detail(store.get_run(job_name), tasks))
+        return JSONResponse(run_stats["tasks"])
+    return _md_response(render_run_detail(store.get_run(job_name),
+                                          store.list_tasks(job_name)))
 
 
 @app.get("/api/runs/{job_name}/tasks/{task_name}")
@@ -100,6 +107,14 @@ def get_task(job_name: str, task_name: str, request: Request):
     if _wants_json(request):
         task["trajectory"] = trajectories
         task.pop("transcript_files", None)
+
+        # Merge per-task stats (exclude action_sequence to avoid duplicating
+        # trajectory data already present on the response).
+        task_stats = compute_task_stats(store, job_name, task_name)
+        if task_stats:
+            task.update({k: v for k, v in task_stats.items()
+                         if k not in ("action_sequence",)})
+
         return JSONResponse(task)
 
     main_trajectory = trajectories[0]["trajectory"] if trajectories else []
@@ -111,6 +126,118 @@ def get_task(job_name: str, task_name: str, request: Request):
         trajectory=main_trajectory,
         verifier_output=task.get("test_output", ""),
     ))
+
+
+@app.get("/api/compare")
+def compare_runs(request: Request, a: str = "", b: str = ""):
+    tasks_a = store.list_tasks(a)
+    if tasks_a is None:
+        return JSONResponse({"error": f"run '{a}' not found"}, status_code=404)
+    tasks_b = store.list_tasks(b)
+    if tasks_b is None:
+        return JSONResponse({"error": f"run '{b}' not found"}, status_code=404)
+
+    map_a = {t["task_name"]: t for t in tasks_a}
+    map_b = {t["task_name"]: t for t in tasks_b}
+    all_tasks = sorted(set(map_a) | set(map_b))
+
+    improved = []
+    regressed = []
+    stable_pass = []
+    stable_fail = []
+    only_a = []
+    only_b = []
+
+    for task_name in all_tasks:
+        in_a = task_name in map_a
+        in_b = task_name in map_b
+        if in_a and not in_b:
+            only_a.append({"task": task_name,
+                           "a": "pass" if map_a[task_name]["passed"] else "fail"})
+            continue
+        if in_b and not in_a:
+            only_b.append({"task": task_name,
+                           "b": "pass" if map_b[task_name]["passed"] else "fail"})
+            continue
+
+        a_pass = map_a[task_name]["passed"]
+        b_pass = map_b[task_name]["passed"]
+        entry = {"task": task_name,
+                 "a": "pass" if a_pass else "fail",
+                 "b": "pass" if b_pass else "fail"}
+
+        if not a_pass and b_pass:
+            improved.append(entry)
+        elif a_pass and not b_pass:
+            regressed.append(entry)
+        elif a_pass and b_pass:
+            stable_pass.append(entry)
+        else:
+            stable_fail.append(entry)
+
+    passed_a = sum(1 for t in tasks_a if t["passed"])
+    passed_b = sum(1 for t in tasks_b if t["passed"])
+
+    return JSONResponse({
+        "run_a": {"job_name": a, "passed": passed_a, "total": len(tasks_a)},
+        "run_b": {"job_name": b, "passed": passed_b, "total": len(tasks_b)},
+        "improved": improved,
+        "regressed": regressed,
+        "stable_pass": stable_pass,
+        "stable_fail": stable_fail,
+        "only_a": only_a,
+        "only_b": only_b,
+    })
+
+
+@app.get("/api/tasks/{task_name}/history")
+def task_history(task_name: str):
+    history = compute_task_history(store, task_name)
+    return JSONResponse(history)
+
+
+@app.get("/raw/{file_path:path}")
+def raw_file(file_path: str):
+    data_path = Path(store.data_dir).resolve()
+    requested = (data_path / file_path).resolve()
+
+    # Reject path traversal
+    if not str(requested).startswith(str(data_path) + os.sep) and requested != data_path:
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+
+    if not requested.is_file():
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    try:
+        content = requested.read_text(errors="replace")
+    except OSError:
+        return JSONResponse({"error": "read error"}, status_code=500)
+
+    suffix = requested.suffix.lower()
+    if suffix == ".json":
+        try:
+            parsed = json.loads(content)
+            escaped = html_mod.escape(json.dumps(parsed, indent=2))
+        except (json.JSONDecodeError, ValueError):
+            escaped = html_mod.escape(content)
+        body = f"<pre>{escaped}</pre>"
+    elif suffix == ".jsonl":
+        parts = []
+        for line in content.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                parsed = json.loads(line)
+                escaped = html_mod.escape(json.dumps(parsed, indent=2))
+            except (json.JSONDecodeError, ValueError):
+                escaped = html_mod.escape(line)
+            parts.append(f"<pre>{escaped}</pre>")
+        body = "<hr>".join(parts)
+    else:
+        body = f"<pre>{html_mod.escape(content)}</pre>"
+
+    return HTMLResponse(f"<!DOCTYPE html><html><body>{body}</body></html>")
 
 
 @app.get("/")
@@ -143,7 +270,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.data_dir:
-        import sys
+        _data_dir = args.data_dir
         sys.modules[__name__].store = RunStore(args.data_dir)
+        sys.modules[__name__]._cache_dir = os.path.join(args.data_dir, ".cache")
 
     uvicorn.run(app, host=args.host, port=args.port)

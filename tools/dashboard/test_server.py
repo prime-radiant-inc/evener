@@ -1,18 +1,26 @@
 """Integration tests for API routes."""
 
+import json
 import os
 import pytest
 from fastapi.testclient import TestClient
+
+from data import RunStore
+from conftest import _make_task, _passing_transcript
+
+
+def _make_client(harbor_job_dir):
+    """Create a TestClient with a store pointed at the test fixture."""
+    import server as srv
+    srv.store = RunStore(harbor_job_dir)
+    srv._cache_dir = str(harbor_job_dir / ".cache")
+    return TestClient(srv.app)
 
 
 @pytest.fixture
 def client(harbor_job_dir):
     """Create a test client pointing at the fixture data."""
-    os.environ["DASHBOARD_DATA_DIR"] = str(harbor_job_dir)
-    import importlib
-    import server as srv
-    importlib.reload(srv)
-    return TestClient(srv.app)
+    return _make_client(harbor_job_dir)
 
 
 class TestContentNegotiation:
@@ -85,3 +93,155 @@ class TestTaskEndpoints:
         resp = client.get("/api/runs/full-test/tasks/nope",
                           headers={"Accept": "application/json"})
         assert resp.status_code == 404
+
+
+class TestStatsEnrichedTasks:
+    """Tests for stats-enriched /api/runs/{job}/tasks endpoint."""
+
+    def test_tasks_endpoint_has_stats(self, harbor_job_dir):
+        client = _make_client(harbor_job_dir)
+        resp = client.get("/api/runs/full-test/tasks",
+                          headers={"Accept": "application/json"})
+        assert resp.status_code == 200
+        tasks = resp.json()
+        assert len(tasks) == 2
+        assert "total_rounds" in tasks[0]
+
+    def test_tasks_endpoint_not_found(self, harbor_job_dir):
+        client = _make_client(harbor_job_dir)
+        resp = client.get("/api/runs/nonexistent/tasks",
+                          headers={"Accept": "application/json"})
+        assert resp.status_code == 404
+
+    def test_task_detail_has_stats(self, harbor_job_dir):
+        client = _make_client(harbor_job_dir)
+        resp = client.get("/api/runs/full-test/tasks/build-widget",
+                          headers={"Accept": "application/json"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "total_rounds" in data
+        assert "total_tokens_in" in data
+        # action_sequence should NOT be duplicated into task detail
+        assert "action_sequence" not in data
+
+
+class TestCompareEndpoint:
+    """Tests for GET /api/compare?a={job_a}&b={job_b}."""
+
+    def test_compare_endpoint(self, harbor_job_dir):
+        # Create a second run with one task that fails
+        job2 = harbor_job_dir / "second-run"
+        t = job2 / "build-widget__xyz999"
+        _make_task(t, reward=0.0, transcript_entries=_passing_transcript(),
+                   agent_stdout="[submit_result] submitted\n")
+
+        client = _make_client(harbor_job_dir)
+        resp = client.get("/api/compare?a=full-test&b=second-run",
+                          headers={"Accept": "application/json"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "improved" in data
+        assert "regressed" in data
+        assert "stable_pass" in data
+        assert "stable_fail" in data
+        assert "only_a" in data
+        assert "only_b" in data
+        assert "run_a" in data
+        assert "run_b" in data
+        assert data["run_a"]["job_name"] == "full-test"
+        assert data["run_b"]["job_name"] == "second-run"
+
+    def test_compare_missing_run_a(self, harbor_job_dir):
+        client = _make_client(harbor_job_dir)
+        resp = client.get("/api/compare?a=nonexistent&b=full-test",
+                          headers={"Accept": "application/json"})
+        assert resp.status_code == 404
+
+    def test_compare_missing_run_b(self, harbor_job_dir):
+        client = _make_client(harbor_job_dir)
+        resp = client.get("/api/compare?a=full-test&b=nonexistent",
+                          headers={"Accept": "application/json"})
+        assert resp.status_code == 404
+
+
+class TestTaskHistoryEndpoint:
+    """Tests for GET /api/tasks/{task_name}/history."""
+
+    def test_task_history_endpoint(self, harbor_job_dir):
+        client = _make_client(harbor_job_dir)
+        resp = client.get("/api/tasks/build-widget/history",
+                          headers={"Accept": "application/json"})
+        assert resp.status_code == 200
+        history = resp.json()
+        assert len(history) >= 1
+        assert history[0]["job_name"] == "full-test"
+
+    def test_task_history_not_found(self, harbor_job_dir):
+        client = _make_client(harbor_job_dir)
+        resp = client.get("/api/tasks/nonexistent-task/history",
+                          headers={"Accept": "application/json"})
+        assert resp.status_code == 200
+        history = resp.json()
+        assert history == []
+
+
+class TestRawFileEndpoint:
+    """Tests for GET /raw/{file_path:path}."""
+
+    def test_raw_json_endpoint(self, harbor_job_dir):
+        client = _make_client(harbor_job_dir)
+        resp = client.get("/raw/full-test/build-widget__abc123/result.json")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+        # Should contain pretty-printed JSON in a <pre> block
+        assert "<pre>" in resp.text
+
+    def test_raw_jsonl_endpoint(self, harbor_job_dir):
+        client = _make_client(harbor_job_dir)
+        resp = client.get(
+            "/raw/full-test/build-widget__abc123/agent/serf-state/sessions"
+            "/sess-main.transcript.jsonl"
+        )
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+        # JSONL renders each line separated by <hr>
+        assert "<hr>" in resp.text
+
+    def test_raw_plain_file(self, harbor_job_dir):
+        client = _make_client(harbor_job_dir)
+        resp = client.get(
+            "/raw/full-test/build-widget__abc123/agent/command-0/stdout.txt"
+        )
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+        assert "<pre>" in resp.text
+
+    def test_raw_blocks_traversal(self, harbor_job_dir):
+        """Path traversal with plain ../ is blocked by Starlette (404).
+        URL-encoded %2e%2e bypasses Starlette but our handler catches it (403)."""
+        client = _make_client(harbor_job_dir)
+        # Starlette normalizes plain ../ so it never reaches the handler
+        resp = client.get("/raw/../../etc/passwd")
+        assert resp.status_code in (403, 404)
+        # URL-encoded dots bypass Starlette but our check catches them
+        resp = client.get("/raw/%2e%2e/%2e%2e/etc/passwd")
+        assert resp.status_code == 403
+
+    def test_raw_not_found(self, harbor_job_dir):
+        client = _make_client(harbor_job_dir)
+        resp = client.get("/raw/full-test/nonexistent.json")
+        assert resp.status_code == 404
+
+    def test_raw_escapes_html(self, harbor_job_dir):
+        """Raw endpoint must escape HTML to prevent XSS."""
+        # Create a file with HTML content
+        xss_dir = harbor_job_dir / "xss-test__abc"
+        xss_dir.mkdir(parents=True)
+        (xss_dir / "evil.txt").write_text("<script>alert('xss')</script>")
+
+        client = _make_client(harbor_job_dir)
+        resp = client.get("/raw/xss-test__abc/evil.txt")
+        assert resp.status_code == 200
+        # The <script> tag should be escaped
+        assert "<script>" not in resp.text
+        assert "&lt;script&gt;" in resp.text
