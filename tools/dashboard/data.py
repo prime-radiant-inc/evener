@@ -1,1 +1,284 @@
-"""Data layer — discover runs and read task results from disk."""
+"""Data layer -- discover runs and read task results from disk."""
+
+import json
+from pathlib import Path
+
+
+class RunStore:
+    """Read-only access to harbor job data on disk.
+
+    Expected layout under data_dir:
+        job_name/task-name__hash/verifier/reward.txt
+        job_name/task-name__hash/agent/serf-state/sessions/*.jsonl
+        job_name/task-name__hash/agent/command-0/stdout.txt
+        job_name/task-name__hash/result.json
+    """
+
+    def __init__(self, data_dir):
+        self.data_dir = Path(data_dir)
+
+    # ------------------------------------------------------------------
+    # Run discovery
+    # ------------------------------------------------------------------
+
+    def list_runs(self):
+        """Return a list of run summary dicts, one per discovered job."""
+        runs = []
+        if not self.data_dir.is_dir():
+            return runs
+        for job_dir in sorted(self.data_dir.iterdir()):
+            if not job_dir.is_dir():
+                continue
+            task_dirs = self._find_task_dirs(job_dir)
+            if not task_dirs:
+                continue
+            tasks = [self._read_task_summary(td) for td in task_dirs]
+            passed = sum(1 for t in tasks if t["passed"])
+            runs.append({
+                "job_name": job_dir.name,
+                "total_tasks": len(tasks),
+                "passed": passed,
+            })
+        return runs
+
+    def get_run(self, job_name):
+        """Return summary dict for a single job, or None."""
+        job_dir = self.data_dir / job_name
+        if not job_dir.is_dir():
+            return None
+        task_dirs = self._find_task_dirs(job_dir)
+        if not task_dirs:
+            return None
+        tasks = [self._read_task_summary(td) for td in task_dirs]
+        passed = sum(1 for t in tasks if t["passed"])
+        return {
+            "job_name": job_name,
+            "total_tasks": len(tasks),
+            "passed": passed,
+        }
+
+    # ------------------------------------------------------------------
+    # Task listing
+    # ------------------------------------------------------------------
+
+    def list_tasks(self, job_name):
+        """Return list of task summary dicts for a job, or None if missing."""
+        job_dir = self.data_dir / job_name
+        if not job_dir.is_dir():
+            return None
+        task_dirs = self._find_task_dirs(job_dir)
+        return [self._read_task_summary(td) for td in task_dirs]
+
+    def get_task(self, job_name, task_name):
+        """Return detailed task dict, or None if not found."""
+        job_dir = self.data_dir / job_name
+        if not job_dir.is_dir():
+            return None
+        task_dirs = self._find_task_dirs(job_dir)
+        for td in task_dirs:
+            if self._task_name_from_dir(td) == task_name:
+                return self._read_task_detail(td)
+        return None
+
+    # ------------------------------------------------------------------
+    # Transcript loading
+    # ------------------------------------------------------------------
+
+    def load_transcripts(self, transcript_files):
+        """Parse JSONL transcript files into session dicts.
+
+        Each session dict has header fields (session_id, parent_session_id,
+        model, depth, etc.) plus an 'entries' list of entry dicts.
+        """
+        sessions = []
+        for path in transcript_files:
+            path = Path(path)
+            if not path.is_file():
+                continue
+            session = self._parse_transcript(path)
+            if session is not None:
+                sessions.append(session)
+        return sessions
+
+    def build_session_tree(self, sessions):
+        """Organize flat session list into a tree using parent_session_id.
+
+        Returns a list of root session dicts, each with a 'children' list.
+        """
+        by_id = {}
+        for s in sessions:
+            node = dict(s)
+            node["children"] = []
+            by_id[s["session_id"]] = node
+
+        roots = []
+        for node in by_id.values():
+            parent_id = node.get("parent_session_id")
+            if parent_id and parent_id in by_id:
+                by_id[parent_id]["children"].append(node)
+            else:
+                roots.append(node)
+        return roots
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _find_task_dirs(self, inner_dir):
+        """Return sorted list of task__hash directories."""
+        dirs = []
+        for d in inner_dir.iterdir():
+            if d.is_dir() and "__" in d.name:
+                dirs.append(d)
+        return sorted(dirs, key=lambda d: d.name)
+
+    def _task_name_from_dir(self, task_dir):
+        """Extract task name from 'task-name__hash' directory name."""
+        name = task_dir.name
+        idx = name.rfind("__")
+        if idx > 0:
+            return name[:idx]
+        return name
+
+    def _read_reward(self, task_dir):
+        """Read reward from verifier/reward.txt, or None."""
+        reward_file = task_dir / "verifier" / "reward.txt"
+        if not reward_file.is_file():
+            return None
+        try:
+            return float(reward_file.read_text().strip())
+        except (ValueError, OSError):
+            return None
+
+    def _read_agent_stdout(self, task_dir):
+        """Read agent stdout, or empty string."""
+        stdout_file = task_dir / "agent" / "command-0" / "stdout.txt"
+        if not stdout_file.is_file():
+            return ""
+        try:
+            return stdout_file.read_text()
+        except OSError:
+            return ""
+
+    def _read_result_json(self, task_dir):
+        """Read and parse result.json, or empty dict."""
+        result_file = task_dir / "result.json"
+        if not result_file.is_file():
+            return {}
+        try:
+            return json.loads(result_file.read_text())
+        except (json.JSONDecodeError, OSError):
+            return {}
+
+    def _read_test_output(self, task_dir):
+        """Read verifier test output, or empty string."""
+        test_file = task_dir / "verifier" / "test-stdout.txt"
+        if not test_file.is_file():
+            return ""
+        try:
+            return test_file.read_text()
+        except OSError:
+            return ""
+
+    def _find_transcript_files(self, task_dir):
+        """Find all transcript JSONL files for a task."""
+        sessions_dir = task_dir / "agent" / "serf-state" / "sessions"
+        if not sessions_dir.is_dir():
+            return []
+        return sorted(
+            str(f) for f in sessions_dir.iterdir()
+            if f.is_file() and f.suffix == ".jsonl"
+        )
+
+    def _classify_failure(self, reward, task_dir):
+        """Classify failure category for a failing task."""
+        if reward is None or reward >= 1.0:
+            return None
+
+        result = self._read_result_json(task_dir)
+        exc_info = result.get("exception_info", {})
+        if exc_info and exc_info.get("exception_type") == "AgentTimeoutError":
+            return "timeout"
+
+        stdout = self._read_agent_stdout(task_dir)
+        if "[submit_result]" in stdout or "[communicate]" in stdout:
+            return "wrong_answer"
+        if "[error]" in stdout:
+            return "api_error"
+
+        return "no_submit"
+
+    def _read_task_summary(self, task_dir):
+        """Build a summary dict for a task directory."""
+        reward = self._read_reward(task_dir)
+        transcript_files = self._find_transcript_files(task_dir)
+        return {
+            "task_name": self._task_name_from_dir(task_dir),
+            "reward": reward,
+            "passed": reward is not None and reward >= 1.0,
+            "failure_category": self._classify_failure(reward, task_dir),
+            "session_count": len(transcript_files),
+        }
+
+    def _read_task_detail(self, task_dir):
+        """Build a detailed dict for a task directory."""
+        summary = self._read_task_summary(task_dir)
+        result = self._read_result_json(task_dir)
+        model = result.get("config", {}).get("model", "")
+        transcript_files = self._find_transcript_files(task_dir)
+
+        # If model not in result.json, try to get from first transcript header
+        if not model and transcript_files:
+            sessions = self.load_transcripts(transcript_files[:1])
+            if sessions:
+                model = sessions[0].get("model", "")
+
+        summary.update({
+            "test_output": self._read_test_output(task_dir),
+            "model": model,
+            "transcript_files": transcript_files,
+            "agent_stdout": self._read_agent_stdout(task_dir),
+        })
+        return summary
+
+    def _parse_transcript(self, path):
+        """Parse a single JSONL transcript file into a session dict."""
+        try:
+            lines = Path(path).read_text().splitlines()
+        except OSError:
+            return None
+
+        if not lines:
+            return None
+
+        # First line is the header
+        try:
+            header = json.loads(lines[0])
+        except json.JSONDecodeError:
+            return None
+
+        if header.get("kind") != "header":
+            return None
+
+        # Parse entries
+        entries = []
+        for line in lines[1:]:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+                if entry.get("kind") == "entry":
+                    entries.append(entry)
+            except json.JSONDecodeError:
+                continue
+
+        return {
+            "session_id": header.get("session_id", ""),
+            "parent_session_id": header.get("parent_session_id", ""),
+            "model": header.get("model", ""),
+            "depth": header.get("depth", 0),
+            "profile_id": header.get("profile_id", ""),
+            "created_at": header.get("created_at", ""),
+            "entries": entries,
+        }
