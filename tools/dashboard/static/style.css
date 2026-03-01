@@ -905,6 +905,21 @@ td.numeric {
 }
 
 /* --------------------------------------------------------
+   History link (task detail → task history)
+   -------------------------------------------------------- */
+.history-link {
+    font-size: 13px;
+    color: #6B6B6B;
+    text-decoration: none;
+    margin-left: 8px;
+}
+
+.history-link:hover {
+    color: #1A1A1A;
+    text-decoration: underline;
+}
+
+/* --------------------------------------------------------
    Responsive
    -------------------------------------------------------- */
 @media (max-width: 768px) {

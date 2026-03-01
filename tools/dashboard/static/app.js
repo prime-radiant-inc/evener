@@ -19,7 +19,9 @@ function route() {
     const app = document.getElementById('app');
 
     let m;
-    if ((m = hash.match(/^#\/runs\/([^/]+)\/tasks\/([^/]+)$/))) {
+    if ((m = hash.match(/^#\/tasks\/([^/]+)\/history$/))) {
+        renderTaskHistory(app, decodeURIComponent(m[1]));
+    } else if ((m = hash.match(/^#\/runs\/([^/]+)\/tasks\/([^/]+)$/))) {
         renderTaskDetail(app, decodeURIComponent(m[1]), decodeURIComponent(m[2]));
     } else if ((m = hash.match(/^#\/runs\/([^/]+)$/))) {
         renderRunDetail(app, decodeURIComponent(m[1]));
@@ -445,6 +447,82 @@ function renderCompareResult(container, data) {
 }
 
 // ---------------------------------------------------------------------------
+// Task history page (one task across all runs)
+// ---------------------------------------------------------------------------
+
+async function renderTaskHistory(container, taskName) {
+    setBreadcrumb([
+        { label: 'Dashboard', href: '#/' },
+        { label: `${taskName} History` }
+    ]);
+    container.innerHTML = '<div class="loading">Loading history...</div>';
+
+    try {
+        const history = await fetchJSON(`/api/tasks/${encodeURIComponent(taskName)}/history`);
+
+        const header = h('div', { className: 'page-header' },
+            h('h1', null, `${taskName}`),
+            h('div', { className: 'subtitle' }, `History across ${history.length} run${history.length !== 1 ? 's' : ''}`)
+        );
+
+        if (!history.length) {
+            container.innerHTML = '';
+            container.appendChild(header);
+            container.appendChild(h('div', { className: 'empty-state' }, 'No history found for this task.'));
+            return;
+        }
+
+        const thead = h('thead', null,
+            h('tr', null,
+                h('th', null, 'Run'),
+                h('th', null, 'Result'),
+                h('th', null, 'Category'),
+                h('th', null, 'Rounds'),
+                h('th', null, 'Wasted'),
+                h('th', null, 'Tokens'),
+                h('th', null, 'Wall Time')
+            )
+        );
+
+        const tbody = h('tbody');
+        for (const entry of history) {
+            const dotClass = entry.passed ? 'pass' : failureDotClass(entry.failure_category);
+            const row = h('tr', null,
+                h('td', null,
+                    h('a', {
+                        className: 'table-link',
+                        href: `#/runs/${encodeURIComponent(entry.job_name)}/tasks/${encodeURIComponent(taskName)}`
+                    }, entry.job_name)
+                ),
+                h('td', null,
+                    h('span', { className: 'status-text' },
+                        h('span', { className: `status-dot ${dotClass}` }),
+                        entry.passed ? 'Pass' : 'Fail'
+                    )
+                ),
+                h('td', null, failureCategoryLabel(entry.failure_category)),
+                h('td', { className: 'numeric' }, String(entry.total_rounds || 0)),
+                h('td', { className: 'numeric' }, String(entry.wasted_rounds || 0)),
+                h('td', { className: 'numeric' }, formatTaskTokens(entry.total_tokens_in, entry.total_tokens_out)),
+                h('td', { className: 'numeric' }, formatWallTime(entry.wall_time_sec))
+            );
+            tbody.appendChild(row);
+        }
+
+        const table = h('table', null, thead, tbody);
+        const card = h('div', { className: 'card' },
+            h('div', { className: 'card-body table-wrap' }, table)
+        );
+
+        container.innerHTML = '';
+        container.appendChild(header);
+        container.appendChild(card);
+    } catch (err) {
+        container.innerHTML = `<div class="error-msg">Failed to load history: ${escapeHtml(err.message)}</div>`;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Run detail page
 // ---------------------------------------------------------------------------
 
@@ -729,7 +807,11 @@ async function renderTaskDetail(container, jobName, taskName) {
                 task.failure_category ? ` \u00b7 ${failureCategoryLabel(task.failure_category)}` : '',
                 rawFiles.result ? ' ' : null,
                 rawFiles.result ? rawLink(`/raw/${rawFiles.result}`) : null,
-                rawFiles.config ? rawLink(`/raw/${rawFiles.config}`) : null
+                rawFiles.config ? rawLink(`/raw/${rawFiles.config}`) : null,
+                h('a', {
+                    href: `#/tasks/${encodeURIComponent(taskName)}/history`,
+                    className: 'history-link'
+                }, 'View history across runs')
             )
         );
 
