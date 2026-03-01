@@ -77,24 +77,15 @@ function h(tag, attrs, ...children) {
         if (child == null) continue;
         if (typeof child === 'string' || typeof child === 'number') {
             el.appendChild(document.createTextNode(String(child)));
+        } else if (Array.isArray(child)) {
+            for (const c of child) {
+                if (c != null) el.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+            }
         } else {
             el.appendChild(child);
         }
     }
     return el;
-}
-
-function pct(n, d) {
-    if (d === 0) return '0%';
-    return Math.round((n / d) * 100) + '%';
-}
-
-function formatTokens(usage) {
-    if (!usage) return '';
-    const inp = usage.input_tokens || 0;
-    const out = usage.output_tokens || 0;
-    if (inp === 0 && out === 0) return '';
-    return `${(inp / 1000).toFixed(1)}k in / ${(out / 1000).toFixed(1)}k out`;
 }
 
 function escapeHtml(str) {
@@ -119,6 +110,63 @@ function failureDotClass(cat) {
         case 'no_submit': return 'no-submit';
         default: return 'fail';
     }
+}
+
+function formatTokens(usage) {
+    if (!usage) return '';
+    const inp = usage.input_tokens || 0;
+    const out = usage.output_tokens || 0;
+    if (inp === 0 && out === 0) return '';
+    return `${(inp / 1000).toFixed(1)}k in / ${(out / 1000).toFixed(1)}k out`;
+}
+
+function truncate(str, maxLen) {
+    if (!str) return '';
+    if (str.length <= maxLen) return str;
+    return str.slice(0, maxLen) + '...';
+}
+
+// Extract a useful one-liner from tool call arguments
+function toolCallOneLiner(tc) {
+    const name = tc.name || 'tool';
+    const args = parseArgs(tc);
+
+    // Command execution: show the command
+    for (const key of ['command', 'cmd', 'script']) {
+        if (args[key]) return `${name}: ${truncate(args[key], 80)}`;
+    }
+    // File paths
+    for (const key of ['path', 'file_path', 'file', 'directory']) {
+        if (args[key]) return `${name}: ${args[key]}`;
+    }
+    // Search patterns
+    if (args.pattern) {
+        const path = args.path || '';
+        return `${name}: ${args.pattern}` + (path ? ` in ${path}` : '');
+    }
+    // Spawn
+    if (args.task) return `${name}: ${truncate(args.task, 60)}`;
+    if (args.agent) return `${name}: ${args.agent}`;
+    // Submit
+    if (args.result != null) return `${name}("${truncate(String(args.result), 60)}")`;
+    // Review
+    if (args.reason) return `${name}: ${truncate(args.reason, 60)}`;
+    if (args.message) return `${name}: ${truncate(args.message, 60)}`;
+    // Patch
+    if (args.patch) {
+        const match = args.patch.match(/\+\+\+ b\/(.+)/);
+        if (match) return `${name}: ${match[1]}`;
+    }
+    // Fallback
+    return name;
+}
+
+function parseArgs(tc) {
+    const raw = tc.arguments;
+    if (typeof raw === 'string') {
+        try { return JSON.parse(raw); } catch { return {}; }
+    }
+    return (raw && typeof raw === 'object') ? raw : {};
 }
 
 // ---------------------------------------------------------------------------
@@ -170,7 +218,7 @@ async function renderDashboard(container) {
                     )
                 ),
                 h('td', null,
-                    h('div', { className: 'pass-bar', style: `width:120px` },
+                    h('div', { className: 'pass-bar', style: 'width:120px' },
                         h('div', { className: 'pass-fill',
                             style: `width:${run.total_tasks > 0 ? (run.passed / run.total_tasks) * 100 : 0}%` })
                     )
@@ -279,7 +327,7 @@ async function renderRunDetail(container, jobName) {
         const filterBar = h('div', { className: 'filter-bar' });
 
         // Sorting state
-        let sortCol = 'name'; // 'name' or 'result'
+        let sortCol = 'name';
         let sortAsc = true;
 
         function matchesFilter(task) {
@@ -299,7 +347,6 @@ async function renderRunDetail(container, jobName) {
                 if (sortCol === 'name') {
                     cmp = a.task_name.localeCompare(b.task_name);
                 } else {
-                    // Sort by result: pass first, then by category
                     cmp = (b.passed ? 1 : 0) - (a.passed ? 1 : 0);
                     if (cmp === 0) {
                         cmp = (a.failure_category || '').localeCompare(b.failure_category || '');
@@ -330,7 +377,7 @@ async function renderRunDetail(container, jobName) {
                     h('th', { className: resultThClass, onClick: () => { toggleSort('result'); } },
                         'Result', h('span', { className: 'sort-arrow' }, resultArrow)),
                     h('th', null, 'Category'),
-                    h('th', null, 'Sessions')
+                    h('th', null, 'Transcripts')
                 )
             );
 
@@ -423,86 +470,122 @@ async function renderTaskDetail(container, jobName, taskName) {
             `/api/runs/${encodeURIComponent(jobName)}/tasks/${encodeURIComponent(taskName)}`
         );
 
+        // Header with result badge
+        const resultBadge = h('span', {
+            className: task.passed ? 'result-badge pass' : 'result-badge fail'
+        }, task.passed ? 'PASS' : 'FAIL');
+
         const header = h('div', { className: 'page-header' },
-            h('h1', null, taskName),
-            h('div', { className: 'subtitle' }, jobName)
+            h('h1', null, taskName, resultBadge),
+            h('div', { className: 'subtitle' },
+                jobName,
+                task.model ? ` \u00b7 ${task.model}` : '',
+                task.failure_category ? ` \u00b7 ${failureCategoryLabel(task.failure_category)}` : ''
+            )
         );
 
-        // Left: trajectory
-        const trajectoryCol = h('div', { className: 'trajectory' });
+        // ---------------------------------------------------------------
+        // Verifier output — full width, prominent, FIRST
+        // ---------------------------------------------------------------
+        let verifierSection = null;
+        if (task.test_output) {
+            verifierSection = h('div', { className: 'card verifier-card' },
+                h('div', { className: 'card-header' },
+                    h('span', { className: 'card-title' }, 'Verifier Output'),
+                    h('button', {
+                        className: 'toggle-btn',
+                        onClick: (e) => {
+                            const pre = e.target.closest('.card').querySelector('.verifier-output');
+                            pre.classList.toggle('collapsed');
+                            e.target.textContent = pre.classList.contains('collapsed') ? 'Expand' : 'Collapse';
+                        }
+                    }, 'Collapse')
+                ),
+                h('pre', { className: 'verifier-output' }, task.test_output)
+            );
+        }
+
+        // ---------------------------------------------------------------
+        // Agent stdout (if available)
+        // ---------------------------------------------------------------
+        let stdoutSection = null;
+        if (task.agent_stdout && task.agent_stdout.trim()) {
+            stdoutSection = h('div', { className: 'card' },
+                h('div', { className: 'card-header' },
+                    h('span', { className: 'card-title' }, 'Agent Stdout'),
+                    h('button', {
+                        className: 'toggle-btn',
+                        onClick: (e) => {
+                            const pre = e.target.closest('.card').querySelector('.stdout-output');
+                            pre.classList.toggle('collapsed');
+                            e.target.textContent = pre.classList.contains('collapsed') ? 'Expand' : 'Collapse';
+                        }
+                    }, 'Expand')
+                ),
+                h('pre', { className: 'stdout-output collapsed' }, task.agent_stdout)
+            );
+        }
+
+        // ---------------------------------------------------------------
+        // Trajectory — full width
+        // ---------------------------------------------------------------
+        const trajectorySection = h('div', { className: 'card' },
+            h('div', { className: 'card-header' },
+                h('span', { className: 'card-title' }, 'Trajectory'),
+                h('div', { className: 'trajectory-controls' },
+                    h('button', {
+                        className: 'toggle-btn',
+                        onClick: () => {
+                            const rounds = trajectorySection.querySelectorAll('.timeline-round');
+                            const anyExpanded = Array.from(rounds).some(r => r.classList.contains('expanded'));
+                            rounds.forEach(r => {
+                                if (anyExpanded) r.classList.remove('expanded');
+                                else r.classList.add('expanded');
+                            });
+                        }
+                    }, 'Toggle All')
+                )
+            )
+        );
+
+        const trajectoryBody = h('div', { className: 'card-body-flush' });
+
         if (task.trajectory && task.trajectory.length > 0) {
+            // Count rounds for summary
+            let totalRounds = 0;
+            let errorRounds = 0;
             for (const session of task.trajectory) {
-                trajectoryCol.appendChild(renderSession(session, 0));
+                const traj = session.trajectory || [];
+                for (const r of traj) {
+                    totalRounds++;
+                    if (r.action === 'ERROR') errorRounds++;
+                }
+            }
+
+            const roundInfo = h('div', { className: 'trajectory-summary' },
+                `${totalRounds} rounds`,
+                errorRounds > 0 ? ` (${errorRounds} empty)` : '',
+                task.trajectory.length > 1 ? ` across ${task.trajectory.length} transcript files` : ''
+            );
+            trajectoryBody.appendChild(roundInfo);
+
+            for (const session of task.trajectory) {
+                trajectoryBody.appendChild(renderSession(session, 0));
             }
         } else {
-            trajectoryCol.appendChild(
+            trajectoryBody.appendChild(
                 h('div', { className: 'empty-state' }, 'No trajectory data.')
             );
         }
 
-        // Right: context panel
-        const contextPanel = h('div', { className: 'context-panel' });
+        trajectorySection.appendChild(trajectoryBody);
 
-        // Result card
-        const resultCard = h('div', { className: 'card' });
-        const resultSection = h('div', { className: 'context-section' },
-            h('div', { className: 'context-label' }, 'Result'),
-            h('div', {
-                className: task.passed ? 'context-value result-pass' : 'context-value result-fail'
-            }, task.passed ? 'PASS' : 'FAIL')
-        );
-        resultCard.appendChild(resultSection);
-
-        if (task.failure_category) {
-            resultCard.appendChild(h('div', { className: 'context-section' },
-                h('div', { className: 'context-label' }, 'Failure Category'),
-                h('div', { className: 'context-value' }, failureCategoryLabel(task.failure_category))
-            ));
-        }
-
-        if (task.model) {
-            resultCard.appendChild(h('div', { className: 'context-section' },
-                h('div', { className: 'context-label' }, 'Model'),
-                h('div', { className: 'context-value' }, task.model)
-            ));
-        }
-
-        if (task.reward != null) {
-            resultCard.appendChild(h('div', { className: 'context-section' },
-                h('div', { className: 'context-label' }, 'Reward'),
-                h('div', { className: 'context-value' }, String(task.reward))
-            ));
-        }
-
-        if (task.session_count != null) {
-            resultCard.appendChild(h('div', { className: 'context-section' },
-                h('div', { className: 'context-label' }, 'Sessions'),
-                h('div', { className: 'context-value' }, String(task.session_count))
-            ));
-        }
-
-        contextPanel.appendChild(resultCard);
-
-        // Test output card
-        if (task.test_output) {
-            const testCard = h('div', { className: 'card' },
-                h('div', { className: 'context-section' },
-                    h('div', { className: 'context-label' }, 'Verifier Output'),
-                    h('pre', { className: 'test-output' }, task.test_output)
-                )
-            );
-            contextPanel.appendChild(testCard);
-        }
-
-        // Layout
-        const layout = h('div', { className: 'task-layout' },
-            trajectoryCol,
-            contextPanel
-        );
-
+        // Assemble page
         container.innerHTML = '';
         container.appendChild(header);
-        container.appendChild(layout);
+        if (verifierSection) container.appendChild(verifierSection);
+        if (stdoutSection) container.appendChild(stdoutSection);
+        container.appendChild(trajectorySection);
     } catch (err) {
         container.innerHTML = `<div class="error-msg">Failed to load task: ${escapeHtml(err.message)}</div>`;
     }
@@ -517,9 +600,10 @@ function renderSession(session, depth) {
 
     // Session label for child sessions
     if (depth > 0) {
-        block.appendChild(h('div', { className: 'session-label' },
-            `Session: ${session.session_id || 'child'} (depth ${session.depth || depth})`
-        ));
+        const label = session.model
+            ? `Subagent (${session.model}, depth ${session.depth || depth})`
+            : `Subagent (depth ${session.depth || depth})`;
+        block.appendChild(h('div', { className: 'session-label' }, label));
     }
 
     const timeline = h('div', { className: 'timeline' });
@@ -536,7 +620,7 @@ function renderSession(session, depth) {
         block.appendChild(timeline);
     }
 
-    // Render children inline after their parent's spawn round
+    // Render children
     if (session.children && session.children.length > 0) {
         for (const child of session.children) {
             block.appendChild(renderSession(child, (session.depth || 0) + 1));
@@ -549,7 +633,6 @@ function renderSession(session, depth) {
 function renderRound(round) {
     const action = round.action || 'PLAN';
     const roundNum = round.round || 0;
-    const summary = round.summary || '';
     const tokens = formatTokens(round.usage);
 
     const el = h('div', { className: 'timeline-round' });
@@ -557,15 +640,28 @@ function renderRound(round) {
     // Dot
     el.appendChild(h('div', { className: `timeline-dot ${action}` }));
 
-    // Header row
+    // Build rich single-line content
     const headerItems = [
         h('span', { className: 'round-num' }, `#${roundNum}`),
         h('span', { className: `round-action ${action}` }, action),
-        h('span', { className: 'round-summary', title: summary }, summary),
     ];
+
+    // Show per-tool one-liners for maximum information density
+    if (round.tool_calls && round.tool_calls.length > 0) {
+        const toolLines = round.tool_calls.map(tc => toolCallOneLiner(tc));
+        // Show first 3 tools inline, truncate rest
+        const shown = toolLines.slice(0, 3);
+        const remaining = toolLines.length - shown.length;
+        const toolText = shown.join(' ; ') + (remaining > 0 ? ` (+${remaining} more)` : '');
+        headerItems.push(h('span', { className: 'round-tools' }, toolText));
+    } else if (round.summary) {
+        headerItems.push(h('span', { className: 'round-summary' }, round.summary));
+    }
+
     if (tokens) {
         headerItems.push(h('span', { className: 'round-tokens' }, tokens));
     }
+
     el.appendChild(h('div', { className: 'round-header' }, ...headerItems));
 
     // Detail (expanded on click)
@@ -573,10 +669,10 @@ function renderRound(round) {
 
     // Assistant text
     if (round.text && round.text.trim()) {
-        detail.appendChild(h('div', { className: 'round-text' }, round.text));
+        detail.appendChild(h('pre', { className: 'round-text' }, round.text));
     }
 
-    // Tool calls
+    // Tool calls with results side-by-side
     if (round.tool_calls && round.tool_calls.length > 0) {
         for (let i = 0; i < round.tool_calls.length; i++) {
             const tc = round.tool_calls[i];
@@ -592,10 +688,10 @@ function renderRound(round) {
 
     el.appendChild(detail);
 
-    // Click to expand/collapse
-    el.addEventListener('click', (e) => {
-        // Don't toggle if clicking a show-more button
-        if (e.target.classList.contains('show-more')) return;
+    // Click to expand/collapse — but not if clicking inside detail area or buttons
+    const headerEl = el.querySelector('.round-header');
+    headerEl.style.cursor = 'pointer';
+    headerEl.addEventListener('click', (e) => {
         el.classList.toggle('expanded');
     });
 
@@ -605,7 +701,6 @@ function renderRound(round) {
 function renderToolCall(tc, tr) {
     const block = h('div', { className: 'tool-block' });
 
-    // Tool call header + args
     const name = tc.name || 'unknown';
     const argsRaw = tc.arguments;
     let argsStr = '';
@@ -620,47 +715,48 @@ function renderToolCall(tc, tr) {
     }
 
     block.appendChild(h('div', { className: 'tool-header' },
-        'Call: ', h('span', { className: 'tool-name' }, name)
+        h('span', { className: 'tool-name' }, name)
     ));
 
     if (argsStr) {
-        block.appendChild(makeCollapsible(argsStr, 300));
+        block.appendChild(makeExpandable(argsStr, 'tool-content', 200));
     }
 
     // Tool result
     if (tr) {
         const resultContent = tr.content || '';
         const isError = tr.is_error || false;
-        block.appendChild(h('div', { className: 'tool-header', style: 'margin-top:6px' },
-            'Result:',
-            isError ? h('span', { style: 'color:#DC2626;margin-left:6px;font-weight:400' }, '(error)') : null
-        ));
+        const resultLabel = h('div', { className: 'tool-result-header' },
+            'Result',
+            isError ? h('span', { className: 'tool-error-badge' }, 'error') : null
+        );
+        block.appendChild(resultLabel);
         if (resultContent) {
-            const resultEl = makeCollapsible(resultContent, 300);
-            if (isError) resultEl.querySelector('.tool-content').classList.add('tool-error');
-            block.appendChild(resultEl);
+            const cls = isError ? 'tool-content tool-error' : 'tool-content';
+            block.appendChild(makeExpandable(resultContent, cls, 200));
         }
     }
 
     return block;
 }
 
-function makeCollapsible(text, threshold) {
-    const wrapper = h('div');
+function makeExpandable(text, className, threshold) {
     const isLong = text.length > threshold;
-    const content = h('pre', { className: `tool-content${isLong ? ' collapsed' : ''}` }, text);
-    wrapper.appendChild(content);
+    const pre = h('pre', { className: className + (isLong ? ' collapsed' : '') }, text);
 
     if (isLong) {
-        const btn = h('button', { className: 'show-more' }, 'Show more');
+        const wrapper = h('div', { className: 'expandable-wrapper' });
+        wrapper.appendChild(pre);
+        const btn = h('button', { className: 'expand-btn' }, 'Show more');
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
-            const isCollapsed = content.classList.contains('collapsed');
-            content.classList.toggle('collapsed');
-            btn.textContent = isCollapsed ? 'Show less' : 'Show more';
+            const wasCollapsed = pre.classList.contains('collapsed');
+            pre.classList.toggle('collapsed');
+            btn.textContent = wasCollapsed ? 'Show less' : 'Show more';
         });
         wrapper.appendChild(btn);
+        return wrapper;
     }
 
-    return wrapper;
+    return pre;
 }
