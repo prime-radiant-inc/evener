@@ -823,6 +823,88 @@ td.numeric {
 }
 
 /* --------------------------------------------------------
+   Comparison page
+   -------------------------------------------------------- */
+.compare-select-row {
+    display: flex;
+    gap: 24px;
+    margin-bottom: 24px;
+    align-items: flex-end;
+}
+
+.compare-label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #6B6B6B;
+    margin-bottom: 6px;
+}
+
+.compare-select {
+    padding: 8px 12px;
+    font-size: 14px;
+    font-family: inherit;
+    border: 1px solid rgba(0,0,0,0.12);
+    border-radius: 6px;
+    min-width: 200px;
+    background: #FFFFFF;
+}
+
+.compare-select:focus {
+    outline: none;
+    border-color: rgba(0,0,0,0.3);
+}
+
+.compare-summary {
+    font-size: 16px;
+    margin-bottom: 16px;
+    color: #1A1A1A;
+}
+
+.compare-row.improved { background: rgba(24,163,74,0.05); }
+.compare-row.regressed { background: rgba(220,38,38,0.05); }
+
+.compare-unique {
+    margin-top: 24px;
+}
+
+.compare-unique h3 {
+    font-size: 14px;
+    font-weight: 600;
+    color: #6B6B6B;
+    margin-bottom: 8px;
+}
+
+.unique-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.unique-task {
+    font-size: 13px;
+    padding: 4px 10px;
+    background: #F5F5F3;
+    border-radius: 4px;
+    color: #4B5563;
+}
+
+.compare-nav-link {
+    font-size: 13px;
+    color: #6B6B6B;
+    text-decoration: none;
+    margin-left: 16px;
+}
+
+.compare-nav-link:hover {
+    color: #1A1A1A;
+    text-decoration: underline;
+}
+
+/* --------------------------------------------------------
    Responsive
    -------------------------------------------------------- */
 @media (max-width: 768px) {

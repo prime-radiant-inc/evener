@@ -23,6 +23,8 @@ function route() {
         renderTaskDetail(app, decodeURIComponent(m[1]), decodeURIComponent(m[2]));
     } else if ((m = hash.match(/^#\/runs\/([^/]+)$/))) {
         renderRunDetail(app, decodeURIComponent(m[1]));
+    } else if ((m = hash.match(/^#\/compare$/))) {
+        renderComparison(app);
     } else {
         renderDashboard(app);
     }
@@ -239,8 +241,10 @@ async function renderDashboard(container) {
             return;
         }
 
+        const compareLink = h('a', { href: '#/compare', className: 'compare-nav-link' }, 'Compare runs');
+
         const header = h('div', { className: 'page-header' },
-            h('h1', null, 'Eval Runs'),
+            h('h1', null, 'Eval Runs', compareLink),
             h('div', { className: 'subtitle' }, `${runs.length} run${runs.length !== 1 ? 's' : ''}`)
         );
 
@@ -291,6 +295,152 @@ async function renderDashboard(container) {
         container.appendChild(card);
     } catch (err) {
         container.innerHTML = `<div class="error-msg">Failed to load runs: ${escapeHtml(err.message)}</div>`;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Comparison page
+// ---------------------------------------------------------------------------
+
+async function renderComparison(container) {
+    setBreadcrumb([
+        { label: 'Dashboard', href: '#/' },
+        { label: 'Compare' }
+    ]);
+    container.innerHTML = '<div class="loading">Loading runs...</div>';
+
+    try {
+        const runs = await fetchJSON('/api/runs');
+        if (!runs.length) {
+            container.innerHTML = '<div class="empty-state">No runs to compare.</div>';
+            return;
+        }
+
+        const header = h('div', { className: 'page-header' },
+            h('h1', null, 'Run Comparison')
+        );
+
+        // Dropdowns
+        const selectA = h('select', { className: 'compare-select' });
+        const selectB = h('select', { className: 'compare-select' });
+        selectA.appendChild(h('option', { value: '' }, '-- Select Run A --'));
+        selectB.appendChild(h('option', { value: '' }, '-- Select Run B --'));
+        for (const run of runs) {
+            selectA.appendChild(h('option', { value: run.job_name }, run.job_name));
+            selectB.appendChild(h('option', { value: run.job_name }, run.job_name));
+        }
+
+        const selectRow = h('div', { className: 'compare-select-row' },
+            h('div', null,
+                h('label', { className: 'compare-label' }, 'Run A'),
+                selectA
+            ),
+            h('div', null,
+                h('label', { className: 'compare-label' }, 'Run B'),
+                selectB
+            )
+        );
+
+        const resultArea = h('div', { className: 'compare-results' });
+
+        async function doCompare() {
+            const a = selectA.value;
+            const b = selectB.value;
+            if (!a || !b) {
+                resultArea.innerHTML = '';
+                return;
+            }
+            if (a === b) {
+                resultArea.innerHTML = '<div class="empty-state">Select two different runs.</div>';
+                return;
+            }
+            resultArea.innerHTML = '<div class="loading">Comparing...</div>';
+
+            try {
+                const data = await fetchJSON(`/api/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
+                renderCompareResult(resultArea, data);
+            } catch (err) {
+                resultArea.innerHTML = `<div class="error-msg">Comparison failed: ${escapeHtml(err.message)}</div>`;
+            }
+        }
+
+        selectA.addEventListener('change', doCompare);
+        selectB.addEventListener('change', doCompare);
+
+        container.innerHTML = '';
+        container.appendChild(header);
+        container.appendChild(selectRow);
+        container.appendChild(resultArea);
+    } catch (err) {
+        container.innerHTML = `<div class="error-msg">Failed to load runs: ${escapeHtml(err.message)}</div>`;
+    }
+}
+
+function renderCompareResult(container, data) {
+    container.innerHTML = '';
+
+    const delta = data.run_b.passed - data.run_a.passed;
+    const deltaStr = delta > 0 ? `+${delta}` : String(delta);
+    const summary = h('div', { className: 'compare-summary' },
+        `Run B: ${data.run_b.passed}/${data.run_b.total} (${deltaStr} vs Run A). `,
+        `${data.improved.length} improved, ${data.regressed.length} regressed.`
+    );
+    container.appendChild(summary);
+
+    // Build ordered task list: regressed first, then improved, then stable
+    const allRows = [
+        ...data.regressed.map(r => ({ ...r, cat: 'regressed' })),
+        ...data.improved.map(r => ({ ...r, cat: 'improved' })),
+        ...data.stable_pass.map(r => ({ ...r, cat: 'stable-pass' })),
+        ...data.stable_fail.map(r => ({ ...r, cat: 'stable-fail' })),
+    ];
+
+    if (allRows.length > 0) {
+        const thead = h('thead', null,
+            h('tr', null,
+                h('th', null, 'Task'),
+                h('th', null, 'Run A'),
+                h('th', null, 'Run B')
+            )
+        );
+        const tbody = h('tbody');
+        for (const row of allRows) {
+            const dotA = h('span', { className: `status-dot ${row.a === 'pass' ? 'pass' : 'fail'}` });
+            const dotB = h('span', { className: `status-dot ${row.b === 'pass' ? 'pass' : 'fail'}` });
+            const tr = h('tr', { className: `compare-row ${row.cat}` },
+                h('td', null, row.task),
+                h('td', null, h('span', { className: 'status-text' }, dotA, row.a === 'pass' ? 'Pass' : 'Fail')),
+                h('td', null, h('span', { className: 'status-text' }, dotB, row.b === 'pass' ? 'Pass' : 'Fail'))
+            );
+            tbody.appendChild(tr);
+        }
+        const table = h('table', null, thead, tbody);
+        const card = h('div', { className: 'card' },
+            h('div', { className: 'card-body table-wrap' }, table)
+        );
+        container.appendChild(card);
+    }
+
+    // Tasks unique to one run
+    if (data.only_a.length > 0 || data.only_b.length > 0) {
+        const uniqueSection = h('div', { className: 'compare-unique' });
+        if (data.only_a.length > 0) {
+            uniqueSection.appendChild(h('h3', null, `Only in Run A (${data.only_a.length})`));
+            const list = h('div', { className: 'unique-list' });
+            for (const t of data.only_a) {
+                list.appendChild(h('span', { className: 'unique-task' }, t.task));
+            }
+            uniqueSection.appendChild(list);
+        }
+        if (data.only_b.length > 0) {
+            uniqueSection.appendChild(h('h3', null, `Only in Run B (${data.only_b.length})`));
+            const list = h('div', { className: 'unique-list' });
+            for (const t of data.only_b) {
+                list.appendChild(h('span', { className: 'unique-task' }, t.task));
+            }
+            uniqueSection.appendChild(list);
+        }
+        container.appendChild(uniqueSection);
     }
 }
 
