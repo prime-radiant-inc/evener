@@ -156,7 +156,7 @@ class RunStore:
         if not stdout_file.is_file():
             return ""
         try:
-            return stdout_file.read_text()
+            return stdout_file.read_text(errors="replace")
         except OSError:
             return ""
 
@@ -176,7 +176,7 @@ class RunStore:
         if not test_file.is_file():
             return ""
         try:
-            return test_file.read_text()
+            return test_file.read_text(errors="replace")
         except OSError:
             return ""
 

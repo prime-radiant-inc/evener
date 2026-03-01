@@ -829,10 +829,21 @@ async function renderTaskDetail(container, jobName, taskName) {
                 metricBox('Wall Time', formatWallTime(task.wall_time_sec)),
                 metricBox('Submit @', task.first_submit_round || '-'),
             ),
-            task.submitted_value ? h('div', { className: 'submitted-value' },
-                h('span', { className: 'label' }, 'Submitted: '),
-                h('code', null, truncate(task.submitted_value, 200))
-            ) : null
+            task.submitted_value ? (() => {
+                const sv = h('div', { className: 'submitted-value collapsed' });
+                sv.appendChild(h('span', { className: 'label' }, 'Submitted: '));
+                const codeEl = h('code', null, truncate(task.submitted_value, 200));
+                sv.appendChild(codeEl);
+                if (task.submitted_value.length > 200) {
+                    sv.style.cursor = 'pointer';
+                    sv.addEventListener('click', () => {
+                        const isCollapsed = sv.classList.contains('collapsed');
+                        sv.classList.toggle('collapsed');
+                        codeEl.textContent = isCollapsed ? task.submitted_value : truncate(task.submitted_value, 200);
+                    });
+                }
+                return sv;
+            })() : null
         );
 
         // ---------------------------------------------------------------
