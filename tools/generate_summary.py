@@ -4,56 +4,19 @@ import json
 import os
 import sys
 
+from eval_lib import read_archive_tasks
 from eval_stats import aggregate_task_results, wilson_ci
 
 
 def generate_summary(run_dir: str, run_id: str) -> dict:
     """Read reward.txt files from archive and produce summary dict.
 
-    The archive layout is:
-        <run_dir>/tasks/<task-name>/rep-<N>/reward.txt
-        <run_dir>/tasks/<task-name>/rep-<N>/failure_category.txt
-
     Raises FileNotFoundError if <run_dir>/tasks/ does not exist.
     """
-    tasks_dir = os.path.join(run_dir, "tasks")
-    if not os.path.isdir(tasks_dir):
-        raise FileNotFoundError(f"No tasks/ directory in {run_dir}")
+    archive_tasks = read_archive_tasks(run_dir)
 
     tasks = []
-    for task_name in sorted(os.listdir(tasks_dir)):
-        task_path = os.path.join(tasks_dir, task_name)
-        if not os.path.isdir(task_path):
-            continue
-
-        reps = []
-        for rep_name in sorted(os.listdir(task_path)):
-            rep_path = os.path.join(task_path, rep_name)
-            reward_file = os.path.join(rep_path, "reward.txt")
-            if not os.path.isfile(reward_file):
-                continue
-
-            with open(reward_file) as f:
-                reward = float(f.read().strip())
-            rep_num = int(rep_name.replace("rep-", ""))
-
-            failure_cat = None
-            fc_file = os.path.join(rep_path, "failure_category.txt")
-            if os.path.isfile(fc_file):
-                with open(fc_file) as f:
-                    fc = f.read().strip()
-                if fc:
-                    failure_cat = fc
-
-            reps.append({
-                "rep": rep_num,
-                "reward": reward,
-                "failure_category": failure_cat,
-            })
-
-        if not reps:
-            continue
-
+    for task_name, reps in archive_tasks.items():
         rewards = [r["reward"] for r in reps]
         agg = aggregate_task_results(task_name, rewards)
         agg["reps"] = reps
