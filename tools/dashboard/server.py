@@ -123,3 +123,25 @@ def index():
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.isdir(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+
+if __name__ == "__main__":
+    import argparse
+    import sys
+    import uvicorn
+
+    # Ensure dashboard modules are importable.
+    sys.path.insert(0, os.path.dirname(__file__))
+
+    parser = argparse.ArgumentParser(description="Serf Eval Dashboard")
+    parser.add_argument("--data-dir", default=None,
+                        help="Directory to scan for eval runs")
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=8080)
+    args = parser.parse_args()
+
+    if args.data_dir:
+        import sys
+        sys.modules[__name__].store = RunStore(args.data_dir)
+
+    uvicorn.run(app, host=args.host, port=args.port)
