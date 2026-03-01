@@ -24,10 +24,10 @@ Systematic process for diagnosing and fixing serf failures on terminal-bench tas
 - serf repo checked out at `/Users/jesse/prime-radiant/serf/`
 - `OPENAI_API_KEY` in `.env` file at repo root (for local runs) and in
   `~/git/terminal-bench/.env` on flower-garden (for harbor runs)
-- SSH access to flower-garden (`jesse@192.168.118.101`). Use the IP address, not the
-  hostname — Tailscale MagicDNS may not resolve `flower-garden`.
+- SSH access to magic-kingdom (`jesse@magic-kingdom` via Tailscale) for harbor runs.
+  Fallback: flower-garden (`jesse@192.168.118.101`). Override with `EVAL_REMOTE` env var.
 - Go toolchain for building serf
-- Helper scripts in `tools/`: `eval-task.sh`, `check-eval.sh`, `api-log-analyze.py`, `compare-runs.sh`
+- Python tools in `tools/`: `run_eval.py`, `api-log-analyze.py`, `compare_runs.py`, `generate_report.py`
 
 ## Step 1: Pick a Failure to Investigate
 
@@ -48,11 +48,12 @@ Pick a task that USED TO PASS with the previous model/prompt — regressions are
 
 ## Step 2: Extract the Benchmark Task
 
-Tasks are cached on flower-garden at `~/.cache/harbor/tasks/<hash>/<task-name>/`.
+Tasks are cached on the eval server at `~/.cache/harbor/tasks/<hash>/<task-name>/`.
 
 ```bash
-# Find a task
-ssh jesse@192.168.118.101 'find ~/.cache/harbor/tasks/ -name "TASK_NAME" -type d'
+# Find a task (uses EVAL_REMOTE or defaults to magic-kingdom)
+REMOTE=${EVAL_REMOTE:-jesse@magic-kingdom}
+ssh $REMOTE 'find ~/.cache/harbor/tasks/ -name "TASK_NAME" -type d'
 
 # Key files in each task:
 #   instruction.md    — The prompt given to serf
@@ -65,9 +66,10 @@ ssh jesse@192.168.118.101 'find ~/.cache/harbor/tasks/ -name "TASK_NAME" -type d
 Copy the instruction and tests locally:
 ```bash
 TASK=cancel-async-tasks
-TASK_DIR=$(ssh jesse@192.168.118.101 "find ~/.cache/harbor/tasks/ -name '$TASK' -type d")
-scp jesse@192.168.118.101:"$TASK_DIR/instruction.md" /tmp/task-$TASK.md
-scp -r jesse@192.168.118.101:"$TASK_DIR/tests/" /tmp/task-$TASK-tests/
+REMOTE=${EVAL_REMOTE:-jesse@magic-kingdom}
+TASK_DIR=$(ssh $REMOTE "find ~/.cache/harbor/tasks/ -name '$TASK' -type d")
+scp $REMOTE:"$TASK_DIR/instruction.md" /tmp/task-$TASK.md
+scp -r $REMOTE:"$TASK_DIR/tests/" /tmp/task-$TASK-tests/
 ```
 
 Read the instruction to understand what serf is asked to do. Read the tests to understand what the verifier checks — this is critical for understanding WHY the agent's output fails.
@@ -106,13 +108,14 @@ Transcripts are at `<state-dir>/sessions/<session-id>.transcript.jsonl`.
 For analyzing many failures at once, use the transcript viewer to generate an interactive HTML site:
 
 ```bash
-# 1. Rsync job data from flower-garden to local
+# 1. Rsync job data from eval server to local
 JOB=serf-reviewer-full2
+REMOTE=${EVAL_REMOTE:-jesse@magic-kingdom}
 rsync -avz --include='*/' \
   --include='result.json' --include='reward.txt' --include='test-stdout.txt' \
   --include='stdout.txt' --include='return-code.txt' --include='command.txt' \
   --include='*.json' --include='*.jsonl' --exclude='*' \
-  192.168.118.101:~/git/terminal-bench/jobs/$JOB/ /tmp/$JOB/
+  $REMOTE:/tmp/$JOB/$JOB/ /tmp/$JOB/
 
 # 2. Generate the viewer
 python3 tools/transcript-viewer.py /tmp/$JOB --output /tmp/viewer --filter failed
@@ -161,11 +164,12 @@ python3 tools/api-log-analyze.py /tmp/serf-bench-$TASK/ --session sess-abc
 python3 tools/api-log-analyze.py /tmp/serf-bench-$TASK/ --errors
 ```
 
-For flower-garden runs, rsync the `api.jsonl` files along with transcripts:
+For remote runs, rsync the `api.jsonl` files along with transcripts:
 ```bash
+REMOTE=${EVAL_REMOTE:-jesse@magic-kingdom}
 rsync -avz --include='*/' --include='api.jsonl' --include='*.jsonl' \
   --include='reward.txt' --include='result.json' --exclude='*' \
-  192.168.118.101:/tmp/$JOB/ /tmp/$JOB/
+  $REMOTE:/tmp/$JOB/ /tmp/$JOB/
 ```
 
 ### Single-task analysis
@@ -253,9 +257,9 @@ Compare transcripts before/after:
 - Tests run before submitting? (verification fix working)
 - Correct output? (actual pass)
 
-## Step 8: Validate on Flower-Garden
+## Step 8: Validate on Eval Server
 
-**Use the helper scripts.** They handle building, deploying, env vars, and harbor flags
+**Use `tools/run_eval.py`.** It handles building, deploying, env vars, and harbor flags
 correctly. Do not manually construct harbor commands — the flags are finicky and
 you will waste time on typos.
 
@@ -263,22 +267,35 @@ you will waste time on typos.
 
 ```bash
 # Single task, 3 repetitions, with reviewer gate
-./tools/eval-task.sh reviewer-v3 build-cython-ext 3 enable_reviewer_gate=true
+./tools/run_eval.py launch --job reviewer-v3 --task build-cython-ext --reps 3 --ak enable_reviewer_gate=true
 
 # Single task, 5 repetitions, no reviewer gate
-./tools/eval-task.sh baseline-test fix-code-vulnerability 5
+./tools/run_eval.py launch --job baseline-test --task fix-code-vulnerability --reps 5
 
 # Multiple agent kwargs
-./tools/eval-task.sh experiment-1 build-cython-ext 3 enable_reviewer_gate=true result_tool_name=done
+./tools/run_eval.py launch --job experiment-1 --task build-cython-ext --reps 3 \
+  --ak enable_reviewer_gate=true --ak result_tool_name=done
+
+# Dry run (show what would be done without executing)
+./tools/run_eval.py launch --job test --task build-cython-ext --reps 1 --dry-run
 ```
 
 ### Check eval status and results
 
 ```bash
-./tools/check-eval.sh reviewer-v3
+./tools/run_eval.py status --job reviewer-v3
 ```
 
-Output shows pass/fail/running for each rep, summary, and recent log.
+Output shows pass/fail/running for each rep, summary, manifest, and recent log.
+
+### Collect and summarize a finished run
+
+```bash
+./tools/run_eval.py collect --job reviewer-v3
+```
+
+Rsyncs results from the eval server, runs `collect-run.sh` to create the archive,
+generates `summary.json` with all three pass rates and Wilson CI.
 
 ### Full 89-task suite
 
@@ -286,10 +303,10 @@ For full validation after targeted testing:
 
 ```bash
 # Build, deploy, and run all 89 tasks
-./tools/eval-task.sh full-run-v4 "" 1 enable_reviewer_gate=true
+./tools/run_eval.py launch --job full-run-v4 --reps 1 --ak enable_reviewer_gate=true
 ```
 
-(Empty task name = all tasks. But prefer focused evals first — full runs take hours
+(Omit `--task` for all tasks. But prefer focused evals first — full runs take hours
 and cost real money.)
 
 ### A/B testing
@@ -298,47 +315,56 @@ To compare two configurations, run focused evals with different job names:
 
 ```bash
 # Control: current behavior
-./tools/eval-task.sh ab-control build-cython-ext 5 enable_reviewer_gate=true
+./tools/run_eval.py launch --job ab-control --task build-cython-ext --reps 5 --ak enable_reviewer_gate=true
 
 # Treatment: with some change
-./tools/eval-task.sh ab-treatment build-cython-ext 5 enable_reviewer_gate=true result_tool_name=done
+./tools/run_eval.py launch --job ab-treatment --task build-cython-ext --reps 5 \
+  --ak enable_reviewer_gate=true --ak result_tool_name=done
 ```
 
-Then compare results side-by-side:
+Then compare results:
 ```bash
-# Structured comparison with regressions/improvements
-./tools/compare-runs.sh ab-control ab-treatment
+# Collect both runs
+./tools/run_eval.py collect --job ab-control
+./tools/run_eval.py collect --job ab-treatment
 
-# Or check each individually
-./tools/check-eval.sh ab-control
-./tools/check-eval.sh ab-treatment
+# Cross-run comparison with bootstrap CIs, McNemar's test, regressions/improvements
+python3 tools/compare_runs.py /data/serf-evals/runs/<run-id-a> /data/serf-evals/runs/<run-id-b>
+
+# Generate HTML report for a single run
+python3 tools/generate_report.py /data/serf-evals/runs/<run-id>
 ```
-
-The `--result-tool-name` flag (`--ak result_tool_name=X`) lets you rename the result
-tool at runtime without code changes. Useful for testing whether tool naming affects
-model behavior. (Answer from our eval: it doesn't.)
 
 ### Custom adapters
 
 To test prompt variants or adapter changes without rebuilding the binary:
 
 ```bash
-# 1. Create adapter variant on flower-garden (e.g., serf_agent_mytest.py)
+# 1. Create adapter variant on the eval server (e.g., serf_agent_mytest.py)
 #    - Copy from serf_agent.py, change class name, modify as needed
 
-# 2. Run with NO_BUILD=1 and custom AGENT_IMPORT_PATH
-NO_BUILD=1 AGENT_IMPORT_PATH="serf_agent_mytest:MyTestAgent" \
-  ./tools/eval-task.sh my-test configure-git-webserver 1 enable_reviewer_gate=true
+# 2. Run with --no-build and custom --adapter
+./tools/run_eval.py launch --job my-test --task configure-git-webserver --reps 1 \
+  --no-build --adapter "serf_agent_mytest:MyTestAgent" --ak enable_reviewer_gate=true
 ```
 
-**NEVER manually run harbor commands.** The helper scripts handle env vars, PATH, and
+### Targeting a different server
+
+By default, `run_eval.py` targets magic-kingdom. To use flower-garden or another server:
+
+```bash
+EVAL_REMOTE=jesse@192.168.118.101 ./tools/run_eval.py launch --job test --task build-cython-ext --reps 1
+```
+
+**NEVER manually run harbor commands.** `run_eval.py` handles env vars, PATH, and
 flags correctly. Manual harbor commands will forget `set -a; source .env; set +a` and
 silently fail with "no LLM providers configured."
 
 ## Harbor CLI Reference
 
 Harbor is the benchmark runner. It's installed via uv at `~/.local/bin/harbor` on
-flower-garden. The helper scripts handle all of this, but if you need to run manually:
+the eval servers (magic-kingdom v0.1.45, flower-garden v0.1.44). `run_eval.py` handles
+all of this, but if you need to understand the flags:
 
 ### Correct flags (verified working)
 
@@ -362,14 +388,16 @@ flower-garden. The helper scripts handle all of this, but if you need to run man
 
 ### Agent adapter (serf_agent.py)
 
-The serf adapter is at `~/git/terminal-bench/serf_agent.py` on flower-garden. It wraps
-the serf binary for harbor's agent interface:
+The serf adapter is at `tools/serf_agent.py` in the repo and deployed to
+`~/git/terminal-bench/serf_agent.py` on the eval server. `run_eval.py launch`
+auto-deploys it. It wraps the serf binary for harbor's agent interface:
 
 - Maps harbor agent kwargs to serf CLI flags (e.g., `enable_reviewer_gate` → `--enable-reviewer-gate`)
 - Custom kwargs like `result_tool_name` need explicit support in the adapter — check
   that the adapter handles new flags before using them with `--ak`
-- The adapter must be importable from the working directory (`cd ~/git/terminal-bench`
-  before running harbor)
+- State dir at `/logs/agent/serf-state` (bind-mounted by harbor), captures transcripts + api.jsonl
+- Downloads `/app` artifacts post-run, prunes large/binary directories locally
+- Requires `install-serf.sh.j2` alongside it (also auto-deployed)
 
 ### Environment variables
 
@@ -406,14 +434,32 @@ After a harbor run, job data is at:
 **Important:** `reward.txt` is the accurate per-task reward. `result.json` intermediate
 writes can be misleading — always check `reward.txt`.
 
-The `manifest.json` ties the run to exact source code — `check-eval.sh` prints it.
+The `manifest.json` ties the run to exact source code — `run_eval.py status` prints it.
 The `api.jsonl` captures every LLM API call with the full raw provider response,
 enabling postmortem analysis of empty responses, parsing failures, and token usage
 without throwaway scripts.
 
 For batch analysis, use the transcript viewer (see Step 4). For quick failure listing:
 ```bash
-./tools/check-eval.sh <job-name>
+./tools/run_eval.py status --job <job-name>
+```
+
+### Collected archive structure
+
+After `run_eval.py collect`, the archive at `/data/serf-evals/runs/<run-id>/` has:
+```
+<run-id>/
+  manifest.json
+  summary.json
+  tasks/
+    <task-name>/
+      rep-1/
+        reward.txt
+        failure_category.txt
+        transcript.jsonl
+        api.jsonl
+      rep-2/
+        ...
 ```
 
 ## Reviewer Gate Failure Patterns
@@ -455,6 +501,6 @@ These fixes are in `agent/agents/reviewer.md` and encode general principles
 - **Don't assume the model reads the prompt**: gpt-5.3-codex in tool-calling mode often skips system prompt directives. Structural interventions (tool availability, response handling) are more reliable than prompt text.
 - **Run multiple times**: Results are nondeterministic. A task that passes once may fail next time. Run 2-3 times before declaring a fix works.
 - **Don't build to the benchmark**: If a fix requires knowing the task answer, it's cheating. If it only helps one task and hurts others, it's overfitting. Every fix should be a general engineering principle.
-- **Don't skip the env vars**: The #1 cause of "all tasks fail immediately" is forgetting to export OPENAI_API_KEY. The helper scripts handle this, so use them.
-- **Use helper scripts**: `tools/eval-task.sh` and `tools/check-eval.sh` exist for a reason. They encode correct harbor flags, env var handling, and result checking. Don't hand-construct harbor commands.
+- **Don't skip the env vars**: The #1 cause of "all tasks fail immediately" is forgetting to export OPENAI_API_KEY. `run_eval.py` handles this, so use it.
+- **Use run_eval.py**: It encodes correct harbor flags, env var handling, build/deploy, and result checking. Don't hand-construct harbor commands.
 - **Check build provenance**: Run `./serf --version` to verify the binary you're testing. Every transcript header includes `build_version`. Every eval run writes a `manifest.json` with the git SHA. If you can't trace a result to the code that produced it, the result is worthless.
