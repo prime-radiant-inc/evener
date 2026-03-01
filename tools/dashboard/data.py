@@ -234,6 +234,7 @@ class RunStore:
                 model = sessions[0].get("model", "")
 
         summary.update({
+            "task_dir": str(task_dir),
             "test_output": self._read_test_output(task_dir),
             "model": model,
             "transcript_files": transcript_files,

@@ -41,7 +41,8 @@ def harbor_job_dir(tmp_path):
     return tmp_path / "full-test"
 
 
-def _make_task(task_dir, reward, transcript_entries, agent_stdout=""):
+def _make_task(task_dir, reward, transcript_entries, agent_stdout="",
+               result_json=None, api_log_entries=None):
     """Create a single task directory with required files."""
     # Verifier
     verifier = task_dir / "verifier"
@@ -67,9 +68,64 @@ def _make_task(task_dir, reward, transcript_entries, agent_stdout=""):
     (cmd_dir / "stdout.txt").write_text(agent_stdout)
 
     # result.json
-    (task_dir / "result.json").write_text(json.dumps({
+    result_data = result_json or {
         "config": {"model": "gpt-5.3-codex"},
-    }))
+        "started_at": "2026-03-01T12:00:00Z",
+        "finished_at": "2026-03-01T12:05:30Z",
+    }
+    (task_dir / "result.json").write_text(json.dumps(result_data))
+
+    # api.jsonl (optional)
+    if api_log_entries is not None:
+        api_file = task_dir / "agent" / "serf-state" / "api.jsonl"
+        lines = [json.dumps(e) for e in api_log_entries]
+        api_file.write_text("\n".join(lines) + "\n")
+
+
+@pytest.fixture
+def harbor_job_dir_with_api(tmp_path):
+    """Create a harbor-style job directory with api.jsonl data.
+
+    Structure mirrors harbor_job_dir but the passing task has 3 api.jsonl
+    entries (one empty response) for testing API metrics.
+    """
+    job_root = tmp_path / "full-test" / "full-test"
+
+    api_entries = [
+        {"ts": "2026-03-01T12:00:01Z", "session_id": "sess-main", "round": 1,
+         "request": {"model": "gpt-5.3-codex", "provider": "openai",
+                     "message_count": 3, "tool_count": 5},
+         "response": {"model": "gpt-5.3-codex", "finish_reason": "tool_calls",
+                      "text_length": 50, "tool_call_count": 1,
+                      "usage": {"input_tokens": 500, "output_tokens": 30}},
+         "latency_ms": 1200},
+        {"ts": "2026-03-01T12:00:02Z", "session_id": "sess-main", "round": 2,
+         "request": {"model": "gpt-5.3-codex", "provider": "openai",
+                     "message_count": 4, "tool_count": 5},
+         "response": {"model": "gpt-5.3-codex", "finish_reason": "tool_calls",
+                      "text_length": 0, "tool_call_count": 0,
+                      "usage": {"input_tokens": 600, "output_tokens": 4}},
+         "latency_ms": 800},
+        {"ts": "2026-03-01T12:00:03Z", "session_id": "sess-main", "round": 3,
+         "request": {"model": "gpt-5.3-codex", "provider": "openai",
+                     "message_count": 5, "tool_count": 5},
+         "response": {"model": "gpt-5.3-codex", "finish_reason": "tool_calls",
+                      "text_length": 100, "tool_call_count": 1,
+                      "usage": {"input_tokens": 700, "output_tokens": 25}},
+         "latency_ms": 1500},
+    ]
+
+    # Task 1: build-widget (PASS) with api.jsonl
+    t1 = job_root / "build-widget__abc123"
+    _make_task(t1, reward=1.0, transcript_entries=_passing_transcript(),
+               api_log_entries=api_entries)
+
+    # Task 2: fix-bug (FAIL, no api.jsonl)
+    t2 = job_root / "fix-bug__def456"
+    _make_task(t2, reward=0.0, transcript_entries=_failing_transcript(),
+               agent_stdout="[submit_result] submitted\n")
+
+    return tmp_path / "full-test"
 
 
 def _passing_transcript():

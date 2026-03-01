@@ -1,6 +1,8 @@
 """Per-task metrics computed from transcripts."""
 
 import json
+from datetime import datetime
+from pathlib import Path
 
 from trajectory import build_trajectory
 
@@ -11,12 +13,14 @@ _SUBMIT_VALUE_KEYS = ["result", "message", "output"]
 
 
 def compute_task_stats(store, job_name, task_name):
-    """Compute per-task metrics from transcripts.
+    """Compute per-task metrics from transcripts, result.json, and api.jsonl.
 
     Returns a dict with keys:
         total_rounds, rounds_by_action, wasted_rounds,
         total_tokens_in, total_tokens_out, session_count,
-        max_depth, first_submit_round, submitted_value, action_sequence
+        max_depth, first_submit_round, submitted_value, action_sequence,
+        wall_time_sec, api_call_count, total_latency_ms, avg_latency_ms,
+        empty_response_count
 
     Returns None if the task is not found.
     """
@@ -68,7 +72,12 @@ def compute_task_stats(store, job_name, task_name):
         for rnd in trajectory:
             action_sequence.append(rnd["action"])
 
-    return {
+    # Wall time and API metrics from task directory
+    task_dir = task.get("task_dir")
+    wall_time = _compute_wall_time(task_dir) if task_dir else None
+    api_stats = _compute_api_stats(task_dir) if task_dir else {}
+
+    result = {
         "total_rounds": total_rounds,
         "rounds_by_action": rounds_by_action,
         "wasted_rounds": wasted_rounds,
@@ -79,6 +88,85 @@ def compute_task_stats(store, job_name, task_name):
         "first_submit_round": first_submit_round,
         "submitted_value": submitted_value,
         "action_sequence": action_sequence,
+        "wall_time_sec": wall_time,
+    }
+    result.update(api_stats)
+    return result
+
+
+def _compute_wall_time(task_dir_path):
+    """Compute wall time in seconds from result.json timestamps.
+
+    Returns float seconds or None if timestamps are missing or unparseable.
+    """
+    result_file = Path(task_dir_path) / "result.json"
+    if not result_file.is_file():
+        return None
+    try:
+        data = json.loads(result_file.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+    started = data.get("started_at")
+    finished = data.get("finished_at")
+    if not started or not finished:
+        return None
+
+    try:
+        t_start = datetime.fromisoformat(started)
+        t_end = datetime.fromisoformat(finished)
+        return (t_end - t_start).total_seconds()
+    except (ValueError, TypeError):
+        return None
+
+
+def _compute_api_stats(task_dir_path):
+    """Compute API metrics from api.jsonl.
+
+    Returns a dict with api_call_count, total_latency_ms, avg_latency_ms,
+    and empty_response_count. All values are None if api.jsonl doesn't exist.
+    """
+    api_file = Path(task_dir_path) / "agent" / "serf-state" / "api.jsonl"
+    if not api_file.is_file():
+        return {
+            "api_call_count": None,
+            "total_latency_ms": None,
+            "avg_latency_ms": None,
+            "empty_response_count": None,
+        }
+
+    entries = []
+    try:
+        for line in api_file.read_text().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    except OSError:
+        return {
+            "api_call_count": None,
+            "total_latency_ms": None,
+            "avg_latency_ms": None,
+            "empty_response_count": None,
+        }
+
+    count = len(entries)
+    total_latency = sum(e.get("latency_ms", 0) for e in entries)
+    avg_latency = total_latency / count if count > 0 else 0.0
+    empty_count = sum(
+        1 for e in entries
+        if e.get("response", {}).get("text_length", -1) == 0
+        and e.get("response", {}).get("tool_call_count", -1) == 0
+    )
+
+    return {
+        "api_call_count": count,
+        "total_latency_ms": total_latency,
+        "avg_latency_ms": avg_latency,
+        "empty_response_count": empty_count,
     }
 
 
