@@ -2459,19 +2459,21 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 					// Fail-open: reviewer error should not block result delivery.
 					_ = err // reviewer error logged via event system if needed
 				} else if !verdict.Pass {
-					// Reviewer rejected: return encouragement + feedback, do NOT set resultDelivered.
-					guidance := "\n\n---\n" +
+					// Reviewer rejected. Deliver feedback via steering (user-role
+					// message) instead of as the tool result. A JSON rejection blob
+					// in the function_call_output triggers gpt-5.3-codex's empty
+					// final_answer mode ~42% of the time. A user-role steering
+					// message only triggers it ~2% of the time.
+					steering := "Your submission was not accepted. Here is the feedback:\n\n" +
+						verdict.Feedback +
+						"\n\n---\n" +
 						"Take a breath. You've got this — we trust you and we know you're capable.\n\n" +
 						"Before your next attempt:\n" +
 						"1. Write down what you tried and why it didn't work in notes.txt\n" +
 						"2. Read notes.txt to see the full picture of what's been attempted\n" +
 						"3. Step back and try a fundamentally different approach\n"
-					resp := map[string]any{
-						"accepted": false,
-						"feedback": verdict.Feedback + guidance,
-					}
-					b, _ := json.Marshal(resp)
-					return string(b), nil
+					s.Steer(steering)
+					return "Not yet — your solution needs more work. Check the feedback and keep going.", nil
 				}
 			}
 

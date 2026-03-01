@@ -606,6 +606,92 @@ func TestSubmitResult_Depth0_ReviewerFail(t *testing.T) {
 	}
 }
 
+// TestSubmitResult_ReviewerFail_SteeringFeedback verifies that when the reviewer
+// rejects, the rejection feedback is delivered via a steering message (user role),
+// not as the tool result JSON. The tool result should be a brief action-oriented
+// string. This prevents gpt-5.3-codex from entering empty final_answer mode
+// after seeing {"accepted": false, ...} in a function_call_output.
+func TestSubmitResult_ReviewerFail_SteeringFeedback(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	reviewerFeedback := "Tests are still failing. Run pytest to verify."
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			// Main agent: first submit_result attempt
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(submitResultCall("call-1", "I fixed the bug"))
+			},
+			// Reviewer: rejects the work
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(rejectCall("review-1", reviewerFeedback))
+			},
+			// Main agent: receives brief tool result + steering feedback, tries again
+			func(req llm.Request) llm.Response {
+				// Check that tool result does NOT contain JSON rejection blob.
+				for _, m := range req.Messages {
+					for _, p := range m.Content {
+						if p.Kind == llm.ContentToolResult {
+							if ct, ok := p.ToolResult.Content.(string); ok && strings.Contains(ct, `"accepted"`) {
+								t.Errorf("tool result should not contain JSON rejection, got: %s", ct)
+							}
+						}
+					}
+				}
+
+				// Check that a user-role steering message contains the reviewer feedback.
+				foundFeedback := false
+				for _, m := range req.Messages {
+					if m.Role == llm.RoleUser {
+						for _, p := range m.Content {
+							if p.Kind == llm.ContentText && strings.Contains(p.Text, reviewerFeedback) {
+								foundFeedback = true
+							}
+						}
+					}
+				}
+				if !foundFeedback {
+					t.Errorf("expected reviewer feedback in a user-role steering message")
+				}
+
+				return toolCallResponse(submitResultCall("call-2", "Fixed the test failures too"))
+			},
+			// Reviewer: approves on second attempt
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(approveCall("review-2", "All tests pass now."))
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		Depth:              0,
+		MaxSubagentDepth:   3,
+		EnableReviewerGate: true,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := sess.ProcessInput(ctx, "fix the bug")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+
+	if out == "" {
+		t.Fatal("expected non-empty output after reviewer accepted second attempt")
+	}
+
+	// 4 LLM requests: main submit #1, reviewer FAIL, main submit #2, reviewer PASS.
+	if got := len(f.Requests()); got != 4 {
+		t.Fatalf("requests: got %d want 4 (submit-review-submit-review)", got)
+	}
+}
+
 // TestSubmitResult_DepthGt0_Passthrough verifies that at depth > 0 (subagent),
 // submit_result passes through directly without spawning a reviewer.
 func TestSubmitResult_DepthGt0_Passthrough(t *testing.T) {
