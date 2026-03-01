@@ -126,6 +126,18 @@ function truncate(str, maxLen) {
     return str.slice(0, maxLen) + '...';
 }
 
+function formatWallTime(sec) {
+    if (sec == null) return '-';
+    const m = Math.floor(sec / 60);
+    const s = Math.round(sec % 60);
+    return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+function formatTaskTokens(tokIn, tokOut) {
+    if (!tokIn && !tokOut) return '-';
+    return `${(tokIn / 1000).toFixed(1)}k / ${(tokOut / 1000).toFixed(1)}k`;
+}
+
 // Extract a useful one-liner from tool call arguments
 function toolCallOneLiner(tc) {
     const name = tc.name || 'tool';
@@ -324,10 +336,25 @@ async function renderRunDetail(container, jobName) {
         ];
 
         let activeFilter = 'all';
+        let searchQuery = '';
         const filterBar = h('div', { className: 'filter-bar' });
 
+        // Column definitions
+        const columns = [
+            { key: 'task_name', label: 'Task', sort: (a, b) => a.task_name.localeCompare(b.task_name) },
+            { key: 'passed', label: 'Result', sort: (a, b) => (b.passed ? 1 : 0) - (a.passed ? 1 : 0) },
+            { key: 'failure_category', label: 'Category', sort: (a, b) => (a.failure_category || '').localeCompare(b.failure_category || '') },
+            { key: 'total_rounds', label: 'Rounds', sort: (a, b) => (a.total_rounds || 0) - (b.total_rounds || 0), numeric: true },
+            { key: 'wasted_rounds', label: 'Wasted', sort: (a, b) => (a.wasted_rounds || 0) - (b.wasted_rounds || 0), numeric: true },
+            { key: 'total_tokens_in', label: 'Tokens', sort: (a, b) => (a.total_tokens_in || 0) - (b.total_tokens_in || 0), numeric: true },
+            { key: 'session_count', label: 'Sessions', sort: (a, b) => (a.session_count || 0) - (b.session_count || 0), numeric: true },
+            { key: 'max_depth', label: 'Depth', sort: (a, b) => (a.max_depth || 0) - (b.max_depth || 0), numeric: true },
+            { key: 'first_submit_round', label: 'Submit @', sort: (a, b) => (a.first_submit_round || 999) - (b.first_submit_round || 999), numeric: true },
+            { key: 'wall_time_sec', label: 'Wall Time', sort: (a, b) => (a.wall_time_sec || 0) - (b.wall_time_sec || 0), numeric: true },
+        ];
+
         // Sorting state
-        let sortCol = 'name';
+        let sortColKey = 'task_name';
         let sortAsc = true;
 
         function matchesFilter(task) {
@@ -341,20 +368,59 @@ async function renderRunDetail(container, jobName) {
             }
         }
 
+        function matchesSearch(task) {
+            if (!searchQuery) return true;
+            return task.task_name.toLowerCase().includes(searchQuery.toLowerCase());
+        }
+
         function sortTasks(list) {
+            const col = columns.find(c => c.key === sortColKey);
+            if (!col) return list;
             return list.slice().sort((a, b) => {
-                let cmp;
-                if (sortCol === 'name') {
-                    cmp = a.task_name.localeCompare(b.task_name);
-                } else {
-                    cmp = (b.passed ? 1 : 0) - (a.passed ? 1 : 0);
-                    if (cmp === 0) {
-                        cmp = (a.failure_category || '').localeCompare(b.failure_category || '');
-                    }
-                }
+                const cmp = col.sort(a, b);
                 return sortAsc ? cmp : -cmp;
             });
         }
+
+        function renderCell(task, col) {
+            switch (col.key) {
+                case 'task_name':
+                    return h('a', {
+                        className: 'table-link',
+                        href: `#/runs/${encodeURIComponent(jobName)}/tasks/${encodeURIComponent(task.task_name)}`
+                    }, task.task_name);
+                case 'passed': {
+                    const dotClass = task.passed ? 'pass' : failureDotClass(task.failure_category);
+                    return h('span', { className: 'status-text' },
+                        h('span', { className: `status-dot ${dotClass}` }),
+                        task.passed ? 'Pass' : 'Fail');
+                }
+                case 'failure_category':
+                    return document.createTextNode(failureCategoryLabel(task.failure_category));
+                case 'total_rounds':
+                    return document.createTextNode(String(task.total_rounds || 0));
+                case 'wasted_rounds':
+                    return document.createTextNode(String(task.wasted_rounds || 0));
+                case 'total_tokens_in':
+                    return document.createTextNode(formatTaskTokens(task.total_tokens_in, task.total_tokens_out));
+                case 'session_count':
+                    return document.createTextNode(String(task.session_count || 0));
+                case 'max_depth':
+                    return document.createTextNode(String(task.max_depth || 0));
+                case 'first_submit_round':
+                    return document.createTextNode(task.first_submit_round ? String(task.first_submit_round) : '-');
+                case 'wall_time_sec':
+                    return document.createTextNode(formatWallTime(task.wall_time_sec));
+            }
+        }
+
+        // Search box
+        const searchBox = h('input', {
+            className: 'search-box',
+            type: 'text',
+            placeholder: 'Search tasks...',
+            onInput: (e) => { searchQuery = e.target.value; renderTable(); }
+        });
 
         // Table container
         const tableCard = h('div', { className: 'card' });
@@ -362,46 +428,31 @@ async function renderRunDetail(container, jobName) {
         tableCard.appendChild(tableWrap);
 
         function renderTable() {
-            const filtered = tasks.filter(matchesFilter);
+            const filtered = tasks.filter(t => matchesFilter(t) && matchesSearch(t));
             const sorted = sortTasks(filtered);
 
-            const nameThClass = 'sortable' + (sortCol === 'name' ? ' sorted' : '');
-            const resultThClass = 'sortable' + (sortCol === 'result' ? ' sorted' : '');
-            const nameArrow = sortCol === 'name' ? (sortAsc ? '\u2191' : '\u2193') : '\u2195';
-            const resultArrow = sortCol === 'result' ? (sortAsc ? '\u2191' : '\u2193') : '\u2195';
-
-            const thead = h('thead', null,
-                h('tr', null,
-                    h('th', { className: nameThClass, onClick: () => { toggleSort('name'); } },
-                        'Task', h('span', { className: 'sort-arrow' }, nameArrow)),
-                    h('th', { className: resultThClass, onClick: () => { toggleSort('result'); } },
-                        'Result', h('span', { className: 'sort-arrow' }, resultArrow)),
-                    h('th', null, 'Category'),
-                    h('th', null, 'Transcripts')
-                )
-            );
+            const headerRow = h('tr');
+            for (const col of columns) {
+                const isSorted = sortColKey === col.key;
+                const thClass = 'sortable' + (isSorted ? ' sorted' : '');
+                const arrow = isSorted ? (sortAsc ? '\u2191' : '\u2193') : '\u2195';
+                const th = h('th', {
+                    className: thClass,
+                    onClick: () => { toggleSort(col.key); }
+                }, col.label, h('span', { className: 'sort-arrow' }, arrow));
+                headerRow.appendChild(th);
+            }
+            const thead = h('thead', null, headerRow);
 
             const tbody = h('tbody');
             for (const task of sorted) {
-                const dotClass = task.passed ? 'pass' : failureDotClass(task.failure_category);
-                const statusLabel = task.passed ? 'Pass' : 'Fail';
-
-                const row = h('tr', null,
-                    h('td', null,
-                        h('a', {
-                            className: 'table-link',
-                            href: `#/runs/${encodeURIComponent(jobName)}/tasks/${encodeURIComponent(task.task_name)}`
-                        }, task.task_name)
-                    ),
-                    h('td', null,
-                        h('span', { className: 'status-text' },
-                            h('span', { className: `status-dot ${dotClass}` }),
-                            statusLabel
-                        )
-                    ),
-                    h('td', null, failureCategoryLabel(task.failure_category)),
-                    h('td', null, String(task.session_count))
-                );
+                const row = h('tr');
+                for (const col of columns) {
+                    const tdClass = col.numeric ? 'numeric' : null;
+                    const td = h('td', tdClass ? { className: tdClass } : null);
+                    td.appendChild(renderCell(task, col));
+                    row.appendChild(td);
+                }
                 tbody.appendChild(row);
             }
 
@@ -410,11 +461,11 @@ async function renderRunDetail(container, jobName) {
             tableWrap.appendChild(table);
         }
 
-        function toggleSort(col) {
-            if (sortCol === col) {
+        function toggleSort(colKey) {
+            if (sortColKey === colKey) {
                 sortAsc = !sortAsc;
             } else {
-                sortCol = col;
+                sortColKey = colKey;
                 sortAsc = true;
             }
             renderTable();
@@ -446,6 +497,7 @@ async function renderRunDetail(container, jobName) {
         container.appendChild(stats);
         container.appendChild(passBar);
         if (breakdown) container.appendChild(breakdown);
+        container.appendChild(searchBox);
         container.appendChild(filterBar);
         container.appendChild(tableCard);
     } catch (err) {

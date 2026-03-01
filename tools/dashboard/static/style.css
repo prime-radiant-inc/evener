@@ -788,6 +788,31 @@ a.table-link:hover {
 }
 
 /* --------------------------------------------------------
+   Search box
+   -------------------------------------------------------- */
+.search-box {
+    width: 100%;
+    max-width: 300px;
+    padding: 8px 12px;
+    font-size: 13px;
+    font-family: inherit;
+    border: 1px solid rgba(0,0,0,0.12);
+    border-radius: 6px;
+    margin-bottom: 12px;
+    outline: none;
+}
+
+.search-box:focus {
+    border-color: rgba(0,0,0,0.3);
+}
+
+/* Numeric table cells */
+td.numeric {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+/* --------------------------------------------------------
    Responsive
    -------------------------------------------------------- */
 @media (max-width: 768px) {
