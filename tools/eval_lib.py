@@ -22,6 +22,7 @@ DEFAULT_ADAPTER = "serf_agent:SerfAgent"
 DEFAULT_REPS = 3
 DEFAULT_CONCURRENCY = 10
 DEFAULT_ARCHIVE_ROOT = "/data/serf-evals"
+DEFAULT_JOBS_DIR = "/data/serf-evals/runs"
 
 
 # --- Git helpers ---
@@ -94,7 +95,7 @@ def build_harbor_command(
         f"-k {reps}",
         f"-n {concurrency}",
         f"--job-name {job_name}",
-        f"--jobs-dir /tmp/{job_name}",
+        f"--jobs-dir {DEFAULT_JOBS_DIR}",
         "--no-delete",
     ])
     for ak in (ak_args or []):

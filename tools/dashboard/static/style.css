@@ -815,6 +815,45 @@ td.numeric {
 }
 
 /* --------------------------------------------------------
+   Artifact browser
+   -------------------------------------------------------- */
+.artifact-body {
+    white-space: normal;
+    padding: 8px 24px;
+}
+
+.artifact-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.artifact-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 0;
+}
+
+.artifact-path {
+    font-family: 'SF Mono', 'Cascadia Code', 'JetBrains Mono', monospace;
+    font-size: 13px;
+    color: #1A1A1A;
+    text-decoration: none;
+}
+
+.artifact-path:hover {
+    text-decoration: underline;
+}
+
+.artifact-size {
+    font-size: 12px;
+    color: #A0A0A0;
+    margin-left: 16px;
+    white-space: nowrap;
+}
+
+/* --------------------------------------------------------
    Trajectory search
    -------------------------------------------------------- */
 .traj-search {

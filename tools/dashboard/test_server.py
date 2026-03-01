@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from data import RunStore
-from conftest import _make_task, _passing_transcript
+from conftest import _make_task, _passing_transcript, _make_task_with_artifacts
 
 
 def _make_client(harbor_job_dir):
@@ -245,3 +245,53 @@ class TestRawFileEndpoint:
         # The <script> tag should be escaped
         assert "<script>" not in resp.text
         assert "&lt;script&gt;" in resp.text
+
+
+class TestArtifactEndpoint:
+    """Tests for GET /api/runs/{job}/tasks/{task}/artifacts."""
+
+    def test_artifacts_listed(self, harbor_job_dir):
+        """Task with artifacts returns file list with paths, sizes, raw_urls."""
+        job_root = harbor_job_dir / "artifact-run"
+        t = job_root / "build-widget__abc123"
+        _make_task_with_artifacts(
+            t, reward=1.0, transcript_entries=_passing_transcript(),
+            artifacts={"main.py": "print(42)\n", "lib/util.py": "# utility helpers\n\n\n"},
+        )
+        client = _make_client(harbor_job_dir)
+        resp = client.get(
+            "/api/runs/artifact-run/tasks/build-widget/artifacts",
+            headers={"Accept": "application/json"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 2
+        paths = [a["path"] for a in data]
+        assert "lib/util.py" in paths
+        assert "main.py" in paths
+        # Sizes should match content length
+        by_path = {a["path"]: a for a in data}
+        assert by_path["main.py"]["size"] == len("print(42)\n")
+        assert by_path["lib/util.py"]["size"] == len("# utility helpers\n\n\n")
+        # Each file should have a raw_url
+        assert "raw_url" in by_path["main.py"]
+        assert "/raw/" in by_path["main.py"]["raw_url"]
+
+    def test_no_artifacts_returns_empty(self, harbor_job_dir):
+        """Task without artifacts returns empty list."""
+        client = _make_client(harbor_job_dir)
+        resp = client.get(
+            "/api/runs/full-test/tasks/build-widget/artifacts",
+            headers={"Accept": "application/json"},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_nonexistent_task_returns_404(self, harbor_job_dir):
+        """Nonexistent task returns 404."""
+        client = _make_client(harbor_job_dir)
+        resp = client.get(
+            "/api/runs/full-test/tasks/nope/artifacts",
+            headers={"Accept": "application/json"},
+        )
+        assert resp.status_code == 404

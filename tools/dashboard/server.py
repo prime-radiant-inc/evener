@@ -142,6 +142,10 @@ def get_task(job_name: str, task_name: str, request: Request):
                     if api_log.is_file():
                         raw_files["api_log"] = str(
                             rel / "agent" / "serf-state" / "api.jsonl")
+                artifacts_dir = task_path / "agent" / "artifacts"
+                if artifacts_dir.is_dir():
+                    raw_files["artifacts_base"] = str(
+                        rel / "agent" / "artifacts")
                 task["raw_files"] = raw_files
             except (ValueError, OSError):
                 pass
@@ -157,6 +161,24 @@ def get_task(job_name: str, task_name: str, request: Request):
         trajectory=main_trajectory,
         verifier_output=task.get("test_output", ""),
     ))
+
+
+@app.get("/api/runs/{job_name}/tasks/{task_name}/artifacts")
+def list_artifacts(job_name: str, task_name: str):
+    task = store.get_task(job_name, task_name)
+    if task is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    task_path = Path(task["task_dir"])
+    artifacts = store.list_artifacts(task_path)
+    # Add raw URLs for each file
+    data_path = Path(store.data_dir).resolve()
+    try:
+        rel = task_path.resolve().relative_to(data_path)
+        for a in artifacts:
+            a["raw_url"] = f"/raw/{rel}/agent/artifacts/{a['path']}"
+    except (ValueError, OSError):
+        pass
+    return JSONResponse(artifacts)
 
 
 @app.get("/api/compare")

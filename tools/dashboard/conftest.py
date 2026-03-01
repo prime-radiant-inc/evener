@@ -82,6 +82,22 @@ def _make_task(task_dir, reward, transcript_entries, agent_stdout="",
         api_file.write_text("\n".join(lines) + "\n")
 
 
+def _make_task_with_artifacts(task_dir, reward, transcript_entries,
+                              artifacts=None, **kwargs):
+    """Create a task directory with optional artifact files.
+
+    artifacts: dict mapping relative paths to content strings,
+    e.g. {"main.py": "print(42)", "lib/util.py": "# util"}
+    """
+    _make_task(task_dir, reward, transcript_entries, **kwargs)
+    if artifacts:
+        artifacts_dir = task_dir / "agent" / "artifacts"
+        for relpath, content in artifacts.items():
+            f = artifacts_dir / relpath
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(content)
+
+
 @pytest.fixture
 def harbor_job_dir_with_api(tmp_path):
     """Create a harbor-style job directory with api.jsonl data.

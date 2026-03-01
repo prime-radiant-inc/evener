@@ -27,6 +27,7 @@ from eval_lib import (
     DEFAULT_ADAPTER,
     DEFAULT_ARCHIVE_ROOT,
     DEFAULT_CONCURRENCY,
+    DEFAULT_JOBS_DIR,
     DEFAULT_MODEL,
     DEFAULT_REPS,
     build_harbor_command,
@@ -131,7 +132,7 @@ def cmd_launch(args):
     if args.force:
         print("=== Force: killing existing job ===")
         subprocess.run(
-            ["ssh", REMOTE, f"pkill -f 'job-name {args.job}' 2>/dev/null; rm -rf /tmp/{args.job}"],
+            ["ssh", REMOTE, f"pkill -f 'job-name {args.job}' 2>/dev/null; rm -rf {DEFAULT_JOBS_DIR}/{args.job}"],
             check=False,
         )
 
@@ -142,8 +143,8 @@ def cmd_launch(args):
     launch_script = f"""cd {run_stage_dir}
 set -a; source .env; set +a
 export PATH="$HOME/.local/bin:$PATH"
-rm -rf /tmp/{args.job}
-mkdir -p /tmp/{args.job}
+rm -rf {DEFAULT_JOBS_DIR}/{args.job}
+mkdir -p {DEFAULT_JOBS_DIR}/{args.job}
 
 nohup {harbor_cmd} > /tmp/{args.job}.log 2>&1 &
 PID=$!
@@ -168,7 +169,7 @@ fi"""
         manifest_path = f.name
     try:
         subprocess.run(
-            ["scp", "-q", manifest_path, f"{REMOTE}:/tmp/{args.job}/manifest.json"],
+            ["scp", "-q", manifest_path, f"{REMOTE}:{DEFAULT_JOBS_DIR}/{args.job}/manifest.json"],
             check=False,
         )
     finally:
@@ -192,6 +193,7 @@ fi"""
 
 def cmd_status(args):
     """Check status of a running job."""
+    jobs_dir = DEFAULT_JOBS_DIR
     status_script = f"""echo "=== Process ==="
 ps aux | grep "job-name {args.job}" | grep -v grep || echo "(not running)"
 
@@ -199,24 +201,10 @@ echo ""
 echo "=== Results ==="
 pass=0; fail=0; pending=0
 
-RESULTS_DIR=""
-for candidate in "/tmp/{args.job}/{args.job}" "/tmp/{args.job}"; do
-    if [ -d "$candidate" ]; then
-        if ls "$candidate"/*/verifier/reward.txt >/dev/null 2>&1 || \
-           ls "$candidate"/*/reward.txt >/dev/null 2>&1 || \
-           ls "$candidate"/*/result.json >/dev/null 2>&1; then
-            RESULTS_DIR="$candidate"
-            break
-        fi
-    fi
-done
-
-if [ -z "$RESULTS_DIR" ]; then
-    RESULTS_DIR="/tmp/{args.job}"
-    if [ ! -d "$RESULTS_DIR" ]; then
-        echo "  No results directory found for {args.job}"
-        exit 0
-    fi
+RESULTS_DIR="{jobs_dir}/{args.job}"
+if [ ! -d "$RESULTS_DIR" ]; then
+    echo "  No results directory found for {args.job}"
+    exit 0
 fi
 
 echo "(results in $RESULTS_DIR)"
@@ -244,13 +232,12 @@ echo "=== Summary: $pass/$total pass, $fail fail, $pending running ==="
 
 echo ""
 echo "=== Build ==="
-cat /tmp/{args.job}/manifest.json 2>/dev/null \
-  || cat /tmp/{args.job}/{args.job}/manifest.json 2>/dev/null \
+cat {jobs_dir}/{args.job}/manifest.json 2>/dev/null \
   || echo "(no manifest)"
 
 echo ""
 echo "=== Recent log ==="
-tail -10 /tmp/{args.job}/{args.job}/job.log 2>/dev/null \
+tail -10 {jobs_dir}/{args.job}/job.log 2>/dev/null \
   || tail -10 /tmp/{args.job}.log 2>/dev/null \
   || echo "(no log)"
 """
@@ -269,7 +256,7 @@ def cmd_collect(args):
     with tempfile.TemporaryDirectory() as tmpdir:
         print("=== Syncing harbor output from remote ===")
         subprocess.run(
-            ["rsync", "-az", f"{REMOTE}:/tmp/{args.job}/{args.job}/", f"{tmpdir}/"],
+            ["rsync", "-az", f"{REMOTE}:{DEFAULT_JOBS_DIR}/{args.job}/", f"{tmpdir}/"],
             check=True,
         )
 

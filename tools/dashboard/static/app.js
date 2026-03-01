@@ -137,6 +137,13 @@ function formatWallTime(sec) {
     return m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
+function formatSize(bytes) {
+    if (bytes == null) return '-';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function formatTaskTokens(tokIn, tokOut) {
     if (!tokIn && !tokOut) return '-';
     return `${(tokIn / 1000).toFixed(1)}k / ${(tokOut / 1000).toFixed(1)}k`;
@@ -857,6 +864,44 @@ async function renderTaskDetail(container, jobName, taskName) {
         }
 
         // ---------------------------------------------------------------
+        // Artifacts — collapsible list of agent-created files
+        // ---------------------------------------------------------------
+        let artifactSection = null;
+        if (rawFiles.artifacts_base) {
+            try {
+                const artifacts = await fetchJSON(
+                    `/api/runs/${encodeURIComponent(jobName)}/tasks/${encodeURIComponent(taskName)}/artifacts`
+                );
+                if (artifacts.length > 0) {
+                    const list = h('div', { className: 'artifact-list' });
+                    for (const a of artifacts) {
+                        const row = h('div', { className: 'artifact-row' },
+                            h('a', {
+                                href: a.raw_url,
+                                target: '_blank',
+                                className: 'artifact-path',
+                            }, a.path),
+                            h('span', { className: 'artifact-size' }, formatSize(a.size)),
+                        );
+                        list.appendChild(row);
+                    }
+                    const section = h('div', { className: 'card two-state collapsed' });
+                    const header = h('div', { className: 'card-header clickable' },
+                        h('span', { className: 'card-title' }, `Artifacts (${artifacts.length} files)`),
+                    );
+                    header.addEventListener('click', () => section.classList.toggle('collapsed'));
+                    section.appendChild(header);
+                    const body = h('div', { className: 'card-body-pre artifact-body' });
+                    body.appendChild(list);
+                    section.appendChild(body);
+                    artifactSection = section;
+                }
+            } catch (_) {
+                // Artifact fetch failed — skip section
+            }
+        }
+
+        // ---------------------------------------------------------------
         // Agent stdout — two-state expand, default collapsed
         // ---------------------------------------------------------------
         let stdoutSection = null;
@@ -940,6 +985,7 @@ async function renderTaskDetail(container, jobName, taskName) {
         container.appendChild(header);
         container.appendChild(summaryCard);
         if (verifierSection) container.appendChild(verifierSection);
+        if (artifactSection) container.appendChild(artifactSection);
         if (stdoutSection) container.appendChild(stdoutSection);
         container.appendChild(trajectorySection);
     } catch (err) {

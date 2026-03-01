@@ -121,6 +121,24 @@ class RunStore:
         return roots
 
     # ------------------------------------------------------------------
+    # Artifacts
+    # ------------------------------------------------------------------
+
+    def list_artifacts(self, task_dir):
+        """List artifact files with relative paths and sizes."""
+        artifacts_dir = Path(task_dir) / "agent" / "artifacts"
+        if not artifacts_dir.is_dir():
+            return []
+        files = []
+        for f in sorted(artifacts_dir.rglob("*")):
+            if f.is_file():
+                files.append({
+                    "path": str(f.relative_to(artifacts_dir)),
+                    "size": f.stat().st_size,
+                })
+        return files
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
