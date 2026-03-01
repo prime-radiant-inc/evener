@@ -161,6 +161,104 @@ func TestEmptyResponse_ResetsOnProgress(t *testing.T) {
 	}
 }
 
+func TestEmptyResponse_DoesNotConsumeToolRounds(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	shellCall := func(id string) llm.ToolCallData {
+		raw, _ := json.Marshal(map[string]any{
+			"command":     "echo ok",
+			"description": "filler",
+		})
+		return llm.ToolCallData{ID: id, Name: "exec_command", Arguments: raw, Type: "function"}
+	}
+	result := submitResultCall("c1", "done")
+
+	// With MaxToolRoundsPerInput=3, agent gets 3 real tool rounds.
+	// Two empty responses should NOT consume rounds, leaving all 3 for real work.
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(shellCall("s1")) }, // round 0
+			func(req llm.Request) llm.Response { return emptyResponse() },                   // empty — not a round
+			func(req llm.Request) llm.Response { return toolCallResponse(shellCall("s2")) },  // round 1
+			func(req llm.Request) llm.Response { return emptyResponse() },                   // empty — not a round
+			func(req llm.Request) llm.Response { return toolCallResponse(result) },           // round 2 (submit)
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.3-codex"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxToolRoundsPerInput: 3,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := sess.ProcessInput(ctx, "do the task")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if strings.TrimSpace(out) != "done" {
+		t.Fatalf("ProcessInput returned %q, want %q", out, "done")
+	}
+	sess.Close()
+
+	// All 5 requests should have been made (3 real + 2 empty).
+	if got := len(f.Requests()); got != 5 {
+		t.Fatalf("requests: got %d want 5", got)
+	}
+}
+
+func TestBareText_DoesNotConsumeToolRounds(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	shellCall := func(id string) llm.ToolCallData {
+		raw, _ := json.Marshal(map[string]any{
+			"command":     "echo ok",
+			"description": "filler",
+		})
+		return llm.ToolCallData{ID: id, Name: "exec_command", Arguments: raw, Type: "function"}
+	}
+	result := submitResultCall("c1", "done")
+
+	// With MaxToolRoundsPerInput=3, bare text retries should not consume rounds.
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(shellCall("s1")) },          // round 0
+			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("oops")} }, // bare text — not a round
+			func(req llm.Request) llm.Response { return toolCallResponse(shellCall("s2")) },          // round 1
+			func(req llm.Request) llm.Response { return toolCallResponse(result) },                   // round 2 (submit)
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.3-codex"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxToolRoundsPerInput: 3,
+		NonInteractive:        true,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := sess.ProcessInput(ctx, "do the task")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if strings.TrimSpace(out) != "done" {
+		t.Fatalf("ProcessInput returned %q, want %q", out, "done")
+	}
+	sess.Close()
+
+	if got := len(f.Requests()); got != 4 {
+		t.Fatalf("requests: got %d want 4", got)
+	}
+}
+
 func TestBareText_RedirectsToSubmitResult(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()

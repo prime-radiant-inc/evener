@@ -1543,6 +1543,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 					}
 					s.appendTurn(TurnSteering, llm.User(steering))
 					s.emit(EventSteeringInjected, SteeringInjectedData{Text: steering})
+					round-- // Don't count empty-response retries as tool rounds.
 					continue
 				}
 				// Exhausted retries — fall through to exit.
@@ -1561,6 +1562,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 						"If you still have work to do, call your next tool."
 					s.appendTurn(TurnSteering, llm.User(steering))
 					s.emit(EventSteeringInjected, SteeringInjectedData{Text: steering})
+					round-- // Don't count bare-text retries as tool rounds.
 					continue
 				}
 				// Exhausted retries — fall through to exit with last text.
