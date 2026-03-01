@@ -95,6 +95,7 @@ def build_harbor_command(
         f"-n {concurrency}",
         f"--job-name {job_name}",
         f"--jobs-dir /tmp/{job_name}",
+        "--no-delete",
     ])
     for ak in (ak_args or []):
         parts.append(f"--ak {ak}")
