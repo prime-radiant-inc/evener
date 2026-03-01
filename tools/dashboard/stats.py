@@ -1,5 +1,6 @@
-"""Per-task metrics computed from transcripts."""
+"""Per-task and per-run metrics computed from transcripts."""
 
+import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
@@ -199,3 +200,109 @@ def _extract_submitted_value(rnd):
             if val:
                 return str(val)
     return ""
+
+
+def compute_run_stats(store, job_name, cache_dir=None):
+    """Compute aggregate metrics for all tasks in a run.
+
+    Returns a dict with passed, failed, total, by_category,
+    total_rounds, total_tokens_in, total_tokens_out, and tasks list.
+
+    Returns None if the job is not found.
+    """
+    tasks = store.list_tasks(job_name)
+    if tasks is None:
+        return None
+
+    job_dir = store.data_dir / job_name
+    if not job_dir.is_dir():
+        return None
+
+    # Check disk cache
+    if cache_dir is not None:
+        cache_dir = Path(cache_dir)
+        key = _cache_key(job_dir)
+        cache_file = cache_dir / job_name / "stats.json"
+        if cache_file.is_file():
+            try:
+                cached = json.loads(cache_file.read_text())
+                if cached.get("_cache_key") == key:
+                    cached.pop("_cache_key", None)
+                    return cached
+            except (json.JSONDecodeError, OSError):
+                pass
+
+    # Compute per-task stats and aggregate
+    passed = 0
+    failed = 0
+    by_category = {}
+    total_rounds = 0
+    total_tokens_in = 0
+    total_tokens_out = 0
+    task_entries = []
+
+    for task_summary in tasks:
+        task_name = task_summary["task_name"]
+        task_stats = compute_task_stats(store, job_name, task_name)
+
+        entry = {
+            "task_name": task_name,
+            "passed": task_summary["passed"],
+            "failure_category": task_summary["failure_category"],
+            "reward": task_summary["reward"],
+        }
+        if task_stats is not None:
+            entry.update(task_stats)
+
+        task_entries.append(entry)
+
+        if task_summary["passed"]:
+            passed += 1
+        else:
+            failed += 1
+            cat = task_summary["failure_category"]
+            if cat:
+                by_category[cat] = by_category.get(cat, 0) + 1
+
+        if task_stats is not None:
+            total_rounds += task_stats["total_rounds"]
+            total_tokens_in += task_stats["total_tokens_in"]
+            total_tokens_out += task_stats["total_tokens_out"]
+
+    result = {
+        "passed": passed,
+        "failed": failed,
+        "total": len(tasks),
+        "by_category": by_category,
+        "total_rounds": total_rounds,
+        "total_tokens_in": total_tokens_in,
+        "total_tokens_out": total_tokens_out,
+        "tasks": task_entries,
+    }
+
+    # Write disk cache
+    if cache_dir is not None:
+        cache_file = cache_dir / job_name / "stats.json"
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        to_write = dict(result)
+        to_write["_cache_key"] = key
+        cache_file.write_text(json.dumps(to_write))
+
+    return result
+
+
+def _cache_key(job_dir):
+    """Hash of mtimes for all transcript and api.jsonl files."""
+    mtimes = []
+    for task_dir in sorted(job_dir.iterdir()):
+        if not task_dir.is_dir() or "__" not in task_dir.name:
+            continue
+        sessions = task_dir / "agent" / "serf-state" / "sessions"
+        if sessions.is_dir():
+            for f in sorted(sessions.iterdir()):
+                if f.suffix == ".jsonl":
+                    mtimes.append(f"{f}:{f.stat().st_mtime_ns}")
+        api_log = task_dir / "agent" / "serf-state" / "api.jsonl"
+        if api_log.is_file():
+            mtimes.append(f"{api_log}:{api_log.stat().st_mtime_ns}")
+    return hashlib.sha256("\n".join(mtimes).encode()).hexdigest()[:16]

@@ -1,9 +1,9 @@
-"""Tests for per-task metrics computed from transcripts."""
+"""Tests for per-task and per-run metrics computed from transcripts."""
 
 import pytest
 
 from data import RunStore
-from stats import compute_task_stats
+from stats import compute_task_stats, compute_run_stats
 
 
 class TestComputeTaskStatsBuildWidget:
@@ -152,3 +152,81 @@ class TestComputeTaskStatsNotFound:
     def test_missing_job(self, harbor_job_dir):
         store = RunStore(harbor_job_dir)
         assert compute_task_stats(store, "no-such-job", "build-widget") is None
+
+
+class TestComputeRunStats:
+    """Per-run aggregate metrics."""
+
+    def test_pass_fail_counts(self, harbor_job_dir):
+        store = RunStore(harbor_job_dir)
+        stats = compute_run_stats(store, "full-test")
+        assert stats["passed"] == 1
+        assert stats["failed"] == 1
+        assert stats["total"] == 2
+
+    def test_category_counts(self, harbor_job_dir):
+        store = RunStore(harbor_job_dir)
+        stats = compute_run_stats(store, "full-test")
+        assert stats["by_category"]["wrong_answer"] == 1
+
+    def test_total_rounds(self, harbor_job_dir):
+        store = RunStore(harbor_job_dir)
+        stats = compute_run_stats(store, "full-test")
+        assert stats["total_rounds"] == 6  # 4 + 2
+
+    def test_total_tokens(self, harbor_job_dir):
+        store = RunStore(harbor_job_dir)
+        stats = compute_run_stats(store, "full-test")
+        assert stats["total_tokens_in"] == 3450  # 2550 + 900
+
+    def test_tasks_list(self, harbor_job_dir):
+        store = RunStore(harbor_job_dir)
+        stats = compute_run_stats(store, "full-test")
+        assert len(stats["tasks"]) == 2
+        names = {t["task_name"] for t in stats["tasks"]}
+        assert names == {"build-widget", "fix-bug"}
+
+    def test_task_entries_have_stats(self, harbor_job_dir):
+        store = RunStore(harbor_job_dir)
+        stats = compute_run_stats(store, "full-test")
+        for t in stats["tasks"]:
+            assert "total_rounds" in t
+            assert "task_name" in t
+            assert "passed" in t
+
+    def test_not_found_returns_none(self, harbor_job_dir):
+        store = RunStore(harbor_job_dir)
+        assert compute_run_stats(store, "nonexistent") is None
+
+
+class TestStatsCache:
+    """Disk caching for run stats."""
+
+    def test_cache_written(self, harbor_job_dir):
+        store = RunStore(harbor_job_dir)
+        cache_dir = harbor_job_dir / ".cache"
+        compute_run_stats(store, "full-test", cache_dir=cache_dir)
+        assert (cache_dir / "full-test" / "stats.json").is_file()
+
+    def test_cache_hit(self, harbor_job_dir):
+        store = RunStore(harbor_job_dir)
+        cache_dir = harbor_job_dir / ".cache"
+        s1 = compute_run_stats(store, "full-test", cache_dir=cache_dir)
+        s2 = compute_run_stats(store, "full-test", cache_dir=cache_dir)
+        assert s1 == s2
+
+    def test_cache_invalidation(self, harbor_job_dir):
+        import time
+        store = RunStore(harbor_job_dir)
+        cache_dir = harbor_job_dir / ".cache"
+        compute_run_stats(store, "full-test", cache_dir=cache_dir)
+
+        time.sleep(0.05)
+        # Touch a transcript file
+        task_dir = harbor_job_dir / "full-test" / "build-widget__abc123"
+        sessions_dir = task_dir / "agent" / "serf-state" / "sessions"
+        tf = list(sessions_dir.iterdir())[0]
+        tf.write_text(tf.read_text())
+
+        s2 = compute_run_stats(store, "full-test", cache_dir=cache_dir)
+        assert s2 is not None  # recomputed successfully
