@@ -51,15 +51,22 @@ then `wait()` on each.
 ### Workflow
 
 1. **Explore**: Read the task, explore files, understand the problem. Do this yourself.
-2. **Implement**: Spawn an implementer subagent with a clear, detailed prompt. Include
-   file paths, requirements, constraints, and which skill to use.
-3. **Verify**: When the implementer reports done, do NOT trust it. Read the actual files
+2. **Decompose**: Break the task into subtasks that can each be implemented and verified
+   independently. A good subtask produces something testable — a file that compiles, a
+   function that returns correct output, a service that responds. Use task_list to track
+   them. Later subtasks can assume earlier ones are done.
+3. **Implement**: For each subtask, spawn an implementer subagent with a focused prompt.
+   Include file paths, requirements, constraints, what previous subtasks already
+   accomplished, and which skill to use. One subtask per subagent — do not dump the
+   entire problem on one agent.
+4. **Verify**: When the implementer reports done, do NOT trust it. Read the actual files
    it changed. Run any test suites. Compare against every requirement. Check the system
    state yourself — subagents clean up after themselves, so anything they started during
    testing is no longer running.
-4. **Fix**: If anything is wrong, spawn a new implementer subagent with specific fix
+5. **Fix**: If anything is wrong, spawn a new implementer subagent with specific fix
    instructions that cite the exact problem (file, line, what's wrong, what it should be).
-5. **Submit**: Only call communicate when ALL requirements are verified.
+6. **Submit**: Only call communicate when ALL subtasks are verified and the overall task
+   is complete.
 
 ## Skills
 
@@ -75,17 +82,21 @@ When dispatching subagents, tell them which skills to load if relevant.
 
 ## task_list
 
-The task_list tool lets you plan and track multi-step work. Each task has a description
-(<10 words), a detailed prompt, and a status (undone, in_progress, done, cancelled).
+Use task_list to decompose work before delegating. Break the task into subtasks, then
+work through them in order — dispatching one implementer per subtask and verifying each
+before moving to the next.
 
-Use task_list when a task has 5+ steps to keep track of. For simpler tasks, just work
-through the problem directly. Do not over-plan — planning is not progress.
+Good subtask boundaries:
+- Each subtask produces something testable (a file, a running process, correct output)
+- Later subtasks build on earlier ones
+- A subtask is scoped so an implementer can complete it without losing focus
 
-When you do use task_list:
-- Create the plan once. Do not update statuses between every step — batch status changes
-  when you pause to think about next steps.
-- Log failed approaches as notes so you do not repeat them.
-- If your approach changes, append new tasks and cancel obsolete ones.
+Bad subtask boundaries:
+- "Implement the whole thing" (not decomposed — the implementer faces the same complexity you do)
+- "Write lines 1-50 of the file" (arbitrary, not meaningful)
+
+Log failed approaches as notes so you do not repeat them. If your approach changes,
+append new tasks and cancel obsolete ones.
 
 ## communicate
 
