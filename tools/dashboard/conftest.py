@@ -1,0 +1,202 @@
+"""Shared test fixtures for dashboard tests."""
+
+import json
+import os
+import pytest
+
+
+@pytest.fixture
+def harbor_job_dir(tmp_path):
+    """Create a harbor-style job directory with two tasks.
+
+    Structure:
+        full-test/full-test/
+            build-widget__abc123/
+                verifier/reward.txt (1.0 - pass)
+                agent/serf-state/sessions/sess-main.transcript.jsonl
+                agent/command-0/stdout.txt
+                result.json
+            fix-bug__def456/
+                verifier/reward.txt (0.0 - fail)
+                agent/serf-state/sessions/sess-main2.transcript.jsonl
+                agent/command-0/stdout.txt
+                result.json
+    """
+    job_root = tmp_path / "full-test" / "full-test"
+
+    # Task 1: build-widget (PASS)
+    t1 = job_root / "build-widget__abc123"
+    _make_task(t1, reward=1.0, transcript_entries=_passing_transcript())
+
+    # Task 2: fix-bug (FAIL, wrong answer)
+    t2 = job_root / "fix-bug__def456"
+    _make_task(t2, reward=0.0, transcript_entries=_failing_transcript(),
+               agent_stdout="[submit_result] submitted\n")
+
+    return tmp_path / "full-test"
+
+
+def _make_task(task_dir, reward, transcript_entries, agent_stdout=""):
+    """Create a single task directory with required files."""
+    # Verifier
+    verifier = task_dir / "verifier"
+    verifier.mkdir(parents=True)
+    (verifier / "reward.txt").write_text(str(reward))
+    if reward < 1.0:
+        (verifier / "test-stdout.txt").write_text(
+            "FAIL: test_widget (expected 42, got 0)\n"
+        )
+
+    # Sessions
+    sessions = task_dir / "agent" / "serf-state" / "sessions"
+    sessions.mkdir(parents=True)
+
+    # Write transcript
+    tf = sessions / "sess-main.transcript.jsonl"
+    lines = [json.dumps(e) for e in transcript_entries]
+    tf.write_text("\n".join(lines) + "\n")
+
+    # Agent stdout
+    cmd_dir = task_dir / "agent" / "command-0"
+    cmd_dir.mkdir(parents=True)
+    (cmd_dir / "stdout.txt").write_text(agent_stdout)
+
+    # result.json
+    (task_dir / "result.json").write_text(json.dumps({
+        "config": {"model": "gpt-5.3-codex"},
+    }))
+
+
+def _passing_transcript():
+    """Transcript entries for a passing task: explore, edit, exec, submit."""
+    return [
+        {"kind": "header", "format_version": 1, "session_id": "sess-main",
+         "created_at": "2026-03-01T12:00:00Z", "model": "gpt-5.3-codex",
+         "profile_id": "openai", "depth": 0},
+        {"kind": "entry", "seq": 0, "turn": {
+            "kind": "USER_INPUT",
+            "message": {"role": "user", "content": [
+                {"kind": "text", "text": "Build a widget that returns 42."}
+            ]},
+            "timestamp": "2026-03-01T12:00:01Z",
+        }},
+        {"kind": "entry", "seq": 1, "turn": {
+            "kind": "ASSISTANT",
+            "message": {"role": "assistant", "content": [
+                {"kind": "text", "text": "I'll start by reading the workspace."},
+                {"kind": "tool_call", "tool_call": {
+                    "id": "tc-1", "name": "glob",
+                    "arguments": "{\"pattern\": \"*\"}",
+                }},
+            ]},
+            "timestamp": "2026-03-01T12:00:02Z",
+            "usage": {"input_tokens": 500, "output_tokens": 30},
+        }},
+        {"kind": "entry", "seq": 2, "turn": {
+            "kind": "TOOL_RESULTS",
+            "message": {"role": "tool", "content": [
+                {"kind": "tool_result", "tool_result": {
+                    "tool_call_id": "tc-1", "name": "glob",
+                    "content": "main.py\ntest_main.py", "is_error": False,
+                }},
+            ]},
+        }},
+        {"kind": "entry", "seq": 3, "turn": {
+            "kind": "ASSISTANT",
+            "message": {"role": "assistant", "content": [
+                {"kind": "tool_call", "tool_call": {
+                    "id": "tc-2", "name": "apply_patch",
+                    "arguments": "{\"patch\": \"--- a/main.py\\n+++ b/main.py\\n@@ -1 +1 @@\\n-pass\\n+def widget(): return 42\"}",
+                }},
+            ]},
+            "timestamp": "2026-03-01T12:00:03Z",
+            "usage": {"input_tokens": 600, "output_tokens": 40},
+        }},
+        {"kind": "entry", "seq": 4, "turn": {
+            "kind": "TOOL_RESULTS",
+            "message": {"role": "tool", "content": [
+                {"kind": "tool_result", "tool_result": {
+                    "tool_call_id": "tc-2", "name": "apply_patch",
+                    "content": "Applied.", "is_error": False,
+                }},
+            ]},
+        }},
+        {"kind": "entry", "seq": 5, "turn": {
+            "kind": "ASSISTANT",
+            "message": {"role": "assistant", "content": [
+                {"kind": "tool_call", "tool_call": {
+                    "id": "tc-3", "name": "shell",
+                    "arguments": "{\"command\": \"python -c 'from main import widget; print(widget())'\"}",
+                }},
+            ]},
+            "timestamp": "2026-03-01T12:00:04Z",
+            "usage": {"input_tokens": 700, "output_tokens": 25},
+        }},
+        {"kind": "entry", "seq": 6, "turn": {
+            "kind": "TOOL_RESULTS",
+            "message": {"role": "tool", "content": [
+                {"kind": "tool_result", "tool_result": {
+                    "tool_call_id": "tc-3", "name": "shell",
+                    "content": "42", "is_error": False,
+                }},
+            ]},
+        }},
+        {"kind": "entry", "seq": 7, "turn": {
+            "kind": "ASSISTANT",
+            "message": {"role": "assistant", "content": [
+                {"kind": "tool_call", "tool_call": {
+                    "id": "tc-4", "name": "communicate",
+                    "arguments": "{\"result\": \"Widget implemented.\"}",
+                }},
+            ]},
+            "timestamp": "2026-03-01T12:00:05Z",
+            "usage": {"input_tokens": 750, "output_tokens": 20},
+        }},
+    ]
+
+
+def _failing_transcript():
+    """Transcript for a failing task: explore, wrong submit."""
+    return [
+        {"kind": "header", "format_version": 1, "session_id": "sess-main2",
+         "created_at": "2026-03-01T13:00:00Z", "model": "gpt-5.3-codex",
+         "profile_id": "openai", "depth": 0},
+        {"kind": "entry", "seq": 0, "turn": {
+            "kind": "USER_INPUT",
+            "message": {"role": "user", "content": [
+                {"kind": "text", "text": "Fix the bug in widget."}
+            ]},
+            "timestamp": "2026-03-01T13:00:01Z",
+        }},
+        {"kind": "entry", "seq": 1, "turn": {
+            "kind": "ASSISTANT",
+            "message": {"role": "assistant", "content": [
+                {"kind": "tool_call", "tool_call": {
+                    "id": "tc-10", "name": "read_file",
+                    "arguments": "{\"path\": \"main.py\"}",
+                }},
+            ]},
+            "timestamp": "2026-03-01T13:00:02Z",
+            "usage": {"input_tokens": 400, "output_tokens": 15},
+        }},
+        {"kind": "entry", "seq": 2, "turn": {
+            "kind": "TOOL_RESULTS",
+            "message": {"role": "tool", "content": [
+                {"kind": "tool_result", "tool_result": {
+                    "tool_call_id": "tc-10", "name": "read_file",
+                    "content": "def widget(): return 0", "is_error": False,
+                }},
+            ]},
+        }},
+        {"kind": "entry", "seq": 3, "turn": {
+            "kind": "ASSISTANT",
+            "message": {"role": "assistant", "content": [
+                {"kind": "tool_call", "tool_call": {
+                    "id": "tc-11", "name": "communicate",
+                    "arguments": "{\"result\": \"Looks fine to me.\"}",
+                }},
+            ]},
+            "timestamp": "2026-03-01T13:00:03Z",
+            "usage": {"input_tokens": 500, "output_tokens": 10},
+        }},
+    ]
