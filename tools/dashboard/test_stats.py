@@ -3,7 +3,7 @@
 import pytest
 
 from data import RunStore
-from stats import compute_task_stats, compute_run_stats
+from stats import compute_task_stats, compute_run_stats, compute_task_history
 
 
 class TestComputeTaskStatsBuildWidget:
@@ -230,3 +230,37 @@ class TestStatsCache:
 
         s2 = compute_run_stats(store, "full-test", cache_dir=cache_dir)
         assert s2 is not None  # recomputed successfully
+
+
+class TestTaskHistory:
+    """Cross-run task history."""
+
+    def test_single_run(self, harbor_job_dir):
+        store = RunStore(harbor_job_dir)
+        history = compute_task_history(store, "build-widget")
+        assert len(history) == 1
+        assert history[0]["job_name"] == "full-test"
+        assert history[0]["passed"] is True
+
+    def test_includes_stats(self, harbor_job_dir):
+        store = RunStore(harbor_job_dir)
+        history = compute_task_history(store, "build-widget")
+        assert "total_rounds" in history[0]
+        assert "wasted_rounds" in history[0]
+        assert "wall_time_sec" in history[0]
+
+    def test_multiple_runs(self, harbor_job_dir):
+        from conftest import _make_task, _passing_transcript
+        # Create second run with same task
+        job2 = harbor_job_dir / "second-run"
+        t = job2 / "build-widget__xyz999"
+        _make_task(t, reward=0.0, transcript_entries=_passing_transcript(),
+                   agent_stdout="[submit_result] submitted\n")
+        store = RunStore(harbor_job_dir)
+        history = compute_task_history(store, "build-widget")
+        assert len(history) == 2
+
+    def test_not_found(self, harbor_job_dir):
+        store = RunStore(harbor_job_dir)
+        history = compute_task_history(store, "nonexistent-task")
+        assert history == []

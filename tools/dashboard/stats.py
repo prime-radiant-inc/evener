@@ -291,6 +291,47 @@ def compute_run_stats(store, job_name, cache_dir=None):
     return result
 
 
+def compute_task_history(store, task_name):
+    """Find a task across all runs, return per-run stats sorted newest first.
+
+    Returns a list of dicts with job_name, passed, failure_category,
+    total_rounds, wasted_rounds, total_tokens_in, total_tokens_out,
+    and wall_time_sec.  Returns empty list if task not found in any run.
+    """
+    results = []
+    for run in store.list_runs():
+        job_name = run["job_name"]
+        tasks = store.list_tasks(job_name)
+        if tasks is None:
+            continue
+        for t in tasks:
+            if t["task_name"] == task_name:
+                task_stats = compute_task_stats(store, job_name, task_name)
+                if task_stats is None:
+                    continue
+                entry = {
+                    "job_name": job_name,
+                    "passed": t["passed"],
+                    "failure_category": t.get("failure_category"),
+                    "total_rounds": task_stats["total_rounds"],
+                    "wasted_rounds": task_stats["wasted_rounds"],
+                    "total_tokens_in": task_stats["total_tokens_in"],
+                    "total_tokens_out": task_stats["total_tokens_out"],
+                    "wall_time_sec": task_stats.get("wall_time_sec"),
+                }
+                job_dir = store.data_dir / job_name
+                try:
+                    entry["_mtime"] = job_dir.stat().st_mtime
+                except OSError:
+                    entry["_mtime"] = 0
+                results.append(entry)
+                break
+    results.sort(key=lambda r: r.get("_mtime", 0), reverse=True)
+    for r in results:
+        r.pop("_mtime", None)
+    return results
+
+
 def _cache_key(job_dir):
     """Hash of mtimes for all transcript and api.jsonl files."""
     mtimes = []
