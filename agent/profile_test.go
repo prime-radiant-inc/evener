@@ -2,6 +2,8 @@ package agent
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -1042,5 +1044,131 @@ func assertToolListExact(t *testing.T, p ProviderProfile, want []string) {
 	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("tool list mismatch for profile %q:\n got: %v\nwant: %v", p.ID(), got, want)
+	}
+}
+
+func TestBuildSystemPrompt_WorkspaceSection(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a realistic workspace.
+	for _, f := range []struct{ path, content string }{
+		{"main.py", "print('hello')\n"},
+		{"utils.py", "def helper(): pass\n"},
+		{"src/core.py", "class Core: pass\n"},
+		{"tests/test_main.py", "def test_main(): pass\n"},
+		{"test.sh", "#!/bin/bash\nexit 0\n"},
+		{"Makefile", "all:\n\techo ok\ntest:\n\t./test.sh\nclean:\n\trm -f *.o\n"},
+	} {
+		p := filepath.Join(dir, f.path)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(f.content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	env := EnvironmentInfo{
+		WorkingDir: dir,
+		Platform:   "linux",
+		Today:      "2026-03-01",
+		Workspace:  ScanWorkspace(dir),
+	}
+
+	p := NewOpenAIProfile("gpt-5.3-codex")
+	prompt := p.BuildSystemPrompt(env, nil, nil, "")
+
+	// Should contain workspace section.
+	if !strings.Contains(prompt, "<workspace>") {
+		t.Fatalf("prompt missing <workspace> section:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "</workspace>") {
+		t.Fatal("prompt missing </workspace> closing tag")
+	}
+
+	// Should contain the directory tree.
+	if !strings.Contains(prompt, "main.py") {
+		t.Error("workspace section missing main.py in tree")
+	}
+	if !strings.Contains(prompt, "src/") {
+		t.Error("workspace section missing src/ directory")
+	}
+
+	// Should highlight test files.
+	if !strings.Contains(prompt, "test.sh") || !strings.Contains(prompt, "test_main.py") {
+		t.Error("workspace section missing test file callout")
+	}
+
+	// Should show build system info.
+	if !strings.Contains(prompt, "Makefile") {
+		t.Error("workspace section missing Makefile info")
+	}
+
+	// Workspace section should come after environment but before tool list.
+	wsIdx := strings.Index(prompt, "<workspace>")
+	envIdx := strings.Index(prompt, "</environment>")
+	toolIdx := strings.Index(prompt, "Tools:")
+	if wsIdx < envIdx {
+		t.Errorf("workspace (pos %d) should come after environment (pos %d)", wsIdx, envIdx)
+	}
+	if wsIdx > toolIdx {
+		t.Errorf("workspace (pos %d) should come before tools (pos %d)", wsIdx, toolIdx)
+	}
+}
+
+func TestBuildSystemPrompt_EmptyWorkspace(t *testing.T) {
+	env := EnvironmentInfo{
+		WorkingDir: "/tmp",
+		Platform:   "linux",
+		Today:      "2026-03-01",
+		// Workspace is zero value (empty).
+	}
+
+	p := NewOpenAIProfile("gpt-5.3-codex")
+	prompt := p.BuildSystemPrompt(env, nil, nil, "")
+
+	// Should NOT render an empty workspace section.
+	if strings.Contains(prompt, "<workspace>") {
+		t.Error("empty workspace should not render a <workspace> section")
+	}
+}
+
+func TestBuildSystemPrompt_WorkspaceTestFilesCallout(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create test files only.
+	for _, f := range []struct{ path, content string }{
+		{"app.py", "print('app')\n"},
+		{"tests/test_app.py", "def test_app(): pass\n"},
+		{"tests/test_integration.py", "def test_int(): pass\n"},
+	} {
+		p := filepath.Join(dir, f.path)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(f.content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	env := EnvironmentInfo{
+		WorkingDir: dir,
+		Platform:   "linux",
+		Today:      "2026-03-01",
+		Workspace:  ScanWorkspace(dir),
+	}
+
+	p := NewOpenAIProfile("gpt-5.3-codex")
+	prompt := p.BuildSystemPrompt(env, nil, nil, "")
+
+	// The test files callout should emphasize these are for verification.
+	if !strings.Contains(prompt, "Test files") {
+		t.Error("workspace section missing 'Test files' callout")
+	}
+	if !strings.Contains(prompt, "tests/test_app.py") {
+		t.Error("workspace section missing tests/test_app.py")
+	}
+	if !strings.Contains(prompt, "tests/test_integration.py") {
+		t.Error("workspace section missing tests/test_integration.py")
 	}
 }

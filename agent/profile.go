@@ -20,17 +20,18 @@ func embeddedBasePrompt(provider string) string {
 }
 
 type EnvironmentInfo struct {
-	WorkingDir            string   `json:"working_dir"`
-	Platform              string   `json:"platform"`
-	OSVersion             string   `json:"os_version"`
-	Today                 string   `json:"today"`            // YYYY-MM-DD
-	KnowledgeCutoff       string   `json:"knowledge_cutoff"` // YYYY-MM-DD
-	IsGitRepo             bool     `json:"is_git_repo"`
-	GitBranch             string   `json:"git_branch,omitempty"`
-	GitOriginURL          string   `json:"git_origin_url,omitempty"`
-	GitModifiedFiles      int      `json:"git_modified_files"`
-	GitUntrackedFiles     int      `json:"git_untracked_files"`
-	GitRecentCommitTitles []string `json:"git_recent_commit_titles,omitempty"`
+	WorkingDir            string        `json:"working_dir"`
+	Platform              string        `json:"platform"`
+	OSVersion             string        `json:"os_version"`
+	Today                 string        `json:"today"`            // YYYY-MM-DD
+	KnowledgeCutoff       string        `json:"knowledge_cutoff"` // YYYY-MM-DD
+	IsGitRepo             bool          `json:"is_git_repo"`
+	GitBranch             string        `json:"git_branch,omitempty"`
+	GitOriginURL          string        `json:"git_origin_url,omitempty"`
+	GitModifiedFiles      int           `json:"git_modified_files"`
+	GitUntrackedFiles     int           `json:"git_untracked_files"`
+	GitRecentCommitTitles []string      `json:"git_recent_commit_titles,omitempty"`
+	Workspace             WorkspaceInfo `json:"workspace,omitempty"`
 }
 
 type ProviderProfile interface {
@@ -181,6 +182,30 @@ func (p *baseProfile) BuildSystemPrompt(env EnvironmentInfo, docs []ProjectDoc, 
 			}
 		}
 		b.WriteString("</git>\n\n")
+	}
+
+	// Workspace context: directory tree, test files, build system info.
+	// Injected so the model starts with full workspace awareness.
+	if env.Workspace.Tree != "" || len(env.Workspace.TestFiles) > 0 || env.Workspace.BuildInfo != "" {
+		b.WriteString("<workspace>\n")
+		if env.Workspace.Tree != "" {
+			b.WriteString("Directory structure:\n")
+			b.WriteString(env.Workspace.Tree)
+			b.WriteString("\n\n")
+		}
+		if len(env.Workspace.TestFiles) > 0 {
+			b.WriteString("Test files found (run these to verify your work):\n")
+			for _, tf := range env.Workspace.TestFiles {
+				b.WriteString("- " + tf + "\n")
+			}
+			b.WriteString("\n")
+		}
+		if env.Workspace.BuildInfo != "" {
+			b.WriteString("Build system:\n")
+			b.WriteString(env.Workspace.BuildInfo)
+			b.WriteString("\n")
+		}
+		b.WriteString("</workspace>\n\n")
 	}
 
 	// Skills section is only rendered for profiles that use the use_skill tool
@@ -427,6 +452,7 @@ func envInfoFromEnv(env ExecutionEnvironment) EnvironmentInfo {
 		Platform:   plat,
 		OSVersion:  osv,
 		Today:      time.Now().UTC().Format("2006-01-02"),
+		Workspace:  ScanWorkspace(wd),
 	}
 }
 
