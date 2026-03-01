@@ -2156,6 +2156,86 @@ func TestPhaseRoundTrip(t *testing.T) {
 	}
 }
 
+// TestFromResponses_EmptyTextWithPhase verifies that when the API returns a
+// message with phase="final_answer" but empty text (gpt-5.3-codex's empty
+// response behavior), the phase is still preserved in the parsed ContentPart.
+func TestFromResponses_EmptyTextWithPhase(t *testing.T) {
+	raw := map[string]any{
+		"id":    "r1",
+		"model": "gpt-5.3-codex",
+		"output": []any{
+			map[string]any{
+				"type":  "message",
+				"phase": "final_answer",
+				"content": []any{
+					map[string]any{"type": "output_text", "text": ""},
+				},
+			},
+		},
+		"usage": map[string]any{"input_tokens": float64(100), "output_tokens": float64(4), "total_tokens": float64(104)},
+	}
+
+	r := fromResponses(raw, "gpt-5.3-codex")
+	// Should have one content part preserving the phase, even with empty text.
+	if len(r.Message.Content) != 1 {
+		t.Fatalf("content parts: got %d want 1", len(r.Message.Content))
+	}
+	if r.Message.Content[0].Phase != "final_answer" {
+		t.Fatalf("phase: got %q want %q", r.Message.Content[0].Phase, "final_answer")
+	}
+}
+
+// TestEmptyPhaseRoundTrip verifies that an empty-text final_answer survives
+// serialization back to the API. The model needs to see that it previously
+// entered final_answer mode (even with no content) so it can course-correct.
+func TestEmptyPhaseRoundTrip(t *testing.T) {
+	// Parse an empty final_answer response.
+	raw := map[string]any{
+		"id":    "r1",
+		"model": "gpt-5.3-codex",
+		"output": []any{
+			map[string]any{
+				"type":  "message",
+				"phase": "final_answer",
+				"content": []any{
+					map[string]any{"type": "output_text", "text": ""},
+				},
+			},
+		},
+		"usage": map[string]any{"input_tokens": float64(100), "output_tokens": float64(4), "total_tokens": float64(104)},
+	}
+	r := fromResponses(raw, "gpt-5.3-codex")
+
+	// Serialize back.
+	nextMsgs := []llm.Message{
+		llm.User("initial task"),
+		r.Message,
+		llm.User("continue working"),
+	}
+	_, items, err := toResponsesInput(nextMsgs)
+	if err != nil {
+		t.Fatalf("toResponsesInput: %v", err)
+	}
+
+	// Find assistant message items.
+	var assistantItems []map[string]any
+	for _, itemAny := range items {
+		item, ok := itemAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		if item["role"] == "assistant" && item["type"] == "message" {
+			assistantItems = append(assistantItems, item)
+		}
+	}
+	if len(assistantItems) != 1 {
+		t.Fatalf("assistant message items: got %d want 1; items=%v", len(assistantItems), items)
+	}
+	if assistantItems[0]["phase"] != "final_answer" {
+		t.Fatalf("phase: got %v want %q", assistantItems[0]["phase"], "final_answer")
+	}
+}
+
 func contentKinds(parts []llm.ContentPart) []string {
 	var kinds []string
 	for _, p := range parts {

@@ -354,3 +354,68 @@ func TestBareText_ExhaustsRetries(t *testing.T) {
 		t.Fatalf("requests: got %d want 4", got)
 	}
 }
+
+// TestEmptyResponse_PhasePreservedInHistory verifies that when a response has
+// empty text but a phase annotation (e.g., "final_answer"), the turn is still
+// appended to history. This ensures the model sees its previous phase in context
+// so it can course-correct instead of repeating the empty final_answer.
+func TestEmptyResponse_PhasePreservedInHistory(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	result := submitResultCall("c1", "final answer")
+
+	// emptyResponseWithPhase simulates gpt-5.3-codex emitting an empty text
+	// response with phase="final_answer".
+	emptyWithPhase := llm.Response{
+		Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentText, Text: "", Phase: "final_answer"},
+			},
+		},
+	}
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			// Round 0: model returns empty text with final_answer phase.
+			func(req llm.Request) llm.Response { return emptyWithPhase },
+			// Round 1: after steering, model should have the empty final_answer
+			// in its history. Verify by checking message count increased.
+			func(req llm.Request) llm.Response {
+				// The empty final_answer turn should be in the messages.
+				foundPhase := false
+				for _, m := range req.Messages {
+					if m.Role == llm.RoleAssistant {
+						for _, p := range m.Content {
+							if p.Phase == "final_answer" {
+								foundPhase = true
+							}
+						}
+					}
+				}
+				if !foundPhase {
+					t.Errorf("expected empty final_answer phase in history, not found in request messages")
+				}
+				return toolCallResponse(result)
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.3-codex"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := sess.ProcessInput(ctx, "do the task")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if strings.TrimSpace(out) != "final answer" {
+		t.Fatalf("ProcessInput returned %q, want %q", out, "final answer")
+	}
+	sess.Close()
+}

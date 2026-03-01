@@ -590,7 +590,7 @@ func toResponsesInput(msgs []llm.Message) (instructions string, items []any, _ e
 				for _, p := range m.Content {
 					switch p.Kind {
 					case llm.ContentText:
-						if strings.TrimSpace(p.Text) == "" {
+						if strings.TrimSpace(p.Text) == "" && p.Phase == "" {
 							continue
 						}
 						entry := map[string]any{"type": "output_text", "text": p.Text}
@@ -786,7 +786,8 @@ func fromResponses(raw map[string]any, requestedModel string) llm.Response {
 						}
 						ct, _ := c["type"].(string)
 						if ct == "output_text" {
-							if text, _ := c["text"].(string); text != "" {
+							text, _ := c["text"].(string)
+							if text != "" || phase != "" {
 								msg.Content = append(msg.Content, llm.ContentPart{Kind: llm.ContentText, Text: text, Phase: phase})
 							}
 						}

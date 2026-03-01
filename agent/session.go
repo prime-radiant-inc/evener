@@ -1476,15 +1476,26 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		lastText = txt
 		calls := resp.ToolCalls()
 
-		// Detect truly empty response (no text, no tool calls) before appending
-		// to history. Appending ghost turns creates consecutive user messages in
-		// the API, which reinforces the empty-response pattern.
-		isTrulyEmpty := strings.TrimSpace(txt) == "" && len(calls) == 0
+		// Two concepts of "empty":
+		// 1. noContent: no text and no tool calls — triggers retry logic
+		// 2. skipHistory: no text, no tool calls, AND no phase metadata —
+		//    truly nothing to append. Responses with phase annotations
+		//    (e.g., "final_answer") must be preserved in history so the
+		//    model sees its own phase metadata and can course-correct.
+		noContent := strings.TrimSpace(txt) == "" && len(calls) == 0
+		hasPhase := false
+		for _, p := range resp.Message.Content {
+			if p.Phase != "" {
+				hasPhase = true
+				break
+			}
+		}
+		skipHistory := noContent && !hasPhase
 
 		s.emit(EventAssistantTextStart, AssistantTextStartData{
 			Model: resp.Model,
 		})
-		if !isTrulyEmpty {
+		if !skipHistory {
 			s.appendAssistantTurn(resp)
 		}
 		if strings.TrimSpace(txt) != "" {
@@ -1520,9 +1531,11 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		}
 
 		if len(calls) == 0 {
-			// Truly empty response (no text, no tool calls): likely a model glitch
+			// Empty response (no text, no tool calls): likely a model glitch
 			// (e.g. gpt-5.3-codex null-content). Inject escalating steering and retry.
-			if isTrulyEmpty {
+			// Note: phase-only responses are still retried — they carry metadata
+			// but the model hasn't produced any useful output.
+			if noContent {
 				consecutiveEmptyResponses++
 				totalEmptyResponses++
 				if consecutiveEmptyResponses <= maxEmptyRetries && totalEmptyResponses <= maxTotalEmptyResponses {
