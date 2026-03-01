@@ -9,14 +9,15 @@ import os
 import subprocess
 
 # --- Remote server config ---
+# Override with EVAL_REMOTE / EVAL_REMOTE_DIR env vars to target a different server.
 
-REMOTE = "jesse@192.168.118.101"
-REMOTE_DIR = "git/terminal-bench"
+REMOTE = os.environ.get("EVAL_REMOTE", "jesse@magic-kingdom")
+REMOTE_DIR = os.environ.get("EVAL_REMOTE_DIR", "git/terminal-bench")
 DATASET = "terminal-bench@2.0"
 
 # --- Defaults ---
 
-DEFAULT_MODEL = "openai/gpt-5.2-codex"
+DEFAULT_MODEL = "openai/gpt-5.3-codex"
 DEFAULT_ADAPTER = "serf_agent:SerfAgent"
 DEFAULT_REPS = 3
 DEFAULT_CONCURRENCY = 4
