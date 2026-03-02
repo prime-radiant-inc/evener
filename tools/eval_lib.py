@@ -63,6 +63,40 @@ def build_ldflags(repo_root: str) -> str:
     )
 
 
+# --- Job naming ---
+
+def extract_effort(ak_args: list[str] | None) -> str:
+    """Extract reasoning_effort from agent kwargs list.
+
+    Returns the effort value if found, otherwise "default".
+    """
+    for arg in (ak_args or []):
+        if arg.startswith("reasoning_effort="):
+            return arg.split("=", 1)[1]
+    return "default"
+
+
+def make_job_name(
+    harness: str,
+    model: str,
+    effort: str,
+    git_sha: str,
+    rep: int,
+    date: str = "",
+) -> str:
+    """Generate a structured job name.
+
+    Format: {harness}_{model}_{effort}_{git-short}_{YYYYMMDD}_{rep}
+    Provider prefix (e.g. "openai/") is stripped from the model name.
+    """
+    # Strip provider prefix
+    if "/" in model:
+        model = model.split("/", 1)[1]
+    if not date:
+        date = datetime.date.today().strftime("%Y%m%d")
+    return f"{harness}_{model}_{effort}_{git_sha}_{date}_{rep}"
+
+
 # --- Run ID ---
 
 def make_run_id(job_name: str, git_sha: str) -> str:

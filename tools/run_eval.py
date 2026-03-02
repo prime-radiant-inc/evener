@@ -7,11 +7,14 @@ Subcommands:
     collect  Collect results and generate summary from a finished job
 
 Examples:
-    ./tools/run_eval.py launch --job baseline-v1
-    ./tools/run_eval.py launch --job test --task build-cython-ext --reps 1
-    ./tools/run_eval.py launch --job reviewer --ak enable_reviewer_gate=true
-    ./tools/run_eval.py status --job baseline-v1
-    ./tools/run_eval.py collect --job baseline-v1
+    ./tools/run_eval.py launch --ak reasoning_effort=medium
+    ./tools/run_eval.py launch --ak reasoning_effort=medium --rep 2
+    ./tools/run_eval.py launch --job custom-name --task build-cython-ext --reps 1
+    ./tools/run_eval.py status --job serf_gpt-5.3-codex_medium_abc1234_20260302_1
+    ./tools/run_eval.py collect --job serf_gpt-5.3-codex_medium_abc1234_20260302_1
+
+Job names are auto-generated as {harness}_{model}_{effort}_{git-sha}_{date}_{rep}
+unless --job is provided explicitly.
 """
 
 import argparse
@@ -33,7 +36,9 @@ from eval_lib import (
     build_harbor_command,
     build_ldflags,
     build_manifest,
+    extract_effort,
     git_info,
+    make_job_name,
     make_run_id,
 )
 
@@ -52,21 +57,37 @@ def cmd_launch(args):
 
     info = git_info(REPO_ROOT)
 
+    # Auto-generate job name if not provided
+    if not args.job:
+        effort = extract_effort(args.ak)
+        args.job = make_job_name(
+            harness=args.harness,
+            model=args.model,
+            effort=effort,
+            git_sha=info["sha"],
+            rep=args.rep,
+        )
+        print(f"=== Auto-generated job name: {args.job} ===")
+
     # Per-run staging directory: each run gets its own isolated copy of the
     # binary, adapter, and install template. This prevents concurrent runs
     # from interfering with each other.
     run_stage_dir = f"{REMOTE_DIR}/runs/{args.job}"
 
     # Build
+    binary_path = "/tmp/serf-linux-amd64"
     if not args.no_build and not args.dry_run:
         print("=== Building linux binary ===")
         ldflags = build_ldflags(REPO_ROOT)
         subprocess.run(
-            f'GOOS=linux GOARCH=amd64 go build -ldflags "{ldflags}" -o /tmp/serf-linux-amd64 ./cmd/serf/',
+            f'GOOS=linux GOARCH=amd64 go build -ldflags "{ldflags}" -o {binary_path} ./cmd/serf/',
             shell=True, check=True, cwd=REPO_ROOT,
         )
     elif args.no_build:
         print("=== Skipping build (--no-build) ===")
+        if not args.dry_run and not os.path.isfile(binary_path):
+            print(f"ERROR: --no-build but {binary_path} does not exist. Build first.", file=sys.stderr)
+            sys.exit(1)
 
     # Deploy to per-run staging directory
     if not args.dry_run:
@@ -76,13 +97,10 @@ def cmd_launch(args):
             check=True,
         )
         files_to_deploy = [
+            (binary_path, f"{REMOTE}:{run_stage_dir}/serf-linux-amd64"),
             (f"{REPO_ROOT}/tools/serf_agent.py", f"{REMOTE}:{run_stage_dir}/serf_agent.py"),
             (f"{REPO_ROOT}/tools/install-serf.sh.j2", f"{REMOTE}:{run_stage_dir}/install-serf.sh.j2"),
         ]
-        if not args.no_build:
-            files_to_deploy.insert(0,
-                ("/tmp/serf-linux-amd64", f"{REMOTE}:{run_stage_dir}/serf-linux-amd64"),
-            )
         for src, dst in files_to_deploy:
             subprocess.run(["scp", src, dst], check=True)
         # Copy .env from base directory
@@ -302,16 +320,19 @@ def main():
         description="Unified orchestration for benchmark eval runs.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""examples:
-  %(prog)s launch --job baseline-v1
-  %(prog)s launch --job test --task build-cython-ext --reps 1
-  %(prog)s status --job baseline-v1
-  %(prog)s collect --job baseline-v1""",
+  %(prog)s launch --ak reasoning_effort=medium
+  %(prog)s launch --ak reasoning_effort=medium --rep 2
+  %(prog)s launch --job custom-name --task build-cython-ext --reps 1
+  %(prog)s status --job serf_gpt-5.3-codex_medium_abc1234_20260302_1
+  %(prog)s collect --job serf_gpt-5.3-codex_medium_abc1234_20260302_1""",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # launch
     launch_p = subparsers.add_parser("launch", help="Build, deploy, and start a harbor eval run")
-    launch_p.add_argument("--job", required=True, help="Job name")
+    launch_p.add_argument("--job", default="", help="Job name (auto-generated if omitted)")
+    launch_p.add_argument("--harness", default="serf", help="Harness name for auto-generated job names (default: serf)")
+    launch_p.add_argument("--rep", type=int, default=1, help="Rep number for auto-generated job names (default: 1)")
     launch_p.add_argument("--model", default=DEFAULT_MODEL, help=f"Model (default: {DEFAULT_MODEL})")
     launch_p.add_argument("--task", default="", help="Single task (omit for full suite)")
     launch_p.add_argument("--reps", type=int, default=DEFAULT_REPS, help=f"Reps (default: {DEFAULT_REPS})")

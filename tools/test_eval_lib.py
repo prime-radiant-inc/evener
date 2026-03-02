@@ -12,6 +12,7 @@ from eval_lib import (
     REMOTE_DIR,
     DATASET,
     git_info,
+    make_job_name,
     make_run_id,
     build_harbor_command,
     build_manifest,
@@ -43,6 +44,88 @@ class TestGitInfo:
     def test_bad_repo_raises(self):
         with pytest.raises(subprocess.CalledProcessError):
             git_info("/nonexistent")
+
+
+class TestMakeJobName:
+    """make_job_name() generates structured job names."""
+
+    def test_basic_format(self):
+        name = make_job_name(
+            harness="serf",
+            model="openai/gpt-5.3-codex",
+            effort="medium",
+            git_sha="dadd39b",
+            date="20260302",
+            rep=1,
+        )
+        assert name == "serf_gpt-5.3-codex_medium_dadd39b_20260302_1"
+
+    def test_strips_provider_prefix(self):
+        name = make_job_name(
+            harness="serf",
+            model="openai/gpt-5.3-codex",
+            effort="high",
+            git_sha="abc1234",
+            date="20260301",
+            rep=3,
+        )
+        assert name == "serf_gpt-5.3-codex_high_abc1234_20260301_3"
+        assert "openai/" not in name
+
+    def test_model_without_provider(self):
+        name = make_job_name(
+            harness="serf",
+            model="gpt-5.3-codex",
+            effort="low",
+            git_sha="abc1234",
+            date="20260301",
+            rep=1,
+        )
+        assert name == "serf_gpt-5.3-codex_low_abc1234_20260301_1"
+
+    def test_different_harness(self):
+        name = make_job_name(
+            harness="codex",
+            model="openai/gpt-5.3-codex",
+            effort="medium",
+            git_sha="abc1234",
+            date="20260301",
+            rep=2,
+        )
+        assert name.startswith("codex_")
+
+    def test_default_date_is_today(self):
+        name = make_job_name(
+            harness="serf",
+            model="openai/gpt-5.3-codex",
+            effort="medium",
+            git_sha="abc1234",
+            rep=1,
+        )
+        # Should contain today's date in YYYYMMDD format
+        import datetime
+        today = datetime.date.today().strftime("%Y%m%d")
+        assert today in name
+
+
+class TestExtractEffort:
+    """extract_effort() pulls reasoning_effort from ak_args."""
+
+    def test_from_ak_args(self):
+        from eval_lib import extract_effort
+        assert extract_effort(["reasoning_effort=medium", "foo=bar"]) == "medium"
+
+    def test_missing_returns_default(self):
+        from eval_lib import extract_effort
+        assert extract_effort(["foo=bar"]) == "default"
+
+    def test_empty_list(self):
+        from eval_lib import extract_effort
+        assert extract_effort([]) == "default"
+
+    def test_none_list(self):
+        from eval_lib import extract_effort
+        assert extract_effort(None) == "default"
 
 
 class TestMakeRunId:
