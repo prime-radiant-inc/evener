@@ -41,6 +41,9 @@ type ToolExecResult struct {
 
 	IsError bool
 
+	// DurationMS is the wall-clock duration of the tool execution in milliseconds.
+	DurationMS int64
+
 	// ImageData and ImageMediaType carry image bytes when a tool returns
 	// an ImageResult (e.g. read_file on a PNG). Providers include these
 	// alongside the text output so the model can "see" the image.

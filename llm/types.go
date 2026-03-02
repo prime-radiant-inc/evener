@@ -151,6 +151,7 @@ type ToolResultData struct {
 	Name       string `json:"name,omitempty"`
 	Content    any    `json:"content"`
 	IsError    bool   `json:"is_error"`
+	DurationMS int64  `json:"duration_ms,omitempty"`
 
 	ImageData      []byte `json:"image_data,omitempty"`
 	ImageMediaType string `json:"image_media_type,omitempty"`

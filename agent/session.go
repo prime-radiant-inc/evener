@@ -1003,7 +1003,9 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecR
 
 	// Session-level tools (subagents) are registered in the registry with closures.
 	ctx = context.WithValue(ctx, ctxToolCallID, call.ID)
+	toolStart := time.Now()
 	res := s.reg.ExecuteCall(ctx, s.env, call)
+	res.DurationMS = time.Since(toolStart).Milliseconds()
 
 	// Emit output deltas (best-effort). Even for non-streaming tools, this gives consumers a uniform
 	// incremental event pattern that mirrors provider LLM streaming.
@@ -1629,6 +1631,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 					Name:           r.ToolName,
 					Content:        r.Output,
 					IsError:        r.IsError,
+					DurationMS:     r.DurationMS,
 					ImageData:      r.ImageData,
 					ImageMediaType: r.ImageMediaType,
 				},

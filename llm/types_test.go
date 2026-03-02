@@ -169,6 +169,56 @@ func TestToolCallData_Parse_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestToolResultData_DurationMS_JSONRoundTrip(t *testing.T) {
+	tr := ToolResultData{
+		ToolCallID: "call_1",
+		Name:       "shell",
+		Content:    "hello",
+		IsError:    false,
+		DurationMS: 1234,
+	}
+	b, err := json.Marshal(tr)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	// Verify the JSON contains duration_ms
+	var raw map[string]any
+	if err := json.Unmarshal(b, &raw); err != nil {
+		t.Fatalf("unmarshal to map: %v", err)
+	}
+	if _, ok := raw["duration_ms"]; !ok {
+		t.Fatalf("JSON missing duration_ms field: %s", b)
+	}
+
+	// Round-trip
+	var got ToolResultData
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.DurationMS != 1234 {
+		t.Fatalf("DurationMS = %d, want 1234", got.DurationMS)
+	}
+}
+
+func TestToolResultData_DurationMS_OmittedWhenZero(t *testing.T) {
+	tr := ToolResultData{
+		ToolCallID: "call_1",
+		Content:    "hello",
+	}
+	b, err := json.Marshal(tr)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(b, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := raw["duration_ms"]; ok {
+		t.Fatalf("JSON should omit duration_ms when zero: %s", b)
+	}
+}
+
 func TestRequest_Validate_WithWebSearch(t *testing.T) {
 	req := Request{
 		Model:     "test-model",
