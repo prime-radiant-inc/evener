@@ -50,4 +50,9 @@ fi
 
 cp "$BINARY" /usr/local/bin/serf
 chmod +x /usr/local/bin/serf
+
+# Many benchmark tasks operate on repos owned by a different user.
+# Without this, git refuses to run inside /app.
+git config --global safe.directory '*'
+
 echo "serf installed for $ARCH"

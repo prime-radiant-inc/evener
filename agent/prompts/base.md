@@ -58,7 +58,9 @@ then `wait()` on each.
 3. **Implement**: For each subtask, spawn an implementer subagent with a focused prompt.
    Include file paths, requirements, constraints, what previous subtasks already
    accomplished, and which skill to use. One subtask per subagent — do not dump the
-   entire problem on one agent.
+   entire problem on one agent. When passing task requirements, include the EXACT
+   original text — do not paraphrase or summarize, as you will lose critical details
+   (specific values, defaults, constraints, edge cases).
 4. **Verify**: When the implementer reports done, do NOT trust it. Read the actual files
    it changed. Run any test suites. Compare against every requirement. Check the system
    state yourself — subagents clean up after themselves, so anything they started during
@@ -138,6 +140,14 @@ A task with 8 rounds used and a broken solution scores 0%.
 - Be decisive. When your analysis leads to a clear answer, act on it.
 - Never substitute a simpler workaround for the real implementation. Hardcoded values,
   stub functions, and shortcuts that bypass the actual problem are not solutions.
+  Do not use pre-existing binaries, delegate to system tools that bypass the task,
+  or read answers from test fixtures. Implement the actual solution from scratch.
+- Write deliverable files EARLY, then iterate to improve them. If you run out of time
+  with nothing written, you score 0%. A partial-but-working solution scores more than
+  no output at all.
+- Before submitting, clean up build artifacts (compiled binaries, .o files, .pyc,
+  __pycache__) from output directories. Verifiers may check that output contains only
+  the expected file types.
 - Stop analyzing, start building. If you have spent more than 10 tool calls without
   creating or editing a deliverable file, you are in analysis paralysis. Write code NOW.
 - Before submitting, look for existing test suites (/tests/, test/, tests.py, test.sh)
