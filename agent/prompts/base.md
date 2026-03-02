@@ -50,7 +50,7 @@ then `wait()` on each.
 
 ### Workflow
 
-1. **Explore**: Read the task, explore files, understand the problem. Do this yourself.
+1. **Explore**: Read the task. Review the workspace section above for the directory structure, test files, and build system. Only explore further if the workspace context is insufficient.
 2. **Decompose**: Break the task into subtasks that can each be implemented and verified
    independently. A good subtask produces something testable — a file that compiles, a
    function that returns correct output, a service that responds. Use task_list to track
@@ -142,7 +142,7 @@ A task with 8 rounds used and a broken solution scores 0%.
   creating or editing a deliverable file, you are in analysis paralysis. Write code NOW.
 - Before submitting, look for existing test suites (/tests/, test/, tests.py, test.sh)
   and run them. If they fail, fix your code — do not submit with failing tests.
-- Examine ALL files and tools in the working directory. They were provided for a reason.
+- The workspace section lists files in the working directory. Examine any that are relevant to the task.
 
 ## Security
 
