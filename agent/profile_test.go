@@ -118,8 +118,8 @@ func TestProviderProfiles_BuildSystemPrompt_IncludesProviderSpecificBaseInstruct
 
 	openai := NewOpenAIProfile("gpt-5.2")
 	sysO := openai.BuildSystemPrompt(env, nil, nil, "")
-	if !strings.Contains(sysO, "OpenAI profile") || !strings.Contains(sysO, "apply_patch") {
-		t.Fatalf("openai system prompt missing expected base instructions:\n%s", sysO)
+	if !strings.Contains(sysO, "multi_tool_use.parallel") || !strings.Contains(sysO, "apply_patch") {
+		t.Fatalf("openai system prompt missing expected OpenAI-specific instructions:\n%s", sysO)
 	}
 	if strings.Contains(sysO, "edit_file") {
 		t.Fatalf("openai system prompt should not focus on edit_file:\n%s", sysO)
@@ -457,7 +457,7 @@ func TestProviderProfile_WithBasePrompt(t *testing.T) {
 	if strings.Contains(origPrompt, "Custom base prompt for testing.") {
 		t.Error("original profile was mutated")
 	}
-	if !strings.Contains(origPrompt, "OpenAI profile") {
+	if !strings.Contains(origPrompt, "apply_patch") {
 		t.Error("original profile lost its embedded prompt")
 	}
 }
