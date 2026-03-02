@@ -215,6 +215,64 @@ class TestListTasks:
         assert tasks[0]["finished_at"] == ""
 
 
+class TestTaskStatus:
+    """Tasks have a status field: running, pass, or fail."""
+
+    def test_completed_pass(self, harbor_job_dir):
+        store = RunStore(harbor_job_dir)
+        tasks = store.list_tasks("full-test")
+        bw = [t for t in tasks if t["task_name"] == "build-widget"][0]
+        assert bw["status"] == "pass"
+
+    def test_completed_fail(self, harbor_job_dir):
+        store = RunStore(harbor_job_dir)
+        tasks = store.list_tasks("full-test")
+        fb = [t for t in tasks if t["task_name"] == "fix-bug"][0]
+        assert fb["status"] == "fail"
+
+    def test_running_no_reward_no_finished(self, tmp_path):
+        """Task with no reward.txt and no finished_at is running."""
+        job_root = tmp_path / "active-run"
+        task = job_root / "in-prog__aaa111"
+        task.mkdir(parents=True)
+        # result.json with started_at but no finished_at
+        (task / "result.json").write_text(json.dumps({
+            "started_at": "2026-03-01T12:00:00Z",
+        }))
+
+        store = RunStore(tmp_path)
+        tasks = store.list_tasks("active-run")
+        assert tasks[0]["status"] == "running"
+        assert tasks[0]["passed"] is False
+
+    def test_running_no_files_at_all(self, tmp_path):
+        """Task dir with nothing in it is running."""
+        job_root = tmp_path / "bare-run"
+        task = job_root / "bare__aaa111"
+        task.mkdir(parents=True)
+
+        store = RunStore(tmp_path)
+        tasks = store.list_tasks("bare-run")
+        assert tasks[0]["status"] == "running"
+
+    def test_run_counts_exclude_running(self, tmp_path):
+        """list_runs total_tasks and passed exclude running tasks."""
+        from conftest import _make_task, _passing_transcript
+        job_root = tmp_path / "mixed-run"
+        # One completed passing task
+        t1 = job_root / "done-task__abc123"
+        _make_task(t1, reward=1.0, transcript_entries=_passing_transcript())
+        # One still running (no reward, no finished_at)
+        t2 = job_root / "running-task__def456"
+        t2.mkdir(parents=True)
+
+        store = RunStore(tmp_path)
+        runs = store.list_runs()
+        run = runs[0]
+        assert run["total_tasks"] == 1  # only the completed one
+        assert run["passed"] == 1
+
+
 class TestFailureClassification:
     """Failure categories are correctly identified."""
 

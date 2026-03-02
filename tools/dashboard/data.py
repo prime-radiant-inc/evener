@@ -34,11 +34,14 @@ class RunStore:
                 continue
             grouped = self._group_task_dirs(task_dirs)
             tasks = [self._read_task_summary(td, tc) for td, tc in grouped]
-            passed = sum(1 for t in tasks if t["passed"])
+            completed = [t for t in tasks if t["status"] != "running"]
+            running = len(tasks) - len(completed)
+            passed = sum(1 for t in completed if t["passed"])
             run = {
                 "job_name": job_dir.name,
-                "total_tasks": len(tasks),
+                "total_tasks": len(completed),
                 "passed": passed,
+                "running": running,
             }
             run.update(self._read_run_metadata(job_dir))
             runs.append(run)
@@ -54,11 +57,14 @@ class RunStore:
             return None
         grouped = self._group_task_dirs(task_dirs)
         tasks = [self._read_task_summary(td, tc) for td, tc in grouped]
-        passed = sum(1 for t in tasks if t["passed"])
+        completed = [t for t in tasks if t["status"] != "running"]
+        running = len(tasks) - len(completed)
+        passed = sum(1 for t in completed if t["passed"])
         run = {
             "job_name": job_name,
-            "total_tasks": len(tasks),
+            "total_tasks": len(completed),
             "passed": passed,
+            "running": running,
         }
         run.update(self._read_run_metadata(job_dir))
         return run
@@ -335,15 +341,31 @@ class RunStore:
 
         return "no_submit"
 
+    def _task_status(self, reward, task_dir):
+        """Determine task status: 'running', 'pass', or 'fail'.
+
+        A task is 'running' if it has no reward.txt and no finished_at
+        in its result.json (i.e. the verifier hasn't run yet).
+        """
+        if reward is not None:
+            return "pass" if reward >= 1.0 else "fail"
+        # No reward — check if the task actually finished
+        result = self._read_result_json(task_dir)
+        if result.get("finished_at"):
+            return "fail"  # finished but no reward → failure
+        return "running"
+
     def _read_task_summary(self, task_dir, trial_count=1):
         """Build a summary dict for a task directory."""
         reward = self._read_reward(task_dir)
         transcript_files = self._find_transcript_files(task_dir)
         result = self._read_result_json(task_dir)
+        status = self._task_status(reward, task_dir)
         return {
             "task_name": self._task_name_from_dir(task_dir),
             "reward": reward,
             "passed": reward is not None and reward >= 1.0,
+            "status": status,
             "failure_category": self._classify_failure(reward, task_dir),
             "session_count": len(transcript_files),
             "trial_count": trial_count,

@@ -291,6 +291,12 @@ async function renderDashboard(container) {
             const dataset = run.dataset_name
                 ? `${run.dataset_name} ${run.dataset_version || ''}`.trim()
                 : '-';
+            const runningLabel = run.running > 0
+                ? h('span', { className: 'running-badge' }, `${run.running} running`)
+                : null;
+            const taskLabel = run.total_tasks > 0
+                ? `${run.passed}/${run.total_tasks}`
+                : (run.running > 0 ? '...' : '0');
 
             const row = h('tr', null,
                 h('td', null,
@@ -300,11 +306,11 @@ async function renderDashboard(container) {
                 h('td', null, stripProviderPrefix(run.model)),
                 h('td', null, dataset),
                 h('td', null, formatDate(run.started_at)),
-                h('td', null, String(run.total_tasks)),
+                h('td', null, String(run.total_tasks), runningLabel),
                 h('td', null,
                     h('div', { className: 'pass-info' },
-                        h('span', { className: 'pass-fraction' }, `${run.passed}/${run.total_tasks}`),
-                        h('span', { className: 'pass-pct' }, `${passRate}%`)
+                        h('span', { className: 'pass-fraction' }, taskLabel),
+                        run.total_tasks > 0 ? h('span', { className: 'pass-pct' }, `${passRate}%`) : null
                     )
                 ),
                 h('td', null,
@@ -713,6 +719,11 @@ async function renderRunDetail(container, jobName) {
                     return link;
                 }
                 case 'passed': {
+                    if (task.status === 'running') {
+                        return h('span', { className: 'status-text' },
+                            h('span', { className: 'status-dot running' }),
+                            'Running');
+                    }
                     const dotClass = task.passed ? 'pass' : failureDotClass(task.failure_category);
                     return h('span', { className: 'status-text' },
                         h('span', { className: `status-dot ${dotClass}` }),

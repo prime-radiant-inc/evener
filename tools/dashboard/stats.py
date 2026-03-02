@@ -248,6 +248,7 @@ def compute_run_stats(store, job_name, cache_dir=None):
         entry = {
             "task_name": task_name,
             "passed": task_summary["passed"],
+            "status": task_summary.get("status", "fail"),
             "failure_category": task_summary["failure_category"],
             "reward": task_summary["reward"],
             "trial_count": task_summary.get("trial_count", 1),
