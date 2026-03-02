@@ -991,3 +991,16 @@ td.numeric {
         padding: 8px 10px;
     }
 }
+
+/* Rep badge for multi-trial tasks */
+.rep-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 6px;
+    font-size: 11px;
+    font-weight: 500;
+    color: #6B6B6B;
+    background: #F0F0F0;
+    border-radius: 4px;
+    vertical-align: middle;
+}

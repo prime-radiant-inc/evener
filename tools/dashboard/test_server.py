@@ -66,6 +66,25 @@ class TestRunEndpoints:
                           headers={"Accept": "application/json"})
         assert resp.status_code == 404
 
+    def test_list_runs_includes_metadata(self, client):
+        resp = client.get("/api/runs",
+                          headers={"Accept": "application/json"})
+        data = resp.json()
+        run = [r for r in data if r["job_name"] == "full-test"][0]
+        assert run["model"] == "openai/gpt-5.3-codex"
+        assert run["git_sha"] == "abc1234"
+        assert run["dataset_name"] == "terminal-bench"
+        assert run["dataset_version"] == "2.0"
+        assert run["started_at"] == "2026-03-01T12:00:00Z"
+        assert run["finished_at"] == "2026-03-01T13:30:00Z"
+
+    def test_get_run_includes_metadata(self, client):
+        resp = client.get("/api/runs/full-test",
+                          headers={"Accept": "application/json"})
+        data = resp.json()
+        assert data["model"] == "openai/gpt-5.3-codex"
+        assert data["git_branch"] == "main"
+
 
 class TestTaskEndpoints:
     def test_list_tasks(self, client):
@@ -93,6 +112,33 @@ class TestTaskEndpoints:
         resp = client.get("/api/runs/full-test/tasks/nope",
                           headers={"Accept": "application/json"})
         assert resp.status_code == 404
+
+    def test_task_list_has_timestamps(self, harbor_job_dir):
+        client = _make_client(harbor_job_dir)
+        resp = client.get("/api/runs/full-test/tasks",
+                          headers={"Accept": "application/json"})
+        tasks = resp.json()
+        bw = [t for t in tasks if t["task_name"] == "build-widget"][0]
+        assert bw["started_at"] == "2026-03-01T12:00:00Z"
+        assert bw["finished_at"] == "2026-03-01T12:05:30Z"
+
+    def test_task_list_has_trial_count(self, harbor_job_dir):
+        client = _make_client(harbor_job_dir)
+        resp = client.get("/api/runs/full-test/tasks",
+                          headers={"Accept": "application/json"})
+        tasks = resp.json()
+        for t in tasks:
+            assert t["trial_count"] == 1
+
+    def test_task_dedup_in_api(self, harbor_job_dir_with_reps):
+        client = _make_client(harbor_job_dir_with_reps)
+        resp = client.get("/api/runs/reps-test/tasks",
+                          headers={"Accept": "application/json"})
+        tasks = resp.json()
+        names = [t["task_name"] for t in tasks]
+        assert names.count("build-widget") == 1
+        bw = [t for t in tasks if t["task_name"] == "build-widget"][0]
+        assert bw["trial_count"] == 2
 
 
 class TestStatsEnrichedTasks:

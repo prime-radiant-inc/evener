@@ -250,6 +250,9 @@ def compute_run_stats(store, job_name, cache_dir=None):
             "passed": task_summary["passed"],
             "failure_category": task_summary["failure_category"],
             "reward": task_summary["reward"],
+            "trial_count": task_summary.get("trial_count", 1),
+            "started_at": task_summary.get("started_at", ""),
+            "finished_at": task_summary.get("finished_at", ""),
         }
         if task_stats is not None:
             entry.update(task_stats)

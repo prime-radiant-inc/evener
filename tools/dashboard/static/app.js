@@ -144,6 +144,20 @@ function formatSize(bytes) {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function formatDate(isoStr) {
+    if (!isoStr) return '-';
+    try {
+        const d = new Date(isoStr);
+        return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    } catch { return '-'; }
+}
+
+function stripProviderPrefix(model) {
+    if (!model) return '-';
+    const idx = model.indexOf('/');
+    return idx >= 0 ? model.slice(idx + 1) : model;
+}
+
 function formatTaskTokens(tokIn, tokOut) {
     if (!tokIn && !tokOut) return '-';
     return `${(tokIn / 1000).toFixed(1)}k / ${(tokOut / 1000).toFixed(1)}k`;
@@ -260,6 +274,9 @@ async function renderDashboard(container) {
         const thead = h('thead', null,
             h('tr', null,
                 h('th', null, 'Run'),
+                h('th', null, 'Model'),
+                h('th', null, 'Dataset'),
+                h('th', null, 'Date'),
                 h('th', null, 'Tasks'),
                 h('th', null, 'Pass Rate'),
                 h('th', null, '')
@@ -271,12 +288,18 @@ async function renderDashboard(container) {
             const passRate = run.total_tasks > 0
                 ? ((run.passed / run.total_tasks) * 100).toFixed(0)
                 : 0;
+            const dataset = run.dataset_name
+                ? `${run.dataset_name} ${run.dataset_version || ''}`.trim()
+                : '-';
 
             const row = h('tr', null,
                 h('td', null,
                     h('a', { className: 'table-link', href: `#/runs/${encodeURIComponent(run.job_name)}` },
                         run.job_name)
                 ),
+                h('td', null, stripProviderPrefix(run.model)),
+                h('td', null, dataset),
+                h('td', null, formatDate(run.started_at)),
                 h('td', null, String(run.total_tasks)),
                 h('td', null,
                     h('div', { className: 'pass-info' },
@@ -566,6 +589,23 @@ async function renderRunDetail(container, jobName) {
             h('div', { className: 'subtitle' }, `${run.total_tasks} tasks`)
         );
 
+        // Metadata card
+        const dataset = run.dataset_name
+            ? `${run.dataset_name} ${run.dataset_version || ''}`.trim()
+            : '-';
+        const metadataCard = h('div', { className: 'summary-card' },
+            h('div', { className: 'summary-metrics' },
+                metricBox('Model', stripProviderPrefix(run.model)),
+                metricBox('Dataset', dataset),
+                metricBox('Git SHA', run.git_sha ? run.git_sha.slice(0, 7) : '-'),
+                metricBox('Branch', run.git_branch || '-'),
+                metricBox('Started', formatDate(run.started_at)),
+                metricBox('Finished', formatDate(run.finished_at)),
+                metricBox('Reps', run.reps != null ? run.reps : '-'),
+                metricBox('Adapter', run.adapter || '-'),
+            )
+        );
+
         // Stat cards
         const stats = h('div', { className: 'stat-row' },
             h('div', { className: 'stat-card' },
@@ -661,11 +701,17 @@ async function renderRunDetail(container, jobName) {
 
         function renderCell(task, col) {
             switch (col.key) {
-                case 'task_name':
-                    return h('a', {
+                case 'task_name': {
+                    const link = h('a', {
                         className: 'table-link',
                         href: `#/runs/${encodeURIComponent(jobName)}/tasks/${encodeURIComponent(task.task_name)}`
                     }, task.task_name);
+                    if (task.trial_count > 1) {
+                        return h('span', null, link,
+                            h('span', { className: 'rep-badge' }, `${task.trial_count} reps`));
+                    }
+                    return link;
+                }
                 case 'passed': {
                     const dotClass = task.passed ? 'pass' : failureDotClass(task.failure_category);
                     return h('span', { className: 'status-text' },
@@ -771,6 +817,7 @@ async function renderRunDetail(container, jobName) {
 
         container.innerHTML = '';
         container.appendChild(header);
+        container.appendChild(metadataCard);
         container.appendChild(stats);
         container.appendChild(passBar);
         if (breakdown) container.appendChild(breakdown);
