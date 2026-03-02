@@ -423,16 +423,19 @@ function renderCompareResult(container, data) {
 
     const delta = data.run_b.passed - data.run_a.passed;
     const deltaStr = delta > 0 ? `+${delta}` : String(delta);
+    const pendingCount = (data.pending || []).length;
+    const pendingSuffix = pendingCount > 0 ? `, ${pendingCount} pending` : '';
     const summary = h('div', { className: 'compare-summary' },
         `Run B: ${data.run_b.passed}/${data.run_b.total} (${deltaStr} vs Run A). `,
-        `${data.improved.length} improved, ${data.regressed.length} regressed.`
+        `${data.improved.length} improved, ${data.regressed.length} regressed${pendingSuffix}.`
     );
     container.appendChild(summary);
 
-    // Build ordered task list: regressed first, then improved, then stable
+    // Build ordered task list: regressed first, then improved, then pending, then stable
     const allRows = [
         ...data.regressed.map(r => ({ ...r, cat: 'regressed' })),
         ...data.improved.map(r => ({ ...r, cat: 'improved' })),
+        ...(data.pending || []).map(r => ({ ...r, cat: 'pending' })),
         ...data.stable_pass.map(r => ({ ...r, cat: 'stable-pass' })),
         ...data.stable_fail.map(r => ({ ...r, cat: 'stable-fail' })),
     ];

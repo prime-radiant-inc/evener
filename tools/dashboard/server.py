@@ -215,6 +215,7 @@ def compare_runs(request: Request, a: str = "", b: str = ""):
     regressed = []
     stable_pass = []
     stable_fail = []
+    pending = []
     only_a = []
     only_b = []
 
@@ -238,12 +239,19 @@ def compare_runs(request: Request, a: str = "", b: str = ""):
             continue
 
         ta, tb = map_a[task_name], map_b[task_name]
-        a_pass = ta["passed"] and ta.get("status") not in ("running", "queued")
-        b_pass = tb["passed"] and tb.get("status") not in ("running", "queued")
         entry = {"task": task_name,
                  "a": _task_label(ta),
                  "b": _task_label(tb)}
 
+        # If either side is still running/queued, comparison is meaningless
+        a_final = ta.get("status") in ("pass", "fail")
+        b_final = tb.get("status") in ("pass", "fail")
+        if not a_final or not b_final:
+            pending.append(entry)
+            continue
+
+        a_pass = ta["passed"]
+        b_pass = tb["passed"]
         if not a_pass and b_pass:
             improved.append(entry)
         elif a_pass and not b_pass:
@@ -263,6 +271,7 @@ def compare_runs(request: Request, a: str = "", b: str = ""):
         "regressed": regressed,
         "stable_pass": stable_pass,
         "stable_fail": stable_fail,
+        "pending": pending,
         "only_a": only_a,
         "only_b": only_b,
     })

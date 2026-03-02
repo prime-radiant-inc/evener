@@ -197,8 +197,8 @@ class TestCompareEndpoint:
         assert data["run_a"]["job_name"] == "full-test"
         assert data["run_b"]["job_name"] == "second-run"
 
-    def test_compare_shows_running_status(self, harbor_job_dir):
-        """In-progress tasks in a compared run show as 'running', not 'fail'."""
+    def test_compare_running_tasks_are_pending(self, harbor_job_dir):
+        """In-progress tasks go in 'pending' bucket, not 'regressed'."""
         # Create a run with one running task (has transcript, no reward)
         job2 = harbor_job_dir / "in-progress-run"
         task = job2 / "build-widget__xyz999"
@@ -213,13 +213,14 @@ class TestCompareEndpoint:
                           headers={"Accept": "application/json"})
         assert resp.status_code == 200
         data = resp.json()
-        # Find the build-widget entry — it should show "running" for run B
-        all_entries = (data["improved"] + data["regressed"]
-                       + data["stable_pass"] + data["stable_fail"]
-                       + data.get("only_a", []) + data.get("only_b", []))
-        bw = [e for e in all_entries if e["task"] == "build-widget"]
-        assert len(bw) == 1
-        assert bw[0]["b"] == "running", f"Expected 'running', got '{bw[0]['b']}'"
+        # build-widget: pass in A, running in B → should be "pending", not regressed
+        assert "pending" in data
+        bw_pending = [e for e in data["pending"] if e["task"] == "build-widget"]
+        assert len(bw_pending) == 1
+        assert bw_pending[0]["b"] == "running"
+        # Must NOT appear in regressed
+        bw_regressed = [e for e in data["regressed"] if e["task"] == "build-widget"]
+        assert len(bw_regressed) == 0
 
     def test_compare_missing_run_a(self, harbor_job_dir):
         client = _make_client(harbor_job_dir)
