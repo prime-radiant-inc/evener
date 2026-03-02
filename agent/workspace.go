@@ -48,7 +48,7 @@ func ScanWorkspace(root string) WorkspaceInfo {
 	var ws WorkspaceInfo
 
 	entries, truncated := walkTree(root)
-	ws.Tree = formatTree(entries, truncated)
+	ws.Tree = formatTree(root, entries, truncated)
 	ws.TestFiles = detectTestFiles(entries)
 	ws.BuildInfo = detectBuildSystem(root)
 
@@ -137,23 +137,23 @@ func walkTree(root string) ([]treeEntry, bool) {
 	return entries, truncated
 }
 
-// formatTree renders entries as an indented directory listing.
-func formatTree(entries []treeEntry, truncated bool) string {
+// formatTree renders entries as a flat list of absolute paths.
+func formatTree(root string, entries []treeEntry, truncated bool) string {
 	if len(entries) == 0 {
 		return ""
 	}
 
 	var b strings.Builder
 	for _, e := range entries {
-		indent := strings.Repeat("  ", e.Depth)
+		abs := filepath.Join(root, e.RelPath)
 		if e.IsDir {
-			b.WriteString(fmt.Sprintf("%s%s/\n", indent, filepath.Base(e.RelPath)))
+			b.WriteString(abs + "/\n")
 		} else {
-			b.WriteString(fmt.Sprintf("%s%s\n", indent, filepath.Base(e.RelPath)))
+			b.WriteString(abs + "\n")
 		}
 	}
 	if truncated {
-		b.WriteString("  ... (truncated, >200 entries)\n")
+		b.WriteString("... (truncated, >200 entries)\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
