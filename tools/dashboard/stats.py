@@ -240,15 +240,17 @@ def compute_run_stats(store, job_name, cache_dir=None):
     total_tokens_in = 0
     total_tokens_out = 0
     task_entries = []
+    has_incomplete = False
 
     for task_summary in tasks:
         task_name = task_summary["task_name"]
+        status = task_summary.get("status", "fail")
         task_stats = compute_task_stats(store, job_name, task_name)
 
         entry = {
             "task_name": task_name,
             "passed": task_summary["passed"],
-            "status": task_summary.get("status", "fail"),
+            "status": status,
             "failure_category": task_summary["failure_category"],
             "reward": task_summary["reward"],
             "trial_count": task_summary.get("trial_count", 1),
@@ -260,7 +262,9 @@ def compute_run_stats(store, job_name, cache_dir=None):
 
         task_entries.append(entry)
 
-        if task_summary["passed"]:
+        if status in ("running", "queued"):
+            has_incomplete = True
+        elif task_summary["passed"]:
             passed += 1
         else:
             failed += 1
@@ -284,8 +288,9 @@ def compute_run_stats(store, job_name, cache_dir=None):
         "tasks": task_entries,
     }
 
-    # Write disk cache
-    if cache_dir is not None:
+    # Only cache when all tasks are complete — in-progress runs change
+    # as new task dirs appear and agents produce output.
+    if cache_dir is not None and not has_incomplete:
         cache_file = cache_dir / job_name / "stats.json"
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         to_write = dict(result)

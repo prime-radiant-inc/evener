@@ -103,6 +103,16 @@ body {
     color: #991B1B;
 }
 
+.result-badge.running {
+    background: #FEF3C7;
+    color: #92400E;
+}
+
+.result-badge.queued {
+    background: #F3F4F6;
+    color: #6B7280;
+}
+
 /* --------------------------------------------------------
    Cards
    -------------------------------------------------------- */

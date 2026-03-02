@@ -35,6 +35,9 @@ function route() {
 window.addEventListener('hashchange', route);
 window.addEventListener('DOMContentLoaded', route);
 
+// Auto-refresh every 30 seconds
+setInterval(route, 30000);
+
 // ---------------------------------------------------------------------------
 // Breadcrumb
 // ---------------------------------------------------------------------------
@@ -866,9 +869,18 @@ async function renderTaskDetail(container, jobName, taskName) {
         const rawFiles = task.raw_files || {};
 
         // Header with result badge
-        const resultBadge = h('span', {
-            className: task.passed ? 'result-badge pass' : 'result-badge fail'
-        }, task.passed ? 'PASS' : 'FAIL');
+        let badgeClass, badgeText;
+        if (task.status === 'running') {
+            badgeClass = 'result-badge running';
+            badgeText = 'RUNNING';
+        } else if (task.status === 'queued') {
+            badgeClass = 'result-badge queued';
+            badgeText = 'QUEUED';
+        } else {
+            badgeClass = task.passed ? 'result-badge pass' : 'result-badge fail';
+            badgeText = task.passed ? 'PASS' : 'FAIL';
+        }
+        const resultBadge = h('span', { className: badgeClass }, badgeText);
 
         const header = h('div', { className: 'page-header' },
             h('h1', null, taskName, resultBadge),
