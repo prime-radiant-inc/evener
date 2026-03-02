@@ -142,7 +142,7 @@ func ConvertToATIF(header TranscriptHeader, entries []TranscriptEntry) ATIFTraje
 			steps = append(steps, step)
 			stepID++
 
-		case TurnSteering:
+		case TurnSteering, TurnSystem:
 			step := ATIFStep{
 				StepID:    stepID,
 				Source:    "system",
@@ -292,6 +292,9 @@ func convertAssistantTurn(turn Turn, stepID int) ATIFStep {
 				if part.WebSearch.Query != "" {
 					ws["query"] = part.WebSearch.Query
 				}
+				if len(part.WebSearch.Raw) > 0 {
+					ws["raw"] = part.WebSearch.Raw
+				}
 			}
 			existing, _ := step.Extra["web_searches"].([]any)
 			step.Extra["web_searches"] = append(existing, ws)
@@ -325,6 +328,9 @@ func convertAssistantTurn(turn Turn, stepID int) ATIFStep {
 		}
 		if turn.Usage.CacheWriteTokens != nil {
 			extra["cache_write_tokens"] = *turn.Usage.CacheWriteTokens
+		}
+		if len(turn.Usage.Raw) > 0 {
+			extra["raw_usage"] = turn.Usage.Raw
 		}
 		if len(extra) > 0 {
 			m.Extra = extra

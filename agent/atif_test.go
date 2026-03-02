@@ -1125,3 +1125,110 @@ func TestExportATIF_WritesFile(t *testing.T) {
 		t.Errorf("Steps[0].Message = %q, want %q", traj.Steps[0].Message, "Hello!")
 	}
 }
+
+func TestConvertToATIF_RawUsage(t *testing.T) {
+	header := TranscriptHeader{SessionID: "sess-raw", Model: "gpt-5.3-codex"}
+	entries := []TranscriptEntry{
+		{Kind: "entry", Seq: 0, Turn: Turn{
+			Kind: TurnAssistant,
+			Message: llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "hello"}},
+			},
+			Timestamp: time.Date(2026, 3, 2, 12, 0, 0, 0, time.UTC),
+			Usage: llm.Usage{
+				InputTokens:  50,
+				OutputTokens: 10,
+				Raw: map[string]any{
+					"prompt_tokens_details": map[string]any{"cached_tokens": 25},
+					"some_provider_field":   "custom_value",
+				},
+			},
+		}},
+	}
+
+	traj := ConvertToATIF(header, entries)
+	if len(traj.Steps) != 1 {
+		t.Fatalf("len(Steps) = %d, want 1", len(traj.Steps))
+	}
+	m := traj.Steps[0].Metrics
+	if m == nil {
+		t.Fatal("Metrics is nil")
+	}
+	if m.Extra == nil {
+		t.Fatal("Metrics.Extra is nil")
+	}
+	rawUsage, ok := m.Extra["raw_usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("raw_usage type = %T, want map[string]any", m.Extra["raw_usage"])
+	}
+	if rawUsage["some_provider_field"] != "custom_value" {
+		t.Errorf("raw_usage[some_provider_field] = %v", rawUsage["some_provider_field"])
+	}
+}
+
+func TestConvertToATIF_WebSearchRaw(t *testing.T) {
+	header := TranscriptHeader{SessionID: "sess-ws-raw", Model: "gpt-5.3-codex"}
+	entries := []TranscriptEntry{
+		{Kind: "entry", Seq: 0, Turn: Turn{
+			Kind: TurnAssistant,
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentText, Text: "searching"},
+					{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{
+						Query: "golang testing",
+						Raw:   json.RawMessage(`{"provider_data":"test123"}`),
+					}},
+				},
+			},
+			Timestamp: time.Date(2026, 3, 2, 12, 0, 0, 0, time.UTC),
+		}},
+	}
+
+	traj := ConvertToATIF(header, entries)
+	if len(traj.Steps) != 1 {
+		t.Fatalf("len(Steps) = %d, want 1", len(traj.Steps))
+	}
+	searches, ok := traj.Steps[0].Extra["web_searches"].([]any)
+	if !ok {
+		t.Fatalf("web_searches type = %T", traj.Steps[0].Extra["web_searches"])
+	}
+	if len(searches) != 1 {
+		t.Fatalf("len(web_searches) = %d, want 1", len(searches))
+	}
+	ws := searches[0].(map[string]any)
+	if ws["query"] != "golang testing" {
+		t.Errorf("query = %v", ws["query"])
+	}
+	rawMsg, ok := ws["raw"].(json.RawMessage)
+	if !ok {
+		t.Fatalf("raw type = %T, want json.RawMessage", ws["raw"])
+	}
+	if string(rawMsg) != `{"provider_data":"test123"}` {
+		t.Errorf("raw = %s", rawMsg)
+	}
+}
+
+func TestConvertToATIF_TurnSystem(t *testing.T) {
+	header := TranscriptHeader{SessionID: "sess-sys", Model: "gpt-5.3-codex"}
+	entries := []TranscriptEntry{
+		{Kind: "entry", Seq: 0, Turn: Turn{
+			Kind:      TurnSystem,
+			Message:   llm.User("System message content"),
+			Timestamp: time.Date(2026, 3, 2, 12, 0, 0, 0, time.UTC),
+		}},
+	}
+
+	traj := ConvertToATIF(header, entries)
+	if len(traj.Steps) != 1 {
+		t.Fatalf("len(Steps) = %d, want 1", len(traj.Steps))
+	}
+	step := traj.Steps[0]
+	if step.Source != "system" {
+		t.Errorf("Source = %q, want system", step.Source)
+	}
+	if step.Message != "System message content" {
+		t.Errorf("Message = %q", step.Message)
+	}
+}
