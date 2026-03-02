@@ -218,23 +218,31 @@ def compare_runs(request: Request, a: str = "", b: str = ""):
     only_a = []
     only_b = []
 
+    def _task_label(t):
+        """Map task dict to a compare label: pass/fail/running/queued."""
+        status = t.get("status", "")
+        if status in ("running", "queued"):
+            return status
+        return "pass" if t["passed"] else "fail"
+
     for task_name in all_tasks:
         in_a = task_name in map_a
         in_b = task_name in map_b
         if in_a and not in_b:
             only_a.append({"task": task_name,
-                           "a": "pass" if map_a[task_name]["passed"] else "fail"})
+                           "a": _task_label(map_a[task_name])})
             continue
         if in_b and not in_a:
             only_b.append({"task": task_name,
-                           "b": "pass" if map_b[task_name]["passed"] else "fail"})
+                           "b": _task_label(map_b[task_name])})
             continue
 
-        a_pass = map_a[task_name]["passed"]
-        b_pass = map_b[task_name]["passed"]
+        ta, tb = map_a[task_name], map_b[task_name]
+        a_pass = ta["passed"] and ta.get("status") not in ("running", "queued")
+        b_pass = tb["passed"] and tb.get("status") not in ("running", "queued")
         entry = {"task": task_name,
-                 "a": "pass" if a_pass else "fail",
-                 "b": "pass" if b_pass else "fail"}
+                 "a": _task_label(ta),
+                 "b": _task_label(tb)}
 
         if not a_pass and b_pass:
             improved.append(entry)

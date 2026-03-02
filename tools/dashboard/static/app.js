@@ -446,13 +446,22 @@ function renderCompareResult(container, data) {
             )
         );
         const tbody = h('tbody');
+        function compareDot(status) {
+            return h('span', { className: `status-dot ${status}` });
+        }
+        function compareLabel(status) {
+            if (status === 'pass') return 'Pass';
+            if (status === 'running') return 'Running';
+            if (status === 'queued') return 'Queued';
+            return 'Fail';
+        }
         for (const row of allRows) {
-            const dotA = h('span', { className: `status-dot ${row.a === 'pass' ? 'pass' : 'fail'}` });
-            const dotB = h('span', { className: `status-dot ${row.b === 'pass' ? 'pass' : 'fail'}` });
+            const dotA = compareDot(row.a);
+            const dotB = compareDot(row.b);
             const tr = h('tr', { className: `compare-row ${row.cat}` },
                 h('td', null, row.task),
-                h('td', null, h('span', { className: 'status-text' }, dotA, row.a === 'pass' ? 'Pass' : 'Fail')),
-                h('td', null, h('span', { className: 'status-text' }, dotB, row.b === 'pass' ? 'Pass' : 'Fail'))
+                h('td', null, h('span', { className: 'status-text' }, dotA, compareLabel(row.a))),
+                h('td', null, h('span', { className: 'status-text' }, dotB, compareLabel(row.b)))
             );
             tbody.appendChild(tr);
         }
@@ -648,7 +657,7 @@ async function renderRunDetail(container, jobName) {
         // Filter bar
         const allCount = tasks.length;
         const passCount = tasks.filter(t => t.passed).length;
-        const failCount = tasks.filter(t => !t.passed).length;
+        const failCount = tasks.filter(t => !t.passed && t.status !== 'running' && t.status !== 'queued').length;
         const timeoutCount = tasks.filter(t => t.failure_category === 'timeout').length;
         const wrongCount = tasks.filter(t => t.failure_category === 'wrong_answer').length;
         const noSubmitCount = tasks.filter(t => t.failure_category === 'no_submit').length;
@@ -687,7 +696,7 @@ async function renderRunDetail(container, jobName) {
         function matchesFilter(task) {
             switch (activeFilter) {
                 case 'pass': return task.passed;
-                case 'fail': return !task.passed;
+                case 'fail': return !task.passed && task.status !== 'running' && task.status !== 'queued';
                 case 'timeout': return task.failure_category === 'timeout';
                 case 'wrong_answer': return task.failure_category === 'wrong_answer';
                 case 'no_submit': return task.failure_category === 'no_submit';
