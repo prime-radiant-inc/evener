@@ -31,6 +31,7 @@ type runConfig struct {
 	resultToolName     string   // --result-tool-name override
 	reasoningEffort    string   // --reasoning-effort override (or SERF_REASONING_EFFORT)
 	contextStrategy    string   // --context-strategy
+	exportATIF         string   // --export-atif path
 	verbose            bool
 	noProjectPrompts   bool
 	stdout             io.Writer
@@ -170,6 +171,7 @@ func run(ctx context.Context, cfg runConfig) error {
 			MCPInline:             cfg.mcpServers,
 			PluginDirs:            cfg.pluginDirs,
 			ContextStrategy:       cfg.contextStrategy,
+			ExportATIFPath:        cfg.exportATIF,
 			NonInteractive:        true,
 		}
 		if effort.Set {

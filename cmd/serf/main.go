@@ -44,6 +44,7 @@ func main() {
 	enableReviewerGate := flag.Bool("enable-reviewer-gate", false, "spawn reviewer subagent to validate communicate at depth 0")
 	resultToolName := flag.String("result-tool-name", "", "override the result tool name (default: communicate)")
 	reasoningEffort := flag.String("reasoning-effort", "", "reasoning effort: low|medium|high|xhigh|none")
+	exportATIF := flag.String("export-atif", "", "export ATIF v1.6 trajectory to this path on session close")
 	contextStrategy := flag.String("context-strategy", "", "context management strategy: compact|recall|session-log|ooda (default: compact)")
 	verbose := flag.Bool("verbose", false, "emit NDJSON events to stderr")
 	noProjectPrompts := flag.Bool("no-project-prompts", false, "suppress .serf/prompts/ loading (match container behavior)")
@@ -78,7 +79,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  --skills-dir <path>  Extra skill directory (repeatable)\n")
 		fmt.Fprintf(os.Stderr, "  --mcp <spec>         MCP server (repeatable, format: name:command args...)\n")
 		fmt.Fprintf(os.Stderr, "  --mcp-config <path>  Path to .mcp.json file (repeatable)\n")
-		fmt.Fprintf(os.Stderr, "  --plugin-dir <path>  Plugin directory (repeatable)\n\n")
+		fmt.Fprintf(os.Stderr, "  --plugin-dir <path>  Plugin directory (repeatable)\n")
+		fmt.Fprintf(os.Stderr, "  --export-atif <path> Export ATIF trajectory on session close\n\n")
 		fmt.Fprintf(os.Stderr, "Session resume:\n")
 		fmt.Fprintf(os.Stderr, "  --resume <id>        Resume a previous session\n")
 		fmt.Fprintf(os.Stderr, "  --resume-with <id>   New task using a previous session's context\n")
@@ -121,6 +123,7 @@ func main() {
 		resultToolName:     *resultToolName,
 		reasoningEffort:    *reasoningEffort,
 		contextStrategy:    *contextStrategy,
+		exportATIF:         *exportATIF,
 		verbose:            *verbose,
 		noProjectPrompts:   *noProjectPrompts,
 		skillsDirs:         []string(skillsDirs),

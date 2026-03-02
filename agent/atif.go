@@ -3,6 +3,8 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"primeradiant.com/serf/llm"
 )
@@ -204,6 +206,26 @@ func ConvertToATIF(header TranscriptHeader, entries []TranscriptEntry) ATIFTraje
 	}
 
 	return traj
+}
+
+// ExportATIF reads a transcript JSONL file, converts to ATIF, and writes to outPath.
+func ExportATIF(transcriptPath, outPath string) error {
+	header, entries, _, err := ReadTranscript(transcriptPath)
+	if err != nil {
+		return fmt.Errorf("read transcript: %w", err)
+	}
+	traj := ConvertToATIF(header, entries)
+	data, err := json.MarshalIndent(traj, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal ATIF: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+		return fmt.Errorf("create output dir: %w", err)
+	}
+	if err := os.WriteFile(outPath, data, 0o644); err != nil {
+		return fmt.Errorf("write ATIF: %w", err)
+	}
+	return nil
 }
 
 // convertAssistantTurn extracts text, tool calls, thinking, and metadata from an assistant turn.

@@ -157,6 +157,10 @@ type SessionConfig struct {
 	// StateDir, when non-empty, enables incremental session persistence.
 	// Snapshots are written to <StateDir>/sessions/ and tasks to <StateDir>/tasks/.
 	StateDir string `json:"-"`
+
+	// ExportATIFPath, when non-empty, causes Session.Close to export an ATIF v1.6
+	// trajectory JSON file to this path. Only root sessions (Depth==0) export.
+	ExportATIFPath string `json:"-"`
 }
 
 func (c *SessionConfig) applyDefaults() {
@@ -729,6 +733,14 @@ func (s *Session) Close() {
 
 		if s.transcript != nil {
 			_ = s.transcript.Close()
+		}
+
+		// Export ATIF trajectory if configured (root session only, after transcript flush).
+		if s.cfg.ExportATIFPath != "" && s.stateDir != "" && s.cfg.Depth == 0 {
+			tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
+			if err := ExportATIF(tpath, s.cfg.ExportATIFPath); err != nil {
+				s.emit(EventWarning, WarningData{Message: fmt.Sprintf("ATIF export failed: %v", err)})
+			}
 		}
 
 		if s.embeddedSkillsDir != "" {
