@@ -40,7 +40,54 @@ def harbor_job_dir(tmp_path):
                agent_stdout="[submit_result] submitted\n",
                command_txt="serf --state-dir /logs/agent/serf-state -- 'Fix the bug in widget.'")
 
+    # Run-level metadata files
+    (job_root / "manifest.json").write_text(json.dumps({
+        "job_name": "full-test",
+        "git_sha": "abc1234",
+        "model": "openai/gpt-5.3-codex",
+        "reps": 1,
+        "started_at": "2026-03-01T12:00:00Z",
+        "adapter": "serf_agent:SerfAgent",
+        "git_branch": "main",
+    }))
+    (job_root / "config.json").write_text(json.dumps({
+        "datasets": [{"name": "terminal-bench", "version": "2.0"}],
+    }))
+    (job_root / "result.json").write_text(json.dumps({
+        "started_at": "2026-03-01T12:00:00Z",
+        "finished_at": "2026-03-01T13:30:00Z",
+        "n_total_trials": 2,
+    }))
+
     return tmp_path / "full-test"
+
+
+@pytest.fixture
+def harbor_job_dir_with_reps(tmp_path):
+    """Job directory where build-widget has 2 trials (reps=2).
+
+    Structure:
+        reps-test/reps-test/
+            build-widget__abc123/  (reward=1.0, best)
+            build-widget__xyz789/  (reward=0.0, duplicate from reps)
+            fix-bug__def456/       (reward=0.0, single trial)
+    """
+    job_root = tmp_path / "reps-test" / "reps-test"
+
+    # Trial 1: build-widget (PASS)
+    t1 = job_root / "build-widget__abc123"
+    _make_task(t1, reward=1.0, transcript_entries=_passing_transcript())
+
+    # Trial 2: build-widget (FAIL, duplicate from reps)
+    t2 = job_root / "build-widget__xyz789"
+    _make_task(t2, reward=0.0, transcript_entries=_failing_transcript())
+
+    # Single trial: fix-bug (FAIL)
+    t3 = job_root / "fix-bug__def456"
+    _make_task(t3, reward=0.0, transcript_entries=_failing_transcript(),
+               agent_stdout="[submit_result] submitted\n")
+
+    return tmp_path / "reps-test"
 
 
 def _make_task(task_dir, reward, transcript_entries, agent_stdout="",

@@ -58,6 +58,104 @@ class TestGetRun:
         assert store.get_run("nonexistent") is None
 
 
+class TestRunMetadata:
+    """RunStore reads run-level metadata from manifest/config/result files."""
+
+    def test_list_runs_includes_model(self, harbor_job_dir):
+        store = RunStore(harbor_job_dir)
+        runs = store.list_runs()
+        assert runs[0]["model"] == "openai/gpt-5.3-codex"
+
+    def test_list_runs_includes_git_sha(self, harbor_job_dir):
+        store = RunStore(harbor_job_dir)
+        runs = store.list_runs()
+        assert runs[0]["git_sha"] == "abc1234"
+
+    def test_list_runs_includes_dataset(self, harbor_job_dir):
+        store = RunStore(harbor_job_dir)
+        runs = store.list_runs()
+        assert runs[0]["dataset_name"] == "terminal-bench"
+        assert runs[0]["dataset_version"] == "2.0"
+
+    def test_list_runs_includes_timestamps(self, harbor_job_dir):
+        store = RunStore(harbor_job_dir)
+        runs = store.list_runs()
+        assert runs[0]["started_at"] == "2026-03-01T12:00:00Z"
+        assert runs[0]["finished_at"] == "2026-03-01T13:30:00Z"
+
+    def test_list_runs_includes_reps(self, harbor_job_dir):
+        store = RunStore(harbor_job_dir)
+        runs = store.list_runs()
+        assert runs[0]["reps"] == 1
+
+    def test_get_run_includes_metadata(self, harbor_job_dir):
+        store = RunStore(harbor_job_dir)
+        run = store.get_run("full-test")
+        assert run["model"] == "openai/gpt-5.3-codex"
+        assert run["git_sha"] == "abc1234"
+        assert run["git_branch"] == "main"
+        assert run["adapter"] == "serf_agent:SerfAgent"
+
+    def test_metadata_missing_files(self, tmp_path):
+        """Runs without metadata files still work with empty defaults."""
+        job_root = tmp_path / "bare-run"
+        task = job_root / "some-task__aaa111"
+        task.mkdir(parents=True)
+        (task / "verifier").mkdir()
+        (task / "verifier" / "reward.txt").write_text("1.0")
+
+        store = RunStore(tmp_path)
+        runs = store.list_runs()
+        assert runs[0]["model"] == ""
+        assert runs[0]["git_sha"] == ""
+        assert runs[0]["dataset_name"] == ""
+        assert runs[0]["started_at"] == ""
+
+
+class TestTaskDeduplication:
+    """Duplicate task dirs from reps are grouped, best trial selected."""
+
+    def test_list_tasks_deduplicates(self, harbor_job_dir_with_reps):
+        store = RunStore(harbor_job_dir_with_reps)
+        tasks = store.list_tasks("reps-test")
+        names = [t["task_name"] for t in tasks]
+        assert names.count("build-widget") == 1
+
+    def test_dedup_picks_best_reward(self, harbor_job_dir_with_reps):
+        store = RunStore(harbor_job_dir_with_reps)
+        tasks = store.list_tasks("reps-test")
+        bw = [t for t in tasks if t["task_name"] == "build-widget"][0]
+        assert bw["reward"] == 1.0
+        assert bw["passed"] is True
+
+    def test_dedup_includes_trial_count(self, harbor_job_dir_with_reps):
+        store = RunStore(harbor_job_dir_with_reps)
+        tasks = store.list_tasks("reps-test")
+        bw = [t for t in tasks if t["task_name"] == "build-widget"][0]
+        assert bw["trial_count"] == 2
+
+    def test_single_trial_has_count_1(self, harbor_job_dir_with_reps):
+        store = RunStore(harbor_job_dir_with_reps)
+        tasks = store.list_tasks("reps-test")
+        fb = [t for t in tasks if t["task_name"] == "fix-bug"][0]
+        assert fb["trial_count"] == 1
+
+    def test_list_runs_counts_unique_tasks(self, harbor_job_dir_with_reps):
+        store = RunStore(harbor_job_dir_with_reps)
+        runs = store.list_runs()
+        assert runs[0]["total_tasks"] == 2  # not 3
+
+    def test_get_run_counts_unique_tasks(self, harbor_job_dir_with_reps):
+        store = RunStore(harbor_job_dir_with_reps)
+        run = store.get_run("reps-test")
+        assert run["total_tasks"] == 2
+
+    def test_get_task_returns_best_trial(self, harbor_job_dir_with_reps):
+        store = RunStore(harbor_job_dir_with_reps)
+        task = store.get_task("reps-test", "build-widget")
+        assert task["reward"] == 1.0
+
+
 class TestListTasks:
     """RunStore.list_tasks() returns per-task summaries."""
 
@@ -95,6 +193,26 @@ class TestListTasks:
     def test_list_tasks_missing_run(self, harbor_job_dir):
         store = RunStore(harbor_job_dir)
         assert store.list_tasks("nonexistent") is None
+
+    def test_task_summary_includes_timestamps(self, harbor_job_dir):
+        store = RunStore(harbor_job_dir)
+        tasks = store.list_tasks("full-test")
+        bw = [t for t in tasks if t["task_name"] == "build-widget"][0]
+        assert bw["started_at"] == "2026-03-01T12:00:00Z"
+        assert bw["finished_at"] == "2026-03-01T12:05:30Z"
+
+    def test_task_summary_timestamps_missing(self, tmp_path):
+        """Task without result.json returns empty timestamps."""
+        job_root = tmp_path / "no-ts-run"
+        task = job_root / "some-task__aaa111"
+        task.mkdir(parents=True)
+        (task / "verifier").mkdir()
+        (task / "verifier" / "reward.txt").write_text("1.0")
+
+        store = RunStore(tmp_path)
+        tasks = store.list_tasks("no-ts-run")
+        assert tasks[0]["started_at"] == ""
+        assert tasks[0]["finished_at"] == ""
 
 
 class TestFailureClassification:

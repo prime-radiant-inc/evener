@@ -32,13 +32,16 @@ class RunStore:
             task_dirs = self._find_task_dirs(job_dir)
             if not task_dirs:
                 continue
-            tasks = [self._read_task_summary(td) for td in task_dirs]
+            grouped = self._group_task_dirs(task_dirs)
+            tasks = [self._read_task_summary(td, tc) for td, tc in grouped]
             passed = sum(1 for t in tasks if t["passed"])
-            runs.append({
+            run = {
                 "job_name": job_dir.name,
                 "total_tasks": len(tasks),
                 "passed": passed,
-            })
+            }
+            run.update(self._read_run_metadata(job_dir))
+            runs.append(run)
         return runs
 
     def get_run(self, job_name):
@@ -49,13 +52,16 @@ class RunStore:
         task_dirs = self._find_task_dirs(job_dir)
         if not task_dirs:
             return None
-        tasks = [self._read_task_summary(td) for td in task_dirs]
+        grouped = self._group_task_dirs(task_dirs)
+        tasks = [self._read_task_summary(td, tc) for td, tc in grouped]
         passed = sum(1 for t in tasks if t["passed"])
-        return {
+        run = {
             "job_name": job_name,
             "total_tasks": len(tasks),
             "passed": passed,
         }
+        run.update(self._read_run_metadata(job_dir))
+        return run
 
     # ------------------------------------------------------------------
     # Task listing
@@ -67,7 +73,8 @@ class RunStore:
         if not job_dir.is_dir():
             return None
         task_dirs = self._find_task_dirs(job_dir)
-        return [self._read_task_summary(td) for td in task_dirs]
+        grouped = self._group_task_dirs(task_dirs)
+        return [self._read_task_summary(td, tc) for td, tc in grouped]
 
     def get_task(self, job_name, task_name):
         """Return detailed task dict, or None if not found."""
@@ -75,9 +82,12 @@ class RunStore:
         if not job_dir.is_dir():
             return None
         task_dirs = self._find_task_dirs(job_dir)
-        for td in task_dirs:
+        grouped = self._group_task_dirs(task_dirs)
+        for td, tc in grouped:
             if self._task_name_from_dir(td) == task_name:
-                return self._read_task_detail(td)
+                detail = self._read_task_detail(td)
+                detail["trial_count"] = tc
+                return detail
         return None
 
     # ------------------------------------------------------------------
@@ -160,6 +170,55 @@ class RunStore:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _read_run_metadata(self, job_dir):
+        """Read run-level metadata from manifest.json, config.json, result.json."""
+        meta = {
+            "model": "", "git_sha": "", "git_branch": "", "started_at": "",
+            "finished_at": "", "reps": 1, "adapter": "", "dataset_name": "",
+            "dataset_version": "",
+        }
+
+        # manifest.json
+        manifest_file = job_dir / "manifest.json"
+        if manifest_file.is_file():
+            try:
+                manifest = json.loads(manifest_file.read_text())
+                for key in ("model", "git_sha", "git_branch", "adapter"):
+                    if manifest.get(key):
+                        meta[key] = manifest[key]
+                if manifest.get("reps"):
+                    meta["reps"] = manifest["reps"]
+                if manifest.get("started_at"):
+                    meta["started_at"] = manifest["started_at"]
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        # config.json
+        config_file = job_dir / "config.json"
+        if config_file.is_file():
+            try:
+                config = json.loads(config_file.read_text())
+                datasets = config.get("datasets", [])
+                if datasets:
+                    meta["dataset_name"] = datasets[0].get("name", "")
+                    meta["dataset_version"] = datasets[0].get("version", "")
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        # result.json (run-level)
+        result_file = job_dir / "result.json"
+        if result_file.is_file():
+            try:
+                result = json.loads(result_file.read_text())
+                if not meta["started_at"] and result.get("started_at"):
+                    meta["started_at"] = result["started_at"]
+                if result.get("finished_at"):
+                    meta["finished_at"] = result["finished_at"]
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        return meta
+
     def _find_task_dirs(self, inner_dir):
         """Return sorted list of task__hash directories."""
         dirs = []
@@ -167,6 +226,38 @@ class RunStore:
             if d.is_dir() and "__" in d.name:
                 dirs.append(d)
         return sorted(dirs, key=lambda d: d.name)
+
+    def _group_task_dirs(self, task_dirs):
+        """Deduplicate task dirs by name, picking the best trial.
+
+        Returns list of (best_dir, trial_count) tuples sorted by task name.
+        For groups with multiple dirs, picks highest reward (ties broken by
+        latest mtime).
+        """
+        from collections import defaultdict
+        groups = defaultdict(list)
+        for td in task_dirs:
+            name = self._task_name_from_dir(td)
+            groups[name].append(td)
+
+        result = []
+        for name in sorted(groups):
+            dirs = groups[name]
+            if len(dirs) == 1:
+                result.append((dirs[0], 1))
+            else:
+                # Pick best: highest reward, then latest mtime
+                def sort_key(d):
+                    reward = self._read_reward(d)
+                    r = reward if reward is not None else -1.0
+                    try:
+                        mtime = d.stat().st_mtime
+                    except OSError:
+                        mtime = 0
+                    return (r, mtime)
+                best = max(dirs, key=sort_key)
+                result.append((best, len(dirs)))
+        return result
 
     def _task_name_from_dir(self, task_dir):
         """Extract task name from 'task-name__hash' directory name."""
@@ -244,16 +335,20 @@ class RunStore:
 
         return "no_submit"
 
-    def _read_task_summary(self, task_dir):
+    def _read_task_summary(self, task_dir, trial_count=1):
         """Build a summary dict for a task directory."""
         reward = self._read_reward(task_dir)
         transcript_files = self._find_transcript_files(task_dir)
+        result = self._read_result_json(task_dir)
         return {
             "task_name": self._task_name_from_dir(task_dir),
             "reward": reward,
             "passed": reward is not None and reward >= 1.0,
             "failure_category": self._classify_failure(reward, task_dir),
             "session_count": len(transcript_files),
+            "trial_count": trial_count,
+            "started_at": result.get("started_at", ""),
+            "finished_at": result.get("finished_at", ""),
         }
 
     def _read_task_instruction(self, task_dir):
