@@ -106,6 +106,8 @@ class SerfAgent(BaseInstalledAgent):
             else ""
         )
 
+        export_atif_flag = f"--export-atif {_CONTAINER_STATE_DIR}/trajectory.json "
+
         return [
             ExecInput(
                 command=(
@@ -116,6 +118,7 @@ class SerfAgent(BaseInstalledAgent):
                     f"{reviewer_gate_flag}"
                     f"{result_tool_name_flag}"
                     f"--state-dir {_CONTAINER_STATE_DIR} "
+                    f"{export_atif_flag}"
                     f"{effort_flag}"
                     f"-- {escaped}"
                 ),
@@ -140,6 +143,12 @@ class SerfAgent(BaseInstalledAgent):
             except Exception as e:
                 logger.warning("Could not download serf traces: %s", e)
 
+            # Copy ATIF trajectory to logs_dir root for harbor viewer.
+            traj_src = local_state_dir / "trajectory.json"
+            if traj_src.exists():
+                shutil.copy2(traj_src, self.logs_dir / "trajectory.json")
+                logger.info("Copied ATIF trajectory to %s", self.logs_dir / "trajectory.json")
+
             # Extract agent artifacts from /app (filtered).
             # Harbor's download_dir doesn't support exclude, so we download
             # everything and prune locally.
@@ -157,7 +166,9 @@ class SerfAgent(BaseInstalledAgent):
                 logger.warning("Could not download /app artifacts: %s", e)
 
     def populate_context_post_run(self, context: AgentContext) -> None:
-        # Serf doesn't produce ATIF trajectories yet
+        # ATIF trajectory is produced by the Go binary (--export-atif flag)
+        # and copied to logs_dir/trajectory.json in run(). Harbor viewer
+        # picks it up from there automatically.
         pass
 
 
