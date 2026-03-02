@@ -1005,19 +1005,29 @@ td.numeric {
     vertical-align: middle;
 }
 
-/* Running badge for in-progress tasks */
-.running-badge {
+/* Status badges for in-progress tasks */
+.running-badge, .verifying-badge, .queued-badge {
     display: inline-block;
     margin-left: 6px;
     padding: 1px 6px;
     font-size: 11px;
     font-weight: 500;
-    color: #B45309;
-    background: #FEF3C7;
     border-radius: 4px;
     vertical-align: middle;
 }
-
-.status-dot.running {
-    background: #F59E0B;
+.running-badge {
+    color: #B45309;
+    background: #FEF3C7;
 }
+.verifying-badge {
+    color: #1D4ED8;
+    background: #DBEAFE;
+}
+.queued-badge {
+    color: #6B7280;
+    background: #F3F4F6;
+}
+
+.status-dot.running   { background: #F59E0B; }
+.status-dot.verifying { background: #3B82F6; }
+.status-dot.queued    { background: #9CA3AF; }

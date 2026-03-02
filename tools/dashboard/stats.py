@@ -337,7 +337,7 @@ def compute_task_history(store, task_name):
 
 
 def _cache_key(job_dir):
-    """Hash of mtimes for all transcript and api.jsonl files."""
+    """Hash of mtimes for key files that affect computed stats."""
     mtimes = []
     for task_dir in sorted(job_dir.iterdir()):
         if not task_dir.is_dir() or "__" not in task_dir.name:
@@ -350,4 +350,12 @@ def _cache_key(job_dir):
         api_log = task_dir / "agent" / "serf-state" / "api.jsonl"
         if api_log.is_file():
             mtimes.append(f"{api_log}:{api_log.stat().st_mtime_ns}")
+        # Include reward.txt and result.json so cache invalidates when
+        # verifier finishes or task status changes.
+        reward_file = task_dir / "verifier" / "reward.txt"
+        if reward_file.is_file():
+            mtimes.append(f"{reward_file}:{reward_file.stat().st_mtime_ns}")
+        result_file = task_dir / "result.json"
+        if result_file.is_file():
+            mtimes.append(f"{result_file}:{result_file.stat().st_mtime_ns}")
     return hashlib.sha256("\n".join(mtimes).encode()).hexdigest()[:16]

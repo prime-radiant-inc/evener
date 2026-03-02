@@ -34,14 +34,15 @@ class RunStore:
                 continue
             grouped = self._group_task_dirs(task_dirs)
             tasks = [self._read_task_summary(td, tc) for td, tc in grouped]
-            completed = [t for t in tasks if t["status"] != "running"]
-            running = len(tasks) - len(completed)
+            completed = [t for t in tasks if t["status"] in ("pass", "fail")]
             passed = sum(1 for t in completed if t["passed"])
             run = {
                 "job_name": job_dir.name,
                 "total_tasks": len(completed),
                 "passed": passed,
-                "running": running,
+                "running": sum(1 for t in tasks if t["status"] == "running"),
+                "queued": sum(1 for t in tasks if t["status"] == "queued"),
+                "verifying": sum(1 for t in tasks if t["status"] == "verifying"),
             }
             run.update(self._read_run_metadata(job_dir))
             runs.append(run)
@@ -57,14 +58,15 @@ class RunStore:
             return None
         grouped = self._group_task_dirs(task_dirs)
         tasks = [self._read_task_summary(td, tc) for td, tc in grouped]
-        completed = [t for t in tasks if t["status"] != "running"]
-        running = len(tasks) - len(completed)
+        completed = [t for t in tasks if t["status"] in ("pass", "fail")]
         passed = sum(1 for t in completed if t["passed"])
         run = {
             "job_name": job_name,
             "total_tasks": len(completed),
             "passed": passed,
-            "running": running,
+            "running": sum(1 for t in tasks if t["status"] == "running"),
+            "queued": sum(1 for t in tasks if t["status"] == "queued"),
+            "verifying": sum(1 for t in tasks if t["status"] == "verifying"),
         }
         run.update(self._read_run_metadata(job_dir))
         return run
@@ -341,21 +343,30 @@ class RunStore:
 
         return "no_submit"
 
-    def _task_status(self, reward):
-        """Determine task status: 'running', 'pass', or 'fail'.
+    def _task_status(self, reward, result):
+        """Determine task status from reward and result.json data.
 
-        A task is 'running' if the verifier hasn't written reward.txt yet.
+        States:
+            'pass'      — reward.txt exists and reward >= 1.0
+            'fail'      — reward.txt exists and reward < 1.0
+            'verifying' — agent finished (finished_at set) but no reward.txt
+            'running'   — agent started (started_at set) but not finished
+            'queued'    — task dir exists but agent hasn't started
         """
-        if reward is None:
+        if reward is not None:
+            return "pass" if reward >= 1.0 else "fail"
+        if result.get("finished_at"):
+            return "verifying"
+        if result.get("started_at"):
             return "running"
-        return "pass" if reward >= 1.0 else "fail"
+        return "queued"
 
     def _read_task_summary(self, task_dir, trial_count=1):
         """Build a summary dict for a task directory."""
         reward = self._read_reward(task_dir)
         transcript_files = self._find_transcript_files(task_dir)
         result = self._read_result_json(task_dir)
-        status = self._task_status(reward)
+        status = self._task_status(reward, result)
         return {
             "task_name": self._task_name_from_dir(task_dir),
             "reward": reward,

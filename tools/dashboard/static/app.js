@@ -291,12 +291,14 @@ async function renderDashboard(container) {
             const dataset = run.dataset_name
                 ? `${run.dataset_name} ${run.dataset_version || ''}`.trim()
                 : '-';
-            const runningLabel = run.running > 0
-                ? h('span', { className: 'running-badge' }, `${run.running} running`)
-                : null;
+            const inProgress = (run.running || 0) + (run.queued || 0) + (run.verifying || 0);
+            const statusBadges = [];
+            if (run.running > 0) statusBadges.push(h('span', { className: 'running-badge' }, `${run.running} running`));
+            if (run.verifying > 0) statusBadges.push(h('span', { className: 'verifying-badge' }, `${run.verifying} verifying`));
+            if (run.queued > 0) statusBadges.push(h('span', { className: 'queued-badge' }, `${run.queued} queued`));
             const taskLabel = run.total_tasks > 0
                 ? `${run.passed}/${run.total_tasks}`
-                : (run.running > 0 ? '...' : '0');
+                : (inProgress > 0 ? '...' : '0');
 
             const row = h('tr', null,
                 h('td', null,
@@ -306,7 +308,7 @@ async function renderDashboard(container) {
                 h('td', null, stripProviderPrefix(run.model)),
                 h('td', null, dataset),
                 h('td', null, formatDate(run.started_at)),
-                h('td', null, String(run.total_tasks), runningLabel),
+                h('td', null, String(run.total_tasks), ...statusBadges),
                 h('td', null,
                     h('div', { className: 'pass-info' },
                         h('span', { className: 'pass-fraction' }, taskLabel),
@@ -719,10 +721,20 @@ async function renderRunDetail(container, jobName) {
                     return link;
                 }
                 case 'passed': {
+                    if (task.status === 'queued') {
+                        return h('span', { className: 'status-text' },
+                            h('span', { className: 'status-dot queued' }),
+                            'Queued');
+                    }
                     if (task.status === 'running') {
                         return h('span', { className: 'status-text' },
                             h('span', { className: 'status-dot running' }),
                             'Running');
+                    }
+                    if (task.status === 'verifying') {
+                        return h('span', { className: 'status-text' },
+                            h('span', { className: 'status-dot verifying' }),
+                            'Verifying');
                     }
                     const dotClass = task.passed ? 'pass' : failureDotClass(task.failure_category);
                     return h('span', { className: 'status-text' },

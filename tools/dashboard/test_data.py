@@ -216,7 +216,7 @@ class TestListTasks:
 
 
 class TestTaskStatus:
-    """Tasks have a status field: running, pass, or fail."""
+    """Tasks have status: queued, running, verifying, pass, or fail."""
 
     def test_completed_pass(self, harbor_job_dir):
         store = RunStore(harbor_job_dir)
@@ -230,12 +230,11 @@ class TestTaskStatus:
         fb = [t for t in tasks if t["task_name"] == "fix-bug"][0]
         assert fb["status"] == "fail"
 
-    def test_running_no_reward(self, tmp_path):
-        """Task with no reward.txt is running, even with finished_at."""
+    def test_verifying_has_finished_but_no_reward(self, tmp_path):
+        """Agent finished but verifier hasn't written reward.txt yet."""
         job_root = tmp_path / "active-run"
         task = job_root / "in-prog__aaa111"
         task.mkdir(parents=True)
-        # result.json with finished_at but no reward.txt (verifier pending)
         (task / "result.json").write_text(json.dumps({
             "started_at": "2026-03-01T12:00:00Z",
             "finished_at": "2026-03-01T12:10:00Z",
@@ -243,35 +242,76 @@ class TestTaskStatus:
 
         store = RunStore(tmp_path)
         tasks = store.list_tasks("active-run")
+        assert tasks[0]["status"] == "verifying"
+        assert tasks[0]["passed"] is False
+
+    def test_running_has_started_but_not_finished(self, tmp_path):
+        """Agent started but hasn't finished yet."""
+        job_root = tmp_path / "active-run"
+        task = job_root / "in-prog__aaa111"
+        task.mkdir(parents=True)
+        (task / "result.json").write_text(json.dumps({
+            "started_at": "2026-03-01T12:00:00Z",
+        }))
+
+        store = RunStore(tmp_path)
+        tasks = store.list_tasks("active-run")
         assert tasks[0]["status"] == "running"
         assert tasks[0]["passed"] is False
 
-    def test_running_no_files_at_all(self, tmp_path):
-        """Task dir with nothing in it is running."""
+    def test_queued_no_files_at_all(self, tmp_path):
+        """Task dir with nothing in it is queued."""
         job_root = tmp_path / "bare-run"
         task = job_root / "bare__aaa111"
         task.mkdir(parents=True)
 
         store = RunStore(tmp_path)
         tasks = store.list_tasks("bare-run")
-        assert tasks[0]["status"] == "running"
+        assert tasks[0]["status"] == "queued"
 
-    def test_run_counts_exclude_running(self, tmp_path):
-        """list_runs total_tasks and passed exclude running tasks."""
+    def test_queued_no_started_at(self, tmp_path):
+        """Task with result.json but no started_at is queued."""
+        job_root = tmp_path / "bare-run"
+        task = job_root / "bare__aaa111"
+        task.mkdir(parents=True)
+        (task / "result.json").write_text(json.dumps({"config": {}}))
+
+        store = RunStore(tmp_path)
+        tasks = store.list_tasks("bare-run")
+        assert tasks[0]["status"] == "queued"
+
+    def test_run_counts_exclude_incomplete(self, tmp_path):
+        """list_runs total_tasks and passed exclude non-final tasks."""
         from conftest import _make_task, _passing_transcript
         job_root = tmp_path / "mixed-run"
         # One completed passing task
         t1 = job_root / "done-task__abc123"
         _make_task(t1, reward=1.0, transcript_entries=_passing_transcript())
-        # One still running (no reward, no finished_at)
-        t2 = job_root / "running-task__def456"
+        # One queued (no files)
+        t2 = job_root / "queued-task__def456"
         t2.mkdir(parents=True)
+        # One running (started, not finished)
+        t3 = job_root / "running-task__ghi789"
+        t3.mkdir(parents=True)
+        (t3 / "result.json").write_text(json.dumps({
+            "started_at": "2026-03-01T12:00:00Z",
+        }))
+        # One verifying (finished, no reward)
+        t4 = job_root / "verifying-task__jkl012"
+        t4.mkdir(parents=True)
+        (t4 / "result.json").write_text(json.dumps({
+            "started_at": "2026-03-01T12:00:00Z",
+            "finished_at": "2026-03-01T12:10:00Z",
+        }))
 
         store = RunStore(tmp_path)
         runs = store.list_runs()
         run = runs[0]
         assert run["total_tasks"] == 1  # only the completed one
         assert run["passed"] == 1
+        assert run["running"] == 1
+        assert run["queued"] == 1
+        assert run["verifying"] == 1
 
 
 class TestFailureClassification:
