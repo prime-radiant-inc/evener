@@ -139,6 +139,8 @@ def build_trajectory(session):
         action = classify_round(tool_names, has_text)
         summary = _generate_summary(action, text, tool_calls)
 
+        duration_ms = sum(tr.get("duration_ms", 0) for tr in tool_results)
+
         rounds.append({
             "round": round_num,
             "action": action,
@@ -147,6 +149,7 @@ def build_trajectory(session):
             "tool_results": tool_results,
             "text": text,
             "usage": usage,
+            "duration_ms": duration_ms,
             "raw_entries": raw_entries,
         })
 

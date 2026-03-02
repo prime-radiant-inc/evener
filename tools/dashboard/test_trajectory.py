@@ -681,3 +681,51 @@ class TestSummaryGeneration:
         rounds = build_trajectory(session)
         assert rounds[0]["action"] == "ERROR"
         assert "(empty response)" in rounds[0]["summary"]
+
+    def test_round_has_duration_ms(self):
+        """duration_ms from tool results is summed per round."""
+        entries = [
+            self._user_entry(0),
+            self._assistant_entry(1, tool_calls=[
+                {"id": "tc-1", "name": "shell",
+                 "arguments": '{"command": "echo hi"}'},
+                {"id": "tc-2", "name": "read_file",
+                 "arguments": '{"path": "x.py"}'},
+            ]),
+            self._tool_results_entry(2, [
+                {"tool_call_id": "tc-1", "name": "shell",
+                 "content": "hi", "is_error": False, "duration_ms": 1500},
+                {"tool_call_id": "tc-2", "name": "read_file",
+                 "content": "code", "is_error": False, "duration_ms": 30},
+            ]),
+        ]
+        session = self._make_session(entries)
+        rounds = build_trajectory(session)
+        assert rounds[0]["duration_ms"] == 1530
+
+    def test_round_duration_ms_zero_when_missing(self):
+        """Rounds without duration_ms in tool results default to 0."""
+        entries = [
+            self._user_entry(0),
+            self._assistant_entry(1, tool_calls=[
+                {"id": "tc-1", "name": "glob",
+                 "arguments": '{"pattern": "*"}'},
+            ]),
+            self._tool_results_entry(2, [
+                {"tool_call_id": "tc-1", "name": "glob",
+                 "content": "main.py", "is_error": False},
+            ]),
+        ]
+        session = self._make_session(entries)
+        rounds = build_trajectory(session)
+        assert rounds[0]["duration_ms"] == 0
+
+    def test_plan_round_duration_ms_zero(self):
+        """Text-only rounds (no tool calls) have duration_ms 0."""
+        entries = [
+            self._user_entry(0),
+            self._assistant_entry(1, text="Let me think about this."),
+        ]
+        session = self._make_session(entries)
+        rounds = build_trajectory(session)
+        assert rounds[0]["duration_ms"] == 0
