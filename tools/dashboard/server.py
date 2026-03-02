@@ -104,6 +104,14 @@ def get_task(job_name: str, task_name: str, request: Request):
             ],
         })
 
+    # Extract system_prompt from the root (depth 0) session.
+    system_prompt = ""
+    for s in sessions:
+        if s.get("depth", 0) == 0 and s.get("system_prompt"):
+            system_prompt = s["system_prompt"]
+            break
+    task["system_prompt"] = system_prompt
+
     if _wants_json(request):
         task["trajectory"] = trajectories
         task.pop("transcript_files", None)

@@ -338,5 +338,6 @@ class RunStore:
             "depth": header.get("depth", 0),
             "profile_id": header.get("profile_id", ""),
             "created_at": header.get("created_at", ""),
+            "system_prompt": header.get("system_prompt", ""),
             "entries": entries,
         }

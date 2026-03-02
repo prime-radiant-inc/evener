@@ -458,3 +458,29 @@ class TestListAllFiles:
     def test_nonexistent_dir_returns_empty(self, harbor_job_dir):
         store = RunStore(harbor_job_dir)
         assert store.list_all_files("/nonexistent/path") == []
+
+
+class TestSystemPromptInTranscript:
+    """Transcript parser extracts system_prompt from header."""
+
+    def test_system_prompt_parsed(self, tmp_path):
+        """Transcript with system_prompt in header returns it."""
+        import json
+        tf = tmp_path / "sess.jsonl"
+        header = {
+            "kind": "header", "format_version": 1,
+            "session_id": "sess-test", "model": "gpt-5.3-codex",
+            "profile_id": "openai", "depth": 0,
+            "system_prompt": "You are serf. Do the task.",
+        }
+        tf.write_text(json.dumps(header) + "\n")
+        store = RunStore(tmp_path)
+        sessions = store.load_transcripts([str(tf)])
+        assert sessions[0]["system_prompt"] == "You are serf. Do the task."
+
+    def test_missing_system_prompt_defaults_empty(self, harbor_job_dir):
+        """Old transcripts without system_prompt return empty string."""
+        store = RunStore(harbor_job_dir)
+        task = store.get_task("full-test", "build-widget")
+        sessions = store.load_transcripts(task["transcript_files"])
+        assert sessions[0]["system_prompt"] == ""

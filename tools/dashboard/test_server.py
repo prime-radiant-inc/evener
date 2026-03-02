@@ -290,6 +290,36 @@ class TestAllFiles:
             assert f["raw_url"].startswith("/raw/")
 
 
+class TestSystemPrompt:
+    """Task detail includes system_prompt from transcript header."""
+
+    def test_task_detail_has_system_prompt_key(self, harbor_job_dir):
+        client = _make_client(harbor_job_dir)
+        resp = client.get("/api/runs/full-test/tasks/build-widget",
+                          headers={"Accept": "application/json"})
+        data = resp.json()
+        assert "system_prompt" in data
+
+    def test_system_prompt_from_transcript(self, harbor_job_dir):
+        """When transcript has system_prompt, it appears in response."""
+        import json
+        task_dir = harbor_job_dir / "full-test" / "build-widget__abc123"
+        sessions_dir = task_dir / "agent" / "serf-state" / "sessions"
+        # Rewrite the transcript with a system_prompt in the header
+        tf = sessions_dir / "sess-main.transcript.jsonl"
+        lines = tf.read_text().splitlines()
+        header = json.loads(lines[0])
+        header["system_prompt"] = "You are serf. Build things."
+        lines[0] = json.dumps(header)
+        tf.write_text("\n".join(lines) + "\n")
+
+        client = _make_client(harbor_job_dir)
+        resp = client.get("/api/runs/full-test/tasks/build-widget",
+                          headers={"Accept": "application/json"})
+        data = resp.json()
+        assert data["system_prompt"] == "You are serf. Build things."
+
+
 class TestArtifactEndpoint:
     """Tests for GET /api/runs/{job}/tasks/{task}/artifacts."""
 

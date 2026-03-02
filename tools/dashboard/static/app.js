@@ -836,6 +836,14 @@ async function renderTaskDetail(container, jobName, taskName) {
         }
 
         // ---------------------------------------------------------------
+        // System prompt — collapsible, collapsed by default
+        // ---------------------------------------------------------------
+        let systemPromptSection = null;
+        if (task.system_prompt) {
+            systemPromptSection = twoStateSection('System Prompt', task.system_prompt, false);
+        }
+
+        // ---------------------------------------------------------------
         // Summary card — key metrics at a glance
         // ---------------------------------------------------------------
         const summaryCard = h('div', { className: 'summary-card' },
@@ -1040,6 +1048,7 @@ async function renderTaskDetail(container, jobName, taskName) {
         container.innerHTML = '';
         container.appendChild(header);
         if (instructionSection) container.appendChild(instructionSection);
+        if (systemPromptSection) container.appendChild(systemPromptSection);
         container.appendChild(summaryCard);
         if (verifierSection) container.appendChild(verifierSection);
         if (artifactSection) container.appendChild(artifactSection);
