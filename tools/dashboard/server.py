@@ -130,6 +130,9 @@ def get_task(job_name: str, task_name: str, request: Request):
                 stdout_file = task_path / "agent" / "command-0" / "stdout.txt"
                 if stdout_file.is_file():
                     raw_files["stdout"] = str(rel / "agent" / "command-0" / "stdout.txt")
+                cmd_file = task_path / "agent" / "command-0" / "command.txt"
+                if cmd_file.is_file():
+                    raw_files["command"] = str(rel / "agent" / "command-0" / "command.txt")
                 test_stdout = task_path / "verifier" / "test-stdout.txt"
                 if test_stdout.is_file():
                     raw_files["verifier"] = str(rel / "verifier" / "test-stdout.txt")
@@ -147,6 +150,12 @@ def get_task(job_name: str, task_name: str, request: Request):
                     raw_files["artifacts_base"] = str(
                         rel / "agent" / "artifacts")
                 task["raw_files"] = raw_files
+
+                # All files in task directory with raw URLs
+                all_files = store.list_all_files(task_path)
+                for f in all_files:
+                    f["raw_url"] = f"/raw/{rel}/{f['path']}"
+                task["all_files"] = all_files
             except (ValueError, OSError):
                 pass
 

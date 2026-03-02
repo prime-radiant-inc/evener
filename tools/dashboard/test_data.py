@@ -414,3 +414,47 @@ class TestSessionTree:
         assert child_node["session_id"] == "sess-child"
         assert len(child_node["children"]) == 1
         assert child_node["children"][0]["session_id"] == "sess-grandchild"
+
+
+class TestTaskInstruction:
+    """RunStore reads task instruction from command.txt."""
+
+    def test_get_task_includes_instruction(self, harbor_job_dir):
+        store = RunStore(harbor_job_dir)
+        task = store.get_task("full-test", "build-widget")
+        assert task["instruction"] == "Build a widget that returns 42."
+
+    def test_instruction_missing_command_txt(self, tmp_path):
+        """Task without command.txt returns empty instruction."""
+        from conftest import _make_task, _passing_transcript
+        job_root = tmp_path / "no-cmd-run" / "no-cmd-run"
+        t = job_root / "some-task__aaa111"
+        _make_task(t, reward=1.0, transcript_entries=_passing_transcript())
+        store = RunStore(tmp_path / "no-cmd-run")
+        task = store.get_task("no-cmd-run", "some-task")
+        assert task["instruction"] == ""
+
+
+class TestListAllFiles:
+    """RunStore.list_all_files() enumerates all files in a task dir."""
+
+    def test_lists_files(self, harbor_job_dir):
+        store = RunStore(harbor_job_dir)
+        task = store.get_task("full-test", "build-widget")
+        files = store.list_all_files(task["task_dir"])
+        paths = [f["path"] for f in files]
+        assert any("reward.txt" in p for p in paths)
+        assert any("stdout.txt" in p for p in paths)
+        assert any("result.json" in p for p in paths)
+
+    def test_files_have_size(self, harbor_job_dir):
+        store = RunStore(harbor_job_dir)
+        task = store.get_task("full-test", "build-widget")
+        files = store.list_all_files(task["task_dir"])
+        for f in files:
+            assert "size" in f
+            assert isinstance(f["size"], int)
+
+    def test_nonexistent_dir_returns_empty(self, harbor_job_dir):
+        store = RunStore(harbor_job_dir)
+        assert store.list_all_files("/nonexistent/path") == []

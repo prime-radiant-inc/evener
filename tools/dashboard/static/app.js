@@ -823,6 +823,19 @@ async function renderTaskDetail(container, jobName, taskName) {
         );
 
         // ---------------------------------------------------------------
+        // Task instruction — always visible
+        // ---------------------------------------------------------------
+        let instructionSection = null;
+        if (task.instruction) {
+            instructionSection = h('div', { className: 'card' },
+                h('div', { className: 'card-header' },
+                    h('span', { className: 'card-title' }, 'Task Instruction'),
+                ),
+                h('pre', { className: 'card-body-pre' }, task.instruction),
+            );
+        }
+
+        // ---------------------------------------------------------------
         // Summary card — key metrics at a glance
         // ---------------------------------------------------------------
         const summaryCard = h('div', { className: 'summary-card' },
@@ -980,14 +993,59 @@ async function renderTaskDetail(container, jobName, taskName) {
 
         trajectorySection.appendChild(trajectoryBody);
 
+        // ---------------------------------------------------------------
+        // All files — collapsible directory listing
+        // ---------------------------------------------------------------
+        let filesSection = null;
+        if (task.all_files && task.all_files.length > 0) {
+            const groups = {};
+            for (const f of task.all_files) {
+                const topDir = f.path.includes('/') ? f.path.split('/')[0] : '(root)';
+                if (!groups[topDir]) groups[topDir] = [];
+                groups[topDir].push(f);
+            }
+
+            const list = h('div', { className: 'artifact-body' });
+            for (const dir of Object.keys(groups).sort()) {
+                list.appendChild(h('div', {
+                    style: 'font-size:12px;font-weight:600;color:#6B6B6B;text-transform:uppercase;letter-spacing:0.5px;margin:12px 0 4px;'
+                }, dir));
+                const dirList = h('div', { className: 'artifact-list' });
+                for (const f of groups[dir]) {
+                    dirList.appendChild(h('div', { className: 'artifact-row' },
+                        h('a', {
+                            href: f.raw_url,
+                            target: '_blank',
+                            className: 'artifact-path',
+                        }, f.path),
+                        h('span', { className: 'artifact-size' }, formatSize(f.size)),
+                    ));
+                }
+                list.appendChild(dirList);
+            }
+
+            filesSection = h('div', { className: 'card two-state collapsed' });
+            const filesHeader = h('div', { className: 'card-header clickable' },
+                h('span', { className: 'card-title' }, `Files (${task.all_files.length})`),
+            );
+            filesHeader.addEventListener('click', () => filesSection.classList.toggle('collapsed'));
+            filesSection.appendChild(filesHeader);
+            const filesBody = h('div', { className: 'card-body-pre' });
+            filesBody.style.whiteSpace = 'normal';
+            filesBody.appendChild(list);
+            filesSection.appendChild(filesBody);
+        }
+
         // Assemble page
         container.innerHTML = '';
         container.appendChild(header);
+        if (instructionSection) container.appendChild(instructionSection);
         container.appendChild(summaryCard);
         if (verifierSection) container.appendChild(verifierSection);
         if (artifactSection) container.appendChild(artifactSection);
         if (stdoutSection) container.appendChild(stdoutSection);
         container.appendChild(trajectorySection);
+        if (filesSection) container.appendChild(filesSection);
     } catch (err) {
         container.innerHTML = `<div class="error-msg">Failed to load task: ${escapeHtml(err.message)}</div>`;
     }

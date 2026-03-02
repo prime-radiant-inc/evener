@@ -247,6 +247,49 @@ class TestRawFileEndpoint:
         assert "&lt;script&gt;" in resp.text
 
 
+class TestTaskInstruction:
+    """Task detail response includes instruction from command.txt."""
+
+    def test_task_detail_has_instruction(self, harbor_job_dir):
+        client = _make_client(harbor_job_dir)
+        resp = client.get("/api/runs/full-test/tasks/build-widget",
+                          headers={"Accept": "application/json"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["instruction"] == "Build a widget that returns 42."
+
+    def test_task_detail_has_command_raw_file(self, harbor_job_dir):
+        client = _make_client(harbor_job_dir)
+        resp = client.get("/api/runs/full-test/tasks/build-widget",
+                          headers={"Accept": "application/json"})
+        data = resp.json()
+        raw_files = data.get("raw_files", {})
+        assert "command" in raw_files
+
+
+class TestAllFiles:
+    """Task detail response includes all_files list."""
+
+    def test_task_detail_has_all_files(self, harbor_job_dir):
+        client = _make_client(harbor_job_dir)
+        resp = client.get("/api/runs/full-test/tasks/build-widget",
+                          headers={"Accept": "application/json"})
+        data = resp.json()
+        assert "all_files" in data
+        assert len(data["all_files"]) > 0
+        paths = [f["path"] for f in data["all_files"]]
+        assert any("reward.txt" in p for p in paths)
+
+    def test_all_files_have_raw_url(self, harbor_job_dir):
+        client = _make_client(harbor_job_dir)
+        resp = client.get("/api/runs/full-test/tasks/build-widget",
+                          headers={"Accept": "application/json"})
+        data = resp.json()
+        for f in data["all_files"]:
+            assert "raw_url" in f
+            assert f["raw_url"].startswith("/raw/")
+
+
 class TestArtifactEndpoint:
     """Tests for GET /api/runs/{job}/tasks/{task}/artifacts."""
 

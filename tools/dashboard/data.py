@@ -139,6 +139,24 @@ class RunStore:
         return files
 
     # ------------------------------------------------------------------
+    # File listing
+    # ------------------------------------------------------------------
+
+    def list_all_files(self, task_dir):
+        """List all files in task directory with relative paths and sizes."""
+        task_path = Path(task_dir)
+        if not task_path.is_dir():
+            return []
+        files = []
+        for f in sorted(task_path.rglob("*")):
+            if f.is_file():
+                files.append({
+                    "path": str(f.relative_to(task_path)),
+                    "size": f.stat().st_size,
+                })
+        return files
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
@@ -238,6 +256,25 @@ class RunStore:
             "session_count": len(transcript_files),
         }
 
+    def _read_task_instruction(self, task_dir):
+        """Extract task instruction from command.txt."""
+        cmd_file = task_dir / "agent" / "command-0" / "command.txt"
+        if not cmd_file.is_file():
+            return ""
+        try:
+            cmd = cmd_file.read_text(errors="replace").strip()
+            # Instruction is the last argument after "-- '"
+            marker = "-- '"
+            idx = cmd.find(marker)
+            if idx >= 0:
+                instruction = cmd[idx + len(marker):]
+                if instruction.endswith("'"):
+                    instruction = instruction[:-1]
+                return instruction
+            return cmd
+        except OSError:
+            return ""
+
     def _read_task_detail(self, task_dir):
         """Build a detailed dict for a task directory."""
         summary = self._read_task_summary(task_dir)
@@ -257,6 +294,7 @@ class RunStore:
             "model": model,
             "transcript_files": transcript_files,
             "agent_stdout": self._read_agent_stdout(task_dir),
+            "instruction": self._read_task_instruction(task_dir),
         })
         return summary
 

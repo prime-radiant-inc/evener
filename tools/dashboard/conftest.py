@@ -31,18 +31,20 @@ def harbor_job_dir(tmp_path):
 
     # Task 1: build-widget (PASS)
     t1 = job_root / "build-widget__abc123"
-    _make_task(t1, reward=1.0, transcript_entries=_passing_transcript())
+    _make_task(t1, reward=1.0, transcript_entries=_passing_transcript(),
+               command_txt="serf --state-dir /logs/agent/serf-state -- 'Build a widget that returns 42.'")
 
     # Task 2: fix-bug (FAIL, wrong answer)
     t2 = job_root / "fix-bug__def456"
     _make_task(t2, reward=0.0, transcript_entries=_failing_transcript(),
-               agent_stdout="[submit_result] submitted\n")
+               agent_stdout="[submit_result] submitted\n",
+               command_txt="serf --state-dir /logs/agent/serf-state -- 'Fix the bug in widget.'")
 
     return tmp_path / "full-test"
 
 
 def _make_task(task_dir, reward, transcript_entries, agent_stdout="",
-               result_json=None, api_log_entries=None):
+               result_json=None, api_log_entries=None, command_txt=None):
     """Create a single task directory with required files."""
     # Verifier
     verifier = task_dir / "verifier"
@@ -66,6 +68,10 @@ def _make_task(task_dir, reward, transcript_entries, agent_stdout="",
     cmd_dir = task_dir / "agent" / "command-0"
     cmd_dir.mkdir(parents=True)
     (cmd_dir / "stdout.txt").write_text(agent_stdout)
+
+    # command.txt (optional)
+    if command_txt is not None:
+        (cmd_dir / "command.txt").write_text(command_txt)
 
     # result.json
     result_data = result_json or {
