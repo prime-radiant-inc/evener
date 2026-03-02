@@ -1006,7 +1006,7 @@ td.numeric {
 }
 
 /* Status badges for in-progress tasks */
-.running-badge, .verifying-badge, .queued-badge {
+.running-badge, .queued-badge {
     display: inline-block;
     margin-left: 6px;
     padding: 1px 6px;
@@ -1019,15 +1019,10 @@ td.numeric {
     color: #B45309;
     background: #FEF3C7;
 }
-.verifying-badge {
-    color: #1D4ED8;
-    background: #DBEAFE;
-}
 .queued-badge {
     color: #6B7280;
     background: #F3F4F6;
 }
 
-.status-dot.running   { background: #F59E0B; }
-.status-dot.verifying { background: #3B82F6; }
-.status-dot.queued    { background: #9CA3AF; }
+.status-dot.running { background: #F59E0B; }
+.status-dot.queued  { background: #9CA3AF; }

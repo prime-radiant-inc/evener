@@ -42,7 +42,6 @@ class RunStore:
                 "passed": passed,
                 "running": sum(1 for t in tasks if t["status"] == "running"),
                 "queued": sum(1 for t in tasks if t["status"] == "queued"),
-                "verifying": sum(1 for t in tasks if t["status"] == "verifying"),
             }
             run.update(self._read_run_metadata(job_dir))
             runs.append(run)
@@ -66,7 +65,6 @@ class RunStore:
             "passed": passed,
             "running": sum(1 for t in tasks if t["status"] == "running"),
             "queued": sum(1 for t in tasks if t["status"] == "queued"),
-            "verifying": sum(1 for t in tasks if t["status"] == "verifying"),
         }
         run.update(self._read_run_metadata(job_dir))
         return run
@@ -343,21 +341,23 @@ class RunStore:
 
         return "no_submit"
 
-    def _task_status(self, reward, result):
-        """Determine task status from reward and result.json data.
+    def _task_status(self, reward, task_dir):
+        """Determine task status from disk artifacts.
 
-        States:
-            'pass'      — reward.txt exists and reward >= 1.0
-            'fail'      — reward.txt exists and reward < 1.0
-            'verifying' — agent finished (finished_at set) but no reward.txt
-            'running'   — agent started (started_at set) but not finished
-            'queued'    — task dir exists but agent hasn't started
+        Harbor pre-writes result.json with started_at/finished_at at job
+        launch, so those timestamps are unreliable for status. Instead:
+            'pass'    — reward.txt exists and reward >= 1.0
+            'fail'    — reward.txt exists and reward < 1.0
+            'running' — agent has written transcripts or stdout (no reward yet)
+            'queued'  — task dir exists but no agent output
         """
         if reward is not None:
             return "pass" if reward >= 1.0 else "fail"
-        if result.get("finished_at"):
-            return "verifying"
-        if result.get("started_at"):
+        # Check for agent output as evidence the task actually started
+        if self._find_transcript_files(task_dir):
+            return "running"
+        stdout_file = task_dir / "agent" / "command-0" / "stdout.txt"
+        if stdout_file.is_file() and stdout_file.stat().st_size > 0:
             return "running"
         return "queued"
 
@@ -366,7 +366,7 @@ class RunStore:
         reward = self._read_reward(task_dir)
         transcript_files = self._find_transcript_files(task_dir)
         result = self._read_result_json(task_dir)
-        status = self._task_status(reward, result)
+        status = self._task_status(reward, task_dir)
         return {
             "task_name": self._task_name_from_dir(task_dir),
             "reward": reward,

@@ -216,7 +216,11 @@ class TestListTasks:
 
 
 class TestTaskStatus:
-    """Tasks have status: queued, running, verifying, pass, or fail."""
+    """Tasks have status: queued, running, pass, or fail.
+
+    Status is determined by disk artifacts, not result.json timestamps
+    (harbor pre-writes those at job launch).
+    """
 
     def test_completed_pass(self, harbor_job_dir):
         store = RunStore(harbor_job_dir)
@@ -230,36 +234,53 @@ class TestTaskStatus:
         fb = [t for t in tasks if t["task_name"] == "fix-bug"][0]
         assert fb["status"] == "fail"
 
-    def test_verifying_has_finished_but_no_reward(self, tmp_path):
-        """Agent finished but verifier hasn't written reward.txt yet."""
+    def test_running_has_transcripts(self, tmp_path):
+        """Task with transcript files but no reward is running."""
+        from conftest import _passing_transcript
         job_root = tmp_path / "active-run"
         task = job_root / "in-prog__aaa111"
         task.mkdir(parents=True)
-        (task / "result.json").write_text(json.dumps({
-            "started_at": "2026-03-01T12:00:00Z",
-            "finished_at": "2026-03-01T12:10:00Z",
-        }))
-
-        store = RunStore(tmp_path)
-        tasks = store.list_tasks("active-run")
-        assert tasks[0]["status"] == "verifying"
-        assert tasks[0]["passed"] is False
-
-    def test_running_has_started_but_not_finished(self, tmp_path):
-        """Agent started but hasn't finished yet."""
-        job_root = tmp_path / "active-run"
-        task = job_root / "in-prog__aaa111"
-        task.mkdir(parents=True)
-        (task / "result.json").write_text(json.dumps({
-            "started_at": "2026-03-01T12:00:00Z",
-        }))
+        # Write a transcript (agent has started)
+        sessions = task / "agent" / "serf-state" / "sessions"
+        sessions.mkdir(parents=True)
+        (sessions / "sess.transcript.jsonl").write_text(
+            json.dumps({"kind": "header", "format_version": 1,
+                         "session_id": "s1", "model": "x", "depth": 0}) + "\n")
 
         store = RunStore(tmp_path)
         tasks = store.list_tasks("active-run")
         assert tasks[0]["status"] == "running"
         assert tasks[0]["passed"] is False
 
-    def test_queued_no_files_at_all(self, tmp_path):
+    def test_running_has_stdout(self, tmp_path):
+        """Task with non-empty stdout but no reward is running."""
+        job_root = tmp_path / "active-run"
+        task = job_root / "in-prog__aaa111"
+        task.mkdir(parents=True)
+        cmd = task / "agent" / "command-0"
+        cmd.mkdir(parents=True)
+        (cmd / "stdout.txt").write_text("some output\n")
+
+        store = RunStore(tmp_path)
+        tasks = store.list_tasks("active-run")
+        assert tasks[0]["status"] == "running"
+
+    def test_queued_no_agent_output(self, tmp_path):
+        """Task dir with result.json but no agent output is queued."""
+        job_root = tmp_path / "bare-run"
+        task = job_root / "bare__aaa111"
+        task.mkdir(parents=True)
+        # Harbor pre-writes result.json at launch — doesn't mean task started
+        (task / "result.json").write_text(json.dumps({
+            "started_at": "2026-03-01T12:00:00Z",
+            "finished_at": "2026-03-01T12:00:01Z",
+        }))
+
+        store = RunStore(tmp_path)
+        tasks = store.list_tasks("bare-run")
+        assert tasks[0]["status"] == "queued"
+
+    def test_queued_empty_dir(self, tmp_path):
         """Task dir with nothing in it is queued."""
         job_root = tmp_path / "bare-run"
         task = job_root / "bare__aaa111"
@@ -269,12 +290,14 @@ class TestTaskStatus:
         tasks = store.list_tasks("bare-run")
         assert tasks[0]["status"] == "queued"
 
-    def test_queued_no_started_at(self, tmp_path):
-        """Task with result.json but no started_at is queued."""
+    def test_queued_empty_stdout(self, tmp_path):
+        """Task with empty stdout (no real output) is queued."""
         job_root = tmp_path / "bare-run"
         task = job_root / "bare__aaa111"
         task.mkdir(parents=True)
-        (task / "result.json").write_text(json.dumps({"config": {}}))
+        cmd = task / "agent" / "command-0"
+        cmd.mkdir(parents=True)
+        (cmd / "stdout.txt").write_text("")
 
         store = RunStore(tmp_path)
         tasks = store.list_tasks("bare-run")
@@ -287,31 +310,25 @@ class TestTaskStatus:
         # One completed passing task
         t1 = job_root / "done-task__abc123"
         _make_task(t1, reward=1.0, transcript_entries=_passing_transcript())
-        # One queued (no files)
+        # One queued (no agent output)
         t2 = job_root / "queued-task__def456"
         t2.mkdir(parents=True)
-        # One running (started, not finished)
+        # One running (has transcript, no reward)
         t3 = job_root / "running-task__ghi789"
         t3.mkdir(parents=True)
-        (t3 / "result.json").write_text(json.dumps({
-            "started_at": "2026-03-01T12:00:00Z",
-        }))
-        # One verifying (finished, no reward)
-        t4 = job_root / "verifying-task__jkl012"
-        t4.mkdir(parents=True)
-        (t4 / "result.json").write_text(json.dumps({
-            "started_at": "2026-03-01T12:00:00Z",
-            "finished_at": "2026-03-01T12:10:00Z",
-        }))
+        sessions = t3 / "agent" / "serf-state" / "sessions"
+        sessions.mkdir(parents=True)
+        (sessions / "s.transcript.jsonl").write_text(
+            json.dumps({"kind": "header", "format_version": 1,
+                         "session_id": "s1", "model": "x", "depth": 0}) + "\n")
 
         store = RunStore(tmp_path)
         runs = store.list_runs()
         run = runs[0]
-        assert run["total_tasks"] == 1  # only the completed one
+        assert run["total_tasks"] == 1
         assert run["passed"] == 1
         assert run["running"] == 1
         assert run["queued"] == 1
-        assert run["verifying"] == 1
 
 
 class TestFailureClassification:

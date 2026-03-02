@@ -291,10 +291,9 @@ async function renderDashboard(container) {
             const dataset = run.dataset_name
                 ? `${run.dataset_name} ${run.dataset_version || ''}`.trim()
                 : '-';
-            const inProgress = (run.running || 0) + (run.queued || 0) + (run.verifying || 0);
+            const inProgress = (run.running || 0) + (run.queued || 0);
             const statusBadges = [];
             if (run.running > 0) statusBadges.push(h('span', { className: 'running-badge' }, `${run.running} running`));
-            if (run.verifying > 0) statusBadges.push(h('span', { className: 'verifying-badge' }, `${run.verifying} verifying`));
             if (run.queued > 0) statusBadges.push(h('span', { className: 'queued-badge' }, `${run.queued} queued`));
             const taskLabel = run.total_tasks > 0
                 ? `${run.passed}/${run.total_tasks}`
@@ -730,11 +729,6 @@ async function renderRunDetail(container, jobName) {
                         return h('span', { className: 'status-text' },
                             h('span', { className: 'status-dot running' }),
                             'Running');
-                    }
-                    if (task.status === 'verifying') {
-                        return h('span', { className: 'status-text' },
-                            h('span', { className: 'status-dot verifying' }),
-                            'Verifying');
                     }
                     const dotClass = task.passed ? 'pass' : failureDotClass(task.failure_category);
                     return h('span', { className: 'status-text' },
