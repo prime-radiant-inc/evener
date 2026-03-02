@@ -1161,14 +1161,37 @@ func TestBuildSystemPrompt_WorkspaceTestFilesCallout(t *testing.T) {
 	p := NewOpenAIProfile("gpt-5.3-codex")
 	prompt := p.BuildSystemPrompt(env, nil, nil, "")
 
-	// The test files callout should emphasize these are for verification.
-	if !strings.Contains(prompt, "Test files") {
-		t.Error("workspace section missing 'Test files' callout")
+	// The test files callout should list test files (without "run these to verify").
+	if !strings.Contains(prompt, "Test files:") {
+		t.Error("workspace section missing 'Test files:' callout")
 	}
-	if !strings.Contains(prompt, "tests/test_app.py") {
-		t.Error("workspace section missing tests/test_app.py")
+	if strings.Contains(prompt, "run these to verify") {
+		t.Error("workspace section should NOT say 'run these to verify'")
 	}
-	if !strings.Contains(prompt, "tests/test_integration.py") {
-		t.Error("workspace section missing tests/test_integration.py")
+	// Test file paths should be absolute.
+	if !strings.Contains(prompt, filepath.Join(dir, "tests/test_app.py")) {
+		t.Errorf("workspace section missing absolute path for tests/test_app.py in:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, filepath.Join(dir, "tests/test_integration.py")) {
+		t.Errorf("workspace section missing absolute path for tests/test_integration.py in:\n%s", prompt)
+	}
+}
+
+func TestBuildSystemPrompt_WorkspaceAnnotation(t *testing.T) {
+	dir := t.TempDir()
+	touchFile(t, filepath.Join(dir, "main.py"), "print('hello')\n")
+
+	env := EnvironmentInfo{
+		WorkingDir: dir,
+		Platform:   "linux",
+		Today:      "2026-03-01",
+		Workspace:  ScanWorkspace(dir),
+	}
+
+	p := NewOpenAIProfile("gpt-5.3-codex")
+	prompt := p.BuildSystemPrompt(env, nil, nil, "")
+
+	if !strings.Contains(prompt, "snapshot of the working directory taken at session start") {
+		t.Error("workspace section missing static annotation")
 	}
 }

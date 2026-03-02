@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -188,15 +189,16 @@ func (p *baseProfile) BuildSystemPrompt(env EnvironmentInfo, docs []ProjectDoc, 
 	// Injected so the model starts with full workspace awareness.
 	if env.Workspace.Tree != "" || len(env.Workspace.TestFiles) > 0 || env.Workspace.BuildInfo != "" {
 		b.WriteString("<workspace>\n")
+		b.WriteString("This is a snapshot of the working directory taken at session start. It does not update.\n\n")
 		if env.Workspace.Tree != "" {
 			b.WriteString("Directory structure:\n")
 			b.WriteString(env.Workspace.Tree)
 			b.WriteString("\n\n")
 		}
 		if len(env.Workspace.TestFiles) > 0 {
-			b.WriteString("Test files found (run these to verify your work):\n")
+			b.WriteString("Test files:\n")
 			for _, tf := range env.Workspace.TestFiles {
-				b.WriteString("- " + tf + "\n")
+				b.WriteString("- " + filepath.Join(env.WorkingDir, tf) + "\n")
 			}
 			b.WriteString("\n")
 		}
