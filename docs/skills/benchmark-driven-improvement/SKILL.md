@@ -138,6 +138,25 @@ open /tmp/viewer/index.html
 - Tool calls, results, assistant text with collapsible large content
 - Session labels auto-detect reviewer vs test-writer subagents
 
+### Dashboard (visual inspection)
+
+The eval dashboard at `http://magic-kingdom:8080` provides a web UI for browsing
+run results without SSH or rsync. It reads job data directly from `/tmp/` on the server.
+
+**What you can see per task:**
+- Task instruction (the prompt given to serf)
+- System prompt
+- Verifier test output (pass/fail details)
+- Agent stdout
+- Trajectory tab — per-step tool calls, reasoning, observations (from `trajectory.json`)
+- File browser — workspace artifacts post-run
+
+Navigate: Runs list → click a run → task list (color-coded pass/fail) → click a task.
+
+The trajectory tab is the fastest way to see what the agent actually did without parsing
+JSONL. Use the transcript viewer (above) for batch analysis of many failures; use the
+dashboard for drilling into a single task.
+
 ### API log analysis
 
 Every serf run writes `api.jsonl` alongside transcripts, logging every LLM API call
@@ -412,6 +431,9 @@ agent interface:
 - Custom kwargs like `result_tool_name` need explicit support in the adapter — check
   that the adapter handles new flags before using them with `--ak`
 - State dir at `/logs/agent/serf-state` (bind-mounted by harbor), captures transcripts + api.jsonl
+- Exports ATIF v1.6 trajectory (`--export-atif`), copies to `agent/trajectory.json` for dashboard
+- Populates harbor token metrics from ATIF `final_metrics` (feeds into result.json)
+- Logs execution summary to `trial.log` via harbor's logger (trace download, token counts)
 - Downloads `/app` artifacts post-run, prunes large/binary directories locally
 - Requires `install-serf.sh.j2` alongside it (also auto-deployed)
 
@@ -442,13 +464,26 @@ After a harbor run, job data is at:
   <task>__<hash>/
     reward.txt                                   — 0.0 or 1.0 (ground truth)
     result.json                                  — overall result, timing
+    trial.log                                    — adapter execution log (trace download, token summary)
+    agent/trajectory.json                        — ATIF v1.6 trajectory (steps, tool calls, metrics)
     agent/serf-state/api.jsonl                   — all LLM API calls with raw responses
     agent/serf-state/sessions/<id>.json          — session metadata
     agent/serf-state/sessions/<id>.transcript.jsonl — full transcript (all turns)
+    agent/artifacts/                             — workspace files (/app) post-run, pruned
 ```
 
 **Important:** `reward.txt` is the accurate per-task reward. `result.json` intermediate
 writes can be misleading — always check `reward.txt`.
+
+**trial.log** contains adapter-level execution info: trace download confirmation, ATIF
+trajectory copy, and a token usage summary line like
+`Serf finished: 6 steps, 39462 prompt tokens, 1410 completion tokens`. Quick sanity check
+for whether the agent ran at all.
+
+**trajectory.json** is the ATIF v1.6 trajectory exported by the serf binary
+(`--export-atif` flag). Contains per-step data (tool calls, reasoning, observations) and
+`final_metrics` (total tokens, steps). The adapter reads `final_metrics` to populate
+harbor's token tracking (`context.n_input_tokens`, `n_output_tokens`, `n_cache_tokens`).
 
 The `manifest.json` ties the run to exact source code — `run_eval.py status` prints it.
 The `api.jsonl` captures every LLM API call with the full raw provider response,

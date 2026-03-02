@@ -1,8 +1,7 @@
 """Harbor adapter for serf — a non-interactive coding agent."""
 
-import logging
+import json
 import os
-import platform
 import shlex
 import shutil
 from pathlib import Path
@@ -29,8 +28,6 @@ _ARTIFACT_EXCLUDES = [
     "*.pyc", "*.o", "*.so", ".cache",
 ]
 _ARTIFACT_WARN_MB = 100
-
-logger = logging.getLogger(__name__)
 
 
 class SerfAgent(BaseInstalledAgent):
@@ -139,37 +136,63 @@ class SerfAgent(BaseInstalledAgent):
             local_state_dir = self.logs_dir / "serf-state"
             try:
                 await environment.download_dir(_CONTAINER_STATE_DIR, local_state_dir)
-                logger.info("Downloaded serf traces to %s", local_state_dir)
+                self.logger.info("Downloaded serf traces to %s", local_state_dir)
             except Exception as e:
-                logger.warning("Could not download serf traces: %s", e)
+                self.logger.warning("Could not download serf traces: %s", e)
 
             # Copy ATIF trajectory to logs_dir root for harbor viewer.
             traj_src = local_state_dir / "trajectory.json"
             if traj_src.exists():
                 shutil.copy2(traj_src, self.logs_dir / "trajectory.json")
-                logger.info("Copied ATIF trajectory to %s", self.logs_dir / "trajectory.json")
+                self.logger.info("Copied ATIF trajectory to %s", self.logs_dir / "trajectory.json")
+
+            # Populate context now that trajectory is available.
+            # (populate_context_post_run was already called by super().run()
+            # before traces were downloaded — this second call has the data.)
+            self._populate_context(context)
 
             # Extract agent artifacts from /app (filtered).
-            # Harbor's download_dir doesn't support exclude, so we download
-            # everything and prune locally.
             artifacts_dir = self.logs_dir / "artifacts"
             try:
                 await environment.download_dir("/app", artifacts_dir)
                 _prune_artifacts(artifacts_dir, _ARTIFACT_EXCLUDES)
                 total = _dir_size(artifacts_dir)
                 if total > _ARTIFACT_WARN_MB * 1024 * 1024:
-                    logger.warning(
+                    self.logger.warning(
                         "Large artifacts: %dMB in /app (threshold: %dMB)",
                         total // (1024 * 1024), _ARTIFACT_WARN_MB,
                     )
             except Exception as e:
-                logger.warning("Could not download /app artifacts: %s", e)
+                self.logger.warning("Could not download /app artifacts: %s", e)
 
     def populate_context_post_run(self, context: AgentContext) -> None:
-        # ATIF trajectory is produced by the Go binary (--export-atif flag)
-        # and copied to logs_dir/trajectory.json in run(). Harbor viewer
-        # picks it up from there automatically.
+        # Called by super().run() before traces are downloaded. Actual
+        # population happens in _populate_context() from our finally block.
         pass
+
+    def _populate_context(self, context: AgentContext) -> None:
+        """Populate harbor context with token usage from ATIF trajectory."""
+        traj_path = self.logs_dir / "trajectory.json"
+        if not traj_path.exists():
+            return
+
+        try:
+            traj = json.loads(traj_path.read_text())
+        except (json.JSONDecodeError, OSError) as e:
+            self.logger.warning("Failed to read ATIF trajectory: %s", e)
+            return
+
+        metrics = traj.get("final_metrics", {})
+        context.n_input_tokens = metrics.get("total_prompt_tokens", 0)
+        context.n_output_tokens = metrics.get("total_completion_tokens", 0)
+        context.n_cache_tokens = metrics.get("total_cached_tokens", 0)
+
+        self.logger.info(
+            "Serf finished: %d steps, %d prompt tokens, %d completion tokens",
+            metrics.get("total_steps", 0),
+            context.n_input_tokens,
+            context.n_output_tokens,
+        )
 
 
 def _prune_artifacts(root: Path, excludes: list[str]) -> None:
