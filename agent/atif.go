@@ -219,7 +219,6 @@ func convertAssistantTurn(turn Turn, stepID int) ATIFStep {
 	var toolCalls []ATIFToolCall
 	var reasoningParts []byte
 	var phases []string
-	var hasWebSearch bool
 
 	for _, part := range turn.Message.Content {
 		switch part.Kind {
@@ -250,7 +249,7 @@ func convertAssistantTurn(turn Turn, stepID int) ATIFStep {
 		case llm.ContentThinking:
 			if part.Thinking != nil {
 				if part.Thinking.Redacted {
-					step.Extra["redacted_thinking"] = true
+					step.Extra["has_redacted_thinking"] = true
 				} else {
 					if len(reasoningParts) > 0 {
 						reasoningParts = append(reasoningParts, '\n')
@@ -262,8 +261,18 @@ func convertAssistantTurn(turn Turn, stepID int) ATIFStep {
 				}
 			}
 
+		case llm.ContentRedThinking:
+			step.Extra["has_redacted_thinking"] = true
+
 		case llm.ContentWebSearch:
-			hasWebSearch = true
+			ws := map[string]any{}
+			if part.WebSearch != nil {
+				if part.WebSearch.Query != "" {
+					ws["query"] = part.WebSearch.Query
+				}
+			}
+			existing, _ := step.Extra["web_searches"].([]any)
+			step.Extra["web_searches"] = append(existing, ws)
 		}
 	}
 
@@ -274,9 +283,6 @@ func convertAssistantTurn(turn Turn, stepID int) ATIFStep {
 	}
 	if len(phases) > 0 {
 		step.Extra["phases"] = phases
-	}
-	if hasWebSearch {
-		step.Extra["web_search"] = true
 	}
 	if turn.ResponseID != "" {
 		step.Extra["response_id"] = turn.ResponseID
@@ -361,6 +367,9 @@ func buildRootExtra(header TranscriptHeader) map[string]any {
 	}
 	if header.Task != "" {
 		extra["task"] = header.Task
+	}
+	if header.SystemPrompt != "" {
+		extra["system_prompt"] = header.SystemPrompt
 	}
 	return extra
 }
