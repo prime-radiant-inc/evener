@@ -230,14 +230,15 @@ class TestTaskStatus:
         fb = [t for t in tasks if t["task_name"] == "fix-bug"][0]
         assert fb["status"] == "fail"
 
-    def test_running_no_reward_no_finished(self, tmp_path):
-        """Task with no reward.txt and no finished_at is running."""
+    def test_running_no_reward(self, tmp_path):
+        """Task with no reward.txt is running, even with finished_at."""
         job_root = tmp_path / "active-run"
         task = job_root / "in-prog__aaa111"
         task.mkdir(parents=True)
-        # result.json with started_at but no finished_at
+        # result.json with finished_at but no reward.txt (verifier pending)
         (task / "result.json").write_text(json.dumps({
             "started_at": "2026-03-01T12:00:00Z",
+            "finished_at": "2026-03-01T12:10:00Z",
         }))
 
         store = RunStore(tmp_path)

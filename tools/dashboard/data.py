@@ -341,26 +341,21 @@ class RunStore:
 
         return "no_submit"
 
-    def _task_status(self, reward, task_dir):
+    def _task_status(self, reward):
         """Determine task status: 'running', 'pass', or 'fail'.
 
-        A task is 'running' if it has no reward.txt and no finished_at
-        in its result.json (i.e. the verifier hasn't run yet).
+        A task is 'running' if the verifier hasn't written reward.txt yet.
         """
-        if reward is not None:
-            return "pass" if reward >= 1.0 else "fail"
-        # No reward — check if the task actually finished
-        result = self._read_result_json(task_dir)
-        if result.get("finished_at"):
-            return "fail"  # finished but no reward → failure
-        return "running"
+        if reward is None:
+            return "running"
+        return "pass" if reward >= 1.0 else "fail"
 
     def _read_task_summary(self, task_dir, trial_count=1):
         """Build a summary dict for a task directory."""
         reward = self._read_reward(task_dir)
         transcript_files = self._find_transcript_files(task_dir)
         result = self._read_result_json(task_dir)
-        status = self._task_status(reward, task_dir)
+        status = self._task_status(reward)
         return {
             "task_name": self._task_name_from_dir(task_dir),
             "reward": reward,
