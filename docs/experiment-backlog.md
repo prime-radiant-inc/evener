@@ -167,6 +167,32 @@ without hurting quality.
 (Results go here as experiments complete)
 
 ### delegation-framing-v1
-- **Commit:** (pending)
-- **Phase 1:** (not started)
-- **Phase 2:** (not started)
+
+**Hypothesis:** Framing delegation as speed optimization (codex-rs style) improves
+delegation behavior — more parallelism, better coordinator discipline.
+
+**Commit:** 1d3b03f (main)
+
+#### Phase 1 Results (delegation-framing-v1-p1)
+- **Job:** delegation-framing-v1-p1
+- **Tasks:** cancel-async-tasks, build-pmars, overfull-hbox (1 rep each)
+- **Pass rate:** 1/2 valid tasks (build-pmars was setup failure — install script bug)
+  - overfull-hbox: PASS (verifier 4/4 tests, despite agent timeout at 750s)
+  - cancel-async-tasks: FAIL (verifier 5/6 tests, SIGINT cleanup bug)
+  - build-pmars: SETUP FAILURE (libatlas-base-dev unavailable, git not installed)
+- **Behavioral observations:**
+  - Both coordinators followed full delegation workflow (plan → implement → verify → submit)
+  - Neither coordinator tried to write code directly — the prompt is working
+  - cancel-async-tasks used parallelism (test-engineer + reviewer in parallel)
+  - overfull-hbox did NOT use parallelism (all sequential blocking calls)
+  - cancel-async-tasks spawned 6 subagents (2 were wasteful cleanup agents)
+  - overfull-hbox spawned 3 subagents (planner, implementer, reviewer)
+  - overfull-hbox reviewer was pathologically thorough (downloaded Gutenberg text, ran out of budget)
+  - cancel-async-tasks needed STEERING correction (text instead of communicate)
+  - cancel-async-tasks failure was validation gap: all 3 validators tested programmatic
+    cancel, not SIGINT from external process. Implementation bug is real but all validators missed it.
+- **Decision:** Proceed to Phase 2 — delegation behavior is correct, but need more data points
+  for pass rate signal. Swap build-pmars for a task without setup issues. Consider:
+  replace build-pmars with largest-eigenval (MODERATE tier, no special env needs)
+
+#### Phase 2: (not started)
