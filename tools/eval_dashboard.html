@@ -101,6 +101,24 @@ html, body {
 }
 .run-select:focus { border-color: var(--accent); }
 .run-select option { background: var(--bg-2); }
+.run-select optgroup { color: var(--text-dim); font-style: normal; font-family: 'Barlow Condensed', sans-serif; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; }
+.run-select optgroup option { color: var(--text); text-transform: none; font-family: 'IBM Plex Mono', monospace; font-size: 13px; letter-spacing: 0; }
+
+.group-select {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: 5px 10px;
+  border-radius: 4px;
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  cursor: pointer;
+  outline: none;
+}
+.group-select:focus { border-color: var(--accent); }
+.group-select option { background: var(--bg-2); }
 
 .health-bar {
   display: flex;
@@ -741,6 +759,12 @@ html, body {
   <select class="run-select" id="runSelect">
     <option value="">Loading runs...</option>
   </select>
+  <select class="group-select" id="groupSelect">
+    <option value="">No grouping</option>
+    <option value="model">Group by model</option>
+    <option value="adapter">Group by agent</option>
+    <option value="date">Group by date</option>
+  </select>
   <div class="health-bar" id="healthBar">
     <div class="health-item">
       <div class="led" id="healthLed"></div>
@@ -825,6 +849,7 @@ let currentRun = null;
 let currentTask = null;
 let currentTab = 'transcript';
 let currentFilter = 'all';
+let currentGroupBy = '';
 let runs = [];
 let tasks = [];
 let expandedGroups = new Set();
@@ -864,6 +889,52 @@ async function refreshHealth() {
 }
 
 // === RUNS ===
+function getRunGroupKey(run) {
+  const m = run.manifest || {};
+  switch (currentGroupBy) {
+    case 'model':
+      return m.model ? m.model.split('/').pop() : 'unknown';
+    case 'adapter':
+      return (m.adapter || 'unknown').replace(/_agent$/, '').replace(/:.*$/, '');
+    case 'date':
+      return m.started_at ? m.started_at.slice(0, 10) : 'unknown';
+    default:
+      return null;
+  }
+}
+
+function sortRunsForGroup(runList) {
+  if (!currentGroupBy) {
+    // Default sort: active first, then by total tasks descending, then by name
+    runList.sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0)
+      || ((b.summary?.total || 0) - (a.summary?.total || 0))
+      || a.job_name.localeCompare(b.job_name));
+    return;
+  }
+  // Sort by group key, then within group by total tasks descending
+  runList.sort((a, b) => {
+    const ga = getRunGroupKey(a);
+    const gb = getRunGroupKey(b);
+    if (ga !== gb) {
+      if (ga === 'unknown') return 1;
+      if (gb === 'unknown') return -1;
+      if (currentGroupBy === 'date') return gb.localeCompare(ga); // newest first
+      return ga.localeCompare(gb);
+    }
+    return (b.summary?.total || 0) - (a.summary?.total || 0)
+      || a.job_name.localeCompare(b.job_name);
+  });
+}
+
+function buildRunOption(run) {
+  const opt = document.createElement('option');
+  opt.value = run.job_name;
+  const status = run.active ? '' : ' (archived)';
+  const summary = run.summary ? ` [${run.summary.pass}/${run.summary.total}]` : '';
+  opt.textContent = run.job_name + summary + status;
+  return opt;
+}
+
 async function refreshRuns() {
   try {
     runs = await api('/runs');
@@ -874,18 +945,29 @@ async function refreshRuns() {
       select.innerHTML = '<option value="">No runs found</option>';
       return;
     }
-    // Sort: active first, then by total tasks descending, then by name
-    runs.sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0)
-      || ((b.summary?.total || 0) - (a.summary?.total || 0))
-      || a.job_name.localeCompare(b.job_name));
-    for (const run of runs) {
-      const opt = document.createElement('option');
-      opt.value = run.job_name;
-      const status = run.active ? '' : ' (archived)';
-      const summary = run.summary ? ` [${run.summary.pass}/${run.summary.total}]` : '';
-      opt.textContent = run.job_name + summary + status;
-      select.appendChild(opt);
+
+    sortRunsForGroup(runs);
+
+    if (currentGroupBy) {
+      // Build optgroups
+      let currentGroup = null;
+      let optgroup = null;
+      for (const run of runs) {
+        const key = getRunGroupKey(run);
+        if (key !== currentGroup) {
+          currentGroup = key;
+          optgroup = document.createElement('optgroup');
+          optgroup.label = key;
+          select.appendChild(optgroup);
+        }
+        optgroup.appendChild(buildRunOption(run));
+      }
+    } else {
+      for (const run of runs) {
+        select.appendChild(buildRunOption(run));
+      }
     }
+
     // Restore or auto-select
     if (prev && runs.find(r => r.job_name === prev)) {
       select.value = prev;
@@ -1373,6 +1455,11 @@ document.getElementById('runSelect').addEventListener('change', (e) => {
   closeDetail();
   refreshTasks();
   updateSummary();
+});
+
+document.getElementById('groupSelect').addEventListener('change', (e) => {
+  currentGroupBy = e.target.value;
+  refreshRuns();
 });
 
 document.getElementById('detailClose').addEventListener('click', closeDetail);
