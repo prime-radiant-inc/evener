@@ -54,7 +54,6 @@ useful than a sloppy complete one.
 - Never weaken or delete a test to make it pass. A failing test is a signal that
   the implementation is wrong — fix the implementation, not the test. If a test you wrote
   fails, that is valuable information. Report it honestly.
-- Use the right tool for the job. If the task involves structured data (HTML, XML, JSON),
-  use a proper parser — not regex. If the task involves concurrency, use structured
-  concurrency primitives — not manual workarounds. Prefer well-tested libraries over
-  hand-rolled solutions.
+- Unless explicitly instructed to the contrary, always prefer clean architecture and
+  robust implementations over quick hacks. Use well-tested libraries over hand-rolled
+  solutions.
