@@ -33,13 +33,15 @@ _ARTIFACT_WARN_MB = 100
 class SerfAgent(BaseInstalledAgent):
     """Serf agent: headless, non-interactive coding agent."""
 
-    def __init__(self, max_rounds: int = 100, min_result_round: int = 0, reasoning_effort: str = "", enable_reviewer_gate: bool = False, result_tool_name: str = "", *args, **kwargs):
+    def __init__(self, max_rounds: int = 100, min_result_round: int = 0, reasoning_effort: str = "", enable_reviewer_gate: bool = False, result_tool_name: str = "", plugin_dirs: str = "", *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._max_rounds = max_rounds
         self._min_result_round = min_result_round
         self._reasoning_effort = reasoning_effort
         self._enable_reviewer_gate = enable_reviewer_gate
         self._result_tool_name = result_tool_name
+        # Comma-separated host paths to plugin directories.
+        self._plugin_dirs = [p.strip() for p in plugin_dirs.split(",") if p.strip()] if plugin_dirs else []
 
         # Parse provider/model from model_name (e.g. "openai/gpt-5.2-codex")
         if self._parsed_model_provider:
@@ -67,6 +69,15 @@ class SerfAgent(BaseInstalledAgent):
                     source_path=binary,
                     target_path=f"/installed-agent/serf-linux-{arch}",
                 )
+
+        # Upload plugin directories into the container.
+        for host_path in self._plugin_dirs:
+            name = Path(host_path).name
+            container_path = f"/installed-agent/plugins/{name}"
+            await environment.upload_dir(
+                source_dir=Path(host_path),
+                target_dir=container_path,
+            )
 
         # Renders template, uploads install.sh, executes it
         await super().setup(environment)
@@ -105,6 +116,11 @@ class SerfAgent(BaseInstalledAgent):
 
         export_atif_flag = f"--export-atif {_CONTAINER_STATE_DIR}/trajectory.json "
 
+        plugin_flags = ""
+        for host_path in self._plugin_dirs:
+            name = Path(host_path).name
+            plugin_flags += f"--plugin-dir /installed-agent/plugins/{name} "
+
         return [
             ExecInput(
                 command=(
@@ -116,6 +132,7 @@ class SerfAgent(BaseInstalledAgent):
                     f"{result_tool_name_flag}"
                     f"--state-dir {_CONTAINER_STATE_DIR} "
                     f"{export_atif_flag}"
+                    f"{plugin_flags}"
                     f"{effort_flag}"
                     f"-- {escaped}"
                 ),
