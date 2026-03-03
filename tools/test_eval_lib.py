@@ -107,6 +107,42 @@ class TestMakeJobName:
         today = datetime.date.today().strftime("%Y%m%d")
         assert today in name
 
+    def test_with_single_plugin(self):
+        name = make_job_name(
+            harness="serf",
+            model="openai/gpt-5.3-codex",
+            effort="high",
+            git_sha="abc1234",
+            date="20260302",
+            rep=1,
+            plugins=["superpowers"],
+        )
+        assert name == "serf+superpowers_gpt-5.3-codex_high_abc1234_20260302_1"
+
+    def test_with_multiple_plugins(self):
+        name = make_job_name(
+            harness="serf",
+            model="openai/gpt-5.3-codex",
+            effort="high",
+            git_sha="abc1234",
+            date="20260302",
+            rep=1,
+            plugins=["superpowers", "frontend-design"],
+        )
+        assert name == "serf+superpowers+frontend-design_gpt-5.3-codex_high_abc1234_20260302_1"
+
+    def test_with_empty_plugins(self):
+        name = make_job_name(
+            harness="serf",
+            model="openai/gpt-5.3-codex",
+            effort="high",
+            git_sha="abc1234",
+            date="20260302",
+            rep=1,
+            plugins=[],
+        )
+        assert name == "serf_gpt-5.3-codex_high_abc1234_20260302_1"
+
 
 class TestExtractEffort:
     """extract_effort() pulls reasoning_effort from ak_args."""
@@ -282,6 +318,21 @@ class TestBuildManifest:
             ak_args=["foo=bar"],
         )
         assert m["ak_args"] == ["foo=bar"]
+
+    def test_plugins_default(self):
+        m = build_manifest(
+            run_id="x", job_name="test", git_sha="abc", git_dirty=False,
+            git_branch="main", model="m", adapter="a", reps=1, concurrency=1,
+        )
+        assert m["plugins"] == []
+
+    def test_plugins_set(self):
+        m = build_manifest(
+            run_id="x", job_name="test", git_sha="abc", git_dirty=False,
+            git_branch="main", model="m", adapter="a", reps=1, concurrency=1,
+            plugins=["/home/jesse/git/superpowers"],
+        )
+        assert m["plugins"] == ["/home/jesse/git/superpowers"]
 
     def test_json_serializable(self):
         m = build_manifest(

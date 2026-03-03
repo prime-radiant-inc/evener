@@ -11,10 +11,11 @@ Examples:
     ./tools/run_eval.py launch --ak reasoning_effort=medium --rep 2
     ./tools/run_eval.py launch --job custom-name --task build-cython-ext --reps 1
     ./tools/run_eval.py launch --task crack-7z-hash --task fix-code-vulnerability --reps 1
+    ./tools/run_eval.py launch --plugin ~/git/superpowers --task build-cython-ext --reps 1
     ./tools/run_eval.py status --job serf_gpt-5.3-codex_medium_abc1234_20260302_1
     ./tools/run_eval.py collect --job serf_gpt-5.3-codex_medium_abc1234_20260302_1
 
-Job names are auto-generated as {harness}_{model}_{effort}_{git-sha}_{date}_{rep}
+Job names are auto-generated as {harness}[+plugin1+plugin2]_{model}_{effort}_{git-sha}_{date}_{rep}
 unless --job is provided explicitly.
 """
 
@@ -58,6 +59,9 @@ def cmd_launch(args):
 
     info = git_info(REPO_ROOT)
 
+    # Extract plugin basenames for job naming
+    plugin_names = [os.path.basename(p.rstrip("/")) for p in args.plugin] if args.plugin else []
+
     # Auto-generate job name if not provided
     if not args.job:
         effort = extract_effort(args.ak)
@@ -67,6 +71,7 @@ def cmd_launch(args):
             effort=effort,
             git_sha=info["sha"],
             rep=args.rep,
+            plugins=plugin_names or None,
         )
         print(f"=== Auto-generated job name: {args.job} ===")
 
@@ -110,6 +115,11 @@ def cmd_launch(args):
             check=True,
         )
 
+    # Inject plugin_dirs into ak_args for the adapter
+    ak_args = list(args.ak or [])
+    if args.plugin:
+        ak_args.append(f"plugin_dirs={','.join(args.plugin)}")
+
     # Manifest
     run_id = make_run_id(args.job, info["sha"])
     manifest = build_manifest(
@@ -123,7 +133,8 @@ def cmd_launch(args):
         reps=args.reps,
         concurrency=args.concurrency,
         task_names=args.task or None,
-        ak_args=args.ak or [],
+        ak_args=ak_args,
+        plugins=args.plugin or None,
     )
 
     print("=== Manifest ===")
@@ -137,7 +148,7 @@ def cmd_launch(args):
         concurrency=args.concurrency,
         job_name=args.job,
         task_names=args.task or None,
-        ak_args=args.ak or [],
+        ak_args=ak_args,
     )
 
     if args.dry_run:
@@ -325,6 +336,7 @@ def main():
   %(prog)s launch --ak reasoning_effort=medium --rep 2
   %(prog)s launch --job custom-name --task build-cython-ext --reps 1
   %(prog)s launch --task crack-7z-hash --task fix-code-vulnerability --reps 1
+  %(prog)s launch --plugin ~/git/superpowers --task build-cython-ext --reps 1
   %(prog)s status --job serf_gpt-5.3-codex_medium_abc1234_20260302_1
   %(prog)s collect --job serf_gpt-5.3-codex_medium_abc1234_20260302_1""",
     )
@@ -339,6 +351,7 @@ def main():
     launch_p.add_argument("--task", action="append", default=[], help="Task name (repeatable, omit for full suite)")
     launch_p.add_argument("--reps", type=int, default=DEFAULT_REPS, help=f"Reps (default: {DEFAULT_REPS})")
     launch_p.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY, help=f"Concurrency (default: {DEFAULT_CONCURRENCY})")
+    launch_p.add_argument("--plugin", action="append", default=[], help="Plugin host path (repeatable)")
     launch_p.add_argument("--ak", action="append", help="Agent kwarg (repeatable)")
     launch_p.add_argument("--adapter", default=DEFAULT_ADAPTER, help=f"Adapter (default: {DEFAULT_ADAPTER})")
     launch_p.add_argument("--no-build", action="store_true", help="Skip cross-compile")

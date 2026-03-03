@@ -83,18 +83,23 @@ def make_job_name(
     git_sha: str,
     rep: int,
     date: str = "",
+    plugins: list[str] | None = None,
 ) -> str:
     """Generate a structured job name.
 
-    Format: {harness}_{model}_{effort}_{git-short}_{YYYYMMDD}_{rep}
+    Format: {harness}[+plugin1+plugin2]_{model}_{effort}_{git-short}_{YYYYMMDD}_{rep}
     Provider prefix (e.g. "openai/") is stripped from the model name.
+    Plugin names are appended to the harness with '+' separators.
     """
     # Strip provider prefix
     if "/" in model:
         model = model.split("/", 1)[1]
     if not date:
         date = datetime.date.today().strftime("%Y%m%d")
-    return f"{harness}_{model}_{effort}_{git_sha}_{date}_{rep}"
+    harness_part = harness
+    if plugins:
+        harness_part = "+".join([harness] + plugins)
+    return f"{harness_part}_{model}_{effort}_{git_sha}_{date}_{rep}"
 
 
 # --- Run ID ---
@@ -151,6 +156,7 @@ def build_manifest(
     concurrency: int,
     task_names: list[str] | None = None,
     ak_args: list[str] | None = None,
+    plugins: list[str] | None = None,
 ) -> dict:
     """Build a manifest dict for a benchmark run."""
     now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -167,6 +173,7 @@ def build_manifest(
         "concurrency": concurrency,
         "started_at": now,
         "ak_args": ak_args or [],
+        "plugins": plugins or [],
     }
 
 
