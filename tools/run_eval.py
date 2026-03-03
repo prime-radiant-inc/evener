@@ -12,6 +12,8 @@ Examples:
     ./tools/run_eval.py launch --job custom-name --task build-cython-ext --reps 1
     ./tools/run_eval.py launch --task crack-7z-hash --task fix-code-vulnerability --reps 1
     ./tools/run_eval.py launch --plugin ~/git/superpowers --task build-cython-ext --reps 1
+    ./tools/run_eval.py launch --harness lace --reps 3
+    ./tools/run_eval.py launch --harness lace --task build-cython-ext --reps 1
     ./tools/run_eval.py status --job serf_gpt-5.3-codex_medium_abc1234_20260302_1
     ./tools/run_eval.py collect --job serf_gpt-5.3-codex_medium_abc1234_20260302_1
 
@@ -35,6 +37,9 @@ from eval_lib import (
     DEFAULT_JOBS_DIR,
     DEFAULT_MODEL,
     DEFAULT_REPS,
+    LACE_DEFAULT_ADAPTER,
+    LACE_DEFAULT_MODEL,
+    LACE_REPO,
     build_harbor_command,
     build_ldflags,
     build_manifest,
@@ -50,14 +55,29 @@ REPO_ROOT = os.path.dirname(SCRIPT_DIR)
 
 def cmd_launch(args):
     """Preflight, build, deploy to per-run staging dir, write manifest, launch harbor."""
+    # Harness-specific configuration
+    is_lace = args.harness == "lace"
+    if is_lace:
+        repo_root = LACE_REPO
+        if not os.path.isdir(repo_root):
+            print(f"ERROR: Lace repo not found at {repo_root}. Set LACE_REPO env var.", file=sys.stderr)
+            sys.exit(1)
+        # Override defaults when user hasn't explicitly changed them
+        if args.model == DEFAULT_MODEL:
+            args.model = LACE_DEFAULT_MODEL
+        if args.adapter == DEFAULT_ADAPTER:
+            args.adapter = LACE_DEFAULT_ADAPTER
+    else:
+        repo_root = REPO_ROOT
+
     # Preflight: clean tree check
     if not args.allow_dirty:
-        info = git_info(REPO_ROOT)
+        info = git_info(repo_root)
         if info["dirty"]:
             print("ERROR: Dirty working tree. Commit or use --allow-dirty.", file=sys.stderr)
             sys.exit(1)
 
-    info = git_info(REPO_ROOT)
+    info = git_info(repo_root)
 
     # Extract plugin basenames for job naming
     plugin_names = [os.path.basename(p.rstrip("/")) for p in args.plugin] if args.plugin else []
@@ -80,54 +100,72 @@ def cmd_launch(args):
     # from interfering with each other.
     run_stage_dir = f"{REMOTE_DIR}/runs/{args.job}"
 
-    # Build
-    binary_path = "/tmp/serf-linux-amd64"
-    if not args.no_build and not args.dry_run:
-        print("=== Building linux binary ===")
-        ldflags = build_ldflags(REPO_ROOT)
-        subprocess.run(
-            f'GOOS=linux GOARCH=amd64 go build -ldflags "{ldflags}" -o {binary_path} ./cmd/serf/',
-            shell=True, check=True, cwd=REPO_ROOT,
-        )
-    elif args.no_build:
-        print("=== Skipping build (--no-build) ===")
-        if not args.dry_run and not os.path.isfile(binary_path):
-            print(f"ERROR: --no-build but {binary_path} does not exist. Build first.", file=sys.stderr)
-            sys.exit(1)
-
-    # Deploy to per-run staging directory
-    if not args.dry_run:
-        print(f"=== Staging run: {run_stage_dir} ===")
-        subprocess.run(
-            ["ssh", REMOTE, f"mkdir -p {run_stage_dir}"],
-            check=True,
-        )
-        files_to_deploy = [
-            (binary_path, f"{REMOTE}:{run_stage_dir}/serf-linux-amd64"),
-            (f"{REPO_ROOT}/tools/serf_agent.py", f"{REMOTE}:{run_stage_dir}/serf_agent.py"),
-            (f"{REPO_ROOT}/tools/install-serf.sh.j2", f"{REMOTE}:{run_stage_dir}/install-serf.sh.j2"),
-        ]
-        for src, dst in files_to_deploy:
-            subprocess.run(["scp", src, dst], check=True)
-        # Copy .env from base directory
-        subprocess.run(
-            ["ssh", REMOTE, f"cp {REMOTE_DIR}/.env {run_stage_dir}/.env"],
-            check=True,
-        )
-
-        # Copy plugins into the staging directory for reproducibility
-        if args.plugin:
-            subprocess.run(
-                ["ssh", REMOTE, f"mkdir -p {run_stage_dir}/plugins"],
-                check=True,
-            )
-            for plugin_path in args.plugin:
-                plugin_name = os.path.basename(plugin_path.rstrip("/"))
-                print(f"  Staging plugin: {plugin_name}")
+    # Build + Deploy (harness-specific)
+    if is_lace:
+        # Lace: build + deploy handled together by deploy-lace.sh
+        if not args.dry_run:
+            if not args.no_build:
+                print(f"=== Building and deploying lace to {run_stage_dir} ===")
+                deploy_script = os.path.join(LACE_REPO, "tools", "deploy-lace.sh")
                 subprocess.run(
-                    ["scp", "-r", plugin_path, f"{REMOTE}:{run_stage_dir}/plugins/{plugin_name}"],
+                    [deploy_script, "--staging-dir", run_stage_dir],
                     check=True,
                 )
+            else:
+                print("=== Skipping lace build/deploy (--no-build) ===")
+            # Copy .env from base directory
+            subprocess.run(
+                ["ssh", REMOTE, f"mkdir -p {run_stage_dir} && cp {REMOTE_DIR}/.env {run_stage_dir}/.env"],
+                check=True,
+            )
+    else:
+        # Serf: separate build + deploy steps
+        binary_path = "/tmp/serf-linux-amd64"
+        if not args.no_build and not args.dry_run:
+            print("=== Building linux binary ===")
+            ldflags = build_ldflags(REPO_ROOT)
+            subprocess.run(
+                f'GOOS=linux GOARCH=amd64 go build -ldflags "{ldflags}" -o {binary_path} ./cmd/serf/',
+                shell=True, check=True, cwd=REPO_ROOT,
+            )
+        elif args.no_build:
+            print("=== Skipping build (--no-build) ===")
+            if not args.dry_run and not os.path.isfile(binary_path):
+                print(f"ERROR: --no-build but {binary_path} does not exist. Build first.", file=sys.stderr)
+                sys.exit(1)
+
+        if not args.dry_run:
+            print(f"=== Staging run: {run_stage_dir} ===")
+            subprocess.run(
+                ["ssh", REMOTE, f"mkdir -p {run_stage_dir}"],
+                check=True,
+            )
+            files_to_deploy = [
+                (binary_path, f"{REMOTE}:{run_stage_dir}/serf-linux-amd64"),
+                (f"{REPO_ROOT}/tools/serf_agent.py", f"{REMOTE}:{run_stage_dir}/serf_agent.py"),
+                (f"{REPO_ROOT}/tools/install-serf.sh.j2", f"{REMOTE}:{run_stage_dir}/install-serf.sh.j2"),
+            ]
+            for src, dst in files_to_deploy:
+                subprocess.run(["scp", src, dst], check=True)
+            # Copy .env from base directory
+            subprocess.run(
+                ["ssh", REMOTE, f"cp {REMOTE_DIR}/.env {run_stage_dir}/.env"],
+                check=True,
+            )
+
+    # Copy plugins into the staging directory for reproducibility
+    if not args.dry_run and args.plugin:
+        subprocess.run(
+            ["ssh", REMOTE, f"mkdir -p {run_stage_dir}/plugins"],
+            check=True,
+        )
+        for plugin_path in args.plugin:
+            plugin_name = os.path.basename(plugin_path.rstrip("/"))
+            print(f"  Staging plugin: {plugin_name}")
+            subprocess.run(
+                ["scp", "-r", plugin_path, f"{REMOTE}:{run_stage_dir}/plugins/{plugin_name}"],
+                check=True,
+            )
 
     # Inject plugin_dirs into ak_args, pointing at the staged copies
     ak_args = list(args.ak or [])
@@ -355,6 +393,8 @@ def main():
   %(prog)s launch --job custom-name --task build-cython-ext --reps 1
   %(prog)s launch --task crack-7z-hash --task fix-code-vulnerability --reps 1
   %(prog)s launch --plugin ~/git/superpowers --task build-cython-ext --reps 1
+  %(prog)s launch --harness lace --reps 3
+  %(prog)s launch --harness lace --task build-cython-ext --reps 1
   %(prog)s status --job serf_gpt-5.3-codex_medium_abc1234_20260302_1
   %(prog)s collect --job serf_gpt-5.3-codex_medium_abc1234_20260302_1""",
     )

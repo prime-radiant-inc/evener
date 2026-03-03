@@ -12,7 +12,7 @@ import subprocess
 # Override with EVAL_REMOTE / EVAL_REMOTE_DIR env vars to target a different server.
 
 REMOTE = os.environ.get("EVAL_REMOTE", "jesse@magic-kingdom")
-REMOTE_DIR = os.environ.get("EVAL_REMOTE_DIR", "git/terminal-bench")
+REMOTE_DIR = os.environ.get("EVAL_REMOTE_DIR", "/home/jesse/git/terminal-bench")
 DATASET = "terminal-bench@2.0"
 
 # --- Defaults ---
@@ -23,6 +23,12 @@ DEFAULT_REPS = 3
 DEFAULT_CONCURRENCY = 10
 DEFAULT_ARCHIVE_ROOT = "/data/serf-evals"
 DEFAULT_JOBS_DIR = "/data/serf-evals/runs"
+
+# --- Lace harness config ---
+
+LACE_REPO = os.environ.get("LACE_REPO", os.path.expanduser("~/git/lace"))
+LACE_DEFAULT_MODEL = "openai/gpt-5.2-codex"
+LACE_DEFAULT_ADAPTER = "lace_agent:LaceAgent"
 
 
 # --- Git helpers ---

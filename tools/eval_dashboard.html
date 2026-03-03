@@ -325,6 +325,45 @@ html, body {
   animation: pulse-running 2s ease-in-out infinite;
 }
 
+/* === REP GROUPS === */
+.task-card .rep-indicator {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+.rep-list {
+  margin-top: 6px;
+  border-top: 1px solid var(--border);
+  padding-top: 4px;
+}
+
+.rep-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 4px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+  cursor: pointer;
+  border-radius: 2px;
+}
+.rep-item:hover { background: var(--bg-4); }
+.rep-item.selected { background: var(--accent-dim); }
+
+.rep-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.rep-dot.pass { background: var(--pass); }
+.rep-dot.fail { background: var(--fail); }
+.rep-dot.running { background: var(--running); }
+.rep-dot.timeout { background: var(--timeout); }
+.rep-dot.error { background: var(--error); }
+
 /* === FILTER BAR === */
 .filter-bar {
   display: flex;
@@ -788,6 +827,7 @@ let currentTab = 'transcript';
 let currentFilter = 'all';
 let runs = [];
 let tasks = [];
+let expandedGroups = new Set();
 let refreshInterval = null;
 let lastRefresh = Date.now();
 
@@ -911,39 +951,123 @@ async function refreshTasks() {
   }
 }
 
+function groupTasksByName(taskList) {
+  const groups = new Map();
+  for (const t of taskList) {
+    if (!groups.has(t.name)) {
+      groups.set(t.name, []);
+    }
+    groups.get(t.name).push(t);
+  }
+  return groups;
+}
+
+function getGroupStatus(reps) {
+  const statuses = reps.map(r => r.status);
+  if (statuses.some(s => s === 'running')) return 'running';
+  if (statuses.every(s => s === 'pass')) return 'pass';
+  if (statuses.some(s => s === 'fail')) return 'fail';
+  if (statuses.some(s => s === 'timeout')) return 'timeout';
+  if (statuses.some(s => s === 'error')) return 'error';
+  return 'fail';
+}
+
+function toggleGroup(taskName) {
+  if (expandedGroups.has(taskName)) {
+    expandedGroups.delete(taskName);
+  } else {
+    expandedGroups.add(taskName);
+  }
+  renderTaskGrid();
+}
+
 function renderTaskGrid() {
   const grid = document.getElementById('taskGrid');
   const search = document.getElementById('searchInput').value.toLowerCase();
   let filtered = tasks;
 
-  if (currentFilter !== 'all') {
-    filtered = filtered.filter(t => t.status === currentFilter);
-  }
   if (search) {
     filtered = filtered.filter(t => t.name.toLowerCase().includes(search));
   }
 
+  // Group by task name
+  const groups = groupTasksByName(filtered);
+  let groupEntries = [];
+  for (const [name, reps] of groups) {
+    const passCount = reps.filter(r => r.status === 'pass').length;
+    const groupStatus = getGroupStatus(reps);
+    groupEntries.push({ name, reps, passCount, groupStatus });
+  }
+
+  // Filter by group status (or any rep matching for multi-rep)
+  if (currentFilter !== 'all') {
+    groupEntries = groupEntries.filter(g => {
+      if (g.reps.length === 1) return g.reps[0].status === currentFilter;
+      return g.groupStatus === currentFilter || g.reps.some(r => r.status === currentFilter);
+    });
+  }
+
   // Sort: fails first, then timeouts, then running, then pass
   const order = { fail: 0, timeout: 1, error: 2, running: 3, pass: 4 };
-  filtered.sort((a, b) => (order[a.status] ?? 5) - (order[b.status] ?? 5) || a.name.localeCompare(b.name));
+  groupEntries.sort((a, b) => (order[a.groupStatus] ?? 5) - (order[b.groupStatus] ?? 5) || a.name.localeCompare(b.name));
 
-  if (filtered.length === 0) {
+  if (groupEntries.length === 0) {
     grid.innerHTML = '<div class="empty-state">No matching tasks</div>';
     return;
   }
 
-  grid.innerHTML = filtered.map(t => `
-    <div class="task-card ${t.status} ${currentTask === t.dir_name ? 'selected' : ''}"
-         data-dir="${t.dir_name}" onclick="selectTask('${t.dir_name}')">
-      <div class="name" title="${t.name}">${t.name}</div>
-      <div class="meta">
-        <span class="status-badge">${t.status}</span>
-        <span>${t.sessions}s</span>
-        <span>${t.api_calls} calls</span>
-        ${t.total_tokens > 0 ? `<span>${(t.total_tokens/1000).toFixed(0)}k tok</span>` : ''}
-      </div>
-    </div>
-  `).join('');
+  grid.innerHTML = groupEntries.map(g => {
+    if (g.reps.length === 1) {
+      // Single rep — same as before
+      const t = g.reps[0];
+      return `
+        <div class="task-card ${t.status} ${currentTask === t.dir_name ? 'selected' : ''}"
+             onclick="selectTask('${t.dir_name}')">
+          <div class="name" title="${t.name}">${t.name}</div>
+          <div class="meta">
+            <span class="status-badge">${t.status}</span>
+            <span>${t.sessions}s</span>
+            <span>${t.api_calls} calls</span>
+            ${t.total_tokens > 0 ? `<span>${(t.total_tokens/1000).toFixed(0)}k tok</span>` : ''}
+          </div>
+        </div>`;
+    }
+
+    // Multi-rep group
+    const expanded = expandedGroups.has(g.name);
+    const arrow = expanded ? '&#9660;' : '&#9654;';
+    const isSelected = g.reps.some(r => r.dir_name === currentTask);
+
+    let html = `
+      <div class="task-card ${g.groupStatus} ${isSelected ? 'selected' : ''}"
+           onclick="toggleGroup('${g.name}')">
+        <div class="name" title="${g.name}">${g.name}</div>
+        <div class="meta">
+          <span class="status-badge">${g.passCount}/${g.reps.length} pass</span>
+          <span class="rep-indicator">${arrow} ${g.reps.length} reps</span>
+        </div>`;
+
+    if (expanded) {
+      html += `<div class="rep-list">`;
+      for (const r of g.reps) {
+        const statusColor = { pass: 'var(--pass)', fail: 'var(--fail)', running: 'var(--running)', timeout: 'var(--timeout)', error: 'var(--error)' };
+        html += `
+          <div class="rep-item ${currentTask === r.dir_name ? 'selected' : ''}"
+               onclick="event.stopPropagation(); selectTask('${r.dir_name}')">
+            <span class="rep-dot ${r.status}"></span>
+            <span style="min-width:42px;font-weight:500;text-transform:uppercase;font-size:10px;color:${statusColor[r.status] || 'var(--text-dim)'}">${r.status}</span>
+            <span style="color:var(--text-muted)">${r.hash.slice(0, 5)}</span>
+            <span>${r.sessions}s</span>
+            <span>${r.api_calls} calls</span>
+            ${r.total_tokens > 0 ? `<span>${(r.total_tokens/1000).toFixed(0)}k tok</span>` : ''}
+          </div>`;
+      }
+      html += `</div>`;
+    }
+
+    html += `</div>`;
+    return html;
+  }).join('');
 }
 
 // === TASK DETAIL ===

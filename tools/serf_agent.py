@@ -33,7 +33,7 @@ _ARTIFACT_WARN_MB = 100
 class SerfAgent(BaseInstalledAgent):
     """Serf agent: headless, non-interactive coding agent."""
 
-    def __init__(self, max_rounds: int = 100, min_result_round: int = 0, reasoning_effort: str = "", enable_reviewer_gate: bool = False, result_tool_name: str = "", plugin_dirs: str = "", *args, **kwargs):
+    def __init__(self, max_rounds: int = 100, min_result_round: int = 0, reasoning_effort: str = "", enable_reviewer_gate: bool = False, result_tool_name: str = "", plugin_dirs: str = "", system_prompt_append: str = "", *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._max_rounds = max_rounds
         self._min_result_round = min_result_round
@@ -42,6 +42,8 @@ class SerfAgent(BaseInstalledAgent):
         self._result_tool_name = result_tool_name
         # Comma-separated host paths to plugin directories.
         self._plugin_dirs = [p.strip() for p in plugin_dirs.split(",") if p.strip()] if plugin_dirs else []
+        # Comma-separated host paths to files appended to system prompt.
+        self._system_prompt_append = [p.strip() for p in system_prompt_append.split(",") if p.strip()] if system_prompt_append else []
 
         # Parse provider/model from model_name (e.g. "openai/gpt-5.2-codex")
         if self._parsed_model_provider:
@@ -79,6 +81,16 @@ class SerfAgent(BaseInstalledAgent):
                 await environment.upload_dir(
                     source_dir=Path(host_path),
                     target_dir=container_path,
+                )
+
+        # Upload system-prompt-append files into the container.
+        if self._system_prompt_append:
+            await environment.exec(command="mkdir -p /installed-agent/prompts")
+            for host_path in self._system_prompt_append:
+                name = Path(host_path).name
+                await environment.upload_file(
+                    source_path=Path(host_path),
+                    target_path=f"/installed-agent/prompts/{name}",
                 )
 
         # Renders template, uploads install.sh, executes it
@@ -123,6 +135,11 @@ class SerfAgent(BaseInstalledAgent):
             name = Path(host_path).name
             plugin_flags += f"--plugin-dir /installed-agent/plugins/{name} "
 
+        append_flags = ""
+        for host_path in self._system_prompt_append:
+            name = Path(host_path).name
+            append_flags += f"--system-prompt-append /installed-agent/prompts/{name} "
+
         return [
             ExecInput(
                 command=(
@@ -135,6 +152,7 @@ class SerfAgent(BaseInstalledAgent):
                     f"--state-dir {_CONTAINER_STATE_DIR} "
                     f"{export_atif_flag}"
                     f"{plugin_flags}"
+                    f"{append_flags}"
                     f"{effort_flag}"
                     f"-- {escaped}"
                 ),
