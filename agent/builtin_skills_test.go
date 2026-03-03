@@ -476,6 +476,93 @@ func TestNonInteractive_NotPresentWhenFalse(t *testing.T) {
 	}
 }
 
+func TestNonInteractive_CoordinatorDoesNotGetCodingGuidance(t *testing.T) {
+	root := t.TempDir()
+	initGitRepo(t, root)
+
+	c := llm.NewClient()
+	comm := submitResultCall("c1", "done")
+
+	var capturedSystem string
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				if len(req.Messages) > 0 && req.Messages[0].Role == llm.RoleSystem {
+					capturedSystem = req.Messages[0].Text()
+				}
+				return toolCallResponse(comm)
+			},
+		},
+	}
+	c.Register(f)
+
+	// Depth 0 = coordinator session.
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(root), SessionConfig{
+		NonInteractive: true,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = sess.ProcessInput(ctx, "hi")
+	sess.Close()
+
+	// Coordinator MUST NOT be told to "start coding" — it delegates.
+	if strings.Contains(capturedSystem, "Start coding") {
+		t.Error("coordinator (depth 0) should NOT be told to 'Start coding' — it delegates to subagents")
+	}
+	// Coordinator MUST still get non-interactive basics.
+	if !strings.Contains(capturedSystem, "no human available") {
+		t.Error("coordinator should still get non-interactive basics")
+	}
+	// Coordinator should get delegation-aware guidance.
+	if !strings.Contains(capturedSystem, "decompose") || !strings.Contains(capturedSystem, "delegate") {
+		t.Error("coordinator should get delegation-aware non-interactive guidance")
+	}
+}
+
+func TestNonInteractive_SubagentGetsCodingGuidance(t *testing.T) {
+	root := t.TempDir()
+	initGitRepo(t, root)
+
+	c := llm.NewClient()
+	comm := submitResultCall("c1", "done")
+
+	var capturedSystem string
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				if len(req.Messages) > 0 && req.Messages[0].Role == llm.RoleSystem {
+					capturedSystem = req.Messages[0].Text()
+				}
+				return toolCallResponse(comm)
+			},
+		},
+	}
+	c.Register(f)
+
+	// Depth 1 = subagent session.
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(root), SessionConfig{
+		NonInteractive: true,
+		Depth:          1,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = sess.ProcessInput(ctx, "hi")
+	sess.Close()
+
+	// Subagents SHOULD be told to start coding.
+	if !strings.Contains(capturedSystem, "Start coding") {
+		t.Error("subagent (depth > 0) should get 'Start coding' guidance")
+	}
+}
+
 // builtinSkillNames returns a slice of skill names for test output.
 func builtinSkillNames(skills map[string]SkillMeta) []string {
 	names := make([]string, 0, len(skills))

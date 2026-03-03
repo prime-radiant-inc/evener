@@ -34,8 +34,8 @@ const (
 	SessionClosed        SessionState = "CLOSED"
 )
 
-func nonInteractiveGuidance(resultToolName string) string {
-	return fmt.Sprintf(`
+func nonInteractiveGuidance(resultToolName string, depth int) string {
+	common := fmt.Sprintf(`
 
 ## Non-interactive mode — CRITICAL
 
@@ -48,12 +48,20 @@ RULES (these override ANY skill instructions that conflict):
 - The ONLY valid use of %s is to deliver FINAL work output.
 - The task prompt IS the complete specification. Read it carefully, then BUILD.
 - If a skill says "ask your human partner", "confirm with user", or "explore user intent":
-  make those judgment calls yourself. You are both the implementer and the decision-maker.
-- The brainstorming skill's "explore user intent" step means carefully re-reading the spec
-  and extracting every requirement — NOT asking questions.
-- Start coding within your first 3 tool calls. Read the spec, read relevant files, then write code.
-- Focus on: read spec → plan internally → test → implement → verify → deliver.
+  make those judgment calls yourself and proceed autonomously.
 `, resultToolName, resultToolName)
+
+	if depth == 0 {
+		// Coordinator: decompose and delegate, don't code directly.
+		return common + `- You are the coordinator. You MUST decompose the task and delegate to subagents.
+- Within your first 5 tool calls, explore the workspace and start spawning implementer subagents.
+- Focus on: read spec → decompose into subtasks → delegate to subagents → verify via reviewer → deliver.
+`
+	}
+	// Subagent: start coding quickly.
+	return common + `- Start coding within your first 3 tool calls. Read the spec, read relevant files, then write code.
+- Focus on: read spec → plan internally → test → implement → verify → deliver.
+`
 }
 
 type SessionConfig struct {
@@ -1326,7 +1334,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		}
 
 		if s.cfg.NonInteractive {
-			sys += nonInteractiveGuidance(s.resultToolName())
+			sys += nonInteractiveGuidance(s.resultToolName(), s.depth)
 		}
 
 		if strings.TrimSpace(s.cfg.UserInstructionOverride) != "" {
@@ -2006,7 +2014,7 @@ func (s *Session) buildInitialSystemPrompt() string {
 		sys += agentSection
 	}
 	if s.cfg.NonInteractive {
-		sys += nonInteractiveGuidance(s.resultToolName())
+		sys += nonInteractiveGuidance(s.resultToolName(), s.depth)
 	}
 	if strings.TrimSpace(s.cfg.UserInstructionOverride) != "" {
 		sys = sys + "\n\n" + strings.TrimSpace(s.cfg.UserInstructionOverride) + "\n"
