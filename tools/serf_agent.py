@@ -21,7 +21,7 @@ PROVIDER_ENV_KEYS = {
 
 # Harbor bind-mounts /logs/agent/ for us; writing state there ensures it
 # survives container teardown and ends up in the job output automatically.
-_CONTAINER_STATE_DIR = "/logs/agent/serf-state"
+_CONTAINER_STATE_DIR = "/logs/agent/agent-state"
 
 _ARTIFACT_EXCLUDES = [
     ".git", "node_modules", "__pycache__", ".venv",
@@ -169,13 +169,13 @@ class SerfAgent(BaseInstalledAgent):
         try:
             await super().run(instruction, environment, context)
         finally:
-            # Download serf session traces from the container, even on timeout.
-            local_state_dir = self.logs_dir / "serf-state"
+            # Download agent session traces from the container, even on timeout.
+            local_state_dir = self.logs_dir / "agent-state"
             try:
                 await environment.download_dir(_CONTAINER_STATE_DIR, local_state_dir)
-                self.logger.info("Downloaded serf traces to %s", local_state_dir)
+                self.logger.info("Downloaded agent traces to %s", local_state_dir)
             except Exception as e:
-                self.logger.warning("Could not download serf traces: %s", e)
+                self.logger.warning("Could not download agent traces: %s", e)
 
             # Copy ATIF trajectory to logs_dir root for harbor viewer.
             traj_src = local_state_dir / "trajectory.json"
