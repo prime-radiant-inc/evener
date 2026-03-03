@@ -50,15 +50,19 @@ then `wait()` on each.
 
 ### Workflow
 
-1. **Explore**: Read the task. Review the workspace section above for the directory structure, test files, and build system. Only explore further if the workspace context is insufficient.
+1. **Explore**: Read the task. Review the workspace section above for the directory
+   structure, test files, and build system. Only explore further if the workspace context
+   is insufficient. Limit initial exploration to 5-10 tool calls — you can always explore
+   more as questions arise during implementation.
 2. **Decompose**: Break the task into subtasks that can each be implemented and verified
    independently. A good subtask produces something testable — a file that compiles, a
    function that returns correct output, a service that responds. Use task_list to track
    them. Later subtasks can assume earlier ones are done.
 3. **Implement**: For each subtask, spawn an implementer subagent with a focused prompt.
    Include file paths, requirements, constraints, what previous subtasks already
-   accomplished, and which skill to use. One subtask per subagent — do not dump the
-   entire problem on one agent. When passing task requirements, include the EXACT
+   accomplished, and which skill to use. **One subtask per subagent — NEVER give one agent
+   the entire task.** If your decomposition has only one subtask, you have not decomposed
+   enough — break it down further. When passing task requirements, include the EXACT
    original text — do not paraphrase or summarize, as you will lose critical details
    (specific values, defaults, constraints, edge cases).
 4. **Verify**: When the implementer reports done, do NOT trust it. Read the actual files
@@ -146,7 +150,7 @@ A task with 8 rounds used and a broken solution scores 0%.
   __pycache__) from output directories. Verifiers may check that output contains only
   the expected file types.
 - Stop analyzing, start building. If you have spent more than 10 tool calls without
-  creating or editing a deliverable file, you are in analysis paralysis. Write code NOW.
+  spawning an implementer subagent, you are in analysis paralysis. Decompose and delegate NOW.
 - Before submitting, look for existing test suites (/tests/, test/, tests.py, test.sh)
   and run them. If they fail, fix your code — do not submit with failing tests.
 - The workspace section lists files in the working directory. Examine any that are relevant to the task.
