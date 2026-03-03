@@ -1124,3 +1124,79 @@ td.numeric {
 .trial-pill.active .status-dot {
     box-shadow: 0 0 0 1px rgba(255,255,255,0.3);
 }
+
+/* --------------------------------------------------------
+   Group-by pill buttons
+   -------------------------------------------------------- */
+.group-pills {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: 12px;
+    vertical-align: middle;
+}
+
+.group-pills-label {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #A0A0A0;
+    margin-right: 2px;
+}
+
+.group-pill {
+    padding: 3px 12px;
+    font-size: 12px;
+    font-family: inherit;
+    font-weight: 500;
+    border: 1px solid rgba(0,0,0,0.12);
+    border-radius: 12px;
+    background: #FFFFFF;
+    color: #6B6B6B;
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+}
+
+.group-pill:hover {
+    color: #1A1A1A;
+    border-color: rgba(0,0,0,0.25);
+}
+
+.group-pill.active {
+    background: #1A1A1A;
+    color: #FFFFFF;
+    border-color: #1A1A1A;
+}
+
+/* --------------------------------------------------------
+   Group header rows in run table (depth-based)
+   -------------------------------------------------------- */
+.group-header-row td {
+    padding: 10px 16px 6px !important;
+    border-bottom: 1px solid rgba(0,0,0,0.08) !important;
+}
+
+.group-header-row:first-child td {
+    padding-top: 10px !important;
+}
+
+.group-header-row.depth-0 td { background: #F0F0EE; }
+.group-header-row.depth-1 td { background: #F5F5F3; }
+.group-header-row.depth-2 td { background: #FAFAF8; }
+
+.group-header-row.depth-0 .group-label { padding-left: 0; font-size: 14px; }
+.group-header-row.depth-1 .group-label { padding-left: 20px; font-size: 13px; }
+.group-header-row.depth-2 .group-label { padding-left: 40px; font-size: 13px; }
+
+.group-label {
+    font-weight: 600;
+    color: #1A1A1A;
+}
+
+.group-summary {
+    margin-left: 10px;
+    font-size: 12px;
+    color: #A0A0A0;
+}

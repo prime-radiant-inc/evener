@@ -112,6 +112,16 @@ def get_task(job_name: str, task_name: str, request: Request, trial: str = None)
             break
     task["system_prompt"] = system_prompt
 
+    # Check for ATIF trajectory (used by non-serf agents like lace)
+    task_dir = task.get("task_dir", "")
+    if task_dir:
+        atif_path = Path(task_dir) / "agent" / "trajectory.json"
+        if atif_path.is_file():
+            try:
+                task["atif_trajectory"] = json.loads(atif_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                pass
+
     if _wants_json(request):
         task["trajectory"] = trajectories
         task.pop("transcript_files", None)

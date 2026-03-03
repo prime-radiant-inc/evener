@@ -35,8 +35,10 @@ function route() {
 window.addEventListener('hashchange', route);
 window.addEventListener('DOMContentLoaded', route);
 
-// Auto-refresh every 30 seconds
-setInterval(route, 30000);
+// Persistent group-by state for dashboard — hierarchical grouping
+const GROUP_DIMENSIONS = ['date', 'adapter', 'model'];
+const GROUP_LABELS = { date: 'Date', adapter: 'Agent', model: 'Model' };
+let groupByLevels = ['date', 'adapter', 'model']; // default hierarchy
 
 // ---------------------------------------------------------------------------
 // Breadcrumb
@@ -255,6 +257,74 @@ function rawLink(href) {
 // Dashboard page
 // ---------------------------------------------------------------------------
 
+function getRunDimensionValue(run, dimension) {
+    switch (dimension) {
+        case 'model': return run.model ? stripProviderPrefix(run.model) : 'unknown';
+        case 'adapter': return (run.adapter || 'unknown').replace(/_agent(:.+)?$/, '');
+        case 'date': return run.started_at ? run.started_at.slice(0, 10) : 'unknown';
+        default: return 'unknown';
+    }
+}
+
+function sortRunsForGroup(runs) {
+    if (!groupByLevels.length) return runs;
+    return [...runs].sort((a, b) => {
+        for (const dim of groupByLevels) {
+            const va = getRunDimensionValue(a, dim);
+            const vb = getRunDimensionValue(b, dim);
+            if (va !== vb) {
+                if (va === 'unknown') return 1;
+                if (vb === 'unknown') return -1;
+                if (dim === 'date') return vb.localeCompare(va); // newest first
+                return va.localeCompare(vb);
+            }
+        }
+        // Within innermost group: newest first by started_at
+        const ta = a.started_at || '';
+        const tb = b.started_at || '';
+        return tb.localeCompare(ta);
+    });
+}
+
+function buildRunRow(run) {
+    const passRate = run.total_tasks > 0
+        ? ((run.passed / run.total_tasks) * 100).toFixed(0)
+        : 0;
+    const dataset = run.dataset_name
+        ? `${run.dataset_name} ${run.dataset_version || ''}`.trim()
+        : '-';
+    const inProgress = (run.running || 0) + (run.queued || 0);
+    const statusBadges = [];
+    if (run.running > 0) statusBadges.push(h('span', { className: 'running-badge' }, `${run.running} running`));
+    if (run.queued > 0) statusBadges.push(h('span', { className: 'queued-badge' }, `${run.queued} queued`));
+    const taskLabel = run.total_tasks > 0
+        ? `${run.passed}/${run.total_tasks}`
+        : (inProgress > 0 ? '...' : '0');
+
+    return h('tr', null,
+        h('td', null,
+            h('a', { className: 'table-link', href: `#/runs/${encodeURIComponent(run.job_name)}` },
+                run.job_name)
+        ),
+        h('td', null, stripProviderPrefix(run.model)),
+        h('td', null, dataset),
+        h('td', null, formatDate(run.started_at)),
+        h('td', null, String(run.total_tasks), ...statusBadges),
+        h('td', null,
+            h('div', { className: 'pass-info' },
+                h('span', { className: 'pass-fraction' }, taskLabel),
+                run.total_tasks > 0 ? h('span', { className: 'pass-pct' }, `${passRate}%`) : null
+            )
+        ),
+        h('td', null,
+            h('div', { className: 'pass-bar', style: 'width:120px' },
+                h('div', { className: 'pass-fill',
+                    style: `width:${run.total_tasks > 0 ? (run.passed / run.total_tasks) * 100 : 0}%` })
+            )
+        )
+    );
+}
+
 async function renderDashboard(container) {
     setBreadcrumb([{ label: 'Dashboard' }]);
     container.innerHTML = '<div class="loading">Loading runs...</div>';
@@ -269,11 +339,38 @@ async function renderDashboard(container) {
 
         const compareLink = h('a', { href: '#/compare', className: 'compare-nav-link' }, 'Compare runs');
 
+        // Build pill buttons for hierarchical grouping
+        const pillBar = h('span', { className: 'group-pills' });
+        const pillLabel = h('span', { className: 'group-pills-label' }, 'Group:');
+        pillBar.appendChild(pillLabel);
+        function rebuildPills() {
+            // Remove all pills (keep the label)
+            while (pillBar.children.length > 1) pillBar.removeChild(pillBar.lastChild);
+            for (const dim of GROUP_DIMENSIONS) {
+                const idx = groupByLevels.indexOf(dim);
+                const active = idx >= 0;
+                const pill = h('button', {
+                    className: 'group-pill' + (active ? ' active' : ''),
+                    onClick: () => {
+                        if (active) {
+                            groupByLevels = groupByLevels.filter(d => d !== dim);
+                        } else {
+                            groupByLevels = [...groupByLevels, dim];
+                        }
+                        renderDashboard(container);
+                    }
+                }, active ? `${idx + 1}. ${GROUP_LABELS[dim]}` : GROUP_LABELS[dim]);
+                pillBar.appendChild(pill);
+            }
+        }
+        rebuildPills();
+
         const header = h('div', { className: 'page-header' },
             h('h1', null, 'Eval Runs', compareLink),
-            h('div', { className: 'subtitle' }, `${runs.length} run${runs.length !== 1 ? 's' : ''}`)
+            h('div', { className: 'subtitle' }, `${runs.length} run${runs.length !== 1 ? 's' : ''}`, pillBar)
         );
 
+        const colCount = 7;
         const thead = h('thead', null,
             h('tr', null,
                 h('th', null, 'Run'),
@@ -287,44 +384,50 @@ async function renderDashboard(container) {
         );
 
         const tbody = h('tbody');
-        for (const run of runs) {
-            const passRate = run.total_tasks > 0
-                ? ((run.passed / run.total_tasks) * 100).toFixed(0)
-                : 0;
-            const dataset = run.dataset_name
-                ? `${run.dataset_name} ${run.dataset_version || ''}`.trim()
-                : '-';
-            const inProgress = (run.running || 0) + (run.queued || 0);
-            const statusBadges = [];
-            if (run.running > 0) statusBadges.push(h('span', { className: 'running-badge' }, `${run.running} running`));
-            if (run.queued > 0) statusBadges.push(h('span', { className: 'queued-badge' }, `${run.queued} queued`));
-            const taskLabel = run.total_tasks > 0
-                ? `${run.passed}/${run.total_tasks}`
-                : (inProgress > 0 ? '...' : '0');
+        const sorted = sortRunsForGroup(runs);
 
-            const row = h('tr', null,
-                h('td', null,
-                    h('a', { className: 'table-link', href: `#/runs/${encodeURIComponent(run.job_name)}` },
-                        run.job_name)
-                ),
-                h('td', null, stripProviderPrefix(run.model)),
-                h('td', null, dataset),
-                h('td', null, formatDate(run.started_at)),
-                h('td', null, String(run.total_tasks), ...statusBadges),
-                h('td', null,
-                    h('div', { className: 'pass-info' },
-                        h('span', { className: 'pass-fraction' }, taskLabel),
-                        run.total_tasks > 0 ? h('span', { className: 'pass-pct' }, `${passRate}%`) : null
-                    )
-                ),
-                h('td', null,
-                    h('div', { className: 'pass-bar', style: 'width:120px' },
-                        h('div', { className: 'pass-fill',
-                            style: `width:${run.total_tasks > 0 ? (run.passed / run.total_tasks) * 100 : 0}%` })
-                    )
-                )
-            );
-            tbody.appendChild(row);
+        if (groupByLevels.length > 0) {
+            // Track current key at each active level
+            const currentKeys = new Array(groupByLevels.length).fill(null);
+            for (const run of sorted) {
+                // Check each level — emit header when key changes
+                for (let depth = 0; depth < groupByLevels.length; depth++) {
+                    const dim = groupByLevels[depth];
+                    const key = getRunDimensionValue(run, dim);
+                    if (key !== currentKeys[depth]) {
+                        currentKeys[depth] = key;
+                        // Reset deeper levels
+                        for (let d = depth + 1; d < groupByLevels.length; d++) {
+                            currentKeys[d] = null;
+                        }
+                        // Compute aggregate stats for this group
+                        const groupRuns = sorted.filter(r => {
+                            for (let d = 0; d <= depth; d++) {
+                                if (getRunDimensionValue(r, groupByLevels[d]) !== currentKeys[d]) return false;
+                            }
+                            return true;
+                        });
+                        const groupPassed = groupRuns.reduce((s, r) => s + (r.passed || 0), 0);
+                        const groupTotal = groupRuns.reduce((s, r) => s + (r.total_tasks || 0), 0);
+                        const groupSummary = groupTotal > 0
+                            ? ` \u2014 ${groupPassed}/${groupTotal} (${((groupPassed/groupTotal)*100).toFixed(0)}%)`
+                            : '';
+                        const groupRow = h('tr', { className: `group-header-row depth-${depth}` },
+                            h('td', { colSpan: String(colCount) },
+                                h('span', { className: 'group-label' }, key),
+                                h('span', { className: 'group-summary' },
+                                    `${groupRuns.length} run${groupRuns.length !== 1 ? 's' : ''}${groupSummary}`)
+                            )
+                        );
+                        tbody.appendChild(groupRow);
+                    }
+                }
+                tbody.appendChild(buildRunRow(run));
+            }
+        } else {
+            for (const run of sorted) {
+                tbody.appendChild(buildRunRow(run));
+            }
         }
 
         const table = h('table', null, thead, tbody);
@@ -1134,8 +1237,12 @@ async function renderTaskDetail(container, jobName, taskName, trialHash) {
 
         const trajectoryBody = h('div', { className: 'card-body-flush' });
 
-        if (task.trajectory && task.trajectory.length > 0) {
-            // Count rounds for summary
+        const atif = task.atif_trajectory;
+        if (atif && atif.steps && atif.steps.length > 0) {
+            // ATIF trajectory (lace and other non-serf agents)
+            renderAtifTrajectory(atif, trajectoryBody);
+        } else if (task.trajectory && task.trajectory.length > 0) {
+            // Serf transcript-based trajectory
             let totalRounds = 0;
             let errorRounds = 0;
             for (const session of task.trajectory) {
@@ -1221,6 +1328,123 @@ async function renderTaskDetail(container, jobName, taskName, trialHash) {
         if (filesSection) container.appendChild(filesSection);
     } catch (err) {
         container.innerHTML = `<div class="error-msg">Failed to load task: ${escapeHtml(err.message)}</div>`;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ATIF trajectory rendering
+// ---------------------------------------------------------------------------
+
+function atifStepAction(step) {
+    // Map ATIF step source + tool name to a display action matching serf's categories
+    if (step.source === 'system') return 'PLAN';
+    if (step.source === 'user') return 'TASK';
+    if (!step.tool_calls || step.tool_calls.length === 0) return 'PLAN';
+    const name = (step.tool_calls[0].function_name || '').toLowerCase();
+    if (name.includes('edit') || name.includes('write') || name.includes('patch')) return 'EDIT';
+    if (name.includes('bash') || name.includes('exec') || name.includes('command')) return 'EXEC';
+    if (name.includes('read') || name.includes('glob') || name.includes('grep') || name.includes('search')) return 'EXPLORE';
+    if (name.includes('submit') || name.includes('communicate') || name.includes('report')) return 'SUBMIT';
+    if (name.includes('task') || name.includes('spawn') || name.includes('delegate')) return 'SPAWN';
+    return 'TOOL';
+}
+
+function renderAtifTrajectory(atif, container) {
+    const steps = atif.steps;
+    const agentSteps = steps.filter(s => s.source === 'agent' && s.tool_calls && s.tool_calls.length > 0);
+    const agent = atif.agent || {};
+
+    const info = h('div', { className: 'trajectory-summary' },
+        `${steps.length} steps`,
+        agentSteps.length > 0 ? ` (${agentSteps.length} tool calls)` : '',
+        agent.name ? ` \u00b7 ${agent.name}` : '',
+        agent.model ? ` \u00b7 ${agent.model}` : ''
+    );
+    container.appendChild(info);
+
+    const timeline = h('div', { className: 'timeline' });
+
+    for (const step of steps) {
+        const action = atifStepAction(step);
+        const el = h('div', { className: 'timeline-round' });
+        el.appendChild(h('div', { className: `timeline-dot ${action}` }));
+
+        const headerItems = [
+            h('span', { className: 'round-num' }, `#${step.step_id}`),
+            h('span', { className: `round-action ${action}` }, action),
+        ];
+
+        // One-liner summary
+        if (step.tool_calls && step.tool_calls.length > 0) {
+            const toolText = step.tool_calls.map(tc => {
+                const name = tc.function_name || 'unknown';
+                const args = tc.arguments || {};
+                // Show key arg for common tools
+                const hint = args.command || args.file_path || args.pattern || args.query || '';
+                const short = typeof hint === 'string' ? hint.slice(0, 60) : '';
+                return short ? `${name}(${short}${hint.length > 60 ? '...' : ''})` : name;
+            }).join(' ; ');
+            headerItems.push(h('span', { className: 'round-tools' }, toolText));
+        } else if (step.message) {
+            headerItems.push(h('span', { className: 'round-summary' },
+                truncate(step.message, 80)));
+        }
+
+        if (step.timestamp) {
+            headerItems.push(h('span', { className: 'round-tokens' },
+                new Date(step.timestamp).toLocaleTimeString()));
+        }
+
+        el.appendChild(h('div', { className: 'round-header' }, ...headerItems));
+
+        // Detail (expanded on click)
+        const detail = h('div', { className: 'round-detail' });
+
+        if (step.message && step.message.trim()) {
+            detail.appendChild(h('pre', { className: 'round-text' }, step.message));
+        }
+
+        if (step.tool_calls) {
+            for (let i = 0; i < step.tool_calls.length; i++) {
+                const tc = step.tool_calls[i];
+                // Map ATIF tool_call to the format renderToolCall expects
+                const mapped = {
+                    name: tc.function_name,
+                    arguments: tc.arguments,
+                };
+                // Find matching observation result
+                let result = null;
+                if (step.observation && step.observation.results) {
+                    const match = step.observation.results.find(
+                        r => r.source_call_id === tc.tool_call_id
+                    ) || step.observation.results[i];
+                    if (match) {
+                        result = { content: match.content || '', is_error: false };
+                    }
+                }
+                detail.appendChild(renderToolCall(mapped, result));
+            }
+        }
+
+        el.appendChild(detail);
+
+        const headerEl = el.querySelector('.round-header');
+        headerEl.style.cursor = 'pointer';
+        headerEl.addEventListener('click', () => el.classList.toggle('expanded'));
+
+        timeline.appendChild(el);
+    }
+
+    container.appendChild(timeline);
+
+    // Final metrics if present
+    if (atif.final_metrics) {
+        const metricsEl = h('div', { className: 'trajectory-summary' },
+            Object.entries(atif.final_metrics)
+                .map(([k, v]) => `${k}: ${v}`)
+                .join(' \u00b7 ')
+        );
+        container.appendChild(metricsEl);
     }
 }
 
