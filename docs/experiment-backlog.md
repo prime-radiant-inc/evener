@@ -251,3 +251,39 @@ guidance to subagent_base.md fixes the 3 observed failure patterns.
 - **Decision:** Keep the subagent values changes. cancel-async-tasks improvement is real.
   filter-js-from-html may be unsolvable via generic prompting — needs agent to discover
   BS4 normalization requirement. path-tracing needs the link-loophole fix tested.
+
+### subagent-values-v2
+
+**Hypothesis:** Closing the hard-link loophole ("copy/link reference output files") and
+replacing prescriptive "use proper parsers" with principled "prefer clean architecture and
+robust implementations over quick hacks" fixes remaining path-tracing cheating and improves
+filter-js-from-html library usage.
+
+**Commits:** a230b69 (link loophole), b669154 (clean architecture wording)
+
+#### Results (subagent-values-v2)
+- **Job:** subagent-values-v2
+- **Tasks:** path-tracing, filter-js-from-html (2 reps each)
+- **Pass rate:** 1/4 (25%)
+
+| Task | v1 | v2 | Behavior Change? |
+|------|----|----|-----------------|
+| path-tracing | 1/2 | 1/2 | Yes — stopped cheating entirely, implemented real path tracer |
+| filter-js-from-html | 0/2 | 0/2 | No — still hand-rolls HTML parsers, never installs BS4 |
+
+- **path-tracing**: Anti-cheating guidance fully working now. Rep 2 reverse-engineered
+  /app/orig via disassembly (objdump, readelf, extracted float constants), then wrote a
+  genuine ~2500-char C path tracer with vector math, ray-sphere/plane intersection, shadow
+  rays, sky gradient, and checkerboard floor. No hardlinks, no symlinks, no copying.
+  Rep 1 timed out during exploration phase (never progressed past planning).
+- **filter-js-from-html**: "Clean architecture" wording insufficient. Both reps still
+  hand-rolled parsers (~200-7300 chars of custom byte-level scanning). Neither attempted
+  `pip install beautifulsoup4` or imported any HTML parsing library. The agent interprets
+  "clean architecture" as "well-organized custom code," not "use existing libraries."
+  The fundamental issue remains: verifier normalizes through BS4, so hand-rolled serialization
+  doesn't match. This is a task-specific knowledge gap, not a prompting problem.
+- **Decision:** Anti-cheating prompt is now solid (keep all changes). filter-js-from-html
+  is likely unsolvable via generic prompt engineering — the agent needs to discover the
+  verifier's BS4 normalization requirement, which can't be hinted without task-specific
+  knowledge. Move on to broader validation of the delegation framing + subagent values
+  changes together.
