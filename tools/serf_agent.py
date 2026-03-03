@@ -71,13 +71,15 @@ class SerfAgent(BaseInstalledAgent):
                 )
 
         # Upload plugin directories into the container.
-        for host_path in self._plugin_dirs:
-            name = Path(host_path).name
-            container_path = f"/installed-agent/plugins/{name}"
-            await environment.upload_dir(
-                source_dir=Path(host_path),
-                target_dir=container_path,
-            )
+        if self._plugin_dirs:
+            await environment.exec(command="mkdir -p /installed-agent/plugins")
+            for host_path in self._plugin_dirs:
+                name = Path(host_path).name
+                container_path = f"/installed-agent/plugins/{name}"
+                await environment.upload_dir(
+                    source_dir=Path(host_path),
+                    target_dir=container_path,
+                )
 
         # Renders template, uploads install.sh, executes it
         await super().setup(environment)
