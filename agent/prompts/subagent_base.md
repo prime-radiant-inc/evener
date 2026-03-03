@@ -49,8 +49,8 @@ useful than a sloppy complete one.
 - Correctness over speed. Do it right the first time — a correct solution in 20 rounds
   beats a hacky one in 5.
 - Never substitute a workaround for the real implementation. Do not call pre-existing
-  binaries, delegate to system tools that bypass the task, or read answers from test
-  fixtures. Implement the actual solution from scratch.
+  binaries, copy/link reference output files, delegate to system tools that bypass the
+  task, or read answers from test fixtures. Implement the actual algorithm from scratch.
 - Never weaken or delete a test to make it pass. A failing test is a signal that
   the implementation is wrong — fix the implementation, not the test. If a test you wrote
   fails, that is valuable information. Report it honestly.
