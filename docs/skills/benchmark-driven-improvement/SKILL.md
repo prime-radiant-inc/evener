@@ -545,6 +545,45 @@ From analyzing build-cython-ext failures (4/5 same root cause):
 These fixes are in `agent/agents/reviewer.md` and encode general principles
 (search all file types, test final artifact) not task-specific knowledge.
 
+## Task Difficulty Tiers (terminal-bench 2.0)
+
+Tasks ranked by aggregate failure rate across all agents (from the terminal-bench README):
+
+| Tier | Failure Rate | Tasks | Use For |
+|------|-------------|-------|---------|
+| EXTREME | 90%+ | sanitize-git-repo, password-recovery, circuit-fibsqrt, etc. | Skip — too hard for signal |
+| VERY HARD | 75-90% | path-tracing, decrypt-file, crack-7z-hash, etc. | Only if specifically investigating |
+| HARD | 50-75% | build-pmars, qemu-startup, winning-avg-corewars, etc. | Testing ambitious improvements |
+| MODERATE-HARD | 35-50% | cancel-async-tasks, overfull-hbox, multi-source-data-merger, etc. | Sweet spot for most experiments |
+| MODERATE | 20-35% | largest-eigenval, filter-js-from-html, etc. | Good baseline, should be solvable |
+| EASY | <20% | fix-code-vulnerability, build-cython-ext, etc. | Regression checks only |
+
+### High-discrimination tasks (biggest gap between good and bad agents)
+
+These tasks best separate capable from incapable agents:
+
+| Task | Failure Rate | Discrimination Gap | Notes |
+|------|-------------|-------------------|-------|
+| sanitize-git-repo | 43.4% | 78.6pt | Biggest discriminator |
+| path-tracing | 59.3% | 68pt | Ray tracing implementation |
+| break-filter-js-from-html | 33.7% | 68pt | HTML/JS extraction |
+
+Use these for Phase 2+ of experiments where you need maximum signal from a small task set.
+
+## Running Controlled Experiments
+
+For systematic prompt experiments, see the prompt-experiment-protocol skill at
+`~/.claude/skills/prompt-experiment-protocol/SKILL.md`. Key principles:
+
+- Test ONE hypothesis per experiment
+- Phase 1 (trajectory check): 2-3 tasks, 1 rep each — look at BEHAVIOR, not pass/fail
+- Phase 2 (statistical signal): 5-8 tasks, 2-3 reps — does behavior translate to outcomes?
+- Phase 3 (validation): full discriminator set — only if Phase 2 shows improvement
+- Always pass `--ak reasoning_effort=high` (without it everything scores ~0%)
+- Document results in `docs/experiment-backlog.md`
+
+Track active experiments and their hypotheses/results in `docs/experiment-backlog.md`.
+
 ## Common Pitfalls
 
 - **Don't optimize for one task**: A prompt that says "always install scipy first" is task-specific. A prompt that says "resolve dependency errors before retrying" is general.
