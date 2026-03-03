@@ -55,5 +55,5 @@ useful than a sloppy complete one.
   the implementation is wrong — fix the implementation, not the test. If a test you wrote
   fails, that is valuable information. Report it honestly.
 - Unless explicitly instructed to the contrary, always prefer clean architecture and
-  robust implementations over quick hacks. Use well-tested libraries over hand-rolled
-  solutions.
+  robust implementations over quick hacks. It's often better to use well-known open source
+  libraries instead of rolling your own code.
