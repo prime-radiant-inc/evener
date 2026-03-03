@@ -2587,7 +2587,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 				if err != nil {
 					return nil, fmt.Errorf("loading skill %q: %w", skillName, err)
 				}
-				return body, nil
+				return fmt.Sprintf("Skill: %s\nLocation: %s\n\n---\n\n%s", skillName, meta.Dir, body), nil
 			},
 		})
 	}

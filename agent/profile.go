@@ -210,21 +210,29 @@ func (p *baseProfile) BuildSystemPrompt(env EnvironmentInfo, docs []ProjectDoc, 
 		b.WriteString("</workspace>\n\n")
 	}
 
-	// Skills section is only rendered for profiles that use the use_skill tool
-	// (Anthropic, Gemini). OpenAI models read skills via read_file, and listing
-	// skill file paths in the system prompt causes the model to read all of them
-	// on the first turn, wasting context.
-	hasUseSkill := false
-	for _, td := range p.ToolDefinitions() {
-		if td.Name == "use_skill" {
-			hasUseSkill = true
-			break
+	// Skills section: always rendered when skills are available.
+	// For profiles with use_skill (Anthropic, Gemini): model calls use_skill(name).
+	// For profiles without use_skill (OpenAI): model reads the SKILL.md file directly.
+	if len(skills) > 0 {
+		hasUseSkill := false
+		for _, td := range p.ToolDefinitions() {
+			if td.Name == "use_skill" {
+				hasUseSkill = true
+				break
+			}
 		}
-	}
-	if len(skills) > 0 && hasUseSkill {
 		b.WriteString("<skills>\n")
+		if hasUseSkill {
+			b.WriteString("Load a skill by calling use_skill with its name. The response includes the skill directory path for accessing scripts and other collateral.\n")
+		} else {
+			b.WriteString("Load a skill by reading its SKILL.md file path with read_file. The skill directory may contain scripts and other collateral.\n")
+		}
 		for _, s := range skills {
-			b.WriteString(fmt.Sprintf("- %s: %s\n", s.Name, s.Description))
+			if hasUseSkill {
+				b.WriteString(fmt.Sprintf("- %s: %s [%s]\n", s.Name, s.Description, s.Dir))
+			} else {
+				b.WriteString(fmt.Sprintf("- %s: %s [%s]\n", s.Name, s.Description, s.SkillFile))
+			}
 		}
 		b.WriteString("</skills>\n\n")
 	}

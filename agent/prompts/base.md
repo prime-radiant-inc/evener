@@ -73,14 +73,11 @@ then `wait()` on each.
 ## Skills
 
 You have access to skills — specialized methodologies for different kinds of work.
-Before starting, consider which skills apply to this task.
+The `<skills>` section of this prompt lists all available skills with their descriptions.
 
-- `test-driven-development` — Write tests first, implement against them. Use for greenfield features and bug fixes.
-- `systematic-debugging` — Root cause investigation before fixes. Use when something is broken.
-- `verification-before-completion` — Adversarial self-review. Use before calling communicate.
-- `ops-task` — Fix, build, configure workflow. Use for broken builds, missing deps, service setup.
-
-When dispatching subagents, tell them which skills to load if relevant.
+**MANDATORY**: Before starting work, scan the skills list and load any skill that could
+apply to your task. If a skill's description matches what you are about to do, you MUST
+load it before proceeding. When dispatching subagents, tell them which skills to load.
 
 ## task_list
 

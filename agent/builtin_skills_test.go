@@ -172,7 +172,7 @@ func TestEmbeddedSkills_InSystemPrompt(t *testing.T) {
 	}
 }
 
-func TestOpenAI_NoSkillsInSystemPrompt(t *testing.T) {
+func TestOpenAI_SkillsWithFilePathsInSystemPrompt(t *testing.T) {
 	root := t.TempDir()
 	initGitRepo(t, root)
 
@@ -193,8 +193,8 @@ func TestOpenAI_NoSkillsInSystemPrompt(t *testing.T) {
 	}
 	c.Register(f)
 
-	// OpenAI profile does not list skills in system prompt to avoid
-	// the model wasting rounds reading skill files.
+	// OpenAI profile lists skills with file paths (not use_skill) so the
+	// model can load them via read_file.
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -204,8 +204,16 @@ func TestOpenAI_NoSkillsInSystemPrompt(t *testing.T) {
 	_, _ = sess.ProcessInput(ctx, "hi")
 	sess.Close()
 
-	if strings.Contains(capturedSystem, "<skills>") {
-		t.Error("OpenAI system prompt should NOT contain <skills> section")
+	// OpenAI should have <skills> section with file paths and read_file guidance.
+	if !strings.Contains(capturedSystem, "<skills>") {
+		t.Error("OpenAI system prompt should contain <skills> section with file paths")
+	}
+	if !strings.Contains(capturedSystem, "read_file") {
+		t.Error("OpenAI system prompt should instruct model to use read_file for skills")
+	}
+	// OpenAI should NOT have use_skill tool.
+	if strings.Contains(capturedSystem, "- use_skill:") {
+		t.Error("OpenAI should not have use_skill tool listed")
 	}
 }
 
