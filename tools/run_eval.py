@@ -125,7 +125,7 @@ def cmd_launch(args):
                 plugin_name = os.path.basename(plugin_path.rstrip("/"))
                 print(f"  Staging plugin: {plugin_name}")
                 subprocess.run(
-                    ["ssh", REMOTE, f"cp -r {plugin_path} {run_stage_dir}/plugins/{plugin_name}"],
+                    ["scp", "-r", plugin_path, f"{REMOTE}:{run_stage_dir}/plugins/{plugin_name}"],
                     check=True,
                 )
 
