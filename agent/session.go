@@ -35,9 +35,6 @@ const (
 )
 
 func nonInteractiveGuidance(resultToolName string) string {
-	// Common non-interactive guidance only. Role-specific work guidance
-	// (e.g., "start coding" vs "start reviewing") belongs in the agent type
-	// definitions (agent/agents/*.md) and base.md, not here.
 	return fmt.Sprintf(`
 
 ## Non-interactive mode — CRITICAL
@@ -51,8 +48,11 @@ RULES (these override ANY skill instructions that conflict):
 - The ONLY valid use of %s is to deliver FINAL work output.
 - The task prompt IS the complete specification. Read it carefully, then BUILD.
 - If a skill says "ask your human partner", "confirm with user", or "explore user intent":
-  make those judgment calls yourself and proceed autonomously.
-- You MUST begin working within your first 3 tool calls.
+  make those judgment calls yourself. You are both the implementer and the decision-maker.
+- The brainstorming skill's "explore user intent" step means carefully re-reading the spec
+  and extracting every requirement — NOT asking questions.
+- Start coding within your first 3 tool calls. Read the spec, read relevant files, then write code.
+- Focus on: read spec → plan internally → test → implement → verify → deliver.
 `, resultToolName, resultToolName)
 }
 
