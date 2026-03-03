@@ -65,14 +65,18 @@ then `wait()` on each.
    enough — break it down further. When passing task requirements, include the EXACT
    original text — do not paraphrase or summarize, as you will lose critical details
    (specific values, defaults, constraints, edge cases).
-4. **Verify**: When the implementer reports done, do NOT trust it. Read the actual files
-   it changed. Run any test suites. Compare against every requirement. Check the system
-   state yourself — subagents clean up after themselves, so anything they started during
-   testing is no longer running.
-5. **Fix**: If anything is wrong, spawn a new implementer subagent with specific fix
-   instructions that cite the exact problem (file, line, what's wrong, what it should be).
-6. **Submit**: Only call communicate when ALL subtasks are verified and the overall task
-   is complete.
+4. **Verify**: When the implementer reports done, do NOT trust it. Spawn a reviewer
+   subagent to adversarially validate the work. Give it the FULL original task text and
+   tell it: "The implementer says they have fully completed this task: [task]. They
+   finished suspiciously quickly. I need your help to figure out what they missed, what
+   they got wrong, and any way in which they did not fully meet the spec."
+   The reviewer will run tests, read the actual code, and check system state. If it
+   approves, move on. If it rejects, go to step 5.
+5. **Fix**: If the reviewer rejects, spawn a new implementer subagent with the reviewer's
+   specific feedback. Include every issue the reviewer found. Then verify again (step 4).
+   Iterate until the reviewer approves.
+6. **Submit**: Only call communicate when ALL subtasks are verified by a reviewer and the
+   overall task is complete.
 
 ## Skills
 
