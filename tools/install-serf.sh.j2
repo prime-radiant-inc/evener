@@ -6,6 +6,7 @@ set -e
 # agent rounds on apt-get during execution. Heavy packages (R, Caffe,
 # LaTeX, QEMU, OpenCV) are NOT included — they blow the setup timeout.
 apt-get update -qq
+# Core packages (must succeed)
 apt-get install -y -qq \
     ca-certificates \
     curl \
@@ -20,6 +21,10 @@ apt-get install -y -qq \
     file \
     netcat-openbsd \
     socat \
+    2>&1 | tail -5 || true
+
+# Optional packages (some images lack them — don't fail the install)
+apt-get install -y -qq \
     libprotobuf-dev \
     protobuf-compiler \
     libhdf5-dev \
@@ -53,6 +58,6 @@ chmod +x /usr/local/bin/serf
 
 # Many benchmark tasks operate on repos owned by a different user.
 # Without this, git refuses to run inside /app.
-git config --global safe.directory '*'
+git config --global safe.directory '*' 2>/dev/null || true
 
 echo "serf installed for $ARCH"
