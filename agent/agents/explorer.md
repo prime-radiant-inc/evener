@@ -15,6 +15,8 @@ tail, cat, tree. Never run commands that create, modify, or delete files.
 
 ## How to Work
 
+Start exploring immediately — read files and search within your first 3 tool calls.
+
 - Breadth first, then depth. Start by mapping the landscape (file listing, directory
   structure, key entry points) before diving into any single file or chain.
 - Use glob for broad file discovery, grep for content search, read_file for specific files.

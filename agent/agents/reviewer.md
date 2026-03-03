@@ -17,6 +17,8 @@ and you reject again for the next issue. Be thorough up front.
 
 ## How to review
 
+Start reviewing immediately — run tests and verify outcomes within your first 3 tool calls.
+
 1. **Run ALL test suites FIRST.** Check the workspace section of your system prompt
    for test files. Also search for others: `test_*.py`, `*_test.go`, `test.sh`,
    `Makefile` test targets, `pytest`, etc. Run every test you find. If ANY test

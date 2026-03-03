@@ -523,7 +523,7 @@ func TestNonInteractive_CoordinatorDoesNotGetCodingGuidance(t *testing.T) {
 	}
 }
 
-func TestNonInteractive_SubagentGetsCodingGuidance(t *testing.T) {
+func TestNonInteractive_SubagentGetsRoleNeutralGuidance(t *testing.T) {
 	root := t.TempDir()
 	initGitRepo(t, root)
 
@@ -557,9 +557,56 @@ func TestNonInteractive_SubagentGetsCodingGuidance(t *testing.T) {
 	_, _ = sess.ProcessInput(ctx, "hi")
 	sess.Close()
 
-	// Subagents SHOULD be told to start coding.
-	if !strings.Contains(capturedSystem, "Start coding") {
-		t.Error("subagent (depth > 0) should get 'Start coding' guidance")
+	// Subagent non-interactive guidance should NOT contain "Start coding" —
+	// role-specific work guidance belongs in the agent type definition, not here.
+	if strings.Contains(capturedSystem, "Start coding") {
+		t.Error("non-interactive guidance should not contain 'Start coding' — that belongs in agent type definitions")
+	}
+	// Should still get the common non-interactive basics.
+	if !strings.Contains(capturedSystem, "no human available") {
+		t.Error("subagent should still get non-interactive basics")
+	}
+}
+
+func TestAgentDefinition_ImplementerHasCodingUrgency(t *testing.T) {
+	agents, err := builtinAgents()
+	if err != nil {
+		t.Fatalf("builtinAgents: %v", err)
+	}
+	impl, ok := agents["implementer"]
+	if !ok {
+		t.Fatal("implementer agent not found in builtinAgents()")
+	}
+	if !strings.Contains(impl.SystemPrompt, "Start coding") {
+		t.Error("implementer agent definition should contain 'Start coding' work guidance")
+	}
+}
+
+func TestAgentDefinition_ReviewerNoCodingUrgency(t *testing.T) {
+	agents, err := builtinAgents()
+	if err != nil {
+		t.Fatalf("builtinAgents: %v", err)
+	}
+	rev, ok := agents["reviewer"]
+	if !ok {
+		t.Fatal("reviewer agent not found in builtinAgents()")
+	}
+	if strings.Contains(rev.SystemPrompt, "Start coding") {
+		t.Error("reviewer agent definition should NOT contain 'Start coding' — it reviews, not codes")
+	}
+}
+
+func TestAgentDefinition_ExplorerNoCodingUrgency(t *testing.T) {
+	agents, err := builtinAgents()
+	if err != nil {
+		t.Fatalf("builtinAgents: %v", err)
+	}
+	exp, ok := agents["explorer"]
+	if !ok {
+		t.Fatal("explorer agent not found in builtinAgents()")
+	}
+	if strings.Contains(exp.SystemPrompt, "Start coding") {
+		t.Error("explorer agent definition should NOT contain 'Start coding' — it explores, not codes")
 	}
 }
 

@@ -19,6 +19,8 @@ tests.
 
 ## How to Write Tests
 
+Start coding within your first 3 tool calls. Read the spec, explore the test patterns, then write tests.
+
 1. Read the spec requirements you are given carefully.
 2. Explore the codebase to understand the testing patterns, frameworks, and conventions.
 3. Write tests that verify the ACTUAL requirements, not simplified versions.

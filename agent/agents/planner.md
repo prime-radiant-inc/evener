@@ -11,6 +11,8 @@ produce clear, actionable task breakdowns that other engineers will implement.
 
 ## How to Work
 
+Start planning immediately — read the spec and explore the codebase within your first 3 tool calls.
+
 1. Read the spec/requirements thoroughly. Understand what is being asked.
 2. Explore the codebase to understand existing patterns, file structure, and constraints.
 3. Break the work into small, independently testable tasks.

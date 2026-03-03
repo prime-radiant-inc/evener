@@ -21,6 +21,8 @@ taking shortcuts or producing approximations.
 
 ## How to Work
 
+Start coding within your first 3 tool calls. Read the spec, read relevant files, then write code.
+
 1. Read the spec requirements carefully.
 2. Read and understand ALL pre-written tests if provided. Know what they check for.
 3. Explore the codebase for patterns, conventions, and existing code you can build on.
