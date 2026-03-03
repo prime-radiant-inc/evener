@@ -113,7 +113,7 @@ def build_harbor_command(
     reps: int,
     concurrency: int,
     job_name: str,
-    task_name: str = "",
+    task_names: list[str] | None = None,
     ak_args: list[str] | None = None,
 ) -> str:
     """Build a harbor run command string."""
@@ -122,8 +122,8 @@ def build_harbor_command(
         f"--agent-import-path {adapter}",
         f"--dataset {DATASET}",
     ]
-    if task_name:
-        parts.append(f"--task-name {task_name}")
+    for name in (task_names or []):
+        parts.append(f"--task-name {name}")
     parts.extend([
         f"--model {model}",
         f"-k {reps}",
@@ -149,7 +149,7 @@ def build_manifest(
     adapter: str,
     reps: int,
     concurrency: int,
-    task_name: str = "",
+    task_names: list[str] | None = None,
     ak_args: list[str] | None = None,
 ) -> dict:
     """Build a manifest dict for a benchmark run."""
@@ -162,7 +162,7 @@ def build_manifest(
         "git_branch": git_branch,
         "model": model,
         "adapter": adapter,
-        "task_name": task_name or "all",
+        "task_names": task_names or ["all"],
         "reps": reps,
         "concurrency": concurrency,
         "started_at": now,

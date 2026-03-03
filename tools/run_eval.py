@@ -10,6 +10,7 @@ Examples:
     ./tools/run_eval.py launch --ak reasoning_effort=medium
     ./tools/run_eval.py launch --ak reasoning_effort=medium --rep 2
     ./tools/run_eval.py launch --job custom-name --task build-cython-ext --reps 1
+    ./tools/run_eval.py launch --task crack-7z-hash --task fix-code-vulnerability --reps 1
     ./tools/run_eval.py status --job serf_gpt-5.3-codex_medium_abc1234_20260302_1
     ./tools/run_eval.py collect --job serf_gpt-5.3-codex_medium_abc1234_20260302_1
 
@@ -121,7 +122,7 @@ def cmd_launch(args):
         adapter=args.adapter,
         reps=args.reps,
         concurrency=args.concurrency,
-        task_name=args.task or "",
+        task_names=args.task or None,
         ak_args=args.ak or [],
     )
 
@@ -135,7 +136,7 @@ def cmd_launch(args):
         reps=args.reps,
         concurrency=args.concurrency,
         job_name=args.job,
-        task_name=args.task or "",
+        task_names=args.task or None,
         ak_args=args.ak or [],
     )
 
@@ -155,7 +156,7 @@ def cmd_launch(args):
         )
 
     # Launch
-    label = args.task or "FULL SUITE"
+    label = ", ".join(args.task) if args.task else "FULL SUITE"
     print(f"\n=== Launching: {label} x{args.reps} (job: {args.job}) ===")
 
     launch_script = f"""cd {run_stage_dir}
@@ -323,6 +324,7 @@ def main():
   %(prog)s launch --ak reasoning_effort=medium
   %(prog)s launch --ak reasoning_effort=medium --rep 2
   %(prog)s launch --job custom-name --task build-cython-ext --reps 1
+  %(prog)s launch --task crack-7z-hash --task fix-code-vulnerability --reps 1
   %(prog)s status --job serf_gpt-5.3-codex_medium_abc1234_20260302_1
   %(prog)s collect --job serf_gpt-5.3-codex_medium_abc1234_20260302_1""",
     )
@@ -334,7 +336,7 @@ def main():
     launch_p.add_argument("--harness", default="serf", help="Harness name for auto-generated job names (default: serf)")
     launch_p.add_argument("--rep", type=int, default=1, help="Rep number for auto-generated job names (default: 1)")
     launch_p.add_argument("--model", default=DEFAULT_MODEL, help=f"Model (default: {DEFAULT_MODEL})")
-    launch_p.add_argument("--task", default="", help="Single task (omit for full suite)")
+    launch_p.add_argument("--task", action="append", default=[], help="Task name (repeatable, omit for full suite)")
     launch_p.add_argument("--reps", type=int, default=DEFAULT_REPS, help=f"Reps (default: {DEFAULT_REPS})")
     launch_p.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY, help=f"Concurrency (default: {DEFAULT_CONCURRENCY})")
     launch_p.add_argument("--ak", action="append", help="Agent kwarg (repeatable)")

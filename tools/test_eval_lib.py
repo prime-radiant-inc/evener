@@ -162,16 +162,30 @@ class TestBuildHarborCommand:
         assert "--job-name test-job" in cmd
         assert "--jobs-dir /data/serf-evals/runs" in cmd
 
-    def test_with_task(self):
+    def test_with_single_task(self):
         cmd = build_harbor_command(
             adapter="serf_agent:SerfAgent",
             model="openai/gpt-5.2-codex",
             reps=1,
             concurrency=2,
             job_name="test",
-            task_name="build-cython-ext",
+            task_names=["build-cython-ext"],
         )
         assert "--task-name build-cython-ext" in cmd
+
+    def test_with_multiple_tasks(self):
+        cmd = build_harbor_command(
+            adapter="serf_agent:SerfAgent",
+            model="openai/gpt-5.2-codex",
+            reps=1,
+            concurrency=2,
+            job_name="test",
+            task_names=["build-cython-ext", "fix-code-vulnerability", "crack-7z-hash"],
+        )
+        assert "--task-name build-cython-ext" in cmd
+        assert "--task-name fix-code-vulnerability" in cmd
+        assert "--task-name crack-7z-hash" in cmd
+        assert cmd.count("--task-name") == 3
 
     def test_without_task(self):
         cmd = build_harbor_command(
@@ -180,6 +194,17 @@ class TestBuildHarborCommand:
             reps=1,
             concurrency=2,
             job_name="test",
+        )
+        assert "--task-name" not in cmd
+
+    def test_empty_task_list(self):
+        cmd = build_harbor_command(
+            adapter="serf_agent:SerfAgent",
+            model="openai/gpt-5.2-codex",
+            reps=1,
+            concurrency=2,
+            job_name="test",
+            task_names=[],
         )
         assert "--task-name" not in cmd
 
@@ -227,20 +252,28 @@ class TestBuildManifest:
         assert m["reps"] == 3
         assert "started_at" in m
 
-    def test_task_name_default(self):
+    def test_task_names_default(self):
         m = build_manifest(
             run_id="x", job_name="test", git_sha="abc", git_dirty=False,
             git_branch="main", model="m", adapter="a", reps=1, concurrency=1,
         )
-        assert m["task_name"] == "all"
+        assert m["task_names"] == ["all"]
 
-    def test_task_name_set(self):
+    def test_task_names_single(self):
         m = build_manifest(
             run_id="x", job_name="test", git_sha="abc", git_dirty=False,
             git_branch="main", model="m", adapter="a", reps=1, concurrency=1,
-            task_name="build-cython-ext",
+            task_names=["build-cython-ext"],
         )
-        assert m["task_name"] == "build-cython-ext"
+        assert m["task_names"] == ["build-cython-ext"]
+
+    def test_task_names_multiple(self):
+        m = build_manifest(
+            run_id="x", job_name="test", git_sha="abc", git_dirty=False,
+            git_branch="main", model="m", adapter="a", reps=1, concurrency=1,
+            task_names=["build-cython-ext", "crack-7z-hash"],
+        )
+        assert m["task_names"] == ["build-cython-ext", "crack-7z-hash"]
 
     def test_ak_args(self):
         m = build_manifest(
