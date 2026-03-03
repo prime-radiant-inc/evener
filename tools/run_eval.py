@@ -14,6 +14,8 @@ Examples:
     ./tools/run_eval.py launch --plugin ~/git/superpowers --task build-cython-ext --reps 1
     ./tools/run_eval.py launch --harness lace --reps 3
     ./tools/run_eval.py launch --harness lace --task build-cython-ext --reps 1
+    ./tools/run_eval.py launch --harness lace --task discriminators --reps 3
+    ./tools/run_eval.py launch --list-tasks
     ./tools/run_eval.py status --job serf_gpt-5.3-codex_medium_abc1234_20260302_1
     ./tools/run_eval.py collect --job serf_gpt-5.3-codex_medium_abc1234_20260302_1
 
@@ -48,6 +50,7 @@ from eval_lib import (
     make_job_name,
     make_run_id,
 )
+from task_sets import list_task_sets, resolve_tasks
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR)
@@ -55,6 +58,11 @@ REPO_ROOT = os.path.dirname(SCRIPT_DIR)
 
 def cmd_launch(args):
     """Preflight, build, deploy to per-run staging dir, write manifest, launch harbor."""
+    if args.list_tasks:
+        print("Available task sets:")
+        print(list_task_sets())
+        return
+
     # Harness-specific configuration
     is_lace = args.harness == "lace"
     if is_lace:
@@ -69,6 +77,10 @@ def cmd_launch(args):
             args.adapter = LACE_DEFAULT_ADAPTER
     else:
         repo_root = REPO_ROOT
+
+    # Resolve named task sets (e.g. --task discriminators → 56 concrete tasks)
+    if args.task:
+        args.task = resolve_tasks(args.task)
 
     # Preflight: clean tree check
     if not args.allow_dirty:
@@ -395,6 +407,8 @@ def main():
   %(prog)s launch --plugin ~/git/superpowers --task build-cython-ext --reps 1
   %(prog)s launch --harness lace --reps 3
   %(prog)s launch --harness lace --task build-cython-ext --reps 1
+  %(prog)s launch --harness lace --task discriminators --reps 3
+  %(prog)s launch --list-tasks
   %(prog)s status --job serf_gpt-5.3-codex_medium_abc1234_20260302_1
   %(prog)s collect --job serf_gpt-5.3-codex_medium_abc1234_20260302_1""",
     )
@@ -406,7 +420,7 @@ def main():
     launch_p.add_argument("--harness", default="serf", help="Harness name for auto-generated job names (default: serf)")
     launch_p.add_argument("--rep", type=int, default=1, help="Rep number for auto-generated job names (default: 1)")
     launch_p.add_argument("--model", default=DEFAULT_MODEL, help=f"Model (default: {DEFAULT_MODEL})")
-    launch_p.add_argument("--task", action="append", default=[], help="Task name (repeatable, omit for full suite)")
+    launch_p.add_argument("--task", action="append", default=[], help="Task name or named set (repeatable, omit for full suite)")
     launch_p.add_argument("--reps", type=int, default=DEFAULT_REPS, help=f"Reps (default: {DEFAULT_REPS})")
     launch_p.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY, help=f"Concurrency (default: {DEFAULT_CONCURRENCY})")
     launch_p.add_argument("--plugin", action="append", default=[], help="Plugin host path (repeatable)")
@@ -416,6 +430,7 @@ def main():
     launch_p.add_argument("--allow-dirty", action="store_true", help="Allow dirty git tree")
     launch_p.add_argument("--force", action="store_true", help="Kill existing job first")
     launch_p.add_argument("--dry-run", action="store_true", help="Print what would be done")
+    launch_p.add_argument("--list-tasks", action="store_true", help="List available named task sets and exit")
     launch_p.set_defaults(func=cmd_launch)
 
     # status
