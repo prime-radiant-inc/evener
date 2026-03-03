@@ -195,4 +195,31 @@ delegation behavior — more parallelism, better coordinator discipline.
   for pass rate signal. Swap build-pmars for a task without setup issues. Consider:
   replace build-pmars with largest-eigenval (MODERATE tier, no special env needs)
 
-#### Phase 2: (not started)
+#### Phase 2 Results (delegation-framing-v1-p2)
+- **Job:** delegation-framing-v1-p2
+- **Tasks:** 8 tasks x 2 reps = 16 trials
+- **Pass rate:** 10/16 (62.5%)
+- **Baseline comparison:** 6/30 (20%) across all prior runs on these same 8 tasks
+
+| Task | Tier | Baseline | P2 | Change |
+|------|------|----------|----|----|
+| cancel-async-tasks | MOD-HARD | 0/3 | 1/2 | **NEW PASS** |
+| overfull-hbox | MOD-HARD | 0/4 | 1/2 | **NEW PASS** |
+| largest-eigenval | MODERATE | 2/5 | 1/2 | ~same |
+| path-tracing | VERY HARD | 0/5 | 1/2 | **NEW PASS** |
+| winning-avg-corewars | HARD | 0/5 | 2/2 | **NEW PASS** |
+| qemu-startup | HARD | 2/2 | 2/2 | no regression |
+| multi-source-data-merger | MOD-HARD | 2/3 | 2/2 | ~same |
+| filter-js-from-html | MODERATE | 0/3 | 0/2 | still failing |
+
+- **Failure modes:**
+  - 2 timeouts (overfull-hbox rep 2, path-tracing rep 2)
+  - filter-js-from-html 0/2 (persistent, likely needs different approach)
+  - cancel-async-tasks, largest-eigenval each 1/2 (nondeterministic)
+- **No regressions** on tasks that already passed (qemu-startup, multi-source-data-merger)
+- **4 previously-impossible tasks now passing** at >=50% rate
+- **Caveats:** Baseline spans multiple configs (some without reasoning_effort=high).
+  But even tasks that were 0/4+ across ALL configs are now passing.
+- **Decision:** Strong signal. This prompt change is a clear improvement. Merge to main
+  and proceed with next experiment (inline role descriptions). Consider Phase 3
+  (full 89-task run) to validate no regressions on broader task set.
