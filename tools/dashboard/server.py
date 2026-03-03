@@ -74,8 +74,8 @@ def list_tasks(job_name: str, request: Request):
 
 
 @app.get("/api/runs/{job_name}/tasks/{task_name}")
-def get_task(job_name: str, task_name: str, request: Request):
-    task = store.get_task(job_name, task_name)
+def get_task(job_name: str, task_name: str, request: Request, trial: str = None):
+    task = store.get_task(job_name, task_name, trial_hash=trial)
     if task is None:
         if _wants_json(request):
             return JSONResponse({"error": "not found"}, status_code=404)
@@ -118,7 +118,7 @@ def get_task(job_name: str, task_name: str, request: Request):
 
         # Merge per-task stats (exclude action_sequence to avoid duplicating
         # trajectory data already present on the response).
-        task_stats = compute_task_stats(store, job_name, task_name)
+        task_stats = compute_task_stats(store, job_name, task_name, trial_hash=trial)
         if task_stats:
             task.update({k: v for k, v in task_stats.items()
                          if k not in ("action_sequence",)})

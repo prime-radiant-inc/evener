@@ -21,8 +21,8 @@ function route() {
     let m;
     if ((m = hash.match(/^#\/tasks\/([^/]+)\/history$/))) {
         renderTaskHistory(app, decodeURIComponent(m[1]));
-    } else if ((m = hash.match(/^#\/runs\/([^/]+)\/tasks\/([^/]+)$/))) {
-        renderTaskDetail(app, decodeURIComponent(m[1]), decodeURIComponent(m[2]));
+    } else if ((m = hash.match(/^#\/runs\/([^/]+)\/tasks\/([^/?]+)(?:\?trial=([^&]+))?$/))) {
+        renderTaskDetail(app, decodeURIComponent(m[1]), decodeURIComponent(m[2]), m[3] || null);
     } else if ((m = hash.match(/^#\/runs\/([^/]+)$/))) {
         renderRunDetail(app, decodeURIComponent(m[1]));
     } else if ((m = hash.match(/^#\/compare$/))) {
@@ -35,6 +35,8 @@ function route() {
 window.addEventListener('hashchange', route);
 window.addEventListener('DOMContentLoaded', route);
 
+// Auto-refresh every 30 seconds
+setInterval(route, 30000);
 
 // ---------------------------------------------------------------------------
 // Breadcrumb
@@ -674,6 +676,7 @@ async function renderRunDetail(container, jobName) {
 
         let activeFilter = 'all';
         let searchQuery = '';
+        let expandedReps = new Set();
         const filterBar = h('div', { className: 'filter-bar' });
 
         // Column definitions
@@ -727,8 +730,25 @@ async function renderRunDetail(container, jobName) {
                         href: `#/runs/${encodeURIComponent(jobName)}/tasks/${encodeURIComponent(task.task_name)}`
                     }, task.task_name);
                     if (task.trial_count > 1) {
-                        return h('span', null, link,
-                            h('span', { className: 'rep-badge' }, `${task.trial_count} reps`));
+                        const isExpanded = expandedReps.has(task.task_name);
+                        const arrow = h('span', {
+                            className: 'rep-toggle',
+                            onClick: (e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                if (expandedReps.has(task.task_name)) {
+                                    expandedReps.delete(task.task_name);
+                                } else {
+                                    expandedReps.add(task.task_name);
+                                }
+                                renderTable();
+                            }
+                        }, isExpanded ? '\u25BC' : '\u25B6');
+                        const badgeText = task.pass_count != null
+                            ? `${task.pass_count}/${task.trial_count} pass`
+                            : `${task.trial_count} reps`;
+                        return h('span', null, arrow, link,
+                            h('span', { className: 'rep-badge' }, badgeText));
                     }
                     return link;
                 }
@@ -742,6 +762,13 @@ async function renderRunDetail(container, jobName) {
                         return h('span', { className: 'status-text' },
                             h('span', { className: 'status-dot running' }),
                             'Running');
+                    }
+                    if (task.trial_count > 1 && task.pass_count != null) {
+                        const dotClass = task.pass_count === task.trial_count ? 'pass'
+                            : task.pass_count === 0 ? 'fail' : 'partial';
+                        return h('span', { className: 'status-text' },
+                            h('span', { className: `status-dot ${dotClass}` }),
+                            `${task.pass_count}/${task.trial_count} Pass`);
                     }
                     const dotClass = task.passed ? 'pass' : failureDotClass(task.failure_category);
                     return h('span', { className: 'status-text' },
@@ -807,6 +834,33 @@ async function renderRunDetail(container, jobName) {
                     row.appendChild(td);
                 }
                 tbody.appendChild(row);
+
+                // Expanded trial sub-rows for multi-rep tasks
+                if (task.trial_count > 1 && expandedReps.has(task.task_name) && task.trials) {
+                    for (const trial of task.trials) {
+                        const subRow = h('tr', { className: 'trial-row' });
+                        // Task name: indented hash linking to trial detail
+                        const trialHref = `#/runs/${encodeURIComponent(jobName)}/tasks/${encodeURIComponent(task.task_name)}?trial=${trial.hash}`;
+                        subRow.appendChild(h('td', null,
+                            h('a', { className: 'trial-hash', href: trialHref }, trial.hash)));
+                        // Result: pass/fail dot
+                        const trialDotClass = trial.status === 'running' ? 'running'
+                            : trial.status === 'queued' ? 'queued'
+                            : trial.passed ? 'pass' : 'fail';
+                        const trialLabel = trial.status === 'running' ? 'Running'
+                            : trial.status === 'queued' ? 'Queued'
+                            : trial.passed ? 'Pass' : 'Fail';
+                        subRow.appendChild(h('td', null,
+                            h('span', { className: 'status-text' },
+                                h('span', { className: `status-dot ${trialDotClass}` }),
+                                trialLabel)));
+                        // Empty cells for remaining columns
+                        for (let i = 2; i < columns.length; i++) {
+                            subRow.appendChild(h('td'));
+                        }
+                        tbody.appendChild(subRow);
+                    }
+                }
             }
 
             const table = h('table', null, thead, tbody);
@@ -863,7 +917,7 @@ async function renderRunDetail(container, jobName) {
 // Task detail page
 // ---------------------------------------------------------------------------
 
-async function renderTaskDetail(container, jobName, taskName) {
+async function renderTaskDetail(container, jobName, taskName, trialHash) {
     setBreadcrumb([
         { label: 'Dashboard', href: '#/' },
         { label: jobName, href: `#/runs/${encodeURIComponent(jobName)}` },
@@ -872,9 +926,9 @@ async function renderTaskDetail(container, jobName, taskName) {
     container.innerHTML = '<div class="loading">Loading task...</div>';
 
     try {
-        const task = await fetchJSON(
-            `/api/runs/${encodeURIComponent(jobName)}/tasks/${encodeURIComponent(taskName)}`
-        );
+        let taskUrl = `/api/runs/${encodeURIComponent(jobName)}/tasks/${encodeURIComponent(taskName)}`;
+        if (trialHash) taskUrl += `?trial=${encodeURIComponent(trialHash)}`;
+        const task = await fetchJSON(taskUrl);
 
         const rawFiles = task.raw_files || {};
 
@@ -907,6 +961,29 @@ async function renderTaskDetail(container, jobName, taskName) {
                 }, 'View history across runs')
             )
         );
+
+        // ---------------------------------------------------------------
+        // Trial picker for multi-rep tasks
+        // ---------------------------------------------------------------
+        let trialPicker = null;
+        if (task.trial_count > 1 && task.trials) {
+            const pills = task.trials.map(t => {
+                const isActive = task.active_trial === t.hash;
+                const dotClass = t.passed ? 'pass' : t.status === 'running' ? 'running' : 'fail';
+                const href = `#/runs/${encodeURIComponent(jobName)}/tasks/${encodeURIComponent(taskName)}?trial=${t.hash}`;
+                return h('a', {
+                    className: `trial-pill${isActive ? ' active' : ''}`,
+                    href: href
+                },
+                    h('span', { className: `status-dot ${dotClass}` }),
+                    t.hash
+                );
+            });
+            trialPicker = h('div', { className: 'trial-picker' },
+                h('span', { className: 'trial-picker-label' }, 'Trials:'),
+                ...pills
+            );
+        }
 
         // ---------------------------------------------------------------
         // Task instruction — always visible
@@ -1133,6 +1210,7 @@ async function renderTaskDetail(container, jobName, taskName) {
         // Assemble page
         container.innerHTML = '';
         container.appendChild(header);
+        if (trialPicker) container.appendChild(trialPicker);
         if (instructionSection) container.appendChild(instructionSection);
         if (systemPromptSection) container.appendChild(systemPromptSection);
         container.appendChild(summaryCard);

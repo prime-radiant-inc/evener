@@ -33,7 +33,7 @@ class RunStore:
             if not task_dirs:
                 continue
             grouped = self._group_task_dirs(task_dirs)
-            tasks = [self._read_task_summary(td, tc) for td, tc in grouped]
+            tasks = [self._read_task_summary(td, tc, ad) for td, tc, ad in grouped]
             completed = [t for t in tasks if t["status"] in ("pass", "fail")]
             passed = sum(1 for t in completed if t["passed"])
             run = {
@@ -56,7 +56,7 @@ class RunStore:
         if not task_dirs:
             return None
         grouped = self._group_task_dirs(task_dirs)
-        tasks = [self._read_task_summary(td, tc) for td, tc in grouped]
+        tasks = [self._read_task_summary(td, tc, ad) for td, tc, ad in grouped]
         completed = [t for t in tasks if t["status"] in ("pass", "fail")]
         passed = sum(1 for t in completed if t["passed"])
         run = {
@@ -80,19 +80,48 @@ class RunStore:
             return None
         task_dirs = self._find_task_dirs(job_dir)
         grouped = self._group_task_dirs(task_dirs)
-        return [self._read_task_summary(td, tc) for td, tc in grouped]
+        return [self._read_task_summary(td, tc, ad) for td, tc, ad in grouped]
 
-    def get_task(self, job_name, task_name):
-        """Return detailed task dict, or None if not found."""
+    def get_task(self, job_name, task_name, trial_hash=None):
+        """Return detailed task dict, or None if not found.
+
+        If trial_hash is given and the task has multiple trials, return
+        detail for the specific trial matching that hash suffix.
+        """
         job_dir = self.data_dir / job_name
         if not job_dir.is_dir():
             return None
         task_dirs = self._find_task_dirs(job_dir)
         grouped = self._group_task_dirs(task_dirs)
-        for td, tc in grouped:
+        for td, tc, all_dirs in grouped:
             if self._task_name_from_dir(td) == task_name:
-                detail = self._read_task_detail(td)
+                # Pick specific trial if requested
+                target_dir = td
+                if trial_hash and tc > 1:
+                    for d in all_dirs:
+                        if d.name.endswith(f"__{trial_hash}"):
+                            target_dir = d
+                            break
+                detail = self._read_task_detail(target_dir)
                 detail["trial_count"] = tc
+                detail["active_trial"] = target_dir.name.split("__")[-1] if "__" in target_dir.name else ""
+                # Add per-trial breakdown for multi-rep tasks
+                if tc > 1:
+                    trials = []
+                    pass_count = 0
+                    for d in all_dirs:
+                        r = self._read_reward(d)
+                        passed = r is not None and r >= 1.0
+                        if passed:
+                            pass_count += 1
+                        trials.append({
+                            "hash": d.name.split("__")[-1] if "__" in d.name else "",
+                            "reward": r,
+                            "passed": passed,
+                            "status": self._task_status(r, d),
+                        })
+                    detail["pass_count"] = pass_count
+                    detail["trials"] = trials
                 return detail
         return None
 
@@ -236,9 +265,9 @@ class RunStore:
     def _group_task_dirs(self, task_dirs):
         """Deduplicate task dirs by name, picking the best trial.
 
-        Returns list of (best_dir, trial_count) tuples sorted by task name.
-        For groups with multiple dirs, picks highest reward (ties broken by
-        latest mtime).
+        Returns list of (best_dir, trial_count, all_dirs) tuples sorted by
+        task name.  For groups with multiple dirs, picks highest reward
+        (ties broken by latest mtime).
         """
         from collections import defaultdict
         groups = defaultdict(list)
@@ -250,7 +279,7 @@ class RunStore:
         for name in sorted(groups):
             dirs = groups[name]
             if len(dirs) == 1:
-                result.append((dirs[0], 1))
+                result.append((dirs[0], 1, dirs))
             else:
                 # Pick best: highest reward, then latest mtime
                 def sort_key(d):
@@ -262,7 +291,7 @@ class RunStore:
                         mtime = 0
                     return (r, mtime)
                 best = max(dirs, key=sort_key)
-                result.append((best, len(dirs)))
+                result.append((best, len(dirs), dirs))
         return result
 
     def _task_name_from_dir(self, task_dir):
@@ -361,13 +390,13 @@ class RunStore:
             return "running"
         return "queued"
 
-    def _read_task_summary(self, task_dir, trial_count=1):
+    def _read_task_summary(self, task_dir, trial_count=1, all_dirs=None):
         """Build a summary dict for a task directory."""
         reward = self._read_reward(task_dir)
         transcript_files = self._find_transcript_files(task_dir)
         result = self._read_result_json(task_dir)
         status = self._task_status(reward, task_dir)
-        return {
+        summary = {
             "task_name": self._task_name_from_dir(task_dir),
             "reward": reward,
             "passed": reward is not None and reward >= 1.0,
@@ -378,6 +407,26 @@ class RunStore:
             "started_at": result.get("started_at", ""),
             "finished_at": result.get("finished_at", ""),
         }
+
+        # Per-trial breakdown for multi-rep tasks
+        if all_dirs and trial_count > 1:
+            trials = []
+            pass_count = 0
+            for td in all_dirs:
+                r = self._read_reward(td)
+                passed = r is not None and r >= 1.0
+                if passed:
+                    pass_count += 1
+                trials.append({
+                    "hash": td.name.split("__")[-1] if "__" in td.name else "",
+                    "reward": r,
+                    "passed": passed,
+                    "status": self._task_status(r, td),
+                })
+            summary["pass_count"] = pass_count
+            summary["trials"] = trials
+
+        return summary
 
     def _read_task_instruction(self, task_dir):
         """Extract task instruction from command.txt."""

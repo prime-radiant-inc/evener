@@ -13,7 +13,7 @@ from trajectory import build_trajectory
 _SUBMIT_VALUE_KEYS = ["result", "message", "output"]
 
 
-def compute_task_stats(store, job_name, task_name):
+def compute_task_stats(store, job_name, task_name, trial_hash=None):
     """Compute per-task metrics from transcripts, result.json, and api.jsonl.
 
     Returns a dict with keys:
@@ -25,7 +25,7 @@ def compute_task_stats(store, job_name, task_name):
 
     Returns None if the task is not found.
     """
-    task = store.get_task(job_name, task_name)
+    task = store.get_task(job_name, task_name, trial_hash=trial_hash)
     if task is None:
         return None
 
@@ -254,6 +254,8 @@ def compute_run_stats(store, job_name, cache_dir=None):
             "failure_category": task_summary["failure_category"],
             "reward": task_summary["reward"],
             "trial_count": task_summary.get("trial_count", 1),
+            "pass_count": task_summary.get("pass_count"),
+            "trials": task_summary.get("trials"),
             "started_at": task_summary.get("started_at", ""),
             "finished_at": task_summary.get("finished_at", ""),
         }
