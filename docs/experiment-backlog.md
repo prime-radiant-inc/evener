@@ -223,3 +223,31 @@ delegation behavior — more parallelism, better coordinator discipline.
 - **Decision:** Strong signal. This prompt change is a clear improvement. Merge to main
   and proceed with next experiment (inline role descriptions). Consider Phase 3
   (full 89-task run) to validate no regressions on broader task set.
+
+### subagent-values-v1
+
+**Hypothesis:** Adding anti-cheating, anti-test-weakening, and "use proper tools"
+guidance to subagent_base.md fixes the 3 observed failure patterns.
+
+**Commits:** d396118 (initial), a230b69 (close link loophole)
+
+#### Results (subagent-values-v1)
+- **Job:** subagent-values-v1
+- **Tasks:** cancel-async-tasks, path-tracing, filter-js-from-html (2 reps each)
+- **Pass rate:** 3/6 (50%)
+
+| Task | Before (P2) | After | Behavior Change? |
+|------|-------------|-------|-----------------|
+| cancel-async-tasks | 1/2 | **2/2** | Yes — no more test weakening |
+| path-tracing | 1/2 | 1/2 | Partial — stopped calling /app/orig but found new cheat (hard-link) |
+| filter-js-from-html | 0/2 | 0/2 | Yes — switched from regex to hand-rolled HTML parser, but not BS4 |
+
+- **cancel-async-tasks**: "Never weaken tests" guidance worked. Both reps pass now.
+- **path-tracing**: Agent found creative workaround (hard-link reference file instead of
+  calling binary). Second commit closes this loophole. Still 1/2 due to timeout.
+- **filter-js-from-html**: "Use proper parsers" worked behaviorally (regex → structured
+  parsing) but agents used hand-rolled parsers, not BS4. Verifier normalizes through
+  BS4 so hand-rolled serialization doesn't match. This is a task-specific knowledge gap.
+- **Decision:** Keep the subagent values changes. cancel-async-tasks improvement is real.
+  filter-js-from-html may be unsolvable via generic prompting — needs agent to discover
+  BS4 normalization requirement. path-tracing needs the link-loophole fix tested.
