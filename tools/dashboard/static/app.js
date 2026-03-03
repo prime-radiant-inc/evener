@@ -35,8 +35,6 @@ function route() {
 window.addEventListener('hashchange', route);
 window.addEventListener('DOMContentLoaded', route);
 
-// Auto-refresh every 30 seconds
-setInterval(route, 30000);
 
 // ---------------------------------------------------------------------------
 // Breadcrumb

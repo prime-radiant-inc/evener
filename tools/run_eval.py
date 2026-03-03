@@ -115,10 +115,28 @@ def cmd_launch(args):
             check=True,
         )
 
-    # Inject plugin_dirs into ak_args for the adapter
+        # Copy plugins into the staging directory for reproducibility
+        if args.plugin:
+            subprocess.run(
+                ["ssh", REMOTE, f"mkdir -p {run_stage_dir}/plugins"],
+                check=True,
+            )
+            for plugin_path in args.plugin:
+                plugin_name = os.path.basename(plugin_path.rstrip("/"))
+                print(f"  Staging plugin: {plugin_name}")
+                subprocess.run(
+                    ["ssh", REMOTE, f"cp -r {plugin_path} {run_stage_dir}/plugins/{plugin_name}"],
+                    check=True,
+                )
+
+    # Inject plugin_dirs into ak_args, pointing at the staged copies
     ak_args = list(args.ak or [])
     if args.plugin:
-        ak_args.append(f"plugin_dirs={','.join(args.plugin)}")
+        staged_plugins = [
+            f"{run_stage_dir}/plugins/{os.path.basename(p.rstrip('/'))}"
+            for p in args.plugin
+        ]
+        ak_args.append(f"plugin_dirs={','.join(staged_plugins)}")
 
     # Manifest
     run_id = make_run_id(args.job, info["sha"])
