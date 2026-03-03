@@ -22,7 +22,7 @@ from urllib.parse import parse_qs, urlparse
 
 RUNS_DIR = os.path.expanduser("~/git/terminal-bench/runs")
 JOBS_ROOT = "/tmp"
-ARCHIVE_ROOT = "/data/serf-evals"
+ARCHIVE_ROOT = "/data/agent-evals"
 
 
 # --- System info ---

@@ -21,8 +21,8 @@ DEFAULT_MODEL = "openai/gpt-5.3-codex"
 DEFAULT_ADAPTER = "serf_agent:SerfAgent"
 DEFAULT_REPS = 3
 DEFAULT_CONCURRENCY = 10
-DEFAULT_ARCHIVE_ROOT = "/data/serf-evals"
-DEFAULT_JOBS_DIR = "/data/serf-evals/runs"
+DEFAULT_ARCHIVE_ROOT = "/data/agent-evals"
+DEFAULT_JOBS_DIR = "/data/agent-evals/runs"
 
 # --- Lace harness config ---
 

@@ -8,7 +8,7 @@
 #   collect-run.sh --harbor-dir DIR --archive-dir DIR [--run-id ID] [--dry-run]
 #
 #   --harbor-dir DIR    Harbor's raw job output directory (contains task__hash/ dirs)
-#   --archive-dir DIR   Target archive run directory (e.g., /data/serf-evals/runs/2026-02-28T...)
+#   --archive-dir DIR   Target archive run directory (e.g., /data/agent-evals/runs/2026-02-28T...)
 #   --run-id ID         Run ID for logging (default: basename of archive-dir)
 #   --dry-run           Print what would be done without writing
 #

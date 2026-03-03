@@ -196,7 +196,7 @@ class TestBuildHarborCommand:
         assert "-k 3" in cmd
         assert "-n 4" in cmd
         assert "--job-name test-job" in cmd
-        assert "--jobs-dir /data/serf-evals/runs" in cmd
+        assert "--jobs-dir /data/agent-evals/runs" in cmd
 
     def test_with_single_task(self):
         cmd = build_harbor_command(
