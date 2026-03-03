@@ -113,6 +113,15 @@ func ErrorFromHTTPStatus(provider string, statusCode int, message string, raw an
 		return &AuthenticationError{base}
 	case 403:
 		base.retryable = false
+		// OpenAI cyber_policy_violation is a temporary account-level ban that
+		// clears after a few minutes. Retry with backoff instead of dying.
+		if base.errorCode == "cyber_policy_violation" {
+			base.retryable = true
+			if base.retryAfter == nil {
+				d := 60 * time.Second
+				base.retryAfter = &d
+			}
+		}
 		return &AccessDeniedError{base}
 	case 404:
 		base.retryable = false

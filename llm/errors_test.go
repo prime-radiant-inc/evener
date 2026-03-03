@@ -255,6 +255,62 @@ func TestErrorFromHTTPStatus_ErrorCodeClassification(t *testing.T) {
 	}
 }
 
+func TestCyberPolicyViolation_403_IsRetryable(t *testing.T) {
+	raw := map[string]any{"error": map[string]any{"code": "cyber_policy_violation"}}
+	err := ErrorFromHTTPStatus("openai", 403, "flagged by cyber policy", raw, nil)
+	var e Error
+	if !errors.As(err, &e) {
+		t.Fatal("expected Error interface")
+	}
+	if !e.Retryable() {
+		t.Fatal("cyber_policy_violation should be retryable (temporary account ban)")
+	}
+	if e.ErrorCode() != "cyber_policy_violation" {
+		t.Fatalf("ErrorCode() = %q, want %q", e.ErrorCode(), "cyber_policy_violation")
+	}
+}
+
+func TestCyberPolicyViolation_403_DefaultsRetryAfterTo60s(t *testing.T) {
+	raw := map[string]any{"error": map[string]any{"code": "cyber_policy_violation"}}
+	err := ErrorFromHTTPStatus("openai", 403, "flagged", raw, nil)
+	var e Error
+	if !errors.As(err, &e) {
+		t.Fatal("expected Error interface")
+	}
+	ra := e.RetryAfter()
+	if ra == nil {
+		t.Fatal("RetryAfter() should default to 60s for cyber_policy_violation")
+	}
+	if *ra != 60*time.Second {
+		t.Fatalf("RetryAfter() = %v, want 60s", *ra)
+	}
+}
+
+func TestCyberPolicyViolation_403_RespectsServerRetryAfter(t *testing.T) {
+	raw := map[string]any{"error": map[string]any{"code": "cyber_policy_violation"}}
+	d := 90 * time.Second
+	err := ErrorFromHTTPStatus("openai", 403, "flagged", raw, &d)
+	var e Error
+	if !errors.As(err, &e) {
+		t.Fatal("expected Error interface")
+	}
+	ra := e.RetryAfter()
+	if ra == nil || *ra != 90*time.Second {
+		t.Fatalf("RetryAfter() = %v, want 90s (server-provided)", ra)
+	}
+}
+
+func TestRegular403_StillNonRetryable(t *testing.T) {
+	err := ErrorFromHTTPStatus("openai", 403, "access denied", nil, nil)
+	var e Error
+	if !errors.As(err, &e) {
+		t.Fatal("expected Error interface")
+	}
+	if e.Retryable() {
+		t.Fatal("regular 403 should NOT be retryable")
+	}
+}
+
 func TestConfigurationError_Unwrap_ExposesCause(t *testing.T) {
 	cause := fmt.Errorf("missing API key")
 	err := &ConfigurationError{Message: "bad config", Cause: cause}
