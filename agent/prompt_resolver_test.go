@@ -16,7 +16,7 @@ func TestResolveSystemPrompt_ComposesBaseAndProvider(t *testing.T) {
 	}{
 		{"openai", "apply_patch", "task_list"},
 		{"anthropic", "edit_file", "communicate"},
-		{"gemini", "edit_file", "Subagent delegation"},
+		{"gemini", "edit_file", "Sub-agents"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.provider, func(t *testing.T) {

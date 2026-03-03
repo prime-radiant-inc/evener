@@ -430,8 +430,8 @@ func TestAllProfiles_SystemPromptContainsSubagentGuidance(t *testing.T) {
 		if !strings.Contains(prompt, "spawn_agent") {
 			t.Errorf("profile %q system prompt missing spawn_agent guidance", name)
 		}
-		if !strings.Contains(prompt, "Subagent delegation") {
-			t.Errorf("profile %q system prompt missing subagent delegation section", name)
+		if !strings.Contains(prompt, "Sub-agents") {
+			t.Errorf("profile %q system prompt missing sub-agents section", name)
 		}
 	}
 }
@@ -441,8 +441,8 @@ func TestBuildSystemPrompt_SubagentGuidanceContent(t *testing.T) {
 	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux", Today: "2026-02-09"}
 	prompt := p.BuildSystemPrompt(env, nil, nil, "")
 
-	// Should mention exploration, implementation, and verification use cases.
-	for _, keyword := range []string{"Explore", "implementation", "Verify"} {
+	// Should mention key workflow steps.
+	for _, keyword := range []string{"Understand", "spawn", "Verify"} {
 		if !strings.Contains(prompt, keyword) {
 			t.Errorf("subagent guidance missing %q keyword", keyword)
 		}
