@@ -20,7 +20,7 @@ from markdown_render import render_run_list, render_run_detail, render_task_deta
 app = FastAPI(title="Serf Eval Dashboard")
 
 # Configure data dir from env or default.
-_data_dir = os.environ.get("DASHBOARD_DATA_DIR", "/data/serf-evals/runs")
+_data_dir = os.environ.get("DASHBOARD_DATA_DIR", "/data/agent-evals/runs")
 store = RunStore(_data_dir)
 _cache_dir = os.path.join(_data_dir, ".cache")
 
