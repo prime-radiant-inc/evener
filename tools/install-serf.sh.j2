@@ -8,8 +8,8 @@ set -e
 
 # Use apt-cacher-ng proxy on Docker host to avoid hammering upstream mirrors
 # when many containers install packages simultaneously.
-# Each harbor task gets its own Docker network, so detect the gateway dynamically.
-DOCKER_GW=$(ip route | awk '/default/ {print $3; exit}')
+# Detect gateway without relying on `ip` (not always installed in minimal images).
+DOCKER_GW=$(awk '$2=="00000000" {printf "%d.%d.%d.%d", "0x"substr($3,7,2), "0x"substr($3,5,2), "0x"substr($3,3,2), "0x"substr($3,1,2); exit}' /proc/net/route 2>/dev/null)
 if [ -n "$DOCKER_GW" ]; then
     echo "Acquire::http::Proxy \"http://${DOCKER_GW}:3142\";" > /etc/apt/apt.conf.d/01proxy
 fi
