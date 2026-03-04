@@ -11,7 +11,18 @@ set -e
 # Detect gateway without relying on `ip` (not always installed in minimal images).
 DOCKER_GW=$(awk '$2=="00000000" {printf "%d.%d.%d.%d", "0x"substr($3,7,2), "0x"substr($3,5,2), "0x"substr($3,3,2), "0x"substr($3,1,2); exit}' /proc/net/route 2>/dev/null)
 if [ -n "$DOCKER_GW" ]; then
-    echo "Acquire::http::Proxy \"http://${DOCKER_GW}:3142\";" > /etc/apt/apt.conf.d/01proxy
+    # Write an auto-detect script that checks if apt-cacher-ng is reachable.
+    # Falls back to DIRECT if the proxy is down or overloaded.
+    cat > /usr/local/bin/apt-proxy-detect <<PROXYEOF
+#!/bin/sh
+if timeout 2 bash -c "echo >/dev/tcp/${DOCKER_GW}/3142" 2>/dev/null; then
+    echo "http://${DOCKER_GW}:3142"
+else
+    echo "DIRECT"
+fi
+PROXYEOF
+    chmod +x /usr/local/bin/apt-proxy-detect
+    echo 'Acquire::http::ProxyAutoDetect "/usr/local/bin/apt-proxy-detect";' > /etc/apt/apt.conf.d/01proxy
 fi
 
 apt-get update -qq
