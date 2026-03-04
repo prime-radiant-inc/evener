@@ -61,6 +61,33 @@ func TestResolveReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestParseAllowedDecisions_CommaSeparated(t *testing.T) {
+	got := parseAllowedDecisions("approved,changes_requested")
+	if len(got) != 2 || got[0] != "approved" || got[1] != "changes_requested" {
+		t.Fatalf("got %v, want [approved changes_requested]", got)
+	}
+}
+
+func TestParseAllowedDecisions_JSONArray(t *testing.T) {
+	got := parseAllowedDecisions(`["pass","fail"]`)
+	if len(got) != 2 || got[0] != "pass" || got[1] != "fail" {
+		t.Fatalf("got %v, want [pass fail]", got)
+	}
+}
+
+func TestParseAllowedDecisions_Empty(t *testing.T) {
+	if got := parseAllowedDecisions(""); got != nil {
+		t.Fatalf("got %v, want nil", got)
+	}
+}
+
+func TestParseAllowedDecisions_Whitespace(t *testing.T) {
+	got := parseAllowedDecisions(" approved , changes_requested ")
+	if len(got) != 2 || got[0] != "approved" || got[1] != "changes_requested" {
+		t.Fatalf("got %v, want [approved changes_requested]", got)
+	}
+}
+
 func TestStringSliceFlag(t *testing.T) {
 	var f StringSliceFlag
 	if err := f.Set("a"); err != nil {

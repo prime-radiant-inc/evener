@@ -29,14 +29,18 @@ func GitOriginURLFromDir(dir string) string {
 // SelectProfile creates the ProviderProfile for the given provider and model.
 func SelectProfile(provider, model string) (agent.ProviderProfile, error) {
 	requiredKeys := parseSubmitResultRequiredDataKeys(os.Getenv("SERF_SUBMIT_RESULT_REQUIRED_DATA_KEYS"))
+	allowedDecisions := parseAllowedDecisions(os.Getenv("SERF_ALLOWED_DECISIONS"))
 
 	switch strings.ToLower(provider) {
 	case "openai":
-		return agent.WithSubmitResultRequiredDataKeys(agent.NewOpenAIProfile(model), requiredKeys), nil
+		p := agent.WithSubmitResultRequiredDataKeys(agent.NewOpenAIProfile(model), requiredKeys)
+		return agent.WithAllowedDecisions(p, allowedDecisions), nil
 	case "anthropic":
-		return agent.WithSubmitResultRequiredDataKeys(agent.NewAnthropicProfile(model), requiredKeys), nil
+		p := agent.WithSubmitResultRequiredDataKeys(agent.NewAnthropicProfile(model), requiredKeys)
+		return agent.WithAllowedDecisions(p, allowedDecisions), nil
 	case "google", "gemini":
-		return agent.WithSubmitResultRequiredDataKeys(agent.NewGeminiProfile(model), requiredKeys), nil
+		p := agent.WithSubmitResultRequiredDataKeys(agent.NewGeminiProfile(model), requiredKeys)
+		return agent.WithAllowedDecisions(p, allowedDecisions), nil
 	default:
 		return nil, fmt.Errorf("unknown provider %q: must be openai, anthropic, or google", provider)
 	}
@@ -156,6 +160,29 @@ func ListModelsFunc(client *llm.Client, providerID string) func(context.Context)
 		}
 		return items, nil
 	}
+}
+
+func parseAllowedDecisions(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	if strings.HasPrefix(raw, "[") {
+		var keys []string
+		if err := json.Unmarshal([]byte(raw), &keys); err == nil && len(keys) > 0 {
+			return keys
+		}
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 func parseSubmitResultRequiredDataKeys(raw string) []string {
