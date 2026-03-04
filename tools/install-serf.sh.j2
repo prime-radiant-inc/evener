@@ -5,6 +5,11 @@ set -e
 # Install lightweight packages that agents commonly need. Avoids wasting
 # agent rounds on apt-get during execution. Heavy packages (R, Caffe,
 # LaTeX, QEMU, OpenCV) are NOT included — they blow the setup timeout.
+
+# Use apt-cacher-ng proxy on Docker host to avoid hammering upstream mirrors
+# when many containers install packages simultaneously.
+echo 'Acquire::http::Proxy "http://10.0.0.1:3142";' > /etc/apt/apt.conf.d/01proxy
+
 apt-get update -qq
 # Core packages (must succeed)
 apt-get install -y -qq \
