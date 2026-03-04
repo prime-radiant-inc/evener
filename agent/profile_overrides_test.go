@@ -1,6 +1,11 @@
 package agent
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	"primeradiant.com/serf/llm"
+)
 
 func TestWithSubmitResultRequiredDataKeys_AddsRequiredKeysToSchema(t *testing.T) {
 	p := WithSubmitResultRequiredDataKeys(NewOpenAIProfile("gpt-5.2"), []string{"components"})
@@ -197,6 +202,50 @@ func TestWithAllowedDecisions_NilDecisions_NoOp(t *testing.T) {
 	// Should return same profile (pointer equality)
 	if p != base {
 		t.Fatal("nil decisions should return profile unchanged")
+	}
+}
+
+func TestWithAllowedDecisions_RegistryPreservesDecisionSchema(t *testing.T) {
+	// Regression test: NewToolRegistry registers the profile's communicate
+	// definition (with decision). Then re-registering with the base definition
+	// but checking for an existing entry first should preserve decision.
+	p := WithAllowedDecisions(NewOpenAIProfile("gpt-5.2"), []string{"approved", "rejected"})
+	reg := p.NewToolRegistry()
+
+	// Registry should have communicate with decision from profile.
+	existing := reg.Get("communicate")
+	if existing == nil {
+		t.Fatal("communicate not found in registry after NewToolRegistry")
+	}
+
+	// Simulate registerCoreTools pattern (the fix):
+	// Use existing definition from registry instead of base.
+	resultToolDef := defSubmitResultNamed("communicate")
+	if ex := reg.Get("communicate"); ex != nil {
+		resultToolDef = ex.Definition
+	}
+
+	// Re-register with the preserved definition + an executor.
+	err := reg.Register(RegisteredTool{
+		Tool: llm.Tool{Definition: resultToolDef},
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("re-register failed: %v", err)
+	}
+
+	// Verify decision survived the re-registration.
+	final := reg.Get("communicate")
+	if final == nil {
+		t.Fatal("communicate not found after re-registration")
+	}
+	props, _ := final.Definition.Parameters["properties"].(map[string]any)
+	output, _ := props["output"].(map[string]any)
+	outProps, _ := output["properties"].(map[string]any)
+	if _, exists := outProps["decision"]; !exists {
+		t.Fatal("decision field lost during re-registration — schema overwrite bug")
 	}
 }
 
