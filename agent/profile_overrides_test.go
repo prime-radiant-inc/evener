@@ -125,3 +125,123 @@ func TestWithSubmitResultRequiredDataKeys_TasksSchemaHasItems(t *testing.T) {
 	}
 	t.Fatal("submit_result tool not found")
 }
+
+func TestWithAllowedDecisions_AddsDecisionWithEnum(t *testing.T) {
+	p := WithAllowedDecisions(NewOpenAIProfile("gpt-5.2"), []string{"approved", "changes_requested"})
+
+	for _, td := range p.ToolDefinitions() {
+		if td.Name != "communicate" {
+			continue
+		}
+		props, _ := td.Parameters["properties"].(map[string]any)
+		output, _ := props["output"].(map[string]any)
+		outProps, _ := output["properties"].(map[string]any)
+
+		decisionSchema, exists := outProps["decision"].(map[string]any)
+		if !exists {
+			t.Fatal("expected decision field in output.properties")
+		}
+		if decisionSchema["type"] != "string" {
+			t.Fatalf("decision.type=%v, want string", decisionSchema["type"])
+		}
+		// enum may be []string (direct) or []any (after JSON round-trip)
+		enumSlice := toStringSlice(decisionSchema["enum"])
+		if len(enumSlice) != 2 || enumSlice[0] != "approved" || enumSlice[1] != "changes_requested" {
+			t.Fatalf("decision.enum=%v, want [approved changes_requested]", enumSlice)
+		}
+
+		required, _ := output["required"].([]string)
+		hasDecision := false
+		for _, r := range required {
+			if r == "decision" {
+				hasDecision = true
+			}
+		}
+		if !hasDecision {
+			t.Fatal("output.required should include decision")
+		}
+		return
+	}
+	t.Fatal("communicate tool not found")
+}
+
+func TestWithAllowedDecisions_MakesOutputRequired(t *testing.T) {
+	p := WithAllowedDecisions(NewOpenAIProfile("gpt-5.2"), []string{"pass", "fail"})
+
+	for _, td := range p.ToolDefinitions() {
+		if td.Name != "communicate" {
+			continue
+		}
+		topRequired, ok := td.Parameters["required"].([]string)
+		if !ok {
+			t.Fatalf("parameters.required not []string: %#v", td.Parameters["required"])
+		}
+		hasOutput := false
+		for _, r := range topRequired {
+			if r == "output" {
+				hasOutput = true
+			}
+		}
+		if !hasOutput {
+			t.Fatal("parameters.required should include output")
+		}
+		return
+	}
+	t.Fatal("communicate tool not found")
+}
+
+func TestWithAllowedDecisions_NilDecisions_NoOp(t *testing.T) {
+	base := NewOpenAIProfile("gpt-5.2")
+	p := WithAllowedDecisions(base, nil)
+
+	// Should return same profile (pointer equality)
+	if p != base {
+		t.Fatal("nil decisions should return profile unchanged")
+	}
+}
+
+func TestWithAllowedDecisions_WithRequiredDataKeys_BothApplied(t *testing.T) {
+	p := NewOpenAIProfile("gpt-5.2")
+	p = WithSubmitResultRequiredDataKeys(p, []string{"plan_doc"})
+	p = WithAllowedDecisions(p, []string{"ready_for_review"})
+
+	for _, td := range p.ToolDefinitions() {
+		if td.Name != "communicate" {
+			continue
+		}
+		props, _ := td.Parameters["properties"].(map[string]any)
+		output, _ := props["output"].(map[string]any)
+		outProps, _ := output["properties"].(map[string]any)
+
+		// Decision should be present with enum
+		decisionSchema, exists := outProps["decision"].(map[string]any)
+		if !exists {
+			t.Fatal("expected decision field")
+		}
+		enumSlice := toStringSlice(decisionSchema["enum"])
+		if len(enumSlice) != 1 || enumSlice[0] != "ready_for_review" {
+			t.Fatalf("decision.enum=%v, want [ready_for_review]", enumSlice)
+		}
+
+		// Data keys should also be present
+		data, _ := outProps["data"].(map[string]any)
+		dataProps, _ := data["properties"].(map[string]any)
+		if _, ok := dataProps["plan_doc"]; !ok {
+			t.Fatal("expected plan_doc in data.properties")
+		}
+
+		// Output should be required at top level
+		topRequired, _ := td.Parameters["required"].([]string)
+		hasOutput := false
+		for _, r := range topRequired {
+			if r == "output" {
+				hasOutput = true
+			}
+		}
+		if !hasOutput {
+			t.Fatal("parameters.required should include output")
+		}
+		return
+	}
+	t.Fatal("communicate tool not found")
+}
