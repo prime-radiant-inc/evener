@@ -43,6 +43,11 @@ func TestWithSubmitResultRequiredDataKeys_AddsRequiredKeysToSchema(t *testing.T)
 		if items["type"] != "object" {
 			t.Fatalf("components.items.type=%v, want %q", items["type"], "object")
 		}
+
+		// After removing decision side-effect, decision should NOT be in output
+		if _, exists := outProps["decision"]; exists {
+			t.Fatal("WithSubmitResultRequiredDataKeys should not add decision field")
+		}
 	}
 	if !submitResultFound {
 		t.Fatal("submit_result tool not found")
@@ -92,40 +97,6 @@ func TestDefSubmitResult_DefaultSchema_NoDecisionField(t *testing.T) {
 	}
 }
 
-func TestWithSubmitResultRequiredDataKeys_AddsDecisionField(t *testing.T) {
-	// When orchestration keys are set (toil mode), decision field must be present.
-	p := WithSubmitResultRequiredDataKeys(NewOpenAIProfile("gpt-5.2"), []string{"components"})
-
-	for _, td := range p.ToolDefinitions() {
-		if td.Name != "communicate" {
-			continue
-		}
-		props, _ := td.Parameters["properties"].(map[string]any)
-		output, _ := props["output"].(map[string]any)
-		outProps, _ := output["properties"].(map[string]any)
-
-		decisionSchema, exists := outProps["decision"].(map[string]any)
-		if !exists {
-			t.Fatal("orchestrated submit_result schema should have decision field")
-		}
-		if decisionSchema["type"] != "string" {
-			t.Fatalf("decision.type=%v, want string", decisionSchema["type"])
-		}
-
-		required, _ := output["required"].([]string)
-		hasDecision := false
-		for _, r := range required {
-			if r == "decision" {
-				hasDecision = true
-			}
-		}
-		if !hasDecision {
-			t.Fatal("orchestrated submit_result output.required should include decision")
-		}
-		return
-	}
-	t.Fatal("submit_result tool not found")
-}
 
 func TestWithSubmitResultRequiredDataKeys_TasksSchemaHasItems(t *testing.T) {
 	p := WithSubmitResultRequiredDataKeys(NewOpenAIProfile("gpt-5.2"), []string{"tasks"})
