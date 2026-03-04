@@ -2492,8 +2492,15 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 	})
 
 	// Submit result (exits session).
+	// Use the profile's definition if available (it may have been modified by
+	// WithAllowedDecisions to add extra fields to the output schema).
+	// Fall back to the base definition otherwise.
+	resultToolDef := defSubmitResultNamed(s.resultToolName())
+	if existing := reg.Get(s.resultToolName()); existing != nil {
+		resultToolDef = existing.Definition
+	}
 	_ = reg.Register(RegisteredTool{
-		Tool: llm.Tool{Definition: defSubmitResultNamed(s.resultToolName())},
+		Tool: llm.Tool{Definition: resultToolDef},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			_ = env
