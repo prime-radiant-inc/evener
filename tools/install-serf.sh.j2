@@ -8,7 +8,11 @@ set -e
 
 # Use apt-cacher-ng proxy on Docker host to avoid hammering upstream mirrors
 # when many containers install packages simultaneously.
-echo 'Acquire::http::Proxy "http://10.0.0.1:3142";' > /etc/apt/apt.conf.d/01proxy
+# Each harbor task gets its own Docker network, so detect the gateway dynamically.
+DOCKER_GW=$(ip route | awk '/default/ {print $3; exit}')
+if [ -n "$DOCKER_GW" ]; then
+    echo "Acquire::http::Proxy \"http://${DOCKER_GW}:3142\";" > /etc/apt/apt.conf.d/01proxy
+fi
 
 apt-get update -qq
 # Core packages (must succeed)
