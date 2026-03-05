@@ -414,9 +414,9 @@ func TestBuildSystemPrompt_NoSkills_NoSkillsSection(t *testing.T) {
 	}
 }
 
-// TestAllProfiles_SystemPromptContainsSubagentGuidance verifies that all
-// profiles include behavioral guidance for subagent delegation.
-func TestAllProfiles_SystemPromptContainsSubagentGuidance(t *testing.T) {
+// TestAllProfiles_SystemPromptContainsRoleGuidance verifies that all
+// profiles include the implementer role guidance.
+func TestAllProfiles_SystemPromptContainsRoleGuidance(t *testing.T) {
 	profiles := map[string]ProviderProfile{
 		"openai":    NewOpenAIProfile("gpt-5.2"),
 		"anthropic": NewAnthropicProfile("claude-test"),
@@ -427,24 +427,21 @@ func TestAllProfiles_SystemPromptContainsSubagentGuidance(t *testing.T) {
 	for name, p := range profiles {
 		prompt := p.BuildSystemPrompt(env, nil, nil, "")
 
-		if !strings.Contains(prompt, "spawn_agent") {
-			t.Errorf("profile %q system prompt missing spawn_agent guidance", name)
-		}
-		if !strings.Contains(prompt, "Sub-agents") {
-			t.Errorf("profile %q system prompt missing sub-agents section", name)
+		if !strings.Contains(prompt, "implementer") {
+			t.Errorf("profile %q system prompt missing implementer role", name)
 		}
 	}
 }
 
-func TestBuildSystemPrompt_SubagentGuidanceContent(t *testing.T) {
+func TestBuildSystemPrompt_WorkflowContent(t *testing.T) {
 	p := NewOpenAIProfile("gpt-5.2")
 	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux", Today: "2026-02-09"}
 	prompt := p.BuildSystemPrompt(env, nil, nil, "")
 
-	// Should mention key workflow steps.
-	for _, keyword := range []string{"Understand", "spawn", "Verify"} {
+	// Should mention key workflow elements.
+	for _, keyword := range []string{"iterate", "task_list", "communicate"} {
 		if !strings.Contains(prompt, keyword) {
-			t.Errorf("subagent guidance missing %q keyword", keyword)
+			t.Errorf("prompt missing %q keyword", keyword)
 		}
 	}
 	// Should mention task_list for parent coordination.
