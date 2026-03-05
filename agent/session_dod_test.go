@@ -3287,7 +3287,7 @@ func TestSession_Subagent_SharedFilesystem(t *testing.T) {
 	}
 }
 
-func TestSubagent_MaxTurns_DefaultsTo50_NotInheritedFromParent(t *testing.T) {
+func TestSubagent_MaxTurns_DefaultsTo500_NotInheritedFromParent(t *testing.T) {
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
@@ -3326,8 +3326,8 @@ func TestSubagent_MaxTurns_DefaultsTo50_NotInheritedFromParent(t *testing.T) {
 		sub.sess.mu.Lock()
 		mt := sub.sess.cfg.MaxTurns
 		sub.sess.mu.Unlock()
-		if mt != 50 {
-			t.Fatalf("subagent MaxTurns=%d, want 50 (should not inherit parent's 100)", mt)
+		if mt != 500 {
+			t.Fatalf("subagent MaxTurns=%d, want 500 (should not inherit parent's 100)", mt)
 		}
 	}
 }

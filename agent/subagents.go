@@ -92,7 +92,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	if maxTurns > 0 {
 		subCfg.MaxTurns = maxTurns
 	} else {
-		subCfg.MaxTurns = 50
+		subCfg.MaxTurns = 500
 	}
 	// Compose subagent system prompt: common base + role-specific instructions.
 	// All subagents get the subagent base (submit_result, workflow, non-interactive)

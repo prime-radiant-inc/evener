@@ -632,7 +632,7 @@ func defSpawnAgent() llm.ToolDefinition {
 				"task":        map[string]any{"type": "string"},
 				"model":       map[string]any{"type": "string", "description": "Model override (default: parent model)"},
 				"working_dir": map[string]any{"type": "string", "description": "Subdirectory to scope the agent to"},
-				"max_turns":   map[string]any{"type": "integer", "description": "Turn limit for the subagent (default: 50)"},
+				"max_turns":   map[string]any{"type": "integer", "description": "Turn limit for the subagent (default: 500)"},
 				"agent_type":  map[string]any{"type": "string", "description": "Agent type (e.g. 'explorer' for built-in, or 'plugin-name:agent-name' for plugin agents)"},
 				"blocking":    map[string]any{"type": "boolean", "description": "When true, spawns the agent and waits for completion in a single call, returning the result directly. Do NOT call wait() after a blocking spawn — the result is already in the response. Default is false (async). Use blocking=false only when you need to run multiple agents in parallel, then call wait() on each agent_id."},
 			},
