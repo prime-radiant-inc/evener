@@ -16,7 +16,7 @@ func TestResolveSystemPrompt_ComposesBaseAndProvider(t *testing.T) {
 	}{
 		{"openai", "apply_patch", "task_list"},
 		{"anthropic", "edit_file", "communicate"},
-		{"gemini", "edit_file", "implementer"},
+		{"gemini", "edit_file", "coordinator"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.provider, func(t *testing.T) {
@@ -59,7 +59,7 @@ func TestEmbeddedPrompts_ContainCoreGuidance(t *testing.T) {
 	}{
 		{"security", "security"},
 		{"minimal changes", "existing file"},
-		{"understand before modifying", "before modifying"},
+		{"understand before delegating", "before delegating"},
 		{"verification before completion", "verify"},
 		{"decisive action", "decisive"},
 	}

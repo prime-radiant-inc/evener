@@ -415,7 +415,7 @@ func TestBuildSystemPrompt_NoSkills_NoSkillsSection(t *testing.T) {
 }
 
 // TestAllProfiles_SystemPromptContainsRoleGuidance verifies that all
-// profiles include the implementer role guidance.
+// profiles include the coordinator role guidance.
 func TestAllProfiles_SystemPromptContainsRoleGuidance(t *testing.T) {
 	profiles := map[string]ProviderProfile{
 		"openai":    NewOpenAIProfile("gpt-5.2"),
@@ -427,8 +427,8 @@ func TestAllProfiles_SystemPromptContainsRoleGuidance(t *testing.T) {
 	for name, p := range profiles {
 		prompt := p.BuildSystemPrompt(env, nil, nil, "")
 
-		if !strings.Contains(prompt, "implementer") {
-			t.Errorf("profile %q system prompt missing implementer role", name)
+		if !strings.Contains(prompt, "coordinator") {
+			t.Errorf("profile %q system prompt missing coordinator role", name)
 		}
 	}
 }
