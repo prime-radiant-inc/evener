@@ -276,15 +276,26 @@ def scan_eval_dir(eval_dir):
     return trials
 
 
-def extract_microtask(trial):
+def extract_microtask(trial, override_step=None):
     """Extract a microtask from a failed trial.
+
+    Args:
+        trial: Trial dict from scan_eval_dir().
+        override_step: Optional 1-indexed step number to use as decision point.
+            When set, extracts the microtask at this specific step instead of
+            the auto-detected decision point. Useful for extracting earlier
+            decision points in TIMEOUT/NEVER_SUBMITTED failures.
 
     Returns a microtask dict ready for JSON serialization.
     """
     steps = trial["steps"]
     category = trial["category"]
 
-    decision_idx, decision_desc = _find_decision_point(steps, category)
+    if override_step is not None:
+        decision_idx = min(override_step - 1, len(steps) - 1)
+        decision_desc = f"Manual override: step {override_step}"
+    else:
+        decision_idx, decision_desc = _find_decision_point(steps, category)
     input_items = _steps_to_responses_input(steps, decision_idx)
     actual_next = _describe_next_action(steps, decision_idx)
 
@@ -357,6 +368,8 @@ def main():
                         help="Filter to a specific failure category")
     parser.add_argument("--task", "-t", action="append",
                         help="Filter to specific task name(s) (repeatable)")
+    parser.add_argument("--step", type=int,
+                        help="Override decision point to a specific step number (1-indexed)")
     parser.add_argument("--list", "-l", action="store_true",
                         help="Just list failures, don't extract")
     parser.add_argument("--verbose", "-v", action="store_true")
@@ -391,7 +404,7 @@ def main():
 
     extracted = 0
     for trial in trials:
-        microtask = extract_microtask(trial)
+        microtask = extract_microtask(trial, override_step=args.step)
         filename = f"{microtask['id']}.json"
         output_path = output_dir / filename
 

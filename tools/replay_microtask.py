@@ -176,7 +176,8 @@ def _load_tool_definitions(tool_defs_path=None):
 
 
 def replay_microtask(microtask, persona_text=None, tool_defs=None,
-                     model_override=None, dry_run=False):
+                     model_override=None, dry_run=False,
+                     tool_choice=None):
     """Replay a microtask against the OpenAI Responses API.
 
     Args:
@@ -185,6 +186,8 @@ def replay_microtask(microtask, persona_text=None, tool_defs=None,
         tool_defs: Optional tool definitions list.
         model_override: Optional model name override.
         dry_run: If True, don't call the API — just print what would be sent.
+        tool_choice: Optional tool_choice value ("auto", "required", "none",
+            or a specific tool name).
 
     Returns:
         Dict with replay results: new_action, input_tokens, output_tokens, etc.
@@ -216,13 +219,17 @@ def replay_microtask(microtask, persona_text=None, tool_defs=None,
     # Build reasoning config
     reasoning = {"effort": "high"}
 
-    response = client.responses.create(
-        model=model,
-        input=input_items,
-        tools=tools,
-        reasoning=reasoning,
-        store=False,  # don't store in OpenAI's history
-    )
+    kwargs = {
+        "model": model,
+        "input": input_items,
+        "tools": tools,
+        "reasoning": reasoning,
+        "store": False,
+    }
+    if tool_choice:
+        kwargs["tool_choice"] = tool_choice
+
+    response = client.responses.create(**kwargs)
 
     # Extract the model's next action from the response
     new_actions = []
@@ -311,6 +318,8 @@ def main():
     parser.add_argument("--dry-run", action="store_true",
                         help="Don't call API, just show what would be sent")
     parser.add_argument("--limit", type=int, help="Maximum microtasks to process in batch")
+    parser.add_argument("--tool-choice",
+                        help="Tool choice mode: auto, required, none, or a tool name")
     parser.add_argument("--verbose", "-v", action="store_true")
 
     args = parser.parse_args()
@@ -356,7 +365,8 @@ def main():
         for mt in microtasks:
             try:
                 result = replay_microtask(mt, persona_text, tool_defs,
-                                          args.model, args.dry_run)
+                                          args.model, args.dry_run,
+                                          args.tool_choice)
                 results.append((result, mt))
                 print(_format_result(result, mt))
                 print()
@@ -377,7 +387,8 @@ def main():
         # Single microtask
         mt = _load_microtask(path)
         result = replay_microtask(mt, persona_text, tool_defs,
-                                  args.model, args.dry_run)
+                                  args.model, args.dry_run,
+                                  args.tool_choice)
         print(_format_result(result, mt))
 
 
