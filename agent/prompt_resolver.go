@@ -13,7 +13,7 @@ var embeddedPrompts embed.FS
 
 // PromptSource describes one component of the composed system prompt.
 type PromptSource struct {
-	Label string // e.g. "embedded:base.md", "project:.serf/prompts/system.openai.md"
+	Label string // e.g. "embedded:core.md", "persona:coordinator"
 	Size  int    // byte length of this section
 }
 
@@ -31,12 +31,13 @@ func ResolveSystemPrompt(provider, model, cliPath, projectPromptsDir, globalProm
 // When cliPath is set (--system-prompt flag), it replaces the embedded base entirely.
 // Otherwise, the prompt is composed from:
 //  1. Embedded provider file (identity + tool docs)
-//  2. Embedded base.md (common guidance)
+//  2. Embedded core.md (universal guidance)
 //  3. Global additions (~/.config/serf/prompts/system.md, system.<provider>.md)
 //  4. Project additions (.serf/prompts/system.md, system.<provider>.md)
 //
-// appendPaths (--system-prompt-append) are always appended last, regardless of
-// whether cliPath is set. This allows orchestrators to layer guidance on any base.
+// The persona (coordinator, worker, subagent, etc.) is composed separately by the
+// caller and appended after resolution. appendPaths (--system-prompt-append) are
+// always appended last, regardless of whether cliPath is set.
 func ResolveSystemPromptWithSources(provider, model, cliPath, projectPromptsDir, globalPromptsDir string, appendPaths []string) (string, []PromptSource, error) {
 	var sections []string
 	var sources []PromptSource
@@ -59,10 +60,10 @@ func ResolveSystemPromptWithSources(provider, model, cliPath, projectPromptsDir,
 			sources = append(sources, PromptSource{Label: "embedded:" + name, Size: len(prompt)})
 		}
 
-		// Embedded base (common guidance).
-		if base, err := embeddedPrompts.ReadFile("prompts/base.md"); err == nil {
-			sections = append(sections, string(base))
-			sources = append(sources, PromptSource{Label: "embedded:base.md", Size: len(base)})
+		// Embedded core (universal guidance).
+		if core, err := embeddedPrompts.ReadFile("prompts/core.md"); err == nil {
+			sections = append(sections, string(core))
+			sources = append(sources, PromptSource{Label: "embedded:core.md", Size: len(core)})
 		}
 
 		// Global additions (general → provider-specific).
@@ -101,7 +102,7 @@ func ResolveSystemPromptWithSources(provider, model, cliPath, projectPromptsDir,
 }
 
 // embeddedProviderCandidates returns filenames for embedded provider lookup,
-// most-specific first. Does not include base.md (that's loaded separately).
+// most-specific first. Does not include core.md (that's loaded separately).
 func embeddedProviderCandidates(provider, model string) []string {
 	var names []string
 	if model != "" && provider != "" {
@@ -169,12 +170,9 @@ func firstEmbedMatchNamed(candidates []string) (string, string, bool) {
 	return "", "", false
 }
 
-// SubagentBasePrompt returns the common base prompt for all subagents.
-// This is a stripped-down version of base.md covering submit_result,
-// tool basics, and workflow essentials. Agent-specific instructions are
-// appended after this base.
-func SubagentBasePrompt() string {
-	b, err := embeddedPrompts.ReadFile("prompts/subagent_base.md")
+// CorePrompt returns the universal core prompt shared by all sessions.
+func CorePrompt() string {
+	b, err := embeddedPrompts.ReadFile("prompts/core.md")
 	if err != nil {
 		return ""
 	}

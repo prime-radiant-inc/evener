@@ -34,6 +34,7 @@ type runConfig struct {
 	exportATIF         string   // --export-atif path
 	verbose            bool
 	noProjectPrompts   bool
+	agentName          string // --agent persona name
 	stdout             io.Writer
 	stderr             io.Writer
 
@@ -166,6 +167,7 @@ func run(ctx context.Context, cfg runConfig) error {
 			SystemPromptFile:      cfg.systemPrompt,
 			SystemPromptAppend:    cfg.systemPromptAppend,
 			NoProjectPrompts:      cfg.noProjectPrompts,
+			AgentName:             cfg.agentName,
 			SkillsDirs:            cfg.skillsDirs,
 			MCPConfigFiles:        cfg.mcpConfigs,
 			MCPInline:             cfg.mcpServers,
