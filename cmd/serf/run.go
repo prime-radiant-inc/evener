@@ -66,7 +66,11 @@ func run(ctx context.Context, cfg runConfig) error {
 	}
 
 	// Compute runtime state directory.
+	// Priority: --state-dir flag > SERF_STATE_DIR env > XDG-computed default.
 	stateDir := cfg.stateDir
+	if stateDir == "" {
+		stateDir = os.Getenv("SERF_STATE_DIR")
+	}
 	if stateDir == "" {
 		originURL := cmdutil.GitOriginURLFromDir(cfg.workDir)
 		stateDir = agent.RuntimeDir(originURL, cfg.workDir, "")

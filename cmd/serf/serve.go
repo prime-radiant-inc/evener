@@ -48,7 +48,11 @@ func runServe(args []string) error {
 	}
 
 	// Resolve state directory.
+	// Priority: --state-dir flag > SERF_STATE_DIR env > XDG-computed default.
 	sd := *stateDir
+	if sd == "" {
+		sd = os.Getenv("SERF_STATE_DIR")
+	}
 	if sd == "" {
 		originURL := cmdutil.GitOriginURLFromDir(wd)
 		sd = agent.RuntimeDir(originURL, wd, "")
