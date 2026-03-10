@@ -1,6 +1,11 @@
 package agent
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	"primeradiant.com/serf/llm"
+)
 
 func TestWithSubmitResultRequiredDataKeys_AddsRequiredKeysToSchema(t *testing.T) {
 	p := WithSubmitResultRequiredDataKeys(NewOpenAIProfile("gpt-5.2"), []string{"components"})
@@ -125,6 +130,45 @@ func TestWithSubmitResultRequiredDataKeys_AddsDecisionField(t *testing.T) {
 		return
 	}
 	t.Fatal("submit_result tool not found")
+}
+
+func TestWithSubmitResultRequiredDataKeys_SurvivesRegistryOverwrite(t *testing.T) {
+	// Regression: registerCoreTools was overwriting the profile's modified
+	// communicate schema with the default (no decision field). The fix
+	// preserves the profile's definition when already present in the registry.
+	p := WithSubmitResultRequiredDataKeys(NewOpenAIProfile("gpt-5.2"), []string{"components"})
+	reg := p.NewToolRegistry()
+
+	// Verify decision field exists after NewToolRegistry.
+	existing := reg.Get("communicate")
+	if existing == nil {
+		t.Fatal("communicate not registered by NewToolRegistry")
+	}
+
+	// Simulate what the fixed registerCoreTools does: check for existing
+	// definition before registering the default.
+	submitResultDef := defSubmitResultNamed("communicate")
+	if ex := reg.Get("communicate"); ex != nil {
+		submitResultDef = ex.Definition
+	}
+	_ = reg.Register(RegisteredTool{
+		Tool: llm.Tool{Definition: submitResultDef},
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			return nil, nil
+		},
+	})
+
+	// Verify decision field still present after re-registration.
+	got := reg.Get("communicate")
+	if got == nil {
+		t.Fatal("communicate not in registry after re-registration")
+	}
+	props, _ := got.Definition.Parameters["properties"].(map[string]any)
+	output, _ := props["output"].(map[string]any)
+	outProps, _ := output["properties"].(map[string]any)
+	if _, exists := outProps["decision"]; !exists {
+		t.Fatal("decision field lost after re-registration — registerCoreTools overwrote profile schema")
+	}
 }
 
 func TestWithSubmitResultRequiredDataKeys_TasksSchemaHasItems(t *testing.T) {
