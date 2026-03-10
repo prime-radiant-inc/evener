@@ -349,33 +349,33 @@ func TestSpawnAgent_BlockingWithExplorerAgent(t *testing.T) {
 	}
 }
 
-// --- subagent prompt composition ---
+// --- core prompt ---
 
-func TestSubagentBasePrompt_IsNonEmpty(t *testing.T) {
-	base := SubagentBasePrompt()
-	if base == "" {
-		t.Fatal("SubagentBasePrompt() should return non-empty string")
+func TestCorePrompt_IsNonEmpty(t *testing.T) {
+	core := CorePrompt()
+	if core == "" {
+		t.Fatal("CorePrompt() should return non-empty string")
 	}
 }
 
-func TestSubagentBasePrompt_ContainsSubmitResultGuidance(t *testing.T) {
-	base := SubagentBasePrompt()
-	if !strings.Contains(base, "communicate") {
-		t.Error("subagent base prompt should mention submit_result")
+func TestCorePrompt_ContainsCommunicateGuidance(t *testing.T) {
+	core := CorePrompt()
+	if !strings.Contains(core, "communicate") {
+		t.Error("core prompt should mention communicate")
 	}
 }
 
-func TestSubagentBasePrompt_DoesNotContainSkillGuidance(t *testing.T) {
-	base := SubagentBasePrompt()
-	if strings.Contains(base, "use_skill") {
-		t.Error("subagent base prompt should NOT mention use_skill (subagents don't have it)")
+func TestCorePrompt_DoesNotContainSkillGuidance(t *testing.T) {
+	core := CorePrompt()
+	if strings.Contains(core, "use_skill") {
+		t.Error("core prompt should NOT mention use_skill")
 	}
 }
 
-func TestSubagentBasePrompt_DoesNotContainDelegation(t *testing.T) {
-	base := SubagentBasePrompt()
-	if strings.Contains(base, "spawn_agent") {
-		t.Error("subagent base prompt should NOT mention spawn_agent (subagents can't delegate)")
+func TestCorePrompt_DoesNotContainDelegation(t *testing.T) {
+	core := CorePrompt()
+	if strings.Contains(core, "spawn_agent") {
+		t.Error("core prompt should NOT mention spawn_agent")
 	}
 }
 
@@ -419,19 +419,19 @@ func TestSpawnAgent_PluginAgentGetsComposedPrompt(t *testing.T) {
 		t.Fatalf("blocking explorer spawn error: %s", res.Output)
 	}
 
-	// Subagent prompt should contain BOTH the subagent base AND the agent-specific prompt.
-	base := SubagentBasePrompt()
+	// Subagent prompt should contain BOTH core AND the agent-specific prompt.
+	core := CorePrompt()
 	if !strings.Contains(subagentSystemPrompt, "communicate") {
-		t.Error("subagent prompt should contain submit_result guidance from subagent base")
+		t.Error("subagent prompt should contain communicate guidance from core")
 	}
 	if !strings.Contains(subagentSystemPrompt, "read-only exploration agent") {
 		t.Error("subagent prompt should contain agent-specific prompt (explorer)")
 	}
-	// The base should appear before the agent-specific part.
-	baseIdx := strings.Index(subagentSystemPrompt, base[:50])
+	// Core should appear before the agent-specific part.
+	coreIdx := strings.Index(subagentSystemPrompt, core[:50])
 	agentIdx := strings.Index(subagentSystemPrompt, "read-only exploration agent")
-	if baseIdx >= agentIdx {
-		t.Error("subagent base should appear before agent-specific prompt")
+	if coreIdx >= agentIdx {
+		t.Error("core prompt should appear before agent-specific prompt")
 	}
 }
 
@@ -476,12 +476,12 @@ func TestSpawnAgent_DefaultSubagentGetsComposedPrompt(t *testing.T) {
 		t.Fatalf("blocking spawn error: %s", res.Output)
 	}
 
-	// Default subagent should get subagent base + defaultSubagentInstructions.
+	// Default subagent should get core + subagent persona.
 	if !strings.Contains(subagentSystemPrompt, "communicate") {
-		t.Error("default subagent prompt should contain submit_result guidance from subagent base")
+		t.Error("default subagent prompt should contain communicate guidance from core")
 	}
-	if !strings.Contains(subagentSystemPrompt, "general-purpose subagent") {
-		t.Error("default subagent prompt should contain default subagent instructions")
+	if !strings.Contains(subagentSystemPrompt, "focused subagent") {
+		t.Error("default subagent prompt should contain subagent persona instructions")
 	}
 }
 

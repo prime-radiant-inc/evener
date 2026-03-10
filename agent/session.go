@@ -70,8 +70,13 @@ type SessionConfig struct {
 	UserInstructionOverride string `json:"user_instruction_override,omitempty"`
 
 	// BasePromptOverride replaces the profile's base prompt entirely.
-	// Used by default subagents to avoid inheriting the parent's delegation instructions.
+	// Used by subagents to replace the full prompt resolution with core + persona.
 	BasePromptOverride string `json:"base_prompt_override,omitempty"`
+
+	// AgentName selects a persona for prompt composition. When set, the persona's
+	// SystemPrompt is appended after core.md instead of the default coordinator.
+	// Looked up from built-in agents, then plugin agents.
+	AgentName string `json:"agent_name,omitempty"`
 
 	// ReasoningEffort is passed through to the Unified LLM request when non-empty.
 	// Valid values are provider-dependent but typically include: low|medium|high.
@@ -826,13 +831,11 @@ func (s *Session) spawnReviewer(ctx context.Context, claimedResult string) (revi
 	subCfg.MaxTurns = 20
 	subCfg.MaxToolRoundsPerInput = 30 // reviewer shouldn't need many rounds
 
-	// Compose system prompt: subagent base + reviewer role.
-	// The standard subagent base tells agents to call submit_result, but the
-	// reviewer must use approve/reject instead. Strip the ## submit_result
-	// section so the model isn't confused by contradictory instructions —
-	// reviewer.md has its own "Verdict — MANDATORY TOOL CALL" section.
-	subBase := stripPromptSection(SubagentBasePrompt(), s.resultToolName())
-	composed := subBase + "\n\n" + agent.SystemPrompt
+	// Compose system prompt: core + reviewer role.
+	// Strip the ## communicate section from core so the reviewer isn't confused
+	// by contradictory instructions — reviewer.md has its own verdict section.
+	core := stripPromptSection(CorePrompt(), s.resultToolName())
+	composed := core + "\n\n" + agent.SystemPrompt
 	subCfg.BasePromptOverride = composed
 
 	subProfile := s.profile.WithBasePrompt(composed)
@@ -1879,11 +1882,19 @@ func (s *Session) initSessionState() ([]PromptSource, error) {
 	}
 	s.envInfo = ei
 
+	// Load built-in agents (coordinator, worker, subagent, explorer, etc.) as a base layer.
+	// This must happen before prompt resolution so we can look up the persona.
+	builtins, err := builtinAgents()
+	if err != nil {
+		return nil, fmt.Errorf("loading built-in agents: %w", err)
+	}
+	s.pluginAgents = builtins
+
 	var promptSources []PromptSource
 	var basePrompt string
 	if s.cfg.BasePromptOverride != "" {
-		// Subagents use BasePromptOverride to replace the parent's base.md entirely,
-		// avoiding inherited delegation instructions the subagent cannot follow.
+		// Subagents use BasePromptOverride to replace the full prompt with
+		// core + persona, composed by the parent.
 		basePrompt = s.cfg.BasePromptOverride
 	} else {
 		gitRoot := gitRootOrEmpty(s.env, ei.WorkingDir)
@@ -1903,6 +1914,25 @@ func (s *Session) initSessionState() ([]PromptSource, error) {
 		}
 		basePrompt = resolvedPrompt
 		promptSources = sources
+
+		// Append persona. Default to "coordinator" when no --agent flag is set
+		// and no --system-prompt override is active.
+		if s.cfg.SystemPromptFile == "" {
+			agentName := s.cfg.AgentName
+			if agentName == "" {
+				agentName = "coordinator"
+			}
+			if agent, ok := s.pluginAgents[agentName]; ok {
+				persona := strings.TrimSpace(agent.SystemPrompt)
+				if persona != "" {
+					basePrompt += "\n\n" + persona
+					promptSources = append(promptSources, PromptSource{
+						Label: "persona:" + agentName,
+						Size:  len(persona),
+					})
+				}
+			}
+		}
 	}
 
 	// If the result tool has been renamed, update all references in the system prompt.
@@ -1926,13 +1956,6 @@ func (s *Session) initSessionState() ([]PromptSource, error) {
 			s.skills[name] = meta // filesystem shadows embedded
 		}
 	}
-
-	// Load built-in agents (explorer, etc.) as a base layer.
-	builtins, err := builtinAgents()
-	if err != nil {
-		return nil, fmt.Errorf("loading built-in agents: %w", err)
-	}
-	s.pluginAgents = builtins
 
 	// Initialize plugins (skills, agents, hooks). Plugin agents override builtins.
 	if err := s.initPlugins(); err != nil {

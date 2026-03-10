@@ -427,34 +427,22 @@ func TestAllProfiles_SystemPromptContainsRoleGuidance(t *testing.T) {
 	for name, p := range profiles {
 		prompt := p.BuildSystemPrompt(env, nil, nil, "")
 
-		if !strings.Contains(prompt, "coordinator") {
-			t.Errorf("profile %q system prompt missing coordinator role", name)
+		if !strings.Contains(prompt, "You are serf") {
+			t.Errorf("profile %q system prompt missing core identity", name)
 		}
 	}
 }
 
-func TestBuildSystemPrompt_WorkflowContent(t *testing.T) {
+func TestBuildSystemPrompt_CoreContent(t *testing.T) {
 	p := NewOpenAIProfile("gpt-5.2")
 	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux", Today: "2026-02-09"}
 	prompt := p.BuildSystemPrompt(env, nil, nil, "")
 
-	// Should mention key workflow elements.
-	for _, keyword := range []string{"iterate", "task_list", "communicate"} {
+	// Should contain core identity and guidance.
+	for _, keyword := range []string{"You are serf", "communicate", "Security"} {
 		if !strings.Contains(prompt, keyword) {
 			t.Errorf("prompt missing %q keyword", keyword)
 		}
-	}
-	// Should mention task_list for parent coordination.
-	if !strings.Contains(prompt, "task_list") {
-		t.Error("subagent guidance should mention task_list for coordination")
-	}
-	// Should clarify that task_list is for the parent agent, not shared across subagents.
-	if !strings.Contains(prompt, "communicate") {
-		t.Error("subagent guidance should mention submit_result for subagent results")
-	}
-	// Should NOT imply shared task_list across subagents.
-	if strings.Contains(prompt, "coordinate work across subagents") {
-		t.Error("subagent guidance should not imply shared task_list across subagents")
 	}
 }
 

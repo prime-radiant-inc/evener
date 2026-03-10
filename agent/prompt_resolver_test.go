@@ -8,15 +8,15 @@ import (
 )
 
 func TestResolveSystemPrompt_ComposesBaseAndProvider(t *testing.T) {
-	// Embedded result must contain both base.md content and provider-specific content.
+	// Embedded result must contain both core.md content and provider-specific content.
 	tests := []struct {
 		provider        string
 		providerSnippet string // from provider file
-		baseSnippet     string // from base.md
+		baseSnippet     string // from core.md
 	}{
-		{"openai", "apply_patch", "task_list"},
+		{"openai", "apply_patch", "communicate"},
 		{"anthropic", "edit_file", "communicate"},
-		{"gemini", "edit_file", "coordinator"},
+		{"gemini", "edit_file", "communicate"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.provider, func(t *testing.T) {
@@ -41,12 +41,12 @@ func TestResolveSystemPrompt_ProviderBeforeBase(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	providerIdx := strings.Index(prompt, "apply_patch")
-	baseIdx := strings.Index(prompt, "## task_list")
-	if providerIdx < 0 || baseIdx < 0 {
+	coreIdx := strings.Index(prompt, "## Identity")
+	if providerIdx < 0 || coreIdx < 0 {
 		t.Fatal("prompt missing expected content")
 	}
-	if providerIdx >= baseIdx {
-		t.Error("provider content should appear before base content")
+	if providerIdx >= coreIdx {
+		t.Error("provider content should appear before core content")
 	}
 }
 
@@ -58,9 +58,8 @@ func TestEmbeddedPrompts_ContainCoreGuidance(t *testing.T) {
 		snippet string
 	}{
 		{"security", "security"},
-		{"minimal changes", "existing file"},
-		{"understand before delegating", "before delegating"},
-		{"verification before completion", "verify"},
+		{"honesty", "Honesty"},
+		{"identity", "You are serf"},
 		{"decisive action", "decisive"},
 	}
 
@@ -124,8 +123,8 @@ func TestResolveSystemPrompt_ProjectAddsToEmbedded(t *testing.T) {
 	if !strings.Contains(prompt, "apply_patch") {
 		t.Error("missing embedded provider content")
 	}
-	if !strings.Contains(prompt, "task_list") {
-		t.Error("missing embedded base content")
+	if !strings.Contains(prompt, "You are serf") {
+		t.Error("missing embedded core content")
 	}
 	if !strings.Contains(prompt, "project openai rules") {
 		t.Error("missing project addition")
@@ -304,9 +303,9 @@ func TestResolveSystemPrompt_UnknownProviderGetsBase(t *testing.T) {
 	if prompt == "" {
 		t.Fatal("expected non-empty prompt for unknown provider")
 	}
-	// Should have base content.
-	if !strings.Contains(prompt, "task_list") {
-		t.Error("unknown provider should still get base prompt")
+	// Should have core content.
+	if !strings.Contains(prompt, "You are serf") {
+		t.Error("unknown provider should still get core prompt")
 	}
 }
 
@@ -345,9 +344,9 @@ func TestResolveSystemPromptWithSources_ReturnsCorrectSources(t *testing.T) {
 		t.Errorf("sources[0].Size = %d, want > 0", sources[0].Size)
 	}
 
-	// Second source should be the embedded base.
-	if sources[1].Label != "embedded:base.md" {
-		t.Errorf("sources[1].Label = %q, want %q", sources[1].Label, "embedded:base.md")
+	// Second source should be the embedded core.
+	if sources[1].Label != "embedded:core.md" {
+		t.Errorf("sources[1].Label = %q, want %q", sources[1].Label, "embedded:core.md")
 	}
 	if sources[1].Size <= 0 {
 		t.Errorf("sources[1].Size = %d, want > 0", sources[1].Size)

@@ -94,18 +94,19 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	} else {
 		subCfg.MaxTurns = 500
 	}
-	// Compose subagent system prompt: common base + role-specific instructions.
-	// All subagents get the subagent base (submit_result, workflow, non-interactive)
-	// followed by their role-specific guidance. This replaces the parent's base.md
-	// to avoid inherited delegation/skill instructions the subagent can't follow.
-	subBase := SubagentBasePrompt()
+	// Compose subagent system prompt: core + persona.
+	// All subagents get core.md (universal guidance) followed by their persona.
+	// Named agents use their own SystemPrompt; unnamed agents get the "subagent" persona.
+	core := CorePrompt()
 	var rolePrompt string
 	if agent != nil && strings.TrimSpace(agent.SystemPrompt) != "" {
 		rolePrompt = agent.SystemPrompt
+	} else if subagentAgent, ok := s.pluginAgents["subagent"]; ok {
+		rolePrompt = subagentAgent.SystemPrompt
 	} else {
 		rolePrompt = defaultSubagentInstructions
 	}
-	composed := subBase + "\n\n" + rolePrompt
+	composed := core + "\n\n" + rolePrompt
 
 	// Inject skill content referenced by the plugin agent.
 	if agent != nil && len(agent.Skills) > 0 {
