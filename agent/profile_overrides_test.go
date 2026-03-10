@@ -198,3 +198,80 @@ func TestWithSubmitResultRequiredDataKeys_TasksSchemaHasItems(t *testing.T) {
 	}
 	t.Fatal("submit_result tool not found")
 }
+
+func TestWithAllowedDecisions_AddsDecisionField(t *testing.T) {
+	p := WithAllowedDecisions(NewOpenAIProfile("gpt-5.2"), []string{"approve", "reject"})
+
+	for _, td := range p.ToolDefinitions() {
+		if td.Name != "communicate" {
+			continue
+		}
+		props, _ := td.Parameters["properties"].(map[string]any)
+		output, _ := props["output"].(map[string]any)
+		outProps, _ := output["properties"].(map[string]any)
+
+		decisionSchema, exists := outProps["decision"].(map[string]any)
+		if !exists {
+			t.Fatal("decision field should be present when allowed decisions are set")
+		}
+		if decisionSchema["type"] != "string" {
+			t.Fatalf("decision.type=%v, want string", decisionSchema["type"])
+		}
+
+		required, _ := output["required"].([]string)
+		hasDecision := false
+		for _, r := range required {
+			if r == "decision" {
+				hasDecision = true
+			}
+		}
+		if !hasDecision {
+			t.Fatal("output.required should include decision")
+		}
+		return
+	}
+	t.Fatal("communicate tool not found")
+}
+
+func TestWithAllowedDecisions_NoopWhenEmpty(t *testing.T) {
+	original := NewOpenAIProfile("gpt-5.2")
+	p := WithAllowedDecisions(original, nil)
+
+	// Should return the same profile unchanged.
+	if p != original {
+		t.Fatal("WithAllowedDecisions with nil decisions should return original profile")
+	}
+
+	p = WithAllowedDecisions(original, []string{})
+	if p != original {
+		t.Fatal("WithAllowedDecisions with empty decisions should return original profile")
+	}
+}
+
+func TestWithAllowedDecisions_DoesNotOverwriteExisting(t *testing.T) {
+	// WithSubmitResultRequiredDataKeys already adds decision. WithAllowedDecisions
+	// should not overwrite it.
+	p := WithSubmitResultRequiredDataKeys(NewOpenAIProfile("gpt-5.2"), []string{"components"})
+	p = WithAllowedDecisions(p, []string{"approve", "reject"})
+
+	for _, td := range p.ToolDefinitions() {
+		if td.Name != "communicate" {
+			continue
+		}
+		props, _ := td.Parameters["properties"].(map[string]any)
+		output, _ := props["output"].(map[string]any)
+		outProps, _ := output["properties"].(map[string]any)
+
+		decisionSchema, exists := outProps["decision"].(map[string]any)
+		if !exists {
+			t.Fatal("decision field should be present")
+		}
+		// The original from WithSubmitResultRequiredDataKeys has type: string
+		// but no description. WithAllowedDecisions should not have overwritten it.
+		if decisionSchema["type"] != "string" {
+			t.Fatalf("decision.type=%v, want string", decisionSchema["type"])
+		}
+		return
+	}
+	t.Fatal("communicate tool not found")
+}

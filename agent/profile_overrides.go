@@ -61,6 +61,78 @@ func WithSubmitResultRequiredDataKeys(p ProviderProfile, requiredKeys []string) 
 	return &clone
 }
 
+// WithAllowedDecisions returns a cloned profile where the communicate tool
+// schema includes a required `decision` field. This is used by orchestration
+// systems (like Toil) for nodes that have decisions but no data outputs.
+func WithAllowedDecisions(p ProviderProfile, decisions []string) ProviderProfile {
+	if p == nil || len(decisions) == 0 {
+		return p
+	}
+
+	var bp *baseProfile
+	switch v := p.(type) {
+	case *baseProfile:
+		bp = v
+	case *anthropicProfile:
+		bp = &v.baseProfile
+	default:
+		return p
+	}
+
+	clone := *bp
+	defs := append([]llm.ToolDefinition{}, bp.toolDefs...)
+	for i := range defs {
+		if defs[i].Name == "communicate" {
+			defs[i] = addDecisionField(defs[i], decisions)
+		}
+	}
+	clone.toolDefs = defs
+
+	if ap, ok := p.(*anthropicProfile); ok {
+		apClone := *ap
+		apClone.baseProfile = clone
+		return &apClone
+	}
+	return &clone
+}
+
+// addDecisionField adds a required `decision` field to the communicate tool schema's
+// output object. If the field already exists (e.g. from WithSubmitResultRequiredDataKeys),
+// this is a no-op.
+func addDecisionField(td llm.ToolDefinition, decisions []string) llm.ToolDefinition {
+	props, _ := td.Parameters["properties"].(map[string]any)
+	if props == nil {
+		return td
+	}
+	outputSchema, _ := props["output"].(map[string]any)
+	if outputSchema == nil {
+		return td
+	}
+	outProps, _ := outputSchema["properties"].(map[string]any)
+	if outProps == nil {
+		return td
+	}
+
+	// Don't overwrite if already present.
+	if _, exists := outProps["decision"]; exists {
+		return td
+	}
+
+	outProps["decision"] = map[string]any{
+		"type":        "string",
+		"description": "The decision for this task. Allowed values: " + strings.Join(decisions, ", "),
+	}
+	if existing, ok := outputSchema["required"].([]string); ok {
+		if !slices.Contains(existing, "decision") {
+			outputSchema["required"] = append(existing, "decision")
+		}
+	} else {
+		outputSchema["required"] = []string{"message", "decision"}
+	}
+
+	return td
+}
+
 func defSubmitResultWithRequiredDataKeys(requiredKeys []string) llm.ToolDefinition {
 	td := defSubmitResult()
 
