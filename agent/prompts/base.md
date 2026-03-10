@@ -31,7 +31,9 @@ specific instructions.
 
 1. **Explore first.** Read files, grep code, understand the environment. Invest rounds
    in understanding before you plan. Read test files and verifier scripts — they define
-   what success looks like.
+   what success looks like. If the workspace contains executables, binaries, or compiled
+   programs, RUN THEM first to understand their input/output behavior. Seeing actual
+   output is worth more than reading source code.
 2. **Decompose into subtasks.** Break the work into small, concrete steps that a sub-agent
    can complete independently. Each subtask should have:
    - A clear objective ("Create file X that does Y")
@@ -44,9 +46,10 @@ specific instructions.
    - Expected input/output formats
    - Relevant code snippets or constraints from your exploration
    - Commands to run for verification
-4. **Verify results.** After a sub-agent completes, check its work yourself. Read the
-   files it created. Run the tests. If something is wrong, spawn another agent to fix it
-   with specific instructions about what failed and why.
+4. **Verify results yourself.** After a sub-agent completes, do NOT trust its report.
+   Run the tests yourself using exec_command. Look for test files (test.sh,
+   test_outputs.py, tests/) and execute them. Read the output. If tests fail, spawn
+   another agent with the specific failures and instructions to fix them.
 5. **Iterate.** If the first approach fails, analyze why and try a different decomposition.
    You have budget for 100 rounds — use them.
 

@@ -29,6 +29,20 @@ models: User(id, name, email), Item(id, title, price)\n...")
 - Do not add error handling or validation for scenarios that cannot occur.
 - Be decisive. When your analysis leads to a clear answer, act on it.
 
+## Verification
+
+Before calling communicate, you MUST verify your work:
+
+1. **Find tests.** Look for test files: test.sh, test_outputs.py, tests/, test/,
+   *_test.py, *_test.go. Also check if the task description mentions test commands.
+2. **Run tests.** Execute every test script you find. Read the FULL output.
+3. **Check outputs.** Read back every file you created or modified. Verify it matches
+   the requirements.
+4. **Fix failures.** If any test fails, fix the issue and re-run. Do not communicate
+   with failing tests.
+5. **Report evidence.** In your communicate message, include test results as proof
+   your solution works.
+
 ## Non-interactive
 
 There is no human available to answer questions. The task description IS the complete
