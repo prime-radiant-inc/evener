@@ -118,7 +118,7 @@ def cmd_launch(args):
         if not args.dry_run:
             if not args.no_build:
                 print(f"=== Building and deploying lace to {run_stage_dir} ===")
-                deploy_script = os.path.join(LACE_REPO, "tools", "deploy-lace.sh")
+                deploy_script = os.path.join(LACE_REPO, "tools", "harbor-eval", "deploy-lace.sh")
                 subprocess.run(
                     [deploy_script, "--staging-dir", run_stage_dir],
                     check=True,
