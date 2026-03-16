@@ -36,10 +36,12 @@ type TaskInput struct {
 }
 
 // TaskUpdate is a status change for an existing task.
+// DependsOn nil means no change; &[]int{} clears the dependency list.
 type TaskUpdate struct {
-	ID     int        `json:"id"`
-	Status TaskStatus `json:"status"`
-	Notes  string     `json:"notes,omitempty"`
+	ID        int        `json:"id"`
+	Status    TaskStatus `json:"status"`
+	Notes     string     `json:"notes,omitempty"`
+	DependsOn *[]int     `json:"depends_on,omitempty"`
 }
 
 // TaskStore manages a persistent list of tasks stored as JSON.
@@ -162,6 +164,9 @@ func (s *TaskStore) Update(updates []TaskUpdate) error {
 				s.tasks[i].Status = u.Status
 				if u.Notes != "" {
 					s.tasks[i].Notes = append(s.tasks[i].Notes, u.Notes)
+				}
+				if u.DependsOn != nil {
+					s.tasks[i].DependsOn = *u.DependsOn
 				}
 				found = true
 				break

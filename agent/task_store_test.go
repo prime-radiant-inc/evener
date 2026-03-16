@@ -524,3 +524,57 @@ func TestTaskStore_DependsOnPersistsAcrossLoads(t *testing.T) {
 		t.Fatalf("task 1 should have no DependsOn, got %v", all[0].DependsOn)
 	}
 }
+
+func TestTaskStore_UpdateDependsOn(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTaskStore(dir, "test-session")
+
+	if _, err := s.Append([]TaskInput{
+		{Description: "First", Prompt: "Do first"},
+		{Description: "Second", Prompt: "Do second"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Set depends_on via Update.
+	deps := []int{1}
+	if err := s.Update([]TaskUpdate{{ID: 2, Status: TaskOpen, DependsOn: &deps}}); err != nil {
+		t.Fatalf("Update with DependsOn: %v", err)
+	}
+	all := s.View()
+	if len(all[1].DependsOn) != 1 || all[1].DependsOn[0] != 1 {
+		t.Fatalf("DependsOn after Update: got %v", all[1].DependsOn)
+	}
+
+	// Clear depends_on with empty slice.
+	empty := []int{}
+	if err := s.Update([]TaskUpdate{{ID: 2, Status: TaskOpen, DependsOn: &empty}}); err != nil {
+		t.Fatalf("Update clear DependsOn: %v", err)
+	}
+	all = s.View()
+	if len(all[1].DependsOn) != 0 {
+		t.Fatalf("DependsOn should be cleared: got %v", all[1].DependsOn)
+	}
+}
+
+func TestTaskStore_UpdateOmittedDependsOnPreserves(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTaskStore(dir, "test-session")
+
+	if _, err := s.Append([]TaskInput{
+		{Description: "First", Prompt: "Do first"},
+		{Description: "Second", Prompt: "Do second", DependsOn: []int{1}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Update status without touching DependsOn (nil pointer = no change).
+	if err := s.Update([]TaskUpdate{{ID: 2, Status: TaskInProgress}}); err != nil {
+		t.Fatalf("Update status: %v", err)
+	}
+
+	all := s.View()
+	if len(all[1].DependsOn) != 1 || all[1].DependsOn[0] != 1 {
+		t.Fatalf("DependsOn should be preserved: got %v", all[1].DependsOn)
+	}
+}
