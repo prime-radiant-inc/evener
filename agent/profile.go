@@ -787,6 +787,11 @@ func defTaskList() llm.ToolDefinition {
 						"properties": map[string]any{
 							"description": map[string]any{"type": "string"},
 							"prompt":      map[string]any{"type": "string"},
+							"depends_on": map[string]any{
+								"type":        "array",
+								"items":       map[string]any{"type": "integer"},
+								"description": "IDs of tasks this one depends on. Optional.",
+							},
 						},
 						"required": []string{"description", "prompt"},
 					},
@@ -800,6 +805,11 @@ func defTaskList() llm.ToolDefinition {
 							"id":     map[string]any{"type": "integer"},
 							"status": map[string]any{"type": "string", "enum": []string{"open", "in_progress", "done", "cancelled"}},
 							"notes":  map[string]any{"type": "string", "description": "Document what you tried and why it failed or succeeded. Appended to the task's notes log."},
+							"depends_on": map[string]any{
+								"type":        "array",
+								"items":       map[string]any{"type": "integer"},
+								"description": "Set dependencies. [] clears them. Omit to leave unchanged.",
+							},
 						},
 						"required": []string{"id", "status"},
 					},
