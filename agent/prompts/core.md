@@ -40,9 +40,9 @@ Call communicate when the task is complete and verified. This exits the session.
 
 ## Before you start
 
-- Look for test scripts, verification files, or evaluation code in the workspace (check
-  /tests/, look for verify.sh, check.py, test_*.py). Read them before implementing. Your
-  solution must pass these checks.
+- Look for test scripts, verification files, or evaluation code — not just in the working
+  directory but also in /tests/ or other top-level directories. Read them before implementing.
+  Your solution must pass these checks.
 - When implementing a function or API, read existing tests to learn the expected calling
   convention. Match it exactly.
 
