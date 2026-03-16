@@ -770,7 +770,7 @@ func defSubmitResultNamed(name string) llm.ToolDefinition {
 func defTaskList() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "task_list",
-		Description: "Manage a persistent task list. Actions: view (show all tasks), append (add new tasks), update (change task status to undone/in_progress/done/cancelled).",
+		Description: "Manage a persistent task list. Actions: view (show all tasks), append (add new tasks), update (change task status to open/in_progress/done/cancelled).",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -798,7 +798,7 @@ func defTaskList() llm.ToolDefinition {
 						"type": "object",
 						"properties": map[string]any{
 							"id":     map[string]any{"type": "integer"},
-							"status": map[string]any{"type": "string", "enum": []string{"undone", "in_progress", "done", "cancelled"}},
+							"status": map[string]any{"type": "string", "enum": []string{"open", "in_progress", "done", "cancelled"}},
 							"notes":  map[string]any{"type": "string", "description": "Document what you tried and why it failed or succeeded. Appended to the task's notes log."},
 						},
 						"required": []string{"id", "status"},

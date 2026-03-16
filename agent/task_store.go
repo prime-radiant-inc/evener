@@ -12,7 +12,7 @@ import (
 type TaskStatus string
 
 const (
-	TaskUndone     TaskStatus = "undone"
+	TaskOpen       TaskStatus = "open"
 	TaskInProgress TaskStatus = "in_progress"
 	TaskDone       TaskStatus = "done"
 	TaskCancelled  TaskStatus = "cancelled"
@@ -117,7 +117,7 @@ func (s *TaskStore) View() []Task {
 	return append([]Task{}, s.tasks...)
 }
 
-// Append adds new tasks with auto-assigned IDs and status=undone. Returns the created tasks.
+// Append adds new tasks with auto-assigned IDs and status=open. Returns the created tasks.
 func (s *TaskStore) Append(items []TaskInput) ([]Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -128,7 +128,7 @@ func (s *TaskStore) Append(items []TaskInput) ([]Task, error) {
 			ID:          s.nextID,
 			Description: item.Description,
 			Prompt:      item.Prompt,
-			Status:      TaskUndone,
+			Status:      TaskOpen,
 		}
 		s.nextID++
 		s.tasks = append(s.tasks, t)
@@ -148,10 +148,10 @@ func (s *TaskStore) Update(updates []TaskUpdate) error {
 
 	for _, u := range updates {
 		switch u.Status {
-		case TaskUndone, TaskInProgress, TaskDone, TaskCancelled:
+		case TaskOpen, TaskInProgress, TaskDone, TaskCancelled:
 			// valid
 		default:
-			return fmt.Errorf("invalid status %q for task %d: must be undone, in_progress, done, or cancelled", u.Status, u.ID)
+			return fmt.Errorf("invalid status %q for task %d: must be open, in_progress, done, or cancelled", u.Status, u.ID)
 		}
 		found := false
 		for i := range s.tasks {

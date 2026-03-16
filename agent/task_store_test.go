@@ -28,7 +28,7 @@ func TestTaskStore_AppendAndView(t *testing.T) {
 	if added[0].ID != 1 || added[1].ID != 2 {
 		t.Fatalf("IDs: got %d, %d", added[0].ID, added[1].ID)
 	}
-	if added[0].Status != TaskUndone || added[1].Status != TaskUndone {
+	if added[0].Status != TaskOpen || added[1].Status != TaskOpen {
 		t.Fatalf("statuses: got %q, %q", added[0].Status, added[1].Status)
 	}
 	if added[0].Description != "Read auth code" {
@@ -247,7 +247,7 @@ func TestTaskStore_ViewReturnsCopy(t *testing.T) {
 	if fresh[0].Description != "Original" {
 		t.Fatalf("View did not return a defensive copy: description is %q", fresh[0].Description)
 	}
-	if fresh[0].Status != TaskUndone {
+	if fresh[0].Status != TaskOpen {
 		t.Fatalf("View did not return a defensive copy: status is %q", fresh[0].Status)
 	}
 }
@@ -439,7 +439,7 @@ func TestTaskListTool_AppendViewUpdate(t *testing.T) {
 	if viewRes.IsError {
 		t.Fatalf("view error: %s", viewRes.Output)
 	}
-	if !strings.Contains(viewRes.Output, "undone") {
+	if !strings.Contains(viewRes.Output, "open") {
 		t.Fatalf("view output missing status: %s", viewRes.Output)
 	}
 

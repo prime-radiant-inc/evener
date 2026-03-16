@@ -280,8 +280,8 @@ func TestAllProfiles_SystemPromptContainsTaskListGuidance(t *testing.T) {
 		}
 
 		// Must include guidance about task statuses.
-		if !strings.Contains(prompt, "done") || !strings.Contains(prompt, "undone") {
-			t.Errorf("profile %q system prompt missing task status guidance (done/undone)", name)
+		if !strings.Contains(prompt, "open/in_progress") {
+			t.Errorf("profile %q system prompt missing task status guidance (open/in_progress)", name)
 		}
 	}
 }
