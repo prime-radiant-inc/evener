@@ -48,9 +48,8 @@ Call communicate when the task is complete and verified. This exits the session.
 
 ## Before you finish
 
-- Your deliverable directory must contain only what was requested. Build artifacts, test
-  binaries, and temporary files must be removed. Compile and test in /tmp, not in the
-  deliverable directory.
+- Before finishing, review the files you created. Remove any scratch files, build artifacts,
+  or temporary outputs that aren't part of your deliverable.
 - If the task requires a running service, it must survive your session ending. A foreground
   process or background shell job will die. Use daemon mode or ensure the evaluator's
   setup script starts the service.
