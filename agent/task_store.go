@@ -121,11 +121,93 @@ func (s *TaskStore) View() []Task {
 	return append([]Task{}, s.tasks...)
 }
 
+// validateDependencies checks that all IDs in deps exist (in s.tasks or pending)
+// and that adding them does not create a cycle in the dependency graph.
+// taskID is the task being created or modified.
+// pending holds tasks being appended in the same batch (not yet in s.tasks).
+func (s *TaskStore) validateDependencies(taskID int, deps []int, pending []Task) error {
+	// Build known ID set from existing tasks + pending.
+	known := make(map[int]bool, len(s.tasks)+len(pending))
+	for _, t := range s.tasks {
+		known[t.ID] = true
+	}
+	for _, t := range pending {
+		known[t.ID] = true
+	}
+
+	for _, dep := range deps {
+		if dep == taskID {
+			return fmt.Errorf("task %d cannot depend on itself", taskID)
+		}
+		if !known[dep] {
+			return fmt.Errorf("task %d depends on unknown task %d", taskID, dep)
+		}
+	}
+
+	// Build adjacency map for cycle detection.
+	// Include all existing tasks, all pending tasks, and the task being validated.
+	adj := make(map[int][]int)
+	for _, t := range s.tasks {
+		if t.ID == taskID {
+			// Will be replaced by the new deps below.
+			continue
+		}
+		adj[t.ID] = t.DependsOn
+	}
+	for _, t := range pending {
+		if t.ID == taskID {
+			continue
+		}
+		adj[t.ID] = t.DependsOn
+	}
+	adj[taskID] = deps
+
+	if hasCycle(adj) {
+		return fmt.Errorf("task %d would create a dependency cycle", taskID)
+	}
+	return nil
+}
+
+// hasCycle returns true if the directed graph contains a cycle (DFS with white/gray/black coloring).
+func hasCycle(adj map[int][]int) bool {
+	// 0 = white (unvisited), 1 = gray (in stack), 2 = black (done)
+	color := make(map[int]int, len(adj))
+
+	var dfs func(node int) bool
+	dfs = func(node int) bool {
+		color[node] = 1 // gray
+		for _, neighbor := range adj[node] {
+			if color[neighbor] == 1 {
+				return true // back edge → cycle
+			}
+			if color[neighbor] == 0 {
+				if dfs(neighbor) {
+					return true
+				}
+			}
+		}
+		color[node] = 2 // black
+		return false
+	}
+
+	for node := range adj {
+		if color[node] == 0 {
+			if dfs(node) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Append adds new tasks with auto-assigned IDs and status=open. Returns the created tasks.
 func (s *TaskStore) Append(items []TaskInput) ([]Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	savedNextID := s.nextID
+
+	// Build all tasks first without committing to s.tasks.
 	var added []Task
 	for _, item := range items {
 		t := Task{
@@ -136,9 +218,28 @@ func (s *TaskStore) Append(items []TaskInput) ([]Task, error) {
 			DependsOn:   item.DependsOn,
 		}
 		s.nextID++
-		s.tasks = append(s.tasks, t)
 		added = append(added, t)
 	}
+
+	// Validate all dependency constraints before committing.
+	for _, t := range added {
+		if len(t.DependsOn) == 0 {
+			continue
+		}
+		// pending = the other tasks in this batch (not the task itself).
+		var pending []Task
+		for _, p := range added {
+			if p.ID != t.ID {
+				pending = append(pending, p)
+			}
+		}
+		if err := s.validateDependencies(t.ID, t.DependsOn, pending); err != nil {
+			s.nextID = savedNextID
+			return nil, err
+		}
+	}
+
+	s.tasks = append(s.tasks, added...)
 
 	if err := s.save(); err != nil {
 		return added, fmt.Errorf("save: %w", err)
@@ -166,6 +267,9 @@ func (s *TaskStore) Update(updates []TaskUpdate) error {
 					s.tasks[i].Notes = append(s.tasks[i].Notes, u.Notes)
 				}
 				if u.DependsOn != nil {
+					if err := s.validateDependencies(u.ID, *u.DependsOn, nil); err != nil {
+						return err
+					}
 					s.tasks[i].DependsOn = *u.DependsOn
 				}
 				found = true

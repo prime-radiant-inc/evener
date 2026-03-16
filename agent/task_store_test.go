@@ -557,6 +557,132 @@ func TestTaskStore_UpdateDependsOn(t *testing.T) {
 	}
 }
 
+// Task 4: Dependency validation tests
+
+func TestTaskStore_AppendRejectsNonexistentDependency(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTaskStore(dir, "test-session")
+
+	_, err := s.Append([]TaskInput{
+		{Description: "Task A", Prompt: "Do A", DependsOn: []int{99}},
+	})
+	if err == nil {
+		t.Fatalf("expected error for nonexistent dependency 99, got nil")
+	}
+}
+
+func TestTaskStore_UpdateRejectsNonexistentDependency(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTaskStore(dir, "test-session")
+
+	if _, err := s.Append([]TaskInput{
+		{Description: "Task A", Prompt: "Do A"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	deps := []int{99}
+	err := s.Update([]TaskUpdate{{ID: 1, Status: TaskOpen, DependsOn: &deps}})
+	if err == nil {
+		t.Fatalf("expected error for nonexistent dependency 99, got nil")
+	}
+}
+
+func TestTaskStore_RejectsCyclicDependency(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTaskStore(dir, "test-session")
+
+	// Append A and B with no deps first.
+	if _, err := s.Append([]TaskInput{
+		{Description: "Task A", Prompt: "Do A"},
+		{Description: "Task B", Prompt: "Do B", DependsOn: []int{1}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now try to make A depend on B — creates cycle A→B→A.
+	deps := []int{2}
+	err := s.Update([]TaskUpdate{{ID: 1, Status: TaskOpen, DependsOn: &deps}})
+	if err == nil {
+		t.Fatalf("expected error for cyclic dependency A→B→A, got nil")
+	}
+}
+
+func TestTaskStore_RejectsTransitiveCycle(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTaskStore(dir, "test-session")
+
+	// A, B→A, C→B  (chain A←B←C)
+	if _, err := s.Append([]TaskInput{
+		{Description: "Task A", Prompt: "Do A"},
+		{Description: "Task B", Prompt: "Do B", DependsOn: []int{1}},
+		{Description: "Task C", Prompt: "Do C", DependsOn: []int{2}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Make A depend on C → closes the cycle A←B←C←A.
+	deps := []int{3}
+	err := s.Update([]TaskUpdate{{ID: 1, Status: TaskOpen, DependsOn: &deps}})
+	if err == nil {
+		t.Fatalf("expected error for transitive cycle A→C→B→A, got nil")
+	}
+}
+
+func TestTaskStore_RejectsSelfDependency(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTaskStore(dir, "test-session")
+
+	_, err := s.Append([]TaskInput{
+		{Description: "Task A", Prompt: "Do A", DependsOn: []int{1}},
+	})
+	if err == nil {
+		t.Fatalf("expected error for self-dependency (ID 1 depends on 1), got nil")
+	}
+}
+
+func TestTaskStore_RejectsIntraBatchCycle(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTaskStore(dir, "test-session")
+
+	// Both tasks reference each other within the same Append call.
+	// Task at nextID=1 depends on 2, task at nextID=2 depends on 1.
+	_, err := s.Append([]TaskInput{
+		{Description: "Task A", Prompt: "Do A", DependsOn: []int{2}},
+		{Description: "Task B", Prompt: "Do B", DependsOn: []int{1}},
+	})
+	if err == nil {
+		t.Fatalf("expected error for intra-batch cycle, got nil")
+	}
+}
+
+func TestTaskStore_AppendRestoresNextIDOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTaskStore(dir, "test-session")
+
+	// First append succeeds — nextID becomes 2.
+	if _, err := s.Append([]TaskInput{{Description: "Task A", Prompt: "Do A"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Failing append should not advance nextID.
+	_, err := s.Append([]TaskInput{
+		{Description: "Task B", Prompt: "Do B", DependsOn: []int{99}},
+	})
+	if err == nil {
+		t.Fatalf("expected error for nonexistent dependency, got nil")
+	}
+
+	// Next successful append should get ID 2, not 3.
+	added, err := s.Append([]TaskInput{{Description: "Task C", Prompt: "Do C"}})
+	if err != nil {
+		t.Fatalf("Append after failed: %v", err)
+	}
+	if added[0].ID != 2 {
+		t.Fatalf("expected ID 2 after failed append, got %d", added[0].ID)
+	}
+}
+
 func TestTaskStore_UpdateOmittedDependsOnPreserves(t *testing.T) {
 	dir := t.TempDir()
 	s := NewTaskStore(dir, "test-session")
