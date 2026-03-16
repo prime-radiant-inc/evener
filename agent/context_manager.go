@@ -720,7 +720,11 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, result
 	if meta != nil && len(meta.TaskSnapshot) > 0 {
 		fixed.WriteString("\nTask list:\n")
 		for _, t := range meta.TaskSnapshot {
-			fixed.WriteString(fmt.Sprintf("  [%s] #%d: %s\n", string(t.Status), t.ID, t.Description))
+			line := fmt.Sprintf("  [%s] #%d: %s", string(t.Status), t.ID, t.Description)
+			if len(t.DependsOn) > 0 {
+				line += fmt.Sprintf(" (depends_on: %v)", t.DependsOn)
+			}
+			fixed.WriteString(line + "\n")
 		}
 	}
 
