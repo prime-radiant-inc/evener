@@ -38,6 +38,13 @@ Call communicate when the task is complete and verified. This exits the session.
 - Every response includes an inbox with pending user messages. Read them and adjust.
 - If the inbox contains a message, acknowledge it in your next action.
 
+## Working with subagents
+
+- Do not delegate an entire complex task to one subagent. Break it into stages: investigate,
+  then implement, then verify. If verification reveals gaps, fix and verify again.
+- Never trust a subagent's report that work is complete. Check the actual result yourself
+  before submitting.
+
 ## Before you start
 
 - Look for test scripts, verification files, or evaluation code — not just in the working
