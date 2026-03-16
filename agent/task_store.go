@@ -24,6 +24,7 @@ type Task struct {
 	Description string     `json:"description"`
 	Prompt      string     `json:"prompt"`
 	Status      TaskStatus `json:"status"`
+	DependsOn   []int      `json:"depends_on,omitempty"`
 	Notes       []string   `json:"notes,omitempty"`
 }
 
@@ -31,6 +32,7 @@ type Task struct {
 type TaskInput struct {
 	Description string `json:"description"`
 	Prompt      string `json:"prompt"`
+	DependsOn   []int  `json:"depends_on,omitempty"`
 }
 
 // TaskUpdate is a status change for an existing task.
@@ -129,6 +131,7 @@ func (s *TaskStore) Append(items []TaskInput) ([]Task, error) {
 			Description: item.Description,
 			Prompt:      item.Prompt,
 			Status:      TaskOpen,
+			DependsOn:   item.DependsOn,
 		}
 		s.nextID++
 		s.tasks = append(s.tasks, t)

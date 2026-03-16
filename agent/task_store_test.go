@@ -463,3 +463,64 @@ func TestTaskListTool_AppendViewUpdate(t *testing.T) {
 		t.Fatalf("view after update missing done status: %s", viewRes2.Output)
 	}
 }
+
+func TestTaskStore_AppendWithDependsOn(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTaskStore(dir, "test-session")
+
+	// Append a prerequisite task first.
+	added, err := s.Append([]TaskInput{
+		{Description: "First task", Prompt: "Do first"},
+	})
+	if err != nil {
+		t.Fatalf("Append first: %v", err)
+	}
+	firstID := added[0].ID
+
+	// Append a task that depends on the first.
+	added2, err := s.Append([]TaskInput{
+		{Description: "Second task", Prompt: "Do second", DependsOn: []int{firstID}},
+	})
+	if err != nil {
+		t.Fatalf("Append second: %v", err)
+	}
+	if len(added2[0].DependsOn) != 1 || added2[0].DependsOn[0] != firstID {
+		t.Fatalf("DependsOn not set: got %v", added2[0].DependsOn)
+	}
+
+	// View should include the DependsOn.
+	all := s.View()
+	if len(all[1].DependsOn) != 1 || all[1].DependsOn[0] != firstID {
+		t.Fatalf("View DependsOn: got %v", all[1].DependsOn)
+	}
+}
+
+func TestTaskStore_DependsOnPersistsAcrossLoads(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTaskStore(dir, "test-session")
+
+	if _, err := s.Append([]TaskInput{
+		{Description: "First", Prompt: "Do first"},
+		{Description: "Second", Prompt: "Do second", DependsOn: []int{1}},
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	// Reload from disk.
+	s2 := NewTaskStore(dir, "test-session")
+	if err := s2.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	all := s2.View()
+	if len(all) != 2 {
+		t.Fatalf("expected 2 tasks after reload, got %d", len(all))
+	}
+	if len(all[1].DependsOn) != 1 || all[1].DependsOn[0] != 1 {
+		t.Fatalf("DependsOn after reload: got %v", all[1].DependsOn)
+	}
+	// Task without deps should have nil/empty DependsOn.
+	if len(all[0].DependsOn) != 0 {
+		t.Fatalf("task 1 should have no DependsOn, got %v", all[0].DependsOn)
+	}
+}
