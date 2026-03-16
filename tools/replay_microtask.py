@@ -217,7 +217,7 @@ def replay_microtask(microtask, persona_text=None, tool_defs=None,
     client = openai.OpenAI()
 
     # Build reasoning config
-    reasoning = {"effort": "high"}
+    reasoning = {"effort": "high", "summary": "auto"}
 
     kwargs = {
         "model": model,
@@ -234,6 +234,7 @@ def replay_microtask(microtask, persona_text=None, tool_defs=None,
     # Extract the model's next action from the response
     new_actions = []
     response_text = ""
+    reasoning_summaries = []
 
     for item in response.output:
         if item.type == "function_call":
@@ -243,6 +244,11 @@ def replay_microtask(microtask, persona_text=None, tool_defs=None,
             for content in item.content:
                 if hasattr(content, "text"):
                     response_text += content.text
+        elif item.type == "reasoning":
+            if item.summary:
+                for s in item.summary:
+                    if hasattr(s, "text"):
+                        reasoning_summaries.append(s.text)
 
     if not new_actions and response_text:
         new_actions.append(f"Said: {response_text[:200]}")
@@ -252,6 +258,7 @@ def replay_microtask(microtask, persona_text=None, tool_defs=None,
         "model": model,
         "new_actions": new_actions,
         "response_text": response_text[:500] if response_text else "",
+        "reasoning_summaries": reasoning_summaries,
         "original_action": microtask.get("actual_next_action", ""),
         "persona_replaced": persona_text is not None,
         "input_tokens": response.usage.input_tokens if response.usage else 0,
@@ -283,6 +290,12 @@ def _format_result(result, microtask):
         lines.append(f"NEW response: {result['response_text'][:300]}")
     else:
         lines.append("NEW action: (empty response)")
+
+    if result.get("reasoning_summaries"):
+        lines.append("\nREASONING:")
+        for summary in result["reasoning_summaries"]:
+            for line in summary.split("\n"):
+                lines.append(f"  {line}")
 
     if result.get("input_tokens"):
         lines.append(f"\nTokens: {result['input_tokens']} in / {result['output_tokens']} out")

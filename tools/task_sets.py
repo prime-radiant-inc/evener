@@ -11,10 +11,101 @@ Methodology for the "discriminators" set:
 
   Source: https://gist.github.com/simonw/3bff274abcbbbf8766e9437a542db248
   Date of analysis: 2026-03-03
+
+Methodology for the "solvable" set:
+  All 89 terminal-bench 2.0 tasks minus 17 with >75% aggregate failure rate
+  across all submissions. These 17 are too hard for any agent to solve
+  reliably, so running them wastes compute without providing signal.
+  The remaining 72 tasks span easy (<10%) through hard (75%).
+
+  Excluded (>75% failure): make-doom-for-mips, sam-cell-seg,
+  install-windows-3.11, caffe-cifar-10, filter-js-from-html, gpt2-codegolf,
+  extract-moves-from-video, raman-fitting, train-fasttext, mteb-retrieve,
+  video-processing, torch-tensor-parallelism, dna-assembly, db-wal-recovery,
+  torch-pipeline-parallelism, dna-insert, mteb-leaderboard.
+
+  Date of analysis: 2026-03-06
 """
 
 # fmt: off
 TASK_SETS: dict[str, list[str]] = {
+    # 72 tasks with <=75% failure rate (all 89 minus 17 extreme).
+    # Sorted by failure rate descending (hardest first).
+    "solvable": [
+        "model-extraction-relu-logits",     # 75.8%
+        "make-mips-interpreter",            # 75.4%
+        "gcode-to-text",                    # 74.6%
+        "regex-chess",                      # 70.1%
+        "polyglot-c-py",                    # 65.0%
+        "polyglot-rust-c",                  # 63.4%
+        "query-optimize",                   # 61.3%
+        "path-tracing",                     # 59.3%
+        "adaptive-rejection-sampler",       # 59.0%
+        "qemu-alpine-ssh",                  # 57.4%
+        "path-tracing-reverse",             # 54.5%
+        "protein-assembly",                 # 52.9%
+        "chess-best-move",                  # 52.8%
+        "write-compressor",                 # 49.6%
+        "configure-git-webserver",          # 47.1%
+        "tune-mjcf",                        # 46.3%
+        "winning-avg-corewars",             # 45.9%
+        "cancel-async-tasks",              # 44.7%
+        "financial-document-processor",     # 43.9%
+        "overfull-hbox",                    # 43.7%
+        "sanitize-git-repo",               # 43.4%
+        "extract-elf",                      # 43.0%
+        "schemelike-metacircular-eval",     # 39.5%
+        "compile-compcert",                # 37.0%
+        "feal-linear-cryptanalysis",        # 36.4%
+        "circuit-fibsqrt",                 # 35.9%
+        "break-filter-js-from-html",       # 33.7%
+        "sparql-university",               # 30.9%
+        "largest-eigenval",                # 30.1%
+        "build-pmars",                     # 29.3%
+        "mailman",                          # 29.2%
+        "large-scale-text-editing",        # 27.7%
+        "bn-fit-modify",                   # 27.6%
+        "qemu-startup",                    # 27.6%
+        "rstan-to-pystan",                 # 26.9%
+        "build-cython-ext",                # 23.6%
+        "password-recovery",               # 23.6%
+        "pytorch-model-cli",               # 23.6%
+        "feal-differential-cryptanalysis", # 23.3%
+        "count-dataset-tokens",            # 23.1%
+        "sqlite-db-truncate",              # 22.9%
+        "llm-inference-batching-scheduler", # 21.9%
+        "reshard-c4-data",                 # 20.8%
+        "mcmc-sampling-stan",              # 20.7%
+        "fix-ocaml-gc",                    # 20.0%
+        "openssl-selfsigned-cert",         # 19.5%
+        "sqlite-with-gcov",                # 18.7%
+        "pytorch-model-recovery",          # 18.5%
+        "build-pov-ray",                   # 17.4%
+        "crack-7z-hash",                   # 17.1%
+        "kv-store-grpc",                   # 15.4%
+        "hf-model-inference",              # 14.9%
+        "headless-terminal",               # 14.8%
+        "merge-diff-arc-agi-task",         # 12.3%
+        "pypi-server",                     # 11.4%
+        "regex-log",                       # 11.4%
+        "fix-code-vulnerability",          # 9.0%
+        "git-multibranch",                 # 8.1%
+        "distribution-search",             # 7.3%
+        "code-from-image",                 # 6.6%
+        "log-summary-date-ranges",         # 6.5%
+        "modernize-scientific-stack",      # 5.8%
+        "custom-memory-heap-crash",        # 5.7%
+        "multi-source-data-merger",        # 5.7%
+        "prove-plus-comm",                 # 5.7%
+        "portfolio-optimization",          # 5.0%
+        "vulnerable-secret",               # 4.9%
+        "constraints-scheduling",          # 4.1%
+        "fix-git",                         # 4.1%
+        "nginx-request-logging",           # 4.1%
+        "cobol-modernization",             # 3.2%
+        "git-leak-recovery",               # 1.6%
+    ],
+
     # 56 tasks with 10-75% failure rate across 27 agent/model submissions.
     # Sorted by failure rate descending (hardest discriminators first).
     "discriminators": [
