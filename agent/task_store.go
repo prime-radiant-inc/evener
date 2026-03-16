@@ -247,6 +247,21 @@ func (s *TaskStore) Append(items []TaskInput) ([]Task, error) {
 	return added, nil
 }
 
+// Progress returns (total tasks, completed tasks). Only tasks with
+// status "done" count as completed. Cancelled tasks are not complete.
+func (s *TaskStore) Progress() (total, done int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	total = len(s.tasks)
+	for _, t := range s.tasks {
+		if t.Status == TaskDone {
+			done++
+		}
+	}
+	return total, done
+}
+
 // NextEligible returns open tasks whose dependencies are all satisfied
 // (done or cancelled), sorted by ID (insertion order).
 func (s *TaskStore) NextEligible() []Task {

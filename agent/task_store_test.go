@@ -793,6 +793,40 @@ func TestTaskStore_NextEligibleCancelledSatisfiesDeps(t *testing.T) {
 	}
 }
 
+// Task 6: Progress summary tests
+
+func TestTaskStore_Progress(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTaskStore(dir, "test-session")
+
+	if _, err := s.Append([]TaskInput{
+		{Description: "A", Prompt: "a"},
+		{Description: "B", Prompt: "b"},
+		{Description: "C", Prompt: "c"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// No tasks done yet.
+	total, done := s.Progress()
+	if total != 3 || done != 0 {
+		t.Fatalf("initial: expected total=3 done=0, got total=%d done=%d", total, done)
+	}
+
+	// Mark one done, one cancelled.
+	if err := s.Update([]TaskUpdate{
+		{ID: 1, Status: TaskDone},
+		{ID: 2, Status: TaskCancelled},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	total, done = s.Progress()
+	if total != 3 || done != 1 {
+		t.Fatalf("after updates: expected total=3 done=1, got total=%d done=%d", total, done)
+	}
+}
+
 func TestTaskStore_UpdateOmittedDependsOnPreserves(t *testing.T) {
 	dir := t.TempDir()
 	s := NewTaskStore(dir, "test-session")
