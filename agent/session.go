@@ -259,6 +259,12 @@ type Session struct {
 	taskStore     *TaskStore
 	taskStoreOnce sync.Once
 
+	// task reminder tracking
+	taskToolLastRound int  // totalRounds value at last task_list tool call
+	taskToolEverUsed  bool // whether task_list has ever been called
+	taskNudgeFired    bool // whether the "consider using task_list" nudge has fired
+	totalRounds       int  // cumulative tool rounds across all inputs
+
 	// transcript writer (nil when StateDir is empty)
 	transcript *TranscriptWriter
 }
@@ -1286,6 +1292,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 	for round := 0; s.cfg.MaxToolRoundsPerInput < 0 || round < s.cfg.MaxToolRoundsPerInput; round++ {
 		s.mu.Lock()
 		s.currentRound = round
+		s.totalRounds++
 		s.mu.Unlock()
 
 		select {
@@ -2442,6 +2449,10 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 		Tool: llm.Tool{Definition: defTaskList()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
+			s.mu.Lock()
+			s.taskToolEverUsed = true
+			s.taskToolLastRound = s.totalRounds
+			s.mu.Unlock()
 			store := s.getOrCreateTaskStore()
 			action := fmt.Sprint(args["action"])
 			switch action {
