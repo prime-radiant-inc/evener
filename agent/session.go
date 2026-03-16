@@ -259,6 +259,12 @@ type Session struct {
 	taskStore     *TaskStore
 	taskStoreOnce sync.Once
 
+	// task reminder tracking
+	taskToolLastRound int  // totalRounds value at last task_list tool call
+	taskToolEverUsed  bool // whether task_list has ever been called
+	taskNudgeFired    bool // whether the "consider using task_list" nudge has fired
+	totalRounds       int  // cumulative tool rounds across all inputs
+
 	// transcript writer (nil when StateDir is empty)
 	transcript *TranscriptWriter
 }
@@ -360,6 +366,12 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 	s.contextMgr.OnCompactionTurn = func(t Turn) {
 		if err := s.transcript.Append(t); err != nil {
 			s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
+		}
+		// After compaction, inject full task list if tasks exist.
+		if s.taskStore != nil {
+			if reminder := taskReminderFull(s.taskStore); reminder != "" {
+				s.Steer(reminder)
+			}
 		}
 	}
 
@@ -484,6 +496,12 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 	s.contextMgr.OnCompactionTurn = func(t Turn) {
 		if err := s.transcript.Append(t); err != nil {
 			s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
+		}
+		// After compaction, inject full task list if tasks exist.
+		if s.taskStore != nil {
+			if reminder := taskReminderFull(s.taskStore); reminder != "" {
+				s.Steer(reminder)
+			}
 		}
 	}
 
@@ -1286,6 +1304,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 	for round := 0; s.cfg.MaxToolRoundsPerInput < 0 || round < s.cfg.MaxToolRoundsPerInput; round++ {
 		s.mu.Lock()
 		s.currentRound = round
+		s.totalRounds++
 		s.mu.Unlock()
 
 		select {
@@ -1684,6 +1703,12 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		for _, msg := range s.drainSteering() {
 			s.appendTurn(TurnSteering, llm.User(msg))
 			s.emit(EventSteeringInjected, SteeringInjectedData{Text: msg})
+		}
+
+		// Task reminder injection.
+		if reminder := s.maybeInjectTaskReminder(); reminder != "" {
+			s.appendTurn(TurnSteering, llm.User(reminder))
+			s.emit(EventSteeringInjected, SteeringInjectedData{Text: reminder})
 		}
 
 		// submit_result sets the flag; exit the loop with the result message.
@@ -2442,6 +2467,10 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 		Tool: llm.Tool{Definition: defTaskList()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
+			s.mu.Lock()
+			s.taskToolEverUsed = true
+			s.taskToolLastRound = s.totalRounds
+			s.mu.Unlock()
 			store := s.getOrCreateTaskStore()
 			action := fmt.Sprint(args["action"])
 			switch action {
@@ -2458,9 +2487,18 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 					if !ok {
 						return nil, fmt.Errorf("each task must be an object with description and prompt")
 					}
+					var depIDs []int
+					if depsRaw, ok := m["depends_on"].([]any); ok {
+						for _, d := range depsRaw {
+							if v, ok := d.(float64); ok {
+								depIDs = append(depIDs, int(v))
+							}
+						}
+					}
 					items = append(items, TaskInput{
 						Description: fmt.Sprint(m["description"]),
 						Prompt:      fmt.Sprint(m["prompt"]),
+						DependsOn:   depIDs,
 					})
 				}
 				return store.Append(items)
@@ -2486,9 +2524,59 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 					if n, ok := m["notes"].(string); ok {
 						u.Notes = n
 					}
+					if depsRaw, ok := m["depends_on"]; ok {
+						var depIDs []int
+						if arr, ok := depsRaw.([]any); ok {
+							for _, d := range arr {
+								if v, ok := d.(float64); ok {
+									depIDs = append(depIDs, int(v))
+								}
+							}
+						}
+						u.DependsOn = &depIDs
+					}
 					updates = append(updates, u)
 				}
-				return nil, store.Update(updates)
+				if err := store.Update(updates); err != nil {
+					return nil, err
+				}
+
+				// Check if any task was marked done or cancelled — if so, suggest next tasks.
+				var completedAny bool
+				for _, u := range updates {
+					if u.Status == TaskDone || u.Status == TaskCancelled {
+						completedAny = true
+						break
+					}
+				}
+
+				if !completedAny {
+					return "Updated.", nil
+				}
+
+				eligible := store.NextEligible()
+				total, done := store.Progress()
+
+				var msg strings.Builder
+				msg.WriteString(fmt.Sprintf("Updated. Progress: %d/%d tasks complete.\n", done, total))
+
+				switch len(eligible) {
+				case 0:
+					if done == total {
+						msg.WriteString("All tasks complete.")
+					} else {
+						msg.WriteString("No tasks are currently ready (remaining tasks have unsatisfied dependencies).")
+					}
+				case 1:
+					msg.WriteString(fmt.Sprintf("\nNext task: #%d — %s. Mark it in_progress to begin.", eligible[0].ID, eligible[0].Description))
+				default:
+					msg.WriteString("\nReady tasks:\n")
+					for _, t := range eligible {
+						msg.WriteString(fmt.Sprintf("  #%d — %s\n", t.ID, t.Description))
+					}
+					msg.WriteString("Pick one and mark it in_progress.")
+				}
+				return msg.String(), nil
 			default:
 				return nil, fmt.Errorf("unknown task_list action %q: use view, append, or update", action)
 			}
@@ -2742,6 +2830,40 @@ func (s *Session) getOrCreateTaskStore() *TaskStore {
 		_ = s.taskStore.Load()
 	})
 	return s.taskStore
+}
+
+// maybeInjectTaskReminder checks whether a task-related steering message
+// should be injected before the next LLM call. Returns the message or "".
+func (s *Session) maybeInjectTaskReminder() string {
+	s.mu.Lock()
+	totalRounds := s.totalRounds
+	lastRound := s.taskToolLastRound
+	everUsed := s.taskToolEverUsed
+	nudgeFired := s.taskNudgeFired
+	s.mu.Unlock()
+
+	roundsSinceUse := totalRounds - lastRound
+
+	// Trigger 3: never used task_list, 10+ rounds in.
+	if !everUsed && !nudgeFired && totalRounds >= 10 {
+		s.mu.Lock()
+		s.taskNudgeFired = true
+		s.mu.Unlock()
+		return taskReminderNudge()
+	}
+
+	// Trigger 2: tasks exist, not used in 5+ rounds.
+	if everUsed && roundsSinceUse >= 5 {
+		store := s.getOrCreateTaskStore()
+		if len(store.View()) > 0 {
+			s.mu.Lock()
+			s.taskToolLastRound = totalRounds
+			s.mu.Unlock()
+			return taskReminderForInactivity(store)
+		}
+	}
+
+	return ""
 }
 
 // optionalIntArg extracts an optional integer pointer from tool arguments.
