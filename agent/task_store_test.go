@@ -683,6 +683,116 @@ func TestTaskStore_AppendRestoresNextIDOnFailure(t *testing.T) {
 	}
 }
 
+// ids extracts task IDs from a slice of tasks.
+func ids(tasks []Task) []int {
+	out := make([]int, len(tasks))
+	for i, t := range tasks {
+		out[i] = t.ID
+	}
+	return out
+}
+
+// Task 5: NextEligible tests
+
+func TestTaskStore_NextEligible(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTaskStore(dir, "test-session")
+
+	// A (no deps), B→A, C→A, D→[B,C]
+	if _, err := s.Append([]TaskInput{
+		{Description: "A", Prompt: "a"},
+		{Description: "B", Prompt: "b", DependsOn: []int{1}},
+		{Description: "C", Prompt: "c", DependsOn: []int{1}},
+		{Description: "D", Prompt: "d", DependsOn: []int{2, 3}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Initially only A is eligible (no deps).
+	eligible := ids(s.NextEligible())
+	if len(eligible) != 1 || eligible[0] != 1 {
+		t.Fatalf("step 0: expected [1], got %v", eligible)
+	}
+
+	// Mark A done — B and C become eligible.
+	if err := s.Update([]TaskUpdate{{ID: 1, Status: TaskDone}}); err != nil {
+		t.Fatal(err)
+	}
+	eligible = ids(s.NextEligible())
+	if len(eligible) != 2 || eligible[0] != 2 || eligible[1] != 3 {
+		t.Fatalf("step 1: expected [2 3], got %v", eligible)
+	}
+
+	// Mark B done — C still eligible, D not yet (C still open).
+	if err := s.Update([]TaskUpdate{{ID: 2, Status: TaskDone}}); err != nil {
+		t.Fatal(err)
+	}
+	eligible = ids(s.NextEligible())
+	if len(eligible) != 1 || eligible[0] != 3 {
+		t.Fatalf("step 2: expected [3], got %v", eligible)
+	}
+
+	// Mark C done — D becomes eligible.
+	if err := s.Update([]TaskUpdate{{ID: 3, Status: TaskDone}}); err != nil {
+		t.Fatal(err)
+	}
+	eligible = ids(s.NextEligible())
+	if len(eligible) != 1 || eligible[0] != 4 {
+		t.Fatalf("step 3: expected [4], got %v", eligible)
+	}
+}
+
+func TestTaskStore_NextEligibleSkipsInProgress(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTaskStore(dir, "test-session")
+
+	if _, err := s.Append([]TaskInput{
+		{Description: "A", Prompt: "a"},
+		{Description: "B", Prompt: "b"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Mark A in_progress — should not appear in eligible list.
+	if err := s.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress}}); err != nil {
+		t.Fatal(err)
+	}
+
+	eligible := ids(s.NextEligible())
+	for _, id := range eligible {
+		if id == 1 {
+			t.Fatalf("in_progress task 1 should not appear in NextEligible")
+		}
+	}
+	// B should still be eligible (no deps, open).
+	if len(eligible) != 1 || eligible[0] != 2 {
+		t.Fatalf("expected [2], got %v", eligible)
+	}
+}
+
+func TestTaskStore_NextEligibleCancelledSatisfiesDeps(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTaskStore(dir, "test-session")
+
+	// B depends on A; A gets cancelled.
+	if _, err := s.Append([]TaskInput{
+		{Description: "A", Prompt: "a"},
+		{Description: "B", Prompt: "b", DependsOn: []int{1}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Update([]TaskUpdate{{ID: 1, Status: TaskCancelled}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// B should become eligible since its dep (A) is cancelled.
+	eligible := ids(s.NextEligible())
+	if len(eligible) != 1 || eligible[0] != 2 {
+		t.Fatalf("expected [2] after A cancelled, got %v", eligible)
+	}
+}
+
 func TestTaskStore_UpdateOmittedDependsOnPreserves(t *testing.T) {
 	dir := t.TempDir()
 	s := NewTaskStore(dir, "test-session")

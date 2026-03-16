@@ -247,6 +247,38 @@ func (s *TaskStore) Append(items []TaskInput) ([]Task, error) {
 	return added, nil
 }
 
+// NextEligible returns open tasks whose dependencies are all satisfied
+// (done or cancelled), sorted by ID (insertion order).
+func (s *TaskStore) NextEligible() []Task {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Build status lookup.
+	status := make(map[int]TaskStatus, len(s.tasks))
+	for _, t := range s.tasks {
+		status[t.ID] = t.Status
+	}
+
+	var result []Task
+	for _, t := range s.tasks {
+		if t.Status != TaskOpen {
+			continue
+		}
+		satisfied := true
+		for _, dep := range t.DependsOn {
+			st := status[dep]
+			if st != TaskDone && st != TaskCancelled {
+				satisfied = false
+				break
+			}
+		}
+		if satisfied {
+			result = append(result, t)
+		}
+	}
+	return result
+}
+
 // Update changes the status of existing tasks.
 func (s *TaskStore) Update(updates []TaskUpdate) error {
 	s.mu.Lock()
