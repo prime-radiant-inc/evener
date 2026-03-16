@@ -2458,9 +2458,18 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 					if !ok {
 						return nil, fmt.Errorf("each task must be an object with description and prompt")
 					}
+					var depIDs []int
+					if depsRaw, ok := m["depends_on"].([]any); ok {
+						for _, d := range depsRaw {
+							if v, ok := d.(float64); ok {
+								depIDs = append(depIDs, int(v))
+							}
+						}
+					}
 					items = append(items, TaskInput{
 						Description: fmt.Sprint(m["description"]),
 						Prompt:      fmt.Sprint(m["prompt"]),
+						DependsOn:   depIDs,
 					})
 				}
 				return store.Append(items)
@@ -2486,9 +2495,59 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 					if n, ok := m["notes"].(string); ok {
 						u.Notes = n
 					}
+					if depsRaw, ok := m["depends_on"]; ok {
+						var depIDs []int
+						if arr, ok := depsRaw.([]any); ok {
+							for _, d := range arr {
+								if v, ok := d.(float64); ok {
+									depIDs = append(depIDs, int(v))
+								}
+							}
+						}
+						u.DependsOn = &depIDs
+					}
 					updates = append(updates, u)
 				}
-				return nil, store.Update(updates)
+				if err := store.Update(updates); err != nil {
+					return nil, err
+				}
+
+				// Check if any task was marked done or cancelled — if so, suggest next tasks.
+				var completedAny bool
+				for _, u := range updates {
+					if u.Status == TaskDone || u.Status == TaskCancelled {
+						completedAny = true
+						break
+					}
+				}
+
+				if !completedAny {
+					return "Updated.", nil
+				}
+
+				eligible := store.NextEligible()
+				total, done := store.Progress()
+
+				var msg strings.Builder
+				msg.WriteString(fmt.Sprintf("Updated. Progress: %d/%d tasks complete.\n", done, total))
+
+				switch len(eligible) {
+				case 0:
+					if done == total {
+						msg.WriteString("All tasks complete.")
+					} else {
+						msg.WriteString("No tasks are currently ready (remaining tasks have unsatisfied dependencies).")
+					}
+				case 1:
+					msg.WriteString(fmt.Sprintf("\nNext task: #%d — %s. Mark it in_progress to begin.", eligible[0].ID, eligible[0].Description))
+				default:
+					msg.WriteString("\nReady tasks:\n")
+					for _, t := range eligible {
+						msg.WriteString(fmt.Sprintf("  #%d — %s\n", t.ID, t.Description))
+					}
+					msg.WriteString("Pick one and mark it in_progress.")
+				}
+				return msg.String(), nil
 			default:
 				return nil, fmt.Errorf("unknown task_list action %q: use view, append, or update", action)
 			}

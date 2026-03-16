@@ -848,3 +848,200 @@ func TestTaskStore_UpdateOmittedDependsOnPreserves(t *testing.T) {
 		t.Fatalf("DependsOn should be preserved: got %v", all[1].DependsOn)
 	}
 }
+
+// Task 8: Tool handler tests
+
+func TestTaskListTool_AppendWithDependsOn(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx := context.Background()
+	env := sess.env
+
+	// Append a base task and a dependent task via the tool.
+	appendRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:   "c1",
+		Name: "task_list",
+		Arguments: json.RawMessage(`{
+			"action": "append",
+			"tasks": [
+				{"description": "Task A", "prompt": "Do A"},
+				{"description": "Task B", "prompt": "Do B", "depends_on": [1]}
+			]
+		}`),
+	})
+	if appendRes.IsError {
+		t.Fatalf("append error: %s", appendRes.Output)
+	}
+
+	// View should show depends_on for task 2.
+	viewRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:        "c2",
+		Name:      "task_list",
+		Arguments: json.RawMessage(`{"action": "view"}`),
+	})
+	if viewRes.IsError {
+		t.Fatalf("view error: %s", viewRes.Output)
+	}
+	if !strings.Contains(viewRes.Output, "1") {
+		t.Fatalf("view output missing depends_on: %s", viewRes.Output)
+	}
+
+	// Verify store state directly.
+	store := sess.getOrCreateTaskStore()
+	all := store.View()
+	if len(all) != 2 {
+		t.Fatalf("expected 2 tasks, got %d", len(all))
+	}
+	if len(all[1].DependsOn) != 1 || all[1].DependsOn[0] != 1 {
+		t.Fatalf("task 2 DependsOn: got %v", all[1].DependsOn)
+	}
+}
+
+func TestTaskListTool_UpdateShowsNextTask(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx := context.Background()
+	env := sess.env
+
+	// Create A, B→A, C→A.
+	sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:   "c1",
+		Name: "task_list",
+		Arguments: json.RawMessage(`{
+			"action": "append",
+			"tasks": [
+				{"description": "Task A", "prompt": "Do A"},
+				{"description": "Task B", "prompt": "Do B", "depends_on": [1]},
+				{"description": "Task C", "prompt": "Do C", "depends_on": [1]}
+			]
+		}`),
+	})
+
+	// Mark A done — response should mention B and C as ready.
+	updateRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:        "c2",
+		Name:      "task_list",
+		Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 1, "status": "done"}]}`),
+	})
+	if updateRes.IsError {
+		t.Fatalf("update error: %s", updateRes.Output)
+	}
+
+	// Response should include progress and mention ready tasks.
+	if !strings.Contains(updateRes.Output, "Progress") {
+		t.Fatalf("response missing Progress: %s", updateRes.Output)
+	}
+	if !strings.Contains(updateRes.Output, "Task B") {
+		t.Fatalf("response missing Task B: %s", updateRes.Output)
+	}
+	if !strings.Contains(updateRes.Output, "Task C") {
+		t.Fatalf("response missing Task C: %s", updateRes.Output)
+	}
+	if !strings.Contains(updateRes.Output, "in_progress") {
+		t.Fatalf("response missing in_progress suggestion: %s", updateRes.Output)
+	}
+}
+
+func TestTaskListTool_UpdateShowsAllComplete(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx := context.Background()
+	env := sess.env
+
+	// Single task.
+	sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:   "c1",
+		Name: "task_list",
+		Arguments: json.RawMessage(`{
+			"action": "append",
+			"tasks": [{"description": "Only task", "prompt": "Do it"}]
+		}`),
+	})
+
+	// Mark it done.
+	updateRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:        "c2",
+		Name:      "task_list",
+		Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 1, "status": "done"}]}`),
+	})
+	if updateRes.IsError {
+		t.Fatalf("update error: %s", updateRes.Output)
+	}
+	if !strings.Contains(updateRes.Output, "All tasks complete") {
+		t.Fatalf("response should say 'All tasks complete': %s", updateRes.Output)
+	}
+}
+
+func TestTaskListTool_UpdateShowsBlocked(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx := context.Background()
+	env := sess.env
+
+	// A, B→A, C→B (chain A←B←C).
+	sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:   "c1",
+		Name: "task_list",
+		Arguments: json.RawMessage(`{
+			"action": "append",
+			"tasks": [
+				{"description": "Task A", "prompt": "Do A"},
+				{"description": "Task B", "prompt": "Do B", "depends_on": [1]},
+				{"description": "Task C", "prompt": "Do C", "depends_on": [2]}
+			]
+		}`),
+	})
+
+	// Mark A in_progress (not done), cancel C — B still blocked on A in_progress.
+	// With A in_progress (not eligible) and C cancelled, B is the only open task
+	// but A is in_progress so B's dep is not satisfied. No tasks should be ready.
+	sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:        "c2",
+		Name:      "task_list",
+		Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 1, "status": "in_progress"}]}`),
+	})
+
+	updateRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:        "c3",
+		Name:      "task_list",
+		Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 3, "status": "cancelled"}]}`),
+	})
+	if updateRes.IsError {
+		t.Fatalf("update error: %s", updateRes.Output)
+	}
+	if !strings.Contains(updateRes.Output, "No tasks are currently ready") {
+		t.Fatalf("response should say no tasks ready: %s", updateRes.Output)
+	}
+}
