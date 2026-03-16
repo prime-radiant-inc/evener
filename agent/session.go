@@ -367,6 +367,12 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		if err := s.transcript.Append(t); err != nil {
 			s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
 		}
+		// After compaction, inject full task list if tasks exist.
+		if s.taskStore != nil {
+			if reminder := taskReminderFull(s.taskStore); reminder != "" {
+				s.Steer(reminder)
+			}
+		}
 	}
 
 	// Create context strategy.
@@ -490,6 +496,12 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 	s.contextMgr.OnCompactionTurn = func(t Turn) {
 		if err := s.transcript.Append(t); err != nil {
 			s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
+		}
+		// After compaction, inject full task list if tasks exist.
+		if s.taskStore != nil {
+			if reminder := taskReminderFull(s.taskStore); reminder != "" {
+				s.Steer(reminder)
+			}
 		}
 	}
 
@@ -1693,6 +1705,12 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			s.emit(EventSteeringInjected, SteeringInjectedData{Text: msg})
 		}
 
+		// Task reminder injection.
+		if reminder := s.maybeInjectTaskReminder(); reminder != "" {
+			s.appendTurn(TurnSteering, llm.User(reminder))
+			s.emit(EventSteeringInjected, SteeringInjectedData{Text: reminder})
+		}
+
 		// submit_result sets the flag; exit the loop with the result message.
 		s.mu.Lock()
 		delivered := s.resultDelivered
@@ -2812,6 +2830,40 @@ func (s *Session) getOrCreateTaskStore() *TaskStore {
 		_ = s.taskStore.Load()
 	})
 	return s.taskStore
+}
+
+// maybeInjectTaskReminder checks whether a task-related steering message
+// should be injected before the next LLM call. Returns the message or "".
+func (s *Session) maybeInjectTaskReminder() string {
+	s.mu.Lock()
+	totalRounds := s.totalRounds
+	lastRound := s.taskToolLastRound
+	everUsed := s.taskToolEverUsed
+	nudgeFired := s.taskNudgeFired
+	s.mu.Unlock()
+
+	roundsSinceUse := totalRounds - lastRound
+
+	// Trigger 3: never used task_list, 10+ rounds in.
+	if !everUsed && !nudgeFired && totalRounds >= 10 {
+		s.mu.Lock()
+		s.taskNudgeFired = true
+		s.mu.Unlock()
+		return taskReminderNudge()
+	}
+
+	// Trigger 2: tasks exist, not used in 5+ rounds.
+	if everUsed && roundsSinceUse >= 5 {
+		store := s.getOrCreateTaskStore()
+		if len(store.View()) > 0 {
+			s.mu.Lock()
+			s.taskToolLastRound = totalRounds
+			s.mu.Unlock()
+			return taskReminderForInactivity(store)
+		}
+	}
+
+	return ""
 }
 
 // optionalIntArg extracts an optional integer pointer from tool arguments.
