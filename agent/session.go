@@ -2568,11 +2568,18 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 						msg.WriteString("No tasks are currently ready (remaining tasks have unsatisfied dependencies).")
 					}
 				case 1:
-					msg.WriteString(fmt.Sprintf("\nNext task: #%d — %s. Mark it in_progress to begin.", eligible[0].ID, eligible[0].Description))
+					msg.WriteString(fmt.Sprintf("\nNext task: #%d — %s.", eligible[0].ID, eligible[0].Description))
+				if eligible[0].Prompt != "" {
+					msg.WriteString(fmt.Sprintf("\nInstructions: %s", eligible[0].Prompt))
+				}
+				msg.WriteString("\nMark it in_progress to begin.")
 				default:
 					msg.WriteString("\nReady tasks:\n")
 					for _, t := range eligible {
 						msg.WriteString(fmt.Sprintf("  #%d — %s\n", t.ID, t.Description))
+					if t.Prompt != "" {
+						msg.WriteString(fmt.Sprintf("      Instructions: %s\n", t.Prompt))
+					}
 					}
 					msg.WriteString("Pick one and mark it in_progress.")
 				}
