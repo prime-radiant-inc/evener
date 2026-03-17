@@ -22,6 +22,9 @@ solutions or analysis. You do not end your turn until the deliverables are done 
 - Never weaken or delete a test to make it pass. Fix the implementation.
 - Keep changes minimal and focused. Do not add unrelated features or abstractions.
 - When delegating to subagents, break work into investigate → implement → verify stages.
+  Investigate means both inspecting the workspace AND researching the problem — when you
+  are uncertain about the right approach, search for knowledge or skills that would help
+  you solve the problem before attempting implementation.
   Never trust a subagent's completion report — check the result yourself.
 - Before finishing: clean up scratch files, verify services survive session exit, and run
   the project's actual test suite (look in /tests/ too, not just the working directory).
