@@ -18,9 +18,20 @@ const (
 	TaskCancelled  TaskStatus = "cancelled"
 )
 
+// TaskType classifies what kind of work a task represents.
+type TaskType string
+
+const (
+	TaskTypeResearch  TaskType = "research"
+	TaskTypeImplement TaskType = "implement"
+	TaskTypeVerify    TaskType = "verify"
+	TaskTypeFix       TaskType = "fix" // system-generated, no auto-review
+)
+
 // Task is a single work item in the agent's task list.
 type Task struct {
 	ID          int        `json:"id"`
+	Type        TaskType   `json:"type"`
 	Description string     `json:"description"`
 	Prompt      string     `json:"prompt"`
 	Status      TaskStatus `json:"status"`
@@ -30,9 +41,10 @@ type Task struct {
 
 // TaskInput is the data needed to create a new task.
 type TaskInput struct {
-	Description string `json:"description"`
-	Prompt      string `json:"prompt"`
-	DependsOn   []int  `json:"depends_on,omitempty"`
+	Type        TaskType `json:"type"`
+	Description string   `json:"description"`
+	Prompt      string   `json:"prompt"`
+	DependsOn   []int    `json:"depends_on,omitempty"`
 }
 
 // TaskUpdate is a status change for an existing task.
@@ -210,8 +222,13 @@ func (s *TaskStore) Append(items []TaskInput) ([]Task, error) {
 	// Build all tasks first without committing to s.tasks.
 	var added []Task
 	for _, item := range items {
+		taskType := item.Type
+		if taskType == "" {
+			taskType = TaskTypeImplement // default to implement
+		}
 		t := Task{
 			ID:          s.nextID,
+			Type:        taskType,
 			Description: item.Description,
 			Prompt:      item.Prompt,
 			Status:      TaskOpen,
@@ -239,7 +256,26 @@ func (s *TaskStore) Append(items []TaskInput) ([]Task, error) {
 		}
 	}
 
+	// Auto-create review tasks for implementation tasks.
+	var verifyTasks []Task
+	for _, t := range added {
+		if t.Type != TaskTypeImplement {
+			continue
+		}
+		vt := Task{
+			ID:          s.nextID,
+			Type:        TaskTypeVerify,
+			Description: "Verify: " + t.Description,
+			Prompt:      "Dispatch an independent subagent to review this work. Its job is to find mistakes, missing requirements, leftover artifacts, or anything that would cause an external evaluator to reject the submission. It is rewarded for finding legitimate problems, not for confirming success. You may run commands and inspect files but do not write to the working directory.",
+			Status:      TaskOpen,
+			DependsOn:   []int{t.ID},
+		}
+		s.nextID++
+		verifyTasks = append(verifyTasks, vt)
+	}
+
 	s.tasks = append(s.tasks, added...)
+	s.tasks = append(s.tasks, verifyTasks...)
 
 	if err := s.save(); err != nil {
 		return added, fmt.Errorf("save: %w", err)

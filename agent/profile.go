@@ -770,7 +770,7 @@ func defSubmitResultNamed(name string) llm.ToolDefinition {
 func defTaskList() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "task_list",
-		Description: "Manage a persistent task list. Actions: view (show all tasks), append (add new tasks), update (change task status to open/in_progress/done/cancelled).",
+		Description: "Manage a persistent task list. Actions: view (show all tasks), append (add new tasks), update (change task status to open/in_progress/done/cancelled). Implementation tasks automatically get a verification task created after them.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -781,10 +781,15 @@ func defTaskList() llm.ToolDefinition {
 				},
 				"tasks": map[string]any{
 					"type":        "array",
-					"description": "For append: tasks to add. Each has a brief description (<10 words) and a detailed prompt.",
+					"description": "For append: tasks to add. Each has a type, brief description (<10 words), and a detailed prompt.",
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
+							"type": map[string]any{
+								"type":        "string",
+								"enum":        []string{"research", "implement", "verify"},
+								"description": "Task type. 'implement' tasks automatically get a verification task.",
+							},
 							"description": map[string]any{"type": "string"},
 							"prompt":      map[string]any{"type": "string"},
 							"depends_on": map[string]any{
@@ -793,7 +798,7 @@ func defTaskList() llm.ToolDefinition {
 								"description": "IDs of tasks this one depends on. Optional.",
 							},
 						},
-						"required": []string{"description", "prompt"},
+						"required": []string{"type", "description", "prompt"},
 					},
 				},
 				"updates": map[string]any{
