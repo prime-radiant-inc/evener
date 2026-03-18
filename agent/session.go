@@ -366,6 +366,9 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		if twErr != nil {
 			s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript create failed: %v", twErr)})
 		}
+		if tw != nil {
+			tw.SyncInterval = 1 * time.Second
+		}
 		s.transcript = tw
 	}
 
@@ -495,6 +498,9 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 			if twErr != nil {
 				s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript open failed: %v", twErr)})
 			}
+		}
+		if tw != nil {
+			tw.SyncInterval = 1 * time.Second
 		}
 		s.transcript = tw
 	}
@@ -627,6 +633,9 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 			if twErr != nil {
 				s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript open failed: %v", twErr)})
 			}
+		}
+		if tw != nil {
+			tw.SyncInterval = 1 * time.Second
 		}
 		s.transcript = tw
 	}
@@ -1458,6 +1467,10 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 	const maxBareTextRetries = 3
 
 	for round := 0; s.cfg.MaxToolRoundsPerInput < 0 || round < s.cfg.MaxToolRoundsPerInput; round++ {
+		roundStart := time.Now()
+		var timings RoundTimings
+		timings.Round = round
+
 		s.mu.Lock()
 		s.currentRound = round
 		s.totalRounds++
@@ -1469,6 +1482,9 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			return "", ctx.Err()
 		default:
 		}
+
+		// --- Phase: SystemPrompt ---
+		tPhaseStart := time.Now()
 
 		// Rebuild system prompt each iteration using cached project docs.
 		docs := s.projectDocs
@@ -1511,6 +1527,11 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			sys = sys + "\n\n" + strings.TrimSpace(s.cfg.UserInstructionOverride) + "\n"
 		}
 
+		timings.SystemPrompt = time.Since(tPhaseStart)
+
+		// --- Phase: ContextMgmt ---
+		tPhaseStart = time.Now()
+
 		// PreCompact hooks
 		if s.hookRunner != nil {
 			preCompactResult := s.hookRunner.RunPreCompact(ctx, s.hookInput(HookPreCompact))
@@ -1537,6 +1558,11 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			s.history = histCopy
 			s.mu.Unlock()
 		}
+
+		timings.ContextMgmt = time.Since(tPhaseStart)
+
+		// --- Phase: HistoryExpand ---
+		tPhaseStart = time.Now()
 
 		s.mu.Lock()
 		historyTurns := append([]Turn{}, s.history...)
@@ -1570,11 +1596,18 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			history = append(history, t.Message)
 		}
 
+		timings.HistoryExpand = time.Since(tPhaseStart)
+
+		// --- Phase: ToolDefs ---
+		tPhaseStart = time.Now()
+		toolDefs := s.allToolDefinitions(round)
+		timings.ToolDefs = time.Since(tPhaseStart)
+
 		req := llm.Request{
 			Model:      s.profile.Model(),
 			Provider:   s.profile.ID(),
 			Messages:   append([]llm.Message{llm.System(sys)}, history...),
-			Tools:      s.allToolDefinitions(round),
+			Tools:      toolDefs,
 			ToolChoice: &llm.ToolChoice{Mode: "auto"},
 			WebSearch:  true,
 			AdapterTimeout: &llm.AdapterTimeout{
@@ -1591,6 +1624,9 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			req.ReasoningEffort = &v
 		}
 
+		// --- Phase: LLMCall ---
+		tPhaseStart = time.Now()
+
 		policy := llm.DefaultRetryPolicy()
 		if s.cfg.LLMRetryPolicy != nil {
 			policy = *s.cfg.LLMRetryPolicy
@@ -1599,6 +1635,9 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		resp, err := llm.Retry(callCtx, policy, s.cfg.LLMSleep, nil, func() (llm.Response, error) {
 			return s.client.Complete(callCtx, req)
 		})
+
+		timings.LLMCall = time.Since(tPhaseStart)
+
 		if err != nil {
 			s.emit(EventError, ErrorData{Error: err.Error()})
 
@@ -1708,6 +1747,9 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		// pause_turn: model needs another turn (e.g. server-side web search still running).
 		if resp.Finish.Reason == llm.FinishReasonPauseTurn {
 			round-- // Don't count pause_turn as a tool round.
+			timings.TotalRound = time.Since(roundStart)
+			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
+			s.emit(EventRoundTimings, timings)
 			continue
 		}
 
@@ -1751,6 +1793,9 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 					s.appendTurn(TurnSteering, llm.User(steering))
 					s.emit(EventSteeringInjected, SteeringInjectedData{Text: steering})
 					round-- // Don't count empty-response retries as tool rounds.
+					timings.TotalRound = time.Since(roundStart)
+					timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
+					s.emit(EventRoundTimings, timings)
 					continue
 				}
 				// Exhausted retries — fall through to exit.
@@ -1770,6 +1815,9 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 					s.appendTurn(TurnSteering, llm.User(steering))
 					s.emit(EventSteeringInjected, SteeringInjectedData{Text: steering})
 					round-- // Don't count bare-text retries as tool rounds.
+					timings.TotalRound = time.Since(roundStart)
+					timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
+					s.emit(EventRoundTimings, timings)
 					continue
 				}
 				// Exhausted retries — fall through to exit with last text.
@@ -1786,12 +1834,18 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			}
 			s.mu.Unlock()
 			s.maybeAutoSave()
+			timings.TotalRound = time.Since(roundStart)
+			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
+			s.emit(EventRoundTimings, timings)
 			return txt, nil
 		}
 
 		// Model produced tool calls — reset retry counters.
 		consecutiveEmptyResponses = 0
 		consecutiveBareTextResponses = 0
+
+		// --- Phase: ToolExec ---
+		tPhaseStart = time.Now()
 
 		// Execute tool calls (possibly in parallel) and send results back.
 		results := make([]ToolExecResult, len(calls))
@@ -1810,6 +1864,11 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 				results[i] = s.execTool(ctx, calls[i])
 			}
 		}
+
+		timings.ToolExec = time.Since(tPhaseStart)
+
+		// --- Phase: Persistence ---
+		tPhaseStart = time.Now()
 
 		// Aggregate all tool results into a single TurnToolResults turn.
 		var parts []llm.ContentPart
@@ -1832,6 +1891,11 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		// tool_result turns for any prior assistant tool calls.
 		s.maybeAutoSave()
 
+		timings.Persistence = time.Since(tPhaseStart)
+
+		// --- Phase: AfterAction ---
+		tPhaseStart = time.Now()
+
 		// Notify the context strategy that a tool round completed.
 		if s.strategy != nil {
 			s.mu.Lock()
@@ -1841,6 +1905,8 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 				s.emit(EventWarning, WarningData{Message: "strategy AfterAction error: " + err.Error()})
 			}
 		}
+
+		timings.AfterAction = time.Since(tPhaseStart)
 
 		// Loop detection: track per-call signatures and check for repeating patterns.
 		for _, call := range calls {
@@ -1871,6 +1937,11 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			s.appendTurn(TurnSteering, llm.User(reminder))
 			s.emit(EventSteeringInjected, SteeringInjectedData{Text: reminder})
 		}
+
+		// Emit round timings before checking result delivery.
+		timings.TotalRound = time.Since(roundStart)
+		timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall - timings.ToolExec - timings.Persistence - timings.AfterAction
+		s.emit(EventRoundTimings, timings)
 
 		// submit_result sets the flag; exit the loop with the result message.
 		s.mu.Lock()

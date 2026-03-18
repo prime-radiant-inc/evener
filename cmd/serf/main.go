@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime/pprof"
+	"runtime/trace"
 
 	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/cmdutil"
@@ -57,6 +59,8 @@ func main() {
 	flag.Var(&mcpConfigs, "mcp-config", "path to .mcp.json file (repeatable)")
 	var pluginDirs stringSliceFlag
 	flag.Var(&pluginDirs, "plugin-dir", "plugin directory (repeatable)")
+	cpuProfile := flag.String("cpu-profile", "", "write CPU profile to this file path")
+	traceFile := flag.String("trace", "", "write execution trace to this file path")
 	var systemPromptAppend stringSliceFlag
 	flag.Var(&systemPromptAppend, "system-prompt-append", "path to append to system prompt (repeatable)")
 
@@ -82,7 +86,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  --mcp <spec>         MCP server (repeatable, format: name:command args...)\n")
 		fmt.Fprintf(os.Stderr, "  --mcp-config <path>  Path to .mcp.json file (repeatable)\n")
 		fmt.Fprintf(os.Stderr, "  --plugin-dir <path>  Plugin directory (repeatable)\n")
-		fmt.Fprintf(os.Stderr, "  --export-atif <path> Export ATIF trajectory on session close\n\n")
+		fmt.Fprintf(os.Stderr, "  --export-atif <path> Export ATIF trajectory on session close\n")
+		fmt.Fprintf(os.Stderr, "  --cpu-profile <path> Write CPU profile (go tool pprof compatible)\n")
+		fmt.Fprintf(os.Stderr, "  --trace <path>       Write execution trace (go tool trace compatible)\n\n")
 		fmt.Fprintf(os.Stderr, "Session resume:\n")
 		fmt.Fprintf(os.Stderr, "  --resume <id>        Resume a previous session\n")
 		fmt.Fprintf(os.Stderr, "  --resume-with <id>   New task using a previous session's context\n")
@@ -97,6 +103,42 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  GEMINI_API_KEY       Google Gemini API key\n")
 	}
 	flag.Parse()
+
+	// CPU profiling: start before any real work, stop on exit.
+	if *cpuProfile != "" {
+		f, err := os.Create(*cpuProfile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "serf: cannot create CPU profile: %v\n", err)
+			os.Exit(1)
+		}
+		if err := pprof.StartCPUProfile(f); err != nil {
+			f.Close()
+			fmt.Fprintf(os.Stderr, "serf: cannot start CPU profile: %v\n", err)
+			os.Exit(1)
+		}
+		defer func() {
+			pprof.StopCPUProfile()
+			f.Close()
+		}()
+	}
+
+	// Execution trace: start before any real work, stop on exit.
+	if *traceFile != "" {
+		f, err := os.Create(*traceFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "serf: cannot create trace file: %v\n", err)
+			os.Exit(1)
+		}
+		if err := trace.Start(f); err != nil {
+			f.Close()
+			fmt.Fprintf(os.Stderr, "serf: cannot start trace: %v\n", err)
+			os.Exit(1)
+		}
+		defer func() {
+			trace.Stop()
+			f.Close()
+		}()
+	}
 
 	isResume := *resume != "" || *resumeWith != "" || *resumeLast || *listSessionsFlag
 	stat, _ := os.Stdin.Stat()

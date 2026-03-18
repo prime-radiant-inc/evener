@@ -1920,3 +1920,259 @@ func truncStr(s string, n int) string {
 	}
 	return s[:n] + "..."
 }
+
+// --- Periodic sync tests ---
+
+func TestTranscriptWriter_PeriodicSync_SkipsSyncWithinInterval(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "transcript.jsonl")
+
+	w, err := NewTranscriptWriter(path, TranscriptHeader{
+		SessionID: "sess-sync-001",
+		CreatedAt: time.Now().UTC(),
+		ProfileID: "test",
+		Model:     "test-model",
+	})
+	if err != nil {
+		t.Fatalf("NewTranscriptWriter: %v", err)
+	}
+	defer w.Close()
+
+	// Set a long sync interval so rapid writes don't trigger sync.
+	w.SyncInterval = 1 * time.Hour
+
+	// Write several entries rapidly.
+	for i := 0; i < 5; i++ {
+		if err := w.Append(NewTurn(TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
+			t.Fatalf("Append %d: %v", i, err)
+		}
+	}
+
+	// The dirty flag should be true (writes happened but no sync since header).
+	w.mu.Lock()
+	dirty := w.dirty
+	w.mu.Unlock()
+	if !dirty {
+		t.Error("expected dirty=true after writes within sync interval")
+	}
+
+	// Close should flush all data.
+	w.Close()
+
+	// All data should be readable after Close.
+	_, entries, _, err := ReadTranscript(path)
+	if err != nil {
+		t.Fatalf("ReadTranscript: %v", err)
+	}
+	if len(entries) != 5 {
+		t.Fatalf("expected 5 entries, got %d", len(entries))
+	}
+}
+
+func TestTranscriptWriter_PeriodicSync_SyncsAfterIntervalExpires(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "transcript.jsonl")
+
+	w, err := NewTranscriptWriter(path, TranscriptHeader{
+		SessionID: "sess-sync-002",
+		CreatedAt: time.Now().UTC(),
+		ProfileID: "test",
+		Model:     "test-model",
+	})
+	if err != nil {
+		t.Fatalf("NewTranscriptWriter: %v", err)
+	}
+	defer w.Close()
+
+	// Set a very short sync interval.
+	w.SyncInterval = 1 * time.Millisecond
+
+	// Write first entry.
+	if err := w.Append(NewTurn(TurnAssistant, llm.Assistant("first"))); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	// Wait for interval to expire.
+	time.Sleep(5 * time.Millisecond)
+
+	// Next write should trigger a sync because the interval has elapsed.
+	if err := w.Append(NewTurn(TurnAssistant, llm.Assistant("second"))); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	// After the sync, dirty should be false.
+	w.mu.Lock()
+	dirty := w.dirty
+	w.mu.Unlock()
+	if dirty {
+		t.Error("expected dirty=false after sync interval elapsed and write occurred")
+	}
+}
+
+func TestTranscriptWriter_PeriodicSync_ZeroIntervalSyncsEveryWrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "transcript.jsonl")
+
+	w, err := NewTranscriptWriter(path, TranscriptHeader{
+		SessionID: "sess-sync-003",
+		CreatedAt: time.Now().UTC(),
+		ProfileID: "test",
+		Model:     "test-model",
+	})
+	if err != nil {
+		t.Fatalf("NewTranscriptWriter: %v", err)
+	}
+	defer w.Close()
+
+	// Zero interval = sync every write (backward compat).
+	w.SyncInterval = 0
+
+	for i := 0; i < 3; i++ {
+		if err := w.Append(NewTurn(TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
+			t.Fatalf("Append %d: %v", i, err)
+		}
+		// After each write with zero interval, dirty should be false.
+		w.mu.Lock()
+		dirty := w.dirty
+		w.mu.Unlock()
+		if dirty {
+			t.Errorf("Append %d: expected dirty=false with zero SyncInterval", i)
+		}
+	}
+}
+
+func TestTranscriptWriter_PeriodicSync_CloseFlushesDirtyWrites(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "transcript.jsonl")
+
+	w, err := NewTranscriptWriter(path, TranscriptHeader{
+		SessionID: "sess-sync-004",
+		CreatedAt: time.Now().UTC(),
+		ProfileID: "test",
+		Model:     "test-model",
+	})
+	if err != nil {
+		t.Fatalf("NewTranscriptWriter: %v", err)
+	}
+
+	// Long interval so no auto-sync happens.
+	w.SyncInterval = 1 * time.Hour
+
+	// Write entries without syncing.
+	for i := 0; i < 10; i++ {
+		if err := w.Append(NewTurn(TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
+			t.Fatalf("Append %d: %v", i, err)
+		}
+	}
+
+	// Close must flush.
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// All entries must be readable.
+	_, entries, _, err := ReadTranscript(path)
+	if err != nil {
+		t.Fatalf("ReadTranscript: %v", err)
+	}
+	if len(entries) != 10 {
+		t.Fatalf("expected 10 entries, got %d", len(entries))
+	}
+	for i, e := range entries {
+		if e.Seq != i {
+			t.Errorf("entry %d seq = %d, want %d", i, e.Seq, i)
+		}
+	}
+}
+
+func TestTranscriptWriter_PeriodicSync_ConcurrentAppendWithInterval(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "transcript.jsonl")
+
+	w, err := NewTranscriptWriter(path, TranscriptHeader{
+		SessionID: "sess-sync-005",
+		CreatedAt: time.Now().UTC(),
+		ProfileID: "test",
+		Model:     "test-model",
+	})
+	if err != nil {
+		t.Fatalf("NewTranscriptWriter: %v", err)
+	}
+	defer w.Close()
+
+	w.SyncInterval = 50 * time.Millisecond
+
+	const numGoroutines = 5
+	const turnsPerGoroutine = 20
+
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < turnsPerGoroutine; j++ {
+				turn := NewTurn(TurnAssistant, llm.Assistant("concurrent"))
+				if err := w.Append(turn); err != nil {
+					t.Errorf("goroutine %d append %d: %v", id, j, err)
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	w.Close()
+
+	_, entries, _, err := ReadTranscript(path)
+	if err != nil {
+		t.Fatalf("ReadTranscript: %v", err)
+	}
+
+	expectedTotal := numGoroutines * turnsPerGoroutine
+	if len(entries) != expectedTotal {
+		t.Fatalf("expected %d entries, got %d", expectedTotal, len(entries))
+	}
+
+	// Verify seq uniqueness.
+	seqs := map[int]bool{}
+	for _, e := range entries {
+		if seqs[e.Seq] {
+			t.Errorf("duplicate seq %d", e.Seq)
+		}
+		seqs[e.Seq] = true
+	}
+}
+
+func TestOpenTranscriptWriter_SetsLastSync(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "transcript.jsonl")
+
+	// Create a transcript.
+	w, err := NewTranscriptWriter(path, TranscriptHeader{
+		SessionID: "sess-sync-006",
+		CreatedAt: time.Now().UTC(),
+		ProfileID: "test",
+		Model:     "test-model",
+	})
+	if err != nil {
+		t.Fatalf("NewTranscriptWriter: %v", err)
+	}
+	w.Append(NewTurn(TurnAssistant, llm.Assistant("msg 0")))
+	w.Close()
+
+	// Reopen for resume.
+	before := time.Now()
+	w2, err := OpenTranscriptWriter(path)
+	if err != nil {
+		t.Fatalf("OpenTranscriptWriter: %v", err)
+	}
+	defer w2.Close()
+
+	// lastSync should be set to approximately now (not zero).
+	w2.mu.Lock()
+	ls := w2.lastSync
+	w2.mu.Unlock()
+	if ls.Before(before) {
+		t.Errorf("lastSync = %v, expected >= %v", ls, before)
+	}
+}

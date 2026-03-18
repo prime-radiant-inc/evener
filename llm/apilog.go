@@ -65,6 +65,14 @@ type APILogResponse struct {
 type APILogger struct {
 	file *os.File
 	mu   sync.Mutex
+
+	// SyncInterval controls how often write calls fsync.
+	// If 0, every write fsyncs (backward-compatible default for tests).
+	// If >0, write only fsyncs when this duration has elapsed since the last sync.
+	SyncInterval time.Duration
+
+	dirty    bool
+	lastSync time.Time
 }
 
 // NewAPILogger creates an API logger that writes to the given path.
@@ -77,7 +85,7 @@ func NewAPILogger(path string) (*APILogger, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &APILogger{file: f}, nil
+	return &APILogger{file: f, lastSync: time.Now()}, nil
 }
 
 // WrapComplete wraps a CompleteFunc to log request metadata and full response.
@@ -122,9 +130,16 @@ func (l *APILogger) Close() error {
 	if l.file == nil {
 		return nil
 	}
-	err := l.file.Close()
+	var syncErr error
+	if l.dirty {
+		syncErr = l.file.Sync()
+		l.dirty = false
+	}
+	if err := l.file.Close(); err != nil && syncErr == nil {
+		syncErr = err
+	}
 	l.file = nil
-	return err
+	return syncErr
 }
 
 func (l *APILogger) write(entry APILogEntry) {
@@ -139,7 +154,13 @@ func (l *APILogger) write(entry APILogEntry) {
 		return
 	}
 	l.file.Write(append(data, '\n')) //nolint:errcheck
-	l.file.Sync()                    //nolint:errcheck
+
+	l.dirty = true
+	if l.SyncInterval == 0 || time.Since(l.lastSync) >= l.SyncInterval {
+		l.file.Sync() //nolint:errcheck
+		l.lastSync = time.Now()
+		l.dirty = false
+	}
 }
 
 func buildLogRequest(req Request) APILogRequest {

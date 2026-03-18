@@ -34,6 +34,7 @@ const (
 	EventHookEnd             EventKind = "HOOK_END"
 	EventForkSummary         EventKind = "FORK_SUMMARY"
 	EventPromptLoaded        EventKind = "PROMPT_LOADED"
+	EventRoundTimings        EventKind = "ROUND_TIMINGS"
 )
 
 type SessionEvent struct {

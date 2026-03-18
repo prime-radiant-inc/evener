@@ -44,6 +44,14 @@ type TranscriptWriter struct {
 	seq       int
 	closeOnce sync.Once
 	closed    atomic.Bool
+
+	// SyncInterval controls how often Append calls fsync.
+	// If 0, every Append fsyncs (backward-compatible default for tests).
+	// If >0, Append only fsyncs when this duration has elapsed since the last sync.
+	SyncInterval time.Duration
+
+	dirty    bool
+	lastSync time.Time
 }
 
 // NewTranscriptWriter creates a transcript file at path, writes the header as the first line,
@@ -77,7 +85,7 @@ func NewTranscriptWriter(path string, header TranscriptHeader) (*TranscriptWrite
 		return nil, fmt.Errorf("sync transcript header: %w", err)
 	}
 
-	return &TranscriptWriter{file: f}, nil
+	return &TranscriptWriter{file: f, lastSync: time.Now()}, nil
 }
 
 // Append writes a turn as a TranscriptEntry to the JSONL file.
@@ -111,8 +119,13 @@ func (w *TranscriptWriter) Append(turn Turn) error {
 		return fmt.Errorf("write transcript entry: %w", err)
 	}
 
-	if err := w.file.Sync(); err != nil {
-		return fmt.Errorf("sync transcript entry: %w", err)
+	w.dirty = true
+	if w.SyncInterval == 0 || time.Since(w.lastSync) >= w.SyncInterval {
+		if err := w.file.Sync(); err != nil {
+			return fmt.Errorf("sync transcript entry: %w", err)
+		}
+		w.lastSync = time.Now()
+		w.dirty = false
 	}
 
 	w.seq++
@@ -133,8 +146,12 @@ func (w *TranscriptWriter) Close() error {
 
 	var closeErr error
 	w.closeOnce.Do(func() {
-		if err := w.file.Sync(); err != nil {
-			closeErr = fmt.Errorf("sync transcript on close: %w", err)
+		// Flush any dirty writes before closing.
+		if w.dirty {
+			if err := w.file.Sync(); err != nil {
+				closeErr = fmt.Errorf("sync transcript on close: %w", err)
+			}
+			w.dirty = false
 		}
 		if err := w.file.Close(); err != nil && closeErr == nil {
 			closeErr = fmt.Errorf("close transcript file: %w", err)
@@ -212,7 +229,7 @@ func OpenTranscriptWriter(path string) (*TranscriptWriter, error) {
 		return nil, fmt.Errorf("seek to end of transcript: %w", err)
 	}
 
-	return &TranscriptWriter{file: f, seq: nextSeq}, nil
+	return &TranscriptWriter{file: f, seq: nextSeq, lastSync: time.Now()}, nil
 }
 
 // ReadTranscript reads a transcript JSONL file, returning the header, all valid entries,

@@ -2,12 +2,14 @@ package llm
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestAPILoggerWritesJSONL(t *testing.T) {
@@ -285,5 +287,224 @@ func TestAPILoggerReasoningEffort(t *testing.T) {
 	}
 	if entry.Request.ReasoningEffort != "high" {
 		t.Errorf("reasoning_effort = %q, want %q", entry.Request.ReasoningEffort, "high")
+	}
+}
+
+// --- Periodic sync tests ---
+
+func TestAPILogger_PeriodicSync_SkipsSyncWithinInterval(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "api.jsonl")
+
+	logger, err := NewAPILogger(path)
+	if err != nil {
+		t.Fatalf("NewAPILogger: %v", err)
+	}
+	defer logger.Close()
+
+	// Long interval so rapid writes don't trigger sync.
+	logger.SyncInterval = 1 * time.Hour
+
+	fakeAdapter := func(ctx context.Context, req Request) (Response, error) {
+		return Response{
+			Model:    "test-model",
+			Provider: "test",
+			Finish:   FinishReason{Reason: FinishReasonStop},
+		}, nil
+	}
+
+	wrapped := logger.WrapComplete(fakeAdapter)
+
+	// Make several rapid calls.
+	for i := 0; i < 5; i++ {
+		_, err := wrapped(context.Background(), Request{
+			Model:    "test-model",
+			Provider: "test",
+			Messages: []Message{User("hi")},
+		})
+		if err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+	}
+
+	// dirty should be true (writes happened but no sync).
+	logger.mu.Lock()
+	dirty := logger.dirty
+	logger.mu.Unlock()
+	if !dirty {
+		t.Error("expected dirty=true after writes within sync interval")
+	}
+
+	// Close should flush.
+	logger.Close()
+
+	// All data should be readable.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	lines := 0
+	for _, b := range data {
+		if b == '\n' {
+			lines++
+		}
+	}
+	if lines != 5 {
+		t.Fatalf("expected 5 lines, got %d", lines)
+	}
+}
+
+func TestAPILogger_PeriodicSync_ZeroIntervalSyncsEveryWrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "api.jsonl")
+
+	logger, err := NewAPILogger(path)
+	if err != nil {
+		t.Fatalf("NewAPILogger: %v", err)
+	}
+	defer logger.Close()
+
+	// Zero interval = sync every write (backward compat).
+	logger.SyncInterval = 0
+
+	fakeAdapter := func(ctx context.Context, req Request) (Response, error) {
+		return Response{
+			Model:    "test-model",
+			Provider: "test",
+			Finish:   FinishReason{Reason: FinishReasonStop},
+		}, nil
+	}
+
+	wrapped := logger.WrapComplete(fakeAdapter)
+
+	for i := 0; i < 3; i++ {
+		_, err := wrapped(context.Background(), Request{
+			Model:    "test-model",
+			Provider: "test",
+			Messages: []Message{User("hi")},
+		})
+		if err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+		// After each write with zero interval, dirty should be false.
+		logger.mu.Lock()
+		dirty := logger.dirty
+		logger.mu.Unlock()
+		if dirty {
+			t.Errorf("call %d: expected dirty=false with zero SyncInterval", i)
+		}
+	}
+}
+
+func TestAPILogger_PeriodicSync_CloseFlushesDirtyWrites(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "api.jsonl")
+
+	logger, err := NewAPILogger(path)
+	if err != nil {
+		t.Fatalf("NewAPILogger: %v", err)
+	}
+
+	// Long interval so no auto-sync.
+	logger.SyncInterval = 1 * time.Hour
+
+	fakeAdapter := func(ctx context.Context, req Request) (Response, error) {
+		return Response{
+			Model:    "test-model",
+			Provider: "test",
+			Finish:   FinishReason{Reason: FinishReasonStop},
+		}, nil
+	}
+
+	wrapped := logger.WrapComplete(fakeAdapter)
+
+	for i := 0; i < 5; i++ {
+		_, err := wrapped(context.Background(), Request{
+			Model:    "test-model",
+			Provider: "test",
+			Messages: []Message{User("hi")},
+		})
+		if err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+	}
+
+	// Close must flush.
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// All entries must be readable.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+
+	lines := 0
+	for _, b := range data {
+		if b == '\n' {
+			lines++
+		}
+	}
+	if lines != 5 {
+		t.Fatalf("expected 5 lines, got %d", lines)
+	}
+
+	// Each line should parse as valid JSON.
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		var entry APILogEntry
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+	}
+}
+
+func TestAPILogger_PeriodicSync_SyncsAfterIntervalExpires(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "api.jsonl")
+
+	logger, err := NewAPILogger(path)
+	if err != nil {
+		t.Fatalf("NewAPILogger: %v", err)
+	}
+	defer logger.Close()
+
+	// Very short interval.
+	logger.SyncInterval = 1 * time.Millisecond
+
+	fakeAdapter := func(ctx context.Context, req Request) (Response, error) {
+		return Response{
+			Model:    "test-model",
+			Provider: "test",
+			Finish:   FinishReason{Reason: FinishReasonStop},
+		}, nil
+	}
+
+	wrapped := logger.WrapComplete(fakeAdapter)
+
+	// First call.
+	_, _ = wrapped(context.Background(), Request{
+		Model:    "test-model",
+		Provider: "test",
+		Messages: []Message{User("hi")},
+	})
+
+	// Wait for interval to expire.
+	time.Sleep(5 * time.Millisecond)
+
+	// Second call should trigger sync.
+	_, _ = wrapped(context.Background(), Request{
+		Model:    "test-model",
+		Provider: "test",
+		Messages: []Message{User("hello")},
+	})
+
+	// dirty should be false after sync.
+	logger.mu.Lock()
+	dirty := logger.dirty
+	logger.mu.Unlock()
+	if dirty {
+		t.Error("expected dirty=false after sync interval elapsed")
 	}
 }

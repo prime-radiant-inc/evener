@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmdutil"
@@ -141,6 +142,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	if apiLogErr != nil {
 		fmt.Fprintf(cfg.stderr, "warning: API logging disabled: %v\n", apiLogErr) //nolint:errcheck
 	} else {
+		apiLog.SyncInterval = 2 * time.Second
 		client.Use(apiLog)
 		defer apiLog.Close()
 	}
