@@ -79,7 +79,7 @@ func TestSpawnAgent_UnknownPluginAgentType(t *testing.T) {
 	defer sess.Close()
 
 	// No pluginAgents registered, so any agent_type should fail
-	_, err = sess.spawnAgent(context.Background(), "do something", "", "", 10, "nonexistent:agent")
+	_, err = sess.spawnAgent(context.Background(), "do something", "", "", 10, "nonexistent:agent", "")
 	if err == nil {
 		t.Fatal("expected error for unknown agent_type")
 	}
@@ -134,7 +134,7 @@ func TestSpawnAgent_PluginAgentType_SystemPrompt(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result, err := sess.spawnAgent(ctx, "review this code", "", "", 10, "my-plugin:reviewer")
+	result, err := sess.spawnAgent(ctx, "review this code", "", "", 10, "my-plugin:reviewer", "")
 	if err != nil {
 		t.Fatalf("spawnAgent: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestSpawnAgent_PluginAgentType_ModelOverride(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result, err := sess.spawnAgent(ctx, "do it fast", "", "", 10, "my-plugin:fast-agent")
+	result, err := sess.spawnAgent(ctx, "do it fast", "", "", 10, "my-plugin:fast-agent", "")
 	if err != nil {
 		t.Fatalf("spawnAgent: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestSpawnAgent_PluginAgentType_InheritModel(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result, err := sess.spawnAgent(ctx, "help me", "", "", 10, "my-plugin:helper")
+	result, err := sess.spawnAgent(ctx, "help me", "", "", 10, "my-plugin:helper", "")
 	if err != nil {
 		t.Fatalf("spawnAgent: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestSpawnAgent_PluginAgentType_RestrictsTools(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result, err := sess.spawnAgent(ctx, "read the code", "", "", 10, "my-plugin:reader")
+	result, err := sess.spawnAgent(ctx, "read the code", "", "", 10, "my-plugin:reader", "")
 	if err != nil {
 		t.Fatalf("spawnAgent: %v", err)
 	}
@@ -398,7 +398,7 @@ func TestSpawnAgent_PluginAgentType_InjectsSkillContent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result, err := sess.spawnAgent(ctx, "write tests", "", "", 10, "my-plugin:test-eng")
+	result, err := sess.spawnAgent(ctx, "write tests", "", "", 10, "my-plugin:test-eng", "")
 	if err != nil {
 		t.Fatalf("spawnAgent: %v", err)
 	}

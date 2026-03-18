@@ -199,7 +199,7 @@ func TestSession_DetailedStatus_Subagents(t *testing.T) {
 	// Spawn a subagent directly.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	result, err := sess.spawnAgent(ctx, "test task", "", "", 1, "")
+	result, err := sess.spawnAgent(ctx, "test task", "", "", 1, "", "")
 	if err != nil {
 		t.Fatalf("spawnAgent: %v", err)
 	}

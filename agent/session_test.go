@@ -858,7 +858,7 @@ func TestSession_LoopDetection_EmitsEventAndInjectsSteering(t *testing.T) {
 	sess.mu.Unlock()
 	foundSteering := false
 	for _, tr := range turns {
-		if tr.Kind == TurnSteering && tr.Message.Role == llm.RoleUser && strings.Contains(tr.Message.Text(), "Warning: Loop detected") && strings.Contains(tr.Message.Text(), "Consider changing approach") {
+		if tr.Kind == TurnSteering && tr.Message.Role == llm.RoleUser && strings.Contains(tr.Message.Text(), "stuck") {
 			foundSteering = true
 		}
 	}
@@ -875,7 +875,7 @@ func TestSession_LoopDetection_EmitsEventAndInjectsSteering(t *testing.T) {
 			loopEv = true
 		}
 		if ev.Kind == EventSteeringInjected {
-			if s, _ := ev.DataMap()["text"].(string); strings.Contains(s, "Warning: Loop detected") && strings.Contains(s, "Consider changing approach") {
+			if s, _ := ev.DataMap()["text"].(string); strings.Contains(s, "stuck") {
 				steerEv = true
 			}
 		}
@@ -892,7 +892,7 @@ func TestSession_LoopDetection_EmitsEventAndInjectsSteering(t *testing.T) {
 	found := false
 	for _, req := range reqs {
 		for _, m := range req.Messages {
-			if m.Role == llm.RoleUser && strings.Contains(m.Text(), "Warning: Loop detected") {
+			if m.Role == llm.RoleUser && strings.Contains(m.Text(), "stuck") {
 				found = true
 			}
 		}
@@ -1774,14 +1774,11 @@ func TestSession_LoopDetection_WarningWording(t *testing.T) {
 	if loopMsg == "" {
 		t.Fatal("no LOOP_DETECTION event found")
 	}
-	if !strings.Contains(loopMsg, "Warning: Loop detected") {
-		t.Fatalf("loop message should contain 'Warning: Loop detected', got: %q", loopMsg)
+	if !strings.Contains(loopMsg, "stuck in a loop") {
+		t.Fatalf("loop message should contain 'stuck in a loop', got: %q", loopMsg)
 	}
-	if !strings.Contains(loopMsg, "Consider changing approach") {
-		t.Fatalf("loop message should contain 'Consider changing approach', got: %q", loopMsg)
-	}
-	if strings.Contains(loopMsg, "Try a different approach") {
-		t.Fatalf("loop message should not contain old wording 'Try a different approach', got: %q", loopMsg)
+	if !strings.Contains(loopMsg, "reasoning effort has been increased") {
+		t.Fatalf("first loop detection should mention reasoning escalation, got: %q", loopMsg)
 	}
 }
 

@@ -265,6 +265,9 @@ type Session struct {
 	taskNudgeFired    bool // whether the "consider using task_list" nudge has fired
 	totalRounds       int  // cumulative tool rounds across all inputs
 
+	// stuck detection
+	loopDetectionCount int // how many times loop detection has fired
+
 	// transcript writer (nil when StateDir is empty)
 	transcript *TranscriptWriter
 }
@@ -1692,7 +1695,12 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		}
 		if s.cfg.EnableLoopDetection != nil && *s.cfg.EnableLoopDetection {
 			if detectLoop(toolSigs, s.cfg.LoopDetectionWindow) {
-				warning := fmt.Sprintf("Warning: Loop detected — the same tool call pattern has repeated %d times. Consider changing approach.", s.cfg.LoopDetectionWindow)
+				s.mu.Lock()
+				s.loopDetectionCount++
+				count := s.loopDetectionCount
+				s.mu.Unlock()
+
+				warning := s.stuckEscalation(count)
 				s.emit(EventLoopDetection, LoopDetectionData{Message: warning})
 				s.appendTurn(TurnSteering, llm.User(warning))
 				s.emit(EventSteeringInjected, SteeringInjectedData{Text: warning})
@@ -1742,6 +1750,34 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 	s.state = SessionIdle
 	s.mu.Unlock()
 	return lastText, nil
+}
+
+// stuckEscalation returns the steering message for the nth loop detection.
+// First detection bumps reasoning effort; subsequent detections get increasingly
+// direct about abandoning the current approach.
+func (s *Session) stuckEscalation(count int) string {
+	switch count {
+	case 1:
+		// Bump reasoning effort to help the agent think harder.
+		s.mu.Lock()
+		prev := s.cfg.ReasoningEffort
+		if prev == "" || prev == "low" || prev == "medium" {
+			s.cfg.ReasoningEffort = "high"
+		} else if prev == "high" {
+			s.cfg.ReasoningEffort = "xhigh"
+		}
+		s.mu.Unlock()
+		return "You are stuck in a loop. Your reasoning effort has been increased. " +
+			"Stop and think about why your current approach is not working. " +
+			"What assumption are you making that might be wrong?"
+	case 2:
+		return "You are still stuck. Your current approach is fundamentally not working. " +
+			"Abandon it completely and try a different strategy. " +
+			"What is the simplest possible way to achieve the goal?"
+	default:
+		return "You have been stuck for a long time. " +
+			"If you cannot make progress, report what you tried and what failed."
+	}
 }
 
 func (s *Session) drainSteering() []string {
@@ -2386,7 +2422,11 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			if v, ok := args["blocking"].(bool); ok {
 				blocking = v
 			}
-			result, err := s.spawnAgent(ctx, task, model, workingDir, maxTurns, agentType)
+			reasoningEffort := ""
+			if v, ok := args["reasoning_effort"]; ok && v != nil {
+				reasoningEffort = fmt.Sprint(v)
+			}
+			result, err := s.spawnAgent(ctx, task, model, workingDir, maxTurns, agentType, reasoningEffort)
 			if err != nil || !blocking {
 				return result, err
 			}

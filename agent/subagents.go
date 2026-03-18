@@ -52,7 +52,7 @@ type subagent struct {
 	nudgeEnabled   bool // true for default subagents that should be nudged to submit_result
 }
 
-func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string, maxTurns int, agentType string) (any, error) {
+func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string, maxTurns int, agentType string, reasoningEffort string) (any, error) {
 	s.mu.Lock()
 	depth := s.depth
 	maxDepth := s.cfg.MaxSubagentDepth
@@ -93,6 +93,9 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		subCfg.MaxTurns = maxTurns
 	} else {
 		subCfg.MaxTurns = 500
+	}
+	if reasoningEffort = strings.TrimSpace(reasoningEffort); reasoningEffort != "" {
+		subCfg.ReasoningEffort = reasoningEffort
 	}
 	// Compose subagent system prompt: core + persona.
 	// All subagents get core.md (universal guidance) followed by their persona.
