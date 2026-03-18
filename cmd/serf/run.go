@@ -82,22 +82,22 @@ func run(ctx context.Context, cfg runConfig) error {
 	}
 
 	// Resolve resume target.
-	var snap *agent.SessionSnapshot
+	var meta *agent.SessionMeta
 	if cfg.resume != "" || cfg.resumeWith != "" || cfg.resumeLast {
-		s, err := resolveSnapshot(cfg, stateDir)
+		m, err := resolveSessionMeta(cfg, stateDir)
 		if err != nil {
 			return err
 		}
-		snap = &s
+		meta = &m
 	}
 
 	// Determine task.
 	task := strings.TrimSpace(cfg.task)
-	if snap != nil && cfg.resumeWith == "" && task == "" {
+	if meta != nil && cfg.resumeWith == "" && task == "" {
 		// --resume without a task: continue with a generic prompt.
 		task = "Continue where you left off."
 	}
-	if task == "" && snap == nil {
+	if task == "" && meta == nil {
 		return fmt.Errorf("no task provided")
 	}
 
@@ -106,10 +106,10 @@ func run(ctx context.Context, cfg runConfig) error {
 		return err
 	}
 
-	// Resolve provider: explicit flag > snapshot > SERF_PROVIDER env var.
+	// Resolve provider: explicit flag > meta > SERF_PROVIDER env var.
 	provider := cfg.provider
-	if provider == "" && snap != nil {
-		provider = snap.ProfileID
+	if provider == "" && meta != nil {
+		provider = meta.ProfileID
 	}
 	if provider == "" {
 		provider = os.Getenv("SERF_PROVIDER")
@@ -118,10 +118,10 @@ func run(ctx context.Context, cfg runConfig) error {
 		return fmt.Errorf("no provider specified: use --provider or set SERF_PROVIDER (openai, anthropic, google)")
 	}
 
-	// Resolve model: explicit flag > snapshot > SERF_MODEL env var.
+	// Resolve model: explicit flag > meta > SERF_MODEL env var.
 	model := cfg.model
-	if model == "" && snap != nil {
-		model = snap.Model
+	if model == "" && meta != nil {
+		model = meta.Model
 	}
 	if model == "" {
 		model = os.Getenv("SERF_MODEL")
@@ -152,15 +152,15 @@ func run(ctx context.Context, cfg runConfig) error {
 	env := agent.NewLocalExecutionEnvironment(cfg.workDir)
 
 	var sess *agent.Session
-	if snap != nil {
-		sess, err = agent.RestoreSession(client, profile, env, *snap, stateDir)
+	if meta != nil {
+		sess, err = agent.RestoreSessionFromMeta(client, profile, env, *meta, stateDir)
 		if err != nil {
 			return fmt.Errorf("restore session: %w", err)
 		}
 		if effort.Set {
 			sess.SetReasoningEffort(effort.Value)
 		}
-		fmt.Fprintf(cfg.stderr, "[resumed] session %s (%d turns)\n", snap.ID, snap.TurnCount) //nolint:errcheck
+		fmt.Fprintf(cfg.stderr, "[resumed] session %s (%d turns)\n", meta.ID, meta.TurnCount) //nolint:errcheck
 	} else {
 		sessionCfg := agent.SessionConfig{
 			MaxToolRoundsPerInput: cmdutil.MaxRoundsToConfig(cfg.maxRounds),
@@ -309,18 +309,18 @@ func drainEventsHuman(events <-chan agent.SessionEvent, w io.Writer) <-chan stru
 	return done
 }
 
-// resolveSnapshot loads the session snapshot for the given resume configuration.
-func resolveSnapshot(cfg runConfig, stateDir string) (agent.SessionSnapshot, error) {
+// resolveSessionMeta loads the session meta for the given resume configuration.
+func resolveSessionMeta(cfg runConfig, stateDir string) (agent.SessionMeta, error) {
 	id := cfg.resume
 	if id == "" {
 		id = cfg.resumeWith
 	}
-	return cmdutil.ResolveSnapshot(stateDir, id, cfg.resumeLast)
+	return cmdutil.ResolveSessionMeta(stateDir, id, cfg.resumeLast)
 }
 
 // listSessions prints all saved sessions and returns.
 func listSessions(cfg runConfig, stateDir string) error {
-	list, err := agent.ListSessions(stateDir)
+	list, err := agent.ListSessionMetas(stateDir)
 	if err != nil {
 		return fmt.Errorf("list sessions: %w", err)
 	}
@@ -328,23 +328,13 @@ func listSessions(cfg runConfig, stateDir string) error {
 		fmt.Fprintln(cfg.stdout, "No saved sessions.") //nolint:errcheck
 		return nil
 	}
-	for _, s := range list {
-		firstInput := ""
-		for _, t := range s.History {
-			if t.Kind == agent.TurnUserInput {
-				firstInput = t.Message.Text()
-				break
-			}
-		}
-		if len(firstInput) > 80 {
-			firstInput = firstInput[:77] + "..."
-		}
-		branch := s.EnvInfo.GitBranch
+	for _, m := range list {
+		branch := m.EnvInfo.GitBranch
 		if branch == "" {
 			branch = "-"
 		}
-		fmt.Fprintf(cfg.stdout, "%s  %-16s  %-20s  %-20s  turns=%d  %q\n", //nolint:errcheck
-			s.ID, s.Model, branch, s.UpdatedAt.Format("2006-01-02 15:04:05"), s.TurnCount, firstInput)
+		fmt.Fprintf(cfg.stdout, "%s  %-16s  %-20s  %-20s  turns=%d\n", //nolint:errcheck
+			m.ID, m.Model, branch, m.UpdatedAt.Format("2006-01-02 15:04:05"), m.TurnCount)
 	}
 	return nil
 }

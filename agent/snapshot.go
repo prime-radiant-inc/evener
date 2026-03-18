@@ -11,6 +11,10 @@ import (
 )
 
 // SessionSnapshot holds the serializable state of a Session for persistence and resume.
+//
+// Deprecated: Use SessionMeta + transcript JSONL for persistence. SessionSnapshot
+// is retained for backward compatibility with external tools (transcript_tools.go,
+// serfeval) that read snapshot files directly.
 type SessionSnapshot struct {
 	ID              string          `json:"id"`
 	ProfileID       string          `json:"profile_id"`
@@ -24,9 +28,98 @@ type SessionSnapshot struct {
 	LastInputTokens int             `json:"last_input_tokens,omitempty"`
 }
 
+// SessionMeta holds session metadata without the full conversation history.
+// The history is always recovered from the transcript JSONL file.
+type SessionMeta struct {
+	ID              string          `json:"id"`
+	ProfileID       string          `json:"profile_id"`
+	Model           string          `json:"model"`
+	Config          SessionConfig   `json:"config"`
+	EnvInfo         EnvironmentInfo `json:"env_info"`
+	CreatedAt       time.Time       `json:"created_at"`
+	UpdatedAt       time.Time       `json:"updated_at"`
+	TurnCount       int             `json:"turn_count"`
+	LastInputTokens int             `json:"last_input_tokens,omitempty"`
+}
+
 const sessionsSubdir = "sessions"
 
+// SaveSessionMeta writes a SessionMeta to <dir>/sessions/<id>.meta.json using
+// atomic rename and compact JSON (no indentation).
+func SaveSessionMeta(dir string, meta SessionMeta) error {
+	sessDir := filepath.Join(dir, sessionsSubdir)
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		return fmt.Errorf("create sessions dir: %w", err)
+	}
+
+	data, err := json.Marshal(meta)
+	if err != nil {
+		return fmt.Errorf("marshal session meta: %w", err)
+	}
+
+	target := filepath.Join(sessDir, meta.ID+".meta.json")
+	tmp := target + ".tmp"
+
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return fmt.Errorf("write temp file: %w", err)
+	}
+	if err := os.Rename(tmp, target); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("rename temp to target: %w", err)
+	}
+	return nil
+}
+
+// LoadSessionMeta reads a SessionMeta from <dir>/sessions/<id>.meta.json.
+func LoadSessionMeta(dir, id string) (SessionMeta, error) {
+	path := filepath.Join(dir, sessionsSubdir, id+".meta.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return SessionMeta{}, fmt.Errorf("read session meta %s: %w", id, err)
+	}
+	var meta SessionMeta
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return SessionMeta{}, fmt.Errorf("unmarshal session meta %s: %w", id, err)
+	}
+	return meta, nil
+}
+
+// ListSessionMetas returns all valid session metas sorted by UpdatedAt descending.
+// Scans for .meta.json files. Corrupt files are silently skipped.
+func ListSessionMetas(dir string) ([]SessionMeta, error) {
+	sessDir := filepath.Join(dir, sessionsSubdir)
+	entries, err := os.ReadDir(sessDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read sessions dir: %w", err)
+	}
+
+	var metas []SessionMeta
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".meta.json") {
+			continue
+		}
+		id := strings.TrimSuffix(e.Name(), ".meta.json")
+		meta, err := LoadSessionMeta(dir, id)
+		if err != nil {
+			continue // skip corrupt files
+		}
+		metas = append(metas, meta)
+	}
+
+	sort.Slice(metas, func(i, j int) bool {
+		return metas[i].UpdatedAt.After(metas[j].UpdatedAt)
+	})
+
+	return metas, nil
+}
+
 // SaveSession writes a snapshot to <dir>/sessions/<id>.json using atomic rename.
+//
+// Deprecated: Use SaveSessionMeta for lightweight persistence. SaveSession is
+// retained for backward compatibility with external tools.
 func SaveSession(dir string, snap SessionSnapshot) error {
 	sessDir := filepath.Join(dir, sessionsSubdir)
 	if err := os.MkdirAll(sessDir, 0o755); err != nil {

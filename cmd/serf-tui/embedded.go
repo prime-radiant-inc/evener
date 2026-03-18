@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"primeradiant.com/serf/agent"
@@ -116,12 +117,16 @@ func startEmbedded(ctx context.Context, cfg embeddedConfig) (*embeddedServer, er
 	var sess *agent.Session
 	var history []agent.Turn
 	if cfg.resume != "" || cfg.resumeLast {
-		snap, snapErr := cmdutil.ResolveSnapshot(sd, cfg.resume, cfg.resumeLast)
-		if snapErr != nil {
-			return nil, snapErr
+		meta, metaErr := cmdutil.ResolveSessionMeta(sd, cfg.resume, cfg.resumeLast)
+		if metaErr != nil {
+			return nil, metaErr
 		}
-		history = snap.History
-		sess, err = agent.RestoreSession(client, profile, env, snap, sd)
+		// Recover history from transcript for the TUI display.
+		tpath := filepath.Join(sd, "sessions", meta.ID+".transcript.jsonl")
+		if _, entries, _, readErr := agent.ReadTranscript(tpath); readErr == nil && len(entries) > 0 {
+			history = agent.ResumeHistory(entries)
+		}
+		sess, err = agent.RestoreSessionFromMeta(client, profile, env, meta, sd)
 		if err != nil {
 			return nil, fmt.Errorf("restore session: %w", err)
 		}

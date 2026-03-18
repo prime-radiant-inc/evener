@@ -81,15 +81,15 @@ func runServe(args []string) error {
 
 	var sess *agent.Session
 	if *resume != "" || *resumeLast {
-		snap, snapErr := cmdutil.ResolveSnapshot(sd, *resume, *resumeLast)
-		if snapErr != nil {
-			return snapErr
+		meta, metaErr := cmdutil.ResolveSessionMeta(sd, *resume, *resumeLast)
+		if metaErr != nil {
+			return metaErr
 		}
-		sess, err = agent.RestoreSession(client, profile, env, snap, sd)
+		sess, err = agent.RestoreSessionFromMeta(client, profile, env, meta, sd)
 		if err != nil {
 			return fmt.Errorf("restore session: %w", err)
 		}
-		fmt.Fprintf(os.Stderr, "[serve] resumed session %s (%d turns)\n", snap.ID, snap.TurnCount)
+		fmt.Fprintf(os.Stderr, "[serve] resumed session %s (%d turns)\n", meta.ID, meta.TurnCount)
 	} else {
 		sessionCfg := agent.SessionConfig{StateDir: sd, NonInteractive: true}
 		sess, err = agent.NewSession(client, profile, env, sessionCfg)

@@ -194,32 +194,25 @@ func TestRunMissingModel(t *testing.T) {
 func TestListSessions_PrintsFormattedList(t *testing.T) {
 	dir := t.TempDir()
 
-	snap1 := agent.SessionSnapshot{
+	meta1 := agent.SessionMeta{
 		ID:        "01JTEST000000000000000001",
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
-		History: []agent.Turn{
-			{Kind: agent.TurnUserInput, Message: llm.User("hello")},
-			{Kind: agent.TurnAssistant, Message: llm.Assistant("hi")},
-		},
 		CreatedAt: time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC),
 		UpdatedAt: time.Date(2025, 1, 15, 10, 5, 0, 0, time.UTC),
 		TurnCount: 2,
 	}
-	snap2 := agent.SessionSnapshot{
+	meta2 := agent.SessionMeta{
 		ID:        "01JTEST000000000000000002",
 		ProfileID: "anthropic",
 		Model:     "claude-opus-4-6",
-		History: []agent.Turn{
-			{Kind: agent.TurnUserInput, Message: llm.User("world")},
-		},
 		CreatedAt: time.Date(2025, 1, 15, 11, 0, 0, 0, time.UTC),
 		UpdatedAt: time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC),
 		TurnCount: 1,
 	}
-	for _, s := range []agent.SessionSnapshot{snap1, snap2} {
-		if err := agent.SaveSession(dir, s); err != nil {
-			t.Fatalf("SaveSession: %v", err)
+	for _, m := range []agent.SessionMeta{meta1, meta2} {
+		if err := agent.SaveSessionMeta(dir, m); err != nil {
+			t.Fatalf("SaveSessionMeta: %v", err)
 		}
 	}
 

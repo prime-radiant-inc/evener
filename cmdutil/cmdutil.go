@@ -125,6 +125,8 @@ func MaxRoundsToConfig(cliValue int) int {
 }
 
 // ResolveSnapshot loads a session snapshot by ID or finds the most recent one.
+//
+// Deprecated: Use ResolveSessionMeta for the new meta-based flow.
 func ResolveSnapshot(stateDir, sessionID string, resumeLast bool) (agent.SessionSnapshot, error) {
 	if resumeLast {
 		list, err := agent.ListSessions(stateDir)
@@ -141,6 +143,25 @@ func ResolveSnapshot(stateDir, sessionID string, resumeLast bool) (agent.Session
 		return agent.SessionSnapshot{}, fmt.Errorf("load session %s: %w", sessionID, err)
 	}
 	return snap, nil
+}
+
+// ResolveSessionMeta loads a session meta by ID or finds the most recent one.
+func ResolveSessionMeta(stateDir, sessionID string, resumeLast bool) (agent.SessionMeta, error) {
+	if resumeLast {
+		list, err := agent.ListSessionMetas(stateDir)
+		if err != nil {
+			return agent.SessionMeta{}, fmt.Errorf("list sessions: %w", err)
+		}
+		if len(list) == 0 {
+			return agent.SessionMeta{}, fmt.Errorf("no saved sessions in %s", stateDir)
+		}
+		return list[0], nil
+	}
+	meta, err := agent.LoadSessionMeta(stateDir, sessionID)
+	if err != nil {
+		return agent.SessionMeta{}, fmt.Errorf("load session %s: %w", sessionID, err)
+	}
+	return meta, nil
 }
 
 // ListModelsFunc returns a function suitable for server.SetListModelsFunc that

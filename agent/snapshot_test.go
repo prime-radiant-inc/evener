@@ -313,7 +313,7 @@ func TestRestoreSession_RestoresHistoryAndID(t *testing.T) {
 	}
 }
 
-func TestSession_AutoSave_WritesSnapshotAfterProcessInput(t *testing.T) {
+func TestSession_AutoSave_WritesMetaAfterProcessInput(t *testing.T) {
 	dir := t.TempDir()
 
 	c := llm.NewClient()
@@ -342,30 +342,36 @@ func TestSession_AutoSave_WritesSnapshotAfterProcessInput(t *testing.T) {
 	}
 	sess.Close()
 
-	// A snapshot file should exist.
-	list, err := ListSessions(dir)
+	// A meta file should exist (not a full snapshot).
+	list, err := ListSessionMetas(dir)
 	if err != nil {
-		t.Fatalf("ListSessions: %v", err)
+		t.Fatalf("ListSessionMetas: %v", err)
 	}
 	if len(list) != 1 {
-		t.Fatalf("expected 1 saved session, got %d", len(list))
+		t.Fatalf("expected 1 saved session meta, got %d", len(list))
 	}
-	snap := list[0]
-	if snap.ID != sess.ID() {
-		t.Fatalf("saved id: got %q want %q", snap.ID, sess.ID())
+	meta := list[0]
+	if meta.ID != sess.ID() {
+		t.Fatalf("saved id: got %q want %q", meta.ID, sess.ID())
 	}
-	// Should have user + assistant turns.
-	if len(snap.History) < 2 {
-		t.Fatalf("expected at least 2 history turns, got %d", len(snap.History))
+	if meta.ProfileID != "openai" {
+		t.Fatalf("profile_id: got %q want %q", meta.ProfileID, "openai")
 	}
-	if snap.History[0].Kind != TurnUserInput {
-		t.Fatalf("history[0].kind: got %q want %q", snap.History[0].Kind, TurnUserInput)
+
+	// History should be in the transcript, not the meta.
+	tpath := filepath.Join(dir, sessionsSubdir, sess.ID()+".transcript.jsonl")
+	_, entries, _, err := ReadTranscript(tpath)
+	if err != nil {
+		t.Fatalf("ReadTranscript: %v", err)
 	}
-	if snap.History[1].Kind != TurnAssistant {
-		t.Fatalf("history[1].kind: got %q want %q", snap.History[1].Kind, TurnAssistant)
+	if len(entries) < 2 {
+		t.Fatalf("expected at least 2 transcript entries, got %d", len(entries))
 	}
-	if snap.ProfileID != "openai" {
-		t.Fatalf("profile_id: got %q want %q", snap.ProfileID, "openai")
+	if entries[0].Turn.Kind != TurnUserInput {
+		t.Fatalf("entry[0].kind: got %q want %q", entries[0].Turn.Kind, TurnUserInput)
+	}
+	if entries[1].Turn.Kind != TurnAssistant {
+		t.Fatalf("entry[1].kind: got %q want %q", entries[1].Turn.Kind, TurnAssistant)
 	}
 }
 
@@ -407,18 +413,26 @@ func TestSession_AutoSave_PersistsToolResults(t *testing.T) {
 	}
 	sess.Close()
 
-	list, err := ListSessions(dir)
+	// Meta file should exist.
+	list, err := ListSessionMetas(dir)
 	if err != nil {
-		t.Fatalf("ListSessions: %v", err)
+		t.Fatalf("ListSessionMetas: %v", err)
 	}
 	if len(list) != 1 {
-		t.Fatalf("expected 1 saved session, got %d", len(list))
+		t.Fatalf("expected 1 saved session meta, got %d", len(list))
+	}
+
+	// Tool results should be in the transcript.
+	tpath := filepath.Join(dir, sessionsSubdir, sess.ID()+".transcript.jsonl")
+	_, entries, _, err := ReadTranscript(tpath)
+	if err != nil {
+		t.Fatalf("ReadTranscript: %v", err)
 	}
 
 	pendingToolCalls := map[string]struct{}{}
 	seenToolResult := false
-	for _, turn := range list[0].History {
-		for _, part := range turn.Message.Content {
+	for _, entry := range entries {
+		for _, part := range entry.Turn.Message.Content {
 			switch part.Kind {
 			case llm.ContentToolCall:
 				if part.ToolCall != nil && part.ToolCall.ID != "" {
@@ -436,10 +450,10 @@ func TestSession_AutoSave_PersistsToolResults(t *testing.T) {
 	}
 
 	if !seenToolResult {
-		t.Fatal("expected snapshot history to include submit_result tool_result")
+		t.Fatal("expected transcript to include submit_result tool_result")
 	}
 	if len(pendingToolCalls) != 0 {
-		t.Fatalf("expected no dangling tool calls in snapshot history, got %d", len(pendingToolCalls))
+		t.Fatalf("expected no dangling tool calls in transcript, got %d", len(pendingToolCalls))
 	}
 }
 
@@ -505,12 +519,12 @@ func TestSession_AutoSave_DoesNotPersistMidToolRound(t *testing.T) {
 		t.Fatalf("tool did not start: %v", ctx.Err())
 	}
 
-	list, err := ListSessions(dir)
+	list, err := ListSessionMetas(dir)
 	if err != nil {
-		t.Fatalf("ListSessions: %v", err)
+		t.Fatalf("ListSessionMetas: %v", err)
 	}
 	if len(list) != 0 {
-		t.Fatalf("expected no snapshot before tool result, got %d", len(list))
+		t.Fatalf("expected no meta before tool result, got %d", len(list))
 	}
 
 	close(release)
@@ -519,17 +533,24 @@ func TestSession_AutoSave_DoesNotPersistMidToolRound(t *testing.T) {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 
-	list2, err := ListSessions(dir)
+	list2, err := ListSessionMetas(dir)
 	if err != nil {
-		t.Fatalf("ListSessions after completion: %v", err)
+		t.Fatalf("ListSessionMetas after completion: %v", err)
 	}
 	if len(list2) != 1 {
-		t.Fatalf("expected 1 snapshot after completion, got %d", len(list2))
+		t.Fatalf("expected 1 meta after completion, got %d", len(list2))
+	}
+
+	// Verify tool results are complete in the transcript.
+	tpath := filepath.Join(dir, sessionsSubdir, sess.ID()+".transcript.jsonl")
+	_, entries, _, err := ReadTranscript(tpath)
+	if err != nil {
+		t.Fatalf("ReadTranscript: %v", err)
 	}
 
 	pending := map[string]struct{}{}
-	for _, turn := range list2[0].History {
-		for _, part := range turn.Message.Content {
+	for _, entry := range entries {
+		for _, part := range entry.Turn.Message.Content {
 			switch part.Kind {
 			case llm.ContentToolCall:
 				if part.ToolCall != nil && part.ToolCall.ID != "" {
@@ -543,7 +564,7 @@ func TestSession_AutoSave_DoesNotPersistMidToolRound(t *testing.T) {
 		}
 	}
 	if len(pending) != 0 {
-		t.Fatalf("expected no dangling tool calls in snapshot, got %d", len(pending))
+		t.Fatalf("expected no dangling tool calls in transcript, got %d", len(pending))
 	}
 }
 
@@ -572,25 +593,32 @@ func TestRestoreSession_AutoSaveContinues(t *testing.T) {
 	}
 	sess.Close()
 
-	// Verify initial snapshot was saved.
-	list, err := ListSessions(dir)
+	// Verify initial meta was saved.
+	list, err := ListSessionMetas(dir)
 	if err != nil {
-		t.Fatalf("ListSessions after phase 1: %v", err)
+		t.Fatalf("ListSessionMetas after phase 1: %v", err)
 	}
 	if len(list) != 1 {
 		t.Fatalf("expected 1 session after phase 1, got %d", len(list))
 	}
 	initialTurnCount := list[0].TurnCount
-	initialHistoryLen := len(list[0].History)
-	if initialHistoryLen < 2 {
-		t.Fatalf("expected at least 2 history entries after phase 1, got %d", initialHistoryLen)
+
+	// Verify transcript has the initial history.
+	tpath := filepath.Join(dir, sessionsSubdir, sess.ID()+".transcript.jsonl")
+	_, entries, _, err := ReadTranscript(tpath)
+	if err != nil {
+		t.Fatalf("ReadTranscript after phase 1: %v", err)
+	}
+	initialEntryCount := len(entries)
+	if initialEntryCount < 2 {
+		t.Fatalf("expected at least 2 transcript entries after phase 1, got %d", initialEntryCount)
 	}
 
-	// Phase 2: Restore the session (with auto-save) and process more input.
-	snap := list[0]
-	sess2, err := RestoreSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), snap, dir)
+	// Phase 2: Restore from meta + transcript and process more input.
+	meta := list[0]
+	sess2, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), meta, dir)
 	if err != nil {
-		t.Fatalf("RestoreSession: %v", err)
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
 	go func() {
 		for range sess2.Events() {
@@ -602,10 +630,10 @@ func TestRestoreSession_AutoSaveContinues(t *testing.T) {
 	}
 	sess2.Close()
 
-	// Verify the snapshot was updated with new turns.
-	list2, err := ListSessions(dir)
+	// Verify the meta was updated with new turns.
+	list2, err := ListSessionMetas(dir)
 	if err != nil {
-		t.Fatalf("ListSessions after phase 2: %v", err)
+		t.Fatalf("ListSessionMetas after phase 2: %v", err)
 	}
 	if len(list2) != 1 {
 		t.Fatalf("expected 1 session after phase 2, got %d", len(list2))
@@ -613,15 +641,21 @@ func TestRestoreSession_AutoSaveContinues(t *testing.T) {
 	if list2[0].TurnCount <= initialTurnCount {
 		t.Fatalf("turn count did not increase after resume: got %d, was %d", list2[0].TurnCount, initialTurnCount)
 	}
-	if len(list2[0].History) <= initialHistoryLen {
-		t.Fatalf("history did not grow after resume: got %d entries, was %d", len(list2[0].History), initialHistoryLen)
+
+	// Verify the transcript grew with new entries.
+	_, entries2, _, err := ReadTranscript(tpath)
+	if err != nil {
+		t.Fatalf("ReadTranscript after phase 2: %v", err)
+	}
+	if len(entries2) <= initialEntryCount {
+		t.Fatalf("transcript did not grow after resume: got %d entries, was %d", len(entries2), initialEntryCount)
 	}
 
-	// Verify the new history has both original and new user inputs.
+	// Verify the transcript has both original and new user inputs.
 	var userTexts []string
-	for _, turn := range list2[0].History {
-		if turn.Kind == TurnUserInput {
-			userTexts = append(userTexts, turn.Message.Text())
+	for _, entry := range entries2 {
+		if entry.Turn.Kind == TurnUserInput {
+			userTexts = append(userTexts, entry.Turn.Message.Text())
 		}
 	}
 	if len(userTexts) < 2 {

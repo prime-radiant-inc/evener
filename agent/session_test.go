@@ -1171,7 +1171,9 @@ func TestSession_SessionEnd_EmittedExactlyOnce(t *testing.T) {
 	}
 }
 
-func TestSession_SystemPromptRebuiltPerRound(t *testing.T) {
+func TestSession_ProjectDocsCachedAtInit(t *testing.T) {
+	// Project docs are loaded once at session init and cached.
+	// Mid-session writes to AGENTS.md should NOT be reflected in subsequent rounds.
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
@@ -1187,10 +1189,11 @@ func TestSession_SystemPromptRebuiltPerRound(t *testing.T) {
 			}
 		},
 		func(req llm.Request) llm.Response {
-			// Round 2: the system prompt should now include the freshly-written AGENTS.md.
+			// Round 2: project docs are cached at init, so the newly-written AGENTS.md
+			// should NOT appear in the system prompt (it didn't exist at init time).
 			sys := req.Messages[0].Text()
-			if !strings.Contains(sys, "New agent instructions") {
-				t.Error("system prompt not rebuilt after tool execution -- AGENTS.md changes not reflected")
+			if strings.Contains(sys, "New agent instructions") {
+				t.Error("project docs should be cached at init, not reloaded per round")
 			}
 			return llm.Response{Message: llm.Assistant("done")}
 		},

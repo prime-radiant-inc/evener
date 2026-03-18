@@ -82,7 +82,12 @@ func buildRecallTool(getSession func() *Session) RegisteredTool {
 				return nil, fmt.Errorf("recall: no session reference available")
 			}
 
-			sess.maybeAutoSave()
+			// Save a full snapshot (with history) for the transcript search tools.
+			// maybeAutoSave only writes lightweight meta now, so we need the full snapshot here.
+			snap := sess.Snapshot()
+			if err := SaveSession(sess.stateDir, snap); err != nil {
+				return nil, fmt.Errorf("recall: save snapshot for search: %w", err)
+			}
 
 			path := transcriptPath(sess.stateDir, sess.id)
 			return recallExecute(ctx, sess.client, sess.profile.ID(), sess.profile.Model(), path, question)

@@ -241,6 +241,10 @@ type Session struct {
 	// Tool names registered during session initialization (not custom).
 	coreToolNames map[string]bool
 
+	// Project docs loaded once at session init and cached for lifetime.
+	projectDocs          []ProjectDoc
+	projectDocsTruncated bool
+
 	// read-before-write guardrail
 	readFiles map[string]bool
 	readFilesMu sync.RWMutex
@@ -538,6 +542,136 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 	return s, nil
 }
 
+// RestoreSessionFromMeta creates a Session from a SessionMeta, recovering
+// history exclusively from the transcript JSONL. If no transcript exists,
+// the session starts with empty history (no snapshot fallback).
+func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env ExecutionEnvironment, meta SessionMeta, stateDir string) (*Session, error) {
+	cfg := meta.Config
+	cfg.StateDir = stateDir
+	cfg.applyDefaults()
+
+	if client == nil {
+		return nil, fmt.Errorf("llm client is nil")
+	}
+	if profile == nil {
+		return nil, fmt.Errorf("profile is nil")
+	}
+	if env == nil {
+		return nil, fmt.Errorf("execution environment is nil")
+	}
+	if err := env.Initialize(); err != nil {
+		return nil, fmt.Errorf("env initialize: %w", err)
+	}
+
+	// Recover history from transcript JSONL. No snapshot fallback.
+	var resumeHistory []Turn
+	if stateDir != "" {
+		tpath := filepath.Join(stateDir, sessionsSubdir, meta.ID+".transcript.jsonl")
+		_, entries, _, readErr := ReadTranscript(tpath)
+		if readErr == nil && len(entries) > 0 {
+			resumeHistory = ResumeHistory(entries)
+		}
+	}
+	if resumeHistory == nil {
+		resumeHistory = []Turn{}
+	}
+
+	sessCtx, sessCancel := context.WithCancel(context.Background())
+	s := &Session{
+		id:         meta.ID,
+		cfg:        cfg,
+		client:     client,
+		profile:    profile,
+		env:        env,
+		stateDir:   cfg.StateDir,
+		state:      SessionIdle,
+		events:     make(chan SessionEvent, 256),
+		history:    resumeHistory,
+		turns:      meta.TurnCount,
+		subagents:  map[string]*subagent{},
+		readFiles:  map[string]bool{},
+		sessionCtx: sessCtx,
+		cancelFunc: sessCancel,
+	}
+
+	promptSources, err := s.initSessionState()
+	if err != nil {
+		return nil, err
+	}
+
+	// Seed context manager with the meta's token count.
+	if meta.LastInputTokens > 0 && s.contextMgr != nil {
+		s.contextMgr.RecordInputTokens(meta.LastInputTokens, len(s.history))
+	}
+
+	// Open or create transcript for appending.
+	if s.stateDir != "" {
+		tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
+		tw, twErr := OpenTranscriptWriter(tpath)
+		if twErr != nil {
+			// Transcript might not exist (new session from meta). Create new.
+			hdr := TranscriptHeader{
+				SessionID:        s.id,
+				ParentSessionID:  cfg.ParentSessionID,
+				ParentToolCallID: cfg.ParentToolCallID,
+				Task:             cfg.SubagentTask,
+				CreatedAt:        meta.CreatedAt,
+				ProfileID:        profile.ID(),
+				Model:            profile.Model(),
+				WorkingDir:       s.envInfo.WorkingDir,
+				Depth:            cfg.Depth,
+				BuildVersion:     buildinfo.Version(),
+				SystemPrompt:     s.buildInitialSystemPrompt(),
+			}
+			tw, twErr = NewTranscriptWriter(tpath, hdr)
+			if twErr != nil {
+				s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript open failed: %v", twErr)})
+			}
+		}
+		s.transcript = tw
+	}
+
+	applyThresholdScale(s.contextMgr, cfg.CompactionThresholdScale)
+	s.contextMgr.OnCompactionTurn = func(t Turn) {
+		if err := s.transcript.Append(t); err != nil {
+			s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
+		}
+		if s.taskStore != nil {
+			if reminder := taskReminderFull(s.taskStore); reminder != "" {
+				s.Steer(reminder)
+			}
+		}
+	}
+
+	// Create context strategy.
+	strat, err := selectStrategy(cfg, s.contextMgr, s)
+	if err != nil {
+		return nil, err
+	}
+	s.strategy = strat
+
+	if s.strategy != nil {
+		for _, tool := range s.strategy.Tools() {
+			if err := s.reg.Register(tool); err != nil {
+				return nil, fmt.Errorf("register strategy tool: %w", err)
+			}
+		}
+	}
+
+	s.emit(EventSessionStart, SessionStartData{
+		Profile:           profile.ID(),
+		Model:             profile.Model(),
+		Restored:          true,
+		Turns:             s.turns,
+		LastInputTokens:   meta.LastInputTokens,
+		ContextWindowSize: profile.ContextWindowSize(),
+	})
+	for _, src := range promptSources {
+		s.emit(EventPromptLoaded, PromptLoadedData{Label: src.Label, Size: src.Size})
+	}
+	return s, nil
+}
+
 func (s *Session) ID() string                  { return s.id }
 func (s *Session) Events() <-chan SessionEvent { return s.events }
 
@@ -568,6 +702,24 @@ func (s *Session) Snapshot() SessionSnapshot {
 		Config:          s.cfg,
 		EnvInfo:         s.envInfo,
 		History:         append([]Turn{}, s.history...),
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		TurnCount:       s.turns,
+		LastInputTokens: s.contextMgr.LastInputTokens(),
+	}
+}
+
+// Meta returns the current session metadata without the conversation history.
+func (s *Session) Meta() SessionMeta {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UTC()
+	return SessionMeta{
+		ID:              s.id,
+		ProfileID:       s.profile.ID(),
+		Model:           s.profile.Model(),
+		Config:          s.cfg,
+		EnvInfo:         s.envInfo,
 		CreatedAt:       now,
 		UpdatedAt:       now,
 		TurnCount:       s.turns,
@@ -1112,14 +1264,15 @@ func (s *Session) appendAssistantTurn(resp llm.Response) {
 	}
 }
 
-// maybeAutoSave persists the session state if StateDir is configured.
-// Errors are emitted as warnings but do not interrupt the session.
+// maybeAutoSave persists the session metadata if StateDir is configured.
+// Writes only lightweight SessionMeta (~500 bytes), not the full history.
+// The conversation history is already durably recorded by the transcript JSONL.
 func (s *Session) maybeAutoSave() {
 	if s.stateDir == "" {
 		return
 	}
-	snap := s.Snapshot()
-	if err := SaveSession(s.stateDir, snap); err != nil {
+	meta := s.Meta()
+	if err := SaveSessionMeta(s.stateDir, meta); err != nil {
 		s.emit(EventWarning, WarningData{
 			Message: fmt.Sprintf("auto-save failed: %v", err),
 		})
@@ -1317,8 +1470,8 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		default:
 		}
 
-		// Rebuild system prompt each iteration so tool side-effects (e.g. new AGENTS.md) are reflected.
-		docs, _ := LoadProjectDocs(s.env, s.profile.ProjectDocFiles()...)
+		// Rebuild system prompt each iteration using cached project docs.
+		docs := s.projectDocs
 		var skillList []SkillMeta
 		for _, sm := range s.skills {
 			skillList = append(skillList, sm)
@@ -2056,13 +2209,17 @@ func (s *Session) initSessionState() ([]PromptSource, error) {
 	if err := s.initMCP(); err != nil {
 		return nil, fmt.Errorf("MCP initialization: %w", err)
 	}
+
+	// Cache project docs once; reused every round for system prompt rebuilds.
+	s.projectDocs, s.projectDocsTruncated = LoadProjectDocs(s.env, s.profile.ProjectDocFiles()...)
+
 	return promptSources, nil
 }
 
 // buildInitialSystemPrompt constructs the system prompt as the model would see
 // it on its first turn. Persisted in the transcript header for debugging.
 func (s *Session) buildInitialSystemPrompt() string {
-	docs, _ := LoadProjectDocs(s.env, s.profile.ProjectDocFiles()...)
+	docs := s.projectDocs
 	var skillList []SkillMeta
 	for _, sm := range s.skills {
 		skillList = append(skillList, sm)
