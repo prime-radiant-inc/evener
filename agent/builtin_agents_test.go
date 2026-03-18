@@ -500,6 +500,95 @@ func TestWaitToolDescription_SuggestsFiveMinutes(t *testing.T) {
 	}
 }
 
+// --- reviewer agent is read-only ---
+
+func TestBuiltinAgents_ReviewerIsReadOnly(t *testing.T) {
+	agents, err := builtinAgents()
+	if err != nil {
+		t.Fatalf("builtinAgents: %v", err)
+	}
+	reviewer := agents["reviewer"]
+	for _, tool := range reviewer.Tools {
+		if tool == "write_file" || tool == "edit_file" || tool == "apply_patch" {
+			t.Errorf("reviewer should not have write tool %q", tool)
+		}
+	}
+}
+
+// --- task_list preserved for all subagents ---
+
+func TestSpawnAgent_TaskListPreservedForNamedAgent(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	var subagentTools []string
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				for _, td := range req.Tools {
+					subagentTools = append(subagentTools, td.Name)
+				}
+				return llm.Response{Message: llm.Assistant("done")}
+			},
+		},
+	}
+	c.Register(adapter)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Spawn an explorer (named agent with explicit tool list that doesn't include task_list).
+	res := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"explore the code","agent_type":"explorer","blocking":true}`),
+	})
+	if res.IsError {
+		t.Fatalf("spawn error: %s", res.Output)
+	}
+
+	// task_list should be in the subagent's tools even though explorer.md doesn't list it.
+	hasTaskList := false
+	for _, name := range subagentTools {
+		if name == "task_list" {
+			hasTaskList = true
+			break
+		}
+	}
+	if !hasTaskList {
+		t.Errorf("named subagent should have task_list, got tools: %v", subagentTools)
+	}
+}
+
+// --- subagent.md includes task_list ---
+
+func TestBuiltinAgents_SubagentHasTaskList(t *testing.T) {
+	agents, err := builtinAgents()
+	if err != nil {
+		t.Fatalf("builtinAgents: %v", err)
+	}
+	sub := agents["subagent"]
+	hasTaskList := false
+	for _, tool := range sub.Tools {
+		if tool == "task_list" {
+			hasTaskList = true
+			break
+		}
+	}
+	if !hasTaskList {
+		t.Errorf("subagent should have task_list in tools, got: %v", sub.Tools)
+	}
+}
+
 // --- spawn_agent blocking description ---
 
 func TestSpawnAgent_BlockingDescription_NoFireAndForget(t *testing.T) {

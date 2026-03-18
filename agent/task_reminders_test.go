@@ -11,8 +11,8 @@ func TestTaskReminderFull(t *testing.T) {
 	dir := t.TempDir()
 	store := NewTaskStore(dir, "test")
 	store.Append([]TaskInput{
-		{Description: "A", Prompt: "a"},
-		{Description: "B", Prompt: "b", DependsOn: []int{1}},
+		{Type: TaskTypeResearch, Description: "A", Prompt: "a"},
+		{Type: TaskTypeResearch, Description: "B", Prompt: "b", DependsOn: []int{1}},
 	})
 	store.Update([]TaskUpdate{{ID: 1, Status: TaskDone}})
 
@@ -41,8 +41,8 @@ func TestTaskReminderForInactivity(t *testing.T) {
 	dir := t.TempDir()
 	store := NewTaskStore(dir, "test")
 	store.Append([]TaskInput{
-		{Description: "Task A", Prompt: "a"},
-		{Description: "Task B", Prompt: "b"},
+		{Type: TaskTypeResearch, Description: "Task A", Prompt: "a"},
+		{Type: TaskTypeResearch, Description: "Task B", Prompt: "b"},
 	})
 	store.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress}})
 
@@ -122,7 +122,7 @@ func TestMaybeInjectTaskReminder_InactivityAfter5Rounds(t *testing.T) {
 
 	// Create tasks via store directly (simulating prior tool use).
 	store := sess.getOrCreateTaskStore()
-	store.Append([]TaskInput{{Description: "A", Prompt: "a"}})
+	store.Append([]TaskInput{{Type: TaskTypeResearch, Description: "A", Prompt: "a"}})
 	sess.taskToolEverUsed = true
 	sess.taskToolLastRound = 0
 

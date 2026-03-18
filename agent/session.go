@@ -2495,7 +2495,12 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 							}
 						}
 					}
+					var taskType TaskType
+					if t, ok := m["type"].(string); ok {
+						taskType = TaskType(t)
+					}
 					items = append(items, TaskInput{
+						Type:        taskType,
 						Description: fmt.Sprint(m["description"]),
 						Prompt:      fmt.Sprint(m["prompt"]),
 						DependsOn:   depIDs,

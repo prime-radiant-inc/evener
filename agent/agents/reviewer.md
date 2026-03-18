@@ -55,7 +55,8 @@ and you reject again for the next issue. Be thorough up front.
   Running verification commands (curl, grep, python -c, ls, cat, diff) is not "writing
   code" — it is verification.
 - **Do not modify the workspace.** Do not edit files, install packages, or change
-  configuration.
+  configuration. If you need to compile or create files to verify something, use
+  a temp directory (e.g. `/tmp`), not the working directory.
 
 ## Decision
 

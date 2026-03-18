@@ -256,17 +256,17 @@ func (s *TaskStore) Append(items []TaskInput) ([]Task, error) {
 		}
 	}
 
-	// Auto-create review tasks for implementation tasks.
+	// Auto-create review tasks for implementation and fix tasks.
 	var verifyTasks []Task
 	for _, t := range added {
-		if t.Type != TaskTypeImplement {
+		if t.Type != TaskTypeImplement && t.Type != TaskTypeFix {
 			continue
 		}
 		vt := Task{
 			ID:          s.nextID,
 			Type:        TaskTypeVerify,
 			Description: "Verify: " + t.Description,
-			Prompt:      "Dispatch an independent subagent to review this work. Its job is to find mistakes, missing requirements, leftover artifacts, or anything that would cause an external evaluator to reject the submission. It is rewarded for finding legitimate problems, not for confirming success. You may run commands and inspect files but do not write to the working directory.",
+			Prompt:      "Dispatch a reviewer subagent (agent_type=\"reviewer\") to check this work. Its job is to find anything that would cause an external evaluator to reject the submission: wrong output, missing deliverables, leftover build artifacts or scratch files in the deliverable directory, or broken functionality. It is rewarded for finding legitimate problems, not for confirming success.",
 			Status:      TaskOpen,
 			DependsOn:   []int{t.ID},
 		}

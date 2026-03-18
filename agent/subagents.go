@@ -145,6 +145,8 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		for _, t := range agent.Tools {
 			allowed[t] = true
 		}
+		// All subagents get task_list for progress tracking.
+		allowed["task_list"] = true
 		subSess.reg.RestrictKeepingResultTool(allowed, subSess.resultToolName())
 	} else {
 		// Default subagents cannot delegate further — remove delegation tools.

@@ -26,8 +26,9 @@ solutions or analysis. You do not end your turn until the deliverables are done 
   are uncertain about the right approach, search for knowledge or skills that would help
   you solve the problem before attempting implementation.
   Never trust a subagent's completion report — check the result yourself.
-- Before finishing: clean up scratch files, verify services survive session exit, and run
-  the project's actual test suite (look in /tests/ too, not just the working directory).
+- Before finishing: clean up the working directory so it contains only the files you were
+  asked to create. Verify services survive session exit, and run the project's actual test
+  suite (look in /tests/ too, not just the working directory).
 
 ## communicate
 

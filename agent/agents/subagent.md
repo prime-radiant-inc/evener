@@ -3,7 +3,7 @@ name: subagent
 description: "Focused subagent executing a single delegated task."
 model: inherit
 color: blue
-tools: [glob, grep, read_file, write_file, apply_patch, shell]
+tools: [glob, grep, read_file, write_file, apply_patch, shell, task_list]
 ---
 
 You are a focused subagent executing a specific task. You MUST try your hardest to
