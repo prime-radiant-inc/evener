@@ -274,6 +274,17 @@ type Session struct {
 
 	// transcript writer (nil when StateDir is empty)
 	transcript *TranscriptWriter
+
+	// Cached tool definitions (Issue 1: avoid rebuilding every round).
+	// cachedToolDefs is the full list; cachedToolDefsNoResult excludes the result tool.
+	cachedToolDefs         []llm.ToolDefinition
+	cachedToolDefsNoResult []llm.ToolDefinition
+
+	// Cached system prompt components (Issue 3: avoid recomputing every round).
+	cachedSkillList                []SkillMeta
+	cachedExtraTools               string
+	cachedAgentSection             string
+	cachedNonInteractiveGuidance   string
 }
 
 // selectStrategy creates the appropriate ContextStrategy from config.
@@ -833,6 +844,9 @@ func (s *Session) RegisterTool(name, description string, params map[string]any, 
 			return fn(ctx, args)
 		},
 	})
+	// Rebuild caches so the new tool appears in tool defs and system prompt.
+	s.rebuildToolDefsCache()
+	s.rebuildPromptCache()
 }
 
 // Steer queues a message to inject after the current tool round completes.
@@ -1091,6 +1105,8 @@ func (s *Session) spawnReviewer(ctx context.Context, claimedResult string) (revi
 	// Restrict auto-adds result tool; remove it so the reviewer
 	// must use approve/reject (the tool name IS the verdict).
 	subSess.reg.Remove(s.resultToolName())
+	// Rebuild cached tool definitions after restriction/removal.
+	subSess.rebuildToolDefsCache()
 
 	// Run reviewer synchronously. If the reviewer outputs text instead of
 	// calling approve/reject, nudge it to use the tools.
@@ -1486,42 +1502,14 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		// --- Phase: SystemPrompt ---
 		tPhaseStart := time.Now()
 
-		// Rebuild system prompt each iteration using cached project docs.
-		docs := s.projectDocs
-		var skillList []SkillMeta
-		for _, sm := range s.skills {
-			skillList = append(skillList, sm)
-		}
-		// Build extra tool descriptions (MCP + custom-registered) for layer 3 insertion.
-		var extraTools strings.Builder
-		if len(s.mcpTools) > 0 {
-			extraTools.WriteString("MCP Tools (from external servers):\n")
-			for _, td := range s.mcpTools {
-				desc := strings.TrimSpace(td.Description)
-				if desc == "" {
-					desc = "(no description)"
-				}
-				extraTools.WriteString(fmt.Sprintf("- %s: %s\n", td.Name, desc))
-			}
-		}
-		if extra := s.customToolDescriptions(); len(extra) > 0 {
-			if extraTools.Len() > 0 {
-				extraTools.WriteString("\n")
-			}
-			extraTools.WriteString("Additional tools:\n")
-			extraTools.WriteString(extra)
+		// Rebuild system prompt using cached project docs and cached prompt components.
+		sys := s.profile.BuildSystemPrompt(s.envInfo, s.projectDocs, s.cachedSkillList, s.cachedExtraTools)
+
+		if s.cachedAgentSection != "" {
+			sys += s.cachedAgentSection
 		}
 
-		sys := s.profile.BuildSystemPrompt(s.envInfo, docs, skillList, extraTools.String())
-
-		// Add plugin agents section if any are available.
-		if agentSection := FormatPluginAgentsPrompt(s.pluginAgents); agentSection != "" {
-			sys += agentSection
-		}
-
-		if s.cfg.NonInteractive {
-			sys += nonInteractiveGuidance(s.resultToolName())
-		}
+		sys += s.cachedNonInteractiveGuidance
 
 		if strings.TrimSpace(s.cfg.UserInstructionOverride) != "" {
 			sys = sys + "\n\n" + strings.TrimSpace(s.cfg.UserInstructionOverride) + "\n"
@@ -1540,22 +1528,22 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			}
 		}
 
+		// Copy history once for both context management and message expansion.
+		s.mu.Lock()
+		historyTurns := append([]Turn{}, s.history...)
+		s.mu.Unlock()
+
 		// Apply context management before each LLM request.
-		// Copy history out to avoid holding s.mu during potential LLM calls (Layer 4).
 		if s.strategy != nil {
 			// Populate compaction metadata so checkpoint/summarize have session context.
 			s.contextMgr.Meta = s.buildCompactionMeta()
 
-			s.mu.Lock()
-			histCopy := append([]Turn{}, s.history...)
-			s.mu.Unlock()
-
-			if err := s.strategy.ManageContext(ctx, &histCopy, len(sys), s.emit); err != nil {
+			if err := s.strategy.ManageContext(ctx, &historyTurns, len(sys), s.emit); err != nil {
 				s.emit(EventWarning, WarningData{Message: "context strategy error: " + err.Error()})
 			}
 
 			s.mu.Lock()
-			s.history = histCopy
+			s.history = historyTurns
 			s.mu.Unlock()
 		}
 
@@ -1564,10 +1552,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		// --- Phase: HistoryExpand ---
 		tPhaseStart = time.Now()
 
-		s.mu.Lock()
-		historyTurns := append([]Turn{}, s.history...)
-		s.mu.Unlock()
-
+		// Reuse historyTurns from context management — no redundant copy.
 		history := make([]llm.Message, 0, len(historyTurns))
 		for _, t := range historyTurns {
 			if t.Kind == TurnSteering {
@@ -1897,11 +1882,14 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		tPhaseStart = time.Now()
 
 		// Notify the context strategy that a tool round completed.
+		// AfterAction takes []Turn (not *[]Turn) so it cannot mutate the slice.
+		// Pass s.history directly — no copy needed since the loop is single-
+		// threaded and nothing else modifies history until AfterAction returns.
 		if s.strategy != nil {
 			s.mu.Lock()
-			histCopy := append([]Turn{}, s.history...)
+			hist := s.history
 			s.mu.Unlock()
-			if err := s.strategy.AfterAction(ctx, histCopy, s.client); err != nil {
+			if err := s.strategy.AfterAction(ctx, hist, s.client); err != nil {
 				s.emit(EventWarning, WarningData{Message: "strategy AfterAction error: " + err.Error()})
 			}
 		}
@@ -2085,17 +2073,22 @@ func (s *Session) customToolDescriptions() string {
 	return b.String()
 }
 
-// allToolDefinitions returns tool definitions for tools registered in the
-// session's tool registry, plus any MCP tools. Only tools present in the
-// registry are included, ensuring tool restrictions (e.g. from plugin agents)
-// are reflected in what the LLM sees.
-//
-// When MinResultRound is configured and round < MinResultRound, the
-// result tool is excluded from the returned list so the model
-// cannot attempt premature result submission.
+// allToolDefinitions returns cached tool definitions, filtering the result
+// tool when MinResultRound is configured and the round is below the threshold.
+// The cache is built once at session init via rebuildToolDefsCache.
 func (s *Session) allToolDefinitions(round int) []llm.ToolDefinition {
-	hideSubmitResult := s.cfg.MinResultRound > 0 && round < s.cfg.MinResultRound
+	if s.cfg.MinResultRound > 0 && round < s.cfg.MinResultRound {
+		return s.cachedToolDefsNoResult
+	}
+	return s.cachedToolDefs
+}
+
+// rebuildToolDefsCache builds the cached tool definition lists from the
+// current profile, MCP tools, and registry state. Called once at session init
+// and again if tools are added at runtime (e.g. MCP or custom tools).
+func (s *Session) rebuildToolDefsCache() {
 	registered := s.reg.RegisteredNames()
+	resultName := s.resultToolName()
 
 	// Profile tool definitions use provider-specific names (e.g. "exec_command"
 	// for OpenAI). Build a reverse map from provider name → canonical name so
@@ -2107,16 +2100,13 @@ func (s *Session) allToolDefinitions(round int) []llm.ToolDefinition {
 	}
 
 	var defs []llm.ToolDefinition
-	included := make(map[string]bool) // track which tools we've added
+	included := make(map[string]bool)
 	for _, td := range s.profile.ToolDefinitions() {
 		canonical := td.Name
 		if c, ok := reverseMap[td.Name]; ok {
 			canonical = c
 		}
 		if registered[canonical] {
-			if hideSubmitResult && canonical == s.resultToolName() {
-				continue
-			}
 			defs = append(defs, td)
 			included[canonical] = true
 		}
@@ -2133,9 +2123,6 @@ func (s *Session) allToolDefinitions(round int) []llm.ToolDefinition {
 		if included[td.Name] {
 			continue
 		}
-		if hideSubmitResult && td.Name == s.resultToolName() {
-			continue
-		}
 		// Normalize empty parameters to a valid object schema so the LLM
 		// client doesn't reject the tool definition.
 		if td.Parameters != nil && td.Parameters["type"] == nil {
@@ -2146,7 +2133,61 @@ func (s *Session) allToolDefinitions(round int) []llm.ToolDefinition {
 		}
 		defs = append(defs, td)
 	}
-	return defs
+
+	s.cachedToolDefs = defs
+
+	// Build the filtered list that excludes the result tool.
+	filtered := make([]llm.ToolDefinition, 0, len(defs))
+	for _, td := range defs {
+		canonical := td.Name
+		if c, ok := reverseMap[td.Name]; ok {
+			canonical = c
+		}
+		if canonical != resultName {
+			filtered = append(filtered, td)
+		}
+	}
+	s.cachedToolDefsNoResult = filtered
+}
+
+// rebuildPromptCache caches system prompt components that don't change between
+// rounds: skill list, extra tools string, agent section, and non-interactive
+// guidance. Called once at session init.
+func (s *Session) rebuildPromptCache() {
+	// Skill list.
+	s.cachedSkillList = make([]SkillMeta, 0, len(s.skills))
+	for _, sm := range s.skills {
+		s.cachedSkillList = append(s.cachedSkillList, sm)
+	}
+
+	// Extra tool descriptions (MCP + custom-registered).
+	var extraTools strings.Builder
+	if len(s.mcpTools) > 0 {
+		extraTools.WriteString("MCP Tools (from external servers):\n")
+		for _, td := range s.mcpTools {
+			desc := strings.TrimSpace(td.Description)
+			if desc == "" {
+				desc = "(no description)"
+			}
+			extraTools.WriteString(fmt.Sprintf("- %s: %s\n", td.Name, desc))
+		}
+	}
+	if extra := s.customToolDescriptions(); len(extra) > 0 {
+		if extraTools.Len() > 0 {
+			extraTools.WriteString("\n")
+		}
+		extraTools.WriteString("Additional tools:\n")
+		extraTools.WriteString(extra)
+	}
+	s.cachedExtraTools = extraTools.String()
+
+	// Plugin agents section.
+	s.cachedAgentSection = FormatPluginAgentsPrompt(s.pluginAgents)
+
+	// Non-interactive guidance (empty when not in non-interactive mode).
+	if s.cfg.NonInteractive {
+		s.cachedNonInteractiveGuidance = nonInteractiveGuidance(s.resultToolName())
+	}
 }
 
 // initSessionState performs the shared initialization steps for both
@@ -2283,6 +2324,10 @@ func (s *Session) initSessionState() ([]PromptSource, error) {
 
 	// Cache project docs once; reused every round for system prompt rebuilds.
 	s.projectDocs, s.projectDocsTruncated = LoadProjectDocs(s.env, s.profile.ProjectDocFiles()...)
+
+	// Cache tool definitions and prompt components that don't change per-round.
+	s.rebuildToolDefsCache()
+	s.rebuildPromptCache()
 
 	return promptSources, nil
 }

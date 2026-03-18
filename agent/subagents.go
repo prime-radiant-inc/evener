@@ -158,6 +158,8 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		subSess.reg.Remove("wait")
 		subSess.reg.Remove("close_agent")
 	}
+	// Rebuild cached tool definitions after restriction/removal.
+	subSess.rebuildToolDefsCache()
 
 	sub := &subagent{
 		id:           subSess.id,

@@ -12,7 +12,500 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// ---------------------------------------------------------------------------
+// --- Issue 1: allToolDefinitions caching ---
+
+func TestCachedToolDefs_MatchUncached(t *testing.T) {
+	// Verify that cached tool definitions produce the same result as
+	// building them from scratch each round.
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("ok")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// Get cached defs (no MinResultRound gate).
+	defs := sess.allToolDefinitions(0)
+	if len(defs) == 0 {
+		t.Fatal("allToolDefinitions returned empty list")
+	}
+
+	// Call again — should return identical results.
+	defs2 := sess.allToolDefinitions(0)
+	if len(defs) != len(defs2) {
+		t.Fatalf("tool def count mismatch: %d vs %d", len(defs), len(defs2))
+	}
+	for i := range defs {
+		if defs[i].Name != defs2[i].Name {
+			t.Errorf("tool %d name mismatch: %q vs %q", i, defs[i].Name, defs2[i].Name)
+		}
+	}
+}
+
+func TestCachedToolDefs_MinResultRound_FiltersCorrectly(t *testing.T) {
+	// With MinResultRound, early rounds should exclude the result tool.
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai"}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MinResultRound: 3,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	resultName := sess.resultToolName()
+
+	// Round 0,1,2: result tool should be hidden.
+	for round := 0; round < 3; round++ {
+		defs := sess.allToolDefinitions(round)
+		for _, td := range defs {
+			if td.Name == resultName {
+				t.Errorf("round %d: result tool %q should be hidden before MinResultRound", round, resultName)
+			}
+		}
+	}
+
+	// Round 3+: result tool should be present.
+	defs := sess.allToolDefinitions(3)
+	found := false
+	for _, td := range defs {
+		if td.Name == resultName {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("round 3: result tool %q should be present at MinResultRound", resultName)
+	}
+}
+
+func TestCachedToolDefs_IncludesMCPTools(t *testing.T) {
+	// MCP tools should be included in the cached list.
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai"}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// Simulate MCP tools by adding to mcpTools and registering.
+	mcpTool := llm.ToolDefinition{
+		Name:        "mcp__server__tool1",
+		Description: "An MCP tool",
+		Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+	}
+	sess.mcpTools = append(sess.mcpTools, mcpTool)
+	_ = sess.reg.Register(RegisteredTool{
+		Tool: llm.Tool{Definition: mcpTool},
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			return "ok", nil
+		},
+	})
+
+	// Rebuild cache after adding MCP tool.
+	sess.rebuildToolDefsCache()
+
+	defs := sess.allToolDefinitions(0)
+	found := false
+	for _, td := range defs {
+		if td.Name == "mcp__server__tool1" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("MCP tool not found in allToolDefinitions")
+	}
+}
+
+func TestCachedToolDefs_IncludesRegistryOnlyTools(t *testing.T) {
+	// Tools registered directly (e.g. approve/reject) should be included.
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai"}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// Register a custom tool directly.
+	customTool := RegisteredTool{
+		Tool: llm.Tool{
+			Definition: llm.ToolDefinition{
+				Name:        "custom_tool",
+				Description: "A custom tool",
+				Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+			},
+		},
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			return "ok", nil
+		},
+	}
+	_ = sess.reg.Register(customTool)
+
+	// Rebuild cache to pick up new tool.
+	sess.rebuildToolDefsCache()
+
+	defs := sess.allToolDefinitions(0)
+	found := false
+	for _, td := range defs {
+		if td.Name == "custom_tool" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("custom tool not found in allToolDefinitions")
+	}
+}
+
+// --- Issue 2: History copy reduction ---
+
+func TestHistoryCopyReduction_ContextAndExpansionShareCopy(t *testing.T) {
+	// Verify that context management and history expansion produce
+	// correct results when sharing a single history copy.
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	shellCall := func(id string) llm.ToolCallData {
+		raw, _ := json.Marshal(map[string]any{
+			"command":     "echo hello",
+			"description": "test",
+		})
+		return llm.ToolCallData{ID: id, Name: "exec_command", Arguments: raw, Type: "function"}
+	}
+
+	comm := submitResultCall("c1", "done after tools")
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(shellCall("s1"))
+			},
+			func(req llm.Request) llm.Response {
+				// Verify history has the tool result from round 0.
+				hasToolResult := false
+				for _, msg := range req.Messages {
+					if msg.Role == llm.RoleTool {
+						hasToolResult = true
+						break
+					}
+				}
+				if !hasToolResult {
+					t.Error("round 1 should see tool result from round 0")
+				}
+				return toolCallResponse(comm)
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := sess.ProcessInput(ctx, "test")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if strings.TrimSpace(out) != "done after tools" {
+		t.Fatalf("got %q, want %q", out, "done after tools")
+	}
+	sess.Close()
+}
+
+func TestAfterAction_ReceivesCurrentHistory(t *testing.T) {
+	// Verify that AfterAction sees the full history including the latest tool results.
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	shellCall := func(id string) llm.ToolCallData {
+		raw, _ := json.Marshal(map[string]any{
+			"command":     "echo ok",
+			"description": "test",
+		})
+		return llm.ToolCallData{ID: id, Name: "exec_command", Arguments: raw, Type: "function"}
+	}
+	comm := submitResultCall("c1", "done")
+
+	var afterActionHistory []Turn
+	spy := &spyStrategy{
+		toolsDefs: nil,
+	}
+
+	// Override AfterAction to capture what it sees.
+	type captureSpy struct {
+		*spyStrategy
+	}
+	capturer := &afterActionCapture{
+		spyStrategy: spy,
+		onAfterAction: func(history []Turn) {
+			afterActionHistory = append([]Turn{}, history...)
+		},
+	}
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(shellCall("s1"))
+			},
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(comm)
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		ContextStrategyOverride: capturer,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "test")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+
+	// AfterAction should have been called and should see tool results.
+	if len(afterActionHistory) == 0 {
+		t.Fatal("AfterAction was never called with history")
+	}
+
+	// The history should contain at least: user input, assistant (tool call), tool results.
+	hasToolResults := false
+	for _, turn := range afterActionHistory {
+		if turn.Kind == TurnToolResults {
+			hasToolResults = true
+			break
+		}
+	}
+	if !hasToolResults {
+		t.Error("AfterAction history should contain tool results")
+	}
+}
+
+// afterActionCapture wraps a spyStrategy and captures the history passed to AfterAction.
+type afterActionCapture struct {
+	*spyStrategy
+	onAfterAction func(history []Turn)
+}
+
+func (a *afterActionCapture) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
+	if a.onAfterAction != nil {
+		a.onAfterAction(history)
+	}
+	return a.spyStrategy.AfterAction(ctx, history, client)
+}
+
+// --- Issue 3: System prompt caching ---
+
+func TestCachedSystemPromptComponents_SkillList(t *testing.T) {
+	// Verify that the cached skill list matches what would be built each round.
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai"}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// Build the skill list manually from s.skills (like processOneInput does).
+	var manualList []SkillMeta
+	for _, sm := range sess.skills {
+		manualList = append(manualList, sm)
+	}
+
+	// The cached list should have the same length.
+	if len(sess.cachedSkillList) != len(manualList) {
+		t.Errorf("cached skill list length %d != manual %d", len(sess.cachedSkillList), len(manualList))
+	}
+}
+
+func TestCachedSystemPromptComponents_ExtraToolsString(t *testing.T) {
+	// Verify the cached extra tools string is consistent.
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai"}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// Add an MCP tool and rebuild to test that extra tools string includes it.
+	mcpTool := llm.ToolDefinition{
+		Name:        "mcp__test__tool",
+		Description: "Test MCP tool",
+	}
+	sess.mcpTools = append(sess.mcpTools, mcpTool)
+	_ = sess.reg.Register(RegisteredTool{
+		Tool: llm.Tool{Definition: mcpTool},
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			return "ok", nil
+		},
+	})
+	sess.rebuildPromptCache()
+
+	if !strings.Contains(sess.cachedExtraTools, "mcp__test__tool") {
+		t.Errorf("cached extra tools should contain MCP tool name, got: %q", sess.cachedExtraTools)
+	}
+	if !strings.Contains(sess.cachedExtraTools, "MCP Tools") {
+		t.Errorf("cached extra tools should contain 'MCP Tools' header, got: %q", sess.cachedExtraTools)
+	}
+}
+
+func TestCachedSystemPromptComponents_NonInteractiveGuidance(t *testing.T) {
+	// NonInteractive guidance should be cached and consistent.
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai"}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		NonInteractive: true,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	if sess.cachedNonInteractiveGuidance == "" {
+		t.Error("non-interactive guidance should be cached when NonInteractive is set")
+	}
+	if !strings.Contains(sess.cachedNonInteractiveGuidance, "Non-interactive mode") {
+		t.Errorf("cached guidance missing expected content: %q", sess.cachedNonInteractiveGuidance)
+	}
+}
+
+func TestCachedSystemPromptComponents_AgentSection(t *testing.T) {
+	// Plugin agents section should be cached.
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai"}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// The cached agent section should match FormatPluginAgentsPrompt.
+	expected := FormatPluginAgentsPrompt(sess.pluginAgents)
+	if sess.cachedAgentSection != expected {
+		t.Errorf("cached agent section mismatch:\ngot:  %q\nwant: %q", sess.cachedAgentSection, expected)
+	}
+}
+
+func TestSystemPromptConsistency_WithAndWithoutCache(t *testing.T) {
+	// The system prompt produced with caching should be identical to one
+	// built without caching. Use buildInitialSystemPrompt as the reference.
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	var capturedSysPrompt string
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				// Capture the system prompt from the first round.
+				if len(req.Messages) > 0 && req.Messages[0].Role == llm.RoleSystem {
+					capturedSysPrompt = req.Messages[0].Text()
+				}
+				return llm.Response{Message: llm.Assistant("ok")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		NonInteractive: true,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	// buildInitialSystemPrompt builds from scratch (no cache).
+	referencePrompt := sess.buildInitialSystemPrompt()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "hi")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+
+	// The prompt used in processOneInput should match the reference.
+	if capturedSysPrompt != referencePrompt {
+		// Find first difference for debugging.
+		minLen := len(capturedSysPrompt)
+		if len(referencePrompt) < minLen {
+			minLen = len(referencePrompt)
+		}
+		diffIdx := minLen
+		for i := 0; i < minLen; i++ {
+			if capturedSysPrompt[i] != referencePrompt[i] {
+				diffIdx = i
+				break
+			}
+		}
+		t.Errorf("system prompt mismatch at byte %d (of %d vs %d):\ncaptured: ...%q...\nreference: ...%q...",
+			diffIdx, len(capturedSysPrompt), len(referencePrompt),
+			safeSubstring(capturedSysPrompt, diffIdx-20, diffIdx+40),
+			safeSubstring(referencePrompt, diffIdx-20, diffIdx+40))
+	}
+}
+
+func safeSubstring(s string, start, end int) string {
+	if start < 0 {
+		start = 0
+	}
+	if end > len(s) {
+		end = len(s)
+	}
+	if start >= end {
+		return ""
+	}
+	return s[start:end]
+}
+
+// --- Benchmark ---
+
 // Issue 1: Project docs should be loaded once at init, not every round
 // ---------------------------------------------------------------------------
 
