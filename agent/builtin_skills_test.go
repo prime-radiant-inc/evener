@@ -28,35 +28,39 @@ func TestExtractEmbeddedSkills_CreatesDir(t *testing.T) {
 	}
 }
 
-func TestExtractEmbeddedSkills_ContainsTDD(t *testing.T) {
+func TestExtractEmbeddedSkills_ContainsOpsTask(t *testing.T) {
 	dir, err := extractEmbeddedSkills()
 	if err != nil {
 		t.Fatalf("extractEmbeddedSkills: %v", err)
 	}
 	defer os.RemoveAll(dir)
 
-	// The test-driven-development skill should be present.
-	skillFile := filepath.Join(dir, "test-driven-development", "SKILL.md")
+	// The ops-task skill should be present (only embedded skill after superpowers removal).
+	skillFile := filepath.Join(dir, "ops-task", "SKILL.md")
 	data, err := os.ReadFile(skillFile)
 	if err != nil {
-		t.Fatalf("reading TDD SKILL.md: %v", err)
+		t.Fatalf("reading ops-task SKILL.md: %v", err)
 	}
 	if len(data) == 0 {
-		t.Fatal("TDD SKILL.md is empty")
+		t.Fatal("ops-task SKILL.md is empty")
 	}
 }
 
-func TestExtractEmbeddedSkills_AuxiliaryFiles(t *testing.T) {
+func TestExtractEmbeddedSkills_OpsTaskHasContent(t *testing.T) {
 	dir, err := extractEmbeddedSkills()
 	if err != nil {
 		t.Fatalf("extractEmbeddedSkills: %v", err)
 	}
 	defer os.RemoveAll(dir)
 
-	// systematic-debugging has auxiliary files alongside SKILL.md.
-	auxFile := filepath.Join(dir, "systematic-debugging", "root-cause-tracing.md")
-	if _, err := os.Stat(auxFile); os.IsNotExist(err) {
-		t.Fatal("expected auxiliary file root-cause-tracing.md to be extracted")
+	// ops-task SKILL.md should have frontmatter with a name field.
+	skillFile := filepath.Join(dir, "ops-task", "SKILL.md")
+	data, err := os.ReadFile(skillFile)
+	if err != nil {
+		t.Fatalf("reading ops-task SKILL.md: %v", err)
+	}
+	if !strings.Contains(string(data), "name:") {
+		t.Fatal("ops-task SKILL.md missing frontmatter name field")
 	}
 }
 
@@ -74,23 +78,13 @@ func TestExtractEmbeddedSkills_DiscoverableByDiscoverSkills(t *testing.T) {
 	env := NewLocalExecutionEnvironment(root)
 	skills := DiscoverSkills(env, dir)
 
-	// Should find all 14 superpowers skills.
-	if len(skills) < 14 {
-		t.Fatalf("expected at least 14 skills, got %d: %v", len(skills), builtinSkillNames(skills))
+	// Should find the ops-task skill (only embedded skill remaining).
+	if len(skills) < 1 {
+		t.Fatalf("expected at least 1 skill, got %d: %v", len(skills), builtinSkillNames(skills))
 	}
 
-	// Spot-check key skills.
-	for _, name := range []string{
-		"test-driven-development",
-		"systematic-debugging",
-		"verification-before-completion",
-		"brainstorming",
-		"writing-plans",
-		"subagent-driven-development",
-	} {
-		if _, ok := skills[name]; !ok {
-			t.Errorf("expected skill %q to be discovered", name)
-		}
+	if _, ok := skills["ops-task"]; !ok {
+		t.Errorf("expected skill %q to be discovered", "ops-task")
 	}
 }
 
@@ -161,14 +155,8 @@ func TestEmbeddedSkills_InSystemPrompt(t *testing.T) {
 	if !strings.Contains(capturedSystem, "<skills>") {
 		t.Error("system prompt missing <skills> section")
 	}
-	if !strings.Contains(capturedSystem, "test-driven-development") {
-		t.Error("system prompt missing embedded TDD skill")
-	}
-	if !strings.Contains(capturedSystem, "systematic-debugging") {
-		t.Error("system prompt missing embedded systematic-debugging skill")
-	}
-	if !strings.Contains(capturedSystem, "verification-before-completion") {
-		t.Error("system prompt missing embedded verification-before-completion skill")
+	if !strings.Contains(capturedSystem, "ops-task") {
+		t.Error("system prompt missing embedded ops-task skill")
 	}
 }
 
@@ -258,15 +246,15 @@ func TestEmbeddedSkills_ProjectShadowsEmbedded(t *testing.T) {
 	}
 }
 
-func TestEmbeddedSkills_UseSkillReturnsTDDBody(t *testing.T) {
+func TestEmbeddedSkills_UseSkillReturnsOpsTaskBody(t *testing.T) {
 	root := t.TempDir()
 	initGitRepo(t, root)
 
 	c := llm.NewClient()
 
-	// Agent calls use_skill("test-driven-development"), then calls submit_result.
+	// Agent calls use_skill("ops-task"), then calls submit_result.
 	// Uses Anthropic profile because OpenAI uses read_file for skills.
-	skill := useSkillCall("s1", "test-driven-development")
+	skill := useSkillCall("s1", "ops-task")
 	comm := submitResultCall("c1", "done")
 
 	var skillResultContent string
@@ -282,7 +270,7 @@ func TestEmbeddedSkills_UseSkillReturnsTDDBody(t *testing.T) {
 					for _, part := range msg.Content {
 						if part.Kind == llm.ContentToolResult {
 							if content, ok := part.ToolResult.Content.(string); ok {
-								if strings.Contains(content, "TDD") || strings.Contains(content, "Test-Driven") {
+								if strings.Contains(content, "ops") || strings.Contains(content, "task") {
 									skillResultContent = content
 								}
 							}
@@ -301,35 +289,28 @@ func TestEmbeddedSkills_UseSkillReturnsTDDBody(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "implement a feature")
+	_, err = sess.ProcessInput(ctx, "fix the build")
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 	sess.Close()
 
 	if skillResultContent == "" {
-		t.Fatal("use_skill('test-driven-development') did not return the TDD skill body")
-	}
-
-	// Verify key content from the real superpowers TDD skill is present.
-	if !strings.Contains(skillResultContent, "NO PRODUCTION CODE WITHOUT A FAILING TEST FIRST") {
-		t.Error("TDD skill body missing 'NO PRODUCTION CODE WITHOUT A FAILING TEST FIRST'")
-	}
-	if !strings.Contains(skillResultContent, "Red-Green-Refactor") {
-		t.Error("TDD skill body missing 'Red-Green-Refactor'")
+		t.Fatal("use_skill('ops-task') did not return the ops-task skill body")
 	}
 }
 
-func TestEmbeddedSkills_UseSkillReturnsVerificationBody(t *testing.T) {
+func TestEmbeddedSkills_UseSkillUnknownReturnsError(t *testing.T) {
 	root := t.TempDir()
 	initGitRepo(t, root)
 
 	c := llm.NewClient()
 
-	skill := useSkillCall("s1", "verification-before-completion")
+	// Calling use_skill with a skill that doesn't exist should return an error.
+	skill := useSkillCall("s1", "nonexistent-skill")
 	comm := submitResultCall("c1", "done")
 
-	var skillResultContent string
+	var skillResultIsError bool
 	f := &fakeAdapter{
 		name: "anthropic",
 		steps: []func(req llm.Request) llm.Response{
@@ -337,12 +318,8 @@ func TestEmbeddedSkills_UseSkillReturnsVerificationBody(t *testing.T) {
 			func(req llm.Request) llm.Response {
 				for _, msg := range req.Messages {
 					for _, part := range msg.Content {
-						if part.Kind == llm.ContentToolResult {
-							if content, ok := part.ToolResult.Content.(string); ok {
-								if strings.Contains(content, "verification") || strings.Contains(content, "Verification") {
-									skillResultContent = content
-								}
-							}
+						if part.Kind == llm.ContentToolResult && part.ToolResult != nil {
+							skillResultIsError = part.ToolResult.IsError
 						}
 					}
 				}
@@ -364,11 +341,8 @@ func TestEmbeddedSkills_UseSkillReturnsVerificationBody(t *testing.T) {
 	}
 	sess.Close()
 
-	if skillResultContent == "" {
-		t.Fatal("use_skill('verification-before-completion') did not return the skill body")
-	}
-	if !strings.Contains(skillResultContent, "Evidence before claims") {
-		t.Error("verification skill body missing 'Evidence before claims'")
+	if !skillResultIsError {
+		t.Error("use_skill with unknown skill should return an error result")
 	}
 }
 
@@ -383,8 +357,9 @@ func TestEmbeddedSkills_AllSkillsLoadable(t *testing.T) {
 	skills := make(map[string]SkillMeta)
 	scanSkillsDir(dir, skills)
 
-	if len(skills) < 15 {
-		t.Fatalf("expected at least 15 embedded skills, got %d", len(skills))
+	// Only ops-task remains after superpowers skills were removed (commit 00f7327).
+	if len(skills) < 1 {
+		t.Fatalf("expected at least 1 embedded skill, got %d", len(skills))
 	}
 
 	for name, meta := range skills {
