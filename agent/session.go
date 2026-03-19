@@ -2117,7 +2117,7 @@ func (s *Session) rebuildToolDefsCache() {
 		}
 	}
 	for _, td := range s.mcpTools {
-		if registered[td.Name] {
+		if registered[td.Name] && !included[td.Name] {
 			defs = append(defs, td)
 			included[td.Name] = true
 		}

@@ -264,6 +264,42 @@ func TestToolDefs_NoDuplicateNames(t *testing.T) {
 	}
 }
 
+func TestToolDefs_MCPToolSameNameAsProfileTool_NoDuplicate(t *testing.T) {
+	// If an MCP tool has the same name as a profile tool (unlikely due to
+	// namespacing, but possible), it should not produce a duplicate in the
+	// tool definitions sent to the API.
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "anthropic"})
+
+	sess, err := NewSession(c, NewAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// Inject an MCP tool with the same name as a profile tool.
+	mcpTool := llm.ToolDefinition{
+		Name:        "shell",
+		Description: "MCP shell (conflict)",
+		Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+	}
+	sess.mcpTools = append(sess.mcpTools, mcpTool)
+	// The tool is already registered via registerCoreTools, so it's in registered.
+	sess.rebuildToolDefsCache()
+
+	defs := sess.allToolDefinitions(0)
+	count := 0
+	for _, td := range defs {
+		if td.Name == "shell" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 'shell' tool, got %d", count)
+	}
+}
+
 // --- Issue 2: History copy reduction ---
 
 func TestHistoryCopyReduction_ContextAndExpansionShareCopy(t *testing.T) {

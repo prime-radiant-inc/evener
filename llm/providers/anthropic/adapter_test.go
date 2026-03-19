@@ -3100,4 +3100,78 @@ func TestAdapter_Complete_ToolResultWithImageData_DefaultMediaType(t *testing.T)
 	}
 }
 
+func TestAdapter_Complete_WebSearchWithTools_NoDuplicateNames(t *testing.T) {
+	// When WebSearch is true and function tools are present, the adapter
+	// injects a server-side web_search tool. If the caller also passes a
+	// function tool named "web_search", the API rejects with
+	// "Tool names must be unique." This test verifies the adapter strips
+	// the function-type web_search to prevent the collision.
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "msg_1", "type": "message", "role": "assistant", "model": "test",
+  "content": [{"type":"text","text":"ok"}],
+  "stop_reason": "end_turn",
+  "usage": {"input_tokens": 1, "output_tokens": 1}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Simulate a tool list that includes a function-type web_search alongside
+	// other function tools, plus WebSearch=true which triggers the adapter to
+	// inject its own server-side web_search.
+	_, err := a.Complete(ctx, llm.Request{
+		Model:    "claude-test",
+		Messages: []llm.Message{llm.User("search for docs")},
+		Tools: []llm.ToolDefinition{
+			{Name: "shell", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}},
+			{Name: "web_search", Description: "function-type shim", Parameters: map[string]any{
+				"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}},
+			}},
+		},
+		ToolChoice: &llm.ToolChoice{Mode: "auto"},
+		WebSearch:  true,
+		ProviderOptions: map[string]any{
+			"anthropic": map[string]any{"auto_cache": false},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	toolsAny, ok := gotBody["tools"].([]any)
+	if !ok {
+		t.Fatalf("tools not array: %#v", gotBody["tools"])
+	}
+
+	// Check for duplicate names.
+	seen := make(map[string]bool)
+	for _, tAny := range toolsAny {
+		tm, _ := tAny.(map[string]any)
+		name, _ := tm["name"].(string)
+		if name == "" {
+			continue
+		}
+		if seen[name] {
+			t.Errorf("duplicate tool name %q in Anthropic request body", name)
+		}
+		seen[name] = true
+	}
+
+	// The server-side web_search should be present.
+	if !seen["web_search"] {
+		t.Error("server-side web_search tool not found in request body")
+	}
+}
+
 func ptrInt(i int) *int { return &i }

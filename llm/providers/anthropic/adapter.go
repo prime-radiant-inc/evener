@@ -213,7 +213,20 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 	if includeTools || req.WebSearch {
 		var tools []map[string]any
 		if includeTools {
-			tools = toAnthropicTools(req.Tools)
+			toolDefs := req.Tools
+			if req.WebSearch {
+				// Strip any function-type "web_search" tool to avoid a
+				// duplicate name collision with the server-side web_search
+				// tool injected below.
+				filtered := toolDefs[:0:0]
+				for _, td := range toolDefs {
+					if td.Name != "web_search" {
+						filtered = append(filtered, td)
+					}
+				}
+				toolDefs = filtered
+			}
+			tools = toAnthropicTools(toolDefs)
 		}
 		if req.WebSearch {
 			tools = append(tools, map[string]any{
