@@ -383,7 +383,16 @@ func defaultToolLimit(toolName string) ToolOutputLimit {
 	}
 }
 
-func compileSchema(params map[string]any) (*jsonschema.Schema, error) {
+func compileSchema(params map[string]any) (schema *jsonschema.Schema, err error) {
+	// The jsonschema library has multiple panic() sites for malformed inputs.
+	// Recover so a bad MCP/plugin tool schema doesn't crash the process.
+	defer func() {
+		if r := recover(); r != nil {
+			schema = nil
+			err = fmt.Errorf("schema compilation panicked: %v", r)
+		}
+	}()
+
 	if params == nil {
 		// Default to empty object schema.
 		params = map[string]any{

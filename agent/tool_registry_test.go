@@ -456,6 +456,56 @@ func TestToolRegistry_Register_WarnsOnEmptyDescription(t *testing.T) {
 	}
 }
 
+func TestToolRegistry_Register_RecoversPanicInSchemaCompilation(t *testing.T) {
+	// compileSchema wraps the jsonschema library which has multiple panic()
+	// sites. A recover() in compileSchema must convert panics to errors so
+	// that a malformed MCP or plugin tool schema doesn't crash the process.
+
+	// We can't easily trigger the exact library panic in a unit test, so
+	// we verify the contract: Register never panics, even with pathological
+	// schema inputs that push the library to its limits.
+	reg := NewToolRegistry()
+	pathological := []struct {
+		name   string
+		params map[string]any
+	}{
+		{"nil-property-value", map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"x": nil},
+		}},
+		{"empty-map", map[string]any{}},
+		{"nested-self-ref", map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"x": map[string]any{"$ref": "#"}},
+		}},
+		{"deeply-nested", func() map[string]any {
+			inner := map[string]any{"type": "string"}
+			for i := 0; i < 50; i++ {
+				inner = map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"x": inner},
+				}
+			}
+			return inner
+		}()},
+	}
+
+	for _, tc := range pathological {
+		t.Run(tc.name, func(t *testing.T) {
+			// This must not panic — error return is acceptable.
+			_ = reg.Register(RegisteredTool{
+				Tool: llm.Tool{Definition: llm.ToolDefinition{
+					Name:       "test_" + tc.name,
+					Parameters: tc.params,
+				}},
+				Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+					return nil, nil
+				},
+			})
+		})
+	}
+}
+
 func TestExecuteCall_ImageResult_PopulatesImageFields(t *testing.T) {
 	reg := NewToolRegistry()
 	imgData := []byte{0x89, 0x50, 0x4E, 0x47} // PNG magic bytes
