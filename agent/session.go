@@ -2109,6 +2109,11 @@ func (s *Session) rebuildToolDefsCache() {
 		if registered[canonical] {
 			defs = append(defs, td)
 			included[canonical] = true
+			// Also track the provider-mapped name so loop 3 (registry tools)
+			// won't add a registry tool whose canonical name matches the
+			// provider name (e.g. OpenAI maps glob→list_dir; the registry
+			// also has a separate list_dir tool that must be excluded).
+			included[td.Name] = true
 		}
 	}
 	for _, td := range s.mcpTools {
@@ -2919,13 +2924,18 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 	})
 
 	// Web search (Gemini only — see tool_web_search.go for why).
-	_ = reg.Register(RegisteredTool{
-		Tool: llm.Tool{Definition: defWebSearch()},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
-			query := fmt.Sprint(args["query"])
-			return s.webSearch(ctx, query)
-		},
-	})
+	// OpenAI and Anthropic handle web search natively via req.WebSearch;
+	// registering a function tool named "web_search" for those providers
+	// causes a duplicate name collision with the adapter-injected server tool.
+	if s.profile.ID() == "gemini" {
+		_ = reg.Register(RegisteredTool{
+			Tool: llm.Tool{Definition: defWebSearch()},
+			Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+				query := fmt.Sprint(args["query"])
+				return s.webSearch(ctx, query)
+			},
+		})
+	}
 
 	// Submit result (exits session).
 	// Use the profile's definition if available (it may have been modified by

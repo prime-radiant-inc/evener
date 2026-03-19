@@ -181,6 +181,89 @@ func TestCachedToolDefs_IncludesRegistryOnlyTools(t *testing.T) {
 	}
 }
 
+// --- web_search tool dedup (Anthropic duplicate tool names) ---
+
+func TestToolDefs_WebSearchExcludedForNonGemini(t *testing.T) {
+	// The web_search function tool is a shim for Gemini only (see tool_web_search.go).
+	// For Anthropic and OpenAI, native web search is used via req.WebSearch.
+	// Including the web_search function tool for Anthropic causes a duplicate
+	// "web_search" name (the adapter also injects a server-side web_search tool),
+	// which Anthropic's API rejects.
+	for _, tc := range []struct {
+		name    string
+		profile ProviderProfile
+		adapter string
+		want    bool // true = web_search should be present
+	}{
+		{"anthropic", NewAnthropicProfile("claude-test"), "anthropic", false},
+		{"openai", NewOpenAIProfile("gpt-test"), "openai", false},
+		{"gemini", NewGeminiProfile("gemini-test"), "gemini", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			c := llm.NewClient()
+			c.Register(&fakeAdapter{name: tc.adapter})
+
+			sess, err := NewSession(c, tc.profile, NewLocalExecutionEnvironment(dir), SessionConfig{})
+			if err != nil {
+				t.Fatalf("NewSession: %v", err)
+			}
+			defer sess.Close()
+
+			defs := sess.allToolDefinitions(0)
+			found := false
+			for _, td := range defs {
+				if td.Name == "web_search" {
+					found = true
+					break
+				}
+			}
+			if found != tc.want {
+				if tc.want {
+					t.Error("web_search tool should be present for Gemini but was not found")
+				} else {
+					t.Errorf("web_search function tool should NOT be in tool definitions for %s (causes duplicate name with native web search)", tc.name)
+				}
+			}
+		})
+	}
+}
+
+func TestToolDefs_NoDuplicateNames(t *testing.T) {
+	// Verify that no provider profile produces duplicate tool names in
+	// allToolDefinitions, which would be rejected by APIs like Anthropic.
+	for _, tc := range []struct {
+		name    string
+		profile ProviderProfile
+		adapter string
+	}{
+		{"anthropic", NewAnthropicProfile("claude-test"), "anthropic"},
+		{"openai", NewOpenAIProfile("gpt-test"), "openai"},
+		{"gemini", NewGeminiProfile("gemini-test"), "gemini"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			c := llm.NewClient()
+			c.Register(&fakeAdapter{name: tc.adapter})
+
+			sess, err := NewSession(c, tc.profile, NewLocalExecutionEnvironment(dir), SessionConfig{})
+			if err != nil {
+				t.Fatalf("NewSession: %v", err)
+			}
+			defer sess.Close()
+
+			defs := sess.allToolDefinitions(0)
+			seen := make(map[string]bool, len(defs))
+			for _, td := range defs {
+				if seen[td.Name] {
+					t.Errorf("duplicate tool name %q in allToolDefinitions", td.Name)
+				}
+				seen[td.Name] = true
+			}
+		})
+	}
+}
+
 // --- Issue 2: History copy reduction ---
 
 func TestHistoryCopyReduction_ContextAndExpansionShareCopy(t *testing.T) {
