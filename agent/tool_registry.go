@@ -131,6 +131,17 @@ func (r *ToolRegistry) Register(t RegisteredTool) error {
 		t.Limit = defaultToolLimit(t.Definition.Name)
 	}
 	if t.Schema == nil {
+		// Reuse already-compiled schema when re-registering a tool (e.g.
+		// registerCoreTools re-registers tools from NewToolRegistry). This
+		// avoids recompilation and guards against transient jsonschema
+		// library panics from os.Getwd() failures in ephemeral worktrees.
+		r.mu.RLock()
+		if existing, ok := r.tools[t.Definition.Name]; ok && existing.Schema != nil {
+			t.Schema = existing.Schema
+		}
+		r.mu.RUnlock()
+	}
+	if t.Schema == nil {
 		s, err := compileSchema(t.Definition.Parameters)
 		if err != nil {
 			return fmt.Errorf("tool %s schema: %w", t.Definition.Name, err)
@@ -408,10 +419,14 @@ func compileSchema(params map[string]any) (schema *jsonschema.Schema, err error)
 		return nil, err
 	}
 	c := jsonschema.NewCompiler()
-	if err := c.AddResource("schema.json", bytes.NewReader(b)); err != nil {
+	// Use an absolute URI so the library never calls filepath.Abs → os.Getwd().
+	// A relative URL like "schema.json" triggers os.Getwd() which can panic
+	// in transient environments (e.g. deleted git worktrees).
+	const schemaURI = "urn:serf:tool-schema"
+	if err := c.AddResource(schemaURI, bytes.NewReader(b)); err != nil {
 		return nil, err
 	}
-	return c.Compile("schema.json")
+	return c.Compile(schemaURI)
 }
 
 func toolValueToString(v any) string {

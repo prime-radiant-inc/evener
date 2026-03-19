@@ -506,6 +506,60 @@ func TestToolRegistry_Register_RecoversPanicInSchemaCompilation(t *testing.T) {
 	}
 }
 
+func TestRegister_ReusesCompiledSchemaOnReregistration(t *testing.T) {
+	// Regression test: registerCoreTools re-registers tools that were already
+	// registered by NewToolRegistry. Previously, each Register call recompiled
+	// the schema from scratch. If the jsonschema library panicked transiently
+	// (e.g. os.Getwd() failure in a deleted worktree), the re-registration
+	// failed even though the first registration succeeded. Register should
+	// reuse the already-compiled Schema when re-registering a tool with
+	// identical parameters.
+	reg := NewToolRegistry()
+	params := map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"file_path": map[string]any{"type": "string"}},
+		"required":   []string{"file_path"},
+	}
+	noop := func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+		return nil, nil
+	}
+
+	// First registration compiles the schema.
+	if err := reg.Register(RegisteredTool{
+		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "read_file", Parameters: params}},
+		Exec: noop,
+	}); err != nil {
+		t.Fatalf("first Register: %v", err)
+	}
+
+	// Verify schema was compiled.
+	reg.mu.RLock()
+	first := reg.tools["read_file"]
+	reg.mu.RUnlock()
+	if first.Schema == nil {
+		t.Fatal("expected compiled schema after first registration")
+	}
+
+	// Re-register the same tool (as registerCoreTools does) without Schema.
+	// Register should reuse the compiled Schema from the first registration.
+	if err := reg.Register(RegisteredTool{
+		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "read_file", Parameters: params}},
+		Exec: noop,
+	}); err != nil {
+		t.Fatalf("second Register: %v", err)
+	}
+
+	reg.mu.RLock()
+	second := reg.tools["read_file"]
+	reg.mu.RUnlock()
+	if second.Schema == nil {
+		t.Fatal("expected compiled schema after second registration")
+	}
+	if first.Schema != second.Schema {
+		t.Fatal("Register should reuse the compiled schema from the first registration, got a different pointer")
+	}
+}
+
 func TestExecuteCall_ImageResult_PopulatesImageFields(t *testing.T) {
 	reg := NewToolRegistry()
 	imgData := []byte{0x89, 0x50, 0x4E, 0x47} // PNG magic bytes

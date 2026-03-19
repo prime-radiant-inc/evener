@@ -323,10 +323,12 @@ func compileSchema(params map[string]any) (*jsonschema.Schema, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := c.AddResource("schema.json", bytes.NewReader(b)); err != nil {
+	// Use an absolute URI so the library never calls filepath.Abs → os.Getwd().
+	const schemaURI = "urn:serf:tool-schema"
+	if err := c.AddResource(schemaURI, bytes.NewReader(b)); err != nil {
 		return nil, err
 	}
-	return c.Compile("schema.json")
+	return c.Compile(schemaURI)
 }
 
 func executeToolCalls(ctx context.Context, toolIndex map[string]Tool, calls []ToolCallData, messages []Message, repairFn func(context.Context, ToolCallData, error) (json.RawMessage, error)) []ToolResultData {
