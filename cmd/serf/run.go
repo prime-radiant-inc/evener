@@ -31,6 +31,7 @@ type runConfig struct {
 	enableReviewerGate bool     // --enable-reviewer-gate
 	noAutoVerify       bool     // --no-auto-verify
 	maxSubagentDepth   int      // --max-subagent-depth (-1=default)
+	shareTaskStore     bool     // --share-task-store
 	resultToolName     string   // --result-tool-name override
 	reasoningEffort    string   // --reasoning-effort override (or SERF_REASONING_EFFORT)
 	contextStrategy    string   // --context-strategy
@@ -170,7 +171,8 @@ func run(ctx context.Context, cfg runConfig) error {
 			MaxToolRoundsPerInput: cmdutil.MaxRoundsToConfig(cfg.maxRounds),
 			MinResultRound:        cfg.minResultRound,
 			EnableReviewerGate:    cfg.enableReviewerGate,
-			DisableAutoVerify:     cfg.noAutoVerify,
+			DisableAutoVerify:      cfg.noAutoVerify,
+			ShareTasksWithChildren: cfg.shareTaskStore,
 			ResultToolName:        cfg.resultToolName,
 			StateDir:              stateDir,
 			SystemPromptFile:      cfg.systemPrompt,

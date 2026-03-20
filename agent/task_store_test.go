@@ -1226,6 +1226,131 @@ func TestTaskStore_AutoVerifyPromptFocusesOnRejection(t *testing.T) {
 	}
 }
 
+func TestSharedTaskStore_ChildUsesParentStore(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	// Create parent session and populate its task store.
+	parentSess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		DisableAutoVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("NewSession (parent): %v", err)
+	}
+	defer parentSess.Close()
+
+	parentStore := parentSess.getOrCreateTaskStore()
+	parentStore.Append([]TaskInput{
+		{Type: TaskTypeResearch, Description: "Shared task", Prompt: "Do shared work"},
+	})
+
+	// Create child session with SharedTaskStore pointing to parent's store.
+	childSess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		SharedTaskStore: parentStore,
+	})
+	if err != nil {
+		t.Fatalf("NewSession (child): %v", err)
+	}
+	defer childSess.Close()
+
+	childStore := childSess.getOrCreateTaskStore()
+
+	// Child should see parent's tasks.
+	childTasks := childStore.View()
+	if len(childTasks) != 1 {
+		t.Fatalf("child expected 1 task from parent, got %d", len(childTasks))
+	}
+	if childTasks[0].Description != "Shared task" {
+		t.Fatalf("child task description: got %q, want %q", childTasks[0].Description, "Shared task")
+	}
+
+	// Child adds a task — parent should see it too.
+	childStore.Append([]TaskInput{
+		{Type: TaskTypeResearch, Description: "Child task", Prompt: "Child work"},
+	})
+
+	parentTasks := parentStore.View()
+	if len(parentTasks) != 2 {
+		t.Fatalf("parent expected 2 tasks after child append, got %d", len(parentTasks))
+	}
+}
+
+func TestSharedTaskStore_ShareTasksWithChildrenConfig(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	// Parent with ShareTasksWithChildren enabled.
+	parentSess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		ShareTasksWithChildren: true,
+		DisableAutoVerify:      true,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer parentSess.Close()
+
+	// Populate parent task store.
+	parentStore := parentSess.getOrCreateTaskStore()
+	parentStore.Append([]TaskInput{
+		{Type: TaskTypeResearch, Description: "Shared via config", Prompt: "Work"},
+	})
+
+	// Verify config propagation: subCfg should have SharedTaskStore set.
+	// We can't easily call spawnAgent in a unit test, so verify the config
+	// field is correctly set and the child would pick it up.
+	subCfg := parentSess.cfg
+	subCfg.SharedTaskStore = nil // Reset to simulate fresh subCfg copy
+	if parentSess.cfg.ShareTasksWithChildren {
+		subCfg.SharedTaskStore = parentSess.getOrCreateTaskStore()
+	}
+
+	childSess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), subCfg)
+	if err != nil {
+		t.Fatalf("NewSession (child): %v", err)
+	}
+	defer childSess.Close()
+
+	childTasks := childSess.getOrCreateTaskStore().View()
+	if len(childTasks) != 1 || childTasks[0].Description != "Shared via config" {
+		t.Fatalf("child should see parent task via ShareTasksWithChildren, got: %v", childTasks)
+	}
+}
+
+func TestSharedTaskStore_IsolatedByDefault(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	// Parent with tasks.
+	parentSess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		DisableAutoVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("NewSession (parent): %v", err)
+	}
+	defer parentSess.Close()
+
+	parentStore := parentSess.getOrCreateTaskStore()
+	parentStore.Append([]TaskInput{
+		{Type: TaskTypeResearch, Description: "Parent task", Prompt: "Parent work"},
+	})
+
+	// Child WITHOUT SharedTaskStore — should have its own empty store.
+	childSess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession (child): %v", err)
+	}
+	defer childSess.Close()
+
+	childStore := childSess.getOrCreateTaskStore()
+	childTasks := childStore.View()
+	if len(childTasks) != 0 {
+		t.Fatalf("child expected 0 tasks (isolated), got %d", len(childTasks))
+	}
+}
+
 func TestTaskListTool_AppendShowsProgressAndNextTask(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()

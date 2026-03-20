@@ -86,6 +86,11 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	subCfg.ParentSessionID = s.id
 	subCfg.SubagentTask = task
 	subCfg.Depth = depth + 1
+	if s.cfg.ShareTasksWithChildren {
+		subCfg.SharedTaskStore = s.getOrCreateTaskStore()
+	} else {
+		subCfg.SharedTaskStore = nil
+	}
 	if callID, ok := ctx.Value(ctxToolCallID).(string); ok {
 		subCfg.ParentToolCallID = callID
 	}

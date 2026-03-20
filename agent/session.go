@@ -130,6 +130,11 @@ type SessionConfig struct {
 	// (e.g. toil) already provides its own review workflow.
 	DisableAutoVerify bool `json:"disable_auto_verify,omitempty"`
 
+	// ShareTasksWithChildren, when true, passes the parent's task store to
+	// child sessions spawned via spawn_agent. Both parent and children see
+	// the same task list, enabling cross-session task coordination.
+	ShareTasksWithChildren bool `json:"share_tasks_with_children,omitempty"`
+
 	// ResultToolName overrides the name of the result tool.
 	// When set, all internal references use this name instead of "communicate".
 	// Used for A/B testing tool names. Empty means "communicate".
@@ -171,6 +176,10 @@ type SessionConfig struct {
 	// ExportATIFPath, when non-empty, causes Session.Close to export an ATIF v1.6
 	// trajectory JSON file to this path. Only root sessions (Depth==0) export.
 	ExportATIFPath string `json:"-"`
+
+	// SharedTaskStore, when non-nil, is used instead of creating a per-session
+	// task store. Set by spawnAgent when ShareTasksWithChildren is true.
+	SharedTaskStore *TaskStore `json:"-"`
 }
 
 func (c *SessionConfig) applyDefaults() {
@@ -3146,6 +3155,10 @@ func applyThresholdScale(cm *ContextManager, scale float64) {
 
 func (s *Session) getOrCreateTaskStore() *TaskStore {
 	s.taskStoreOnce.Do(func() {
+		if s.cfg.SharedTaskStore != nil {
+			s.taskStore = s.cfg.SharedTaskStore
+			return
+		}
 		dir := s.stateDir
 		if dir == "" {
 			dir = s.env.WorkingDirectory()
