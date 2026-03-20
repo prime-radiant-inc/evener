@@ -129,19 +129,19 @@ func (o updateFileOp) apply(rootDir string) ([]string, error) {
 			switch prefix {
 			case ' ':
 				if pos >= len(origLines) {
-					return nil, fmt.Errorf("apply_patch: context mismatch in %s: want %q at line %d", o.path, body, pos+1)
+					return nil, fmt.Errorf("apply_patch: context mismatch in %s: want %q at line %d but file only has %d lines", o.path, body, pos+1, len(origLines))
 				}
 				if !fuzzyLineMatch(origLines[pos], body) {
-					return nil, fmt.Errorf("apply_patch: context mismatch in %s: want %q at line %d", o.path, body, pos+1)
+					return nil, fmt.Errorf("apply_patch: context mismatch in %s: want %q at line %d, got %q", o.path, body, pos+1, origLines[pos])
 				}
 				out = append(out, origLines[pos])
 				pos++
 			case '-':
 				if pos >= len(origLines) {
-					return nil, fmt.Errorf("apply_patch: delete mismatch in %s: want %q at line %d", o.path, body, pos+1)
+					return nil, fmt.Errorf("apply_patch: delete mismatch in %s: want %q at line %d but file only has %d lines", o.path, body, pos+1, len(origLines))
 				}
 				if !fuzzyLineMatch(origLines[pos], body) {
-					return nil, fmt.Errorf("apply_patch: delete mismatch in %s: want %q at line %d", o.path, body, pos+1)
+					return nil, fmt.Errorf("apply_patch: delete mismatch in %s: want %q at line %d, got %q", o.path, body, pos+1, origLines[pos])
 				}
 				pos++
 			case '+':
