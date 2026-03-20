@@ -229,8 +229,10 @@ func defSubmitResultWithRequiredDataKeys(requiredKeys []string) llm.ToolDefiniti
 	dataProps := map[string]any{}
 	for _, k := range requiredKeys {
 		// Heuristic: most orchestrator-required keys are structured lists.
+		// Keys ending in "_results" are objects keyed by ID, not arrays.
 		propType := "object"
-		if strings.HasSuffix(k, "s") || strings.HasSuffix(k, "_list") || strings.HasSuffix(k, "_ids") {
+		if strings.HasSuffix(k, "_list") || strings.HasSuffix(k, "_ids") ||
+			(strings.HasSuffix(k, "s") && !strings.HasSuffix(k, "_results")) {
 			propType = "array"
 		}
 		var propSchema map[string]any

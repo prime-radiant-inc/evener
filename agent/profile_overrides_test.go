@@ -131,6 +131,33 @@ func TestWithSubmitResultRequiredDataKeys_TasksSchemaHasItems(t *testing.T) {
 	t.Fatal("submit_result tool not found")
 }
 
+func TestWithSubmitResultRequiredDataKeys_StoryResultsIsObject(t *testing.T) {
+	// Regression: the suffix heuristic was typing "story_results" as array
+	// because it ends in "s". Keys ending in "_results" should be objects
+	// (keyed by ID), not arrays.
+	p := WithSubmitResultRequiredDataKeys(NewOpenAIProfile("gpt-5.2"), []string{"story_results"})
+
+	for _, td := range p.ToolDefinitions() {
+		if td.Name != "communicate" {
+			continue
+		}
+		props, _ := td.Parameters["properties"].(map[string]any)
+		output, _ := props["output"].(map[string]any)
+		outProps, _ := output["properties"].(map[string]any)
+		data, _ := outProps["data"].(map[string]any)
+		dataProps, _ := data["properties"].(map[string]any)
+		sr, _ := dataProps["story_results"].(map[string]any)
+		if sr["type"] != "object" {
+			t.Fatalf("story_results.type=%v, want %q", sr["type"], "object")
+		}
+		if sr["additionalProperties"] != false {
+			t.Fatalf("story_results.additionalProperties=%v, want false", sr["additionalProperties"])
+		}
+		return
+	}
+	t.Fatal("submit_result tool not found")
+}
+
 func TestWithAllowedDecisions_AddsDecisionWithEnum(t *testing.T) {
 	p := WithAllowedDecisions(NewOpenAIProfile("gpt-5.2"), []string{"approved", "changes_requested"})
 
