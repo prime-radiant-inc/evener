@@ -2335,6 +2335,28 @@ func (s *Session) initSessionState() ([]PromptSource, error) {
 		reg.mu.Unlock()
 	}
 	s.reg = reg
+
+	// Enforce tool restrictions for the root session's persona. The coordinator
+	// (or any named agent used as root) declares a tools list in its frontmatter
+	// but this was previously only enforced for subagents. Without enforcement
+	// the model sees write_file/apply_patch and does implementation itself.
+	// Only applied in non-interactive mode (benchmarks) to avoid breaking
+	// interactive use where broader tool access is expected.
+	if s.cfg.BasePromptOverride == "" && s.cfg.Depth == 0 && s.cfg.NonInteractive {
+		agentName := s.cfg.AgentName
+		if agentName == "" {
+			agentName = "coordinator"
+		}
+		if agent, ok := s.pluginAgents[agentName]; ok && len(agent.Tools) > 0 {
+			allowed := make(map[string]bool, len(agent.Tools))
+			for _, t := range agent.Tools {
+				allowed[t] = true
+			}
+			allowed["task_list"] = true
+			reg.RestrictKeepingResultTool(allowed, s.resultToolName())
+		}
+	}
+
 	s.coreToolNames = reg.RegisteredNames()
 
 	if err := s.initMCP(); err != nil {
