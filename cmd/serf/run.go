@@ -29,6 +29,8 @@ type runConfig struct {
 	maxRounds          int      // --max-rounds (-1=default, 0=unlimited, >0=limit)
 	minResultRound     int      // --min-result-round (0=no minimum)
 	enableReviewerGate bool     // --enable-reviewer-gate
+	noAutoVerify       bool     // --no-auto-verify
+	maxSubagentDepth   int      // --max-subagent-depth (-1=default)
 	resultToolName     string   // --result-tool-name override
 	reasoningEffort    string   // --reasoning-effort override (or SERF_REASONING_EFFORT)
 	contextStrategy    string   // --context-strategy
@@ -168,6 +170,7 @@ func run(ctx context.Context, cfg runConfig) error {
 			MaxToolRoundsPerInput: cmdutil.MaxRoundsToConfig(cfg.maxRounds),
 			MinResultRound:        cfg.minResultRound,
 			EnableReviewerGate:    cfg.enableReviewerGate,
+			DisableAutoVerify:     cfg.noAutoVerify,
 			ResultToolName:        cfg.resultToolName,
 			StateDir:              stateDir,
 			SystemPromptFile:      cfg.systemPrompt,
@@ -181,6 +184,9 @@ func run(ctx context.Context, cfg runConfig) error {
 			ContextStrategy:       cfg.contextStrategy,
 			ExportATIFPath:        cfg.exportATIF,
 			NonInteractive:        true,
+		}
+		if cfg.maxSubagentDepth >= 0 {
+			sessionCfg.MaxSubagentDepth = cfg.maxSubagentDepth
 		}
 		if effort.Set {
 			sessionCfg.ReasoningEffort = effort.Value

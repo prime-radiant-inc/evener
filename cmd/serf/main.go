@@ -44,6 +44,8 @@ func main() {
 	maxRounds := flag.Int("max-rounds", -1, "max tool rounds per input (0=unlimited, default: 200)")
 	minResultRound := flag.Int("min-result-round", 0, "minimum round before communicate is accepted (0=no minimum)")
 	enableReviewerGate := flag.Bool("enable-reviewer-gate", false, "spawn reviewer subagent to validate communicate at depth 0")
+	noAutoVerify := flag.Bool("no-auto-verify", false, "disable auto-generated verify tasks for implement/fix tasks")
+	maxSubagentDepth := flag.Int("max-subagent-depth", -1, "max subagent nesting depth (default: 1)")
 	resultToolName := flag.String("result-tool-name", "", "override the result tool name (default: communicate)")
 	reasoningEffort := flag.String("reasoning-effort", "", "reasoning effort: low|medium|high|xhigh|none")
 	exportATIF := flag.String("export-atif", "", "export ATIF v1.6 trajectory to this path on session close")
@@ -78,6 +80,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  --state-dir <path>   Override runtime state directory (sessions, tasks)\n")
 		fmt.Fprintf(os.Stderr, "  --max-rounds <n>     Max tool rounds per input (0=unlimited, default: 200)\n")
 		fmt.Fprintf(os.Stderr, "  --min-result-round <n> Minimum round before result submission accepted (default: 0=no minimum)\n")
+		fmt.Fprintf(os.Stderr, "  --max-subagent-depth <n> Max subagent nesting depth (default: 1)\n")
+		fmt.Fprintf(os.Stderr, "  --no-auto-verify     Disable auto-generated verify tasks for implement/fix tasks\n")
 		fmt.Fprintf(os.Stderr, "  --context-strategy <name> Context management strategy: compact|recall|session-log|ooda (default: compact)\n")
 		fmt.Fprintf(os.Stderr, "  --verbose            Emit NDJSON events to stderr (replaces human-readable output)\n")
 		fmt.Fprintf(os.Stderr, "  --no-project-prompts Suppress .serf/prompts/ loading (match Docker container behavior)\n")
@@ -164,6 +168,8 @@ func main() {
 		maxRounds:          *maxRounds,
 		minResultRound:     *minResultRound,
 		enableReviewerGate: *enableReviewerGate,
+		noAutoVerify:       *noAutoVerify,
+		maxSubagentDepth:   *maxSubagentDepth,
 		resultToolName:     *resultToolName,
 		reasoningEffort:    *reasoningEffort,
 		contextStrategy:    *contextStrategy,

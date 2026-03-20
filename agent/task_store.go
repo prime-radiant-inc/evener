@@ -62,14 +62,20 @@ type TaskStore struct {
 	tasks  []Task
 	nextID int
 	path   string
+
+	// AutoVerify controls whether implement/fix tasks automatically generate
+	// a companion verify task. Defaults to true. Set to false when an external
+	// orchestrator (e.g. toil) already provides its own review nodes.
+	AutoVerify bool
 }
 
 // NewTaskStore creates a TaskStore that persists to <stateDir>/tasks/<sessionID>.json.
 // Each session (parent or subagent) gets its own task file, ensuring isolation.
 func NewTaskStore(stateDir, sessionID string) *TaskStore {
 	return &TaskStore{
-		nextID: 1,
-		path:   filepath.Join(stateDir, "tasks", sessionID+".json"),
+		nextID:     1,
+		path:       filepath.Join(stateDir, "tasks", sessionID+".json"),
+		AutoVerify: true,
 	}
 }
 
@@ -256,22 +262,24 @@ func (s *TaskStore) Append(items []TaskInput) ([]Task, error) {
 		}
 	}
 
-	// Auto-create review tasks for implementation and fix tasks.
+	// Auto-create review tasks for implementation and fix tasks (when enabled).
 	var verifyTasks []Task
-	for _, t := range added {
-		if t.Type != TaskTypeImplement && t.Type != TaskTypeFix {
-			continue
+	if s.AutoVerify {
+		for _, t := range added {
+			if t.Type != TaskTypeImplement && t.Type != TaskTypeFix {
+				continue
+			}
+			vt := Task{
+				ID:          s.nextID,
+				Type:        TaskTypeVerify,
+				Description: "Verify: " + t.Description,
+				Prompt:      "Dispatch a reviewer subagent (agent_type=\"reviewer\") to check this work. Its job is to find anything that would cause an external evaluator to reject the submission: wrong output, missing deliverables, leftover build artifacts or scratch files in the deliverable directory, or broken functionality. It is rewarded for finding legitimate problems, not for confirming success.",
+				Status:      TaskOpen,
+				DependsOn:   []int{t.ID},
+			}
+			s.nextID++
+			verifyTasks = append(verifyTasks, vt)
 		}
-		vt := Task{
-			ID:          s.nextID,
-			Type:        TaskTypeVerify,
-			Description: "Verify: " + t.Description,
-			Prompt:      "Dispatch a reviewer subagent (agent_type=\"reviewer\") to check this work. Its job is to find anything that would cause an external evaluator to reject the submission: wrong output, missing deliverables, leftover build artifacts or scratch files in the deliverable directory, or broken functionality. It is rewarded for finding legitimate problems, not for confirming success.",
-			Status:      TaskOpen,
-			DependsOn:   []int{t.ID},
-		}
-		s.nextID++
-		verifyTasks = append(verifyTasks, vt)
 	}
 
 	s.tasks = append(s.tasks, added...)

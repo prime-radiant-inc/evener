@@ -1107,6 +1107,103 @@ func TestTaskStore_AutoVerifyAfterFixTask(t *testing.T) {
 	}
 }
 
+func TestTaskStore_AutoVerifyDisabled(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTaskStore(dir, "test-session")
+	s.AutoVerify = false
+
+	added, err := s.Append([]TaskInput{
+		{Type: TaskTypeImplement, Description: "Build widget", Prompt: "Create widget.go"},
+	})
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if len(added) != 1 {
+		t.Fatalf("expected 1 added task, got %d", len(added))
+	}
+
+	all := s.View()
+	// No auto-generated verify task when AutoVerify is false.
+	if len(all) != 1 {
+		t.Fatalf("expected 1 task (auto-verify disabled), got %d", len(all))
+	}
+	if all[0].Type != TaskTypeImplement {
+		t.Errorf("task type = %q, want %q", all[0].Type, TaskTypeImplement)
+	}
+}
+
+func TestTaskStore_AutoVerifyDisabledForFixTasks(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTaskStore(dir, "test-session")
+	s.AutoVerify = false
+
+	added, err := s.Append([]TaskInput{
+		{Type: TaskTypeFix, Description: "Fix edge case", Prompt: "Handle negative input"},
+	})
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if len(added) != 1 {
+		t.Fatalf("expected 1 added task, got %d", len(added))
+	}
+
+	all := s.View()
+	if len(all) != 1 {
+		t.Fatalf("expected 1 task (auto-verify disabled), got %d", len(all))
+	}
+}
+
+func TestTaskStore_AutoVerifyDefaultEnabled(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTaskStore(dir, "test-session")
+	// AutoVerify defaults to true — verify tasks should still be created.
+
+	s.Append([]TaskInput{
+		{Type: TaskTypeImplement, Description: "Build it", Prompt: "Do the thing"},
+	})
+
+	all := s.View()
+	if len(all) != 2 {
+		t.Fatalf("expected 2 tasks (implement + verify with default AutoVerify=true), got %d", len(all))
+	}
+}
+
+func TestTaskListTool_DisableAutoVerifyViaSessionConfig(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		DisableAutoVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx := context.Background()
+	env := sess.env
+
+	// Append an implement task — should NOT generate auto-verify.
+	sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:   "c1",
+		Name: "task_list",
+		Arguments: json.RawMessage(`{
+			"action": "append",
+			"tasks": [{"type": "implement", "description": "Build widget", "prompt": "Create widget.go"}]
+		}`),
+	})
+
+	store := sess.getOrCreateTaskStore()
+	all := store.View()
+	if len(all) != 1 {
+		t.Fatalf("expected 1 task (auto-verify disabled via config), got %d", len(all))
+	}
+	if all[0].Type != TaskTypeImplement {
+		t.Errorf("task type = %q, want %q", all[0].Type, TaskTypeImplement)
+	}
+}
+
 func TestTaskStore_AutoVerifyPromptFocusesOnRejection(t *testing.T) {
 	dir := t.TempDir()
 	s := NewTaskStore(dir, "test-session")

@@ -125,6 +125,11 @@ type SessionConfig struct {
 	// submit_result always passes through directly.
 	EnableReviewerGate bool `json:"enable_reviewer_gate,omitempty"`
 
+	// DisableAutoVerify, when true, prevents the task store from auto-generating
+	// verify tasks for implement/fix tasks. Use when an external orchestrator
+	// (e.g. toil) already provides its own review workflow.
+	DisableAutoVerify bool `json:"disable_auto_verify,omitempty"`
+
 	// ResultToolName overrides the name of the result tool.
 	// When set, all internal references use this name instead of "communicate".
 	// Used for A/B testing tool names. Empty means "communicate".
@@ -3162,6 +3167,9 @@ func (s *Session) getOrCreateTaskStore() *TaskStore {
 			dir = s.env.WorkingDirectory()
 		}
 		s.taskStore = NewTaskStore(dir, s.id)
+		if s.cfg.DisableAutoVerify {
+			s.taskStore.AutoVerify = false
+		}
 		_ = s.taskStore.Load()
 	})
 	return s.taskStore
