@@ -46,8 +46,8 @@ func TestBuiltinAgents_LoadsExplorer(t *testing.T) {
 	if explorer.Name != "explorer" {
 		t.Errorf("Name = %q, want %q", explorer.Name, "explorer")
 	}
-	if explorer.Model != "inherit" {
-		t.Errorf("Model = %q, want %q", explorer.Model, "inherit")
+	if explorer.Model != "openai/gpt-5.4-mini" {
+		t.Errorf("Model = %q, want %q", explorer.Model, "openai/gpt-5.4-mini")
 	}
 	if explorer.PluginName != "builtin" {
 		t.Errorf("PluginName = %q, want %q", explorer.PluginName, "builtin")
@@ -344,7 +344,7 @@ func TestSpawnAgent_BlockingWithExplorerAgent(t *testing.T) {
 	}
 
 	// Should have used the explorer's system prompt.
-	if !strings.Contains(subagentSystemPrompt, "read-only exploration agent") {
+	if !strings.Contains(subagentSystemPrompt, "workspace scout") {
 		t.Errorf("subagent should use explorer prompt, got:\n%.200s...", subagentSystemPrompt)
 	}
 }
@@ -424,12 +424,12 @@ func TestSpawnAgent_PluginAgentGetsComposedPrompt(t *testing.T) {
 	if !strings.Contains(subagentSystemPrompt, "communicate") {
 		t.Error("subagent prompt should contain communicate guidance from core")
 	}
-	if !strings.Contains(subagentSystemPrompt, "read-only exploration agent") {
+	if !strings.Contains(subagentSystemPrompt, "workspace scout") {
 		t.Error("subagent prompt should contain agent-specific prompt (explorer)")
 	}
 	// Core should appear before the agent-specific part.
 	coreIdx := strings.Index(subagentSystemPrompt, core[:50])
-	agentIdx := strings.Index(subagentSystemPrompt, "read-only exploration agent")
+	agentIdx := strings.Index(subagentSystemPrompt, "workspace scout")
 	if coreIdx >= agentIdx {
 		t.Error("core prompt should appear before agent-specific prompt")
 	}
