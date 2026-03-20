@@ -1225,3 +1225,90 @@ func TestTaskStore_AutoVerifyPromptFocusesOnRejection(t *testing.T) {
 		t.Errorf("verify prompt should incentivize finding real problems, got: %s", verify.Prompt)
 	}
 }
+
+func TestTaskListTool_AppendShowsProgressAndNextTask(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		DisableAutoVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx := context.Background()
+	env := sess.env
+
+	// Append tasks with dependencies: A (no deps), B→A.
+	appendRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:   "c1",
+		Name: "task_list",
+		Arguments: json.RawMessage(`{
+			"action": "append",
+			"tasks": [
+				{"type": "research", "description": "Task A", "prompt": "Do A"},
+				{"type": "research", "description": "Task B", "prompt": "Do B", "depends_on": [1]}
+			]
+		}`),
+	})
+	if appendRes.IsError {
+		t.Fatalf("append error: %s", appendRes.Output)
+	}
+
+	// Append response should include progress info.
+	if !strings.Contains(appendRes.Output, "Progress") {
+		t.Fatalf("append response should include Progress summary: %s", appendRes.Output)
+	}
+	// Should show Task A as the next eligible task.
+	if !strings.Contains(appendRes.Output, "Task A") {
+		t.Fatalf("append response should mention next eligible task: %s", appendRes.Output)
+	}
+	// Should suggest marking in_progress.
+	if !strings.Contains(appendRes.Output, "in_progress") {
+		t.Fatalf("append response should suggest marking in_progress: %s", appendRes.Output)
+	}
+}
+
+func TestTaskListTool_AppendShowsAllReady(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		DisableAutoVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx := context.Background()
+	env := sess.env
+
+	// Append two independent tasks (both eligible immediately).
+	appendRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:   "c1",
+		Name: "task_list",
+		Arguments: json.RawMessage(`{
+			"action": "append",
+			"tasks": [
+				{"type": "research", "description": "Task X", "prompt": "Do X"},
+				{"type": "research", "description": "Task Y", "prompt": "Do Y"}
+			]
+		}`),
+	})
+	if appendRes.IsError {
+		t.Fatalf("append error: %s", appendRes.Output)
+	}
+
+	// Both tasks should appear as ready.
+	if !strings.Contains(appendRes.Output, "Task X") {
+		t.Fatalf("append response should mention Task X: %s", appendRes.Output)
+	}
+	if !strings.Contains(appendRes.Output, "Task Y") {
+		t.Fatalf("append response should mention Task Y: %s", appendRes.Output)
+	}
+}

@@ -73,3 +73,36 @@ func taskReminderNudge() string {
 	return "You have a task_list tool available for organizing multi-step work. " +
 		"Consider creating a task list to track your progress."
 }
+
+// formatEligibleSummary appends progress and next-eligible task info to msg.
+// Used by both append and update handlers to avoid a separate view call.
+func formatEligibleSummary(msg *strings.Builder, store *TaskStore) {
+	eligible := store.NextEligible()
+	total, done := store.Progress()
+
+	msg.WriteString(fmt.Sprintf("Progress: %d/%d tasks complete.\n", done, total))
+
+	switch len(eligible) {
+	case 0:
+		if done == total {
+			msg.WriteString("All tasks complete.")
+		} else {
+			msg.WriteString("No tasks are currently ready (remaining tasks have unsatisfied dependencies).")
+		}
+	case 1:
+		msg.WriteString(fmt.Sprintf("\nNext task: #%d — %s.", eligible[0].ID, eligible[0].Description))
+		if eligible[0].Prompt != "" {
+			msg.WriteString(fmt.Sprintf("\nInstructions: %s", eligible[0].Prompt))
+		}
+		msg.WriteString("\nMark it in_progress to begin.")
+	default:
+		msg.WriteString("\nReady tasks:\n")
+		for _, t := range eligible {
+			msg.WriteString(fmt.Sprintf("  #%d — %s\n", t.ID, t.Description))
+			if t.Prompt != "" {
+				msg.WriteString(fmt.Sprintf("      Instructions: %s\n", t.Prompt))
+			}
+		}
+		msg.WriteString("Pick one and mark it in_progress.")
+	}
+}

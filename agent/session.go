@@ -2829,7 +2829,17 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 						DependsOn:   depIDs,
 					})
 				}
-				return store.Append(items)
+				added, err := store.Append(items)
+				if err != nil {
+					return nil, err
+				}
+
+				// Include progress and next-eligible tasks so the agent
+				// can start working without a separate view call.
+				var msg strings.Builder
+				msg.WriteString(fmt.Sprintf("Added %d task(s). ", len(added)))
+				formatEligibleSummary(&msg, store)
+				return msg.String(), nil
 			case "update":
 				raw, ok := args["updates"].([]any)
 				if !ok || len(raw) == 0 {
@@ -2882,35 +2892,9 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 					return "Updated.", nil
 				}
 
-				eligible := store.NextEligible()
-				total, done := store.Progress()
-
 				var msg strings.Builder
-				msg.WriteString(fmt.Sprintf("Updated. Progress: %d/%d tasks complete.\n", done, total))
-
-				switch len(eligible) {
-				case 0:
-					if done == total {
-						msg.WriteString("All tasks complete.")
-					} else {
-						msg.WriteString("No tasks are currently ready (remaining tasks have unsatisfied dependencies).")
-					}
-				case 1:
-					msg.WriteString(fmt.Sprintf("\nNext task: #%d — %s.", eligible[0].ID, eligible[0].Description))
-				if eligible[0].Prompt != "" {
-					msg.WriteString(fmt.Sprintf("\nInstructions: %s", eligible[0].Prompt))
-				}
-				msg.WriteString("\nMark it in_progress to begin.")
-				default:
-					msg.WriteString("\nReady tasks:\n")
-					for _, t := range eligible {
-						msg.WriteString(fmt.Sprintf("  #%d — %s\n", t.ID, t.Description))
-					if t.Prompt != "" {
-						msg.WriteString(fmt.Sprintf("      Instructions: %s\n", t.Prompt))
-					}
-					}
-					msg.WriteString("Pick one and mark it in_progress.")
-				}
+				msg.WriteString("Updated. ")
+				formatEligibleSummary(&msg, store)
 				return msg.String(), nil
 			default:
 				return nil, fmt.Errorf("unknown task_list action %q: use view, append, or update", action)
