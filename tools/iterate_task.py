@@ -263,7 +263,7 @@ def print_report(task: str, job_name: str):
             print(f"  {line}")
 
     print(f"\n--- Tokens ---")
-    print(f"  Prompt: {tokens['prompt']:,}  Completion: {tokens['completion']:,}  Cached: {tokens['cached']:,}")
+    print(f"  Prompt: {tokens.get('prompt') or 0:,}  Completion: {tokens.get('completion') or 0:,}  Cached: {tokens.get('cached') or 0:,}")
 
     print(f"\n--- Coordinator Timeline ---")
     for action in deleg["coordinator_actions"][:30]:
