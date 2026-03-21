@@ -5,11 +5,19 @@ a new session.
 
 ## Current State (March 21, 2026)
 
-**Shipped code:** commit 5921528 on main, pushed to GitHub
+**Shipped code:** commit 969e785 on main, pushed to GitHub
 **Model:** gpt-5.4 for evals
 **Baseline:** 56/88 = 64% on full 89-task terminal-bench (job: `full-89-ef120d4`)
 **High water mark:** 75/89 (84%) tasks ever passed across all runs
 **Skill:** `~/.claude/skills/benchmark-driven-improvement/SKILL.md`
+
+**Regression set** (must keep passing after every change):
+sanitize-git-repo, feal-linear-cryptanalysis, winning-avg-corewars,
+kv-store-grpc, build-pov-ray, regex-log, pypi-server, adaptive-rejection-sampler
+
+These span: delegation (sanitize-git-repo), domain research (feal-linear-cryptanalysis),
+complex implementation (winning-avg-corewars, kv-store-grpc), build systems (build-pov-ray),
+text processing (regex-log), service setup (pypi-server), R/statistics (adaptive-rejection-sampler).
 
 ## What's Been Done
 
