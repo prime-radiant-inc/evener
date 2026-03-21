@@ -180,6 +180,41 @@ func TestReadFile_NonImageBinaryStillErrors(t *testing.T) {
 	}
 }
 
+func TestReadFile_Image_EndToEnd_ToolExecResult(t *testing.T) {
+	// End-to-end: read_file on a real PNG → env returns base64 → parseImageResult
+	// extracts bytes → ToolExecResult has ImageData set. This is the path that
+	// sends images to the model for visual inspection.
+	dir := t.TempDir()
+	env := NewLocalExecutionEnvironment(dir)
+
+	// Write a minimal valid PNG (just the magic bytes + enough to detect).
+	pngData := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x01}
+	if err := os.WriteFile(filepath.Join(dir, "board.png"), pngData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Step 1: ReadFile returns base64 image output.
+	output, err := env.ReadFile("board.png", nil, nil)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.HasPrefix(output, "[image:") {
+		t.Fatalf("expected [image: prefix, got: %q", output[:min(len(output), 50)])
+	}
+
+	// Step 2: parseImageResult extracts the image data.
+	img := parseImageResult("board.png", output)
+	if img == nil {
+		t.Fatal("parseImageResult returned nil — image not detected")
+	}
+	if !bytes.Equal(img.Data, pngData) {
+		t.Fatalf("image data mismatch: got %d bytes, want %d", len(img.Data), len(pngData))
+	}
+	if img.MediaType != "image/png" {
+		t.Fatalf("MediaType = %q, want image/png", img.MediaType)
+	}
+}
+
 func TestEditFile_FuzzyMatchWhitespace(t *testing.T) {
 	dir := t.TempDir()
 	env := NewLocalExecutionEnvironment(dir)
