@@ -42,49 +42,64 @@ Full writeup: `docs/experiments/2026-03-17-gepa-prompt-optimization.md`
 
 **Active work plan:** `docs/experiments/2026-03-21-failure-inventory.md`
 
-Execute in this order:
+### Parallel experiment batch
 
-### 1. Chess-best-move regression investigation
-The overlay experiments (prompt only on coordinator) passed 3/5, but core.md versions
-pass ~1/5. Need to understand why and get a reliable solution.
+Run these as parallel branches from the current baseline. Each fix is one branch,
+one binary, one eval job. Use magic-kingdom concurrently or AWS spot instances.
 
-**Hypothesis:** Coordinator describing the image and passing text to implementer works
-better than implementer seeing the image directly.
+**Baseline commit:** 4d07812
 
-**Test plan:** Revert core.md vision to minimal, add description guidance to coordinator.md
-only. Run 5 reps.
+| Branch | File changed | Fix (general principle) | Target tasks | Reps |
+|--------|-------------|------------------------|-------------|------|
+| fix-vision-coordinator | coordinator.md | Coordinator describes images in text, passes description to implementer (not the image) | chess-best-move, gcode-to-text | 3 |
+| fix-write-early | core.md | "Write your best answer as soon as you have one. Improve it later." | chess-best-move, gcode-to-text, query-optimize | 3 |
+| fix-workspace-clean | coordinator.md | "Your verification must not leave permanent changes. Reset repos, remove test files." | db-wal-recovery, configure-git-webserver, git-multibranch, polyglot-c-py | 3 |
+| fix-read-tests | coordinator.md | "Read /tests/ before delegating. Include file path, directory, and format constraints." | polyglot-c-py, sqlite-with-gcov, install-windows-3.11 | 3 |
+| fix-escalate | subagent.md | "Report contradictory evidence prominently in your communicate." | fix-code-vulnerability | 3 |
+| fix-verify-literal | core.md | "Before submitting, re-read the task and verify each requirement literally. Check exact formats." | mcmc-sampling-stan, dna-insert, regex-chess | 3 |
+| fix-check-environment | core.md | "Verify your environment matches assumptions. Check versions, interfaces, paths." | qemu-alpine-ssh, mteb-retrieve | 3 |
 
-### 2. Write-early fix (3 tasks)
-chess-best-move, gcode-to-text, query-optimize all had answers but never wrote files.
+**Every branch also runs the regression set (1 rep each):**
+sanitize-git-repo, feal-linear-cryptanalysis, winning-avg-corewars,
+kv-store-grpc, build-pov-ray, regex-log, pypi-server, adaptive-rejection-sampler
 
-**Fix:** Add to core.md: "Write your best answer to the output file as soon as you have
-one. You can always improve it later."
+### Procedure
 
-**Test:** Run all 3 tasks × 3 reps.
+```
+1. For each branch:
+   git checkout -b BRANCH 4d07812
+   # make the one prompt change
+   go build ./...
+   git commit
+   GOOS=linux GOARCH=amd64 go build -o /tmp/serf-BRANCH ./cmd/serf/
 
-### 3. Workspace contamination fix (4 tasks)
-db-wal-recovery, configure-git-webserver, git-multibranch, polyglot-c-py.
+2. Launch all branches in parallel on magic-kingdom or spot instances
 
-**Fix:** Add to coordinator.md: "Your verification must not leave permanent changes."
+3. Collect results. For each branch:
+   - Target tasks: 2/3+ pass? → winner
+   - Regression set: all pass? → no regression
+   - If target improved but regression broke → reject
 
-**Test:** Run all 4 tasks × 3 reps.
+4. Merge all winners onto main:
+   git checkout main
+   git cherry-pick <winner commits>
 
-### 4. Read-tests fix (3 tasks)
-polyglot-c-py, sqlite-with-gcov, install-windows-3.11.
+5. Re-validate the combination:
+   run all target tasks + regression set with the combined binary
 
-**Fix:** Strengthen coordinator step 2 to explicitly check /tests/.
+6. Full eval on discriminators
+```
 
-**Test:** Run all 3 tasks × 3 reps.
+### Conflict notes
 
-### 5. Escalate-contradictions fix (1 task)
-fix-code-vulnerability (390/391 pass, wrong CWE).
+fix-write-early and fix-verify-literal and fix-check-environment all touch core.md.
+fix-vision-coordinator, fix-workspace-clean, and fix-read-tests all touch coordinator.md.
+Apply them in order within each file when merging. Re-validate after merge.
 
-**Fix:** Add to subagent.md: report contradictory evidence.
+### After the batch
 
-**Test:** Run × 3 reps.
-
-### 6. Full validation
-After all individual fixes validated, run full discriminator set.
+Update this notebook with results. Move completed fixes from "What's Next" to
+"What's Been Done". Update the experiment log table.
 
 ## Key Learnings (for future sessions)
 
