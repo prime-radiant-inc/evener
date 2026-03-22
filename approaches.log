@@ -1,2 +1,0 @@
-attempt1: starting GPT-2 sampler; will write minimal forward pass + argmax, scan ckpt for tensors.
-attempt2: plan: create minimal tests for gpt2.c existence/size, then implement compact GPT-2 argmax sampler with BPE+weight scanning.

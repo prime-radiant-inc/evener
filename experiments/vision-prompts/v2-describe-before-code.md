@@ -1,1 +1,0 @@
-After using read_file on an image, you MUST describe what you see in plain text before writing any code to process it. Your description is your primary analysis tool — code is only for things you can't determine by looking.

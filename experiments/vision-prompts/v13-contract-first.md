@@ -1,1 +1,0 @@
-Before you use vision to evaluate an image, you must write out exactly what information you want to get out of the image and what format you want that information in. After looking at the image, you must do your best to satisfy the contract you set for yourself.

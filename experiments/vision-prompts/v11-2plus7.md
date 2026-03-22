@@ -1,1 +1,0 @@
-After using read_file on an image, you MUST describe what you see in plain text before writing any code to process it. Your description is your primary analysis tool. Do not extract, crop, or process the image programmatically unless your visual description is insufficient to solve the problem.

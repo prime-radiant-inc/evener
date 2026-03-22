@@ -1,1 +1,0 @@
-When you look at an image, describe in detail what you see and how it answers the question you were trying to figure out.

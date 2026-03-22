@@ -1,1 +1,0 @@
-When you look at an image, say what you see out loud. Describe what you see in complete detail before writing any code to process it. Your visual description is your primary analysis — do not extract, crop, or process the image programmatically unless your description is insufficient to solve the problem.
