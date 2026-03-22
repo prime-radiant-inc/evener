@@ -1492,6 +1492,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 	consecutiveEmptyResponses := 0
 	totalEmptyResponses := 0
 	consecutiveBareTextResponses := 0
+	forceTextNextRound := false // set after tool results contain images — forces one text-only response
 	const maxEmptyRetries = 3
 	const maxTotalEmptyResponses = 8 // prevent repeated burst-and-recover spirals
 	const maxBareTextRetries = 3
@@ -1602,12 +1603,17 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		toolDefs := s.allToolDefinitions(round)
 		timings.ToolDefs = time.Since(tPhaseStart)
 
+		toolChoice := &llm.ToolChoice{Mode: "auto"}
+		if forceTextNextRound {
+			toolChoice = &llm.ToolChoice{Mode: "none"}
+			forceTextNextRound = false
+		}
 		req := llm.Request{
 			Model:      s.profile.Model(),
 			Provider:   s.profile.ID(),
 			Messages:   append([]llm.Message{llm.System(sys)}, history...),
 			Tools:      toolDefs,
-			ToolChoice: &llm.ToolChoice{Mode: "auto"},
+			ToolChoice: toolChoice,
 			WebSearch:  true,
 			AdapterTimeout: &llm.AdapterTimeout{
 				Connect:    10 * time.Second,
@@ -1889,6 +1895,16 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		// Persist the completed tool round so resumed sessions always include
 		// tool_result turns for any prior assistant tool calls.
 		s.maybeAutoSave()
+
+		// If any tool result contained an image, force the next round to be
+		// text-only (tool_choice=none). This makes the model describe what it
+		// sees instead of immediately writing code to analyze it.
+		for _, r := range results {
+			if len(r.ImageData) > 0 {
+				forceTextNextRound = true
+				break
+			}
+		}
 
 		timings.Persistence = time.Since(tPhaseStart)
 
