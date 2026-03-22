@@ -286,7 +286,7 @@ Use AWS spot instances via harbor-runner.
 | 3/22 | Vision side-channel v1 | chess ×3 local | **3/3** | LLM-driven purpose, chess-specific suffix |
 | 3/22 | Vision side-channel v2 | chess ×3 local | **3/3** | Generic suffix — still works |
 | 3/22 | Side-channel AWS validation | chess 2/3, gcode 1/3 | **Shipped** | chess 0→2/3, gcode holds, regression 7/7 |
-| 3/22 | install-windows-3.11 | windows ×3 AWS | 0/2 (rep 2 running) | 3/4 tests pass, visual feedback fails |
+| 3/22 | install-windows-3.11 | windows ×3 AWS | 0/2 (rep 2 running) | NOT vision — socket path mismatch |
 
 ### AWS validation root causes (March 22)
 
@@ -301,3 +301,10 @@ second-guess engine-validated answers.
 a hallucinated one ("fragrances 12 oz"). Both spent 900s rendering projections without
 writing out.txt. Rep 3 (pass) got a correct vision read from a clean PCA projection
 and wrote immediately.
+
+**install-windows-3.11 failure (all reps):** NOT a vision problem. Test expects QEMU
+monitor socket at `/tmp/qemu-monitor.sock` (hardcoded fixture). Both agents set up
+working monitor sockets at different paths. QEMU runs, Windows desktop is up, keyboard
+input works — just wrong socket path. Fix: coordinator needs to extract the specific
+path from test_outputs.py. Same root cause category as fix-read-tests (didn't read
+tests carefully enough).
