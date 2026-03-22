@@ -286,4 +286,18 @@ Use AWS spot instances via harbor-runner.
 | 3/22 | Vision side-channel v1 | chess ×3 local | **3/3** | LLM-driven purpose, chess-specific suffix |
 | 3/22 | Vision side-channel v2 | chess ×3 local | **3/3** | Generic suffix — still works |
 | 3/22 | Side-channel AWS validation | chess 2/3, gcode 1/3 | **Shipped** | chess 0→2/3, gcode holds, regression 7/7 |
-| 3/22 | install-windows-3.11 | windows ×3 AWS | running | New baseline with side-channel |
+| 3/22 | install-windows-3.11 | windows ×3 AWS | 0/2 (rep 2 running) | 3/4 tests pass, visual feedback fails |
+
+### AWS validation root causes (March 22)
+
+**Chess rep 3 failure:** Coordinator-overrides-implementer antipattern. The implementer
+got the CORRECT answer (e2e4 + g2g4, both mate-in-one, validated with Stockfish). The
+coordinator then independently re-derived the FEN from the same vision description,
+got piece colors wrong (swapped white/black on 3 squares), concluded g2g4 wasn't mate,
+and spawned a fix agent that overwrote the correct answer. Fix: coordinator should not
+second-guess engine-validated answers.
+
+**Gcode reps 1,2 failure:** Timeout. Rep 1 never got a vision description. Rep 2 got
+a hallucinated one ("fragrances 12 oz"). Both spent 900s rendering projections without
+writing out.txt. Rep 3 (pass) got a correct vision read from a clean PCA projection
+and wrote immediately.
