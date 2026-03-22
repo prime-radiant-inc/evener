@@ -37,6 +37,11 @@ understanding through this look-describe-zoom-describe cycle.
   asked to create. Verify services survive session exit, and run the project's actual test
   suite (look in /tests/ too, not just the working directory).
 
+## Workflow
+
+Do the work. Then verify the work. Do not verify before writing — produce your
+deliverables first, then check them. If checking reveals problems, fix and rewrite.
+
 ## communicate
 
 Call communicate when the task is complete and verified. This exits the session.
