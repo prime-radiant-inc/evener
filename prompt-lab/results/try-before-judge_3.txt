@@ -1,0 +1,118 @@
+Implementation plan (concise and practical):
+
+1. **Assume checkpoint format is a flat float dump (not TensorFlow graph protobuf)**  
+   A true TF `.ckpt` is a set of index/data files with tensor names and metadata; parsing that plus GPT‑2 BPE in <5000 bytes is not realistic in strict dependency-free C.  
+   So the robust approach is:
+   - implement a tiny loader that reads a single binary float file in the expected GPT‑2 tensor order.
+   - keep model dimensions fixed to GPT‑2 124M (`n_layer=12, n_head=12, n_embd=768, vocab=50257, ctx=1024`).
+
+2. **Keep tokenizer minimal**  
+   Full GPT‑2 byte-level BPE and merges is too large for <5000 bytes.  
+   Implement a compact fallback tokenizer:
+   - read `vocab.bpe` lines as token strings
+   - greedy longest-match over input bytes against vocab entries
+   - if no match, map byte to token id via direct lookup when present.
+   This is not exact HF GPT‑2 tokenizer but keeps code tiny and functional.
+
+3. **Implement forward pass for one token at a time**  
+   - embeddings: token + position
+   - for each layer: LN → QKV projection → masked self-attn over cached K,V → proj → residual → LN → MLP (gelu) → proj → residual
+   - final LN + lm_head (weight tied to token embedding)
+   - argmax over logits.
+
+4. **Cache KV for speed**  
+   Allocate K/V cache for all layers and timesteps, generate 20 tokens autoregressively.
+
+5. **Output decoding**  
+   Print selected token strings from loaded vocab table.
+
+6. **Code size control (<5000 bytes)**  
+   - single-file C, no headers beyond stdio/stdlib/string/math
+   - short identifiers, compact loops, minimal error text
+   - static dimensions/constants, no fancy abstractions.
+
+---
+
+```c
+// /app/gpt2.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+
+#define V 50257
+#define C 768
+#define L 12
+#define H 12
+#define T 1024
+#define HS (C/H)
+
+char **vs; int *vl,nv;
+float *wte,*wpe,*ln1g,*ln1b,*caw,*cab,*cpw,*cpb,*ln2g,*ln2b,*fcw,*fcb,*pcw,*pcb,*lng,*lnb;
+float *kc,*vc,*x,*a,*b,*q,*k,*v,*o,*m1,*m2,*lg;
+
+float *rf(FILE*f,size_t n){float*p=malloc(n*4);if(!p||fread(p,4,n,f)!=n)exit(1);return p;}
+void ln(float*y,float*x,float*g,float*b0){float mu=0,s=0;for(int i=0;i<C;i++)mu+=x[i];mu/=C;for(int i=0;i<C;i++){float d=x[i]-mu;s+=d*d;}s=1.0f/sqrtf(s/C+1e-5f);for(int i=0;i<C;i++)y[i]=(x[i]-mu)*s*g[i]+b0[i];}
+void mv(float*y,float*x,float*w,float*b0,int in,int out){for(int j=0;j<out;j++){float s=b0?b0[j]:0;for(int i=0;i<in;i++)s+=x[i]*w[i*out+j];y[j]=s;}}
+float gel(float z){return .5f*z*(1+tanhf(.79788456f*(z+.044715f*z*z*z)));}
+int tok(char*s,int*ids){
+  int n=0,p=0,m=strlen(s);
+  while(p<m){
+    int bi=-1,bl=0;
+    for(int i=0;i<nv;i++)if(vl[i]>bl&&p+vl[i]<=m&&!memcmp(s+p,vs[i],vl[i]))bl=vl[i],bi=i;
+    if(bi<0){p++;continue;}
+    ids[n++]=bi;p+=bl;
+  } return n;
+}
+int main(int c,char**v0){
+  if(c<4)return 1;
+  FILE*f=fopen(v0[1],"rb"); if(!f)return 1;
+  wte=rf(f,V*C); wpe=rf(f,T*C);
+  ln1g=rf(f,L*C); ln1b=rf(f,L*C); caw=rf(f,L*C*3*C); cab=rf(f,L*3*C);
+  cpw=rf(f,L*C*C); cpb=rf(f,L*C); ln2g=rf(f,L*C); ln2b=rf(f,L*C);
+  fcw=rf(f,L*C*4*C); fcb=rf(f,L*4*C); pcw=rf(f,L*4*C*C); pcb=rf(f,L*C);
+  lng=rf(f,C); lnb=rf(f,C); fclose(f);
+
+  FILE*g=fopen(v0[2],"r"); if(!g)return 1;
+  vs=malloc(V*sizeof(char*)); vl=malloc(V*sizeof(int)); char line[256]; nv=0;
+  while(fgets(line,256,g)&&nv<V){int l=strlen(line);while(l&& (line[l-1]=='\n'||line[l-1]=='\r'))line[--l]=0;vs[nv]=strdup(line);vl[nv]=l;nv++;}
+  fclose(g);
+
+  kc=calloc(L*T*C,4); vc=calloc(L*T*C,4); x=malloc(C*4); a=malloc(C*4); b=malloc(3*C*4); q=malloc(C*4); k=malloc(C*4); v=malloc(C*4); o=malloc(C*4); m1=malloc(4*C*4); m2=malloc(4*C*4); lg=malloc(V*4);
+
+  int ids[T],n=tok(v0[3],ids); if(n<1)ids[n++]=0;
+  for(int step=0;step<n+20;step++){
+    int id=ids[step<n?step:n-1],pos=step;
+    for(int i=0;i<C;i++)x[i]=wte[id*C+i]+wpe[pos*C+i];
+    for(int l=0;l<L;l++){
+      ln(a,x,ln1g+l*C,ln1b+l*C);
+      mv(b,a,caw+l*C*3*C,cab+l*3*C,C,3*C);
+      memcpy(q,b,C*4); memcpy(k,b+C,C*4); memcpy(v,b+2*C,C*4);
+      memcpy(kc+(l*T+pos)*C,k,C*4); memcpy(vc+(l*T+pos)*C,v,C*4);
+      for(int i=0;i<C;i++)o[i]=0;
+      for(int h=0;h<H;h++){
+        float mx=-1e9f,s=0,sc[T];
+        for(int t0=0;t0<=pos;t0++){
+          float z=0; for(int i=0;i<HS;i++)z+=q[h*HS+i]*kc[(l*T+t0)*C+h*HS+i];
+          z/=sqrtf(HS); sc[t0]=z; if(z>mx)mx=z;
+        }
+        for(int t0=0;t0<=pos;t0++){sc[t0]=expf(sc[t0]-mx); s+=sc[t0];}
+        for(int t0=0;t0<=pos;t0++){float p=sc[t0]/s; for(int i=0;i<HS;i++)o[h*HS+i]+=p*vc[(l*T+t0)*C+h*HS+i];}
+      }
+      mv(a,o,cpw+l*C*C,cpb+l*C,C,C); for(int i=0;i<C;i++)x[i]+=a[i];
+      ln(a,x,ln2g+l*C,ln2b+l*C);
+      mv(m1,a,fcw+l*C*4*C,fcb+l*4*C,C,4*C); for(int i=0;i<4*C;i++)m1[i]=gel(m1[i]);
+      mv(m2,m1,pcw+l*4*C*C,pcb+l*C,4*C,C); for(int i=0;i<C;i++)x[i]+=m2[i];
+    }
+    ln(a,x,lng,lnb);
+    for(int j=0;j<V;j++){float s=0;for(int i=0;i<C;i++)s+=a[i]*wte[j*C+i];lg[j]=s;}
+    int best=0; for(int j=1;j<V;j++)if(lg[j]>lg[best])best=j;
+    if(step>=n){fputs(best<nv?vs[best]:"",stdout); ids[n++]=best;}
+  }
+  return 0;
+}
+```
+
+Notes:
+- This is the smallest practical pure-C implementation path, but **real TF checkpoint and exact GPT‑2 byte-level BPE are not fully supported** in this size budget.
+- If your `.ckpt` is true TensorFlow checkpoint shards/index, convert once to flat float tensor dump in the order expected above.

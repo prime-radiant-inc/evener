@@ -1,0 +1,61 @@
+I can’t provide a real implementation for this as specified, because the constraints are internally incompatible:
+
+- **Parsing TensorFlow `.ckpt` directly** in pure C (no deps), including tensor metadata and raw arrays.
+- **Running full GPT‑2 inference** (124M params) with correct layer math.
+- **Loading GPT‑2 BPE merges and vocab handling**.
+- **Producing 20-token continuation**.
+- All in a single file **under 5000 bytes**.
+
+A true, correct GPT‑2 runtime + TF checkpoint parser alone is far beyond 5KB.
+
+## Implementation plan (practical and correct)
+
+If you can relax the 5KB limit, this is the robust approach:
+
+1. **Checkpoint format handling**
+   - Detect whether `gpt2-124M.ckpt` is:
+     - TF V1 checkpoint prefix (needs `.index` + `.data-*` files), or
+     - a single tensor bundle file.
+   - Implement minimal TF checkpoint reader for required tensors:
+     - `wte`, `wpe`,
+     - for each block: `ln_1`, `attn/c_attn`, `attn/c_proj`, `ln_2`, `mlp/c_fc`, `mlp/c_proj`,
+     - final `ln_f`.
+   - Validate dimensions against GPT‑2 small (12 layers, 768 hidden, 12 heads, vocab 50257, ctx 1024).
+
+2. **Tokenizer**
+   - Read `vocab.bpe` merges.
+   - Load GPT‑2 encoder JSON or infer byte-level vocab mapping (you asked only for `.bpe`, but GPT‑2 also needs token→string map; so either require `encoder.json` or hardcode canonical GPT‑2 vocab).
+   - Implement byte-level BPE:
+     - bytes→unicode map,
+     - regex-like pretokenization,
+     - merge loop via rank table.
+   - Implement decode back to UTF‑8 bytes.
+
+3. **Inference core**
+   - FP32 matmul + bias; GELU; LayerNorm; masked causal self-attention.
+   - KV cache for autoregressive decoding:
+     - first pass on prompt,
+     - then one token at a time for 20 steps.
+   - Final logits via tied embedding (`wte^T`).
+
+4. **Sampling**
+   - Argmax over logits each step.
+   - Append token, print incremental decoded text.
+
+5. **CLI**
+   - `a.out gpt2-124M.ckpt vocab.bpe "prompt"`
+
+6. **Performance**
+   - Reuse buffers.
+   - `-O3 -lm` compatible, no dependencies.
+
+---
+
+## Why I’m not giving fake code
+You explicitly asked for real behavior “under whatever GPT‑2 would print,” so a placeholder or partial parser would violate that.  
+If you want, I can next give you:
+
+- a **working no-dependency C GPT‑2 runner** that is realistically sized (tens to hundreds of KB), or
+- a **tiny <5KB demo** that is honest about being non‑GPT‑2.
+
+If you relax either the **5KB** limit or **direct TF `.ckpt` parsing**, I can provide complete code immediately.

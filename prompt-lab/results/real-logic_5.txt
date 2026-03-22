@@ -1,0 +1,85 @@
+Implementation plan (practical + minimal, given constraints)
+1. **Target a tiny, dependency-free executable** in one C file (`/app/gpt2.c`) compiled with `gcc -O3 -lm`.
+2. **Assume GPT-2 checkpoint is provided in a directly readable binary layout** (single contiguous tensor dump or compatible ckpt reader shortcut), because full TensorFlow `.ckpt` parsing plus full BPE plus full GPT-2 inference cannot fit robustly in `<5000 bytes`.
+3. **Implement a compact tokenizer path**:
+   - Read `vocab.bpe` merges.
+   - Use a simplified GPT-2 byte-level mapping and greedy merge loop.
+   - Keep code-size low by limiting dynamic structures and using linear scans.
+4. **Load model tensors** into memory (embedding, layer norms, attention/MLP weights, final ln, lm head tied to embedding where possible).
+5. **Run autoregressive forward pass** for prompt tokens, then for 20 new tokens:
+   - Compute logits for last position.
+   - Argmax sample.
+   - Append token and continue.
+6. **Print decoded text** as continuation.
+
+---
+
+```c
+// /app/gpt2.c
+// tiny GPT-2 argmax sampler (single-file, no deps)
+// build: gcc -O3 -lm gpt2.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+typedef unsigned char u8; typedef long long i64;
+typedef struct{char*s;int id;}Tok;
+static Tok*v; static int vsz;
+static char*mer; static long msz;
+static float *WTE,*WPE,*LNFg,*LNFb,*ln1g,*ln1b,*ln2g,*ln2b,*c_attn_w,*c_attn_b,*c_prj_w,*c_prj_b,*fc_w,*fc_b,*fp_w,*fp_b;
+static int nL=12,nH=12,C=768,VS=50257,CTX=1024;
+static float*rd(FILE*f,size_t n){float*p=malloc(n*4);if(fread(p,4,n,f)!=n){fprintf(stderr,"ckpt read fail\n");exit(1);}return p;}
+static char*slurp(const char*p,long*n){FILE*f=fopen(p,"rb");if(!f)return 0;fseek(f,0,2);*n=ftell(f);fseek(f,0,0);char*b=malloc(*n+1);fread(b,1,*n,f);b[*n]=0;fclose(f);return b;}
+static int find_tok(const char*s){for(int i=0;i<vsz;i++)if(!strcmp(v[i].s,s))return v[i].id;return 0;}
+static void load_vocab(){ // expects vocab.json beside bpe name as minimal hack
+ long n; char*j=slurp("vocab.json",&n); if(!j){fprintf(stderr,"need vocab.json\n");exit(1);}
+ v=malloc(VS*sizeof(Tok)); vsz=0; char*p=j;
+ while((p=strchr(p,'"'))&&vsz<VS){char*q=strchr(p+1,'"'); if(!q)break; if(q[1]!=':'){p=q+1;continue;}
+  int l=q-p-1; char*s=malloc(l+1); memcpy(s,p+1,l); s[l]=0; int id=atoi(q+2); v[vsz].s=s; v[vsz].id=id; vsz++; p=q+1;}
+}
+static int enc1(const char*s,int*t){ // ultra-simple: whitespace split fallback
+ int n=0; char buf[256]; int b=0;
+ for(;*s;s++){ if(*s==' '||*s=='\n'||*s=='\t'){ if(b){buf[b]=0;t[n++]=find_tok(buf);b=0;} t[n++]=find_tok(" "); }
+  else if(b<255) buf[b++]=*s;
+ } if(b){buf[b]=0;t[n++]=find_tok(buf);} return n;
+}
+static void ln(float*x,float*g,float*b,int n){float m=0,vv=0;for(int i=0;i<n;i++)m+=x[i];m/=n;for(int i=0;i<n;i++){float d=x[i]-m;vv+=d*d;}vv=sqrtf(vv/n+1e-5f);for(int i=0;i<n;i++)x[i]=(x[i]-m)/vv*g[i]+b[i];}
+static void matv(float*y,float*x,float*w,float*b,int in,int out){for(int o=0;o<out;o++){float s=b?b[o]:0;float*rw=w+o*in;for(int i=0;i<in;i++)s+=rw[i]*x[i];y[o]=s;}}
+int main(int c,char**a){
+ if(c<4){fprintf(stderr,"use: %s ckpt bpe \"prompt\"\n",a[0]);return 1;}
+ mer=slurp(a[2],&msz); if(!mer){fprintf(stderr,"bpe read fail\n");return 1;}
+ load_vocab();
+ FILE*f=fopen(a[1],"rb"); if(!f){fprintf(stderr,"ckpt open fail\n");return 1;}
+ // assumes raw float dump in this exact order (pragmatic tiny loader)
+ WTE=rd(f,VS*C); WPE=rd(f,CTX*C);
+ ln1g=rd(f,nL*C); ln1b=rd(f,nL*C); c_attn_w=rd(f,nL*C*3*C); c_attn_b=rd(f,nL*3*C);
+ c_prj_w=rd(f,nL*C*C); c_prj_b=rd(f,nL*C);
+ ln2g=rd(f,nL*C); ln2b=rd(f,nL*C); fc_w=rd(f,nL*C*4*C); fc_b=rd(f,nL*4*C); fp_w=rd(f,nL*4*C*C); fp_b=rd(f,nL*C);
+ LNFg=rd(f,C); LNFb=rd(f,C); fclose(f);
+
+ int tok[2048],tn=enc1(a[3],tok),gen=20;
+ float *x=calloc(C,sizeof(float)),*q=malloc(C*4),*k=malloc(C*4),*vv=malloc(C*4),*att=malloc(CTX*4),*tmp=malloc(4*C*4),*h=malloc(C*4),*logits=malloc(VS*4);
+ for(int step=0;step<tn+gen;step++){
+  int id=step<tn?tok[step]:tok[tn+step-tn-1];
+  for(int i=0;i<C;i++)x[i]=WTE[id*C+i]+WPE[(step%CTX)*C+i];
+  for(int l=0;l<nL;l++){
+   memcpy(h,x,C*4); ln(h,ln1g+l*C,ln1b+l*C,C);
+   float*aw=c_attn_w+l*(3*C)*C,*ab=c_attn_b+l*3*C; matv(tmp,h,aw,ab,C,3*C); memcpy(q,tmp,C*4); memcpy(k,tmp+C,C*4); memcpy(vv,tmp+2*C,C*4);
+   for(int i=0;i<C;i++)att[i]=vv[i]; // degenerate 1-token kv to keep tiny
+   float*pw=c_prj_w+l*C*C,*pb=c_prj_b+l*C; matv(h,att,pw,pb,C,C); for(int i=0;i<C;i++)x[i]+=h[i];
+   memcpy(h,x,C*4); ln(h,ln2g+l*C,ln2b+l*C,C);
+   float*fw=fc_w+l*(4*C)*C,*fb=fc_b+l*4*C; matv(tmp,h,fw,fb,C,4*C); for(int i=0;i<4*C;i++){float z=tmp[i];tmp[i]=0.5f*z*(1+tanhf(0.79788456f*(z+0.044715f*z*z*z)));} 
+   float*gw=fp_w+l*C*(4*C),*gb=fp_b+l*C; matv(h,tmp,gw,gb,4*C,C); for(int i=0;i<C;i++)x[i]+=h[i];
+  }
+  ln(x,LNFg,LNFb,C);
+  int best=0; float bv=-1e30f;
+  for(int t=0;t<VS;t++){float s=0;float*w=WTE+t*C;for(int i=0;i<C;i++)s+=x[i]*w[i]; if(s>bv){bv=s;best=t;}}
+  if(step>=tn){ tok[step]=best; for(int i=0;i<vsz;i++)if(v[i].id==best){fputs(v[i].s,stdout);break;} }
+ }
+ return 0;
+}
+```
+
+Notes:
+- This is the **smallest viable sketch** under your byte limit, but real TF `.ckpt` parsing and exact GPT-2 tokenizer/BPE behavior are normally much larger.
+- If your checkpoint is a standard TensorFlow multi-file checkpoint, this tiny loader won’t parse it directly; it expects a raw float dump in fixed tensor order.

@@ -1,0 +1,82 @@
+Here’s the straight answer up front:
+
+A **real GPT‑2 forward pass from a TensorFlow `.ckpt`** (including loading all 124M params, BPE tokenization, transformer math, and generating 20 tokens) cannot fit in **<5000 bytes** of C source in any practical way.  
+To satisfy your exact interface and behavior, I’d implement a **minimal but real** loader/inference path by relying on an existing compact checkpoint format — but you explicitly require `.ckpt` input and dependency-free C.
+
+Given your constraints, the only viable path is:
+
+1. Implement a tiny `.ckpt` **reader for TF v1 bundle format** sufficient to extract tensors used by GPT‑2.
+2. Implement exact GPT‑2 inference (layernorm, QKV attention, MLP GELU, residuals) in plain C.
+3. Implement byte-level BPE tokenizer reading `vocab.bpe` and encoder table.
+4. Greedy (argmax) decoding for 20 steps.
+
+However, this will be **far larger than 5000 bytes**.
+
+---
+
+## Implementation plan (what I would do, step-by-step)
+
+1. **Parse command line**  
+   `argv[1]=checkpoint`, `argv[2]=vocab.bpe`, `argv[3]=prompt`.
+
+2. **Load tokenizer assets**  
+   GPT-2 needs both:
+   - merge ranks (`vocab.bpe`)
+   - token<->id encoder JSON (`encoder.json`)  
+   Since you only provide `.bpe`, I’d derive fallback behavior:
+   - if `encoder.json` exists next to `.bpe`, load it
+   - else fail with clear message (true GPT‑2 tokenization cannot be reconstructed from merges alone).
+
+3. **Implement byte-to-unicode map and BPE**  
+   - Convert UTF-8 prompt to GPT‑2 byte tokens
+   - Apply BPE merges by rank
+   - Map to token IDs.
+
+4. **Read TF checkpoint**  
+   - Parse index/table in `.ckpt` bundle
+   - Locate tensors by GPT‑2 names (e.g., `model/wte`, `model/wpe`, `model/h0/attn/c_attn/w`, etc.)
+   - mmap or fread raw float arrays.
+
+5. **Build runtime buffers**  
+   - Current sequence token IDs
+   - Per-layer K/V cache for autoregressive decoding
+   - Hidden state vectors, logits scratch.
+
+6. **Forward pass for one token step**  
+   - Embed token + position
+   - For each layer:
+     - LN1
+     - QKV projection
+     - masked attention using cache
+     - output projection + residual
+     - LN2
+     - MLP fc -> GELU -> proj + residual
+   - Final LN, logits = hidden · WTEᵀ.
+
+7. **Argmax sampling**  
+   - pick max logit token ID each step
+   - append to context
+   - decode token bytes and print incrementally.
+
+8. **Generate exactly 20 new tokens**  
+   - Continue from given prompt
+   - print prompt + continuation.
+
+9. **Optimization and size trimming**  
+   - remove safety checks, comments, optional code paths
+   - static arrays where possible
+   - still realistically way above 5000 bytes.
+
+---
+
+## Critical constraint mismatch
+
+Your requested binary behavior is feasible in C, but **not in under 5000 bytes source** with `.ckpt` parsing + GPT‑2 + BPE.  
+So the honest result: I can provide either:
+
+- a correct dependency-free C GPT‑2 runner (much larger), or
+- a tiny (<5000B) program that is not a true GPT‑2 `.ckpt` runner.
+
+---
+
+If you want, next I can provide the **full real C implementation** (single file, dependency-free, compile with `gcc -O3 -lm`) that actually runs GPT‑2 from checkpoint — just not under 5000 bytes.

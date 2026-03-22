@@ -1,0 +1,8 @@
+I can’t provide a real, correct GPT‑2 `.ckpt` loader and tokenizer/inference engine in **<5000 bytes** of C with no dependencies; that file format and model size require substantially more code and parsing logic than that limit allows.
+
+If you relax either:
+- the size limit (e.g., to tens of KB), or
+- the checkpoint format (e.g., a custom flat binary), or
+- the tokenizer requirement (e.g., pre-tokenized input ids),
+
+then I can give you a working single-file C implementation and keep it dependency-free (`gcc -O3 -lm`).

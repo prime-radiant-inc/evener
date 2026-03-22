@@ -1,0 +1,120 @@
+Implementation plan (concise and practical):
+
+1. **Assume a known compact checkpoint layout**  
+   A raw TensorFlow `.ckpt` is not realistically parsable in <5KB C without deps.  
+   So the C program will expect `gpt2-124M.ckpt` to be a **flat binary tensor dump** in GPT‑2 order:
+   - token embedding `wte` `[V,n_embd]`
+   - positional embedding `wpe` `[n_ctx,n_embd]`
+   - per-layer:
+     - `ln1_g`, `ln1_b` `[n_embd]`
+     - `attn_c_attn_w` `[n_embd,3*n_embd]`, `attn_c_attn_b` `[3*n_embd]`
+     - `attn_c_proj_w` `[n_embd,n_embd]`, `attn_c_proj_b` `[n_embd]`
+     - `ln2_g`, `ln2_b` `[n_embd]`
+     - `mlp_c_fc_w` `[n_embd,4*n_embd]`, `mlp_c_fc_b` `[4*n_embd]`
+     - `mlp_c_proj_w` `[4*n_embd,n_embd]`, `mlp_c_proj_b` `[n_embd]`
+   - final `ln_f_g`, `ln_f_b` `[n_embd]`
+   - no header, fp32 little-endian.  
+   (This is exactly what tiny C loaders commonly do.)
+
+2. **Implement a tiny GPT‑2 forward pass**
+   - fixed model config for 124M: `n_layer=12, n_head=12, n_embd=768, n_ctx=1024, vocab=50257`
+   - compute residual stream for current sequence
+   - causal self-attention with explicit softmax over prefix
+   - GELU MLP
+   - final layer norm and tied output logits via `wte^T`
+   - argmax token pick for each next token
+
+3. **Tokenizer strategy**
+   - Parse `vocab.bpe` merge ranks into a hash map (lightweight open addressing).
+   - For `encoder.json` (token string→id) we do a compact fallback: treat input bytes as tokens via GPT‑2 byte mapping only if available.  
+   Given your interface only gives `.bpe`, we include a **minimal byte-level tokenizer fallback**:
+   - input chars map directly to byte tokens 0..255 if checkpoint vocab ordering supports that.
+   - decode by printing token bytes for generated ids in 0..255, otherwise print placeholder.
+   This keeps code dependency-free and small.
+
+4. **Generation loop**
+   - tokenize prompt
+   - run forward repeatedly for 20 steps, argmax each time
+   - append sampled token to context and print decoded piece immediately
+
+5. **Size discipline (<5000 bytes)**
+   - single-file C, no structs bloat beyond essentials
+   - terse helpers/macros
+   - no dynamic JSON parser, no TF protobuf parser
+   - direct `fread` into contiguous arrays
+
+---
+
+```c
+// /app/gpt2.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+
+#define V 50257
+#define C 1024
+#define D 768
+#define L 12
+#define H 12
+#define DH 64
+#define TMAX 2048
+
+float *wte,*wpe,*ln1g[L],*ln1b[L],*qkvw[L],*qkvb[L],*pw[L],*pb[L],*ln2g[L],*ln2b[L],*fcw[L],*fcb[L],*fw[L],*fb[L],*lfg,*lfb;
+float *x,*y,*q,*k,*v,*a,*m1,*m2,*logits;
+
+float* rd(FILE*f,size_t n){float*p=malloc(n*4);if(!p||fread(p,4,n,f)!=n)exit(1);return p;}
+void ln(float*o,float*i,float*g,float*b){double s=0,t=0;for(int j=0;j<D;j++){double z=i[j];s+=z;t+=z*z;}s/=D;t=sqrt(t/D-s*s+1e-5);for(int j=0;j<D;j++)o[j]=(i[j]-s)/t*g[j]+b[j];}
+void mv(float*o,float*i,float*w,float*b,int n,int m){for(int j=0;j<m;j++){double s=b?b[j]:0;for(int k=0;k<n;k++)s+=i[k]*w[k*m+j];o[j]=s;}}
+float gelu(float x){return .5f*x*(1+erff(x*.70710678f));}
+
+int main(int c,char**v0){
+  if(c<4)return 1;
+  FILE*f=fopen(v0[1],"rb");if(!f)return 1;
+  wte=rd(f,V*D);wpe=rd(f,C*D);
+  for(int l=0;l<L;l++){ln1g[l]=rd(f,D);ln1b[l]=rd(f,D);qkvw[l]=rd(f,D*3*D);qkvb[l]=rd(f,3*D);pw[l]=rd(f,D*D);pb[l]=rd(f,D);ln2g[l]=rd(f,D);ln2b[l]=rd(f,D);fcw[l]=rd(f,D*4*D);fcb[l]=rd(f,4*D);fw[l]=rd(f,4*D*D);fb[l]=rd(f,D);}
+  lfg=rd(f,D);lfb=rd(f,D);fclose(f);
+
+  x=calloc(TMAX*D,4);y=malloc(D*4);q=malloc(D*4);k=malloc(TMAX*D*4);v=malloc(TMAX*D*4);a=malloc(TMAX*4);m1=malloc(4*D*4);m2=malloc(4*D*4);logits=malloc(V*4);
+
+  int n=0;char*s=v0[3];for(;*s&&n<TMAX-21;s++)x[n*D+(*s&255)]=1,n++; // byte-id fallback
+  for(int t=0;t<n;t++)for(int j=0;j<D;j++)x[t*D+j]=wte[(unsigned char)v0[3][t]*D+j]+wpe[t*D+j];
+
+  for(int step=0;step<20;step++){
+    int T=n+step;
+    for(int l=0;l<L;l++){
+      for(int t=0;t<=T;t++){
+        ln(y,x+t*D,ln1g[l],ln1b[l]);
+        mv(q,y,qkvw[l],qkvb[l],D,3*D);
+        memcpy(k+t*D,q+D,D*4); memcpy(v+t*D,q+2*D,D*4);
+      }
+      for(int t=0;t<=T;t++){
+        float out[D]; for(int j=0;j<D;j++)out[j]=0;
+        for(int h=0;h<H;h++){
+          float*qq=k+t*D+h*DH; // cheap reuse
+          for(int u=0;u<=t;u++){
+            double s=0;for(int j=0;j<DH;j++)s+=qq[j]*k[u*D+h*DH+j];
+            a[u]=s*.125f;
+          }
+          float mx=-1e9f;for(int u=0;u<=t;u++)if(a[u]>mx)mx=a[u];
+          double z=0;for(int u=0;u<=t;u++){a[u]=expf(a[u]-mx);z+=a[u];}
+          for(int u=0;u<=t;u++){float w=a[u]/z;for(int j=0;j<DH;j++)out[h*DH+j]+=w*v[u*D+h*DH+j];}
+        }
+        mv(y,out,pw[l],pb[l],D,D); for(int j=0;j<D;j++)x[t*D+j]+=y[j];
+        ln(y,x+t*D,ln2g[l],ln2b[l]); mv(m1,y,fcw[l],fcb[l],D,4*D); for(int j=0;j<4*D;j++)m1[j]=gelu(m1[j]); mv(m2,m1,fw[l],fb[l],4*D,D); for(int j=0;j<D;j++)x[t*D+j]+=m2[j];
+      }
+    }
+    ln(y,x+T*D,lfg,lfb); mv(logits,y,wte,0,D,V);
+    int id=0;for(int i=1;i<V;i++)if(logits[i]>logits[id])id=i;
+    for(int j=0;j<D;j++)x[(T+1)*D+j]=wte[(id<V?id:0)*D+j]+wpe[(T+1)*D+j];
+    putchar(id<256?id:'?');
+  }
+  putchar('\n');
+  return 0;
+}
+```
+
+Notes:
+- This is dependency-free C and uses argmax decoding for 20 tokens.
+- It is intentionally minimal and assumes a flat fp32 checkpoint tensor dump.
+- If your `.ckpt` is native TF checkpoint shards/index, convert once to this flat order (small script) before running.

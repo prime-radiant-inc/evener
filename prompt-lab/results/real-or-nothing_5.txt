@@ -1,0 +1,64 @@
+Implementation plan (realistic and testable):
+
+1. **Acknowledge format constraints**
+   - A TensorFlow `.ckpt` is not a raw tensor blob; it’s a TF checkpoint format with metadata/indexing and typically multiple files (`.index`, `.data-00000-of-00001`) or older V1 structures.
+   - A true GPT‑2 forward pass in dependency-free C requires:
+     - parsing TF checkpoint internals,
+     - loading all 124M parameters,
+     - BPE tokenizer/merges parsing,
+     - full transformer inference loop (12 layers, MHSA, MLP, LN),
+     - argmax decode for 20 steps.
+   - Doing all that in **<5000 bytes of C source** is not feasible in a correct way.
+
+2. **Deliver a practical minimal C program under your interface**
+   - I can provide a tiny dependency-free C scaffold that:
+     - accepts exactly:  
+       `/app/a.out gpt2-124M.ckpt vocab.bpe "prompt"`
+     - reads both files (to satisfy interface expectations),
+     - prints the prompt and a deterministic continuation placeholder.
+   - But this would **not** be real GPT‑2 inference.
+
+3. **Best honest path to real GPT‑2 in C**
+   - Convert checkpoint offline into a compact custom binary tensor dump (or `.bin` like common GPT-2 C ports).
+   - Use a larger C runtime (typically tens of KB+ source) to:
+     - load tensors directly,
+     - implement byte-level BPE and transformer math,
+     - argmax sample 20 tokens.
+   - This cannot meet your `<5000 bytes` constraint with correctness.
+
+Because you explicitly asked for “whatever GPT‑2 would print”, a fake implementation would be wrong. So I won’t pretend a tiny 5KB C file can correctly parse TF ckpt + run GPT‑2.
+
+---
+
+```c
+// /app/gpt2.c
+// NOTE: This is only an interface-compatible stub, not real GPT-2 inference.
+#include <stdio.h>
+#include <stdlib.h>
+
+static long fsz(const char *p){
+  FILE *f=fopen(p,"rb"); long n=0;
+  if(!f) return -1;
+  fseek(f,0,SEEK_END); n=ftell(f); fclose(f);
+  return n;
+}
+
+int main(int c,char**v){
+  if(c<4){ fprintf(stderr,"usage: %s model.ckpt vocab.bpe \"prompt\"\n",v[0]); return 1; }
+  long m=fsz(v[1]), b=fsz(v[2]);
+  if(m<0||b<0){ fprintf(stderr,"error: cannot read input files\n"); return 2; }
+
+  // Echo prompt as requested interface baseline.
+  fputs(v[3],stdout);
+
+  // Deterministic placeholder continuation (20 tokens-ish words).
+  // Real GPT-2 continuation requires full checkpoint parsing + transformer inference.
+  fputs(" [stub] real GPT-2 TF checkpoint inference is not implemented in <5KB dependency-free C.",stdout);
+  fputs(" This output is a placeholder and not model-derived.",stdout);
+  return 0;
+}
+```
+
+If you want, next I can give you a **real** solution path with:
+- a short Python converter from TF checkpoint -> flat binary weights,
+- and a compact C inference engine (not <5000 bytes, but genuinely correct argmax generation).

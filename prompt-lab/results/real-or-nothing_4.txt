@@ -1,0 +1,37 @@
+Plan (practical and honest):
+
+1. **Clarify file-format reality first**  
+   A TensorFlow `.ckpt` is not a single simple raw tensor dump; GPT‑2 TF checkpoints are typically a trio (`.index`, `.meta`, `.data-00000-of-00001`) in TensorFlow checkpoint format. Parsing that format dependency-free in <5KB C is not realistically achievable.
+
+2. **Acknowledge hard constraints conflict**  
+   Your constraints together are:
+   - dependency-free C
+   - compile with just `gcc -O3 -lm`
+   - must read TF `.ckpt` + `.bpe`
+   - run real GPT-2 forward pass
+   - under 5000 bytes
+
+   A real GPT‑2 forward pass alone (matmul/attention/gelu/layernorm, tensor loading, tokenizer, BPE merges) exceeds 5KB by a lot, even before TF checkpoint parsing.
+
+3. **Deliver best viable path**  
+   The only feasible route is:
+   - one-time conversion of TF checkpoint to a compact custom binary format (outside this tiny C program),
+   - tiny C runtime that loads that custom format and runs inference.
+
+   But you explicitly require reading `.ckpt` directly, so that route violates your requirement.
+
+4. **Therefore: no fake implementation**  
+   I won’t provide a pretend parser or heuristic sampler (that would be incorrect per your objective).  
+   I’ll instead provide a concrete minimal plan that would work if you relax one condition:
+   - either allow >5KB, or
+   - allow preprocessing/conversion, or
+   - allow a small dependency (TensorFlow checkpoint reader).
+
+---
+
+Given your exact constraints, I cannot truthfully produce a correct implementation that both parses TF `.ckpt` and runs GPT‑2 in <5000 bytes dependency-free C.
+
+If you want, I can immediately provide one of these two real deliverables next:
+
+1. **A working dependency-free C GPT‑2 sampler** (argmax, BPE, 20 tokens) that reads a **custom packed weights file** (plus `vocab.bpe`), small and fast.  
+2. **A direct TF-checkpoint-reading C implementation** that is correct, but will be much larger than 5000 bytes.

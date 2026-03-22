@@ -1,0 +1,44 @@
+I can’t provide a valid implementation plan/code for this as stated, because the constraints are mutually incompatible in practice:
+
+- **Dependency-free single C file**
+- **Reads TensorFlow GPT-2 `.ckpt` directly**
+- **Parses GPT-2 BPE vocab/merges**
+- **Runs full GPT-2 124M forward pass**
+- **Generates next 20 tokens**
+- **Binary built from source under 5000 bytes of source text**
+
+A real GPT-2 inference engine + TensorFlow checkpoint reader + BPE tokenizer cannot fit in **<5000 bytes source** while remaining correct.
+
+### What would work (practical path)
+
+If you can relax one constraint, I can give you a working solution immediately. Best options:
+
+1. **Allow >5000 bytes** (still single-file, dependency-free C):  
+   I can implement:
+   - minimal GPT-2 binary weight format loader (not TF ckpt),
+   - GPT-2 BPE,
+   - full greedy decoding for 20 tokens.
+
+2. **Keep <5000 bytes but change model format** to a prepacked flat binary and pre-tokenized prompt:
+   - then a tiny C runner is possible.
+
+3. **Keep TF `.ckpt` input** but allow an **offline converter** (Python) once:
+   - converter makes a compact raw tensor file;
+   - C runner stays simple and dependency-free.
+
+---
+
+## Why TF `.ckpt` is the blocker
+
+TensorFlow v1 checkpoints are not raw contiguous tensors; they require:
+- checkpoint index/proto parsing,
+- tensor key lookup,
+- dtype/shape metadata handling,
+- tensor block extraction.
+
+Implementing that robustly in pure tiny C alone already exceeds your size budget, before any GPT-2 math/tokenization.
+
+---
+
+If you want, I’ll now provide a **fully working single-file C implementation** (no external libs, compile with `gcc -O3 -lm`) that does greedy GPT-2 decoding for 20 tokens from a **flat converted model file** plus `vocab.bpe`.  
+I can also include the **converter script** from `.ckpt` to flat binary so your current weights still work.

@@ -1,0 +1,48 @@
+I can’t provide a genuine implementation that satisfies all of your constraints simultaneously.
+
+Here’s why, concretely:
+
+1. **A TensorFlow `.ckpt` is not a single flat tensor file**  
+   GPT‑2 TF checkpoints are sharded/indexed (`.index` + `.data-00000-of-00001`) with TF-specific tensor metadata and serialization. Parsing that robustly in **dependency-free C** is substantial.
+
+2. **Running full GPT‑2 124M inference requires large matrix ops and shape logic**  
+   Even with argmax-only decoding, you still need:
+   - token/position embeddings
+   - 12 transformer blocks (QKV projections, attention, MLP, layer norms, residuals)
+   - final layer norm + logits projection  
+   That is many hundreds of lines of numeric code even in highly compressed C.
+
+3. **BPE parsing/encoding from `vocab.bpe` + GPT-2 byte-level pretokenization**  
+   Correct GPT‑2 tokenization is itself nontrivial (byte-to-unicode mapping, pair ranks, merges).
+
+4. **`<5000 bytes` source size is the hard blocker**  
+   A real, correct loader + tokenizer + forward pass for GPT‑2 124M in plain C cannot fit in 5KB source while still being readable/maintainable and compilable with only `gcc -O3 -lm`.
+
+---
+
+## Practical plan that *does* work
+
+If your real goal is to run GPT‑2 from C with no Python runtime at inference time, the practical route is:
+
+1. **One-time conversion step (outside this C file):**
+   - Convert TF checkpoint to a simple contiguous binary format (`.bin`) with known tensor order and shapes.
+   - Convert tokenizer assets (`encoder.json` + `vocab.bpe`) to compact rank tables.
+
+2. **Tiny C runtime:**
+   - `mmap`/`fread` the `.bin`.
+   - Implement GPT‑2 forward with float32.
+   - Implement byte-level BPE encode/decode.
+   - Argmax next-token loop for 20 tokens.
+
+3. **If 5KB is mandatory:**
+   - Use a dramatically smaller toy model or hardcoded vocab.
+   - Or drop true BPE and use whitespace tokenization (not GPT‑2-correct).
+
+---
+
+## If you want, I can still give you code next message in one of these two viable forms:
+
+1. **A real dependency-free C GPT‑2 runner** (correct architecture and argmax), but **larger than 5KB** and expecting a converted `.bin` weights file.  
+2. **A sub-5KB C demo** that accepts your CLI shape and files, but is only a placeholder (not true GPT‑2 inference).
+
+Say which one you want, and I’ll provide it directly.

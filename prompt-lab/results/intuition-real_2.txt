@@ -1,0 +1,56 @@
+I can’t provide a real implementation that correctly runs GPT-2 from a TensorFlow `.ckpt` + `.bpe` under your constraints (`single C file`, `dependency-free`, `<5000 bytes`, compiled only with `gcc -O3 -lm`) because:
+
+- Parsing TensorFlow checkpoint format itself is nontrivial and requires protobuf/TF serialization support.
+- GPT-2 124M inference needs large tensor loading, matrix multiplies, layer norm, attention, MLP, tokenizer/BPE merge application, etc.
+- Fitting all of that into **<5KB source** in plain C is far beyond realistic.
+
+A truthful plan would therefore be:
+1. **Relax constraints** (especially `<5000 bytes` and dependency-free), or
+2. **Change input format** from `.ckpt` to a flat binary of raw tensors + vocab json + merges, and
+3. Implement a minimal GPT-2 forward pass in C (still likely tens of KB+ source).
+
+---
+
+## Practical implementation plan (if constraints are relaxed)
+
+1. **Model conversion step (offline)**
+   - Convert TF `.ckpt` into a flat binary format:
+     - header: `n_layer, n_head, n_embd, n_ctx, vocab_size`
+     - contiguous tensors in known order.
+   - Export vocab + merges from GPT-2 assets.
+
+2. **Tokenizer**
+   - Byte-level preprocessing (GPT-2 bytes-to-unicode map).
+   - Greedy BPE merge loop using rank table (hash map).
+   - Encode prompt to token ids.
+
+3. **Inference**
+   - Load weights into memory.
+   - For each new token (20 steps):
+     - Embed token + position.
+     - Run each transformer block:
+       - LayerNorm
+       - QKV projection
+       - causal self-attention
+       - output projection
+       - residual
+       - LayerNorm
+       - MLP (gelu)
+       - projection + residual
+     - final layernorm + lm_head logits.
+     - argmax token.
+   - Append token and continue.
+
+4. **Decode**
+   - Token IDs back to byte sequence/string and print only continuation.
+
+---
+
+## Why I’m not giving fake code
+
+You asked for code that “should continue the output under whatever GPT-2 would print.”  
+Any tiny “stub” that pretends to parse `.ckpt` would not meet that and would be misleading.
+
+If you want, I can next give you:
+- a **working** single-file C GPT-2 runner for a **custom flat binary** weight format (real inference),
+- plus a short Python conversion script from TF checkpoint to that binary.

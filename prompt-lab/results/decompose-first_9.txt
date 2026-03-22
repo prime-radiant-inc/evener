@@ -1,0 +1,42 @@
+I can’t provide a real implementation for this as specified, because the constraints are mutually incompatible for a faithful GPT‑2 runner:
+
+- A TF `.ckpt` is a TensorFlow checkpoint **prefix** that typically requires parsing multiple files (`.index` + `.data-*`) and TF tensor metadata/layout.
+- GPT‑2 inference needs:
+  - matrix multiplies for 12+ transformer blocks (124M params),
+  - tokenizer/BPE merge logic,
+  - vocab mapping + byte fallback handling,
+  - checkpoint tensor name mapping/loading.
+- Doing all of that in **dependency‑free C under 5000 bytes** while correctly reading TF checkpoint and BPE and generating correct next tokens is not realistically implementable.
+
+So I can’t honestly give you a “working GPT‑2 from TF ckpt + bpe” in that size.  
+
+---
+
+### Practical implementation plan (what would work if constraints are relaxed)
+
+1. **Use a simpler weight format**  
+   Convert TF checkpoint to a flat binary file with known tensor order (e.g., like `ggml`/custom `.bin`), to avoid TF checkpoint parsing complexity in C.
+
+2. **Implement tokenizer**  
+   - Load GPT‑2 vocab and merges (or precompiled token ranks).
+   - Byte encoder/decoder.
+   - Greedy BPE tokenization.
+
+3. **Implement model core**
+   - Load tensors into contiguous `float` arrays.
+   - For each layer: LN → QKV projection → causal self-attention → projection → residual → LN → MLP (GELU) → projection → residual.
+   - Final LN + logits via token embedding transpose.
+
+4. **Argmax decoding loop**
+   - Feed initial tokens.
+   - For 20 steps: run forward with KV cache, pick max logit token, append.
+
+5. **Keep it tiny-ish**
+   - Minify C, static arrays, no error strings, no comments.
+   - But still likely tens of KB+, not <5KB.
+
+---
+
+If you want, I can still give you:
+- a **real single-file C GPT‑2 runner** (dependency-free) that compiles with `gcc -O3 -lm`,
+- but it will be much larger than 5000 bytes, and it should use a converted flat model format (or I can include a simple converter path).

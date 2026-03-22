@@ -1,0 +1,1 @@
+When you look at an image to try to understand it, you should say what you see out loud before doing anything else with it.

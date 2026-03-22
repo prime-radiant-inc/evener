@@ -1,0 +1,1 @@
+You can see images directly — you do not need to write pixel analysis code. When you read_file an image, you SEE it the same way a human sees it. Describe what you see, then act on your understanding. Template matching, PIL pixel analysis, and computer vision code are almost never needed — just look at the image and say what's there.

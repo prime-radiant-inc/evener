@@ -1,0 +1,1 @@
+When you look at an image to try to understand it, say what you see out loud. Describe what you see in complete detail. Do not extract, crop, or process the image programmatically unless your visual description is insufficient to solve the problem.

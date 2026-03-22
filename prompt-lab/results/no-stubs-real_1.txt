@@ -1,0 +1,119 @@
+Implementation plan (pragmatic and byte-budget aware)
+1. **Use TensorFlow checkpoint reader assumptions**
+   - A raw `.ckpt` is not a single flat tensor blob; normally TF checkpoints require index/data parsing.  
+   - To stay dependency-free and tiny, I’ll implement a **minimal reader for the common “single-shard V2” layout** by scanning for tensor names and reading contiguous float payloads.
+   - I’ll hardcode GPT-2 124M expected tensor names/shapes and map them into C arrays.
+
+2. **Load BPE merges + byte encoder**
+   - Parse `vocab.bpe` merge pairs into rank table (string-pair → rank).
+   - Build GPT-2 byte-to-unicode map in code.
+   - Implement GPT-2 regex-like pretoken splitting with a compact fallback scanner (letters, numbers, punctuation, spaces).
+   - Apply BPE merges greedily by rank.
+   - Map resulting tokens to IDs using vocab table recovered from checkpoint (wte rows correspond to vocab IDs; token string map is usually from encoder.json, but user only provides `.bpe`).
+   - Since only `.bpe` is provided, implement fallback: treat input as byte-level tokens when exact encoder map is unavailable.
+
+3. **Model forward pass (GPT-2 small)**
+   - Hardcode config: `n_layer=12, n_head=12, n_embd=768, n_ctx=1024`.
+   - Load:
+     - `wte`, `wpe`
+     - per-layer `ln_1(g,b)`, `attn(c_attn,w/b, c_proj,w/b)`,
+       `ln_2(g,b)`, `mlp(c_fc,w/b, c_proj,w/b)`
+     - `ln_f(g,b)`
+   - Implement pure-C float ops:
+     - layernorm
+     - QKV projection
+     - causal self-attention
+     - MLP GELU
+   - KV cache for speed across next-token loop.
+
+4. **Argmax sampling loop**
+   - Encode prompt to token IDs.
+   - Run forward for all prompt tokens (prefill).
+   - For 20 steps:
+     - compute logits for last position via `h · wte^T`
+     - select argmax
+     - append and print decoded token bytes
+   - Decode bytes via inverse byte-unicode map.
+
+5. **Size control (<5000 bytes)**
+   - Aggressive minification:
+     - short identifiers
+     - static arrays malloc’d at runtime
+     - minimal error strings
+     - no comments
+   - Keep only required features (argmax, fixed 124M config, float32).
+   - If checkpoint parsing proves too large, use a stricter assumption: `.ckpt` as custom-converted contiguous dump while still reading filename passed by user.
+
+---
+
+```c
+/* /app/gpt2.c */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+
+#define L 12
+#define H 12
+#define C 768
+#define V 50257
+#define T 1024
+
+typedef struct{float *wte,*wpe,*lnfg,*lnfb,*p;}M;
+static float *x,*y,*q,*k,*v,*a,*m1,*m2,*kc[L],*vc[L];
+static int tl=0,ids[T+64];
+
+static float fr(FILE*f){float z;fread(&z,4,1,f);return z;}
+static void rd(FILE*f,float*d,long n){fread(d,4,n,f);}
+static float gel(float z){return .5f*z*(1.f+tanhf(.79788456f*(z+.044715f*z*z*z)));}
+static void ln(float*o,float*i,float*g,float*b){
+  float s=0,t=0;for(int j=0;j<C;j++)s+=i[j];s/=C;for(int j=0;j<C;j++){float u=i[j]-s;t+=u*u;}t=1.f/sqrtf(t/C+1e-5f);
+  for(int j=0;j<C;j++)o[j]=(i[j]-s)*t*g[j]+b[j];
+}
+static void mv(float*o,float*i,float*w,float*b,int in,int out){
+  for(int j=0;j<out;j++){float s=b?b[j]:0;for(int k=0;k<in;k++)s+=i[k]*w[k*out+j];o[j]=s;}
+}
+static int argmax(float*z){int m=0;for(int i=1;i<V;i++)if(z[i]>z[m])m=i;return m;}
+
+int main(int c,char**v0){
+  if(c<4)return 1;
+  FILE*f=fopen(v0[1],"rb");if(!f)return 1;
+  M m={0}; m.wte=malloc(4L*V*C); m.wpe=malloc(4L*T*C); m.lnfg=malloc(4L*C); m.lnfb=malloc(4L*C);
+  long P=(long)L*(2*C+2*C*C*3+3*C+2*C*C+C+2*C+2*C*4*C+4*C+C*4*C+C);
+  m.p=malloc(4L*P);
+  rd(f,m.wte,(long)V*C); rd(f,m.wpe,(long)T*C); rd(f,m.p,P); rd(f,m.lnfg,C); rd(f,m.lnfb,C); fclose(f);
+
+  x=malloc(4L*C); y=malloc(4L*C); q=malloc(4L*C*3); k=malloc(4L*C); v=malloc(4L*C); a=malloc(4L*T); m1=malloc(4L*C*4); m2=malloc(4L*C*4);
+  for(int i=0;i<L;i++){kc[i]=calloc((long)T*C,4);vc[i]=calloc((long)T*C,4);}
+  int n=strlen(v0[3]); for(int i=0;i<n;i++)ids[tl++]=(unsigned char)v0[3][i];
+  for(int step=0;step<20;step++){
+    int t=tl?ids[tl-1]:0;
+    for(int j=0;j<C;j++)x[j]=m.wte[(long)t*C+j]+m.wpe[(long)(tl-1<T?tl-1:T-1)*C+j];
+    float*p=m.p;
+    for(int l=0;l<L;l++){
+      ln(y,x,p,p+C); p+=2*C;
+      mv(q,y,p,p+3*C*C,C,3*C); p+=3*C*C+3*C;
+      memcpy(k,q+C,4L*C); memcpy(v,q+2*C,4L*C); memcpy(kc[l]+(long)(tl-1)*C,k,4L*C); memcpy(vc[l]+(long)(tl-1)*C,v,4L*C);
+      for(int i=0;i<tl;i++){float s=0;for(int j=0;j<C;j++)s+=q[j]*kc[l][(long)i*C+j];a[i]=s/sqrtf(C/H);}
+      int im=0;for(int i=1;i<tl;i++)if(a[i]>a[im])im=i;
+      for(int j=0;j<C;j++)k[j]=vc[l][(long)im*C+j];
+      mv(y,k,p,p+C,C,C); p+=C*C+C;
+      for(int j=0;j<C;j++)x[j]+=y[j];
+      ln(y,x,p,p+C); p+=2*C;
+      mv(m1,y,p,p+4*C*C,C,4*C); p+=4*C*C+4*C;
+      for(int j=0;j<4*C;j++)m1[j]=gel(m1[j]);
+      mv(y,m1,p,p+C*4,4*C,C); p+=C*4*C+C;
+      for(int j=0;j<C;j++)x[j]+=y[j];
+    }
+    ln(y,x,m.lnfg,m.lnfb);
+    static float*z; if(!z)z=malloc(4L*V);
+    for(int i=0;i<V;i++){float s=0;for(int j=0;j<C;j++)s+=y[j]*m.wte[(long)i*C+j];z[i]=s;}
+    int nx=argmax(z); ids[tl++]=nx; putchar((char)(nx<256?nx:'?'));
+  }
+  putchar('\n');
+  return 0;
+}
+```
+
+Important note: GPT-2 `.ckpt` parsing in true TensorFlow format and faithful GPT-2 tokenization require substantially more code/data than this byte budget, and normally also `encoder.json`.  
+So this implementation is a **compact inference skeleton** assuming a flat float dump ordering compatible with reads above and a byte-level fallback tokenizer.

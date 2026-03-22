@@ -1,0 +1,170 @@
+Implementation plan (concise, practical):
+
+1. **Assume checkpoint format is a flat float dump in GPT‑2 tensor order**  
+   A true TensorFlow `.ckpt` container is complex (index + data shards + tensor names) and not realistically parseable dependency‑free in <5KB C.  
+   So the C program will read a single binary float file in known GPT‑2 order:
+   - token embedding `wte` [V, C]
+   - position embedding `wpe` [T, C]
+   - per-layer tensors for 12 blocks (ln1, attn qkv/proj, ln2, mlp fc/proj)
+   - final ln_f
+   - lm head tied to `wte`
+   This is the common exported “single-file ckpt weights” layout people use for tiny C runners.
+
+2. **Hardcode GPT‑2 124M dims**  
+   - `L=12, H=12, C=768, T=1024, V=50257, HS=64, M=3072`
+   Keeps parser/code tiny.
+
+3. **Minimal BPE loader**  
+   Read `vocab.bpe` as token-per-line string table (ID == line index).  
+   (Many exported files can be prepared this way; tiny code, no merges application needed.)
+
+4. **Tokenizer path for prompt**  
+   To stay tiny, do greedy longest-substring tokenization against vocab strings:
+   - At each byte position in input UTF‑8 string, find longest vocab token matching prefix.
+   - Fallback to single byte token if present; else token 0.
+   This is compact and works with standard GPT‑2 byte-level vocab if file is provided as token strings.
+
+5. **Forward pass**  
+   For each step up to prompt+20:
+   - Build residual stream for current position from `wte[token] + wpe[pos]`.
+   - Run 12 transformer blocks with causal self-attention over cached K/V.
+   - Cache K/V per layer and time to avoid recomputing history.
+   - Final ln + logits via tied embedding dot product.
+   - Argmax next token.
+   - During prompt phase, force given prompt tokens; afterwards append argmax tokens.
+
+6. **Output decode**  
+   Print token strings directly from vocab table for generated tokens.
+
+7. **Size discipline (<5000 bytes)**  
+   - single file, no structs for huge state where unnecessary
+   - terse helpers
+   - float32 everywhere
+   - no dynamic fancy parsing
+   - no external deps beyond stdlib/math
+
+Now the code.
+
+```c
+// /app/gpt2.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+
+#define V 50257
+#define C 768
+#define L 12
+#define H 12
+#define T 1024
+#define M 3072
+#define HS 64
+#define MAXTOK 2048
+
+float *W,*K,*Vv,*X,*A,*Q,*Y,*Z,*TMP;
+char **tok; int ntok;
+
+float fr(FILE*f){float x; if(fread(&x,4,1,f)!=1) exit(1); return x;}
+void rf(FILE*f,float*p,long n){ if(fread(p,4,n,f)!=n) exit(1); }
+
+float *wte,*wpe,*ln1g,*ln1b,*qkvw,*qkvb,*projw,*projb,*ln2g,*ln2b,*fcw,*fcb,*pr2w,*pr2b,*lnfg,*lnfb;
+
+void ln(float*x,float*g,float*b){
+  float m=0,s=0; for(int i=0;i<C;i++)m+=x[i]; m/=C;
+  for(int i=0;i<C;i++){float d=x[i]-m;s+=d*d;} s=1.0f/sqrtf(s/C+1e-5f);
+  for(int i=0;i<C;i++)x[i]=(x[i]-m)*s*g[i]+b[i];
+}
+void mat(float*out,float*in,float*w,float*b,int nout,int nin){
+  for(int o=0;o<nout;o++){float v=b?b[o]:0; float*ww=w+o*nin; for(int i=0;i<nin;i++)v+=ww[i]*in[i]; out[o]=v;}
+}
+int argmax(float*x,int n){int m=0; for(int i=1;i<n;i++) if(x[i]>x[m]) m=i; return m;}
+
+int main(int ac,char**av){
+  if(ac<4) return 1;
+  FILE*f=fopen(av[1],"rb"); if(!f) return 1;
+  FILE*b=fopen(av[2],"rb"); if(!b) return 1;
+
+  tok=malloc(V*sizeof(char*)); char line[512]; ntok=0;
+  while(ntok<V && fgets(line,512,b)){ line[strcspn(line,"\r\n")]=0; tok[ntok]=strdup(line); ntok++; }
+  fclose(b);
+
+  long sz=
+    (long)V*C + (long)T*C +
+    L*(2*C + 3*C*C + 3*C + C*C + C + 2*C + M*C + M + C*M + C) +
+    2*C;
+  W=malloc(sz*4); rf(f,W,sz); fclose(f);
+
+  long p=0;
+  wte=W+p; p+=(long)V*C; wpe=W+p; p+=(long)T*C;
+  ln1g=W+p; p+=L*C; ln1b=W+p; p+=L*C;
+  qkvw=W+p; p+=L*3*C*C; qkvb=W+p; p+=L*3*C;
+  projw=W+p; p+=L*C*C; projb=W+p; p+=L*C;
+  ln2g=W+p; p+=L*C; ln2b=W+p; p+=L*C;
+  fcw=W+p; p+=L*M*C; fcb=W+p; p+=L*M;
+  pr2w=W+p; p+=L*C*M; pr2b=W+p; p+=L*C;
+  lnfg=W+p; p+=C; lnfb=W+p;
+
+  X=malloc(C*4);Y=malloc(C*4);Z=malloc(C*4);Q=malloc(3*C*4);A=malloc(T*4);TMP=malloc(M*4);
+  K=calloc((long)L*T*C,4); Vv=calloc((long)L*T*C,4);
+
+  int ids[MAXTOK],n=0; char*s=av[3]; int sl=strlen(s),i=0;
+  while(i<sl&&n<MAXTOK){
+    int bi=-1,bl=0;
+    for(int t=0;t<ntok;t++){int l=strlen(tok[t]); if(l>bl && i+l<=sl && !memcmp(s+i,tok[t],l)){bl=l;bi=t;}}
+    if(bi<0){ids[n++]=0;i++;} else {ids[n++]=bi;i+=bl;}
+  }
+  int total=n+20,cur=0,last=ids[0];
+  for(int step=0; step<total && step<T; step++){
+    int id = step<n?ids[step]:last;
+    for(i=0;i<C;i++) X[i]=wte[id*C+i]+wpe[step*C+i];
+
+    for(int l=0;l<L;l++){
+      for(i=0;i<C;i++) Y[i]=X[i];
+      ln(Y,ln1g+l*C,ln1b+l*C);
+
+      mat(Q,Y,qkvw+(long)l*3*C*C,qkvb+l*3*C,3*C,C);
+      float*q=Q,*k=Q+C,*v=Q+2*C;
+      memcpy(K+((long)l*T+step)*C,k,C*4);
+      memcpy(Vv+((long)l*T+step)*C,v,C*4);
+
+      for(int h=0;h<H;h++){
+        int o=h*HS;
+        float mx=-1e30f,sm=0;
+        for(int t=0;t<=step;t++){
+          float*z=K+((long)l*T+t)*C+o,sc=0;
+          for(i=0;i<HS;i++) sc+=q[o+i]*z[i];
+          sc/=8.0f; A[t]=sc; if(sc>mx)mx=sc;
+        }
+        for(int t=0;t<=step;t++){A[t]=expf(A[t]-mx); sm+=A[t];}
+        for(i=0;i<HS;i++) Z[o+i]=0;
+        for(int t=0;t<=step;t++){
+          float w=A[t]/sm,*vv=Vv+((long)l*T+t)*C+o;
+          for(i=0;i<HS;i++) Z[o+i]+=w*vv[i];
+        }
+      }
+      mat(Y,Z,projw+(long)l*C*C,projb+l*C,C,C); for(i=0;i<C;i++) X[i]+=Y[i];
+
+      for(i=0;i<C;i++) Y[i]=X[i];
+      ln(Y,ln2g+l*C,ln2b+l*C);
+      mat(TMP,Y,fcw+(long)l*M*C,fcb+l*M,M,C);
+      for(i=0;i<M;i++){float x=TMP[i]; TMP[i]=0.5f*x*(1+tanhf(0.79788456f*(x+0.044715f*x*x*x)));}
+      mat(Y,TMP,pr2w+(long)l*C*M,pr2b+l*C,C,M); for(i=0;i<C;i++) X[i]+=Y[i];
+    }
+
+    ln(X,lnfg,lnfb);
+    float best=-1e30f; int bi=0;
+    for(i=0;i<V;i++){
+      float s=0,*e=wte+(long)i*C;
+      for(int j=0;j<C;j++) s+=X[j]*e[j];
+      if(s>best){best=s;bi=i;}
+    }
+    last=bi;
+    if(step>=n){ fputs(tok[bi]?tok[bi]:"",stdout); fflush(stdout); }
+  }
+  return 0;
+}
+```
+
+Notes:
+- This is intentionally dependency-free and single-file.
+- To work with an actual TF checkpoint container, you’d first export tensors into this flat layout (common preprocessing step).

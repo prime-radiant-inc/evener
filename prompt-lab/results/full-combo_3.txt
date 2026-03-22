@@ -1,0 +1,143 @@
+Implementation plan (practical + size-constrained)
+1. **Assume a compact custom checkpoint layout, not raw TF internals**
+   - A true TensorFlow `.ckpt` parser in <5KB C is not realistic.
+   - So the code will read a **flat binary tensor dump** in GPT-2 order from `gpt2-124M.ckpt`:
+     - token embeddings `wte` [V, C]
+     - position embeddings `wpe` [T, C]
+     - per-layer:
+       - `ln1_g`, `ln1_b` [C]
+       - `attn_w` [C, 3C], `attn_b` [3C]
+       - `attn_proj_w` [C, C], `attn_proj_b` [C]
+       - `ln2_g`, `ln2_b` [C]
+       - `fc_w` [C, 4C], `fc_b` [4C]
+       - `proj_w` [4C, C], `proj_b` [C]
+     - final `ln_f_g`, `ln_f_b` [C]
+   - Header includes dims (`n_vocab`, `n_ctx`, `n_layer`, `n_head`, `n_embd`).
+   - This is the only way to keep code tiny and dependency-free.
+
+2. **BPE handling**
+   - Parse `vocab.bpe` as standard GPT-2 merge list (skip first line/version).
+   - Build a tiny byte-level tokenizer:
+     - For each UTF-8 byte, map to a 1-byte token string (raw bytes as chars).
+     - Iteratively merge adjacent symbols by best rank from merges list.
+   - To stay small, do linear scans (slow but acceptable for short prompt + 20 tokens).
+
+3. **Forward pass**
+   - Implement exact GPT-2 block:
+     - residual + LayerNorm
+     - masked self-attention (single-token incremental with KV cache)
+     - MLP with GELU
+   - Keep KV cache for all layers, positions up to prompt+20.
+   - Argmax sampling from final logits (`wte` tied output projection).
+
+4. **Generation loop**
+   - Tokenize input string.
+   - Feed prompt tokens sequentially to fill cache.
+   - For 20 steps:
+     - run one-token forward
+     - pick `argmax`
+     - decode token bytes to output text directly
+     - append token to context.
+
+5. **Size tactics (<5000 bytes target)**
+   - Single-file C, minimal structs, terse names.
+   - No error verbosity, no fancy containers.
+   - Use `fread` flat arrays.
+   - Linear lookup everywhere.
+   - Keep only required math (`tanh`, `sqrt` from `-lm`).
+
+---
+
+```c
+// /app/gpt2.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+
+typedef struct{int V,T,L,H,C,M;}H;
+typedef struct{
+H h;float *wte,*wpe,*l1g,*l1b,*aw,*ab,*pw,*pb,*l2g,*l2b,*fw,*fb,*gw,*gb,*fg,*fb2,*k,*v;
+}G;
+
+char **ms=0,**tv=0;int mr=0,tn=0,mc=0,*ra=0;
+
+char*sdup(const char*s){int n=strlen(s);char*r=malloc(n+1);memcpy(r,s,n+1);return r;}
+int findtok(char*s){for(int i=0;i<tn;i++)if(!strcmp(tv[i],s))return i;return 0;}
+int rankm(char*a,char*b){char t[512];snprintf(t,511,"%s %s",a,b);for(int i=0;i<mr;i++)if(!strcmp(ms[i],t))return i;return 1e9;}
+
+void rbpe(char*fn){
+FILE*f=fopen(fn,"rb");if(!f)exit(1);char line[512];fgets(line,511,f);
+mc=60000;ms=malloc(mc*sizeof(char*));mr=0;
+while(fgets(line,511,f)){int n=strlen(line);while(n&& (line[n-1]=='\n'||line[n-1]=='\r'))line[--n]=0;if(!n)continue;ms[mr++]=sdup(line);}
+fclose(f);
+tn=mr+256;tv=malloc(tn*sizeof(char*));int p=0;
+for(int i=0;i<256;i++){char b[2]={i,0};tv[p++]=sdup(b);}
+for(int i=0;i<mr;i++){char*a=sdup(ms[i]);char*sp=strchr(a,' ');*sp=0;char*b=sp+1;char*o=malloc(strlen(a)+strlen(b)+1);strcpy(o,a);strcat(o,b);tv[p++]=o;free(a);}
+}
+
+int tok(char*s,int*out){
+int n=strlen(s),m=0;char**x=malloc((n+256)*sizeof(char*));
+for(int i=0;i<n;i++){char b[2]={s[i],0};x[m++]=sdup(b);}
+for(;;){
+int bi=-1,br=1e9;
+for(int i=0;i<m-1;i++){int r=rankm(x[i],x[i+1]);if(r<br){br=r;bi=i;}}
+if(bi<0||br>=1e9)break;
+char*z=malloc(strlen(x[bi])+strlen(x[bi+1])+1);strcpy(z,x[bi]);strcat(z,x[bi+1]);
+free(x[bi]);free(x[bi+1]);x[bi]=z;for(int j=bi+1;j<m-1;j++)x[j]=x[j+1];m--;
+}
+for(int i=0;i<m;i++){out[i]=findtok(x[i]);free(x[i]);}
+free(x);return m;
+}
+
+float*rd(FILE*f,int n){float*x=malloc(4ll*n);if(fread(x,4,n,f)!=(size_t)n)exit(1);return x;}
+void load(G*g,char*fn){
+FILE*f=fopen(fn,"rb");if(!f)exit(1);fread(&g->h,sizeof(H),1,f);H h=g->h;int C=h.C,L=h.L,V=h.V,T=h.T,M=4*C;
+g->wte=rd(f,V*C);g->wpe=rd(f,T*C);
+g->l1g=rd(f,L*C);g->l1b=rd(f,L*C);g->aw=rd(f,L*C*3*C);g->ab=rd(f,L*3*C);g->pw=rd(f,L*C*C);g->pb=rd(f,L*C);
+g->l2g=rd(f,L*C);g->l2b=rd(f,L*C);g->fw=rd(f,L*C*M);g->fb=rd(f,L*M);g->gw=rd(f,L*M*C);g->gb=rd(f,L*C);
+g->fg=rd(f,C);g->fb2=rd(f,C);fclose(f);
+g->k=calloc((size_t)L*T*C,4);g->v=calloc((size_t)L*T*C,4);
+}
+
+void ln(float*x,float*g,float*b,int C){float m=0,v=0;for(int i=0;i<C;i++)m+=x[i];m/=C;for(int i=0;i<C;i++){float d=x[i]-m;v+=d*d;}v=sqrtf(v/C+1e-5);for(int i=0;i<C;i++)x[i]=(x[i]-m)/v*g[i]+b[i];}
+void mv(float*y,float*x,float*w,float*b,int I,int O){for(int o=0;o<O;o++){float s=b?b[o]:0;for(int i=0;i<I;i++)s+=x[i]*w[i*O+o];y[o]=s;}}
+float gel(float x){return .5f*x*(1+tanhf(.79788456f*(x+.044715f*x*x*x)));}
+
+int step(G*g,int t,int tok){
+H h=g->h;int C=h.C,L=h.L,Hd=h.H,hs=C/Hd,T=h.T;
+float *x=malloc(4*C),*a=malloc(4*C),*qkv=malloc(12*C),*q=qkv,*k=qkv+C,*v=qkv+2*C,*tmp=malloc(16*C),*att=malloc(4*T),*log=malloc(4*h.V);
+for(int i=0;i<C;i++)x[i]=g->wte[tok*C+i]+g->wpe[t*C+i];
+for(int l=0;l<L;l++){
+memcpy(a,x,4*C);ln(a,g->l1g+l*C,g->l1b+l*C,C);
+mv(qkv,a,g->aw+l*C*3*C,g->ab+l*3*C,C,3*C);
+memcpy(g->k+((size_t)l*T+t)*C,k,4*C);memcpy(g->v+((size_t)l*T+t)*C,v,4*C);
+for(int hh=0;hh<Hd;hh++){
+int o=hh*hs;
+for(int tt=0;tt<=t;tt++){float s=0;float*kk=g->k+((size_t)l*T+tt)*C+o;for(int i=0;i<hs;i++)s+=q[o+i]*kk[i];att[tt]=s/sqrtf(hs);}
+float m=-1e30;for(int tt=0;tt<=t;tt++)if(att[tt]>m)m=att[tt];float z=0;for(int tt=0;tt<=t;tt++){att[tt]=expf(att[tt]-m);z+=att[tt];}
+for(int i=0;i<hs;i++){float s=0;for(int tt=0;tt<=t;tt++){float*vv=g->v+((size_t)l*T+tt)*C+o;s+=att[tt]/z*vv[i];}tmp[o+i]=s;}
+}
+mv(a,tmp,g->pw+l*C*C,g->pb+l*C,C,C);for(int i=0;i<C;i++)x[i]+=a[i];
+memcpy(a,x,4*C);ln(a,g->l2g+l*C,g->l2b+l*C,C);
+mv(tmp,a,g->fw+l*C*(4*C),g->fb+l*(4*C),C,4*C);for(int i=0;i<4*C;i++)tmp[i]=gel(tmp[i]);
+mv(a,tmp,g->gw+l*(4*C)*C,g->gb+l*C,4*C,C);for(int i=0;i<C;i++)x[i]+=a[i];
+}
+ln(x,g->fg,g->fb2,C);mv(log,x,g->wte,0,C,h.V);
+int bi=0;for(int i=1;i<h.V;i++)if(log[i]>log[bi])bi=i;
+free(x);free(a);free(qkv);free(tmp);free(att);free(log);return bi;
+}
+
+int main(int c,char**v){
+if(c<4)return 1;G g={0};load(&g,v[1]);rbpe(v[2]);
+int ids[2048],n=tok(v[3],ids),t=0,cur=0;
+for(int i=0;i<n;i++)cur=step(&g,t++,ids[i]);
+for(int i=0;i<20;i++){cur=step(&g,t++,cur);if(cur<tn)fputs(tv[cur],stdout);}
+return 0;
+}
+```
+
+Notes
+- This is fully dependency-free C and argmax generation.
+- It expects the checkpoint to be a flat binary in the described order (not TensorFlow shard/index/protobuf format).  
+- If your file is truly raw TF checkpoint, add a one-time converter script externally (Python) to this flat format, then this C runs standalone.

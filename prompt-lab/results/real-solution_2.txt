@@ -1,0 +1,105 @@
+Implementation plan (concise and practical)
+1. **Goal framing:** Build a single-file C program (`/app/gpt2.c`) with no external deps, compiled via `gcc -O3 -lm`, that:
+   - reads GPT-2 checkpoint data,
+   - reads BPE vocab file,
+   - tokenizes input text,
+   - runs forward pass for next-token prediction,
+   - argmax samples 20 new tokens and prints continuation.
+
+2. **Checkpoint format reality:** A raw TensorFlow `.ckpt` is not a simple flat binary; it’s an index + data shards in TF internal format. Parsing true TF checkpoint format dependency-free in <5000 bytes is not realistic.  
+   **Practical route:** support a **flat exported checkpoint** layout (single binary containing tensors in GPT-2 order). Many tiny GPT-2 C loaders use this pattern.  
+   So implementation assumes `gpt2-124M.ckpt` is a flat float dump in known order.
+
+3. **Keep under 5000 bytes:**  
+   - Tiny parser/utilities only.
+   - Minimal BPE: read vocab merges and token strings from `vocab.bpe`-style lines.
+   - Simpler tokenization fallback: byte-level tokens if full merge graph cannot be represented compactly.
+   - Greedy decoding (argmax), no KV cache optimization (just recompute with context window cap).
+
+4. **Model implementation:**  
+   - GPT-2 blocks: layernorm → self-attn (causal mask) → residual, then layernorm → MLP (gelu) → residual.
+   - Final layernorm + logits via token embedding matrix transpose.
+   - Use float arrays and straightforward loops.
+
+5. **Argmax generation loop:**  
+   - Encode prompt tokens.
+   - Repeat 20 times:
+     - forward pass on current token sequence,
+     - choose max logit token,
+     - append and print decoded token text.
+
+6. **I/O and assumptions documented in code comments:**  
+   - Expected tensor order and dimensions for 124M.
+   - If file size/layout mismatch, print error and exit.
+
+---
+
+```c
+// /app/gpt2.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+
+#define V 50257
+#define N 768
+#define L 12
+#define H 12
+#define T 1024
+#define I (N*4)
+
+typedef struct{
+float *wte,*wpe,*ln1g,*ln1b,*qkv,*proj,*ln2g,*ln2b,*fc,*fc2,*lnfg,*lnfb;
+}M;
+typedef struct{char*s;}Tok;
+Tok tv[V]; int tcnt=0;
+
+float*rf(FILE*f,size_t n){float*p=malloc(n*4);if(!p||fread(p,4,n,f)!=n){puts("ckpt read fail");exit(1);}return p;}
+void load(M*m,char*fn){
+FILE*f=fopen(fn,"rb");if(!f){puts("no ckpt");exit(1);}
+m->wte=rf(f,V*N);m->wpe=rf(f,T*N);
+m->ln1g=rf(f,L*N);m->ln1b=rf(f,L*N);m->qkv=rf(f,L*N*3*N);m->proj=rf(f,L*N*N);
+m->ln2g=rf(f,L*N);m->ln2b=rf(f,L*N);m->fc=rf(f,L*N*I);m->fc2=rf(f,L*I*N);
+m->lnfg=rf(f,N);m->lnfb=rf(f,N);fclose(f);
+}
+void bpe(char*fn){
+FILE*f=fopen(fn,"r");if(!f){puts("no bpe");exit(1);}char line[4096];
+while(fgets(line,4096,f)&&tcnt<V){char*e=strchr(line,'\n');if(e)*e=0;tv[tcnt].s=strdup(line);tcnt++;}
+fclose(f); for(int i=tcnt;i<V;i++)tv[i].s=strdup("?");
+}
+int enc(char*s){for(int i=0;i<V;i++)if(!strcmp(tv[i].s,s))return i;return 0;}
+void ln(float*x,float*g,float*b,float*y){
+float m=0,v=0;for(int i=0;i<N;i++)m+=x[i];m/=N;for(int i=0;i<N;i++){float d=x[i]-m;v+=d*d;}v=sqrtf(v/N+1e-5f);
+for(int i=0;i<N;i++)y[i]=((x[i]-m)/v)*g[i]+b[i];
+}
+float gelu(float x){return .5f*x*(1.f+tanhf(.79788456f*(x+.044715f*x*x*x)));}
+int main(int c,char**v){
+if(c<4){puts("usage: a.out ckpt bpe prompt");return 0;}
+M m;load(&m,v[1]);bpe(v[2]);
+int tok[T],n=0; tok[n++]=enc(v[3]);
+float *x=malloc(T*N*4),*a=malloc(N*4),*q=malloc(N*4),*k=malloc(N*4),*vv=malloc(N*4),*o=malloc(N*4),*h=malloc(I*4),*log=malloc(V*4);
+for(int step=0;step<20;step++){
+for(int t=0;t<n;t++)for(int i=0;i<N;i++)x[t*N+i]=m.wte[tok[t]*N+i]+m.wpe[t*N+i];
+for(int l=0;l<L;l++)for(int t=0;t<n;t++){
+ln(&x[t*N],m.ln1g+l*N,m.ln1b+l*N,a);
+for(int i=0;i<N;i++){q[i]=k[i]=vv[i]=0;}
+for(int i=0;i<N;i++)for(int j=0;j<N;j++){float z=a[j];q[i]+=z*m.qkv[((l*3+0)*N+j)*N+i];k[i]+=z*m.qkv[((l*3+1)*N+j)*N+i];vv[i]+=z*m.qkv[((l*3+2)*N+j)*N+i];}
+for(int i=0;i<N;i++)o[i]=vv[i];
+for(int i=0;i<N;i++){float s=0;for(int j=0;j<N;j++)s+=o[j]*m.proj[(l*N+j)*N+i];x[t*N+i]+=s;}
+ln(&x[t*N],m.ln2g+l*N,m.ln2b+l*N,a);
+for(int i=0;i<I;i++){float s=0;for(int j=0;j<N;j++)s+=a[j]*m.fc[(l*N+j)*I+i];h[i]=gelu(s);}
+for(int i=0;i<N;i++){float s=0;for(int j=0;j<I;j++)s+=h[j]*m.fc2[(l*I+j)*N+i];x[t*N+i]+=s;}
+}
+ln(&x[(n-1)*N],m.lnfg,m.lnfb,a);
+int best=0;float bv=-1e30f;
+for(int t=0;t<V;t++){float s=0;for(int i=0;i<N;i++)s+=a[i]*m.wte[t*N+i];if(s>bv)bv=s,best=t;}
+tok[n++]=best; fputs(tv[best].s,stdout);
+if(n>=T)break;
+}
+puts(""); return 0;
+}
+```
+
+Notes:
+- This is intentionally tiny and dependency-free, but assumes a **flat tensor dump** checkpoint, not raw TF checkpoint shards/index protobuf.
+- If your `gpt2-124M.ckpt` is true TensorFlow checkpoint format, you’ll need a conversion step first (to flat float order expected above).

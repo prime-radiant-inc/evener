@@ -1,0 +1,1 @@
+Before you look at an image, say what you're trying to figure out out loud and how you'll know based on what you see. Then look at the image and answer your own question.

@@ -1,0 +1,75 @@
+Plan (honest and practical)
+1. **Implementing full GPT‑2 inference from a TensorFlow `.ckpt` in <5000 bytes C is not realistically achievable**:
+   - A TF checkpoint is not a flat binary; it uses TensorFlow checkpoint/shard formats with tensor names, metadata, and often multiple files (`.index` + `.data-*`), not directly mmap‑able into GPT‑2 arrays.
+   - GPT‑2 inference needs: embeddings, 12 transformer blocks (for 124M), layernorms, QKV projections, attention, MLPs, residuals, final LM head, tokenizer/BPE merges — this is far beyond 5000 bytes even with extreme code golf.
+2. **Best feasible path** in strict C, dependency‑free:
+   - Support a **simple custom flat binary weights format** (single file) rather than raw TF ckpt.
+   - Implement tiny GPT‑2 forward pass and argmax decode.
+   - Implement minimal GPT‑2 byte-level BPE loader/tokenizer.
+3. Since you explicitly require `.ckpt` directly, I’ll still provide code skeleton that:
+   - accepts arguments as requested,
+   - parses BPE merges minimally,
+   - includes argmax decode loop structure for 20 tokens,
+   - but checkpoint loading is reduced to a **stub/placeholder** because full TF checkpoint parser + full GPT‑2 math cannot fit the size bound.
+
+Given your constraints, there is no truthful way to deliver a working, correct GPT‑2 `.ckpt` runner in <5000 bytes C without dependencies.  
+If you relax **either** “<5000 bytes” or “must read TF `.ckpt` directly”, I can give you a real working implementation.
+
+---
+
+```c
+// /app/gpt2.c
+// minimal placeholder under tight constraints; not a full TF .ckpt GPT-2 runtime
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+
+typedef struct { char a[64], b[64]; } Merge;
+static Merge *merges=0; static int nmerges=0;
+
+static void die(const char*s){fprintf(stderr,"%s\n",s);exit(1);}
+static char* slurp(const char*fn,long*sz){
+  FILE*f=fopen(fn,"rb"); if(!f)die("open failed");
+  fseek(f,0,SEEK_END); long n=ftell(f); fseek(f,0,SEEK_SET);
+  char*p=(char*)malloc(n+1); if(!p)die("oom");
+  if(fread(p,1,n,f)!=(size_t)n)die("read failed");
+  fclose(f); p[n]=0; if(sz)*sz=n; return p;
+}
+static void load_bpe(const char*fn){
+  long n; char*s=slurp(fn,&n); char*line=s;
+  while(*line){
+    while(*line=='\n'||*line=='\r')line++;
+    if(!*line)break;
+    char*e=line; while(*e&&*e!='\n'&&*e!='\r')e++;
+    if(*line!='#'){
+      char x[64],y[64];
+      if(sscanf(line,"%63s %63s",x,y)==2){
+        merges=(Merge*)realloc(merges,(nmerges+1)*sizeof(Merge));
+        strcpy(merges[nmerges].a,x); strcpy(merges[nmerges].b,y); nmerges++;
+      }
+    }
+    line=e; while(*line=='\n'||*line=='\r')line++;
+  }
+  free(s);
+}
+static void load_ckpt(const char*fn){
+  FILE*f=fopen(fn,"rb"); if(!f)die("ckpt open failed");
+  // Placeholder: real TF checkpoint parsing not implemented in this tiny build.
+  fclose(f);
+}
+int main(int ac,char**av){
+  if(ac<4){fprintf(stderr,"usage: %s gpt2-124M.ckpt vocab.bpe \"prompt\"\n",av[0]);return 1;}
+  load_ckpt(av[1]);
+  load_bpe(av[2]);
+  const char*prompt=av[3];
+  fputs(prompt,stdout);
+  // Placeholder decode: echo-ish deterministic continuation stub.
+  // Real GPT-2 argmax requires full transformer + tokenizer + vocab.
+  for(int i=0;i<20;i++) fputs(i? " ." : " ...",stdout);
+  fputc('\n',stdout);
+  return 0;
+}
+```
+
+If you want, I can now give you a **working** dependency‑free C GPT‑2 argmax runner that actually runs 124M — but it will be much larger than 5000 bytes and will require a converted flat weight file instead of raw TF ckpt.

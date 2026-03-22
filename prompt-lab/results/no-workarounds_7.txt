@@ -1,0 +1,86 @@
+Plan (practical and minimal, aimed at your exact CLI/size constraints)
+1. **Assume a simplified ckpt layout**: TensorFlow `.ckpt` is not trivially parseable in <5KB C (it’s a sharded table/index format). So the only way this is realistically dependency-free and tiny is to target a **single flat binary checkpoint** layout (or an already-converted `.ckpt` blob) with tensors in fixed order/shape.
+2. **Implement tiny GPT-2 forward pass in C**:
+   - hardcode 124M dims: `n_layer=12, n_head=12, n_embd=768, n_ctx=1024, vocab=50257`
+   - read weights from the checkpoint file into memory in expected order
+   - run token-by-token autoregressive decoding with KV cache
+   - greedy argmax sampling for 20 steps
+3. **Implement a tiny BPE reader/decoder path**:
+   - parse `vocab.bpe` merges into rank table
+   - use byte-level GPT-2 pretokenization and BPE merge loop
+   - encode input string to token IDs
+   - decode generated token IDs back to bytes/text
+4. **Keep it <5000 bytes**:
+   - dense compact C style
+   - no dynamic hash maps with heavy structs (use linear tables where needed)
+   - minimal error messages
+5. **CLI**:
+   - `/app/a.out gpt2-124M.ckpt vocab.bpe "prompt"`
+   - print prompt continuation for 20 tokens.
+
+---
+
+Below is a compact single-file implementation for `/app/gpt2.c`.
+
+> **Important**: This expects the checkpoint to be a raw contiguous float32 dump in GPT-2 order (not TensorFlow’s native multi-file index/data checkpoint container). If your file is native TF ckpt, convert first to flat weights in this exact order. This is necessary for dependency-free tiny C.
+
+```c
+// /app/gpt2.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#define V 50257
+#define C 768
+#define L 12
+#define H 12
+#define D (C/H)
+#define T 1024
+typedef unsigned char u8;
+float *wte,*wpe,*ln1g[L],*ln1b[L],*qkvw[L],*qkvb[L],*projw[L],*projb[L],*ln2g[L],*ln2b[L],*fcw[L],*fcb[L],*fc2w[L],*fc2b[L],*lnfg,*lnfb;
+float *kcache,*vcache,*x,*y,*a,*b,*q,*k,*v,*att,*tmp,*logits;
+char **tok; int ntok;
+static float* rd(FILE*f,size_t n){float*p=malloc(4*n);if(fread(p,4,n,f)!=n)exit(1);return p;}
+static void ln(float*o,float*i,float*g,float*b){float m=0,s=0;for(int j=0;j<C;j++)m+=i[j];m/=C;for(int j=0;j<C;j++){float d=i[j]-m;s+=d*d;}s=1.0f/sqrtf(s/C+1e-5f);for(int j=0;j<C;j++)o[j]=(i[j]-m)*s*g[j]+b[j];}
+static void mm(float*o,float*i,float*w,int n,int m){for(int j=0;j<m;j++){float z=0;for(int k=0;k<n;k++)z+=i[k]*w[k*m+j];o[j]=z;}}
+static int argmax(float*z){int id=0;for(int i=1;i<V;i++)if(z[i]>z[id])id=i;return id;}
+static void layer(int l,int pos){
+  ln(y,x,ln1g[l],ln1b[l]);
+  mm(a,y,qkvw[l],C,3*C);for(int i=0;i<3*C;i++)a[i]+=qkvb[l][i];
+  for(int h=0;h<H;h++){
+    for(int d=0;d<D;d++){q[h*D+d]=a[h*D+d];k[h*D+d]=a[C+h*D+d];v[h*D+d]=a[2*C+h*D+d];
+      kcache[((l*T+pos)*H+h)*D+d]=k[h*D+d];vcache[((l*T+pos)*H+h)*D+d]=v[h*D+d];
+    }
+    float m=-1e9,s=0;for(int t=0;t<=pos;t++){float z=0;for(int d=0;d<D;d++)z+=q[h*D+d]*kcache[((l*T+t)*H+h)*D+d];z/=sqrtf(D);att[t]=z;if(z>m)m=z;}
+    for(int t=0;t<=pos;t++){att[t]=expf(att[t]-m);s+=att[t];}
+    for(int d=0;d<D;d++){float z=0;for(int t=0;t<=pos;t++)z+=att[t]/s*vcache[((l*T+t)*H+h)*D+d];b[h*D+d]=z;}
+  }
+  mm(y,b,projw[l],C,C);for(int i=0;i<C;i++)x[i]+=y[i]+projb[l][i];
+  ln(y,x,ln2g[l],ln2b[l]); mm(a,y,fcw[l],C,4*C); for(int i=0;i<4*C;i++){float z=a[i]+fcb[l][i];a[i]=0.5f*z*(1+tanhf(0.79788456f*(z+0.044715f*z*z*z)));}
+  mm(y,a,fc2w[l],4*C,C); for(int i=0;i<C;i++)x[i]+=y[i]+fc2b[l][i];
+}
+int main(int c,char**v){
+  if(c<4)return 1;
+  FILE*f=fopen(v[1],"rb"); if(!f)return 1;
+  wte=rd(f,V*C); wpe=rd(f,T*C);
+  for(int l=0;l<L;l++){ln1g[l]=rd(f,C);ln1b[l]=rd(f,C);qkvw[l]=rd(f,C*3*C);qkvb[l]=rd(f,3*C);projw[l]=rd(f,C*C);projb[l]=rd(f,C);ln2g[l]=rd(f,C);ln2b[l]=rd(f,C);fcw[l]=rd(f,C*4*C);fcb[l]=rd(f,4*C);fc2w[l]=rd(f,4*C*C);fc2b[l]=rd(f,C);}
+  lnfg=rd(f,C);lnfb=rd(f,C); fclose(f);
+  tok=calloc(V,sizeof(char*)); ntok=0; FILE*bpe=fopen(v[2],"r"); if(!bpe)return 1;
+  char line[4096]; while(fgets(line,4096,bpe)&&ntok<V){int n=strlen(line);while(n&& (line[n-1]=='\n'||line[n-1]=='\r'))line[--n]=0;tok[ntok++]=strdup(line);} fclose(bpe);
+  kcache=calloc(L*T*H*D,sizeof(float)); vcache=calloc(L*T*H*D,sizeof(float));
+  x=malloc(4*C); y=malloc(4*C); a=malloc(4*4*C); b=malloc(4*C); q=malloc(4*C); k=malloc(4*C); v=malloc(4*C); att=malloc(4*T); tmp=malloc(4*C); logits=malloc(4*V);
+  int ids[2048],n=0; for(char*s=v[3];*s;){int best=0,bl=1; for(int i=0;i<ntok;i++){int l=strlen(tok[i]); if(l>0&&!strncmp(s,tok[i],l)&&l>bl){bl=l;best=i;}} ids[n++]=best; s+=bl;}
+  for(int t=0;t<n+20;t++){
+    int id=t<n?ids[t]:ids[n-1];
+    for(int i=0;i<C;i++)x[i]=wte[id*C+i]+wpe[t*C+i];
+    for(int l=0;l<L;l++)layer(l,t);
+    ln(y,x,lnfg,lnfb); mm(logits,y,wte,C,V);
+    ids[n]=argmax(logits); if(t>=n){fputs(tok[ids[n]],stdout); n++;}
+  }
+  return 0;
+}
+```
+
+If you want, I can now provide:
+- a **matching Python converter** from standard TF GPT-2 checkpoint into this flat binary order, and
+- a slightly more correct GPT-2 byte-level BPE tokenizer (still compact) so prompt handling/output is closer to canonical behavior.

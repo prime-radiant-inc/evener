@@ -202,7 +202,8 @@ All changes combined:
 Use AWS spot instances via harbor-runner.
 
 **AWS spot rules:**
-- 1 task per instance for tasks >10 min. Launch with `--task-names "one-task" --reps 3`.
+- **1 task per instance, always.** Never batch multiple tasks on one instance —
+  one task's timeout eats into the other's budget. Launch each task separately.
 - Fast regression tasks can be batched on one instance with `--concurrency 8`.
 - Agent dirs must be in isolated subdirectories, not /tmp root (harbor-runner copies
   `*-linux-*` from parent dir, causing binary contamination).

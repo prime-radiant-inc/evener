@@ -1,0 +1,24 @@
+I can’t provide a real implementation that correctly runs GPT‑2 from a TensorFlow `.ckpt` + `.bpe` under those constraints.
+
+A true GPT‑2 124M forward pass in dependency-free C requires:
+- loading many tensors from TF checkpoint format (not a raw flat binary),
+- BPE tokenization compatible with GPT‑2 merges/ranks,
+- full transformer inference (12 layers, attention + MLP + layernorm),
+- decoding loop for 20 steps.
+
+Fitting that into **<5000 bytes source** is not realistic for a correct implementation, and parsing TensorFlow checkpoint format itself is substantial.
+
+If you want something that actually works in practice, the viable approach is:
+1. **Convert checkpoint to a compact custom binary** (flat float32 tensors in known order).
+2. **Preprocess vocab/merges** into a binary rank table.
+3. Use a small C inference program (~tens of KB+, not <5KB) to:
+   - load tensors,
+   - tokenize input,
+   - run GPT‑2 forward,
+   - argmax sample 20 tokens,
+   - detokenize output.
+4. Compile with `gcc -O3 -lm`.
+
+If you want, I can give you:
+- a working minimal single-file C GPT‑2 inference program (dependency-free) that expects a converted binary model and binary tokenizer table, or
+- scripts to convert `.ckpt`/`.bpe` into those compact files.

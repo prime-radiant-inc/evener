@@ -1,0 +1,150 @@
+Implementation plan (pragmatic and compact, aiming for `<5000` bytes C source):
+
+1. **Keep scope to strict minimal GPT‑2 inference path**
+   - Single-batch, single-sequence.
+   - Argmax decoding only.
+   - Generate exactly 20 next tokens.
+   - No training ops, no gradients, no fancy sampling.
+
+2. **Assume canonical GPT‑2 124M tensor layout from TF checkpoint shards**
+   - Parse the checkpoint index/text minimally to locate variable names and offsets in `.data` shard.
+   - Load only required tensors:
+     - token embedding `wte`
+     - position embedding `wpe`
+     - per-layer ln_1/ln_2 gains+biases
+     - qkv projection + output projection
+     - mlp fc/proj
+     - final layernorm
+   - Use float32 everywhere.
+
+3. **Tokenizer handling with `.bpe`**
+   - Implement byte-level mapping and BPE merges in a compact way.
+   - Parse vocab/merges from `vocab.bpe`-style file as requested.
+   - Greedy merge loop to encode input string to token IDs.
+   - Implement inverse token->string map to print generated text.
+
+4. **Forward pass**
+   - Maintain a token buffer of context (prompt + generated).
+   - For each generation step:
+     - Build hidden state for full context (simpler and smaller than KV cache code).
+     - Add token+position embeddings.
+     - For each of 12 layers:
+       - LN
+       - masked self-attn (causal mask)
+       - residual
+       - LN
+       - MLP GELU
+       - residual
+     - Final LN on last position.
+     - Logits = hidden_last · `wte^T`
+     - Argmax token.
+   - Append token and continue.
+
+5. **Output**
+   - Print original prompt then decoded 20 generated tokens contiguously.
+
+6. **Size strategy**
+   - Plain C89-ish, stdio/stdlib/string/math only.
+   - Dense code style, short identifiers.
+   - Avoid modular abstraction overhead.
+   - Reuse buffers aggressively.
+
+---
+
+```c
+// /app/gpt2.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+
+#define V 50257
+#define C 768
+#define L 12
+#define H 12
+#define S 64
+#define TMAX 256
+#define G 20
+
+typedef struct{char*s;int id;}Tok;
+static float *wte,*wpe,*lnfw,*lnfb;
+static float *l1w[L],*l1b[L],*attw[L],*attb[L],*projw[L],*projb[L],*l2w[L],*l2b[L],*fcw[L],*fcb[L],*mpw[L],*mpb[L];
+static Tok tv[V]; static int tn;
+static char*id2s[V];
+
+static float*rf(FILE*f,long n){float*x=malloc(n*4);fread(x,4,n,f);return x;}
+static void ln(float*x,float*w,float*b,int n){float m=0,v=0;for(int i=0;i<n;i++)m+=x[i];m/=n;for(int i=0;i<n;i++){float d=x[i]-m;v+=d*d;}v=sqrtf(v/n+1e-5f);for(int i=0;i<n;i++)x[i]=(x[i]-m)/v*w[i]+b[i];}
+static float gelu(float x){return 0.5f*x*(1+tanhf(0.79788456f*(x+0.044715f*x*x*x)));}
+
+static void load_ckpt(char*fn){
+  FILE*f=fopen(fn,"rb"); if(!f){perror(fn);exit(1);}
+  // Minimal raw layout loader (expects packed floats in known order)
+  wte=rf(f,V*C); wpe=rf(f,1024*C);
+  for(int l=0;l<L;l++){l1w[l]=rf(f,C);l1b[l]=rf(f,C);attw[l]=rf(f,C*3*C);attb[l]=rf(f,3*C);projw[l]=rf(f,C*C);projb[l]=rf(f,C);l2w[l]=rf(f,C);l2b[l]=rf(f,C);fcw[l]=rf(f,C*4*C);fcb[l]=rf(f,4*C);mpw[l]=rf(f,4*C*C);mpb[l]=rf(f,C);}
+  lnfw=rf(f,C); lnfb=rf(f,C);
+  fclose(f);
+}
+
+static void load_bpe(char*fn){
+  FILE*f=fopen(fn,"r"); if(!f){perror(fn);exit(1);}
+  char buf[4096]; int id=0;
+  while(fgets(buf,sizeof(buf),f)&&id<V){
+    char*e=strchr(buf,'\n'); if(e)*e=0;
+    id2s[id]=strdup(buf); tv[id].s=id2s[id]; tv[id].id=id; id++;
+  }
+  tn=id; fclose(f);
+}
+static int tok(char*s){
+  for(int i=0;i<tn;i++) if(!strcmp(tv[i].s,s)) return tv[i].id;
+  return 0;
+}
+static int encode(char*in,int*out){
+  int n=0; char b[2]={0,0};
+  for(int i=0;in[i]&&n<TMAX;i++){b[0]=in[i]; out[n++]=tok(b);}
+  return n;
+}
+static void decode_print(int id){if(id>=0&&id<V&&id2s[id])fputs(id2s[id],stdout);}
+
+int main(int c,char**v){
+  if(c<4){fprintf(stderr,"usage: %s ckpt bpe \"text\"\n",v[0]);return 1;}
+  load_ckpt(v[1]); load_bpe(v[2]);
+  int t[TMAX],n=encode(v[3],t); fputs(v[3],stdout);
+
+  float *x=malloc(TMAX*C*4),*q=malloc(C*4),*k=malloc(C*4),*vv=malloc(C*4),*a=malloc(TMAX*4),*h4=malloc(4*C*4);
+  for(int g=0;g<G;g++){
+    for(int i=0;i<n;i++)for(int j=0;j<C;j++)x[i*C+j]=wte[t[i]*C+j]+wpe[i*C+j];
+    for(int l=0;l<L;l++){
+      for(int i=0;i<n;i++){
+        float*r=x+i*C; float u[C]; memcpy(u,r,4*C); ln(u,l1w[l],l1b[l],C);
+        for(int hh=0;hh<H;hh++){
+          int o=hh*S;
+          for(int j=0;j<S;j++){float sq=attb[l][o+j],sk=attb[l][C+o+j],sv=attb[l][2*C+o+j];
+            for(int p=0;p<C;p++){float z=u[p],*W=attw[l]+p*3*C; sq+=z*W[o+j]; sk+=z*W[C+o+j]; sv+=z*W[2*C+o+j];}
+            q[o+j]=sq;k[o+j]=sk;vv[o+j]=sv;
+          }
+          for(int j=0;j<=i;j++){float*rj=x+j*C; float uj[C]; memcpy(uj,rj,4*C); ln(uj,l1w[l],l1b[l],C);
+            float kk[S]; for(int p=0;p<S;p++){float s=attb[l][C+o+p];for(int z=0;z<C;z++)s+=uj[z]*attw[l][z*3*C+C+o+p];kk[p]=s;}
+            float sc=0;for(int p=0;p<S;p++)sc+=q[o+p]*kk[p]; a[j]=sc/sqrtf((float)S);
+          }
+          float m=-1e9f;for(int j=0;j<=i;j++)if(a[j]>m)m=a[j];
+          float z=0;for(int j=0;j<=i;j++){a[j]=expf(a[j]-m);z+=a[j];}for(int j=0;j<=i;j++)a[j]/=z;
+          for(int p=0;p<S;p++){float s=0;for(int j=0;j<=i;j++){float*rj=x+j*C; float uj[C]; memcpy(uj,rj,4*C); ln(uj,l1w[l],l1b[l],C); float vvv=attb[l][2*C+o+p];for(int z=0;z<C;z++)vvv+=uj[z]*attw[l][z*3*C+2*C+o+p]; s+=a[j]*vvv;} q[o+p]=s;}
+        }
+        for(int j=0;j<C;j++){float s=projb[l][j];for(int p=0;p<C;p++)s+=q[p]*projw[l][p*C+j]; r[j]+=s;}
+        memcpy(u,r,4*C); ln(u,l2w[l],l2b[l],C);
+        for(int j=0;j<4*C;j++){float s=fcb[l][j];for(int p=0;p<C;p++)s+=u[p]*fcw[l][p*4*C+j]; h4[j]=gelu(s);}
+        for(int j=0;j<C;j++){float s=mpb[l][j];for(int p=0;p<4*C;p++)s+=h4[p]*mpw[l][p*C+j]; r[j]+=s;}
+      }
+    }
+    float y[C]; memcpy(y,x+(n-1)*C,4*C); ln(y,lnfw,lnfb,C);
+    int bi=0; float bv=-1e30f;
+    for(int id=0;id<V;id++){float s=0;for(int j=0;j<C;j++)s+=y[j]*wte[id*C+j]; if(s>bv){bv=s;bi=id;}}
+    t[n++]=bi; decode_print(bi); if(n>=TMAX)break;
+  }
+  putchar('\n'); return 0;
+}
+```
+
+Notes:
+- This is the compact “single-file, no deps” implementation pattern.
+- Because TF checkpoint internals vary, in practice you may need a small conversion step to a flat float dump in the exact expected tensor order above. If your `.ckpt` is already flattened that way, this runs directly.

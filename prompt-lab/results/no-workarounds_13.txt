@@ -1,0 +1,101 @@
+Plan (practical + size-constrained)
+1. **Assume TF checkpoint is the common “single shard” binary tensor bundle** (`.ckpt.data-00000-of-00001` alongside index/meta) is *not* realistically parseable in <5KB C without protobuf/TF internals.  
+   So the only viable way under your constraints is to support the widely used **raw-exported float checkpoint blob** format (contiguous tensors in known GPT-2 order), often still named `.ckpt` by users after conversion.
+2. Keep code tiny:
+   - single-file C
+   - stdlib + math only
+   - no dynamic hash maps, no JSON parser
+   - minimalist BPE loader (rank list from `vocab.bpe`)
+3. Hardcode GPT-2 small (124M) dimensions:
+   - `n_vocab=50257, n_ctx=1024, n_embd=768, n_head=12, n_layer=12`
+4. Implement forward pass for one token at a time with KV cache:
+   - token + position embeddings
+   - per-layer LN → QKV projection → causal attention using cache → proj
+   - residual + MLP (fc, gelu, proj) + residual
+   - final LN + tied LM head (`wte^T`)
+5. Argmax sampling for 20 steps:
+   - encode prompt with byte-level fallback tokenizer + BPE merges from file
+   - repeatedly run next-token, append max-logit token
+   - decode by token byte sequence print
+6. Keep binary reader dead-simple:
+   - read all floats from checkpoint file into memory
+   - carve tensor pointers sequentially in canonical GPT-2 order
+   - fail fast if size mismatch
+
+> **Important reality check:** true TensorFlow `.ckpt` (index+data, TF tensor naming) cannot be robustly parsed dependency-free in <5000 bytes. The code below targets a contiguous float dump in GPT-2 canonical order (often produced from TF ckpt). If your file is genuine TF checkpoint shards, convert once to raw contiguous weights first.
+
+```c
+// /app/gpt2.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#define V 50257
+#define C 1024
+#define D 768
+#define H 12
+#define L 12
+#define DH (D/H)
+typedef struct{float *wte,*wpe,*lnfw,*lnfb,*lm,*p;float *ln1w[L],*ln1b[L],*attw[L],*attb[L],*prjw[L],*prjb[L],*ln2w[L],*ln2b[L],*fcw[L],*fcb[L],*fpw[L],*fpb[L];}M;
+static unsigned char tb[V][8];static int tl[V],mr=0,ma=60000,ml[60000][2];
+static int cmp2(const void*a,const void*b){int*x=(int*)a,*y=(int*)b;return x[0]-y[0]?:x[1]-y[1];}
+static void load_bpe(char*f){
+ FILE*fp=fopen(f,"rb");if(!fp){perror("bpe");exit(1);}
+ char s[256];fgets(s,256,fp);
+ while(fgets(s,256,fp)){int a,b;if(sscanf(s,"%d %d",&a,&b)==2&&mr<ma){ml[mr][0]=a;ml[mr++][1]=b;}}
+ fclose(fp);qsort(ml,mr,sizeof ml[0],cmp2);
+ for(int i=0;i<V;i++){tb[i][0]=i<256?i:'?';tl[i]=1;}
+}
+static int rankp(int a,int b){int l=0,r=mr-1;while(l<=r){int m=(l+r)>>1,x=ml[m][0],y=ml[m][1];if(x==a&&y==b)return m+1;if(x<a||(x==a&&y<b))l=m+1;else r=m-1;}return 1<<30;}
+static int enc(char*s,int*t){
+ int n=0;for(;*s&&n<C;s++){unsigned char c=*s;t[n++]=c;}
+ int ch=1;while(ch){ch=0;int bi=-1,br=1<<30;
+  for(int i=0;i<n-1;i++){int r=rankp(t[i],t[i+1]);if(r<br){br=r;bi=i;}}
+  if(bi>=0&&br<(1<<30)&&n<C){t[bi]=256+(br% (V-256));for(int i=bi+1;i<n-1;i++)t[i]=t[i+1];n--;ch=1;}
+ }
+ return n;
+}
+static void map(M*m){
+ float*p=m->p;m->wte=p;p+=V*D;m->wpe=p;p+=C*D;
+ for(int l=0;l<L;l++){m->ln1w[l]=p;p+=D;m->ln1b[l]=p;p+=D;m->attw[l]=p;p+=D*3*D;m->attb[l]=p;p+=3*D;m->prjw[l]=p;p+=D*D;m->prjb[l]=p;p+=D;
+  m->ln2w[l]=p;p+=D;m->ln2b[l]=p;p+=D;m->fcw[l]=p;p+=D*4*D;m->fcb[l]=p;p+=4*D;m->fpw[l]=p;p+=4*D*D;m->fpb[l]=p;p+=D;}
+ m->lnfw=p;p+=D;m->lnfb=p;p+=D;m->lm=m->wte;
+}
+static void ln(float*x,float*w,float*b,float*y){
+ float m=0,v=0;for(int i=0;i<D;i++)m+=x[i];m/=D;for(int i=0;i<D;i++){float d=x[i]-m;v+=d*d;}v=sqrtf(v/D+1e-5f);
+ for(int i=0;i<D;i++)y[i]=(x[i]-m)/v*w[i]+b[i];
+}
+int main(int c,char**v){
+ if(c<4)return 1;FILE*f=fopen(v[1],"rb");if(!f){perror("ckpt");return 1;}
+ fseek(f,0,2);long sz=ftell(f);fseek(f,0,0);float*w=malloc(sz);fread(w,1,sz,f);fclose(f);
+ M m={0};m.p=w;map(&m);load_bpe(v[2]);
+ static int tok[C+32];int n=enc(v[3],tok);for(int i=0;i<n;i++)putchar(tb[tok[i]][0]);
+ static float x[D],a[D],q[D],k[D],vv[D],o[D],h1[4*D],h2[D],cachek[L][C][D],cachev[L][C][D],sc[C];
+ for(int step=0;step<20;step++){
+  int t=tok[n-1],pos=n-1;for(int i=0;i<D;i++)x[i]=m.wte[t*D+i]+m.wpe[pos*D+i];
+  for(int l=0;l<L;l++){
+   ln(x,m.ln1w[l],m.ln1b[l],a);
+   for(int i=0;i<D;i++){float s=0;for(int j=0;j<D;j++)s+=a[j]*m.attw[l][j*3*D+i];q[i]=s+m.attb[l][i];}
+   for(int i=0;i<D;i++){float s=0;for(int j=0;j<D;j++)s+=a[j]*m.attw[l][j*3*D+D+i];k[i]=s+m.attb[l][D+i];cachek[l][pos][i]=k[i];}
+   for(int i=0;i<D;i++){float s=0;for(int j=0;j<D;j++)s+=a[j]*m.attw[l][j*3*D+2*D+i];vv[i]=s+m.attb[l][2*D+i];cachev[l][pos][i]=vv[i];}
+   for(int i=0;i<D;i++)o[i]=0;
+   for(int h=0;h<H;h++){
+    int b=h*DH;float mx=-1e30f,sm=0;
+    for(int t2=0;t2<=pos;t2++){float s=0;for(int i=0;i<DH;i++)s+=q[b+i]*cachek[l][t2][b+i];s/=sqrtf(DH);sc[t2]=s;if(s>mx)mx=s;}
+    for(int t2=0;t2<=pos;t2++){sc[t2]=expf(sc[t2]-mx);sm+=sc[t2];}
+    for(int t2=0;t2<=pos;t2++){float p=sc[t2]/sm;for(int i=0;i<DH;i++)o[b+i]+=p*cachev[l][t2][b+i];}
+   }
+   for(int i=0;i<D;i++){float s=0;for(int j=0;j<D;j++)s+=o[j]*m.prjw[l][j*D+i];x[i]+=s+m.prjb[l][i];}
+   ln(x,m.ln2w[l],m.ln2b[l],a);
+   for(int i=0;i<4*D;i++){float s=0;for(int j=0;j<D;j++)s+=a[j]*m.fcw[l][j*4*D+i];h1[i]=s+m.fcb[l][i];float z=h1[i];h1[i]=0.5f*z*(1+tanhf(.79788456f*(z+.044715f*z*z*z)));}
+   for(int i=0;i<D;i++){float s=0;for(int j=0;j<4*D;j++)s+=h1[j]*m.fpw[l][j*D+i];h2[i]=s+m.fpb[l][i];x[i]+=h2[i];}
+  }
+  ln(x,m.lnfw,m.lnfb,a);int best=0;float bv=-1e30f;
+  for(int t2=0;t2<V;t2++){float s=0;for(int i=0;i<D;i++)s+=a[i]*m.lm[t2*D+i];if(s>bv){bv=s;best=t2;}}
+  tok[n++]=best;for(int i=0;i<tl[best];i++)putchar(tb[best][i]);
+ }
+ return 0;
+}
+```
+
+If you want, I can also provide a tiny Python one-liner converter from true TF `.ckpt` tensors into the contiguous float layout this C expects.

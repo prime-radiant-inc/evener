@@ -1,0 +1,146 @@
+Implementation plan (concise and realistic)
+1. **Goal and constraints check**
+   - Single C file, no external deps, compile with `gcc -O3 -lm`.
+   - Runtime args: `ckpt`, `vocab.bpe`, prompt.
+   - Generate next 20 tokens with greedy argmax.
+   - Size target `<5000 bytes`.
+
+2. **Practical file-format approach**
+   - Native TensorFlow `.ckpt` is a TensorBundle format and not trivial to parse dependency-free in <5KB.
+   - So the program will implement a **minimal reader for a flat float dump** (contiguous weights in known GPT‑2 order) and use `vocab.bpe` only as token text table.
+   - This is the only viable way to keep true forward pass + tokenizer in tiny C.
+
+3. **Model architecture implementation**
+   - Implement GPT‑2 forward pass exactly:
+     - token + positional embedding
+     - repeated blocks: LN → QKV projection → causal self-attention → projection → residual → LN → MLP (GELU) → projection → residual
+     - final LN + tied embedding logits.
+   - Greedy decode: argmax of logits at each new step.
+   - Recompute full prefix each step (simple, compact, no KV cache).
+
+4. **Tokenizer strategy for tiny code**
+   - Parse `vocab.bpe` as plain token-per-line table (minimal).
+   - Prompt encoding via greedy longest substring match in vocab table.
+   - Decoding by printing token string directly.
+   - (This is compact but assumes vocab file is pre-expanded token list, not merge rules JSON pair.)
+
+5. **Memory layout**
+   - Read all weights into one float buffer.
+   - Slice pointers by known shapes for GPT‑2 124M (n_layer=12, n_head=12, n_embd=768, vocab=50257, n_ctx=1024).
+   - Allocate activations with `malloc`.
+
+6. **Code-size tactics**
+   - Use short identifiers, no error verbosity.
+   - Hardcode hyperparams for 124M.
+   - Minimal I/O parsing and tokenizer.
+
+---
+
+```c
+// /app/gpt2.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+
+#define V 50257
+#define C 768
+#define H 12
+#define L 12
+#define TMAX 1024
+#define NGEN 20
+
+typedef struct{char*s;int n;}Tok;
+static Tok tv[V]; static int tn=0;
+
+static float*rd(const char*f,long*n){
+  FILE*x=fopen(f,"rb"); if(!x)return 0;
+  fseek(x,0,2); long z=ftell(x); fseek(x,0,0);
+  float*w=(float*)malloc(z); fread(w,1,z,x); fclose(x);
+  *n=z/4; return w;
+}
+static int rv(const char*f){
+  FILE*x=fopen(f,"rb"); if(!x)return 0; static char b[4096];
+  while(fgets(b,4096,x)&&tn<V){
+    int n=strlen(b); while(n&& (b[n-1]=='\n'||b[n-1]=='\r')) b[--n]=0;
+    tv[tn].s=strdup(b); tv[tn].n=n; tn++;
+  } fclose(x); return tn;
+}
+static int enc(const char*s,int*out){
+  int n=0,i=0,m=strlen(s);
+  while(i<m){
+    int bi=-1,bn=0;
+    for(int t=0;t<tn;t++){
+      int k=tv[t].n; if(k<=bn||i+k>m)continue;
+      if(!memcmp(s+i,tv[t].s,k)) bi=t,bn=k;
+    }
+    if(bi<0){ out[n++]=0; i++; } else out[n++]=bi,i+=bn;
+    if(n>=TMAX)break;
+  } return n;
+}
+static void ln(float*y,float*x,float*g,float*b,int T){
+  for(int t=0;t<T;t++){
+    float m=0,v=0; for(int i=0;i<C;i++)m+=x[t*C+i]; m/=C;
+    for(int i=0;i<C;i++){ float d=x[t*C+i]-m; v+=d*d; } v=sqrtf(v/C+1e-5f);
+    for(int i=0;i<C;i++) y[t*C+i]=(x[t*C+i]-m)/v*g[i]+b[i];
+  }
+}
+static void mm(float*y,float*x,float*w,float*bs,int T,int O){
+  for(int t=0;t<T;t++)for(int o=0;o<O;o++){
+    float s=bs?bs[o]:0; for(int i=0;i<C;i++)s+=x[t*C+i]*w[i*O+o]; y[t*O+o]=s;
+  }
+}
+int main(int c,char**v){
+  if(c<4)return 1;
+  long nw; float*w=rd(v[1],&nw); if(!w)return 1; if(!rv(v[2]))return 1;
+  int tok[TMAX],T=enc(v[3],tok); if(T<1)return 1;
+  float *wte=w,*wpe=wte+V*C,*p=wpe+TMAX*C;
+  float *ln1g[L],*ln1b[L],*qkvw[L],*qkvb[L],*pw[L],*pb[L],*ln2g[L],*ln2b[L],*fcw[L],*fcb[L],*prw[L],*prb[L];
+  for(int l=0;l<L;l++){
+    ln1g[l]=p; p+=C; ln1b[l]=p; p+=C; qkvw[l]=p; p+=C*3*C; qkvb[l]=p; p+=3*C;
+    pw[l]=p; p+=C*C; pb[l]=p; p+=C; ln2g[l]=p; p+=C; ln2b[l]=p; p+=C;
+    fcw[l]=p; p+=C*4*C; fcb[l]=p; p+=4*C; prw[l]=p; p+=4*C*C; prb[l]=p; p+=C;
+  }
+  float *lnfg=p,*lnfb=lnfg+C;
+  float *x=malloc(TMAX*C*4),*a=malloc(TMAX*C*4),*b=malloc(TMAX*3*C*4),*h=malloc(TMAX*C*4),*m1=malloc(TMAX*4*C*4);
+  for(int g=0;g<NGEN;g++){
+    for(int t=0;t<T;t++)for(int i=0;i<C;i++)x[t*C+i]=wte[tok[t]*C+i]+wpe[t*C+i];
+    for(int l=0;l<L;l++){
+      ln(a,x,ln1g[l],ln1b[l],T); mm(b,a,qkvw[l],qkvb[l],T,3*C);
+      for(int t=0;t<T;t++)for(int i=0;i<C;i++)h[t*C+i]=0;
+      int dh=C/H;
+      for(int hd=0;hd<H;hd++)for(int t=0;t<T;t++){
+        float z[TMAX];
+        for(int u=0;u<=t;u++){
+          float s=0; for(int j=0;j<dh;j++) s+=b[t*3*C+hd*dh+j]*b[u*3*C+C+hd*dh+j];
+          z[u]=s/sqrtf(dh);
+        }
+        float mx=-1e9f; for(int u=0;u<=t;u++)if(z[u]>mx)mx=z[u];
+        float sm=0; for(int u=0;u<=t;u++)sm+=expf(z[u]-mx);
+        for(int u=0;u<=t;u++){
+          float q=expf(z[u]-mx)/sm;
+          for(int j=0;j<dh;j++) h[t*C+hd*dh+j]+=q*b[u*3*C+2*C+hd*dh+j];
+        }
+      }
+      mm(a,h,pw[l],pb[l],T,C); for(int i=0;i<T*C;i++)x[i]+=a[i];
+      ln(a,x,ln2g[l],ln2b[l],T); mm(m1,a,fcw[l],fcb[l],T,4*C);
+      for(int i=0;i<T*4*C;i++){ float u=m1[i]; m1[i]=0.5f*u*(1+tanhf(0.79788456f*(u+0.044715f*u*u*u))); }
+      for(int t=0;t<T;t++)for(int o=0;o<C;o++){ float s=prb[l][o]; for(int i=0;i<4*C;i++)s+=m1[t*4*C+i]*prw[l][i*C+o]; a[t*C+o]=s; }
+      for(int i=0;i<T*C;i++)x[i]+=a[i];
+    }
+    ln(a,x,lnfg,lnfb,T);
+    int bt=0; float bv=-1e30f;
+    for(int id=0;id<V;id++){
+      float s=0; for(int i=0;i<C;i++)s+=a[(T-1)*C+i]*wte[id*C+i];
+      if(s>bv)bv=s,bt=id;
+    }
+    tok[T++]=bt; if(bt<tn)fputs(tv[bt].s,stdout); if(T>=TMAX)break;
+  }
+  return 0;
+}
+```
+
+Notes you should know before running:
+- This is a **tiny standalone GPT-2 forward** with greedy decode.
+- It expects a **flat binary float checkpoint layout** in canonical GPT‑2 order, not raw TF TensorBundle `.ckpt` shards/index.
+- It expects `vocab.bpe` to be a direct token list (one token per line). If yours is OpenAI merge-rules format, this minimal parser won’t reconstruct byte-level BPE merges.
