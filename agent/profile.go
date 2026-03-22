@@ -503,7 +503,7 @@ func envInfoFromEnv(env ExecutionEnvironment) EnvironmentInfo {
 func defReadFile() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "read_file",
-		Description: "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection.",
+		Description: "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. When reading an image, describe what you hope to learn — the system will provide a detailed description alongside the image.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -511,6 +511,7 @@ func defReadFile() llm.ToolDefinition {
 				"file_path": map[string]any{"type": "string"},
 				"offset":    map[string]any{"type": "integer"},
 				"limit":     map[string]any{"type": "integer"},
+				"purpose":   map[string]any{"type": "string", "description": "For image files: what do you hope to learn by looking at this image?"},
 			},
 			"required": []string{"file_path"},
 		},

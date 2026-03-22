@@ -876,6 +876,70 @@ func (s *Session) Steer(msg string) {
 	s.steeringQueue = append(s.steeringQueue, msg)
 }
 
+// describeImage makes a side-channel API call with no tools to describe an image
+// using the model's native vision. Returns the text description, or "" on error.
+// The call includes context from the current task so the description is relevant.
+func (s *Session) describeImage(ctx context.Context, r ToolExecResult) string {
+	if len(r.ImageData) == 0 {
+		return ""
+	}
+	// Skip for explorer agents — they're just inventorying files, not analyzing images.
+	if s.cfg.AgentName == "explorer" {
+		return ""
+	}
+
+	// Use the caller's stated purpose as the vision prompt. The calling LLM
+	// knows what it needs — we just ask the vision model to answer that question.
+	purpose := strings.TrimSpace(r.ImagePurpose)
+	if purpose == "" {
+		purpose = "Describe what you see in this image in thorough detail."
+	}
+
+	var prompt strings.Builder
+	prompt.WriteString(purpose)
+	prompt.WriteString("\n\nBe thorough — the reader cannot see the image and will rely entirely on your description.")
+
+	mt := r.ImageMediaType
+	if mt == "" {
+		mt = "image/png"
+	}
+
+	req := llm.Request{
+		Model:    s.profile.Model(),
+		Provider: s.profile.ID(),
+		Messages: []llm.Message{
+			{
+				Role: llm.RoleUser,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentText, Text: prompt.String()},
+					{Kind: llm.ContentImage, Image: &llm.ImageData{
+						Data:      r.ImageData,
+						MediaType: mt,
+						Detail:    "original",
+					}},
+				},
+			},
+		},
+		// No tools — force text-only response.
+		AdapterTimeout: &llm.AdapterTimeout{
+			Connect:    10 * time.Second,
+			Request:    2 * time.Minute,
+			StreamRead: 30 * time.Second,
+		},
+	}
+	if effort := strings.TrimSpace(s.cfg.ReasoningEffort); effort != "" {
+		req.ReasoningEffort = &effort
+	}
+
+	resp, err := s.client.Complete(ctx, req)
+	if err != nil {
+		s.emit(EventWarning, WarningData{Message: fmt.Sprintf("vision side-channel failed: %v", err)})
+		return ""
+	}
+
+	return strings.TrimSpace(resp.Message.Text())
+}
+
 // FollowUp queues a message to process after the current input completes.
 func (s *Session) FollowUp(msg string) {
 	s.mu.Lock()
@@ -1492,7 +1556,6 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 	consecutiveEmptyResponses := 0
 	totalEmptyResponses := 0
 	consecutiveBareTextResponses := 0
-	forceTextNextRound := false // set after tool results contain images — forces one text-only response
 	const maxEmptyRetries = 3
 	const maxTotalEmptyResponses = 8 // prevent repeated burst-and-recover spirals
 	const maxBareTextRetries = 3
@@ -1603,17 +1666,12 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		toolDefs := s.allToolDefinitions(round)
 		timings.ToolDefs = time.Since(tPhaseStart)
 
-		toolChoice := &llm.ToolChoice{Mode: "auto"}
-		if forceTextNextRound {
-			toolChoice = &llm.ToolChoice{Mode: "none"}
-			forceTextNextRound = false
-		}
 		req := llm.Request{
 			Model:      s.profile.Model(),
 			Provider:   s.profile.ID(),
 			Messages:   append([]llm.Message{llm.System(sys)}, history...),
 			Tools:      toolDefs,
-			ToolChoice: toolChoice,
+			ToolChoice: &llm.ToolChoice{Mode: "auto"},
 			WebSearch:  true,
 			AdapterTimeout: &llm.AdapterTimeout{
 				Connect:    10 * time.Second,
@@ -1896,13 +1954,17 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		// tool_result turns for any prior assistant tool calls.
 		s.maybeAutoSave()
 
-		// If any tool result contained an image, force the next round to be
-		// text-only (tool_choice=none). This makes the model describe what it
-		// sees instead of immediately writing code to analyze it.
+		// If any tool result contained an image, make a side-channel API call
+		// to describe it. GPT models in tool-calling mode never produce text
+		// descriptions of images — they immediately write code. This off-loop
+		// call with no tools forces the model to use its native vision, then
+		// injects the description into the conversation so the agent can use it.
 		for _, r := range results {
 			if len(r.ImageData) > 0 {
-				forceTextNextRound = true
-				break
+				if desc := s.describeImage(ctx, r); desc != "" {
+					s.Steer("Image description (from vision): " + desc)
+				}
+				break // one description per round is enough
 			}
 		}
 
@@ -2508,12 +2570,14 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			path := fmt.Sprint(args["file_path"])
 			offset := optionalIntArg(args, "offset")
 			limit := optionalIntArg(args, "limit")
+			purpose, _ := args["purpose"].(string)
 			result, err := env.ReadFile(path, offset, limit)
 			if err == nil {
 				s.trackReadFile(path)
 				// If the file is an image, return an ImageResult so the
 				// model receives the image as a proper content part.
 				if img := parseImageResult(path, result); img != nil {
+					img.Purpose = purpose
 					return *img, nil
 				}
 			}
