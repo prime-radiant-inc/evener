@@ -137,6 +137,26 @@ func (p *baseProfile) WithModel(model string) ProviderProfile {
 	if model == "" {
 		model = p.model
 	}
+	// Parse "provider/model" strings (e.g. "openai/gpt-5.4-mini") into the
+	// correct provider profile with the bare model name. This is the same
+	// format used by harbor and the CLI (--model openai/gpt-5.4).
+	if parts := strings.SplitN(model, "/", 2); len(parts) == 2 {
+		provider := strings.ToLower(parts[0])
+		bareModel := parts[1]
+		if provider != p.id {
+			// Different provider — construct the right profile type.
+			switch provider {
+			case "openai":
+				return NewOpenAIProfile(bareModel)
+			case "anthropic":
+				return NewAnthropicProfile(bareModel)
+			case "google", "gemini":
+				return NewGeminiProfile(bareModel)
+			}
+		}
+		// Same provider — just use the bare model name.
+		model = bareModel
+	}
 	clone := *p
 	clone.model = model
 	return &clone
@@ -340,6 +360,20 @@ func (p *anthropicProfile) WithModel(model string) ProviderProfile {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		model = p.model
+	}
+	// Parse "provider/model" strings — delegate to the right profile type.
+	if parts := strings.SplitN(model, "/", 2); len(parts) == 2 {
+		provider := strings.ToLower(parts[0])
+		bareModel := parts[1]
+		if provider != "anthropic" {
+			switch provider {
+			case "openai":
+				return NewOpenAIProfile(bareModel)
+			case "google", "gemini":
+				return NewGeminiProfile(bareModel)
+			}
+		}
+		model = bareModel
 	}
 	clone := *p
 	clone.model = model

@@ -191,6 +191,43 @@ func TestProviderProfile_WithModel_EmptyStringKeepsOriginal(t *testing.T) {
 	}
 }
 
+func TestProviderProfile_WithModel_ResolvesProviderPrefix(t *testing.T) {
+	// WithModel("openai/gpt-5.4-mini") on an OpenAI profile should strip
+	// the prefix and use the bare model name.
+	orig := NewOpenAIProfile("gpt-5.4")
+	cloned := orig.WithModel("openai/gpt-5.4-mini")
+	if cloned.Model() != "gpt-5.4-mini" {
+		t.Fatalf("Model() = %q, want %q", cloned.Model(), "gpt-5.4-mini")
+	}
+	if cloned.ID() != "openai" {
+		t.Fatalf("ID() = %q, want %q", cloned.ID(), "openai")
+	}
+}
+
+func TestProviderProfile_WithModel_CrossProvider(t *testing.T) {
+	// WithModel("anthropic/claude-opus-4-6") on an OpenAI profile should
+	// return an Anthropic profile.
+	orig := NewOpenAIProfile("gpt-5.4")
+	cloned := orig.WithModel("anthropic/claude-opus-4-6")
+	if cloned.Model() != "claude-opus-4-6" {
+		t.Fatalf("Model() = %q, want %q", cloned.Model(), "claude-opus-4-6")
+	}
+	if cloned.ID() != "anthropic" {
+		t.Fatalf("ID() = %q, want %q", cloned.ID(), "anthropic")
+	}
+}
+
+func TestAnthropicProfile_WithModel_ResolvesProviderPrefix(t *testing.T) {
+	orig := NewAnthropicProfile("claude-opus-4-6")
+	cloned := orig.WithModel("openai/gpt-5.4-mini")
+	if cloned.Model() != "gpt-5.4-mini" {
+		t.Fatalf("Model() = %q, want %q", cloned.Model(), "gpt-5.4-mini")
+	}
+	if cloned.ID() != "openai" {
+		t.Fatalf("ID() = %q, want %q", cloned.ID(), "openai")
+	}
+}
+
 func assertHasTool(t *testing.T, p ProviderProfile, name string) {
 	t.Helper()
 	for _, td := range p.ToolDefinitions() {
