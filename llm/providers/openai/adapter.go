@@ -73,7 +73,7 @@ func (a *Adapter) setHeaders(req *http.Request) {
 }
 
 func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
-	instructions, inputItems, err := toResponsesInput(req.Messages)
+	instructions, inputItems, err := toResponsesInput(req.Messages, req.Model)
 	if err != nil {
 		return nil, err
 	}
@@ -563,7 +563,17 @@ func toResponsesToolChoice(tc llm.ToolChoice) (any, error) {
 	}
 }
 
-func toResponsesInput(msgs []llm.Message) (instructions string, items []any, _ error) {
+// defaultImageDetail returns the best image detail level for the model.
+// GPT-5.4+ supports "original" (full fidelity); older models use "high".
+func defaultImageDetail(model string) string {
+	if strings.HasPrefix(model, "gpt-5.4") || strings.HasPrefix(model, "gpt-5.5") ||
+		strings.HasPrefix(model, "gpt-6") {
+		return "original"
+	}
+	return "high"
+}
+
+func toResponsesInput(msgs []llm.Message, model string) (instructions string, items []any, _ error) {
 	var instrParts []string
 	for _, m := range msgs {
 		switch m.Role {
@@ -662,6 +672,8 @@ func toResponsesInput(msgs []llm.Message) (instructions string, items []any, _ e
 							}
 							if p.Image.Detail != "" {
 								img["detail"] = p.Image.Detail
+							} else {
+								img["detail"] = defaultImageDetail(model)
 							}
 							content = append(content, img)
 						}
@@ -740,6 +752,7 @@ func toResponsesInput(msgs []llm.Message) (instructions string, items []any, _ e
 					items = append(items, map[string]any{
 						"type":      "input_image",
 						"image_url": llm.DataURI(mt, p.ToolResult.ImageData),
+						"detail":    defaultImageDetail(model),
 					})
 				}
 			}

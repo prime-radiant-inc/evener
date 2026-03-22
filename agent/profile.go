@@ -137,6 +137,26 @@ func (p *baseProfile) WithModel(model string) ProviderProfile {
 	if model == "" {
 		model = p.model
 	}
+	// Parse "provider/model" strings (e.g. "openai/gpt-5.4-mini") into the
+	// correct provider profile with the bare model name. This is the same
+	// format used by harbor and the CLI (--model openai/gpt-5.4).
+	if parts := strings.SplitN(model, "/", 2); len(parts) == 2 {
+		provider := strings.ToLower(parts[0])
+		bareModel := parts[1]
+		if provider != p.id {
+			// Different provider — construct the right profile type.
+			switch provider {
+			case "openai":
+				return NewOpenAIProfile(bareModel)
+			case "anthropic":
+				return NewAnthropicProfile(bareModel)
+			case "google", "gemini":
+				return NewGeminiProfile(bareModel)
+			}
+		}
+		// Same provider — just use the bare model name.
+		model = bareModel
+	}
 	clone := *p
 	clone.model = model
 	return &clone
@@ -341,6 +361,20 @@ func (p *anthropicProfile) WithModel(model string) ProviderProfile {
 	if model == "" {
 		model = p.model
 	}
+	// Parse "provider/model" strings — delegate to the right profile type.
+	if parts := strings.SplitN(model, "/", 2); len(parts) == 2 {
+		provider := strings.ToLower(parts[0])
+		bareModel := parts[1]
+		if provider != "anthropic" {
+			switch provider {
+			case "openai":
+				return NewOpenAIProfile(bareModel)
+			case "google", "gemini":
+				return NewGeminiProfile(bareModel)
+			}
+		}
+		model = bareModel
+	}
 	clone := *p
 	clone.model = model
 	has1M := strings.HasSuffix(model, anthropicSuffix1M)
@@ -469,7 +503,7 @@ func envInfoFromEnv(env ExecutionEnvironment) EnvironmentInfo {
 func defReadFile() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "read_file",
-		Description: "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection.",
+		Description: "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. When reading an image, describe what you hope to learn — the system will provide a detailed description alongside the image.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -477,6 +511,7 @@ func defReadFile() llm.ToolDefinition {
 				"file_path": map[string]any{"type": "string"},
 				"offset":    map[string]any{"type": "integer"},
 				"limit":     map[string]any{"type": "integer"},
+				"purpose":   map[string]any{"type": "string", "description": "For image files: what do you hope to learn by looking at this image?"},
 			},
 			"required": []string{"file_path"},
 		},

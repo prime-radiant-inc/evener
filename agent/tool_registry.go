@@ -49,6 +49,7 @@ type ToolExecResult struct {
 	// alongside the text output so the model can "see" the image.
 	ImageData      []byte
 	ImageMediaType string
+	ImagePurpose   string // from the caller: what they hope to learn
 }
 
 // ImageResult is returned by tool executors (e.g. read_file) when a file is
@@ -58,6 +59,7 @@ type ImageResult struct {
 	Text      string
 	Data      []byte
 	MediaType string
+	Purpose   string // what the caller hopes to learn from this image
 }
 
 // parseImageResult checks if ReadFile output is an image response (the [image: ...]
@@ -304,6 +306,7 @@ func (r *ToolRegistry) ExecuteCall(ctx context.Context, env ExecutionEnvironment
 		res := truncateResult(name, callID, img.Text, false, t.Limit)
 		res.ImageData = img.Data
 		res.ImageMediaType = img.MediaType
+		res.ImagePurpose = img.Purpose
 		return res
 	}
 

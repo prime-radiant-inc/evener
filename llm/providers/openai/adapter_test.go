@@ -979,7 +979,7 @@ func TestToResponsesInput_WebSearch_ReplayedAsItem(t *testing.T) {
 		llm.User("thanks"),
 	}
 
-	_, items, err := toResponsesInput(msgs)
+	_, items, err := toResponsesInput(msgs, "gpt-5.4")
 	if err != nil {
 		t.Fatalf("toResponsesInput: %v", err)
 	}
@@ -1054,7 +1054,7 @@ func TestAdapter_Integration_PhaseAnnotation(t *testing.T) {
 		resp.Message,
 		llm.User("follow-up"),
 	}
-	_, items, err := toResponsesInput(nextMsgs)
+	_, items, err := toResponsesInput(nextMsgs, "gpt-5.4")
 	if err != nil {
 		t.Fatalf("toResponsesInput: %v", err)
 	}
@@ -1737,7 +1737,7 @@ func TestToResponsesInput_ToolResultWithImage(t *testing.T) {
 		}}},
 	}
 
-	_, items, err := toResponsesInput(msgs)
+	_, items, err := toResponsesInput(msgs, "gpt-5.4")
 	if err != nil {
 		t.Fatalf("toResponsesInput: %v", err)
 	}
@@ -1800,7 +1800,7 @@ func TestToResponsesInput_ToolResultWithImage_DefaultMediaType(t *testing.T) {
 		}}},
 	}
 
-	_, items, err := toResponsesInput(msgs)
+	_, items, err := toResponsesInput(msgs, "gpt-5.4")
 	if err != nil {
 		t.Fatalf("toResponsesInput: %v", err)
 	}
@@ -1834,7 +1834,7 @@ func TestToResponsesInput_ToolResultWithoutImage_NoInputImage(t *testing.T) {
 		llm.ToolResult("call_3", "done", false),
 	}
 
-	_, items, err := toResponsesInput(msgs)
+	_, items, err := toResponsesInput(msgs, "gpt-5.4")
 	if err != nil {
 		t.Fatalf("toResponsesInput: %v", err)
 	}
@@ -2030,7 +2030,7 @@ func TestToResponsesInput_PhaseReplayed(t *testing.T) {
 		},
 	}
 
-	_, items, err := toResponsesInput(msgs)
+	_, items, err := toResponsesInput(msgs, "gpt-5.4")
 	if err != nil {
 		t.Fatalf("toResponsesInput: %v", err)
 	}
@@ -2069,7 +2069,7 @@ func TestToResponsesInput_EmptyPhase_SingleItem(t *testing.T) {
 		},
 	}
 
-	_, items, err := toResponsesInput(msgs)
+	_, items, err := toResponsesInput(msgs, "gpt-5.4")
 	if err != nil {
 		t.Fatalf("toResponsesInput: %v", err)
 	}
@@ -2131,7 +2131,7 @@ func TestPhaseRoundTrip(t *testing.T) {
 		r.Message,
 		llm.User("follow-up"),
 	}
-	_, items, err := toResponsesInput(nextMsgs)
+	_, items, err := toResponsesInput(nextMsgs, "gpt-5.4")
 	if err != nil {
 		t.Fatalf("toResponsesInput: %v", err)
 	}
@@ -2212,7 +2212,7 @@ func TestEmptyPhaseRoundTrip(t *testing.T) {
 		r.Message,
 		llm.User("continue working"),
 	}
-	_, items, err := toResponsesInput(nextMsgs)
+	_, items, err := toResponsesInput(nextMsgs, "gpt-5.4")
 	if err != nil {
 		t.Fatalf("toResponsesInput: %v", err)
 	}
