@@ -55,6 +55,72 @@ func ScanWorkspace(root string) WorkspaceInfo {
 	return ws
 }
 
+// scanParentTree returns a shallow tree of the parent directory, excluding
+// the working directory itself (which is covered by the workspace tree).
+// This gives the agent awareness of what's around it — sibling directories
+// that may contain tests, configs, or other relevant files.
+func scanParentTree(workDir string) string {
+	if workDir == "" || workDir == "/" {
+		return ""
+	}
+	parent := filepath.Dir(filepath.Clean(workDir))
+	if parent == workDir {
+		return ""
+	}
+
+	wdBase := filepath.Base(filepath.Clean(workDir))
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString(parent + "/\n")
+	for _, e := range entries {
+		name := e.Name()
+		// Skip the working directory — already covered by workspace tree.
+		if name == wdBase {
+			continue
+		}
+		// Skip hidden dirs and noisy system dirs.
+		if strings.HasPrefix(name, ".") || excludedDirs[name] {
+			continue
+		}
+		if name == "proc" || name == "sys" || name == "dev" || name == "run" ||
+			name == "var" || name == "usr" || name == "lib" || name == "lib64" ||
+			name == "bin" || name == "sbin" || name == "boot" || name == "etc" ||
+			name == "snap" || name == "mnt" || name == "media" || name == "srv" ||
+			name == "opt" || name == "tmp" || name == "root" || name == "home" {
+			continue
+		}
+
+		fullPath := filepath.Join(parent, name)
+		if e.IsDir() {
+			b.WriteString("  " + name + "/\n")
+			// One level deep into sibling dirs.
+			subEntries, err := os.ReadDir(fullPath)
+			if err == nil {
+				for _, se := range subEntries {
+					if !strings.HasPrefix(se.Name(), ".") {
+						suffix := ""
+						if se.IsDir() {
+							suffix = "/"
+						}
+						b.WriteString("    " + se.Name() + suffix + "\n")
+					}
+				}
+			}
+		} else {
+			b.WriteString("  " + name + "\n")
+		}
+	}
+	result := strings.TrimRight(b.String(), "\n")
+	if result == parent+"/" {
+		return "" // nothing interesting
+	}
+	return result
+}
+
 // treeEntry represents a file or directory in the workspace.
 type treeEntry struct {
 	RelPath string // relative to workspace root
