@@ -5,8 +5,8 @@ a new session.
 
 ## Current State (March 22, 2026)
 
-**Shipped code:** commit 4407cbc on main (includes vision breakthrough docs)
-**Active branch:** fix-explorer-model (all vision fixes combined)
+**Shipped code:** commit 716662d on main (vision side-channel + all fixes merged)
+**Previous shipped:** commit 4407cbc (before vision work)
 **Model:** gpt-5.4 for evals
 **Baseline:** 56/88 = 64% on full 89-task terminal-bench (job: `full-89-ef120d4`)
 **High water mark:** 75/89 (84%) tasks ever passed across all runs
@@ -285,3 +285,5 @@ Use AWS spot instances via harbor-runner.
 | 3/22 | force-text (tool_choice=none) | chess ×3 AWS | 0/3 | Eliminated rabbit hole but empty text + hallucination |
 | 3/22 | Vision side-channel v1 | chess ×3 local | **3/3** | LLM-driven purpose, chess-specific suffix |
 | 3/22 | Vision side-channel v2 | chess ×3 local | **3/3** | Generic suffix — still works |
+| 3/22 | Side-channel AWS validation | chess 2/3, gcode 1/3 | **Shipped** | chess 0→2/3, gcode holds, regression 7/7 |
+| 3/22 | install-windows-3.11 | windows ×3 AWS | running | New baseline with side-channel |
