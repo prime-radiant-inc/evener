@@ -165,7 +165,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		return llm.Response{}, llm.ErrorFromHTTPStatus("openai-compatible", statusCode, msg, raw, retryAfter)
 	}
 
-	resp, err := fromChatCompletionResponse(raw)
+	resp, err := fromChatCompletionResponse(raw, a.Quirks)
 	if err != nil {
 		return resp, err
 	}
@@ -432,7 +432,7 @@ func buildRequestBody(req llm.Request, stream bool, quirks ProviderQuirks) (map[
 		"model": req.Model,
 	}
 
-	msgs, err := toChatMessages(req.Messages)
+	msgs, err := toChatMessages(req.Messages, quirks)
 	if err != nil {
 		return nil, err
 	}
@@ -496,38 +496,72 @@ func buildRequestBody(req llm.Request, stream bool, quirks ProviderQuirks) (map[
 	if quirks.LockPresencePenalty {
 		delete(body, "presence_penalty")
 	}
+	if quirks.ToolChoiceAutoOnly {
+		if tc, ok := body["tool_choice"]; ok {
+			switch tc {
+			case "auto", "none":
+				// allowed
+			default:
+				body["tool_choice"] = "auto"
+			}
+		}
+	}
+	if quirks.MaxStopSequences > 0 {
+		if stops, ok := body["stop"].([]string); ok && len(stops) > quirks.MaxStopSequences {
+			body["stop"] = stops[:quirks.MaxStopSequences]
+		}
+	}
+	if quirks.NoJSONSchema {
+		if rf, ok := body["response_format"].(map[string]any); ok {
+			if rf["type"] == "json_schema" {
+				body["response_format"] = map[string]any{"type": "json_object"}
+			}
+		}
+	}
 
 	return body, nil
 }
 
-func toChatMessages(messages []llm.Message) ([]map[string]any, error) {
+func toChatMessages(messages []llm.Message, quirks ProviderQuirks) ([]map[string]any, error) {
 	out := make([]map[string]any, 0, len(messages))
 	for _, m := range messages {
+		// Strip empty text parts when the quirk is enabled.
+		content := m.Content
+		if quirks.StripEmptyContent {
+			filtered := make([]llm.ContentPart, 0, len(content))
+			for _, p := range content {
+				if p.Kind == llm.ContentText && p.Text == "" {
+					continue
+				}
+				filtered = append(filtered, p)
+			}
+			content = filtered
+		}
 		switch m.Role {
 		case llm.RoleSystem, llm.RoleDeveloper:
 			out = append(out, map[string]any{
 				"role":    "system",
-				"content": textFromParts(m.Content),
+				"content": textFromParts(content),
 			})
 		case llm.RoleUser:
-			if hasImageContent(m.Content) {
+			if hasImageContent(content) {
 				out = append(out, map[string]any{
 					"role":    "user",
-					"content": buildMultimodalParts(m.Content),
+					"content": buildMultimodalParts(content),
 				})
 			} else {
 				out = append(out, map[string]any{
 					"role":    "user",
-					"content": textFromParts(m.Content),
+					"content": textFromParts(content),
 				})
 			}
 		case llm.RoleAssistant:
 			msg := map[string]any{
 				"role": "assistant",
 			}
-			text := textFromParts(m.Content)
-			calls := toolCallsFromParts(m.Content)
-			reasoning := thinkingFromParts(m.Content)
+			text := textFromParts(content)
+			calls := toolCallsFromParts(content)
+			reasoning := thinkingFromParts(content)
 			if reasoning != "" {
 				msg["reasoning_content"] = reasoning
 			}
@@ -541,20 +575,20 @@ func toChatMessages(messages []llm.Message) ([]map[string]any, error) {
 			}
 			out = append(out, msg)
 		case llm.RoleTool:
-			for _, p := range m.Content {
+			for _, p := range content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
-					content := ""
+					resultContent := ""
 					switch v := p.ToolResult.Content.(type) {
 					case string:
-						content = v
+						resultContent = v
 					default:
 						b, _ := json.Marshal(v)
-						content = string(b)
+						resultContent = string(b)
 					}
 					out = append(out, map[string]any{
 						"role":         "tool",
 						"tool_call_id": p.ToolResult.ToolCallID,
-						"content":      content,
+						"content":      resultContent,
 					})
 				}
 			}
@@ -773,7 +807,7 @@ type chatChunkToolCall struct {
 	Function chatFunctionCall `json:"function"`
 }
 
-func fromChatCompletionResponse(raw map[string]any) (llm.Response, error) {
+func fromChatCompletionResponse(raw map[string]any, quirks ProviderQuirks) (llm.Response, error) {
 	b, err := json.Marshal(raw)
 	if err != nil {
 		return llm.Response{}, err
@@ -812,7 +846,16 @@ func fromChatCompletionResponse(raw map[string]any) (llm.Response, error) {
 	}
 
 	msg := llm.Message{Role: llm.RoleAssistant, Content: parts}
-	finish := llm.NormalizeFinishReason("", choice.FinishReason)
+
+	// Map the provider-specific finish reason using quirks, preserving the original in .Raw.
+	rawFinish := choice.FinishReason
+	mappedFinish := quirks.mapFinishReason(rawFinish)
+	var finish llm.FinishReason
+	if mappedFinish == rawFinish {
+		finish = llm.NormalizeFinishReason("", rawFinish)
+	} else {
+		finish = llm.FinishReason{Reason: mappedFinish, Raw: rawFinish}
+	}
 
 	resp := llm.Response{
 		Provider: "openai-compatible",

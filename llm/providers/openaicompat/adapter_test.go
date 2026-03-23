@@ -1402,3 +1402,221 @@ func TestBuildRequestBody_QuirksLockTemperatureAndTopP(t *testing.T) {
 		t.Fatalf("top_p should be stripped when locked, got %v", gotBody["top_p"])
 	}
 }
+
+func TestBuildRequestBody_QuirksToolChoiceAutoOnly(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "chatcmpl-q2", "model": "kimi-k2.5",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey: "k", BaseURL: srv.URL, Client: srv.Client(),
+		Quirks: ProviderQuirks{ToolChoiceAutoOnly: true},
+	}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:      "kimi-k2.5",
+		Messages:   []llm.Message{llm.User("hi")},
+		Tools:      []llm.ToolDefinition{{Name: "test", Parameters: map[string]any{"type": "object"}}},
+		ToolChoice: &llm.ToolChoice{Mode: "required"},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if gotBody["tool_choice"] != "auto" {
+		t.Fatalf("tool_choice: %v, want auto", gotBody["tool_choice"])
+	}
+}
+
+func TestBuildRequestBody_QuirksToolChoiceAutoOnly_PreservesAutoAndNone(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "chatcmpl-q3", "model": "kimi-k2.5",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey: "k", BaseURL: srv.URL, Client: srv.Client(),
+		Quirks: ProviderQuirks{ToolChoiceAutoOnly: true},
+	}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:      "kimi-k2.5",
+		Messages:   []llm.Message{llm.User("hi")},
+		Tools:      []llm.ToolDefinition{{Name: "test", Parameters: map[string]any{"type": "object"}}},
+		ToolChoice: &llm.ToolChoice{Mode: "auto"},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if gotBody["tool_choice"] != "auto" {
+		t.Fatalf("tool_choice: %v, want auto (unchanged)", gotBody["tool_choice"])
+	}
+}
+
+func TestBuildRequestBody_QuirksMaxStopSequences(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "chatcmpl-q4", "model": "glm-5",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey: "k", BaseURL: srv.URL, Client: srv.Client(),
+		Quirks: ProviderQuirks{MaxStopSequences: 1},
+	}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:         "glm-5",
+		Messages:      []llm.Message{llm.User("hi")},
+		StopSequences: []string{"STOP1", "STOP2", "STOP3"},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	stops, ok := gotBody["stop"].([]any)
+	if !ok || len(stops) != 1 {
+		t.Fatalf("stop: %v (type %T)", gotBody["stop"], gotBody["stop"])
+	}
+	if stops[0] != "STOP1" {
+		t.Fatalf("stop[0]: %v, want STOP1", stops[0])
+	}
+}
+
+func TestBuildRequestBody_QuirksNoJSONSchema(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "chatcmpl-q5", "model": "glm-5",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey: "k", BaseURL: srv.URL, Client: srv.Client(),
+		Quirks: ProviderQuirks{NoJSONSchema: true},
+	}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "glm-5",
+		Messages: []llm.Message{llm.User("hi")},
+		ResponseFormat: &llm.ResponseFormat{
+			Type:       "json_schema",
+			JSONSchema: map[string]any{"type": "object"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	rf, ok := gotBody["response_format"].(map[string]any)
+	if !ok {
+		t.Fatalf("response_format: %T", gotBody["response_format"])
+	}
+	if rf["type"] != "json_object" {
+		t.Fatalf("response_format.type: %v, want json_object", rf["type"])
+	}
+	if _, hasSchema := rf["json_schema"]; hasSchema {
+		t.Fatalf("json_schema should be removed from response_format")
+	}
+}
+
+func TestBuildRequestBody_QuirksStripEmptyContent(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "chatcmpl-q6", "model": "glm-5",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey: "k", BaseURL: srv.URL, Client: srv.Client(),
+		Quirks: ProviderQuirks{StripEmptyContent: true},
+	}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model: "glm-5",
+		Messages: []llm.Message{
+			{Role: llm.RoleUser, Content: []llm.ContentPart{
+				{Kind: llm.ContentText, Text: ""},
+				{Kind: llm.ContentText, Text: "hello"},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	msgs, _ := gotBody["messages"].([]any)
+	userMsg, _ := msgs[0].(map[string]any)
+	content, _ := userMsg["content"].(string)
+	if content != "hello" {
+		t.Fatalf("content: %q, want 'hello'", content)
+	}
+}
+
+func TestComplete_QuirksFinishReasonMap(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "chatcmpl-fr1", "model": "glm-5",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "filtered"}, "finish_reason": "sensitive"}],
+  "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey: "k", BaseURL: srv.URL, Client: srv.Client(),
+		Quirks: ProviderQuirks{
+			FinishReasonMap: map[string]string{
+				"sensitive":     "content_filter",
+				"network_error": "error",
+			},
+		},
+	}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "glm-5",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.Finish.Reason != "content_filter" {
+		t.Fatalf("finish reason: %q, want content_filter", resp.Finish.Reason)
+	}
+	if resp.Finish.Raw != "sensitive" {
+		t.Fatalf("finish raw: %q, want sensitive", resp.Finish.Raw)
+	}
+}
