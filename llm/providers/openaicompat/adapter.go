@@ -19,11 +19,49 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// ProviderQuirks configures per-provider behavioral overrides for OpenAI-compatible
+// APIs that deviate from the standard Chat Completions contract.
+type ProviderQuirks struct {
+	// LockTemperature strips temperature from requests (provider fixes it).
+	LockTemperature bool
+	// LockTopP strips top_p from requests (provider fixes it).
+	LockTopP bool
+	// LockFrequencyPenalty strips frequency_penalty from requests.
+	LockFrequencyPenalty bool
+	// LockPresencePenalty strips presence_penalty from requests.
+	LockPresencePenalty bool
+	// ToolChoiceAutoOnly restricts tool_choice to "auto" or "none" (no "required" or named).
+	ToolChoiceAutoOnly bool
+	// MaxStopSequences limits the number of stop sequences (0 = unlimited).
+	MaxStopSequences int
+	// StripEmptyContent removes message content parts with empty text.
+	StripEmptyContent bool
+	// NoJSONSchema downgrades json_schema response_format to json_object.
+	NoJSONSchema bool
+	// FinishReasonMap maps non-standard finish reasons to canonical values.
+	// E.g., {"sensitive": "content_filter", "network_error": "error"}
+	FinishReasonMap map[string]string
+}
+
+// mapFinishReason translates a provider-specific finish reason using the quirk map.
+// If no mapping exists, returns the original value unchanged.
+func (q ProviderQuirks) mapFinishReason(raw string) string {
+	if q.FinishReasonMap == nil {
+		return raw
+	}
+	if mapped, ok := q.FinishReasonMap[raw]; ok {
+		return mapped
+	}
+	return raw
+}
+
+// Adapter implements llm.ProviderAdapter for OpenAI-compatible services.
 type Adapter struct {
 	APIKey         string
 	BaseURL        string
 	Client         *http.Client
 	DefaultHeaders map[string]string
+	Quirks         ProviderQuirks
 }
 
 func init() {
@@ -109,7 +147,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		a.Client = &http.Client{Timeout: 0}
 	}
 
-	body, err := buildRequestBody(req, false)
+	body, err := buildRequestBody(req, false, a.Quirks)
 	if err != nil {
 		return llm.Response{}, err
 	}
@@ -143,7 +181,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	ctx, timeoutCancel := llm.ApplyAdapterTimeout(ctx, req.AdapterTimeout, true)
 	defer timeoutCancel()
 
-	body, err := buildRequestBody(req, true)
+	body, err := buildRequestBody(req, true, a.Quirks)
 	if err != nil {
 		return nil, err
 	}
@@ -389,7 +427,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 
 // --- Request building ---
 
-func buildRequestBody(req llm.Request, stream bool) (map[string]any, error) {
+func buildRequestBody(req llm.Request, stream bool, quirks ProviderQuirks) (map[string]any, error) {
 	body := map[string]any{
 		"model": req.Model,
 	}
@@ -443,6 +481,20 @@ func buildRequestBody(req llm.Request, stream bool) (map[string]any, error) {
 				body[k] = v
 			}
 		}
+	}
+
+	// Apply provider quirks.
+	if quirks.LockTemperature {
+		delete(body, "temperature")
+	}
+	if quirks.LockTopP {
+		delete(body, "top_p")
+	}
+	if quirks.LockFrequencyPenalty {
+		delete(body, "frequency_penalty")
+	}
+	if quirks.LockPresencePenalty {
+		delete(body, "presence_penalty")
 	}
 
 	return body, nil

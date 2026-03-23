@@ -1357,3 +1357,48 @@ func TestComplete_ReasoningTokens_EstimatedFromContent(t *testing.T) {
 		t.Fatalf("ReasoningTokens: %v, want 20", resp.Usage.ReasoningTokens)
 	}
 }
+
+// --- Provider quirks tests ---
+
+func TestBuildRequestBody_QuirksLockTemperatureAndTopP(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "chatcmpl-q1", "model": "kimi-k2.5",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	temp := 0.7
+	topP := 0.9
+	a := &Adapter{
+		APIKey:  "k",
+		BaseURL: srv.URL,
+		Client:  srv.Client(),
+		Quirks: ProviderQuirks{
+			LockTemperature: true,
+			LockTopP:        true,
+		},
+	}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:       "kimi-k2.5",
+		Messages:    []llm.Message{llm.User("hi")},
+		Temperature: &temp,
+		TopP:        &topP,
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if _, ok := gotBody["temperature"]; ok {
+		t.Fatalf("temperature should be stripped when locked, got %v", gotBody["temperature"])
+	}
+	if _, ok := gotBody["top_p"]; ok {
+		t.Fatalf("top_p should be stripped when locked, got %v", gotBody["top_p"])
+	}
+}
