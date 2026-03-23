@@ -40,8 +40,9 @@ region, then look at the result and describe it.
 
 ## Workflow
 
-Do the work. Then verify the work. Do not verify before writing — produce your
-deliverables first, then check them. If checking reveals problems, fix and rewrite.
+Produce deliverables first. Analyze, implement, and write output files before
+running any verification or validation. If you haven't written your output files,
+you haven't started the work — you're still planning.
 
 ## communicate
 
