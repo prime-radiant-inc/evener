@@ -323,3 +323,22 @@ tests carefully enough).
 - Notable: adaptive-rejection-sampler 3/3 (was nondeterministic)
 
 Waiting for full results before final analysis.
+
+### Tuning round experiments (March 23)
+
+**Fix A: Write-early reinforcement (core.md)**
+- "If you haven't written your output files, you haven't started the work"
+- tune-mjcf: 1/3 → **3/3** ✓ SHIPPED
+- path-tracing-reverse: 1/3 → 0/3 (no improvement — strategy choice, not write-last)
+- Regression: holds
+
+**Fix B: Interface conventions (coordinator.md)**
+- Absolute paths, --named args, edit originals
+- sam-cell-seg: 0/3 → 0/3 (no improvement)
+- caffe-cifar-10: 0/3 → 0/3 (no improvement)
+- REJECTED — coordinator delegation guidelines don't change implementer behavior
+
+**Fix C: Verification depth (coordinator.md)**
+- "Don't just check files exist — read contents and verify they make sense"
+- sanitize-git-repo: 1/3 → running
+- sqlite-with-gcov: 1/3 → running
