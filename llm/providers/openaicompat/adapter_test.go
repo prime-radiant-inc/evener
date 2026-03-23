@@ -1696,3 +1696,96 @@ func TestNewFromEnv_ParsesQuirksEnvVar(t *testing.T) {
 		t.Error("expected ToolChoiceAutoOnly from kimi-k2.5 preset")
 	}
 }
+
+// --- Streaming quirks tests ---
+
+func TestStream_QuirksFinishReasonMap(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		chunks := []string{
+			`{"id":"chatcmpl-1","model":"glm-5","choices":[{"index":0,"delta":{"role":"assistant","content":"filtered"},"finish_reason":null}]}`,
+			`{"id":"chatcmpl-1","model":"glm-5","choices":[{"index":0,"delta":{},"finish_reason":"sensitive"}],"usage":{"prompt_tokens":5,"completion_tokens":1,"total_tokens":6}}`,
+		}
+		for _, c := range chunks {
+			fmt.Fprintf(w, "data: %s\n\n", c)
+			flusher.Flush()
+		}
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey: "k", BaseURL: srv.URL, Client: srv.Client(),
+		Quirks: QuirksPreset("glm-5"),
+	}
+	st, err := a.Stream(context.Background(), llm.Request{
+		Model:    "glm-5",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer st.Close()
+
+	var finishReason string
+	var finishRaw string
+	for ev := range st.Events() {
+		if ev.Type == llm.StreamEventFinish && ev.FinishReason != nil {
+			finishReason = ev.FinishReason.Reason
+			finishRaw = ev.FinishReason.Raw
+		}
+	}
+	if finishReason != "content_filter" {
+		t.Fatalf("finish reason: %q, want content_filter", finishReason)
+	}
+	if finishRaw != "sensitive" {
+		t.Fatalf("finish raw: %q, want sensitive", finishRaw)
+	}
+}
+
+func TestStream_ReasoningContent_InFinalResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		chunks := []string{
+			`{"id":"chatcmpl-1","model":"kimi-k2.5","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"thinking..."},"finish_reason":null}]}`,
+			`{"id":"chatcmpl-1","model":"kimi-k2.5","choices":[{"index":0,"delta":{"content":"answer"},"finish_reason":null}]}`,
+			`{"id":"chatcmpl-1","model":"kimi-k2.5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		}
+		for _, c := range chunks {
+			fmt.Fprintf(w, "data: %s\n\n", c)
+			flusher.Flush()
+		}
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	st, err := a.Stream(context.Background(), llm.Request{
+		Model:    "kimi-k2.5",
+		Messages: []llm.Message{llm.User("think")},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer st.Close()
+
+	var finalResp *llm.Response
+	for ev := range st.Events() {
+		if ev.Type == llm.StreamEventFinish && ev.Response != nil {
+			finalResp = ev.Response
+		}
+	}
+	if finalResp == nil {
+		t.Fatal("no FINISH response")
+	}
+	if finalResp.ReasoningText() != "thinking..." {
+		t.Fatalf("ReasoningText(): %q", finalResp.ReasoningText())
+	}
+	if finalResp.Text() != "answer" {
+		t.Fatalf("Text(): %q", finalResp.Text())
+	}
+}

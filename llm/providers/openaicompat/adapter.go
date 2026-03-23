@@ -332,7 +332,15 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 						ToolCall: &completedToolCalls[i],
 					})
 				}
-				finish := llm.NormalizeFinishReason("", finishReason)
+				// Apply quirk finish reason mapping, preserving the original raw value.
+				rawFinish := finishReason
+				mappedFinish := a.Quirks.mapFinishReason(rawFinish)
+				var finish llm.FinishReason
+				if mappedFinish == rawFinish {
+					finish = llm.NormalizeFinishReason("", rawFinish)
+				} else {
+					finish = llm.FinishReason{Reason: mappedFinish, Raw: rawFinish}
+				}
 				finalResp := &llm.Response{
 					Provider:  "openai-compatible",
 					Model:     model,
@@ -342,6 +350,17 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 				}
 				if usage != nil {
 					finalResp.Usage = *usage
+				}
+				// Estimate reasoning tokens from reasoning buffer when not natively reported.
+				if finalResp.Usage.ReasoningTokens == nil && reasoningBuf.Len() > 0 {
+					estimated := reasoningBuf.Len() / 4
+					if estimated < 1 {
+						estimated = 1
+					}
+					finalResp.Usage.ReasoningTokens = &estimated
+					if usage != nil {
+						usage.ReasoningTokens = &estimated
+					}
 				}
 				s.Send(llm.StreamEvent{
 					Type:         llm.StreamEventFinish,
@@ -368,6 +387,12 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 				u.TotalTokens = u.InputTokens + u.OutputTokens
 				if v := llm.IntFromAny(chunk.Usage["total_tokens"]); v > 0 {
 					u.TotalTokens = v
+				}
+				// Extract native reasoning tokens from completion_tokens_details.
+				if details, ok := chunk.Usage["completion_tokens_details"].(map[string]any); ok {
+					if rt := llm.IntFromAny(details["reasoning_tokens"]); rt > 0 {
+						u.ReasoningTokens = &rt
+					}
 				}
 				usage = &u
 			}
