@@ -1789,3 +1789,166 @@ func TestStream_ReasoningContent_InFinalResponse(t *testing.T) {
 		t.Fatalf("Text(): %q", finalResp.Text())
 	}
 }
+
+// --- Integration tests ---
+
+func TestIntegration_KimiK2_5_ReasoningWithToolCall(t *testing.T) {
+	requestCount := 0
+	var firstReqBody, secondReqBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		b, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+
+		if requestCount == 1 {
+			_ = json.Unmarshal(b, &firstReqBody)
+			_, _ = w.Write([]byte(`{
+  "id": "chatcmpl-k1", "model": "kimi-k2.5",
+  "choices": [{"index": 0, "message": {
+    "role": "assistant",
+    "reasoning_content": "I need to check the weather API.",
+    "content": null,
+    "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"SF\"}"}}]
+  }, "finish_reason": "tool_calls"}],
+  "usage": {"prompt_tokens": 10, "completion_tokens": 30, "total_tokens": 40, "completion_tokens_details": {"reasoning_tokens": 20}}
+}`))
+		} else {
+			_ = json.Unmarshal(b, &secondReqBody)
+			_, _ = w.Write([]byte(`{
+  "id": "chatcmpl-k2", "model": "kimi-k2.5",
+  "choices": [{"index": 0, "message": {
+    "role": "assistant",
+    "reasoning_content": "The weather data says sunny and 72F.",
+    "content": "It's sunny and 72F in San Francisco!"
+  }, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 50, "completion_tokens": 40, "total_tokens": 90}
+}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	temp := 0.7
+	a := &Adapter{
+		APIKey: "k", BaseURL: srv.URL, Client: srv.Client(),
+		Quirks: QuirksPreset("kimi-k2.5"),
+	}
+
+	// First request: user asks, model thinks and calls tool.
+	resp1, err := a.Complete(context.Background(), llm.Request{
+		Model:       "kimi-k2.5",
+		Messages:    []llm.Message{llm.User("What's the weather in SF?")},
+		Tools:       []llm.ToolDefinition{{Name: "get_weather", Parameters: map[string]any{"type": "object"}}},
+		Temperature: &temp,
+	})
+	if err != nil {
+		t.Fatalf("first Complete: %v", err)
+	}
+
+	// Verify temperature was stripped.
+	if _, ok := firstReqBody["temperature"]; ok {
+		t.Error("temperature should be stripped for kimi-k2.5")
+	}
+
+	// Verify reasoning was parsed.
+	if resp1.ReasoningText() != "I need to check the weather API." {
+		t.Fatalf("first reasoning: %q", resp1.ReasoningText())
+	}
+	// Verify native reasoning tokens.
+	if resp1.Usage.ReasoningTokens == nil || *resp1.Usage.ReasoningTokens != 20 {
+		t.Fatalf("first reasoning tokens: %v", resp1.Usage.ReasoningTokens)
+	}
+	// Verify tool call.
+	if len(resp1.ToolCalls()) != 1 || resp1.ToolCalls()[0].Name != "get_weather" {
+		t.Fatalf("first tool calls: %v", resp1.ToolCalls())
+	}
+
+	// Second request: include previous assistant message (with thinking) and tool result.
+	resp2, err := a.Complete(context.Background(), llm.Request{
+		Model: "kimi-k2.5",
+		Messages: []llm.Message{
+			llm.User("What's the weather in SF?"),
+			resp1.Message, // Should include ContentThinking + ContentToolCall
+			llm.ToolResultNamed("call_1", "get_weather", "Sunny, 72F", false),
+		},
+	})
+	if err != nil {
+		t.Fatalf("second Complete: %v", err)
+	}
+
+	// Verify reasoning_content was round-tripped in the second request's assistant message.
+	msgs, _ := secondReqBody["messages"].([]any)
+	assistantMsg, _ := msgs[1].(map[string]any)
+	if rc, _ := assistantMsg["reasoning_content"].(string); rc != "I need to check the weather API." {
+		t.Fatalf("round-tripped reasoning_content: %q", rc)
+	}
+
+	// Verify second response.
+	if resp2.ReasoningText() != "The weather data says sunny and 72F." {
+		t.Fatalf("second reasoning: %q", resp2.ReasoningText())
+	}
+	if resp2.Text() != "It's sunny and 72F in San Francisco!" {
+		t.Fatalf("second text: %q", resp2.Text())
+	}
+	// Verify estimated reasoning tokens (no native count in second response).
+	if resp2.Usage.ReasoningTokens == nil {
+		t.Fatal("second reasoning tokens should be estimated")
+	}
+}
+
+func TestIntegration_GLM5_EmptyContentAndSensitiveFilter(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "chatcmpl-g1", "model": "glm-5",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "I cannot answer that."}, "finish_reason": "sensitive"}],
+  "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey: "k", BaseURL: srv.URL, Client: srv.Client(),
+		Quirks: QuirksPreset("glm-5"),
+	}
+
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model: "glm-5",
+		Messages: []llm.Message{
+			{Role: llm.RoleUser, Content: []llm.ContentPart{
+				{Kind: llm.ContentText, Text: ""},
+				{Kind: llm.ContentText, Text: "tell me something"},
+			}},
+		},
+		StopSequences: []string{"STOP1", "STOP2", "STOP3"},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	// Verify stop sequences truncated to 1.
+	stops, _ := gotBody["stop"].([]any)
+	if len(stops) != 1 {
+		t.Fatalf("stop sequences: %v, want 1 element", stops)
+	}
+
+	// Verify user message content (empty part stripped).
+	msgs, _ := gotBody["messages"].([]any)
+	userMsg, _ := msgs[0].(map[string]any)
+	content, _ := userMsg["content"].(string)
+	if content != "tell me something" {
+		t.Fatalf("content: %q, want 'tell me something'", content)
+	}
+
+	// Verify finish reason mapped.
+	if resp.Finish.Reason != "content_filter" {
+		t.Fatalf("finish reason: %q, want content_filter", resp.Finish.Reason)
+	}
+	if resp.Finish.Raw != "sensitive" {
+		t.Fatalf("finish raw: %q, want sensitive", resp.Finish.Raw)
+	}
+}
