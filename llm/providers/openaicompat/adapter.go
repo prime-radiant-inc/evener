@@ -203,6 +203,8 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		toolCalls := map[int]*toolCallState{}
 		var textStarted bool
 		var textBuf strings.Builder
+		var reasoningStarted bool
+		var reasoningBuf strings.Builder
 		var model string
 		var finishReason string
 		var usage *llm.Usage
@@ -212,16 +214,25 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 			data := string(ev.Data)
 			if data == "[DONE]" {
 				finished = true
-				// Emit tool call end events for any open tool calls.
+
+				// Close reasoning if still open (e.g., reasoning only, no text or tool calls).
+				if reasoningStarted && !textStarted && len(toolCalls) == 0 {
+					s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningEnd})
+				}
+
+				// Collect tool call data before emitting end events (for final response).
+				var completedToolCalls []llm.ToolCallData
 				for idx, tc := range toolCalls {
+					tcd := llm.ToolCallData{
+						ID:        tc.id,
+						Name:      tc.name,
+						Arguments: json.RawMessage(tc.args.String()),
+						Type:      "function",
+					}
+					completedToolCalls = append(completedToolCalls, tcd)
 					s.Send(llm.StreamEvent{
-						Type: llm.StreamEventToolCallEnd,
-						ToolCall: &llm.ToolCallData{
-							ID:        tc.id,
-							Name:      tc.name,
-							Arguments: json.RawMessage(tc.args.String()),
-							Type:      "function",
-						},
+						Type:     llm.StreamEventToolCallEnd,
+						ToolCall: &tcd,
 					})
 					delete(toolCalls, idx)
 				}
@@ -232,8 +243,20 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 
 				// Build final response.
 				msg := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{}}
+				if reasoningBuf.Len() > 0 {
+					msg.Content = append(msg.Content, llm.ContentPart{
+						Kind:     llm.ContentThinking,
+						Thinking: &llm.ThinkingData{Text: reasoningBuf.String()},
+					})
+				}
 				if textBuf.Len() > 0 {
 					msg.Content = append(msg.Content, llm.ContentPart{Kind: llm.ContentText, Text: textBuf.String()})
+				}
+				for i := range completedToolCalls {
+					msg.Content = append(msg.Content, llm.ContentPart{
+						Kind:     llm.ContentToolCall,
+						ToolCall: &completedToolCalls[i],
+					})
 				}
 				finish := llm.NormalizeFinishReason("", finishReason)
 				finalResp := &llm.Response{
@@ -284,8 +307,24 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 				finishReason = choice.FinishReason
 			}
 
-			// Text delta.
+			// Reasoning content delta.
+			if choice.Delta.ReasoningContent != "" {
+				if !reasoningStarted {
+					s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningStart})
+					reasoningStarted = true
+				}
+				reasoningBuf.WriteString(choice.Delta.ReasoningContent)
+				s.Send(llm.StreamEvent{
+					Type:           llm.StreamEventReasoningDelta,
+					ReasoningDelta: choice.Delta.ReasoningContent,
+				})
+			}
+
+			// Text delta — close reasoning first if transitioning from reasoning to text.
 			if choice.Delta.Content != "" {
+				if reasoningStarted && !textStarted {
+					s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningEnd})
+				}
 				if !textStarted {
 					s.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: "text_0"})
 					textStarted = true
@@ -302,6 +341,11 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 			for _, tc := range choice.Delta.ToolCalls {
 				state, exists := toolCalls[tc.Index]
 				if !exists {
+					// Close reasoning before the first tool call if needed.
+					if reasoningStarted && !textStarted {
+						s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningEnd})
+						reasoningStarted = false // Prevent double-close in [DONE].
+					}
 					state = &toolCallState{
 						id:   tc.ID,
 						name: tc.Function.Name,
@@ -646,9 +690,10 @@ type chatChunkChoice struct {
 }
 
 type chatDelta struct {
-	Role      string              `json:"role"`
-	Content   string              `json:"content"`
-	ToolCalls []chatChunkToolCall `json:"tool_calls,omitempty"`
+	Role             string              `json:"role"`
+	Content          string              `json:"content"`
+	ReasoningContent string              `json:"reasoning_content,omitempty"`
+	ToolCalls        []chatChunkToolCall `json:"tool_calls,omitempty"`
 }
 
 type chatChunkToolCall struct {

@@ -1051,3 +1051,175 @@ func TestComplete_NoReasoningContent_OnlyText(t *testing.T) {
 		t.Fatalf("ReasoningText() should be empty, got %q", resp.ReasoningText())
 	}
 }
+
+func TestStream_ReasoningContent_EmitsReasoningEvents(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+
+		chunks := []string{
+			`{"id":"chatcmpl-1","model":"kimi-k2.5","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Let me "},"finish_reason":null}]}`,
+			`{"id":"chatcmpl-1","model":"kimi-k2.5","choices":[{"index":0,"delta":{"reasoning_content":"think..."},"finish_reason":null}]}`,
+			`{"id":"chatcmpl-1","model":"kimi-k2.5","choices":[{"index":0,"delta":{"content":"The answer"},"finish_reason":null}]}`,
+			`{"id":"chatcmpl-1","model":"kimi-k2.5","choices":[{"index":0,"delta":{"content":" is 42."},"finish_reason":null}]}`,
+			`{"id":"chatcmpl-1","model":"kimi-k2.5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":20,"total_tokens":25}}`,
+		}
+		for _, c := range chunks {
+			fmt.Fprintf(w, "data: %s\n\n", c)
+			flusher.Flush()
+		}
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	st, err := a.Stream(ctx, llm.Request{
+		Model:    "kimi-k2.5",
+		Messages: []llm.Message{llm.User("What is the meaning of life?")},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer st.Close()
+
+	var kinds []llm.StreamEventType
+	var reasoningDeltas []string
+	var textDeltas []string
+	var finalResp *llm.Response
+	for ev := range st.Events() {
+		kinds = append(kinds, ev.Type)
+		if ev.Type == llm.StreamEventReasoningDelta {
+			reasoningDeltas = append(reasoningDeltas, ev.ReasoningDelta)
+		}
+		if ev.Type == llm.StreamEventTextDelta {
+			textDeltas = append(textDeltas, ev.Delta)
+		}
+		if ev.Type == llm.StreamEventFinish && ev.Response != nil {
+			finalResp = ev.Response
+		}
+	}
+
+	if strings.Join(reasoningDeltas, "") != "Let me think..." {
+		t.Fatalf("reasoning deltas: %q", strings.Join(reasoningDeltas, ""))
+	}
+	if strings.Join(textDeltas, "") != "The answer is 42." {
+		t.Fatalf("text deltas: %q", strings.Join(textDeltas, ""))
+	}
+
+	// Verify event ordering.
+	var reasoningStartIdx, reasoningEndIdx, textStartIdx int
+	for i, k := range kinds {
+		switch k {
+		case llm.StreamEventReasoningStart:
+			reasoningStartIdx = i
+		case llm.StreamEventReasoningEnd:
+			reasoningEndIdx = i
+		case llm.StreamEventTextStart:
+			textStartIdx = i
+		}
+	}
+	if reasoningStartIdx >= reasoningEndIdx {
+		t.Fatalf("REASONING_START (%d) should come before REASONING_END (%d)", reasoningStartIdx, reasoningEndIdx)
+	}
+	if reasoningEndIdx >= textStartIdx {
+		t.Fatalf("REASONING_END (%d) should come before TEXT_START (%d)", reasoningEndIdx, textStartIdx)
+	}
+
+	// Verify final response includes thinking content.
+	if finalResp == nil {
+		t.Fatal("no FINISH response")
+	}
+	if finalResp.ReasoningText() != "Let me think..." {
+		t.Fatalf("final ReasoningText(): %q", finalResp.ReasoningText())
+	}
+	if finalResp.Text() != "The answer is 42." {
+		t.Fatalf("final Text(): %q", finalResp.Text())
+	}
+}
+
+func TestStream_ReasoningContent_ThenToolCall_EmitsReasoningEndBeforeToolStart(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+
+		chunks := []string{
+			`{"id":"chatcmpl-1","model":"kimi-k2.5","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"I need to call the API."},"finish_reason":null}]}`,
+			`{"id":"chatcmpl-1","model":"kimi-k2.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null}]}`,
+			`{"id":"chatcmpl-1","model":"kimi-k2.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"city\":\"SF\"}"}}]},"finish_reason":null}]}`,
+			`{"id":"chatcmpl-1","model":"kimi-k2.5","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		}
+		for _, c := range chunks {
+			fmt.Fprintf(w, "data: %s\n\n", c)
+			flusher.Flush()
+		}
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	st, err := a.Stream(ctx, llm.Request{
+		Model:    "kimi-k2.5",
+		Messages: []llm.Message{llm.User("weather in SF?")},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer st.Close()
+
+	var kinds []llm.StreamEventType
+	var finalResp *llm.Response
+	for ev := range st.Events() {
+		kinds = append(kinds, ev.Type)
+		if ev.Type == llm.StreamEventFinish && ev.Response != nil {
+			finalResp = ev.Response
+		}
+	}
+
+	// REASONING_END should appear before TOOL_CALL_START.
+	var reasoningEndIdx, toolCallStartIdx int
+	reasoningEndIdx = -1
+	toolCallStartIdx = -1
+	for i, k := range kinds {
+		if k == llm.StreamEventReasoningEnd {
+			reasoningEndIdx = i
+		}
+		if k == llm.StreamEventToolCallStart && toolCallStartIdx == -1 {
+			toolCallStartIdx = i
+		}
+	}
+	if reasoningEndIdx == -1 {
+		t.Fatalf("expected REASONING_END event, kinds: %v", kinds)
+	}
+	if toolCallStartIdx == -1 {
+		t.Fatalf("expected TOOL_CALL_START event, kinds: %v", kinds)
+	}
+	if reasoningEndIdx >= toolCallStartIdx {
+		t.Fatalf("REASONING_END (%d) should come before TOOL_CALL_START (%d)", reasoningEndIdx, toolCallStartIdx)
+	}
+
+	// No TEXT_START or TEXT_DELTA events.
+	for _, k := range kinds {
+		if k == llm.StreamEventTextStart || k == llm.StreamEventTextDelta {
+			t.Fatalf("unexpected text event: %v", k)
+		}
+	}
+
+	// Final response should have ContentThinking + ContentToolCall (no ContentText).
+	if finalResp == nil {
+		t.Fatal("no FINISH response")
+	}
+	if finalResp.ReasoningText() != "I need to call the API." {
+		t.Fatalf("ReasoningText(): %q", finalResp.ReasoningText())
+	}
+	if len(finalResp.ToolCalls()) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(finalResp.ToolCalls()))
+	}
+}
