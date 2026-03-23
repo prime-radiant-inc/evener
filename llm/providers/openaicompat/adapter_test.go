@@ -1223,3 +1223,86 @@ func TestStream_ReasoningContent_ThenToolCall_EmitsReasoningEndBeforeToolStart(t
 		t.Fatalf("expected 1 tool call, got %d", len(finalResp.ToolCalls()))
 	}
 }
+
+func TestComplete_ThinkingContentRoundTripped_AsReasoningContent(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "chatcmpl-rt1",
+  "model": "kimi-k2.5",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "OK"}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model: "kimi-k2.5",
+		Messages: []llm.Message{
+			llm.User("What is 2+2?"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "I need to add 2 and 2."}},
+				{Kind: llm.ContentText, Text: "The answer is 4."},
+			}},
+			llm.User("Are you sure?"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	msgs, _ := gotBody["messages"].([]any)
+	if len(msgs) != 3 {
+		t.Fatalf("messages count: %d", len(msgs))
+	}
+	assistantMsg, _ := msgs[1].(map[string]any)
+	rc, ok := assistantMsg["reasoning_content"].(string)
+	if !ok || rc != "I need to add 2 and 2." {
+		t.Fatalf("reasoning_content: %v (ok=%v)", assistantMsg["reasoning_content"], ok)
+	}
+	content, _ := assistantMsg["content"].(string)
+	if content != "The answer is 4." {
+		t.Fatalf("content: %v", assistantMsg["content"])
+	}
+}
+
+func TestComplete_NoThinking_OmitsReasoningContent(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "chatcmpl-nr2",
+  "model": "gpt-4o",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "OK"}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model: "gpt-4o",
+		Messages: []llm.Message{
+			llm.User("hi"),
+			llm.Assistant("hey"),
+			llm.User("what?"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	msgs, _ := gotBody["messages"].([]any)
+	assistantMsg, _ := msgs[1].(map[string]any)
+	if _, ok := assistantMsg["reasoning_content"]; ok {
+		t.Fatalf("reasoning_content should be absent, got %v", assistantMsg["reasoning_content"])
+	}
+}

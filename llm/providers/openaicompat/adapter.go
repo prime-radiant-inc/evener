@@ -475,6 +475,10 @@ func toChatMessages(messages []llm.Message) ([]map[string]any, error) {
 			}
 			text := textFromParts(m.Content)
 			calls := toolCallsFromParts(m.Content)
+			reasoning := thinkingFromParts(m.Content)
+			if reasoning != "" {
+				msg["reasoning_content"] = reasoning
+			}
 			if len(calls) > 0 {
 				msg["tool_calls"] = calls
 				if text != "" {
@@ -515,6 +519,20 @@ func textFromParts(parts []llm.ContentPart) string {
 				b.WriteString("\n")
 			}
 			b.WriteString(p.Text)
+		}
+	}
+	return b.String()
+}
+
+// thinkingFromParts concatenates all ContentThinking parts' text.
+func thinkingFromParts(parts []llm.ContentPart) string {
+	var b strings.Builder
+	for _, p := range parts {
+		if p.Kind == llm.ContentThinking && p.Thinking != nil && p.Thinking.Text != "" {
+			if b.Len() > 0 {
+				b.WriteString("\n")
+			}
+			b.WriteString(p.Thinking.Text)
 		}
 	}
 	return b.String()
