@@ -1306,3 +1306,54 @@ func TestComplete_NoThinking_OmitsReasoningContent(t *testing.T) {
 		t.Fatalf("reasoning_content should be absent, got %v", assistantMsg["reasoning_content"])
 	}
 }
+
+func TestComplete_ReasoningTokens_NativeFromUsage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "chatcmpl-u1",
+  "model": "kimi-k2.5",
+  "choices": [{"index": 0, "message": {"role": "assistant", "reasoning_content": "thinking...", "content": "done"}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 10, "completion_tokens": 50, "total_tokens": 60, "completion_tokens_details": {"reasoning_tokens": 35}}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "kimi-k2.5",
+		Messages: []llm.Message{llm.User("think")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.Usage.ReasoningTokens == nil || *resp.Usage.ReasoningTokens != 35 {
+		t.Fatalf("ReasoningTokens: %v, want 35", resp.Usage.ReasoningTokens)
+	}
+}
+
+func TestComplete_ReasoningTokens_EstimatedFromContent(t *testing.T) {
+	reasoning := strings.Repeat("abcd", 20) // 80 chars -> 80/4 = 20 estimated tokens
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{
+  "id": "chatcmpl-u2",
+  "model": "glm-5",
+  "choices": [{"index": 0, "message": {"role": "assistant", "reasoning_content": %q, "content": "done"}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 10, "completion_tokens": 50, "total_tokens": 60}
+}`, reasoning)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "glm-5",
+		Messages: []llm.Message{llm.User("think")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.Usage.ReasoningTokens == nil || *resp.Usage.ReasoningTokens != 20 {
+		t.Fatalf("ReasoningTokens: %v, want 20", resp.Usage.ReasoningTokens)
+	}
+}

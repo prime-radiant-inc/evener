@@ -781,6 +781,30 @@ func fromChatCompletionResponse(raw map[string]any) (llm.Response, error) {
 		if v := llm.IntFromAny(parsed.Usage["total_tokens"]); v > 0 {
 			resp.Usage.TotalTokens = v
 		}
+
+		// Extract native reasoning tokens from completion_tokens_details.
+		if details, ok := parsed.Usage["completion_tokens_details"].(map[string]any); ok {
+			if rt := llm.IntFromAny(details["reasoning_tokens"]); rt > 0 {
+				resp.Usage.ReasoningTokens = &rt
+			}
+		}
+	}
+
+	// Estimate reasoning tokens from thinking content when not natively reported.
+	if resp.Usage.ReasoningTokens == nil {
+		var thinkingChars int
+		for _, p := range parts {
+			if p.Kind == llm.ContentThinking && p.Thinking != nil {
+				thinkingChars += len(p.Thinking.Text)
+			}
+		}
+		if thinkingChars > 0 {
+			estimated := thinkingChars / 4
+			if estimated < 1 {
+				estimated = 1
+			}
+			resp.Usage.ReasoningTokens = &estimated
+		}
 	}
 
 	return resp, nil
