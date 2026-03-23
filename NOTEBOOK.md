@@ -358,3 +358,17 @@ Waiting for full results before final analysis.
 
 Net gain: +1 task reliably passing (tune-mjcf), +1 marginal (sanitize-git-repo).
 Baseline moves from 44/81 → 45/81 reliable (55%) + sanitize trending up.
+
+### Failure rerun with shipped fixes (March 23)
+
+Reran 45 non-reliable tasks with Fix A (write-early) + Fix C (verify depth).
+
+**6 improved, 0 regressed:**
+- count-dataset-tokens: 1/3 → 3/5 ▲ (now reliable)
+- sqlite-with-gcov: 1/3 → 3/7 ▲ (now reliable)
+- tune-mjcf: 1/3 → 4/6 ▲ (now reliable)
+- sanitize-git-repo: 1/3 → 3/6 ▲ (trending up)
+- fix-git: 3/3 → 6/6 (confirmed)
+- regex-log: 3/3 → 6/6 (confirmed)
+
+**Updated baseline: ~47/81 reliable (58%)**, up from 44/81 (54%).
