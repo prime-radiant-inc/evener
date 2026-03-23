@@ -372,3 +372,21 @@ Reran 45 non-reliable tasks with Fix A (write-early) + Fix C (verify depth).
 - regex-log: 3/3 → 6/6 (confirmed)
 
 **Updated baseline: ~47/81 reliable (58%)**, up from 44/81 (54%).
+
+### Eval v2 results (March 23, commit a907c64)
+
+**Model:** gpt-5.4-mini, reasoning_effort=xhigh
+**Binary:** commit a907c64 (Fix A: write-early + Fix C: verify-depth)
+
+| Metric | v1 (493fa49) | v2 (a907c64) |
+|--------|-------------|-------------|
+| Raw pass rate | 140/260 (54%) | 155/278 (56%) |
+| Tasks ≥2/3 | 44/81 (54%) | **45/70 (64%)** |
+| Tasks 3/3 | 31/81 (38%) | 31/70 (44%) |
+
+**7 tasks improved**, 0 regressed. tune-mjcf, count-dataset-tokens,
+sqlite-with-gcov, sanitize-git-repo moved from flaky toward reliable.
+cobol-modernization and feal-linear-cryptanalysis pushed to 3/3.
+
+Full report: `docs/experiments/2026-03-23-gpt54mini-eval-v2.md`
+Full root causes: `docs/experiments/2026-03-23-failure-root-causes.md`
