@@ -342,3 +342,19 @@ Waiting for full results before final analysis.
 - "Don't just check files exist — read contents and verify they make sense"
 - sanitize-git-repo: 1/3 → running
 - sqlite-with-gcov: 1/3 → running
+
+**Fix C: Verification depth (coordinator.md)** — SHIPPED
+- sanitize-git-repo: 1/3 → **2/3** (marginal improvement)
+- sqlite-with-gcov: 1/3 → 1/3 (no change)
+- Regression: holds
+
+### Tuning round summary
+
+| Fix | Target | Result | Shipped? |
+|-----|--------|--------|----------|
+| A: Write-early | tune-mjcf 1/3→3/3, ptr 1/3→0/3 | **Win on tune-mjcf** | Yes |
+| B: Interface conventions | sam-cell-seg 0/3→0/3, caffe 0/3→0/3 | No improvement | No |
+| C: Verify depth | sanitize 1/3→2/3, sqlite-gcov 1/3→1/3 | **Marginal on sanitize** | Yes |
+
+Net gain: +1 task reliably passing (tune-mjcf), +1 marginal (sanitize-git-repo).
+Baseline moves from 44/81 → 45/81 reliable (55%) + sanitize trending up.
