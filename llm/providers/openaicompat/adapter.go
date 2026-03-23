@@ -107,6 +107,9 @@ func init() {
 	})
 }
 
+// NewFromEnv creates an Adapter configured from environment variables.
+// Required: OPENAI_COMPATIBLE_BASE_URL. Optional: OPENAI_COMPATIBLE_API_KEY,
+// OPENAI_COMPATIBLE_PROVIDER_QUIRKS (a named preset like "kimi-k2.5" or "glm-5").
 func NewFromEnv() (*Adapter, error) {
 	base := strings.TrimSpace(os.Getenv("OPENAI_COMPATIBLE_BASE_URL"))
 	if base == "" {
