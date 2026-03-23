@@ -325,6 +325,22 @@ if choice.Delta.Content != "" {
         Delta:  choice.Delta.Content,
     })
 }
+
+// Tool call deltas — also close reasoning before the first tool call if needed.
+// (Kimi K2.5 can emit reasoning_content followed by tool_calls with no text in between.)
+```
+
+In the existing tool call delta block, add at the top (before creating new tool call state):
+
+```go
+if !exists {
+    // Close reasoning before the first tool call, matching Anthropic's event ordering.
+    if reasoningStarted && !textStarted {
+        s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningEnd})
+        reasoningStarted = false // Prevent double-close in [DONE].
+    }
+    // ... existing tool call start logic ...
+}
 ```
 
 In the `[DONE]` handler, add reasoning content to the final response message and close reasoning if still open:
@@ -944,7 +960,7 @@ if quirks.NoJSONSchema {
 
 For `StripEmptyContent`, modify `toChatMessages` to accept quirks and filter empty text parts when `StripEmptyContent` is true. Change `textFromParts` to optionally skip empty texts, or add a post-processing step.
 
-For `FinishReasonMap`, modify `fromChatCompletionResponse` and the streaming `[DONE]` handler to apply the map before `NormalizeFinishReason`. Thread `a.Quirks` through to the response parsing functions. The finish reason mapping logic:
+For `FinishReasonMap`, modify `fromChatCompletionResponse` and the streaming `[DONE]` handler to apply the map while preserving the original raw value. Thread `a.Quirks` through to the response parsing functions. The finish reason mapping logic:
 
 ```go
 func (q ProviderQuirks) mapFinishReason(raw string) string {
@@ -961,8 +977,22 @@ func (q ProviderQuirks) mapFinishReason(raw string) string {
 Then in `fromChatCompletionResponse` (which needs to accept quirks now):
 
 ```go
-finish := llm.NormalizeFinishReason("", quirks.mapFinishReason(choice.FinishReason))
+// Map the provider-specific finish reason to a canonical value,
+// but preserve the original provider value in .Raw for diagnostics.
+rawFinish := choice.FinishReason
+mappedFinish := quirks.mapFinishReason(rawFinish)
+var finish llm.FinishReason
+if mappedFinish == rawFinish {
+    // No quirk mapping applied — use standard normalization.
+    finish = llm.NormalizeFinishReason("", rawFinish)
+} else {
+    // Quirk mapping applied — use the mapped value as the canonical reason,
+    // but keep the original provider value in .Raw.
+    finish = llm.FinishReason{Reason: mappedFinish, Raw: rawFinish}
+}
 ```
+
+**Important:** `NormalizeFinishReason("", mapped)` would set `.Raw = mapped`, losing the original provider value (e.g., `"sensitive"`). The explicit construction above preserves it so diagnostics and tests can see the original finish reason.
 
 Update function signatures for `fromChatCompletionResponse`, `toChatMessages`, and `buildRequestBody` to accept `ProviderQuirks`, and update all call sites.
 
@@ -1259,12 +1289,21 @@ Expected: FAIL — streaming doesn't apply quirk finish reason mapping, and the 
 
 The Stream goroutine needs access to `a.Quirks`. It is already a method on `*Adapter`, so `a.Quirks` is directly accessible.
 
-In the streaming goroutine's `[DONE]` handler, apply the quirk mapping to `finishReason`:
+In the streaming goroutine's `[DONE]` handler, apply the quirk mapping to `finishReason` while preserving the original raw value, using the same pattern as the non-streaming fix in Task 6:
 
 ```go
-// Apply quirk finish reason mapping.
-finishReason = a.Quirks.mapFinishReason(finishReason)
+// Apply quirk finish reason mapping, preserving the original raw value.
+rawFinish := finishReason
+mappedFinish := a.Quirks.mapFinishReason(rawFinish)
+var finish llm.FinishReason
+if mappedFinish == rawFinish {
+    finish = llm.NormalizeFinishReason("", rawFinish)
+} else {
+    finish = llm.FinishReason{Reason: mappedFinish, Raw: rawFinish}
+}
 ```
+
+Replace the existing `finish := llm.NormalizeFinishReason("", finishReason)` with the above block.
 
 The reasoning content in the final response should already work from Task 2's implementation (the `[DONE]` handler builds the message with `reasoningBuf`). If it doesn't because Task 2's implementation isn't quite complete, fix it here.
 
