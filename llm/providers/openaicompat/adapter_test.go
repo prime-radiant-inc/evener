@@ -969,3 +969,85 @@ func TestAdapter_Complete_Metadata_Propagated(t *testing.T) {
 		t.Errorf("metadata[user_id] = %v, want %q", md["user_id"], "u123")
 	}
 }
+
+// --- Reasoning content tests ---
+
+func TestComplete_ReasoningContent_ParsedAsThinking(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "chatcmpl-rc1",
+  "model": "kimi-k2.5",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "reasoning_content": "Let me think step by step...\nFirst, I need to consider...",
+      "content": "The answer is 42."
+    },
+    "finish_reason": "stop"
+  }],
+  "usage": {"prompt_tokens": 10, "completion_tokens": 50, "total_tokens": 60}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "kimi-k2.5",
+		Messages: []llm.Message{llm.User("What is the meaning of life?")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	if len(resp.Message.Content) < 2 {
+		t.Fatalf("expected at least 2 content parts, got %d: %+v", len(resp.Message.Content), resp.Message.Content)
+	}
+	if resp.Message.Content[0].Kind != llm.ContentThinking {
+		t.Fatalf("first part kind: %v, want thinking", resp.Message.Content[0].Kind)
+	}
+	if resp.Message.Content[0].Thinking == nil || resp.Message.Content[0].Thinking.Text != "Let me think step by step...\nFirst, I need to consider..." {
+		t.Fatalf("thinking text: %+v", resp.Message.Content[0].Thinking)
+	}
+	if resp.Message.Content[1].Kind != llm.ContentText {
+		t.Fatalf("second part kind: %v, want text", resp.Message.Content[1].Kind)
+	}
+	if resp.Message.Content[1].Text != "The answer is 42." {
+		t.Fatalf("text: %q", resp.Message.Content[1].Text)
+	}
+	if resp.ReasoningText() != "Let me think step by step...\nFirst, I need to consider..." {
+		t.Fatalf("ReasoningText(): %q", resp.ReasoningText())
+	}
+}
+
+func TestComplete_NoReasoningContent_OnlyText(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "chatcmpl-nr1",
+  "model": "gpt-4o",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "Hello"}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gpt-4o",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if len(resp.Message.Content) != 1 {
+		t.Fatalf("expected 1 content part, got %d", len(resp.Message.Content))
+	}
+	if resp.Message.Content[0].Kind != llm.ContentText {
+		t.Fatalf("part kind: %v, want text", resp.Message.Content[0].Kind)
+	}
+	if resp.ReasoningText() != "" {
+		t.Fatalf("ReasoningText() should be empty, got %q", resp.ReasoningText())
+	}
+}

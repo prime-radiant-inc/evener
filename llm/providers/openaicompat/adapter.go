@@ -615,9 +615,10 @@ type chatChoice struct {
 }
 
 type chatMessage struct {
-	Role      string         `json:"role"`
-	Content   string         `json:"content"`
-	ToolCalls []chatToolCall `json:"tool_calls,omitempty"`
+	Role             string         `json:"role"`
+	Content          string         `json:"content"`
+	ReasoningContent string         `json:"reasoning_content,omitempty"`
+	ToolCalls        []chatToolCall `json:"tool_calls,omitempty"`
 }
 
 type chatToolCall struct {
@@ -674,6 +675,12 @@ func fromChatCompletionResponse(raw map[string]any) (llm.Response, error) {
 
 	// Build message.
 	parts := []llm.ContentPart{}
+	if choice.Message.ReasoningContent != "" {
+		parts = append(parts, llm.ContentPart{
+			Kind:     llm.ContentThinking,
+			Thinking: &llm.ThinkingData{Text: choice.Message.ReasoningContent},
+		})
+	}
 	if choice.Message.Content != "" {
 		parts = append(parts, llm.ContentPart{Kind: llm.ContentText, Text: choice.Message.Content})
 	}
