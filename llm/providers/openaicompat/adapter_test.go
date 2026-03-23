@@ -1620,3 +1620,79 @@ func TestComplete_QuirksFinishReasonMap(t *testing.T) {
 		t.Fatalf("finish raw: %q, want sensitive", resp.Finish.Raw)
 	}
 }
+
+// --- Quirk presets and env var tests ---
+
+func TestQuirksPreset_KimiK2_5(t *testing.T) {
+	q := QuirksPreset("kimi-k2.5")
+	if !q.LockTemperature {
+		t.Error("LockTemperature should be true")
+	}
+	if !q.LockTopP {
+		t.Error("LockTopP should be true")
+	}
+	if !q.LockFrequencyPenalty {
+		t.Error("LockFrequencyPenalty should be true")
+	}
+	if !q.LockPresencePenalty {
+		t.Error("LockPresencePenalty should be true")
+	}
+	if !q.ToolChoiceAutoOnly {
+		t.Error("ToolChoiceAutoOnly should be true")
+	}
+	if !q.NoJSONSchema {
+		t.Error("NoJSONSchema should be true")
+	}
+}
+
+func TestQuirksPreset_GLM5(t *testing.T) {
+	q := QuirksPreset("glm-5")
+	if !q.StripEmptyContent {
+		t.Error("StripEmptyContent should be true")
+	}
+	if !q.ToolChoiceAutoOnly {
+		t.Error("ToolChoiceAutoOnly should be true")
+	}
+	if q.MaxStopSequences != 1 {
+		t.Errorf("MaxStopSequences: %d, want 1", q.MaxStopSequences)
+	}
+	if !q.NoJSONSchema {
+		t.Error("NoJSONSchema should be true")
+	}
+	if q.FinishReasonMap["sensitive"] != "content_filter" {
+		t.Errorf("FinishReasonMap[sensitive]: %v", q.FinishReasonMap["sensitive"])
+	}
+	if q.FinishReasonMap["network_error"] != "error" {
+		t.Errorf("FinishReasonMap[network_error]: %v", q.FinishReasonMap["network_error"])
+	}
+}
+
+func TestQuirksPreset_Unknown_ReturnsEmpty(t *testing.T) {
+	q := QuirksPreset("unknown-provider")
+	if q.LockTemperature || q.StripEmptyContent || q.ToolChoiceAutoOnly {
+		t.Error("unknown preset should return zero-value quirks")
+	}
+	if q.MaxStopSequences != 0 {
+		t.Errorf("MaxStopSequences: %d, want 0", q.MaxStopSequences)
+	}
+	if q.FinishReasonMap != nil {
+		t.Errorf("FinishReasonMap should be nil, got %v", q.FinishReasonMap)
+	}
+}
+
+func TestNewFromEnv_ParsesQuirksEnvVar(t *testing.T) {
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "http://example.com")
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "test-key")
+	t.Setenv("OPENAI_COMPATIBLE_PROVIDER_QUIRKS", "kimi-k2.5")
+
+	a, err := NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+	if !a.Quirks.LockTemperature {
+		t.Error("expected LockTemperature from kimi-k2.5 preset")
+	}
+	if !a.Quirks.ToolChoiceAutoOnly {
+		t.Error("expected ToolChoiceAutoOnly from kimi-k2.5 preset")
+	}
+}

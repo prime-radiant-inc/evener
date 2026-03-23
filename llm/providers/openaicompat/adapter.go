@@ -55,6 +55,35 @@ func (q ProviderQuirks) mapFinishReason(raw string) string {
 	return raw
 }
 
+// QuirksPreset returns a ProviderQuirks configuration for a known provider name.
+// Unknown names return zero-value quirks (no restrictions).
+func QuirksPreset(name string) ProviderQuirks {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "kimi-k2.5", "kimi", "moonshot":
+		return ProviderQuirks{
+			LockTemperature:      true,
+			LockTopP:             true,
+			LockFrequencyPenalty: true,
+			LockPresencePenalty:  true,
+			ToolChoiceAutoOnly:   true,
+			NoJSONSchema:         true,
+		}
+	case "glm-5", "glm-5-turbo", "glm", "zhipu":
+		return ProviderQuirks{
+			StripEmptyContent:  true,
+			ToolChoiceAutoOnly: true,
+			MaxStopSequences:   1,
+			NoJSONSchema:       true,
+			FinishReasonMap: map[string]string{
+				"sensitive":     "content_filter",
+				"network_error": "error",
+			},
+		}
+	default:
+		return ProviderQuirks{}
+	}
+}
+
 // Adapter implements llm.ProviderAdapter for OpenAI-compatible services.
 type Adapter struct {
 	APIKey         string
@@ -84,10 +113,17 @@ func NewFromEnv() (*Adapter, error) {
 		return nil, fmt.Errorf("OPENAI_COMPATIBLE_BASE_URL is required")
 	}
 	key := strings.TrimSpace(os.Getenv("OPENAI_COMPATIBLE_API_KEY"))
+
+	var quirks ProviderQuirks
+	if preset := strings.TrimSpace(os.Getenv("OPENAI_COMPATIBLE_PROVIDER_QUIRKS")); preset != "" {
+		quirks = QuirksPreset(preset)
+	}
+
 	return &Adapter{
 		APIKey:  key,
 		BaseURL: strings.TrimRight(base, "/"),
 		Client:  &http.Client{Timeout: 0},
+		Quirks:  quirks,
 	}, nil
 }
 
