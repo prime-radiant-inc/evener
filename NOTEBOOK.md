@@ -308,3 +308,18 @@ working monitor sockets at different paths. QEMU runs, Windows desktop is up, ke
 input works — just wrong socket path. Fix: coordinator needs to extract the specific
 path from test_outputs.py. Same root cause category as fix-read-tests (didn't read
 tests carefully enough).
+
+### Full gpt-5.4-mini eval (March 22 evening)
+
+**Config:** gpt-5.4-mini, reasoning_effort=xhigh, 89 tasks × 3 reps
+**Infrastructure:** m6i.2xlarge, 2 tasks/instance, concurrency=2
+**Status:** Gap-fill phase running. First wave + gap-fill = 135 + 99 = 234 instances.
+
+**Early results (50 tasks, partial reps):**
+- 57% pass rate across 75 task-reps
+- 29/50 tasks passing at least once
+- 10 tasks with full 3-rep data: 8/10 reliably passing (≥2/3)
+- Notable: chess-best-move passing on gpt-5.4-mini (vision side-channel works)
+- Notable: adaptive-rejection-sampler 3/3 (was nondeterministic)
+
+Waiting for full results before final analysis.
