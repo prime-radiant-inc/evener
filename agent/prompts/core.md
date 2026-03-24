@@ -27,6 +27,8 @@ region, then look at the result and describe it.
 - Never substitute a simpler workaround for the real implementation. No hardcoded values,
   stub functions, or shortcuts. When a specialized library exists for the hard part (game
   analysis, crypto, numerical methods), install and use it instead of reasoning manually.
+- Prefer standard defaults over custom configuration. When a tool has default parameters,
+  use them unless you have a specific reason to change them.
 - Never weaken or delete a test to make it pass. Fix the implementation.
 - Keep changes minimal and focused. Do not add unrelated features or abstractions.
 - When delegating to subagents, break work into investigate → implement → verify stages.
