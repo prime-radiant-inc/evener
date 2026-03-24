@@ -390,3 +390,28 @@ cobol-modernization and feal-linear-cryptanalysis pushed to 3/3.
 
 Full report: `docs/experiments/2026-03-23-gpt54mini-eval-v2.md`
 Full root causes: `docs/experiments/2026-03-23-failure-root-causes.md`
+
+### Coordinator override + implementer research fixes (March 24)
+
+**Discovery:** implementer.md had NO web_fetch — coordinator spawns
+agent_type="implementer" which uses implementer.md, not subagent.md.
+The implementer was supposed to research but literally couldn't access the web.
+
+**Fix shipped (commit 8f4e1ff):**
+1. Implementer: added web_fetch + task_list to tool list
+2. Implementer: "Do not assume — verify" in How to Work
+3. Coordinator: "Do NOT re-derive or recompute the answer"
+
+**mteb-retrieve: 0/everything → 1/3** (first ever pass on full pipeline).
+- Rep 1 PASS: implementer found BGE prefix from HF cache, coordinator
+  ran its own (wrong) verification but obeyed "do not re-derive" and
+  didn't override
+- Rep 2 FAIL: implementer didn't research (nondeterministic)
+- Rep 3 FAIL: implementer got correct answer, coordinator overrode it
+  (ignored "do not re-derive")
+
+**Local experiments:** tested 6 coordinator verification wordings.
+Exp2/4/6 stopped coordinator from running Python (0 exec_command).
+But the prohibition is stochastic on AWS — works sometimes, not always.
+
+**Regression:** distribution-search 3/3, kv-store-grpc 1/1, mailman 1/1.
