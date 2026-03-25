@@ -47,14 +47,14 @@ func TestDiskSource_EmptyDir(t *testing.T) {
 }
 
 func TestEmbedSource_ReadFile(t *testing.T) {
-	src := embedSource{fs: embeddedPrompts, prefix: "prompts/"}
+	src := embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}
 
-	data, ok := src.ReadFile("core.md")
+	data, ok := src.ReadFile("identity.md")
 	if !ok {
-		t.Fatal("expected ok=true for embedded core.md")
+		t.Fatal("expected ok=true for embedded identity.md")
 	}
 	if len(data) == 0 {
-		t.Error("expected non-empty content for core.md")
+		t.Error("expected non-empty content for identity.md")
 	}
 
 	// Missing file returns (nil, false).

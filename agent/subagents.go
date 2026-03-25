@@ -152,9 +152,8 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		embeddedPrompts, "prompts/templates/", "subagent", subData,
 	)
 	if err != nil {
-		// Fallback to legacy composition on template error.
-		core := CorePrompt()
-		composed = core + "\n\n" + rolePrompt
+		// Fallback: use role prompt directly if template rendering fails.
+		composed = rolePrompt
 	} else {
 		// Append the role prompt after template rendering.
 		// For plugin agents with custom SystemPrompts, this ensures their

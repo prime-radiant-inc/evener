@@ -1039,31 +1039,6 @@ func (s *Session) Close() {
 	})
 }
 
-// stripPromptSection removes a markdown ## section by heading from text.
-// It removes from "## <heading>" (case-insensitive) through the next ## heading
-// or end of string, including any trailing blank lines.
-func stripPromptSection(text, heading string) string {
-	lines := strings.Split(text, "\n")
-	var out []string
-	skipping := false
-	target := strings.ToLower(heading)
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "## ") {
-			sectionName := strings.TrimSpace(strings.TrimPrefix(trimmed, "## "))
-			if strings.EqualFold(sectionName, target) {
-				skipping = true
-				continue
-			}
-			skipping = false
-		}
-		if !skipping {
-			out = append(out, line)
-		}
-	}
-	return strings.Join(out, "\n")
-}
-
 // reviewVerdict is the result of a reviewer subagent evaluation.
 type reviewVerdict struct {
 	Pass     bool
@@ -1152,9 +1127,8 @@ func (s *Session) spawnReviewer(ctx context.Context, claimedResult string) (revi
 		embeddedPrompts, "prompts/templates/", "subagent", subData,
 	)
 	if err != nil {
-		// Fallback to legacy composition on template error.
-		core := stripPromptSection(CorePrompt(), s.resultToolName())
-		composed = core + "\n\n" + agent.SystemPrompt
+		// Fallback: use agent persona directly if template rendering fails.
+		composed = agent.SystemPrompt
 	}
 
 	// Inject skill content referenced by the reviewer agent.
@@ -2525,56 +2499,22 @@ func (s *Session) initSessionState() ([]PromptSource, error) {
 	}
 	s.pluginAgents = builtins
 
-	var promptSources []PromptSource
-	var basePrompt string
+	// Legacy: --system-prompt or BasePromptOverride bypass the template system.
+	// Set the profile's base prompt so buildInitialSystemPrompt works as a fallback.
 	if s.cfg.BasePromptOverride != "" {
-		// Subagents use BasePromptOverride to replace the full prompt with
-		// core + persona, composed by the parent.
-		basePrompt = s.cfg.BasePromptOverride
-	} else {
-		gitRoot := gitRootOrEmpty(s.env, ei.WorkingDir)
-		projDir := ProjectPromptsDir(gitRoot)
-		if s.cfg.NoProjectPrompts {
-			projDir = ""
-		}
-		resolvedPrompt, sources, err := ResolveSystemPromptWithSources(
+		s.profile = s.profile.WithBasePrompt(s.cfg.BasePromptOverride)
+	} else if s.cfg.SystemPromptFile != "" {
+		resolvedPrompt, _, err := ResolveSystemPromptWithSources(
 			s.profile.ID(), s.profile.Model(),
 			s.cfg.SystemPromptFile,
-			projDir,
-			GlobalPromptsDir(),
+			"", "", // no project/global dirs for CLI override
 			s.cfg.SystemPromptAppend,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("resolve system prompt: %w", err)
 		}
-		basePrompt = resolvedPrompt
-		promptSources = sources
-
-		// Append persona. Default to "coordinator" when no --agent flag is set
-		// and no --system-prompt override is active.
-		if s.cfg.SystemPromptFile == "" {
-			agentName := s.cfg.AgentName
-			if agentName == "" {
-				agentName = "coordinator"
-			}
-			if agent, ok := s.pluginAgents[agentName]; ok {
-				persona := strings.TrimSpace(agent.SystemPrompt)
-				if persona != "" {
-					basePrompt += "\n\n" + persona
-					promptSources = append(promptSources, PromptSource{
-						Label: "persona:" + agentName,
-						Size:  len(persona),
-					})
-				}
-			}
-		}
+		s.profile = s.profile.WithBasePrompt(resolvedPrompt)
 	}
-
-	// If the result tool has been renamed, update all references in the system prompt.
-	if name := s.resultToolName(); name != "communicate" {
-		basePrompt = strings.ReplaceAll(basePrompt, "communicate", name)
-	}
-	s.profile = s.profile.WithBasePrompt(basePrompt)
 
 	// Extract embedded skills to a temp dir as the base layer.
 	// Filesystem-discovered skills (project + extraDirs) shadow embedded ones.
@@ -2639,7 +2579,7 @@ func (s *Session) initSessionState() ([]PromptSource, error) {
 	s.rebuildToolDefsCache()
 	s.rebuildPromptCache()
 
-	return promptSources, nil
+	return s.promptSourceLog, nil
 }
 
 // buildInitialSystemPrompt constructs the system prompt as the model would see

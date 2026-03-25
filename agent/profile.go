@@ -10,16 +10,6 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// embeddedBasePrompt resolves the embedded default system prompt for a provider.
-// Used by profile constructors; overridden at session creation with full resolution.
-func embeddedBasePrompt(provider string) string {
-	prompt, err := ResolveSystemPrompt(provider, "", "", "", "", nil)
-	if err != nil {
-		return ""
-	}
-	return prompt
-}
-
 type EnvironmentInfo struct {
 	WorkingDir            string        `json:"working_dir"`
 	Platform              string        `json:"platform"`
@@ -301,7 +291,7 @@ func NewOpenAIProfile(model string) ProviderProfile {
 		model:           strings.TrimSpace(model),
 		parallel:        true,
 		contextWindow:   128_000,
-		basePrompt:      embeddedBasePrompt("openai"),
+		basePrompt:      "", // set by initSessionState via template system
 		docFiles:        []string{"AGENTS.md", ".codex/instructions.md"},
 		reasoning:       true,
 		streaming:       true,
@@ -409,7 +399,7 @@ func NewAnthropicProfile(model string) ProviderProfile {
 			model:           model,
 			parallel:        true,
 			contextWindow:   ctxWindow,
-			basePrompt:      embeddedBasePrompt("anthropic"),
+			basePrompt:      "", // set by initSessionState via template system
 			docFiles:        []string{"CLAUDE.md", "AGENTS.md"},
 			reasoning:       true,
 			streaming:       true,
@@ -442,7 +432,7 @@ func NewGeminiProfile(model string) ProviderProfile {
 		model:           strings.TrimSpace(model),
 		parallel:        true,
 		contextWindow:   1_000_000,
-		basePrompt:      embeddedBasePrompt("gemini"),
+		basePrompt:      "", // set by initSessionState via template system
 		docFiles:        []string{"GEMINI.md", "AGENTS.md"},
 		reasoning:       true,
 		streaming:       true,

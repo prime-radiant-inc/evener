@@ -7,75 +7,6 @@ import (
 	"testing"
 )
 
-func TestResolveSystemPrompt_ComposesBaseAndProvider(t *testing.T) {
-	// Embedded result must contain both core.md content and provider-specific content.
-	tests := []struct {
-		provider        string
-		providerSnippet string // from provider file
-		baseSnippet     string // from core.md
-	}{
-		{"openai", "apply_patch", "communicate"},
-		{"anthropic", "edit_file", "communicate"},
-		{"gemini", "edit_file", "communicate"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.provider, func(t *testing.T) {
-			prompt, err := ResolveSystemPrompt(tt.provider, "some-model", "", "", "", nil)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if !strings.Contains(prompt, tt.providerSnippet) {
-				t.Errorf("prompt missing provider content %q", tt.providerSnippet)
-			}
-			if !strings.Contains(prompt, tt.baseSnippet) {
-				t.Errorf("prompt missing base content %q", tt.baseSnippet)
-			}
-		})
-	}
-}
-
-func TestResolveSystemPrompt_ProviderBeforeBase(t *testing.T) {
-	// Provider identity and tool docs should come before base guidance.
-	prompt, err := ResolveSystemPrompt("openai", "some-model", "", "", "", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	providerIdx := strings.Index(prompt, "apply_patch")
-	coreIdx := strings.Index(prompt, "## Identity")
-	if providerIdx < 0 || coreIdx < 0 {
-		t.Fatal("prompt missing expected content")
-	}
-	if providerIdx >= coreIdx {
-		t.Error("provider content should appear before core content")
-	}
-}
-
-func TestEmbeddedPrompts_ContainCoreGuidance(t *testing.T) {
-	// All embedded prompts must include security, code quality, and
-	// change discipline guidance regardless of provider.
-	required := []struct {
-		label   string
-		snippet string
-	}{
-		{"security", "security"},
-		{"honesty", "Honesty"},
-		{"identity", "You are serf"},
-		{"decisive action", "decisive"},
-	}
-
-	for _, provider := range []string{"openai", "anthropic", "gemini"} {
-		prompt, err := ResolveSystemPrompt(provider, "some-model", "", "", "", nil)
-		if err != nil {
-			t.Fatalf("%s: %v", provider, err)
-		}
-		for _, r := range required {
-			if !strings.Contains(prompt, r.snippet) {
-				t.Errorf("%s prompt missing %s guidance (looked for %q)", provider, r.label, r.snippet)
-			}
-		}
-	}
-}
-
 func TestResolveSystemPrompt_CLIOverride(t *testing.T) {
 	// CLI flag replaces the entire embedded base.
 	tmp := t.TempDir()
@@ -91,43 +22,12 @@ func TestResolveSystemPrompt_CLIOverride(t *testing.T) {
 	if prompt != "custom CLI prompt" {
 		t.Errorf("got %q, want %q", prompt, "custom CLI prompt")
 	}
-	// Should NOT contain embedded content.
-	if strings.Contains(prompt, "task_list") {
-		t.Error("CLI override should replace embedded content, not append to it")
-	}
 }
 
 func TestResolveSystemPrompt_CLIOverrideMissing(t *testing.T) {
 	_, err := ResolveSystemPrompt("openai", "gpt-4o", "/nonexistent/path.md", "", "", nil)
 	if err == nil {
 		t.Fatal("expected error for missing CLI prompt file")
-	}
-}
-
-func TestResolveSystemPrompt_ProjectAddsToEmbedded(t *testing.T) {
-	// Project-level file is appended to the embedded prompt, not replacing it.
-	tmp := t.TempDir()
-	projDir := filepath.Join(tmp, ".serf", "prompts")
-	if err := os.MkdirAll(projDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(projDir, "system.openai.md"), []byte("project openai rules"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	prompt, err := ResolveSystemPrompt("openai", "gpt-4o", "", projDir, "", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// Must contain both embedded and project content.
-	if !strings.Contains(prompt, "apply_patch") {
-		t.Error("missing embedded provider content")
-	}
-	if !strings.Contains(prompt, "You are serf") {
-		t.Error("missing embedded core content")
-	}
-	if !strings.Contains(prompt, "project openai rules") {
-		t.Error("missing project addition")
 	}
 }
 
@@ -199,8 +99,8 @@ func TestResolveSystemPrompt_GlobalAndProjectBothAppended(t *testing.T) {
 	}
 }
 
-func TestResolveSystemPrompt_GlobalOverride(t *testing.T) {
-	// Global addition appended to embedded prompt.
+func TestResolveSystemPrompt_GlobalAddition(t *testing.T) {
+	// Global addition should be included in the prompt.
 	tmp := t.TempDir()
 	globalDir := filepath.Join(tmp, "prompts")
 	if err := os.MkdirAll(globalDir, 0755); err != nil {
@@ -214,48 +114,8 @@ func TestResolveSystemPrompt_GlobalOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(prompt, "edit_file") {
-		t.Error("missing embedded provider content")
-	}
 	if !strings.Contains(prompt, "global anthropic rules") {
 		t.Error("missing global addition")
-	}
-}
-
-func TestResolveSystemPrompt_AppendPaths(t *testing.T) {
-	// CLI --system-prompt-append files are always appended.
-	tmp := t.TempDir()
-	f1 := filepath.Join(tmp, "extra1.md")
-	f2 := filepath.Join(tmp, "extra2.md")
-	if err := os.WriteFile(f1, []byte("append one"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(f2, []byte("append two"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	prompt, err := ResolveSystemPrompt("openai", "gpt-4o", "", "", "", []string{f1, f2})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(prompt, "apply_patch") {
-		t.Error("missing embedded content")
-	}
-	if !strings.Contains(prompt, "append one") {
-		t.Error("missing first append")
-	}
-	if !strings.Contains(prompt, "append two") {
-		t.Error("missing second append")
-	}
-	// Appends should come after embedded content.
-	embIdx := strings.Index(prompt, "task_list")
-	app1Idx := strings.Index(prompt, "append one")
-	app2Idx := strings.Index(prompt, "append two")
-	if embIdx >= app1Idx {
-		t.Error("embedded content should come before appends")
-	}
-	if app1Idx >= app2Idx {
-		t.Error("appends should be in order")
 	}
 }
 
@@ -281,75 +141,12 @@ func TestResolveSystemPrompt_AppendWithCLIOverride(t *testing.T) {
 	if !strings.Contains(prompt, "extra guidance") {
 		t.Error("missing append content")
 	}
-	// Should NOT contain embedded content.
-	if strings.Contains(prompt, "task_list") {
-		t.Error("CLI override should replace embedded, not include it")
-	}
 }
 
 func TestResolveSystemPrompt_AppendMissingFile(t *testing.T) {
 	_, err := ResolveSystemPrompt("openai", "gpt-4o", "", "", "", []string{"/nonexistent/path.md"})
 	if err == nil {
 		t.Fatal("expected error for missing append file")
-	}
-}
-
-func TestResolveSystemPrompt_UnknownProviderGetsBase(t *testing.T) {
-	// Unknown provider should still get the base prompt.
-	prompt, err := ResolveSystemPrompt("unknown-provider", "some-model", "", "", "", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if prompt == "" {
-		t.Fatal("expected non-empty prompt for unknown provider")
-	}
-	// Should have core content.
-	if !strings.Contains(prompt, "You are serf") {
-		t.Error("unknown provider should still get core prompt")
-	}
-}
-
-func TestEmbeddedProviderCandidates(t *testing.T) {
-	names := embeddedProviderCandidates("openai", "gpt-4o")
-	want := []string{"system.openai.gpt-4o.md", "system.openai.md"}
-	if len(names) != len(want) {
-		t.Fatalf("got %v, want %v", names, want)
-	}
-	for i, n := range names {
-		if n != want[i] {
-			t.Errorf("names[%d] = %q, want %q", i, n, want[i])
-		}
-	}
-}
-
-func TestResolveSystemPromptWithSources_ReturnsCorrectSources(t *testing.T) {
-	// The WithSources variant must return labeled sources matching each section.
-	prompt, sources, err := ResolveSystemPromptWithSources("openai", "some-model", "", "", "", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if prompt == "" {
-		t.Fatal("expected non-empty prompt")
-	}
-	// Expect at least 2 sources: embedded provider + embedded base.
-	if len(sources) < 2 {
-		t.Fatalf("expected at least 2 sources, got %d: %+v", len(sources), sources)
-	}
-
-	// First source should be the embedded provider file.
-	if sources[0].Label != "embedded:system.openai.md" {
-		t.Errorf("sources[0].Label = %q, want %q", sources[0].Label, "embedded:system.openai.md")
-	}
-	if sources[0].Size <= 0 {
-		t.Errorf("sources[0].Size = %d, want > 0", sources[0].Size)
-	}
-
-	// Second source should be the embedded core.
-	if sources[1].Label != "embedded:core.md" {
-		t.Errorf("sources[1].Label = %q, want %q", sources[1].Label, "embedded:core.md")
-	}
-	if sources[1].Size <= 0 {
-		t.Errorf("sources[1].Size = %d, want > 0", sources[1].Size)
 	}
 }
 

@@ -784,36 +784,6 @@ func TestSubmitResult_ReviewerError_FailOpen(t *testing.T) {
 	}
 }
 
-func TestStripPromptSection(t *testing.T) {
-	input := "Preamble text.\n\n## keep_me\n\nKeep this section.\n\n## communicate\n\nYou MUST call communicate when done.\nMore communicate details.\n\n## workflow\n\nWorkflow section.\n"
-	got := stripPromptSection(input, "communicate")
-
-	if strings.Contains(got, "communicate") {
-		t.Errorf("stripped text still contains communicate:\n%s", got)
-	}
-	if !strings.Contains(got, "keep_me") {
-		t.Errorf("stripped text lost keep_me section")
-	}
-	if !strings.Contains(got, "workflow") {
-		t.Errorf("stripped text lost workflow section")
-	}
-	if !strings.Contains(got, "Preamble text.") {
-		t.Errorf("stripped text lost preamble")
-	}
-}
-
-func TestStripPromptSection_CaseInsensitive(t *testing.T) {
-	input := "## Communicate\n\nContent.\n\n## Other\n\nKept.\n"
-	got := stripPromptSection(input, "communicate")
-
-	if strings.Contains(got, "Content.") {
-		t.Errorf("case-insensitive strip failed:\n%s", got)
-	}
-	if !strings.Contains(got, "Kept.") {
-		t.Errorf("lost other section")
-	}
-}
-
 // TestSubmitResult_ReviewerPromptNoSubmitResult verifies the reviewer's system
 // prompt does NOT mention submit_result (which would confuse the model since
 // the reviewer must use approve/reject instead).
