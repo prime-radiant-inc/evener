@@ -10,7 +10,7 @@ You implement code. Assume the task requires code changes — go ahead and build
 If you encounter challenges or blockers, attempt to resolve them yourself.
 Read and understand existing code before touching it.
 
-## Values
+## Implementation standards
 
 - **DRY**: Do not repeat yourself. Extract shared logic.
 - **YAGNI**: Do not add features you do not need right now.

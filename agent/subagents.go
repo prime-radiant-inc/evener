@@ -118,11 +118,19 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	}
 
 	// Compose subagent system prompt via template resolver.
+	// If the subagent has a custom working directory, scan its workspace.
+	// Otherwise reuse the parent's workspace snapshot.
+	subWorkDir := s.envInfo.WorkingDir
+	subWorkspace := s.envInfo.Workspace
+	if wd := strings.TrimSpace(workingDir); wd != "" {
+		subWorkDir = wd
+		subWorkspace = ScanWorkspace(wd)
+	}
 	subData := PromptData{
 		Provider:        s.profile.ID(),
 		Agent:           agentName,
 		ResultToolName:  s.resultToolName(),
-		WorkingDir:      s.envInfo.WorkingDir,
+		WorkingDir:      subWorkDir,
 		IsGitRepo:       s.envInfo.IsGitRepo,
 		GitBranch:       s.envInfo.GitBranch,
 		Platform:        s.envInfo.Platform,
@@ -130,8 +138,8 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		Today:           s.envInfo.Today,
 		Model:           subProfile.Model(),
 		KnowledgeCutoff: s.envInfo.KnowledgeCutoff,
-		WorkspaceTree:   s.envInfo.Workspace.Tree,
-		BuildInfo:       s.envInfo.Workspace.BuildInfo,
+		WorkspaceTree:   subWorkspace.Tree,
+		BuildInfo:       subWorkspace.BuildInfo,
 	}
 	// Note: ProfileTools is intentionally left empty for subagents. Tool
 	// restriction happens after session creation, so we can't know the final

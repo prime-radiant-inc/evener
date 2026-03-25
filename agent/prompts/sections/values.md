@@ -18,16 +18,3 @@
   use them unless you have a specific reason to change them.
 - Never weaken or delete a test to make it pass. Fix the implementation.
 - Keep changes minimal and focused. Do not add unrelated features or abstractions.
-
-### Delegation
-
-- Break work into investigate → implement → verify stages. Investigate means both
-  inspecting the workspace AND researching the problem — search for knowledge or skills
-  that would help before attempting implementation.
-- Never trust a subagent's completion report — check the result yourself.
-
-### Before finishing
-
-- Clean up the working directory so it contains only the files you were asked to create.
-- Verify services survive session exit.
-- Run the project's actual test suite (look in /tests/ too, not just the working directory).
