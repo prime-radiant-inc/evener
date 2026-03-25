@@ -1110,17 +1110,68 @@ func (s *Session) spawnReviewer(ctx context.Context, claimedResult string) (revi
 	subCfg.MaxTurns = 20
 	subCfg.MaxToolRoundsPerInput = 30 // reviewer shouldn't need many rounds
 
-	// Compose system prompt: core + reviewer role.
-	// Strip the ## communicate section from core so the reviewer isn't confused
-	// by contradictory instructions — reviewer.md has its own verdict section.
-	core := stripPromptSection(CorePrompt(), s.resultToolName())
-	composed := core + "\n\n" + agent.SystemPrompt
-	subCfg.BasePromptOverride = composed
-
-	subProfile := s.profile.WithBasePrompt(composed)
+	// Compose reviewer system prompt via template resolver.
+	// The "reviewer" agent qualifier causes communicate.agent-reviewer.md to
+	// replace the base communicate section, avoiding conflicting instructions.
+	subProfile := s.profile
 	if agent.Model != "inherit" && agent.Model != "" {
 		subProfile = subProfile.WithModel(agent.Model)
 	}
+
+	subData := PromptData{
+		Provider:        s.profile.ID(),
+		Agent:           "reviewer",
+		ResultToolName:  s.resultToolName(),
+		WorkingDir:      s.envInfo.WorkingDir,
+		IsGitRepo:       s.envInfo.IsGitRepo,
+		GitBranch:       s.envInfo.GitBranch,
+		Platform:        s.envInfo.Platform,
+		OSVersion:       s.envInfo.OSVersion,
+		Today:           s.envInfo.Today,
+		Model:           subProfile.Model(),
+		KnowledgeCutoff: s.envInfo.KnowledgeCutoff,
+		WorkspaceTree:   s.envInfo.Workspace.Tree,
+		TestFiles:       s.envInfo.Workspace.TestFiles,
+		BuildInfo:       s.envInfo.Workspace.BuildInfo,
+		WorkingDirFull:  s.envInfo.WorkingDir,
+	}
+	// Note: ProfileTools is intentionally left empty for reviewer subagents.
+	// Tool restriction happens after session creation, so we can't know the
+	// final tool set here.
+
+	subResolver := &SectionResolver{
+		provider: s.profile.ID(),
+		agent:    "reviewer",
+		agentFS:  embeddedAgents,
+		sources: []SectionSource{
+			embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"},
+		},
+	}
+
+	composed, _, err := subResolver.RenderEmbedded(
+		embeddedPrompts, "prompts/templates/", "subagent", subData,
+	)
+	if err != nil {
+		// Fallback to legacy composition on template error.
+		core := stripPromptSection(CorePrompt(), s.resultToolName())
+		composed = core + "\n\n" + agent.SystemPrompt
+	}
+
+	// Inject skill content referenced by the reviewer agent.
+	if len(agent.Skills) > 0 {
+		for _, skillName := range agent.Skills {
+			body, err := ResolveSkillContent(s.skills, skillName)
+			if err != nil {
+				continue
+			}
+			if body != "" {
+				composed += "\n\n" + body
+			}
+		}
+	}
+
+	subCfg.BasePromptOverride = composed
+	subProfile = subProfile.WithBasePrompt(composed)
 
 	subSess, err := NewSession(s.client, subProfile, s.env, subCfg)
 	if err != nil {

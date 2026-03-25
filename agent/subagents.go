@@ -102,21 +102,69 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	if reasoningEffort = strings.TrimSpace(reasoningEffort); reasoningEffort != "" {
 		subCfg.ReasoningEffort = reasoningEffort
 	}
-	// Compose subagent system prompt: core + persona.
-	// All subagents get core.md (universal guidance) followed by their persona.
+	// Determine agent name and role prompt for the subagent.
 	// Named agents use their own SystemPrompt; unnamed agents get the "subagent" persona.
-	core := CorePrompt()
+	var agentName string
 	var rolePrompt string
 	if agent != nil && strings.TrimSpace(agent.SystemPrompt) != "" {
+		agentName = agent.Name
 		rolePrompt = agent.SystemPrompt
 	} else if subagentAgent, ok := s.pluginAgents["subagent"]; ok {
+		agentName = "subagent"
 		rolePrompt = subagentAgent.SystemPrompt
 	} else {
+		agentName = "subagent"
 		rolePrompt = defaultSubagentInstructions
 	}
-	composed := core + "\n\n" + rolePrompt
 
-	// Inject skill content referenced by the plugin agent.
+	// Compose subagent system prompt via template resolver.
+	subData := PromptData{
+		Provider:        s.profile.ID(),
+		Agent:           agentName,
+		ResultToolName:  s.resultToolName(),
+		WorkingDir:      s.envInfo.WorkingDir,
+		IsGitRepo:       s.envInfo.IsGitRepo,
+		GitBranch:       s.envInfo.GitBranch,
+		Platform:        s.envInfo.Platform,
+		OSVersion:       s.envInfo.OSVersion,
+		Today:           s.envInfo.Today,
+		Model:           subProfile.Model(),
+		KnowledgeCutoff: s.envInfo.KnowledgeCutoff,
+		WorkspaceTree:   s.envInfo.Workspace.Tree,
+		TestFiles:       s.envInfo.Workspace.TestFiles,
+		BuildInfo:       s.envInfo.Workspace.BuildInfo,
+		WorkingDirFull:  s.envInfo.WorkingDir,
+	}
+	// Note: ProfileTools is intentionally left empty for subagents. Tool
+	// restriction happens after session creation, so we can't know the final
+	// tool set here. The old code didn't include a tool listing either.
+
+	subResolver := &SectionResolver{
+		provider: s.profile.ID(),
+		agent:    agentName,
+		agentFS:  embeddedAgents,
+		sources: []SectionSource{
+			embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"},
+		},
+	}
+
+	composed, _, err := subResolver.RenderEmbedded(
+		embeddedPrompts, "prompts/templates/", "subagent", subData,
+	)
+	if err != nil {
+		// Fallback to legacy composition on template error.
+		core := CorePrompt()
+		composed = core + "\n\n" + rolePrompt
+	} else {
+		// Append the role prompt after template rendering.
+		// For plugin agents with custom SystemPrompts, this ensures their
+		// persona is included even if no matching embedded agent file exists.
+		// For built-in agents, the role section already resolved the same
+		// content from the embedded file — the duplication is harmless.
+		composed += "\n\n" + rolePrompt
+	}
+
+	// Inject skill content referenced by the plugin agent (after template rendering).
 	if agent != nil && len(agent.Skills) > 0 {
 		for _, skillName := range agent.Skills {
 			body, err := ResolveSkillContent(s.skills, skillName)
