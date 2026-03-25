@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"text/template"
+
+	"primeradiant.com/serf/frontmatter"
 )
 
 // SectionSource provides read access to a directory of section files.
@@ -52,6 +54,7 @@ type SectionResolver struct {
 	agent    string
 	sources  []SectionSource
 	tracked  []PromptSource
+	agentFS  embed.FS // for role section: reads agents/{agent}.md
 }
 
 // Section resolves a named section with provider and agent layering.
@@ -62,6 +65,10 @@ type SectionResolver struct {
 // Otherwise, agent prepend/append are additive on top of the provider result.
 // Non-empty parts are joined with "\n\n".
 func (r *SectionResolver) Section(name string, data PromptData) string {
+	if name == "role" {
+		return r.resolveRole(data)
+	}
+
 	// Provider layer.
 	providerPrepend := r.readAndRender(fmt.Sprintf("%s.provider-%s_prepend", name, r.provider), data)
 	providerBody := r.readAndRender(fmt.Sprintf("%s.provider-%s", name, r.provider), data)
@@ -93,6 +100,43 @@ func (r *SectionResolver) Section(name string, data PromptData) string {
 	}
 
 	return strings.Join(parts, "\n\n")
+}
+
+// resolveRole handles the "role" section specially: it checks disk sources for
+// a role.agent-{agent}.md override, then falls back to the embedded agent
+// definition (with YAML frontmatter stripped).
+func (r *SectionResolver) resolveRole(data PromptData) string {
+	if r.agent == "" {
+		return ""
+	}
+	// Check disk sources first for a role.agent-{agent}.md override.
+	stem := "role.agent-" + r.agent
+	for _, src := range r.sources {
+		if content, ok := src.ReadFile(stem + ".md"); ok {
+			s := strings.TrimRight(string(content), "\n")
+			r.tracked = append(r.tracked, PromptSource{
+				Label: r.sourceLabel(src, stem+".md"),
+				Size:  len(s),
+			})
+			return s
+		}
+	}
+	// Fall back to embedded agents dir, strip frontmatter.
+	path := "agents/" + r.agent + ".md"
+	raw, err := r.agentFS.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	doc, err := frontmatter.Parse(string(raw))
+	if err != nil {
+		return ""
+	}
+	body := strings.TrimSpace(doc.Body)
+	r.tracked = append(r.tracked, PromptSource{
+		Label: "agent:" + r.agent,
+		Size:  len(body),
+	})
+	return body
 }
 
 // readAndRender tries to read a section file (template first, then plain),

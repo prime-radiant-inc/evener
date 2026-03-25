@@ -283,6 +283,43 @@ func TestCollapseBlankLines(t *testing.T) {
 	}
 }
 
+func TestSectionResolver_RoleSection(t *testing.T) {
+	r := &SectionResolver{
+		provider: "openai",
+		agent:    "coordinator",
+		sources:  nil,
+		agentFS:  embeddedAgents,
+	}
+	got := r.Section("role", PromptData{})
+
+	if !strings.Contains(got, "You are a dispatcher") {
+		t.Errorf("expected role to contain 'You are a dispatcher', got %q", got)
+	}
+	if strings.Contains(got, "---") {
+		t.Errorf("expected frontmatter stripped (no '---'), got %q", got)
+	}
+	if len(r.Sources()) == 0 {
+		t.Error("expected non-empty Sources()")
+	}
+}
+
+func TestSectionResolver_RoleDiskOverride(t *testing.T) {
+	dir := t.TempDir()
+	writeSection(t, dir, "role.agent-coordinator.md", "Custom coordinator role")
+
+	r := &SectionResolver{
+		provider: "openai",
+		agent:    "coordinator",
+		sources:  []SectionSource{diskSource{dir: dir}},
+		agentFS:  embeddedAgents,
+	}
+	got := r.Section("role", PromptData{})
+
+	if got != "Custom coordinator role" {
+		t.Errorf("got %q, want %q", got, "Custom coordinator role")
+	}
+}
+
 func TestSectionResolver_SourceTracking(t *testing.T) {
 	dir := t.TempDir()
 	writeSection(t, dir, "identity.md", "I am serf")
