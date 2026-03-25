@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"primeradiant.com/serf/llm"
 )
 
 // TranscriptHeader is the first line of a transcript JSONL file.
@@ -35,6 +37,19 @@ type TranscriptEntry struct {
 	Kind string `json:"kind"` // Always "entry"
 	Seq  int    `json:"seq"`
 	Turn Turn   `json:"turn"`
+}
+
+// TranscriptAPICall records an LLM API call in the transcript JSONL file.
+type TranscriptAPICall struct {
+	Kind         string           `json:"kind"`                    // Always "api_call"
+	Seq          int              `json:"seq"`
+	Round        int              `json:"round"`
+	Timestamp    string           `json:"ts"`
+	LatencyMs    int64            `json:"latency_ms"`
+	SystemPrompt string           `json:"system_prompt"`
+	Request      llm.APILogRequest  `json:"request"`
+	Response     *llm.APILogResponse `json:"response,omitempty"`
+	Error        string           `json:"error,omitempty"`
 }
 
 // TranscriptWriter appends turns to an immutable JSONL transcript file.
@@ -132,6 +147,48 @@ func (w *TranscriptWriter) Append(turn Turn) error {
 	return nil
 }
 
+// AppendAPICall writes an API call record to the JSONL file.
+// Safe for concurrent use. No-op if the receiver is nil.
+// Shares the seq counter with Append so entries and api_calls are interleaved in order.
+func (w *TranscriptWriter) AppendAPICall(call TranscriptAPICall) error {
+	if w == nil || w.closed.Load() {
+		return nil
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	// Re-check after acquiring lock: Close may have raced between the
+	// fast-path check above and the lock acquisition.
+	if w.closed.Load() {
+		return nil
+	}
+
+	call.Kind = "api_call"
+	call.Seq = w.seq
+
+	data, err := json.Marshal(call)
+	if err != nil {
+		return fmt.Errorf("marshal transcript api_call: %w", err)
+	}
+
+	if _, err := w.file.Write(append(data, '\n')); err != nil {
+		return fmt.Errorf("write transcript api_call: %w", err)
+	}
+
+	w.dirty = true
+	if w.SyncInterval == 0 || time.Since(w.lastSync) >= w.SyncInterval {
+		if err := w.file.Sync(); err != nil {
+			return fmt.Errorf("sync transcript api_call: %w", err)
+		}
+		w.lastSync = time.Now()
+		w.dirty = false
+	}
+
+	w.seq++
+	return nil
+}
+
 // Close syncs and closes the underlying file. Idempotent: safe to call multiple times.
 // No-op if the receiver is nil.
 func (w *TranscriptWriter) Close() error {
@@ -204,7 +261,7 @@ func OpenTranscriptWriter(path string) (*TranscriptWriter, error) {
 			continue // skip header
 		}
 		var entry TranscriptEntry
-		if json.Unmarshal(scanner.Bytes(), &entry) == nil && entry.Kind == "entry" {
+		if json.Unmarshal(scanner.Bytes(), &entry) == nil && (entry.Kind == "entry" || entry.Kind == "api_call") {
 			if entry.Seq > maxSeq {
 				maxSeq = entry.Seq
 			}
@@ -258,7 +315,8 @@ func ReadTranscript(path string) (TranscriptHeader, []TranscriptEntry, int, erro
 		return TranscriptHeader{}, nil, 0, fmt.Errorf("parsing transcript header: %w", err)
 	}
 
-	// Remaining lines are entries. Skip any that fail to parse.
+	// Remaining lines are entries. Skip non-entry lines (e.g. api_call) and
+	// any that fail to parse.
 	var entries []TranscriptEntry
 	skipped := 0
 	for scanner.Scan() {
@@ -272,6 +330,9 @@ func ReadTranscript(path string) (TranscriptHeader, []TranscriptEntry, int, erro
 			skipped++
 			continue
 		}
+		if entry.Kind != "entry" {
+			continue // skip non-entry lines (e.g. api_call)
+		}
 		entries = append(entries, entry)
 	}
 	if err := scanner.Err(); err != nil {
@@ -279,6 +340,81 @@ func ReadTranscript(path string) (TranscriptHeader, []TranscriptEntry, int, erro
 	}
 
 	return header, entries, skipped, nil
+}
+
+// TranscriptData holds all parsed content from a transcript JSONL file.
+type TranscriptData struct {
+	Header   TranscriptHeader
+	Entries  []TranscriptEntry
+	APICalls []TranscriptAPICall
+	Skipped  int
+}
+
+// ReadTranscriptFull reads a transcript JSONL file, returning all line types:
+// header, entries, and API calls. Corrupt/partial lines are counted in Skipped.
+func ReadTranscriptFull(path string) (TranscriptData, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return TranscriptData{}, fmt.Errorf("open transcript: %w", err)
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+
+	// First line must be the header.
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return TranscriptData{}, fmt.Errorf("reading transcript header: %w", err)
+		}
+		return TranscriptData{}, fmt.Errorf("transcript file is empty: no header")
+	}
+
+	var data TranscriptData
+	if err := json.Unmarshal(scanner.Bytes(), &data.Header); err != nil {
+		return TranscriptData{}, fmt.Errorf("parsing transcript header: %w", err)
+	}
+
+	// Remaining lines are entries or api_calls. Dispatch by "kind" field.
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		// Peek at the kind field to decide which struct to unmarshal into.
+		var peek struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal(line, &peek); err != nil {
+			data.Skipped++
+			continue
+		}
+
+		switch peek.Kind {
+		case "entry":
+			var entry TranscriptEntry
+			if err := json.Unmarshal(line, &entry); err != nil {
+				data.Skipped++
+				continue
+			}
+			data.Entries = append(data.Entries, entry)
+		case "api_call":
+			var call TranscriptAPICall
+			if err := json.Unmarshal(line, &call); err != nil {
+				data.Skipped++
+				continue
+			}
+			data.APICalls = append(data.APICalls, call)
+		default:
+			data.Skipped++
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return TranscriptData{}, fmt.Errorf("reading transcript: %w", err)
+	}
+
+	return data, nil
 }
 
 // ResumeHistory extracts the history needed for session resume from transcript entries.
