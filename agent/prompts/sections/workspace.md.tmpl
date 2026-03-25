@@ -1,12 +1,9 @@
-{{ if or .WorkspaceTree .TestFiles .BuildInfo }}<workspace>
+{{ if or .WorkspaceTree .BuildInfo }}<workspace>
 This is a snapshot of the working directory taken at session start. It does not update.
 
 {{ if .WorkspaceTree }}Directory structure:
 {{ .WorkspaceTree }}
 
-{{ end }}{{ if .TestFiles }}Test files:
-{{ range .TestFiles }}- {{ $.WorkingDirFull }}/{{ . }}
-{{ end }}
 {{ end }}{{ if .BuildInfo }}Build system:
 {{ .BuildInfo }}
 {{ end }}</workspace>
