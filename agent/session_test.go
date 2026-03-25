@@ -2162,3 +2162,69 @@ func TestSession_ContentFilterRecovery_FailsOnSecondFilterHit(t *testing.T) {
 	}
 	sess.Close()
 }
+
+func TestSession_SystemPromptAsUser_CombinesIntoOneMessage(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("ok")} },
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		SystemPromptAsUser: true,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	task := "solve the mteb-retrieve task"
+	if _, err := sess.ProcessInput(ctx, task); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+
+	reqs := f.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("requests: got %d want 1", len(reqs))
+	}
+	msgs := reqs[0].Messages
+
+	// Should be exactly one message (combined), not two separate ones.
+	userMsgs := 0
+	for _, m := range msgs {
+		if m.Role == llm.RoleSystem {
+			t.Fatal("SystemPromptAsUser should produce no system-role message")
+		}
+		if m.Role == llm.RoleUser {
+			userMsgs++
+		}
+	}
+	if userMsgs != 1 {
+		t.Fatalf("expected 1 user message (combined), got %d", userMsgs)
+	}
+
+	combined := msgs[0].Text()
+
+	// System prompt should be present (environment block is always included).
+	if !strings.Contains(combined, "<environment>") {
+		t.Fatal("combined message missing system prompt content")
+	}
+
+	// Task input should be present.
+	if !strings.Contains(combined, task) {
+		t.Fatal("combined message missing task input")
+	}
+
+	// System prompt should come FIRST, task after.
+	sysIdx := strings.Index(combined, "<environment>")
+	taskIdx := strings.Index(combined, task)
+	if taskIdx < sysIdx {
+		t.Fatalf("system prompt should precede task in combined message (sysIdx=%d taskIdx=%d)", sysIdx, taskIdx)
+	}
+}
