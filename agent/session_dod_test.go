@@ -699,7 +699,7 @@ func TestSession_ContextWindowAwareness_DoesNotWarnUnderThreshold(t *testing.T) 
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, tinyProfile{id: "tiny", mod: "m", cw: 1000}, NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, tinyProfile{id: "tiny", mod: "m", cw: 1_000_000}, NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

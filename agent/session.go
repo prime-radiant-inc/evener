@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -299,6 +300,10 @@ type Session struct {
 	cachedExtraTools               string
 	cachedAgentSection             string
 	cachedNonInteractiveGuidance   string
+
+	// Template-based prompt caching.
+	cachedSystemPrompt string
+	promptSourceLog    []PromptSource
 }
 
 // selectStrategy creates the appropriate ContextStrategy from config.
@@ -1034,31 +1039,6 @@ func (s *Session) Close() {
 	})
 }
 
-// stripPromptSection removes a markdown ## section by heading from text.
-// It removes from "## <heading>" (case-insensitive) through the next ## heading
-// or end of string, including any trailing blank lines.
-func stripPromptSection(text, heading string) string {
-	lines := strings.Split(text, "\n")
-	var out []string
-	skipping := false
-	target := strings.ToLower(heading)
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "## ") {
-			sectionName := strings.TrimSpace(strings.TrimPrefix(trimmed, "## "))
-			if strings.EqualFold(sectionName, target) {
-				skipping = true
-				continue
-			}
-			skipping = false
-		}
-		if !skipping {
-			out = append(out, line)
-		}
-	}
-	return strings.Join(out, "\n")
-}
-
 // reviewVerdict is the result of a reviewer subagent evaluation.
 type reviewVerdict struct {
 	Pass     bool
@@ -1105,17 +1085,67 @@ func (s *Session) spawnReviewer(ctx context.Context, claimedResult string) (revi
 	subCfg.MaxTurns = 20
 	subCfg.MaxToolRoundsPerInput = 30 // reviewer shouldn't need many rounds
 
-	// Compose system prompt: core + reviewer role.
-	// Strip the ## communicate section from core so the reviewer isn't confused
-	// by contradictory instructions — reviewer.md has its own verdict section.
-	core := stripPromptSection(CorePrompt(), s.resultToolName())
-	composed := core + "\n\n" + agent.SystemPrompt
-	subCfg.BasePromptOverride = composed
-
-	subProfile := s.profile.WithBasePrompt(composed)
+	// Compose reviewer system prompt via template resolver.
+	// The "reviewer" agent qualifier causes communicate.agent-reviewer.md to
+	// replace the base communicate section, avoiding conflicting instructions.
+	subProfile := s.profile
 	if agent.Model != "inherit" && agent.Model != "" {
 		subProfile = subProfile.WithModel(agent.Model)
 	}
+
+	subData := PromptData{
+		Provider:        s.profile.ID(),
+		Agent:           "reviewer",
+		ResultToolName:  s.resultToolName(),
+		WorkingDir:      s.envInfo.WorkingDir,
+		IsGitRepo:       s.envInfo.IsGitRepo,
+		GitBranch:       s.envInfo.GitBranch,
+		Platform:        s.envInfo.Platform,
+		OSVersion:       s.envInfo.OSVersion,
+		Today:           s.envInfo.Today,
+		Model:           subProfile.Model(),
+		KnowledgeCutoff: s.envInfo.KnowledgeCutoff,
+		WorkspaceTree:   s.envInfo.Workspace.Tree,
+		TestFiles:       s.envInfo.Workspace.TestFiles,
+		BuildInfo:       s.envInfo.Workspace.BuildInfo,
+		WorkingDirFull:  s.envInfo.WorkingDir,
+	}
+	// Note: ProfileTools is intentionally left empty for reviewer subagents.
+	// Tool restriction happens after session creation, so we can't know the
+	// final tool set here.
+
+	subResolver := &SectionResolver{
+		provider: s.profile.ID(),
+		agent:    "reviewer",
+		agentFS:  embeddedAgents,
+		sources: []SectionSource{
+			embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"},
+		},
+	}
+
+	composed, _, err := subResolver.RenderEmbedded(
+		embeddedPrompts, "prompts/templates/", "subagent", subData,
+	)
+	if err != nil {
+		// Fallback: use agent persona directly if template rendering fails.
+		composed = agent.SystemPrompt
+	}
+
+	// Inject skill content referenced by the reviewer agent.
+	if len(agent.Skills) > 0 {
+		for _, skillName := range agent.Skills {
+			body, err := ResolveSkillContent(s.skills, skillName)
+			if err != nil {
+				continue
+			}
+			if body != "" {
+				composed += "\n\n" + body
+			}
+		}
+	}
+
+	subCfg.BasePromptOverride = composed
+	subProfile = subProfile.WithBasePrompt(composed)
 
 	subSess, err := NewSession(s.client, subProfile, s.env, subCfg)
 	if err != nil {
@@ -1580,18 +1610,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		// --- Phase: SystemPrompt ---
 		tPhaseStart := time.Now()
 
-		// Rebuild system prompt using cached project docs and cached prompt components.
-		sys := s.profile.BuildSystemPrompt(s.envInfo, s.projectDocs, s.cachedSkillList, s.cachedExtraTools)
-
-		if s.cachedAgentSection != "" {
-			sys += s.cachedAgentSection
-		}
-
-		sys += s.cachedNonInteractiveGuidance
-
-		if strings.TrimSpace(s.cfg.UserInstructionOverride) != "" {
-			sys = sys + "\n\n" + strings.TrimSpace(s.cfg.UserInstructionOverride) + "\n"
-		}
+		sys := s.cachedSystemPrompt
 
 		timings.SystemPrompt = time.Since(tPhaseStart)
 
@@ -2325,6 +2344,173 @@ func (s *Session) rebuildPromptCache() {
 	if s.cfg.NonInteractive {
 		s.cachedNonInteractiveGuidance = nonInteractiveGuidance(s.resultToolName())
 	}
+
+	// Refresh the cached system prompt (template path or legacy fallback).
+	s.cachedSystemPrompt = s.renderSystemPrompt()
+}
+
+// buildPromptData assembles a PromptData from session state for template rendering.
+func (s *Session) buildPromptData() PromptData {
+	agentName := s.cfg.AgentName
+	if agentName == "" {
+		agentName = "coordinator"
+	}
+
+	data := PromptData{
+		NonInteractive:        s.cfg.NonInteractive,
+		Provider:              s.profile.ID(),
+		Agent:                 agentName,
+		WorkingDir:            s.envInfo.WorkingDir,
+		IsGitRepo:             s.envInfo.IsGitRepo,
+		GitBranch:             s.envInfo.GitBranch,
+		Platform:              s.envInfo.Platform,
+		OSVersion:             s.envInfo.OSVersion,
+		Today:                 s.envInfo.Today,
+		Model:                 s.profile.Model(),
+		KnowledgeCutoff:       s.envInfo.KnowledgeCutoff,
+		GitModifiedFiles:      s.envInfo.GitModifiedFiles,
+		GitUntrackedFiles:     s.envInfo.GitUntrackedFiles,
+		GitRecentCommitTitles: s.envInfo.GitRecentCommitTitles,
+		WorkspaceTree:         s.envInfo.Workspace.Tree,
+		TestFiles:             s.envInfo.Workspace.TestFiles,
+		BuildInfo:             s.envInfo.Workspace.BuildInfo,
+		WorkingDirFull:        s.envInfo.WorkingDir,
+		ResultToolName:        s.resultToolName(),
+		UserInstructionOverride: strings.TrimSpace(s.cfg.UserInstructionOverride),
+		ProjectDocs:           s.projectDocs,
+	}
+
+	// Skills
+	hasUseSkill := false
+	for _, td := range s.profile.ToolDefinitions() {
+		if td.Name == "use_skill" {
+			hasUseSkill = true
+			break
+		}
+	}
+	data.HasUseSkill = hasUseSkill
+	for _, sm := range s.skills {
+		data.Skills = append(data.Skills, SkillEntry{
+			Name: sm.Name, Description: sm.Description,
+			Dir: sm.Dir, SkillFile: sm.SkillFile,
+		})
+	}
+
+	// Profile tools
+	for _, td := range s.profile.ToolDefinitions() {
+		desc := strings.TrimSpace(td.Description)
+		if desc == "" {
+			desc = "(no description)"
+		}
+		data.ProfileTools = append(data.ProfileTools, ToolEntry{Name: td.Name, Description: desc})
+	}
+
+	// MCP tools
+	for _, td := range s.mcpTools {
+		desc := strings.TrimSpace(td.Description)
+		if desc == "" {
+			desc = "(no description)"
+		}
+		data.MCPTools = append(data.MCPTools, ToolEntry{Name: td.Name, Description: desc})
+	}
+
+	// Custom tools (not core, not MCP)
+	mcpNames := make(map[string]bool, len(s.mcpTools))
+	for _, td := range s.mcpTools {
+		mcpNames[td.Name] = true
+	}
+	for _, td := range s.reg.Definitions() {
+		if s.coreToolNames[td.Name] || mcpNames[td.Name] {
+			continue
+		}
+		desc := strings.TrimSpace(td.Description)
+		if desc == "" {
+			desc = "(no description)"
+		}
+		data.CustomTools = append(data.CustomTools, ToolEntry{Name: td.Name, Description: desc})
+	}
+
+	// Available agents
+	names := make([]string, 0, len(s.pluginAgents))
+	for n := range s.pluginAgents {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		a := s.pluginAgents[n]
+		data.AvailableAgents = append(data.AvailableAgents, AgentEntry{Name: n, Description: a.Description})
+	}
+
+	// CLI appends: read file paths into contents
+	for _, p := range s.cfg.SystemPromptAppend {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		data.CLIAppends = append(data.CLIAppends, string(b))
+	}
+
+	return data
+}
+
+// renderSystemPrompt renders the system prompt using the template resolver,
+// falling back to the legacy path if template rendering fails.
+func (s *Session) renderSystemPrompt() string {
+	// Legacy: --system-prompt overrides everything
+	if s.cfg.SystemPromptFile != "" {
+		return s.buildInitialSystemPrompt()
+	}
+	// Legacy: subagents with BasePromptOverride
+	if s.cfg.BasePromptOverride != "" {
+		return s.cfg.BasePromptOverride
+	}
+
+	gitRoot := gitRootOrEmpty(s.env, s.envInfo.WorkingDir)
+	projDir := ProjectPromptsDir(gitRoot)
+	if s.cfg.NoProjectPrompts {
+		projDir = ""
+	}
+
+	projSections := ""
+	globalSections := ""
+	if projDir != "" {
+		projSections = filepath.Join(projDir, "sections")
+	}
+	if gd := GlobalPromptsDir(); gd != "" {
+		globalSections = filepath.Join(gd, "sections")
+	}
+
+	resolver := &SectionResolver{
+		provider: s.profile.ID(),
+		agent:    s.cfg.AgentName,
+		agentFS:  embeddedAgents,
+		sources: []SectionSource{
+			diskSource{dir: projSections},
+			diskSource{dir: globalSections},
+			embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"},
+		},
+	}
+	if resolver.agent == "" {
+		resolver.agent = "coordinator"
+	}
+
+	data := s.buildPromptData()
+
+	templateName := "system"
+	if s.depth > 0 {
+		templateName = "subagent"
+	}
+
+	result, sources, err := resolver.RenderEmbedded(
+		embeddedPrompts, "prompts/templates/", templateName, data,
+	)
+	if err != nil {
+		// Fall back to legacy path if template rendering fails
+		s.emit(EventWarning, WarningData{Message: fmt.Sprintf("template render failed, using legacy: %v", err)})
+		return s.buildInitialSystemPrompt()
+	}
+	s.promptSourceLog = sources
+	return result
 }
 
 // initSessionState performs the shared initialization steps for both
@@ -2353,56 +2539,22 @@ func (s *Session) initSessionState() ([]PromptSource, error) {
 	}
 	s.pluginAgents = builtins
 
-	var promptSources []PromptSource
-	var basePrompt string
+	// Legacy: --system-prompt or BasePromptOverride bypass the template system.
+	// Set the profile's base prompt so buildInitialSystemPrompt works as a fallback.
 	if s.cfg.BasePromptOverride != "" {
-		// Subagents use BasePromptOverride to replace the full prompt with
-		// core + persona, composed by the parent.
-		basePrompt = s.cfg.BasePromptOverride
-	} else {
-		gitRoot := gitRootOrEmpty(s.env, ei.WorkingDir)
-		projDir := ProjectPromptsDir(gitRoot)
-		if s.cfg.NoProjectPrompts {
-			projDir = ""
-		}
-		resolvedPrompt, sources, err := ResolveSystemPromptWithSources(
+		s.profile = s.profile.WithBasePrompt(s.cfg.BasePromptOverride)
+	} else if s.cfg.SystemPromptFile != "" {
+		resolvedPrompt, _, err := ResolveSystemPromptWithSources(
 			s.profile.ID(), s.profile.Model(),
 			s.cfg.SystemPromptFile,
-			projDir,
-			GlobalPromptsDir(),
+			"", "", // no project/global dirs for CLI override
 			s.cfg.SystemPromptAppend,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("resolve system prompt: %w", err)
 		}
-		basePrompt = resolvedPrompt
-		promptSources = sources
-
-		// Append persona. Default to "coordinator" when no --agent flag is set
-		// and no --system-prompt override is active.
-		if s.cfg.SystemPromptFile == "" {
-			agentName := s.cfg.AgentName
-			if agentName == "" {
-				agentName = "coordinator"
-			}
-			if agent, ok := s.pluginAgents[agentName]; ok {
-				persona := strings.TrimSpace(agent.SystemPrompt)
-				if persona != "" {
-					basePrompt += "\n\n" + persona
-					promptSources = append(promptSources, PromptSource{
-						Label: "persona:" + agentName,
-						Size:  len(persona),
-					})
-				}
-			}
-		}
+		s.profile = s.profile.WithBasePrompt(resolvedPrompt)
 	}
-
-	// If the result tool has been renamed, update all references in the system prompt.
-	if name := s.resultToolName(); name != "communicate" {
-		basePrompt = strings.ReplaceAll(basePrompt, "communicate", name)
-	}
-	s.profile = s.profile.WithBasePrompt(basePrompt)
 
 	// Extract embedded skills to a temp dir as the base layer.
 	// Filesystem-discovered skills (project + extraDirs) shadow embedded ones.
@@ -2467,12 +2619,16 @@ func (s *Session) initSessionState() ([]PromptSource, error) {
 	s.rebuildToolDefsCache()
 	s.rebuildPromptCache()
 
-	return promptSources, nil
+	return s.promptSourceLog, nil
 }
 
 // buildInitialSystemPrompt constructs the system prompt as the model would see
 // it on its first turn. Persisted in the transcript header for debugging.
 func (s *Session) buildInitialSystemPrompt() string {
+	if s.cachedSystemPrompt != "" {
+		return s.cachedSystemPrompt
+	}
+	// Legacy path: assemble from profile + cached components (for --system-prompt override)
 	docs := s.projectDocs
 	var skillList []SkillMeta
 	for _, sm := range s.skills {

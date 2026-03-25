@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-//go:embed prompts/*.md
+//go:embed prompts/templates/* prompts/sections/*
 var embeddedPrompts embed.FS
 
 // PromptSource describes one component of the composed system prompt.
@@ -168,15 +168,6 @@ func firstEmbedMatchNamed(candidates []string) (string, string, bool) {
 		}
 	}
 	return "", "", false
-}
-
-// CorePrompt returns the universal core prompt shared by all sessions.
-func CorePrompt() string {
-	b, err := embeddedPrompts.ReadFile("prompts/core.md")
-	if err != nil {
-		return ""
-	}
-	return string(b)
 }
 
 // GlobalPromptsDir returns the path to the global prompts directory.

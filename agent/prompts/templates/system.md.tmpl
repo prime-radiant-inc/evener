@@ -1,0 +1,45 @@
+{{ section "identity" }}
+
+{{ section "values" }}
+
+{{ section "capabilities" }}
+
+{{ section "tools" }}
+
+{{ section "tool-list" }}
+
+{{ section "workflow" }}
+
+{{ section "git-safety" }}
+
+{{ section "security" }}
+
+{{ section "task-tracking" }}
+
+{{ section "communicate" }}
+
+{{ section "environment" }}
+
+{{ section "git" }}
+
+{{ section "workspace" }}
+
+{{ section "skills" }}
+
+{{ section "available-agents" }}
+
+{{ section "role" }}
+
+{{ section "project-docs" }}
+
+{{ if .NonInteractive }}
+{{ section "non-interactive" }}
+{{ end }}
+{{ if .UserInstructionOverride }}
+
+{{ .UserInstructionOverride }}
+{{ end }}
+{{ range .CLIAppends }}
+
+{{ . }}
+{{ end }}

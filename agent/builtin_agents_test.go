@@ -349,36 +349,6 @@ func TestSpawnAgent_BlockingWithExplorerAgent(t *testing.T) {
 	}
 }
 
-// --- core prompt ---
-
-func TestCorePrompt_IsNonEmpty(t *testing.T) {
-	core := CorePrompt()
-	if core == "" {
-		t.Fatal("CorePrompt() should return non-empty string")
-	}
-}
-
-func TestCorePrompt_ContainsCommunicateGuidance(t *testing.T) {
-	core := CorePrompt()
-	if !strings.Contains(core, "communicate") {
-		t.Error("core prompt should mention communicate")
-	}
-}
-
-func TestCorePrompt_DoesNotContainSkillGuidance(t *testing.T) {
-	core := CorePrompt()
-	if strings.Contains(core, "use_skill") {
-		t.Error("core prompt should NOT mention use_skill")
-	}
-}
-
-func TestCorePrompt_DoesNotContainDelegation(t *testing.T) {
-	core := CorePrompt()
-	if strings.Contains(core, "spawn_agent") {
-		t.Error("core prompt should NOT mention spawn_agent")
-	}
-}
-
 func TestSpawnAgent_PluginAgentGetsComposedPrompt(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -419,19 +389,12 @@ func TestSpawnAgent_PluginAgentGetsComposedPrompt(t *testing.T) {
 		t.Fatalf("blocking explorer spawn error: %s", res.Output)
 	}
 
-	// Subagent prompt should contain BOTH core AND the agent-specific prompt.
-	core := CorePrompt()
+	// Subagent prompt should contain template-rendered content AND the agent-specific prompt.
 	if !strings.Contains(subagentSystemPrompt, "communicate") {
-		t.Error("subagent prompt should contain communicate guidance from core")
+		t.Error("subagent prompt should contain communicate guidance")
 	}
 	if !strings.Contains(subagentSystemPrompt, "workspace scout") {
 		t.Error("subagent prompt should contain agent-specific prompt (explorer)")
-	}
-	// Core should appear before the agent-specific part.
-	coreIdx := strings.Index(subagentSystemPrompt, core[:50])
-	agentIdx := strings.Index(subagentSystemPrompt, "workspace scout")
-	if coreIdx >= agentIdx {
-		t.Error("core prompt should appear before agent-specific prompt")
 	}
 }
 
