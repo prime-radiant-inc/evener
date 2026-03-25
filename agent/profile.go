@@ -33,7 +33,6 @@ type EnvironmentInfo struct {
 	GitUntrackedFiles     int           `json:"git_untracked_files"`
 	GitRecentCommitTitles []string      `json:"git_recent_commit_titles,omitempty"`
 	Workspace             WorkspaceInfo `json:"workspace,omitempty"`
-	ParentTree            string        `json:"parent_tree,omitempty"` // shallow tree of the parent directory
 }
 
 type ProviderProfile interface {
@@ -190,8 +189,8 @@ func (p *baseProfile) BuildSystemPrompt(env EnvironmentInfo, docs []ProjectDoc, 
 	b.WriteString(fmt.Sprintf("Today's date: %s\n", env.Today))
 	b.WriteString(fmt.Sprintf("Model: %s\n", p.model))
 	b.WriteString(fmt.Sprintf("Knowledge cutoff: %s\n", env.KnowledgeCutoff))
-	if env.ParentTree != "" {
-		b.WriteString("Filesystem context:\n" + env.ParentTree + "\n")
+	if env.Workspace.Tree != "" {
+		b.WriteString("Workspace:\n" + env.Workspace.Tree + "\n")
 	}
 	b.WriteString("</environment>\n\n")
 
@@ -500,8 +499,7 @@ func envInfoFromEnv(env ExecutionEnvironment) EnvironmentInfo {
 		Platform:    plat,
 		OSVersion:   osv,
 		Today:       time.Now().UTC().Format("2006-01-02"),
-		Workspace:   ScanWorkspace(wd),
-		ParentTree:  scanParentTree(wd),
+		Workspace:  ScanWorkspace(wd),
 	}
 }
 
