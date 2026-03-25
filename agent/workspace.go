@@ -141,23 +141,49 @@ func walkTree(root string) ([]treeEntry, bool) {
 	return entries, truncated
 }
 
-// formatTree renders entries as an indented tree rooted at the given path.
+// formatTree renders entries as a compact indented tree. Directories get their
+// own lines; files within a directory are grouped on one comma-separated line.
 func formatTree(root string, entries []treeEntry, truncated bool) string {
 	if len(entries) == 0 {
 		return ""
 	}
 
+	// Group files by their parent directory depth+path.
+	type dirGroup struct {
+		depth int
+		files []string
+	}
+
 	var b strings.Builder
 	b.WriteString(root + "/\n")
+
+	var pendingFiles []string
+	pendingDepth := -1
+
+	flushFiles := func() {
+		if len(pendingFiles) == 0 {
+			return
+		}
+		indent := strings.Repeat("  ", pendingDepth+1)
+		b.WriteString(indent + strings.Join(pendingFiles, ", ") + "\n")
+		pendingFiles = nil
+	}
+
 	for _, e := range entries {
-		indent := strings.Repeat("  ", e.Depth+1)
-		name := filepath.Base(e.RelPath)
 		if e.IsDir {
-			b.WriteString(indent + name + "/\n")
+			flushFiles()
+			indent := strings.Repeat("  ", e.Depth+1)
+			b.WriteString(indent + filepath.Base(e.RelPath) + "/\n")
 		} else {
-			b.WriteString(indent + name + "\n")
+			if e.Depth != pendingDepth {
+				flushFiles()
+				pendingDepth = e.Depth
+			}
+			pendingFiles = append(pendingFiles, filepath.Base(e.RelPath))
 		}
 	}
+	flushFiles()
+
 	if truncated {
 		b.WriteString("  ... (truncated, >200 entries)\n")
 	}

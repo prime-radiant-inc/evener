@@ -59,8 +59,7 @@ The implementer handles research, implementation, and self-verification internal
 - Tell the implementer to clean up before finishing:
   only deliverable files should remain in the workspace.
 
-## communicate
+### Submitting — HARD GATE
 
-**HARD GATE**: You MUST NOT call communicate until you have verified artifacts.
-Verification means inspecting files, logs, and workspace state — not rerunning
-the computation.
+You MUST NOT call communicate until you have verified artifacts. Verification
+means inspecting files, logs, and workspace state — not rerunning the computation.

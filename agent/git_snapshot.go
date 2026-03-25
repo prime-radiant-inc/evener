@@ -65,7 +65,7 @@ func snapshotGit(env ExecutionEnvironment, cwd string) (inRepo bool, branch stri
 	}
 
 	// Use %x20 for a literal space so the shell doesn't split the format across args.
-	if lg, err := run("git log -n 10 --pretty=format:%h%x20%s"); err == nil && lg.ExitCode == 0 {
+	if lg, err := run("git log -n 5 --pretty=format:%h%x20%s"); err == nil && lg.ExitCode == 0 {
 		for _, line := range strings.Split(strings.ReplaceAll(lg.Stdout, "\r\n", "\n"), "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" {
