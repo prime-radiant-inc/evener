@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"text/template"
 )
 
 func TestDiskSource_ReadFile(t *testing.T) {
@@ -343,5 +344,19 @@ func TestSectionResolver_SourceTracking(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("no source label mentions identity.md; got %v", sources)
+	}
+}
+
+func TestMasterTemplates_Parse(t *testing.T) {
+	funcMap := template.FuncMap{"section": func(string) string { return "" }}
+	for _, name := range []string{"system", "subagent"} {
+		content, err := embeddedPrompts.ReadFile("prompts/templates/" + name + ".md.tmpl")
+		if err != nil {
+			t.Fatalf("reading %s template: %v", name, err)
+		}
+		_, err = template.New(name).Funcs(funcMap).Parse(string(content))
+		if err != nil {
+			t.Fatalf("parsing %s template: %v", name, err)
+		}
 	}
 }

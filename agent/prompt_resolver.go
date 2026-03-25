@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-//go:embed prompts/*.md
+//go:embed prompts/*.md prompts/templates/* prompts/sections/*
 var embeddedPrompts embed.FS
 
 // PromptSource describes one component of the composed system prompt.
