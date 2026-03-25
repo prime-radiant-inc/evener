@@ -360,3 +360,165 @@ func TestMasterTemplates_Parse(t *testing.T) {
 		}
 	}
 }
+
+func TestSystemTemplate_StructuralRegression(t *testing.T) {
+	resolver := &SectionResolver{
+		provider: "openai",
+		agent:    "coordinator",
+		agentFS:  embeddedAgents,
+		sources:  []SectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+	}
+
+	data := PromptData{
+		Provider:       "openai",
+		Agent:          "coordinator",
+		WorkingDir:     "/tmp/test",
+		IsGitRepo:      true,
+		GitBranch:      "main",
+		Platform:       "linux",
+		OSVersion:      "Linux 6.1",
+		Today:          "2026-03-25",
+		Model:          "gpt-5.4",
+		KnowledgeCutoff: "2025-05",
+		ResultToolName: "communicate",
+		ProfileTools: []ToolEntry{
+			{Name: "shell", Description: "Run commands"},
+			{Name: "apply_patch", Description: "Edit files"},
+		},
+		AvailableAgents: []AgentEntry{
+			{Name: "implementer", Description: "Code implementation agent."},
+		},
+	}
+
+	result, sources, err := resolver.RenderEmbedded(embeddedPrompts, "prompts/templates/", "system", data)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+
+	// Verify key structural markers appear in order.
+	markers := []string{
+		"## Identity",
+		"## Values",
+		"## Capabilities",
+		"apply_patch",       // OpenAI tools section
+		"Tools:",            // tool-list section
+		"## Workflow",
+		"## Git safety",
+		"## Security",
+		"## Task tracking",
+		"## communicate",    // communicate section
+		"<environment>",
+		"<git>",
+		"## Role",           // coordinator role
+		"You are a dispatcher",
+	}
+	lastIdx := -1
+	for _, marker := range markers {
+		idx := strings.Index(result, marker)
+		if idx < 0 {
+			t.Errorf("missing marker: %q", marker)
+			continue
+		}
+		if idx <= lastIdx {
+			t.Errorf("marker %q (pos %d) appears before or at previous marker (pos %d) — out of order", marker, idx, lastIdx)
+		}
+		lastIdx = idx
+	}
+
+	// Verify sources were tracked.
+	if len(sources) < 5 {
+		t.Errorf("expected at least 5 tracked sources, got %d", len(sources))
+	}
+}
+
+func TestSubagentTemplate_StructuralRegression(t *testing.T) {
+	resolver := &SectionResolver{
+		provider: "openai",
+		agent:    "implementer",
+		agentFS:  embeddedAgents,
+		sources:  []SectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+	}
+
+	data := PromptData{
+		Provider:       "openai",
+		Agent:          "implementer",
+		WorkingDir:     "/tmp/test",
+		Model:          "gpt-5.4",
+		ResultToolName: "communicate",
+	}
+
+	result, _, err := resolver.RenderEmbedded(embeddedPrompts, "prompts/templates/", "subagent", data)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+
+	// Subagent should have identity, values, tools, communicate, role.
+	for _, marker := range []string{"## Identity", "## Values", "## communicate", "You implement code"} {
+		if !strings.Contains(result, marker) {
+			t.Errorf("subagent prompt missing: %q", marker)
+		}
+	}
+
+	// Subagent should NOT have workflow, git-safety, task-tracking, skills, available-agents.
+	for _, absent := range []string{"## Workflow", "## Git safety", "## Task tracking", "<skills>", "<available_agents>"} {
+		if strings.Contains(result, absent) {
+			t.Errorf("subagent prompt should not contain: %q", absent)
+		}
+	}
+}
+
+func TestReviewerTemplate_CommunicateReplacement(t *testing.T) {
+	resolver := &SectionResolver{
+		provider: "openai",
+		agent:    "reviewer",
+		agentFS:  embeddedAgents,
+		sources:  []SectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+	}
+
+	data := PromptData{
+		Provider:       "openai",
+		Agent:          "reviewer",
+		ResultToolName: "communicate",
+	}
+
+	result, _, err := resolver.RenderEmbedded(embeddedPrompts, "prompts/templates/", "subagent", data)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+
+	// Reviewer should get approve/reject, not the base communicate section.
+	if !strings.Contains(result, "approve") {
+		t.Error("reviewer prompt should contain 'approve'")
+	}
+	if !strings.Contains(result, "reject") {
+		t.Error("reviewer prompt should contain 'reject'")
+	}
+}
+
+func TestAnthropicProvider_UsesEditFile(t *testing.T) {
+	resolver := &SectionResolver{
+		provider: "anthropic",
+		agent:    "coordinator",
+		agentFS:  embeddedAgents,
+		sources:  []SectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+	}
+
+	data := PromptData{
+		Provider:       "anthropic",
+		Agent:          "coordinator",
+		ResultToolName: "communicate",
+	}
+
+	result, _, err := resolver.RenderEmbedded(embeddedPrompts, "prompts/templates/", "system", data)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+
+	// Anthropic should get edit_file docs, NOT apply_patch.
+	if !strings.Contains(result, "edit_file") {
+		t.Error("anthropic prompt should contain edit_file")
+	}
+	if strings.Contains(result, "apply_patch") {
+		t.Error("anthropic prompt should NOT contain apply_patch")
+	}
+}
