@@ -14,9 +14,8 @@ import (
 // working directory. Injected into the system prompt so the model starts
 // with awareness of what's available — no discovery round needed.
 type WorkspaceInfo struct {
-	Tree      string   `json:"tree,omitempty"`       // indented directory listing
-	TestFiles []string `json:"test_files,omitempty"` // relative paths to test files
-	BuildInfo string   `json:"build_info,omitempty"` // build system summary
+	Tree      string `json:"tree,omitempty"`       // indented directory listing
+	BuildInfo string `json:"build_info,omitempty"` // build system summary
 }
 
 const (
@@ -49,7 +48,6 @@ func ScanWorkspace(root string) WorkspaceInfo {
 
 	entries, truncated := walkTree(root)
 	ws.Tree = formatTree(root, entries, truncated)
-	ws.TestFiles = detectTestFiles(entries)
 	ws.BuildInfo = detectBuildSystem(root)
 
 	return ws
@@ -156,75 +154,6 @@ func formatTree(root string, entries []treeEntry, truncated bool) string {
 		b.WriteString("... (truncated, >200 entries)\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
-}
-
-// detectTestFiles identifies files that look like tests based on naming conventions.
-func detectTestFiles(entries []treeEntry) []string {
-	var tests []string
-	for _, e := range entries {
-		if e.IsDir {
-			continue
-		}
-		if isTestFile(e.RelPath) {
-			tests = append(tests, e.RelPath)
-		}
-	}
-	return tests
-}
-
-// isTestFile checks if a filename matches common test file patterns.
-func isTestFile(relPath string) bool {
-	base := filepath.Base(relPath)
-	ext := filepath.Ext(base)
-	nameNoExt := strings.TrimSuffix(base, ext)
-
-	// Exact matches.
-	switch base {
-	case "test.sh", "test.bash", "test.py", "test.rb":
-		return true
-	}
-
-	// Shell test scripts.
-	if strings.HasPrefix(base, "test") && (ext == ".sh" || ext == ".bash") {
-		return true
-	}
-
-	// Python: test_*.py, *_test.py
-	if ext == ".py" && (strings.HasPrefix(nameNoExt, "test_") || strings.HasSuffix(nameNoExt, "_test")) {
-		return true
-	}
-
-	// Go: *_test.go
-	if ext == ".go" && strings.HasSuffix(nameNoExt, "_test") {
-		return true
-	}
-
-	// JavaScript/TypeScript: *.test.js, *.test.ts, *.test.jsx, *.test.tsx, *.spec.*
-	if strings.HasSuffix(nameNoExt, ".test") || strings.HasSuffix(nameNoExt, ".spec") {
-		return true
-	}
-
-	// Ruby: *_test.rb, *_spec.rb, test_*.rb
-	if ext == ".rb" && (strings.HasSuffix(nameNoExt, "_test") || strings.HasSuffix(nameNoExt, "_spec") || strings.HasPrefix(nameNoExt, "test_")) {
-		return true
-	}
-
-	// Rust: tests in tests/ directory detected by path
-	if ext == ".rs" && strings.Contains(relPath, "tests/") {
-		return true
-	}
-
-	// Java/Kotlin: *Test.java, *Test.kt
-	if (ext == ".java" || ext == ".kt") && strings.HasSuffix(nameNoExt, "Test") {
-		return true
-	}
-
-	// C/C++: test_*.c, test_*.cpp, *_test.c, *_test.cpp
-	if (ext == ".c" || ext == ".cpp" || ext == ".cc") && (strings.HasPrefix(nameNoExt, "test_") || strings.HasSuffix(nameNoExt, "_test")) {
-		return true
-	}
-
-	return false
 }
 
 // detectBuildSystem examines the workspace root for build system files and

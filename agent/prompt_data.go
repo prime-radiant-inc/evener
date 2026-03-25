@@ -24,10 +24,8 @@ type PromptData struct {
 	GitRecentCommitTitles []string
 
 	// Workspace
-	WorkspaceTree  string
-	TestFiles      []string
-	BuildInfo      string
-	WorkingDirFull string // absolute path for test file paths
+	WorkspaceTree string
+	BuildInfo     string
 
 	// Skills
 	Skills      []SkillEntry

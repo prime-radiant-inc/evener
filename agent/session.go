@@ -1106,9 +1106,7 @@ func (s *Session) spawnReviewer(ctx context.Context, claimedResult string) (revi
 		Model:           subProfile.Model(),
 		KnowledgeCutoff: s.envInfo.KnowledgeCutoff,
 		WorkspaceTree:   s.envInfo.Workspace.Tree,
-		TestFiles:       s.envInfo.Workspace.TestFiles,
 		BuildInfo:       s.envInfo.Workspace.BuildInfo,
-		WorkingDirFull:  s.envInfo.WorkingDir,
 	}
 	// Note: ProfileTools is intentionally left empty for reviewer subagents.
 	// Tool restriction happens after session creation, so we can't know the
@@ -2372,9 +2370,7 @@ func (s *Session) buildPromptData() PromptData {
 		GitUntrackedFiles:     s.envInfo.GitUntrackedFiles,
 		GitRecentCommitTitles: s.envInfo.GitRecentCommitTitles,
 		WorkspaceTree:         s.envInfo.Workspace.Tree,
-		TestFiles:             s.envInfo.Workspace.TestFiles,
 		BuildInfo:             s.envInfo.Workspace.BuildInfo,
-		WorkingDirFull:        s.envInfo.WorkingDir,
 		ResultToolName:        s.resultToolName(),
 		UserInstructionOverride: strings.TrimSpace(s.cfg.UserInstructionOverride),
 		ProjectDocs:           s.projectDocs,

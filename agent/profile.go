@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -198,22 +197,15 @@ func (p *baseProfile) BuildSystemPrompt(env EnvironmentInfo, docs []ProjectDoc, 
 		b.WriteString("</git>\n\n")
 	}
 
-	// Workspace context: directory tree, test files, build system info.
+	// Workspace context: directory tree and build system info.
 	// Injected so the model starts with full workspace awareness.
-	if env.Workspace.Tree != "" || len(env.Workspace.TestFiles) > 0 || env.Workspace.BuildInfo != "" {
+	if env.Workspace.Tree != "" || env.Workspace.BuildInfo != "" {
 		b.WriteString("<workspace>\n")
 		b.WriteString("This is a snapshot of the working directory taken at session start. It does not update.\n\n")
 		if env.Workspace.Tree != "" {
 			b.WriteString("Directory structure:\n")
 			b.WriteString(env.Workspace.Tree)
 			b.WriteString("\n\n")
-		}
-		if len(env.Workspace.TestFiles) > 0 {
-			b.WriteString("Test files:\n")
-			for _, tf := range env.Workspace.TestFiles {
-				b.WriteString("- " + filepath.Join(env.WorkingDir, tf) + "\n")
-			}
-			b.WriteString("\n")
 		}
 		if env.Workspace.BuildInfo != "" {
 			b.WriteString("Build system:\n")

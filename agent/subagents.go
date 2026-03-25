@@ -131,9 +131,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		Model:           subProfile.Model(),
 		KnowledgeCutoff: s.envInfo.KnowledgeCutoff,
 		WorkspaceTree:   s.envInfo.Workspace.Tree,
-		TestFiles:       s.envInfo.Workspace.TestFiles,
 		BuildInfo:       s.envInfo.Workspace.BuildInfo,
-		WorkingDirFull:  s.envInfo.WorkingDir,
 	}
 	// Note: ProfileTools is intentionally left empty for subagents. Tool
 	// restriction happens after session creation, so we can't know the final

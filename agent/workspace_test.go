@@ -29,9 +29,6 @@ func TestScanWorkspace_EmptyDir(t *testing.T) {
 	if ws.Tree != "" {
 		t.Errorf("expected empty tree for empty dir, got %q", ws.Tree)
 	}
-	if len(ws.TestFiles) != 0 {
-		t.Errorf("expected no test files, got %v", ws.TestFiles)
-	}
 	if ws.BuildInfo != "" {
 		t.Errorf("expected empty build info, got %q", ws.BuildInfo)
 	}
@@ -91,53 +88,6 @@ func TestScanWorkspace_MaxEntries(t *testing.T) {
 	// Should be truncated with a note.
 	if !strings.Contains(ws.Tree, "truncated") {
 		t.Errorf("expected truncation note in tree: %s", ws.Tree)
-	}
-}
-
-func TestScanWorkspace_TestFileDetection(t *testing.T) {
-	dir := t.TempDir()
-
-	// Various test file patterns.
-	touchFile(t, filepath.Join(dir, "test.sh"), "#!/bin/bash\nexit 0\n")
-	touchFile(t, filepath.Join(dir, "tests", "test_main.py"), "def test_main(): pass\n")
-	touchFile(t, filepath.Join(dir, "src", "main_test.go"), "func TestMain(t *testing.T) {}\n")
-	touchFile(t, filepath.Join(dir, "spec", "app.test.js"), "test('app', () => {})\n")
-	touchFile(t, filepath.Join(dir, "tests", "test_outputs.py"), "import pytest\n")
-	touchFile(t, filepath.Join(dir, "test_runner.sh"), "#!/bin/bash\n")
-
-	// Non-test files that shouldn't be flagged.
-	touchFile(t, filepath.Join(dir, "main.py"), "print('hello')\n")
-	touchFile(t, filepath.Join(dir, "utils_test_helper.py"), "# helper\n") // ambiguous but has _test_ in it
-
-	ws := ScanWorkspace(dir)
-
-	// These should all be detected.
-	expected := []string{
-		"test.sh",
-		"tests/test_main.py",
-		"src/main_test.go",
-		"spec/app.test.js",
-		"tests/test_outputs.py",
-		"test_runner.sh",
-	}
-	for _, e := range expected {
-		found := false
-		for _, tf := range ws.TestFiles {
-			if tf == e {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("expected test file %q not found in %v", e, ws.TestFiles)
-		}
-	}
-
-	// main.py should NOT be flagged.
-	for _, tf := range ws.TestFiles {
-		if tf == "main.py" {
-			t.Errorf("main.py should not be flagged as a test file")
-		}
 	}
 }
 
@@ -236,9 +186,6 @@ func TestScanWorkspace_NonexistentDir(t *testing.T) {
 	if ws.Tree != "" {
 		t.Errorf("expected empty tree for nonexistent dir, got %q", ws.Tree)
 	}
-	if len(ws.TestFiles) != 0 {
-		t.Errorf("expected no test files, got %v", ws.TestFiles)
-	}
 }
 
 func TestScanWorkspace_GoModDetection(t *testing.T) {
@@ -330,17 +277,4 @@ func TestScanWorkspace_CMakeDetection(t *testing.T) {
 	}
 }
 
-func TestScanWorkspace_TestFilesRelativePaths(t *testing.T) {
-	dir := t.TempDir()
-	touchFile(t, filepath.Join(dir, "tests", "test_main.py"), "def test_main(): pass\n")
-	touchFile(t, filepath.Join(dir, "test.sh"), "#!/bin/bash\n")
 
-	ws := ScanWorkspace(dir)
-
-	// Paths should be relative to the workspace root.
-	for _, tf := range ws.TestFiles {
-		if filepath.IsAbs(tf) {
-			t.Errorf("test file path should be relative, got %q", tf)
-		}
-	}
-}

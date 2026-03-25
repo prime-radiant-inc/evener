@@ -982,50 +982,6 @@ func TestBuildSystemPrompt_EmptyWorkspace(t *testing.T) {
 	}
 }
 
-func TestBuildSystemPrompt_WorkspaceTestFilesCallout(t *testing.T) {
-	dir := t.TempDir()
-
-	// Create test files only.
-	for _, f := range []struct{ path, content string }{
-		{"app.py", "print('app')\n"},
-		{"tests/test_app.py", "def test_app(): pass\n"},
-		{"tests/test_integration.py", "def test_int(): pass\n"},
-	} {
-		p := filepath.Join(dir, f.path)
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(f.content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	env := EnvironmentInfo{
-		WorkingDir: dir,
-		Platform:   "linux",
-		Today:      "2026-03-01",
-		Workspace:  ScanWorkspace(dir),
-	}
-
-	p := NewOpenAIProfile("gpt-5.3-codex")
-	prompt := p.BuildSystemPrompt(env, nil, nil, "")
-
-	// The test files callout should list test files (without "run these to verify").
-	if !strings.Contains(prompt, "Test files:") {
-		t.Error("workspace section missing 'Test files:' callout")
-	}
-	if strings.Contains(prompt, "run these to verify") {
-		t.Error("workspace section should NOT say 'run these to verify'")
-	}
-	// Test file paths should be absolute.
-	if !strings.Contains(prompt, filepath.Join(dir, "tests/test_app.py")) {
-		t.Errorf("workspace section missing absolute path for tests/test_app.py in:\n%s", prompt)
-	}
-	if !strings.Contains(prompt, filepath.Join(dir, "tests/test_integration.py")) {
-		t.Errorf("workspace section missing absolute path for tests/test_integration.py in:\n%s", prompt)
-	}
-}
-
 func TestBuildSystemPrompt_WorkspaceAnnotation(t *testing.T) {
 	dir := t.TempDir()
 	touchFile(t, filepath.Join(dir, "main.py"), "print('hello')\n")
