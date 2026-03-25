@@ -80,11 +80,7 @@ func TestMCPIntegration_ToolCallThroughSession(t *testing.T) {
 					t.Errorf("ext__greet not found in request tools: %v", req.Tools)
 				}
 
-				// Verify MCP tool description is in the system prompt.
-				sys := req.Messages[0].Text()
-				if !strings.Contains(sys, "ext__greet") {
-					t.Errorf("system prompt missing ext__greet mention:\n%s", sys)
-				}
+				// MCP tools appear in the API tools parameter, not the system prompt.
 
 				return llm.Response{
 					Message: llm.Message{

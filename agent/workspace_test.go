@@ -62,20 +62,28 @@ func TestScanWorkspace_BasicTree(t *testing.T) {
 
 func TestScanWorkspace_DepthLimit(t *testing.T) {
 	dir := t.TempDir()
-	// Create a deeply nested file: level1/level2/level3/level4/deep.txt
-	touchFile(t, filepath.Join(dir, "level1", "level2", "level3", "level4", "deep.txt"), "deep")
-	// Also a file at depth 3 (should be included).
-	touchFile(t, filepath.Join(dir, "level1", "level2", "level3", "shallow.txt"), "shallow")
+	// Walk depths: level1=0, level2=1, level3=2, level4=3
+	touchFile(t, filepath.Join(dir, "level1", "level2", "shallow.txt"), "shallow")              // walk depth 2 — visible (maxFileDepth=2)
+	touchFile(t, filepath.Join(dir, "level1", "level2", "level3", "deep.txt"), "deep")          // walk depth 3 — NOT visible (>maxFileDepth)
+	touchFile(t, filepath.Join(dir, "level1", "level2", "level3", "level4", "vdeep.txt"), "vd") // walk depth 4 — NOT visible
 
 	ws := ScanWorkspace(dir)
 
-	// Depth 3 file should be visible.
+	// Walk-depth-2 file should be visible (within maxFileDepth=2).
 	if !strings.Contains(ws.Tree, "shallow.txt") {
-		t.Errorf("tree missing depth-3 file: %s", ws.Tree)
+		t.Errorf("tree missing file at depth 2: %s", ws.Tree)
 	}
-	// Depth 4 file should NOT be visible (maxDepth=3).
+	// Walk-depth-2 directory (level3) should be visible (within maxDirDepth=3).
+	if !strings.Contains(ws.Tree, "level3") {
+		t.Errorf("tree missing directory at depth 2: %s", ws.Tree)
+	}
+	// Walk-depth-3 directory (level4) should be visible (maxDirDepth=3).
+	if !strings.Contains(ws.Tree, "level4") {
+		t.Errorf("tree missing directory at depth 3: %s", ws.Tree)
+	}
+	// Walk-depth-3 file should NOT be visible (>maxFileDepth=2).
 	if strings.Contains(ws.Tree, "deep.txt") {
-		t.Errorf("tree should not contain depth-4 file: %s", ws.Tree)
+		t.Errorf("tree should not contain file at depth 3: %s", ws.Tree)
 	}
 }
 

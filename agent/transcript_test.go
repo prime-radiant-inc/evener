@@ -1910,9 +1910,8 @@ func TestSession_TranscriptHeaderContainsSystemPrompt(t *testing.T) {
 		t.Fatal("expected non-empty system_prompt in transcript header")
 	}
 
-	// System prompt should contain content from the profile's base prompt.
-	// OpenAI profile includes "apply_patch" in its system prompt.
-	if !strings.Contains(header.SystemPrompt, "apply_patch") {
+	// System prompt should contain identity section content.
+	if !strings.Contains(header.SystemPrompt, "## Identity") {
 		t.Errorf("system_prompt missing expected content; got (first 200 chars): %s",
 			truncStr(header.SystemPrompt, 200))
 	}

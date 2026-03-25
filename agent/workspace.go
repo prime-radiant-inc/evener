@@ -19,8 +19,9 @@ type WorkspaceInfo struct {
 }
 
 const (
-	maxDepth   = 3   // how deep to walk the directory tree
-	maxEntries = 200 // cap tree entries to keep prompt manageable
+	maxDirDepth  = 3   // how deep to show directories
+	maxFileDepth = 2   // how deep to show files (shallower to save tokens)
+	maxEntries   = 200 // cap tree entries to keep prompt manageable
 )
 
 // excludedDirs are directories skipped during workspace scanning.
@@ -73,7 +74,7 @@ func walkTree(root string) ([]treeEntry, bool) {
 
 	var walk func(dir string, depth int)
 	walk = func(dir string, depth int) {
-		if depth > maxDepth {
+		if depth > maxDirDepth {
 			return
 		}
 		if len(entries) >= maxEntries {
@@ -108,6 +109,11 @@ func walkTree(root string) ([]treeEntry, bool) {
 				continue
 			}
 			if de.IsDir() && excludedDirs[name] {
+				continue
+			}
+
+			// Skip files deeper than maxFileDepth (dirs can go deeper).
+			if !de.IsDir() && depth > maxFileDepth {
 				continue
 			}
 

@@ -21,5 +21,3 @@
 - Before finishing: clean up the working directory so it contains only the files you were
   asked to create. Verify services survive session exit, and run the project's actual test
   suite (look in /tests/ too, not just the working directory).
-
-Avoid cheerleading, motivational language, or artificial reassurance.

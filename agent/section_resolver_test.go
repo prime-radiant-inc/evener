@@ -400,16 +400,14 @@ func TestSystemTemplate_StructuralRegression(t *testing.T) {
 		"## Identity",
 		"## Values",
 		"## Capabilities",
-		"apply_patch",       // OpenAI tools section
-		"Tools:",            // tool-list section
-		"## Workflow",
+		"## Tool usage",
 		"## Git safety",
 		"## Security",
 		"## Task tracking",
-		"## communicate",    // communicate section
+		"## Submitting your work",
 		"<environment>",
 		"<git>",
-		"## Role",           // coordinator role
+		"## Role",
 		"You are a dispatcher",
 	}
 	lastIdx := -1
@@ -452,15 +450,15 @@ func TestSubagentTemplate_StructuralRegression(t *testing.T) {
 		t.Fatalf("render error: %v", err)
 	}
 
-	// Subagent should have identity, values, tools, communicate, role.
-	for _, marker := range []string{"## Identity", "## Values", "## communicate", "You implement code"} {
+	// Subagent should have identity, values, tools, workflow, communicate, role.
+	for _, marker := range []string{"## Identity", "## Values", "## Workflow", "## Submitting your work", "You implement code"} {
 		if !strings.Contains(result, marker) {
 			t.Errorf("subagent prompt missing: %q", marker)
 		}
 	}
 
-	// Subagent should NOT have workflow, git-safety, task-tracking, skills, available-agents.
-	for _, absent := range []string{"## Workflow", "## Git safety", "## Task tracking", "<skills>", "<available_agents>"} {
+	// Subagent should NOT have git-safety, task-tracking, skills, available-agents.
+	for _, absent := range []string{"## Git safety", "## Task tracking", "<skills>", "<available_agents>"} {
 		if strings.Contains(result, absent) {
 			t.Errorf("subagent prompt should not contain: %q", absent)
 		}

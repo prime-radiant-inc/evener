@@ -145,7 +145,7 @@ func TestSession_NaturalCompletion_LoadsOnlyProfileDocs(t *testing.T) {
 		t.Fatalf("system prompt doc selection failed:\n%s", sys)
 	}
 	// Spec: system prompt includes environment context.
-	for _, want := range []string{"<environment>", "Working directory:", "Is git repository:", "Platform:", "Today's date:", "Knowledge cutoff:", "Tools:"} {
+	for _, want := range []string{"<environment>", "Working directory:", "Is git repository:", "Platform:", "Today's date:", "Knowledge cutoff:"} {
 		if !strings.Contains(sys, want) {
 			t.Fatalf("system prompt missing %q:\n%s", want, sys)
 		}
@@ -1396,12 +1396,16 @@ func TestSession_CustomRegisteredTool_AppearsInSystemPrompt(t *testing.T) {
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
-			sys := req.Messages[0].Text()
-			if !strings.Contains(sys, "my_custom_tool") {
-				t.Error("custom tool not in system prompt")
+			// Custom tools appear in the API tools parameter, not the system prompt.
+			found := false
+			for _, tool := range req.Tools {
+				if tool.Name == "my_custom_tool" {
+					found = true
+					break
+				}
 			}
-			if !strings.Contains(sys, "Does custom things") {
-				t.Error("custom tool description not in system prompt")
+			if !found {
+				t.Error("custom tool not in request tools")
 			}
 			return llm.Response{Message: llm.Assistant("done")}
 		},

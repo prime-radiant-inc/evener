@@ -628,8 +628,58 @@ func defGlob() llm.ToolDefinition {
 
 func defApplyPatch() llm.ToolDefinition {
 	return llm.ToolDefinition{
-		Name:        "apply_patch",
-		Description: "Apply code changes using the v4a patch format. Supports creating, deleting, and modifying files in a single operation.",
+		Name: "apply_patch",
+		Description: `Apply code changes using the v4a patch format. Supports creating, deleting, and modifying files in a single operation.
+
+The patch format is a stripped-down, file-oriented diff. The envelope is:
+
+*** Begin Patch
+[ one or more file sections ]
+*** End Patch
+
+Each section starts with one of three headers:
+
+*** Add File: <path>    — create a new file. Every following line is a + line.
+*** Delete File: <path> — remove an existing file. Nothing follows.
+*** Update File: <path> — patch an existing file (optionally with a rename).
+
+An Update may be followed by *** Move to: <new path> to rename the file.
+Then one or more hunks, each introduced by @@ (optionally followed by a scope header).
+
+Within a hunk, each line starts with:
+  (space) — context line (unchanged)
+  -       — line to remove
+  +       — line to add
+
+Context rules:
+- Show 3 lines of context above and below each change.
+- If 3 lines are not enough to uniquely locate the hunk, add @@ scope headers:
+  @@ class MyClass
+  @@ def my_method():
+  [3 context lines]
+  - old_code
+  + new_code
+  [3 context lines]
+
+Example combining all operations:
+
+*** Begin Patch
+*** Add File: hello.txt
++Hello world
+*** Update File: src/app.py
+*** Move to: src/main.py
+@@ def greet():
+-print("Hi")
++print("Hello, world!")
+*** Delete File: obsolete.txt
+*** End Patch
+
+Important:
+- Always include a header (Add/Delete/Update) for each file.
+- Prefix every new line with + even when creating a new file.
+- File paths must be relative, NEVER absolute.
+- Do NOT use standard unified diff format (--- a/ +++ b/). Use only the format above.
+- Try to use apply_patch for single file edits. Use scripting for bulk search-and-replace.`,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -754,13 +804,7 @@ func defSubmitResult() llm.ToolDefinition {
 func defSubmitResultNamed(name string) llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: name,
-		Description: "Submit your result and exit the session. " +
-			"Before calling this tool, you MUST:\n" +
-			"1. Run the project's test suite or write and run your own tests.\n" +
-			"2. Verify ALL tests pass — if any test fails, fix it first, do NOT call " + name + ".\n" +
-			"3. Re-read the original task spec and confirm every requirement is met.\n" +
-			"Calling " + name + " with failing tests or unfinished work is a lie. " +
-			"A working solution after 80 rounds scores 100%. A broken submission scores 0%.",
+		Description: "Submit your result and exit the session. Only call when work is complete and verified.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
