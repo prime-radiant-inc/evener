@@ -1,0 +1,8 @@
+{{ if .IsGitRepo }}<git>
+Branch: {{ .GitBranch }}
+Modified files: {{ .GitModifiedFiles }}
+Untracked files: {{ .GitUntrackedFiles }}
+{{ if .GitRecentCommitTitles }}Recent commits:
+{{ range .GitRecentCommitTitles }}- {{ . }}
+{{ end }}{{ end }}</git>
+{{ end }}

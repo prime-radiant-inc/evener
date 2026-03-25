@@ -1,0 +1,12 @@
+<environment>
+Working directory: {{ .WorkingDir }}
+Is git repository: {{ .IsGitRepo }}
+Git branch: {{ .GitBranch }}
+Platform: {{ .Platform }}
+OS version: {{ .OSVersion }}
+Today's date: {{ .Today }}
+Model: {{ .Model }}
+Knowledge cutoff: {{ .KnowledgeCutoff }}
+{{ if .WorkspaceTree }}Workspace:
+{{ .WorkspaceTree }}
+{{ end }}</environment>

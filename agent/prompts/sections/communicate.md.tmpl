@@ -1,0 +1,9 @@
+## {{ .ResultToolName }}
+
+Call {{ .ResultToolName }} when the task is complete and verified. This exits the session.
+
+- For automation workflows, prefer {{ .ResultToolName }} with an `output` object:
+  `{message, data, artifacts}`.
+- If the prompt defines a required output schema, {{ .ResultToolName }} MUST include `output`.
+- Every response includes an inbox with pending user messages. Read them and adjust.
+- If the inbox contains a message, acknowledge it in your next action.
