@@ -776,7 +776,7 @@ func TestSession_UserInstructionOverride_AppendedLastToSystemPrompt(t *testing.T
 		t.Fatalf("requests: got %d want 1", len(reqs))
 	}
 	sys := reqs[0].Messages[0].Text()
-	if !strings.HasSuffix(sys, override+"\n") {
+	if !strings.HasSuffix(strings.TrimSpace(sys), override) {
 		t.Fatalf("expected system prompt to end with override, got:\n%s", sys)
 	}
 	if end := strings.LastIndex(sys, "----- END AGENTS.md -----"); end >= 0 {

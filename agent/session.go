@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -299,6 +300,10 @@ type Session struct {
 	cachedExtraTools               string
 	cachedAgentSection             string
 	cachedNonInteractiveGuidance   string
+
+	// Template-based prompt caching.
+	cachedSystemPrompt string
+	promptSourceLog    []PromptSource
 }
 
 // selectStrategy creates the appropriate ContextStrategy from config.
@@ -1580,18 +1585,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		// --- Phase: SystemPrompt ---
 		tPhaseStart := time.Now()
 
-		// Rebuild system prompt using cached project docs and cached prompt components.
-		sys := s.profile.BuildSystemPrompt(s.envInfo, s.projectDocs, s.cachedSkillList, s.cachedExtraTools)
-
-		if s.cachedAgentSection != "" {
-			sys += s.cachedAgentSection
-		}
-
-		sys += s.cachedNonInteractiveGuidance
-
-		if strings.TrimSpace(s.cfg.UserInstructionOverride) != "" {
-			sys = sys + "\n\n" + strings.TrimSpace(s.cfg.UserInstructionOverride) + "\n"
-		}
+		sys := s.cachedSystemPrompt
 
 		timings.SystemPrompt = time.Since(tPhaseStart)
 
@@ -2285,6 +2279,173 @@ func (s *Session) rebuildPromptCache() {
 	if s.cfg.NonInteractive {
 		s.cachedNonInteractiveGuidance = nonInteractiveGuidance(s.resultToolName())
 	}
+
+	// Refresh the cached system prompt (template path or legacy fallback).
+	s.cachedSystemPrompt = s.renderSystemPrompt()
+}
+
+// buildPromptData assembles a PromptData from session state for template rendering.
+func (s *Session) buildPromptData() PromptData {
+	agentName := s.cfg.AgentName
+	if agentName == "" {
+		agentName = "coordinator"
+	}
+
+	data := PromptData{
+		NonInteractive:        s.cfg.NonInteractive,
+		Provider:              s.profile.ID(),
+		Agent:                 agentName,
+		WorkingDir:            s.envInfo.WorkingDir,
+		IsGitRepo:             s.envInfo.IsGitRepo,
+		GitBranch:             s.envInfo.GitBranch,
+		Platform:              s.envInfo.Platform,
+		OSVersion:             s.envInfo.OSVersion,
+		Today:                 s.envInfo.Today,
+		Model:                 s.profile.Model(),
+		KnowledgeCutoff:       s.envInfo.KnowledgeCutoff,
+		GitModifiedFiles:      s.envInfo.GitModifiedFiles,
+		GitUntrackedFiles:     s.envInfo.GitUntrackedFiles,
+		GitRecentCommitTitles: s.envInfo.GitRecentCommitTitles,
+		WorkspaceTree:         s.envInfo.Workspace.Tree,
+		TestFiles:             s.envInfo.Workspace.TestFiles,
+		BuildInfo:             s.envInfo.Workspace.BuildInfo,
+		WorkingDirFull:        s.envInfo.WorkingDir,
+		ResultToolName:        s.resultToolName(),
+		UserInstructionOverride: strings.TrimSpace(s.cfg.UserInstructionOverride),
+		ProjectDocs:           s.projectDocs,
+	}
+
+	// Skills
+	hasUseSkill := false
+	for _, td := range s.profile.ToolDefinitions() {
+		if td.Name == "use_skill" {
+			hasUseSkill = true
+			break
+		}
+	}
+	data.HasUseSkill = hasUseSkill
+	for _, sm := range s.skills {
+		data.Skills = append(data.Skills, SkillEntry{
+			Name: sm.Name, Description: sm.Description,
+			Dir: sm.Dir, SkillFile: sm.SkillFile,
+		})
+	}
+
+	// Profile tools
+	for _, td := range s.profile.ToolDefinitions() {
+		desc := strings.TrimSpace(td.Description)
+		if desc == "" {
+			desc = "(no description)"
+		}
+		data.ProfileTools = append(data.ProfileTools, ToolEntry{Name: td.Name, Description: desc})
+	}
+
+	// MCP tools
+	for _, td := range s.mcpTools {
+		desc := strings.TrimSpace(td.Description)
+		if desc == "" {
+			desc = "(no description)"
+		}
+		data.MCPTools = append(data.MCPTools, ToolEntry{Name: td.Name, Description: desc})
+	}
+
+	// Custom tools (not core, not MCP)
+	mcpNames := make(map[string]bool, len(s.mcpTools))
+	for _, td := range s.mcpTools {
+		mcpNames[td.Name] = true
+	}
+	for _, td := range s.reg.Definitions() {
+		if s.coreToolNames[td.Name] || mcpNames[td.Name] {
+			continue
+		}
+		desc := strings.TrimSpace(td.Description)
+		if desc == "" {
+			desc = "(no description)"
+		}
+		data.CustomTools = append(data.CustomTools, ToolEntry{Name: td.Name, Description: desc})
+	}
+
+	// Available agents
+	names := make([]string, 0, len(s.pluginAgents))
+	for n := range s.pluginAgents {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		a := s.pluginAgents[n]
+		data.AvailableAgents = append(data.AvailableAgents, AgentEntry{Name: n, Description: a.Description})
+	}
+
+	// CLI appends: read file paths into contents
+	for _, p := range s.cfg.SystemPromptAppend {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		data.CLIAppends = append(data.CLIAppends, string(b))
+	}
+
+	return data
+}
+
+// renderSystemPrompt renders the system prompt using the template resolver,
+// falling back to the legacy path if template rendering fails.
+func (s *Session) renderSystemPrompt() string {
+	// Legacy: --system-prompt overrides everything
+	if s.cfg.SystemPromptFile != "" {
+		return s.buildInitialSystemPrompt()
+	}
+	// Legacy: subagents with BasePromptOverride
+	if s.cfg.BasePromptOverride != "" {
+		return s.cfg.BasePromptOverride
+	}
+
+	gitRoot := gitRootOrEmpty(s.env, s.envInfo.WorkingDir)
+	projDir := ProjectPromptsDir(gitRoot)
+	if s.cfg.NoProjectPrompts {
+		projDir = ""
+	}
+
+	projSections := ""
+	globalSections := ""
+	if projDir != "" {
+		projSections = filepath.Join(projDir, "sections")
+	}
+	if gd := GlobalPromptsDir(); gd != "" {
+		globalSections = filepath.Join(gd, "sections")
+	}
+
+	resolver := &SectionResolver{
+		provider: s.profile.ID(),
+		agent:    s.cfg.AgentName,
+		agentFS:  embeddedAgents,
+		sources: []SectionSource{
+			diskSource{dir: projSections},
+			diskSource{dir: globalSections},
+			embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"},
+		},
+	}
+	if resolver.agent == "" {
+		resolver.agent = "coordinator"
+	}
+
+	data := s.buildPromptData()
+
+	templateName := "system"
+	if s.depth > 0 {
+		templateName = "subagent"
+	}
+
+	result, sources, err := resolver.RenderEmbedded(
+		embeddedPrompts, "prompts/templates/", templateName, data,
+	)
+	if err != nil {
+		// Fall back to legacy path if template rendering fails
+		s.emit(EventWarning, WarningData{Message: fmt.Sprintf("template render failed, using legacy: %v", err)})
+		return s.buildInitialSystemPrompt()
+	}
+	s.promptSourceLog = sources
+	return result
 }
 
 // initSessionState performs the shared initialization steps for both
@@ -2433,6 +2594,10 @@ func (s *Session) initSessionState() ([]PromptSource, error) {
 // buildInitialSystemPrompt constructs the system prompt as the model would see
 // it on its first turn. Persisted in the transcript header for debugging.
 func (s *Session) buildInitialSystemPrompt() string {
+	if s.cachedSystemPrompt != "" {
+		return s.cachedSystemPrompt
+	}
+	// Legacy path: assemble from profile + cached components (for --system-prompt override)
 	docs := s.projectDocs
 	var skillList []SkillMeta
 	for _, sm := range s.skills {
