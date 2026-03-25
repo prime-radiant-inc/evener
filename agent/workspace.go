@@ -135,23 +135,25 @@ func walkTree(root string) ([]treeEntry, bool) {
 	return entries, truncated
 }
 
-// formatTree renders entries as a flat list of absolute paths.
+// formatTree renders entries as an indented tree rooted at the given path.
 func formatTree(root string, entries []treeEntry, truncated bool) string {
 	if len(entries) == 0 {
 		return ""
 	}
 
 	var b strings.Builder
+	b.WriteString(root + "/\n")
 	for _, e := range entries {
-		abs := filepath.Join(root, e.RelPath)
+		indent := strings.Repeat("  ", e.Depth+1)
+		name := filepath.Base(e.RelPath)
 		if e.IsDir {
-			b.WriteString(abs + "/\n")
+			b.WriteString(indent + name + "/\n")
 		} else {
-			b.WriteString(abs + "\n")
+			b.WriteString(indent + name + "\n")
 		}
 	}
 	if truncated {
-		b.WriteString("... (truncated, >200 entries)\n")
+		b.WriteString("  ... (truncated, >200 entries)\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

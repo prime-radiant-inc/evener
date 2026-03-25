@@ -42,18 +42,21 @@ func TestScanWorkspace_BasicTree(t *testing.T) {
 
 	ws := ScanWorkspace(dir)
 
-	// Tree should contain absolute paths for all files.
-	if !strings.Contains(ws.Tree, filepath.Join(dir, "main.py")) {
+	// Tree should be rooted at the directory and use indented basenames.
+	if !strings.Contains(ws.Tree, dir+"/") {
+		t.Errorf("tree missing root path: %s", ws.Tree)
+	}
+	if !strings.Contains(ws.Tree, "main.py") {
 		t.Errorf("tree missing main.py: %s", ws.Tree)
 	}
-	if !strings.Contains(ws.Tree, filepath.Join(dir, "utils.py")) {
+	if !strings.Contains(ws.Tree, "utils.py") {
 		t.Errorf("tree missing utils.py: %s", ws.Tree)
 	}
-	if !strings.Contains(ws.Tree, filepath.Join(dir, "src")+"/") {
+	if !strings.Contains(ws.Tree, "src/") {
 		t.Errorf("tree missing src/ directory: %s", ws.Tree)
 	}
-	if !strings.Contains(ws.Tree, filepath.Join(dir, "src", "lib.py")) {
-		t.Errorf("tree missing src/lib.py: %s", ws.Tree)
+	if !strings.Contains(ws.Tree, "lib.py") {
+		t.Errorf("tree missing lib.py: %s", ws.Tree)
 	}
 }
 
@@ -223,7 +226,7 @@ func TestScanWorkspace_PytestIniDetection(t *testing.T) {
 	}
 }
 
-func TestScanWorkspace_TreeFormat_AbsolutePaths(t *testing.T) {
+func TestScanWorkspace_TreeFormat_Indented(t *testing.T) {
 	dir := t.TempDir()
 	touchFile(t, filepath.Join(dir, "README.md"), "# Hello\n")
 	touchFile(t, filepath.Join(dir, "src", "main.py"), "print('hello')\n")
@@ -231,26 +234,21 @@ func TestScanWorkspace_TreeFormat_AbsolutePaths(t *testing.T) {
 
 	ws := ScanWorkspace(dir)
 
+	// First line should be the root with trailing slash.
 	lines := strings.Split(ws.Tree, "\n")
-	for _, line := range lines {
-		if line == "" {
-			continue
-		}
-		// Every line should be an absolute path (starts with /).
-		if !filepath.IsAbs(line) {
-			t.Errorf("expected absolute path, got %q", line)
-		}
+	if len(lines) == 0 || !strings.HasSuffix(lines[0], "/") {
+		t.Errorf("first line should be root path with trailing slash, got %q", lines[0])
 	}
 
-	// Should contain the full paths.
-	if !strings.Contains(ws.Tree, filepath.Join(dir, "src")+"/") {
-		t.Errorf("tree missing absolute path for src/: %s", ws.Tree)
+	// Subsequent lines should be indented basenames.
+	if !strings.Contains(ws.Tree, "  src/") {
+		t.Errorf("tree missing indented src/: %s", ws.Tree)
 	}
-	if !strings.Contains(ws.Tree, filepath.Join(dir, "src", "main.py")) {
-		t.Errorf("tree missing absolute path for src/main.py: %s", ws.Tree)
+	if !strings.Contains(ws.Tree, "    main.py") {
+		t.Errorf("tree missing indented main.py under src: %s", ws.Tree)
 	}
-	if !strings.Contains(ws.Tree, filepath.Join(dir, "README.md")) {
-		t.Errorf("tree missing absolute path for README.md: %s", ws.Tree)
+	if !strings.Contains(ws.Tree, "  README.md") {
+		t.Errorf("tree missing indented README.md: %s", ws.Tree)
 	}
 }
 
