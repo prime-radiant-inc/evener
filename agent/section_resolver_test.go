@@ -207,6 +207,82 @@ func TestSectionResolver_TmplPriorityOverMd(t *testing.T) {
 	}
 }
 
+func TestSectionResolver_Render(t *testing.T) {
+	// Section files.
+	sectionDir := t.TempDir()
+	writeSection(t, sectionDir, "identity.md", "I am serf")
+	writeSection(t, sectionDir, "values.md", "Be honest")
+
+	// Template file.
+	tmplDir := t.TempDir()
+	writeSection(t, tmplDir, "test.md.tmpl", "{{ section \"identity\" }}\n\n{{ section \"values\" }}")
+
+	r := newTestResolver(t, sectionDir, "openai", "coordinator")
+	got, sources, err := r.Render(tmplDir, "test", PromptData{})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	want := "I am serf\n\nBe honest"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if len(sources) < 2 {
+		t.Errorf("expected at least 2 sources, got %d: %v", len(sources), sources)
+	}
+}
+
+func TestSectionResolver_RenderConditional(t *testing.T) {
+	sectionDir := t.TempDir()
+	writeSection(t, sectionDir, "identity.md", "I am serf")
+	writeSection(t, sectionDir, "non-interactive.md", "headless mode")
+
+	tmplDir := t.TempDir()
+	tmpl := `{{ section "identity" }}
+{{ if .NonInteractive }}
+{{ section "non-interactive" }}
+{{ end }}`
+	writeSection(t, tmplDir, "cond.md.tmpl", tmpl)
+
+	// NonInteractive false: "headless" should NOT appear.
+	r := newTestResolver(t, sectionDir, "openai", "coordinator")
+	got, _, err := r.Render(tmplDir, "cond", PromptData{NonInteractive: false})
+	if err != nil {
+		t.Fatalf("Render (false): %v", err)
+	}
+	if strings.Contains(got, "headless") {
+		t.Errorf("NonInteractive=false: should not contain 'headless', got %q", got)
+	}
+
+	// NonInteractive true: "headless" should appear.
+	r2 := newTestResolver(t, sectionDir, "openai", "coordinator")
+	got2, _, err := r2.Render(tmplDir, "cond", PromptData{NonInteractive: true})
+	if err != nil {
+		t.Fatalf("Render (true): %v", err)
+	}
+	if !strings.Contains(got2, "headless") {
+		t.Errorf("NonInteractive=true: should contain 'headless', got %q", got2)
+	}
+}
+
+func TestCollapseBlankLines(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"\n\n\n", "\n\n"},
+		{"\n\n\n\n", "\n\n"},
+		{"\n\n", "\n\n"},
+		{"a\n\n\nb", "a\n\nb"},
+		{"a\n\nb", "a\n\nb"},
+		{"no newlines", "no newlines"},
+	}
+	for _, tt := range tests {
+		got := collapseBlankLines(tt.in)
+		if got != tt.want {
+			t.Errorf("collapseBlankLines(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
 func TestSectionResolver_SourceTracking(t *testing.T) {
 	dir := t.TempDir()
 	writeSection(t, dir, "identity.md", "I am serf")

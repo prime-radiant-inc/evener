@@ -155,6 +155,57 @@ func (r *SectionResolver) renderTemplate(name, content string, data PromptData) 
 	return buf.String(), nil
 }
 
+// Render reads a top-level template from disk at {tmplDir}/{name}.md.tmpl,
+// executes it with a "section" FuncMap that resolves sections through this
+// resolver, and returns the rendered text with tracked sources.
+func (r *SectionResolver) Render(tmplDir string, name string, data PromptData) (string, []PromptSource, error) {
+	r.tracked = nil
+	content, err := os.ReadFile(filepath.Join(tmplDir, name+".md.tmpl"))
+	if err != nil {
+		return "", nil, fmt.Errorf("reading template %s: %w", name, err)
+	}
+	return r.renderFromContent(name, content, data)
+}
+
+// RenderEmbedded reads a top-level template from an embedded FS at
+// {prefix}{name}.md.tmpl and renders it the same way as Render.
+func (r *SectionResolver) RenderEmbedded(fs embed.FS, prefix, name string, data PromptData) (string, []PromptSource, error) {
+	r.tracked = nil
+	content, err := fs.ReadFile(prefix + name + ".md.tmpl")
+	if err != nil {
+		return "", nil, fmt.Errorf("reading embedded template %s: %w", name, err)
+	}
+	return r.renderFromContent(name, content, data)
+}
+
+// renderFromContent is the shared implementation for Render and RenderEmbedded.
+func (r *SectionResolver) renderFromContent(name string, content []byte, data PromptData) (string, []PromptSource, error) {
+	funcMap := template.FuncMap{
+		"section": func(sectionName string) string {
+			return r.Section(sectionName, data)
+		},
+	}
+	tmpl, err := template.New(name).Funcs(funcMap).Parse(string(content))
+	if err != nil {
+		return "", nil, fmt.Errorf("parsing template %s: %w", name, err)
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", nil, fmt.Errorf("executing template %s: %w", name, err)
+	}
+	result := collapseBlankLines(buf.String())
+	return strings.TrimSpace(result), r.tracked, nil
+}
+
+// collapseBlankLines reduces runs of 3+ consecutive newlines to 2
+// (one blank line between sections).
+func collapseBlankLines(s string) string {
+	for strings.Contains(s, "\n\n\n") {
+		s = strings.ReplaceAll(s, "\n\n\n", "\n\n")
+	}
+	return s
+}
+
 // Sources returns the tracked prompt sources from all resolved sections.
 func (r *SectionResolver) Sources() []PromptSource {
 	return r.tracked
