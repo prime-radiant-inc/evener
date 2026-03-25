@@ -1701,6 +1701,46 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 
 		timings.LLMCall = time.Since(tPhaseStart)
 
+		// Log API call to transcript (both success and error paths).
+		if s.transcript != nil {
+			apiCall := TranscriptAPICall{
+				Round:        round,
+				Timestamp:    roundStart.UTC().Format(time.RFC3339),
+				LatencyMs:    timings.LLMCall.Milliseconds(),
+				SystemPrompt: sys,
+				Request: llm.APILogRequest{
+					Model:        req.Model,
+					Provider:     req.Provider,
+					MessageCount: len(req.Messages),
+					ToolCount:    len(req.Tools),
+				},
+			}
+			if req.ReasoningEffort != nil {
+				apiCall.Request.ReasoningEffort = *req.ReasoningEffort
+			}
+			if len(req.Tools) > 0 {
+				names := make([]string, len(req.Tools))
+				for i, t := range req.Tools {
+					names[i] = t.Name
+				}
+				apiCall.Request.ToolNames = names
+			}
+			if err != nil {
+				apiCall.Error = err.Error()
+			} else {
+				apiCall.Response = &llm.APILogResponse{
+					ID:            resp.ID,
+					Model:         resp.Model,
+					FinishReason:  resp.Finish.Reason,
+					TextLength:    len(resp.Text()),
+					ToolCallCount: len(resp.ToolCalls()),
+					Usage:         resp.Usage,
+					Raw:           resp.Raw,
+				}
+			}
+			s.transcript.AppendAPICall(apiCall)
+		}
+
 		if err != nil {
 			s.emit(EventError, ErrorData{Error: err.Error()})
 
