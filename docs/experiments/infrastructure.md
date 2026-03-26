@@ -158,7 +158,7 @@ implementer needs to see a prompt change, modify the section files in
 
 ## Local testing
 
-For full coordinator pipeline testing (~15 min per run):
+### Full coordinator pipeline (~15 min per run)
 
 ```bash
 set -a; source .env; set +a
@@ -171,6 +171,20 @@ make build
 
 Tasks expecting `/app/` paths won't resolve locally. Options: adjust the prompt,
 run in Docker, or just observe the agent's strategy from the transcript.
+
+### Implementer-only repro (~3 min per run)
+
+For fast iteration on implementer behavior, bypassing the coordinator:
+
+```bash
+OPENAI_API_KEY=... ./tools/impl-repro/run-test.sh /path/to/serf-binary label
+```
+
+This sends the implementer an AWS-style coordinator delegation message directly.
+The harness and data file live in `tools/impl-repro/`. Use when:
+- The problem is implementer behavior, not coordinator delegation
+- You need to test 10+ prompt variants quickly
+- Local coordinator runs don't reproduce the AWS failure mode
 
 ### Workspace tree vs parent tree
 
