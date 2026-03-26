@@ -7,11 +7,36 @@ a new session.
 process — hill-climbing protocol, commit-on-branch-before-deploy, root-cause-from-transcripts.
 Invoke it before starting work.
 
-## Current State (March 25, 2026)
+## Current State (March 26, 2026)
 
-**Model:** gpt-5.4 for evals
-**Baseline:** 56/88 = 64% on full 89-task terminal-bench (job: `full-89-ef120d4`)
-**High water mark:** 75/89 (84%) tasks ever passed across all runs
+**Model:** gpt-5.4-mini for current eval iteration
+**Combined baseline (Mar 24):** 72/87 reliable (82%) with gpt-5.4 + gpt-5.4-mini best-of
+**Mini-only baseline:** 34 tasks pass reliably with gpt-5.4-mini alone
+**Active eval:** `disc-3rep-v6` — 56 discriminator tasks × 3 reps with template engine fixes
+
+### Template engine regression analysis (Mar 25-26)
+
+The prompt template engine (commit 38afc9a) introduced 12 regressions from the
+mini baseline. Root causes identified and fixed:
+
+1. **Template section ordering** — Skills rendered before Role, priming the
+   coordinator into implementer mode. Fix: moved Role before Skills.
+2. **Artifact-only verification** — prevented coordinator from running tests.
+   Fix: reverted to baseline "Run test commands if available" language.
+3. **Delegation info loss** — coordinator paraphrases task specs when delegating.
+   Prompt-level fix helps partially; structural solutions still needed.
+4. **Aggressive cleanup instruction** — "only deliverables remain" caused
+   implementer to delete pre-existing task inputs. Fix: moved to shared values
+   with "never delete files that existed before you started."
+
+**Key technique discovered:** Session interrogation via OpenAI API replay.
+Replay the failed conversation and ask the model why it made specific choices.
+The model gives honest, useful answers about instruction conflicts.
+
+**Go build cache gotcha:** `go build` caches embedded files. Use `make build-linux`
+(which runs `go clean -cache`) when cross-compiling for eval deployments.
+
+### Previous state (March 25)
 
 ### Shipped on main (commit 0977af1)
 
