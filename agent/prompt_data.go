@@ -42,6 +42,11 @@ type PromptData struct {
 	// Project docs
 	ProjectDocs []ProjectDoc
 
+	// Root task — the original user-facing task from the root session.
+	// Available to all sessions; subagent templates use it so implementers
+	// see the full spec regardless of how the coordinator paraphrased.
+	RootTask string
+
 	// Result tool
 	ResultToolName string // "communicate" or override
 

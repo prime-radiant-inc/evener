@@ -61,16 +61,6 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		return "", fmt.Errorf("subagent depth limit reached")
 	}
 
-	// When the coordinator (depth 0) spawns an implementer, prepend the
-	// original user task to ensure the implementer sees the full spec.
-	// This prevents delegation information loss where the coordinator
-	// paraphrases format specifications, exact strings, or schema details.
-	if depth == 0 && (agentType == "implementer" || agentType == "") {
-		if origTask := s.extractOriginalTask(); origTask != "" && origTask != task {
-			task = fmt.Sprintf("<original-task>\n%s\n</original-task>\n\n%s", origTask, task)
-		}
-	}
-
 	// Look up plugin agent configuration when agent_type is specified.
 	var agent *PluginAgent
 	if agentType = strings.TrimSpace(agentType); agentType != "" {
@@ -139,6 +129,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	subData := PromptData{
 		Provider:        s.profile.ID(),
 		Agent:           agentName,
+		RootTask:        s.cfg.RootTask,
 		ResultToolName:  s.resultToolName(),
 		WorkingDir:      subWorkDir,
 		IsGitRepo:       s.envInfo.IsGitRepo,
