@@ -92,14 +92,23 @@ FIXABLE: [Yes/No — and what the fix would be if yes]
 **Step 7: Interrogate if the cause is unclear**
 
 If you can't determine WHY the behavior diverged from the transcripts alone,
-use the OpenAI API to replay the failing conversation and ask the model:
+run the interrogation tool. You MUST source the env file first for API keys:
 
-```python
-# See tools/interrogate_session.py for the full implementation
+```bash
+cd ~/prime-radiant/serf && set -a && source .env && set +a && \
 python3 tools/interrogate_session.py \
     --run {FAILING_RUN_ID} --rep {REP} --task {TASK} \
+    --compare-run {PASSING_RUN_ID} --compare-rep {PASSING_REP} \
     --question "Why did you do X instead of Y?"
 ```
+
+The tool downloads both transcripts, reconstructs context, and asks the model
+about its decisions. Include the comparison flag so the model sees what the
+passing run did differently.
+
+**Always interrogate when:** the coordinator didn't delegate but should have,
+the coordinator verified insufficiently, or the delegation text diverged
+significantly from the passing run. Don't skip this step.
 
 ### What NOT to do
 
