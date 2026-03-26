@@ -280,7 +280,7 @@ messages with system prompt first, which GPT-5.4 ignores. Not yet implemented or
 | 3/26 | v6-3rep | 5 regression tasks ×3 | 9/15 | fix-git 3/3, nginx 2/3, password 2/3, log-summary 1/3, multi-source 1/3 |
 | 3/26 | disc-3rep-v6 | 56 disc ×3 | 68/167 (41%) | **WRONG BINARY** — stale 38afc9a deployed. Useful as unfixed baseline |
 | 3/26 | disc-3rep-v6-fixed | 56 disc ×3 | 70/163 (43%) | Correct binary (1b06827). +2.2pt vs unfixed. 31 timeouts |
-| 3/26 | v7-action-bias | 7 regression tasks ×1 | PENDING | Action bias + optional explorer + capabilities fix |
+| 3/26 | v7-action-bias | 7 regression tasks ×1 | 3/7 | feal-diff PASS, eigenval PASS, rust-c PASS. chess/ars FAIL. 2 timeout |
 
 ### Detailed experiment writeups
 
