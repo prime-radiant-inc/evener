@@ -150,36 +150,117 @@ Record the full eval result in NOTEBOOK.md alongside the baseline for comparison
 - **Tool restriction at code level**: Model hallucinated or bypassed via shell.
 - **Long complex prompts**: More instruction does not equal more compliance.
 
-## Debugging Techniques
+## Root-Cause Analysis
 
-### Debrief: Resume and ask WHY
+**Root-causing means comparing, not categorizing.** For every failure, you need
+BOTH the failing transcript AND a passing transcript for the same task. Then
+you diff the coordinator behavior step by step.
 
-When an agent disobeys an instruction, resume its session and ask why. The model will
-tell you which competing instructions it noticed and how it prioritized them.
+### The comparison protocol
 
+1. Download the coordinator transcript from a failing rep AND a passing rep
+2. List the first 10 tool calls side by side
+3. Find where behavior diverges — that's your investigation point
+4. If both delegated, diff the delegation task text word for word
+5. Check the verifier output — what specifically failed and how close was it?
+6. Check system prompt differences (build version in transcript header)
+
+### Dispatching root-cause subagents
+
+Use the prompt template at `docs/skills/benchmark-driven-improvement/root-cause-prompt.md`.
+It enforces the comparison protocol — the subagent must produce side-by-side
+tool flows, delegation text diffs, and specific divergence points.
+
+**Do NOT dispatch subagents with vague prompts like "analyze these failures."**
+They'll produce surface-level categorization instead of real root causes. The
+template exists to prevent this.
+
+### Session interrogation
+
+When transcripts don't explain WHY the model chose a different approach, ask it.
+
+```bash
+# Interrogate a failing session with default questions
+python3 tools/interrogate_session.py \
+    --run RUN_ID --rep REP --task TASK_NAME
+
+# Compare against a passing rep
+python3 tools/interrogate_session.py \
+    --run FAIL_RUN --rep FAIL_REP --task TASK \
+    --compare-run PASS_RUN --compare-rep PASS_REP
+
+# Custom questions
+python3 tools/interrogate_session.py \
+    --run RUN_ID --rep REP --task TASK \
+    --question "Why did you read the skill file before delegating?" \
+    --question "What would you have done differently with the same prompt?"
 ```
-resume_agent(session_id="...", message="You did X instead of Y. Why?")
+
+This replays the conversation context and appends your questions. The model
+reports which instructions it noticed and how it prioritized them.
+
+**Reliable for:** which instructions competed, what the model noticed, how it
+ranked priorities. **Less reliable for:** deeper "why" (may rationalize).
+
+### What good root causes look like
+
+Bad: "Delegation info loss — coordinator paraphrased the spec."
+Good: "Failing coordinator's spawn_agent task said 'ensure correct CSV format'
+but omitted the actual header `period,severity,count`. Passing coordinator
+included the full CSV example verbatim. The omission caused the implementer
+to choose wide format (5 rows) instead of long format (15 rows). Verifier
+failed on header check at test_outputs.py:40."
+
+Bad: "Timeout — agent ran out of time."
+Good: "Failing coordinator spent 4 rounds reading files directly (list_dir,
+read_file x2, exec_command) before delegating at step 5. Passing coordinator
+delegated at step 2. The 3 wasted rounds cost ~45 seconds of wall time,
+and the implementer's PyStan sampling needed the full 900s budget."
+
+## Verifying Deployed Binaries
+
+**ALWAYS verify the binary before trusting eval results.** The build cache
+and staging pipeline can silently deploy stale code.
+
+```bash
+# Check transcript header for build version
+python3 -c "
+import json, subprocess
+content = subprocess.run(['aws', 's3', 'cp', 'S3_PATH', '-', '--region', 'us-west-1'],
+    capture_output=True, text=True).stdout
+h = json.loads(content.split(chr(10))[0])
+print('build:', h.get('build_version'))
+sp = h.get('system_prompt', '')
+print('Has expected text:', 'YOUR_EXPECTED_STRING' in sp)
+"
+
+# Check binary directly
+strings serf-linux-amd64 | grep "expected phrase"
+strings serf-linux-amd64 | grep -c "must not appear"
+
+# Check the S3 tarball (not just the local binary)
+aws s3 cp s3://BUCKET/agents/RUN_ID/agent.tar.gz /tmp/check.tar.gz
+tar xzf /tmp/check.tar.gz -C /tmp/check/
+strings /tmp/check/serf-linux-amd64 | grep "expected phrase"
 ```
 
-This is fast (~30 seconds) and reveals instruction conflicts that aren't obvious from
-reading the prompt.
-
-**Caveat:** The model's self-report is reliable about WHICH instructions it noticed
-and how it ranked them. It's less reliable about the deeper WHY (may rationalize).
+Use `make build-linux` which invalidates the Go embed cache automatically.
 
 ## Anti-Patterns
 
 | Anti-pattern | Instead |
 |-------------|---------|
-| Guessing root causes from error messages | Read the actual transcript |
-| Reusing job names | Always use auto-generated names |
+| Categorizing failures without comparison | Side-by-side transcript diff against passing run |
+| Guessing root causes from error messages | Read the actual transcript, both passing and failing |
+| Dispatching subagents with vague prompts | Use the root-cause-prompt.md template |
+| Reusing job names | Always use unique names |
 | Running full eval before understanding failures | Root cause -> fix -> test isolated -> then full eval |
 | Bundling multiple changes | One change per experiment |
 | Testing with 1 rep | 3+ reps minimum |
 | Teaching to the test | Fixes must be general engineering principles |
-| Skipping transcript analysis | Read transcripts, identify patterns across failures |
-| Not verifying the binary | Always verify the deployed binary contains expected content |
-| Not checking transcript headers | After run, verify the prompt in transcript header matches intent |
+| Not verifying the deployed binary | Check transcript header build_version AND tarball contents |
+| Trusting `go build` after changing embedded files | Use `make build-linux` (runs go clean -cache) |
+| Staging agent dir under /tmp/ | Use isolated subdirectory to avoid parent-dir binary contamination |
 
 ## Recording Results
 
