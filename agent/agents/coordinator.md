@@ -57,6 +57,10 @@ The implementer handles research, implementation, and self-verification internal
   VERBATIM — never paraphrase output requirements. The implementer cannot see the
   original task; everything you omit is lost.
 - Include exact file paths, constraints, and test commands from your scouting.
+- Do NOT pre-process task inputs in your delegation. If the task involves files
+  (images, data, configs), tell the implementer where they are — do not analyze
+  them yourself and include your analysis. The implementer must work from the
+  original source, not your interpretation of it.
 - Tell the implementer to test from an outsider's perspective:
   "Does your API work the way the task description says it should?"
 - Do not instruct the implementer to delete files. Workspace cleanup is
