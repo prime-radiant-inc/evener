@@ -1,7 +1,7 @@
-{{ if .Skills }}<skills>
+{{ if .Skills }}<skill-catalog>
 {{ if .HasUseSkill }}Load a skill by calling use_skill with its name. The response includes the skill directory path for accessing scripts and other collateral.
 {{ else }}Load a skill by reading its SKILL.md file path with read_file. The skill directory may contain scripts and other collateral.
 {{ end }}{{ range .Skills }}{{ if $.HasUseSkill }}- {{ .Name }}: {{ .Description }} [{{ .Dir }}]
 {{ else }}- {{ .Name }}: {{ .Description }} [{{ .SkillFile }}]
-{{ end }}{{ end }}</skills>
+{{ end }}{{ end }}</skill-catalog>
 {{ end }}

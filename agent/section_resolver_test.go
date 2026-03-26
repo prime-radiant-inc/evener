@@ -458,7 +458,7 @@ func TestSubagentTemplate_StructuralRegression(t *testing.T) {
 	}
 
 	// Subagent should NOT have git-safety, task-tracking, skills, available-agents.
-	for _, absent := range []string{"## Git safety", "## Task tracking", "<skills>", "<available_agents>"} {
+	for _, absent := range []string{"## Git safety", "## Task tracking", "<skill-catalog>", "<available_agents>"} {
 		if strings.Contains(result, absent) {
 			t.Errorf("subagent prompt should not contain: %q", absent)
 		}

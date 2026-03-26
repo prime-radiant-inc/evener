@@ -226,7 +226,7 @@ func (p *baseProfile) BuildSystemPrompt(env EnvironmentInfo, docs []ProjectDoc, 
 				break
 			}
 		}
-		b.WriteString("<skills>\n")
+		b.WriteString("<skill-catalog>\n")
 		if hasUseSkill {
 			b.WriteString("Load a skill by calling use_skill with its name. The response includes the skill directory path for accessing scripts and other collateral.\n")
 		} else {
@@ -239,7 +239,7 @@ func (p *baseProfile) BuildSystemPrompt(env EnvironmentInfo, docs []ProjectDoc, 
 				b.WriteString(fmt.Sprintf("- %s: %s [%s]\n", s.Name, s.Description, s.SkillFile))
 			}
 		}
-		b.WriteString("</skills>\n\n")
+		b.WriteString("</skill-catalog>\n\n")
 	}
 
 	b.WriteString("Tools:\n")
@@ -893,7 +893,7 @@ func defTaskList() llm.ToolDefinition {
 func defUseSkill() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "use_skill",
-		Description: "Activate a skill to load its full instructions into context. Available skills are listed in the <skills> section of the system prompt.",
+		Description: "Activate a skill to load its full instructions into context. Available skills are listed in the <skill-catalog> section of the system prompt.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,

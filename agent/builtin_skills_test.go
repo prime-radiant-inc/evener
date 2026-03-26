@@ -152,7 +152,7 @@ func TestEmbeddedSkills_InSystemPrompt(t *testing.T) {
 	_, _ = sess.ProcessInput(ctx, "hi")
 	sess.Close()
 
-	if !strings.Contains(capturedSystem, "<skills>") {
+	if !strings.Contains(capturedSystem, "<skill-catalog>") {
 		t.Error("system prompt missing <skills> section")
 	}
 	if !strings.Contains(capturedSystem, "ops-task") {
@@ -193,7 +193,7 @@ func TestOpenAI_SkillsWithFilePathsInSystemPrompt(t *testing.T) {
 	sess.Close()
 
 	// OpenAI should have <skills> section with file paths and read_file guidance.
-	if !strings.Contains(capturedSystem, "<skills>") {
+	if !strings.Contains(capturedSystem, "<skill-catalog>") {
 		t.Error("OpenAI system prompt should contain <skills> section with file paths")
 	}
 	if !strings.Contains(capturedSystem, "read_file") {

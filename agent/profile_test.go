@@ -258,7 +258,7 @@ func TestAllProfiles_SystemPromptContainsSkillsGuidance(t *testing.T) {
 		prompt := p.BuildSystemPrompt(env, nil, skills, "")
 
 		// All profiles should render <skills> when skills are provided.
-		if !strings.Contains(prompt, "<skills>") {
+		if !strings.Contains(prompt, "<skill-catalog>") {
 			t.Errorf("profile %q system prompt missing <skills> section", name)
 		}
 
@@ -295,7 +295,7 @@ func TestBuildSystemPrompt_IncludesSkillsList(t *testing.T) {
 	}
 	prompt := p.BuildSystemPrompt(env, nil, skills, "")
 
-	if !strings.Contains(prompt, "<skills>") {
+	if !strings.Contains(prompt, "<skill-catalog>") {
 		t.Error("prompt missing <skills> section")
 	}
 	if !strings.Contains(prompt, "- greet: Greeting skill [/tmp/skills/greet]") {
@@ -304,8 +304,8 @@ func TestBuildSystemPrompt_IncludesSkillsList(t *testing.T) {
 	if !strings.Contains(prompt, "- deploy: Deploy skill [/tmp/skills/deploy]") {
 		t.Error("prompt missing deploy skill entry with directory path")
 	}
-	if !strings.Contains(prompt, "</skills>") {
-		t.Error("prompt missing </skills> closing tag")
+	if !strings.Contains(prompt, "</skill-catalog>") {
+		t.Error("prompt missing </skill-catalog> closing tag")
 	}
 	if !strings.Contains(prompt, "use_skill") {
 		t.Error("prompt missing use_skill instruction")
@@ -321,7 +321,7 @@ func TestBuildSystemPrompt_OpenAI_SkillsWithFilePaths(t *testing.T) {
 	}
 	prompt := p.BuildSystemPrompt(env, nil, skills, "")
 
-	if !strings.Contains(prompt, "<skills>") {
+	if !strings.Contains(prompt, "<skill-catalog>") {
 		t.Error("OpenAI prompt should contain <skills> section")
 	}
 	if !strings.Contains(prompt, "/tmp/skills/greet/SKILL.md") {
@@ -338,11 +338,9 @@ func TestBuildSystemPrompt_NoSkills_NoSkillsSection(t *testing.T) {
 
 	prompt := p.BuildSystemPrompt(env, nil, nil, "")
 
-	// The guidance text mentions <skills> as a reference, but the actual
-	// structured block starts with "<skills>\n- " (a skill entry). Verify
-	// no structured block is present by checking for "</skills>".
-	if strings.Contains(prompt, "</skills>") {
-		t.Error("prompt should not contain </skills> section when no skills present")
+	// Verify no skill-catalog block is present when no skills exist.
+	if strings.Contains(prompt, "</skill-catalog>") {
+		t.Error("prompt should not contain </skill-catalog> section when no skills present")
 	}
 }
 

@@ -191,7 +191,7 @@ func TestUseSkill_SystemPromptContainsSkillList(t *testing.T) {
 	_, _ = sess.ProcessInput(ctx, "hi")
 	sess.Close()
 
-	if !strings.Contains(capturedSystem, "<skills>") {
+	if !strings.Contains(capturedSystem, "<skill-catalog>") {
 		t.Error("system prompt missing <skills> section")
 	}
 	if !strings.Contains(capturedSystem, "greet: Greeting skill") {
@@ -231,7 +231,7 @@ func TestOpenAI_SkillsSectionWithFilePaths(t *testing.T) {
 	sess.Close()
 
 	// OpenAI should have skills listed with file paths for read_file access.
-	if !strings.Contains(capturedSystem, "<skills>") {
+	if !strings.Contains(capturedSystem, "<skill-catalog>") {
 		t.Error("OpenAI system prompt should contain <skills> section")
 	}
 	if !strings.Contains(capturedSystem, "greet: Greeting skill") {
