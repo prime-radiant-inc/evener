@@ -129,6 +129,20 @@ s3_cat(f"runs/{run_id}/rep-1/task-name/reward.txt")
 Instances self-terminate after uploading. "User initiated" termination in the AWS
 console is normal behavior.
 
+### Verifier vs agent visibility
+
+**CRITICAL: The verifier's `/tests/` directory is mounted ONLY during the
+verification phase, AFTER the agent has finished.** The running agent CANNOT
+see verifier tests. The agent can only see:
+- Files in the task workspace (`/app/` or similar)
+- Files it creates itself
+- Tests that the TASK provides (e.g., a Makefile test target, test.py in /app/)
+
+When analyzing failures, remember: the agent could never have run the verifier
+tests. It must self-verify using its own tests or by checking its output against
+the task description's requirements. "The agent should have run the tests under
+/tests/" is always wrong — it couldn't.
+
 ### Transcript locations
 
 Full agent transcripts: `agent/agent-state/sessions/*.transcript.jsonl`
