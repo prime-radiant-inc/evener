@@ -1,596 +1,192 @@
 ---
 name: benchmark-driven-improvement
-description: Use when investigating serf benchmark failures, iterating on agent behavior against terminal-bench tasks, or diagnosing why serf fails specific coding challenges. Covers task extraction, local execution, transcript analysis, session interrogation, and fix iteration.
+description: Use when investigating agent benchmark failures, iterating on agent behavior against eval tasks, or diagnosing why an agent fails specific coding challenges. Covers transcript analysis, session interrogation, fix iteration, and validation.
 ---
 
 # Benchmark-Driven Improvement
 
-## Overview
+Systematic process for diagnosing and fixing agent failures on benchmark evals.
+Run the agent against tasks, analyze transcripts, identify systemic patterns,
+iterate on code/prompts, and validate fixes.
 
-Systematic process for diagnosing and fixing serf failures on terminal-bench tasks. Run serf locally against extracted benchmark tasks, analyze transcripts, interrogate the agent about its decisions, then iterate on code/prompts.
+**Core principle:** Benchmarks are a proxy for good autonomous engineering. Fixes
+should improve general agent capability, not game specific tasks.
 
-**Core principle:** We're not hill-climbing on the benchmark. Terminal-bench is a proxy for good autonomous engineering. Fixes should improve general agent capability, not game specific tasks.
+## Project-Specific Docs
 
-## Philosophy
+Project-specific knowledge lives in the project repo, not this skill:
+- `docs/experiments/NOTEBOOK.md` — current state, experiment log, key learnings
+- `docs/experiments/backlog.md` — prioritized queue of next experiments
+- `docs/experiments/infrastructure.md` — how to run evals for this project
+- `docs/experiments/task-sets.md` — regression and target task lists
 
-- A fix that passes one task but breaks the agent's general reasoning is a bad fix
-- Prompt changes should encode good engineering practices, not task-specific tricks
-- Code changes should handle failure modes generically (e.g., "retry on empty response" not "retry on task X")
-- If a fix requires knowing the task answer, it's cheating — reject it
-- Test fixes on multiple tasks to confirm they're general
+## First: Read the Notebook
 
-## Prerequisites
+Before doing anything, read the project's `docs/experiments/NOTEBOOK.md`. It contains:
+- Current experimental state (what's shipped, baseline pass rates)
+- What's been tried and what worked/didn't
+- Key learnings from all experiments
+- Full experiment log
 
-- serf repo checked out at `/Users/jesse/prime-radiant/serf/`
-- `OPENAI_API_KEY` in `.env` file at repo root (for local runs) and in
-  `~/git/terminal-bench/.env` on flower-garden (for harbor runs)
-- SSH access to magic-kingdom (`jesse@magic-kingdom` via Tailscale) for harbor runs.
-  Fallback: flower-garden (`jesse@192.168.118.101`). Override with `EVAL_REMOTE` env var.
-- Go toolchain for building serf
-- Python tools in `tools/`: `run_eval.py`, `api-log-analyze.py`, `compare_runs.py`, `generate_report.py`
+If there's active work in progress, pick up where the notebook says to start.
+If starting fresh on a new eval, follow the workflow below.
 
-## Step 1: Pick a Failure to Investigate
+## The Full Workflow
 
-Start from benchmark results. Categorize the failure:
+When given an eval to tune against:
 
-| Pattern | Symptoms | Likely Fix |
-|---------|----------|------------|
-| Empty/null response | Transcript ends with empty assistant turn, ~4 output tokens | Code: retry logic in session.go |
-| One-shot-and-quit | 1-5 rounds, communicate immediately, no iteration | Prompt: verification/iteration guidance |
-| Wrong approach | Many rounds but fundamentally wrong strategy | Prompt: exploration/planning guidance |
-| Gave up early | 5-10 rounds, reasonable start, then premature submit | Prompt: persistence directives |
-| Timeout | 900s wallclock, task still running | Code: efficiency, or accept as hard |
-| Refusal | Model says "I can't help with..." | Prompt: task framing |
-| Reviewer-approved-but-wrong | Reviewer approves, verifier fails | Reviewer prompt: thoroughness |
-| Never submitted | Many rounds, no communicate call at all | Code: nudge logic, or prompt |
+1. **Baseline** — run the eval, establish pass rates
+2. **Root cause** — read transcripts for every failure (not error messages — transcripts)
+3. **Inventory** — categorize failures by systemic pattern, prioritize fixes
+4. **Fix** — one change at a time, test on affected tasks only (3+ reps)
+5. **Validate** — after all individual fixes validated, run full eval
+6. **Document** — update NOTEBOOK.md after every experiment
 
-Pick a task that USED TO PASS with the previous model/prompt — regressions are highest value.
+## Step 1: Run Baseline
 
-## Step 2: Extract the Benchmark Task
+**Rules:**
+- Never reuse job names. Auto-generate unique names.
+- Always use 1 rep for initial baselines (save budget for iteration).
+- Record the job name and git SHA for provenance.
 
-Tasks are cached on the eval server at `~/.cache/harbor/tasks/<hash>/<task-name>/`.
+## Step 2: Root Cause Every Failure
 
-```bash
-# Find a task (uses EVAL_REMOTE or defaults to magic-kingdom)
-REMOTE=${EVAL_REMOTE:-jesse@magic-kingdom}
-ssh $REMOTE 'find ~/.cache/harbor/tasks/ -name "TASK_NAME" -type d'
+**This is the most important step. Do not skip it. Do not guess from error messages.**
 
-# Key files in each task:
-#   instruction.md    — The prompt given to serf
-#   task.toml         — Metadata (difficulty, timeouts, docker image)
-#   tests/            — Verifier scripts (test.sh, test_outputs.py, etc.)
-#   environment/      — Dockerfile and setup
-#   solution/         — Reference solution (if available)
+For each failing task, read the actual agent transcript and answer:
+
+1. What did the coordinator do? Did it scout? Delegate? Verify?
+2. What did the implementer do? What approach did it take? Where did it get stuck?
+3. Why did the verifier fail? What specific assertion failed?
+4. Did the coordinator catch the problem before submitting?
+5. What would have fixed it? (Must be a general principle, not task-specific.)
+
+## Step 3: Build Failure Inventory
+
+Categorize every failure by its systemic root cause. Write a failure inventory with:
+- Each failure's root cause (from transcript analysis, not guesses)
+- Proposed fix (must be a general principle)
+- Test plan (which tasks, how many reps)
+- Execution order (highest impact first)
+
+## Step 4: Fix and Test (Hill-Climbing Protocol)
+
+Every change must make things better without making anything worse.
+
+### The regression set
+
+Before you start fixing, define a **regression set**: 5-9 tasks that currently pass
+and span different categories (easy, moderate, hard). These must keep passing after
+every change. Record the regression set in NOTEBOOK.md.
+
+### For each fix
+
+1. **Make one change.** One prompt edit, one code change. Not two.
+
+2. **Build and test locally.**
+
+3. **Commit on an experiment branch.** Every experiment that gets deployed
+   MUST be committed first. This is non-negotiable — it gives you provenance,
+   rollback safety, and prevents losing work to accidental checkout.
+
+4. **Test on target tasks** — the tasks this fix is supposed to help. 3 reps.
+
+5. **Test on regression set** — 1 rep each is enough since these should be
+   reliable passes.
+
+6. **Evaluate results:**
+   - **Target tasks improved (2/3+) AND regression set holds:** Merge to main.
+   - **Target tasks improved BUT regression set broke:** Do NOT merge. Root cause
+     the regression.
+   - **Target tasks didn't improve:** Do NOT merge. Document and move on after
+     2-3 failed attempts.
+
+**NEVER deploy an uncommitted experiment.** The experiment branch is your safety net.
+
+### What counts as improvement
+
+With 3 reps per task:
+- 0/3 -> 1/3: Not conclusive. Could be noise. Try 2 more reps to confirm.
+- 0/3 -> 2/3: Improvement. Ship it.
+- 1/3 -> 2/3: Marginal. Probably improvement but confirm with the full eval later.
+- 1/3 -> 3/3: Clear improvement.
+- Any regression on regression set (was passing, now fails): Block. Investigate.
+
+### Teaching to the test vs good engineering
+
+The goal is NOT to pass specific tasks. The goal is to make the agent a better engineer.
+Every fix must be a general principle:
+
+- "Write deliverables early" — good. Helps any task where the agent runs out of time.
+- "For chess tasks, use python-chess" — bad. Only helps one task.
+- "Read /tests/ before delegating" — good. Helps any task with verifier expectations.
+- "Put the QEMU monitor socket at /tmp/qemu-monitor.sock" — bad. Only helps one task.
+
+If you can't articulate the fix as a general principle, it's teaching to the test.
+
+## Step 5: Full Validation
+
+Only after all individual fixes are validated, combined, and re-validated:
+
+- **Overall pass rate** should be higher (or equal if fixes were narrow).
+- **No task that passed in the baseline should now fail** (check explicitly).
+- If there are regressions, identify which fix caused them.
+
+Record the full eval result in NOTEBOOK.md alongside the baseline for comparison.
+
+## Prompt Engineering for GPT Models
+
+### What works
+- **Imperative prose with CRITICAL markers**: "CRITICAL: You must spawn an implementer."
+- **Positive framing**: "Before resorting to X, try Y first."
+- **Concrete examples**: Showing exact tool call format anchors behavior.
+- **Role framing**: "You are a dispatcher" > "You do NOT write code."
+- **XML-tagged prerequisites in user messages**: `<mandatory_prerequisites>` blocks with
+  numbered steps improve instruction adherence for models that deprioritize system prompts.
+
+### What doesn't work
+- **Graphviz flowcharts**: GPT ignores dot syntax. (Works for Claude.)
+- **Prohibitions**: "NEVER use write_file" -- model uses shell heredocs instead.
+- **Tool restriction at code level**: Model hallucinated or bypassed via shell.
+- **Long complex prompts**: More instruction does not equal more compliance.
+
+## Debugging Techniques
+
+### Debrief: Resume and ask WHY
+
+When an agent disobeys an instruction, resume its session and ask why. The model will
+tell you which competing instructions it noticed and how it prioritized them.
+
+```
+resume_agent(session_id="...", message="You did X instead of Y. Why?")
 ```
 
-Copy the instruction and tests locally:
-```bash
-TASK=cancel-async-tasks
-REMOTE=${EVAL_REMOTE:-jesse@magic-kingdom}
-TASK_DIR=$(ssh $REMOTE "find ~/.cache/harbor/tasks/ -name '$TASK' -type d")
-scp $REMOTE:"$TASK_DIR/instruction.md" /tmp/task-$TASK.md
-scp -r $REMOTE:"$TASK_DIR/tests/" /tmp/task-$TASK-tests/
-```
-
-Read the instruction to understand what serf is asked to do. Read the tests to understand what the verifier checks — this is critical for understanding WHY the agent's output fails.
-
-## Step 3: Run Serf Locally
-
-Build and run serf against the task prompt:
-
-```bash
-# Build (includes git SHA, dirty state, build time via ldflags)
-cd /Users/jesse/prime-radiant/serf
-export $(cat .env | xargs)
-make build
-
-# Run with limited rounds for fast iteration
-./serf --provider openai --model gpt-5.3-codex \
-  --max-rounds 10 \
-  --state-dir /tmp/serf-bench-$TASK \
-  -- "$(cat /tmp/task-$TASK.md)"
-```
-
-**Important constraints:**
-- Tasks expecting `/app/` paths won't work directly locally. Options:
-  1. Adjust the prompt to use a local directory (e.g., replace `/app/` with `/tmp/bench-workspace/`)
-  2. Run inside a Docker container matching the task's environment
-  3. Just observe the agent's approach — even if files are at wrong paths, you can see its strategy
-- Use `--max-rounds 10` for fast iteration, increase once you're testing persistence fixes
-- `--state-dir` keeps transcripts separate per investigation
-
-## Step 4: Analyze the Transcript
-
-Transcripts are at `<state-dir>/sessions/<session-id>.transcript.jsonl`.
-
-### Transcript Viewer (batch analysis)
-
-For analyzing many failures at once, use the transcript viewer to generate an interactive HTML site:
-
-```bash
-# 1. Rsync job data from eval server to local
-JOB=serf-reviewer-full2
-REMOTE=${EVAL_REMOTE:-jesse@magic-kingdom}
-rsync -avz --include='*/' \
-  --include='result.json' --include='reward.txt' --include='test-stdout.txt' \
-  --include='stdout.txt' --include='return-code.txt' --include='command.txt' \
-  --include='*.json' --include='*.jsonl' --exclude='*' \
-  $REMOTE:/tmp/$JOB/$JOB/ /tmp/$JOB/
-
-# 2. Generate the viewer
-python3 tools/transcript-viewer.py /tmp/$JOB --output /tmp/viewer --filter failed
-
-# 3. Open locally or scp to Jesse's machine
-open /tmp/viewer/index.html
-# Or: scp /tmp/viewer/index.html <target>:/tmp/serf-viewer.html
-```
-
-**Flags:**
-- `--filter failed` (default) — only show tasks with reward=0
-- `--filter passed` — only show tasks with reward=1
-- `--filter all` — show everything
-
-**The viewer provides:**
-- Table of contents with color-coded failure types (timeout/wrong answer/no submit/error)
-- Filter buttons to isolate one failure category
-- Expand All / Collapse All for quick scanning
-- Per-task: verifier test output, all sessions (main agent + subagents) with formatted transcripts
-- Tool calls, results, assistant text with collapsible large content
-- Session labels auto-detect reviewer vs test-writer subagents
-
-### Dashboard (visual inspection)
-
-The eval dashboard at `http://magic-kingdom:8080` provides a web UI for browsing
-run results without SSH or rsync. It reads job data directly from `/tmp/` on the server.
-
-**What you can see per task:**
-- Task instruction (the prompt given to serf)
-- System prompt
-- Verifier test output (pass/fail details)
-- Agent stdout
-- Trajectory tab — per-step tool calls, reasoning, observations (from `trajectory.json`)
-- File browser — workspace artifacts post-run
-
-Navigate: Runs list → click a run → task list (color-coded pass/fail) → click a task.
-
-The trajectory tab is the fastest way to see what the agent actually did without parsing
-JSONL. Use the transcript viewer (above) for batch analysis of many failures; use the
-dashboard for drilling into a single task.
-
-### API log analysis
-
-Every serf run writes `api.jsonl` alongside transcripts, logging every LLM API call
-with full raw provider response. This is the primary tool for diagnosing empty responses,
-parsing failures, and token usage.
-
-```bash
-# Show all API calls for a local run
-python3 tools/api-log-analyze.py /tmp/serf-bench-$TASK/
-
-# Show only empty responses (no text, no tool calls)
-python3 tools/api-log-analyze.py /tmp/serf-bench-$TASK/ --empty
-
-# Per-session summary (calls, empties, tokens, avg latency)
-python3 tools/api-log-analyze.py /tmp/serf-bench-$TASK/ --summary
-
-# Show full raw API response for empty responses
-python3 tools/api-log-analyze.py /tmp/serf-bench-$TASK/ --empty --raw
-
-# Filter to a specific session
-python3 tools/api-log-analyze.py /tmp/serf-bench-$TASK/ --session sess-abc
-
-# Show only errors (rate limits, timeouts)
-python3 tools/api-log-analyze.py /tmp/serf-bench-$TASK/ --errors
-```
-
-For remote runs, rsync the `api.jsonl` files along with transcripts:
-```bash
-REMOTE=${EVAL_REMOTE:-jesse@magic-kingdom}
-rsync -avz --include='*/' --include='api.jsonl' --include='*.jsonl' \
-  --include='reward.txt' --include='result.json' --exclude='*' \
-  $REMOTE:/tmp/$JOB/ /tmp/$JOB/
-```
-
-### Single-task analysis
-
-For a single transcript, read the JSONL directly:
-
-```bash
-ls /tmp/serf-bench-$TASK/sessions/*.transcript.jsonl
-```
-
-**What to look for:**
-1. **How many rounds?** If < 5 of 100, the model is giving up early
-2. **Did it call communicate?** If yes, what did it submit? If no, did it emit bare text or null?
-3. **Did it run tests?** Good agents test their work. One-shot agents don't.
-4. **Did it iterate on failures?** After a test failure, did it try to fix the issue?
-5. **What was the final state?** Read the files the agent wrote — compare against verifier expectations
-
-## Step 5: Interrogate the Agent
-
-Use `--resume-with` to load the old session context and ask questions:
-
-```bash
-./serf --provider openai --model gpt-5.3-codex \
-  --resume-with SESSION_ID \
-  --state-dir /tmp/serf-bench-$TASK \
-  -- "You just completed a task but the verifier says your solution is wrong. \
-      Look at what you submitted and explain: \
-      1. What was your strategy? \
-      2. Why did you stop when you did? \
-      3. What would you do differently if you could start over? \
-      4. Did you verify your solution before submitting?"
-```
-
-This reveals the agent's internal reasoning — rationalizations, misconceptions, and gaps that inform prompt fixes.
-
-**Key questions to ask:**
-- "Why did you stop after N rounds when you had 100 available?"
-- "Did you run the evaluation script? What did it show?"
-- "Your solution has [specific bug]. How would you fix it?"
-- "The verifier expects [X] but you produced [Y]. What went wrong?"
-
-## Step 6: Identify the Fix
-
-Based on transcript analysis and interrogation, determine the fix category:
-
-### Code Fix (session.go, context_manager.go, etc.)
-- Empty/null response → retry logic
-- Tool execution failures → error handling
-- Context window issues → compaction improvements
-
-### Prompt Fix (agent/prompts/base.md, system.openai.md)
-- One-shot behavior → verification/iteration directives
-- Wrong approach → exploration/planning guidance
-- Premature submission → persistence directives
-- Missing capabilities → tool usage guidance
-
-### Profile Fix (agent/profile.go, tool definitions)
-- Tool not available → add/modify tool definitions
-- Wrong tool behavior → fix tool implementation
-
-### Reviewer Prompt Fix (agent/agents/reviewer.md)
-- Reviewer-approved-but-wrong → more thorough verification steps
-- Reviewer missed file types → search completeness guidance
-- Reviewer tested wrong artifact → verify installed/deployed state
-
-## Step 7: Implement and Verify
-
-Follow TDD: write a test for the fix, watch it fail, implement, watch it pass.
-
-For code fixes: unit tests in `agent/session_test.go` or similar.
-For prompt fixes: the benchmark task IS the test — re-run serf against the same task.
-
-```bash
-# After making changes, rebuild and re-run
-make build
-./serf --provider openai --model gpt-5.3-codex \
-  --max-rounds 15 \
-  --state-dir /tmp/serf-bench-$TASK-v2 \
-  -- "$(cat /tmp/task-$TASK.md)"
-```
-
-Compare transcripts before/after:
-- More rounds used? (persistence fix working)
-- Different strategy? (approach fix working)
-- Tests run before submitting? (verification fix working)
-- Correct output? (actual pass)
-
-## Step 8: Validate on Eval Server
-
-**Use `tools/run_eval.py`.** It handles building, deploying, env vars, and harbor flags
-correctly. Do not manually construct harbor commands — the flags are finicky and
-you will waste time on typos.
-
-### Per-run isolation
-
-Every `run_eval.py launch` creates an isolated staging directory on the eval server
-at `~/git/terminal-bench/runs/<job-name>/` containing its own copy of:
-- `serf-linux-amd64` — the binary built from the current commit
-- `serf_agent.py` — the harbor adapter
-- `install-serf.sh.j2` — the container install template
-- `.env` — copied from the base terminal-bench directory
-
-This means concurrent runs never interfere with each other. You can run a focused test
-and a full suite simultaneously without worrying about binary swaps or shared state.
-
-### Deploy and run a focused eval
-
-```bash
-# Single task, 3 repetitions, with reviewer gate
-./tools/run_eval.py launch --job reviewer-v3 --task build-cython-ext --reps 3 --ak enable_reviewer_gate=true
-
-# Single task, 5 repetitions, no reviewer gate
-./tools/run_eval.py launch --job baseline-test --task fix-code-vulnerability --reps 5
-
-# Multiple agent kwargs
-./tools/run_eval.py launch --job experiment-1 --task build-cython-ext --reps 3 \
-  --ak enable_reviewer_gate=true --ak result_tool_name=done
-
-# Dry run (show what would be done without executing)
-./tools/run_eval.py launch --job test --task build-cython-ext --reps 1 --dry-run
-```
-
-### Check eval status and results
-
-```bash
-./tools/run_eval.py status --job reviewer-v3
-```
-
-Output shows pass/fail/running for each rep, summary, manifest, and recent log.
-
-### Collect and summarize a finished run
-
-```bash
-./tools/run_eval.py collect --job reviewer-v3
-```
-
-Rsyncs results from the eval server, runs `collect-run.sh` to create the archive,
-generates `summary.json` with all three pass rates and Wilson CI.
-
-### Full 89-task suite
-
-For full validation after targeted testing:
-
-```bash
-# Build, deploy, and run all 89 tasks
-./tools/run_eval.py launch --job full-run-v4 --reps 1 --ak enable_reviewer_gate=true
-```
-
-(Omit `--task` for all tasks. But prefer focused evals first — full runs take hours
-and cost real money.)
-
-### A/B testing
-
-To compare two configurations, run focused evals with different job names:
-
-```bash
-# Control: current behavior
-./tools/run_eval.py launch --job ab-control --task build-cython-ext --reps 5 --ak enable_reviewer_gate=true
-
-# Treatment: with some change
-./tools/run_eval.py launch --job ab-treatment --task build-cython-ext --reps 5 \
-  --ak enable_reviewer_gate=true --ak result_tool_name=done
-```
-
-Then compare results:
-```bash
-# Collect both runs
-./tools/run_eval.py collect --job ab-control
-./tools/run_eval.py collect --job ab-treatment
-
-# Cross-run comparison with bootstrap CIs, McNemar's test, regressions/improvements
-python3 tools/compare_runs.py /data/serf-evals/runs/<run-id-a> /data/serf-evals/runs/<run-id-b>
-
-# Generate HTML report for a single run
-python3 tools/generate_report.py /data/serf-evals/runs/<run-id>
-```
-
-### Custom adapters
-
-Each run gets its own staging directory, so adapter modifications won't affect other
-runs. To test adapter changes without rebuilding the binary:
-
-```bash
-# --no-build skips cross-compile; the staging dir won't have a binary, so ensure
-# a previous run's binary exists or copy one manually.
-./tools/run_eval.py launch --job my-test --task configure-git-webserver --reps 1 \
-  --no-build --adapter "serf_agent:SerfAgent" --ak enable_reviewer_gate=true
-```
-
-For a completely different adapter class, modify `tools/serf_agent.py` locally and
-launch — `run_eval.py` will deploy your modified version to the run's isolated staging
-directory without touching any other run.
-
-### Targeting a different server
-
-By default, `run_eval.py` targets magic-kingdom. To use flower-garden or another server:
-
-```bash
-EVAL_REMOTE=jesse@192.168.118.101 ./tools/run_eval.py launch --job test --task build-cython-ext --reps 1
-```
-
-**NEVER manually run harbor commands.** `run_eval.py` handles env vars, PATH, and
-flags correctly. Manual harbor commands will forget `set -a; source .env; set +a` and
-silently fail with "no LLM providers configured."
-
-## Harbor CLI Reference
-
-Harbor is the benchmark runner. It's installed via uv at `~/.local/bin/harbor` on
-the eval servers (magic-kingdom v0.1.45, flower-garden v0.1.44). `run_eval.py` handles
-all of this, but if you need to understand the flags:
-
-### Correct flags (verified working)
-
-| Flag | Purpose | Example |
-|------|---------|---------|
-| `--dataset` | Dataset to run | `"terminal-bench@2.0"` |
-| `--task-name` | Filter to one task | `"build-cython-ext"` |
-| `-k` | Repetitions per task | `3` |
-| `--job-name` | Name for this run | `"my-eval"` |
-| `--jobs-dir` | Output directory | `"/tmp/my-eval"` |
-| `--agent-import-path` | Agent adapter | `"serf_agent:SerfAgent"` |
-| `--ak` | Agent kwargs (repeatable) | `enable_reviewer_gate=true` |
-
-### Wrong flags (will error)
-
-| Wrong | Correct | Error |
-|-------|---------|-------|
-| `--job-dir` | `--jobs-dir` | "No such option" |
-| `--agent serf` | `--agent-import-path "serf_agent:SerfAgent"` | serf is not a built-in agent |
-| File path as import | `module:ClassName` format | Import error |
-
-### Agent adapter (serf_agent.py)
-
-The serf adapter is at `tools/serf_agent.py` in the repo. `run_eval.py launch`
-deploys it to each run's isolated staging directory at
-`~/git/terminal-bench/runs/<job-name>/`. It wraps the serf binary for harbor's
-agent interface:
-
-- Maps harbor agent kwargs to serf CLI flags (e.g., `enable_reviewer_gate` → `--enable-reviewer-gate`)
-- Custom kwargs like `result_tool_name` need explicit support in the adapter — check
-  that the adapter handles new flags before using them with `--ak`
-- State dir at `/logs/agent/serf-state` (bind-mounted by harbor), captures transcripts + api.jsonl
-- Exports ATIF v1.6 trajectory (`--export-atif`), copies to `agent/trajectory.json` for dashboard
-- Populates harbor token metrics from ATIF `final_metrics` (feeds into result.json)
-- Logs execution summary to `trial.log` via harbor's logger (trace download, token counts)
-- Downloads `/app` artifacts post-run, prunes large/binary directories locally
-- Requires `install-serf.sh.j2` alongside it (also auto-deployed)
-
-### Environment variables
-
-**CRITICAL**: Background processes (`nohup`) do NOT inherit interactive shell env vars.
-You must explicitly source the env file before launching:
-
-```bash
-# Correct: set -a exports all vars, works with nohup
-set -a; source .env; set +a
-
-# Also works but messier with special characters in values
-export $(cat .env | xargs)
-
-# WRONG: source without set -a does not export
-source .env  # vars set but not exported to child processes
-```
-
-The helper scripts handle this automatically.
-
-## Job Data Structure
-
-After a harbor run, job data is at:
-```
-/tmp/<job-name>/
-  manifest.json                                  — build provenance (git SHA, branch, model, adapter)
-  <task>__<hash>/
-    reward.txt                                   — 0.0 or 1.0 (ground truth)
-    result.json                                  — overall result, timing
-    trial.log                                    — adapter execution log (trace download, token summary)
-    agent/trajectory.json                        — ATIF v1.6 trajectory (steps, tool calls, metrics)
-    agent/serf-state/api.jsonl                   — all LLM API calls with raw responses
-    agent/serf-state/sessions/<id>.json          — session metadata
-    agent/serf-state/sessions/<id>.transcript.jsonl — full transcript (all turns)
-    agent/artifacts/                             — workspace files (/app) post-run, pruned
-```
-
-**Important:** `reward.txt` is the accurate per-task reward. `result.json` intermediate
-writes can be misleading — always check `reward.txt`.
-
-**trial.log** contains adapter-level execution info: trace download confirmation, ATIF
-trajectory copy, and a token usage summary line like
-`Serf finished: 6 steps, 39462 prompt tokens, 1410 completion tokens`. Quick sanity check
-for whether the agent ran at all.
-
-**trajectory.json** is the ATIF v1.6 trajectory exported by the serf binary
-(`--export-atif` flag). Contains per-step data (tool calls, reasoning, observations) and
-`final_metrics` (total tokens, steps). The adapter reads `final_metrics` to populate
-harbor's token tracking (`context.n_input_tokens`, `n_output_tokens`, `n_cache_tokens`).
-
-The `manifest.json` ties the run to exact source code — `run_eval.py status` prints it.
-The `api.jsonl` captures every LLM API call with the full raw provider response,
-enabling postmortem analysis of empty responses, parsing failures, and token usage
-without throwaway scripts.
-
-For batch analysis, use the transcript viewer (see Step 4). For quick failure listing:
-```bash
-./tools/run_eval.py status --job <job-name>
-```
-
-### Collected archive structure
-
-After `run_eval.py collect`, the archive at `/data/serf-evals/runs/<run-id>/` has:
-```
-<run-id>/
-  manifest.json
-  summary.json
-  tasks/
-    <task-name>/
-      rep-1/
-        reward.txt
-        failure_category.txt
-        transcript.jsonl
-        api.jsonl
-      rep-2/
-        ...
-```
-
-## Reviewer Gate Failure Patterns
-
-When running with `--enable-reviewer-gate`, failures fall into these categories:
-
-| Pattern | Frequency | Cause | Fix |
-|---------|-----------|-------|-----|
-| Reviewer-approved-but-wrong | ~40% | Reviewer approves work that verifier rejects | Improve reviewer thoroughness |
-| Timeout | ~33% | Task + reviewer overhead exceeds wallclock limit | Efficiency, or accept as hard |
-| Never submitted | ~23% | Agent never calls communicate | Nudge logic, prompt |
-| API error | ~2% | Transient provider failures | Retry logic |
-
-### Reviewer-approved-but-wrong deep dive
-
-From analyzing build-cython-ext failures (4/5 same root cause):
-
-1. **Missed file types**: Agent patched `.py` files but missed `.pyx` (Cython source).
-   The reviewer ran the project's own test suite (18/18 pass) but didn't grep for
-   remaining instances of the deprecated pattern in ALL file types. Fix: reviewer
-   prompt now says to search exhaustively across all file types.
-
-2. **Tested wrong artifact**: Agent built extensions in-place, then `pip install`
-   created a pure-Python wheel. Reviewer tested from source directory (where `.so`
-   files existed), but verifier tested the installed package (where they didn't).
-   Fix: reviewer prompt now says to test the final installed/deployed artifact.
-
-3. **All-or-nothing scoring**: Even 10/11 tests passing yields reward=0.
-   Tasks that look close are actually failures. The reviewer needs to be strict
-   about complete coverage.
-
-These fixes are in `agent/agents/reviewer.md` and encode general principles
-(search all file types, test final artifact) not task-specific knowledge.
-
-## Task Difficulty Tiers (terminal-bench 2.0)
-
-Tasks ranked by aggregate failure rate across all agents (from the terminal-bench README):
-
-| Tier | Failure Rate | Tasks | Use For |
-|------|-------------|-------|---------|
-| EXTREME | 90%+ | sanitize-git-repo, password-recovery, circuit-fibsqrt, etc. | Skip — too hard for signal |
-| VERY HARD | 75-90% | path-tracing, decrypt-file, crack-7z-hash, etc. | Only if specifically investigating |
-| HARD | 50-75% | build-pmars, qemu-startup, winning-avg-corewars, etc. | Testing ambitious improvements |
-| MODERATE-HARD | 35-50% | cancel-async-tasks, overfull-hbox, multi-source-data-merger, etc. | Sweet spot for most experiments |
-| MODERATE | 20-35% | largest-eigenval, filter-js-from-html, etc. | Good baseline, should be solvable |
-| EASY | <20% | fix-code-vulnerability, build-cython-ext, etc. | Regression checks only |
-
-### High-discrimination tasks (biggest gap between good and bad agents)
-
-These tasks best separate capable from incapable agents:
-
-| Task | Failure Rate | Discrimination Gap | Notes |
-|------|-------------|-------------------|-------|
-| sanitize-git-repo | 43.4% | 78.6pt | Biggest discriminator |
-| path-tracing | 59.3% | 68pt | Ray tracing implementation |
-| break-filter-js-from-html | 33.7% | 68pt | HTML/JS extraction |
-
-Use these for Phase 2+ of experiments where you need maximum signal from a small task set.
-
-## Running Controlled Experiments
-
-For systematic prompt experiments, see the prompt-experiment-protocol skill at
-`~/.claude/skills/prompt-experiment-protocol/SKILL.md`. Key principles:
-
-- Test ONE hypothesis per experiment
-- Phase 1 (trajectory check): 2-3 tasks, 1 rep each — look at BEHAVIOR, not pass/fail
-- Phase 2 (statistical signal): 5-8 tasks, 2-3 reps — does behavior translate to outcomes?
-- Phase 3 (validation): full discriminator set — only if Phase 2 shows improvement
-- Always pass `--ak reasoning_effort=high` (without it everything scores ~0%)
-- Document results in `docs/experiment-backlog.md`
-
-Track active experiments and their hypotheses/results in `docs/experiment-backlog.md`.
-
-## Common Pitfalls
-
-- **Don't optimize for one task**: A prompt that says "always install scipy first" is task-specific. A prompt that says "resolve dependency errors before retrying" is general.
-- **Don't ignore the verifier**: Read `tests/test.sh` and `tests/test_outputs.py` to understand exactly what's checked. Many failures are partial — the agent did 80% of the work but missed a specific requirement.
-- **Don't assume the model reads the prompt**: gpt-5.3-codex in tool-calling mode often skips system prompt directives. Structural interventions (tool availability, response handling) are more reliable than prompt text.
-- **Run multiple times**: Results are nondeterministic. A task that passes once may fail next time. Run 2-3 times before declaring a fix works.
-- **Don't build to the benchmark**: If a fix requires knowing the task answer, it's cheating. If it only helps one task and hurts others, it's overfitting. Every fix should be a general engineering principle.
-- **Don't skip the env vars**: The #1 cause of "all tasks fail immediately" is forgetting to export OPENAI_API_KEY. `run_eval.py` handles this, so use it.
-- **Use run_eval.py**: It encodes correct harbor flags, env var handling, build/deploy, and result checking. Don't hand-construct harbor commands.
-- **Check build provenance**: Run `./serf --version` to verify the binary you're testing. Every transcript header includes `build_version`. Every eval run writes a `manifest.json` with the git SHA. If you can't trace a result to the code that produced it, the result is worthless.
+This is fast (~30 seconds) and reveals instruction conflicts that aren't obvious from
+reading the prompt.
+
+**Caveat:** The model's self-report is reliable about WHICH instructions it noticed
+and how it ranked them. It's less reliable about the deeper WHY (may rationalize).
+
+## Anti-Patterns
+
+| Anti-pattern | Instead |
+|-------------|---------|
+| Guessing root causes from error messages | Read the actual transcript |
+| Reusing job names | Always use auto-generated names |
+| Running full eval before understanding failures | Root cause -> fix -> test isolated -> then full eval |
+| Bundling multiple changes | One change per experiment |
+| Testing with 1 rep | 3+ reps minimum |
+| Teaching to the test | Fixes must be general engineering principles |
+| Skipping transcript analysis | Read transcripts, identify patterns across failures |
+| Not verifying the binary | Always verify the deployed binary contains expected content |
+| Not checking transcript headers | After run, verify the prompt in transcript header matches intent |
+
+## Recording Results
+
+Each entry: git SHA, model, tasks, reps, pass rate, behavioral observations,
+whether fix was adopted or reverted. Update NOTEBOOK.md after every experiment.
+
+## Infrastructure Reference
+
+See the project's `docs/experiments/infrastructure.md` for deployment, launch
+commands, results collection, and environment-specific details.

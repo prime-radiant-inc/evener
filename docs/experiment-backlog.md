@@ -5,9 +5,11 @@ See `~/.claude/skills/prompt-experiment-protocol/SKILL.md` for execution methodo
 
 ## Current Baseline
 
-Best run: `serf_gpt-5.3-codex_high_e6756a2_20260302_1` — 58/89 cumulative (65.2%)
-Reverted baseline: `revert-e6756a2-high` — 9/14 (64%) on 5 tasks x ~3 reps
-Critical parameter: `--ak reasoning_effort=high` (without it everything scores ~0%)
+Combined eval (2026-03-24): 72/87 reliable (82%) with gpt-5.4 + gpt-5.4-mini best-of.
+See `docs/experiments/2026-03-24-combined-eval-final.md`.
+
+Mini-only baseline: `openai-gpt-5-4-mini_nogit_20260322_*` — 63 runs, 87 tasks.
+34 tasks pass reliably with mini alone.
 
 ---
 
@@ -251,6 +253,59 @@ guidance to subagent_base.md fixes the 3 observed failure patterns.
 - **Decision:** Keep the subagent values changes. cancel-async-tasks improvement is real.
   filter-js-from-html may be unsolvable via generic prompting — needs agent to discover
   BS4 normalization requirement. path-tracing needs the link-loophole fix tested.
+
+### prompt-template-engine (2026-03-25/26)
+
+**Hypothesis:** Section-based template engine replaces flat prompt concatenation.
+Should be a structural improvement without behavioral change.
+
+**Commit:** 38afc9a (main) — template engine merged.
+
+**Baseline comparison run:** `prompt-engine-mini-1rep` (gpt-5.4-mini, 89 tasks, 1 rep)
+- 34/73 pass (46.6%) — 12 regressions from the mini-reliable baseline (34 tasks).
+- 16 tasks launched with hallucinated names (excluded tier).
+
+**Root causes identified (12 regressions):**
+
+| Root Cause | Tasks | Fix Commit |
+|------------|-------|------------|
+| Template ordering: Skills before Role | fix-git, password-recovery, crack-7z-hash | 3522d73 |
+| Delegation info loss (coordinator paraphrases) | nginx, log-summary, multi-source | 246a150 |
+| Artifact-only verification (can't run tests) | chess-best-move, extract-elf, fix-code-vuln, pytorch-model-cli, financial-doc | 830096a |
+| Aggressive cleanup instruction | pytorch-model-cli | 5008632 |
+| Nondeterministic | rstan-to-pystan, crack-7z-hash | N/A |
+
+**Key techniques used:**
+- Session interrogation via OpenAI API replay — asked the model "why did you skip delegation?" Got honest answer: "reading ops-task/SKILL.md pushed me toward direct work."
+- Side-by-side baseline vs new transcript comparison (first 5 tool calls)
+- Delegation test harness (`/tmp/delegation-test-harness.py`) — proved prompt text alone doesn't break delegation; interaction with real tool outputs triggers it.
+- `go clean -cache` required before cross-compiling — stale embedded files caused v3 to run without template reorder.
+
+**Fix iteration runs (harbor-runner, 5-task regression set):**
+
+| Run ID | Fixes Included | Results |
+|--------|---------------|---------|
+| prompt-engine-mini-1rep | None (baseline) | 0/5 on these 5 tasks |
+| delegation-fix-test1 | Verbatim delegation | 2/3 (nginx P, multi-source P, log-summary F) |
+| v2-fix-test1 | + Role reorder | 2/5 (nginx P, log-summary P) |
+| v4-clean-test | + RootTask injection | 2/5 (log-summary P, password P) — first clean build |
+| v6-no-inject | Reorder + verification revert (no injection) | 2/5 (fix-git P, password P) |
+| v6-3rep | Same as v6, 3 reps | 9/15 (60%) |
+
+**v6-3rep detailed:**
+
+| Task | Score | Notes |
+|------|-------|-------|
+| fix-git | 3/3 | Fixed (was 0/1). Verification revert is the key. |
+| nginx-request-logging | 2/3 | Improved (was 0/1). Delegation info loss still flaky. |
+| password-recovery | 2/3 | Improved (was 0/1). |
+| log-summary-date-ranges | 1/3 | Still flaky without RootTask injection. |
+| multi-source-data-merger | 1/3 | Still flaky. |
+
+**Decision:** 4 commits kept on main (246a150, 3522d73, 5008632, 830096a).
+RootTask injection reverted (74230a9) — too specific. Delegation info loss for
+log-summary and multi-source needs a better general solution.
+Failure analysis of v6-3rep failures in progress.
 
 ### subagent-values-v2
 
