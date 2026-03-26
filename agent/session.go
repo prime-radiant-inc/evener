@@ -167,11 +167,6 @@ type SessionConfig struct {
 	// SubagentTask is the task description passed to spawn_agent.
 	SubagentTask string `json:"-"`
 
-	// RootTask is the original user-facing task description from the root session.
-	// Propagated to all child sessions so subagents can see the full spec
-	// regardless of how the coordinator paraphrases its delegation.
-	RootTask string `json:"-"`
-
 	// Depth is the sub-agent nesting depth (0 for root sessions).
 	Depth int `json:"-"`
 
@@ -1546,13 +1541,6 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 	s.emit(EventUserInput, UserInputData{Text: input})
 	s.appendTurn(TurnUserInput, llm.User(input))
 
-	// Capture the first user input as the root task for child sessions.
-	s.mu.Lock()
-	if s.cfg.RootTask == "" {
-		s.cfg.RootTask = input
-	}
-	s.mu.Unlock()
-
 	// UserPromptSubmit hooks
 	if s.hookRunner != nil {
 		hi := s.hookInput(HookUserPromptSubmit)
@@ -2376,7 +2364,6 @@ func (s *Session) buildPromptData() PromptData {
 		GitRecentCommitTitles: s.envInfo.GitRecentCommitTitles,
 		WorkspaceTree:         s.envInfo.Workspace.Tree,
 		BuildInfo:             s.envInfo.Workspace.BuildInfo,
-		RootTask:              s.cfg.RootTask,
 		ResultToolName:        s.resultToolName(),
 		UserInstructionOverride: strings.TrimSpace(s.cfg.UserInstructionOverride),
 		ProjectDocs:           s.projectDocs,

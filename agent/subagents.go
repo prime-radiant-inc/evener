@@ -129,7 +129,6 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	subData := PromptData{
 		Provider:        s.profile.ID(),
 		Agent:           agentName,
-		RootTask:        s.cfg.RootTask,
 		ResultToolName:  s.resultToolName(),
 		WorkingDir:      subWorkDir,
 		IsGitRepo:       s.envInfo.IsGitRepo,
