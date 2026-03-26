@@ -62,6 +62,7 @@ func main() {
 	flag.Var(&mcpConfigs, "mcp-config", "path to .mcp.json file (repeatable)")
 	var pluginDirs stringSliceFlag
 	flag.Var(&pluginDirs, "plugin-dir", "plugin directory (repeatable)")
+	systemPromptAsUser := flag.Bool("system-prompt-as-user", false, "deliver system prompt as first user message instead of system instructions")
 	cpuProfile := flag.String("cpu-profile", "", "write CPU profile to this file path")
 	traceFile := flag.String("trace", "", "write execution trace to this file path")
 	var systemPromptAppend stringSliceFlag
@@ -184,6 +185,7 @@ func main() {
 		mcpServers:         []string(mcpServers),
 		mcpConfigs:         []string(mcpConfigs),
 		pluginDirs:         []string(pluginDirs),
+		systemPromptAsUser: *systemPromptAsUser,
 		stdout:             os.Stdout,
 		stderr:             os.Stderr,
 		resume:             *resume,

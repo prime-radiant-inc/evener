@@ -178,6 +178,12 @@ type SessionConfig struct {
 	// trajectory JSON file to this path. Only root sessions (Depth==0) export.
 	ExportATIFPath string `json:"-"`
 
+	// SystemPromptAsUser, when true, delivers the system prompt as the first
+	// user message instead of a system/developer message. This is a workaround
+	// for models (e.g. GPT-5.4) that reliably follow user messages but
+	// ignore system instructions when given specific task delegations.
+	SystemPromptAsUser bool `json:"system_prompt_as_user,omitempty"`
+
 	// SharedTaskStore, when non-nil, is used instead of creating a per-session
 	// task store. Set by spawnAgent when ShareTasksWithChildren is true.
 	SharedTaskStore *TaskStore `json:"-"`
@@ -1681,10 +1687,17 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		toolDefs := s.allToolDefinitions(round)
 		timings.ToolDefs = time.Since(tPhaseStart)
 
+		var messages []llm.Message
+		if s.cfg.SystemPromptAsUser {
+			messages = append([]llm.Message{llm.User(sys)}, history...)
+		} else {
+			messages = append([]llm.Message{llm.System(sys)}, history...)
+		}
+
 		req := llm.Request{
 			Model:      s.profile.Model(),
 			Provider:   s.profile.ID(),
-			Messages:   append([]llm.Message{llm.System(sys)}, history...),
+			Messages:   messages,
 			Tools:      toolDefs,
 			ToolChoice: &llm.ToolChoice{Mode: "auto"},
 			WebSearch:  true,

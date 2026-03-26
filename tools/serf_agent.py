@@ -33,13 +33,14 @@ _ARTIFACT_WARN_MB = 100
 class SerfAgent(BaseInstalledAgent):
     """Serf agent: headless, non-interactive coding agent."""
 
-    def __init__(self, max_rounds: int = 100, min_result_round: int = 0, reasoning_effort: str = "", enable_reviewer_gate: bool = False, result_tool_name: str = "", plugin_dirs: str = "", system_prompt_append: str = "", *args, **kwargs):
+    def __init__(self, max_rounds: int = 100, min_result_round: int = 0, reasoning_effort: str = "", enable_reviewer_gate: bool = False, result_tool_name: str = "", plugin_dirs: str = "", system_prompt_append: str = "", system_prompt_as_user: bool = False, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._max_rounds = max_rounds
         self._min_result_round = min_result_round
         self._reasoning_effort = reasoning_effort
         self._enable_reviewer_gate = enable_reviewer_gate
         self._result_tool_name = result_tool_name
+        self._system_prompt_as_user = system_prompt_as_user
         # Comma-separated host paths to plugin directories.
         self._plugin_dirs = [p.strip() for p in plugin_dirs.split(",") if p.strip()] if plugin_dirs else []
         # Comma-separated host paths to files appended to system prompt.
@@ -140,6 +141,8 @@ class SerfAgent(BaseInstalledAgent):
             name = Path(host_path).name
             append_flags += f"--system-prompt-append /installed-agent/prompts/{name} "
 
+        spau_flag = "--system-prompt-as-user " if self._system_prompt_as_user else ""
+
         return [
             ExecInput(
                 command=(
@@ -153,6 +156,7 @@ class SerfAgent(BaseInstalledAgent):
                     f"{export_atif_flag}"
                     f"{plugin_flags}"
                     f"{append_flags}"
+                    f"{spau_flag}"
                     f"{effort_flag}"
                     f"-- {escaped}"
                 ),

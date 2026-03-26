@@ -45,7 +45,8 @@ type runConfig struct {
 	skillsDirs []string // extra skill directories
 	mcpServers []string // --mcp inline specs
 	mcpConfigs []string // --mcp-config file paths
-	pluginDirs []string // --plugin-dir directories
+	pluginDirs         []string // --plugin-dir directories
+	systemPromptAsUser bool     // --system-prompt-as-user
 
 	// Resume options.
 	resume       string // session ID to resume
@@ -186,6 +187,7 @@ func run(ctx context.Context, cfg runConfig) error {
 			ContextStrategy:       cfg.contextStrategy,
 			ExportATIFPath:        cfg.exportATIF,
 			NonInteractive:        true,
+			SystemPromptAsUser:    cfg.systemPromptAsUser,
 		}
 		if cfg.maxSubagentDepth >= 0 {
 			sessionCfg.MaxSubagentDepth = cfg.maxSubagentDepth
