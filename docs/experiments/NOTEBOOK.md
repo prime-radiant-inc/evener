@@ -12,29 +12,71 @@ Invoke it before starting work.
 **Model:** gpt-5.4-mini for current eval iteration
 **Combined baseline (Mar 24):** 72/87 reliable (82%) with gpt-5.4 + gpt-5.4-mini best-of
 **Mini-only baseline:** 34 tasks pass reliably with gpt-5.4-mini alone
-**Active eval:** `disc-3rep-v6` — 56 discriminator tasks × 3 reps with template engine fixes
 
-### Template engine regression analysis (Mar 25-26)
+### Latest eval: disc-3rep-v6-fixed (Mar 26)
 
-The prompt template engine (commit 38afc9a) introduced 12 regressions from the
-mini baseline. Root causes identified and fixed:
+**Run:** `disc-3rep-v6-fixed` — 56 discriminator tasks × 3 reps with template engine fixes
+**Build:** commit 1b06827 (all fixes through verification revert)
+**Result:** 70/163 = 42.9% (including 31 timeouts as failures)
+**Result excl timeouts:** 70/132 = 53.0%
+**Comparison baseline:** `disc-3rep-v6` (unfixed, same tasks) = 68/167 = 40.7%
 
-1. **Template section ordering** — Skills rendered before Role, priming the
-   coordinator into implementer mode. Fix: moved Role before Skills.
-2. **Artifact-only verification** — prevented coordinator from running tests.
-   Fix: reverted to baseline "Run test commands if available" language.
-3. **Delegation info loss** — coordinator paraphrases task specs when delegating.
-   Prompt-level fix helps partially; structural solutions still needed.
-4. **Aggressive cleanup instruction** — "only deliverables remain" caused
-   implementer to delete pre-existing task inputs. Fix: moved to shared values
-   with "never delete files that existed before you started."
+**Net: +2.2pt overall.** 15 task improvements >15pt, 12 regressions >15pt. But only
+1 regression was caused by our fixes (polyglot-c-py — verification artifact left behind).
+The other 11 regressions are nondeterministic variance (implementer approach quality).
 
-**Key technique discovered:** Session interrogation via OpenAI API replay.
-Replay the failed conversation and ask the model why it made specific choices.
-The model gives honest, useful answers about instruction conflicts.
+### Active test: v7-action-bias (Mar 26)
 
-**Go build cache gotcha:** `go build` caches embedded files. Use `make build-linux`
-(which runs `go clean -cache`) when cross-compiling for eval deployments.
+Testing 3 more prompt changes on 7 regression tasks:
+- **Action bias in workflow.md**: "Start building early. Research is not progress;
+  working code is progress." Addresses implementer research-loop timeouts.
+- **Optional explorer**: Coordinator can scout directly for small workspaces instead
+  of mandatory explorer spawn. Saves 30-60s of budget.
+- **Capabilities: computational verification**: "Use computational tools to verify
+  what you see" instead of "do not write code to extract what you see." Addresses
+  chess-best-move where baseline installed python-chess but fixed run trusted vision.
+
+**Run:** `v7-action-bias` — 7 tasks × 1 rep (feal-differential, largest-eigenval,
+circuit-fibsqrt, polyglot-c-py, polyglot-rust-c, chess-best-move,
+adaptive-rejection-sampler)
+
+### Template engine fixes shipped (commits on main)
+
+| Commit | Fix | Root Cause |
+|--------|-----|------------|
+| 246a150 | Verbatim delegation guidance | Coordinator paraphrases specs |
+| 3522d73 | Role before Skills + `<skill-catalog>` | Skill priming before identity |
+| 5008632 | Cleanup rule in shared values | Implementer deleted task inputs |
+| 830096a | Verification: "Run test commands" | Artifact-only blocked coordinator testing |
+| 74230a9 | Revert RootTask injection | Too specific, not general |
+| 70ae411 | Verification cleanup in step 4 | polyglot-c-py: compiled binary left behind |
+| eecc20a | Action bias + optional explorer | Timeout regressions + budget waste |
+| cedf53e | Computational verification for vision | chess-best-move trusted vision alone |
+
+### Known remaining issues
+
+1. **Delegation info loss** — coordinator still paraphrases task specs despite
+   "forward verbatim" instruction. The model rewrites. Structural solutions
+   (RootTask injection) were too specific. No good general fix yet.
+2. **Non-delegation on vision tasks** — coordinator sometimes handles vision tasks
+   directly instead of delegating. Capabilities text updated but not yet validated.
+3. **Reviewer can destroy correct answers** — chess-best-move unfixed: reviewer
+   removed the correct g2g4 move. Reviewer is too aggressive about reformatting.
+4. **Reviewer validation can introduce bugs** — adaptive-rejection-sampler: reviewer
+   feedback led to overly strict xinit validation that broke valid inputs.
+5. **Post-rejection self-fix** — coordinator fixes code itself after reviewer rejection
+   instead of spawning a new implementer (violating "NEVER write files yourself").
+
+### Key techniques
+
+- **Session interrogation** (`tools/interrogate_session.py`): Replay failed session
+  and ask the model about its decisions. Model honestly reports instruction conflicts.
+- **Comparative root-cause analysis** (`docs/skills/benchmark-driven-improvement/root-cause-prompt.md`):
+  Template for subagent dispatch. Enforces side-by-side comparison, not categorization.
+- **Binary verification**: Always check transcript header `build_version` AND tarball
+  contents. `go build` caches embedded files — use `make build-linux`.
+- **Harbor-runner staging**: Never put agent dirs under /tmp/ — parent-dir binary
+  contamination. Use isolated subdirectories.
 
 ### Previous state (March 25)
 
@@ -230,6 +272,15 @@ messages with system prompt first, which GPT-5.4 ignores. Not yet implemented or
 | 3/25 | Impl H29M (no XML tags) | mteb ×2 local | 0/2 | Same content without XML: fails |
 | 3/25 | Impl H33 (no "follow docs") | mteb ×2 local | 0/2 | XML + numbered but no "follow docs": fails |
 | 3/25 | SystemPromptAsUser (AWS) | mteb ×3 + regression | 0/3 | System prompt placed BEFORE task — wrong order |
+| 3/25 | prompt-engine-mini-1rep | 56 disc ×1 | 24/56 (43%) | Template engine baseline, 12 regressions from mini baseline |
+| 3/26 | delegation-fix-test1 | 3 info-loss tasks ×1 | 2/3 | Verbatim delegation: nginx+multi-source pass, log-summary fail |
+| 3/26 | v2-fix-test1 | 5 regression tasks ×1 | 2/5 | + Role reorder: nginx+log-summary pass |
+| 3/26 | v4-clean-test | 5 regression tasks ×1 | 2/5 | + RootTask injection (first clean build): log-summary+password pass |
+| 3/26 | v6-no-inject | 5 regression tasks ×1 | 2/5 | No injection: fix-git+password pass (verification revert) |
+| 3/26 | v6-3rep | 5 regression tasks ×3 | 9/15 | fix-git 3/3, nginx 2/3, password 2/3, log-summary 1/3, multi-source 1/3 |
+| 3/26 | disc-3rep-v6 | 56 disc ×3 | 68/167 (41%) | **WRONG BINARY** — stale 38afc9a deployed. Useful as unfixed baseline |
+| 3/26 | disc-3rep-v6-fixed | 56 disc ×3 | 70/163 (43%) | Correct binary (1b06827). +2.2pt vs unfixed. 31 timeouts |
+| 3/26 | v7-action-bias | 7 regression tasks ×1 | PENDING | Action bias + optional explorer + capabilities fix |
 
 ### Detailed experiment writeups
 
