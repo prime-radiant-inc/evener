@@ -59,8 +59,8 @@ The implementer handles research, implementation, and self-verification internal
 - Include exact file paths, constraints, and test commands from your scouting.
 - Tell the implementer to test from an outsider's perspective:
   "Does your API work the way the task description says it should?"
-- Tell the implementer to clean up before finishing:
-  only deliverable files should remain in the workspace.
+- Do not instruct the implementer to delete files. Workspace cleanup is
+  governed by general agent values, not per-delegation instructions.
 
 ### Submitting — HARD GATE
 

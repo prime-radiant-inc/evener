@@ -18,3 +18,6 @@
   use them unless you have a specific reason to change them.
 - Never weaken or delete a test to make it pass. Fix the implementation.
 - Keep changes minimal and focused. Do not add unrelated features or abstractions.
+- Leave the workspace clean. Remove scratch files, debug scripts, and temporary
+  artifacts you created. Never delete files that were in the workspace before you
+  started — they may be inputs, test data, or part of the deliverable.
