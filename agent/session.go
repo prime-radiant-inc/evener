@@ -35,6 +35,9 @@ const (
 	SessionClosed        SessionState = "CLOSED"
 )
 
+// nonInteractiveGuidance is DEPRECATED — only used by the legacy buildInitialSystemPrompt
+// path (--system-prompt override). The template system uses section files instead:
+//   non-interactive.md.tmpl (base) and non-interactive.agent-coordinator.md (coordinator).
 func nonInteractiveGuidance(resultToolName string) string {
 	return fmt.Sprintf(`
 
@@ -49,11 +52,8 @@ RULES (these override ANY skill instructions that conflict):
 - The ONLY valid use of %s is to deliver FINAL work output.
 - The task prompt IS the complete specification. Read it carefully, then BUILD.
 - If a skill says "ask your human partner", "confirm with user", or "explore user intent":
-  make those judgment calls yourself. You are both the implementer and the decision-maker.
-- The brainstorming skill's "explore user intent" step means carefully re-reading the spec
-  and extracting every requirement — NOT asking questions.
-- Start coding within your first 3 tool calls. Read the spec, read relevant files, then write code.
-- Focus on: read spec → plan internally → test → implement → verify → deliver.
+  make those judgment calls yourself and proceed autonomously.
+- Focus on: read spec → plan internally → implement → verify → deliver.
 `, resultToolName, resultToolName)
 }
 
@@ -299,8 +299,6 @@ type Session struct {
 	cachedSkillList                []SkillMeta
 	cachedExtraTools               string
 	cachedAgentSection             string
-	cachedNonInteractiveGuidance   string
-
 	// Template-based prompt caching.
 	cachedSystemPrompt string
 	promptSourceLog    []PromptSource
@@ -2338,11 +2336,6 @@ func (s *Session) rebuildPromptCache() {
 	// Plugin agents section.
 	s.cachedAgentSection = FormatPluginAgentsPrompt(s.pluginAgents)
 
-	// Non-interactive guidance (empty when not in non-interactive mode).
-	if s.cfg.NonInteractive {
-		s.cachedNonInteractiveGuidance = nonInteractiveGuidance(s.resultToolName())
-	}
-
 	// Refresh the cached system prompt (template path or legacy fallback).
 	s.cachedSystemPrompt = s.renderSystemPrompt()
 }
@@ -2501,9 +2494,10 @@ func (s *Session) renderSystemPrompt() string {
 		embeddedPrompts, "prompts/templates/", templateName, data,
 	)
 	if err != nil {
-		// Fall back to legacy path if template rendering fails
-		s.emit(EventWarning, WarningData{Message: fmt.Sprintf("template render failed, using legacy: %v", err)})
-		return s.buildInitialSystemPrompt()
+		// Template rendering should not fail — embedded templates are compiled into the binary.
+		// Log the error and return a minimal prompt rather than silently degrading to legacy.
+		s.emit(EventWarning, WarningData{Message: fmt.Sprintf("template render failed: %v", err)})
+		return fmt.Sprintf("Template rendering failed: %v. Please report this bug.", err)
 	}
 	s.promptSourceLog = sources
 	return result

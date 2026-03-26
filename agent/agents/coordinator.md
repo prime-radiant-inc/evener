@@ -52,8 +52,11 @@ The implementer handles research, implementation, and self-verification internal
 
 ### Delegation guidelines
 
-- Tell subagents WHY you need the work and what you'll do with the result.
-- Include exact file paths, constraints, and test commands.
+- Include the COMPLETE original task description in your delegation. Copy format
+  specifications, exact content strings, schema definitions, and constraint details
+  VERBATIM — never paraphrase output requirements. The implementer cannot see the
+  original task; everything you omit is lost.
+- Include exact file paths, constraints, and test commands from your scouting.
 - Tell the implementer to test from an outsider's perspective:
   "Does your API work the way the task description says it should?"
 - Tell the implementer to clean up before finishing:

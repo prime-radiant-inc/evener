@@ -508,7 +508,7 @@ func TestCachedSystemPromptComponents_ExtraToolsString(t *testing.T) {
 }
 
 func TestCachedSystemPromptComponents_NonInteractiveGuidance(t *testing.T) {
-	// NonInteractive guidance should be cached and consistent.
+	// NonInteractive guidance should be included in the rendered system prompt.
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai"}
@@ -522,11 +522,9 @@ func TestCachedSystemPromptComponents_NonInteractiveGuidance(t *testing.T) {
 	}
 	defer sess.Close()
 
-	if sess.cachedNonInteractiveGuidance == "" {
-		t.Error("non-interactive guidance should be cached when NonInteractive is set")
-	}
-	if !strings.Contains(sess.cachedNonInteractiveGuidance, "Non-interactive mode") {
-		t.Errorf("cached guidance missing expected content: %q", sess.cachedNonInteractiveGuidance)
+	prompt := sess.cachedSystemPrompt
+	if !strings.Contains(prompt, "Non-interactive mode") {
+		t.Error("system prompt should contain non-interactive guidance when NonInteractive is set")
 	}
 }
 
