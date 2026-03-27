@@ -1,0 +1,67 @@
+{
+  "task": "polyglot-c-py",
+  "current_score": 1.0,
+  "current_run": "v17-broad-20",
+  "current_date": "2026-03-26",
+  "status": "tested",
+  "notes": "",
+  "history": [
+    {
+      "run_id": "disc-3rep-v6-fixed",
+      "date": "2026-03-26",
+      "git_sha": "unknown",
+      "model": "openai/gpt-5.4-mini",
+      "score": 0.25,
+      "reps": [
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "run_id": "v17-broad-20",
+      "date": "2026-03-26",
+      "git_sha": "unknown",
+      "model": "openai/gpt-5.4-mini",
+      "score": 1.0,
+      "reps": [
+        1.0
+      ]
+    },
+    {
+      "run_id": "v10-deleg-goldplate",
+      "date": "2026-03-25",
+      "git_sha": "unknown",
+      "model": "openai/gpt-5.4-mini",
+      "score": 0.333,
+      "reps": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "run_id": "v11-positive-framing",
+      "date": "2026-03-25",
+      "git_sha": "unknown",
+      "model": "openai/gpt-5.4-mini",
+      "score": 1.0,
+      "reps": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "run_id": "v13-coordinator-verify",
+      "date": "2026-03-26",
+      "git_sha": "unknown",
+      "model": "openai/gpt-5.4-mini",
+      "score": 1.0,
+      "reps": [
+        1.0
+      ]
+    }
+  ]
+}

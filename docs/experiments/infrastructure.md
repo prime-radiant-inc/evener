@@ -239,3 +239,56 @@ For each variant:
 2. Copy clean base, apply changes, build, verify with `strings`, reset
 3. Start experiments on 1 task before running the full suite
 4. Kill variants that go 0/2 on tasks the baseline passes 3/3
+
+## Results collection and scoreboard
+
+Three-layer results system: S3 (canonical archive) → local cache (collateral for
+interrogation) → git-tracked metadata (scores and history).
+
+### Collecting results after a run
+
+```bash
+./tools/collect_results.py RUN_ID \
+    --model openai/gpt-5.4-mini \
+    --git-sha $(git rev-parse --short HEAD) \
+    --variant "description of what changed"
+```
+
+This downloads from S3, normalizes into `~/.serf-evals/tasks/{task}/{run}/{rep}/`,
+extracts rewards, and updates git-tracked metadata:
+
+- `docs/experiments/runs/{run-id}.json` — per-run metadata
+- `docs/experiments/tasks/{task}.json` — per-task scorecard with full history
+- `docs/experiments/scoreboard.json` — the 89-task matrix
+
+Use `--light` for fast backfill (only downloads reward.txt, not transcripts).
+
+### Viewing the scoreboard
+
+```bash
+./tools/scoreboard.py                         # Full 89-task matrix
+./tools/scoreboard.py --task kv-store-grpc    # Single task history
+./tools/scoreboard.py --failing               # Tasks with score < 1.0
+./tools/scoreboard.py --untested              # Tasks not yet tested
+./tools/scoreboard.py --sort score            # Sort by score descending
+```
+
+### Scoring rule
+
+Score = mean of reps from the most recent run. For parallel experiments on the
+same date, the highest score wins. Previous runs are history, not part of the
+current score.
+
+### Local cache
+
+Collateral lives at `~/.serf-evals/tasks/{task}/{run}/{rep}/` organized
+task-first for easy investigation. Full transcripts and API logs included
+in default mode. Cache can be cleaned without losing metadata (re-download
+from S3 on demand).
+
+### Post-experiment workflow
+
+1. `check_run.sh RUN_ID` — poll until complete
+2. `collect_results.py RUN_ID --model ... --git-sha ... --variant "..."` — collect + update
+3. Auto-interrogate failures
+4. `git add docs/experiments/ && git commit` — commit metadata update

@@ -1,0 +1,864 @@
+{
+  "model": "openai/gpt-5.4-mini",
+  "total_tasks": 89,
+  "tested_tasks": 79,
+  "mean_score": 0.608,
+  "tasks": {
+    "adaptive-rejection-sampler": {
+      "score": 0.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0,
+        0.0
+      ],
+      "status": "tested"
+    },
+    "bn-fit-modify": {
+      "score": 1.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "break-filter-js-from-html": {
+      "score": 1.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0
+      ],
+      "status": "tested"
+    },
+    "build-cython-ext": {
+      "score": 0.5,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        0.0
+      ],
+      "status": "tested"
+    },
+    "build-pmars": {
+      "score": 1.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "build-pov-ray": {
+      "score": 1.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "caffe-cifar-10": {
+      "score": 0.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0
+      ],
+      "status": "tested"
+    },
+    "cancel-async-tasks": {
+      "score": 0.667,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        1.0,
+        0.0
+      ],
+      "status": "tested"
+    },
+    "chess-best-move": {
+      "score": 1.0,
+      "last_run": "v19-deleg-b",
+      "last_date": "2026-03-27",
+      "reps": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "circuit-fibsqrt": {
+      "score": 0.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0
+      ],
+      "status": "tested"
+    },
+    "cobol-modernization": {
+      "score": 1.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0
+      ],
+      "status": "tested"
+    },
+    "code-from-image": {
+      "score": 1.0,
+      "last_run": "v12-easy-sweep",
+      "last_date": "2026-03-25",
+      "reps": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "compile-compcert": {
+      "score": 1.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0
+      ],
+      "status": "tested"
+    },
+    "configure-git-webserver": {
+      "score": 1.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "count-dataset-tokens": {
+      "score": 1.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "crack-7z-hash": {
+      "score": 0.667,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        1.0,
+        0.0
+      ],
+      "status": "tested"
+    },
+    "custom-memory-heap-crash": {
+      "score": 1.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0
+      ],
+      "status": "tested"
+    },
+    "db-wal-recovery": {
+      "score": 1.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0
+      ],
+      "status": "tested"
+    },
+    "distribution-search": {
+      "score": 1.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "extract-elf": {
+      "score": 0.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0,
+        0.0
+      ],
+      "status": "tested"
+    },
+    "extract-moves-from-video": {
+      "score": 1.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0
+      ],
+      "status": "tested"
+    },
+    "feal-differential-cryptanalysis": {
+      "score": 1.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0
+      ],
+      "status": "tested"
+    },
+    "feal-linear-cryptanalysis": {
+      "score": 1.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "financial-document-processor": {
+      "score": 0.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0,
+        0.0
+      ],
+      "status": "tested"
+    },
+    "fix-code-vulnerability": {
+      "score": 1.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0
+      ],
+      "status": "tested"
+    },
+    "fix-git": {
+      "score": 1.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0
+      ],
+      "status": "tested"
+    },
+    "fix-ocaml-gc": {
+      "score": 1.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "gcode-to-text": {
+      "score": 0.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "status": "tested"
+    },
+    "git-multibranch": {
+      "score": 1.0,
+      "last_run": "v19-state-b",
+      "last_date": "2026-03-27",
+      "reps": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "gpt2-codegolf": {
+      "score": 0.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0
+      ],
+      "status": "tested"
+    },
+    "headless-terminal": {
+      "score": 1.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "hf-model-inference": {
+      "score": 1.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "install-windows-3.11": {
+      "score": 0.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0
+      ],
+      "status": "tested"
+    },
+    "kv-store-grpc": {
+      "score": 1.0,
+      "last_run": "v20-impl-test-a",
+      "last_date": "2026-03-27",
+      "reps": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "large-scale-text-editing": {
+      "score": 1.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "largest-eigenval": {
+      "score": 1.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "llm-inference-batching-scheduler": {
+      "score": 0.5,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "log-summary-date-ranges": {
+      "score": 1.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "mailman": {
+      "score": 0.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0,
+        0.0
+      ],
+      "status": "tested"
+    },
+    "make-doom-for-mips": {
+      "score": 0.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0
+      ],
+      "status": "tested"
+    },
+    "make-mips-interpreter": {
+      "score": 0.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0,
+        0.0
+      ],
+      "status": "tested"
+    },
+    "mcmc-sampling-stan": {
+      "score": 0.5,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        0.0
+      ],
+      "status": "tested"
+    },
+    "merge-diff-arc-agi-task": {
+      "score": 1.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0
+      ],
+      "status": "tested"
+    },
+    "modernize-scientific-stack": {
+      "score": 1.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0
+      ],
+      "status": "tested"
+    },
+    "mteb-leaderboard": {
+      "score": 0.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0
+      ],
+      "status": "tested"
+    },
+    "mteb-retrieve": {
+      "score": 0.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0
+      ],
+      "status": "tested"
+    },
+    "multi-source-data-merger": {
+      "score": 1.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "openssl-selfsigned-cert": {
+      "score": 1.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "overfull-hbox": {
+      "score": 0.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0,
+        0.0
+      ],
+      "status": "tested"
+    },
+    "password-recovery": {
+      "score": 1.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "path-tracing-reverse": {
+      "score": 0.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0,
+        0.0
+      ],
+      "status": "tested"
+    },
+    "path-tracing": {
+      "score": 1.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0
+      ],
+      "status": "tested"
+    },
+    "polyglot-c-py": {
+      "score": 1.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0
+      ],
+      "status": "tested"
+    },
+    "polyglot-rust-c": {
+      "score": 0.333,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "portfolio-optimization": {
+      "score": 1.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0
+      ],
+      "status": "tested"
+    },
+    "protein-assembly": {
+      "score": 0.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0,
+        0.0
+      ],
+      "status": "tested"
+    },
+    "prove-plus-comm": {
+      "score": 1.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0
+      ],
+      "status": "tested"
+    },
+    "pypi-server": {
+      "score": 1.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "pytorch-model-cli": {
+      "score": 1.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0
+      ],
+      "status": "tested"
+    },
+    "pytorch-model-recovery": {
+      "score": 1.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "qemu-alpine-ssh": {
+      "score": 0.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0,
+        0.0
+      ],
+      "status": "tested"
+    },
+    "qemu-startup": {
+      "score": 0.667,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        1.0,
+        0.0
+      ],
+      "status": "tested"
+    },
+    "query-optimize": {
+      "score": 0.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "status": "tested"
+    },
+    "regex-chess": {
+      "score": 0.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0,
+        0.0
+      ],
+      "status": "tested"
+    },
+    "regex-log": {
+      "score": 1.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "reshard-c4-data": {
+      "score": 1.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "rstan-to-pystan": {
+      "score": 0.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0,
+        0.0
+      ],
+      "status": "tested"
+    },
+    "sanitize-git-repo": {
+      "score": 0.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0,
+        0.0
+      ],
+      "status": "tested"
+    },
+    "schemelike-metacircular-eval": {
+      "score": 0.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0
+      ],
+      "status": "tested"
+    },
+    "sparql-university": {
+      "score": 0.667,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        0.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "sqlite-db-truncate": {
+      "score": 1.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "sqlite-with-gcov": {
+      "score": 1.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "torch-pipeline-parallelism": {
+      "score": 0.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0
+      ],
+      "status": "tested"
+    },
+    "torch-tensor-parallelism": {
+      "score": 0.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0
+      ],
+      "status": "tested"
+    },
+    "train-fasttext": {
+      "score": 0.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0
+      ],
+      "status": "tested"
+    },
+    "tune-mjcf": {
+      "score": 1.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        1.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "video-processing": {
+      "score": 0.0,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0
+      ],
+      "status": "tested"
+    },
+    "winning-avg-corewars": {
+      "score": 0.5,
+      "last_run": "v17-broad-20",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0,
+        1.0
+      ],
+      "status": "tested"
+    },
+    "write-compressor": {
+      "score": 0.0,
+      "last_run": "disc-3rep-v6-fixed",
+      "last_date": "2026-03-26",
+      "reps": [
+        0.0,
+        0.0
+      ],
+      "status": "tested"
+    },
+    "constraints-scheduling": {
+      "score": null,
+      "last_run": null,
+      "last_date": null,
+      "reps": [],
+      "status": "untested"
+    },
+    "dna-assembly": {
+      "score": null,
+      "last_run": null,
+      "last_date": null,
+      "reps": [],
+      "status": "untested"
+    },
+    "dna-insert": {
+      "score": null,
+      "last_run": null,
+      "last_date": null,
+      "reps": [],
+      "status": "untested"
+    },
+    "filter-js-from-html": {
+      "score": null,
+      "last_run": null,
+      "last_date": null,
+      "reps": [],
+      "status": "untested"
+    },
+    "git-leak-recovery": {
+      "score": null,
+      "last_run": null,
+      "last_date": null,
+      "reps": [],
+      "status": "untested"
+    },
+    "model-extraction-relu-logits": {
+      "score": null,
+      "last_run": null,
+      "last_date": null,
+      "reps": [],
+      "status": "untested"
+    },
+    "nginx-request-logging": {
+      "score": null,
+      "last_run": null,
+      "last_date": null,
+      "reps": [],
+      "status": "untested"
+    },
+    "raman-fitting": {
+      "score": null,
+      "last_run": null,
+      "last_date": null,
+      "reps": [],
+      "status": "untested"
+    },
+    "sam-cell-seg": {
+      "score": null,
+      "last_run": null,
+      "last_date": null,
+      "reps": [],
+      "status": "untested"
+    },
+    "vulnerable-secret": {
+      "score": null,
+      "last_run": null,
+      "last_date": null,
+      "reps": [],
+      "status": "untested"
+    }
+  },
+  "updated": "2026-03-27"
+}

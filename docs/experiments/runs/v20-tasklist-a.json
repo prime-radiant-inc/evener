@@ -1,0 +1,20 @@
+{
+  "run_id": "v20-tasklist-a",
+  "date": "2026-03-27",
+  "git_sha": "unknown",
+  "model": "openai/gpt-5.4-mini",
+  "variant": "v20 variant: v20-tasklist-a",
+  "results": {
+    "kv-store-grpc": {
+      "score": 0.667,
+      "reps": [
+        1.0,
+        0.0,
+        1.0
+      ],
+      "reps_pass": 2,
+      "reps_total": 3
+    }
+  },
+  "s3_prefix": "s3://harbor-eval-results-526275945504/runs/v20-tasklist-a/"
+}

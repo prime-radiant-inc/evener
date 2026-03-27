@@ -356,8 +356,32 @@ Use `make build-linux` which invalidates the Go embed cache automatically.
 
 ## Recording Results
 
-Each entry: git SHA, model, tasks, reps, pass rate, behavioral observations,
-whether fix was adopted or reverted. Update NOTEBOOK.md after every experiment.
+After every experiment:
+
+1. **Collect results** — `./tools/collect_results.py RUN_ID --model ... --git-sha ... --variant "..."`
+   This downloads from S3, normalizes to `~/.serf-evals/`, and updates:
+   - `docs/experiments/runs/{run}.json` — per-run metadata
+   - `docs/experiments/tasks/{task}.json` — per-task scorecard with full history
+   - `docs/experiments/scoreboard.json` — the 89-task matrix
+
+2. **Check the scoreboard** — `./tools/scoreboard.py --sort score`
+
+3. **View task history** — `./tools/scoreboard.py --task TASK_NAME`
+
+4. **Commit metadata** — `git add docs/experiments/ && git commit`
+
+5. **Update NOTEBOOK.md** — add behavioral observations, interrogation findings,
+   and any lessons learned. The scoreboard captures scores; NOTEBOOK.md captures
+   the narrative.
+
+### Scoring rule
+Score = mean of reps from the most recent run. For parallel experiments on the
+same date, the highest score wins (best achievable, not arbitrary tiebreak).
+
+### Scoreboard as starting point
+`docs/experiments/scoreboard.json` is the canonical task matrix. Before starting
+a new experiment, check `scoreboard.py --failing` to see which tasks need work
+and `scoreboard.py --task TASK` to see what's been tried.
 
 ## Infrastructure Reference
 

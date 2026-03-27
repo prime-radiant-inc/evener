@@ -1,0 +1,20 @@
+{
+  "run_id": "v18-no-tests-5.4",
+  "date": "2026-03-26",
+  "git_sha": "unknown",
+  "model": "openai/gpt-5.4",
+  "variant": "log-summary-date-ranges: no-tests case on gpt-5.4",
+  "results": {
+    "log-summary-date-ranges": {
+      "score": 1.0,
+      "reps": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "reps_pass": 3,
+      "reps_total": 3
+    }
+  },
+  "s3_prefix": "s3://harbor-eval-results-526275945504/runs/v18-no-tests-5.4/"
+}

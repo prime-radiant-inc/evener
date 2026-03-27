@@ -1,0 +1,129 @@
+{
+  "task": "log-summary-date-ranges",
+  "current_score": 1.0,
+  "current_run": "v17-broad-20",
+  "current_date": "2026-03-26",
+  "status": "tested",
+  "notes": "",
+  "history": [
+    {
+      "run_id": "v17-broad-20",
+      "date": "2026-03-26",
+      "git_sha": "unknown",
+      "model": "openai/gpt-5.4-mini",
+      "score": 1.0,
+      "reps": [
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "run_id": "v12-easy-sweep",
+      "date": "2026-03-25",
+      "git_sha": "unknown",
+      "model": "openai/gpt-5.4-mini",
+      "score": 0.333,
+      "reps": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "run_id": "v13-coordinator-verify",
+      "date": "2026-03-26",
+      "git_sha": "unknown",
+      "model": "openai/gpt-5.4-mini",
+      "score": 0.333,
+      "reps": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "run_id": "v14-hard-ban",
+      "date": "2026-03-26",
+      "git_sha": "unknown",
+      "model": "openai/gpt-5.4-mini",
+      "score": 0.0,
+      "reps": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "run_id": "v15-positive-verify",
+      "date": "2026-03-26",
+      "git_sha": "unknown",
+      "model": "openai/gpt-5.4-mini",
+      "score": 0.333,
+      "reps": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "run_id": "v16-no-scratch",
+      "date": "2026-03-26",
+      "git_sha": "unknown",
+      "model": "openai/gpt-5.4-mini",
+      "score": 0.333,
+      "reps": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "run_id": "v17-harmonize-gate-mini",
+      "date": "2026-03-26",
+      "git_sha": "unknown",
+      "model": "openai/gpt-5.4-mini",
+      "score": 1.0,
+      "reps": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "run_id": "v17-log-summary-5.4",
+      "date": "2026-03-26",
+      "git_sha": "unknown",
+      "model": "openai/gpt-5.4",
+      "score": 0.667,
+      "reps": [
+        1.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "run_id": "v18-no-tests-mini",
+      "date": "2026-03-26",
+      "git_sha": "unknown",
+      "model": "openai/gpt-5.4-mini",
+      "score": 1.0,
+      "reps": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "run_id": "v18-no-tests-5.4",
+      "date": "2026-03-26",
+      "git_sha": "unknown",
+      "model": "openai/gpt-5.4",
+      "score": 1.0,
+      "reps": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    }
+  ]
+}
