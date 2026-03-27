@@ -50,6 +50,11 @@
 - Second implementer couldn't install python-chess (first's venv was gone), wrote wrong answer
 - Fix: reviewer should check consistency and methodology, not re-derive without equivalent tools
 - "Your reasoning cannot override a computational proof" — key framing
+- v10 interrogation (real session resume) confirmed: NO competing instruction caused this.
+  The reviewer saw the "consistency not re-derive" instruction but let visual context override
+  it anyway. Wants explicit authority ordering: "verified computation is authoritative; visual
+  analysis is context only." The vision section's general "trust what you see" was not cited
+  as the cause — the model just didn't apply the specific rule.
 
 ## Verification artifacts in workspace: verify-clean-reverify-forget
 - polyglot-c-py (v8): coordinator compiled gcc into workspace, cleaned up, re-verified
@@ -75,8 +80,8 @@
 - When interrogated: "I was aware of that rule; I just failed to follow it"
 - Also violated step 4 ("spawn a fix agent") and "trust domain-tool validation over reviewer"
 - The model knows the rules but treats them as soft guidelines when a quick fix is available
-- This may not be fixable with prompt alone — may need code-level enforcement (refuse to
-  execute write/edit tools at coordinator depth)
+- Prompt-level fix needed — the framing must make the rule feel higher-priority than
+  the shortcut. Current "NEVER" framing is insufficient.
 
 ## Implementer gold-plates beyond spec, consuming entire budget
 - polyglot-c-py (v9 rep-5): implementer had correct, verified solution at t+44 seconds
@@ -89,6 +94,12 @@
 - Existing prompt "Keep changes minimal and focused" wasn't specific enough
 - Fix: workflow.md now says "Verify against the spec's actual acceptance criteria,
   not stricter ones you invent. When your solution passes, submit it."
+- v10 interrogation (real session resume) revealed the root cause: COMPETING INSTRUCTIONS.
+  The model cited "After running commands, read errors carefully and fix them", "Never
+  ignore system or test output", and "Correctness over speed" as overriding the anti-
+  gold-plating instruction. It treated gcc warnings as "output that shouldn't be ignored."
+- The anti-gold-plating instruction needs to explicitly override the caution instructions
+  for non-error output: "Compiler warnings with exit code 0 are not failures."
 
 ## Coordinator reads task inputs despite "do NOT pre-process"
 - chess-best-move (v8): coordinator read chess_board.png as its FIRST tool call

@@ -203,30 +203,46 @@ template exists to prevent this.
 
 Interrogation is a required part of root-cause analysis, not an optional fallback.
 
+The tool uses `serf --resume-with` to replay the FULL conversation history,
+placing the model back in its exact original context before asking questions.
+It supports interrogating any session — coordinator, implementer, or reviewer.
+
 ```bash
-# Interrogate a failing session with default questions
+# List all sessions for a rep (shows role, model, turn count)
+python3 tools/interrogate_session.py \
+    --run RUN_ID --rep REP --task TASK_NAME --list-sessions
+
+# Interrogate the coordinator (default)
 python3 tools/interrogate_session.py \
     --run RUN_ID --rep REP --task TASK_NAME
 
-# Compare against a passing rep
+# Interrogate a subagent by index (from --list-sessions)
 python3 tools/interrogate_session.py \
-    --run FAIL_RUN --rep FAIL_REP --task TASK \
-    --compare-run PASS_RUN --compare-rep PASS_REP
+    --run RUN_ID --rep REP --task TASK_NAME \
+    --session 3 \
+    --question "Your prompt says X. Why did you do Y instead?"
 
-# Custom questions about specific decisions
+# Interrogate a subagent by session ID prefix
+python3 tools/interrogate_session.py \
+    --run RUN_ID --rep REP --task TASK_NAME \
+    --session 01KMPF5M \
+    --question "Why did you override the computational proof?"
+
+# Custom questions (always include "what changes would fix this")
 python3 tools/interrogate_session.py \
     --run RUN_ID --rep REP --task TASK \
     --question "Your prompt says X. Why did you do Y instead?" \
-    --question "Did you have the original task spec? What format did it specify?"
+    --question "What specific changes to your instructions would have made you do the right thing?"
 ```
 
-This replays the conversation context and appends your questions. The model
-reports which instructions it noticed and how it prioritized them.
+**Interrogate every agent in the failure chain.** Use `--list-sessions` to see
+all sessions, then `--session INDEX` to target specific ones. The coordinator's
+delegation is often the root cause (missing context, wrong instructions), but
+the subagent's own instruction conflicts are equally important.
 
-**Interrogate every agent in the failure chain.** The tool targets the coordinator
-by default. For subagents (reviewer, implementer), reconstruct their context
-from the transcript and interrogate them separately — the coordinator's delegation
-is often the root cause (missing context, wrong instructions).
+**Always ask "what changes would fix this."** The model in its original context
+is the best source for what framing would have changed its behavior. This
+produces actionable prompt fixes, not just explanations.
 
 **Reliable for:** which instructions competed, what the model noticed, how it
 ranked priorities, what context was missing. **Less reliable for:** deeper "why"
