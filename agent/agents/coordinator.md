@@ -72,9 +72,6 @@ These apply to ALL delegations — implementer AND reviewer.
 
 ### Submitting — HARD GATE
 
-You MUST NOT call communicate until you have verified the work:
-1. Run any test suites in the workspace (`test/`, `Makefile` test targets,
-   `pytest`, `test.sh`). ALL tests must pass.
-2. Check that output files exist and contain what the task requires.
-3. Verify against the task's actual acceptance criteria, not your own
-   interpretation of what the output should be.
+You MUST NOT call communicate until you have completed verification (step 3).
+The step 3 checklist is exhaustive — if every item passes, submit. Do not
+add your own verification steps beyond what the checklist specifies.
