@@ -117,22 +117,8 @@ Fewer fix-up rounds at the coordinator level?
 
 ## Experiment 6: Coordinator Tool Restriction
 
-**Status:** Not started (structural, not prompt)
-
-**Hypothesis:** The coordinator has write_file/edit_file/exec_command available, which
-tempts it to do implementation work directly. Removing write/edit tools from the
-coordinator's tool set at depth 0 would FORCE delegation.
-
-**Change:** In `agent/profile.go` or session setup, filter out write/edit tools when
-depth == 0.
-
-**Risk:** Coordinator can't write scratch notes, can't do quick fixes. May need to
-keep exec_command for running tests/verification.
-
-**What to look for:** Does 100% delegation actually improve results? Or does the
-overhead of spawning agents for trivial tasks hurt?
-
-**Note:** This is a CODE change, not a prompt change. Higher risk, higher potential.
+**Status:** Rejected. Code-level enforcement is not an acceptable approach.
+All behavioral changes must come through prompt engineering.
 
 ---
 

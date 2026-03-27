@@ -101,6 +101,35 @@
 - The anti-gold-plating instruction needs to explicitly override the caution instructions
   for non-error output: "Compiler warnings with exit code 0 are not failures."
 
+## Coordinator overrides correct implementer output with flawed verification
+- log-summary-date-ranges (v12, 2/3 failures): implementer produced correct ERROR count (370)
+- Coordinator re-derived with `grep -w ERROR` that matched ERROR in warning message text → got 414
+- Coordinator forced implementer to "fix" to 414, introducing the bug
+- Model acknowledged: "I violated the spirit of 'Do not fix work that passed'"
+- Same pattern as reviewer-overrides-computation, but now it's the coordinator doing it
+- Fix: coordinator step 3 now says "If your independent check disagrees with a passing
+  implementation, your check is more likely wrong than the implementation"
+
+## Reviewer speculation overrides passing tests
+- fix-code-vulnerability (v12, 2/3 failures): implementer correctly identified CWE-93,
+  all tests passed. Reviewer suggested CWE-113 was "more precise." Coordinator changed it.
+- Verifier expected CWE-93 from the task's provided CWE list
+- Model acknowledged: task said "exact CWE-ids" and the provided list included CWE-93
+  but not CWE-113 — the constraint was clearly signaled
+- Fix: coordinator step 4 now says "A reviewer may flag risks, but passing tests outrank
+  reviewer opinions about what the output 'should' be"
+
+## Coordinator verifies runtime state, not reproducibility
+- git-multibranch (v12, 2/3 failures): implementer configured live machine (sshd, nginx)
+- Coordinator verified running services (curl, process check) — everything looked correct
+- But verifier starts from clean state; runtime mutations don't persist
+- Model acknowledged: "I delivered a manually configured live environment rather than
+  a fully evaluator-reproducible solution"
+- Note: /tests/ is mounted by the verifier AFTER the agent finishes — the agent
+  cannot see it. The agent can only verify using workspace-provided tests.
+- Fix: submit gate now has explicit 3-step checklist; coordinator step 3 emphasizes
+  running workspace test suites first
+
 ## Coordinator reads task inputs despite "do NOT pre-process"
 - chess-best-move (v8): coordinator read chess_board.png as its FIRST tool call
 - The "do NOT pre-process task inputs in your delegation" rule targets step 2 (delegation)

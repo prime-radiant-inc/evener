@@ -4,19 +4,24 @@ Prioritized queue of next experiments. Updated March 26, 2026.
 
 ## Currently testing
 
-### v11-positive-framing (ready to launch)
+### v13-coordinator-verify (ready to launch)
 
-Two prompt fixes based on real session interrogation of v10 failures:
-1. **Reviewer positive authority ordering**: "Treat domain-tool results as
-   authoritative" + "Computational proof outranks visual inspection, manual
-   reasoning, and heuristic judgment." Replaces prohibition framing.
-2. **Warnings are not failures**: workflow.md adds "A command that exits 0
-   succeeded — warnings are informational, not failures." Resolves the
-   competing-instruction conflict where "never ignore output" overrode the
-   anti-gold-plating instruction.
+Three coordinator verification fixes based on v12 interrogation:
+1. **Tests-first verification**: "Run the project's test suite first. If your
+   independent check disagrees with a passing implementation, your check is
+   more likely wrong." Fixes log-summary-date-ranges (coordinator overrode
+   correct implementer output with flawed grep).
+2. **Passing tests outrank reviewer opinions**: "Do NOT change work that passes
+   tests — not based on your analysis, and not based on a reviewer's
+   suggestion." Fixes fix-code-vulnerability (reviewer CWE suggestion changed
+   correct answer).
+3. **Explicit test suite checklist in submit gate**: 3-step checklist requires
+   running workspace test suites before communicate. Fixes git-multibranch
+   (coordinator verified runtime state but didn't check reproducibility).
 
-**Test:** chess-best-move × 3, polyglot-c-py × 3.
-**Build:** commit 1e0ddd1.
+**Test:** Re-run v12's 3 regression tasks × 3 reps (9 instances):
+log-summary-date-ranges, git-multibranch, fix-code-vulnerability.
+Plus chess-best-move × 1, polyglot-c-py × 1 as regression checks.
 
 ## Next up
 
@@ -114,8 +119,8 @@ what I have").
 - Active pre-submit workspace check — shipped (v9/v10: still violated)
 - Delegation guidelines to reviewer — shipped (v10: included)
 - Anti-gold-plating — shipped (v10: overridden by competing instructions)
-- Reviewer positive authority ordering — testing (v11: replaces prohibition framing)
-- Warnings are not failures — testing (v11: resolves competing-instruction conflict)
+- Reviewer positive authority ordering — shipped (v11: 6/6, replaces prohibition framing)
+- Warnings are not failures — shipped (v11: 6/6, resolves competing-instruction conflict)
 - harbor-runner: removed parent-dir binary copy — shipped
 - Makefile: `build-linux` target with cache invalidation — shipped
 - Session interrogation tool — shipped (rewritten: real session resume, subagent support)

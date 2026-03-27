@@ -25,7 +25,50 @@ Invoke it before starting work.
 1 regression was caused by our fixes (polyglot-c-py — verification artifact left behind).
 The other 11 regressions are nondeterministic variance (implementer approach quality).
 
-### Latest test: v10-deleg-goldplate (Mar 26)
+### Latest test: v12-easy-sweep (Mar 26)
+
+**Run:** `v12-easy-sweep` — 12 easy tasks × 3 reps (36 total)
+**Build:** commit 1e0ddd1 (same as v11)
+**Result:** 27/35 = 77% (1 rep pending). 7 tasks at 3/3, 3 tasks at 1/3.
+
+Three failure patterns identified via real session interrogation:
+
+1. **Coordinator overrides correct implementer output** (log-summary-date-ranges 1/3):
+   Implementer produced correct answer. Coordinator re-derived with flawed grep,
+   got different number, forced implementer to "fix" to wrong answer. Both failures
+   identical: coordinator's verification method was less precise than implementer's.
+   Model acknowledged violating "Do not fix work that passed implementer's verification."
+
+2. **Reviewer causes unnecessary last-minute change** (fix-code-vulnerability 1/3):
+   Implementer identified correct CWE-93 from task's provided list, all tests passed.
+   Reviewer suggested CWE-113 was "more precise." Coordinator changed it. Verifier
+   expected CWE-93. Both failures identical pattern.
+
+3. **Runtime-only verification, skipped /tests/** (git-multibranch 1/3):
+   Implementer configured live machine. Coordinator verified running services but
+   never ran `/tests/`. Verifier starts from clean state, services not running.
+
+**Fixes applied (uncommitted):**
+- Coordinator step 3: "Run the project's test suite first. If your independent check
+  disagrees with a passing implementation, your check is more likely wrong."
+- Coordinator step 4: "Do NOT change work that passes tests — not based on your own
+  analysis, and not based on a reviewer's suggestion."
+- Submit gate: explicit 3-step checklist (run tests, check output files, verify against
+  task's actual criteria not your interpretation).
+
+### Previous test: v11-positive-framing (Mar 26)
+
+**Run:** `v11-positive-framing` — chess-best-move × 3, polyglot-c-py × 3
+**Build:** commit 1e0ddd1 (positive authority ordering for reviewer + warnings-are-not-failures)
+**Result:** 6/6 — chess 3/3, polyglot 3/3.
+
+Both v10 failure modes resolved:
+- Reviewer positive authority ordering ("treat domain-tool results as authoritative,
+  computational proof outranks visual inspection") replaced prohibition framing.
+- "A command that exits 0 succeeded — warnings are informational" resolved the
+  competing-instruction conflict that caused gold-plating.
+
+### Previous test: v10-deleg-goldplate (Mar 26)
 
 **Run:** `v10-deleg-goldplate` — chess-best-move × 3, polyglot-c-py × 3
 **Build:** commit 8679e08 (reviewer consistency + scratch dir + delegation-to-reviewer + anti-gold-plating)
@@ -121,6 +164,9 @@ circuit-fibsqrt and polyglot-c-py TIMEOUT.
 | 72125d2 | Workflow: test against spec's criteria, don't gold-plate | Implementer self-imposed -Werror, burned 14min on warnings |
 | 1e0ddd1 | Reviewer: positive framing, domain-tool authority ordering | v10: "cannot override" prohibition ignored, positive framing works better |
 | 1e0ddd1 | Workflow: exit 0 = success, warnings informational | v10: competing instructions ("never ignore output") overrode anti-gold-plating |
+| (dirty) | Coordinator: tests-first verification, don't re-derive | v12: coordinator overrode correct implementer with flawed grep |
+| (dirty) | Coordinator: passing tests outrank reviewer opinions | v12: reviewer CWE suggestion changed correct answer |
+| (dirty) | Coordinator: explicit test suite checklist in submit gate | v12: coordinator verified runtime state, not reproducibility |
 
 ### Known remaining issues
 
@@ -367,6 +413,8 @@ messages with system prompt first, which GPT-5.4 ignores. Not yet implemented or
 | 3/26 | v8-input-fix | chess ×1, polyglot ×1 | 0/2 | chess: reviewer hallucinated wrong move. polyglot: verify-clean-reverify-forget |
 | 3/26 | v9-review-fix-b | chess ×3, polyglot ×3 | 4/6 | chess 2/3 (1 reviewer info loss), polyglot 2/3 (1 timeout). Fixes work. |
 | 3/26 | v10-deleg-goldplate | chess ×3, polyglot ×3 | 1/6 | All fixes violated. Real interrogation: competing instructions + no authority ordering |
+| 3/26 | v11-positive-framing | chess ×3, polyglot ×3 | 6/6 | Both v10 failure modes resolved. Positive authority ordering + warnings fix |
+| 3/26 | v12-easy-sweep | 12 easy tasks ×3 | 27/35 | 77%. 3 regressions: coordinator overrides correct work, reviewer-driven changes, skipped /tests/ |
 
 ### Detailed experiment writeups
 

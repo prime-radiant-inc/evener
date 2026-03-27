@@ -77,9 +77,21 @@ AGENT_DIR=/tmp/agent-experiment
 RUN_ID="my-experiment-name"
 TASKS=(sanitize-git-repo feal-linear-cryptanalysis kv-store-grpc regex-log)
 
-# First launch uploads the agent tarball; subsequent ones skip it.
-REP=1
-for task in "${TASKS[@]}"; do
+# First launch uploads the agent tarball (foreground — must finish before
+# the rest start, or parallel launches race on the staging directory).
+./launch.sh \
+  --run-id "$RUN_ID" \
+  --rep 1 \
+  --agent-dir "$AGENT_DIR" \
+  --agent-import-path serf_agent:SerfAgent \
+  --model openai/gpt-5.4 \
+  --task-names "${TASKS[0]}" \
+  --concurrency 1 \
+  --instance-type c6i.xlarge
+
+# Remaining launches find the tarball in S3 and skip upload — safe to parallelize.
+REP=2
+for task in "${TASKS[@]:1}"; do
   ./launch.sh \
     --run-id "$RUN_ID" \
     --rep $((REP++)) \
@@ -94,8 +106,10 @@ wait
 ```
 
 Each task gets a unique rep number under the shared run ID. Results land in
-`s3://bucket/runs/RUN_ID/rep-N/...`. No sleep needed — `--run-id` overrides
-the timestamp-based ID, and `--rep` prevents S3 path collisions.
+`s3://bucket/runs/RUN_ID/rep-N/...`. The first launch must run in the
+foreground because `launch.sh` uses a staging directory keyed by run ID —
+parallel launches race on creating/deleting it. Once the tarball is in S3,
+subsequent launches skip the upload and can safely run in parallel.
 
 ### Spot instance rules
 
