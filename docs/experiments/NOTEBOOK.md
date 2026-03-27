@@ -25,11 +25,16 @@ Invoke it before starting work.
 1 regression was caused by our fixes (polyglot-c-py — verification artifact left behind).
 The other 11 regressions are nondeterministic variance (implementer approach quality).
 
-### Latest test: v17-harmonize-gate (Mar 26)
+### Latest test: v17-harmonize-gate-mini (Mar 26)
 
-**Run:** `v17-harmonize-gate` — log-summary-date-ranges × 3
+**Run:** `v17-harmonize-gate-mini` — log-summary-date-ranges × 3
 **Build:** commit eaad757 (HARD GATE forward-references step 3)
+**Model:** gpt-5.4-mini
 **Status:** PENDING
+
+(Note: `v17-harmonize-gate` was accidentally run on gpt-5.4 — invalid for
+comparison against the v12-v16 mini baseline. Scored 1/3 on 5.4 with same
+ERROR=414 override pattern.)
 
 Session interrogation of both v16 failures revealed the same root cause: the
 HARD GATE's phrases "contain what the task requires" and "verify against actual
