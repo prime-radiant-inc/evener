@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -28,39 +27,19 @@ func TestExtractEmbeddedSkills_CreatesDir(t *testing.T) {
 	}
 }
 
-func TestExtractEmbeddedSkills_ContainsOpsTask(t *testing.T) {
+func TestExtractEmbeddedSkills_EmptyAfterOpsTaskRemoval(t *testing.T) {
 	dir, err := extractEmbeddedSkills()
 	if err != nil {
 		t.Fatalf("extractEmbeddedSkills: %v", err)
 	}
 	defer os.RemoveAll(dir)
 
-	// The ops-task skill should be present (only embedded skill after superpowers removal).
-	skillFile := filepath.Join(dir, "ops-task", "SKILL.md")
-	data, err := os.ReadFile(skillFile)
-	if err != nil {
-		t.Fatalf("reading ops-task SKILL.md: %v", err)
-	}
-	if len(data) == 0 {
-		t.Fatal("ops-task SKILL.md is empty")
-	}
-}
-
-func TestExtractEmbeddedSkills_OpsTaskHasContent(t *testing.T) {
-	dir, err := extractEmbeddedSkills()
-	if err != nil {
-		t.Fatalf("extractEmbeddedSkills: %v", err)
-	}
-	defer os.RemoveAll(dir)
-
-	// ops-task SKILL.md should have frontmatter with a name field.
-	skillFile := filepath.Join(dir, "ops-task", "SKILL.md")
-	data, err := os.ReadFile(skillFile)
-	if err != nil {
-		t.Fatalf("reading ops-task SKILL.md: %v", err)
-	}
-	if !strings.Contains(string(data), "name:") {
-		t.Fatal("ops-task SKILL.md missing frontmatter name field")
+	// No embedded skills remain after ops-task removal.
+	// The skill catalog is populated by filesystem-discovered project skills only.
+	skills := make(map[string]SkillMeta)
+	scanSkillsDir(dir, skills)
+	if len(skills) != 0 {
+		t.Fatalf("expected 0 embedded skills, got %d", len(skills))
 	}
 }
 
@@ -71,20 +50,17 @@ func TestExtractEmbeddedSkills_DiscoverableByDiscoverSkills(t *testing.T) {
 	}
 	defer os.RemoveAll(dir)
 
-	// The extracted dir should work as an extraDirs argument to DiscoverSkills.
+	// The extracted dir should work as an extraDirs argument to DiscoverSkills,
+	// even when empty (no embedded skills remain).
 	root := t.TempDir()
 	initGitRepo(t, root)
 
 	env := NewLocalExecutionEnvironment(root)
 	skills := DiscoverSkills(env, dir)
 
-	// Should find the ops-task skill (only embedded skill remaining).
-	if len(skills) < 1 {
-		t.Fatalf("expected at least 1 skill, got %d: %v", len(skills), builtinSkillNames(skills))
-	}
-
-	if _, ok := skills["ops-task"]; !ok {
-		t.Errorf("expected skill %q to be discovered", "ops-task")
+	// No embedded skills remain, so only project skills (none here) are found.
+	if len(skills) != 0 {
+		t.Fatalf("expected 0 skills from empty embedded dir, got %d: %v", len(skills), builtinSkillNames(skills))
 	}
 }
 
@@ -95,27 +71,16 @@ func TestExtractEmbeddedSkills_FilesystemShadowsEmbedded(t *testing.T) {
 	}
 	defer os.RemoveAll(dir)
 
-	// Project has a skill with the same name as an embedded one.
+	// With no embedded skills, project skills are the only source.
 	root := t.TempDir()
 	initGitRepo(t, root)
 	writeSkillMD(t, root, "test-driven-development",
-		"---\nname: test-driven-development\ndescription: \"Project TDD override\"\n---\nCustom TDD.\n")
+		"---\nname: test-driven-development\ndescription: \"Project TDD\"\n---\nCustom TDD.\n")
 
 	env := NewLocalExecutionEnvironment(root)
-	// Embedded skills are added first; project skills discovered after should NOT shadow
-	// because DiscoverSkills processes root→cwd first, then extraDirs.
-	// To get the right layering (embedded as base, project overrides), we need
-	// embedded first, then project skills shadow them.
-	// Actually: DiscoverSkills processes root→cwd dirs first, then extraDirs.
-	// extraDirs shadow project skills. So we want embedded as a *base* that
-	// project skills shadow. Let's verify the current behavior.
 	skills := DiscoverSkills(env, dir)
 
-	// extraDirs shadow root→cwd, so the embedded version wins over project.
-	// This is the WRONG layering — we want project to shadow embedded.
-	// This test documents current behavior so we can fix the merge order.
 	tdd := skills["test-driven-development"]
-	// For now, just verify the skill exists and we'll fix layering in the merge code.
 	if tdd.Name != "test-driven-development" {
 		t.Fatalf("expected TDD skill, got %q", tdd.Name)
 	}
@@ -152,17 +117,20 @@ func TestEmbeddedSkills_InSystemPrompt(t *testing.T) {
 	_, _ = sess.ProcessInput(ctx, "hi")
 	sess.Close()
 
-	if !strings.Contains(capturedSystem, "<skill-catalog>") {
-		t.Error("system prompt missing <skills> section")
-	}
-	if !strings.Contains(capturedSystem, "ops-task") {
-		t.Error("system prompt missing embedded ops-task skill")
+	// With no embedded skills and no project skills, the skill catalog
+	// should be absent from the system prompt.
+	if strings.Contains(capturedSystem, "<skill-catalog>") {
+		t.Error("system prompt should not contain <skill-catalog> when no skills exist")
 	}
 }
 
 func TestOpenAI_SkillsWithFilePathsInSystemPrompt(t *testing.T) {
 	root := t.TempDir()
 	initGitRepo(t, root)
+
+	// Create a project skill so the skill catalog is populated.
+	writeSkillMD(t, root, "my-skill",
+		"---\nname: my-skill\ndescription: \"Test skill\"\n---\nBody.\n")
 
 	c := llm.NewClient()
 	comm := submitResultCall("c1", "done")
@@ -192,9 +160,9 @@ func TestOpenAI_SkillsWithFilePathsInSystemPrompt(t *testing.T) {
 	_, _ = sess.ProcessInput(ctx, "hi")
 	sess.Close()
 
-	// OpenAI should have <skills> section with file paths and read_file guidance.
+	// OpenAI should have <skill-catalog> section with file paths and read_file guidance.
 	if !strings.Contains(capturedSystem, "<skill-catalog>") {
-		t.Error("OpenAI system prompt should contain <skills> section with file paths")
+		t.Error("OpenAI system prompt should contain <skill-catalog> section with file paths")
 	}
 	if !strings.Contains(capturedSystem, "read_file") {
 		t.Error("OpenAI system prompt should instruct model to use read_file for skills")
@@ -246,31 +214,30 @@ func TestEmbeddedSkills_ProjectShadowsEmbedded(t *testing.T) {
 	}
 }
 
-func TestEmbeddedSkills_UseSkillReturnsOpsTaskBody(t *testing.T) {
+func TestEmbeddedSkills_UseSkillWithProjectSkill(t *testing.T) {
 	root := t.TempDir()
 	initGitRepo(t, root)
 
+	// Create a project skill to test use_skill with.
+	writeSkillMD(t, root, "my-skill",
+		"---\nname: my-skill\ndescription: \"Test skill\"\n---\nSkill body content.\n")
+
 	c := llm.NewClient()
 
-	// Agent calls use_skill("ops-task"), then calls submit_result.
-	// Uses Anthropic profile because OpenAI uses read_file for skills.
-	skill := useSkillCall("s1", "ops-task")
+	skill := useSkillCall("s1", "my-skill")
 	comm := submitResultCall("c1", "done")
 
 	var skillResultContent string
 	f := &fakeAdapter{
 		name: "anthropic",
 		steps: []func(req llm.Request) llm.Response{
-			// First turn: agent calls use_skill.
 			func(req llm.Request) llm.Response { return toolCallResponse(skill) },
-			// Second turn: agent sees the skill body in tool result, then finishes.
 			func(req llm.Request) llm.Response {
-				// Capture the tool result from the use_skill call.
 				for _, msg := range req.Messages {
 					for _, part := range msg.Content {
 						if part.Kind == llm.ContentToolResult {
 							if content, ok := part.ToolResult.Content.(string); ok {
-								if strings.Contains(content, "ops") || strings.Contains(content, "task") {
+								if strings.Contains(content, "Skill body content") {
 									skillResultContent = content
 								}
 							}
@@ -289,14 +256,14 @@ func TestEmbeddedSkills_UseSkillReturnsOpsTaskBody(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "fix the build")
+	_, err = sess.ProcessInput(ctx, "use my skill")
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 	sess.Close()
 
 	if skillResultContent == "" {
-		t.Fatal("use_skill('ops-task') did not return the ops-task skill body")
+		t.Fatal("use_skill('my-skill') did not return the skill body")
 	}
 }
 
@@ -357,20 +324,10 @@ func TestEmbeddedSkills_AllSkillsLoadable(t *testing.T) {
 	skills := make(map[string]SkillMeta)
 	scanSkillsDir(dir, skills)
 
-	// Only ops-task remains after superpowers skills were removed (commit 00f7327).
-	if len(skills) < 1 {
-		t.Fatalf("expected at least 1 embedded skill, got %d", len(skills))
-	}
-
-	for name, meta := range skills {
-		body, err := LoadSkillBody(meta)
-		if err != nil {
-			t.Errorf("skill %q: LoadSkillBody failed: %v", name, err)
-			continue
-		}
-		if len(body) == 0 {
-			t.Errorf("skill %q: body is empty", name)
-		}
+	// No embedded skills remain after ops-task removal.
+	// This test verifies the extraction still works without error.
+	if len(skills) != 0 {
+		t.Fatalf("expected 0 embedded skills, got %d", len(skills))
 	}
 }
 

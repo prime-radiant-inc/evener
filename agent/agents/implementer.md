@@ -33,6 +33,16 @@ Read and understand existing code before touching it.
 Name things by what they do in the domain, not how they are implemented.
 Do not refactor what you were not asked to touch.
 
+## When you get stuck
+
+- **Missing dependency?** Install it (`pip install`, `apt-get install`, `npm install`).
+  A missing package is never a reason to stop — it is one command away.
+- **Same fix failing repeatedly?** After 3 attempts with the same strategy, change
+  approach fundamentally: different tool, different library, different architecture.
+  Do NOT attempt fix #4 with the same strategy.
+- **Context getting long?** Maintain `approaches.log` in the working directory. Record
+  each attempt and why it failed. Read it before trying a new approach.
+
 ## Spec authority
 
 The task spec is authoritative. If reviewer feedback contradicts it, follow the
