@@ -4,25 +4,26 @@ Prioritized queue of next experiments. Updated March 26, 2026.
 
 ## Currently testing
 
-### v15-positive-verify (launched)
+(Nothing actively running)
 
-Positive-framing coordinator verification. Prohibition framing exhausted:
-- v12 baseline: 1/3 on log-summary-date-ranges
-- v13 soft ("your check is more likely wrong"): 1/3
-- v14 hard ("NEVER override"): 0/3 — REGRESSION
+### Coordinator override: prompt ceiling reached
 
-New approach applies the v11 lesson (positive authority ordering replaced
-prohibition → 6/6): define verification as an exhaustive positive checklist,
-leaving no room for independent recomputation.
+Five iterations on log-summary-date-ranges all produced 1/3 ± 0:
+- v12 baseline: 1/3
+- v13 soft prohibition: 1/3
+- v14 hard prohibition: 0/3 (REGRESSION)
+- v15 positive framing: 1/3
+- v16 reading-not-computing + no scratch dir: 1/3
 
-Changes (commit 76f5f4f):
-- "confirm the implementer delivered" (implementer as authority)
-- Exhaustive checklist: run tests → check files exist → check format
-- "The implementer's computed values are the deliverable — accept them"
-- "skip to step 5" when tests pass
-- Zero prohibition language
+Transcript analysis shows the instruction works when followed (v16 rep-1:
+coordinator reads and submits, zero exec_commands) but compliance is
+stochastic (~33%). The coordinator has exec_command and ~67% of the time
+decides to independently recompute values regardless of instructions.
 
-**Test:** log-summary-date-ranges × 3 + chess-best-move × 1, git-multibranch × 1.
+**Options:**
+- Accept 1/3 base rate and move on to higher-ROI tasks
+- Remove exec_command from coordinator tools (code change)
+- Different coordinator architecture (implementer self-submits)
 
 ## Next up
 

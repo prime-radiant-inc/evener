@@ -146,6 +146,22 @@
 - For v15: exhaustive positive checklist ("verification means: run tests, check files
   exist, check format — that is the complete checklist"), "accept implementer values"
 
+## Scratch directory permission enables recomputation despite positive framing
+- v15 positive framing ("accept implementer values", exhaustive checklist) went 1/3 on
+  log-summary-date-ranges — same as v12 baseline and v13 soft prohibition
+- Transcript shows: coordinator read the implementer's correct CSV (370), then ran its
+  own AWK script in /tmp/verify, got 414 (flawed `index($0,"ERROR")` counting), spawned
+  fix agent to override
+- The sentence "you may only create files in a scratch directory" was the escape hatch:
+  it explicitly permitted running verification scripts, which the coordinator used to
+  independently recompute values
+- Even "The implementer's computed values are the deliverable — accept them" was overridden
+  once the coordinator had its own recomputation showing a different number
+- The positive framing defined WHAT to do but the scratch directory gave a tool to go
+  beyond it. Removing the scratch directory removes the sanctioned execution environment
+  for independent recomputation
+- "Verification is reading, not computing" + no scratch directory is the v16 approach
+
 ## Coordinator reads task inputs despite "do NOT pre-process"
 - chess-best-move (v8): coordinator read chess_board.png as its FIRST tool call
 - The "do NOT pre-process task inputs in your delegation" rule targets step 2 (delegation)

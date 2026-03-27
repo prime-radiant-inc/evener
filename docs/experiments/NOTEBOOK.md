@@ -25,20 +25,36 @@ Invoke it before starting work.
 1 regression was caused by our fixes (polyglot-c-py — verification artifact left behind).
 The other 11 regressions are nondeterministic variance (implementer approach quality).
 
-### Latest test: v15-positive-verify (Mar 26, in progress)
+### Latest test: v16-no-scratch (Mar 26)
+
+**Run:** `v16-no-scratch` — log-summary-date-ranges × 3
+**Build:** commit d71ac81 (reading not computing + no scratch dir)
+**Result:** 1/3. Same base rate as v12/v13/v15.
+
+Added "Verification is reading, not computing" and removed scratch directory
+permission entirely. Transcript analysis:
+- Rep-1 (PASS): coordinator followed instruction perfectly — read_file, list_dir,
+  communicate. Zero exec_commands during verification.
+- Rep-3 (FAIL): coordinator explicitly ran "Recompute counts independently" via
+  inline Python heredoc, ignoring the instruction.
+
+Compliance is stochastic (~33%). When followed, the approach works. When not,
+the coordinator uses exec_command to run independent recomputation regardless.
+
+**Conclusion:** Prompt engineering has hit the ceiling on coordinator verification
+override. Five iterations (v12-v16) all produced 1/3 ± 0 (except v14 hard ban
+which regressed to 0/3). The coordinator has exec_command and ~67% of the time
+decides to use it for independent value verification.
+
+### Previous test: v15-positive-verify (Mar 26)
 
 **Run:** `v15-positive-verify` — log-summary-date-ranges × 3, chess-best-move × 1, git-multibranch × 1
 **Build:** commit 76f5f4f (positive-framing coordinator verification)
-**Hypothesis:** Positive framing ("accept the implementer's values") works where
-prohibitions failed (v13 soft "don't override" 1/3, v14 hard "NEVER override" 0/3).
-Same pattern that fixed reviewer in v11 (positive authority ordering → 6/6).
+**Result:** log-summary 1/3, chess-best-move 1/1, git-multibranch incomplete (spot reclaim).
 
-Changes in coordinator step 3:
-- "confirm the implementer delivered" (implementer as authority)
-- Exhaustive verification checklist: run tests → check files exist → check format
-- "The implementer's computed values are the deliverable — accept them"
-- "skip to step 5" when tests pass (explicit shortcut past recomputation)
-- Zero prohibition language — no "Do NOT", "NEVER", "do not second-guess"
+Positive framing alone didn't move the needle. Transcript showed coordinator used
+scratch directory to run AWK recomputation, overriding correct implementer output
+with flawed count. The scratch directory sentence was the explicit escape hatch.
 
 ### Previous test: v14-hard-ban (Mar 26)
 
@@ -213,6 +229,7 @@ circuit-fibsqrt and polyglot-c-py TIMEOUT.
 | f2a57d8 | Coordinator: explicit test suite checklist in submit gate | v12: coordinator verified runtime state, not reproducibility |
 | f33e96d | Coordinator: hard "NEVER override" ban | v13: soft framing insufficient → 0/3 REGRESSION, reverted |
 | 76f5f4f | Coordinator: positive-framing verification, accept implementer values | v14: prohibition framing exhausted, apply v11 lesson |
+| d71ac81 | Coordinator: "reading not computing" + remove scratch dir permission | v15: scratch dir was escape hatch for recomputation |
 
 ### Known remaining issues
 
@@ -463,7 +480,8 @@ messages with system prompt first, which GPT-5.4 ignores. Not yet implemented or
 | 3/26 | v12-easy-sweep | 12 easy tasks ×3 | 27/35 | 77%. 3 regressions: coordinator overrides correct work, reviewer-driven changes, skipped /tests/ |
 | 3/26 | v13-coordinator-verify | 3 regress ×3 + 2 check | 9/11 | fix-code-vuln 3/3, git-multi 3/3, log-summary 1/3. No regressions |
 | 3/26 | v14-hard-ban | log-summary ×3 | 0/3 | REGRESSION. "NEVER override" prohibition worse than soft version |
-| 3/26 | v15-positive-verify | log-summary ×3 + 2 check | pending | Positive framing: "accept implementer values", exhaustive checklist |
+| 3/26 | v15-positive-verify | log-summary ×3 + 2 check | 3/5 | log-summary 1/3, chess 1/1, git-multi incomplete (spot reclaim) |
+| 3/26 | v16-no-scratch | log-summary ×3 | 1/3 | "Reading not computing" + no scratch dir. Same base rate. Prompt ceiling reached |
 
 ### Detailed experiment writeups
 
