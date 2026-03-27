@@ -9,9 +9,19 @@ Invoke it before starting work.
 
 ## Current State (March 26, 2026)
 
-**Model:** gpt-5.4-mini for current eval iteration
+**Model:** gpt-5.4-mini for current eval iteration (only move to 5.4 when mini tuning is done)
 **Combined baseline (Mar 24):** 72/87 reliable (82%) with gpt-5.4 + gpt-5.4-mini best-of
 **Mini-only baseline:** 34 tasks pass reliably with gpt-5.4-mini alone
+
+### Pending runs (check with `./tools/check_run.sh RUN_ID`)
+
+| Run ID | Model | Tasks | Status |
+|--------|-------|-------|--------|
+| `v18-no-tests-mini` | gpt-5.4-mini | log-summary-date-ranges × 3 | PENDING |
+| `v18-no-tests-5.4` | gpt-5.4 | log-summary-date-ranges × 3 | PENDING |
+| `v17-broad-20` | gpt-5.4-mini | 20 tasks × 1 rep (regression + target) | PENDING |
+
+When results arrive: record scores below, update backlog, interrogate failures.
 
 ### Latest eval: disc-3rep-v6-fixed (Mar 26)
 
