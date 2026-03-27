@@ -17,8 +17,7 @@ Invoke it before starting work.
 
 | Run ID | Model | Task | Variant | Status |
 |--------|-------|------|---------|--------|
-| `v20-combined-a` | gpt-5.4-mini | kv-store-grpc × 3 | tasklist-a + impl-test-a | 0/2, rep 3 relaunched |
-| `v20-combined-b` | gpt-5.4-mini | kv-store-grpc × 3 | verify-a + impl-test-c | 1/1, reps 2-3 relaunched |
+| (none pending — all complete) | | | | |
 | `v17-broad-20` | gpt-5.4-mini | 20 tasks × 1 rep | regression check | 13/18, 2 pending |
 
 ### v19 variant experiment results (Mar 27)
@@ -73,26 +72,34 @@ contract, just check file existence and port liveness.
 | Variant | Changes to | Result | Approach |
 |---------|-----------|--------|----------|
 | **v20-impl-test-a** | **implementer** | **3/3** | **"Write a minimal client command, verify response"** |
+| **v20-combined-b** | **both** | **3/3** | **verify-a coordinator + impl-test-c implementer** |
 | v20-tasklist-a | coordinator | 2/3 | Task list reinjection (basic) |
 | v20-verify-b | coordinator | 2/3 | "Write grpc_cli/curl command, run it" |
 | v20-verify-a | coordinator | 1/3 | "Make a real request through protocol" |
 | v20-verify-c | coordinator | 1/3 | "Depth must match complexity" |
 | v20-impl-test-b | implementer | 1/3 | "Test script like outside evaluator" |
 | v20-impl-test-c | implementer | 1/3 | Acceptance criteria check |
-| v20-combined-b | both | 1/1+ | verify-a + impl-test-c (reps pending) |
 | v20-tasklist-b | coordinator | 0/3 | Task list (per-endpoint emphasis) |
-| v20-combined-a | both | 0/2+ | tasklist-a + impl-test-a (rep pending) |
+| **v20-combined-a** | **both** | **0/3** | **tasklist-a + impl-test-a — INTERFERENCE** |
 
-**Winner: v20-impl-test-a (3/3).** The fix is on the implementer side, not the
-coordinator side. Telling the implementer to "write a minimal client command that
-sends a request and verify the response" is more effective than telling the
-coordinator to do deeper verification. The implementer has the tools and context
-to actually test the service; the coordinator is one step removed.
+**Two winners at 3/3:**
+- **impl-test-a** — implementer: "Write a minimal client command that sends a
+  request and verify the response matches the task requirements"
+- **combined-b** — coordinator verify-a ("port checks alone are not verification")
+  + implementer impl-test-c (acceptance criteria check, "list every requirement,
+  verify each concretely")
+
+**Critical finding: combined-a went 0/3 despite containing the winning impl-test-a.**
+The task-list reinjection coordinator variant interferes with the implementer's
+behavior. Hypothesis: the coordinator's expanded task list changes the delegation
+text in a way that overrides or crowds out the implementer's own verification
+instructions. This is a classic competing-instruction problem.
 
 **Key insight:** Implementer-side verification fixes beat coordinator-side because
 the implementer has direct access to the code, the running process, and the
 ability to write and run a test client. The coordinator can only inspect from the
-outside.
+outside. But coordinator changes that expand the delegation text can INTERFERE
+with implementer behavior (combined-a 0/3 vs impl-test-a alone 3/3).
 
 ### v20 verification depth experiment design (Mar 27)
 
@@ -672,8 +679,8 @@ messages with system prompt first, which GPT-5.4 ignores. Not yet implemented or
 | 3/27 | v20-impl-test-b | kv-store-grpc ×3 | 1/3 | "Test script like evaluator." Too vague |
 | 3/27 | v20-impl-test-c | kv-store-grpc ×3 | 1/3 | Acceptance criteria check. Too vague |
 | 3/27 | v20-tasklist-b | kv-store-grpc ×3 | 0/3 | Task list (per-endpoint). Overspecified |
-| 3/27 | v20-combined-a | kv-store-grpc ×3 | 0/2+ | tasklist-a + impl-test-a. Pending |
-| 3/27 | v20-combined-b | kv-store-grpc ×3 | 1/1+ | verify-a + impl-test-c. Pending |
+| 3/27 | **v20-combined-a** | kv-store-grpc ×3 | **0/3** | tasklist-a + impl-test-a. INTERFERENCE |
+| 3/27 | **v20-combined-b** | kv-store-grpc ×3 | **3/3** | verify-a + impl-test-c. SHIP CANDIDATE |
 | 3/27 | **v19-deleg-b** | chess-best-move ×3 | **3/3** | "Quality gate not worker." SHIPPED |
 | 3/27 | **v19-state-b** | git-multibranch ×3 | **3/3** | "Check for mutation after testing." SHIPPED |
 | 3/27 | v19-deleg-a | chess-best-move ×3 | 0/3 | 1 no-deleg, 2 wrong answer |
