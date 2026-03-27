@@ -72,6 +72,28 @@ Invoke it before starting work.
   - Rep 3: `/dev/index.html` returned "dev version" instead of expected "dev branch content" — implementer's testing mutated deployed content and left it in place (exactly the state pollution state-b fixes)
 - **Lesson:** Post-hoc mutation detection (state-b) more robust than prevention (state-a) because it catches unanticipated mutation paths
 
+### v20 verification depth experiments (Mar 27)
+
+**Target:** kv-store-grpc × 3 reps per variant. 10 variants testing how to fix
+verification depth — the coordinator/implementer never test the actual gRPC wire
+contract, just check file existence and port liveness.
+
+**Coordinator variants (5):**
+1. **tasklist-a**: Task list reinjection — coordinator writes numbered 8-step plan before spawning. Includes "exercise the actual protocol"
+2. **tasklist-b**: Task list with emphasis on per-endpoint service verification
+3. **verify-a**: Step 3.4 added: "make a real request through the protocol. Port checks and file existence alone are not verification"
+4. **verify-b**: Step 3.4 added: "write a command using grpc_cli, curl, python gRPC client. Run it and verify"
+5. **verify-c**: Preamble: "Verification depth must match task complexity: File→read, Service→connect and request, API→call each endpoint"
+
+**Implementer variants (3):**
+6. **impl-test-a**: "Write a minimal client command that sends a request and verify the response"
+7. **impl-test-b**: "Write a test script that exercises your deliverable the way an outside evaluator would"
+8. **impl-test-c**: Acceptance criteria check — "list every requirement, verify each concretely"
+
+**Combined (2):**
+9. **combined-a**: tasklist-a coordinator + impl-test-a implementer
+10. **combined-b**: verify-a coordinator + impl-test-c implementer
+
 ### v19 variant experiment design (Mar 27)
 
 **Problem 1: Non-delegation (chess-best-move)**
