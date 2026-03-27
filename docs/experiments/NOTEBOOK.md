@@ -17,6 +17,16 @@ Invoke it before starting work.
 
 | Run ID | Model | Task | Variant | Status |
 |--------|-------|------|---------|--------|
+| `v20-tasklist-a` | gpt-5.4-mini | kv-store-grpc × 3 | coord: task list reinjection (basic) | PENDING |
+| `v20-tasklist-b` | gpt-5.4-mini | kv-store-grpc × 3 | coord: task list reinjection (service emphasis) | PENDING |
+| `v20-verify-a` | gpt-5.4-mini | kv-store-grpc × 3 | coord: "make a real request through protocol" | PENDING |
+| `v20-verify-b` | gpt-5.4-mini | kv-store-grpc × 3 | coord: "write a command using grpc_cli/curl" | PENDING |
+| `v20-verify-c` | gpt-5.4-mini | kv-store-grpc × 3 | coord: "depth must match complexity" | PENDING |
+| `v20-impl-test-a` | gpt-5.4-mini | kv-store-grpc × 3 | impl: "minimal client through protocol" | PENDING |
+| `v20-impl-test-b` | gpt-5.4-mini | kv-store-grpc × 3 | impl: "test script like outside evaluator" | PENDING |
+| `v20-impl-test-c` | gpt-5.4-mini | kv-store-grpc × 3 | impl: acceptance criteria check | PENDING |
+| `v20-combined-a` | gpt-5.4-mini | kv-store-grpc × 3 | tasklist-a + impl-test-a | PENDING (1 rep short) |
+| `v20-combined-b` | gpt-5.4-mini | kv-store-grpc × 3 | verify-a + impl-test-c | PENDING (2 reps short) |
 | `v17-broad-20` | gpt-5.4-mini | 20 tasks × 1 rep | regression check | 13/18, 2 pending |
 
 ### v19 variant experiment results (Mar 27)
