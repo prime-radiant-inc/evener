@@ -15,13 +15,72 @@ Invoke it before starting work.
 
 ### Pending runs (check with `./tools/check_run.sh RUN_ID`)
 
-| Run ID | Model | Tasks | Status |
-|--------|-------|-------|--------|
-| `v18-no-tests-mini` | gpt-5.4-mini | log-summary-date-ranges × 3 | PENDING |
-| `v18-no-tests-5.4` | gpt-5.4 | log-summary-date-ranges × 3 | PENDING |
-| `v17-broad-20` | gpt-5.4-mini | 20 tasks × 1 rep (regression + target) | PENDING |
+| Run ID | Model | Task | Variant | Status |
+|--------|-------|------|---------|--------|
+| `v17-broad-20` | gpt-5.4-mini | 20 tasks × 1 rep | regression check | 13/18, 2 pending |
 
-When results arrive: record scores below, update backlog, interrogate failures.
+### v19 variant experiment results (Mar 27)
+
+**9 variants across 3 problem areas, 27 experiments total.**
+
+| Run ID | Task | Result | Key finding |
+|--------|------|--------|-------------|
+| v19-deleg-a | chess-best-move × 3 | 0/3 | Rep 1: no delegation. Reps 2-3: delegated but wrong answer |
+| **v19-deleg-b** | chess-best-move × 3 | **3/3** | **WINNER.** 100% delegation + correct answers |
+| v19-deleg-c | chess-best-move × 3 | 0/3 | Both delegated but accepted single move (missed g2g4) |
+| v19-deleg-d | chess-best-move × 3 | 0/3 | Reps 1,3: no delegation. Rep 2: delegated, wrong (b2b3) |
+| v19-deleg-e | chess-best-move × 3 | 0/3 | Both delegated, both found only e2e4 |
+| v19-tasklist-a | kv-store-grpc × 3 | 0/3 | Not info-loss — all failed on gRPC proto contract mismatch |
+| v19-tasklist-b | kv-store-grpc × 3 | 0/3 | Same as tasklist-a. Verification depth, not delegation text |
+| v19-state-a | git-multibranch × 3 | 1/3 | Rep 1: Git HEAD misconfigured. Rep 3: testing mutated deliverable |
+| **v19-state-b** | git-multibranch × 3 | **3/3** | **WINNER.** Post-test mutation check |
+
+**Winners shipped to main:** deleg-b (coordinator.md) + state-b (implementer.md)
+
+#### Interrogation findings by problem area
+
+**Non-delegation (chess-best-move):**
+- deleg-b's "quality gate, not the worker" framing was uniquely effective — 100% delegation AND correct answers
+- deleg-a: 1/3 failed to delegate at all. Other 2 delegated but implementer got wrong answer
+- deleg-c: Both delegated, both accepted single move without finding the second checkmate (g2g4)
+- deleg-d: 2/3 failed to delegate. The 1 that delegated got wrong answer (b2b3)
+- deleg-e: Both delegated via task list but implementer found only e2e4
+- Common across failures: "Do NOT re-derive" instruction prevents coordinator from catching wrong implementer answers
+
+**Delegation info loss (kv-store-grpc):**
+- **Reclassified: NOT info-loss, base capability issue.** Both task-list variants (0/3 each) failed identically.
+- Root cause across all 6 reps: gRPC proto field names/RPC signatures don't match verifier's expected wire format
+- Coordinator consistently verified superficially (files exist, port listening) but never tested actual gRPC contract
+- Even reps with reviewers (2-3 review passes) didn't catch proto mismatch — nobody ran end-to-end RPC round-trip
+- Rep 3 of tasklist-a had 5 sessions (coordinator + 2 implementers + 2 reviewers) and still failed same way
+- **Lesson:** Task-list/verbatim approaches can't fix verification depth problems. The coordinator needs to actually exercise the service interface, not just check superficial health
+
+**State pollution (git-multibranch):**
+- state-b "check whether testing mutated" went 3/3 — clear winner
+- state-a "clone for testing" went 1/3:
+  - Rep 1: Git bare repo's default HEAD not set correctly. Cloning produced "remote HEAD refers to nonexistent ref." Implementer relied on ad hoc runtime state (sshpass wrapper) instead of persistent config
+  - Rep 3: `/dev/index.html` returned "dev version" instead of expected "dev branch content" — implementer's testing mutated deployed content and left it in place (exactly the state pollution state-b fixes)
+- **Lesson:** Post-hoc mutation detection (state-b) more robust than prevention (state-a) because it catches unanticipated mutation paths
+
+### v19 variant experiment design (Mar 27)
+
+**Problem 1: Non-delegation (chess-best-move)**
+Coordinator ignores delegation rules and handles tasks directly. 5 framing variants:
+- **a**: "If you do the work yourself, you cannot verify it was done correctly"
+- **b**: "You are the quality gate, not the worker. A gate cannot inspect what it built"
+- **c**: "The coordinator exists to catch implementer mistakes. If you implement, nobody catches yours"
+- **d**: "Delegation is the mechanism that produces correct solutions. Without it you are unreviewed"
+- **e**: "Create a task list before taking action" (forces planning that includes delegation)
+
+**Problem 2: Delegation info loss (kv-store-grpc)**
+Coordinator paraphrases specs, losing exact field names/formats. 2 variants:
+- **tasklist-a**: Pre-delegation task list with "VERBATIM task description you will pass"
+- **tasklist-b**: "CHARACTER-FOR-CHARACTER" copying + "re-read and verify before spawning"
+
+**Problem 3: Implementer state pollution (git-multibranch)**
+Implementer testing mutates deliverable (git refs, configs). 2 variants:
+- **state-a**: "Clone or copy deliverable to temporary location for testing"
+- **state-b**: "Check whether your testing process mutated the deliverable"
 
 ### Latest eval: disc-3rep-v6-fixed (Mar 26)
 
@@ -40,17 +99,47 @@ The other 11 regressions are nondeterministic variance (implementer approach qua
 **Run:** `v18-no-tests-5.4` + `v18-no-tests-mini` — log-summary-date-ranges × 3 each
 **Build:** commit 4d42c75 (no-tests case in verification checklist)
 **Models:** gpt-5.4 and gpt-5.4-mini
-**Status:** PENDING
+**Result:** mini 3/3, 5.4 3/3. log-summary-date-ranges SOLVED on both models.
 
-Interrogation of v17 gpt-5.4 rep-2 failure revealed a different root cause than
-the mini failures: when no test suites exist, the coordinator writes its own
-verification script rather than following the read-only checklist. It admitted
-knowingly violating "Do NOT re-derive" because the absence of tests made
-verification feel incomplete.
+The no-tests case fix worked: 5.4 improved from 2/3 → 3/3. Mini held at 3/3.
 
-Fix: step 3.1 now explicitly handles the no-tests case: "If no test suites
-exist, that is fine — proceed to step 3.2. Do not write your own test or
-verification scripts."
+**Score history (log-summary-date-ranges):**
+- v12 baseline: 1/3 (mini)
+- v13 soft prohibition: 1/3
+- v14 hard prohibition: 0/3 (REGRESSION)
+- v15 positive framing: 1/3
+- v16 reading-not-computing: 1/3
+- v17 harmonize gate: 3/3 mini, 2/3 5.4
+- v18 no-tests case: **3/3 mini, 3/3 5.4** ✓
+
+### Broad regression: v17-broad-20 (Mar 26)
+
+**Run:** `v17-broad-20` — 20 tasks × 1 rep on gpt-5.4-mini
+**Build:** commit eaad757 (v17 HARD GATE harmonization)
+**Result:** 13/18 passed, 2 still pending (circuit-fibsqrt, fix-ocaml-gc).
+
+| Task | Result | Notes |
+|------|--------|-------|
+| feal-linear-cryptanalysis | PASS | |
+| build-pov-ray | PASS | |
+| regex-log | PASS | |
+| pypi-server | PASS | |
+| distribution-search | PASS | |
+| polyglot-c-py | PASS | |
+| fix-code-vulnerability | PASS | |
+| largest-eigenval | PASS | |
+| multi-source-data-merger | PASS | |
+| count-dataset-tokens | PASS | |
+| headless-terminal | PASS | |
+| log-summary-date-ranges | PASS | |
+| gpt2-codegolf | FAIL | Known too-hard (>75% failure on leaderboard) |
+| chess-best-move | FAIL | **Non-delegation**: coordinator didn't spawn any subagent. Read image, hallucinated "e2e6", wrote move.txt directly. Backlog #2. |
+| kv-store-grpc | FAIL | Base capability: implementer used `val` instead of `value` in proto field name. Delegation worked correctly. |
+| adaptive-rejection-sampler | FAIL | Base capability: ARS envelope math wrong for normal dist. Known nondeterministic (~50%). |
+| git-multibranch | FAIL | Implementer polluted bare repo state during self-testing. Verifier expects pristine repo but found leftover branch refs. Implementer suggests: "test in throwaway clone, restore pristine state." |
+| winning-avg-corewars | PASS | Late arrival (spot delayed) |
+| circuit-fibsqrt | PENDING | Spot reclaim, re-run needed |
+| fix-ocaml-gc | PENDING | Spot reclaim, re-run needed |
 
 ### Previous test: v17-harmonize-gate-mini (Mar 26)
 
@@ -525,6 +614,15 @@ messages with system prompt first, which GPT-5.4 ignores. Not yet implemented or
 | 3/26 | disc-3rep-v6-fixed | 56 disc ×3 | 70/163 (43%) | Correct binary (1b06827). +2.2pt vs unfixed. 31 timeouts |
 | 3/26 | v7-action-bias | 7 regression tasks ×1 | 3/7 | feal-diff PASS, eigenval PASS, rust-c PASS. chess/ars FAIL. 2 timeout |
 | 3/26 | v8-input-fix | chess ×1, polyglot ×1 | 0/2 | chess: reviewer hallucinated wrong move. polyglot: verify-clean-reverify-forget |
+| 3/27 | **v19-deleg-b** | chess-best-move ×3 | **3/3** | "Quality gate not worker." SHIPPED |
+| 3/27 | **v19-state-b** | git-multibranch ×3 | **3/3** | "Check for mutation after testing." SHIPPED |
+| 3/27 | v19-deleg-a | chess-best-move ×3 | 0/3 | 1 no-deleg, 2 wrong answer |
+| 3/27 | v19-deleg-c | chess-best-move ×3 | 0/3 | Delegated, accepted single move |
+| 3/27 | v19-deleg-d | chess-best-move ×3 | 0/3 | 2 no-deleg, 1 wrong answer |
+| 3/27 | v19-deleg-e | chess-best-move ×3 | 0/3 | Delegated via task list, wrong answer |
+| 3/27 | v19-tasklist-a | kv-store-grpc ×3 | 0/3 | Proto mismatch, not info-loss |
+| 3/27 | v19-tasklist-b | kv-store-grpc ×3 | 0/3 | Proto mismatch, not info-loss |
+| 3/27 | v19-state-a | git-multibranch ×3 | 1/3 | Clone approach less robust |
 | 3/26 | v9-review-fix-b | chess ×3, polyglot ×3 | 4/6 | chess 2/3 (1 reviewer info loss), polyglot 2/3 (1 timeout). Fixes work. |
 | 3/26 | v10-deleg-goldplate | chess ×3, polyglot ×3 | 1/6 | All fixes violated. Real interrogation: competing instructions + no authority ordering |
 | 3/26 | v11-positive-framing | chess ×3, polyglot ×3 | 6/6 | Both v10 failure modes resolved. Positive authority ordering + warnings fix |

@@ -37,3 +37,11 @@ Do not refactor what you were not asked to touch.
 
 When done, call communicate with the file paths of all files you created or modified
 and test results.
+
+## Deliverable hygiene
+
+After completing self-verification, check whether your testing process mutated
+the deliverable. Common mutations: leftover git branch refs from test pushes,
+cached compilation artifacts, modified config files, test data left in
+databases. If the deliverable's state has drifted from what a fresh evaluator
+would expect, restore it before reporting completion.

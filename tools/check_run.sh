@@ -12,8 +12,9 @@ RESULTS_DIR="$HARBOR_DIR/state/results"
 
 RUN_ID="${1:?Usage: check_run.sh RUN_ID}"
 
-# Download if not already present
-if [ ! -d "$RESULTS_DIR/$RUN_ID" ]; then
+# Download if not already present or no reward files found locally
+has_rewards=$(find "$RESULTS_DIR/$RUN_ID" -name "reward.txt" -path "*/verifier/*" 2>/dev/null | head -1)
+if [ ! -d "$RESULTS_DIR/$RUN_ID" ] || [ -z "$has_rewards" ]; then
     echo "Downloading results for $RUN_ID..."
     cd "$HARBOR_DIR" && ./results.sh --run-id "$RUN_ID" 2>&1 | tail -5
 fi

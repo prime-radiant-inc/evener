@@ -4,14 +4,15 @@ Prioritized queue of next experiments. Updated March 26, 2026.
 
 ## Currently testing
 
-### v18: No-tests case (log-summary-date-ranges × 3 × 2 models)
+### v17-broad-20 regression check (20 tasks × 1 rep on mini)
 
-v17 fixed mini (3/3) but 5.4 went 2/3. Interrogation of 5.4 failure: when no
-test suites exist, the model writes its own verification script. v18 adds
-explicit handling: "If no test suites exist, that is fine — proceed to step 3.2.
-Do not write your own test or verification scripts."
+12/17 passed, 3 pending. Failures: chess-best-move, kv-store-grpc,
+git-multibranch, adaptive-rejection-sampler (documented nondeterministic),
+gpt2-codegolf (known too-hard). Interrogating all non-trivial failures.
 
-Also running v17-broad-20 (20 tasks × 1 rep on mini) for regression check.
+## Recently completed
+
+### v18: No-tests case — SOLVED (3/3 mini, 3/3 5.4)
 
 **Score history (log-summary-date-ranges):**
 - v12 baseline: 1/3 (mini)
@@ -20,7 +21,7 @@ Also running v17-broad-20 (20 tasks × 1 rep on mini) for regression check.
 - v15 positive framing: 1/3
 - v16 reading-not-computing: 1/3
 - v17 harmonize gate: 3/3 mini, 2/3 5.4
-- v18 no-tests case: PENDING
+- v18 no-tests case: **3/3 mini, 3/3 5.4** ✓
 
 ## Next up
 
@@ -48,6 +49,12 @@ verbatim" instruction doesn't work — the model rewrites regardless.
 **Problem:** Coordinator sometimes handles tasks directly instead of delegating.
 Most visible on chess-best-move (reads image, writes wrong answer immediately)
 and pytorch-model-cli (codes in C++ for 35 rounds instead of delegating).
+
+**v17-broad-20 evidence:** chess-best-move had exactly 1 session (coordinator
+only). Coordinator read the image, hallucinated "e2e6", wrote move.txt directly,
+submitted. Never spawned any subagent despite "Your NEXT action is spawn_agent"
+and "You NEVER write or modify files yourself." Interrogation confirmed the
+coordinator relied on the "image description" and didn't follow test verification.
 
 **Hypotheses:**
 - **A) Steering injection:** If the coordinator's first 3 tool calls don't

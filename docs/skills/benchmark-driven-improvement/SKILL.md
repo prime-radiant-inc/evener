@@ -85,7 +85,21 @@ Ask specific questions about the decision that went wrong:
 - "Did you see instruction Z? How did it interact with instruction W?"
 - "What information would you have needed to make the right decision?"
 
-### 2c. NEVER conclude without interrogation
+### 2c. Interrogate automatically — NEVER wait for permission
+
+When eval results arrive, immediately launch parallel interrogation subagents
+for EVERY failure. Do not wait for the user to ask. Do not process results
+without interrogation. The workflow is: results arrive → launch interrogations →
+record findings.
+
+Use one subagent per failing run-id. Each subagent runs `--list-sessions` then
+`interrogate_session.py` for each failed rep. Subagents must use
+`export $(cat .env | xargs)` because env vars don't propagate to subprocesses.
+
+When check_run.sh shows 0/0 but S3 has results, the local directory was
+pre-created by launch.sh. Force re-download with `results.sh --run-id RUN_ID`.
+
+### 2d. NEVER conclude without interrogation
 
 **Do not declare a ceiling, exhausted approach, or unsolvable problem without
 having interrogated the failed sessions.** Transcript analysis alone is
