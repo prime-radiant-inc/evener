@@ -4,26 +4,24 @@ Prioritized queue of next experiments. Updated March 26, 2026.
 
 ## Currently testing
 
-(Nothing actively running)
+### v17: HARD GATE harmonization (log-summary-date-ranges × 3)
 
-### Coordinator override: prompt ceiling reached
+Session interrogation of v16 failures revealed the root cause was NOT stochastic
+non-compliance — the coordinator was following a COMPETING INSTRUCTION. The HARD
+GATE said "contain what the task requires" and "verify against actual acceptance
+criteria," which the model interpreted as requiring numeric verification. This
+directly overrode the step 3 "reading, not computing" checklist.
 
-Five iterations on log-summary-date-ranges all produced 1/3 ± 0:
+v17 fix: HARD GATE now forward-references step 3 and declares the checklist
+exhaustive. No competing verification criteria remain.
+
+**Score history:**
 - v12 baseline: 1/3
 - v13 soft prohibition: 1/3
 - v14 hard prohibition: 0/3 (REGRESSION)
 - v15 positive framing: 1/3
-- v16 reading-not-computing + no scratch dir: 1/3
-
-Transcript analysis shows the instruction works when followed (v16 rep-1:
-coordinator reads and submits, zero exec_commands) but compliance is
-stochastic (~33%). The coordinator has exec_command and ~67% of the time
-decides to independently recompute values regardless of instructions.
-
-**Options:**
-- Accept 1/3 base rate and move on to higher-ROI tasks
-- Remove exec_command from coordinator tools (code change)
-- Different coordinator architecture (implementer self-submits)
+- v16 reading-not-computing: 1/3
+- v17 harmonize gate: PENDING
 
 ## Next up
 

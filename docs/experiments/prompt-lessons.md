@@ -162,6 +162,21 @@
   for independent recomputation
 - "Verification is reading, not computing" + no scratch directory is the v16 approach
 
+## Competing instructions are the real cause of stochastic non-compliance
+- v12-v16 all scored 1/3 on log-summary-date-ranges — looked like a stochastic compliance ceiling
+- Session interrogation (v16 rep-2 and rep-3) revealed the cause: the HARD GATE section
+  said "contain what the task requires" and "verify against actual acceptance criteria,"
+  which the model interpreted as requiring numeric verification. This directly competed
+  with step 3's "verification is reading, not computing"
+- Both sessions independently identified the same conflict and chose the HARD GATE because
+  it appeared "stricter and more aligned with correctness"
+- This was NOT random non-compliance — it was the model resolving an instruction conflict
+  deterministically. The 33% compliance rate reflects cases where the model happened to
+  follow step 3 without reaching the HARD GATE's competing language
+- Lesson: when compliance is stochastic, always interrogate failures to check for
+  instruction conflicts. What looks like a ceiling may be a fixable contradiction
+- v17 fix: HARD GATE forward-references step 3 instead of establishing competing criteria
+
 ## Coordinator reads task inputs despite "do NOT pre-process"
 - chess-best-move (v8): coordinator read chess_board.png as its FIRST tool call
 - The "do NOT pre-process task inputs in your delegation" rule targets step 2 (delegation)

@@ -25,7 +25,23 @@ Invoke it before starting work.
 1 regression was caused by our fixes (polyglot-c-py — verification artifact left behind).
 The other 11 regressions are nondeterministic variance (implementer approach quality).
 
-### Latest test: v16-no-scratch (Mar 26)
+### Latest test: v17-harmonize-gate (Mar 26)
+
+**Run:** `v17-harmonize-gate` — log-summary-date-ranges × 3
+**Build:** commit eaad757 (HARD GATE forward-references step 3)
+**Status:** PENDING
+
+Session interrogation of both v16 failures revealed the same root cause: the
+HARD GATE's phrases "contain what the task requires" and "verify against actual
+acceptance criteria" directly contradicted "Verification is reading, not computing."
+Both sessions independently reported choosing the HARD GATE over the checklist
+because it appeared "stricter and more aligned with correctness."
+
+Fix: HARD GATE now forward-references step 3 instead of establishing a competing
+verification standard. The conflicting phrases are removed. The checklist is
+declared exhaustive — "if every item passes, submit."
+
+### Previous test: v16-no-scratch (Mar 26)
 
 **Run:** `v16-no-scratch` — log-summary-date-ranges × 3
 **Build:** commit d71ac81 (reading not computing + no scratch dir)
@@ -38,13 +54,10 @@ permission entirely. Transcript analysis:
 - Rep-3 (FAIL): coordinator explicitly ran "Recompute counts independently" via
   inline Python heredoc, ignoring the instruction.
 
-Compliance is stochastic (~33%). When followed, the approach works. When not,
-the coordinator uses exec_command to run independent recomputation regardless.
-
-**Conclusion:** Prompt engineering has hit the ceiling on coordinator verification
-override. Five iterations (v12-v16) all produced 1/3 ± 0 (except v14 hard ban
-which regressed to 0/3). The coordinator has exec_command and ~67% of the time
-decides to use it for independent value verification.
+Session interrogation of rep-2 and rep-3 failures identified the root cause:
+the HARD GATE section ("contain what the task requires", "verify against actual
+acceptance criteria") overrode the read-only checklist. Both sessions independently
+reported the same conflict and suggested harmonizing the HARD GATE with step 3.
 
 ### Previous test: v15-positive-verify (Mar 26)
 
@@ -230,6 +243,7 @@ circuit-fibsqrt and polyglot-c-py TIMEOUT.
 | f33e96d | Coordinator: hard "NEVER override" ban | v13: soft framing insufficient → 0/3 REGRESSION, reverted |
 | 76f5f4f | Coordinator: positive-framing verification, accept implementer values | v14: prohibition framing exhausted, apply v11 lesson |
 | d71ac81 | Coordinator: "reading not computing" + remove scratch dir permission | v15: scratch dir was escape hatch for recomputation |
+| eaad757 | Coordinator: HARD GATE forward-references step 3, no competing criteria | v16: HARD GATE overrode read-only checklist (interrogation-confirmed) |
 
 ### Known remaining issues
 
