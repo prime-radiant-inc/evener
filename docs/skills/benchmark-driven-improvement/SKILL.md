@@ -53,13 +53,37 @@ When given an eval to tune against:
 
 **This is the most important step. Do not skip it. Do not guess from error messages.**
 
-For each failing task, read the actual agent transcript and answer:
+For each failing task:
 
-1. What did the coordinator do? Did it scout? Delegate? Verify?
+### 2a. Read the transcripts
+
+Read the actual agent transcript (coordinator AND subagent sessions) and answer:
+
+1. What did the coordinator do? Did it inventory? Delegate? Verify?
 2. What did the implementer do? What approach did it take? Where did it get stuck?
 3. Why did the verifier fail? What specific assertion failed?
 4. Did the coordinator catch the problem before submitting?
 5. What would have fixed it? (Must be a general principle, not task-specific.)
+
+### 2b. Interrogate the sessions
+
+**This is required, not optional.** After reading transcripts, resume the failed
+sessions and ask the model WHY it made its decisions. Use `tools/interrogate_session.py`.
+
+The model honestly reports which instructions it noticed, how it prioritized them,
+and what it was aware of but chose not to follow. This frequently reveals root causes
+that transcript reading alone cannot — e.g., the model knew a rule but violated it
+because another instruction felt higher-priority, or a subagent lacked context it
+needed because the coordinator didn't include it in the delegation.
+
+Interrogate every agent involved in the failure chain, not just the coordinator.
+If the reviewer made a bad call, interrogate the reviewer. If the implementer went
+down a wrong path, interrogate the implementer.
+
+Ask specific questions about the decision that went wrong:
+- "Your prompt says X. Why did you do Y instead?"
+- "Did you see instruction Z? How did it interact with instruction W?"
+- "What information would you have needed to make the right decision?"
 
 ## Step 3: Build Failure Inventory
 
@@ -175,9 +199,9 @@ tool flows, delegation text diffs, and specific divergence points.
 They'll produce surface-level categorization instead of real root causes. The
 template exists to prevent this.
 
-### Session interrogation
+### Session interrogation (required — see step 2b)
 
-When transcripts don't explain WHY the model chose a different approach, ask it.
+Interrogation is a required part of root-cause analysis, not an optional fallback.
 
 ```bash
 # Interrogate a failing session with default questions
@@ -189,18 +213,24 @@ python3 tools/interrogate_session.py \
     --run FAIL_RUN --rep FAIL_REP --task TASK \
     --compare-run PASS_RUN --compare-rep PASS_REP
 
-# Custom questions
+# Custom questions about specific decisions
 python3 tools/interrogate_session.py \
     --run RUN_ID --rep REP --task TASK \
-    --question "Why did you read the skill file before delegating?" \
-    --question "What would you have done differently with the same prompt?"
+    --question "Your prompt says X. Why did you do Y instead?" \
+    --question "Did you have the original task spec? What format did it specify?"
 ```
 
 This replays the conversation context and appends your questions. The model
 reports which instructions it noticed and how it prioritized them.
 
+**Interrogate every agent in the failure chain.** The tool targets the coordinator
+by default. For subagents (reviewer, implementer), reconstruct their context
+from the transcript and interrogate them separately — the coordinator's delegation
+is often the root cause (missing context, wrong instructions).
+
 **Reliable for:** which instructions competed, what the model noticed, how it
-ranked priorities. **Less reliable for:** deeper "why" (may rationalize).
+ranked priorities, what context was missing. **Less reliable for:** deeper "why"
+(may rationalize).
 
 ### What good root causes look like
 
@@ -250,6 +280,7 @@ Use `make build-linux` which invalidates the Go embed cache automatically.
 
 | Anti-pattern | Instead |
 |-------------|---------|
+| Analyzing transcripts without interrogating | Resume sessions and ask the model why it decided what it did |
 | Categorizing failures without comparison | Side-by-side transcript diff against passing run |
 | Guessing root causes from error messages | Read the actual transcript, both passing and failing |
 | Dispatching subagents with vague prompts | Use the root-cause-prompt.md template |

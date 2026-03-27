@@ -25,9 +25,41 @@ Invoke it before starting work.
 1 regression was caused by our fixes (polyglot-c-py — verification artifact left behind).
 The other 11 regressions are nondeterministic variance (implementer approach quality).
 
-### Active test: v7-action-bias (Mar 26)
+### Active test: v9-review-fix-b (Mar 26)
 
-Testing 3 more prompt changes on 7 regression tasks:
+Testing reviewer and verification fixes on the two remaining regressions:
+- **Reviewer consistency check**: reviewer.md changed from "independently verify"
+  to "review results for consistency, not by re-deriving." If the implementer
+  validated with a domain tool, the reviewer checks the tool was used correctly
+  rather than substituting its own analysis.
+- **Scratch directory for verification**: coordinator.md step 3 now requires all
+  verification artifacts go to a scratch directory (e.g. `/tmp/verify`), never the
+  workspace. Prevents the verify-clean-reverify-forget pattern.
+- **Active pre-submit workspace check**: coordinator.md step 5 now requires listing
+  the workspace and removing verification artifacts before calling communicate.
+
+**Run:** `v9-review-fix-b` — chess-best-move × 3, polyglot-c-py × 3
+
+### Previous test: v8-input-fix (Mar 26)
+
+**Run:** `v8-input-fix` — chess-best-move × 1, polyglot-c-py × 1
+**Result:** 0/2 — both failed.
+
+**chess-best-move:** First implementer got it RIGHT (python-chess found both g2g4
+and e2e4). But the reviewer had no chess engine, relied on vision hallucination,
+said the answer should be e2f3 (Qf3+). Coordinator trusted the reviewer over the
+implementer's computational proof and told a fix-implementer to write e2f3. Root
+cause: reviewer re-derived the answer instead of reviewing the implementer's
+methodology and consistency.
+
+**polyglot-c-py:** Coordinator compiled gcc into the workspace during verification
+(creating cmain), cleaned up, re-verified (re-compiled, re-creating cmain), and
+forgot to clean up the second time. Submitted with cmain still in the directory.
+Root cause: no scratch directory rule + no active pre-submit workspace check.
+
+### Previous test: v7-action-bias (Mar 26)
+
+Testing 3 prompt changes on 7 regression tasks:
 - **Action bias in workflow.md**: "Start building early. Research is not progress;
   working code is progress." Addresses implementer research-loop timeouts.
 - **Optional explorer**: Coordinator can scout directly for small workspaces instead
@@ -36,9 +68,9 @@ Testing 3 more prompt changes on 7 regression tasks:
   what you see" instead of "do not write code to extract what you see." Addresses
   chess-best-move where baseline installed python-chess but fixed run trusted vision.
 
-**Run:** `v7-action-bias` — 7 tasks × 1 rep (feal-differential, largest-eigenval,
-circuit-fibsqrt, polyglot-c-py, polyglot-rust-c, chess-best-move,
-adaptive-rejection-sampler)
+**Run:** `v7-action-bias` — 7 tasks × 1 rep
+**Result:** 3/7 — feal-diff PASS, eigenval PASS, rust-c PASS. chess/ars FAIL.
+circuit-fibsqrt and polyglot-c-py TIMEOUT.
 
 ### Template engine fixes shipped (commits on main)
 
@@ -52,20 +84,40 @@ adaptive-rejection-sampler)
 | 70ae411 | Verification cleanup in step 4 | polyglot-c-py: compiled binary left behind |
 | eecc20a | Action bias + optional explorer | Timeout regressions + budget waste |
 | cedf53e | Computational verification for vision | chess-best-move trusted vision alone |
+| e9a3989 | Don't pre-process task inputs + rename inventory/coordinator | Coordinator analyzed images for delegation |
+| (dirty) | Reviewer: consistency check, not re-derive | Reviewer hallucinated wrong answer without domain tools |
+| (dirty) | Coordinator: scratch dir for verification | Verify-clean-reverify-forget left artifacts |
+| (dirty) | Coordinator: active pre-submit workspace check | No check before communicate |
+| (dirty) | Coordinator: include task spec in reviewer delegation | Reviewer lacked format requirements, guessed wrong |
+| (dirty) | Workflow: test against spec's criteria, don't gold-plate | Implementer self-imposed -Werror, burned 14min on warnings |
 
 ### Known remaining issues
 
 1. **Delegation info loss** — coordinator still paraphrases task specs despite
    "forward verbatim" instruction. The model rewrites. Structural solutions
    (RootTask injection) were too specific. No good general fix yet.
-2. **Non-delegation on vision tasks** — coordinator sometimes handles vision tasks
-   directly instead of delegating. Capabilities text updated but not yet validated.
-3. **Reviewer can destroy correct answers** — chess-best-move unfixed: reviewer
-   removed the correct g2g4 move. Reviewer is too aggressive about reformatting.
-4. **Reviewer validation can introduce bugs** — adaptive-rejection-sampler: reviewer
-   feedback led to overly strict xinit validation that broke valid inputs.
-5. **Post-rejection self-fix** — coordinator fixes code itself after reviewer rejection
+2. **Coordinator reads task inputs during inventory** — coordinator reads images/data
+   files during step 1 inventory despite "do NOT pre-process task inputs." v8 chess
+   run showed coordinator read chess_board.png as its first action. The "pre-process"
+   rule targets delegation (step 2), not inventory (step 1). May need to explicitly
+   say "do not read binary files during inventory."
+3. **Reviewer lacks task spec context** — coordinator delegates to reviewer without
+   including the original task's output format requirements. v9 chess rep-1: reviewer
+   didn't know "print them all, one per line" and assumed single-move format. When
+   interrogated, reviewer confirmed "I did not have the original task spec." This is
+   the delegation info loss pattern applied to reviewer delegation, not just implementer.
+   Fix needed: coordinator must include task spec in reviewer delegation.
+4. **Reviewer re-derives without tools** — (v9 fix working: 2/3 vs 0/1) reviewer
+   without equivalent domain tools falls back on hallucination. Fix: reviewer.md
+   changed to "review consistency, not re-derive." But v9 chess rep-1 shows the
+   coordinator still trusts reviewer over domain-tool proof AND writes files itself.
+4. **Verify-clean-reverify-forget** — (v9 fix in testing) coordinator cleans up after
+   first verify, re-verifies (re-creating artifacts), forgets second cleanup. Fix:
+   verification artifacts must go to scratch directory, not workspace.
+6. **Post-rejection self-fix** — coordinator fixes code itself after reviewer rejection
    instead of spawning a new implementer (violating "NEVER write files yourself").
+   v9 chess rep-1: coordinator used cat/mv to overwrite move.txt. When interrogated,
+   it admitted "I was aware of that rule; I just failed to follow it."
 
 ### Key techniques
 
@@ -281,6 +333,8 @@ messages with system prompt first, which GPT-5.4 ignores. Not yet implemented or
 | 3/26 | disc-3rep-v6 | 56 disc ×3 | 68/167 (41%) | **WRONG BINARY** — stale 38afc9a deployed. Useful as unfixed baseline |
 | 3/26 | disc-3rep-v6-fixed | 56 disc ×3 | 70/163 (43%) | Correct binary (1b06827). +2.2pt vs unfixed. 31 timeouts |
 | 3/26 | v7-action-bias | 7 regression tasks ×1 | 3/7 | feal-diff PASS, eigenval PASS, rust-c PASS. chess/ars FAIL. 2 timeout |
+| 3/26 | v8-input-fix | chess ×1, polyglot ×1 | 0/2 | chess: reviewer hallucinated wrong move. polyglot: verify-clean-reverify-forget |
+| 3/26 | v9-review-fix-b | chess ×3, polyglot ×3 | 4/6 | chess 2/3 (1 reviewer info loss), polyglot 2/3 (1 timeout). Fixes work. |
 
 ### Detailed experiment writeups
 

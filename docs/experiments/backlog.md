@@ -4,14 +4,19 @@ Prioritized queue of next experiments. Updated March 26, 2026.
 
 ## Currently testing
 
-### v7-action-bias (running)
+### v9-review-fix-b (running)
 
-Three prompt changes targeting timeout regressions and research-loop failures:
-1. Workflow: "Start building early. Research is not progress."
-2. Coordinator: Optional explorer for small workspaces
-3. Capabilities: Computational verification for vision tasks
+Two prompt fixes targeting the last two known regressions (chess-best-move,
+polyglot-c-py):
+1. **Reviewer consistency**: reviewer.md changed from "independently verify" to
+   "review results for consistency." If implementer used a domain tool, reviewer
+   checks methodology and consistency rather than re-deriving the answer.
+2. **Scratch directory verification**: coordinator.md step 3 requires all
+   verification artifacts go to a scratch dir (e.g. `/tmp/verify`), never workspace.
+3. **Active pre-submit check**: coordinator.md step 5 requires listing workspace
+   and removing verification artifacts before calling communicate.
 
-**Test:** 7 regression tasks × 1 rep. If positive, run broader eval.
+**Test:** chess-best-move × 3, polyglot-c-py × 3. Run ID: `v9-review-fix-b`.
 
 ## Next up
 
@@ -50,18 +55,23 @@ and pytorch-model-cli (codes in C++ for 35 rounds instead of delegating).
 
 **Test plan:** chess-best-move × 5 reps with each approach.
 
-### 3. Reviewer quality
+### 3. Reviewer quality — partially addressed
 
 **Problem:** Reviewer sometimes destroys correct answers (chess-best-move:
 removed g2g4) or introduces bugs (adaptive-rejection-sampler: overly strict
-xinit validation).
+xinit validation). Root cause identified in v8: reviewer without equivalent
+domain tools (chess engine) fell back on vision hallucination, overriding the
+implementer's correct computational proof.
 
-**Hypotheses:**
-- **A) Conservative rejection:** Add "When rejecting, do not suggest changes
-  to output format or structure unless the task specification explicitly
-  requires a different format."
+**Fix in testing (v9):** Reviewer prompt changed to "review consistency, not
+re-derive." If implementer validated with a domain tool, reviewer checks
+methodology consistency rather than substituting its own analysis.
+
+**Remaining hypotheses (if v9 doesn't fully fix):**
+- **A) Conservative rejection:** "Do not suggest changes to output format or
+  structure unless the task specification explicitly requires a different format."
 - **B) Reject-only, no fix suggestions:** Reviewer says what's wrong but
-  doesn't suggest how to fix it, reducing the chance of bad advice.
+  doesn't suggest how to fix it.
 
 ### 4. Post-rejection coordinator behavior
 
@@ -96,9 +106,14 @@ what I have").
 - Verification language revert (artifact-only → run tests) — shipped
 - Workspace cleanup in shared values — shipped
 - Verification cleanup after step 4 — shipped
-- Action bias in workflow — shipped (testing)
-- Optional explorer — shipped (testing)
-- Capabilities: computational verification — shipped (testing)
+- Action bias in workflow — shipped (v7: 3/7 tasks improved)
+- Optional explorer — shipped (v7: included in action-bias run)
+- Capabilities: computational verification — shipped (v7: included)
+- Input pre-processing ban — shipped (coordinator must not analyze task inputs)
+- Coordinator/reviewer rename — shipped (inventory not scout, coordinator not dispatcher)
+- Reviewer consistency check — testing (v9: review consistency, not re-derive)
+- Scratch directory verification — testing (v9: verification artifacts to /tmp)
+- Active pre-submit workspace check — testing (v9: list + clean before communicate)
 - harbor-runner: removed parent-dir binary copy — shipped
 - Makefile: `build-linux` target with cache invalidation — shipped
 - Session interrogation tool — shipped
