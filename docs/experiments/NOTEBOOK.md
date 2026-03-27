@@ -101,6 +101,35 @@ ability to write and run a test client. The coordinator can only inspect from th
 outside. But coordinator changes that expand the delegation text can INTERFERE
 with implementer behavior (combined-a 0/3 vs impl-test-a alone 3/3).
 
+#### v20 interrogation findings
+
+**Root cause: spec interpretation, not verification depth.** Every kv-store-grpc
+failure across ALL 10 variants traces to the same bug: the proto field is named
+`val` instead of `value` in SetValRequest. The task spec says "a value (int)" and
+the model interprets this as field name `val` for brevity/consistency with other
+message names (SetValRequest, GetValRequest).
+
+**Self-referential verification is structurally blind to this.** When the
+implementer tests its own service with its own generated stubs, the client and
+server agree on `val` — the test passes. Only an external client using the
+*expected* field name `value` would detect the mismatch. No amount of "verify
+deeper" prompting can fix a test that validates against itself.
+
+**impl-test-a's 3/3 is likely stochastic.** The prompt change ("write a minimal
+client command") doesn't address field naming. The model happened to choose
+`value` in those 3 runs. Combined-b's 3/3 may also be stochastic for the same
+reason.
+
+**Implication:** To reliably fix kv-store-grpc, we need either:
+1. A prompt that instructs the agent to cross-check spec language against proto
+   field names (fragile, task-specific)
+2. External verification (evaluator-provided test client or proto definition)
+3. Accept it as nondeterministic (~50-70% pass rate) and move to other tasks
+
+**This changes the ship decision for impl-test-a.** The prompt itself is harmless
+and may help with other service tasks, but its 3/3 on kv-store-grpc shouldn't be
+treated as signal that the prompt reliably fixes that task.
+
 ### v20 verification depth experiment design (Mar 27)
 
 **Coordinator variants (5):**

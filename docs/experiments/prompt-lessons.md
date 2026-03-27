@@ -198,3 +198,54 @@
 - But the coordinator reads the image during step 1 (inventory) — technically not "pre-processing
   for delegation" but still harmful since it triggers vision hallucination that biases later actions
 - May need explicit rule: "do not read binary/image files during inventory — list them only"
+
+## "Quality gate, not the worker" is the winning delegation framing
+- chess-best-move: 5 delegation framings tested, only one went 3/3
+- deleg-b: "You are the quality gate, not the worker. A gate cannot inspect
+  what it built." → 3/3
+- deleg-a "can't verify your own work" → 0/3 (1/3 didn't delegate at all)
+- deleg-c "catch implementer mistakes" → 0/3
+- deleg-d "unreviewed without delegation" → 0/3
+- deleg-e "task list forces planning" → 0/3
+- The winning framing ties identity ("you ARE a gate") to the mechanism
+  ("gates don't build things"). Other framings explain consequences but
+  don't redefine what the coordinator IS
+- "Do NOT re-derive" instruction interferes: prevents coordinator from
+  catching wrong implementer answers, since checking IS re-deriving
+
+## Post-test mutation detection beats prevention
+- git-multibranch: testing mutates deliverable (leftover branch refs, modified configs)
+- state-a "clone to temp for testing" went 1/3 — prevention misses unanticipated paths
+- state-b "check whether testing mutated deliverable" went 3/3
+- Post-hoc detection catches things the agent doesn't anticipate breaking
+- The mutation check is general: "did my testing process change anything?"
+
+## Competing coordinator instructions interfere with implementer behavior
+- combined-a (tasklist-a coordinator + impl-test-a implementer) went 0/3,
+  while impl-test-a alone went 3/3
+- The coordinator's 8-step task list reinjection changed delegation text,
+  which overrode or crowded out the implementer's own verification behavior
+- Lesson: coordinator prompt expansions can degrade downstream agent behavior
+  even when they improve coordinator behavior in isolation
+- Keep coordinator delegation text lean — avoid injecting extra process steps
+  that get forwarded to implementer
+
+## Self-referential verification cannot detect schema-level mismatches
+- kv-store-grpc: ALL failures (across 10 variants, 30 runs) share one root
+  cause: proto field named `val` instead of `value` in SetValRequest
+- The task spec says "a value (int)" — model interprets as field name `val`
+- When the implementer tests with its own generated stubs, client and server
+  agree on `val` — the test passes despite the mismatch
+- Only an external client using the EXPECTED field name `value` would fail
+- No prompt change can fix this: "verify deeper" makes the agent run MORE
+  self-referential tests, not different ones
+- This is a structural limitation of any agent testing its own code against
+  its own understanding of the spec
+
+## Implementer-side verification beats coordinator-side for service tasks
+- v20: 3 implementer variants, 5 coordinator variants, 2 combined
+- Best implementer (impl-test-a, 3/3) outperformed best coordinator (verify-b, 2/3)
+- Implementer has direct access to code, running process, can write test client
+- Coordinator can only inspect from outside (file existence, port checks)
+- BUT: impl-test-a's 3/3 on kv-store-grpc is likely stochastic (see
+  self-referential verification lesson above)
