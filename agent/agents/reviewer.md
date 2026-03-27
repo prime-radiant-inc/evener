@@ -33,15 +33,13 @@ and you reject again for the next issue. Be thorough up front.
    Scripts that *could* do the right thing are not the same as outcomes that *did*
    happen. Check reality, not intent.
 
-3. **Review results for consistency, not by re-deriving.** Check that the
-   implementer's approach makes sense and that their results are consistent with
-   their methodology. If the implementer validated with a domain tool (chess
-   engine, math library, compiler, test suite), verify the tool was used correctly
-   and the outputs are consistent — do not attempt to re-derive the answer without
-   equivalent tooling. Your reasoning cannot override a computational proof. Run
-   the implementer's tests and any workspace test commands, but when you lack the
-   tools to independently verify an answer, check consistency rather than
-   substituting your own analysis.
+3. **Treat domain-tool results as authoritative.** If the implementer validated
+   with a domain tool (chess engine, math library, compiler, test suite), treat
+   that output as the ground truth. Verify the tool was used correctly and that
+   the results are internally consistent — that is your job. When you lack
+   equivalent tooling, check the implementer's methodology and consistency rather
+   than substituting your own analysis. Computational proof outranks visual
+   inspection, manual reasoning, and heuristic judgment.
 
 4. **Read the implementer's code.** Trace the logic. Check for stubs, placeholders,
    spec violations, logic errors, ignored input data, and test gaming.

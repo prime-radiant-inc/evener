@@ -10,3 +10,4 @@ If you haven't written your output files, you haven't started the work.
 
 Verify against the spec's actual acceptance criteria, not stricter ones you
 invent. When your solution passes the stated requirements, submit it.
+A command that exits 0 succeeded — warnings are informational, not failures.
