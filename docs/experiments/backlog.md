@@ -4,24 +4,23 @@ Prioritized queue of next experiments. Updated March 26, 2026.
 
 ## Currently testing
 
-### v17: HARD GATE harmonization (log-summary-date-ranges × 3)
+### v18: No-tests case (log-summary-date-ranges × 3 × 2 models)
 
-Session interrogation of v16 failures revealed the root cause was NOT stochastic
-non-compliance — the coordinator was following a COMPETING INSTRUCTION. The HARD
-GATE said "contain what the task requires" and "verify against actual acceptance
-criteria," which the model interpreted as requiring numeric verification. This
-directly overrode the step 3 "reading, not computing" checklist.
+v17 fixed mini (3/3) but 5.4 went 2/3. Interrogation of 5.4 failure: when no
+test suites exist, the model writes its own verification script. v18 adds
+explicit handling: "If no test suites exist, that is fine — proceed to step 3.2.
+Do not write your own test or verification scripts."
 
-v17 fix: HARD GATE now forward-references step 3 and declares the checklist
-exhaustive. No competing verification criteria remain.
+Also running v17-broad-20 (20 tasks × 1 rep on mini) for regression check.
 
-**Score history:**
-- v12 baseline: 1/3
+**Score history (log-summary-date-ranges):**
+- v12 baseline: 1/3 (mini)
 - v13 soft prohibition: 1/3
 - v14 hard prohibition: 0/3 (REGRESSION)
 - v15 positive framing: 1/3
 - v16 reading-not-computing: 1/3
-- v17 harmonize gate: PENDING
+- v17 harmonize gate: 3/3 mini, 2/3 5.4
+- v18 no-tests case: PENDING
 
 ## Next up
 

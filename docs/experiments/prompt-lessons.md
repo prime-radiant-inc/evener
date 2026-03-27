@@ -177,6 +177,21 @@
   instruction conflicts. What looks like a ceiling may be a fixable contradiction
 - v17 fix: HARD GATE forward-references step 3 instead of establishing competing criteria
 
+## Absent tests create a verification anxiety that drives recomputation
+- v17 fixed mini to 3/3 but 5.4 still went 2/3 on log-summary-date-ranges
+- Interrogation of 5.4 failure: model correctly found no test suites (there are
+  genuinely none at agent runtime), but instead of following the read-only checklist,
+  it wrote its own verification script
+- Model admitted knowingly violating "Do NOT re-derive" because "absence of obvious
+  tests" made verification feel incomplete — the checklist's "Run any test suites"
+  step creates an implicit expectation that tests exist, and when they don't, the
+  model fills the gap with its own scripts
+- Fix: explicitly handle the no-tests case in the checklist: "If no test suites
+  exist, that is fine — proceed to step 3.2. Do not write your own."
+- Different models may have different failure modes for the same instruction set —
+  mini was blocked by a competing instruction (HARD GATE), 5.4 was blocked by
+  verification anxiety from missing tests. Interrogate failures per model.
+
 ## Coordinator reads task inputs despite "do NOT pre-process"
 - chess-best-move (v8): coordinator read chess_board.png as its FIRST tool call
 - The "do NOT pre-process task inputs in your delegation" rule targets step 2 (delegation)

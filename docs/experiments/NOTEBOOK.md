@@ -25,16 +25,37 @@ Invoke it before starting work.
 1 regression was caused by our fixes (polyglot-c-py — verification artifact left behind).
 The other 11 regressions are nondeterministic variance (implementer approach quality).
 
-### Latest test: v17-harmonize-gate-mini (Mar 26)
+### Latest test: v18-no-tests-case (Mar 26)
+
+**Run:** `v18-no-tests-5.4` + `v18-no-tests-mini` — log-summary-date-ranges × 3 each
+**Build:** commit 4d42c75 (no-tests case in verification checklist)
+**Models:** gpt-5.4 and gpt-5.4-mini
+**Status:** PENDING
+
+Interrogation of v17 gpt-5.4 rep-2 failure revealed a different root cause than
+the mini failures: when no test suites exist, the coordinator writes its own
+verification script rather than following the read-only checklist. It admitted
+knowingly violating "Do NOT re-derive" because the absence of tests made
+verification feel incomplete.
+
+Fix: step 3.1 now explicitly handles the no-tests case: "If no test suites
+exist, that is fine — proceed to step 3.2. Do not write your own test or
+verification scripts."
+
+### Previous test: v17-harmonize-gate-mini (Mar 26)
 
 **Run:** `v17-harmonize-gate-mini` — log-summary-date-ranges × 3
 **Build:** commit eaad757 (HARD GATE forward-references step 3)
 **Model:** gpt-5.4-mini
-**Status:** PENDING
+**Result:** 3/3. Major improvement from 1/3 baseline (v12-v16).
 
-(Note: `v17-harmonize-gate` was accidentally run on gpt-5.4 — invalid for
-comparison against the v12-v16 mini baseline. Scored 1/3 on 5.4 with same
-ERROR=414 override pattern.)
+Removing competing HARD GATE language fixed mini completely. The "reading, not
+computing" checklist now takes effect consistently.
+
+Also tested on gpt-5.4 (`v17-log-summary-5.4`): 2/3. Improvement from 1/3 but
+not fully fixed. Interrogation of 5.4 rep-2 failure revealed a different root
+cause: no tests exist → model feels verification is incomplete → writes own
+verification script. This is the v18 target.
 
 Session interrogation of both v16 failures revealed the same root cause: the
 HARD GATE's phrases "contain what the task requires" and "verify against actual
@@ -249,6 +270,7 @@ circuit-fibsqrt and polyglot-c-py TIMEOUT.
 | 76f5f4f | Coordinator: positive-framing verification, accept implementer values | v14: prohibition framing exhausted, apply v11 lesson |
 | d71ac81 | Coordinator: "reading not computing" + remove scratch dir permission | v15: scratch dir was escape hatch for recomputation |
 | eaad757 | Coordinator: HARD GATE forward-references step 3, no competing criteria | v16: HARD GATE overrode read-only checklist (interrogation-confirmed) |
+| 4d42c75 | Coordinator: explicit no-tests case, ban custom verification scripts | v17-5.4: absent tests → model writes own checker (interrogation-confirmed) |
 
 ### Known remaining issues
 
