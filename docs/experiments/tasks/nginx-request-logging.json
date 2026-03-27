@@ -1,21 +1,11 @@
 {
-  "task": "cobol-modernization",
+  "task": "nginx-request-logging",
   "current_score": 1.0,
   "current_run": "v21-easy5",
   "current_date": "2026-03-27",
   "status": "tested",
   "notes": "",
   "history": [
-    {
-      "run_id": "v17-broad-20",
-      "date": "2026-03-26",
-      "git_sha": "unknown",
-      "model": "openai/gpt-5.4-mini",
-      "score": 1.0,
-      "reps": [
-        1.0
-      ]
-    },
     {
       "run_id": "v21-easy5",
       "date": "2026-03-27",
