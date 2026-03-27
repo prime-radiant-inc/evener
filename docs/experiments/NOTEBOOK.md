@@ -7,18 +7,43 @@ a new session.
 process — hill-climbing protocol, commit-on-branch-before-deploy, root-cause-from-transcripts.
 Invoke it before starting work.
 
-## Current State (March 26, 2026)
+## Current State (March 27, 2026)
 
-**Model:** gpt-5.4-mini for current eval iteration (only move to 5.4 when mini tuning is done)
-**Combined baseline (Mar 24):** 72/87 reliable (82%) with gpt-5.4 + gpt-5.4-mini best-of
-**Mini-only baseline:** 34 tasks pass reliably with gpt-5.4-mini alone
+**Model:** gpt-5.4-mini for current eval iteration
+**Scoreboard:** `./tools/scoreboard.py` — canonical 89-task matrix
+**Score:** 82/89 tested, mean 0.622 (44 tasks at 1.0, 8 partial, 27 at 0.0, 7 untested)
 
-### Pending runs (check with `./tools/check_run.sh RUN_ID`)
+### Shipped prompt fixes (on main)
+- **deleg-b** (coordinator.md): "quality gate, not the worker" — fixes chess-best-move
+- **state-b** (implementer.md): post-test deliverable mutation check — fixes git-multibranch
+- **v17 harmonize gate** + **v18 no-tests case**: fixes log-summary-date-ranges
+- impl-test-a NOT shipped (interrogation showed 3/3 was stochastic, not causal)
 
-| Run ID | Model | Task | Variant | Status |
-|--------|-------|------|---------|--------|
-| (none pending — all complete) | | | | |
-| `v17-broad-20` | gpt-5.4-mini | 20 tasks × 1 rep | regression check | 13/18, 2 pending |
+### Results system
+- `tools/collect_results.py` — download from S3, normalize, update metadata
+- `tools/scoreboard.py` — view scoreboard and per-task history
+- `docs/experiments/scoreboard.json` — machine-readable matrix
+- `docs/experiments/tasks/*.json` — per-task scorecards
+- `docs/experiments/runs/*.json` — per-run metadata
+- Local cache: `~/.serf-evals/tasks/{task}/{run}/{rep}/`
+- Scoring: mean of reps from last run; same-date tiebreak = highest score
+
+### Pending runs
+
+(none pending)
+
+### v21-easy5 baseline (Mar 27)
+
+**Run:** `v21-easy5` — 5 easiest tasks × 3 reps, gpt-5.4-mini, commit c77f85e
+**Result:** 5/5 tasks, 15/15 reps — perfect.
+
+| Task | Score | Leaderboard failure rate |
+|------|-------|------------------------|
+| git-leak-recovery | 3/3 | 1.6% |
+| cobol-modernization | 3/3 | 3.2% |
+| fix-git | 3/3 | 4.1% |
+| constraints-scheduling | 3/3 | 4.1% |
+| nginx-request-logging | 3/3 | 4.1% |
 
 ### v19 variant experiment results (Mar 27)
 
