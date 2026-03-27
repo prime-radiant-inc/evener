@@ -4,24 +4,25 @@ Prioritized queue of next experiments. Updated March 26, 2026.
 
 ## Currently testing
 
-### v13-coordinator-verify (ready to launch)
+### v15-positive-verify (launched)
 
-Three coordinator verification fixes based on v12 interrogation:
-1. **Tests-first verification**: "Run the project's test suite first. If your
-   independent check disagrees with a passing implementation, your check is
-   more likely wrong." Fixes log-summary-date-ranges (coordinator overrode
-   correct implementer output with flawed grep).
-2. **Passing tests outrank reviewer opinions**: "Do NOT change work that passes
-   tests — not based on your analysis, and not based on a reviewer's
-   suggestion." Fixes fix-code-vulnerability (reviewer CWE suggestion changed
-   correct answer).
-3. **Explicit test suite checklist in submit gate**: 3-step checklist requires
-   running workspace test suites before communicate. Fixes git-multibranch
-   (coordinator verified runtime state but didn't check reproducibility).
+Positive-framing coordinator verification. Prohibition framing exhausted:
+- v12 baseline: 1/3 on log-summary-date-ranges
+- v13 soft ("your check is more likely wrong"): 1/3
+- v14 hard ("NEVER override"): 0/3 — REGRESSION
 
-**Test:** Re-run v12's 3 regression tasks × 3 reps (9 instances):
-log-summary-date-ranges, git-multibranch, fix-code-vulnerability.
-Plus chess-best-move × 1, polyglot-c-py × 1 as regression checks.
+New approach applies the v11 lesson (positive authority ordering replaced
+prohibition → 6/6): define verification as an exhaustive positive checklist,
+leaving no room for independent recomputation.
+
+Changes (commit 76f5f4f):
+- "confirm the implementer delivered" (implementer as authority)
+- Exhaustive checklist: run tests → check files exist → check format
+- "The implementer's computed values are the deliverable — accept them"
+- "skip to step 5" when tests pass
+- Zero prohibition language
+
+**Test:** log-summary-date-ranges × 3 + chess-best-move × 1, git-multibranch × 1.
 
 ## Next up
 
@@ -121,6 +122,8 @@ what I have").
 - Anti-gold-plating — shipped (v10: overridden by competing instructions)
 - Reviewer positive authority ordering — shipped (v11: 6/6, replaces prohibition framing)
 - Warnings are not failures — shipped (v11: 6/6, resolves competing-instruction conflict)
+- Coordinator tests-first verification — shipped (v13: fix-code-vuln 3/3, git-multi 3/3)
+- Coordinator explicit submit gate checklist — shipped (v13: git-multibranch fixed)
 - harbor-runner: removed parent-dir binary copy — shipped
 - Makefile: `build-linux` target with cache invalidation — shipped
 - Session interrogation tool — shipped (rewritten: real session resume, subagent support)

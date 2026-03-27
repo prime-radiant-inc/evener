@@ -25,7 +25,51 @@ Invoke it before starting work.
 1 regression was caused by our fixes (polyglot-c-py — verification artifact left behind).
 The other 11 regressions are nondeterministic variance (implementer approach quality).
 
-### Latest test: v12-easy-sweep (Mar 26)
+### Latest test: v15-positive-verify (Mar 26, in progress)
+
+**Run:** `v15-positive-verify` — log-summary-date-ranges × 3, chess-best-move × 1, git-multibranch × 1
+**Build:** commit 76f5f4f (positive-framing coordinator verification)
+**Hypothesis:** Positive framing ("accept the implementer's values") works where
+prohibitions failed (v13 soft "don't override" 1/3, v14 hard "NEVER override" 0/3).
+Same pattern that fixed reviewer in v11 (positive authority ordering → 6/6).
+
+Changes in coordinator step 3:
+- "confirm the implementer delivered" (implementer as authority)
+- Exhaustive verification checklist: run tests → check files exist → check format
+- "The implementer's computed values are the deliverable — accept them"
+- "skip to step 5" when tests pass (explicit shortcut past recomputation)
+- Zero prohibition language — no "Do NOT", "NEVER", "do not second-guess"
+
+### Previous test: v14-hard-ban (Mar 26)
+
+**Run:** `v14-hard-ban` — log-summary-date-ranges × 3
+**Build:** commit f33e96d (hard procedural ban on coordinator override)
+**Result:** 0/3 — REGRESSION from v13's 1/3.
+
+Hard "NEVER override the implementer's output based on your own recomputation"
+made things worse. Interrogation of rep-1 confirmed: model acknowledges the NEVER
+instruction, cites it explicitly, and violates it anyway. Said: "I violated this
+instruction...I treated my homegrown check as stronger than the implementer's
+deliverable."
+
+This exhausts the prohibition framing approach:
+- v12 baseline: 1/3 (no override instruction)
+- v13 soft: 1/3 ("your check is more likely wrong")
+- v14 hard: 0/3 ("NEVER override...you may only direct changes when a test fails")
+
+### Previous test: v13-coordinator-verify (Mar 26)
+
+**Run:** `v13-coordinator-verify` — 3 regression tasks × 3 reps + 2 regression checks
+**Build:** commit f2a57d8 (tests-first verification, don't override passing work)
+**Result:** 9/11 — fix-code-vulnerability 3/3, git-multibranch 3/3, log-summary 1/3.
+chess-best-move 1/1, polyglot-c-py 1/1.
+
+Two of three v12 failure modes fixed:
+- fix-code-vulnerability: reviewer CWE suggestion no longer overrides passing tests
+- git-multibranch: explicit test suite checklist catches runtime-only verification
+- log-summary-date-ranges: coordinator still overrides correct implementer output
+
+### Previous test: v12-easy-sweep (Mar 26)
 
 **Run:** `v12-easy-sweep` — 12 easy tasks × 3 reps (36 total)
 **Build:** commit 1e0ddd1 (same as v11)
@@ -164,9 +208,11 @@ circuit-fibsqrt and polyglot-c-py TIMEOUT.
 | 72125d2 | Workflow: test against spec's criteria, don't gold-plate | Implementer self-imposed -Werror, burned 14min on warnings |
 | 1e0ddd1 | Reviewer: positive framing, domain-tool authority ordering | v10: "cannot override" prohibition ignored, positive framing works better |
 | 1e0ddd1 | Workflow: exit 0 = success, warnings informational | v10: competing instructions ("never ignore output") overrode anti-gold-plating |
-| (dirty) | Coordinator: tests-first verification, don't re-derive | v12: coordinator overrode correct implementer with flawed grep |
-| (dirty) | Coordinator: passing tests outrank reviewer opinions | v12: reviewer CWE suggestion changed correct answer |
-| (dirty) | Coordinator: explicit test suite checklist in submit gate | v12: coordinator verified runtime state, not reproducibility |
+| f2a57d8 | Coordinator: tests-first verification, don't re-derive | v12: coordinator overrode correct implementer with flawed grep |
+| f2a57d8 | Coordinator: passing tests outrank reviewer opinions | v12: reviewer CWE suggestion changed correct answer |
+| f2a57d8 | Coordinator: explicit test suite checklist in submit gate | v12: coordinator verified runtime state, not reproducibility |
+| f33e96d | Coordinator: hard "NEVER override" ban | v13: soft framing insufficient → 0/3 REGRESSION, reverted |
+| 76f5f4f | Coordinator: positive-framing verification, accept implementer values | v14: prohibition framing exhausted, apply v11 lesson |
 
 ### Known remaining issues
 
@@ -415,6 +461,9 @@ messages with system prompt first, which GPT-5.4 ignores. Not yet implemented or
 | 3/26 | v10-deleg-goldplate | chess ×3, polyglot ×3 | 1/6 | All fixes violated. Real interrogation: competing instructions + no authority ordering |
 | 3/26 | v11-positive-framing | chess ×3, polyglot ×3 | 6/6 | Both v10 failure modes resolved. Positive authority ordering + warnings fix |
 | 3/26 | v12-easy-sweep | 12 easy tasks ×3 | 27/35 | 77%. 3 regressions: coordinator overrides correct work, reviewer-driven changes, skipped /tests/ |
+| 3/26 | v13-coordinator-verify | 3 regress ×3 + 2 check | 9/11 | fix-code-vuln 3/3, git-multi 3/3, log-summary 1/3. No regressions |
+| 3/26 | v14-hard-ban | log-summary ×3 | 0/3 | REGRESSION. "NEVER override" prohibition worse than soft version |
+| 3/26 | v15-positive-verify | log-summary ×3 + 2 check | pending | Positive framing: "accept implementer values", exhaustive checklist |
 
 ### Detailed experiment writeups
 

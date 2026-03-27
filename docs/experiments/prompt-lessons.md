@@ -130,6 +130,22 @@
 - Fix: submit gate now has explicit 3-step checklist; coordinator step 3 emphasizes
   running workspace test suites first
 
+## Prohibition framing has inverse dose-response for coordinator verification
+- log-summary-date-ranges across 3 iterations: v12 baseline 1/3, v13 soft 1/3, v14 hard 0/3
+- Soft: "If your independent check disagrees, your check is more likely wrong" → 1/3
+- Hard: "NEVER override the implementer's output based on your own recomputation —
+  you may only direct changes when a workspace test fails" → 0/3 (worse!)
+- Interrogation: model acknowledges NEVER instruction, cites it explicitly, violates it anyway
+- Model said: "I violated this instruction...I treated my homegrown check as stronger
+  than the implementer's deliverable"
+- Stronger prohibition may actually trigger more override behavior — the model engages
+  more deeply with the verification question when told not to, forming the very
+  independent analysis it's told not to act on
+- The v11 reviewer fix proved the alternative: positive authority ordering ("treat
+  domain-tool results as authoritative") replaced prohibition and went from 0/3 to 6/6
+- For v15: exhaustive positive checklist ("verification means: run tests, check files
+  exist, check format — that is the complete checklist"), "accept implementer values"
+
 ## Coordinator reads task inputs despite "do NOT pre-process"
 - chess-best-move (v8): coordinator read chess_board.png as its FIRST tool call
 - The "do NOT pre-process task inputs in your delegation" rule targets step 2 (delegation)
