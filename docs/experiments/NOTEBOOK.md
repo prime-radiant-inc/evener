@@ -17,16 +17,8 @@ Invoke it before starting work.
 
 | Run ID | Model | Task | Variant | Status |
 |--------|-------|------|---------|--------|
-| `v20-tasklist-a` | gpt-5.4-mini | kv-store-grpc × 3 | coord: task list reinjection (basic) | PENDING |
-| `v20-tasklist-b` | gpt-5.4-mini | kv-store-grpc × 3 | coord: task list reinjection (service emphasis) | PENDING |
-| `v20-verify-a` | gpt-5.4-mini | kv-store-grpc × 3 | coord: "make a real request through protocol" | PENDING |
-| `v20-verify-b` | gpt-5.4-mini | kv-store-grpc × 3 | coord: "write a command using grpc_cli/curl" | PENDING |
-| `v20-verify-c` | gpt-5.4-mini | kv-store-grpc × 3 | coord: "depth must match complexity" | PENDING |
-| `v20-impl-test-a` | gpt-5.4-mini | kv-store-grpc × 3 | impl: "minimal client through protocol" | PENDING |
-| `v20-impl-test-b` | gpt-5.4-mini | kv-store-grpc × 3 | impl: "test script like outside evaluator" | PENDING |
-| `v20-impl-test-c` | gpt-5.4-mini | kv-store-grpc × 3 | impl: acceptance criteria check | PENDING |
-| `v20-combined-a` | gpt-5.4-mini | kv-store-grpc × 3 | tasklist-a + impl-test-a | PENDING (1 rep short) |
-| `v20-combined-b` | gpt-5.4-mini | kv-store-grpc × 3 | verify-a + impl-test-c | PENDING (2 reps short) |
+| `v20-combined-a` | gpt-5.4-mini | kv-store-grpc × 3 | tasklist-a + impl-test-a | 0/2, rep 3 relaunched |
+| `v20-combined-b` | gpt-5.4-mini | kv-store-grpc × 3 | verify-a + impl-test-c | 1/1, reps 2-3 relaunched |
 | `v17-broad-20` | gpt-5.4-mini | 20 tasks × 1 rep | regression check | 13/18, 2 pending |
 
 ### v19 variant experiment results (Mar 27)
@@ -72,11 +64,37 @@ Invoke it before starting work.
   - Rep 3: `/dev/index.html` returned "dev version" instead of expected "dev branch content" — implementer's testing mutated deployed content and left it in place (exactly the state pollution state-b fixes)
 - **Lesson:** Post-hoc mutation detection (state-b) more robust than prevention (state-a) because it catches unanticipated mutation paths
 
-### v20 verification depth experiments (Mar 27)
+### v20 verification depth experiment results (Mar 27)
 
 **Target:** kv-store-grpc × 3 reps per variant. 10 variants testing how to fix
 verification depth — the coordinator/implementer never test the actual gRPC wire
 contract, just check file existence and port liveness.
+
+| Variant | Changes to | Result | Approach |
+|---------|-----------|--------|----------|
+| **v20-impl-test-a** | **implementer** | **3/3** | **"Write a minimal client command, verify response"** |
+| v20-tasklist-a | coordinator | 2/3 | Task list reinjection (basic) |
+| v20-verify-b | coordinator | 2/3 | "Write grpc_cli/curl command, run it" |
+| v20-verify-a | coordinator | 1/3 | "Make a real request through protocol" |
+| v20-verify-c | coordinator | 1/3 | "Depth must match complexity" |
+| v20-impl-test-b | implementer | 1/3 | "Test script like outside evaluator" |
+| v20-impl-test-c | implementer | 1/3 | Acceptance criteria check |
+| v20-combined-b | both | 1/1+ | verify-a + impl-test-c (reps pending) |
+| v20-tasklist-b | coordinator | 0/3 | Task list (per-endpoint emphasis) |
+| v20-combined-a | both | 0/2+ | tasklist-a + impl-test-a (rep pending) |
+
+**Winner: v20-impl-test-a (3/3).** The fix is on the implementer side, not the
+coordinator side. Telling the implementer to "write a minimal client command that
+sends a request and verify the response" is more effective than telling the
+coordinator to do deeper verification. The implementer has the tools and context
+to actually test the service; the coordinator is one step removed.
+
+**Key insight:** Implementer-side verification fixes beat coordinator-side because
+the implementer has direct access to the code, the running process, and the
+ability to write and run a test client. The coordinator can only inspect from the
+outside.
+
+### v20 verification depth experiment design (Mar 27)
 
 **Coordinator variants (5):**
 1. **tasklist-a**: Task list reinjection — coordinator writes numbered 8-step plan before spawning. Includes "exercise the actual protocol"
@@ -646,6 +664,16 @@ messages with system prompt first, which GPT-5.4 ignores. Not yet implemented or
 | 3/26 | disc-3rep-v6-fixed | 56 disc ×3 | 70/163 (43%) | Correct binary (1b06827). +2.2pt vs unfixed. 31 timeouts |
 | 3/26 | v7-action-bias | 7 regression tasks ×1 | 3/7 | feal-diff PASS, eigenval PASS, rust-c PASS. chess/ars FAIL. 2 timeout |
 | 3/26 | v8-input-fix | chess ×1, polyglot ×1 | 0/2 | chess: reviewer hallucinated wrong move. polyglot: verify-clean-reverify-forget |
+| 3/27 | **v20-impl-test-a** | kv-store-grpc ×3 | **3/3** | "Write minimal client, verify response." SHIP CANDIDATE |
+| 3/27 | v20-tasklist-a | kv-store-grpc ×3 | 2/3 | Task list reinjection. Promising but not reliable |
+| 3/27 | v20-verify-b | kv-store-grpc ×3 | 2/3 | "Write grpc_cli/curl command." Promising |
+| 3/27 | v20-verify-a | kv-store-grpc ×3 | 1/3 | "Make real request." Not enough |
+| 3/27 | v20-verify-c | kv-store-grpc ×3 | 1/3 | "Depth must match complexity." Not enough |
+| 3/27 | v20-impl-test-b | kv-store-grpc ×3 | 1/3 | "Test script like evaluator." Too vague |
+| 3/27 | v20-impl-test-c | kv-store-grpc ×3 | 1/3 | Acceptance criteria check. Too vague |
+| 3/27 | v20-tasklist-b | kv-store-grpc ×3 | 0/3 | Task list (per-endpoint). Overspecified |
+| 3/27 | v20-combined-a | kv-store-grpc ×3 | 0/2+ | tasklist-a + impl-test-a. Pending |
+| 3/27 | v20-combined-b | kv-store-grpc ×3 | 1/1+ | verify-a + impl-test-c. Pending |
 | 3/27 | **v19-deleg-b** | chess-best-move ×3 | **3/3** | "Quality gate not worker." SHIPPED |
 | 3/27 | **v19-state-b** | git-multibranch ×3 | **3/3** | "Check for mutation after testing." SHIPPED |
 | 3/27 | v19-deleg-a | chess-best-move ×3 | 0/3 | 1 no-deleg, 2 wrong answer |
