@@ -1,246 +1,285 @@
 #!/usr/bin/env python3
-"""Interrogate a failed agent session by replaying its context and asking questions.
+"""Interrogate an agent session by resuming it with serf and asking questions.
 
-Downloads the transcript from S3, reconstructs the conversation, appends
-interrogation questions, and sends to the same model. The model's self-report
-reveals which instructions it noticed, how it prioritized them, and what
-influenced its decisions.
+Uses serf's --resume-with to replay the FULL conversation history, then appends
+interrogation questions. The model is placed back into the exact context of its
+original session — same system prompt, same tool calls, same results.
 
 Usage:
-    # Interrogate with default questions
+    # List sessions for a rep
     python3 tools/interrogate_session.py \
-        --run disc-3rep-v6 --rep 8 --task adaptive-rejection-sampler
+        --run v10-deleg-goldplate --rep 1 --task chess-best-move --list-sessions
 
-    # Custom questions
+    # Interrogate coordinator (default)
     python3 tools/interrogate_session.py \
-        --run disc-3rep-v6 --rep 8 --task adaptive-rejection-sampler \
-        --question "Why did you choose to work directly instead of delegating?" \
-        --question "What in the system prompt influenced your approach?"
+        --run v10-deleg-goldplate --rep 3 --task chess-best-move \
+        --question "Why did you not delegate?"
 
-    # Compare two reps (passing vs failing)
+    # Interrogate a subagent by session ID (prefix match)
     python3 tools/interrogate_session.py \
-        --run disc-3rep-v6 --rep 8 --task adaptive-rejection-sampler \
-        --compare-run disc-3rep-v6 --compare-rep 64
+        --run v10-deleg-goldplate --rep 1 --task chess-best-move \
+        --session 01KMPF5M \
+        --question "Why did you override the computational proof?"
+
+    # Interrogate subagent by index (from --list-sessions output)
+    python3 tools/interrogate_session.py \
+        --run v10-deleg-goldplate --rep 1 --task chess-best-move \
+        --session 2 \
+        --question "Why did you override the computational proof?"
 """
 
 import argparse
 import json
 import os
-import re
+import shutil
 import subprocess
 import sys
 import tempfile
 
 REGION = "us-west-1"
 BUCKET = "harbor-eval-results-526275945504"
+RESULTS_DIR = os.path.expanduser("~/prime-radiant/harbor-runner/state/results")
+SERF_BINARY = os.path.expanduser("~/prime-radiant/serf/serf-linux-amd64")
 
 
-def s3_ls(prefix):
-    r = subprocess.run(
-        ["aws", "s3", "ls", f"s3://{BUCKET}/{prefix}", "--region", REGION, "--recursive"],
-        capture_output=True, text=True,
-    )
-    return [line.split()[-1] for line in r.stdout.strip().split("\n") if line.strip()]
-
-
-def s3_cat(path):
-    r = subprocess.run(
-        ["aws", "s3", "cp", f"s3://{BUCKET}/{path}", "-", "--region", REGION],
-        capture_output=True, text=True,
-    )
-    return r.stdout
-
-
-def find_coordinator_transcript(run_id, rep):
-    """Find the coordinator transcript (no parent) for a given rep."""
-    files = s3_ls(f"runs/{run_id}/rep-{rep}/")
-    transcripts = [f for f in files if "transcript.jsonl" in f]
-
-    for path in transcripts:
-        content = s3_cat(path)
-        if not content.strip():
-            continue
-        header = json.loads(content.split("\n")[0])
-        parent = header.get("parent_session_id")
-        if not parent:
-            return path, content
-    return None, None
-
-
-def parse_transcript(content):
-    """Parse transcript into header + conversation entries."""
-    lines = content.strip().split("\n")
-    header = json.loads(lines[0])
-    entries = []
-    for line in lines[1:]:
-        data = json.loads(line)
-        if data.get("kind") == "entry":
-            entries.append(data)
-    return header, entries
-
-
-def summarize_tool_flow(entries, max_calls=15):
-    """Extract tool call sequence from transcript entries."""
-    calls = []
-    for entry in entries:
-        turn = entry.get("turn", {})
-        msg = turn.get("message", {})
-        content = msg.get("content", [])
-        if not isinstance(content, list):
-            continue
-        for c in content:
-            if c.get("kind") == "tool_call":
-                tc = c.get("tool_call", {})
-                name = tc.get("name", "?")
-                args = tc.get("arguments", {})
-                if name == "spawn_agent":
-                    detail = f"type={args.get('agent_type', '?')}"
-                elif name in ("exec_command", "shell"):
-                    detail = args.get("command", "")[:50]
-                elif name == "read_file":
-                    detail = args.get("path", args.get("file_path", ""))[:50]
-                elif name == "communicate":
-                    detail = args.get("message", "")[:50]
-                else:
-                    detail = ""
-                calls.append(f"{name}({detail})" if detail else name)
-                if len(calls) >= max_calls:
-                    return calls
-    return calls
-
-
-def get_verifier_output(run_id, rep):
-    """Get the verifier test output for a rep."""
-    files = s3_ls(f"runs/{run_id}/rep-{rep}/")
-    for f in files:
-        if "test-stdout.txt" in f:
-            return s3_cat(f)
+def find_local_state_dir(run_id, rep):
+    """Find the agent-state dir in locally downloaded results."""
+    rep_dir = os.path.join(RESULTS_DIR, run_id, f"rep-{rep}")
+    if not os.path.isdir(rep_dir):
+        return None
+    # Walk to find agent-state/sessions/
+    for root, dirs, files in os.walk(rep_dir):
+        if os.path.basename(root) == "agent-state" and "sessions" in dirs:
+            return root
     return None
 
 
-def interrogate(system_prompt, task_message, tool_flow, verifier_output, questions, model="gpt-5.4-mini"):
-    """Send interrogation to the model."""
-    from openai import OpenAI
-    client = OpenAI()
+def download_results(run_id, rep):
+    """Download results from S3 if not already local."""
+    state_dir = find_local_state_dir(run_id, rep)
+    if state_dir:
+        return state_dir
 
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": task_message},
-        {"role": "assistant", "content": f"I executed the following tool calls: {', '.join(tool_flow[:10])}"},
+    dest = os.path.join(RESULTS_DIR, run_id, f"rep-{rep}")
+    print(f"Downloading from S3 to {dest}...")
+    subprocess.run([
+        "aws", "s3", "sync",
+        f"s3://{BUCKET}/runs/{run_id}/rep-{rep}/",
+        dest,
+        "--region", REGION,
+    ], check=True)
+    return find_local_state_dir(run_id, rep)
+
+
+def list_sessions(state_dir):
+    """List all sessions in a state dir with metadata."""
+    sessions_dir = os.path.join(state_dir, "sessions")
+    sessions = []
+    for f in sorted(os.listdir(sessions_dir)):
+        if not f.endswith(".meta.json"):
+            continue
+        meta = json.load(open(os.path.join(sessions_dir, f)))
+        session_id = meta["id"]
+
+        # Check transcript for parent and role info
+        transcript_path = os.path.join(sessions_dir, f"{session_id}.transcript.jsonl")
+        parent = None
+        turn_count = meta.get("turn_count", 0)
+        task_preview = ""
+        if os.path.exists(transcript_path):
+            header = json.loads(open(transcript_path).readline())
+            parent = header.get("parent_session_id")
+            task_text = header.get("task", "")
+            if task_text:
+                task_preview = task_text[:80]
+
+        # Infer role from meta config
+        prompt = meta.get("config", {}).get("base_prompt_override", "")
+        if not parent:
+            role = "coordinator"
+        elif "You are reviewing" in prompt:
+            role = "reviewer"
+        else:
+            role = "implementer"
+
+        sessions.append({
+            "id": session_id,
+            "role": role,
+            "parent": parent,
+            "model": meta.get("model", "?"),
+            "turns": turn_count,
+            "task_preview": task_preview,
+        })
+    return sessions
+
+
+def resolve_session(sessions, selector):
+    """Resolve a session selector to a session ID.
+
+    Selector can be:
+    - "coordinator" (default) — the session with no parent
+    - A 1-based index from the list
+    - A session ID prefix
+    """
+    if selector is None or selector == "coordinator":
+        for s in sessions:
+            if s["parent"] is None:
+                return s
+        print("ERROR: No coordinator session found")
+        sys.exit(1)
+
+    # Try as integer index (1-based)
+    try:
+        idx = int(selector)
+        if 1 <= idx <= len(sessions):
+            return sessions[idx - 1]
+        print(f"ERROR: Session index {idx} out of range (1-{len(sessions)})")
+        sys.exit(1)
+    except ValueError:
+        pass
+
+    # Try as session ID prefix
+    matches = [s for s in sessions if s["id"].startswith(selector)]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        print(f"ERROR: Ambiguous prefix '{selector}', matches: {[m['id'] for m in matches]}")
+        sys.exit(1)
+    print(f"ERROR: No session matching '{selector}'")
+    sys.exit(1)
+
+
+def get_verifier_output(run_id, rep):
+    """Get verifier output from local results."""
+    rep_dir = os.path.join(RESULTS_DIR, run_id, f"rep-{rep}")
+    for root, dirs, files in os.walk(rep_dir):
+        for f in files:
+            if f == "test-stdout.txt":
+                return open(os.path.join(root, f)).read()
+    return None
+
+
+def build_question_message(questions, verifier_output):
+    """Build the interrogation message."""
+    parts = [
+        "You have completed your work and it is now time for your post-mission "
+        "debrief. The verifier says your solution FAILED."
     ]
 
-    verifier_context = ""
     if verifier_output:
-        # Extract just the test results
         lines = verifier_output.strip().split("\n")
-        test_lines = [l for l in lines if "PASS" in l or "FAIL" in l or "assert" in l.lower()]
-        verifier_context = f"\n\nVerifier results:\n" + "\n".join(test_lines[-10:])
+        test_lines = [l for l in lines
+                      if "PASS" in l or "FAIL" in l or "assert" in l.lower()]
+        if test_lines:
+            parts.append("\nVerifier results:\n" + "\n".join(test_lines[-10:]))
 
-    question_text = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
-
-    messages.append({
-        "role": "user",
-        "content": f"""STOP. I'm the system operator reviewing your session. The verifier says your solution failed.{verifier_context}
-
-Your tool call sequence was: {', '.join(tool_flow)}
-
-I need honest answers about your decision-making:
-{question_text}
-
-Be specific about which instructions in your system prompt influenced each decision.""",
-    })
-
-    response = client.responses.create(
-        model=model,
-        input=messages,
-        reasoning={"effort": "high"},
-    )
-
-    result = []
-    for block in response.output:
-        if hasattr(block, "content") and block.type == "message":
-            for part in block.content:
-                if hasattr(part, "text"):
-                    result.append(part.text)
-    return "\n".join(result)
+    parts.append("\nAnswer each question thoroughly. For each answer, cite the "
+                 "specific instructions from your system prompt that influenced "
+                 "the decision. If two instructions conflicted, explain which "
+                 "won and why. Then call communicate with your full debrief.")
+    for i, q in enumerate(questions):
+        parts.append(f"{i+1}. {q}")
+    return "\n".join(parts)
 
 
 DEFAULT_QUESTIONS = [
-    "Did you delegate to an implementer, or work directly? Why?",
-    "What was your first tool call and why did you choose it?",
-    "If you delegated, what information did you include in the delegation? What did you leave out?",
-    "Did you verify the result before submitting? How thoroughly?",
-    "What in your system prompt most influenced your approach to this task?",
+    "What was your approach and why did you choose it?",
+    "Which instructions in your system prompt most influenced your decisions?",
+    "Were there any instructions you noticed but chose not to follow? Why?",
+    "What specific changes to your instructions would have made you do the right thing?",
 ]
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Interrogate a failed agent session")
+    parser = argparse.ArgumentParser(
+        description="Interrogate an agent session by resuming it with serf")
     parser.add_argument("--run", required=True, help="Run ID")
     parser.add_argument("--rep", required=True, type=int, help="Rep number")
     parser.add_argument("--task", required=True, help="Task name (for display)")
-    parser.add_argument("--question", action="append", help="Custom question (repeatable)")
-    parser.add_argument("--compare-run", help="Run ID of passing rep to compare")
-    parser.add_argument("--compare-rep", type=int, help="Rep number of passing rep")
-    parser.add_argument("--model", default="gpt-5.4-mini", help="Model for interrogation")
+    parser.add_argument("--session", default=None,
+                        help="Session to interrogate: 'coordinator' (default), "
+                             "1-based index, or session ID prefix")
+    parser.add_argument("--list-sessions", action="store_true",
+                        help="List available sessions and exit")
+    parser.add_argument("--question", action="append",
+                        help="Custom question (repeatable)")
+    parser.add_argument("--model", default=None,
+                        help="Model override (default: same as original session)")
+    parser.add_argument("--serf", default=None,
+                        help="Path to serf binary (default: local build)")
     args = parser.parse_args()
 
-    questions = args.question or DEFAULT_QUESTIONS
-
-    print(f"=== Interrogating {args.task} (run={args.run}, rep={args.rep}) ===\n")
-
-    # Download failing transcript
-    print("Downloading failing transcript...")
-    path, content = find_coordinator_transcript(args.run, args.rep)
-    if not content:
-        print(f"ERROR: No coordinator transcript found for rep {args.rep}")
+    # Find or download results
+    state_dir = download_results(args.run, args.rep)
+    if not state_dir:
+        print(f"ERROR: Could not find agent-state for run={args.run} rep={args.rep}")
         sys.exit(1)
 
-    header, entries = parse_transcript(content)
-    system_prompt = header.get("system_prompt", "")
-    tool_flow = summarize_tool_flow(entries)
+    sessions = list_sessions(state_dir)
 
-    # Get task message (first user input)
-    task_message = ""
-    for entry in entries:
-        turn = entry.get("turn", {})
-        if turn.get("kind") == "USER_INPUT":
-            msg = turn.get("message", {})
-            content = msg.get("content", [])
-            if isinstance(content, list):
-                for c in content:
-                    if c.get("kind") == "text":
-                        task_message = c["text"]
-                        break
-            break
+    if args.list_sessions:
+        print(f"Sessions for {args.task} (run={args.run}, rep={args.rep}):\n")
+        for i, s in enumerate(sessions, 1):
+            parent_info = f"parent={s['parent'][:8]}..." if s['parent'] else "ROOT"
+            print(f"  {i}. {s['id']}  {s['role']:<14} {s['model']:<16} "
+                  f"turns={s['turns']:<3} {parent_info}")
+            if s["task_preview"]:
+                print(f"     task: {s['task_preview']}")
+        return
 
-    print(f"System prompt: {len(system_prompt)} chars")
-    print(f"Tool flow ({len(tool_flow)} calls): {tool_flow[:8]}")
+    target = resolve_session(sessions, args.session)
+    questions = args.question or DEFAULT_QUESTIONS
+    model = args.model or target["model"]
 
-    # Get verifier output
+    print(f"=== Interrogating {args.task} (run={args.run}, rep={args.rep}) ===")
+    print(f"Session: {target['id']} ({target['role']})")
+    print(f"Model: {model}")
+    print(f"Turns: {target['turns']}")
+    print()
+
+    # Build interrogation message
     verifier = get_verifier_output(args.run, args.rep)
     if verifier:
         print(f"Verifier output: {len(verifier)} chars")
+    message = build_question_message(questions, verifier)
 
-    # If comparing, also get the passing transcript
-    if args.compare_run and args.compare_rep:
-        print(f"\nDownloading passing transcript (run={args.compare_run}, rep={args.compare_rep})...")
-        _, pass_content = find_coordinator_transcript(args.compare_run, args.compare_rep)
-        if pass_content:
-            _, pass_entries = parse_transcript(pass_content)
-            pass_flow = summarize_tool_flow(pass_entries)
-            print(f"Passing tool flow ({len(pass_flow)} calls): {pass_flow[:8]}")
-            questions.append(
-                f"A PASSING run of this same task used this tool sequence: {', '.join(pass_flow[:10])}. "
-                f"Why did your approach differ? What would you do differently?"
-            )
+    # Find serf binary
+    serf = args.serf
+    if not serf:
+        # Try local build first, then PATH
+        local = os.path.expanduser("~/prime-radiant/serf/serf")
+        if os.path.isfile(local) and os.access(local, os.X_OK):
+            serf = local
+        else:
+            serf = "serf"
 
-    # Interrogate
-    print("\nSending interrogation...\n")
-    response = interrogate(system_prompt, task_message, tool_flow, verifier, questions, args.model)
+    # Copy state dir to temp location so we don't mutate the original
+    # transcripts (serf writes new turns during resume).
+    with tempfile.TemporaryDirectory(prefix="interrogate-") as tmp:
+        tmp_state = os.path.join(tmp, "agent-state")
+        shutil.copytree(state_dir, tmp_state)
 
-    print("=== MODEL RESPONSE ===\n")
-    print(response)
+        # Resume the session with serf
+        print(f"\nResuming session with serf...\n")
+        cmd = [
+            serf,
+            "--resume-with", target["id"],
+            "--state-dir", tmp_state,
+            "--provider", "openai",
+            "--model", model,
+            "--max-rounds", "3",
+            "--", message,
+        ]
+
+        print(f"=== MODEL RESPONSE ===\n")
+        result = subprocess.run(cmd, capture_output=True, text=True,
+                                env={**os.environ, "SERF_NON_INTERACTIVE": "1"})
+        if result.stdout:
+            print(result.stdout)
+        if result.returncode != 0:
+            print(f"\n[serf exited {result.returncode}]", file=sys.stderr)
+            if result.stderr:
+                print(result.stderr, file=sys.stderr)
 
 
 if __name__ == "__main__":
