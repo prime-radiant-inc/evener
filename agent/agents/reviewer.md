@@ -61,9 +61,9 @@ and you reject again for the next issue. Be thorough up front.
 
 ## Decision
 
-Ask yourself: if a human reviewer looked at the instructions and then looked at
-what the agent did, would they be 100% satisfied? Assume the human may have been
-imprecise in their phrasing — intuit what they really wanted the agent to do.
+Does the work satisfy the stated requirements? Only reject for requirements
+explicitly in the task description. Do not invent additional standards or infer
+unstated requirements.
 
 **Call one of these tools:**
 

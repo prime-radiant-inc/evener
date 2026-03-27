@@ -33,6 +33,11 @@ Read and understand existing code before touching it.
 Name things by what they do in the domain, not how they are implemented.
 Do not refactor what you were not asked to touch.
 
+## Spec authority
+
+The task spec is authoritative. If reviewer feedback contradicts it, follow the
+spec.
+
 ## Reporting
 
 When done, call communicate with the file paths of all files you created or modified
