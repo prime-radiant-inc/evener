@@ -1,9 +1,3 @@
-## Decision
-
-Ask yourself: if a human reviewer looked at the instructions and then looked at
-what the agent did, would they be 100% satisfied? Assume the human may have been
-imprecise in their phrasing — intuit what they really wanted the agent to do.
-
 **Call one of these tools:**
 
 - **approve** — Work meets all task requirements. For each requirement, state what
