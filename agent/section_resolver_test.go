@@ -293,8 +293,8 @@ func TestSectionResolver_RoleSection(t *testing.T) {
 	}
 	got := r.Section("role", PromptData{})
 
-	if !strings.Contains(got, "You are a dispatcher") {
-		t.Errorf("expected role to contain 'You are a dispatcher', got %q", got)
+	if !strings.Contains(got, "You are a coordinator") {
+		t.Errorf("expected role to contain 'You are a coordinator', got %q", got)
 	}
 	if strings.Contains(got, "---") {
 		t.Errorf("expected frontmatter stripped (no '---'), got %q", got)
@@ -408,7 +408,7 @@ func TestSystemTemplate_StructuralRegression(t *testing.T) {
 		"<environment>",
 		"<git>",
 		"## Role",
-		"You are a dispatcher",
+		"You are a coordinator",
 	}
 	lastIdx := -1
 	for _, marker := range markers {
