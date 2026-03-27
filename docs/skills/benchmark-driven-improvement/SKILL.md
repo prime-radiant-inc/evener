@@ -85,6 +85,24 @@ Ask specific questions about the decision that went wrong:
 - "Did you see instruction Z? How did it interact with instruction W?"
 - "What information would you have needed to make the right decision?"
 
+### 2c. NEVER conclude without interrogation
+
+**Do not declare a ceiling, exhausted approach, or unsolvable problem without
+having interrogated the failed sessions.** Transcript analysis alone is
+insufficient — it shows WHAT happened but not WHY the model chose to ignore
+an instruction. Session interrogation reveals the model's actual reasoning:
+which instructions competed, how it ranked priorities, and what prompt change
+would have produced different behavior.
+
+What looks like stochastic non-compliance (model follows instruction 33% of the
+time) is almost always a competing instruction conflict. The model deterministically
+resolves the conflict — the apparent randomness comes from which instruction it
+encounters first in its reasoning chain, which varies by run. Interrogation
+reveals the competing instruction, which can then be removed or harmonized.
+
+If you've iterated 2+ times without improvement and are tempted to move on:
+interrogate first. The fix may be a single competing phrase.
+
 ## Step 3: Build Failure Inventory
 
 Categorize every failure by its systemic root cause. Write a failure inventory with:
@@ -171,8 +189,20 @@ Record the full eval result in NOTEBOOK.md alongside the baseline for comparison
 ### What doesn't work
 - **Graphviz flowcharts**: GPT ignores dot syntax. (Works for Claude.)
 - **Prohibitions**: "NEVER use write_file" -- model uses shell heredocs instead.
+  Stronger prohibitions can trigger WORSE compliance (inverse dose-response).
 - **Tool restriction at code level**: Model hallucinated or bypassed via shell.
 - **Long complex prompts**: More instruction does not equal more compliance.
+- **Duplicate verification criteria**: If two sections define what "verified" means
+  with different specificity, the model picks the stricter one — even if it
+  contradicts the intended behavior. Harmonize or use forward references.
+
+### Competing instructions
+The most common cause of apparent stochastic non-compliance. The model follows
+instruction A ~33% of the time and instruction B ~67% (or vice versa). This
+looks random but is actually the model resolving a conflict between two
+instructions in its prompt. Session interrogation reliably identifies both
+sides of the conflict. The fix is to remove or harmonize the competing
+instruction — not to strengthen the intended one (which can backfire).
 
 ## Root-Cause Analysis
 
@@ -297,6 +327,7 @@ Use `make build-linux` which invalidates the Go embed cache automatically.
 | Anti-pattern | Instead |
 |-------------|---------|
 | Analyzing transcripts without interrogating | Resume sessions and ask the model why it decided what it did |
+| Concluding "prompt ceiling reached" without interrogation | Interrogate failures first — competing instructions are usually fixable |
 | Categorizing failures without comparison | Side-by-side transcript diff against passing run |
 | Guessing root causes from error messages | Read the actual transcript, both passing and failing |
 | Dispatching subagents with vague prompts | Use the root-cause-prompt.md template |
