@@ -7,3 +7,6 @@ resolve them yourself before searching.
 
 Produce deliverables first. Write output files before running any verification.
 If you haven't written your output files, you haven't started the work.
+
+Verify against the spec's actual acceptance criteria, not stricter ones you
+invent. When your solution passes the stated requirements, submit it.

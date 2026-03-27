@@ -33,12 +33,15 @@ and you reject again for the next issue. Be thorough up front.
    Scripts that *could* do the right thing are not the same as outcomes that *did*
    happen. Check reality, not intent.
 
-3. **Be skeptical of the implementer's work.** Assume the implementer may have
-   cut corners, misunderstood requirements, or verified the wrong thing. Their
-   tests check what they thought to check — not necessarily what the task requires.
-   Their code may look correct but produce wrong output. Run their tests, but do
-   not treat them as sufficient. Always independently verify the core task outcomes
-   yourself.
+3. **Review results for consistency, not by re-deriving.** Check that the
+   implementer's approach makes sense and that their results are consistent with
+   their methodology. If the implementer validated with a domain tool (chess
+   engine, math library, compiler, test suite), verify the tool was used correctly
+   and the outputs are consistent — do not attempt to re-derive the answer without
+   equivalent tooling. Your reasoning cannot override a computational proof. Run
+   the implementer's tests and any workspace test commands, but when you lack the
+   tools to independently verify an answer, check consistency rather than
+   substituting your own analysis.
 
 4. **Read the implementer's code.** Trace the logic. Check for stubs, placeholders,
    spec violations, logic errors, ignored input data, and test gaming.
