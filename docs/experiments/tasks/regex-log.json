@@ -1,8 +1,8 @@
 {
   "task": "regex-log",
-  "current_score": 1.0,
-  "current_run": "disc-3rep-v6-fixed",
-  "current_date": "2026-03-26",
+  "current_score": 0.667,
+  "current_run": "v23-B-reviewer",
+  "current_date": "2026-03-27",
   "status": "tested",
   "notes": "",
   "history": [
@@ -37,6 +37,30 @@
       "reps": [
         1.0,
         1.0,
+        1.0
+      ]
+    },
+    {
+      "run_id": "v22-next20",
+      "date": "2026-03-27",
+      "git_sha": "8ba6486",
+      "model": "openai/gpt-5.4-mini",
+      "score": 0.333,
+      "reps": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "run_id": "v23-B-reviewer",
+      "date": "2026-03-27",
+      "git_sha": "3ba3a09",
+      "model": "openai/gpt-5.4-mini",
+      "score": 0.667,
+      "reps": [
+        1.0,
+        0.0,
         1.0
       ]
     }

@@ -131,6 +131,17 @@
         0.0,
         0.0
       ]
+    },
+    {
+      "run_id": "v23-B-reviewer",
+      "date": "2026-03-27",
+      "git_sha": "3ba3a09",
+      "model": "openai/gpt-5.4-mini",
+      "score": 0.5,
+      "reps": [
+        0.0,
+        1.0
+      ]
     }
   ]
 }

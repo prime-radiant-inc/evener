@@ -1,8 +1,8 @@
 {
   "task": "break-filter-js-from-html",
-  "current_score": 1.0,
-  "current_run": "v17-broad-20",
-  "current_date": "2026-03-26",
+  "current_score": 0.0,
+  "current_run": "v22-next20",
+  "current_date": "2026-03-27",
   "status": "tested",
   "notes": "",
   "history": [
@@ -24,6 +24,17 @@
       "score": 1.0,
       "reps": [
         1.0
+      ]
+    },
+    {
+      "run_id": "v22-next20",
+      "date": "2026-03-27",
+      "git_sha": "8ba6486",
+      "model": "openai/gpt-5.4-mini",
+      "score": 0.0,
+      "reps": [
+        0.0,
+        0.0
       ]
     }
   ]

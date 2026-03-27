@@ -1,8 +1,8 @@
 {
   "model": "openai/gpt-5.4-mini",
   "total_tasks": 89,
-  "tested_tasks": 82,
-  "mean_score": 0.622,
+  "tested_tasks": 83,
+  "mean_score": 0.6,
   "tasks": {
     "adaptive-rejection-sampler": {
       "score": 0.0,
@@ -26,11 +26,12 @@
       "status": "tested"
     },
     "break-filter-js-from-html": {
-      "score": 1.0,
-      "last_run": "v17-broad-20",
-      "last_date": "2026-03-26",
+      "score": 0.0,
+      "last_run": "v22-next20",
+      "last_date": "2026-03-27",
       "reps": [
-        1.0
+        0.0,
+        0.0
       ],
       "status": "tested"
     },
@@ -56,8 +57,8 @@
     },
     "build-pov-ray": {
       "score": 1.0,
-      "last_run": "disc-3rep-v6-fixed",
-      "last_date": "2026-03-26",
+      "last_run": "v22-next20",
+      "last_date": "2026-03-27",
       "reps": [
         1.0,
         1.0,
@@ -117,13 +118,13 @@
       "status": "tested"
     },
     "code-from-image": {
-      "score": 1.0,
-      "last_run": "v12-easy-sweep",
-      "last_date": "2026-03-25",
+      "score": 0.667,
+      "last_run": "v22-next20",
+      "last_date": "2026-03-27",
       "reps": [
         1.0,
         1.0,
-        1.0
+        0.0
       ],
       "status": "tested"
     },
@@ -169,8 +170,8 @@
     },
     "crack-7z-hash": {
       "score": 0.667,
-      "last_run": "disc-3rep-v6-fixed",
-      "last_date": "2026-03-26",
+      "last_run": "v22-next20",
+      "last_date": "2026-03-27",
       "reps": [
         1.0,
         1.0,
@@ -180,9 +181,10 @@
     },
     "custom-memory-heap-crash": {
       "score": 1.0,
-      "last_run": "v17-broad-20",
-      "last_date": "2026-03-26",
+      "last_run": "v23-D-steering",
+      "last_date": "2026-03-27",
       "reps": [
+        1.0,
         1.0
       ],
       "status": "tested"
@@ -198,9 +200,10 @@
     },
     "distribution-search": {
       "score": 1.0,
-      "last_run": "v17-broad-20",
-      "last_date": "2026-03-26",
+      "last_run": "v22-next20",
+      "last_date": "2026-03-27",
       "reps": [
+        1.0,
         1.0,
         1.0
       ],
@@ -256,11 +259,13 @@
       "status": "tested"
     },
     "fix-code-vulnerability": {
-      "score": 1.0,
-      "last_run": "v17-broad-20",
-      "last_date": "2026-03-26",
+      "score": 0.333,
+      "last_run": "v22-next20",
+      "last_date": "2026-03-27",
       "reps": [
-        1.0
+        0.0,
+        1.0,
+        0.0
       ],
       "status": "tested"
     },
@@ -320,18 +325,20 @@
       "status": "tested"
     },
     "gpt2-codegolf": {
-      "score": 0.0,
-      "last_run": "v17-broad-20",
-      "last_date": "2026-03-26",
+      "score": 0.333,
+      "last_run": "v22-next20",
+      "last_date": "2026-03-27",
       "reps": [
+        1.0,
+        0.0,
         0.0
       ],
       "status": "tested"
     },
     "headless-terminal": {
       "score": 1.0,
-      "last_run": "disc-3rep-v6-fixed",
-      "last_date": "2026-03-26",
+      "last_run": "v22-next20",
+      "last_date": "2026-03-27",
       "reps": [
         1.0,
         1.0,
@@ -341,8 +348,8 @@
     },
     "hf-model-inference": {
       "score": 1.0,
-      "last_run": "disc-3rep-v6-fixed",
-      "last_date": "2026-03-26",
+      "last_run": "v22-next20",
+      "last_date": "2026-03-27",
       "reps": [
         1.0,
         1.0,
@@ -392,20 +399,22 @@
       "status": "tested"
     },
     "llm-inference-batching-scheduler": {
-      "score": 0.5,
-      "last_run": "disc-3rep-v6-fixed",
-      "last_date": "2026-03-26",
+      "score": 0.333,
+      "last_run": "v22-next20",
+      "last_date": "2026-03-27",
       "reps": [
         0.0,
-        1.0
+        1.0,
+        0.0
       ],
       "status": "tested"
     },
     "log-summary-date-ranges": {
       "score": 1.0,
-      "last_run": "v17-broad-20",
-      "last_date": "2026-03-26",
+      "last_run": "v22-next20",
+      "last_date": "2026-03-27",
       "reps": [
+        1.0,
         1.0,
         1.0
       ],
@@ -452,18 +461,22 @@
     },
     "merge-diff-arc-agi-task": {
       "score": 1.0,
-      "last_run": "v17-broad-20",
-      "last_date": "2026-03-26",
+      "last_run": "v22-next20",
+      "last_date": "2026-03-27",
       "reps": [
+        1.0,
+        1.0,
         1.0
       ],
       "status": "tested"
     },
     "modernize-scientific-stack": {
       "score": 1.0,
-      "last_run": "v17-broad-20",
-      "last_date": "2026-03-26",
+      "last_run": "v22-next20",
+      "last_date": "2026-03-27",
       "reps": [
+        1.0,
+        1.0,
         1.0
       ],
       "status": "tested"
@@ -488,9 +501,10 @@
     },
     "multi-source-data-merger": {
       "score": 1.0,
-      "last_run": "v17-broad-20",
-      "last_date": "2026-03-26",
+      "last_run": "v22-next20",
+      "last_date": "2026-03-27",
       "reps": [
+        1.0,
         1.0,
         1.0
       ],
@@ -580,9 +594,11 @@
     },
     "portfolio-optimization": {
       "score": 1.0,
-      "last_run": "v17-broad-20",
-      "last_date": "2026-03-26",
+      "last_run": "v22-next20",
+      "last_date": "2026-03-27",
       "reps": [
+        1.0,
+        1.0,
         1.0
       ],
       "status": "tested"
@@ -599,17 +615,19 @@
     },
     "prove-plus-comm": {
       "score": 1.0,
-      "last_run": "v17-broad-20",
-      "last_date": "2026-03-26",
+      "last_run": "v22-next20",
+      "last_date": "2026-03-27",
       "reps": [
+        1.0,
+        1.0,
         1.0
       ],
       "status": "tested"
     },
     "pypi-server": {
       "score": 1.0,
-      "last_run": "disc-3rep-v6-fixed",
-      "last_date": "2026-03-26",
+      "last_run": "v22-next20",
+      "last_date": "2026-03-27",
       "reps": [
         1.0,
         1.0,
@@ -628,8 +646,8 @@
     },
     "pytorch-model-recovery": {
       "score": 1.0,
-      "last_run": "disc-3rep-v6-fixed",
-      "last_date": "2026-03-26",
+      "last_run": "v22-next20",
+      "last_date": "2026-03-27",
       "reps": [
         1.0,
         1.0,
@@ -680,12 +698,12 @@
       "status": "tested"
     },
     "regex-log": {
-      "score": 1.0,
-      "last_run": "disc-3rep-v6-fixed",
-      "last_date": "2026-03-26",
+      "score": 0.667,
+      "last_run": "v23-B-reviewer",
+      "last_date": "2026-03-27",
       "reps": [
         1.0,
-        1.0,
+        0.0,
         1.0
       ],
       "status": "tested"
@@ -806,6 +824,17 @@
       ],
       "status": "tested"
     },
+    "vulnerable-secret": {
+      "score": 1.0,
+      "last_run": "v22-vuln-secret",
+      "last_date": "2026-03-27",
+      "reps": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "status": "tested"
+    },
     "winning-avg-corewars": {
       "score": 0.5,
       "last_run": "v17-broad-20",
@@ -862,13 +891,6 @@
       "status": "untested"
     },
     "sam-cell-seg": {
-      "score": null,
-      "last_run": null,
-      "last_date": null,
-      "reps": [],
-      "status": "untested"
-    },
-    "vulnerable-secret": {
       "score": null,
       "last_run": null,
       "last_date": null,
