@@ -2,7 +2,7 @@
   "model": "openai/gpt-5.4-mini",
   "total_tasks": 89,
   "tested_tasks": 83,
-  "mean_score": 0.6,
+  "mean_score": 0.604,
   "tasks": {
     "adaptive-rejection-sampler": {
       "score": 0.0,
@@ -76,13 +76,13 @@
       "status": "tested"
     },
     "cancel-async-tasks": {
-      "score": 0.667,
-      "last_run": "disc-3rep-v6-fixed",
-      "last_date": "2026-03-26",
+      "score": 1.0,
+      "last_run": "v24-C-verify",
+      "last_date": "2026-03-27",
       "reps": [
         1.0,
         1.0,
-        0.0
+        1.0
       ],
       "status": "tested"
     },
@@ -118,13 +118,13 @@
       "status": "tested"
     },
     "code-from-image": {
-      "score": 0.667,
-      "last_run": "v22-next20",
+      "score": 1.0,
+      "last_run": "v24-C-verify",
       "last_date": "2026-03-27",
       "reps": [
         1.0,
         1.0,
-        0.0
+        1.0
       ],
       "status": "tested"
     },
@@ -582,13 +582,13 @@
       "status": "tested"
     },
     "polyglot-rust-c": {
-      "score": 0.333,
-      "last_run": "disc-3rep-v6-fixed",
-      "last_date": "2026-03-26",
+      "score": 0.0,
+      "last_run": "v24-C-verify",
+      "last_date": "2026-03-27",
       "reps": [
         0.0,
         0.0,
-        1.0
+        0.0
       ],
       "status": "tested"
     },

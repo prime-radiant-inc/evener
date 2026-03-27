@@ -1,8 +1,8 @@
 {
   "task": "polyglot-rust-c",
-  "current_score": 0.333,
-  "current_run": "disc-3rep-v6-fixed",
-  "current_date": "2026-03-26",
+  "current_score": 0.0,
+  "current_run": "v24-C-verify",
+  "current_date": "2026-03-27",
   "status": "tested",
   "notes": "",
   "history": [
@@ -25,6 +25,18 @@
       "model": "openai/gpt-5.4-mini",
       "score": 0.0,
       "reps": [
+        0.0
+      ]
+    },
+    {
+      "run_id": "v24-C-verify",
+      "date": "2026-03-27",
+      "git_sha": "70095a4",
+      "model": "openai/gpt-5.4-mini",
+      "score": 0.0,
+      "reps": [
+        0.0,
+        0.0,
         0.0
       ]
     }
