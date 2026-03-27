@@ -4,19 +4,19 @@ Prioritized queue of next experiments. Updated March 26, 2026.
 
 ## Currently testing
 
-### v9-review-fix-b (running)
+### v11-positive-framing (ready to launch)
 
-Two prompt fixes targeting the last two known regressions (chess-best-move,
-polyglot-c-py):
-1. **Reviewer consistency**: reviewer.md changed from "independently verify" to
-   "review results for consistency." If implementer used a domain tool, reviewer
-   checks methodology and consistency rather than re-deriving the answer.
-2. **Scratch directory verification**: coordinator.md step 3 requires all
-   verification artifacts go to a scratch dir (e.g. `/tmp/verify`), never workspace.
-3. **Active pre-submit check**: coordinator.md step 5 requires listing workspace
-   and removing verification artifacts before calling communicate.
+Two prompt fixes based on real session interrogation of v10 failures:
+1. **Reviewer positive authority ordering**: "Treat domain-tool results as
+   authoritative" + "Computational proof outranks visual inspection, manual
+   reasoning, and heuristic judgment." Replaces prohibition framing.
+2. **Warnings are not failures**: workflow.md adds "A command that exits 0
+   succeeded — warnings are informational, not failures." Resolves the
+   competing-instruction conflict where "never ignore output" overrode the
+   anti-gold-plating instruction.
 
-**Test:** chess-best-move × 3, polyglot-c-py × 3. Run ID: `v9-review-fix-b`.
+**Test:** chess-best-move × 3, polyglot-c-py × 3.
+**Build:** commit 1e0ddd1.
 
 ## Next up
 
@@ -46,11 +46,9 @@ Most visible on chess-best-move (reads image, writes wrong answer immediately)
 and pytorch-model-cli (codes in C++ for 35 rounds instead of delegating).
 
 **Hypotheses:**
-- **A) Code-level enforcement:** Refuse to execute write/edit tools at depth 0.
-  The coordinator can only spawn, read, grep, and shell (for verification).
-- **B) Steering injection:** If the coordinator's first 3 tool calls don't
+- **A) Steering injection:** If the coordinator's first 3 tool calls don't
   include spawn_agent, inject: "You are the coordinator. Delegate."
-- **C) Prompt-only:** Current approach. The reorder fix (Role before Skills)
+- **B) Prompt-only:** Current approach. The reorder fix (Role before Skills)
   helped fix-git delegate. Further prompt tweaks may help chess-best-move.
 
 **Test plan:** chess-best-move × 5 reps with each approach.
@@ -111,10 +109,14 @@ what I have").
 - Capabilities: computational verification — shipped (v7: included)
 - Input pre-processing ban — shipped (coordinator must not analyze task inputs)
 - Coordinator/reviewer rename — shipped (inventory not scout, coordinator not dispatcher)
-- Reviewer consistency check — testing (v9: review consistency, not re-derive)
-- Scratch directory verification — testing (v9: verification artifacts to /tmp)
-- Active pre-submit workspace check — testing (v9: list + clean before communicate)
+- Reviewer consistency check — shipped (v9: 2/3 chess, v10: 0/3 — fix insufficient)
+- Scratch directory verification — shipped (v9: 2/3 polyglot, v10: still violated)
+- Active pre-submit workspace check — shipped (v9/v10: still violated)
+- Delegation guidelines to reviewer — shipped (v10: included)
+- Anti-gold-plating — shipped (v10: overridden by competing instructions)
+- Reviewer positive authority ordering — testing (v11: replaces prohibition framing)
+- Warnings are not failures — testing (v11: resolves competing-instruction conflict)
 - harbor-runner: removed parent-dir binary copy — shipped
 - Makefile: `build-linux` target with cache invalidation — shipped
-- Session interrogation tool — shipped
+- Session interrogation tool — shipped (rewritten: real session resume, subagent support)
 - Root-cause prompt template — shipped

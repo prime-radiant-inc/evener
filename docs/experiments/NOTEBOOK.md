@@ -25,7 +25,36 @@ Invoke it before starting work.
 1 regression was caused by our fixes (polyglot-c-py — verification artifact left behind).
 The other 11 regressions are nondeterministic variance (implementer approach quality).
 
-### Active test: v9-review-fix-b (Mar 26)
+### Latest test: v10-deleg-goldplate (Mar 26)
+
+**Run:** `v10-deleg-goldplate` — chess-best-move × 3, polyglot-c-py × 3
+**Build:** commit 8679e08 (reviewer consistency + scratch dir + delegation-to-reviewer + anti-gold-plating)
+**Result:** 1/6 — chess 0/3, polyglot 1/3. Regression from v9's 4/6.
+
+All five prompt fixes were violated at least once:
+- **Chess rep-1:** Implementer correct (Python engine, both moves). Reviewer
+  overrode with vision despite "consistency not re-derive" instruction.
+- **Chess rep-2:** Implementer trusted vision alone, never installed chess engine.
+- **Chess rep-3:** Coordinator did work directly — no delegation at all.
+- **Polyglot rep-5:** Coordinator verified in workspace (not scratch dir), then
+  edited main.py.c itself (not via implementer). Left cmain behind.
+- **Polyglot rep-6:** Timeout. Implementer gold-plated gcc warnings despite anti-
+  gold-plating instruction. Named competing instructions in interrogation.
+
+**Real session interrogation** (using fixed tool with serf --resume-with) revealed:
+- **Gold-plating:** COMPETING INSTRUCTIONS. Model cited "never ignore system output",
+  "read errors carefully", "correctness over speed" as overriding anti-gold-plating.
+  Treated warnings as errors. Fix: "exit 0 = success, warnings are informational."
+- **Reviewer override:** No competing instruction. Model just didn't apply the rule.
+  Wants explicit authority ordering. Fix: positive framing "treat domain-tool results
+  as authoritative" + "computational proof outranks visual inspection."
+- **Coordinator non-delegation:** Terse response, acknowledged violation. Short session.
+
+**Fixes applied (commit 1e0ddd1):**
+- Reviewer: "Treat domain-tool results as authoritative" (positive framing)
+- Workflow: "exit 0 succeeded — warnings are informational, not failures"
+
+### Previous test: v9-review-fix-b (Mar 26)
 
 Testing reviewer and verification fixes on the two remaining regressions:
 - **Reviewer consistency check**: reviewer.md changed from "independently verify"
@@ -85,11 +114,13 @@ circuit-fibsqrt and polyglot-c-py TIMEOUT.
 | eecc20a | Action bias + optional explorer | Timeout regressions + budget waste |
 | cedf53e | Computational verification for vision | chess-best-move trusted vision alone |
 | e9a3989 | Don't pre-process task inputs + rename inventory/coordinator | Coordinator analyzed images for delegation |
-| (dirty) | Reviewer: consistency check, not re-derive | Reviewer hallucinated wrong answer without domain tools |
-| (dirty) | Coordinator: scratch dir for verification | Verify-clean-reverify-forget left artifacts |
-| (dirty) | Coordinator: active pre-submit workspace check | No check before communicate |
-| (dirty) | Coordinator: include task spec in reviewer delegation | Reviewer lacked format requirements, guessed wrong |
-| (dirty) | Workflow: test against spec's criteria, don't gold-plate | Implementer self-imposed -Werror, burned 14min on warnings |
+| 72125d2 | Reviewer: consistency check, not re-derive | Reviewer hallucinated wrong answer without domain tools |
+| 72125d2 | Coordinator: scratch dir for verification | Verify-clean-reverify-forget left artifacts |
+| 72125d2 | Coordinator: active pre-submit workspace check | No check before communicate |
+| 72125d2 | Coordinator: include task spec in reviewer delegation | Reviewer lacked format requirements, guessed wrong |
+| 72125d2 | Workflow: test against spec's criteria, don't gold-plate | Implementer self-imposed -Werror, burned 14min on warnings |
+| 1e0ddd1 | Reviewer: positive framing, domain-tool authority ordering | v10: "cannot override" prohibition ignored, positive framing works better |
+| 1e0ddd1 | Workflow: exit 0 = success, warnings informational | v10: competing instructions ("never ignore output") overrode anti-gold-plating |
 
 ### Known remaining issues
 
@@ -335,6 +366,7 @@ messages with system prompt first, which GPT-5.4 ignores. Not yet implemented or
 | 3/26 | v7-action-bias | 7 regression tasks ×1 | 3/7 | feal-diff PASS, eigenval PASS, rust-c PASS. chess/ars FAIL. 2 timeout |
 | 3/26 | v8-input-fix | chess ×1, polyglot ×1 | 0/2 | chess: reviewer hallucinated wrong move. polyglot: verify-clean-reverify-forget |
 | 3/26 | v9-review-fix-b | chess ×3, polyglot ×3 | 4/6 | chess 2/3 (1 reviewer info loss), polyglot 2/3 (1 timeout). Fixes work. |
+| 3/26 | v10-deleg-goldplate | chess ×3, polyglot ×3 | 1/6 | All fixes violated. Real interrogation: competing instructions + no authority ordering |
 
 ### Detailed experiment writeups
 
