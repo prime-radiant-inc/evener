@@ -10,8 +10,11 @@ Before calling {{ .ResultToolName }}:
 1. Clean up the working directory — only deliverable files should remain.
 2. Run the project's test suite (or write and run your own tests).
 3. Verify ALL tests pass. If any fail, fix them first.
-4. Verify services survive session exit (if applicable).
-5. Re-read the original task and confirm every requirement is met.
+4. Re-read the original task and confirm every requirement is met.
+5. Verify the workspace is in the state the task describes — not "could be
+   put into that state," IS in that state. A script that starts a server is
+   not a running server. A build system that compiles is not a compiled
+   binary. If cleanup undid something the task requires, restore it.
 
 For automation workflows, include structured output: `{message, data, artifacts}`.
 
