@@ -15,7 +15,9 @@ should improve general agent capability, not game specific tasks.
 ## Project-Specific Docs
 
 Project-specific knowledge lives in the project repo, not this skill:
-- `docs/experiments/NOTEBOOK.md` — current state, experiment log, key learnings
+- `docs/experiments/NOTEBOOK.md` — current state, shipped fixes, what to do next
+- `docs/experiments/experiment-log.md` — full chronological record of all experiments
+- `docs/experiments/prompt-lessons.md` — synthesized learnings about GPT prompt behavior
 - `docs/experiments/backlog.md` — prioritized queue of next experiments
 - `docs/experiments/infrastructure.md` — how to run evals for this project
 - `docs/experiments/task-sets.md` — regression and target task lists
@@ -24,12 +26,12 @@ Project-specific knowledge lives in the project repo, not this skill:
 
 Before doing anything, read the project's `docs/experiments/NOTEBOOK.md`. It contains:
 - Current experimental state (what's shipped, baseline pass rates)
-- What's been tried and what worked/didn't
-- Key learnings from all experiments
-- Full experiment log
+- Known open problems and what to do next
+- Pointers to the experiment log, prompt lessons, and backlog
 
 If there's active work in progress, pick up where the notebook says to start.
-If starting fresh on a new eval, follow the workflow below.
+For full experiment history, see `experiment-log.md`. For synthesized learnings
+about prompt behavior, see `prompt-lessons.md`.
 
 ## The Full Workflow
 
@@ -40,7 +42,7 @@ When given an eval to tune against:
 3. **Inventory** — categorize failures by systemic pattern, prioritize fixes
 4. **Fix** — one change at a time, test on affected tasks only (3+ reps)
 5. **Validate** — after all individual fixes validated, run full eval
-6. **Document** — update NOTEBOOK.md after every experiment
+6. **Document** — update experiment-log.md and NOTEBOOK.md after every experiment
 
 ## Step 1: Run Baseline
 
@@ -222,7 +224,7 @@ Only after all individual fixes are validated, combined, and re-validated:
 - **No task that passed in the baseline should now fail** (check explicitly).
 - If there are regressions, identify which fix caused them.
 
-Record the full eval result in NOTEBOOK.md alongside the baseline for comparison.
+Record the full eval result in `experiment-log.md`. Update `NOTEBOOK.md` current state.
 
 ## Prompt Engineering for GPT Models
 
@@ -413,9 +415,10 @@ For manual collection: `./tools/collect_results.py RUN_ID --model ... --git-sha 
 
 5. **View task history** — `./tools/scoreboard.py --task TASK_NAME`
 
-6. **Update NOTEBOOK.md** — add behavioral observations, interrogation findings,
-   and any lessons learned. The scoreboard captures scores; NOTEBOOK.md captures
-   the narrative.
+6. **Update docs:**
+   - `experiment-log.md` — add the experiment entry (results, interrogation findings)
+   - `prompt-lessons.md` — add any new synthesized learnings about model behavior
+   - `NOTEBOOK.md` — update current state if shipped fixes or open problems changed
 
 ### Scoring rule
 Score = mean of reps from the most recent run. For parallel experiments on the

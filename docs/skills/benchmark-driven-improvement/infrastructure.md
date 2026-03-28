@@ -89,7 +89,9 @@ python3 tools/interrogate_session.py \
 
 ## Project docs (authoritative)
 
-- `docs/experiments/NOTEBOOK.md` — current state, experiment log
+- `docs/experiments/NOTEBOOK.md` — current state, shipped fixes, what to do next
+- `docs/experiments/experiment-log.md` — full chronological experiment record
+- `docs/experiments/prompt-lessons.md` — synthesized learnings about GPT prompt behavior
+- `docs/experiments/backlog.md` — prioritized queue of next experiments
 - `docs/experiments/infrastructure.md` — full deployment details
 - `docs/experiments/task-sets.md` — regression and target task lists
-- `docs/experiments/prompt-lessons.md` — GPT prompt engineering findings

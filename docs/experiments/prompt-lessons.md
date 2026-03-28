@@ -249,3 +249,64 @@
 - Coordinator can only inspect from outside (file existence, port checks)
 - BUT: impl-test-a's 3/3 on kv-store-grpc is likely stochastic (see
   self-referential verification lesson above)
+
+## GPT-5.4 instruction following patterns
+
+- **GPT-5.4 follows instructions closest to end of context.** The `instructions`
+  parameter goes at the beginning; user messages at the end. The model follows
+  whichever is last. 0/45 across 15 system prompt variants on AWS.
+- **System prompt instructions are ignored when user message implies routine work.**
+  The implementer sees the task as "pure execution" and skips research steps
+  regardless of system prompt wording.
+- **XML-tagged prerequisites in user messages work.** `<mandatory_prerequisites>`
+  + numbered steps + "Follow the documented usage instructions" achieved 6/6
+  locally. XML tags + numbered steps + "follow docs" is the minimum formula —
+  remove any element and compliance drops to zero.
+- **Graphviz doesn't work with GPT.** 0/7 compliance. Use prose with CRITICAL markers.
+- **Prohibitions don't work with GPT.** Use positive framing.
+- **Prompts don't change GPT-5.4 vision behavior.** "Trust what you see", "describe
+  before coding" — all ignored. Only code-level changes (tool_choice, detail
+  parameter) affect vision behavior.
+
+## Delegation architecture principles
+
+- **Coordinator should NOT pre-research domain problems.** Domain research and
+  implementation are interleaved — separating them loses the feedback loop. In
+  every passing protein-assembly run, the implementer did its own research. In
+  every failure, the coordinator split research into separate subagents.
+- **Explorer = workspace scout** (files, tools, tests). NOT domain research.
+- **Coordinator plans, delegates whole problems, verifies.** Does NOT decompose
+  into phases.
+- **Implementer owns the full problem** including domain research.
+- **What failed:** coordinator-does-implementation (0/9), coordinator-explores-itself
+  (3/9), budget-aware framing (3/9), hard ban on research (0/3).
+
+## Coordinator behavior patterns
+
+- **"Inspect" and "verify" are too vague.** The coordinator interprets them as
+  running Python. Must specify: "file existence, format, workspace state."
+- **Imperative phrasing + zero reasoning tokens primes direct action.** "Mark it
+  in_progress to begin" caused coordinators to implement directly. Neutral phrasing
+  ("Next open task: #N") fixes this.
+- **Embedded skills prime behavior.** ops-task skill's "Try it. Fix it." primed
+  coordinators to implement directly (0/3 delegation). Removing it fixed 3 tasks.
+
+## Vision architecture lessons
+
+- **Vision side-channel works.** Off-loop API call with no tools forces native
+  vision. LLM-driven `purpose` parameter ensures task-relevant descriptions.
+- **GPT-5.4 reads chess boards perfectly** at medium+ effort with detail:original
+  when no tools are available.
+- **Vision section mentioning read_file causes GPT to call read_file** instead of
+  using native vision on images already in context.
+- **detail:"original" is GPT-5.4-specific.** Older models use "high".
+- **Vision steering content varies per run,** causing stochastic coordinator bypass
+  when the description primes direct action.
+
+## Local vs AWS divergence
+
+- **Parent tree scan dumped 78K of /tmp/ into subagent prompts,** invalidating all
+  local test results before the workspace tree fix.
+- **Local testing diverges from AWS for prompt compliance.** All 12 local
+  implementers read the README regardless of prompt. 0/6 AWS implementers did
+  with the same prompt. Always validate on AWS.
