@@ -31,6 +31,7 @@ Usage:
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -42,6 +43,11 @@ RESULTS_DIR = os.path.expanduser("~/prime-radiant/harbor-runner/state/results")
 SERF_BINARY = os.path.expanduser("~/prime-radiant/serf/serf-linux-amd64")
 
 
+def _extract_task_name(dirname):
+    """Extract task name from a 'taskname__hash' directory name."""
+    return re.sub(r"__[A-Za-z0-9]+$", "", dirname)
+
+
 def find_local_state_dir(run_id, rep, task=None):
     """Find the agent-state dir in locally downloaded results."""
     rep_dir = os.path.join(RESULTS_DIR, run_id, f"rep-{rep}")
@@ -50,8 +56,16 @@ def find_local_state_dir(run_id, rep, task=None):
     # Walk to find agent-state/sessions/, filtering by task name if provided.
     for root, dirs, files in os.walk(rep_dir):
         if os.path.basename(root) == "agent-state" and "sessions" in dirs:
-            if task and task not in root:
-                continue
+            if task:
+                # Match exact task name from taskname__hash directory
+                parts = root.replace("\\", "/").split("/")
+                task_dir_name = None
+                for part in parts:
+                    if _extract_task_name(part) == task and part != task:
+                        task_dir_name = part
+                        break
+                if not task_dir_name:
+                    continue
             return root
     return None
 
@@ -63,13 +77,28 @@ def download_results(run_id, rep, task=None):
         return state_dir
 
     dest = os.path.join(RESULTS_DIR, run_id, f"rep-{rep}")
+    s3_prefix = f"s3://{BUCKET}/runs/{run_id}/rep-{rep}/"
+
+    # Download agent-state for the target task
     print(f"Downloading from S3 to {dest}...")
-    subprocess.run([
-        "aws", "s3", "sync",
-        f"s3://{BUCKET}/runs/{run_id}/rep-{rep}/",
-        dest,
+    cmd = [
+        "aws", "s3", "sync", s3_prefix, dest,
         "--region", REGION,
-    ], check=True)
+        "--exclude", "*",
+        "--include", f"*{task}*/agent-state/*" if task else "*agent-state/*",
+    ]
+    subprocess.run(cmd, check=True)
+
+    # Also download verifier output for the target task
+    if task:
+        print(f"Downloading verifier output for {task}...")
+        subprocess.run([
+            "aws", "s3", "sync", s3_prefix, dest,
+            "--region", REGION,
+            "--exclude", "*",
+            "--include", f"*{task}*/verifier/test-stdout.txt",
+        ], check=True)
+
     return find_local_state_dir(run_id, rep, task)
 
 
@@ -151,14 +180,122 @@ def resolve_session(sessions, selector):
     sys.exit(1)
 
 
-def get_verifier_output(run_id, rep):
+def get_verifier_output(run_id, rep, task=None):
     """Get verifier output from local results."""
     rep_dir = os.path.join(RESULTS_DIR, run_id, f"rep-{rep}")
     for root, dirs, files in os.walk(rep_dir):
+        if task:
+            # Match exact task name from the taskname__hash directory
+            dir_name = os.path.basename(root)
+            parent_name = os.path.basename(os.path.dirname(root))
+            # test-stdout.txt lives at taskname__hash/verifier/test-stdout.txt
+            # so when we're in the verifier dir, check the parent
+            if dir_name == "verifier":
+                if _extract_task_name(parent_name) != task:
+                    continue
+            else:
+                continue
         for f in files:
             if f == "test-stdout.txt":
                 return open(os.path.join(root, f)).read()
     return None
+
+
+def fix_orphaned_tool_calls(state_dir, session_id):
+    """Patch transcript if the last assistant message has unanswered tool calls.
+
+    Sessions that timed out mid-tool-call have a pending function_call with no
+    tool result. The OpenAI API rejects resume with "No tool output found for
+    function call". We append synthetic tool results so the resume can proceed.
+
+    Operates on the copy in the temp dir, not the original.
+    """
+    transcript_path = os.path.join(
+        state_dir, "sessions", f"{session_id}.transcript.jsonl")
+    if not os.path.exists(transcript_path):
+        return
+
+    with open(transcript_path) as f:
+        lines = f.readlines()
+
+    if not lines:
+        return
+
+    # Collect tool_call IDs from the last assistant turn and tool_result IDs
+    # from any subsequent tool turns. Walk backward to find the last assistant
+    # message that contains tool calls.
+    last_assistant_idx = None
+    pending_call_ids = []  # tool_call IDs from the last assistant message
+    answered_call_ids = set()  # tool_call_ids from subsequent tool results
+
+    for i in range(len(lines) - 1, -1, -1):
+        entry = json.loads(lines[i])
+        if "turn" not in entry or "message" not in entry["turn"]:
+            continue
+        msg = entry["turn"]["message"]
+        role = msg.get("role")
+
+        if role == "tool" and last_assistant_idx is None:
+            # Tool result after the last assistant — collect its IDs
+            for item in (msg.get("content") or []):
+                if isinstance(item, dict) and item.get("kind") == "tool_result":
+                    tid = item.get("tool_result", {}).get("tool_call_id")
+                    if tid:
+                        answered_call_ids.add(tid)
+
+        elif role == "assistant":
+            # Found the last assistant message — extract tool call IDs
+            last_assistant_idx = i
+            for item in (msg.get("content") or []):
+                if isinstance(item, dict) and item.get("kind") == "tool_call":
+                    tid = item.get("tool_call", {}).get("id")
+                    name = item.get("tool_call", {}).get("name", "unknown")
+                    if tid:
+                        pending_call_ids.append((tid, name))
+            break
+
+        elif role == "user":
+            # User message means no orphaned tool calls possible
+            break
+
+    if not pending_call_ids:
+        return
+
+    # Find unanswered calls
+    unanswered = [(tid, name) for tid, name in pending_call_ids
+                  if tid not in answered_call_ids]
+    if not unanswered:
+        return
+
+    print(f"Fixing {len(unanswered)} orphaned tool call(s) in transcript...")
+    # Append synthetic tool results
+    with open(transcript_path, "a") as f:
+        for tid, name in unanswered:
+            seq = len(lines) + 1
+            synthetic = {
+                "kind": "tool_result",
+                "seq": seq,
+                "turn": {
+                    "kind": "tool_result",
+                    "message": {
+                        "role": "tool",
+                        "content": [{
+                            "kind": "tool_result",
+                            "tool_result": {
+                                "tool_call_id": tid,
+                                "name": name,
+                                "content": json.dumps({
+                                    "error": "Session timed out before this "
+                                             "tool call completed."
+                                }),
+                                "is_error": True,
+                            }
+                        }]
+                    }
+                }
+            }
+            f.write(json.dumps(synthetic) + "\n")
+            seq += 1
 
 
 def build_question_message(questions, verifier_output):
@@ -240,7 +377,7 @@ def main():
     print()
 
     # Build interrogation message
-    verifier = get_verifier_output(args.run, args.rep)
+    verifier = get_verifier_output(args.run, args.rep, args.task)
     if verifier:
         print(f"Verifier output: {len(verifier)} chars")
     message = build_question_message(questions, verifier)
@@ -260,6 +397,9 @@ def main():
     with tempfile.TemporaryDirectory(prefix="interrogate-") as tmp:
         tmp_state = os.path.join(tmp, "agent-state")
         shutil.copytree(state_dir, tmp_state)
+
+        # Fix orphaned tool calls (timed-out sessions) before resume
+        fix_orphaned_tool_calls(tmp_state, target["id"])
 
         # Resume the session with serf
         print(f"\nResuming session with serf...\n")
