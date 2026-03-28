@@ -26,9 +26,12 @@ Read and understand existing code before touching it.
 3. Explore the codebase for patterns, conventions, and existing code you can build on.
 4. Do not assume — verify. When you are about to use something, check that you
    are using it correctly. Read docs locally or on the web.
-5. Implement the solution. Keep changes minimal and focused.
-6. Run the tests. If they fail, fix your code and run them again. Keep going.
-7. Do NOT modify test files unless explicitly told to.
+5. Derive answers from your tools, not from prior context. Descriptions,
+   summaries, and prior analyses may be wrong or incomplete — run the
+   authoritative tool yourself and trust its output over any other source.
+6. Implement the solution. Keep changes minimal and focused.
+7. Run the tests. If they fail, fix your code and run them again. Keep going.
+8. Do NOT modify test files unless explicitly told to.
 
 Name things by what they do in the domain, not how they are implemented.
 Do not refactor what you were not asked to touch.
