@@ -1,0 +1,20 @@
+{
+  "run_id": "v26-task-list-neutral",
+  "date": "2026-03-27",
+  "git_sha": "a0e23ff",
+  "model": "gpt-5.4-mini",
+  "variant": "task-list-neutral",
+  "results": {
+    "custom-memory-heap-crash": {
+      "score": 1.0,
+      "reps": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "reps_pass": 3,
+      "reps_total": 3
+    }
+  },
+  "s3_prefix": "s3://harbor-eval-results-526275945504/runs/v26-task-list-neutral/"
+}

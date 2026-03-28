@@ -214,6 +214,39 @@ The harness and data file live in `tools/impl-repro/`. Use when:
 - You need to test 10+ prompt variants quickly
 - Local coordinator runs don't reproduce the AWS failure mode
 
+### Coordinator delegation repro (~2 min per run)
+
+For fast iteration on whether the coordinator delegates or bypasses, using
+chess-best-move as the test case:
+
+```bash
+OPENAI_API_KEY=... ./tools/coord-repro/run-test.sh label [coordinator.md-path]
+```
+
+Builds serf from current source (or with a replacement coordinator.md), sets up
+a workspace with the chess board image, runs the full coordinator pipeline with
+`--max-rounds 8`, and checks the transcript for `spawn_agent` (DELEGATE) vs
+`write_file`/shell write (BYPASS).
+
+To batch-test many variants at once:
+
+```bash
+# Create a directory of coordinator.md variants
+mkdir /tmp/coord-variants
+cp agent/agents/coordinator.md /tmp/coord-variants/00-baseline.md
+# ... create more variants ...
+
+# Run each variant 2x (default) or Nx
+OPENAI_API_KEY=... ./tools/coord-repro/run-batch.sh /tmp/coord-variants/ 3
+```
+
+The harness lives in `tools/coord-repro/`. Use when:
+- The problem is coordinator delegation behavior
+- You need to test 10+ prompt variants quickly
+- The signal is binary (delegate vs bypass), not answer correctness
+
+Uses `--reasoning-effort none` and `gpt-5.4-mini` to match AWS eval conditions.
+
 ### Workspace tree vs parent tree
 
 The parent tree scan (`scanParentTree`) dumps the workspace's parent directory

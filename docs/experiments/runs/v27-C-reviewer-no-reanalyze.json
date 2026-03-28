@@ -1,0 +1,20 @@
+{
+  "run_id": "v27-C-reviewer-no-reanalyze",
+  "date": "2026-03-27",
+  "git_sha": "0df84f6",
+  "model": "gpt-5.4-mini",
+  "variant": "reviewer-no-reanalyze",
+  "results": {
+    "chess-best-move": {
+      "score": 0.0,
+      "reps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "reps_pass": 0,
+      "reps_total": 3
+    }
+  },
+  "s3_prefix": "s3://harbor-eval-results-526275945504/runs/v27-C-reviewer-no-reanalyze/"
+}

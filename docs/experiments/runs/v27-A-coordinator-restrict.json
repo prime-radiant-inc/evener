@@ -1,0 +1,19 @@
+{
+  "run_id": "v27-A-coordinator-restrict",
+  "date": "2026-03-27",
+  "git_sha": "fbcf20b",
+  "model": "gpt-5.4-mini",
+  "variant": "coordinator-restrict",
+  "results": {
+    "chess-best-move": {
+      "score": 0.0,
+      "reps": [
+        0.0,
+        0.0
+      ],
+      "reps_pass": 0,
+      "reps_total": 2
+    }
+  },
+  "s3_prefix": "s3://harbor-eval-results-526275945504/runs/v27-A-coordinator-restrict/"
+}
