@@ -1,0 +1,20 @@
+{
+  "run_id": "v25-A-reviewer-evidence",
+  "date": "2026-03-27",
+  "git_sha": "7498c4a",
+  "model": "openai/gpt-5.4-mini",
+  "variant": "reviewer gets implementer verification methodology",
+  "results": {
+    "chess-best-move": {
+      "score": 0.0,
+      "reps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "reps_pass": 0,
+      "reps_total": 3
+    }
+  },
+  "s3_prefix": "s3://harbor-eval-results-526275945504/runs/v25-A-reviewer-evidence/"
+}

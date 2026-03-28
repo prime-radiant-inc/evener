@@ -111,12 +111,38 @@ foreground because `launch.sh` uses a staging directory keyed by run ID —
 parallel launches race on creating/deleting it. Once the tarball is in S3,
 subsequent launches skip the upload and can safely run in parallel.
 
+### Full 89-task baseline run
+
+For a complete baseline across all tasks, use the convenience script:
+
+```bash
+./tools/run_full_baseline.sh
+```
+
+This builds the binary, stages it, extracts all 89 task names from the scoreboard,
+and launches 3 reps on c6i.2xlarge with concurrency 8. Each instance runs all 89
+tasks and finishes in ~3 hours. Uses 24 of 128 vCPU quota.
+
+Override defaults with flags: `--reps 5 --model openai/gpt-5.4 --instance-type c6i.4xlarge`
+
+The script enforces a clean working tree (must commit before launching).
+
+After results are in:
+
+```bash
+./tools/post_run.sh RUN_ID --variant "description of what changed"
+```
+
+This collects from S3, updates the scoreboard, and shows score diffs vs previous.
+
 ### Spot instance rules
 
 - **1 task per instance for long tasks.** One task's timeout eats into the other's
   budget. Use the loop pattern above.
 - Fast regression tasks (< 5 min) are the exception: batch with
   `--task-names "task1,task2,..." --concurrency 8` on one instance.
+- **Full baselines**: use `run_full_baseline.sh` which puts all 89 tasks on each of
+  3 instances with concurrency 8. Each instance finishes in ~3 hours.
 - **NEVER run evals on magic-kingdom.** It gets congested with Docker containers
   and causes failures. magic-kingdom is for staging and reading results only.
 - Use `--run-id` for parallel launches. Without it, auto-generated IDs have

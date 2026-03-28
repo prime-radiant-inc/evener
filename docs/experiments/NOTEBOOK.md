@@ -11,7 +11,7 @@ Invoke it before starting work.
 
 **Model:** gpt-5.4-mini for current eval iteration
 **Scoreboard:** `./tools/scoreboard.py` — canonical 89-task matrix
-**Score:** 82/89 tested, mean 0.622 (44 tasks at 1.0, 8 partial, 27 at 0.0, 7 untested)
+**Score:** 83/89 tested, mean 0.608
 
 ### Shipped prompt fixes (on main)
 - **deleg-b** (coordinator.md): "quality gate, not the worker" — fixes chess-best-move
@@ -22,6 +22,7 @@ Invoke it before starting work.
 - **ops-task removal** (agent/skills/): deleted ops-task embedded skill — was priming coordinators to implement directly
 - **coordinator inventory fix** (coordinator.md): "Inventory means listing, not reading" + "Small tasks are not exceptions"
 - **implementer stuck guidance** (implementer.md): folded useful ops-task content into "When you get stuck" section
+- **v26 task_list neutral** (task_reminders.go): neutral phrasing — "No in_progress task. Next open task: #N" instead of imperative "Mark it in_progress to begin"
 
 ### Results system
 - `tools/collect_results.py` — download from S3, normalize, update metadata
@@ -34,14 +35,21 @@ Invoke it before starting work.
 
 ### Pending runs
 
-- **v25-A-reviewer-evidence** — chess-best-move × 3 reps.
-  Coordinator passes implementer verification methodology to reviewer.
-  Build: 7498c4a (exp/v25-A-reviewer-evidence). Running.
-- **v25-B-reviewer-no-rederive** — chess-best-move × 3 reps.
-  Reviewer told not to re-derive from primary sources when lacking equivalent tools.
-  Build: bd01002 (exp/v25-B-reviewer-no-rederive). Running.
-- **v25-C-both** — chess-best-move × 3 reps.
-  Both A + B combined. Build: fe9286f (exp/v25-C-both). Running.
+- **full-baseline-2026-03-27** — all 89 tasks × 3 reps, gpt-5.4-mini, main @ 5554bed.
+  Clean baseline with all shipped fixes. 3 × c6i.2xlarge, concurrency 8. Running.
+
+### Local coordinator delegation harness
+
+`tools/coord-repro/` — fast local test for coordinator delegation vs bypass.
+Builds serf, sets up chess board workspace, runs with `--max-rounds 8`, checks
+transcript for `spawn_agent` (DELEGATE) vs `write_file`/shell (BYPASS). ~2 min/run.
+See `docs/experiments/infrastructure.md` for usage.
+
+25 coordinator prompt variants in `tools/coord-repro/generate-variants.py`.
+Partial local results (13/26 variants tested, 2 reps each) showed baseline
+delegating 2/2 locally — consistent with AWS baseline-retest 3/3. The local
+harness has a lower bypass rate than AWS Docker, limiting its discriminative
+power. Best used for smoke-testing variants before AWS runs.
 
 ### v21-easy5 baseline (Mar 27)
 
@@ -56,7 +64,7 @@ Invoke it before starting work.
 | constraints-scheduling | 3/3 | 4.1% |
 | nginx-request-logging | 3/3 | 4.1% |
 
-### v25 reviewer experiments (Mar 27) — running
+### v25 reviewer experiments (Mar 27) — all failed
 
 **3 variants testing reviewer/coordinator interaction when reviewing computational
 output. All run chess-best-move × 3 reps on gpt-5.4-mini.**
@@ -67,17 +75,48 @@ moves (e2e4, g2g4) via python-chess. The reviewer then read chess_board.png with
 side-channel injected a wrong description saying only Qe4# was checkmate. The
 reviewer trusted the vision injection and rejected the correct answer.
 
-The reviewer explained (via interrogation) that "Confirm whether move.txt satisfies
-this" + its "verify outcomes, not artifacts" instruction required semantic
-verification, and it lacked visibility into the implementer's tools.
+| Variant | Change | SHA | Result |
+|---------|--------|-----|--------|
+| **v25-A** | Coordinator passes implementer verification methodology to reviewer | 7498c4a | **0/3** |
+| **v25-B** | Reviewer: do not re-derive from primary sources when lacking equivalent tools | bd01002 | **0/3** |
+| **v25-C** | Both A + B | fe9286f | **1/3** |
 
-| Variant | Change | SHA |
-|---------|--------|-----|
-| **v25-A** | Coordinator passes implementer verification methodology to reviewer | 7498c4a |
-| **v25-B** | Reviewer: do not re-derive from primary sources when lacking equivalent tools | bd01002 |
-| **v25-C** | Both A + B | fe9286f |
+**Baseline:** baseline-retest chess-best-move = **3/3** (main @ 5554bed, same day)
 
-**Baseline:** v24-E chess-best-move = 1/3
+**Conclusion:** All v25 reviewer changes made things worse. The baseline without
+reviewer modifications scores 3/3 on chess-best-move. Do not ship any v25 changes.
+
+### v26 task_list neutral (Mar 27) — shipped
+
+**Change:** task_reminders.go — neutral phrasing instead of imperative.
+"No in_progress task. Next open task: #N — ..." instead of "Mark it in_progress to begin."
+Merged to main as commit 5554bed.
+
+Tested on custom-memory-heap-crash 3/3 (was 2/3 when task_list used imperatives).
+The imperative phrasing + zero reasoning tokens primed coordinators to act directly.
+
+### v27 implementer/coordinator experiments (Mar 27) — coordinator bypass dominant
+
+**4 variants testing different approaches to chess-best-move failures.**
+
+| Variant | Change | Result | Finding |
+|---------|--------|--------|---------|
+| v27-A coordinator-restrict | Tighter coordinator delegation rules | 0/3 | Coordinator still bypassed |
+| v27-B implementer-compute | Implementer told to "enumerate programmatically" | 2/3 | **Teaches to the test** — mentions image analysis |
+| v27-B2 implementer-derive | Generic "derive from tools not context" | 0/3 | 2/3 coordinator bypass, 1/3 implementer confirmation bias |
+| v27-C reviewer-no-reanalyze | Reviewer told not to re-derive | 0/3 | Coordinator bypass |
+
+**Interrogation findings (v27-B2):**
+- Rep 1: Coordinator bypass — vision steering gave "Nxd5+", coordinator wrote directly
+- Rep 2: Implementer delegated but only validated vision's candidate instead of searching
+- Rep 3: Coordinator bypass — vision steering gave "Rh4+", coordinator wrote directly
+
+**Key insight:** 2/3 failures were coordinator bypass (implementer never spawned).
+The implementer prompt is irrelevant when the coordinator never delegates.
+
+**However:** baseline-retest on the same day went 3/3 with unchanged code. The
+coordinator bypass may be intermittent/stochastic rather than systematic. The full
+89-task baseline (running) will establish whether the current main code is solid.
 
 ### v24-E-no-ops-task results (Mar 27)
 
