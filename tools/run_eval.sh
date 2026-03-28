@@ -1,25 +1,22 @@
 #!/usr/bin/env bash
-# Build and launch eval runs on AWS spot instances.
+# Build and launch eval runs on AWS spot instances (one task per instance).
 #
 # Usage:
-#   ./tools/run_eval.sh                                     # all 89 tasks (baseline)
+#   ./tools/run_eval.sh                                     # all 89 tasks (3 reps)
 #   ./tools/run_eval.sh --tasks "chess-best-move,kv-store"  # specific tasks
 #   ./tools/run_eval.sh --tasks failing                     # all currently failing
 #   ./tools/run_eval.sh --tasks untested                    # all untested
 #   ./tools/run_eval.sh --tasks hard                        # historically hard 16
-#   ./tools/run_eval.sh --wave                              # all 89, one task per instance
-#   ./tools/run_eval.sh --wave --tasks failing              # failing, one task per instance
+#   ./tools/run_eval.sh --dry-run                           # preview without launching
 #
 # Options:
 #   --tasks STR        Comma-separated task names, or: failing, untested, hard
 #                      Default: all 89 from scoreboard.json
-#   --wave             Fan-out mode: one task per instance, backfill as slots free
 #   --run-id NAME      Override auto-generated run ID
 #   --reps N           Number of reps (default: 3)
 #   --model STR        Model (default: openai/gpt-5.4-mini)
 #   --instance-type    EC2 instance type (default: c6i.xlarge)
-#   --concurrency N    Tasks per instance (default: 8, or 1 in wave mode)
-#   --max-vcpu N       vCPU quota ceiling for wave mode (default: 128)
+#   --max-vcpu N       vCPU quota ceiling (default: 128)
 #   --variant STR      Description saved to launch metadata
 #   --dry-run          Preview without launching
 set -euo pipefail
@@ -29,10 +26,8 @@ HARBOR_DIR="${HARBOR_DIR:-$HOME/prime-radiant/harbor-runner}"
 
 # Defaults
 TASKS=""
-WAVE=false
 REPS=3
 INSTANCE_TYPE="c6i.xlarge"
-CONCURRENCY=""  # set after parsing based on wave mode
 MAX_VCPU=128
 MODEL="openai/gpt-5.4-mini"
 RUN_ID=""
@@ -42,28 +37,18 @@ DRY_RUN=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --tasks)         TASKS="$2"; shift 2 ;;
-        --wave)          WAVE=true; shift ;;
         --run-id)        RUN_ID="$2"; shift 2 ;;
         --reps)          REPS="$2"; shift 2 ;;
         --model)         MODEL="$2"; shift 2 ;;
         --instance-type) INSTANCE_TYPE="$2"; shift 2 ;;
-        --concurrency)   CONCURRENCY="$2"; shift 2 ;;
         --max-vcpu)      MAX_VCPU="$2"; shift 2 ;;
         --variant)       VARIANT="$2"; shift 2 ;;
         --dry-run)       DRY_RUN=true; shift ;;
-        --help|-h)       head -24 "$0" | grep '^#' | sed 's/^# \?//'; exit 0 ;;
+        --wave)          shift ;;  # accepted for backward compat, always wave
+        --help|-h)       head -22 "$0" | grep '^#' | sed 's/^# \?//'; exit 0 ;;
         *)               echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
-
-# Default concurrency: 1 for wave (single task per instance), 8 otherwise
-if [[ -z "$CONCURRENCY" ]]; then
-    if $WAVE; then
-        CONCURRENCY=1
-    else
-        CONCURRENCY=8
-    fi
-fi
 
 # --- Enforce clean working tree (skip for dry-run) ---
 cd "$REPO_ROOT"
@@ -126,20 +111,11 @@ TASK_COUNT=$(echo "$TASKS" | tr ',' '\n' | wc -l | tr -d ' ')
 
 # --- Generate run ID ---
 if [[ -z "$RUN_ID" ]]; then
-    if $WAVE; then
-        RUN_ID="wave-${GIT_SHA}-$(date -u +%Y%m%d-%H%M)"
-    elif [[ "$TASK_COUNT" -eq 89 ]]; then
-        RUN_ID="baseline-${GIT_SHA}-$(date -u +%Y%m%d)"
-    else
-        RUN_ID="subset-${GIT_SHA}-$(date -u +%Y%m%d-%H%M)"
-    fi
+    RUN_ID="wave-${GIT_SHA}-$(date -u +%Y%m%d-%H%M)"
 fi
 
 # --- Print summary ---
-MODE="batch"
-$WAVE && MODE="wave"
-
-echo "=== Eval launch ($MODE) ==="
+echo "=== Eval launch ==="
 echo "Branch:      $BRANCH"
 echo "SHA:         $GIT_SHA"
 echo "Run ID:      $RUN_ID"
@@ -147,10 +123,7 @@ echo "Model:       $MODEL"
 echo "Tasks:       $TASK_COUNT"
 echo "Reps:        $REPS"
 echo "Instance:    $INSTANCE_TYPE"
-echo "Concurrency: $CONCURRENCY"
-if $WAVE; then
-    echo "Max vCPU:    $MAX_VCPU"
-fi
+echo "Max vCPU:    $MAX_VCPU"
 if [[ -n "$VARIANT" ]]; then
     echo "Variant:     $VARIANT"
 fi
@@ -159,20 +132,16 @@ echo ""
 if $DRY_RUN; then
     echo "=== DRY RUN ==="
     echo "Tasks: $TASKS"
-    if $WAVE; then
-        TOTAL=$((TASK_COUNT * REPS))
-        # vCPU per instance type
-        VCPU=$(python3 -c "
+    TOTAL=$((TASK_COUNT * REPS))
+    VCPU=$(python3 -c "
 m = {'c6i.large': 2, 'c6i.xlarge': 4, 'c6i.2xlarge': 8, 'c6i.4xlarge': 16}
 print(m.get('$INSTANCE_TYPE', 4))
 ")
-        MAX_INSTANCES=$((MAX_VCPU / VCPU))
-        echo ""
-        echo "Wave mode:"
-        echo "  Total work items: $TOTAL ($TASK_COUNT tasks x $REPS reps)"
-        echo "  Max concurrent:   $MAX_INSTANCES instances ($VCPU vCPU each, $MAX_VCPU quota)"
-        echo "  Estimated waves:  $(( (TOTAL + MAX_INSTANCES - 1) / MAX_INSTANCES ))"
-    fi
+    MAX_INSTANCES=$((MAX_VCPU / VCPU))
+    echo ""
+    echo "  Total work items: $TOTAL ($TASK_COUNT tasks x $REPS reps)"
+    echo "  Max concurrent:   $MAX_INSTANCES instances ($VCPU vCPU each, $MAX_VCPU quota)"
+    echo "  Estimated waves:  $(( (TOTAL + MAX_INSTANCES - 1) / MAX_INSTANCES ))"
     exit 0
 fi
 
@@ -214,11 +183,9 @@ meta = {
     'model': '$MODEL',
     'reps': $REPS,
     'instance_type': '$INSTANCE_TYPE',
-    'concurrency': $CONCURRENCY,
     'task_count': $TASK_COUNT,
     'variant': '$VARIANT' if '$VARIANT' else None,
     'tasks': '$TASKS'.split(','),
-    'launch_mode': 'wave' if $($WAVE && echo True || echo False) else 'batch',
     'launched_at': datetime.datetime.utcnow().isoformat() + 'Z',
 }
 # Remove None values
@@ -228,35 +195,15 @@ with open('$LAUNCH_META', 'w') as f:
 "
 echo "  Launch metadata saved"
 
-# --- Launch ---
+# --- Launch (one task per instance) ---
 echo ""
-if $WAVE; then
-    # Wave mode: Python orchestrator handles per-task-rep fan-out
-    exec python3 "$REPO_ROOT/tools/wave_launcher.py" \
-        --run-id "$RUN_ID" \
-        --agent-dir "$AGENT_DIR" \
-        --model "$MODEL" \
-        --tasks "$TASKS" \
-        --reps "$REPS" \
-        --instance-type "$INSTANCE_TYPE" \
-        --concurrency "$CONCURRENCY" \
-        --max-vcpu "$MAX_VCPU" \
-        --harbor-dir "$HARBOR_DIR"
-else
-    # Batch mode: one instance per rep, all tasks on each
-    cd "$HARBOR_DIR"
-    ./launch.sh \
-        --run-id "$RUN_ID" \
-        --agent-dir "$AGENT_DIR" \
-        --agent-import-path serf_agent:SerfAgent \
-        --model "$MODEL" \
-        --task-names "$TASKS" \
-        --reps "$REPS" \
-        --concurrency "$CONCURRENCY" \
-        --instance-type "$INSTANCE_TYPE"
-
-    echo ""
-    echo "Next steps:"
-    echo "  ./tools/run_status.sh $RUN_ID"
-    echo "  ./tools/post_run.sh $RUN_ID${VARIANT:+ --variant '$VARIANT'}"
-fi
+exec python3 "$REPO_ROOT/tools/wave_launcher.py" \
+    --run-id "$RUN_ID" \
+    --agent-dir "$AGENT_DIR" \
+    --model "$MODEL" \
+    --tasks "$TASKS" \
+    --reps "$REPS" \
+    --instance-type "$INSTANCE_TYPE" \
+    --concurrency 1 \
+    --max-vcpu "$MAX_VCPU" \
+    --harbor-dir "$HARBOR_DIR"
