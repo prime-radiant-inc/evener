@@ -68,15 +68,26 @@ for task in sorted(sb['tasks']):
     print(f'{task}\t{score}')
 " 2>/dev/null || echo "")
 
-# --- Detect git SHA ---
+# --- Read launch metadata (saved by run_full_baseline.sh) ---
+LAUNCH_META="$REPO_ROOT/.serf-launches/${RUN_ID}.json"
 GIT_SHA=$(git rev-parse --short HEAD)
 
-# Try to find the SHA from the run metadata if it exists
-RUN_META="docs/experiments/runs/${RUN_ID}.json"
-if [[ -f "$RUN_META" ]]; then
-    META_SHA=$(python3 -c "import json; print(json.load(open('$RUN_META')).get('git_sha', ''))" 2>/dev/null || echo "")
-    if [[ -n "$META_SHA" ]]; then
-        GIT_SHA="$META_SHA"
+if [[ -f "$LAUNCH_META" ]]; then
+    echo "  Found launch metadata: $LAUNCH_META"
+    META_SHA=$(python3 -c "import json; print(json.load(open('$LAUNCH_META')).get('git_sha', ''))" 2>/dev/null || echo "")
+    META_MODEL=$(python3 -c "import json; print(json.load(open('$LAUNCH_META')).get('model', ''))" 2>/dev/null || echo "")
+    META_BRANCH=$(python3 -c "import json; print(json.load(open('$LAUNCH_META')).get('branch', ''))" 2>/dev/null || echo "")
+    if [[ -n "$META_SHA" ]]; then GIT_SHA="$META_SHA"; fi
+    if [[ -n "$META_MODEL" ]]; then MODEL="$META_MODEL"; fi
+    if [[ -n "$META_BRANCH" ]]; then
+        echo "  Branch: $META_BRANCH  SHA: $GIT_SHA  Model: $MODEL"
+    fi
+else
+    # Fall back to existing run metadata
+    RUN_META="docs/experiments/runs/${RUN_ID}.json"
+    if [[ -f "$RUN_META" ]]; then
+        META_SHA=$(python3 -c "import json; print(json.load(open('$RUN_META')).get('git_sha', ''))" 2>/dev/null || echo "")
+        if [[ -n "$META_SHA" ]]; then GIT_SHA="$META_SHA"; fi
     fi
 fi
 

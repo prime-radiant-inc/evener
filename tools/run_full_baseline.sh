@@ -100,6 +100,27 @@ if $DRY_RUN; then
     exit 0
 fi
 
+# --- Save launch metadata (post_run.sh reads this) ---
+LAUNCH_META="$REPO_ROOT/.serf-launches/${RUN_ID}.json"
+mkdir -p "$REPO_ROOT/.serf-launches"
+python3 -c "
+import json, datetime
+meta = {
+    'run_id': '$RUN_ID',
+    'git_sha': '$GIT_SHA',
+    'branch': '$BRANCH',
+    'model': '$MODEL',
+    'reps': $REPS,
+    'instance_type': '$INSTANCE_TYPE',
+    'concurrency': $CONCURRENCY,
+    'task_count': $TASK_COUNT,
+    'launched_at': datetime.datetime.utcnow().isoformat() + 'Z',
+}
+with open('$LAUNCH_META', 'w') as f:
+    json.dump(meta, f, indent=2)
+"
+echo "  Launch metadata saved to $LAUNCH_META"
+
 # --- Launch ---
 echo ""
 cd "$HARBOR_DIR"

@@ -25,10 +25,10 @@ implementer must read the BGE model README to discover a required Chinese query
 prefix for retrieval. Without prefix: 5th result = HumanEval (wrong). With prefix:
 5th result = MTEB (correct).
 
-## Known too-hard tasks
+## Historically hard tasks
 
 These 16 tasks have >75% failure rate across all 27 agent/model submissions on the
-public leaderboard. Skip them — they waste compute without providing signal.
+public leaderboard. Still run them in full baselines — any pass is signal.
 
 - dna-assembly
 - make-doom-for-mips
