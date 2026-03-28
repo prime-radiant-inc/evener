@@ -30,7 +30,7 @@ for variant_file in "$VARIANTS_DIR"/*.md; do
 
   for rep in $(seq 1 "$REPS"); do
     label="${variant_name}-rep${rep}"
-    result=$("$SCRIPT_DIR/run-test.sh" "$label" "$variant_file" 2>/dev/null | head -1)
+    result=$("$SCRIPT_DIR/run-test.sh" "$label" "$variant_file" 2>/dev/null | tail -1)
 
     if echo "$result" | grep -q "DELEGATE"; then
       delegate_count=$((delegate_count + 1))
