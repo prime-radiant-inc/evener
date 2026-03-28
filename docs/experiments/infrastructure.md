@@ -347,7 +347,49 @@ from S3 on demand).
 
 ### Post-experiment workflow
 
-1. `check_run.sh RUN_ID` — poll until complete
-2. `collect_results.py RUN_ID --model ... --git-sha ... --variant "..."` — collect + update
-3. Auto-interrogate failures
-4. `git add docs/experiments/ && git commit` — commit metadata update
+```bash
+# 1. Check status (repeat until all instances terminated)
+./tools/check_run.sh RUN_ID
+
+# 2. Collect results + update scoreboard (auto-reads launch metadata)
+./tools/post_run.sh RUN_ID --variant "description of what changed"
+
+# 3. Auto-interrogate every failure (coordinator + all subagents)
+./tools/interrogate_failures.sh RUN_ID
+
+# 4. Commit metadata update
+git add docs/experiments/ && git commit -m "results: RUN_ID"
+```
+
+If the run was launched with `run_full_baseline.sh`, `post_run.sh` auto-reads
+the model, git SHA, and branch from `.serf-launches/RUN_ID.json` — no need
+to pass `--model` or `--git-sha` manually.
+
+## Session interrogation
+
+Resume a completed session and ask the model about its decisions. The model is
+placed back in its exact original context (same system prompt, tool calls, results).
+
+```bash
+# List all sessions for a rep (shows role, model, turn count)
+python3 tools/interrogate_session.py \
+    --run RUN_ID --rep REP --task TASK --list-sessions
+
+# Interrogate the coordinator (default — session 1)
+python3 tools/interrogate_session.py \
+    --run RUN_ID --rep REP --task TASK \
+    --question "Why did you not delegate?"
+
+# Interrogate a subagent by index (from --list-sessions)
+python3 tools/interrogate_session.py \
+    --run RUN_ID --rep REP --task TASK \
+    --session 2 \
+    --question "Why did you override the computational proof?"
+
+# Interrogate all failures at once (coordinator + subagents, standard questions)
+./tools/interrogate_failures.sh RUN_ID
+```
+
+Always interrogate both the coordinator AND subagents in the failure chain.
+Standard questions cover delegation decisions (coordinator) and verification
+approach (subagents). Add `--question` for task-specific follow-ups.

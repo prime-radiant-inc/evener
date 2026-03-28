@@ -44,10 +44,20 @@ When given an eval to tune against:
 
 ## Step 1: Run Baseline
 
+```bash
+# Full 89-task baseline (3 reps, auto-generates run ID from git SHA)
+./tools/run_full_baseline.sh
+
+# Or targeted tasks for iteration
+cd ~/prime-radiant/harbor-runner
+./launch.sh --task-names "task1,task2" --reps 3 ...
+```
+
 **Rules:**
-- Never reuse job names. Auto-generate unique names.
-- Always use 1 rep for initial baselines (save budget for iteration).
-- Record the job name and git SHA for provenance.
+- Never reuse job names. `run_full_baseline.sh` auto-generates unique names.
+- Use 3 reps for baselines (1 rep is insufficient for noisy tasks).
+- Must commit before launching — `run_full_baseline.sh` enforces this.
+- Provenance (git SHA, branch, model) is auto-saved to `.serf-launches/`.
 
 ## Step 2: Root Cause Every Failure
 
@@ -97,14 +107,25 @@ fix is incomplete.
 
 ### 2c. Interrogate automatically — NEVER wait for permission
 
-When eval results arrive, immediately launch parallel interrogation subagents
-for EVERY failure. Do not wait for the user to ask. Do not process results
-without interrogation. The workflow is: results arrive → launch interrogations →
-record findings.
+When eval results arrive, immediately interrogate EVERY failure. Do not wait
+for the user to ask. Do not process results without interrogation. The workflow
+is: results arrive → interrogate → record findings.
 
-Use one subagent per failing run-id. Each subagent runs `--list-sessions` then
-`interrogate_session.py` for each failed rep. Subagents must use
-`export $(cat .env | xargs)` because env vars don't propagate to subprocesses.
+**Automated interrogation:**
+```bash
+./tools/interrogate_failures.sh RUN_ID
+```
+This auto-interrogates every failing rep — both the coordinator AND all subagents —
+with standard questions (delegation decisions, verification approach, what prompt
+change would fix it). Outputs saved to `/tmp/interrogation-RUN_ID/`.
+
+**Manual interrogation** for follow-up or custom questions:
+```bash
+python3 tools/interrogate_session.py \
+    --run RUN_ID --rep REP --task TASK \
+    --question "Your prompt says X. Why did you do Y instead?"
+```
+Use `--list-sessions` to see all sessions, `--session INDEX` to target subagents.
 
 When check_run.sh shows 0/0 but S3 has results, the local directory was
 pre-created by launch.sh. Force re-download with `results.sh --run-id RUN_ID`.
@@ -368,19 +389,28 @@ Use `make build-linux` which invalidates the Go embed cache automatically.
 
 After every experiment:
 
-1. **Collect results** — `./tools/collect_results.py RUN_ID --model ... --git-sha ... --variant "..."`
-   This downloads from S3, normalizes to `~/.serf-evals/`, and updates:
-   - `docs/experiments/runs/{run}.json` — per-run metadata
-   - `docs/experiments/tasks/{task}.json` — per-task scorecard with full history
-   - `docs/experiments/scoreboard.json` — the 89-task matrix
+```bash
+# 1. Collect + update scoreboard (auto-reads launch metadata if available)
+./tools/post_run.sh RUN_ID --variant "description of what changed"
 
-2. **Check the scoreboard** — `./tools/scoreboard.py --sort score`
+# 2. Auto-interrogate all failures (coordinator + subagents)
+./tools/interrogate_failures.sh RUN_ID
 
-3. **View task history** — `./tools/scoreboard.py --task TASK_NAME`
+# 3. Commit metadata
+git add docs/experiments/ && git commit -m "results: RUN_ID"
+```
 
-4. **Commit metadata** — `git add docs/experiments/ && git commit`
+`post_run.sh` downloads from S3, updates the scoreboard, and shows score diffs
+vs the previous state. If the run was launched with `run_full_baseline.sh`, it
+auto-reads the model, git SHA, and branch from `.serf-launches/`.
 
-5. **Update NOTEBOOK.md** — add behavioral observations, interrogation findings,
+For manual collection: `./tools/collect_results.py RUN_ID --model ... --git-sha ... --variant "..."`
+
+4. **Check the scoreboard** — `./tools/scoreboard.py --sort score`
+
+5. **View task history** — `./tools/scoreboard.py --task TASK_NAME`
+
+6. **Update NOTEBOOK.md** — add behavioral observations, interrogation findings,
    and any lessons learned. The scoreboard captures scores; NOTEBOOK.md captures
    the narrative.
 
