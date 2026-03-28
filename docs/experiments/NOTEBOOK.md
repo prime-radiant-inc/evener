@@ -12,17 +12,31 @@ Current experimental state. Read this first when starting a new session.
 **Methodology:** The `benchmark-driven-improvement` skill defines the experimental
 process — hill-climbing protocol, root-cause-from-transcripts, commit-before-deploy.
 
-## Current State (March 27, 2026)
+## Current State (March 28, 2026)
 
 **Model:** gpt-5.4-mini for current eval iteration
 **Scoreboard:** `./tools/scoreboard.py` — canonical 89-task matrix
-**Score:** 83/89 tested, mean 0.608
+**Score:** 88/89 tested, mean 0.504 (33 perfect, 23 partial, 32 zero)
+**Baseline run:** wave-08b8a7f-20260328 (main @ 0d224b5, 88 tasks × 3 reps)
 
-### Pending runs
+### Failure inventory summary
 
-- **full-baseline-2026-03-27** — all 89 tasks × 3 reps, gpt-5.4-mini, main @ 5554bed.
-  Clean baseline with all shipped fixes. 3 × c6i.2xlarge, concurrency 8. Running.
-  When complete: `./tools/post_run.sh full-baseline-2026-03-27`
+All 55 failing reps interrogated with corrected tooling. Full inventory in
+`experiment-log.md` under wave-08b8a7f-20260328.
+
+| Pattern | Tasks | % | Fixable? |
+|---------|-------|---|----------|
+| Shallow verification | 20 | 36% | Yes — coordinator test gate |
+| Genuine difficulty | 9 | 16% | Unlikely by prompt alone |
+| Analysis paralysis | 8 | 15% | Yes — deliverable-first checkpoint |
+| Spec mismatch | 7 | 13% | Yes — spec-literal naming |
+| Fabrication | 3 | 5% | Yes — anti-fabrication strengthening |
+| Coordinator bypass | 3 | 5% | Partially addressed |
+| Environment issue | 2 | 4% | Infrastructure fix |
+| Other | 3 | 5% | Case-by-case |
+
+**Key insight:** 36% of failures share one root cause — the coordinator does not
+run the verifier tests before submitting. This is the single highest-leverage fix.
 
 ### Shipped fixes (on main)
 
@@ -33,30 +47,24 @@ process — hill-climbing protocol, root-cause-from-transcripts, commit-before-d
 | v17+v18 | coordinator.md: harmonize HARD GATE + no-tests case | log-summary-date-ranges 3/3 |
 | v23-B | reviewer.md: remove "intuit", spec authority | chess-best-move 3/3 |
 | ops-task removal | agent/skills/: deleted skill that primed direct implementation | crack-7z-hash 3/3 |
-| coordinator inventory | coordinator.md: "listing, not reading" + anti-rationalization | custom-memory-heap-crash 2/3→3/3 |
+| coordinator inventory | coordinator.md: "listing, not reading" + anti-rationalization | custom-memory-heap-crash 2/3->3/3 |
 | v26 task_list | task_reminders.go: neutral phrasing | custom-memory-heap-crash 3/3 |
-| v11 positive authority | reviewer.md + workflow: authority ordering, warnings≠failures | chess+polyglot 6/6 |
+| v11 positive authority | reviewer.md + workflow: authority ordering, warnings!=failures | chess+polyglot 6/6 |
 | v13 tests-first | coordinator.md: tests-first verify, submit gate | fix-code-vuln+git-multi 6/6 |
 
 **Not shipped:** impl-test-a — 3/3 was stochastic (model happened to pick right
 field name), not a causal prompt fix.
 
-### Known open problems
-
-1. **Delegation info loss** — coordinator paraphrases specs, losing exact formats.
-   No good general fix yet. ~60% of affected tasks pass anyway.
-2. **Coordinator bypass (stochastic)** — vision steering content varies per run,
-   sometimes priming direct action. Appears stochastic, not systematic.
-3. **Self-referential verification** — agent can't detect own schema mismatches
-   (e.g., proto field `val` vs `value`). Structural, not prompt-fixable.
-
 ### What to do next
 
-1. Collect full-baseline-2026-03-27 results when complete
-2. Auto-interrogate every failure: `./tools/interrogate_failures.sh full-baseline-2026-03-27`
-3. Build failure inventory from interrogation findings
-4. Start hill-climbing from `backlog.md` priority list
-5. See `experiment-log.md` for full history of what's been tried
+1. **Experiment 1: Coordinator test gate** — highest priority, targets 20 tasks.
+   Require coordinator to run `run_tests` as final step before `communicate`.
+   See `backlog.md` for test plan.
+2. **Experiment 2: Deliverable-first checkpoint** — targets 8 tasks.
+   Hard limit on analysis-only tool calls before first deliverable write.
+3. **Experiment 3: Spec-literal naming** — targets 7 tasks.
+   Instruction to use exact spec wording for field names/formats.
+4. See `backlog.md` for experiments 4-6.
 
 ### Local harnesses
 

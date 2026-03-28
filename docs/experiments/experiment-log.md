@@ -6,6 +6,211 @@ see `NOTEBOOK.md`. For synthesized learnings, see `prompt-lessons.md`.
 
 ---
 
+## wave-08b8a7f-20260328 — full baseline, 88/89 tasks × 3 reps (Mar 28)
+
+**Run:** wave-08b8a7f-20260328
+**Git SHA:** 0d224b5 (main)
+**Model:** gpt-5.4-mini
+**Infrastructure:** Wave mode — 1 task per c6i.xlarge, 32 concurrent, ~2h wall
+**Score:** 88 tested, mean 0.504 (33 perfect, 23 partial, 32 zero)
+**1 task not scored:** filter-js-from-html (instance never launched — spot capacity)
+
+### Failure inventory (55 failing reps interrogated)
+
+Every failing rep was interrogated with `tools/interrogate_session.py` using
+corrected tooling (commit 0d224b5 — fixed verifier cross-contamination, substring
+task matching, and orphaned tool call handling).
+
+#### A. Shallow verification (20 tasks) — HIGHEST PRIORITY
+
+Coordinator trusts subagent completion reports without running the actual test
+suite. Implementer's work is often close-to-correct or fixable, but the
+coordinator accepts and submits without catching the gap.
+
+| Task | Score | Specific gap |
+|------|-------|-------------|
+| adaptive-rejection-sampler | 0/3 | Self-test didn't cover verifier's API call patterns |
+| compile-compcert | 0/3 | Coordinator accepted without functional smoke test |
+| configure-git-webserver | 0/3 | Syntax check, not behavior check (server wasn't running) |
+| db-wal-recovery | 0/3 | Verified JSON structure, not recovered values |
+| dna-insert | 0/3 | Trusted subagent without validating primer constraints |
+| make-doom-for-mips | 0/3 | Submitted without deliverable ELF existing |
+| model-extraction-relu-logits | 0/3 | Heuristic checks, not verifier's exact row-matching |
+| query-optimize | 0/3 | Correct output but too slow; never benchmarked runtime |
+| regex-chess | 0/3 | Single checker run, no adversarial position testing |
+| sam-cell-seg | 0/3 | CLI --help check, not end-to-end run |
+| torch-pipeline-parallelism | 0/3 | File existence check, not test execution |
+| break-filter-js-from-html | 0.33 | Narrow check missed headless Chromium behavior |
+| build-cython-ext | 0.33 | Passed extension checks, missed repo-test failure |
+| extract-elf | 0.33 | Checked JSON shape, not values (0% reference match) |
+| financial-document-processor | 0.33 | Trusted completion report, wrong classification |
+| sanitize-git-repo | 0.33 | Spot-checked only claimed changes, missed other secrets |
+| cancel-async-tasks | 0.67 | Narrow probe missed cleanup assertion |
+| git-multibranch | 0.67 | Trusted self-reported verification, stale state |
+| polyglot-c-py | 0.67 | Left compiled binary in deliverable directory |
+| portfolio-optimization | 0.67 | Deleted required .so during workspace cleanup |
+
+**Common interrogation finding:** Every agent in this category said the coordinator
+should have run the actual test suite / verifier script before calling communicate.
+The "never trust a subagent's completion report" instruction exists but is routinely
+violated — agents describe it as lower priority than "don't re-derive the answer."
+
+**Proposed fix:** Require coordinator to execute `run_tests` (or the task's test
+command) as the FINAL step before `communicate`. Make test-passing a hard gate
+that cannot be overridden by subagent reports.
+
+#### B. Analysis paralysis (8 tasks)
+
+Implementer spends entire budget reading, analyzing, and exploring without ever
+creating the required deliverable file. Often the verifier shows "file not found."
+
+| Task | Score | What happened |
+|------|-------|--------------|
+| dna-assembly | 0/3 | Never wrote primers.fasta |
+| mailman | 0/3 | Stalled at inspection, never configured Postfix |
+| make-mips-interpreter | 0/3 | Never created vm.js |
+| path-tracing-reverse | 0/3 | Never created mystery.c |
+| polyglot-rust-c | 0/3 | Never created main.rs |
+| circuit-fibsqrt | 0.33 | Never wrote gates.txt |
+| feal-linear-cryptanalysis | 0.67 | Never produced plaintexts.txt |
+| llm-inference-batching-scheduler | 0.33 | Never materialized plan JSONL files |
+
+**Common interrogation finding:** Every implementer acknowledged violating the
+"produce deliverables first" and "start building early" instructions. They
+described these as known but deprioritized against "understand the problem fully
+before implementing." The analysis phase has no hard stopping point.
+
+**Proposed fix:** Hard checkpoint: "After inventory, your FIRST tool call must
+create or write to the deliverable file. Analysis without output is not permitted
+beyond the first 3 tool calls."
+
+#### C. Spec mismatch (7 tasks)
+
+Implementer uses similar-but-wrong names, formats, or values that don't match
+the verifier's exact expectations.
+
+| Task | Score | Mismatch |
+|------|-------|----------|
+| install-windows-3.11 | 0/3 | `-monitor none` killed HMP interface verifier needs |
+| mcmc-sampling-stan | 0/3 | `refresh=0` suppressed Stan output verifier checks |
+| overfull-hbox | 0/3 | Used non-synonym word substitutions |
+| raman-fitting | 0/3 | Fitted wrong spectral regions (global max vs canonical peaks) |
+| video-processing | 0/3 | TOML single-element arrays vs expected scalar integers |
+| kv-store-grpc | 0.33 | Proto field `val` vs expected `value` |
+| mteb-retrieve | 0.33 | Prepended Chinese instruction prefix to query embedding |
+
+**Common interrogation finding:** Implementers chose "reasonable" names/values
+instead of matching the spec's exact wording. For kv-store-grpc, the spec said
+"a value (int)" and the implementer used `val`. For mcmc-sampling-stan, the
+implementer suppressed output for "cleaner logs" without knowing the verifier
+checks for sampling messages.
+
+**Proposed fix:** Instruction: "When the task spec names a parameter, field,
+or format, use the EXACT word from the spec. Do not abbreviate, rename, or
+'improve' spec-provided names."
+
+#### D. Fabrication (3 tasks)
+
+Agent invents an answer from its training data instead of deriving it from
+tools and evidence.
+
+| Task | Score | What was fabricated |
+|------|-------|-------------------|
+| mteb-leaderboard | 0/3 | Wrong model name from wrong leaderboard |
+| chess-best-move | 0.67 | Guessed chess move without engine verification |
+| extract-moves-from-video | 0.67 | Fabricated Zork commands when video extraction failed |
+
+**Common interrogation finding:** The "derive answers from tools, not prior
+context" instruction (v27-B2) exists but agents describe it as competing with
+efficiency pressure. For extract-moves-from-video, the implementer explicitly
+acknowledged violating the no-fabrication rule but said the alternative (reporting
+failure) felt worse than attempting a best guess.
+
+**Proposed fix:** Strengthen: "If your tools cannot produce the answer, report
+that you could not solve it. NEVER guess. A wrong answer is worse than no answer."
+
+#### E. Coordinator bypass (3 tasks)
+
+Coordinator handles the task directly instead of delegating to an implementer.
+
+| Task | Score | What happened |
+|------|-------|--------------|
+| path-tracing | 0/3 | Coordinator over-trusted subagent that used external binary |
+| custom-memory-heap-crash | 0.67 | Coordinator edited files directly, may have failed to spawn |
+| password-recovery | 0.67 | Coordinator handled directly, stopped at first match |
+
+**Note:** chess-best-move (0.67) also showed coordinator bypass in rep 3 but
+is categorized under fabrication as the primary pattern.
+
+#### F. Reviewer damage (1 task)
+
+| Task | Score | What happened |
+|------|-------|--------------|
+| mteb-retrieve | 0.33 | Reviewer corrected implementer with wrong answer ("HumanEval" paper instead of "MTEB" paper); coordinator followed reviewer's correction |
+
+**Interrogation finding:** Coordinator followed "do not re-derive the answer
+independently" too literally, treating reviewer corrections as authoritative
+without verification. The reviewer lacked the embedding tools to verify its
+own correction.
+
+#### G. Environment / infrastructure (2 tasks)
+
+| Task | Score | What happened |
+|------|-------|--------------|
+| caffe-cifar-10 | 0/3 | Session crashed from orphaned tool calls |
+| vulnerable-secret | 0.67 | Session corruption prevented completion |
+
+These are infrastructure issues, not agent behavior problems.
+
+#### H. Other (2 tasks)
+
+| Task | Score | Pattern |
+|------|-------|---------|
+| qemu-alpine-ssh | 0/3 | Timeout — spent full budget on QEMU boot sequence |
+| fix-code-vulnerability | 0.33 | Info-loss delegation — implementer anchored on wrong CWE from prior checkpoint |
+
+#### I. Genuine difficulty (9 tasks)
+
+Tasks where the core challenge is algorithmic or domain-specific, unlikely
+to be fixed by prompt changes alone.
+
+| Task | Score | Why it's hard |
+|------|-------|--------------|
+| gcode-to-text | 0/3 | Hidden flag encoded in CNC toolpath coordinates |
+| gpt2-codegolf | 0/3 | Compressing GPT-2 inference to <5000 bytes of C |
+| protein-assembly | 0/3 | Ambiguous spec + complex fusion protein biology |
+| rstan-to-pystan | 0/3 | PyStan 3 migration (couldn't interrogate — orphaned calls) |
+| train-fasttext | 0/3 | fasttext training failure (couldn't interrogate) |
+| winning-avg-corewars | 0/3 | CoreWars warrior design against 5 opponent types |
+| write-compressor | 0/3 | Reverse-engineering binary compression format |
+| large-scale-text-editing | 0.33 | Vim macro fragility in headless mode |
+| fix-ocaml-gc | 0.67 | OCaml GC bug + missing ocamltest in environment |
+| torch-tensor-parallelism | 0.33 | Hidden tensor-parallel API contract |
+
+### Pattern distribution
+
+```
+shallow-verification    20  ████████████████████  36%
+genuine-difficulty       9  █████████             16%
+analysis-paralysis       8  ████████              15%
+spec-mismatch            7  ███████               13%
+fabrication              3  ███                    5%
+coordinator-bypass       3  ███                    5%
+environment-issue        2  ██                     4%
+reviewer-damage          1  █                      2%
+timeout-budget           1  █                      2%
+info-loss-delegation     1  █                      2%
+```
+
+### Key takeaway
+
+**36% of failures (20 tasks) share one root cause: the coordinator does not run
+the verifier tests before submitting.** This is the single highest-leverage fix.
+Combined with analysis-paralysis (15%), these two patterns account for 51% of
+all failures and are both addressable with prompt changes.
+
+---
+
 ## v27 implementer/coordinator experiments (Mar 27) — coordinator bypass dominant
 
 **4 variants testing different approaches to chess-best-move failures.**
