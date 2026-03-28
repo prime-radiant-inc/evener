@@ -180,10 +180,17 @@ fi
 echo "Building linux binary..."
 make build-linux 2>&1 | tail -2
 
-if ! strings serf-linux-amd64 | grep -q "agents/coordinator.md"; then
-    echo "Error: binary missing embedded agent prompts" >&2
+if ! strings serf-linux-amd64 > /tmp/serf-strings-check.$$ 2>&1; then
+    echo "Error: strings command failed on binary" >&2
+    rm -f /tmp/serf-strings-check.$$
     exit 1
 fi
+if ! grep -q "agents/coordinator.md" /tmp/serf-strings-check.$$; then
+    echo "Error: binary missing embedded agent prompts" >&2
+    rm -f /tmp/serf-strings-check.$$
+    exit 1
+fi
+rm -f /tmp/serf-strings-check.$$
 echo "  Binary OK ($(du -h serf-linux-amd64 | cut -f1))"
 
 # --- Stage ---

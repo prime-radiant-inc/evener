@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -u
 """Wave launcher: fan-out eval tasks one-per-instance, backfill as slots free.
 
 Called by run_eval.sh --wave. Not intended to be run directly.
