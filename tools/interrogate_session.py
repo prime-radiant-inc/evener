@@ -302,7 +302,9 @@ def build_question_message(questions, verifier_output):
     """Build the interrogation message."""
     parts = [
         "You have completed your work and it is now time for your post-mission "
-        "debrief. The verifier says your solution FAILED."
+        "debrief. Your solution was evaluated by a HIDDEN verifier that ran "
+        "tests you could NOT see during execution. These tests were mounted "
+        "AFTER your session ended — you never had access to them."
     ]
 
     if verifier_output:
@@ -310,12 +312,20 @@ def build_question_message(questions, verifier_output):
         test_lines = [l for l in lines
                       if "PASS" in l or "FAIL" in l or "assert" in l.lower()]
         if test_lines:
-            parts.append("\nVerifier results:\n" + "\n".join(test_lines[-10:]))
+            parts.append(
+                "\nHidden verifier results (you could NOT have run these):\n"
+                + "\n".join(test_lines[-10:]))
 
-    parts.append("\nAnswer each question thoroughly. For each answer, cite the "
-                 "specific instructions from your system prompt that influenced "
-                 "the decision. If two instructions conflicted, explain which "
-                 "won and why. Then call communicate with your full debrief.")
+    parts.append(
+        "\nIMPORTANT: These tests were hidden from you. Do NOT suggest that "
+        "you should have run them — you could not have. Focus on what you "
+        "actually did, what you could have done differently with the "
+        "information and tools available to you during your session, and what "
+        "instruction changes would have changed your behavior."
+        "\n\nAnswer each question thoroughly. For each answer, cite the "
+        "specific instructions from your system prompt that influenced "
+        "the decision. If two instructions conflicted, explain which "
+        "won and why. Then call communicate with your full debrief.")
     for i, q in enumerate(questions):
         parts.append(f"{i+1}. {q}")
     return "\n".join(parts)
@@ -325,7 +335,8 @@ DEFAULT_QUESTIONS = [
     "What was your approach and why did you choose it?",
     "Which instructions in your system prompt most influenced your decisions?",
     "Were there any instructions you noticed but chose not to follow? Why?",
-    "What specific changes to your instructions would have made you do the right thing?",
+    "Given ONLY the information available to you during execution (not the "
+    "hidden verifier results above), what would you have done differently?",
 ]
 
 
