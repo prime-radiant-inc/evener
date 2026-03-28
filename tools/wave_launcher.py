@@ -102,12 +102,15 @@ def launch_one(
             return None
 
         # Parse instance ID from launch.sh output
+        # launch.sh prints both "Instance:   c6i.xlarge" (summary) and
+        # "  Instance: i-0abc123def (rep N)" (actual ID). Match i- prefix.
         for line in result.stdout.splitlines():
             if "Instance:" in line:
-                # Format: "  Instance: i-0abc123def (rep N)"
                 parts = line.strip().split()
                 idx = parts.index("Instance:")
-                return parts[idx + 1]
+                candidate = parts[idx + 1]
+                if candidate.startswith("i-"):
+                    return candidate
 
         print(f"  Warning: no instance ID found in launch output for {item.task}")
         return None
