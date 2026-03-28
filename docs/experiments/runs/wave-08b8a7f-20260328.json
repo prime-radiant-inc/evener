@@ -1,984 +1,890 @@
 {
+  "run_id": "wave-08b8a7f-20260328",
+  "date": "2026-03-28",
+  "git_sha": "08b8a7f",
   "model": "openai/gpt-5.4-mini",
-  "total_tasks": 89,
-  "tested_tasks": 88,
-  "mean_score": 0.504,
-  "tasks": {
+  "variant": "clean baseline with wave launcher",
+  "results": {
     "adaptive-rejection-sampler": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "bn-fit-modify": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "break-filter-js-from-html": {
       "score": 0.333,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 1,
+      "reps_total": 3
     },
     "build-cython-ext": {
       "score": 0.333,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 1,
+      "reps_total": 3
     },
     "build-pmars": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "build-pov-ray": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "caffe-cifar-10": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "cancel-async-tasks": {
       "score": 0.667,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 2,
+      "reps_total": 3
     },
     "chess-best-move": {
       "score": 0.667,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 2,
+      "reps_total": 3
     },
     "circuit-fibsqrt": {
       "score": 0.333,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 1,
+      "reps_total": 3
     },
     "cobol-modernization": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "code-from-image": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "compile-compcert": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "configure-git-webserver": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "constraints-scheduling": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "count-dataset-tokens": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "crack-7z-hash": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "custom-memory-heap-crash": {
       "score": 0.667,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         0.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 2,
+      "reps_total": 3
     },
     "db-wal-recovery": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "distribution-search": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "dna-assembly": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "dna-insert": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "extract-elf": {
       "score": 0.333,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         1.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 1,
+      "reps_total": 3
     },
     "extract-moves-from-video": {
       "score": 0.667,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 2,
+      "reps_total": 3
     },
     "feal-differential-cryptanalysis": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "feal-linear-cryptanalysis": {
       "score": 0.667,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 2,
+      "reps_total": 3
     },
     "financial-document-processor": {
       "score": 0.333,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 1,
+      "reps_total": 3
     },
     "fix-code-vulnerability": {
       "score": 0.333,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         1.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 1,
+      "reps_total": 3
     },
     "fix-git": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "fix-ocaml-gc": {
       "score": 0.667,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 2,
+      "reps_total": 3
     },
     "gcode-to-text": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "git-leak-recovery": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "git-multibranch": {
       "score": 0.667,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         0.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 2,
+      "reps_total": 3
     },
     "gpt2-codegolf": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "headless-terminal": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "hf-model-inference": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "install-windows-3.11": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "kv-store-grpc": {
       "score": 0.333,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 1,
+      "reps_total": 3
     },
     "large-scale-text-editing": {
       "score": 0.333,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         1.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 1,
+      "reps_total": 3
     },
     "largest-eigenval": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "llm-inference-batching-scheduler": {
       "score": 0.333,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 1,
+      "reps_total": 3
     },
     "log-summary-date-ranges": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "mailman": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "make-doom-for-mips": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "make-mips-interpreter": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "mcmc-sampling-stan": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "merge-diff-arc-agi-task": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "model-extraction-relu-logits": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "modernize-scientific-stack": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "mteb-leaderboard": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "mteb-retrieve": {
       "score": 0.333,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         1.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 1,
+      "reps_total": 3
     },
     "multi-source-data-merger": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "nginx-request-logging": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "openssl-selfsigned-cert": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "overfull-hbox": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "password-recovery": {
       "score": 0.667,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         0.0
       ],
-      "status": "tested"
-    },
-    "path-tracing-reverse": {
-      "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
-      "reps": [
-        0.0,
-        0.0,
-        0.0
-      ],
-      "status": "tested"
+      "reps_pass": 2,
+      "reps_total": 3
     },
     "path-tracing": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
+    },
+    "path-tracing-reverse": {
+      "score": 0.0,
+      "reps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "polyglot-c-py": {
       "score": 0.667,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 2,
+      "reps_total": 3
     },
     "polyglot-rust-c": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "portfolio-optimization": {
       "score": 0.667,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 2,
+      "reps_total": 3
     },
     "protein-assembly": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "prove-plus-comm": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "pypi-server": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "pytorch-model-cli": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "pytorch-model-recovery": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "qemu-alpine-ssh": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "qemu-startup": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "query-optimize": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "raman-fitting": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "regex-chess": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "regex-log": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "reshard-c4-data": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "rstan-to-pystan": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "sam-cell-seg": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "sanitize-git-repo": {
       "score": 0.333,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 1,
+      "reps_total": 3
     },
     "schemelike-metacircular-eval": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "sparql-university": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "sqlite-db-truncate": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "sqlite-with-gcov": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "torch-pipeline-parallelism": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "torch-tensor-parallelism": {
       "score": 0.333,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 1,
+      "reps_total": 3
     },
     "train-fasttext": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "tune-mjcf": {
       "score": 1.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         1.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 3,
+      "reps_total": 3
     },
     "video-processing": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "vulnerable-secret": {
       "score": 0.667,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         1.0,
         1.0
       ],
-      "status": "tested"
+      "reps_pass": 2,
+      "reps_total": 3
     },
     "winning-avg-corewars": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
+      "reps_pass": 0,
+      "reps_total": 3
     },
     "write-compressor": {
       "score": 0.0,
-      "last_run": "wave-08b8a7f-20260328",
-      "last_date": "2026-03-28",
       "reps": [
         0.0,
         0.0,
         0.0
       ],
-      "status": "tested"
-    },
-    "filter-js-from-html": {
-      "score": null,
-      "last_run": null,
-      "last_date": null,
-      "reps": [],
-      "status": "untested"
+      "reps_pass": 0,
+      "reps_total": 3
     }
   },
-  "updated": "2026-03-28"
+  "s3_prefix": "s3://harbor-eval-results-526275945504/runs/wave-08b8a7f-20260328/"
 }

@@ -1,8 +1,8 @@
 {
   "task": "merge-diff-arc-agi-task",
   "current_score": 1.0,
-  "current_run": "v22-next20",
-  "current_date": "2026-03-27",
+  "current_run": "wave-08b8a7f-20260328",
+  "current_date": "2026-03-28",
   "status": "tested",
   "notes": "",
   "history": [
@@ -44,6 +44,18 @@
       "run_id": "v22-next20",
       "date": "2026-03-27",
       "git_sha": "8ba6486",
+      "model": "openai/gpt-5.4-mini",
+      "score": 1.0,
+      "reps": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "run_id": "wave-08b8a7f-20260328",
+      "date": "2026-03-28",
+      "git_sha": "08b8a7f",
       "model": "openai/gpt-5.4-mini",
       "score": 1.0,
       "reps": [

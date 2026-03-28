@@ -1,31 +1,21 @@
 {
-  "task": "torch-tensor-parallelism",
-  "current_score": 0.333,
+  "task": "sam-cell-seg",
+  "current_score": 0.0,
   "current_run": "wave-08b8a7f-20260328",
   "current_date": "2026-03-28",
   "status": "tested",
   "notes": "",
   "history": [
     {
-      "run_id": "v17-broad-20",
-      "date": "2026-03-26",
-      "git_sha": "unknown",
-      "model": "openai/gpt-5.4-mini",
-      "score": 0.0,
-      "reps": [
-        0.0
-      ]
-    },
-    {
       "run_id": "wave-08b8a7f-20260328",
       "date": "2026-03-28",
       "git_sha": "08b8a7f",
       "model": "openai/gpt-5.4-mini",
-      "score": 0.333,
+      "score": 0.0,
       "reps": [
         0.0,
         0.0,
-        1.0
+        0.0
       ]
     }
   ]

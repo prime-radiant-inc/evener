@@ -1,8 +1,8 @@
 {
   "task": "kv-store-grpc",
-  "current_score": 1.0,
-  "current_run": "v20-impl-test-a",
-  "current_date": "2026-03-27",
+  "current_score": 0.333,
+  "current_run": "wave-08b8a7f-20260328",
+  "current_date": "2026-03-28",
   "status": "tested",
   "notes": "",
   "history": [
@@ -201,6 +201,18 @@
       "run_id": "v23-A-verbatim",
       "date": "2026-03-27",
       "git_sha": "610c265",
+      "model": "openai/gpt-5.4-mini",
+      "score": 0.333,
+      "reps": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "run_id": "wave-08b8a7f-20260328",
+      "date": "2026-03-28",
+      "git_sha": "08b8a7f",
       "model": "openai/gpt-5.4-mini",
       "score": 0.333,
       "reps": [
