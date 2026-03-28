@@ -12,17 +12,34 @@ Current experimental state. Read this first when starting a new session.
 **Methodology:** The `benchmark-driven-improvement` skill defines the experimental
 process — hill-climbing protocol, root-cause-from-transcripts, commit-before-deploy.
 
-## Current State (March 27, 2026)
+## Current State (March 28, 2026)
 
 **Model:** gpt-5.4-mini for current eval iteration
 **Scoreboard:** `./tools/scoreboard.py` — canonical 89-task matrix
-**Score:** 83/89 tested, mean 0.608
+**Score:** 88/89 tested, mean 0.504
 
-### Pending runs
+### Latest baseline: wave-08b8a7f-20260328
 
-- **full-baseline-2026-03-27** — all 89 tasks × 3 reps, gpt-5.4-mini, main @ 5554bed.
-  Clean baseline with all shipped fixes. 3 × c6i.2xlarge, concurrency 8. Running.
-  When complete: `./tools/post_run.sh full-baseline-2026-03-27`
+First clean 3-rep baseline from a single commit (main @ 08b8a7f, all shipped fixes).
+Wave mode: one task per c6i.xlarge instance, 32 concurrent, ~2h total.
+264/267 results (filter-js-from-html missing due to wave launcher bug, now fixed).
+
+**33 pass (3/3):** bn-fit-modify, build-pmars, build-pov-ray, cobol-modernization,
+code-from-image, constraints-scheduling, count-dataset-tokens, crack-7z-hash,
+distribution-search, feal-differential-cryptanalysis, fix-git, git-leak-recovery,
+headless-terminal, hf-model-inference, largest-eigenval, log-summary-date-ranges,
+merge-diff-arc-agi-task, modernize-scientific-stack, multi-source-data-merger,
+nginx-request-logging, openssl-selfsigned-cert, prove-plus-comm, pypi-server,
+pytorch-model-cli, pytorch-model-recovery, qemu-startup, regex-log,
+reshard-c4-data, schemelike-metacircular-eval, sparql-university,
+sqlite-db-truncate, sqlite-with-gcov, tune-mjcf
+
+**55 fail** (see experiment-log.md for full breakdown)
+
+**Regressions vs prior scores:** compile-compcert (1.0→0.0), configure-git-webserver
+(1.0→0.0), db-wal-recovery (1.0→0.0), path-tracing (1.0→0.0) are most concerning.
+Prior scores were from different runs at different times — this baseline is the most
+trustworthy snapshot.
 
 ### Shipped fixes (on main)
 
@@ -41,22 +58,27 @@ process — hill-climbing protocol, root-cause-from-transcripts, commit-before-d
 **Not shipped:** impl-test-a — 3/3 was stochastic (model happened to pick right
 field name), not a causal prompt fix.
 
-### Known open problems
+### Known open problems (from interrogation of 55 failures)
 
-1. **Delegation info loss** — coordinator paraphrases specs, losing exact formats.
-   No good general fix yet. ~60% of affected tasks pass anyway.
-2. **Coordinator bypass (stochastic)** — vision steering content varies per run,
-   sometimes priming direct action. Appears stochastic, not systematic.
-3. **Self-referential verification** — agent can't detect own schema mismatches
-   (e.g., proto field `val` vs `value`). Structural, not prompt-fixable.
+1. **Analysis paralysis** (10 tasks, all 0/3) — implementer spends entire budget
+   on research, never produces deliverables. Highest-priority fix.
+2. **Shallow coordinator verification** (8 tasks) — coordinator checks existence
+   not correctness. "Do NOT re-derive" over-applied as "don't verify."
+3. **Never runs test suite** (7 tasks) — test files exist but agent doesn't run them.
+4. **Coordinator bypass** (4 tasks) — coordinator implements directly.
+5. **Spec/format mismatch** (5 tasks) — wrong field names, output format, API contract.
+6. **Fabrication** (3 tasks) — agent invents data when stuck.
+7. **Genuine difficulty** (12 tasks) — capability ceiling, not prompt-fixable.
 
 ### What to do next
 
-1. Collect full-baseline-2026-03-27 results when complete
-2. Auto-interrogate every failure: `./tools/interrogate_failures.sh full-baseline-2026-03-27`
-3. Build failure inventory from interrogation findings
-4. Start hill-climbing from `backlog.md` priority list
-5. See `experiment-log.md` for full history of what's been tried
+1. Fix interrogation tooling bug (verifier output cross-contamination)
+2. Start hill-climbing from `backlog.md` priority list:
+   - **Experiment 1:** Anti-analysis-paralysis (10 tasks affected)
+   - **Experiment 2:** Run-test-suite instruction (7 tasks)
+   - **Experiment 3:** Coordinator verification depth (8 tasks)
+   - **Quick fix:** Cleanup instruction refinement (portfolio-optimization)
+3. See `experiment-log.md` for full failure inventory and interrogation findings
 
 ### Local harnesses
 

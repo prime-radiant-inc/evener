@@ -6,6 +6,147 @@ see `NOTEBOOK.md`. For synthesized learnings, see `prompt-lessons.md`.
 
 ---
 
+## wave-08b8a7f-20260328 full baseline (Mar 28) — 33/88 pass, mean 0.504
+
+**Run:** `wave-08b8a7f-20260328` — 88/89 tasks × 3 reps, gpt-5.4-mini, main @ 08b8a7f
+**Build:** All shipped fixes through v27 (deleg-b, state-b, v17+v18, v23-B, ops-task removal, coordinator inventory, v26 task_list, v11 positive authority, v13 tests-first)
+**Mode:** Wave (one task per c6i.xlarge, 32 concurrent). First wave-mode run.
+**Result:** 264/267 scored (filter-js-from-html missing). Mean 0.504.
+
+| Score | Count | Tasks |
+|-------|-------|-------|
+| 3/3 | 33 | bn-fit-modify, build-pmars, build-pov-ray, cobol-modernization, code-from-image, constraints-scheduling, count-dataset-tokens, crack-7z-hash, distribution-search, feal-differential-cryptanalysis, fix-git, git-leak-recovery, headless-terminal, hf-model-inference, largest-eigenval, log-summary-date-ranges, merge-diff-arc-agi-task, modernize-scientific-stack, multi-source-data-merger, nginx-request-logging, openssl-selfsigned-cert, prove-plus-comm, pypi-server, pytorch-model-cli, pytorch-model-recovery, qemu-startup, regex-log, reshard-c4-data, schemelike-metacircular-eval, sparql-university, sqlite-db-truncate, sqlite-with-gcov, tune-mjcf |
+| 2/3 | 13 | cancel-async-tasks, chess-best-move, custom-memory-heap-crash, extract-moves-from-video, feal-linear-cryptanalysis, fix-ocaml-gc, git-multibranch, password-recovery, polyglot-c-py, portfolio-optimization, vulnerable-secret, large-scale-text-editing(?), llm-inference-batching-scheduler(?) |
+| 1/3 | 12 | break-filter-js-from-html, build-cython-ext, circuit-fibsqrt, extract-elf, financial-document-processor, fix-code-vulnerability, kv-store-grpc, mteb-retrieve, sanitize-git-repo, torch-tensor-parallelism |
+| 0/3 | 30 | adaptive-rejection-sampler, caffe-cifar-10, compile-compcert, configure-git-webserver, db-wal-recovery, dna-assembly, dna-insert, gcode-to-text, gpt2-codegolf, install-windows-3.11, mailman, make-doom-for-mips, make-mips-interpreter, mcmc-sampling-stan, model-extraction-relu-logits, mteb-leaderboard, overfull-hbox, path-tracing, path-tracing-reverse, polyglot-rust-c, protein-assembly, qemu-alpine-ssh, query-optimize, raman-fitting, regex-chess, rstan-to-pystan, sam-cell-seg, torch-pipeline-parallelism, train-fasttext, video-processing, winning-avg-corewars, write-compressor |
+
+**Notable regressions vs prior (individual-run) scores:**
+- compile-compcert 1.0→0.0, configure-git-webserver 1.0→0.0, db-wal-recovery 1.0→0.0, path-tracing 1.0→0.0
+- Prior scores were from different runs at different SHA/dates — this is the first consistent 3-rep baseline
+
+**Notable improvements:**
+- schemelike-metacircular-eval 0→1.0, qemu-startup 0.67→1.0, regex-log 0.67→1.0, sparql-university 0.67→1.0
+
+**Infrastructure:** Wave launcher had a bug (instance ID parsing matched instance type instead of i-* ID), fixed in c14d5d0. filter-js-from-html missed all 3 reps as a result.
+
+**Interrogation findings:** See failure inventory below.
+
+### Failure Inventory (55 tasks, 9 interrogation batches)
+
+Categorized by systemic root cause. Many tasks have multiple contributing causes;
+listed under the primary one.
+
+**Pattern A: Analysis paralysis — no deliverable produced (10 tasks, 0/3)**
+Agent spends entire turn budget on research/analysis and never writes output files.
+The existing "start building early" instruction is ignored.
+
+| Task | What happened |
+|------|--------------|
+| caffe-cifar-10 | 50 turns building Caffe from source, training never started |
+| dna-assembly | 50 turns on sequence analysis, never wrote primers.fasta |
+| mailman | 100% of budget on grep/read, never started postfix or created list |
+| make-doom-for-mips | 104 exec_commands, 87 reads, 86 greps, 0 writes. Never attempted build |
+| make-mips-interpreter | Built too-minimal MIPS VM, timed out at 1800s |
+| path-tracing-reverse | 146 tool calls of disassembly reading, never wrote mystery.c |
+| polyglot-rust-c | 11 tool calls experimenting in /tmp, never created /app/polyglot/ |
+| vulnerable-secret | Burned all turns on /proc exploration, never wrote results.txt |
+| rstan-to-pystan | 20 rounds on venv/pip, then MCMC sampling timed out |
+| train-fasttext | Multiple training runs exceeded 600s timeout, no model.bin saved |
+
+**Pattern B: Shallow coordinator verification (8 tasks, mixed scores)**
+Coordinator checks that deliverables exist but doesn't verify correctness.
+"Do NOT re-derive" instruction interpreted as "don't verify at all."
+
+| Task | What coordinator missed |
+|------|----------------------|
+| compile-compcert | Checked `ccomp --version` but not compile-and-link (missing libcompcert) |
+| db-wal-recovery | Verified record count but not record values (fabricated data) |
+| raman-fitting | Checked file structure, not numerical reasonableness (x0 off by 12x) |
+| protein-assembly | Checked gblock.txt existed, not that protein sequences matched |
+| query-optimize | Checked correctness, not performance (45% slower than golden) |
+| model-extraction-relu-logits | Checked .npy existed, not that all rows matched |
+| mcmc-sampling-stan | Checked script ran, not convergence or output format |
+| path-tracing | Accepted implementer report, didn't test in isolation |
+
+**Pattern C: Never ran test suite (7 tasks, mixed scores)**
+Test files existed in workspace but agent never executed them.
+
+| Task | Tests available but not run |
+|------|--------------------------|
+| install-windows-3.11 | QMP socket at wrong path — reading test would have shown expected path |
+| dna-insert | Primer length constraint — test would have shown 15-45nt requirement |
+| mteb-retrieve | Embedding similarity — running test would have caught wrong answer |
+| polyglot-c-py | Fibonacci test — would have shown execvp approach doesn't satisfy |
+| sanitize-git-repo | Secret scan — would have shown missed files in excluded dirs |
+| portfolio-optimization | Extension test — would have caught deleted .so |
+| password-recovery | Password match — would have shown wrong password |
+
+**Pattern D: Coordinator bypasses delegation (4 tasks)**
+Coordinator implements directly instead of spawning implementer.
+
+| Task | What happened |
+|------|--------------|
+| chess-best-move r3 | Looked at image, wrote wrong move, 2 tool calls total |
+| custom-memory-heap-crash r2 | Wrote no-op fix, ignored crash exit code -11 |
+| fix-ocaml-gc r3 | Edited runtime/major_gc.c directly, bootstrap still segfaulted |
+| password-recovery r3 | strings\|grep on one file, took first match |
+
+**Pattern E: Spec/format mismatch (5 tasks)**
+Agent builds correct-ish solution but wrong API contract, field names, or format.
+
+| Task | Mismatch |
+|------|----------|
+| adaptive-rejection-sampler | ars(log_density) vs verifier's ars(density, bounds) |
+| extract-elf | Hex byte-offset keys vs expected decimal int32 vaddr keys |
+| kv-store-grpc | Proto field `val` vs expected `value` |
+| fix-code-vulnerability | Found CWE-20 instead of expected CWE-93 |
+| overfull-hbox | 939 tokens vs expected 934 (over-edited beyond minimal synonyms) |
+
+**Pattern F: Fabrication / shortcuts (3 tasks)**
+Agent invents data or shells out instead of doing real work.
+
+| Task | What happened |
+|------|--------------|
+| db-wal-recovery | Couldn't decrypt WAL, fabricated 6 records with guessed values |
+| extract-moves-from-video | YouTube blocked, fabricated Zork walkthrough from memory |
+| path-tracing | Wrote C wrapper that calls original binary via system() |
+
+**Pattern G: Environment/persistence issues (3 tasks)**
+Agent doesn't leave state ready for verifier.
+
+| Task | Issue |
+|------|-------|
+| configure-git-webserver | Web server not running when verifier checked |
+| git-multibranch | Pre-populated repo rejected verifier's push |
+| portfolio-optimization | Deleted compiled .so during cleanup |
+
+**Pattern H: Genuine difficulty / capability ceiling (12 tasks, mostly 0/3)**
+Tasks where the model lacks domain expertise or time is insufficient.
+
+| Task | Category |
+|------|----------|
+| circuit-fibsqrt | Hardware circuit design in gate form |
+| feal-linear-cryptanalysis | Custom cipher cryptanalysis |
+| gpt2-codegolf | GPT-2 in <5000 bytes of C |
+| regex-chess | All chess rules in regex |
+| winning-avg-corewars | Competitive Redcode assembly |
+| write-compressor | Reverse-engineer arithmetic coding |
+| sam-cell-seg | Complex ML dependency chain |
+| qemu-alpine-ssh | Interactive VM management from non-interactive agent |
+| video-processing | CV heuristic tuning + type error |
+| torch-pipeline-parallelism | Manual distributed gradient computation |
+| torch-tensor-parallelism | Missing all_gather/all_reduce, no torch to test |
+| gcode-to-text | CTF puzzle requiring toolpath simulation |
+
+**Pattern I: Miscellaneous (3 tasks)**
+| Task | Issue |
+|------|-------|
+| cancel-async-tasks | SIGINT doesn't propagate through asyncio.gather |
+| break-filter-js-from-html | XSS bypass didn't work in modern Chromium |
+| mteb-leaderboard | Wrong leaderboard scope (per-language vs aggregate) |
+
+---
+
 ## v27 implementer/coordinator experiments (Mar 27) — coordinator bypass dominant
 
 **4 variants testing different approaches to chess-best-move failures.**
