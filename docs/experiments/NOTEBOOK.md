@@ -17,7 +17,7 @@ Invoke it before starting work.
 - **deleg-b** (coordinator.md): "quality gate, not the worker" — fixes chess-best-move
 - **state-b** (implementer.md): post-test deliverable mutation check — fixes git-multibranch
 - **v17 harmonize gate** + **v18 no-tests case**: fixes log-summary-date-ranges
-- impl-test-a NOT shipped (interrogation showed 3/3 was stochastic, not causal)
+- impl-test-a NOT shipped — interrogation showed 3/3 was stochastic (model happened to pick `value` vs `val`), not a causal prompt fix
 - **v23-B reviewer-evidence** (reviewer.md + communicate.agent-reviewer.md): remove "intuit" phrasing, spec authority for implementer
 - **ops-task removal** (agent/skills/): deleted ops-task embedded skill — was priming coordinators to implement directly
 - **coordinator inventory fix** (coordinator.md): "Inventory means listing, not reading" + "Small tasks are not exceptions"
@@ -114,9 +114,10 @@ The imperative phrasing + zero reasoning tokens primed coordinators to act direc
 **Key insight:** 2/3 failures were coordinator bypass (implementer never spawned).
 The implementer prompt is irrelevant when the coordinator never delegates.
 
-**However:** baseline-retest on the same day went 3/3 with unchanged code. The
-coordinator bypass may be intermittent/stochastic rather than systematic. The full
-89-task baseline (running) will establish whether the current main code is solid.
+**However:** baseline-retest on the same day went 3/3 with unchanged code.
+Coordinator bypass appears stochastic (vision steering content varies per run),
+not a systematic prompt defect. Parked pending full-baseline-2026-03-27 results —
+if chess-best-move passes 2/3+ on the full baseline, deprioritize bypass fixes.
 
 ### v24-E-no-ops-task results (Mar 27)
 
@@ -309,9 +310,11 @@ reason.
 2. External verification (evaluator-provided test client or proto definition)
 3. Accept it as nondeterministic (~50-70% pass rate) and move to other tasks
 
-**This changes the ship decision for impl-test-a.** The prompt itself is harmless
-and may help with other service tasks, but its 3/3 on kv-store-grpc shouldn't be
-treated as signal that the prompt reliably fixes that task.
+**Ship decision: impl-test-a NOT shipped.** The prompt itself is harmless and may
+help other service tasks, but its 3/3 on kv-store-grpc is stochastic — the model
+happened to pick the right field name, not because the prompt guided it there.
+kv-store-grpc's proto field mismatch is a structural verification gap, not a
+prompt-fixable problem.
 
 ### v20 verification depth experiment design (Mar 27)
 

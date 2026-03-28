@@ -49,8 +49,8 @@ When given an eval to tune against:
 ./tools/run_full_baseline.sh
 
 # Or targeted tasks for iteration
-cd ~/prime-radiant/harbor-runner
-./launch.sh --task-names "task1,task2" --reps 3 ...
+./tools/run_eval_subset.sh --tasks "task1,task2"
+./tools/run_eval_subset.sh --tasks failing    # all currently failing tasks
 ```
 
 **Rules:**
@@ -58,6 +58,9 @@ cd ~/prime-radiant/harbor-runner
 - Use 3 reps for baselines (1 rep is insufficient for noisy tasks).
 - Must commit before launching — `run_full_baseline.sh` enforces this.
 - Provenance (git SHA, branch, model) is auto-saved to `.serf-launches/`.
+- **Verify the binary** before trusting results — see "Verifying Deployed Binaries" below.
+  `run_full_baseline.sh` checks for embedded prompts automatically, but after
+  collecting results, confirm the transcript header's `build_version` matches.
 
 ## Step 2: Root Cause Every Failure
 
@@ -162,9 +165,9 @@ Every change must make things better without making anything worse.
 
 ### The regression set
 
-Before you start fixing, define a **regression set**: 5-9 tasks that currently pass
-and span different categories (easy, moderate, hard). These must keep passing after
-every change. Record the regression set in NOTEBOOK.md.
+The project's canonical regression set is defined in `docs/experiments/task-sets.md`
+(9 tasks spanning easy, moderate, and hard categories). Use it unless you have a
+specific reason to define a different one. These must keep passing after every change.
 
 ### For each fix
 

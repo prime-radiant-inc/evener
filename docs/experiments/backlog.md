@@ -1,135 +1,123 @@
 # Experiment Backlog
 
-Prioritized queue of next experiments. Updated March 26, 2026.
+Prioritized queue of next experiments. Updated March 27, 2026.
 
-## Currently testing
+## Currently running
 
-### v17-broad-20 regression check (20 tasks × 1 rep on mini)
+### full-baseline-2026-03-27 — all 89 tasks × 3 reps
 
-12/17 passed, 3 pending. Failures: chess-best-move, kv-store-grpc,
-git-multibranch, adaptive-rejection-sampler (documented nondeterministic),
-gpt2-codegolf (known too-hard). Interrogating all non-trivial failures.
+Clean baseline with all shipped fixes on main @ 5554bed. gpt-5.4-mini,
+3 × c6i.2xlarge, concurrency 8. Results will establish the current state
+and identify which failures to target next.
 
-## Recently completed
-
-### v18: No-tests case — SOLVED (3/3 mini, 3/3 5.4)
-
-**Score history (log-summary-date-ranges):**
-- v12 baseline: 1/3 (mini)
-- v13 soft prohibition: 1/3
-- v14 hard prohibition: 0/3 (REGRESSION)
-- v15 positive framing: 1/3
-- v16 reading-not-computing: 1/3
-- v17 harmonize gate: 3/3 mini, 2/3 5.4
-- v18 no-tests case: **3/3 mini, 3/3 5.4** ✓
+**After this completes:** collect with `post_run.sh`, interrogate all failures,
+build the failure inventory, then start hill-climbing from the top of the
+"Next up" list below.
 
 ## Next up
 
+Priority order for hill-climbing after the baseline establishes current state.
+Re-prioritize based on what the baseline failure inventory reveals.
+
 ### 1. Delegation info loss — structural solution
 
-**Problem:** Coordinator consistently paraphrases task specs when delegating,
-losing exact format strings, schemas, and constraints. Prompt-level "forward
-verbatim" instruction doesn't work — the model rewrites regardless.
+**Problem:** Coordinator paraphrases task specs when delegating, losing exact
+format strings, schemas, and constraints. Prompt-level "forward verbatim"
+instruction doesn't work — the model rewrites regardless. No good general fix
+found yet.
 
 **Hypotheses to test:**
-- **A) Structured delegation field:** Add an optional `context` parameter to
-  spawn_agent that the system auto-populates with the original task. The
-  coordinator still writes its own `task`, but the implementer sees both.
-- **B) Read-back verification:** After the coordinator delegates, inject a
-  steering message: "Verify your delegation includes ALL format specifications
-  from the original task. If you summarized instead of copying, revise."
-- **C) Accept the loss:** ~60% of delegation-info-loss tasks pass anyway.
-  Focus engineering time elsewhere.
+- **A) Structured delegation field:** Add `context` parameter to spawn_agent
+  that auto-populates with the original task. Coordinator writes its own `task`,
+  implementer sees both.
+- **B) Read-back verification:** Post-delegation steering: "Verify your
+  delegation includes ALL format specifications. If you summarized, revise."
+- **C) Accept the loss:** ~60% of info-loss tasks pass anyway. Focus elsewhere.
 
-**Test plan:** Pick log-summary-date-ranges and multi-source-data-merger (both
-~1/3 pass rate due to info loss). Test each hypothesis × 3 reps.
+**Test plan:** Tasks with known info-loss failures from baseline × 3 reps each.
 
-### 2. Non-delegation enforcement
+### 2. Coordinator bypass (stochastic)
 
 **Problem:** Coordinator sometimes handles tasks directly instead of delegating.
-Most visible on chess-best-move (reads image, writes wrong answer immediately)
-and pytorch-model-cli (codes in C++ for 35 rounds instead of delegating).
+Most visible on chess-best-move. Root cause: vision steering content varies per
+run, sometimes priming the coordinator to act directly.
 
-**v17-broad-20 evidence:** chess-best-move had exactly 1 session (coordinator
-only). Coordinator read the image, hallucinated "e2e6", wrote move.txt directly,
-submitted. Never spawned any subagent despite "Your NEXT action is spawn_agent"
-and "You NEVER write or modify files yourself." Interrogation confirmed the
-coordinator relied on the "image description" and didn't follow test verification.
+**Current state:** ops-task removal + "quality gate" framing shipped. Baseline
+retest went 3/3, but v27 experiments showed 2/3 bypass rate on same task.
+Appears stochastic, not systematic. **Deprioritize if baseline shows 2/3+.**
 
-**Hypotheses:**
-- **A) Steering injection:** If the coordinator's first 3 tool calls don't
-  include spawn_agent, inject: "You are the coordinator. Delegate."
-- **B) Prompt-only:** Current approach. The reorder fix (Role before Skills)
-  helped fix-git delegate. Further prompt tweaks may help chess-best-move.
+**Hypotheses if still failing:**
+- **A) Steering injection:** If first 3 tool calls don't include spawn_agent,
+  inject: "You are the coordinator. Delegate."
+- **B) Vision steering suppression:** Don't inject image descriptions into
+  coordinator context for tasks requiring delegation.
 
-**Test plan:** chess-best-move × 5 reps with each approach.
+### 3. Reviewer quality
 
-### 3. Reviewer quality — partially addressed
+**Problem:** Reviewer destroys correct answers when it lacks domain tools.
+Root cause: reviewer re-derives from primary sources (vision, raw data)
+instead of reviewing implementer's methodology.
 
-**Problem:** Reviewer sometimes destroys correct answers (chess-best-move:
-removed g2g4) or introduces bugs (adaptive-rejection-sampler: overly strict
-xinit validation). Root cause identified in v8: reviewer without equivalent
-domain tools (chess engine) fell back on vision hallucination, overriding the
-implementer's correct computational proof.
+**Shipped fixes:** v23-B removed "intuit", added spec authority for implementer.
+v25 reviewer experiments all made things worse (0/3, 0/3, 1/3) — do not revisit
+the vision/reviewer path. The shipped v23-B is the current best.
 
-**Fix in testing (v9):** Reviewer prompt changed to "review consistency, not
-re-derive." If implementer validated with a domain tool, reviewer checks
-methodology consistency rather than substituting its own analysis.
+**Remaining hypotheses (only if baseline shows reviewer-caused failures):**
+- **A) Conservative rejection:** Reviewer says what's wrong but doesn't suggest
+  how to fix it.
+- **B) Tool parity:** Give reviewer the same tools implementer had (risky —
+  may cause reviewer to redo all work).
 
-**Remaining hypotheses (if v9 doesn't fully fix):**
-- **A) Conservative rejection:** "Do not suggest changes to output format or
-  structure unless the task specification explicitly requires a different format."
-- **B) Reject-only, no fix suggestions:** Reviewer says what's wrong but
-  doesn't suggest how to fix it.
-
-### 4. Post-rejection coordinator behavior
-
-**Problem:** After reviewer rejection, coordinator sometimes fixes code itself
-instead of spawning a new implementer (violating "NEVER write files yourself").
-
-**Fix:** Strengthen step 5 in coordinator.md: "If the reviewer rejects, spawn
-a new implementer with the reviewer's feedback. Do NOT fix the code yourself."
-
-### 5. Full 89-task eval with all fixes
-
-After validating v7 changes, run the full 89-task × 3-rep eval to measure
-aggregate impact. Compare against:
-- disc-3rep-v6 (unfixed 3-rep baseline): 40.7%
-- disc-3rep-v6-fixed (first fixed eval): 42.9%
-- Combined baseline (gpt-5.4 + mini): 82%
-
-### 6. Budget awareness
+### 4. Budget awareness
 
 **Problem:** Neither coordinator nor implementer knows the 900s wall-clock
 budget. Implementers research for 10 minutes then timeout.
 
-**Hypothesis:** Injecting approximate budget info ("You have approximately
-12 minutes of wall time") would encourage decisive action.
+**Hypothesis:** Inject approximate budget info ("~12 minutes wall time").
 
-**Risk:** May cause premature submission ("I'm running out of time, submit
-what I have").
+**Risk:** Premature submission. Test carefully on tasks that currently pass.
+
+### 5. Verification depth (structural)
+
+**Problem:** Self-referential testing can't detect external contract mismatches
+(e.g., kv-store-grpc proto field `val` vs expected `value`). No prompt fix can
+address this — the agent's test agrees with the agent's implementation.
+
+**Hypotheses:**
+- **A) Cross-check instruction:** "Compare your proto/schema field names against
+  the exact words in the task description" (fragile, may help some tasks)
+- **B) Accept nondeterministic:** ~50-70% pass rate on these tasks. Focus on
+  tasks with fixable failure modes instead.
+
+impl-test-a was NOT shipped — its 3/3 was stochastic, not causal.
 
 ## Completed / shipped
 
-- Template section ordering (Role before Skills) — shipped
-- Verification language revert (artifact-only → run tests) — shipped
-- Workspace cleanup in shared values — shipped
-- Verification cleanup after step 4 — shipped
-- Action bias in workflow — shipped (v7: 3/7 tasks improved)
-- Optional explorer — shipped (v7: included in action-bias run)
-- Capabilities: computational verification — shipped (v7: included)
-- Input pre-processing ban — shipped (coordinator must not analyze task inputs)
-- Coordinator/reviewer rename — shipped (inventory not scout, coordinator not dispatcher)
-- Reviewer consistency check — shipped (v9: 2/3 chess, v10: 0/3 — fix insufficient)
-- Scratch directory verification — shipped (v9: 2/3 polyglot, v10: still violated)
-- Active pre-submit workspace check — shipped (v9/v10: still violated)
-- Delegation guidelines to reviewer — shipped (v10: included)
-- Anti-gold-plating — shipped (v10: overridden by competing instructions)
-- Reviewer positive authority ordering — shipped (v11: 6/6, replaces prohibition framing)
-- Warnings are not failures — shipped (v11: 6/6, resolves competing-instruction conflict)
-- Coordinator tests-first verification — shipped (v13: fix-code-vuln 3/3, git-multi 3/3)
-- Coordinator explicit submit gate checklist — shipped (v13: git-multibranch fixed)
-- harbor-runner: removed parent-dir binary copy — shipped
-- Makefile: `build-linux` target with cache invalidation — shipped
-- Session interrogation tool — shipped (rewritten: real session resume, subagent support)
-- Root-cause prompt template — shipped
+### Effective fixes (validated with improved scores)
+- **v19-deleg-b** — "quality gate, not worker" framing → chess-best-move 3/3
+- **v19-state-b** — post-test mutation check → git-multibranch 3/3
+- **v17+v18** — harmonize HARD GATE + no-tests case → log-summary-date-ranges 3/3
+- **v23-B** — reviewer: remove "intuit", spec authority → chess-best-move 3/3
+- **v26** — neutral task_list phrasing → custom-memory-heap-crash 3/3
+- **ops-task removal** — deleted embedded skill that primed direct implementation
+- **coordinator inventory fix** — "listing, not reading" + anti-rationalization
+- **v11** — reviewer positive authority ordering + warnings-are-not-failures → 6/6
+- **v13** — tests-first verification + submit gate → fix-code-vuln 3/3, git-multi 3/3
+
+### Infrastructure shipped
+- Template section ordering (Role before Skills)
+- Verification language revert (artifact-only → run tests)
+- Workspace cleanup in shared values
+- harbor-runner: removed parent-dir binary copy
+- Makefile: `build-linux` target with cache invalidation
+- Session interrogation tool (real session resume, subagent support)
+- Root-cause prompt template
+- Eval tooling: run_full_baseline.sh, run_eval_subset.sh, run_status.sh, post_run.sh, interrogate_failures.sh
+
+### Tried and superseded (no longer active)
+- Scratch directory verification — v9/v10: still violated despite instruction
+- Active pre-submit workspace check — v9/v10: still violated
+- Anti-gold-plating — v10: overridden by competing instructions (resolved differently in v11)
+- Reviewer consistency check — v9: 2/3, v10: 0/3 (superseded by v11 positive authority)
+- v25 reviewer experiments — all made things worse, do not revisit
+- impl-test-a — 3/3 was stochastic, not shipped

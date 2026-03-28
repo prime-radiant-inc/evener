@@ -47,14 +47,16 @@ public leaderboard. Still run them in full baselines — any pass is signal.
 - dna-insert
 - mteb-leaderboard
 
-## Programmatic definitions
+## Named sets in eval tools
 
-See `tools/task_sets.py` for the full programmatic task set definitions used by
-`run_eval.py`. Available sets:
-
-- `discriminators` — 56 tasks with 10-75% failure rate (the useful signal range)
-- `solvable` — 72 tasks with ≤75% failure rate
+`run_eval_subset.sh` supports named sets:
 
 ```bash
-./tools/run_eval.py launch --list-tasks  # Show available named sets
+./tools/run_eval_subset.sh --tasks failing    # all tasks with score < 1.0
+./tools/run_eval_subset.sh --tasks untested   # all tasks not yet tested
+./tools/run_eval_subset.sh --tasks hard       # the 16 historically hard tasks above
 ```
+
+`tools/task_sets.py` has programmatic definitions:
+- `discriminators` — 56 tasks with 10-75% failure rate (the useful signal range)
+- `solvable` — 72 tasks with ≤75% failure rate

@@ -103,13 +103,12 @@ run the interrogation tool. You MUST source the env file first for API keys:
 cd ~/prime-radiant/serf && set -a && source .env && set +a && \
 python3 tools/interrogate_session.py \
     --run {FAILING_RUN_ID} --rep {REP} --task {TASK} \
-    --compare-run {PASSING_RUN_ID} --compare-rep {PASSING_REP} \
-    --question "Why did you do X instead of Y?"
+    --question "The passing run did X at this point. Why did you do Y instead?"
 ```
 
-The tool downloads both transcripts, reconstructs context, and asks the model
-about its decisions. Include the comparison flag so the model sees what the
-passing run did differently.
+The tool reconstructs the full conversation context and asks the model about its
+decisions. Frame your question to include what the passing run did differently —
+the model can reason about alternative approaches in its original context.
 
 **Always interrogate when:** the coordinator didn't delegate but should have,
 the coordinator verified insufficiently, or the delegation text diverged
