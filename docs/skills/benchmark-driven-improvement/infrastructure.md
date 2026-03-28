@@ -12,16 +12,13 @@ Evals run on **AWS spot instances** via harbor-runner. Three workflows:
 ```
 Saves launch metadata to `.serf-launches/` for `post_run.sh` to read.
 
-### Single experiment (specific tasks)
+### Subset of tasks
 ```bash
-cd ~/prime-radiant/harbor-runner
-./launch.sh \
-  --agent-dir /tmp/agent-experiment \
-  --agent-import-path serf_agent:SerfAgent \
-  --model openai/gpt-5.4-mini \
-  --task-names "chess-best-move,kv-store-grpc" \
-  --reps 3 \
-  --instance-type c6i.xlarge
+./tools/run_eval_subset.sh --tasks "chess-best-move,kv-store-grpc"
+./tools/run_eval_subset.sh --tasks failing       # all currently failing
+./tools/run_eval_subset.sh --tasks untested       # all untested
+./tools/run_eval_subset.sh --tasks hard           # historically hard 16
+./tools/run_eval_subset.sh --tasks failing --dry-run   # preview
 ```
 
 ### Local coordinator delegation test (~2 min/run)
@@ -35,7 +32,7 @@ Binary signal: DELEGATE vs BYPASS. For fast iteration on coordinator prompts.
 ## Post-experiment workflow
 
 ```bash
-./tools/check_run.sh RUN_ID                              # poll status
+./tools/run_status.sh RUN_ID                             # live instance status
 ./tools/post_run.sh RUN_ID --variant "description"       # collect + diff
 ./tools/interrogate_failures.sh RUN_ID                   # auto-interrogate
 git add docs/experiments/ && git commit -m "results: RUN_ID"

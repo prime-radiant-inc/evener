@@ -127,13 +127,29 @@ Override defaults with flags: `--reps 5 --model openai/gpt-5.4 --instance-type c
 
 The script enforces a clean working tree (must commit before launching).
 
-After results are in:
+### Subset of tasks
 
 ```bash
-./tools/post_run.sh RUN_ID --variant "description of what changed"
+./tools/run_eval_subset.sh --tasks "chess-best-move,kv-store-grpc"
+./tools/run_eval_subset.sh --tasks failing       # all currently failing tasks
+./tools/run_eval_subset.sh --tasks untested       # all untested tasks
+./tools/run_eval_subset.sh --tasks hard           # historically hard 16
+./tools/run_eval_subset.sh --tasks failing --variant "testing fix X" --dry-run
 ```
 
-This collects from S3, updates the scoreboard, and shows score diffs vs previous.
+Same build/stage/launch workflow as `run_full_baseline.sh`. Defaults to c6i.xlarge
+with concurrency 4 (smaller than full baseline). Saves launch metadata for
+`post_run.sh`.
+
+### Monitoring and collecting
+
+```bash
+./tools/run_status.sh RUN_ID                             # live instance status
+./tools/post_run.sh RUN_ID --variant "description"       # collect + scoreboard diff
+```
+
+`post_run.sh` auto-reads model/SHA/branch from `.serf-launches/` if the run
+was launched with `run_full_baseline.sh` or `run_eval_subset.sh`.
 
 ### Spot instance rules
 

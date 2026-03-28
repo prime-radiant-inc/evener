@@ -68,8 +68,8 @@ echo "Building linux binary..."
 make build-linux 2>&1 | tail -2
 
 # Verify binary
-if ! strings serf-linux-amd64 | grep -q "You are a coordinator"; then
-    echo "Error: binary missing coordinator prompt" >&2
+if ! strings serf-linux-amd64 | grep -q "agents/coordinator.md"; then
+    echo "Error: binary missing embedded agent prompts" >&2
     exit 1
 fi
 echo "  Binary OK ($(du -h serf-linux-amd64 | cut -f1))"
