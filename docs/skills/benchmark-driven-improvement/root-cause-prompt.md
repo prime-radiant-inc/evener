@@ -84,10 +84,15 @@ WHAT FAILING DID: [The specific failing approach]
 WHY IT DIVERGED: [Root cause — e.g., "Skills section appears before Role
 section in the prompt, priming the coordinator into implementer mode"]
 
-VERIFIER: [What specifically failed in the test]
+WHAT WOULD FIX IT: [Specific prompt/instruction change that would have
+produced correct behavior — e.g., "Add to reviewer.md: 'Do not re-derive
+computational results from primary sources'"]
 
-FIXABLE: [Yes/No — and what the fix would be if yes]
+VERIFIER: [What specifically failed in the test]
 ```
+
+The "WHY IT DIVERGED" and "WHAT WOULD FIX IT" fields are both mandatory.
+A root cause without a fix hypothesis is incomplete.
 
 **Step 7: Interrogate if the cause is unclear**
 

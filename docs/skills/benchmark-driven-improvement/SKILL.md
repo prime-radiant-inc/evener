@@ -80,10 +80,20 @@ Interrogate every agent involved in the failure chain, not just the coordinator.
 If the reviewer made a bad call, interrogate the reviewer. If the implementer went
 down a wrong path, interrogate the implementer.
 
+Every interrogation MUST ask both:
+1. **Why** — what caused the agent to make the decision it made?
+2. **What would fix it** — what specific prompt/instruction change would have
+   made the agent behave correctly?
+
 Ask specific questions about the decision that went wrong:
 - "Your prompt says X. Why did you do Y instead?"
 - "Did you see instruction Z? How did it interact with instruction W?"
 - "What information would you have needed to make the right decision?"
+- "What specific changes to your instructions would have made you do the right thing?"
+
+The model in its original context is the best source for actionable fixes. An
+interrogation that only describes what happened without proposing a prompt-level
+fix is incomplete.
 
 ### 2c. Interrogate automatically — NEVER wait for permission
 

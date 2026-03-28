@@ -2,7 +2,7 @@
   "model": "openai/gpt-5.4-mini",
   "total_tasks": 89,
   "tested_tasks": 83,
-  "mean_score": 0.604,
+  "mean_score": 0.608,
   "tasks": {
     "adaptive-rejection-sampler": {
       "score": 0.0,
@@ -169,13 +169,13 @@
       "status": "tested"
     },
     "crack-7z-hash": {
-      "score": 0.667,
-      "last_run": "v22-next20",
+      "score": 1.0,
+      "last_run": "v24-E-no-ops-task",
       "last_date": "2026-03-27",
       "reps": [
         1.0,
         1.0,
-        0.0
+        1.0
       ],
       "status": "tested"
     },

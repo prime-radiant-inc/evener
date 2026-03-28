@@ -42,21 +42,23 @@ RESULTS_DIR = os.path.expanduser("~/prime-radiant/harbor-runner/state/results")
 SERF_BINARY = os.path.expanduser("~/prime-radiant/serf/serf-linux-amd64")
 
 
-def find_local_state_dir(run_id, rep):
+def find_local_state_dir(run_id, rep, task=None):
     """Find the agent-state dir in locally downloaded results."""
     rep_dir = os.path.join(RESULTS_DIR, run_id, f"rep-{rep}")
     if not os.path.isdir(rep_dir):
         return None
-    # Walk to find agent-state/sessions/
+    # Walk to find agent-state/sessions/, filtering by task name if provided.
     for root, dirs, files in os.walk(rep_dir):
         if os.path.basename(root) == "agent-state" and "sessions" in dirs:
+            if task and task not in root:
+                continue
             return root
     return None
 
 
-def download_results(run_id, rep):
+def download_results(run_id, rep, task=None):
     """Download results from S3 if not already local."""
-    state_dir = find_local_state_dir(run_id, rep)
+    state_dir = find_local_state_dir(run_id, rep, task)
     if state_dir:
         return state_dir
 
@@ -68,7 +70,7 @@ def download_results(run_id, rep):
         dest,
         "--region", REGION,
     ], check=True)
-    return find_local_state_dir(run_id, rep)
+    return find_local_state_dir(run_id, rep, task)
 
 
 def list_sessions(state_dir):
@@ -210,9 +212,9 @@ def main():
     args = parser.parse_args()
 
     # Find or download results
-    state_dir = download_results(args.run, args.rep)
+    state_dir = download_results(args.run, args.rep, args.task)
     if not state_dir:
-        print(f"ERROR: Could not find agent-state for run={args.run} rep={args.rep}")
+        print(f"ERROR: Could not find agent-state for run={args.run} rep={args.rep} task={args.task}")
         sys.exit(1)
 
     sessions = list_sessions(state_dir)

@@ -18,6 +18,10 @@ Invoke it before starting work.
 - **state-b** (implementer.md): post-test deliverable mutation check — fixes git-multibranch
 - **v17 harmonize gate** + **v18 no-tests case**: fixes log-summary-date-ranges
 - impl-test-a NOT shipped (interrogation showed 3/3 was stochastic, not causal)
+- **v23-B reviewer-evidence** (reviewer.md + communicate.agent-reviewer.md): remove "intuit" phrasing, spec authority for implementer
+- **ops-task removal** (agent/skills/): deleted ops-task embedded skill — was priming coordinators to implement directly
+- **coordinator inventory fix** (coordinator.md): "Inventory means listing, not reading" + "Small tasks are not exceptions"
+- **implementer stuck guidance** (implementer.md): folded useful ops-task content into "When you get stuck" section
 
 ### Results system
 - `tools/collect_results.py` — download from S3, normalize, update metadata
@@ -30,7 +34,14 @@ Invoke it before starting work.
 
 ### Pending runs
 
-(none pending)
+- **v25-A-reviewer-evidence** — chess-best-move × 3 reps.
+  Coordinator passes implementer verification methodology to reviewer.
+  Build: 7498c4a (exp/v25-A-reviewer-evidence). Running.
+- **v25-B-reviewer-no-rederive** — chess-best-move × 3 reps.
+  Reviewer told not to re-derive from primary sources when lacking equivalent tools.
+  Build: bd01002 (exp/v25-B-reviewer-no-rederive). Running.
+- **v25-C-both** — chess-best-move × 3 reps.
+  Both A + B combined. Build: fe9286f (exp/v25-C-both). Running.
 
 ### v21-easy5 baseline (Mar 27)
 
@@ -44,6 +55,114 @@ Invoke it before starting work.
 | fix-git | 3/3 | 4.1% |
 | constraints-scheduling | 3/3 | 4.1% |
 | nginx-request-logging | 3/3 | 4.1% |
+
+### v25 reviewer experiments (Mar 27) — running
+
+**3 variants testing reviewer/coordinator interaction when reviewing computational
+output. All run chess-best-move × 3 reps on gpt-5.4-mini.**
+
+**Root cause:** In v24-E rep 3, the implementer correctly found both mate-in-one
+moves (e2e4, g2g4) via python-chess. The reviewer then read chess_board.png with
+`purpose: "determine the position and best move"` (singular). Serf's vision
+side-channel injected a wrong description saying only Qe4# was checkmate. The
+reviewer trusted the vision injection and rejected the correct answer.
+
+The reviewer explained (via interrogation) that "Confirm whether move.txt satisfies
+this" + its "verify outcomes, not artifacts" instruction required semantic
+verification, and it lacked visibility into the implementer's tools.
+
+| Variant | Change | SHA |
+|---------|--------|-----|
+| **v25-A** | Coordinator passes implementer verification methodology to reviewer | 7498c4a |
+| **v25-B** | Reviewer: do not re-derive from primary sources when lacking equivalent tools | bd01002 |
+| **v25-C** | Both A + B | fe9286f |
+
+**Baseline:** v24-E chess-best-move = 1/3
+
+### v24-E-no-ops-task results (Mar 27)
+
+**Run:** `v24-E-no-ops-task` — 3 non-delegation tasks × 3 reps, gpt-5.4-mini, commit 70095a4
+**Build:** B merge + ops-task removal + coordinator inventory fix
+**Result:** 6/9 = 66.7%
+
+| Task | Rep 1 | Rep 2 | Rep 3 | Score |
+|------|-------|-------|-------|-------|
+| chess-best-move | 1 | 0 | 0 | 1/3 |
+| crack-7z-hash | 1 | 1 | 1 | 3/3 |
+| custom-memory-heap-crash | 0 | 1 | 1 | 2/3 |
+
+**Non-delegation fix confirmed:** All 9 trials delegated to implementers (vs 0/3
+in baseline). Remaining failures are implementation-quality issues, not delegation.
+
+**Interrogation findings:**
+- **crack-7z-hash 3/3:** Delegation works. Task solved.
+- **chess-best-move rep 2 (fail):** Implementer misread chess piece from image
+  (wrong FEN → missed g2g4). Capability issue, not prompt.
+- **chess-best-move rep 3 (fail):** Implementer found both correct moves. Reviewer
+  overrode correct answer — vision steering injection said only Qe4# was correct.
+  → v25 experiments target this.
+- **custom-memory-heap-crash rep 1 (fail):** Coordinator implemented directly
+  (1 of 3 reps). task_list tool's "begin" phrasing + zero reasoning tokens primed
+  direct execution. → Separate fix needed for task_list reminder wording.
+
+**Hypothesis confirmed:** ops-task skill was the primary cause of non-delegation.
+Removing it + tightening coordinator inventory wording fixed crack-7z-hash (0/3 → 3/3)
+and custom-memory-heap-crash (0/3 → 2/3).
+
+### v24-C-verify retest (Mar 27)
+
+**Run:** `v24-C-verify` — 4 tasks × 3 reps, gpt-5.4-mini, commit 819d8f4
+**Build:** B merge + C (verify outputs) + ops-task removal
+**Result:** Mixed — binary includes B + C + ops-task removal, NOT C alone.
+
+| Task | Score | vs baseline |
+|------|-------|-------------|
+| crack-7z-hash | 3/3 | was 0/3 — improved |
+| custom-memory-heap-crash | 3/3 | was 0/3 — improved |
+| chess-best-move | 1/3 | was 1/3 — flat |
+| log-summary-date-ranges | 2/3 | was 3/3 — regressed |
+
+**Note:** Cannot attribute changes to C alone since binary also includes ops-task removal.
+
+### v23 experiment results (Mar 27)
+
+**4 variants testing reviewer/delegation prompt changes.**
+
+| Run ID | Variant | Result | Key finding |
+|--------|---------|--------|-------------|
+| v23-A | verbatim-delegation | 0/3 | Coordinator still paraphrased despite verbatim instruction |
+| **v23-B** | **reviewer-evidence** | **3/3** | **WINNER.** Removed "intuit" from reviewer, added spec authority to implementer |
+| v23-C | verify-outputs | 2/3 | Coordinator "verify concretely" — partial improvement |
+| v23-D | delegation-steering | 1/3 | System prompt injection — rejected as "bullshit hack" |
+
+**B shipped to main.** D rejected on principle (treating symptoms, not root cause).
+C retested as part of v24-C-verify but results confounded by other changes.
+
+### v22-next20 results (Mar 27)
+
+**Run:** `v22-next20` — 20 tasks × 3 reps, gpt-5.4-mini
+**Purpose:** Broader regression test with shipped fixes (deleg-b + state-b + v17/v18).
+
+### Non-delegation root cause investigation (Mar 27)
+
+Interrogated 3 baseline sessions where coordinators failed to delegate:
+- chess-best-move, crack-7z-hash, custom-memory-heap-crash
+
+**All three showed the same pattern:**
+1. Coordinator reads ops-task skill early in the turn
+2. Gets primed by "Try it. Fix it." instructions
+3. Implements directly instead of spawning implementer
+4. gpt-5.4-mini uses zero reasoning tokens — snap decisions, so recency/salience wins
+
+**Additional factor:** Old coordinator.md said "For small workspaces, use list_dir and
+read_file directly" for inventory. Model extended this "do it directly" permission
+beyond inventory into implementation.
+
+**Fix applied (70095a4):**
+1. Deleted ops-task embedded skill entirely
+2. Rewrote coordinator inventory step: "Inventory means listing, not reading or running"
+3. Added anti-rationalization: "Small tasks and simple workspaces are not exceptions"
+4. Folded useful ops-task content (stuck guidance) into implementer.md
 
 ### v19 variant experiment results (Mar 27)
 

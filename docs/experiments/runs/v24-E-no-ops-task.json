@@ -1,0 +1,40 @@
+{
+  "run_id": "v24-E-no-ops-task",
+  "date": "2026-03-27",
+  "git_sha": "70095a4",
+  "model": "openai/gpt-5.4-mini",
+  "variant": "B+ops-task-removal+coordinator-fix",
+  "results": {
+    "chess-best-move": {
+      "score": 0.333,
+      "reps": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "reps_pass": 1,
+      "reps_total": 3
+    },
+    "crack-7z-hash": {
+      "score": 1.0,
+      "reps": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "reps_pass": 3,
+      "reps_total": 3
+    },
+    "custom-memory-heap-crash": {
+      "score": 0.667,
+      "reps": [
+        0.0,
+        1.0,
+        1.0
+      ],
+      "reps_pass": 2,
+      "reps_total": 3
+    }
+  },
+  "s3_prefix": "s3://harbor-eval-results-526275945504/runs/v24-E-no-ops-task/"
+}
