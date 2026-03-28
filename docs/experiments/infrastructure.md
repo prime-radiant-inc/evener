@@ -116,30 +116,26 @@ subsequent launches skip the upload and can safely run in parallel.
 All eval launches go through a single script:
 
 ```bash
-# Full 89-task baseline (3 reps, batch mode)
-./tools/run_eval.sh
-
-# Wave mode: one task per instance, backfills as slots free (~2x faster)
+# Full 89-task eval (3 reps, one task per instance)
 ./tools/run_eval.sh --wave
 
 # Subset of tasks
-./tools/run_eval.sh --tasks "chess-best-move,kv-store-grpc"
-./tools/run_eval.sh --tasks failing              # all currently failing
-./tools/run_eval.sh --tasks untested             # all untested
-./tools/run_eval.sh --tasks hard                 # historically hard 16
-./tools/run_eval.sh --tasks failing --dry-run    # preview
+./tools/run_eval.sh --wave --tasks "chess-best-move,kv-store-grpc"
+./tools/run_eval.sh --wave --tasks failing       # all currently failing
+./tools/run_eval.sh --wave --tasks untested      # all untested
+./tools/run_eval.sh --wave --tasks hard          # historically hard 16
+./tools/run_eval.sh --wave --tasks failing --dry-run  # preview
 ```
 
 Builds the binary, stages it, extracts task names, launches on spot instances.
 Enforces clean working tree (must commit before launching). Saves launch
 metadata to `.serf-launches/` for `post_run.sh`.
 
-**Batch mode** (default): one instance per rep, all tasks on each with
-concurrency 8. Uses 24/128 vCPU. ~3 hours.
-
-**Wave mode** (`--wave`): one task per instance (c6i.xlarge), saturates spot
-quota (32 concurrent at 128 vCPU). Polls for completion, backfills freed
-slots. ~90 min. First complete rep of scores available in ~30 min.
+**Always use `--wave` (one task per instance).** Each task gets its own
+c6i.xlarge instance. The launcher saturates spot quota (32 concurrent at
+128 vCPU), polls for completion, and backfills freed slots. Full 89-task
+×3 reps completes in ~90 min, with the first complete rep of scores
+available in ~30 min.
 
 Override defaults: `--reps 5 --model openai/gpt-5.4 --instance-type c6i.2xlarge`
 
@@ -155,13 +151,11 @@ was launched with `run_eval.sh`.
 
 ### Spot instance rules
 
-- **1 task per instance for long tasks.** One task's timeout eats into the other's
-  budget. Use the loop pattern above.
-- Fast regression tasks (< 5 min) are the exception: batch with
-  `--task-names "task1,task2,..." --concurrency 8` on one instance.
-- **Full baselines**: use `run_eval.sh` (batch mode) or `run_eval.sh --wave`.
-  Batch puts all 89 tasks on each of 3 instances (~3 hours). Wave fans out
-  one-per-instance for ~90 min total.
+- **1 task per instance, always.** Never batch multiple tasks on one instance.
+  One task's timeout eats into others' budgets, and resource contention
+  changes agent behavior.
+- **Always use `--wave` mode.** The default batch mode (multiple tasks per
+  instance with `--concurrency 8`) is broken and should not be used.
 - **NEVER run evals on magic-kingdom.** It gets congested with Docker containers
   and causes failures. magic-kingdom is for staging and reading results only.
 - Use `--run-id` for parallel launches. Without it, auto-generated IDs have
@@ -292,20 +286,13 @@ The harness lives in `tools/coord-repro/`. Use when:
 
 Uses `--reasoning-effort none` and `gpt-5.4-mini` to match AWS eval conditions.
 
-### Workspace tree vs parent tree
+### Workspace tree (fixed)
 
-The parent tree scan (`scanParentTree`) dumps the workspace's parent directory
-contents into the system prompt. When the workspace is under `/tmp/`, this picks
-up thousands of experiment files, inflating subagent prompts from ~10K (AWS) to
-~88K (local).
-
-This was a massive confounder: local implementers appeared to read READMEs because
-the dump included HuggingFace cache paths. On AWS (clean Docker, `/app` workspace),
-prompts were lean and the implementer never found the README.
-
-**Fix:** The workspace tree change in `profile.go` replaces parent tree with
-workspace tree. When running local experiments before this fix ships, use workspaces
-outside `/tmp/` or verify that prompt sizes match the target environment.
+The system prompt includes a workspace tree showing files in the working
+directory. Previously, `scanParentTree` dumped the parent directory contents,
+which under `/tmp/` picked up thousands of experiment files (inflating prompts
+from ~10K to ~88K). This was a confounder for local testing — fixed by
+replacing parent tree with workspace tree (commit 9a284f5).
 
 ## Building experiment variants
 

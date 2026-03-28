@@ -47,18 +47,16 @@ When given an eval to tune against:
 ## Step 1: Run Baseline
 
 ```bash
-# Full 89-task baseline (3 reps, auto-generates run ID from git SHA)
-./tools/run_eval.sh
-
-# Wave mode: one task per instance, backfills as slots free (~2x faster)
+# Full 89-task eval (3 reps, one task per instance)
 ./tools/run_eval.sh --wave
 
 # Targeted tasks for iteration
-./tools/run_eval.sh --tasks "task1,task2"
-./tools/run_eval.sh --tasks failing    # all currently failing tasks
+./tools/run_eval.sh --wave --tasks "task1,task2"
+./tools/run_eval.sh --wave --tasks failing    # all currently failing tasks
 ```
 
 **Rules:**
+- **Always use `--wave`** (one task per instance). Never batch multiple tasks.
 - Never reuse job names. `run_eval.sh` auto-generates unique names.
 - Use 3 reps for baselines (1 rep is insufficient for noisy tasks).
 - Must commit before launching — `run_eval.sh` enforces this.

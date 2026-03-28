@@ -2,24 +2,24 @@
 
 ## Running evals
 
-Evals run on **AWS spot instances** via harbor-runner. Three workflows:
+Evals run on **AWS spot instances** via harbor-runner. **Always one task per
+instance** (`--wave` mode). Never batch multiple tasks on one instance.
 
-### Full baseline (all 89 tasks × 3 reps)
+### Full eval (all 89 tasks × 3 reps)
 ```bash
-./tools/run_eval.sh                           # build, stage, launch
-./tools/run_eval.sh --dry-run                 # preview without launching
-./tools/run_eval.sh --reps 5                  # more reps
-./tools/run_eval.sh --wave                    # fan-out: one task per instance
+./tools/run_eval.sh --wave                    # build, stage, launch
+./tools/run_eval.sh --wave --dry-run          # preview without launching
+./tools/run_eval.sh --wave --reps 5           # more reps
 ```
 Saves launch metadata to `.serf-launches/` for `post_run.sh` to read.
 
 ### Subset of tasks
 ```bash
-./tools/run_eval.sh --tasks "chess-best-move,kv-store-grpc"
-./tools/run_eval.sh --tasks failing              # all currently failing
-./tools/run_eval.sh --tasks untested             # all untested
-./tools/run_eval.sh --tasks hard                 # historically hard 16
-./tools/run_eval.sh --tasks failing --dry-run    # preview
+./tools/run_eval.sh --wave --tasks "chess-best-move,kv-store-grpc"
+./tools/run_eval.sh --wave --tasks failing       # all currently failing
+./tools/run_eval.sh --wave --tasks untested      # all untested
+./tools/run_eval.sh --wave --tasks hard          # historically hard 16
+./tools/run_eval.sh --wave --tasks failing --dry-run  # preview
 ```
 
 ### Local coordinator delegation test (~2 min/run)
@@ -81,6 +81,7 @@ python3 tools/interrogate_session.py \
 
 ## Key rules
 
+- **1 task per instance, always.** Use `--wave`. Never use default batch mode.
 - **NEVER run evals on magic-kingdom.** AWS spot only.
 - **Commit before deploying.** `run_eval.sh` enforces this.
 - **`make build-linux`** invalidates Go embed cache. Never use raw `go build`.
