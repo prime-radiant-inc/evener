@@ -68,7 +68,7 @@ for task in sorted(sb['tasks']):
     print(f'{task}\t{score}')
 " 2>/dev/null || echo "")
 
-# --- Read launch metadata (saved by run_full_baseline.sh) ---
+# --- Read launch metadata (saved by run_eval.sh) ---
 LAUNCH_META="$REPO_ROOT/.serf-launches/${RUN_ID}.json"
 GIT_SHA=$(git rev-parse --short HEAD)
 

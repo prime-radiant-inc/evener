@@ -48,20 +48,23 @@ When given an eval to tune against:
 
 ```bash
 # Full 89-task baseline (3 reps, auto-generates run ID from git SHA)
-./tools/run_full_baseline.sh
+./tools/run_eval.sh
 
-# Or targeted tasks for iteration
-./tools/run_eval_subset.sh --tasks "task1,task2"
-./tools/run_eval_subset.sh --tasks failing    # all currently failing tasks
+# Wave mode: one task per instance, backfills as slots free (~2x faster)
+./tools/run_eval.sh --wave
+
+# Targeted tasks for iteration
+./tools/run_eval.sh --tasks "task1,task2"
+./tools/run_eval.sh --tasks failing    # all currently failing tasks
 ```
 
 **Rules:**
-- Never reuse job names. `run_full_baseline.sh` auto-generates unique names.
+- Never reuse job names. `run_eval.sh` auto-generates unique names.
 - Use 3 reps for baselines (1 rep is insufficient for noisy tasks).
-- Must commit before launching — `run_full_baseline.sh` enforces this.
+- Must commit before launching — `run_eval.sh` enforces this.
 - Provenance (git SHA, branch, model) is auto-saved to `.serf-launches/`.
 - **Verify the binary** before trusting results — see "Verifying Deployed Binaries" below.
-  `run_full_baseline.sh` checks for embedded prompts automatically, but after
+  `run_eval.sh` checks for embedded prompts automatically, but after
   collecting results, confirm the transcript header's `build_version` matches.
 
 ## Step 2: Root Cause Every Failure
@@ -406,7 +409,7 @@ git add docs/experiments/ && git commit -m "results: RUN_ID"
 ```
 
 `post_run.sh` downloads from S3, updates the scoreboard, and shows score diffs
-vs the previous state. If the run was launched with `run_full_baseline.sh`, it
+vs the previous state. If the run was launched with `run_eval.sh`, it
 auto-reads the model, git SHA, and branch from `.serf-launches/`.
 
 For manual collection: `./tools/collect_results.py RUN_ID --model ... --git-sha ... --variant "..."`

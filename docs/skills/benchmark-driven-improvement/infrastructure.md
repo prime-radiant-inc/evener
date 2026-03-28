@@ -6,19 +6,20 @@ Evals run on **AWS spot instances** via harbor-runner. Three workflows:
 
 ### Full baseline (all 89 tasks × 3 reps)
 ```bash
-./tools/run_full_baseline.sh                  # build, stage, launch
-./tools/run_full_baseline.sh --dry-run        # preview without launching
-./tools/run_full_baseline.sh --reps 5         # more reps
+./tools/run_eval.sh                           # build, stage, launch
+./tools/run_eval.sh --dry-run                 # preview without launching
+./tools/run_eval.sh --reps 5                  # more reps
+./tools/run_eval.sh --wave                    # fan-out: one task per instance
 ```
 Saves launch metadata to `.serf-launches/` for `post_run.sh` to read.
 
 ### Subset of tasks
 ```bash
-./tools/run_eval_subset.sh --tasks "chess-best-move,kv-store-grpc"
-./tools/run_eval_subset.sh --tasks failing       # all currently failing
-./tools/run_eval_subset.sh --tasks untested       # all untested
-./tools/run_eval_subset.sh --tasks hard           # historically hard 16
-./tools/run_eval_subset.sh --tasks failing --dry-run   # preview
+./tools/run_eval.sh --tasks "chess-best-move,kv-store-grpc"
+./tools/run_eval.sh --tasks failing              # all currently failing
+./tools/run_eval.sh --tasks untested             # all untested
+./tools/run_eval.sh --tasks hard                 # historically hard 16
+./tools/run_eval.sh --tasks failing --dry-run    # preview
 ```
 
 ### Local coordinator delegation test (~2 min/run)
@@ -39,7 +40,7 @@ git add docs/experiments/ && git commit -m "results: RUN_ID"
 ```
 
 `post_run.sh` auto-reads model/SHA/branch from `.serf-launches/` if the run
-was launched with `run_full_baseline.sh`.
+was launched with `run_eval.sh`.
 
 ## Session interrogation
 
@@ -81,7 +82,7 @@ python3 tools/interrogate_session.py \
 ## Key rules
 
 - **NEVER run evals on magic-kingdom.** AWS spot only.
-- **Commit before deploying.** `run_full_baseline.sh` enforces this.
+- **Commit before deploying.** `run_eval.sh` enforces this.
 - **`make build-linux`** invalidates Go embed cache. Never use raw `go build`.
 - **Verify binaries:** `strings serf-linux-amd64 | grep "expected phrase"`
 - **Spot quota:** 128 vCPU (32 × c6i.xlarge or 16 × c6i.2xlarge)

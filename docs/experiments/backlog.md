@@ -112,7 +112,7 @@ impl-test-a was NOT shipped — its 3/3 was stochastic, not causal.
 - Makefile: `build-linux` target with cache invalidation
 - Session interrogation tool (real session resume, subagent support)
 - Root-cause prompt template
-- Eval tooling: run_full_baseline.sh, run_eval_subset.sh, run_status.sh, post_run.sh, interrogate_failures.sh
+- Eval tooling: run_eval.sh (unified launcher with wave mode), run_status.sh, post_run.sh, interrogate_failures.sh
 
 ### Tried and superseded (no longer active)
 - Scratch directory verification — v9/v10: still violated despite instruction

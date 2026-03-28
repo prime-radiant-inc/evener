@@ -111,35 +111,37 @@ foreground because `launch.sh` uses a staging directory keyed by run ID —
 parallel launches race on creating/deleting it. Once the tarball is in S3,
 subsequent launches skip the upload and can safely run in parallel.
 
-### Full 89-task baseline run
+### Launching evals
 
-For a complete baseline across all tasks, use the convenience script:
-
-```bash
-./tools/run_full_baseline.sh
-```
-
-This builds the binary, stages it, extracts all 89 task names from the scoreboard,
-and launches 3 reps on c6i.2xlarge with concurrency 8. Each instance runs all 89
-tasks and finishes in ~3 hours. Uses 24 of 128 vCPU quota.
-
-Override defaults with flags: `--reps 5 --model openai/gpt-5.4 --instance-type c6i.4xlarge`
-
-The script enforces a clean working tree (must commit before launching).
-
-### Subset of tasks
+All eval launches go through a single script:
 
 ```bash
-./tools/run_eval_subset.sh --tasks "chess-best-move,kv-store-grpc"
-./tools/run_eval_subset.sh --tasks failing       # all currently failing tasks
-./tools/run_eval_subset.sh --tasks untested       # all untested tasks
-./tools/run_eval_subset.sh --tasks hard           # historically hard 16
-./tools/run_eval_subset.sh --tasks failing --variant "testing fix X" --dry-run
+# Full 89-task baseline (3 reps, batch mode)
+./tools/run_eval.sh
+
+# Wave mode: one task per instance, backfills as slots free (~2x faster)
+./tools/run_eval.sh --wave
+
+# Subset of tasks
+./tools/run_eval.sh --tasks "chess-best-move,kv-store-grpc"
+./tools/run_eval.sh --tasks failing              # all currently failing
+./tools/run_eval.sh --tasks untested             # all untested
+./tools/run_eval.sh --tasks hard                 # historically hard 16
+./tools/run_eval.sh --tasks failing --dry-run    # preview
 ```
 
-Same build/stage/launch workflow as `run_full_baseline.sh`. Defaults to c6i.xlarge
-with concurrency 4 (smaller than full baseline). Saves launch metadata for
-`post_run.sh`.
+Builds the binary, stages it, extracts task names, launches on spot instances.
+Enforces clean working tree (must commit before launching). Saves launch
+metadata to `.serf-launches/` for `post_run.sh`.
+
+**Batch mode** (default): one instance per rep, all tasks on each with
+concurrency 8. Uses 24/128 vCPU. ~3 hours.
+
+**Wave mode** (`--wave`): one task per instance (c6i.xlarge), saturates spot
+quota (32 concurrent at 128 vCPU). Polls for completion, backfills freed
+slots. ~90 min. First complete rep of scores available in ~30 min.
+
+Override defaults: `--reps 5 --model openai/gpt-5.4 --instance-type c6i.2xlarge`
 
 ### Monitoring and collecting
 
@@ -149,7 +151,7 @@ with concurrency 4 (smaller than full baseline). Saves launch metadata for
 ```
 
 `post_run.sh` auto-reads model/SHA/branch from `.serf-launches/` if the run
-was launched with `run_full_baseline.sh` or `run_eval_subset.sh`.
+was launched with `run_eval.sh`.
 
 ### Spot instance rules
 
@@ -157,8 +159,9 @@ was launched with `run_full_baseline.sh` or `run_eval_subset.sh`.
   budget. Use the loop pattern above.
 - Fast regression tasks (< 5 min) are the exception: batch with
   `--task-names "task1,task2,..." --concurrency 8` on one instance.
-- **Full baselines**: use `run_full_baseline.sh` which puts all 89 tasks on each of
-  3 instances with concurrency 8. Each instance finishes in ~3 hours.
+- **Full baselines**: use `run_eval.sh` (batch mode) or `run_eval.sh --wave`.
+  Batch puts all 89 tasks on each of 3 instances (~3 hours). Wave fans out
+  one-per-instance for ~90 min total.
 - **NEVER run evals on magic-kingdom.** It gets congested with Docker containers
   and causes failures. magic-kingdom is for staging and reading results only.
 - Use `--run-id` for parallel launches. Without it, auto-generated IDs have
@@ -377,7 +380,7 @@ from S3 on demand).
 git add docs/experiments/ && git commit -m "results: RUN_ID"
 ```
 
-If the run was launched with `run_full_baseline.sh`, `post_run.sh` auto-reads
+If the run was launched with `run_eval.sh`, `post_run.sh` auto-reads
 the model, git SHA, and branch from `.serf-launches/RUN_ID.json` — no need
 to pass `--model` or `--git-sha` manually.
 

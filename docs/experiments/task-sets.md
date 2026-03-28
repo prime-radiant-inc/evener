@@ -49,12 +49,12 @@ public leaderboard. Still run them in full baselines — any pass is signal.
 
 ## Named sets in eval tools
 
-`run_eval_subset.sh` supports named sets:
+`run_eval.sh` supports named sets:
 
 ```bash
-./tools/run_eval_subset.sh --tasks failing    # all tasks with score < 1.0
-./tools/run_eval_subset.sh --tasks untested   # all tasks not yet tested
-./tools/run_eval_subset.sh --tasks hard       # the 16 historically hard tasks above
+./tools/run_eval.sh --tasks failing    # all tasks with score < 1.0
+./tools/run_eval.sh --tasks untested   # all tasks not yet tested
+./tools/run_eval.sh --tasks hard       # the 16 historically hard tasks above
 ```
 
 `tools/task_sets.py` has programmatic definitions:
