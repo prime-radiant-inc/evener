@@ -176,3 +176,37 @@ func TestDiscoverPluginAgents_SkipsNonMd(t *testing.T) {
 		t.Errorf("expected 1 agent, got %d: %v", len(plugin.Agents), keys(plugin.Agents))
 	}
 }
+
+func TestParsePluginAgent_WithTasks(t *testing.T) {
+	input := []byte("---\nname: test-agent\ndescription: \"Test agent\"\nmodel: inherit\ntasks:\n  - title: First step\n    prompt: \"Do the first thing\"\n    reasoning_effort: low\n  - title: Do work\n    insert: parent_tasks\n    prompt: \"Implement it\"\n    reasoning_effort: xhigh\n  - title: Verify\n    prompt: \"Check it\"\n---\n\nYou are a test agent.\n")
+	agent, err := parsePluginAgent(input, "test-plugin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.Tasks) != 3 {
+		t.Fatalf("expected 3 tasks, got %d", len(agent.Tasks))
+	}
+	if agent.Tasks[0].Title != "First step" {
+		t.Errorf("task 0 title = %q", agent.Tasks[0].Title)
+	}
+	if agent.Tasks[0].ReasoningEffort != "low" {
+		t.Errorf("task 0 effort = %q", agent.Tasks[0].ReasoningEffort)
+	}
+	if agent.Tasks[1].Insert != "parent_tasks" {
+		t.Errorf("task 1 insert = %q", agent.Tasks[1].Insert)
+	}
+	if agent.Tasks[1].ReasoningEffort != "xhigh" {
+		t.Errorf("task 1 effort = %q", agent.Tasks[1].ReasoningEffort)
+	}
+}
+
+func TestParsePluginAgent_NoTasks(t *testing.T) {
+	input := []byte("---\nname: simple\ndescription: \"No tasks\"\n---\n\nJust a prompt.\n")
+	agent, err := parsePluginAgent(input, "builtin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.Tasks) != 0 {
+		t.Fatalf("expected 0 tasks, got %d", len(agent.Tasks))
+	}
+}

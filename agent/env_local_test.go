@@ -215,6 +215,118 @@ func TestReadFile_Image_EndToEnd_ToolExecResult(t *testing.T) {
 	}
 }
 
+func TestReadFile_PDF_ReturnsBase64(t *testing.T) {
+	dir := t.TempDir()
+	env := NewLocalExecutionEnvironment(dir)
+
+	// Write a minimal PDF (just the magic bytes + enough to be a real header).
+	pdfData := []byte("%PDF-1.4 fake content\x00\x01\x02")
+	if err := os.WriteFile(filepath.Join(dir, "invoice.pdf"), pdfData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := env.ReadFile("invoice.pdf", nil, nil)
+	if err != nil {
+		t.Fatalf("ReadFile should not error for PDF: %v", err)
+	}
+	if !strings.HasPrefix(result, "[document:") {
+		t.Fatalf("expected [document: prefix, got: %q", result[:min(len(result), 50)])
+	}
+	if !strings.Contains(result, "pdf") {
+		t.Fatalf("expected 'pdf' in output, got: %q", result[:min(len(result), 80)])
+	}
+	// Verify the base64 round-trips.
+	idx := strings.Index(result, "\n")
+	if idx < 0 {
+		t.Fatal("expected newline separating header from base64")
+	}
+	b64 := strings.TrimSpace(result[idx+1:])
+	decoded, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		t.Fatalf("base64 decode: %v", err)
+	}
+	if !bytes.Equal(decoded, pdfData) {
+		t.Fatalf("round-trip mismatch: got %d bytes, want %d", len(decoded), len(pdfData))
+	}
+}
+
+func TestReadFile_PDF_DetectedByMagicBytes(t *testing.T) {
+	dir := t.TempDir()
+	env := NewLocalExecutionEnvironment(dir)
+
+	// PDF magic bytes but without .pdf extension.
+	pdfData := []byte("%PDF-1.7 some content\x00")
+	if err := os.WriteFile(filepath.Join(dir, "mystery.dat"), pdfData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := env.ReadFile("mystery.dat", nil, nil)
+	if err != nil {
+		t.Fatalf("ReadFile should detect PDF by magic bytes: %v", err)
+	}
+	if !strings.HasPrefix(result, "[document:") {
+		t.Fatalf("expected [document: prefix, got: %q", result[:min(len(result), 50)])
+	}
+}
+
+func TestParseDocumentResult_ExtractsPDFData(t *testing.T) {
+	pdfContent := []byte("%PDF-1.4 content\x00\x01")
+	encoded := base64.StdEncoding.EncodeToString(pdfContent)
+	readOutput := fmt.Sprintf("[document: pdf, %d bytes, base64 data follows]\n%s", len(pdfContent), encoded)
+
+	got := parseDocumentResult("invoice.pdf", readOutput)
+	if got == nil {
+		t.Fatal("expected non-nil result for document")
+	}
+	if !bytes.Equal(got.Data, pdfContent) {
+		t.Fatalf("Data mismatch: got %v, want %v", got.Data, pdfContent)
+	}
+	if got.MediaType != "application/pdf" {
+		t.Fatalf("MediaType = %q, want application/pdf", got.MediaType)
+	}
+	if !strings.Contains(got.Text, "[document: pdf") {
+		t.Fatalf("Text should contain header, got: %q", got.Text)
+	}
+}
+
+func TestParseDocumentResult_ReturnsNilForNonDocument(t *testing.T) {
+	got := parseDocumentResult("code.go", "1 | package main\n2 | func main() {}\n")
+	if got != nil {
+		t.Fatal("expected nil for non-document content")
+	}
+}
+
+func TestReadFile_PDF_EndToEnd_ToolExecResult(t *testing.T) {
+	dir := t.TempDir()
+	env := NewLocalExecutionEnvironment(dir)
+
+	pdfData := []byte("%PDF-1.4 invoice content\x00\x01\x02")
+	if err := os.WriteFile(filepath.Join(dir, "report.pdf"), pdfData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Step 1: ReadFile returns base64 document output.
+	output, err := env.ReadFile("report.pdf", nil, nil)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.HasPrefix(output, "[document:") {
+		t.Fatalf("expected [document: prefix, got: %q", output[:min(len(output), 50)])
+	}
+
+	// Step 2: parseDocumentResult extracts the document data.
+	doc := parseDocumentResult("report.pdf", output)
+	if doc == nil {
+		t.Fatal("parseDocumentResult returned nil")
+	}
+	if !bytes.Equal(doc.Data, pdfData) {
+		t.Fatalf("data mismatch: got %d bytes, want %d", len(doc.Data), len(pdfData))
+	}
+	if doc.MediaType != "application/pdf" {
+		t.Fatalf("MediaType = %q, want application/pdf", doc.MediaType)
+	}
+}
+
 func TestEditFile_FuzzyMatchWhitespace(t *testing.T) {
 	dir := t.TempDir()
 	env := NewLocalExecutionEnvironment(dir)

@@ -538,6 +538,34 @@ class TestTranscriptLoading:
         sessions = store.load_transcripts([])
         assert sessions == []
 
+    def test_discovers_agent_state_dir(self, tmp_path):
+        """Real harbor data writes to agent/agent-state/sessions/, not
+        serf-state/. RunStore must find transcripts under either name."""
+        job_root = tmp_path / "harbor-run"
+        task_dir = job_root / "mytask__abc123"
+        sessions = task_dir / "agent" / "agent-state" / "sessions"
+        sessions.mkdir(parents=True)
+        (sessions / "sess.transcript.jsonl").write_text(
+            json.dumps({"kind": "header", "format_version": 1,
+                         "session_id": "s1", "model": "gpt-5.4-mini",
+                         "depth": 0}) + "\n"
+        )
+        (task_dir / "verifier").mkdir()
+        (task_dir / "verifier" / "reward.txt").write_text("1.0")
+        (task_dir / "result.json").write_text(json.dumps({
+            "config": {"model": "gpt-5.4-mini"},
+            "started_at": "2026-03-01T12:00:00Z",
+            "finished_at": "2026-03-01T12:05:30Z",
+        }))
+
+        store = RunStore(tmp_path)
+        task = store.get_task("harbor-run", "mytask")
+        assert task is not None
+        assert len(task["transcript_files"]) == 1
+        loaded = store.load_transcripts(task["transcript_files"])
+        assert len(loaded) == 1
+        assert loaded[0]["session_id"] == "s1"
+
 
 class TestSessionTree:
     """RunStore.build_session_tree() organizes sessions by parent-child."""

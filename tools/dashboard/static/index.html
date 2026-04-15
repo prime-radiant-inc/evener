@@ -3,26 +3,23 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Serf eval dashboard — browse runs, tasks, and agent trajectories">
-    <title>Eval Dashboard</title>
+    <title>Serf Experiment Dashboard</title>
     <link rel="stylesheet" href="/static/style.css">
     <style>
-        /* Prevent flash of unstyled content */
+        /* Loading state while Preact initializes */
         #app:empty { display: flex; align-items: center; justify-content: center;
                      min-height: 60vh; color: #A0A0A0; font-size: 14px; }
         #app:empty::after { content: 'Loading...'; }
     </style>
 </head>
 <body>
-    <nav id="breadcrumb">
-        <a href="#/">Dashboard</a>
-    </nav>
+    <nav id="breadcrumb" style="display:none"></nav>
     <main id="app"></main>
     <noscript>
         <p style="padding:64px 32px;text-align:center;color:#6B6B6B">
-            JavaScript is required to use the Eval Dashboard.
+            JavaScript is required to use the Serf Experiment Dashboard.
         </p>
     </noscript>
-    <script src="/static/app.js"></script>
+    <script type="module" src="/static/js/app.js"></script>
 </body>
 </html>

@@ -89,6 +89,33 @@ func parseImageResult(path, readFileOutput string) *ImageResult {
 	}
 }
 
+// parseDocumentResult checks if ReadFile output is a document response (the [document: ...]
+// format produced by LocalExecutionEnvironment for PDFs). Returns an ImageResult so the
+// same vision side-channel pipeline handles both images and documents.
+func parseDocumentResult(path, readFileOutput string) *ImageResult {
+	if !strings.HasPrefix(readFileOutput, "[document:") {
+		return nil
+	}
+	idx := strings.Index(readFileOutput, "\n")
+	if idx < 0 {
+		return nil
+	}
+	b64 := strings.TrimSpace(readFileOutput[idx+1:])
+	data, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return nil
+	}
+	mt := llm.InferMimeTypeFromPath(path)
+	if mt == "" {
+		mt = "application/pdf"
+	}
+	return &ImageResult{
+		Text:      readFileOutput[:idx],
+		Data:      data,
+		MediaType: mt,
+	}
+}
+
 type RegisteredTool struct {
 	llm.Tool // embeds Definition + Execute
 	Schema   *jsonschema.Schema

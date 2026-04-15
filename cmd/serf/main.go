@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"runtime/pprof"
-	"runtime/trace"
 
 	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/cmdutil"
@@ -33,7 +31,7 @@ func main() {
 	}
 
 	model := flag.String("model", "", "LLM model identifier")
-	provider := flag.String("provider", "", "LLM provider (openai, anthropic, google)")
+	provider := flag.String("provider", "", "LLM provider")
 	workDir := flag.String("dir", "", "working directory (default: current directory)")
 	systemPrompt := flag.String("system-prompt", "", "path to a custom system prompt file")
 	stateDir := flag.String("state-dir", "", "override runtime state directory (default: XDG-computed)")
@@ -73,7 +71,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "A non-interactive coding agent.\n\n")
 		fmt.Fprintf(os.Stderr, "The task can be passed as arguments or piped via stdin.\n\n")
 		fmt.Fprintf(os.Stderr, "Required:\n")
-		fmt.Fprintf(os.Stderr, "  --provider <name>    LLM provider: openai, anthropic, google\n")
+		fmt.Fprintf(os.Stderr, "  --provider <name>    LLM provider: openai, anthropic, google, minimax, openrouter, kimi, glm\n")
 		fmt.Fprintf(os.Stderr, "  --model <name>       LLM model (e.g. gpt-5.2, claude-opus-4-6, gemini-3-flash-preview)\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		fmt.Fprintf(os.Stderr, "  --dir <path>         Working directory (default: current directory)\n")
@@ -111,40 +109,21 @@ func main() {
 	}
 	flag.Parse()
 
-	// CPU profiling: start before any real work, stop on exit.
 	if *cpuProfile != "" {
-		f, err := os.Create(*cpuProfile)
+		stop, err := cmdutil.StartCPUProfile(*cpuProfile)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "serf: cannot create CPU profile: %v\n", err)
+			fmt.Fprintf(os.Stderr, "serf: %v\n", err)
 			os.Exit(1)
 		}
-		if err := pprof.StartCPUProfile(f); err != nil {
-			f.Close()
-			fmt.Fprintf(os.Stderr, "serf: cannot start CPU profile: %v\n", err)
-			os.Exit(1)
-		}
-		defer func() {
-			pprof.StopCPUProfile()
-			f.Close()
-		}()
+		defer stop()
 	}
-
-	// Execution trace: start before any real work, stop on exit.
 	if *traceFile != "" {
-		f, err := os.Create(*traceFile)
+		stop, err := cmdutil.StartTrace(*traceFile)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "serf: cannot create trace file: %v\n", err)
+			fmt.Fprintf(os.Stderr, "serf: %v\n", err)
 			os.Exit(1)
 		}
-		if err := trace.Start(f); err != nil {
-			f.Close()
-			fmt.Fprintf(os.Stderr, "serf: cannot start trace: %v\n", err)
-			os.Exit(1)
-		}
-		defer func() {
-			trace.Stop()
-			f.Close()
-		}()
+		defer stop()
 	}
 
 	isResume := *resume != "" || *resumeWith != "" || *resumeLast || *listSessionsFlag

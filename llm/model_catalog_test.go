@@ -171,3 +171,82 @@ func TestEmbeddedModelCatalog(t *testing.T) {
 		t.Fatalf("gpt-4o provider = %q", info.Provider)
 	}
 }
+
+func TestParseLiteLLMCatalog_ReasoningEffortFields(t *testing.T) {
+	body := `{
+  "claude-opus-4-6": {
+    "litellm_provider":"anthropic","mode":"chat",
+    "max_input_tokens":200000,"max_output_tokens":8192,
+    "supports_function_calling":true,"supports_reasoning":true,
+    "reasoning_effort_levels": ["low", "medium", "high", "max"],
+    "supports_adaptive_thinking": true,
+    "supports_effort_parameter": true
+  },
+  "claude-opus-4-5": {
+    "litellm_provider":"anthropic","mode":"chat",
+    "max_input_tokens":200000,"max_output_tokens":8192,
+    "supports_function_calling":true,"supports_reasoning":true,
+    "reasoning_effort_levels": ["low", "medium", "high"],
+    "supports_adaptive_thinking": false,
+    "supports_effort_parameter": true
+  },
+  "claude-sonnet-4-5": {
+    "litellm_provider":"anthropic","mode":"chat",
+    "max_input_tokens":200000,"max_output_tokens":8192,
+    "supports_function_calling":true,"supports_reasoning":true,
+    "reasoning_effort_levels": ["low", "medium", "high"]
+  }
+}`
+	cat, err := parseLiteLLMCatalog([]byte(body))
+	if err != nil {
+		t.Fatalf("parseLiteLLMCatalog: %v", err)
+	}
+	if len(cat.Models) != 3 {
+		t.Fatalf("models: got %d want 3", len(cat.Models))
+	}
+
+	// Test Opus 4.6: adaptive + effort
+	opus46 := cat.GetModelInfo("claude-opus-4-6")
+	if opus46 == nil {
+		t.Fatal("claude-opus-4-6 not found")
+	}
+	if got := opus46.ReasoningEffortLevels; len(got) != 4 || got[0] != "low" || got[3] != "max" {
+		t.Fatalf("opus-4-6 effort levels: got %v, want [low medium high max]", got)
+	}
+	if !opus46.SupportsAdaptiveThinking {
+		t.Fatal("opus-4-6 SupportsAdaptiveThinking should be true")
+	}
+	if !opus46.SupportsEffortParameter {
+		t.Fatal("opus-4-6 SupportsEffortParameter should be true")
+	}
+
+	// Test Opus 4.5: manual + effort (hybrid)
+	opus45 := cat.GetModelInfo("claude-opus-4-5")
+	if opus45 == nil {
+		t.Fatal("claude-opus-4-5 not found")
+	}
+	if got := opus45.ReasoningEffortLevels; len(got) != 3 || got[2] != "high" {
+		t.Fatalf("opus-4-5 effort levels: got %v, want [low medium high]", got)
+	}
+	if opus45.SupportsAdaptiveThinking {
+		t.Fatal("opus-4-5 SupportsAdaptiveThinking should be false")
+	}
+	if !opus45.SupportsEffortParameter {
+		t.Fatal("opus-4-5 SupportsEffortParameter should be true")
+	}
+
+	// Test Sonnet 4.5: manual only (no effort fields means defaults to false)
+	sonnet45 := cat.GetModelInfo("claude-sonnet-4-5")
+	if sonnet45 == nil {
+		t.Fatal("claude-sonnet-4-5 not found")
+	}
+	if got := sonnet45.ReasoningEffortLevels; len(got) != 3 {
+		t.Fatalf("sonnet-4-5 effort levels: got %v, want [low medium high]", got)
+	}
+	if sonnet45.SupportsAdaptiveThinking {
+		t.Fatal("sonnet-4-5 SupportsAdaptiveThinking should default to false")
+	}
+	if sonnet45.SupportsEffortParameter {
+		t.Fatal("sonnet-4-5 SupportsEffortParameter should default to false")
+	}
+}

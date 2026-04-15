@@ -10,6 +10,15 @@ import (
 	"primeradiant.com/serf/frontmatter"
 )
 
+// TaskTemplate defines a default task in an agent's workflow.
+type TaskTemplate struct {
+	Title           string `json:"title"`
+	Prompt          string `json:"prompt"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	Type            string `json:"type,omitempty"`
+	Insert          string `json:"insert,omitempty"`
+}
+
 // PluginAgent represents a subagent defined by a plugin.
 type PluginAgent struct {
 	Name         string
@@ -17,9 +26,10 @@ type PluginAgent struct {
 	Model        string   // "inherit", "sonnet", "opus", "haiku"
 	Color        string
 	Tools        []string // serf canonical names (mapped at load time)
-	Skills       []string // skill names to auto-inject at dispatch time
-	SystemPrompt string   // markdown body
-	PluginName   string   // owning plugin
+	Skills       []string       // skill names to auto-inject at dispatch time
+	Tasks        []TaskTemplate // default workflow tasks from YAML
+	SystemPrompt string         // markdown body
+	PluginName   string         // owning plugin
 }
 
 // parsePluginAgent parses a markdown file with YAML frontmatter into a PluginAgent.
@@ -92,6 +102,37 @@ func parsePluginAgent(data []byte, pluginName string) (PluginAgent, error) {
 		}
 	}
 
+	var tasks []TaskTemplate
+	if raw, ok := doc.Meta["tasks"]; ok {
+		items, ok := raw.([]any)
+		if !ok {
+			return PluginAgent{}, fmt.Errorf("agent field \"tasks\" must be a list")
+		}
+		for _, item := range items {
+			m, ok := item.(map[string]any)
+			if !ok {
+				return PluginAgent{}, fmt.Errorf("each task must be an object with title and prompt")
+			}
+			tt := TaskTemplate{}
+			if v, ok := m["title"].(string); ok {
+				tt.Title = v
+			}
+			if v, ok := m["prompt"].(string); ok {
+				tt.Prompt = v
+			}
+			if v, ok := m["reasoning_effort"].(string); ok {
+				tt.ReasoningEffort = v
+			}
+			if v, ok := m["type"].(string); ok {
+				tt.Type = v
+			}
+			if v, ok := m["insert"].(string); ok {
+				tt.Insert = v
+			}
+			tasks = append(tasks, tt)
+		}
+	}
+
 	return PluginAgent{
 		Name:         name,
 		Description:  description,
@@ -99,6 +140,7 @@ func parsePluginAgent(data []byte, pluginName string) (PluginAgent, error) {
 		Color:        color,
 		Tools:        tools,
 		Skills:       skills,
+		Tasks:        tasks,
 		SystemPrompt: doc.Body,
 		PluginName:   pluginName,
 	}, nil

@@ -390,6 +390,243 @@ class TestSystemPrompt:
         data = resp.json()
         assert data["system_prompt"] == "You are serf. Build things."
 
+    def test_initial_prompt_on_each_trajectory_node(self, harbor_job_dir):
+        """Each root and child trajectory node includes the first
+        USER_INPUT text as initial_prompt."""
+        import json
+        task_dir = harbor_job_dir / "full-test" / "build-widget__abc123"
+        sessions_dir = task_dir / "agent" / "serf-state" / "sessions"
+
+        # Add a second session: a depth-1 child of the root with USER_INPUT
+        child_tf = sessions_dir / "sess-child.transcript.jsonl"
+        child_lines = [
+            {"kind": "header", "format_version": 1,
+             "session_id": "sess-child",
+             "parent_session_id": "sess-main",
+             "parent_tool_call_id": "tc-spawn",
+             "depth": 1, "model": "gpt-5.3-codex",
+             "profile_id": "openai",
+             "created_at": "2026-03-01T12:00:10Z"},
+            {"kind": "entry", "seq": 0, "turn": {
+                "kind": "USER_INPUT",
+                "message": {"role": "user", "content": [
+                    {"kind": "text", "text": "Write widget.py returning 42."}
+                ]},
+            }},
+        ]
+        child_tf.write_text("\n".join(json.dumps(l) for l in child_lines) + "\n")
+
+        client = _make_client(harbor_job_dir)
+        resp = client.get("/api/runs/full-test/tasks/build-widget",
+                          headers={"Accept": "application/json"})
+        data = resp.json()
+
+        # Root session's initial prompt came from _passing_transcript
+        assert data["trajectory"][0]["initial_prompt"] == \
+            "Build a widget that returns 42."
+        # Child session's initial prompt
+        assert data["trajectory"][0]["children"][0]["initial_prompt"] == \
+            "Write widget.py returning 42."
+
+    def test_system_prompt_on_each_trajectory_node(self, harbor_job_dir):
+        """Each root and child trajectory node carries its session's
+        system_prompt, so the structure view can show the prompt for
+        every agent in the delegation tree."""
+        import json
+        task_dir = harbor_job_dir / "full-test" / "build-widget__abc123"
+        sessions_dir = task_dir / "agent" / "serf-state" / "sessions"
+
+        # Rewrite the root session's header with a system_prompt.
+        root_tf = sessions_dir / "sess-main.transcript.jsonl"
+        root_lines = root_tf.read_text().splitlines()
+        root_header = json.loads(root_lines[0])
+        root_header["system_prompt"] = "I am the coordinator."
+        root_lines[0] = json.dumps(root_header)
+        root_tf.write_text("\n".join(root_lines) + "\n")
+
+        # Add a second session: a depth-1 child of the root.
+        child_tf = sessions_dir / "sess-child.transcript.jsonl"
+        child_header = {
+            "kind": "header",
+            "format_version": 1,
+            "session_id": "sess-child",
+            "parent_session_id": "sess-main",
+            "parent_tool_call_id": "tc-spawn",
+            "depth": 1,
+            "model": "gpt-5.3-codex",
+            "profile_id": "openai",
+            "created_at": "2026-03-01T12:00:10Z",
+            "system_prompt": "I am the implementer.",
+        }
+        child_entry = {"kind": "entry", "seq": 0, "turn": {
+            "kind": "ASSISTANT",
+            "message": {"role": "assistant", "content": [
+                {"kind": "text", "text": "Done."}
+            ]},
+            "timestamp": "2026-03-01T12:00:11Z",
+        }}
+        child_tf.write_text(
+            json.dumps(child_header) + "\n" + json.dumps(child_entry) + "\n"
+        )
+
+        client = _make_client(harbor_job_dir)
+        resp = client.get("/api/runs/full-test/tasks/build-widget",
+                          headers={"Accept": "application/json"})
+        data = resp.json()
+
+        # The root trajectory node carries its session's system_prompt.
+        assert data["trajectory"][0]["system_prompt"] == "I am the coordinator."
+
+        # The child trajectory node carries its own system_prompt.
+        children = data["trajectory"][0]["children"]
+        assert len(children) == 1
+        assert children[0]["system_prompt"] == "I am the implementer."
+
+
+class TestS3TranscriptFallback:
+    """When a task is missing locally and job_name matches wave_repN,
+    the server should sync the task from S3 via s3_client.sync_task()."""
+
+    def test_s3_fallback_populates_task(self, tmp_path, monkeypatch):
+        """S3 sync fills the local cache; second get_task finds the task."""
+        import server as srv
+
+        # Empty local data dir — no tasks present.
+        srv.store = RunStore(tmp_path)
+        srv._cache_dir = str(tmp_path / ".cache")
+
+        # Fake S3 sync: create the task dir on disk where RunStore expects
+        def fake_sync(wave, rep, task_name, cache_base):
+            assert wave == "wave-demo"
+            assert rep == 1
+            assert task_name == "build-widget"
+            job = cache_base / f"{wave}_rep{rep}"
+            task_dir = job / f"{task_name}__fromS3X"
+            verifier = task_dir / "verifier"
+            verifier.mkdir(parents=True)
+            (verifier / "reward.txt").write_text("1.0")
+            (task_dir / "result.json").write_text(json.dumps({
+                "config": {"model": "gpt-5.4-mini"},
+                "started_at": "2026-04-05T00:00:00Z",
+                "finished_at": "2026-04-05T00:05:00Z",
+            }))
+            sessions = task_dir / "agent" / "agent-state" / "sessions"
+            sessions.mkdir(parents=True)
+            (sessions / "s.transcript.jsonl").write_text(
+                json.dumps({"kind": "header", "format_version": 1,
+                             "session_id": "s1", "model": "gpt-5.4-mini",
+                             "depth": 0, "system_prompt": "hi"}) + "\n"
+            )
+            return task_dir
+
+        class FakeS3:
+            def sync_task(self, wave, rep, task_name, cache_base):
+                return fake_sync(wave, rep, task_name, cache_base)
+
+        monkeypatch.setattr(srv, "s3_client", FakeS3())
+        client = TestClient(srv.app)
+
+        resp = client.get("/api/runs/wave-demo_rep1/tasks/build-widget",
+                          headers={"Accept": "application/json"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["passed"] is True
+        assert data["reward"] == 1.0
+        # Trajectory surfaced from the synced transcript
+        assert data["trajectory"][0]["system_prompt"] == "hi"
+
+    def test_s3_fallback_no_client_returns_404(self, tmp_path):
+        """When s3_client is None, a missing task still 404s."""
+        import server as srv
+        srv.store = RunStore(tmp_path)
+        srv.s3_client = None
+        srv._cache_dir = str(tmp_path / ".cache")
+        client = TestClient(srv.app)
+        resp = client.get("/api/runs/wave-demo_rep1/tasks/missing",
+                          headers={"Accept": "application/json"})
+        assert resp.status_code == 404
+
+    def test_rep_query_param_syncs_requested_rep(self, tmp_path, monkeypatch):
+        """?rep=N with a bare wave URL syncs that rep, not rep 1."""
+        import server as srv
+        srv.store = RunStore(tmp_path)
+        srv._cache_dir = str(tmp_path / ".cache")
+
+        call_args = []
+        class FakeS3:
+            def sync_task(self, wave, rep, task_name, cache_base):
+                call_args.append((wave, rep))
+                job = cache_base / f"{wave}_rep{rep}"
+                task_dir = job / f"{task_name}__h{rep}"
+                verifier = task_dir / "verifier"
+                verifier.mkdir(parents=True)
+                (verifier / "reward.txt").write_text(f"0.{rep}")
+                (task_dir / "result.json").write_text(json.dumps({
+                    "config": {"model": "m"},
+                    "started_at": "2026-04-05T00:00:00Z",
+                    "finished_at": "2026-04-05T00:05:00Z",
+                }))
+                sessions = task_dir / "agent" / "agent-state" / "sessions"
+                sessions.mkdir(parents=True)
+                (sessions / "s.transcript.jsonl").write_text(
+                    json.dumps({"kind": "header", "format_version": 1,
+                                 "session_id": f"s{rep}", "model": "m",
+                                 "depth": 0}) + "\n"
+                )
+                return task_dir
+
+        monkeypatch.setattr(srv, "s3_client", FakeS3())
+        client = TestClient(srv.app)
+
+        resp = client.get("/api/runs/wave-abc/tasks/thing?rep=3",
+                          headers={"Accept": "application/json"})
+        assert resp.status_code == 200
+        assert call_args == [("wave-abc", 3)]
+        data = resp.json()
+        assert data["reward"] == 0.3
+
+    def test_s3_fallback_bare_wave_name_defaults_to_rep1(self, tmp_path, monkeypatch):
+        """Bare wave name (no _rep suffix) defaults to rep 1, syncs, retries
+        as {wave}_rep1."""
+        import server as srv
+        srv.store = RunStore(tmp_path)
+        srv._cache_dir = str(tmp_path / ".cache")
+
+        call_args = []
+        def fake_sync(wave, rep, task_name, cache_base):
+            call_args.append((wave, rep, task_name))
+            job = cache_base / f"{wave}_rep{rep}"
+            task_dir = job / f"{task_name}__barewaveH"
+            verifier = task_dir / "verifier"
+            verifier.mkdir(parents=True)
+            (verifier / "reward.txt").write_text("1.0")
+            (task_dir / "result.json").write_text(json.dumps({
+                "config": {"model": "gpt-5.4-mini"},
+                "started_at": "2026-04-05T00:00:00Z",
+                "finished_at": "2026-04-05T00:05:00Z",
+            }))
+            sessions = task_dir / "agent" / "agent-state" / "sessions"
+            sessions.mkdir(parents=True)
+            (sessions / "s.transcript.jsonl").write_text(
+                json.dumps({"kind": "header", "format_version": 1,
+                             "session_id": "s1", "model": "gpt-5.4-mini",
+                             "depth": 0}) + "\n"
+            )
+            return task_dir
+
+        class FakeS3:
+            def sync_task(self, wave, rep, task_name, cache_base):
+                return fake_sync(wave, rep, task_name, cache_base)
+
+        monkeypatch.setattr(srv, "s3_client", FakeS3())
+        client = TestClient(srv.app)
+
+        resp = client.get("/api/runs/wave-bare/tasks/some-task",
+                          headers={"Accept": "application/json"})
+        assert resp.status_code == 200
+        # sync called with rep=1 and the bare wave name
+        assert call_args == [("wave-bare", 1, "some-task")]
+
 
 class TestArtifactEndpoint:
     """Tests for GET /api/runs/{job}/tasks/{task}/artifacts."""
@@ -439,3 +676,101 @@ class TestArtifactEndpoint:
             headers={"Accept": "application/json"},
         )
         assert resp.status_code == 404
+
+
+class TestLiveRunRoutes:
+    """Tests for live run API routes (/api/live/runs/*)."""
+
+    SAMPLE_ENV = (
+        "RUN_ID=exp-test-20260404-1807\n"
+        "MODEL=openai/gpt-5.4-mini\n"
+        "BENCHMARK=terminal-bench@2.0\n"
+        "NUM_TASKS=2\n"
+        "REPS=1\n"
+        "INSTANCE_TYPE=r6i.large\n"
+        "AGENT_IMPORT=serf_agent:SerfAgent\n"
+        "LAUNCHED_AT=2026-04-04T18:07:14Z\n"
+        "INSTANCE=i-aaaaaaaaaaaa REP=1 TASK=task-one\n"
+        "INSTANCE=i-bbbbbbbbbbbb REP=1 TASK=task-two\n"
+    )
+
+    def _make_live_client(self, harbor_job_dir, state_dir):
+        """Create a TestClient with LiveStore configured."""
+        from live_store import LiveStore
+        import server as srv
+        srv.store = RunStore(harbor_job_dir)
+        srv._cache_dir = str(harbor_job_dir / ".cache")
+        srv.live_store = LiveStore(str(state_dir))
+        return TestClient(srv.app)
+
+    def test_list_runs_not_configured(self, harbor_job_dir):
+        """Returns 501 when live_store is None."""
+        import server as srv
+        srv.store = RunStore(harbor_job_dir)
+        srv._cache_dir = str(harbor_job_dir / ".cache")
+        srv.live_store = None
+        c = TestClient(srv.app)
+        resp = c.get("/api/live/runs")
+        assert resp.status_code == 501
+
+    def test_list_runs(self, harbor_job_dir, tmp_path):
+        (tmp_path / "exp-test.env").write_text(self.SAMPLE_ENV)
+        client = self._make_live_client(harbor_job_dir, tmp_path)
+        resp = client.get("/api/live/runs")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["run_id"] == "exp-test-20260404-1807"
+        assert len(data[0]["instances"]) == 2
+
+    def test_get_run_not_configured(self, harbor_job_dir):
+        """Returns 501 when live_store is None."""
+        import server as srv
+        srv.store = RunStore(harbor_job_dir)
+        srv._cache_dir = str(harbor_job_dir / ".cache")
+        srv.live_store = None
+        c = TestClient(srv.app)
+        resp = c.get("/api/live/runs/some-run")
+        assert resp.status_code == 501
+
+    def test_get_run_not_found(self, harbor_job_dir, tmp_path):
+        """Returns 404 when run_id doesn't exist."""
+        (tmp_path / "exp-test.env").write_text(self.SAMPLE_ENV)
+        client = self._make_live_client(harbor_job_dir, tmp_path)
+        resp = client.get("/api/live/runs/missing")
+        assert resp.status_code == 404
+
+    def test_get_run_enriched(self, harbor_job_dir, tmp_path):
+        """Returns run with AWS state merged in."""
+        from unittest.mock import patch, MagicMock
+        (tmp_path / "exp-test.env").write_text(self.SAMPLE_ENV)
+        client = self._make_live_client(harbor_job_dir, tmp_path)
+
+        with patch("live_store.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                stdout=json.dumps([[
+                    {"Id": "i-aaaaaaaaaaaa", "State": "running",
+                     "LaunchTime": "2026-04-04T18:07:14+00:00",
+                     "PublicIP": "1.2.3.4"},
+                ]]),
+                returncode=0,
+            )
+            resp = client.get("/api/live/runs/exp-test-20260404-1807")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["run_id"] == "exp-test-20260404-1807"
+        instances = {i["instance_id"]: i for i in data["instances"]}
+        assert instances["i-aaaaaaaaaaaa"]["aws_state"] == "running"
+        assert instances["i-aaaaaaaaaaaa"]["public_ip"] == "1.2.3.4"
+        assert instances["i-bbbbbbbbbbbb"]["aws_state"] == "unknown"
+
+    def test_stream_not_configured(self, harbor_job_dir):
+        """Returns 501 when live_store is None."""
+        import server as srv
+        srv.store = RunStore(harbor_job_dir)
+        srv._cache_dir = str(harbor_job_dir / ".cache")
+        srv.live_store = None
+        c = TestClient(srv.app)
+        resp = c.get("/api/live/runs/some-run/stream")
+        assert resp.status_code == 501

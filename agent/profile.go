@@ -9,6 +9,19 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// resolveEffortLevels returns reasoning effort levels for the given model.
+// It first checks the embedded model catalog for model-specific levels, then
+// falls back to the provider default. This allows per-model effort vocabularies
+// while maintaining backward compatibility.
+func resolveEffortLevels(model string, providerDefault []string) []string {
+	if cat := llm.EmbeddedModelCatalog(); cat != nil {
+		if mi := cat.GetModelInfo(model); mi != nil && len(mi.ReasoningEffortLevels) > 0 {
+			return append([]string(nil), mi.ReasoningEffortLevels...)
+		}
+	}
+	return providerDefault
+}
+
 type EnvironmentInfo struct {
 	WorkingDir            string        `json:"working_dir"`
 	Platform              string        `json:"platform"`
@@ -37,7 +50,12 @@ type ProviderProfile interface {
 	WithBasePrompt(prompt string) ProviderProfile
 	ProviderOptions() map[string]any
 	SupportsReasoning() bool
+	// ReasoningEffortLevels returns the valid effort strings this provider
+	// accepts, in ascending order. Returns an empty slice when the provider
+	// does not support reasoning control.
+	ReasoningEffortLevels() []string
 	SupportsStreaming() bool
+	SupportsWebSearch() bool
 	DefaultCommandTimeoutMS() int
 	KnowledgeCutoff() string
 	// ToolNameMap returns the canonical→provider-specific tool name mapping.
@@ -63,6 +81,8 @@ type baseProfile struct {
 	defaultTimeout  int
 	knowledgeCutoff string
 	providerOpts    map[string]any
+	effortLevels    []string
+	webSearch       bool
 }
 
 func (p *baseProfile) ID() string    { return p.id }
@@ -106,7 +126,11 @@ func (p *baseProfile) ProjectDocFiles() []string {
 }
 func (p *baseProfile) ProviderOptions() map[string]any { return p.providerOpts }
 func (p *baseProfile) SupportsReasoning() bool         { return p.reasoning }
+func (p *baseProfile) ReasoningEffortLevels() []string {
+	return append([]string(nil), p.effortLevels...)
+}
 func (p *baseProfile) SupportsStreaming() bool         { return p.streaming }
+func (p *baseProfile) SupportsWebSearch() bool         { return p.webSearch }
 func (p *baseProfile) DefaultCommandTimeoutMS() int    { return p.defaultTimeout }
 func (p *baseProfile) KnowledgeCutoff() string         { return p.knowledgeCutoff }
 func (p *baseProfile) CheapModel() string {
@@ -117,6 +141,8 @@ func (p *baseProfile) CheapModel() string {
 		return "claude-haiku-4-5-20251001"
 	case "gemini":
 		return "gemini-2.5-flash-lite"
+	case "glm":
+		return "glm-4.7-flash"
 	default:
 		return p.model
 	}
@@ -141,6 +167,12 @@ func (p *baseProfile) WithModel(model string) ProviderProfile {
 				return NewAnthropicProfile(bareModel)
 			case "google", "gemini":
 				return NewGeminiProfile(bareModel)
+			case "minimax":
+				return NewMiniMaxProfile(bareModel)
+			case "openrouter-anthropic":
+				return NewOpenRouterAnthropicProfile(bareModel)
+			case "kimi", "glm", "openrouter":
+				return NewOpenAICompatProfile(provider, bareModel, 0)
 			}
 		}
 		// Same provider — just use the bare model name.
@@ -278,17 +310,22 @@ func (p *baseProfile) BuildSystemPrompt(env EnvironmentInfo, docs []ProjectDoc, 
 }
 
 func NewOpenAIProfile(model string) ProviderProfile {
+	model = strings.TrimSpace(model)
+	defaultEfforts := []string{"low", "medium", "high", "xhigh"}
+	efforts := resolveEffortLevels(model, defaultEfforts)
 	return &baseProfile{
 		id:              "openai",
-		model:           strings.TrimSpace(model),
+		model:           model,
 		parallel:        true,
 		contextWindow:   128_000,
 		basePrompt:      "", // set by initSessionState via template system
 		docFiles:        []string{"AGENTS.md", ".codex/instructions.md"},
 		reasoning:       true,
 		streaming:       true,
+		webSearch:       true,
 		defaultTimeout:  120_000,
 		knowledgeCutoff: "2025-06-01",
+		effortLevels:    efforts,
 		providerOpts: map[string]any{
 			"openai": map[string]any{
 				"parallel_tool_calls": true,
@@ -310,7 +347,7 @@ func NewOpenAIProfile(model string) ProviderProfile {
 			defSendInput(),
 			defWait(),
 			defCloseAgent(),
-			defTaskList(),
+			defTaskList(efforts),
 			defWebFetch(),
 			defSubmitResult(),
 		},
@@ -356,6 +393,8 @@ func (p *anthropicProfile) WithModel(model string) ProviderProfile {
 				return NewOpenAIProfile(bareModel)
 			case "google", "gemini":
 				return NewGeminiProfile(bareModel)
+			case "minimax":
+				return NewMiniMaxProfile(bareModel)
 			}
 		}
 		model = bareModel
@@ -385,6 +424,8 @@ func NewAnthropicProfile(model string) ProviderProfile {
 	if has1M {
 		ctxWindow = 1_000_000
 	}
+	defaultEfforts := []string{"low", "medium", "high", "max"}
+	efforts := resolveEffortLevels(model, defaultEfforts)
 	return &anthropicProfile{
 		baseProfile: baseProfile{
 			id:              "anthropic",
@@ -395,8 +436,10 @@ func NewAnthropicProfile(model string) ProviderProfile {
 			docFiles:        []string{"CLAUDE.md", "AGENTS.md"},
 			reasoning:       true,
 			streaming:       true,
+			webSearch:       true,
 			defaultTimeout:  120_000,
 			knowledgeCutoff: "2025-04-01",
+			effortLevels:    efforts,
 			providerOpts:    anthropicProviderOpts(has1M),
 			toolDefs: []llm.ToolDefinition{
 				defReadFile(),
@@ -409,7 +452,7 @@ func NewAnthropicProfile(model string) ProviderProfile {
 				defSendInput(),
 				defWait(),
 				defCloseAgent(),
-				defTaskList(),
+				defTaskList(efforts),
 				defWebFetch(),
 				defSubmitResult(),
 				defUseSkill(),
@@ -419,17 +462,22 @@ func NewAnthropicProfile(model string) ProviderProfile {
 }
 
 func NewGeminiProfile(model string) ProviderProfile {
+	model = strings.TrimSpace(model)
+	defaultEfforts := []string{"low", "medium", "high"}
+	efforts := resolveEffortLevels(model, defaultEfforts)
 	return &baseProfile{
 		id:              "gemini",
-		model:           strings.TrimSpace(model),
+		model:           model,
 		parallel:        true,
 		contextWindow:   1_000_000,
 		basePrompt:      "", // set by initSessionState via template system
 		docFiles:        []string{"GEMINI.md", "AGENTS.md"},
 		reasoning:       true,
 		streaming:       true,
+		webSearch:       true,
 		defaultTimeout:  120_000,
 		knowledgeCutoff: "2025-03-01",
+		effortLevels:    efforts,
 		providerOpts: map[string]any{
 			"gemini": map[string]any{
 				"safetySettings": []map[string]any{
@@ -458,11 +506,173 @@ func NewGeminiProfile(model string) ProviderProfile {
 			defSendInput(),
 			defWait(),
 			defCloseAgent(),
-			defTaskList(),
+			defTaskList(efforts),
 			defWebFetch(),
 			defWebSearch(),
 			defSubmitResult(),
 			defUseSkill(),
+		},
+	}
+}
+
+func NewMiniMaxProfile(model string) ProviderProfile {
+	model = strings.TrimSpace(model)
+	defaultEfforts := []string{"low", "medium", "high", "max"}
+	efforts := resolveEffortLevels(model, defaultEfforts)
+	return &baseProfile{
+		id:              "minimax",
+		model:           model,
+		parallel:        true,
+		contextWindow:   204_800,
+		basePrompt:      "",
+		docFiles:        []string{"CLAUDE.md", "AGENTS.md"},
+		reasoning:       true,
+		streaming:       true,
+		defaultTimeout:  120_000,
+		knowledgeCutoff: "2025-06-01",
+		effortLevels:    efforts,
+		toolDefs: []llm.ToolDefinition{
+			defReadFile(),
+			defWriteFile(),
+			defEditFile(),
+			defShell(),
+			defGrep(),
+			defGlob(),
+			defSpawnAgent(),
+			defSendInput(),
+			defWait(),
+			defCloseAgent(),
+			defTaskList(efforts),
+			defWebFetch(),
+			defSubmitResult(),
+			defUseSkill(),
+		},
+	}
+}
+
+// NewOpenRouterAnthropicProfile creates a profile that routes any OpenRouter-
+// served model through OpenRouter's Anthropic-Messages-compatible endpoint
+// (https://openrouter.ai/api/v1/messages).
+//
+// Use this for models whose native tool-call format is Anthropic-style XML
+// (notably minimax/minimax-m2.7). Routing them through OpenRouter's OpenAI
+// chat/completions endpoint produces corrupt tool_calls.arguments where XML
+// fragments leak into the JSON args string; the Anthropic endpoint keeps the
+// model's native format end-to-end.
+//
+// The provider id is "openrouter-anthropic" which is served by
+// llm/providers/openrouter_anthropic — it wraps the standard Anthropic
+// adapter with the OpenRouter base URL and OPENROUTER_API_KEY.
+func NewOpenRouterAnthropicProfile(model string) ProviderProfile {
+	model = strings.TrimSpace(model)
+	// Ducktype capabilities from the catalog for the specific model.
+	contextWindow := 128_000
+	ws := true // default to web search on (Anthropic models support it)
+	if cat := llm.EmbeddedModelCatalog(); cat != nil {
+		if mi := cat.GetModelInfo(model); mi != nil {
+			if mi.ContextWindow > 0 {
+				contextWindow = mi.ContextWindow
+			}
+			// Only override if the catalog has an explicit entry for this model.
+			// Absent models keep the default (true).
+			ws = mi.SupportsWebSearch
+		}
+	}
+	// Resolve effort levels from catalog; fall back to MiniMax defaults.
+	defaultEfforts := []string{"low", "medium", "high", "max"}
+	efforts := resolveEffortLevels(model, defaultEfforts)
+	return &baseProfile{
+		id:              "openrouter-anthropic",
+		model:           model,
+		parallel:        true,
+		contextWindow:   contextWindow,
+		basePrompt:      "",
+		docFiles:        []string{"CLAUDE.md", "AGENTS.md"},
+		reasoning:       true,
+		streaming:       true,
+		webSearch:       ws,
+		defaultTimeout:  120_000,
+		knowledgeCutoff: "2025-06-01",
+		effortLevels:    efforts,
+		providerOpts: map[string]any{
+			"anthropic": map[string]any{
+				"max_tokens": 16384,
+			},
+		},
+		toolDefs: []llm.ToolDefinition{
+			defReadFile(),
+			defWriteFile(),
+			defEditFile(),
+			defShell(),
+			defGrep(),
+			defGlob(),
+			defSpawnAgent(),
+			defSendInput(),
+			defWait(),
+			defCloseAgent(),
+			defTaskList(efforts),
+			defWebFetch(),
+			defSubmitResult(),
+			defUseSkill(),
+		},
+	}
+}
+
+// NewOpenAICompatProfile creates a profile for OpenAI-compatible providers
+// (kimi, glm, openrouter, etc.). If contextWindow is 0, it's looked up from
+// the embedded model catalog; if still unknown, defaults to 128K.
+func NewOpenAICompatProfile(id, model string, contextWindow int) ProviderProfile {
+	model = strings.TrimSpace(model)
+	if contextWindow == 0 {
+		if cat := llm.EmbeddedModelCatalog(); cat != nil {
+			if mi := cat.GetModelInfo(model); mi != nil && mi.ContextWindow > 0 {
+				contextWindow = mi.ContextWindow
+			}
+		}
+	}
+	if contextWindow == 0 {
+		contextWindow = 128_000
+	}
+	defaultEfforts := []string{"low", "medium", "high"}
+	efforts := resolveEffortLevels(model, defaultEfforts)
+	// MiniMax via OpenRouter uses reasoning_details for multi-turn reasoning
+	// (not OpenAI's reasoning_content). Set the provider option that tells the
+	// openai-compat adapter to serialize/deserialize reasoning_details.
+	var providerOpts map[string]any
+	if strings.HasPrefix(model, "minimax/") {
+		providerOpts = map[string]any{
+			"openai-compatible": map[string]any{
+				"reasoning": map[string]any{"enabled": true},
+			},
+		}
+	}
+	return &baseProfile{
+		id:              id,
+		model:           model,
+		parallel:        true,
+		contextWindow:   contextWindow,
+		basePrompt:      "",
+		docFiles:        []string{"AGENTS.md"},
+		reasoning:       true,
+		streaming:       true,
+		defaultTimeout:  120_000,
+		knowledgeCutoff: "2025-06-01",
+		effortLevels:    efforts,
+		providerOpts:    providerOpts,
+		toolDefs: []llm.ToolDefinition{
+			defReadFile(),
+			defApplyPatch(),
+			defWriteFile(),
+			defShell(),
+			defGrep(),
+			defGlob(),
+			defSpawnAgent(),
+			defSendInput(),
+			defWait(),
+			defCloseAgent(),
+			defTaskList(efforts),
+			defWebFetch(),
+			defSubmitResult(),
 		},
 	}
 }
@@ -488,7 +698,7 @@ func envInfoFromEnv(env ExecutionEnvironment) EnvironmentInfo {
 func defReadFile() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "read_file",
-		Description: "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. When reading an image, describe what you hope to learn — the system will provide a detailed description alongside the image.",
+		Description: "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis. When reading an image or PDF, describe what you hope to learn — the system will provide a detailed description alongside the file.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -496,7 +706,7 @@ func defReadFile() llm.ToolDefinition {
 				"file_path": map[string]any{"type": "string"},
 				"offset":    map[string]any{"type": "integer"},
 				"limit":     map[string]any{"type": "integer"},
-				"purpose":   map[string]any{"type": "string", "description": "For image files: what do you hope to learn by looking at this image?"},
+				"purpose":   map[string]any{"type": "string", "description": "For image/PDF files: describe what factual data you need extracted. Vision is an OCR + description service, not an analyst. It will extract and describe what you ask for; interpretation and classification are your job. Concrete asks work best: transcribe, list, extract, locate."},
 			},
 			"required": []string{"file_path"},
 		},
@@ -701,11 +911,23 @@ func defSpawnAgent() llm.ToolDefinition {
 			"properties": map[string]any{
 				"task":        map[string]any{"type": "string"},
 				"model":       map[string]any{"type": "string", "description": "Model override (default: parent model)"},
-				"working_dir": map[string]any{"type": "string", "description": "Subdirectory to scope the agent to"},
 				"max_turns":   map[string]any{"type": "integer", "description": "Turn limit for the subagent (default: 500)"},
 				"agent_type":  map[string]any{"type": "string", "description": "Agent type (e.g. 'explorer' for built-in, or 'plugin-name:agent-name' for plugin agents)"},
 				"blocking":          map[string]any{"type": "boolean", "description": "When true, spawns the agent and waits for completion in a single call, returning the result directly. Do NOT call wait() after a blocking spawn — the result is already in the response. Default is false (async). Use blocking=false only when you need to run multiple agents in parallel, then call wait() on each agent_id."},
-				"reasoning_effort": map[string]any{"type": "string", "description": "Reasoning effort for this subagent: low, medium, high, or xhigh. Default inherits from parent. Use high/xhigh for complex tasks."},
+				"reasoning_effort": map[string]any{"type": "string", "description": "Reasoning effort for this subagent: low, medium, high, or xhigh. Default inherits from parent. Start with low — it auto-escalates when the agent gets stuck."},
+				"task_list": map[string]any{
+					"type":        "array",
+					"description": "Pre-populate the subagent's task list. Items replace the agent's 'parent_tasks' placeholder.",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"title":            map[string]any{"type": "string", "description": "Short task title"},
+							"prompt":           map[string]any{"type": "string", "description": "Detailed instructions"},
+							"reasoning_effort": map[string]any{"type": "string", "description": "low|medium|high|xhigh"},
+						},
+						"required": []string{"title", "prompt"},
+					},
+				},
 			},
 			"required": []string{"task"},
 		},
@@ -725,6 +947,19 @@ func defSendInput() llm.ToolDefinition {
 				"blocking": map[string]any{
 					"type":        "boolean",
 					"description": "When true, sends the message and waits for the agent to finish, returning the result directly. Do NOT call wait() after a blocking resume. Default is false.",
+				},
+				"task_list": map[string]any{
+					"type":        "array",
+					"description": "Append tasks to the subagent's task list. Items are added after any existing tasks.",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"title":            map[string]any{"type": "string", "description": "Short task title"},
+							"prompt":           map[string]any{"type": "string", "description": "Detailed instructions"},
+							"reasoning_effort": map[string]any{"type": "string", "description": "low|medium|high|xhigh"},
+						},
+						"required": []string{"title", "prompt"},
+					},
 				},
 			},
 			"required": []string{"agent_id", "message"},
@@ -832,10 +1067,18 @@ func defSubmitResultNamed(name string) llm.ToolDefinition {
 	}
 }
 
-func defTaskList() llm.ToolDefinition {
+func defTaskList(effortLevels []string) llm.ToolDefinition {
+	reasoningDesc := "Raise or lower the reasoning budget for this task. Omit to leave unchanged."
+	reasoningSchema := map[string]any{
+		"type":        "string",
+		"description": reasoningDesc,
+	}
+	if len(effortLevels) > 0 {
+		reasoningSchema["enum"] = append([]string(nil), effortLevels...)
+	}
 	return llm.ToolDefinition{
 		Name:        "task_list",
-		Description: "Manage a persistent task list. Actions: view (show all tasks), append (add new tasks), update (change task status to open/in_progress/done/cancelled). Implementation tasks automatically get a verification task created after them.",
+		Description: "Manage your task list. Actions: view (show all tasks with reasoning effort levels), append (add new tasks), update (change status — when you mark a task done, the next task auto-starts and its prompt is injected). You can modify your task list at any time: add tasks, reorder via dependencies, or cancel tasks you don't need.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -880,6 +1123,7 @@ func defTaskList() llm.ToolDefinition {
 								"items":       map[string]any{"type": "integer"},
 								"description": "Set dependencies. [] clears them. Omit to leave unchanged.",
 							},
+							"reasoning_effort": reasoningSchema,
 						},
 						"required": []string{"id", "status"},
 					},

@@ -641,7 +641,9 @@ func (p tinyProfile) WithModel(model string) ProviderProfile {
 func (p tinyProfile) WithBasePrompt(string) ProviderProfile { return p }
 func (p tinyProfile) ProviderOptions() map[string]any       { return p.opts }
 func (p tinyProfile) SupportsReasoning() bool               { return false }
+func (p tinyProfile) ReasoningEffortLevels() []string        { return nil }
 func (p tinyProfile) SupportsStreaming() bool               { return false }
+func (p tinyProfile) SupportsWebSearch() bool               { return false }
 func (p tinyProfile) DefaultCommandTimeoutMS() int          { return 10_000 }
 func (p tinyProfile) KnowledgeCutoff() string               { return "2025-01-01" }
 func (p tinyProfile) ToolNameMap() map[string]string        { return nil }
@@ -1150,7 +1152,7 @@ func TestSession_Subagents_SpawnWaitClose_AndDepthLimit(t *testing.T) {
 	if sub == nil || sub.sess == nil {
 		t.Fatalf("missing subagent session for %q", agentID)
 	}
-	if _, err := sub.sess.spawnAgent(context.Background(), "nested", "", "", 0, "", ""); err == nil {
+	if _, err := sub.sess.spawnAgent(context.Background(), "nested", "", "", 0, "", "", nil); err == nil {
 		t.Fatalf("expected depth limit error, got nil")
 	}
 
@@ -3099,6 +3101,76 @@ func TestSession_ReasoningEffort_MediumPassedThrough(t *testing.T) {
 	}
 	if reqs[0].ReasoningEffort == nil || *reqs[0].ReasoningEffort != "medium" {
 		t.Fatalf("reasoning_effort: got %#v, want 'medium'", reqs[0].ReasoningEffort)
+	}
+}
+
+func TestSession_TaskListUpdateEscalatesReasoningEffort(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	taskListCall := func(id string, args string) llm.Response {
+		return llm.Response{Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{{
+				Kind:     llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{ID: id, Name: "task_list", Arguments: json.RawMessage(args)},
+			}},
+		}}
+	}
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			// Step 1: create a task.
+			func(req llm.Request) llm.Response {
+				return taskListCall("c1", `{"action":"append","tasks":[{"type":"implement","description":"work","prompt":"do stuff"}]}`)
+			},
+			// Step 2: start it (in_progress, no effort override yet).
+			func(req llm.Request) llm.Response {
+				return taskListCall("c2", `{"action":"update","updates":[{"id":1,"status":"in_progress"}]}`)
+			},
+			// Step 3: escalate reasoning_effort to high.
+			func(req llm.Request) llm.Response {
+				return taskListCall("c3", `{"action":"update","updates":[{"id":1,"status":"in_progress","reasoning_effort":"high"}]}`)
+			},
+			// Step 4: done — this request should carry effort=high.
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("done")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		ReasoningEffort: "low",
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello"); err != nil {
+		t.Fatal(err)
+	}
+	sess.Close()
+
+	reqs := f.Requests()
+	if len(reqs) < 4 {
+		t.Fatalf("expected >=4 requests, got %d", len(reqs))
+	}
+
+	// Request 0-2 should have effort=low (session default, no task override yet or task has no effort set).
+	for i := 0; i < 3; i++ {
+		if reqs[i].ReasoningEffort == nil || *reqs[i].ReasoningEffort != "low" {
+			t.Fatalf("req[%d] reasoning_effort: got %#v, want 'low'", i, reqs[i].ReasoningEffort)
+		}
+	}
+
+	// Request 3 (after task escalated to high) should have effort=high.
+	if reqs[3].ReasoningEffort == nil || *reqs[3].ReasoningEffort != "high" {
+		t.Fatalf("req[3] reasoning_effort after escalation: got %#v, want 'high'", reqs[3].ReasoningEffort)
 	}
 }
 

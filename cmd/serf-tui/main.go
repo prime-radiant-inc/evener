@@ -14,7 +14,7 @@ import (
 
 func main() {
 	addr := flag.String("addr", "", "connect to existing server (skip embedded startup)")
-	provider := flag.String("provider", "", "LLM provider (openai, anthropic, google)")
+	provider := flag.String("provider", "", "LLM provider")
 	modelFlag := flag.String("model", "", "LLM model identifier")
 	workDir := flag.String("dir", "", "working directory")
 	stateDir := flag.String("state-dir", "", "override runtime state directory")
@@ -24,6 +24,21 @@ func main() {
 	resume := flag.String("resume", "", "resume a previous session by ID")
 	resumeLast := flag.Bool("resume-last", false, "resume the most recent session")
 	listSessions := flag.Bool("list-sessions", false, "pick a session to resume interactively")
+	minResultRound := flag.Int("min-result-round", 0, "minimum round before result submission accepted")
+	enableReviewerGate := flag.Bool("enable-reviewer-gate", false, "spawn reviewer subagent to validate result")
+	noAutoVerify := flag.Bool("no-auto-verify", false, "disable auto-generated verify tasks")
+	maxSubagentDepth := flag.Int("max-subagent-depth", -1, "max subagent nesting depth")
+	shareTaskStore := flag.Bool("share-task-store", false, "share task list between parent and child sessions")
+	resultToolName := flag.String("result-tool-name", "", "override the result tool name")
+	exportATIF := flag.String("export-atif", "", "export ATIF trajectory to this path")
+	contextStrategy := flag.String("context-strategy", "", "context management strategy")
+	verbose := flag.Bool("verbose", false, "emit NDJSON events to stderr")
+	noProjectPrompts := flag.Bool("no-project-prompts", false, "suppress .serf/prompts/ loading")
+	agentName := flag.String("agent", "", "agent persona name")
+	systemPromptAsUser := flag.Bool("system-prompt-as-user", false, "deliver system prompt as first user message")
+	resumeWith := flag.String("resume-with", "", "start a new task using a previous session's context")
+	cpuProfile := flag.String("cpu-profile", "", "write CPU profile to file")
+	traceFile := flag.String("trace", "", "write execution trace to file")
 
 	var systemPromptAppend cmdutil.StringSliceFlag
 	flag.Var(&systemPromptAppend, "system-prompt-append", "path to append to system prompt (repeatable)")
@@ -37,6 +52,23 @@ func main() {
 	flag.Var(&pluginDirs, "plugin-dir", "plugin directory (repeatable)")
 
 	flag.Parse()
+
+	if *cpuProfile != "" {
+		stop, err := cmdutil.StartCPUProfile(*cpuProfile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "serf-tui: %v\n", err)
+			os.Exit(1)
+		}
+		defer stop()
+	}
+	if *traceFile != "" {
+		stop, err := cmdutil.StartTrace(*traceFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "serf-tui: %v\n", err)
+			os.Exit(1)
+		}
+		defer stop()
+	}
 
 	// If --list-sessions, show interactive picker before starting anything else.
 	if *listSessions {
@@ -70,12 +102,25 @@ func main() {
 			systemPrompt:       *systemPrompt,
 			systemPromptAppend: []string(systemPromptAppend),
 			maxRounds:          *maxRounds,
+			minResultRound:     *minResultRound,
+			enableReviewerGate: *enableReviewerGate,
+			noAutoVerify:       *noAutoVerify,
+			maxSubagentDepth:   *maxSubagentDepth,
+			shareTaskStore:     *shareTaskStore,
+			resultToolName:     *resultToolName,
+			exportATIF:         *exportATIF,
+			contextStrategy:    *contextStrategy,
+			verbose:            *verbose,
+			noProjectPrompts:   *noProjectPrompts,
+			agentName:          *agentName,
+			systemPromptAsUser: *systemPromptAsUser,
 			reasoningEffort:    *reasoningEffort,
 			skillsDirs:         []string(skillsDirs),
 			mcpServers:         []string(mcpServers),
 			mcpConfigs:         []string(mcpConfigs),
 			pluginDirs:         []string(pluginDirs),
 			resume:             *resume,
+			resumeWith:         *resumeWith,
 			resumeLast:         *resumeLast,
 		})
 		if err != nil {

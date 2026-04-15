@@ -59,7 +59,7 @@ type toolCallInfo struct {
 
 const toolCollapseThreshold = 5
 
-func renderMessage(msg chatMessage, width int) string {
+func renderMessage(msg chatMessage, width int, focused bool) string {
 	switch msg.Kind {
 	case msgUser:
 		return userBlockStyle.Width(width).Render("> " + msg.Text)
@@ -75,17 +75,21 @@ func renderMessage(msg chatMessage, width int) string {
 		if msg.Tool == nil || msg.Tool.Hidden {
 			return ""
 		}
-		return renderToolCall(*msg.Tool, width)
+		return renderToolCall(*msg.Tool, width, focused)
 	case msgSystem:
 		return systemStyle.Width(width).Render(msg.Text)
 	}
 	return ""
 }
 
-func renderToolCall(tc toolCallInfo, width int) string {
+func renderToolCall(tc toolCallInfo, width int, focused bool) string {
+	// Show a distinct arrow when focused.
 	arrow := "▸"
 	if tc.Expanded {
 		arrow = "▾"
+	}
+	if focused {
+		arrow = "▶"
 	}
 
 	dur := ""

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/llm"
 )
 
 func TestProviderProfiles_ToolsetsAndDocSelection(t *testing.T) {
@@ -528,7 +530,7 @@ func TestSendInput_UsesMessageParam(t *testing.T) {
 	}
 }
 
-func TestSpawnAgent_HasWorkingDirAndMaxTurns(t *testing.T) {
+func TestSpawnAgent_HasMaxTurns(t *testing.T) {
 	profiles := []ProviderProfile{
 		NewOpenAIProfile("gpt-5.2"),
 		NewAnthropicProfile("claude-sonnet-4-20250514"),
@@ -539,8 +541,8 @@ func TestSpawnAgent_HasWorkingDirAndMaxTurns(t *testing.T) {
 			for _, td := range p.ToolDefinitions() {
 				if td.Name == "spawn_agent" {
 					props := td.Parameters["properties"].(map[string]any)
-					if _, ok := props["working_dir"]; !ok {
-						t.Fatal("spawn_agent missing working_dir parameter")
+					if _, ok := props["working_dir"]; ok {
+						t.Fatal("spawn_agent should NOT have working_dir parameter (removed)")
 					}
 					if _, ok := props["max_turns"]; !ok {
 						t.Fatal("spawn_agent missing max_turns parameter")
@@ -997,4 +999,198 @@ func TestBuildSystemPrompt_WorkspaceAnnotation(t *testing.T) {
 	if !strings.Contains(prompt, "snapshot of the working directory taken at session start") {
 		t.Error("workspace section missing static annotation")
 	}
+}
+
+// --- MiniMax profile tests ---
+
+func TestMiniMaxProfile_BasicProperties(t *testing.T) {
+	p := NewMiniMaxProfile("MiniMax-M2.7")
+	if p.ID() != "minimax" {
+		t.Fatalf("ID() = %q, want minimax", p.ID())
+	}
+	if p.Model() != "MiniMax-M2.7" {
+		t.Fatalf("Model() = %q", p.Model())
+	}
+	if p.ContextWindowSize() != 204_800 {
+		t.Fatalf("ContextWindowSize() = %d, want 204800", p.ContextWindowSize())
+	}
+	if !p.SupportsReasoning() {
+		t.Fatal("should support reasoning")
+	}
+	if !p.SupportsStreaming() {
+		t.Fatal("should support streaming")
+	}
+}
+
+func TestMiniMaxProfile_AnthropicStyleTools(t *testing.T) {
+	// MiniMax direct platform uses Anthropic API, so it should have
+	// Anthropic-style tools (edit_file, use_skill, no apply_patch).
+	p := NewMiniMaxProfile("MiniMax-M2.7")
+	assertHasTool(t, p, "edit_file")
+	assertHasTool(t, p, "use_skill")
+	assertMissingTool(t, p, "apply_patch")
+}
+
+func TestMiniMaxProfile_ToolListExact(t *testing.T) {
+	p := NewMiniMaxProfile("MiniMax-M2.7")
+	assertToolListExact(t, p, []string{
+		"read_file",
+		"write_file",
+		"edit_file",
+		"shell",
+		"grep",
+		"glob",
+		"spawn_agent",
+		"resume_agent",
+		"wait",
+		"close_agent",
+		"task_list",
+		"web_fetch",
+		"communicate",
+		"use_skill",
+	})
+}
+
+func TestMiniMaxProfile_WithModel_CrossProvider(t *testing.T) {
+	// WithModel("anthropic/claude-opus-4-6") on a MiniMax profile should
+	// return an Anthropic profile.
+	orig := NewMiniMaxProfile("MiniMax-M2.7")
+	cloned := orig.WithModel("anthropic/claude-opus-4-6")
+	if cloned.ID() != "anthropic" {
+		t.Fatalf("ID() = %q, want anthropic", cloned.ID())
+	}
+	if cloned.Model() != "claude-opus-4-6" {
+		t.Fatalf("Model() = %q", cloned.Model())
+	}
+}
+
+func TestWithModel_CrossProviderToMiniMax(t *testing.T) {
+	// WithModel("minimax/MiniMax-M2.7") on an OpenAI profile should return
+	// a MiniMax profile.
+	orig := NewOpenAIProfile("gpt-5.2")
+	cloned := orig.WithModel("minimax/MiniMax-M2.7")
+	if cloned.ID() != "minimax" {
+		t.Fatalf("ID() = %q, want minimax", cloned.ID())
+	}
+	if cloned.Model() != "MiniMax-M2.7" {
+		t.Fatalf("Model() = %q", cloned.Model())
+	}
+}
+
+func TestResolveEffortLevels_CatalogHit(t *testing.T) {
+	// claude-opus-4-6 is in the catalog with [low, medium, high, max]
+	p := NewAnthropicProfile("claude-opus-4-6")
+	levels := p.ReasoningEffortLevels()
+	if len(levels) != 4 || levels[3] != "max" {
+		t.Fatalf("claude-opus-4-6 effort levels: got %v, want [low medium high max]", levels)
+	}
+}
+
+func TestResolveEffortLevels_CatalogMiss(t *testing.T) {
+	// A model not in the catalog should fall back to provider defaults.
+	p := NewAnthropicProfile("claude-unknown-model")
+	levels := p.ReasoningEffortLevels()
+	// Anthropic default is [low, medium, high, max]
+	if len(levels) != 4 {
+		t.Fatalf("unknown anthropic model effort levels: got %v, want provider default", levels)
+	}
+}
+
+func TestResolveEffortLevels_MiniMaxCatalog(t *testing.T) {
+	// minimax/minimax-m2.7 is in the catalog with [low, medium, high] (no max)
+	p := NewMiniMaxProfile("minimax/minimax-m2.7")
+	levels := p.ReasoningEffortLevels()
+	if len(levels) != 3 || levels[2] != "high" {
+		t.Fatalf("minimax effort levels: got %v, want [low medium high]", levels)
+	}
+}
+
+func TestTaskListSchema_EffortEnum_MatchesCatalog(t *testing.T) {
+	// Verify that the task_list tool's reasoning_effort enum matches the
+	// catalog entry across different profile paths.
+	model := "minimax/minimax-m2.7"
+
+	// Get expected effort levels from the catalog.
+	var expectedLevels []string
+	if cat := llm.EmbeddedModelCatalog(); cat != nil {
+		if mi := cat.GetModelInfo(model); mi != nil {
+			expectedLevels = mi.ReasoningEffortLevels
+		}
+	}
+	if len(expectedLevels) == 0 {
+		t.Fatalf("minimax/minimax-m2.7 not in catalog or has no effort levels")
+	}
+
+	// Test openrouter-anthropic profile path.
+	orAnthro := NewOpenRouterAnthropicProfile(model)
+	effortEnumORAnthro := extractTaskListEffortEnum(t, orAnthro)
+	if !stringSliceEqual(effortEnumORAnthro, expectedLevels) {
+		t.Fatalf("openrouter-anthropic task_list effort enum mismatch:\n  got:  %v\n  want: %v",
+			effortEnumORAnthro, expectedLevels)
+	}
+
+	// Test minimax direct profile path.
+	minimax := NewMiniMaxProfile(model)
+	effortEnumMinimax := extractTaskListEffortEnum(t, minimax)
+	if !stringSliceEqual(effortEnumMinimax, expectedLevels) {
+		t.Fatalf("minimax task_list effort enum mismatch:\n  got:  %v\n  want: %v",
+			effortEnumMinimax, expectedLevels)
+	}
+
+	// Both paths should produce the same enum.
+	if !stringSliceEqual(effortEnumORAnthro, effortEnumMinimax) {
+		t.Fatalf("effort enum differs between profiles:\n  openrouter-anthropic: %v\n  minimax: %v",
+			effortEnumORAnthro, effortEnumMinimax)
+	}
+}
+
+// extractTaskListEffortEnum finds the task_list tool and extracts the
+// reasoning_effort enum from its parameters schema.
+func extractTaskListEffortEnum(t *testing.T, p ProviderProfile) []string {
+	t.Helper()
+	var taskListTool *llm.ToolDefinition
+	for _, td := range p.ToolDefinitions() {
+		if td.Name == "task_list" {
+			cp := td
+			taskListTool = &cp
+			break
+		}
+	}
+	if taskListTool == nil {
+		t.Fatalf("task_list tool not found in profile %s", p.ID())
+	}
+
+	// Navigate: parameters -> properties -> updates -> items -> properties -> reasoning_effort -> enum
+	params, _ := taskListTool.Parameters["properties"].(map[string]any)
+	updates, _ := params["updates"].(map[string]any)
+	items, _ := updates["items"].(map[string]any)
+	itemProps, _ := items["properties"].(map[string]any)
+	reasoningEffort, _ := itemProps["reasoning_effort"].(map[string]any)
+	enumAny, _ := reasoningEffort["enum"].([]string)
+	if enumAny == nil {
+		// Try []any fallback
+		if enumInterface, ok := reasoningEffort["enum"].([]any); ok {
+			for _, v := range enumInterface {
+				if s, ok := v.(string); ok {
+					enumAny = append(enumAny, s)
+				}
+			}
+		}
+	}
+	if len(enumAny) == 0 {
+		t.Fatalf("reasoning_effort enum not found or empty in profile %s", p.ID())
+	}
+	return enumAny
+}
+
+func stringSliceEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

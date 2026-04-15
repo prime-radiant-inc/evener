@@ -5,7 +5,27 @@ import (
 	"strings"
 )
 
-// taskReminderFull generates the full task list for post-compaction injection.
+// formatCurrentTaskSteering wraps a Task into a SYSTEM-REMINDER block that
+// becomes the agent's next steering message. Variant: v09
+func formatCurrentTaskSteering(task Task) string {
+	var b strings.Builder
+	b.WriteString("<SYSTEM-REMINDER>\n")
+	b.WriteString(fmt.Sprintf("<CURRENT-TASK id=\"%d\">\n", task.ID))
+	b.WriteString(fmt.Sprintf("<TITLE>%s</TITLE>\n", task.Description))
+	if task.Prompt != "" {
+		b.WriteString("<INSTRUCTIONS>\n")
+		b.WriteString(strings.TrimSpace(task.Prompt))
+		b.WriteString("\n</INSTRUCTIONS>\n")
+	}
+	b.WriteString("</CURRENT-TASK>\n")
+	b.WriteString(fmt.Sprintf("Call your next tool: use task_list to mark task %d as done when this step is complete.\n", task.ID))
+	b.WriteString("</SYSTEM-REMINDER>")
+	return b.String()
+}
+
+// taskReminderFull generates the full task list for post-compaction injection,
+// wrapped as a SYSTEM-REMINDER so the model treats it as steering rather than
+// conversational content.
 func taskReminderFull(store *TaskStore) string {
 	tasks := store.View()
 	if len(tasks) == 0 {
@@ -13,9 +33,13 @@ func taskReminderFull(store *TaskStore) string {
 	}
 
 	var b strings.Builder
+	b.WriteString("<SYSTEM-REMINDER>\n")
 	b.WriteString("Task list:\n")
 	for _, t := range tasks {
 		b.WriteString(fmt.Sprintf("  [%s] #%d: %s", t.Status, t.ID, t.Description))
+		if t.ReasoningEffort != "" {
+			b.WriteString(fmt.Sprintf(" [%s]", t.ReasoningEffort))
+		}
 		if len(t.DependsOn) > 0 {
 			b.WriteString(fmt.Sprintf(" (depends_on: %v)", t.DependsOn))
 		}
@@ -24,83 +48,26 @@ func taskReminderFull(store *TaskStore) string {
 			b.WriteString(fmt.Sprintf("    note: %s\n", n))
 		}
 	}
+	b.WriteString("</SYSTEM-REMINDER>")
 	return b.String()
 }
 
-// taskReminderForInactivity generates the periodic reminder when tasks exist
-// but the tool hasn't been used recently.
+// taskReminderForInactivity re-emits the current task's steering message when
+// the agent has gone quiet but still has work in progress. Returns empty when
+// nothing is in_progress — there is no "current step" to re-state.
 func taskReminderForInactivity(store *TaskStore) string {
-	tasks := store.View()
-	if len(tasks) == 0 {
+	current, ok := store.CurrentInProgress()
+	if !ok {
 		return ""
 	}
-
-	total, done := store.Progress()
-
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Task reminder (Progress: %d/%d tasks complete):\n", done, total))
-
-	// Show in-progress tasks.
-	var hasInProgress bool
-	for _, t := range tasks {
-		if t.Status == TaskInProgress {
-			b.WriteString(fmt.Sprintf("  Current: #%d — %s\n", t.ID, t.Description))
-			hasInProgress = true
-		}
-	}
-
-	// Show next eligible tasks (up to 3).
-	eligible := store.NextEligible()
-	if len(eligible) > 3 {
-		eligible = eligible[:3]
-	}
-	if len(eligible) > 0 {
-		if hasInProgress {
-			b.WriteString("  Up next:\n")
-		} else {
-			b.WriteString("  Ready:\n")
-		}
-		for _, t := range eligible {
-			b.WriteString(fmt.Sprintf("    #%d — %s\n", t.ID, t.Description))
-		}
-	}
-
-	return b.String()
+	return formatCurrentTaskSteering(current)
 }
 
-// taskReminderNudge generates the one-time suggestion to use task_list.
+// taskReminderNudge generates the one-time suggestion to use task_list, wrapped
+// as a SYSTEM-REMINDER so all task reminders share a single envelope.
 func taskReminderNudge() string {
-	return "You have a task_list tool available for organizing multi-step work. " +
-		"Consider creating a task list to track your progress."
-}
-
-// formatEligibleSummary appends progress and next-eligible task info to msg.
-// Used by both append and update handlers to avoid a separate view call.
-func formatEligibleSummary(msg *strings.Builder, store *TaskStore) {
-	eligible := store.NextEligible()
-	total, done := store.Progress()
-
-	msg.WriteString(fmt.Sprintf("Progress: %d/%d tasks complete.\n", done, total))
-
-	switch len(eligible) {
-	case 0:
-		if done == total {
-			msg.WriteString("All tasks complete.")
-		} else {
-			msg.WriteString("No tasks are currently ready (remaining tasks have unsatisfied dependencies).")
-		}
-	case 1:
-		msg.WriteString(fmt.Sprintf("\nNo in_progress task. Next open task: #%d — %s.", eligible[0].ID, eligible[0].Description))
-		if eligible[0].Prompt != "" {
-			msg.WriteString(fmt.Sprintf("\nInstructions: %s", eligible[0].Prompt))
-		}
-	default:
-		msg.WriteString("\nNo in_progress task. Open tasks:\n")
-		for _, t := range eligible {
-			msg.WriteString(fmt.Sprintf("  #%d — %s\n", t.ID, t.Description))
-			if t.Prompt != "" {
-				msg.WriteString(fmt.Sprintf("      Instructions: %s\n", t.Prompt))
-			}
-		}
-	}
+	return "<SYSTEM-REMINDER>\n" +
+		"You have a task_list tool available for organizing multi-step work. " +
+		"Consider creating a task list to track your progress.\n" +
+		"</SYSTEM-REMINDER>"
 }

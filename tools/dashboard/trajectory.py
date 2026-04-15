@@ -82,8 +82,8 @@ def classify_round(tool_names, has_text):
 def build_trajectory(session):
     """Parse session entries into a list of round dicts.
 
-    Each round = one ASSISTANT entry + its following TOOL_RESULTS.
-    USER_INPUT and STEERING entries are skipped.
+    Each round = one ASSISTANT entry + its following TOOL_RESULTS,
+    or a STEERING/USER_INPUT entry shown as its own round.
 
     Returns list of dicts with keys:
         round, action, summary, tool_calls, tool_results, text, usage, raw_entries
@@ -98,7 +98,51 @@ def build_trajectory(session):
         turn = entry.get("turn", {})
         kind = turn.get("kind", "")
 
-        # Skip non-ASSISTANT entries
+        # Handle STEERING entries as their own rounds
+        if kind == "STEERING":
+            round_num += 1
+            text = ""
+            for part in turn.get("message", {}).get("content", []):
+                if part.get("kind") == "text":
+                    text += part.get("text", "")
+            summary = text.split("\n")[0][:80] if text else "steering"
+            rounds.append({
+                "round": round_num,
+                "action": "STEERING",
+                "summary": summary,
+                "tool_calls": [],
+                "tool_results": [],
+                "text": text,
+                "usage": {},
+                "duration_ms": 0,
+                "raw_entries": [entry],
+            })
+            i += 1
+            continue
+
+        # Handle USER_INPUT entries as their own rounds
+        if kind == "USER_INPUT":
+            round_num += 1
+            text = ""
+            for part in turn.get("message", {}).get("content", []):
+                if part.get("kind") == "text":
+                    text += part.get("text", "")
+            summary = text.split("\n")[0][:80] if text else "user input"
+            rounds.append({
+                "round": round_num,
+                "action": "USER",
+                "summary": summary,
+                "tool_calls": [],
+                "tool_results": [],
+                "text": text,
+                "usage": {},
+                "duration_ms": 0,
+                "raw_entries": [entry],
+            })
+            i += 1
+            continue
+
+        # Skip other non-ASSISTANT entries
         if kind != "ASSISTANT":
             i += 1
             continue

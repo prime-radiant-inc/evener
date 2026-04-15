@@ -343,14 +343,19 @@ class RunStore:
             return ""
 
     def _find_transcript_files(self, task_dir):
-        """Find all transcript JSONL files for a task."""
-        sessions_dir = task_dir / "agent" / "serf-state" / "sessions"
-        if not sessions_dir.is_dir():
-            return []
-        return sorted(
-            str(f) for f in sessions_dir.iterdir()
-            if f.is_file() and f.suffix == ".jsonl"
-        )
+        """Find all transcript JSONL files for a task.
+
+        Checks agent/agent-state/sessions/ (current harbor layout) first,
+        then agent/serf-state/sessions/ (legacy) for backwards compat.
+        """
+        for state_name in ("agent-state", "serf-state"):
+            sessions_dir = task_dir / "agent" / state_name / "sessions"
+            if sessions_dir.is_dir():
+                return sorted(
+                    str(f) for f in sessions_dir.iterdir()
+                    if f.is_file() and f.suffix == ".jsonl"
+                )
+        return []
 
     def _classify_failure(self, reward, task_dir):
         """Classify failure category for a failing task."""

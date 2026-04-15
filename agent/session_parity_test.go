@@ -1017,38 +1017,19 @@ func (e *nonLocalEnv) ExecCommand(ctx context.Context, command string, timeoutMS
 	return ExecResult{}, fmt.Errorf("not implemented")
 }
 
-func TestParity_WorkingDirOverride_NonLocalEnv_ReturnsError(t *testing.T) {
-	pc := providerCases[0] // openai
-	steps := []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response {
-			return llm.Response{Message: llm.Assistant("done")}
-		},
-	}
-	dir := t.TempDir()
-	c := llm.NewClient()
-	f := &fakeAdapter{name: pc.adapterName, steps: steps}
-	c.Register(f)
-	sess, err := NewSession(c, pc.profile("test-model"), &nonLocalEnv{dir: dir}, SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
-	go func() {
-		for range sess.Events() {
+func TestParity_WorkingDirRemovedFromSchema(t *testing.T) {
+	// working_dir was removed from spawn_agent — subagents always use parent's working dir.
+	pc := providerCases[0]
+	for _, td := range pc.profile("test-model").ToolDefinitions() {
+		if td.Name == "spawn_agent" {
+			props := td.Parameters["properties"].(map[string]any)
+			if _, ok := props["working_dir"]; ok {
+				t.Fatal("spawn_agent should NOT have working_dir parameter")
+			}
+			return
 		}
-	}()
-
-	// Spawn agent with working_dir — should fail.
-	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
-		ID: "c1", Name: "spawn_agent", Type: "function",
-		Arguments: json.RawMessage(`{"task":"test","working_dir":"/tmp/somewhere"}`),
-	})
-	if !spawnRes.IsError {
-		t.Fatalf("expected error when using working_dir with non-local env, got: %s", spawnRes.Output)
 	}
-	if !strings.Contains(spawnRes.Output, "does not support working_dir") {
-		t.Fatalf("expected 'does not support working_dir' in error, got: %s", spawnRes.Output)
-	}
+	t.Fatal("spawn_agent not found")
 }
 
 // canonicalXxx returns the wire-name for a tool given the provider name.

@@ -17,6 +17,8 @@ PROVIDER_ENV_KEYS = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "google": "GEMINI_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "openrouter-anthropic": "OPENROUTER_API_KEY",
 }
 
 # Harbor bind-mounts /logs/agent/ for us; writing state there ensures it
@@ -33,7 +35,7 @@ _ARTIFACT_WARN_MB = 100
 class SerfAgent(BaseInstalledAgent):
     """Serf agent: headless, non-interactive coding agent."""
 
-    def __init__(self, max_rounds: int = 100, min_result_round: int = 0, reasoning_effort: str = "", enable_reviewer_gate: bool = False, result_tool_name: str = "", plugin_dirs: str = "", system_prompt_append: str = "", system_prompt_as_user: bool = False, *args, **kwargs):
+    def __init__(self, max_rounds: int = 100, min_result_round: int = 0, reasoning_effort: str = "low", enable_reviewer_gate: bool = False, result_tool_name: str = "", plugin_dirs: str = "", system_prompt_append: str = "", system_prompt_as_user: bool = False, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._max_rounds = max_rounds
         self._min_result_round = min_result_round
@@ -104,6 +106,10 @@ class SerfAgent(BaseInstalledAgent):
         env: dict[str, str] = {}
         if env_key and env_key in os.environ:
             env[env_key] = os.environ[env_key]
+
+        # Pass through raw HTTP logging flag if set.
+        if os.environ.get("SERF_LOG_RAW_HTTP"):
+            env["SERF_LOG_RAW_HTTP"] = os.environ["SERF_LOG_RAW_HTTP"]
 
         effort_flag = (
             f"--reasoning-effort {self._reasoning_effort} "

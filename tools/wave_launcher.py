@@ -23,14 +23,18 @@ VCPU_MAP = {
     "c6i.xlarge": 4,
     "c6i.2xlarge": 8,
     "c6i.4xlarge": 16,
+    "m6i.large": 2,
     "m6i.xlarge": 4,
     "m6i.2xlarge": 8,
     "m6i.4xlarge": 16,
+    "r6i.large": 2,
+    "r6i.xlarge": 4,
+    "r6i.2xlarge": 8,
 }
 
 POLL_INTERVAL = 60  # seconds between completion checks
 LAUNCH_STAGGER = 2  # seconds between launches to avoid API throttle
-STUCK_TIMEOUT = 3600  # 60 minutes — terminate and requeue
+STUCK_TIMEOUT = 14400  # 4 hours — must exceed longest task timeout (up to 3h20m) + setup/cleanup
 MAX_ATTEMPTS = 3
 AWS_REGION = os.environ.get("AWS_REGION", "us-west-1")
 
@@ -48,7 +52,10 @@ class WorkItem:
 def parse_args():
     p = argparse.ArgumentParser(description="Wave launcher orchestrator")
     p.add_argument("--run-id", required=True)
-    p.add_argument("--agent-dir", required=True)
+    p.add_argument("--agent-dir", default="")
+    p.add_argument("--agent-name", default="",
+                   help="Built-in Harbor agent name (e.g., terminus-2)")
+    p.add_argument("--agent-import-path", default="serf_agent:SerfAgent")
     p.add_argument("--model", required=True)
     p.add_argument("--tasks", required=True, help="Comma-separated task names")
     p.add_argument("--reps", type=int, required=True)
@@ -56,6 +63,13 @@ def parse_args():
     p.add_argument("--concurrency", type=int, default=1)
     p.add_argument("--max-vcpu", type=int, default=128)
     p.add_argument("--harbor-dir", required=True)
+    p.add_argument("--agent-kwargs", default="",
+                   help="Space-separated key=value pairs passed to SerfAgent "
+                        "(e.g., 'system_prompt_as_user=true reasoning_effort=medium')")
+    p.add_argument("--backfill", action="store_true",
+                   help="Check S3 for existing results and skip completed task/rep combos")
+    p.add_argument("--on-demand", action="store_true",
+                   help="Launch on-demand instances instead of spot (uses separate vCPU quota)")
     return p.parse_args()
 
 
@@ -76,28 +90,49 @@ def launch_one(
     instance_type: str,
     concurrency: int,
     harbor_dir: str,
+    agent_kwargs: str = "",
+    agent_name: str = "",
+    agent_import_path: str = "serf_agent:SerfAgent",
+    on_demand: bool = False,
 ) -> str | None:
-    """Launch a single instance for one task-rep. Returns instance ID or None on failure."""
+    """Launch a single instance for one task-rep.
+
+    Returns instance ID on success, "transient" for retryable errors
+    (capacity/quota), or None for permanent failures.
+    """
     cmd = [
         os.path.join(harbor_dir, "launch.sh"),
         "--run-id", run_id,
         "--rep", str(item.rep),
-        "--agent-dir", agent_dir,
-        "--agent-import-path", "serf_agent:SerfAgent",
         "--model", model,
         "--task-names", item.task,
         "--concurrency", str(concurrency),
         "--instance-type", instance_type,
     ]
+    if on_demand:
+        cmd.append("--on-demand")
+    if agent_name:
+        cmd.extend(["--agent-name", agent_name])
+    else:
+        cmd.extend(["--agent-dir", agent_dir,
+                     "--agent-import-path", agent_import_path])
+    if agent_kwargs:
+        cmd.extend(["--agent-kwargs", agent_kwargs])
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=120, cwd=harbor_dir
         )
         if result.returncode != 0:
-            # Check for capacity errors (retryable)
-            if "InsufficientInstanceCapacity" in result.stderr:
-                print(f"  Spot capacity unavailable for {item.task} rep-{item.rep}, will retry")
-                return None
+            # Transient errors — retryable, don't count against attempts
+            transient_errors = [
+                "InsufficientInstanceCapacity",
+                "MaxSpotInstanceCountExceeded",
+                "SpotMaxPriceTooLow",
+                "RequestLimitExceeded",
+            ]
+            if any(e in result.stderr for e in transient_errors):
+                print(f"  Transient error for {item.task} rep-{item.rep}, will retry")
+                return "transient"
             print(f"  Launch failed for {item.task} rep-{item.rep}: {result.stderr.strip()}")
             return None
 
@@ -156,6 +191,48 @@ def terminate_instances(run_id: str, harbor_dir: str):
     subprocess.run(cmd, capture_output=True, timeout=30)
 
 
+def find_completed_in_s3(run_id: str) -> set[tuple[str, int]]:
+    """Check S3 for task/rep combos that have verifier reward.txt.
+
+    We check for reward.txt rather than result.json because harbor writes
+    result.json even when the agent times out and the verifier never runs.
+    Without reward.txt, the rep has no score and must be re-run.
+    """
+    bucket = os.environ.get("HARBOR_S3_BUCKET", "harbor-eval-results-526275945504")
+    cmd = [
+        "aws", "s3", "ls", "--recursive",
+        f"s3://{bucket}/runs/{run_id}/",
+        "--region", AWS_REGION,
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if result.returncode != 0:
+            print(f"  Warning: S3 listing failed: {result.stderr.strip()}")
+            return set()
+
+        completed = set()
+        for line in result.stdout.splitlines():
+            if "reward.txt" not in line:
+                continue
+            # Path: runs/RUN_ID/rep-N/JOB_NAME/TASK__HASH/verifier/reward.txt
+            path = line.split()[-1]
+            parts = path.split("/")
+            # Find rep-N
+            rep_part = next((p for p in parts if p.startswith("rep-")), None)
+            if not rep_part:
+                continue
+            rep = int(rep_part.split("-")[1])
+            # Task name is two dirs up from reward.txt (TASK__HASH/verifier/reward.txt)
+            task_dir = parts[-3]  # e.g., "chess-best-move__aBcDeF1"
+            task = task_dir.rsplit("__", 1)[0] if "__" in task_dir else task_dir
+            completed.add((task, rep))
+        return completed
+
+    except subprocess.TimeoutExpired:
+        print("  Warning: S3 listing timed out")
+        return set()
+
+
 def format_elapsed(seconds: float) -> str:
     m, s = divmod(int(seconds), 60)
     h, m = divmod(m, 60)
@@ -168,13 +245,27 @@ def main():
     args = parse_args()
     tasks = args.tasks.split(",")
     queue = build_work_queue(tasks, args.reps)
+    total_full = len(queue)
+
+    if args.backfill:
+        print(f"Backfill mode: checking S3 for existing results...")
+        completed = find_completed_in_s3(args.run_id)
+        before = len(queue)
+        queue = [item for item in queue if (item.task, item.rep) not in completed]
+        skipped = before - len(queue)
+        print(f"  Found {len(completed)} completed, skipping {skipped}, {len(queue)} remaining")
+        if not queue:
+            print("Nothing to backfill — all task/rep combos have results.")
+            return
+        print()
+
     total = len(queue)
 
     vcpu_per = VCPU_MAP.get(args.instance_type, 4)
     max_concurrent = args.max_vcpu // vcpu_per
 
     print(f"=== Wave launcher ===")
-    print(f"Work items:     {total} ({len(tasks)} tasks x {args.reps} reps)")
+    print(f"Work items:     {total} ({total_full} total, {total_full - total} already done)")
     print(f"Max concurrent: {max_concurrent} instances ({vcpu_per} vCPU each, {args.max_vcpu} quota)")
     print(f"Poll interval:  {POLL_INTERVAL}s")
     print()
@@ -207,15 +298,32 @@ def main():
 
     # --- Initial wave ---
     # First launch must complete (uploads agent tarball to S3).
+    # Retry transient errors (quota/capacity) up to 5 times with backoff —
+    # "transient" returns are NOT real instance IDs and must not be stored
+    # in active. Permanent failures (None) abort the launcher.
     if pending:
         item = pending.pop(0)
         item.attempts += 1
-        print(f"Launching {item.task} rep-{item.rep} (1/{total}, uploads tarball)...")
-        instance_id = launch_one(
-            item, args.run_id, args.agent_dir, args.model,
-            args.instance_type, args.concurrency, args.harbor_dir,
-        )
-        if instance_id:
+        label = "uploads tarball" if args.agent_dir else "first instance"
+        print(f"Launching {item.task} rep-{item.rep} (1/{total}, {label})...")
+        max_first_launch_retries = 5
+        instance_id = None
+        for first_retry in range(max_first_launch_retries):
+            instance_id = launch_one(
+                item, args.run_id, args.agent_dir, args.model,
+                args.instance_type, args.concurrency, args.harbor_dir, args.agent_kwargs,
+                args.agent_name, args.agent_import_path, args.on_demand,
+            )
+            if instance_id and instance_id != "transient":
+                break
+            if instance_id == "transient":
+                wait_s = 15 * (first_retry + 1)
+                print(f"  First-launch transient — waiting {wait_s}s before retry {first_retry + 2}/{max_first_launch_retries}")
+                time.sleep(wait_s)
+                continue
+            # instance_id is None — permanent failure
+            break
+        if instance_id and instance_id != "transient":
             item.status = "launched"
             item.instance_id = instance_id
             item.launched_at = time.time()
@@ -223,26 +331,35 @@ def main():
         else:
             item.status = "pending"
             pending.insert(0, item)
-            print("First launch failed — cannot continue without tarball upload.")
+            if instance_id == "transient":
+                print(f"First launch failed — {max_first_launch_retries} transient retries exhausted. Quota/capacity issue.")
+            else:
+                print("First launch failed — cannot continue without tarball upload.")
             sys.exit(1)
 
     # Launch rest of initial wave with stagger
     while len(active) < max_concurrent and pending:
         item = pending.pop(0)
-        item.attempts += 1
         instance_id = launch_one(
             item, args.run_id, args.agent_dir, args.model,
-            args.instance_type, args.concurrency, args.harbor_dir,
+            args.instance_type, args.concurrency, args.harbor_dir, args.agent_kwargs,
+            args.agent_name, args.agent_import_path, args.on_demand,
         )
-        if instance_id:
+        if instance_id and instance_id != "transient":
+            item.attempts += 1
             item.status = "launched"
             item.instance_id = instance_id
             item.launched_at = time.time()
             active[instance_id] = item
             launched_total = done + len(active)
             print(f"  Launched {item.task} rep-{item.rep} ({launched_total}/{total}) -> {instance_id}")
+        elif instance_id == "transient":
+            # Transient error — requeue without counting attempt
+            item.status = "pending"
+            pending.append(item)
+            break  # Stop initial wave — quota likely full
         else:
-            # Requeue for retry
+            item.attempts += 1
             item.status = "pending"
             pending.append(item)
 
@@ -293,18 +410,25 @@ def main():
         launched_this_cycle = 0
         while len(active) < max_concurrent and pending:
             item = pending.pop(0)
-            item.attempts += 1
             instance_id = launch_one(
                 item, args.run_id, args.agent_dir, args.model,
-                args.instance_type, args.concurrency, args.harbor_dir,
+                args.instance_type, args.concurrency, args.harbor_dir, args.agent_kwargs,
+                args.agent_name, args.agent_import_path, args.on_demand,
             )
-            if instance_id:
+            if instance_id and instance_id != "transient":
+                item.attempts += 1
                 item.status = "launched"
                 item.instance_id = instance_id
                 item.launched_at = time.time()
                 active[instance_id] = item
                 launched_this_cycle += 1
+            elif instance_id == "transient":
+                # Transient error — requeue without counting attempt
+                item.status = "pending"
+                pending.append(item)
+                break  # Stop backfilling — quota likely full, wait for next cycle
             else:
+                item.attempts += 1
                 if item.attempts < MAX_ATTEMPTS:
                     item.status = "pending"
                     pending.append(item)

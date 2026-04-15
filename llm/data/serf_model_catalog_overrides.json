@@ -1,0 +1,40 @@
+{
+  "_comment": "Serf-specific model metadata overlays. Merged on top of litellm_model_catalog.json at load time. These fields are not available upstream and must be maintained here.",
+
+  "claude-opus-4-6": {
+    "reasoning_effort_levels": ["low", "medium", "high", "max"],
+    "supports_adaptive_thinking": true,
+    "supports_effort_parameter": true,
+    "supports_web_search": true
+  },
+  "claude-sonnet-4-6": {
+    "reasoning_effort_levels": ["low", "medium", "high", "max"],
+    "supports_adaptive_thinking": true,
+    "supports_effort_parameter": true,
+    "supports_web_search": true
+  },
+  "claude-opus-4-5": {
+    "reasoning_effort_levels": ["low", "medium", "high"],
+    "supports_adaptive_thinking": false,
+    "supports_effort_parameter": true,
+    "supports_web_search": true
+  },
+  "claude-sonnet-4-5": {
+    "reasoning_effort_levels": ["low", "medium", "high"],
+    "supports_adaptive_thinking": false,
+    "supports_effort_parameter": false,
+    "supports_web_search": true
+  },
+  "minimax/minimax-m2.7": {
+    "reasoning_effort_levels": ["low", "medium", "high"],
+    "supports_adaptive_thinking": false,
+    "supports_effort_parameter": false,
+    "supports_web_search": false
+  },
+  "openrouter/minimax/minimax-m2": {
+    "reasoning_effort_levels": ["low", "medium", "high"],
+    "supports_adaptive_thinking": false,
+    "supports_effort_parameter": false,
+    "supports_web_search": false
+  }
+}

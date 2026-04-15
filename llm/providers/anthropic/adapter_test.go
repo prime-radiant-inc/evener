@@ -3175,3 +3175,239 @@ func TestAdapter_Complete_WebSearchWithTools_NoDuplicateNames(t *testing.T) {
 }
 
 func ptrInt(i int) *int { return &i }
+
+// ================== Catalog-driven adaptive/hybrid thinking tests ==================
+
+func TestBuildRequestBody_AdaptiveThinking_Opus46(t *testing.T) {
+	// Test opus-4-6 with effort => adaptive thinking + output_config.
+	a := &Adapter{APIKey: "test", BaseURL: "https://api.anthropic.com"}
+	effort := "medium"
+	req := llm.Request{
+		Model:           "claude-opus-4-6",
+		Messages:        []llm.Message{{Role: "user", Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "hi"}}}},
+		ReasoningEffort: &effort,
+	}
+	body, err := a.buildRequestBody(req)
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+
+	// Should emit adaptive thinking.
+	thinking, ok := body["thinking"].(map[string]any)
+	if !ok {
+		t.Fatal("expected thinking block")
+	}
+	if thinking["type"] != "adaptive" {
+		t.Fatalf("expected thinking.type=adaptive, got %v", thinking["type"])
+	}
+	if _, hasBudget := thinking["budget_tokens"]; hasBudget {
+		t.Fatal("adaptive thinking should not have budget_tokens")
+	}
+
+	// Should emit output_config.effort.
+	outputConfig, ok := body["output_config"].(map[string]any)
+	if !ok {
+		t.Fatal("expected output_config block for opus-4-6")
+	}
+	if outputConfig["effort"] != "medium" {
+		t.Fatalf("expected output_config.effort=medium, got %v", outputConfig["effort"])
+	}
+}
+
+func TestBuildRequestBody_AdaptiveThinking_NoEffort(t *testing.T) {
+	// Test opus-4-6 without effort => adaptive thinking only, no output_config.
+	a := &Adapter{APIKey: "test", BaseURL: "https://api.anthropic.com"}
+	req := llm.Request{
+		Model:    "claude-opus-4-6",
+		Messages: []llm.Message{{Role: "user", Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "hi"}}}},
+		// No ReasoningEffort
+	}
+	body, err := a.buildRequestBody(req)
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+
+	// Should still emit adaptive thinking.
+	thinking, ok := body["thinking"].(map[string]any)
+	if !ok {
+		t.Fatal("expected thinking block for opus-4-6")
+	}
+	if thinking["type"] != "adaptive" {
+		t.Fatalf("expected thinking.type=adaptive, got %v", thinking["type"])
+	}
+
+	// No output_config when no effort specified.
+	if _, ok := body["output_config"]; ok {
+		t.Fatal("should not emit output_config when no effort specified")
+	}
+}
+
+func TestBuildRequestBody_HybridThinking_Opus45(t *testing.T) {
+	// Test opus-4-5 with effort => manual thinking + output_config (hybrid).
+	a := &Adapter{APIKey: "test", BaseURL: "https://api.anthropic.com"}
+	effort := "medium"
+	req := llm.Request{
+		Model:           "claude-opus-4-5",
+		Messages:        []llm.Message{{Role: "user", Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "hi"}}}},
+		ReasoningEffort: &effort,
+	}
+	body, err := a.buildRequestBody(req)
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+
+	// Should emit manual thinking with budget.
+	thinking, ok := body["thinking"].(map[string]any)
+	if !ok {
+		t.Fatal("expected thinking block")
+	}
+	if thinking["type"] != "enabled" {
+		t.Fatalf("expected thinking.type=enabled, got %v", thinking["type"])
+	}
+	budget, ok := thinking["budget_tokens"].(int)
+	if !ok || budget <= 0 {
+		t.Fatalf("expected budget_tokens > 0, got %v", thinking["budget_tokens"])
+	}
+
+	// Should also emit output_config.effort (hybrid).
+	outputConfig, ok := body["output_config"].(map[string]any)
+	if !ok {
+		t.Fatal("expected output_config block for opus-4-5 (hybrid)")
+	}
+	if outputConfig["effort"] != "medium" {
+		t.Fatalf("expected output_config.effort=medium, got %v", outputConfig["effort"])
+	}
+}
+
+func TestBuildRequestBody_LegacyThinking_Sonnet45(t *testing.T) {
+	// Test sonnet-4-5 with effort => manual thinking only, no output_config.
+	a := &Adapter{APIKey: "test", BaseURL: "https://api.anthropic.com"}
+	effort := "medium"
+	req := llm.Request{
+		Model:           "claude-sonnet-4-5",
+		Messages:        []llm.Message{{Role: "user", Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "hi"}}}},
+		ReasoningEffort: &effort,
+	}
+	body, err := a.buildRequestBody(req)
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+
+	// Should emit manual thinking with budget.
+	thinking, ok := body["thinking"].(map[string]any)
+	if !ok {
+		t.Fatal("expected thinking block")
+	}
+	if thinking["type"] != "enabled" {
+		t.Fatalf("expected thinking.type=enabled, got %v", thinking["type"])
+	}
+	budget, ok := thinking["budget_tokens"].(int)
+	if !ok || budget <= 0 {
+		t.Fatalf("expected budget_tokens > 0, got %v", thinking["budget_tokens"])
+	}
+
+	// Should NOT emit output_config for older models.
+	if _, ok := body["output_config"]; ok {
+		t.Fatal("sonnet-4-5 should not emit output_config")
+	}
+}
+
+func TestBuildRequestBody_EffortClamping_Opus45(t *testing.T) {
+	// Test opus-4-5 with effort "max" => should clamp to "high" since it only supports [low, medium, high].
+	a := &Adapter{APIKey: "test", BaseURL: "https://api.anthropic.com"}
+	effort := "max"
+	req := llm.Request{
+		Model:           "claude-opus-4-5",
+		Messages:        []llm.Message{{Role: "user", Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "hi"}}}},
+		ReasoningEffort: &effort,
+	}
+	body, err := a.buildRequestBody(req)
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+
+	// output_config should have clamped effort to "high".
+	outputConfig, ok := body["output_config"].(map[string]any)
+	if !ok {
+		t.Fatal("expected output_config block")
+	}
+	if outputConfig["effort"] != "high" {
+		t.Fatalf("expected effort clamped to 'high', got %v", outputConfig["effort"])
+	}
+
+	// budget should also be for "high", not "max".
+	thinking, ok := body["thinking"].(map[string]any)
+	if !ok {
+		t.Fatal("expected thinking block")
+	}
+	budgetHigh := llm.ReasoningBudget("high")
+	budgetMax := llm.ReasoningBudget("max")
+	budget, _ := thinking["budget_tokens"].(int)
+	if budget != budgetHigh {
+		t.Fatalf("expected budget_tokens=%d (high), got %d", budgetHigh, budget)
+	}
+	if budget == budgetMax {
+		t.Fatal("budget_tokens should not be max value after clamping")
+	}
+}
+
+func TestClampEffort(t *testing.T) {
+	tests := []struct {
+		name      string
+		requested string
+		supported []string
+		want      string
+	}{
+		{
+			name:      "empty supported returns as-is",
+			requested: "max",
+			supported: nil,
+			want:      "max",
+		},
+		{
+			name:      "supported level passes through",
+			requested: "medium",
+			supported: []string{"low", "medium", "high"},
+			want:      "medium",
+		},
+		{
+			name:      "max clamped to high",
+			requested: "max",
+			supported: []string{"low", "medium", "high"},
+			want:      "high",
+		},
+		{
+			name:      "max allowed when supported",
+			requested: "max",
+			supported: []string{"low", "medium", "high", "max"},
+			want:      "max",
+		},
+		{
+			name:      "high clamped to medium",
+			requested: "high",
+			supported: []string{"low", "medium"},
+			want:      "medium",
+		},
+		{
+			name:      "unknown level passes through",
+			requested: "xhigh",
+			supported: []string{"low", "medium", "high"},
+			want:      "xhigh",
+		},
+		{
+			name:      "case insensitive",
+			requested: "MAX",
+			supported: []string{"Low", "Medium", "High"},
+			want:      "high",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := clampEffort(tt.requested, tt.supported)
+			if got != tt.want {
+				t.Errorf("clampEffort(%q, %v) = %q, want %q", tt.requested, tt.supported, got, tt.want)
+			}
+		})
+	}
+}

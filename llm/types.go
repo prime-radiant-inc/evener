@@ -345,6 +345,11 @@ type Response struct {
 	Raw       map[string]any `json:"raw,omitempty"`
 	Warnings  []Warning      `json:"warnings,omitempty"`
 	RateLimit *RateLimitInfo `json:"rate_limit,omitempty"`
+
+	// Raw HTTP bodies for debugging. Populated only when SERF_LOG_RAW_HTTP=1.
+	// Excluded from JSON serialization to avoid bloating api.jsonl.
+	RawRequestBody  string `json:"-"`
+	RawResponseBody string `json:"-"`
 }
 
 func (r Response) Text() string { return r.Message.Text() }
@@ -387,8 +392,8 @@ func (req Request) Validate() error {
 	return nil
 }
 
-// ReasoningBudget converts a reasoning effort level (low/medium/high) to a
-// token budget. Returns 0 for unrecognized values.
+// ReasoningBudget converts a reasoning effort level to a token budget.
+// Returns 0 for unrecognized values.
 func ReasoningBudget(effort string) int {
 	switch strings.ToLower(strings.TrimSpace(effort)) {
 	case "low":
@@ -397,6 +402,8 @@ func ReasoningBudget(effort string) int {
 		return 8192
 	case "high":
 		return 32768
+	case "max":
+		return 131072
 	default:
 		return 0
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -61,10 +62,33 @@ type APILogResponse struct {
 	Raw           map[string]any `json:"raw"`
 }
 
+// APIRawLogEntry is a JSONL line in the raw HTTP body log.
+type APIRawLogEntry struct {
+	Timestamp    string `json:"ts"`
+	SessionID    string `json:"session_id,omitempty"`
+	Round        int    `json:"round,omitempty"`
+	Provider     string `json:"provider"`
+	Model        string `json:"model"`
+	Mode         string `json:"mode"` // "complete" or "stream"
+	RequestBody  string `json:"request_body,omitempty"`
+	ResponseBody string `json:"response_body,omitempty"`
+	LatencyMs    int64  `json:"latency_ms"`
+}
+
+// RawBodyEnabled returns true when SERF_LOG_RAW_HTTP is set.
+// Adapters check this before populating RawRequestBody/RawResponseBody.
+func RawBodyEnabled() bool { return rawBodyEnabled }
+
+var rawBodyEnabled = func() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("SERF_LOG_RAW_HTTP")))
+	return v == "1" || v == "true"
+}()
+
 // APILogger is middleware that logs every LLM API call to a JSONL file.
 type APILogger struct {
-	file *os.File
-	mu   sync.Mutex
+	file    *os.File
+	rawFile *os.File // nil when raw logging is disabled
+	mu      sync.Mutex
 
 	// SyncInterval controls how often write calls fsync.
 	// If 0, every write fsyncs (backward-compatible default for tests).
@@ -86,6 +110,19 @@ func NewAPILogger(path string) (*APILogger, error) {
 		return nil, err
 	}
 	return &APILogger{file: f, lastSync: time.Now()}, nil
+}
+
+// EnableRawLogging opens a separate JSONL file for raw HTTP request/response bodies.
+func (l *APILogger) EnableRawLogging(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	l.rawFile = f
+	return nil
 }
 
 // WrapComplete wraps a CompleteFunc to log request metadata and full response.
@@ -114,6 +151,21 @@ func (l *APILogger) WrapComplete(next CompleteFunc) CompleteFunc {
 
 		l.write(entry)
 
+		if l.rawFile != nil && (resp.RawRequestBody != "" || resp.RawResponseBody != "") {
+			rawEntry := APIRawLogEntry{
+				Timestamp:    entry.Timestamp,
+				SessionID:    entry.SessionID,
+				Round:        entry.Round,
+				Provider:     req.Provider,
+				Model:        req.Model,
+				Mode:         "complete",
+				RequestBody:  resp.RawRequestBody,
+				ResponseBody: resp.RawResponseBody,
+				LatencyMs:    entry.LatencyMs,
+			}
+			l.writeRaw(rawEntry)
+		}
+
 		return resp, err
 	}
 }
@@ -123,23 +175,31 @@ func (l *APILogger) WrapStream(next StreamFunc) StreamFunc {
 	return next
 }
 
-// Close flushes and closes the log file.
+// Close flushes and closes the log file(s).
 func (l *APILogger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.file == nil {
-		return nil
+	var firstErr error
+	if l.file != nil {
+		if l.dirty {
+			if err := l.file.Sync(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+			l.dirty = false
+		}
+		if err := l.file.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		l.file = nil
 	}
-	var syncErr error
-	if l.dirty {
-		syncErr = l.file.Sync()
-		l.dirty = false
+	if l.rawFile != nil {
+		_ = l.rawFile.Sync()
+		if err := l.rawFile.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		l.rawFile = nil
 	}
-	if err := l.file.Close(); err != nil && syncErr == nil {
-		syncErr = err
-	}
-	l.file = nil
-	return syncErr
+	return firstErr
 }
 
 func (l *APILogger) write(entry APILogEntry) {
@@ -161,6 +221,20 @@ func (l *APILogger) write(entry APILogEntry) {
 		l.lastSync = time.Now()
 		l.dirty = false
 	}
+}
+
+func (l *APILogger) writeRaw(entry APIRawLogEntry) {
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.rawFile == nil {
+		return
+	}
+	l.rawFile.Write(append(data, '\n')) //nolint:errcheck
+	l.rawFile.Sync()                    //nolint:errcheck
 }
 
 func buildLogRequest(req Request) APILogRequest {

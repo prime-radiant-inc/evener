@@ -19,7 +19,7 @@ func TestAdapter_Complete_MapsToChatCompletionsAPI(t *testing.T) {
 	var gotBody map[string]any
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/v1/chat/completions" {
+		if r.Method != http.MethodPost || r.URL.Path != "/chat/completions" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -246,7 +246,7 @@ func TestAdapter_Complete_HTTPError_MapsToErrorType(t *testing.T) {
 
 func TestAdapter_Stream_YieldsTextDeltasAndFinish(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/v1/chat/completions" {
+		if r.Method != http.MethodPost || r.URL.Path != "/chat/completions" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -906,7 +906,7 @@ func TestAdapter_Complete_ReasoningEffort_Propagated(t *testing.T) {
 
 func TestAdapter_ListModels(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/v1/models" {
+		if r.Method != http.MethodGet || r.URL.Path != "/models" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -967,5 +967,1195 @@ func TestAdapter_Complete_Metadata_Propagated(t *testing.T) {
 	}
 	if md["user_id"] != "u123" {
 		t.Errorf("metadata[user_id] = %v, want %q", md["user_id"], "u123")
+	}
+}
+
+// --- Reasoning content tests ---
+
+func TestComplete_ReasoningContent_ParsedAsThinking(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "chatcmpl-rc1",
+  "model": "kimi-k2.5",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "reasoning_content": "Let me think step by step...\nFirst, I need to consider...",
+      "content": "The answer is 42."
+    },
+    "finish_reason": "stop"
+  }],
+  "usage": {"prompt_tokens": 10, "completion_tokens": 50, "total_tokens": 60}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "kimi-k2.5",
+		Messages: []llm.Message{llm.User("What is the meaning of life?")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	if len(resp.Message.Content) < 2 {
+		t.Fatalf("expected at least 2 content parts, got %d", len(resp.Message.Content))
+	}
+	if resp.Message.Content[0].Kind != llm.ContentThinking {
+		t.Fatalf("first part kind: %v, want thinking", resp.Message.Content[0].Kind)
+	}
+	if resp.Message.Content[0].Thinking == nil || resp.Message.Content[0].Thinking.Text != "Let me think step by step...\nFirst, I need to consider..." {
+		t.Fatalf("thinking text mismatch: %+v", resp.Message.Content[0].Thinking)
+	}
+	if resp.Message.Content[1].Kind != llm.ContentText {
+		t.Fatalf("second part kind: %v, want text", resp.Message.Content[1].Kind)
+	}
+	if resp.Message.Content[1].Text != "The answer is 42." {
+		t.Fatalf("text: %q", resp.Message.Content[1].Text)
+	}
+	if resp.ReasoningText() != "Let me think step by step...\nFirst, I need to consider..." {
+		t.Fatalf("ReasoningText(): %q", resp.ReasoningText())
+	}
+}
+
+func TestComplete_NoReasoningContent_OnlyText(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "chatcmpl-nr1",
+  "model": "gpt-4o",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "Hello"}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gpt-4o",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if len(resp.Message.Content) != 1 {
+		t.Fatalf("expected 1 content part, got %d", len(resp.Message.Content))
+	}
+	if resp.Message.Content[0].Kind != llm.ContentText {
+		t.Fatalf("part kind: %v, want text", resp.Message.Content[0].Kind)
+	}
+	if resp.ReasoningText() != "" {
+		t.Fatalf("ReasoningText() should be empty, got %q", resp.ReasoningText())
+	}
+}
+
+func TestComplete_ReasoningTokens_NativeFromCompletionDetails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "chatcmpl-rt1",
+  "model": "kimi-k2.5",
+  "choices": [{
+    "index": 0,
+    "message": {"role": "assistant", "reasoning_content": "thinking...", "content": "done"},
+    "finish_reason": "stop"
+  }],
+  "usage": {
+    "prompt_tokens": 10, "completion_tokens": 50, "total_tokens": 60,
+    "completion_tokens_details": {"reasoning_tokens": 35}
+  }
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "kimi-k2.5",
+		Messages: []llm.Message{llm.User("think")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.Usage.ReasoningTokens == nil || *resp.Usage.ReasoningTokens != 35 {
+		t.Fatalf("ReasoningTokens: %v, want 35", resp.Usage.ReasoningTokens)
+	}
+}
+
+func TestComplete_ReasoningTokens_EstimatedWhenAbsent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// 80 chars of reasoning_content, no completion_tokens_details.
+		_, _ = w.Write([]byte(`{
+  "id": "chatcmpl-rt2",
+  "model": "kimi-k2.5",
+  "choices": [{
+    "index": 0,
+    "message": {"role": "assistant", "reasoning_content": "01234567890123456789012345678901234567890123456789012345678901234567890123456789", "content": "done"},
+    "finish_reason": "stop"
+  }],
+  "usage": {"prompt_tokens": 10, "completion_tokens": 50, "total_tokens": 60}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "kimi-k2.5",
+		Messages: []llm.Message{llm.User("think")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	// 80 chars / 4 = 20 estimated tokens.
+	if resp.Usage.ReasoningTokens == nil || *resp.Usage.ReasoningTokens != 20 {
+		t.Fatalf("ReasoningTokens: %v, want 20", resp.Usage.ReasoningTokens)
+	}
+}
+
+func TestComplete_RoundTrip_ThinkingSerializedAsReasoningContent(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "chatcmpl-rr1", "model": "m",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model: "m",
+		Messages: []llm.Message{
+			llm.User("question"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "my reasoning"}},
+				{Kind: llm.ContentText, Text: "my answer"},
+			}},
+			llm.User("followup"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	msgs := gotBody["messages"].([]any)
+	assistantMsg := msgs[1].(map[string]any)
+	if assistantMsg["reasoning_content"] != "my reasoning" {
+		t.Fatalf("reasoning_content: %v", assistantMsg["reasoning_content"])
+	}
+	if assistantMsg["content"] != "my answer" {
+		t.Fatalf("content: %v", assistantMsg["content"])
+	}
+}
+
+func TestComplete_RoundTrip_NoThinking_NoReasoningContent(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "chatcmpl-rr2", "model": "m",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model: "m",
+		Messages: []llm.Message{
+			llm.User("question"),
+			llm.Assistant("plain answer"),
+			llm.User("followup"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	msgs := gotBody["messages"].([]any)
+	assistantMsg := msgs[1].(map[string]any)
+	if _, has := assistantMsg["reasoning_content"]; has {
+		t.Fatalf("reasoning_content should not be present, got: %v", assistantMsg["reasoning_content"])
+	}
+}
+
+func TestStream_ReasoningContent_EmitsReasoningEvents(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+
+		chunks := []string{
+			`{"id":"c1","model":"kimi-k2.5","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Let me "},"finish_reason":null}]}`,
+			`{"id":"c1","model":"kimi-k2.5","choices":[{"index":0,"delta":{"reasoning_content":"think..."},"finish_reason":null}]}`,
+			`{"id":"c1","model":"kimi-k2.5","choices":[{"index":0,"delta":{"content":"The answer"},"finish_reason":null}]}`,
+			`{"id":"c1","model":"kimi-k2.5","choices":[{"index":0,"delta":{"content":" is 42."},"finish_reason":null}]}`,
+			`{"id":"c1","model":"kimi-k2.5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":20,"total_tokens":25}}`,
+		}
+		for _, c := range chunks {
+			fmt.Fprintf(w, "data: %s\n\n", c)
+			flusher.Flush()
+		}
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	st, err := a.Stream(ctx, llm.Request{
+		Model:    "kimi-k2.5",
+		Messages: []llm.Message{llm.User("think")},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer st.Close()
+
+	var kinds []llm.StreamEventType
+	var reasoningDeltas, textDeltas []string
+	var finalResp *llm.Response
+	for ev := range st.Events() {
+		kinds = append(kinds, ev.Type)
+		if ev.Type == llm.StreamEventReasoningDelta {
+			reasoningDeltas = append(reasoningDeltas, ev.ReasoningDelta)
+		}
+		if ev.Type == llm.StreamEventTextDelta {
+			textDeltas = append(textDeltas, ev.Delta)
+		}
+		if ev.Type == llm.StreamEventFinish && ev.Response != nil {
+			finalResp = ev.Response
+		}
+	}
+
+	if got := strings.Join(reasoningDeltas, ""); got != "Let me think..." {
+		t.Fatalf("reasoning deltas: %q", got)
+	}
+	if got := strings.Join(textDeltas, ""); got != "The answer is 42." {
+		t.Fatalf("text deltas: %q", got)
+	}
+
+	// Verify event ordering: REASONING_START before REASONING_DELTA, REASONING_END before TEXT_START.
+	indexOf := func(target llm.StreamEventType) int {
+		for i, k := range kinds {
+			if k == target {
+				return i
+			}
+		}
+		return -1
+	}
+	if rs, rd := indexOf(llm.StreamEventReasoningStart), indexOf(llm.StreamEventReasoningDelta); rs < 0 || rd < 0 || rs >= rd {
+		t.Fatalf("REASONING_START should precede REASONING_DELTA: %v", kinds)
+	}
+	if re, ts := indexOf(llm.StreamEventReasoningEnd), indexOf(llm.StreamEventTextStart); re < 0 || ts < 0 || re >= ts {
+		t.Fatalf("REASONING_END should precede TEXT_START: %v", kinds)
+	}
+
+	// Final response should have both thinking and text.
+	if finalResp == nil {
+		t.Fatal("no final response")
+	}
+	if finalResp.ReasoningText() != "Let me think..." {
+		t.Fatalf("final ReasoningText(): %q", finalResp.ReasoningText())
+	}
+	if finalResp.Text() != "The answer is 42." {
+		t.Fatalf("final Text(): %q", finalResp.Text())
+	}
+}
+
+func TestStream_ReasoningThenToolCalls_ReasoningEndBeforeToolStart(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+
+		chunks := []string{
+			`{"id":"c2","model":"kimi-k2.5","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"I should call a tool"},"finish_reason":null}]}`,
+			`{"id":"c2","model":"kimi-k2.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":""}}]},"finish_reason":null}]}`,
+			`{"id":"c2","model":"kimi-k2.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":\"x\"}"}}]},"finish_reason":null}]}`,
+			`{"id":"c2","model":"kimi-k2.5","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		}
+		for _, c := range chunks {
+			fmt.Fprintf(w, "data: %s\n\n", c)
+			flusher.Flush()
+		}
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	st, err := a.Stream(ctx, llm.Request{
+		Model:    "kimi-k2.5",
+		Messages: []llm.Message{llm.User("do something")},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer st.Close()
+
+	var kinds []llm.StreamEventType
+	for ev := range st.Events() {
+		kinds = append(kinds, ev.Type)
+	}
+
+	indexOf := func(target llm.StreamEventType) int {
+		for i, k := range kinds {
+			if k == target {
+				return i
+			}
+		}
+		return -1
+	}
+
+	// REASONING_END must appear before TOOL_CALL_START.
+	re := indexOf(llm.StreamEventReasoningEnd)
+	tc := indexOf(llm.StreamEventToolCallStart)
+	if re < 0 || tc < 0 || re >= tc {
+		t.Fatalf("REASONING_END (%d) should precede TOOL_CALL_START (%d): %v", re, tc, kinds)
+	}
+	// No TEXT_START should appear.
+	if indexOf(llm.StreamEventTextStart) >= 0 {
+		t.Fatalf("should not have TEXT_START when reasoning transitions to tool calls: %v", kinds)
+	}
+}
+
+// --- ProviderQuirks tests ---
+
+func TestQuirks_LockedParams_StrippedFromRequest(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "q1", "model": "m",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey:  "k",
+		BaseURL: srv.URL,
+		Client:  srv.Client(),
+		Quirks: ProviderQuirks{
+			LockTemperature:      true,
+			LockTopP:             true,
+			LockFrequencyPenalty: true,
+			LockPresencePenalty:  true,
+		},
+	}
+	temp := 0.7
+	topP := 0.9
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:       "m",
+		Messages:    []llm.Message{llm.User("hi")},
+		Temperature: &temp,
+		TopP:        &topP,
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	if _, has := gotBody["temperature"]; has {
+		t.Fatalf("temperature should be stripped, got: %v", gotBody["temperature"])
+	}
+	if _, has := gotBody["top_p"]; has {
+		t.Fatalf("top_p should be stripped, got: %v", gotBody["top_p"])
+	}
+}
+
+func TestQuirks_ToolChoiceAutoOnly_ClampsRequired(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "q2", "model": "m",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey: "k", BaseURL: srv.URL, Client: srv.Client(),
+		Quirks: ProviderQuirks{ToolChoiceAutoOnly: true},
+	}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "m",
+		Messages: []llm.Message{llm.User("hi")},
+		Tools:    []llm.ToolDefinition{{Name: "foo"}},
+		ToolChoice: &llm.ToolChoice{Mode: "required"},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	if gotBody["tool_choice"] != "auto" {
+		t.Fatalf("tool_choice should be clamped to auto, got: %v", gotBody["tool_choice"])
+	}
+}
+
+func TestQuirks_ToolChoiceAutoOnly_PreservesAuto(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "q3", "model": "m",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey: "k", BaseURL: srv.URL, Client: srv.Client(),
+		Quirks: ProviderQuirks{ToolChoiceAutoOnly: true},
+	}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "m",
+		Messages: []llm.Message{llm.User("hi")},
+		Tools:    []llm.ToolDefinition{{Name: "foo"}},
+		ToolChoice: &llm.ToolChoice{Mode: "auto"},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	if gotBody["tool_choice"] != "auto" {
+		t.Fatalf("tool_choice should remain auto, got: %v", gotBody["tool_choice"])
+	}
+}
+
+func TestQuirks_MaxStopSequences_Truncates(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "q4", "model": "m",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey: "k", BaseURL: srv.URL, Client: srv.Client(),
+		Quirks: ProviderQuirks{MaxStopSequences: 1},
+	}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:         "m",
+		Messages:      []llm.Message{llm.User("hi")},
+		StopSequences: []string{"stop1", "stop2", "stop3"},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	stops, ok := gotBody["stop"].([]any)
+	if !ok {
+		t.Fatalf("stop not array: %T", gotBody["stop"])
+	}
+	if len(stops) != 1 {
+		t.Fatalf("stop should be truncated to 1, got %d: %v", len(stops), stops)
+	}
+}
+
+func TestQuirks_StripEmptyContent_RemovesEmptyTextParts(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "q5", "model": "m",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey: "k", BaseURL: srv.URL, Client: srv.Client(),
+		Quirks: ProviderQuirks{StripEmptyContent: true},
+	}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model: "m",
+		Messages: []llm.Message{
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentText, Text: ""},
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+					ID: "call_1", Name: "foo", Arguments: json.RawMessage(`{}`), Type: "function",
+				}},
+			}},
+			{Role: llm.RoleTool, Content: []llm.ContentPart{
+				{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
+					ToolCallID: "call_1", Content: "result",
+				}},
+			}},
+			llm.User("continue"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	msgs := gotBody["messages"].([]any)
+	assistantMsg := msgs[0].(map[string]any)
+	// With StripEmptyContent, the empty text part should be stripped.
+	// The assistant message should have tool_calls but no content key (since empty text was stripped).
+	if content, has := assistantMsg["content"]; has && content != "" {
+		t.Fatalf("content should be empty or absent after stripping, got: %v", content)
+	}
+}
+
+func TestQuirks_NoJSONSchema_DowngradesToJsonObject(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "q6", "model": "m",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "{}"}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey: "k", BaseURL: srv.URL, Client: srv.Client(),
+		Quirks: ProviderQuirks{NoJSONSchema: true},
+	}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "m",
+		Messages: []llm.Message{llm.User("hi")},
+		ResponseFormat: &llm.ResponseFormat{
+			Type:       "json_schema",
+			JSONSchema: map[string]any{"type": "object"},
+			Strict:     true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	rf, ok := gotBody["response_format"].(map[string]any)
+	if !ok {
+		t.Fatalf("response_format not map: %T", gotBody["response_format"])
+	}
+	if rf["type"] != "json_object" {
+		t.Fatalf("response_format type should be json_object, got: %v", rf["type"])
+	}
+}
+
+func TestQuirks_FinishReasonMap_MapsNonStandard(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "q7", "model": "glm-5",
+  "choices": [{
+    "index": 0,
+    "message": {"role": "assistant", "content": "filtered"},
+    "finish_reason": "sensitive"
+  }],
+  "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey: "k", BaseURL: srv.URL, Client: srv.Client(),
+		Quirks: ProviderQuirks{
+			FinishReasonMap: map[string]string{
+				"sensitive":     "content_filter",
+				"network_error": "error",
+			},
+		},
+	}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "glm-5",
+		Messages: []llm.Message{llm.User("test")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.Finish.Reason != "content_filter" {
+		t.Fatalf("finish reason: %q, want content_filter", resp.Finish.Reason)
+	}
+	if resp.Finish.Raw != "sensitive" {
+		t.Fatalf("finish raw: %q, want sensitive", resp.Finish.Raw)
+	}
+}
+
+func TestQuirksPreset_KimiK25(t *testing.T) {
+	q := QuirksPreset("kimi-k2.5")
+	if !q.LockTemperature || !q.LockTopP || !q.LockFrequencyPenalty || !q.LockPresencePenalty {
+		t.Fatal("kimi-k2.5 should lock all four params")
+	}
+	if !q.ToolChoiceAutoOnly {
+		t.Fatal("kimi-k2.5 should restrict tool_choice")
+	}
+	if !q.NoJSONSchema {
+		t.Fatal("kimi-k2.5 should downgrade json_schema")
+	}
+}
+
+func TestQuirksPreset_GLM5(t *testing.T) {
+	q := QuirksPreset("glm-5")
+	if !q.StripEmptyContent {
+		t.Fatal("glm-5 should strip empty content")
+	}
+	if !q.ToolChoiceAutoOnly {
+		t.Fatal("glm-5 should restrict tool_choice")
+	}
+	if q.MaxStopSequences != 1 {
+		t.Fatalf("glm-5 MaxStopSequences: %d, want 1", q.MaxStopSequences)
+	}
+	if !q.NoJSONSchema {
+		t.Fatal("glm-5 should downgrade json_schema")
+	}
+	if q.FinishReasonMap["sensitive"] != "content_filter" {
+		t.Fatal("glm-5 should map sensitive to content_filter")
+	}
+}
+
+func TestQuirksPreset_Unknown_ReturnsZeroValue(t *testing.T) {
+	q := QuirksPreset("unknown")
+	if q.LockTemperature || q.LockTopP || q.ToolChoiceAutoOnly || q.StripEmptyContent {
+		t.Fatal("unknown preset should return zero-value quirks")
+	}
+}
+
+func TestQuirksPreset_CaseInsensitive(t *testing.T) {
+	names := []string{"Kimi-K2.5", "KIMI-K2.5", "kimi", "moonshot", "GLM-5", "glm", "zhipu"}
+	for _, name := range names {
+		q := QuirksPreset(name)
+		if !q.ToolChoiceAutoOnly {
+			t.Fatalf("QuirksPreset(%q) should have ToolChoiceAutoOnly", name)
+		}
+	}
+}
+
+func TestQuirks_FinishReasonMap_Streaming(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+
+		chunks := []string{
+			`{"id":"c3","model":"glm-5","choices":[{"index":0,"delta":{"role":"assistant","content":"filtered"},"finish_reason":null}]}`,
+			`{"id":"c3","model":"glm-5","choices":[{"index":0,"delta":{},"finish_reason":"sensitive"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
+		}
+		for _, c := range chunks {
+			fmt.Fprintf(w, "data: %s\n\n", c)
+			flusher.Flush()
+		}
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey: "k", BaseURL: srv.URL, Client: srv.Client(),
+		Quirks: ProviderQuirks{
+			FinishReasonMap: map[string]string{"sensitive": "content_filter"},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	st, err := a.Stream(ctx, llm.Request{
+		Model:    "glm-5",
+		Messages: []llm.Message{llm.User("test")},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer st.Close()
+
+	var finalResp *llm.Response
+	for ev := range st.Events() {
+		if ev.Type == llm.StreamEventFinish && ev.Response != nil {
+			finalResp = ev.Response
+		}
+	}
+
+	if finalResp == nil {
+		t.Fatal("no final response")
+	}
+	if finalResp.Finish.Reason != "content_filter" {
+		t.Fatalf("finish reason: %q, want content_filter", finalResp.Finish.Reason)
+	}
+	if finalResp.Finish.Raw != "sensitive" {
+		t.Fatalf("finish raw: %q, want sensitive", finalResp.Finish.Raw)
+	}
+}
+
+func TestStream_ReasoningTokens_EstimatedInStream(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+
+		chunks := []string{
+			// 20 chars of reasoning = 5 estimated tokens.
+			`{"id":"c4","model":"m","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"12345678901234567890"},"finish_reason":null}]}`,
+			`{"id":"c4","model":"m","choices":[{"index":0,"delta":{"content":"done"},"finish_reason":null}]}`,
+			`{"id":"c4","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":5,"total_tokens":6}}`,
+		}
+		for _, c := range chunks {
+			fmt.Fprintf(w, "data: %s\n\n", c)
+			flusher.Flush()
+		}
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	st, err := a.Stream(ctx, llm.Request{
+		Model:    "m",
+		Messages: []llm.Message{llm.User("think")},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer st.Close()
+
+	var finalResp *llm.Response
+	for ev := range st.Events() {
+		if ev.Type == llm.StreamEventFinish && ev.Response != nil {
+			finalResp = ev.Response
+		}
+	}
+
+	if finalResp == nil {
+		t.Fatal("no final response")
+	}
+	// 20 chars / 4 = 5 estimated tokens.
+	if finalResp.Usage.ReasoningTokens == nil || *finalResp.Usage.ReasoningTokens != 5 {
+		t.Fatalf("ReasoningTokens: %v, want 5", finalResp.Usage.ReasoningTokens)
+	}
+}
+
+// --- reasoning_details tests (OpenRouter MiniMax format) ---
+
+func TestComplete_ReasoningDetails_ParsedAsThinking(t *testing.T) {
+	// OpenRouter returns reasoning as a reasoning_details array on the message,
+	// not as reasoning_content. Verify it is parsed into thinking content parts.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "chatcmpl-mm1",
+  "model": "minimax/minimax-m2.7",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "There are 3 r's in strawberry.",
+      "reasoning_details": [
+        {"type": "thinking", "thinking": "Let me count: s-t-r-a-w-b-e-r-r-y. r appears at positions 3, 8, 9."}
+      ]
+    },
+    "finish_reason": "stop"
+  }],
+  "usage": {"prompt_tokens": 10, "completion_tokens": 50, "total_tokens": 60}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "minimax/minimax-m2.7",
+		Messages: []llm.Message{llm.User("How many r's in strawberry?")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	if len(resp.Message.Content) < 2 {
+		t.Fatalf("expected at least 2 content parts, got %d", len(resp.Message.Content))
+	}
+	if resp.Message.Content[0].Kind != llm.ContentThinking {
+		t.Fatalf("first part kind: %v, want thinking", resp.Message.Content[0].Kind)
+	}
+	if resp.Message.Content[0].Thinking == nil || resp.Message.Content[0].Thinking.Text != "Let me count: s-t-r-a-w-b-e-r-r-y. r appears at positions 3, 8, 9." {
+		t.Fatalf("thinking text mismatch: %+v", resp.Message.Content[0].Thinking)
+	}
+	if resp.Message.Content[1].Kind != llm.ContentText {
+		t.Fatalf("second part kind: %v, want text", resp.Message.Content[1].Kind)
+	}
+	if resp.ReasoningText() != "Let me count: s-t-r-a-w-b-e-r-r-y. r appears at positions 3, 8, 9." {
+		t.Fatalf("ReasoningText(): %q", resp.ReasoningText())
+	}
+}
+
+func TestComplete_ReasoningDetails_SuppressesReasoningEffort(t *testing.T) {
+	// When provider options include a "reasoning" key, reasoning_effort should
+	// NOT be emitted (it would conflict with the provider-specific format).
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "chatcmpl-mm2", "model": "minimax/minimax-m2.7",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	effort := "high"
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:           "minimax/minimax-m2.7",
+		Messages:        []llm.Message{llm.User("think hard")},
+		ReasoningEffort: &effort,
+		ProviderOptions: map[string]any{
+			"openai-compatible": map[string]any{
+				"reasoning": map[string]any{"enabled": true},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	// reasoning_effort should be suppressed in favor of the provider-specific "reasoning" field.
+	if _, has := gotBody["reasoning_effort"]; has {
+		t.Fatalf("reasoning_effort should be suppressed when provider options contain 'reasoning', got: %v", gotBody["reasoning_effort"])
+	}
+	// "reasoning" from provider options should be present.
+	reasoning, ok := gotBody["reasoning"].(map[string]any)
+	if !ok {
+		t.Fatalf("reasoning should be present from provider options, got: %v", gotBody["reasoning"])
+	}
+	if reasoning["enabled"] != true {
+		t.Fatalf("reasoning.enabled: %v", reasoning["enabled"])
+	}
+}
+
+func TestComplete_RoundTrip_ThinkingSerializedAsReasoningDetails(t *testing.T) {
+	// When provider options contain "reasoning" (OpenRouter MiniMax format),
+	// thinking data should be serialized as reasoning_details, not reasoning_content.
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "chatcmpl-mm3", "model": "minimax/minimax-m2.7",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model: "minimax/minimax-m2.7",
+		Messages: []llm.Message{
+			llm.User("question"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "my reasoning"}},
+				{Kind: llm.ContentText, Text: "my answer"},
+			}},
+			llm.User("followup"),
+		},
+		ProviderOptions: map[string]any{
+			"openai-compatible": map[string]any{
+				"reasoning": map[string]any{"enabled": true},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	msgs := gotBody["messages"].([]any)
+	assistantMsg := msgs[1].(map[string]any)
+
+	// Should use reasoning_details format, not reasoning_content.
+	if _, has := assistantMsg["reasoning_content"]; has {
+		t.Fatalf("reasoning_content should NOT be present when using reasoning_details format, got: %v", assistantMsg["reasoning_content"])
+	}
+	details, ok := assistantMsg["reasoning_details"].([]any)
+	if !ok || len(details) == 0 {
+		t.Fatalf("reasoning_details should be present, got: %v", assistantMsg["reasoning_details"])
+	}
+	detail := details[0].(map[string]any)
+	if detail["type"] != "reasoning.text" || detail["text"] != "my reasoning" {
+		t.Fatalf("reasoning_details[0]: %v", detail)
+	}
+	if assistantMsg["content"] != "my answer" {
+		t.Fatalf("content: %v", assistantMsg["content"])
+	}
+}
+
+func TestStream_ReasoningDetails_EmitsReasoningEvents(t *testing.T) {
+	// OpenRouter streams reasoning_details as reasoning_content deltas for MiniMax.
+	// But the final response should report them correctly.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+
+		chunks := []string{
+			`{"id":"c1","model":"minimax/minimax-m2.7","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Let me "},"finish_reason":null}]}`,
+			`{"id":"c1","model":"minimax/minimax-m2.7","choices":[{"index":0,"delta":{"reasoning_content":"count..."},"finish_reason":null}]}`,
+			`{"id":"c1","model":"minimax/minimax-m2.7","choices":[{"index":0,"delta":{"content":"There are 3."},"finish_reason":null}]}`,
+			`{"id":"c1","model":"minimax/minimax-m2.7","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":20,"total_tokens":25}}`,
+		}
+		for _, c := range chunks {
+			fmt.Fprintf(w, "data: %s\n\n", c)
+			flusher.Flush()
+		}
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	st, err := a.Stream(ctx, llm.Request{
+		Model:    "minimax/minimax-m2.7",
+		Messages: []llm.Message{llm.User("count r's")},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer st.Close()
+
+	var reasoningText, contentText string
+	for ev := range st.Events() {
+		if ev.Type == llm.StreamEventReasoningDelta {
+			reasoningText += ev.ReasoningDelta
+		}
+		if ev.Type == llm.StreamEventTextDelta {
+			contentText += ev.Delta
+		}
+	}
+
+	if reasoningText != "Let me count..." {
+		t.Fatalf("reasoning deltas: %q", reasoningText)
+	}
+	if contentText != "There are 3." {
+		t.Fatalf("text deltas: %q", contentText)
+	}
+}
+
+// TestRescueClaudeXMLArgs exercises the rescue function against real-world
+// corruption patterns observed in MiniMax M2.7 via OpenRouter. MiniMax
+// sometimes reverts from JSON tool calling to Claude-style XML tool syntax
+// mid-generation, which produces tool args like:
+//
+//	{"action":"update\">\n<parameter name=\"updates\">[{...}]"}
+//
+// These parse as JSON (one field with a long string value) but fail tool
+// schema validation because the value for `action` is not a valid enum member.
+// The rescue function detects the XML pattern inside the string value and
+// lifts the embedded parameters to sibling fields.
+func TestRescueClaudeXMLArgs(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string // JSON-encoded expected output (field order doesn't matter)
+	}{
+		{
+			name: "clean JSON passes through",
+			in:   `{"action":"append","tasks":[{"prompt":"hi"}]}`,
+			want: `{"action":"append","tasks":[{"prompt":"hi"}]}`,
+		},
+		{
+			name: "incomplete XML (no closing tag)",
+			in:   `{"action":"update\">\n<parameter name=\"updates\">[{\"id\":1,\"status\":\"done\"}]"}`,
+			want: `{"action":"update","updates":[{"id":1,"status":"done"}]}`,
+		},
+		{
+			name: "complete XML (with closing tag)",
+			in:   `{"action":"append\">\n<parameter name=\"tasks\">[{\"title\":\"t1\"}]</parameter>"}`,
+			want: `{"action":"append","tasks":[{"title":"t1"}]}`,
+		},
+		{
+			name: "multiple parameter blocks",
+			in:   `{"action":"x\">\n<parameter name=\"a\">hello</parameter>\n<parameter name=\"b\">world</parameter>"}`,
+			want: `{"a":"hello","action":"x","b":"world"}`,
+		},
+		{
+			name: "json-encoded string becomes array (type confusion)",
+			in:   `{"task":"do stuff","task_list":"[{\"title\":\"one\",\"prompt\":\"do one\"}]"}`,
+			want: `{"task":"do stuff","task_list":[{"prompt":"do one","title":"one"}]}`,
+		},
+		{
+			name: "genuine string starting with [ not parsed",
+			in:   `{"message":"[INFO] starting up"}`,
+			want: `{"message":"[INFO] starting up"}`,
+		},
+		{
+			name: "single-quoted parameter name attribute",
+			in:   `{"action":"update\">\n<parameter name='updates'>[{\"id\":1}]</parameter>"}`,
+			want: `{"action":"update","updates":[{"id":1}]}`,
+		},
+		{
+			name: "uppercase PARAMETER tag",
+			in:   `{"action":"update\">\n<PARAMETER NAME=\"updates\">[{\"id\":2}]</PARAMETER>"}`,
+			want: `{"action":"update","updates":[{"id":2}]}`,
+		},
+		{
+			name: "extra attributes before name",
+			in:   `{"action":"update\">\n<parameter type=\"array\" name=\"updates\">[{\"id\":3}]</parameter>"}`,
+			want: `{"action":"update","updates":[{"id":3}]}`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := rescueClaudeXMLArgs(tc.in)
+			var g, w any
+			if err := json.Unmarshal([]byte(got), &g); err != nil {
+				t.Fatalf("result is not valid JSON: %v\ngot: %s", err, got)
+			}
+			if err := json.Unmarshal([]byte(tc.want), &w); err != nil {
+				t.Fatalf("want is not valid JSON: %v", err)
+			}
+			gj, _ := json.Marshal(g)
+			wj, _ := json.Marshal(w)
+			if string(gj) != string(wj) {
+				t.Fatalf("\n got: %s\nwant: %s", gj, wj)
+			}
+		})
+	}
+}
+
+// ================== Effort translation tests ==================
+
+func TestBuildRequestBody_TranslateMaxToXHigh_OpenRouter(t *testing.T) {
+	// OpenRouter quirk translates "max" to "xhigh".
+	effort := "max"
+	req := llm.Request{
+		Model:           "some-model",
+		Messages:        []llm.Message{{Role: "user", Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "hi"}}}},
+		ReasoningEffort: &effort,
+	}
+	quirks := QuirksPreset("openrouter")
+	body, err := buildRequestBody(req, false, quirks)
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+	got, ok := body["reasoning_effort"].(string)
+	if !ok {
+		t.Fatal("expected reasoning_effort in body")
+	}
+	if got != "xhigh" {
+		t.Fatalf("expected reasoning_effort='xhigh', got %q", got)
+	}
+}
+
+func TestBuildRequestBody_NoTranslation_OtherProviders(t *testing.T) {
+	// Without the quirk, "max" passes through unchanged.
+	effort := "max"
+	req := llm.Request{
+		Model:           "some-model",
+		Messages:        []llm.Message{{Role: "user", Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "hi"}}}},
+		ReasoningEffort: &effort,
+	}
+	quirks := ProviderQuirks{} // No translation quirk
+	body, err := buildRequestBody(req, false, quirks)
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+	got, ok := body["reasoning_effort"].(string)
+	if !ok {
+		t.Fatal("expected reasoning_effort in body")
+	}
+	if got != "max" {
+		t.Fatalf("expected reasoning_effort='max' (unchanged), got %q", got)
+	}
+}
+
+func TestBuildRequestBody_TranslateMaxToXHigh_CaseInsensitive(t *testing.T) {
+	// The translation should be case-insensitive.
+	for _, effort := range []string{"MAX", "Max", "mAx"} {
+		t.Run(effort, func(t *testing.T) {
+			e := effort
+			req := llm.Request{
+				Model:           "some-model",
+				Messages:        []llm.Message{{Role: "user", Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "hi"}}}},
+				ReasoningEffort: &e,
+			}
+			quirks := QuirksPreset("openrouter")
+			body, err := buildRequestBody(req, false, quirks)
+			if err != nil {
+				t.Fatalf("buildRequestBody: %v", err)
+			}
+			got, ok := body["reasoning_effort"].(string)
+			if !ok {
+				t.Fatal("expected reasoning_effort in body")
+			}
+			if got != "xhigh" {
+				t.Fatalf("expected reasoning_effort='xhigh', got %q", got)
+			}
+		})
+	}
+}
+
+func TestBuildRequestBody_OtherEffortLevels_NoTranslation(t *testing.T) {
+	// Non-"max" levels pass through unchanged even with the quirk.
+	levels := []string{"low", "medium", "high", "xhigh"}
+	quirks := QuirksPreset("openrouter")
+	for _, level := range levels {
+		t.Run(level, func(t *testing.T) {
+			e := level
+			req := llm.Request{
+				Model:           "some-model",
+				Messages:        []llm.Message{{Role: "user", Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "hi"}}}},
+				ReasoningEffort: &e,
+			}
+			body, err := buildRequestBody(req, false, quirks)
+			if err != nil {
+				t.Fatalf("buildRequestBody: %v", err)
+			}
+			got, ok := body["reasoning_effort"].(string)
+			if !ok {
+				t.Fatal("expected reasoning_effort in body")
+			}
+			if got != level {
+				t.Fatalf("expected reasoning_effort=%q, got %q", level, got)
+			}
+		})
 	}
 }

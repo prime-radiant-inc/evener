@@ -956,3 +956,103 @@ func TestRestoreSession_TranscriptWithCompaction(t *testing.T) {
 		t.Fatalf("snapshot history should not appear when transcript exists, got user texts: %v", userTexts)
 	}
 }
+
+// TestMetaTurnCount_CountsModelResponses verifies that meta.json turn_count
+// reflects the number of model responses (LLM round-trips), not the number
+// of user input submissions.
+func TestMetaTurnCount_CountsModelResponses(t *testing.T) {
+	c := llm.NewClient()
+	callNum := 0
+	var mu sync.Mutex
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			// Round 1: model returns a tool call
+			func(req llm.Request) llm.Response {
+				mu.Lock()
+				callNum++
+				mu.Unlock()
+				call := llm.ToolCallData{
+					ID:        "c1",
+					Name:      "read_file",
+					Arguments: json.RawMessage(`{"file_path":"a.txt"}`),
+					Type:      "function",
+				}
+				return llm.Response{
+					Message: llm.Message{
+						Role:    llm.RoleAssistant,
+						Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
+					},
+					Finish: llm.FinishReason{Reason: "tool_calls"},
+				}
+			},
+			// Round 2: model returns another tool call
+			func(req llm.Request) llm.Response {
+				mu.Lock()
+				callNum++
+				mu.Unlock()
+				call := llm.ToolCallData{
+					ID:        "c2",
+					Name:      "read_file",
+					Arguments: json.RawMessage(`{"file_path":"b.txt"}`),
+					Type:      "function",
+				}
+				return llm.Response{
+					Message: llm.Message{
+						Role:    llm.RoleAssistant,
+						Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
+					},
+					Finish: llm.FinishReason{Reason: "tool_calls"},
+				}
+			},
+			// Round 3: model returns final text
+			func(req llm.Request) llm.Response {
+				mu.Lock()
+				callNum++
+				mu.Unlock()
+				return llm.Response{
+					Message: llm.Assistant("all done"),
+					Finish:  llm.FinishReason{Reason: "stop"},
+				}
+			},
+		},
+	}
+	c.Register(f)
+
+	dir := t.TempDir()
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir),
+		SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	// One user input, but three model responses (2 tool rounds + 1 final text).
+	if _, err := sess.ProcessInput(context.Background(), "do stuff"); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+
+	mu.Lock()
+	totalCalls := callNum
+	mu.Unlock()
+	if totalCalls != 3 {
+		t.Fatalf("expected 3 LLM calls, got %d", totalCalls)
+	}
+
+	// The meta.json turn_count should reflect all 3 model responses,
+	// not just 1 (the number of user inputs).
+	metas, err := ListSessionMetas(dir)
+	if err != nil {
+		t.Fatalf("ListSessionMetas: %v", err)
+	}
+	if len(metas) != 1 {
+		t.Fatalf("expected 1 meta, got %d", len(metas))
+	}
+	if metas[0].TurnCount != 3 {
+		t.Fatalf("meta turn_count: got %d, want 3 (should count model responses, not user inputs)", metas[0].TurnCount)
+	}
+}

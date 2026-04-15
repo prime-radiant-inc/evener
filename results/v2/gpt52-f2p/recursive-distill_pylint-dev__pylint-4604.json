@@ -1,8 +1,0 @@
-{
-  "task": "pylint-dev__pylint-4604",
-  "strategy": "recursive-distill",
-  "model": "gpt-5.2",
-  "resolved": false,
-  "exit_code": 2,
-  "test_output_tail": "============================= test session starts ==============================\ncollected 0 items / 1 error\n\n==================================== ERRORS ====================================\n____________ ERROR collecting tests/checkers/unittest_variables.py _____________\nImportError while importing test module '/private/tmp/serfeval-v2/repos/pylint-dev__pylint-4604/tests/checkers/unittest_variables.py'.\nHint: make sure your test modules/packages have valid Python names.\nTraceback:\n/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/importlib/__init__.py:127: in import_module\n    return _bootstrap._gcd_import(name[level:], package, level)\ntests/checkers/unittest_variables.py:30: in <module>\n    from pylint.constants import IS_PYPY\nE   ImportError: cannot import name 'IS_PYPY' from 'pylint.constants' (/private/tmp/serfeval-v2/repos/pylint-dev__pylint-4604/pylint/constants.py)\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!\n!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!\n=============================== 1 error in 0.09s ===============================\n/Users/jesse/Library/Python/3.9/lib/python/site-packages/setuptools_scm/git.py:202: UserWarning: \"/private/tmp/serfeval-v2/repos/astropy__astropy-13398\" is shallow and may cause errors\n  warnings.warn(f'\"{wd.path}\" is shallow and may cause errors')\n"
-}

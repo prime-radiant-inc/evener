@@ -14,8 +14,14 @@ import (
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/anthropic"
+	_ "primeradiant.com/serf/llm/providers/glm"
 	_ "primeradiant.com/serf/llm/providers/google"
+	_ "primeradiant.com/serf/llm/providers/kimi"
+	_ "primeradiant.com/serf/llm/providers/minimax"
 	_ "primeradiant.com/serf/llm/providers/openai"
+	_ "primeradiant.com/serf/llm/providers/openaicompat"
+	_ "primeradiant.com/serf/llm/providers/openrouter"
+	_ "primeradiant.com/serf/llm/providers/openrouter_anthropic"
 )
 
 type runConfig struct {
@@ -120,7 +126,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		provider = os.Getenv("SERF_PROVIDER")
 	}
 	if provider == "" {
-		return fmt.Errorf("no provider specified: use --provider or set SERF_PROVIDER (openai, anthropic, google)")
+		return fmt.Errorf("no provider specified: use --provider or set SERF_PROVIDER")
 	}
 
 	// Resolve model: explicit flag > meta > SERF_MODEL env var.
@@ -147,6 +153,12 @@ func run(ctx context.Context, cfg runConfig) error {
 		fmt.Fprintf(cfg.stderr, "warning: API logging disabled: %v\n", apiLogErr) //nolint:errcheck
 	} else {
 		apiLog.SyncInterval = 2 * time.Second
+		if llm.RawBodyEnabled() {
+			rawLogPath := filepath.Join(stateDir, "api-raw.jsonl")
+			if err := apiLog.EnableRawLogging(rawLogPath); err != nil {
+				fmt.Fprintf(cfg.stderr, "warning: raw API logging disabled: %v\n", err) //nolint:errcheck
+			}
+		}
 		client.Use(apiLog)
 		defer apiLog.Close()
 	}
@@ -172,7 +184,7 @@ func run(ctx context.Context, cfg runConfig) error {
 			MaxToolRoundsPerInput: cmdutil.MaxRoundsToConfig(cfg.maxRounds),
 			MinResultRound:        cfg.minResultRound,
 			EnableReviewerGate:    cfg.enableReviewerGate,
-			DisableAutoVerify:      cfg.noAutoVerify,
+			EnableAutoVerify:       false, // disabled by default; --no-auto-verify flag preserved for compatibility
 			ShareTasksWithChildren: cfg.shareTaskStore,
 			ResultToolName:        cfg.resultToolName,
 			StateDir:              stateDir,

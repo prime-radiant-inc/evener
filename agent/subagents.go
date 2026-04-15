@@ -24,9 +24,10 @@ const (
 
 // SubAgentResult is the structured output from a completed sub-agent.
 type SubAgentResult struct {
-	Output    string `json:"output"`
-	Success   bool   `json:"success"`
-	TurnsUsed int    `json:"turns_used"`
+	Output     string `json:"output"`
+	Success    bool   `json:"success"`
+	TurnsUsed  int    `json:"turns_used"`
+	Transcript string `json:"transcript,omitempty"`
 }
 
 // defaultSubagentInstructions is the role-specific prompt for default subagents
@@ -52,7 +53,7 @@ type subagent struct {
 	nudgeEnabled   bool // true for default subagents that should be nudged to submit_result
 }
 
-func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string, maxTurns int, agentType string, reasoningEffort string) (any, error) {
+func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string, maxTurns int, agentType string, reasoningEffort string, parentTasks []TaskTemplate) (any, error) {
 	s.mu.Lock()
 	depth := s.depth
 	maxDepth := s.cfg.MaxSubagentDepth
@@ -116,16 +117,20 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		agentName = "subagent"
 		rolePrompt = defaultSubagentInstructions
 	}
+	subCfg.AgentName = agentName // ensure subagent gets its own tasks, not parent's
 
 	// Compose subagent system prompt via template resolver.
-	// If the subagent has a custom working directory, scan its workspace.
-	// Otherwise reuse the parent's workspace snapshot.
+	// Always rescan the workspace at subagent spawn time so the subagent sees
+	// the current state of the directory, including any files the implementer
+	// (or previous subagents) produced. Reusing the parent coordinator's
+	// snapshot would show the subagent a stale pre-work baseline, causing the
+	// verifier to treat implementer-produced artifacts as "new files I created"
+	// during its Restore step.
 	subWorkDir := s.envInfo.WorkingDir
-	subWorkspace := s.envInfo.Workspace
 	if wd := strings.TrimSpace(workingDir); wd != "" {
 		subWorkDir = wd
-		subWorkspace = ScanWorkspace(wd)
 	}
+	subWorkspace := ScanWorkspace(subWorkDir)
 	subData := PromptData{
 		Provider:        s.profile.ID(),
 		Agent:           agentName,
@@ -160,12 +165,11 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	if err != nil {
 		// Fallback: use role prompt directly if template rendering fails.
 		composed = rolePrompt
-	} else {
-		// Append the role prompt after template rendering.
-		// For plugin agents with custom SystemPrompts, this ensures their
-		// persona is included even if no matching embedded agent file exists.
-		// For built-in agents, the role section already resolved the same
-		// content from the embedded file — the duplication is harmless.
+	} else if agent != nil && agent.PluginName != "builtin" && strings.TrimSpace(agent.SystemPrompt) != "" {
+		// Plugin agents (not built-in) may have custom SystemPrompts that
+		// differ from any embedded agent file. The template's role section
+		// won't find them, so append here. Built-in agents already have
+		// their content resolved via the role section from the embedded FS.
 		composed += "\n\n" + rolePrompt
 	}
 
@@ -218,6 +222,19 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	}
 	// Rebuild cached tool definitions after restriction/removal.
 	subSess.rebuildToolDefsCache()
+
+	// Populate default tasks from agent definition + parent tasks.
+	if agent != nil && len(agent.Tasks) > 0 {
+		subStore := subSess.getOrCreateTaskStore()
+		if err := subStore.PopulateFromTemplates(agent.Tasks, parentTasks); err != nil {
+			// Log but don't fail the spawn.
+			_ = err
+		}
+		// Inject the first task's prompt as a steering message.
+		if current, ok := subStore.CurrentInProgress(); ok {
+			subSess.Steer(formatCurrentTaskSteering(current))
+		}
+	}
 
 	sub := &subagent{
 		id:           subSess.id,
@@ -307,9 +324,10 @@ func (s *Session) waitAgent(ctx context.Context, agentID string, timeoutMS int) 
 	}
 	sub.mu.Lock()
 	result := SubAgentResult{
-		Output:    sub.result,
-		Success:   sub.err == nil,
-		TurnsUsed: sub.turnsUsed,
+		Output:     sub.result,
+		Success:    sub.err == nil,
+		TurnsUsed:  sub.turnsUsed,
+		Transcript: sub.sess.TranscriptPath(),
 	}
 	status := sub.status
 	subErr := sub.err

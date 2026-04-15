@@ -12,10 +12,17 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/anthropic"
+	_ "primeradiant.com/serf/llm/providers/glm"
 	_ "primeradiant.com/serf/llm/providers/google"
+	_ "primeradiant.com/serf/llm/providers/kimi"
+	_ "primeradiant.com/serf/llm/providers/minimax"
 	_ "primeradiant.com/serf/llm/providers/openai"
+	_ "primeradiant.com/serf/llm/providers/openaicompat"
+	_ "primeradiant.com/serf/llm/providers/openrouter"
+	_ "primeradiant.com/serf/llm/providers/openrouter_anthropic"
 )
 
 // llmcall is a minimal single-call CLI for the unified llm client.
@@ -31,14 +38,7 @@ func main() {
 	}
 }
 
-// stringSliceFlag implements flag.Value for a repeatable string flag.
-type stringSliceFlag []string
-
-func (f *stringSliceFlag) String() string { return strings.Join(*f, ",") }
-func (f *stringSliceFlag) Set(val string) error {
-	*f = append(*f, val)
-	return nil
-}
+type stringSliceFlag = cmdutil.StringSliceFlag
 
 type llmCallConfig struct {
 	prompt   string
@@ -86,7 +86,7 @@ func llmcallMain(args []string, stdout, stderr io.Writer) error {
 		maxTokens:   -1,
 	}
 
-	fs.StringVar(&cfg.provider, "provider", "", "LLM provider: openai, anthropic, google (or set LLM_PROVIDER / SERF_PROVIDER)")
+	fs.StringVar(&cfg.provider, "provider", "", "LLM provider (or set LLM_PROVIDER / SERF_PROVIDER)")
 	fs.StringVar(&cfg.model, "model", "", "LLM model identifier (or set LLM_MODEL / SERF_MODEL)")
 
 	fs.StringVar(&cfg.systemText, "system", "", "system prompt text (optional)")
@@ -113,6 +113,10 @@ func llmcallMain(args []string, stdout, stderr io.Writer) error {
 	var metadata stringSliceFlag
 	fs.Var(&metadata, "meta", "metadata key=value (repeatable)")
 
+	var cpuProfile, traceFile string
+	fs.StringVar(&cpuProfile, "cpu-profile", "", "write CPU profile to file")
+	fs.StringVar(&traceFile, "trace", "", "write execution trace to file")
+
 	fs.Usage = func() {
 		fmt.Fprintf(stderr, "Usage:\n")
 		fmt.Fprintf(stderr, "  llmcall --provider <provider> --model <model> [flags] <prompt>\n")
@@ -122,7 +126,7 @@ func llmcallMain(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintf(stderr, "  - Tool calls are forbidden (tool_choice=none).\n")
 		fmt.Fprintf(stderr, "  - No system prompt by default.\n\n")
 		fmt.Fprintf(stderr, "Required:\n")
-		fmt.Fprintf(stderr, "  --provider <name>        openai|anthropic|google (or LLM_PROVIDER/SERF_PROVIDER)\n")
+		fmt.Fprintf(stderr, "  --provider <name>        LLM provider (or LLM_PROVIDER/SERF_PROVIDER)\n")
 		fmt.Fprintf(stderr, "  --model <id>             model identifier (or LLM_MODEL/SERF_MODEL)\n")
 	}
 
@@ -131,6 +135,21 @@ func llmcallMain(args []string, stdout, stderr io.Writer) error {
 			return nil
 		}
 		return err
+	}
+
+	if cpuProfile != "" {
+		stop, err := cmdutil.StartCPUProfile(cpuProfile)
+		if err != nil {
+			return err
+		}
+		defer stop()
+	}
+	if traceFile != "" {
+		stop, err := cmdutil.StartTrace(traceFile)
+		if err != nil {
+			return err
+		}
+		defer stop()
 	}
 
 	cfg.prompt = strings.TrimSpace(strings.Join(fs.Args(), " "))

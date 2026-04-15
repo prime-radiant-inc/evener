@@ -116,6 +116,7 @@ def normalize_to_cache(staging: Path, run_id: str) -> None:
                 agent_state = entry / "agent" / "agent-state"
                 if agent_state.is_dir():
                     _copy_if_exists(agent_state / "api.jsonl", dest / "api.jsonl")
+                    _copy_if_exists(agent_state / "api-raw.jsonl", dest / "api-raw.jsonl")
                     _copy_if_exists(agent_state / "trajectory.json", dest / "trajectory.json")
 
                     # Sessions

@@ -4,7 +4,20 @@ description: "Direct execution worker. Writes code and runs commands to complete
 model: inherit
 color: green
 tools: [glob, grep, read_file, write_file, apply_patch, shell]
+tasks:
+  - title: Understand task
+    prompt: "Read the task requirements and relevant files."
+    reasoning_effort: low
+  - title: Do the work
+    insert: parent_tasks
+    prompt: "Implement the solution."
+    reasoning_effort: low
+  - title: Verify
+    prompt: "Test your work and verify it meets requirements."
+    reasoning_effort: low
 ---
+
+Your task list defines your workflow. Adapt it as needed.
 
 ## Role
 

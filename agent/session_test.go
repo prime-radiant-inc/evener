@@ -647,7 +647,9 @@ func TestSession_ParallelToolCalls_RunConcurrentlyWhenSupported(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	// Register a slow tool that blocks until the test releases it.
+	// Register a slow read-only tool that blocks until the test releases it.
+	// ReadOnly: true ensures the ordered-group algorithm batches both calls
+	// for parallel execution (non-read-only tools are serialized).
 	_ = sess.reg.Register(RegisteredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{
 			Name: "slow",
@@ -655,7 +657,7 @@ func TestSession_ParallelToolCalls_RunConcurrentlyWhenSupported(t *testing.T) {
 				"type":       "object",
 				"properties": map[string]any{"n": map[string]any{"type": "integer"}},
 			},
-		}},
+		}, ReadOnly: true},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			_ = env
@@ -687,6 +689,102 @@ func TestSession_ParallelToolCalls_RunConcurrentlyWhenSupported(t *testing.T) {
 		t.Fatalf("ProcessInput error: %v", err)
 	}
 	sess.Close()
+}
+
+func TestSession_ParallelToolCalls_NonReadOnlyToolsSerialize(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	// Track execution order: each tool call records its start and end.
+	type callTiming struct {
+		name  string
+		start time.Time
+		end   time.Time
+	}
+	var mu sync.Mutex
+	var timings []callTiming
+
+	f := &fakeAdapter{
+		name: "anthropic",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				// read, write, read — the write must not overlap with reads.
+				return llm.Response{
+					Message: llm.Message{
+						Role: llm.RoleAssistant,
+						Content: []llm.ContentPart{
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "reader", Arguments: json.RawMessage(`{}`)}},
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "2", Name: "writer", Arguments: json.RawMessage(`{}`)}},
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "3", Name: "reader", Arguments: json.RawMessage(`{}`)}},
+						},
+					},
+				}
+			},
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("ok")}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	makeTool := func(name string, readOnly bool) RegisteredTool {
+		return RegisteredTool{
+			Tool: llm.Tool{
+				Definition: llm.ToolDefinition{
+					Name:       name,
+					Parameters: map[string]any{"type": "object", "properties": map[string]any{}},
+				},
+				ReadOnly: readOnly,
+			},
+			Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+				start := time.Now()
+				time.Sleep(50 * time.Millisecond)
+				end := time.Now()
+				mu.Lock()
+				timings = append(timings, callTiming{name: name, start: start, end: end})
+				mu.Unlock()
+				return "ok", nil
+			},
+		}
+	}
+	_ = sess.reg.Register(makeTool("reader", true))
+	_ = sess.reg.Register(makeTool("writer", false))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "run tools")
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(timings) != 3 {
+		t.Fatalf("expected 3 tool calls, got %d", len(timings))
+	}
+
+	// Find the writer timing.
+	var writerTiming callTiming
+	for _, ct := range timings {
+		if ct.name == "writer" {
+			writerTiming = ct
+			break
+		}
+	}
+	// Every reader must not overlap with the writer.
+	for _, ct := range timings {
+		if ct.name == "reader" {
+			if ct.start.Before(writerTiming.end) && writerTiming.start.Before(ct.end) {
+				t.Errorf("reader overlapped with writer: reader=%v-%v writer=%v-%v",
+					ct.start, ct.end, writerTiming.start, writerTiming.end)
+			}
+		}
+	}
 }
 
 func TestSession_SystemPrompt_IncludesGitSnapshot_WhenInGitRepo(t *testing.T) {

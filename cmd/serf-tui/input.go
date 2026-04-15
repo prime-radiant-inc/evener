@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/server"
 )
 
@@ -37,6 +38,7 @@ func slashCommandHelp() string {
 		"  /help      Show this help",
 		"  /compact   Compact context (free up token space)",
 		"  /status    Show session info and context pressure",
+		"  /tasks     Show the agent's task list",
 		"  /model     Switch model (picker) or /model <name>",
 		"  /theme     Pick a theme (dark/light)",
 		"  /clear     Start a new session",
@@ -48,7 +50,8 @@ func slashCommandHelp() string {
 		"  ctrl+j           New line in input (alternative)",
 		"  pgup             Enter scroll mode (browse history)",
 		"  esc / i          Exit scroll mode",
-		"  tab              Expand/collapse most recent tool call",
+		"  up / down        Navigate tool calls in scroll mode",
+		"  tab / enter      Expand/collapse focused tool call",
 	}, "\n")
 }
 
@@ -120,6 +123,30 @@ func fetchStatus(addr string) tea.Cmd {
 			return statusResult{err: err}
 		}
 		return statusResult{info: info}
+	}
+}
+
+type tasksResult struct {
+	tasks []agent.Task
+	err   error
+}
+
+func fetchTasks(addr string) tea.Cmd {
+	return func() tea.Msg {
+		url := fmt.Sprintf("http://%s/tasks", addr)
+		resp, err := http.Get(url)
+		if err != nil {
+			return tasksResult{err: err}
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return tasksResult{err: fmt.Errorf("server returned %d", resp.StatusCode)}
+		}
+		var tasks []agent.Task
+		if err := json.NewDecoder(resp.Body).Decode(&tasks); err != nil {
+			return tasksResult{err: err}
+		}
+		return tasksResult{tasks: tasks}
 	}
 }
 

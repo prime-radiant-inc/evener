@@ -1,6 +1,6 @@
 // Package openaicompat implements a Chat Completions adapter for OpenAI-compatible
-// services (Ollama, vLLM, LiteLLM, etc.). It registers as provider "openai-compatible"
-// and uses the standard /v1/chat/completions endpoint.
+// services (Ollama, vLLM, LiteLLM, etc.). It registers as provider "openai-compatible".
+// BaseURL should include the version prefix (e.g. "https://api.openai.com/v1").
 package openaicompat
 
 import (
@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -19,11 +20,69 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// ProviderQuirks configures per-provider behavioral overrides for OpenAI-compatible
+// APIs that deviate from the standard Chat Completions contract.
+type ProviderQuirks struct {
+	LockTemperature       bool
+	LockTopP              bool
+	LockFrequencyPenalty  bool
+	LockPresencePenalty   bool
+	ToolChoiceAutoOnly    bool
+	MaxStopSequences      int
+	StripEmptyContent     bool
+	NoJSONSchema          bool
+	FinishReasonMap       map[string]string
+	TranslateMaxToXHigh   bool // OpenRouter vocab: our "max" → their "xhigh"
+}
+
+func (q ProviderQuirks) mapFinishReason(raw string) string {
+	if q.FinishReasonMap == nil {
+		return raw
+	}
+	if mapped, ok := q.FinishReasonMap[raw]; ok {
+		return mapped
+	}
+	return raw
+}
+
+// QuirksPreset returns a ProviderQuirks configuration for a known provider name.
+func QuirksPreset(name string) ProviderQuirks {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "kimi-k2.5", "kimi", "moonshot":
+		return ProviderQuirks{
+			LockTemperature:      true,
+			LockTopP:             true,
+			LockFrequencyPenalty: true,
+			LockPresencePenalty:  true,
+			ToolChoiceAutoOnly:   true,
+			NoJSONSchema:         true,
+		}
+	case "glm-5", "glm-5-turbo", "glm", "zhipu":
+		return ProviderQuirks{
+			StripEmptyContent:  true,
+			ToolChoiceAutoOnly: true,
+			MaxStopSequences:   1,
+			NoJSONSchema:       true,
+			FinishReasonMap: map[string]string{
+				"sensitive":     "content_filter",
+				"network_error": "error",
+			},
+		}
+	case "openrouter":
+		return ProviderQuirks{
+			TranslateMaxToXHigh: true,
+		}
+	default:
+		return ProviderQuirks{}
+	}
+}
+
 type Adapter struct {
 	APIKey         string
 	BaseURL        string
 	Client         *http.Client
 	DefaultHeaders map[string]string
+	Quirks         ProviderQuirks
 }
 
 func init() {
@@ -46,10 +105,17 @@ func NewFromEnv() (*Adapter, error) {
 		return nil, fmt.Errorf("OPENAI_COMPATIBLE_BASE_URL is required")
 	}
 	key := strings.TrimSpace(os.Getenv("OPENAI_COMPATIBLE_API_KEY"))
+
+	var quirks ProviderQuirks
+	if preset := strings.TrimSpace(os.Getenv("OPENAI_COMPATIBLE_PROVIDER_QUIRKS")); preset != "" {
+		quirks = QuirksPreset(preset)
+	}
+
 	return &Adapter{
 		APIKey:  key,
 		BaseURL: strings.TrimRight(base, "/"),
 		Client:  &http.Client{Timeout: 0},
+		Quirks:  quirks,
 	}, nil
 }
 
@@ -61,7 +127,7 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 		a.Client = &http.Client{Timeout: 0}
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, a.BaseURL+"/v1/models", nil)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, a.BaseURL+"/models", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -109,7 +175,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		a.Client = &http.Client{Timeout: 0}
 	}
 
-	body, err := buildRequestBody(req, false)
+	body, err := buildRequestBody(req, false, a.Quirks)
 	if err != nil {
 		return llm.Response{}, err
 	}
@@ -117,7 +183,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	ctx, adapterCancel := llm.ApplyAdapterTimeout(ctx, req.AdapterTimeout, false)
 	defer adapterCancel()
 
-	raw, statusCode, headers, err := a.doHTTP(ctx, body, req.AdapterTimeout)
+	raw, rawReqBody, rawRespBody, statusCode, headers, err := a.doHTTP(ctx, body, req.AdapterTimeout)
 	if err != nil {
 		return llm.Response{}, err
 	}
@@ -127,11 +193,15 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		return llm.Response{}, llm.ErrorFromHTTPStatus("openai-compatible", statusCode, msg, raw, retryAfter)
 	}
 
-	resp, err := fromChatCompletionResponse(raw)
+	resp, err := fromChatCompletionResponse(raw, a.Quirks)
 	if err != nil {
 		return resp, err
 	}
 	resp.RateLimit = llm.ParseRateLimitHeaders(headers)
+	if llm.RawBodyEnabled() {
+		resp.RawRequestBody = string(rawReqBody)
+		resp.RawResponseBody = string(rawRespBody)
+	}
 	return resp, nil
 }
 
@@ -143,7 +213,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	ctx, timeoutCancel := llm.ApplyAdapterTimeout(ctx, req.AdapterTimeout, true)
 	defer timeoutCancel()
 
-	body, err := buildRequestBody(req, true)
+	body, err := buildRequestBody(req, true, a.Quirks)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +223,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		return nil, err
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.BaseURL+"/v1/chat/completions", bytes.NewReader(jsonBody))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.BaseURL+"/chat/completions", bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, err
 	}
@@ -203,25 +273,45 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		toolCalls := map[int]*toolCallState{}
 		var textStarted bool
 		var textBuf strings.Builder
+		var reasoningStarted bool
+		var reasoningBuf strings.Builder
 		var model string
 		var finishReason string
 		var usage *llm.Usage
 		finished := false
 
-		_ = llm.ParseSSE(sctx, resp.Body, func(ev llm.SSEEvent) error {
+		var sseBody io.Reader = resp.Body
+		var sseBuf *bytes.Buffer
+		if llm.RawBodyEnabled() {
+			sseBuf = &bytes.Buffer{}
+			sseBody = io.TeeReader(resp.Body, sseBuf)
+		}
+		rawReqBody := string(jsonBody)
+
+		_ = llm.ParseSSE(sctx, sseBody, func(ev llm.SSEEvent) error {
 			data := string(ev.Data)
 			if data == "[DONE]" {
 				finished = true
-				// Emit tool call end events for any open tool calls.
+
+				// Close reasoning if still open.
+				if reasoningStarted && !textStarted && len(toolCalls) == 0 {
+					s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningEnd})
+				}
+
+				// Collect and emit tool call end events.
+				var completedToolCalls []llm.ToolCallData
 				for idx, tc := range toolCalls {
+					rescuedArgs := rescueClaudeXMLArgs(tc.args.String())
+					tcd := llm.ToolCallData{
+						ID:        tc.id,
+						Name:      tc.name,
+						Arguments: json.RawMessage(rescuedArgs),
+						Type:      "function",
+					}
+					completedToolCalls = append(completedToolCalls, tcd)
 					s.Send(llm.StreamEvent{
-						Type: llm.StreamEventToolCallEnd,
-						ToolCall: &llm.ToolCallData{
-							ID:        tc.id,
-							Name:      tc.name,
-							Arguments: json.RawMessage(tc.args.String()),
-							Type:      "function",
-						},
+						Type:     llm.StreamEventToolCallEnd,
+						ToolCall: &tcd,
 					})
 					delete(toolCalls, idx)
 				}
@@ -232,10 +322,31 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 
 				// Build final response.
 				msg := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{}}
+				if reasoningBuf.Len() > 0 {
+					msg.Content = append(msg.Content, llm.ContentPart{
+						Kind:     llm.ContentThinking,
+						Thinking: &llm.ThinkingData{Text: reasoningBuf.String()},
+					})
+				}
 				if textBuf.Len() > 0 {
 					msg.Content = append(msg.Content, llm.ContentPart{Kind: llm.ContentText, Text: textBuf.String()})
 				}
-				finish := llm.NormalizeFinishReason("", finishReason)
+				for i := range completedToolCalls {
+					msg.Content = append(msg.Content, llm.ContentPart{
+						Kind:     llm.ContentToolCall,
+						ToolCall: &completedToolCalls[i],
+					})
+				}
+
+				rawFinish := finishReason
+				mappedFinish := a.Quirks.mapFinishReason(rawFinish)
+				var finish llm.FinishReason
+				if mappedFinish == rawFinish {
+					finish = llm.NormalizeFinishReason("", rawFinish)
+				} else {
+					finish = llm.FinishReason{Reason: mappedFinish, Raw: rawFinish}
+				}
+
 				finalResp := &llm.Response{
 					Provider:  "openai-compatible",
 					Model:     model,
@@ -245,6 +356,18 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 				}
 				if usage != nil {
 					finalResp.Usage = *usage
+				}
+				// Estimate reasoning tokens when not natively reported.
+				if finalResp.Usage.ReasoningTokens == nil && reasoningBuf.Len() > 0 {
+					estimated := reasoningBuf.Len() / 4
+					if estimated < 1 {
+						estimated = 1
+					}
+					finalResp.Usage.ReasoningTokens = &estimated
+				}
+				if sseBuf != nil {
+					finalResp.RawRequestBody = rawReqBody
+					finalResp.RawResponseBody = sseBuf.String()
 				}
 				s.Send(llm.StreamEvent{
 					Type:         llm.StreamEventFinish,
@@ -272,6 +395,11 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 				if v := llm.IntFromAny(chunk.Usage["total_tokens"]); v > 0 {
 					u.TotalTokens = v
 				}
+				if details, ok := chunk.Usage["completion_tokens_details"].(map[string]any); ok {
+					if rt := llm.IntFromAny(details["reasoning_tokens"]); rt > 0 {
+						u.ReasoningTokens = &rt
+					}
+				}
 				usage = &u
 			}
 
@@ -284,8 +412,24 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 				finishReason = choice.FinishReason
 			}
 
-			// Text delta.
+			// Reasoning content delta.
+			if choice.Delta.ReasoningContent != "" {
+				if !reasoningStarted {
+					s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningStart})
+					reasoningStarted = true
+				}
+				reasoningBuf.WriteString(choice.Delta.ReasoningContent)
+				s.Send(llm.StreamEvent{
+					Type:           llm.StreamEventReasoningDelta,
+					ReasoningDelta: choice.Delta.ReasoningContent,
+				})
+			}
+
+			// Text delta — close reasoning first if transitioning.
 			if choice.Delta.Content != "" {
+				if reasoningStarted && !textStarted {
+					s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningEnd})
+				}
 				if !textStarted {
 					s.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: "text_0"})
 					textStarted = true
@@ -302,6 +446,11 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 			for _, tc := range choice.Delta.ToolCalls {
 				state, exists := toolCalls[tc.Index]
 				if !exists {
+					// Close reasoning before the first tool call if needed.
+					if reasoningStarted && !textStarted {
+						s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningEnd})
+						reasoningStarted = false // Prevent double-close in [DONE].
+					}
 					state = &toolCallState{
 						id:   tc.ID,
 						name: tc.Function.Name,
@@ -345,12 +494,24 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 
 // --- Request building ---
 
-func buildRequestBody(req llm.Request, stream bool) (map[string]any, error) {
+func buildRequestBody(req llm.Request, stream bool, quirks ProviderQuirks) (map[string]any, error) {
 	body := map[string]any{
 		"model": req.Model,
 	}
 
-	msgs, err := toChatMessages(req.Messages)
+	// Check if provider options supply a custom "reasoning" field (e.g. OpenRouter
+	// MiniMax format: {"reasoning": {"enabled": true}}). When present, skip the
+	// default reasoning_effort field and use reasoning_details for multi-turn.
+	useReasoningDetails := false
+	if req.ProviderOptions != nil {
+		if ov, ok := req.ProviderOptions["openai-compatible"].(map[string]any); ok {
+			if _, has := ov["reasoning"]; has {
+				useReasoningDetails = true
+			}
+		}
+	}
+
+	msgs, err := toChatMessages(req.Messages, quirks, useReasoningDetails)
 	if err != nil {
 		return nil, err
 	}
@@ -381,8 +542,13 @@ func buildRequestBody(req llm.Request, stream bool) (map[string]any, error) {
 	if req.ResponseFormat != nil {
 		body["response_format"] = toChatResponseFormat(*req.ResponseFormat)
 	}
-	if req.ReasoningEffort != nil {
-		body["reasoning_effort"] = *req.ReasoningEffort
+	if req.ReasoningEffort != nil && !useReasoningDetails {
+		effort := *req.ReasoningEffort
+		// OpenRouter uses "xhigh" where we say "max".
+		if quirks.TranslateMaxToXHigh && strings.EqualFold(effort, "max") {
+			effort = "xhigh"
+		}
+		body["reasoning_effort"] = effort
 	}
 	if len(req.Metadata) > 0 {
 		body["metadata"] = req.Metadata
@@ -401,36 +567,100 @@ func buildRequestBody(req llm.Request, stream bool) (map[string]any, error) {
 		}
 	}
 
+	// Apply provider quirks.
+	if quirks.LockTemperature {
+		delete(body, "temperature")
+	}
+	if quirks.LockTopP {
+		delete(body, "top_p")
+	}
+	if quirks.LockFrequencyPenalty {
+		delete(body, "frequency_penalty")
+	}
+	if quirks.LockPresencePenalty {
+		delete(body, "presence_penalty")
+	}
+	if quirks.ToolChoiceAutoOnly {
+		if tc, ok := body["tool_choice"]; ok {
+			switch tc {
+			case "auto", "none":
+				// allowed
+			default:
+				body["tool_choice"] = "auto"
+			}
+		}
+	}
+	if quirks.MaxStopSequences > 0 {
+		if stops, ok := body["stop"].([]string); ok && len(stops) > quirks.MaxStopSequences {
+			body["stop"] = stops[:quirks.MaxStopSequences]
+		}
+	}
+	if quirks.NoJSONSchema {
+		if rf, ok := body["response_format"].(map[string]any); ok {
+			if rf["type"] == "json_schema" {
+				body["response_format"] = map[string]any{"type": "json_object"}
+			}
+		}
+	}
+
 	return body, nil
 }
 
-func toChatMessages(messages []llm.Message) ([]map[string]any, error) {
+func toChatMessages(messages []llm.Message, quirks ProviderQuirks, useReasoningDetails bool) ([]map[string]any, error) {
 	out := make([]map[string]any, 0, len(messages))
 	for _, m := range messages {
+		content := m.Content
+		if quirks.StripEmptyContent {
+			filtered := make([]llm.ContentPart, 0, len(content))
+			for _, p := range content {
+				if p.Kind == llm.ContentText && p.Text == "" {
+					continue
+				}
+				filtered = append(filtered, p)
+			}
+			content = filtered
+		}
+
 		switch m.Role {
 		case llm.RoleSystem, llm.RoleDeveloper:
 			out = append(out, map[string]any{
 				"role":    "system",
-				"content": textFromParts(m.Content),
+				"content": textFromParts(content),
 			})
 		case llm.RoleUser:
-			if hasImageContent(m.Content) {
+			if hasImageContent(content) {
 				out = append(out, map[string]any{
 					"role":    "user",
-					"content": buildMultimodalParts(m.Content),
+					"content": buildMultimodalParts(content),
 				})
 			} else {
 				out = append(out, map[string]any{
 					"role":    "user",
-					"content": textFromParts(m.Content),
+					"content": textFromParts(content),
 				})
 			}
 		case llm.RoleAssistant:
 			msg := map[string]any{
 				"role": "assistant",
 			}
-			text := textFromParts(m.Content)
-			calls := toolCallsFromParts(m.Content)
+			text := textFromParts(content)
+			calls := toolCallsFromParts(content)
+			reasoning := thinkingFromParts(content)
+			if reasoning != "" {
+				if useReasoningDetails {
+					// MiniMax format: {type: "reasoning.text", text: "...", format: "unknown", index: 0}
+					msg["reasoning_details"] = []map[string]any{
+						{
+							"type":   "reasoning.text",
+							"text":   reasoning,
+							"format": "unknown",
+							"index":  0,
+						},
+					}
+				} else {
+					msg["reasoning_content"] = reasoning
+				}
+			}
 			if len(calls) > 0 {
 				msg["tool_calls"] = calls
 				if text != "" {
@@ -441,20 +671,20 @@ func toChatMessages(messages []llm.Message) ([]map[string]any, error) {
 			}
 			out = append(out, msg)
 		case llm.RoleTool:
-			for _, p := range m.Content {
+			for _, p := range content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
-					content := ""
+					resultContent := ""
 					switch v := p.ToolResult.Content.(type) {
 					case string:
-						content = v
+						resultContent = v
 					default:
 						b, _ := json.Marshal(v)
-						content = string(b)
+						resultContent = string(b)
 					}
 					out = append(out, map[string]any{
 						"role":         "tool",
 						"tool_call_id": p.ToolResult.ToolCallID,
-						"content":      content,
+						"content":      resultContent,
 					})
 				}
 			}
@@ -474,6 +704,227 @@ func textFromParts(parts []llm.ContentPart) string {
 		}
 	}
 	return b.String()
+}
+
+// extractReasoning returns the reasoning text from a chat message, checking
+// reasoning_details (OpenRouter MiniMax format) first, then reasoning_content.
+// MiniMax uses {type: "reasoning.text", text: "..."}; older/alternate formats
+// use {type: "thinking", thinking: "..."}.
+func extractReasoning(msg chatMessage) string {
+	if len(msg.ReasoningDetails) > 0 {
+		var b strings.Builder
+		for _, d := range msg.ReasoningDetails {
+			var piece string
+			if d.Text != "" {
+				piece = d.Text
+			} else if d.Thinking != "" {
+				piece = d.Thinking
+			}
+			if piece != "" {
+				if b.Len() > 0 {
+					b.WriteString("\n")
+				}
+				b.WriteString(piece)
+			}
+		}
+		if b.Len() > 0 {
+			return b.String()
+		}
+	}
+	return msg.ReasoningContent
+}
+
+func thinkingFromParts(parts []llm.ContentPart) string {
+	var b strings.Builder
+	for _, p := range parts {
+		if p.Kind == llm.ContentThinking && p.Thinking != nil && p.Thinking.Text != "" {
+			if b.Len() > 0 {
+				b.WriteString("\n")
+			}
+			b.WriteString(p.Thinking.Text)
+		}
+	}
+	return b.String()
+}
+
+// claudeXMLParamOpenRE matches the OPEN of an Anthropic-style <parameter name="KEY"> tag.
+// Some models (notably MiniMax M2.7 via OpenRouter) emit Claude/MiniMax XML
+// tool-call syntax inside JSON tool arguments when they revert from JSON to
+// XML mid-generation. Closing </parameter> tags are often missing, so we scan
+// opens and slice to the next open or end-of-string.
+//
+// Pattern details (adapted from zeroclaw-labs/zeroclaw PR #1189 which solved
+// the same parsing problem for MiniMax at the content level):
+//   - Case-insensitive (`(?i)`) matches tag-case variation.
+//   - Permissive attribute matching: other attributes can appear before `name=`.
+//   - Both double and single quoted attribute values.
+var claudeXMLParamOpenRE = regexp.MustCompile(
+	`(?i)<parameter\b[^>]*\bname\s*=\s*(?:"([^"]+)"|'([^']+)')[^>]*>`,
+)
+
+// rescueClaudeXMLArgs attempts to recover tool call arguments when a model
+// mixes Claude-style XML tool call syntax into the JSON arguments field.
+//
+// Examples:
+//
+//	Input:  {"action":"append\">\n<parameter name=\"tasks\">[{...}]</parameter>"}
+//	Output: {"action":"append","tasks":[{...}]}
+//
+//	Input:  {"action":"update\">\n<parameter name=\"updates\">[{...}]"}   (no close tag)
+//	Output: {"action":"update","updates":[{...}]}
+//
+// If the input is already valid and contains no XML syntax, it is returned
+// unchanged. If rescue is not possible, the original input is returned so the
+// usual schema-validation error path can surface the problem.
+func rescueClaudeXMLArgs(raw string) string {
+	if raw == "" {
+		return raw
+	}
+	// The raw JSON is escaped — `<parameter name=\"KEY\">` — so we cannot
+	// detect the pattern in the raw bytes. Parse first, then check the
+	// unescaped string values.
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return raw
+	}
+	// Second-order rescue: for any top-level field whose value is a string
+	// that looks like a JSON array or object (starts with `[` or `{`), try
+	// parsing it. Models sometimes emit JSON-encoded strings for array/object
+	// fields instead of the parsed value. This is a separate bug from the
+	// Claude-XML corruption but benefits from the same rescue path.
+	parsedAnyJSONString := false
+	for k, v := range parsed {
+		s, ok := v.(string)
+		if !ok {
+			continue
+		}
+		trimmed := strings.TrimSpace(s)
+		if !(strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{")) {
+			continue
+		}
+		var asJSON any
+		if err := json.Unmarshal([]byte(trimmed), &asJSON); err == nil {
+			// Only replace if the parsed result is a composite type (array/object),
+			// not a scalar — avoid mangling genuine strings that happen to start
+			// with `[` or `{`.
+			switch asJSON.(type) {
+			case []any, map[string]any:
+				parsed[k] = asJSON
+				parsedAnyJSONString = true
+			}
+		}
+	}
+
+	// Quick exit: if no string value contains an XML <parameter ... tag,
+	// nothing more to rescue. Case-insensitive because models sometimes
+	// emit uppercase tag names.
+	hasXML := false
+	for _, v := range parsed {
+		if s, ok := v.(string); ok {
+			lower := strings.ToLower(s)
+			if strings.Contains(lower, "<parameter ") || strings.Contains(lower, "<parameter\t") || strings.Contains(lower, "<parameter\n") {
+				hasXML = true
+				break
+			}
+		}
+	}
+	if !hasXML {
+		if parsedAnyJSONString {
+			if out, err := json.Marshal(parsed); err == nil {
+				return string(out)
+			}
+		}
+		return raw
+	}
+
+	// For each string value, check whether it carries a `"><parameter...` tail.
+	// If so, split at the `">` boundary: the prefix is the real value, the tail
+	// holds the <parameter> blocks whose name/value pairs should become siblings.
+	changed := false
+	extracted := make(map[string]any)
+	for k, v := range parsed {
+		s, ok := v.(string)
+		if !ok {
+			continue
+		}
+		// Find where the XML <parameter starts (case-insensitive, tolerant of
+		// tab/newline after "parameter"). Use regex so we can find the exact
+		// offset and let the caller split there.
+		openMatch := claudeXMLParamOpenRE.FindStringIndex(s)
+		if openMatch == nil {
+			continue
+		}
+		// Split at the first `">` before the parameter block. If there's no
+		// `">` (value not terminated with a quote-close-bracket), fall back to
+		// splitting at the `<` of the parameter tag.
+		idx := strings.Index(s[:openMatch[0]], `">`)
+		if idx < 0 {
+			idx = openMatch[0]
+		}
+		cleanValue := s[:idx]
+		parsed[k] = cleanValue
+		changed = true
+
+		tail := s[idx:]
+		// Find all <parameter name="KEY"> opens. Between consecutive opens (or
+		// from an open to end-of-string), the value is the parameter content.
+		// The regex has two alternations for the name: double-quoted (group 1)
+		// and single-quoted (group 2). Submatch indices are:
+		//   m[0..1] = whole match
+		//   m[2..3] = double-quoted name (or -1 if single-quoted)
+		//   m[4..5] = single-quoted name (or -1 if double-quoted)
+		opens := claudeXMLParamOpenRE.FindAllStringSubmatchIndex(tail, -1)
+		for i, m := range opens {
+			var paramName string
+			if m[2] >= 0 {
+				paramName = tail[m[2]:m[3]]
+			} else if m[4] >= 0 {
+				paramName = tail[m[4]:m[5]]
+			}
+			if paramName == "" {
+				continue
+			}
+			valStart := m[1] // index just after the `>` of this open tag
+			valEnd := len(tail)
+			if i+1 < len(opens) {
+				valEnd = opens[i+1][0]
+			}
+			paramValue := tail[valStart:valEnd]
+			// Strip trailing </parameter> (case-insensitive) if present.
+			lowerVal := strings.ToLower(paramValue)
+			if cut := strings.LastIndex(lowerVal, "</parameter>"); cut >= 0 {
+				paramValue = paramValue[:cut]
+			}
+			// Strip any leading/trailing whitespace and quotes that may remain.
+			paramValue = strings.TrimSpace(paramValue)
+			// If the parameter value is itself JSON (array/object/number/bool/null),
+			// parse it. Otherwise keep as string.
+			var asJSON any
+			if err := json.Unmarshal([]byte(paramValue), &asJSON); err == nil {
+				extracted[paramName] = asJSON
+			} else {
+				extracted[paramName] = paramValue
+			}
+		}
+	}
+
+	if !changed {
+		return raw
+	}
+
+	// Merge extracted params into the top-level object. Parent fields take
+	// precedence if there's a collision — the parent had the "primary" value.
+	for k, v := range extracted {
+		if _, exists := parsed[k]; !exists {
+			parsed[k] = v
+		}
+	}
+
+	out, err := json.Marshal(parsed)
+	if err != nil {
+		return raw
+	}
+	return string(out)
 }
 
 // hasImageContent returns true if any content part is an image.
@@ -615,9 +1066,26 @@ type chatChoice struct {
 }
 
 type chatMessage struct {
-	Role      string         `json:"role"`
-	Content   string         `json:"content"`
-	ToolCalls []chatToolCall `json:"tool_calls,omitempty"`
+	Role             string                `json:"role"`
+	Content          string                `json:"content"`
+	ReasoningContent string                `json:"reasoning_content,omitempty"`
+	ReasoningDetails []reasoningDetailItem `json:"reasoning_details,omitempty"`
+	ToolCalls        []chatToolCall        `json:"tool_calls,omitempty"`
+}
+
+// reasoningDetailItem represents an element in the reasoning_details array
+// used by OpenRouter for models like MiniMax M2.7. MiniMax's actual format
+// is {type: "reasoning.text", text: "...", format: "...", index: N}.
+// We preserve unknown fields via the Extra map so round-tripping the message
+// back to the model keeps the reasoning chain intact.
+type reasoningDetailItem struct {
+	Type   string `json:"type"`
+	Text   string `json:"text,omitempty"`
+	Format string `json:"format,omitempty"`
+	Index  int    `json:"index,omitempty"`
+	// Thinking is kept for backward compatibility with older OpenRouter format
+	// variants that used {type: "thinking", thinking: "..."}.
+	Thinking string `json:"thinking,omitempty"`
 }
 
 type chatToolCall struct {
@@ -645,9 +1113,10 @@ type chatChunkChoice struct {
 }
 
 type chatDelta struct {
-	Role      string              `json:"role"`
-	Content   string              `json:"content"`
-	ToolCalls []chatChunkToolCall `json:"tool_calls,omitempty"`
+	Role             string              `json:"role"`
+	Content          string              `json:"content"`
+	ReasoningContent string              `json:"reasoning_content,omitempty"`
+	ToolCalls        []chatChunkToolCall `json:"tool_calls,omitempty"`
 }
 
 type chatChunkToolCall struct {
@@ -657,7 +1126,7 @@ type chatChunkToolCall struct {
 	Function chatFunctionCall `json:"function"`
 }
 
-func fromChatCompletionResponse(raw map[string]any) (llm.Response, error) {
+func fromChatCompletionResponse(raw map[string]any, quirks ProviderQuirks) (llm.Response, error) {
 	b, err := json.Marshal(raw)
 	if err != nil {
 		return llm.Response{}, err
@@ -674,23 +1143,38 @@ func fromChatCompletionResponse(raw map[string]any) (llm.Response, error) {
 
 	// Build message.
 	parts := []llm.ContentPart{}
+	if reasoning := extractReasoning(choice.Message); reasoning != "" {
+		parts = append(parts, llm.ContentPart{
+			Kind:     llm.ContentThinking,
+			Thinking: &llm.ThinkingData{Text: reasoning},
+		})
+	}
 	if choice.Message.Content != "" {
 		parts = append(parts, llm.ContentPart{Kind: llm.ContentText, Text: choice.Message.Content})
 	}
 	for _, tc := range choice.Message.ToolCalls {
+		args := rescueClaudeXMLArgs(tc.Function.Arguments)
 		parts = append(parts, llm.ContentPart{
 			Kind: llm.ContentToolCall,
 			ToolCall: &llm.ToolCallData{
 				ID:        tc.ID,
 				Name:      tc.Function.Name,
-				Arguments: json.RawMessage(tc.Function.Arguments),
+				Arguments: json.RawMessage(args),
 				Type:      "function",
 			},
 		})
 	}
 
 	msg := llm.Message{Role: llm.RoleAssistant, Content: parts}
-	finish := llm.NormalizeFinishReason("", choice.FinishReason)
+
+	rawFinish := choice.FinishReason
+	mappedFinish := quirks.mapFinishReason(rawFinish)
+	var finish llm.FinishReason
+	if mappedFinish == rawFinish {
+		finish = llm.NormalizeFinishReason("", rawFinish)
+	} else {
+		finish = llm.FinishReason{Reason: mappedFinish, Raw: rawFinish}
+	}
 
 	resp := llm.Response{
 		Provider: "openai-compatible",
@@ -711,6 +1195,28 @@ func fromChatCompletionResponse(raw map[string]any) (llm.Response, error) {
 		if v := llm.IntFromAny(parsed.Usage["total_tokens"]); v > 0 {
 			resp.Usage.TotalTokens = v
 		}
+		if details, ok := parsed.Usage["completion_tokens_details"].(map[string]any); ok {
+			if rt := llm.IntFromAny(details["reasoning_tokens"]); rt > 0 {
+				resp.Usage.ReasoningTokens = &rt
+			}
+		}
+	}
+
+	// Estimate reasoning tokens from thinking content when not natively reported.
+	if resp.Usage.ReasoningTokens == nil {
+		var thinkingChars int
+		for _, p := range parts {
+			if p.Kind == llm.ContentThinking && p.Thinking != nil {
+				thinkingChars += len(p.Thinking.Text)
+			}
+		}
+		if thinkingChars > 0 {
+			estimated := thinkingChars / 4
+			if estimated < 1 {
+				estimated = 1
+			}
+			resp.Usage.ReasoningTokens = &estimated
+		}
 	}
 
 	return resp, nil
@@ -718,15 +1224,15 @@ func fromChatCompletionResponse(raw map[string]any) (llm.Response, error) {
 
 // --- HTTP helpers ---
 
-func (a *Adapter) doHTTP(ctx context.Context, body map[string]any, at *llm.AdapterTimeout) (map[string]any, int, http.Header, error) {
+func (a *Adapter) doHTTP(ctx context.Context, body map[string]any, at *llm.AdapterTimeout) (raw map[string]any, rawReqBody []byte, rawRespBody []byte, status int, hdr http.Header, err error) {
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
-		return nil, 0, nil, err
+		return nil, nil, nil, 0, nil, err
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.BaseURL+"/v1/chat/completions", bytes.NewReader(jsonBody))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.BaseURL+"/chat/completions", bytes.NewReader(jsonBody))
 	if err != nil {
-		return nil, 0, nil, err
+		return nil, nil, nil, 0, nil, err
 	}
 	// Apply default headers first so provider-specific headers take precedence.
 	for k, v := range a.DefaultHeaders {
@@ -740,24 +1246,23 @@ func (a *Adapter) doHTTP(ctx context.Context, body map[string]any, at *llm.Adapt
 	client := llm.ClientWithConnectTimeout(a.Client, at)
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return nil, 0, nil, llm.WrapContextError("openai-compatible", err)
+		return nil, nil, nil, 0, nil, llm.WrapContextError("openai-compatible", err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, resp.StatusCode, resp.Header, err
+		return nil, jsonBody, b, resp.StatusCode, resp.Header, err
 	}
 
-	var raw map[string]any
+	var parsed map[string]any
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.UseNumber()
-	if err := dec.Decode(&raw); err != nil {
-		// If we can't parse JSON, return what we have.
-		return nil, resp.StatusCode, resp.Header, nil
+	if err := dec.Decode(&parsed); err != nil {
+		return nil, jsonBody, b, resp.StatusCode, resp.Header, nil
 	}
 
-	return raw, resp.StatusCode, resp.Header, nil
+	return parsed, jsonBody, b, resp.StatusCode, resp.Header, nil
 }
 
 func extractErrorMessage(raw map[string]any) string {

@@ -30,6 +30,13 @@ type TranscriptHeader struct {
 	Depth            int       `json:"depth,omitempty"`
 	BuildVersion     string    `json:"build_version,omitempty"`
 	SystemPrompt     string    `json:"system_prompt,omitempty"`
+	// AgentTasks is the full task list the agent started with (from the
+	// agent's YAML frontmatter for root sessions, or from the coordinator's
+	// task_list parameter for spawned subagents). Captured at session
+	// creation so the transcript is self-describing even for runs that
+	// never call task_list(action="view") or fail before all STEERING
+	// messages are emitted.
+	AgentTasks       []Task    `json:"agent_tasks,omitempty"`
 }
 
 // TranscriptEntry is a single turn in the transcript JSONL file.

@@ -30,30 +30,36 @@ const (
 
 // Task is a single work item in the agent's task list.
 type Task struct {
-	ID          int        `json:"id"`
-	Type        TaskType   `json:"type"`
-	Description string     `json:"description"`
-	Prompt      string     `json:"prompt"`
-	Status      TaskStatus `json:"status"`
-	DependsOn   []int      `json:"depends_on,omitempty"`
-	Notes       []string   `json:"notes,omitempty"`
+	ID              int        `json:"id"`
+	Type            TaskType   `json:"type"`
+	Description     string     `json:"description"`
+	Prompt          string     `json:"prompt"`
+	Status          TaskStatus `json:"status"`
+	DependsOn       []int      `json:"depends_on,omitempty"`
+	Notes           []string   `json:"notes,omitempty"`
+	ReasoningEffort string     `json:"reasoning_effort,omitempty"`
+	Insert          string     `json:"insert,omitempty"`
 }
 
 // TaskInput is the data needed to create a new task.
 type TaskInput struct {
-	Type        TaskType `json:"type"`
-	Description string   `json:"description"`
-	Prompt      string   `json:"prompt"`
-	DependsOn   []int    `json:"depends_on,omitempty"`
+	Type            TaskType `json:"type"`
+	Description     string   `json:"description"`
+	Prompt          string   `json:"prompt"`
+	DependsOn       []int    `json:"depends_on,omitempty"`
+	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
+	Insert          string   `json:"insert,omitempty"`
 }
 
 // TaskUpdate is a status change for an existing task.
 // DependsOn nil means no change; &[]int{} clears the dependency list.
+// ReasoningEffort empty means no change; a non-empty value replaces it.
 type TaskUpdate struct {
-	ID        int        `json:"id"`
-	Status    TaskStatus `json:"status"`
-	Notes     string     `json:"notes,omitempty"`
-	DependsOn *[]int     `json:"depends_on,omitempty"`
+	ID              int        `json:"id"`
+	Status          TaskStatus `json:"status"`
+	Notes           string     `json:"notes,omitempty"`
+	DependsOn       *[]int     `json:"depends_on,omitempty"`
+	ReasoningEffort string     `json:"reasoning_effort,omitempty"`
 }
 
 // TaskStore manages a persistent list of tasks stored as JSON.
@@ -75,7 +81,7 @@ func NewTaskStore(stateDir, sessionID string) *TaskStore {
 	return &TaskStore{
 		nextID:     1,
 		path:       filepath.Join(stateDir, "tasks", sessionID+".json"),
-		AutoVerify: true,
+		AutoVerify: false,
 	}
 }
 
@@ -233,12 +239,14 @@ func (s *TaskStore) Append(items []TaskInput) ([]Task, error) {
 			taskType = TaskTypeImplement // default to implement
 		}
 		t := Task{
-			ID:          s.nextID,
-			Type:        taskType,
-			Description: item.Description,
-			Prompt:      item.Prompt,
-			Status:      TaskOpen,
-			DependsOn:   item.DependsOn,
+			ID:              s.nextID,
+			Type:            taskType,
+			Description:     item.Description,
+			Prompt:          item.Prompt,
+			Status:          TaskOpen,
+			DependsOn:       item.DependsOn,
+			ReasoningEffort: item.ReasoningEffort,
+			Insert:          item.Insert,
 		}
 		s.nextID++
 		added = append(added, t)
@@ -338,11 +346,73 @@ func (s *TaskStore) NextEligible() []Task {
 	return result
 }
 
+// CurrentInProgress returns the first task with status in_progress, if any.
+func (s *TaskStore) CurrentInProgress() (Task, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range s.tasks {
+		if t.Status == TaskInProgress {
+			return t, true
+		}
+	}
+	return Task{}, false
+}
+
+// PopulateFromTemplates initializes the task store from agent definition templates.
+// If parentTasks is non-nil and non-empty, they replace the template with Insert=="parent_tasks".
+// The first task is auto-started (set to in_progress).
+// No-op if the store already has tasks.
+func (s *TaskStore) PopulateFromTemplates(templates []TaskTemplate, parentTasks []TaskTemplate) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(s.tasks) > 0 {
+		return nil // already populated
+	}
+
+	// Build the effective template list by expanding the insert placeholder.
+	var effective []TaskTemplate
+	for _, tt := range templates {
+		if tt.Insert == "parent_tasks" && len(parentTasks) > 0 {
+			effective = append(effective, parentTasks...)
+		} else {
+			effective = append(effective, tt)
+		}
+	}
+
+	// Convert templates to tasks.
+	for _, tt := range effective {
+		taskType := TaskType(tt.Type)
+		if taskType == "" {
+			taskType = TaskTypeImplement
+		}
+		t := Task{
+			ID:              s.nextID,
+			Type:            taskType,
+			Description:     tt.Title,
+			Prompt:          tt.Prompt,
+			Status:          TaskOpen,
+			ReasoningEffort: tt.ReasoningEffort,
+			Insert:          tt.Insert,
+		}
+		s.nextID++
+		s.tasks = append(s.tasks, t)
+	}
+
+	// Auto-start the first task.
+	if len(s.tasks) > 0 {
+		s.tasks[0].Status = TaskInProgress
+	}
+
+	return s.save()
+}
+
 // Update changes the status of existing tasks.
 func (s *TaskStore) Update(updates []TaskUpdate) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Validate status values up front so a bad status doesn't half-apply.
 	for _, u := range updates {
 		switch u.Status {
 		case TaskOpen, TaskInProgress, TaskDone, TaskCancelled:
@@ -350,6 +420,31 @@ func (s *TaskStore) Update(updates []TaskUpdate) error {
 		default:
 			return fmt.Errorf("invalid status %q for task %d: must be open, in_progress, done, or cancelled", u.Status, u.ID)
 		}
+	}
+
+	// Enforce the single-in_progress invariant: simulate the resulting state
+	// and reject the whole batch if more than one task would be in_progress.
+	projected := make(map[int]TaskStatus, len(s.tasks))
+	for _, t := range s.tasks {
+		projected[t.ID] = t.Status
+	}
+	for _, u := range updates {
+		if _, exists := projected[u.ID]; !exists {
+			return fmt.Errorf("unknown task ID %d", u.ID)
+		}
+		projected[u.ID] = u.Status
+	}
+	inProgressCount := 0
+	for _, status := range projected {
+		if status == TaskInProgress {
+			inProgressCount++
+		}
+	}
+	if inProgressCount > 1 {
+		return fmt.Errorf("only one task may be in_progress at a time; update would result in %d", inProgressCount)
+	}
+
+	for _, u := range updates {
 		found := false
 		for i := range s.tasks {
 			if s.tasks[i].ID == u.ID {
@@ -362,6 +457,9 @@ func (s *TaskStore) Update(updates []TaskUpdate) error {
 						return err
 					}
 					s.tasks[i].DependsOn = *u.DependsOn
+				}
+				if u.ReasoningEffort != "" {
+					s.tasks[i].ReasoningEffort = u.ReasoningEffort
 				}
 				found = true
 				break

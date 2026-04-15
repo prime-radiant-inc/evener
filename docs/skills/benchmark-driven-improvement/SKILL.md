@@ -1,436 +1,722 @@
 ---
 name: benchmark-driven-improvement
-description: Use when investigating agent benchmark failures, iterating on agent behavior against eval tasks, or diagnosing why an agent fails specific coding challenges. Covers transcript analysis, session interrogation, fix iteration, and validation.
+description: Use when investigating agent benchmark failures, iterating on agent behavior against eval tasks, or diagnosing why an agent fails specific coding challenges. Covers regression detection, transcript analysis, session interrogation, fix iteration, and validation.
 ---
 
 # Benchmark-Driven Improvement
 
 Systematic process for diagnosing and fixing agent failures on benchmark evals.
-Run the agent against tasks, analyze transcripts, identify systemic patterns,
-iterate on code/prompts, and validate fixes.
 
 **Core principle:** Benchmarks are a proxy for good autonomous engineering. Fixes
 should improve general agent capability, not game specific tasks.
 
-## Project-Specific Docs
+## HARD GATE: Root-cause EVERY sub-perfect task
 
-Project-specific knowledge lives in the project repo, not this skill:
-- `docs/experiments/NOTEBOOK.md` — current state, shipped fixes, what to do next
-- `docs/experiments/experiment-log.md` — full chronological record of all experiments
-- `docs/experiments/prompt-lessons.md` — synthesized learnings about GPT prompt behavior
-- `docs/experiments/backlog.md` — prioritized queue of next experiments
-- `docs/experiments/infrastructure.md` — how to run evals for this project
-- `docs/experiments/task-sets.md` — regression and target task lists
+**Every task that scores below 1.0 gets full root-cause analysis.** No
+exceptions. Not "just the regressions." Not "skip the pre-existing ones."
+Not "this one looks like noise." EVERY failure.
 
-## First: Read the Notebook
+- If a task scored 2/3, the 1 failing rep gets interrogated.
+- If a task scored 1/3, BOTH failing reps get interrogated — they may
+  have different failure mechanisms. Do not pick one and skip the other.
+- If a task improved from 0/3 to 2/3, the 1 remaining failure STILL gets
+  interrogated — the improvement doesn't excuse the gap.
+- "Pre-existing" describes how long you've been failing to fix it, not that
+  it's unfixable. The passing reps PROVE it can pass.
+- "Stochastic" is the classification of last resort. See the stochastic
+  checklist below — every box must have a concrete answer.
 
-Before doing anything, read the project's `docs/experiments/NOTEBOOK.md`. It contains:
-- Current experimental state (what's shipped, baseline pass rates)
-- Known open problems and what to do next
-- Pointers to the experiment log, prompt lessons, and backlog
+**Interrogate ALL failing reps AND the passing rep.** Every failing rep
+gets its own interrogation — do not generalize from one to all. The
+passing rep reveals what correct behavior looks like. Without it, you're
+guessing at what "fixed" means. Compare at the FIRST point of divergence.
 
-If there's active work in progress, pick up where the notebook says to start.
-For full experiment history, see `experiment-log.md`. For synthesized learnings
-about prompt behavior, see `prompt-lessons.md`.
+**Interrogation is a blameless postmortem.** Do not ask "Why did you do X?"
+(produces defensive rationalization). Ask "Was there an issue with your
+instructions? Did something in your delegation or system prompt lead you
+down the wrong path? How could your instructions have been better?" Focus
+on the environment we control, not the agent's reasoning.
 
-## The Full Workflow
+**Do not make ship/iterate/abandon decisions until RCA is complete.** Scores
+alone don't tell you whether a change is safe. A tied score can hide a real
+regression masked by a lucky win elsewhere. Only RCA reveals the mechanism.
 
-When given an eval to tune against:
+**One RCA subagent per task. Always.** When dispatching deep root-cause
+analysis, launch ONE dedicated subagent for EACH task being investigated.
+Never batch multiple tasks into one subagent. Each task has its own failure
+mechanism, its own passing/failing reps, its own interrogation questions.
+A subagent handling 4 tasks does shallow work on all 4. A subagent handling
+1 task does deep work on that task — reads every transcript, interrogates
+at the decision point, compares pass vs fail, extracts the engineering
+principle. The cost of extra subagents is trivial; the cost of shallow RCA
+is wasted experiments.
 
-1. **Baseline** — run the eval, establish pass rates
-2. **Root cause** — read transcripts for every failure (not error messages — transcripts)
-3. **Inventory** — categorize failures by systemic pattern, prioritize fixes
-4. **Fix** — one change at a time, test on affected tasks only (3+ reps)
-5. **Validate** — after all individual fixes validated, run full eval
-6. **Document** — update experiment-log.md and NOTEBOOK.md after every experiment
+## BEFORE ANYTHING: Environment & Tool Check
 
-## Step 1: Run Baseline
+**Do this FIRST, before reading the notebook or starting any investigation.**
 
 ```bash
-# Full 89-task eval (3 reps, one task per instance)
-./tools/run_eval.sh --wave
+# 1. Load API keys
+set -a; source .env; set +a
 
-# Targeted tasks for iteration
-./tools/run_eval.sh --wave --tasks "task1,task2"
-./tools/run_eval.sh --wave --tasks failing    # all currently failing tasks
-```
-
-**Rules:**
-- **Always use `--wave`** (one task per instance). Never batch multiple tasks.
-- Never reuse job names. `run_eval.sh` auto-generates unique names.
-- Use 3 reps for baselines (1 rep is insufficient for noisy tasks).
-- Must commit before launching — `run_eval.sh` enforces this.
-- Provenance (git SHA, branch, model) is auto-saved to `.serf-launches/`.
-- **Verify the binary** before trusting results — see "Verifying Deployed Binaries" below.
-  `run_eval.sh` checks for embedded prompts automatically, but after
-  collecting results, confirm the transcript header's `build_version` matches.
-
-## Step 2: Root Cause Every Failure
-
-**This is the most important step. Do not skip it. Do not guess from error messages.**
-
-For each failing task:
-
-### 2a. Read the transcripts
-
-Read the actual agent transcript (coordinator AND subagent sessions) and answer:
-
-1. What did the coordinator do? Did it inventory? Delegate? Verify?
-2. What did the implementer do? What approach did it take? Where did it get stuck?
-3. Why did the verifier fail? What specific assertion failed?
-4. Did the coordinator catch the problem before submitting?
-5. What would have fixed it? (Must be a general principle, not task-specific.)
-
-### 2b. Interrogate the sessions
-
-**This is required, not optional.** After reading transcripts, resume the failed
-sessions and ask the model WHY it made its decisions. Use `tools/interrogate_session.py`.
-
-The model honestly reports which instructions it noticed, how it prioritized them,
-and what it was aware of but chose not to follow. This frequently reveals root causes
-that transcript reading alone cannot — e.g., the model knew a rule but violated it
-because another instruction felt higher-priority, or a subagent lacked context it
-needed because the coordinator didn't include it in the delegation.
-
-Interrogate every agent involved in the failure chain, not just the coordinator.
-If the reviewer made a bad call, interrogate the reviewer. If the implementer went
-down a wrong path, interrogate the implementer.
-
-Every interrogation MUST ask both:
-1. **Why** — what caused the agent to make the decision it made?
-2. **What would fix it** — what specific prompt/instruction change would have
-   made the agent behave correctly?
-
-Ask specific questions about the decision that went wrong:
-- "Your prompt says X. Why did you do Y instead?"
-- "Did you see instruction Z? How did it interact with instruction W?"
-- "What information would you have needed to make the right decision?"
-- "What specific changes to your instructions would have made you do the right thing?"
-
-The model in its original context is the best source for actionable fixes. An
-interrogation that only describes what happened without proposing a prompt-level
-fix is incomplete.
-
-### 2c. Interrogate automatically — NEVER wait for permission
-
-When eval results arrive, immediately interrogate EVERY failure. Do not wait
-for the user to ask. Do not process results without interrogation. The workflow
-is: results arrive → interrogate → record findings.
-
-**Automated interrogation:**
-```bash
-./tools/interrogate_failures.sh RUN_ID
-```
-This auto-interrogates every failing rep — both the coordinator AND all subagents —
-with standard questions (delegation decisions, verification approach, what prompt
-change would fix it). Outputs saved to `/tmp/interrogation-RUN_ID/`.
-
-**Manual interrogation** for follow-up or custom questions:
-```bash
+# 2. Verify interrogation works (pick any recent run from docs/experiments/runs/)
 python3 tools/interrogate_session.py \
-    --run RUN_ID --rep REP --task TASK \
-    --question "Your prompt says X. Why did you do Y instead?"
+    --run RECENT_WAVE --rep 1 --task ANY_TASK --list-sessions
 ```
-Use `--list-sessions` to see all sessions, `--session INDEX` to target subagents.
 
-When check_run.sh shows 0/0 but S3 has results, the local directory was
-pre-created by launch.sh. Force re-download with `results.sh --run-id RUN_ID`.
+If step 2 fails with "no LLM providers configured" or similar:
+**STOP. Fix the environment before proceeding.** Do not work around broken
+interrogation by substituting transcript reading. Transcript reading shows
+WHAT happened. Interrogation reveals WHY. They are fundamentally different
+steps and one cannot substitute for the other. If you cannot interrogate,
+you cannot complete this workflow.
 
-### 2d. NEVER conclude without interrogation
+## Scoring convention: reward-based, not exception-based
 
-**Do not declare a ceiling, exhausted approach, or unsolvable problem without
-having interrogated the failed sessions.** Transcript analysis alone is
-insufficient — it shows WHAT happened but not WHY the model chose to ignore
-an instruction. Session interrogation reveals the model's actual reasoning:
-which instructions competed, how it ranked priorities, and what prompt change
-would have produced different behavior.
+**Use reward-based scoring. A rep's score is `verifier_result.rewards.reward`
+in `result.json` (or the contents of `verifier/reward.txt`, which mirrors it).
+A rep passes when the reward is 1.0 and fails when it is anything less.
+Exceptions are informational, not authoritative.**
 
-What looks like stochastic non-compliance (model follows instruction 33% of the
-time) is almost always a competing instruction conflict. The model deterministically
-resolves the conflict — the apparent randomness comes from which instruction it
-encounters first in its reasoning chain, which varies by run. Interrogation
-reveals the competing instruction, which can then be removed or harmonized.
+In particular: a rep that hit `AgentTimeoutError` (`exception_info.exception_type
+== "AgentTimeoutError"`) can still pass with `reward == 1.0`. The harbor
+verifier runs after the agent is killed and grades the final workspace state.
+If the implementer left the workspace in a passing state before the timeout,
+the verifier returns 1.0 and the rep is a pass — even though `communicate`
+was never called and the agent's session ends in an exception.
 
-If you've iterated 2+ times without improvement and are tempted to move on:
-interrogate first. The fix may be a single competing phrase.
+Do NOT use a "TIMEOUT = fail" working convention when manually scoring a wave.
+It undercounts these reps and can flip experiment verdicts. The session-26
+scoring used this convention and four passes were missed; see
+`docs/experiments/session-26-verifier-fixes/summary.md` for the corrected
+chart and the per-experiment score deltas.
 
-## Step 3: Build Failure Inventory
+When a chart needs to distinguish the two timeout flavors, use:
+- `T*` — timeout but `reward == 1.0` (counts as a pass)
+- `T`  — timeout with `reward < 1.0` (a real fail)
 
-Categorize every failure by its systemic root cause. Write a failure inventory with:
-- Each failure's root cause (from transcript analysis, not guesses)
-- Proposed fix (must be a general principle)
-- Test plan (which tasks, how many reps)
-- Execution order (highest impact first)
+The provided scoring tools (`wave_scores.py`, `wave_compare.py`,
+`eval_results.compute_score`, `serf-report`, `dashboard/data.py`) all read
+the reward field. The "TIMEOUT = fail" mistake is a HUMAN scoring habit, not
+something any of the tools do — but if you build an ad-hoc scoring script,
+make sure it follows the rule above.
 
-## Step 4: Fix and Test (Hill-Climbing Protocol)
+## BEFORE COMPARING WAVES: Infrastructure Validation
 
-Every change must make things better without making anything worse.
+**MANDATORY before attributing ANY score drop to prompt changes.**
 
-### The regression set
+A wave can be silently corrupted by billing quota exhaustion (OpenAI
+`insufficient_quota` 429), spot instance failures, or Docker issues.
+These produce reps with 0 tokens that look like agent failures but aren't.
 
-The project's canonical regression set is defined in `docs/experiments/task-sets.md`
-(9 tasks spanning easy, moderate, and hard categories). Use it unless you have a
-specific reason to define a different one. These must keep passing after every change.
+```bash
+# Download all result.json files for the wave
+aws s3 sync "s3://harbor-eval-results-526275945504/runs/WAVE_ID/" /tmp/WAVE-results/ \
+    --exclude "*" --include "*/result.json"
 
-### For each fix
+# Count infrastructure failures
+python3 -c "
+import json, glob
+silent = sum(1 for f in glob.glob('/tmp/WAVE-results/**/result.json', recursive=True)
+    if (lambda d: (d.get('agent_result') or {}).get('n_output_tokens', 0) == 0
+        and (d.get('agent_result') or {}).get('n_input_tokens', 0) == 0
+        and not d.get('exception_info'))(json.load(open(f))))
+print(f'Silent failures (0 tokens, no exception): {silent}')
+# Normal: 2-5 per wave. If >10, wave is contaminated.
+"
+```
 
-1. **Make one change.** One prompt edit, one code change. Not two.
+**If silent failures > 5:** The wave is unreliable. Check api.jsonl files
+for `insufficient_quota` or `429` errors. Do NOT use this wave for comparisons.
 
-2. **Build and test locally.**
+**Session 16 lesson:** wave-e7c0b48 had 38 silent failures (vs normal ~3) due
+to billing quota exhaustion at 10:34 UTC. This was misdiagnosed as a -9.0 point
+prompt regression, leading to panicked experiment reverts. The experiments were
+fine — the wave was broken.
 
-3. **Commit on an experiment branch.** Every experiment that gets deployed
-   MUST be committed first. This is non-negotiable — it gives you provenance,
-   rollback safety, and prevents losing work to accidental checkout.
+## Read the Notebook
 
-4. **Test on target tasks** — the tasks this fix is supposed to help. 3 reps.
+Read `docs/experiments/NOTEBOOK.md`. It has current state, shipped fixes, regression
+targets, and what to do next. For prompt behavior patterns, read `prompt-lessons.md`.
 
-5. **Test on regression set** — 1 rep each is enough since these should be
-   reliable passes.
+## Key Tools
 
-6. **Evaluate results:**
-   - **Target tasks improved (2/3+) AND regression set holds:** Merge to main.
-   - **Target tasks improved BUT regression set broke:** Do NOT merge. Root cause
-     the regression.
-   - **Target tasks didn't improve:** Do NOT merge. Document and move on after
-     2-3 failed attempts.
+```bash
+./tools/serf-report compare CURRENT BASELINE  # find what improved/regressed
+./tools/serf-report regressions               # tasks below historical best
+./tools/serf-report history TASK              # full timeline with regression markers
+./tools/serf-report cost WAVE                 # token/dollar costs per task
+./tools/serf-report dashboard                 # generate HTML dashboard
+./tools/wave_scores.py WAVE_ID                # live scores (N tasks scored, X/N complete, Y perfect)
+./tools/wave_compare.py --labels "a,b" W1 W2  # side-by-side wave comparison with deltas
+./tools/run_eval.sh --wave --tasks "t1,t2"    # launch evals
+./tools/post_run.sh WAVE_ID                   # collect results
+```
 
-**NEVER deploy an uncommitted experiment.** The experiment branch is your safety net.
+For full tool reference, see `tools-reference.md` in this skill directory.
+
+## Two Workflows
+
+### A. Regression Recovery (recovering lost performance)
+
+Use when tasks that used to pass now fail. This is the highest-leverage work.
+
+1. **Find regressions:** `./tools/serf-report regressions`
+2. **For each regressed task:** follow the Investigation Sequence below
+3. **Write experiments** for behavioral regressions, skip capability gaps
+4. **Run experiments** using the Three-Phase Execution Process below
+
+### B. New Improvement (raising the ceiling on never-passed tasks)
+
+Use when all regressions are addressed and you want to improve tasks.
+
+1. **Baseline** — run discriminators (`--tasks discriminators`), establish pass rates
+2. **Root cause** — interrogate every failure (not just read transcripts)
+3. **Inventory** — categorize by systemic pattern, prioritize
+4. **Write experiments** — one change at a time
+5. **Run experiments** using the Three-Phase Execution Process below
+6. **Document** — update NOTEBOOK.md and prompt-lessons.md
+
+## The Investigation Sequence (for each failing task)
+
+This is the core loop. Follow it for every task, every time.
+
+### Step 0: Check for infrastructure failure
+
+Before investigating the agent's behavior, rule out infra:
+
+```bash
+# Check result.json for this specific rep
+# If n_output_tokens == 0 AND n_input_tokens == 0: agent never ran (billing/infra)
+# If exception_info contains "insufficient_quota" or "429": billing failure
+# If exception_info contains "Docker": environment setup failure
+# If exception_info contains "Timeout": agent was working but slow — NOT
+#   automatically a fail. Read verifier_result.rewards.reward; if it is 1.0
+#   the rep is a pass even though the agent was killed mid-execution.
+```
+
+If this rep is an infra failure, **skip it** — investigate a different failing
+rep, or mark the task as needing a rerun.
+
+### Step 1: Get the history
+
+```bash
+./tools/serf-report history TASK_NAME
+```
+
+This shows every run, when the task last passed, and when it regressed.
+For regressions, note the git SHA where the regression was introduced.
+
+### Step 2: Diff the prompts (regressions only)
+
+```bash
+git diff LAST_PASSING_SHA..FIRST_FAILING_SHA -- agent/agents/ agent/prompts/
+```
+
+If a prompt change correlates with the regression, that's your prime suspect.
+
+### Step 3: Read transcripts — passing AND failing
+
+Read the full coordinator + subagent transcripts for BOTH a passing rep and
+a failing rep. You're looking for where behavior diverges.
+
+```bash
+# List sessions
+python3 tools/read_transcript.py --run WAVE --rep N --task TASK --list-sessions
+# Read coordinator tool calls
+python3 tools/read_transcript.py --run WAVE --rep N --task TASK --tool-calls
+# Read a specific session
+python3 tools/read_transcript.py --run WAVE --rep N --task TASK --session 0 --full --limit 30
+```
+
+Compare side by side. Find the FIRST point of divergence. Everything before
+that point was fine. Everything after is a consequence.
+
+### Step 4: Interrogate the failing agent
+
+**This is mandatory. Do not skip it.**
+
+**Before interrogating, rebuild the native binary from the correct branch:**
+
+```bash
+git checkout THE_BRANCH_THAT_PRODUCED_THE_RUN
+go build -o serf ./cmd/serf/
+strings serf | grep "a phrase from the experiment's prompt change"
+```
+
+The interrogation tool uses the local `serf` binary to resume sessions.
+If this binary is stale (different branch, different date), the model
+sees the WRONG system prompt and cites instructions that don't exist in
+the experiment. This produces false root causes. Always verify the binary
+matches the experiment before interrogating.
+
+Then resume the failed session and ask the model WHY at the exact
+decision point:
+
+```bash
+export $(grep -v '^#' .env | xargs)
+python3 tools/interrogate_session.py \
+    --run WAVE --rep N --task TASK \
+    --question "At turn N you did X. Your prompt says Y. What were you optimizing for?"
+```
+
+See `root-cause-task-failure.md` in this skill directory for the full
+interrogation methodology, question templates, and interpretation guidance.
+
+### Step 5: Classify the root cause
+
+**"Stochastic" is the classification of last resort.** To classify a task
+as stochastic, you must complete this checklist IN YOUR REPORT for that task.
+Every box must have a concrete answer, not "N/A" or "skipped":
+
+- [ ] Read ≥2 failing transcripts. Which reps? What tool calls did each make?
+- [ ] Read ≥1 passing transcript. Which rep? What tool calls did it make?
+- [ ] Ran `interrogate_session.py` on ≥1 failing rep (not just read the
+  transcript — actually ran the tool and got a model response). Paste the
+  interrogation output.
+- [ ] Ran `git diff` between last-passing SHA and first-failing SHA on
+  `agent/agents/` and `agent/prompts/`. Was there a prompt change? If yes,
+  what was it? Why isn't it the cause?
+- [ ] The passing and failing agents used IDENTICAL strategies (same tool
+  sequence, same approach, same delegation pattern) with different outcomes.
+  Describe the identical strategy and where the outcomes diverged.
+
+If ANY box is empty, you cannot classify as stochastic. If the passing and
+failing agents used DIFFERENT strategies (different tool choices, different
+approaches, different delegation text), that is behavioral, not stochastic —
+investigate why the strategies differed.
+
+**Classification categories** (from `root-cause-task-failure.md`):
+- **Instruction conflict** — two instructions pull opposite directions
+- **Missing delegation context** — coordinator omitted critical info
+- **Training prior override** — model's default behavior ignores instructions
+- **Verification gap** — agent tests the wrong thing
+- **Workflow structure mismatch** — wrong time/turn allocation
+- **Genuine capability gap** — task beyond model ability (requires 3+ failed structural experiments to declare)
+
+### Step 6: Write experiment or document finding
+
+For behavioral issues → write experiment file in `docs/experiments/backlog/`
+following `TEMPLATE.md`. Include interrogation evidence, exact OLD/NEW text,
+target tasks, and regression tests.
+
+**The regression tests in your experiment file MUST come from a blame analysis**
+(see below). Do not use a generic regression set.
+
+For capability gaps → document in NOTEBOOK.md and move on.
+
+## Blame Before You Change (mandatory)
+
+**Every time you change agent prompts or skills — whether writing an experiment
+file, applying a change, or editing code — you MUST run a blame first.**
+
+This is not optional. This is not "if you have time." This is a hard gate.
+The purpose: understand what other tasks depend on the text you are about to
+modify, so you can include them in your regression set and avoid silently
+breaking previously shipped fixes.
+
+### The blame process
+
+```bash
+# 1. Identify the lines you plan to change
+#    Read the file, find your OLD text
+
+# 2. Blame those lines to find what added them
+git blame agent/agents/implementer.md -L 90,95
+# → each line shows the commit SHA that last touched it
+
+# 3. For each commit SHA, check if it was an experiment
+git log --oneline COMMIT_SHA -1
+# → "experiment: cancel-async-tasks-2 — clean shutdown standard"
+# If the commit message includes task results (per our commit format),
+# you can read them directly. Otherwise:
+
+# 4. Find that experiment's target tasks
+cat docs/experiments/completed-improved/cancel-async-tasks-2.md | grep -A5 "Target Tasks"
+# → cancel-async-tasks was the target task
+
+# 5. Those tasks are now MANDATORY in your regression set
+```
+
+### The rule
+
+If your change modifies, replaces, or removes text that was added by a
+previous experiment, that experiment's target tasks are mandatory regression
+tests. You are changing code that was proven to fix those tasks — you must
+verify you haven't broken them.
+
+This applies to:
+- **Experiment files** — the Regression Tests section must include blame-derived tasks
+- **Direct prompt edits** — before committing, blame what you're changing
+- **Refactoring** — even "harmless" rewording can break instruction ordering effects
+
+Always ALSO include distribution-search and portfolio-optimization as baseline
+regression checks (they're fast and catch broad breakage).
+
+### Example
+
+You want to add a sentence to the implementer's Verify task. Before writing
+the experiment:
+
+```bash
+git blame agent/agents/implementer.md -L 45,55
+# Line 48: 8209375  (experiment: build-cython-ext-1 — preserve existing packages)
+# Line 50: 3496f7e  (results: Wave 1 complete)
+# Line 52: 0026d39  (experiment: db-wal-recovery-1 — preserve data before inspection)
+```
+
+Your regression set must include: build-cython-ext, db-wal-recovery, plus
+distribution-search and portfolio-optimization.
+
+## Experiment Execution: Three-Phase Process
+
+Every experiment goes through three phases. Each phase has an explicit
+decision gate. Do NOT skip phases or advance past a failing gate.
+
+### Setup (before any phase)
+
+1. Branch from main: `git checkout -b exp/NAME main`
+2. **Run blame** on the lines you're changing (see Blame section above).
+   The blame-derived tasks are MANDATORY in your Phase 1 regression set.
+3. Apply the change, commit on the branch
+4. Build and verify binary:
+   ```bash
+   make build-linux && strings serf-linux-amd64 | grep "expected phrase"
+   ```
+5. Build native binary for interrogation:
+   ```bash
+   go build -o serf ./cmd/serf/
+   strings serf | grep "expected phrase"
+   set -a; source .env; set +a  # load API keys
+   ```
+
+### Phase 1: Targeted test (5-10 tasks, ~15 min)
+
+Run ONLY the tasks the experiment targets + blame-derived regression tasks.
+**Also run a CONTROL** — the same tasks with the unmodified baseline binary.
+
+```bash
+# Experiment
+./tools/run_eval.sh --tasks "target1,target2,blame-task1,blame-task2" --reps 3
+
+# Control (build from clean main, same tasks, same reps)
+./tools/run_eval.sh --tasks "target1,target2,blame-task1,blame-task2" --reps 3 \
+    --run-id "exp-NAME-control-TIMESTAMP"
+```
+
+The control establishes what the baseline does on THIS run, with THIS
+infrastructure, at THIS time. Without it you're comparing against a stale
+wave that may have had different infra conditions. A control that scores
+3/3 on a task the experiment also scores 3/3 on tells you nothing. A control
+that scores 1/3 while the experiment scores 3/3 is real signal.
+
+After results arrive:
+
+1. **Validate infra** on BOTH experiment AND control — check for silent failures.
+2. **Interrogate EVERY failing rep** on target tasks. Not transcript reading —
+   real `interrogate_session.py` with specific questions about the change:
+   - "Did you see the instruction about X? How did it affect your behavior?"
+   - "What would have gotten you to do Y instead of Z?"
+   Use the native binary you built in Setup (it matches this experiment's prompts).
+3. **Decision gate:**
+   - Target tasks improved AND regression tasks hold → proceed to Phase 2
+   - Target tasks did NOT improve → STOP. The experiment doesn't work.
+     Interrogation should tell you WHY. Revise or abandon.
+   - Regression tasks regressed → STOP. Interrogate to understand the
+     interaction, then revise.
+
+### Phase 2: Discriminator run (62 tasks, ~45 min)
+
+Run all discriminator tasks to check for broad regressions.
+
+```bash
+./tools/run_eval.sh --tasks discriminators
+```
+
+After results arrive:
+
+1. **Validate infra** — same check. If >5 silent failures, rerun.
+2. **Compare against the same-day CONTROL** (not a stale baseline). Use
+   `./tools/wave_compare.py --labels "control,variant" CONTROL_WAVE VARIANT_WAVE`
+   for side-by-side per-task deltas. For multiple variants:
+   `./tools/wave_compare.py --labels "control,27a,27b,27d" W_CTRL W_A W_B W_D`
+3. **Interrogate EVERY task that scored LOWER than baseline.** For each:
+   - Is it infra? (Step 0 of investigation sequence)
+   - Is it caused by this experiment? (Interrogate with specific question
+     about the changed text)
+   - Is it stochastic? (Full stochastic checklist required)
+4. **Decision gate:**
+   - Net score >= baseline AND no unexplained regressions → proceed to Phase 3
+   - Net score < baseline → STOP. Interrogation should identify which
+     regressions are experiment-caused vs stochastic. If experiment-caused
+     regressions outweigh gains, do not ship.
+
+### Phase 3: Cross-check (8 tasks, ~10 min)
+
+Run the always-perfect tasks as a safety net.
+
+```bash
+./tools/run_eval.sh --tasks crosscheck --run-id WAVE_ID --backfill
+```
+
+After results arrive:
+
+1. **Validate infra.**
+2. **If ANY always-perfect task scores below 1.000:** The experiment is
+   causing broad harm. Do NOT ship. Interrogate the failure to understand
+   what went wrong.
+3. **Decision gate:**
+   - All 8 tasks at 1.000 → proceed to Ship
+   - Any drop → STOP and investigate
+
+### Ship gate
+
+ALL of the following must be true:
+
+- [ ] Phase 1: target tasks improved
+- [ ] Phase 1: regression tasks held
+- [ ] Phase 1: every failing rep interrogated (paste interrogation output)
+- [ ] Phase 2: net score >= baseline (infra-validated comparison)
+- [ ] Phase 2: every new regression interrogated and classified
+- [ ] Phase 3: all 8 cross-check tasks at 1.000
+- [ ] Infra validated at every phase (silent failures < 5)
+
+Then:
+
+```bash
+git checkout main
+git merge --no-ff exp/NAME -m "experiment: NAME — description
+
+PHASE 1 (targeted):
+  target-task-1: X/3 → Y/3
+  regression-task-1: 3/3 → 3/3
+
+PHASE 2 (discriminators):
+  Mean: 0.XXX (baseline: 0.XXX)
+  New regressions: none | task-a (stochastic, interrogated)
+
+PHASE 3 (cross-check):
+  All 8 tasks: 3/3
+
+Co-Authored-By: ..."
+```
+
+Move experiment file to `completed-improved/` or `completed-did-not-improve/`.
+Update NOTEBOOK.md and prompt-lessons.md.
 
 ### What counts as improvement
 
-With 3 reps per task:
-- 0/3 -> 1/3: Not conclusive. Could be noise. Try 2 more reps to confirm.
-- 0/3 -> 2/3: Improvement. Ship it.
-- 1/3 -> 2/3: Marginal. Probably improvement but confirm with the full eval later.
-- 1/3 -> 3/3: Clear improvement.
-- Any regression on regression set (was passing, now fails): Block. Investigate.
+- 0/3 → 2/3+: Ship it
+- 0/3 → 1/3: Marginal. Ship only if change is light and no regressions
+- 1/3 → 3/3: Clear improvement
+- Any regression on regression set: Block and investigate (do not ship)
 
-### Teaching to the test vs good engineering
+### Choosing target tasks
 
-The goal is NOT to pass specific tasks. The goal is to make the agent a better engineer.
-Every fix must be a general principle:
+Before selecting target tasks for Phase 1, trace the root cause back to
+the experiment log:
 
-- "Write deliverables early" — good. Helps any task where the agent runs out of time.
-- "For chess tasks, use python-chess" — bad. Only helps one task.
-- "Read /tests/ before delegating" — good. Helps any task with verifier expectations.
-- "Put the QEMU monitor socket at /tmp/qemu-monitor.sock" — bad. Only helps one task.
+1. Search `experiment-log.md` for the failure mode your experiment addresses
+2. Find which tasks were ORIGINALLY documented with that root cause
+3. Find which experiments previously fixed or attempted to fix those tasks
+4. Check if the previous fix is still in the prompts (it may already cover your change)
+5. Your Phase 1 targets are the tasks from step 2, NOT tasks that sound
+   vaguely related
 
-If you can't articulate the fix as a general principle, it's teaching to the test.
+**Session 16 example:** "verify-after-cleanup" was proposed because ONE rep
+of large-scale-text-editing had "cleanup removed expected.csv" in the
+regression report. But tracing the full chain revealed:
+1. The dominant failure mode for that task is Vim macro fragility, not cleanup
+2. The cleanup that removed expected.csv was IMPLEMENTER cleanup, not coordinator
+3. The implementer already has the H2 fix ("If cleanup undid something, restore it")
+4. The experiment added a COORDINATOR-side check for an IMPLEMENTER-side problem
+5. sqlite-with-gcov (the other target) fails for PATH reasons, not cleanup at all
+The experiment addressed a real but rare finding (1 rep) at the wrong
+intervention point. Dropped after Phase 1 interrogation confirmed no effect.
 
-## Step 5: Full Validation
+### Teaching to the test
 
-Only after all individual fixes are validated, combined, and re-validated:
+Every fix must be a general engineering principle. If you can't articulate
+the fix without naming the target task, it's teaching to the test.
 
-- **Overall pass rate** should be higher (or equal if fixes were narrow).
-- **No task that passed in the baseline should now fail** (check explicitly).
-- If there are regressions, identify which fix caused them.
+## Prompt Engineering Rules
 
-Record the full eval result in `experiment-log.md`. Update `NOTEBOOK.md` current state.
+See `prompt-lessons.md` for the full catalog. Key rules:
 
-## Prompt Engineering for GPT Models
-
-### What works
-- **Imperative prose with CRITICAL markers**: "CRITICAL: You must spawn an implementer."
-- **Positive framing**: "Before resorting to X, try Y first."
-- **Concrete examples**: Showing exact tool call format anchors behavior.
-- **Role framing**: "You are a dispatcher" > "You do NOT write code."
-- **XML-tagged prerequisites in user messages**: `<mandatory_prerequisites>` blocks with
-  numbered steps improve instruction adherence for models that deprioritize system prompts.
-
-### What doesn't work
-- **Graphviz flowcharts**: GPT ignores dot syntax. (Works for Claude.)
-- **Prohibitions**: "NEVER use write_file" -- model uses shell heredocs instead.
-  Stronger prohibitions can trigger WORSE compliance (inverse dose-response).
-- **Tool restriction at code level**: Model hallucinated or bypassed via shell.
-- **Long complex prompts**: More instruction does not equal more compliance.
-- **Duplicate verification criteria**: If two sections define what "verified" means
-  with different specificity, the model picks the stricter one — even if it
-  contradicts the intended behavior. Harmonize or use forward references.
-
-### Competing instructions
-The most common cause of apparent stochastic non-compliance. The model follows
-instruction A ~33% of the time and instruction B ~67% (or vice versa). This
-looks random but is actually the model resolving a conflict between two
-instructions in its prompt. Session interrogation reliably identifies both
-sides of the conflict. The fix is to remove or harmonize the competing
-instruction — not to strengthen the intended one (which can backfire).
-
-## Root-Cause Analysis
-
-**Root-causing means comparing, not categorizing.** For every failure, you need
-BOTH the failing transcript AND a passing transcript for the same task. Then
-you diff the coordinator behavior step by step.
-
-### The comparison protocol
-
-1. Download the coordinator transcript from a failing rep AND a passing rep
-2. List the first 10 tool calls side by side
-3. Find where behavior diverges — that's your investigation point
-4. If both delegated, diff the delegation task text word for word
-5. Check the verifier output — what specifically failed and how close was it?
-6. Check system prompt differences (build version in transcript header)
-
-### Dispatching root-cause subagents
-
-Use the prompt template at `docs/skills/benchmark-driven-improvement/root-cause-prompt.md`.
-It enforces the comparison protocol — the subagent must produce side-by-side
-tool flows, delegation text diffs, and specific divergence points.
-
-**Do NOT dispatch subagents with vague prompts like "analyze these failures."**
-They'll produce surface-level categorization instead of real root causes. The
-template exists to prevent this.
-
-### Session interrogation (required — see step 2b)
-
-Interrogation is a required part of root-cause analysis, not an optional fallback.
-
-The tool uses `serf --resume-with` to replay the FULL conversation history,
-placing the model back in its exact original context before asking questions.
-It supports interrogating any session — coordinator, implementer, or reviewer.
-
-```bash
-# List all sessions for a rep (shows role, model, turn count)
-python3 tools/interrogate_session.py \
-    --run RUN_ID --rep REP --task TASK_NAME --list-sessions
-
-# Interrogate the coordinator (default)
-python3 tools/interrogate_session.py \
-    --run RUN_ID --rep REP --task TASK_NAME
-
-# Interrogate a subagent by index (from --list-sessions)
-python3 tools/interrogate_session.py \
-    --run RUN_ID --rep REP --task TASK_NAME \
-    --session 3 \
-    --question "Your prompt says X. Why did you do Y instead?"
-
-# Interrogate a subagent by session ID prefix
-python3 tools/interrogate_session.py \
-    --run RUN_ID --rep REP --task TASK_NAME \
-    --session 01KMPF5M \
-    --question "Why did you override the computational proof?"
-
-# Custom questions (always include "what changes would fix this")
-python3 tools/interrogate_session.py \
-    --run RUN_ID --rep REP --task TASK \
-    --question "Your prompt says X. Why did you do Y instead?" \
-    --question "What specific changes to your instructions would have made you do the right thing?"
-```
-
-**Interrogate every agent in the failure chain.** Use `--list-sessions` to see
-all sessions, then `--session INDEX` to target specific ones. The coordinator's
-delegation is often the root cause (missing context, wrong instructions), but
-the subagent's own instruction conflicts are equally important.
-
-**Always ask "what changes would fix this."** The model in its original context
-is the best source for what framing would have changed its behavior. This
-produces actionable prompt fixes, not just explanations.
-
-**Reliable for:** which instructions competed, what the model noticed, how it
-ranked priorities, what context was missing. **Less reliable for:** deeper "why"
-(may rationalize).
-
-### What good root causes look like
-
-Bad: "Delegation info loss — coordinator paraphrased the spec."
-Good: "Failing coordinator's spawn_agent task said 'ensure correct CSV format'
-but omitted the actual header `period,severity,count`. Passing coordinator
-included the full CSV example verbatim. The omission caused the implementer
-to choose wide format (5 rows) instead of long format (15 rows). Verifier
-failed on header check at test_outputs.py:40."
-
-Bad: "Timeout — agent ran out of time."
-Good: "Failing coordinator spent 4 rounds reading files directly (list_dir,
-read_file x2, exec_command) before delegating at step 5. Passing coordinator
-delegated at step 2. The 3 wasted rounds cost ~45 seconds of wall time,
-and the implementer's PyStan sampling needed the full 900s budget."
-
-## Verifying Deployed Binaries
-
-**ALWAYS verify the binary before trusting eval results.** The build cache
-and staging pipeline can silently deploy stale code.
-
-```bash
-# Check transcript header for build version
-python3 -c "
-import json, subprocess
-content = subprocess.run(['aws', 's3', 'cp', 'S3_PATH', '-', '--region', 'us-west-1'],
-    capture_output=True, text=True).stdout
-h = json.loads(content.split(chr(10))[0])
-print('build:', h.get('build_version'))
-sp = h.get('system_prompt', '')
-print('Has expected text:', 'YOUR_EXPECTED_STRING' in sp)
-"
-
-# Check binary directly
-strings serf-linux-amd64 | grep "expected phrase"
-strings serf-linux-amd64 | grep -c "must not appear"
-
-# Check the S3 tarball (not just the local binary)
-aws s3 cp s3://BUCKET/agents/RUN_ID/agent.tar.gz /tmp/check.tar.gz
-tar xzf /tmp/check.tar.gz -C /tmp/check/
-strings /tmp/check/serf-linux-amd64 | grep "expected phrase"
-```
-
-Use `make build-linux` which invalidates the Go embed cache automatically.
+- **Implementation standards > verification gates** — tell the agent HOW to
+  write code, not just to CHECK afterward
+- **Positive framing > prohibitions** — "verification is reading" beats
+  "NEVER re-derive"
+- **Instruction position matters** — numbered workflow steps get ~100%
+  compliance, standalone sections get ~50-60%
+- **Competing instructions cause stochastic non-compliance** — always
+  interrogate to find the conflict
+- **Inverse dose-response** — stronger prohibitions can cause WORSE compliance
 
 ## Anti-Patterns
 
 | Anti-pattern | Instead |
 |-------------|---------|
-| Analyzing transcripts without interrogating | Resume sessions and ask the model why it decided what it did |
-| Concluding "prompt ceiling reached" without interrogation | Interrogate failures first — competing instructions are usually fixable |
-| Categorizing failures without comparison | Side-by-side transcript diff against passing run |
-| Guessing root causes from error messages | Read the actual transcript, both passing and failing |
-| Dispatching subagents with vague prompts | Use the root-cause-prompt.md template |
-| Reusing job names | Always use unique names |
-| Running full eval before understanding failures | Root cause -> fix -> test isolated -> then full eval |
+| Substituting transcript reading for interrogation | They are different steps. Transcripts show WHAT. Interrogation reveals WHY. If interrogation tools are broken, fix them — do not proceed without them. |
+| Working around broken tools silently | STOP and fix the tool, or tell the user it's broken. Never pretend a workaround is equivalent to the real step. |
+| Classifying by history pattern alone ("scores are noisy") | Read the actual transcripts and interrogate. Score history tells you THAT something changed, not WHY. |
+| Declaring "stochastic" without the full checklist | Every box in the stochastic checklist must have a concrete answer. Empty boxes = incomplete investigation, not stochastic. |
+| Declaring "stochastic" when strategies differ | If passing and failing reps used different approaches, that's behavioral — investigate why the approaches differed. |
+| Analyzing error messages instead of transcripts | Read the full transcript end-to-end |
+| Interrogating without a specific question | Ask about the exact decision point |
+| Strengthening a losing instruction | Remove or harmonize the competing instruction |
 | Bundling multiple changes | One change per experiment |
-| Testing with 1 rep | 3+ reps minimum |
-| Teaching to the test | Fixes must be general engineering principles |
-| Not verifying the deployed binary | Check transcript header build_version AND tarball contents |
-| Trusting `go build` after changing embedded files | Use `make build-linux` (runs go clean -cache) |
-| Staging agent dir under /tmp/ | Use isolated subdirectory to avoid parent-dir binary contamination |
+| Comparing against "most recent" scoreboard | Compare against the hardcoded baseline wave ID |
+| Shipping without interrogation evidence | Confirm causal link between change and improvement |
+| Declaring capability gap after 1 experiment | Try 3+ structural changes first |
+| Shipping after Phase 1 only (narrow A/B test) | Run all three phases. Phase 1 targets can look great while Phase 2 reveals broad regressions on untested tasks. Session 16 learned this the hard way. |
+| Skipping RCA on "pre-existing" failures | Pre-existing = you've been failing to fix it. The passing rep proves it's fixable. Investigate. |
+| Skipping RCA on passing reps | Compare passing vs failing to find the divergence. Without the passing rep, you're guessing. |
+| Making ship/iterate/abandon decisions on scores alone | Scores + RCA. A tied score can hide regressions masked by lucky wins. |
+| Asking text questions to probe self-awareness | Text produces rationalization. Force tool calls whose exit codes can't be rationalized. "Did you verify?" → rationalization. `env -i python3 -c 'import X'` → evidence. (Session 27 finding.) |
+| Comparing waves without infra validation | Always count silent failures (0 tokens) before attributing score drops. Session 16: 38 phantom failures misdiagnosed as -9.0pt prompt regression. |
+| Reverting experiments based on a single bad wave | Interrogate first. One wave's noise is not evidence. Need infra validation + interrogation before reverting. |
+| Comparing partial-wave means mid-run | Each variant has a different mix of tasks completed at any given moment. The wave with more easy tasks scored looks better. Wait for full completion, then compare per-task, per-rep. |
+| Manually parsing transcript JSONL | Use `interrogate_session.py` and `read_transcript.py`. The transcript format is complex and tool-specific. Manual parsing wastes time and produces wrong results. |
+| Proposing infrastructure hacks instead of clean designs | Brainstorm multiple approaches before proposing infra changes. Prefer designs that work WITH the model (task steps, prompts) over designs that fight it (parsing model output, filesystem hacks). Use the brainstorming skill for non-trivial design decisions. |
 
-## Recording Results
+## Parallel Experiment Execution
 
-After every experiment:
+When you have multiple independent experiments ready, run them in parallel
+rather than sequentially. Each experiment gets its own isolated worktree,
+branch, binary, and eval wave. The orchestrator stays on main and evaluates
+results as a batch.
 
-```bash
-# 1. Collect + update scoreboard (auto-reads launch metadata if available)
-./tools/post_run.sh RUN_ID --variant "description of what changed"
+### When to parallelize
 
-# 2. Auto-interrogate all failures (coordinator + subagents)
-./tools/interrogate_failures.sh RUN_ID
+- Multiple experiments target DIFFERENT prompt files or non-overlapping lines
+- Each experiment has its own target tasks (minimal overlap is fine)
+- You have enough AWS vCPU quota for concurrent waves
 
-# 3. Commit metadata
-git add docs/experiments/ && git commit -m "results: RUN_ID"
+Do NOT parallelize experiments that modify the same lines — those must be
+tested sequentially or combined into a single experiment.
+
+### The workflow
+
+1. **Orchestrator creates worktrees** — one per experiment, branched from
+   the current main (which includes any code fixes like tool serialization):
+
+   ```bash
+   git worktree add .claude/worktrees/exp-NAME exp/NAME
+   ```
+
+2. **Dispatch one subagent per experiment.** Each subagent receives:
+   - The worktree path
+   - The experiment file path (in `docs/experiments/backlog/`)
+   - Instructions to: apply the change, build, launch eval, monitor, report
+
+3. **Subagent lifecycle** (in the worktree):
+   ```bash
+   cd WORKTREE_PATH
+   # Apply experiment (edit the prompt file per the experiment's OLD/NEW)
+   # Commit on the experiment branch
+   # Build: make build-linux
+   # Verify: strings serf-linux-amd64 | grep "expected phrase"
+   # Launch: ./tools/run_eval.sh --tasks "target1,target2,regression1" --reps 3
+   # Monitor: poll wave_scores.py until complete
+   # Report results back to orchestrator
+   ```
+
+4. **Orchestrator evaluates the batch:**
+   - Collect all wave results
+   - Compare each experiment against baseline (wave-092c36a or equivalent)
+   - Interrogate every failure on target tasks
+   - Decide which experiments ship, which need revision, which are dropped
+   - Ship winners: merge experiment branches to main one at a time,
+     checking for conflicts
+
+### Subagent dispatch template
+
+```
+You are running experiment "{NAME}" in worktree "{PATH}".
+
+Experiment file: docs/experiments/backlog/{NAME}.md
+Read it for the exact OLD/NEW text, target tasks, and regression tasks.
+
+Steps:
+1. cd {WORKTREE_PATH}
+2. Read the experiment file and apply the OLD→NEW change to the prompt file
+3. git add -A && git commit -m "experiment: {NAME}"
+4. make build-linux
+5. strings serf-linux-amd64 | grep "EXPECTED_PHRASE"
+6. set -a; source .env; set +a
+7. ./tools/run_eval.sh --tasks "TARGET_TASKS,REGRESSION_TASKS" --reps 3
+8. Monitor wave_scores.py until all reps complete
+9. Report: per-task scores, comparison to baseline, any regressions
+
+If a target task improves, interrogate a passing rep to confirm causality.
+If a regression task drops, interrogate to determine if experiment-caused.
 ```
 
-`post_run.sh` downloads from S3, updates the scoreboard, and shows score diffs
-vs the previous state. If the run was launched with `run_eval.sh`, it
-auto-reads the model, git SHA, and branch from `.serf-launches/`.
+### Evaluating the batch
 
-For manual collection: `./tools/collect_results.py RUN_ID --model ... --git-sha ... --variant "..."`
+After all waves complete:
 
-4. **Check the scoreboard** — `./tools/scoreboard.py --sort score`
+1. **Infra-validate** every wave (check for silent failures)
+2. **Per-experiment decision:** improved targets + held regressions → candidate
+   to ship. Any regression → interrogate before deciding.
+3. **Conflict check:** if two shipping experiments touch nearby lines, test
+   them combined before merging both. The combined effect may differ.
+4. **Ship order:** merge experiments one at a time to main. After each merge,
+   verify the combined binary still builds and `strings` shows all expected
+   phrases from all merged experiments.
 
-5. **View task history** — `./tools/scoreboard.py --task TASK_NAME`
+## Session 27 additions
 
-6. **Update docs:**
-   - `experiment-log.md` — add the experiment entry (results, interrogation findings)
-   - `prompt-lessons.md` — add any new synthesized learnings about model behavior
-   - `NOTEBOOK.md` — update current state if shipped fixes or open problems changed
+### Subagent workspace snapshots are now fresh
 
-### Scoring rule
-Score = mean of reps from the most recent run. For parallel experiments on the
-same date, the highest score wins (best achievable, not arbitrary tiebreak).
+Commit `20d3db9` fixed a fundamental bug: subagents previously reused the
+coordinator's stale workspace snapshot (captured before the implementer ran).
+The verifier would see a pre-work baseline and treat implementer-produced
+artifacts as "new files I created." Now `ScanWorkspace` runs at subagent
+spawn time. This changes debugging assumptions — if a verifier claims it
+doesn't see a file, the file genuinely doesn't exist (not a stale snapshot).
 
-### Scoreboard as starting point
-`docs/experiments/scoreboard.json` is the canonical task matrix. Before starting
-a new experiment, check `scoreboard.py --failing` to see which tasks need work
-and `scoreboard.py --task TASK` to see what's been tried.
+### Note/Restore verifier task steps were deleted
 
-## Infrastructure Reference
+The "Restore noted state" task step instructed the verifier to delete files
+it created and restore the workspace. This caused the verifier to delete
+implementer-produced build artifacts (`.so` files, compiled binaries) because
+the Note step captured pre-build state. Deleted in commit `7c37dae`. The
+verifier's task list is now: Plan → Read → Run tests → Fresh eyes → Assess.
 
-See the project's `docs/experiments/infrastructure.md` for deployment, launch
-commands, results collection, and environment-specific details.
+### "Understand before running" verifier rule
+
+Commit `7cf9129`. Before executing any command, the verifier must state what
+it will read, what it will change, and what it will prove. Proven to
+causally improve bn-fit-modify (+2 reps: forced semantic column parsing) and
+configure-git-webserver (+2 reps: prevented service-killing by forcing
+consequence articulation before destructive commands).
+
+### Transcript access
+
+Commit `09d47f9` + `9681696`. Subagent spawn/wait results now include a
+`transcript` field with the path to the subagent's JSONL transcript. After
+context compaction, a SYSTEM-REMINDER tells the agent where to find its own
+full pre-compaction transcript. The coordinator's Verify step hints it to
+pass the implementer's transcript path to the verifier (but NOT to fix
+agents — fix agents get a fresh start to avoid anchoring on failed approaches).
+
+### Text questions produce text rationalization
+
+Session 27 tested asking implementers "did you do a good job?" before
+submission. Finding: 70% of genuinely-failing implementers accurately
+self-reported failure when asked post-hoc. But pre-completion text questions
+produced confident rationalization — the implementer described what it
+BELIEVED was on disk, not what was actually there. Exit codes and command
+output can't be rationalized; text can. Prefer forced tool calls over
+text-based self-checks.
+
+### Teaching to the test remains the biggest experiment-design risk
+
+Session 27 experiments repeatedly named specific tools (vim, Python
+`__pycache__`), specific failure modes from target tasks, or specific
+harness behaviors. Every one that did was caught and revised. The rule:
+**if you can't articulate the fix without naming the target task or its
+specific toolchain, it's teaching to the test.** General engineering
+principles only.

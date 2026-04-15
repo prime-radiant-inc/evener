@@ -5,9 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/llm"
@@ -41,8 +44,18 @@ func SelectProfile(provider, model string) (agent.ProviderProfile, error) {
 	case "google", "gemini":
 		p := agent.WithSubmitResultRequiredDataKeys(agent.NewGeminiProfile(model), requiredKeys)
 		return agent.WithAllowedDecisions(p, allowedDecisions), nil
+	case "minimax":
+		p := agent.WithSubmitResultRequiredDataKeys(agent.NewMiniMaxProfile(model), requiredKeys)
+		return agent.WithAllowedDecisions(p, allowedDecisions), nil
+	case "openrouter-anthropic":
+		p := agent.WithSubmitResultRequiredDataKeys(agent.NewOpenRouterAnthropicProfile(model), requiredKeys)
+		return agent.WithAllowedDecisions(p, allowedDecisions), nil
+	case "kimi", "glm", "openrouter":
+		ctxWindow := queryModelContextWindow(provider, model)
+		p := agent.WithSubmitResultRequiredDataKeys(agent.NewOpenAICompatProfile(provider, model, ctxWindow), requiredKeys)
+		return agent.WithAllowedDecisions(p, allowedDecisions), nil
 	default:
-		return nil, fmt.Errorf("unknown provider %q: must be openai, anthropic, or google", provider)
+		return nil, fmt.Errorf("unknown provider %q: must be openai, anthropic, google, minimax, openrouter-anthropic, kimi, glm, or openrouter", provider)
 	}
 }
 
@@ -227,4 +240,75 @@ func parseSubmitResultRequiredDataKeys(raw string) []string {
 		out = append(out, p)
 	}
 	return out
+}
+
+// providerEnvConfig maps provider names to their env var and base URL info.
+var providerEnvConfig = map[string]struct {
+	apiKeyEnv  string
+	baseURLEnv string
+	defaultURL string
+}{
+	"kimi":       {"KIMI_API_KEY", "KIMI_BASE_URL", "https://api.moonshot.ai/v1"},
+	"glm":        {"GLM_API_KEY", "GLM_BASE_URL", "https://api.z.ai/api/paas/v4"},
+	"openrouter": {"OPENROUTER_API_KEY", "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"},
+}
+
+// queryModelContextWindow queries the provider's /models endpoint for the
+// context window of the given model. Returns 0 if the query fails or the
+// provider doesn't report context length. Best-effort — the profile falls
+// back to the embedded catalog, then to 128K.
+func queryModelContextWindow(provider, model string) int {
+	cfg, ok := providerEnvConfig[provider]
+	if !ok {
+		return 0
+	}
+	apiKey := strings.TrimSpace(os.Getenv(cfg.apiKeyEnv))
+	if apiKey == "" {
+		return 0
+	}
+	baseURL := strings.TrimSpace(os.Getenv(cfg.baseURLEnv))
+	if baseURL == "" {
+		baseURL = cfg.defaultURL
+	}
+	baseURL = strings.TrimRight(baseURL, "/")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/models", nil)
+	if err != nil {
+		return 0
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return 0
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1MB limit
+	if err != nil {
+		return 0
+	}
+
+	var result struct {
+		Data []struct {
+			ID            string `json:"id"`
+			ContextLength int    `json:"context_length"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return 0
+	}
+
+	for _, m := range result.Data {
+		if m.ID == model && m.ContextLength > 0 {
+			return m.ContextLength
+		}
+	}
+	return 0
 }

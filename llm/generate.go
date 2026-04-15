@@ -15,7 +15,11 @@ import (
 type Tool struct {
 	Definition ToolDefinition
 	Execute    func(ctx context.Context, args any) (any, error)
-	schema     *jsonschema.Schema
+	// ReadOnly marks tools that never modify filesystem, network, or external state
+	// (e.g. read_file, grep, glob, list_dir). Used by executeToolCalls to batch
+	// consecutive read-only calls in parallel while serializing everything else.
+	ReadOnly bool
+	schema   *jsonschema.Schema
 }
 
 // ToolCallContext provides additional context to tool handlers via context.Value.
@@ -331,59 +335,102 @@ func compileSchema(params map[string]any) (*jsonschema.Schema, error) {
 	return c.Compile(schemaURI)
 }
 
+// executeSingleToolCall runs one tool call and writes the result into results[idx].
+func executeSingleToolCall(ctx context.Context, toolIndex map[string]Tool, call ToolCallData, messages []Message, repairFn func(context.Context, ToolCallData, error) (json.RawMessage, error), results []ToolResultData, idx int) {
+	r := ToolResultData{
+		ToolCallID: call.ID,
+		Name:       call.Name,
+	}
+
+	t, ok := toolIndex[call.Name]
+	if !ok || t.Execute == nil {
+		r.IsError = true
+		r.Content = fmt.Sprintf("unknown tool: %s", call.Name)
+		results[idx] = r
+		return
+	}
+
+	args, err := parseAndValidateArgs(t.schema, call.Arguments)
+	if err != nil {
+		if repairFn != nil {
+			repaired, repairErr := repairFn(ctx, call, err)
+			if repairErr == nil {
+				args, err = parseAndValidateArgs(t.schema, repaired)
+			}
+		}
+		if err != nil {
+			r.IsError = true
+			r.Content = fmt.Sprintf("invalid tool arguments: %v", err)
+			results[idx] = r
+			return
+		}
+	}
+
+	tcCtx := context.WithValue(ctx, toolCallContextKey{}, ToolCallContext{
+		Messages:   messages,
+		ToolCallID: call.ID,
+	})
+	out, err := t.Execute(tcCtx, args)
+	if err != nil {
+		r.IsError = true
+		r.Content = err.Error()
+		results[idx] = r
+		return
+	}
+	r.Content = out
+	results[idx] = r
+}
+
+// indexedToolCall pairs an original slice index with a tool call, used when
+// building parallel read-only batches in executeToolCalls.
+type indexedToolCall struct {
+	idx  int
+	call ToolCallData
+}
+
 func executeToolCalls(ctx context.Context, toolIndex map[string]Tool, calls []ToolCallData, messages []Message, repairFn func(context.Context, ToolCallData, error) (json.RawMessage, error)) []ToolResultData {
 	results := make([]ToolResultData, len(calls))
-	var wg sync.WaitGroup
-	wg.Add(len(calls))
-	for i := range calls {
-		go func() {
-			defer wg.Done()
-			call := calls[i]
-			r := ToolResultData{
-				ToolCallID: call.ID,
-				Name:       call.Name,
-			}
 
-			t, ok := toolIndex[call.Name]
-			if !ok || t.Execute == nil {
-				r.IsError = true
-				r.Content = fmt.Sprintf("unknown tool: %s", call.Name)
-				results[i] = r
-				return
-			}
-
-			args, err := parseAndValidateArgs(t.schema, call.Arguments)
-			if err != nil {
-				if repairFn != nil {
-					repaired, repairErr := repairFn(ctx, call, err)
-					if repairErr == nil {
-						args, err = parseAndValidateArgs(t.schema, repaired)
-					}
-				}
-				if err != nil {
-					r.IsError = true
-					r.Content = fmt.Sprintf("invalid tool arguments: %v", err)
-					results[i] = r
-					return
-				}
-			}
-
-			tcCtx := context.WithValue(ctx, toolCallContextKey{}, ToolCallContext{
-				Messages:   messages,
-				ToolCallID: call.ID,
-			})
-			out, err := t.Execute(tcCtx, args)
-			if err != nil {
-				r.IsError = true
-				r.Content = err.Error()
-				results[i] = r
-				return
-			}
-			r.Content = out
-			results[i] = r
-		}()
+	// Single-call fast path: no goroutine overhead.
+	if len(calls) == 1 {
+		executeSingleToolCall(ctx, toolIndex, calls[0], messages, repairFn, results, 0)
+		return results
 	}
-	wg.Wait()
+
+	// Ordered-group algorithm: batch consecutive read-only calls for parallel
+	// execution; serialize everything else.
+	flushReadBatch := func(batch []indexedToolCall) {
+		switch len(batch) {
+		case 0:
+			// nothing to do
+		case 1:
+			executeSingleToolCall(ctx, toolIndex, batch[0].call, messages, repairFn, results, batch[0].idx)
+		default:
+			var wg sync.WaitGroup
+			wg.Add(len(batch))
+			for _, item := range batch {
+				go func() {
+					defer wg.Done()
+					executeSingleToolCall(ctx, toolIndex, item.call, messages, repairFn, results, item.idx)
+				}()
+			}
+			wg.Wait()
+		}
+	}
+
+	var readBatch []indexedToolCall
+	for i, call := range calls {
+		t, ok := toolIndex[call.Name]
+		if ok && t.ReadOnly {
+			readBatch = append(readBatch, indexedToolCall{i, call})
+		} else {
+			flushReadBatch(readBatch)
+			readBatch = readBatch[:0]
+			executeSingleToolCall(ctx, toolIndex, call, messages, repairFn, results, i)
+		}
+	}
+	flushReadBatch(readBatch)
+
 	return results
 }
 

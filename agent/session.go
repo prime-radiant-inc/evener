@@ -126,10 +126,10 @@ type SessionConfig struct {
 	// submit_result always passes through directly.
 	EnableReviewerGate bool `json:"enable_reviewer_gate,omitempty"`
 
-	// DisableAutoVerify, when true, prevents the task store from auto-generating
-	// verify tasks for implement/fix tasks. Use when an external orchestrator
-	// (e.g. toil) already provides its own review workflow.
-	DisableAutoVerify bool `json:"disable_auto_verify,omitempty"`
+	// EnableAutoVerify, when true, makes the task store auto-generate verify
+	// tasks for implement/fix tasks. Disabled by default — agents with
+	// structured task workflows already include their own verification steps.
+	EnableAutoVerify bool `json:"enable_auto_verify,omitempty"`
 
 	// ShareTasksWithChildren, when true, passes the parent's task store to
 	// child sessions spawned via spawn_agent. Both parent and children see
@@ -222,10 +222,11 @@ type Session struct {
 	events  chan SessionEvent
 	envInfo EnvironmentInfo
 
-	mu      sync.Mutex
-	state   SessionState
-	turns   int
-	history []Turn
+	mu             sync.Mutex
+	state          SessionState
+	turns          int // user input count (for MaxTurns enforcement)
+	modelResponses int // LLM round-trip count (for meta.json turn_count)
+	history        []Turn
 
 	reg *ToolRegistry
 
@@ -292,6 +293,7 @@ type Session struct {
 
 	// stuck detection
 	loopDetectionCount int // how many times loop detection has fired
+	readOnlyStreak     int // consecutive rounds with only read-only tool calls
 
 	// transcript writer (nil when StateDir is empty)
 	transcript *TranscriptWriter
@@ -380,8 +382,38 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 
 	s.depth = cfg.Depth
 
+	// Populate default tasks from agent definition (non-interactive/eval mode only).
+	agentName := cfg.AgentName
+	if agentName == "" {
+		agentName = "coordinator"
+	}
+	if cfg.NonInteractive && cfg.ParentSessionID == "" {
+		// Root sessions only. Subagent tasks are populated in spawnAgent
+		// where parentTasks from the coordinator's task_list parameter are
+		// available. Populating here with nil parentTasks would leave the
+		// insert:parent_tasks placeholder unexpanded, and the later
+		// PopulateFromTemplates call in spawnAgent would be a no-op
+		// (tasks already exist).
+		if agent, ok := s.pluginAgents[agentName]; ok && len(agent.Tasks) > 0 {
+		store := s.getOrCreateTaskStore()
+		if err := store.PopulateFromTemplates(agent.Tasks, nil); err == nil {
+			// Inject first task prompt and set reasoning effort.
+			if current, ok := store.CurrentInProgress(); ok {
+				if current.ReasoningEffort != "" {
+					s.cfg.ReasoningEffort = current.ReasoningEffort
+				}
+				s.Steer(formatCurrentTaskSteering(current))
+			}
+		}
+		}
+	}
+
 	// Create transcript writer if state persistence is enabled.
 	if s.stateDir != "" {
+		var agentTasks []Task
+		if s.taskStore != nil {
+			agentTasks = s.taskStore.View()
+		}
 		hdr := TranscriptHeader{
 			SessionID:        s.id,
 			ParentSessionID:  cfg.ParentSessionID,
@@ -394,6 +426,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 			Depth:            cfg.Depth,
 			BuildVersion:     buildinfo.Version(),
 			SystemPrompt:     s.buildInitialSystemPrompt(),
+			AgentTasks:       agentTasks,
 		}
 		tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
 		tw, twErr := NewTranscriptWriter(tpath, hdr)
@@ -416,6 +449,10 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 			if reminder := taskReminderFull(s.taskStore); reminder != "" {
 				s.Steer(reminder)
 			}
+		}
+		// Tell the agent where to find the full pre-compaction transcript.
+		if tpath := s.TranscriptPath(); tpath != "" {
+			s.Steer("<SYSTEM-REMINDER>If you need the exact transcript of this session before compaction, you can read it at: " + tpath + "</SYSTEM-REMINDER>")
 		}
 	}
 
@@ -490,12 +527,12 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		stateDir:   cfg.StateDir,
 		state:      SessionIdle,
 		events:     make(chan SessionEvent, 256),
-		history:    resumeHistory,
-		turns:      snap.TurnCount,
-		subagents:  map[string]*subagent{},
-		readFiles:  map[string]bool{},
-		sessionCtx: sessCtx,
-		cancelFunc: sessCancel,
+		history:        resumeHistory,
+		modelResponses: snap.TurnCount,
+		subagents:      map[string]*subagent{},
+		readFiles:      map[string]bool{},
+		sessionCtx:     sessCtx,
+		cancelFunc:     sessCancel,
 	}
 
 	promptSources, err := s.initSessionState()
@@ -515,6 +552,10 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		tw, twErr := OpenTranscriptWriter(tpath)
 		if twErr != nil {
 			// Transcript might not exist (old session). Create new.
+			var agentTasks []Task
+			if s.taskStore != nil {
+				agentTasks = s.taskStore.View()
+			}
 			hdr := TranscriptHeader{
 				SessionID:        s.id,
 				ParentSessionID:  cfg.ParentSessionID,
@@ -527,6 +568,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 				Depth:            cfg.Depth,
 				BuildVersion:     buildinfo.Version(),
 				SystemPrompt:     s.buildInitialSystemPrompt(),
+				AgentTasks:       agentTasks,
 			}
 			tw, twErr = NewTranscriptWriter(tpath, hdr)
 			if twErr != nil {
@@ -550,6 +592,10 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 				s.Steer(reminder)
 			}
 		}
+		// Tell the agent where to find the full pre-compaction transcript.
+		if tpath := s.TranscriptPath(); tpath != "" {
+			s.Steer("<SYSTEM-REMINDER>If you need the exact transcript of this session before compaction, you can read it at: " + tpath + "</SYSTEM-REMINDER>")
+		}
 	}
 
 	// Create context strategy.
@@ -572,7 +618,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		Profile:           profile.ID(),
 		Model:             profile.Model(),
 		Restored:          true,
-		Turns:             s.turns,
+		Turns:             s.modelResponses,
 		LastInputTokens:   snap.LastInputTokens,
 		ContextWindowSize: profile.ContextWindowSize(),
 	})
@@ -626,12 +672,12 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 		stateDir:   cfg.StateDir,
 		state:      SessionIdle,
 		events:     make(chan SessionEvent, 256),
-		history:    resumeHistory,
-		turns:      meta.TurnCount,
-		subagents:  map[string]*subagent{},
-		readFiles:  map[string]bool{},
-		sessionCtx: sessCtx,
-		cancelFunc: sessCancel,
+		history:        resumeHistory,
+		modelResponses: meta.TurnCount,
+		subagents:      map[string]*subagent{},
+		readFiles:      map[string]bool{},
+		sessionCtx:     sessCtx,
+		cancelFunc:     sessCancel,
 	}
 
 	promptSources, err := s.initSessionState()
@@ -650,6 +696,10 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 		tw, twErr := OpenTranscriptWriter(tpath)
 		if twErr != nil {
 			// Transcript might not exist (new session from meta). Create new.
+			var agentTasks []Task
+			if s.taskStore != nil {
+				agentTasks = s.taskStore.View()
+			}
 			hdr := TranscriptHeader{
 				SessionID:        s.id,
 				ParentSessionID:  cfg.ParentSessionID,
@@ -662,6 +712,7 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 				Depth:            cfg.Depth,
 				BuildVersion:     buildinfo.Version(),
 				SystemPrompt:     s.buildInitialSystemPrompt(),
+				AgentTasks:       agentTasks,
 			}
 			tw, twErr = NewTranscriptWriter(tpath, hdr)
 			if twErr != nil {
@@ -684,6 +735,10 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 				s.Steer(reminder)
 			}
 		}
+		// Tell the agent where to find the full pre-compaction transcript.
+		if tpath := s.TranscriptPath(); tpath != "" {
+			s.Steer("<SYSTEM-REMINDER>If you need the exact transcript of this session before compaction, you can read it at: " + tpath + "</SYSTEM-REMINDER>")
+		}
 	}
 
 	// Create context strategy.
@@ -705,7 +760,7 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 		Profile:           profile.ID(),
 		Model:             profile.Model(),
 		Restored:          true,
-		Turns:             s.turns,
+		Turns:             s.modelResponses,
 		LastInputTokens:   meta.LastInputTokens,
 		ContextWindowSize: profile.ContextWindowSize(),
 	})
@@ -747,7 +802,7 @@ func (s *Session) Snapshot() SessionSnapshot {
 		History:         append([]Turn{}, s.history...),
 		CreatedAt:       now,
 		UpdatedAt:       now,
-		TurnCount:       s.turns,
+		TurnCount:       s.modelResponses,
 		LastInputTokens: s.contextMgr.LastInputTokens(),
 	}
 }
@@ -765,7 +820,7 @@ func (s *Session) Meta() SessionMeta {
 		EnvInfo:         s.envInfo,
 		CreatedAt:       now,
 		UpdatedAt:       now,
-		TurnCount:       s.turns,
+		TurnCount:       s.modelResponses,
 		LastInputTokens: s.contextMgr.LastInputTokens(),
 	}
 }
@@ -913,6 +968,23 @@ func (s *Session) describeImage(ctx context.Context, r ToolExecResult) string {
 		mt = "image/png"
 	}
 
+	// Build the content part based on media type — images use ContentImage,
+	// documents (PDFs) use ContentDocument so the provider sends them correctly.
+	var mediaPart llm.ContentPart
+	if strings.HasPrefix(mt, "application/pdf") {
+		mediaPart = llm.ContentPart{Kind: llm.ContentDocument, Document: &llm.DocumentData{
+			Data:      r.ImageData,
+			MediaType: mt,
+			FileName:  "document.pdf",
+		}}
+	} else {
+		mediaPart = llm.ContentPart{Kind: llm.ContentImage, Image: &llm.ImageData{
+			Data:      r.ImageData,
+			MediaType: mt,
+			Detail:    "original",
+		}}
+	}
+
 	req := llm.Request{
 		Model:    s.profile.Model(),
 		Provider: s.profile.ID(),
@@ -921,11 +993,7 @@ func (s *Session) describeImage(ctx context.Context, r ToolExecResult) string {
 				Role: llm.RoleUser,
 				Content: []llm.ContentPart{
 					{Kind: llm.ContentText, Text: prompt.String()},
-					{Kind: llm.ContentImage, Image: &llm.ImageData{
-						Data:      r.ImageData,
-						MediaType: mt,
-						Detail:    "original",
-					}},
+					mediaPart,
 				},
 			},
 		},
@@ -936,9 +1004,19 @@ func (s *Session) describeImage(ctx context.Context, r ToolExecResult) string {
 			StreamRead: 30 * time.Second,
 		},
 	}
-	if effort := strings.TrimSpace(s.cfg.ReasoningEffort); effort != "" {
-		req.ReasoningEffort = &effort
+	// Vision descriptions need sufficient reasoning to be accurate.
+	// Floor at "high" regardless of the current task's effort level.
+	effort := strings.TrimSpace(s.cfg.ReasoningEffort)
+	if s.taskStore != nil {
+		if current, ok := s.taskStore.CurrentInProgress(); ok && current.ReasoningEffort != "" {
+			effort = current.ReasoningEffort
+		}
 	}
+	effortRank := map[string]int{"low": 1, "medium": 2, "high": 3, "xhigh": 4}
+	if effortRank[effort] < effortRank["high"] {
+		effort = "high"
+	}
+	req.ReasoningEffort = &effort
 
 	resp, err := s.client.Complete(ctx, req)
 	if err != nil {
@@ -980,7 +1058,7 @@ func (s *Session) Close() {
 			subs = append(subs, sub)
 			delete(s.subagents, id)
 		}
-		turns := s.turns
+		turns := s.modelResponses
 		emitEnd := !s.sessionEndEmitted
 		s.sessionEndEmitted = true
 		s.mu.Unlock()
@@ -1263,7 +1341,7 @@ func (s *Session) ProcessInput(ctx context.Context, input string) (string, error
 			s.mu.Lock()
 			if !s.sessionEndEmitted {
 				s.sessionEndEmitted = true
-				turns := s.turns
+				turns := s.modelResponses
 				state := s.state
 				s.mu.Unlock()
 				s.emit(EventSessionEnd, SessionEndData{
@@ -1709,7 +1787,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			Messages:   messages,
 			Tools:      toolDefs,
 			ToolChoice: &llm.ToolChoice{Mode: "auto"},
-			WebSearch:  true,
+			WebSearch:  s.profile.SupportsWebSearch(),
 			AdapterTimeout: &llm.AdapterTimeout{
 				Connect:    10 * time.Second,
 				Request:    10 * time.Minute,
@@ -1718,6 +1796,11 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		}
 		if opts := s.profile.ProviderOptions(); opts != nil {
 			req.ProviderOptions = opts
+		}
+		if s.taskStore != nil {
+			if current, ok := s.taskStore.CurrentInProgress(); ok && current.ReasoningEffort != "" {
+				s.cfg.ReasoningEffort = current.ReasoningEffort
+			}
 		}
 		if strings.TrimSpace(s.cfg.ReasoningEffort) != "" {
 			v := strings.TrimSpace(s.cfg.ReasoningEffort)
@@ -1884,6 +1967,9 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			textEndData.Reasoning = reasoning
 		}
 		s.emit(EventAssistantTextEnd, textEndData)
+		s.mu.Lock()
+		s.modelResponses++
+		s.mu.Unlock()
 		// pause_turn: model needs another turn (e.g. server-side web search still running).
 		if resp.Finish.Reason == llm.FinishReasonPauseTurn {
 			round-- // Don't count pause_turn as a tool round.
@@ -1949,9 +2035,8 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 						Message: fmt.Sprintf("bare text response without tool call (retry %d/%d)", consecutiveBareTextResponses, maxBareTextRetries),
 					})
 					steering := "You responded with bare text instead of a tool call. " +
-						"You must use the " + s.resultToolName() + " tool to deliver results. " +
-						"If you are done, call " + s.resultToolName() + ". " +
-						"If you still have work to do, call your next tool."
+						"If you still have work to do, call your next tool. " +
+						"Only call " + s.resultToolName() + " when all your work is complete."
 					s.appendTurn(TurnSteering, llm.User(steering))
 					s.emit(EventSteeringInjected, SteeringInjectedData{Text: steering})
 					round-- // Don't count bare-text retries as tool rounds.
@@ -1990,15 +2075,39 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		// Execute tool calls (possibly in parallel) and send results back.
 		results := make([]ToolExecResult, len(calls))
 		if s.profile.SupportsParallelToolCalls() && len(calls) > 1 {
-			var wg sync.WaitGroup
-			wg.Add(len(calls))
-			for i := range calls {
-				go func() {
-					defer wg.Done()
-					results[i] = s.execTool(ctx, calls[i])
-				}()
+			// Ordered-group algorithm: batch consecutive read-only calls for
+			// parallel execution; serialize everything else.
+			flushReadBatch := func(batch []int) {
+				switch len(batch) {
+				case 0:
+					// nothing to do
+				case 1:
+					results[batch[0]] = s.execTool(ctx, calls[batch[0]])
+				default:
+					var wg sync.WaitGroup
+					wg.Add(len(batch))
+					for _, i := range batch {
+						go func() {
+							defer wg.Done()
+							results[i] = s.execTool(ctx, calls[i])
+						}()
+					}
+					wg.Wait()
+				}
 			}
-			wg.Wait()
+
+			var readBatch []int
+			for i, call := range calls {
+				t := s.reg.Get(call.Name)
+				if t != nil && t.ReadOnly {
+					readBatch = append(readBatch, i)
+				} else {
+					flushReadBatch(readBatch)
+					readBatch = readBatch[:0]
+					results[i] = s.execTool(ctx, call)
+				}
+			}
+			flushReadBatch(readBatch)
 		} else {
 			for i := range calls {
 				results[i] = s.execTool(ctx, calls[i])
@@ -2036,12 +2145,25 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		// descriptions of images — they immediately write code. This off-loop
 		// call with no tools forces the model to use its native vision, then
 		// injects the description into the conversation so the agent can use it.
-		for _, r := range results {
+		for i, r := range results {
 			if len(r.ImageData) > 0 {
 				if desc := s.describeImage(ctx, r); desc != "" {
-					s.Steer("Image description (from vision): " + desc)
+					// Include the file path so the agent can correlate descriptions
+					// to specific files when multiple images/documents are read in one round.
+					label := "Image description (from vision)"
+					if strings.HasPrefix(r.ImageMediaType, "application/pdf") {
+						label = "Document description (from content analysis)"
+					}
+					if i < len(calls) {
+						var args map[string]any
+						if json.Unmarshal(calls[i].Arguments, &args) == nil {
+							if path, ok := args["file_path"].(string); ok {
+								label += " for " + path
+							}
+						}
+					}
+					s.Steer(label + ": " + desc + "\n<system-reminder>Visual descriptions are summaries. They may miss or mischaracterize details.</system-reminder>")
 				}
-				break // one description per round is enough
 			}
 		}
 
@@ -2081,6 +2203,30 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 				s.appendTurn(TurnSteering, llm.User(warning))
 				s.emit(EventSteeringInjected, SteeringInjectedData{Text: warning})
 			}
+		}
+
+		// Read-only streak detection: nudge agent if stuck in analysis paralysis.
+		allReadOnly := len(calls) > 0
+		for _, call := range calls {
+			t := s.reg.Get(call.Name)
+			if t == nil || !t.ReadOnly {
+				allReadOnly = false
+				break
+			}
+		}
+		if allReadOnly {
+			s.readOnlyStreak++
+		} else {
+			s.readOnlyStreak = 0
+		}
+		if s.readOnlyStreak == 5 {
+			nudge := "<SYSTEM-REMINDER>You have spent several turns reading without writing or running anything. Review your current task. If you have enough context to make progress, write code or run a command now. A first attempt you can test and fix is more valuable than more reading.</SYSTEM-REMINDER>"
+			s.appendTurn(TurnSteering, llm.User(nudge))
+			s.emit(EventSteeringInjected, SteeringInjectedData{Text: nudge})
+		} else if s.readOnlyStreak == 10 {
+			nudge := "<SYSTEM-REMINDER>You have been reading for 10 turns without acting. Stop reading. Write the deliverable file now, even if incomplete. You can iterate after you have something to test.</SYSTEM-REMINDER>"
+			s.appendTurn(TurnSteering, llm.User(nudge))
+			s.emit(EventSteeringInjected, SteeringInjectedData{Text: nudge})
 		}
 
 		// Inject any queued steering messages before the next model call.
@@ -2772,7 +2918,7 @@ func (s *Session) initMCP() error {
 func registerCoreTools(reg *ToolRegistry, s *Session) error {
 	// read_file
 	if err := reg.Register(RegisteredTool{
-		Tool: llm.Tool{Definition: defReadFile()},
+		Tool: llm.Tool{Definition: defReadFile(), ReadOnly: true},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			path := fmt.Sprint(args["file_path"])
@@ -2782,11 +2928,15 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			result, err := env.ReadFile(path, offset, limit)
 			if err == nil {
 				s.trackReadFile(path)
-				// If the file is an image, return an ImageResult so the
-				// model receives the image as a proper content part.
+				// If the file is an image or document (PDF), return an
+				// ImageResult so the vision side-channel can process it.
 				if img := parseImageResult(path, result); img != nil {
 					img.Purpose = purpose
 					return *img, nil
+				}
+				if doc := parseDocumentResult(path, result); doc != nil {
+					doc.Purpose = purpose
+					return *doc, nil
 				}
 			}
 			return result, err
@@ -2797,7 +2947,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 
 	// read_many_files (Gemini-aligned; safe to register globally)
 	_ = reg.Register(RegisteredTool{
-		Tool: llm.Tool{Definition: defReadManyFiles()},
+		Tool: llm.Tool{Definition: defReadManyFiles(), ReadOnly: true},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			pathsAny := args["file_paths"]
@@ -2912,7 +3062,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 
 	// list_dir (Gemini-aligned)
 	_ = reg.Register(RegisteredTool{
-		Tool: llm.Tool{Definition: defListDir()},
+		Tool: llm.Tool{Definition: defListDir(), ReadOnly: true},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			path := fmt.Sprint(args["path"])
@@ -2926,7 +3076,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 
 	// grep
 	if err := reg.Register(RegisteredTool{
-		Tool: llm.Tool{Definition: defGrep()},
+		Tool: llm.Tool{Definition: defGrep(), ReadOnly: true},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			pat := fmt.Sprint(args["pattern"])
@@ -2952,7 +3102,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 
 	// glob
 	if err := reg.Register(RegisteredTool{
-		Tool: llm.Tool{Definition: defGlob()},
+		Tool: llm.Tool{Definition: defGlob(), ReadOnly: true},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			pat := fmt.Sprint(args["pattern"])
@@ -2987,10 +3137,6 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			if v, ok := args["model"]; ok && v != nil {
 				model = fmt.Sprint(v)
 			}
-			workingDir := ""
-			if v, ok := args["working_dir"]; ok && v != nil {
-				workingDir = fmt.Sprint(v)
-			}
 			maxTurns := 0
 			if v, ok := args["max_turns"].(float64); ok {
 				maxTurns = int(v)
@@ -3007,7 +3153,27 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			if v, ok := args["reasoning_effort"]; ok && v != nil {
 				reasoningEffort = fmt.Sprint(v)
 			}
-			result, err := s.spawnAgent(ctx, task, model, workingDir, maxTurns, agentType, reasoningEffort)
+			var parentTasks []TaskTemplate
+			if rawList, ok := args["task_list"].([]any); ok {
+				for _, item := range rawList {
+					m, ok := item.(map[string]any)
+					if !ok {
+						continue
+					}
+					tt := TaskTemplate{}
+					if v, ok := m["title"].(string); ok {
+						tt.Title = v
+					}
+					if v, ok := m["prompt"].(string); ok {
+						tt.Prompt = v
+					}
+					if v, ok := m["reasoning_effort"].(string); ok {
+						tt.ReasoningEffort = v
+					}
+					parentTasks = append(parentTasks, tt)
+				}
+			}
+			result, err := s.spawnAgent(ctx, task, model, "", maxTurns, agentType, reasoningEffort, parentTasks)
 			if err != nil || !blocking {
 				return result, err
 			}
@@ -3039,6 +3205,28 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			agentID := fmt.Sprint(args["agent_id"])
+			// Append task_list items before sending input.
+			if rawList, ok := args["task_list"].([]any); ok && len(rawList) > 0 {
+				var items []TaskInput
+				for _, item := range rawList {
+					m, ok := item.(map[string]any)
+					if !ok {
+						continue
+					}
+					ti := TaskInput{
+						Description: fmt.Sprint(m["title"]),
+						Prompt:      fmt.Sprint(m["prompt"]),
+					}
+					if v, ok := m["reasoning_effort"].(string); ok {
+						ti.ReasoningEffort = v
+					}
+					items = append(items, ti)
+				}
+				if sub, ok := s.subagents[agentID]; ok {
+					store := sub.sess.getOrCreateTaskStore()
+					store.Append(items)
+				}
+			}
 			result, err := s.sendInput(ctx, agentID, fmt.Sprint(args["message"]))
 			if err != nil {
 				return result, err
@@ -3085,7 +3273,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 
 	// Task management.
 	_ = reg.Register(RegisteredTool{
-		Tool: llm.Tool{Definition: defTaskList()},
+		Tool: llm.Tool{Definition: defTaskList(s.profile.ReasoningEffortLevels())},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			s.mu.Lock()
@@ -3132,12 +3320,12 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 					return nil, err
 				}
 
-				// Include progress and next-eligible tasks so the agent
-				// can start working without a separate view call.
-				var msg strings.Builder
-				msg.WriteString(fmt.Sprintf("Added %d task(s). ", len(added)))
-				formatEligibleSummary(&msg, store)
-				return msg.String(), nil
+				// The tool response is a terse acknowledgement. The current
+				// task is announced via a separate SYSTEM-REMINDER steering
+				// message when the agent actually transitions one to
+				// in_progress, either manually or via auto-advance.
+				total, done := store.Progress()
+				return fmt.Sprintf("Added %d task(s). Progress: %d/%d tasks complete.", len(added), done, total), nil
 			case "update":
 				raw, ok := args["updates"].([]any)
 				if !ok || len(raw) == 0 {
@@ -3171,28 +3359,82 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 						}
 						u.DependsOn = &depIDs
 					}
+					if re, ok := m["reasoning_effort"].(string); ok {
+						u.ReasoningEffort = re
+					}
 					updates = append(updates, u)
 				}
 				if err := store.Update(updates); err != nil {
 					return nil, err
 				}
 
-				// Check if any task was marked done or cancelled — if so, suggest next tasks.
+				// Classify the batch so we know whether to auto-advance, fire
+				// a manual-start steering, or emit the "all done" steering.
 				var completedAny bool
+				var manuallyStartedID int
 				for _, u := range updates {
 					if u.Status == TaskDone || u.Status == TaskCancelled {
 						completedAny = true
-						break
+					}
+					if u.Status == TaskInProgress {
+						manuallyStartedID = u.ID
 					}
 				}
 
-				if !completedAny {
+				// If the agent explicitly started a task, fire its current-task
+				// steering so the SYSTEM-REMINDER for the new task shows up on
+				// the next turn.
+				if manuallyStartedID != 0 {
+					for _, t := range store.View() {
+						if t.ID == manuallyStartedID {
+							if t.ReasoningEffort != "" {
+								s.SetReasoningEffort(t.ReasoningEffort)
+							}
+							s.Steer(formatCurrentTaskSteering(t))
+							break
+						}
+					}
+				}
+
+				if !completedAny && manuallyStartedID == 0 {
 					return "Updated.", nil
 				}
 
 				var msg strings.Builder
 				msg.WriteString("Updated. ")
-				formatEligibleSummary(&msg, store)
+
+				if completedAny {
+					// Auto-advance unless the agent already picked what to do next.
+					if manuallyStartedID == 0 {
+						eligible := store.NextEligible()
+						if len(eligible) > 0 {
+							next := eligible[0]
+							if err := store.Update([]TaskUpdate{{ID: next.ID, Status: TaskInProgress}}); err == nil {
+								if next.ReasoningEffort != "" {
+									s.SetReasoningEffort(next.ReasoningEffort)
+								}
+								s.Steer(formatCurrentTaskSteering(next))
+							}
+						} else {
+							// No eligible task. If nothing remains open or in_progress,
+							// signal the agent that the list is exhausted.
+							allDone := true
+							for _, t := range store.View() {
+								if t.Status == TaskOpen || t.Status == TaskInProgress {
+									allDone = false
+									break
+								}
+							}
+							if allDone && len(store.View()) > 0 {
+								s.Steer("All tasks on your list are complete. If you have remaining work, add it to your task list. Otherwise, use communicate to indicate you're done.")
+								msg.WriteString("All tasks complete. ")
+							}
+						}
+					}
+				}
+
+				total, done := store.Progress()
+				msg.WriteString(fmt.Sprintf("Progress: %d/%d tasks complete.", done, total))
 				return msg.String(), nil
 			default:
 				return nil, fmt.Errorf("unknown task_list action %q: use view, append, or update", action)
@@ -3453,8 +3695,8 @@ func (s *Session) getOrCreateTaskStore() *TaskStore {
 			dir = s.env.WorkingDirectory()
 		}
 		s.taskStore = NewTaskStore(dir, s.id)
-		if s.cfg.DisableAutoVerify {
-			s.taskStore.AutoVerify = false
+		if s.cfg.EnableAutoVerify {
+			s.taskStore.AutoVerify = true
 		}
 		_ = s.taskStore.Load()
 	})
@@ -3481,8 +3723,8 @@ func (s *Session) maybeInjectTaskReminder() string {
 		return taskReminderNudge()
 	}
 
-	// Trigger 2: tasks exist, not used in 5+ rounds.
-	if everUsed && roundsSinceUse >= 5 {
+	// Trigger 2: tasks exist, not used in 25+ rounds.
+	if everUsed && roundsSinceUse >= 25 {
 		store := s.getOrCreateTaskStore()
 		if len(store.View()) > 0 {
 			s.mu.Lock()
@@ -3506,4 +3748,18 @@ func optionalIntArg(args map[string]any, key string) *int {
 		return &ni
 	}
 	return nil
+}
+
+// Tasks returns a snapshot of the session's task list.
+func (s *Session) Tasks() []Task {
+	return s.getOrCreateTaskStore().View()
+}
+
+// TranscriptPath returns the path to this session's transcript JSONL file,
+// or empty string if state persistence is not enabled.
+func (s *Session) TranscriptPath() string {
+	if s.stateDir == "" {
+		return ""
+	}
+	return filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
 }

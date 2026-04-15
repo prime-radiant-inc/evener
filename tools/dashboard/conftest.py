@@ -330,3 +330,138 @@ def _failing_transcript():
             "usage": {"input_tokens": 500, "output_tokens": 10},
         }},
     ]
+
+
+# ------------------------------------------------------------------
+# Experiment data fixtures
+# ------------------------------------------------------------------
+
+@pytest.fixture
+def experiment_dir(tmp_path):
+    """Create an experiment data directory with runs, tasks, and scoreboard.
+
+    Structure:
+        runs/
+            wave-abc1234-20260401-0800.json  (wave run, 2 tasks)
+            v10-deleg-goldplate.json          (experiment run, 1 task)
+        tasks/
+            chess-best-move.json
+        scoreboard.json
+    """
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+
+    # Wave run: 2 tasks, one perfect and one partial
+    wave_run = {
+        "run_id": "wave-abc1234-20260401-0800",
+        "date": "2026-04-01",
+        "git_sha": "abc1234",
+        "model": "openai/gpt-5.4-mini",
+        "variant": "baseline",
+        "results": {
+            "chess-best-move": {
+                "score": 0.667,
+                "reps": [1.0, 0.0, 1.0],
+                "reps_pass": 2,
+                "reps_total": 3,
+            },
+            "build-cython-ext": {
+                "score": 1.0,
+                "reps": [1.0, 1.0, 1.0],
+                "reps_pass": 3,
+                "reps_total": 3,
+            },
+        },
+        "s3_prefix": "s3://bucket/runs/wave-abc1234-20260401-0800/",
+    }
+    (runs_dir / "wave-abc1234-20260401-0800.json").write_text(
+        json.dumps(wave_run)
+    )
+
+    # Experiment run: 1 task, older date
+    exp_run = {
+        "run_id": "v10-deleg-goldplate",
+        "date": "2026-03-25",
+        "git_sha": "def5678",
+        "model": "openai/gpt-5.4-mini",
+        "variant": "delegation/goldplating fixes",
+        "results": {
+            "chess-best-move": {
+                "score": 0.0,
+                "reps": [0.0, 0.0, 0.0],
+                "reps_pass": 0,
+                "reps_total": 3,
+            },
+        },
+        "s3_prefix": "s3://bucket/runs/v10-deleg-goldplate/",
+    }
+    (runs_dir / "v10-deleg-goldplate.json").write_text(
+        json.dumps(exp_run)
+    )
+
+    # Task file
+    task_data = {
+        "task": "chess-best-move",
+        "current_score": 1.0,
+        "current_run": "wave-abc1234-20260401-0800",
+        "current_date": "2026-04-02",
+        "status": "tested",
+        "notes": "",
+        "history": [
+            {
+                "run_id": "v10-deleg-goldplate",
+                "date": "2026-03-25",
+                "git_sha": "def5678",
+                "model": "openai/gpt-5.4-mini",
+                "score": 0.0,
+                "reps": [0.0, 0.0, 0.0],
+            },
+            {
+                "run_id": "wave-abc1234-20260401-0800",
+                "date": "2026-04-01",
+                "git_sha": "abc1234",
+                "model": "openai/gpt-5.4-mini",
+                "score": 0.667,
+                "reps": [1.0, 0.0, 1.0],
+            },
+        ],
+    }
+    (tasks_dir / "chess-best-move.json").write_text(
+        json.dumps(task_data)
+    )
+
+    # Scoreboard
+    scoreboard = {
+        "model": "openai/gpt-5.4-mini",
+        "total_tasks": 3,
+        "tested_tasks": 3,
+        "mean_score": 0.556,
+        "tasks": {
+            "chess-best-move": {
+                "score": 0.667,
+                "last_run": "wave-abc1234-20260401-0800",
+                "last_date": "2026-04-01",
+                "reps": [1.0, 0.0, 1.0],
+                "status": "tested",
+            },
+            "build-cython-ext": {
+                "score": 1.0,
+                "last_run": "wave-abc1234-20260401-0800",
+                "last_date": "2026-04-01",
+                "reps": [1.0, 1.0, 1.0],
+                "status": "tested",
+            },
+            "fix-bug": {
+                "score": 0.0,
+                "last_run": "wave-abc1234-20260401-0800",
+                "last_date": "2026-04-01",
+                "reps": [0.0, 0.0, 0.0],
+                "status": "tested",
+            },
+        },
+    }
+    (tmp_path / "scoreboard.json").write_text(json.dumps(scoreboard))
+
+    return tmp_path

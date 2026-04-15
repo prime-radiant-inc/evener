@@ -15,14 +15,21 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/anthropic"
+	_ "primeradiant.com/serf/llm/providers/glm"
 	_ "primeradiant.com/serf/llm/providers/google"
+	_ "primeradiant.com/serf/llm/providers/kimi"
+	_ "primeradiant.com/serf/llm/providers/minimax"
 	_ "primeradiant.com/serf/llm/providers/openai"
+	_ "primeradiant.com/serf/llm/providers/openaicompat"
+	_ "primeradiant.com/serf/llm/providers/openrouter"
+	_ "primeradiant.com/serf/llm/providers/openrouter_anthropic"
 )
 
 func main() {
-	provider := flag.String("provider", "", "LLM provider (openai, anthropic, google)")
+	provider := flag.String("provider", "", "LLM provider")
 	model := flag.String("model", "", "LLM model identifier")
 	strategy := flag.String("strategy", "compact", "context strategy: compact|recall|session-log|ooda|obs-mask|checkpoint-pred|memory-crystals|recursive-distill")
 	task := flag.String("task", "", "task description")
@@ -35,12 +42,36 @@ func main() {
 	testCmd := flag.String("test-cmd", "", "command to run F2P tests (e.g., 'python -m pytest tests/test_foo.py')")
 	f2pTests := flag.String("f2p-tests", "", "comma-separated fail-to-pass test names")
 	reasoningEffort := flag.String("reasoning-effort", "", "reasoning effort: none|low|medium|high|xhigh")
+	stateDir := flag.String("state-dir", "", "override runtime state directory (default: temp dir)")
+	systemPrompt := flag.String("system-prompt", "", "path to a custom system prompt file")
+	var systemPromptAppend cmdutil.StringSliceFlag
+	flag.Var(&systemPromptAppend, "system-prompt-append", "path to append to system prompt (repeatable)")
+	minResultRound := flag.Int("min-result-round", 0, "minimum round before result submission accepted")
+	enableReviewerGate := flag.Bool("enable-reviewer-gate", false, "spawn reviewer subagent to validate result")
+	noAutoVerify := flag.Bool("no-auto-verify", false, "disable auto-generated verify tasks")
+	maxSubagentDepth := flag.Int("max-subagent-depth", -1, "max subagent nesting depth")
+	shareTaskStore := flag.Bool("share-task-store", false, "share task list between parent and child sessions")
+	resultToolName := flag.String("result-tool-name", "", "override the result tool name")
+	exportATIF := flag.String("export-atif", "", "export ATIF trajectory to this path")
+	verbose := flag.Bool("verbose", false, "emit NDJSON events to stderr")
+	noProjectPrompts := flag.Bool("no-project-prompts", false, "suppress .serf/prompts/ loading")
+	agentName := flag.String("agent", "", "agent persona name")
+	var skillsDirs cmdutil.StringSliceFlag
+	flag.Var(&skillsDirs, "skills-dir", "extra skill directory (repeatable)")
+	var mcpServers cmdutil.StringSliceFlag
+	flag.Var(&mcpServers, "mcp", "MCP server (repeatable)")
+	var mcpConfigs cmdutil.StringSliceFlag
+	flag.Var(&mcpConfigs, "mcp-config", "path to .mcp.json file (repeatable)")
+	var pluginDirs cmdutil.StringSliceFlag
+	flag.Var(&pluginDirs, "plugin-dir", "plugin directory (repeatable)")
+	cpuProfile := flag.String("cpu-profile", "", "write CPU profile to file")
+	traceFile := flag.String("trace", "", "write execution trace to file")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: serfeval --provider <p> --model <m> --task <task> [flags]\n\n")
 		fmt.Fprintf(os.Stderr, "Run a serf task and output evaluation metrics as JSON.\n\n")
 		fmt.Fprintf(os.Stderr, "Required:\n")
-		fmt.Fprintf(os.Stderr, "  --provider <name>    LLM provider: openai, anthropic, google\n")
+		fmt.Fprintf(os.Stderr, "  --provider <name>    LLM provider: openai, anthropic, google, minimax, openrouter, kimi, glm\n")
 		fmt.Fprintf(os.Stderr, "  --model <name>       LLM model\n")
 		fmt.Fprintf(os.Stderr, "  --task <text>        Task description\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
@@ -63,19 +94,53 @@ func main() {
 	}
 
 	cfg := evalConfig{
-		provider:       *provider,
-		model:          *model,
-		strategy:       *strategy,
-		task:           *task,
-		workDir:        *workDir,
-		output:         *output,
-		probesFile:     *probes,
-		thresholdScale: *thresholdScale,
-		maxTurns:       *maxTurns,
-		testPatch:      *testPatch,
-		testCmd:         *testCmd,
-		f2pTests:        *f2pTests,
-		reasoningEffort: *reasoningEffort,
+		provider:           *provider,
+		model:              *model,
+		strategy:           *strategy,
+		task:               *task,
+		workDir:            *workDir,
+		output:             *output,
+		probesFile:         *probes,
+		thresholdScale:     *thresholdScale,
+		maxTurns:           *maxTurns,
+		testPatch:          *testPatch,
+		testCmd:            *testCmd,
+		f2pTests:           *f2pTests,
+		reasoningEffort:    *reasoningEffort,
+		stateDir:           *stateDir,
+		systemPrompt:       *systemPrompt,
+		systemPromptAppend: []string(systemPromptAppend),
+		minResultRound:     *minResultRound,
+		enableReviewerGate: *enableReviewerGate,
+		noAutoVerify:       *noAutoVerify,
+		maxSubagentDepth:   *maxSubagentDepth,
+		shareTaskStore:     *shareTaskStore,
+		resultToolName:     *resultToolName,
+		exportATIF:         *exportATIF,
+		verbose:            *verbose,
+		noProjectPrompts:   *noProjectPrompts,
+		agentName:          *agentName,
+		skillsDirs:         []string(skillsDirs),
+		mcpServers:         []string(mcpServers),
+		mcpConfigs:         []string(mcpConfigs),
+		pluginDirs:         []string(pluginDirs),
+	}
+
+	if *cpuProfile != "" {
+		stop, err := cmdutil.StartCPUProfile(*cpuProfile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "serfeval: %v\n", err)
+			os.Exit(1)
+		}
+		defer stop()
+	}
+	if *traceFile != "" {
+		stop, err := cmdutil.StartTrace(*traceFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "serfeval: %v\n", err)
+			os.Exit(1)
+		}
+		defer stop()
 	}
 
 	if err := runEval(cfg); err != nil {
@@ -85,19 +150,37 @@ func main() {
 }
 
 type evalConfig struct {
-	provider       string
-	model          string
-	strategy       string
-	task           string
-	workDir        string
-	output         string
-	probesFile     string
-	thresholdScale float64
-	maxTurns       int
+	provider        string
+	model           string
+	strategy        string
+	task            string
+	workDir         string
+	output          string
+	probesFile      string
+	thresholdScale  float64
+	maxTurns        int
 	testPatch       string
 	testCmd         string
 	f2pTests        string
 	reasoningEffort string
+
+	stateDir           string
+	systemPrompt       string
+	systemPromptAppend []string
+	minResultRound     int
+	enableReviewerGate bool
+	noAutoVerify       bool
+	maxSubagentDepth   int
+	shareTaskStore     bool
+	resultToolName     string
+	exportATIF         string
+	verbose            bool
+	noProjectPrompts   bool
+	agentName          string
+	skillsDirs         []string
+	mcpServers         []string
+	mcpConfigs         []string
+	pluginDirs         []string
 }
 
 func runEval(cfg evalConfig) error {
@@ -106,25 +189,54 @@ func runEval(cfg evalConfig) error {
 		return fmt.Errorf("LLM client setup: %w", err)
 	}
 
-	profile, err := selectProfile(cfg.provider, cfg.model)
+	profile, err := cmdutil.SelectProfile(cfg.provider, cfg.model)
 	if err != nil {
 		return err
 	}
 
 	env := agent.NewLocalExecutionEnvironment(cfg.workDir)
 
-	stateDir, err := os.MkdirTemp("", "serfeval-state-")
-	if err != nil {
-		return fmt.Errorf("create state dir: %w", err)
+	stateDir := cfg.stateDir
+	if stateDir == "" {
+		var tmpErr error
+		stateDir, tmpErr = os.MkdirTemp("", "serfeval-state-")
+		if tmpErr != nil {
+			return fmt.Errorf("create state dir: %w", tmpErr)
+		}
+		defer os.RemoveAll(stateDir)
 	}
-	defer os.RemoveAll(stateDir)
+
+	effort, err := cmdutil.ResolveReasoningEffort(cfg.reasoningEffort, os.Getenv("SERF_REASONING_EFFORT"))
+	if err != nil {
+		return err
+	}
 
 	sessCfg := agent.SessionConfig{
 		ContextStrategy:          cfg.strategy,
 		CompactionThresholdScale: cfg.thresholdScale,
 		StateDir:                 stateDir,
 		MaxToolRoundsPerInput:    cfg.maxTurns,
-		ReasoningEffort:          cfg.reasoningEffort,
+		MinResultRound:           cfg.minResultRound,
+		EnableReviewerGate:       cfg.enableReviewerGate,
+		EnableAutoVerify:         false,
+		ShareTasksWithChildren:   cfg.shareTaskStore,
+		ResultToolName:           cfg.resultToolName,
+		SystemPromptFile:         cfg.systemPrompt,
+		SystemPromptAppend:       cfg.systemPromptAppend,
+		NoProjectPrompts:         cfg.noProjectPrompts,
+		AgentName:                cfg.agentName,
+		SkillsDirs:               cfg.skillsDirs,
+		MCPConfigFiles:           cfg.mcpConfigs,
+		MCPInline:                cfg.mcpServers,
+		PluginDirs:               cfg.pluginDirs,
+		ExportATIFPath:           cfg.exportATIF,
+		NonInteractive:           true,
+	}
+	if cfg.maxSubagentDepth >= 0 {
+		sessCfg.MaxSubagentDepth = cfg.maxSubagentDepth
+	}
+	if effort.Set {
+		sessCfg.ReasoningEffort = effort.Value
 	}
 
 	sess, err := agent.NewSession(client, profile, env, sessCfg)
@@ -141,6 +253,10 @@ func runEval(cfg evalConfig) error {
 		defer close(eventsDone)
 		for ev := range sess.Events() {
 			collector.ProcessEvent(ev)
+			if cfg.verbose {
+				data, _ := json.Marshal(ev)
+				fmt.Fprintln(os.Stderr, string(data))
+			}
 		}
 	}()
 
@@ -342,19 +458,4 @@ func isTestPassed(output, testName string) bool {
 		}
 	}
 	return false
-}
-
-// selectProfile creates a ProviderProfile for the given provider name.
-// NOTE: Simplified version of cmd/serf/run.go:selectProfile. Keep in sync.
-func selectProfile(provider, model string) (agent.ProviderProfile, error) {
-	switch strings.ToLower(provider) {
-	case "openai":
-		return agent.NewOpenAIProfile(model), nil
-	case "anthropic":
-		return agent.NewAnthropicProfile(model), nil
-	case "google", "gemini":
-		return agent.NewGeminiProfile(model), nil
-	default:
-		return nil, fmt.Errorf("unknown provider %q: must be openai, anthropic, or google", provider)
-	}
 }

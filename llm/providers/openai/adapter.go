@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"sort"
@@ -172,8 +173,12 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	rawBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return llm.Response{}, err
+	}
 	var raw map[string]any
-	dec := json.NewDecoder(resp.Body)
+	dec := json.NewDecoder(bytes.NewReader(rawBytes))
 	dec.UseNumber()
 	if err := dec.Decode(&raw); err != nil {
 		return llm.Response{}, err
@@ -186,6 +191,10 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 
 	r := fromResponses(raw, req.Model)
 	r.RateLimit = llm.ParseRateLimitHeaders(resp.Header)
+	if llm.RawBodyEnabled() {
+		r.RawRequestBody = string(b)
+		r.RawResponseBody = string(rawBytes)
+	}
 	return r, nil
 }
 
@@ -258,7 +267,15 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		}
 		toolStates := map[string]*toolState{}
 
-		_ = llm.ParseSSE(sctx, resp.Body, func(ev llm.SSEEvent) error {
+		var sseBody io.Reader = resp.Body
+		var sseBuf *bytes.Buffer
+		if llm.RawBodyEnabled() {
+			sseBuf = &bytes.Buffer{}
+			sseBody = io.TeeReader(resp.Body, sseBuf)
+		}
+		rawReqBody := string(b)
+
+		_ = llm.ParseSSE(sctx, sseBody, func(ev llm.SSEEvent) error {
 			if len(ev.Data) == 0 {
 				return nil
 			}
@@ -388,6 +405,10 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 					textStarted = false
 				}
 				rp := r
+				if sseBuf != nil {
+					rp.RawRequestBody = rawReqBody
+					rp.RawResponseBody = sseBuf.String()
+				}
 				s.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp})
 				// Stop parsing after finish.
 				finished = true
@@ -677,7 +698,31 @@ func toResponsesInput(msgs []llm.Message, model string) (instructions string, it
 							}
 							content = append(content, img)
 						}
-					case llm.ContentAudio, llm.ContentDocument:
+					case llm.ContentDocument:
+						if p.Document == nil {
+							continue
+						}
+						var fileData string
+						if len(p.Document.Data) > 0 {
+							mt := strings.TrimSpace(p.Document.MediaType)
+							if mt == "" {
+								mt = "application/pdf"
+							}
+							fileData = llm.DataURI(mt, p.Document.Data)
+						} else if p.Document.URL != "" {
+							fileData = p.Document.URL
+						}
+						if fileData != "" {
+							entry := map[string]any{
+								"type":      "input_file",
+								"file_data": fileData,
+							}
+							if p.Document.FileName != "" {
+								entry["filename"] = p.Document.FileName
+							}
+							content = append(content, entry)
+						}
+					case llm.ContentAudio:
 						return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("unsupported content kind for openai: %s", p.Kind)}
 					default:
 						// ignore (tool calls are top-level items)

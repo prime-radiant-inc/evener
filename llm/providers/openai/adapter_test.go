@@ -259,7 +259,7 @@ func TestAdapter_Complete_ToolParameters_DefaultToEmptyObjectSchema(t *testing.T
 	}
 }
 
-func TestAdapter_Complete_RejectsAudioAndDocumentParts(t *testing.T) {
+func TestAdapter_Complete_RejectsAudioParts(t *testing.T) {
 	a := &Adapter{APIKey: "k", BaseURL: "http://example.com"}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -273,14 +273,72 @@ func TestAdapter_Complete_RejectsAudioAndDocumentParts(t *testing.T) {
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected ConfigurationError, got %T (%v)", err, err)
 	}
+}
 
-	msgDoc := llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentDocument, Document: &llm.DocumentData{URL: "https://example.com/a.pdf"}}}}
-	_, err = a.Complete(ctx, llm.Request{Model: "gpt-5.2", Messages: []llm.Message{msgDoc}})
-	if err == nil {
-		t.Fatalf("expected error")
+func TestAdapter_Complete_DocumentParts(t *testing.T) {
+	// Verify that document parts (PDFs) are sent as input_file content.
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp-1","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"PDF content"}]}],"usage":{"input_tokens":10,"output_tokens":5}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	pdfData := []byte("%PDF-1.4 test content")
+	msg := llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{
+		{Kind: llm.ContentText, Text: "Describe this document"},
+		{Kind: llm.ContentDocument, Document: &llm.DocumentData{
+			Data:      pdfData,
+			MediaType: "application/pdf",
+			FileName:  "invoice.pdf",
+		}},
+	}}
+	resp, err := a.Complete(ctx, llm.Request{Model: "gpt-5.2", Messages: []llm.Message{msg}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected ConfigurationError, got %T (%v)", err, err)
+	if resp.Text() != "PDF content" {
+		t.Fatalf("got text %q, want 'PDF content'", resp.Text())
+	}
+
+	// Verify the request body contains an input_file entry.
+	input, ok := gotBody["input"].([]any)
+	if !ok || len(input) == 0 {
+		t.Fatal("expected input array in request body")
+	}
+	// Find the user message item.
+	var content []any
+	for _, item := range input {
+		m, _ := item.(map[string]any)
+		if m["role"] == "user" {
+			content, _ = m["content"].([]any)
+		}
+	}
+	if len(content) < 2 {
+		t.Fatalf("expected at least 2 content parts, got %d", len(content))
+	}
+	// Find the input_file part.
+	var filePart map[string]any
+	for _, c := range content {
+		cm, _ := c.(map[string]any)
+		if cm["type"] == "input_file" {
+			filePart = cm
+		}
+	}
+	if filePart == nil {
+		t.Fatal("expected input_file content part for document")
+	}
+	if filePart["filename"] != "invoice.pdf" {
+		t.Fatalf("filename = %q, want 'invoice.pdf'", filePart["filename"])
+	}
+	fileData, _ := filePart["file_data"].(string)
+	if !strings.HasPrefix(fileData, "data:application/pdf;base64,") {
+		t.Fatalf("file_data should be a data URI, got: %q", fileData[:min(len(fileData), 50)])
 	}
 }
 

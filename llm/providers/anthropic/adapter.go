@@ -239,8 +239,28 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 		}
 		body["tools"] = tools
 	}
-	if req.ReasoningEffort != nil {
-		budget := llm.ReasoningBudget(*req.ReasoningEffort)
+	// Determine model capabilities from catalog.
+	var adaptiveThinking, supportsEffort bool
+	var effortLevels []string
+	if cat := llm.EmbeddedModelCatalog(); cat != nil {
+		if mi := cat.GetModelInfo(apiModel); mi != nil {
+			adaptiveThinking = mi.SupportsAdaptiveThinking
+			supportsEffort = mi.SupportsEffortParameter
+			effortLevels = mi.ReasoningEffortLevels
+		}
+	}
+
+	if adaptiveThinking {
+		// New path: Opus 4.6, Sonnet 4.6, Mythos — adaptive thinking.
+		body["thinking"] = map[string]any{"type": "adaptive"}
+		if req.ReasoningEffort != nil {
+			effort := clampEffort(*req.ReasoningEffort, effortLevels)
+			body["output_config"] = map[string]any{"effort": effort}
+		}
+	} else if req.ReasoningEffort != nil {
+		// Legacy manual thinking path.
+		effort := clampEffort(*req.ReasoningEffort, effortLevels)
+		budget := llm.ReasoningBudget(effort)
 		if budget > 0 {
 			body["thinking"] = map[string]any{
 				"type":          "enabled",
@@ -251,6 +271,10 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 			if maxTokens <= budget {
 				body["max_tokens"] = budget + maxTokens
 			}
+		}
+		// Hybrid: Opus 4.5 accepts effort even with manual thinking.
+		if supportsEffort {
+			body["output_config"] = map[string]any{"effort": effort}
 		}
 	}
 	if req.ProviderOptions != nil {
@@ -320,6 +344,10 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 
 	r := fromAnthropicResponse(raw, req.Model)
 	r.RateLimit = llm.ParseRateLimitHeaders(resp.Header)
+	if llm.RawBodyEnabled() {
+		r.RawRequestBody = string(b)
+		r.RawResponseBody = string(rawBytes)
+	}
 	return r, nil
 }
 
@@ -419,7 +447,15 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		var actualModel string
 		var rawMessage map[string]any
 
-		_ = llm.ParseSSE(sctx, resp.Body, func(ev llm.SSEEvent) error {
+		var sseBody io.Reader = resp.Body
+		var sseBuf *bytes.Buffer
+		if llm.RawBodyEnabled() {
+			sseBuf = &bytes.Buffer{}
+			sseBody = io.TeeReader(resp.Body, sseBuf)
+		}
+		rawReqBody := string(b) // captured above
+
+		_ = llm.ParseSSE(sctx, sseBody, func(ev llm.SSEEvent) error {
 			if len(ev.Data) == 0 {
 				return nil
 			}
@@ -708,6 +744,10 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 				}
 
 				rp := r
+				if sseBuf != nil {
+					rp.RawRequestBody = rawReqBody
+					rp.RawResponseBody = sseBuf.String()
+				}
 				s.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp})
 				finished = true
 				cancel()
@@ -1179,4 +1219,58 @@ func parseUsage(u map[string]any) llm.Usage {
 		usage.CacheWriteTokens = &v
 	}
 	return usage
+}
+
+// clampEffort ensures the requested effort level is within the model's supported
+// range. If the requested level isn't in supportedLevels, clamp down to the
+// highest supported level. If supportedLevels is empty, return the input unchanged.
+func clampEffort(requested string, supportedLevels []string) string {
+	if len(supportedLevels) == 0 {
+		return requested
+	}
+	requested = strings.ToLower(strings.TrimSpace(requested))
+
+	// Check if requested is directly supported.
+	for _, lvl := range supportedLevels {
+		if strings.ToLower(lvl) == requested {
+			return requested
+		}
+	}
+
+	// Effort hierarchy for comparison: low < medium < high < max.
+	hierarchy := []string{"low", "medium", "high", "max"}
+	reqIdx := -1
+	for i, h := range hierarchy {
+		if h == requested {
+			reqIdx = i
+			break
+		}
+	}
+	if reqIdx < 0 {
+		// Unknown level; return as-is and let the API handle it.
+		return requested
+	}
+
+	// Find highest supported level that's at or below requested.
+	highestIdx := -1
+	for _, lvl := range supportedLevels {
+		lvlLower := strings.ToLower(lvl)
+		for i, h := range hierarchy {
+			if h == lvlLower && i <= reqIdx && i > highestIdx {
+				highestIdx = i
+			}
+		}
+	}
+	if highestIdx >= 0 {
+		return hierarchy[highestIdx]
+	}
+	// No lower level available; return the lowest supported level.
+	for _, h := range hierarchy {
+		for _, lvl := range supportedLevels {
+			if strings.ToLower(lvl) == h {
+				return h
+			}
+		}
+	}
+	return requested
 }

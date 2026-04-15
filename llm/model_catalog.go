@@ -13,17 +13,21 @@ import (
 // ModelInfo is the normalized model metadata entry, primarily sourced from the LiteLLM catalog
 // in serf. This is metadata-only and is not used as a provider call path.
 type ModelInfo struct {
-	ID                   string   `json:"id"`
-	Provider             string   `json:"provider"`
-	DisplayName          string   `json:"display_name"`
-	ContextWindow        int      `json:"context_window"`
-	MaxOutputTokens      *int     `json:"max_output_tokens,omitempty"`
-	SupportsTools        bool     `json:"supports_tools"`
-	SupportsVision       bool     `json:"supports_vision"`
-	SupportsReasoning    bool     `json:"supports_reasoning"`
-	InputCostPerMillion  *float64 `json:"input_cost_per_million,omitempty"`
-	OutputCostPerMillion *float64 `json:"output_cost_per_million,omitempty"`
-	Aliases              []string `json:"aliases,omitempty"`
+	ID                       string   `json:"id"`
+	Provider                 string   `json:"provider"`
+	DisplayName              string   `json:"display_name"`
+	ContextWindow            int      `json:"context_window"`
+	MaxOutputTokens          *int     `json:"max_output_tokens,omitempty"`
+	SupportsTools            bool     `json:"supports_tools"`
+	SupportsVision           bool     `json:"supports_vision"`
+	SupportsReasoning        bool     `json:"supports_reasoning"`
+	ReasoningEffortLevels    []string `json:"reasoning_effort_levels,omitempty"`
+	SupportsAdaptiveThinking bool     `json:"supports_adaptive_thinking,omitempty"`
+	SupportsEffortParameter  bool     `json:"supports_effort_parameter,omitempty"`
+	SupportsWebSearch        bool     `json:"supports_web_search,omitempty"`
+	InputCostPerMillion      *float64 `json:"input_cost_per_million,omitempty"`
+	OutputCostPerMillion     *float64 `json:"output_cost_per_million,omitempty"`
+	Aliases                  []string `json:"aliases,omitempty"`
 }
 
 type ModelCatalog struct {
@@ -176,17 +180,30 @@ func parseLiteLLMCatalog(data []byte) (*ModelCatalog, error) {
 		inPerM := scalePerMillion(inCost)
 		outPerM := scalePerMillion(outCost)
 
+		// Parse reasoning effort levels if present
+		var effortLevels []string
+		if arr, ok := v["reasoning_effort_levels"].([]any); ok {
+			for _, item := range arr {
+				if s, ok := item.(string); ok {
+					effortLevels = append(effortLevels, s)
+				}
+			}
+		}
+
 		models = append(models, ModelInfo{
-			ID:                   id,
-			Provider:             prov,
-			DisplayName:          id,
-			ContextWindow:        ctxWindow,
-			MaxOutputTokens:      maxOutPtr,
-			SupportsTools:        parseBool(v["supports_function_calling"]),
-			SupportsVision:       parseBool(v["supports_vision"]),
-			SupportsReasoning:    parseBool(v["supports_reasoning"]),
-			InputCostPerMillion:  inPerM,
-			OutputCostPerMillion: outPerM,
+			ID:                       id,
+			Provider:                 prov,
+			DisplayName:              id,
+			ContextWindow:            ctxWindow,
+			MaxOutputTokens:          maxOutPtr,
+			SupportsTools:            parseBool(v["supports_function_calling"]),
+			SupportsVision:           parseBool(v["supports_vision"]),
+			SupportsReasoning:        parseBool(v["supports_reasoning"]),
+			ReasoningEffortLevels:    effortLevels,
+			SupportsAdaptiveThinking: parseBool(v["supports_adaptive_thinking"]),
+			SupportsEffortParameter:  parseBool(v["supports_effort_parameter"]),
+			InputCostPerMillion:      inPerM,
+			OutputCostPerMillion:     outPerM,
 		})
 	}
 

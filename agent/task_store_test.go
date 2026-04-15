@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -116,6 +117,102 @@ func TestTaskStore_UpdateRejectsInvalidStatus(t *testing.T) {
 	err := s.Update([]TaskUpdate{{ID: 1, Status: TaskStatus("deleted")}})
 	if err == nil {
 		t.Fatalf("expected error for invalid status")
+	}
+}
+
+func TestTaskStore_UpdateRejectsMultipleInProgressInBatch(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTaskStore(dir, "test-session")
+
+	if _, err := s.Append([]TaskInput{
+		{Type: TaskTypeResearch, Description: "Task A", Prompt: "Do A"},
+		{Type: TaskTypeResearch, Description: "Task B", Prompt: "Do B"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := s.Update([]TaskUpdate{
+		{ID: 1, Status: TaskInProgress},
+		{ID: 2, Status: TaskInProgress},
+	})
+	if err == nil {
+		t.Fatalf("expected error for setting two tasks to in_progress in one update")
+	}
+	if !strings.Contains(err.Error(), "in_progress") {
+		t.Fatalf("error should mention in_progress: %v", err)
+	}
+
+	// Neither task should have been moved to in_progress (whole batch rejected).
+	all := s.View()
+	for _, task := range all {
+		if task.Status == TaskInProgress {
+			t.Fatalf("no task should be in_progress after rejected batch; got %+v", task)
+		}
+	}
+}
+
+func TestTaskStore_UpdateRejectsInProgressWhenOneAlreadyExists(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTaskStore(dir, "test-session")
+
+	if _, err := s.Append([]TaskInput{
+		{Type: TaskTypeResearch, Description: "Task A", Prompt: "Do A"},
+		{Type: TaskTypeResearch, Description: "Task B", Prompt: "Do B"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress}}); err != nil {
+		t.Fatalf("first in_progress update: %v", err)
+	}
+
+	err := s.Update([]TaskUpdate{{ID: 2, Status: TaskInProgress}})
+	if err == nil {
+		t.Fatalf("expected error when setting a second task to in_progress while another is in_progress")
+	}
+	if !strings.Contains(err.Error(), "in_progress") {
+		t.Fatalf("error should mention in_progress: %v", err)
+	}
+
+	// Existing in_progress task should still be in_progress; new one should not.
+	all := s.View()
+	if all[0].Status != TaskInProgress {
+		t.Fatalf("task 1 should remain in_progress; got %q", all[0].Status)
+	}
+	if all[1].Status == TaskInProgress {
+		t.Fatalf("task 2 should not be in_progress; got %q", all[1].Status)
+	}
+}
+
+func TestTaskStore_UpdateAllowsMovingInProgressToDoneThenStartingAnother(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTaskStore(dir, "test-session")
+
+	if _, err := s.Append([]TaskInput{
+		{Type: TaskTypeResearch, Description: "Task A", Prompt: "Do A"},
+		{Type: TaskTypeResearch, Description: "Task B", Prompt: "Do B"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress}}); err != nil {
+		t.Fatalf("first in_progress: %v", err)
+	}
+
+	// Agent completes task 1 and starts task 2 in one batch — allowed.
+	if err := s.Update([]TaskUpdate{
+		{ID: 1, Status: TaskDone},
+		{ID: 2, Status: TaskInProgress},
+	}); err != nil {
+		t.Fatalf("unexpected error transitioning 1→done and 2→in_progress in one batch: %v", err)
+	}
+
+	all := s.View()
+	if all[0].Status != TaskDone {
+		t.Fatalf("task 1 should be done; got %q", all[0].Status)
+	}
+	if all[1].Status != TaskInProgress {
+		t.Fatalf("task 2 should be in_progress; got %q", all[1].Status)
 	}
 }
 
@@ -330,6 +427,113 @@ func TestTaskStore_UpdateWithNotes(t *testing.T) {
 	}
 }
 
+func TestTaskListSchema_ReasoningEffortEnumPerProvider(t *testing.T) {
+	cases := []struct {
+		name    string
+		profile ProviderProfile
+		want    []string
+	}{
+		{"openai", NewOpenAIProfile("test"), []string{"low", "medium", "high", "xhigh"}},
+		{"anthropic", NewAnthropicProfile("test"), []string{"low", "medium", "high", "max"}},
+		{"gemini", NewGeminiProfile("test"), []string{"low", "medium", "high"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.profile.ReasoningEffortLevels(); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("ReasoningEffortLevels: got %v, want %v", got, tc.want)
+			}
+			// The enum should surface in the task_list update schema.
+			var td *llm.ToolDefinition
+			for i := range tc.profile.ToolDefinitions() {
+				d := tc.profile.ToolDefinitions()[i]
+				if d.Name == "task_list" {
+					td = &d
+					break
+				}
+			}
+			if td == nil {
+				t.Fatal("task_list tool definition not found in profile")
+			}
+			props := td.Parameters["properties"].(map[string]any)
+			updates := props["updates"].(map[string]any)
+			items := updates["items"].(map[string]any)
+			updProps := items["properties"].(map[string]any)
+			effort := updProps["reasoning_effort"].(map[string]any)
+			gotEnum, ok := effort["enum"].([]string)
+			if !ok {
+				t.Fatalf("enum missing from reasoning_effort schema: %v", effort)
+			}
+			if !reflect.DeepEqual(gotEnum, tc.want) {
+				t.Fatalf("schema enum: got %v, want %v", gotEnum, tc.want)
+			}
+		})
+	}
+}
+
+func TestTaskStore_CurrentInProgressReflectsReasoningEffortUpdate(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTaskStore(dir, "test-session")
+
+	if _, err := s.Append([]TaskInput{
+		{Type: TaskTypeImplement, Description: "Do the work", Prompt: "Build it", ReasoningEffort: "medium"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress}}); err != nil {
+		t.Fatal(err)
+	}
+	current, ok := s.CurrentInProgress()
+	if !ok || current.ReasoningEffort != "medium" {
+		t.Fatalf("initial effort: got %q, want medium", current.ReasoningEffort)
+	}
+
+	// Escalate the in-progress task.
+	if err := s.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress, ReasoningEffort: "high"}}); err != nil {
+		t.Fatal(err)
+	}
+	current, ok = s.CurrentInProgress()
+	if !ok || current.ReasoningEffort != "high" {
+		t.Fatalf("after escalate: got %q, want high", current.ReasoningEffort)
+	}
+}
+
+func TestTaskStore_UpdateReasoningEffort(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTaskStore(dir, "test-session")
+
+	if _, err := s.Append([]TaskInput{
+		{Type: TaskTypeImplement, Description: "Do the work", Prompt: "Build it", ReasoningEffort: "medium"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Escalate to high.
+	if err := s.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress, ReasoningEffort: "high"}}); err != nil {
+		t.Fatalf("escalate to high: %v", err)
+	}
+	if got := s.View()[0].ReasoningEffort; got != "high" {
+		t.Fatalf("reasoning_effort after escalate: got %q, want high", got)
+	}
+
+	// Omitting reasoning_effort leaves it unchanged.
+	if err := s.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress, Notes: "still working"}}); err != nil {
+		t.Fatalf("update without reasoning_effort: %v", err)
+	}
+	if got := s.View()[0].ReasoningEffort; got != "high" {
+		t.Fatalf("reasoning_effort after omit: got %q, want high", got)
+	}
+
+	// Store does not validate effort strings — values are passed through to
+	// the provider, which knows what it accepts. Schema-level enum on the
+	// tool definition prevents the LLM from sending unsupported values.
+	if err := s.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress, ReasoningEffort: "xhigh"}}); err != nil {
+		t.Fatalf("xhigh should be accepted by store: %v", err)
+	}
+	if got := s.View()[0].ReasoningEffort; got != "xhigh" {
+		t.Fatalf("reasoning_effort after xhigh: got %q, want xhigh", got)
+	}
+}
+
 func TestTaskStore_NotesPersistAcrossLoads(t *testing.T) {
 	dir := t.TempDir()
 	s := NewTaskStore(dir, "test-session")
@@ -349,6 +553,107 @@ func TestTaskStore_NotesPersistAcrossLoads(t *testing.T) {
 	all := s2.View()
 	if len(all[0].Notes) != 1 || all[0].Notes[0] != "First approach failed" {
 		t.Fatalf("notes after reload: %v", all[0].Notes)
+	}
+}
+
+func TestTaskStore_PopulateFromTemplates(t *testing.T) {
+	dir := t.TempDir()
+	store := NewTaskStore(dir, "test-populate")
+	store.AutoVerify = false
+	store.Load()
+
+	templates := []TaskTemplate{
+		{Title: "Inventory", Prompt: "List files", ReasoningEffort: "low"},
+		{Title: "Do work", Prompt: "Implement", Insert: "parent_tasks", ReasoningEffort: "xhigh"},
+		{Title: "Verify", Prompt: "Check it", ReasoningEffort: "low"},
+	}
+
+	err := store.PopulateFromTemplates(templates, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tasks := store.View()
+	if len(tasks) != 3 {
+		t.Fatalf("expected 3 tasks, got %d", len(tasks))
+	}
+	if tasks[0].Description != "Inventory" || tasks[0].ReasoningEffort != "low" {
+		t.Errorf("task 0: desc=%q effort=%q", tasks[0].Description, tasks[0].ReasoningEffort)
+	}
+	if tasks[1].Description != "Do work" || tasks[1].Insert != "parent_tasks" {
+		t.Errorf("task 1: desc=%q insert=%q", tasks[1].Description, tasks[1].Insert)
+	}
+	// First task should be auto-started.
+	if tasks[0].Status != TaskInProgress {
+		t.Errorf("task 0 status: %q, want in_progress", tasks[0].Status)
+	}
+	if tasks[1].Status != TaskOpen {
+		t.Errorf("task 1 status: %q, want open", tasks[1].Status)
+	}
+}
+
+func TestTaskStore_PopulateFromTemplates_WithParentTasks(t *testing.T) {
+	dir := t.TempDir()
+	store := NewTaskStore(dir, "test-parent")
+	store.AutoVerify = false
+	store.Load()
+
+	templates := []TaskTemplate{
+		{Title: "Understand", Prompt: "Read spec"},
+		{Title: "Do work", Prompt: "Implement", Insert: "parent_tasks"},
+		{Title: "Verify", Prompt: "Check it"},
+	}
+	parentTasks := []TaskTemplate{
+		{Title: "Fix eigenvalue solver", Prompt: "Use scipy LAPACK"},
+		{Title: "Benchmark sizes 2-10", Prompt: "Must beat numpy"},
+	}
+
+	err := store.PopulateFromTemplates(templates, parentTasks)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tasks := store.View()
+	// Understand + 2 parent + Verify = 4 tasks (placeholder replaced)
+	if len(tasks) != 4 {
+		t.Fatalf("expected 4 tasks, got %d: %+v", len(tasks), tasks)
+	}
+	if tasks[0].Description != "Understand" {
+		t.Errorf("task 0: %q", tasks[0].Description)
+	}
+	if tasks[1].Description != "Fix eigenvalue solver" {
+		t.Errorf("task 1: %q", tasks[1].Description)
+	}
+	if tasks[2].Description != "Benchmark sizes 2-10" {
+		t.Errorf("task 2: %q", tasks[2].Description)
+	}
+	if tasks[3].Description != "Verify" {
+		t.Errorf("task 3: %q", tasks[3].Description)
+	}
+	// Placeholder should NOT be in the list.
+	for _, task := range tasks {
+		if task.Insert == "parent_tasks" {
+			t.Errorf("placeholder task should have been replaced: %+v", task)
+		}
+	}
+}
+
+func TestTaskStore_PopulateFromTemplates_Idempotent(t *testing.T) {
+	dir := t.TempDir()
+	store := NewTaskStore(dir, "test-idempotent")
+	store.AutoVerify = false
+	store.Load()
+
+	templates := []TaskTemplate{
+		{Title: "Step 1", Prompt: "Do it"},
+	}
+
+	store.PopulateFromTemplates(templates, nil)
+	store.PopulateFromTemplates(templates, nil) // second call should be no-op
+
+	tasks := store.View()
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task (idempotent), got %d", len(tasks))
 	}
 }
 
@@ -397,6 +702,59 @@ func TestTaskListTool_UpdateWithNotes(t *testing.T) {
 	}
 }
 
+func TestTaskListTool_UpdateReasoningEffort(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx := context.Background()
+	env := sess.env
+
+	sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:   "c1",
+		Name: "task_list",
+		Arguments: json.RawMessage(`{
+			"action": "append",
+			"tasks": [{"type": "implement", "description": "Do the work", "prompt": "Build it"}]
+		}`),
+	})
+
+	// Escalate via tool call.
+	updateRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:   "c2",
+		Name: "task_list",
+		Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 1, "status": "in_progress", "reasoning_effort": "high"}]}`),
+	})
+	if updateRes.IsError {
+		t.Fatalf("update with reasoning_effort error: %s", updateRes.Output)
+	}
+
+	viewRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:        "c3",
+		Name:      "task_list",
+		Arguments: json.RawMessage(`{"action": "view"}`),
+	})
+	if !strings.Contains(viewRes.Output, "high") {
+		t.Fatalf("view should report reasoning_effort high: %s", viewRes.Output)
+	}
+
+	// OpenAI profile accepts xhigh via the tool schema enum.
+	xhigh := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:        "c4",
+		Name:      "task_list",
+		Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 1, "status": "in_progress", "reasoning_effort": "xhigh"}]}`),
+	})
+	if xhigh.IsError {
+		t.Fatalf("xhigh should be accepted by OpenAI profile: %s", xhigh.Output)
+	}
+}
+
 func TestTaskListTool_AppendViewUpdate(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -426,8 +784,13 @@ func TestTaskListTool_AppendViewUpdate(t *testing.T) {
 	if appendRes.IsError {
 		t.Fatalf("append error: %s", appendRes.Output)
 	}
-	if !strings.Contains(appendRes.Output, "Read auth code") {
-		t.Fatalf("append output missing description: %s", appendRes.Output)
+	// Append acknowledges the change minimally — it no longer echoes task
+	// descriptions back. Current-task details are delivered via steering.
+	if !strings.Contains(appendRes.Output, "Added 2 task(s)") {
+		t.Fatalf("append output missing acknowledgment: %s", appendRes.Output)
+	}
+	if !strings.Contains(appendRes.Output, "Progress: 0/2") {
+		t.Fatalf("append output missing progress: %s", appendRes.Output)
 	}
 
 	// View tasks.
@@ -905,7 +1268,7 @@ func TestTaskListTool_AppendWithDependsOn(t *testing.T) {
 	}
 }
 
-func TestTaskListTool_UpdateShowsNextTask(t *testing.T) {
+func TestTaskListTool_UpdateAutoAdvanceFiresSteeringNotOutput(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -919,7 +1282,7 @@ func TestTaskListTool_UpdateShowsNextTask(t *testing.T) {
 	ctx := context.Background()
 	env := sess.env
 
-	// Create A, B→A, C→A. Use type=research to avoid auto-verify task creation.
+	// Append A and B. Use type=research to avoid auto-verify task creation.
 	sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
 		ID:   "c1",
 		Name: "task_list",
@@ -927,13 +1290,17 @@ func TestTaskListTool_UpdateShowsNextTask(t *testing.T) {
 			"action": "append",
 			"tasks": [
 				{"type": "research", "description": "Task A", "prompt": "Do A"},
-				{"type": "research", "description": "Task B", "prompt": "Do B", "depends_on": [1]},
-				{"type": "research", "description": "Task C", "prompt": "Do C", "depends_on": [1]}
+				{"type": "research", "description": "Task B", "prompt": "Do B", "depends_on": [1]}
 			]
 		}`),
 	})
 
-	// Mark A done — response should mention B and C as ready.
+	// Drop any steering already queued from the append.
+	sess.mu.Lock()
+	sess.steeringQueue = nil
+	sess.mu.Unlock()
+
+	// Mark A done — auto-advance should start B via steering, not via tool output.
 	updateRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
 		ID:        "c2",
 		Name:      "task_list",
@@ -943,18 +1310,134 @@ func TestTaskListTool_UpdateShowsNextTask(t *testing.T) {
 		t.Fatalf("update error: %s", updateRes.Output)
 	}
 
-	// Response should include progress and mention ready tasks.
+	// Tool response must stay minimal — no task descriptions, no "Started task".
+	if strings.Contains(updateRes.Output, "Task B") {
+		t.Fatalf("tool response should not leak next task description; got: %s", updateRes.Output)
+	}
+	if strings.Contains(updateRes.Output, "Started task") {
+		t.Fatalf("tool response should not include 'Started task' line; got: %s", updateRes.Output)
+	}
+	if strings.Contains(updateRes.Output, "Next open task") {
+		t.Fatalf("tool response should not include 'Next open task' summary; got: %s", updateRes.Output)
+	}
 	if !strings.Contains(updateRes.Output, "Progress") {
-		t.Fatalf("response missing Progress: %s", updateRes.Output)
+		t.Fatalf("tool response should include Progress: %s", updateRes.Output)
 	}
-	if !strings.Contains(updateRes.Output, "Task B") {
-		t.Fatalf("response missing Task B: %s", updateRes.Output)
+
+	// Steering queue should carry the current-task SYSTEM-REMINDER for task 2.
+	sess.mu.Lock()
+	queue := append([]string{}, sess.steeringQueue...)
+	sess.mu.Unlock()
+	if len(queue) != 1 {
+		t.Fatalf("expected 1 steering message after auto-advance, got %d: %v", len(queue), queue)
 	}
-	if !strings.Contains(updateRes.Output, "Task C") {
-		t.Fatalf("response missing Task C: %s", updateRes.Output)
+	if !strings.Contains(queue[0], "<SYSTEM-REMINDER>") {
+		t.Fatalf("auto-advance steering should be a SYSTEM-REMINDER: %s", queue[0])
+	}
+	if !strings.Contains(queue[0], `<CURRENT-TASK id="2">`) {
+		t.Fatalf("auto-advance steering should target task 2: %s", queue[0])
+	}
+	if !strings.Contains(queue[0], "Task B") {
+		t.Fatalf("auto-advance steering should include task B title: %s", queue[0])
+	}
+}
+
+func TestTaskListTool_ManualInProgressFiresSteering(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx := context.Background()
+	env := sess.env
+
+	sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:   "c1",
+		Name: "task_list",
+		Arguments: json.RawMessage(`{
+			"action": "append",
+			"tasks": [
+				{"type": "research", "description": "Task A", "prompt": "Do A"},
+				{"type": "research", "description": "Task B", "prompt": "Do B"}
+			]
+		}`),
+	})
+
+	sess.mu.Lock()
+	sess.steeringQueue = nil
+	sess.mu.Unlock()
+
+	// Agent manually marks task 2 in_progress.
+	updateRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:        "c2",
+		Name:      "task_list",
+		Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 2, "status": "in_progress"}]}`),
+	})
+	if updateRes.IsError {
+		t.Fatalf("update error: %s", updateRes.Output)
+	}
+
+	// Tool response stays minimal.
+	if strings.Contains(updateRes.Output, "Task B") {
+		t.Fatalf("tool response should not include task description; got: %s", updateRes.Output)
+	}
+
+	// Steering should include the current-task reminder for task 2.
+	sess.mu.Lock()
+	queue := append([]string{}, sess.steeringQueue...)
+	sess.mu.Unlock()
+	if len(queue) != 1 {
+		t.Fatalf("expected 1 steering message after manual in_progress, got %d: %v", len(queue), queue)
+	}
+	if !strings.Contains(queue[0], "<SYSTEM-REMINDER>") {
+		t.Fatalf("manual in_progress steering should be a SYSTEM-REMINDER: %s", queue[0])
+	}
+	if !strings.Contains(queue[0], `<CURRENT-TASK id="2">`) {
+		t.Fatalf("manual in_progress steering should target task 2: %s", queue[0])
+	}
+}
+
+func TestTaskListTool_UpdateRejectsMultipleInProgress(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx := context.Background()
+	env := sess.env
+
+	sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:   "c1",
+		Name: "task_list",
+		Arguments: json.RawMessage(`{
+			"action": "append",
+			"tasks": [
+				{"type": "research", "description": "Task A", "prompt": "Do A"},
+				{"type": "research", "description": "Task B", "prompt": "Do B"}
+			]
+		}`),
+	})
+
+	updateRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:        "c2",
+		Name:      "task_list",
+		Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 1, "status": "in_progress"}, {"id": 2, "status": "in_progress"}]}`),
+	})
+	if !updateRes.IsError {
+		t.Fatalf("expected tool error for two in_progress in one update; got output: %s", updateRes.Output)
 	}
 	if !strings.Contains(updateRes.Output, "in_progress") {
-		t.Fatalf("response missing in_progress suggestion: %s", updateRes.Output)
+		t.Fatalf("error should reference in_progress: %s", updateRes.Output)
 	}
 }
 
@@ -996,7 +1479,7 @@ func TestTaskListTool_UpdateShowsAllComplete(t *testing.T) {
 	}
 }
 
-func TestTaskListTool_UpdateShowsBlocked(t *testing.T) {
+func TestTaskListTool_UpdateStaysMinimalWhenBlocked(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -1024,9 +1507,7 @@ func TestTaskListTool_UpdateShowsBlocked(t *testing.T) {
 		}`),
 	})
 
-	// Mark A in_progress (not done), cancel C — B still blocked on A in_progress.
-	// With A in_progress (not eligible) and C cancelled, B is the only open task
-	// but A is in_progress so B's dep is not satisfied. No tasks should be ready.
+	// Mark A in_progress, then cancel C. Nothing else should be auto-advanced.
 	sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
 		ID:        "c2",
 		Name:      "task_list",
@@ -1041,14 +1522,18 @@ func TestTaskListTool_UpdateShowsBlocked(t *testing.T) {
 	if updateRes.IsError {
 		t.Fatalf("update error: %s", updateRes.Output)
 	}
-	if !strings.Contains(updateRes.Output, "No tasks are currently ready") {
-		t.Fatalf("response should say no tasks ready: %s", updateRes.Output)
+	// Tool response must not leak task list state (no descriptions, no "ready" summaries).
+	for _, substr := range []string{"Task A", "Task B", "Task C", "No tasks are currently ready", "Next open task"} {
+		if strings.Contains(updateRes.Output, substr) {
+			t.Fatalf("tool response should not contain %q; got: %s", substr, updateRes.Output)
+		}
 	}
 }
 
 func TestTaskStore_AutoVerifyUsesReviewerAgentType(t *testing.T) {
 	dir := t.TempDir()
 	s := NewTaskStore(dir, "test-session")
+	s.AutoVerify = true
 
 	added, err := s.Append([]TaskInput{
 		{Type: TaskTypeImplement, Description: "Build widget", Prompt: "Create widget.go"},
@@ -1081,6 +1566,7 @@ func TestTaskStore_AutoVerifyUsesReviewerAgentType(t *testing.T) {
 func TestTaskStore_AutoVerifyAfterFixTask(t *testing.T) {
 	dir := t.TempDir()
 	s := NewTaskStore(dir, "test-session")
+	s.AutoVerify = true
 
 	added, err := s.Append([]TaskInput{
 		{Type: TaskTypeFix, Description: "Fix edge case", Prompt: "Handle negative input"},
@@ -1153,10 +1639,11 @@ func TestTaskStore_AutoVerifyDisabledForFixTasks(t *testing.T) {
 	}
 }
 
-func TestTaskStore_AutoVerifyDefaultEnabled(t *testing.T) {
+func TestTaskStore_AutoVerifyWhenEnabled(t *testing.T) {
 	dir := t.TempDir()
 	s := NewTaskStore(dir, "test-session")
-	// AutoVerify defaults to true — verify tasks should still be created.
+	s.AutoVerify = true
+	// AutoVerify explicitly enabled — verify tasks should be created.
 
 	s.Append([]TaskInput{
 		{Type: TaskTypeImplement, Description: "Build it", Prompt: "Do the thing"},
@@ -1164,7 +1651,7 @@ func TestTaskStore_AutoVerifyDefaultEnabled(t *testing.T) {
 
 	all := s.View()
 	if len(all) != 2 {
-		t.Fatalf("expected 2 tasks (implement + verify with default AutoVerify=true), got %d", len(all))
+		t.Fatalf("expected 2 tasks (implement + verify with AutoVerify=true), got %d", len(all))
 	}
 }
 
@@ -1174,7 +1661,7 @@ func TestTaskListTool_DisableAutoVerifyViaSessionConfig(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai"})
 
 	sess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{
-		DisableAutoVerify: true,
+		
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -1207,6 +1694,7 @@ func TestTaskListTool_DisableAutoVerifyViaSessionConfig(t *testing.T) {
 func TestTaskStore_AutoVerifyPromptFocusesOnRejection(t *testing.T) {
 	dir := t.TempDir()
 	s := NewTaskStore(dir, "test-session")
+	s.AutoVerify = true
 
 	s.Append([]TaskInput{
 		{Type: TaskTypeImplement, Description: "Build it", Prompt: "Do the thing"},
@@ -1233,7 +1721,7 @@ func TestSharedTaskStore_ChildUsesParentStore(t *testing.T) {
 
 	// Create parent session and populate its task store.
 	parentSess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{
-		DisableAutoVerify: true,
+		
 	})
 	if err != nil {
 		t.Fatalf("NewSession (parent): %v", err)
@@ -1284,7 +1772,7 @@ func TestSharedTaskStore_ShareTasksWithChildrenConfig(t *testing.T) {
 	// Parent with ShareTasksWithChildren enabled.
 	parentSess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{
 		ShareTasksWithChildren: true,
-		DisableAutoVerify:      true,
+		
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -1325,7 +1813,7 @@ func TestSharedTaskStore_IsolatedByDefault(t *testing.T) {
 
 	// Parent with tasks.
 	parentSess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{
-		DisableAutoVerify: true,
+		
 	})
 	if err != nil {
 		t.Fatalf("NewSession (parent): %v", err)
@@ -1351,14 +1839,12 @@ func TestSharedTaskStore_IsolatedByDefault(t *testing.T) {
 	}
 }
 
-func TestTaskListTool_AppendShowsProgressAndNextTask(t *testing.T) {
+func TestTaskListTool_AppendResponseIsMinimal(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{
-		DisableAutoVerify: true,
-	})
+	sess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1367,7 +1853,6 @@ func TestTaskListTool_AppendShowsProgressAndNextTask(t *testing.T) {
 	ctx := context.Background()
 	env := sess.env
 
-	// Append tasks with dependencies: A (no deps), B→A.
 	appendRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
 		ID:   "c1",
 		Name: "task_list",
@@ -1383,57 +1868,101 @@ func TestTaskListTool_AppendShowsProgressAndNextTask(t *testing.T) {
 		t.Fatalf("append error: %s", appendRes.Output)
 	}
 
-	// Append response should include progress info.
+	// Append response is a terse acknowledgement: count added + progress.
+	if !strings.Contains(appendRes.Output, "Added") {
+		t.Fatalf("append response should acknowledge the added tasks: %s", appendRes.Output)
+	}
 	if !strings.Contains(appendRes.Output, "Progress") {
-		t.Fatalf("append response should include Progress summary: %s", appendRes.Output)
+		t.Fatalf("append response should include Progress: %s", appendRes.Output)
 	}
-	// Should show Task A as the next eligible task.
-	if !strings.Contains(appendRes.Output, "Task A") {
-		t.Fatalf("append response should mention next eligible task: %s", appendRes.Output)
-	}
-	// Should suggest marking in_progress.
-	if !strings.Contains(appendRes.Output, "in_progress") {
-		t.Fatalf("append response should suggest marking in_progress: %s", appendRes.Output)
+	// It MUST NOT leak the task list (descriptions, instructions, or start suggestions).
+	for _, substr := range []string{"Task A", "Task B", "Next open task", "in_progress", "Instructions:"} {
+		if strings.Contains(appendRes.Output, substr) {
+			t.Fatalf("append response should not contain %q; got: %s", substr, appendRes.Output)
+		}
 	}
 }
 
-func TestTaskListTool_AppendShowsAllReady(t *testing.T) {
+func TestTask_ReasoningEffort_RoundTrips(t *testing.T) {
 	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
+	store := NewTaskStore(dir, "test-effort")
+	store.Load()
 
-	sess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{
-		DisableAutoVerify: true,
-	})
+	added, err := store.Append([]TaskInput{{
+		Type:            TaskTypeImplement,
+		Description:     "plan the work",
+		Prompt:          "think carefully",
+		ReasoningEffort: "xhigh",
+	}})
 	if err != nil {
-		t.Fatalf("NewSession: %v", err)
+		t.Fatal(err)
 	}
-	defer sess.Close()
+	if added[0].ReasoningEffort != "xhigh" {
+		t.Errorf("got %q, want xhigh", added[0].ReasoningEffort)
+	}
 
-	ctx := context.Background()
-	env := sess.env
+	// Reload from disk and verify persistence.
+	store2 := NewTaskStore(dir, "test-effort")
+	store2.Load()
+	tasks := store2.View()
+	if tasks[0].ReasoningEffort != "xhigh" {
+		t.Errorf("after reload: got %q, want xhigh", tasks[0].ReasoningEffort)
+	}
+}
 
-	// Append two independent tasks (both eligible immediately).
-	appendRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
-		ID:   "c1",
-		Name: "task_list",
-		Arguments: json.RawMessage(`{
-			"action": "append",
-			"tasks": [
-				{"type": "research", "description": "Task X", "prompt": "Do X"},
-				{"type": "research", "description": "Task Y", "prompt": "Do Y"}
-			]
-		}`),
+func TestTask_Insert_RoundTrips(t *testing.T) {
+	dir := t.TempDir()
+	store := NewTaskStore(dir, "test-insert")
+	store.Load()
+
+	added, err := store.Append([]TaskInput{{
+		Type:        TaskTypeImplement,
+		Description: "placeholder",
+		Prompt:      "do the work",
+		Insert:      "parent_tasks",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if added[0].Insert != "parent_tasks" {
+		t.Errorf("got %q, want parent_tasks", added[0].Insert)
+	}
+}
+
+func TestTaskStore_CurrentInProgress(t *testing.T) {
+	dir := t.TempDir()
+	store := NewTaskStore(dir, "test-current")
+	store.AutoVerify = false
+	store.Load()
+
+	store.Append([]TaskInput{
+		{Type: TaskTypeResearch, Description: "first", Prompt: "do first", ReasoningEffort: "low"},
+		{Type: TaskTypeResearch, Description: "second", Prompt: "do second", ReasoningEffort: "xhigh"},
 	})
-	if appendRes.IsError {
-		t.Fatalf("append error: %s", appendRes.Output)
+
+	// No task in progress yet.
+	_, ok := store.CurrentInProgress()
+	if ok {
+		t.Fatal("expected no in_progress task")
 	}
 
-	// Both tasks should appear as ready.
-	if !strings.Contains(appendRes.Output, "Task X") {
-		t.Fatalf("append response should mention Task X: %s", appendRes.Output)
+	// Start first task.
+	store.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress}})
+	task, ok := store.CurrentInProgress()
+	if !ok || task.ID != 1 {
+		t.Fatalf("expected task 1 in progress, got ok=%v task=%+v", ok, task)
 	}
-	if !strings.Contains(appendRes.Output, "Task Y") {
-		t.Fatalf("append response should mention Task Y: %s", appendRes.Output)
+	if task.ReasoningEffort != "low" {
+		t.Errorf("effort = %q, want low", task.ReasoningEffort)
+	}
+
+	// Complete first, start second.
+	store.Update([]TaskUpdate{{ID: 1, Status: TaskDone}, {ID: 2, Status: TaskInProgress}})
+	task, ok = store.CurrentInProgress()
+	if !ok || task.ID != 2 {
+		t.Fatalf("expected task 2 in progress, got ok=%v task=%+v", ok, task)
+	}
+	if task.ReasoningEffort != "xhigh" {
+		t.Errorf("effort = %q, want xhigh", task.ReasoningEffort)
 	}
 }

@@ -86,6 +86,7 @@ type Server struct {
 	detailedStatusFn func() DetailedStatus
 	modelFunc        func(string)
 	listModelsFunc   func(context.Context) ([]ModelsResponseItem, error)
+	tasksFn          func() any
 	processing       bool
 	inputCh          chan string
 }
@@ -111,6 +112,7 @@ func NewServer(cfg ServerConfig) *Server {
 	s.mux.HandleFunc("/clear", s.handleClear)
 	s.mux.HandleFunc("/input", s.handleInput)
 	s.mux.HandleFunc("/events", s.handleEvents)
+	s.mux.HandleFunc("/tasks", s.handleTasks)
 	return s
 }
 
@@ -337,6 +339,31 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ModelsResponse{Models: models})
+}
+
+// SetTasksFunc sets the function called by GET /tasks. The function should
+// return a JSON-serializable slice (typically []agent.Task).
+func (s *Server) SetTasksFunc(fn func() any) {
+	s.mu.Lock()
+	s.tasksFn = fn
+	s.mu.Unlock()
+}
+
+func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.mu.RLock()
+	fn := s.tasksFn
+	s.mu.RUnlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	if fn == nil {
+		_, _ = w.Write([]byte("[]\n"))
+		return
+	}
+	_ = json.NewEncoder(w).Encode(fn())
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {

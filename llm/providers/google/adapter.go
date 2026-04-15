@@ -289,6 +289,10 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 
 	r := fromGeminiResponse(raw, req.Model)
 	r.RateLimit = llm.ParseRateLimitHeaders(resp.Header)
+	if llm.RawBodyEnabled() {
+		r.RawRequestBody = string(b)
+		r.RawResponseBody = string(rawBytes)
+	}
 	return r, nil
 }
 
@@ -383,7 +387,15 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 			textBuf.Reset()
 		}
 
-		_ = llm.ParseSSE(sctx, resp.Body, func(ev llm.SSEEvent) error {
+		var sseBody io.Reader = resp.Body
+		var sseBuf *bytes.Buffer
+		if llm.RawBodyEnabled() {
+			sseBuf = &bytes.Buffer{}
+			sseBody = io.TeeReader(resp.Body, sseBuf)
+		}
+		rawReqBody := string(b)
+
+		_ = llm.ParseSSE(sctx, sseBody, func(ev llm.SSEEvent) error {
 			if len(ev.Data) == 0 {
 				return nil
 			}
@@ -506,6 +518,10 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 							r.Finish = llm.FinishReason{Reason: "stop"}
 						}
 						rp := r
+						if sseBuf != nil {
+							rp.RawRequestBody = rawReqBody
+							rp.RawResponseBody = sseBuf.String()
+						}
 						s.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp})
 						finished = true
 						cancel()

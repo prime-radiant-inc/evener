@@ -67,7 +67,7 @@ echo 'Return JSON: {"ok": true}' | ./llmcall --provider openai --model gpt-5-min
 
 ### Provider and model (required)
 
-Both `--provider` and `--model` are required. Providers: `openai`, `anthropic`, `google`.
+Both `--provider` and `--model` are required. Providers: `openai`, `anthropic`, `google`, `minimax`, `openrouter`, `kimi`, `glm`.
 
 Use flags or set `SERF_PROVIDER` and `SERF_MODEL` environment variables.
 
@@ -85,7 +85,7 @@ Use flags or set `SERF_PROVIDER` and `SERF_MODEL` environment variables.
 
 | Flag | Description |
 |---|---|
-| `--provider <name>` | LLM provider: openai, anthropic, google (required) |
+| `--provider <name>` | LLM provider (see above) (required) |
 | `--model <name>` | LLM model identifier (required) |
 | `--dir <path>` | Working directory (default: current directory) |
 | `--verbose` | Emit NDJSON events to stderr (replaces human-readable output) |
@@ -171,7 +171,7 @@ All flags from the `serf` CLI are supported, plus `--addr` for remote connection
 
 | Flag | Description |
 |---|---|
-| `--provider <name>` | LLM provider: openai, anthropic, google |
+| `--provider <name>` | LLM provider (see above) |
 | `--model <name>` | LLM model identifier |
 | `--dir <path>` | Working directory for the agent |
 | `--state-dir <path>` | Override runtime state directory |

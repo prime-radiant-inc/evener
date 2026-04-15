@@ -1,8 +1,0 @@
-{
-  "task": "astropy__astropy-13398",
-  "strategy": "codex",
-  "model": "gpt-5.3-codex",
-  "resolved": true,
-  "test_exit_code": 0,
-  "test_output_tail": "============================= test session starts ==============================\ncollected 76 items\n\nastropy/coordinates/tests/test_intermediate_transformations.py ......... [ 11%]\n.........................................................ss...s....      [100%]\n\n======================== 73 passed, 3 skipped in 0.55s =========================\n/Users/jesse/Library/Python/3.9/lib/python/site-packages/setuptools_scm/git.py:202: UserWarning: \"/private/tmp/serfeval-v2/repos/astropy__astropy-13398\" is shallow and may cause errors\n  warnings.warn(f'\"{wd.path}\" is shallow and may cause errors')\n"
-}

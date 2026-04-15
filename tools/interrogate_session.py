@@ -36,6 +36,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 
 REGION = "us-west-1"
 BUCKET = "harbor-eval-results-526275945504"
@@ -70,7 +71,7 @@ def find_local_state_dir(run_id, rep, task=None):
     return None
 
 
-def download_results(run_id, rep, task=None):
+def download_results(run_id, rep, task=None, include_verifier_output=False):
     """Download results from S3 if not already local."""
     state_dir = find_local_state_dir(run_id, rep, task)
     if state_dir:
@@ -89,8 +90,10 @@ def download_results(run_id, rep, task=None):
     ]
     subprocess.run(cmd, check=True)
 
-    # Also download verifier output for the target task
-    if task:
+    # Verifier output is opt-in because it contains the hidden PASS/FAIL
+    # ground truth. Leaking it into a debrief prompt corrupts any
+    # self-awareness probing.
+    if task and include_verifier_output:
         print(f"Downloading verifier output for {task}...")
         subprocess.run([
             "aws", "s3", "sync", s3_prefix, dest,
@@ -138,6 +141,7 @@ def list_sessions(state_dir):
             "role": role,
             "parent": parent,
             "model": meta.get("model", "?"),
+            "profile_id": meta.get("profile_id", ""),
             "turns": turn_count,
             "task_preview": task_preview,
         })
@@ -268,15 +272,32 @@ def fix_orphaned_tool_calls(state_dir, session_id):
         return
 
     print(f"Fixing {len(unanswered)} orphaned tool call(s) in transcript...")
-    # Append synthetic tool results
+
+    # Find the max seq across existing entries so appended synthetic
+    # results don't collide.
+    max_seq = 0
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        s = entry.get("seq", 0)
+        if isinstance(s, int) and s > max_seq:
+            max_seq = s
+
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000000Z")
+
+    # Append synthetic TOOL_RESULTS entries. Structure must match the
+    # rest of the transcript: top-level kind="entry", turn.kind="TOOL_RESULTS"
+    # (uppercase, plural), with timestamp and usage fields.
     with open(transcript_path, "a") as f:
         for tid, name in unanswered:
-            seq = len(lines) + 1
+            max_seq += 1
             synthetic = {
-                "kind": "tool_result",
-                "seq": seq,
+                "kind": "entry",
+                "seq": max_seq,
                 "turn": {
-                    "kind": "tool_result",
+                    "kind": "TOOL_RESULTS",
                     "message": {
                         "role": "tool",
                         "content": [{
@@ -284,18 +305,21 @@ def fix_orphaned_tool_calls(state_dir, session_id):
                             "tool_result": {
                                 "tool_call_id": tid,
                                 "name": name,
-                                "content": json.dumps({
-                                    "error": "Session timed out before this "
-                                             "tool call completed."
-                                }),
+                                "content": "[Session ended with orphaned "
+                                           "tool call; no result recorded.]",
                                 "is_error": True,
                             }
                         }]
+                    },
+                    "timestamp": ts,
+                    "usage": {
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "total_tokens": 0,
                     }
                 }
             }
             f.write(json.dumps(synthetic) + "\n")
-            seq += 1
 
 
 def build_question_message(questions, verifier_output):
@@ -340,6 +364,69 @@ DEFAULT_QUESTIONS = [
 ]
 
 
+def _extract_wave_sha(run_id: str) -> str | None:
+    """Extract git SHA from wave ID or launch metadata."""
+    # Try .serf-launches/RUN_ID.json first
+    launch_file = os.path.expanduser(f"~/prime-radiant/serf/.serf-launches/{run_id}.json")
+    if os.path.isfile(launch_file):
+        try:
+            with open(launch_file) as f:
+                meta = json.load(f)
+            return meta.get("git_sha")
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    # Fall back to parsing wave-SHA-DATE format
+    m = re.match(r"wave-([0-9a-f]{7,})-", run_id)
+    if m:
+        return m.group(1)
+
+    return None
+
+
+def _check_binary_matches_wave(serf_path: str, wave_sha: str, run_id: str):
+    """Warn if the serf binary doesn't match the wave's git SHA."""
+    # Check current git HEAD
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, cwd=os.path.expanduser("~/prime-radiant/serf")
+        ).stdout.strip()
+    except Exception:
+        head = None
+
+    # Check binary modification time vs wave launch time
+    try:
+        binary_mtime = os.path.getmtime(serf_path)
+    except Exception:
+        binary_mtime = 0
+
+    sha_match = head and wave_sha and head.startswith(wave_sha[:7])
+
+    if os.environ.get("SKIP_SHA_CHECK"):
+        return
+
+    if not sha_match:
+        print(f"\n{'='*70}", file=sys.stderr)
+        print(f"WARNING: Binary/wave SHA mismatch!", file=sys.stderr)
+        print(f"  Wave {run_id} was built from SHA: {wave_sha}", file=sys.stderr)
+        print(f"  Current git HEAD: {head or 'unknown'}", file=sys.stderr)
+        print(f"  Binary: {serf_path}", file=sys.stderr)
+        print(f"", file=sys.stderr)
+        print(f"  The serf binary injects its OWN system prompt into the resumed", file=sys.stderr)
+        print(f"  session. If the binary is from a different SHA, the model sees", file=sys.stderr)
+        print(f"  the WRONG prompts and produces false root cause attributions.", file=sys.stderr)
+        print(f"", file=sys.stderr)
+        print(f"  Fix: git checkout {wave_sha} && go build -o serf ./cmd/serf/", file=sys.stderr)
+        print(f"  Then re-run this interrogation.", file=sys.stderr)
+        print(f"{'='*70}\n", file=sys.stderr)
+
+        resp = input("Continue anyway? [y/N] ") if sys.stdin.isatty() else "n"
+        if resp.lower() != "y":
+            print("Aborted. Rebuild the binary first.", file=sys.stderr)
+            sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Interrogate an agent session by resuming it with serf")
@@ -355,12 +442,23 @@ def main():
                         help="Custom question (repeatable)")
     parser.add_argument("--model", default=None,
                         help="Model override (default: same as original session)")
+    parser.add_argument("--provider", default=None,
+                        help="Provider override (default: auto-detect from session profile_id, "
+                             "fall back to openai if unknown)")
     parser.add_argument("--serf", default=None,
                         help="Path to serf binary (default: local build)")
+    parser.add_argument("--force", action="store_true",
+                        help="Skip binary/wave SHA mismatch check (use when binary is manually verified)")
+    parser.add_argument("--include-verifier-output", action="store_true",
+                        help="Include the hidden verifier's test-stdout.txt in the debrief prompt. "
+                             "OFF by default because leaking ground-truth PASS/FAIL corrupts "
+                             "self-awareness probing.")
     args = parser.parse_args()
 
     # Find or download results
-    state_dir = download_results(args.run, args.rep, args.task)
+    state_dir = download_results(
+        args.run, args.rep, args.task,
+        include_verifier_output=args.include_verifier_output)
     if not state_dir:
         print(f"ERROR: Could not find agent-state for run={args.run} rep={args.rep} task={args.task}")
         sys.exit(1)
@@ -381,16 +479,28 @@ def main():
     questions = args.question or DEFAULT_QUESTIONS
     model = args.model or target["model"]
 
+    # Resolve provider: --provider flag wins, then session metadata profile_id,
+    # else default to openai (historical behavior) with a warning.
+    provider = args.provider or target.get("profile_id") or ""
+    if not provider:
+        print("[WARN] Session profile_id missing from metadata; defaulting to --provider openai. "
+              "Pass --provider explicitly if this is wrong.", file=sys.stderr)
+        provider = "openai"
+
     print(f"=== Interrogating {args.task} (run={args.run}, rep={args.rep}) ===")
     print(f"Session: {target['id']} ({target['role']})")
     print(f"Model: {model}")
     print(f"Turns: {target['turns']}")
     print()
 
-    # Build interrogation message
-    verifier = get_verifier_output(args.run, args.rep, args.task)
-    if verifier:
-        print(f"Verifier output: {len(verifier)} chars")
+    # Build interrogation message. Verifier output is opt-in — when
+    # disabled, we skip reading test-stdout.txt entirely so there is no
+    # path by which PASS/FAIL leaks into the prompt.
+    verifier = None
+    if args.include_verifier_output:
+        verifier = get_verifier_output(args.run, args.rep, args.task)
+        if verifier:
+            print(f"Verifier output: {len(verifier)} chars")
     message = build_question_message(questions, verifier)
 
     # Find serf binary
@@ -402,6 +512,13 @@ def main():
             serf = local
         else:
             serf = "serf"
+
+    # CRITICAL: Check that the serf binary matches the wave's git SHA.
+    # A stale binary injects the WRONG system prompt into the resumed session,
+    # producing false root cause attributions. See prompt-lessons.md.
+    wave_sha = _extract_wave_sha(args.run)
+    if wave_sha and not args.force:
+        _check_binary_matches_wave(serf, wave_sha, args.run)
 
     # Copy state dir to temp location so we don't mutate the original
     # transcripts (serf writes new turns during resume).
@@ -418,15 +535,21 @@ def main():
             serf,
             "--resume-with", target["id"],
             "--state-dir", tmp_state,
-            "--provider", "openai",
+            "--provider", provider,
             "--model", model,
             "--max-rounds", "3",
             "--", message,
         ]
 
         print(f"=== MODEL RESPONSE ===\n")
-        result = subprocess.run(cmd, capture_output=True, text=True,
-                                env={**os.environ, "SERF_NON_INTERACTIVE": "1"})
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True,
+                                    timeout=120,
+                                    env={**os.environ, "SERF_NON_INTERACTIVE": "1"})
+        except subprocess.TimeoutExpired:
+            print("\n[serf timed out after 120s — session may have orphaned spawned agents]",
+                  file=sys.stderr)
+            return
         if result.stdout:
             print(result.stdout)
         if result.returncode != 0:

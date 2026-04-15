@@ -18,8 +18,14 @@ import (
 
 	// Blank imports to register provider factories.
 	_ "primeradiant.com/serf/llm/providers/anthropic"
+	_ "primeradiant.com/serf/llm/providers/glm"
 	_ "primeradiant.com/serf/llm/providers/google"
+	_ "primeradiant.com/serf/llm/providers/kimi"
+	_ "primeradiant.com/serf/llm/providers/minimax"
 	_ "primeradiant.com/serf/llm/providers/openai"
+	_ "primeradiant.com/serf/llm/providers/openaicompat"
+	_ "primeradiant.com/serf/llm/providers/openrouter"
+	_ "primeradiant.com/serf/llm/providers/openrouter_anthropic"
 )
 
 // providerConfig holds a test model and the env key that gates the provider.
@@ -33,6 +39,7 @@ var providers = []providerConfig{
 	{"OPENAI_API_KEY", "gpt-5-mini-2025-08-07", "openai"},
 	{"ANTHROPIC_API_KEY", "claude-sonnet-4-5-20250929", "anthropic"},
 	{"GEMINI_API_KEY", "gemini-2.5-flash", "google"},
+	{"MINIMAX_API_KEY", "MiniMax-M2.7", "minimax"},
 }
 
 func skipIfNoProviders(t *testing.T) {
@@ -638,6 +645,7 @@ var reasoningProviders = []providerConfig{
 	{"OPENAI_API_KEY", "o4-mini", "openai"},
 	{"ANTHROPIC_API_KEY", "claude-sonnet-4-5-20250929", "anthropic"},
 	{"GEMINI_API_KEY", "gemini-2.5-flash", "google"},
+	{"MINIMAX_API_KEY", "MiniMax-M2.7", "minimax"},
 }
 
 func TestIntegration_ReasoningTokens(t *testing.T) {

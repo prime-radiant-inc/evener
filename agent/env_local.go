@@ -117,6 +117,11 @@ func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limit
 		encoded := base64.StdEncoding.EncodeToString(b)
 		return fmt.Sprintf("[image: %s, %d bytes, base64 data follows]\n%s", format, len(b), encoded), nil
 	}
+	// Document files (PDF): return base64-encoded data for vision/content pipeline.
+	if format := detectDocumentFormat(path, b); format != "" {
+		encoded := base64.StdEncoding.EncodeToString(b)
+		return fmt.Sprintf("[document: %s, %d bytes, base64 data follows]\n%s", format, len(b), encoded), nil
+	}
 	// Basic binary detection.
 	if bytes.IndexByte(b, 0) >= 0 {
 		return "", fmt.Errorf("binary file (NUL byte): %s", path)
@@ -240,6 +245,20 @@ func detectImageFormat(path string, data []byte) string {
 	}
 	if len(data) >= 6 && (string(data[:6]) == "GIF87a" || string(data[:6]) == "GIF89a") {
 		return "gif"
+	}
+	return ""
+}
+
+// detectDocumentFormat checks file extension and magic bytes to identify document files
+// that can be processed natively by the model (e.g. PDFs). Returns the format name or "".
+func detectDocumentFormat(path string, data []byte) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext == ".pdf" {
+		return "pdf"
+	}
+	// Check magic bytes: PDF files start with %PDF-
+	if len(data) >= 5 && string(data[:5]) == "%PDF-" {
+		return "pdf"
 	}
 	return ""
 }

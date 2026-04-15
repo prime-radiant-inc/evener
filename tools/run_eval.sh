@@ -7,6 +7,7 @@
 #   ./tools/run_eval.sh --tasks failing                     # all currently failing
 #   ./tools/run_eval.sh --tasks untested                    # all untested
 #   ./tools/run_eval.sh --tasks hard                        # historically hard 16
+#   ./tools/run_eval.sh --tasks vision                       # 9 tasks using vision side-channel
 #   ./tools/run_eval.sh --dry-run                           # preview without launching
 #
 # Options:
@@ -15,7 +16,7 @@
 #   --run-id NAME      Override auto-generated run ID
 #   --reps N           Number of reps (default: 3)
 #   --model STR        Model (default: openai/gpt-5.4-mini)
-#   --instance-type    EC2 instance type (default: c6i.xlarge)
+#   --instance-type    EC2 instance type (default: r6i.large)
 #   --max-vcpu N       vCPU quota ceiling (default: 128)
 #   --variant STR      Description saved to launch metadata
 #   --dry-run          Preview without launching
@@ -27,12 +28,15 @@ HARBOR_DIR="${HARBOR_DIR:-$HOME/prime-radiant/harbor-runner}"
 # Defaults
 TASKS=""
 REPS=3
-INSTANCE_TYPE="c6i.xlarge"
+INSTANCE_TYPE="r6i.large"
 MAX_VCPU=128
 MODEL="openai/gpt-5.4-mini"
 RUN_ID=""
 VARIANT=""
+AGENT_KWARGS=""
 DRY_RUN=false
+BACKFILL=false
+ON_DEMAND=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -43,7 +47,10 @@ while [[ $# -gt 0 ]]; do
         --instance-type) INSTANCE_TYPE="$2"; shift 2 ;;
         --max-vcpu)      MAX_VCPU="$2"; shift 2 ;;
         --variant)       VARIANT="$2"; shift 2 ;;
+        --agent-kwargs)  AGENT_KWARGS="$2"; shift 2 ;;
         --dry-run)       DRY_RUN=true; shift ;;
+        --backfill)      BACKFILL=true; shift ;;
+        --on-demand)     ON_DEMAND=true; shift ;;
         --wave)          shift ;;  # accepted for backward compat, always wave
         --help|-h)       head -22 "$0" | grep '^#' | sed 's/^# \?//'; exit 0 ;;
         *)               echo "Unknown option: $1" >&2; exit 1 ;;
@@ -99,6 +106,31 @@ print(','.join(sorted(tasks)))
             TASKS="dna-assembly,make-doom-for-mips,sam-cell-seg,install-windows-3.11,caffe-cifar-10,filter-js-from-html,gpt2-codegolf,extract-moves-from-video,raman-fitting,train-fasttext,video-processing,torch-tensor-parallelism,db-wal-recovery,torch-pipeline-parallelism,dna-insert,mteb-leaderboard"
             echo "Historically hard tasks: 16"
             ;;
+        discriminators)
+            # 62 tasks that sometimes pass and sometimes fail — the signal tasks.
+            # Excludes 19 never-passed (always 0) and 8 always-perfect (always 1.0).
+            # Use this for experiment iterations: saves ~25% of instances.
+            TASKS="adaptive-rejection-sampler,bn-fit-modify,break-filter-js-from-html,build-cython-ext,build-pmars,build-pov-ray,caffe-cifar-10,cancel-async-tasks,chess-best-move,circuit-fibsqrt,cobol-modernization,compile-compcert,configure-git-webserver,constraints-scheduling,count-dataset-tokens,crack-7z-hash,custom-memory-heap-crash,db-wal-recovery,extract-elf,extract-moves-from-video,feal-differential-cryptanalysis,feal-linear-cryptanalysis,financial-document-processor,fix-code-vulnerability,fix-git,fix-ocaml-gc,git-leak-recovery,git-multibranch,gpt2-codegolf,hf-model-inference,kv-store-grpc,large-scale-text-editing,largest-eigenval,llm-inference-batching-scheduler,log-summary-date-ranges,mailman,mcmc-sampling-stan,merge-diff-arc-agi-task,modernize-scientific-stack,mteb-retrieve,openssl-selfsigned-cert,password-recovery,path-tracing,polyglot-c-py,polyglot-rust-c,portfolio-optimization,pytorch-model-cli,pytorch-model-recovery,qemu-alpine-ssh,qemu-startup,query-optimize,raman-fitting,reshard-c4-data,sanitize-git-repo,schemelike-metacircular-eval,sparql-university,sqlite-db-truncate,sqlite-with-gcov,torch-tensor-parallelism,tune-mjcf,vulnerable-secret,winning-avg-corewars"
+            echo "Discriminator tasks: 62 (excludes 19 never-pass + 8 always-pass)"
+            ;;
+        crosscheck)
+            # 8 always-perfect tasks. Run after discriminators pass as a safety net.
+            TASKS="code-from-image,distribution-search,headless-terminal,multi-source-data-merger,nginx-request-logging,prove-plus-comm,pypi-server,regex-log"
+            echo "Cross-check tasks (always-perfect): 8"
+            ;;
+        quick-baseline)
+            # 8 historically-passable but recently-variable tasks.
+            # Quick sanity check for shipped experiments (~8 min at 3 reps).
+            TASKS="sparql-university,sqlite-with-gcov,qemu-startup,llm-inference-batching-scheduler,fix-ocaml-gc,count-dataset-tokens,cobol-modernization,schemelike-metacircular-eval"
+            echo "Quick-baseline tasks: 8"
+            ;;
+        vision)
+            # 9 tasks that have previously triggered the vision side-channel
+            # (images or PDFs read via read_file). Use this to test vision-
+            # prompt or vision-architecture changes.
+            TASKS="chess-best-move,code-from-image,financial-document-processor,gcode-to-text,path-tracing,path-tracing-reverse,pytorch-model-cli,sam-cell-seg,video-processing"
+            echo "Vision tasks: 9"
+            ;;
     esac
 fi
 
@@ -134,7 +166,9 @@ if $DRY_RUN; then
     echo "Tasks: $TASKS"
     TOTAL=$((TASK_COUNT * REPS))
     VCPU=$(python3 -c "
-m = {'c6i.large': 2, 'c6i.xlarge': 4, 'c6i.2xlarge': 8, 'c6i.4xlarge': 16}
+m = {'c6i.large': 2, 'c6i.xlarge': 4, 'c6i.2xlarge': 8, 'c6i.4xlarge': 16,
+     'r6i.large': 2, 'r6i.xlarge': 4, 'r6i.2xlarge': 8,
+     'm6i.large': 2, 'm6i.xlarge': 4}
 print(m.get('$INSTANCE_TYPE', 4))
 ")
     MAX_INSTANCES=$((MAX_VCPU / VCPU))
@@ -186,7 +220,7 @@ meta = {
     'task_count': $TASK_COUNT,
     'variant': '$VARIANT' if '$VARIANT' else None,
     'tasks': '$TASKS'.split(','),
-    'launched_at': datetime.datetime.utcnow().isoformat() + 'Z',
+    'launched_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
 }
 # Remove None values
 meta = {k: v for k, v in meta.items() if v is not None}
@@ -197,13 +231,29 @@ echo "  Launch metadata saved"
 
 # --- Launch (one task per instance) ---
 echo ""
-exec python3 "$REPO_ROOT/tools/wave_launcher.py" \
-    --run-id "$RUN_ID" \
-    --agent-dir "$AGENT_DIR" \
-    --model "$MODEL" \
-    --tasks "$TASKS" \
-    --reps "$REPS" \
-    --instance-type "$INSTANCE_TYPE" \
-    --concurrency 1 \
-    --max-vcpu "$MAX_VCPU" \
-    --harbor-dir "$HARBOR_DIR"
+BACKFILL_FLAG=""
+if $BACKFILL; then
+    BACKFILL_FLAG="--backfill"
+fi
+
+LAUNCHER_CMD=(env PYTHONUNBUFFERED=1 python3 "$REPO_ROOT/tools/wave_launcher.py"
+    --run-id "$RUN_ID"
+    --agent-dir "$AGENT_DIR"
+    --model "$MODEL"
+    --tasks "$TASKS"
+    --reps "$REPS"
+    --instance-type "$INSTANCE_TYPE"
+    --concurrency 1
+    --max-vcpu "$MAX_VCPU"
+    --harbor-dir "$HARBOR_DIR")
+if [[ -n "$AGENT_KWARGS" ]]; then
+    LAUNCHER_CMD+=(--agent-kwargs "$AGENT_KWARGS")
+fi
+if [[ -n "$BACKFILL_FLAG" ]]; then
+    LAUNCHER_CMD+=("$BACKFILL_FLAG")
+fi
+if $ON_DEMAND; then
+    LAUNCHER_CMD+=(--on-demand)
+fi
+
+exec "${LAUNCHER_CMD[@]}"

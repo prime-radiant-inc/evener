@@ -13,8 +13,14 @@ import (
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/anthropic"
+	_ "primeradiant.com/serf/llm/providers/glm"
 	_ "primeradiant.com/serf/llm/providers/google"
+	_ "primeradiant.com/serf/llm/providers/kimi"
+	_ "primeradiant.com/serf/llm/providers/minimax"
 	_ "primeradiant.com/serf/llm/providers/openai"
+	_ "primeradiant.com/serf/llm/providers/openaicompat"
+	_ "primeradiant.com/serf/llm/providers/openrouter"
+	_ "primeradiant.com/serf/llm/providers/openrouter_anthropic"
 	"primeradiant.com/serf/server"
 )
 
@@ -27,12 +33,25 @@ type embeddedConfig struct {
 	systemPrompt       string
 	systemPromptAppend []string
 	maxRounds          int
+	minResultRound     int
+	enableReviewerGate bool
+	noAutoVerify       bool
+	maxSubagentDepth   int
+	shareTaskStore     bool
+	resultToolName     string
+	exportATIF         string
+	contextStrategy    string
+	verbose            bool
+	noProjectPrompts   bool
+	agentName          string
+	systemPromptAsUser bool
 	reasoningEffort    string
 	skillsDirs         []string
 	mcpServers         []string
 	mcpConfigs         []string
 	pluginDirs         []string
 	resume             string
+	resumeWith         string
 	resumeLast         bool
 }
 
@@ -101,14 +120,27 @@ func startEmbedded(ctx context.Context, cfg embeddedConfig) (*embeddedServer, er
 	env := agent.NewLocalExecutionEnvironment(wd)
 
 	sessionCfg := agent.SessionConfig{
-		StateDir:              sd,
-		SystemPromptFile:      cfg.systemPrompt,
-		SystemPromptAppend:    cfg.systemPromptAppend,
-		MaxToolRoundsPerInput: cmdutil.MaxRoundsToConfig(cfg.maxRounds),
-		SkillsDirs:            cfg.skillsDirs,
-		MCPConfigFiles:        cfg.mcpConfigs,
-		MCPInline:             cfg.mcpServers,
-		PluginDirs:            cfg.pluginDirs,
+		StateDir:               sd,
+		SystemPromptFile:       cfg.systemPrompt,
+		SystemPromptAppend:     cfg.systemPromptAppend,
+		MaxToolRoundsPerInput:  cmdutil.MaxRoundsToConfig(cfg.maxRounds),
+		MinResultRound:         cfg.minResultRound,
+		EnableReviewerGate:     cfg.enableReviewerGate,
+		EnableAutoVerify:       false,
+		ShareTasksWithChildren: cfg.shareTaskStore,
+		ResultToolName:         cfg.resultToolName,
+		NoProjectPrompts:       cfg.noProjectPrompts,
+		AgentName:              cfg.agentName,
+		SkillsDirs:             cfg.skillsDirs,
+		MCPConfigFiles:         cfg.mcpConfigs,
+		MCPInline:              cfg.mcpServers,
+		PluginDirs:             cfg.pluginDirs,
+		ContextStrategy:        cfg.contextStrategy,
+		ExportATIFPath:         cfg.exportATIF,
+		SystemPromptAsUser:     cfg.systemPromptAsUser,
+	}
+	if cfg.maxSubagentDepth >= 0 {
+		sessionCfg.MaxSubagentDepth = cfg.maxSubagentDepth
 	}
 	if effort.Set {
 		sessionCfg.ReasoningEffort = effort.Value
@@ -116,8 +148,12 @@ func startEmbedded(ctx context.Context, cfg embeddedConfig) (*embeddedServer, er
 
 	var sess *agent.Session
 	var history []agent.Turn
-	if cfg.resume != "" || cfg.resumeLast {
-		meta, metaErr := cmdutil.ResolveSessionMeta(sd, cfg.resume, cfg.resumeLast)
+	if cfg.resume != "" || cfg.resumeWith != "" || cfg.resumeLast {
+		resumeID := cfg.resume
+		if resumeID == "" {
+			resumeID = cfg.resumeWith
+		}
+		meta, metaErr := cmdutil.ResolveSessionMeta(sd, resumeID, cfg.resumeLast)
 		if metaErr != nil {
 			return nil, metaErr
 		}
@@ -190,6 +226,7 @@ func (e *embeddedServer) wireSession(sess *agent.Session) {
 		return agentToServerStatus(sess.DetailedStatus())
 	})
 	e.srv.SetListModelsFunc(cmdutil.ListModelsFunc(e.client, e.profile.ID()))
+	e.srv.SetTasksFunc(func() any { return sess.Tasks() })
 }
 
 // agentToServerStatus converts an agent.DetailedStatus to a server.DetailedStatus.

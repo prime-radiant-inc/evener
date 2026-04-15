@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/server"
 )
 
@@ -50,6 +51,7 @@ type model struct {
 	picker        *modelPicker // non-nil when model picker is active
 	themePicker   *themePicker // non-nil when theme picker is active
 	scrollMode    bool         // true when scrolling history; input is blurred
+	focusedToolIdx int         // index into messages of focused tool call in scroll mode; -1 = none
 }
 
 // applyInputTheme sets the textarea's style to match the active theme colours.
@@ -97,6 +99,78 @@ func newModel(addr, stateDir string, initialMessages []chatMessage) model {
 
 func (m model) Init() tea.Cmd {
 	return m.input.Focus()
+}
+
+// toolIndices returns the indices in m.messages that are msgTool entries.
+func (m *model) toolIndices() []int {
+	var idx []int
+	for i := range m.messages {
+		if m.messages[i].Kind == msgTool && m.messages[i].Tool != nil && !m.messages[i].Tool.Hidden {
+			idx = append(idx, i)
+		}
+	}
+	return idx
+}
+
+// focusTool moves the focused tool to the previous (dir=-1) or next (dir=+1) tool.
+func (m *model) focusTool(dir int) {
+	indices := m.toolIndices()
+	if len(indices) == 0 {
+		return
+	}
+	if m.focusedToolIdx < 0 {
+		// No focus yet; default to the last tool.
+		m.focusedToolIdx = indices[len(indices)-1]
+		return
+	}
+	// Find current position in the list.
+	curPos := -1
+	for i, idx := range indices {
+		if idx == m.focusedToolIdx {
+			curPos = i
+			break
+		}
+	}
+	if curPos < 0 {
+		// Focused index is not in the list (e.g., hidden); reset to last.
+		m.focusedToolIdx = indices[len(indices)-1]
+		return
+	}
+	curPos += dir
+	if curPos < 0 {
+		curPos = 0
+	} else if curPos >= len(indices) {
+		curPos = len(indices) - 1
+	}
+	m.focusedToolIdx = indices[curPos]
+}
+
+// isToolFocused returns true if the given message index is the focused tool.
+func (m *model) isToolFocused(msgIdx int) bool {
+	return m.scrollMode && msgIdx == m.focusedToolIdx
+}
+
+// scrollToMessage scrolls the viewport so the rendered output for the given
+// message index is visible, roughly centered in the viewport.
+func (m *model) scrollToMessage(msgIdx int) {
+	line := 0
+	for i, msg := range m.messages {
+		focused := m.isToolFocused(i)
+		rendered := renderMessage(msg, m.width, focused)
+		if rendered == "" {
+			continue
+		}
+		if i == msgIdx {
+			// Center the target in the viewport.
+			target := line - m.viewport.Height/2
+			if target < 0 {
+				target = 0
+			}
+			m.viewport.SetYOffset(target)
+			return
+		}
+		line += strings.Count(rendered, "\n") + 2 // +1 for the line itself, +1 for blank separator
+	}
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -148,7 +222,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "esc", "i", "q":
 				m.scrollMode = false
+				m.focusedToolIdx = -1
 				m.input.Focus()
+			case "up":
+				m.focusTool(-1)
+				m.refreshViewport()
+				if m.focusedToolIdx >= 0 {
+					m.scrollToMessage(m.focusedToolIdx)
+				} else {
+					m.viewport, _ = m.viewport.Update(msg)
+				}
+			case "down":
+				m.focusTool(1)
+				m.refreshViewport()
+				if m.focusedToolIdx >= 0 {
+					m.scrollToMessage(m.focusedToolIdx)
+				} else {
+					m.viewport, _ = m.viewport.Update(msg)
+				}
+			case "tab", "enter":
+				// Toggle expand/collapse of the focused tool.
+				if m.focusedToolIdx >= 0 && m.focusedToolIdx < len(m.messages) {
+					msg := &m.messages[m.focusedToolIdx]
+					if msg.Kind == msgTool && msg.Tool != nil && msg.Tool.Done {
+						msg.Tool.Expanded = !msg.Tool.Expanded
+						m.refreshViewport()
+						m.scrollToMessage(m.focusedToolIdx)
+					}
+				}
 			default:
 				m.viewport, _ = m.viewport.Update(msg)
 			}
@@ -209,11 +310,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "pgup":
 			m.scrollMode = true
+			m.focusedToolIdx = -1
 			m.input.Blur()
 			m.viewport, _ = m.viewport.Update(msg)
 			return m, nil
 		case "tab":
-			// Toggle the most recent tool call's expanded state
+			// Toggle the most recent tool call's expanded state (default behavior outside scroll mode).
 			for i := len(m.messages) - 1; i >= 0; i-- {
 				if m.messages[i].Kind == msgTool && m.messages[i].Tool != nil && m.messages[i].Tool.Done {
 					m.messages[i].Tool.Expanded = !m.messages[i].Tool.Expanded
@@ -240,6 +342,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "status":
 					m.resetInput()
 					return m, fetchStatus(m.addr)
+				case "tasks":
+					m.resetInput()
+					m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "Fetching tasks..."})
+					m.refreshViewport()
+					cmds = append(cmds, fetchTasks(m.addr))
+					return m, tea.Batch(cmds...)
 				case "model":
 					m.resetInput()
 					if args == "" {
@@ -352,6 +460,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messages = append(m.messages, chatMessage{
 				Kind: msgSystem,
 				Text: renderDetailedStatus(msg.info, m.width),
+			})
+		}
+		m.refreshViewport()
+		return m, nil
+
+	case tasksResult:
+		if msg.err != nil {
+			m.messages = append(m.messages, chatMessage{
+				Kind: msgSystem,
+				Text: fmt.Sprintf("Tasks error: %s", msg.err),
+			})
+		} else {
+			m.messages = append(m.messages, chatMessage{
+				Kind: msgSystem,
+				Text: renderTasks(msg.tasks, m.width),
 			})
 		}
 		m.refreshViewport()
@@ -650,8 +773,9 @@ func (m *model) refreshViewport() {
 		m.viewport.Height = newH
 	}
 	var lines []string
-	for _, msg := range m.messages {
-		rendered := renderMessage(msg, m.width)
+	for i, msg := range m.messages {
+		focused := m.isToolFocused(i)
+		rendered := renderMessage(msg, m.width, focused)
 		if rendered != "" {
 			lines = append(lines, rendered, "") // blank line between messages
 		}
@@ -824,4 +948,41 @@ func writeWrappedList(b *strings.Builder, label string, items []string, width in
 		b.WriteString(entry)
 		col += len(entry)
 	}
+}
+
+// renderTasks formats a list of agent tasks for display.
+func renderTasks(tasks []agent.Task, width int) string {
+	if width <= 0 {
+		width = 80
+	}
+	if len(tasks) == 0 {
+		return "No tasks."
+	}
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("Tasks (%d):\n", len(tasks)))
+
+	statusIcon := map[agent.TaskStatus]string{
+		agent.TaskOpen:       "○",
+		agent.TaskInProgress: "◐",
+		agent.TaskDone:       "●",
+		agent.TaskCancelled:  "✗",
+	}
+
+	for _, t := range tasks {
+		icon := statusIcon[t.Status]
+		if icon == "" {
+			icon = "?"
+		}
+		b.WriteString(fmt.Sprintf("  %s [%d] %s — %s", icon, t.ID, t.Type, t.Description))
+		if len(t.DependsOn) > 0 {
+			b.WriteString(fmt.Sprintf(" (depends on: %v)", t.DependsOn))
+		}
+		if t.ReasoningEffort != "" {
+			b.WriteString(fmt.Sprintf(" [%s]", t.ReasoningEffort))
+		}
+		b.WriteString("\n")
+	}
+
+	return strings.TrimSpace(b.String())
 }
