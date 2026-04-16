@@ -50,7 +50,7 @@ func main() {
 	contextStrategy := flag.String("context-strategy", "", "context management strategy: compact|recall|session-log|ooda (default: compact)")
 	verbose := flag.Bool("verbose", false, "emit NDJSON events to stderr")
 	noProjectPrompts := flag.Bool("no-project-prompts", false, "suppress .serf/prompts/ loading (match container behavior)")
-	agentName := flag.String("agent", "", "agent persona: coordinator (default), worker, or a plugin agent name")
+	agentName := flag.String("agent", "", "agent persona: default (default), coordinator, worker, or a plugin agent name")
 	var skillsDirs stringSliceFlag
 	flag.Var(&skillsDirs, "skills-dir", "extra skill directory (repeatable)")
 	var mcpServers stringSliceFlag
@@ -84,7 +84,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  --context-strategy <name> Context management strategy: compact|recall|session-log|ooda (default: compact)\n")
 		fmt.Fprintf(os.Stderr, "  --verbose            Emit NDJSON events to stderr (replaces human-readable output)\n")
 		fmt.Fprintf(os.Stderr, "  --no-project-prompts Suppress .serf/prompts/ loading (match Docker container behavior)\n")
-		fmt.Fprintf(os.Stderr, "  --agent <name>       Agent persona: coordinator (default), worker, or a plugin agent name\n")
+		fmt.Fprintf(os.Stderr, "  --agent <name>       Agent persona: default (default), coordinator, worker, or a plugin agent name\n")
 		fmt.Fprintf(os.Stderr, "  --skills-dir <path>  Extra skill directory (repeatable)\n")
 		fmt.Fprintf(os.Stderr, "  --mcp <spec>         MCP server (repeatable, format: name:command args...)\n")
 		fmt.Fprintf(os.Stderr, "  --mcp-config <path>  Path to .mcp.json file (repeatable)\n")

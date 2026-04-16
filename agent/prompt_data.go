@@ -12,7 +12,7 @@ type PromptData struct {
 	// Resolution context
 	NonInteractive           bool
 	Provider                 string // "openai", "anthropic", "gemini"
-	Agent                    string // "coordinator", "implementer", "reviewer", etc.
+	Agent                    string // "default", "coordinator", "implementer", "reviewer", etc.
 	BaseInstructionsOverride string
 	RolePromptOverride       string
 

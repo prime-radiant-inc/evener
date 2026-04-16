@@ -190,9 +190,53 @@ func TestFetchStatus_WithDetailedFields(t *testing.T) {
 	}
 }
 
+func TestFetchTranscriptTargets(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" || r.Method != http.MethodGet {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"session_id":"root-123",
+			"state":"IDLE",
+			"turns":5,
+			"model":"gpt-5",
+			"profile":"openai",
+			"context_pressure":0.12,
+			"detailed":{
+				"subagents":[
+					{"id":"sub-1","status":"running","turns_used":2}
+				]
+			}
+		}`))
+	}))
+	defer ts.Close()
+
+	addr := ts.URL[len("http://"):]
+	cmd := fetchTranscriptTargets(addr)
+	msg := cmd()
+
+	result, ok := msg.(transcriptTargetsResult)
+	if !ok {
+		t.Fatalf("expected transcriptTargetsResult, got %T", msg)
+	}
+	if result.err != nil {
+		t.Fatalf("unexpected error: %v", result.err)
+	}
+	if result.info.SessionID != "root-123" {
+		t.Errorf("session_id = %q, want root-123", result.info.SessionID)
+	}
+	if result.info.Detailed == nil || len(result.info.Detailed.Subagents) != 1 {
+		t.Fatalf("expected 1 subagent in detailed status, got %+v", result.info.Detailed)
+	}
+	if result.info.Detailed.Subagents[0].ID != "sub-1" {
+		t.Errorf("subagent id = %q, want sub-1", result.info.Detailed.Subagents[0].ID)
+	}
+}
+
 func TestSlashCommandHelp(t *testing.T) {
 	help := slashCommandHelp()
-	for _, cmd := range []string{"/help", "/compact", "/status", "/model", "/theme", "/clear", "/quit"} {
+	for _, cmd := range []string{"/help", "/compact", "/status", "/agents", "/model", "/theme", "/clear", "/quit"} {
 		if !strings.Contains(help, cmd) {
 			t.Errorf("help text missing %q", cmd)
 		}

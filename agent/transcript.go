@@ -17,8 +17,8 @@ import (
 
 // TranscriptHeader is the first line of a transcript JSONL file.
 type TranscriptHeader struct {
-	Kind             string    `json:"kind"`              // Always "header"
-	FormatVersion    int       `json:"format_version"`    // Currently 1
+	Kind             string    `json:"kind"`           // Always "header"
+	FormatVersion    int       `json:"format_version"` // Currently 1
 	SessionID        string    `json:"session_id"`
 	ParentSessionID  string    `json:"parent_session_id,omitempty"`
 	ParentToolCallID string    `json:"parent_tool_call_id,omitempty"`
@@ -31,12 +31,12 @@ type TranscriptHeader struct {
 	BuildVersion     string    `json:"build_version,omitempty"`
 	SystemPrompt     string    `json:"system_prompt,omitempty"`
 	// AgentTasks is the full task list the agent started with (from the
-	// agent's YAML frontmatter for root sessions, or from the coordinator's
+	// agent's YAML frontmatter for root sessions, or from the parent's
 	// task_list parameter for spawned subagents). Captured at session
 	// creation so the transcript is self-describing even for runs that
 	// never call task_list(action="view") or fail before all STEERING
 	// messages are emitted.
-	AgentTasks       []Task    `json:"agent_tasks,omitempty"`
+	AgentTasks []Task `json:"agent_tasks,omitempty"`
 }
 
 // TranscriptEntry is a single turn in the transcript JSONL file.
@@ -48,15 +48,15 @@ type TranscriptEntry struct {
 
 // TranscriptAPICall records an LLM API call in the transcript JSONL file.
 type TranscriptAPICall struct {
-	Kind         string           `json:"kind"`                    // Always "api_call"
-	Seq          int              `json:"seq"`
-	Round        int              `json:"round"`
-	Timestamp    string           `json:"ts"`
-	LatencyMs    int64            `json:"latency_ms"`
-	SystemPrompt string           `json:"system_prompt"`
-	Request      llm.APILogRequest  `json:"request"`
+	Kind         string              `json:"kind"` // Always "api_call"
+	Seq          int                 `json:"seq"`
+	Round        int                 `json:"round"`
+	Timestamp    string              `json:"ts"`
+	LatencyMs    int64               `json:"latency_ms"`
+	SystemPrompt string              `json:"system_prompt"`
+	Request      llm.APILogRequest   `json:"request"`
 	Response     *llm.APILogResponse `json:"response,omitempty"`
-	Error        string           `json:"error,omitempty"`
+	Error        string              `json:"error,omitempty"`
 }
 
 // TranscriptWriter appends turns to an immutable JSONL transcript file.

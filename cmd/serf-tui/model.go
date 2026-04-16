@@ -45,13 +45,16 @@ type model struct {
 	historyDraft string   // saved current input when entering history browse
 
 	// Track active tool calls by call ID -> index in messages
-	activeTools    map[string]int
-	lastInterrupt  time.Time
-	lastSentText   string       // last user input, used for auto-steer on busy
-	picker         *modelPicker // non-nil when model picker is active
-	themePicker    *themePicker // non-nil when theme picker is active
-	scrollMode     bool         // true when scrolling history; input is blurred
-	focusedToolIdx int          // index into messages of focused tool call in scroll mode; -1 = none
+	activeTools       map[string]int
+	lastInterrupt     time.Time
+	lastSentText      string                // last user input, used for auto-steer on busy
+	picker            *modelPicker          // non-nil when model picker is active
+	transcriptPicker  *modelPicker          // non-nil when transcript picker is active
+	themePicker       *themePicker          // non-nil when theme picker is active
+	scrollMode        bool                  // true when scrolling history; input is blurred
+	focusedToolIdx    int                   // index into messages of focused tool call in scroll mode; -1 = none
+	transcriptView    *transcriptViewState  // non-nil when viewing a transcript instead of live chat
+	observedSubagents map[string]subagentUI // subagents seen via SSE or /status
 }
 
 // applyInputTheme sets the textarea's style to match the active theme colours.
@@ -87,13 +90,14 @@ func newModel(addr, stateDir string, initialMessages []chatMessage) model {
 	applyInputTheme(&ta)
 
 	return model{
-		addr:        addr,
-		stateDir:    stateDir,
-		input:       ta,
-		messages:    initialMessages,
-		activeTools: make(map[string]int),
-		history:     loadHistory(stateDir),
-		historyIdx:  -1,
+		addr:              addr,
+		stateDir:          stateDir,
+		input:             ta,
+		messages:          initialMessages,
+		activeTools:       make(map[string]int),
+		history:           loadHistory(stateDir),
+		historyIdx:        -1,
+		observedSubagents: make(map[string]subagentUI),
 	}
 }
 
@@ -215,6 +219,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.refreshViewport()
 			}
 			return m, cmd
+		}
+
+		if m.transcriptPicker != nil {
+			updated, cmd := m.transcriptPicker.Update(msg)
+			p := updated.(modelPicker)
+			m.transcriptPicker = &p
+			if p.done {
+				selectedID := p.selected
+				selectedTitle := pickerDisplay(p.items, selectedID)
+				m.transcriptPicker = nil
+				if selectedID != "" {
+					cmd = m.enterTranscriptView(selectedID, selectedTitle)
+				}
+				m.refreshViewport()
+			}
+			return m, cmd
+		}
+
+		if m.transcriptView != nil {
+			switch msg.String() {
+			case "esc", "i", "q":
+				m.exitTranscriptView()
+			default:
+				m.viewport, _ = m.viewport.Update(msg)
+			}
+			return m, nil
 		}
 
 		// In scroll mode, route keys to the viewport; esc/i/q return to input.
@@ -348,6 +378,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.refreshViewport()
 					cmds = append(cmds, fetchTasks(m.addr))
 					return m, tea.Batch(cmds...)
+				case "agents":
+					m.resetInput()
+					cmds = append(cmds, fetchTranscriptTargets(m.addr))
+					return m, tea.Batch(cmds...)
 				case "model":
 					m.resetInput()
 					if args == "" {
@@ -480,6 +514,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, nil
 
+	case transcriptTargetsResult:
+		if msg.err != nil {
+			m.messages = append(m.messages, chatMessage{
+				Kind: msgSystem,
+				Text: fmt.Sprintf("Could not fetch session transcripts: %s", msg.err),
+			})
+			m.refreshViewport()
+			return m, nil
+		}
+		if m.sessionID == "" {
+			m.sessionID = msg.info.SessionID
+		}
+		items := m.buildTranscriptPickerItems(msg.info)
+		if len(items) == 0 {
+			m.messages = append(m.messages, chatMessage{
+				Kind: msgSystem,
+				Text: "No session transcripts are available yet.",
+			})
+			m.refreshViewport()
+			return m, nil
+		}
+		activeID := m.sessionID
+		if m.transcriptView != nil {
+			activeID = m.transcriptView.sessionID
+		}
+		picker := newTranscriptPicker(items, activeID, m.width)
+		m.transcriptPicker = &picker
+		m.refreshViewport()
+		return m, nil
+
 	case clearDoneMsg:
 		if msg.err != nil {
 			m.messages = append(m.messages, chatMessage{
@@ -490,6 +554,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messages = nil
 			m.activeTools = make(map[string]int)
 			m.turns = 0
+			m.transcriptPicker = nil
+			m.transcriptView = nil
+			m.observedSubagents = make(map[string]subagentUI)
+			m.scrollMode = false
+			m.focusedToolIdx = -1
+			m.input.Focus()
 			m.messages = append(m.messages, chatMessage{
 				Kind: msgSystem,
 				Text: "New session started.",
@@ -553,6 +623,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.refreshViewport()
 		return m, nil
+
+	case transcriptRefreshMsg:
+		if m.transcriptView == nil || m.transcriptView.root {
+			return m, nil
+		}
+		m.refreshTranscriptViewState()
+		m.refreshViewport()
+		return m, scheduleTranscriptRefresh()
 	}
 
 	// Update sub-components — only pass non-key messages to the viewport so its
@@ -723,6 +801,33 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 			}
 		}
 		delete(m.activeTools, d.CallID)
+
+	case "SUBAGENT_START":
+		var d struct {
+			AgentID string `json:"agent_id"`
+		}
+		json.Unmarshal([]byte(ev.Data), &d)
+		if d.AgentID != "" {
+			m.trackSubagent(server.SubagentStatusInfo{
+				ID:     d.AgentID,
+				Status: "running",
+			})
+		}
+
+	case "SUBAGENT_END":
+		var d struct {
+			AgentID   string `json:"agent_id"`
+			Status    string `json:"status"`
+			TurnsUsed int    `json:"turns_used"`
+		}
+		json.Unmarshal([]byte(ev.Data), &d)
+		if d.AgentID != "" {
+			m.trackSubagent(server.SubagentStatusInfo{
+				ID:        d.AgentID,
+				Status:    d.Status,
+				TurnsUsed: d.TurnsUsed,
+			})
+		}
 	}
 }
 
@@ -775,12 +880,22 @@ func (m *model) refreshViewport() {
 		m.viewport.Height = newH
 	}
 	var lines []string
-	for i, msg := range m.messages {
+	if m.transcriptView != nil {
+		lines = append(lines, systemStyle.Width(m.width).Render(m.transcriptView.banner()), "")
+		if m.transcriptView.readErr != "" {
+			lines = append(lines, systemStyle.Width(m.width).Render(m.transcriptView.readErr), "")
+		}
+	}
+	currentMessages := m.visibleMessages()
+	for i, msg := range currentMessages {
 		focused := m.isToolFocused(i)
 		rendered := renderMessage(msg, m.width, focused)
 		if rendered != "" {
 			lines = append(lines, rendered, "") // blank line between messages
 		}
+	}
+	if m.transcriptView != nil && len(currentMessages) == 0 && m.transcriptView.readErr == "" {
+		lines = append(lines, systemStyle.Width(m.width).Render("Transcript is empty so far."), "")
 	}
 	content := strings.Join(lines, "\n")
 	m.viewport.SetContent(content)
@@ -808,11 +923,22 @@ func (m model) View() string {
 			statusBar,
 			m.picker.View(),
 		)
+	} else if m.transcriptPicker != nil {
+		body = lipgloss.JoinVertical(lipgloss.Left,
+			m.viewport.View(),
+			statusBar,
+			m.transcriptPicker.View(),
+		)
 	} else if m.themePicker != nil {
 		body = lipgloss.JoinVertical(lipgloss.Left,
 			m.viewport.View(),
 			statusBar,
 			m.themePicker.View(),
+		)
+	} else if m.transcriptView != nil {
+		body = lipgloss.JoinVertical(lipgloss.Left,
+			m.viewport.View(),
+			statusBar,
 		)
 	} else {
 		inputView := inputBorderStyle.Width(m.width).Render(m.input.View())

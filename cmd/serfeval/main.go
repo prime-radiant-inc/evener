@@ -54,7 +54,7 @@ func main() {
 	exportATIF := flag.String("export-atif", "", "export ATIF trajectory to this path")
 	verbose := flag.Bool("verbose", false, "emit NDJSON events to stderr")
 	noProjectPrompts := flag.Bool("no-project-prompts", false, "suppress .serf/prompts/ loading")
-	agentName := flag.String("agent", "", "agent persona name")
+	agentName := flag.String("agent", "", "agent persona name (default: default)")
 	var skillsDirs cmdutil.StringSliceFlag
 	flag.Var(&skillsDirs, "skills-dir", "extra skill directory (repeatable)")
 	var mcpServers cmdutil.StringSliceFlag

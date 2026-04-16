@@ -15,6 +15,7 @@ import (
 type inputSentMsg struct{ err error }
 type steerSentMsg struct{ err error }
 type compactDoneMsg struct{ err error }
+type transcriptRefreshMsg struct{}
 
 // parseSlashCommand returns the command name and arguments if the input starts
 // with a slash command. Returns ("", "") if not a slash command.
@@ -39,6 +40,7 @@ func slashCommandHelp() string {
 		"  /compact   Compact context (free up token space)",
 		"  /status    Show session info and context pressure",
 		"  /tasks     Show the agent's task list",
+		"  /agents    View the main or subagent transcript",
 		"  /model     Switch model (picker) or /model <name>",
 		"  /theme     Pick a theme (dark/light)",
 		"  /clear     Start a new session",
@@ -110,6 +112,11 @@ type statusResult struct {
 	err  error
 }
 
+type transcriptTargetsResult struct {
+	info server.StatusInfo
+	err  error
+}
+
 func fetchStatus(addr string) tea.Cmd {
 	return func() tea.Msg {
 		url := fmt.Sprintf("http://%s/status", addr)
@@ -123,6 +130,22 @@ func fetchStatus(addr string) tea.Cmd {
 			return statusResult{err: err}
 		}
 		return statusResult{info: info}
+	}
+}
+
+func fetchTranscriptTargets(addr string) tea.Cmd {
+	return func() tea.Msg {
+		url := fmt.Sprintf("http://%s/status", addr)
+		resp, err := http.Get(url)
+		if err != nil {
+			return transcriptTargetsResult{err: err}
+		}
+		defer resp.Body.Close()
+		var info server.StatusInfo
+		if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+			return transcriptTargetsResult{err: err}
+		}
+		return transcriptTargetsResult{info: info}
 	}
 }
 

@@ -12,8 +12,11 @@ type modelPickerItem struct {
 	display string
 }
 
-// modelPicker is an inline Bubble Tea model for selecting from a list of models.
+// modelPicker is an inline Bubble Tea model for selecting from a filtered list.
 type modelPicker struct {
+	title     string
+	emptyText string
+	footer    string
 	items     []modelPickerItem
 	active    string // currently active model (highlighted differently)
 	filter    string
@@ -26,9 +29,23 @@ type modelPicker struct {
 
 func newModelPicker(items []modelPickerItem, activeModel string, width int) modelPicker {
 	return modelPicker{
-		items:  items,
-		active: activeModel,
-		width:  width,
+		title:     "Select model",
+		emptyText: "  No matching models.",
+		footer:    "↑/↓ navigate  enter select  esc cancel",
+		items:     items,
+		active:    activeModel,
+		width:     width,
+	}
+}
+
+func newTranscriptPicker(items []modelPickerItem, activeSessionID string, width int) modelPicker {
+	return modelPicker{
+		title:     "Select transcript",
+		emptyText: "  No matching sessions.",
+		footer:    "↑/↓ navigate  enter select  esc cancel",
+		items:     items,
+		active:    activeSessionID,
+		width:     width,
 	}
 }
 
@@ -89,7 +106,11 @@ func (m modelPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m modelPicker) View() string {
 	var b strings.Builder
 
-	b.WriteString(mpTitleStyle.Render("Select model"))
+	title := m.title
+	if title == "" {
+		title = "Select model"
+	}
+	b.WriteString(mpTitleStyle.Render(title))
 	b.WriteString("\n")
 
 	filterText := m.filter
@@ -103,7 +124,11 @@ func (m modelPicker) View() string {
 
 	filtered := m.filtered()
 	if len(filtered) == 0 {
-		b.WriteString(mpDimStyle.Render("  No matching models."))
+		emptyText := m.emptyText
+		if emptyText == "" {
+			emptyText = "  No matching items."
+		}
+		b.WriteString(mpDimStyle.Render(emptyText))
 		b.WriteString("\n")
 	} else {
 		maxVisible := 15
@@ -144,12 +169,16 @@ func (m modelPicker) View() string {
 		}
 
 		if len(filtered) > maxVisible {
-			b.WriteString(mpDimStyle.Render(fmt.Sprintf("  ... %d models total", len(filtered))))
+			b.WriteString(mpDimStyle.Render(fmt.Sprintf("  ... %d items total", len(filtered))))
 			b.WriteString("\n")
 		}
 	}
 
 	b.WriteString("\n")
-	b.WriteString(mpDimStyle.Render("↑/↓ navigate  enter select  esc cancel"))
+	footer := m.footer
+	if footer == "" {
+		footer = "↑/↓ navigate  enter select  esc cancel"
+	}
+	b.WriteString(mpDimStyle.Render(footer))
 	return b.String()
 }

@@ -43,7 +43,7 @@ type runConfig struct {
 	exportATIF         string   // --export-atif path
 	verbose            bool
 	noProjectPrompts   bool
-	agentName          string // --agent persona name
+	agentName          string // --agent persona name (default: default)
 	stdout             io.Writer
 	stderr             io.Writer
 

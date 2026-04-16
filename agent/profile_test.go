@@ -16,7 +16,7 @@ func renderPromptForTest(t *testing.T, p ProviderProfile, data PromptData) strin
 		data.Provider = p.ID()
 	}
 	if data.Agent == "" {
-		data.Agent = "coordinator"
+		data.Agent = defaultAgentName
 	}
 	if data.Model == "" {
 		data.Model = p.Model()
@@ -141,6 +141,45 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"use_skill",
 		})
 	})
+}
+
+func TestSystemPrompt_ImplementerWarnsOnUnavailableTools(t *testing.T) {
+	prompt := renderPromptForTest(t, NewOpenAIProfile("gpt-5.4"), PromptData{
+		Agent:                       "implementer",
+		CallableToolNames:           []string{"read_file", "exec_command", "communicate"},
+		UnavailableProfileToolNames: []string{"spawn_agent", "resume_agent", "wait", "close_agent"},
+	})
+
+	if !strings.Contains(prompt, "If the task depends on tools or capabilities explicitly listed as unavailable in") {
+		t.Fatalf("implementer prompt missing unavailable-tools guidance:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Do not try to recreate unavailable serf-native tools by shelling out to") {
+		t.Fatalf("implementer prompt missing nested-serf warning:\n%s", prompt)
+	}
+}
+
+func TestSystemPrompt_CoordinatorHasImpossibleDelegationException(t *testing.T) {
+	prompt := renderPromptForTest(t, NewOpenAIProfile("gpt-5.4"), PromptData{
+		Agent: "coordinator",
+	})
+
+	if !strings.Contains(prompt, "Exception: if the task itself is about delegation, agent behavior, or orchestration") {
+		t.Fatalf("coordinator prompt missing delegation exception:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Do not force an impossible delegation.") {
+		t.Fatalf("coordinator prompt missing impossible-delegation rule:\n%s", prompt)
+	}
+}
+
+func TestSystemPrompt_DefaultAgentDoesNotUseCoordinatorRole(t *testing.T) {
+	prompt := renderPromptForTest(t, NewOpenAIProfile("gpt-5.4"), PromptData{})
+
+	if strings.Contains(prompt, "You are a coordinator. You delegate, verify, and iterate. You do not implement.") {
+		t.Fatalf("default prompt should not use coordinator persona:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "### CRITICAL: You normally spawn an implementer") {
+		t.Fatalf("default prompt should not include coordinator delegation mandate:\n%s", prompt)
+	}
 }
 
 func TestProviderProfiles_BuildSystemPrompt_IncludesEnvironment(t *testing.T) {

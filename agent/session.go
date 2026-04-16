@@ -41,6 +41,8 @@ const (
 	communicateKindFinal   = "final"
 )
 
+const defaultAgentName = "default"
+
 type SessionConfig struct {
 	MaxToolRoundsPerInput   int `json:"max_tool_rounds_per_input,omitempty"`
 	MaxTurns                int `json:"max_turns,omitempty"`
@@ -55,7 +57,7 @@ type SessionConfig struct {
 	UserInstructionOverride string `json:"user_instruction_override,omitempty"`
 
 	// AgentName selects a persona for prompt composition. When set, the persona's
-	// role prompt is used instead of the default coordinator. Looked up from
+	// role prompt is used instead of the default agent profile. Looked up from
 	// built-in agents, then plugin agents.
 	AgentName string `json:"agent_name,omitempty"`
 
@@ -362,7 +364,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 	// Populate default tasks from agent definition (non-interactive/eval mode only).
 	agentName := cfg.AgentName
 	if agentName == "" {
-		agentName = "coordinator"
+		agentName = defaultAgentName
 	}
 	if cfg.NonInteractive && cfg.ParentSessionID == "" {
 		// Root sessions only. Subagent tasks are populated in spawnAgent
@@ -2364,7 +2366,7 @@ func (s *Session) refreshSystemPromptCache() {
 func (s *Session) buildPromptData() PromptData {
 	agentName := s.cfg.AgentName
 	if agentName == "" {
-		agentName = "coordinator"
+		agentName = defaultAgentName
 	}
 
 	data := PromptData{
@@ -2486,7 +2488,7 @@ func (s *Session) renderSystemPrompt() string {
 		},
 	}
 	if resolver.agent == "" {
-		resolver.agent = "coordinator"
+		resolver.agent = defaultAgentName
 	}
 
 	data := s.buildPromptData()

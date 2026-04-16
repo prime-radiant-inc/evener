@@ -19,19 +19,93 @@ func TestBuiltinAgents_LoadsAllRoles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("builtinAgents: %v", err)
 	}
-	want := []string{"explorer", "planner", "test-engineer", "implementer", "reviewer"}
+	want := []string{"default", "explorer", "planner", "test-engineer", "implementer", "reviewer"}
 	for _, name := range want {
 		agent, ok := agents[name]
 		if !ok {
 			t.Errorf("missing built-in agent %q", name)
 			continue
 		}
-		if agent.SystemPrompt == "" {
+		if name != defaultAgentName && agent.SystemPrompt == "" {
 			t.Errorf("agent %q has empty system prompt", name)
 		}
 		if agent.Description == "" {
 			t.Errorf("agent %q has empty description", name)
 		}
+	}
+}
+
+func TestBuiltinAgents_DefaultHasBroadToolAccess(t *testing.T) {
+	agents, err := builtinAgents()
+	if err != nil {
+		t.Fatalf("builtinAgents: %v", err)
+	}
+	def, ok := agents["default"]
+	if !ok {
+		t.Fatal("expected built-in 'default' agent")
+	}
+	wantTools := []string{
+		"read_file", "write_file", "shell", "spawn_agent", "resume_agent",
+		"wait", "close_agent", "task_list", "web_fetch",
+	}
+	for _, want := range wantTools {
+		found := false
+		for _, tool := range def.Tools {
+			if tool == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("default agent missing tool %q; got %v", want, def.Tools)
+		}
+	}
+}
+
+func TestBuiltinAgents_DefaultTaskWorkflowAcceptsParentTasks(t *testing.T) {
+	agents, err := builtinAgents()
+	if err != nil {
+		t.Fatalf("builtinAgents: %v", err)
+	}
+	def, ok := agents["default"]
+	if !ok {
+		t.Fatal("expected built-in 'default' agent")
+	}
+	found := false
+	for _, task := range def.Tasks {
+		if task.Title == "Do the work" && task.Insert == "parent_tasks" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("default agent should have a Do the work task with insert=parent_tasks, got %#v", def.Tasks)
+	}
+}
+
+func TestSession_DefaultFallbackUsesDefaultAgentPrompt(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	foundDefaultRoleSource := false
+	for _, src := range sess.promptSourceLog {
+		if src.Label == "agent:"+defaultAgentName {
+			foundDefaultRoleSource = true
+			break
+		}
+	}
+	if !foundDefaultRoleSource {
+		t.Fatalf("default session prompt should resolve the default agent role, sources=%v", sess.promptSourceLog)
+	}
+	if strings.Contains(sess.cachedSystemPrompt, "You are a coordinator. You delegate, verify, and iterate. You do not implement.") {
+		t.Fatalf("default session prompt should not use coordinator persona, got:\n%s", sess.cachedSystemPrompt)
 	}
 }
 

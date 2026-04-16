@@ -48,7 +48,7 @@ func runServe(args []string) error {
 	contextStrategy := fs.String("context-strategy", "", "context management strategy")
 	verbose := fs.Bool("verbose", false, "emit NDJSON events to stderr")
 	noProjectPrompts := fs.Bool("no-project-prompts", false, "suppress .serf/prompts/ loading")
-	agentName := fs.String("agent", "", "agent persona name")
+	agentName := fs.String("agent", "", "agent persona name (default: default)")
 	var skillsDirs cmdutil.StringSliceFlag
 	fs.Var(&skillsDirs, "skills-dir", "extra skill directory (repeatable)")
 	var mcpServers cmdutil.StringSliceFlag

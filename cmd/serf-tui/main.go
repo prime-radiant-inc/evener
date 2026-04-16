@@ -33,7 +33,7 @@ func main() {
 	contextStrategy := flag.String("context-strategy", "", "context management strategy")
 	verbose := flag.Bool("verbose", false, "emit NDJSON events to stderr")
 	noProjectPrompts := flag.Bool("no-project-prompts", false, "suppress .serf/prompts/ loading")
-	agentName := flag.String("agent", "", "agent persona name")
+	agentName := flag.String("agent", "", "agent persona name (default: default)")
 	systemPromptAsUser := flag.Bool("system-prompt-as-user", false, "deliver system prompt as first user message")
 	resumeWith := flag.String("resume-with", "", "start a new task using a previous session's context")
 	cpuProfile := flag.String("cpu-profile", "", "write CPU profile to file")
