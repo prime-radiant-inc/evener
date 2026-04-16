@@ -6,6 +6,5 @@
     can work with the changes rather than reverting them.
   * If changes are in unrelated files, ignore them and don't revert them.
 - Do not amend a commit unless explicitly requested to do so.
-- **NEVER** use destructive commands like `git reset --hard` or `git checkout --` unless
-  specifically requested or approved.
+- **NEVER** use destructive commands like `git reset --hard`, `git checkout --`, `git add -A`  unless specifically requested or approved.
 - **ALWAYS** prefer using non-interactive git commands.

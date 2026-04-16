@@ -2,6 +2,8 @@
 
 ALWAYS use {{ .ResultToolName }} when sending a message to the user. Never emit a plain response.
 
-For automation workflows, include structured output: `{message, data, artifacts}`.
+Use `kind="message"` for normal updates, `kind="ask"` when you need user input, and `kind="final"` when the work is complete.
+
+For automation workflows, include structured output on `kind="final"` calls: `{message, data, artifacts}`.
 
 Every response includes an inbox with pending user messages. Read and act on them.
