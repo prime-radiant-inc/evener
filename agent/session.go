@@ -35,9 +35,16 @@ const (
 	SessionClosed        SessionState = "CLOSED"
 )
 
+const (
+	communicateKindMessage = "message"
+	communicateKindAsk     = "ask"
+	communicateKindFinal   = "final"
+)
+
 // nonInteractiveGuidance is DEPRECATED — only used by the legacy buildInitialSystemPrompt
 // path (--system-prompt override). The template system uses section files instead:
-//   non-interactive.md.tmpl (base) and non-interactive.agent-coordinator.md (coordinator).
+//
+//	non-interactive.md.tmpl (base) and non-interactive.agent-coordinator.md (coordinator).
 func nonInteractiveGuidance(resultToolName string) string {
 	return fmt.Sprintf(`
 
@@ -48,8 +55,8 @@ answer questions, provide clarification, or confirm your approach. Nobody will e
 to you. Any attempt to ask a question or wait for confirmation wastes your limited rounds.
 
 RULES (these override ANY skill instructions that conflict):
-- NEVER use %s to ask a question or request confirmation.
-- The ONLY valid use of %s is to deliver FINAL work output.
+- Use %s for every user-facing message.
+- In non-interactive mode, NEVER use %s with kind="ask".
 - The task prompt IS the complete specification. Read it carefully, then BUILD.
 - If a skill says "ask your human partner", "confirm with user", or "explore user intent":
   make those judgment calls yourself and proceed autonomously.
@@ -116,14 +123,9 @@ type SessionConfig struct {
 	// ContextStrategy selects the context management strategy: compact|recall|session-log|ooda.
 	ContextStrategy string `json:"context_strategy,omitempty"`
 
-	// MinResultRound sets the minimum tool round before submit_result
-	// is accepted. Before this round, the tool returns an error asking the
-	// model to verify its solution. 0 means no minimum (accept immediately).
-	MinResultRound int `json:"min_result_round,omitempty"`
-
 	// EnableReviewerGate, when true, spawns a reviewer subagent at depth 0
 	// to validate the result before accepting it. At depth > 0 (subagents),
-	// submit_result always passes through directly.
+	// communicate kind="final" always passes through directly.
 	EnableReviewerGate bool `json:"enable_reviewer_gate,omitempty"`
 
 	// EnableAutoVerify, when true, makes the task store auto-generate verify
@@ -233,10 +235,11 @@ type Session struct {
 	steeringQueue []string
 	followups     []string
 
-	// submit_result tool state (transient, reset each processOneInput call)
-	resultDelivered bool
-	resultText      string
-	currentRound    int // updated each tool loop iteration for MinResultRound gate
+	// communicate tool state (transient, reset each processOneInput call)
+	communicated     bool
+	communicateKind  string
+	communicateText  string
+	communicateReply string
 
 	// subagents
 	depth     int
@@ -268,7 +271,7 @@ type Session struct {
 	projectDocsTruncated bool
 
 	// read-before-write guardrail
-	readFiles map[string]bool
+	readFiles   map[string]bool
 	readFilesMu sync.RWMutex
 
 	// SESSION_END deduplication: emitted exactly once across ProcessInput and Close.
@@ -299,14 +302,12 @@ type Session struct {
 	transcript *TranscriptWriter
 
 	// Cached tool definitions (Issue 1: avoid rebuilding every round).
-	// cachedToolDefs is the full list; cachedToolDefsNoResult excludes the result tool.
-	cachedToolDefs         []llm.ToolDefinition
-	cachedToolDefsNoResult []llm.ToolDefinition
+	cachedToolDefs []llm.ToolDefinition
 
 	// Cached system prompt components (Issue 3: avoid recomputing every round).
-	cachedSkillList                []SkillMeta
-	cachedExtraTools               string
-	cachedAgentSection             string
+	cachedSkillList    []SkillMeta
+	cachedExtraTools   string
+	cachedAgentSection string
 	// Template-based prompt caching.
 	cachedSystemPrompt string
 	promptSourceLog    []PromptSource
@@ -395,16 +396,16 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		// PopulateFromTemplates call in spawnAgent would be a no-op
 		// (tasks already exist).
 		if agent, ok := s.pluginAgents[agentName]; ok && len(agent.Tasks) > 0 {
-		store := s.getOrCreateTaskStore()
-		if err := store.PopulateFromTemplates(agent.Tasks, nil); err == nil {
-			// Inject first task prompt and set reasoning effort.
-			if current, ok := store.CurrentInProgress(); ok {
-				if current.ReasoningEffort != "" {
-					s.cfg.ReasoningEffort = current.ReasoningEffort
+			store := s.getOrCreateTaskStore()
+			if err := store.PopulateFromTemplates(agent.Tasks, nil); err == nil {
+				// Inject first task prompt and set reasoning effort.
+				if current, ok := store.CurrentInProgress(); ok {
+					if current.ReasoningEffort != "" {
+						s.cfg.ReasoningEffort = current.ReasoningEffort
+					}
+					s.Steer(formatCurrentTaskSteering(current))
 				}
-				s.Steer(formatCurrentTaskSteering(current))
 			}
-		}
 		}
 	}
 
@@ -519,14 +520,14 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 
 	sessCtx, sessCancel := context.WithCancel(context.Background())
 	s := &Session{
-		id:         snap.ID,
-		cfg:        cfg,
-		client:     client,
-		profile:    profile,
-		env:        env,
-		stateDir:   cfg.StateDir,
-		state:      SessionIdle,
-		events:     make(chan SessionEvent, 256),
+		id:             snap.ID,
+		cfg:            cfg,
+		client:         client,
+		profile:        profile,
+		env:            env,
+		stateDir:       cfg.StateDir,
+		state:          SessionIdle,
+		events:         make(chan SessionEvent, 256),
 		history:        resumeHistory,
 		modelResponses: snap.TurnCount,
 		subagents:      map[string]*subagent{},
@@ -664,14 +665,14 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 
 	sessCtx, sessCancel := context.WithCancel(context.Background())
 	s := &Session{
-		id:         meta.ID,
-		cfg:        cfg,
-		client:     client,
-		profile:    profile,
-		env:        env,
-		stateDir:   cfg.StateDir,
-		state:      SessionIdle,
-		events:     make(chan SessionEvent, 256),
+		id:             meta.ID,
+		cfg:            cfg,
+		client:         client,
+		profile:        profile,
+		env:            env,
+		stateDir:       cfg.StateDir,
+		state:          SessionIdle,
+		events:         make(chan SessionEvent, 256),
 		history:        resumeHistory,
 		modelResponses: meta.TurnCount,
 		subagents:      map[string]*subagent{},
@@ -773,7 +774,7 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 func (s *Session) ID() string                  { return s.id }
 func (s *Session) Events() <-chan SessionEvent { return s.events }
 
-// resultToolName returns the effective name for the submit_result tool.
+// resultToolName returns the effective name for the communicate tool.
 func (s *Session) resultToolName() string {
 	if s.cfg.ResultToolName != "" {
 		return s.cfg.ResultToolName
@@ -1040,12 +1041,17 @@ func (s *Session) FollowUp(msg string) {
 	s.followups = append(s.followups, msg)
 }
 
-// ResultDelivered reports whether submit_result was called during the
-// most recent ProcessInput invocation.
-func (s *Session) ResultDelivered() bool {
+// Communicated reports whether communicate was called during the most recent
+// ProcessInput invocation.
+func (s *Session) Communicated() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.resultDelivered
+	return s.communicated
+}
+
+// ResultDelivered is kept as an alias for older callers.
+func (s *Session) ResultDelivered() bool {
+	return s.Communicated()
 }
 
 func (s *Session) Close() {
@@ -1241,8 +1247,10 @@ func (s *Session) spawnReviewer(ctx context.Context, claimedResult string) (revi
 		verdict = v
 		verdictSet = true
 		subSess.mu.Lock()
-		subSess.resultDelivered = true
-		subSess.resultText = v.Feedback
+		subSess.communicated = true
+		subSess.communicateKind = communicateKindFinal
+		subSess.communicateText = v.Feedback
+		subSess.communicateReply = v.Feedback
 		subSess.mu.Unlock()
 	}
 	_ = subSess.reg.Register(RegisteredTool{
@@ -1611,8 +1619,10 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		return "", fmt.Errorf("session is closed")
 	}
 	s.state = SessionProcessing
-	s.resultDelivered = false
-	s.resultText = ""
+	s.communicated = false
+	s.communicateKind = ""
+	s.communicateText = ""
+	s.communicateReply = ""
 	s.mu.Unlock()
 
 	select {
@@ -1676,7 +1686,6 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		timings.Round = round
 
 		s.mu.Lock()
-		s.currentRound = round
 		s.totalRounds++
 		s.mu.Unlock()
 
@@ -1786,7 +1795,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			Provider:   s.profile.ID(),
 			Messages:   messages,
 			Tools:      toolDefs,
-			ToolChoice: &llm.ToolChoice{Mode: "auto"},
+			ToolChoice: &llm.ToolChoice{Mode: "required"},
 			WebSearch:  s.profile.SupportsWebSearch(),
 			AdapterTimeout: &llm.AdapterTimeout{
 				Connect:    10 * time.Second,
@@ -2025,9 +2034,9 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 					continue
 				}
 				// Exhausted retries — fall through to exit.
-			} else if s.cfg.NonInteractive {
-				// Non-empty bare text without tool calls in non-interactive mode.
-				// The model should use submit_result instead. Redirect it.
+			} else {
+				// Non-empty bare text without tool calls violates the contract:
+				// all user-facing messages must go through communicate.
 				consecutiveEmptyResponses = 0
 				consecutiveBareTextResponses++
 				if consecutiveBareTextResponses <= maxBareTextRetries {
@@ -2035,8 +2044,9 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 						Message: fmt.Sprintf("bare text response without tool call (retry %d/%d)", consecutiveBareTextResponses, maxBareTextRetries),
 					})
 					steering := "You responded with bare text instead of a tool call. " +
-						"If you still have work to do, call your next tool. " +
-						"Only call " + s.resultToolName() + " when all your work is complete."
+						"All user-facing messages MUST use " + s.resultToolName() + ". " +
+						"If that bare text was meant for the user, call " + s.resultToolName() + " now with kind=\"message\", kind=\"ask\", or kind=\"final\" as appropriate. " +
+						"Otherwise call your next tool and keep working."
 					s.appendTurn(TurnSteering, llm.User(steering))
 					s.emit(EventSteeringInjected, SteeringInjectedData{Text: steering})
 					round-- // Don't count bare-text retries as tool rounds.
@@ -2045,18 +2055,16 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 					s.emit(EventRoundTimings, timings)
 					continue
 				}
-				// Exhausted retries — fall through to exit with last text.
-			} else {
-				// Interactive mode: bare text is a normal response.
-				consecutiveEmptyResponses = 0
+				err := fmt.Errorf("model returned bare text without calling %s after %d retries", s.resultToolName(), maxBareTextRetries)
+				s.emit(EventError, ErrorData{Error: err.Error()})
+				s.mu.Lock()
+				s.state = SessionIdle
+				s.mu.Unlock()
+				return "", err
 			}
 
 			s.mu.Lock()
-			if looksLikeQuestion(txt) {
-				s.state = SessionAwaitingInput
-			} else {
-				s.state = SessionIdle
-			}
+			s.state = SessionIdle
 			s.mu.Unlock()
 			s.maybeAutoSave()
 			timings.TotalRound = time.Since(roundStart)
@@ -2246,16 +2254,17 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall - timings.ToolExec - timings.Persistence - timings.AfterAction
 		s.emit(EventRoundTimings, timings)
 
-		// submit_result sets the flag; exit the loop with the result message.
+		// communicate sets the flag; exit the loop with the communicated message.
 		s.mu.Lock()
-		delivered := s.resultDelivered
-		text := s.resultText
+		delivered := s.communicated
+		kind := s.communicateKind
+		text := s.communicateReply
 		s.mu.Unlock()
 		if delivered {
 			// Stop hooks
 			if s.hookRunner != nil {
 				hi := s.hookInput(HookStop)
-				hi.Reason = "communicate"
+				hi.Reason = "communicate." + kind
 				stopResult := s.hookRunner.RunStop(ctx, hi)
 				for _, msg := range stopResult.SystemMessages {
 					s.Steer(msg)
@@ -2266,7 +2275,11 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 				}
 			}
 			s.mu.Lock()
-			s.state = SessionIdle
+			if kind == communicateKindAsk {
+				s.state = SessionAwaitingInput
+			} else {
+				s.state = SessionIdle
+			}
 			s.mu.Unlock()
 			return text, nil
 		}
@@ -2388,13 +2401,9 @@ func (s *Session) customToolDescriptions() string {
 	return b.String()
 }
 
-// allToolDefinitions returns cached tool definitions, filtering the result
-// tool when MinResultRound is configured and the round is below the threshold.
+// allToolDefinitions returns cached tool definitions.
 // The cache is built once at session init via rebuildToolDefsCache.
-func (s *Session) allToolDefinitions(round int) []llm.ToolDefinition {
-	if s.cfg.MinResultRound > 0 && round < s.cfg.MinResultRound {
-		return s.cachedToolDefsNoResult
-	}
+func (s *Session) allToolDefinitions(_ int) []llm.ToolDefinition {
 	return s.cachedToolDefs
 }
 
@@ -2403,7 +2412,6 @@ func (s *Session) allToolDefinitions(round int) []llm.ToolDefinition {
 // and again if tools are added at runtime (e.g. MCP or custom tools).
 func (s *Session) rebuildToolDefsCache() {
 	registered := s.reg.RegisteredNames()
-	resultName := s.resultToolName()
 
 	// Profile tool definitions use provider-specific names (e.g. "exec_command"
 	// for OpenAI). Build a reverse map from provider name → canonical name so
@@ -2455,19 +2463,6 @@ func (s *Session) rebuildToolDefsCache() {
 	}
 
 	s.cachedToolDefs = defs
-
-	// Build the filtered list that excludes the result tool.
-	filtered := make([]llm.ToolDefinition, 0, len(defs))
-	for _, td := range defs {
-		canonical := td.Name
-		if c, ok := reverseMap[td.Name]; ok {
-			canonical = c
-		}
-		if canonical != resultName {
-			filtered = append(filtered, td)
-		}
-	}
-	s.cachedToolDefsNoResult = filtered
 }
 
 // rebuildPromptCache caches system prompt components that don't change between
@@ -2516,25 +2511,25 @@ func (s *Session) buildPromptData() PromptData {
 	}
 
 	data := PromptData{
-		NonInteractive:        s.cfg.NonInteractive,
-		Provider:              s.profile.ID(),
-		Agent:                 agentName,
-		WorkingDir:            s.envInfo.WorkingDir,
-		IsGitRepo:             s.envInfo.IsGitRepo,
-		GitBranch:             s.envInfo.GitBranch,
-		Platform:              s.envInfo.Platform,
-		OSVersion:             s.envInfo.OSVersion,
-		Today:                 s.envInfo.Today,
-		Model:                 s.profile.Model(),
-		KnowledgeCutoff:       s.envInfo.KnowledgeCutoff,
-		GitModifiedFiles:      s.envInfo.GitModifiedFiles,
-		GitUntrackedFiles:     s.envInfo.GitUntrackedFiles,
-		GitRecentCommitTitles: s.envInfo.GitRecentCommitTitles,
-		WorkspaceTree:         s.envInfo.Workspace.Tree,
-		BuildInfo:             s.envInfo.Workspace.BuildInfo,
-		ResultToolName:        s.resultToolName(),
+		NonInteractive:          s.cfg.NonInteractive,
+		Provider:                s.profile.ID(),
+		Agent:                   agentName,
+		WorkingDir:              s.envInfo.WorkingDir,
+		IsGitRepo:               s.envInfo.IsGitRepo,
+		GitBranch:               s.envInfo.GitBranch,
+		Platform:                s.envInfo.Platform,
+		OSVersion:               s.envInfo.OSVersion,
+		Today:                   s.envInfo.Today,
+		Model:                   s.profile.Model(),
+		KnowledgeCutoff:         s.envInfo.KnowledgeCutoff,
+		GitModifiedFiles:        s.envInfo.GitModifiedFiles,
+		GitUntrackedFiles:       s.envInfo.GitUntrackedFiles,
+		GitRecentCommitTitles:   s.envInfo.GitRecentCommitTitles,
+		WorkspaceTree:           s.envInfo.Workspace.Tree,
+		BuildInfo:               s.envInfo.Workspace.BuildInfo,
+		ResultToolName:          s.resultToolName(),
 		UserInstructionOverride: strings.TrimSpace(s.cfg.UserInstructionOverride),
-		ProjectDocs:           s.projectDocs,
+		ProjectDocs:             s.projectDocs,
 	}
 
 	// Skills
@@ -3466,7 +3461,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 		})
 	}
 
-	// Submit result (exits session).
+	// communicate is the only user-facing message channel.
 	// Use the profile's definition if available (it may have been modified by
 	// WithAllowedDecisions to add extra fields to the output schema).
 	// Fall back to the base definition otherwise.
@@ -3479,17 +3474,31 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			_ = env
+			kind := strings.TrimSpace(fmt.Sprint(args["kind"]))
 			message := ""
 			if v, ok := args["message"]; ok {
 				message = fmt.Sprint(v)
 			}
+			output, hasOutput := args["output"]
 
-			if v, ok := args["output"]; (!ok || v == nil) && strings.TrimSpace(message) == "" {
-				return nil, fmt.Errorf("submit_result requires either message or output")
+			switch kind {
+			case communicateKindMessage, communicateKindAsk, communicateKindFinal:
+			default:
+				return nil, fmt.Errorf("communicate requires kind to be one of %q, %q, or %q", communicateKindMessage, communicateKindAsk, communicateKindFinal)
 			}
 
 			resultText := message
-			if output, ok := args["output"]; ok && output != nil {
+			if kind != communicateKindFinal && hasOutput && output != nil {
+				return nil, fmt.Errorf("communicate output is only allowed with kind=%q", communicateKindFinal)
+			}
+			if kind == communicateKindFinal && (!hasOutput || output == nil) && strings.TrimSpace(message) == "" {
+				return nil, fmt.Errorf("communicate kind=%q requires message or output", communicateKindFinal)
+			}
+			if kind != communicateKindFinal && strings.TrimSpace(message) == "" {
+				return nil, fmt.Errorf("communicate kind=%q requires message", kind)
+			}
+
+			if kind == communicateKindFinal && hasOutput && output != nil {
 				// Only use canonicalized output when there's no top-level message.
 				// When both message and output are provided, message is the detailed
 				// text intended for the parent; output is structured metadata.
@@ -3504,7 +3513,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			// Reviewer gate: at depth 0 (root session) with EnableReviewerGate,
 			// spawn a reviewer subagent to validate the work before accepting.
 			// At depth > 0 (subagent), pass through directly to prevent recursion.
-			if s.cfg.EnableReviewerGate && s.depth == 0 {
+			if kind == communicateKindFinal && s.cfg.EnableReviewerGate && s.depth == 0 {
 				verdict, err := s.spawnReviewer(ctx, resultText)
 				if err != nil {
 					// Fail-open: reviewer error should not block result delivery.
@@ -3528,7 +3537,8 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 				}
 			}
 
-			s.emit(EventSubmitResult, SubmitResultData{
+			s.emit(EventCommunicate, CommunicateData{
+				Kind:    kind,
 				Message: message,
 			})
 
@@ -3536,14 +3546,16 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			inbox := s.drainSteering()
 
 			s.mu.Lock()
-			s.resultDelivered = true
-			s.resultText = resultText
+			s.communicated = true
+			s.communicateKind = kind
+			s.communicateText = message
+			s.communicateReply = resultText
 			s.mu.Unlock()
 
 			resp := map[string]any{
-				"accepted":  true,
-				"delivered": true,
-				"inbox":     inbox,
+				"accepted": true,
+				"kind":     kind,
+				"inbox":    inbox,
 			}
 			b, _ := json.Marshal(resp)
 			return string(b), nil

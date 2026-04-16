@@ -12,10 +12,10 @@ import (
 
 // spyStrategy records calls to ManageContext and AfterAction for test assertions.
 type spyStrategy struct {
-	mu                  sync.Mutex
-	manageContextCalls  int
-	afterActionCalls    int
-	toolsDefs           []RegisteredTool
+	mu                 sync.Mutex
+	manageContextCalls int
+	afterActionCalls   int
+	toolsDefs          []RegisteredTool
 }
 
 func (s *spyStrategy) Name() string { return "spy" }
@@ -136,7 +136,7 @@ func TestSession_ContextStrategy_SpyHooks(t *testing.T) {
 			},
 			// Round 2: model gives a final text response.
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("done")}
+				return finalResponse("done")
 			},
 		},
 	}
@@ -166,9 +166,10 @@ func TestSession_ContextStrategy_SpyHooks(t *testing.T) {
 		t.Errorf("ManageContext call count: got %d, want 2", got)
 	}
 
-	// AfterAction is called once per completed tool round (1 tool round = 1 call).
-	if got := spy.AfterActionCount(); got != 1 {
-		t.Errorf("AfterAction call count: got %d, want 1", got)
+	// AfterAction is called once per completed tool round. The explicit
+	// communicate final response is also a tool round under the new contract.
+	if got := spy.AfterActionCount(); got != 2 {
+		t.Errorf("AfterAction call count: got %d, want 2", got)
 	}
 }
 
@@ -207,8 +208,8 @@ func TestCompactionThresholdScale(t *testing.T) {
 	cm := sess.contextMgr
 	check("ObservationMaskThreshold", cm.ObservationMaskThreshold, 0.30) // 0.60 * 0.5
 	check("ThinkingClearThreshold", cm.ThinkingClearThreshold, 0.35)     // 0.70 * 0.5
-	check("CheckpointThreshold", cm.CheckpointThreshold, 0.40)          // 0.80 * 0.5
-	check("SummarizeThreshold", cm.SummarizeThreshold, 0.45)            // 0.90 * 0.5
+	check("CheckpointThreshold", cm.CheckpointThreshold, 0.40)           // 0.80 * 0.5
+	check("SummarizeThreshold", cm.SummarizeThreshold, 0.45)             // 0.90 * 0.5
 	sess.Close()
 
 	// Scale=0.1 clamps to 0.20 floor.

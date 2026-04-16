@@ -23,7 +23,7 @@ func TestCachedToolDefs_MatchUncached(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("ok")}
+				return finalResponse("ok")
 			},
 		},
 	}
@@ -53,35 +53,20 @@ func TestCachedToolDefs_MatchUncached(t *testing.T) {
 	}
 }
 
-func TestCachedToolDefs_MinResultRound_FiltersCorrectly(t *testing.T) {
-	// With MinResultRound, early rounds should exclude the result tool.
+func TestCachedToolDefs_AlwaysIncludesCommunicate(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai"}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
-		MinResultRound: 3,
-	})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
 
 	resultName := sess.resultToolName()
-
-	// Round 0,1,2: result tool should be hidden.
-	for round := 0; round < 3; round++ {
-		defs := sess.allToolDefinitions(round)
-		for _, td := range defs {
-			if td.Name == resultName {
-				t.Errorf("round %d: result tool %q should be hidden before MinResultRound", round, resultName)
-			}
-		}
-	}
-
-	// Round 3+: result tool should be present.
-	defs := sess.allToolDefinitions(3)
+	defs := sess.allToolDefinitions(0)
 	found := false
 	for _, td := range defs {
 		if td.Name == resultName {
@@ -90,7 +75,7 @@ func TestCachedToolDefs_MinResultRound_FiltersCorrectly(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("round 3: result tool %q should be present at MinResultRound", resultName)
+		t.Errorf("communicate tool %q should always be present", resultName)
 	}
 }
 
@@ -563,7 +548,7 @@ func TestSystemPromptConsistency_WithAndWithoutCache(t *testing.T) {
 				if len(req.Messages) > 0 && req.Messages[0].Role == llm.RoleSystem {
 					capturedSysPrompt = req.Messages[0].Text()
 				}
-				return llm.Response{Message: llm.Assistant("ok")}
+				return finalResponse("ok")
 			},
 		},
 	}
@@ -669,7 +654,10 @@ func TestSession_CachedProjectDocsUsedInSystemPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() { for range sess.Events() {} }()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -867,7 +855,10 @@ func TestSession_MaybeAutoSave_WritesMetaNotSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() { for range sess.Events() {} }()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

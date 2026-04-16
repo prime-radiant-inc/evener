@@ -749,11 +749,11 @@ func TestAnthropicProfile_Default_NoBeta1MHeader(t *testing.T) {
 	}
 }
 
-func TestAnthropicProfile_WithSubmitResultRequiredDataKeys(t *testing.T) {
+func TestAnthropicProfile_WithCommunicateRequiredDataKeys(t *testing.T) {
 	p := NewAnthropicProfile("claude-opus-4-6")
-	p2 := WithSubmitResultRequiredDataKeys(p, []string{"tasks"})
+	p2 := WithCommunicateRequiredDataKeys(p, []string{"tasks"})
 	if p2 == nil {
-		t.Fatal("WithSubmitResultRequiredDataKeys returned nil")
+		t.Fatal("WithCommunicateRequiredDataKeys returned nil")
 	}
 	// Should still be a valid profile with correct ID.
 	if p2.ID() != "anthropic" {

@@ -61,7 +61,7 @@ class TestRenderTaskDetail:
              "tool_calls": [], "tool_results": [], "text": "",
              "usage": {}, "entries": []},
             {"round": 2, "action": "SUBMIT",
-             "summary": 'communicate("Done")',
+             "summary": 'communicate:final("Done")',
              "tool_calls": [], "tool_results": [], "text": "",
              "usage": {}, "entries": []},
         ]

@@ -181,9 +181,9 @@ func TestEmptyResponse_DoesNotConsumeToolRounds(t *testing.T) {
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response { return toolCallResponse(shellCall("s1")) }, // round 0
 			func(req llm.Request) llm.Response { return emptyResponse() },                   // empty — not a round
-			func(req llm.Request) llm.Response { return toolCallResponse(shellCall("s2")) },  // round 1
+			func(req llm.Request) llm.Response { return toolCallResponse(shellCall("s2")) }, // round 1
 			func(req llm.Request) llm.Response { return emptyResponse() },                   // empty — not a round
-			func(req llm.Request) llm.Response { return toolCallResponse(result) },           // round 2 (submit)
+			func(req llm.Request) llm.Response { return toolCallResponse(result) },          // round 2 (submit)
 		},
 	}
 	c.Register(f)
@@ -228,10 +228,10 @@ func TestBareText_DoesNotConsumeToolRounds(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(shellCall("s1")) },          // round 0
+			func(req llm.Request) llm.Response { return toolCallResponse(shellCall("s1")) },            // round 0
 			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("oops")} }, // bare text — not a round
-			func(req llm.Request) llm.Response { return toolCallResponse(shellCall("s2")) },          // round 1
-			func(req llm.Request) llm.Response { return toolCallResponse(result) },                   // round 2 (submit)
+			func(req llm.Request) llm.Response { return toolCallResponse(shellCall("s2")) },            // round 1
+			func(req llm.Request) llm.Response { return toolCallResponse(result) },                     // round 2 (submit)
 		},
 	}
 	c.Register(f)
@@ -274,6 +274,9 @@ func TestBareText_RedirectsToSubmitResult(t *testing.T) {
 			},
 			// Round 1: after steering, model uses submit_result.
 			func(req llm.Request) llm.Response {
+				if req.ToolChoice == nil || req.ToolChoice.Mode != "required" {
+					t.Errorf("expected bare-text retry to require a tool call, got %#v", req.ToolChoice)
+				}
 				// Verify a steering message was injected.
 				lastMsg := req.Messages[len(req.Messages)-1]
 				if lastMsg.Role != llm.RoleUser {
@@ -281,12 +284,12 @@ func TestBareText_RedirectsToSubmitResult(t *testing.T) {
 				}
 				foundSteering := false
 				for _, p := range lastMsg.Content {
-					if p.Kind == llm.ContentText && strings.Contains(p.Text, "communicate") {
+					if p.Kind == llm.ContentText && strings.Contains(p.Text, "call communicate now") {
 						foundSteering = true
 					}
 				}
 				if !foundSteering {
-					t.Errorf("expected steering mentioning submit_result, got: %+v", lastMsg.Content)
+					t.Errorf("expected steering to allow immediate communicate, got: %+v", lastMsg.Content)
 				}
 				return toolCallResponse(result)
 			},
@@ -311,6 +314,9 @@ func TestBareText_RedirectsToSubmitResult(t *testing.T) {
 
 	if got := len(f.Requests()); got != 2 {
 		t.Fatalf("requests: got %d want 2", got)
+	}
+	if req := f.Requests()[0]; req.ToolChoice == nil || req.ToolChoice.Mode != "required" {
+		t.Fatalf("initial request should be required, got %#v", req.ToolChoice)
 	}
 }
 
@@ -340,12 +346,14 @@ func TestBareText_ExhaustsRetries(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	out, err := sess.ProcessInput(ctx, "do the task")
-	if err != nil {
-		t.Fatalf("ProcessInput: %v", err)
+	if err == nil {
+		t.Fatalf("expected bare-text contract error, got output %q", out)
 	}
-	// After exhausting retries, should return the last bare text.
-	if strings.TrimSpace(out) != "text 4" {
-		t.Fatalf("expected last bare text, got %q", out)
+	if out != "" {
+		t.Fatalf("expected empty output on error, got %q", out)
+	}
+	if !strings.Contains(err.Error(), "bare text without calling communicate") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 	sess.Close()
 

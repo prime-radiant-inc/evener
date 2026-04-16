@@ -31,28 +31,32 @@ func GitOriginURLFromDir(dir string) string {
 
 // SelectProfile creates the ProviderProfile for the given provider and model.
 func SelectProfile(provider, model string) (agent.ProviderProfile, error) {
-	requiredKeys := parseSubmitResultRequiredDataKeys(os.Getenv("SERF_SUBMIT_RESULT_REQUIRED_DATA_KEYS"))
+	requiredKeysRaw := os.Getenv("SERF_COMMUNICATE_REQUIRED_DATA_KEYS")
+	if strings.TrimSpace(requiredKeysRaw) == "" {
+		requiredKeysRaw = os.Getenv("SERF_SUBMIT_RESULT_REQUIRED_DATA_KEYS")
+	}
+	requiredKeys := parseCommunicateRequiredDataKeys(requiredKeysRaw)
 	allowedDecisions := parseAllowedDecisions(os.Getenv("SERF_ALLOWED_DECISIONS"))
 
 	switch strings.ToLower(provider) {
 	case "openai":
-		p := agent.WithSubmitResultRequiredDataKeys(agent.NewOpenAIProfile(model), requiredKeys)
+		p := agent.WithCommunicateRequiredDataKeys(agent.NewOpenAIProfile(model), requiredKeys)
 		return agent.WithAllowedDecisions(p, allowedDecisions), nil
 	case "anthropic":
-		p := agent.WithSubmitResultRequiredDataKeys(agent.NewAnthropicProfile(model), requiredKeys)
+		p := agent.WithCommunicateRequiredDataKeys(agent.NewAnthropicProfile(model), requiredKeys)
 		return agent.WithAllowedDecisions(p, allowedDecisions), nil
 	case "google", "gemini":
-		p := agent.WithSubmitResultRequiredDataKeys(agent.NewGeminiProfile(model), requiredKeys)
+		p := agent.WithCommunicateRequiredDataKeys(agent.NewGeminiProfile(model), requiredKeys)
 		return agent.WithAllowedDecisions(p, allowedDecisions), nil
 	case "minimax":
-		p := agent.WithSubmitResultRequiredDataKeys(agent.NewMiniMaxProfile(model), requiredKeys)
+		p := agent.WithCommunicateRequiredDataKeys(agent.NewMiniMaxProfile(model), requiredKeys)
 		return agent.WithAllowedDecisions(p, allowedDecisions), nil
 	case "openrouter-anthropic":
-		p := agent.WithSubmitResultRequiredDataKeys(agent.NewOpenRouterAnthropicProfile(model), requiredKeys)
+		p := agent.WithCommunicateRequiredDataKeys(agent.NewOpenRouterAnthropicProfile(model), requiredKeys)
 		return agent.WithAllowedDecisions(p, allowedDecisions), nil
 	case "kimi", "glm", "openrouter":
 		ctxWindow := queryModelContextWindow(provider, model)
-		p := agent.WithSubmitResultRequiredDataKeys(agent.NewOpenAICompatProfile(provider, model, ctxWindow), requiredKeys)
+		p := agent.WithCommunicateRequiredDataKeys(agent.NewOpenAICompatProfile(provider, model, ctxWindow), requiredKeys)
 		return agent.WithAllowedDecisions(p, allowedDecisions), nil
 	default:
 		return nil, fmt.Errorf("unknown provider %q: must be openai, anthropic, google, minimax, openrouter-anthropic, kimi, glm, or openrouter", provider)
@@ -219,7 +223,7 @@ func parseAllowedDecisions(raw string) []string {
 	return out
 }
 
-func parseSubmitResultRequiredDataKeys(raw string) []string {
+func parseCommunicateRequiredDataKeys(raw string) []string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil
@@ -240,6 +244,10 @@ func parseSubmitResultRequiredDataKeys(raw string) []string {
 		out = append(out, p)
 	}
 	return out
+}
+
+func parseSubmitResultRequiredDataKeys(raw string) []string {
+	return parseCommunicateRequiredDataKeys(raw)
 }
 
 // providerEnvConfig maps provider names to their env var and base URL info.

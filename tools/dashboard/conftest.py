@@ -37,7 +37,7 @@ def harbor_job_dir(tmp_path):
     # Task 2: fix-bug (FAIL, wrong answer)
     t2 = job_root / "fix-bug__def456"
     _make_task(t2, reward=0.0, transcript_entries=_failing_transcript(),
-               agent_stdout="[submit_result] submitted\n",
+               agent_stdout="[communicate:final] submitted\n",
                command_txt="serf --state-dir /logs/agent/serf-state -- 'Fix the bug in widget.'")
 
     # Run-level metadata files
@@ -85,7 +85,7 @@ def harbor_job_dir_with_reps(tmp_path):
     # Single trial: fix-bug (FAIL)
     t3 = job_root / "fix-bug__def456"
     _make_task(t3, reward=0.0, transcript_entries=_failing_transcript(),
-               agent_stdout="[submit_result] submitted\n")
+               agent_stdout="[communicate:final] submitted\n")
 
     return tmp_path / "reps-test"
 
@@ -192,7 +192,7 @@ def harbor_job_dir_with_api(tmp_path):
     # Task 2: fix-bug (FAIL, no api.jsonl)
     t2 = job_root / "fix-bug__def456"
     _make_task(t2, reward=0.0, transcript_entries=_failing_transcript(),
-               agent_stdout="[submit_result] submitted\n")
+               agent_stdout="[communicate:final] submitted\n")
 
     return tmp_path / "full-test"
 
@@ -276,7 +276,7 @@ def _passing_transcript():
             "message": {"role": "assistant", "content": [
                 {"kind": "tool_call", "tool_call": {
                     "id": "tc-4", "name": "communicate",
-                    "arguments": "{\"result\": \"Widget implemented.\"}",
+                    "arguments": "{\"kind\": \"final\", \"message\": \"Widget implemented.\"}",
                 }},
             ]},
             "timestamp": "2026-03-01T12:00:05Z",
@@ -323,7 +323,7 @@ def _failing_transcript():
             "message": {"role": "assistant", "content": [
                 {"kind": "tool_call", "tool_call": {
                     "id": "tc-11", "name": "communicate",
-                    "arguments": "{\"result\": \"Looks fine to me.\"}",
+                    "arguments": "{\"kind\": \"final\", \"message\": \"Looks fine to me.\"}",
                 }},
             ]},
             "timestamp": "2026-03-01T13:00:03Z",

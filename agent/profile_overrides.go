@@ -8,12 +8,12 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// WithSubmitResultRequiredDataKeys returns a cloned profile where the `submit_result`
-// tool schema requires specific `output.data.*` keys.
+// WithCommunicateRequiredDataKeys returns a cloned profile where the
+// `communicate` tool schema requires specific `output.data.*` keys.
 //
 // This is intended for orchestration systems (like Toil) that can provide the
 // required output keys per task/node.
-func WithSubmitResultRequiredDataKeys(p ProviderProfile, requiredKeys []string) ProviderProfile {
+func WithCommunicateRequiredDataKeys(p ProviderProfile, requiredKeys []string) ProviderProfile {
 	if p == nil {
 		return p
 	}
@@ -48,7 +48,7 @@ func WithSubmitResultRequiredDataKeys(p ProviderProfile, requiredKeys []string) 
 	defs := append([]llm.ToolDefinition{}, bp.toolDefs...)
 	for i := range defs {
 		if defs[i].Name == "communicate" {
-			defs[i] = defSubmitResultWithRequiredDataKeys(keys)
+			defs[i] = defCommunicateWithRequiredDataKeys(keys)
 		}
 	}
 	clone.toolDefs = defs
@@ -60,6 +60,11 @@ func WithSubmitResultRequiredDataKeys(p ProviderProfile, requiredKeys []string) 
 		return &apClone
 	}
 	return &clone
+}
+
+// WithSubmitResultRequiredDataKeys is a compatibility alias for the older name.
+func WithSubmitResultRequiredDataKeys(p ProviderProfile, requiredKeys []string) ProviderProfile {
+	return WithCommunicateRequiredDataKeys(p, requiredKeys)
 }
 
 // WithAllowedDecisions returns a cloned profile where the `communicate` tool
@@ -183,7 +188,7 @@ func toStringSlice(v any) []string {
 	return nil
 }
 
-func defSubmitResultWithRequiredDataKeys(requiredKeys []string) llm.ToolDefinition {
+func defCommunicateWithRequiredDataKeys(requiredKeys []string) llm.ToolDefinition {
 	td := defSubmitResult()
 
 	// Navigate: parameters.properties.output.properties.data
@@ -275,6 +280,10 @@ func defSubmitResultWithRequiredDataKeys(requiredKeys []string) llm.ToolDefiniti
 	return td
 }
 
+func defSubmitResultWithRequiredDataKeys(requiredKeys []string) llm.ToolDefinition {
+	return defCommunicateWithRequiredDataKeys(requiredKeys)
+}
+
 func stringArraySchema() map[string]any {
 	return map[string]any{"type": "array", "items": map[string]any{"type": "string"}}
 }
@@ -286,9 +295,9 @@ func componentsSchema() map[string]any {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"id":              map[string]any{"type": "string"},
-				"name":            map[string]any{"type": "string"},
-				"spec_slice":      map[string]any{"type": "string"},
+				"id":               map[string]any{"type": "string"},
+				"name":             map[string]any{"type": "string"},
+				"spec_slice":       map[string]any{"type": "string"},
 				"relevant_stories": stringArraySchema(),
 				"interfaces": map[string]any{
 					"type":                 "object",
@@ -313,12 +322,12 @@ func tasksSchema() map[string]any {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"id":                map[string]any{"type": "string"},
-				"name":              map[string]any{"type": "string"},
-				"steps":             stringArraySchema(),
-				"files":             stringArraySchema(),
+				"id":                  map[string]any{"type": "string"},
+				"name":                map[string]any{"type": "string"},
+				"steps":               stringArraySchema(),
+				"files":               stringArraySchema(),
 				"acceptance_criteria": stringArraySchema(),
-				"dependencies":       stringArraySchema(),
+				"dependencies":        stringArraySchema(),
 			},
 			"required": []string{"id", "name", "steps", "files", "acceptance_criteria", "dependencies"},
 		},

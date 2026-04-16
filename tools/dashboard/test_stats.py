@@ -255,7 +255,7 @@ class TestTaskHistory:
         job2 = harbor_job_dir / "second-run"
         t = job2 / "build-widget__xyz999"
         _make_task(t, reward=0.0, transcript_entries=_passing_transcript(),
-                   agent_stdout="[submit_result] submitted\n")
+                   agent_stdout="[communicate:final] submitted\n")
         store = RunStore(harbor_job_dir)
         history = compute_task_history(store, "build-widget")
         assert len(history) == 2

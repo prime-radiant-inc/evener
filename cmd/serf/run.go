@@ -33,7 +33,6 @@ type runConfig struct {
 	systemPrompt       string   // --system-prompt file path
 	systemPromptAppend []string // --system-prompt-append file paths
 	maxRounds          int      // --max-rounds (-1=default, 0=unlimited, >0=limit)
-	minResultRound     int      // --min-result-round (0=no minimum)
 	enableReviewerGate bool     // --enable-reviewer-gate
 	noAutoVerify       bool     // --no-auto-verify
 	maxSubagentDepth   int      // --max-subagent-depth (-1=default)
@@ -48,9 +47,9 @@ type runConfig struct {
 	stdout             io.Writer
 	stderr             io.Writer
 
-	skillsDirs []string // extra skill directories
-	mcpServers []string // --mcp inline specs
-	mcpConfigs []string // --mcp-config file paths
+	skillsDirs         []string // extra skill directories
+	mcpServers         []string // --mcp inline specs
+	mcpConfigs         []string // --mcp-config file paths
 	pluginDirs         []string // --plugin-dir directories
 	systemPromptAsUser bool     // --system-prompt-as-user
 
@@ -181,25 +180,24 @@ func run(ctx context.Context, cfg runConfig) error {
 		fmt.Fprintf(cfg.stderr, "[resumed] session %s (%d turns)\n", meta.ID, meta.TurnCount) //nolint:errcheck
 	} else {
 		sessionCfg := agent.SessionConfig{
-			MaxToolRoundsPerInput: cmdutil.MaxRoundsToConfig(cfg.maxRounds),
-			MinResultRound:        cfg.minResultRound,
-			EnableReviewerGate:    cfg.enableReviewerGate,
+			MaxToolRoundsPerInput:  cmdutil.MaxRoundsToConfig(cfg.maxRounds),
+			EnableReviewerGate:     cfg.enableReviewerGate,
 			EnableAutoVerify:       false, // disabled by default; --no-auto-verify flag preserved for compatibility
 			ShareTasksWithChildren: cfg.shareTaskStore,
-			ResultToolName:        cfg.resultToolName,
-			StateDir:              stateDir,
-			SystemPromptFile:      cfg.systemPrompt,
-			SystemPromptAppend:    cfg.systemPromptAppend,
-			NoProjectPrompts:      cfg.noProjectPrompts,
-			AgentName:             cfg.agentName,
-			SkillsDirs:            cfg.skillsDirs,
-			MCPConfigFiles:        cfg.mcpConfigs,
-			MCPInline:             cfg.mcpServers,
-			PluginDirs:            cfg.pluginDirs,
-			ContextStrategy:       cfg.contextStrategy,
-			ExportATIFPath:        cfg.exportATIF,
-			NonInteractive:        true,
-			SystemPromptAsUser:    cfg.systemPromptAsUser,
+			ResultToolName:         cfg.resultToolName,
+			StateDir:               stateDir,
+			SystemPromptFile:       cfg.systemPrompt,
+			SystemPromptAppend:     cfg.systemPromptAppend,
+			NoProjectPrompts:       cfg.noProjectPrompts,
+			AgentName:              cfg.agentName,
+			SkillsDirs:             cfg.skillsDirs,
+			MCPConfigFiles:         cfg.mcpConfigs,
+			MCPInline:              cfg.mcpServers,
+			PluginDirs:             cfg.pluginDirs,
+			ContextStrategy:        cfg.contextStrategy,
+			ExportATIFPath:         cfg.exportATIF,
+			NonInteractive:         true,
+			SystemPromptAsUser:     cfg.systemPromptAsUser,
 		}
 		if cfg.maxSubagentDepth >= 0 {
 			sessionCfg.MaxSubagentDepth = cfg.maxSubagentDepth
@@ -232,7 +230,6 @@ func run(ctx context.Context, cfg runConfig) error {
 	fmt.Fprintln(cfg.stdout, result) //nolint:errcheck
 	return nil
 }
-
 
 // drainEventsVerbose writes every event as a JSON line (NDJSON) to w.
 func drainEventsVerbose(events <-chan agent.SessionEvent, w io.Writer) <-chan struct{} {
@@ -298,9 +295,13 @@ func drainEventsHuman(events <-chan agent.SessionEvent, w io.Writer) <-chan stru
 						fmt.Fprintf(w, "[tool] %s: done\n", d.ToolName) //nolint:errcheck
 					}
 				}
-			case agent.EventSubmitResult:
-				if d, ok := ev.Data.(agent.SubmitResultData); ok {
-					fmt.Fprintf(w, "[communicate] %s\n", d.Message) //nolint:errcheck
+			case agent.EventCommunicate:
+				if d, ok := ev.Data.(agent.CommunicateData); ok {
+					if d.Kind != "" {
+						fmt.Fprintf(w, "[communicate:%s] %s\n", d.Kind, d.Message) //nolint:errcheck
+					} else {
+						fmt.Fprintf(w, "[communicate] %s\n", d.Message) //nolint:errcheck
+					}
 				}
 			case agent.EventPluginLoaded:
 				if d, ok := ev.Data.(agent.PluginLoadedData); ok {
@@ -362,4 +363,3 @@ func listSessions(cfg runConfig, stateDir string) error {
 	}
 	return nil
 }
-

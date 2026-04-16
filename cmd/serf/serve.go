@@ -38,7 +38,6 @@ func runServe(args []string) error {
 	fs.Var(&systemPromptAppend, "system-prompt-append", "path to append to system prompt (repeatable)")
 	systemPromptAsUser := fs.Bool("system-prompt-as-user", false, "deliver system prompt as first user message")
 	maxRounds := fs.Int("max-rounds", -1, "max tool rounds per input (-1=default, 0=unlimited)")
-	minResultRound := fs.Int("min-result-round", 0, "minimum round before result submission accepted")
 	enableReviewerGate := fs.Bool("enable-reviewer-gate", false, "spawn reviewer subagent to validate result")
 	noAutoVerify := fs.Bool("no-auto-verify", false, "disable auto-generated verify tasks")
 	maxSubagentDepth := fs.Int("max-subagent-depth", -1, "max subagent nesting depth")
@@ -152,7 +151,6 @@ func runServe(args []string) error {
 	} else {
 		sessionCfg := agent.SessionConfig{
 			MaxToolRoundsPerInput:  cmdutil.MaxRoundsToConfig(*maxRounds),
-			MinResultRound:         *minResultRound,
 			EnableReviewerGate:     *enableReviewerGate,
 			EnableAutoVerify:       false,
 			ShareTasksWithChildren: *shareTaskStore,
@@ -211,7 +209,7 @@ func runServe(args []string) error {
 				srv.SetState("PROCESSING")
 				result, processErr := sess.ProcessInput(ctx, text)
 				srv.SetProcessing(false)
-				srv.SetState("IDLE")
+				srv.SetState(string(sess.State()))
 				if processErr != nil {
 					fmt.Fprintf(os.Stderr, "[serve] error: %v\n", processErr)
 				}

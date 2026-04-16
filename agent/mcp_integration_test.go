@@ -104,13 +104,13 @@ func TestMCPIntegration_ToolCallThroughSession(t *testing.T) {
 							if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
 								text, ok := p.ToolResult.Content.(string)
 								if ok && strings.Contains(text, "Hello, World!") {
-									return llm.Response{Message: llm.Assistant("The server said: Hello, World!")}
+									return finalResponse("The server said: Hello, World!")
 								}
 							}
 						}
 					}
 				}
-				return llm.Response{Message: llm.Assistant("Tool result not found")}
+				return finalResponse("Tool result not found")
 			},
 		},
 	}

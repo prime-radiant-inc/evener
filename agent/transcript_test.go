@@ -958,7 +958,7 @@ func TestSession_TranscriptRecordsTurns(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("hello back")}
+				return finalResponse("hello back")
 			},
 		},
 	})
@@ -1004,12 +1004,18 @@ func TestSession_TranscriptRecordsTurns(t *testing.T) {
 		t.Errorf("first entry text: got %q want %q", entries[0].Turn.Message.Text(), "hello")
 	}
 
-	// Second entry should be assistant response.
+	// Second entry should be the assistant's communicate tool call.
 	if entries[1].Turn.Kind != TurnAssistant {
 		t.Errorf("second entry kind: got %q want %q", entries[1].Turn.Kind, TurnAssistant)
 	}
-	if entries[1].Turn.Message.Text() != "hello back" {
-		t.Errorf("second entry text: got %q want %q", entries[1].Turn.Message.Text(), "hello back")
+	var communicateCalls int
+	for _, part := range entries[1].Turn.Message.Content {
+		if part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.Name == "communicate" {
+			communicateCalls++
+		}
+	}
+	if communicateCalls != 1 {
+		t.Errorf("second entry should record communicate tool call, got %+v", entries[1].Turn.Message.Content)
 	}
 
 	// Sequence numbers should be monotonically increasing (may have gaps due
@@ -1069,7 +1075,10 @@ func TestSubagent_TranscriptHasParentLinkage(t *testing.T) {
 	defer sess.Close()
 
 	// Drain the event channel so Close doesn't block.
-	go func() { for range sess.Events() {} }()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
 
 	// Read the transcript and verify parent linkage fields.
 	files, _ := filepath.Glob(filepath.Join(stateDir, sessionsSubdir, "*.transcript.jsonl"))
@@ -1106,7 +1115,10 @@ func TestRootSession_TranscriptHasEmptyParentFields(t *testing.T) {
 	}
 	defer sess.Close()
 
-	go func() { for range sess.Events() {} }()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
 
 	files, _ := filepath.Glob(filepath.Join(stateDir, sessionsSubdir, "*.transcript.jsonl"))
 	if len(files) != 1 {
@@ -1138,7 +1150,10 @@ func TestSubagent_DepthSetFromConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sess.Close()
-	go func() { for range sess.Events() {} }()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
 
 	if sess.depth != 3 {
 		t.Errorf("sess.depth = %d, want 3", sess.depth)
@@ -1175,7 +1190,7 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 			},
 			// Round 1, after tool result: finish.
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("finished reading")}
+				return finalResponse("finished reading")
 			},
 			// Round 2, input 2: read again.
 			func(req llm.Request) llm.Response {
@@ -1194,7 +1209,12 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 			},
 			// Round 2, after tool result: finish.
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("done with second read")}
+				return finalResponse("done with second read")
+			},
+			// Some context-management paths can trigger one more completion round
+			// after compaction before returning the final answer.
+			func(req llm.Request) llm.Response {
+				return finalResponse("done with second read")
 			},
 		},
 	})
@@ -1396,7 +1416,7 @@ func TestSummarizeWithLLM_UsesTurnSummaryKind(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("Summary: fixed auth bug")}
+				return finalResponse("Summary: fixed auth bug")
 			},
 		},
 	}
@@ -1480,7 +1500,7 @@ func TestSubagent_TranscriptPersistsAfterCloseAgent(t *testing.T) {
 		steps: []func(req llm.Request) llm.Response{
 			// Sub-agent's response (consumed by the spawned child session).
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("sub-agent done")}
+				return finalResponse("sub-agent done")
 			},
 		},
 	})
@@ -1494,7 +1514,10 @@ func TestSubagent_TranscriptPersistsAfterCloseAgent(t *testing.T) {
 	}
 
 	// Drain parent events so Close doesn't block.
-	go func() { for range parentSess.Events() {} }()
+	go func() {
+		for range parentSess.Events() {
+		}
+	}()
 
 	// Spawn a sub-agent via the tool registry (matches existing test patterns).
 	// Inject the tool call ID via context so spawnAgent can record it in the transcript header.
@@ -1616,10 +1639,10 @@ func TestSession_TranscriptWriteFailureEmitsWarning(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("first")}
+				return finalResponse("first")
 			},
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("second")}
+				return finalResponse("second")
 			},
 		},
 	})

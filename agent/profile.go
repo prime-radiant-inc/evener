@@ -129,10 +129,10 @@ func (p *baseProfile) SupportsReasoning() bool         { return p.reasoning }
 func (p *baseProfile) ReasoningEffortLevels() []string {
 	return append([]string(nil), p.effortLevels...)
 }
-func (p *baseProfile) SupportsStreaming() bool         { return p.streaming }
-func (p *baseProfile) SupportsWebSearch() bool         { return p.webSearch }
-func (p *baseProfile) DefaultCommandTimeoutMS() int    { return p.defaultTimeout }
-func (p *baseProfile) KnowledgeCutoff() string         { return p.knowledgeCutoff }
+func (p *baseProfile) SupportsStreaming() bool      { return p.streaming }
+func (p *baseProfile) SupportsWebSearch() bool      { return p.webSearch }
+func (p *baseProfile) DefaultCommandTimeoutMS() int { return p.defaultTimeout }
+func (p *baseProfile) KnowledgeCutoff() string      { return p.knowledgeCutoff }
 func (p *baseProfile) CheapModel() string {
 	switch p.id {
 	case "openai":
@@ -687,10 +687,10 @@ func envInfoFromEnv(env ExecutionEnvironment) EnvironmentInfo {
 		osv = env.OSVersion()
 	}
 	return EnvironmentInfo{
-		WorkingDir:  wd,
-		Platform:    plat,
-		OSVersion:   osv,
-		Today:       time.Now().UTC().Format("2006-01-02"),
+		WorkingDir: wd,
+		Platform:   plat,
+		OSVersion:  osv,
+		Today:      time.Now().UTC().Format("2006-01-02"),
 		Workspace:  ScanWorkspace(wd),
 	}
 }
@@ -909,11 +909,11 @@ func defSpawnAgent() llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"task":        map[string]any{"type": "string"},
-				"model":       map[string]any{"type": "string", "description": "Model override (default: parent model)"},
-				"max_turns":   map[string]any{"type": "integer", "description": "Turn limit for the subagent (default: 500)"},
-				"agent_type":  map[string]any{"type": "string", "description": "Agent type (e.g. 'explorer' for built-in, or 'plugin-name:agent-name' for plugin agents)"},
-				"blocking":          map[string]any{"type": "boolean", "description": "When true, spawns the agent and waits for completion in a single call, returning the result directly. Do NOT call wait() after a blocking spawn — the result is already in the response. Default is false (async). Use blocking=false only when you need to run multiple agents in parallel, then call wait() on each agent_id."},
+				"task":             map[string]any{"type": "string"},
+				"model":            map[string]any{"type": "string", "description": "Model override (default: parent model)"},
+				"max_turns":        map[string]any{"type": "integer", "description": "Turn limit for the subagent (default: 500)"},
+				"agent_type":       map[string]any{"type": "string", "description": "Agent type (e.g. 'explorer' for built-in, or 'plugin-name:agent-name' for plugin agents)"},
+				"blocking":         map[string]any{"type": "boolean", "description": "When true, spawns the agent and waits for completion in a single call, returning the result directly. Do NOT call wait() after a blocking spawn — the result is already in the response. Default is false (async). Use blocking=false only when you need to run multiple agents in parallel, then call wait() on each agent_id."},
 				"reasoning_effort": map[string]any{"type": "string", "description": "Reasoning effort for this subagent: low, medium, high, or xhigh. Default inherits from parent. Start with low — it auto-escalates when the agent gets stuck."},
 				"task_list": map[string]any{
 					"type":        "array",
@@ -1038,19 +1038,24 @@ func defSubmitResult() llm.ToolDefinition {
 
 func defSubmitResultNamed(name string) llm.ToolDefinition {
 	return llm.ToolDefinition{
-		Name: name,
-		Description: "Submit your result and exit the session. Only call when work is complete and verified.",
+		Name:        name,
+		Description: "Send a user-facing message. This is the only valid way to communicate with the user; never emit a plain assistant response. Use kind=message for normal updates, kind=ask when waiting for user input, and kind=final when the work is complete.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
+				"kind": map[string]any{
+					"type":        "string",
+					"description": "Communication type: message for normal updates, ask when waiting for user input, final when the work is complete.",
+					"enum":        []string{communicateKindMessage, communicateKindAsk, communicateKindFinal},
+				},
 				"message": map[string]any{
 					"type":        "string",
-					"description": "Human-readable summary of what was accomplished.",
+					"description": "User-facing message text. Required for kind=message and kind=ask. Optional for kind=final when output is provided.",
 				},
 				"output": map[string]any{
 					"type":                 "object",
-					"description":          "Structured output (optional).",
+					"description":          "Structured output for kind=final.",
 					"additionalProperties": false,
 					"properties": map[string]any{
 						"message": map[string]any{"type": "string"},
@@ -1063,6 +1068,7 @@ func defSubmitResultNamed(name string) llm.ToolDefinition {
 					"required": []string{"message", "data"},
 				},
 			},
+			"required": []string{"kind"},
 		},
 	}
 }
@@ -1148,4 +1154,3 @@ func defUseSkill() llm.ToolDefinition {
 		},
 	}
 }
-

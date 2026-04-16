@@ -76,7 +76,7 @@ func TestParity_SimpleFileCreation(t *testing.T) {
 					}
 				},
 				func(req llm.Request) llm.Response {
-					return llm.Response{Message: llm.Assistant("done")}
+					return finalResponse("done")
 				},
 			}
 			sess, _ := newParitySession(t, pc, steps)
@@ -129,7 +129,7 @@ func TestParity_ReadFileThenEdit(t *testing.T) {
 					}
 				},
 				func(req llm.Request) llm.Response {
-					return llm.Response{Message: llm.Assistant("done")}
+					return finalResponse("done")
 				},
 			}
 			sess, _ := newParitySession(t, pc, steps)
@@ -174,7 +174,7 @@ func TestParity_ShellCommandExecution(t *testing.T) {
 					}
 				},
 				func(req llm.Request) llm.Response {
-					return llm.Response{Message: llm.Assistant("done")}
+					return finalResponse("done")
 				},
 			}
 			sess, f := newParitySession(t, pc, steps)
@@ -224,7 +224,7 @@ func TestParity_ShellCommandTimeout(t *testing.T) {
 					}
 				},
 				func(req llm.Request) llm.Response {
-					return llm.Response{Message: llm.Assistant("timed out")}
+					return finalResponse("timed out")
 				},
 			}
 			sess, f := newParitySession(t, pc, steps)
@@ -287,7 +287,7 @@ func TestParity_GrepAndGlob(t *testing.T) {
 					}
 				},
 				func(req llm.Request) llm.Response {
-					return llm.Response{Message: llm.Assistant("done")}
+					return finalResponse("done")
 				},
 			}
 			sess, _ := newParitySession(t, pc, steps)
@@ -339,7 +339,7 @@ func TestParity_MultiStepTask(t *testing.T) {
 					}
 				},
 				func(req llm.Request) llm.Response {
-					return llm.Response{Message: llm.Assistant("done")}
+					return finalResponse("done")
 				},
 			}
 			sess, _ := newParitySession(t, pc, steps)
@@ -387,7 +387,7 @@ func TestParity_ParallelToolCalls(t *testing.T) {
 					}
 				},
 				func(req llm.Request) llm.Response {
-					return llm.Response{Message: llm.Assistant("done")}
+					return finalResponse("done")
 				},
 			}
 			sess, f := newParitySession(t, pc, steps)
@@ -447,11 +447,11 @@ func TestParity_ErrorRecovery(t *testing.T) {
 					for _, m := range req.Messages {
 						for _, p := range m.Content {
 							if p.Kind == llm.ContentToolResult && p.ToolResult != nil && p.ToolResult.IsError {
-								return llm.Response{Message: llm.Assistant("handled error")}
+								return finalResponse("handled error")
 							}
 						}
 					}
-					return llm.Response{Message: llm.Assistant("no error seen")}
+					return finalResponse("no error seen")
 				},
 			}
 			sess, _ := newParitySession(t, pc, steps)
@@ -501,7 +501,7 @@ func TestParity_LoopDetectionWarning(t *testing.T) {
 			}
 			// Final response to end the session.
 			steps = append(steps, func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("done")}
+				return finalResponse("done")
 			})
 
 			sess, _ := newParitySession(t, pc, steps)
@@ -558,12 +558,12 @@ func TestParity_SteeringMidTask(t *testing.T) {
 						if m.Role == llm.RoleUser {
 							for _, p := range m.Content {
 								if p.Kind == llm.ContentText && strings.Contains(p.Text, "steer me") {
-									return llm.Response{Message: llm.Assistant("steered")}
+									return finalResponse("steered")
 								}
 							}
 						}
 					}
-					return llm.Response{Message: llm.Assistant("not steered")}
+					return finalResponse("not steered")
 				},
 			}
 			sess, _ := newParitySession(t, pc, steps)
@@ -630,7 +630,7 @@ func TestParity_MultiFileEdit(t *testing.T) {
 				},
 				// Round 3: Done.
 				func(req llm.Request) llm.Response {
-					return llm.Response{Message: llm.Assistant("done")}
+					return finalResponse("done")
 				},
 			}
 
@@ -687,7 +687,7 @@ func TestParity_ToolOutputTruncation(t *testing.T) {
 					}}
 				},
 				func(req llm.Request) llm.Response {
-					return llm.Response{Message: llm.Assistant("done")}
+					return finalResponse("done")
 				},
 			}
 			sess, f := newParitySession(t, pc, steps)
@@ -736,10 +736,10 @@ func TestParity_ReasoningEffort(t *testing.T) {
 		t.Run(pc.name, func(t *testing.T) {
 			steps := []func(llm.Request) llm.Response{
 				func(req llm.Request) llm.Response {
-					return llm.Response{Message: llm.Assistant("first")}
+					return finalResponse("first")
 				},
 				func(req llm.Request) llm.Response {
-					return llm.Response{Message: llm.Assistant("second")}
+					return finalResponse("second")
 				},
 			}
 			sess, f := newParitySession(t, pc, steps)
@@ -791,7 +791,7 @@ func TestParity_SubagentSpawnAndWait(t *testing.T) {
 								{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
 									ID:        "comm_nudge",
 									Name:      "communicate",
-									Arguments: json.RawMessage(`{"message":"subagent completed task"}`),
+									Arguments: json.RawMessage(`{"kind":"final","message":"subagent completed task"}`),
 								}},
 							},
 						},
@@ -864,7 +864,7 @@ func TestParity_CloseAgentWaitsForCompletion(t *testing.T) {
 								{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
 									ID:        "comm_nudge",
 									Name:      "communicate",
-									Arguments: json.RawMessage(`{"message":"subagent done"}`),
+									Arguments: json.RawMessage(`{"kind":"final","message":"subagent done"}`),
 								}},
 							},
 						},
@@ -926,7 +926,7 @@ func TestParity_SubagentNoMCPInheritance(t *testing.T) {
 	pc := providerCases[0] // openai is sufficient
 	steps := []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
-			return llm.Response{Message: llm.Assistant("subagent done")}
+			return finalResponse("subagent done")
 		},
 		// Auto-nudge response.
 		func(req llm.Request) llm.Response {

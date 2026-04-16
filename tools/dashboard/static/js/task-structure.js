@@ -21,6 +21,12 @@ function parseToolArgs(args) {
     return {};
 }
 
+function communicateKind(name, args) {
+    if (name !== 'communicate') return 'final';
+    const kind = typeof args.kind === 'string' ? args.kind.trim().toLowerCase() : '';
+    return kind || 'final';
+}
+
 function parseTaskListResult(content) {
     // Tool result content is a JSON array of task entries with full fields.
     if (typeof content !== 'string') return null;
@@ -102,12 +108,18 @@ function extractStructureFromTrajectory(trajectory, seedTaskList) {
                     reasoning_effort: args.reasoning_effort || '',
                 });
             } else if (name === 'communicate' || name.includes('submit') || name === 'report_result' || name === 'finish') {
+                const kind = communicateKind(name, args);
                 events.push({
                     kind: 'communicate',
                     round: round.round,
                     name: tc.name || '',
+                    communicate_kind: kind,
                     args: args,
                 });
+                const message = typeof args.message === 'string' ? args.message.trim() : '';
+                if (message) {
+                    finalResponse = message;
+                }
             }
         }
         if (round.text && round.text.trim()) {
@@ -243,12 +255,15 @@ function TaskListEvent({ event }) {
 function CommunicateEvent({ event }) {
     const [open, setOpen] = useState(true);
     const argsStr = JSON.stringify(event.args, null, 2);
+    const label = event.name === 'communicate'
+        ? `${event.name}:${event.communicate_kind || 'final'}`
+        : event.name;
     return html`
         <div class="structure-communicate-call">
             <div class="structure-delegation-head" onClick=${() => setOpen(!open)}>
                 <span class="structure-expander">${open ? '\u25be' : '\u25b8'}</span>
                 <span class="structure-event-round">R${event.round}</span>
-                <span class="structure-event-action action-communicate">${event.name}</span>
+                <span class="structure-event-action action-communicate">${label}</span>
             </div>
             ${open && html`
                 <div class="structure-event-body">

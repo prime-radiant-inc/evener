@@ -24,7 +24,6 @@ func main() {
 	resume := flag.String("resume", "", "resume a previous session by ID")
 	resumeLast := flag.Bool("resume-last", false, "resume the most recent session")
 	listSessions := flag.Bool("list-sessions", false, "pick a session to resume interactively")
-	minResultRound := flag.Int("min-result-round", 0, "minimum round before result submission accepted")
 	enableReviewerGate := flag.Bool("enable-reviewer-gate", false, "spawn reviewer subagent to validate result")
 	noAutoVerify := flag.Bool("no-auto-verify", false, "disable auto-generated verify tasks")
 	maxSubagentDepth := flag.Int("max-subagent-depth", -1, "max subagent nesting depth")
@@ -102,7 +101,6 @@ func main() {
 			systemPrompt:       *systemPrompt,
 			systemPromptAppend: []string(systemPromptAppend),
 			maxRounds:          *maxRounds,
-			minResultRound:     *minResultRound,
 			enableReviewerGate: *enableReviewerGate,
 			noAutoVerify:       *noAutoVerify,
 			maxSubagentDepth:   *maxSubagentDepth,

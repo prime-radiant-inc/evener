@@ -1,7 +1,11 @@
 """Data layer -- discover runs and read task results from disk."""
 
 import json
+import re
 from pathlib import Path
+
+
+FINAL_COMMUNICATE_PATTERN = re.compile(r"\[(?:submit_result|communicate(?:\:final)?)\]")
 
 
 class RunStore:
@@ -368,7 +372,7 @@ class RunStore:
             return "timeout"
 
         stdout = self._read_agent_stdout(task_dir)
-        if "[submit_result]" in stdout or "[communicate]" in stdout:
+        if FINAL_COMMUNICATE_PATTERN.search(stdout):
             return "wrong_answer"
         if "[error]" in stdout:
             return "api_error"

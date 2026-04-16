@@ -131,11 +131,11 @@ func TestWebFetchTool_Integration(t *testing.T) {
 			// Step 1: the cheap model Complete() call from web_fetch.
 			func(req llm.Request) llm.Response {
 				capturedReqs = append(capturedReqs, req)
-				return llm.Response{Message: llm.Assistant("This page is about Go programming.")}
+				return finalResponse("This page is about Go programming.")
 			},
 			// Step 2: the main agent receives the web_fetch result and responds.
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("The page is about Go programming.")}
+				return finalResponse("The page is about Go programming.")
 			},
 		},
 	}
@@ -234,10 +234,10 @@ func TestWebFetchTool_ResultContainsFilePaths(t *testing.T) {
 				})
 			},
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("answer")}
+				return finalResponse("answer")
 			},
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("done")}
+				return finalResponse("done")
 			},
 		},
 	}
@@ -302,10 +302,10 @@ func TestWebFetchTool_JSONContent(t *testing.T) {
 			},
 			// Cheap model call.
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("The status is ok.")}
+				return finalResponse("The status is ok.")
 			},
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("Status is ok.")}
+				return finalResponse("Status is ok.")
 			},
 		},
 	}

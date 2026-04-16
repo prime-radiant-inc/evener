@@ -8,8 +8,7 @@ from pathlib import Path
 from trajectory import build_trajectory
 
 
-# Keys to look for the submitted value in SUBMIT tool call arguments,
-# matching the order used by trajectory._summarize_by_args for SUBMIT.
+# Keys to look for the submitted value in SUBMIT tool call arguments.
 _SUBMIT_VALUE_KEYS = ["result", "message", "output"]
 
 
@@ -198,6 +197,11 @@ def _extract_submitted_value(rnd):
         for key in _SUBMIT_VALUE_KEYS:
             val = args.get(key, "")
             if val:
+                if isinstance(val, dict):
+                    for nested_key in ("message", "result"):
+                        nested = val.get(nested_key, "")
+                        if isinstance(nested, str) and nested:
+                            return nested
                 return str(val)
     return ""
 

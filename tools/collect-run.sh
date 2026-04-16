@@ -16,6 +16,8 @@
 # Atomic: writes to staging dir, then renames on success.
 set -euo pipefail
 
+FINAL_COMMUNICATE_PATTERN='\[(submit_result|communicate(:final)?)\]'
+
 # --- Argument parsing ---
 
 HARBOR_DIR=""
@@ -159,7 +161,7 @@ categorize_failure() {
     fi
 
     # Check agent stdout for submission (wrong answer if submitted but failed)
-    if [[ -f "$agent_stdout" ]] && grep -q -E "\[communicate\]|\[submit_result\]" "$agent_stdout"; then
+    if [[ -f "$agent_stdout" ]] && grep -q -E "$FINAL_COMMUNICATE_PATTERN" "$agent_stdout"; then
         echo "wrong_answer"
         return
     fi

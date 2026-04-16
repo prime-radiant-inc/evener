@@ -817,7 +817,6 @@ func TestMaybeCompact_BelowThreshold_NoAction(t *testing.T) {
 	}
 }
 
-
 func TestMaybeCompact_CheckpointThreshold(t *testing.T) {
 	profile := &baseProfile{id: "openai", model: "test", contextWindow: 500}
 	cm := NewContextManager(profile, nil)
@@ -943,7 +942,9 @@ func TestSession_ContextManager_Created(t *testing.T) {
 	c.Register(&fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("ok")} },
+			func(req llm.Request) llm.Response {
+				return wrapCommunicateResponse(llm.Response{Message: llm.Assistant("ok")})
+			},
 		},
 	})
 
@@ -967,7 +968,7 @@ func TestSession_ContextManager_AccumulatesUsage(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{
+				return wrapCommunicateResponse(llm.Response{
 					Message: llm.Assistant("ok"),
 					Usage: llm.Usage{
 						InputTokens:     100,
@@ -975,7 +976,7 @@ func TestSession_ContextManager_AccumulatesUsage(t *testing.T) {
 						TotalTokens:     150,
 						ReasoningTokens: &reasoningTokens,
 					},
-				}
+				})
 			},
 		},
 	})
@@ -1029,7 +1030,7 @@ func TestSession_ContextManager_CompactsWhenNeeded(t *testing.T) {
 			// Second round: just return text.
 			func(req llm.Request) llm.Response {
 				callCount++
-				return llm.Response{Message: llm.Assistant("done")}
+				return finalResponse("done")
 			},
 		},
 	})
@@ -1098,7 +1099,7 @@ func TestSession_ContextManager_EmitsEvents(t *testing.T) {
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("done")}
+				return finalResponse("done")
 			},
 		},
 	})

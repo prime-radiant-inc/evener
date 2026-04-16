@@ -141,13 +141,13 @@ func TestRecallStrategy_RecallTool_SearchesTranscript(t *testing.T) {
 			// Step 2: After getting search results, the sub-agent returns a text answer.
 			func(req llm.Request) llm.Response {
 				callCount++
-				return llm.Response{
+				return wrapCommunicateResponse(llm.Response{
 					Model: "gpt-5.2",
 					Finish: llm.FinishReason{
 						Reason: llm.FinishReasonStop,
 					},
 					Message: llm.Assistant("The secret code mentioned earlier was ALPHA-7."),
-				}
+				})
 			},
 		},
 	}
@@ -236,22 +236,22 @@ func TestRecallStrategy_Integration_ViaTool(t *testing.T) {
 				if !containsHelper(sysMsg, "transcript search") {
 					t.Errorf("expected sub-agent system prompt to mention transcript search, got: %s", sysMsg[:min(100, len(sysMsg))])
 				}
-				return llm.Response{
+				return wrapCommunicateResponse(llm.Response{
 					Model: "gpt-5.2",
 					Finish: llm.FinishReason{
 						Reason: llm.FinishReasonStop,
 					},
 					Message: llm.Assistant("Earlier, the user said hello."),
-				}
+				})
 			},
 			// Main agent round 2: after getting recall result, return final answer.
 			func(req llm.Request) llm.Response {
 				llmCallIndex++
-				return llm.Response{
-					Model:  "gpt-5.2",
-					Finish: llm.FinishReason{Reason: llm.FinishReasonStop},
+				return wrapCommunicateResponse(llm.Response{
+					Model:   "gpt-5.2",
+					Finish:  llm.FinishReason{Reason: llm.FinishReasonStop},
 					Message: llm.Assistant("Based on my recall, the user said hello earlier."),
-				}
+				})
 			},
 		},
 	}

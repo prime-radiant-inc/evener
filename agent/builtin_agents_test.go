@@ -213,7 +213,7 @@ func TestSpawnAgent_BlockingMode(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("subagent done")}
+				return finalResponse("subagent done")
 			},
 		},
 	}
@@ -265,7 +265,7 @@ func TestSpawnAgent_NonBlockingMode(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("done")}
+				return finalResponse("done")
 			},
 		},
 	}
@@ -317,7 +317,7 @@ func TestSpawnAgent_BlockingWithExplorerAgent(t *testing.T) {
 						subagentSystemPrompt = m.Text()
 					}
 				}
-				return llm.Response{Message: llm.Assistant("exploration complete")}
+				return finalResponse("exploration complete")
 			},
 		},
 	}
@@ -363,7 +363,7 @@ func TestSpawnAgent_PluginAgentGetsComposedPrompt(t *testing.T) {
 						subagentSystemPrompt = m.Text()
 					}
 				}
-				return llm.Response{Message: llm.Assistant("done")}
+				return finalResponse("done")
 			},
 		},
 	}
@@ -412,7 +412,7 @@ func TestSpawnAgent_DefaultSubagentGetsComposedPrompt(t *testing.T) {
 						subagentSystemPrompt = m.Text()
 					}
 				}
-				return llm.Response{Message: llm.Assistant("done")}
+				return finalResponse("done")
 			},
 		},
 	}
@@ -494,7 +494,7 @@ func TestSpawnAgent_ReasoningEffortApplied(t *testing.T) {
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
 				subagentReasoningEffort = req.ReasoningEffort
-				return llm.Response{Message: llm.Assistant("done")}
+				return finalResponse("done")
 			},
 		},
 	}
@@ -611,7 +611,7 @@ func TestSpawnAgent_TaskListPreservedForNamedAgent(t *testing.T) {
 				for _, td := range req.Tools {
 					subagentTools = append(subagentTools, td.Name)
 				}
-				return llm.Response{Message: llm.Assistant("done")}
+				return finalResponse("done")
 			},
 		},
 	}

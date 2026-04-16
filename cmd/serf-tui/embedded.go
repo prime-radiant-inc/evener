@@ -33,7 +33,6 @@ type embeddedConfig struct {
 	systemPrompt       string
 	systemPromptAppend []string
 	maxRounds          int
-	minResultRound     int
 	enableReviewerGate bool
 	noAutoVerify       bool
 	maxSubagentDepth   int
@@ -124,7 +123,6 @@ func startEmbedded(ctx context.Context, cfg embeddedConfig) (*embeddedServer, er
 		SystemPromptFile:       cfg.systemPrompt,
 		SystemPromptAppend:     cfg.systemPromptAppend,
 		MaxToolRoundsPerInput:  cmdutil.MaxRoundsToConfig(cfg.maxRounds),
-		MinResultRound:         cfg.minResultRound,
 		EnableReviewerGate:     cfg.enableReviewerGate,
 		EnableAutoVerify:       false,
 		ShareTasksWithChildren: cfg.shareTaskStore,
@@ -292,7 +290,7 @@ func (e *embeddedServer) inputLoop(ctx context.Context) {
 			e.srv.SetState("PROCESSING")
 			_, processErr := sess.ProcessInput(ctx, text)
 			e.srv.SetProcessing(false)
-			e.srv.SetState("IDLE")
+			e.srv.SetState(string(sess.State()))
 			if processErr != nil {
 				fmt.Fprintf(os.Stderr, "[embedded] error: %v\n", processErr)
 			}

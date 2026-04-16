@@ -40,7 +40,6 @@ func main() {
 	resumeLast := flag.Bool("resume-last", false, "resume the most recent session")
 	listSessionsFlag := flag.Bool("list-sessions", false, "list saved sessions and exit")
 	maxRounds := flag.Int("max-rounds", -1, "max tool rounds per input (0=unlimited, default: 200)")
-	minResultRound := flag.Int("min-result-round", 0, "minimum round before communicate is accepted (0=no minimum)")
 	enableReviewerGate := flag.Bool("enable-reviewer-gate", false, "spawn reviewer subagent to validate communicate at depth 0")
 	noAutoVerify := flag.Bool("no-auto-verify", false, "disable auto-generated verify tasks for implement/fix tasks")
 	maxSubagentDepth := flag.Int("max-subagent-depth", -1, "max subagent nesting depth (default: 1)")
@@ -79,7 +78,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  --system-prompt-append <path> Append to system prompt (repeatable)\n")
 		fmt.Fprintf(os.Stderr, "  --state-dir <path>   Override runtime state directory (sessions, tasks)\n")
 		fmt.Fprintf(os.Stderr, "  --max-rounds <n>     Max tool rounds per input (0=unlimited, default: 200)\n")
-		fmt.Fprintf(os.Stderr, "  --min-result-round <n> Minimum round before result submission accepted (default: 0=no minimum)\n")
 		fmt.Fprintf(os.Stderr, "  --max-subagent-depth <n> Max subagent nesting depth (default: 1)\n")
 		fmt.Fprintf(os.Stderr, "  --no-auto-verify     Disable auto-generated verify tasks for implement/fix tasks\n")
 		fmt.Fprintf(os.Stderr, "  --share-task-store   Share task list between parent and child sessions\n")
@@ -148,7 +146,6 @@ func main() {
 		systemPrompt:       *systemPrompt,
 		systemPromptAppend: []string(systemPromptAppend),
 		maxRounds:          *maxRounds,
-		minResultRound:     *minResultRound,
 		enableReviewerGate: *enableReviewerGate,
 		noAutoVerify:       *noAutoVerify,
 		maxSubagentDepth:   *maxSubagentDepth,

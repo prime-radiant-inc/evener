@@ -24,15 +24,15 @@ type model struct {
 	height    int
 
 	// Session info (from SSE events)
-	sessionModel   string
-	sessionProfile string
-	sessionID      string
-	turns              int
-	contextTokens      int // input tokens from last ASSISTANT_TEXT_END
-	contextWindowSize  int // context window size from SESSION_START
-	processing         bool
-	turnInputTokens  int // input tokens accumulated since last USER_INPUT
-	turnOutputTokens int // output tokens accumulated since last USER_INPUT
+	sessionModel      string
+	sessionProfile    string
+	sessionID         string
+	turns             int
+	contextTokens     int // input tokens from last ASSISTANT_TEXT_END
+	contextWindowSize int // context window size from SESSION_START
+	processing        bool
+	turnInputTokens   int // input tokens accumulated since last USER_INPUT
+	turnOutputTokens  int // output tokens accumulated since last USER_INPUT
 
 	// UI components
 	viewport viewport.Model
@@ -40,18 +40,18 @@ type model struct {
 	messages []chatMessage
 
 	// Input history
-	history     []string // escaped entries (one per line)
-	historyIdx  int      // -1 = not browsing; len(history) = back to draft
-	historyDraft string  // saved current input when entering history browse
+	history      []string // escaped entries (one per line)
+	historyIdx   int      // -1 = not browsing; len(history) = back to draft
+	historyDraft string   // saved current input when entering history browse
 
 	// Track active tool calls by call ID -> index in messages
-	activeTools   map[string]int
-	lastInterrupt time.Time
-	lastSentText  string       // last user input, used for auto-steer on busy
-	picker        *modelPicker // non-nil when model picker is active
-	themePicker   *themePicker // non-nil when theme picker is active
-	scrollMode    bool         // true when scrolling history; input is blurred
-	focusedToolIdx int         // index into messages of focused tool call in scroll mode; -1 = none
+	activeTools    map[string]int
+	lastInterrupt  time.Time
+	lastSentText   string       // last user input, used for auto-steer on busy
+	picker         *modelPicker // non-nil when model picker is active
+	themePicker    *themePicker // non-nil when theme picker is active
+	scrollMode     bool         // true when scrolling history; input is blurred
+	focusedToolIdx int          // index into messages of focused tool call in scroll mode; -1 = none
 }
 
 // applyInputTheme sets the textarea's style to match the active theme colours.
@@ -203,10 +203,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if p.done {
 				m.themePicker = nil
 				if p.selected != "" {
-				setTheme(p.selected)
-				initMarkdownRenderer(m.width)
-				m.viewport.Style = viewportStyle
-				applyInputTheme(&m.input)
+					setTheme(p.selected)
+					initMarkdownRenderer(m.width)
+					m.viewport.Style = viewportStyle
+					applyInputTheme(&m.input)
 					m.messages = append(m.messages, chatMessage{
 						Kind: msgSystem,
 						Text: fmt.Sprintf("Switched to %s theme.", p.selected),
@@ -617,8 +617,9 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 	case "SESSION_END":
 		m.processing = false
 
-	case "SUBMIT_RESULT":
+	case "COMMUNICATE":
 		var d struct {
+			Kind    string `json:"kind"`
 			Message string `json:"message"`
 		}
 		json.Unmarshal([]byte(ev.Data), &d)
@@ -758,6 +759,7 @@ func (m *model) addHistory(text string) {
 	}
 	appendHistory(m.stateDir, text)
 }
+
 // and input dimensions. statusBar=1, border=1, textarea rows=input.Height().
 func (m model) vpHeight() int {
 	h := m.height - 1 - 1 - m.input.Height()

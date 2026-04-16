@@ -1335,18 +1335,43 @@ async function renderTaskDetail(container, jobName, taskName, trialHash) {
 // ATIF trajectory rendering
 // ---------------------------------------------------------------------------
 
-function atifStepAction(step) {
-    // Map ATIF step source + tool name to a display action matching serf's categories
-    if (step.source === 'system') return 'PLAN';
-    if (step.source === 'user') return 'TASK';
-    if (!step.tool_calls || step.tool_calls.length === 0) return 'PLAN';
-    const name = (step.tool_calls[0].function_name || '').toLowerCase();
+function atifToolAction(toolCall) {
+    const name = (toolCall.function_name || '').toLowerCase();
+    let args = {};
+    const rawArgs = toolCall.arguments;
+    if (typeof rawArgs === 'string') {
+        try { args = JSON.parse(rawArgs); } catch { args = {}; }
+    } else if (rawArgs && typeof rawArgs === 'object') {
+        args = rawArgs;
+    }
+    if (name.includes('submit') || name.includes('report')) return 'SUBMIT';
+    if (name.includes('communicate')) {
+        const kind = typeof args.kind === 'string' ? args.kind.trim().toLowerCase() : '';
+        return !kind || kind === 'final' ? 'SUBMIT' : null;
+    }
+    if (name.includes('task') || name.includes('spawn') || name.includes('delegate')) return 'SPAWN';
     if (name.includes('edit') || name.includes('write') || name.includes('patch')) return 'EDIT';
     if (name.includes('bash') || name.includes('exec') || name.includes('command')) return 'EXEC';
     if (name.includes('read') || name.includes('glob') || name.includes('grep') || name.includes('search')) return 'EXPLORE';
-    if (name.includes('submit') || name.includes('communicate') || name.includes('report')) return 'SUBMIT';
-    if (name.includes('task') || name.includes('spawn') || name.includes('delegate')) return 'SPAWN';
     return 'TOOL';
+}
+
+function atifStepAction(step) {
+    // Map ATIF step source + tool names to a display action matching serf's categories.
+    if (step.source === 'system') return 'PLAN';
+    if (step.source === 'user') return 'TASK';
+    if (!step.tool_calls || step.tool_calls.length === 0) return 'PLAN';
+
+    const actions = step.tool_calls
+        .map(atifToolAction)
+        .filter(Boolean);
+    if (actions.includes('SUBMIT')) return 'SUBMIT';
+    if (actions.includes('SPAWN')) return 'SPAWN';
+    if (actions.includes('EDIT')) return 'EDIT';
+    if (actions.includes('EXEC')) return 'EXEC';
+    if (actions.includes('EXPLORE')) return 'EXPLORE';
+    if (actions.includes('TOOL')) return 'TOOL';
+    return 'PLAN';
 }
 
 function renderAtifTrajectory(atif, container) {

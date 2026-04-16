@@ -261,7 +261,7 @@ class TestBuildTrajectory:
             # Round 3: submit
             self._assistant_entry(5, tool_calls=[
                 {"id": "tc-3", "name": "communicate",
-                 "arguments": '{"result": "Done."}'},
+                 "arguments": '{"kind": "final", "message": "Done."}'},
             ]),
         ]
         session = self._make_session(entries)
@@ -385,6 +385,38 @@ class TestBuildTrajectory:
         assert rounds[0]["action"] == "EXEC"
         assert "ls -la /app" in rounds[0]["summary"]
 
+    def test_nonfinal_communicate_round_is_plan_not_submit(self):
+        entries = [
+            self._user_entry(0),
+            self._assistant_entry(1, tool_calls=[
+                {"id": "tc-1", "name": "communicate",
+                 "arguments": '{"kind": "ask", "message": "Which file should I edit?"}'},
+            ]),
+        ]
+        session = self._make_session(entries)
+        rounds = build_trajectory(session)
+        assert rounds[0]["action"] == "PLAN"
+        assert rounds[0]["summary"] == 'communicate:ask("Which file should I edit?")'
+
+    def test_nonfinal_communicate_does_not_override_other_tool_action(self):
+        entries = [
+            self._user_entry(0),
+            self._assistant_entry(1, tool_calls=[
+                {"id": "tc-1", "name": "read_file",
+                 "arguments": '{"path": "main.py"}'},
+                {"id": "tc-2", "name": "communicate",
+                 "arguments": '{"kind": "message", "message": "I am checking main.py next."}'},
+            ]),
+            self._tool_results_entry(2, [
+                {"tool_call_id": "tc-1", "name": "read_file",
+                 "content": "def widget(): return 0", "is_error": False},
+            ]),
+        ]
+        session = self._make_session(entries)
+        rounds = build_trajectory(session)
+        assert rounds[0]["action"] == "EXPLORE"
+        assert "main.py" in rounds[0]["summary"]
+
 
 class TestSummaryGeneration:
     """Round summaries are generated based on action type."""
@@ -461,13 +493,26 @@ class TestSummaryGeneration:
             self._user_entry(0),
             self._assistant_entry(1, tool_calls=[
                 {"id": "tc-1", "name": "communicate",
-                 "arguments": '{"result": "Widget built successfully."}'},
+                 "arguments": '{"kind": "final", "message": "Widget built successfully."}'},
             ]),
         ]
         session = self._make_session(entries)
         rounds = build_trajectory(session)
-        assert "communicate" in rounds[0]["summary"]
+        assert "communicate:final" in rounds[0]["summary"]
         assert "Widget built" in rounds[0]["summary"]
+
+    def test_plan_summary_uses_nonfinal_communicate_message(self):
+        entries = [
+            self._user_entry(0),
+            self._assistant_entry(1, tool_calls=[
+                {"id": "tc-1", "name": "communicate",
+                 "arguments": '{"kind": "message", "message": "I am still validating the fix."}'},
+            ]),
+        ]
+        session = self._make_session(entries)
+        rounds = build_trajectory(session)
+        assert rounds[0]["action"] == "PLAN"
+        assert rounds[0]["summary"] == 'communicate:message("I am still validating the fix.")'
 
     def test_spawn_summary(self):
         entries = [

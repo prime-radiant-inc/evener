@@ -179,7 +179,7 @@ class TestCompareEndpoint:
         job2 = harbor_job_dir / "second-run"
         t = job2 / "build-widget__xyz999"
         _make_task(t, reward=0.0, transcript_entries=_passing_transcript(),
-                   agent_stdout="[submit_result] submitted\n")
+                   agent_stdout="[communicate:final] submitted\n")
 
         client = _make_client(harbor_job_dir)
         resp = client.get("/api/compare?a=full-test&b=second-run",

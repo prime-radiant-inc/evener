@@ -111,7 +111,7 @@ func TestSession_NaturalCompletion_LoadsOnlyProfileDocs(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("ok")}
+				return finalResponse("ok")
 			},
 		},
 	}
@@ -166,7 +166,7 @@ func TestSession_NaturalCompletion_LoadsOnlyProfileDocs_Anthropic(t *testing.T) 
 		name: "anthropic",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("ok")}
+				return finalResponse("ok")
 			},
 		},
 	}
@@ -249,7 +249,7 @@ func TestSession_NaturalCompletion_LoadsOnlyProfileDocs_Gemini(t *testing.T) {
 		name: "google",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("ok")}
+				return finalResponse("ok")
 			},
 		},
 	}
@@ -298,7 +298,7 @@ func TestSession_SystemPromptFile_OverridesBasePrompt(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("ok")}
+				return finalResponse("ok")
 			},
 		},
 	}
@@ -417,9 +417,9 @@ func TestSession_ToolLoop_ExecutesToolsAndContinues(t *testing.T) {
 					}
 				}
 				if !foundTool {
-					return llm.Response{Message: llm.Assistant("missing tool result")}
+					return finalResponse("missing tool result")
 				}
-				return llm.Response{Message: llm.Assistant("ok")}
+				return finalResponse("ok")
 			},
 		},
 	}
@@ -473,7 +473,7 @@ func TestSession_ToolOutputTruncation_OverridesLimitsAndKeepsFullOutputInEvents(
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("ok")}
+				return finalResponse("ok")
 			},
 		},
 	}
@@ -522,22 +522,31 @@ func TestSession_ToolOutputTruncation_OverridesLimitsAndKeepsFullOutputInEvents(
 		t.Fatalf("expected truncated tool result to be small, got %d chars", len(truncated))
 	}
 
-	// But TOOL_CALL_END should carry the full untruncated output.
+	// TOOL_CALL_OUTPUT_DELTA / TOOL_CALL_END should reflect the full shell output,
+	// not the truncated payload sent back to the model in the next request.
 	var full string
+	totalDeltaBytes := 0
 	for ev := range sess.Events() {
-		if ev.Kind == EventToolCallEnd {
-			if v := anyToString(ev.DataMap()["output"]); v != "" {
-				full = v
-			} else {
-				full = anyToString(ev.DataMap()["error"])
+		switch ev.Kind {
+		case EventToolCallOutputDelta:
+			if d, ok := ev.Data.(ToolCallOutputDeltaData); ok && d.ToolName == "shell" {
+				totalDeltaBytes += len(d.Delta)
+			}
+		case EventToolCallEnd:
+			if d, ok := ev.Data.(ToolCallEndData); ok && d.ToolName == "shell" {
+				if d.Output != "" {
+					full = d.Output
+				} else {
+					full = d.Error
+				}
 			}
 		}
 	}
 	if strings.TrimSpace(full) == "" {
 		t.Fatalf("expected non-empty full output from TOOL_CALL_END event")
 	}
-	if len(full) <= len(truncated) {
-		t.Fatalf("expected full output larger than truncated output: full=%d truncated=%d", len(full), len(truncated))
+	if totalDeltaBytes <= len(truncated) {
+		t.Fatalf("expected shell output deltas to exceed truncated request payload: deltas=%d truncated=%d", totalDeltaBytes, len(truncated))
 	}
 }
 
@@ -562,7 +571,7 @@ func TestSession_ToolOutputTruncation_CanOverrideLineLimitViaSessionConfig(t *te
 					},
 				}
 			},
-			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("ok")} },
+			func(req llm.Request) llm.Response { return finalResponse("ok") },
 		},
 	}
 	c.Register(f)
@@ -637,7 +646,7 @@ func TestSession_ParallelToolCalls_RunConcurrentlyWhenSupported(t *testing.T) {
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("ok")}
+				return finalResponse("ok")
 			},
 		},
 	}
@@ -721,7 +730,7 @@ func TestSession_ParallelToolCalls_NonReadOnlyToolsSerialize(t *testing.T) {
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("ok")}
+				return finalResponse("ok")
 			},
 		},
 	}
@@ -799,7 +808,7 @@ func TestSession_SystemPrompt_IncludesGitSnapshot_WhenInGitRepo(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("ok")} },
+			func(req llm.Request) llm.Response { return finalResponse("ok") },
 		},
 	}
 	c.Register(f)
@@ -850,7 +859,7 @@ func TestSession_UserInstructionOverride_AppendedLastToSystemPrompt(t *testing.T
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("ok")} },
+			func(req llm.Request) llm.Response { return finalResponse("ok") },
 		},
 	}
 	c.Register(f)
@@ -890,8 +899,8 @@ func TestSession_FollowUp_ProcessesAfterCompletion(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("first")} },
-			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("second")} },
+			func(req llm.Request) llm.Response { return finalResponse("first") },
+			func(req llm.Request) llm.Response { return finalResponse("second") },
 		},
 	}
 	c.Register(f)
@@ -933,7 +942,7 @@ func TestSession_LoopDetection_EmitsEventAndInjectsSteering(t *testing.T) {
 			func(req llm.Request) llm.Response { return toolMsg() },
 			func(req llm.Request) llm.Response { return toolMsg() },
 			func(req llm.Request) llm.Response { return toolMsg() },
-			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("ok")} },
+			func(req llm.Request) llm.Response { return finalResponse("ok") },
 		},
 	}
 	c.Register(f)
@@ -1021,7 +1030,7 @@ func TestAssistantTextEnd_EnrichedData(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{
+				return wrapCommunicateResponse(llm.Response{
 					Model:  "gpt-5.2",
 					Finish: llm.FinishReason{Reason: "stop"},
 					Usage: llm.Usage{
@@ -1037,7 +1046,7 @@ func TestAssistantTextEnd_EnrichedData(t *testing.T) {
 							{Kind: llm.ContentText, Text: "here is my answer"},
 						},
 					},
-				}
+				})
 			},
 		},
 	})
@@ -1128,14 +1137,14 @@ func TestSession_WebSearch_FlagSetOnRequest(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{
+				return wrapCommunicateResponse(llm.Response{
 					Message: llm.Message{
 						Role:    llm.RoleAssistant,
 						Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "done"}},
 					},
 					Finish: llm.FinishReason{Reason: "stop"},
 					Usage:  llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
-				}
+				})
 			},
 		},
 	}
@@ -1182,14 +1191,14 @@ func TestSession_PauseTurn_ContinuesLoop(t *testing.T) {
 			},
 			func(req llm.Request) llm.Response {
 				// Second call: return final answer
-				return llm.Response{
+				return wrapCommunicateResponse(llm.Response{
 					Message: llm.Message{
 						Role:    llm.RoleAssistant,
 						Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "Here is the answer."}},
 					},
 					Finish: llm.FinishReason{Reason: "stop"},
 					Usage:  llm.Usage{InputTokens: 20, OutputTokens: 10, TotalTokens: 30},
-				}
+				})
 			},
 		},
 	}
@@ -1237,7 +1246,7 @@ func TestSession_SessionEnd_EmittedExactlyOnce(t *testing.T) {
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
-			return llm.Response{Message: llm.Assistant("done")}
+			return finalResponse("done")
 		},
 	}}
 	c.Register(f)
@@ -1293,7 +1302,7 @@ func TestSession_ProjectDocsCachedAtInit(t *testing.T) {
 			if strings.Contains(sys, "New agent instructions") {
 				t.Error("project docs should be cached at init, not reloaded per round")
 			}
-			return llm.Response{Message: llm.Assistant("done")}
+			return finalResponse("done")
 		},
 	}}
 	c.Register(f)
@@ -1505,7 +1514,7 @@ func TestSession_CustomRegisteredTool_AppearsInSystemPrompt(t *testing.T) {
 			if !found {
 				t.Error("custom tool not in request tools")
 			}
-			return llm.Response{Message: llm.Assistant("done")}
+			return finalResponse("done")
 		},
 	}}
 	c.Register(f)
@@ -1558,7 +1567,7 @@ func TestSession_ToolCallEnd_UsesOutputKeyOnSuccess(t *testing.T) {
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("done")}
+				return finalResponse("done")
 			},
 		},
 	}
@@ -1638,7 +1647,7 @@ func TestSession_ToolCallEnd_UsesErrorKeyOnFailure(t *testing.T) {
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("done")}
+				return finalResponse("done")
 			},
 		},
 	}
@@ -1705,10 +1714,10 @@ func TestSession_AssistantTextStart_IncludesModel(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{
+				return wrapCommunicateResponse(llm.Response{
 					Model:   "test-model-42",
 					Message: llm.Assistant("hello"),
-				}
+				})
 			},
 		},
 	})
@@ -1787,11 +1796,11 @@ func TestSession_PauseTurn_DoesNotCountAsToolRound(t *testing.T) {
 			},
 			func(req llm.Request) llm.Response {
 				callNum++
-				return llm.Response{
+				return wrapCommunicateResponse(llm.Response{
 					Model:   "gpt-5.2",
 					Message: llm.Assistant("here is the answer"),
 					Finish:  llm.FinishReason{Reason: "stop"},
-				}
+				})
 			},
 		},
 	}
@@ -1842,7 +1851,7 @@ func TestSession_LoopDetection_WarningWording(t *testing.T) {
 			func(req llm.Request) llm.Response { return toolMsg() },
 			func(req llm.Request) llm.Response { return toolMsg() },
 			func(req llm.Request) llm.Response { return toolMsg() },
-			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("ok")} },
+			func(req llm.Request) llm.Response { return finalResponse("ok") },
 		},
 	}
 	c.Register(f)
@@ -1922,11 +1931,11 @@ func TestSession_SetModel_TakesEffectOnNextCall(t *testing.T) {
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
 				capturedModel = req.Model
-				return llm.Response{Message: llm.Assistant("ok")}
+				return finalResponse("ok")
 			},
 			func(req llm.Request) llm.Response {
 				capturedModel = req.Model
-				return llm.Response{Message: llm.Assistant("ok")}
+				return finalResponse("ok")
 			},
 		},
 	}
@@ -2008,7 +2017,7 @@ func TestSession_RecordInputTokens_SkipsWebSearchResponse(t *testing.T) {
 		name: "anthropic",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{
+				return wrapCommunicateResponse(llm.Response{
 					Message: llm.Message{
 						Role: llm.RoleAssistant,
 						Content: []llm.ContentPart{
@@ -2017,16 +2026,16 @@ func TestSession_RecordInputTokens_SkipsWebSearchResponse(t *testing.T) {
 						},
 					},
 					Usage: llm.Usage{InputTokens: 200_000}, // inflated ~2x
-				}
+				})
 			},
 			func(req llm.Request) llm.Response {
-				return llm.Response{
+				return wrapCommunicateResponse(llm.Response{
 					Message: llm.Message{
 						Role:    llm.RoleAssistant,
 						Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "done"}},
 					},
 					Usage: llm.Usage{InputTokens: 100_000}, // real count
-				}
+				})
 			},
 		},
 	})
@@ -2069,13 +2078,13 @@ func TestSession_SetModel_UpdatesContextManager(t *testing.T) {
 		name: "anthropic",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{
+				return wrapCommunicateResponse(llm.Response{
 					Message: llm.Assistant("ok"),
 					Usage:   llm.Usage{InputTokens: 100_000},
-				}
+				})
 			},
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("ok")}
+				return finalResponse("ok")
 			},
 		},
 	})
@@ -2144,7 +2153,7 @@ func TestSession_ContentFilterRecovery_CompactsAndRetries(t *testing.T) {
 			// Third call (after compaction): succeeds.
 			func(req llm.Request) (llm.Response, error) {
 				callCount++
-				return llm.Response{Message: llm.Assistant("recovered after compaction")}, nil
+				return finalResponse("recovered after compaction"), nil
 			},
 		},
 	}
@@ -2154,7 +2163,7 @@ func TestSession_ContentFilterRecovery_CompactsAndRetries(t *testing.T) {
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 20,
-		LLMRetryPolicy:       &llm.RetryPolicy{MaxRetries: 0}, // no transport retries
+		LLMRetryPolicy:        &llm.RetryPolicy{MaxRetries: 0}, // no transport retries
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -2234,12 +2243,15 @@ func TestSession_ContentFilterRecovery_FailsOnSecondFilterHit(t *testing.T) {
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 20,
-		LLMRetryPolicy:       &llm.RetryPolicy{MaxRetries: 0},
+		LLMRetryPolicy:        &llm.RetryPolicy{MaxRetries: 0},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() { for range sess.Events() {} }()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -2267,7 +2279,7 @@ func TestSession_SystemPromptAsUser_CombinesIntoOneMessage(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("ok")} },
+			func(req llm.Request) llm.Response { return finalResponse("ok") },
 		},
 	}
 	c.Register(f)

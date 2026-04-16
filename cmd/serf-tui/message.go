@@ -38,9 +38,9 @@ func renderMarkdown(text string) string {
 type messageKind int
 
 const (
-	msgUser messageKind = iota
-	msgAssistant    // LLM thinking/reasoning text
-	msgSubmitResult // agent's communicate output (the actual response)
+	msgUser         messageKind = iota
+	msgAssistant                // LLM thinking/reasoning text
+	msgSubmitResult             // agent's communicate output (the actual response)
 	msgTool
 	msgSystem
 )
@@ -234,16 +234,16 @@ func historyToMessages(turns []agent.Turn) []chatMessage {
 					}
 					tc := p.ToolCall
 					if tc.Name == "communicate" {
-						msg := extractSubmitResultMessage(tc)
+						_, msg := extractCommunicate(tc)
 						if msg != "" {
 							msgs = append(msgs, chatMessage{Kind: msgSubmitResult, Text: msg})
 						}
 						continue
 					}
 
-				// Non-communicate tool call: show as collapsed tool entry.
-				argsJSON := string(tc.Arguments)
-				toolDesc, toolDetail := summarizeTool(tc.Name, argsJSON)
+					// Non-communicate tool call: show as collapsed tool entry.
+					argsJSON := string(tc.Arguments)
+					toolDesc, toolDetail := summarizeTool(tc.Name, argsJSON)
 					result := toolResults[tc.ID]
 					output := fmt.Sprintf("%v", result.Content)
 					info := &toolCallInfo{
@@ -265,13 +265,22 @@ func historyToMessages(turns []agent.Turn) []chatMessage {
 	return msgs
 }
 
-// extractSubmitResultMessage pulls the message field from a submit_result tool call's arguments.
-func extractSubmitResultMessage(tc *llm.ToolCallData) string {
+// extractCommunicate pulls the kind and message fields from a communicate tool call.
+func extractCommunicate(tc *llm.ToolCallData) (string, string) {
 	var args struct {
+		Kind    string `json:"kind"`
 		Message string `json:"message"`
+		Output  *struct {
+			Message string `json:"message"`
+		} `json:"output"`
 	}
-	if err := json.Unmarshal(tc.Arguments, &args); err == nil && args.Message != "" {
-		return args.Message
+	if err := json.Unmarshal(tc.Arguments, &args); err == nil {
+		if args.Message != "" {
+			return args.Kind, args.Message
+		}
+		if args.Output != nil && args.Output.Message != "" {
+			return args.Kind, args.Output.Message
+		}
 	}
-	return ""
+	return "", ""
 }

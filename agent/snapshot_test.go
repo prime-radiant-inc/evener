@@ -245,7 +245,7 @@ func (a *snapshotFakeAdapter) Complete(ctx context.Context, req llm.Request) (ll
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.requests = append(a.requests, req)
-	return llm.Response{Provider: a.name, Model: req.Model, Message: llm.Assistant("restored response")}, nil
+	return wrapCommunicateResponse(llm.Response{Provider: a.name, Model: req.Model, Message: llm.Assistant("restored response")}), nil
 }
 func (a *snapshotFakeAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	return nil, errors.New("not implemented")
@@ -473,7 +473,7 @@ func TestSession_AutoSave_DoesNotPersistMidToolRound(t *testing.T) {
 				return toolCallResponse(blockCall)
 			},
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("done")}
+				return finalResponse("done")
 			},
 		},
 	})
@@ -1010,10 +1010,10 @@ func TestMetaTurnCount_CountsModelResponses(t *testing.T) {
 				mu.Lock()
 				callNum++
 				mu.Unlock()
-				return llm.Response{
+				return wrapCommunicateResponse(llm.Response{
 					Message: llm.Assistant("all done"),
 					Finish:  llm.FinishReason{Reason: "stop"},
-				}
+				})
 			},
 		},
 	}

@@ -154,7 +154,7 @@ These apply to ALL delegations — implementer, verifier, AND reviewer.
 
 ### Submitting — HARD GATE
 
-You MUST NOT call communicate until the verifier has returned a PASS
-verdict. If the verifier says PASS, submit. If the verifier says FAIL,
-fix and re-verify. Do not add your own verification on top of the
+You MUST NOT call `communicate(kind="final", ...)` until the verifier has
+returned a PASS verdict. If the verifier says PASS, submit. If the verifier
+says FAIL, fix and re-verify. Do not add your own verification on top of the
 verifier's report — the verifier is the verification mechanism.

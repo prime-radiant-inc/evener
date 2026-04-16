@@ -36,7 +36,7 @@ func TestWebSearch_MakesGroundingCall(t *testing.T) {
 			},
 			// Step 2: main agent receives grounding result and responds.
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("Go 1.23 was released in August 2024.")}
+				return finalResponse("Go 1.23 was released in August 2024.")
 			},
 		},
 	}

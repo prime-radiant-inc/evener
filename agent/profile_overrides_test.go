@@ -7,8 +7,8 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-func TestWithSubmitResultRequiredDataKeys_AddsRequiredKeysToSchema(t *testing.T) {
-	p := WithSubmitResultRequiredDataKeys(NewOpenAIProfile("gpt-5.2"), []string{"components"})
+func TestWithCommunicateRequiredDataKeys_AddsRequiredKeysToSchema(t *testing.T) {
+	p := WithCommunicateRequiredDataKeys(NewOpenAIProfile("gpt-5.2"), []string{"components"})
 
 	var submitResultFound bool
 	for _, td := range p.ToolDefinitions() {
@@ -51,16 +51,16 @@ func TestWithSubmitResultRequiredDataKeys_AddsRequiredKeysToSchema(t *testing.T)
 
 		// After removing decision side-effect, decision should NOT be in output
 		if _, exists := outProps["decision"]; exists {
-			t.Fatal("WithSubmitResultRequiredDataKeys should not add decision field")
+			t.Fatal("WithCommunicateRequiredDataKeys should not add decision field")
 		}
 	}
 	if !submitResultFound {
-		t.Fatal("submit_result tool not found")
+		t.Fatal("communicate tool not found")
 	}
 }
 
-func TestWithSubmitResultRequiredDataKeys_PlanDocIsString(t *testing.T) {
-	p := WithSubmitResultRequiredDataKeys(NewOpenAIProfile("gpt-5.2"), []string{"plan_doc"})
+func TestWithCommunicateRequiredDataKeys_PlanDocIsString(t *testing.T) {
+	p := WithCommunicateRequiredDataKeys(NewOpenAIProfile("gpt-5.2"), []string{"plan_doc"})
 
 	for _, td := range p.ToolDefinitions() {
 		if td.Name != "communicate" {
@@ -77,11 +77,11 @@ func TestWithSubmitResultRequiredDataKeys_PlanDocIsString(t *testing.T) {
 		}
 		return
 	}
-	t.Fatal("submit_result tool not found")
+	t.Fatal("communicate tool not found")
 }
 
 func TestDefSubmitResult_DefaultSchema_NoDecisionField(t *testing.T) {
-	// Default submit_result schema should NOT include the decision field.
+	// Default communicate schema should NOT include the decision field.
 	// Decision is only needed for orchestration (toil) and gives the model
 	// an escape hatch to rationalize giving up in standalone mode.
 	td := defSubmitResult()
@@ -90,21 +90,20 @@ func TestDefSubmitResult_DefaultSchema_NoDecisionField(t *testing.T) {
 	outProps, _ := output["properties"].(map[string]any)
 
 	if _, exists := outProps["decision"]; exists {
-		t.Fatal("default submit_result schema should not have decision field")
+		t.Fatal("default communicate schema should not have decision field")
 	}
 
 	// output.required should not include "decision"
 	required, _ := output["required"].([]string)
 	for _, r := range required {
 		if r == "decision" {
-			t.Fatal("default submit_result output.required should not include decision")
+			t.Fatal("default communicate output.required should not include decision")
 		}
 	}
 }
 
-
-func TestWithSubmitResultRequiredDataKeys_TasksSchemaHasItems(t *testing.T) {
-	p := WithSubmitResultRequiredDataKeys(NewOpenAIProfile("gpt-5.2"), []string{"tasks"})
+func TestWithCommunicateRequiredDataKeys_TasksSchemaHasItems(t *testing.T) {
+	p := WithCommunicateRequiredDataKeys(NewOpenAIProfile("gpt-5.2"), []string{"tasks"})
 
 	for _, td := range p.ToolDefinitions() {
 		if td.Name != "communicate" {
@@ -128,14 +127,14 @@ func TestWithSubmitResultRequiredDataKeys_TasksSchemaHasItems(t *testing.T) {
 		}
 		return
 	}
-	t.Fatal("submit_result tool not found")
+	t.Fatal("communicate tool not found")
 }
 
-func TestWithSubmitResultRequiredDataKeys_StoryResultsIsObject(t *testing.T) {
+func TestWithCommunicateRequiredDataKeys_StoryResultsIsObject(t *testing.T) {
 	// Regression: the suffix heuristic was typing "story_results" as array
 	// because it ends in "s". Keys ending in "_results" should be objects
 	// (keyed by ID), not arrays.
-	p := WithSubmitResultRequiredDataKeys(NewOpenAIProfile("gpt-5.2"), []string{"story_results"})
+	p := WithCommunicateRequiredDataKeys(NewOpenAIProfile("gpt-5.2"), []string{"story_results"})
 
 	for _, td := range p.ToolDefinitions() {
 		if td.Name != "communicate" {
@@ -155,7 +154,7 @@ func TestWithSubmitResultRequiredDataKeys_StoryResultsIsObject(t *testing.T) {
 		}
 		return
 	}
-	t.Fatal("submit_result tool not found")
+	t.Fatal("communicate tool not found")
 }
 
 func TestWithAllowedDecisions_AddsDecisionWithEnum(t *testing.T) {
@@ -278,7 +277,7 @@ func TestWithAllowedDecisions_RegistryPreservesDecisionSchema(t *testing.T) {
 
 func TestWithAllowedDecisions_WithRequiredDataKeys_BothApplied(t *testing.T) {
 	p := NewOpenAIProfile("gpt-5.2")
-	p = WithSubmitResultRequiredDataKeys(p, []string{"plan_doc"})
+	p = WithCommunicateRequiredDataKeys(p, []string{"plan_doc"})
 	p = WithAllowedDecisions(p, []string{"ready_for_review"})
 
 	for _, td := range p.ToolDefinitions() {

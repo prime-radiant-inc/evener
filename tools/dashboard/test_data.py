@@ -335,7 +335,7 @@ class TestFailureClassification:
     """Failure categories are correctly identified."""
 
     def test_wrong_answer(self, harbor_job_dir):
-        """fix-bug has submit_result in stdout -> wrong_answer."""
+        """fix-bug has communicate:final in stdout -> wrong_answer."""
         store = RunStore(harbor_job_dir)
         tasks = store.list_tasks("full-test")
         failing = [t for t in tasks if t["task_name"] == "fix-bug"][0]

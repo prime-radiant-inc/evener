@@ -50,7 +50,7 @@ type subagent struct {
 	result         string
 	err            error
 	resultConsumed bool // true after first successful wait returns results
-	nudgeEnabled   bool // true for default subagents that should be nudged to submit_result
+	nudgeEnabled   bool // true for default subagents that should be nudged to communicate
 }
 
 func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string, maxTurns int, agentType string, reasoningEffort string, parentTasks []TaskTemplate) (any, error) {
@@ -241,7 +241,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		sess:         subSess,
 		status:       SubAgentRunning,
 		done:         make(chan struct{}),
-		nudgeEnabled: agent == nil, // default subagents get nudged to submit_result
+		nudgeEnabled: agent == nil, // default subagents get nudged to communicate
 	}
 
 	s.mu.Lock()
@@ -394,7 +394,7 @@ func (s *Session) getSub(agentID string) *subagent {
 // calling the result tool. Sent at most once.
 func submitResultNudge(toolName string) string {
 	return "You stopped without calling " + toolName + ". " +
-		"You MUST call " + toolName + " with a message summarizing your complete findings " +
+		"You MUST call " + toolName + " with kind=\"final\" and a message summarizing your complete findings " +
 		"before stopping. The parent agent receives ONLY the " + toolName + " message — " +
 		"it cannot see anything else you did. Report your results now."
 }
@@ -407,10 +407,10 @@ func (a *subagent) run(ctx context.Context, input string) {
 
 	res, err := a.sess.ProcessInput(ctx, input)
 
-	// Auto-nudge: if a default subagent stopped without calling submit_result,
+	// Auto-nudge: if a default subagent stopped without calling communicate,
 	// send one reminder and let it try again. This addresses the empty-result
 	// failure mode where subagents do work but forget to report back.
-	if a.nudgeEnabled && err == nil && !a.sess.ResultDelivered() {
+	if a.nudgeEnabled && err == nil && !a.sess.Communicated() {
 		res, err = a.sess.ProcessInput(ctx, submitResultNudge(a.sess.resultToolName()))
 	}
 

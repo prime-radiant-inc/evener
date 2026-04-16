@@ -82,8 +82,7 @@ def classify_round(tool_names, has_text):
 def build_trajectory(session):
     """Parse session entries into a list of round dicts.
 
-    Each round = one ASSISTANT entry + its following TOOL_RESULTS,
-    or a STEERING/USER_INPUT entry shown as its own round.
+    Each round = one ASSISTANT entry + its following TOOL_RESULTS.
 
     Returns list of dicts with keys:
         round, action, summary, tool_calls, tool_results, text, usage, raw_entries
@@ -98,47 +97,7 @@ def build_trajectory(session):
         turn = entry.get("turn", {})
         kind = turn.get("kind", "")
 
-        # Handle STEERING entries as their own rounds
-        if kind == "STEERING":
-            round_num += 1
-            text = ""
-            for part in turn.get("message", {}).get("content", []):
-                if part.get("kind") == "text":
-                    text += part.get("text", "")
-            summary = text.split("\n")[0][:80] if text else "steering"
-            rounds.append({
-                "round": round_num,
-                "action": "STEERING",
-                "summary": summary,
-                "tool_calls": [],
-                "tool_results": [],
-                "text": text,
-                "usage": {},
-                "duration_ms": 0,
-                "raw_entries": [entry],
-            })
-            i += 1
-            continue
-
-        # Handle USER_INPUT entries as their own rounds
-        if kind == "USER_INPUT":
-            round_num += 1
-            text = ""
-            for part in turn.get("message", {}).get("content", []):
-                if part.get("kind") == "text":
-                    text += part.get("text", "")
-            summary = text.split("\n")[0][:80] if text else "user input"
-            rounds.append({
-                "round": round_num,
-                "action": "USER",
-                "summary": summary,
-                "tool_calls": [],
-                "tool_results": [],
-                "text": text,
-                "usage": {},
-                "duration_ms": 0,
-                "raw_entries": [entry],
-            })
+        if kind in ("STEERING", "USER_INPUT"):
             i += 1
             continue
 
@@ -178,8 +137,17 @@ def build_trajectory(session):
                         tool_results.append(tr)
                 i += 1  # consume the TOOL_RESULTS entry
 
-        tool_names = [tc.get("name", "") for tc in tool_calls]
-        has_text = bool(text.strip())
+        tool_names = []
+        nonfinal_communicates = []
+        for tc in tool_calls:
+            name = tc.get("name", "")
+            kind = _communicate_kind(tc)
+            if kind and kind != "final":
+                nonfinal_communicates.append(tc)
+                continue
+            tool_names.append(name)
+
+        has_text = bool(text.strip()) or bool(nonfinal_communicates)
         action = classify_round(tool_names, has_text)
         summary = _generate_summary(action, text, tool_calls)
 
@@ -209,8 +177,15 @@ def _generate_summary(action, text, tool_calls):
     by looking for common keys, not by matching specific tool names.
     """
     if action == "PLAN":
+        if not text.strip():
+            communicate_summary = _summarize_communicate(tool_calls, final_only=False, nonfinal_only=True)
+            if communicate_summary:
+                return communicate_summary
         return _summarize_plan(text)
     elif action == "SUBMIT":
+        communicate_summary = _summarize_communicate(tool_calls, final_only=True)
+        if communicate_summary:
+            return communicate_summary
         return _summarize_by_args(tool_calls, ["result", "message", "output"], "submit")
     elif action == "SPAWN":
         return _summarize_spawn(tool_calls)
@@ -247,7 +222,7 @@ def _summarize_by_args(tool_calls, arg_keys, fallback_label):
         for key in arg_keys:
             value = args.get(key, "")
             if value:
-                value = str(value)
+                value = _format_summary_value(value)
                 if len(value) > 80:
                     value = value[:80] + "..."
                 return f'{name}("{value}")'
@@ -310,13 +285,94 @@ def _summarize_unknown_tools(tool_calls):
                      "result", "message", "query", "url"):
             val = args.get(key, "")
             if val:
-                val = str(val)
+                val = _format_summary_value(val)
                 if len(val) > 60:
                     val = val[:60] + "..."
                 return f'{name}("{val}")'
         # Just show the tool name
         return name
     return "tool"
+
+
+def _summarize_communicate(tool_calls, final_only=False, nonfinal_only=False):
+    """Summarize communicate-style tool calls with kind-aware labels."""
+    for tc in tool_calls:
+        kind = _communicate_kind(tc)
+        if not kind:
+            continue
+        if final_only and kind != "final":
+            continue
+        if nonfinal_only and kind == "final":
+            continue
+
+        name = tc.get("name", "communicate")
+        args = _parse_args(tc)
+        message = _communicate_message(args)
+        label = name
+        if name == "communicate":
+            label = f"{name}:{kind}"
+        if message:
+            if len(message) > 80:
+                message = message[:80] + "..."
+            return f'{label}("{message}")'
+        return label
+    return ""
+
+
+def _communicate_kind(tool_call):
+    """Return communicate kind for communicate-style tools, else empty string."""
+    name = tool_call.get("name", "")
+    cat = classify_tool(name)
+    if cat != "SUBMIT":
+        return ""
+
+    if name != "communicate":
+        return "final"
+
+    args = _parse_args(tool_call)
+    kind = args.get("kind", "")
+    if isinstance(kind, str):
+        kind = kind.strip().lower()
+    else:
+        kind = ""
+
+    # Legacy communicate payloads had no explicit kind and were implicitly final.
+    return kind or "final"
+
+
+def _communicate_message(args):
+    """Extract the user-visible message from communicate-style args."""
+    for key in ("message", "result"):
+        value = args.get(key, "")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    output = args.get("output")
+    if isinstance(output, dict):
+        for key in ("message", "result"):
+            value = output.get(key, "")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        if output:
+            return _format_summary_value(output)
+    if isinstance(output, str) and output.strip():
+        return output.strip()
+
+    return ""
+
+
+def _format_summary_value(value):
+    """Render summary values, preferring nested output.message when present."""
+    if isinstance(value, dict):
+        for key in ("message", "result"):
+            nested = value.get(key, "")
+            if isinstance(nested, str) and nested.strip():
+                return nested.strip()
+        try:
+            return json.dumps(value, sort_keys=True)
+        except (TypeError, ValueError):
+            return str(value)
+    return str(value)
 
 
 def _parse_args(tool_call):
