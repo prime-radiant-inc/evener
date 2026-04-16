@@ -3914,9 +3914,12 @@ func TestSession_Subagent_DoesNotGetParentDelegationPrompt(t *testing.T) {
 		t.Fatal("default subagent should have BasePromptOverride set, not use parent's base.md")
 	}
 
-	// The BasePromptOverride should NOT contain delegation instructions.
-	if strings.Contains(sub.sess.cfg.BasePromptOverride, "spawn_agent") {
-		t.Error("subagent base prompt should not contain spawn_agent delegation instructions")
+	// The BasePromptOverride should not contain the coordinator's delegation instructions.
+	if strings.Contains(sub.sess.cfg.BasePromptOverride, "You are a coordinator") {
+		t.Error("subagent base prompt should not contain the coordinator persona")
+	}
+	if strings.Contains(sub.sess.cfg.BasePromptOverride, "### CRITICAL: You must spawn an implementer") {
+		t.Error("subagent base prompt should not contain coordinator delegation instructions")
 	}
 
 	// It should contain submit_result guidance.

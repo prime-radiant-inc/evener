@@ -230,5 +230,5 @@ differently than your local inspection suggests.
 
 ## Reporting
 
-When done, call `communicate(kind="final", ...)` with the file paths of all files
-you created or modified and the test results.
+When done, include the file paths of all files you created or modified and the
+test results in your final report.

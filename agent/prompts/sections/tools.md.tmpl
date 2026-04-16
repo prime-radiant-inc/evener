@@ -1,0 +1,19 @@
+## Tool usage
+
+- Tool descriptions are authoritative for tool-specific semantics and argument rules.
+- Inspect relevant files before modifying them.
+- When using the shell to search text or files, prefer `rg` or `rg --files` if available.
+- After running commands, read errors carefully and fix them.
+
+{{ if .ProfileTools }}
+Tools:
+{{ range .ProfileTools }}- `{{ .Name }}`: {{ .Description }}
+{{ end }}{{ end }}
+{{ if .MCPTools }}
+MCP tools:
+{{ range .MCPTools }}- `{{ .Name }}`: {{ .Description }}
+{{ end }}{{ end }}
+{{ if .CustomTools }}
+Custom tools:
+{{ range .CustomTools }}- `{{ .Name }}`: {{ .Description }}
+{{ end }}{{ end }}

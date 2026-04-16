@@ -283,8 +283,8 @@ func (p *baseProfile) BuildSystemPrompt(env EnvironmentInfo, docs []ProjectDoc, 
 		b.WriteString(fmt.Sprintf("- %s: %s\n", td.Name, desc))
 	}
 	b.WriteString("\nTool usage:\n")
-	b.WriteString("- Use tools to inspect the codebase before editing.\n")
-	b.WriteString("- When editing code, prefer the provider-aligned edit tool for this profile.\n")
+	b.WriteString("- Tool descriptions are authoritative for tool-specific semantics and argument rules.\n")
+	b.WriteString("- Inspect relevant files before modifying them.\n")
 	b.WriteString("- After running commands, read errors carefully and fix them.\n")
 
 	if extra := strings.TrimSpace(extraTools); extra != "" {
@@ -716,7 +716,7 @@ func defReadFile() llm.ToolDefinition {
 func defReadManyFiles() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "read_many_files",
-		Description: "Read multiple files from the filesystem. Returns a concatenated, line-numbered output for each file.",
+		Description: "Read multiple files from the filesystem in one call. Returns a concatenated, line-numbered output for each file. Prefer this for batch exploration when you already know the file set and want to avoid repeated read_file calls.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -733,7 +733,7 @@ func defReadManyFiles() llm.ToolDefinition {
 func defWriteFile() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "write_file",
-		Description: "Write content to a file. Creates the file and parent directories if needed.",
+		Description: "Write content to a file. Creates the file and parent directories if needed, and replaces the entire file contents when the file already exists. Use this for new files or intentional full rewrites; prefer the exact-edit tool for small changes to existing files.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -749,7 +749,7 @@ func defWriteFile() llm.ToolDefinition {
 func defListDir() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "list_dir",
-		Description: "List directory contents. Depth controls recursion (1 = this directory only).",
+		Description: "List the contents of a directory path. Use depth to control recursion when exploring project structure (1 means this directory only).",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -764,7 +764,7 @@ func defListDir() llm.ToolDefinition {
 func defEditFile() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "edit_file",
-		Description: "Replace an exact string occurrence in a file.",
+		Description: "Replace an exact string occurrence in an existing file. Always read the file first so you know the exact text to match. old_string must identify a unique location in the file, so include enough surrounding context to make it unambiguous. Keep each call small and focused. Set replace_all only for deliberate whole-file replacements such as a symbol rename.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -782,7 +782,7 @@ func defEditFile() llm.ToolDefinition {
 func defShell() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "shell",
-		Description: "Execute a shell command. Returns stdout, stderr, and exit code.",
+		Description: "Execute a shell command and return stdout, stderr, and exit code. Use this for build, test, git, runtime, and inspection commands. When using the shell to search text or files, prefer rg or rg --files if available.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -799,7 +799,7 @@ func defShell() llm.ToolDefinition {
 func defGrep() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "grep",
-		Description: "Search file contents using regex patterns.",
+		Description: "Search file contents using regex patterns. Use this to find definitions, references, and recurring patterns across files.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -823,7 +823,7 @@ func defGrep() llm.ToolDefinition {
 func defGlob() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "glob",
-		Description: "Find files matching a glob pattern.",
+		Description: "Find files matching a glob pattern. Use this for pattern-based file discovery. If a provider aliases this tool to a name like list_dir, it still performs glob matching rather than a literal directory listing.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -1039,7 +1039,7 @@ func defSubmitResult() llm.ToolDefinition {
 func defSubmitResultNamed(name string) llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        name,
-		Description: "Send a user-facing message. This is the only valid way to communicate with the user; never emit a plain assistant response. Use kind=message for normal updates, kind=ask when waiting for user input, and kind=final when the work is complete.",
+		Description: "Send a user-facing message. This is the only valid way to communicate with the user; never emit a plain assistant response. Use kind=message for normal updates, kind=ask when waiting for user input, and kind=final when the work is complete. The receiver only sees what you send through this tool, not your hidden reasoning or tool-call history, so include the evidence, file paths, and test outcomes they need. For automation workflows, include structured output on final calls using output.message, output.data, and any output.artifacts.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -1051,24 +1051,53 @@ func defSubmitResultNamed(name string) llm.ToolDefinition {
 				},
 				"message": map[string]any{
 					"type":        "string",
-					"description": "User-facing message text. Required for kind=message and kind=ask. Optional for kind=final when output is provided.",
+					"description": "User-facing message text. Required for kind=message and kind=ask. Optional for kind=final when output is provided, but include it when the receiver needs a human-readable summary or evidence.",
 				},
 				"output": map[string]any{
 					"type":                 "object",
 					"description":          "Structured output for kind=final.",
 					"additionalProperties": false,
 					"properties": map[string]any{
-						"message": map[string]any{"type": "string"},
-						"data":    map[string]any{"type": "object"},
+						"message": map[string]any{"type": "string", "description": "Human-readable completion summary."},
+						"data":    map[string]any{"type": "object", "description": "Machine-readable result payload."},
 						"artifacts": map[string]any{
-							"type":  "array",
-							"items": map[string]any{"type": "string"},
+							"type":        "array",
+							"description": "Optional artifact identifiers such as file paths, transcript paths, or output URIs.",
+							"items":       map[string]any{"type": "string"},
 						},
 					},
 					"required": []string{"message", "data"},
 				},
 			},
 			"required": []string{"kind"},
+		},
+	}
+}
+
+func defApprove() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name:        "approve",
+		Description: "Approve the work after verifying that all task requirements are satisfied. Use this only when the deliverable meets the spec. This is the only valid way to deliver an approval in reviewer mode. In message, summarize the checks you ran and cite the evidence you observed for each requirement.",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"message": map[string]any{"type": "string", "description": "Approval summary with the checks you ran and the evidence you observed for each requirement."},
+			},
+			"required": []string{"message"},
+		},
+	}
+}
+
+func defReject() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name:        "reject",
+		Description: "Reject the work when any requirement is not satisfied. This is the only valid way to deliver a rejection in reviewer mode. In feedback, include every issue you found in one pass, with what you tested, what you expected, what actually happened, and concrete evidence such as file paths, commands, or outputs.",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"feedback": map[string]any{"type": "string", "description": "Complete rejection report with every issue, what you tested, expected vs actual behavior, and concrete evidence."},
+			},
+			"required": []string{"feedback"},
 		},
 	}
 }
@@ -1084,7 +1113,7 @@ func defTaskList(effortLevels []string) llm.ToolDefinition {
 	}
 	return llm.ToolDefinition{
 		Name:        "task_list",
-		Description: "Manage your task list. Actions: view (show all tasks with reasoning effort levels), append (add new tasks), update (change status — when you mark a task done, the next task auto-starts and its prompt is injected). You can modify your task list at any time: add tasks, reorder via dependencies, or cancel tasks you don't need.",
+		Description: "Manage your task list. Use view to inspect tasks and reasoning effort levels, append to add new tasks, and update to change status, notes, dependencies, or reasoning_effort. When you mark a task done, the next eligible task auto-starts and its prompt is injected. Use depends_on to express ordering and notes to record what happened.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,

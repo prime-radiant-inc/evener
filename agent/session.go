@@ -1195,10 +1195,9 @@ func (s *Session) spawnReviewer(ctx context.Context, claimedResult string) (revi
 		KnowledgeCutoff: s.envInfo.KnowledgeCutoff,
 		WorkspaceTree:   s.envInfo.Workspace.Tree,
 		BuildInfo:       s.envInfo.Workspace.BuildInfo,
+		ProfileTools:    toolEntriesFromDefinitions(subProfile.ToolDefinitions()),
+		CustomTools:     toolEntriesFromDefinitions([]llm.ToolDefinition{defApprove(), defReject()}),
 	}
-	// Note: ProfileTools is intentionally left empty for reviewer subagents.
-	// Tool restriction happens after session creation, so we can't know the
-	// final tool set here.
 
 	subResolver := &SectionResolver{
 		provider: s.profile.ID(),
@@ -1254,17 +1253,7 @@ func (s *Session) spawnReviewer(ctx context.Context, claimedResult string) (revi
 		subSess.mu.Unlock()
 	}
 	_ = subSess.reg.Register(RegisteredTool{
-		Tool: llm.Tool{Definition: llm.ToolDefinition{
-			Name:        "approve",
-			Description: "Approve the work. Call when the agent's implementation meets the task requirements.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"message": map[string]any{"type": "string", "description": "Brief summary of what you verified"},
-				},
-				"required": []string{"message"},
-			},
-		}},
+		Tool: llm.Tool{Definition: defApprove()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			msg, _ := args["message"].(string)
 			deliverResult(reviewVerdict{Pass: true, Feedback: msg})
@@ -1272,17 +1261,7 @@ func (s *Session) spawnReviewer(ctx context.Context, claimedResult string) (revi
 		},
 	})
 	_ = subSess.reg.Register(RegisteredTool{
-		Tool: llm.Tool{Definition: llm.ToolDefinition{
-			Name:        "reject",
-			Description: "Reject the work. Call when the agent's implementation has issues that must be fixed.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"feedback": map[string]any{"type": "string", "description": "Specific issues with file paths and evidence"},
-				},
-				"required": []string{"feedback"},
-			},
-		}},
+		Tool: llm.Tool{Definition: defReject()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			fb, _ := args["feedback"].(string)
 			deliverResult(reviewVerdict{Pass: false, Feedback: fb})
@@ -2549,38 +2528,24 @@ func (s *Session) buildPromptData() PromptData {
 	}
 
 	// Profile tools
-	for _, td := range s.profile.ToolDefinitions() {
-		desc := strings.TrimSpace(td.Description)
-		if desc == "" {
-			desc = "(no description)"
-		}
-		data.ProfileTools = append(data.ProfileTools, ToolEntry{Name: td.Name, Description: desc})
-	}
+	data.ProfileTools = toolEntriesFromDefinitions(s.profile.ToolDefinitions())
 
 	// MCP tools
-	for _, td := range s.mcpTools {
-		desc := strings.TrimSpace(td.Description)
-		if desc == "" {
-			desc = "(no description)"
-		}
-		data.MCPTools = append(data.MCPTools, ToolEntry{Name: td.Name, Description: desc})
-	}
+	data.MCPTools = toolEntriesFromDefinitions(s.mcpTools)
 
 	// Custom tools (not core, not MCP)
 	mcpNames := make(map[string]bool, len(s.mcpTools))
 	for _, td := range s.mcpTools {
 		mcpNames[td.Name] = true
 	}
+	var customToolDefs []llm.ToolDefinition
 	for _, td := range s.reg.Definitions() {
 		if s.coreToolNames[td.Name] || mcpNames[td.Name] {
 			continue
 		}
-		desc := strings.TrimSpace(td.Description)
-		if desc == "" {
-			desc = "(no description)"
-		}
-		data.CustomTools = append(data.CustomTools, ToolEntry{Name: td.Name, Description: desc})
+		customToolDefs = append(customToolDefs, td)
 	}
+	data.CustomTools = toolEntriesFromDefinitions(customToolDefs)
 
 	// Available agents
 	names := make([]string, 0, len(s.pluginAgents))

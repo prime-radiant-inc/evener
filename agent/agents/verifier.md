@@ -27,8 +27,7 @@ tasks:
       Write your verdict using the REVIEW REPORT format described
       in your instructions. PASS only if you tried to break every
       criterion and couldn't. If you found issues, FAIL with
-      specific evidence for each issue. Call communicate with your
-      complete report.
+      specific evidence for each issue. Deliver your complete report.
     reasoning_effort: high
 ---
 
@@ -105,7 +104,7 @@ requires.
 
 ## REVIEW REPORT format
 
-Your communicate message MUST use this format:
+Your final report MUST use this format:
 
 ```
 VERDICT: PASS | FAIL

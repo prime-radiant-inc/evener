@@ -42,17 +42,17 @@ blockers, attempt to resolve them yourself.
 
 ## Verification
 
-Before calling communicate, verify your work:
+Before you finish, verify your work:
 
 1. **Find tests.** Look for test files: test.sh, test_outputs.py, tests/, test/,
    *_test.py, *_test.go. Also check if the task description mentions test commands.
 2. **Run tests.** Execute every test script you find. Read the FULL output.
 3. **Check outputs.** Read back every file you created or modified. Verify it matches
    the requirements.
-4. **Fix failures.** If any test fails, fix the issue and re-run. Do not communicate
-   with failing tests.
-5. **Report evidence.** In your communicate message, include test results as proof
-   your solution works.
+4. **Fix failures.** If any test fails, fix the issue and re-run. Do not report
+   completion with failing tests.
+5. **Report evidence.** Include test results in your final report as proof your
+   solution works.
 
 ## Non-interactive
 

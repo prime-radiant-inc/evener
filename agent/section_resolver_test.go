@@ -370,17 +370,17 @@ func TestSystemTemplate_StructuralRegression(t *testing.T) {
 	}
 
 	data := PromptData{
-		Provider:       "openai",
-		Agent:          "coordinator",
-		WorkingDir:     "/tmp/test",
-		IsGitRepo:      true,
-		GitBranch:      "main",
-		Platform:       "linux",
-		OSVersion:      "Linux 6.1",
-		Today:          "2026-03-25",
-		Model:          "gpt-5.4",
+		Provider:        "openai",
+		Agent:           "coordinator",
+		WorkingDir:      "/tmp/test",
+		IsGitRepo:       true,
+		GitBranch:       "main",
+		Platform:        "linux",
+		OSVersion:       "Linux 6.1",
+		Today:           "2026-03-25",
+		Model:           "gpt-5.4",
 		KnowledgeCutoff: "2025-05",
-		ResultToolName: "communicate",
+		ResultToolName:  "communicate",
 		ProfileTools: []ToolEntry{
 			{Name: "shell", Description: "Run commands"},
 			{Name: "apply_patch", Description: "Edit files"},
@@ -465,7 +465,7 @@ func TestSubagentTemplate_StructuralRegression(t *testing.T) {
 	}
 }
 
-func TestReviewerTemplate_CommunicateReplacement(t *testing.T) {
+func TestReviewerTemplate_UsesRoleNarrowing(t *testing.T) {
 	resolver := &SectionResolver{
 		provider: "openai",
 		agent:    "reviewer",
@@ -491,6 +491,9 @@ func TestReviewerTemplate_CommunicateReplacement(t *testing.T) {
 	if !strings.Contains(result, "reject") {
 		t.Error("reviewer prompt should contain 'reject'")
 	}
+	if !strings.Contains(result, "Do not call `communicate` in this role.") {
+		t.Error("reviewer prompt should narrow the result channel in the role prompt")
+	}
 }
 
 func TestAnthropicProvider_UsesEditFile(t *testing.T) {
@@ -505,6 +508,7 @@ func TestAnthropicProvider_UsesEditFile(t *testing.T) {
 		Provider:       "anthropic",
 		Agent:          "coordinator",
 		ResultToolName: "communicate",
+		ProfileTools:   toolEntriesFromDefinitions(NewAnthropicProfile("claude-test").ToolDefinitions()),
 	}
 
 	result, _, err := resolver.RenderEmbedded(embeddedPrompts, "prompts/templates/", "system", data)

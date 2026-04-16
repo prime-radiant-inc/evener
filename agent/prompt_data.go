@@ -1,5 +1,11 @@
 package agent
 
+import (
+	"strings"
+
+	"primeradiant.com/serf/llm"
+)
+
 // PromptData is the template context for system prompt rendering.
 // Assembled from session state; not a source of truth.
 type PromptData struct {
@@ -70,4 +76,16 @@ type ToolEntry struct {
 type AgentEntry struct {
 	Name        string
 	Description string
+}
+
+func toolEntriesFromDefinitions(defs []llm.ToolDefinition) []ToolEntry {
+	entries := make([]ToolEntry, 0, len(defs))
+	for _, td := range defs {
+		desc := strings.TrimSpace(td.Description)
+		if desc == "" {
+			desc = "(no description)"
+		}
+		entries = append(entries, ToolEntry{Name: td.Name, Description: desc})
+	}
+	return entries
 }

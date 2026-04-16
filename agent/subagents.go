@@ -33,7 +33,7 @@ type SubAgentResult struct {
 // defaultSubagentInstructions is the role-specific prompt for default subagents
 // (no agent_type). Appended after the common subagent base prompt.
 const defaultSubagentInstructions = `You are a general-purpose subagent. Do the work yourself using the tools
-available to you: glob, grep, read_file, shell, edit_file, write_file, apply_patch.
+available in this session.
 Do NOT try to spawn further subagents.
 
 Your job is to complete the task and report your findings.`
@@ -145,10 +145,8 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		KnowledgeCutoff: s.envInfo.KnowledgeCutoff,
 		WorkspaceTree:   subWorkspace.Tree,
 		BuildInfo:       subWorkspace.BuildInfo,
+		ProfileTools:    toolEntriesFromDefinitions(subProfile.ToolDefinitions()),
 	}
-	// Note: ProfileTools is intentionally left empty for subagents. Tool
-	// restriction happens after session creation, so we can't know the final
-	// tool set here. The old code didn't include a tool listing either.
 
 	subResolver := &SectionResolver{
 		provider: s.profile.ID(),

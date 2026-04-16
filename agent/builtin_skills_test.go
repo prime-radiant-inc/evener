@@ -119,7 +119,7 @@ func TestEmbeddedSkills_InSystemPrompt(t *testing.T) {
 
 	// With no embedded skills and no project skills, the skill catalog
 	// should be absent from the system prompt.
-	if strings.Contains(capturedSystem, "<skill-catalog>") {
+	if strings.Contains(capturedSystem, "\n<skill-catalog>\n") {
 		t.Error("system prompt should not contain <skill-catalog> when no skills exist")
 	}
 }

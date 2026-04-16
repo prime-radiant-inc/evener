@@ -45,8 +45,8 @@ When resumed via resume_agent with failure information:
 
 ## Reporting
 
-When done, call `communicate(kind="final", ...)` with your complete task
-breakdown. The orchestrator receives ONLY this message. Include:
+When done, deliver your complete task breakdown. The orchestrator only sees
+your final report. Include:
 - Ordered list of tasks with clear descriptions
 - File paths and acceptance criteria for each
 - Dependencies between tasks

@@ -81,11 +81,11 @@ tasks:
     reasoning_effort: low
   - title: Submit
     prompt: >
-      Before calling communicate, list the workspace directory. Remove
+      Before submitting the result, list the workspace directory. Remove
       files YOU created (not files created by the implementer or
       verifier). Compiled artifacts like .so extensions or built
-      binaries may be the deliverable — do not remove them. Then call
-      communicate.
+      binaries may be the deliverable — do not remove them. Then submit
+      the result.
     reasoning_effort: low
 ---
 
@@ -154,7 +154,7 @@ These apply to ALL delegations — implementer, verifier, AND reviewer.
 
 ### Submitting — HARD GATE
 
-You MUST NOT call `communicate(kind="final", ...)` until the verifier has
-returned a PASS verdict. If the verifier says PASS, submit. If the verifier
-says FAIL, fix and re-verify. Do not add your own verification on top of the
-verifier's report — the verifier is the verification mechanism.
+You MUST NOT submit the final result until the verifier has returned a PASS
+verdict. If the verifier says PASS, submit. If the verifier says FAIL, fix and
+re-verify. Do not add your own verification on top of the verifier's report —
+the verifier is the verification mechanism.

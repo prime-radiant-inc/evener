@@ -71,5 +71,5 @@ ALWAYS write tests like:
 
 ## Reporting
 
-When done, call `communicate(kind="final", ...)` with the file paths of all
-test files you created. Describe what each test verifies and why.
+When done, include the file paths of all test files you created in your final
+report. Describe what each test verifies and why.
