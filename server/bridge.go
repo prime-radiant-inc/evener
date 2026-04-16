@@ -21,7 +21,16 @@ type sessionStartSSE struct {
 // server's ring buffer via the broadcaster, and updates server status.
 // It blocks until the events channel is closed.
 func Bridge(srv *Server, events <-chan agent.SessionEvent) {
+	BridgeWithObserver(srv, events, nil)
+}
+
+// BridgeWithObserver behaves like Bridge and also invokes observer for every
+// event before broadcasting it. This is used to tee raw NDJSON event logs.
+func BridgeWithObserver(srv *Server, events <-chan agent.SessionEvent, observer func(agent.SessionEvent)) {
 	for ev := range events {
+		if observer != nil {
+			observer(ev)
+		}
 		data, _ := json.Marshal(ev.Data)
 
 		switch ev.Kind {

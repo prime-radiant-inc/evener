@@ -1084,11 +1084,6 @@ func TestSession_LLMTransientErrors_RetryWithBackoff(t *testing.T) {
 	}
 }
 
-// submitResultResponse returns a fake LLM response that calls communicate.
-func submitResultResponse(msg string) llm.Response {
-	return finalResponse(msg)
-}
-
 func TestSession_Subagents_SpawnWaitClose_AndDepthLimit(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -1097,8 +1092,8 @@ func TestSession_Subagents_SpawnWaitClose_AndDepthLimit(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("subok")} },
-			// Auto-nudge: default subagents get nudged to call submit_result.
-			func(req llm.Request) llm.Response { return submitResultResponse("subok") },
+			// Auto-nudge: default subagents get nudged to call communicate.
+			func(req llm.Request) llm.Response { return finalResponse("subok") },
 		},
 	}
 	c.Register(f)
@@ -1213,8 +1208,8 @@ func TestSession_WaitAgent_ReturnsSubAgentResult(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("result text")} },
-			// Auto-nudge: default subagents get nudged to call submit_result.
-			func(req llm.Request) llm.Response { return submitResultResponse("result text") },
+			// Auto-nudge: default subagents get nudged to call communicate.
+			func(req llm.Request) llm.Response { return finalResponse("result text") },
 		},
 	}
 	c.Register(f)
@@ -1262,6 +1257,109 @@ func TestSession_WaitAgent_ReturnsSubAgentResult(t *testing.T) {
 	}
 	if result.TurnsUsed < 1 {
 		t.Fatalf("expected turns_used >= 1, got %d", result.TurnsUsed)
+	}
+	if result.Status != SubAgentCompleted {
+		t.Fatalf("expected status=%q, got %q", SubAgentCompleted, result.Status)
+	}
+}
+
+func TestSession_WaitAgent_FailedSubagentReturnsResult(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	ad := &fakeErrAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) (llm.Response, error){
+			func(req llm.Request) (llm.Response, error) {
+				return llm.Response{}, fmt.Errorf("simulated child failure")
+			},
+		},
+	}
+	c.Register(ad)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"do it"}`),
+	})
+	if spawnRes.IsError {
+		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
+	}
+	var spawned map[string]any
+	if err := json.Unmarshal([]byte(spawnRes.Output), &spawned); err != nil {
+		t.Fatal(err)
+	}
+	agentID := fmt.Sprint(spawned["agent_id"])
+
+	waitRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c2",
+		Name:      "wait",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":2000}`, agentID)),
+	})
+	if waitRes.IsError {
+		t.Fatalf("wait should return a failed result, not a tool error: %s", waitRes.Output)
+	}
+
+	var result SubAgentResult
+	if err := json.Unmarshal([]byte(waitRes.Output), &result); err != nil {
+		t.Fatalf("unmarshal failed SubAgentResult: %v (out=%q)", err, waitRes.Output)
+	}
+	if result.Success {
+		t.Fatalf("expected success=false, got true")
+	}
+	if result.Status != SubAgentFailed {
+		t.Fatalf("expected status=%q, got %q", SubAgentFailed, result.Status)
+	}
+}
+
+func TestSession_SpawnAgent_BlockingFailureReturnsResult(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	ad := &fakeErrAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) (llm.Response, error){
+			func(req llm.Request) (llm.Response, error) {
+				return llm.Response{}, fmt.Errorf("simulated child failure")
+			},
+		},
+	}
+	c.Register(ad)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"do it","blocking":true}`),
+	})
+	if res.IsError {
+		t.Fatalf("blocking spawn should return a failed result, not a tool error: %s", res.Output)
+	}
+
+	var result SubAgentResult
+	if err := json.Unmarshal([]byte(res.Output), &result); err != nil {
+		t.Fatalf("unmarshal blocking result: %v (out=%q)", err, res.Output)
+	}
+	if result.Success {
+		t.Fatalf("expected success=false, got true")
+	}
+	if result.Status != SubAgentFailed {
+		t.Fatalf("expected status=%q, got %q", SubAgentFailed, result.Status)
 	}
 }
 
@@ -2400,9 +2498,9 @@ func TestSession_AwaitingInput_QuestionMarkResponse(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(submitResultCallArgs("ask1", map[string]any{
-					"kind":    communicateKindAsk,
-					"message": "What file would you like me to edit?",
+				return toolCallResponse(communicateCallArgs("ask1", map[string]any{
+					"await_reply": true,
+					"message":     "What file would you like me to edit?",
 				}))
 			},
 		},
@@ -2439,9 +2537,9 @@ func TestSession_AwaitingInput_DeclarativeResponse_GoesIdle(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(submitResultCallArgs("msg1", map[string]any{
-					"kind":    communicateKindMessage,
-					"message": "I have completed the task.",
+				return toolCallResponse(communicateCallArgs("msg1", map[string]any{
+					"await_reply": false,
+					"message":     "I have completed the task.",
 				}))
 			},
 		},
@@ -2478,15 +2576,15 @@ func TestSession_AwaitingInput_TransitionsToProcessing(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(submitResultCallArgs("ask2", map[string]any{
-					"kind":    communicateKindAsk,
-					"message": "What language?",
+				return toolCallResponse(communicateCallArgs("ask2", map[string]any{
+					"await_reply": true,
+					"message":     "What language?",
 				}))
 			},
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(submitResultCallArgs("msg2", map[string]any{
-					"kind":    communicateKindMessage,
-					"message": "Done writing Go code.",
+				return toolCallResponse(communicateCallArgs("msg2", map[string]any{
+					"await_reply": false,
+					"message":     "Done writing Go code.",
 				}))
 			},
 		},
@@ -3475,22 +3573,91 @@ func TestCloseAgent_ReturnsStructuredStatus(t *testing.T) {
 		t.Fatalf("close_agent error: %s", closeRes.Output)
 	}
 
-	// Verify close result is structured JSON with expected fields.
-	var result map[string]any
+	// Verify close result is a SubAgentResult and removes the agent from the session.
+	var result SubAgentResult
 	if err := json.Unmarshal([]byte(closeRes.Output), &result); err != nil {
 		t.Fatalf("close_agent result is not JSON: %q (err: %v)", closeRes.Output, err)
 	}
-	if _, ok := result["status"]; !ok {
-		t.Error("close_agent result missing 'status' field")
+	if result.Status != SubAgentCompleted {
+		t.Errorf("close_agent status=%v, want %q", result.Status, SubAgentCompleted)
 	}
-	if _, ok := result["output"]; !ok {
-		t.Error("close_agent result missing 'output' field")
+	if result.Output != "subagent output text" {
+		t.Errorf("close_agent output=%q, want %q", result.Output, "subagent output text")
 	}
-	if _, ok := result["turns_used"]; !ok {
-		t.Error("close_agent result missing 'turns_used' field")
+	if got := sess.getSub(agentID); got != nil {
+		t.Fatalf("expected close_agent to remove subagent from session, found %+v", got)
 	}
-	if result["status"] != "completed" {
-		t.Errorf("close_agent status=%v, want 'completed'", result["status"])
+}
+
+func TestSession_SubagentEndEvent_EmittedOnce(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("subagent done") },
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var events []SessionEvent
+	evDone := make(chan struct{})
+	go func() {
+		defer close(evDone)
+		for ev := range sess.Events() {
+			events = append(events, ev)
+		}
+	}()
+
+	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"do something"}`),
+	})
+	if spawnRes.IsError {
+		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
+	}
+	var spawned map[string]any
+	if err := json.Unmarshal([]byte(spawnRes.Output), &spawned); err != nil {
+		t.Fatalf("unmarshal spawn result: %v", err)
+	}
+	agentID := fmt.Sprint(spawned["agent_id"])
+
+	waitRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c2",
+		Name:      "wait",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":5000}`, agentID)),
+	})
+	if waitRes.IsError {
+		t.Fatalf("wait error: %s", waitRes.Output)
+	}
+
+	closeRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c3",
+		Name:      "close_agent",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q}`, agentID)),
+	})
+	if closeRes.IsError {
+		t.Fatalf("close_agent error: %s", closeRes.Output)
+	}
+
+	sess.Close()
+	<-evDone
+
+	endCount := 0
+	for _, ev := range events {
+		if ev.Kind == EventSubagentEnd {
+			endCount++
+		}
+	}
+	if endCount != 1 {
+		t.Fatalf("expected exactly 1 SUBAGENT_END event, got %d", endCount)
 	}
 }
 
@@ -3894,7 +4061,7 @@ func TestSession_Subagent_DoesNotGetParentDelegationPrompt(t *testing.T) {
 		t.Error("subagent prompt should not contain coordinator delegation instructions")
 	}
 
-	// It should contain submit_result guidance.
+	// It should contain communicate guidance.
 	if !strings.Contains(sub.sess.cachedSystemPrompt, "communicate") {
 		t.Error("subagent prompt should mention communicate")
 	}
@@ -3925,19 +4092,19 @@ func TestSession_Subagent_DoesNotGetParentDelegationPrompt(t *testing.T) {
 			t.Errorf("subagent should not have %q in its API tool list", forbidden)
 		}
 	}
-	// submit_result should still be available.
+	// communicate should still be available.
 	if !toolNames["communicate"] {
-		t.Error("subagent should have submit_result in its API tool list")
+		t.Error("subagent should have communicate in its API tool list")
 	}
 
-	// Verify the base prompt (in system message) mentions submit_result.
+	// Verify the base prompt (in system message) mentions communicate.
 	sysMsg := subReq.Messages[0]
 	if sysMsg.Role != "system" {
 		t.Fatalf("expected first message to be system, got %s", sysMsg.Role)
 	}
 	sysTxt := sysMsg.Content[0].Text
 	if !strings.Contains(sysTxt, "communicate") {
-		t.Error("subagent system prompt should mention submit_result")
+		t.Error("subagent system prompt should mention communicate")
 	}
 	// Base prompt should NOT contain the parent's delegation section.
 	if strings.Contains(sysTxt, "Subagent delegation") {
@@ -4065,8 +4232,8 @@ func TestSession_WaitAgent_ErrorsOnReWait(t *testing.T) {
 	}
 }
 
-func TestSession_Subagent_AutoNudgeOnMissingSubmitResult(t *testing.T) {
-	// When a subagent stops without calling submit_result, the runner
+func TestSession_Subagent_AutoNudgeOnMissingCommunicate(t *testing.T) {
+	// When a subagent stops without calling communicate, the runner
 	// should automatically send a nudge message and let it try again once.
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -4076,14 +4243,14 @@ func TestSession_Subagent_AutoNudgeOnMissingSubmitResult(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			// First call: subagent returns text without submit_result.
+			// First call: subagent returns text without communicate.
 			func(req llm.Request) llm.Response {
 				mu.Lock()
 				callCount++
 				mu.Unlock()
 				return llm.Response{Message: llm.Assistant("I found some stuff")}
 			},
-			// Second call (after nudge): subagent calls submit_result.
+			// Second call (after nudge): subagent calls communicate.
 			func(req llm.Request) llm.Response {
 				mu.Lock()
 				callCount++
@@ -4133,9 +4300,9 @@ func TestSession_Subagent_AutoNudgeOnMissingSubmitResult(t *testing.T) {
 	json.Unmarshal([]byte(waitRes.Output), &result)
 
 	// The auto-nudge should have caused a second ProcessInput call,
-	// resulting in the submit_result output.
+	// resulting in the communicate output.
 	if !strings.Contains(result.Output, "Here are my findings") {
-		t.Errorf("expected nudged subagent to report findings via submit_result, got: %q", result.Output)
+		t.Errorf("expected nudged subagent to report findings via communicate, got: %q", result.Output)
 	}
 	mu.Lock()
 	cc := callCount

@@ -36,9 +36,6 @@ class TestClassifyTool:
     def test_serf_communicate(self):
         assert classify_tool("communicate") == "SUBMIT"
 
-    def test_serf_submit_result(self):
-        assert classify_tool("submit_result") == "SUBMIT"
-
     # gpt-5.3-codex tool names
     def test_codex_exec_command(self):
         assert classify_tool("exec_command") == "EXEC"
@@ -258,7 +255,7 @@ class TestBuildTrajectory:
             # Round 3: submit
             self._assistant_entry(5, tool_calls=[
                 {"id": "tc-3", "name": "communicate",
-                 "arguments": '{"kind": "final", "message": "Done."}'},
+                 "arguments": '{"await_reply": false, "message": "Done.", "output": {"message": "", "data": {}, "artifacts": []}}'},
             ]),
         ]
         session = self._make_session(entries)
@@ -387,6 +384,19 @@ class TestBuildTrajectory:
             self._user_entry(0),
             self._assistant_entry(1, tool_calls=[
                 {"id": "tc-1", "name": "communicate",
+                 "arguments": '{"await_reply": true, "message": "Which file should I edit?", "output": {"message": "", "data": {}, "artifacts": []}}'},
+            ]),
+        ]
+        session = self._make_session(entries)
+        rounds = build_trajectory(session)
+        assert rounds[0]["action"] == "PLAN"
+        assert rounds[0]["summary"] == 'communicate:await_reply("Which file should I edit?")'
+
+    def test_legacy_nonfinal_communicate_round_is_plan_not_submit(self):
+        entries = [
+            self._user_entry(0),
+            self._assistant_entry(1, tool_calls=[
+                {"id": "tc-1", "name": "communicate",
                  "arguments": '{"kind": "ask", "message": "Which file should I edit?"}'},
             ]),
         ]
@@ -402,7 +412,7 @@ class TestBuildTrajectory:
                 {"id": "tc-1", "name": "read_file",
                  "arguments": '{"path": "main.py"}'},
                 {"id": "tc-2", "name": "communicate",
-                 "arguments": '{"kind": "message", "message": "I am checking main.py next."}'},
+                 "arguments": '{"await_reply": true, "message": "I found two candidates. Which file should I edit?", "output": {"message": "", "data": {}, "artifacts": []}}'},
             ]),
             self._tool_results_entry(2, [
                 {"tool_call_id": "tc-1", "name": "read_file",
@@ -490,15 +500,41 @@ class TestSummaryGeneration:
             self._user_entry(0),
             self._assistant_entry(1, tool_calls=[
                 {"id": "tc-1", "name": "communicate",
+                 "arguments": '{"await_reply": false, "message": "Widget built successfully.", "output": {"message": "", "data": {}, "artifacts": []}}'},
+            ]),
+        ]
+        session = self._make_session(entries)
+        rounds = build_trajectory(session)
+        assert rounds[0]["summary"].startswith('communicate(')
+        assert "Widget built" in rounds[0]["summary"]
+
+    def test_legacy_submit_summary(self):
+        entries = [
+            self._user_entry(0),
+            self._assistant_entry(1, tool_calls=[
+                {"id": "tc-1", "name": "communicate",
                  "arguments": '{"kind": "final", "message": "Widget built successfully."}'},
             ]),
         ]
         session = self._make_session(entries)
         rounds = build_trajectory(session)
-        assert "communicate:final" in rounds[0]["summary"]
+        assert rounds[0]["summary"].startswith('communicate(')
         assert "Widget built" in rounds[0]["summary"]
 
     def test_plan_summary_uses_nonfinal_communicate_message(self):
+        entries = [
+            self._user_entry(0),
+            self._assistant_entry(1, tool_calls=[
+                {"id": "tc-1", "name": "communicate",
+                 "arguments": '{"await_reply": true, "message": "I am still validating the fix.", "output": {"message": "", "data": {}, "artifacts": []}}'},
+            ]),
+        ]
+        session = self._make_session(entries)
+        rounds = build_trajectory(session)
+        assert rounds[0]["action"] == "PLAN"
+        assert rounds[0]["summary"] == 'communicate:await_reply("I am still validating the fix.")'
+
+    def test_plan_summary_uses_legacy_nonfinal_communicate_message(self):
         entries = [
             self._user_entry(0),
             self._assistant_entry(1, tool_calls=[
@@ -771,3 +807,5 @@ class TestSummaryGeneration:
         session = self._make_session(entries)
         rounds = build_trajectory(session)
         assert rounds[0]["duration_ms"] == 0
+    def test_serf_submit_result(self):
+        assert classify_tool("submit_result") == "SUBMIT"

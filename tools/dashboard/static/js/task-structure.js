@@ -21,10 +21,22 @@ function parseToolArgs(args) {
     return {};
 }
 
-function communicateKind(name, args) {
+function communicateMode(name, args) {
     if (name !== 'communicate') return 'final';
     const kind = typeof args.kind === 'string' ? args.kind.trim().toLowerCase() : '';
-    return kind || 'final';
+    if (kind) return kind;
+    if (args.await_reply === true) return 'await_reply';
+    return 'final';
+}
+
+function communicateMessage(args) {
+    const message = typeof args.message === 'string' ? args.message.trim() : '';
+    if (message) return message;
+    if (args.output && typeof args.output === 'object') {
+        const outputMessage = typeof args.output.message === 'string' ? args.output.message.trim() : '';
+        if (outputMessage) return outputMessage;
+    }
+    return '';
 }
 
 function parseTaskListResult(content) {
@@ -108,15 +120,15 @@ function extractStructureFromTrajectory(trajectory, seedTaskList) {
                     reasoning_effort: args.reasoning_effort || '',
                 });
             } else if (name === 'communicate' || name.includes('submit') || name === 'report_result' || name === 'finish') {
-                const kind = communicateKind(name, args);
+                const mode = communicateMode(name, args);
                 events.push({
                     kind: 'communicate',
                     round: round.round,
                     name: tc.name || '',
-                    communicate_kind: kind,
+                    communicate_mode: mode,
                     args: args,
                 });
-                const message = typeof args.message === 'string' ? args.message.trim() : '';
+                const message = communicateMessage(args);
                 if (message) {
                     finalResponse = message;
                 }
@@ -256,7 +268,9 @@ function CommunicateEvent({ event }) {
     const [open, setOpen] = useState(true);
     const argsStr = JSON.stringify(event.args, null, 2);
     const label = event.name === 'communicate'
-        ? `${event.name}:${event.communicate_kind || 'final'}`
+        ? (event.communicate_mode && event.communicate_mode !== 'final'
+            ? `${event.name}:${event.communicate_mode}`
+            : event.name)
         : event.name;
     return html`
         <div class="structure-communicate-call">

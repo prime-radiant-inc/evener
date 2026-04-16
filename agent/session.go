@@ -36,12 +36,8 @@ const (
 )
 
 const (
-	communicateKindMessage = "message"
-	communicateKindAsk     = "ask"
-	communicateKindFinal   = "final"
+	defaultAgentName = "default"
 )
-
-const defaultAgentName = "default"
 
 var errBareTextWithoutResultTool = errors.New("model returned bare text without calling result tool")
 
@@ -1100,11 +1096,6 @@ func (s *Session) providerVisibleToolNames(names []string) []string {
 	return out
 }
 
-// ResultDelivered is kept as an alias for older callers.
-func (s *Session) ResultDelivered() bool {
-	return s.Communicated()
-}
-
 func (s *Session) Close() {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
@@ -1905,7 +1896,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 					})
 					steering := "You responded with bare text instead of a tool call. " +
 						"All user-facing messages MUST use " + s.resultToolName() + ". " +
-						"If that bare text was meant for the user, call " + s.resultToolName() + " now with kind=\"message\", kind=\"ask\", or kind=\"final\" as appropriate. " +
+						"If that bare text was meant for the user, call " + s.resultToolName() + " now with that text in message, set await_reply=true only if you need user input, and include the output envelope. " +
 						"Otherwise call your next tool and keep working."
 					s.appendTurn(TurnSteering, llm.User(steering))
 					s.emit(EventSteeringInjected, SteeringInjectedData{Text: steering})
@@ -2127,7 +2118,11 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			// Stop hooks
 			if s.hookRunner != nil {
 				hi := s.hookInput(HookStop)
-				hi.Reason = "communicate." + communicateMode(awaitReply)
+				if awaitReply {
+					hi.Reason = "communicate.await_reply"
+				} else {
+					hi.Reason = "communicate.complete"
+				}
 				stopResult := s.hookRunner.RunStop(ctx, hi)
 				for _, msg := range stopResult.SystemMessages {
 					s.Steer(msg)
@@ -3112,11 +3107,16 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 					if t, ok := m["type"].(string); ok {
 						taskType = TaskType(t)
 					}
+					reasoningEffort := ""
+					if re, ok := m["reasoning_effort"].(string); ok {
+						reasoningEffort = re
+					}
 					items = append(items, TaskInput{
-						Type:        taskType,
-						Description: fmt.Sprint(m["description"]),
-						Prompt:      fmt.Sprint(m["prompt"]),
-						DependsOn:   depIDs,
+						Type:            taskType,
+						Description:     fmt.Sprint(m["description"]),
+						Prompt:          fmt.Sprint(m["prompt"]),
+						DependsOn:       depIDs,
+						ReasoningEffort: reasoningEffort,
 					})
 				}
 				added, err := store.Append(items)
@@ -3274,7 +3274,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 	// Use the profile's definition if available (it may have been modified by
 	// WithAllowedDecisions to add extra fields to the output schema).
 	// Fall back to the base definition otherwise.
-	resultToolDef := defSubmitResultNamed(s.resultToolName())
+	resultToolDef := defCommunicateNamed(s.resultToolName())
 	if existing := reg.Get(s.resultToolName()); existing != nil {
 		resultToolDef = existing.Definition
 	}
@@ -3287,11 +3287,9 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			if v, ok := args["message"]; ok {
 				message = strings.TrimSpace(fmt.Sprint(v))
 			}
-			awaitReply := false
-			if v, ok := args["await_reply"].(bool); ok {
-				awaitReply = v
-			} else {
-				awaitReply = legacyAwaitReply(args["kind"])
+			awaitReply, ok := args["await_reply"].(bool)
+			if !ok {
+				return nil, fmt.Errorf("communicate requires await_reply")
 			}
 
 			originalOutput := normalizeNodeOutput(args["output"])
@@ -3313,7 +3311,6 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			}
 
 			s.emit(EventCommunicate, CommunicateData{
-				Kind:       communicateMode(awaitReply),
 				AwaitReply: awaitReply,
 				Message:    message,
 			})
@@ -3332,7 +3329,6 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			resp := map[string]any{
 				"accepted":    true,
 				"await_reply": awaitReply,
-				"kind":        communicateMode(awaitReply),
 				"inbox":       inbox,
 			}
 			b, _ := json.Marshal(resp)
@@ -3372,22 +3368,6 @@ type nodeOutput struct {
 	Message   string         `json:"message"`
 	Data      map[string]any `json:"data"`
 	Artifacts []string       `json:"artifacts"`
-}
-
-func communicateMode(awaitReply bool) string {
-	if awaitReply {
-		return communicateKindAsk
-	}
-	return communicateKindFinal
-}
-
-func legacyAwaitReply(raw any) bool {
-	switch strings.TrimSpace(fmt.Sprint(raw)) {
-	case communicateKindAsk:
-		return true
-	default:
-		return false
-	}
 }
 
 func normalizeNodeOutput(raw any) nodeOutput {
@@ -3452,10 +3432,6 @@ func canonicalNodeOutputText(raw any) string {
 		return "{}"
 	}
 	return string(b)
-}
-
-func submitResultOutputMessage(raw any) string {
-	return normalizeNodeOutput(raw).Message
 }
 
 // trackReadFile records that a file has been read in this session.

@@ -697,12 +697,11 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 
 	case "COMMUNICATE":
 		var d struct {
-			Kind    string `json:"kind"`
 			Message string `json:"message"`
 		}
 		json.Unmarshal([]byte(ev.Data), &d)
 		if d.Message != "" {
-			m.messages = append(m.messages, chatMessage{Kind: msgSubmitResult, Text: d.Message})
+			m.messages = append(m.messages, chatMessage{Kind: msgCommunicate, Text: d.Message})
 		}
 
 	case "ASSISTANT_TEXT_END":

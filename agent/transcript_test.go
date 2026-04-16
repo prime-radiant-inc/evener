@@ -1233,7 +1233,7 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 		contextWindow: 500,
 		toolDefs: []llm.ToolDefinition{
 			defReadFile(),
-			defSubmitResult(),
+			defCommunicate(),
 		},
 	}
 

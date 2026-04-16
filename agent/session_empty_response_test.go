@@ -20,14 +20,14 @@ func TestEmptyResponse_RetriesWithSteering(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	result := submitResultCall("c1", "final answer")
+	result := communicateCall("c1", "final answer")
 
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			// Round 0: model returns empty response.
 			func(req llm.Request) llm.Response { return emptyResponse() },
-			// Round 1: after steering nudge, model resumes with submit_result.
+			// Round 1: after steering nudge, model resumes with communicate.
 			func(req llm.Request) llm.Response {
 				// Verify a steering message was injected into the conversation.
 				lastMsg := req.Messages[len(req.Messages)-1]
@@ -124,7 +124,7 @@ func TestEmptyResponse_ResetsOnProgress(t *testing.T) {
 		})
 		return llm.ToolCallData{ID: id, Name: "exec_command", Arguments: raw, Type: "function"}
 	}
-	result := submitResultCall("c1", "done")
+	result := communicateCall("c1", "done")
 
 	f := &fakeAdapter{
 		name: "openai",
@@ -172,7 +172,7 @@ func TestEmptyResponse_DoesNotConsumeToolRounds(t *testing.T) {
 		})
 		return llm.ToolCallData{ID: id, Name: "exec_command", Arguments: raw, Type: "function"}
 	}
-	result := submitResultCall("c1", "done")
+	result := communicateCall("c1", "done")
 
 	// With MaxToolRoundsPerInput=3, agent gets 3 real tool rounds.
 	// Two empty responses should NOT consume rounds, leaving all 3 for real work.
@@ -222,7 +222,7 @@ func TestBareText_DoesNotConsumeToolRounds(t *testing.T) {
 		})
 		return llm.ToolCallData{ID: id, Name: "exec_command", Arguments: raw, Type: "function"}
 	}
-	result := submitResultCall("c1", "done")
+	result := communicateCall("c1", "done")
 
 	// With MaxToolRoundsPerInput=3, bare text retries should not consume rounds.
 	f := &fakeAdapter{
@@ -259,11 +259,11 @@ func TestBareText_DoesNotConsumeToolRounds(t *testing.T) {
 	}
 }
 
-func TestBareText_RedirectsToSubmitResult(t *testing.T) {
+func TestBareText_RedirectsToCommunicate(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	result := submitResultCall("c1", "final answer")
+	result := communicateCall("c1", "final answer")
 
 	f := &fakeAdapter{
 		name: "openai",
@@ -272,7 +272,7 @@ func TestBareText_RedirectsToSubmitResult(t *testing.T) {
 			func(req llm.Request) llm.Response {
 				return llm.Response{Message: llm.Assistant("here is my answer")}
 			},
-			// Round 1: after steering, model uses submit_result.
+			// Round 1: after steering, model uses communicate.
 			func(req llm.Request) llm.Response {
 				if req.ToolChoice == nil || req.ToolChoice.Mode != "required" {
 					t.Errorf("expected bare-text retry to require a tool call, got %#v", req.ToolChoice)
@@ -371,7 +371,7 @@ func TestEmptyResponse_PhasePreservedInHistory(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	result := submitResultCall("c1", "final answer")
+	result := communicateCall("c1", "final answer")
 
 	// emptyResponseWithPhase simulates gpt-5.3-codex emitting an empty text
 	// response with phase="final_answer".

@@ -7,8 +7,7 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-func communicateResponse(kind, message string) llm.Response {
-	awaitReply := kind == communicateKindAsk
+func communicateResponse(awaitReply bool, message string) llm.Response {
 	args, _ := json.Marshal(map[string]any{
 		"message":     message,
 		"await_reply": awaitReply,
@@ -37,15 +36,15 @@ func communicateResponse(kind, message string) llm.Response {
 }
 
 func finalResponse(message string) llm.Response {
-	return communicateResponse(communicateKindFinal, message)
+	return communicateResponse(false, message)
 }
 
 func messageResponse(message string) llm.Response {
-	return communicateResponse(communicateKindMessage, message)
+	return communicateResponse(false, message)
 }
 
 func askResponse(message string) llm.Response {
-	return communicateResponse(communicateKindAsk, message)
+	return communicateResponse(true, message)
 }
 
 func wrapCommunicateResponse(resp llm.Response) llm.Response {
@@ -54,12 +53,8 @@ func wrapCommunicateResponse(resp llm.Response) llm.Response {
 		return resp
 	}
 
-	kind := communicateKindMessage
-	if looksLikeQuestion(text) {
-		kind = communicateKindAsk
-	}
-
-	wrapped := communicateResponse(kind, text)
+	awaitReply := looksLikeQuestion(text)
+	wrapped := communicateResponse(awaitReply, text)
 	wrapped = resp
 	wrapped.Message = resp.Message
 	wrapped.Message.Content = append(append([]llm.ContentPart{}, resp.Message.Content...), llm.ContentPart{
@@ -67,7 +62,7 @@ func wrapCommunicateResponse(resp llm.Response) llm.Response {
 		ToolCall: &llm.ToolCallData{
 			ID:        "communicate_test_call",
 			Name:      "communicate",
-			Arguments: communicateResponse(kind, text).ToolCalls()[0].Arguments,
+			Arguments: communicateResponse(awaitReply, text).ToolCalls()[0].Arguments,
 			Type:      "function",
 		},
 	})

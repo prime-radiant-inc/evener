@@ -28,7 +28,7 @@ func TestInitTheme_SetsStyles(t *testing.T) {
 		{"statusBarStyle", statusBarStyle, "x"},
 		{"userBlockStyle", userBlockStyle, "x"},
 		{"thinkingStyle", thinkingStyle, "x"},
-		{"submitResultStyle", submitResultStyle, "x"},
+		{"communicateStyle", communicateStyle, "x"},
 		{"toolCollapsedStyle", toolCollapsedStyle, "x"},
 		{"toolNameStyle", toolNameStyle, "x"},
 		{"inputBorderStyle", inputBorderStyle, "x"},

@@ -37,7 +37,7 @@ func TestToolRegistry_Restrict(t *testing.T) {
 	}
 }
 
-func TestToolRegistry_Restrict_KeepsSubmitResult(t *testing.T) {
+func TestToolRegistry_Restrict_KeepsCommunicate(t *testing.T) {
 	reg := NewToolRegistry()
 	_ = reg.Register(RegisteredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "communicate", Description: "communicate"}},
@@ -52,11 +52,11 @@ func TestToolRegistry_Restrict_KeepsSubmitResult(t *testing.T) {
 		},
 	})
 
-	// Restrict to only "shell" -- submit_result should still be kept
+	// Restrict to only "shell" -- communicate should still be kept
 	reg.Restrict(map[string]bool{"shell": true})
 
 	if reg.Get("communicate") == nil {
-		t.Error("submit_result should always be kept after Restrict")
+		t.Error("communicate should always be kept after Restrict")
 	}
 	if reg.Get("shell") == nil {
 		t.Error("shell should be in allowed set")
@@ -331,7 +331,7 @@ func TestSpawnAgent_PluginAgentType_RestrictsTools(t *testing.T) {
 	regNames := sub.sess.reg.Names()
 	for _, name := range regNames {
 		if !allowed[name] {
-			t.Errorf("unexpected tool %q in restricted subagent (allowed: read_file, grep, submit_result)", name)
+			t.Errorf("unexpected tool %q in restricted subagent (allowed: read_file, grep, communicate)", name)
 		}
 	}
 	// Ensure the allowed tools are present

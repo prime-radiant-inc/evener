@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmdutil"
@@ -82,8 +84,6 @@ func runServe(args []string) error {
 		defer stop()
 	}
 
-	_ = *verbose // TODO: tee events to stderr NDJSON alongside SSE bridge
-
 	// Resolve working directory.
 	wd := *workDir
 	if wd == "" {
@@ -130,6 +130,30 @@ func runServe(args []string) error {
 		return err
 	}
 	env := agent.NewLocalExecutionEnvironment(wd)
+	sessionCfg := agent.SessionConfig{
+		MaxToolRoundsPerInput:  cmdutil.MaxRoundsToConfig(*maxRounds),
+		ShareTasksWithChildren: *shareTaskStore,
+		ResultToolName:         *resultToolName,
+		StateDir:               sd,
+		SystemPromptFile:       *systemPrompt,
+		SystemPromptAppend:     []string(systemPromptAppend),
+		NoProjectPrompts:       *noProjectPrompts,
+		AgentName:              *agentName,
+		SkillsDirs:             []string(skillsDirs),
+		MCPConfigFiles:         []string(mcpConfigs),
+		MCPInline:              []string(mcpServers),
+		PluginDirs:             []string(pluginDirs),
+		ContextStrategy:        *contextStrategy,
+		ExportATIFPath:         *exportATIF,
+		NonInteractive:         true,
+		SystemPromptAsUser:     *systemPromptAsUser,
+	}
+	if *maxSubagentDepth >= 0 {
+		sessionCfg.MaxSubagentDepth = *maxSubagentDepth
+	}
+	if effort.Set {
+		sessionCfg.ReasoningEffort = effort.Value
+	}
 
 	var sess *agent.Session
 	if *resume != "" || *resumeLast {
@@ -146,30 +170,6 @@ func runServe(args []string) error {
 		}
 		fmt.Fprintf(os.Stderr, "[serve] resumed session %s (%d turns)\n", meta.ID, meta.TurnCount)
 	} else {
-		sessionCfg := agent.SessionConfig{
-			MaxToolRoundsPerInput:  cmdutil.MaxRoundsToConfig(*maxRounds),
-			ShareTasksWithChildren: *shareTaskStore,
-			ResultToolName:         *resultToolName,
-			StateDir:               sd,
-			SystemPromptFile:       *systemPrompt,
-			SystemPromptAppend:     []string(systemPromptAppend),
-			NoProjectPrompts:       *noProjectPrompts,
-			AgentName:              *agentName,
-			SkillsDirs:             []string(skillsDirs),
-			MCPConfigFiles:         []string(mcpConfigs),
-			MCPInline:              []string(mcpServers),
-			PluginDirs:             []string(pluginDirs),
-			ContextStrategy:        *contextStrategy,
-			ExportATIFPath:         *exportATIF,
-			NonInteractive:         true,
-			SystemPromptAsUser:     *systemPromptAsUser,
-		}
-		if *maxSubagentDepth >= 0 {
-			sessionCfg.MaxSubagentDepth = *maxSubagentDepth
-		}
-		if effort.Set {
-			sessionCfg.ReasoningEffort = effort.Value
-		}
 		sess, err = agent.NewSession(client, profile, env, sessionCfg)
 		if err != nil {
 			return fmt.Errorf("session creation: %w", err)
@@ -181,14 +181,60 @@ func runServe(args []string) error {
 	defer cancel()
 
 	srv := server.NewServer(server.ServerConfig{})
-	srv.SetCompactFunc(sess.Compact)
-	srv.SetSteerFunc(sess.Steer)
-	srv.SetContextPressureFunc(sess.ContextPressure)
-	srv.SetModelFunc(sess.SetModel)
+
+	var currentMu sync.RWMutex
+	currentSess := sess
+	getSession := func() *agent.Session {
+		currentMu.RLock()
+		defer currentMu.RUnlock()
+		return currentSess
+	}
+	setSession := func(next *agent.Session) {
+		currentMu.Lock()
+		currentSess = next
+		currentMu.Unlock()
+	}
+
+	var eventObserver func(agent.SessionEvent)
+	if *verbose {
+		enc := json.NewEncoder(os.Stderr)
+		enc.SetEscapeHTML(false)
+		var verboseMu sync.Mutex
+		eventObserver = func(ev agent.SessionEvent) {
+			verboseMu.Lock()
+			defer verboseMu.Unlock()
+			_ = enc.Encode(ev)
+		}
+	}
+
+	bridgeSession := func(s *agent.Session) {
+		go server.BridgeWithObserver(srv, s.Events(), eventObserver)
+	}
+
+	srv.SetCompactFunc(func(ctx context.Context) error { return getSession().Compact(ctx) })
+	srv.SetSteerFunc(func(text string) { getSession().Steer(text) })
+	srv.SetContextPressureFunc(func() float64 { return getSession().ContextPressure() })
+	srv.SetModelFunc(func(model string) { getSession().SetModel(model) })
 	srv.SetListModelsFunc(cmdutil.ListModelsFunc(client, profile.ID()))
+	srv.SetDetailedStatusFunc(func() server.DetailedStatus {
+		return agentToServerDetailedStatus(getSession().DetailedStatus())
+	})
+	srv.SetTasksFunc(func() any { return getSession().Tasks() })
+	srv.SetClearFunc(func(ctx context.Context) error {
+		oldSess := getSession()
+		oldSess.Close()
+
+		newSess, err := agent.NewSession(client, profile, env, sessionCfg)
+		if err != nil {
+			return fmt.Errorf("new session: %w", err)
+		}
+		setSession(newSess)
+		bridgeSession(newSess)
+		return nil
+	})
 
 	// Bridge session events to SSE broadcaster.
-	go server.Bridge(srv, sess.Events())
+	bridgeSession(sess)
 
 	// Input processing loop.
 	go func() {
@@ -200,6 +246,7 @@ func runServe(args []string) error {
 				if !ok {
 					return
 				}
+				sess := getSession()
 				srv.SetProcessing(true)
 				srv.SetState("PROCESSING")
 				result, processErr := sess.ProcessInput(ctx, text)
@@ -216,20 +263,60 @@ func runServe(args []string) error {
 	// Start HTTP server.
 	listener, err := net.Listen("tcp", *addr)
 	if err != nil {
-		sess.Close()
+		getSession().Close()
 		return fmt.Errorf("listen %s: %w", *addr, err)
 	}
-	fmt.Fprintf(os.Stderr, "[serve] listening on %s (session %s)\n", listener.Addr(), sess.ID())
+	fmt.Fprintf(os.Stderr, "[serve] listening on %s (session %s)\n", listener.Addr(), getSession().ID())
 
 	httpSrv := &http.Server{Handler: srv}
 	go func() {
 		<-ctx.Done()
 		httpSrv.Close()
-		sess.Close()
+		getSession().Close()
 	}()
 
 	if err := httpSrv.Serve(listener); err != http.ErrServerClosed {
 		return err
 	}
 	return nil
+}
+
+func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus {
+	var out server.DetailedStatus
+
+	for _, t := range ds.Tools {
+		out.Tools = append(out.Tools, server.ToolInfo{Name: t.Name, Source: t.Source})
+	}
+	for _, m := range ds.MCP {
+		out.MCP = append(out.MCP, server.MCPServerInfo{Name: m.Name, Tools: m.Tools})
+	}
+	for _, s := range ds.Skills {
+		out.Skills = append(out.Skills, server.SkillInfo{Name: s.Name, Description: s.Description})
+	}
+	for _, p := range ds.Plugins {
+		out.Plugins = append(out.Plugins, server.PluginStatusInfo{
+			Name:       p.Name,
+			Version:    p.Version,
+			SkillCount: p.SkillCount,
+			AgentCount: p.AgentCount,
+			HookCount:  p.HookCount,
+			MCPCount:   p.MCPCount,
+		})
+	}
+	if len(ds.Hooks) > 0 {
+		out.Hooks = make(map[string]int, len(ds.Hooks))
+		for event, count := range ds.Hooks {
+			out.Hooks[string(event)] = count
+		}
+	}
+	for _, s := range ds.Subagents {
+		out.Subagents = append(out.Subagents, server.SubagentStatusInfo{
+			ID:        s.ID,
+			Status:    string(s.Status),
+			TurnsUsed: s.TurnsUsed,
+		})
+	}
+	out.Agents = ds.Agents
+
+	return out
 }

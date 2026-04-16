@@ -246,10 +246,6 @@ func parseCommunicateRequiredDataKeys(raw string) []string {
 	return out
 }
 
-func parseSubmitResultRequiredDataKeys(raw string) []string {
-	return parseCommunicateRequiredDataKeys(raw)
-}
-
 // providerEnvConfig maps provider names to their env var and base URL info.
 var providerEnvConfig = map[string]struct {
 	apiKeyEnv  string

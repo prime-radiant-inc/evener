@@ -8,7 +8,7 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-func TestHistoryToMessages_UserAndSubmitResult(t *testing.T) {
+func TestHistoryToMessages_UserAndCommunicate(t *testing.T) {
 	turns := []agent.Turn{
 		{Kind: agent.TurnUserInput, Message: llm.User("what is 2+2?")},
 		{Kind: agent.TurnAssistant, Message: llm.Message{
@@ -26,15 +26,15 @@ func TestHistoryToMessages_UserAndSubmitResult(t *testing.T) {
 
 	msgs := historyToMessages(turns)
 
-	// Should have: user message + submit_result message.
+	// Should have: user message + communicate message.
 	if len(msgs) != 2 {
 		t.Fatalf("expected 2 messages, got %d: %+v", len(msgs), msgs)
 	}
 	if msgs[0].Kind != msgUser || msgs[0].Text != "what is 2+2?" {
 		t.Errorf("msg[0] = %+v, want user 'what is 2+2?'", msgs[0])
 	}
-	if msgs[1].Kind != msgSubmitResult || msgs[1].Text != "The answer is 4." {
-		t.Errorf("msg[1] = %+v, want submit_result 'The answer is 4.'", msgs[1])
+	if msgs[1].Kind != msgCommunicate || msgs[1].Text != "The answer is 4." {
+		t.Errorf("msg[1] = %+v, want communicate 'The answer is 4.'", msgs[1])
 	}
 }
 
@@ -67,7 +67,7 @@ func TestHistoryToMessages_ToolCalls(t *testing.T) {
 
 	msgs := historyToMessages(turns)
 
-	// Should have: user + tool + submit_result.
+	// Should have: user + tool + communicate.
 	if len(msgs) != 3 {
 		t.Fatalf("expected 3 messages, got %d: %+v", len(msgs), msgs)
 	}
@@ -83,8 +83,8 @@ func TestHistoryToMessages_ToolCalls(t *testing.T) {
 	if msgs[1].Tool.Output != "file1.go\nfile2.go" {
 		t.Errorf("tool output = %q, want file listing", msgs[1].Tool.Output)
 	}
-	if msgs[2].Kind != msgSubmitResult || msgs[2].Text != "Found 2 files." {
-		t.Errorf("msg[2] = %+v, want submit_result 'Found 2 files.'", msgs[2])
+	if msgs[2].Kind != msgCommunicate || msgs[2].Text != "Found 2 files." {
+		t.Errorf("msg[2] = %+v, want communicate 'Found 2 files.'", msgs[2])
 	}
 }
 
@@ -111,8 +111,8 @@ func TestHistoryToMessages_ThinkingText(t *testing.T) {
 	if msgs[0].Kind != msgAssistant || msgs[0].Text != "Let me think about this..." {
 		t.Errorf("msg[0] = %+v, want assistant thinking", msgs[0])
 	}
-	if msgs[1].Kind != msgSubmitResult {
-		t.Errorf("msg[1].Kind = %v, want msgSubmitResult", msgs[1].Kind)
+	if msgs[1].Kind != msgCommunicate {
+		t.Errorf("msg[1].Kind = %v, want msgCommunicate", msgs[1].Kind)
 	}
 }
 

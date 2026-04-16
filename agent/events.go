@@ -23,7 +23,6 @@ const (
 	EventTurnLimit           EventKind = "TURN_LIMIT"
 	EventLoopDetection       EventKind = "LOOP_DETECTION"
 	EventCommunicate         EventKind = "COMMUNICATE"
-	EventSubmitResult        EventKind = EventCommunicate
 	EventSkillActivated      EventKind = "SKILL_ACTIVATED"
 	EventContextCompaction   EventKind = "CONTEXT_COMPACTION"
 	EventWarning             EventKind = "WARNING"
@@ -168,12 +167,9 @@ type LoopDetectionData struct {
 }
 
 type CommunicateData struct {
-	Kind       string `json:"kind,omitempty"`
 	AwaitReply bool   `json:"await_reply"`
 	Message    string `json:"message"`
 }
-
-type SubmitResultData = CommunicateData
 
 type SkillActivatedData struct {
 	Name string `json:"name"`

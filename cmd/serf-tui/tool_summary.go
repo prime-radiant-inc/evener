@@ -161,7 +161,6 @@ func summarizeTool(toolName, argsJSON string) (desc, detail string) {
 		return
 
 	case "communicate":
-		kind := str("kind")
 		msg := trunc(str("message"), 60)
 		if msg == "" {
 			if output, ok := args["output"].(map[string]any); ok {
@@ -170,9 +169,7 @@ func summarizeTool(toolName, argsJSON string) (desc, detail string) {
 				}
 			}
 		}
-		if msg != "" && kind != "" {
-			desc = fmt.Sprintf("[%s] %s", kind, msg)
-		} else if msg != "" {
+		if msg != "" {
 			desc = msg
 		} else {
 			desc = "(communicating)"

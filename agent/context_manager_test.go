@@ -301,7 +301,7 @@ func TestMaskObservations_SkipsErrorResults(t *testing.T) {
 	}
 }
 
-func TestMaskObservations_PreservesSubmitResult(t *testing.T) {
+func TestMaskObservations_PreservesCommunicate(t *testing.T) {
 	history := []Turn{
 		{Kind: TurnUserInput, Message: llm.User("task")},
 		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "communicate", `{"delivered":true,"inbox":[]}`, false)},
@@ -311,7 +311,7 @@ func TestMaskObservations_PreservesSubmitResult(t *testing.T) {
 	maskObservations(history, 0, "communicate")
 	got := toolResultContent(history[1])
 	if startsWith(got, "[communicate:") {
-		t.Fatalf("submit_result result should NOT be masked, got: %q", got)
+		t.Fatalf("communicate result should NOT be masked, got: %q", got)
 	}
 }
 
@@ -1049,7 +1049,7 @@ func TestSession_ContextManager_CompactsWhenNeeded(t *testing.T) {
 		contextWindow: 500,
 		toolDefs: []llm.ToolDefinition{
 			defReadFile(),
-			defSubmitResult(),
+			defCommunicate(),
 		},
 	}
 
@@ -1115,7 +1115,7 @@ func TestSession_ContextManager_EmitsEvents(t *testing.T) {
 		contextWindow: 500, // Tiny window to force compaction.
 		toolDefs: []llm.ToolDefinition{
 			defReadFile(),
-			defSubmitResult(),
+			defCommunicate(),
 		},
 	}
 

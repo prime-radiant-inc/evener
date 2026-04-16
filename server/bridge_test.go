@@ -132,6 +132,43 @@ func TestBridge_UsesSessionEndStateWhenProvided(t *testing.T) {
 	}
 }
 
+func TestBridgeWithObserver_InvokesObserverAndForwardsEvents(t *testing.T) {
+	srv := NewServer(ServerConfig{RingBufferSize: 100})
+	events := make(chan agent.SessionEvent, 10)
+	observed := make(chan agent.SessionEvent, 1)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		BridgeWithObserver(srv, events, func(ev agent.SessionEvent) {
+			observed <- ev
+		})
+	}()
+
+	want := agent.SessionEvent{
+		Kind:      agent.EventAssistantTextDelta,
+		SessionID: "s1",
+		Data:      agent.AssistantTextDeltaData{Delta: "hello"},
+	}
+	events <- want
+	close(events)
+	<-done
+
+	select {
+	case got := <-observed:
+		if got.Kind != want.Kind || got.SessionID != want.SessionID {
+			t.Fatalf("observer saw %+v, want %+v", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("observer was not invoked")
+	}
+
+	items := srv.broadcaster.ring.After(0)
+	if len(items) == 0 {
+		t.Fatal("expected forwarded event in ring buffer")
+	}
+}
+
 func TestBridge_SessionStartEnrichesSSEData(t *testing.T) {
 	srv := NewServer(ServerConfig{RingBufferSize: 100})
 	events := make(chan agent.SessionEvent, 10)

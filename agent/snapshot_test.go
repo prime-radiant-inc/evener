@@ -379,7 +379,7 @@ func TestSession_AutoSave_PersistsToolResults(t *testing.T) {
 	dir := t.TempDir()
 
 	c := llm.NewClient()
-	comm := submitResultCall("c1", "done")
+	comm := communicateCall("c1", "done")
 	c.Register(&fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
@@ -450,7 +450,7 @@ func TestSession_AutoSave_PersistsToolResults(t *testing.T) {
 	}
 
 	if !seenToolResult {
-		t.Fatal("expected transcript to include submit_result tool_result")
+		t.Fatal("expected transcript to include communicate tool_result")
 	}
 	if len(pendingToolCalls) != 0 {
 		t.Fatalf("expected no dangling tool calls in transcript, got %d", len(pendingToolCalls))

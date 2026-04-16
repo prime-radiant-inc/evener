@@ -141,8 +141,8 @@ def build_trajectory(session):
         nonfinal_communicates = []
         for tc in tool_calls:
             name = tc.get("name", "")
-            kind = _communicate_kind(tc)
-            if kind and kind != "final":
+            mode = _communicate_mode(tc)
+            if mode and mode != "final":
                 nonfinal_communicates.append(tc)
                 continue
             tool_names.append(name)
@@ -297,20 +297,20 @@ def _summarize_unknown_tools(tool_calls):
 def _summarize_communicate(tool_calls, final_only=False, nonfinal_only=False):
     """Summarize communicate-style tool calls with kind-aware labels."""
     for tc in tool_calls:
-        kind = _communicate_kind(tc)
-        if not kind:
+        mode = _communicate_mode(tc)
+        if not mode:
             continue
-        if final_only and kind != "final":
+        if final_only and mode != "final":
             continue
-        if nonfinal_only and kind == "final":
+        if nonfinal_only and mode == "final":
             continue
 
         name = tc.get("name", "communicate")
         args = _parse_args(tc)
         message = _communicate_message(args)
         label = name
-        if name == "communicate":
-            label = f"{name}:{kind}"
+        if name == "communicate" and mode != "final":
+            label = f"{name}:{mode}"
         if message:
             if len(message) > 80:
                 message = message[:80] + "..."
@@ -319,8 +319,8 @@ def _summarize_communicate(tool_calls, final_only=False, nonfinal_only=False):
     return ""
 
 
-def _communicate_kind(tool_call):
-    """Return communicate kind for communicate-style tools, else empty string."""
+def _communicate_mode(tool_call):
+    """Return communicate mode for communicate-style tools, else empty string."""
     name = tool_call.get("name", "")
     cat = classify_tool(name)
     if cat != "SUBMIT":
@@ -335,9 +335,11 @@ def _communicate_kind(tool_call):
         kind = kind.strip().lower()
     else:
         kind = ""
-
-    # Legacy communicate payloads had no explicit kind and were implicitly final.
-    return kind or "final"
+    if kind:
+        return kind
+    if args.get("await_reply") is True:
+        return "await_reply"
+    return "final"
 
 
 def _communicate_message(args):

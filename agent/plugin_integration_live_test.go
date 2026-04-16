@@ -730,7 +730,10 @@ func TestLive_Session_PluginAgentsInSystemPrompt(t *testing.T) {
 	}
 
 	// Drain events
-	go func() { for range sess.Events() {} }()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -758,7 +761,7 @@ func TestLive_ToolRestriction_PluginAgent(t *testing.T) {
 
 	// Build a full tool registry
 	reg := NewToolRegistry()
-	// Register some dummy tools (including submit_result, which subagents always need)
+	// Register some dummy tools (including communicate, which subagents always need)
 	for _, name := range []string{"read_file", "grep", "glob", "shell", "write_file", "edit_file", "communicate"} {
 		n := name
 		if err := reg.Register(RegisteredTool{
@@ -789,7 +792,7 @@ func TestLive_ToolRestriction_PluginAgent(t *testing.T) {
 	}
 	reg.Restrict(allowed)
 
-	// After restriction: should have read_file, grep, glob + submit_result (auto-kept)
+	// After restriction: should have read_file, grep, glob + communicate (auto-kept)
 	restricted := reg.RegisteredNames()
 	if !restricted["read_file"] {
 		t.Error("read_file should survive restriction")
@@ -801,7 +804,7 @@ func TestLive_ToolRestriction_PluginAgent(t *testing.T) {
 		t.Error("glob should survive restriction")
 	}
 	if !restricted["communicate"] {
-		t.Error("submit_result should always be kept")
+		t.Error("communicate should always be kept")
 	}
 	if restricted["shell"] {
 		t.Error("shell should be removed by restriction")
@@ -855,7 +858,10 @@ func TestLive_Session_RealSuperpowersPlugin(t *testing.T) {
 	}
 
 	// Drain events
-	go func() { for range sess.Events() {} }()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
 
 	// Verify skills were loaded
 	tddKey := "superpowers:test-driven-development"

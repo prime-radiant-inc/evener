@@ -11,12 +11,12 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// submitResultCall builds a tool call to the submit_result tool.
-func submitResultCall(id, message string) llm.ToolCallData {
-	return submitResultCallArgs(id, map[string]any{"message": message})
+// communicateCall builds a tool call to the communicate tool.
+func communicateCall(id, message string) llm.ToolCallData {
+	return communicateCallArgs(id, map[string]any{"message": message})
 }
 
-func submitResultCallArgs(id string, args map[string]any) llm.ToolCallData {
+func communicateCallArgs(id string, args map[string]any) llm.ToolCallData {
 	normalized := map[string]any{}
 
 	var message string
@@ -24,17 +24,7 @@ func submitResultCallArgs(id string, args map[string]any) llm.ToolCallData {
 		message = strings.TrimSpace(fmt.Sprint(v))
 	}
 
-	awaitReply := false
-	if v, ok := args["await_reply"].(bool); ok {
-		awaitReply = v
-	} else {
-		switch strings.TrimSpace(fmt.Sprint(args["kind"])) {
-		case communicateKindAsk:
-			awaitReply = true
-		default:
-			awaitReply = false
-		}
-	}
+	awaitReply, _ := args["await_reply"].(bool)
 
 	output := map[string]any{
 		"message":   "",
@@ -67,11 +57,11 @@ func submitResultCallArgs(id string, args map[string]any) llm.ToolCallData {
 
 // toolCallResponse is defined in tool_web_fetch_test.go (same package).
 
-func TestSubmitResult_ToolChoiceRequired_SetOnRequest(t *testing.T) {
+func TestCommunicate_ToolChoiceRequired_SetOnRequest(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	comm := submitResultCall("c1", "done")
+	comm := communicateCall("c1", "done")
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
@@ -108,11 +98,11 @@ func TestSubmitResult_ToolChoiceRequired_SetOnRequest(t *testing.T) {
 	}
 }
 
-func TestSubmitResult_ResultExitsLoop(t *testing.T) {
+func TestCommunicate_ResultExitsLoop(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	comm := submitResultCall("c1", "Here is your answer.")
+	comm := communicateCall("c1", "Here is your answer.")
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
@@ -121,7 +111,7 @@ func TestSubmitResult_ResultExitsLoop(t *testing.T) {
 			},
 			// If the loop doesn't exit, this step would be reached.
 			func(req llm.Request) llm.Response {
-				t.Fatalf("should not reach second LLM call after submit_result")
+				t.Fatalf("should not reach second LLM call after communicate")
 				return llm.Response{}
 			},
 		},
@@ -149,12 +139,12 @@ func TestSubmitResult_ResultExitsLoop(t *testing.T) {
 	}
 }
 
-func TestSubmitResult_StructuredOutputExitsLoop(t *testing.T) {
+func TestCommunicate_StructuredOutputExitsLoop(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	comm := submitResultCallArgs("c1", map[string]any{
-		"kind": communicateKindFinal,
+	comm := communicateCallArgs("c1", map[string]any{
+		"await_reply": false,
 		"output": map[string]any{
 			"message": "Structured final answer.",
 			"data": map[string]any{
@@ -170,7 +160,7 @@ func TestSubmitResult_StructuredOutputExitsLoop(t *testing.T) {
 				return toolCallResponse(comm)
 			},
 			func(req llm.Request) llm.Response {
-				t.Fatalf("should not reach second LLM call after submit_result")
+				t.Fatalf("should not reach second LLM call after communicate")
 				return llm.Response{}
 			},
 		},
@@ -198,7 +188,7 @@ func TestSubmitResult_StructuredOutputExitsLoop(t *testing.T) {
 	}
 }
 
-func TestSubmitResult_BareTextFallback(t *testing.T) {
+func TestCommunicate_BareTextFallback(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -234,7 +224,7 @@ func TestSubmitResult_BareTextFallback(t *testing.T) {
 	sess.Close()
 }
 
-func TestSubmitResult_InboxDrainsSteering(t *testing.T) {
+func TestCommunicate_InboxDrainsSteering(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -245,12 +235,12 @@ func TestSubmitResult_InboxDrainsSteering(t *testing.T) {
 	}
 	defer sess.Close()
 
-	// Queue a steering message, then call submit_result directly through the registry.
+	// Queue a steering message, then call communicate directly through the registry.
 	sess.Steer("change direction: do Y instead")
 
-	res := sess.reg.ExecuteCall(context.Background(), sess.env, submitResultCall("c1", "Working..."))
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, communicateCall("c1", "Working..."))
 	if res.IsError {
-		t.Fatalf("submit_result error: %s", res.Output)
+		t.Fatalf("communicate error: %s", res.Output)
 	}
 
 	// The tool result should contain the steering message in the inbox.
@@ -259,9 +249,9 @@ func TestSubmitResult_InboxDrainsSteering(t *testing.T) {
 	}
 
 	// A second call should have an empty inbox (steering was already drained).
-	res2 := sess.reg.ExecuteCall(context.Background(), sess.env, submitResultCall("c2", "Still working..."))
+	res2 := sess.reg.ExecuteCall(context.Background(), sess.env, communicateCall("c2", "Still working..."))
 	if res2.IsError {
-		t.Fatalf("submit_result error: %s", res2.Output)
+		t.Fatalf("communicate error: %s", res2.Output)
 	}
 
 	// Parse the JSON to verify inbox is empty.
@@ -275,7 +265,7 @@ func TestSubmitResult_InboxDrainsSteering(t *testing.T) {
 	}
 }
 
-func TestSubmitResult_SchemaRejectsMalformedOutput(t *testing.T) {
+func TestCommunicate_SchemaRejectsMalformedOutput(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -307,11 +297,11 @@ func TestSubmitResult_SchemaRejectsMalformedOutput(t *testing.T) {
 	}
 }
 
-func TestSubmitResult_EmitsEvent(t *testing.T) {
+func TestCommunicate_EmitsEvent(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	result := submitResultCall("c1", "Final answer")
+	result := communicateCall("c1", "Final answer")
 
 	f := &fakeAdapter{
 		name: "openai",
@@ -358,16 +348,16 @@ func TestSubmitResult_EmitsEvent(t *testing.T) {
 	if msg, _ := srEvents[0].DataMap()["message"].(string); msg != "Final answer" {
 		t.Fatalf("event 0 message: got %q want %q", msg, "Final answer")
 	}
-	if kind, _ := srEvents[0].DataMap()["kind"].(string); kind != communicateKindFinal {
-		t.Fatalf("event 0 kind: got %q want %q", kind, communicateKindFinal)
+	if awaitReply, _ := srEvents[0].DataMap()["await_reply"].(bool); awaitReply {
+		t.Fatalf("event 0 await_reply: got %v want false", awaitReply)
 	}
 }
 
-func TestSubmitResult_AvailableImmediately(t *testing.T) {
+func TestCommunicate_AvailableImmediately(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	result := submitResultCall("c1", "immediate answer")
+	result := communicateCall("c1", "immediate answer")
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{

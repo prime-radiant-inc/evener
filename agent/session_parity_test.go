@@ -782,7 +782,7 @@ func TestParity_SubagentSpawnAndWait(t *testing.T) {
 				func(req llm.Request) llm.Response {
 					return llm.Response{Message: llm.Assistant("subagent completed task")}
 				},
-				// Auto-nudge: default subagents get nudged to call submit_result.
+				// Auto-nudge: default subagents get nudged to call communicate.
 				func(req llm.Request) llm.Response {
 					return finalResponse("subagent completed task")
 				},
@@ -885,12 +885,11 @@ func TestParity_CloseAgentWaitsForCompletion(t *testing.T) {
 				t.Fatalf("close_agent error: %s", closeRes.Output)
 			}
 
-			var result map[string]any
+			var result SubAgentResult
 			if err := json.Unmarshal([]byte(closeRes.Output), &result); err != nil {
 				t.Fatal(err)
 			}
-			status := fmt.Sprint(result["status"])
-			if status == "running" {
+			if result.Status == SubAgentRunning {
 				t.Fatalf("close_agent returned status 'running'; expected it to wait for completion")
 			}
 		})
@@ -908,7 +907,7 @@ func TestParity_SubagentNoMCPInheritance(t *testing.T) {
 		},
 		// Auto-nudge response.
 		func(req llm.Request) llm.Response {
-			return submitResultResponse("subagent done")
+			return finalResponse("subagent done")
 		},
 	}
 	sess, _ := newParitySession(t, pc, steps)

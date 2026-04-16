@@ -390,7 +390,6 @@ func findToolCallArgs(history []Turn, toolCallID string) json.RawMessage {
 
 func parseCommunicateArgs(args json.RawMessage) (awaitReply bool, message string) {
 	var payload struct {
-		Kind       string `json:"kind"`
 		Message    string `json:"message"`
 		AwaitReply *bool  `json:"await_reply"`
 		Output     *struct {
@@ -404,13 +403,13 @@ func parseCommunicateArgs(args json.RawMessage) (awaitReply bool, message string
 	if message == "" && payload.Output != nil {
 		message = strings.TrimSpace(payload.Output.Message)
 	}
-	if payload.AwaitReply != nil {
-		return *payload.AwaitReply, message
+	if payload.AwaitReply == nil {
+		return false, ""
 	}
-	return legacyAwaitReply(payload.Kind), message
+	return *payload.AwaitReply, message
 }
 
-func communicateKindAndMessageFromHistory(history []Turn, toolCallID string) (awaitReply bool, message string) {
+func communicateArgsFromHistory(history []Turn, toolCallID string) (awaitReply bool, message string) {
 	return parseCommunicateArgs(findToolCallArgs(history, toolCallID))
 }
 
@@ -604,7 +603,7 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, result
 					continue
 				}
 				if p.ToolResult.Name == resultToolName {
-					awaitReply, msg := communicateKindAndMessageFromHistory(history[:i+1], p.ToolResult.ToolCallID)
+					awaitReply, msg := communicateArgsFromHistory(history[:i+1], p.ToolResult.ToolCallID)
 					if !awaitReply && msg != "" {
 						agentResponses = append(agentResponses, msg)
 					}

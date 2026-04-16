@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -70,6 +71,8 @@ type embeddedServer struct {
 	profile    agent.ProviderProfile
 	env        agent.ExecutionEnvironment
 	sessionCfg agent.SessionConfig
+
+	eventObserver func(agent.SessionEvent)
 }
 
 // startEmbedded creates an agent session and HTTP server in-process,
@@ -181,23 +184,36 @@ func startEmbedded(ctx context.Context, cfg embeddedConfig) (*embeddedServer, er
 
 	ctx, cancel := context.WithCancel(ctx)
 
+	var eventObserver func(agent.SessionEvent)
+	if cfg.verbose {
+		enc := json.NewEncoder(os.Stderr)
+		enc.SetEscapeHTML(false)
+		var verboseMu sync.Mutex
+		eventObserver = func(ev agent.SessionEvent) {
+			verboseMu.Lock()
+			defer verboseMu.Unlock()
+			_ = enc.Encode(ev)
+		}
+	}
+
 	e := &embeddedServer{
-		addr:       listener.Addr().String(),
-		srv:        srv,
-		listener:   listener,
-		cancel:     cancel,
-		history:    history,
-		sess:       sess,
-		client:     client,
-		profile:    profile,
-		env:        env,
-		sessionCfg: sessionCfg,
+		addr:          listener.Addr().String(),
+		srv:           srv,
+		listener:      listener,
+		cancel:        cancel,
+		history:       history,
+		sess:          sess,
+		client:        client,
+		profile:       profile,
+		env:           env,
+		sessionCfg:    sessionCfg,
+		eventObserver: eventObserver,
 	}
 
 	e.wireSession(sess)
 
 	// Bridge session events to SSE broadcaster.
-	go server.Bridge(srv, sess.Events())
+	go server.BridgeWithObserver(srv, sess.Events(), e.eventObserver)
 
 	// Input processing loop.
 	go e.inputLoop(ctx)
@@ -312,7 +328,7 @@ func (e *embeddedServer) clearSession(ctx context.Context) error {
 	e.mu.Unlock()
 
 	e.wireSession(newSess)
-	go server.Bridge(e.srv, newSess.Events())
+	go server.BridgeWithObserver(e.srv, newSess.Events(), e.eventObserver)
 
 	return nil
 }

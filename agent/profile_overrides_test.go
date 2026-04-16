@@ -10,12 +10,12 @@ import (
 func TestWithCommunicateRequiredDataKeys_AddsRequiredKeysToSchema(t *testing.T) {
 	p := WithCommunicateRequiredDataKeys(NewOpenAIProfile("gpt-5.2"), []string{"components"})
 
-	var submitResultFound bool
+	var communicateFound bool
 	for _, td := range p.ToolDefinitions() {
 		if td.Name != "communicate" {
 			continue
 		}
-		submitResultFound = true
+		communicateFound = true
 
 		props, _ := td.Parameters["properties"].(map[string]any)
 		output, _ := props["output"].(map[string]any)
@@ -54,7 +54,7 @@ func TestWithCommunicateRequiredDataKeys_AddsRequiredKeysToSchema(t *testing.T) 
 			t.Fatal("WithCommunicateRequiredDataKeys should not add decision field")
 		}
 	}
-	if !submitResultFound {
+	if !communicateFound {
 		t.Fatal("communicate tool not found")
 	}
 }
@@ -80,11 +80,11 @@ func TestWithCommunicateRequiredDataKeys_PlanDocIsString(t *testing.T) {
 	t.Fatal("communicate tool not found")
 }
 
-func TestDefSubmitResult_DefaultSchema_NoDecisionField(t *testing.T) {
+func TestDefCommunicate_DefaultSchema_NoDecisionField(t *testing.T) {
 	// Default communicate schema should NOT include the decision field.
 	// Decision is only needed for orchestration (toil) and gives the model
 	// an escape hatch to rationalize giving up in standalone mode.
-	td := defSubmitResult()
+	td := defCommunicate()
 	props, _ := td.Parameters["properties"].(map[string]any)
 	output, _ := props["output"].(map[string]any)
 	outProps, _ := output["properties"].(map[string]any)
@@ -246,7 +246,7 @@ func TestWithAllowedDecisions_RegistryPreservesDecisionSchema(t *testing.T) {
 
 	// Simulate registerCoreTools pattern (the fix):
 	// Use existing definition from registry instead of base.
-	resultToolDef := defSubmitResultNamed("communicate")
+	resultToolDef := defCommunicateNamed("communicate")
 	if ex := reg.Get("communicate"); ex != nil {
 		resultToolDef = ex.Definition
 	}

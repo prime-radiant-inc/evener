@@ -32,7 +32,7 @@ func TestUseSkill_ReturnsBody(t *testing.T) {
 
 	c := llm.NewClient()
 	skill := useSkillCall("s1", "greet")
-	comm := submitResultCall("c1", "done")
+	comm := communicateCall("c1", "done")
 
 	f := &fakeAdapter{
 		name: "anthropic",
@@ -111,7 +111,7 @@ func TestUseSkill_EmitsEvent(t *testing.T) {
 
 	c := llm.NewClient()
 	skill := useSkillCall("s1", "deploy")
-	comm := submitResultCall("c1", "done")
+	comm := communicateCall("c1", "done")
 
 	f := &fakeAdapter{
 		name: "anthropic",
@@ -165,7 +165,7 @@ func TestUseSkill_SystemPromptContainsSkillList(t *testing.T) {
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nBody.\n")
 
 	c := llm.NewClient()
-	comm := submitResultCall("c1", "done")
+	comm := communicateCall("c1", "done")
 
 	var capturedSystem string
 	f := &fakeAdapter{
@@ -205,7 +205,7 @@ func TestOpenAI_SkillsSectionWithFilePaths(t *testing.T) {
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nBody.\n")
 
 	c := llm.NewClient()
-	comm := submitResultCall("c1", "done")
+	comm := communicateCall("c1", "done")
 
 	var capturedSystem string
 	f := &fakeAdapter{

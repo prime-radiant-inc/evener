@@ -25,10 +25,11 @@ const (
 
 // SubAgentResult is the structured output from a completed sub-agent.
 type SubAgentResult struct {
-	Output     string `json:"output"`
-	Success    bool   `json:"success"`
-	TurnsUsed  int    `json:"turns_used"`
-	Transcript string `json:"transcript,omitempty"`
+	Status     SubAgentStatus `json:"status"`
+	Output     string         `json:"output"`
+	Success    bool           `json:"success"`
+	TurnsUsed  int            `json:"turns_used"`
+	Transcript string         `json:"transcript,omitempty"`
 }
 
 // defaultSubagentInstructions is the role-specific prompt for default subagents
@@ -42,8 +43,9 @@ Your job is to complete the task and report your findings.`
 var rootOnlyAgentManagementTools = []string{"spawn_agent", "resume_agent", "wait", "close_agent"}
 
 type subagent struct {
-	id   string
-	sess *Session
+	id     string
+	sess   *Session
+	parent *Session
 
 	mu             sync.Mutex
 	running        bool
@@ -52,7 +54,8 @@ type subagent struct {
 	done           chan struct{}
 	result         string
 	err            error
-	resultConsumed bool // true after first successful wait returns results
+	resultConsumed bool // true after the first wait returns this run's result
+	endEmitted     bool
 	nudgeEnabled   bool // true for default subagents that should be nudged to communicate
 }
 
@@ -280,8 +283,10 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	}
 
 	sub := &subagent{
+		parent:       s,
 		id:           subSess.id,
 		sess:         subSess,
+		running:      true,
 		status:       SubAgentRunning,
 		done:         make(chan struct{}),
 		nudgeEnabled: agent == nil, // default subagents get nudged to communicate
@@ -325,8 +330,17 @@ func (s *Session) sendInput(ctx context.Context, agentID string, input string) (
 	sub.mu.Lock()
 	sub.done = make(chan struct{})
 	sub.running = true
+	sub.status = SubAgentRunning
+	sub.result = ""
+	sub.err = nil
 	sub.resultConsumed = false
+	sub.endEmitted = false
 	sub.mu.Unlock()
+
+	s.emit(EventSubagentStart, SubagentStartData{
+		AgentID: sub.id,
+		Task:    input,
+	})
 
 	// Resume runs should also be independent of the caller's wait context.
 	go sub.run(context.Background(), input)
@@ -339,9 +353,6 @@ func (s *Session) waitAgent(ctx context.Context, agentID string, timeoutMS int) 
 		return "", fmt.Errorf("unknown agent_id: %s", agentID)
 	}
 
-	// Prevent closed-channel polling: if results were already consumed and
-	// the agent is not running, return an error instead of silently returning
-	// stale data. This prevents the model from burning rounds re-waiting.
 	sub.mu.Lock()
 	if sub.resultConsumed && !sub.running {
 		sub.mu.Unlock()
@@ -351,7 +362,7 @@ func (s *Session) waitAgent(ctx context.Context, agentID string, timeoutMS int) 
 
 	done := sub.done
 	if done == nil {
-		return "", fmt.Errorf("agent has no running task")
+		return "", fmt.Errorf("agent has no active run")
 	}
 	if timeoutMS <= 0 {
 		select {
@@ -371,64 +382,51 @@ func (s *Session) waitAgent(ctx context.Context, agentID string, timeoutMS int) 
 		}
 	}
 	sub.mu.Lock()
-	result := SubAgentResult{
-		Output:     sub.result,
-		Success:    sub.err == nil,
-		TurnsUsed:  sub.turnsUsed,
-		Transcript: sub.sess.TranscriptPath(),
-	}
-	status := sub.status
-	subErr := sub.err
+	result := sub.resultSnapshotLocked()
 	sub.resultConsumed = true
 	sub.mu.Unlock()
 
-	s.emit(EventSubagentEnd, SubagentEndData{
-		AgentID:   agentID,
-		Status:    string(status),
-		TurnsUsed: result.TurnsUsed,
-	})
-
 	b, _ := json.Marshal(result)
-	if subErr != nil {
-		return string(b), subErr
-	}
 	return string(b), nil
 }
 
 func (s *Session) closeAgent(agentID string) (any, error) {
-	s.mu.Lock()
-	sub := s.subagents[agentID]
-	delete(s.subagents, agentID)
-	s.mu.Unlock()
+	sub := s.getSub(agentID)
 	if sub == nil {
 		return "", fmt.Errorf("unknown agent_id: %s", agentID)
 	}
 
 	sub.sess.Close()
 
-	// Wait for the goroutine to finish.
+	// Wait for the goroutine to finish after cancellation.
+	done := sub.done
+	if done == nil {
+		s.mu.Lock()
+		delete(s.subagents, agentID)
+		s.mu.Unlock()
+
+		sub.mu.Lock()
+		result := sub.resultSnapshotLocked()
+		sub.mu.Unlock()
+
+		b, _ := json.Marshal(result)
+		return string(b), nil
+	}
 	select {
-	case <-sub.done:
+	case <-done:
 	case <-time.After(5 * time.Second):
+		return "", fmt.Errorf("timed out closing subagent %s", agentID)
 	}
 
 	sub.mu.Lock()
-	status := sub.status
-	result := sub.result
-	turnsUsed := sub.turnsUsed
+	result := sub.resultSnapshotLocked()
 	sub.mu.Unlock()
 
-	s.emit(EventSubagentEnd, SubagentEndData{
-		AgentID:   agentID,
-		Status:    string(status),
-		TurnsUsed: turnsUsed,
-	})
+	s.mu.Lock()
+	delete(s.subagents, agentID)
+	s.mu.Unlock()
 
-	b, _ := json.Marshal(map[string]any{
-		"status":     string(status),
-		"output":     result,
-		"turns_used": turnsUsed,
-	})
+	b, _ := json.Marshal(result)
 	return string(b), nil
 }
 
@@ -438,21 +436,16 @@ func (s *Session) getSub(agentID string) *subagent {
 	return s.subagents[agentID]
 }
 
-// submitResultNudge returns the message sent to a subagent that stops without
+// communicateNudge returns the message sent to a subagent that stops without
 // calling the result tool. Sent at most once.
-func submitResultNudge(toolName string) string {
+func communicateNudge(toolName string) string {
 	return "You stopped without calling " + toolName + ". " +
-		"You MUST call " + toolName + " with kind=\"final\" and a message summarizing your complete findings " +
+		"You MUST call " + toolName + " with await_reply=false and a message summarizing your complete findings " +
 		"before stopping. The parent agent receives ONLY the " + toolName + " message — " +
 		"it cannot see anything else you did. Report your results now."
 }
 
 func (a *subagent) run(ctx context.Context, input string) {
-	a.mu.Lock()
-	a.running = true
-	a.status = SubAgentRunning
-	a.mu.Unlock()
-
 	res, err := a.sess.ProcessInput(ctx, input)
 
 	// Auto-nudge: if a default subagent stops without calling communicate,
@@ -463,7 +456,7 @@ func (a *subagent) run(ctx context.Context, input string) {
 		!a.sess.Communicated() &&
 		(err == nil || errors.Is(err, errBareTextWithoutResultTool))
 	if shouldNudge {
-		res, err = a.sess.ProcessInput(ctx, submitResultNudge(a.sess.resultToolName()))
+		res, err = a.sess.ProcessInput(ctx, communicateNudge(a.sess.resultToolName()))
 	}
 
 	a.sess.mu.Lock()
@@ -480,8 +473,32 @@ func (a *subagent) run(ctx context.Context, input string) {
 	} else {
 		a.status = SubAgentCompleted
 	}
-	if a.done != nil {
-		close(a.done)
-	}
+	done := a.done
+	emitEnd := !a.endEmitted
+	a.endEmitted = true
+	status := a.status
+	turnsUsed := a.turnsUsed
+	parent := a.parent
 	a.mu.Unlock()
+
+	if done != nil {
+		close(done)
+	}
+	if emitEnd && parent != nil {
+		parent.emit(EventSubagentEnd, SubagentEndData{
+			AgentID:   a.id,
+			Status:    string(status),
+			TurnsUsed: turnsUsed,
+		})
+	}
+}
+
+func (a *subagent) resultSnapshotLocked() SubAgentResult {
+	return SubAgentResult{
+		Status:     a.status,
+		Output:     a.result,
+		Success:    a.err == nil,
+		TurnsUsed:  a.turnsUsed,
+		Transcript: a.sess.TranscriptPath(),
+	}
 }

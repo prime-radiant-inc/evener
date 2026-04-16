@@ -301,7 +301,7 @@ func TestHistoryCopyReduction_ContextAndExpansionShareCopy(t *testing.T) {
 		return llm.ToolCallData{ID: id, Name: "exec_command", Arguments: raw, Type: "function"}
 	}
 
-	comm := submitResultCall("c1", "done after tools")
+	comm := communicateCall("c1", "done after tools")
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
@@ -354,7 +354,7 @@ func TestAfterAction_ReceivesCurrentHistory(t *testing.T) {
 		})
 		return llm.ToolCallData{ID: id, Name: "exec_command", Arguments: raw, Type: "function"}
 	}
-	comm := submitResultCall("c1", "done")
+	comm := communicateCall("c1", "done")
 
 	var afterActionHistory []Turn
 	spy := &spyStrategy{

@@ -219,7 +219,7 @@ func NewOpenAIProfile(model string) ProviderProfile {
 			defCloseAgent(),
 			defTaskList(efforts),
 			defWebFetch(),
-			defSubmitResult(),
+			defCommunicate(),
 		},
 	}
 }
@@ -317,7 +317,7 @@ func NewAnthropicProfile(model string) ProviderProfile {
 				defCloseAgent(),
 				defTaskList(efforts),
 				defWebFetch(),
-				defSubmitResult(),
+				defCommunicate(),
 				defUseSkill(),
 			},
 		},
@@ -370,7 +370,7 @@ func NewGeminiProfile(model string) ProviderProfile {
 			defTaskList(efforts),
 			defWebFetch(),
 			defWebSearch(),
-			defSubmitResult(),
+			defCommunicate(),
 			defUseSkill(),
 		},
 	}
@@ -404,7 +404,7 @@ func NewMiniMaxProfile(model string) ProviderProfile {
 			defCloseAgent(),
 			defTaskList(efforts),
 			defWebFetch(),
-			defSubmitResult(),
+			defCommunicate(),
 			defUseSkill(),
 		},
 	}
@@ -471,7 +471,7 @@ func NewOpenRouterAnthropicProfile(model string) ProviderProfile {
 			defCloseAgent(),
 			defTaskList(efforts),
 			defWebFetch(),
-			defSubmitResult(),
+			defCommunicate(),
 			defUseSkill(),
 		},
 	}
@@ -530,7 +530,7 @@ func NewOpenAICompatProfile(id, model string, contextWindow int) ProviderProfile
 			defCloseAgent(),
 			defTaskList(efforts),
 			defWebFetch(),
-			defSubmitResult(),
+			defCommunicate(),
 		},
 	}
 }
@@ -745,7 +745,7 @@ Important:
 func defSpawnAgent() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "spawn_agent",
-		Description: "Spawn a sub-agent to work on a scoped task. Only you can call this tool; subagents never receive it. With blocking=true, the returned output is the subagent's own report, not a guarantee the task was done correctly. You are responsible for checking whether it actually answered the delegated task before you relay it to the user. If the subagent reports a bounce, placeholder text, or otherwise fails to do the work, resume it with sharper instructions or spawn a better-suited agent instead of treating the delegation as complete.",
+		Description: "Spawn a sub-agent to work on a scoped task. Only you can call this tool; subagents never receive it. With blocking=true, the returned output is the subagent's own result JSON. Check `success`, `status`, and `output` yourself before trusting it. If the subagent reports a bounce, placeholder text, or otherwise fails to do the work, resume it with sharper instructions or spawn a better-suited agent instead of treating the delegation as complete.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -754,7 +754,7 @@ func defSpawnAgent() llm.ToolDefinition {
 				"model":            map[string]any{"type": "string", "description": "Model override (default: parent model)"},
 				"max_turns":        map[string]any{"type": "integer", "description": "Turn limit for the subagent (default: 500)"},
 				"agent_type":       map[string]any{"type": "string", "description": "Agent type (e.g. 'explorer' or 'implementer' for built-in/bundled agents, or 'plugin-name:agent-name' for external plugin agents)"},
-				"blocking":         map[string]any{"type": "boolean", "description": "When true, spawns the agent and waits for completion in a single call, returning the result directly. Do NOT call wait() after a blocking spawn — the result is already in the response. Default is false (async). Use blocking=false only when you need to run multiple agents in parallel, then call wait() on each agent_id."},
+				"blocking":         map[string]any{"type": "boolean", "description": "When true, spawns the agent and waits for completion in a single call, returning the subagent result JSON directly. Do NOT call wait() after a blocking spawn — the result is already in the response. Default is false (async). Use blocking=false only when you need to run multiple agents in parallel, then call wait() on each agent_id."},
 				"reasoning_effort": map[string]any{"type": "string", "description": "Reasoning effort for this subagent: low, medium, high, or xhigh. Default inherits from parent. Start with low — it auto-escalates when the agent gets stuck."},
 				"grant_tools": map[string]any{
 					"type":        "array",
@@ -783,7 +783,7 @@ func defSpawnAgent() llm.ToolDefinition {
 func defSendInput() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "resume_agent",
-		Description: "Resume a sub-agent with new instructions. The agent keeps all its previous context (files read, analysis done, code written) and continues from where it left off. Use this instead of spawning a new agent when you want to iterate — e.g. send reviewer feedback to an implementer, or ask a planner to revise. Use blocking=true (recommended) to wait for the result in one call.",
+		Description: "Resume a sub-agent with new instructions. The agent keeps all its previous context (files read, analysis done, code written) and continues from where it left off. Use this instead of spawning a new agent when you want to iterate — e.g. send reviewer feedback to an implementer, or ask a planner to revise. Use blocking=true (recommended) to wait for the result JSON in one call.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -792,7 +792,7 @@ func defSendInput() llm.ToolDefinition {
 				"message":  map[string]any{"type": "string"},
 				"blocking": map[string]any{
 					"type":        "boolean",
-					"description": "When true, sends the message and waits for the agent to finish, returning the result directly. Do NOT call wait() after a blocking resume. Default is false.",
+					"description": "When true, sends the message and waits for the agent to finish, returning the subagent result JSON directly. Do NOT call wait() after a blocking resume. Default is false.",
 				},
 				"task_list": map[string]any{
 					"type":        "array",
@@ -816,7 +816,7 @@ func defSendInput() llm.ToolDefinition {
 func defWait() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "wait",
-		Description: "Wait for a non-blocking sub-agent to finish and return its result. Only use this after spawn_agent with blocking=false. Do NOT use after blocking=true — that already returned the result. Use timeout_ms of 300000 (5 minutes) or more — short timeouts waste rounds on retries.",
+		Description: "Wait for a non-blocking sub-agent to finish and return its result JSON. Only use this after spawn_agent with blocking=false. Do NOT use after blocking=true — that already returned the result. The result includes `success`, `status`, `output`, `turns_used`, and `transcript`; inspect `success` yourself instead of assuming the subagent solved the task. Use timeout_ms of 300000 (5 minutes) or more — short timeouts waste rounds on retries.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -832,7 +832,7 @@ func defWait() llm.ToolDefinition {
 func defCloseAgent() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "close_agent",
-		Description: "Close a sub-agent session.",
+		Description: "Close a sub-agent session, waiting for any active run to stop first. Returns the same result JSON shape as wait(), then removes the sub-agent from the active session list.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -878,11 +878,11 @@ func defWebSearch() llm.ToolDefinition {
 	}
 }
 
-func defSubmitResult() llm.ToolDefinition {
-	return defSubmitResultNamed("communicate")
+func defCommunicate() llm.ToolDefinition {
+	return defCommunicateNamed("communicate")
 }
 
-func defSubmitResultNamed(name string) llm.ToolDefinition {
+func defCommunicateNamed(name string) llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        name,
@@ -948,14 +948,14 @@ func defTaskList(effortLevels []string) llm.ToolDefinition {
 				},
 				"tasks": map[string]any{
 					"type":        "array",
-					"description": "For append: tasks to add. Each has a type, brief description (<10 words), and a detailed prompt.",
+					"description": "For append: tasks to add. Each has a type, brief description (<10 words), a detailed prompt, and optional reasoning_effort.",
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
 							"type": map[string]any{
 								"type":        "string",
-								"enum":        []string{"research", "implement", "verify"},
-								"description": "Task type. 'implement' tasks automatically get a verification task.",
+								"enum":        []string{"research", "implement", "verify", "fix"},
+								"description": "Task type. Use 'fix' for targeted remediation after a specific failure or review finding.",
 							},
 							"description": map[string]any{"type": "string"},
 							"prompt":      map[string]any{"type": "string"},
@@ -964,6 +964,7 @@ func defTaskList(effortLevels []string) llm.ToolDefinition {
 								"items":       map[string]any{"type": "integer"},
 								"description": "IDs of tasks this one depends on. Optional.",
 							},
+							"reasoning_effort": reasoningSchema,
 						},
 						"required": []string{"type", "description", "prompt"},
 					},

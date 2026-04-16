@@ -293,8 +293,8 @@ func drainEventsHuman(events <-chan agent.SessionEvent, w io.Writer) <-chan stru
 				}
 			case agent.EventCommunicate:
 				if d, ok := ev.Data.(agent.CommunicateData); ok {
-					if d.Kind != "" {
-						fmt.Fprintf(w, "[communicate:%s] %s\n", d.Kind, d.Message) //nolint:errcheck
+					if d.AwaitReply {
+						fmt.Fprintf(w, "[communicate:await_reply] %s\n", d.Message) //nolint:errcheck
 					} else {
 						fmt.Fprintf(w, "[communicate] %s\n", d.Message) //nolint:errcheck
 					}

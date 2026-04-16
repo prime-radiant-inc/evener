@@ -21,7 +21,7 @@ type colorTheme struct {
 	userBlockBg   lipgloss.Color
 	userBlockFg   lipgloss.Color
 	thinkingFg    lipgloss.Color
-	submitResultFg lipgloss.Color
+	communicateFg lipgloss.Color
 	systemFg      lipgloss.Color
 
 	// Tool calls
@@ -54,7 +54,7 @@ var darkTheme = colorTheme{
 	userBlockBg:   lipgloss.Color("236"),
 	userBlockFg:   lipgloss.Color("252"),
 	thinkingFg:    lipgloss.Color("244"),
-	submitResultFg: lipgloss.Color("255"),
+	communicateFg: lipgloss.Color("255"),
 	systemFg:      lipgloss.Color("240"),
 
 	toolFg:       lipgloss.Color("244"),
@@ -84,7 +84,7 @@ var lightTheme = colorTheme{
 	userBlockBg:   lipgloss.Color("253"),
 	userBlockFg:   lipgloss.Color("236"),
 	thinkingFg:    lipgloss.Color("244"),
-	submitResultFg: lipgloss.Color("236"),
+	communicateFg: lipgloss.Color("236"),
 	systemFg:      lipgloss.Color("244"),
 
 	toolFg:       lipgloss.Color("243"),
@@ -115,10 +115,10 @@ var (
 	statusDisconnected lipgloss.Style
 	scrollModeStyle    lipgloss.Style
 
-	userBlockStyle    lipgloss.Style
-	thinkingStyle     lipgloss.Style
-	submitResultStyle  lipgloss.Style
-	systemStyle       lipgloss.Style
+	userBlockStyle   lipgloss.Style
+	thinkingStyle    lipgloss.Style
+	communicateStyle lipgloss.Style
+	systemStyle      lipgloss.Style
 
 	toolCollapsedStyle lipgloss.Style
 	toolExpandedStyle  lipgloss.Style
@@ -207,8 +207,8 @@ func applyTheme(t colorTheme) {
 		Foreground(t.thinkingFg).
 		Italic(true)
 
-	submitResultStyle = lipgloss.NewStyle().
-		Foreground(t.submitResultFg)
+	communicateStyle = lipgloss.NewStyle().
+		Foreground(t.communicateFg)
 
 	systemStyle = lipgloss.NewStyle().
 		Foreground(t.systemFg).

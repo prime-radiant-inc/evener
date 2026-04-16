@@ -91,7 +91,7 @@ func TestEmbeddedSkills_InSystemPrompt(t *testing.T) {
 	initGitRepo(t, root)
 
 	c := llm.NewClient()
-	comm := submitResultCall("c1", "done")
+	comm := communicateCall("c1", "done")
 
 	var capturedSystem string
 	f := &fakeAdapter{
@@ -133,7 +133,7 @@ func TestOpenAI_SkillsWithFilePathsInSystemPrompt(t *testing.T) {
 		"---\nname: my-skill\ndescription: \"Test skill\"\n---\nBody.\n")
 
 	c := llm.NewClient()
-	comm := submitResultCall("c1", "done")
+	comm := communicateCall("c1", "done")
 
 	var capturedSystem string
 	f := &fakeAdapter{
@@ -182,7 +182,7 @@ func TestEmbeddedSkills_ProjectShadowsEmbedded(t *testing.T) {
 		"---\nname: test-driven-development\ndescription: \"Custom project TDD\"\n---\nCustom TDD body.\n")
 
 	c := llm.NewClient()
-	comm := submitResultCall("c1", "done")
+	comm := communicateCall("c1", "done")
 
 	var capturedSystem string
 	f := &fakeAdapter{
@@ -225,7 +225,7 @@ func TestEmbeddedSkills_UseSkillWithProjectSkill(t *testing.T) {
 	c := llm.NewClient()
 
 	skill := useSkillCall("s1", "my-skill")
-	comm := submitResultCall("c1", "done")
+	comm := communicateCall("c1", "done")
 
 	var skillResultContent string
 	f := &fakeAdapter{
@@ -275,7 +275,7 @@ func TestEmbeddedSkills_UseSkillUnknownReturnsError(t *testing.T) {
 
 	// Calling use_skill with a skill that doesn't exist should return an error.
 	skill := useSkillCall("s1", "nonexistent-skill")
-	comm := submitResultCall("c1", "done")
+	comm := communicateCall("c1", "done")
 
 	var skillResultIsError bool
 	f := &fakeAdapter{
@@ -336,7 +336,7 @@ func TestNonInteractive_SystemPromptContainsGuidance(t *testing.T) {
 	initGitRepo(t, root)
 
 	c := llm.NewClient()
-	comm := submitResultCall("c1", "done")
+	comm := communicateCall("c1", "done")
 
 	var capturedSystem string
 	f := &fakeAdapter{
@@ -376,7 +376,7 @@ func TestNonInteractive_NotPresentWhenFalse(t *testing.T) {
 	initGitRepo(t, root)
 
 	c := llm.NewClient()
-	comm := submitResultCall("c1", "done")
+	comm := communicateCall("c1", "done")
 
 	var capturedSystem string
 	f := &fakeAdapter{

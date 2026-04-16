@@ -38,9 +38,9 @@ func renderMarkdown(text string) string {
 type messageKind int
 
 const (
-	msgUser         messageKind = iota
-	msgAssistant                // LLM thinking/reasoning text
-	msgSubmitResult             // agent's communicate output (the actual response)
+	msgUser        messageKind = iota
+	msgAssistant               // LLM thinking/reasoning text
+	msgCommunicate             // agent's communicate output (the actual response)
 	msgTool
 	msgSystem
 )
@@ -69,8 +69,8 @@ func renderMessage(msg chatMessage, width int, focused bool) string {
 			return ""
 		}
 		return thinkingStyle.Width(width).Render(text)
-	case msgSubmitResult:
-		return submitResultStyle.Width(width).Render(renderMarkdown(msg.Text))
+	case msgCommunicate:
+		return communicateStyle.Width(width).Render(renderMarkdown(msg.Text))
 	case msgTool:
 		if msg.Tool == nil || msg.Tool.Hidden {
 			return ""
@@ -234,9 +234,9 @@ func historyToMessages(turns []agent.Turn) []chatMessage {
 					}
 					tc := p.ToolCall
 					if tc.Name == "communicate" {
-						_, msg := extractCommunicate(tc)
+						msg := extractCommunicate(tc)
 						if msg != "" {
-							msgs = append(msgs, chatMessage{Kind: msgSubmitResult, Text: msg})
+							msgs = append(msgs, chatMessage{Kind: msgCommunicate, Text: msg})
 						}
 						continue
 					}
@@ -265,31 +265,21 @@ func historyToMessages(turns []agent.Turn) []chatMessage {
 	return msgs
 }
 
-// extractCommunicate pulls the kind and message fields from a communicate tool call.
-func extractCommunicate(tc *llm.ToolCallData) (string, string) {
+// extractCommunicate pulls the message field from a communicate tool call.
+func extractCommunicate(tc *llm.ToolCallData) string {
 	var args struct {
-		Kind       string `json:"kind"`
-		AwaitReply *bool  `json:"await_reply"`
-		Message    string `json:"message"`
-		Output     *struct {
+		Message string `json:"message"`
+		Output  *struct {
 			Message string `json:"message"`
 		} `json:"output"`
 	}
 	if err := json.Unmarshal(tc.Arguments, &args); err == nil {
-		kind := args.Kind
-		if kind == "" && args.AwaitReply != nil {
-			if *args.AwaitReply {
-				kind = "ask"
-			} else {
-				kind = "final"
-			}
-		}
 		if args.Message != "" {
-			return kind, args.Message
+			return args.Message
 		}
 		if args.Output != nil && args.Output.Message != "" {
-			return kind, args.Output.Message
+			return args.Output.Message
 		}
 	}
-	return "", ""
+	return ""
 }

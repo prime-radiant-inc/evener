@@ -55,7 +55,7 @@ func TestRoundTimings_Emitted(t *testing.T) {
 	dir := t.TempDir()
 
 	c := llm.NewClient()
-	comm := submitResultCall("c1", "result")
+	comm := communicateCall("c1", "result")
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
@@ -63,7 +63,7 @@ func TestRoundTimings_Emitted(t *testing.T) {
 			func(req llm.Request) llm.Response {
 				return toolCallResponse(shellToolCall("s1"))
 			},
-			// Round 1: submit result
+			// Round 1: communicate
 			func(req llm.Request) llm.Response {
 				return toolCallResponse(comm)
 			},
@@ -170,7 +170,7 @@ func BenchmarkRoundOverhead(b *testing.B) {
 			})
 		}
 		steps = append(steps, func(req llm.Request) llm.Response {
-			return toolCallResponse(submitResultCall("c1", "done"))
+			return toolCallResponse(communicateCall("c1", "done"))
 		})
 		return steps
 	}

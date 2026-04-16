@@ -62,11 +62,6 @@ func WithCommunicateRequiredDataKeys(p ProviderProfile, requiredKeys []string) P
 	return &clone
 }
 
-// WithSubmitResultRequiredDataKeys is a compatibility alias for the older name.
-func WithSubmitResultRequiredDataKeys(p ProviderProfile, requiredKeys []string) ProviderProfile {
-	return WithCommunicateRequiredDataKeys(p, requiredKeys)
-}
-
 // WithAllowedDecisions returns a cloned profile where the `communicate` tool
 // schema requires a `decision` field constrained to the given values, and
 // `output` is required at the top level.
@@ -189,7 +184,7 @@ func toStringSlice(v any) []string {
 }
 
 func defCommunicateWithRequiredDataKeys(requiredKeys []string) llm.ToolDefinition {
-	td := defSubmitResult()
+	td := defCommunicate()
 
 	// Navigate: parameters.properties.output.properties.data
 	params := td.Parameters
@@ -278,10 +273,6 @@ func defCommunicateWithRequiredDataKeys(requiredKeys []string) llm.ToolDefinitio
 	dataSchema["required"] = required
 
 	return td
-}
-
-func defSubmitResultWithRequiredDataKeys(requiredKeys []string) llm.ToolDefinition {
-	return defCommunicateWithRequiredDataKeys(requiredKeys)
 }
 
 func stringArraySchema() map[string]any {

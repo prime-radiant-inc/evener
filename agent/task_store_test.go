@@ -455,6 +455,26 @@ func TestTaskListSchema_ReasoningEffortEnumPerProvider(t *testing.T) {
 				t.Fatal("task_list tool definition not found in profile")
 			}
 			props := td.Parameters["properties"].(map[string]any)
+
+			tasks := props["tasks"].(map[string]any)
+			taskItems := tasks["items"].(map[string]any)
+			taskProps := taskItems["properties"].(map[string]any)
+			appendEffort := taskProps["reasoning_effort"].(map[string]any)
+			appendEnum, ok := appendEffort["enum"].([]string)
+			if !ok {
+				t.Fatalf("append enum missing from reasoning_effort schema: %v", appendEffort)
+			}
+			if !reflect.DeepEqual(appendEnum, tc.want) {
+				t.Fatalf("append schema enum: got %v, want %v", appendEnum, tc.want)
+			}
+			gotTypes, ok := taskProps["type"].(map[string]any)["enum"].([]string)
+			if !ok {
+				t.Fatalf("task type enum missing from append schema: %v", taskProps["type"])
+			}
+			if !reflect.DeepEqual(gotTypes, []string{"research", "implement", "verify", "fix"}) {
+				t.Fatalf("append task type enum: got %v", gotTypes)
+			}
+
 			updates := props["updates"].(map[string]any)
 			items := updates["items"].(map[string]any)
 			updProps := items["properties"].(map[string]any)
@@ -749,6 +769,41 @@ func TestTaskListTool_UpdateReasoningEffort(t *testing.T) {
 	})
 	if xhigh.IsError {
 		t.Fatalf("xhigh should be accepted by OpenAI profile: %s", xhigh.Output)
+	}
+}
+
+func TestTaskListTool_AppendPreservesReasoningEffortAndType(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	appendRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:   "c1",
+		Name: "task_list",
+		Arguments: json.RawMessage(`{
+			"action": "append",
+			"tasks": [{"type": "fix", "description": "Repair flaky test", "prompt": "Stabilize the test after the regression", "reasoning_effort": "xhigh"}]
+		}`),
+	})
+	if appendRes.IsError {
+		t.Fatalf("append error: %s", appendRes.Output)
+	}
+
+	tasks := sess.Tasks()
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].Type != TaskTypeFix {
+		t.Fatalf("task type: got %q want %q", tasks[0].Type, TaskTypeFix)
+	}
+	if tasks[0].ReasoningEffort != "xhigh" {
+		t.Fatalf("reasoning_effort: got %q want %q", tasks[0].ReasoningEffort, "xhigh")
 	}
 }
 
