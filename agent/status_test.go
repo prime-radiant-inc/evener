@@ -156,7 +156,7 @@ func TestSession_DetailedStatus_EmptySections(t *testing.T) {
 	if len(ds.MCP) != 0 {
 		t.Errorf("expected no MCP servers, got %d", len(ds.MCP))
 	}
-	// No plugins.
+	// No plugins in a vanilla session.
 	if len(ds.Plugins) != 0 {
 		t.Errorf("expected no plugins, got %d", len(ds.Plugins))
 	}
@@ -164,15 +164,66 @@ func TestSession_DetailedStatus_EmptySections(t *testing.T) {
 	if len(ds.Subagents) != 0 {
 		t.Errorf("expected no subagents, got %d", len(ds.Subagents))
 	}
-	// Built-in agents (explorer, etc.) are always present.
+	// Core agents are always present.
+	foundDefault := false
 	foundExplorer := false
+	foundSubagent := false
 	for _, name := range ds.Agents {
+		if name == "default" {
+			foundDefault = true
+		}
 		if name == "explorer" {
 			foundExplorer = true
 		}
+		if name == "subagent" {
+			foundSubagent = true
+		}
+	}
+	if !foundDefault {
+		t.Errorf("expected core 'default' agent in %v", ds.Agents)
 	}
 	if !foundExplorer {
-		t.Errorf("expected built-in 'explorer' agent in %v", ds.Agents)
+		t.Errorf("expected core 'explorer' agent in %v", ds.Agents)
+	}
+	if !foundSubagent {
+		t.Errorf("expected core 'subagent' agent in %v", ds.Agents)
+	}
+}
+
+func TestSession_DetailedStatus_ConfiguredWorkflowPlugin(t *testing.T) {
+	dir := t.TempDir()
+
+	c := llm.NewClient()
+	f := &fakeAdapter{
+		name:  "openai",
+		steps: []func(req llm.Request) llm.Response{},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), NewLocalExecutionEnvironment(dir), coordinatorWorkflowSessionConfig(t, SessionConfig{}))
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ds := sess.DetailedStatus()
+
+	if len(ds.Plugins) != 1 {
+		t.Fatalf("expected 1 coordinator workflow plugin, got %d", len(ds.Plugins))
+	}
+	if ds.Plugins[0].Name != coordinatorWorkflowPluginName {
+		t.Fatalf("plugin name = %q, want %q", ds.Plugins[0].Name, coordinatorWorkflowPluginName)
+	}
+
+	foundReviewer := false
+	for _, name := range ds.Agents {
+		if name == "reviewer" {
+			foundReviewer = true
+			break
+		}
+	}
+	if !foundReviewer {
+		t.Fatalf("expected configured coordinator workflow reviewer agent in %v", ds.Agents)
 	}
 }
 
@@ -199,7 +250,7 @@ func TestSession_DetailedStatus_Subagents(t *testing.T) {
 	// Spawn a subagent directly.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	result, err := sess.spawnAgent(ctx, "test task", "", "", 1, "", "", nil)
+	result, err := sess.spawnAgent(ctx, "test task", "", "", 1, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("spawnAgent: %v", err)
 	}

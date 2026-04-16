@@ -1,5 +1,12 @@
 {{ if .AvailableAgents }}<available_agents>
-The following agent types are available for spawn_agent with agent_type parameter:
-{{ range .AvailableAgents }}- {{ .Name }}: {{ .Description }}
+The following subagent types are available for `spawn_agent` with the `agent_type` parameter:
+{{ range .AvailableAgents }}<agent>
+Name: `{{ .Name }}`
+Description: {{ .Description }}
+Default tools: {{ .DefaultTools }}
+Default task list:
+{{ if .TaskList }}{{ range .TaskList }}- `{{ .Title }}`: {{ .Description }}{{ if .ReplacedByParentTasks }} Delegated tasks from `task_list` replace this step when provided.{{ end }}
+{{ end }}{{ else }}- none
+{{ end }}</agent>
 {{ end }}</available_agents>
 {{ end }}

@@ -8,7 +8,7 @@
 #   OPENAI_API_KEY=... ./run-test.sh [label] [coordinator.md-path]
 #
 # The binary is built fresh from the current source tree. If coordinator.md-path
-# is given, it replaces agent/agents/coordinator.md before building.
+# is given, it replaces agent/bundled_plugins/workflow/agents/coordinator.md before building.
 #
 # Output: DELEGATE or BYPASS + details
 set -euo pipefail
@@ -32,8 +32,8 @@ python3 "$SCRIPT_DIR/generate-board.py" "$WORKDIR/chess_board.png"
 ORIG_COORD=""
 if [ -n "$COORD_MD" ]; then
   ORIG_COORD=$(mktemp)
-  cp "$REPO_ROOT/agent/agents/coordinator.md" "$ORIG_COORD"
-  cp "$COORD_MD" "$REPO_ROOT/agent/agents/coordinator.md"
+  cp "$REPO_ROOT/agent/bundled_plugins/workflow/agents/coordinator.md" "$ORIG_COORD"
+  cp "$COORD_MD" "$REPO_ROOT/agent/bundled_plugins/workflow/agents/coordinator.md"
 fi
 
 cd "$REPO_ROOT"
@@ -42,7 +42,7 @@ go build -o "/tmp/serf-coord-repro-${LABEL}" ./cmd/serf/ 2>&1
 
 # Restore original coordinator.md if we swapped it
 if [ -n "$ORIG_COORD" ]; then
-  cp "$ORIG_COORD" "$REPO_ROOT/agent/agents/coordinator.md"
+  cp "$ORIG_COORD" "$REPO_ROOT/agent/bundled_plugins/workflow/agents/coordinator.md"
   rm -f "$ORIG_COORD"
 fi
 

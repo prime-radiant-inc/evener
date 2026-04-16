@@ -49,9 +49,6 @@ class TestClassifyTool:
     def test_codex_grep_files(self):
         assert classify_tool("grep_files") == "EXPLORE"
 
-    def test_codex_read_many_files(self):
-        assert classify_tool("read_many_files") == "EXPLORE"
-
     # Claude Code tool names
     def test_claude_bash(self):
         assert classify_tool("bash") == "EXEC"

@@ -559,7 +559,6 @@ func TestTaskStore_NotesPersistAcrossLoads(t *testing.T) {
 func TestTaskStore_PopulateFromTemplates(t *testing.T) {
 	dir := t.TempDir()
 	store := NewTaskStore(dir, "test-populate")
-	store.AutoVerify = false
 	store.Load()
 
 	templates := []TaskTemplate{
@@ -595,7 +594,6 @@ func TestTaskStore_PopulateFromTemplates(t *testing.T) {
 func TestTaskStore_PopulateFromTemplates_WithParentTasks(t *testing.T) {
 	dir := t.TempDir()
 	store := NewTaskStore(dir, "test-parent")
-	store.AutoVerify = false
 	store.Load()
 
 	templates := []TaskTemplate{
@@ -641,7 +639,6 @@ func TestTaskStore_PopulateFromTemplates_WithParentTasks(t *testing.T) {
 func TestTaskStore_PopulateFromTemplates_Idempotent(t *testing.T) {
 	dir := t.TempDir()
 	store := NewTaskStore(dir, "test-idempotent")
-	store.AutoVerify = false
 	store.Load()
 
 	templates := []TaskTemplate{
@@ -683,8 +680,8 @@ func TestTaskListTool_UpdateWithNotes(t *testing.T) {
 
 	// Update with notes.
 	updateRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
-		ID:   "c2",
-		Name: "task_list",
+		ID:        "c2",
+		Name:      "task_list",
 		Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 1, "status": "in_progress", "notes": "make failed with missing libfoo"}]}`),
 	})
 	if updateRes.IsError {
@@ -727,8 +724,8 @@ func TestTaskListTool_UpdateReasoningEffort(t *testing.T) {
 
 	// Escalate via tool call.
 	updateRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
-		ID:   "c2",
-		Name: "task_list",
+		ID:        "c2",
+		Name:      "task_list",
 		Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 1, "status": "in_progress", "reasoning_effort": "high"}]}`),
 	})
 	if updateRes.IsError {
@@ -1282,7 +1279,7 @@ func TestTaskListTool_UpdateAutoAdvanceFiresSteeringNotOutput(t *testing.T) {
 	ctx := context.Background()
 	env := sess.env
 
-	// Append A and B. Use type=research to avoid auto-verify task creation.
+	// Append A and B with explicit research tasks.
 	sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
 		ID:   "c1",
 		Name: "task_list",
@@ -1455,7 +1452,7 @@ func TestTaskListTool_UpdateShowsAllComplete(t *testing.T) {
 	ctx := context.Background()
 	env := sess.env
 
-	// Single task. Use type=research to avoid auto-verify task creation.
+	// Single research task.
 	sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
 		ID:   "c1",
 		Name: "task_list",
@@ -1493,7 +1490,7 @@ func TestTaskListTool_UpdateStaysMinimalWhenBlocked(t *testing.T) {
 	ctx := context.Background()
 	env := sess.env
 
-	// A, B→A, C→B (chain A←B←C). Use type=research to avoid auto-verify task creation.
+	// A, B→A, C→B (chain A←B←C).
 	sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
 		ID:   "c1",
 		Name: "task_list",
@@ -1530,199 +1527,13 @@ func TestTaskListTool_UpdateStaysMinimalWhenBlocked(t *testing.T) {
 	}
 }
 
-func TestTaskStore_AutoVerifyUsesReviewerAgentType(t *testing.T) {
-	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
-	s.AutoVerify = true
-
-	added, err := s.Append([]TaskInput{
-		{Type: TaskTypeImplement, Description: "Build widget", Prompt: "Create widget.go"},
-	})
-	if err != nil {
-		t.Fatalf("Append: %v", err)
-	}
-	if len(added) != 1 {
-		t.Fatalf("expected 1 added task, got %d", len(added))
-	}
-
-	all := s.View()
-	// Should have 2 tasks: the implement task + auto-generated verify task.
-	if len(all) != 2 {
-		t.Fatalf("expected 2 tasks (implement + verify), got %d", len(all))
-	}
-
-	verify := all[1]
-	if verify.Type != TaskTypeVerify {
-		t.Errorf("auto-created task type = %q, want %q", verify.Type, TaskTypeVerify)
-	}
-	if !strings.Contains(verify.Prompt, `agent_type="reviewer"`) {
-		t.Errorf("verify prompt should instruct coordinator to use agent_type=\"reviewer\", got: %s", verify.Prompt)
-	}
-	if len(verify.DependsOn) != 1 || verify.DependsOn[0] != added[0].ID {
-		t.Errorf("verify task should depend on implement task, got depends_on=%v", verify.DependsOn)
-	}
-}
-
-func TestTaskStore_AutoVerifyAfterFixTask(t *testing.T) {
-	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
-	s.AutoVerify = true
-
-	added, err := s.Append([]TaskInput{
-		{Type: TaskTypeFix, Description: "Fix edge case", Prompt: "Handle negative input"},
-	})
-	if err != nil {
-		t.Fatalf("Append: %v", err)
-	}
-	if len(added) != 1 {
-		t.Fatalf("expected 1 added task, got %d", len(added))
-	}
-
-	all := s.View()
-	// Fix tasks should also get auto-verify.
-	if len(all) != 2 {
-		t.Fatalf("expected 2 tasks (fix + verify), got %d", len(all))
-	}
-
-	verify := all[1]
-	if verify.Type != TaskTypeVerify {
-		t.Errorf("auto-created task type = %q, want %q", verify.Type, TaskTypeVerify)
-	}
-	if len(verify.DependsOn) != 1 || verify.DependsOn[0] != added[0].ID {
-		t.Errorf("verify task should depend on fix task, got depends_on=%v", verify.DependsOn)
-	}
-}
-
-func TestTaskStore_AutoVerifyDisabled(t *testing.T) {
-	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
-	s.AutoVerify = false
-
-	added, err := s.Append([]TaskInput{
-		{Type: TaskTypeImplement, Description: "Build widget", Prompt: "Create widget.go"},
-	})
-	if err != nil {
-		t.Fatalf("Append: %v", err)
-	}
-	if len(added) != 1 {
-		t.Fatalf("expected 1 added task, got %d", len(added))
-	}
-
-	all := s.View()
-	// No auto-generated verify task when AutoVerify is false.
-	if len(all) != 1 {
-		t.Fatalf("expected 1 task (auto-verify disabled), got %d", len(all))
-	}
-	if all[0].Type != TaskTypeImplement {
-		t.Errorf("task type = %q, want %q", all[0].Type, TaskTypeImplement)
-	}
-}
-
-func TestTaskStore_AutoVerifyDisabledForFixTasks(t *testing.T) {
-	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
-	s.AutoVerify = false
-
-	added, err := s.Append([]TaskInput{
-		{Type: TaskTypeFix, Description: "Fix edge case", Prompt: "Handle negative input"},
-	})
-	if err != nil {
-		t.Fatalf("Append: %v", err)
-	}
-	if len(added) != 1 {
-		t.Fatalf("expected 1 added task, got %d", len(added))
-	}
-
-	all := s.View()
-	if len(all) != 1 {
-		t.Fatalf("expected 1 task (auto-verify disabled), got %d", len(all))
-	}
-}
-
-func TestTaskStore_AutoVerifyWhenEnabled(t *testing.T) {
-	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
-	s.AutoVerify = true
-	// AutoVerify explicitly enabled — verify tasks should be created.
-
-	s.Append([]TaskInput{
-		{Type: TaskTypeImplement, Description: "Build it", Prompt: "Do the thing"},
-	})
-
-	all := s.View()
-	if len(all) != 2 {
-		t.Fatalf("expected 2 tasks (implement + verify with AutoVerify=true), got %d", len(all))
-	}
-}
-
-func TestTaskListTool_DisableAutoVerifyViaSessionConfig(t *testing.T) {
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
-
-	sess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{
-		
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
-
-	ctx := context.Background()
-	env := sess.env
-
-	// Append an implement task — should NOT generate auto-verify.
-	sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
-		ID:   "c1",
-		Name: "task_list",
-		Arguments: json.RawMessage(`{
-			"action": "append",
-			"tasks": [{"type": "implement", "description": "Build widget", "prompt": "Create widget.go"}]
-		}`),
-	})
-
-	store := sess.getOrCreateTaskStore()
-	all := store.View()
-	if len(all) != 1 {
-		t.Fatalf("expected 1 task (auto-verify disabled via config), got %d", len(all))
-	}
-	if all[0].Type != TaskTypeImplement {
-		t.Errorf("task type = %q, want %q", all[0].Type, TaskTypeImplement)
-	}
-}
-
-func TestTaskStore_AutoVerifyPromptFocusesOnRejection(t *testing.T) {
-	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
-	s.AutoVerify = true
-
-	s.Append([]TaskInput{
-		{Type: TaskTypeImplement, Description: "Build it", Prompt: "Do the thing"},
-	})
-
-	all := s.View()
-	verify := all[1]
-	// Should focus on rejection-worthy issues including leftover artifacts.
-	if !strings.Contains(verify.Prompt, "reject") {
-		t.Errorf("verify prompt should mention rejection, got: %s", verify.Prompt)
-	}
-	if !strings.Contains(verify.Prompt, "leftover build artifacts") {
-		t.Errorf("verify prompt should mention leftover build artifacts, got: %s", verify.Prompt)
-	}
-	if !strings.Contains(verify.Prompt, "rewarded for finding legitimate problems") {
-		t.Errorf("verify prompt should incentivize finding real problems, got: %s", verify.Prompt)
-	}
-}
-
 func TestSharedTaskStore_ChildUsesParentStore(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
 	// Create parent session and populate its task store.
-	parentSess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{
-		
-	})
+	parentSess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession (parent): %v", err)
 	}
@@ -1772,7 +1583,6 @@ func TestSharedTaskStore_ShareTasksWithChildrenConfig(t *testing.T) {
 	// Parent with ShareTasksWithChildren enabled.
 	parentSess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{
 		ShareTasksWithChildren: true,
-		
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -1812,9 +1622,7 @@ func TestSharedTaskStore_IsolatedByDefault(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai"})
 
 	// Parent with tasks.
-	parentSess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{
-		
-	})
+	parentSess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession (parent): %v", err)
 	}
@@ -1932,7 +1740,6 @@ func TestTask_Insert_RoundTrips(t *testing.T) {
 func TestTaskStore_CurrentInProgress(t *testing.T) {
 	dir := t.TempDir()
 	store := NewTaskStore(dir, "test-current")
-	store.AutoVerify = false
 	store.Load()
 
 	store.Append([]TaskInput{

@@ -9,8 +9,8 @@ import (
 //go:embed agents/*.md
 var embeddedAgents embed.FS
 
-// builtinAgents parses and returns agents from the embedded agents/ directory.
-// They are keyed by their name (no plugin prefix), e.g. "explorer".
+// builtinAgents parses and returns the core agents embedded directly into the
+// binary. These are keyed by their public name (no plugin prefix).
 func builtinAgents() (map[string]PluginAgent, error) {
 	entries, err := embeddedAgents.ReadDir("agents")
 	if err != nil {

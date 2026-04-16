@@ -16,7 +16,7 @@ OUTDIR = sys.argv[1] if len(sys.argv) > 1 else "/tmp/coord-variants"
 os.makedirs(OUTDIR, exist_ok=True)
 
 # Read the baseline
-BASELINE_PATH = os.path.join(os.path.dirname(__file__), "../../agent/agents/coordinator.md")
+BASELINE_PATH = os.path.join(os.path.dirname(__file__), "../../agent/bundled_plugins/workflow/agents/coordinator.md")
 with open(BASELINE_PATH) as f:
     BASELINE = f.read()
 

@@ -101,6 +101,38 @@ func TestParsePluginAgent_NoTools(t *testing.T) {
 	}
 }
 
+func TestParsePluginAgent_AllToolsScalar(t *testing.T) {
+	content := "---\nname: test\ndescription: desc\ntools: all\n---\nbody"
+	agent, err := parsePluginAgent([]byte(content), "p")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !agent.AllTools {
+		t.Fatal("AllTools = false, want true")
+	}
+	if len(agent.Tools) != 0 {
+		t.Fatalf("Tools = %v, want empty when AllTools is true", agent.Tools)
+	}
+}
+
+func TestParsePluginAgent_AllToolsListFormsRejected(t *testing.T) {
+	cases := []string{
+		"---\nname: test\ndescription: desc\ntools: \"*\"\n---\nbody",
+		"---\nname: test\ndescription: desc\ntools: [all]\n---\nbody",
+		"---\nname: test\ndescription: desc\ntools: [\"*\"]\n---\nbody",
+		"---\nname: test\ndescription: desc\ntools: [all, shell]\n---\nbody",
+	}
+	for _, content := range cases {
+		_, err := parsePluginAgent([]byte(content), "p")
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "use `tools: all`") {
+			t.Fatalf("error = %v, want canonical form hint", err)
+		}
+	}
+}
+
 func TestParsePluginAgent_Skills(t *testing.T) {
 	data := []byte("---\nname: test-eng\ndescription: test engineer\nskills: [test-engineering, debugging]\n---\nYou write tests.\n")
 	agent, err := parsePluginAgent(data, "builtin")

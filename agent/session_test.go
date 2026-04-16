@@ -332,7 +332,7 @@ func TestSession_SystemPromptFile_OverridesBasePrompt(t *testing.T) {
 	}
 }
 
-func TestSession_CoreTools_ReadManyFiles_And_ListDir(t *testing.T) {
+func TestSession_CoreTools_ListDir(t *testing.T) {
 	dir := t.TempDir()
 	env := NewLocalExecutionEnvironment(dir)
 	if _, err := env.WriteFile("a.txt", "hello\n"); err != nil {
@@ -350,25 +350,8 @@ func TestSession_CoreTools_ReadManyFiles_And_ListDir(t *testing.T) {
 	}
 	defer sess.Close()
 
-	// read_many_files
-	res := sess.reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
-		ID:        "c1",
-		Name:      "read_many_files",
-		Arguments: json.RawMessage(`{"file_paths":["a.txt","sub/b.txt"]}`),
-		Type:      "function",
-	})
-	if res.IsError {
-		t.Fatalf("read_many_files error: %s", res.Output)
-	}
-	if !strings.Contains(res.Output, "BEGIN a.txt") || !strings.Contains(res.Output, "1 | hello") {
-		t.Fatalf("read_many_files output:\n%s", res.Output)
-	}
-	if !strings.Contains(res.Output, "BEGIN sub/b.txt") || !strings.Contains(res.Output, "1 | world") {
-		t.Fatalf("read_many_files output:\n%s", res.Output)
-	}
-
 	// list_dir
-	res = sess.reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
+	res := sess.reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
 		ID:        "c2",
 		Name:      "list_dir",
 		Arguments: json.RawMessage(`{"path":"","depth":2}`),

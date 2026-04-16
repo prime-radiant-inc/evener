@@ -85,6 +85,11 @@ func newTestResolver(t *testing.T, dir, provider, agent string) *SectionResolver
 	}
 }
 
+func mustWorkflowAgent(t *testing.T, name string) PluginAgent {
+	t.Helper()
+	return coordinatorWorkflowAgentForTest(t, name)
+}
+
 func TestSectionResolver_BaseOnly(t *testing.T) {
 	dir := t.TempDir()
 	writeSection(t, dir, "identity.md", "I am serf")
@@ -291,7 +296,9 @@ func TestSectionResolver_RoleSection(t *testing.T) {
 		sources:  nil,
 		agentFS:  embeddedAgents,
 	}
-	got := r.Section("role", PromptData{})
+	got := r.Section("role", PromptData{
+		RolePromptOverride: mustWorkflowAgent(t, "coordinator").SystemPrompt,
+	})
 
 	if !strings.Contains(got, "You are a coordinator") {
 		t.Errorf("expected role to contain 'You are a coordinator', got %q", got)
@@ -370,23 +377,31 @@ func TestSystemTemplate_StructuralRegression(t *testing.T) {
 	}
 
 	data := PromptData{
-		Provider:        "openai",
-		Agent:           "coordinator",
-		WorkingDir:      "/tmp/test",
-		IsGitRepo:       true,
-		GitBranch:       "main",
-		Platform:        "linux",
-		OSVersion:       "Linux 6.1",
-		Today:           "2026-03-25",
-		Model:           "gpt-5.4",
-		KnowledgeCutoff: "2025-05",
-		ResultToolName:  "communicate",
+		Provider:           "openai",
+		Agent:              "coordinator",
+		RolePromptOverride: mustWorkflowAgent(t, "coordinator").SystemPrompt,
+		WorkingDir:         "/tmp/test",
+		IsGitRepo:          true,
+		GitBranch:          "main",
+		Platform:           "linux",
+		OSVersion:          "Linux 6.1",
+		Today:              "2026-03-25",
+		Model:              "gpt-5.4",
+		KnowledgeCutoff:    "2025-05",
+		ResultToolName:     "communicate",
 		ProfileTools: []ToolEntry{
 			{Name: "shell", Description: "Run commands"},
 			{Name: "apply_patch", Description: "Edit files"},
 		},
 		AvailableAgents: []AgentEntry{
-			{Name: "implementer", Description: "Code implementation agent."},
+			{
+				Name:         "implementer",
+				Description:  "Code implementation agent.",
+				DefaultTools: "`read_file`, `apply_patch`",
+				TaskList: []AgentTaskEntry{
+					{Title: "Do the work", Description: "Implement the solution.", ReplacedByParentTasks: true},
+				},
+			},
 		},
 	}
 
@@ -400,6 +415,7 @@ func TestSystemTemplate_StructuralRegression(t *testing.T) {
 		"## Identity",
 		"## Values",
 		"## Capabilities",
+		"## Delegation",
 		"## Git safety",
 		"## Security",
 		"## Task tracking",
@@ -438,11 +454,12 @@ func TestSubagentTemplate_StructuralRegression(t *testing.T) {
 	}
 
 	data := PromptData{
-		Provider:       "openai",
-		Agent:          "implementer",
-		WorkingDir:     "/tmp/test",
-		Model:          "gpt-5.4",
-		ResultToolName: "communicate",
+		Provider:           "openai",
+		Agent:              "implementer",
+		RolePromptOverride: mustWorkflowAgent(t, "implementer").SystemPrompt,
+		WorkingDir:         "/tmp/test",
+		Model:              "gpt-5.4",
+		ResultToolName:     "communicate",
 	}
 
 	result, _, err := resolver.RenderEmbedded(embeddedPrompts, "prompts/templates/", "subagent", data)
@@ -458,8 +475,9 @@ func TestSubagentTemplate_StructuralRegression(t *testing.T) {
 		}
 	}
 
-	// Subagent should NOT have git-safety, task-tracking, skills, available-agents.
-	for _, absent := range []string{"## Git safety", "## Task tracking", "<skill-catalog>", "<available_agents>"} {
+	// Subagent should NOT have root-only sections such as delegation, git-safety,
+	// task-tracking, skills, or available-agents.
+	for _, absent := range []string{"## Delegation", "## Git safety", "## Task tracking", "<skill-catalog>", "<available_agents>"} {
 		if strings.Contains(result, absent) {
 			t.Errorf("subagent prompt should not contain: %q", absent)
 		}
@@ -477,6 +495,7 @@ func TestReviewerTemplate_UsesCommunicateDecisionContract(t *testing.T) {
 	data := PromptData{
 		Provider:                    "openai",
 		Agent:                       "reviewer",
+		RolePromptOverride:          mustWorkflowAgent(t, "reviewer").SystemPrompt,
 		ResultToolName:              "communicate",
 		ProfileTools:                toolEntriesFromDefinitions(NewOpenAIProfile("gpt-5.2").ToolDefinitions()),
 		CallableToolNames:           []string{"read_file", "grep", "glob", "shell", "communicate"},
@@ -488,8 +507,8 @@ func TestReviewerTemplate_UsesCommunicateDecisionContract(t *testing.T) {
 		t.Fatalf("render error: %v", err)
 	}
 
-	if !strings.Contains(result, "communicate(kind=\"final\", ...)") {
-		t.Error("reviewer prompt should require communicate(kind=\"final\", ...)")
+	if !strings.Contains(result, "`message` to your full review report") || !strings.Contains(result, "`await_reply` to `false`") {
+		t.Error("reviewer prompt should require the current communicate review contract")
 	}
 	if !strings.Contains(result, "output.decision") {
 		t.Error("reviewer prompt should mention output.decision")
@@ -517,10 +536,11 @@ func TestAnthropicProvider_UsesEditFile(t *testing.T) {
 	}
 
 	data := PromptData{
-		Provider:       "anthropic",
-		Agent:          "coordinator",
-		ResultToolName: "communicate",
-		ProfileTools:   toolEntriesFromDefinitions(NewAnthropicProfile("claude-test").ToolDefinitions()),
+		Provider:           "anthropic",
+		Agent:              "coordinator",
+		RolePromptOverride: mustWorkflowAgent(t, "coordinator").SystemPrompt,
+		ResultToolName:     "communicate",
+		ProfileTools:       toolEntriesFromDefinitions(NewAnthropicProfile("claude-test").ToolDefinitions()),
 	}
 
 	result, _, err := resolver.RenderEmbedded(embeddedPrompts, "prompts/templates/", "system", data)

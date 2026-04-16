@@ -357,7 +357,6 @@ func NewGeminiProfile(model string) ProviderProfile {
 		},
 		toolDefs: []llm.ToolDefinition{
 			defReadFile(),
-			defReadManyFiles(),
 			defWriteFile(),
 			defEditFile(),
 			defShell(),
@@ -572,23 +571,6 @@ func defReadFile() llm.ToolDefinition {
 	}
 }
 
-func defReadManyFiles() llm.ToolDefinition {
-	return llm.ToolDefinition{
-		Name:        "read_many_files",
-		Description: "Read multiple files from the filesystem in one call. Returns a concatenated, line-numbered output for each file. Prefer this for batch exploration when you already know the file set and want to avoid repeated read_file calls.",
-		Parameters: map[string]any{
-			"type":                 "object",
-			"additionalProperties": false,
-			"properties": map[string]any{
-				"file_paths": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-				"offset":     map[string]any{"type": "integer"},
-				"limit":      map[string]any{"type": "integer"},
-			},
-			"required": []string{"file_paths"},
-		},
-	}
-}
-
 func defWriteFile() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "write_file",
@@ -763,7 +745,7 @@ Important:
 func defSpawnAgent() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "spawn_agent",
-		Description: "Spawn a sub-agent to work on a scoped task. With blocking=true, the returned output is the subagent's own report, not a guarantee the task was done correctly. You are responsible for checking whether it actually answered the delegated task before you relay it to the user. If the subagent reports a bounce, placeholder text, or otherwise fails to do the work, resume it with sharper instructions or spawn a better-suited agent instead of treating the delegation as complete.",
+		Description: "Spawn a sub-agent to work on a scoped task. Only you can call this tool; subagents never receive it. With blocking=true, the returned output is the subagent's own report, not a guarantee the task was done correctly. You are responsible for checking whether it actually answered the delegated task before you relay it to the user. If the subagent reports a bounce, placeholder text, or otherwise fails to do the work, resume it with sharper instructions or spawn a better-suited agent instead of treating the delegation as complete.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -771,9 +753,14 @@ func defSpawnAgent() llm.ToolDefinition {
 				"task":             map[string]any{"type": "string"},
 				"model":            map[string]any{"type": "string", "description": "Model override (default: parent model)"},
 				"max_turns":        map[string]any{"type": "integer", "description": "Turn limit for the subagent (default: 500)"},
-				"agent_type":       map[string]any{"type": "string", "description": "Agent type (e.g. 'explorer' for built-in, or 'plugin-name:agent-name' for plugin agents)"},
+				"agent_type":       map[string]any{"type": "string", "description": "Agent type (e.g. 'explorer' or 'implementer' for built-in/bundled agents, or 'plugin-name:agent-name' for external plugin agents)"},
 				"blocking":         map[string]any{"type": "boolean", "description": "When true, spawns the agent and waits for completion in a single call, returning the result directly. Do NOT call wait() after a blocking spawn — the result is already in the response. Default is false (async). Use blocking=false only when you need to run multiple agents in parallel, then call wait() on each agent_id."},
 				"reasoning_effort": map[string]any{"type": "string", "description": "Reasoning effort for this subagent: low, medium, high, or xhigh. Default inherits from parent. Start with low — it auto-escalates when the agent gets stuck."},
+				"grant_tools": map[string]any{
+					"type":        "array",
+					"description": "Extra tools to grant to the subagent beyond its default role. Use tool names exactly as shown in your current callable tool list. You may only grant tools that are currently callable in this session. `spawn_agent`, `resume_agent`, `wait`, and `close_agent` are only callable by you and cannot be granted.",
+					"items":       map[string]any{"type": "string"},
+				},
 				"task_list": map[string]any{
 					"type":        "array",
 					"description": "Pre-populate the subagent's task list. Items replace the agent's 'parent_tasks' placeholder.",

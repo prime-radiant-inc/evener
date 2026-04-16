@@ -12,7 +12,7 @@ type PromptData struct {
 	// Resolution context
 	NonInteractive           bool
 	Provider                 string // "openai", "anthropic", "gemini"
-	Agent                    string // "default", "coordinator", "implementer", "reviewer", etc.
+	Agent                    string // public agent name, e.g. "default", "explorer", "coordinator"
 	BaseInstructionsOverride string
 	RolePromptOverride       string
 
@@ -49,7 +49,7 @@ type PromptData struct {
 	CallableToolNames           []string
 	UnavailableProfileToolNames []string
 
-	// Available agents (for coordinator spawn_agent)
+	// Available agents (for spawn_agent)
 	AvailableAgents []AgentEntry
 
 	// Project docs
@@ -79,10 +79,19 @@ type ToolEntry struct {
 	Description string
 }
 
+// AgentTaskEntry is a summarized default task in a spawnable agent workflow.
+type AgentTaskEntry struct {
+	Title                 string
+	Description           string
+	ReplacedByParentTasks bool
+}
+
 // AgentEntry is a spawnable agent for template rendering.
 type AgentEntry struct {
-	Name        string
-	Description string
+	Name         string
+	Description  string
+	DefaultTools string
+	TaskList     []AgentTaskEntry
 }
 
 func toolEntriesFromDefinitions(defs []llm.ToolDefinition) []ToolEntry {
@@ -131,4 +140,44 @@ func unavailableToolNames(profileDefs, actualDefs []llm.ToolDefinition) []string
 		missing = append(missing, td.Name)
 	}
 	return missing
+}
+
+func summarizeTaskPrompt(prompt string) string {
+	text := strings.Join(strings.Fields(prompt), " ")
+	if text == "" {
+		return "(no description)"
+	}
+	for i, r := range text {
+		switch r {
+		case '.', '!', '?':
+			return strings.TrimSpace(text[:i+1])
+		}
+	}
+	if len(text) > 120 {
+		return strings.TrimSpace(text[:117]) + "..."
+	}
+	return text
+}
+
+func agentTaskEntries(tasks []TaskTemplate) []AgentTaskEntry {
+	entries := make([]AgentTaskEntry, 0, len(tasks))
+	for _, task := range tasks {
+		entries = append(entries, AgentTaskEntry{
+			Title:                 task.Title,
+			Description:           summarizeTaskPrompt(task.Prompt),
+			ReplacedByParentTasks: task.Insert == "parent_tasks",
+		})
+	}
+	return entries
+}
+
+func formatToolNamesForPrompt(names []string) string {
+	if len(names) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, "`"+name+"`")
+	}
+	return strings.Join(parts, ", ")
 }

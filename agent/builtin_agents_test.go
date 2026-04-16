@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -14,12 +16,12 @@ import (
 
 // --- builtinAgents() ---
 
-func TestBuiltinAgents_LoadsAllRoles(t *testing.T) {
+func TestBuiltinAgents_LoadsCoreRoles(t *testing.T) {
 	agents, err := builtinAgents()
 	if err != nil {
 		t.Fatalf("builtinAgents: %v", err)
 	}
-	want := []string{"default", "explorer", "planner", "test-engineer", "implementer", "reviewer"}
+	want := []string{"default", "explorer", "subagent"}
 	for _, name := range want {
 		agent, ok := agents[name]
 		if !ok {
@@ -35,7 +37,25 @@ func TestBuiltinAgents_LoadsAllRoles(t *testing.T) {
 	}
 }
 
-func TestBuiltinAgents_DefaultHasBroadToolAccess(t *testing.T) {
+func TestWorkflowPlugin_LoadWorkflowRoles(t *testing.T) {
+	agents := coordinatorWorkflowPublicAgentsForTest(t)
+	want := []string{"coordinator", "planner", "implementer", "reviewer", "verifier", "worker", "test-engineer"}
+	for _, name := range want {
+		agent, ok := agents[name]
+		if !ok {
+			t.Errorf("missing coordinator workflow agent %q", name)
+			continue
+		}
+		if agent.PluginName != coordinatorWorkflowPluginName {
+			t.Errorf("agent %q PluginName = %q, want %q", name, agent.PluginName, coordinatorWorkflowPluginName)
+		}
+		if agent.SystemPrompt == "" {
+			t.Errorf("agent %q has empty system prompt", name)
+		}
+	}
+}
+
+func TestBuiltinAgents_DefaultUsesAllToolsShorthand(t *testing.T) {
 	agents, err := builtinAgents()
 	if err != nil {
 		t.Fatalf("builtinAgents: %v", err)
@@ -44,21 +64,11 @@ func TestBuiltinAgents_DefaultHasBroadToolAccess(t *testing.T) {
 	if !ok {
 		t.Fatal("expected built-in 'default' agent")
 	}
-	wantTools := []string{
-		"read_file", "write_file", "shell", "spawn_agent", "resume_agent",
-		"wait", "close_agent", "task_list", "web_fetch",
+	if !def.AllTools {
+		t.Fatal("default agent should opt into explicit all-tools mode")
 	}
-	for _, want := range wantTools {
-		found := false
-		for _, tool := range def.Tools {
-			if tool == want {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("default agent missing tool %q; got %v", want, def.Tools)
-		}
+	if len(def.Tools) != 0 {
+		t.Fatalf("default agent should not need an explicit tool list, got %v", def.Tools)
 	}
 }
 
@@ -216,6 +226,42 @@ func TestSession_HasBuiltinExplorerAgent(t *testing.T) {
 	}
 }
 
+func TestSession_DoesNotLoadWorkflowPluginByDefault(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	if _, ok := sess.pluginAgents["reviewer"]; ok {
+		t.Fatal("vanilla session should not load the coordinator workflow reviewer agent")
+	}
+}
+
+func TestSession_LoadsWorkflowReviewerAgentFromConfiguredPlugin(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), NewLocalExecutionEnvironment(dir), coordinatorWorkflowSessionConfig(t, SessionConfig{}))
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	reviewer, ok := sess.pluginAgents["reviewer"]
+	if !ok {
+		t.Fatal("session should expose the configured coordinator workflow reviewer agent")
+	}
+	if reviewer.PluginName != coordinatorWorkflowPluginName {
+		t.Errorf("reviewer PluginName = %q, want %q", reviewer.PluginName, coordinatorWorkflowPluginName)
+	}
+}
+
 func TestSession_PluginAgentOverridesBuiltin(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -242,13 +288,13 @@ func TestSession_PluginAgentOverridesBuiltin(t *testing.T) {
 	}
 }
 
-// --- FormatPluginAgentsPrompt tag ---
+// --- available-agents section tag ---
 
-func TestFormatPluginAgentsPrompt_UsesAvailableAgentsTag(t *testing.T) {
+func TestAvailableAgentsSection_UsesAvailableAgentsTag(t *testing.T) {
 	agents := map[string]PluginAgent{
 		"explorer": {Name: "explorer", Description: "Explores code"},
 	}
-	result := FormatPluginAgentsPrompt(agents)
+	result := renderAvailableAgentsSectionForTest(t, agents)
 	if !strings.Contains(result, "<available_agents>") {
 		t.Error("should contain <available_agents> opening tag")
 	}
@@ -622,6 +668,64 @@ func TestSpawnAgent_DefaultSubagentGetsComposedPrompt(t *testing.T) {
 	}
 }
 
+func TestSpawnAgent_SystemPromptFileDoesNotOverrideSubagentPrompt(t *testing.T) {
+	dir := t.TempDir()
+	promptFile := filepath.Join(dir, "root-system-prompt.md")
+	if err := os.WriteFile(promptFile, []byte("ROOT ONLY CUSTOM PROMPT"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := llm.NewClient()
+
+	var subagentSystemPrompt string
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				for _, m := range req.Messages {
+					if m.Role == llm.RoleSystem {
+						subagentSystemPrompt = m.Text()
+					}
+				}
+				return finalResponse("done")
+			},
+		},
+	}
+	c.Register(adapter)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+		SystemPromptFile: promptFile,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	if !strings.Contains(sess.cachedSystemPrompt, "ROOT ONLY CUSTOM PROMPT") {
+		t.Fatal("root cached system prompt should include the custom top-level prompt")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	res := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
+		ID:        "c-root-only",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"do something","blocking":true}`),
+	})
+	if res.IsError {
+		t.Fatalf("blocking spawn error: %s", res.Output)
+	}
+
+	if strings.Contains(subagentSystemPrompt, "ROOT ONLY CUSTOM PROMPT") {
+		t.Fatalf("subagent prompt should not inherit the root-only system prompt override:\n%s", subagentSystemPrompt)
+	}
+	if !strings.Contains(subagentSystemPrompt, "Delegated task limits") {
+		t.Fatalf("subagent prompt should still use the dedicated subagent template:\n%s", subagentSystemPrompt)
+	}
+}
+
 // --- minWaitTimeoutMS ---
 
 func TestMinWaitTimeoutMS_IsAtLeast120Seconds(t *testing.T) {
@@ -758,11 +862,8 @@ func TestStuckEscalation_BumpsFromHighToXhigh(t *testing.T) {
 
 // --- reviewer agent is read-only ---
 
-func TestBuiltinAgents_ReviewerIsReadOnly(t *testing.T) {
-	agents, err := builtinAgents()
-	if err != nil {
-		t.Fatalf("builtinAgents: %v", err)
-	}
+func TestWorkflowPlugin_ReviewerIsReadOnly(t *testing.T) {
+	agents := coordinatorWorkflowPublicAgentsForTest(t)
 	reviewer := agents["reviewer"]
 	for _, tool := range reviewer.Tools {
 		if tool == "write_file" || tool == "edit_file" || tool == "apply_patch" {
@@ -822,6 +923,141 @@ func TestSpawnAgent_TaskListPreservedForNamedAgent(t *testing.T) {
 	}
 	if !hasTaskList {
 		t.Errorf("named subagent should have task_list, got tools: %v", subagentTools)
+	}
+}
+
+func TestSpawnAgent_AllToolsAgentStripsAgentManagementTools(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	var subagentTools []string
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				for _, td := range req.Tools {
+					subagentTools = append(subagentTools, td.Name)
+				}
+				return finalResponse("done")
+			},
+		},
+	}
+	c.Register(adapter)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	res := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
+		ID:        "c-all",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"help with the task","agent_type":"default","blocking":true}`),
+	})
+	if res.IsError {
+		t.Fatalf("spawn error: %s", res.Output)
+	}
+
+	for _, want := range []string{"task_list"} {
+		found := false
+		for _, name := range subagentTools {
+			if name == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("all-tools agent should retain %q, got tools: %v", want, subagentTools)
+		}
+	}
+	for _, forbidden := range rootOnlyAgentManagementTools {
+		for _, name := range subagentTools {
+			if name == forbidden {
+				t.Errorf("all-tools subagent should not receive root-only tool %q, got tools: %v", forbidden, subagentTools)
+			}
+		}
+	}
+}
+
+func TestSpawnAgent_GrantTools_RejectsRootOnlyManagementTool(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("done") },
+		},
+	})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	res := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
+		ID:        "c-grant",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"help with follow-up work","grant_tools":["wait"]}`),
+	})
+	if !res.IsError {
+		t.Fatalf("expected root-only grant rejection, got %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "top-level only") {
+		t.Fatalf("grant error = %q, want top-level-only message", res.Output)
+	}
+}
+
+func TestSpawnAgent_DirectNestedCallRejected(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("done") },
+		},
+	})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	result, err := sess.spawnAgent(context.Background(), "help with a task", "", "", 10, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("spawnAgent: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(result.(string)), &parsed); err != nil {
+		t.Fatalf("unmarshal spawn result: %v", err)
+	}
+	agentID := fmt.Sprint(parsed["agent_id"])
+	sub := sess.getSub(agentID)
+	if sub == nil || sub.sess == nil {
+		t.Fatalf("subagent %q not found", agentID)
+	}
+
+	_, err = sub.sess.spawnAgent(context.Background(), "nested", "", "", 10, "", "", nil, nil)
+	if err == nil {
+		t.Fatal("expected top-level-only rejection")
+	}
+	if !strings.Contains(err.Error(), "top-level only") {
+		t.Fatalf("error = %q, want top-level-only message", err)
 	}
 }
 

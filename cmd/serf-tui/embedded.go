@@ -33,8 +33,6 @@ type embeddedConfig struct {
 	systemPrompt       string
 	systemPromptAppend []string
 	maxRounds          int
-	enableReviewerGate bool
-	noAutoVerify       bool
 	maxSubagentDepth   int
 	shareTaskStore     bool
 	resultToolName     string
@@ -123,8 +121,6 @@ func startEmbedded(ctx context.Context, cfg embeddedConfig) (*embeddedServer, er
 		SystemPromptFile:       cfg.systemPrompt,
 		SystemPromptAppend:     cfg.systemPromptAppend,
 		MaxToolRoundsPerInput:  cmdutil.MaxRoundsToConfig(cfg.maxRounds),
-		EnableReviewerGate:     cfg.enableReviewerGate,
-		EnableAutoVerify:       false,
 		ShareTasksWithChildren: cfg.shareTaskStore,
 		ResultToolName:         cfg.resultToolName,
 		NoProjectPrompts:       cfg.noProjectPrompts,

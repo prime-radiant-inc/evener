@@ -23,9 +23,10 @@ type TaskTemplate struct {
 type PluginAgent struct {
 	Name         string
 	Description  string
-	Model        string   // "inherit", "sonnet", "opus", "haiku"
+	Model        string // "inherit", "sonnet", "opus", "haiku"
 	Color        string
-	Tools        []string // serf canonical names (mapped at load time)
+	AllTools     bool
+	Tools        []string       // serf canonical names (mapped at load time)
 	Skills       []string       // skill names to auto-inject at dispatch time
 	Tasks        []TaskTemplate // default workflow tasks from YAML
 	SystemPrompt string         // markdown body
@@ -34,7 +35,7 @@ type PluginAgent struct {
 
 // parsePluginAgent parses a markdown file with YAML frontmatter into a PluginAgent.
 // Required frontmatter fields: name, description.
-// Optional: model, color, tools (mapped to serf canonical names), skills (plain strings).
+// Optional: model, color, tools (mapped to serf canonical names, or the scalar string "all"), skills (plain strings).
 func parsePluginAgent(data []byte, pluginName string) (PluginAgent, error) {
 	doc, err := frontmatter.Parse(string(data))
 	if err != nil {
@@ -72,18 +73,36 @@ func parsePluginAgent(data []byte, pluginName string) (PluginAgent, error) {
 		color = v
 	}
 
-	var tools []string
+	var (
+		allTools bool
+		tools    []string
+	)
 	if raw, ok := doc.Meta["tools"]; ok {
-		items, ok := raw.([]any)
-		if !ok {
-			return PluginAgent{}, fmt.Errorf("agent field \"tools\" must be a list of strings")
-		}
-		for _, item := range items {
-			s, ok := item.(string)
-			if !ok {
-				return PluginAgent{}, fmt.Errorf("agent tool name must be a string, got %T", item)
+		switch v := raw.(type) {
+		case string:
+			switch strings.TrimSpace(strings.ToLower(v)) {
+			case "all":
+				allTools = true
+			case "*":
+				return PluginAgent{}, fmt.Errorf("agent field \"tools\" uses the scalar form \"all\" for unrestricted access; use `tools: all`")
+			default:
+				return PluginAgent{}, fmt.Errorf("agent field \"tools\" must be a list of strings or the string \"all\"")
 			}
-			tools = append(tools, MapClaudeToolName(s))
+		case []any:
+			for _, item := range v {
+				s, ok := item.(string)
+				if !ok {
+					return PluginAgent{}, fmt.Errorf("agent tool name must be a string, got %T", item)
+				}
+				switch strings.TrimSpace(strings.ToLower(s)) {
+				case "all", "*":
+					return PluginAgent{}, fmt.Errorf("agent field \"tools\" uses the scalar form \"all\" for unrestricted access; use `tools: all`")
+				default:
+					tools = append(tools, MapClaudeToolName(s))
+				}
+			}
+		default:
+			return PluginAgent{}, fmt.Errorf("agent field \"tools\" must be a list of strings or the string \"all\"")
 		}
 	}
 
@@ -138,6 +157,7 @@ func parsePluginAgent(data []byte, pluginName string) (PluginAgent, error) {
 		Description:  description,
 		Model:        model,
 		Color:        color,
+		AllTools:     allTools,
 		Tools:        tools,
 		Skills:       skills,
 		Tasks:        tasks,

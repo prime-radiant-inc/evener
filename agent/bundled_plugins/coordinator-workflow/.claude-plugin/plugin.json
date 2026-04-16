@@ -1,0 +1,5 @@
+{
+  "name": "coordinator-workflow",
+  "version": "1.0.0",
+  "description": "Coordinator-oriented orchestration and implementation workflow agents."
+}

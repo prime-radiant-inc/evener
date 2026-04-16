@@ -24,6 +24,12 @@ func renderPromptForTest(t *testing.T, p ProviderProfile, data PromptData) strin
 	if data.ResultToolName == "" {
 		data.ResultToolName = "communicate"
 	}
+	if data.RolePromptOverride == "" {
+		switch data.Agent {
+		case "coordinator", "implementer", "reviewer", "verifier", "worker", "planner", "test-engineer":
+			data.RolePromptOverride = coordinatorWorkflowAgentForTest(t, data.Agent).SystemPrompt
+		}
+	}
 	if len(data.ProfileTools) == 0 {
 		data.ProfileTools = toolEntriesFromDefinitions(p.ToolDefinitions())
 	}
@@ -76,7 +82,6 @@ func TestProviderProfiles_ToolsetsAndDocSelection(t *testing.T) {
 		t.Fatalf("gemini should support parallel tool calls")
 	}
 	assertHasTool(t, gemini, "edit_file")
-	assertHasTool(t, gemini, "read_many_files")
 	assertHasTool(t, gemini, "list_directory")
 	assertMissingTool(t, gemini, "apply_patch")
 }
@@ -123,7 +128,6 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 		p := NewGeminiProfile("gemini-test")
 		assertToolListExact(t, p, []string{
 			"read_file",
-			"read_many_files",
 			"write_file",
 			"edit_file",
 			"run_shell_command",

@@ -234,7 +234,7 @@ func TestRealPlugin_Superpowers_PromptFormatting(t *testing.T) {
 		t.Fatalf("LoadPlugin: %v", err)
 	}
 
-	prompt := FormatPluginAgentsPrompt(lp.Agents)
+	prompt := renderAvailableAgentsSectionForTest(t, lp.Agents)
 	if !strings.Contains(prompt, "superpowers:code-reviewer") {
 		t.Error("prompt should contain 'superpowers:code-reviewer'")
 	}
@@ -588,7 +588,7 @@ func TestRealPlugin_AggregateAgents(t *testing.T) {
 	}
 
 	// All agents should format correctly in prompt
-	prompt := FormatPluginAgentsPrompt(allAgents)
+	prompt := renderAvailableAgentsSectionForTest(t, allAgents)
 	if !strings.Contains(prompt, "<available_agents>") {
 		t.Error("prompt should contain <available_agents> tag")
 	}

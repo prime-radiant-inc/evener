@@ -13,9 +13,9 @@
 # If task-name is omitted or empty, runs the full suite (all tasks).
 #
 # Examples:
-#   ./tools/eval-task.sh reviewer-v3 build-cython-ext 3 enable_reviewer_gate=true
+#   ./tools/eval-task.sh baseline-v2 build-cython-ext 3 max_rounds=100
 #   ./tools/eval-task.sh baseline fix-code-vulnerability 5
-#   ./tools/eval-task.sh full-run "" 1 enable_reviewer_gate=true    # all tasks
+#   ./tools/eval-task.sh full-run "" 1 max_rounds=100               # all tasks
 #   ./tools/eval-task.sh full-run                                    # all tasks, 3 reps
 #
 #   # Custom adapter (skip build since binary is already deployed):

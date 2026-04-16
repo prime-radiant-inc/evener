@@ -61,6 +61,6 @@ specification. Read it carefully, then work. If you need to make a judgment call
 
 ## Skills
 
-If skills were pre-loaded into your context, follow their methodology. The coordinator
-chose them for a reason. If a skill contains a checklist or process, follow it — do not
+If skills were pre-loaded into your context, follow their methodology. The delegating
+agent chose them for a reason. If a skill contains a checklist or process, follow it — do not
 skip steps.

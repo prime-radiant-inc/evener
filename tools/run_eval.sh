@@ -188,7 +188,7 @@ if ! strings serf-linux-amd64 > /tmp/serf-strings-check.$$ 2>&1; then
     rm -f /tmp/serf-strings-check.$$
     exit 1
 fi
-if ! grep -q "agents/coordinator.md" /tmp/serf-strings-check.$$; then
+if ! grep -q "bundled_plugins/workflow/agents/coordinator.md" /tmp/serf-strings-check.$$; then
     echo "Error: binary missing embedded agent prompts" >&2
     rm -f /tmp/serf-strings-check.$$
     exit 1

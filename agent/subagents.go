@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -38,6 +39,8 @@ Do NOT try to spawn further subagents.
 
 Your job is to complete the task and report your findings.`
 
+var rootOnlyAgentManagementTools = []string{"spawn_agent", "resume_agent", "wait", "close_agent"}
+
 type subagent struct {
 	id   string
 	sess *Session
@@ -53,11 +56,77 @@ type subagent struct {
 	nudgeEnabled   bool // true for default subagents that should be nudged to communicate
 }
 
-func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string, maxTurns int, agentType string, reasoningEffort string, parentTasks []TaskTemplate) (any, error) {
+func hasString(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
+
+func appendUniqueStrings(items []string, extras ...string) []string {
+	for _, extra := range extras {
+		if extra == "" || hasString(items, extra) {
+			continue
+		}
+		items = append(items, extra)
+	}
+	return items
+}
+
+func removeStrings(items, removals []string) []string {
+	if len(removals) == 0 {
+		return append([]string(nil), items...)
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if hasString(removals, item) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func isRootOnlyAgentManagementTool(name string) bool {
+	return hasString(rootOnlyAgentManagementTools, name)
+}
+
+func removeRootOnlyAgentManagementTools(items []string) []string {
+	return removeStrings(items, rootOnlyAgentManagementTools)
+}
+
+func agentUsesRootOnlyManagementTools(agent PluginAgent) bool {
+	for _, tool := range agent.Tools {
+		if isRootOnlyAgentManagementTool(tool) {
+			return true
+		}
+	}
+	return false
+}
+
+func baseSubagentToolPolicy(agent *PluginAgent) (allTools bool, allowed []string, denied []string) {
+	switch {
+	case agent != nil && agent.AllTools:
+		return true, nil, nil
+	case agent != nil && len(agent.Tools) > 0:
+		allowed = append([]string(nil), agent.Tools...)
+		allowed = appendUniqueStrings(allowed, "task_list")
+		return false, allowed, nil
+	default:
+		return false, nil, append([]string(nil), rootOnlyAgentManagementTools...)
+	}
+}
+
+func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string, maxTurns int, agentType string, reasoningEffort string, parentTasks []TaskTemplate, grantTools []string) (any, error) {
 	s.mu.Lock()
 	depth := s.depth
 	maxDepth := s.cfg.MaxSubagentDepth
 	s.mu.Unlock()
+	if depth > 0 {
+		return "", fmt.Errorf("subagent management is top-level only")
+	}
 	if depth >= maxDepth {
 		return "", fmt.Errorf("subagent depth limit reached")
 	}
@@ -68,6 +137,9 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		a, ok := s.pluginAgents[agentType]
 		if !ok {
 			return "", fmt.Errorf("unknown plugin agent type: %s", agentType)
+		}
+		if agentUsesRootOnlyManagementTools(a) {
+			return "", fmt.Errorf("agent_type %q is top-level only: it requires root-only agent-management tools", agentType)
 		}
 		agent = &a
 	}
@@ -103,6 +175,8 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	if reasoningEffort = strings.TrimSpace(reasoningEffort); reasoningEffort != "" {
 		subCfg.ReasoningEffort = reasoningEffort
 	}
+	canonicalGrantTools := s.canonicalizeToolNames(grantTools)
+
 	// Determine agent name and role prompt for the subagent.
 	// Named agents use their own SystemPrompt; unnamed agents get the "subagent" persona.
 	var agentName string
@@ -133,11 +207,37 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 			}
 		}
 	}
-	if agent != nil && len(agent.Tools) > 0 {
-		subCfg.AllowedToolNames = append([]string(nil), agent.Tools...)
-		subCfg.AllowedToolNames = append(subCfg.AllowedToolNames, "task_list")
+
+	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(agent)
+	if len(canonicalGrantTools) > 0 {
+		currentTools := s.reg.RegisteredNames()
+		for _, toolName := range canonicalGrantTools {
+			if isRootOnlyAgentManagementTool(toolName) {
+				return "", fmt.Errorf("cannot grant tool %q: subagent-management tools are top-level only", toolName)
+			}
+			baseHasTool := allTools ||
+				hasString(allowedTools, toolName) ||
+				(len(allowedTools) == 0 && !hasString(deniedTools, toolName))
+			if baseHasTool {
+				continue
+			}
+			if !currentTools[toolName] {
+				return "", fmt.Errorf("cannot grant tool %q: it is not currently callable in this session", toolName)
+			}
+			if len(allowedTools) > 0 {
+				allowedTools = appendUniqueStrings(allowedTools, toolName)
+			} else {
+				deniedTools = removeStrings(deniedTools, []string{toolName})
+			}
+		}
+	}
+
+	if allTools {
+		// Leave the registry unrestricted for explicit all-tools agents.
+	} else if len(allowedTools) > 0 {
+		subCfg.AllowedToolNames = append([]string(nil), allowedTools...)
 	} else {
-		subCfg.DeniedToolNames = []string{"spawn_agent", "resume_agent", "wait", "close_agent"}
+		subCfg.DeniedToolNames = append([]string(nil), deniedTools...)
 	}
 
 	subEnv := s.env
@@ -152,6 +252,18 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	subSess, err := NewSession(s.client, subProfile, subEnv, subCfg)
 	if err != nil {
 		return "", err
+	}
+	if len(canonicalGrantTools) > 0 {
+		var missing []string
+		for _, toolName := range canonicalGrantTools {
+			if subSess.reg.Get(toolName) == nil {
+				missing = append(missing, toolName)
+			}
+		}
+		if len(missing) > 0 {
+			subSess.Close()
+			return "", fmt.Errorf("cannot grant tool(s) to spawned subagent: %s", strings.Join(missing, ", "))
+		}
 	}
 
 	// Populate default tasks from agent definition + parent tasks.
@@ -343,10 +455,14 @@ func (a *subagent) run(ctx context.Context, input string) {
 
 	res, err := a.sess.ProcessInput(ctx, input)
 
-	// Auto-nudge: if a default subagent stopped without calling communicate,
-	// send one reminder and let it try again. This addresses the empty-result
-	// failure mode where subagents do work but forget to report back.
-	if a.nudgeEnabled && err == nil && !a.sess.Communicated() {
+	// Auto-nudge: if a default subagent stops without calling communicate,
+	// send one reminder and let it try again. This covers both empty stops
+	// and repeated bare-text responses that exhausted the session-level retry
+	// loop before the subagent had a chance to report back.
+	shouldNudge := a.nudgeEnabled &&
+		!a.sess.Communicated() &&
+		(err == nil || errors.Is(err, errBareTextWithoutResultTool))
+	if shouldNudge {
 		res, err = a.sess.ProcessInput(ctx, submitResultNudge(a.sess.resultToolName()))
 	}
 

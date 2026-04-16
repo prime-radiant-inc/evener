@@ -38,8 +38,6 @@ func runServe(args []string) error {
 	fs.Var(&systemPromptAppend, "system-prompt-append", "path to append to system prompt (repeatable)")
 	systemPromptAsUser := fs.Bool("system-prompt-as-user", false, "deliver system prompt as first user message")
 	maxRounds := fs.Int("max-rounds", -1, "max tool rounds per input (-1=default, 0=unlimited)")
-	enableReviewerGate := fs.Bool("enable-reviewer-gate", false, "spawn reviewer subagent to validate result")
-	noAutoVerify := fs.Bool("no-auto-verify", false, "disable auto-generated verify tasks")
 	maxSubagentDepth := fs.Int("max-subagent-depth", -1, "max subagent nesting depth")
 	shareTaskStore := fs.Bool("share-task-store", false, "share task list between parent and child sessions")
 	resultToolName := fs.String("result-tool-name", "", "override the result tool name")
@@ -84,8 +82,7 @@ func runServe(args []string) error {
 		defer stop()
 	}
 
-	_ = *noAutoVerify // no-op: auto-verify is always disabled in serve mode
-	_ = *verbose      // TODO: tee events to stderr NDJSON alongside SSE bridge
+	_ = *verbose // TODO: tee events to stderr NDJSON alongside SSE bridge
 
 	// Resolve working directory.
 	wd := *workDir
@@ -151,8 +148,6 @@ func runServe(args []string) error {
 	} else {
 		sessionCfg := agent.SessionConfig{
 			MaxToolRoundsPerInput:  cmdutil.MaxRoundsToConfig(*maxRounds),
-			EnableReviewerGate:     *enableReviewerGate,
-			EnableAutoVerify:       false,
 			ShareTasksWithChildren: *shareTaskStore,
 			ResultToolName:         *resultToolName,
 			StateDir:               sd,

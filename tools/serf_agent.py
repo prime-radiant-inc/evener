@@ -35,12 +35,11 @@ _ARTIFACT_WARN_MB = 100
 class SerfAgent(BaseInstalledAgent):
     """Serf agent: headless, non-interactive coding agent."""
 
-    def __init__(self, max_rounds: int = 100, reasoning_effort: str = "low", enable_reviewer_gate: bool = False, result_tool_name: str = "", plugin_dirs: str = "", system_prompt_append: str = "", system_prompt_as_user: bool = False, *args, **kwargs):
+    def __init__(self, max_rounds: int = 100, reasoning_effort: str = "low", result_tool_name: str = "", plugin_dirs: str = "", system_prompt_append: str = "", system_prompt_as_user: bool = False, *args, **kwargs):
         kwargs.pop("min_result_round", None)
         super().__init__(*args, **kwargs)
         self._max_rounds = max_rounds
         self._reasoning_effort = reasoning_effort
-        self._enable_reviewer_gate = enable_reviewer_gate
         self._result_tool_name = result_tool_name
         self._system_prompt_as_user = system_prompt_as_user
         # Comma-separated host paths to plugin directories.
@@ -117,12 +116,6 @@ class SerfAgent(BaseInstalledAgent):
             else ""
         )
 
-        reviewer_gate_flag = (
-            "--enable-reviewer-gate "
-            if self._enable_reviewer_gate
-            else ""
-        )
-
         result_tool_name_flag = (
             f"--result-tool-name {self._result_tool_name} "
             if self._result_tool_name
@@ -149,7 +142,6 @@ class SerfAgent(BaseInstalledAgent):
                     f"serf --provider {self._provider} "
                     f"--model {self._model} "
                     f"--max-rounds {self._max_rounds} "
-                    f"{reviewer_gate_flag}"
                     f"{result_tool_name_flag}"
                     f"--state-dir {_CONTAINER_STATE_DIR} "
                     f"{export_atif_flag}"

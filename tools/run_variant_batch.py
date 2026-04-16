@@ -12,6 +12,8 @@ REPO = os.path.expanduser("~/prime-radiant/serf")
 HARBOR = os.path.expanduser("~/prime-radiant/harbor-runner")
 REPS = 3
 INSTANCE_TYPE = "c6i.xlarge"
+IMPL_PATH = "agent/bundled_plugins/workflow/agents/implementer.md"
+COORD_PATH = "agent/bundled_plugins/workflow/agents/coordinator.md"
 
 # Distribute vCPU across variants — total 128
 VCPU_PER_VARIANT = 16  # 4 concurrent instances each
@@ -43,9 +45,9 @@ def main():
     orig_branch = run("git rev-parse --abbrev-ref HEAD").stdout.strip()
 
     # Read current file contents
-    with open(os.path.join(REPO, "agent/agents/implementer.md")) as f:
+    with open(os.path.join(REPO, IMPL_PATH)) as f:
         orig_impl = f.read()
-    with open(os.path.join(REPO, "agent/agents/coordinator.md")) as f:
+    with open(os.path.join(REPO, COORD_PATH)) as f:
         orig_coord = f.read()
     with open(os.path.join(REPO, "agent/prompts/sections/communicate.md.tmpl")) as f:
         orig_comm = f.read()
@@ -71,7 +73,7 @@ def main():
                 continue
             impl_content = impl_content.replace(old, new)
 
-        with open(os.path.join(REPO, "agent/agents/implementer.md"), "w") as f:
+        with open(os.path.join(REPO, IMPL_PATH), "w") as f:
             f.write(impl_content)
 
         # Apply coordinator.md edits if any
@@ -83,7 +85,7 @@ def main():
             coord_content = coord_content.replace(old, new)
 
         if v.get("coordinator_edits"):
-            with open(os.path.join(REPO, "agent/agents/coordinator.md"), "w") as f:
+            with open(os.path.join(REPO, COORD_PATH), "w") as f:
                 f.write(coord_content)
 
         # Apply communicate.md.tmpl edits if any
@@ -99,7 +101,7 @@ def main():
                 f.write(comm_content)
 
         # Commit
-        run("git add agent/agents/implementer.md agent/agents/coordinator.md agent/prompts/sections/communicate.md.tmpl")
+        run(f"git add {IMPL_PATH} {COORD_PATH} agent/prompts/sections/communicate.md.tmpl")
         run(f'git commit -m "exp/v33: {name}" -q')
         sha = run("git rev-parse --short HEAD").stdout.strip()
 
@@ -107,9 +109,9 @@ def main():
             print(f"  Branch: {branch} @ {sha}")
             print(f"  Target: {v['target']}")
             # Restore files
-            with open(os.path.join(REPO, "agent/agents/implementer.md"), "w") as f:
+            with open(os.path.join(REPO, IMPL_PATH), "w") as f:
                 f.write(orig_impl)
-            with open(os.path.join(REPO, "agent/agents/coordinator.md"), "w") as f:
+            with open(os.path.join(REPO, COORD_PATH), "w") as f:
                 f.write(orig_coord)
             continue
 
@@ -139,9 +141,9 @@ def main():
     # Restore original branch
     run(f"git checkout {orig_branch} -q")
     # Restore original files
-    with open(os.path.join(REPO, "agent/agents/implementer.md"), "w") as f:
+    with open(os.path.join(REPO, IMPL_PATH), "w") as f:
         f.write(orig_impl)
-    with open(os.path.join(REPO, "agent/agents/coordinator.md"), "w") as f:
+    with open(os.path.join(REPO, COORD_PATH), "w") as f:
         f.write(orig_coord)
     with open(os.path.join(REPO, "agent/prompts/sections/communicate.md.tmpl"), "w") as f:
         f.write(orig_comm)

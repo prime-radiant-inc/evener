@@ -61,8 +61,11 @@ func TestLocalExecutionEnvironment_ExecCommand_ContextCancel_KillsProcessGroup(t
 	if err == nil {
 		t.Fatalf("expected error, got nil (res=%+v)", res)
 	}
-	if !res.TimedOut {
-		t.Fatalf("expected timed_out=true on cancel, got %+v", res)
+	if res.TimedOut {
+		t.Fatalf("expected timed_out=false on cancel, got %+v", res)
+	}
+	if res.ExitCode != 130 {
+		t.Fatalf("exit_code: got %d want 130 on cancel", res.ExitCode)
 	}
 	if time.Since(start) > 3*time.Second {
 		t.Fatalf("expected cancel handling to return quickly; took %s", time.Since(start))

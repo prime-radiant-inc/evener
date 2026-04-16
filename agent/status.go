@@ -39,11 +39,11 @@ type DetailedStatus struct {
 	Plugins   []PluginInfo      `json:"plugins,omitempty"`
 	Hooks     map[HookEvent]int `json:"hooks,omitempty"`
 	Subagents []SubagentInfo    `json:"subagents,omitempty"`
-	Agents    []string          `json:"agents,omitempty"` // plugin agent names
+	Agents    []string          `json:"agents,omitempty"` // public agent names
 }
 
 // DetailedStatus builds a snapshot of the session's loaded tools, MCP servers,
-// skills, plugins, hooks, subagents, and plugin agents.
+// skills, plugins, hooks, subagents, and public agent names.
 func (s *Session) DetailedStatus() DetailedStatus {
 	var ds DetailedStatus
 

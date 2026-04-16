@@ -46,8 +46,6 @@ func main() {
 	systemPrompt := flag.String("system-prompt", "", "path to a custom system prompt file")
 	var systemPromptAppend cmdutil.StringSliceFlag
 	flag.Var(&systemPromptAppend, "system-prompt-append", "path to append to system prompt (repeatable)")
-	enableReviewerGate := flag.Bool("enable-reviewer-gate", false, "spawn reviewer subagent to validate result")
-	noAutoVerify := flag.Bool("no-auto-verify", false, "disable auto-generated verify tasks")
 	maxSubagentDepth := flag.Int("max-subagent-depth", -1, "max subagent nesting depth")
 	shareTaskStore := flag.Bool("share-task-store", false, "share task list between parent and child sessions")
 	resultToolName := flag.String("result-tool-name", "", "override the result tool name")
@@ -109,8 +107,6 @@ func main() {
 		stateDir:           *stateDir,
 		systemPrompt:       *systemPrompt,
 		systemPromptAppend: []string(systemPromptAppend),
-		enableReviewerGate: *enableReviewerGate,
-		noAutoVerify:       *noAutoVerify,
 		maxSubagentDepth:   *maxSubagentDepth,
 		shareTaskStore:     *shareTaskStore,
 		resultToolName:     *resultToolName,
@@ -165,8 +161,6 @@ type evalConfig struct {
 	stateDir           string
 	systemPrompt       string
 	systemPromptAppend []string
-	enableReviewerGate bool
-	noAutoVerify       bool
 	maxSubagentDepth   int
 	shareTaskStore     bool
 	resultToolName     string
@@ -213,8 +207,6 @@ func runEval(cfg evalConfig) error {
 		CompactionThresholdScale: cfg.thresholdScale,
 		StateDir:                 stateDir,
 		MaxToolRoundsPerInput:    cfg.maxTurns,
-		EnableReviewerGate:       cfg.enableReviewerGate,
-		EnableAutoVerify:         false,
 		ShareTasksWithChildren:   cfg.shareTaskStore,
 		ResultToolName:           cfg.resultToolName,
 		SystemPromptFile:         cfg.systemPrompt,

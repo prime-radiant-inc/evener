@@ -251,10 +251,10 @@ class TestBuildHarborCommand:
             reps=1,
             concurrency=2,
             job_name="test",
-            ak_args=["enable_reviewer_gate=true", "max_rounds=50"],
+            ak_args=["max_rounds=50", "result_tool_name=communicate"],
         )
-        assert "--ak enable_reviewer_gate=true" in cmd
         assert "--ak max_rounds=50" in cmd
+        assert "--ak result_tool_name=communicate" in cmd
 
     def test_no_ak_args(self):
         cmd = build_harbor_command(

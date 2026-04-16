@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -524,19 +525,22 @@ func (e *LocalExecutionEnvironment) ExecCommand(ctx context.Context, command str
 	go func() { done <- cmd.Wait() }()
 
 	timedOut := false
+	interrupted := false
 	var waitErr error
 	select {
 	case <-ctx.Done():
-		timedOut = true
+		interrupted = true
 		waitErr = ctx.Err()
+		timedOut = errors.Is(waitErr, context.DeadlineExceeded)
 	case err := <-done:
 		waitErr = err
 	case <-time.After(time.Duration(timeoutMS) * time.Millisecond):
+		interrupted = true
 		timedOut = true
 		waitErr = context.DeadlineExceeded
 	}
 
-	if timedOut {
+	if interrupted {
 		terminateProcessGroup(cmd.Process.Pid)
 		select {
 		case <-done:
@@ -557,6 +561,8 @@ func (e *LocalExecutionEnvironment) ExecCommand(ctx context.Context, command str
 			exitCode = ee.ExitCode()
 		} else if timedOut {
 			exitCode = 124
+		} else if errors.Is(waitErr, context.Canceled) {
+			exitCode = 130
 		} else {
 			exitCode = 1
 		}

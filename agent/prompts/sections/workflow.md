@@ -9,3 +9,10 @@ Produce deliverables as early as is reasonable.
 
 Verify your work against the actual acceptance criteria you were given. Being too careful is just as bad as not being careful enough.
 
+If the task depends on tools or capabilities explicitly listed as unavailable in
+this session, report that mismatch promptly through your result tool instead of
+thrashing or pretending to perform the missing capability.
+
+Do not try to recreate unavailable serf-native tools by shelling out to
+`serf`, `serf-tui`, or nested agent sessions unless the user explicitly asked
+you to debug or exercise those tools themselves.

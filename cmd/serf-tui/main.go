@@ -24,8 +24,6 @@ func main() {
 	resume := flag.String("resume", "", "resume a previous session by ID")
 	resumeLast := flag.Bool("resume-last", false, "resume the most recent session")
 	listSessions := flag.Bool("list-sessions", false, "pick a session to resume interactively")
-	enableReviewerGate := flag.Bool("enable-reviewer-gate", false, "spawn reviewer subagent to validate result")
-	noAutoVerify := flag.Bool("no-auto-verify", false, "disable auto-generated verify tasks")
 	maxSubagentDepth := flag.Int("max-subagent-depth", -1, "max subagent nesting depth")
 	shareTaskStore := flag.Bool("share-task-store", false, "share task list between parent and child sessions")
 	resultToolName := flag.String("result-tool-name", "", "override the result tool name")
@@ -101,8 +99,6 @@ func main() {
 			systemPrompt:       *systemPrompt,
 			systemPromptAppend: []string(systemPromptAppend),
 			maxRounds:          *maxRounds,
-			enableReviewerGate: *enableReviewerGate,
-			noAutoVerify:       *noAutoVerify,
 			maxSubagentDepth:   *maxSubagentDepth,
 			shareTaskStore:     *shareTaskStore,
 			resultToolName:     *resultToolName,

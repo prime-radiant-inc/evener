@@ -507,7 +507,7 @@ func TestCachedSystemPromptComponents_NonInteractiveGuidance(t *testing.T) {
 }
 
 func TestCachedSystemPromptComponents_AgentSection(t *testing.T) {
-	// Available agents should be rendered into the cached system prompt.
+	// Available subagent types should be rendered into the cached system prompt.
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai"}
@@ -519,8 +519,20 @@ func TestCachedSystemPromptComponents_AgentSection(t *testing.T) {
 	}
 	defer sess.Close()
 
-	if !strings.Contains(sess.cachedSystemPrompt, "The following agent types are available") {
+	if !strings.Contains(sess.cachedSystemPrompt, "The following subagent types are available") {
 		t.Errorf("cached system prompt should contain the available-agents section, got: %q", sess.cachedSystemPrompt)
+	}
+	if !strings.Contains(sess.cachedSystemPrompt, "Default tools:") {
+		t.Errorf("cached system prompt should summarize default agent tools, got: %q", sess.cachedSystemPrompt)
+	}
+	if !strings.Contains(sess.cachedSystemPrompt, "Default task list:") {
+		t.Errorf("cached system prompt should summarize default agent task lists, got: %q", sess.cachedSystemPrompt)
+	}
+	if !strings.Contains(sess.cachedSystemPrompt, "Delegated tasks from `task_list` replace this step when provided.") {
+		t.Errorf("cached system prompt should explain parent task slot behavior, got: %q", sess.cachedSystemPrompt)
+	}
+	if strings.Contains(sess.cachedSystemPrompt, "Name: `coordinator`") {
+		t.Errorf("cached system prompt should not advertise top-level-only coordinator as a subagent type, got: %q", sess.cachedSystemPrompt)
 	}
 }
 
@@ -530,9 +542,9 @@ func TestCachedSystemPromptComponents_UsesProviderVisibleToolNames(t *testing.T)
 	f := &fakeAdapter{name: "openai"}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), coordinatorWorkflowSessionConfig(t, SessionConfig{
 		AgentName: "reviewer",
-	})
+	}))
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

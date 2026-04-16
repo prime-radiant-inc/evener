@@ -79,7 +79,7 @@ func TestSpawnAgent_UnknownPluginAgentType(t *testing.T) {
 	defer sess.Close()
 
 	// No pluginAgents registered, so any agent_type should fail
-	_, err = sess.spawnAgent(context.Background(), "do something", "", "", 10, "nonexistent:agent", "", nil)
+	_, err = sess.spawnAgent(context.Background(), "do something", "", "", 10, "nonexistent:agent", "", nil, nil)
 	if err == nil {
 		t.Fatal("expected error for unknown agent_type")
 	}
@@ -134,7 +134,7 @@ func TestSpawnAgent_PluginAgentType_SystemPrompt(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result, err := sess.spawnAgent(ctx, "review this code", "", "", 10, "my-plugin:reviewer", "", nil)
+	result, err := sess.spawnAgent(ctx, "review this code", "", "", 10, "my-plugin:reviewer", "", nil, nil)
 	if err != nil {
 		t.Fatalf("spawnAgent: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestSpawnAgent_PluginAgentType_ModelOverride(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result, err := sess.spawnAgent(ctx, "do it fast", "", "", 10, "my-plugin:fast-agent", "", nil)
+	result, err := sess.spawnAgent(ctx, "do it fast", "", "", 10, "my-plugin:fast-agent", "", nil, nil)
 	if err != nil {
 		t.Fatalf("spawnAgent: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestSpawnAgent_PluginAgentType_InheritModel(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result, err := sess.spawnAgent(ctx, "help me", "", "", 10, "my-plugin:helper", "", nil)
+	result, err := sess.spawnAgent(ctx, "help me", "", "", 10, "my-plugin:helper", "", nil, nil)
 	if err != nil {
 		t.Fatalf("spawnAgent: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestSpawnAgent_PluginAgentType_RestrictsTools(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result, err := sess.spawnAgent(ctx, "read the code", "", "", 10, "my-plugin:reader", "", nil)
+	result, err := sess.spawnAgent(ctx, "read the code", "", "", 10, "my-plugin:reader", "", nil, nil)
 	if err != nil {
 		t.Fatalf("spawnAgent: %v", err)
 	}
@@ -339,6 +339,144 @@ func TestSpawnAgent_PluginAgentType_RestrictsTools(t *testing.T) {
 		if sub.sess.reg.Get(name) == nil {
 			t.Errorf("expected tool %q to be present in restricted subagent", name)
 		}
+	}
+}
+
+func TestSpawnAgent_PluginAgentType_RejectsTopLevelOnlyAgent(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	sess.pluginAgents = map[string]PluginAgent{
+		"my-plugin:coordinator": {
+			Name:         "coordinator",
+			Description:  "Delegates to agents",
+			Model:        "inherit",
+			Tools:        []string{"read_file", "spawn_agent"},
+			SystemPrompt: "You coordinate by delegating.",
+			PluginName:   "my-plugin",
+		},
+	}
+
+	_, err = sess.spawnAgent(context.Background(), "try to coordinate", "", "", 10, "my-plugin:coordinator", "", nil, nil)
+	if err == nil {
+		t.Fatal("expected top-level-only rejection")
+	}
+	if !strings.Contains(err.Error(), "top-level only") {
+		t.Fatalf("error = %q, want top-level-only message", err)
+	}
+}
+
+func TestSpawnAgent_PluginAgentType_GrantTools_AddsProviderVisibleTool(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	var subagentToolNames []string
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				for _, td := range req.Tools {
+					subagentToolNames = append(subagentToolNames, td.Name)
+				}
+				return llm.Response{Message: llm.Assistant("done")}
+			},
+		},
+	}
+	c.Register(adapter)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	sess.pluginAgents = map[string]PluginAgent{
+		"my-plugin:reader": {
+			Name:         "reader",
+			Description:  "Read-only agent",
+			Model:        "inherit",
+			Tools:        []string{"read_file", "grep"},
+			SystemPrompt: "You only read files.",
+			PluginName:   "my-plugin",
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := sess.spawnAgent(ctx, "inspect and optionally shell out", "", "", 10, "my-plugin:reader", "", nil, []string{"exec_command"})
+	if err != nil {
+		t.Fatalf("spawnAgent: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(result.(string)), &parsed); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	agentID := parsed["agent_id"].(string)
+	_, _ = sess.waitAgent(ctx, agentID, 5000)
+
+	sub := sess.getSub(agentID)
+	if sub == nil {
+		t.Fatal("subagent not found")
+	}
+	if sub.sess.reg.Get("shell") == nil {
+		t.Fatalf("granted provider-visible exec_command should map to shell; tools=%v", sub.sess.reg.Names())
+	}
+	hasExecCommand := false
+	for _, name := range subagentToolNames {
+		if name == "exec_command" {
+			hasExecCommand = true
+			break
+		}
+	}
+	if !hasExecCommand {
+		t.Fatalf("subagent request should include provider-visible exec_command, got %v", subagentToolNames)
+	}
+}
+
+func TestSpawnAgent_GrantTools_RejectsUnavailableParentTool(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 2,
+		AllowedToolNames: []string{"read_file", "spawn_agent"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	sess.pluginAgents = map[string]PluginAgent{
+		"my-plugin:reader": {
+			Name:         "reader",
+			Description:  "Read-only agent",
+			Model:        "inherit",
+			Tools:        []string{"read_file", "grep"},
+			SystemPrompt: "You only read files.",
+			PluginName:   "my-plugin",
+		},
+	}
+
+	_, err = sess.spawnAgent(context.Background(), "try to escalate", "", "", 10, "my-plugin:reader", "", nil, []string{"write_file"})
+	if err == nil {
+		t.Fatal("expected grant rejection")
+	}
+	if !strings.Contains(err.Error(), "not currently callable") {
+		t.Fatalf("error = %q, want not-currently-callable message", err)
 	}
 }
 
@@ -398,7 +536,7 @@ func TestSpawnAgent_PluginAgentType_InjectsSkillContent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result, err := sess.spawnAgent(ctx, "write tests", "", "", 10, "my-plugin:test-eng", "", nil)
+	result, err := sess.spawnAgent(ctx, "write tests", "", "", 10, "my-plugin:test-eng", "", nil, nil)
 	if err != nil {
 		t.Fatalf("spawnAgent: %v", err)
 	}

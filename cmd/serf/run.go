@@ -33,8 +33,6 @@ type runConfig struct {
 	systemPrompt       string   // --system-prompt file path
 	systemPromptAppend []string // --system-prompt-append file paths
 	maxRounds          int      // --max-rounds (-1=default, 0=unlimited, >0=limit)
-	enableReviewerGate bool     // --enable-reviewer-gate
-	noAutoVerify       bool     // --no-auto-verify
 	maxSubagentDepth   int      // --max-subagent-depth (-1=default)
 	shareTaskStore     bool     // --share-task-store
 	resultToolName     string   // --result-tool-name override
@@ -181,8 +179,6 @@ func run(ctx context.Context, cfg runConfig) error {
 	} else {
 		sessionCfg := agent.SessionConfig{
 			MaxToolRoundsPerInput:  cmdutil.MaxRoundsToConfig(cfg.maxRounds),
-			EnableReviewerGate:     cfg.enableReviewerGate,
-			EnableAutoVerify:       false, // disabled by default; --no-auto-verify flag preserved for compatibility
 			ShareTasksWithChildren: cfg.shareTaskStore,
 			ResultToolName:         cfg.resultToolName,
 			StateDir:               stateDir,

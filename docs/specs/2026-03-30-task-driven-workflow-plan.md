@@ -159,7 +159,6 @@ git commit -m "task_store: add ReasoningEffort and Insert fields to Task"
 func TestTaskStore_CurrentInProgress(t *testing.T) {
 	dir := t.TempDir()
 	store := NewTaskStore(dir, "test-current")
-	store.AutoVerify = false
 	store.Load()
 
 	store.Append([]TaskInput{
@@ -392,7 +391,6 @@ git commit -m "plugin_agents: parse tasks from YAML frontmatter"
 func TestTaskStore_PopulateFromTemplates(t *testing.T) {
 	dir := t.TempDir()
 	store := NewTaskStore(dir, "test-populate")
-	store.AutoVerify = false
 	store.Load()
 
 	templates := []TaskTemplate{
@@ -434,7 +432,6 @@ Expected: FAIL — method does not exist.
 func TestTaskStore_PopulateFromTemplates_WithParentTasks(t *testing.T) {
 	dir := t.TempDir()
 	store := NewTaskStore(dir, "test-parent")
-	store.AutoVerify = false
 	store.Load()
 
 	templates := []TaskTemplate{
@@ -558,7 +555,6 @@ git commit -m "task_store: PopulateFromTemplates with parent task insertion"
 func TestTaskStore_AutoAdvance(t *testing.T) {
 	dir := t.TempDir()
 	store := NewTaskStore(dir, "test-advance")
-	store.AutoVerify = false
 	store.Load()
 
 	store.PopulateFromTemplates([]TaskTemplate{
@@ -591,7 +587,6 @@ func TestTaskStore_AutoAdvance(t *testing.T) {
 func TestTaskStore_AutoAdvance_AllDone(t *testing.T) {
 	dir := t.TempDir()
 	store := NewTaskStore(dir, "test-alldone")
-	store.AutoVerify = false
 	store.Load()
 
 	store.PopulateFromTemplates([]TaskTemplate{

@@ -10,7 +10,6 @@ import (
 func TestTaskWorkflow_PopulateAndAutoStart(t *testing.T) {
 	dir := t.TempDir()
 	store := NewTaskStore(dir, "workflow-test")
-	store.AutoVerify = false
 	store.Load()
 
 	templates := []TaskTemplate{
@@ -39,7 +38,6 @@ func TestTaskWorkflow_PopulateAndAutoStart(t *testing.T) {
 func TestTaskWorkflow_AdvanceSequence(t *testing.T) {
 	dir := t.TempDir()
 	store := NewTaskStore(dir, "advance-test")
-	store.AutoVerify = false
 	store.Load()
 
 	store.PopulateFromTemplates([]TaskTemplate{
@@ -70,7 +68,6 @@ func TestTaskWorkflow_AdvanceSequence(t *testing.T) {
 func TestTaskWorkflow_ParentTaskInsertion(t *testing.T) {
 	dir := t.TempDir()
 	store := NewTaskStore(dir, "parent-test")
-	store.AutoVerify = false
 	store.Load()
 
 	templates := []TaskTemplate{
@@ -115,7 +112,6 @@ func TestTaskWorkflow_AgentDefinitionWithTasks(t *testing.T) {
 	// Populate a store from the parsed tasks.
 	dir := t.TempDir()
 	store := NewTaskStore(dir, "agent-def-test")
-	store.AutoVerify = false
 	store.Load()
 
 	store.PopulateFromTemplates(agent.Tasks, nil)
@@ -131,7 +127,6 @@ func TestTaskWorkflow_AgentDefinitionWithTasks(t *testing.T) {
 func TestTaskWorkflow_AllTasksComplete(t *testing.T) {
 	dir := t.TempDir()
 	store := NewTaskStore(dir, "complete-test")
-	store.AutoVerify = false
 	store.Load()
 
 	store.PopulateFromTemplates([]TaskTemplate{
@@ -158,10 +153,7 @@ func TestTaskWorkflow_ImplementerGetsOwnTasks(t *testing.T) {
 	// When a coordinator spawns an implementer, the implementer must get
 	// its own task list (Understand, Do the work, Verify, Clean up) —
 	// NOT the coordinator's (Inventory, Plan, Delegate, Verify, Fix, Submit).
-	agents, err := builtinAgents()
-	if err != nil {
-		t.Fatalf("builtinAgents: %v", err)
-	}
+	agents := coordinatorWorkflowPublicAgentsForTest(t)
 
 	implAgent := agents["implementer"]
 	coordAgent := agents["coordinator"]
@@ -196,7 +188,6 @@ func TestTaskWorkflow_ImplementerGetsOwnTasks(t *testing.T) {
 	// Populate a store with implementer tasks
 	dir := t.TempDir()
 	store := NewTaskStore(dir, "impl-tasks-test")
-	store.AutoVerify = false
 	store.Load()
 	store.PopulateFromTemplates(implAgent.Tasks, nil)
 	tasks := store.View()
@@ -232,10 +223,7 @@ func TestTaskWorkflow_ImplementerGetsOwnTasks(t *testing.T) {
 func TestTaskWorkflow_ImplementerGetsOwnRolePrompt(t *testing.T) {
 	// The implementer's system prompt must say "You implement code" —
 	// NOT "You are a coordinator" or "You delegate, verify, and iterate."
-	agents, err := builtinAgents()
-	if err != nil {
-		t.Fatalf("builtinAgents: %v", err)
-	}
+	agents := coordinatorWorkflowPublicAgentsForTest(t)
 
 	impl := agents["implementer"]
 	coord := agents["coordinator"]
@@ -278,12 +266,12 @@ func TestTaskWorkflow_ParentTasksNotClobberedByNewSession(t *testing.T) {
 	})
 
 	// Simulate a subagent session (has ParentSessionID set).
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), coordinatorWorkflowSessionConfig(t, SessionConfig{
 		AgentName:       "implementer",
 		NonInteractive:  true,
 		StateDir:        dir,
 		ParentSessionID: "parent-coord-123", // marks this as a subagent
-	})
+	}))
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -314,12 +302,12 @@ func TestTaskWorkflow_RootSessionPopulatesTasks(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), coordinatorWorkflowSessionConfig(t, SessionConfig{
 		AgentName:      "coordinator",
 		NonInteractive: true,
 		StateDir:       dir,
 		// No ParentSessionID — this is a root session
-	})
+	}))
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -349,11 +337,11 @@ func TestTaskWorkflow_NewSessionPopulatesCorrectTasks(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), coordinatorWorkflowSessionConfig(t, SessionConfig{
 		AgentName:      "implementer",
 		NonInteractive: true,
 		StateDir:       dir,
-	})
+	}))
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

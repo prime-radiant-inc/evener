@@ -638,7 +638,7 @@ For Claude Opus 4.6, Opus 4.5, Sonnet 4.5, Haiku 4.5, and older Claude models. M
 For Gemini 3 Flash, Gemini 2.5 Pro/Flash, and other Gemini models. Mirrors the gemini-cli toolset.
 
 **Profile tool list for Gemini:**
-- `read_file` / `read_many_files` (batch reading support)
+- `read_file`
 - `write_file`
 - `edit_file` (search-and-replace style, matching gemini-cli conventions)
 - `shell` (command execution, 10s default timeout)

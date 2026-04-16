@@ -173,7 +173,7 @@ func TestPlugin_EndToEnd(t *testing.T) {
 	}
 
 	// 8. Plugin agent prompt formatting
-	agentPrompt := FormatPluginAgentsPrompt(lp.Agents)
+	agentPrompt := renderAvailableAgentsSectionForTest(t, lp.Agents)
 	if !strings.Contains(agentPrompt, "e2e-plugin:helper") {
 		t.Error("prompt should contain agent name 'e2e-plugin:helper'")
 	}

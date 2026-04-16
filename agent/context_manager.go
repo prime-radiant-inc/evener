@@ -438,10 +438,6 @@ func summarizeToolResult(toolName string, content any, args json.RawMessage) str
 		lines := countLines(contentStr)
 		return fmt.Sprintf("[read_file: %s, %d lines]", path, lines)
 
-	case "read_many_files":
-		path := getArg("file_paths")
-		return fmt.Sprintf("[read_many_files: %s → %d chars]", path, len(contentStr))
-
 	case "shell":
 		cmd := getArg("command")
 		if len(cmd) > 60 {

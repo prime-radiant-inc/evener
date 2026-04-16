@@ -1084,20 +1084,9 @@ func TestSession_LLMTransientErrors_RetryWithBackoff(t *testing.T) {
 	}
 }
 
-// submitResultResponse returns a fake LLM response that calls submit_result.
+// submitResultResponse returns a fake LLM response that calls communicate.
 func submitResultResponse(msg string) llm.Response {
-	return llm.Response{
-		Message: llm.Message{
-			Role: llm.RoleAssistant,
-			Content: []llm.ContentPart{
-				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-					ID:        "comm_nudge",
-					Name:      "communicate",
-					Arguments: json.RawMessage(fmt.Sprintf(`{"kind":"final","message":%q}`, msg)),
-				}},
-			},
-		},
-	}
+	return finalResponse(msg)
 }
 
 func TestSession_Subagents_SpawnWaitClose_AndDepthLimit(t *testing.T) {
@@ -1157,13 +1146,15 @@ func TestSession_Subagents_SpawnWaitClose_AndDepthLimit(t *testing.T) {
 		t.Fatalf("expected success=true")
 	}
 
-	// Depth limiting: subagent cannot spawn further subagents when MaxSubagentDepth=1.
+	// Subagent management is top-level only: child sessions cannot spawn further subagents.
 	sub := sess.getSub(agentID)
 	if sub == nil || sub.sess == nil {
 		t.Fatalf("missing subagent session for %q", agentID)
 	}
-	if _, err := sub.sess.spawnAgent(context.Background(), "nested", "", "", 0, "", "", nil); err == nil {
-		t.Fatalf("expected depth limit error, got nil")
+	if _, err := sub.sess.spawnAgent(context.Background(), "nested", "", "", 0, "", "", nil, nil); err == nil {
+		t.Fatalf("expected top-level-only error, got nil")
+	} else if !strings.Contains(err.Error(), "top-level only") {
+		t.Fatalf("error = %q, want top-level-only error", err)
 	}
 
 	closeRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
@@ -1779,19 +1770,9 @@ func TestProcessInput_ToolChoiceIsRequired(t *testing.T) {
 				if req.ToolChoice == nil || req.ToolChoice.Mode != "required" {
 					t.Fatalf("expected tool_choice required, got %+v", req.ToolChoice)
 				}
-				return llm.Response{
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-								ID:        "comm_required",
-								Name:      "communicate",
-								Arguments: json.RawMessage(`{"kind":"final","message":"done"}`),
-							}},
-						},
-					},
-					Finish: llm.FinishReason{Reason: "stop"},
-				}
+				resp := finalResponse("done")
+				resp.Finish = llm.FinishReason{Reason: "stop"}
+				return resp
 			},
 		},
 	}
@@ -4107,18 +4088,7 @@ func TestSession_Subagent_AutoNudgeOnMissingSubmitResult(t *testing.T) {
 				mu.Lock()
 				callCount++
 				mu.Unlock()
-				return llm.Response{
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-								ID:        "comm1",
-								Name:      "communicate",
-								Arguments: json.RawMessage(`{"kind":"final","message":"Here are my findings"}`),
-							}},
-						},
-					},
-				}
+				return finalResponse("Here are my findings")
 			},
 		},
 	}
