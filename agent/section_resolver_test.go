@@ -400,11 +400,11 @@ func TestSystemTemplate_StructuralRegression(t *testing.T) {
 		"## Identity",
 		"## Values",
 		"## Capabilities",
-		"## Tool usage",
 		"## Git safety",
 		"## Security",
 		"## Task tracking",
 		"## Submitting your work",
+		"## Tool usage",
 		"<environment>",
 		"<git>",
 		"## Role",
@@ -465,7 +465,7 @@ func TestSubagentTemplate_StructuralRegression(t *testing.T) {
 	}
 }
 
-func TestReviewerTemplate_UsesRoleNarrowing(t *testing.T) {
+func TestReviewerTemplate_UsesCommunicateDecisionContract(t *testing.T) {
 	resolver := &SectionResolver{
 		provider: "openai",
 		agent:    "reviewer",
@@ -474,9 +474,12 @@ func TestReviewerTemplate_UsesRoleNarrowing(t *testing.T) {
 	}
 
 	data := PromptData{
-		Provider:       "openai",
-		Agent:          "reviewer",
-		ResultToolName: "communicate",
+		Provider:                    "openai",
+		Agent:                       "reviewer",
+		ResultToolName:              "communicate",
+		ProfileTools:                toolEntriesFromDefinitions(NewOpenAIProfile("gpt-5.2").ToolDefinitions()),
+		CallableToolNames:           []string{"read_file", "grep", "glob", "shell", "communicate"},
+		UnavailableProfileToolNames: []string{"apply_patch", "write_file", "spawn_agent", "resume_agent", "wait", "close_agent", "task_list", "web_fetch"},
 	}
 
 	result, _, err := resolver.RenderEmbedded(embeddedPrompts, "prompts/templates/", "subagent", data)
@@ -484,15 +487,23 @@ func TestReviewerTemplate_UsesRoleNarrowing(t *testing.T) {
 		t.Fatalf("render error: %v", err)
 	}
 
-	// Reviewer should get approve/reject, not the base communicate section.
-	if !strings.Contains(result, "approve") {
-		t.Error("reviewer prompt should contain 'approve'")
+	if !strings.Contains(result, "communicate(kind=\"final\", ...)") {
+		t.Error("reviewer prompt should require communicate(kind=\"final\", ...)")
 	}
-	if !strings.Contains(result, "reject") {
-		t.Error("reviewer prompt should contain 'reject'")
+	if !strings.Contains(result, "output.decision") {
+		t.Error("reviewer prompt should mention output.decision")
 	}
-	if !strings.Contains(result, "Do not call `communicate` in this role.") {
-		t.Error("reviewer prompt should narrow the result channel in the role prompt")
+	if !strings.Contains(result, "approve") || !strings.Contains(result, "reject") {
+		t.Error("reviewer prompt should mention the allowed decision values")
+	}
+	if !strings.Contains(result, "Currently callable tools:") {
+		t.Error("reviewer prompt should show the callable tool list for this role")
+	}
+	if !strings.Contains(result, "Provider tools currently unavailable here:") {
+		t.Error("reviewer prompt should show the unavailable provider tools for this role")
+	}
+	if !strings.Contains(result, "`spawn_agent`") {
+		t.Error("reviewer prompt should identify unavailable delegated tools")
 	}
 }
 

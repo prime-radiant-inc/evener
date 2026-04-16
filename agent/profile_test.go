@@ -10,6 +10,40 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+func renderPromptForTest(t *testing.T, p ProviderProfile, data PromptData) string {
+	t.Helper()
+	if data.Provider == "" {
+		data.Provider = p.ID()
+	}
+	if data.Agent == "" {
+		data.Agent = "coordinator"
+	}
+	if data.Model == "" {
+		data.Model = p.Model()
+	}
+	if data.ResultToolName == "" {
+		data.ResultToolName = "communicate"
+	}
+	if len(data.ProfileTools) == 0 {
+		data.ProfileTools = toolEntriesFromDefinitions(p.ToolDefinitions())
+	}
+
+	resolver := &SectionResolver{
+		provider: p.ID(),
+		agent:    data.Agent,
+		agentFS:  embeddedAgents,
+		sources: []SectionSource{
+			embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"},
+		},
+	}
+
+	result, _, err := resolver.RenderEmbedded(embeddedPrompts, "prompts/templates/", "system", data)
+	if err != nil {
+		t.Fatalf("RenderEmbedded: %v", err)
+	}
+	return result
+}
+
 func TestProviderProfiles_ToolsetsAndDocSelection(t *testing.T) {
 	openai := NewOpenAIProfile("gpt-5.2")
 	if openai.ID() != "openai" {
@@ -110,7 +144,7 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 }
 
 func TestProviderProfiles_BuildSystemPrompt_IncludesEnvironment(t *testing.T) {
-	env := EnvironmentInfo{
+	data := PromptData{
 		WorkingDir:      "/tmp",
 		Platform:        "linux",
 		OSVersion:       "test",
@@ -118,14 +152,12 @@ func TestProviderProfiles_BuildSystemPrompt_IncludesEnvironment(t *testing.T) {
 		KnowledgeCutoff: "2024-06-01",
 	}
 
-	// BuildSystemPrompt with empty base (template system sets base at session init)
-	// should still produce environment and tool sections.
 	for _, p := range []ProviderProfile{
 		NewOpenAIProfile("gpt-5.2"),
 		NewAnthropicProfile("claude-test"),
 		NewGeminiProfile("gemini-test"),
 	} {
-		sys := p.BuildSystemPrompt(env, nil, nil, "")
+		sys := renderPromptForTest(t, p, data)
 		if !strings.Contains(sys, "<environment>") {
 			t.Errorf("%s prompt missing <environment> block", p.ID())
 		}
@@ -170,9 +202,7 @@ func TestProviderProfile_WithModel(t *testing.T) {
 	if len(cloned.ToolDefinitions()) != len(orig.ToolDefinitions()) {
 		t.Fatalf("tool count mismatch: cloned=%d orig=%d", len(cloned.ToolDefinitions()), len(orig.ToolDefinitions()))
 	}
-	// System prompt preserved.
-	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux"}
-	if cloned.BuildSystemPrompt(env, nil, nil, "") == "" {
+	if renderPromptForTest(t, cloned, PromptData{WorkingDir: "/tmp", Platform: "linux"}) == "" {
 		t.Fatalf("cloned profile has empty system prompt")
 	}
 }
@@ -251,13 +281,18 @@ func TestAllProfiles_SystemPromptContainsSkillsGuidance(t *testing.T) {
 		"anthropic": NewAnthropicProfile("claude-test"),
 		"gemini":    NewGeminiProfile("gemini-test"),
 	}
-	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux", Today: "2026-02-09"}
-	skills := []SkillMeta{
+	skills := []SkillEntry{
 		{Name: "test-skill", Description: "A test skill", Dir: "/tmp/skills/test-skill", SkillFile: "/tmp/skills/test-skill/SKILL.md"},
 	}
 
 	for name, p := range profiles {
-		prompt := p.BuildSystemPrompt(env, nil, skills, "")
+		prompt := renderPromptForTest(t, p, PromptData{
+			WorkingDir:  "/tmp",
+			Platform:    "linux",
+			Today:       "2026-02-09",
+			Skills:      skills,
+			HasUseSkill: name != "openai",
+		})
 
 		// All profiles should render <skills> when skills are provided.
 		if !strings.Contains(prompt, "<skill-catalog>") {
@@ -289,13 +324,17 @@ func TestAllProfiles_SystemPromptContainsSkillsGuidance(t *testing.T) {
 func TestBuildSystemPrompt_IncludesSkillsList(t *testing.T) {
 	// Anthropic profile has use_skill, so skills are rendered with directory paths.
 	p := NewAnthropicProfile("claude-test")
-	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux", Today: "2026-02-09"}
-
-	skills := []SkillMeta{
+	skills := []SkillEntry{
 		{Name: "greet", Description: "Greeting skill", Dir: "/tmp/skills/greet", SkillFile: "/tmp/skills/greet/SKILL.md"},
 		{Name: "deploy", Description: "Deploy skill", Dir: "/tmp/skills/deploy", SkillFile: "/tmp/skills/deploy/SKILL.md"},
 	}
-	prompt := p.BuildSystemPrompt(env, nil, skills, "")
+	prompt := renderPromptForTest(t, p, PromptData{
+		WorkingDir:  "/tmp",
+		Platform:    "linux",
+		Today:       "2026-02-09",
+		Skills:      skills,
+		HasUseSkill: true,
+	})
 
 	if !strings.Contains(prompt, "<skill-catalog>") {
 		t.Error("prompt missing <skills> section")
@@ -316,12 +355,15 @@ func TestBuildSystemPrompt_IncludesSkillsList(t *testing.T) {
 
 func TestBuildSystemPrompt_OpenAI_SkillsWithFilePaths(t *testing.T) {
 	p := NewOpenAIProfile("gpt-5.2")
-	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux", Today: "2026-02-09"}
-
-	skills := []SkillMeta{
+	skills := []SkillEntry{
 		{Name: "greet", Description: "Greeting skill", Dir: "/tmp/skills/greet", SkillFile: "/tmp/skills/greet/SKILL.md"},
 	}
-	prompt := p.BuildSystemPrompt(env, nil, skills, "")
+	prompt := renderPromptForTest(t, p, PromptData{
+		WorkingDir: "/tmp",
+		Platform:   "linux",
+		Today:      "2026-02-09",
+		Skills:     skills,
+	})
 
 	if !strings.Contains(prompt, "<skill-catalog>") {
 		t.Error("OpenAI prompt should contain <skills> section")
@@ -336,9 +378,11 @@ func TestBuildSystemPrompt_OpenAI_SkillsWithFilePaths(t *testing.T) {
 
 func TestBuildSystemPrompt_NoSkills_NoSkillsSection(t *testing.T) {
 	p := NewOpenAIProfile("gpt-5.2")
-	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux", Today: "2026-02-09"}
-
-	prompt := p.BuildSystemPrompt(env, nil, nil, "")
+	prompt := renderPromptForTest(t, p, PromptData{
+		WorkingDir: "/tmp",
+		Platform:   "linux",
+		Today:      "2026-02-09",
+	})
 
 	// Verify no skill-catalog block is present when no skills exist.
 	if strings.Contains(prompt, "</skill-catalog>") {
@@ -350,43 +394,6 @@ func TestGeminiProfile_IncludesWebSearch(t *testing.T) {
 	assertHasTool(t, NewGeminiProfile("gemini-test"), "web_search")
 	assertMissingTool(t, NewOpenAIProfile("gpt-5.2"), "web_search")
 	assertMissingTool(t, NewAnthropicProfile("claude-test"), "web_search")
-}
-
-func TestProviderProfile_WithBasePrompt(t *testing.T) {
-	orig := NewOpenAIProfile("gpt-5.2")
-	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux"}
-
-	custom := orig.WithBasePrompt("Custom base prompt for testing.")
-
-	// Custom prompt should appear in the system prompt output.
-	prompt := custom.BuildSystemPrompt(env, nil, nil, "")
-	if !strings.Contains(prompt, "Custom base prompt for testing.") {
-		t.Error("custom base prompt not found in system prompt")
-	}
-
-	// Original should be unmodified (empty base prompt since template system handles it).
-	origPrompt := orig.BuildSystemPrompt(env, nil, nil, "")
-	if strings.Contains(origPrompt, "Custom base prompt for testing.") {
-		t.Error("original profile was mutated")
-	}
-}
-
-func TestProviderProfile_WithBasePrompt_PreservesOtherFields(t *testing.T) {
-	orig := NewOpenAIProfile("gpt-5.2")
-	custom := orig.WithBasePrompt("different prompt")
-
-	if custom.ID() != orig.ID() {
-		t.Errorf("ID changed: got %q want %q", custom.ID(), orig.ID())
-	}
-	if custom.Model() != orig.Model() {
-		t.Errorf("Model changed: got %q want %q", custom.Model(), orig.Model())
-	}
-	if len(custom.ToolDefinitions()) != len(orig.ToolDefinitions()) {
-		t.Errorf("tool count changed: got %d want %d", len(custom.ToolDefinitions()), len(orig.ToolDefinitions()))
-	}
-	if custom.ContextWindowSize() != orig.ContextWindowSize() {
-		t.Errorf("context window changed: got %d want %d", custom.ContextWindowSize(), orig.ContextWindowSize())
-	}
 }
 
 func TestProviderProfile_ProviderOptions(t *testing.T) {
@@ -764,21 +771,6 @@ func TestAnthropicProfile_WithCommunicateRequiredDataKeys(t *testing.T) {
 	}
 }
 
-func TestAnthropicProfile_WithBasePrompt(t *testing.T) {
-	orig := NewAnthropicProfile("claude-opus-4-6")
-	custom := orig.WithBasePrompt("Custom anthropic prompt.")
-	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux"}
-
-	prompt := custom.BuildSystemPrompt(env, nil, nil, "")
-	if !strings.Contains(prompt, "Custom anthropic prompt.") {
-		t.Error("custom base prompt not found")
-	}
-	// Should preserve anthropic-specific context window.
-	if custom.ContextWindowSize() != 200_000 {
-		t.Errorf("context window changed: got %d", custom.ContextWindowSize())
-	}
-}
-
 func TestGeminiProfile_ContextWindow_Is1M(t *testing.T) {
 	p := NewGeminiProfile("gemini-2.5-flash")
 	if p.ContextWindowSize() != 1_000_000 {
@@ -788,11 +780,14 @@ func TestGeminiProfile_ContextWindow_Is1M(t *testing.T) {
 
 func TestBuildSystemPrompt_ExtraToolsBeforeProjectDocs(t *testing.T) {
 	p := NewOpenAIProfile("gpt-5.2")
-	env := EnvironmentInfo{WorkingDir: "/tmp", Platform: "linux", Today: "2026-02-11"}
-	docs := []ProjectDoc{{Path: "AGENTS.md", Content: "project instructions here"}}
-	extra := "- mcp__server__tool1: Does thing one\n- my_custom_tool: Does custom things\n"
-
-	prompt := p.BuildSystemPrompt(env, docs, nil, extra)
+	prompt := renderPromptForTest(t, p, PromptData{
+		WorkingDir:  "/tmp",
+		Platform:    "linux",
+		Today:       "2026-02-11",
+		ProjectDocs: []ProjectDoc{{Path: "AGENTS.md", Content: "project instructions here"}},
+		MCPTools:    []ToolEntry{{Name: "mcp__server__tool1", Description: "Does thing one"}},
+		CustomTools: []ToolEntry{{Name: "my_custom_tool", Description: "Does custom things"}},
+	})
 
 	beginIdx := strings.Index(prompt, "----- BEGIN AGENTS.md -----")
 	if beginIdx < 0 {
@@ -925,7 +920,13 @@ func TestBuildSystemPrompt_WorkspaceSection(t *testing.T) {
 	}
 
 	p := NewOpenAIProfile("gpt-5.3-codex")
-	prompt := p.BuildSystemPrompt(env, nil, nil, "")
+	prompt := renderPromptForTest(t, p, PromptData{
+		WorkingDir:    env.WorkingDir,
+		Platform:      env.Platform,
+		Today:         env.Today,
+		WorkspaceTree: env.Workspace.Tree,
+		BuildInfo:     env.Workspace.BuildInfo,
+	})
 
 	// Should contain workspace section.
 	if !strings.Contains(prompt, "<workspace>") {
@@ -953,15 +954,15 @@ func TestBuildSystemPrompt_WorkspaceSection(t *testing.T) {
 		t.Error("workspace section missing Makefile info")
 	}
 
-	// Workspace section should come after environment but before tool list.
+	// Workspace section should come after environment and after the tool list.
 	wsIdx := strings.Index(prompt, "<workspace>")
 	envIdx := strings.Index(prompt, "</environment>")
 	toolIdx := strings.Index(prompt, "Tools:")
 	if wsIdx < envIdx {
 		t.Errorf("workspace (pos %d) should come after environment (pos %d)", wsIdx, envIdx)
 	}
-	if wsIdx > toolIdx {
-		t.Errorf("workspace (pos %d) should come before tools (pos %d)", wsIdx, toolIdx)
+	if wsIdx < toolIdx {
+		t.Errorf("workspace (pos %d) should come after tools (pos %d)", wsIdx, toolIdx)
 	}
 }
 
@@ -974,7 +975,11 @@ func TestBuildSystemPrompt_EmptyWorkspace(t *testing.T) {
 	}
 
 	p := NewOpenAIProfile("gpt-5.3-codex")
-	prompt := p.BuildSystemPrompt(env, nil, nil, "")
+	prompt := renderPromptForTest(t, p, PromptData{
+		WorkingDir: env.WorkingDir,
+		Platform:   env.Platform,
+		Today:      env.Today,
+	})
 
 	// Should NOT render an empty workspace section.
 	if strings.Contains(prompt, "<workspace>") {
@@ -994,7 +999,13 @@ func TestBuildSystemPrompt_WorkspaceAnnotation(t *testing.T) {
 	}
 
 	p := NewOpenAIProfile("gpt-5.3-codex")
-	prompt := p.BuildSystemPrompt(env, nil, nil, "")
+	prompt := renderPromptForTest(t, p, PromptData{
+		WorkingDir:    env.WorkingDir,
+		Platform:      env.Platform,
+		Today:         env.Today,
+		WorkspaceTree: env.Workspace.Tree,
+		BuildInfo:     env.Workspace.BuildInfo,
+	})
 
 	if !strings.Contains(prompt, "snapshot of the working directory taken at session start") {
 		t.Error("workspace section missing static annotation")

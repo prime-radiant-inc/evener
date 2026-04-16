@@ -25,14 +25,17 @@ func submitResultCallArgs(id string, args map[string]any) llm.ToolCallData {
 	}
 }
 
-func approveCall(id, message string) llm.ToolCallData {
-	raw, _ := json.Marshal(map[string]any{"message": message})
-	return llm.ToolCallData{ID: id, Name: "approve", Arguments: raw, Type: "function"}
-}
-
-func rejectCall(id, feedback string) llm.ToolCallData {
-	raw, _ := json.Marshal(map[string]any{"feedback": feedback})
-	return llm.ToolCallData{ID: id, Name: "reject", Arguments: raw, Type: "function"}
+func reviewerVerdictCall(id, decision, report string) llm.ToolCallData {
+	raw, _ := json.Marshal(map[string]any{
+		"kind": communicateKindFinal,
+		"output": map[string]any{
+			"message":   report,
+			"decision":  decision,
+			"data":      map[string]any{},
+			"artifacts": []string{},
+		},
+	})
+	return llm.ToolCallData{ID: id, Name: "communicate", Arguments: raw, Type: "function"}
 }
 
 // toolCallResponse is defined in tool_web_fetch_test.go (same package).
@@ -367,12 +370,9 @@ func TestSubmitResult_AvailableImmediately(t *testing.T) {
 // Phase 2: Reviewer gate tests
 // ---------------------------------------------------------------------------
 
-// TestSubmitResult_Depth0_ReviewerToolsInRequest verifies that the approve and
-// reject tools are actually present in the API request sent to the reviewer
-// subagent. This guards against a regression where custom-registered tools
-// were in the registry (for execution) but not in allToolDefinitions() (so the
-// model never saw them).
-func TestSubmitResult_Depth0_ReviewerToolsInRequest(t *testing.T) {
+// TestSubmitResult_Depth0_ReviewerCommunicateSchemaInRequest verifies that the
+// reviewer request contains communicate with the required decision schema.
+func TestSubmitResult_Depth0_ReviewerCommunicateSchemaInRequest(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -383,22 +383,34 @@ func TestSubmitResult_Depth0_ReviewerToolsInRequest(t *testing.T) {
 			func(req llm.Request) llm.Response {
 				return toolCallResponse(submitResultCall("call-1", "done"))
 			},
-			// Reviewer subagent: check that approve/reject are in the tools list
+			// Reviewer subagent: check that communicate is present with decision schema.
 			func(req llm.Request) llm.Response {
 				toolNames := make(map[string]bool)
+				var communicateSchema map[string]any
 				for _, td := range req.Tools {
 					toolNames[td.Name] = true
+					if td.Name == "communicate" {
+						communicateSchema = td.Parameters
+					}
 				}
-				if !toolNames["approve"] {
-					t.Errorf("reviewer request missing 'approve' tool; tools: %v", toolNames)
+				if !toolNames["communicate"] {
+					t.Errorf("reviewer request missing 'communicate' tool; tools: %v", toolNames)
 				}
-				if !toolNames["reject"] {
-					t.Errorf("reviewer request missing 'reject' tool; tools: %v", toolNames)
+				if toolNames["approve"] {
+					t.Errorf("reviewer request should NOT have 'approve' tool; tools: %v", toolNames)
 				}
-				if toolNames["communicate"] {
-					t.Errorf("reviewer request should NOT have 'communicate' tool; tools: %v", toolNames)
+				if toolNames["reject"] {
+					t.Errorf("reviewer request should NOT have 'reject' tool; tools: %v", toolNames)
 				}
-				return toolCallResponse(approveCall("review-1", "looks good"))
+				props, _ := communicateSchema["properties"].(map[string]any)
+				output, _ := props["output"].(map[string]any)
+				outProps, _ := output["properties"].(map[string]any)
+				decisionSchema, _ := outProps["decision"].(map[string]any)
+				enumSlice := toStringSlice(decisionSchema["enum"])
+				if len(enumSlice) != 2 || enumSlice[0] != "approve" || enumSlice[1] != "reject" {
+					t.Errorf("reviewer communicate decision enum=%v, want [approve reject]", enumSlice)
+				}
+				return toolCallResponse(reviewerVerdictCall("review-1", "approve", "looks good"))
 			},
 		},
 	}
@@ -441,7 +453,7 @@ func TestSubmitResult_Depth0_ReviewerPass(t *testing.T) {
 			},
 			// Reviewer subagent: approve the work
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(approveCall("review-1", "The implementation correctly fixes the bug."))
+				return toolCallResponse(reviewerVerdictCall("review-1", "approve", "The implementation correctly fixes the bug."))
 			},
 		},
 	}
@@ -491,7 +503,7 @@ func TestSubmitResult_Depth0_ReviewerFail(t *testing.T) {
 			},
 			// Reviewer: rejects the work
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(rejectCall("review-1", "Tests are still failing. Run pytest to verify."))
+				return toolCallResponse(reviewerVerdictCall("review-1", "reject", "Tests are still failing. Run pytest to verify."))
 			},
 			// Main agent: receives rejection feedback, tries again
 			func(req llm.Request) llm.Response {
@@ -499,7 +511,7 @@ func TestSubmitResult_Depth0_ReviewerFail(t *testing.T) {
 			},
 			// Reviewer: approves on second attempt
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(approveCall("review-2", "All tests pass now."))
+				return toolCallResponse(reviewerVerdictCall("review-2", "approve", "All tests pass now."))
 			},
 		},
 	}
@@ -552,7 +564,7 @@ func TestSubmitResult_ReviewerFail_SteeringFeedback(t *testing.T) {
 			},
 			// Reviewer: rejects the work
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(rejectCall("review-1", reviewerFeedback))
+				return toolCallResponse(reviewerVerdictCall("review-1", "reject", reviewerFeedback))
 			},
 			// Main agent: receives brief tool result + steering feedback, tries again
 			func(req llm.Request) llm.Response {
@@ -586,7 +598,7 @@ func TestSubmitResult_ReviewerFail_SteeringFeedback(t *testing.T) {
 			},
 			// Reviewer: approves on second attempt
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(approveCall("review-2", "All tests pass now."))
+				return toolCallResponse(reviewerVerdictCall("review-2", "approve", "All tests pass now."))
 			},
 		},
 	}
@@ -710,10 +722,10 @@ func TestSubmitResult_ReviewerError_FailOpen(t *testing.T) {
 	}
 }
 
-// TestSubmitResult_ReviewerPromptNoSubmitResult verifies the reviewer's system
-// prompt does NOT mention submit_result (which would confuse the model since
-// the reviewer must use approve/reject instead).
-func TestSubmitResult_ReviewerPromptNoSubmitResult(t *testing.T) {
+// TestSubmitResult_ReviewerPromptUsesStructuredCommunicate verifies the
+// reviewer's system prompt tells it to use communicate with a structured
+// decision payload instead of reviewer-specific verdict tools.
+func TestSubmitResult_ReviewerPromptUsesStructuredCommunicate(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -730,13 +742,19 @@ func TestSubmitResult_ReviewerPromptNoSubmitResult(t *testing.T) {
 				for _, m := range req.Messages {
 					if m.Role == "system" {
 						for _, p := range m.Content {
-							if p.Kind == llm.ContentText && strings.Contains(p.Text, "MUST call communicate") {
-								t.Errorf("reviewer system prompt still tells model to call submit_result:\n%s", p.Text[:min(len(p.Text), 500)])
+							if p.Kind != llm.ContentText {
+								continue
+							}
+							if !strings.Contains(p.Text, "output.decision") {
+								t.Errorf("reviewer system prompt should mention output.decision:\n%s", p.Text[:min(len(p.Text), 500)])
+							}
+							if strings.Contains(p.Text, "Finish with `approve`") || strings.Contains(p.Text, "call `approve`") || strings.Contains(p.Text, "call `reject`") {
+								t.Errorf("reviewer system prompt should not instruct tool-specific approve/reject calls:\n%s", p.Text[:min(len(p.Text), 500)])
 							}
 						}
 					}
 				}
-				return toolCallResponse(approveCall("review-1", "ok"))
+				return toolCallResponse(reviewerVerdictCall("review-1", "approve", "ok"))
 			},
 		},
 	}
@@ -792,7 +810,7 @@ func TestSubmitResult_ReviewerGetsOriginalTask(t *testing.T) {
 				if !found {
 					t.Errorf("reviewer prompt does not contain original task %q", originalTask)
 				}
-				return toolCallResponse(approveCall("review-1", "Vulnerability properly fixed."))
+				return toolCallResponse(reviewerVerdictCall("review-1", "approve", "Vulnerability properly fixed."))
 			},
 		},
 	}

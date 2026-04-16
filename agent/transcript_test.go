@@ -1231,7 +1231,6 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 		id:            "openai",
 		model:         "gpt-5.2",
 		contextWindow: 500,
-		basePrompt:    "You are a test agent.",
 		toolDefs: []llm.ToolDefinition{
 			defReadFile(),
 			defSubmitResult(),
@@ -1653,7 +1652,6 @@ func TestSession_TranscriptWriteFailureEmitsWarning(t *testing.T) {
 		id:            "openai",
 		model:         "test",
 		contextWindow: 100000,
-		basePrompt:    "test",
 	}, env, cfg)
 	if err != nil {
 		t.Fatal(err)

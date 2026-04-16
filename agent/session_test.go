@@ -1534,9 +1534,9 @@ func TestSession_CustomRegisteredTool_AppearsInSystemPrompt(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// Rebuild caches to pick up tool registered after session creation.
+	// Refresh caches to pick up tool registered after session creation.
 	sess.rebuildToolDefsCache()
-	sess.rebuildPromptCache()
+	sess.refreshSystemPromptCache()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

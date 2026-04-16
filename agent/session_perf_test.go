@@ -123,7 +123,7 @@ func TestCachedToolDefs_IncludesMCPTools(t *testing.T) {
 }
 
 func TestCachedToolDefs_IncludesRegistryOnlyTools(t *testing.T) {
-	// Tools registered directly (e.g. approve/reject) should be included.
+	// Tools registered directly on the registry should be included.
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai"}
@@ -433,7 +433,7 @@ func (a *afterActionCapture) AfterAction(ctx context.Context, history []Turn, cl
 // --- Issue 3: System prompt caching ---
 
 func TestCachedSystemPromptComponents_SkillList(t *testing.T) {
-	// Verify that the cached skill list matches what would be built each round.
+	// Verify that prompt data reflects the discovered skills.
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai"}
@@ -445,15 +445,8 @@ func TestCachedSystemPromptComponents_SkillList(t *testing.T) {
 	}
 	defer sess.Close()
 
-	// Build the skill list manually from s.skills (like processOneInput does).
-	var manualList []SkillMeta
-	for _, sm := range sess.skills {
-		manualList = append(manualList, sm)
-	}
-
-	// The cached list should have the same length.
-	if len(sess.cachedSkillList) != len(manualList) {
-		t.Errorf("cached skill list length %d != manual %d", len(sess.cachedSkillList), len(manualList))
+	if got := len(sess.buildPromptData().Skills); got != len(sess.skills) {
+		t.Errorf("buildPromptData skills length %d != discovered %d", got, len(sess.skills))
 	}
 }
 
@@ -470,7 +463,7 @@ func TestCachedSystemPromptComponents_ExtraToolsString(t *testing.T) {
 	}
 	defer sess.Close()
 
-	// Add an MCP tool and rebuild to test that extra tools string includes it.
+	// Add an MCP tool and rebuild to test that the rendered prompt includes it.
 	mcpTool := llm.ToolDefinition{
 		Name:        "mcp__test__tool",
 		Description: "Test MCP tool",
@@ -482,13 +475,13 @@ func TestCachedSystemPromptComponents_ExtraToolsString(t *testing.T) {
 			return "ok", nil
 		},
 	})
-	sess.rebuildPromptCache()
+	sess.refreshSystemPromptCache()
 
-	if !strings.Contains(sess.cachedExtraTools, "mcp__test__tool") {
-		t.Errorf("cached extra tools should contain MCP tool name, got: %q", sess.cachedExtraTools)
+	if !strings.Contains(sess.cachedSystemPrompt, "mcp__test__tool") {
+		t.Errorf("cached system prompt should contain MCP tool name, got: %q", sess.cachedSystemPrompt)
 	}
-	if !strings.Contains(sess.cachedExtraTools, "MCP Tools") {
-		t.Errorf("cached extra tools should contain 'MCP Tools' header, got: %q", sess.cachedExtraTools)
+	if !strings.Contains(sess.cachedSystemPrompt, "MCP tools:") {
+		t.Errorf("cached system prompt should contain MCP tools header, got: %q", sess.cachedSystemPrompt)
 	}
 }
 
@@ -514,7 +507,7 @@ func TestCachedSystemPromptComponents_NonInteractiveGuidance(t *testing.T) {
 }
 
 func TestCachedSystemPromptComponents_AgentSection(t *testing.T) {
-	// Plugin agents section should be cached.
+	// Available agents should be rendered into the cached system prompt.
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai"}
@@ -526,16 +519,14 @@ func TestCachedSystemPromptComponents_AgentSection(t *testing.T) {
 	}
 	defer sess.Close()
 
-	// The cached agent section should match FormatPluginAgentsPrompt.
-	expected := FormatPluginAgentsPrompt(sess.pluginAgents)
-	if sess.cachedAgentSection != expected {
-		t.Errorf("cached agent section mismatch:\ngot:  %q\nwant: %q", sess.cachedAgentSection, expected)
+	if !strings.Contains(sess.cachedSystemPrompt, "The following agent types are available") {
+		t.Errorf("cached system prompt should contain the available-agents section, got: %q", sess.cachedSystemPrompt)
 	}
 }
 
 func TestSystemPromptConsistency_WithAndWithoutCache(t *testing.T) {
-	// The system prompt produced with caching should be identical to one
-	// built without caching. Use buildInitialSystemPrompt as the reference.
+	// The system prompt produced with caching should match the prompt that is
+	// actually sent to the model.
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -561,8 +552,7 @@ func TestSystemPromptConsistency_WithAndWithoutCache(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 
-	// buildInitialSystemPrompt builds from scratch (no cache).
-	referencePrompt := sess.buildInitialSystemPrompt()
+	referencePrompt := sess.cachedSystemPrompt
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

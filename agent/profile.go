@@ -44,10 +44,8 @@ type ProviderProfile interface {
 	SupportsParallelToolCalls() bool
 	ContextWindowSize() int
 	ProjectDocFiles() []string
-	BuildSystemPrompt(env EnvironmentInfo, docs []ProjectDoc, skills []SkillMeta, extraTools string) string
 	CheapModel() string
 	WithModel(model string) ProviderProfile
-	WithBasePrompt(prompt string) ProviderProfile
 	ProviderOptions() map[string]any
 	SupportsReasoning() bool
 	// ReasoningEffortLevels returns the valid effort strings this provider
@@ -72,7 +70,6 @@ type baseProfile struct {
 	model           string
 	parallel        bool
 	contextWindow   int
-	basePrompt      string
 	toolDefs        []llm.ToolDefinition
 	toolNameMap     map[string]string // canonical → provider-specific
 	docFiles        []string
@@ -183,132 +180,6 @@ func (p *baseProfile) WithModel(model string) ProviderProfile {
 	return &clone
 }
 
-func (p *baseProfile) WithBasePrompt(prompt string) ProviderProfile {
-	clone := *p
-	clone.basePrompt = prompt
-	return &clone
-}
-
-func (p *baseProfile) BuildSystemPrompt(env EnvironmentInfo, docs []ProjectDoc, skills []SkillMeta, extraTools string) string {
-	var b strings.Builder
-
-	base := strings.TrimSpace(p.basePrompt)
-	if base != "" {
-		b.WriteString(base)
-		if !strings.HasSuffix(base, "\n") {
-			b.WriteString("\n")
-		}
-		b.WriteString("\n")
-	}
-
-	b.WriteString("<environment>\n")
-	b.WriteString(fmt.Sprintf("Working directory: %s\n", env.WorkingDir))
-	b.WriteString(fmt.Sprintf("Is git repository: %t\n", env.IsGitRepo))
-	b.WriteString(fmt.Sprintf("Git branch: %s\n", env.GitBranch))
-	b.WriteString(fmt.Sprintf("Platform: %s\n", env.Platform))
-	b.WriteString(fmt.Sprintf("OS version: %s\n", env.OSVersion))
-	b.WriteString(fmt.Sprintf("Today's date: %s\n", env.Today))
-	b.WriteString(fmt.Sprintf("Model: %s\n", p.model))
-	b.WriteString(fmt.Sprintf("Knowledge cutoff: %s\n", env.KnowledgeCutoff))
-	if env.Workspace.Tree != "" {
-		b.WriteString("Workspace:\n" + env.Workspace.Tree + "\n")
-	}
-	b.WriteString("</environment>\n\n")
-
-	if env.IsGitRepo {
-		b.WriteString("<git>\n")
-		b.WriteString(fmt.Sprintf("Branch: %s\n", env.GitBranch))
-		b.WriteString(fmt.Sprintf("Modified files: %d\n", env.GitModifiedFiles))
-		b.WriteString(fmt.Sprintf("Untracked files: %d\n", env.GitUntrackedFiles))
-		if len(env.GitRecentCommitTitles) > 0 {
-			b.WriteString("Recent commits:\n")
-			for _, c := range env.GitRecentCommitTitles {
-				b.WriteString("- " + c + "\n")
-			}
-		}
-		b.WriteString("</git>\n\n")
-	}
-
-	// Workspace context: directory tree and build system info.
-	// Injected so the model starts with full workspace awareness.
-	if env.Workspace.Tree != "" || env.Workspace.BuildInfo != "" {
-		b.WriteString("<workspace>\n")
-		b.WriteString("This is a snapshot of the working directory taken at session start. It does not update.\n\n")
-		if env.Workspace.Tree != "" {
-			b.WriteString("Directory structure:\n")
-			b.WriteString(env.Workspace.Tree)
-			b.WriteString("\n\n")
-		}
-		if env.Workspace.BuildInfo != "" {
-			b.WriteString("Build system:\n")
-			b.WriteString(env.Workspace.BuildInfo)
-			b.WriteString("\n")
-		}
-		b.WriteString("</workspace>\n\n")
-	}
-
-	// Skills section: always rendered when skills are available.
-	// For profiles with use_skill (Anthropic, Gemini): model calls use_skill(name).
-	// For profiles without use_skill (OpenAI): model reads the SKILL.md file directly.
-	if len(skills) > 0 {
-		hasUseSkill := false
-		for _, td := range p.ToolDefinitions() {
-			if td.Name == "use_skill" {
-				hasUseSkill = true
-				break
-			}
-		}
-		b.WriteString("<skill-catalog>\n")
-		if hasUseSkill {
-			b.WriteString("Load a skill by calling use_skill with its name. The response includes the skill directory path for accessing scripts and other collateral.\n")
-		} else {
-			b.WriteString("Load a skill by reading its SKILL.md file path with read_file. The skill directory may contain scripts and other collateral.\n")
-		}
-		for _, s := range skills {
-			if hasUseSkill {
-				b.WriteString(fmt.Sprintf("- %s: %s [%s]\n", s.Name, s.Description, s.Dir))
-			} else {
-				b.WriteString(fmt.Sprintf("- %s: %s [%s]\n", s.Name, s.Description, s.SkillFile))
-			}
-		}
-		b.WriteString("</skill-catalog>\n\n")
-	}
-
-	b.WriteString("Tools:\n")
-	for _, td := range p.ToolDefinitions() {
-		desc := strings.TrimSpace(td.Description)
-		if desc == "" {
-			desc = "(no description)"
-		}
-		b.WriteString(fmt.Sprintf("- %s: %s\n", td.Name, desc))
-	}
-	b.WriteString("\nTool usage:\n")
-	b.WriteString("- Tool descriptions are authoritative for tool-specific semantics and argument rules.\n")
-	b.WriteString("- Inspect relevant files before modifying them.\n")
-	b.WriteString("- After running commands, read errors carefully and fix them.\n")
-
-	if extra := strings.TrimSpace(extraTools); extra != "" {
-		b.WriteString("\n")
-		b.WriteString(extra)
-		if !strings.HasSuffix(extra, "\n") {
-			b.WriteString("\n")
-		}
-	}
-
-	for _, d := range docs {
-		if strings.TrimSpace(d.Path) == "" {
-			continue
-		}
-		b.WriteString("\n----- BEGIN " + d.Path + " -----\n")
-		b.WriteString(d.Content)
-		if !strings.HasSuffix(d.Content, "\n") {
-			b.WriteString("\n")
-		}
-		b.WriteString("----- END " + d.Path + " -----\n")
-	}
-	return b.String()
-}
-
 func NewOpenAIProfile(model string) ProviderProfile {
 	model = strings.TrimSpace(model)
 	defaultEfforts := []string{"low", "medium", "high", "xhigh"}
@@ -318,7 +189,6 @@ func NewOpenAIProfile(model string) ProviderProfile {
 		model:           model,
 		parallel:        true,
 		contextWindow:   128_000,
-		basePrompt:      "", // set by initSessionState via template system
 		docFiles:        []string{"AGENTS.md", ".codex/instructions.md"},
 		reasoning:       true,
 		streaming:       true,
@@ -372,8 +242,8 @@ func anthropicProviderOpts(has1M bool) map[string]any {
 	}
 }
 
-// anthropicProfile embeds baseProfile and overrides WithModel / WithBasePrompt
-// to re-derive contextWindow and providerOpts from the model string.
+// anthropicProfile embeds baseProfile and overrides WithModel to re-derive
+// contextWindow and providerOpts from the model string.
 type anthropicProfile struct {
 	baseProfile
 }
@@ -411,12 +281,6 @@ func (p *anthropicProfile) WithModel(model string) ProviderProfile {
 	return &clone
 }
 
-func (p *anthropicProfile) WithBasePrompt(prompt string) ProviderProfile {
-	clone := *p
-	clone.basePrompt = prompt
-	return &clone
-}
-
 func NewAnthropicProfile(model string) ProviderProfile {
 	model = strings.TrimSpace(model)
 	has1M := strings.HasSuffix(model, anthropicSuffix1M)
@@ -432,7 +296,6 @@ func NewAnthropicProfile(model string) ProviderProfile {
 			model:           model,
 			parallel:        true,
 			contextWindow:   ctxWindow,
-			basePrompt:      "", // set by initSessionState via template system
 			docFiles:        []string{"CLAUDE.md", "AGENTS.md"},
 			reasoning:       true,
 			streaming:       true,
@@ -470,7 +333,6 @@ func NewGeminiProfile(model string) ProviderProfile {
 		model:           model,
 		parallel:        true,
 		contextWindow:   1_000_000,
-		basePrompt:      "", // set by initSessionState via template system
 		docFiles:        []string{"GEMINI.md", "AGENTS.md"},
 		reasoning:       true,
 		streaming:       true,
@@ -524,7 +386,6 @@ func NewMiniMaxProfile(model string) ProviderProfile {
 		model:           model,
 		parallel:        true,
 		contextWindow:   204_800,
-		basePrompt:      "",
 		docFiles:        []string{"CLAUDE.md", "AGENTS.md"},
 		reasoning:       true,
 		streaming:       true,
@@ -586,7 +447,6 @@ func NewOpenRouterAnthropicProfile(model string) ProviderProfile {
 		model:           model,
 		parallel:        true,
 		contextWindow:   contextWindow,
-		basePrompt:      "",
 		docFiles:        []string{"CLAUDE.md", "AGENTS.md"},
 		reasoning:       true,
 		streaming:       true,
@@ -651,7 +511,6 @@ func NewOpenAICompatProfile(id, model string, contextWindow int) ProviderProfile
 		model:           model,
 		parallel:        true,
 		contextWindow:   contextWindow,
-		basePrompt:      "",
 		docFiles:        []string{"AGENTS.md"},
 		reasoning:       true,
 		streaming:       true,
@@ -1074,34 +933,6 @@ func defSubmitResultNamed(name string) llm.ToolDefinition {
 	}
 }
 
-func defApprove() llm.ToolDefinition {
-	return llm.ToolDefinition{
-		Name:        "approve",
-		Description: "Approve the work after verifying that all task requirements are satisfied. Use this only when the deliverable meets the spec. This is the only valid way to deliver an approval in reviewer mode. In message, summarize the checks you ran and cite the evidence you observed for each requirement.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"message": map[string]any{"type": "string", "description": "Approval summary with the checks you ran and the evidence you observed for each requirement."},
-			},
-			"required": []string{"message"},
-		},
-	}
-}
-
-func defReject() llm.ToolDefinition {
-	return llm.ToolDefinition{
-		Name:        "reject",
-		Description: "Reject the work when any requirement is not satisfied. This is the only valid way to deliver a rejection in reviewer mode. In feedback, include every issue you found in one pass, with what you tested, what you expected, what actually happened, and concrete evidence such as file paths, commands, or outputs.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"feedback": map[string]any{"type": "string", "description": "Complete rejection report with every issue, what you tested, expected vs actual behavior, and concrete evidence."},
-			},
-			"required": []string{"feedback"},
-		},
-	}
-}
-
 func defTaskList(effortLevels []string) llm.ToolDefinition {
 	reasoningDesc := "Raise or lower the reasoning budget for this task. Omit to leave unchanged."
 	reasoningSchema := map[string]any{
@@ -1172,7 +1003,7 @@ func defTaskList(effortLevels []string) llm.ToolDefinition {
 func defUseSkill() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "use_skill",
-		Description: "Activate a skill to load its full instructions into context. Available skills are listed in the <skill-catalog> section of the system prompt.",
+		Description: "Activate a skill to load its full instructions into context. Use a skill name from the skill catalog in the system prompt.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,

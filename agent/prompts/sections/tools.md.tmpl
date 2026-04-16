@@ -9,6 +9,16 @@
 Tools:
 {{ range .ProfileTools }}- `{{ .Name }}`: {{ .Description }}
 {{ end }}{{ end }}
+{{ if .UnavailableProfileToolNames }}
+Current role/session:
+
+Currently callable tools:
+{{ range .CallableToolNames }}- `{{ . }}`
+{{ end }}
+
+Provider tools currently unavailable here:
+{{ range .UnavailableProfileToolNames }}- `{{ . }}`
+{{ end }}{{ end }}
 {{ if .MCPTools }}
 MCP tools:
 {{ range .MCPTools }}- `{{ .Name }}`: {{ .Description }}

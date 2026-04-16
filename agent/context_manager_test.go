@@ -1047,7 +1047,6 @@ func TestSession_ContextManager_CompactsWhenNeeded(t *testing.T) {
 		id:            "openai",
 		model:         "gpt-5.2",
 		contextWindow: 500,
-		basePrompt:    "You are a test agent.",
 		toolDefs: []llm.ToolDefinition{
 			defReadFile(),
 			defSubmitResult(),
@@ -1114,7 +1113,6 @@ func TestSession_ContextManager_EmitsEvents(t *testing.T) {
 		id:            "openai",
 		model:         "gpt-5.2",
 		contextWindow: 500, // Tiny window to force compaction.
-		basePrompt:    "Agent.",
 		toolDefs: []llm.ToolDefinition{
 			defReadFile(),
 			defSubmitResult(),

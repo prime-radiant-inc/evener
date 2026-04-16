@@ -132,7 +132,7 @@ func TestMCPIntegration_ToolCallThroughSession(t *testing.T) {
 	sess.mcpTools = mgr.ToolDefinitions()
 	// Rebuild caches to pick up the MCP tools added after session creation.
 	sess.rebuildToolDefsCache()
-	sess.rebuildPromptCache()
+	sess.refreshSystemPromptCache()
 
 	tctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

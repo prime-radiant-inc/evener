@@ -119,73 +119,26 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	}
 	subCfg.AgentName = agentName // ensure subagent gets its own tasks, not parent's
 
-	// Compose subagent system prompt via template resolver.
-	// Always rescan the workspace at subagent spawn time so the subagent sees
-	// the current state of the directory, including any files the implementer
-	// (or previous subagents) produced. Reusing the parent coordinator's
-	// snapshot would show the subagent a stale pre-work baseline, causing the
-	// verifier to treat implementer-produced artifacts as "new files I created"
-	// during its Restore step.
-	subWorkDir := s.envInfo.WorkingDir
-	if wd := strings.TrimSpace(workingDir); wd != "" {
-		subWorkDir = wd
+	if agent != nil && strings.TrimSpace(agent.SystemPrompt) != "" && agent.PluginName != "builtin" {
+		subCfg.RolePromptOverride = rolePrompt
 	}
-	subWorkspace := ScanWorkspace(subWorkDir)
-	subData := PromptData{
-		Provider:        s.profile.ID(),
-		Agent:           agentName,
-		ResultToolName:  s.resultToolName(),
-		WorkingDir:      subWorkDir,
-		IsGitRepo:       s.envInfo.IsGitRepo,
-		GitBranch:       s.envInfo.GitBranch,
-		Platform:        s.envInfo.Platform,
-		OSVersion:       s.envInfo.OSVersion,
-		Today:           s.envInfo.Today,
-		Model:           subProfile.Model(),
-		KnowledgeCutoff: s.envInfo.KnowledgeCutoff,
-		WorkspaceTree:   subWorkspace.Tree,
-		BuildInfo:       subWorkspace.BuildInfo,
-		ProfileTools:    toolEntriesFromDefinitions(subProfile.ToolDefinitions()),
-	}
-
-	subResolver := &SectionResolver{
-		provider: s.profile.ID(),
-		agent:    agentName,
-		agentFS:  embeddedAgents,
-		sources: []SectionSource{
-			embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"},
-		},
-	}
-
-	composed, _, err := subResolver.RenderEmbedded(
-		embeddedPrompts, "prompts/templates/", "subagent", subData,
-	)
-	if err != nil {
-		// Fallback: use role prompt directly if template rendering fails.
-		composed = rolePrompt
-	} else if agent != nil && agent.PluginName != "builtin" && strings.TrimSpace(agent.SystemPrompt) != "" {
-		// Plugin agents (not built-in) may have custom SystemPrompts that
-		// differ from any embedded agent file. The template's role section
-		// won't find them, so append here. Built-in agents already have
-		// their content resolved via the role section from the embedded FS.
-		composed += "\n\n" + rolePrompt
-	}
-
-	// Inject skill content referenced by the plugin agent (after template rendering).
 	if agent != nil && len(agent.Skills) > 0 {
 		for _, skillName := range agent.Skills {
 			body, err := ResolveSkillContent(s.skills, skillName)
 			if err != nil {
 				continue
 			}
-			if body != "" {
-				composed += "\n\n" + body
+			if strings.TrimSpace(body) != "" {
+				subCfg.ActivatedSkillBodies = append(subCfg.ActivatedSkillBodies, body)
 			}
 		}
 	}
-
-	subCfg.BasePromptOverride = composed
-	subProfile = subProfile.WithBasePrompt(composed)
+	if agent != nil && len(agent.Tools) > 0 {
+		subCfg.AllowedToolNames = append([]string(nil), agent.Tools...)
+		subCfg.AllowedToolNames = append(subCfg.AllowedToolNames, "task_list")
+	} else {
+		subCfg.DeniedToolNames = []string{"spawn_agent", "resume_agent", "wait", "close_agent"}
+	}
 
 	subEnv := s.env
 	if workingDir = strings.TrimSpace(workingDir); workingDir != "" {
@@ -200,26 +153,6 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	if err != nil {
 		return "", err
 	}
-
-	// Restrict subagent tools.
-	if agent != nil && len(agent.Tools) > 0 {
-		// Plugin agents get their explicit allow list.
-		allowed := make(map[string]bool, len(agent.Tools))
-		for _, t := range agent.Tools {
-			allowed[t] = true
-		}
-		// All subagents get task_list for progress tracking.
-		allowed["task_list"] = true
-		subSess.reg.RestrictKeepingResultTool(allowed, subSess.resultToolName())
-	} else {
-		// Default subagents cannot delegate further — remove delegation tools.
-		subSess.reg.Remove("spawn_agent")
-		subSess.reg.Remove("resume_agent")
-		subSess.reg.Remove("wait")
-		subSess.reg.Remove("close_agent")
-	}
-	// Rebuild cached tool definitions after restriction/removal.
-	subSess.rebuildToolDefsCache()
 
 	// Populate default tasks from agent definition + parent tasks.
 	if agent != nil && len(agent.Tasks) > 0 {

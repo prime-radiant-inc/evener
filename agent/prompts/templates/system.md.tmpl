@@ -1,8 +1,9 @@
+{{ if .BaseInstructionsOverride }}
+{{ .BaseInstructionsOverride }}
+{{ else }}
 {{ section "identity" }}
 
 {{ section "capabilities" }}
-
-{{ section "tools" }}
 
 {{ section "transcripts" }}
 
@@ -13,6 +14,9 @@
 {{ section "task-tracking" }}
 
 {{ section "communicate" }}
+{{ end }}
+
+{{ section "tools" }}
 
 {{ section "environment" }}
 
@@ -21,6 +25,8 @@
 {{ section "workspace" }}
 
 {{ section "role" }}
+
+{{ section "activated-skills" }}
 
 {{ section "skills" }}
 

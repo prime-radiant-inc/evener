@@ -12,6 +12,12 @@ import (
 	"primeradiant.com/serf/frontmatter"
 )
 
+// PromptSource describes one component of the composed system prompt.
+type PromptSource struct {
+	Label string
+	Size  int
+}
+
 // SectionSource provides read access to a directory of section files.
 type SectionSource interface {
 	ReadFile(name string) ([]byte, bool)
@@ -106,6 +112,13 @@ func (r *SectionResolver) Section(name string, data PromptData) string {
 // a role.agent-{agent}.md override, then falls back to the embedded agent
 // definition (with YAML frontmatter stripped).
 func (r *SectionResolver) resolveRole(data PromptData) string {
+	if body := strings.TrimSpace(data.RolePromptOverride); body != "" {
+		r.tracked = append(r.tracked, PromptSource{
+			Label: "config:role_prompt_override",
+			Size:  len(body),
+		})
+		return body
+	}
 	if r.agent == "" {
 		return ""
 	}

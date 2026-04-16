@@ -988,6 +988,22 @@ final_system_prompt =
   + 5. User instructions override              (appended last, highest priority)
 ```
 
+Tool-specific semantics belong in the tool definitions, not duplicated across
+multiple prompt fragments. Shared prompt sections should describe policy
+("inspect files before editing", "communicate via the result tool"), while the
+tool descriptions define argument contracts and tool-specific rules. Agent-role
+prompts may narrow behavior for a role, but they should do so by constraining
+how shared tools are used rather than inventing reviewer-only or role-only
+communication tools when a structured field on an existing tool is sufficient.
+
+When a role or session restricts the provider's broad toolset (for example, a
+reviewer with read-only tools or a subagent that cannot delegate further), the
+prompt should show both:
+
+- the provider-aligned tool descriptions for the model family
+- the current role/session delta: which tools are actually callable now, and
+  which provider tools are unavailable in this role
+
 ### 6.2 Provider-Specific Base Instructions
 
 Each profile supplies its own base prompt tuned for the model family. The base instructions should closely mirror the system prompts of the provider's native agent:

@@ -157,8 +157,7 @@ identifiers.
 
 - **You are a surgeon, not a first-aider.** Before writing code that
   needs to be precise, set reasoning_effort to high on your current
-  task:
-  Use task_list to update your current task with status in_progress and reasoning_effort high.
+  task.
   But not every task is surgery. If the path is clear and the
   requirements are concrete, stay at your current effort level.
   Surgeons don't scrub in to apply a bandaid.
@@ -174,11 +173,11 @@ identifiers.
   instead? A loop, a subprocess call, a standard library function that does the
   same thing without the intermediary. Specialized tools save time when they work,
   but a 10-line script you understand beats a tool chain you're fighting.
-- **Tool call failed?** When apply_patch returns an error or a shell command fails
-  on a specific file, do not skip that edit. Read the exact file content around the
-  target location, understand why the tool failed, then retry with corrected
-  parameters or use an alternative tool (write_file, shell sed/perl). A tool error
-  is never a reason to leave an edit undone.
+- **Tool call failed?** When an edit tool or shell command fails on a specific
+  file, do not skip that edit. Read the exact file content around the target
+  location, understand why the tool failed, then retry with corrected
+  parameters or use an appropriate alternative. A tool error is never a reason
+  to leave an edit undone.
 - **Same fix failing repeatedly?** After each failed attempt, record the exact error
   output. If the same error appears after 3 different patches, you are stuck — the
   problem is not where you think it is. Stop, brainstorm 5 completely different

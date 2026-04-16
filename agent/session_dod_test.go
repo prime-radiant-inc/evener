@@ -645,23 +645,19 @@ func (p tinyProfile) ToolDefinitions() []llm.ToolDefinition { return nil }
 func (p tinyProfile) SupportsParallelToolCalls() bool       { return false }
 func (p tinyProfile) ContextWindowSize() int                { return p.cw }
 func (p tinyProfile) ProjectDocFiles() []string             { return nil }
-func (p tinyProfile) BuildSystemPrompt(EnvironmentInfo, []ProjectDoc, []SkillMeta, string) string {
-	return ""
-}
-func (p tinyProfile) CheapModel() string { return p.mod }
+func (p tinyProfile) CheapModel() string                    { return p.mod }
 func (p tinyProfile) WithModel(model string) ProviderProfile {
 	return tinyProfile{id: p.id, cw: p.cw, mod: model}
 }
-func (p tinyProfile) WithBasePrompt(string) ProviderProfile { return p }
-func (p tinyProfile) ProviderOptions() map[string]any       { return p.opts }
-func (p tinyProfile) SupportsReasoning() bool               { return false }
-func (p tinyProfile) ReasoningEffortLevels() []string       { return nil }
-func (p tinyProfile) SupportsStreaming() bool               { return false }
-func (p tinyProfile) SupportsWebSearch() bool               { return false }
-func (p tinyProfile) DefaultCommandTimeoutMS() int          { return 10_000 }
-func (p tinyProfile) KnowledgeCutoff() string               { return "2025-01-01" }
-func (p tinyProfile) ToolNameMap() map[string]string        { return nil }
-func (p tinyProfile) NewToolRegistry() *ToolRegistry        { return NewToolRegistry() }
+func (p tinyProfile) ProviderOptions() map[string]any { return p.opts }
+func (p tinyProfile) SupportsReasoning() bool         { return false }
+func (p tinyProfile) ReasoningEffortLevels() []string { return nil }
+func (p tinyProfile) SupportsStreaming() bool         { return false }
+func (p tinyProfile) SupportsWebSearch() bool         { return false }
+func (p tinyProfile) DefaultCommandTimeoutMS() int    { return 10_000 }
+func (p tinyProfile) KnowledgeCutoff() string         { return "2025-01-01" }
+func (p tinyProfile) ToolNameMap() map[string]string  { return nil }
+func (p tinyProfile) NewToolRegistry() *ToolRegistry  { return NewToolRegistry() }
 
 func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) {
 	dir := t.TempDir()
@@ -3813,15 +3809,12 @@ func TestSession_Subagent_DefaultGetsSubagentInstructions(t *testing.T) {
 		t.Fatalf("missing subagent session for %q", agentID)
 	}
 
-	// Default subagent should have BasePromptOverride set (not UserInstructionOverride).
-	if sub.sess.cfg.BasePromptOverride == "" {
-		t.Fatal("default subagent should have BasePromptOverride set, got empty string")
+	if sub.sess.cachedSystemPrompt == "" {
+		t.Fatal("default subagent should have a rendered system prompt")
 	}
 
-	// The override should instruct the subagent to work directly.
-	override := sub.sess.cfg.BasePromptOverride
-	if !strings.Contains(override, "communicate") {
-		t.Errorf("subagent base prompt should mention submit_result, got: %s", override)
+	if !strings.Contains(sub.sess.cachedSystemPrompt, "communicate") {
+		t.Errorf("subagent prompt should mention communicate, got: %s", sub.sess.cachedSystemPrompt)
 	}
 
 	// Wait for completion so goroutine doesn't leak.
@@ -3869,8 +3862,8 @@ func TestSession_SetsGenerousRequestTimeout(t *testing.T) {
 
 func TestSession_Subagent_DoesNotGetParentDelegationPrompt(t *testing.T) {
 	// Default subagents should NOT see the parent's "spawn a research subagent"
-	// instructions. Their system prompt should use BasePromptOverride to replace
-	// the parent's base.md entirely with focused subagent instructions.
+	// instructions. Their rendered system prompt should contain only focused
+	// subagent instructions.
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{
@@ -3909,22 +3902,20 @@ func TestSession_Subagent_DoesNotGetParentDelegationPrompt(t *testing.T) {
 		t.Fatalf("missing subagent session for %q", agentID)
 	}
 
-	// The subagent should have BasePromptOverride set.
-	if sub.sess.cfg.BasePromptOverride == "" {
-		t.Fatal("default subagent should have BasePromptOverride set, not use parent's base.md")
+	if sub.sess.cachedSystemPrompt == "" {
+		t.Fatal("default subagent should have a rendered system prompt")
 	}
 
-	// The BasePromptOverride should not contain the coordinator's delegation instructions.
-	if strings.Contains(sub.sess.cfg.BasePromptOverride, "You are a coordinator") {
-		t.Error("subagent base prompt should not contain the coordinator persona")
+	if strings.Contains(sub.sess.cachedSystemPrompt, "You are a coordinator") {
+		t.Error("subagent prompt should not contain the coordinator persona")
 	}
-	if strings.Contains(sub.sess.cfg.BasePromptOverride, "### CRITICAL: You must spawn an implementer") {
-		t.Error("subagent base prompt should not contain coordinator delegation instructions")
+	if strings.Contains(sub.sess.cachedSystemPrompt, "### CRITICAL: You must spawn an implementer") {
+		t.Error("subagent prompt should not contain coordinator delegation instructions")
 	}
 
 	// It should contain submit_result guidance.
-	if !strings.Contains(sub.sess.cfg.BasePromptOverride, "communicate") {
-		t.Error("subagent base prompt should mention submit_result")
+	if !strings.Contains(sub.sess.cachedSystemPrompt, "communicate") {
+		t.Error("subagent prompt should mention communicate")
 	}
 
 	// Wait for the subagent to complete so we can check the adapter's recorded requests.
