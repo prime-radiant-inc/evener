@@ -388,36 +388,30 @@ func findToolCallArgs(history []Turn, toolCallID string) json.RawMessage {
 	return nil
 }
 
-func parseCommunicateArgs(args json.RawMessage) (kind string, message string) {
+func parseCommunicateArgs(args json.RawMessage) (awaitReply bool, message string) {
 	var payload struct {
-		Kind    string `json:"kind"`
-		Message string `json:"message"`
-		Output  *struct {
+		Kind       string `json:"kind"`
+		Message    string `json:"message"`
+		AwaitReply *bool  `json:"await_reply"`
+		Output     *struct {
 			Message string `json:"message"`
 		} `json:"output"`
 	}
 	if len(args) == 0 || json.Unmarshal(args, &payload) != nil {
-		return "", ""
+		return false, ""
 	}
-	kind = strings.TrimSpace(payload.Kind)
 	message = strings.TrimSpace(payload.Message)
 	if message == "" && payload.Output != nil {
 		message = strings.TrimSpace(payload.Output.Message)
 	}
-	if kind == "" && message != "" {
-		// Legacy communicate calls without a kind, plus old submit_result calls,
-		// were implicitly final.
-		kind = "final"
+	if payload.AwaitReply != nil {
+		return *payload.AwaitReply, message
 	}
-	return kind, message
+	return legacyAwaitReply(payload.Kind), message
 }
 
-func communicateKindAndMessageFromHistory(history []Turn, toolCallID string) (kind string, message string) {
+func communicateKindAndMessageFromHistory(history []Turn, toolCallID string) (awaitReply bool, message string) {
 	return parseCommunicateArgs(findToolCallArgs(history, toolCallID))
-}
-
-func isFinalCommunicateKind(kind string) bool {
-	return strings.EqualFold(strings.TrimSpace(kind), "final")
 }
 
 // summarizeToolResult generates a one-line summary for a tool result.
@@ -608,14 +602,14 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, result
 			userMessages = append(userMessages, text)
 
 		case TurnTool, TurnToolResults:
-			// Extract communicate(kind="final") results (agent's final responses to user).
+			// Extract non-await communicate results (agent responses to the user).
 			for _, p := range t.Message.Content {
 				if p.Kind != llm.ContentToolResult || p.ToolResult == nil {
 					continue
 				}
 				if p.ToolResult.Name == resultToolName {
-					kind, msg := communicateKindAndMessageFromHistory(history[:i+1], p.ToolResult.ToolCallID)
-					if isFinalCommunicateKind(kind) && msg != "" {
+					awaitReply, msg := communicateKindAndMessageFromHistory(history[:i+1], p.ToolResult.ToolCallID)
+					if !awaitReply && msg != "" {
 						agentResponses = append(agentResponses, msg)
 					}
 					continue
@@ -887,21 +881,20 @@ func (cm *ContextManager) summarizeWithLLM(ctx context.Context, history []Turn, 
 			b.WriteString("Previous compaction: " + truncText(t.Message.Text(), 1000) + "\n")
 		case TurnAssistant:
 			// Extract communicate calls so the summarizer sees how the agent
-			// talked to the user, while only treating kind="final" as a submit.
+			// talked to the user, while still distinguishing questions from
+			// non-await replies.
 			text := t.Message.Text()
 			if text != "" {
 				b.WriteString("Assistant: " + truncText(text, 500) + "\n")
 			}
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolCall && p.ToolCall != nil && p.ToolCall.Name == cm.resultToolName() {
-					kind, msg := parseCommunicateArgs(p.ToolCall.Arguments)
+					awaitReply, msg := parseCommunicateArgs(p.ToolCall.Arguments)
 					if msg == "" {
 						continue
 					}
 					switch {
-					case isFinalCommunicateKind(kind):
-						b.WriteString(fmt.Sprintf("Agent Final: %s\n", msg))
-					case strings.EqualFold(kind, "ask"):
+					case awaitReply:
 						b.WriteString(fmt.Sprintf("Agent Question: %s\n", msg))
 					default:
 						b.WriteString(fmt.Sprintf("Agent Message: %s\n", msg))

@@ -456,19 +456,24 @@ func toResponsesTools(tools []llm.ToolDefinition) []map[string]any {
 		if params == nil {
 			params = map[string]any{"type": "object", "properties": map[string]any{}}
 		}
-		// OpenAI strict mode requires a fully-specified JSON Schema:
-		// - object schemas must set additionalProperties=false
-		// - required must include every key in properties (even for "optional" fields)
-		// See API validation errors like:
-		// "Invalid schema for function 'read_file': ... 'required' ... Missing 'limit'."
-		params = strictifyJSONSchema(params)
+		strict := true
+		if t.Strict != nil {
+			strict = *t.Strict
+		}
+		if strict {
+			// OpenAI strict mode requires a fully-specified JSON Schema:
+			// - object schemas must set additionalProperties=false
+			// - required must include every key in properties (even for "optional" fields)
+			// See API validation errors like:
+			// "Invalid schema for function 'read_file': ... 'required' ... Missing 'limit'."
+			params = strictifyJSONSchema(params)
+		}
 		out = append(out, map[string]any{
 			"type":        "function",
 			"name":        t.Name,
 			"description": t.Description,
 			"parameters":  params,
-			// Structured Outputs strict-by-default.
-			"strict": true,
+			"strict":      strict,
 		})
 	}
 	return out

@@ -112,6 +112,26 @@ func TestBridge_ClosesOnSessionEnd(t *testing.T) {
 	}
 }
 
+func TestBridge_UsesSessionEndStateWhenProvided(t *testing.T) {
+	srv := NewServer(ServerConfig{RingBufferSize: 100})
+	events := make(chan agent.SessionEvent, 10)
+
+	go Bridge(srv, events)
+
+	events <- agent.SessionEvent{
+		Kind:      agent.EventSessionEnd,
+		SessionID: "s1",
+		Data:      agent.SessionEndData{Reason: "input_complete", State: "IDLE"},
+	}
+	close(events)
+	time.Sleep(50 * time.Millisecond)
+
+	status := srv.GetStatus()
+	if status.State != "IDLE" {
+		t.Errorf("state: got %q, want IDLE", status.State)
+	}
+}
+
 func TestBridge_SessionStartEnrichesSSEData(t *testing.T) {
 	srv := NewServer(ServerConfig{RingBufferSize: 100})
 	events := make(chan agent.SessionEvent, 10)

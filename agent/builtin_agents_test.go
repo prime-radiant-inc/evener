@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -303,6 +304,102 @@ func TestSpawnAgent_NonBlockingMode(t *testing.T) {
 	}
 }
 
+type releaseAdapter struct {
+	name    string
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (a *releaseAdapter) Name() string { return a.name }
+
+func (a *releaseAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	a.once.Do(func() { close(a.started) })
+	select {
+	case <-a.release:
+		resp := finalResponse("child done")
+		resp.Provider = a.name
+		if resp.Model == "" {
+			resp.Model = req.Model
+		}
+		return resp, nil
+	case <-ctx.Done():
+		return llm.Response{}, ctx.Err()
+	}
+}
+
+func (a *releaseAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	_ = ctx
+	_ = req
+	return nil, fmt.Errorf("stream not implemented")
+}
+
+func TestSpawnAgent_NonBlockingSubagentSurvivesParentContextCancellation(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	adapter := &releaseAdapter{
+		name:    "openai",
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	c.Register(adapter)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	res := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"test task"}`),
+	})
+	if res.IsError {
+		t.Fatalf("non-blocking spawn error: %s", res.Output)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(res.Output), &parsed); err != nil {
+		t.Fatalf("parsing result: %v", err)
+	}
+	agentID := fmt.Sprint(parsed["agent_id"])
+	if agentID == "" {
+		t.Fatal("spawn_agent did not return agent_id")
+	}
+
+	select {
+	case <-adapter.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("subagent did not start")
+	}
+
+	cancel()
+	close(adapter.release)
+
+	waitRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c2",
+		Name:      "wait",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":2000}`, agentID)),
+	})
+	if waitRes.IsError {
+		t.Fatalf("wait error: %s", waitRes.Output)
+	}
+
+	var result SubAgentResult
+	if err := json.Unmarshal([]byte(waitRes.Output), &result); err != nil {
+		t.Fatalf("unmarshal SubAgentResult: %v (out=%q)", err, waitRes.Output)
+	}
+	if !result.Success {
+		t.Fatalf("expected success=true, got false (out=%q)", result.Output)
+	}
+	if result.Output != "child done" {
+		t.Fatalf("expected output=%q, got %q", "child done", result.Output)
+	}
+}
+
 func TestSpawnAgent_BlockingWithExplorerAgent(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -442,6 +539,9 @@ func TestSpawnAgent_DefaultSubagentGetsComposedPrompt(t *testing.T) {
 	// Default subagent should get core + subagent persona.
 	if !strings.Contains(subagentSystemPrompt, "communicate") {
 		t.Error("default subagent prompt should contain communicate guidance from core")
+	}
+	if !strings.Contains(subagentSystemPrompt, "Delegated task limits") {
+		t.Error("default subagent prompt should contain shared delegated-task guidance")
 	}
 	if !strings.Contains(subagentSystemPrompt, "focused subagent") {
 		t.Error("default subagent prompt should contain subagent persona instructions")

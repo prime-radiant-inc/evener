@@ -172,6 +172,11 @@ type ToolDefinition struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
 	Parameters  map[string]any `json:"parameters,omitempty"` // JSON Schema (root object)
+	// Strict controls provider-side strict schema enforcement when supported.
+	// Nil means use the adapter default. For OpenAI Responses, explicit false
+	// opts the tool out of strict mode instead of allowing the API to
+	// normalize the schema into strict mode automatically.
+	Strict *bool `json:"strict,omitempty"`
 }
 
 type ToolChoice struct {

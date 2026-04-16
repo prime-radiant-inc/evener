@@ -178,3 +178,19 @@ func TestStreamSSE_ConnectionRefused(t *testing.T) {
 		t.Error("expected non-nil error")
 	}
 }
+
+func TestParseSSEStream_LargeDataLine(t *testing.T) {
+	large := strings.Repeat("x", 128*1024)
+	input := "id: 1\nevent: TOOL_CALL_END\ndata: {\"output\":\"" + large + "\"}\n\n"
+
+	events, err := parseSSEStream(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if !strings.Contains(events[0].Data, large) {
+		t.Fatal("large data payload was not preserved")
+	}
+}

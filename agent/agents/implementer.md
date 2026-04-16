@@ -1,6 +1,6 @@
 ---
 name: implementer
-description: "Code implementation agent."
+description: "Code implementation agent. Works locally and does not delegate."
 model: inherit
 color: green
 tools: [glob, grep, read_file, write_file, apply_patch, shell, task_list, web_fetch]

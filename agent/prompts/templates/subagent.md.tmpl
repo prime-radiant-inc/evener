@@ -7,6 +7,15 @@
 
 {{ section "workflow" }}
 
+## Delegated task limits
+
+If a delegated task explicitly requires tools or capabilities unavailable in this
+session, do not thrash or pretend to perform the missing capability.
+
+Report the mismatch promptly through `{{ .ResultToolName }}`. State what capability
+is missing and, when it is obvious from the task, what kind of agent or tool would
+be better suited.
+
 {{ section "communicate" }}
 {{ end }}
 

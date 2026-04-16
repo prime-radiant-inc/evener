@@ -450,8 +450,9 @@ func TestSubagentTemplate_StructuralRegression(t *testing.T) {
 		t.Fatalf("render error: %v", err)
 	}
 
-	// Subagent should have identity, values, tools, workflow, communicate, role.
-	for _, marker := range []string{"## Identity", "## Values", "## Workflow", "## Submitting your work", "You implement code"} {
+	// Subagent should have identity, values, tools, workflow, shared delegated-task
+	// guidance, communicate, and role.
+	for _, marker := range []string{"## Identity", "## Values", "## Workflow", "## Delegated task limits", "## Submitting your work", "You implement code"} {
 		if !strings.Contains(result, marker) {
 			t.Errorf("subagent prompt missing: %q", marker)
 		}

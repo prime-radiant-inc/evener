@@ -179,7 +179,11 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	s.subagents[sub.id] = sub
 	s.mu.Unlock()
 
-	go sub.run(ctx, task)
+	// Subagent execution must outlive the parent tool-call context.
+	// The parent may stop waiting, finish its input, or time out while the
+	// child keeps running. Child cancellation is handled by subSess.Close(),
+	// including when the parent session closes.
+	go sub.run(context.Background(), task)
 
 	s.emit(EventSubagentStart, SubagentStartData{
 		AgentID: sub.id,
@@ -212,7 +216,8 @@ func (s *Session) sendInput(ctx context.Context, agentID string, input string) (
 	sub.resultConsumed = false
 	sub.mu.Unlock()
 
-	go sub.run(ctx, input)
+	// Resume runs should also be independent of the caller's wait context.
+	go sub.run(context.Background(), input)
 	return "ok", nil
 }
 

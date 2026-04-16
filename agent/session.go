@@ -98,8 +98,8 @@ type SessionConfig struct {
 	ContextStrategy string `json:"context_strategy,omitempty"`
 
 	// EnableReviewerGate, when true, spawns a reviewer subagent at depth 0
-	// to validate the result before accepting it. At depth > 0 (subagents),
-	// communicate kind="final" always passes through directly.
+	// to validate structured deliverable output before accepting it. At depth > 0
+	// (subagents), communicate always passes through directly.
 	EnableReviewerGate bool `json:"enable_reviewer_gate,omitempty"`
 
 	// EnableAutoVerify, when true, makes the task store auto-generate verify
@@ -216,10 +216,11 @@ type Session struct {
 	followups     []string
 
 	// communicate tool state (transient, reset each processOneInput call)
-	communicated     bool
-	communicateKind  string
-	communicateText  string
-	communicateReply string
+	communicated          bool
+	communicateAwaitReply bool
+	communicateText       string
+	communicateReply      string
+	communicateOutput     string
 
 	// subagents
 	depth     int
@@ -341,6 +342,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		cfg:        cfg,
 		client:     client,
 		profile:    profile,
+		depth:      cfg.Depth,
 		env:        env,
 		stateDir:   cfg.StateDir,
 		state:      SessionIdle,
@@ -356,8 +358,6 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 	if err != nil {
 		return nil, err
 	}
-
-	s.depth = cfg.Depth
 
 	// Populate default tasks from agent definition (non-interactive/eval mode only).
 	agentName := cfg.AgentName
@@ -500,6 +500,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		cfg:            cfg,
 		client:         client,
 		profile:        profile,
+		depth:          cfg.Depth,
 		env:            env,
 		stateDir:       cfg.StateDir,
 		state:          SessionIdle,
@@ -645,6 +646,7 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 		cfg:            cfg,
 		client:         client,
 		profile:        profile,
+		depth:          cfg.Depth,
 		env:            env,
 		stateDir:       cfg.StateDir,
 		state:          SessionIdle,
@@ -1027,6 +1029,14 @@ func (s *Session) Communicated() bool {
 	return s.communicated
 }
 
+// CommunicateOutput returns the canonical structured output from the most recent
+// communicate call in the current ProcessInput invocation.
+func (s *Session) CommunicateOutput() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.communicateOutput
+}
+
 // ResultDelivered is kept as an alias for older callers.
 func (s *Session) ResultDelivered() bool {
 	return s.Communicated()
@@ -1184,11 +1194,15 @@ func (s *Session) spawnReviewer(ctx context.Context, claimedResult string) (revi
 	for attempt := 0; attempt < maxReviewerAttempts; attempt++ {
 		prompt := reviewPrompt
 		if attempt > 0 {
-			prompt = "You must call `communicate` with kind=\"final\" and a structured output. Put your full review report in output.message, set output.decision to either \"approve\" or \"reject\", include any machine-readable details in output.data, and leave the top-level message field empty."
+			prompt = "You must call `communicate` with `message`, `await_reply=false`, and structured `output`. Put your full review report in both `message` and `output.message`, set `output.decision` to either \"approve\" or \"reject\", include any machine-readable details in `output.data`, and list any artifacts in `output.artifacts`."
 		}
 		out, err := subSess.ProcessInput(ctx, prompt)
 		if err != nil {
 			return reviewVerdict{Pass: true}, fmt.Errorf("reviewer ProcessInput: %w", err)
+		}
+		if parsed, ok := reviewerVerdictFromText(subSess.CommunicateOutput()); ok {
+			verdict = parsed
+			break
 		}
 		if parsed, ok := reviewerVerdictFromText(out); ok {
 			verdict = parsed
@@ -1495,9 +1509,10 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 	}
 	s.state = SessionProcessing
 	s.communicated = false
-	s.communicateKind = ""
+	s.communicateAwaitReply = false
 	s.communicateText = ""
 	s.communicateReply = ""
+	s.communicateOutput = ""
 	s.mu.Unlock()
 
 	select {
@@ -2132,14 +2147,14 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 		// communicate sets the flag; exit the loop with the communicated message.
 		s.mu.Lock()
 		delivered := s.communicated
-		kind := s.communicateKind
+		awaitReply := s.communicateAwaitReply
 		text := s.communicateReply
 		s.mu.Unlock()
 		if delivered {
 			// Stop hooks
 			if s.hookRunner != nil {
 				hi := s.hookInput(HookStop)
-				hi.Reason = "communicate." + kind
+				hi.Reason = "communicate." + communicateMode(awaitReply)
 				stopResult := s.hookRunner.RunStop(ctx, hi)
 				for _, msg := range stopResult.SystemMessages {
 					s.Steer(msg)
@@ -2150,7 +2165,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 				}
 			}
 			s.mu.Lock()
-			if kind == communicateKindAsk {
+			if awaitReply {
 				s.state = SessionAwaitingInput
 			} else {
 				s.state = SessionIdle
@@ -2396,7 +2411,10 @@ func (s *Session) buildPromptData() PromptData {
 	// Profile tools
 	profileDefs := s.profile.ToolDefinitions()
 	data.ProfileTools = toolEntriesFromDefinitions(profileDefs)
-	actualDefs := s.reg.Definitions()
+	// Use the same provider-visible tool definitions that are sent to the model.
+	// Prompting with canonical names while the API receives mapped names such as
+	// exec_command/grep_files/list_dir is contradictory and confuses tool use.
+	actualDefs := append([]llm.ToolDefinition(nil), s.cachedToolDefs...)
 	data.CallableToolNames = toolNamesFromDefinitions(actualDefs)
 	data.UnavailableProfileToolNames = unavailableToolNames(profileDefs, actualDefs)
 
@@ -2840,7 +2858,9 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 					b.WriteString("\n")
 				}
 			}
-			if res.TimedOut {
+			if errors.Is(err, context.Canceled) && !res.TimedOut {
+				b.WriteString("[ERROR: Command was canceled before completion. Partial output is shown above.]\n")
+			} else if res.TimedOut {
 				b.WriteString(fmt.Sprintf("[ERROR: Command timed out after %dms. Partial output is shown above.\nYou can retry with a longer timeout by setting the timeout_ms parameter.]\n", timeout))
 			}
 			b.WriteString(fmt.Sprintf("exit_code=%d duration_ms=%d timed_out=%t\n", res.ExitCode, res.DurationMS, res.TimedOut))
@@ -3269,47 +3289,41 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			_ = env
-			kind := strings.TrimSpace(fmt.Sprint(args["kind"]))
 			message := ""
 			if v, ok := args["message"]; ok {
-				message = fmt.Sprint(v)
+				message = strings.TrimSpace(fmt.Sprint(v))
 			}
-			output, hasOutput := args["output"]
-
-			switch kind {
-			case communicateKindMessage, communicateKindAsk, communicateKindFinal:
-			default:
-				return nil, fmt.Errorf("communicate requires kind to be one of %q, %q, or %q", communicateKindMessage, communicateKindAsk, communicateKindFinal)
+			awaitReply := false
+			if v, ok := args["await_reply"].(bool); ok {
+				awaitReply = v
+			} else {
+				awaitReply = legacyAwaitReply(args["kind"])
 			}
 
+			originalOutput := normalizeNodeOutput(args["output"])
+			if message == "" && strings.TrimSpace(originalOutput.Message) != "" {
+				message = strings.TrimSpace(originalOutput.Message)
+			}
+			if message == "" {
+				return nil, fmt.Errorf("communicate requires message or output.message")
+			}
+			explicitStructuredOutput := hasMeaningfulNodeOutput(originalOutput)
+			effectiveOutput := originalOutput
+			if strings.TrimSpace(effectiveOutput.Message) == "" {
+				effectiveOutput.Message = message
+			}
 			resultText := message
-			if kind != communicateKindFinal && hasOutput && output != nil {
-				return nil, fmt.Errorf("communicate output is only allowed with kind=%q", communicateKindFinal)
-			}
-			if kind == communicateKindFinal && (!hasOutput || output == nil) && strings.TrimSpace(message) == "" {
-				return nil, fmt.Errorf("communicate kind=%q requires message or output", communicateKindFinal)
-			}
-			if kind != communicateKindFinal && strings.TrimSpace(message) == "" {
-				return nil, fmt.Errorf("communicate kind=%q requires message", kind)
-			}
-
-			if kind == communicateKindFinal && hasOutput && output != nil {
-				// Only use canonicalized output when there's no top-level message.
-				// When both message and output are provided, message is the detailed
-				// text intended for the parent; output is structured metadata.
-				if strings.TrimSpace(message) == "" {
-					resultText = canonicalNodeOutputText(output)
-					if outMsg := submitResultOutputMessage(output); outMsg != "" {
-						message = outMsg
-					}
-				}
+			structuredText := canonicalNodeOutputText(effectiveOutput)
+			if explicitStructuredOutput {
+				resultText = structuredText
 			}
 
 			// Reviewer gate: at depth 0 (root session) with EnableReviewerGate,
-			// spawn a reviewer subagent to validate the work before accepting.
-			// At depth > 0 (subagent), pass through directly to prevent recursion.
-			if kind == communicateKindFinal && s.cfg.EnableReviewerGate && s.depth == 0 {
-				verdict, err := s.spawnReviewer(ctx, resultText)
+			// spawn a reviewer subagent to validate the communicate payload
+			// before accepting it. At depth > 0 (subagent), pass through
+			// directly to prevent recursion.
+			if !awaitReply && s.cfg.EnableReviewerGate && s.depth == 0 {
+				verdict, err := s.spawnReviewer(ctx, structuredText)
 				if err != nil {
 					// Fail-open: reviewer error should not block result delivery.
 					_ = err // reviewer error logged via event system if needed
@@ -3333,8 +3347,9 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			}
 
 			s.emit(EventCommunicate, CommunicateData{
-				Kind:    kind,
-				Message: message,
+				Kind:       communicateMode(awaitReply),
+				AwaitReply: awaitReply,
+				Message:    message,
 			})
 
 			// Drain steering queue into the inbox.
@@ -3342,15 +3357,17 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 
 			s.mu.Lock()
 			s.communicated = true
-			s.communicateKind = kind
+			s.communicateAwaitReply = awaitReply
 			s.communicateText = message
 			s.communicateReply = resultText
+			s.communicateOutput = structuredText
 			s.mu.Unlock()
 
 			resp := map[string]any{
-				"accepted": true,
-				"kind":     kind,
-				"inbox":    inbox,
+				"accepted":    true,
+				"await_reply": awaitReply,
+				"kind":        communicateMode(awaitReply),
+				"inbox":       inbox,
 			}
 			b, _ := json.Marshal(resp)
 			return string(b), nil
@@ -3391,23 +3408,53 @@ type nodeOutput struct {
 	Artifacts []string       `json:"artifacts"`
 }
 
-func canonicalNodeOutputText(raw any) string {
-	m, ok := raw.(map[string]any)
-	if !ok {
-		return "{}"
+func communicateMode(awaitReply bool) string {
+	if awaitReply {
+		return communicateKindAsk
 	}
+	return communicateKindFinal
+}
 
-	var decision string
-	if d, ok := m["decision"].(string); ok {
-		decision = d
+func legacyAwaitReply(raw any) bool {
+	switch strings.TrimSpace(fmt.Sprint(raw)) {
+	case communicateKindAsk:
+		return true
+	default:
+		return false
 	}
+}
+
+func normalizeNodeOutput(raw any) nodeOutput {
 	out := nodeOutput{
-		Decision:  decision,
-		Message:   fmt.Sprint(m["message"]),
+		Message:   "",
 		Data:      map[string]any{},
 		Artifacts: []string{},
 	}
+	if raw == nil {
+		return out
+	}
+	if typed, ok := raw.(nodeOutput); ok {
+		if typed.Data == nil {
+			typed.Data = map[string]any{}
+		}
+		if typed.Artifacts == nil {
+			typed.Artifacts = []string{}
+		}
+		return typed
+	}
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return out
+	}
 
+	if d, ok := m["decision"].(string); ok {
+		out.Decision = d
+	}
+	if msg, ok := m["message"].(string); ok {
+		out.Message = msg
+	} else if v, ok := m["message"]; ok && v != nil {
+		out.Message = fmt.Sprint(v)
+	}
 	if data, ok := m["data"].(map[string]any); ok {
 		out.Data = data
 	}
@@ -3422,7 +3469,18 @@ func canonicalNodeOutputText(raw any) string {
 			}
 		}
 	}
+	return out
+}
 
+func hasMeaningfulNodeOutput(out nodeOutput) bool {
+	return strings.TrimSpace(out.Decision) != "" ||
+		strings.TrimSpace(out.Message) != "" ||
+		len(out.Data) > 0 ||
+		len(out.Artifacts) > 0
+}
+
+func canonicalNodeOutputText(raw any) string {
+	out := normalizeNodeOutput(raw)
 	b, err := json.Marshal(out)
 	if err != nil {
 		return "{}"
@@ -3431,12 +3489,7 @@ func canonicalNodeOutputText(raw any) string {
 }
 
 func submitResultOutputMessage(raw any) string {
-	m, ok := raw.(map[string]any)
-	if !ok {
-		return ""
-	}
-	msg, _ := m["message"].(string)
-	return msg
+	return normalizeNodeOutput(raw).Message
 }
 
 func reviewerVerdictFromText(text string) (reviewVerdict, bool) {

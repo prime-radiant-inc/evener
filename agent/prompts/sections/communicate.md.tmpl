@@ -2,6 +2,8 @@
 
 ALWAYS use {{ .ResultToolName }} when sending a message to the user. Never emit a plain response.
 
-The {{ .ResultToolName }} tool description defines the message kinds and any structured final-output contract.
+Set `await_reply=true` only when you need user input before you can continue. Otherwise set `await_reply=false`.
+
+Always include the structured `output` envelope. For ordinary conversational replies, leave `output.message` empty, `output.data` empty, and `output.artifacts` empty. When handing back completed work or machine-readable results, populate `output` with the evidence and structured data the caller needs.
 
 Every response includes an inbox with pending user messages. Read and act on them.

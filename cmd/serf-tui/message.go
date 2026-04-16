@@ -268,18 +268,27 @@ func historyToMessages(turns []agent.Turn) []chatMessage {
 // extractCommunicate pulls the kind and message fields from a communicate tool call.
 func extractCommunicate(tc *llm.ToolCallData) (string, string) {
 	var args struct {
-		Kind    string `json:"kind"`
-		Message string `json:"message"`
-		Output  *struct {
+		Kind       string `json:"kind"`
+		AwaitReply *bool  `json:"await_reply"`
+		Message    string `json:"message"`
+		Output     *struct {
 			Message string `json:"message"`
 		} `json:"output"`
 	}
 	if err := json.Unmarshal(tc.Arguments, &args); err == nil {
+		kind := args.Kind
+		if kind == "" && args.AwaitReply != nil {
+			if *args.AwaitReply {
+				kind = "ask"
+			} else {
+				kind = "final"
+			}
+		}
 		if args.Message != "" {
-			return args.Kind, args.Message
+			return kind, args.Message
 		}
 		if args.Output != nil && args.Output.Message != "" {
-			return args.Kind, args.Output.Message
+			return kind, args.Output.Message
 		}
 	}
 	return "", ""

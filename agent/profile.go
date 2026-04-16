@@ -763,7 +763,7 @@ Important:
 func defSpawnAgent() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "spawn_agent",
-		Description: "Spawn a sub-agent to work on a scoped task.",
+		Description: "Spawn a sub-agent to work on a scoped task. With blocking=true, the returned output is the subagent's own report, not a guarantee the task was done correctly. You are responsible for checking whether it actually answered the delegated task before you relay it to the user. If the subagent reports a bounce, placeholder text, or otherwise fails to do the work, resume it with sharper instructions or spawn a better-suited agent instead of treating the delegation as complete.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -896,39 +896,45 @@ func defSubmitResult() llm.ToolDefinition {
 }
 
 func defSubmitResultNamed(name string) llm.ToolDefinition {
+	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        name,
-		Description: "Send a user-facing message. This is the only valid way to communicate with the user; never emit a plain assistant response. Use kind=message for normal updates, kind=ask when waiting for user input, and kind=final when the work is complete. The receiver only sees what you send through this tool, not your hidden reasoning or tool-call history, so include the evidence, file paths, and test outcomes they need. For automation workflows, include structured output on final calls using output.message, output.data, and any output.artifacts.",
+		Description: "Send a user-facing message. This is the only valid way to communicate with the user; never emit a plain assistant response. Set `message` to the exact text the user should see. Set `await_reply` to true only when you need user input before you can continue; otherwise set it to false. Always include `output` as the structured envelope. For ordinary conversational replies, leave `output.message` empty, `output.data` empty, and `output.artifacts` empty. When handing back completed work or machine-readable results, populate `output.message`, `output.data`, and `output.artifacts` accordingly. Some workflows may also require extra fields inside `output`, such as `output.decision` or specific `output.data.*` keys.",
+		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"kind": map[string]any{
-					"type":        "string",
-					"description": "Communication type: message for normal updates, ask when waiting for user input, final when the work is complete.",
-					"enum":        []string{communicateKindMessage, communicateKindAsk, communicateKindFinal},
-				},
 				"message": map[string]any{
 					"type":        "string",
-					"description": "User-facing message text. Required for kind=message and kind=ask. Optional for kind=final when output is provided, but include it when the receiver needs a human-readable summary or evidence.",
+					"description": "Exact user-facing message text. Prefer filling this even when output.message is also populated. Never use a placeholder like 'Done.' when the task asked for concrete findings.",
+				},
+				"await_reply": map[string]any{
+					"type":        "boolean",
+					"description": "Set to true only when you need user input before you can continue. Otherwise set to false.",
 				},
 				"output": map[string]any{
 					"type":                 "object",
-					"description":          "Structured output for kind=final.",
+					"description":          "Structured output envelope. Keep this present on every call. For ordinary conversational replies, leave message empty, data empty, and artifacts empty.",
 					"additionalProperties": false,
 					"properties": map[string]any{
-						"message": map[string]any{"type": "string", "description": "Human-readable completion summary."},
-						"data":    map[string]any{"type": "object", "description": "Machine-readable result payload."},
+						"message": map[string]any{"type": "string", "description": "Human-readable structured summary for automation and orchestration. Leave empty for ordinary conversational replies."},
+						"data": map[string]any{
+							"type":                 "object",
+							"description":          "Machine-readable result payload. Leave empty unless the workflow requires structured data.",
+							"additionalProperties": true,
+							"properties":           map[string]any{},
+						},
 						"artifacts": map[string]any{
 							"type":        "array",
-							"description": "Optional artifact identifiers such as file paths, transcript paths, or output URIs.",
+							"description": "Artifact identifiers such as file paths, transcript paths, or output URIs. Leave empty when there are none.",
 							"items":       map[string]any{"type": "string"},
 						},
 					},
-					"required": []string{"message", "data"},
+					"required": []string{"message", "data", "artifacts"},
 				},
 			},
-			"required": []string{"kind"},
+			"required": []string{"message", "await_reply", "output"},
 		},
 	}
 }

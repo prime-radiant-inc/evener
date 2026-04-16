@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -12,11 +13,50 @@ import (
 
 // submitResultCall builds a tool call to the submit_result tool.
 func submitResultCall(id, message string) llm.ToolCallData {
-	return submitResultCallArgs(id, map[string]any{"kind": communicateKindFinal, "message": message})
+	return submitResultCallArgs(id, map[string]any{"message": message})
 }
 
 func submitResultCallArgs(id string, args map[string]any) llm.ToolCallData {
-	raw, _ := json.Marshal(args)
+	normalized := map[string]any{}
+
+	var message string
+	if v, ok := args["message"]; ok && v != nil {
+		message = strings.TrimSpace(fmt.Sprint(v))
+	}
+
+	awaitReply := false
+	if v, ok := args["await_reply"].(bool); ok {
+		awaitReply = v
+	} else {
+		switch strings.TrimSpace(fmt.Sprint(args["kind"])) {
+		case communicateKindAsk:
+			awaitReply = true
+		default:
+			awaitReply = false
+		}
+	}
+
+	output := map[string]any{
+		"message":   "",
+		"data":      map[string]any{},
+		"artifacts": []string{},
+	}
+	if rawOutput, ok := args["output"].(map[string]any); ok {
+		for k, v := range rawOutput {
+			output[k] = v
+		}
+	}
+	if message == "" {
+		if outMsg, ok := output["message"].(string); ok {
+			message = outMsg
+		}
+	}
+
+	normalized["message"] = message
+	normalized["await_reply"] = awaitReply
+	normalized["output"] = output
+
+	raw, _ := json.Marshal(normalized)
 	return llm.ToolCallData{
 		ID:        id,
 		Name:      "communicate",
@@ -26,8 +66,8 @@ func submitResultCallArgs(id string, args map[string]any) llm.ToolCallData {
 }
 
 func reviewerVerdictCall(id, decision, report string) llm.ToolCallData {
-	raw, _ := json.Marshal(map[string]any{
-		"kind": communicateKindFinal,
+	return submitResultCallArgs(id, map[string]any{
+		"message": report,
 		"output": map[string]any{
 			"message":   report,
 			"decision":  decision,
@@ -35,7 +75,6 @@ func reviewerVerdictCall(id, decision, report string) llm.ToolCallData {
 			"artifacts": []string{},
 		},
 	})
-	return llm.ToolCallData{ID: id, Name: "communicate", Arguments: raw, Type: "function"}
 }
 
 // toolCallResponse is defined in tool_web_fetch_test.go (same package).
@@ -259,12 +298,19 @@ func TestSubmitResult_SchemaRejectsMalformedOutput(t *testing.T) {
 	}
 	defer sess.Close()
 
-	res := sess.reg.ExecuteCall(context.Background(), sess.env, submitResultCallArgs("c1", map[string]any{
-		"kind": communicateKindFinal,
+	rawArgs, _ := json.Marshal(map[string]any{
+		"message":     "missing data field",
+		"await_reply": false,
 		"output": map[string]any{
 			"message": "missing data field",
 		},
-	}))
+	})
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "communicate",
+		Arguments: rawArgs,
+		Type:      "function",
+	})
 	if !res.IsError {
 		t.Fatalf("expected schema error, got success: %s", res.Output)
 	}

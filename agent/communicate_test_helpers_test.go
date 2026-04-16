@@ -8,9 +8,15 @@ import (
 )
 
 func communicateResponse(kind, message string) llm.Response {
+	awaitReply := kind == communicateKindAsk
 	args, _ := json.Marshal(map[string]any{
-		"kind":    kind,
-		"message": message,
+		"message":     message,
+		"await_reply": awaitReply,
+		"output": map[string]any{
+			"message":   "",
+			"data":      map[string]any{},
+			"artifacts": []string{},
+		},
 	})
 	return llm.Response{
 		Message: llm.Message{
@@ -48,7 +54,7 @@ func wrapCommunicateResponse(resp llm.Response) llm.Response {
 		return resp
 	}
 
-	kind := communicateKindFinal
+	kind := communicateKindMessage
 	if looksLikeQuestion(text) {
 		kind = communicateKindAsk
 	}

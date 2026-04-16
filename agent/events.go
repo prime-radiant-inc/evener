@@ -168,8 +168,9 @@ type LoopDetectionData struct {
 }
 
 type CommunicateData struct {
-	Kind    string `json:"kind"`
-	Message string `json:"message"`
+	Kind       string `json:"kind,omitempty"`
+	AwaitReply bool   `json:"await_reply"`
+	Message    string `json:"message"`
 }
 
 type SubmitResultData = CommunicateData

@@ -524,6 +524,32 @@ func TestCachedSystemPromptComponents_AgentSection(t *testing.T) {
 	}
 }
 
+func TestCachedSystemPromptComponents_UsesProviderVisibleToolNames(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai"}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		AgentName: "reviewer",
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	prompt := sess.cachedSystemPrompt
+	if !strings.Contains(prompt, "`exec_command`") {
+		t.Fatalf("system prompt should list provider-visible exec_command for OpenAI reviewer tools, got: %q", prompt)
+	}
+	if strings.Contains(prompt, "Provider tools currently unavailable here:\n- `exec_command`") {
+		t.Fatalf("system prompt should not mark exec_command unavailable, got: %q", prompt)
+	}
+	if strings.Contains(prompt, "Currently callable tools:\n- `shell`") {
+		t.Fatalf("system prompt should not list canonical shell for OpenAI callable tools, got: %q", prompt)
+	}
+}
+
 func TestSystemPromptConsistency_WithAndWithoutCache(t *testing.T) {
 	// The system prompt produced with caching should match the prompt that is
 	// actually sent to the model.

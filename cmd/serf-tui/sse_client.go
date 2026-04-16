@@ -11,6 +11,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+const maxSSELineBytes = 2 * 1024 * 1024
+
+func newSSEScanner(r io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 64*1024), maxSSELineBytes)
+	return scanner
+}
+
 // SSEEvent represents a parsed Server-Sent Event.
 type SSEEvent struct {
 	ID    string
@@ -37,7 +45,7 @@ func (e *SSEEvent) hasContent() bool {
 // parseSSEStream reads all SSE events from a reader.
 func parseSSEStream(r io.Reader) ([]SSEEvent, error) {
 	var events []SSEEvent
-	scanner := bufio.NewScanner(r)
+	scanner := newSSEScanner(r)
 	var current SSEEvent
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -81,7 +89,7 @@ func streamSSE(ctx context.Context, addr string, send func(tea.Msg)) {
 
 	send(sseConnectedMsg{})
 
-	scanner := bufio.NewScanner(resp.Body)
+	scanner := newSSEScanner(resp.Body)
 	var current SSEEvent
 	for scanner.Scan() {
 		line := scanner.Text()

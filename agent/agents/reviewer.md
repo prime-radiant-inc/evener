@@ -80,6 +80,6 @@ Does the work satisfy the stated requirements? Only reject for requirements
 explicitly in the task description. Do not invent additional standards or infer
 unstated requirements.
 
-Finish with `communicate(kind="final", ...)`.
-Put your full review report in `output.message`, set `output.decision` to `approve` or `reject`, include any machine-readable details in `output.data`, and leave the top-level `message` field empty.
+Finish with `communicate`.
+Set `message` to your full review report, `await_reply` to `false`, copy the report into `output.message`, set `output.decision` to `approve` or `reject`, include any machine-readable details in `output.data`, and list any artifacts in `output.artifacts`.
 The `communicate` tool description defines the reporting and evidence contract.

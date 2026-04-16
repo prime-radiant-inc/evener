@@ -45,7 +45,11 @@ func Bridge(srv *Server, events <-chan agent.SessionEvent) {
 			srv.IncrementTurns()
 		case agent.EventSessionEnd:
 			srv.SetProcessing(false)
-			srv.SetState("CLOSED")
+			if d, ok := ev.Data.(agent.SessionEndData); ok && d.State != "" {
+				srv.SetState(d.State)
+			} else {
+				srv.SetState("CLOSED")
+			}
 		}
 
 		srv.Broadcast(string(ev.Kind), json.RawMessage(data))
