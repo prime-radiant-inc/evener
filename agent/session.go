@@ -3230,7 +3230,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 								}
 							}
 							if allDone && len(store.View()) > 0 {
-								s.Steer("All tasks on your list are complete. If you have remaining work, add it to your task list. Otherwise, use communicate to indicate you're done.")
+								s.Steer(taskReminderAllDone())
 								msg.WriteString("All tasks complete. ")
 							}
 						}

@@ -63,6 +63,16 @@ func taskReminderForInactivity(store *TaskStore) string {
 	return formatCurrentTaskSteering(current)
 }
 
+// taskReminderAllDone signals that the agent has completed all tasks on its
+// list and should either add new work or finish up.
+func taskReminderAllDone() string {
+	return "<SYSTEM-REMINDER>\n" +
+		"You have completed all tasks on your task list. " +
+		"If you have other work to do, add it to the task list now. " +
+		"Otherwise, deliver your final output with the communicate tool.\n" +
+		"</SYSTEM-REMINDER>"
+}
+
 // taskReminderNudge generates the one-time suggestion to use task_list, wrapped
 // as a SYSTEM-REMINDER so all task reminders share a single envelope.
 func taskReminderNudge() string {

@@ -1529,6 +1529,21 @@ func TestTaskListTool_UpdateShowsAllComplete(t *testing.T) {
 	if !strings.Contains(updateRes.Output, "All tasks complete") {
 		t.Fatalf("response should say 'All tasks complete': %s", updateRes.Output)
 	}
+
+	// Steering should be a SYSTEM-REMINDER so models treat it like other task steering.
+	sess.mu.Lock()
+	queue := append([]string{}, sess.steeringQueue...)
+	sess.mu.Unlock()
+	if len(queue) == 0 {
+		t.Fatal("expected steering message after all tasks complete, got none")
+	}
+	last := queue[len(queue)-1]
+	if !strings.Contains(last, "<SYSTEM-REMINDER>") {
+		t.Fatalf("all-done steering should be wrapped in <SYSTEM-REMINDER>: %s", last)
+	}
+	if !strings.Contains(last, "completed all tasks") {
+		t.Fatalf("all-done steering should say 'completed all tasks': %s", last)
+	}
 }
 
 func TestTaskListTool_UpdateStaysMinimalWhenBlocked(t *testing.T) {

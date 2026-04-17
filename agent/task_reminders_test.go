@@ -162,6 +162,22 @@ func TestTaskReminderNudge(t *testing.T) {
 	}
 }
 
+func TestTaskReminderAllDone(t *testing.T) {
+	msg := taskReminderAllDone()
+	if !strings.HasPrefix(msg, "<SYSTEM-REMINDER>") {
+		t.Fatalf("should start with <SYSTEM-REMINDER>: %s", msg)
+	}
+	if !strings.HasSuffix(strings.TrimRight(msg, "\n"), "</SYSTEM-REMINDER>") {
+		t.Fatalf("should end with </SYSTEM-REMINDER>: %s", msg)
+	}
+	if !strings.Contains(msg, "completed all tasks") {
+		t.Fatalf("should say 'completed all tasks': %s", msg)
+	}
+	if !strings.Contains(msg, "communicate") {
+		t.Fatalf("should mention communicate tool: %s", msg)
+	}
+}
+
 func TestMaybeInjectTaskReminder_NudgeAfter10Rounds(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
