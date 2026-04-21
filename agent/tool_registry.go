@@ -50,6 +50,21 @@ type ToolExecResult struct {
 	ImageData      []byte
 	ImageMediaType string
 	ImagePurpose   string // from the caller: what they hope to learn
+
+	// ToolState is an optional JSON-encoded snapshot emitted alongside
+	// Output via the TOOL_CALL_END event. The LLM never sees this — it's a
+	// side channel for dashboards and other consumers that would otherwise
+	// have to reconstruct state by replaying the whole event stream.
+	ToolState json.RawMessage
+}
+
+// ToolStateResult is returned by tool executors that want to emit a
+// structured state snapshot alongside the terse string reply. Output is
+// what goes to the LLM; State is JSON-marshaled into TOOL_CALL_END's
+// tool_state field.
+type ToolStateResult struct {
+	Output string
+	State  any
 }
 
 // ImageResult is returned by tool executors (e.g. read_file) when a file is
@@ -334,6 +349,20 @@ func (r *ToolRegistry) ExecuteCall(ctx context.Context, env ExecutionEnvironment
 		res.ImageData = img.Data
 		res.ImageMediaType = img.MediaType
 		res.ImagePurpose = img.Purpose
+		return res
+	}
+
+	// ToolStateResult carries an LLM-facing Output plus a JSON-serializable
+	// State snapshot that rides along on the TOOL_CALL_END event.
+	if st, ok := v.(ToolStateResult); ok {
+		res := truncateResult(name, callID, st.Output, false, t.Limit)
+		if st.State != nil {
+			if data, err := json.Marshal(st.State); err == nil {
+				res.ToolState = data
+			} else {
+				log.Printf("tool %s: marshal ToolStateResult.State: %v", name, err)
+			}
+		}
 		return res
 	}
 

@@ -14,6 +14,51 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+func TestToolRegistry_ToolStateResult_CarriesStateAsSideChannel(t *testing.T) {
+	r := NewToolRegistry()
+	if err := r.Register(RegisteredTool{
+		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "snap"}},
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			_ = ctx
+			_ = env
+			_ = args
+			return ToolStateResult{
+				Output: "terse summary for LLM",
+				State: []map[string]any{
+					{"id": 1, "description": "first", "status": "done"},
+					{"id": 2, "description": "second", "status": "open"},
+				},
+			}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	res := r.ExecuteCall(context.Background(), NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
+		ID:        "c1",
+		Name:      "snap",
+		Arguments: json.RawMessage(`{}`),
+	})
+	if res.IsError {
+		t.Fatalf("unexpected error: %q", res.Output)
+	}
+	if res.Output != "terse summary for LLM" {
+		t.Errorf("Output: got %q, want %q", res.Output, "terse summary for LLM")
+	}
+	if len(res.ToolState) == 0 {
+		t.Fatalf("expected ToolState to be populated")
+	}
+	var parsed []map[string]any
+	if err := json.Unmarshal(res.ToolState, &parsed); err != nil {
+		t.Fatalf("ToolState not valid JSON: %v", err)
+	}
+	if len(parsed) != 2 {
+		t.Fatalf("expected 2 state entries, got %d", len(parsed))
+	}
+	if parsed[0]["description"] != "first" {
+		t.Errorf("first entry description: got %v, want first", parsed[0]["description"])
+	}
+}
+
 func TestToolRegistry_UnknownTool_ReturnsErrorResult(t *testing.T) {
 	r := NewToolRegistry()
 	// No tools registered.

@@ -151,6 +151,12 @@ type ToolCallEndData struct {
 	CallID   string `json:"call_id"`
 	Output   string `json:"output,omitempty"`
 	Error    string `json:"error,omitempty"`
+
+	// ToolState is an optional JSON snapshot produced by the tool
+	// executor. Dashboards and other consumers render from this directly
+	// rather than reconstructing state by replaying the event stream.
+	// The LLM never sees this field.
+	ToolState json.RawMessage `json:"tool_state,omitempty"`
 }
 
 type SteeringInjectedData struct {

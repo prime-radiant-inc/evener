@@ -3287,6 +3287,115 @@ func TestSession_TaskListUpdateEscalatesReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestSession_TaskList_AppendAndUpdate_EmitToolStateSnapshots(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	taskListCall := func(id, args string) llm.Response {
+		return llm.Response{Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{{
+				Kind:     llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{ID: id, Name: "task_list", Arguments: json.RawMessage(args)},
+			}},
+		}}
+	}
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return taskListCall("c1", `{"action":"append","tasks":[{"type":"research","description":"Map criteria","prompt":"look at specs"},{"type":"implement","description":"Write tests","prompt":"add cases"}]}`)
+			},
+			func(req llm.Request) llm.Response {
+				return taskListCall("c2", `{"action":"update","updates":[{"id":1,"status":"done","notes":"reviewed specs"}]}`)
+			},
+			func(req llm.Request) llm.Response { return finalResponse("done") },
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "go"); err != nil {
+		t.Fatal(err)
+	}
+	sess.Close()
+
+	type endCall struct {
+		callID string
+		state  []Task
+	}
+	var ends []endCall
+	for ev := range sess.Events() {
+		if ev.Kind != EventToolCallEnd {
+			continue
+		}
+		d := ev.DataMap()
+		if d["tool_name"] != "task_list" {
+			continue
+		}
+		raw, ok := d["tool_state"]
+		if !ok {
+			t.Fatalf("TOOL_CALL_END for task_list missing tool_state; data=%+v", d)
+		}
+		// DataMap() returns a map[string]any — tool_state is a
+		// json.RawMessage which comes through as a string or []byte depending
+		// on round-trip. Re-marshal and unmarshal to normalize.
+		js, err := json.Marshal(raw)
+		if err != nil {
+			t.Fatalf("marshal tool_state: %v", err)
+		}
+		// If it came through as a JSON string containing JSON (double-encoded),
+		// peel one layer.
+		var unquoted string
+		if err := json.Unmarshal(js, &unquoted); err == nil && strings.HasPrefix(strings.TrimSpace(unquoted), "[") {
+			js = []byte(unquoted)
+		}
+		var tasks []Task
+		if err := json.Unmarshal(js, &tasks); err != nil {
+			t.Fatalf("tool_state not a []Task: %v; raw=%s", err, js)
+		}
+		ends = append(ends, endCall{callID: fmt.Sprint(d["call_id"]), state: tasks})
+	}
+
+	if len(ends) < 2 {
+		t.Fatalf("expected >=2 task_list TOOL_CALL_END events, got %d", len(ends))
+	}
+
+	// After append (c1): both tasks present, no statuses yet in "done".
+	appendState := ends[0]
+	if appendState.callID != "c1" {
+		t.Errorf("first task_list end: call_id %q, want c1", appendState.callID)
+	}
+	if len(appendState.state) != 2 {
+		t.Fatalf("append state should have 2 tasks, got %d: %+v", len(appendState.state), appendState.state)
+	}
+	if appendState.state[0].Description != "Map criteria" {
+		t.Errorf("append state[0].Description: %q, want %q", appendState.state[0].Description, "Map criteria")
+	}
+	if appendState.state[0].ID != 1 {
+		t.Errorf("append state[0].ID: %d, want 1", appendState.state[0].ID)
+	}
+
+	// After update (c2): task 1 marked done, description preserved.
+	updateState := ends[1]
+	if updateState.callID != "c2" {
+		t.Errorf("second task_list end: call_id %q, want c2", updateState.callID)
+	}
+	if len(updateState.state) < 1 || updateState.state[0].Status != TaskDone {
+		t.Errorf("update state[0].Status: %+v, want done", updateState.state)
+	}
+	if len(updateState.state) >= 1 && updateState.state[0].Description != "Map criteria" {
+		t.Errorf("update state[0] description should be preserved; got %q", updateState.state[0].Description)
+	}
+}
+
 func TestSession_ReasoningEffort_EmptyMeansNoOverride(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()

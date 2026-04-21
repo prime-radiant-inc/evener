@@ -1291,8 +1291,9 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecR
 	}
 
 	endData := ToolCallEndData{
-		ToolName: res.ToolName,
-		CallID:   res.CallID,
+		ToolName:  res.ToolName,
+		CallID:    res.CallID,
+		ToolState: res.ToolState,
 	}
 	if res.IsError {
 		endData.Error = res.FullOutput
@@ -3129,7 +3130,10 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 				// message when the agent actually transitions one to
 				// in_progress, either manually or via auto-advance.
 				total, done := store.Progress()
-				return fmt.Sprintf("Added %d task(s). Progress: %d/%d tasks complete.", len(added), done, total), nil
+				return ToolStateResult{
+					Output: fmt.Sprintf("Added %d task(s). Progress: %d/%d tasks complete.", len(added), done, total),
+					State:  store.View(),
+				}, nil
 			case "update":
 				raw, ok := args["updates"].([]any)
 				if !ok || len(raw) == 0 {
@@ -3201,7 +3205,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 				}
 
 				if !completedAny && manuallyStartedID == 0 {
-					return "Updated.", nil
+					return ToolStateResult{Output: "Updated.", State: store.View()}, nil
 				}
 
 				var msg strings.Builder
@@ -3239,7 +3243,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 
 				total, done := store.Progress()
 				msg.WriteString(fmt.Sprintf("Progress: %d/%d tasks complete.", done, total))
-				return msg.String(), nil
+				return ToolStateResult{Output: msg.String(), State: store.View()}, nil
 			default:
 				return nil, fmt.Errorf("unknown task_list action %q: use view, append, or update", action)
 			}
