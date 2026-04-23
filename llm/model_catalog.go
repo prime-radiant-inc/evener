@@ -27,7 +27,12 @@ type ModelInfo struct {
 	SupportsWebSearch        bool     `json:"supports_web_search,omitempty"`
 	InputCostPerMillion      *float64 `json:"input_cost_per_million,omitempty"`
 	OutputCostPerMillion     *float64 `json:"output_cost_per_million,omitempty"`
-	Aliases                  []string `json:"aliases,omitempty"`
+	// Cache-tier pricing. All optional — providers that don't charge separately for cached
+	// reads or for cache-creation leave them nil.
+	CacheReadInputCostPerMillion  *float64 `json:"cache_read_input_cost_per_million,omitempty"`
+	CacheCreation5mCostPerMillion *float64 `json:"cache_creation_5m_cost_per_million,omitempty"`
+	CacheCreation1hCostPerMillion *float64 `json:"cache_creation_1h_cost_per_million,omitempty"`
+	Aliases                       []string `json:"aliases,omitempty"`
 }
 
 type ModelCatalog struct {
@@ -157,7 +162,12 @@ func parseLiteLLMCatalog(data []byte) (*ModelCatalog, error) {
 			continue
 		}
 		mode, _ := v["mode"].(string)
-		if strings.TrimSpace(mode) != "" && strings.TrimSpace(mode) != "chat" {
+		mode = strings.TrimSpace(mode)
+		// "chat" covers most models; "responses" covers the OpenAI Responses API
+		// family (gpt-5-codex, o3-deep-research, gpt-5-pro). Other modes
+		// (embedding, image_generation, audio_*, rerank, moderation, ...) are not
+		// text-completion models.
+		if mode != "" && mode != "chat" && mode != "responses" {
 			continue
 		}
 
@@ -179,6 +189,9 @@ func parseLiteLLMCatalog(data []byte) (*ModelCatalog, error) {
 		outCost := parseFloatPtr(v["output_cost_per_token"])
 		inPerM := scalePerMillion(inCost)
 		outPerM := scalePerMillion(outCost)
+		cacheReadPerM := scalePerMillion(parseFloatPtr(v["cache_read_input_token_cost"]))
+		cacheCreate5mPerM := scalePerMillion(parseFloatPtr(v["cache_creation_input_token_cost"]))
+		cacheCreate1hPerM := scalePerMillion(parseFloatPtr(v["cache_creation_input_token_cost_above_1hr"]))
 
 		// Parse reasoning effort levels if present
 		var effortLevels []string
@@ -202,8 +215,11 @@ func parseLiteLLMCatalog(data []byte) (*ModelCatalog, error) {
 			ReasoningEffortLevels:    effortLevels,
 			SupportsAdaptiveThinking: parseBool(v["supports_adaptive_thinking"]),
 			SupportsEffortParameter:  parseBool(v["supports_effort_parameter"]),
-			InputCostPerMillion:      inPerM,
-			OutputCostPerMillion:     outPerM,
+			InputCostPerMillion:           inPerM,
+			OutputCostPerMillion:          outPerM,
+			CacheReadInputCostPerMillion:  cacheReadPerM,
+			CacheCreation5mCostPerMillion: cacheCreate5mPerM,
+			CacheCreation1hCostPerMillion: cacheCreate1hPerM,
 		})
 	}
 

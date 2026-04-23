@@ -172,6 +172,120 @@ func TestEmbeddedModelCatalog(t *testing.T) {
 	}
 }
 
+func TestParseLiteLLMCatalog_CacheTierPricing(t *testing.T) {
+	body := `{
+  "claude-opus-4-5": {
+    "litellm_provider":"anthropic","mode":"chat",
+    "max_input_tokens":200000,
+    "input_cost_per_token":0.000005,
+    "output_cost_per_token":0.000025,
+    "cache_read_input_token_cost":0.0000005,
+    "cache_creation_input_token_cost":0.00000625,
+    "cache_creation_input_token_cost_above_1hr":0.00001
+  },
+  "gpt-5-codex": {
+    "litellm_provider":"openai","mode":"chat",
+    "max_input_tokens":272000,
+    "input_cost_per_token":0.00000125,
+    "output_cost_per_token":0.00001,
+    "cache_read_input_token_cost":0.000000125
+  },
+  "no-cache-model": {
+    "litellm_provider":"openai","mode":"chat",
+    "max_input_tokens":1000,
+    "input_cost_per_token":0.000001,
+    "output_cost_per_token":0.000002
+  }
+}`
+	cat, err := parseLiteLLMCatalog([]byte(body))
+	if err != nil {
+		t.Fatalf("parseLiteLLMCatalog: %v", err)
+	}
+
+	opus := cat.GetModelInfo("claude-opus-4-5")
+	if opus == nil {
+		t.Fatal("claude-opus-4-5 not found")
+	}
+	if opus.CacheReadInputCostPerMillion == nil || *opus.CacheReadInputCostPerMillion != 0.5 {
+		t.Errorf("opus cache_read: got %v, want 0.5", opus.CacheReadInputCostPerMillion)
+	}
+	if opus.CacheCreation5mCostPerMillion == nil || *opus.CacheCreation5mCostPerMillion != 6.25 {
+		t.Errorf("opus cache_create_5m: got %v, want 6.25", opus.CacheCreation5mCostPerMillion)
+	}
+	if opus.CacheCreation1hCostPerMillion == nil || *opus.CacheCreation1hCostPerMillion != 10.0 {
+		t.Errorf("opus cache_create_1h: got %v, want 10.0", opus.CacheCreation1hCostPerMillion)
+	}
+
+	codex := cat.GetModelInfo("gpt-5-codex")
+	if codex == nil {
+		t.Fatal("gpt-5-codex not found")
+	}
+	if codex.CacheReadInputCostPerMillion == nil || *codex.CacheReadInputCostPerMillion != 0.125 {
+		t.Errorf("codex cache_read: got %v, want 0.125", codex.CacheReadInputCostPerMillion)
+	}
+	if codex.CacheCreation5mCostPerMillion != nil {
+		t.Errorf("codex cache_create_5m: should be nil (OpenAI has no creation cost), got %v", codex.CacheCreation5mCostPerMillion)
+	}
+	if codex.CacheCreation1hCostPerMillion != nil {
+		t.Errorf("codex cache_create_1h: should be nil, got %v", codex.CacheCreation1hCostPerMillion)
+	}
+
+	noCache := cat.GetModelInfo("no-cache-model")
+	if noCache == nil {
+		t.Fatal("no-cache-model not found")
+	}
+	if noCache.CacheReadInputCostPerMillion != nil {
+		t.Errorf("no-cache cache_read: should be nil, got %v", noCache.CacheReadInputCostPerMillion)
+	}
+}
+
+func TestEmbeddedCatalog_CacheTierPricing(t *testing.T) {
+	cat := EmbeddedModelCatalog()
+	if cat == nil {
+		t.Skip("no embedded catalog")
+	}
+
+	cases := []struct {
+		id              string
+		wantCacheRead   *float64
+		wantCacheCreate *float64
+	}{
+		{id: "claude-opus-4-5", wantCacheRead: f64(0.5), wantCacheCreate: f64(6.25)},
+		{id: "claude-sonnet-4-5", wantCacheRead: f64(0.3), wantCacheCreate: f64(3.75)},
+		{id: "gpt-5-codex", wantCacheRead: f64(0.125), wantCacheCreate: nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.id, func(t *testing.T) {
+			mi := cat.GetModelInfo(tc.id)
+			if mi == nil {
+				t.Skipf("%s not in embedded catalog", tc.id)
+			}
+			if !floatPtrApproxEqual(mi.CacheReadInputCostPerMillion, tc.wantCacheRead) {
+				t.Errorf("cache_read: got %v, want %v", mi.CacheReadInputCostPerMillion, tc.wantCacheRead)
+			}
+			if !floatPtrApproxEqual(mi.CacheCreation5mCostPerMillion, tc.wantCacheCreate) {
+				t.Errorf("cache_create_5m: got %v, want %v", mi.CacheCreation5mCostPerMillion, tc.wantCacheCreate)
+			}
+		})
+	}
+}
+
+func f64(v float64) *float64 { return &v }
+
+func floatPtrApproxEqual(a, b *float64) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	diff := *a - *b
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff < 1e-9
+}
+
 func TestParseLiteLLMCatalog_ReasoningEffortFields(t *testing.T) {
 	body := `{
   "claude-opus-4-6": {
