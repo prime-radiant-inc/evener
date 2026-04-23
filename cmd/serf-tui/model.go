@@ -712,6 +712,7 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 				OutputTokens int  `json:"output_tokens"`
 				CacheRead    *int `json:"cache_read_tokens"`
 				CacheWrite   *int `json:"cache_write_tokens"`
+				CacheWrite1h *int `json:"cache_write_1h_tokens"`
 			} `json:"usage"`
 		}
 		if err := json.Unmarshal([]byte(ev.Data), &d); err == nil && d.Usage != nil {
@@ -722,6 +723,9 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 			}
 			if u.CacheWrite != nil {
 				total += *u.CacheWrite
+			}
+			if u.CacheWrite1h != nil {
+				total += *u.CacheWrite1h
 			}
 			m.contextTokens = total
 			m.turnInputTokens += total

@@ -326,8 +326,14 @@ func convertAssistantTurn(turn Turn, stepID int) ATIFStep {
 		if turn.Usage.ReasoningTokens != nil {
 			extra["reasoning_tokens"] = *turn.Usage.ReasoningTokens
 		}
+		if turn.Usage.ReasoningTokensEstimated != nil {
+			extra["reasoning_tokens_estimated"] = *turn.Usage.ReasoningTokensEstimated
+		}
 		if turn.Usage.CacheWriteTokens != nil {
 			extra["cache_write_tokens"] = *turn.Usage.CacheWriteTokens
+		}
+		if turn.Usage.CacheWrite1hTokens != nil {
+			extra["cache_write_1h_tokens"] = *turn.Usage.CacheWrite1hTokens
 		}
 		if len(turn.Usage.Raw) > 0 {
 			extra["raw_usage"] = turn.Usage.Raw
