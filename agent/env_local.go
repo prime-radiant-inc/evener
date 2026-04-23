@@ -153,7 +153,10 @@ func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limit
 }
 
 func (e *LocalExecutionEnvironment) WriteFile(path string, content string) (string, error) {
-	abs := e.resolve(path)
+	abs, err := e.resolveWrite(path)
+	if err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 		return "", err
 	}
@@ -164,7 +167,10 @@ func (e *LocalExecutionEnvironment) WriteFile(path string, content string) (stri
 }
 
 func (e *LocalExecutionEnvironment) EditFile(path string, oldString string, newString string, replaceAll bool) (string, error) {
-	abs := e.resolve(path)
+	abs, err := e.resolveWrite(path)
+	if err != nil {
+		return "", err
+	}
 	b, err := os.ReadFile(abs)
 	if err != nil {
 		return "", err
@@ -502,6 +508,9 @@ func (e *LocalExecutionEnvironment) ExecCommand(ctx context.Context, command str
 	if !filepath.IsAbs(dir) {
 		dir = filepath.Join(e.RootDir, dir)
 	}
+	if err := e.ensureUnderRoot(dir); err != nil {
+		return ExecResult{ExitCode: 127}, fmt.Errorf("working directory %w", err)
+	}
 
 	start := time.Now()
 	cmd := shellCommand(command)
@@ -699,6 +708,69 @@ func (e *LocalExecutionEnvironment) resolve(path string) string {
 		return p
 	}
 	return filepath.Join(e.RootDir, p)
+}
+
+// resolveWrite is the boundary-enforcing counterpart to resolve. Unlike
+// resolve (which trusts reads), resolveWrite rejects paths that escape the
+// working directory so write_file / edit_file can't reach into the
+// orchestrator's source tree or anywhere else outside the project.
+func (e *LocalExecutionEnvironment) resolveWrite(path string) (string, error) {
+	p := strings.TrimSpace(path)
+	if p == "" {
+		return "", fmt.Errorf("empty path")
+	}
+	abs := p
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(e.RootDir, abs)
+	}
+	abs = filepath.Clean(abs)
+	if err := e.ensureUnderRoot(abs); err != nil {
+		return "", fmt.Errorf("%s: %w", path, err)
+	}
+	return abs, nil
+}
+
+// ensureUnderRoot reports whether the cleaned absolute path equals RootDir
+// or is a descendant of it. Both paths are resolved through EvalSymlinks
+// (best-effort; missing leaves resolve via their parent) so that symlink
+// canonicalisation differences like macOS's /var -> /private/var don't
+// false-positive as escapes. Callers are responsible for cleaning and
+// absolutising the path before calling.
+func (e *LocalExecutionEnvironment) ensureUnderRoot(abs string) error {
+	abs = resolveSymlinksBestEffort(abs)
+	root := resolveSymlinksBestEffort(e.RootDir)
+	if abs == root {
+		return nil
+	}
+	if strings.HasPrefix(abs, root+string(filepath.Separator)) {
+		return nil
+	}
+	return fmt.Errorf("is outside working directory %q", e.RootDir)
+}
+
+// resolveSymlinksBestEffort resolves symlinks in path. For write targets the
+// leaf (and sometimes intermediate dirs) may not exist yet, so this walks up
+// the ancestors until it finds one that does, resolves that, and re-joins
+// the missing suffix. Returns a cleaned path in all cases.
+func resolveSymlinksBestEffort(path string) string {
+	path = filepath.Clean(path)
+	if r, err := filepath.EvalSymlinks(path); err == nil {
+		return filepath.Clean(r)
+	}
+	suffix := []string{}
+	cur := path
+	for {
+		parent, base := filepath.Split(cur)
+		parent = strings.TrimRight(parent, string(filepath.Separator))
+		if parent == "" || parent == cur {
+			return path
+		}
+		suffix = append([]string{base}, suffix...)
+		cur = parent
+		if r, err := filepath.EvalSymlinks(cur); err == nil {
+			return filepath.Clean(filepath.Join(append([]string{r}, suffix...)...))
+		}
+	}
 }
 
 func terminateProcessGroup(pid int) {

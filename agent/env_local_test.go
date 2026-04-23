@@ -115,6 +115,99 @@ func TestLocalExecutionEnvironment_ReadWriteEditFile(t *testing.T) {
 	}
 }
 
+func TestLocalExecutionEnvironment_WriteFile_OutsideRoot_Rejected(t *testing.T) {
+	// Writing to an absolute path above the worktree must fail. This is the
+	// guard that would have prevented the flint-oak-willow incident where a
+	// debug_fix agent wrote to toil's own source tree from inside a project
+	// worktree.
+	root := t.TempDir()
+	outside := t.TempDir()
+	env := NewLocalExecutionEnvironment(root)
+
+	target := filepath.Join(outside, "evil.go")
+	if _, err := env.WriteFile(target, "pwned"); err == nil {
+		t.Fatalf("WriteFile outside RootDir should fail; it returned nil err")
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("file should not exist after rejected write; stat err=%v", err)
+	}
+}
+
+func TestLocalExecutionEnvironment_EditFile_OutsideRoot_Rejected(t *testing.T) {
+	// Editing a pre-existing file outside the worktree must fail without
+	// touching the file's contents.
+	root := t.TempDir()
+	outside := t.TempDir()
+	env := NewLocalExecutionEnvironment(root)
+
+	target := filepath.Join(outside, "existing.go")
+	original := "package foo\n// do not touch\n"
+	if err := os.WriteFile(target, []byte(original), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+
+	if _, err := env.EditFile(target, "do not touch", "TOUCHED", false); err == nil {
+		t.Fatalf("EditFile outside RootDir should fail; it returned nil err")
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("re-read seed file: %v", err)
+	}
+	if string(got) != original {
+		t.Fatalf("seed file contents mutated despite rejected edit:\nwant: %q\ngot:  %q", original, string(got))
+	}
+}
+
+func TestLocalExecutionEnvironment_ExecCommand_WorkingDirOutsideRoot_Rejected(t *testing.T) {
+	// An explicit absolute workingDir outside the worktree must be refused.
+	// (Shell-internal `cd` to another directory is out of scope — the
+	// agent can still escape via `cd /other && …`. That's option B.)
+	root := t.TempDir()
+	outside := t.TempDir()
+	env := NewLocalExecutionEnvironment(root)
+
+	res, err := env.ExecCommand(context.Background(), "pwd", 1000, outside, nil)
+	if err == nil {
+		t.Fatalf("ExecCommand with workingDir outside RootDir should fail; got res=%+v", res)
+	}
+	if res.ExitCode == 0 {
+		t.Fatalf("ExecCommand with workingDir outside RootDir should report non-zero exit; got %+v", res)
+	}
+}
+
+func TestLocalExecutionEnvironment_WriteFile_AbsolutePathUnderRoot_Allowed(t *testing.T) {
+	// Absolute paths that fall under RootDir are legitimate (some callers
+	// and agents resolve paths to absolute form before invoking the tool).
+	// Regression guard so the boundary check doesn't overreach.
+	root := t.TempDir()
+	env := NewLocalExecutionEnvironment(root)
+
+	target := filepath.Join(root, "sub", "ok.txt")
+	if _, err := env.WriteFile(target, "fine"); err != nil {
+		t.Fatalf("WriteFile on absolute path under RootDir should succeed; err=%v", err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read-back: %v", err)
+	}
+	if string(got) != "fine" {
+		t.Fatalf("content mismatch: got %q", string(got))
+	}
+}
+
+func TestLocalExecutionEnvironment_WriteFile_DotDotEscape_Rejected(t *testing.T) {
+	// Relative paths that resolve outside RootDir via `..` segments must be
+	// rejected after cleaning, even though no explicit absolute path was
+	// given.
+	root := t.TempDir()
+	env := NewLocalExecutionEnvironment(root)
+
+	// `../escape.txt` cleans to the parent of RootDir.
+	if _, err := env.WriteFile("../escape.txt", "nope"); err == nil {
+		t.Fatalf("WriteFile with ../ that escapes RootDir should fail; it returned nil err")
+	}
+}
+
 func TestReadFile_ImageReturnsBase64(t *testing.T) {
 	dir := t.TempDir()
 	env := NewLocalExecutionEnvironment(dir)
