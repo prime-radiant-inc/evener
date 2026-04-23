@@ -2018,6 +2018,43 @@ func TestComplete_UsageRaw_ContainsProviderData(t *testing.T) {
 	}
 }
 
+func TestComplete_NormalizesInputTokens_SubtractsCached(t *testing.T) {
+	// OpenAI Responses API reports input_tokens as total-including-cached.
+	// llm.Usage's invariant is that InputTokens means "new uncached input."
+	// Assert the adapter subtracts cached_tokens before storing.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "resp_1",
+  "model": "gpt-5.2",
+  "output": [{"type": "message", "content": [{"type":"output_text", "text":"ok"}]}],
+  "usage": {
+    "input_tokens": 10000,
+    "output_tokens": 500,
+    "total_tokens": 10500,
+    "input_tokens_details": {"cached_tokens": 7000}
+  }
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{Model: "gpt-5.2", Messages: []llm.Message{llm.User("hi")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// After normalization: InputTokens = 10000 - 7000 = 3000 (new uncached only).
+	if resp.Usage.InputTokens != 3000 {
+		t.Errorf("InputTokens: got %d, want 3000 (10000 - 7000 cached)", resp.Usage.InputTokens)
+	}
+	if resp.Usage.CacheReadTokens == nil || *resp.Usage.CacheReadTokens != 7000 {
+		t.Errorf("CacheReadTokens: got %v, want 7000", resp.Usage.CacheReadTokens)
+	}
+	if resp.Usage.OutputTokens != 500 {
+		t.Errorf("OutputTokens: got %d, want 500", resp.Usage.OutputTokens)
+	}
+}
+
 func TestAdapter_ListModels(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/v1/models" {

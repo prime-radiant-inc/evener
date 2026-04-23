@@ -425,6 +425,97 @@ func TestComplete_PopulatesTotalTokens(t *testing.T) {
 	}
 }
 
+func TestComplete_ExtractsCachedTokens(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+			"id": "chatcmpl-1", "model": "test",
+			"choices": []any{map[string]any{
+				"index":         0,
+				"finish_reason": "stop",
+				"message":       map[string]any{"role": "assistant", "content": "hi"},
+			}},
+			"usage": map[string]any{
+				"prompt_tokens":         1000,
+				"completion_tokens":     50,
+				"total_tokens":          1050,
+				"prompt_tokens_details": map[string]any{"cached_tokens": 800},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	a := &Adapter{BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{Model: "test", Messages: []llm.Message{llm.User("hi")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Usage.CacheReadTokens == nil {
+		t.Fatalf("CacheReadTokens is nil, want 800")
+	}
+	if *resp.Usage.CacheReadTokens != 800 {
+		t.Errorf("CacheReadTokens = %d, want 800", *resp.Usage.CacheReadTokens)
+	}
+}
+
+func TestComplete_NormalizesInputTokens_SubtractsCached(t *testing.T) {
+	// OpenAI-compat endpoints report prompt_tokens as total-including-cached.
+	// The adapter must subtract cached_tokens so llm.Usage.InputTokens means
+	// new uncached input only.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+			"id": "chatcmpl-1", "model": "test",
+			"choices": []any{map[string]any{
+				"index":         0,
+				"finish_reason": "stop",
+				"message":       map[string]any{"role": "assistant", "content": "hi"},
+			}},
+			"usage": map[string]any{
+				"prompt_tokens":         10000,
+				"completion_tokens":     500,
+				"total_tokens":          10500,
+				"prompt_tokens_details": map[string]any{"cached_tokens": 7000},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	a := &Adapter{BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{Model: "test", Messages: []llm.Message{llm.User("hi")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Usage.InputTokens != 3000 {
+		t.Errorf("InputTokens: got %d, want 3000 (10000 - 7000 cached)", resp.Usage.InputTokens)
+	}
+	if resp.Usage.CacheReadTokens == nil || *resp.Usage.CacheReadTokens != 7000 {
+		t.Errorf("CacheReadTokens: got %v, want 7000", resp.Usage.CacheReadTokens)
+	}
+}
+
+func TestComplete_NoCachedTokensField_LeavesNil(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+			"id": "chatcmpl-1", "model": "test",
+			"choices": []any{map[string]any{
+				"index":         0,
+				"finish_reason": "stop",
+				"message":       map[string]any{"role": "assistant", "content": "hi"},
+			}},
+			"usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+		})
+	}))
+	defer srv.Close()
+
+	a := &Adapter{BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{Model: "test", Messages: []llm.Message{llm.User("hi")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Usage.CacheReadTokens != nil {
+		t.Errorf("CacheReadTokens = %v, want nil for response without prompt_tokens_details", resp.Usage.CacheReadTokens)
+	}
+}
+
 func TestComplete_WrapsContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
@@ -1084,7 +1175,11 @@ func TestComplete_ReasoningTokens_NativeFromCompletionDetails(t *testing.T) {
 	}
 }
 
-func TestComplete_ReasoningTokens_EstimatedWhenAbsent(t *testing.T) {
+func TestComplete_ReasoningTokens_NilWhenProviderOmits(t *testing.T) {
+	// completion_tokens from most OpenAI-compatible providers already
+	// includes billed thinking tokens. Fabricating an estimate from
+	// reasoning_content character count double-counts against output.
+	// Leave ReasoningTokens nil unless the provider reports it natively.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		// 80 chars of reasoning_content, no completion_tokens_details.
@@ -1109,9 +1204,8 @@ func TestComplete_ReasoningTokens_EstimatedWhenAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
-	// 80 chars / 4 = 20 estimated tokens.
-	if resp.Usage.ReasoningTokens == nil || *resp.Usage.ReasoningTokens != 20 {
-		t.Fatalf("ReasoningTokens: %v, want 20", resp.Usage.ReasoningTokens)
+	if resp.Usage.ReasoningTokens != nil {
+		t.Fatalf("ReasoningTokens should be nil (provider didn't report), got %d", *resp.Usage.ReasoningTokens)
 	}
 }
 
@@ -1720,13 +1814,12 @@ func TestQuirks_FinishReasonMap_Streaming(t *testing.T) {
 	}
 }
 
-func TestStream_ReasoningTokens_EstimatedInStream(t *testing.T) {
+func TestStream_ReasoningTokens_NilWhenProviderOmits(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher, _ := w.(http.Flusher)
 
 		chunks := []string{
-			// 20 chars of reasoning = 5 estimated tokens.
 			`{"id":"c4","model":"m","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"12345678901234567890"},"finish_reason":null}]}`,
 			`{"id":"c4","model":"m","choices":[{"index":0,"delta":{"content":"done"},"finish_reason":null}]}`,
 			`{"id":"c4","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":5,"total_tokens":6}}`,
@@ -1763,9 +1856,8 @@ func TestStream_ReasoningTokens_EstimatedInStream(t *testing.T) {
 	if finalResp == nil {
 		t.Fatal("no final response")
 	}
-	// 20 chars / 4 = 5 estimated tokens.
-	if finalResp.Usage.ReasoningTokens == nil || *finalResp.Usage.ReasoningTokens != 5 {
-		t.Fatalf("ReasoningTokens: %v, want 5", finalResp.Usage.ReasoningTokens)
+	if finalResp.Usage.ReasoningTokens != nil {
+		t.Fatalf("ReasoningTokens should be nil in stream (provider didn't report native count), got %d", *finalResp.Usage.ReasoningTokens)
 	}
 }
 

@@ -983,9 +983,23 @@ func skipOpenAIModel(id string) bool {
 }
 
 func parseUsage(u map[string]any) llm.Usage {
+	// OpenAI's Responses API reports input_tokens as total-including-cached,
+	// with cached_tokens a subset in input_tokens_details. The llm.Usage
+	// invariant is that InputTokens means new uncached input only, so we
+	// subtract cached here.
+	rawInput := llm.IntFromAny(u["input_tokens"])
+	output := llm.IntFromAny(u["output_tokens"])
+	var cachedRead int
+	if inDetails, ok := u["input_tokens_details"].(map[string]any); ok {
+		cachedRead = llm.IntFromAny(inDetails["cached_tokens"])
+	}
+	uncachedInput := rawInput - cachedRead
+	if uncachedInput < 0 {
+		uncachedInput = 0
+	}
 	usage := llm.Usage{
-		InputTokens:  llm.IntFromAny(u["input_tokens"]),
-		OutputTokens: llm.IntFromAny(u["output_tokens"]),
+		InputTokens:  uncachedInput,
+		OutputTokens: output,
 		TotalTokens:  llm.IntFromAny(u["total_tokens"]),
 		Raw:          u,
 	}
@@ -993,8 +1007,8 @@ func parseUsage(u map[string]any) llm.Usage {
 		rt := llm.IntFromAny(outDetails["reasoning_tokens"])
 		usage.ReasoningTokens = &rt
 	}
-	if inDetails, ok := u["input_tokens_details"].(map[string]any); ok {
-		ct := llm.IntFromAny(inDetails["cached_tokens"])
+	if _, ok := u["input_tokens_details"].(map[string]any); ok {
+		ct := cachedRead
 		usage.CacheReadTokens = &ct
 	}
 	return usage

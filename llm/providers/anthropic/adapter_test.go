@@ -1695,7 +1695,132 @@ func TestStream_HandlesWebSearchBlocks(t *testing.T) {
 	}
 }
 
-func TestComplete_EstimatesReasoningTokens(t *testing.T) {
+func TestComplete_CacheCreation_SplitsByTTL(t *testing.T) {
+	// Anthropic reports cache_creation breakdown when extended-cache-ttl
+	// is requested. The adapter must route 5m and 1h writes to their
+	// respective fields so downstream pricing uses the correct rate.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		resp := map[string]any{
+			"id":    "msg_1",
+			"model": "claude-opus-4-5",
+			"content": []any{
+				map[string]any{"type": "text", "text": "hi"},
+			},
+			"stop_reason": "end_turn",
+			"usage": map[string]any{
+				"input_tokens":                2000,
+				"output_tokens":               100,
+				"cache_read_input_tokens":     0,
+				"cache_creation_input_tokens": 3000, // aggregate
+				"cache_creation": map[string]any{
+					"ephemeral_5m_input_tokens": 1200,
+					"ephemeral_1h_input_tokens": 1800,
+				},
+			},
+		}
+		b, _ := json.Marshal(resp)
+		w.Write(b) //nolint:errcheck
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "claude-opus-4-5",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Usage.CacheWriteTokens == nil || *resp.Usage.CacheWriteTokens != 1200 {
+		t.Errorf("CacheWriteTokens (5m): got %v, want 1200", resp.Usage.CacheWriteTokens)
+	}
+	if resp.Usage.CacheWrite1hTokens == nil || *resp.Usage.CacheWrite1hTokens != 1800 {
+		t.Errorf("CacheWrite1hTokens: got %v, want 1800", resp.Usage.CacheWrite1hTokens)
+	}
+}
+
+func TestComplete_CacheCreation_FallbackWhenNoBreakdown(t *testing.T) {
+	// Legacy/default behavior: no `cache_creation` breakdown, only the
+	// aggregate field. Must route entirely to CacheWriteTokens (5m TTL).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		resp := map[string]any{
+			"id":          "msg_1",
+			"model":       "claude-opus-4-5",
+			"content":     []any{map[string]any{"type": "text", "text": "hi"}},
+			"stop_reason": "end_turn",
+			"usage": map[string]any{
+				"input_tokens":                2000,
+				"output_tokens":               100,
+				"cache_creation_input_tokens": 3000,
+			},
+		}
+		b, _ := json.Marshal(resp)
+		w.Write(b) //nolint:errcheck
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "claude-opus-4-5",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Usage.CacheWriteTokens == nil || *resp.Usage.CacheWriteTokens != 3000 {
+		t.Errorf("CacheWriteTokens fallback: got %v, want 3000", resp.Usage.CacheWriteTokens)
+	}
+	if resp.Usage.CacheWrite1hTokens != nil {
+		t.Errorf("CacheWrite1hTokens should be nil without breakdown, got %d", *resp.Usage.CacheWrite1hTokens)
+	}
+}
+
+func TestComplete_ReasoningEstimated_FromThinkingChars(t *testing.T) {
+	// Anthropic output_tokens already includes billed thinking tokens, so
+	// ReasoningTokens must stay nil (would double-count if added).
+	// But we DO surface a rough char-based estimate on the separate
+	// ReasoningTokensEstimated field, for display only — never billed.
+	thinkingText := "0123456789abcdefghij01234567" // 28 chars / 4 = 7
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		resp := map[string]any{
+			"id":    "msg_1",
+			"model": "claude-3-5-sonnet-20241022",
+			"content": []any{
+				map[string]any{"type": "thinking", "thinking": thinkingText, "signature": "sig_abc"},
+				map[string]any{"type": "text", "text": "answer"},
+			},
+			"stop_reason": "end_turn",
+			"usage":       map[string]any{"input_tokens": 10, "output_tokens": 20},
+		}
+		b, _ := json.Marshal(resp)
+		w.Write(b) //nolint:errcheck
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "claude-3-5-sonnet-20241022",
+		Messages: []llm.Message{llm.User("think")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Usage.ReasoningTokens != nil {
+		t.Errorf("ReasoningTokens (native) should remain nil, got %d", *resp.Usage.ReasoningTokens)
+	}
+	if resp.Usage.ReasoningTokensEstimated == nil {
+		t.Fatal("ReasoningTokensEstimated should be populated from thinking chars")
+	}
+	if *resp.Usage.ReasoningTokensEstimated != 7 {
+		t.Errorf("estimated reasoning: got %d, want 7 (chars/4)", *resp.Usage.ReasoningTokensEstimated)
+	}
+}
+
+func TestComplete_ReasoningTokens_NilWhenProviderOmits(t *testing.T) {
+	// Without any thinking blocks, both native and estimated fields stay nil.
 	thinkingText := "Let me think about this step by step..."
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1722,16 +1847,12 @@ func TestComplete_EstimatesReasoningTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Usage.ReasoningTokens == nil {
-		t.Fatal("ReasoningTokens should be estimated, got nil")
-	}
-	expected := len(thinkingText) / 4
-	if *resp.Usage.ReasoningTokens != expected {
-		t.Fatalf("ReasoningTokens = %d, want %d (len=%d / 4)", *resp.Usage.ReasoningTokens, expected, len(thinkingText))
+	if resp.Usage.ReasoningTokens != nil {
+		t.Fatalf("ReasoningTokens should be nil (provider didn't report), got %d", *resp.Usage.ReasoningTokens)
 	}
 }
 
-func TestStream_EstimatesReasoningTokens(t *testing.T) {
+func TestStream_ReasoningTokens_NilWhenProviderOmits(t *testing.T) {
 	srv := newAnthropicStreamServer(t, []string{
 		`event: message_start`,
 		`data: {"type":"message_start","message":{"id":"msg_t","model":"claude-test","usage":{"input_tokens":10}}}`,
@@ -1782,11 +1903,8 @@ func TestStream_EstimatesReasoningTokens(t *testing.T) {
 	if resp == nil {
 		t.Fatal("no response")
 	}
-	if resp.Usage.ReasoningTokens == nil {
-		t.Fatal("ReasoningTokens should be estimated in streaming, got nil")
-	}
-	if *resp.Usage.ReasoningTokens <= 0 {
-		t.Fatalf("ReasoningTokens = %d, want > 0", *resp.Usage.ReasoningTokens)
+	if resp.Usage.ReasoningTokens != nil {
+		t.Fatalf("ReasoningTokens should be nil in streaming (not natively reported), got %d", *resp.Usage.ReasoningTokens)
 	}
 }
 

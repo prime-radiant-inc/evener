@@ -726,20 +726,13 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 					r.Finish = llm.FinishReason{Reason: "tool_calls", Raw: "tool_use"}
 				}
 
-				// Estimate reasoning_tokens from thinking blocks.
-				if r.Usage.ReasoningTokens == nil {
-					var thinkingChars int
-					for _, p := range parts {
-						if (p.Kind == llm.ContentThinking || p.Kind == llm.ContentRedThinking) && p.Thinking != nil {
-							thinkingChars += len(p.Thinking.Text)
-						}
-					}
-					if thinkingChars > 0 {
-						estimated := thinkingChars / 4
-						if estimated < 1 {
-							estimated = 1
-						}
-						r.Usage.ReasoningTokens = &estimated
+				// Best-effort thinking-token estimate from visible thinking content,
+				// only when provider didn't supply a native ReasoningTokens count.
+				// Informational only — never enters the billing path.
+				if r.Usage.ReasoningTokens == nil && r.Usage.ReasoningTokensEstimated == nil {
+					if est := estimateThinkingTokens(parts); est > 0 {
+						e := est
+						r.Usage.ReasoningTokensEstimated = &e
 					}
 				}
 
@@ -1183,41 +1176,75 @@ func fromAnthropicResponse(raw map[string]any, requestedModel string) llm.Respon
 		r.Usage = parseUsage(u)
 	}
 
-	// Estimate reasoning_tokens from thinking blocks when provider doesn't give a native count.
-	if r.Usage.ReasoningTokens == nil {
-		var thinkingChars int
-		for _, p := range msg.Content {
-			if (p.Kind == llm.ContentThinking || p.Kind == llm.ContentRedThinking) && p.Thinking != nil {
-				thinkingChars += len(p.Thinking.Text)
-			}
-		}
-		if thinkingChars > 0 {
-			estimated := thinkingChars / 4
-			if estimated < 1 {
-				estimated = 1
-			}
-			r.Usage.ReasoningTokens = &estimated
+	if r.Usage.ReasoningTokens == nil && r.Usage.ReasoningTokensEstimated == nil {
+		if est := estimateThinkingTokens(msg.Content); est > 0 {
+			e := est
+			r.Usage.ReasoningTokensEstimated = &e
 		}
 	}
 
 	return r
 }
 
+// estimateThinkingTokens returns a rough char/4 estimate of thinking
+// content in a response. Used only when the provider doesn't report a
+// native reasoning-token count. Deliberately imprecise — caller must
+// route this into Usage.ReasoningTokensEstimated (not ReasoningTokens).
+func estimateThinkingTokens(parts []llm.ContentPart) int {
+	chars := 0
+	for _, p := range parts {
+		if (p.Kind == llm.ContentThinking || p.Kind == llm.ContentRedThinking) && p.Thinking != nil {
+			chars += len(p.Thinking.Text)
+		}
+	}
+	if chars == 0 {
+		return 0
+	}
+	est := chars / 4
+	if est < 1 {
+		est = 1
+	}
+	return est
+}
+
 func parseUsage(u map[string]any) llm.Usage {
+	// Anthropic already separates new input, cache reads, and cache creations,
+	// matching llm.Usage's invariant.
+	input := llm.IntFromAny(u["input_tokens"])
+	output := llm.IntFromAny(u["output_tokens"])
 	usage := llm.Usage{
-		InputTokens:  llm.IntFromAny(u["input_tokens"]),
-		OutputTokens: llm.IntFromAny(u["output_tokens"]),
-		TotalTokens:  llm.IntFromAny(u["input_tokens"]) + llm.IntFromAny(u["output_tokens"]),
+		InputTokens:  input,
+		OutputTokens: output,
 		Raw:          u,
 	}
+	total := input + output
 	if vAny, ok := u["cache_read_input_tokens"]; ok {
 		v := llm.IntFromAny(vAny)
 		usage.CacheReadTokens = &v
+		total += v
 	}
-	if vAny, ok := u["cache_creation_input_tokens"]; ok {
+	// When extended-cache-ttl is requested, Anthropic reports a
+	// `cache_creation` breakdown alongside the aggregate
+	// `cache_creation_input_tokens`. Prefer the breakdown so 5m and 1h
+	// writes are priced at their correct rates downstream.
+	if breakdown, ok := u["cache_creation"].(map[string]any); ok {
+		if vAny, ok := breakdown["ephemeral_5m_input_tokens"]; ok {
+			v := llm.IntFromAny(vAny)
+			usage.CacheWriteTokens = &v
+			total += v
+		}
+		if vAny, ok := breakdown["ephemeral_1h_input_tokens"]; ok {
+			v := llm.IntFromAny(vAny)
+			usage.CacheWrite1hTokens = &v
+			total += v
+		}
+	} else if vAny, ok := u["cache_creation_input_tokens"]; ok {
+		// Fallback: no breakdown, assume default 5m TTL.
 		v := llm.IntFromAny(vAny)
 		usage.CacheWriteTokens = &v
+		total += v
 	}
+	usage.TotalTokens = total
 	return usage
 }
 

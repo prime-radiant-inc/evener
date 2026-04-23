@@ -271,13 +271,44 @@ func normalizeFinish(provider, raw string) string {
 	return FinishReasonOther
 }
 
+// Usage is the normalized token-usage report returned by every adapter.
+//
+// InputTokens invariant: "new input tokens billed at the full input rate,"
+// i.e. tokens that are neither cache reads nor cache-creation writes.
+// Adapters are responsible for subtracting cached token counts from their
+// raw provider response so this field has the same meaning regardless of
+// provider. Callers never need to know which provider reported a call in
+// order to compute cost.
+//
+// CacheReadTokens counts input tokens served from the provider's prompt
+// cache. CacheWriteTokens counts input tokens written to the 5-minute
+// TTL cache (Anthropic only — OpenAI has no separate write cost).
+// CacheWrite1hTokens counts tokens written to the 1-hour TTL cache; only
+// populated when the caller opts into extended cache via the Anthropic
+// beta header. All three are nil when the provider doesn't report them.
+//
+// ReasoningTokens is nil unless the provider natively reports a count.
+// When set, callers should treat it as metadata only — it is NOT added
+// to OutputTokens for billing, because every supported provider already
+// bills thinking tokens via OutputTokens at the output rate.
+//
+// ReasoningTokensEstimated is populated when the adapter can derive a
+// rough thinking-token count from response content (e.g. char count of
+// thinking blocks divided by 4), used only when the provider doesn't
+// supply a native count. Informational signal only; never enters the
+// billing path. Display it separately from ReasoningTokens with a clear
+// "estimated" marker.
+//
+// TotalTokens = InputTokens + OutputTokens + optional cache reads/writes.
 type Usage struct {
-	InputTokens      int  `json:"input_tokens"`
-	OutputTokens     int  `json:"output_tokens"`
-	TotalTokens      int  `json:"total_tokens"`
-	ReasoningTokens  *int `json:"reasoning_tokens,omitempty"`
-	CacheReadTokens  *int `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens *int `json:"cache_write_tokens,omitempty"`
+	InputTokens              int  `json:"input_tokens"`
+	OutputTokens             int  `json:"output_tokens"`
+	TotalTokens              int  `json:"total_tokens"`
+	ReasoningTokens          *int `json:"reasoning_tokens,omitempty"`
+	ReasoningTokensEstimated *int `json:"reasoning_tokens_estimated,omitempty"`
+	CacheReadTokens          *int `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens         *int `json:"cache_write_tokens,omitempty"`
+	CacheWrite1hTokens       *int `json:"cache_write_1h_tokens,omitempty"`
 
 	Raw map[string]any `json:"raw,omitempty"`
 }
@@ -290,8 +321,10 @@ func (u Usage) Add(v Usage) Usage {
 		Raw:          map[string]any{},
 	}
 	out.ReasoningTokens = addOptInt(u.ReasoningTokens, v.ReasoningTokens)
+	out.ReasoningTokensEstimated = addOptInt(u.ReasoningTokensEstimated, v.ReasoningTokensEstimated)
 	out.CacheReadTokens = addOptInt(u.CacheReadTokens, v.CacheReadTokens)
 	out.CacheWriteTokens = addOptInt(u.CacheWriteTokens, v.CacheWriteTokens)
+	out.CacheWrite1hTokens = addOptInt(u.CacheWrite1hTokens, v.CacheWrite1hTokens)
 	return out
 }
 

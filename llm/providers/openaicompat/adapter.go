@@ -357,13 +357,11 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 				if usage != nil {
 					finalResp.Usage = *usage
 				}
-				// Estimate reasoning tokens when not natively reported.
-				if finalResp.Usage.ReasoningTokens == nil && reasoningBuf.Len() > 0 {
-					estimated := reasoningBuf.Len() / 4
-					if estimated < 1 {
-						estimated = 1
+				if finalResp.Usage.ReasoningTokens == nil && finalResp.Usage.ReasoningTokensEstimated == nil {
+					if est := estimateThinkingFromBuf(reasoningBuf.Len()); est > 0 {
+						e := est
+						finalResp.Usage.ReasoningTokensEstimated = &e
 					}
-					finalResp.Usage.ReasoningTokens = &estimated
 				}
 				if sseBuf != nil {
 					finalResp.RawRequestBody = rawReqBody
@@ -386,12 +384,24 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 				model = chunk.Model
 			}
 			if chunk.Usage != nil {
+				// OpenAI-compat endpoints report prompt_tokens as
+				// total-including-cached. Subtract cached_tokens to honor
+				// llm.Usage's "InputTokens means new uncached input" invariant.
+				rawPrompt := llm.IntFromAny(chunk.Usage["prompt_tokens"])
+				var cachedRead int
+				if details, ok := chunk.Usage["prompt_tokens_details"].(map[string]any); ok {
+					cachedRead = llm.IntFromAny(details["cached_tokens"])
+				}
+				uncachedInput := rawPrompt - cachedRead
+				if uncachedInput < 0 {
+					uncachedInput = 0
+				}
 				u := llm.Usage{
-					InputTokens:  llm.IntFromAny(chunk.Usage["prompt_tokens"]),
+					InputTokens:  uncachedInput,
 					OutputTokens: llm.IntFromAny(chunk.Usage["completion_tokens"]),
 					Raw:          chunk.Usage,
 				}
-				u.TotalTokens = u.InputTokens + u.OutputTokens
+				u.TotalTokens = rawPrompt + u.OutputTokens
 				if v := llm.IntFromAny(chunk.Usage["total_tokens"]); v > 0 {
 					u.TotalTokens = v
 				}
@@ -399,6 +409,9 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 					if rt := llm.IntFromAny(details["reasoning_tokens"]); rt > 0 {
 						u.ReasoningTokens = &rt
 					}
+				}
+				if cachedRead > 0 {
+					u.CacheReadTokens = &cachedRead
 				}
 				usage = &u
 			}
@@ -1186,12 +1199,22 @@ func fromChatCompletionResponse(raw map[string]any, quirks ProviderQuirks) (llm.
 	}
 
 	if parsed.Usage != nil {
+		rawPrompt := llm.IntFromAny(parsed.Usage["prompt_tokens"])
+		output := llm.IntFromAny(parsed.Usage["completion_tokens"])
+		var cachedRead int
+		if details, ok := parsed.Usage["prompt_tokens_details"].(map[string]any); ok {
+			cachedRead = llm.IntFromAny(details["cached_tokens"])
+		}
+		uncachedInput := rawPrompt - cachedRead
+		if uncachedInput < 0 {
+			uncachedInput = 0
+		}
 		resp.Usage = llm.Usage{
-			InputTokens:  llm.IntFromAny(parsed.Usage["prompt_tokens"]),
-			OutputTokens: llm.IntFromAny(parsed.Usage["completion_tokens"]),
+			InputTokens:  uncachedInput,
+			OutputTokens: output,
 			Raw:          parsed.Usage,
 		}
-		resp.Usage.TotalTokens = resp.Usage.InputTokens + resp.Usage.OutputTokens
+		resp.Usage.TotalTokens = rawPrompt + output
 		if v := llm.IntFromAny(parsed.Usage["total_tokens"]); v > 0 {
 			resp.Usage.TotalTokens = v
 		}
@@ -1200,26 +1223,39 @@ func fromChatCompletionResponse(raw map[string]any, quirks ProviderQuirks) (llm.
 				resp.Usage.ReasoningTokens = &rt
 			}
 		}
+		if cachedRead > 0 {
+			resp.Usage.CacheReadTokens = &cachedRead
+		}
 	}
 
-	// Estimate reasoning tokens from thinking content when not natively reported.
-	if resp.Usage.ReasoningTokens == nil {
-		var thinkingChars int
+	if resp.Usage.ReasoningTokens == nil && resp.Usage.ReasoningTokensEstimated == nil {
+		chars := 0
 		for _, p := range parts {
 			if p.Kind == llm.ContentThinking && p.Thinking != nil {
-				thinkingChars += len(p.Thinking.Text)
+				chars += len(p.Thinking.Text)
 			}
 		}
-		if thinkingChars > 0 {
-			estimated := thinkingChars / 4
-			if estimated < 1 {
-				estimated = 1
-			}
-			resp.Usage.ReasoningTokens = &estimated
+		if est := estimateThinkingFromBuf(chars); est > 0 {
+			e := est
+			resp.Usage.ReasoningTokensEstimated = &e
 		}
 	}
 
 	return resp, nil
+}
+
+// estimateThinkingFromBuf returns a char/4 rough estimate from a
+// thinking-content character count. Used only for the Usage metadata
+// field ReasoningTokensEstimated — never for billing.
+func estimateThinkingFromBuf(chars int) int {
+	if chars == 0 {
+		return 0
+	}
+	est := chars / 4
+	if est < 1 {
+		est = 1
+	}
+	return est
 }
 
 // --- HTTP helpers ---
