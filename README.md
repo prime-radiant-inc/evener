@@ -88,11 +88,28 @@ Use flags or set `SERF_PROVIDER` and `SERF_MODEL` environment variables.
 | `--provider <name>` | LLM provider (see above) (required) |
 | `--model <name>` | LLM model identifier (required) |
 | `--dir <path>` | Working directory (default: current directory) |
+| `--output-schema <json>` | Inline JSON Schema replacing the default `communicate.output` schema |
 | `--verbose` | Emit NDJSON events to stderr (replaces human-readable output) |
 | `--resume <id>` | Resume a previous session by ID |
 | `--resume-with <id>` | Start a new task using a previous session's context |
 | `--resume-last` | Resume the most recent session |
 | `--list-sessions` | List saved sessions and exit |
+
+### Structured output
+
+Pass `--output-schema <json>` to replace the `communicate` tool's `output` field schema with your own. The flag takes an inline JSON string (file paths are not supported).
+
+```bash
+serf --provider openai --model gpt-5.2 \
+  --output-schema '{"type":"object","properties":{"plan":{"type":"string"}},"required":["plan"],"additionalProperties":false}' \
+  "Draft a one-paragraph plan for fixing the flaky test."
+```
+
+The supplied schema replaces `output` wholesale — the default `message`/`data`/`artifacts` shape is removed. Provider-specific caveats:
+
+- **OpenAI** rewrites `additionalProperties: true` to `false` and expands `required` to cover every property in the schema (strict mode).
+- **Anthropic** strips `anyOf`/`oneOf`/`allOf` at the top level of the output schema.
+- **Gemini** drops `additionalProperties` during sanitization.
 
 ## Output
 

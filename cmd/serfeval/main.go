@@ -180,7 +180,7 @@ func runEval(cfg evalConfig) error {
 		return fmt.Errorf("LLM client setup: %w", err)
 	}
 
-	profile, err := cmdutil.SelectProfile(cfg.provider, cfg.model)
+	profile, err := cmdutil.SelectProfile(cfg.provider, cfg.model, "")
 	if err != nil {
 		return err
 	}

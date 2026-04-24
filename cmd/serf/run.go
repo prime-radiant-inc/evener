@@ -39,6 +39,7 @@ type runConfig struct {
 	reasoningEffort    string   // --reasoning-effort override (or SERF_REASONING_EFFORT)
 	contextStrategy    string   // --context-strategy
 	exportATIF         string   // --export-atif path
+	outputSchema       string   // --output-schema: raw JSON schema applied to communicate.output
 	verbose            bool
 	noProjectPrompts   bool
 	agentName          string // --agent persona name (default: default)
@@ -160,7 +161,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		defer apiLog.Close()
 	}
 
-	profile, err := cmdutil.SelectProfile(provider, model)
+	profile, err := cmdutil.SelectProfile(provider, model, cfg.outputSchema)
 	if err != nil {
 		return err
 	}

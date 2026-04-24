@@ -112,7 +112,7 @@ func startEmbedded(ctx context.Context, cfg embeddedConfig) (*embeddedServer, er
 		return nil, fmt.Errorf("LLM client: %w", err)
 	}
 
-	profile, err := cmdutil.SelectProfile(prov, mod)
+	profile, err := cmdutil.SelectProfile(prov, mod, "")
 	if err != nil {
 		return nil, err
 	}

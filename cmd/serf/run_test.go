@@ -158,6 +158,35 @@ func TestRunMissingProvider(t *testing.T) {
 	}
 }
 
+// TestRunInvalidOutputSchema verifies that run returns an error when
+// --output-schema contains malformed JSON. This is the black-box wire-through
+// test — it confirms cfg.outputSchema reaches cmdutil.SelectProfile.
+func TestRunInvalidOutputSchema(t *testing.T) {
+	// Need at least one API key so llm.NewFromEnv succeeds and we actually
+	// reach SelectProfile where the schema is parsed.
+	if os.Getenv("OPENAI_API_KEY") == "" {
+		t.Setenv("OPENAI_API_KEY", "dummy-for-wire-test")
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), runConfig{
+		task:         "do something",
+		provider:     "openai",
+		model:        "gpt-5.2",
+		outputSchema: "{not json",
+		workDir:      t.TempDir(),
+		stateDir:     t.TempDir(),
+		stdout:       &stdout,
+		stderr:       &stderr,
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid --output-schema JSON")
+	}
+	if !strings.Contains(err.Error(), "invalid --output-schema") {
+		t.Fatalf("error %q, want to contain 'invalid --output-schema'", err.Error())
+	}
+}
+
 // TestRunMissingModel verifies that run returns an error when no --model is
 // provided and SERF_MODEL is unset.
 func TestRunMissingModel(t *testing.T) {

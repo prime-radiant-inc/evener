@@ -46,6 +46,7 @@ func runServe(args []string) error {
 	reasoningEffort := fs.String("reasoning-effort", "", "reasoning effort: low|medium|high|xhigh|none")
 	exportATIF := fs.String("export-atif", "", "export ATIF trajectory to this path")
 	contextStrategy := fs.String("context-strategy", "", "context management strategy")
+	outputSchema := fs.String("output-schema", "", "inline JSON Schema applied to the communicate tool's output field")
 	verbose := fs.Bool("verbose", false, "emit NDJSON events to stderr")
 	noProjectPrompts := fs.Bool("no-project-prompts", false, "suppress .serf/prompts/ loading")
 	agentName := fs.String("agent", "", "agent persona name (default: default)")
@@ -125,7 +126,7 @@ func runServe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("LLM client: %w", err)
 	}
-	profile, err := cmdutil.SelectProfile(prov, mod)
+	profile, err := cmdutil.SelectProfile(prov, mod, *outputSchema)
 	if err != nil {
 		return err
 	}

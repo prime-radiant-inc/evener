@@ -30,37 +30,44 @@ func GitOriginURLFromDir(dir string) string {
 }
 
 // SelectProfile creates the ProviderProfile for the given provider and model.
-func SelectProfile(provider, model string) (agent.ProviderProfile, error) {
-	requiredKeysRaw := os.Getenv("SERF_COMMUNICATE_REQUIRED_DATA_KEYS")
-	if strings.TrimSpace(requiredKeysRaw) == "" {
-		requiredKeysRaw = os.Getenv("SERF_SUBMIT_RESULT_REQUIRED_DATA_KEYS")
+//
+// If outputSchemaJSON is non-empty (after trimming whitespace), it is parsed
+// as JSON into a map and applied as the communicate tool's output schema via
+// agent.WithCommunicateOutputSchema. Parse errors return an error.
+//
+// SERF_ALLOWED_DECISIONS remains honored independently and stacks on top of
+// any supplied output schema.
+func SelectProfile(provider, model, outputSchemaJSON string) (agent.ProviderProfile, error) {
+	var outputSchema map[string]any
+	if trimmed := strings.TrimSpace(outputSchemaJSON); trimmed != "" {
+		if err := json.Unmarshal([]byte(trimmed), &outputSchema); err != nil {
+			return nil, fmt.Errorf("invalid --output-schema: %w", err)
+		}
 	}
-	requiredKeys := parseCommunicateRequiredDataKeys(requiredKeysRaw)
 	allowedDecisions := parseAllowedDecisions(os.Getenv("SERF_ALLOWED_DECISIONS"))
 
+	var raw agent.ProviderProfile
 	switch strings.ToLower(provider) {
 	case "openai":
-		p := agent.WithCommunicateRequiredDataKeys(agent.NewOpenAIProfile(model), requiredKeys)
-		return agent.WithAllowedDecisions(p, allowedDecisions), nil
+		raw = agent.NewOpenAIProfile(model)
 	case "anthropic":
-		p := agent.WithCommunicateRequiredDataKeys(agent.NewAnthropicProfile(model), requiredKeys)
-		return agent.WithAllowedDecisions(p, allowedDecisions), nil
+		raw = agent.NewAnthropicProfile(model)
 	case "google", "gemini":
-		p := agent.WithCommunicateRequiredDataKeys(agent.NewGeminiProfile(model), requiredKeys)
-		return agent.WithAllowedDecisions(p, allowedDecisions), nil
+		raw = agent.NewGeminiProfile(model)
 	case "minimax":
-		p := agent.WithCommunicateRequiredDataKeys(agent.NewMiniMaxProfile(model), requiredKeys)
-		return agent.WithAllowedDecisions(p, allowedDecisions), nil
+		raw = agent.NewMiniMaxProfile(model)
 	case "openrouter-anthropic":
-		p := agent.WithCommunicateRequiredDataKeys(agent.NewOpenRouterAnthropicProfile(model), requiredKeys)
-		return agent.WithAllowedDecisions(p, allowedDecisions), nil
+		raw = agent.NewOpenRouterAnthropicProfile(model)
 	case "kimi", "glm", "openrouter":
 		ctxWindow := queryModelContextWindow(provider, model)
-		p := agent.WithCommunicateRequiredDataKeys(agent.NewOpenAICompatProfile(provider, model, ctxWindow), requiredKeys)
-		return agent.WithAllowedDecisions(p, allowedDecisions), nil
+		raw = agent.NewOpenAICompatProfile(provider, model, ctxWindow)
 	default:
 		return nil, fmt.Errorf("unknown provider %q: must be openai, anthropic, google, minimax, openrouter-anthropic, kimi, glm, or openrouter", provider)
 	}
+
+	p := agent.WithCommunicateOutputSchema(raw, outputSchema)
+	p = agent.WithAllowedDecisions(p, allowedDecisions)
+	return p, nil
 }
 
 // ResolveProvider returns the provider from the flag value or SERF_PROVIDER env var.
@@ -201,29 +208,6 @@ func ListModelsFunc(client *llm.Client, providerID string) func(context.Context)
 }
 
 func parseAllowedDecisions(raw string) []string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil
-	}
-	if strings.HasPrefix(raw, "[") {
-		var keys []string
-		if err := json.Unmarshal([]byte(raw), &keys); err == nil && len(keys) > 0 {
-			return keys
-		}
-	}
-	parts := strings.Split(raw, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		out = append(out, p)
-	}
-	return out
-}
-
-func parseCommunicateRequiredDataKeys(raw string) []string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil

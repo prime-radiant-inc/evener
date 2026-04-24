@@ -7,79 +7,6 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-func TestWithCommunicateRequiredDataKeys_AddsRequiredKeysToSchema(t *testing.T) {
-	p := WithCommunicateRequiredDataKeys(NewOpenAIProfile("gpt-5.2"), []string{"components"})
-
-	var communicateFound bool
-	for _, td := range p.ToolDefinitions() {
-		if td.Name != "communicate" {
-			continue
-		}
-		communicateFound = true
-
-		props, _ := td.Parameters["properties"].(map[string]any)
-		output, _ := props["output"].(map[string]any)
-		outProps, _ := output["properties"].(map[string]any)
-		data, _ := outProps["data"].(map[string]any)
-
-		if data["additionalProperties"] != false {
-			t.Fatalf("data.additionalProperties=%v, want false", data["additionalProperties"])
-		}
-
-		required, ok := data["required"].([]string)
-		if !ok {
-			t.Fatalf("data.required not []string: %#v", data["required"])
-		}
-		if len(required) != 1 || required[0] != "components" {
-			t.Fatalf("data.required=%v, want [components]", required)
-		}
-		dataProps, _ := data["properties"].(map[string]any)
-		compSchema, ok := dataProps["components"].(map[string]any)
-		if !ok {
-			t.Fatalf("data.properties missing components: %#v", dataProps)
-		}
-		if compSchema["type"] != "array" {
-			t.Fatalf("components.type=%v, want %q", compSchema["type"], "array")
-		}
-		items, ok := compSchema["items"].(map[string]any)
-		if !ok {
-			t.Fatalf("components.items missing or not object: %#v", compSchema["items"])
-		}
-		if items["type"] != "object" {
-			t.Fatalf("components.items.type=%v, want %q", items["type"], "object")
-		}
-
-		// After removing decision side-effect, decision should NOT be in output
-		if _, exists := outProps["decision"]; exists {
-			t.Fatal("WithCommunicateRequiredDataKeys should not add decision field")
-		}
-	}
-	if !communicateFound {
-		t.Fatal("communicate tool not found")
-	}
-}
-
-func TestWithCommunicateRequiredDataKeys_PlanDocIsString(t *testing.T) {
-	p := WithCommunicateRequiredDataKeys(NewOpenAIProfile("gpt-5.2"), []string{"plan_doc"})
-
-	for _, td := range p.ToolDefinitions() {
-		if td.Name != "communicate" {
-			continue
-		}
-		props, _ := td.Parameters["properties"].(map[string]any)
-		output, _ := props["output"].(map[string]any)
-		outProps, _ := output["properties"].(map[string]any)
-		data, _ := outProps["data"].(map[string]any)
-		dataProps, _ := data["properties"].(map[string]any)
-		planDoc, _ := dataProps["plan_doc"].(map[string]any)
-		if planDoc["type"] != "string" {
-			t.Fatalf("plan_doc.type=%v, want %q", planDoc["type"], "string")
-		}
-		return
-	}
-	t.Fatal("communicate tool not found")
-}
-
 func TestDefCommunicate_DefaultSchema_NoDecisionField(t *testing.T) {
 	// Default communicate schema should NOT include the decision field.
 	// Decision is only needed for orchestration (toil) and gives the model
@@ -100,61 +27,6 @@ func TestDefCommunicate_DefaultSchema_NoDecisionField(t *testing.T) {
 			t.Fatal("default communicate output.required should not include decision")
 		}
 	}
-}
-
-func TestWithCommunicateRequiredDataKeys_TasksSchemaHasItems(t *testing.T) {
-	p := WithCommunicateRequiredDataKeys(NewOpenAIProfile("gpt-5.2"), []string{"tasks"})
-
-	for _, td := range p.ToolDefinitions() {
-		if td.Name != "communicate" {
-			continue
-		}
-		props, _ := td.Parameters["properties"].(map[string]any)
-		output, _ := props["output"].(map[string]any)
-		outProps, _ := output["properties"].(map[string]any)
-		data, _ := outProps["data"].(map[string]any)
-		dataProps, _ := data["properties"].(map[string]any)
-		tasks, _ := dataProps["tasks"].(map[string]any)
-		if tasks["type"] != "array" {
-			t.Fatalf("tasks.type=%v, want %q", tasks["type"], "array")
-		}
-		items, ok := tasks["items"].(map[string]any)
-		if !ok {
-			t.Fatalf("tasks.items missing or not object: %#v", tasks["items"])
-		}
-		if items["type"] != "object" {
-			t.Fatalf("tasks.items.type=%v, want %q", items["type"], "object")
-		}
-		return
-	}
-	t.Fatal("communicate tool not found")
-}
-
-func TestWithCommunicateRequiredDataKeys_StoryResultsIsObject(t *testing.T) {
-	// Regression: the suffix heuristic was typing "story_results" as array
-	// because it ends in "s". Keys ending in "_results" should be objects
-	// (keyed by ID), not arrays.
-	p := WithCommunicateRequiredDataKeys(NewOpenAIProfile("gpt-5.2"), []string{"story_results"})
-
-	for _, td := range p.ToolDefinitions() {
-		if td.Name != "communicate" {
-			continue
-		}
-		props, _ := td.Parameters["properties"].(map[string]any)
-		output, _ := props["output"].(map[string]any)
-		outProps, _ := output["properties"].(map[string]any)
-		data, _ := outProps["data"].(map[string]any)
-		dataProps, _ := data["properties"].(map[string]any)
-		sr, _ := dataProps["story_results"].(map[string]any)
-		if sr["type"] != "object" {
-			t.Fatalf("story_results.type=%v, want %q", sr["type"], "object")
-		}
-		if sr["additionalProperties"] != false {
-			t.Fatalf("story_results.additionalProperties=%v, want false", sr["additionalProperties"])
-		}
-		return
-	}
-	t.Fatal("communicate tool not found")
 }
 
 func TestWithAllowedDecisions_AddsDecisionWithEnum(t *testing.T) {
@@ -275,9 +147,139 @@ func TestWithAllowedDecisions_RegistryPreservesDecisionSchema(t *testing.T) {
 	}
 }
 
-func TestWithAllowedDecisions_WithRequiredDataKeys_BothApplied(t *testing.T) {
-	p := NewOpenAIProfile("gpt-5.2")
-	p = WithCommunicateRequiredDataKeys(p, []string{"plan_doc"})
+func TestWithCommunicateOutputSchema_ReplacesOutput(t *testing.T) {
+	schema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"plan": map[string]any{"type": "string"},
+		},
+		"required": []any{"plan"},
+	}
+	p := WithCommunicateOutputSchema(NewOpenAIProfile("gpt-5.2"), schema)
+
+	for _, td := range p.ToolDefinitions() {
+		if td.Name != "communicate" {
+			continue
+		}
+		props, _ := td.Parameters["properties"].(map[string]any)
+		output, ok := props["output"].(map[string]any)
+		if !ok {
+			t.Fatalf("output schema missing or not map: %#v", props["output"])
+		}
+
+		// The replacement schema should be present exactly.
+		if output["type"] != "object" {
+			t.Fatalf("output.type=%v, want object", output["type"])
+		}
+		if output["additionalProperties"] != false {
+			t.Fatalf("output.additionalProperties=%v, want false", output["additionalProperties"])
+		}
+		outProps, _ := output["properties"].(map[string]any)
+		if _, ok := outProps["plan"]; !ok {
+			t.Fatalf("output.properties missing plan: %#v", outProps)
+		}
+		// Default permissive shape (message/data/artifacts) must be gone —
+		// schema REPLACES, not merges.
+		if _, ok := outProps["message"]; ok {
+			t.Fatal("output.properties should not have message after replacement")
+		}
+		if _, ok := outProps["data"]; ok {
+			t.Fatal("output.properties should not have data after replacement")
+		}
+		if _, ok := outProps["artifacts"]; ok {
+			t.Fatal("output.properties should not have artifacts after replacement")
+		}
+		return
+	}
+	t.Fatal("communicate tool not found")
+}
+
+func TestWithCommunicateOutputSchema_MakesOutputRequired(t *testing.T) {
+	schema := map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"x": map[string]any{"type": "string"}},
+	}
+	p := WithCommunicateOutputSchema(NewOpenAIProfile("gpt-5.2"), schema)
+
+	for _, td := range p.ToolDefinitions() {
+		if td.Name != "communicate" {
+			continue
+		}
+		topRequired := toStringSlice(td.Parameters["required"])
+		hasOutput := false
+		for _, r := range topRequired {
+			if r == "output" {
+				hasOutput = true
+			}
+		}
+		if !hasOutput {
+			t.Fatalf("parameters.required=%v, should include output", topRequired)
+		}
+		return
+	}
+	t.Fatal("communicate tool not found")
+}
+
+func TestWithCommunicateOutputSchema_NilOrEmpty_NoOp(t *testing.T) {
+	base := NewOpenAIProfile("gpt-5.2")
+
+	if got := WithCommunicateOutputSchema(base, nil); got != base {
+		t.Fatal("nil schema should return profile unchanged")
+	}
+	if got := WithCommunicateOutputSchema(base, map[string]any{}); got != base {
+		t.Fatal("empty schema should return profile unchanged")
+	}
+}
+
+func TestWithCommunicateOutputSchema_Anthropic(t *testing.T) {
+	base := NewAnthropicProfile("claude-opus-4-6")
+	schema := map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"summary": map[string]any{"type": "string"}},
+		"required":   []any{"summary"},
+	}
+	p := WithCommunicateOutputSchema(base, schema)
+
+	if _, ok := p.(*anthropicProfile); !ok {
+		t.Fatalf("expected *anthropicProfile, got %T", p)
+	}
+	if p.ID() != "anthropic" {
+		t.Fatalf("got ID %q, want anthropic", p.ID())
+	}
+	if p.Model() != "claude-opus-4-6" {
+		t.Fatalf("got model %q, want claude-opus-4-6", p.Model())
+	}
+
+	for _, td := range p.ToolDefinitions() {
+		if td.Name != "communicate" {
+			continue
+		}
+		props, _ := td.Parameters["properties"].(map[string]any)
+		output, _ := props["output"].(map[string]any)
+		outProps, _ := output["properties"].(map[string]any)
+		if _, ok := outProps["summary"]; !ok {
+			t.Fatalf("output.properties missing summary: %#v", outProps)
+		}
+		return
+	}
+	t.Fatal("communicate tool not found")
+}
+
+// Stacking order: WithCommunicateOutputSchema then WithAllowedDecisions.
+// addDecisionToSchema injects "decision" into output.properties, so the
+// user-supplied output schema must already have a properties map that can
+// accept the new field. Document this in a comment near the function.
+func TestWithAllowedDecisions_WithOutputSchema_BothApplied(t *testing.T) {
+	base := NewOpenAIProfile("gpt-5.2")
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"plan_doc": map[string]any{"type": "string"},
+		},
+		"required": []any{"plan_doc"},
+	}
+	p := WithCommunicateOutputSchema(base, schema)
 	p = WithAllowedDecisions(p, []string{"ready_for_review"})
 
 	for _, td := range p.ToolDefinitions() {
@@ -288,27 +290,25 @@ func TestWithAllowedDecisions_WithRequiredDataKeys_BothApplied(t *testing.T) {
 		output, _ := props["output"].(map[string]any)
 		outProps, _ := output["properties"].(map[string]any)
 
-		// Decision should be present with enum
+		// Decision should be present with enum.
 		decisionSchema, exists := outProps["decision"].(map[string]any)
 		if !exists {
-			t.Fatal("expected decision field")
+			t.Fatal("expected decision field in output.properties")
 		}
 		enumSlice := toStringSlice(decisionSchema["enum"])
 		if len(enumSlice) != 1 || enumSlice[0] != "ready_for_review" {
 			t.Fatalf("decision.enum=%v, want [ready_for_review]", enumSlice)
 		}
 
-		// Data keys should also be present
-		data, _ := outProps["data"].(map[string]any)
-		dataProps, _ := data["properties"].(map[string]any)
-		if _, ok := dataProps["plan_doc"]; !ok {
-			t.Fatal("expected plan_doc in data.properties")
+		// User-supplied plan_doc must survive.
+		if _, ok := outProps["plan_doc"]; !ok {
+			t.Fatal("user-supplied plan_doc must survive WithAllowedDecisions")
 		}
 
-		// Output should be required at top level
-		topRequired, _ := td.Parameters["required"].([]string)
+		// Output must be required at top level.
+		topReq := toStringSlice(td.Parameters["required"])
 		hasOutput := false
-		for _, r := range topRequired {
+		for _, r := range topReq {
 			if r == "output" {
 				hasOutput = true
 			}

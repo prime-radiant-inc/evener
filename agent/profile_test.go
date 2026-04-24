@@ -799,21 +799,6 @@ func TestAnthropicProfile_Default_NoBeta1MHeader(t *testing.T) {
 	}
 }
 
-func TestAnthropicProfile_WithCommunicateRequiredDataKeys(t *testing.T) {
-	p := NewAnthropicProfile("claude-opus-4-6")
-	p2 := WithCommunicateRequiredDataKeys(p, []string{"tasks"})
-	if p2 == nil {
-		t.Fatal("WithCommunicateRequiredDataKeys returned nil")
-	}
-	// Should still be a valid profile with correct ID.
-	if p2.ID() != "anthropic" {
-		t.Fatalf("got ID %q", p2.ID())
-	}
-	if p2.Model() != "claude-opus-4-6" {
-		t.Fatalf("got model %q", p2.Model())
-	}
-}
-
 func TestGeminiProfile_ContextWindow_Is1M(t *testing.T) {
 	p := NewGeminiProfile("gemini-2.5-flash")
 	if p.ContextWindowSize() != 1_000_000 {

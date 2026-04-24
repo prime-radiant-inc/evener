@@ -1,6 +1,9 @@
 package cmdutil
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestMaxRoundsToConfig(t *testing.T) {
 	tests := []struct {
@@ -86,6 +89,95 @@ func TestParseAllowedDecisions_Whitespace(t *testing.T) {
 	if len(got) != 2 || got[0] != "approved" || got[1] != "changes_requested" {
 		t.Fatalf("got %v, want [approved changes_requested]", got)
 	}
+}
+
+func TestSelectProfile_NoSchema(t *testing.T) {
+	p, err := SelectProfile("openai", "gpt-5.2", "")
+	if err != nil {
+		t.Fatalf("SelectProfile: %v", err)
+	}
+	// Default permissive output schema should still have the message/data/artifacts shape.
+	var found bool
+	for _, td := range p.ToolDefinitions() {
+		if td.Name != "communicate" {
+			continue
+		}
+		found = true
+		props, _ := td.Parameters["properties"].(map[string]any)
+		output, _ := props["output"].(map[string]any)
+		outProps, _ := output["properties"].(map[string]any)
+		if _, ok := outProps["data"]; !ok {
+			t.Fatalf("default output schema missing data: %#v", outProps)
+		}
+		if _, ok := outProps["message"]; !ok {
+			t.Fatalf("default output schema missing message: %#v", outProps)
+		}
+	}
+	if !found {
+		t.Fatal("communicate tool not found")
+	}
+}
+
+func TestSelectProfile_ValidSchema(t *testing.T) {
+	schemaJSON := `{"type":"object","properties":{"plan":{"type":"string"}},"required":["plan"],"additionalProperties":false}`
+	p, err := SelectProfile("openai", "gpt-5.2", schemaJSON)
+	if err != nil {
+		t.Fatalf("SelectProfile: %v", err)
+	}
+	var found bool
+	for _, td := range p.ToolDefinitions() {
+		if td.Name != "communicate" {
+			continue
+		}
+		found = true
+		props, _ := td.Parameters["properties"].(map[string]any)
+		output, _ := props["output"].(map[string]any)
+		outProps, _ := output["properties"].(map[string]any)
+		if _, ok := outProps["plan"]; !ok {
+			t.Fatalf("output.properties missing plan after schema replacement: %#v", outProps)
+		}
+		// The original permissive fields must be gone.
+		if _, ok := outProps["data"]; ok {
+			t.Fatal("expected data to be gone after schema replacement")
+		}
+		if _, ok := outProps["message"]; ok {
+			t.Fatal("expected message to be gone after schema replacement")
+		}
+	}
+	if !found {
+		t.Fatal("communicate tool not found")
+	}
+}
+
+func TestSelectProfile_InvalidJSON(t *testing.T) {
+	_, err := SelectProfile("openai", "gpt-5.2", "{not json")
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+	if !strings.Contains(err.Error(), "invalid --output-schema") {
+		t.Fatalf("error message %q, want to contain 'invalid --output-schema'", err.Error())
+	}
+}
+
+func TestSelectProfile_WhitespaceOnly(t *testing.T) {
+	// Whitespace-only input is treated like empty — no override applied.
+	p, err := SelectProfile("openai", "gpt-5.2", "   ")
+	if err != nil {
+		t.Fatalf("SelectProfile: %v", err)
+	}
+	for _, td := range p.ToolDefinitions() {
+		if td.Name != "communicate" {
+			continue
+		}
+		props, _ := td.Parameters["properties"].(map[string]any)
+		output, _ := props["output"].(map[string]any)
+		outProps, _ := output["properties"].(map[string]any)
+		if _, ok := outProps["data"]; !ok {
+			t.Fatalf("default output schema missing data (whitespace should be no-op): %#v", outProps)
+		}
+		return
+	}
+	t.Fatal("communicate tool not found")
 }
 
 func TestStringSliceFlag(t *testing.T) {

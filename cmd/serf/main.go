@@ -46,6 +46,7 @@ func main() {
 	reasoningEffort := flag.String("reasoning-effort", "", "reasoning effort: low|medium|high|xhigh|none")
 	exportATIF := flag.String("export-atif", "", "export ATIF v1.6 trajectory to this path on session close")
 	contextStrategy := flag.String("context-strategy", "", "context management strategy: compact|recall|session-log|ooda (default: compact)")
+	outputSchema := flag.String("output-schema", "", "inline JSON Schema applied to the communicate tool's output field (replaces the default schema)")
 	verbose := flag.Bool("verbose", false, "emit NDJSON events to stderr")
 	noProjectPrompts := flag.Bool("no-project-prompts", false, "suppress .serf/prompts/ loading (match container behavior)")
 	agentName := flag.String("agent", "", "agent persona: default (default), explorer, or another available agent name")
@@ -87,6 +88,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  --mcp-config <path>  Path to .mcp.json file (repeatable)\n")
 		fmt.Fprintf(os.Stderr, "  --plugin-dir <path>  Plugin directory (repeatable)\n")
 		fmt.Fprintf(os.Stderr, "  --export-atif <path> Export ATIF trajectory on session close\n")
+		fmt.Fprintf(os.Stderr, "  --output-schema <json> Inline JSON Schema for communicate.output (replaces default; see README)\n")
 		fmt.Fprintf(os.Stderr, "  --cpu-profile <path> Write CPU profile (go tool pprof compatible)\n")
 		fmt.Fprintf(os.Stderr, "  --trace <path>       Write execution trace (go tool trace compatible)\n\n")
 		fmt.Fprintf(os.Stderr, "Session resume:\n")
@@ -149,6 +151,7 @@ func main() {
 		reasoningEffort:    *reasoningEffort,
 		contextStrategy:    *contextStrategy,
 		exportATIF:         *exportATIF,
+		outputSchema:       *outputSchema,
 		verbose:            *verbose,
 		noProjectPrompts:   *noProjectPrompts,
 		agentName:          *agentName,
