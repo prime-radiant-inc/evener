@@ -384,6 +384,28 @@ func TestNewOpenAICompatProfile_OpenRouterResolvesCatalogMetadata(t *testing.T) 
 	}
 }
 
+// TestProviderProfile_WithModel_OpenRouterPrefix_PreservesCatalogMetadata
+// covers the WithModel dispatch path for an OpenRouter model whose bare
+// form still contains a slash after provider stripping
+// ("anthropic/claude-3-haiku-20240307"). This is a slightly different
+// shape from the Ollama case — the SplitN must do exactly one split — so
+// regressions in either the dispatch (provider routing, prefix stripping)
+// or the catalog resolution would otherwise go uncaught.
+func TestProviderProfile_WithModel_OpenRouterPrefix_PreservesCatalogMetadata(t *testing.T) {
+	orig := NewOpenAIProfile("gpt-5.4")
+	cloned := orig.WithModel("openrouter/anthropic/claude-3-haiku-20240307")
+	if cloned.ID() != "openrouter" {
+		t.Fatalf("ID() = %q, want openrouter", cloned.ID())
+	}
+	if cloned.Model() != "anthropic/claude-3-haiku-20240307" {
+		t.Fatalf("Model() = %q, want anthropic/claude-3-haiku-20240307 (slash in remainder must be preserved)", cloned.Model())
+	}
+	if got := cloned.ContextWindowSize(); got != 200000 {
+		t.Fatalf("ContextWindowSize() = %d, want 200000 — catalog metadata for "+
+			"openrouter/anthropic/claude-3-haiku-20240307 was not resolved through the WithModel dispatch", got)
+	}
+}
+
 func assertHasTool(t *testing.T, p ProviderProfile, name string) {
 	t.Helper()
 	for _, td := range p.ToolDefinitions() {
