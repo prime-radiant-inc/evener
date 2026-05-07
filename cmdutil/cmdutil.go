@@ -49,7 +49,9 @@ func SelectProfile(provider, model, outputSchemaJSON string) (agent.ProviderProf
 	// Normalize once: registered adapter names are lowercase, so the
 	// profile's id must also be lowercase or the runtime won't find a
 	// matching provider for "--provider OLLAMA" / "--provider Kimi" / etc.
-	provider = strings.ToLower(provider)
+	// Also trim surrounding whitespace so SERF_PROVIDER="  OLLAMA  " from
+	// a sloppy env file works the same as "ollama".
+	provider = strings.ToLower(strings.TrimSpace(provider))
 
 	var raw agent.ProviderProfile
 	switch provider {
