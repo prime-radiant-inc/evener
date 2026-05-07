@@ -117,11 +117,25 @@ re-emitting the same call. For real coding-agent workloads, larger models
 ## Context length
 
 Ollama's `/v1/models` endpoint does not report `context_length`, so Serf
-cannot auto-detect the model's window. It falls back to **128K** by
-default, which is generous for most local models. If your model has a
-smaller window (many local models default to 4K or 8K), Ollama will
-silently truncate older messages — you may need to tune `num_ctx` in the
-Ollama Modelfile or via `OLLAMA_NUM_CTX` to match what Serf assumes.
+cannot auto-detect the model's window from the API. Resolution order:
+
+1. The embedded model catalog. Many common Ollama models are catalogued
+   under `ollama/<name>` (e.g. `ollama/llama3.1` → 8192). Tagged variants
+   like `llama3.1:8b` fall back to the untagged base entry.
+2. **128K** generic default for unknown models.
+
+So, for example, `--model llama3.1` or `--model llama3.1:8b` picks up
+the catalog's 8192 token window, while a model Serf has never heard of
+gets the 128K fallback. The catalog is conservative — it reflects each
+model family's typical default, not whatever you may have configured
+locally with `num_ctx`.
+
+If your local Modelfile sets `num_ctx` higher (or lower) than what Serf
+assumes, you'll see one of two failure modes: Serf compacts too
+aggressively (catalog says 8K but you have 32K configured), or Ollama
+silently truncates older messages (catalog says 128K fallback but your
+model only has 8K). Either way, align them by tuning `num_ctx` in your
+Modelfile.
 
 To raise the context window for a specific Ollama model:
 

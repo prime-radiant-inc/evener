@@ -186,7 +186,16 @@ func TestSelectProfile_WhitespaceOnly(t *testing.T) {
 // lowercase, so a profile with id="OLLAMA" or "  ollama  " would later
 // fail to find a matching provider in the LLM client. Mirrors the same
 // invariant llm.normalizeProviderName enforces on the client side.
+//
+// Hermeticity: SelectProfile calls queryModelContextWindow for kimi /
+// glm / openrouter when their API keys are present, which would issue
+// real HTTP requests. Clear those env vars so the test takes the
+// fast/empty path regardless of the test runner's environment.
 func TestSelectProfile_NormalizesProviderCase(t *testing.T) {
+	t.Setenv("KIMI_API_KEY", "")
+	t.Setenv("GLM_API_KEY", "")
+	t.Setenv("OPENROUTER_API_KEY", "")
+
 	cases := []struct {
 		input  string
 		wantID string
