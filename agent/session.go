@@ -794,6 +794,8 @@ func (s *Session) Snapshot() SessionSnapshot {
 
 // Meta returns the current session metadata without the conversation history.
 func (s *Session) Meta() SessionMeta {
+	originalTask := s.extractOriginalTask()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now().UTC()
@@ -807,6 +809,7 @@ func (s *Session) Meta() SessionMeta {
 		UpdatedAt:       now,
 		TurnCount:       s.modelResponses,
 		LastInputTokens: s.contextMgr.LastInputTokens(),
+		OriginalTask:    originalTask,
 	}
 }
 

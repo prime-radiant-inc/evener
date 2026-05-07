@@ -2321,3 +2321,49 @@ func TestSession_SystemPromptAsUser_CombinesIntoOneMessage(t *testing.T) {
 		t.Fatalf("system prompt should precede task in combined message (sysIdx=%d taskIdx=%d)", sysIdx, taskIdx)
 	}
 }
+
+func TestSession_Meta_PopulatesOriginalTask(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("ok") },
+		},
+	})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "write a haiku about goroutines"); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	meta := sess.Meta()
+	if meta.OriginalTask != "write a haiku about goroutines" {
+		t.Fatalf("OriginalTask: got %q, want %q",
+			meta.OriginalTask, "write a haiku about goroutines")
+	}
+}
+
+func TestSession_Meta_OriginalTask_EmptyForFreshSession(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	meta := sess.Meta()
+	if meta.OriginalTask != "" {
+		t.Fatalf("OriginalTask: got %q, want empty", meta.OriginalTask)
+	}
+}
