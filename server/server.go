@@ -88,6 +88,7 @@ type Server struct {
 	modelFunc        func(string)
 	listModelsFunc   func(context.Context) ([]ModelsResponseItem, error)
 	tasksFn          func() any
+	shutdownFunc     func()
 	processing       bool
 	inputCh          chan string
 }
@@ -114,6 +115,7 @@ func NewServer(cfg ServerConfig) *Server {
 	s.mux.HandleFunc("/input", s.handleInput)
 	s.mux.HandleFunc("/events", s.handleEvents)
 	s.mux.HandleFunc("/tasks", s.handleTasks)
+	s.mux.HandleFunc("/shutdown", s.handleShutdown)
 	return s
 }
 
@@ -275,10 +277,36 @@ func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.mu.RLock()
+	fn := s.shutdownFunc
+	s.mu.RUnlock()
+
+	if fn == nil {
+		http.Error(w, "shutdown not available", http.StatusServiceUnavailable)
+		return
+	}
+	go fn()
+	w.WriteHeader(http.StatusAccepted)
+}
+
 // SetModelFunc sets the function called by POST /model.
 func (s *Server) SetModelFunc(fn func(string)) {
 	s.mu.Lock()
 	s.modelFunc = fn
+	s.mu.Unlock()
+}
+
+// SetShutdownFunc sets the function called by POST /shutdown.
+// It must initiate graceful termination of the daemon process.
+// The handler returns 202 immediately after invoking the callback.
+func (s *Server) SetShutdownFunc(fn func()) {
+	s.mu.Lock()
+	s.shutdownFunc = fn
 	s.mu.Unlock()
 }
 

@@ -575,3 +575,49 @@ func TestModelsEndpoint_MethodNotAllowed(t *testing.T) {
 		t.Fatalf("status code: got %d, want 405", w.Code)
 	}
 }
+
+func TestShutdown_InvokesCallback(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	called := make(chan struct{}, 1)
+	srv.SetShutdownFunc(func() {
+		called <- struct{}{}
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/shutdown", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status: got %d, want %d (202)", rec.Code, http.StatusAccepted)
+	}
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("shutdown callback was not invoked within 1s")
+	}
+}
+
+func TestShutdown_503WhenUnregistered(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+
+	req := httptest.NewRequest(http.MethodPost, "/shutdown", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status: got %d, want %d (503)", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestShutdown_RejectsGET(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetShutdownFunc(func() {})
+
+	req := httptest.NewRequest(http.MethodGet, "/shutdown", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status: got %d, want %d", rec.Code, http.StatusMethodNotAllowed)
+	}
+}
