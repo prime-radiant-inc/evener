@@ -366,21 +366,97 @@ func TestNewOpenAICompatProfile_OllamaTaggedModelFallsBackToBase(t *testing.T) {
 	}
 }
 
-// TestNewOpenAICompatProfile_OllamaExactTaggedKeyWins verifies that when the
-// catalog has both an exact tagged key ("ollama/llama3:8b") and an
-// untagged key for the same family ("ollama/llama3"), the exact match
-// wins over the tag-stripped fallback.
-func TestNewOpenAICompatProfile_OllamaExactTaggedKeyWins(t *testing.T) {
+// TestResolveOpenAICompatCatalogModel exercises the lookup precedence
+// using a fake catalog so each branch can be observed directly. The
+// embedded catalog ships every ollama/llama3* variant with the same
+// 8192 context window, so a real-data test cannot distinguish the
+// exact-tagged path from the tag-stripped fallback.
+func TestResolveOpenAICompatCatalogModel(t *testing.T) {
+	fake := func(entries map[string]int) func(string) *llm.ModelInfo {
+		return func(key string) *llm.ModelInfo {
+			if ctx, ok := entries[key]; ok {
+				return &llm.ModelInfo{ID: key, ContextWindow: ctx}
+			}
+			return nil
+		}
+	}
+
+	t.Run("bare key wins (kimi/glm style)", func(t *testing.T) {
+		lookup := fake(map[string]int{"kimi-k2.5": 100})
+		mi := resolveOpenAICompatCatalogModel(lookup, "kimi", "kimi-k2.5")
+		if mi == nil || mi.ContextWindow != 100 {
+			t.Fatalf("got %+v, want bare match", mi)
+		}
+	})
+
+	t.Run("prefixed key when bare misses", func(t *testing.T) {
+		lookup := fake(map[string]int{"ollama/llama3.1": 200})
+		mi := resolveOpenAICompatCatalogModel(lookup, "ollama", "llama3.1")
+		if mi == nil || mi.ContextWindow != 200 {
+			t.Fatalf("got %+v, want prefixed match", mi)
+		}
+	})
+
+	t.Run("exact tagged prefixed key wins over tag-stripped fallback", func(t *testing.T) {
+		// Both keys exist with DIFFERENT context windows. The exact tagged
+		// key must be selected, NOT the tag-stripped one. If the lookup
+		// regresses and the third (stripped) branch fires before the
+		// second (exact prefixed) branch, this test catches it.
+		lookup := fake(map[string]int{
+			"ollama/llama3":    111, // tag-stripped fallback target
+			"ollama/llama3:8b": 222, // exact tagged target — should win
+		})
+		mi := resolveOpenAICompatCatalogModel(lookup, "ollama", "llama3:8b")
+		if mi == nil {
+			t.Fatal("got nil, want exact tagged match")
+		}
+		if mi.ContextWindow != 222 {
+			t.Fatalf("ContextWindow = %d, want 222 (exact tagged); got %d means the tag-stripped fallback fired before the exact prefixed match", mi.ContextWindow, mi.ContextWindow)
+		}
+	})
+
+	t.Run("tag-stripped prefixed key when exact tagged misses", func(t *testing.T) {
+		// Only the untagged base exists in the catalog. A user-supplied
+		// "llama3.1:8b" must fall back to "ollama/llama3.1".
+		lookup := fake(map[string]int{"ollama/llama3.1": 333})
+		mi := resolveOpenAICompatCatalogModel(lookup, "ollama", "llama3.1:8b")
+		if mi == nil || mi.ContextWindow != 333 {
+			t.Fatalf("got %+v, want tag-stripped fallback to ollama/llama3.1", mi)
+		}
+	})
+
+	t.Run("returns nil when nothing matches", func(t *testing.T) {
+		lookup := fake(map[string]int{"unrelated/model": 1})
+		mi := resolveOpenAICompatCatalogModel(lookup, "ollama", "nope:9999b")
+		if mi != nil {
+			t.Fatalf("got %+v, want nil", mi)
+		}
+	})
+
+	t.Run("model without colon does not attempt tag-stripped lookup", func(t *testing.T) {
+		// Sanity: an untagged miss must not fall through to a fictional
+		// stripped form. We use a bare-key catalog that would otherwise
+		// match the tag-stripped key if the third branch fired.
+		lookup := fake(map[string]int{"ollama/": 999})
+		mi := resolveOpenAICompatCatalogModel(lookup, "ollama", "nonexistent")
+		if mi != nil {
+			t.Fatalf("got %+v, want nil — there is no tag to strip", mi)
+		}
+	})
+}
+
+// TestNewOpenAICompatProfile_OllamaTaggedModelEndToEnd is a thin
+// integration check that the helper is wired into NewOpenAICompatProfile.
+// It uses a real catalog model and asserts a non-default context window
+// comes back. Detailed precedence is covered by
+// TestResolveOpenAICompatCatalogModel against a fake catalog.
+func TestNewOpenAICompatProfile_OllamaTaggedModelEndToEnd(t *testing.T) {
 	p := NewOpenAICompatProfile("ollama", "llama3:8b", 0)
-	// The catalog stores ollama/llama3:8b with its own context window;
-	// the tag-stripped fallback would have hit ollama/llama3 instead.
-	// Either way ContextWindowSize is non-zero (not the 128k default),
-	// proving that some catalog entry was picked up.
 	if got := p.ContextWindowSize(); got == 128_000 {
-		t.Fatalf("ContextWindowSize() = 128000 (generic fallback) — catalog lookup did not match either ollama/llama3:8b exact or ollama/llama3 tag-stripped")
+		t.Fatalf("ContextWindowSize() = 128000 (generic fallback) — helper not wired into NewOpenAICompatProfile")
 	}
 	if p.Model() != "llama3:8b" {
-		t.Fatalf("Model() = %q, want llama3:8b", p.Model())
+		t.Fatalf("Model() = %q, want llama3:8b — wire model must keep the tag", p.Model())
 	}
 }
 

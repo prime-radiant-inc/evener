@@ -481,17 +481,41 @@ func NewOpenRouterAnthropicProfile(model string) ProviderProfile {
 	}
 }
 
+// resolveOpenAICompatCatalogModel runs the OpenAI-compatible catalog
+// lookup precedence used by NewOpenAICompatProfile, returning the first
+// matching ModelInfo or nil. Pulled out as a pure function so it can be
+// unit-tested with a fake catalog without depending on which specific
+// entries the embedded catalog ships.
+//
+// Precedence (first hit wins):
+//  1. bare model name — covers kimi/glm (unprefixed catalog keys)
+//  2. "<id>/<model>" exact — covers openrouter and untagged ollama,
+//     and any tagged entry that ships in the catalog with its tag
+//     (e.g. "ollama/llama3:8b")
+//  3. "<id>/<base>" where base is `model` with any ":<tag>" suffix
+//     stripped — covers typical Ollama tagged variants whose catalog
+//     entry is the untagged family ("llama3.1:8b" -> "ollama/llama3.1")
+func resolveOpenAICompatCatalogModel(lookup func(string) *llm.ModelInfo, id, model string) *llm.ModelInfo {
+	if mi := lookup(model); mi != nil {
+		return mi
+	}
+	if mi := lookup(id + "/" + model); mi != nil {
+		return mi
+	}
+	if base, _, hasTag := strings.Cut(model, ":"); hasTag && base != "" {
+		if mi := lookup(id + "/" + base); mi != nil {
+			return mi
+		}
+	}
+	return nil
+}
+
 // NewOpenAICompatProfile creates a profile for OpenAI-compatible providers
 // (kimi, glm, openrouter, ollama, etc.). If contextWindow is 0, it's looked
 // up from the embedded model catalog; if still unknown, defaults to 128K.
 //
-// The catalog lookup tries up to three forms in order:
-//  1. bare model name (covers kimi, glm: catalog keys are unprefixed)
-//  2. "<id>/<model>" exact (covers openrouter, and untagged ollama)
-//  3. "<id>/<base>" where base is the model name with any ":<tag>" suffix
-//     stripped (covers tagged Ollama models like "llama3.1:8b" — the
-//     catalog stores "ollama/llama3.1" without the size tag for many
-//     model families)
+// The catalog lookup tries up to three forms in order, see
+// resolveOpenAICompatCatalogModel for the precedence contract.
 //
 // The wire model name is always the bare value; only the catalog lookup
 // is broadened.
@@ -499,15 +523,7 @@ func NewOpenAICompatProfile(id, model string, contextWindow int) ProviderProfile
 	model = strings.TrimSpace(model)
 	var catModel *llm.ModelInfo
 	if cat := llm.EmbeddedModelCatalog(); cat != nil {
-		catModel = cat.GetModelInfo(model)
-		if catModel == nil {
-			catModel = cat.GetModelInfo(id + "/" + model)
-		}
-		if catModel == nil {
-			if base, _, hasTag := strings.Cut(model, ":"); hasTag && base != "" {
-				catModel = cat.GetModelInfo(id + "/" + base)
-			}
-		}
+		catModel = resolveOpenAICompatCatalogModel(cat.GetModelInfo, id, model)
 	}
 	if contextWindow == 0 && catModel != nil && catModel.ContextWindow > 0 {
 		contextWindow = catModel.ContextWindow
