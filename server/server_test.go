@@ -307,6 +307,48 @@ func TestClearEndpoint_NoFunc(t *testing.T) {
 	}
 }
 
+func TestClear_409WhileProcessing(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	called := false
+	srv.SetClearFunc(func(ctx context.Context) error {
+		called = true
+		return nil
+	})
+	srv.SetProcessing(true)
+
+	req := httptest.NewRequest(http.MethodPost, "/clear", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status: got %d, want %d (409)", rec.Code, http.StatusConflict)
+	}
+	if called {
+		t.Fatal("clearFunc should not have been called while processing")
+	}
+}
+
+func TestClear_OKWhenIdle(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	called := false
+	srv.SetClearFunc(func(ctx context.Context) error {
+		called = true
+		return nil
+	})
+	srv.SetProcessing(false)
+
+	req := httptest.NewRequest(http.MethodPost, "/clear", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status: got %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if !called {
+		t.Fatal("clearFunc should have been called when idle")
+	}
+}
+
 func TestModelEndpoint(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 

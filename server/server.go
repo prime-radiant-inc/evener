@@ -253,9 +253,16 @@ func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
 	s.mu.RLock()
+	processing := s.processing
 	fn := s.clearFunc
 	s.mu.RUnlock()
+
+	if processing {
+		http.Error(w, "session is processing", http.StatusConflict)
+		return
+	}
 
 	if fn == nil {
 		http.Error(w, "clear not available", http.StatusServiceUnavailable)
