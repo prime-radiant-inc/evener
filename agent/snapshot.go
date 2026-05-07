@@ -40,6 +40,7 @@ type SessionMeta struct {
 	UpdatedAt       time.Time       `json:"updated_at"`
 	TurnCount       int             `json:"turn_count"`
 	LastInputTokens int             `json:"last_input_tokens,omitempty"`
+	OriginalTask    string          `json:"original_task,omitempty"`
 }
 
 const sessionsSubdir = "sessions"

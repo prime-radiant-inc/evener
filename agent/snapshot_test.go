@@ -1056,3 +1056,38 @@ func TestMetaTurnCount_CountsModelResponses(t *testing.T) {
 		t.Fatalf("meta turn_count: got %d, want 3 (should count model responses, not user inputs)", metas[0].TurnCount)
 	}
 }
+
+func TestSessionMeta_OriginalTask_RoundTrip(t *testing.T) {
+	original := SessionMeta{
+		ID:           "01TEST0001",
+		ProfileID:    "openai-gpt-5",
+		Model:        "gpt-5.2",
+		EnvInfo:      EnvironmentInfo{WorkingDir: "/tmp/x"},
+		CreatedAt:    time.Date(2026, 5, 7, 14, 32, 11, 0, time.UTC),
+		UpdatedAt:    time.Date(2026, 5, 7, 14, 32, 11, 0, time.UTC),
+		TurnCount:    3,
+		OriginalTask: "fix the bug in handler",
+	}
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got SessionMeta
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.OriginalTask != "fix the bug in handler" {
+		t.Fatalf("OriginalTask: got %q, want %q", got.OriginalTask, "fix the bug in handler")
+	}
+}
+
+func TestSessionMeta_OriginalTask_OmitEmpty(t *testing.T) {
+	meta := SessionMeta{ID: "01TEST0001"}
+	data, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if got := string(data); strings.Contains(got, "original_task") {
+		t.Fatalf("expected original_task to be omitempty when empty, got: %s", got)
+	}
+}
