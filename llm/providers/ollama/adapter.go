@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providers/openaicompat"
@@ -64,30 +65,62 @@ func (a *adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 // rewriteStream wraps an inner llm.Stream and rewrites the Provider field on
 // any embedded Response payloads so consumers see "ollama" instead of the
 // inner adapter's "openai-compatible" stamp.
+//
+// Close() owns shutdown: it signals the pump to stop forwarding, closes the
+// inner stream, and waits for the pump goroutine to exit before returning.
+// This prevents a goroutine leak when a consumer calls Close() without
+// draining Events() — without coordination, the pump would block forever
+// trying to send into a full out-channel that nobody is reading.
 type rewriteStream struct {
-	inner  llm.Stream
-	out    chan llm.StreamEvent
-	pumped bool
+	inner   llm.Stream
+	out     chan llm.StreamEvent
+	done    chan struct{}
+	pumpEnd chan struct{}
+	once    sync.Once
 }
 
 func newRewriteStream(inner llm.Stream) *rewriteStream {
-	s := &rewriteStream{inner: inner, out: make(chan llm.StreamEvent, 16)}
+	s := &rewriteStream{
+		inner:   inner,
+		out:     make(chan llm.StreamEvent, 16),
+		done:    make(chan struct{}),
+		pumpEnd: make(chan struct{}),
+	}
 	go s.pump()
 	return s
 }
 
 func (s *rewriteStream) pump() {
+	defer close(s.pumpEnd)
 	defer close(s.out)
-	for ev := range s.inner.Events() {
-		if ev.Response != nil {
-			ev.Response.Provider = providerName
+	for {
+		select {
+		case <-s.done:
+			return
+		case ev, ok := <-s.inner.Events():
+			if !ok {
+				return
+			}
+			if ev.Response != nil {
+				ev.Response.Provider = providerName
+			}
+			select {
+			case s.out <- ev:
+			case <-s.done:
+				return
+			}
 		}
-		s.out <- ev
 	}
 }
 
 func (s *rewriteStream) Events() <-chan llm.StreamEvent { return s.out }
-func (s *rewriteStream) Close() error                   { return s.inner.Close() }
+
+func (s *rewriteStream) Close() error {
+	s.once.Do(func() { close(s.done) })
+	err := s.inner.Close()
+	<-s.pumpEnd
+	return err
+}
 
 // resolveBaseURL implements the documented resolution order.
 func resolveBaseURL(baseURLEnv, hostEnv string) string {

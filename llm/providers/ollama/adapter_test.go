@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providers/openaicompat"
@@ -274,6 +275,102 @@ func TestAdapter_Complete_NoAuthHeaderWhenKeyEmpty(t *testing.T) {
 	if seen != "" {
 		t.Fatalf("Authorization header = %q, want empty", seen)
 	}
+}
+
+// TestAdapter_Stream_CloseWithoutDraining verifies that Close() on the
+// rewriteStream wrapper returns promptly even when the consumer never
+// reads from Events(). Without proper shutdown coordination, the pump
+// goroutine would block forever on a full out-channel and Close() would
+// hang waiting for it. Regression test for the goroutine leak found in
+// review of commit be4e79b.
+func TestAdapter_Stream_CloseWithoutDraining(t *testing.T) {
+	// Server emits many small deltas to fill the wrapper's out-channel
+	// buffer (cap 16). The exact count doesn't matter as long as it
+	// exceeds the buffer.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		var lines []string
+		for i := 0; i < 64; i++ {
+			lines = append(lines, `data: {"id":"c1","model":"llama3.2","choices":[{"index":0,"delta":{"content":"x"}}]}`)
+		}
+		lines = append(lines, `data: [DONE]`, "")
+		_, _ = io.WriteString(w, strings.Join(lines, "\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &adapter{inner: &openaicompat.Adapter{
+		BaseURL: srv.URL,
+		Client:  srv.Client(),
+	}}
+
+	stream, err := a.Stream(context.Background(), llm.Request{
+		Model:    "llama3.2",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	// Give the pump time to fill its buffer, then close without draining.
+	time.Sleep(50 * time.Millisecond)
+
+	closed := make(chan error, 1)
+	go func() { closed <- stream.Close() }()
+	select {
+	case <-closed:
+		// expected — Close returned promptly
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close() hung — likely goroutine leak in rewriteStream.pump")
+	}
+
+	// After Close returns, the events channel must be drained/closed so a
+	// later range over it terminates.
+	drained := make(chan struct{})
+	go func() {
+		for range stream.Events() {
+		}
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Events() channel did not close after Close()")
+	}
+}
+
+// TestAdapter_Stream_CloseIsIdempotent verifies that calling Close()
+// multiple times does not panic (e.g. by double-closing the done channel).
+func TestAdapter_Stream_CloseIsIdempotent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &adapter{inner: &openaicompat.Adapter{
+		BaseURL: srv.URL,
+		Client:  srv.Client(),
+	}}
+
+	stream, err := a.Stream(context.Background(), llm.Request{
+		Model:    "llama3.2",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	// First close — drains naturally.
+	for range stream.Events() {
+	}
+	if err := stream.Close(); err != nil {
+		t.Errorf("first Close: %v", err)
+	}
+	// Second close must not panic.
+	_ = stream.Close()
 }
 
 // TestProviderRegistered_WhenEnvSet verifies that init() has registered the
