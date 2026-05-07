@@ -302,68 +302,62 @@ func TestAdapter_Complete_NoAuthHeaderWhenKeyEmpty(t *testing.T) {
 	}
 }
 
+// stubStream is a hand-rolled llm.Stream used by the close-path regression
+// tests. Its Close() intentionally does NOT close the events channel: the
+// wrapper under test must own its own shutdown via the done signal.
+// Relying on inner.Close() to unblock pump is the bug we're guarding
+// against.
+type stubStream struct {
+	events chan llm.StreamEvent
+}
+
+func (s *stubStream) Events() <-chan llm.StreamEvent { return s.events }
+func (s *stubStream) Close() error                   { return nil }
+
 // TestAdapter_Stream_CloseWithoutDraining verifies that Close() on the
-// rewriteStream wrapper returns promptly even when the consumer never
-// reads from Events(). Without proper shutdown coordination, the pump
-// goroutine would block forever on a full out-channel and Close() would
-// hang waiting for it. Regression test for the goroutine leak found in
-// review of commit be4e79b.
+// rewriteStream wrapper returns promptly and that the events channel is
+// closed even when the consumer never reads from Events() and the inner
+// stream remains open. The synchronous unbuffered stub deterministically
+// reproduces the "pump blocked on full out-channel" condition: the 17th
+// send returns only after pump has dequeued event 17 and is committed to
+// writing it into the now-full 16-slot wrapper buffer. Regression test
+// for the goroutine leak found in review of commit be4e79b.
 func TestAdapter_Stream_CloseWithoutDraining(t *testing.T) {
-	// Server emits many small deltas to fill the wrapper's out-channel
-	// buffer (cap 16). The exact count doesn't matter as long as it
-	// exceeds the buffer.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		flusher, _ := w.(http.Flusher)
-		var lines []string
-		for i := 0; i < 64; i++ {
-			lines = append(lines, `data: {"id":"c1","model":"llama3.2","choices":[{"index":0,"delta":{"content":"x"}}]}`)
-		}
-		lines = append(lines, `data: [DONE]`, "")
-		_, _ = io.WriteString(w, strings.Join(lines, "\n\n"))
-		if flusher != nil {
-			flusher.Flush()
-		}
-	}))
-	t.Cleanup(srv.Close)
+	inner := &stubStream{events: make(chan llm.StreamEvent)}
+	ws := newRewriteStream(inner)
 
-	a := &adapter{inner: &openaicompat.Adapter{
-		BaseURL: srv.URL,
-		Client:  srv.Client(),
-	}}
-
-	stream, err := a.Stream(context.Background(), llm.Request{
-		Model:    "llama3.2",
-		Messages: []llm.Message{llm.User("hi")},
-	})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
+	// Fill the 16-slot wrapper buffer, then send one more so the pump
+	// goroutine is parked inside its inner select on a blocked send. Each
+	// send to the unbuffered inner.events only completes after pump has
+	// read it, so when the 17th send returns we have a deterministic
+	// "pump is blocked" state.
+	for i := 0; i < 17; i++ {
+		inner.events <- llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: "x"}
 	}
-
-	// Give the pump time to fill its buffer, then close without draining.
-	time.Sleep(50 * time.Millisecond)
 
 	closed := make(chan error, 1)
-	go func() { closed <- stream.Close() }()
+	go func() { closed <- ws.Close() }()
 	select {
 	case <-closed:
-		// expected — Close returned promptly
 	case <-time.After(2 * time.Second):
-		t.Fatal("Close() hung — likely goroutine leak in rewriteStream.pump")
+		t.Fatal("Close() hung — pump goroutine did not respond to shutdown signal")
 	}
 
-	// After Close returns, the events channel must be drained/closed so a
-	// later range over it terminates.
+	// After Close returns, the events channel MUST be closed. In the
+	// pre-fix implementation, pump would still be blocked trying to
+	// forward event 17 (or, after we drain, waiting on a fresh read from
+	// the still-open stub stream), so ws.Events() would never close and
+	// this drain would hang.
 	drained := make(chan struct{})
 	go func() {
-		for range stream.Events() {
+		for range ws.Events() {
 		}
 		close(drained)
 	}()
 	select {
 	case <-drained:
 	case <-time.After(2 * time.Second):
-		t.Fatal("Events() channel did not close after Close()")
+		t.Fatal("Events() channel did not close after Close() — pump goroutine leaked")
 	}
 }
 
