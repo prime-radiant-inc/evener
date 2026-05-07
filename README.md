@@ -67,9 +67,11 @@ echo 'Return JSON: {"ok": true}' | ./llmcall --provider openai --model gpt-5-min
 
 ### Provider and model (required)
 
-Both `--provider` and `--model` are required. Providers: `openai`, `anthropic`, `google`, `minimax`, `openrouter`, `kimi`, `glm`.
+Both `--provider` and `--model` are required. Providers: `openai`, `anthropic`, `google`, `minimax`, `openrouter`, `kimi`, `glm`, `ollama`.
 
 Use flags or set `SERF_PROVIDER` and `SERF_MODEL` environment variables.
+
+For local models via Ollama, see [docs/ollama.md](docs/ollama.md).
 
 ### Environment variables
 
@@ -80,6 +82,9 @@ Use flags or set `SERF_PROVIDER` and `SERF_MODEL` environment variables.
 | `OPENAI_API_KEY` | OpenAI API key |
 | `ANTHROPIC_API_KEY` | Anthropic API key |
 | `GEMINI_API_KEY` | Google Gemini API key |
+| `OLLAMA_BASE_URL` | Ollama base URL (default `http://localhost:11434/v1`) |
+| `OLLAMA_HOST` | Ollama host (Ollama's canonical env var; used if `OLLAMA_BASE_URL` is unset) |
+| `OLLAMA_API_KEY` | Optional API key for authenticated Ollama proxies / Ollama Cloud |
 
 ### Flags
 

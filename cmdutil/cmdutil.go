@@ -58,11 +58,11 @@ func SelectProfile(provider, model, outputSchemaJSON string) (agent.ProviderProf
 		raw = agent.NewMiniMaxProfile(model)
 	case "openrouter-anthropic":
 		raw = agent.NewOpenRouterAnthropicProfile(model)
-	case "kimi", "glm", "openrouter":
+	case "kimi", "glm", "openrouter", "ollama":
 		ctxWindow := queryModelContextWindow(provider, model)
 		raw = agent.NewOpenAICompatProfile(provider, model, ctxWindow)
 	default:
-		return nil, fmt.Errorf("unknown provider %q: must be openai, anthropic, google, minimax, openrouter-anthropic, kimi, glm, or openrouter", provider)
+		return nil, fmt.Errorf("unknown provider %q: must be openai, anthropic, google, minimax, openrouter-anthropic, kimi, glm, openrouter, or ollama", provider)
 	}
 
 	p := agent.WithCommunicateOutputSchema(raw, outputSchema)

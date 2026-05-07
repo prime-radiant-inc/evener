@@ -19,6 +19,7 @@ import (
 	_ "primeradiant.com/serf/llm/providers/google"
 	_ "primeradiant.com/serf/llm/providers/kimi"
 	_ "primeradiant.com/serf/llm/providers/minimax"
+	_ "primeradiant.com/serf/llm/providers/ollama"
 	_ "primeradiant.com/serf/llm/providers/openai"
 	_ "primeradiant.com/serf/llm/providers/openaicompat"
 	_ "primeradiant.com/serf/llm/providers/openrouter"
