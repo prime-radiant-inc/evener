@@ -236,6 +236,9 @@ func runServe(args []string) error {
 	})
 
 	srv.SetWorkingDir(wd)
+	srv.SetShutdownFunc(func() {
+		cancel()
+	})
 
 	// Bridge session events to SSE broadcaster.
 	bridgeSession(sess)
