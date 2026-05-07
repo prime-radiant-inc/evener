@@ -235,6 +235,8 @@ func runServe(args []string) error {
 		return nil
 	})
 
+	srv.SetWorkingDir(wd)
+
 	// Bridge session events to SSE broadcaster.
 	bridgeSession(sess)
 
