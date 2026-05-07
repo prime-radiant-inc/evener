@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 type ProviderAdapter interface {
@@ -212,6 +213,7 @@ func (c *Client) ListModels(ctx context.Context, provider string) ([]ModelInfo, 
 }
 
 func normalizeProviderName(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
 	switch name {
 	case "gemini":
 		// Serf uses "google" as the canonical provider key for Gemini.

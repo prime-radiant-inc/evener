@@ -404,6 +404,42 @@ func TestClient_Register_NonInitializable_NoPanic(t *testing.T) {
 	c.Register(&fakeAdapter{name: "plain"})
 }
 
+// TestClient_LookupNormalizesProviderCase verifies that provider lookup
+// is case-insensitive: a CLI passing --provider OLLAMA must still hit
+// the registered "ollama" adapter. Without normalization, callers that
+// forward unmodified user input would silently fail.
+func TestClient_LookupNormalizesProviderCase(t *testing.T) {
+	c := NewClient()
+	c.Register(&fakeAdapter{name: "ollama"})
+
+	if got := normalizeProviderName("OLLAMA"); got != "ollama" {
+		t.Errorf("normalizeProviderName(\"OLLAMA\") = %q, want ollama", got)
+	}
+	if got := normalizeProviderName("Ollama"); got != "ollama" {
+		t.Errorf("normalizeProviderName(\"Ollama\") = %q, want ollama", got)
+	}
+	if got := normalizeProviderName("  OLLAMA  "); got != "ollama" {
+		t.Errorf("normalizeProviderName whitespace-trimmed lowercase = %q", got)
+	}
+	if got := normalizeProviderName("Gemini"); got != "google" {
+		t.Errorf("normalizeProviderName(\"Gemini\") = %q, want google (alias still works)", got)
+	}
+
+	// End-to-end: a non-streaming Complete with mixed-case provider must
+	// route to the registered lowercase adapter.
+	resp, err := c.Complete(context.Background(), Request{
+		Provider: "OLLAMA",
+		Model:    "llama3.1:8b",
+		Messages: []Message{User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Complete with mixed-case provider: %v", err)
+	}
+	if resp.Provider != "ollama" {
+		t.Errorf("resp.Provider = %q, want ollama", resp.Provider)
+	}
+}
+
 func TestClient_SupportsToolChoice(t *testing.T) {
 	c := NewClient()
 	c.Register(&toolChoiceFakeAdapter{fakeAdapter: fakeAdapter{name: "openai"}})

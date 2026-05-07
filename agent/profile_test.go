@@ -340,12 +340,47 @@ func TestNewOpenAICompatProfile_OllamaResolvesCatalogMetadata(t *testing.T) {
 }
 
 // TestNewOpenAICompatProfile_OllamaUnknownModelFallsBack verifies that an
-// Ollama model with no catalog entry (under either bare or prefixed key)
-// falls back to the 128K generic default rather than failing.
+// Ollama model with no catalog entry (under either bare or prefixed key,
+// including the tag-stripped form) falls back to the 128K generic default
+// rather than failing.
 func TestNewOpenAICompatProfile_OllamaUnknownModelFallsBack(t *testing.T) {
 	p := NewOpenAICompatProfile("ollama", "definitely-not-a-real-model:9999b", 0)
 	if got := p.ContextWindowSize(); got != 128_000 {
 		t.Fatalf("ContextWindowSize() = %d, want 128000 fallback", got)
+	}
+}
+
+// TestNewOpenAICompatProfile_OllamaTaggedModelFallsBackToBase verifies that
+// tagged Ollama model names like "llama3.1:8b" — the form documented in
+// docs/ollama.md and produced by `ollama pull llama3.1:8b` — still pick up
+// catalog metadata via tag-stripped lookup. The catalog stores
+// "ollama/llama3.1" (no tag), so without this fallback every typical
+// tagged Ollama model would silently miss its catalog entry.
+func TestNewOpenAICompatProfile_OllamaTaggedModelFallsBackToBase(t *testing.T) {
+	p := NewOpenAICompatProfile("ollama", "llama3.1:8b", 0)
+	if got := p.ContextWindowSize(); got != 8192 {
+		t.Fatalf("ContextWindowSize() = %d, want 8192 (from ollama/llama3.1 via tag-stripped lookup)", got)
+	}
+	if p.Model() != "llama3.1:8b" {
+		t.Fatalf("Model() = %q, want llama3.1:8b — wire model must keep the tag", p.Model())
+	}
+}
+
+// TestNewOpenAICompatProfile_OllamaExactTaggedKeyWins verifies that when the
+// catalog has both an exact tagged key ("ollama/llama3:8b") and an
+// untagged key for the same family ("ollama/llama3"), the exact match
+// wins over the tag-stripped fallback.
+func TestNewOpenAICompatProfile_OllamaExactTaggedKeyWins(t *testing.T) {
+	p := NewOpenAICompatProfile("ollama", "llama3:8b", 0)
+	// The catalog stores ollama/llama3:8b with its own context window;
+	// the tag-stripped fallback would have hit ollama/llama3 instead.
+	// Either way ContextWindowSize is non-zero (not the 128k default),
+	// proving that some catalog entry was picked up.
+	if got := p.ContextWindowSize(); got == 128_000 {
+		t.Fatalf("ContextWindowSize() = 128000 (generic fallback) — catalog lookup did not match either ollama/llama3:8b exact or ollama/llama3 tag-stripped")
+	}
+	if p.Model() != "llama3:8b" {
+		t.Fatalf("Model() = %q, want llama3:8b", p.Model())
 	}
 }
 

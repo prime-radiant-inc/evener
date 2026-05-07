@@ -485,13 +485,16 @@ func NewOpenRouterAnthropicProfile(model string) ProviderProfile {
 // (kimi, glm, openrouter, ollama, etc.). If contextWindow is 0, it's looked
 // up from the embedded model catalog; if still unknown, defaults to 128K.
 //
-// The catalog lookup tries the bare model name first, then the
-// provider-qualified form ("<id>/<model>"). The bare name suffices for
-// providers like kimi and glm whose catalog keys are unprefixed; the
-// fallback covers ollama and openrouter, whose catalog keys are
-// provider-qualified ("ollama/llama3.1", "openrouter/anthropic/...").
-// This keeps the wire model name bare while still resolving catalog
-// metadata correctly.
+// The catalog lookup tries up to three forms in order:
+//  1. bare model name (covers kimi, glm: catalog keys are unprefixed)
+//  2. "<id>/<model>" exact (covers openrouter, and untagged ollama)
+//  3. "<id>/<base>" where base is the model name with any ":<tag>" suffix
+//     stripped (covers tagged Ollama models like "llama3.1:8b" — the
+//     catalog stores "ollama/llama3.1" without the size tag for many
+//     model families)
+//
+// The wire model name is always the bare value; only the catalog lookup
+// is broadened.
 func NewOpenAICompatProfile(id, model string, contextWindow int) ProviderProfile {
 	model = strings.TrimSpace(model)
 	var catModel *llm.ModelInfo
@@ -499,6 +502,11 @@ func NewOpenAICompatProfile(id, model string, contextWindow int) ProviderProfile
 		catModel = cat.GetModelInfo(model)
 		if catModel == nil {
 			catModel = cat.GetModelInfo(id + "/" + model)
+		}
+		if catModel == nil {
+			if base, _, hasTag := strings.Cut(model, ":"); hasTag && base != "" {
+				catModel = cat.GetModelInfo(id + "/" + base)
+			}
 		}
 	}
 	if contextWindow == 0 && catModel != nil && catModel.ContextWindow > 0 {
