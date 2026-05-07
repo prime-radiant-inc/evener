@@ -18,6 +18,7 @@ package ollama
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -134,24 +135,40 @@ func resolveBaseURL(baseURLEnv, hostEnv string) string {
 }
 
 // normalizeHost converts an OLLAMA_HOST value (host, host:port, or full URL)
-// into a complete base URL ending in /v1. Values that already terminate in
-// /v1 are preserved as-is so paths like https://proxy.example/ollama/v1 are
-// not double-suffixed.
+// into a complete base URL ending in /v1. IPv6 hosts are bracketed correctly:
+// bare "::1" becomes "[::1]:11434", which a naive strings.Contains(":") check
+// would have left as "::1" with the wrong scheme syntax. Values whose path
+// already terminates in /v1 are preserved so paths like
+// https://proxy.example/ollama/v1 are not double-suffixed.
 func normalizeHost(h string) string {
-	h = strings.TrimRight(strings.TrimSpace(h), "/")
+	h = strings.TrimSpace(h)
+	h = strings.TrimRight(h, "/")
 	if h == "" {
 		return defaultBaseURL
 	}
-	if !strings.Contains(h, "://") {
-		if !strings.Contains(h, ":") {
+	if strings.Contains(h, "://") {
+		// Has scheme — append /v1 if not already present.
+		if strings.HasSuffix(h, "/v1") {
+			return h
+		}
+		return h + "/v1"
+	}
+	// No scheme. Determine whether a port is present and whether the host
+	// is a bare IPv6 literal that needs brackets.
+	if _, _, err := net.SplitHostPort(h); err != nil {
+		switch {
+		case strings.HasPrefix(h, "[") && strings.HasSuffix(h, "]"):
+			// Bracketed IPv6 with no port.
+			h = h + ":11434"
+		case strings.Count(h, ":") >= 2:
+			// Bare IPv6 with no port: "::1" or "fe80::1".
+			h = "[" + h + "]:11434"
+		default:
+			// Hostname or IPv4 without a port.
 			h = h + ":11434"
 		}
-		h = "http://" + h
 	}
-	if strings.HasSuffix(h, "/v1") {
-		return h
-	}
-	return h + "/v1"
+	return "http://" + h + "/v1"
 }
 
 func init() {

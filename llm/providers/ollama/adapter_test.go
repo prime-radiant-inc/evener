@@ -144,6 +144,31 @@ func TestResolveBaseURL(t *testing.T) {
 			host: "http://192.168.1.5:11434/v1/",
 			want: "http://192.168.1.5:11434/v1",
 		},
+		{
+			name: "OLLAMA_HOST bare IPv6 unbracketed gets brackets and default port",
+			host: "::1",
+			want: "http://[::1]:11434/v1",
+		},
+		{
+			name: "OLLAMA_HOST bare IPv6 longer form",
+			host: "fe80::1",
+			want: "http://[fe80::1]:11434/v1",
+		},
+		{
+			name: "OLLAMA_HOST bracketed IPv6 without port",
+			host: "[::1]",
+			want: "http://[::1]:11434/v1",
+		},
+		{
+			name: "OLLAMA_HOST bracketed IPv6 with port",
+			host: "[::1]:11434",
+			want: "http://[::1]:11434/v1",
+		},
+		{
+			name: "OLLAMA_HOST IPv6 in full URL preserved",
+			host: "http://[::1]:11434",
+			want: "http://[::1]:11434/v1",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

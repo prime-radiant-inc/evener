@@ -295,6 +295,35 @@ func TestAnthropicProfile_WithModel_ResolvesProviderPrefix(t *testing.T) {
 	}
 }
 
+// TestProviderProfile_WithModel_OllamaPrefix verifies that
+// WithModel("ollama/<model>") on an OpenAI profile returns an ollama
+// profile with the prefix stripped — required so subagent / model-override
+// paths that pass "ollama/<model>" don't end up sending the prefixed name
+// to the wire.
+func TestProviderProfile_WithModel_OllamaPrefix(t *testing.T) {
+	orig := NewOpenAIProfile("gpt-5.4")
+	cloned := orig.WithModel("ollama/llama3.1:8b")
+	if cloned.Model() != "llama3.1:8b" {
+		t.Fatalf("Model() = %q, want %q", cloned.Model(), "llama3.1:8b")
+	}
+	if cloned.ID() != "ollama" {
+		t.Fatalf("ID() = %q, want %q", cloned.ID(), "ollama")
+	}
+}
+
+// TestAnthropicProfile_WithModel_OllamaPrefix verifies the same dispatch
+// works from the anthropicProfile WithModel path.
+func TestAnthropicProfile_WithModel_OllamaPrefix(t *testing.T) {
+	orig := NewAnthropicProfile("claude-opus-4-6")
+	cloned := orig.WithModel("ollama/qwen2.5-coder:7b")
+	if cloned.Model() != "qwen2.5-coder:7b" {
+		t.Fatalf("Model() = %q, want %q", cloned.Model(), "qwen2.5-coder:7b")
+	}
+	if cloned.ID() != "ollama" {
+		t.Fatalf("ID() = %q, want %q", cloned.ID(), "ollama")
+	}
+}
+
 func assertHasTool(t *testing.T, p ProviderProfile, name string) {
 	t.Helper()
 	for _, td := range p.ToolDefinitions() {
