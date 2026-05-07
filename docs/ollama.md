@@ -130,23 +130,26 @@ gets the 128K fallback. The catalog is conservative — it reflects each
 model family's typical default, not whatever you may have configured
 locally with `num_ctx`.
 
-If your local Modelfile sets `num_ctx` higher (or lower) than what Serf
-assumes, you'll see one of two failure modes: Serf compacts too
-aggressively (catalog says 8K but you have 32K configured), or Ollama
-silently truncates older messages (catalog says 128K fallback but your
-model only has 8K). Either way, align them by tuning `num_ctx` in your
-Modelfile.
+**Limitation:** Serf has no way to detect your actual configured
+`num_ctx`. The catalog is static. So if you bump `num_ctx` in a custom
+Modelfile, Serf will not know — and there is currently no override
+flag. Two failure modes:
 
-To raise the context window for a specific Ollama model:
+- **Catalog says 8K, you have 32K configured:** Serf compacts too
+  aggressively and you lose useful context that Ollama would have
+  happily kept.
+- **Catalog says 128K (unknown model), you have 8K configured:** Serf
+  doesn't compact; Ollama silently truncates older messages and the
+  agent loses earlier turns without noticing.
 
-```bash
-# Create a model variant with a larger context window
-ollama show llama3.1:8b --modelfile > /tmp/Modelfile
-echo "PARAMETER num_ctx 32768" >> /tmp/Modelfile
-ollama create llama3.1:8b-32k -f /tmp/Modelfile
-
-serf --provider ollama --model llama3.1:8b-32k "..."
-```
+There's no clean workaround today. If you build a custom variant with
+a larger window, naming it under the same family
+(`llama3.1:8b-32k`) won't help — the tag-stripping catalog lookup
+will still resolve to `ollama/llama3.1` and pin you at 8192. Naming it
+something the catalog has never heard of (`my-llama-32k`) gets you the
+128K fallback, which over-shoots your real 32K window and exposes you
+to the silent-truncation failure mode above. For now, prefer Ollama
+models whose stock context window already matches your needs.
 
 ## Troubleshooting
 
