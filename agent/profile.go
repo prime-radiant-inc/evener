@@ -265,7 +265,7 @@ func (p *anthropicProfile) WithModel(model string) ProviderProfile {
 				return NewGeminiProfile(bareModel)
 			case "minimax":
 				return NewMiniMaxProfile(bareModel)
-			case "ollama":
+			case "kimi", "glm", "openrouter", "ollama":
 				return NewOpenAICompatProfile(provider, bareModel, 0)
 			}
 		}

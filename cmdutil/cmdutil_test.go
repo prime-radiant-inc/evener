@@ -180,6 +180,35 @@ func TestSelectProfile_WhitespaceOnly(t *testing.T) {
 	t.Fatal("communicate tool not found")
 }
 
+// TestSelectProfile_NormalizesProviderCase verifies that mixed-case
+// provider strings ("OLLAMA", "Kimi", "OpenRouter") are normalized to
+// lowercase before being used as the profile id. The registered adapter
+// names are lowercase, so a profile with id="OLLAMA" would later fail
+// to find a matching provider in the LLM client.
+func TestSelectProfile_NormalizesProviderCase(t *testing.T) {
+	cases := []struct {
+		input  string
+		wantID string
+	}{
+		{"ollama", "ollama"},
+		{"OLLAMA", "ollama"},
+		{"Ollama", "ollama"},
+		{"Kimi", "kimi"},
+		{"OpenRouter", "openrouter"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			p, err := SelectProfile(tc.input, "some-model", "")
+			if err != nil {
+				t.Fatalf("SelectProfile(%q): %v", tc.input, err)
+			}
+			if p.ID() != tc.wantID {
+				t.Fatalf("profile ID = %q, want %q (mixed-case provider must be lowercased)", p.ID(), tc.wantID)
+			}
+		})
+	}
+}
+
 func TestStringSliceFlag(t *testing.T) {
 	var f StringSliceFlag
 	if err := f.Set("a"); err != nil {

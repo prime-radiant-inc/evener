@@ -406,6 +406,37 @@ func TestProviderProfile_WithModel_OpenRouterPrefix_PreservesCatalogMetadata(t *
 	}
 }
 
+// TestAnthropicProfile_WithModel_OpenAICompatPrefixes verifies that the
+// anthropicProfile.WithModel dispatch handles every OpenAI-compatible
+// provider, not just ollama. Without this, an Anthropic-origin
+// WithModel("openrouter/...") or WithModel("kimi/...") would silently
+// stay on the Anthropic adapter with the slash-prefixed model string,
+// misrouting requests and bypassing the OpenAI-compat metadata path.
+func TestAnthropicProfile_WithModel_OpenAICompatPrefixes(t *testing.T) {
+	cases := []struct {
+		input     string
+		wantID    string
+		wantModel string
+	}{
+		{"openrouter/anthropic/claude-3-haiku-20240307", "openrouter", "anthropic/claude-3-haiku-20240307"},
+		{"kimi/kimi-k2.5", "kimi", "kimi-k2.5"},
+		{"glm/glm-5", "glm", "glm-5"},
+		{"ollama/llama3.1", "ollama", "llama3.1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			orig := NewAnthropicProfile("claude-opus-4-6")
+			cloned := orig.WithModel(tc.input)
+			if cloned.ID() != tc.wantID {
+				t.Fatalf("ID() = %q, want %q", cloned.ID(), tc.wantID)
+			}
+			if cloned.Model() != tc.wantModel {
+				t.Fatalf("Model() = %q, want %q", cloned.Model(), tc.wantModel)
+			}
+		})
+	}
+}
+
 func assertHasTool(t *testing.T, p ProviderProfile, name string) {
 	t.Helper()
 	for _, td := range p.ToolDefinitions() {

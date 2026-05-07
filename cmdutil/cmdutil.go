@@ -46,8 +46,13 @@ func SelectProfile(provider, model, outputSchemaJSON string) (agent.ProviderProf
 	}
 	allowedDecisions := parseAllowedDecisions(os.Getenv("SERF_ALLOWED_DECISIONS"))
 
+	// Normalize once: registered adapter names are lowercase, so the
+	// profile's id must also be lowercase or the runtime won't find a
+	// matching provider for "--provider OLLAMA" / "--provider Kimi" / etc.
+	provider = strings.ToLower(provider)
+
 	var raw agent.ProviderProfile
-	switch strings.ToLower(provider) {
+	switch provider {
 	case "openai":
 		raw = agent.NewOpenAIProfile(model)
 	case "anthropic":
