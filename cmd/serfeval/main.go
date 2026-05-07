@@ -69,7 +69,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Usage: serfeval --provider <p> --model <m> --task <task> [flags]\n\n")
 		fmt.Fprintf(os.Stderr, "Run a serf task and output evaluation metrics as JSON.\n\n")
 		fmt.Fprintf(os.Stderr, "Required:\n")
-		fmt.Fprintf(os.Stderr, "  --provider <name>    LLM provider: openai, anthropic, google, minimax, openrouter, kimi, glm\n")
+		fmt.Fprintf(os.Stderr, "  --provider <name>    LLM provider: openai, anthropic, google, minimax, openrouter, kimi, glm, ollama\n")
 		fmt.Fprintf(os.Stderr, "  --model <name>       LLM model\n")
 		fmt.Fprintf(os.Stderr, "  --task <text>        Task description\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")

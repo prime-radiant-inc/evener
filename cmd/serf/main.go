@@ -69,7 +69,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "A non-interactive coding agent.\n\n")
 		fmt.Fprintf(os.Stderr, "The task can be passed as arguments or piped via stdin.\n\n")
 		fmt.Fprintf(os.Stderr, "Required:\n")
-		fmt.Fprintf(os.Stderr, "  --provider <name>    LLM provider: openai, anthropic, google, minimax, openrouter, kimi, glm\n")
+		fmt.Fprintf(os.Stderr, "  --provider <name>    LLM provider: openai, anthropic, google, minimax, openrouter, kimi, glm, ollama\n")
 		fmt.Fprintf(os.Stderr, "  --model <name>       LLM model (e.g. gpt-5.2, claude-opus-4-6, gemini-3-flash-preview)\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		fmt.Fprintf(os.Stderr, "  --dir <path>         Working directory (default: current directory)\n")
