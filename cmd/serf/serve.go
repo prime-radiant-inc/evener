@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"primeradiant.com/serf/agent"
@@ -181,7 +182,7 @@ func runServe(args []string) error {
 	}
 
 	// Signal handling.
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	srv := server.NewServer(server.ServerConfig{})
