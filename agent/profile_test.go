@@ -368,6 +368,22 @@ func TestProviderProfile_WithModel_OllamaPrefix_PreservesCatalogMetadata(t *test
 	}
 }
 
+// TestNewOpenAICompatProfile_OpenRouterResolvesCatalogMetadata covers the
+// other half of the prefixed-key fallback in NewOpenAICompatProfile:
+// openrouter catalog entries are stored under "openrouter/<provider>/<model>"
+// keys (e.g. "openrouter/anthropic/claude-3-haiku-20240307"). A future
+// refactor that broke the prefixed-key fallback for the non-Ollama path
+// would otherwise go unnoticed.
+func TestNewOpenAICompatProfile_OpenRouterResolvesCatalogMetadata(t *testing.T) {
+	p := NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0)
+	if got := p.ContextWindowSize(); got != 200000 {
+		t.Fatalf("ContextWindowSize() = %d, want 200000 (from openrouter/anthropic/claude-3-haiku-20240307 catalog entry)", got)
+	}
+	if p.Model() != "anthropic/claude-3-haiku-20240307" {
+		t.Fatalf("Model() = %q, want bare model preserved on the wire", p.Model())
+	}
+}
+
 func assertHasTool(t *testing.T, p ProviderProfile, name string) {
 	t.Helper()
 	for _, td := range p.ToolDefinitions() {
