@@ -10,10 +10,12 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"time"
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/rendezvous"
 	_ "primeradiant.com/serf/llm/providers/anthropic"
 	_ "primeradiant.com/serf/llm/providers/glm"
 	_ "primeradiant.com/serf/llm/providers/google"
@@ -274,6 +276,30 @@ func runServe(args []string) error {
 		return fmt.Errorf("listen %s: %w", *addr, err)
 	}
 	fmt.Fprintf(os.Stderr, "[serve] listening on %s (session %s)\n", listener.Addr(), getSession().ID())
+
+	spawnedBy := "user"
+	if os.Getenv("SERF_HUB_SPAWNED") == "1" {
+		spawnedBy = "hub"
+	}
+	runDir := rendezvous.DefaultDir()
+	rvEntry := rendezvous.Entry{
+		PID:        os.Getpid(),
+		Address:    listener.Addr().String(),
+		WorkingDir: wd,
+		StateDir:   sd,
+		Agent:      *agentName,
+		Model:      mod,
+		Provider:   prov,
+		StartedAt:  time.Now().UTC(),
+		SpawnedBy:  spawnedBy,
+	}
+	if _, err := rendezvous.Write(runDir, rvEntry); err != nil {
+		fmt.Fprintf(os.Stderr, "[serve] rendezvous write failed: %v\n", err)
+	} else {
+		defer func() {
+			_ = rendezvous.Remove(runDir, rvEntry.PID)
+		}()
+	}
 
 	httpSrv := &http.Server{Handler: srv}
 	go func() {
