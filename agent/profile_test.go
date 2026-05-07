@@ -324,6 +324,50 @@ func TestAnthropicProfile_WithModel_OllamaPrefix(t *testing.T) {
 	}
 }
 
+// TestNewOpenAICompatProfile_OllamaResolvesCatalogMetadata verifies that
+// constructing an Ollama profile with a model that exists in the catalog
+// under a provider-prefixed key picks up the catalog's context window
+// instead of falling back to the 128K generic default. ollama/llama3.1
+// has max_input_tokens=8192 in the embedded litellm catalog.
+func TestNewOpenAICompatProfile_OllamaResolvesCatalogMetadata(t *testing.T) {
+	p := NewOpenAICompatProfile("ollama", "llama3.1", 0)
+	if got := p.ContextWindowSize(); got != 8192 {
+		t.Fatalf("ContextWindowSize() = %d, want 8192 (from ollama/llama3.1 catalog entry)", got)
+	}
+	if p.Model() != "llama3.1" {
+		t.Fatalf("Model() = %q, want %q (bare name preserved on the wire)", p.Model(), "llama3.1")
+	}
+}
+
+// TestNewOpenAICompatProfile_OllamaUnknownModelFallsBack verifies that an
+// Ollama model with no catalog entry (under either bare or prefixed key)
+// falls back to the 128K generic default rather than failing.
+func TestNewOpenAICompatProfile_OllamaUnknownModelFallsBack(t *testing.T) {
+	p := NewOpenAICompatProfile("ollama", "definitely-not-a-real-model:9999b", 0)
+	if got := p.ContextWindowSize(); got != 128_000 {
+		t.Fatalf("ContextWindowSize() = %d, want 128000 fallback", got)
+	}
+}
+
+// TestProviderProfile_WithModel_OllamaPrefix_PreservesCatalogMetadata is the
+// regression test the reviewer requested: WithModel("ollama/<model>") on an
+// OpenAI profile must surface the catalog-derived metadata, not silently
+// drop it. Combines the dispatch and catalog-resolution paths.
+func TestProviderProfile_WithModel_OllamaPrefix_PreservesCatalogMetadata(t *testing.T) {
+	orig := NewOpenAIProfile("gpt-5.4")
+	cloned := orig.WithModel("ollama/llama3.1")
+	if cloned.ID() != "ollama" {
+		t.Fatalf("ID() = %q, want ollama", cloned.ID())
+	}
+	if cloned.Model() != "llama3.1" {
+		t.Fatalf("Model() = %q, want llama3.1", cloned.Model())
+	}
+	if got := cloned.ContextWindowSize(); got != 8192 {
+		t.Fatalf("ContextWindowSize() = %d, want 8192 — catalog metadata for "+
+			"ollama/llama3.1 was not resolved through the WithModel dispatch", got)
+	}
+}
+
 func assertHasTool(t *testing.T, p ProviderProfile, name string) {
 	t.Helper()
 	for _, td := range p.ToolDefinitions() {

@@ -480,22 +480,38 @@ func NewOpenRouterAnthropicProfile(model string) ProviderProfile {
 }
 
 // NewOpenAICompatProfile creates a profile for OpenAI-compatible providers
-// (kimi, glm, openrouter, etc.). If contextWindow is 0, it's looked up from
-// the embedded model catalog; if still unknown, defaults to 128K.
+// (kimi, glm, openrouter, ollama, etc.). If contextWindow is 0, it's looked
+// up from the embedded model catalog; if still unknown, defaults to 128K.
+//
+// The catalog lookup tries the bare model name first, then the
+// provider-qualified form ("<id>/<model>"). The bare name suffices for
+// providers like kimi and glm whose catalog keys are unprefixed; the
+// fallback covers ollama and openrouter, whose catalog keys are
+// provider-qualified ("ollama/llama3.1", "openrouter/anthropic/...").
+// This keeps the wire model name bare while still resolving catalog
+// metadata correctly.
 func NewOpenAICompatProfile(id, model string, contextWindow int) ProviderProfile {
 	model = strings.TrimSpace(model)
-	if contextWindow == 0 {
-		if cat := llm.EmbeddedModelCatalog(); cat != nil {
-			if mi := cat.GetModelInfo(model); mi != nil && mi.ContextWindow > 0 {
-				contextWindow = mi.ContextWindow
-			}
+	var catModel *llm.ModelInfo
+	if cat := llm.EmbeddedModelCatalog(); cat != nil {
+		catModel = cat.GetModelInfo(model)
+		if catModel == nil {
+			catModel = cat.GetModelInfo(id + "/" + model)
 		}
+	}
+	if contextWindow == 0 && catModel != nil && catModel.ContextWindow > 0 {
+		contextWindow = catModel.ContextWindow
 	}
 	if contextWindow == 0 {
 		contextWindow = 128_000
 	}
 	defaultEfforts := []string{"low", "medium", "high"}
-	efforts := resolveEffortLevels(model, defaultEfforts)
+	var efforts []string
+	if catModel != nil && len(catModel.ReasoningEffortLevels) > 0 {
+		efforts = append([]string(nil), catModel.ReasoningEffortLevels...)
+	} else {
+		efforts = resolveEffortLevels(model, defaultEfforts)
+	}
 	// MiniMax via OpenRouter uses reasoning_details for multi-turn reasoning
 	// (not OpenAI's reasoning_content). Set the provider option that tells the
 	// openai-compat adapter to serialize/deserialize reasoning_details.
