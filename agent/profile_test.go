@@ -406,19 +406,23 @@ func TestProviderProfile_WithModel_OpenRouterPrefix_PreservesCatalogMetadata(t *
 	}
 }
 
-// TestAnthropicProfile_WithModel_OpenAICompatPrefixes verifies that the
-// anthropicProfile.WithModel dispatch handles every OpenAI-compatible
-// provider, not just ollama. Without this, an Anthropic-origin
-// WithModel("openrouter/...") or WithModel("kimi/...") would silently
-// stay on the Anthropic adapter with the slash-prefixed model string,
-// misrouting requests and bypassing the OpenAI-compat metadata path.
-func TestAnthropicProfile_WithModel_OpenAICompatPrefixes(t *testing.T) {
+// TestAnthropicProfile_WithModel_CrossProviderPrefixes verifies that the
+// anthropicProfile.WithModel dispatch is symmetric with
+// baseProfile.WithModel: every provider prefix that baseProfile handles
+// (the OpenAI-compatibles plus openrouter-anthropic) must dispatch the
+// same way from an Anthropic-origin profile. Without this, an
+// Anthropic-origin WithModel("openrouter/...") or
+// WithModel("openrouter-anthropic/...") would silently stay on the
+// Anthropic adapter with the slash-prefixed model string, misrouting
+// requests and bypassing the correct provider path.
+func TestAnthropicProfile_WithModel_CrossProviderPrefixes(t *testing.T) {
 	cases := []struct {
 		input     string
 		wantID    string
 		wantModel string
 	}{
 		{"openrouter/anthropic/claude-3-haiku-20240307", "openrouter", "anthropic/claude-3-haiku-20240307"},
+		{"openrouter-anthropic/claude-3-5-sonnet", "openrouter-anthropic", "claude-3-5-sonnet"},
 		{"kimi/kimi-k2.5", "kimi", "kimi-k2.5"},
 		{"glm/glm-5", "glm", "glm-5"},
 		{"ollama/llama3.1", "ollama", "llama3.1"},
