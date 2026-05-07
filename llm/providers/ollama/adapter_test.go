@@ -19,7 +19,7 @@ func TestAdapter_Name(t *testing.T) {
 	}
 }
 
-func TestAdapter_Complete_DelegatesToInner(t *testing.T) {
+func TestAdapter_Complete_DelegatesAndStampsProvider(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
@@ -44,6 +44,9 @@ func TestAdapter_Complete_DelegatesToInner(t *testing.T) {
 	}
 	if resp.Text() != "hello" {
 		t.Fatalf("text: %q", resp.Text())
+	}
+	if resp.Provider != "ollama" {
+		t.Fatalf("resp.Provider = %q, want ollama", resp.Provider)
 	}
 }
 
@@ -75,10 +78,10 @@ func TestAdapter_ListModels_RewritesProvider(t *testing.T) {
 
 func TestResolveBaseURL(t *testing.T) {
 	cases := []struct {
-		name     string
-		baseURL  string // OLLAMA_BASE_URL
-		host     string // OLLAMA_HOST
-		want     string
+		name    string
+		baseURL string // OLLAMA_BASE_URL
+		host    string // OLLAMA_HOST
+		want    string
 	}{
 		{
 			name: "default when nothing set",
@@ -120,6 +123,26 @@ func TestResolveBaseURL(t *testing.T) {
 			host: "http://192.168.1.5:11434/",
 			want: "http://192.168.1.5:11434/v1",
 		},
+		{
+			name: "OLLAMA_HOST already ending in /v1 is preserved",
+			host: "http://192.168.1.5:11434/v1",
+			want: "http://192.168.1.5:11434/v1",
+		},
+		{
+			name: "OLLAMA_HOST with custom path ending in /v1 is preserved",
+			host: "https://proxy.example.com/ollama/v1",
+			want: "https://proxy.example.com/ollama/v1",
+		},
+		{
+			name: "OLLAMA_HOST with custom path missing /v1 gets it appended",
+			host: "https://proxy.example.com/ollama",
+			want: "https://proxy.example.com/ollama/v1",
+		},
+		{
+			name: "OLLAMA_HOST with /v1/ trailing slash preserved (no double v1)",
+			host: "http://192.168.1.5:11434/v1/",
+			want: "http://192.168.1.5:11434/v1",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -137,9 +160,10 @@ func TestDefaultBaseURL(t *testing.T) {
 	}
 }
 
-// TestAdapter_Stream_DelegatesToInner verifies Stream() forwards to the
-// embedded openaicompat adapter and returns parseable events.
-func TestAdapter_Stream_DelegatesToInner(t *testing.T) {
+// TestAdapter_Stream_DelegatesAndStampsProvider verifies Stream() forwards to
+// the embedded openaicompat adapter, returns parseable text events, and
+// rewrites Response.Provider on the FINISH event to "ollama".
+func TestAdapter_Stream_DelegatesAndStampsProvider(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher, _ := w.(http.Flusher)
@@ -169,13 +193,23 @@ func TestAdapter_Stream_DelegatesToInner(t *testing.T) {
 		t.Fatalf("Stream: %v", err)
 	}
 	var text strings.Builder
+	var sawFinish bool
 	for ev := range stream.Events() {
 		if ev.Type == llm.StreamEventTextDelta {
 			text.WriteString(ev.Delta)
 		}
+		if ev.Type == llm.StreamEventFinish && ev.Response != nil {
+			sawFinish = true
+			if ev.Response.Provider != "ollama" {
+				t.Errorf("FINISH event Response.Provider = %q, want ollama", ev.Response.Provider)
+			}
+		}
 	}
 	if got := text.String(); got != "hi!" {
 		t.Fatalf("text deltas = %q, want %q", got, "hi!")
+	}
+	if !sawFinish {
+		t.Fatal("did not observe a FINISH event with a non-nil Response")
 	}
 }
 
@@ -242,11 +276,14 @@ func TestAdapter_Complete_NoAuthHeaderWhenKeyEmpty(t *testing.T) {
 	}
 }
 
-// TestProviderRegistered verifies init() has registered the ollama factory
-// with the global env registry, so llm.NewFromEnv() produces an "ollama"
-// provider unconditionally (no API key required for local use).
-func TestProviderRegistered(t *testing.T) {
+// TestProviderRegistered_WhenEnvSet verifies that init() has registered the
+// ollama factory with the global env registry, and that setting any one of
+// the OLLAMA_* env vars causes llm.NewFromEnv() to produce an "ollama"
+// provider.
+func TestProviderRegistered_WhenEnvSet(t *testing.T) {
 	t.Setenv("OLLAMA_BASE_URL", "http://example.invalid:9999/v1")
+	t.Setenv("OLLAMA_HOST", "")
+	t.Setenv("OLLAMA_API_KEY", "")
 
 	c, err := llm.NewFromEnv()
 	if err != nil {
@@ -261,5 +298,30 @@ func TestProviderRegistered(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("ollama not in registered providers: %v", c.ProviderNames())
+	}
+}
+
+// TestProviderNotRegistered_WhenNoEnvSet verifies the factory does NOT
+// register itself when none of OLLAMA_BASE_URL / OLLAMA_HOST / OLLAMA_API_KEY
+// are set. This protects against ollama becoming the implicit default
+// provider in environments where it isn't actually configured.
+func TestProviderNotRegistered_WhenNoEnvSet(t *testing.T) {
+	t.Setenv("OLLAMA_BASE_URL", "")
+	t.Setenv("OLLAMA_HOST", "")
+	t.Setenv("OLLAMA_API_KEY", "")
+
+	// llm.NewFromEnv() may or may not succeed depending on what other
+	// provider env vars are set in the test runner's environment. In
+	// either case, ollama must not appear in the registered providers.
+	c, err := llm.NewFromEnv()
+	if err != nil {
+		// "no providers configured" is expected if no other provider env
+		// vars are set. That itself proves ollama did not register.
+		return
+	}
+	for _, name := range c.ProviderNames() {
+		if name == "ollama" {
+			t.Fatalf("ollama is registered without any OLLAMA_* env var: providers=%v", c.ProviderNames())
+		}
 	}
 }

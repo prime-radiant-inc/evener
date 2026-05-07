@@ -21,11 +21,15 @@ OpenAI-compatible Chat Completions endpoint at `/v1/chat/completions`.
 4. **Run Serf**:
 
    ```bash
-   serf --provider ollama --model llama3.1:8b "summarize the README"
+   OLLAMA_HOST=localhost serf --provider ollama --model llama3.1:8b "summarize the README"
    ```
 
-   No API key is needed for local Ollama. Zero configuration required if
-   the daemon is at the default `http://localhost:11434`.
+   No API key is needed for local Ollama. The `ollama` provider only
+   registers itself when at least one of `OLLAMA_BASE_URL`, `OLLAMA_HOST`,
+   or `OLLAMA_API_KEY` is set — this prevents Ollama from silently
+   becoming the default provider in environments where it isn't actually
+   configured. Setting `OLLAMA_HOST=localhost` (which the Ollama CLI also
+   honors) is enough to opt in.
 
 ## How it works
 
@@ -45,21 +49,26 @@ path.
 | `OLLAMA_HOST` | Ollama's canonical env var (`host`, `host:port`, or full URL) | unset |
 | `OLLAMA_API_KEY` | API key for authenticated proxies or Ollama Cloud | unset |
 
-Resolution order:
+**Registration gate:** the `ollama` provider only registers when at least
+one of these three env vars is set. Setting `OLLAMA_HOST=localhost` is
+the simplest opt-in for local-default usage.
+
+Resolution order for the base URL once the provider is enabled:
 
 1. If `OLLAMA_BASE_URL` is set, it wins (used as-is, trailing slash stripped).
 2. Otherwise, if `OLLAMA_HOST` is set, it's normalized:
    - bare host (`ollama.local`) → `http://ollama.local:11434/v1`
    - host:port (`192.168.1.5:11434`) → `http://192.168.1.5:11434/v1`
    - full URL (`https://ollama.example.com`) → `https://ollama.example.com/v1`
-3. Otherwise, the default `http://localhost:11434/v1` is used.
+   - URL whose path already ends in `/v1` (e.g. `https://proxy/ollama/v1`) is preserved verbatim
+3. Otherwise (only `OLLAMA_API_KEY` set), the default `http://localhost:11434/v1` is used.
 
 ## Examples
 
 ### Local default
 
 ```bash
-serf --provider ollama --model llama3.1:8b "what does main.go do?"
+OLLAMA_HOST=localhost serf --provider ollama --model llama3.1:8b "what does main.go do?"
 ```
 
 ### Remote Ollama on your LAN
@@ -80,7 +89,7 @@ OLLAMA_API_KEY=$MY_PROXY_TOKEN \
 ### One-shot calls with `llmcall`
 
 ```bash
-llmcall --provider ollama --model llama3.1:8b "Write a haiku about goroutines."
+OLLAMA_HOST=localhost llmcall --provider ollama --model llama3.1:8b "Write a haiku about goroutines."
 ```
 
 ### Listing locally available models
