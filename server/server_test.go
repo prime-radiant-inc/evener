@@ -68,6 +68,27 @@ func TestStatusEndpoint_ContextPressure(t *testing.T) {
 	}
 }
 
+func TestStatus_IncludesWorkingDir(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.UpdateSessionInfo("01SESS001", "gpt-5", "openai-gpt-5")
+	srv.SetWorkingDir("/tmp/test-wd")
+
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code: got %d, want 200", rec.Code)
+	}
+	var got StatusInfo
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.WorkingDir != "/tmp/test-wd" {
+		t.Fatalf("WorkingDir: got %q, want %q", got.WorkingDir, "/tmp/test-wd")
+	}
+}
+
 func TestInterruptEndpoint(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

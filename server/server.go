@@ -62,6 +62,7 @@ type StatusInfo struct {
 	Turns           int             `json:"turns"`
 	Model           string          `json:"model"`
 	Profile         string          `json:"profile"`
+	WorkingDir      string          `json:"working_dir,omitempty"`
 	ContextPressure float64         `json:"context_pressure"`
 	Detailed        *DetailedStatus `json:"detailed,omitempty"`
 }
@@ -141,6 +142,13 @@ func (s *Server) UpdateSessionInfo(sessionID, model, profile string) {
 	s.status.SessionID = sessionID
 	s.status.Model = model
 	s.status.Profile = profile
+	s.mu.Unlock()
+}
+
+// SetWorkingDir sets the working directory exposed in /status.
+func (s *Server) SetWorkingDir(dir string) {
+	s.mu.Lock()
+	s.status.WorkingDir = dir
 	s.mu.Unlock()
 }
 
