@@ -381,7 +381,30 @@ func TestResolveOpenAICompatCatalogModel(t *testing.T) {
 		}
 	}
 
-	t.Run("bare key wins (kimi/glm style)", func(t *testing.T) {
+	t.Run("prefixed key wins when both exist (openrouter overlap)", func(t *testing.T) {
+		// Real-world case: catalog has both "deepseek/deepseek-r1"
+		// (the deepseek provider's entry) and
+		// "openrouter/deepseek/deepseek-r1" (OpenRouter's entry,
+		// possibly with a different context window). Asking for
+		// openrouter/deepseek-r1 must hit the OpenRouter entry, not
+		// the deepseek one.
+		lookup := fake(map[string]int{
+			"deepseek/deepseek-r1":            65536, // wrong provider's entry
+			"openrouter/deepseek/deepseek-r1": 65336, // correct match
+		})
+		mi := resolveOpenAICompatCatalogModel(lookup, "openrouter", "deepseek/deepseek-r1")
+		if mi == nil {
+			t.Fatal("got nil, want openrouter-prefixed match")
+		}
+		if mi.ContextWindow != 65336 {
+			t.Fatalf("ContextWindow = %d, want 65336 (openrouter-prefixed); got %d means the bare lookup fired before the prefixed match",
+				mi.ContextWindow, mi.ContextWindow)
+		}
+	})
+
+	t.Run("bare key wins when prefixed misses (kimi/glm style)", func(t *testing.T) {
+		// kimi and glm catalog keys are unprefixed — the prefixed
+		// lookup misses, so the bare lookup is the actual match.
 		lookup := fake(map[string]int{"kimi-k2.5": 100})
 		mi := resolveOpenAICompatCatalogModel(lookup, "kimi", "kimi-k2.5")
 		if mi == nil || mi.ContextWindow != 100 {
@@ -389,7 +412,7 @@ func TestResolveOpenAICompatCatalogModel(t *testing.T) {
 		}
 	})
 
-	t.Run("prefixed key when bare misses", func(t *testing.T) {
+	t.Run("prefixed key matches when only it exists", func(t *testing.T) {
 		lookup := fake(map[string]int{"ollama/llama3.1": 200})
 		mi := resolveOpenAICompatCatalogModel(lookup, "ollama", "llama3.1")
 		if mi == nil || mi.ContextWindow != 200 {

@@ -488,18 +488,25 @@ func NewOpenRouterAnthropicProfile(model string) ProviderProfile {
 // entries the embedded catalog ships.
 //
 // Precedence (first hit wins):
-//  1. bare model name — covers kimi/glm (unprefixed catalog keys)
-//  2. "<id>/<model>" exact — covers openrouter and untagged ollama,
-//     and any tagged entry that ships in the catalog with its tag
-//     (e.g. "ollama/llama3:8b")
+//  1. "<id>/<model>" exact — covers openrouter (incl. overlapping cases
+//     like "openrouter/deepseek/deepseek-r1" whose bare form
+//     "deepseek/deepseek-r1" is a different provider's entry) and any
+//     tagged ollama variant the catalog ships with its tag (e.g.
+//     "ollama/llama3:8b")
+//  2. bare model name — covers kimi and glm (unprefixed catalog keys)
 //  3. "<id>/<base>" where base is `model` with any ":<tag>" suffix
 //     stripped — covers typical Ollama tagged variants whose catalog
 //     entry is the untagged family ("llama3.1:8b" -> "ollama/llama3.1")
+//
+// Prefixed-first matters whenever the bare model string happens to match
+// a different provider's entry — historically this affected only
+// OpenRouter, but the prefixed form is always the more specific match
+// for any provider that uses provider-qualified catalog keys.
 func resolveOpenAICompatCatalogModel(lookup func(string) *llm.ModelInfo, id, model string) *llm.ModelInfo {
-	if mi := lookup(model); mi != nil {
+	if mi := lookup(id + "/" + model); mi != nil {
 		return mi
 	}
-	if mi := lookup(id + "/" + model); mi != nil {
+	if mi := lookup(model); mi != nil {
 		return mi
 	}
 	if base, _, hasTag := strings.Cut(model, ":"); hasTag && base != "" {
