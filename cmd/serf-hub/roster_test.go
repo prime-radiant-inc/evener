@@ -73,9 +73,12 @@ func TestRoster_PrunesUnreachable(t *testing.T) {
 	r := NewRoster(dir, fakeProber{
 		shouldFail: true,
 	})
+	// First failure keeps the entry (no previous entry, so list is empty but not pruned yet).
+	r.refresh()
+	// Second consecutive failure prunes the entry.
 	r.refresh()
 	if got := r.List(); len(got) != 0 {
-		t.Fatalf("expected unreachable entries to be pruned, got %d", len(got))
+		t.Fatalf("expected unreachable entries to be pruned after two failures, got %d", len(got))
 	}
 }
 

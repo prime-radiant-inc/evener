@@ -33,9 +33,10 @@ type Roster struct {
 	runDir string
 	prober Prober
 
-	mu      sync.RWMutex
-	bySess  map[string]LiveEntry // session_id -> entry
-	byPID   map[int]LiveEntry    // pid -> entry (for fsnotify event correlation)
+	mu        sync.RWMutex
+	bySess    map[string]LiveEntry // session_id -> entry
+	byPID     map[int]LiveEntry    // pid -> entry (for fsnotify event correlation)
+	failCount map[int]int          // pid -> consecutive prober failures
 }
 
 // NewRoster returns a Roster that scans runDir on demand.
@@ -43,41 +44,70 @@ type Roster struct {
 // If prober is nil, liveness is assumed (used for tests).
 func NewRoster(runDir string, prober Prober) *Roster {
 	return &Roster{
-		runDir: runDir,
-		prober: prober,
-		bySess: make(map[string]LiveEntry),
-		byPID:  make(map[int]LiveEntry),
+		runDir:    runDir,
+		prober:    prober,
+		bySess:    make(map[string]LiveEntry),
+		byPID:     make(map[int]LiveEntry),
+		failCount: make(map[int]int),
 	}
 }
 
 // refresh re-scans the rendezvous dir and updates the in-memory roster.
-// Entries that fail liveness are dropped.
+// An entry is only pruned after two consecutive prober failures, giving
+// transient blips a chance to recover without dropping the daemon from the UI.
 func (r *Roster) refresh() {
 	entries, err := rendezvous.List(r.runDir)
 	if err != nil {
 		return
 	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	bySess := make(map[string]LiveEntry, len(entries))
 	byPID := make(map[int]LiveEntry, len(entries))
+	seen := make(map[int]bool, len(entries))
+
 	for _, e := range entries {
+		seen[e.PID] = true
 		var sessID string
 		ok := true
 		if r.prober != nil {
 			sessID, ok = r.prober.Probe(e.Address)
-			if !ok {
+		}
+		if !ok {
+			r.failCount[e.PID]++
+			if r.failCount[e.PID] < 2 {
+				// First failure: keep the previous entry if we had one.
+				if prev, had := r.byPID[e.PID]; had {
+					byPID[e.PID] = prev
+					if prev.SessionID != "" {
+						bySess[prev.SessionID] = prev
+					}
+				}
 				continue
 			}
+			// Second consecutive failure: prune.
+			delete(r.failCount, e.PID)
+			continue
 		}
+		r.failCount[e.PID] = 0
 		live := LiveEntry{Entry: e, SessionID: sessID}
 		if sessID != "" {
 			bySess[sessID] = live
 		}
 		byPID[e.PID] = live
 	}
-	r.mu.Lock()
+
+	// Reap fail-counts for PIDs whose rendezvous file is gone.
+	for pid := range r.failCount {
+		if !seen[pid] {
+			delete(r.failCount, pid)
+		}
+	}
+
 	r.bySess = bySess
 	r.byPID = byPID
-	r.mu.Unlock()
 }
 
 // List returns all live entries.
