@@ -138,3 +138,17 @@ func TestWeb_DrivePage_UnknownSession_404(t *testing.T) {
 		t.Fatalf("status: %d, want 404", rec.Code)
 	}
 }
+
+func TestWeb_Assets_ServeRenderer(t *testing.T) {
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180"})
+	req := httptest.NewRequest(http.MethodGet, "/assets/renderer.js", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "SerfRenderer") {
+		t.Errorf("renderer.js does not export SerfRenderer")
+	}
+}
