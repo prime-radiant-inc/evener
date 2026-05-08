@@ -232,10 +232,9 @@ func (s *WebServer) handleLiveProxy(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			data := map[string]any{
-				"Title":      "drive",
-				"SessionID":  entry.SessionID,
-				"Entry":      entry,
-				"ForkedFrom": r.URL.Query().Get("from"),
+				"Title":     "drive",
+				"SessionID": entry.SessionID,
+				"Entry":     entry,
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			if err := s.liveTmpl.ExecuteTemplate(w, "base", data); err != nil {
@@ -344,7 +343,7 @@ func (s *WebServer) handlePastID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if sessID := s.findNewSession(entry.PID); sessID != "" {
-			http.Redirect(w, r, "/live/"+sessID+"?from="+id, http.StatusFound)
+			http.Redirect(w, r, "/live/"+sessID, http.StatusFound)
 			return
 		}
 		http.Redirect(w, r, "/", http.StatusFound)

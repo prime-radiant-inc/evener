@@ -369,33 +369,6 @@ func TestWeb_LiveNew_POST_RejectsMissingWorkingDir(t *testing.T) {
 	}
 }
 
-func TestWeb_DrivePage_ShowsForkedFrom(t *testing.T) {
-	dir := t.TempDir()
-	writeRendezvous(t, dir, rendezvous.Entry{PID: 1, Address: "127.0.0.1:55555"})
-	r := NewRoster(dir, fakeProber{sessionID: "01NEW"})
-	r.Refresh()
-
-	web := NewWebServer(WebConfig{
-		HubAddr: "127.0.0.1:9180",
-		Roster:  r,
-		Past:    NewPastIndex(""),
-	})
-	req := httptest.NewRequest(http.MethodGet, "/live/01NEW?from=01OLD", nil)
-	req.Host = "127.0.0.1:9180"
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: %d", rec.Code)
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "01OLD") {
-		t.Errorf("body missing forked-from id 01OLD")
-	}
-	if !strings.Contains(strings.ToLower(body), "forked") {
-		t.Errorf("body missing 'forked' annotation")
-	}
-}
-
 func TestWeb_PastResults_PartialOnlyNoBaseChrome(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
