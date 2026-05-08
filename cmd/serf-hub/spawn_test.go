@@ -1,7 +1,11 @@
 package main
 
 import (
+	"context"
 	"testing"
+	"time"
+
+	"primeradiant.com/serf/rendezvous"
 )
 
 func TestFindTemplate(t *testing.T) {
@@ -58,4 +62,48 @@ func pairsToMap(args []string) map[string]string {
 		out[args[i]] = args[i+1]
 	}
 	return out
+}
+
+func TestWaitForRendezvous_AppearsInTime(t *testing.T) {
+	dir := t.TempDir()
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		_, _ = rendezvous.Write(dir, rendezvous.Entry{
+			PID:     12345,
+			Address: "127.0.0.1:50000",
+		})
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	got, err := WaitForRendezvous(ctx, dir, 12345)
+	if err != nil {
+		t.Fatalf("WaitForRendezvous: %v", err)
+	}
+	if got.Address != "127.0.0.1:50000" {
+		t.Errorf("Address: %q", got.Address)
+	}
+}
+
+func TestWaitForRendezvous_TimesOut(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_, err := WaitForRendezvous(ctx, dir, 99999)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+}
+
+func TestWaitForRendezvous_WrongPID(t *testing.T) {
+	dir := t.TempDir()
+	_, _ = rendezvous.Write(dir, rendezvous.Entry{PID: 11111, Address: "x"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if _, err := WaitForRendezvous(ctx, dir, 22222); err == nil {
+		t.Fatal("expected timeout for wrong PID")
+	}
+
 }
