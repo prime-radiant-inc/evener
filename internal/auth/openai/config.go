@@ -20,11 +20,12 @@ var defaultScopes = []string{
 	"profile",
 	"email",
 	"offline_access",
-	"api.connectors.read",
-	"api.connectors.invoke",
 }
 
-const defaultOriginator = "serf"
+const (
+	defaultOriginator    = "pi"
+	FallbackCallbackPort = 1457
+)
 
 // Config contains the stable OpenAI OAuth settings owned by Serf.
 type Config struct {

@@ -37,7 +37,7 @@ type callbackResult struct {
 
 // StartCallbackServer starts a localhost listener on port. Use port 0 to ask the OS for a free port.
 func StartCallbackServer(cfg Config, port int, expectedState string) (*CallbackServer, error) {
-	listener, err := net.Listen("tcp", net.JoinHostPort("localhost", strconv.Itoa(port)))
+	listener, err := listenCallbackPort(port)
 	if err != nil {
 		return nil, fmt.Errorf("listen for OpenAI callback: %w", err)
 	}
@@ -151,6 +151,17 @@ func listenerPort(addr net.Addr) (int, error) {
 		return 0, fmt.Errorf("OpenAI callback listener address is %T, want TCP address", addr)
 	}
 	return tcpAddr.Port, nil
+}
+
+func listenCallbackPort(port int) (net.Listener, error) {
+	listener, err := net.Listen("tcp", net.JoinHostPort("localhost", strconv.Itoa(port)))
+	if err == nil {
+		return listener, nil
+	}
+	if port == DefaultCallbackPort {
+		return net.Listen("tcp", net.JoinHostPort("localhost", strconv.Itoa(FallbackCallbackPort)))
+	}
+	return nil, err
 }
 
 func (c Config) callbackTimeout() time.Duration {

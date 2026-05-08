@@ -37,8 +37,6 @@ func TestConfigDefaults(t *testing.T) {
 		"profile",
 		"email",
 		"offline_access",
-		"api.connectors.read",
-		"api.connectors.invoke",
 	}
 	for _, want := range wantScopes {
 		if !contains(cfg.Scopes, want) {
@@ -79,7 +77,7 @@ func TestAuthorizeURLContainsRequiredQueryParams(t *testing.T) {
 		"code_challenge_method": "S256",
 		"id_token_add_organizations": "true",
 		"codex_cli_simplified_flow":  "true",
-		"originator":                 "serf",
+		"originator":                 "pi",
 	}
 	for key, want := range required {
 		if got := query.Get(key); got != want {

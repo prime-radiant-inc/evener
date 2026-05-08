@@ -107,7 +107,7 @@ func (s *Service) Login(ctx context.Context, stateDir string) (AuthStatus, error
 		return AuthStatus{}, fmt.Errorf("generate PKCE values: %w", err)
 	}
 
-	callback, err := s.startCallbackServer(s.config(), 0, state)
+	callback, err := s.startCallbackServer(s.config(), DefaultCallbackPort, state)
 	if err != nil {
 		return AuthStatus{}, err
 	}

@@ -12,6 +12,7 @@ import (
 func TestLoginSucceedsViaCallbackPath(t *testing.T) {
 	stateDir := t.TempDir()
 	now := time.Date(2026, 5, 7, 23, 15, 0, 0, time.UTC)
+	var gotPort int
 
 	server := &stubCallbackServer{
 		redirectURI: "http://localhost:1455/auth/callback",
@@ -19,7 +20,8 @@ func TestLoginSucceedsViaCallbackPath(t *testing.T) {
 	}
 
 	svc := newTestService(now)
-	svc.startCallbackServer = func(Config, int, string) (callbackServer, error) {
+	svc.startCallbackServer = func(_ Config, port int, _ string) (callbackServer, error) {
+		gotPort = port
 		return server, nil
 	}
 	svc.exchangeCode = func(ctx context.Context, client *http.Client, cfg Config, req TokenExchangeRequest) (TokenSet, error) {
@@ -59,6 +61,9 @@ func TestLoginSucceedsViaCallbackPath(t *testing.T) {
 	if status.Email != "user@example.com" {
 		t.Fatalf("Email = %q, want %q", status.Email, "user@example.com")
 	}
+	if gotPort != DefaultCallbackPort {
+		t.Fatalf("callback port = %d, want %d", gotPort, DefaultCallbackPort)
+	}
 
 	record, err := LoadAuth(stateDir)
 	if err != nil {
@@ -73,6 +78,7 @@ func TestLoginSucceedsViaManualPastebackPath(t *testing.T) {
 	stateDir := t.TempDir()
 	now := time.Date(2026, 5, 7, 23, 20, 0, 0, time.UTC)
 	var expectedState string
+	var gotPort int
 
 	server := &stubCallbackServer{
 		redirectURI: "http://localhost:1455/auth/callback",
@@ -80,8 +86,9 @@ func TestLoginSucceedsViaManualPastebackPath(t *testing.T) {
 	}
 
 	svc := newTestService(now)
-	svc.startCallbackServer = func(_ Config, _ int, state string) (callbackServer, error) {
+	svc.startCallbackServer = func(_ Config, port int, state string) (callbackServer, error) {
 		expectedState = state
+		gotPort = port
 		return server, nil
 	}
 	svc.readRedirectURL = func(context.Context) (string, error) {
@@ -106,6 +113,9 @@ func TestLoginSucceedsViaManualPastebackPath(t *testing.T) {
 	}
 	if !status.SignedIn {
 		t.Fatal("SignedIn = false, want true")
+	}
+	if gotPort != DefaultCallbackPort {
+		t.Fatalf("callback port = %d, want %d", gotPort, DefaultCallbackPort)
 	}
 
 	record, err := LoadAuth(stateDir)
