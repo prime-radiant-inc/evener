@@ -381,6 +381,29 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .spawn-recent-row:hover { background: var(--bg-raised); }
 .fork-confirm kbd { font-family: ui-monospace, "SFMono-Regular", monospace; opacity: 0.7; margin-left: 4px; }
 
+/* ── Model picker (two-pane) ─────────────────────────────────────────────── */
+.chip-picker-wide { width: 520px; max-height: 360px; display: flex; flex-direction: column; }
+.chip-picker-search { background: transparent; border: none; border-bottom: 1px solid var(--rule); padding: 8px 12px; color: var(--text); font: inherit; font-size: 13px; outline: none; }
+.chip-picker-body { display: flex; flex: 1; min-height: 0; }
+.chip-picker-providers { width: 140px; flex-shrink: 0; border-right: 1px solid var(--rule); overflow-y: auto; padding: 4px 0; }
+.chip-picker-provider { padding: 6px 12px; cursor: pointer; color: var(--text-muted); font-size: 12px; }
+.chip-picker-provider:hover { color: var(--text); }
+.chip-picker-provider.active { color: var(--text); background: var(--rule); }
+.chip-picker-models { flex: 1; overflow-y: auto; padding: 4px 0; }
+.chip-picker-model { padding: 6px 12px; cursor: pointer; }
+.chip-picker-model:hover { background: var(--rule); }
+.chip-picker-model-name { color: var(--text); font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; }
+.chip-picker-model-meta { color: var(--text-muted); font-size: 11px; margin-top: 2px; }
+
+/* ── Directory picker ────────────────────────────────────────────────────── */
+.chip-picker-dir { width: 480px; max-height: 360px; display: flex; flex-direction: column; }
+.chip-picker-results { flex: 1; overflow-y: auto; padding: 4px 0; }
+.chip-picker-dir-row { display: flex; align-items: center; gap: 8px; padding: 6px 12px; cursor: pointer; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; }
+.chip-picker-dir-row:hover { background: var(--rule); }
+.chip-picker-dir-path { color: var(--text); flex: 1; word-break: break-all; }
+.chip-picker-dir-tag { color: var(--state-warning); font-size: 10px; padding: 1px 6px; border: 1px solid var(--state-warning); border-radius: 8px; flex-shrink: 0; }
+.chip-picker-empty { padding: 24px; color: var(--text-muted); text-align: center; font-size: 12px; }
+
 /* ── Search palette ──────────────────────────────────────────────────────── */
 .search-dialog { background: transparent; border: none; padding: 0; max-width: none; max-height: none; width: 100%; height: 100%; }
 .search-dialog::backdrop { background: rgba(0, 0, 0, 0.5); }

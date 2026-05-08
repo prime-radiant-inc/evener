@@ -12,11 +12,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -167,6 +169,7 @@ func (s *WebServer) Handler() http.Handler {
 	// API
 	mux.HandleFunc("/api/spawn", s.handleApiSpawn)
 	mux.HandleFunc("/api/models", s.handleApiModels)
+	mux.HandleFunc("/api/dirs", s.handleApiDirs)
 	mux.HandleFunc("/api/search", s.handleApiSearch)
 
 	// Live drive proxied routes (REST and SSE)
@@ -898,19 +901,97 @@ func parseModel(s string) (provider, model string) {
 	return "", s
 }
 
-// handleApiModels returns the list of available models for the spawn chip.
+// handleApiModels returns the list of available models from the bundled catalog.
 func (s *WebServer) handleApiModels(w http.ResponseWriter, r *http.Request) {
-	models := s.cfg.Models
-	if len(models) == 0 {
-		models = []modelDescriptor{
-			{Provider: "openai", Model: "gpt-5"},
-			{Provider: "openai", Model: "gpt-5-mini"},
-			{Provider: "anthropic", Model: "claude-opus-4-7"},
-			{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+	cat := llm.EmbeddedModelCatalog()
+	var out []map[string]any
+	if cat != nil {
+		for _, m := range cat.Models {
+			// Skip models with no context window or embedding models.
+			if m.ContextWindow == 0 || strings.Contains(strings.ToLower(m.ID), "embedding") {
+				continue
+			}
+			entry := map[string]any{
+				"provider":               m.Provider,
+				"model":                  m.ID,
+				"display_name":           m.DisplayName,
+				"context_window":         m.ContextWindow,
+				"supports_tools":         m.SupportsTools,
+				"supports_reasoning":     m.SupportsReasoning,
+				"input_cost_per_million": m.InputCostPerMillion,
+				"output_cost_per_million": m.OutputCostPerMillion,
+			}
+			out = append(out, entry)
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(models) //nolint:errcheck
+	json.NewEncoder(w).Encode(out) //nolint:errcheck
+}
+
+// handleApiDirs returns directories matching a path prefix for the directory autocomplete.
+func (s *WebServer) handleApiDirs(w http.ResponseWriter, r *http.Request) {
+	prefix := r.URL.Query().Get("prefix")
+	if prefix == "" {
+		prefix = os.Getenv("HOME")
+	}
+	// Expand ~ to home.
+	if strings.HasPrefix(prefix, "~/") || prefix == "~" {
+		prefix = filepath.Join(os.Getenv("HOME"), strings.TrimPrefix(prefix, "~"))
+	}
+
+	// If prefix ends with "/", list contents of that directory.
+	// Otherwise, list contents of the parent and filter by basename prefix.
+	var listDir, filter string
+	if strings.HasSuffix(prefix, "/") || prefix == "" {
+		listDir = prefix
+		if listDir == "" {
+			listDir = "/"
+		}
+		filter = ""
+	} else {
+		listDir = filepath.Dir(prefix)
+		filter = filepath.Base(prefix)
+	}
+
+	entries, err := os.ReadDir(listDir)
+	if err != nil {
+		// Return empty list rather than error — UI shows no matches.
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results":[]}`)) //nolint:errcheck
+		return
+	}
+
+	type result struct {
+		Path  string `json:"path"`
+		Name  string `json:"name"`
+		IsGit bool   `json:"is_git"`
+	}
+	var results []result
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if strings.HasPrefix(name, ".") && filter == "" {
+			continue // hide dotfiles unless user typed a dot
+		}
+		if filter != "" && !strings.HasPrefix(strings.ToLower(name), strings.ToLower(filter)) {
+			continue
+		}
+		full := filepath.Join(listDir, name)
+		isGit := false
+		if _, gerr := os.Stat(filepath.Join(full, ".git")); gerr == nil {
+			isGit = true
+		}
+		results = append(results, result{Path: full, Name: name, IsGit: isGit})
+		if len(results) >= 30 {
+			break
+		}
+	}
+	sort.Slice(results, func(i, j int) bool { return results[i].Name < results[j].Name })
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"results": results}) //nolint:errcheck
 }
 
 // handleSession is the router for all /s/<id>[/<sub>] routes.
