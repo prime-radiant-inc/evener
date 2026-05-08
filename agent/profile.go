@@ -144,35 +144,74 @@ func (p *baseProfile) CheapModel() string {
 		return p.model
 	}
 }
-// modelPrefixIsProviderSwitch reports whether WithModel should interpret
-// a slash-prefixed model string "X/Y" as a provider override when called
-// on a profile with the given id. The slash on the second arg is the
-// would-be provider name extracted from the model string.
+// prefixAction is the resolution of a slash-prefixed model string
+// "X/Y" passed to WithModel on a profile with id `id`. See decidePrefixAction.
+type prefixAction int
+
+const (
+	// prefixActionSwitch: switch to a different provider via the existing
+	// constructor table. Used when the prefix is a known provider name
+	// distinct from the current id.
+	prefixActionSwitch prefixAction = iota
+	// prefixActionStrip: strip the redundant self-prefix. The remaining
+	// bare name is the canonical wire model. Used when prefix == id for
+	// providers whose canonical model is unprefixed (openai, kimi, glm,
+	// the openrouter-style "openrouter/<upstream>/<model>" case where
+	// the canonical wire model is the bare upstream form).
+	prefixActionStrip
+	// prefixActionKeep: leave the model verbatim — the slash is part of
+	// the model namespace, not a provider switch. Used for meta-providers
+	// whose model IDs include slashes by convention (openrouter routing
+	// to upstreams, minimax canonical "minimax/m2.7").
+	prefixActionKeep
+)
+
+// decidePrefixAction resolves what WithModel should do with a
+// slash-prefixed model string. Three outcomes:
 //
-// Returns false for the meta-provider cases where the slash is part of
-// the model namespace, not a provider switch:
-//
-//   - openrouter / openrouter-anthropic: slash-prefixed model strings
-//     ("anthropic/claude-3-haiku", "minimax/minimax-m2.7") are upstream
-//     model namespaces. Calling WithModel("minimax/X") on an openrouter
-//     profile must NOT switch to the standalone minimax adapter —
-//     OpenRouter routes there itself.
-//   - minimax + "minimax/...": same-provider with a slash that's part
-//     of the canonical model name. Stripping it would yield an invalid
-//     wire model. Cross-provider switches from minimax (e.g.
-//     "anthropic/claude-opus") still work — they're a different
-//     provider and the prefix is unambiguously a switch.
-//
-// Returns true for everyone else, preserving the existing harbor / CLI
-// convention where "--model openai/gpt-5.4" means "switch to OpenAI".
-func modelPrefixIsProviderSwitch(id, prefix string) bool {
+//   - openrouter / openrouter-anthropic: prefix == id → strip (canonical
+//     wire model is the bare upstream form, e.g. "anthropic/claude-3"
+//     after stripping "openrouter/"). prefix != id → keep (the slash is
+//     an upstream namespace, not a provider switch).
+//   - minimax: prefix == "minimax" → keep ("minimax/m2.7" is the
+//     canonical wire model on minimax). Other prefixes → switch (a
+//     legitimate cross-provider override).
+//   - everyone else: prefix == id → strip (existing convenience).
+//     Different prefix → switch.
+func decidePrefixAction(id, prefix string) prefixAction {
 	switch id {
 	case "openrouter", "openrouter-anthropic":
-		return false
+		if prefix == id {
+			return prefixActionStrip
+		}
+		return prefixActionKeep
 	case "minimax":
-		return prefix != "minimax"
+		if prefix == "minimax" {
+			return prefixActionKeep
+		}
+		return prefixActionSwitch
 	}
-	return true
+	if prefix == id {
+		return prefixActionStrip
+	}
+	return prefixActionSwitch
+}
+
+// rebuildOnSameProviderChange reports whether a same-provider WithModel
+// override needs to rebuild the profile via its constructor (rather than
+// shallow-cloning) so that model-derived state — context window from
+// catalog, providerOpts that depend on the model — is recomputed.
+//
+// True for providers whose constructors look up per-model state (every
+// openai-compat provider; openrouter-anthropic). False for providers
+// whose model-derived state is fixed at construction (openai, minimax)
+// or handled by their own WithModel (anthropicProfile).
+func rebuildOnSameProviderChange(id string) bool {
+	switch id {
+	case "kimi", "glm", "openrouter", "ollama", "openrouter-anthropic":
+		return true
+	}
+	return false
 }
 
 func (p *baseProfile) WithModel(model string) ProviderProfile {
@@ -180,35 +219,48 @@ func (p *baseProfile) WithModel(model string) ProviderProfile {
 	if model == "" {
 		model = p.model
 	}
-	// Parse "provider/model" strings (e.g. "openai/gpt-5.4-mini") into the
-	// correct provider profile with the bare model name. This is the same
-	// format used by harbor and the CLI (--model openai/gpt-5.4).
-	//
-	// EXCEPT for meta-provider profiles whose model IDs legitimately
-	// contain slashes — see modelPrefixIsProviderSwitch for the gate.
+	// Parse "provider/model" strings (e.g. "openai/gpt-5.4-mini") into
+	// the correct provider profile. This is the format used by harbor
+	// and the CLI (--model openai/gpt-5.4). Meta-providers whose model
+	// IDs include slashes by convention need different handling — see
+	// decidePrefixAction.
 	if parts := strings.SplitN(model, "/", 2); len(parts) == 2 {
 		provider := strings.ToLower(parts[0])
 		bareModel := parts[1]
-		if modelPrefixIsProviderSwitch(p.id, provider) {
-			if provider != p.id {
-				// Different provider — construct the right profile type.
-				switch provider {
-				case "openai":
-					return NewOpenAIProfile(bareModel)
-				case "anthropic":
-					return NewAnthropicProfile(bareModel)
-				case "google", "gemini":
-					return NewGeminiProfile(bareModel)
-				case "minimax":
-					return NewMiniMaxProfile(bareModel)
-				case "openrouter-anthropic":
-					return NewOpenRouterAnthropicProfile(bareModel)
-				case "kimi", "glm", "openrouter", "ollama":
-					return NewOpenAICompatProfile(provider, bareModel, 0)
-				}
+		switch decidePrefixAction(p.id, provider) {
+		case prefixActionSwitch:
+			switch provider {
+			case "openai":
+				return NewOpenAIProfile(bareModel)
+			case "anthropic":
+				return NewAnthropicProfile(bareModel)
+			case "google", "gemini":
+				return NewGeminiProfile(bareModel)
+			case "minimax":
+				return NewMiniMaxProfile(bareModel)
+			case "openrouter-anthropic":
+				return NewOpenRouterAnthropicProfile(bareModel)
+			case "kimi", "glm", "openrouter", "ollama":
+				return NewOpenAICompatProfile(provider, bareModel, 0)
 			}
-			// Same provider — just use the bare model name.
+			// Unknown provider name — fall through to clone with the
+			// model unchanged rather than silently stripping.
+		case prefixActionStrip:
 			model = bareModel
+		case prefixActionKeep:
+			// Leave model unchanged.
+		}
+	}
+	// Same-provider override: rebuild via constructor for providers
+	// whose model-derived state needs recomputation, otherwise shallow
+	// clone (existing behavior for openai, anthropic-via-baseProfile,
+	// google, minimax — their model-derived state is fixed).
+	if rebuildOnSameProviderChange(p.id) {
+		switch p.id {
+		case "openrouter-anthropic":
+			return NewOpenRouterAnthropicProfile(model)
+		default:
+			return NewOpenAICompatProfile(p.id, model, 0)
 		}
 	}
 	clone := *p

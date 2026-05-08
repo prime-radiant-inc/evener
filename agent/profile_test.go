@@ -568,6 +568,96 @@ func TestBaseProfile_WithModel_PreservesSlashOnMetaProviders(t *testing.T) {
 	}
 }
 
+// TestBaseProfile_WithModel_StripsRedundantSelfPrefixOnMetaProviders
+// verifies that WithModel still strips a redundant self-prefix on
+// meta-providers — e.g. "openrouter/anthropic/claude-3-haiku" on an
+// openrouter profile resolves to model "anthropic/claude-3-haiku".
+// Without this, SetModel calls coming from CLI/harbor with the
+// "<provider>/<model>" convention would send the doubly-prefixed
+// string on the wire instead of the canonical bare form.
+func TestBaseProfile_WithModel_StripsRedundantSelfPrefixOnMetaProviders(t *testing.T) {
+	cases := []struct {
+		startProfile func() ProviderProfile
+		startID      string
+		input        string
+		wantModel    string
+	}{
+		{func() ProviderProfile { return NewOpenAICompatProfile("openrouter", "x", 0) }, "openrouter", "openrouter/anthropic/claude-3-haiku-20240307", "anthropic/claude-3-haiku-20240307"},
+		{func() ProviderProfile { return NewOpenAICompatProfile("openrouter", "x", 0) }, "openrouter", "openrouter/minimax/minimax-m2.7", "minimax/minimax-m2.7"},
+		{func() ProviderProfile { return NewOpenRouterAnthropicProfile("x") }, "openrouter-anthropic", "openrouter-anthropic/anthropic/claude-3-5-sonnet", "anthropic/claude-3-5-sonnet"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.startID+"_"+tc.input, func(t *testing.T) {
+			cloned := tc.startProfile().WithModel(tc.input)
+			if cloned.ID() != tc.startID {
+				t.Errorf("ID() = %q, want %q", cloned.ID(), tc.startID)
+			}
+			if cloned.Model() != tc.wantModel {
+				t.Errorf("Model() = %q, want %q (redundant self-prefix should be stripped)", cloned.Model(), tc.wantModel)
+			}
+		})
+	}
+}
+
+// TestBaseProfile_WithModel_RecomputesCatalogStateOnMetaProviders
+// verifies that when WithModel preserves a meta-provider but changes
+// the model, model-derived state (notably ContextWindowSize) is
+// recomputed via the appropriate constructor — not stale from the
+// originally-constructed profile. This guards against silent context
+// truncation when SetModel switches between OpenRouter-routed models
+// with different real context windows.
+func TestBaseProfile_WithModel_RecomputesCatalogStateOnMetaProviders(t *testing.T) {
+	// Start with a known small-context model under openrouter
+	// ("anthropic/claude-3-haiku-20240307" → 200000 in the catalog).
+	orig := NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0)
+	if orig.ContextWindowSize() != 200_000 {
+		t.Fatalf("setup: orig ContextWindowSize = %d, want 200000", orig.ContextWindowSize())
+	}
+
+	// Switch model to a known different-context model
+	// ("minimax/minimax-m2.7" → 204800). The clone must reflect the
+	// new model's context window, not preserve 200000.
+	cloned := orig.WithModel("minimax/minimax-m2.7")
+	if cloned.ID() != "openrouter" {
+		t.Fatalf("ID() = %q, want openrouter", cloned.ID())
+	}
+	if cloned.Model() != "minimax/minimax-m2.7" {
+		t.Fatalf("Model() = %q, want minimax/minimax-m2.7", cloned.Model())
+	}
+	if got := cloned.ContextWindowSize(); got != 204_800 {
+		t.Fatalf("ContextWindowSize() = %d, want 204800 from minimax catalog entry — same-provider WithModel did not recompute model-derived state", got)
+	}
+}
+
+// TestBaseProfile_WithModel_RecomputesProviderOptsOnMetaProviders is
+// the providerOpts companion to the catalog test: switching from a
+// non-minimax openrouter model to a minimax/* one must inject the
+// OpenRouter-MiniMax reasoning_details provider option, and switching
+// the other way must drop it. A shallow clone would leave whichever
+// option was set at original-profile construction time.
+func TestBaseProfile_WithModel_RecomputesProviderOptsOnMetaProviders(t *testing.T) {
+	// Start without minimax/* — providerOpts should be nil.
+	orig := NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0).(*baseProfile)
+	if orig.providerOpts != nil {
+		t.Fatalf("setup: orig providerOpts = %+v, want nil", orig.providerOpts)
+	}
+
+	// Switch to minimax/* — should inject the reasoning option.
+	cloned := orig.WithModel("minimax/minimax-m2.7").(*baseProfile)
+	if cloned.providerOpts == nil {
+		t.Fatal("after switch to minimax/*, providerOpts is nil — same-provider WithModel did not recompute providerOpts")
+	}
+	if _, ok := cloned.providerOpts["openai-compatible"]; !ok {
+		t.Fatalf("providerOpts = %+v, want openai-compatible.reasoning", cloned.providerOpts)
+	}
+
+	// Switch back to non-minimax — option should be dropped.
+	dropped := cloned.WithModel("anthropic/claude-3-haiku-20240307").(*baseProfile)
+	if dropped.providerOpts != nil {
+		t.Fatalf("after switch back to non-minimax, providerOpts = %+v, want nil", dropped.providerOpts)
+	}
+}
+
 // TestBaseProfile_WithModel_StillSwitchesFromNonMeta verifies the
 // existing prefix-switch feature still works from non-meta-provider
 // profiles. This is the original use case: harbor and the CLI pass
