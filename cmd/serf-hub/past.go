@@ -118,6 +118,17 @@ func matches(e PastEntry, lowerQ string) bool {
 	return false
 }
 
+// AllMetas returns the full snapshot of indexed metas. Caller must not mutate.
+func (i *PastIndex) AllMetas() []agent.SessionMeta {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	out := make([]agent.SessionMeta, 0, len(i.all))
+	for _, e := range i.all {
+		out = append(out, e.Meta)
+	}
+	return out
+}
+
 // Find returns the entry for a given session_id.
 func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 	i.mu.RLock()

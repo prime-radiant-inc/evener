@@ -1,0 +1,80 @@
+{{define "sidebar"}}
+<nav class="sidebar">
+  <div class="sidebar-header">
+    <a class="sidebar-action" href="/new" hx-get="/workspace/spawn" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/new">＋ new</a>
+    <a class="sidebar-action" href="#" data-search-trigger>search</a>
+  </div>
+
+  {{if .Live}}
+  <section class="sidebar-section">
+    <header class="sidebar-section-header">
+      <span>Live</span>
+      <span class="row-meta">{{len .Live}}</span>
+    </header>
+    {{range .Live}}
+    <a class="live-row session-row"
+       data-state="{{.State}}"
+       href="/s/{{.ID}}"
+       hx-get="/s/{{.ID}}"
+       hx-target="#workspace"
+       hx-swap="innerHTML"
+       hx-push-url="/s/{{.ID}}">
+      <span class="status-dot" data-state="{{.State}}"></span>
+      <span class="row-title">{{.Title}}</span>
+      <span class="row-meta">{{.Project}}</span>
+      <span class="row-age">{{.Age}}</span>
+    </a>
+    {{end}}
+  </section>
+  {{end}}
+
+  {{range .Projects}}
+  <section class="sidebar-section project-section">
+    <header class="project-header">
+      <span>{{.Name}}</span>
+      <span class="row-meta">{{len .Sessions}}</span>
+    </header>
+    {{range .Sessions}}
+    <a class="session-row"
+       data-state="{{.State}}"
+       href="/s/{{.ID}}"
+       hx-get="/s/{{.ID}}"
+       hx-target="#workspace"
+       hx-swap="innerHTML"
+       hx-push-url="/s/{{.ID}}">
+      <span class="status-dot" data-state="{{.State}}"></span>
+      <span class="row-title">{{.Title}}</span>
+      <span class="row-age">{{.Age}}</span>
+    </a>
+    {{range .Children}}
+      {{if eq .Kind "subagent"}}
+      <a class="subagent-row"
+         data-state="{{.State}}"
+         href="/s/{{.ID}}"
+         hx-get="/s/{{.ID}}"
+         hx-target="#workspace"
+         hx-swap="innerHTML"
+         hx-push-url="/s/{{.ID}}">
+        <span class="status-dot subagent" data-state="{{.State}}"></span>
+        <span class="row-title">{{.Title}}</span>
+        <span class="row-age">{{.Age}}</span>
+      </a>
+      {{else if eq .Kind "fork"}}
+      <a class="fork-row"
+         data-state="{{.State}}"
+         href="/s/{{.ID}}"
+         hx-get="/s/{{.ID}}"
+         hx-target="#workspace"
+         hx-swap="innerHTML"
+         hx-push-url="/s/{{.ID}}">
+        <span class="fork-glyph" data-state="{{.State}}">⎇</span>
+        <span class="row-title">{{.Title}}</span>
+        <span class="row-age">{{.Age}}</span>
+      </a>
+      {{end}}
+    {{end}}
+    {{end}}
+  </section>
+  {{end}}
+</nav>
+{{end}}

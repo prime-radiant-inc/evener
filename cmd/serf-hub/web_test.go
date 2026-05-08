@@ -31,8 +31,75 @@ func TestWeb_Landing_Renders(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "live sessions") {
-		t.Errorf("body missing 'live sessions': %q", rec.Body.String())
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="sidebar"`) {
+		t.Errorf("body missing #sidebar: %q", body)
+	}
+	if !strings.Contains(body, `id="workspace"`) {
+		t.Errorf("body missing #workspace: %q", body)
+	}
+}
+
+func TestWeb_AppShell_RendersSidebarAndWorkspaceMounts(t *testing.T) {
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: NewRoster(t.TempDir(), nil), Past: NewPastIndex("")})
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="sidebar"`) {
+		t.Errorf("missing #sidebar")
+	}
+	if !strings.Contains(body, `id="workspace"`) {
+		t.Errorf("missing #workspace")
+	}
+	if !strings.Contains(body, `hx-get="/sidebar"`) {
+		t.Errorf("missing sidebar hx-get")
+	}
+}
+
+func TestWeb_Sidebar_RendersTreeWithLiveAndProjects(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+		ID: "01PAST", UpdatedAt: time.Now(), OriginalTask: "fix bug",
+		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    idx,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/sidebar", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "fix bug") {
+		t.Errorf("missing title")
+	}
+	if !strings.Contains(body, "session-row") {
+		t.Errorf("missing session-row class")
+	}
+	if !strings.Contains(body, "/s/01PAST") {
+		t.Errorf("missing session URL")
 	}
 }
 

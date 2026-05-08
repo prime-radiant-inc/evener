@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -39,6 +40,8 @@ type Spawner interface {
 type WebServer struct {
 	cfg             WebConfig
 	templates       *template.Template
+	appTmpl         *template.Template
+	sidebarTmpl     *template.Template
 	liveTmpl        *template.Template
 	liveNewTmpl     *template.Template
 	pastTmpl        *template.Template
@@ -58,6 +61,8 @@ func NewWebServer(cfg WebConfig) *WebServer {
 		"templates/landing.html",
 		"templates/partials/live_roster.html",
 	))
+	appTmpl := template.Must(template.ParseFS(templatesFS, "templates/app.html"))
+	sidebarTmpl := template.Must(template.ParseFS(templatesFS, "templates/partials/sidebar.html"))
 	liveTmpl := template.Must(template.ParseFS(templatesFS,
 		"templates/base.html",
 		"templates/live.html",
@@ -86,7 +91,8 @@ func NewWebServer(cfg WebConfig) *WebServer {
 		sse = NewSSEProxy(cfg.Roster)
 	}
 	return &WebServer{
-		cfg: cfg, templates: tmpl, liveTmpl: liveTmpl, liveNewTmpl: liveNewTmpl,
+		cfg: cfg, templates: tmpl, appTmpl: appTmpl, sidebarTmpl: sidebarTmpl,
+		liveTmpl: liveTmpl, liveNewTmpl: liveNewTmpl,
 		pastTmpl: pastTmpl, pastResultsTmpl: pastResultsTmpl, pastViewTmpl: pastViewTmpl,
 		rest: rest, sse: sse,
 		resumeLocks: map[string]*sync.Mutex{},
@@ -117,6 +123,10 @@ func (s *WebServer) Handler() http.Handler {
 
 	// Pages
 	mux.HandleFunc("/", s.handleIndex)
+	mux.HandleFunc("/s/", s.handleIndex)     // SPA route — app shell handles client-side routing via htmx
+	mux.HandleFunc("/new", s.handleIndex)    // ditto
+	mux.HandleFunc("/sidebar", s.handleSidebar)
+	mux.HandleFunc("/workspace/empty", s.handleWorkspaceEmpty)
 	mux.HandleFunc("/live", s.handleLiveRoster)
 	mux.HandleFunc("/live/new", s.handleLiveNew) // must be before /live/
 	mux.HandleFunc("/past", s.handlePast)
@@ -131,27 +141,35 @@ func (s *WebServer) Handler() http.Handler {
 }
 
 func (s *WebServer) handleIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
+	if r.URL.Path != "/" && !strings.HasPrefix(r.URL.Path, "/s/") && r.URL.Path != "/new" {
 		http.NotFound(w, r)
 		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.appTmpl.ExecuteTemplate(w, "app", nil); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (s *WebServer) handleSidebar(w http.ResponseWriter, r *http.Request) {
+	var metas []agent.SessionMeta
+	if s.cfg.Past != nil {
+		metas = s.cfg.Past.AllMetas()
 	}
 	var live []LiveEntry
 	if s.cfg.Roster != nil {
 		live = s.cfg.Roster.List()
 	}
-	var past []PastEntry
-	if s.cfg.Past != nil {
-		past = s.cfg.Past.Search("", 10, 0)
-	}
-	data := map[string]any{
-		"Title": "live",
-		"Live":  live,
-		"Past":  past,
-	}
+	tree := BuildTree(metas, live)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, "base", data); err != nil {
+	if err := s.sidebarTmpl.ExecuteTemplate(w, "sidebar", tree); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+func (s *WebServer) handleWorkspaceEmpty(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprint(w, `<div class="workspace-empty"><p>No session selected.</p><p style="margin-top:1em"><a href="/new" hx-get="/workspace/spawn" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/new">＋ new session</a></p></div>`)
 }
 
 func (s *WebServer) handleLiveRoster(w http.ResponseWriter, r *http.Request) {
