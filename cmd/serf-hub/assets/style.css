@@ -418,3 +418,22 @@ body.app { display: flex; min-height: 100vh; margin: 0; background: var(--bg); c
 .settings-row-meta { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
 .settings-row-detail { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
 .model-chip { background: var(--bg-raised); padding: 2px 8px; border-radius: 10px; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 11px; color: var(--text); }
+
+/* Sidebar settings link — pushed to the right */
+.sidebar-action.settings-link { margin-left: auto; }
+
+/* Title-bar copy button */
+.title-action { background: transparent; border: none; color: var(--text-muted); font-size: 13px; cursor: pointer; padding: 0 4px; }
+.title-action:hover { color: var(--text); }
+
+/* Details slide-over panel */
+.details-panel { position: fixed; top: 0; right: 0; bottom: 0; width: 360px; background: var(--bg-raised); border-left: 1px solid var(--rule); padding: 18px 20px; overflow-y: auto; box-shadow: -8px 0 24px rgba(0,0,0,0.2); z-index: 100; }
+.details-panel-header { display: flex; align-items: baseline; justify-content: space-between; padding-bottom: 12px; border-bottom: 1px solid var(--rule); color: var(--text); font-weight: 500; font-size: 13px; }
+.details-panel-close { color: var(--text-muted); font-size: 11px; }
+.details-loading { color: var(--text-muted); padding: 12px 0; font-size: 12px; }
+.details-list { display: grid; grid-template-columns: 110px 1fr; gap: 6px 12px; margin: 12px 0 0; font-size: 12px; }
+.details-list dt { color: var(--text-muted); }
+.details-list dd { margin: 0; color: var(--text); font-family: ui-monospace, "SFMono-Regular", monospace; word-break: break-all; }
+
+/* Conversation empty state */
+.conversation-empty { color: var(--text-muted); font-size: 13px; padding: 32px 0; font-style: italic; }

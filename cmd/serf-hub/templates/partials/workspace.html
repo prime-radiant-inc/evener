@@ -1,18 +1,15 @@
 {{define "workspace"}}
-<header class="workspace-header">
+<header class="workspace-header" data-session-id="{{.ID}}">
   <div class="workspace-title">
     <span class="title">{{.Title}}</span>
+    <button class="title-action" type="button" data-copy-id="{{.ID}}" title="copy session ID">⧉</button>
     <a class="details-link" href="#" data-details-trigger>details</a>
   </div>
-  <div class="workspace-meta">
-    {{if .Branch}}<span class="branch">{{.Branch}}</span>{{end}}
-    {{if .Branch}}<span class="rule-dot">·</span>{{end}}
-    <span class="status-pill" data-state="{{.State}}">
-      <span class="status-dot" data-state="{{.State}}"></span>
-      {{.StateLabel}}
-    </span>
-    <span class="rule-dot">·</span>
-    <span class="turn-count">{{.TurnCount}} turns</span>
+  <div class="workspace-meta"
+       hx-get="/s/{{.ID}}/meta"
+       hx-trigger="load, every 2s"
+       hx-swap="innerHTML">
+    {{template "workspace_meta" .}}
   </div>
 </header>
 
@@ -34,3 +31,5 @@
   </div>
 </form>
 {{end}}
+
+{{define "workspace_meta"}}{{if .Branch}}<span class="branch">{{.Branch}}</span><span class="rule-dot">·</span>{{end}}<span class="status-pill" data-state="{{.State}}"><span class="status-dot" data-state="{{.State}}"></span> {{.StateLabel}}</span><span class="rule-dot">·</span><span class="turn-count">{{.TurnCount}} turn{{if ne .TurnCount 1}}s{{end}}</span>{{end}}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"primeradiant.com/serf/agent"
@@ -110,6 +111,29 @@ func shortID(id string) string {
 	return "session " + id[len(id)-6:]
 }
 
+// normalizeState maps the daemon's uppercase state vocabulary to the
+// lowercase tokens used by the hub UI (CSS data-state selectors,
+// attention-rank ordering).
+func normalizeState(s string) string {
+	switch s {
+	case "":
+		return "idle"
+	case "AWAITING_REPLY", "AWAITING":
+		return "awaiting"
+	case "PROCESSING", "STREAMING", "TOOL", "COMPACTING":
+		return "processing"
+	case "ERRORED", "ERROR":
+		return "awaiting" // errored sessions need user attention; group with awaiting
+	case "WARNING":
+		return "warning"
+	case "IDLE":
+		return "idle"
+	case "ENDED", "CLOSED":
+		return "ended"
+	}
+	return strings.ToLower(s)
+}
+
 // nodeKind returns "fork", "subagent", or "session" for a meta.
 func nodeKind(m agent.SessionMeta) string {
 	if m.ParentSessionID != "" && !m.IsSubagent {
@@ -132,13 +156,12 @@ func BuildTree(metas []agent.SessionMeta, live []LiveEntry) Tree {
 		}
 	}
 
-	// stateFor resolves the display state for a session ID.
+	// stateFor resolves the display state for a session ID. Daemon /status
+	// reports uppercase ("IDLE", "PROCESSING", "AWAITING_REPLY", "ERRORED");
+	// the UI vocabulary is lowercase to match CSS data-state selectors.
 	stateFor := func(id string) string {
 		if le, ok := liveMap[id]; ok {
-			if le.Status != "" {
-				return le.Status
-			}
-			return "idle"
+			return normalizeState(le.Status)
 		}
 		return "ended"
 	}

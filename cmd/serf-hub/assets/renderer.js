@@ -132,9 +132,9 @@
           this.appendBanner("note", "[subagent end] status=" + (data.status || "?"));
           break;
         case "COMMUNICATE":
-          // The agent talking to the user via the communicate tool — render as
-          // a plain assistant message (no role label, no tool chrome).
-          this.appendAssistantBlock(data.message || "");
+          // Already rendered via TOOL_CALL_START's arguments_json.message.
+          // The daemon emits both events for the same content; drop this one
+          // to avoid duplicates.
           break;
       }
       this.scrollToBottom();
@@ -503,6 +503,76 @@
   }
 
   window.SerfRenderer = SerfRenderer;
+
+  // Tab title — track sessions awaiting reply for the title-count notification
+  // (off by default; opt-in via Settings → Notifications).
+  function refreshTabTitle() {
+    const prefs = readNotifPrefs();
+    if (!prefs.title) {
+      document.title = "serf hub";
+      return;
+    }
+    fetch("/api/search?q=").then(r => r.json()).then(resp => {
+      const awaiting = (resp.live || []).filter(s => s.state === "awaiting").length;
+      const sessTitle = document.querySelector(".workspace-title .title")?.textContent?.trim() || "serf hub";
+      document.title = (awaiting > 0 ? "(" + awaiting + ") " : "") + sessTitle;
+    }).catch(() => { document.title = "serf hub"; });
+  }
+  function readNotifPrefs() {
+    try { return JSON.parse(localStorage.getItem("serf-hub.notifications") || "{}"); }
+    catch (e) { return {}; }
+  }
+
+  // Copy-session-ID button.
+  document.body && document.body.addEventListener("click", (e) => {
+    const t = e.target;
+    if (!t || !t.matches) return;
+    if (t.matches("[data-copy-id]")) {
+      e.preventDefault();
+      const id = t.getAttribute("data-copy-id");
+      if (id && navigator.clipboard) {
+        navigator.clipboard.writeText(id).then(() => {
+          const orig = t.textContent;
+          t.textContent = "✓";
+          setTimeout(() => { t.textContent = orig; }, 1200);
+        });
+      }
+    } else if (t.matches("[data-details-trigger]") || t.closest && t.closest("[data-details-trigger]")) {
+      e.preventDefault();
+      toggleDetailsPanel();
+    }
+  });
+
+  function toggleDetailsPanel() {
+    const existing = document.getElementById("details-panel");
+    if (existing) { existing.remove(); return; }
+    const header = document.querySelector(".workspace-header");
+    if (!header) return;
+    const id = header.dataset.sessionId;
+    if (!id) return;
+
+    const panel = document.createElement("aside");
+    panel.id = "details-panel";
+    panel.className = "details-panel";
+    panel.innerHTML = "<div class='details-loading'>loading…</div>";
+    document.body.appendChild(panel);
+    fetch("/s/" + encodeURIComponent(id) + "/details").then(r => r.text()).then(html => {
+      panel.innerHTML = html;
+    }).catch(() => { panel.innerHTML = "<div class='details-loading'>failed to load</div>"; });
+
+    document.addEventListener("keydown", function escClose(ev) {
+      if (ev.key === "Escape") {
+        panel.remove();
+        document.removeEventListener("keydown", escClose);
+      }
+    });
+  }
+
+  document.addEventListener("DOMContentLoaded", refreshTabTitle);
+  document.addEventListener("DOMContentLoaded", () => {
+    document.body.addEventListener("htmx:afterSwap", refreshTabTitle);
+  });
+  if (document.body) document.body.addEventListener("htmx:afterSwap", refreshTabTitle);
 
   // After every htmx swap, look for a fresh #conversation element and init
   // the renderer on it. Inline <script> blocks inside swapped partials don't

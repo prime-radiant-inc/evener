@@ -211,23 +211,25 @@ func (s *WebServer) handleApiSearch(w http.ResponseWriter, r *http.Request) {
 	var resp searchResponse
 	if s.cfg.Roster != nil {
 		for _, le := range s.cfg.Roster.List() {
-			if q == "" || strings.Contains(strings.ToLower(le.SessionID), q) {
+			title := liveTitle(le.SessionID, le, s.cfg.Past)
+			if q == "" || strings.Contains(strings.ToLower(le.SessionID), q) || strings.Contains(strings.ToLower(title), q) {
 				resp.Live = append(resp.Live, searchResult{
 					ID:      le.SessionID,
-					Title:   le.SessionID,
-					State:   le.Status,
+					Title:   title,
+					State:   normalizeState(le.Status),
 					Project: filepath.Base(le.WorkingDir),
 					Age:     "now",
 				})
 			}
 		}
 	}
-	if s.cfg.Past != nil && q != "" {
+	if s.cfg.Past != nil {
+		// Empty query → most-recent N. Substring match otherwise.
 		results := s.cfg.Past.Search(q, 20, 0)
 		for _, e := range results {
 			title := e.Meta.OriginalTask
 			if title == "" {
-				title = e.Meta.ID
+				title = shortID(e.Meta.ID)
 			}
 			resp.Past = append(resp.Past, searchResult{
 				ID:      e.Meta.ID,
@@ -916,6 +918,10 @@ func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 		}
 	case "state":
 		s.renderInputStrip(w, r, id)
+	case "meta":
+		s.renderWorkspaceMeta(w, r, id)
+	case "details":
+		s.renderDetailsPanel(w, r, id)
 	case "send":
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST required", http.StatusMethodNotAllowed)
@@ -969,14 +975,104 @@ func (s *WebServer) renderWorkspacePartial(w http.ResponseWriter, r *http.Reques
 	}
 }
 
+// renderDetailsPanel returns a side-panel with the session's verbose
+// metadata: full session id, working dir, branch + sha, model, turn count,
+// last input tokens, and (for forks) the parent session id and divergence
+// turn. Triggered by clicking the "details" link in the workspace header.
+func (s *WebServer) renderDetailsPanel(w http.ResponseWriter, r *http.Request, id string) {
+	type detailsRow struct{ Label, Value string }
+	var rows []detailsRow
+	rows = append(rows, detailsRow{"session id", id})
+
+	addMeta := func(m agent.SessionMeta) {
+		if m.OriginalTask != "" {
+			rows = append(rows, detailsRow{"task", m.OriginalTask})
+		}
+		if m.EnvInfo.WorkingDir != "" {
+			rows = append(rows, detailsRow{"working dir", m.EnvInfo.WorkingDir})
+		}
+		if m.EnvInfo.GitBranch != "" {
+			rows = append(rows, detailsRow{"branch", m.EnvInfo.GitBranch})
+		}
+		if m.Model != "" {
+			rows = append(rows, detailsRow{"model", m.ProfileID + " · " + m.Model})
+		}
+		if m.TurnCount > 0 {
+			rows = append(rows, detailsRow{"turns", fmt.Sprintf("%d", m.TurnCount)})
+		}
+		if m.LastInputTokens > 0 {
+			rows = append(rows, detailsRow{"last input tokens", fmt.Sprintf("%d", m.LastInputTokens)})
+		}
+		if m.ParentSessionID != "" {
+			rows = append(rows, detailsRow{"forked from", m.ParentSessionID})
+			rows = append(rows, detailsRow{"divergence turn", fmt.Sprintf("%d", m.DivergenceTurn)})
+		}
+		if m.IsSubagent {
+			rows = append(rows, detailsRow{"kind", "subagent"})
+		}
+	}
+
+	if s.cfg.Roster != nil {
+		if le, ok := s.cfg.Roster.Find(id); ok {
+			rows = append(rows, detailsRow{"daemon", le.Address})
+			rows = append(rows, detailsRow{"pid", fmt.Sprintf("%d", le.PID)})
+		}
+	}
+	if s.cfg.Past != nil {
+		if pe, ok := s.cfg.Past.Find(id); ok {
+			addMeta(pe.Meta)
+		}
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintln(w, `<header class="details-panel-header"><span>details</span><span class="details-panel-close">esc to close</span></header>`)
+	fmt.Fprintln(w, `<dl class="details-list">`)
+	for _, row := range rows {
+		fmt.Fprintf(w, `<dt>%s</dt><dd>%s</dd>`, htmlEscape(row.Label), htmlEscape(row.Value))
+	}
+	fmt.Fprintln(w, `</dl>`)
+}
+
+func htmlEscape(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	s = strings.ReplaceAll(s, `"`, "&quot;")
+	return s
+}
+
+// renderWorkspaceMeta returns the title-bar meta partial — status pill,
+// branch, turn count. Polled every 2s by the workspace header so live
+// state changes (idle → processing → ended) reflect promptly.
+func (s *WebServer) renderWorkspaceMeta(w http.ResponseWriter, r *http.Request, id string) {
+	data := s.workspaceData(id)
+	if data.ID == "" {
+		http.NotFound(w, r)
+		return
+	}
+	// Pull live turns from the daemon when available.
+	if s.cfg.Roster != nil {
+		if le, ok := s.cfg.Roster.Find(id); ok {
+			if info := s.fetchStatus(le); info != nil {
+				data.TurnCount = info.Turns
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.workspaceTmpl.ExecuteTemplate(w, "workspace_meta", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
 func (s *WebServer) workspaceData(id string) WorkspaceData {
 	if s.cfg.Roster != nil {
 		if le, ok := s.cfg.Roster.Find(id); ok {
+			state := normalizeState(le.Status)
 			return WorkspaceData{
 				ID:        id,
-				Title:     liveTitle(le),
-				State:     le.Status,
-				StateLabel: stateLabel(le.Status),
+				Title:     liveTitle(id, le, s.cfg.Past),
+				State:     state,
+				StateLabel: stateLabel(state),
 				Model:     le.Model,
 				EventsURL: "/s/" + id + "/events",
 			}
@@ -998,8 +1094,16 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 	return WorkspaceData{}
 }
 
-func liveTitle(le LiveEntry) string {
-	return le.SessionID
+// liveTitle prefers a friendly title for a running session: pull
+// OriginalTask from the past index if it's been written there, otherwise
+// fall back to a short session ID.
+func liveTitle(id string, le LiveEntry, past *PastIndex) string {
+	if past != nil {
+		if pe, ok := past.Find(id); ok && pe.Meta.OriginalTask != "" {
+			return pe.Meta.OriginalTask
+		}
+	}
+	return shortID(id)
 }
 
 func pastTitle(pe PastEntry) string {
@@ -1127,15 +1231,22 @@ func (s *WebServer) handleFork(w http.ResponseWriter, r *http.Request, parentID 
 		return
 	}
 
-	// Resolve the state dir for the parent session.
-	stateDir := s.cfg.StateDir
-	if stateDir == "" && s.cfg.Past != nil {
+	// Resolve the state dir for the parent session. Forks must write into
+	// the same project's state-dir as the parent (so they appear in the
+	// project tree). Past index knows the per-project state-dir; cfg.StateDir
+	// is the parent of all projects and would point ForkSession at the wrong
+	// directory.
+	var stateDir string
+	if s.cfg.Past != nil {
 		if pe, ok := s.cfg.Past.Find(parentID); ok {
 			stateDir = pe.StateDir
 		}
 	}
 	if stateDir == "" {
-		http.Error(w, "state dir not configured or session not found", http.StatusInternalServerError)
+		stateDir = s.cfg.StateDir
+	}
+	if stateDir == "" {
+		http.Error(w, "state dir not resolvable for parent session", http.StatusInternalServerError)
 		return
 	}
 
