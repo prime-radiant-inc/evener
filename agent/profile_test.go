@@ -481,16 +481,23 @@ func TestResolveOpenAICompatCatalogModel(t *testing.T) {
 		}
 	})
 
-	t.Run("openrouter does not bare-fall-back either", func(t *testing.T) {
-		// Same hazard for openrouter: bare "deepseek-r1" might match
-		// the deepseek provider's entry, which is wrong for a request
-		// addressed to openrouter.
+	t.Run("openrouter still uses bare-key fallback for upstream models", func(t *testing.T) {
+		// OpenRouter routes to upstreams whose catalog entries are
+		// often only stored under their bare upstream key (no
+		// "openrouter/..." prefix). For example, requesting
+		// "openrouter + minimax/minimax-m2.7" must hit the bare
+		// "minimax/minimax-m2.7" entry. The prefixed-first precedence
+		// still protects against the overlap case (covered separately
+		// by the deepseek subtest above).
 		lookup := fake(map[string]int{
-			"deepseek-r1": 65536,
+			"minimax/minimax-m2.7": 204800,
 		})
-		mi := resolveOpenAICompatCatalogModel(lookup, "openrouter", "deepseek-r1")
-		if mi != nil {
-			t.Fatalf("got %+v, want nil — bare-key fallback must be disabled for openrouter", mi)
+		mi := resolveOpenAICompatCatalogModel(lookup, "openrouter", "minimax/minimax-m2.7")
+		if mi == nil {
+			t.Fatal("got nil, want bare upstream match")
+		}
+		if mi.ContextWindow != 204800 {
+			t.Fatalf("ContextWindow = %d, want 204800 (upstream bare entry)", mi.ContextWindow)
 		}
 	})
 
@@ -514,6 +521,19 @@ func TestNewOpenAICompatProfile_OllamaDoesNotPickUpAnthropicCatalog(t *testing.T
 	p := NewOpenAICompatProfile("ollama", "claude-3-haiku-20240307", 0)
 	if got := p.ContextWindowSize(); got != 128_000 {
 		t.Fatalf("ContextWindowSize() = %d, want 128000 generic fallback — bare-key lookup leaked anthropic catalog metadata into ollama", got)
+	}
+}
+
+// TestNewOpenAICompatProfile_OpenRouterUpstreamBareEntry verifies the
+// OpenRouter side of the bare-key contract: openrouter routes to
+// upstreams whose models often appear only under bare keys
+// (e.g. "minimax/minimax-m2.7" with no openrouter/* equivalent), and
+// those metadata must still be inherited. Otherwise OpenRouter would
+// regress to the 128K generic fallback for many real models.
+func TestNewOpenAICompatProfile_OpenRouterUpstreamBareEntry(t *testing.T) {
+	p := NewOpenAICompatProfile("openrouter", "minimax/minimax-m2.7", 0)
+	if got := p.ContextWindowSize(); got != 204800 {
+		t.Fatalf("ContextWindowSize() = %d, want 204800 from bare minimax catalog entry — bare-key fallback was over-suppressed for openrouter", got)
 	}
 }
 

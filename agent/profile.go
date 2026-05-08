@@ -481,18 +481,22 @@ func NewOpenRouterAnthropicProfile(model string) ProviderProfile {
 	}
 }
 
-// providerUsesPrefixedCatalogKeys reports whether a provider's entries
-// in the embedded catalog are stored under provider-qualified keys
-// (e.g. "ollama/llama3.1", "openrouter/anthropic/..."). For these
-// providers, a bare-name lookup is almost always an unrelated provider's
-// entry — falling back to it would silently inherit wrong metadata,
-// so the catalog resolver skips that branch.
-func providerUsesPrefixedCatalogKeys(id string) bool {
-	switch id {
-	case "ollama", "openrouter":
-		return true
-	}
-	return false
+// suppressBareCatalogLookup reports whether a provider should skip the
+// bare-name catalog lookup (step 2 in the resolver). The hazard is
+// inheriting an unrelated provider's entry when the bare model name
+// happens to match.
+//
+// Only ollama is suppressed: local Ollama models and bare upstream-API
+// entries are unrelated by intent — falling back to a coincidental name
+// match (e.g. "claude-3-haiku") would silently mask real context
+// truncation. OpenRouter is NOT suppressed because it explicitly routes
+// to upstreams whose models often appear in the catalog only under
+// their bare upstream keys (e.g. "minimax/minimax-m2.7"); inheriting
+// the upstream's metadata is the right behavior. The prefixed-first
+// precedence still protects OpenRouter from overlap cases like
+// "openrouter/deepseek/deepseek-r1" vs bare "deepseek/deepseek-r1".
+func suppressBareCatalogLookup(id string) bool {
+	return id == "ollama"
 }
 
 // resolveOpenAICompatCatalogModel runs the OpenAI-compatible catalog
@@ -507,11 +511,12 @@ func providerUsesPrefixedCatalogKeys(id string) bool {
 //     "deepseek/deepseek-r1" is a different provider's entry) and any
 //     tagged ollama variant the catalog ships with its tag (e.g.
 //     "ollama/llama3:8b")
-//  2. bare model name — covers kimi and glm (unprefixed catalog keys).
-//     SKIPPED for providers whose catalog uses prefixed keys (ollama,
-//     openrouter) because a bare match would just inherit some other
-//     provider's metadata; e.g. asking ollama for "claude-3-haiku" must
-//     not silently pick up Anthropic's 200K context window.
+//  2. bare model name — covers kimi/glm (unprefixed catalog keys) and
+//     openrouter (which routes to upstreams whose models often only have
+//     bare entries, e.g. "minimax/minimax-m2.7"). SKIPPED for ollama:
+//     local Ollama models and bare upstream entries are unrelated by
+//     intent, so a bare match (e.g. asking ollama for "claude-3-haiku")
+//     would silently inherit Anthropic's 200K context window.
 //  3. "<id>/<base>" where base is `model` with any ":<tag>" suffix
 //     stripped — covers typical Ollama tagged variants whose catalog
 //     entry is the untagged family ("llama3.1:8b" -> "ollama/llama3.1")
@@ -519,7 +524,7 @@ func resolveOpenAICompatCatalogModel(lookup func(string) *llm.ModelInfo, id, mod
 	if mi := lookup(id + "/" + model); mi != nil {
 		return mi
 	}
-	if !providerUsesPrefixedCatalogKeys(id) {
+	if !suppressBareCatalogLookup(id) {
 		if mi := lookup(model); mi != nil {
 			return mi
 		}
