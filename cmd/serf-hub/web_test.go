@@ -939,3 +939,130 @@ func TestWeb_Settings_Providers_RendersConfigured(t *testing.T) {
 		}
 	}
 }
+
+// TestWeb_SessionTasks_PastReturnsPersistedFile verifies that GET /s/<id>/tasks
+// for an ended session reads <StateDir>/tasks/<id>.json and returns its contents.
+func TestWeb_SessionTasks_PastReturnsPersistedFile(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+		ID: "01PASTTASK", UpdatedAt: time.Now(), OriginalTask: "demo",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tasks := []agent.Task{
+		{ID: 1, Type: agent.TaskTypeImplement, Description: "add foo", Status: agent.TaskDone},
+		{ID: 2, Type: agent.TaskTypeVerify, Description: "test foo", Status: agent.TaskOpen},
+	}
+	tasksDir := filepath.Join(proj, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := json.MarshalIndent(tasks, "", "  ")
+	if err := os.WriteFile(filepath.Join(tasksDir, "01PASTTASK.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    idx,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/s/01PASTTASK/tasks", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	var got []agent.Task
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON: %v body=%q", err, rec.Body.String())
+	}
+	if len(got) != 2 || got[0].Description != "add foo" || got[1].Status != agent.TaskOpen {
+		t.Errorf("unexpected tasks: %+v", got)
+	}
+}
+
+// TestWeb_SessionTasks_PastNoTasksFile returns an empty array when no
+// tasks have been persisted for the session.
+func TestWeb_SessionTasks_PastNoTasksFile(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+		ID: "01NOTASKS", UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    idx,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/s/01NOTASKS/tasks", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := strings.TrimSpace(rec.Body.String())
+	if body != "[]" {
+		t.Errorf("expected empty array, got %q", body)
+	}
+}
+
+// TestWeb_SessionTasks_LiveProxiesDaemon stands up a fake daemon serving /tasks
+// and verifies the hub proxies through.
+func TestWeb_SessionTasks_LiveProxiesDaemon(t *testing.T) {
+	daemonResp := `[{"id":1,"type":"implement","description":"live task","status":"in_progress"}]`
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/tasks" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(daemonResp))
+	}))
+	defer daemon.Close()
+
+	addr := strings.TrimPrefix(daemon.URL, "http://")
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 11, Address: addr})
+	r := NewRoster(dir, fakeProber{sessionID: "01LIVETASK", status: "idle"})
+	r.Refresh()
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  r,
+		Past:    NewPastIndex(""),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/s/01LIVETASK/tasks", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"live task"`) {
+		t.Errorf("body missing daemon payload: %q", rec.Body.String())
+	}
+}

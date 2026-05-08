@@ -1107,6 +1107,8 @@ func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 		s.renderWorkspaceMeta(w, r, id)
 	case "details":
 		s.renderDetailsPanel(w, r, id)
+	case "tasks":
+		s.renderSessionTasks(w, r, id)
 	case "send":
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST required", http.StatusMethodNotAllowed)
@@ -1216,6 +1218,40 @@ func (s *WebServer) renderDetailsPanel(w http.ResponseWriter, r *http.Request, i
 		fmt.Fprintf(w, `<dt>%s</dt><dd>%s</dd>`, htmlEscape(row.Label), htmlEscape(row.Value))
 	}
 	fmt.Fprintln(w, `</dl>`)
+}
+
+// renderSessionTasks returns the session's task list as JSON. For live
+// sessions it proxies the daemon's GET /tasks; for ended sessions it reads
+// the persisted <StateDir>/tasks/<id>.json. A missing file or absent
+// session returns an empty array (200) so the UI doesn't have to special-
+// case "no tasks yet".
+func (s *WebServer) renderSessionTasks(w http.ResponseWriter, r *http.Request, id string) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if s.cfg.Roster != nil {
+		if le, ok := s.cfg.Roster.Find(id); ok {
+			client := &http.Client{Timeout: 2 * time.Second}
+			resp, err := client.Get("http://" + le.Address + "/tasks") //nolint:gosec
+			if err == nil {
+				defer resp.Body.Close()
+				_, _ = io.Copy(w, resp.Body)
+				return
+			}
+			// fall through to disk on daemon error
+		}
+	}
+
+	if s.cfg.Past != nil {
+		if pe, ok := s.cfg.Past.Find(id); ok && pe.StateDir != "" {
+			path := filepath.Join(pe.StateDir, "tasks", id+".json")
+			if data, err := os.ReadFile(path); err == nil {
+				_, _ = w.Write(data)
+				return
+			}
+		}
+	}
+
+	_, _ = w.Write([]byte("[]\n"))
 }
 
 func htmlEscape(s string) string {

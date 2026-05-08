@@ -466,3 +466,19 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 
 /* Conversation empty state */
 .conversation-empty { color: var(--text-muted); font-size: 13px; padding: 32px 0; font-style: italic; }
+
+/* Task list panel */
+.tasks-summary { color: var(--text-muted); font-size: 11px; margin: 12px 0 6px; }
+.tasks-empty { color: var(--text-muted); font-size: 12px; padding: 12px 0; font-style: italic; }
+.tasks-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.task-row { display: grid; grid-template-columns: 14px 28px auto 1fr auto; gap: 6px; align-items: baseline; padding: 6px 8px; border-radius: 4px; font-size: 12px; line-height: 1.4; background: var(--bg); border: 1px solid var(--rule); }
+.task-row .task-icon { color: var(--text-muted); font-size: 11px; }
+.task-row .task-id { color: var(--text-muted); font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 11px; }
+.task-row .task-type { color: var(--text-muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+.task-row .task-desc { color: var(--text); word-break: break-word; }
+.task-row .task-deps { color: var(--text-muted); font-size: 10px; font-family: ui-monospace, "SFMono-Regular", monospace; }
+.task-status-done .task-icon { color: var(--state-idle); }
+.task-status-done .task-desc { color: var(--text-muted); text-decoration: line-through; }
+.task-status-in-progress { border-color: var(--state-processing); }
+.task-status-in-progress .task-icon { color: var(--state-processing); }
+.task-status-cancelled .task-desc { color: var(--text-muted); text-decoration: line-through; opacity: 0.6; }

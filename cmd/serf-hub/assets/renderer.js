@@ -620,12 +620,123 @@
     } else if (t.matches("[data-details-trigger]") || t.closest && t.closest("[data-details-trigger]")) {
       e.preventDefault();
       toggleDetailsPanel();
+    } else if (t.matches("[data-tasks-trigger]") || t.closest && t.closest("[data-tasks-trigger]")) {
+      e.preventDefault();
+      toggleTasksPanel();
     }
   });
+
+  function toggleTasksPanel() {
+    const existing = document.getElementById("tasks-panel");
+    if (existing) {
+      if (existing.__pollTimer) clearInterval(existing.__pollTimer);
+      existing.remove();
+      return;
+    }
+    // Close details panel if open — they share the same slot.
+    const details = document.getElementById("details-panel");
+    if (details) details.remove();
+
+    const header = document.querySelector(".workspace-header");
+    if (!header) return;
+    const id = header.dataset.sessionId;
+    if (!id) return;
+
+    const panel = document.createElement("aside");
+    panel.id = "tasks-panel";
+    panel.className = "details-panel";
+    panel.innerHTML = "<div class='details-loading'>loading…</div>";
+    document.body.appendChild(panel);
+
+    const tasksURL = "/s/" + encodeURIComponent(id) + "/tasks";
+    const refresh = () => {
+      fetch(tasksURL).then(r => r.json()).then(tasks => {
+        renderTasksInto(panel, tasks);
+      }).catch(() => {
+        panel.innerHTML = "<div class='details-loading'>failed to load</div>";
+      });
+    };
+    refresh();
+    panel.__pollTimer = setInterval(refresh, 2000);
+
+    document.addEventListener("keydown", function escClose(ev) {
+      if (ev.key === "Escape") {
+        if (panel.__pollTimer) clearInterval(panel.__pollTimer);
+        panel.remove();
+        document.removeEventListener("keydown", escClose);
+      }
+    });
+  }
+
+  function renderTasksInto(panel, tasks) {
+    const total = tasks.length;
+    const done = tasks.filter(t => t.status === "done").length;
+    const inProg = tasks.filter(t => t.status === "in_progress").length;
+    const open = tasks.filter(t => t.status === "open").length;
+
+    const parts = [];
+    parts.push("<header class='details-panel-header'>");
+    parts.push("<span>tasks · " + done + "/" + total + "</span>");
+    parts.push("<span class='details-panel-close'>esc to close</span>");
+    parts.push("</header>");
+
+    if (total === 0) {
+      parts.push("<div class='tasks-empty'>no tasks for this session</div>");
+    } else {
+      if (inProg > 0 || open > 0) {
+        parts.push("<div class='tasks-summary'>" + inProg + " in progress · " + open + " open · " + done + " done</div>");
+      }
+      parts.push("<ul class='tasks-list'>");
+      for (const t of tasks) {
+        const cls = "task-row task-status-" + (t.status || "open").replace(/_/g, "-");
+        const icon = taskStatusIcon(t.status);
+        const desc = escapeHTML(t.description || "");
+        const type = t.type ? "<span class='task-type'>" + escapeHTML(t.type) + "</span>" : "";
+        let deps = "";
+        if (Array.isArray(t.depends_on) && t.depends_on.length > 0) {
+          deps = "<span class='task-deps'>← " + t.depends_on.join(", ") + "</span>";
+        }
+        parts.push(
+          "<li class='" + cls + "'>" +
+          "<span class='task-icon'>" + icon + "</span>" +
+          "<span class='task-id'>#" + (t.id || "?") + "</span>" +
+          type +
+          "<span class='task-desc'>" + desc + "</span>" +
+          deps +
+          "</li>"
+        );
+      }
+      parts.push("</ul>");
+    }
+    panel.innerHTML = parts.join("");
+  }
+
+  function taskStatusIcon(status) {
+    switch (status) {
+      case "done": return "✓";
+      case "in_progress": return "▶";
+      case "cancelled": return "✕";
+      default: return "○";
+    }
+  }
+
+  function escapeHTML(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
 
   function toggleDetailsPanel() {
     const existing = document.getElementById("details-panel");
     if (existing) { existing.remove(); return; }
+    // Close tasks panel if open — they share the same slot.
+    const tasks = document.getElementById("tasks-panel");
+    if (tasks) {
+      if (tasks.__pollTimer) clearInterval(tasks.__pollTimer);
+      tasks.remove();
+    }
     const header = document.querySelector(".workspace-header");
     if (!header) return;
     const id = header.dataset.sessionId;
