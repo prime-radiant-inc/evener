@@ -626,7 +626,10 @@ func TestExecCommand_AddsVenvBinToPATH_WhenPresent(t *testing.T) {
 	}
 
 	env := NewLocalExecutionEnvironment(dir)
-	res, err := env.ExecCommand(context.Background(), cmdName, 5_000, "", nil)
+	// 30s timeout: a parallel `go test ./...` run can starve fork+exec long
+	// enough that a 5s timeout flakes here even though the test does
+	// trivial work. The assertion is about PATH wiring, not latency.
+	res, err := env.ExecCommand(context.Background(), cmdName, 30_000, "", nil)
 	if err != nil {
 		t.Fatalf("ExecCommand: %v (stdout=%q stderr=%q)", err, res.Stdout, res.Stderr)
 	}
@@ -647,7 +650,7 @@ func TestExecCommand_DoesNotInventVenvBinPATH_WhenAbsent(t *testing.T) {
 	env := NewLocalExecutionEnvironment(dir)
 
 	cmdName := "_serf_nonexistent_venv_cmd"
-	res, err := env.ExecCommand(context.Background(), cmdName, 5_000, "", nil)
+	res, err := env.ExecCommand(context.Background(), cmdName, 30_000, "", nil)
 	if err == nil {
 		t.Fatalf("expected error (stdout=%q stderr=%q)", res.Stdout, res.Stderr)
 	}
