@@ -105,14 +105,25 @@ type providerSetter interface {
 // (or any error in its Unwrap chain) supports it. Returns err unchanged
 // otherwise. Safe to call on nil. Thin wrappers should call this on every
 // error they forward so failures aren't misattributed to the inner adapter.
+//
+// Errors whose original Provider() is empty are left alone. This protects
+// errors that intentionally have no provider attribution — most importantly
+// AbortError (user-driven cancellation) and NoObjectGeneratedError
+// (response-shape failure that isn't provider-specific). Restamping these
+// would change "context canceled" into "ollama error: context canceled",
+// which is wrong.
 func RewriteErrorProvider(err error, provider string) error {
 	if err == nil {
 		return nil
 	}
 	var ps providerSetter
-	if errors.As(err, &ps) {
-		ps.setProvider(provider)
+	if !errors.As(err, &ps) {
+		return err
 	}
+	if getter, ok := ps.(interface{ Provider() string }); ok && getter.Provider() == "" {
+		return err
+	}
+	ps.setProvider(provider)
 	return err
 }
 

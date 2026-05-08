@@ -457,6 +457,23 @@ func TestAdapter_Stream_RewritesStartupErrorProvider(t *testing.T) {
 	}
 }
 
+// TestAdapter_AbortErrorNotRestamped verifies that user-driven
+// cancellation errors (AbortError, constructed with no provider) are
+// NOT restamped by the wrapper. Cancellation isn't provider-attributed
+// — turning "context canceled" into "ollama error: context canceled"
+// would mislead callers about who originated the failure.
+func TestAdapter_AbortErrorNotRestamped(t *testing.T) {
+	abort := llm.NewAbortError("context canceled")
+	got := llm.RewriteErrorProvider(abort, "ollama")
+	var llmErr llm.Error
+	if !errors.As(got, &llmErr) {
+		t.Fatalf("rewritten value is not a llm.Error: %T %v", got, got)
+	}
+	if llmErr.Provider() != "" {
+		t.Fatalf("AbortError.Provider() = %q after rewrite, want \"\" (cancellation must stay provider-less)", llmErr.Provider())
+	}
+}
+
 // TestAdapter_Complete_RewritesNonHTTPErrorProvider verifies that
 // non-HTTP typed adapter errors (e.g. UnsupportedToolChoiceError, which
 // the inner adapter returns synchronously before any network call) are
