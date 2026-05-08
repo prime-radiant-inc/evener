@@ -629,6 +629,44 @@ func TestBaseProfile_WithModel_RecomputesCatalogStateOnMetaProviders(t *testing.
 	}
 }
 
+// TestNewOpenRouterAnthropicProfile_ResolvesOpenRouterPrefixedCatalog
+// verifies that NewOpenRouterAnthropicProfile picks up catalog metadata
+// for OpenRouter-prefixed Anthropic models. The OpenRouter catalog
+// stores these as "openrouter/anthropic/claude-3-haiku-20240307" with
+// a 200K context window, but the profile id is "openrouter-anthropic"
+// (with a hyphen) and the bare lookup misses, so without an OpenRouter
+// fallback the profile falls back to 128K.
+//
+// This matters because baseProfile.WithModel now rebuilds the
+// openrouter-anthropic profile via NewOpenRouterAnthropicProfile when
+// the model changes within the same provider — the constructor must
+// re-derive metadata for the new model, not just inherit defaults.
+func TestNewOpenRouterAnthropicProfile_ResolvesOpenRouterPrefixedCatalog(t *testing.T) {
+	p := NewOpenRouterAnthropicProfile("anthropic/claude-3-haiku-20240307")
+	if got := p.ContextWindowSize(); got != 200_000 {
+		t.Fatalf("ContextWindowSize() = %d, want 200000 from openrouter/anthropic/claude-3-haiku-20240307 catalog entry — bare lookup missed and OpenRouter prefix was not tried", got)
+	}
+}
+
+// TestBaseProfile_WithModel_RecomputesOpenRouterAnthropicCatalog is the
+// integration check on the WithModel rebuild path. Starting from an
+// openrouter-anthropic profile constructed with one Anthropic model,
+// switching to a different one via WithModel must surface the new
+// model's OpenRouter-prefixed catalog metadata, not stale state.
+func TestBaseProfile_WithModel_RecomputesOpenRouterAnthropicCatalog(t *testing.T) {
+	orig := NewOpenRouterAnthropicProfile("anthropic/claude-3-5-sonnet")
+	cloned := orig.WithModel("anthropic/claude-3-haiku-20240307")
+	if cloned.ID() != "openrouter-anthropic" {
+		t.Fatalf("ID() = %q, want openrouter-anthropic", cloned.ID())
+	}
+	if cloned.Model() != "anthropic/claude-3-haiku-20240307" {
+		t.Fatalf("Model() = %q, want anthropic/claude-3-haiku-20240307", cloned.Model())
+	}
+	if got := cloned.ContextWindowSize(); got != 200_000 {
+		t.Fatalf("ContextWindowSize() = %d, want 200000 — same-provider WithModel did not pick up the new model's openrouter-prefixed catalog metadata", got)
+	}
+}
+
 // TestBaseProfile_WithModel_RecomputesProviderOptsOnMetaProviders is
 // the providerOpts companion to the catalog test: switching from a
 // non-minimax openrouter model to a minimax/* one must inject the

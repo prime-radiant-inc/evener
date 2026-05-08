@@ -518,21 +518,32 @@ func NewMiniMaxProfile(model string) ProviderProfile {
 func NewOpenRouterAnthropicProfile(model string) ProviderProfile {
 	model = strings.TrimSpace(model)
 	// Ducktype capabilities from the catalog for the specific model.
+	// OpenRouter-Anthropic models are stored in the catalog under
+	// "openrouter/<upstream>/<model>" (e.g.
+	// "openrouter/anthropic/claude-3-haiku-20240307"), not under their
+	// bare upstream name. Use the openai-compat resolver with the
+	// catalog-shipped "openrouter" prefix so the prefixed and bare
+	// fallbacks both fire correctly. Profile id stays "openrouter-anthropic".
 	contextWindow := 128_000
 	ws := true // default to web search on (Anthropic models support it)
+	defaultEfforts := []string{"low", "medium", "high", "max"}
+	var efforts []string
 	if cat := llm.EmbeddedModelCatalog(); cat != nil {
-		if mi := cat.GetModelInfo(model); mi != nil {
+		if mi := resolveOpenAICompatCatalogModel(cat.GetModelInfo, "openrouter", model); mi != nil {
 			if mi.ContextWindow > 0 {
 				contextWindow = mi.ContextWindow
 			}
 			// Only override if the catalog has an explicit entry for this model.
 			// Absent models keep the default (true).
 			ws = mi.SupportsWebSearch
+			if len(mi.ReasoningEffortLevels) > 0 {
+				efforts = append([]string(nil), mi.ReasoningEffortLevels...)
+			}
 		}
 	}
-	// Resolve effort levels from catalog; fall back to MiniMax defaults.
-	defaultEfforts := []string{"low", "medium", "high", "max"}
-	efforts := resolveEffortLevels(model, defaultEfforts)
+	if efforts == nil {
+		efforts = resolveEffortLevels(model, defaultEfforts)
+	}
 	return &baseProfile{
 		id:              "openrouter-anthropic",
 		model:           model,
