@@ -1,0 +1,20 @@
+{{define "settings-content"}}
+<h2 class="settings-h2">Theme</h2>
+<p class="settings-help">Both palettes ship; default follows your OS preference. Saved per-browser.</p>
+<form class="settings-form" data-theme-picker>
+  <label class="settings-radio"><input type="radio" name="theme" value="system"> System</label>
+  <label class="settings-radio"><input type="radio" name="theme" value="dark"> Dark</label>
+  <label class="settings-radio"><input type="radio" name="theme" value="light"> Light</label>
+</form>
+<script>
+(function(){
+  var current = localStorage.getItem("serf-hub.theme") || "system";
+  document.querySelectorAll('input[name=theme]').forEach(r => {
+    r.checked = r.value === current;
+    r.addEventListener("change", () => {
+      window.serfHub.setTheme(r.value === "system" ? null : r.value);
+    });
+  });
+})();
+</script>
+{{end}}

@@ -28,8 +28,24 @@
         hx-trigger="load"
         hx-swap="innerHTML">
   </main>
+  <dialog id="search-dialog" class="search-dialog">
+    <div class="search-dialog-inner">
+      <header class="search-dialog-header">
+        <span class="search-icon">🔍</span>
+        <input id="search-input" type="text" autocomplete="off" placeholder="search live + past sessions">
+        <span class="search-dialog-hint">esc</span>
+      </header>
+      <div id="search-results" class="search-results"></div>
+      <footer class="search-dialog-footer">
+        <span>↑↓ nav</span>
+        <span>↵ open</span>
+        <span>esc close</span>
+      </footer>
+    </div>
+  </dialog>
   <script src="/assets/htmx.min.js"></script>
   <script src="/assets/theme.js"></script>
+  <script src="/assets/search.js"></script>
 </body>
 </html>
 {{end}}

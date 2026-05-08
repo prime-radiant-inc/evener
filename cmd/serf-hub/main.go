@@ -88,6 +88,7 @@ func main() {
 	// Web
 	web := NewWebServer(WebConfig{
 		HubAddr:     cfg.Addr,
+		RunDir:      runDir,
 		Roster:      roster,
 		Past:        past,
 		Spawner:     spawner,

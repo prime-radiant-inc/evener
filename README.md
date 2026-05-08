@@ -225,47 +225,48 @@ All flags from the `serf` CLI are supported, plus `--addr` for remote connection
 
 ## Serf Hub (Web Orchestrator)
 
-`serf-hub` is a sibling binary that aggregates many `serf serve` daemons running on the same host into a single browser UI: live drive pages with SSE streaming, a search-and-resume view of past sessions, and a spawn form for starting new daemons from named templates.
+`serf-hub` is a sibling binary that runs alongside `serf serve` daemons and gives you a single browser-based interface for many concurrent sessions.
 
-### Build
+### Build & run
 
 ```bash
 make build-hub
+serf-hub  # default 127.0.0.1:9180
 ```
 
-### Usage
+Open `http://127.0.0.1:9180` in your browser.
 
-```bash
-# Run a few daemons (any working dirs)
-serf serve --provider openai --model gpt-5-mini-2025-08-07 --addr 127.0.0.1:0 --dir /path/to/repo &
+### What's there
 
-# Start the hub (default 127.0.0.1:9180)
-serf-hub
-```
-
-Open `http://127.0.0.1:9180` to see live daemons, search past sessions, and drive any session through your browser.
+- **Sidebar** with a Live section (every running session sorted by who needs you) and a Projects section (sessions grouped by working directory; subagents indented under origin; forks immediately following with the `⎇` glyph).
+- **Workspace pane** with a two-tier conversation: messages (user pills + assistant body) at the primary reading tier, tool calls and diffs as muted margin annotations.
+- **New session** at `/new` — prompt-first, pick model and working dir, click spawn.
+- **Edit-to-fork**: hover any prior user message, click `✎ edit`, hit ⌘↵, label the original branch, confirm. The new branch becomes active; the original is preserved as a sibling fork.
+- **Transparent resume**: click any closed session, type, send. The daemon spawns from where it left off — same identity throughout.
+- **⌘K search** across live + past sessions.
+- **Settings** for theme (light/dark/system), notification preferences (all opt-in), and read-only inspection of providers and MCP setup.
 
 ### Configuration
 
-`serf-hub` reads `~/.serf/hub.toml` for spawn templates and basic settings:
+`~/.serf/hub.toml` (optional):
 
 ```toml
 addr = "127.0.0.1:9180"
 spawn_timeout = "30s"
 past_results_per_page = 50
 
-[[spawn_template]]
-name = "openai gpt-5"
-provider = "openai"
-model = "gpt-5"
-agent = "default"
+[[providers]]
+name = "openai"
+models = ["gpt-5", "gpt-5-mini"]
+
+[[providers]]
+name = "anthropic"
+models = ["claude-opus-4-7", "claude-sonnet-4-6"]
 ```
 
 ### Architecture
 
-- **Daemons** are loopback-only `serf serve` processes. Each writes a rendezvous file to `~/.serf/run/<pid>.json` so the hub can discover them.
-- **Hub** binds the browser-facing port and proxies REST + SSE to the daemon resolved from `session_id` lookups.
-- **Browser** never talks to a daemon directly. CSRF/DNS-rebinding defense is the hub's `Origin`/`Host` guard plus a strict CSP header.
+Daemons are loopback-only. Each writes a rendezvous file to `~/.serf/run/<pid>.json`; the hub watches the directory, probes daemons for state, and proxies REST + SSE so the browser only ever talks to the hub origin. Same-origin guard + strict CSP defend against DNS-rebinding and cross-origin attacks.
 
 Design spec, plans, and notes live under `docs/superpowers/`.
 

@@ -1,0 +1,11 @@
+{{define "settings-content"}}
+<h2 class="settings-h2">General</h2>
+<dl class="settings-list">
+  <dt>Hub address</dt><dd><code>{{.HubAddr}}</code></dd>
+  <dt>Run dir</dt><dd><code>{{.RunDir}}</code></dd>
+  <dt>State dir</dt><dd><code>{{.StateDir}}</code></dd>
+  <dt>Spawn timeout</dt><dd>{{.SpawnTimeout}}</dd>
+  <dt>Past results per page</dt><dd>{{.PastPerPage}}</dd>
+</dl>
+<p class="settings-help">Edit <code>~/.serf/hub.toml</code> to change.</p>
+{{end}}

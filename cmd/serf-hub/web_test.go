@@ -683,3 +683,99 @@ func TestWeb_Fork_CallsForkSession(t *testing.T) {
 		t.Errorf("response missing child_session_id: %q", respBody)
 	}
 }
+
+// TestWeb_ApiSearch_FiltersPast populates the past index with two metas,
+// queries for one by name, and asserts only that result is returned.
+func TestWeb_ApiSearch_FiltersPast(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	_ = os.MkdirAll(proj, 0o755)
+	_ = agent.SaveSessionMeta(proj, agent.SessionMeta{
+		ID: "01MATCH", UpdatedAt: time.Now(), OriginalTask: "fix the frobnitz",
+		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/alpha"},
+	})
+	_ = agent.SaveSessionMeta(proj, agent.SessionMeta{
+		ID: "01OTHER", UpdatedAt: time.Now(), OriginalTask: "unrelated work",
+		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/beta"},
+	})
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    idx,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/search?q=frobnitz", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "01MATCH") {
+		t.Errorf("body missing 01MATCH: %q", body)
+	}
+	if strings.Contains(body, "01OTHER") {
+		t.Errorf("body incorrectly includes 01OTHER: %q", body)
+	}
+}
+
+// TestWeb_Settings_Theme_Renders checks that GET /settings/theme returns 200
+// with the theme radio inputs present.
+func TestWeb_Settings_Theme_Renders(t *testing.T) {
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    NewPastIndex(""),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/settings/theme", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `name="theme"`) {
+		t.Errorf("body missing theme radio inputs: %q", body)
+	}
+	for _, val := range []string{"system", "dark", "light"} {
+		if !strings.Contains(body, `value="`+val+`"`) {
+			t.Errorf("body missing radio value %q: %q", val, body)
+		}
+	}
+}
+
+// TestWeb_Settings_Providers_RendersConfigured checks that GET /settings/providers
+// with Models in WebConfig renders the provider names.
+func TestWeb_Settings_Providers_RendersConfigured(t *testing.T) {
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    NewPastIndex(""),
+		Models: []modelDescriptor{
+			{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+			{Provider: "anthropic", Model: "claude-opus-4-7"},
+			{Provider: "openai", Model: "gpt-5"},
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/settings/providers", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"anthropic", "openai", "claude-sonnet-4-6", "gpt-5"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q: %q", want, body)
+		}
+	}
+}

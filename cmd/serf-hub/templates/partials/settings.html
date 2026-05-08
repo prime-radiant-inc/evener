@@ -1,0 +1,23 @@
+{{define "settings"}}
+<header class="workspace-header">
+  <div class="workspace-title">
+    <span class="title">settings</span>
+  </div>
+</header>
+<div class="settings-pane">
+  <nav class="settings-nav">
+    <a class="settings-nav-link {{if eq .Active "general"}}active{{end}}" href="/settings/general" hx-get="/settings/general" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/general">General</a>
+    <a class="settings-nav-link {{if eq .Active "theme"}}active{{end}}" href="/settings/theme" hx-get="/settings/theme" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/theme">Theme</a>
+    <a class="settings-nav-link {{if eq .Active "notifications"}}active{{end}}" href="/settings/notifications" hx-get="/settings/notifications" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/notifications">Notifications</a>
+    <div class="settings-nav-section">Agents &amp; models</div>
+    <a class="settings-nav-link {{if eq .Active "providers"}}active{{end}}" href="/settings/providers" hx-get="/settings/providers" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/providers">Providers</a>
+    <div class="settings-nav-section">Extensions</div>
+    <a class="settings-nav-link {{if eq .Active "mcp"}}active{{end}}" href="/settings/mcp" hx-get="/settings/mcp" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/mcp">MCP servers</a>
+    <div class="settings-nav-section">Daemon</div>
+    <a class="settings-nav-link {{if eq .Active "hub"}}active{{end}}" href="/settings/hub" hx-get="/settings/hub" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/hub">Hub</a>
+  </nav>
+  <div id="settings-content" class="settings-content">
+    {{template "settings-content" .}}
+  </div>
+</div>
+{{end}}

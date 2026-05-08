@@ -1,0 +1,25 @@
+{{define "settings-content"}}
+<h2 class="settings-h2">Notifications</h2>
+<p class="settings-help">All notifications default off. Saved per-browser.</p>
+<form class="settings-form" data-notif-form>
+  <label class="settings-toggle"><input type="checkbox" data-notif="title"> Title-bar count of awaiting sessions</label>
+  <label class="settings-toggle"><input type="checkbox" data-notif="favicon"> Favicon dot for highest-attention state</label>
+  <label class="settings-toggle"><input type="checkbox" data-notif="os"> OS notification on idle&rarr;awaiting and processing&rarr;errored</label>
+  <label class="settings-toggle"><input type="checkbox" data-notif="sound"> Short tone on the same transitions</label>
+</form>
+<script>
+(function(){
+  var prefs = JSON.parse(localStorage.getItem("serf-hub.notifications") || "{}");
+  document.querySelectorAll('[data-notif]').forEach(cb => {
+    cb.checked = !!prefs[cb.dataset.notif];
+    cb.addEventListener("change", () => {
+      prefs[cb.dataset.notif] = cb.checked;
+      localStorage.setItem("serf-hub.notifications", JSON.stringify(prefs));
+      if (cb.dataset.notif === "os" && cb.checked && Notification && Notification.requestPermission) {
+        Notification.requestPermission();
+      }
+    });
+  });
+})();
+</script>
+{{end}}

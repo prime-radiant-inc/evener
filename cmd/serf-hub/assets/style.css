@@ -374,3 +374,47 @@ body.app { display: flex; min-height: 100vh; margin: 0; background: var(--bg); c
 .spawn-recent-row { display: block; padding: 6px 10px; border-radius: 4px; color: var(--text); cursor: pointer; font-size: 12px; text-decoration: none; }
 .spawn-recent-row:hover { background: var(--bg-raised); }
 .fork-confirm kbd { font-family: ui-monospace, "SFMono-Regular", monospace; opacity: 0.7; margin-left: 4px; }
+
+/* ── Search palette ──────────────────────────────────────────────────────── */
+.search-dialog { background: transparent; border: none; padding: 0; max-width: none; max-height: none; width: 100%; height: 100%; }
+.search-dialog::backdrop { background: rgba(0, 0, 0, 0.5); }
+.search-dialog-inner { width: 560px; max-width: 90vw; margin: 80px auto 0; background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 8px; box-shadow: 0 20px 60px rgba(0,0,0,0.5); overflow: hidden; }
+.search-dialog-header { padding: 14px 16px; border-bottom: 1px solid var(--rule); display: flex; align-items: center; gap: 10px; }
+.search-icon { color: var(--text-muted); }
+#search-input { flex: 1; background: transparent; border: none; color: var(--text); font: inherit; font-size: 14px; outline: none; }
+.search-dialog-hint { color: var(--text-muted); font-size: 11px; }
+.search-results { max-height: 400px; overflow-y: auto; padding: 6px 0; }
+.search-section-header { padding: 4px 16px; color: var(--text-muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; margin-top: 6px; }
+.search-row { display: flex; align-items: center; gap: 10px; padding: 8px 16px; color: var(--text); cursor: pointer; text-decoration: none; }
+.search-row.active { background: rgba(122, 162, 247, 0.1); }
+.search-row .status-dot { flex-shrink: 0; }
+.search-title { flex: 1; }
+.search-project { color: var(--text-muted); font-size: 11px; }
+.search-age { color: var(--text-muted); font-size: 11px; }
+.search-empty { padding: 24px; color: var(--text-muted); text-align: center; font-size: 12px; }
+.search-dialog-footer { padding: 8px 16px; border-top: 1px solid var(--rule); display: flex; gap: 18px; font-size: 11px; color: var(--text-muted); }
+
+/* ── Settings page ───────────────────────────────────────────────────────── */
+.settings-pane { display: flex; flex: 1; padding: 0; overflow: hidden; }
+.settings-nav { width: 200px; padding: 24px 0; border-right: 1px solid var(--rule); flex-shrink: 0; overflow-y: auto; }
+.settings-nav-section { padding: 14px 20px 4px; color: var(--text-dim); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; }
+.settings-nav-link { display: block; padding: 6px 20px; color: var(--text-muted); text-decoration: none; font-size: 13px; }
+.settings-nav-link:hover { color: var(--text); }
+.settings-nav-link.active { color: var(--text); font-weight: 500; }
+.settings-content { flex: 1; padding: 32px 56px; overflow-y: auto; }
+.settings-h2 { margin: 0 0 12px; font-size: 18px; font-weight: 500; color: var(--text); }
+.settings-help { color: var(--text-muted); font-size: 13px; max-width: 560px; margin: 0 0 24px; line-height: 1.6; }
+.settings-help code { background: var(--bg-raised); padding: 1px 6px; border-radius: 3px; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; }
+.settings-form { display: flex; flex-direction: column; gap: 12px; max-width: 480px; }
+.settings-radio,
+.settings-toggle { display: flex; align-items: center; gap: 10px; color: var(--text); font-size: 13px; cursor: pointer; }
+.settings-list { display: grid; grid-template-columns: 200px 1fr; gap: 8px 24px; max-width: 720px; }
+.settings-list dt { color: var(--text-muted); font-size: 13px; }
+.settings-list dd { margin: 0; color: var(--text); font-size: 13px; }
+.settings-list code { font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; color: var(--text); }
+.settings-rows { display: flex; flex-direction: column; gap: 1px; background: var(--rule); border-radius: 6px; overflow: hidden; max-width: 720px; }
+.settings-row { background: var(--bg); padding: 12px 16px; }
+.settings-row-title { font-weight: 500; color: var(--text); font-size: 14px; font-family: ui-monospace, "SFMono-Regular", monospace; }
+.settings-row-meta { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+.settings-row-detail { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+.model-chip { background: var(--bg-raised); padding: 2px 8px; border-radius: 10px; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 11px; color: var(--text); }

@@ -23,6 +23,7 @@ import (
 // WebConfig is everything the web server needs.
 type WebConfig struct {
 	HubAddr     string
+	RunDir      string            // run directory where rendezvous files live
 	Roster      *Roster
 	Past        *PastIndex
 	Spawner     Spawner           // optional; nil disables spawn
@@ -57,6 +58,7 @@ type WebServer struct {
 	workspaceTmpl   *template.Template
 	spawnTmpl       *template.Template
 	inputStripTmpl  *template.Template
+	settingsTmpls   map[string]*template.Template
 	rest            *RESTProxy
 	sse             *SSEProxy
 
@@ -99,6 +101,14 @@ func NewWebServer(cfg WebConfig) *WebServer {
 	inputStripTmpl := template.Must(template.ParseFS(templatesFS,
 		"templates/partials/input_strip.html",
 	))
+	settingsSections := []string{"general", "theme", "notifications", "providers", "mcp", "hub"}
+	settingsTmpls := make(map[string]*template.Template, len(settingsSections))
+	for _, sec := range settingsSections {
+		settingsTmpls[sec] = template.Must(template.ParseFS(templatesFS,
+			"templates/partials/settings.html",
+			"templates/partials/settings/"+sec+".html",
+		))
+	}
 	var rest *RESTProxy
 	var sse *SSEProxy
 	if cfg.Roster != nil {
@@ -110,6 +120,7 @@ func NewWebServer(cfg WebConfig) *WebServer {
 		liveTmpl: liveTmpl,
 		pastTmpl: pastTmpl, pastResultsTmpl: pastResultsTmpl, pastViewTmpl: pastViewTmpl,
 		workspaceTmpl: workspaceTmpl, spawnTmpl: spawnTmpl, inputStripTmpl: inputStripTmpl,
+		settingsTmpls: settingsTmpls,
 		rest: rest, sse: sse,
 		resumeLocks: map[string]*sync.Mutex{},
 	}
@@ -149,9 +160,14 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/past/results", s.handlePastResults) // must be before /past/
 	mux.HandleFunc("/past/", s.handlePastID)
 
+	// Settings
+	mux.HandleFunc("/settings", s.handleSettings)
+	mux.HandleFunc("/settings/", s.handleSettings)
+
 	// API
 	mux.HandleFunc("/api/spawn", s.handleApiSpawn)
 	mux.HandleFunc("/api/models", s.handleApiModels)
+	mux.HandleFunc("/api/search", s.handleApiSearch)
 
 	// Live drive proxied routes (REST and SSE)
 	mux.HandleFunc("/live/", s.handleLiveProxy)
@@ -174,6 +190,123 @@ func (s *WebServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
+
+// searchResult is one item in the /api/search response.
+type searchResult struct {
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	Project string `json:"project"`
+	State   string `json:"state"`
+	Age     string `json:"age"`
+}
+
+// searchResponse is the JSON envelope returned by /api/search.
+type searchResponse struct {
+	Live []searchResult `json:"live"`
+	Past []searchResult `json:"past"`
+}
+
+func (s *WebServer) handleApiSearch(w http.ResponseWriter, r *http.Request) {
+	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	var resp searchResponse
+	if s.cfg.Roster != nil {
+		for _, le := range s.cfg.Roster.List() {
+			if q == "" || strings.Contains(strings.ToLower(le.SessionID), q) {
+				resp.Live = append(resp.Live, searchResult{
+					ID:      le.SessionID,
+					Title:   le.SessionID,
+					State:   le.Status,
+					Project: filepath.Base(le.WorkingDir),
+					Age:     "now",
+				})
+			}
+		}
+	}
+	if s.cfg.Past != nil && q != "" {
+		results := s.cfg.Past.Search(q, 20, 0)
+		for _, e := range results {
+			title := e.Meta.OriginalTask
+			if title == "" {
+				title = e.Meta.ID
+			}
+			resp.Past = append(resp.Past, searchResult{
+				ID:      e.Meta.ID,
+				Title:   title,
+				State:   "ended",
+				Project: filepath.Base(e.Meta.EnvInfo.WorkingDir),
+				Age:     ageString(e.Meta.UpdatedAt),
+			})
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp) //nolint:errcheck
+}
+
+// settingsData is the template data passed to all settings section templates.
+type settingsData struct {
+	Active       string
+	HubAddr      string
+	RunDir       string
+	StateDir     string
+	SpawnTimeout string
+	PastPerPage  int
+	Providers    []providerDisplay
+}
+
+// providerDisplay groups model descriptors by provider for the providers page.
+type providerDisplay struct {
+	Name   string
+	Models []string
+}
+
+func (s *WebServer) handleSettings(w http.ResponseWriter, r *http.Request) {
+	section := strings.TrimPrefix(r.URL.Path, "/settings")
+	section = strings.TrimPrefix(section, "/")
+	if section == "" {
+		section = "general"
+	}
+
+	settingsTmpl, ok := s.settingsTmpls[section]
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Group flat Models list by provider for the providers page.
+	var providers []providerDisplay
+	byProvider := map[string]int{} // provider name -> index in providers
+	for _, m := range s.cfg.Models {
+		if idx, exists := byProvider[m.Provider]; exists {
+			providers[idx].Models = append(providers[idx].Models, m.Model)
+		} else {
+			byProvider[m.Provider] = len(providers)
+			providers = append(providers, providerDisplay{Name: m.Provider, Models: []string{m.Model}})
+		}
+	}
+
+	data := settingsData{
+		Active:       section,
+		HubAddr:      s.cfg.HubAddr,
+		RunDir:       s.cfg.RunDir,
+		StateDir:     s.cfg.StateDir,
+		SpawnTimeout: "30s",
+		PastPerPage:  s.cfg.PastPerPage,
+		Providers:    providers,
+	}
+
+	// HX-Request: render just the settings-content partial (inner swap).
+	// Full navigation: render the full settings shell (which embeds settings-content).
+	tmplName := "settings"
+	if r.Header.Get("HX-Request") == "true" {
+		tmplName = "settings-content"
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := settingsTmpl.ExecuteTemplate(w, tmplName, data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
 
 func (s *WebServer) handleSidebar(w http.ResponseWriter, r *http.Request) {
 	var metas []agent.SessionMeta
