@@ -40,6 +40,12 @@ func (a *adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	return a.inner.Stream(ctx, req)
 }
 
+// ListModels forwards to the inner Anthropic adapter, which queries
+// OpenRouter's Anthropic-compatible /models endpoint.
+func (a *adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
+	return a.inner.ListModels(ctx)
+}
+
 // newTestAdapter constructs an adapter for testing with a custom base URL and client.
 func newTestAdapter(baseURL, apiKey string, client *http.Client) *adapter {
 	return &adapter{inner: &anthropic.Adapter{

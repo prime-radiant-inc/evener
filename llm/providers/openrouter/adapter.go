@@ -29,6 +29,12 @@ func (a *adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	return a.inner.Stream(ctx, req)
 }
 
+// ListModels forwards to the inner OpenAI-compatible adapter, which fetches
+// /v1/models from OpenRouter's API.
+func (a *adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
+	return a.inner.ListModels(ctx)
+}
+
 func init() {
 	llm.RegisterEnvAdapterFactory(func(_ llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
 		key := strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY"))

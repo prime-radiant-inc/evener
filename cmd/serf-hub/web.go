@@ -945,6 +945,15 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 
 	var out []map[string]any
 	for _, prov := range c.ProviderNames() {
+		// Skip dual-route variants that surface the same models as their
+		// primary route. openrouter-anthropic exists for specific models
+		// whose tool-calling format requires the Anthropic-Messages endpoint,
+		// but it lists the same /models response as plain openrouter. The
+		// daemon picks the correct route based on the model name when
+		// spawning; the picker doesn't need to expose both.
+		if prov == "openrouter-anthropic" {
+			continue
+		}
 		listCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		models, lerr := c.ListModels(listCtx, prov)
 		cancel()
@@ -967,8 +976,13 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 				strings.Contains(lower, "image") {
 				continue
 			}
+			// Use the registered provider name (prov), not m.Provider — wrapper
+			// adapters like openrouter forward to openaicompat which reports
+			// itself as "openai-compatible". The hub's spawn flow needs the
+			// registered name (openrouter, openrouter-anthropic, etc.) so the
+			// daemon spawns with the right adapter.
 			entry := map[string]any{
-				"provider":     m.Provider,
+				"provider":     prov,
 				"model":        m.ID,
 				"display_name": m.DisplayName,
 			}
