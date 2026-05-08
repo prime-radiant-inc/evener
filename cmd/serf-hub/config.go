@@ -1,0 +1,85 @@
+package main
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/BurntSushi/toml"
+)
+
+// SpawnTemplate is a named preset for `POST /live/new`.
+type SpawnTemplate struct {
+	Name            string `toml:"name"`
+	Provider        string `toml:"provider"`
+	Model           string `toml:"model"`
+	Agent           string `toml:"agent"`
+	ReasoningEffort string `toml:"reasoning_effort"`
+}
+
+// Config is the hub's runtime configuration loaded from ~/.serf/hub.toml.
+type Config struct {
+	Addr               string          `toml:"addr"`
+	StateGlob          string          `toml:"state_glob"`
+	RunDir             string          `toml:"run_dir"`
+	StatusPollInterval time.Duration   `toml:"status_poll_interval"`
+	PastIndexRebuild   time.Duration   `toml:"past_index_rebuild_interval"`
+	SpawnTimeout       time.Duration   `toml:"spawn_timeout"`
+	PastResultsPerPage int             `toml:"past_results_per_page"`
+	SpawnTemplates     []SpawnTemplate `toml:"spawn_template"`
+}
+
+// DefaultConfig returns a Config populated with sensible defaults.
+func DefaultConfig() Config {
+	return Config{
+		Addr:               "127.0.0.1:9180",
+		StateGlob:          "",
+		RunDir:             "",
+		StatusPollInterval: 2 * time.Second,
+		PastIndexRebuild:   60 * time.Second,
+		SpawnTimeout:       30 * time.Second,
+		PastResultsPerPage: 50,
+	}
+}
+
+// DefaultConfigPath returns ~/.serf/hub.toml.
+func DefaultConfigPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		home = "."
+	}
+	return filepath.Join(home, ".serf", "hub.toml")
+}
+
+// LoadConfig reads path. A missing file returns DefaultConfig() and nil error.
+func LoadConfig(path string) (Config, error) {
+	cfg := DefaultConfig()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return cfg, nil
+		}
+		return cfg, fmt.Errorf("read config: %w", err)
+	}
+	if err := toml.Unmarshal(data, &cfg); err != nil {
+		return cfg, fmt.Errorf("parse config: %w", err)
+	}
+	if cfg.Addr == "" {
+		cfg.Addr = "127.0.0.1:9180"
+	}
+	if cfg.StatusPollInterval == 0 {
+		cfg.StatusPollInterval = 2 * time.Second
+	}
+	if cfg.PastIndexRebuild == 0 {
+		cfg.PastIndexRebuild = 60 * time.Second
+	}
+	if cfg.SpawnTimeout == 0 {
+		cfg.SpawnTimeout = 30 * time.Second
+	}
+	if cfg.PastResultsPerPage == 0 {
+		cfg.PastResultsPerPage = 50
+	}
+	return cfg, nil
+}
