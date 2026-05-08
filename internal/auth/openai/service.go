@@ -57,12 +57,13 @@ type Service struct {
 }
 
 func NewService(cfg Config, client *http.Client) *Service {
+	resolvedCfg := mergeConfigDefaults(cfg)
 	if client == nil {
-		client = &http.Client{Timeout: cfg.HTTPTimeout}
+		client = &http.Client{Timeout: resolvedCfg.HTTPTimeout}
 	}
 
 	return &Service{
-		cfg:         cfg,
+		cfg:         resolvedCfg,
 		client:      client,
 		now:         time.Now,
 		openBrowser: defaultBrowserOpener,
@@ -218,7 +219,10 @@ func (s *Service) ResolveRuntimeCredentials(ctx context.Context, stateDir string
 		RefreshToken: record.RefreshToken,
 	})
 	if err != nil {
-		return RuntimeCredentials{}, loginRequiredError(err)
+		if isPermanentRefreshError(err) {
+			return RuntimeCredentials{}, loginRequiredError(err)
+		}
+		return RuntimeCredentials{}, fmt.Errorf("refresh OpenAI auth: %w", err)
 	}
 
 	refreshed := refreshedAuthRecord(s.now(), record, tokens)
@@ -251,15 +255,7 @@ func (s *Service) statusFromRecord(record AuthRecord) AuthStatus {
 }
 
 func (s *Service) config() Config {
-	if s.cfg.IssuerBaseURL == "" &&
-		s.cfg.ClientID == "" &&
-		len(s.cfg.Scopes) == 0 &&
-		s.cfg.RedirectPath == "" &&
-		s.cfg.HTTPTimeout == 0 &&
-		s.cfg.CallbackTimeout == 0 {
-		return DefaultConfig()
-	}
-	return s.cfg
+	return mergeConfigDefaults(s.cfg)
 }
 
 func authRecordFromTokens(now time.Time, tokens TokenSet) AuthRecord {
@@ -312,6 +308,43 @@ func needsRefresh(now, expiry time.Time) bool {
 
 func loginRequiredError(err error) error {
 	return fmt.Errorf("%w: run `serf openai login`: %v", ErrLoginRequired, err)
+}
+
+func isPermanentRefreshError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "invalid_grant") ||
+		strings.Contains(message, "invalid_request") ||
+		strings.Contains(message, "unauthorized_client") ||
+		strings.Contains(message, "access_denied")
+}
+
+func mergeConfigDefaults(cfg Config) Config {
+	defaults := DefaultConfig()
+	if cfg.IssuerBaseURL != "" {
+		defaults.IssuerBaseURL = cfg.IssuerBaseURL
+	}
+	if cfg.ClientID != "" {
+		defaults.ClientID = cfg.ClientID
+	}
+	if len(cfg.Scopes) > 0 {
+		defaults.Scopes = append([]string(nil), cfg.Scopes...)
+	}
+	if cfg.RedirectPath != "" {
+		defaults.RedirectPath = cfg.RedirectPath
+	}
+	if cfg.HTTPTimeout != 0 {
+		defaults.HTTPTimeout = cfg.HTTPTimeout
+	}
+	if cfg.CallbackTimeout != 0 {
+		defaults.CallbackTimeout = cfg.CallbackTimeout
+	}
+	return defaults
 }
 
 func firstNonEmpty(values ...string) string {

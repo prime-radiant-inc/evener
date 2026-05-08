@@ -78,20 +78,33 @@ func NewFromEnv(cfgs ...Config) (*Adapter, error) {
 		return nil, fmt.Errorf("no OpenAI credentials configured")
 	}
 
-	record, err := authopenai.LoadAuth(cfg.StateDir)
+	service := authopenai.NewService(authopenai.DefaultConfig(), nil)
+	status, err := service.Status(cfg.StateDir)
 	if err != nil {
 		return nil, fmt.Errorf("load OpenAI auth: %w", err)
+	}
+	if !status.SignedIn || status.Source == authopenai.AuthSourceSignedOut {
+		return nil, fmt.Errorf("no OpenAI credentials configured")
+	}
+
+	creds, err := service.ResolveRuntimeCredentials(context.Background(), cfg.StateDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve OpenAI auth: %w", err)
+	}
+	status, err = service.Status(cfg.StateDir)
+	if err != nil {
+		return nil, fmt.Errorf("refresh OpenAI auth status: %w", err)
 	}
 	base := strings.TrimSpace(os.Getenv("OPENAI_CHATGPT_BASE_URL"))
 	if base == "" {
 		base = defaultChatGPTBaseURL
 	}
-	accountID := strings.TrimSpace(record.AccountID)
+	accountID := strings.TrimSpace(status.AccountID)
 	if accountID == "" {
-		accountID = strings.TrimSpace(record.WorkspaceID)
+		accountID = strings.TrimSpace(status.WorkspaceID)
 	}
 	return &Adapter{
-		APIKey:           record.AccessToken,
+		APIKey:           creds.BearerToken,
 		BaseURL:          strings.TrimRight(base, "/"),
 		ResponsesPath:    defaultCodexResponses,
 		ChatGPTAccountID: accountID,

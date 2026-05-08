@@ -339,6 +339,39 @@ func TestRuntimeCredentialsRefreshFailureRequiresRelogin(t *testing.T) {
 	}
 }
 
+func TestRuntimeCredentialsTransientRefreshFailureDoesNotRequireRelogin(t *testing.T) {
+	stateDir := t.TempDir()
+	now := time.Date(2026, 5, 8, 0, 10, 0, 0, time.UTC)
+	record := sampleAuthRecord()
+	record.Expiry = now.Add(time.Minute)
+	if err := SaveAuth(stateDir, record); err != nil {
+		t.Fatalf("SaveAuth() error = %v", err)
+	}
+
+	svc := newTestService(now)
+	svc.refreshToken = func(context.Context, *http.Client, Config, RefreshTokenRequest) (TokenSet, error) {
+		return TokenSet{}, errors.New("token endpoint returned status 503")
+	}
+
+	_, err := svc.ResolveRuntimeCredentials(context.Background(), stateDir)
+	if err == nil {
+		t.Fatal("ResolveRuntimeCredentials() error = nil, want error")
+	}
+	if errors.Is(err, ErrLoginRequired) {
+		t.Fatalf("ResolveRuntimeCredentials() error = %v, should not require re-login", err)
+	}
+}
+
+func TestNewServiceAppliesDefaultHTTPTimeoutForPartialConfig(t *testing.T) {
+	svc := NewService(Config{ClientID: "client-id"}, nil)
+	if svc.client == nil {
+		t.Fatal("client = nil")
+	}
+	if svc.client.Timeout != DefaultConfig().HTTPTimeout {
+		t.Fatalf("client timeout = %v, want %v", svc.client.Timeout, DefaultConfig().HTTPTimeout)
+	}
+}
+
 func newTestService(now time.Time) *Service {
 	tokens := TokenSet{
 		AccessToken:  "access-token",

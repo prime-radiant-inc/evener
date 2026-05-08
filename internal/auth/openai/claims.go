@@ -40,7 +40,7 @@ func ParseIDTokenClaims(idToken string) (TokenClaims, error) {
 
 	return TokenClaims{
 		Email:       claimString(raw, "email"),
-		AccountID:   claimString(raw, "account_id", "account"),
+		AccountID:   claimString(raw, "chatgpt_account_id", "account_id", "account"),
 		WorkspaceID: claimString(raw, "workspace_id", "workspace"),
 	}, nil
 }

@@ -35,6 +35,18 @@ func TestTokenClaimsParsesAccountAndWorkspaceMetadata(t *testing.T) {
 	}
 }
 
+func TestTokenClaimsParsesChatGPTAccountID(t *testing.T) {
+	claims, err := ParseIDTokenClaims(testJWT(t, map[string]any{
+		"chatgpt_account_id": "acct_chatgpt",
+	}))
+	if err != nil {
+		t.Fatalf("ParseIDTokenClaims() error = %v", err)
+	}
+	if claims.AccountID != "acct_chatgpt" {
+		t.Fatalf("AccountID = %q, want %q", claims.AccountID, "acct_chatgpt")
+	}
+}
+
 func TestTokenClaimsEmptyIDTokenIsBestEffort(t *testing.T) {
 	claims, err := ParseIDTokenClaims("")
 	if err != nil {
