@@ -107,3 +107,37 @@ func TestWaitForRendezvous_WrongPID(t *testing.T) {
 	}
 
 }
+
+// A stale rendezvous file from a dead process whose PID was reused must not
+// match our newly-spawned daemon. WaitForRendezvous filters by startedAfter.
+func TestWaitForRendezvous_IgnoresStaleEntryFromBeforeStart(t *testing.T) {
+	dir := t.TempDir()
+
+	// Stale entry: same PID, but written before our spawn time.
+	_, _ = rendezvous.Write(dir, rendezvous.Entry{
+		PID:       55555,
+		Address:   "127.0.0.1:11111",
+		StartedAt: time.Now().Add(-1 * time.Hour),
+	})
+
+	startedAfter := time.Now()
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		_, _ = rendezvous.Write(dir, rendezvous.Entry{
+			PID:       55555,
+			Address:   "127.0.0.1:22222",
+			StartedAt: time.Now(),
+		})
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	got, err := WaitForRendezvous(ctx, dir, 55555, WithStartedAfter(startedAfter))
+	if err != nil {
+		t.Fatalf("WaitForRendezvous: %v", err)
+	}
+	if got.Address != "127.0.0.1:22222" {
+		t.Errorf("matched stale entry: address=%q", got.Address)
+	}
+}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sync"
 	"time"
@@ -164,7 +165,10 @@ func (r *Roster) Watch(ctx context.Context) error {
 				return nil
 			}
 			r.Refresh()
-		case <-w.Errors:
+		case err := <-w.Errors:
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[hub] fsnotify error on %s: %v\n", r.runDir, err)
+			}
 			r.Refresh()
 		case <-ticker.C:
 			r.Refresh()

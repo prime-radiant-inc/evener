@@ -95,13 +95,14 @@ func SpawnDaemon(ctx context.Context, serfBinary string, runDir string, t SpawnT
 	cmd.Stdout = os.Stderr // forward to hub stderr for now
 	cmd.Stderr = os.Stderr
 
+	startedAt := time.Now()
 	if err := cmd.Start(); err != nil {
 		return rendezvous.Entry{}, fmt.Errorf("start daemon: %w", err)
 	}
 
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	entry, err := WaitForRendezvous(waitCtx, runDir, cmd.Process.Pid)
+	entry, err := WaitForRendezvous(waitCtx, runDir, cmd.Process.Pid, WithStartedAfter(startedAt))
 	if err != nil {
 		_ = cmd.Process.Kill()
 		return rendezvous.Entry{}, fmt.Errorf("daemon spawn timed out: %w", err)
@@ -109,17 +110,39 @@ func SpawnDaemon(ctx context.Context, serfBinary string, runDir string, t SpawnT
 	return entry, nil
 }
 
+// WaitOption configures WaitForRendezvous.
+type WaitOption func(*waitConfig)
+
+type waitConfig struct {
+	startedAfter time.Time
+}
+
+// WithStartedAfter rejects rendezvous entries whose StartedAt is on or
+// before t. Use this to defend against a recycled PID matching a stale
+// entry from a previously-crashed daemon.
+func WithStartedAfter(t time.Time) WaitOption {
+	return func(c *waitConfig) { c.startedAfter = t }
+}
+
 // WaitForRendezvous polls runDir for a rendezvous Entry whose PID matches.
 // Returns when found, or when ctx is canceled.
-func WaitForRendezvous(ctx context.Context, runDir string, pid int) (rendezvous.Entry, error) {
+func WaitForRendezvous(ctx context.Context, runDir string, pid int, opts ...WaitOption) (rendezvous.Entry, error) {
+	cfg := waitConfig{}
+	for _, o := range opts {
+		o(&cfg)
+	}
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		entries, _ := rendezvous.List(runDir)
 		for _, e := range entries {
-			if e.PID == pid {
-				return e, nil
+			if e.PID != pid {
+				continue
 			}
+			if !cfg.startedAfter.IsZero() && !e.StartedAt.After(cfg.startedAfter) {
+				continue
+			}
+			return e, nil
 		}
 		select {
 		case <-ctx.Done():
@@ -143,12 +166,13 @@ func ResumeDaemon(ctx context.Context, serfBinary, runDir, sessionID string, tim
 	cmd.Env = append(os.Environ(), "SERF_HUB_SPAWNED=1")
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
+	startedAt := time.Now()
 	if err := cmd.Start(); err != nil {
 		return rendezvous.Entry{}, fmt.Errorf("start daemon: %w", err)
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	entry, err := WaitForRendezvous(waitCtx, runDir, cmd.Process.Pid)
+	entry, err := WaitForRendezvous(waitCtx, runDir, cmd.Process.Pid, WithStartedAfter(startedAt))
 	if err != nil {
 		_ = cmd.Process.Kill()
 		return rendezvous.Entry{}, fmt.Errorf("resume timed out: %w", err)
