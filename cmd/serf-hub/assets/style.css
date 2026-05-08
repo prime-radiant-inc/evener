@@ -124,4 +124,5 @@ textarea { width: 100%; min-height: 60px; resize: vertical; }
 
 #input-area { margin-top: var(--pad); display: flex; flex-direction: column; gap: 8px; }
 #input-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
+.hint { color: var(--muted); font-size: 11px; padding: 4px; }
 .empty { color: var(--muted); font-style: italic; padding: 16px; text-align: center; }
