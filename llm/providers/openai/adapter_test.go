@@ -1396,13 +1396,26 @@ func TestAdapter_Complete_OAuthTransportUsesCodexEndpointAndAccountHeader(t *tes
 	var gotPath string
 	var gotAuth string
 	var gotAccount string
+	var gotStream bool
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotAuth = r.Header.Get("Authorization")
 		gotAccount = r.Header.Get("ChatGPT-Account-ID")
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"r1","model":"gpt-5.2","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotStream, _ = body["stream"].(bool)
+		if !gotStream {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"detail":"Stream must be set to true"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.output_text.delta\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n")
+		_, _ = io.WriteString(w, "event: response.completed\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"model\":\"gpt-5.2\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hi\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
 	}))
 	t.Cleanup(srv.Close)
 
@@ -1428,6 +1441,9 @@ func TestAdapter_Complete_OAuthTransportUsesCodexEndpointAndAccountHeader(t *tes
 	}
 	if gotAccount != "acct_123" {
 		t.Fatalf("ChatGPT-Account-ID = %q", gotAccount)
+	}
+	if !gotStream {
+		t.Fatal("stream = false, want true for OAuth transport")
 	}
 }
 

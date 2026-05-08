@@ -202,6 +202,10 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 }
 
 func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	if a.requiresStreamingComplete() {
+		return a.completeViaStream(ctx, req)
+	}
+
 	if a.Client == nil {
 		a.Client = &http.Client{Timeout: 0}
 	}
@@ -255,6 +259,31 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		r.RawResponseBody = string(rawBytes)
 	}
 	return r, nil
+}
+
+func (a *Adapter) completeViaStream(ctx context.Context, req llm.Request) (llm.Response, error) {
+	stream, err := a.Stream(ctx, req)
+	if err != nil {
+		return llm.Response{}, err
+	}
+	defer stream.Close()
+
+	acc := llm.NewStreamAccumulator()
+	for ev := range stream.Events() {
+		if ev.Type == llm.StreamEventError {
+			if ev.Err != nil {
+				return llm.Response{}, ev.Err
+			}
+			return llm.Response{}, fmt.Errorf("openai stream failed")
+		}
+		acc.Process(ev)
+	}
+
+	resp := acc.Response()
+	if resp == nil {
+		return llm.Response{}, fmt.Errorf("openai stream completed without final response")
+	}
+	return *resp, nil
 }
 
 func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
@@ -498,6 +527,10 @@ func (a *Adapter) responsesURL() string {
 		return base + path
 	}
 	return base + "/" + path
+}
+
+func (a *Adapter) requiresStreamingComplete() bool {
+	return a.ChatGPTAccountID != "" || a.ResponsesPath == defaultCodexResponses
 }
 
 func isUnconfigured(err error) bool {
