@@ -2,9 +2,15 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/server"
 )
 
@@ -197,5 +203,138 @@ func TestRenderDetailedStatus_ToolsWrapAtWidth(t *testing.T) {
 		if len(line) > 40 {
 			t.Errorf("line %d exceeds width 40 (%d chars): %q", i, len(line), line)
 		}
+	}
+}
+
+func TestTUIEnterSubmitsInput(t *testing.T) {
+	initTheme()
+
+	inputCh := make(chan string, 1)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/input":
+			var req struct {
+				Text string `json:"text"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode /input body: %v", err)
+			}
+			inputCh <- req.Text
+			w.WriteHeader(http.StatusAccepted)
+		case r.Method == http.MethodGet && r.URL.Path == "/events":
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			<-r.Context().Done()
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	addr := strings.TrimPrefix(ts.URL, "http://")
+	asyncCh := make(chan tea.Msg, 8)
+	m := newConfiguredModel(addr, t.TempDir(), nil, embeddedConfig{
+		provider: "openai",
+		model:    "gpt-5.5",
+	}, nil, asyncCh, false)
+
+	p := tea.NewProgram(m, tea.WithInput(nil), tea.WithOutput(io.Discard))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = p.Run()
+	}()
+	defer func() {
+		p.Quit()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for Bubble Tea program to stop")
+		}
+	}()
+
+	p.Send(tea.WindowSizeMsg{Width: 80, Height: 24})
+	p.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	p.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	p.Send(tea.KeyMsg{Type: tea.KeyEnter})
+
+	select {
+	case got := <-inputCh:
+		if got != "hi" {
+			t.Fatalf("/input text = %q, want %q", got, "hi")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for /input request")
+	}
+}
+
+func TestUpdateAsyncSSEConnectedKeepsWaitingForAsync(t *testing.T) {
+	initTheme()
+
+	asyncCh := make(chan tea.Msg, 64)
+	m := newConfiguredModel("127.0.0.1:1234", t.TempDir(), nil, embeddedConfig{}, nil, asyncCh, false)
+	m.streamID = 1
+
+	asyncCh <- sseEventMsg{
+		streamID: 1,
+		event: SSEEvent{
+			Event: "COMMUNICATE",
+			Data:  `{"message":"Hi. What can I help with?"}`,
+		},
+	}
+	asyncCh <- sseEventMsg{
+		streamID: 1,
+		event: SSEEvent{
+			Event: "SESSION_END",
+			Data:  `{"reason":"input_complete","state":"IDLE","turns":1}`,
+		},
+	}
+
+	updated, cmd := m.Update(asyncMsg{msg: sseConnectedMsg{streamID: 1}})
+	if cmd == nil {
+		t.Fatal("Update() returned nil cmd; want waitForAsync to remain armed")
+	}
+
+	next := cmd()
+	wrapped, ok := next.(asyncMsg)
+	if !ok {
+		t.Fatalf("cmd() returned %T, want asyncMsg", next)
+	}
+	ev, ok := wrapped.msg.(sseEventMsg)
+	if !ok {
+		t.Fatalf("wrapped.msg = %T, want sseEventMsg", wrapped.msg)
+	}
+	if ev.event.Event != "COMMUNICATE" {
+		t.Fatalf("event type = %q, want COMMUNICATE", ev.event.Event)
+	}
+
+	m2 := updated.(model)
+	if !m2.connected {
+		t.Fatal("connected = false, want true")
+	}
+
+	updated, cmd = m2.Update(next)
+	if cmd == nil {
+		t.Fatal("Update() returned nil cmd after COMMUNICATE; want waitForAsync to remain armed")
+	}
+	m3 := updated.(model)
+	if len(m3.messages) != 1 || m3.messages[0].Text != "Hi. What can I help with?" {
+		t.Fatalf("messages = %+v, want communicate reply", m3.messages)
+	}
+
+	next = cmd()
+	wrapped, ok = next.(asyncMsg)
+	if !ok {
+		t.Fatalf("second cmd() returned %T, want asyncMsg", next)
+	}
+	ev, ok = wrapped.msg.(sseEventMsg)
+	if !ok {
+		t.Fatalf("second wrapped.msg = %T, want sseEventMsg", wrapped.msg)
+	}
+	if ev.event.Event != "SESSION_END" {
+		t.Fatalf("second event type = %q, want SESSION_END", ev.event.Event)
 	}
 }

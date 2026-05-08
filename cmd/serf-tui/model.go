@@ -562,7 +562,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(cmds...)
 		}
 		m.connected = true
-		return m, nil
+		return m, tea.Batch(cmds...)
 
 	case sseErrorMsg:
 		if msg.streamID != m.streamID {
@@ -570,7 +570,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.connected = false
 		m.err = msg.err
-		return m, nil
+		return m, tea.Batch(cmds...)
 
 	case sseEventMsg:
 		if msg.streamID != m.streamID {
@@ -578,7 +578,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.handleSSEEvent(msg.event)
 		m.refreshViewport()
-		return m, nil
+		return m, tea.Batch(cmds...)
 
 	case inputSentMsg:
 		if msg.err != nil {
