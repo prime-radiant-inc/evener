@@ -753,9 +753,15 @@ func TestWeb_Settings_Theme_Renders(t *testing.T) {
 	}
 }
 
-// TestWeb_ApiModels_ReturnsCatalogModels verifies that /api/models returns a
-// non-empty JSON array from the embedded catalog with the expected fields.
-func TestWeb_ApiModels_ReturnsCatalogModels(t *testing.T) {
+// TestWeb_ApiModels_FiltersByConfiguredProviders verifies that /api/models
+// returns only models for providers configured in the environment, and
+// returns an empty list (not a fallback) when none are configured.
+func TestWeb_ApiModels_FiltersByConfiguredProviders(t *testing.T) {
+	// With OPENAI_API_KEY set, expect openai models.
+	t.Setenv("OPENAI_API_KEY", "sk-test")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("GEMINI_API_KEY", "")
+
 	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180"})
 	req := httptest.NewRequest(http.MethodGet, "/api/models", nil)
 	req.Host = "127.0.0.1:9180"
@@ -769,15 +775,47 @@ func TestWeb_ApiModels_ReturnsCatalogModels(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &models); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	if len(models) < 50 {
-		t.Errorf("expected at least 50 models from catalog, got %d", len(models))
+	if len(models) == 0 {
+		t.Fatalf("expected openai models, got 0")
 	}
-	// Spot-check required fields are present.
-	first := models[0]
-	for _, key := range []string{"provider", "model", "context_window"} {
-		if _, ok := first[key]; !ok {
-			t.Errorf("model missing field %q: %v", key, first)
+	for _, m := range models {
+		if p, _ := m["provider"].(string); strings.ToLower(p) != "openai" {
+			t.Errorf("unexpected provider %q in env-filtered list", p)
 		}
+	}
+	for _, key := range []string{"provider", "model", "context_window"} {
+		if _, ok := models[0][key]; !ok {
+			t.Errorf("model missing field %q: %v", key, models[0])
+		}
+	}
+}
+
+// TestWeb_ApiModels_NoProvidersConfigured returns an empty list (not a
+// fallback) when no providers have keys in the environment.
+func TestWeb_ApiModels_NoProvidersConfigured(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("GEMINI_API_KEY", "")
+	t.Setenv("GLM_API_KEY", "")
+	t.Setenv("GROK_API_KEY", "")
+	t.Setenv("KIMI_API_KEY", "")
+	t.Setenv("MINIMAX_API_KEY", "")
+	t.Setenv("OPENROUTER_API_KEY", "")
+	t.Setenv("OLLAMA_BASE_URL", "")
+	t.Setenv("OLLAMA_HOST", "")
+
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180"})
+	req := httptest.NewRequest(http.MethodGet, "/api/models", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	body := strings.TrimSpace(rec.Body.String())
+	if body != "null" && body != "[]" {
+		t.Errorf("expected empty list when no providers configured, got: %s", body)
 	}
 }
 

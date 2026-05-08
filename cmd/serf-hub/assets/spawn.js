@@ -246,7 +246,12 @@
 
       setTimeout(() => {
         const offClick = (e) => {
-          if (!picker.contains(e.target)) {
+          // Use composedPath, not picker.contains(e.target) — the click
+          // target may have already been removed from the DOM by the
+          // picker's own re-render (e.g., clicking a provider re-renders
+          // the column), and a stale target reads as "outside the picker".
+          const path = (e.composedPath && e.composedPath()) || [];
+          if (!path.includes(picker)) {
             picker.remove();
             document.removeEventListener("click", offClick);
           }

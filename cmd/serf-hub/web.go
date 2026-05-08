@@ -928,10 +928,10 @@ func (s *WebServer) handleApiModels(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			// Only surface models for providers the hub can actually spawn for.
-			// If no providers were discovered (unusual — e.g. dev with no env
-			// vars set), fall back to showing the full catalog so the UI is
-			// still useful.
-			if len(configured) > 0 && !configured[strings.ToLower(m.Provider)] {
+			// No fallback — if no providers are configured, the picker shows
+			// nothing and the user knows to fix their environment. Showing
+			// models we can't run defeats the point of the picker.
+			if !configured[strings.ToLower(m.Provider)] {
 				continue
 			}
 			entry := map[string]any{
