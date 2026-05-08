@@ -328,8 +328,10 @@ func (s *WebServer) handlePastID(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// serveReplay reads <state_dir>/sessions/<id>.transcript.jsonl and streams it
-// as SSE events, one per line. Each line must be JSON with "kind" and "data" fields.
+// serveReplay reads <state_dir>/sessions/<id>.transcript.jsonl and translates
+// each turn into the SSE events the browser renderer expects. The transcript
+// is a record of message-shaped Turns; the renderer is built around the
+// daemon's runtime event stream, so we map between the two here.
 func (s *WebServer) serveReplay(w http.ResponseWriter, r *http.Request, entry PastEntry) {
 	transcriptPath := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
 	f, err := os.Open(transcriptPath)
@@ -352,18 +354,181 @@ func (s *WebServer) serveReplay(w http.ResponseWriter, r *http.Request, entry Pa
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	id := uint64(0)
-	for scanner.Scan() {
-		var ev struct {
-			Kind string          `json:"kind"`
-			Data json.RawMessage `json:"data"`
-		}
-		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
-			continue
+	emit := func(event string, payload any) {
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return
 		}
 		id++
-		fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", id, ev.Kind, string(ev.Data))
+		fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", id, event, data)
 		flusher.Flush()
 	}
+
+	// call_id -> tool_name, so TOOL_RESULTS turns can name the tool the
+	// renderer is closing out.
+	toolNames := map[string]string{}
+
+	first := true
+	for scanner.Scan() {
+		raw := scanner.Bytes()
+		var head struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal(raw, &head); err != nil {
+			continue
+		}
+		if first {
+			first = false
+			if head.Kind == "header" {
+				var h replayHeader
+				if err := json.Unmarshal(raw, &h); err == nil {
+					emit("SESSION_START", map[string]any{
+						"session_id": h.SessionID,
+						"profile":    h.ProfileID,
+						"model":      h.Model,
+						"restored":   true,
+					})
+				}
+				continue
+			}
+		}
+		if head.Kind != "entry" {
+			// Skip api_call records and unknown top-level kinds.
+			continue
+		}
+		var entryRec replayEntry
+		if err := json.Unmarshal(raw, &entryRec); err != nil {
+			continue
+		}
+		emitTurnEvents(emit, entryRec.Turn, toolNames)
+	}
+}
+
+type replayHeader struct {
+	SessionID string `json:"session_id"`
+	ProfileID string `json:"profile_id"`
+	Model     string `json:"model"`
+}
+
+type replayEntry struct {
+	Turn replayTurn `json:"turn"`
+}
+
+type replayTurn struct {
+	Kind    string         `json:"kind"`
+	Message replayMessage  `json:"message"`
+}
+
+type replayMessage struct {
+	Role    string         `json:"role"`
+	Content []replayPart   `json:"content"`
+}
+
+type replayPart struct {
+	Kind       string             `json:"kind"`
+	Text       string             `json:"text,omitempty"`
+	ToolCall   *replayToolCall    `json:"tool_call,omitempty"`
+	ToolResult *replayToolResult  `json:"tool_result,omitempty"`
+}
+
+type replayToolCall struct {
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
+}
+
+type replayToolResult struct {
+	ToolCallID string `json:"tool_call_id"`
+	Name       string `json:"name,omitempty"`
+	Content    any    `json:"content,omitempty"`
+	IsError    bool   `json:"is_error,omitempty"`
+}
+
+// emitTurnEvents translates a single transcript Turn into the SSE events
+// the renderer consumes. toolNames carries call_id -> tool_name across calls
+// so we can populate TOOL_CALL_END from a TOOL_RESULTS turn.
+func emitTurnEvents(emit func(string, any), turn replayTurn, toolNames map[string]string) {
+	switch turn.Kind {
+	case "USER_INPUT":
+		text := joinText(turn.Message.Content)
+		emit("USER_INPUT", map[string]any{"text": text})
+	case "STEERING":
+		text := joinText(turn.Message.Content)
+		emit("STEERING_INJECTED", map[string]any{"text": text})
+	case "ASSISTANT":
+		for _, p := range turn.Message.Content {
+			switch p.Kind {
+			case "text":
+				if p.Text == "" {
+					continue
+				}
+				emit("ASSISTANT_TEXT_START", map[string]any{})
+				emit("ASSISTANT_TEXT_END", map[string]any{
+					"text":          p.Text,
+					"finish_reason": "stop",
+				})
+			case "tool_call":
+				if p.ToolCall == nil {
+					continue
+				}
+				toolNames[p.ToolCall.ID] = p.ToolCall.Name
+				args := ""
+				if len(p.ToolCall.Arguments) > 0 {
+					args = string(p.ToolCall.Arguments)
+				}
+				emit("TOOL_CALL_START", map[string]any{
+					"tool_name":      p.ToolCall.Name,
+					"call_id":        p.ToolCall.ID,
+					"arguments_json": args,
+				})
+			}
+		}
+	case "TOOL", "TOOL_RESULTS":
+		for _, p := range turn.Message.Content {
+			if p.Kind != "tool_result" || p.ToolResult == nil {
+				continue
+			}
+			name := p.ToolResult.Name
+			if name == "" {
+				name = toolNames[p.ToolResult.ToolCallID]
+			}
+			out := stringifyToolContent(p.ToolResult.Content)
+			payload := map[string]any{
+				"tool_name": name,
+				"call_id":   p.ToolResult.ToolCallID,
+			}
+			if p.ToolResult.IsError {
+				payload["error"] = out
+			} else {
+				payload["output"] = out
+			}
+			emit("TOOL_CALL_END", payload)
+		}
+	}
+}
+
+func joinText(parts []replayPart) string {
+	var b strings.Builder
+	for _, p := range parts {
+		if p.Kind == "text" {
+			b.WriteString(p.Text)
+		}
+	}
+	return b.String()
+}
+
+func stringifyToolContent(v any) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 // findNewSession polls the roster up to 3s for a daemon with the given pid.

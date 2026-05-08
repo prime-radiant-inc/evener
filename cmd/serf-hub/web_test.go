@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -234,6 +235,88 @@ func TestWeb_PastView_404Unknown(t *testing.T) {
 	web.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status: %d, want 404", rec.Code)
+	}
+}
+
+func TestWeb_PastReplay_TranslatesTurnsToSSEEvents(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+		ID: "01REPLAY", UpdatedAt: time.Now(), OriginalTask: "demo",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build a transcript using the real writer so the format stays in sync.
+	tpath := filepath.Join(proj, "sessions", "01REPLAY.transcript.jsonl")
+	tw, err := agent.NewTranscriptWriter(tpath, agent.TranscriptHeader{
+		SessionID: "01REPLAY",
+		ProfileID: "openai",
+		Model:     "gpt-5",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Append(agent.NewTurn(agent.TurnUserInput, llm.User("hello"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Append(agent.NewTurn(agent.TurnAssistant, llm.Assistant("hi there"))); err != nil {
+		t.Fatal(err)
+	}
+	toolCallMsg := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+		Kind: llm.ContentToolCall,
+		ToolCall: &llm.ToolCallData{
+			ID: "call_42", Name: "shell", Arguments: []byte(`{"cmd":"ls"}`),
+		},
+	}}}
+	if err := tw.Append(agent.NewTurn(agent.TurnAssistant, toolCallMsg)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Append(agent.NewTurn(agent.TurnToolResults,
+		llm.ToolResultNamed("call_42", "shell", "file1\nfile2", false))); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    idx,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/past/01REPLAY/replay", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"event: SESSION_START",
+		"event: USER_INPUT",
+		`"text":"hello"`,
+		"event: ASSISTANT_TEXT_START",
+		"event: ASSISTANT_TEXT_END",
+		`"text":"hi there"`,
+		"event: TOOL_CALL_START",
+		`"tool_name":"shell"`,
+		`"call_id":"call_42"`,
+		"event: TOOL_CALL_END",
+		"file1",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("replay body missing %q\nbody:\n%s", want, body)
+		}
 	}
 }
 
