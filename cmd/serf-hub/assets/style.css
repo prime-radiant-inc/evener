@@ -274,6 +274,7 @@ body.app { display: flex; min-height: 100vh; margin: 0; background: var(--bg); c
 .status-dot[data-state="warning"] { background: var(--state-warning); }
 .status-dot[data-state="idle"] { background: var(--state-idle); }
 .status-dot.subagent { background: var(--state-subagent); }
+.status-dot.rollup { margin-left: auto; }
 .row-meta { color: var(--text-muted); font-size: 11px; }
 .row-age { color: var(--text-muted); font-size: 11px; margin-left: auto; }
 .live-row { background: transparent; }

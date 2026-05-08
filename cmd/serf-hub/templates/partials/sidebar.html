@@ -32,6 +32,7 @@
   <section class="sidebar-section project-section">
     <header class="project-header">
       <span>{{.Name}}</span>
+      {{if .RollupState}}<span class="status-dot rollup" data-state="{{.RollupState}}"></span>{{end}}
       <span class="row-meta">{{len .Sessions}}</span>
     </header>
     {{range .Sessions}}

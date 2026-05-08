@@ -19,7 +19,7 @@
 <body class="app">
   <aside id="sidebar"
          hx-get="/sidebar"
-         hx-trigger="load"
+         hx-trigger="load, every 5s, sidebar:refresh from:body"
          hx-swap="innerHTML">
     <div class="sidebar-loading">loading…</div>
   </aside>
