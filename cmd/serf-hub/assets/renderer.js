@@ -473,16 +473,29 @@
       const form = document.querySelector("form[data-input-form]");
       if (!form) return;
       const ta = form.querySelector(".message-input");
-      const submit = (e) => {
+      const submit = async (e) => {
         e.preventDefault();
         const text = ta.value.trim();
         if (!text) return;
-        ta.value = "";
-        fetch("/s/" + encodeURIComponent(this.sessionId) + "/send", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text }),
-        }).catch(err => this.appendBanner("error", "send failed: " + err.message));
+        const sendBtn = form.querySelector(".send-btn");
+        if (sendBtn) sendBtn.disabled = true;
+        try {
+          const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/send", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text }),
+          });
+          if (!resp.ok) {
+            const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
+            this.appendBanner("error", "send failed: " + detail);
+          } else {
+            ta.value = "";
+          }
+        } catch (err) {
+          this.appendBanner("error", "send failed: " + err.message);
+        } finally {
+          if (sendBtn) sendBtn.disabled = false;
+        }
       };
       form.addEventListener("submit", submit);
     },

@@ -1191,57 +1191,84 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 		return
 	}
 
-	var le LiveEntry
-	if s.cfg.Roster != nil {
-		var ok bool
-		le, ok = s.cfg.Roster.Find(id)
-		if !ok {
-			// Session is not live — try to resume it.
-			if s.cfg.Spawner == nil {
-				http.Error(w, "spawner not configured", http.StatusServiceUnavailable)
-				return
-			}
-			lock := s.lockForSession(id)
-			lock.Lock()
-			defer lock.Unlock()
-			// Re-check after acquiring the lock — another request may have resumed it.
-			if le2, ok2 := s.cfg.Roster.Find(id); ok2 {
-				le = le2
-			} else {
-				entry, err := s.cfg.Spawner.Resume(r.Context(), id)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				le = waitForRosterMatch(s.cfg.Roster, id, entry.PID, 3*time.Second)
-				if le.Address == "" {
-					http.Error(w, "daemon not in roster after resume", http.StatusInternalServerError)
-					return
-				}
-			}
-		}
-	} else {
+	if s.cfg.Roster == nil {
 		http.Error(w, "spawner not configured", http.StatusServiceUnavailable)
 		return
 	}
 
-	// Forward the message to the daemon's /input endpoint.
-	payload, _ := json.Marshal(map[string]string{"text": body.Text})
-	daemonURL := "http://" + le.Address + "/input"
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, daemonURL, bytes.NewReader(payload))
+	resolve := func(forceResume bool) (LiveEntry, error) {
+		if !forceResume {
+			if le, ok := s.cfg.Roster.Find(id); ok {
+				return le, nil
+			}
+		}
+		// Resume path: spawn the daemon and wait for it to register.
+		if s.cfg.Spawner == nil {
+			return LiveEntry{}, fmt.Errorf("spawner not configured")
+		}
+		lock := s.lockForSession(id)
+		lock.Lock()
+		defer lock.Unlock()
+		if le, ok := s.cfg.Roster.Find(id); ok && !forceResume {
+			return le, nil
+		}
+		entry, err := s.cfg.Spawner.Resume(r.Context(), id)
+		if err != nil {
+			return LiveEntry{}, fmt.Errorf("resume: %w", err)
+		}
+		le := waitForRosterMatch(s.cfg.Roster, id, entry.PID, 5*time.Second)
+		if le.Address == "" {
+			return LiveEntry{}, fmt.Errorf("daemon not in roster after resume")
+		}
+		return le, nil
+	}
+
+	tryForward := func(le LiveEntry) (int, []byte, error) {
+		payload, _ := json.Marshal(map[string]string{"text": body.Text})
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, "http://"+le.Address+"/input", bytes.NewReader(payload))
+		if err != nil {
+			return 0, nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Do(req) //nolint:gosec
+		if err != nil {
+			return 0, nil, err
+		}
+		defer resp.Body.Close()
+		buf, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, buf, nil
+	}
+
+	le, err := resolve(false)
 	if err != nil {
+		// "spawner not configured" → 503 to match the legacy contract.
+		if strings.Contains(err.Error(), "spawner not configured") {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req) //nolint:gosec
+
+	status, buf, err := tryForward(le)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
+		// Network error means the cached daemon address is stale (daemon
+		// died, rendezvous file lingering). Force a resume and retry once.
+		le2, rerr := resolve(true)
+		if rerr != nil {
+			http.Error(w, "daemon unreachable: "+err.Error()+" (resume failed: "+rerr.Error()+")", http.StatusBadGateway)
+			return
+		}
+		status, buf, err = tryForward(le2)
+		if err != nil {
+			http.Error(w, "daemon unreachable: "+err.Error(), http.StatusBadGateway)
+			return
+		}
 	}
-	defer resp.Body.Close()
-	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body) //nolint:errcheck
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(status)
+	w.Write(buf) //nolint:errcheck
 }
 
 func (s *WebServer) handleFork(w http.ResponseWriter, r *http.Request, parentID string) {
