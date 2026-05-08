@@ -28,6 +28,12 @@
       this.activeSubagents = new Map();  // agent_id -> subagent reference el
       this.suppressedToolCalls = new Set();
       this.pendingTaskCalls = new Map(); // callId -> args (for system-line rendering on END)
+      this.lastCurrentTaskId = null;     // dedupe state for "now on X" system-line
+      this.eventBuffer = [];             // queued until cold-load /tasks fetch resolves
+      this.descriptionsReady = false;
+      // Description cache is per-session: clear before entering this conversation
+      // so a stale id→title mapping from a prior session can't bleed in.
+      taskDescriptions.clear();
       this.currentMessageId = null;
       this.userTurnIndex = 0;            // counts user turns rendered (for fork divergence)
       this.entryIndex = 0;               // counts ALL entries rendered (matches transcript entry index)
@@ -40,7 +46,34 @@
 
       this.bindInputForm();
       this.bindKeyboard();
+      // Cold-load hydration: fetch the task list ONCE before processing any
+      // events so the first transition (system-line) renders with task
+      // descriptions instead of a #N → title flash a few seconds later.
+      // After this lands, descriptionsReady flips and any buffered events
+      // get drained through handle().
+      this.hydrateDescriptions().then(() => {
+        this.descriptionsReady = true;
+        const buffered = this.eventBuffer || [];
+        this.eventBuffer = null;
+        for (const [kind, ev] of buffered) this.handle(kind, ev);
+      });
       this.startTaskBadgePoller();
+    },
+
+    hydrateDescriptions() {
+      if (!this.sessionId) return Promise.resolve();
+      return fetch("/s/" + encodeURIComponent(this.sessionId) + "/tasks")
+        .then(r => r.ok ? r.json() : [])
+        .then(tasks => {
+          if (!Array.isArray(tasks)) return;
+          for (const t of tasks) {
+            if (t && t.id != null && t.description) {
+              taskDescriptions.set(t.id, t.description);
+            }
+          }
+          const done = tasks.filter(t => t.status === "done").length;
+          updateTasksBadge(done, tasks.length);
+        }).catch(() => {});
     },
 
     // Periodically pull /tasks to keep the workspace tasks-button badge
@@ -87,6 +120,13 @@
     },
 
     handle(kind, ev) {
+      // Buffer events until the cold-load /tasks fetch resolves, so the
+      // first batch of system-lines renders with task descriptions and
+      // never shows the #N → title flash on resume.
+      if (!this.descriptionsReady && this.eventBuffer) {
+        this.eventBuffer.push([kind, ev]);
+        return;
+      }
       let data = {};
       try { data = JSON.parse(ev.data); } catch (e) {}
       switch (kind) {
@@ -98,6 +138,10 @@
             this.activeMessages.clear();
             this.activeTools.clear();
             this.activeSubagents.clear();
+            this.suppressedToolCalls.clear();
+            this.pendingTaskCalls.clear();
+            taskDescriptions.clear();
+            this.lastCurrentTaskId = null;
             this.userTurnIndex = 0;
             this.entryIndex = 0;
           }
@@ -509,10 +553,32 @@
       const summary = classifySteering(text);
 
       if (summary.kind === "current-task") {
-        // Seed description from the title attribute and suppress.
-        if (summary.taskID && summary.taskTitle) {
-          taskDescriptions.set(parseInt(summary.taskID, 10), summary.taskTitle);
+        // Seed description from the title attribute. The daemon repeats this
+        // steering before nearly every model call, so we only emit a "now on
+        // X" system-line when the active task ID actually changes — and we
+        // skip it when implied by surrounding context:
+        //   • the previous element is a user message (the agent picking up
+        //     work right after a request is implicit)
+        //   • the previous system-line already named this task (avoids
+        //     "started X. now on X" redundancy)
+        const idNum = summary.taskID ? parseInt(summary.taskID, 10) : null;
+        if (idNum && summary.taskTitle) {
+          taskDescriptions.set(idNum, summary.taskTitle);
         }
+        if (idNum && idNum !== this.lastCurrentTaskId) {
+          const previousID = this.lastCurrentTaskId;
+          this.lastCurrentTaskId = idNum;
+          if (previousID === null) return; // first steering of session: silent
+          if (this.lastSystemLineMentions(idNum)) return;
+          const line = document.createElement("div");
+          line.className = "system-line system-line-now";
+          line.textContent = 'now on "' + summary.taskTitle + '"';
+          this.conversation.appendChild(line);
+        }
+        return;
+      }
+      if (summary.kind === "task-nudge") {
+        // The daemon's "consider using task_list" reminder; not user-meaningful.
         return;
       }
       if (summary.kind === "full-list") {
@@ -575,6 +641,19 @@
         this.conversation.appendChild(line);
       }
       this.refreshTaskBadgeSoon();
+    },
+
+    // lastSystemLineMentions returns true if the most-recent system-line in
+    // the conversation already contains the description for the given task
+    // id. Used to dedupe a redundant "now on X" steering that arrives right
+    // after a task_list update saying "started X".
+    lastSystemLineMentions(taskID) {
+      const desc = taskDescriptions.get(taskID);
+      if (!desc) return false;
+      const all = this.conversation.querySelectorAll(".system-line");
+      const last = all[all.length - 1];
+      if (!last) return false;
+      return last.textContent.includes('"' + desc + '"');
     },
 
     refreshTaskBadgeSoon() {
@@ -695,9 +774,16 @@
       const total = lines.length;
       const pending = lines.filter(l => /\[(open|in_progress)\]/.test(l)).length;
       const tasks = lines.map(line => {
-        const m = line.match(/\[(\w+)\]\s*#(\d+):\s*(.+?)(?:\s*\[\w+\])?(?:\s*\(depends_on:.*\))?$/);
+        // Greedy capture for description so a trailing "[WIP]" inside the
+        // title doesn't get clipped. Strip optional " [reasoning]" or
+        // " (depends_on: …)" suffixes only when they're at end-of-line.
+        const m = line.match(/\[(\w+)\]\s*#(\d+):\s*(.+)$/);
         if (!m) return null;
-        return { status: m[1], id: parseInt(m[2], 10), description: m[3].trim() };
+        let description = m[3].trim();
+        description = description.replace(/\s*\(depends_on:[^)]*\)\s*$/, "");
+        // Only strip a trailing reasoning-effort token (low|medium|high|xhigh).
+        description = description.replace(/\s*\[(low|medium|high|xhigh)\]\s*$/, "");
+        return { status: m[1], id: parseInt(m[2], 10), description: description.trim() };
       }).filter(Boolean);
       return {
         kind: "full-list",
@@ -735,35 +821,52 @@
 
     if (args.action === "append") {
       if (!Array.isArray(args.tasks) || args.tasks.length === 0) return "";
+      // Show the FULL plan on creation — the one moment the entire list
+      // matters to the reader. No "+N more" truncation.
       const descs = args.tasks.map(t => '"' + (t.description || "?") + '"');
-      const head = descs.slice(0, 3).join(" · ");
-      const more = descs.length > 3 ? " · +" + (descs.length - 3) + " more" : "";
-      return "added " + descs.length + " task" + (descs.length === 1 ? "" : "s") + ": " + head + more;
+      return "added " + descs.length + " task" + (descs.length === 1 ? "" : "s") + ": " + descs.join(" · ");
     }
 
     if (args.action === "update") {
       if (!Array.isArray(args.updates) || args.updates.length === 0) return "";
-      const clauses = args.updates.slice(0, 4).map(u => {
-        let clause = updateClause(u);
-        if (u.notes) clause += " — " + clip(u.notes, 80);
-        return clause;
-      });
-      let line = clauses.join(", ");
-      if (args.updates.length > 4) line += " (+" + (args.updates.length - 4) + " more)";
-      return line;
+      // Group same-status updates together so 3 dones in one call read as
+      //   marked "A", "B", "C" done
+      // instead of
+      //   marked "A" done, marked "B" done, marked "C" done.
+      // Notes are emitted only when there's exactly one update with notes
+      // for that status — otherwise the prose gets unwieldy.
+      const byStatus = new Map(); // status -> [{id, notes}, …]
+      const order = [];
+      for (const u of args.updates) {
+        const s = u.status || "?";
+        if (!byStatus.has(s)) { byStatus.set(s, []); order.push(s); }
+        byStatus.get(s).push(u);
+      }
+      const clauses = order.map(s => formatStatusClause(s, byStatus.get(s)));
+      return clauses.filter(Boolean).join(", ");
     }
     return "";
   }
 
-  function updateClause(u) {
-    const subject = taskDesc(u.id);
-    switch (u.status) {
-      case "done":        return "marked " + subject + " done";
-      case "in_progress": return "started " + subject;
-      case "cancelled":   return "cancelled " + subject;
-      case "open":        return "reopened " + subject;
-      default:            return "updated " + subject;
+  // formatStatusClause renders one verb's worth of updates: "marked A done",
+  // "marked A, B, C done", "started X", etc. Notes attach when exactly one
+  // task got that status this turn.
+  function formatStatusClause(status, items) {
+    if (!items || items.length === 0) return "";
+    const subjects = items.map(u => taskDesc(u.id)).join(", ");
+    let clause;
+    switch (status) {
+      case "done":        clause = "marked " + subjects + " done"; break;
+      case "in_progress": clause = "started " + subjects; break;
+      case "cancelled":   clause = "cancelled " + subjects; break;
+      case "open":        clause = "reopened " + subjects; break;
+      default:            clause = "updated " + subjects; break;
     }
+    if (items.length === 1 && items[0].notes) {
+      const note = clip(items[0].notes, 100).replace(/[.!?]+$/, "");
+      clause += " (" + note + ")";
+    }
+    return clause;
   }
 
   function parseToolState(s) {
@@ -1267,13 +1370,16 @@
   // reliably execute in the right order across htmx versions, so we use the
   // semantic afterSwap hook instead.
   function autoInit() {
+    // Tear down any orphaned tasks-panel poll interval before the next swap
+    // hides/replaces it; otherwise the panel keeps fetching the old session.
+    const orphan = document.getElementById("tasks-panel");
+    if (orphan && orphan.__pollTimer) {
+      clearInterval(orphan.__pollTimer);
+      orphan.__pollTimer = null;
+    }
     const conv = document.getElementById("conversation");
     if (conv) SerfRenderer.init(conv);
   }
   document.addEventListener("DOMContentLoaded", autoInit);
   document.body && document.body.addEventListener("htmx:afterSwap", autoInit);
-  // If body wasn't ready yet (script loaded in <head>), bind on load.
-  document.addEventListener("DOMContentLoaded", () => {
-    document.body.addEventListener("htmx:afterSwap", autoInit);
-  });
 })();

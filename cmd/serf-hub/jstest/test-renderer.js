@@ -80,10 +80,18 @@ const events = [
   ["TOOL_CALL_END", { call_id: "call_b", output: "{}", tool_name: "communicate" }],
 ];
 
-for (const [name, data] of events) {
-  es.fire(name, data);
+// Wait for the cold-load /tasks fetch to resolve (a few microticks) so
+// events render synchronously instead of getting buffered.
+async function flushAndAssert() {
+  await new Promise(r => setTimeout(r, 30));
+  for (const [name, data] of events) {
+    es.fire(name, data);
+  }
+  await new Promise(r => setTimeout(r, 10));
+  runAssertions();
 }
 
+function runAssertions() {
 // ───────────────────────────── assertions
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
@@ -97,16 +105,19 @@ pass(users[0] && users[0].textContent.includes("Hi! How are you?"), "user messag
 const steerings = conv.querySelectorAll(".steering");
 pass(steerings.length === 0, "expected 0 steering dividers, got " + steerings.length);
 
-// 3. Exactly one .system-line with "marked \"Understand task\" done".
+// 3. Two system-lines: the "marked done" prose for #1 and the "now on" line
+//    for #2 (auto-advanced by the daemon's steering — #2 is never explicitly
+//    started by the agent's task_list call, so the steering carries that
+//    transition). The leading current-task steering is suppressed because
+//    the previous element is a user-message.
 const sysLines = conv.querySelectorAll(".system-line");
-pass(sysLines.length === 1, "expected 1 system-line, got " + sysLines.length + ": " + Array.from(sysLines).map(e => e.textContent).join(" | "));
-if (sysLines.length === 1) {
-  const t = sysLines[0].textContent;
-  pass(t.includes("marked"), "system-line should say 'marked', got: " + t);
-  pass(t.includes("Understand task"), "system-line should name the task, got: " + t);
-  pass(t.includes("done"), "system-line should say 'done', got: " + t);
-  // Should NOT show "#1" since description is known.
-  pass(!t.includes("#1"), "system-line should use description, not #id, got: " + t);
+pass(sysLines.length === 2, "expected 2 system-lines, got " + sysLines.length + ": " + Array.from(sysLines).map(e => e.textContent).join(" | "));
+if (sysLines.length === 2) {
+  const t1 = sysLines[0].textContent;
+  pass(t1.includes("marked") && t1.includes("Understand task") && t1.includes("done"), "first system-line wrong: " + t1);
+  pass(!t1.includes("#1"), "first system-line should use description not #id: " + t1);
+  const t2 = sysLines[1].textContent;
+  pass(t2.includes("now on") && t2.includes("Do the work"), "second system-line wrong: " + t2);
 }
 
 // 4. Zero task-list tool-call cards.
@@ -135,3 +146,6 @@ if (failures.length === 0) {
   for (const f of failures) console.log(f);
   process.exit(1);
 }
+}
+
+flushAndAssert();

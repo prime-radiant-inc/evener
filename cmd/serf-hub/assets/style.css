@@ -533,6 +533,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .tasks-list .task-row-chevron { color: var(--text-dim); font-size: 14px; transition: transform 0.15s; transform: rotate(0deg); }
 .tasks-list .task-row-details[open] > summary > .task-row-chevron { transform: rotate(90deg); }
 .tasks-list .task-detail { margin: 0; padding: 4px 12px 10px 38px; display: grid; grid-template-columns: 80px 1fr; gap: 4px 10px; font-size: 11px; border-top: 1px dashed var(--rule); }
+.tasks-list .task-detail:empty { display: none; border: none; padding: 0; }
 .tasks-list .task-detail dt { color: var(--text-muted); }
 .tasks-list .task-detail dd { margin: 0; color: var(--text); word-break: break-word; }
 .tasks-list .task-prompt { font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 11px; line-height: 1.5; white-space: pre-wrap; color: var(--text); }

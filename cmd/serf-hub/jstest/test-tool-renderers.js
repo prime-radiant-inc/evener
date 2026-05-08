@@ -34,9 +34,11 @@ function newHarness() {
 }
 
 let allPass = true;
-function scenario(name, eventSeq, check) {
+async function scenario(name, eventSeq, check) {
   const { window, conv, es } = newHarness();
+  await new Promise(r => setTimeout(r, 30));
   for (const [t, d] of eventSeq) es.fire(t, d);
+  await new Promise(r => setTimeout(r, 10));
   const result = check({ conv, window });
   console.log((result.ok ? "PASS" : "FAIL") + " — " + name);
   if (!result.ok) {
@@ -46,8 +48,10 @@ function scenario(name, eventSeq, check) {
   }
 }
 
+(async () => {
+
 // Cheap-cluster — read_file should land in .tool-call-cluster, no body.
-scenario("read_file in cheap cluster", [
+await scenario("read_file in cheap cluster", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["TOOL_CALL_START", { call_id: "r1", tool_name: "read_file", arguments_json: JSON.stringify({ file_path: "src/main.go" }) }],
   ["TOOL_CALL_END", { call_id: "r1", output: "line\nline\nline\n", tool_name: "read_file" }],
@@ -62,7 +66,7 @@ scenario("read_file in cheap cluster", [
 });
 
 // edit_file — should produce a diff body.
-scenario("edit_file diff body", [
+await scenario("edit_file diff body", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["TOOL_CALL_START", { call_id: "e1", tool_name: "edit_file", arguments_json: JSON.stringify({ file_path: "x.go" }) }],
   ["TOOL_CALL_OUTPUT_DELTA", { call_id: "e1", delta: "+ added line\n- removed line\n" }],
@@ -79,7 +83,7 @@ scenario("edit_file diff body", [
 });
 
 // shell — collapsible details body, exit code result.
-scenario("shell with stdout and exit code", [
+await scenario("shell with stdout and exit code", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["TOOL_CALL_START", { call_id: "s1", tool_name: "shell", arguments_json: JSON.stringify({ command: "ls -la" }) }],
   ["TOOL_CALL_OUTPUT_DELTA", { call_id: "s1", delta: "total 8\nfile1\nfile2\n" }],
@@ -97,7 +101,7 @@ scenario("shell with stdout and exit code", [
 });
 
 // web_search — list of result lines.
-scenario("web_search renders top results", [
+await scenario("web_search renders top results", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["TOOL_CALL_START", { call_id: "w1", tool_name: "web_search", arguments_json: JSON.stringify({ query: "go context cancellation" }) }],
   ["TOOL_CALL_END", { call_id: "w1", output: "Result A\nResult B\nResult C\n", tool_name: "web_search" }],
@@ -114,7 +118,7 @@ scenario("web_search renders top results", [
 });
 
 // communicate — renders as assistant block, no tool-call card.
-scenario("communicate renders as assistant block", [
+await scenario("communicate renders as assistant block", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["TOOL_CALL_START", { call_id: "c1", tool_name: "communicate", arguments_json: JSON.stringify({ message: "Hello" }) }],
   ["TOOL_CALL_END", { call_id: "c1", output: "{}", tool_name: "communicate" }],
@@ -127,3 +131,4 @@ scenario("communicate renders as assistant block", [
 });
 
 process.exit(allPass ? 0 : 1);
+})();
