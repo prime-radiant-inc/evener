@@ -1,0 +1,42 @@
+{{define "body"}}
+<div id="status-bar"
+     hx-get="/live/{{.SessionID}}/status"
+     hx-trigger="load, every 2s"
+     hx-swap="innerHTML">
+  loading status…
+</div>
+
+<div id="transcript" data-session-id="{{.SessionID}}">
+  <div class="empty">awaiting events…</div>
+</div>
+
+<div id="input-area">
+  <textarea id="input-text" placeholder="message the agent…"></textarea>
+  <div id="input-buttons">
+    <button id="btn-send">send</button>
+    <button id="btn-steer">steer</button>
+    <button id="btn-interrupt">interrupt</button>
+    <button id="btn-compact">compact</button>
+    <button id="btn-clear">clear</button>
+    <button id="btn-shutdown" class="danger">shutdown</button>
+  </div>
+</div>
+
+<script src="/assets/marked.min.js"></script>
+<script src="/assets/renderer.js"></script>
+<script>
+  // renderer.js exposes window.SerfRenderer; init it for this page.
+  window.SerfRenderer.init({
+    sessionId: {{.SessionID}},
+    transcript: document.getElementById("transcript"),
+    statusBar: document.getElementById("status-bar"),
+    input: document.getElementById("input-text"),
+    sendBtn: document.getElementById("btn-send"),
+    steerBtn: document.getElementById("btn-steer"),
+    interruptBtn: document.getElementById("btn-interrupt"),
+    compactBtn: document.getElementById("btn-compact"),
+    clearBtn: document.getElementById("btn-clear"),
+    shutdownBtn: document.getElementById("btn-shutdown"),
+  });
+</script>
+{{end}}

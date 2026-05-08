@@ -49,6 +49,7 @@ func (p *RESTProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // splitLivePath parses "/live/<session_id>/<rest...>" into (session_id, rest, true).
+// When there is no trailing slash (e.g. "/live/<id>"), rest is "" and ok is true.
 // Returns (_, _, false) for paths that don't match the prefix.
 func splitLivePath(path string) (sessionID, rest string, ok bool) {
 	const prefix = "/live/"
@@ -58,7 +59,7 @@ func splitLivePath(path string) (sessionID, rest string, ok bool) {
 	tail := path[len(prefix):]
 	slash := strings.Index(tail, "/")
 	if slash < 0 {
-		return "", "", false
+		return tail, "", true
 	}
 	return tail[:slash], tail[slash+1:], true
 }

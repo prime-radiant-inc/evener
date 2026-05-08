@@ -21,10 +21,11 @@ type Spawner interface{}
 
 // WebServer wires routes, templates, and middleware.
 type WebServer struct {
-	cfg       WebConfig
-	templates *template.Template
-	rest      *RESTProxy
-	sse       *SSEProxy
+	cfg          WebConfig
+	templates    *template.Template
+	liveTmpl     *template.Template
+	rest         *RESTProxy
+	sse          *SSEProxy
 }
 
 // NewWebServer constructs the web server. Templates are parsed from embed.FS.
@@ -34,13 +35,17 @@ func NewWebServer(cfg WebConfig) *WebServer {
 		"templates/landing.html",
 		"templates/partials/live_roster.html",
 	))
+	liveTmpl := template.Must(template.ParseFS(templatesFS,
+		"templates/base.html",
+		"templates/live.html",
+	))
 	var rest *RESTProxy
 	var sse *SSEProxy
 	if cfg.Roster != nil {
 		rest = NewRESTProxy(cfg.Roster)
 		sse = NewSSEProxy(cfg.Roster)
 	}
-	return &WebServer{cfg: cfg, templates: tmpl, rest: rest, sse: sse}
+	return &WebServer{cfg: cfg, templates: tmpl, liveTmpl: liveTmpl, rest: rest, sse: sse}
 }
 
 // Handler returns the http.Handler with all routes wired and the security
@@ -139,8 +144,21 @@ func (s *WebServer) handleLiveProxy(w http.ResponseWriter, r *http.Request) {
 			}
 			s.sse.ServeHTTP(w, r)
 		case rest == "":
-			// drive page placeholder (Task 16)
-			http.Error(w, "drive page not yet implemented", http.StatusNotImplemented)
+			sessID, _, _ := splitLivePath(path)
+			entry, ok := s.cfg.Roster.Find(sessID)
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			data := map[string]any{
+				"Title":     "drive",
+				"SessionID": entry.SessionID,
+				"Entry":     entry,
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			if err := s.liveTmpl.ExecuteTemplate(w, "base", data); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
 		default:
 			if s.rest == nil {
 				http.NotFound(w, r)

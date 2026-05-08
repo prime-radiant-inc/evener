@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/rendezvous"
 )
 
 func TestWeb_Landing_Renders(t *testing.T) {
@@ -94,5 +95,46 @@ func TestWeb_PastSearch(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "01A") {
 		t.Errorf("expected to find 01A in body, got: %q", rec.Body.String())
+	}
+}
+
+func TestWeb_DrivePage_KnownSession(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 1, Address: "127.0.0.1:55555"})
+	r := NewRoster(dir, fakeProber{sessionID: "01SESS001"})
+	r.refresh()
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  r,
+		Past:    NewPastIndex(""),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/live/01SESS001", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "transcript") {
+		t.Errorf("body missing transcript: %q", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "01SESS001") {
+		t.Errorf("body missing session id")
+	}
+}
+
+func TestWeb_DrivePage_UnknownSession_404(t *testing.T) {
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    NewPastIndex(""),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/live/bogus", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status: %d, want 404", rec.Code)
 	}
 }
