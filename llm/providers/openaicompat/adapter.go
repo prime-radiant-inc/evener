@@ -86,7 +86,7 @@ type Adapter struct {
 }
 
 func init() {
-	llm.RegisterEnvAdapterFactory(func() (llm.ProviderAdapter, bool, error) {
+	llm.RegisterEnvAdapterFactory(func(_ llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
 		base := strings.TrimSpace(os.Getenv("OPENAI_COMPATIBLE_BASE_URL"))
 		if base == "" {
 			return nil, false, nil

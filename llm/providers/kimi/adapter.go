@@ -29,7 +29,7 @@ func (a *adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 }
 
 func init() {
-	llm.RegisterEnvAdapterFactory(func() (llm.ProviderAdapter, bool, error) {
+	llm.RegisterEnvAdapterFactory(func(_ llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
 		key := strings.TrimSpace(os.Getenv("KIMI_API_KEY"))
 		if key == "" {
 			return nil, false, nil

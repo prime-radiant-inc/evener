@@ -176,11 +176,6 @@ type evalConfig struct {
 }
 
 func runEval(cfg evalConfig) error {
-	client, err := llm.NewFromEnv()
-	if err != nil {
-		return fmt.Errorf("LLM client setup: %w", err)
-	}
-
 	profile, err := cmdutil.SelectProfile(cfg.provider, cfg.model, "")
 	if err != nil {
 		return err
@@ -196,6 +191,11 @@ func runEval(cfg evalConfig) error {
 			return fmt.Errorf("create state dir: %w", tmpErr)
 		}
 		defer os.RemoveAll(stateDir)
+	}
+
+	client, err := llm.NewFromEnv(llm.WithStateDir(stateDir))
+	if err != nil {
+		return fmt.Errorf("LLM client setup: %w", err)
 	}
 
 	effort, err := cmdutil.ResolveReasoningEffort(cfg.reasoningEffort, os.Getenv("SERF_REASONING_EFFORT"))

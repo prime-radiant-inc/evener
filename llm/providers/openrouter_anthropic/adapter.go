@@ -50,7 +50,7 @@ func newTestAdapter(baseURL, apiKey string, client *http.Client) *adapter {
 }
 
 func init() {
-	llm.RegisterEnvAdapterFactory(func() (llm.ProviderAdapter, bool, error) {
+	llm.RegisterEnvAdapterFactory(func(_ llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
 		key := strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY"))
 		if key == "" {
 			return nil, false, nil

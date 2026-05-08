@@ -5,7 +5,19 @@ import (
 	"sync"
 )
 
-type EnvAdapterFactory func() (adapter ProviderAdapter, configured bool, err error)
+type EnvConfig struct {
+	StateDir string
+}
+
+type EnvOption func(*EnvConfig)
+
+func WithStateDir(stateDir string) EnvOption {
+	return func(cfg *EnvConfig) {
+		cfg.StateDir = stateDir
+	}
+}
+
+type EnvAdapterFactory func(cfg EnvConfig) (adapter ProviderAdapter, configured bool, err error)
 
 var (
 	envFactoriesMu sync.Mutex
@@ -28,14 +40,21 @@ func RegisterEnvAdapterFactory(factory EnvAdapterFactory) {
 // becomes the default provider.
 //
 // Note: providers are discovered via factories registered with RegisterEnvAdapterFactory.
-func NewFromEnv() (*Client, error) {
+func NewFromEnv(opts ...EnvOption) (*Client, error) {
 	envFactoriesMu.Lock()
 	factories := append([]EnvAdapterFactory{}, envFactories...)
 	envFactoriesMu.Unlock()
 
+	var cfg EnvConfig
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+
 	c := NewClient()
 	for _, f := range factories {
-		a, ok, err := f()
+		a, ok, err := f(cfg)
 		if err != nil {
 			return nil, err
 		}

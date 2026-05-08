@@ -22,6 +22,34 @@ func (a *envFakeAdapter) Stream(ctx context.Context, req Request) (Stream, error
 	return nil, nil
 }
 
+func TestNewFromEnv_PassesStateDirOptionToFactories(t *testing.T) {
+	// Isolate global registry.
+	envFactoriesMu.Lock()
+	saved := append([]EnvAdapterFactory{}, envFactories...)
+	envFactories = nil
+	envFactoriesMu.Unlock()
+	t.Cleanup(func() {
+		envFactoriesMu.Lock()
+		envFactories = saved
+		envFactoriesMu.Unlock()
+	})
+
+	const wantStateDir = "/tmp/serf-state"
+	var gotStateDir string
+
+	RegisterEnvAdapterFactory(func(cfg EnvConfig) (ProviderAdapter, bool, error) {
+		gotStateDir = cfg.StateDir
+		return &envFakeAdapter{name: "openai"}, true, nil
+	})
+
+	if _, err := NewFromEnv(WithStateDir(wantStateDir)); err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+	if gotStateDir != wantStateDir {
+		t.Fatalf("factory state dir = %q, want %q", gotStateDir, wantStateDir)
+	}
+}
+
 func TestNewFromEnv_UsesRegisteredFactories(t *testing.T) {
 	// Isolate global registry.
 	envFactoriesMu.Lock()
@@ -35,7 +63,7 @@ func TestNewFromEnv_UsesRegisteredFactories(t *testing.T) {
 	})
 
 	t.Setenv("TEST_LLM_ENABLED", "1")
-	RegisterEnvAdapterFactory(func() (ProviderAdapter, bool, error) {
+	RegisterEnvAdapterFactory(func(EnvConfig) (ProviderAdapter, bool, error) {
 		if os.Getenv("TEST_LLM_ENABLED") == "" {
 			return nil, false, nil
 		}
@@ -87,7 +115,7 @@ func TestDefaultClient_LazyInitializationFromEnv(t *testing.T) {
 	})
 
 	t.Setenv("TEST_LLM_ENABLED", "1")
-	RegisterEnvAdapterFactory(func() (ProviderAdapter, bool, error) {
+	RegisterEnvAdapterFactory(func(EnvConfig) (ProviderAdapter, bool, error) {
 		if os.Getenv("TEST_LLM_ENABLED") == "" {
 			return nil, false, nil
 		}

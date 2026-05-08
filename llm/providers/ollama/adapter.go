@@ -183,7 +183,7 @@ func normalizeHost(h string) string {
 }
 
 func init() {
-	llm.RegisterEnvAdapterFactory(func() (llm.ProviderAdapter, bool, error) {
+	llm.RegisterEnvAdapterFactory(func(_ llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
 		baseEnv := strings.TrimSpace(os.Getenv("OLLAMA_BASE_URL"))
 		hostEnv := strings.TrimSpace(os.Getenv("OLLAMA_HOST"))
 		keyEnv := strings.TrimSpace(os.Getenv("OLLAMA_API_KEY"))

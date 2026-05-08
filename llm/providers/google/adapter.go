@@ -27,7 +27,7 @@ type Adapter struct {
 }
 
 func init() {
-	llm.RegisterEnvAdapterFactory(func() (llm.ProviderAdapter, bool, error) {
+	llm.RegisterEnvAdapterFactory(func(_ llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
 		if strings.TrimSpace(os.Getenv("GEMINI_API_KEY")) == "" && strings.TrimSpace(os.Getenv("GOOGLE_API_KEY")) == "" {
 			return nil, false, nil
 		}

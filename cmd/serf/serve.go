@@ -123,7 +123,7 @@ func runServe(args []string) error {
 	}
 
 	// Create LLM client and session.
-	client, err := llm.NewFromEnv()
+	client, err := llm.NewFromEnv(llm.WithStateDir(sd))
 	if err != nil {
 		return fmt.Errorf("LLM client: %w", err)
 	}

@@ -108,7 +108,7 @@ func startEmbedded(ctx context.Context, cfg embeddedConfig) (*embeddedServer, er
 		return nil, err
 	}
 
-	client, err := llm.NewFromEnv()
+	client, err := llm.NewFromEnv(llm.WithStateDir(sd))
 	if err != nil {
 		return nil, fmt.Errorf("LLM client: %w", err)
 	}

@@ -12,47 +12,90 @@ import (
 	"strings"
 	"time"
 
+	authopenai "primeradiant.com/serf/internal/auth/openai"
 	"primeradiant.com/serf/llm"
 )
+
+const (
+	defaultAPIBaseURL      = "https://api.openai.com"
+	defaultResponsesPath   = "/v1/responses"
+	defaultChatGPTBaseURL  = "https://chatgpt.com"
+	defaultCodexResponses  = "/backend-api/codex/responses"
+)
+
+type Config struct {
+	StateDir string
+}
 
 type Adapter struct {
 	APIKey         string
 	BaseURL        string
+	ResponsesPath  string
 	OrgID          string
 	ProjectID      string
+	ChatGPTAccountID string
 	Client         *http.Client
 	DefaultHeaders map[string]string
 }
 
 func init() {
-	llm.RegisterEnvAdapterFactory(func() (llm.ProviderAdapter, bool, error) {
-		if strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) == "" {
-			return nil, false, nil
-		}
-		a, err := NewFromEnv()
+	llm.RegisterEnvAdapterFactory(func(cfg llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
+		a, err := NewFromEnv(Config{StateDir: cfg.StateDir})
 		if err != nil {
+			if isUnconfigured(err) {
+				return nil, false, nil
+			}
 			return nil, true, err
 		}
 		return a, true, nil
 	})
 }
 
-func NewFromEnv() (*Adapter, error) {
-	key := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
-	if key == "" {
-		return nil, fmt.Errorf("OPENAI_API_KEY is required")
+func NewFromEnv(cfgs ...Config) (*Adapter, error) {
+	var cfg Config
+	if len(cfgs) > 0 {
+		cfg = cfgs[0]
 	}
-	base := strings.TrimSpace(os.Getenv("OPENAI_BASE_URL"))
+
+	key := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+	if key != "" {
+		base := strings.TrimSpace(os.Getenv("OPENAI_BASE_URL"))
+		if base == "" {
+			base = defaultAPIBaseURL
+		}
+		return &Adapter{
+			APIKey:        key,
+			BaseURL:       strings.TrimRight(base, "/"),
+			ResponsesPath: defaultResponsesPath,
+			OrgID:         strings.TrimSpace(os.Getenv("OPENAI_ORG_ID")),
+			ProjectID:     strings.TrimSpace(os.Getenv("OPENAI_PROJECT_ID")),
+			// Avoid short client-level timeouts; rely on request context deadlines instead.
+			Client: &http.Client{Timeout: 0},
+		}, nil
+	}
+
+	if strings.TrimSpace(cfg.StateDir) == "" {
+		return nil, fmt.Errorf("no OpenAI credentials configured")
+	}
+
+	record, err := authopenai.LoadAuth(cfg.StateDir)
+	if err != nil {
+		return nil, fmt.Errorf("load OpenAI auth: %w", err)
+	}
+	base := strings.TrimSpace(os.Getenv("OPENAI_CHATGPT_BASE_URL"))
 	if base == "" {
-		base = "https://api.openai.com"
+		base = defaultChatGPTBaseURL
+	}
+	accountID := strings.TrimSpace(record.AccountID)
+	if accountID == "" {
+		accountID = strings.TrimSpace(record.WorkspaceID)
 	}
 	return &Adapter{
-		APIKey:    key,
-		BaseURL:   strings.TrimRight(base, "/"),
-		OrgID:     strings.TrimSpace(os.Getenv("OPENAI_ORG_ID")),
-		ProjectID: strings.TrimSpace(os.Getenv("OPENAI_PROJECT_ID")),
-		// Avoid short client-level timeouts; rely on request context deadlines instead.
-		Client: &http.Client{Timeout: 0},
+		APIKey:           record.AccessToken,
+		BaseURL:          strings.TrimRight(base, "/"),
+		ResponsesPath:    defaultCodexResponses,
+		ChatGPTAccountID: accountID,
+		Client:           &http.Client{Timeout: 0},
 	}, nil
 }
 
@@ -70,6 +113,9 @@ func (a *Adapter) setHeaders(req *http.Request) {
 	}
 	if a.ProjectID != "" {
 		req.Header.Set("OpenAI-Project", a.ProjectID)
+	}
+	if a.ChatGPTAccountID != "" {
+		req.Header.Set("ChatGPT-Account-ID", a.ChatGPTAccountID)
 	}
 }
 
@@ -160,7 +206,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	ctx, adapterCancel := llm.ApplyAdapterTimeout(ctx, req.AdapterTimeout, false)
 	defer adapterCancel()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.BaseURL+"/v1/responses", bytes.NewReader(b))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.responsesURL(), bytes.NewReader(b))
 	if err != nil {
 		return llm.Response{}, err
 	}
@@ -219,7 +265,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		return nil, err
 	}
 
-	httpReq, err := http.NewRequestWithContext(sctx, http.MethodPost, a.BaseURL+"/v1/responses", bytes.NewReader(b))
+	httpReq, err := http.NewRequestWithContext(sctx, http.MethodPost, a.responsesURL(), bytes.NewReader(b))
 	if err != nil {
 		cancel()
 		return nil, err
@@ -427,6 +473,31 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	}()
 
 	return s, nil
+}
+
+func (a *Adapter) responsesURL() string {
+	base := strings.TrimRight(a.BaseURL, "/")
+	path := a.ResponsesPath
+	if path == "" {
+		path = defaultResponsesPath
+	}
+	if strings.HasPrefix(path, "/") {
+		return base + path
+	}
+	return base + "/" + path
+}
+
+func isUnconfigured(err error) bool {
+	if err == nil {
+		return false
+	}
+	if strings.Contains(err.Error(), "no OpenAI credentials configured") {
+		return true
+	}
+	if strings.Contains(err.Error(), authopenai.ErrAuthNotFound.Error()) {
+		return true
+	}
+	return false
 }
 
 func toResponsesResponseFormat(rf llm.ResponseFormat) any {

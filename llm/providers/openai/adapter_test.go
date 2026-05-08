@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	authopenai "primeradiant.com/serf/internal/auth/openai"
 	"primeradiant.com/serf/llm"
 )
 
@@ -1351,6 +1352,82 @@ func TestNewFromEnv_ReadsOrgAndProjectID(t *testing.T) {
 	}
 	if a.ProjectID != "proj-456" {
 		t.Fatalf("ProjectID = %q", a.ProjectID)
+	}
+}
+
+func TestNewFromEnv_UsesStoredOAuthTransportWhenAPIKeyAbsent(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := authopenai.SaveAuth(stateDir, authopenai.AuthRecord{
+		Version:      1,
+		Provider:     "openai",
+		Source:       "oauth",
+		ObtainedAt:   time.Now().Add(-time.Minute).UTC(),
+		TokenType:    "Bearer",
+		Scope:        "openid profile email offline_access",
+		AccessToken:  "oauth-token",
+		RefreshToken: "refresh-token",
+		Expiry:       time.Now().Add(time.Hour).UTC(),
+		AccountID:    "acct_123",
+		WorkspaceID:  "ws_123",
+	}); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+
+	t.Setenv("OPENAI_CHATGPT_BASE_URL", "https://chatgpt.example.test")
+	a, err := NewFromEnv(Config{StateDir: stateDir})
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+	if a.APIKey != "oauth-token" {
+		t.Fatalf("APIKey = %q", a.APIKey)
+	}
+	if a.BaseURL != "https://chatgpt.example.test" {
+		t.Fatalf("BaseURL = %q", a.BaseURL)
+	}
+	if a.ResponsesPath != "/backend-api/codex/responses" {
+		t.Fatalf("ResponsesPath = %q", a.ResponsesPath)
+	}
+	if a.ChatGPTAccountID != "acct_123" {
+		t.Fatalf("ChatGPTAccountID = %q", a.ChatGPTAccountID)
+	}
+}
+
+func TestAdapter_Complete_OAuthTransportUsesCodexEndpointAndAccountHeader(t *testing.T) {
+	var gotPath string
+	var gotAuth string
+	var gotAccount string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		gotAccount = r.Header.Get("ChatGPT-Account-ID")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r1","model":"gpt-5.2","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey:           "oauth-token",
+		BaseURL:          srv.URL,
+		ResponsesPath:    "/backend-api/codex/responses",
+		ChatGPTAccountID: "acct_123",
+		Client:           srv.Client(),
+	}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gpt-5.2",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if gotPath != "/backend-api/codex/responses" {
+		t.Fatalf("path = %q", gotPath)
+	}
+	if gotAuth != "Bearer oauth-token" {
+		t.Fatalf("Authorization = %q", gotAuth)
+	}
+	if gotAccount != "acct_123" {
+		t.Fatalf("ChatGPT-Account-ID = %q", gotAccount)
 	}
 }
 

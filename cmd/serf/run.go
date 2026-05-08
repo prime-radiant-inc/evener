@@ -140,7 +140,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		return fmt.Errorf("no model specified: use --model or set SERF_MODEL")
 	}
 
-	client, err := llm.NewFromEnv()
+	client, err := llm.NewFromEnv(llm.WithStateDir(stateDir))
 	if err != nil {
 		return fmt.Errorf("LLM client setup: %w", err)
 	}
