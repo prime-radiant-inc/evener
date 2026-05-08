@@ -9,11 +9,13 @@
 // OLLAMA_API_KEY is optional and used only for authenticated proxies or
 // Ollama Cloud. Local Ollama does not require a key.
 //
-// The factory only registers itself when at least one of OLLAMA_BASE_URL,
-// OLLAMA_HOST, or OLLAMA_API_KEY is set. This prevents Ollama from silently
-// becoming the implicit default provider in environments where it isn't
-// actually configured. Users who want zero-config local Ollama can set
-// OLLAMA_HOST=localhost (or any of the three vars) as a one-time signal.
+// The factory always registers the adapter so explicit selection
+// (--provider ollama) works zero-config. The adapter implements
+// llm.NonDefaultEligible, which prevents it from becoming the silent
+// default provider in environments where the user didn't intend it —
+// the original concern that motivated the previous env-gate. Explicit
+// addressing by name still works, so `serf --provider ollama` succeeds
+// regardless of whether any OLLAMA_* env var is set.
 package ollama
 
 import (
@@ -37,6 +39,12 @@ type adapter struct {
 }
 
 func (a *adapter) Name() string { return providerName }
+
+// NonDefaultEligible marks the ollama adapter as ineligible for the
+// client's auto-selected default provider. This adapter is always
+// registered (so explicit --provider ollama works zero-config), but the
+// silent default fallback should never land here.
+func (a *adapter) NonDefaultEligible() {}
 
 func (a *adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	resp, err := a.inner.Complete(ctx, req)
@@ -179,9 +187,9 @@ func init() {
 		baseEnv := strings.TrimSpace(os.Getenv("OLLAMA_BASE_URL"))
 		hostEnv := strings.TrimSpace(os.Getenv("OLLAMA_HOST"))
 		keyEnv := strings.TrimSpace(os.Getenv("OLLAMA_API_KEY"))
-		if baseEnv == "" && hostEnv == "" && keyEnv == "" {
-			return nil, false, nil
-		}
+		// Always register: ollama implements NonDefaultEligible, so the
+		// "silent default provider" concern is handled at the client
+		// level. Explicit --provider ollama works zero-config.
 		return &adapter{inner: &openaicompat.Adapter{
 			APIKey:  keyEnv,
 			BaseURL: resolveBaseURL(baseEnv, hostEnv),

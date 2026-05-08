@@ -534,12 +534,11 @@ func TestAdapter_Stream_RewritesEventErrorProvider(t *testing.T) {
 	}
 }
 
-// TestProviderRegistered_WhenEnvSet verifies that init() has registered the
-// ollama factory with the global env registry, and that setting any one of
-// the OLLAMA_* env vars causes llm.NewFromEnv() to produce an "ollama"
-// provider.
-func TestProviderRegistered_WhenEnvSet(t *testing.T) {
-	t.Setenv("OLLAMA_BASE_URL", "http://example.invalid:9999/v1")
+// TestProviderAlwaysRegistered verifies that the ollama factory registers
+// the adapter unconditionally — even with no OLLAMA_* env vars set —
+// so explicit `--provider ollama` selection works zero-config.
+func TestProviderAlwaysRegistered(t *testing.T) {
+	t.Setenv("OLLAMA_BASE_URL", "")
 	t.Setenv("OLLAMA_HOST", "")
 	t.Setenv("OLLAMA_API_KEY", "")
 
@@ -555,31 +554,44 @@ func TestProviderRegistered_WhenEnvSet(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("ollama not in registered providers: %v", c.ProviderNames())
+		t.Fatalf("ollama not in registered providers (must be available even with no env vars): %v", c.ProviderNames())
 	}
 }
 
-// TestProviderNotRegistered_WhenNoEnvSet verifies the factory does NOT
-// register itself when none of OLLAMA_BASE_URL / OLLAMA_HOST / OLLAMA_API_KEY
-// are set. This protects against ollama becoming the implicit default
-// provider in environments where it isn't actually configured.
-func TestProviderNotRegistered_WhenNoEnvSet(t *testing.T) {
-	t.Setenv("OLLAMA_BASE_URL", "")
-	t.Setenv("OLLAMA_HOST", "")
-	t.Setenv("OLLAMA_API_KEY", "")
+// TestProviderNotAutoElectedAsDefault verifies that ollama implements
+// llm.NonDefaultEligible and is therefore never auto-selected as the
+// client's default provider — even when it's the first (or only)
+// adapter registered. This preserves the "no silent default" property
+// the env-gate previously enforced, while still allowing explicit
+// addressing by name.
+func TestProviderNotAutoElectedAsDefault(t *testing.T) {
+	c := llm.NewClient()
 
-	// llm.NewFromEnv() may or may not succeed depending on what other
-	// provider env vars are set in the test runner's environment. In
-	// either case, ollama must not appear in the registered providers.
-	c, err := llm.NewFromEnv()
-	if err != nil {
-		// "no providers configured" is expected if no other provider env
-		// vars are set. That itself proves ollama did not register.
-		return
+	// Register ollama first. Without NonDefaultEligible it would become
+	// the default. The marker should prevent that.
+	a := &adapter{inner: &openaicompat.Adapter{}}
+	c.Register(a)
+
+	if got := c.DefaultProvider(); got != "" {
+		t.Errorf("DefaultProvider() = %q after registering only ollama, want empty", got)
 	}
-	for _, name := range c.ProviderNames() {
-		if name == "ollama" {
-			t.Fatalf("ollama is registered without any OLLAMA_* env var: providers=%v", c.ProviderNames())
-		}
+
+	// A subsequent default-eligible adapter SHOULD become the default.
+	c.Register(&fakeOpenAI{name: "openai"})
+	if got := c.DefaultProvider(); got != "openai" {
+		t.Errorf("DefaultProvider() = %q after registering openai, want openai", got)
 	}
+}
+
+// fakeOpenAI is a minimal ProviderAdapter used in
+// TestProviderNotAutoElectedAsDefault to confirm a default-eligible
+// adapter wins the default slot over ollama.
+type fakeOpenAI struct{ name string }
+
+func (f *fakeOpenAI) Name() string { return f.name }
+func (f *fakeOpenAI) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	return llm.Response{}, nil
+}
+func (f *fakeOpenAI) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	return nil, nil
 }

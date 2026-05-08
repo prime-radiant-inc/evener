@@ -22,13 +22,26 @@ func NewClient() *Client {
 	return &Client{providers: map[string]ProviderAdapter{}}
 }
 
+// NonDefaultEligible is implemented by adapters that should never be
+// auto-elected as the client's default provider. They remain reachable
+// by explicit name lookup. Use for providers that are always-registered
+// for ergonomic explicit selection (e.g. local Ollama with no API key)
+// but where becoming the silent default in a process that didn't
+// explicitly opt in would be wrong.
+type NonDefaultEligible interface {
+	ProviderAdapter
+	NonDefaultEligible()
+}
+
 func (c *Client) Register(adapter ProviderAdapter) {
 	if c.providers == nil {
 		c.providers = map[string]ProviderAdapter{}
 	}
 	c.providers[adapter.Name()] = adapter
 	if c.defaultProvider == "" {
-		c.defaultProvider = adapter.Name()
+		if _, skip := adapter.(NonDefaultEligible); !skip {
+			c.defaultProvider = adapter.Name()
+		}
 	}
 	if init, ok := adapter.(Initializer); ok {
 		_ = init.Initialize(context.Background())
@@ -37,6 +50,14 @@ func (c *Client) Register(adapter ProviderAdapter) {
 
 func (c *Client) SetDefaultProvider(name string) {
 	c.defaultProvider = name
+}
+
+// DefaultProvider returns the name of the currently-elected default
+// provider, or an empty string if none has been set. The default is
+// the first registered ProviderAdapter that does not implement
+// NonDefaultEligible.
+func (c *Client) DefaultProvider() string {
+	return c.defaultProvider
 }
 
 func (c *Client) ProviderNames() []string {

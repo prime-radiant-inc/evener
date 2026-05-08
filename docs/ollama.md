@@ -21,15 +21,16 @@ OpenAI-compatible Chat Completions endpoint at `/v1/chat/completions`.
 4. **Run Serf**:
 
    ```bash
-   OLLAMA_HOST=localhost serf --provider ollama --model llama3.1:8b "summarize the README"
+   serf --provider ollama --model llama3.1:8b "summarize the README"
    ```
 
-   No API key is needed for local Ollama. The `ollama` provider only
-   registers itself when at least one of `OLLAMA_BASE_URL`, `OLLAMA_HOST`,
-   or `OLLAMA_API_KEY` is set — this prevents Ollama from silently
-   becoming the default provider in environments where it isn't actually
-   configured. Setting `OLLAMA_HOST=localhost` (which the Ollama CLI also
-   honors) is enough to opt in.
+   No API key, no env vars, nothing else needed if Ollama is at the
+   default `http://localhost:11434`. Set `OLLAMA_HOST` or `OLLAMA_BASE_URL`
+   to point at a non-default endpoint (see below).
+
+   Ollama is always registered as an addressable provider, but it never
+   becomes Serf's silent default — you must address it explicitly with
+   `--provider ollama` (or `SERF_PROVIDER=ollama`).
 
 ## How it works
 
@@ -49,11 +50,14 @@ path.
 | `OLLAMA_HOST` | Ollama's canonical env var (`host`, `host:port`, or full URL) | unset |
 | `OLLAMA_API_KEY` | API key for authenticated proxies or Ollama Cloud | unset |
 
-**Registration gate:** the `ollama` provider only registers when at least
-one of these three env vars is set. Setting `OLLAMA_HOST=localhost` is
-the simplest opt-in for local-default usage.
+**Always registered:** the `ollama` provider is always available by
+explicit name (`--provider ollama` / `SERF_PROVIDER=ollama`). It is
+never auto-elected as Serf's default provider — that role goes to
+whichever conventional API-key provider you have configured (OpenAI,
+Anthropic, etc.). So leaving all OLLAMA_* env vars unset is fine; it
+just means Ollama answers on `http://localhost:11434/v1`.
 
-Resolution order for the base URL once the provider is enabled:
+Resolution order for the base URL:
 
 1. If `OLLAMA_BASE_URL` is set, it wins (used as-is, trailing slash stripped).
 2. Otherwise, if `OLLAMA_HOST` is set, it's normalized:
@@ -68,7 +72,7 @@ Resolution order for the base URL once the provider is enabled:
 ### Local default
 
 ```bash
-OLLAMA_HOST=localhost serf --provider ollama --model llama3.1:8b "what does main.go do?"
+serf --provider ollama --model llama3.1:8b "what does main.go do?"
 ```
 
 ### Remote Ollama on your LAN
@@ -89,7 +93,7 @@ OLLAMA_API_KEY=$MY_PROXY_TOKEN \
 ### One-shot calls with `llmcall`
 
 ```bash
-OLLAMA_HOST=localhost llmcall --provider ollama --model llama3.1:8b "Write a haiku about goroutines."
+llmcall --provider ollama --model llama3.1:8b "Write a haiku about goroutines."
 ```
 
 ### Listing locally available models
