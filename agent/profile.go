@@ -208,6 +208,37 @@ func decidePrefixAction(id, prefix string) prefixAction {
 	return prefixActionSwitch
 }
 
+// preserveBaseOverrides carries forward toolDefs from an existing
+// profile onto a freshly rebuilt one. The constructor handles
+// model-derived state (context window, effort levels, providerOpts,
+// default tool defs); this helper restores caller-applied
+// modifications layered on top so WithCommunicateOutputSchema /
+// WithAllowedDecisions overrides survive a same-provider WithModel
+// rebuild.
+//
+// Only toolDefs are preserved — those are the only baseProfile fields
+// the With* override helpers mutate. providerOpts intentionally
+// re-derive from the new model (e.g. so switching to/from
+// minimax/* models on openrouter correctly toggles the
+// reasoning_details option).
+//
+// If either side isn't a *baseProfile, the rebuilt profile is
+// returned unchanged.
+func preserveBaseOverrides(rebuilt, original ProviderProfile) ProviderProfile {
+	rebuiltBP, ok := rebuilt.(*baseProfile)
+	if !ok {
+		return rebuilt
+	}
+	origBP, ok := original.(*baseProfile)
+	if !ok {
+		return rebuilt
+	}
+	if origBP.toolDefs != nil {
+		rebuiltBP.toolDefs = origBP.toolDefs
+	}
+	return rebuiltBP
+}
+
 // rebuildOnSameProviderChange reports whether a same-provider WithModel
 // override needs to rebuild the profile via its constructor (rather than
 // shallow-cloning) so that model-derived state — context window from
@@ -266,13 +297,23 @@ func (p *baseProfile) WithModel(model string) ProviderProfile {
 	// whose model-derived state needs recomputation, otherwise shallow
 	// clone (existing behavior for openai, anthropic-via-baseProfile,
 	// google, minimax — their model-derived state is fixed).
+	//
+	// The rebuild path must preserve any tool-schema overrides applied
+	// via WithCommunicateOutputSchema / WithAllowedDecisions on the
+	// existing profile. Without this carry-over, Session.SetModel and
+	// subagent model overrides would silently revert the communicate
+	// schema to its constructor default. We also preserve any
+	// providerOpts the caller has layered on, since those can also be
+	// override-driven (e.g. test harnesses).
 	if rebuildOnSameProviderChange(p.id) {
+		var rebuilt ProviderProfile
 		switch p.id {
 		case "openrouter-anthropic":
-			return NewOpenRouterAnthropicProfile(model)
+			rebuilt = NewOpenRouterAnthropicProfile(model)
 		default:
-			return NewOpenAICompatProfile(p.id, model, 0)
+			rebuilt = NewOpenAICompatProfile(p.id, model, 0)
 		}
+		return preserveBaseOverrides(rebuilt, p)
 	}
 	clone := *p
 	clone.model = model

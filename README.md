@@ -67,7 +67,7 @@ echo 'Return JSON: {"ok": true}' | ./llmcall --provider openai --model gpt-5-min
 
 ### Provider and model (required)
 
-Both `--provider` and `--model` are required. Providers: `openai`, `anthropic`, `google`, `minimax`, `openrouter`, `kimi`, `glm`, `ollama`.
+Both `--provider` and `--model` are required. Providers: `openai`, `anthropic`, `google`, `minimax`, `openrouter`, `openrouter-anthropic`, `kimi`, `glm`, `ollama`.
 
 Use flags or set `SERF_PROVIDER` and `SERF_MODEL` environment variables.
 

@@ -865,6 +865,71 @@ func equalStringSlices(a, b []string) bool {
 	return true
 }
 
+// TestBaseProfile_WithModel_PreservesToolDefOverrides verifies that
+// same-provider WithModel rebuilds (which now go through the
+// constructor for openrouter/openrouter-anthropic/kimi/glm/ollama)
+// don't drop tool-schema customizations applied via
+// WithCommunicateOutputSchema or WithAllowedDecisions. Previously the
+// rebuild handed back a fresh constructor profile with default
+// toolDefs, silently losing the override.
+//
+// Specifically: if a session sets a custom communicate output schema
+// and later calls Session.SetModel(...) (or a subagent override
+// arrives), the new profile must still carry the custom schema.
+func TestBaseProfile_WithModel_PreservesToolDefOverrides(t *testing.T) {
+	customSchema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"my_field": map[string]any{"type": "string"},
+		},
+		"required":             []any{"my_field"},
+		"additionalProperties": false,
+	}
+
+	cases := []struct {
+		name     string
+		newOrig  func() ProviderProfile
+		newModel string
+	}{
+		{"openrouter", func() ProviderProfile {
+			return NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0)
+		}, "anthropic/claude-3-5-sonnet"},
+		{"openrouter-anthropic", func() ProviderProfile {
+			return NewOpenRouterAnthropicProfile("anthropic/claude-3-5-sonnet")
+		}, "anthropic/claude-3-haiku-20240307"},
+		{"kimi", func() ProviderProfile {
+			return NewOpenAICompatProfile("kimi", "kimi-k2.5", 0)
+		}, "kimi-k2.6"},
+		{"ollama", func() ProviderProfile {
+			return NewOpenAICompatProfile("ollama", "llama3.1", 0)
+		}, "llama3.2"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withSchema := WithCommunicateOutputSchema(tc.newOrig(), customSchema)
+			afterModelChange := withSchema.WithModel(tc.newModel)
+
+			// Verify communicate's output schema still has my_field.
+			var found bool
+			for _, td := range afterModelChange.ToolDefinitions() {
+				if td.Name != "communicate" {
+					continue
+				}
+				found = true
+				props, _ := td.Parameters["properties"].(map[string]any)
+				output, _ := props["output"].(map[string]any)
+				outProps, _ := output["properties"].(map[string]any)
+				if _, ok := outProps["my_field"]; !ok {
+					t.Errorf("after WithModel, communicate.output.properties is missing my_field — custom schema was dropped during rebuild. Got: %v", outProps)
+				}
+			}
+			if !found {
+				t.Fatal("communicate tool not found in rebuilt profile")
+			}
+		})
+	}
+}
+
 // TestBaseProfile_WithModel_RecomputesOpenRouterAnthropicCatalog is the
 // integration check on the WithModel rebuild path. Starting from an
 // openrouter-anthropic profile constructed with one Anthropic model,
