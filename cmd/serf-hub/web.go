@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"primeradiant.com/serf/rendezvous"
 )
@@ -283,14 +284,9 @@ func (s *WebServer) handlePastID(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if s.cfg.Roster != nil {
-			s.cfg.Roster.refresh()
-			for _, le := range s.cfg.Roster.List() {
-				if le.PID == entry.PID {
-					http.Redirect(w, r, "/live/"+le.SessionID, http.StatusFound)
-					return
-				}
-			}
+		if sessID := s.findNewSession(entry.PID); sessID != "" {
+			http.Redirect(w, r, "/live/"+sessID, http.StatusFound)
+			return
 		}
 		http.Redirect(w, r, "/", http.StatusFound)
 	case "replay":
@@ -338,6 +334,24 @@ func (s *WebServer) serveReplay(w http.ResponseWriter, r *http.Request, entry Pa
 	}
 }
 
+// findNewSession polls the roster up to 3s for a daemon with the given pid.
+// Returns the resolved session_id when found, or empty string on timeout.
+func (s *WebServer) findNewSession(pid int) string {
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if s.cfg.Roster != nil {
+			s.cfg.Roster.refresh()
+			for _, le := range s.cfg.Roster.List() {
+				if le.PID == pid && le.SessionID != "" {
+					return le.SessionID
+				}
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return ""
+}
+
 // handleLiveNew serves GET /live/new (spawn form) and POST /live/new (spawn action).
 func (s *WebServer) handleLiveNew(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -372,16 +386,9 @@ func (s *WebServer) handleLiveNew(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		// Refresh roster so the new daemon shows up immediately.
-		if s.cfg.Roster != nil {
-			s.cfg.Roster.refresh()
-		}
-		// Find by PID; resolve session_id via roster.
-		for _, le := range s.cfg.Roster.List() {
-			if le.PID == entry.PID {
-				http.Redirect(w, r, "/live/"+le.SessionID, http.StatusFound)
-				return
-			}
+		if sessID := s.findNewSession(entry.PID); sessID != "" {
+			http.Redirect(w, r, "/live/"+sessID, http.StatusFound)
+			return
 		}
 		http.Redirect(w, r, "/", http.StatusFound)
 	default:

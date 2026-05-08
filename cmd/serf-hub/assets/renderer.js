@@ -17,6 +17,7 @@
       this.activeTools = new Map();    // callId -> {el, outputBuf}
       this.currentMessageId = null;
       this.eventSource = null;
+      this.transcript.innerHTML = "";
       this.connect();
       this.bindButtons();
     },
@@ -24,7 +25,6 @@
     connect() {
       const url = "/live/" + encodeURIComponent(this.sessionId) + "/events";
       this.eventSource = new EventSource(url);
-      this.transcript.innerHTML = "";
 
       const kinds = [
         "SESSION_START", "SESSION_END", "USER_INPUT",
@@ -84,6 +84,18 @@
           break;
         case "STEERING_INJECTED":
           this.appendBanner("note", "[steered] " + (data.text || ""));
+          break;
+        case "SESSION_END":
+          this.appendBanner("note", "[session ended] " + (data.reason || ""));
+          break;
+        case "SUBAGENT_START":
+          this.appendBanner("note", "[subagent start] " + (data.task || ""));
+          break;
+        case "SUBAGENT_END":
+          this.appendBanner("note", "[subagent end] status=" + (data.status || "?"));
+          break;
+        case "COMMUNICATE":
+          this.appendUserMessage("[communicate] " + (data.message || ""));
           break;
         default:
           break;
