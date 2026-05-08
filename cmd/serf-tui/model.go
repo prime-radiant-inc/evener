@@ -899,6 +899,7 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 		json.Unmarshal([]byte(ev.Data), &d)
 		m.sessionID = d.SessionID
 		m.sessionModel = d.Model
+		prevProfile := m.sessionProfile
 		m.sessionProfile = d.Profile
 		if d.ContextWindowSize > 0 {
 			m.contextWindowSize = d.ContextWindowSize
@@ -906,6 +907,11 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 		if d.Restored {
 			m.turns = d.Turns
 			m.contextTokens = d.LastInputTokens
+		}
+		if prevProfile != "openai" && m.sessionProfile == "openai" && m.openAIAuth != nil && m.asyncCh != nil {
+			go func() {
+				m.asyncCh <- loadOpenAIAuthStatusCmd(m.openAIAuth)()
+			}()
 		}
 
 	case "USER_INPUT", "STEERING_INJECTED":
@@ -1184,14 +1190,6 @@ func (m model) handlePickerSelection(selected string, cmd tea.Cmd, cmds []tea.Cm
 		cmds = append(cmds, openAILoginCmd(ctx, m.openAIAuth, m.asyncCh, openURLInBrowser, m.openAIRedirectCh))
 		return m, tea.Batch(cmds...)
 	case "openai-status":
-		if m.openAIStatusSeen {
-			m.messages = append(m.messages, chatMessage{
-				Kind: msgSystem,
-				Text: formatOpenAIAuthStatusSummary(m.openAIStatus),
-			})
-			m.refreshViewport()
-			return m, tea.Batch(cmds...)
-		}
 		m.showOpenAIStatus = true
 		cmds = append(cmds, loadOpenAIAuthStatusCmd(m.openAIAuth))
 		return m, tea.Batch(cmds...)
