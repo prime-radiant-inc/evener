@@ -103,7 +103,7 @@ func TestWeb_DrivePage_KnownSession(t *testing.T) {
 	dir := t.TempDir()
 	writeRendezvous(t, dir, rendezvous.Entry{PID: 1, Address: "127.0.0.1:55555"})
 	r := NewRoster(dir, fakeProber{sessionID: "01SESS001"})
-	r.refresh()
+	r.Refresh()
 
 	web := NewWebServer(WebConfig{
 		HubAddr: "127.0.0.1:9180",

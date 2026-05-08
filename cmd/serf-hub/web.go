@@ -372,7 +372,7 @@ func (s *WebServer) findNewSession(pid int) string {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if s.cfg.Roster != nil {
-			s.cfg.Roster.refresh()
+			s.cfg.Roster.Refresh()
 			for _, le := range s.cfg.Roster.List() {
 				if le.PID == pid && le.SessionID != "" {
 					return le.SessionID

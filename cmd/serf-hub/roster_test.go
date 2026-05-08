@@ -38,7 +38,7 @@ func TestRoster_LoadFromDir(t *testing.T) {
 	})
 
 	r := NewRoster(dir, nil) // nil prober skips liveness for this test
-	r.refresh()
+	r.Refresh()
 	got := r.List()
 	if len(got) != 2 {
 		t.Fatalf("got %d entries, want 2", len(got))
@@ -54,7 +54,7 @@ func TestRoster_FindBySessionID(t *testing.T) {
 	r := NewRoster(dir, fakeProber{
 		sessionID: "01SESS001",
 	})
-	r.refresh()
+	r.Refresh()
 	got, ok := r.Find("01SESS001")
 	if !ok {
 		t.Fatal("expected to find session")
@@ -74,9 +74,9 @@ func TestRoster_PrunesUnreachable(t *testing.T) {
 		shouldFail: true,
 	})
 	// First failure keeps the entry (no previous entry, so list is empty but not pruned yet).
-	r.refresh()
+	r.Refresh()
 	// Second consecutive failure prunes the entry.
-	r.refresh()
+	r.Refresh()
 	if got := r.List(); len(got) != 0 {
 		t.Fatalf("expected unreachable entries to be pruned after two failures, got %d", len(got))
 	}

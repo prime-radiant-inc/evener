@@ -52,10 +52,10 @@ func NewRoster(runDir string, prober Prober) *Roster {
 	}
 }
 
-// refresh re-scans the rendezvous dir and updates the in-memory roster.
+// Refresh re-scans the rendezvous dir and updates the in-memory roster.
 // An entry is only pruned after two consecutive prober failures, giving
 // transient blips a chance to recover without dropping the daemon from the UI.
-func (r *Roster) refresh() {
+func (r *Roster) Refresh() {
 	entries, err := rendezvous.List(r.runDir)
 	if err != nil {
 		return
@@ -138,7 +138,7 @@ func ensureDir(dir string) error {
 //
 // Cancellation of ctx returns from Watch.
 func (r *Roster) Watch(ctx context.Context) error {
-	r.refresh()
+	r.Refresh()
 
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -163,11 +163,11 @@ func (r *Roster) Watch(ctx context.Context) error {
 			if !ok {
 				return nil
 			}
-			r.refresh()
+			r.Refresh()
 		case <-w.Errors:
-			r.refresh()
+			r.Refresh()
 		case <-ticker.C:
-			r.refresh()
+			r.Refresh()
 		}
 	}
 }
