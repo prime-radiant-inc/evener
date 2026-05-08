@@ -232,7 +232,13 @@ func (s *WebServer) handleStatusBar(w http.ResponseWriter, r *http.Request, sess
 		return
 	}
 	statusURL := "http://" + entry.Address + "/status"
-	resp, err := http.Get(statusURL) //nolint:gosec // address comes from trusted roster
+	client := &http.Client{Timeout: 1 * time.Second}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, statusURL, nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	resp, err := client.Do(req) //nolint:gosec // address comes from trusted roster
 	if err != nil {
 		http.Error(w, "daemon unreachable", http.StatusBadGateway)
 		return
