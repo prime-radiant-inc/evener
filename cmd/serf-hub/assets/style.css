@@ -113,7 +113,7 @@ body {
   margin: 0;
   font-size: 14px;
 }
-header {
+.page-header {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -121,8 +121,8 @@ header {
   background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
-header h1 { font-size: 16px; margin: 0; font-weight: 500; }
-header h1 a { color: var(--text); text-decoration: none; }
+.page-header h1 { font-size: 16px; margin: 0; font-weight: 500; }
+.page-header h1 a { color: var(--text); text-decoration: none; }
 main {
   padding: calc(var(--pad) * 2);
   padding-bottom: calc(var(--pad) * 4);
@@ -284,10 +284,11 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .live-row[data-state="awaiting"] { /* could add subtle highlight here, but spec wants quiet */ }
 
 /* Workspace pane */
-.workspace-header { padding: 12px 24px 12px; border-bottom: 1px solid var(--rule); display: flex; align-items: center; gap: 16px; }
-.workspace-title { display: flex; align-items: baseline; gap: 10px; flex: 1; min-width: 0; }
+.workspace-header { padding: 12px 24px 10px; border-bottom: 1px solid var(--rule); }
+.workspace-title-row { display: flex; align-items: center; gap: 12px; }
+.workspace-title { display: flex; align-items: baseline; gap: 8px; flex: 1; min-width: 0; }
 .workspace-title .title { font-weight: 500; font-size: 15px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.workspace-meta { display: flex; align-items: baseline; gap: 12px; color: var(--text-muted); font-size: 12px; flex-shrink: 0; }
+.workspace-meta { margin-top: 3px; display: flex; align-items: baseline; gap: 8px; color: var(--text-muted); font-size: 11.5px; }
 .workspace-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .panel-toggle { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; background: transparent; border: 1px solid transparent; border-radius: 4px; color: var(--text-muted); font-size: 12px; font-family: inherit; cursor: pointer; transition: background 0.1s, color 0.1s, border-color 0.1s; }
 .panel-toggle:hover { color: var(--text); background: var(--bg-raised); border-color: var(--rule); }
@@ -298,9 +299,9 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .rule-dot { color: var(--text-dim); }
 .status-pill { display: inline-flex; align-items: baseline; gap: 6px; }
 .conversation { flex: 1; min-height: 0; padding: 32px 64px; overflow-y: auto; font-size: 15px; line-height: 1.7; color: var(--text); }
-.workspace-input { padding: 14px 28px 16px; border-top: 1px solid var(--rule); }
-.message-input { width: 100%; min-height: 60px; max-height: 240px; background: transparent; border: none; resize: vertical; color: var(--text); font: inherit; outline: none; }
-.input-strip { display: flex; align-items: center; gap: 14px; padding-top: 12px; margin-top: 10px; border-top: 1px solid var(--rule); font-size: 11.5px; color: var(--text-muted); }
+.workspace-input { padding: 8px 24px 8px; border-top: 1px solid var(--rule); }
+.message-input { width: 100%; min-height: 36px; max-height: 240px; padding: 4px 0; background: transparent; border: none; resize: vertical; color: var(--text); font: inherit; outline: none; }
+.input-strip { display: flex; align-items: center; gap: 12px; padding-top: 6px; font-size: 11.5px; color: var(--text-muted); }
 .input-strip .model { font-family: ui-monospace, "SFMono-Regular", monospace; }
 .context { display: inline-flex; align-items: center; gap: 8px; }
 .context-bar { display: inline-block; width: 80px; height: 2px; background: var(--rule); vertical-align: middle; overflow: hidden; }
@@ -363,8 +364,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 /* System-line: short prose narration between user and agent — used for
  * task_list transitions ("marked X done · started Y"), full-list pointers,
  * and other compact system events. Reads as a quiet aside, not a tool log. */
-.system-line { margin: 8px 0 8px 28px; padding: 4px 12px 4px 0; font-size: 12px; color: var(--text-muted); font-style: italic; line-height: 1.5; }
-.system-line::before { content: "› "; color: var(--text-dim); font-style: normal; }
+.system-line { margin: 8px 0 8px 28px; padding: 4px 0; font-size: 12px; color: var(--text-muted); font-style: italic; line-height: 1.5; }
 .system-line-pointer { display: inline-block; text-decoration: none; cursor: pointer; }
 .system-line-pointer:hover { color: var(--text); }
 

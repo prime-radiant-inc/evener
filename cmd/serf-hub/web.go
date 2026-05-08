@@ -1337,13 +1337,13 @@ func pastTitle(pe PastEntry) string {
 func stateLabel(state string) string {
 	switch state {
 	case "awaiting":
-		return "● awaiting"
+		return "awaiting"
 	case "processing":
-		return "● processing"
+		return "processing"
 	case "warning":
-		return "● warning"
+		return "warning"
 	case "idle":
-		return "● idle"
+		return "idle"
 	case "ended":
 		return "ended"
 	}

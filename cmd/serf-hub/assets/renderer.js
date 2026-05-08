@@ -216,7 +216,13 @@
           this.appendSteeringMessage(data.text || "");
           break;
         case "SESSION_END":
-          this.appendBanner("note", "[session ended] " + (data.reason || ""));
+          // input_complete = clean end-of-turn termination; not user-meaningful.
+          // Past replays always end this way and the dim/idle dot already
+          // conveys "this conversation is over." Only render for dramatic
+          // reasons (errored, interrupted, killed).
+          if (data.reason && data.reason !== "input_complete") {
+            this.appendBanner("note", "session ended: " + data.reason);
+          }
           break;
         case "SUBAGENT_START":
           this.beginSubagentRef(data);
