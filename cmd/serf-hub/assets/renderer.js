@@ -15,6 +15,7 @@
       this.input = opts.input;
       this.activeMessages = new Map(); // messageId -> {el, textBuf}
       this.activeTools = new Map();    // callId -> {el, outputBuf}
+      this.suppressedToolCalls = new Set();
       this.currentMessageId = null;
       this.eventSource = null;
       this.transcript.innerHTML = "";
@@ -72,12 +73,21 @@
           this.finalizeAssistantMessage(data);
           break;
         case "TOOL_CALL_START":
+          if (data.tool_name === "communicate") {
+            this.suppressedToolCalls.add(data.call_id);
+            break;
+          }
           this.beginToolCall(data);
           break;
         case "TOOL_CALL_OUTPUT_DELTA":
+          if (this.suppressedToolCalls.has(data.call_id)) break;
           this.appendToolDelta(data);
           break;
         case "TOOL_CALL_END":
+          if (this.suppressedToolCalls.has(data.call_id)) {
+            this.suppressedToolCalls.delete(data.call_id);
+            break;
+          }
           this.finalizeToolCall(data);
           break;
         case "WARNING":
