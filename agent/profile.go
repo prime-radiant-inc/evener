@@ -517,39 +517,38 @@ func NewMiniMaxProfile(model string) ProviderProfile {
 // adapter with the OpenRouter base URL and OPENROUTER_API_KEY.
 func NewOpenRouterAnthropicProfile(model string) ProviderProfile {
 	model = strings.TrimSpace(model)
-	// Resolve catalog metadata. OpenRouter-Anthropic models appear in
-	// the catalog under "openrouter/<upstream>/<model>" (e.g.
-	// "openrouter/anthropic/claude-3-haiku-20240307"). Those prefixed
-	// entries carry context window and pricing but typically OMIT
-	// capability flags like supports_web_search and the serf-shipped
-	// reasoning_effort_levels overrides — those live on the bare
-	// upstream entry (e.g. "claude-sonnet-4-5"). So we look up both:
+	// Resolve catalog metadata. The openrouter-anthropic profile draws
+	// from up to three places:
 	//
-	//   - Prefixed entry: source for context window. Web search and
-	//     effort levels only override when the prefixed entry has them
-	//     explicitly set (we never flip web_search OFF based on a
-	//     missing field — that was the regression added then fixed in
-	//     this commit).
-	//   - Bare upstream entry (anthropic/X stripped to X): fallback
-	//     for capability flags and effort overrides not on the prefixed
-	//     entry. Without this, "claude-sonnet-4-5" would advertise an
-	//     unsupported "max" effort tier from the constructor default.
+	//   - "openrouter/<model>" — prefixed entries are SPARSE: they
+	//     carry context window and pricing but typically omit
+	//     capability flags. Treat them as positive-only: missing
+	//     fields are not authoritative, so a missing supports_web_search
+	//     does NOT flip our `true` default off.
+	//   - "<model>" — bare-direct entries (no openrouter prefix). These
+	//     are AUTHORITATIVE: when present they reflect explicit decisions
+	//     about what the model supports. supports_web_search:false on
+	//     "minimax/minimax-m2.7" must surface as `false` here.
+	//   - "<upstream-stripped>" — the model with a single leading
+	//     "<upstream>/" segment removed (e.g. "anthropic/claude-sonnet-4-5"
+	//     → "claude-sonnet-4-5"). Used as a final fallback to pick up
+	//     serf-shipped effort overrides keyed under the bare upstream
+	//     form. Treat as positive-only — generic upstream entries shouldn't
+	//     override a default OFF based on a missing field.
 	contextWindow := 128_000
 	ws := true // default to web search on (Anthropic models support it)
 	defaultEfforts := []string{"low", "medium", "high", "max"}
 	var efforts []string
 
 	cat := llm.EmbeddedModelCatalog()
-
 	if cat != nil {
-		if mi := resolveOpenAICompatCatalogModel(cat.GetModelInfo, "openrouter", model); mi != nil {
+		// Step 1: prefixed lookup (sparse — positive-only overrides).
+		var prefixedHit bool
+		if mi := cat.GetModelInfo("openrouter/" + model); mi != nil {
+			prefixedHit = true
 			if mi.ContextWindow > 0 {
 				contextWindow = mi.ContextWindow
 			}
-			// Treat boolean fields as "override only when explicitly
-			// true". Catalog entries omit flags they don't certify;
-			// flipping our default OFF based on a missing field would
-			// silently disable functionality the model actually supports.
 			if mi.SupportsWebSearch {
 				ws = true
 			}
@@ -557,24 +556,37 @@ func NewOpenRouterAnthropicProfile(model string) ProviderProfile {
 				efforts = append([]string(nil), mi.ReasoningEffortLevels...)
 			}
 		}
-	}
 
-	// Bare upstream fallback for fields the prefixed entry didn't
-	// supply. Strip a single leading "<upstream>/" segment if present
-	// (e.g. "anthropic/claude-sonnet-4-5" → "claude-sonnet-4-5") so
-	// catalog-shipped overrides keyed under the bare upstream form
-	// can populate effort levels and web-search capability.
-	bareModel := model
-	if _, after, hasSlash := strings.Cut(model, "/"); hasSlash && after != "" {
-		bareModel = after
-	}
-	if cat != nil && bareModel != "" {
-		if mi := cat.GetModelInfo(bareModel); mi != nil {
-			if mi.SupportsWebSearch {
-				ws = true
+		// Step 2: bare-direct lookup (authoritative — honor explicit values).
+		// Only run when the prefixed lookup didn't already match — the
+		// prefixed entry takes precedence for context window and only
+		// adds positive overrides; if it matched, the model is "served
+		// via OpenRouter" and the bare entry is just a different
+		// provider's view of the same model that we shouldn't conflate.
+		if !prefixedHit {
+			if mi := cat.GetModelInfo(model); mi != nil {
+				if mi.ContextWindow > 0 {
+					contextWindow = mi.ContextWindow
+				}
+				ws = mi.SupportsWebSearch
+				if len(mi.ReasoningEffortLevels) > 0 {
+					efforts = append([]string(nil), mi.ReasoningEffortLevels...)
+				}
 			}
-			if efforts == nil && len(mi.ReasoningEffortLevels) > 0 {
-				efforts = append([]string(nil), mi.ReasoningEffortLevels...)
+		}
+
+		// Step 3: bare-upstream-stripped lookup (positive-only — picks
+		// up serf overrides keyed under bare upstream IDs). Only fires
+		// when the model has an "<upstream>/" prefix; the stripped form
+		// is what serf overrides typically use as their key.
+		if _, after, hasSlash := strings.Cut(model, "/"); hasSlash && after != "" {
+			if mi := cat.GetModelInfo(after); mi != nil {
+				if mi.SupportsWebSearch {
+					ws = true
+				}
+				if efforts == nil && len(mi.ReasoningEffortLevels) > 0 {
+					efforts = append([]string(nil), mi.ReasoningEffortLevels...)
+				}
 			}
 		}
 	}

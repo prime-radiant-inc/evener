@@ -665,6 +665,26 @@ func TestNewOpenRouterAnthropicProfile_PreservesWebSearchDefault(t *testing.T) {
 	}
 }
 
+// TestNewOpenRouterAnthropicProfile_HonorsExplicitWebSearchFalse verifies
+// that when a bare-direct catalog match (no openrouter prefix) explicitly
+// sets supports_web_search to false, that signal is respected. This is
+// the documented MiniMax-over-OpenRouter-Anthropic path: the model
+// "minimax/minimax-m2.7" has no openrouter-prefixed catalog entry, so
+// the resolver falls back to the bare entry whose serf override
+// explicitly disables web search.
+//
+// The fix from the previous round ("only override when explicitly true")
+// over-corrected: it correctly preserved the constructor default for
+// sparse OpenRouter prefixed entries, but it also ignored explicit
+// false on bare-direct matches, falsely advertising web search support
+// for models that don't have it.
+func TestNewOpenRouterAnthropicProfile_HonorsExplicitWebSearchFalse(t *testing.T) {
+	p := NewOpenRouterAnthropicProfile("minimax/minimax-m2.7")
+	if p.SupportsWebSearch() {
+		t.Fatal("SupportsWebSearch() = true, want false — bare entry's explicit supports_web_search:false must be respected on the MiniMax-via-OpenRouter-Anthropic path")
+	}
+}
+
 // TestNewOpenRouterAnthropicProfile_PicksUpBareUpstreamEffortOverrides
 // verifies that effort levels resolve to the bare upstream override
 // when the prefixed catalog entry doesn't carry them. The serf
