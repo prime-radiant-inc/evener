@@ -112,9 +112,21 @@
     if (value !== null && value !== undefined && value !== "") setChipValue(kind, value);
   }
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", init);
-  } else {
+  // Re-init whenever a spawn form appears in the DOM (initial load or
+  // workspace swap). Idempotent via a per-form marker.
+  function tryInit() {
+    const form = document.querySelector("[data-spawn-form]");
+    if (!form || form.__spawnInitialized) return;
+    form.__spawnInitialized = true;
     init();
   }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", tryInit);
+  } else {
+    tryInit();
+  }
+  document.addEventListener("DOMContentLoaded", () => {
+    document.body.addEventListener("htmx:afterSwap", tryInit);
+  });
+  if (document.body) document.body.addEventListener("htmx:afterSwap", tryInit);
 })();

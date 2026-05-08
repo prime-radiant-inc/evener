@@ -260,6 +260,16 @@ type providerDisplay struct {
 }
 
 func (s *WebServer) handleSettings(w http.ResponseWriter, r *http.Request) {
+	// Full-page navigation: serve the app shell, which htmx-loads the settings
+	// partial into the workspace pane. Same pattern as /s/<id>.
+	if r.Header.Get("HX-Request") != "true" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := s.appTmpl.ExecuteTemplate(w, "app", map[string]string{"WorkspaceURL": r.URL.Path}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+
 	section := strings.TrimPrefix(r.URL.Path, "/settings")
 	section = strings.TrimPrefix(section, "/")
 	if section == "" {
@@ -294,10 +304,11 @@ func (s *WebServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 		Providers:    providers,
 	}
 
-	// HX-Request: render just the settings-content partial (inner swap).
-	// Full navigation: render the full settings shell (which embeds settings-content).
+	// Render just the inner settings-content partial when htmx is targeting
+	// the inner pane (rail click). Otherwise render the full shell so both
+	// rail and content are visible (initial navigation into settings).
 	tmplName := "settings"
-	if r.Header.Get("HX-Request") == "true" {
+	if r.Header.Get("HX-Target") == "settings-content" {
 		tmplName = "settings-content"
 	}
 

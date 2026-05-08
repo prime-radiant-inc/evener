@@ -734,6 +734,7 @@ func TestWeb_Settings_Theme_Renders(t *testing.T) {
 	})
 	req := httptest.NewRequest(http.MethodGet, "/settings/theme", nil)
 	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
 
@@ -766,6 +767,7 @@ func TestWeb_Settings_Providers_RendersConfigured(t *testing.T) {
 	})
 	req := httptest.NewRequest(http.MethodGet, "/settings/providers", nil)
 	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
 

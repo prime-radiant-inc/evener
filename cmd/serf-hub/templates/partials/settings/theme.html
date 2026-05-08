@@ -6,15 +6,4 @@
   <label class="settings-radio"><input type="radio" name="theme" value="dark"> Dark</label>
   <label class="settings-radio"><input type="radio" name="theme" value="light"> Light</label>
 </form>
-<script>
-(function(){
-  var current = localStorage.getItem("serf-hub.theme") || "system";
-  document.querySelectorAll('input[name=theme]').forEach(r => {
-    r.checked = r.value === current;
-    r.addEventListener("change", () => {
-      window.serfHub.setTheme(r.value === "system" ? null : r.value);
-    });
-  });
-})();
-</script>
 {{end}}
