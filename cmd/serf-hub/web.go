@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"html/template"
 	"io/fs"
 	"net/http"
+
+	"primeradiant.com/serf/rendezvous"
 )
 
 // WebConfig is everything the web server needs.
@@ -13,20 +16,25 @@ type WebConfig struct {
 	HubAddr string
 	Roster  *Roster
 	Past    *PastIndex
-	Spawner *Spawner // optional; nil disables /live/new
+	Spawner Spawner // optional; nil disables /live/new
 }
 
-// Spawner abstracts the daemon-spawning side. Defined here as an interface
-// so web_test.go can pass nil; real implementation lands in Task 18.
-type Spawner interface{}
+// Spawner forks a serf serve subprocess from a SpawnTemplate and waits for
+// its rendezvous file to appear. Returns the discovered Entry's Address
+// (the daemon's bound port) on success.
+type Spawner interface {
+	Spawn(ctx context.Context, templateName, workingDir string) (rendezvous.Entry, error)
+	Templates() []SpawnTemplate
+}
 
 // WebServer wires routes, templates, and middleware.
 type WebServer struct {
-	cfg          WebConfig
-	templates    *template.Template
-	liveTmpl     *template.Template
-	rest         *RESTProxy
-	sse          *SSEProxy
+	cfg         WebConfig
+	templates   *template.Template
+	liveTmpl    *template.Template
+	liveNewTmpl *template.Template
+	rest        *RESTProxy
+	sse         *SSEProxy
 }
 
 // NewWebServer constructs the web server. Templates are parsed from embed.FS.
@@ -41,13 +49,17 @@ func NewWebServer(cfg WebConfig) *WebServer {
 		"templates/live.html",
 		"templates/partials/status_bar.html",
 	))
+	liveNewTmpl := template.Must(template.ParseFS(templatesFS,
+		"templates/base.html",
+		"templates/live_new.html",
+	))
 	var rest *RESTProxy
 	var sse *SSEProxy
 	if cfg.Roster != nil {
 		rest = NewRESTProxy(cfg.Roster)
 		sse = NewSSEProxy(cfg.Roster)
 	}
-	return &WebServer{cfg: cfg, templates: tmpl, liveTmpl: liveTmpl, rest: rest, sse: sse}
+	return &WebServer{cfg: cfg, templates: tmpl, liveTmpl: liveTmpl, liveNewTmpl: liveNewTmpl, rest: rest, sse: sse}
 }
 
 // Handler returns the http.Handler with all routes wired and the security
@@ -62,6 +74,7 @@ func (s *WebServer) Handler() http.Handler {
 	// Pages
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/live", s.handleLiveRoster)
+	mux.HandleFunc("/live/new", s.handleLiveNew) // must be before /live/
 	mux.HandleFunc("/past", s.handlePast)
 
 	// Live drive proxied routes (REST and SSE)
@@ -203,5 +216,56 @@ func (s *WebServer) handleStatusBar(w http.ResponseWriter, r *http.Request, sess
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.liveTmpl.ExecuteTemplate(w, "status_bar", info); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// handleLiveNew serves GET /live/new (spawn form) and POST /live/new (spawn action).
+func (s *WebServer) handleLiveNew(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		var templates []SpawnTemplate
+		if s.cfg.Spawner != nil {
+			templates = s.cfg.Spawner.Templates()
+		}
+		data := map[string]any{
+			"Title":     "spawn",
+			"Templates": templates,
+			"Live":      []LiveEntry{},
+			"Past":      []PastEntry{},
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := s.liveNewTmpl.ExecuteTemplate(w, "base", data); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	case http.MethodPost:
+		if s.cfg.Spawner == nil {
+			http.Error(w, "spawn not configured", http.StatusServiceUnavailable)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		tmpl := r.FormValue("template")
+		wd := r.FormValue("working_dir")
+		entry, err := s.cfg.Spawner.Spawn(r.Context(), tmpl, wd)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Refresh roster so the new daemon shows up immediately.
+		if s.cfg.Roster != nil {
+			s.cfg.Roster.refresh()
+		}
+		// Find by PID; resolve session_id via roster.
+		for _, le := range s.cfg.Roster.List() {
+			if le.PID == entry.PID {
+				http.Redirect(w, r, "/live/"+le.SessionID, http.StatusFound)
+				return
+			}
+		}
+		http.Redirect(w, r, "/", http.StatusFound)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }

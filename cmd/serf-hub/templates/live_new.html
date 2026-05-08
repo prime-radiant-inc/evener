@@ -1,0 +1,22 @@
+{{define "body"}}
+<section class="panel">
+  <h2>spawn new session</h2>
+  <form method="post" action="/live/new">
+    <div style="margin-bottom:8px">
+      <label>template:
+        <select name="template">
+          {{range .Templates}}
+          <option value="{{.Name}}">{{.Name}} ({{.Provider}}/{{.Model}})</option>
+          {{end}}
+        </select>
+      </label>
+    </div>
+    <div style="margin-bottom:8px">
+      <label>working dir:
+        <input type="text" name="working_dir" placeholder="/path/to/repo" style="width:60%">
+      </label>
+    </div>
+    <input type="submit" value="spawn">
+  </form>
+</section>
+{{end}}

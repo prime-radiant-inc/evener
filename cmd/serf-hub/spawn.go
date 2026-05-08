@@ -11,6 +11,29 @@ import (
 	"primeradiant.com/serf/rendezvous"
 )
 
+// HubSpawner fulfills the Spawner interface using SpawnDaemon.
+type HubSpawner struct {
+	Cfg        Config
+	SerfBinary string // path to the serf binary; "" → "serf" on PATH
+	RunDir     string
+}
+
+func (h *HubSpawner) Templates() []SpawnTemplate {
+	return h.Cfg.SpawnTemplates
+}
+
+func (h *HubSpawner) Spawn(ctx context.Context, templateName, workingDir string) (rendezvous.Entry, error) {
+	t, ok := findTemplate(h.Cfg, templateName)
+	if !ok {
+		return rendezvous.Entry{}, fmt.Errorf("template %q not found", templateName)
+	}
+	timeout := h.Cfg.SpawnTimeout
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+	return SpawnDaemon(ctx, h.SerfBinary, h.RunDir, t, workingDir, timeout)
+}
+
 // findTemplate returns the named SpawnTemplate from the config.
 func findTemplate(cfg Config, name string) (SpawnTemplate, bool) {
 	for _, t := range cfg.SpawnTemplates {

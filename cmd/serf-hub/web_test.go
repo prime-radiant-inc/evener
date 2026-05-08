@@ -152,3 +152,42 @@ func TestWeb_Assets_ServeRenderer(t *testing.T) {
 		t.Errorf("renderer.js does not export SerfRenderer")
 	}
 }
+
+func TestWeb_LiveNew_GET_RendersForm(t *testing.T) {
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    NewPastIndex(""),
+		Spawner: &HubSpawner{Cfg: Config{
+			SpawnTemplates: []SpawnTemplate{
+				{Name: "code, gpt", Provider: "openai", Model: "gpt-5.2"},
+			},
+		}},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/live/new", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "code, gpt") {
+		t.Errorf("body missing template name: %q", rec.Body.String())
+	}
+}
+
+func TestWeb_LiveNew_POST_503WhenNoSpawner(t *testing.T) {
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    NewPastIndex(""),
+	})
+	req := httptest.NewRequest(http.MethodPost, "/live/new", strings.NewReader(""))
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status: %d, want 503", rec.Code)
+	}
+}
