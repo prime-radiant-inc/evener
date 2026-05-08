@@ -396,6 +396,38 @@ func TestWeb_DrivePage_ShowsForkedFrom(t *testing.T) {
 	}
 }
 
+func TestWeb_PastResults_PartialOnlyNoBaseChrome(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	_ = os.MkdirAll(proj, 0o755)
+	_ = agent.SaveSessionMeta(proj, agent.SessionMeta{
+		ID: "01HTMX", UpdatedAt: time.Now(), OriginalTask: "the-thing",
+	})
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    idx,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/past/results?q=thing", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "01HTMX") {
+		t.Errorf("body missing id 01HTMX")
+	}
+	if strings.Contains(body, "<html") {
+		t.Errorf("partial response should not include base chrome: %q", body)
+	}
+}
+
 func TestWeb_PastResume_503WhenNoSpawner(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")

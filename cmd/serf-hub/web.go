@@ -37,14 +37,15 @@ type Spawner interface {
 
 // WebServer wires routes, templates, and middleware.
 type WebServer struct {
-	cfg          WebConfig
-	templates    *template.Template
-	liveTmpl     *template.Template
-	liveNewTmpl  *template.Template
-	pastTmpl     *template.Template
-	pastViewTmpl *template.Template
-	rest         *RESTProxy
-	sse          *SSEProxy
+	cfg             WebConfig
+	templates       *template.Template
+	liveTmpl        *template.Template
+	liveNewTmpl     *template.Template
+	pastTmpl        *template.Template
+	pastResultsTmpl *template.Template
+	pastViewTmpl    *template.Template
+	rest            *RESTProxy
+	sse             *SSEProxy
 
 	resumeMu    sync.Mutex
 	resumeLocks map[string]*sync.Mutex // sessionID -> per-session lock
@@ -69,6 +70,10 @@ func NewWebServer(cfg WebConfig) *WebServer {
 	pastTmpl := template.Must(template.ParseFS(templatesFS,
 		"templates/base.html",
 		"templates/past.html",
+		"templates/partials/past_results.html",
+	))
+	pastResultsTmpl := template.Must(template.ParseFS(templatesFS,
+		"templates/partials/past_results.html",
 	))
 	pastViewTmpl := template.Must(template.ParseFS(templatesFS,
 		"templates/base.html",
@@ -82,7 +87,8 @@ func NewWebServer(cfg WebConfig) *WebServer {
 	}
 	return &WebServer{
 		cfg: cfg, templates: tmpl, liveTmpl: liveTmpl, liveNewTmpl: liveNewTmpl,
-		pastTmpl: pastTmpl, pastViewTmpl: pastViewTmpl, rest: rest, sse: sse,
+		pastTmpl: pastTmpl, pastResultsTmpl: pastResultsTmpl, pastViewTmpl: pastViewTmpl,
+		rest: rest, sse: sse,
 		resumeLocks: map[string]*sync.Mutex{},
 	}
 }
@@ -114,6 +120,7 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/live", s.handleLiveRoster)
 	mux.HandleFunc("/live/new", s.handleLiveNew) // must be before /live/
 	mux.HandleFunc("/past", s.handlePast)
+	mux.HandleFunc("/past/results", s.handlePastResults) // must be before /past/
 	mux.HandleFunc("/past/", s.handlePastID)
 
 	// Live drive proxied routes (REST and SSE)
@@ -176,6 +183,25 @@ func (s *WebServer) handlePast(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.pastTmpl.ExecuteTemplate(w, "base", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// handlePastResults renders just the past_results partial (htmx swap target).
+// The /past page form posts here on input changes and on submit.
+func (s *WebServer) handlePastResults(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Past == nil {
+		http.Error(w, "no past index", http.StatusServiceUnavailable)
+		return
+	}
+	q := r.URL.Query().Get("q")
+	limit := s.cfg.PastPerPage
+	if limit <= 0 {
+		limit = 50
+	}
+	results := s.cfg.Past.Search(q, limit, 0)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.pastResultsTmpl.ExecuteTemplate(w, "past_results", map[string]any{"Past": results}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
