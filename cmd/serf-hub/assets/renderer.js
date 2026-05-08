@@ -122,7 +122,7 @@
           this.appendBanner("error", data.error || "");
           break;
         case "STEERING_INJECTED":
-          this.appendBanner("note", "[steered] " + (data.text || ""));
+          this.appendSteeringMessage(data.text || "");
           break;
         case "SESSION_END":
           this.appendBanner("note", "[session ended] " + (data.reason || ""));
@@ -449,6 +449,35 @@
       this.conversation.appendChild(el);
     },
 
+    // appendSteeringMessage classifies the injected steering text and renders
+    // a compact summary pill with click-to-expand for the full payload.
+    // Common shapes (current-task XML, task-list reminder, read-only nudge,
+    // loop-detection escalation, transcript pointer) get specific summaries;
+    // unknown content falls through to "steering injected".
+    appendSteeringMessage(text) {
+      this.cheapToolCluster = null;
+      const summary = classifySteering(text);
+      const el = document.createElement("details");
+      el.className = "steering";
+      const sum = document.createElement("summary");
+      const verb = document.createElement("span");
+      verb.className = "steering-verb";
+      verb.textContent = "↻ " + summary.label;
+      sum.appendChild(verb);
+      if (summary.detail) {
+        const detail = document.createElement("span");
+        detail.className = "steering-detail";
+        detail.textContent = " · " + summary.detail;
+        sum.appendChild(detail);
+      }
+      el.appendChild(sum);
+      const body = document.createElement("pre");
+      body.className = "steering-body";
+      body.textContent = summary.cleanText || text;
+      el.appendChild(body);
+      this.conversation.appendChild(el);
+    },
+
     scrollToBottom() {
       this.conversation.scrollTop = this.conversation.scrollHeight;
     },
@@ -504,6 +533,51 @@
   function parseArgs(json) {
     if (!json) return {};
     try { return JSON.parse(json); } catch (e) { return {}; }
+  }
+
+  // classifySteering inspects steering text and returns a short label + an
+  // optional secondary detail. Recognized shapes:
+  //   - <CURRENT-TASK id="N"><TITLE>…</TITLE>  → "current task" · "#N title"
+  //   - "Task list:\n  [status] #id: …"        → "task list" · "X items, Y pending"
+  //   - "You have completed all tasks"          → "tasks done"
+  //   - "task_list tool available"              → "task_list nudge"
+  //   - "stuck in a loop|still stuck|stuck for" → "loop detection"
+  //   - "reading without writing|reading for"   → "read-only nudge"
+  //   - "pre-compaction transcript"             → "transcript pointer"
+  // Everything else: "steering injected" with no detail.
+  // cleanText strips the <SYSTEM-REMINDER> wrapper for nicer body display.
+  function classifySteering(text) {
+    const stripped = text
+      .replace(/^\s*<SYSTEM-REMINDER>\s*/i, "")
+      .replace(/\s*<\/SYSTEM-REMINDER>\s*$/i, "")
+      .trim();
+
+    const taskMatch = stripped.match(/<CURRENT-TASK\s+id="(\d+)">\s*<TITLE>([^<]+)<\/TITLE>/);
+    if (taskMatch) {
+      return { label: "current task", detail: "#" + taskMatch[1] + " " + taskMatch[2].trim(), cleanText: stripped };
+    }
+    if (/^Task list:/m.test(stripped)) {
+      const lines = stripped.split("\n").filter(l => /^\s*\[/.test(l));
+      const total = lines.length;
+      const pending = lines.filter(l => /\[(open|in_progress)\]/.test(l)).length;
+      return { label: "task list", detail: total + " items · " + pending + " pending", cleanText: stripped };
+    }
+    if (/completed all tasks/.test(stripped)) {
+      return { label: "tasks done", detail: "", cleanText: stripped };
+    }
+    if (/task_list tool available/.test(stripped)) {
+      return { label: "task_list nudge", detail: "", cleanText: stripped };
+    }
+    if (/stuck in a loop|still stuck|stuck for a long time/.test(stripped)) {
+      return { label: "loop detection", detail: "", cleanText: stripped };
+    }
+    if (/reading without writing|reading for \d+ turns/.test(stripped)) {
+      return { label: "read-only nudge", detail: "", cleanText: stripped };
+    }
+    if (/pre-compaction transcript/.test(stripped)) {
+      return { label: "transcript pointer", detail: "", cleanText: stripped };
+    }
+    return { label: "steering injected", detail: "", cleanText: stripped };
   }
 
   function parseToolState(s) {
