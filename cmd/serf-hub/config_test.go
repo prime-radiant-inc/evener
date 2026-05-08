@@ -22,8 +22,8 @@ func TestLoadConfig_DefaultsWhenMissing(t *testing.T) {
 	if cfg.PastResultsPerPage != 50 {
 		t.Errorf("PastResultsPerPage default: got %d", cfg.PastResultsPerPage)
 	}
-	if len(cfg.SpawnTemplates) != 0 {
-		t.Errorf("expected no spawn templates by default, got %d", len(cfg.SpawnTemplates))
+	if len(cfg.Providers) != 0 {
+		t.Errorf("expected no providers by default, got %d", len(cfg.Providers))
 	}
 }
 
@@ -35,17 +35,13 @@ addr = "127.0.0.1:9180"
 spawn_timeout = "10s"
 past_results_per_page = 25
 
-[[spawn_template]]
-name = "code, gpt"
-provider = "openai"
-model = "gpt-5.2"
-agent = "default"
+[[providers]]
+name = "openai"
+models = ["gpt-5", "gpt-5-mini"]
 
-[[spawn_template]]
-name = "review, claude"
-provider = "anthropic"
-model = "claude-opus-4-7"
-agent = "reviewer"
+[[providers]]
+name = "anthropic"
+models = ["claude-opus-4-7", "claude-sonnet-4-6"]
 `
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
@@ -60,11 +56,14 @@ agent = "reviewer"
 	if cfg.PastResultsPerPage != 25 {
 		t.Errorf("PastResultsPerPage: got %d", cfg.PastResultsPerPage)
 	}
-	if len(cfg.SpawnTemplates) != 2 {
-		t.Fatalf("templates: got %d, want 2", len(cfg.SpawnTemplates))
+	if len(cfg.Providers) != 2 {
+		t.Fatalf("providers: got %d, want 2", len(cfg.Providers))
 	}
-	if cfg.SpawnTemplates[0].Name != "code, gpt" || cfg.SpawnTemplates[0].Model != "gpt-5.2" {
-		t.Errorf("template[0] mismatch: %+v", cfg.SpawnTemplates[0])
+	if cfg.Providers[0].Name != "openai" || len(cfg.Providers[0].Models) != 2 {
+		t.Errorf("providers[0] mismatch: %+v", cfg.Providers[0])
+	}
+	if cfg.Providers[1].Name != "anthropic" || cfg.Providers[1].Models[0] != "claude-opus-4-7" {
+		t.Errorf("providers[1] mismatch: %+v", cfg.Providers[1])
 	}
 }
 

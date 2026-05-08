@@ -1,0 +1,63 @@
+{{define "spawn"}}
+<header class="workspace-header">
+  <div class="workspace-title">
+    <span class="title">new session</span>
+  </div>
+  <div class="workspace-meta"></div>
+</header>
+<div class="spawn-pane">
+  <form class="spawn-form" data-spawn-form>
+    <h2 class="spawn-prompt">What should the agent do?</h2>
+    <p class="spawn-subtitle">Leave blank to start a dormant session.</p>
+    <div class="spawn-chips" id="spawn-chips">
+      <button class="chip" type="button" data-chip="model">
+        <span class="chip-label">model</span>
+        <span class="chip-value" data-chip-value-model>{{.DefaultModel}}</span>
+        <span class="chip-caret">▾</span>
+      </button>
+      <button class="chip" type="button" data-chip="working_dir">
+        <span class="chip-label">📁</span>
+        <span class="chip-value" data-chip-value-working_dir>{{.DefaultWorkingDir}}</span>
+        <span class="chip-caret">▾</span>
+      </button>
+      <button class="chip" type="button" data-chip="branch">
+        <span class="chip-label">⌥</span>
+        <span class="chip-value" data-chip-value-branch>{{.DefaultBranch}}</span>
+        <span class="chip-caret">▾</span>
+      </button>
+      <button class="chip chip-mode" type="button" data-chip="access_mode">
+        <span class="chip-value" data-chip-value-access_mode>{{.DefaultAccessMode}}</span>
+        <span class="chip-caret">▾</span>
+      </button>
+    </div>
+    <textarea class="spawn-input" name="task" placeholder="describe the task…" autofocus></textarea>
+    <input type="hidden" name="model" value="{{.DefaultModel}}">
+    <input type="hidden" name="working_dir" value="{{.DefaultWorkingDir}}">
+    <input type="hidden" name="branch" value="{{.DefaultBranch}}">
+    <input type="hidden" name="access_mode" value="{{.DefaultAccessMode}}">
+    <input type="hidden" name="agent" value="default">
+    <input type="hidden" name="reasoning_effort" value="">
+    <details class="spawn-advanced">
+      <summary>advanced</summary>
+      <div class="spawn-advanced-body">
+        <label>agent <input type="text" name="agent_override" placeholder="default"></label>
+        <label>reasoning effort <select name="reasoning_effort_override"><option value="">(default)</option><option>low</option><option>medium</option><option>high</option></select></label>
+        <label>max turns <input type="number" name="max_turns" placeholder="200"></label>
+      </div>
+    </details>
+    <div class="spawn-actions">
+      <button class="spawn-btn" type="submit">spawn <kbd>⌘↵</kbd></button>
+    </div>
+  </form>
+
+  {{if .RecentTasks}}
+  <div class="spawn-recent">
+    <div class="spawn-recent-header">recent tasks</div>
+    {{range .RecentTasks}}
+    <a class="spawn-recent-row" data-recent-task="{{.}}">↻ {{.}}</a>
+    {{end}}
+  </div>
+  {{end}}
+</div>
+<script src="/assets/spawn.js"></script>
+{{end}}

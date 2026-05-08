@@ -10,25 +10,22 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// SpawnTemplate is a named preset for `POST /live/new`.
-type SpawnTemplate struct {
-	Name            string `toml:"name"`
-	Provider        string `toml:"provider"`
-	Model           string `toml:"model"`
-	Agent           string `toml:"agent"`
-	ReasoningEffort string `toml:"reasoning_effort"`
+// ProviderConfig lists the models available from a single provider.
+type ProviderConfig struct {
+	Name   string   `toml:"name"`
+	Models []string `toml:"models"`
 }
 
 // Config is the hub's runtime configuration loaded from ~/.serf/hub.toml.
 type Config struct {
-	Addr               string          `toml:"addr"`
-	StateGlob          string          `toml:"state_glob"`
-	RunDir             string          `toml:"run_dir"`
-	StatusPollInterval time.Duration   `toml:"status_poll_interval"`
-	PastIndexRebuild   time.Duration   `toml:"past_index_rebuild_interval"`
-	SpawnTimeout       time.Duration   `toml:"spawn_timeout"`
-	PastResultsPerPage int             `toml:"past_results_per_page"`
-	SpawnTemplates     []SpawnTemplate `toml:"spawn_template"`
+	Addr               string           `toml:"addr"`
+	StateGlob          string           `toml:"state_glob"`
+	RunDir             string           `toml:"run_dir"`
+	StatusPollInterval time.Duration    `toml:"status_poll_interval"`
+	PastIndexRebuild   time.Duration    `toml:"past_index_rebuild_interval"`
+	SpawnTimeout       time.Duration    `toml:"spawn_timeout"`
+	PastResultsPerPage int              `toml:"past_results_per_page"`
+	Providers          []ProviderConfig `toml:"providers"`
 }
 
 // DefaultConfig returns a Config populated with sensible defaults.

@@ -8,37 +8,15 @@ import (
 	"primeradiant.com/serf/rendezvous"
 )
 
-func TestFindTemplate(t *testing.T) {
-	cfg := Config{
-		SpawnTemplates: []SpawnTemplate{
-			{Name: "code, gpt", Provider: "openai", Model: "gpt-5.2", Agent: "default"},
-			{Name: "review, claude", Provider: "anthropic", Model: "claude-opus-4-7"},
-		},
-	}
-	got, ok := findTemplate(cfg, "code, gpt")
-	if !ok {
-		t.Fatal("expected to find template")
-	}
-	if got.Model != "gpt-5.2" {
-		t.Errorf("Model: %q", got.Model)
-	}
-}
-
-func TestFindTemplate_Missing(t *testing.T) {
-	cfg := Config{}
-	if _, ok := findTemplate(cfg, "nope"); ok {
-		t.Fatal("expected not-found")
-	}
-}
-
 func TestBuildSpawnArgs(t *testing.T) {
-	tmpl := SpawnTemplate{
+	req := SpawnRequest{
 		Provider:        "openai",
 		Model:           "gpt-5.2",
 		Agent:           "default",
+		WorkingDir:      "/Users/jesse/git/foo",
 		ReasoningEffort: "medium",
 	}
-	args := buildSpawnArgs(tmpl, "/Users/jesse/git/foo")
+	args := buildSpawnArgs(req)
 	want := map[string]string{
 		"--provider":         "openai",
 		"--model":            "gpt-5.2",

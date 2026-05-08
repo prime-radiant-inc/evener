@@ -223,42 +223,34 @@ func TestWeb_Assets_ServeRenderer(t *testing.T) {
 	}
 }
 
-func TestWeb_LiveNew_GET_RendersForm(t *testing.T) {
+func TestWeb_WorkspaceSpawn_RendersForm(t *testing.T) {
 	web := NewWebServer(WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  NewRoster(t.TempDir(), nil),
 		Past:    NewPastIndex(""),
-		Spawner: &HubSpawner{Cfg: Config{
-			SpawnTemplates: []SpawnTemplate{
-				{Name: "code, gpt", Provider: "openai", Model: "gpt-5.2"},
-			},
-		}},
 	})
-	req := httptest.NewRequest(http.MethodGet, "/live/new", nil)
+	req := httptest.NewRequest(http.MethodGet, "/workspace/spawn", nil)
 	req.Host = "127.0.0.1:9180"
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "code, gpt") {
-		t.Errorf("body missing template name: %q", rec.Body.String())
+	body := rec.Body.String()
+	if !strings.Contains(body, `class="spawn-pane"`) {
+		t.Errorf("body missing spawn-pane class: %q", body)
 	}
-}
-
-func TestWeb_LiveNew_POST_503WhenNoSpawner(t *testing.T) {
-	web := NewWebServer(WebConfig{
-		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
-		Past:    NewPastIndex(""),
-	})
-	req := httptest.NewRequest(http.MethodPost, "/live/new", strings.NewReader(""))
-	req.Host = "127.0.0.1:9180"
-	req.Header.Set("Origin", "http://127.0.0.1:9180")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status: %d, want 503", rec.Code)
+	if !strings.Contains(body, `data-chip-value-model`) {
+		t.Errorf("body missing data-chip-value-model: %q", body)
+	}
+	if !strings.Contains(body, `data-chip-value-working_dir`) {
+		t.Errorf("body missing data-chip-value-working_dir: %q", body)
+	}
+	if !strings.Contains(body, `data-chip-value-branch`) {
+		t.Errorf("body missing data-chip-value-branch: %q", body)
+	}
+	if !strings.Contains(body, `data-chip-value-access_mode`) {
+		t.Errorf("body missing data-chip-value-access_mode: %q", body)
 	}
 }
 
@@ -390,26 +382,25 @@ func TestWeb_PastReplay_TranslatesTurnsToSSEEvents(t *testing.T) {
 
 type fakeSpawner struct{}
 
-func (fakeSpawner) Spawn(_ context.Context, _, _ string) (rendezvous.Entry, error) {
+func (fakeSpawner) Spawn(_ context.Context, _ SpawnRequest) (rendezvous.Entry, error) {
 	return rendezvous.Entry{PID: 1, Address: "127.0.0.1:0"}, nil
 }
 func (fakeSpawner) Resume(_ context.Context, sessionID string) (rendezvous.Entry, error) {
 	return rendezvous.Entry{PID: 1, Address: "127.0.0.1:0"}, nil
 }
-func (fakeSpawner) Templates() []SpawnTemplate { return nil }
 
-func TestWeb_LiveNew_POST_RejectsRelativeWorkingDir(t *testing.T) {
+func TestWeb_ApiSpawn_RejectsRelativeWorkingDir(t *testing.T) {
 	web := NewWebServer(WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  NewRoster(t.TempDir(), nil),
 		Past:    NewPastIndex(""),
 		Spawner: &fakeSpawner{},
 	})
-	body := strings.NewReader("template=t&working_dir=relative/path")
-	req := httptest.NewRequest(http.MethodPost, "/live/new", body)
+	body := strings.NewReader(`{"working_dir":"relative/path"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/spawn", body)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("Origin", "http://127.0.0.1:9180")
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -417,22 +408,40 @@ func TestWeb_LiveNew_POST_RejectsRelativeWorkingDir(t *testing.T) {
 	}
 }
 
-func TestWeb_LiveNew_POST_RejectsMissingWorkingDir(t *testing.T) {
+func TestWeb_ApiSpawn_RejectsMissingWorkingDir(t *testing.T) {
 	web := NewWebServer(WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  NewRoster(t.TempDir(), nil),
 		Past:    NewPastIndex(""),
 		Spawner: &fakeSpawner{},
 	})
-	body := strings.NewReader("template=t&working_dir=/this/path/does/not/exist/1234567890")
-	req := httptest.NewRequest(http.MethodPost, "/live/new", body)
+	body := strings.NewReader(`{"working_dir":"/this/path/does/not/exist/1234567890"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/spawn", body)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("Origin", "http://127.0.0.1:9180")
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status: %d, want 400; body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestWeb_ApiSpawn_503WhenNoSpawner(t *testing.T) {
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    NewPastIndex(""),
+	})
+	body := strings.NewReader(`{"task":"do something"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/spawn", body)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status: %d, want 503", rec.Code)
 	}
 }
 

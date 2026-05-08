@@ -346,4 +346,31 @@ body.app { display: flex; min-height: 100vh; margin: 0; background: var(--bg); c
 .fork-dialog-actions { display: flex; gap: 14px; align-items: center; margin-top: 10px; font-size: 12px; }
 .fork-cancel { background: transparent; border: none; color: var(--text-muted); cursor: pointer; font: inherit; padding: 4px 8px; }
 .fork-confirm { margin-left: auto; padding: 6px 14px; background: var(--accent); color: var(--bg); border: none; border-radius: 4px; font-weight: 500; cursor: pointer; font: inherit; }
+
+/* ── Spawn surface ───────────────────────────────────────────────────────── */
+.spawn-pane { padding: 48px 64px; max-width: 880px; margin: 0 auto; width: 100%; }
+.spawn-form { display: flex; flex-direction: column; gap: 14px; }
+.spawn-prompt { font-size: 22px; color: var(--text); font-weight: 500; margin: 0; }
+.spawn-subtitle { color: var(--text-muted); font-size: 13px; margin: 0; }
+.spawn-chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.chip { display: inline-flex; align-items: baseline; gap: 8px; padding: 5px 11px; background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 14px; color: var(--text); font-size: 12px; cursor: pointer; font: inherit; }
+.chip-label { color: var(--text-muted); }
+.chip-value { color: var(--text); font-family: ui-monospace, "SFMono-Regular", monospace; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip-caret { color: var(--text-muted); font-size: 9px; }
+.chip-mode { background: rgba(224, 175, 104, 0.12); color: var(--state-warning); }
+.spawn-input { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 8px; padding: 18px; min-height: 160px; color: var(--text); font: inherit; font-size: 14px; line-height: 1.5; outline: none; resize: vertical; }
+.spawn-input:focus { border-color: var(--accent); }
+.spawn-advanced { color: var(--text-muted); font-size: 12px; }
+.spawn-advanced summary { cursor: pointer; padding: 5px 0; }
+.spawn-advanced-body { display: flex; flex-wrap: wrap; gap: 18px; padding: 12px 0; }
+.spawn-advanced-body label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--text-muted); }
+.spawn-advanced-body input,
+.spawn-advanced-body select { background: transparent; border: 1px solid var(--rule); border-radius: 4px; padding: 4px 8px; color: var(--text); font: inherit; font-size: 12px; outline: none; }
+.spawn-actions { display: flex; align-items: center; }
+.spawn-btn { margin-left: auto; padding: 7px 18px; background: var(--accent); color: var(--bg); border: none; border-radius: 4px; font-weight: 500; font-size: 13px; cursor: pointer; font: inherit; }
+.spawn-btn kbd { font-family: ui-monospace, "SFMono-Regular", monospace; opacity: 0.7; margin-left: 4px; }
+.spawn-recent { margin-top: 32px; }
+.spawn-recent-header { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
+.spawn-recent-row { display: block; padding: 6px 10px; border-radius: 4px; color: var(--text); cursor: pointer; font-size: 12px; text-decoration: none; }
+.spawn-recent-row:hover { background: var(--bg-raised); }
 .fork-confirm kbd { font-family: ui-monospace, "SFMono-Regular", monospace; opacity: 0.7; margin-left: 4px; }

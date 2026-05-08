@@ -77,12 +77,21 @@ func main() {
 	// as a fallback when a session's project dir can't be found in the past index.
 	stateDir := filepath.Dir(filepath.Clean(strings.TrimSuffix(stateGlob, "*")))
 
+	// Build model list from provider config for the spawn chip.
+	var models []modelDescriptor
+	for _, p := range cfg.Providers {
+		for _, m := range p.Models {
+			models = append(models, modelDescriptor{Provider: p.Name, Model: m})
+		}
+	}
+
 	// Web
 	web := NewWebServer(WebConfig{
 		HubAddr:     cfg.Addr,
 		Roster:      roster,
 		Past:        past,
 		Spawner:     spawner,
+		Models:      models,
 		PastPerPage: cfg.PastResultsPerPage,
 		StateDir:    stateDir,
 	})

@@ -11,6 +11,15 @@ import (
 	"primeradiant.com/serf/rendezvous"
 )
 
+// SpawnRequest carries the per-spawn knobs passed directly from the caller.
+type SpawnRequest struct {
+	Provider        string
+	Model           string
+	Agent           string
+	WorkingDir      string
+	ReasoningEffort string
+}
+
 // HubSpawner fulfills the Spawner interface using SpawnDaemon.
 type HubSpawner struct {
 	Cfg        Config
@@ -18,20 +27,12 @@ type HubSpawner struct {
 	RunDir     string
 }
 
-func (h *HubSpawner) Templates() []SpawnTemplate {
-	return h.Cfg.SpawnTemplates
-}
-
-func (h *HubSpawner) Spawn(ctx context.Context, templateName, workingDir string) (rendezvous.Entry, error) {
-	t, ok := findTemplate(h.Cfg, templateName)
-	if !ok {
-		return rendezvous.Entry{}, fmt.Errorf("template %q not found", templateName)
-	}
+func (h *HubSpawner) Spawn(ctx context.Context, req SpawnRequest) (rendezvous.Entry, error) {
 	timeout := h.Cfg.SpawnTimeout
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
-	return SpawnDaemon(ctx, h.SerfBinary, h.RunDir, t, workingDir, timeout)
+	return SpawnDaemon(ctx, h.SerfBinary, h.RunDir, req, timeout)
 }
 
 func (h *HubSpawner) Resume(ctx context.Context, sessionID string) (rendezvous.Entry, error) {
@@ -42,53 +43,42 @@ func (h *HubSpawner) Resume(ctx context.Context, sessionID string) (rendezvous.E
 	return ResumeDaemon(ctx, h.SerfBinary, h.RunDir, sessionID, timeout)
 }
 
-// findTemplate returns the named SpawnTemplate from the config.
-func findTemplate(cfg Config, name string) (SpawnTemplate, bool) {
-	for _, t := range cfg.SpawnTemplates {
-		if t.Name == name {
-			return t, true
-		}
-	}
-	return SpawnTemplate{}, false
-}
-
-// buildSpawnArgs assembles the arg slice for `serf serve` from a template
-// and a working directory.
+// buildSpawnArgs assembles the arg slice for `serf serve` from a SpawnRequest.
 //
 // Always passes --addr 127.0.0.1:0 so the daemon binds an ephemeral port,
-// which it reports via its rendezvous file. Empty fields in the template
-// are omitted so `serf serve` can fall back to its environment.
-func buildSpawnArgs(t SpawnTemplate, workingDir string) []string {
+// which it reports via its rendezvous file. Empty fields are omitted so
+// `serf serve` can fall back to its environment.
+func buildSpawnArgs(req SpawnRequest) []string {
 	args := []string{"--addr", "127.0.0.1:0"}
-	if workingDir != "" {
-		args = append(args, "--dir", workingDir)
+	if req.WorkingDir != "" {
+		args = append(args, "--dir", req.WorkingDir)
 	}
-	if t.Provider != "" {
-		args = append(args, "--provider", t.Provider)
+	if req.Provider != "" {
+		args = append(args, "--provider", req.Provider)
 	}
-	if t.Model != "" {
-		args = append(args, "--model", t.Model)
+	if req.Model != "" {
+		args = append(args, "--model", req.Model)
 	}
-	if t.Agent != "" {
-		args = append(args, "--agent", t.Agent)
+	if req.Agent != "" {
+		args = append(args, "--agent", req.Agent)
 	}
-	if t.ReasoningEffort != "" {
-		args = append(args, "--reasoning-effort", t.ReasoningEffort)
+	if req.ReasoningEffort != "" {
+		args = append(args, "--reasoning-effort", req.ReasoningEffort)
 	}
 	return args
 }
 
-// SpawnDaemon launches a `serf serve` subprocess from the given template,
+// SpawnDaemon launches a `serf serve` subprocess from the given SpawnRequest,
 // then waits up to timeout for its rendezvous file to appear.
 //
 // Returns the rendezvous Entry on success, or error on timeout / spawn failure.
 // Caller does NOT manage the subprocess lifecycle — the spawned daemon
 // runs independently and lives until killed or sent /shutdown.
-func SpawnDaemon(ctx context.Context, serfBinary string, runDir string, t SpawnTemplate, workingDir string, timeout time.Duration) (rendezvous.Entry, error) {
+func SpawnDaemon(ctx context.Context, serfBinary string, runDir string, req SpawnRequest, timeout time.Duration) (rendezvous.Entry, error) {
 	if serfBinary == "" {
 		serfBinary = "serf"
 	}
-	args := append([]string{"serve"}, buildSpawnArgs(t, workingDir)...)
+	args := append([]string{"serve"}, buildSpawnArgs(req)...)
 
 	cmd := exec.Command(serfBinary, args...)
 	cmd.Env = append(os.Environ(), "SERF_HUB_SPAWNED=1")

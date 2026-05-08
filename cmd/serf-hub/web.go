@@ -25,18 +25,23 @@ type WebConfig struct {
 	HubAddr     string
 	Roster      *Roster
 	Past        *PastIndex
-	Spawner     Spawner // optional; nil disables /live/new
-	PastPerPage int     // results per page for /past; defaults to 50 when zero
-	StateDir    string  // root of the projects/<sha> state directory; needed for ForkSession
+	Spawner     Spawner           // optional; nil disables spawn
+	Models      []modelDescriptor // available models for the spawn chip
+	PastPerPage int               // results per page for /past; defaults to 50 when zero
+	StateDir    string            // root of the projects/<sha> state directory; needed for ForkSession
 }
 
-// Spawner forks a serf serve subprocess from a SpawnTemplate and waits for
-// its rendezvous file to appear. Returns the discovered Entry's Address
-// (the daemon's bound port) on success.
+// Spawner forks a serf serve subprocess and waits for its rendezvous file to appear.
+// Returns the discovered Entry on success.
 type Spawner interface {
-	Spawn(ctx context.Context, templateName, workingDir string) (rendezvous.Entry, error)
+	Spawn(ctx context.Context, req SpawnRequest) (rendezvous.Entry, error)
 	Resume(ctx context.Context, sessionID string) (rendezvous.Entry, error)
-	Templates() []SpawnTemplate
+}
+
+// modelDescriptor is a provider/model pair used by the spawn chip and /api/models.
+type modelDescriptor struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
 }
 
 // WebServer wires routes, templates, and middleware.
@@ -46,11 +51,11 @@ type WebServer struct {
 	appTmpl         *template.Template
 	sidebarTmpl     *template.Template
 	liveTmpl        *template.Template
-	liveNewTmpl     *template.Template
 	pastTmpl        *template.Template
 	pastResultsTmpl *template.Template
 	pastViewTmpl    *template.Template
 	workspaceTmpl   *template.Template
+	spawnTmpl       *template.Template
 	inputStripTmpl  *template.Template
 	rest            *RESTProxy
 	sse             *SSEProxy
@@ -73,10 +78,6 @@ func NewWebServer(cfg WebConfig) *WebServer {
 		"templates/live.html",
 		"templates/partials/status_bar.html",
 	))
-	liveNewTmpl := template.Must(template.ParseFS(templatesFS,
-		"templates/base.html",
-		"templates/live_new.html",
-	))
 	pastTmpl := template.Must(template.ParseFS(templatesFS,
 		"templates/base.html",
 		"templates/past.html",
@@ -92,6 +93,9 @@ func NewWebServer(cfg WebConfig) *WebServer {
 	workspaceTmpl := template.Must(template.ParseFS(templatesFS,
 		"templates/partials/workspace.html",
 	))
+	spawnTmpl := template.Must(template.ParseFS(templatesFS,
+		"templates/partials/spawn.html",
+	))
 	inputStripTmpl := template.Must(template.ParseFS(templatesFS,
 		"templates/partials/input_strip.html",
 	))
@@ -103,9 +107,9 @@ func NewWebServer(cfg WebConfig) *WebServer {
 	}
 	return &WebServer{
 		cfg: cfg, templates: tmpl, appTmpl: appTmpl, sidebarTmpl: sidebarTmpl,
-		liveTmpl: liveTmpl, liveNewTmpl: liveNewTmpl,
+		liveTmpl: liveTmpl,
 		pastTmpl: pastTmpl, pastResultsTmpl: pastResultsTmpl, pastViewTmpl: pastViewTmpl,
-		workspaceTmpl: workspaceTmpl, inputStripTmpl: inputStripTmpl,
+		workspaceTmpl: workspaceTmpl, spawnTmpl: spawnTmpl, inputStripTmpl: inputStripTmpl,
 		rest: rest, sse: sse,
 		resumeLocks: map[string]*sync.Mutex{},
 	}
@@ -139,11 +143,15 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/new", s.handleIndex)    // ditto
 	mux.HandleFunc("/sidebar", s.handleSidebar)
 	mux.HandleFunc("/workspace/empty", s.handleWorkspaceEmpty)
+	mux.HandleFunc("/workspace/spawn", s.handleWorkspaceSpawn)
 	mux.HandleFunc("/live", s.handleLiveRoster)
-	mux.HandleFunc("/live/new", s.handleLiveNew) // must be before /live/
 	mux.HandleFunc("/past", s.handlePast)
 	mux.HandleFunc("/past/results", s.handlePastResults) // must be before /past/
 	mux.HandleFunc("/past/", s.handlePastID)
+
+	// API
+	mux.HandleFunc("/api/spawn", s.handleApiSpawn)
+	mux.HandleFunc("/api/models", s.handleApiModels)
 
 	// Live drive proxied routes (REST and SSE)
 	mux.HandleFunc("/live/", s.handleLiveProxy)
@@ -157,8 +165,12 @@ func (s *WebServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	workspaceURL := "/workspace/empty"
+	if r.URL.Path == "/new" {
+		workspaceURL = "/workspace/spawn"
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.appTmpl.ExecuteTemplate(w, "app", nil); err != nil {
+	if err := s.appTmpl.ExecuteTemplate(w, "app", map[string]string{"WorkspaceURL": workspaceURL}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
@@ -605,59 +617,127 @@ func (s *WebServer) findNewSession(pid int) string {
 	return ""
 }
 
-// handleLiveNew serves GET /live/new (spawn form) and POST /live/new (spawn action).
-func (s *WebServer) handleLiveNew(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		var templates []SpawnTemplate
-		if s.cfg.Spawner != nil {
-			templates = s.cfg.Spawner.Templates()
-		}
-		data := map[string]any{
-			"Title":     "spawn",
-			"Templates": templates,
-			"Live":      []LiveEntry{},
-			"Past":      []PastEntry{},
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := s.liveNewTmpl.ExecuteTemplate(w, "base", data); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-		}
-	case http.MethodPost:
-		if s.cfg.Spawner == nil {
-			http.Error(w, "spawn not configured", http.StatusServiceUnavailable)
-			return
-		}
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		tmpl := r.FormValue("template")
-		wd := r.FormValue("working_dir")
-		if wd != "" {
-			if !filepath.IsAbs(wd) {
-				http.Error(w, "working_dir must be an absolute path", http.StatusBadRequest)
-				return
-			}
-			info, err := os.Stat(wd)
-			if err != nil || !info.IsDir() {
-				http.Error(w, "working_dir does not exist or is not a directory", http.StatusBadRequest)
-				return
-			}
-		}
-		entry, err := s.cfg.Spawner.Spawn(r.Context(), tmpl, wd)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if sessID := s.findNewSession(entry.PID); sessID != "" {
-			http.Redirect(w, r, "/live/"+sessID, http.StatusFound)
-			return
-		}
-		http.Redirect(w, r, "/", http.StatusFound)
-	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+// spawnViewData is the template data for the spawn partial.
+type spawnViewData struct {
+	DefaultModel      string
+	DefaultWorkingDir string
+	DefaultBranch     string
+	DefaultAccessMode string
+	RecentTasks       []string
+}
+
+// handleWorkspaceSpawn renders the prompt-first spawn surface partial.
+func (s *WebServer) handleWorkspaceSpawn(w http.ResponseWriter, r *http.Request) {
+	data := spawnViewData{
+		DefaultModel:      "(pick a model)",
+		DefaultWorkingDir: "(pick a directory)",
+		DefaultBranch:     "(default)",
+		DefaultAccessMode: "full",
 	}
+	if s.cfg.Past != nil {
+		results := s.cfg.Past.Search("", 5, 0)
+		for _, e := range results {
+			if e.Meta.OriginalTask != "" {
+				data.RecentTasks = append(data.RecentTasks, e.Meta.OriginalTask)
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.spawnTmpl.ExecuteTemplate(w, "spawn", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// spawnRequest is the JSON body for POST /api/spawn.
+type spawnRequest struct {
+	Task            string `json:"task"`
+	Model           string `json:"model"`
+	WorkingDir      string `json:"working_dir"`
+	Branch          string `json:"branch"`
+	AccessMode      string `json:"access_mode"`
+	Agent           string `json:"agent"`
+	ReasoningEffort string `json:"reasoning_effort"`
+}
+
+// handleApiSpawn spawns a new daemon and optionally sends the initial task.
+func (s *WebServer) handleApiSpawn(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.cfg.Spawner == nil {
+		http.Error(w, "spawner not configured", http.StatusServiceUnavailable)
+		return
+	}
+	var req spawnRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.WorkingDir != "" {
+		if !filepath.IsAbs(req.WorkingDir) {
+			http.Error(w, "working_dir must be absolute", http.StatusBadRequest)
+			return
+		}
+		info, err := os.Stat(req.WorkingDir)
+		if err != nil || !info.IsDir() {
+			http.Error(w, "working_dir does not exist or is not a directory", http.StatusBadRequest)
+			return
+		}
+	}
+	provider, model := parseModel(req.Model)
+	entry, err := s.cfg.Spawner.Spawn(r.Context(), SpawnRequest{
+		Provider:        provider,
+		Model:           model,
+		Agent:           req.Agent,
+		WorkingDir:      req.WorkingDir,
+		ReasoningEffort: req.ReasoningEffort,
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	sessID := s.findNewSession(entry.PID)
+	if sessID == "" {
+		http.Error(w, "daemon spawned but didn't appear in roster", http.StatusInternalServerError)
+		return
+	}
+	if req.Task != "" {
+		time.Sleep(300 * time.Millisecond)
+		payload, _ := json.Marshal(map[string]string{"text": req.Task})
+		url := "http://" + entry.Address + "/input"
+		ireq, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, url, bytes.NewReader(payload))
+		ireq.Header.Set("Content-Type", "application/json")
+		if resp, err := http.DefaultClient.Do(ireq); err == nil {
+			resp.Body.Close() //nolint:errcheck
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"session_id": sessID}) //nolint:errcheck
+}
+
+// parseModel splits "provider/model" into its components.
+// If there is no slash, provider is returned as empty.
+func parseModel(s string) (provider, model string) {
+	if i := strings.Index(s, "/"); i > 0 {
+		return s[:i], s[i+1:]
+	}
+	return "", s
+}
+
+// handleApiModels returns the list of available models for the spawn chip.
+func (s *WebServer) handleApiModels(w http.ResponseWriter, r *http.Request) {
+	models := s.cfg.Models
+	if len(models) == 0 {
+		models = []modelDescriptor{
+			{Provider: "openai", Model: "gpt-5"},
+			{Provider: "openai", Model: "gpt-5-mini"},
+			{Provider: "anthropic", Model: "claude-opus-4-7"},
+			{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(models) //nolint:errcheck
 }
 
 // handleSession is the router for all /s/<id>[/<sub>] routes.
@@ -682,9 +762,9 @@ func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 			s.renderWorkspacePartial(w, r, id)
 			return
 		}
-		// Full-page navigation: serve the app shell.
+		// Full-page navigation: serve the app shell, loading this session's workspace.
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := s.appTmpl.ExecuteTemplate(w, "app", nil); err != nil {
+		if err := s.appTmpl.ExecuteTemplate(w, "app", map[string]string{"WorkspaceURL": "/s/" + id}); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	case "state":

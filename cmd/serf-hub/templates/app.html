@@ -24,7 +24,7 @@
     <div class="sidebar-loading">loading…</div>
   </aside>
   <main id="workspace"
-        hx-get="/workspace/empty"
+        hx-get="{{.WorkspaceURL}}"
         hx-trigger="load"
         hx-swap="innerHTML">
   </main>
