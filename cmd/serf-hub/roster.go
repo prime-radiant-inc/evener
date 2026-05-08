@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
+	"os"
 	"sync"
+	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -93,4 +97,47 @@ func (r *Roster) Find(sessionID string) (LiveEntry, bool) {
 	defer r.mu.RUnlock()
 	e, ok := r.bySess[sessionID]
 	return e, ok
+}
+
+func ensureDir(dir string) error {
+	return os.MkdirAll(dir, 0o755)
+}
+
+// Watch blocks: it scans once, then refreshes on every fsnotify event and
+// at a 5-second tick (cheap belt-and-suspenders against missed events).
+//
+// Cancellation of ctx returns from Watch.
+func (r *Roster) Watch(ctx context.Context) error {
+	r.refresh()
+
+	w, err := fsnotify.NewWatcher()
+	if err != nil {
+		return err
+	}
+	defer w.Close()
+
+	// Add the runDir; create it if absent so the watcher can attach.
+	_ = ensureDir(r.runDir)
+	if err := w.Add(r.runDir); err != nil {
+		return err
+	}
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case _, ok := <-w.Events:
+			if !ok {
+				return nil
+			}
+			r.refresh()
+		case <-w.Errors:
+			r.refresh()
+		case <-ticker.C:
+			r.refresh()
+		}
+	}
 }

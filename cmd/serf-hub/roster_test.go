@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -91,6 +92,33 @@ func TestRoster_DefaultRunDir(t *testing.T) {
 	if got := rendezvous.DefaultDir(); got != want {
 		t.Fatalf("DefaultDir: got %q want %q", got, want)
 	}
+}
+
+func TestRoster_Watch_PicksUpNewFile(t *testing.T) {
+	dir := t.TempDir()
+	r := NewRoster(dir, fakeProber{sessionID: "01SESS001"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	go r.Watch(ctx)
+
+	// Give the watcher a moment to start.
+	time.Sleep(100 * time.Millisecond)
+
+	writeRendezvous(t, dir, rendezvous.Entry{
+		PID:     1001,
+		Address: "127.0.0.1:50001",
+	})
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := r.Find("01SESS001"); ok {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("roster did not pick up the new rendezvous file")
 }
 
 // fakeProber implements liveness check for tests without real network calls.
