@@ -142,10 +142,24 @@
       const m = this.activeMessages.get(id);
       if (!m) return;
       m.textBuf += delta;
-      // Render partial markdown for live feedback.
+      // Stream as plain text — marked.parse is O(n²) on the growing buffer
+      // and visibly stalls on long doc-style outputs. We re-parse once on
+      // ASSISTANT_TEXT_END (or on an idle tick if no end arrives).
       const body = m.el.querySelector(".body");
-      try { body.innerHTML = window.marked.parse(m.textBuf); }
-      catch (e) { body.textContent = m.textBuf; }
+      body.textContent = m.textBuf;
+      this.scheduleMarkdownRefresh(id);
+    },
+
+    scheduleMarkdownRefresh(id) {
+      if (this._markdownTimer) return;
+      this._markdownTimer = setTimeout(() => {
+        this._markdownTimer = null;
+        const m = this.activeMessages.get(id);
+        if (!m) return;
+        const body = m.el.querySelector(".body");
+        try { body.innerHTML = window.marked.parse(m.textBuf); }
+        catch (e) { body.textContent = m.textBuf; }
+      }, 500);
     },
 
     finalizeAssistantMessage(data) {
@@ -156,6 +170,10 @@
       const body = m.el.querySelector(".body");
       try { body.innerHTML = window.marked.parse(final); }
       catch (e) { body.textContent = final; }
+      if (this._markdownTimer) {
+        clearTimeout(this._markdownTimer);
+        this._markdownTimer = null;
+      }
       this.activeMessages.delete(id);
       this.currentMessageId = null;
     },
