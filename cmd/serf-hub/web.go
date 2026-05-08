@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"html/template"
 	"io/fs"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"primeradiant.com/serf/rendezvous"
 )
@@ -29,12 +33,14 @@ type Spawner interface {
 
 // WebServer wires routes, templates, and middleware.
 type WebServer struct {
-	cfg         WebConfig
-	templates   *template.Template
-	liveTmpl    *template.Template
-	liveNewTmpl *template.Template
-	rest        *RESTProxy
-	sse         *SSEProxy
+	cfg          WebConfig
+	templates    *template.Template
+	liveTmpl     *template.Template
+	liveNewTmpl  *template.Template
+	pastTmpl     *template.Template
+	pastViewTmpl *template.Template
+	rest         *RESTProxy
+	sse          *SSEProxy
 }
 
 // NewWebServer constructs the web server. Templates are parsed from embed.FS.
@@ -53,13 +59,24 @@ func NewWebServer(cfg WebConfig) *WebServer {
 		"templates/base.html",
 		"templates/live_new.html",
 	))
+	pastTmpl := template.Must(template.ParseFS(templatesFS,
+		"templates/base.html",
+		"templates/past.html",
+	))
+	pastViewTmpl := template.Must(template.ParseFS(templatesFS,
+		"templates/base.html",
+		"templates/past_view.html",
+	))
 	var rest *RESTProxy
 	var sse *SSEProxy
 	if cfg.Roster != nil {
 		rest = NewRESTProxy(cfg.Roster)
 		sse = NewSSEProxy(cfg.Roster)
 	}
-	return &WebServer{cfg: cfg, templates: tmpl, liveTmpl: liveTmpl, liveNewTmpl: liveNewTmpl, rest: rest, sse: sse}
+	return &WebServer{
+		cfg: cfg, templates: tmpl, liveTmpl: liveTmpl, liveNewTmpl: liveNewTmpl,
+		pastTmpl: pastTmpl, pastViewTmpl: pastViewTmpl, rest: rest, sse: sse,
+	}
 }
 
 // Handler returns the http.Handler with all routes wired and the security
@@ -76,6 +93,7 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/live", s.handleLiveRoster)
 	mux.HandleFunc("/live/new", s.handleLiveNew) // must be before /live/
 	mux.HandleFunc("/past", s.handlePast)
+	mux.HandleFunc("/past/", s.handlePastID)
 
 	// Live drive proxied routes (REST and SSE)
 	mux.HandleFunc("/live/", s.handleLiveProxy)
@@ -122,7 +140,7 @@ func (s *WebServer) handleLiveRoster(w http.ResponseWriter, r *http.Request) {
 func (s *WebServer) handlePast(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
 	if s.cfg.Past == nil {
-		fmt.Fprintln(w, "no past index")
+		http.Error(w, "no past index", http.StatusServiceUnavailable)
 		return
 	}
 	results := s.cfg.Past.Search(q, 50, 0)
@@ -130,11 +148,9 @@ func (s *WebServer) handlePast(w http.ResponseWriter, r *http.Request) {
 		"Title": "past",
 		"Past":  results,
 		"Q":     q,
-		"Live":  []LiveEntry{},
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	// Reuse landing layout for now — drives "01A" appearing in body for the test.
-	if err := s.templates.ExecuteTemplate(w, "base", data); err != nil {
+	if err := s.pastTmpl.ExecuteTemplate(w, "base", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
@@ -216,6 +232,90 @@ func (s *WebServer) handleStatusBar(w http.ResponseWriter, r *http.Request, sess
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.liveTmpl.ExecuteTemplate(w, "status_bar", info); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// handlePastID dispatches /past/<id>, /past/<id>/replay, and /past/<id>/resume.
+func (s *WebServer) handlePastID(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/past/")
+	parts := strings.SplitN(rest, "/", 2)
+	id := parts[0]
+	if id == "" {
+		http.Redirect(w, r, "/past", http.StatusFound)
+		return
+	}
+	if s.cfg.Past == nil {
+		http.NotFound(w, r)
+		return
+	}
+	entry, ok := s.cfg.Past.Find(id)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	tail := ""
+	if len(parts) == 2 {
+		tail = parts[1]
+	}
+	switch tail {
+	case "":
+		data := map[string]any{
+			"Title":    "past",
+			"Meta":     entry.Meta,
+			"StateDir": entry.StateDir,
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := s.pastViewTmpl.ExecuteTemplate(w, "base", data); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	case "resume":
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		http.Error(w, "resume not yet implemented", http.StatusNotImplemented)
+	case "replay":
+		s.serveReplay(w, r, entry)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// serveReplay reads <state_dir>/sessions/<id>.transcript.jsonl and streams it
+// as SSE events, one per line. Each line must be JSON with "kind" and "data" fields.
+func (s *WebServer) serveReplay(w http.ResponseWriter, r *http.Request, entry PastEntry) {
+	transcriptPath := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
+	f, err := os.Open(transcriptPath)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	defer f.Close()
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	id := uint64(0)
+	for scanner.Scan() {
+		var ev struct {
+			Kind string          `json:"kind"`
+			Data json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
+			continue
+		}
+		id++
+		fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", id, ev.Kind, string(ev.Data))
+		flusher.Flush()
 	}
 }
 
