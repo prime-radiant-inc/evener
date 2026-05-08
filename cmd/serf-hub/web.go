@@ -603,6 +603,9 @@ func (s *WebServer) serveReplay(w http.ResponseWriter, r *http.Request, entry Pa
 		}
 		emitTurnEvents(emit, entryRec.Turn, toolNames)
 	}
+	// Tell EventSource clients we're done. The browser would otherwise
+	// auto-reconnect on close and the replay would re-run from the top.
+	emit("REPLAY_DONE", map[string]any{})
 }
 
 type replayHeader struct {
@@ -992,7 +995,7 @@ func pastTitle(pe PastEntry) string {
 	if pe.Meta.OriginalTask != "" {
 		return pe.Meta.OriginalTask
 	}
-	return pe.Meta.ID
+	return shortID(pe.Meta.ID)
 }
 
 func stateLabel(state string) string {

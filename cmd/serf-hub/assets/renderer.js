@@ -4,6 +4,19 @@
   const SerfRenderer = {
     init(conversationEl) {
       if (!conversationEl) return;
+      // Idempotent: if we've already initialized this exact element for this
+      // session, don't double-connect. Switching sessions = different element
+      // node (htmx swapped innerHTML), so the marker won't be there.
+      if (conversationEl.__serfInitialized) return;
+      conversationEl.__serfInitialized = true;
+
+      // Close any previous EventSource so switching sessions doesn't leak
+      // connections or replay duplicate events.
+      if (this.eventSource) {
+        try { this.eventSource.close(); } catch (e) {}
+        this.eventSource = null;
+      }
+
       this.conversation = conversationEl;
       this.sessionId = conversationEl.dataset.sessionId;
       this.replayUrl = conversationEl.dataset.replayUrl || "";
@@ -14,7 +27,6 @@
       this.activeTools = new Map();      // callId -> {el, outputBuf}
       this.suppressedToolCalls = new Set();
       this.currentMessageId = null;
-      this.eventSource = null;
       this.userTurnIndex = 0;            // counts user turns rendered (for fork divergence)
       this.entryIndex = 0;               // counts ALL entries rendered (matches transcript entry index)
       this.cheapToolCluster = null;      // current cluster div for batching cheap reads
@@ -38,7 +50,12 @@
         "SUBAGENT_START", "SUBAGENT_END", "COMMUNICATE",
       ];
       kinds.forEach((k) => this.eventSource.addEventListener(k, (ev) => this.handle(k, ev)));
-      this.eventSource.onerror = () => { /* browser auto-reconnects */ };
+      // Replay endpoints emit REPLAY_DONE after the last entry; close the
+      // EventSource so the browser doesn't auto-reconnect and replay again.
+      this.eventSource.addEventListener("REPLAY_DONE", () => {
+        if (this.eventSource) { this.eventSource.close(); this.eventSource = null; }
+      });
+      this.eventSource.onerror = () => { /* browser auto-reconnects for live streams */ };
     },
 
     handle(kind, ev) {
@@ -73,7 +90,13 @@
           break;
         case "TOOL_CALL_START":
           if (data.tool_name === "communicate") {
+            // The agent talking to the user. Extract the message from the
+            // tool's arguments and render as a plain assistant block.
             this.suppressedToolCalls.add(data.call_id);
+            try {
+              const args = JSON.parse(data.arguments_json || "{}");
+              if (args.message) this.appendAssistantBlock(args.message);
+            } catch (e) { /* ignore */ }
             break;
           }
           this.entryIndex++;
@@ -109,7 +132,9 @@
           this.appendBanner("note", "[subagent end] status=" + (data.status || "?"));
           break;
         case "COMMUNICATE":
-          this.appendUserMessage("[communicate] " + (data.message || ""));
+          // The agent talking to the user via the communicate tool — render as
+          // a plain assistant message (no role label, no tool chrome).
+          this.appendAssistantBlock(data.message || "");
           break;
       }
       this.scrollToBottom();
@@ -237,6 +262,17 @@
       el.className = "assistant-message";
       this.conversation.appendChild(el);
       this.activeMessages.set(id, { el, textBuf: "", markdownTimer: null });
+    },
+
+    // appendAssistantBlock renders a complete assistant message in one shot —
+    // no begin/delta/end. Used by COMMUNICATE events.
+    appendAssistantBlock(text) {
+      this.cheapToolCluster = null;
+      const el = document.createElement("div");
+      el.className = "assistant-message";
+      try { el.innerHTML = window.marked.parse(text); }
+      catch (e) { el.textContent = text; }
+      this.conversation.appendChild(el);
     },
 
     appendAssistantDelta(delta) {
@@ -467,4 +503,19 @@
   }
 
   window.SerfRenderer = SerfRenderer;
+
+  // After every htmx swap, look for a fresh #conversation element and init
+  // the renderer on it. Inline <script> blocks inside swapped partials don't
+  // reliably execute in the right order across htmx versions, so we use the
+  // semantic afterSwap hook instead.
+  function autoInit() {
+    const conv = document.getElementById("conversation");
+    if (conv) SerfRenderer.init(conv);
+  }
+  document.addEventListener("DOMContentLoaded", autoInit);
+  document.body && document.body.addEventListener("htmx:afterSwap", autoInit);
+  // If body wasn't ready yet (script loaded in <head>), bind on load.
+  document.addEventListener("DOMContentLoaded", () => {
+    document.body.addEventListener("htmx:afterSwap", autoInit);
+  });
 })();

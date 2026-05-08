@@ -80,11 +80,15 @@ func projectName(m agent.SessionMeta) string {
 }
 
 // nodeTitle computes the display title for a tree node.
+//
+// Older sessions persisted before OriginalTask was captured fall back to a
+// short, human-friendlier rendering of the session ID rather than the full
+// 26-character ULID, which clutters the sidebar.
 func nodeTitle(m agent.SessionMeta, kind string) string {
 	if kind == "fork" {
 		base := m.OriginalTask
 		if base == "" {
-			base = m.ID
+			base = shortID(m.ID)
 		}
 		if m.ForkLabel != "" {
 			return base + " · " + m.ForkLabel
@@ -95,7 +99,15 @@ func nodeTitle(m agent.SessionMeta, kind string) string {
 	if m.OriginalTask != "" {
 		return m.OriginalTask
 	}
-	return m.ID
+	return shortID(m.ID)
+}
+
+// shortID renders an unnamed session ID compactly.
+func shortID(id string) string {
+	if len(id) <= 14 {
+		return id
+	}
+	return "session " + id[len(id)-6:]
 }
 
 // nodeKind returns "fork", "subagent", or "session" for a meta.
