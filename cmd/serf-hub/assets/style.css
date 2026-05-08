@@ -247,6 +247,7 @@ body.app { display: flex; min-height: 100vh; margin: 0; background: var(--bg); c
 .sidebar-header { padding: 0 20px 14px; display: flex; gap: 18px; }
 .sidebar-action { color: var(--text-muted); text-decoration: none; cursor: pointer; }
 .sidebar-action:hover { color: var(--text); }
+.sidebar-action kbd { color: var(--text-dim); font-family: ui-monospace, monospace; font-size: 10px; margin-left: 4px; }
 .sidebar-section { margin-bottom: 4px; }
 .sidebar-section-header,
 .project-header { padding: 14px 20px 4px; color: var(--text-dim); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; display: flex; align-items: baseline; gap: 12px; }
@@ -358,6 +359,9 @@ body.app { display: flex; min-height: 100vh; margin: 0; background: var(--bg); c
 .chip-value { color: var(--text); font-family: ui-monospace, "SFMono-Regular", monospace; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip-caret { color: var(--text-muted); font-size: 9px; }
 .chip-mode { background: rgba(224, 175, 104, 0.12); color: var(--state-warning); }
+.chip-picker { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 6px; padding: 4px 0; min-width: 220px; box-shadow: 0 8px 24px rgba(0,0,0,0.2); z-index: 50; }
+.chip-picker-option { padding: 6px 12px; cursor: pointer; color: var(--text); font-size: 12px; font-family: ui-monospace, "SFMono-Regular", monospace; }
+.chip-picker-option:hover { background: var(--rule); }
 .spawn-input { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 8px; padding: 18px; min-height: 160px; color: var(--text); font: inherit; font-size: 14px; line-height: 1.5; outline: none; resize: vertical; }
 .spawn-input:focus { border-color: var(--accent); }
 .spawn-advanced { color: var(--text-muted); font-size: 12px; }

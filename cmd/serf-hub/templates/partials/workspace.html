@@ -18,7 +18,9 @@
      data-session-id="{{.ID}}"
      data-replay-url="{{.ReplayURL}}"
      data-events-url="{{.EventsURL}}"
-     data-state="{{.State}}"></div>
+     data-state="{{.State}}">
+  <div class="conversation-empty" data-empty-placeholder>no messages yet — type below to start the conversation</div>
+</div>
 
 <form class="workspace-input" data-input-form data-session-id="{{.ID}}">
   <textarea class="message-input" placeholder="message the agent…" autofocus></textarea>

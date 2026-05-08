@@ -101,7 +101,7 @@ func NewWebServer(cfg WebConfig) *WebServer {
 	inputStripTmpl := template.Must(template.ParseFS(templatesFS,
 		"templates/partials/input_strip.html",
 	))
-	settingsSections := []string{"general", "theme", "notifications", "providers", "mcp", "hub"}
+	settingsSections := []string{"general", "theme", "notifications", "providers", "agents", "plugins", "skills", "mcp", "hub", "storage"}
 	settingsTmpls := make(map[string]*template.Template, len(settingsSections))
 	for _, sec := range settingsSections {
 		settingsTmpls[sec] = template.Must(template.ParseFS(templatesFS,
@@ -244,6 +244,12 @@ func (s *WebServer) handleApiSearch(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp) //nolint:errcheck
 }
 
+// agentDisplay is one row in Settings → Agents.
+type agentDisplay struct {
+	Name     string
+	EditPath string
+}
+
 // settingsData is the template data passed to all settings section templates.
 type settingsData struct {
 	Active       string
@@ -253,6 +259,8 @@ type settingsData struct {
 	SpawnTimeout string
 	PastPerPage  int
 	Providers    []providerDisplay
+	Agents       []agentDisplay
+	PastCount    int
 }
 
 // providerDisplay groups model descriptors by provider for the providers page.
@@ -296,6 +304,20 @@ func (s *WebServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	agentNames := []string{"default", "explorer", "subagent"}
+	agents := make([]agentDisplay, 0, len(agentNames))
+	for _, name := range agentNames {
+		agents = append(agents, agentDisplay{
+			Name:     name,
+			EditPath: "agent/agents/" + name + ".md",
+		})
+	}
+
+	var pastCount int
+	if s.cfg.Past != nil {
+		pastCount = len(s.cfg.Past.AllMetas())
+	}
+
 	data := settingsData{
 		Active:       section,
 		HubAddr:      s.cfg.HubAddr,
@@ -304,6 +326,8 @@ func (s *WebServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 		SpawnTimeout: "30s",
 		PastPerPage:  s.cfg.PastPerPage,
 		Providers:    providers,
+		Agents:       agents,
+		PastCount:    pastCount,
 	}
 
 	// Render just the inner settings-content partial when htmx is targeting

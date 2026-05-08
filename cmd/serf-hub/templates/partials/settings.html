@@ -11,10 +11,14 @@
     <a class="settings-nav-link {{if eq .Active "notifications"}}active{{end}}" href="/settings/notifications" hx-get="/settings/notifications" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/notifications">Notifications</a>
     <div class="settings-nav-section">Agents &amp; models</div>
     <a class="settings-nav-link {{if eq .Active "providers"}}active{{end}}" href="/settings/providers" hx-get="/settings/providers" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/providers">Providers</a>
+    <a class="settings-nav-link {{if eq .Active "agents"}}active{{end}}" href="/settings/agents" hx-get="/settings/agents" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/agents">Agents</a>
     <div class="settings-nav-section">Extensions</div>
+    <a class="settings-nav-link {{if eq .Active "plugins"}}active{{end}}" href="/settings/plugins" hx-get="/settings/plugins" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/plugins">Plugins</a>
+    <a class="settings-nav-link {{if eq .Active "skills"}}active{{end}}" href="/settings/skills" hx-get="/settings/skills" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/skills">Skills</a>
     <a class="settings-nav-link {{if eq .Active "mcp"}}active{{end}}" href="/settings/mcp" hx-get="/settings/mcp" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/mcp">MCP servers</a>
     <div class="settings-nav-section">Daemon</div>
     <a class="settings-nav-link {{if eq .Active "hub"}}active{{end}}" href="/settings/hub" hx-get="/settings/hub" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/hub">Hub</a>
+    <a class="settings-nav-link {{if eq .Active "storage"}}active{{end}}" href="/settings/storage" hx-get="/settings/storage" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/storage">Storage</a>
   </nav>
   <div id="settings-content" class="settings-content">
     {{template "settings-content" .}}

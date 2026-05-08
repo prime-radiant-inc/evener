@@ -20,6 +20,11 @@
     input.addEventListener("keydown", (e) => {
       if (e.key === "ArrowDown") { e.preventDefault(); move(1); }
       else if (e.key === "ArrowUp") { e.preventDefault(); move(-1); }
+      else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); openActiveNewTab(); }
+      else if (e.key === "Enter" && e.shiftKey) {
+        e.preventDefault();
+        // TODO: in-session jump-to-turn (not yet implemented)
+      }
       else if (e.key === "Enter") { e.preventDefault(); openActive(); }
     });
     dialog.addEventListener("click", (e) => {
@@ -105,6 +110,11 @@
     if (active < 0 || !items[active]) return;
     close();
     window.location.href = "/s/" + encodeURIComponent(items[active].id);
+  }
+  function openActiveNewTab() {
+    if (active < 0 || !items[active]) return;
+    close();
+    window.open("/s/" + encodeURIComponent(items[active].id), "_blank");
   }
 
   function debounce(fn, ms) {

@@ -25,6 +25,7 @@
 
       this.activeMessages = new Map();   // messageId -> {el, textBuf, markdownTimer}
       this.activeTools = new Map();      // callId -> {el, outputBuf}
+      this.activeSubagents = new Map();  // agent_id -> subagent reference el
       this.suppressedToolCalls = new Set();
       this.currentMessageId = null;
       this.userTurnIndex = 0;            // counts user turns rendered (for fork divergence)
@@ -69,6 +70,7 @@
             this.conversation.innerHTML = "";
             this.activeMessages.clear();
             this.activeTools.clear();
+            this.activeSubagents.clear();
             this.userTurnIndex = 0;
             this.entryIndex = 0;
           }
@@ -126,10 +128,10 @@
           this.appendBanner("note", "[session ended] " + (data.reason || ""));
           break;
         case "SUBAGENT_START":
-          this.appendBanner("note", "[subagent start] " + (data.task || ""));
+          this.beginSubagentRef(data);
           break;
         case "SUBAGENT_END":
-          this.appendBanner("note", "[subagent end] status=" + (data.status || "?"));
+          this.finalizeSubagentRef(data);
           break;
         case "COMMUNICATE":
           // Already rendered via TOOL_CALL_START's arguments_json.message.
@@ -388,6 +390,71 @@
         } catch (e) {}
       }
       this.activeTools.delete(data.call_id);
+    },
+
+    beginSubagentRef(data) {
+      this.cheapToolCluster = null;
+      const agentId = data.agent_id || ("sa-" + Math.random().toString(36).slice(2, 9));
+      const ref = document.createElement("div");
+      ref.className = "subagent-reference";
+      ref.dataset.subagentId = agentId;
+      const verb = document.createElement("span");
+      verb.className = "verb"; verb.textContent = "subagent";
+      const target = document.createElement("span");
+      target.className = "target";
+      target.textContent = (data.task || "").slice(0, 80);
+      const sep = document.createElement("span"); sep.className = "sep"; sep.textContent = "·";
+      const dot = document.createElement("span");
+      dot.className = "status-indicator";
+      dot.style.color = "var(--state-processing)";
+      dot.textContent = "●";
+      ref.appendChild(verb);
+      ref.appendChild(document.createTextNode(" "));
+      ref.appendChild(target);
+      ref.appendChild(document.createTextNode(" "));
+      ref.appendChild(sep);
+      ref.appendChild(document.createTextNode(" "));
+      ref.appendChild(dot);
+      this.conversation.appendChild(ref);
+      this.activeSubagents.set(agentId, ref);
+    },
+
+    finalizeSubagentRef(data) {
+      const agentId = data.agent_id || "";
+      const ref = this.activeSubagents.get(agentId);
+      if (!ref) {
+        // Fallback: no matching SUBAGENT_START — emit a banner
+        this.appendBanner("note", "[subagent end] status=" + (data.status || "?"));
+        return;
+      }
+      this.activeSubagents.delete(agentId);
+      const dot = ref.querySelector(".status-indicator");
+      if (dot) {
+        const s = data.status || "done";
+        if (s === "done") {
+          dot.style.color = "var(--state-idle)";
+        } else if (s === "errored") {
+          dot.style.color = "var(--state-awaiting)";
+        } else {
+          dot.style.color = "var(--state-processing)";
+        }
+        dot.textContent = "●";
+      }
+      // Append turns count
+      if (data.turns_used != null) {
+        const sep2 = document.createElement("span"); sep2.className = "sep"; sep2.textContent = "·";
+        const turns = document.createElement("span"); turns.className = "result";
+        turns.textContent = data.turns_used + " turns";
+        ref.appendChild(document.createTextNode(" "));
+        ref.appendChild(sep2);
+        ref.appendChild(document.createTextNode(" "));
+        ref.appendChild(turns);
+      }
+      // Make clickable if session_id is provided
+      if (data.session_id) {
+        ref.style.cursor = "pointer";
+        ref.onclick = () => { window.location.href = "/s/" + encodeURIComponent(data.session_id); };
+      }
     },
 
     appendBanner(kind, text) {

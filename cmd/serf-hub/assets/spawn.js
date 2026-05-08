@@ -1,15 +1,30 @@
 (function () {
   "use strict";
 
-  const DEFAULTS_KEY = "serf-hub.spawn-defaults";
+  function projectKey(workingDir) {
+    return "serf-hub.spawn-defaults." + (workingDir || "global");
+  }
+
+  function currentWorkingDir() {
+    const el = document.querySelector('input[type=hidden][name="working_dir"]');
+    return el ? el.value : "";
+  }
 
   function loadDefaults() {
     try {
-      return JSON.parse(localStorage.getItem(DEFAULTS_KEY) || "{}");
+      const wd = currentWorkingDir();
+      const perProject = JSON.parse(localStorage.getItem(projectKey(wd)) || "{}");
+      // Layer the global model default underneath the per-project value
+      const globalModel = localStorage.getItem("serf-hub.spawn-defaults.global.model") || "";
+      if (!perProject.model && globalModel) perProject.model = globalModel;
+      return perProject;
     } catch (e) { return {}; }
   }
   function saveDefaults(d) {
-    localStorage.setItem(DEFAULTS_KEY, JSON.stringify(d));
+    const wd = currentWorkingDir();
+    localStorage.setItem(projectKey(wd), JSON.stringify(d));
+    // Persist model globally across projects
+    if (d.model) localStorage.setItem("serf-hub.spawn-defaults.global.model", d.model);
   }
 
   function setChipValue(name, value) {
@@ -70,6 +85,8 @@
         branch: body.branch,
         access_mode: body.access_mode,
       });
+      const btn = form.querySelector(".spawn-btn");
+      if (btn) { btn.disabled = true; btn.textContent = "spawning…"; }
       try {
         const resp = await fetch("/api/spawn", {
           method: "POST",
@@ -77,12 +94,14 @@
           body: JSON.stringify(body),
         });
         if (!resp.ok) {
+          if (btn) { btn.disabled = false; btn.innerHTML = 'spawn <kbd>⌘↵</kbd>'; }
           alert("spawn failed: " + (await resp.text()));
           return;
         }
         const json = await resp.json();
         window.location.href = "/s/" + encodeURIComponent(json.session_id);
       } catch (err) {
+        if (btn) { btn.disabled = false; btn.innerHTML = 'spawn <kbd>⌘↵</kbd>'; }
         alert("spawn failed: " + err.message);
       }
     });
@@ -90,18 +109,13 @@
 
   function openPicker(chip) {
     const kind = chip.dataset.chip;
+    if (kind === "model") {
+      openModelPicker(chip);
+      return;
+    }
     const display = chip.querySelector(".chip-value");
     const current = display.textContent.trim();
     let value;
-    if (kind === "model") {
-      // Fetch /api/models and prompt
-      fetch("/api/models").then(r => r.json()).then(models => {
-        const choices = models.map(m => m.provider + "/" + m.model).join("\n");
-        const picked = prompt("model (current: " + current + ")\n" + choices);
-        if (picked) setChipValue("model", picked);
-      });
-      return;
-    }
     if (kind === "working_dir") {
       value = prompt("working directory (absolute path)", current);
     } else if (kind === "branch") {
@@ -110,6 +124,43 @@
       value = current === "full" ? "read-only" : "full";
     }
     if (value !== null && value !== undefined && value !== "") setChipValue(kind, value);
+  }
+
+  function openModelPicker(chip) {
+    // Remove any existing picker (toggle)
+    const existing = document.querySelector(".chip-picker");
+    if (existing) { existing.remove(); return; }
+
+    fetch("/api/models").then(r => r.json()).then(models => {
+      const picker = document.createElement("div");
+      picker.className = "chip-picker";
+      models.forEach(m => {
+        const opt = document.createElement("div");
+        opt.className = "chip-picker-option";
+        opt.textContent = m.provider + " · " + m.model;
+        opt.addEventListener("click", () => {
+          setChipValue("model", m.provider + "/" + m.model);
+          picker.remove();
+        });
+        picker.appendChild(opt);
+      });
+      chip.parentNode.style.position = "relative";
+      chip.parentNode.appendChild(picker);
+      picker.style.position = "absolute";
+      picker.style.top = (chip.offsetTop + chip.offsetHeight + 4) + "px";
+      picker.style.left = chip.offsetLeft + "px";
+      picker.style.zIndex = "50";
+
+      setTimeout(() => {
+        const offClick = (e) => {
+          if (!picker.contains(e.target)) {
+            picker.remove();
+            document.removeEventListener("click", offClick);
+          }
+        };
+        document.addEventListener("click", offClick);
+      }, 0);
+    });
   }
 
   // Re-init whenever a spawn form appears in the DOM (initial load or
