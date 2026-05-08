@@ -16,6 +16,12 @@ Build the standalone one-shot client (no agent loop):
 make build-llmcall
 ```
 
+Build the multi-session web orchestrator:
+
+```bash
+make build-hub
+```
+
 ## Usage
 
 ```
@@ -216,6 +222,52 @@ All flags from the `serf` CLI are supported, plus `--addr` for remote connection
 - **Tool inspection**: Collapse/expand tool calls and view arguments
 - **User input**: Send messages and provide input to the agent
 - **Session support**: Full session persistence and resume capabilities
+
+## Serf Hub (Web Orchestrator)
+
+`serf-hub` is a sibling binary that aggregates many `serf serve` daemons running on the same host into a single browser UI: live drive pages with SSE streaming, a search-and-resume view of past sessions, and a spawn form for starting new daemons from named templates.
+
+### Build
+
+```bash
+make build-hub
+```
+
+### Usage
+
+```bash
+# Run a few daemons (any working dirs)
+serf serve --provider openai --model gpt-5-mini-2025-08-07 --addr 127.0.0.1:0 --dir /path/to/repo &
+
+# Start the hub (default 127.0.0.1:9180)
+serf-hub
+```
+
+Open `http://127.0.0.1:9180` to see live daemons, search past sessions, and drive any session through your browser.
+
+### Configuration
+
+`serf-hub` reads `~/.serf/hub.toml` for spawn templates and basic settings:
+
+```toml
+addr = "127.0.0.1:9180"
+spawn_timeout = "30s"
+past_results_per_page = 50
+
+[[spawn_template]]
+name = "openai gpt-5"
+provider = "openai"
+model = "gpt-5"
+agent = "default"
+```
+
+### Architecture
+
+- **Daemons** are loopback-only `serf serve` processes. Each writes a rendezvous file to `~/.serf/run/<pid>.json` so the hub can discover them.
+- **Hub** binds the browser-facing port and proxies REST + SSE to the daemon resolved from `session_id` lookups.
+- **Browser** never talks to a daemon directly. CSRF/DNS-rebinding defense is the hub's `Origin`/`Host` guard plus a strict CSP header.
+
+Design spec, plans, and notes live under `docs/superpowers/`.
 
 ## Acknowledgments
 
