@@ -14,6 +14,21 @@ import (
 	"time"
 
 	"primeradiant.com/serf/rendezvous"
+
+	// Side-effect imports register provider adapters. These are the same
+	// adapters `serf serve` uses, so the hub's /api/models reflects what
+	// spawning will succeed at — only providers configured in the hub's
+	// environment surface in the picker.
+	_ "primeradiant.com/serf/llm/providers/anthropic"
+	_ "primeradiant.com/serf/llm/providers/glm"
+	_ "primeradiant.com/serf/llm/providers/google"
+	_ "primeradiant.com/serf/llm/providers/kimi"
+	_ "primeradiant.com/serf/llm/providers/minimax"
+	_ "primeradiant.com/serf/llm/providers/ollama"
+	_ "primeradiant.com/serf/llm/providers/openai"
+	_ "primeradiant.com/serf/llm/providers/openaicompat"
+	_ "primeradiant.com/serf/llm/providers/openrouter"
+	_ "primeradiant.com/serf/llm/providers/openrouter_anthropic"
 )
 
 const Version = "0.1.0"

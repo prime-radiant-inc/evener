@@ -901,8 +901,24 @@ func parseModel(s string) (provider, model string) {
 	return "", s
 }
 
-// handleApiModels returns the list of available models from the bundled catalog.
+// handleApiModels returns the models the hub can spawn for. Source uses the
+// same provider-discovery logic that `serf serve` uses (llm.NewFromEnv), so
+// what shows here matches what spawning will succeed at — no provider listed
+// without an API key, none missing if one is configured. Models metadata
+// (context window, pricing) comes from the bundled catalog.
+//
+// Future: when the hub talks to a remote serf daemon, the model list should
+// come from that daemon's /models endpoint, not the hub binary's compile-time
+// catalog. This handler is the seam to swap.
 func (s *WebServer) handleApiModels(w http.ResponseWriter, r *http.Request) {
+	// Discover providers configured in the hub's environment.
+	configured := map[string]bool{}
+	if c, err := llm.NewFromEnv(); err == nil && c != nil {
+		for _, name := range c.ProviderNames() {
+			configured[strings.ToLower(name)] = true
+		}
+	}
+
 	cat := llm.EmbeddedModelCatalog()
 	var out []map[string]any
 	if cat != nil {
@@ -911,14 +927,21 @@ func (s *WebServer) handleApiModels(w http.ResponseWriter, r *http.Request) {
 			if m.ContextWindow == 0 || strings.Contains(strings.ToLower(m.ID), "embedding") {
 				continue
 			}
+			// Only surface models for providers the hub can actually spawn for.
+			// If no providers were discovered (unusual — e.g. dev with no env
+			// vars set), fall back to showing the full catalog so the UI is
+			// still useful.
+			if len(configured) > 0 && !configured[strings.ToLower(m.Provider)] {
+				continue
+			}
 			entry := map[string]any{
-				"provider":               m.Provider,
-				"model":                  m.ID,
-				"display_name":           m.DisplayName,
-				"context_window":         m.ContextWindow,
-				"supports_tools":         m.SupportsTools,
-				"supports_reasoning":     m.SupportsReasoning,
-				"input_cost_per_million": m.InputCostPerMillion,
+				"provider":                m.Provider,
+				"model":                   m.ID,
+				"display_name":            m.DisplayName,
+				"context_window":          m.ContextWindow,
+				"supports_tools":          m.SupportsTools,
+				"supports_reasoning":      m.SupportsReasoning,
+				"input_cost_per_million":  m.InputCostPerMillion,
 				"output_cost_per_million": m.OutputCostPerMillion,
 			}
 			out = append(out, entry)
