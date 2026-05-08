@@ -139,9 +139,12 @@ func TestInputEndpoint_Accepted(t *testing.T) {
 	}
 
 	select {
-	case text := <-srv.InputCh():
-		if text != "hello world" {
-			t.Errorf("input: got %q, want %q", text, "hello world")
+	case msg := <-srv.InputCh():
+		if msg.Text != "hello world" {
+			t.Errorf("input: got %q, want %q", msg.Text, "hello world")
+		}
+		if len(msg.Images) != 0 {
+			t.Errorf("images: got %d, want 0", len(msg.Images))
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timeout reading input")
@@ -163,7 +166,7 @@ func TestInputEndpoint_Conflict(t *testing.T) {
 	}
 }
 
-func TestInputEndpoint_EmptyText(t *testing.T) {
+func TestInputEndpoint_EmptyTextAndNoImages(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetProcessing(false)
 
@@ -175,6 +178,83 @@ func TestInputEndpoint_EmptyText(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status code: got %d, want 400", w.Code)
+	}
+}
+
+func TestInputEndpoint_TextAndImage(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetProcessing(false)
+
+	// 1x1 transparent PNG
+	pngBytes := []byte{0x89, 0x50, 0x4e, 0x47}
+	reqBody := InputRequest{
+		Text: "caption",
+		Images: []ImageAttachment{
+			{MediaType: "image/png", Data: pngBytes, Name: "x.png"},
+		},
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/input", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status code: got %d, want 202", w.Code)
+	}
+
+	select {
+	case msg := <-srv.InputCh():
+		if msg.Text != "caption" {
+			t.Errorf("text: got %q, want %q", msg.Text, "caption")
+		}
+		if len(msg.Images) != 1 {
+			t.Fatalf("images: got %d, want 1", len(msg.Images))
+		}
+		if msg.Images[0].MediaType != "image/png" {
+			t.Errorf("media_type: got %q, want image/png", msg.Images[0].MediaType)
+		}
+		if msg.Images[0].Name != "x.png" {
+			t.Errorf("name: got %q, want x.png", msg.Images[0].Name)
+		}
+		if string(msg.Images[0].Data) != string(pngBytes) {
+			t.Errorf("data mismatch")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout reading input")
+	}
+}
+
+func TestInputEndpoint_ImageOnly(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetProcessing(false)
+
+	reqBody := InputRequest{
+		Text: "",
+		Images: []ImageAttachment{
+			{MediaType: "image/png", Data: []byte{0x89, 0x50}, Name: "x.png"},
+		},
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/input", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status code: got %d, want 202", w.Code)
+	}
+
+	select {
+	case msg := <-srv.InputCh():
+		if msg.Text != "" {
+			t.Errorf("text: got %q, want empty", msg.Text)
+		}
+		if len(msg.Images) != 1 {
+			t.Fatalf("images: got %d, want 1", len(msg.Images))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout reading input")
 	}
 }
 

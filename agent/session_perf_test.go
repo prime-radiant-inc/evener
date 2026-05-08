@@ -332,7 +332,7 @@ func TestHistoryCopyReduction_ContextAndExpansionShareCopy(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	out, err := sess.ProcessInput(ctx, "test")
+	out, err := sess.ProcessInput(ctx, "test", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -393,7 +393,7 @@ func TestAfterAction_ReceivesCurrentHistory(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "test")
+	_, err = sess.ProcessInput(ctx, "test", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -594,7 +594,7 @@ func TestSystemPromptConsistency_WithAndWithoutCache(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "hi")
+	_, err = sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -690,7 +690,7 @@ func TestSession_CachedProjectDocsUsedInSystemPrompt(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if _, err := sess.ProcessInput(ctx, "hello"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 	sess.Close()
@@ -891,7 +891,7 @@ func TestSession_MaybeAutoSave_WritesMetaNotSnapshot(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if _, err := sess.ProcessInput(ctx, "hello"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 	sess.Close()
@@ -1000,7 +1000,7 @@ func TestRestoreSession_FromMetaAndTranscript(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "continue"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "continue", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 
@@ -1055,7 +1055,7 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "test"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "test", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 
@@ -1111,7 +1111,7 @@ func TestRestoreSessionFromMeta_TranscriptWithCompaction(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "continue"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "continue", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 

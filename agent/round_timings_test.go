@@ -93,7 +93,7 @@ func TestRoundTimings_Emitted(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	out, err := sess.ProcessInput(ctx, "hello")
+	out, err := sess.ProcessInput(ctx, "hello", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -202,7 +202,7 @@ func BenchmarkRoundOverhead(b *testing.B) {
 		}()
 
 		ctx := context.Background()
-		_, err = sess.ProcessInput(ctx, "benchmark task")
+		_, err = sess.ProcessInput(ctx, "benchmark task", nil)
 		if err != nil {
 			b.Fatalf("ProcessInput: %v", err)
 		}

@@ -50,7 +50,7 @@ func TestUseSkill_ReturnsBody(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "greet Jesse")
+	_, err = sess.ProcessInput(ctx, "greet Jesse", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestUseSkill_EmitsEvent(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "deploy")
+	_, err = sess.ProcessInput(ctx, "deploy", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestUseSkill_SystemPromptContainsSkillList(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, _ = sess.ProcessInput(ctx, "hi")
+	_, _ = sess.ProcessInput(ctx, "hi", nil)
 	sess.Close()
 
 	if !strings.Contains(capturedSystem, "<skill-catalog>") {
@@ -227,7 +227,7 @@ func TestOpenAI_SkillsSectionWithFilePaths(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, _ = sess.ProcessInput(ctx, "hi")
+	_, _ = sess.ProcessInput(ctx, "hi", nil)
 	sess.Close()
 
 	// OpenAI should have skills listed with file paths for read_file access.

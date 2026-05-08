@@ -972,7 +972,7 @@ func TestSession_TranscriptRecordsTurns(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := sess.ProcessInput(ctx, "hello")
+	out, err := sess.ProcessInput(ctx, "hello", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -1258,7 +1258,7 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 	defer cancel()
 
 	// First input: reads big file, fills context.
-	out1, err := sess.ProcessInput(ctx, "read the big file")
+	out1, err := sess.ProcessInput(ctx, "read the big file", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput 1: %v", err)
 	}
@@ -1267,7 +1267,7 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 	}
 
 	// Second input: reads again, should trigger compaction.
-	out2, err := sess.ProcessInput(ctx, "read it again")
+	out2, err := sess.ProcessInput(ctx, "read it again", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput 2: %v", err)
 	}
@@ -1677,7 +1677,7 @@ func TestSession_TranscriptWriteFailureEmitsWarning(t *testing.T) {
 	// Process input: should succeed despite transcript failures.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := sess.ProcessInput(ctx, "hello")
+	out, err := sess.ProcessInput(ctx, "hello", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput failed: %v", err)
 	}

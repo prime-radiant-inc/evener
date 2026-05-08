@@ -275,7 +275,7 @@ func TestRecallStrategy_Integration_ViaTool(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	out, err := sess.ProcessInput(ctx, "What was said earlier?")
+	out, err := sess.ProcessInput(ctx, "What was said earlier?", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

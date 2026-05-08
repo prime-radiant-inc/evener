@@ -446,7 +446,7 @@ func communicateNudge(toolName string) string {
 }
 
 func (a *subagent) run(ctx context.Context, input string) {
-	res, err := a.sess.ProcessInput(ctx, input)
+	res, err := a.sess.ProcessInput(ctx, input, nil)
 
 	// Auto-nudge: if a default subagent stops without calling communicate,
 	// send one reminder and let it try again. This covers both empty stops
@@ -456,7 +456,7 @@ func (a *subagent) run(ctx context.Context, input string) {
 		!a.sess.Communicated() &&
 		(err == nil || errors.Is(err, errBareTextWithoutResultTool))
 	if shouldNudge {
-		res, err = a.sess.ProcessInput(ctx, communicateNudge(a.sess.resultToolName()))
+		res, err = a.sess.ProcessInput(ctx, communicateNudge(a.sess.resultToolName()), nil)
 	}
 
 	a.sess.mu.Lock()

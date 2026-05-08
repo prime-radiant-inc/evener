@@ -588,7 +588,7 @@ func TestLive_Session_WithPlugin(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	result, err := sess.ProcessInput(ctx, "What is 2+2? Reply with just the number.")
+	result, err := sess.ProcessInput(ctx, "What is 2+2? Reply with just the number.", nil)
 	sess.Close()
 	<-done
 
@@ -671,7 +671,7 @@ func TestLive_Session_MCPToolCall(t *testing.T) {
 
 	result, err := sess.ProcessInput(ctx,
 		fmt.Sprintf("Use the %s tool to echo the message 'integration test passed'. "+
-			"Then report what the tool returned.", echoToolName))
+			"Then report what the tool returned.", echoToolName), nil)
 	sess.Close()
 	<-done
 
@@ -738,7 +738,7 @@ func TestLive_Session_PluginAgentsInSystemPrompt(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	result, err := sess.ProcessInput(ctx, "hello")
+	result, err := sess.ProcessInput(ctx, "hello", nil)
 	sess.Close()
 
 	if err != nil {
@@ -873,7 +873,7 @@ func TestLive_Session_RealSuperpowersPlugin(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	result, err := sess.ProcessInput(ctx, "hi")
+	result, err := sess.ProcessInput(ctx, "hi", nil)
 	sess.Close()
 
 	if err != nil {

@@ -988,7 +988,7 @@ func TestSession_ContextManager_AccumulatesUsage(t *testing.T) {
 	defer sess.Close()
 
 	ctx := context.Background()
-	_, err = sess.ProcessInput(ctx, "hi")
+	_, err = sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -1065,7 +1065,7 @@ func TestSession_ContextManager_CompactsWhenNeeded(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	_, err = sess.ProcessInput(ctx, "read the file")
+	_, err = sess.ProcessInput(ctx, "read the file", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -1134,7 +1134,7 @@ func TestSession_ContextManager_EmitsEvents(t *testing.T) {
 	}()
 
 	ctx := context.Background()
-	_, err = sess.ProcessInput(ctx, "read the file")
+	_, err = sess.ProcessInput(ctx, "read the file", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

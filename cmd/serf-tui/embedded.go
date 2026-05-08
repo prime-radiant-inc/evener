@@ -302,14 +302,14 @@ func (e *embeddedServer) inputLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case text, ok := <-e.srv.InputCh():
+		case msg, ok := <-e.srv.InputCh():
 			if !ok {
 				return
 			}
 			sess := e.currentSession()
 			e.srv.SetProcessing(true)
 			e.srv.SetState("PROCESSING")
-			_, processErr := sess.ProcessInput(ctx, text)
+			_, processErr := sess.ProcessInput(ctx, msg.Text, msg.Images)
 			e.srv.SetProcessing(false)
 			e.srv.SetState(string(sess.State()))
 			if processErr != nil {

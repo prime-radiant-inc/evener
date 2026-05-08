@@ -7,7 +7,20 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+
+	"primeradiant.com/serf/agent"
 )
+
+// ImageAttachment is re-exported from package agent so HTTP clients and the
+// session layer share a single type.
+type ImageAttachment = agent.ImageAttachment
+
+// InputMessage is delivered on InputCh() carrying user text plus any
+// attached images.
+type InputMessage struct {
+	Text   string
+	Images []ImageAttachment
+}
 
 // ToolInfo describes a registered tool and its source.
 type ToolInfo struct {
@@ -90,7 +103,7 @@ type Server struct {
 	tasksFn          func() any
 	shutdownFunc     func()
 	processing       bool
-	inputCh          chan string
+	inputCh          chan InputMessage
 }
 
 // NewServer creates a new Server.
@@ -103,7 +116,7 @@ func NewServer(cfg ServerConfig) *Server {
 	s := &Server{
 		mux:         http.NewServeMux(),
 		broadcaster: NewBroadcaster(ringSize),
-		inputCh:     make(chan string, 1),
+		inputCh:     make(chan InputMessage, 1),
 	}
 	s.mux.HandleFunc("/status", s.handleStatus)
 	s.mux.HandleFunc("/interrupt", s.handleInterrupt)
@@ -449,7 +462,8 @@ func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {
 
 // InputRequest is the JSON body for POST /input.
 type InputRequest struct {
-	Text string `json:"text"`
+	Text   string            `json:"text"`
+	Images []ImageAttachment `json:"images,omitempty"`
 }
 
 // SetProcessing marks whether the session is currently processing input.
@@ -459,8 +473,8 @@ func (s *Server) SetProcessing(processing bool) {
 	s.mu.Unlock()
 }
 
-// InputCh returns the channel that receives user input text.
-func (s *Server) InputCh() <-chan string {
+// InputCh returns the channel that receives user input messages.
+func (s *Server) InputCh() <-chan InputMessage {
 	return s.inputCh
 }
 
@@ -484,13 +498,13 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
-	if strings.TrimSpace(req.Text) == "" {
-		http.Error(w, "text is required", http.StatusBadRequest)
+	if strings.TrimSpace(req.Text) == "" && len(req.Images) == 0 {
+		http.Error(w, "text or images required", http.StatusBadRequest)
 		return
 	}
 
 	select {
-	case s.inputCh <- req.Text:
+	case s.inputCh <- InputMessage{Text: req.Text, Images: req.Images}:
 		w.WriteHeader(http.StatusAccepted)
 	default:
 		http.Error(w, "input buffer full", http.StatusConflict)

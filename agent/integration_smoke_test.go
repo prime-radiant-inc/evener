@@ -70,7 +70,7 @@ func TestIntegration_SimpleFileCreation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	_, err := sess.ProcessInput(ctx, "Create a file called hello.txt containing exactly 'Hello, World!' and nothing else. Do not include any extra newlines or whitespace.")
+	_, err := sess.ProcessInput(ctx, "Create a file called hello.txt containing exactly 'Hello, World!' and nothing else. Do not include any extra newlines or whitespace.", nil)
 	sess.Close()
 	events := collectEvents()
 
@@ -114,7 +114,7 @@ func TestIntegration_FileReadAndEdit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	_, err := sess.ProcessInput(ctx, "Read the file story.txt, then edit it to replace 'fox' with 'cat'. Do not change anything else in the file.")
+	_, err := sess.ProcessInput(ctx, "Read the file story.txt, then edit it to replace 'fox' with 'cat'. Do not change anything else in the file.", nil)
 	sess.Close()
 
 	if err != nil {
@@ -142,7 +142,7 @@ func TestIntegration_ShellCommand(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	output, err := sess.ProcessInput(ctx, "Run the shell command: echo 'hello from shell'. Report the output.")
+	output, err := sess.ProcessInput(ctx, "Run the shell command: echo 'hello from shell'. Report the output.", nil)
 	sess.Close()
 	events := collectEvents()
 
@@ -201,7 +201,7 @@ func TestIntegration_ToolOutputTruncation(t *testing.T) {
 
 	// The key assertion is that ProcessInput completes without crashing or
 	// hanging, even though the file is very large.
-	_, err := sess.ProcessInput(ctx, "Read the file big.txt and tell me how many lines it has.")
+	_, err := sess.ProcessInput(ctx, "Read the file big.txt and tell me how many lines it has.", nil)
 	sess.Close()
 
 	if err != nil {
@@ -222,7 +222,7 @@ func TestIntegration_Steering(t *testing.T) {
 	// the start of processOneInput, before the first LLM call.
 	sess.Steer("IMPORTANT: Before doing anything else, create a file called steered.txt with the content 'steering works'.")
 
-	_, err := sess.ProcessInput(ctx, "Create a file called main.txt with the content 'main task'.")
+	_, err := sess.ProcessInput(ctx, "Create a file called main.txt with the content 'main task'.", nil)
 	sess.Close()
 	events := collectEvents()
 
@@ -279,7 +279,7 @@ func TestIntegration_Subagent(t *testing.T) {
 	_, err = sess.ProcessInput(ctx,
 		"Spawn a sub-agent (do NOT set a working_dir) with the task: "+
 			"'Create a file called subagent_output.txt containing exactly the text: created by subagent'. "+
-			"Wait for it to finish, then close it. Do not use the task_list tool.")
+			"Wait for it to finish, then close it. Do not use the task_list tool.", nil)
 	sess.Close()
 	events := collectEvents()
 
@@ -346,7 +346,7 @@ func TestIntegration_Timeout(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	_, err := sess.ProcessInput(ctx, "Write a detailed 5000-word essay about the history of computing.")
+	_, err := sess.ProcessInput(ctx, "Write a detailed 5000-word essay about the history of computing.", nil)
 
 	elapsed := time.Since(start)
 	// Session is closed by ProcessInput on context cancellation.

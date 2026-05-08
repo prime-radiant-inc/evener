@@ -55,7 +55,7 @@ func TestEmptyResponse_RetriesWithSteering(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	out, err := sess.ProcessInput(ctx, "do the task")
+	out, err := sess.ProcessInput(ctx, "do the task", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestEmptyResponse_ExhaustsRetries(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	out, err := sess.ProcessInput(ctx, "do the task")
+	out, err := sess.ProcessInput(ctx, "do the task", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestEmptyResponse_ResetsOnProgress(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	out, err := sess.ProcessInput(ctx, "do the task")
+	out, err := sess.ProcessInput(ctx, "do the task", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestEmptyResponse_DoesNotConsumeToolRounds(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	out, err := sess.ProcessInput(ctx, "do the task")
+	out, err := sess.ProcessInput(ctx, "do the task", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestBareText_DoesNotConsumeToolRounds(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	out, err := sess.ProcessInput(ctx, "do the task")
+	out, err := sess.ProcessInput(ctx, "do the task", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestBareText_RedirectsToCommunicate(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := sess.ProcessInput(ctx, "do the task")
+	out, err := sess.ProcessInput(ctx, "do the task", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -345,7 +345,7 @@ func TestBareText_ExhaustsRetries(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	out, err := sess.ProcessInput(ctx, "do the task")
+	out, err := sess.ProcessInput(ctx, "do the task", nil)
 	if err == nil {
 		t.Fatalf("expected bare-text contract error, got output %q", out)
 	}
@@ -418,7 +418,7 @@ func TestEmptyResponse_PhasePreservedInHistory(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	out, err := sess.ProcessInput(ctx, "do the task")
+	out, err := sess.ProcessInput(ctx, "do the task", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

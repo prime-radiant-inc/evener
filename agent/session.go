@@ -1187,7 +1187,7 @@ func (s *Session) extractOriginalTask() string {
 	return s.cfg.SubagentTask
 }
 
-func (s *Session) ProcessInput(ctx context.Context, input string) (string, error) {
+func (s *Session) ProcessInput(ctx context.Context, input string, images []ImageAttachment) (string, error) {
 	// Reset so SESSION_END can fire at the end of this input's processing.
 	s.mu.Lock()
 	s.sessionEndEmitted = false
@@ -1195,8 +1195,11 @@ func (s *Session) ProcessInput(ctx context.Context, input string) (string, error
 
 	outputs := []string{}
 	next := input
+	nextImages := images
 	for {
-		out, err := s.processOneInput(ctx, next)
+		out, err := s.processOneInput(ctx, next, nextImages)
+		// Follow-up turns (after the first) carry no attachments.
+		nextImages = nil
 		if strings.TrimSpace(out) != "" {
 			outputs = append(outputs, out)
 		}
@@ -1465,7 +1468,7 @@ func (s *Session) hookInput(event HookEvent) HookInput {
 	}
 }
 
-func (s *Session) processOneInput(ctx context.Context, input string) (string, error) {
+func (s *Session) processOneInput(ctx context.Context, input string, images []ImageAttachment) (string, error) {
 	// Derive a context that cancels when either the caller's ctx or the session ctx cancels.
 	ctx, cancel := context.WithCancel(ctx)
 	go func() {
@@ -1498,7 +1501,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 	}
 
 	s.emit(EventUserInput, UserInputData{Text: input})
-	s.appendTurn(TurnUserInput, llm.User(input))
+	s.appendTurn(TurnUserInput, buildUserInputMessage(input, images))
 
 	// UserPromptSubmit hooks
 	if s.hookRunner != nil {

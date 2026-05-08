@@ -50,7 +50,7 @@ func TestWebSearch_MakesGroundingCall(t *testing.T) {
 	}
 	defer sess.Close()
 
-	out, err := sess.ProcessInput(context.Background(), "When was Go 1.23 released?")
+	out, err := sess.ProcessInput(context.Background(), "When was Go 1.23 released?", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

@@ -63,7 +63,7 @@ func TestSession_MaxToolRoundsPerInput_StopsLoop(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "loop")
+	_, err = sess.ProcessInput(ctx, "loop", nil)
 	if err != nil {
 		t.Fatalf("round limit should return nil error, got %v", err)
 	}
@@ -110,7 +110,7 @@ func TestSession_MaxToolRoundsPerInput_EmitsTurnLimitEvent(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "loop")
+	_, err = sess.ProcessInput(ctx, "loop", nil)
 	if err != nil {
 		t.Fatalf("round limit should return nil error, got %v", err)
 	}
@@ -169,7 +169,7 @@ func TestSession_MaxToolRoundsPerInput_NegativeMeansUnlimited(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	result, err := sess.ProcessInput(ctx, "do stuff")
+	result, err := sess.ProcessInput(ctx, "do stuff", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestSession_EventSystem_NaturalCompletion_EmitsUserAndAssistantTextEventsIn
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if out, err := sess.ProcessInput(ctx, "hi"); err != nil || strings.TrimSpace(out) != "hello" {
+	if out, err := sess.ProcessInput(ctx, "hi", nil); err != nil || strings.TrimSpace(out) != "hello" {
 		t.Fatalf("ProcessInput: out=%q err=%v", out, err)
 	}
 	sess.Close()
@@ -304,7 +304,7 @@ func TestSession_EventSystem_ToolCall_EmitsStartDeltaEnd(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if out, err := sess.ProcessInput(ctx, "write"); err != nil || strings.TrimSpace(out) != "ok" {
+	if out, err := sess.ProcessInput(ctx, "write", nil); err != nil || strings.TrimSpace(out) != "ok" {
 		t.Fatalf("ProcessInput: out=%q err=%v", out, err)
 	}
 	sess.Close()
@@ -369,13 +369,13 @@ func TestSession_MaxTurns_StopsAcrossInputsAndEmitsEvent(t *testing.T) {
 	defer cancel()
 
 	// First input should succeed (turn 1 of 1).
-	_, err = sess.ProcessInput(ctx, "first input")
+	_, err = sess.ProcessInput(ctx, "first input", nil)
 	if err != nil {
 		t.Fatalf("expected first input to succeed, got %v", err)
 	}
 
 	// Second input should hit the turn limit but return nil error.
-	_, err = sess.ProcessInput(ctx, "second input")
+	_, err = sess.ProcessInput(ctx, "second input", nil)
 	if err != nil {
 		t.Fatalf("turn limit should return nil error, got %v", err)
 	}
@@ -410,10 +410,10 @@ func TestSession_MultipleSequentialInputs_Work(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if out, err := sess.ProcessInput(ctx, "one"); err != nil || strings.TrimSpace(out) != "first" {
+	if out, err := sess.ProcessInput(ctx, "one", nil); err != nil || strings.TrimSpace(out) != "first" {
 		t.Fatalf("first: out=%q err=%v", out, err)
 	}
-	if out, err := sess.ProcessInput(ctx, "two"); err != nil || strings.TrimSpace(out) != "second" {
+	if out, err := sess.ProcessInput(ctx, "two", nil); err != nil || strings.TrimSpace(out) != "second" {
 		t.Fatalf("second: out=%q err=%v", out, err)
 	}
 	sess.Close()
@@ -487,7 +487,7 @@ func TestSession_Steer_IsInjectedAfterCurrentToolRound(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		out, err := sess.ProcessInput(ctx, "run")
+		out, err := sess.ProcessInput(ctx, "run", nil)
 		done <- result{out: out, err: err}
 	}()
 
@@ -603,7 +603,7 @@ func TestSession_ReasoningEffort_PassedThroughAndCanChange(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := sess.ProcessInput(ctx, "run")
+		_, err := sess.ProcessInput(ctx, "run", nil)
 		done <- err
 	}()
 
@@ -678,7 +678,7 @@ func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) 
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, strings.Repeat("a", 40))
+	_, err = sess.ProcessInput(ctx, strings.Repeat("a", 40), nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -717,7 +717,7 @@ func TestSession_ContextWindowAwareness_DoesNotWarnUnderThreshold(t *testing.T) 
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, strings.Repeat("a", 40))
+	_, err = sess.ProcessInput(ctx, strings.Repeat("a", 40), nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -777,7 +777,7 @@ func TestSession_AbortSignal_ClosesSessionAndEmitsSessionEnd(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := sess.ProcessInput(ctx, "run")
+		_, err := sess.ProcessInput(ctx, "run", nil)
 		done <- err
 	}()
 
@@ -934,7 +934,7 @@ func TestSession_AuthenticationError_ClosesSession(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "hi")
+	_, err = sess.ProcessInput(ctx, "hi", nil)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -972,7 +972,7 @@ func TestSession_ContextLengthError_EmitsWarningAndClosesSession(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "hi")
+	_, err = sess.ProcessInput(ctx, "hi", nil)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -1012,7 +1012,7 @@ func TestSession_LLMError_EmitsErrorEvent(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "hi")
+	_, err = sess.ProcessInput(ctx, "hi", nil)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -1061,7 +1061,7 @@ func TestSession_LLMTransientErrors_RetryWithBackoff(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := sess.ProcessInput(ctx, "hi")
+	out, err := sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -1582,7 +1582,7 @@ func TestSession_ShellTool_UsesDefaultTimeoutAndAllowsOverride(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "run"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "run", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 	sess.Close()
@@ -1621,7 +1621,7 @@ func TestSession_ShellTool_UsesDefaultTimeoutAndAllowsOverride(t *testing.T) {
 	}
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel2()
-	if _, err := sess2.ProcessInput(ctx2, "run"); err != nil {
+	if _, err := sess2.ProcessInput(ctx2, "run", nil); err != nil {
 		t.Fatalf("ProcessInput2: %v", err)
 	}
 	sess2.Close()
@@ -1663,7 +1663,7 @@ func TestSession_ShellTool_CapsTimeoutToMaxCommandTimeoutMS(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "run"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "run", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 	sess.Close()
@@ -1705,7 +1705,7 @@ func TestSession_ShellTool_TimeoutAppendsMessageToToolResult(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "run"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "run", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 	sess.Close()
@@ -1886,7 +1886,7 @@ func TestProcessInput_ToolChoiceIsRequired(t *testing.T) {
 		for range sess.Events() {
 		}
 	}()
-	_, _ = sess.ProcessInput(context.Background(), "hello")
+	_, _ = sess.ProcessInput(context.Background(), "hello", nil)
 }
 
 func TestProcessInput_DrainsSteeringBeforeFirstLLMCall(t *testing.T) {
@@ -1919,7 +1919,7 @@ func TestProcessInput_DrainsSteeringBeforeFirstLLMCall(t *testing.T) {
 
 	// Queue steering BEFORE ProcessInput
 	sess.Steer("do it differently")
-	_, _ = sess.ProcessInput(context.Background(), "hello")
+	_, _ = sess.ProcessInput(context.Background(), "hello", nil)
 
 	// The steering message should appear in the first LLM request
 	found := false
@@ -2003,7 +2003,7 @@ func TestLoopDetection_PatternLength2(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "test")
+	_, err = sess.ProcessInput(ctx, "test", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -2046,7 +2046,7 @@ func TestProviderOptions_PassedToLLMRequest(t *testing.T) {
 		}
 	}()
 
-	_, err = sess.ProcessInput(context.Background(), "hello")
+	_, err = sess.ProcessInput(context.Background(), "hello", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -2129,17 +2129,17 @@ func TestMaxTurns_CountsConversationTurns(t *testing.T) {
 	}()
 
 	// First input (turn 1): should work (even with tool round)
-	_, err = sess.ProcessInput(context.Background(), "first")
+	_, err = sess.ProcessInput(context.Background(), "first", nil)
 	if err != nil {
 		t.Fatalf("first input: %v", err)
 	}
 	// Second input (turn 2): should work
-	_, err = sess.ProcessInput(context.Background(), "second")
+	_, err = sess.ProcessInput(context.Background(), "second", nil)
 	if err != nil {
 		t.Fatalf("second input: %v", err)
 	}
 	// Third input (turn 3): should hit limit but return nil error
-	_, err = sess.ProcessInput(context.Background(), "third")
+	_, err = sess.ProcessInput(context.Background(), "third", nil)
 	if err != nil {
 		t.Fatalf("turn limit should return nil error, got: %v", err)
 	}
@@ -2175,7 +2175,7 @@ func TestAssistantTurn_CapturesUsageAndResponseID(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "hi")
+	_, err = sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -2271,7 +2271,7 @@ func TestSession_GracefulShutdown_SessionEndIncludesStateAndTurns(t *testing.T) 
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "hi"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "hi", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 	sess.Close()
@@ -2329,7 +2329,7 @@ func TestSession_ToolResults_AggregatedIntoSingleTurn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err = sess.ProcessInput(ctx, "write two files")
+	_, err = sess.ProcessInput(ctx, "write two files", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -2396,7 +2396,7 @@ func TestSession_ToolResults_ContainsAllCallIDs(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err = sess.ProcessInput(ctx, "write two files")
+	_, err = sess.ProcessInput(ctx, "write two files", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -2465,7 +2465,7 @@ func TestSession_ToolResults_SingleCallAlsoAggregated(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err = sess.ProcessInput(ctx, "write file")
+	_, err = sess.ProcessInput(ctx, "write file", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -2518,7 +2518,7 @@ func TestSession_AwaitingInput_QuestionMarkResponse(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "hello")
+	_, err = sess.ProcessInput(ctx, "hello", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -2557,7 +2557,7 @@ func TestSession_AwaitingInput_DeclarativeResponse_GoesIdle(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "do something")
+	_, err = sess.ProcessInput(ctx, "do something", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -2604,7 +2604,7 @@ func TestSession_AwaitingInput_TransitionsToProcessing(t *testing.T) {
 	defer cancel()
 
 	// First input: question → AWAITING_INPUT
-	_, err = sess.ProcessInput(ctx, "write code")
+	_, err = sess.ProcessInput(ctx, "write code", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput #1: %v", err)
 	}
@@ -2613,7 +2613,7 @@ func TestSession_AwaitingInput_TransitionsToProcessing(t *testing.T) {
 	}
 
 	// Second input: AWAITING_INPUT → PROCESSING → IDLE
-	_, err = sess.ProcessInput(ctx, "Go")
+	_, err = sess.ProcessInput(ctx, "Go", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput #2: %v", err)
 	}
@@ -2647,13 +2647,13 @@ func TestSession_MaxTurns_SetsStateToIdle(t *testing.T) {
 
 	ctx := context.Background()
 	// First input succeeds (turn 1 of 1).
-	_, err = sess.ProcessInput(ctx, "first")
+	_, err = sess.ProcessInput(ctx, "first", nil)
 	if err != nil {
 		t.Fatalf("first input: %v", err)
 	}
 
 	// Second input hits the turn limit but returns nil error.
-	_, err = sess.ProcessInput(ctx, "second")
+	_, err = sess.ProcessInput(ctx, "second", nil)
 	if err != nil {
 		t.Fatalf("turn limit should return nil error, got %v", err)
 	}
@@ -2692,7 +2692,7 @@ func TestSession_SessionEnd_AfterProcessInput(t *testing.T) {
 	}()
 
 	ctx := context.Background()
-	_, err = sess.ProcessInput(ctx, "hi")
+	_, err = sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -2769,7 +2769,7 @@ func TestSession_ToolNameMapping_ReverseDispatch(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "run a command")
+	_, err = sess.ProcessInput(ctx, "run a command", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -2865,7 +2865,7 @@ func TestSession_ToolNameMapping_EventsUseCanonicalName(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "search files")
+	_, err = sess.ProcessInput(ctx, "search files", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -2935,7 +2935,7 @@ func TestSession_ShellDescription_IncludedInToolCallStartEvent(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "list files")
+	_, err = sess.ProcessInput(ctx, "list files", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -3008,7 +3008,7 @@ func TestSession_ReadBeforeWrite_WarnsOnUnreadFile(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "write the file"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "write the file", nil); err != nil {
 		t.Fatal(err)
 	}
 	sess.Close()
@@ -3094,7 +3094,7 @@ func TestSession_ReadBeforeWrite_NoWarningAfterRead(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "read then write"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "read then write", nil); err != nil {
 		t.Fatal(err)
 	}
 	sess.Close()
@@ -3161,7 +3161,7 @@ func TestSession_ReadBeforeWrite_NewFileNoWarning(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "create new file"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "create new file", nil); err != nil {
 		t.Fatal(err)
 	}
 	sess.Close()
@@ -3203,7 +3203,7 @@ func TestSession_ReasoningEffort_MediumPassedThrough(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "hello"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
 	sess.Close()
@@ -3264,7 +3264,7 @@ func TestSession_TaskListUpdateEscalatesReasoningEffort(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "hello"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
 	sess.Close()
@@ -3322,7 +3322,7 @@ func TestSession_TaskList_AppendAndUpdate_EmitToolStateSnapshots(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "go"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "go", nil); err != nil {
 		t.Fatal(err)
 	}
 	sess.Close()
@@ -3420,7 +3420,7 @@ func TestSession_ReasoningEffort_EmptyMeansNoOverride(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "hello"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
 	sess.Close()
@@ -3609,7 +3609,7 @@ func TestSubagent_MaxTurns_DefaultsTo500_NotInheritedFromParent(t *testing.T) {
 	defer sess.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "spawn something"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "spawn something", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -3922,7 +3922,7 @@ func TestSession_RoundLimit_ReturnsNilError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err = sess.ProcessInput(ctx, "loop")
+	_, err = sess.ProcessInput(ctx, "loop", nil)
 	if err != nil {
 		t.Fatalf("round limit should return nil error, got: %v", err)
 	}
@@ -3962,19 +3962,19 @@ func TestSession_TurnLimit_UsesGreaterEqual(t *testing.T) {
 	defer cancel()
 
 	// Turn 1 succeeds.
-	_, err = sess.ProcessInput(ctx, "first")
+	_, err = sess.ProcessInput(ctx, "first", nil)
 	if err != nil {
 		t.Fatalf("first input should succeed: %v", err)
 	}
 
 	// Turn 2 succeeds.
-	_, err = sess.ProcessInput(ctx, "second")
+	_, err = sess.ProcessInput(ctx, "second", nil)
 	if err != nil {
 		t.Fatalf("second input should succeed: %v", err)
 	}
 
 	// Turn 3 should be blocked (turns=3 >= MaxTurns=2).
-	_, err = sess.ProcessInput(ctx, "third")
+	_, err = sess.ProcessInput(ctx, "third", nil)
 	// Under GAP-2.04, the turn limit returns nil error, not an error.
 	if err != nil {
 		t.Fatalf("turn limit should return nil error, got: %v", err)
@@ -4012,13 +4012,13 @@ func TestSession_TurnLimit_ReturnsNilError(t *testing.T) {
 	defer cancel()
 
 	// Turn 1 succeeds.
-	_, err = sess.ProcessInput(ctx, "first")
+	_, err = sess.ProcessInput(ctx, "first", nil)
 	if err != nil {
 		t.Fatalf("first input should succeed: %v", err)
 	}
 
 	// Turn 2 should be blocked but return nil error.
-	_, err = sess.ProcessInput(ctx, "second")
+	_, err = sess.ProcessInput(ctx, "second", nil)
 	if err != nil {
 		t.Fatalf("turn limit should return nil error, got: %v", err)
 	}
@@ -4101,7 +4101,7 @@ func TestSession_SetsGenerousRequestTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, _ = sess.ProcessInput(context.Background(), "hello")
+	_, _ = sess.ProcessInput(context.Background(), "hello", nil)
 
 	f.mu.Lock()
 	defer f.mu.Unlock()

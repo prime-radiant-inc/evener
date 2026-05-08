@@ -78,7 +78,7 @@ func TestCommunicate_ToolChoiceRequired_SetOnRequest(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "hi")
+	_, err = sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestCommunicate_ResultExitsLoop(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := sess.ProcessInput(ctx, "hi")
+	out, err := sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestCommunicate_StructuredOutputExitsLoop(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := sess.ProcessInput(ctx, "hi")
+	out, err := sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestCommunicate_BareTextFallback(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := sess.ProcessInput(ctx, "hi")
+	out, err := sess.ProcessInput(ctx, "hi", nil)
 	if err == nil {
 		t.Fatalf("expected bare-text contract error, got output %q", out)
 	}
@@ -327,7 +327,7 @@ func TestCommunicate_EmitsEvent(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "hi")
+	_, err = sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -376,7 +376,7 @@ func TestCommunicate_AvailableImmediately(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := sess.ProcessInput(ctx, "quick task")
+	out, err := sess.ProcessInput(ctx, "quick task", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

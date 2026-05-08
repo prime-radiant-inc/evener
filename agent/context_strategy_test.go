@@ -153,7 +153,7 @@ func TestSession_ContextStrategy_SpyHooks(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	out, err := sess.ProcessInput(ctx, "hi")
+	out, err := sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

@@ -252,14 +252,14 @@ func runServe(args []string) error {
 			select {
 			case <-ctx.Done():
 				return
-			case text, ok := <-srv.InputCh():
+			case msg, ok := <-srv.InputCh():
 				if !ok {
 					return
 				}
 				sess := getSession()
 				srv.SetProcessing(true)
 				srv.SetState("PROCESSING")
-				result, processErr := sess.ProcessInput(ctx, text)
+				result, processErr := sess.ProcessInput(ctx, msg.Text, msg.Images)
 				srv.SetProcessing(false)
 				srv.SetState(string(sess.State()))
 				if processErr != nil {

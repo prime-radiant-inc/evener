@@ -84,7 +84,7 @@ func TestParity_SimpleFileCreation(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if _, err := sess.ProcessInput(ctx, "create test.txt"); err != nil {
+			if _, err := sess.ProcessInput(ctx, "create test.txt", nil); err != nil {
 				t.Fatal(err)
 			}
 			sess.Close()
@@ -143,7 +143,7 @@ func TestParity_ReadFileThenEdit(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if _, err := sess.ProcessInput(ctx, "edit target.txt"); err != nil {
+			if _, err := sess.ProcessInput(ctx, "edit target.txt", nil); err != nil {
 				t.Fatal(err)
 			}
 			sess.Close()
@@ -182,7 +182,7 @@ func TestParity_ShellCommandExecution(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if _, err := sess.ProcessInput(ctx, "run echo"); err != nil {
+			if _, err := sess.ProcessInput(ctx, "run echo", nil); err != nil {
 				t.Fatal(err)
 			}
 			sess.Close()
@@ -232,7 +232,7 @@ func TestParity_ShellCommandTimeout(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			if _, err := sess.ProcessInput(ctx, "run slow"); err != nil {
+			if _, err := sess.ProcessInput(ctx, "run slow", nil); err != nil {
 				t.Fatal(err)
 			}
 			sess.Close()
@@ -301,7 +301,7 @@ func TestParity_GrepAndGlob(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if _, err := sess.ProcessInput(ctx, "search"); err != nil {
+			if _, err := sess.ProcessInput(ctx, "search", nil); err != nil {
 				t.Fatal(err)
 			}
 			sess.Close()
@@ -352,7 +352,7 @@ func TestParity_MultiStepTask(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if _, err := sess.ProcessInput(ctx, "update config"); err != nil {
+			if _, err := sess.ProcessInput(ctx, "update config", nil); err != nil {
 				t.Fatal(err)
 			}
 			sess.Close()
@@ -395,7 +395,7 @@ func TestParity_ParallelToolCalls(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if _, err := sess.ProcessInput(ctx, "run both"); err != nil {
+			if _, err := sess.ProcessInput(ctx, "run both", nil); err != nil {
 				t.Fatal(err)
 			}
 			sess.Close()
@@ -459,7 +459,7 @@ func TestParity_ErrorRecovery(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			result, err := sess.ProcessInput(ctx, "try reading")
+			result, err := sess.ProcessInput(ctx, "try reading", nil)
 			sess.Close()
 
 			if err != nil {
@@ -511,7 +511,7 @@ func TestParity_LoopDetectionWarning(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			if _, err := sess.ProcessInput(ctx, "do something"); err != nil {
+			if _, err := sess.ProcessInput(ctx, "do something", nil); err != nil {
 				t.Fatal(err)
 			}
 			sess.Close()
@@ -581,7 +581,7 @@ func TestParity_SteeringMidTask(t *testing.T) {
 			defer cancel()
 			done := make(chan string, 1)
 			go func() {
-				result, _ := sess.ProcessInput(ctx, "start")
+				result, _ := sess.ProcessInput(ctx, "start", nil)
 				done <- result
 			}()
 
@@ -648,7 +648,7 @@ func TestParity_MultiFileEdit(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if _, err := sess.ProcessInput(ctx, "edit both files"); err != nil {
+			if _, err := sess.ProcessInput(ctx, "edit both files", nil); err != nil {
 				t.Fatal(err)
 			}
 			sess.Close()
@@ -702,7 +702,7 @@ func TestParity_ToolOutputTruncation(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if _, err := sess.ProcessInput(ctx, "read big file"); err != nil {
+			if _, err := sess.ProcessInput(ctx, "read big file", nil); err != nil {
 				t.Fatal(err)
 			}
 			sess.Close()
@@ -748,12 +748,12 @@ func TestParity_ReasoningEffort(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if _, err := sess.ProcessInput(ctx, "first"); err != nil {
+			if _, err := sess.ProcessInput(ctx, "first", nil); err != nil {
 				t.Fatal(err)
 			}
 
 			sess.SetReasoningEffort("high")
-			if _, err := sess.ProcessInput(ctx, "second"); err != nil {
+			if _, err := sess.ProcessInput(ctx, "second", nil); err != nil {
 				t.Fatal(err)
 			}
 			sess.Close()

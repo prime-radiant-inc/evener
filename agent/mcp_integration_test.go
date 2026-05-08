@@ -137,7 +137,7 @@ func TestMCPIntegration_ToolCallThroughSession(t *testing.T) {
 	tctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	result, err := sess.ProcessInput(tctx, "Greet the world using the MCP tool")
+	result, err := sess.ProcessInput(tctx, "Greet the world using the MCP tool", nil)
 	sess.Close()
 
 	if err != nil {

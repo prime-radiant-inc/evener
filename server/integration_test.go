@@ -45,9 +45,9 @@ func TestIntegration_InputToSSE(t *testing.T) {
 
 	// Read the input from the server's channel
 	select {
-	case text := <-srv.InputCh():
-		if text != "hello" {
-			t.Errorf("input text: got %q, want hello", text)
+	case msg := <-srv.InputCh():
+		if msg.Text != "hello" {
+			t.Errorf("input text: got %q, want hello", msg.Text)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for input")

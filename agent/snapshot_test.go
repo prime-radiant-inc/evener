@@ -280,7 +280,7 @@ func TestRestoreSession_RestoresHistoryAndID(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result, err := sess.ProcessInput(ctx, "continue please")
+	result, err := sess.ProcessInput(ctx, "continue please", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestSession_AutoSave_WritesMetaAfterProcessInput(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err = sess.ProcessInput(ctx, "hello")
+	_, err = sess.ProcessInput(ctx, "hello", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -404,7 +404,7 @@ func TestSession_AutoSave_PersistsToolResults(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	out, err := sess.ProcessInput(ctx, "hello")
+	out, err := sess.ProcessInput(ctx, "hello", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -509,7 +509,7 @@ func TestSession_AutoSave_DoesNotPersistMidToolRound(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := sess.ProcessInput(ctx, "hello")
+		_, err := sess.ProcessInput(ctx, "hello", nil)
 		done <- err
 	}()
 
@@ -588,7 +588,7 @@ func TestRestoreSession_AutoSaveContinues(t *testing.T) {
 	}()
 
 	ctx := context.Background()
-	if _, err := sess.ProcessInput(ctx, "first task"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "first task", nil); err != nil {
 		t.Fatalf("ProcessInput #1: %v", err)
 	}
 	sess.Close()
@@ -625,7 +625,7 @@ func TestRestoreSession_AutoSaveContinues(t *testing.T) {
 		}
 	}()
 
-	if _, err := sess2.ProcessInput(ctx, "second task"); err != nil {
+	if _, err := sess2.ProcessInput(ctx, "second task", nil); err != nil {
 		t.Fatalf("ProcessInput #2: %v", err)
 	}
 	sess2.Close()
@@ -695,7 +695,7 @@ func TestRestoreSession_CanProcessInput(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result, err := sess.ProcessInput(ctx, "test")
+	result, err := sess.ProcessInput(ctx, "test", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -756,7 +756,7 @@ func TestRestoreSession_UsesTranscriptOverSnapshot(t *testing.T) {
 	// Process a new input so we can inspect the history sent to the LLM.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "continue"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "continue", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 
@@ -824,7 +824,7 @@ func TestRestoreSession_FallsBackToSnapshotWithoutTranscript(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "continue"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "continue", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 
@@ -905,7 +905,7 @@ func TestRestoreSession_TranscriptWithCompaction(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "continue after compaction"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "continue after compaction", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 
@@ -1031,7 +1031,7 @@ func TestMetaTurnCount_CountsModelResponses(t *testing.T) {
 	}()
 
 	// One user input, but three model responses (2 tool rounds + 1 final text).
-	if _, err := sess.ProcessInput(context.Background(), "do stuff"); err != nil {
+	if _, err := sess.ProcessInput(context.Background(), "do stuff", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 	sess.Close()

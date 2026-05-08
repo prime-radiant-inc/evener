@@ -73,7 +73,7 @@ func TestProcessInputSimpleTask(t *testing.T) {
 	<-sess.Events()
 
 	ctx := context.Background()
-	result, err := sess.ProcessInput(ctx, "Reply with exactly: HELLO SERF")
+	result, err := sess.ProcessInput(ctx, "Reply with exactly: HELLO SERF", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestProcessInputWithToolUse(t *testing.T) {
 	<-sess.Events()
 
 	ctx := context.Background()
-	_, err = sess.ProcessInput(ctx, "Create a file called hello.txt in the working directory "+tmpDir+" containing exactly the text 'Hello from serf'. Use the write_file tool. Do not explain, just create the file.")
+	_, err = sess.ProcessInput(ctx, "Create a file called hello.txt in the working directory "+tmpDir+" containing exactly the text 'Hello from serf'. Use the write_file tool. Do not explain, just create the file.", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

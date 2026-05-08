@@ -253,7 +253,7 @@ func runEval(cfg evalConfig) error {
 	defer cancel()
 
 	start := time.Now()
-	result, taskErr := sess.ProcessInput(ctx, cfg.task)
+	result, taskErr := sess.ProcessInput(ctx, cfg.task, nil)
 	elapsed := time.Since(start)
 
 	// Grab session history before closing for retention probes.

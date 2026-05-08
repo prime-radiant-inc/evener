@@ -217,7 +217,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		done = drainEventsHuman(sess.Events(), cfg.stderr)
 	}
 
-	result, err := sess.ProcessInput(ctx, task)
+	result, err := sess.ProcessInput(ctx, task, nil)
 	sess.Close()
 	<-done
 

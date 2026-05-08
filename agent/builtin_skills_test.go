@@ -114,7 +114,7 @@ func TestEmbeddedSkills_InSystemPrompt(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, _ = sess.ProcessInput(ctx, "hi")
+	_, _ = sess.ProcessInput(ctx, "hi", nil)
 	sess.Close()
 
 	// With no embedded skills and no project skills, the skill catalog
@@ -157,7 +157,7 @@ func TestOpenAI_SkillsWithFilePathsInSystemPrompt(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, _ = sess.ProcessInput(ctx, "hi")
+	_, _ = sess.ProcessInput(ctx, "hi", nil)
 	sess.Close()
 
 	// OpenAI should have <skill-catalog> section with file paths and read_file guidance.
@@ -205,7 +205,7 @@ func TestEmbeddedSkills_ProjectShadowsEmbedded(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, _ = sess.ProcessInput(ctx, "hi")
+	_, _ = sess.ProcessInput(ctx, "hi", nil)
 	sess.Close()
 
 	// Should have the project override description, not the embedded one.
@@ -256,7 +256,7 @@ func TestEmbeddedSkills_UseSkillWithProjectSkill(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "use my skill")
+	_, err = sess.ProcessInput(ctx, "use my skill", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -302,7 +302,7 @@ func TestEmbeddedSkills_UseSkillUnknownReturnsError(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "check my work")
+	_, err = sess.ProcessInput(ctx, "check my work", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -360,7 +360,7 @@ func TestNonInteractive_SystemPromptContainsGuidance(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, _ = sess.ProcessInput(ctx, "hi")
+	_, _ = sess.ProcessInput(ctx, "hi", nil)
 	sess.Close()
 
 	if !strings.Contains(capturedSystem, "non-interactive") {
@@ -400,7 +400,7 @@ func TestNonInteractive_NotPresentWhenFalse(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, _ = sess.ProcessInput(ctx, "hi")
+	_, _ = sess.ProcessInput(ctx, "hi", nil)
 	sess.Close()
 
 	if strings.Contains(capturedSystem, "no human available") {

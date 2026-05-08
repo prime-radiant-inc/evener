@@ -123,7 +123,7 @@ func TestSession_NaturalCompletion_LoadsOnlyProfileDocs(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := sess.ProcessInput(ctx, "hi")
+	out, err := sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestSession_NaturalCompletion_LoadsOnlyProfileDocs_Anthropic(t *testing.T) 
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := sess.ProcessInput(ctx, "hi")
+	out, err := sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestSession_NaturalCompletion_LoadsOnlyProfileDocs_Gemini(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := sess.ProcessInput(ctx, "hi")
+	out, err := sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestSession_SystemPromptFile_OverridesBasePrompt(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "hello"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -414,7 +414,7 @@ func TestSession_ToolLoop_ExecutesToolsAndContinues(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := sess.ProcessInput(ctx, "write a file")
+	out, err := sess.ProcessInput(ctx, "write a file", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -472,7 +472,7 @@ func TestSession_ToolOutputTruncation_OverridesLimitsAndKeepsFullOutputInEvents(
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	out, err := sess.ProcessInput(ctx, "run a big command")
+	out, err := sess.ProcessInput(ctx, "run a big command", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -569,7 +569,7 @@ func TestSession_ToolOutputTruncation_CanOverrideLineLimitViaSessionConfig(t *te
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	out, err := sess.ProcessInput(ctx, "run")
+	out, err := sess.ProcessInput(ctx, "run", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -664,7 +664,7 @@ func TestSession_ParallelToolCalls_RunConcurrentlyWhenSupported(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := sess.ProcessInput(ctx, "run slow tools")
+		_, err := sess.ProcessInput(ctx, "run slow tools", nil)
 		done <- err
 	}()
 
@@ -748,7 +748,7 @@ func TestSession_ParallelToolCalls_NonReadOnlyToolsSerialize(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "run tools")
+	_, err = sess.ProcessInput(ctx, "run tools", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -802,7 +802,7 @@ func TestSession_SystemPrompt_IncludesGitSnapshot_WhenInGitRepo(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "hi"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "hi", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 	sess.Close()
@@ -856,7 +856,7 @@ func TestSession_UserInstructionOverride_AppendedLastToSystemPrompt(t *testing.T
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "hi"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "hi", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 	sess.Close()
@@ -895,7 +895,7 @@ func TestSession_FollowUp_ProcessesAfterCompletion(t *testing.T) {
 	sess.FollowUp("do second")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := sess.ProcessInput(ctx, "do first")
+	out, err := sess.ProcessInput(ctx, "do first", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -937,7 +937,7 @@ func TestSession_LoopDetection_EmitsEventAndInjectsSteering(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "loop")
+	_, err = sess.ProcessInput(ctx, "loop", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -1052,7 +1052,7 @@ func TestAssistantTextEnd_EnrichedData(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err = sess.ProcessInput(ctx, "test")
+	_, err = sess.ProcessInput(ctx, "test", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -1141,7 +1141,7 @@ func TestSession_WebSearch_FlagSetOnRequest(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "hello")
+	_, err = sess.ProcessInput(ctx, "hello", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -1195,7 +1195,7 @@ func TestSession_PauseTurn_ContinuesLoop(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	result, err := sess.ProcessInput(ctx, "search for something")
+	result, err := sess.ProcessInput(ctx, "search for something", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -1242,7 +1242,7 @@ func TestSession_SessionEnd_EmittedExactlyOnce(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "hello"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
 	sess.Close()
@@ -1304,7 +1304,7 @@ func TestSession_ProjectDocsCachedAtInit(t *testing.T) {
 	defer sess.Close()
 	ctx2, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx2, "write agents.md then verify"); err != nil {
+	if _, err := sess.ProcessInput(ctx2, "write agents.md then verify", nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1337,7 +1337,7 @@ func TestSession_Close_CancelsInFlightLLMCall(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := sess.ProcessInput(context.Background(), "hello")
+		_, err := sess.ProcessInput(context.Background(), "hello", nil)
 		done <- err
 	}()
 
@@ -1427,7 +1427,7 @@ func TestSession_GracefulShutdown_CorrectOrdering(t *testing.T) {
 	processDone := make(chan struct{})
 	go func() {
 		defer close(processDone)
-		_, _ = sess.ProcessInput(context.Background(), "hello")
+		_, _ = sess.ProcessInput(context.Background(), "hello", nil)
 	}()
 
 	// Wait until the LLM call is in-flight, then abort via Close().
@@ -1523,7 +1523,7 @@ func TestSession_CustomRegisteredTool_AppearsInSystemPrompt(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "test"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "test", nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1572,7 +1572,7 @@ func TestSession_ToolCallEnd_UsesOutputKeyOnSuccess(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "test"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "test", nil); err != nil {
 		t.Fatal(err)
 	}
 	sess.Close()
@@ -1652,7 +1652,7 @@ func TestSession_ToolCallEnd_UsesErrorKeyOnFailure(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "read missing file"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "read missing file", nil); err != nil {
 		t.Fatal(err)
 	}
 	sess.Close()
@@ -1721,7 +1721,7 @@ func TestSession_AssistantTextStart_IncludesModel(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "hi"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "hi", nil); err != nil {
 		t.Fatal(err)
 	}
 	sess.Close()
@@ -1799,7 +1799,7 @@ func TestSession_PauseTurn_DoesNotCountAsToolRound(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	result, err := sess.ProcessInput(ctx, "search for something")
+	result, err := sess.ProcessInput(ctx, "search for something", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -1857,7 +1857,7 @@ func TestSession_LoopDetection_WarningWording(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "loop"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "loop", nil); err != nil {
 		t.Fatal(err)
 	}
 	sess.Close()
@@ -1933,7 +1933,7 @@ func TestSession_SetModel_TakesEffectOnNextCall(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if _, err := sess.ProcessInput(ctx, "first"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "first", nil); err != nil {
 		t.Fatal(err)
 	}
 	if capturedModel != "test-model" {
@@ -1941,7 +1941,7 @@ func TestSession_SetModel_TakesEffectOnNextCall(t *testing.T) {
 	}
 
 	sess.SetModel("new-model")
-	if _, err := sess.ProcessInput(ctx, "second"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "second", nil); err != nil {
 		t.Fatal(err)
 	}
 	if capturedModel != "new-model" {
@@ -2032,7 +2032,7 @@ func TestSession_RecordInputTokens_SkipsWebSearchResponse(t *testing.T) {
 	ctx := context.Background()
 
 	// First call: web search response with inflated tokens.
-	if _, err := sess.ProcessInput(ctx, "search something"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "search something", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2043,7 +2043,7 @@ func TestSession_RecordInputTokens_SkipsWebSearchResponse(t *testing.T) {
 	}
 
 	// Second call: normal response.
-	if _, err := sess.ProcessInput(ctx, "follow up"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "follow up", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2080,7 +2080,7 @@ func TestSession_SetModel_UpdatesContextManager(t *testing.T) {
 
 	// After first ProcessInput, contextMgr has InputTokens from 200K profile.
 	ctx := context.Background()
-	if _, err := sess.ProcessInput(ctx, "hello"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2167,7 +2167,7 @@ func TestSession_ContentFilterRecovery_CompactsAndRetries(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	out, err := sess.ProcessInput(ctx, "trigger content filter")
+	out, err := sess.ProcessInput(ctx, "trigger content filter", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput should have recovered, got error: %v", err)
 	}
@@ -2239,7 +2239,7 @@ func TestSession_ContentFilterRecovery_FailsOnSecondFilterHit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	_, err = sess.ProcessInput(ctx, "trigger content filter twice")
+	_, err = sess.ProcessInput(ctx, "trigger content filter twice", nil)
 	if err == nil {
 		t.Fatal("expected error on second content filter hit, got nil")
 	}
@@ -2277,7 +2277,7 @@ func TestSession_SystemPromptAsUser_CombinesIntoOneMessage(t *testing.T) {
 	defer cancel()
 
 	task := "solve the mteb-retrieve task"
-	if _, err := sess.ProcessInput(ctx, task); err != nil {
+	if _, err := sess.ProcessInput(ctx, task, nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 	sess.Close()
@@ -2340,7 +2340,7 @@ func TestSession_Meta_PopulatesOriginalTask(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "write a haiku about goroutines"); err != nil {
+	if _, err := sess.ProcessInput(ctx, "write a haiku about goroutines", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 
@@ -2365,5 +2365,123 @@ func TestSession_Meta_OriginalTask_EmptyForFreshSession(t *testing.T) {
 	meta := sess.Meta()
 	if meta.OriginalTask != "" {
 		t.Fatalf("OriginalTask: got %q, want empty", meta.OriginalTask)
+	}
+}
+
+func TestSession_ProcessInput_WithImage_BuildsMultiPartUserMessage(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("ok") },
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	imgBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+	imgs := []ImageAttachment{
+		{MediaType: "image/png", Data: imgBytes, Name: "test.png"},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "caption", imgs); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	// Check the transcript: the user-input turn should carry both a text part
+	// and an image part.
+	var userTurn *Turn
+	for i := range sess.history {
+		if sess.history[i].Kind == TurnUserInput {
+			userTurn = &sess.history[i]
+			break
+		}
+	}
+	if userTurn == nil {
+		t.Fatal("no TurnUserInput in history")
+	}
+
+	parts := userTurn.Message.Content
+	if len(parts) != 2 {
+		t.Fatalf("user message parts: got %d, want 2 (text + image)", len(parts))
+	}
+
+	var sawText, sawImage bool
+	for _, p := range parts {
+		switch p.Kind {
+		case llm.ContentText:
+			if p.Text != "caption" {
+				t.Errorf("text part: got %q, want %q", p.Text, "caption")
+			}
+			sawText = true
+		case llm.ContentImage:
+			if p.Image == nil {
+				t.Fatal("image part has nil Image")
+			}
+			if p.Image.MediaType != "image/png" {
+				t.Errorf("image media_type: got %q, want image/png", p.Image.MediaType)
+			}
+			if string(p.Image.Data) != string(imgBytes) {
+				t.Errorf("image bytes mismatch")
+			}
+			sawImage = true
+		}
+	}
+	if !sawText || !sawImage {
+		t.Fatalf("expected both text and image parts; sawText=%v sawImage=%v", sawText, sawImage)
+	}
+}
+
+func TestSession_ProcessInput_ImageOnly_OmitsEmptyTextPart(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("ok") },
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	imgs := []ImageAttachment{
+		{MediaType: "image/jpeg", Data: []byte{0xff, 0xd8, 0xff}, Name: "p.jpg"},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "", imgs); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	var userTurn *Turn
+	for i := range sess.history {
+		if sess.history[i].Kind == TurnUserInput {
+			userTurn = &sess.history[i]
+			break
+		}
+	}
+	if userTurn == nil {
+		t.Fatal("no TurnUserInput in history")
+	}
+	parts := userTurn.Message.Content
+	if len(parts) != 1 {
+		t.Fatalf("parts: got %d, want 1 (image only)", len(parts))
+	}
+	if parts[0].Kind != llm.ContentImage {
+		t.Fatalf("part kind: got %q, want %q", parts[0].Kind, llm.ContentImage)
 	}
 }

@@ -149,7 +149,7 @@ func TestWebFetchTool_Integration(t *testing.T) {
 	}
 	defer sess.Close()
 
-	out, err := sess.ProcessInput(context.Background(), "Fetch the test page")
+	out, err := sess.ProcessInput(context.Background(), "Fetch the test page", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestWebFetchTool_JSONContent(t *testing.T) {
 	}
 	defer sess.Close()
 
-	out, err := sess.ProcessInput(context.Background(), "Check the JSON API")
+	out, err := sess.ProcessInput(context.Background(), "Check the JSON API", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
