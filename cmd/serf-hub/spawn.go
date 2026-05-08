@@ -34,6 +34,14 @@ func (h *HubSpawner) Spawn(ctx context.Context, templateName, workingDir string)
 	return SpawnDaemon(ctx, h.SerfBinary, h.RunDir, t, workingDir, timeout)
 }
 
+func (h *HubSpawner) Resume(ctx context.Context, sessionID string) (rendezvous.Entry, error) {
+	timeout := h.Cfg.SpawnTimeout
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+	return ResumeDaemon(ctx, h.SerfBinary, h.RunDir, sessionID, timeout)
+}
+
 // findTemplate returns the named SpawnTemplate from the config.
 func findTemplate(cfg Config, name string) (SpawnTemplate, bool) {
 	for _, t := range cfg.SpawnTemplates {
@@ -119,4 +127,31 @@ func WaitForRendezvous(ctx context.Context, runDir string, pid int) (rendezvous.
 		case <-ticker.C:
 		}
 	}
+}
+
+// ResumeDaemon launches `serf serve --resume <sessionID>` and waits for
+// rendezvous. Returns the new daemon's rendezvous Entry.
+//
+// Note: resume always creates a NEW session_id (the daemon mints a fresh
+// one). Caller resolves it via roster lookup after rendezvous appears.
+func ResumeDaemon(ctx context.Context, serfBinary, runDir, sessionID string, timeout time.Duration) (rendezvous.Entry, error) {
+	if serfBinary == "" {
+		serfBinary = "serf"
+	}
+	args := []string{"serve", "--addr", "127.0.0.1:0", "--resume", sessionID}
+	cmd := exec.Command(serfBinary, args...)
+	cmd.Env = append(os.Environ(), "SERF_HUB_SPAWNED=1")
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		return rendezvous.Entry{}, fmt.Errorf("start daemon: %w", err)
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	entry, err := WaitForRendezvous(waitCtx, runDir, cmd.Process.Pid)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		return rendezvous.Entry{}, fmt.Errorf("resume timed out: %w", err)
+	}
+	return entry, nil
 }

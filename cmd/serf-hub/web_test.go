@@ -236,3 +236,26 @@ func TestWeb_PastView_404Unknown(t *testing.T) {
 		t.Fatalf("status: %d, want 404", rec.Code)
 	}
 }
+
+func TestWeb_PastResume_503WhenNoSpawner(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	_ = os.MkdirAll(proj, 0o755)
+	_ = agent.SaveSessionMeta(proj, agent.SessionMeta{ID: "01ID", UpdatedAt: time.Now()})
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	_ = idx.Rebuild()
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    idx,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/past/01ID/resume", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status: %d, want 503", rec.Code)
+	}
+}

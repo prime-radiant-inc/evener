@@ -28,6 +28,7 @@ type WebConfig struct {
 // (the daemon's bound port) on success.
 type Spawner interface {
 	Spawn(ctx context.Context, templateName, workingDir string) (rendezvous.Entry, error)
+	Resume(ctx context.Context, sessionID string) (rendezvous.Entry, error)
 	Templates() []SpawnTemplate
 }
 
@@ -273,7 +274,25 @@ func (s *WebServer) handlePastID(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		http.Error(w, "resume not yet implemented", http.StatusNotImplemented)
+		if s.cfg.Spawner == nil {
+			http.Error(w, "resume not configured", http.StatusServiceUnavailable)
+			return
+		}
+		entry, err := s.cfg.Spawner.Resume(r.Context(), id)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if s.cfg.Roster != nil {
+			s.cfg.Roster.refresh()
+			for _, le := range s.cfg.Roster.List() {
+				if le.PID == entry.PID {
+					http.Redirect(w, r, "/live/"+le.SessionID, http.StatusFound)
+					return
+				}
+			}
+		}
+		http.Redirect(w, r, "/", http.StatusFound)
 	case "replay":
 		s.serveReplay(w, r, entry)
 	default:
