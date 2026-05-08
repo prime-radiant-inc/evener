@@ -517,30 +517,68 @@ func NewMiniMaxProfile(model string) ProviderProfile {
 // adapter with the OpenRouter base URL and OPENROUTER_API_KEY.
 func NewOpenRouterAnthropicProfile(model string) ProviderProfile {
 	model = strings.TrimSpace(model)
-	// Ducktype capabilities from the catalog for the specific model.
-	// OpenRouter-Anthropic models are stored in the catalog under
-	// "openrouter/<upstream>/<model>" (e.g.
-	// "openrouter/anthropic/claude-3-haiku-20240307"), not under their
-	// bare upstream name. Use the openai-compat resolver with the
-	// catalog-shipped "openrouter" prefix so the prefixed and bare
-	// fallbacks both fire correctly. Profile id stays "openrouter-anthropic".
+	// Resolve catalog metadata. OpenRouter-Anthropic models appear in
+	// the catalog under "openrouter/<upstream>/<model>" (e.g.
+	// "openrouter/anthropic/claude-3-haiku-20240307"). Those prefixed
+	// entries carry context window and pricing but typically OMIT
+	// capability flags like supports_web_search and the serf-shipped
+	// reasoning_effort_levels overrides — those live on the bare
+	// upstream entry (e.g. "claude-sonnet-4-5"). So we look up both:
+	//
+	//   - Prefixed entry: source for context window. Web search and
+	//     effort levels only override when the prefixed entry has them
+	//     explicitly set (we never flip web_search OFF based on a
+	//     missing field — that was the regression added then fixed in
+	//     this commit).
+	//   - Bare upstream entry (anthropic/X stripped to X): fallback
+	//     for capability flags and effort overrides not on the prefixed
+	//     entry. Without this, "claude-sonnet-4-5" would advertise an
+	//     unsupported "max" effort tier from the constructor default.
 	contextWindow := 128_000
 	ws := true // default to web search on (Anthropic models support it)
 	defaultEfforts := []string{"low", "medium", "high", "max"}
 	var efforts []string
-	if cat := llm.EmbeddedModelCatalog(); cat != nil {
+
+	cat := llm.EmbeddedModelCatalog()
+
+	if cat != nil {
 		if mi := resolveOpenAICompatCatalogModel(cat.GetModelInfo, "openrouter", model); mi != nil {
 			if mi.ContextWindow > 0 {
 				contextWindow = mi.ContextWindow
 			}
-			// Only override if the catalog has an explicit entry for this model.
-			// Absent models keep the default (true).
-			ws = mi.SupportsWebSearch
+			// Treat boolean fields as "override only when explicitly
+			// true". Catalog entries omit flags they don't certify;
+			// flipping our default OFF based on a missing field would
+			// silently disable functionality the model actually supports.
+			if mi.SupportsWebSearch {
+				ws = true
+			}
 			if len(mi.ReasoningEffortLevels) > 0 {
 				efforts = append([]string(nil), mi.ReasoningEffortLevels...)
 			}
 		}
 	}
+
+	// Bare upstream fallback for fields the prefixed entry didn't
+	// supply. Strip a single leading "<upstream>/" segment if present
+	// (e.g. "anthropic/claude-sonnet-4-5" → "claude-sonnet-4-5") so
+	// catalog-shipped overrides keyed under the bare upstream form
+	// can populate effort levels and web-search capability.
+	bareModel := model
+	if _, after, hasSlash := strings.Cut(model, "/"); hasSlash && after != "" {
+		bareModel = after
+	}
+	if cat != nil && bareModel != "" {
+		if mi := cat.GetModelInfo(bareModel); mi != nil {
+			if mi.SupportsWebSearch {
+				ws = true
+			}
+			if efforts == nil && len(mi.ReasoningEffortLevels) > 0 {
+				efforts = append([]string(nil), mi.ReasoningEffortLevels...)
+			}
+		}
+	}
+
 	if efforts == nil {
 		efforts = resolveEffortLevels(model, defaultEfforts)
 	}

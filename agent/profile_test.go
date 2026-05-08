@@ -648,6 +648,55 @@ func TestNewOpenRouterAnthropicProfile_ResolvesOpenRouterPrefixedCatalog(t *test
 	}
 }
 
+// TestNewOpenRouterAnthropicProfile_PreservesWebSearchDefault verifies
+// that constructing an openrouter-anthropic profile with a model whose
+// OpenRouter catalog entry doesn't carry supports_web_search (the
+// common case — only some prefixed entries advertise it) leaves the
+// constructor's default of `true` intact. Previously the code did
+// `ws = mi.SupportsWebSearch` unconditionally, which silently flipped
+// web search off for matched OpenRouter Anthropic models.
+func TestNewOpenRouterAnthropicProfile_PreservesWebSearchDefault(t *testing.T) {
+	// claude-3-haiku-20240307 is in the catalog as
+	// "openrouter/anthropic/claude-3-haiku-20240307" with NO
+	// supports_web_search field. Constructor default should win.
+	p := NewOpenRouterAnthropicProfile("anthropic/claude-3-haiku-20240307")
+	if !p.SupportsWebSearch() {
+		t.Fatal("SupportsWebSearch() = false, want true (constructor default must win when prefixed catalog entry omits supports_web_search)")
+	}
+}
+
+// TestNewOpenRouterAnthropicProfile_PicksUpBareUpstreamEffortOverrides
+// verifies that effort levels resolve to the bare upstream override
+// when the prefixed catalog entry doesn't carry them. The serf
+// override file keys overrides under bare upstream IDs (e.g.
+// "claude-sonnet-4-5" → ["low","medium","high"], no "max"). Without
+// bare-fallback resolution, openrouter-anthropic falls back to the
+// constructor's MiniMax-style default ["low","medium","high","max"]
+// — incorrectly advertising a "max" tier these models don't support.
+func TestNewOpenRouterAnthropicProfile_PicksUpBareUpstreamEffortOverrides(t *testing.T) {
+	// "anthropic/claude-sonnet-4-5" — the openrouter prefix in the
+	// catalog has no reasoning_effort_levels; the bare "claude-sonnet-4-5"
+	// override entry sets ["low","medium","high"].
+	p := NewOpenRouterAnthropicProfile("anthropic/claude-sonnet-4-5")
+	got := p.ReasoningEffortLevels()
+	want := []string{"low", "medium", "high"}
+	if !equalStringSlices(got, want) {
+		t.Fatalf("ReasoningEffortLevels() = %v, want %v (bare upstream override should be picked up)", got, want)
+	}
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // TestBaseProfile_WithModel_RecomputesOpenRouterAnthropicCatalog is the
 // integration check on the WithModel rebuild path. Starting from an
 // openrouter-anthropic profile constructed with one Anthropic model,
