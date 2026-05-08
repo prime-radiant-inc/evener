@@ -360,6 +360,14 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .banner.warning { color: var(--state-warning); border-left: 2px solid var(--state-warning); padding-left: 10px; }
 .banner.note { color: var(--text-muted); border-left: 2px solid var(--rule); padding-left: 10px; }
 
+/* System-line: short prose narration between user and agent — used for
+ * task_list transitions ("marked X done · started Y"), full-list pointers,
+ * and other compact system events. Reads as a quiet aside, not a tool log. */
+.system-line { margin: 8px 0 8px 28px; padding: 4px 12px 4px 0; font-size: 12px; color: var(--text-muted); font-style: italic; line-height: 1.5; }
+.system-line::before { content: "› "; color: var(--text-dim); font-style: normal; }
+.system-line-pointer { display: inline-block; text-decoration: none; cursor: pointer; }
+.system-line-pointer:hover { color: var(--text); }
+
 /* Steering messages: render as a system insertion between user and agent
  * messages — full-width divider with the summary centered between rules.
  * Click to expand the full payload. No left indent: this is not a tool call. */
@@ -515,12 +523,24 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .task-status-in-progress { border-color: var(--state-processing); }
 .task-status-in-progress .task-icon { color: var(--state-processing); }
 .task-status-cancelled .task-desc { color: var(--text-muted); text-decoration: line-through; opacity: 0.6; }
-.tasks-list .has-notes { padding: 0; }
-.tasks-list .task-row-details > summary { display: grid; grid-template-columns: 14px 28px auto 1fr auto; gap: 6px; align-items: baseline; padding: 6px 8px; cursor: pointer; list-style: none; user-select: none; }
+
+/* Sidebar task rows: every row is a <details> with full metadata in <dl>. */
+.tasks-list .task-row { padding: 0; display: block; }
+.tasks-list .task-row-details { width: 100%; }
+.tasks-list .task-row-details > summary { display: grid; grid-template-columns: 14px 28px 1fr 14px; gap: 6px; align-items: baseline; padding: 6px 8px; cursor: pointer; list-style: none; user-select: none; }
 .tasks-list .task-row-details > summary::-webkit-details-marker { display: none; }
-.tasks-list .task-row-details > summary:hover { color: var(--text); }
-.tasks-list .task-note-count { color: var(--text-muted); font-size: 10px; font-style: italic; }
-.tasks-list .task-notes-list { list-style: none; margin: 0; padding: 4px 12px 8px 38px; display: flex; flex-direction: column; gap: 4px; border-top: 1px dashed var(--rule); }
-.tasks-list .task-note { display: grid; grid-template-columns: 14px 1fr; gap: 6px; align-items: baseline; font-size: 11px; color: var(--text-muted); }
+.tasks-list .task-row-details > summary:hover { background: var(--bg-raised); }
+.tasks-list .task-row-chevron { color: var(--text-dim); font-size: 14px; transition: transform 0.15s; transform: rotate(0deg); }
+.tasks-list .task-row-details[open] > summary > .task-row-chevron { transform: rotate(90deg); }
+.tasks-list .task-detail { margin: 0; padding: 4px 12px 10px 38px; display: grid; grid-template-columns: 80px 1fr; gap: 4px 10px; font-size: 11px; border-top: 1px dashed var(--rule); }
+.tasks-list .task-detail dt { color: var(--text-muted); }
+.tasks-list .task-detail dd { margin: 0; color: var(--text); word-break: break-word; }
+.tasks-list .task-prompt { font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 11px; line-height: 1.5; white-space: pre-wrap; color: var(--text); }
+.tasks-list .task-type-pill { display: inline-block; padding: 1px 6px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; background: var(--bg); border: 1px solid var(--rule); border-radius: 3px; }
+.tasks-list .task-notes-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.tasks-list .task-note { display: grid; grid-template-columns: 16px 1fr; gap: 4px; align-items: baseline; font-size: 11px; color: var(--text-muted); }
 .tasks-list .task-note-num { color: var(--text-dim); font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 10px; }
 .tasks-list .task-note-text { word-break: break-word; }
+
+/* Tasks button progress badge */
+.panel-toggle-badge { display: inline-flex; align-items: center; padding: 1px 6px; margin-left: 4px; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 10px; color: var(--text-muted); background: var(--bg); border: 1px solid var(--rule); border-radius: 3px; }

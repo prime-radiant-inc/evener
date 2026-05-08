@@ -27,6 +27,7 @@
       this.activeTools = new Map();      // callId -> {el, outputBuf}
       this.activeSubagents = new Map();  // agent_id -> subagent reference el
       this.suppressedToolCalls = new Set();
+      this.pendingTaskCalls = new Map(); // callId -> args (for system-line rendering on END)
       this.currentMessageId = null;
       this.userTurnIndex = 0;            // counts user turns rendered (for fork divergence)
       this.entryIndex = 0;               // counts ALL entries rendered (matches transcript entry index)
@@ -39,6 +40,32 @@
 
       this.bindInputForm();
       this.bindKeyboard();
+      this.startTaskBadgePoller();
+    },
+
+    // Periodically pull /tasks to keep the workspace tasks-button badge
+    // (e.g. "3/7") fresh when the panel is closed and to seed the
+    // taskDescriptions cache so system-line transitions can name tasks.
+    startTaskBadgePoller() {
+      if (this.taskBadgeTimer) clearInterval(this.taskBadgeTimer);
+      const tick = () => {
+        if (!this.sessionId) return;
+        fetch("/s/" + encodeURIComponent(this.sessionId) + "/tasks")
+          .then(r => r.ok ? r.json() : [])
+          .then(tasks => {
+            if (!Array.isArray(tasks)) return;
+            for (const t of tasks) {
+              if (t && t.id != null && t.description) {
+                taskDescriptions.set(t.id, t.description);
+              }
+            }
+            const done = tasks.filter(t => t.status === "done").length;
+            updateTasksBadge(done, tasks.length);
+          })
+          .catch(() => {});
+      };
+      tick();
+      this.taskBadgeTimer = setInterval(tick, 5000);
     },
 
     connect(url) {
@@ -101,6 +128,21 @@
             } catch (e) { /* ignore */ }
             break;
           }
+          if (data.tool_name === "task_list") {
+            // Render as inline system-line prose; suppress the normal
+            // tool-call card. Seed the description cache on append calls.
+            this.suppressedToolCalls.add(data.call_id);
+            const args = parseArgs(data.arguments_json);
+            if (args.action === "append" && Array.isArray(args.tasks)) {
+              for (const t of args.tasks) {
+                if (t && t.id != null && t.description) {
+                  taskDescriptions.set(t.id, t.description);
+                }
+              }
+            }
+            this.pendingTaskCalls.set(data.call_id, args);
+            break;
+          }
           this.entryIndex++;
           this.beginToolCall(data);
           break;
@@ -111,6 +153,11 @@
         case "TOOL_CALL_END":
           if (this.suppressedToolCalls.has(data.call_id)) {
             this.suppressedToolCalls.delete(data.call_id);
+            const pending = this.pendingTaskCalls && this.pendingTaskCalls.get(data.call_id);
+            if (pending !== undefined) {
+              this.pendingTaskCalls.delete(data.call_id);
+              this.appendTaskListSystemLine(pending);
+            }
             break;
           }
           this.finalizeToolCall(data);
@@ -449,14 +496,45 @@
       this.conversation.appendChild(el);
     },
 
-    // appendSteeringMessage classifies the injected steering text and renders
-    // a compact summary pill with click-to-expand for the full payload.
-    // Common shapes (current-task XML, task-list reminder, read-only nudge,
-    // loop-detection escalation, transcript pointer) get specific summaries;
-    // unknown content falls through to "steering injected".
+    // appendSteeringMessage classifies the injected steering text and routes
+    // it to one of four treatments:
+    //   - current-task: SUPPRESSED entirely (the task panel + system-line
+    //     transitions already convey state; this nudge fires every turn).
+    //   - full-list: parse it to seed taskDescriptions, then emit a single
+    //     compact "task list reloaded · N items" pointer that opens the panel.
+    //   - loop / read-only / all-done / unknown: keep the current
+    //     full-width steering divider with click-to-expand body.
     appendSteeringMessage(text) {
       this.cheapToolCluster = null;
       const summary = classifySteering(text);
+
+      if (summary.kind === "current-task") {
+        // Seed description from the title attribute and suppress.
+        if (summary.taskID && summary.taskTitle) {
+          taskDescriptions.set(parseInt(summary.taskID, 10), summary.taskTitle);
+        }
+        return;
+      }
+      if (summary.kind === "full-list") {
+        // Seed all descriptions from the parsed list.
+        if (summary.tasks) {
+          for (const t of summary.tasks) {
+            taskDescriptions.set(t.id, t.description);
+          }
+        }
+        const total = summary.tasks ? summary.tasks.length : 0;
+        const line = document.createElement("a");
+        line.className = "system-line system-line-pointer";
+        line.href = "#";
+        line.textContent = "task list reloaded · " + total + " item" + (total === 1 ? "" : "s");
+        line.onclick = (e) => { e.preventDefault(); toggleTasksPanel(); };
+        this.conversation.appendChild(line);
+        return;
+      }
+
+      // Default: keep the existing collapsible divider for genuine system
+      // notes (loop detection, read-only nudge, all-done, transcript
+      // pointer, unknown).
       const el = document.createElement("details");
       el.className = "steering";
       const sum = document.createElement("summary");
@@ -476,6 +554,43 @@
       body.textContent = summary.cleanText || text;
       el.appendChild(body);
       this.conversation.appendChild(el);
+    },
+
+    // appendTaskListSystemLine renders a task_list tool call as a single
+    // line of system prose: "marked X done", "now starting Y", "added 3
+    // tasks", etc. Multiple updates in one call are joined into one
+    // sentence. action=view is suppressed entirely (it's a read with no
+    // user-visible change).
+    //
+    // After rendering, kicks an immediate /tasks fetch so newly-assigned
+    // ids (from appends) get a description in cache before the agent's
+    // next update — minimising the "marked #N done" fallback window.
+    appendTaskListSystemLine(args) {
+      if (!args || args.action === "view") return;
+      const text = formatTaskListAction(args);
+      if (text) {
+        const line = document.createElement("div");
+        line.className = "system-line";
+        line.textContent = text;
+        this.conversation.appendChild(line);
+      }
+      this.refreshTaskBadgeSoon();
+    },
+
+    refreshTaskBadgeSoon() {
+      if (!this.sessionId) return;
+      fetch("/s/" + encodeURIComponent(this.sessionId) + "/tasks")
+        .then(r => r.ok ? r.json() : [])
+        .then(tasks => {
+          if (!Array.isArray(tasks)) return;
+          for (const t of tasks) {
+            if (t && t.id != null && t.description) {
+              taskDescriptions.set(t.id, t.description);
+            }
+          }
+          const done = tasks.filter(t => t.status === "done").length;
+          updateTasksBadge(done, tasks.length);
+        }).catch(() => {});
     },
 
     scrollToBottom() {
@@ -530,22 +645,34 @@
     return "before " + text.slice(0, 40).replace(/\s+/g, " ").trim();
   }
 
+  // Client-side cache of task id → description, keyed by integer id. Seeded
+  // from: task_list append calls (args.tasks), task_list update calls (no
+  // descriptions in args; ignored), STEERING_INJECTED full-list parses, and
+  // the session's /tasks endpoint when the side panel is open or the
+  // background poller fires. Used by the system-line renderer to print
+  // task transitions by description rather than by raw id.
+  const taskDescriptions = new Map();
+  function taskDesc(id) {
+    const d = taskDescriptions.get(id);
+    return d ? '"' + d + '"' : "#" + id;
+  }
+
   function parseArgs(json) {
     if (!json) return {};
     try { return JSON.parse(json); } catch (e) { return {}; }
   }
 
-  // classifySteering inspects steering text and returns a short label + an
-  // optional secondary detail. Recognized shapes:
-  //   - <CURRENT-TASK id="N"><TITLE>…</TITLE>  → "current task" · "#N title"
-  //   - "Task list:\n  [status] #id: …"        → "task list" · "X items, Y pending"
-  //   - "You have completed all tasks"          → "tasks done"
-  //   - "task_list tool available"              → "task_list nudge"
-  //   - "stuck in a loop|still stuck|stuck for" → "loop detection"
-  //   - "reading without writing|reading for"   → "read-only nudge"
-  //   - "pre-compaction transcript"             → "transcript pointer"
-  // Everything else: "steering injected" with no detail.
-  // cleanText strips the <SYSTEM-REMINDER> wrapper for nicer body display.
+  // classifySteering inspects steering text and returns:
+  //   { kind, label, detail, cleanText, taskID?, taskTitle?, tasks? }
+  // Recognized kinds:
+  //   - "current-task" (suppressed inline; seeds task description cache)
+  //   - "full-list"    (rendered as compact pointer; parses Task list lines)
+  //   - "tasks-done"   (kept as steering divider)
+  //   - "task-nudge"   (kept as steering divider)
+  //   - "loop"         (kept)
+  //   - "read-only"    (kept)
+  //   - "transcript"   (kept)
+  //   - "unknown"      (kept)
   function classifySteering(text) {
     const stripped = text
       .replace(/^\s*<SYSTEM-REMINDER>\s*/i, "")
@@ -554,30 +681,89 @@
 
     const taskMatch = stripped.match(/<CURRENT-TASK\s+id="(\d+)">\s*<TITLE>([^<]+)<\/TITLE>/);
     if (taskMatch) {
-      return { label: "current task", detail: "#" + taskMatch[1] + " " + taskMatch[2].trim(), cleanText: stripped };
+      return {
+        kind: "current-task",
+        label: "current task",
+        detail: "#" + taskMatch[1] + " " + taskMatch[2].trim(),
+        cleanText: stripped,
+        taskID: taskMatch[1],
+        taskTitle: taskMatch[2].trim(),
+      };
     }
     if (/^Task list:/m.test(stripped)) {
       const lines = stripped.split("\n").filter(l => /^\s*\[/.test(l));
       const total = lines.length;
       const pending = lines.filter(l => /\[(open|in_progress)\]/.test(l)).length;
-      return { label: "task list", detail: total + " items · " + pending + " pending", cleanText: stripped };
+      const tasks = lines.map(line => {
+        const m = line.match(/\[(\w+)\]\s*#(\d+):\s*(.+?)(?:\s*\[\w+\])?(?:\s*\(depends_on:.*\))?$/);
+        if (!m) return null;
+        return { status: m[1], id: parseInt(m[2], 10), description: m[3].trim() };
+      }).filter(Boolean);
+      return {
+        kind: "full-list",
+        label: "task list",
+        detail: total + " items · " + pending + " pending",
+        cleanText: stripped,
+        tasks,
+      };
     }
     if (/completed all tasks/.test(stripped)) {
-      return { label: "tasks done", detail: "", cleanText: stripped };
+      return { kind: "tasks-done", label: "tasks done", detail: "", cleanText: stripped };
     }
     if (/task_list tool available/.test(stripped)) {
-      return { label: "task_list nudge", detail: "", cleanText: stripped };
+      return { kind: "task-nudge", label: "task_list nudge", detail: "", cleanText: stripped };
     }
     if (/stuck in a loop|still stuck|stuck for a long time/.test(stripped)) {
-      return { label: "loop detection", detail: "", cleanText: stripped };
+      return { kind: "loop", label: "loop detection", detail: "", cleanText: stripped };
     }
     if (/reading without writing|reading for \d+ turns/.test(stripped)) {
-      return { label: "read-only nudge", detail: "", cleanText: stripped };
+      return { kind: "read-only", label: "read-only nudge", detail: "", cleanText: stripped };
     }
     if (/pre-compaction transcript/.test(stripped)) {
-      return { label: "transcript pointer", detail: "", cleanText: stripped };
+      return { kind: "transcript", label: "transcript pointer", detail: "", cleanText: stripped };
     }
-    return { label: "steering injected", detail: "", cleanText: stripped };
+    return { kind: "unknown", label: "steering injected", detail: "", cleanText: stripped };
+  }
+
+  // formatTaskListAction renders task_list tool args as a single line of
+  // English prose. Returns null/empty for no-op cases (view, empty updates).
+  // Multiple updates in one call collapse into a comma-joined sentence
+  // capped at 4 clauses to prevent runaway lines.
+  function formatTaskListAction(args) {
+    if (!args || !args.action) return "";
+    if (args.action === "view") return "";
+
+    if (args.action === "append") {
+      if (!Array.isArray(args.tasks) || args.tasks.length === 0) return "";
+      const descs = args.tasks.map(t => '"' + (t.description || "?") + '"');
+      const head = descs.slice(0, 3).join(" · ");
+      const more = descs.length > 3 ? " · +" + (descs.length - 3) + " more" : "";
+      return "added " + descs.length + " task" + (descs.length === 1 ? "" : "s") + ": " + head + more;
+    }
+
+    if (args.action === "update") {
+      if (!Array.isArray(args.updates) || args.updates.length === 0) return "";
+      const clauses = args.updates.slice(0, 4).map(u => {
+        let clause = updateClause(u);
+        if (u.notes) clause += " — " + clip(u.notes, 80);
+        return clause;
+      });
+      let line = clauses.join(", ");
+      if (args.updates.length > 4) line += " (+" + (args.updates.length - 4) + " more)";
+      return line;
+    }
+    return "";
+  }
+
+  function updateClause(u) {
+    const subject = taskDesc(u.id);
+    switch (u.status) {
+      case "done":        return "marked " + subject + " done";
+      case "in_progress": return "started " + subject;
+      case "cancelled":   return "cancelled " + subject;
+      case "open":        return "reopened " + subject;
+      default:            return "updated " + subject;
+    }
   }
 
   function parseToolState(s) {
@@ -709,72 +895,9 @@
     };
   }
 
-  // task_list renderer — surfaces what the call actually changed:
-  //   - action=view: no body, just "view"
-  //   - action=append (args.tasks): list of new tasks with type + description
-  //   - action=update (args.updates): rows showing #id → status with notes
-  const taskListRenderer = {
-    mode: "card", friendly: "tasks",
-    target: (a) => a.action || "view",
-    result: (data, out, state) => {
-      const a = state.args || {};
-      if (a.action === "append" && Array.isArray(a.tasks)) return "+" + a.tasks.length;
-      if (a.action === "update" && Array.isArray(a.updates)) return a.updates.length + " updated";
-      if (a.action === "view") return "ok";
-      return "ok";
-    },
-    body: (args, conversation) => {
-      const list = document.createElement("ul");
-      list.className = "tool-body task-list-body";
-      let rendered = 0;
-
-      if (args.action === "append" && Array.isArray(args.tasks)) {
-        for (const t of args.tasks) {
-          const li = document.createElement("li");
-          li.className = "task-row task-status-open";
-          const icon = document.createElement("span");
-          icon.className = "task-icon"; icon.textContent = "+";
-          const type = document.createElement("span");
-          type.className = "task-type"; type.textContent = t.type || "";
-          const desc = document.createElement("span");
-          desc.className = "task-desc"; desc.textContent = t.description || "";
-          li.appendChild(icon);
-          li.appendChild(type);
-          li.appendChild(desc);
-          list.appendChild(li);
-          rendered++;
-        }
-      } else if (args.action === "update" && Array.isArray(args.updates)) {
-        for (const u of args.updates) {
-          const li = document.createElement("li");
-          li.className = "task-row task-status-" + (u.status || "open").replace(/_/g, "-");
-          const icon = document.createElement("span");
-          icon.className = "task-icon";
-          icon.textContent = (u.status === "done" ? "✓" : u.status === "in_progress" ? "▶" : u.status === "cancelled" ? "✕" : "○");
-          const id = document.createElement("span");
-          id.className = "task-id"; id.textContent = "#" + u.id;
-          const arrow = document.createElement("span");
-          arrow.className = "task-arrow"; arrow.textContent = "→";
-          const status = document.createElement("span");
-          status.className = "task-status-label"; status.textContent = u.status || "";
-          li.appendChild(icon);
-          li.appendChild(id);
-          li.appendChild(arrow);
-          li.appendChild(status);
-          if (u.notes) {
-            const notes = document.createElement("span");
-            notes.className = "task-notes"; notes.textContent = "“" + u.notes + "”";
-            li.appendChild(notes);
-          }
-          list.appendChild(li);
-          rendered++;
-        }
-      }
-      if (rendered === 0) return null;
-      conversation.appendChild(list);
-      return { list };
-    },
-  };
+  // task_list is intentionally not in the tool-renderer registry — it's
+  // intercepted in handle() (TOOL_CALL_START/END) and rendered as inline
+  // system-line prose via appendTaskListSystemLine.
 
   // web_fetch renderer.
   const webFetchRenderer = {
@@ -873,7 +996,6 @@
     "edit_file": diffRenderer("edit"),
     "write_file": diffRenderer("write"),
     "apply_patch": diffRenderer("patch"),
-    "task_list": taskListRenderer,
     "web_fetch": webFetchRenderer,
     "web_search": webSearchRenderer,
     "spawn_agent": spawnAgentRenderer,
@@ -978,10 +1100,24 @@
   }
 
   function renderTasksInto(panel, tasks) {
+    // Cache descriptions for inline rendering (system-line uses this).
+    if (Array.isArray(tasks)) {
+      for (const t of tasks) {
+        if (t && t.id != null && t.description) {
+          taskDescriptions.set(t.id, t.description);
+        }
+      }
+    }
+
     const total = tasks.length;
     const done = tasks.filter(t => t.status === "done").length;
     const inProg = tasks.filter(t => t.status === "in_progress").length;
     const open = tasks.filter(t => t.status === "open").length;
+    const cancelled = tasks.filter(t => t.status === "cancelled").length;
+
+    // Update the tasks-button progress badge (e.g., "☑ tasks 3/7") as a
+    // side-effect — visible without opening the panel.
+    updateTasksBadge(done, total);
 
     const parts = [];
     parts.push("<header class='details-panel-header'>");
@@ -991,46 +1127,78 @@
 
     if (total === 0) {
       parts.push("<div class='tasks-empty'>no tasks for this session</div>");
-    } else {
-      if (inProg > 0 || open > 0) {
-        parts.push("<div class='tasks-summary'>" + inProg + " in progress · " + open + " open · " + done + " done</div>");
-      }
-      parts.push("<ul class='tasks-list'>");
-      for (const t of tasks) {
-        const cls = "task-row task-status-" + (t.status || "open").replace(/_/g, "-");
-        const icon = taskStatusIcon(t.status);
-        const desc = escapeHTML(t.description || "");
-        const type = t.type ? "<span class='task-type'>" + escapeHTML(t.type) + "</span>" : "";
-        let deps = "";
-        if (Array.isArray(t.depends_on) && t.depends_on.length > 0) {
-          deps = "<span class='task-deps'>← " + t.depends_on.join(", ") + "</span>";
-        }
-        const hasNotes = Array.isArray(t.notes) && t.notes.length > 0;
-        const head =
-          "<span class='task-icon'>" + icon + "</span>" +
-          "<span class='task-id'>#" + (t.id || "?") + "</span>" +
-          type +
-          "<span class='task-desc'>" + desc + "</span>" +
-          deps;
-        if (hasNotes) {
-          const notesHTML = t.notes.map((n, i) =>
-            "<li class='task-note'><span class='task-note-num'>" + (i + 1) + "</span>" +
-            "<span class='task-note-text'>" + escapeHTML(n) + "</span></li>"
-          ).join("");
-          parts.push(
-            "<li class='" + cls + " has-notes'>" +
-            "<details class='task-row-details'>" +
-            "<summary>" + head + "<span class='task-note-count'>" + t.notes.length + " note" + (t.notes.length === 1 ? "" : "s") + "</span></summary>" +
-            "<ol class='task-notes-list'>" + notesHTML + "</ol>" +
-            "</details></li>"
-          );
-        } else {
-          parts.push("<li class='" + cls + "'>" + head + "</li>");
-        }
-      }
-      parts.push("</ul>");
+      panel.innerHTML = parts.join("");
+      return;
     }
+
+    const counts = [];
+    if (inProg) counts.push(inProg + " in progress");
+    if (open) counts.push(open + " open");
+    if (done) counts.push(done + " done");
+    if (cancelled) counts.push(cancelled + " cancelled");
+    parts.push("<div class='tasks-summary'>" + counts.join(" · ") + "</div>");
+
+    parts.push("<ul class='tasks-list'>");
+    for (const t of tasks) {
+      const cls = "task-row task-status-" + (t.status || "open").replace(/_/g, "-");
+      const icon = taskStatusIcon(t.status);
+      const desc = escapeHTML(t.description || "");
+      const id = t.id || "?";
+      const head =
+        "<span class='task-icon'>" + icon + "</span>" +
+        "<span class='task-id'>#" + id + "</span>" +
+        "<span class='task-desc'>" + desc + "</span>";
+
+      const detail = [];
+      if (t.type) {
+        detail.push("<dt>type</dt><dd><span class='task-type-pill'>" + escapeHTML(t.type) + "</span></dd>");
+      }
+      if (t.status) {
+        detail.push("<dt>status</dt><dd>" + escapeHTML(t.status) + "</dd>");
+      }
+      if (Array.isArray(t.depends_on) && t.depends_on.length > 0) {
+        detail.push("<dt>depends on</dt><dd>" + t.depends_on.map(x => "#" + x).join(", ") + "</dd>");
+      }
+      if (t.reasoning_effort) {
+        detail.push("<dt>reasoning</dt><dd>" + escapeHTML(t.reasoning_effort) + "</dd>");
+      }
+      if (t.prompt) {
+        detail.push("<dt>prompt</dt><dd class='task-prompt'>" + escapeHTML(t.prompt) + "</dd>");
+      }
+      if (Array.isArray(t.notes) && t.notes.length > 0) {
+        const notesHTML = t.notes.map((n, i) =>
+          "<li class='task-note'><span class='task-note-num'>" + (i + 1) + "</span>" +
+          "<span class='task-note-text'>" + escapeHTML(n) + "</span></li>"
+        ).join("");
+        detail.push("<dt>notes</dt><dd><ol class='task-notes-list'>" + notesHTML + "</ol></dd>");
+      }
+
+      parts.push(
+        "<li class='" + cls + "'>" +
+        "<details class='task-row-details'>" +
+        "<summary>" + head + "<span class='task-row-chevron'>›</span></summary>" +
+        "<dl class='task-detail'>" + detail.join("") + "</dl>" +
+        "</details></li>"
+      );
+    }
+    parts.push("</ul>");
     panel.innerHTML = parts.join("");
+  }
+
+  function updateTasksBadge(done, total) {
+    const btn = document.querySelector("[data-tasks-trigger]");
+    if (!btn) return;
+    let badge = btn.querySelector(".panel-toggle-badge");
+    if (total === 0) {
+      if (badge) badge.remove();
+      return;
+    }
+    if (!badge) {
+      badge = document.createElement("span");
+      badge.className = "panel-toggle-badge";
+      btn.appendChild(badge);
+    }
+    badge.textContent = done + "/" + total;
   }
 
   function taskStatusIcon(status) {
