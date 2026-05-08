@@ -1,0 +1,85 @@
+package main
+
+import (
+	"flag"
+	"fmt"
+	"io"
+	"strings"
+
+	authopenai "primeradiant.com/serf/internal/auth/openai"
+)
+
+var openAIStatusAction = func(stateDir string) (authopenai.AuthStatus, error) {
+	return authopenai.NewService(authopenai.DefaultConfig(), nil).Status(stateDir)
+}
+
+func runOpenAIStatus(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("openai status", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+
+	workDir := fs.String("dir", "", "working directory (default: current directory)")
+	stateDir := fs.String("state-dir", "", "override runtime state directory")
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, "Usage: serf openai status [flags]\n\n")
+		fmt.Fprintf(stderr, "Show the current OpenAI auth status.\n\n")
+		fmt.Fprintf(stderr, "Flags:\n")
+		fmt.Fprintf(stderr, "  --dir <path>         Working directory (default: current directory)\n")
+		fmt.Fprintf(stderr, "  --state-dir <path>   Override runtime state directory\n")
+	}
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+
+	resolvedStateDir, err := resolveOpenAIStateDir(*workDir, *stateDir)
+	if err != nil {
+		return err
+	}
+
+	status, err := openAIStatusAction(resolvedStateDir)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintln(stdout, formatOpenAIStatus(status))
+	return nil
+}
+
+func formatOpenAIStatus(status authopenai.AuthStatus) string {
+	state := "signed-out"
+	if status.SignedIn {
+		state = "signed-in"
+	}
+
+	source := strings.TrimSpace(status.Source)
+	if source == "" {
+		source = authopenai.AuthSourceSignedOut
+	}
+
+	parts := []string{
+		"state=" + state,
+		"source=" + source,
+	}
+	if status.Email != "" {
+		parts = append(parts, "email="+status.Email)
+	}
+	if status.AccountID != "" {
+		parts = append(parts, "account_id="+status.AccountID)
+	}
+	if status.WorkspaceID != "" {
+		parts = append(parts, "workspace_id="+status.WorkspaceID)
+	}
+	if !status.Expiry.IsZero() {
+		parts = append(parts, "expiry="+status.Expiry.UTC().Format("2006-01-02T15:04:05Z"))
+	}
+	if status.Source == authopenai.AuthSourceOAuth {
+		parts = append(parts,
+			fmt.Sprintf("needs_refresh=%t", status.NeedsRefresh),
+			fmt.Sprintf("needs_login=%t", status.NeedsLogin),
+		)
+	}
+	return strings.Join(parts, " ")
+}

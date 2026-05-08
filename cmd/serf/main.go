@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 
@@ -21,10 +22,10 @@ func main() {
 		return
 	}
 
-	// Subcommand dispatch — before flag.Parse() so serve gets its own flag set.
-	if len(os.Args) > 1 && os.Args[1] == "serve" {
-		if err := runServe(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "serf serve: %v\n", err)
+	// Subcommand dispatch — before flag.Parse() so subcommands get their own flag sets.
+	if handled, label, err := dispatchCLICommand(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); handled {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", label, err)
 			os.Exit(1)
 		}
 		return
@@ -171,5 +172,20 @@ func main() {
 		fmt.Fprintf(os.Stderr, "serf: %v\n", err)
 		cancel()
 		os.Exit(1) //nolint:gocritic // cancel() called explicitly above
+	}
+}
+
+func dispatchCLICommand(args []string, stdin io.Reader, stdout, stderr io.Writer) (bool, string, error) {
+	if len(args) == 0 {
+		return false, "", nil
+	}
+
+	switch args[0] {
+	case "serve":
+		return true, "serf serve", runServe(args[1:])
+	case "openai":
+		return true, "serf openai", runOpenAI(args[1:], stdin, stdout, stderr)
+	default:
+		return false, "", nil
 	}
 }

@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent"
+	authopenai "primeradiant.com/serf/internal/auth/openai"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/openai"
 )
@@ -116,5 +120,184 @@ func TestProcessInputWithToolUse(t *testing.T) {
 	}
 	if !strings.Contains(string(content), "Hello from serf") {
 		t.Fatalf("expected file to contain 'Hello from serf', got: %q", string(content))
+	}
+}
+
+func TestOpenAIDispatchesFromTopLevel(t *testing.T) {
+	t.Setenv("SERF_STATE_DIR", t.TempDir())
+
+	origStatus := openAIStatusAction
+	t.Cleanup(func() { openAIStatusAction = origStatus })
+
+	openAIStatusAction = func(string) (authopenai.AuthStatus, error) {
+		return authopenai.AuthStatus{
+			SignedIn: true,
+			Source:   authopenai.AuthSourceEnv,
+		}, nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	handled, label, err := dispatchCLICommand([]string{"openai", "status"}, strings.NewReader(""), &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("dispatchCLICommand() error = %v", err)
+	}
+	if !handled {
+		t.Fatal("dispatchCLICommand() handled = false, want true")
+	}
+	if label != "serf openai" {
+		t.Fatalf("dispatchCLICommand() label = %q, want %q", label, "serf openai")
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "state=signed-in source=env" {
+		t.Fatalf("stdout = %q, want %q", got, "state=signed-in source=env")
+	}
+}
+
+func TestOpenAIHelpShowsCommands(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	if err := runOpenAI(nil, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("runOpenAI() error = %v", err)
+	}
+
+	usage := stderr.String()
+	if !strings.Contains(usage, "Usage: serf openai <command>") {
+		t.Fatalf("usage = %q, want openai usage header", usage)
+	}
+	if !strings.Contains(usage, "login") || !strings.Contains(usage, "logout") || !strings.Contains(usage, "status") {
+		t.Fatalf("usage = %q, want listed commands", usage)
+	}
+}
+
+func TestOpenAILoginPrintsURLAndSupportsManualFallback(t *testing.T) {
+	stateDir := t.TempDir()
+	t.Setenv("SERF_STATE_DIR", stateDir)
+	redirectURL := "http://127.0.0.1:1455/auth/callback?code=manual-code&state=expected-state"
+
+	origLogin := openAILoginAction
+	origBrowser := openAIBrowserOpener
+	t.Cleanup(func() {
+		openAILoginAction = origLogin
+		openAIBrowserOpener = origBrowser
+	})
+
+	openAIBrowserOpener = func(url string) error {
+		if !strings.Contains(url, "oauth/authorize") {
+			t.Fatalf("browser URL = %q, want authorize endpoint", url)
+		}
+		return nil
+	}
+	openAILoginAction = func(ctx context.Context, gotStateDir string, openBrowser func(string) error, readRedirectURL func(context.Context) (string, error)) (authopenai.AuthStatus, error) {
+		if gotStateDir != stateDir {
+			t.Fatalf("stateDir = %q, want %q", gotStateDir, stateDir)
+		}
+		if err := openBrowser("https://auth.openai.com/oauth/authorize?client_id=test"); err != nil {
+			t.Fatalf("openBrowser() error = %v", err)
+		}
+		gotRedirectURL, err := readRedirectURL(ctx)
+		if err != nil {
+			t.Fatalf("readRedirectURL() error = %v", err)
+		}
+		if gotRedirectURL != redirectURL {
+			t.Fatalf("redirect URL = %q, want %q", gotRedirectURL, redirectURL)
+		}
+		return authopenai.AuthStatus{
+			SignedIn: true,
+			Source:   authopenai.AuthSourceOAuth,
+			Email:    "user@example.com",
+		}, nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := runOpenAI([]string{"login"}, strings.NewReader(redirectURL+"\n"), &stdout, &stderr); err != nil {
+		t.Fatalf("runOpenAI() error = %v", err)
+	}
+
+	if got := stdout.String(); !strings.Contains(got, "url=https://auth.openai.com/oauth/authorize?client_id=test") {
+		t.Fatalf("stdout = %q, want printed authorize URL", got)
+	}
+	if got := strings.TrimSpace(stdout.String()); !strings.Contains(got, "state=signed-in source=oauth email=user@example.com") {
+		t.Fatalf("stdout = %q, want signed-in status line", got)
+	}
+	if got := stderr.String(); !strings.Contains(got, "Paste the full redirect URL") {
+		t.Fatalf("stderr = %q, want manual redirect prompt", got)
+	}
+}
+
+func TestOpenAIStatusIsCompactAndScriptFriendly(t *testing.T) {
+	stateDir := t.TempDir()
+	t.Setenv("SERF_STATE_DIR", stateDir)
+
+	origStatus := openAIStatusAction
+	t.Cleanup(func() { openAIStatusAction = origStatus })
+
+	expiry := time.Date(2026, 5, 8, 1, 2, 3, 0, time.UTC)
+	openAIStatusAction = func(gotStateDir string) (authopenai.AuthStatus, error) {
+		if gotStateDir != stateDir {
+			t.Fatalf("stateDir = %q, want %q", gotStateDir, stateDir)
+		}
+		return authopenai.AuthStatus{
+			SignedIn:     true,
+			Source:       authopenai.AuthSourceOAuth,
+			Email:        "user@example.com",
+			AccountID:    "acct_123",
+			WorkspaceID:  "ws_123",
+			Expiry:       expiry,
+			NeedsRefresh: true,
+			NeedsLogin:   false,
+		}, nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := runOpenAI([]string{"status"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("runOpenAI() error = %v", err)
+	}
+
+	if got := strings.TrimSpace(stdout.String()); got != "state=signed-in source=oauth email=user@example.com account_id=acct_123 workspace_id=ws_123 expiry=2026-05-08T01:02:03Z needs_refresh=true needs_login=false" {
+		t.Fatalf("stdout = %q", got)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestOpenAILogoutDeletesOnlySerfOwnedAuthState(t *testing.T) {
+	stateDir := t.TempDir()
+	t.Setenv("SERF_STATE_DIR", stateDir)
+
+	if err := authopenai.SaveAuth(stateDir, authopenai.AuthRecord{
+		Version:      1,
+		Provider:     "openai",
+		Source:       authopenai.AuthSourceOAuth,
+		ObtainedAt:   time.Date(2026, 5, 7, 23, 15, 0, 0, time.UTC),
+		TokenType:    "Bearer",
+		Scope:        "openid profile email offline_access",
+		AccessToken:  "access-token",
+		RefreshToken: "refresh-token",
+		Expiry:       time.Date(2026, 5, 8, 0, 15, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("SaveAuth() error = %v", err)
+	}
+
+	keepPath := filepath.Join(stateDir, "keep.txt")
+	if err := os.WriteFile(keepPath, []byte("keep"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := runOpenAI([]string{"logout"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("runOpenAI() error = %v", err)
+	}
+
+	if _, err := os.Stat(authopenai.AuthFilePath(stateDir)); !os.IsNotExist(err) {
+		t.Fatalf("auth file stat error = %v, want not exist", err)
+	}
+	if _, err := os.Stat(keepPath); err != nil {
+		t.Fatalf("keep file stat error = %v, want nil", err)
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "state=signed-out source=signed-out deleted=true" {
+		t.Fatalf("stdout = %q, want signed-out logout result", got)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
 	}
 }
