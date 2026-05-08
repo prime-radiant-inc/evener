@@ -18,12 +18,16 @@
       this.currentMessageId = null;
       this.eventSource = null;
       this.transcript.innerHTML = "";
-      this.connect();
-      this.bindButtons();
+      this.connect(opts.replayUrl);
+      if (!opts.readOnly) {
+        this.bindButtons();
+      }
     },
 
-    connect() {
-      const url = "/live/" + encodeURIComponent(this.sessionId) + "/events";
+    connect(url) {
+      if (!url) {
+        url = "/live/" + encodeURIComponent(this.sessionId) + "/events";
+      }
       this.eventSource = new EventSource(url);
 
       const kinds = [

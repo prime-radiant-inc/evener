@@ -14,30 +14,19 @@
 <script src="/assets/marked.min.js"></script>
 <script src="/assets/renderer.js"></script>
 <script>
-  // Read-only viewer: connect renderer to the replay endpoint instead of /events.
   window.SerfRenderer.init({
     sessionId: {{.Meta.ID}},
     transcript: document.getElementById("transcript"),
-    statusBar: document.createElement("div"),  // unused
-    input: document.createElement("textarea"), // unused
-    sendBtn: document.createElement("button"), // unused
+    statusBar: document.createElement("div"),
+    input: document.createElement("textarea"),
+    sendBtn: document.createElement("button"),
     steerBtn: document.createElement("button"),
     interruptBtn: document.createElement("button"),
     compactBtn: document.createElement("button"),
     clearBtn: document.createElement("button"),
     shutdownBtn: document.createElement("button"),
-  });
-  // Override connect to point at /past replay instead of /live events.
-  // For v1, simplest: rewrite the EventSource URL after init.
-  window.SerfRenderer.eventSource.close();
-  window.SerfRenderer.eventSource = new EventSource(
-    "/past/" + encodeURIComponent({{.Meta.ID}}) + "/replay"
-  );
-  ["SESSION_START","USER_INPUT","ASSISTANT_TEXT_START","ASSISTANT_TEXT_DELTA",
-   "ASSISTANT_TEXT_END","TOOL_CALL_START","TOOL_CALL_OUTPUT_DELTA","TOOL_CALL_END",
-   "WARNING","ERROR"].forEach((kind) => {
-    window.SerfRenderer.eventSource.addEventListener(kind, (ev) =>
-      window.SerfRenderer.handle(kind, ev));
+    replayUrl: "/past/" + encodeURIComponent({{.Meta.ID}}) + "/replay",
+    readOnly: true,
   });
 </script>
 {{end}}
