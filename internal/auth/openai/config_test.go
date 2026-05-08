@@ -32,7 +32,14 @@ func TestConfigDefaults(t *testing.T) {
 		t.Fatalf("CallbackTimeout = %s, want enough time to finish browser login", cfg.CallbackTimeout)
 	}
 
-	wantScopes := []string{"openid", "profile", "email", "offline_access"}
+	wantScopes := []string{
+		"openid",
+		"profile",
+		"email",
+		"offline_access",
+		"api.connectors.read",
+		"api.connectors.invoke",
+	}
 	for _, want := range wantScopes {
 		if !contains(cfg.Scopes, want) {
 			t.Fatalf("Scopes = %v, missing %q", cfg.Scopes, want)
@@ -70,6 +77,9 @@ func TestAuthorizeURLContainsRequiredQueryParams(t *testing.T) {
 		"redirect_uri":          redirectURI,
 		"scope":                 strings.Join(cfg.Scopes, " "),
 		"code_challenge_method": "S256",
+		"id_token_add_organizations": "true",
+		"codex_cli_simplified_flow":  "true",
+		"originator":                 "serf",
 	}
 	for key, want := range required {
 		if got := query.Get(key); got != want {

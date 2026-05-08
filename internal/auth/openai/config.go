@@ -20,7 +20,11 @@ var defaultScopes = []string{
 	"profile",
 	"email",
 	"offline_access",
+	"api.connectors.read",
+	"api.connectors.invoke",
 }
+
+const defaultOriginator = "serf"
 
 // Config contains the stable OpenAI OAuth settings owned by Serf.
 type Config struct {
@@ -82,6 +86,9 @@ func (c Config) AuthorizeURL(options AuthorizeURLOptions) (string, error) {
 	query.Set("scope", strings.Join(c.scopes(), " "))
 	query.Set("code_challenge", options.CodeChallenge)
 	query.Set("code_challenge_method", "S256")
+	query.Set("id_token_add_organizations", "true")
+	query.Set("codex_cli_simplified_flow", "true")
+	query.Set("originator", defaultOriginator)
 	query.Set("state", options.State)
 	issuer.RawQuery = query.Encode()
 
