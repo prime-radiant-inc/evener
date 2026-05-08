@@ -19,10 +19,11 @@ import (
 
 // WebConfig is everything the web server needs.
 type WebConfig struct {
-	HubAddr string
-	Roster  *Roster
-	Past    *PastIndex
-	Spawner Spawner // optional; nil disables /live/new
+	HubAddr     string
+	Roster      *Roster
+	Past        *PastIndex
+	Spawner     Spawner // optional; nil disables /live/new
+	PastPerPage int     // results per page for /past; defaults to 50 when zero
 }
 
 // Spawner forks a serf serve subprocess from a SpawnTemplate and waits for
@@ -163,7 +164,11 @@ func (s *WebServer) handlePast(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no past index", http.StatusServiceUnavailable)
 		return
 	}
-	results := s.cfg.Past.Search(q, 50, 0)
+	limit := s.cfg.PastPerPage
+	if limit <= 0 {
+		limit = 50
+	}
+	results := s.cfg.Past.Search(q, limit, 0)
 	data := map[string]any{
 		"Title": "past",
 		"Past":  results,

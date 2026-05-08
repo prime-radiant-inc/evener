@@ -74,10 +74,11 @@ func main() {
 
 	// Web
 	web := NewWebServer(WebConfig{
-		HubAddr: cfg.Addr,
-		Roster:  roster,
-		Past:    past,
-		Spawner: spawner,
+		HubAddr:     cfg.Addr,
+		Roster:      roster,
+		Past:        past,
+		Spawner:     spawner,
+		PastPerPage: cfg.PastResultsPerPage,
 	})
 
 	// Lifecycle
