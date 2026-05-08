@@ -12,13 +12,14 @@ type StatusProber struct {
 	Timeout time.Duration
 }
 
-// statusInfo is a partial mirror of server.StatusInfo (we only need session_id).
+// statusInfo is a partial mirror of server.StatusInfo (we only need session_id and state).
 type statusInfo struct {
 	SessionID string `json:"session_id"`
+	State     string `json:"state"`
 }
 
 // Probe implements Prober.
-func (p *StatusProber) Probe(addr string) (string, bool) {
+func (p *StatusProber) Probe(addr string) (sessionID, status string, ok bool) {
 	timeout := p.Timeout
 	if timeout == 0 {
 		timeout = 500 * time.Millisecond
@@ -26,15 +27,15 @@ func (p *StatusProber) Probe(addr string) (string, bool) {
 	client := &http.Client{Timeout: timeout}
 	resp, err := client.Get("http://" + addr + "/status")
 	if err != nil {
-		return "", false
+		return "", "", false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", false
+		return "", "", false
 	}
 	var s statusInfo
 	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
-		return "", false
+		return "", "", false
 	}
-	return s.SessionID, true
+	return s.SessionID, s.State, true
 }

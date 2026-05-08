@@ -127,12 +127,13 @@ func TestRoster_Watch_PicksUpNewFile(t *testing.T) {
 // fakeProber implements liveness check for tests without real network calls.
 type fakeProber struct {
 	sessionID  string
+	status     string
 	shouldFail bool
 }
 
-func (p fakeProber) Probe(addr string) (sessionID string, ok bool) {
+func (p fakeProber) Probe(addr string) (sessionID, status string, ok bool) {
 	if p.shouldFail {
-		return "", false
+		return "", "", false
 	}
-	return p.sessionID, true
+	return p.sessionID, p.status, true
 }

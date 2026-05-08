@@ -50,6 +50,10 @@ type SessionMeta struct {
 	ParentSessionID string `json:"parent_session_id,omitempty"`
 	DivergenceTurn  int    `json:"divergence_turn,omitempty"`
 	ForkLabel       string `json:"fork_label,omitempty"`
+	// IsSubagent is true on sessions spawned via spawn_agent.
+	// NOTE: The agent's spawn-subagent code does not yet set this field;
+	// wiring the write path is a follow-up task.
+	IsSubagent bool `json:"is_subagent,omitempty"`
 }
 
 const sessionsSubdir = "sessions"

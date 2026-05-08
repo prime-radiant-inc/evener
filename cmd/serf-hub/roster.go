@@ -16,15 +16,16 @@ import (
 type LiveEntry struct {
 	rendezvous.Entry
 	SessionID string
+	Status    string // most-recent daemon state ("processing", "idle", "awaiting", etc.)
 }
 
 // Prober is implemented by liveness-checking strategies.
 //
 // A Prober verifies a daemon is reachable AND returns its current
 // session_id (which may have changed under POST /clear since the
-// rendezvous file was written).
+// rendezvous file was written) and the daemon's current state.
 type Prober interface {
-	Probe(addr string) (sessionID string, ok bool)
+	Probe(addr string) (sessionID, status string, ok bool)
 }
 
 // Roster maintains the live-daemon set on the host. Reads of the underlying
@@ -71,10 +72,10 @@ func (r *Roster) Refresh() {
 
 	for _, e := range entries {
 		seen[e.PID] = true
-		var sessID string
+		var sessID, status string
 		ok := true
 		if r.prober != nil {
-			sessID, ok = r.prober.Probe(e.Address)
+			sessID, status, ok = r.prober.Probe(e.Address)
 		}
 		if !ok {
 			r.failCount[e.PID]++
@@ -93,7 +94,7 @@ func (r *Roster) Refresh() {
 			continue
 		}
 		r.failCount[e.PID] = 0
-		live := LiveEntry{Entry: e, SessionID: sessID}
+		live := LiveEntry{Entry: e, SessionID: sessID, Status: status}
 		if sessID != "" {
 			bySess[sessID] = live
 		}
