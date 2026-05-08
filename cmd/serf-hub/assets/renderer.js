@@ -709,43 +709,68 @@
     };
   }
 
-  // task_list renderer — renders the actual checklist from arguments.
+  // task_list renderer — surfaces what the call actually changed:
+  //   - action=view: no body, just "view"
+  //   - action=append (args.tasks): list of new tasks with type + description
+  //   - action=update (args.updates): rows showing #id → status with notes
   const taskListRenderer = {
     mode: "card", friendly: "tasks",
-    target: (a) => {
-      if (a.action) return a.action;
-      if (Array.isArray(a.task_list)) return "update";
-      if (Array.isArray(a.updates) || Array.isArray(a.update)) return "update";
-      if (Array.isArray(a.add)) return "add " + a.add.length;
-      return "view";
-    },
+    target: (a) => a.action || "view",
     result: (data, out, state) => {
       const a = state.args || {};
-      if (Array.isArray(a.task_list)) return a.task_list.length + " items";
-      if (Array.isArray(a.add)) return "+" + a.add.length;
-      const updates = a.updates || a.update;
-      if (Array.isArray(updates)) return updates.length + " updated";
+      if (a.action === "append" && Array.isArray(a.tasks)) return "+" + a.tasks.length;
+      if (a.action === "update" && Array.isArray(a.updates)) return a.updates.length + " updated";
+      if (a.action === "view") return "ok";
       return "ok";
     },
     body: (args, conversation) => {
-      // Render task_list (full snapshot) or add/update batches as a checklist.
-      const items = Array.isArray(args.task_list) ? args.task_list : (Array.isArray(args.add) ? args.add : []);
-      if (items.length === 0) return null;
       const list = document.createElement("ul");
       list.className = "tool-body task-list-body";
-      for (const t of items) {
-        const li = document.createElement("li");
-        li.className = "task-row task-status-" + (t.status || "open").replace(/_/g, "-");
-        const icon = document.createElement("span");
-        icon.className = "task-icon";
-        icon.textContent = (t.status === "done" ? "✓" : t.status === "in_progress" ? "▶" : "○");
-        const desc = document.createElement("span");
-        desc.className = "task-desc";
-        desc.textContent = t.description || t.prompt || "";
-        li.appendChild(icon);
-        li.appendChild(desc);
-        list.appendChild(li);
+      let rendered = 0;
+
+      if (args.action === "append" && Array.isArray(args.tasks)) {
+        for (const t of args.tasks) {
+          const li = document.createElement("li");
+          li.className = "task-row task-status-open";
+          const icon = document.createElement("span");
+          icon.className = "task-icon"; icon.textContent = "+";
+          const type = document.createElement("span");
+          type.className = "task-type"; type.textContent = t.type || "";
+          const desc = document.createElement("span");
+          desc.className = "task-desc"; desc.textContent = t.description || "";
+          li.appendChild(icon);
+          li.appendChild(type);
+          li.appendChild(desc);
+          list.appendChild(li);
+          rendered++;
+        }
+      } else if (args.action === "update" && Array.isArray(args.updates)) {
+        for (const u of args.updates) {
+          const li = document.createElement("li");
+          li.className = "task-row task-status-" + (u.status || "open").replace(/_/g, "-");
+          const icon = document.createElement("span");
+          icon.className = "task-icon";
+          icon.textContent = (u.status === "done" ? "✓" : u.status === "in_progress" ? "▶" : u.status === "cancelled" ? "✕" : "○");
+          const id = document.createElement("span");
+          id.className = "task-id"; id.textContent = "#" + u.id;
+          const arrow = document.createElement("span");
+          arrow.className = "task-arrow"; arrow.textContent = "→";
+          const status = document.createElement("span");
+          status.className = "task-status-label"; status.textContent = u.status || "";
+          li.appendChild(icon);
+          li.appendChild(id);
+          li.appendChild(arrow);
+          li.appendChild(status);
+          if (u.notes) {
+            const notes = document.createElement("span");
+            notes.className = "task-notes"; notes.textContent = "“" + u.notes + "”";
+            li.appendChild(notes);
+          }
+          list.appendChild(li);
+          rendered++;
+        }
       }
+      if (rendered === 0) return null;
       conversation.appendChild(list);
       return { list };
     },
@@ -901,16 +926,23 @@
     }
   });
 
+  function setPanelToggleActive(selector, active) {
+    const btn = document.querySelector(selector);
+    if (btn) btn.classList.toggle("active", !!active);
+  }
+
   function toggleTasksPanel() {
     const existing = document.getElementById("tasks-panel");
     if (existing) {
       if (existing.__pollTimer) clearInterval(existing.__pollTimer);
       existing.remove();
+      setPanelToggleActive("[data-tasks-trigger]", false);
       return;
     }
     // Close details panel if open — they share the same slot.
     const details = document.getElementById("details-panel");
     if (details) details.remove();
+    setPanelToggleActive("[data-details-trigger]", false);
 
     const header = document.querySelector(".workspace-header");
     if (!header) return;
@@ -933,11 +965,13 @@
     };
     refresh();
     panel.__pollTimer = setInterval(refresh, 2000);
+    setPanelToggleActive("[data-tasks-trigger]", true);
 
     document.addEventListener("keydown", function escClose(ev) {
       if (ev.key === "Escape") {
         if (panel.__pollTimer) clearInterval(panel.__pollTimer);
         panel.remove();
+        setPanelToggleActive("[data-tasks-trigger]", false);
         document.removeEventListener("keydown", escClose);
       }
     });
@@ -971,15 +1005,28 @@
         if (Array.isArray(t.depends_on) && t.depends_on.length > 0) {
           deps = "<span class='task-deps'>← " + t.depends_on.join(", ") + "</span>";
         }
-        parts.push(
-          "<li class='" + cls + "'>" +
+        const hasNotes = Array.isArray(t.notes) && t.notes.length > 0;
+        const head =
           "<span class='task-icon'>" + icon + "</span>" +
           "<span class='task-id'>#" + (t.id || "?") + "</span>" +
           type +
           "<span class='task-desc'>" + desc + "</span>" +
-          deps +
-          "</li>"
-        );
+          deps;
+        if (hasNotes) {
+          const notesHTML = t.notes.map((n, i) =>
+            "<li class='task-note'><span class='task-note-num'>" + (i + 1) + "</span>" +
+            "<span class='task-note-text'>" + escapeHTML(n) + "</span></li>"
+          ).join("");
+          parts.push(
+            "<li class='" + cls + " has-notes'>" +
+            "<details class='task-row-details'>" +
+            "<summary>" + head + "<span class='task-note-count'>" + t.notes.length + " note" + (t.notes.length === 1 ? "" : "s") + "</span></summary>" +
+            "<ol class='task-notes-list'>" + notesHTML + "</ol>" +
+            "</details></li>"
+          );
+        } else {
+          parts.push("<li class='" + cls + "'>" + head + "</li>");
+        }
       }
       parts.push("</ul>");
     }
@@ -1005,12 +1052,17 @@
 
   function toggleDetailsPanel() {
     const existing = document.getElementById("details-panel");
-    if (existing) { existing.remove(); return; }
+    if (existing) {
+      existing.remove();
+      setPanelToggleActive("[data-details-trigger]", false);
+      return;
+    }
     // Close tasks panel if open — they share the same slot.
     const tasks = document.getElementById("tasks-panel");
     if (tasks) {
       if (tasks.__pollTimer) clearInterval(tasks.__pollTimer);
       tasks.remove();
+      setPanelToggleActive("[data-tasks-trigger]", false);
     }
     const header = document.querySelector(".workspace-header");
     if (!header) return;
@@ -1025,10 +1077,12 @@
     fetch("/s/" + encodeURIComponent(id) + "/details").then(r => r.text()).then(html => {
       panel.innerHTML = html;
     }).catch(() => { panel.innerHTML = "<div class='details-loading'>failed to load</div>"; });
+    setPanelToggleActive("[data-details-trigger]", true);
 
     document.addEventListener("keydown", function escClose(ev) {
       if (ev.key === "Escape") {
         panel.remove();
+        setPanelToggleActive("[data-details-trigger]", false);
         document.removeEventListener("keydown", escClose);
       }
     });

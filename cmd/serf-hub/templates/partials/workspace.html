@@ -3,14 +3,20 @@
   <div class="workspace-title">
     <span class="title">{{.Title}}</span>
     <button class="title-action" type="button" data-copy-id="{{.ID}}" title="copy session ID">⧉</button>
-    <a class="details-link" href="#" data-tasks-trigger>tasks</a>
-    <a class="details-link" href="#" data-details-trigger>details</a>
   </div>
   <div class="workspace-meta"
        hx-get="/s/{{.ID}}/meta"
        hx-trigger="load, every 2s"
        hx-swap="innerHTML">
     {{template "workspace_meta" .}}
+  </div>
+  <div class="workspace-actions">
+    <button type="button" class="panel-toggle" data-tasks-trigger title="task list">
+      <span class="panel-toggle-icon">☑</span><span class="panel-toggle-label">tasks</span>
+    </button>
+    <button type="button" class="panel-toggle" data-details-trigger title="session details">
+      <span class="panel-toggle-icon">ⓘ</span><span class="panel-toggle-label">details</span>
+    </button>
   </div>
 </header>
 
