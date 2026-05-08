@@ -42,6 +42,7 @@ section.panel {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: var(--pad);
+  min-width: 0;
 }
 section.panel h2 { margin-top: 0; font-size: 14px; color: var(--muted); font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; }
 .row {
