@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -38,6 +39,7 @@ func NewWebServer(cfg WebConfig) *WebServer {
 	liveTmpl := template.Must(template.ParseFS(templatesFS,
 		"templates/base.html",
 		"templates/live.html",
+		"templates/partials/status_bar.html",
 	))
 	var rest *RESTProxy
 	var sse *SSEProxy
@@ -135,7 +137,7 @@ func (s *WebServer) handleLiveProxy(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}
-	if _, rest, ok := splitLivePath(path); ok {
+	if sessID, rest, ok := splitLivePath(path); ok {
 		switch {
 		case rest == "events":
 			if s.sse == nil {
@@ -144,7 +146,6 @@ func (s *WebServer) handleLiveProxy(w http.ResponseWriter, r *http.Request) {
 			}
 			s.sse.ServeHTTP(w, r)
 		case rest == "":
-			sessID, _, _ := splitLivePath(path)
 			entry, ok := s.cfg.Roster.Find(sessID)
 			if !ok {
 				http.NotFound(w, r)
@@ -159,6 +160,8 @@ func (s *WebServer) handleLiveProxy(w http.ResponseWriter, r *http.Request) {
 			if err := s.liveTmpl.ExecuteTemplate(w, "base", data); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 			}
+		case rest == "status-bar":
+			s.handleStatusBar(w, r, sessID)
 		default:
 			if s.rest == nil {
 				http.NotFound(w, r)
@@ -169,4 +172,36 @@ func (s *WebServer) handleLiveProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.NotFound(w, r)
+}
+
+// handleStatusBar fetches /status from the daemon, decodes a subset of fields,
+// and renders the status_bar partial as an htmx fragment.
+func (s *WebServer) handleStatusBar(w http.ResponseWriter, r *http.Request, sessID string) {
+	entry, ok := s.cfg.Roster.Find(sessID)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	statusURL := "http://" + entry.Address + "/status"
+	resp, err := http.Get(statusURL) //nolint:gosec // address comes from trusted roster
+	if err != nil {
+		http.Error(w, "daemon unreachable", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	var info struct {
+		Model           string  `json:"model"`
+		Profile         string  `json:"profile"`
+		State           string  `json:"state"`
+		Turns           int     `json:"turns"`
+		ContextPressure float64 `json:"context_pressure"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.liveTmpl.ExecuteTemplate(w, "status_bar", info); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }

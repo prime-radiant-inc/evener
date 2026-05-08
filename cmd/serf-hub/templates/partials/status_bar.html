@@ -1,0 +1,7 @@
+{{define "status_bar"}}
+<span class="pill">{{.Model}}</span>
+<span class="pill">{{.Profile}}</span>
+<span class="pill">turns: {{.Turns}}</span>
+<span class="pill">ctx: {{printf "%.0f" .ContextPressure}}%</span>
+<span class="pill ok">{{.State}}</span>
+{{end}}
