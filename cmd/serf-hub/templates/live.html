@@ -1,4 +1,9 @@
 {{define "body"}}
+{{if .ForkedFrom}}
+<div class="hint" style="padding:6px var(--pad); margin-bottom:8px">
+  forked from <a href="/past/{{.ForkedFrom}}" style="color:var(--accent)">{{.ForkedFrom}}</a>
+</div>
+{{end}}
 <div id="status-bar"
      hx-get="/live/{{.SessionID}}/status-bar"
      hx-trigger="load, every 2s"

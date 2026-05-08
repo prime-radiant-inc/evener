@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -317,6 +318,81 @@ func TestWeb_PastReplay_TranslatesTurnsToSSEEvents(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("replay body missing %q\nbody:\n%s", want, body)
 		}
+	}
+}
+
+type fakeSpawner struct{}
+
+func (fakeSpawner) Spawn(_ context.Context, _, _ string) (rendezvous.Entry, error) {
+	return rendezvous.Entry{PID: 1, Address: "127.0.0.1:0"}, nil
+}
+func (fakeSpawner) Resume(_ context.Context, sessionID string) (rendezvous.Entry, error) {
+	return rendezvous.Entry{PID: 1, Address: "127.0.0.1:0"}, nil
+}
+func (fakeSpawner) Templates() []SpawnTemplate { return nil }
+
+func TestWeb_LiveNew_POST_RejectsRelativeWorkingDir(t *testing.T) {
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    NewPastIndex(""),
+		Spawner: &fakeSpawner{},
+	})
+	body := strings.NewReader("template=t&working_dir=relative/path")
+	req := httptest.NewRequest(http.MethodPost, "/live/new", body)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d, want 400", rec.Code)
+	}
+}
+
+func TestWeb_LiveNew_POST_RejectsMissingWorkingDir(t *testing.T) {
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    NewPastIndex(""),
+		Spawner: &fakeSpawner{},
+	})
+	body := strings.NewReader("template=t&working_dir=/this/path/does/not/exist/1234567890")
+	req := httptest.NewRequest(http.MethodPost, "/live/new", body)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d, want 400; body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestWeb_DrivePage_ShowsForkedFrom(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 1, Address: "127.0.0.1:55555"})
+	r := NewRoster(dir, fakeProber{sessionID: "01NEW"})
+	r.Refresh()
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  r,
+		Past:    NewPastIndex(""),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/live/01NEW?from=01OLD", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "01OLD") {
+		t.Errorf("body missing forked-from id 01OLD")
+	}
+	if !strings.Contains(strings.ToLower(body), "forked") {
+		t.Errorf("body missing 'forked' annotation")
 	}
 }
 

@@ -206,9 +206,10 @@ func (s *WebServer) handleLiveProxy(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			data := map[string]any{
-				"Title":     "drive",
-				"SessionID": entry.SessionID,
-				"Entry":     entry,
+				"Title":      "drive",
+				"SessionID":  entry.SessionID,
+				"Entry":      entry,
+				"ForkedFrom": r.URL.Query().Get("from"),
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			if err := s.liveTmpl.ExecuteTemplate(w, "base", data); err != nil {
@@ -317,7 +318,7 @@ func (s *WebServer) handlePastID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if sessID := s.findNewSession(entry.PID); sessID != "" {
-			http.Redirect(w, r, "/live/"+sessID, http.StatusFound)
+			http.Redirect(w, r, "/live/"+sessID+"?from="+id, http.StatusFound)
 			return
 		}
 		http.Redirect(w, r, "/", http.StatusFound)
@@ -578,6 +579,17 @@ func (s *WebServer) handleLiveNew(w http.ResponseWriter, r *http.Request) {
 		}
 		tmpl := r.FormValue("template")
 		wd := r.FormValue("working_dir")
+		if wd != "" {
+			if !filepath.IsAbs(wd) {
+				http.Error(w, "working_dir must be an absolute path", http.StatusBadRequest)
+				return
+			}
+			info, err := os.Stat(wd)
+			if err != nil || !info.IsDir() {
+				http.Error(w, "working_dir does not exist or is not a directory", http.StatusBadRequest)
+				return
+			}
+		}
 		entry, err := s.cfg.Spawner.Spawn(r.Context(), tmpl, wd)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
