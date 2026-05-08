@@ -41,6 +41,15 @@ type SessionMeta struct {
 	TurnCount       int             `json:"turn_count"`
 	LastInputTokens int             `json:"last_input_tokens,omitempty"`
 	OriginalTask    string          `json:"original_task,omitempty"`
+	// ParentSessionID, DivergenceTurn, and ForkLabel are non-empty on sessions
+	// that branched from another via the fork operation. ParentSessionID names
+	// the original session (the one whose transcript prefix this session shares);
+	// DivergenceTurn is the turn index immediately after the shared prefix
+	// (the first turn unique to this branch). ForkLabel, if set, is the
+	// user-supplied display name for the original branch.
+	ParentSessionID string `json:"parent_session_id,omitempty"`
+	DivergenceTurn  int    `json:"divergence_turn,omitempty"`
+	ForkLabel       string `json:"fork_label,omitempty"`
 }
 
 const sessionsSubdir = "sessions"

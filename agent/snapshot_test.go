@@ -1091,3 +1091,30 @@ func TestSessionMeta_OriginalTask_OmitEmpty(t *testing.T) {
 		t.Fatalf("expected original_task to be omitempty when empty, got: %s", got)
 	}
 }
+
+func TestSessionMeta_ForkFieldsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	meta := SessionMeta{
+		ID:              "01CHILD",
+		ParentSessionID: "01PARENT",
+		DivergenceTurn:  7,
+		ForkLabel:       "before TDD",
+		UpdatedAt:       time.Now(),
+	}
+	if err := SaveSessionMeta(dir, meta); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadSessionMeta(dir, "01CHILD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ParentSessionID != "01PARENT" {
+		t.Errorf("ParentSessionID: %q", got.ParentSessionID)
+	}
+	if got.DivergenceTurn != 7 {
+		t.Errorf("DivergenceTurn: %d", got.DivergenceTurn)
+	}
+	if got.ForkLabel != "before TDD" {
+		t.Errorf("ForkLabel: %q", got.ForkLabel)
+	}
+}
