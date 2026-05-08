@@ -515,6 +515,96 @@ func NewMiniMaxProfile(model string) ProviderProfile {
 // The provider id is "openrouter-anthropic" which is served by
 // llm/providers/openrouter_anthropic — it wraps the standard Anthropic
 // adapter with the OpenRouter base URL and OPENROUTER_API_KEY.
+// resolveOpenRouterAnthropicWebSearch resolves SupportsWebSearch for an
+// openrouter-anthropic profile via the same three-step lookup as
+// resolveOpenRouterAnthropicCtxAndEfforts, but with explicit precedence
+// tracking so step 3 (the bare-upstream-stripped fallback) cannot
+// overwrite an authoritative step 1 / step 2 decision.
+//
+// Returns the resolved value or `defaultWS` when no step set ws.
+func resolveOpenRouterAnthropicWebSearch(lookup func(string) *llm.ModelInfo, model string, defaultWS bool) bool {
+	ws := defaultWS
+	resolved := false
+
+	// Step 1: openrouter-prefixed entry. Authoritative — sets ws when
+	// the field is explicitly present, suppresses later steps either way.
+	prefixedHit := false
+	if mi := lookup("openrouter/" + model); mi != nil {
+		prefixedHit = true
+		if mi.SupportsWebSearch != nil {
+			ws = *mi.SupportsWebSearch
+			resolved = true
+		}
+	}
+
+	// Step 2: bare-direct entry, only when step 1 missed.
+	if !prefixedHit {
+		if mi := lookup(model); mi != nil {
+			if mi.SupportsWebSearch != nil {
+				ws = *mi.SupportsWebSearch
+				resolved = true
+			}
+		}
+	}
+
+	// Step 3: bare-upstream-stripped fallback. Only fills when no
+	// earlier step resolved ws — never overwrites an authoritative
+	// answer.
+	if !resolved {
+		if _, after, hasSlash := strings.Cut(model, "/"); hasSlash && after != "" {
+			if mi := lookup(after); mi != nil {
+				if mi.SupportsWebSearch != nil {
+					ws = *mi.SupportsWebSearch
+				}
+			}
+		}
+	}
+
+	return ws
+}
+
+// resolveOpenRouterAnthropicCtxAndEfforts handles the context-window and
+// effort-levels resolution for openrouter-anthropic profiles. Same
+// three-step precedence as the web-search resolver, but these fields
+// were never affected by the step-3-overwrites-step-2 bug because the
+// existing per-field "only fill if not yet set" guards cover them.
+func resolveOpenRouterAnthropicCtxAndEfforts(lookup func(string) *llm.ModelInfo, model string, defaultCtx int, defaultEfforts []string) (int, []string) {
+	ctx := defaultCtx
+	efforts := defaultEfforts
+
+	prefixedHit := false
+	if mi := lookup("openrouter/" + model); mi != nil {
+		prefixedHit = true
+		if mi.ContextWindow > 0 {
+			ctx = mi.ContextWindow
+		}
+		if len(mi.ReasoningEffortLevels) > 0 {
+			efforts = append([]string(nil), mi.ReasoningEffortLevels...)
+		}
+	}
+
+	if !prefixedHit {
+		if mi := lookup(model); mi != nil {
+			if mi.ContextWindow > 0 {
+				ctx = mi.ContextWindow
+			}
+			if len(mi.ReasoningEffortLevels) > 0 {
+				efforts = append([]string(nil), mi.ReasoningEffortLevels...)
+			}
+		}
+	}
+
+	if _, after, hasSlash := strings.Cut(model, "/"); hasSlash && after != "" {
+		if mi := lookup(after); mi != nil {
+			if efforts == nil && len(mi.ReasoningEffortLevels) > 0 {
+				efforts = append([]string(nil), mi.ReasoningEffortLevels...)
+			}
+		}
+	}
+
+	return ctx, efforts
+}
+
 func NewOpenRouterAnthropicProfile(model string) ProviderProfile {
 	model = strings.TrimSpace(model)
 	// Resolve catalog metadata. The openrouter-anthropic profile draws
@@ -542,62 +632,8 @@ func NewOpenRouterAnthropicProfile(model string) ProviderProfile {
 
 	cat := llm.EmbeddedModelCatalog()
 	if cat != nil {
-		// Step 1: prefixed lookup (openrouter-served entry). Treat as
-		// authoritative — explicit catalog values (true OR false) for
-		// presence-aware fields like SupportsWebSearch are honored.
-		// For absent fields, the constructor default sticks.
-		var prefixedHit bool
-		if mi := cat.GetModelInfo("openrouter/" + model); mi != nil {
-			prefixedHit = true
-			if mi.ContextWindow > 0 {
-				contextWindow = mi.ContextWindow
-			}
-			if mi.SupportsWebSearch != nil {
-				ws = *mi.SupportsWebSearch
-			}
-			if len(mi.ReasoningEffortLevels) > 0 {
-				efforts = append([]string(nil), mi.ReasoningEffortLevels...)
-			}
-		}
-
-		// Step 2: bare-direct lookup (authoritative). Only run when the
-		// prefixed lookup didn't match — if it did, the prefixed entry
-		// already represents the OpenRouter view of the model; the bare
-		// entry is a different provider's view that we shouldn't conflate.
-		if !prefixedHit {
-			if mi := cat.GetModelInfo(model); mi != nil {
-				if mi.ContextWindow > 0 {
-					contextWindow = mi.ContextWindow
-				}
-				if mi.SupportsWebSearch != nil {
-					ws = *mi.SupportsWebSearch
-				}
-				if len(mi.ReasoningEffortLevels) > 0 {
-					efforts = append([]string(nil), mi.ReasoningEffortLevels...)
-				}
-			}
-		}
-
-		// Step 3: bare-upstream-stripped lookup, picking up serf-shipped
-		// overrides keyed under bare upstream IDs (e.g.
-		// "anthropic/claude-sonnet-4-5" → "claude-sonnet-4-5"). Only
-		// supplements fields the earlier steps didn't fill — this is a
-		// fallback for capability metadata, not an override of decisions
-		// made by step 1 or 2.
-		if _, after, hasSlash := strings.Cut(model, "/"); hasSlash && after != "" {
-			if mi := cat.GetModelInfo(after); mi != nil {
-				// Only fill ws if the earlier steps didn't already set
-				// it explicitly. Step 1's prefixed match is the
-				// authoritative OpenRouter view; the bare upstream entry
-				// is for fallback only.
-				if !prefixedHit && mi.SupportsWebSearch != nil {
-					ws = *mi.SupportsWebSearch
-				}
-				if efforts == nil && len(mi.ReasoningEffortLevels) > 0 {
-					efforts = append([]string(nil), mi.ReasoningEffortLevels...)
-				}
-			}
-		}
+		ws = resolveOpenRouterAnthropicWebSearch(cat.GetModelInfo, model, ws)
+		contextWindow, efforts = resolveOpenRouterAnthropicCtxAndEfforts(cat.GetModelInfo, model, contextWindow, efforts)
 	}
 
 	if efforts == nil {

@@ -665,6 +665,76 @@ func TestNewOpenRouterAnthropicProfile_PreservesWebSearchDefault(t *testing.T) {
 	}
 }
 
+// TestResolveOpenRouterAnthropicWebSearch verifies the three-step
+// resolution precedence used by NewOpenRouterAnthropicProfile.
+// Step 1 (openrouter-prefixed) and step 2 (bare-direct, only when step
+// 1 misses) are authoritative; step 3 (bare-upstream-stripped) is a
+// fallback that only fills when no earlier step resolved the field.
+//
+// Particularly important: step 3 must NOT overwrite an authoritative
+// step 2 result, even if step 2's matched entry happened to omit the
+// field. Built against a fake catalog so all branches can be exercised
+// directly — the real catalog doesn't currently contain a model where
+// every relevant key exists with diverging values.
+func TestResolveOpenRouterAnthropicWebSearch(t *testing.T) {
+	tt := func(t *testing.T, name string, entries map[string]*bool, presentEntries map[string]bool, model string, wantWS bool) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			lookup := func(key string) *llm.ModelInfo {
+				if _, present := presentEntries[key]; !present {
+					return nil
+				}
+				ws := entries[key]
+				return &llm.ModelInfo{ID: key, SupportsWebSearch: ws}
+			}
+			got := resolveOpenRouterAnthropicWebSearch(lookup, model, true)
+			if got != wantWS {
+				t.Fatalf("got %v, want %v", got, wantWS)
+			}
+		})
+	}
+
+	bTrue, bFalse := true, false
+
+	// Step 1 wins when the openrouter-prefixed entry has an explicit value.
+	tt(t, "step 1 explicit false wins over later steps",
+		map[string]*bool{"openrouter/anthropic/m": &bFalse, "anthropic/m": &bTrue, "m": &bTrue},
+		map[string]bool{"openrouter/anthropic/m": true, "anthropic/m": true, "m": true},
+		"anthropic/m", false)
+
+	// Step 2 wins when no openrouter-prefixed entry exists but a
+	// bare-direct entry does. Step 3 stripped upstream must NOT
+	// overwrite step 2's authoritative answer — this was the bug.
+	tt(t, "step 2 explicit false wins over step 3 explicit true",
+		map[string]*bool{"anthropic/m": &bFalse, "m": &bTrue},
+		map[string]bool{"anthropic/m": true, "m": true},
+		"anthropic/m", false)
+
+	// Step 3 fills when steps 1 and 2 are silent (no entries match).
+	tt(t, "step 3 fills when steps 1 and 2 silent",
+		map[string]*bool{"m": &bTrue},
+		map[string]bool{"m": true},
+		"anthropic/m", true)
+
+	// Step 3 fills when step 2 matched but its entry has no field —
+	// useful for picking up serf overrides on bare upstream IDs.
+	tt(t, "step 3 fills when step 2 matched but field absent",
+		map[string]*bool{"anthropic/m": nil, "m": &bFalse},
+		map[string]bool{"anthropic/m": true, "m": true},
+		"anthropic/m", false)
+
+	// Step 3 fills when step 1's prefixed entry matched but has no field.
+	tt(t, "step 3 fills when step 1 matched but field absent",
+		map[string]*bool{"openrouter/anthropic/m": nil, "m": &bFalse},
+		map[string]bool{"openrouter/anthropic/m": true, "m": true},
+		"anthropic/m", false)
+
+	// All silent → caller default wins.
+	tt(t, "default wins when nothing matches",
+		map[string]*bool{}, map[string]bool{},
+		"anthropic/m", true)
+}
+
 // TestNewOpenRouterAnthropicProfile_HonorsExplicitWebSearchFalse verifies
 // that when a bare-direct catalog match (no openrouter prefix) explicitly
 // sets supports_web_search to false, that signal is respected. This is
