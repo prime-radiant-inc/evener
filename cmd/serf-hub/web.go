@@ -901,54 +901,97 @@ func parseModel(s string) (provider, model string) {
 	return "", s
 }
 
-// handleApiModels returns the models the hub can spawn for. Source uses the
-// same provider-discovery logic that `serf serve` uses (llm.NewFromEnv), so
-// what shows here matches what spawning will succeed at — no provider listed
-// without an API key, none missing if one is configured. Models metadata
-// (context window, pricing) comes from the bundled catalog.
+// handleApiModels returns the models the hub can spawn for. The list is what
+// each configured provider's /models API returns RIGHT NOW (a live call to
+// the provider, the same path the daemon's /models endpoint uses). Pricing
+// and context-window metadata come from the embedded catalog where the live
+// API doesn't carry it.
 //
-// Future: when the hub talks to a remote serf daemon, the model list should
-// come from that daemon's /models endpoint, not the hub binary's compile-time
-// catalog. This handler is the seam to swap.
+// Future: when the hub talks to a remote serf daemon, this handler will
+// proxy to that daemon's /models. The cache here is shared across the
+// hub's Spawn() target, which is local-only today.
 func (s *WebServer) handleApiModels(w http.ResponseWriter, r *http.Request) {
-	// Discover providers configured in the hub's environment.
-	configured := map[string]bool{}
-	if c, err := llm.NewFromEnv(); err == nil && c != nil {
-		for _, name := range c.ProviderNames() {
-			configured[strings.ToLower(name)] = true
-		}
-	}
+	models := s.fetchLiveModels(r.Context())
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(models) //nolint:errcheck
+}
 
+// modelsCache holds a per-process cache of live ListModels results keyed by
+// provider name, with a TTL. Provider /models calls are cheap but not free.
+type modelsCache struct {
+	mu      sync.Mutex
+	expires time.Time
+	models  []map[string]any
+}
+
+var liveModelsCache modelsCache
+
+const liveModelsTTL = 5 * time.Minute
+
+func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
+	liveModelsCache.mu.Lock()
+	if time.Now().Before(liveModelsCache.expires) && liveModelsCache.models != nil {
+		out := liveModelsCache.models
+		liveModelsCache.mu.Unlock()
+		return out
+	}
+	liveModelsCache.mu.Unlock()
+
+	c, err := llm.NewFromEnv()
+	if err != nil || c == nil {
+		return nil
+	}
 	cat := llm.EmbeddedModelCatalog()
+
 	var out []map[string]any
-	if cat != nil {
-		for _, m := range cat.Models {
-			// Skip models with no context window or embedding models.
-			if m.ContextWindow == 0 || strings.Contains(strings.ToLower(m.ID), "embedding") {
-				continue
-			}
-			// Only surface models for providers the hub can actually spawn for.
-			// No fallback — if no providers are configured, the picker shows
-			// nothing and the user knows to fix their environment. Showing
-			// models we can't run defeats the point of the picker.
-			if !configured[strings.ToLower(m.Provider)] {
+	for _, prov := range c.ProviderNames() {
+		listCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		models, lerr := c.ListModels(listCtx, prov)
+		cancel()
+		if lerr != nil {
+			// Provider doesn't support live listing or call failed —
+			// skip this provider rather than fall back to a stale catalog.
+			// User sees only providers we can confidently report on.
+			continue
+		}
+		for _, m := range models {
+			lower := strings.ToLower(m.ID)
+			// Skip non-chat / non-completion models from the live list.
+			if strings.Contains(lower, "embedding") ||
+				strings.Contains(lower, "whisper") ||
+				strings.Contains(lower, "tts") ||
+				strings.Contains(lower, "dall-e") ||
+				strings.Contains(lower, "moderation") ||
+				strings.Contains(lower, "audio") ||
+				strings.Contains(lower, "transcribe") ||
+				strings.Contains(lower, "image") {
 				continue
 			}
 			entry := map[string]any{
-				"provider":                m.Provider,
-				"model":                   m.ID,
-				"display_name":            m.DisplayName,
-				"context_window":          m.ContextWindow,
-				"supports_tools":          m.SupportsTools,
-				"supports_reasoning":      m.SupportsReasoning,
-				"input_cost_per_million":  m.InputCostPerMillion,
-				"output_cost_per_million": m.OutputCostPerMillion,
+				"provider":     m.Provider,
+				"model":        m.ID,
+				"display_name": m.DisplayName,
+			}
+			// Enrich from the embedded catalog where the live API doesn't
+			// carry context window or pricing.
+			if cat != nil {
+				if mi := cat.GetModelInfo(m.ID); mi != nil {
+					entry["context_window"] = mi.ContextWindow
+					entry["supports_tools"] = mi.SupportsTools
+					entry["supports_reasoning"] = mi.SupportsReasoning
+					entry["input_cost_per_million"] = mi.InputCostPerMillion
+					entry["output_cost_per_million"] = mi.OutputCostPerMillion
+				}
 			}
 			out = append(out, entry)
 		}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(out) //nolint:errcheck
+
+	liveModelsCache.mu.Lock()
+	liveModelsCache.models = out
+	liveModelsCache.expires = time.Now().Add(liveModelsTTL)
+	liveModelsCache.mu.Unlock()
+	return out
 }
 
 // handleApiDirs returns directories matching a path prefix for the directory autocomplete.

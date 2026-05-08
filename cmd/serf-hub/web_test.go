@@ -753,14 +753,18 @@ func TestWeb_Settings_Theme_Renders(t *testing.T) {
 	}
 }
 
-// TestWeb_ApiModels_FiltersByConfiguredProviders verifies that /api/models
-// returns only models for providers configured in the environment, and
-// returns an empty list (not a fallback) when none are configured.
-func TestWeb_ApiModels_FiltersByConfiguredProviders(t *testing.T) {
-	// With OPENAI_API_KEY set, expect openai models.
-	t.Setenv("OPENAI_API_KEY", "sk-test")
-	t.Setenv("ANTHROPIC_API_KEY", "")
-	t.Setenv("GEMINI_API_KEY", "")
+// TestWeb_ApiModels_ReturnsListWithProviderEnv verifies the endpoint
+// shape — returns a JSON array of {provider, model, …} entries when
+// run against a live provider API. Skips when no real API key is set.
+func TestWeb_ApiModels_ReturnsListWithProviderEnv(t *testing.T) {
+	// Force-clear cache to make the test run a fresh fetch.
+	liveModelsCache.mu.Lock()
+	liveModelsCache.expires = time.Time{}
+	liveModelsCache.models = nil
+	liveModelsCache.mu.Unlock()
+	if os.Getenv("OPENAI_API_KEY") == "" {
+		t.Skip("OPENAI_API_KEY not set; live list models requires a real API key")
+	}
 
 	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180"})
 	req := httptest.NewRequest(http.MethodGet, "/api/models", nil)
@@ -776,23 +780,22 @@ func TestWeb_ApiModels_FiltersByConfiguredProviders(t *testing.T) {
 		t.Fatalf("invalid JSON: %v", err)
 	}
 	if len(models) == 0 {
-		t.Fatalf("expected openai models, got 0")
+		t.Fatalf("expected at least one model from live provider API, got 0")
 	}
-	for _, m := range models {
-		if p, _ := m["provider"].(string); strings.ToLower(p) != "openai" {
-			t.Errorf("unexpected provider %q in env-filtered list", p)
-		}
-	}
-	for _, key := range []string{"provider", "model", "context_window"} {
+	for _, key := range []string{"provider", "model"} {
 		if _, ok := models[0][key]; !ok {
 			t.Errorf("model missing field %q: %v", key, models[0])
 		}
 	}
 }
 
-// TestWeb_ApiModels_NoProvidersConfigured returns an empty list (not a
-// fallback) when no providers have keys in the environment.
+// TestWeb_ApiModels_NoProvidersConfigured returns an empty list when no
+// providers have keys in the environment.
 func TestWeb_ApiModels_NoProvidersConfigured(t *testing.T) {
+	liveModelsCache.mu.Lock()
+	liveModelsCache.expires = time.Time{}
+	liveModelsCache.models = nil
+	liveModelsCache.mu.Unlock()
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("GEMINI_API_KEY", "")
