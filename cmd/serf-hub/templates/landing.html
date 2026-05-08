@@ -1,0 +1,27 @@
+{{define "body"}}
+<div class="cols">
+  <section class="panel">
+    <h2>live sessions</h2>
+    <div hx-get="/live" hx-trigger="load, every 2s" hx-swap="innerHTML">
+      <div class="empty">loading…</div>
+    </div>
+  </section>
+  <section class="panel">
+    <h2>recent past sessions</h2>
+    <form method="get" action="/past" style="margin-bottom:8px">
+      <input type="text" name="q" placeholder="search past sessions" style="width:80%">
+      <input type="submit" value="search">
+    </form>
+    {{if .Past}}
+      {{range .Past}}
+      <a class="row" href="/past/{{.Meta.ID}}">
+        <span class="wd">{{.Meta.EnvInfo.WorkingDir}}</span>
+        <span class="meta">{{.Meta.Model}} · {{.Meta.UpdatedAt.Format "2006-01-02 15:04"}}</span>
+      </a>
+      {{end}}
+    {{else}}
+      <div class="empty">no past sessions</div>
+    {{end}}
+  </section>
+</div>
+{{end}}

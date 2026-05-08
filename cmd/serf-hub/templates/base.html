@@ -1,0 +1,24 @@
+{{define "base"}}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{.Title}} — serf hub</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <script src="/assets/htmx.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1><a href="/">serf hub</a></h1>
+    <nav>
+      <a class="btn" href="/">live</a>
+      <a class="btn" href="/past">past</a>
+      <a class="btn" href="/live/new">new session</a>
+    </nav>
+  </header>
+  <main>
+    {{template "body" .}}
+  </main>
+</body>
+</html>
+{{end}}
