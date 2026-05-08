@@ -1,33 +1,122 @@
 // Command serf-hub is the web orchestrator for serf serve daemons.
-// It provides a browser-facing UI to discover, drive, and manage many
-// concurrent serf serve sessions on the local host.
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
+	"time"
+
+	"primeradiant.com/serf/rendezvous"
 )
 
 const Version = "0.1.0"
 
 func main() {
-	addr := flag.String("addr", "127.0.0.1:9180", "hub listen address")
+	configPath := flag.String("config", DefaultConfigPath(), "path to hub.toml")
+	addr := flag.String("addr", "", "override hub listen address")
+	serfBinary := flag.String("serf", "", "path to serf binary (default: 'serf' on PATH)")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: serf-hub [flags]\n\nMulti-session web orchestrator for serf serve daemons.\n\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, "ok")
+	cfg, err := LoadConfig(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[hub] config: %v\n", err)
+		os.Exit(1)
+	}
+	if *addr != "" {
+		cfg.Addr = *addr
+	}
+
+	// flock to ensure single hub per host.
+	home, _ := os.UserHomeDir()
+	lockPath := filepath.Join(home, ".serf", "hub.lock")
+	release, err := AcquireLock(lockPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[hub] %v\n", err)
+		os.Exit(1)
+	}
+	defer release()
+
+	// Resolve runtime paths.
+	runDir := cfg.RunDir
+	if runDir == "" {
+		runDir = rendezvous.DefaultDir()
+	}
+	stateGlob := cfg.StateGlob
+	if stateGlob == "" {
+		stateGlob = filepath.Join(home, ".local", "state", "serf", "projects", "*")
+	}
+
+	// Roster + past index
+	prober := &StatusProber{Timeout: 500 * time.Millisecond}
+	roster := NewRoster(runDir, prober)
+
+	past := NewPastIndex(stateGlob)
+	if err := past.Rebuild(); err != nil {
+		fmt.Fprintf(os.Stderr, "[hub] past index rebuild: %v\n", err)
+	}
+
+	// Spawner
+	spawner := &HubSpawner{
+		Cfg:        cfg,
+		SerfBinary: *serfBinary,
+		RunDir:     runDir,
+	}
+
+	// Web
+	web := NewWebServer(WebConfig{
+		HubAddr: cfg.Addr,
+		Roster:  roster,
+		Past:    past,
+		Spawner: spawner,
 	})
 
-	fmt.Fprintf(os.Stderr, "[hub] serf-hub %s listening on %s\n", Version, *addr)
-	if err := http.ListenAndServe(*addr, mux); err != nil {
+	// Lifecycle
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	go func() {
+		if err := roster.Watch(ctx); err != nil && ctx.Err() == nil {
+			fmt.Fprintf(os.Stderr, "[hub] roster watch: %v\n", err)
+		}
+	}()
+
+	go func() {
+		ticker := time.NewTicker(cfg.PastIndexRebuild)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				_ = past.Rebuild()
+			}
+		}
+	}()
+
+	srv := &http.Server{
+		Addr:    cfg.Addr,
+		Handler: web.Handler(),
+	}
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer scancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+
+	fmt.Fprintf(os.Stderr, "[hub] serf-hub %s listening on %s (run_dir=%s)\n", Version, cfg.Addr, runDir)
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		fmt.Fprintf(os.Stderr, "[hub] %v\n", err)
 		os.Exit(1)
 	}
