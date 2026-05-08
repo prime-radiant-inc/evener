@@ -54,6 +54,9 @@ func LoadAuth(stateDir string) (AuthRecord, error) {
 	if err := json.Unmarshal(data, &record); err != nil {
 		return AuthRecord{}, fmt.Errorf("%w: %v", ErrAuthCorrupt, err)
 	}
+	if err := record.Validate(); err != nil {
+		return AuthRecord{}, fmt.Errorf("%w: %v", ErrAuthCorrupt, err)
+	}
 	return record, nil
 }
 
@@ -110,4 +113,26 @@ func DeleteAuth(stateDir string) (bool, error) {
 		return false, fmt.Errorf("delete auth file: %w", err)
 	}
 	return true, nil
+}
+
+func (r AuthRecord) Validate() error {
+	switch {
+	case r.Version != 1:
+		return fmt.Errorf("unsupported auth record version %d", r.Version)
+	case r.Provider != "openai":
+		return fmt.Errorf("unexpected auth provider %q", r.Provider)
+	case r.Source == "":
+		return fmt.Errorf("auth source is required")
+	case r.AccessToken == "":
+		return fmt.Errorf("access token is required")
+	case r.RefreshToken == "":
+		return fmt.Errorf("refresh token is required")
+	case r.TokenType == "":
+		return fmt.Errorf("token type is required")
+	case r.Expiry.IsZero():
+		return fmt.Errorf("expiry is required")
+	case r.ObtainedAt.IsZero():
+		return fmt.Errorf("obtained_at is required")
+	}
+	return nil
 }

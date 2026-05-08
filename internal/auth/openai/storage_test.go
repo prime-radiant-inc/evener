@@ -117,6 +117,67 @@ func TestAuthStorageLoadReturnsCorruptionErrorForMalformedJSON(t *testing.T) {
 	}
 }
 
+func TestAuthStorageLoadRejectsUnsupportedVersion(t *testing.T) {
+	stateDir := t.TempDir()
+	record := sampleAuthRecord()
+	record.Version = 99
+	writeAuthFixture(t, stateDir, `{
+  "version": 99,
+  "provider": "openai",
+  "source": "oauth",
+  "obtained_at": "2026-05-07T23:00:00Z",
+  "token_type": "Bearer",
+  "scope": "openid profile email offline_access",
+  "access_token": "access-token",
+  "refresh_token": "refresh-token",
+  "expiry": "2026-05-08T00:00:00Z"
+}`)
+
+	_, err := LoadAuth(stateDir)
+	if !errors.Is(err, ErrAuthCorrupt) {
+		t.Fatalf("LoadAuth() error = %v, want ErrAuthCorrupt", err)
+	}
+}
+
+func TestAuthStorageLoadRejectsWrongProvider(t *testing.T) {
+	stateDir := t.TempDir()
+	writeAuthFixture(t, stateDir, `{
+  "version": 1,
+  "provider": "anthropic",
+  "source": "oauth",
+  "obtained_at": "2026-05-07T23:00:00Z",
+  "token_type": "Bearer",
+  "scope": "openid profile email offline_access",
+  "access_token": "access-token",
+  "refresh_token": "refresh-token",
+  "expiry": "2026-05-08T00:00:00Z"
+}`)
+
+	_, err := LoadAuth(stateDir)
+	if !errors.Is(err, ErrAuthCorrupt) {
+		t.Fatalf("LoadAuth() error = %v, want ErrAuthCorrupt", err)
+	}
+}
+
+func TestAuthStorageLoadRejectsMissingAccessToken(t *testing.T) {
+	stateDir := t.TempDir()
+	writeAuthFixture(t, stateDir, `{
+  "version": 1,
+  "provider": "openai",
+  "source": "oauth",
+  "obtained_at": "2026-05-07T23:00:00Z",
+  "token_type": "Bearer",
+  "scope": "openid profile email offline_access",
+  "refresh_token": "refresh-token",
+  "expiry": "2026-05-08T00:00:00Z"
+}`)
+
+	_, err := LoadAuth(stateDir)
+	if !errors.Is(err, ErrAuthCorrupt) {
+		t.Fatalf("LoadAuth() error = %v, want ErrAuthCorrupt", err)
+	}
+}
+
 func TestAuthStorageSaveUsesOwnerOnlyPermissions(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("permission bits are not portable on windows")
@@ -134,5 +195,17 @@ func TestAuthStorageSaveUsesOwnerOnlyPermissions(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("file permissions = %#o, want %#o", got, 0o600)
+	}
+}
+
+func writeAuthFixture(t *testing.T, stateDir, contents string) {
+	t.Helper()
+
+	authPath := AuthFilePath(stateDir)
+	if err := os.MkdirAll(filepath.Dir(authPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(authPath, []byte(contents), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
 	}
 }
