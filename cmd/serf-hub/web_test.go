@@ -598,6 +598,130 @@ func TestWeb_WorkspacePartial_PastSession_RendersTitleAndState(t *testing.T) {
 	}
 }
 
+// TestWeb_WorkspacePartial_RendersBottomStripAffordances verifies that the
+// workspace partial includes the new bordered-card bottom strip elements
+// (attach button, drop zone, mode chip, controls spacer, status row).
+func TestWeb_WorkspacePartial_RendersBottomStripAffordances(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	_ = os.MkdirAll(proj, 0o755)
+	_ = agent.SaveSessionMeta(proj, agent.SessionMeta{
+		ID: "01BOTTOM01", UpdatedAt: time.Now(), OriginalTask: "render bottom strip",
+	})
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    idx,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/s/01BOTTOM01", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	wants := []string{
+		"data-attach-trigger",
+		"data-drop-zone",
+		"mode-chip",
+		"controls-spacer",
+		"input-status",
+		"data-file-picker",
+		`data-steer-trigger`,
+	}
+	for _, w := range wants {
+		if !strings.Contains(body, w) {
+			t.Errorf("workspace partial missing %q", w)
+		}
+	}
+}
+
+// TestWeb_WorkspacePartial_RendersWorkingDirInStatusRow verifies that a session
+// with EnvInfo.WorkingDir populated renders the cwd in the status row.
+func TestWeb_WorkspacePartial_RendersWorkingDirInStatusRow(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	_ = os.MkdirAll(proj, 0o755)
+	_ = agent.SaveSessionMeta(proj, agent.SessionMeta{
+		ID: "01CWD00001", UpdatedAt: time.Now(), OriginalTask: "cwd test",
+		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/tmp/foo", GitBranch: "feature/bar"},
+	})
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    idx,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/s/01CWD00001", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "/tmp/foo") {
+		t.Errorf("status row missing WorkingDir '/tmp/foo': %q", body)
+	}
+	if !strings.Contains(body, "feature/bar") {
+		t.Errorf("status row missing Branch 'feature/bar': %q", body)
+	}
+	if !strings.Contains(body, `class="cwd"`) {
+		t.Errorf("status row missing cwd span: %q", body)
+	}
+}
+
+// TestWeb_State_RendersInputStatusPartial verifies the polled /state endpoint
+// returns the new input_status block content.
+func TestWeb_State_RendersInputStatusPartial(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	_ = os.MkdirAll(proj, 0o755)
+	_ = agent.SaveSessionMeta(proj, agent.SessionMeta{
+		ID: "01STATE001", UpdatedAt: time.Now(),
+		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/tmp/wd", GitBranch: "main"},
+	})
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    idx,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/s/01STATE001/state", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "/tmp/wd") {
+		t.Errorf("state partial missing WorkingDir '/tmp/wd': %q", body)
+	}
+	if !strings.Contains(body, "main") {
+		t.Errorf("state partial missing Branch 'main': %q", body)
+	}
+}
+
 // TestWeb_Send_ClosedSessionRequiresSpawner verifies that POSTing to /s/<id>/send
 // when the session is not live and no spawner is configured returns 503.
 func TestWeb_Send_ClosedSessionRequiresSpawner(t *testing.T) {

@@ -299,18 +299,48 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .rule-dot { color: var(--text-dim); }
 .status-pill { display: inline-flex; align-items: baseline; gap: 6px; }
 .conversation { flex: 1; min-height: 0; padding: 32px 64px; overflow-y: auto; font-size: 15px; line-height: 1.7; color: var(--text); }
-.workspace-input { padding: 8px 24px 8px; border-top: 1px solid var(--rule); }
-.message-input { width: 100%; min-height: 36px; max-height: 240px; padding: 4px 0; background: transparent; border: none; resize: vertical; color: var(--text); font: inherit; outline: none; }
-.input-strip { display: flex; align-items: center; gap: 12px; padding-top: 6px; font-size: 11.5px; color: var(--text-muted); }
-.input-strip .model { font-family: ui-monospace, "SFMono-Regular", monospace; }
+.workspace-input { padding: 12px 24px 14px; border-top: 1px solid var(--rule); }
+
+.input-attachments { display: flex; gap: 6px; flex-wrap: wrap; padding-bottom: 8px; }
+.input-attachments:empty { display: none; }
+.attachment-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; background: var(--bg); border: 1px solid var(--rule); border-radius: 4px; font-size: 11px; }
+.attachment-chip .att-thumb { width: 18px; height: 18px; object-fit: cover; border-radius: 2px; }
+.attachment-chip .att-remove { cursor: pointer; color: var(--text-muted); padding: 0 2px; border: none; background: transparent; }
+.attachment-chip .att-remove:hover { color: var(--text); }
+
+.input-card { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 6px; padding: 12px 14px; min-height: 80px; transition: border-color 0.15s; }
+.input-card.drag-over { border-color: var(--state-processing); background: var(--bg); }
+.message-input { width: 100%; min-height: 36px; max-height: 50vh; background: transparent; border: none; resize: none; color: var(--text); font: inherit; outline: none; line-height: 1.5; overflow-y: auto; }
+
+.input-controls { display: flex; align-items: center; gap: 8px; padding: 8px 0 0; flex-wrap: wrap; }
+.controls-spacer { flex: 1; }
+.input-btn { display: inline-flex; align-items: center; gap: 5px; padding: 4px 12px; background: var(--bg); border: 1px solid var(--rule); border-radius: 4px; color: var(--text); font: inherit; font-size: 11.5px; cursor: pointer; }
+.input-btn:hover { background: var(--bg-raised); }
+.input-btn-ghost { color: var(--text-muted); }
+.input-btn-primary { background: var(--state-processing); color: var(--bg); border-color: transparent; font-weight: 500; }
+.input-btn-primary:hover { background: var(--state-processing); filter: brightness(1.1); }
+.input-btn-primary kbd { background: rgba(0,0,0,0.2); border: 1px solid rgba(0,0,0,0.3); color: inherit; font-family: ui-monospace, "SFMono-Regular", monospace; padding: 0 4px; border-radius: 3px; }
+
+.input-chip { font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 11px; }
+.mode-chip { display: inline-flex; align-items: center; padding: 3px 9px; background: rgba(224,175,104,0.12); color: var(--state-warning); border-radius: 10px; font-size: 11px; }
+.chip-caret { color: var(--text-muted); margin-left: 2px; }
+
+.input-status { display: flex; align-items: center; gap: 14px; padding: 10px 0 0; margin-top: 6px; border-top: 1px solid var(--rule); font-size: 11px; color: var(--text-muted); flex-wrap: wrap; }
+.input-status .cwd, .input-status .branch { font-family: ui-monospace, "SFMono-Regular", monospace; }
+.input-status .cwd { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.input-status .status-spacer { flex: 1; }
+.input-status .context { display: inline-flex; align-items: center; gap: 6px; }
+.input-status .context-bar { width: 80px; height: 3px; background: var(--bg); border-radius: 2px; overflow: hidden; }
+.input-status .context-fill { display: block; height: 100%; background: var(--state-processing); }
+.input-status .context-numbers { font-family: ui-monospace, "SFMono-Regular", monospace; }
+.input-status .cost { font-family: ui-monospace, "SFMono-Regular", monospace; }
+
+/* Generic context/cost styling — kept for status_bar.html and other surfaces. */
 .context { display: inline-flex; align-items: center; gap: 8px; }
 .context-bar { display: inline-block; width: 80px; height: 2px; background: var(--rule); vertical-align: middle; overflow: hidden; }
 .context-fill { display: block; height: 100%; background: var(--accent); }
 .context-numbers { font-family: ui-monospace, "SFMono-Regular", monospace; }
 .cost { font-family: ui-monospace, "SFMono-Regular", monospace; }
-.send-btn { margin-left: auto; padding: 4px 12px; background: transparent; border: 1px solid var(--rule); color: var(--text); border-radius: 4px; font-size: 11.5px; cursor: pointer; font: inherit; }
-.send-btn:hover { background: var(--bg-raised); }
-.send-btn kbd { font-family: ui-monospace, "SFMono-Regular", monospace; opacity: 0.6; }
 
 /* Conversation tiers */
 .user-message { display: flex; justify-content: flex-end; margin-bottom: 28px; position: relative; }

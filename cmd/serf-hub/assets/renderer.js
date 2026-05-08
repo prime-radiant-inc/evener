@@ -686,6 +686,23 @@
       const form = document.querySelector("form[data-input-form]");
       if (!form) return;
       const ta = form.querySelector(".message-input");
+
+      // Auto-grow the textarea up to 50% of the viewport, then scroll inside.
+      const grow = () => {
+        ta.style.height = "auto";
+        ta.style.height = Math.min(ta.scrollHeight, window.innerHeight * 0.5) + "px";
+      };
+      ta.addEventListener("input", grow);
+      grow();
+
+      // Steer button: not wired to /steer yet (Step 4 of the bottom-strip plan).
+      const steerBtn = form.querySelector("[data-steer-trigger]");
+      if (steerBtn) {
+        steerBtn.addEventListener("click", () => {
+          console.warn("steer not wired yet");
+        });
+      }
+
       const submit = async (e) => {
         e.preventDefault();
         const text = ta.value.trim();
@@ -703,6 +720,8 @@
             this.appendBanner("error", "send failed: " + detail);
           } else {
             ta.value = "";
+            ta.style.height = "";
+            grow();
           }
         } catch (err) {
           this.appendBanner("error", "send failed: " + err.message);

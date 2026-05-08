@@ -96,6 +96,7 @@ func NewWebServer(cfg WebConfig) *WebServer {
 	))
 	workspaceTmpl := template.Must(template.ParseFS(templatesFS,
 		"templates/partials/workspace.html",
+		"templates/partials/input_strip.html",
 	))
 	spawnTmpl := template.Must(template.ParseFS(templatesFS,
 		"templates/partials/spawn.html",
@@ -1139,10 +1140,12 @@ type WorkspaceData struct {
 	ID             string
 	Title          string
 	Branch         string
+	WorkingDir     string
 	State          string
 	StateLabel     string
 	TurnCount      int
 	Model          string
+	ContextWindow  int
 	ContextPercent int
 	ContextNumbers string
 	Cost           string
@@ -1289,14 +1292,26 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 	if s.cfg.Roster != nil {
 		if le, ok := s.cfg.Roster.Find(id); ok {
 			state := normalizeState(le.Status)
-			return WorkspaceData{
-				ID:        id,
-				Title:     liveTitle(id, le, s.cfg.Past),
-				State:     state,
+			data := WorkspaceData{
+				ID:         id,
+				Title:      liveTitle(id, le, s.cfg.Past),
+				State:      state,
 				StateLabel: stateLabel(state),
-				Model:     le.Model,
-				EventsURL: "/s/" + id + "/events",
+				Model:      le.Model,
+				WorkingDir: le.WorkingDir,
+				EventsURL:  "/s/" + id + "/events",
 			}
+			// Branch isn't on the rendezvous entry or daemon /status — fall
+			// back to the past index where the agent persists EnvInfo.
+			if s.cfg.Past != nil {
+				if pe, ok := s.cfg.Past.Find(id); ok {
+					data.Branch = pe.Meta.EnvInfo.GitBranch
+					if data.WorkingDir == "" {
+						data.WorkingDir = pe.Meta.EnvInfo.WorkingDir
+					}
+				}
+			}
+			return data
 		}
 	}
 	if s.cfg.Past != nil {
@@ -1308,6 +1323,8 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 				StateLabel: stateLabel("ended"),
 				TurnCount:  pe.Meta.TurnCount,
 				Model:      pe.Meta.Model,
+				WorkingDir: pe.Meta.EnvInfo.WorkingDir,
+				Branch:     pe.Meta.EnvInfo.GitBranch,
 				ReplayURL:  "/past/" + id + "/replay",
 			}
 		}
@@ -1351,30 +1368,39 @@ func stateLabel(state string) string {
 }
 
 func (s *WebServer) renderInputStrip(w http.ResponseWriter, r *http.Request, id string) {
+	// Seed from workspaceData so WorkingDir/Branch are populated for both
+	// live and past sessions, then refresh dynamic fields from /status when
+	// the daemon is reachable.
+	wd := s.workspaceData(id)
 	data := map[string]any{
-		"Model":          "—",
+		"Model":          wd.Model,
+		"WorkingDir":     wd.WorkingDir,
+		"Branch":         wd.Branch,
+		"ContextWindow":  0,
 		"ContextPercent": 0,
 		"ContextNumbers": "",
-		"Cost":           "",
+		"Cost":           wd.Cost,
+	}
+	if data["Model"] == "" {
+		data["Model"] = "—"
 	}
 	if s.cfg.Roster != nil {
 		if le, ok := s.cfg.Roster.Find(id); ok {
 			if info := s.fetchStatus(le); info != nil {
 				data["Model"] = info.Model
 				data["ContextPercent"] = int(info.ContextPressure * 100)
+				data["ContextWindow"] = info.ContextWindow
 				if info.ContextUsed > 0 || info.ContextWindow > 0 {
 					data["ContextNumbers"] = fmt.Sprintf("%d/%d", info.ContextUsed, info.ContextWindow)
+				}
+				if info.WorkingDir != "" {
+					data["WorkingDir"] = info.WorkingDir
 				}
 			}
 		}
 	}
-	if data["Model"] == "—" && s.cfg.Past != nil {
-		if pe, ok := s.cfg.Past.Find(id); ok {
-			data["Model"] = pe.Meta.Model
-		}
-	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.inputStripTmpl.ExecuteTemplate(w, "input_strip", data); err != nil {
+	if err := s.inputStripTmpl.ExecuteTemplate(w, "input_status", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
@@ -1531,6 +1557,7 @@ type daemonStatus struct {
 	Profile         string  `json:"profile"`
 	State           string  `json:"state"`
 	Turns           int     `json:"turns"`
+	WorkingDir      string  `json:"working_dir,omitempty"`
 	ContextPressure float64 `json:"context_pressure"`
 	ContextUsed     int     `json:"context_used,omitempty"`
 	ContextWindow   int     `json:"context_window,omitempty"`
