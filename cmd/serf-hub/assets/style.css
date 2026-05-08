@@ -331,6 +331,18 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .diff-body { margin: 0 0 24px 44px; padding-left: 14px; border-left: 1px solid var(--rule); font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; line-height: 1.65; color: var(--text-muted); white-space: pre-wrap; }
 .diff-body .add { color: var(--state-idle); }
 .diff-body .del { color: var(--state-awaiting); }
+.diff-body .hunk { color: var(--text-dim); }
+
+/* Shared style for tool-body elements: diff, shell output, task list, etc. */
+.tool-body { margin: 0 0 24px 44px; padding-left: 14px; border-left: 1px solid var(--rule); font-size: 12px; color: var(--text-muted); }
+.tool-body summary { cursor: pointer; color: var(--text-muted); padding: 2px 0; user-select: none; }
+.tool-body summary:hover { color: var(--text); }
+.shell-output { margin: 6px 0 0; padding: 8px 10px; background: var(--bg); border-radius: 4px; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; line-height: 1.5; color: var(--text); white-space: pre-wrap; max-height: 360px; overflow-y: auto; }
+.task-list-body { list-style: none; margin: 0 0 24px 44px; padding: 8px 0 8px 14px; border-left: 1px solid var(--rule); display: flex; flex-direction: column; gap: 4px; }
+.task-list-body .task-row { padding: 2px 0; background: transparent; border: none; font-size: 12px; }
+.fetch-body { margin: 0 0 24px 44px; padding-left: 14px; border-left: 1px solid var(--rule); font-size: 12px; color: var(--text-muted); font-style: italic; }
+.search-body { list-style: none; margin: 0 0 24px 44px; padding-left: 14px; border-left: 1px solid var(--rule); font-size: 12px; color: var(--text); }
+.search-body li { padding: 2px 0; }
 .subagent-reference { margin: 0 0 26px 28px; font-size: 12.5px; color: var(--text-muted); cursor: pointer; }
 .subagent-reference .verb { color: var(--state-subagent); font-family: ui-monospace, "SFMono-Regular", monospace; }
 .subagent-reference:hover { color: var(--text); }

@@ -309,11 +309,12 @@
     beginToolCall(data) {
       const callId = data.call_id || ("tool-" + Math.random().toString(36).slice(2, 9));
       const tool = data.tool_name || "?";
-      const isCheap = ["read_file", "grep_files", "list_dir", "glob"].includes(tool);
+      const renderer = toolRendererFor(tool);
+      const args = parseArgs(data.arguments_json);
+      const mode = renderer.mode || "default";
 
-      // Cluster cheap reads
-      let parent = this.conversation;
-      if (isCheap) {
+      let parent;
+      if (mode === "cheap") {
         if (!this.cheapToolCluster) {
           this.cheapToolCluster = document.createElement("div");
           this.cheapToolCluster.className = "tool-call-cluster";
@@ -322,17 +323,18 @@
         parent = this.cheapToolCluster;
       } else {
         this.cheapToolCluster = null;
+        parent = this.conversation;
       }
 
-      // Tool call line
       const el = document.createElement("div");
       el.className = "tool-call " + tool;
       const verb = document.createElement("span");
-      verb.className = "verb"; verb.textContent = friendlyToolName(tool);
+      verb.className = "verb";
+      verb.textContent = renderer.friendly || tool;
       el.appendChild(verb);
       const target = document.createElement("span");
       target.className = "target";
-      target.textContent = describeTarget(tool, data);
+      target.textContent = renderer.target ? renderer.target(args, data) : "";
       el.appendChild(target);
       const sep = document.createElement("span"); sep.className = "sep"; sep.textContent = "·";
       const result = document.createElement("span");
@@ -341,53 +343,35 @@
       el.appendChild(sep); el.appendChild(result);
       parent.appendChild(el);
 
-      // Diff body for mutating tools
-      let diffEl = null;
-      if (["edit_file", "write_file", "apply_patch"].includes(tool)) {
-        diffEl = document.createElement("pre");
-        diffEl.className = "diff-body";
-        this.conversation.appendChild(diffEl);
-      }
-      this.activeTools.set(callId, { el, resultEl: result, diffEl, outputBuf: "", tool });
+      const state = { el, resultEl: result, outputBuf: "", tool, args, renderer, body: null };
+      if (renderer.body) state.body = renderer.body(args, this.conversation, data);
+      this.activeTools.set(callId, state);
     },
 
     appendToolDelta(data) {
       const m = this.activeTools.get(data.call_id);
       if (!m) return;
       m.outputBuf += data.delta || "";
-      if (m.diffEl) renderDiffPreview(m.diffEl, m.outputBuf);
+      if (m.renderer.bodyDelta) m.renderer.bodyDelta(m, m.outputBuf);
     },
 
     finalizeToolCall(data) {
       const m = this.activeTools.get(data.call_id);
       if (!m) return;
-      const tool = m.tool;
       const out = data.output || m.outputBuf || "";
+
       if (data.error) {
         m.resultEl.textContent = "error";
         m.resultEl.className = "result result-bad";
       } else {
-        m.resultEl.textContent = friendlyResult(tool, data, out);
-        m.resultEl.className = "result " + (looksGood(tool, data) ? "result-good" : "result");
+        const text = m.renderer.result ? m.renderer.result(data, out, m) : "ok";
+        m.resultEl.textContent = text;
+        m.resultEl.className = "result " + (toolLooksGood(data) ? "result-good" : "result");
       }
-      if (m.diffEl) renderDiffPreview(m.diffEl, out);
-      // Subagent: spawn_agent end → render as subagent reference
-      if (tool === "spawn_agent" && data.tool_state) {
-        try {
-          const st = typeof data.tool_state === "string" ? JSON.parse(data.tool_state) : data.tool_state;
-          if (st && st.session_id) {
-            const ref = document.createElement("div");
-            ref.className = "subagent-reference";
-            ref.dataset.subagentId = st.session_id;
-            ref.innerHTML = '<span class="verb">subagent</span> <span class="target"></span>' +
-                            ' <span class="sep">·</span> <span class="result-good">●</span>' +
-                            ' <span class="result">' + (st.status || "done") + '</span>' +
-                            ' <span class="sep">·</span> <span class="result">' + (st.turns_used || 0) + ' turns</span>';
-            ref.querySelector(".target").textContent = (st.task || "").slice(0, 80);
-            ref.onclick = () => { window.location.href = "/s/" + encodeURIComponent(st.session_id); };
-            m.el.parentNode.replaceChild(ref, m.el);
-          }
-        } catch (e) {}
+      if (m.renderer.bodyEnd) m.renderer.bodyEnd(m, data, out);
+      if (m.renderer.replace) {
+        const replacement = m.renderer.replace(m, data);
+        if (replacement && m.el.parentNode) m.el.parentNode.replaceChild(replacement, m.el);
       }
       this.activeTools.delete(data.call_id);
     },
@@ -516,71 +500,288 @@
   function autoLabel(text) {
     return "before " + text.slice(0, 40).replace(/\s+/g, " ").trim();
   }
-  function friendlyToolName(tool) {
-    return ({ "read_file": "read", "write_file": "write", "edit_file": "edit",
-              "apply_patch": "patch", "grep_files": "grep", "list_dir": "ls",
-              "shell": "shell", "exec_command": "shell", "glob": "find",
-              "spawn_agent": "subagent", "web_fetch": "fetch" }[tool] || tool);
+
+  function parseArgs(json) {
+    if (!json) return {};
+    try { return JSON.parse(json); } catch (e) { return {}; }
   }
-  function describeTarget(tool, data) {
-    const args = data.arguments_json || "{}";
-    try {
-      const a = JSON.parse(args);
-      if (tool === "shell" || tool === "exec_command") return a.command || "";
-      if (tool === "read_file" || tool === "write_file" || tool === "edit_file") return a.file_path || a.path || "";
-      if (tool === "grep_files") return '"' + (a.pattern || "") + '" in ' + (a.path || ".");
-      if (tool === "list_dir") return a.path || ".";
-      if (tool === "web_fetch") return a.url || "";
-      if (tool === "spawn_agent") return a.task || "";
-      return Object.values(a).slice(0, 2).join(" ");
-    } catch (e) { return args; }
+
+  function parseToolState(s) {
+    if (!s) return null;
+    try { return typeof s === "string" ? JSON.parse(s) : s; } catch (e) { return null; }
   }
-  function friendlyResult(tool, data, out) {
-    if (tool === "shell" || tool === "exec_command") {
-      if (data.tool_state) {
-        try { const st = typeof data.tool_state === "string" ? JSON.parse(data.tool_state) : data.tool_state;
-          return "exit " + (st.exit_code != null ? st.exit_code : "?");
-        } catch (e) {}
-      }
-      return data.error ? "error" : "ok";
-    }
-    if (tool === "read_file") {
-      const lines = (out.match(/\n/g) || []).length;
-      return lines + " lines";
-    }
-    if (tool === "edit_file" || tool === "write_file" || tool === "apply_patch") {
-      const adds = (out.match(/^\+/gm) || []).length;
-      return "+" + adds;
-    }
-    if (tool === "grep_files") {
-      const hits = (out.match(/\n/g) || []).length;
-      return hits + " hits";
-    }
-    return "ok";
-  }
-  function looksGood(tool, data) {
+
+  function toolLooksGood(data) {
     if (data.error) return false;
-    if (data.tool_state) {
-      try {
-        const st = typeof data.tool_state === "string" ? JSON.parse(data.tool_state) : data.tool_state;
-        if (st.exit_code && st.exit_code !== 0) return false;
-      } catch (e) {}
-    }
+    const st = parseToolState(data.tool_state);
+    if (st && st.exit_code && st.exit_code !== 0) return false;
     return true;
   }
-  function renderDiffPreview(el, content) {
-    const max = 800;
+
+  function clip(s, n) {
+    s = String(s || "");
+    return s.length > n ? s.slice(0, n) + "…" : s;
+  }
+
+  // toolRendererFor returns the renderer descriptor for a given tool name.
+  // Falls back to the default renderer when no entry is registered.
+  function toolRendererFor(tool) {
+    return toolRenderers[tool] || toolRenderers.__default__;
+  }
+
+  // Diff preview helper, used by edit/write/apply_patch.
+  function renderDiff(el, content) {
+    const max = 1600;
     const trimmed = content.length > max ? content.slice(0, max) + "\n…" : content;
     el.innerHTML = "";
-    const lines = trimmed.split("\n");
-    lines.forEach(line => {
+    trimmed.split("\n").forEach(line => {
       const span = document.createElement("span");
-      if (line.startsWith("+")) span.className = "add";
-      else if (line.startsWith("-")) span.className = "del";
+      if (line.startsWith("+") && !line.startsWith("+++")) span.className = "add";
+      else if (line.startsWith("-") && !line.startsWith("---")) span.className = "del";
+      else if (line.startsWith("@@")) span.className = "hunk";
       span.textContent = line + "\n";
       el.appendChild(span);
     });
   }
+
+  // Cheap renderers — read/grep/list_dir/glob — share a common shape.
+  const readRenderer = {
+    mode: "cheap", friendly: "read",
+    target: (a) => a.file_path || a.path || "",
+    result: (data, out) => {
+      const lines = (out.match(/\n/g) || []).length;
+      const total = parseToolState(data.tool_state);
+      if (total && total.total_lines) return lines + " of " + total.total_lines + " lines";
+      return lines + " lines";
+    },
+  };
+  const grepRenderer = {
+    mode: "cheap", friendly: "grep",
+    target: (a) => '"' + clip(a.pattern || "", 50) + '" in ' + (a.path || "."),
+    result: (data, out) => ((out.match(/\n/g) || []).length) + " hits",
+  };
+  const lsRenderer = {
+    mode: "cheap", friendly: "ls",
+    target: (a) => a.path || ".",
+    result: (data, out) => ((out.match(/\n/g) || []).length) + " entries",
+  };
+  const globRenderer = {
+    mode: "cheap", friendly: "find",
+    target: (a) => a.pattern || a.glob || "",
+    result: (data, out) => ((out.match(/\n/g) || []).length) + " matches",
+  };
+
+  // Card renderer for shell with collapsible stdout/stderr.
+  const shellRenderer = {
+    mode: "card", friendly: "shell",
+    target: (a) => clip(a.command || a.cmd || "", 200),
+    result: (data) => {
+      const st = parseToolState(data.tool_state);
+      if (st && st.exit_code != null) return "exit " + st.exit_code;
+      return data.error ? "error" : "ok";
+    },
+    body: (args, conversation) => {
+      const wrap = document.createElement("details");
+      wrap.className = "tool-body shell-body";
+      const summary = document.createElement("summary");
+      summary.textContent = "output";
+      const pre = document.createElement("pre");
+      pre.className = "shell-output";
+      wrap.appendChild(summary);
+      wrap.appendChild(pre);
+      conversation.appendChild(wrap);
+      return { wrap, pre };
+    },
+    bodyDelta: (state, out) => {
+      if (state.body && state.body.pre) {
+        state.body.pre.textContent = clip(out, 8000);
+      }
+    },
+    bodyEnd: (state, data, out) => {
+      if (!state.body) return;
+      const pre = state.body.pre;
+      pre.textContent = clip(out, 8000);
+      // Auto-open if non-empty and exit non-zero or output >2 lines.
+      const st = parseToolState(data.tool_state);
+      const lines = (out.match(/\n/g) || []).length;
+      const failed = data.error || (st && st.exit_code && st.exit_code !== 0);
+      if (out.trim() === "") {
+        state.body.wrap.style.display = "none";
+      } else if (failed || lines > 2) {
+        state.body.wrap.open = true;
+      }
+    },
+  };
+
+  // Diff renderers for edit/write/apply_patch.
+  function diffRenderer(friendly) {
+    return {
+      mode: "card", friendly,
+      target: (a) => a.file_path || a.path || "",
+      result: (data, out) => {
+        const adds = (out.match(/^\+/gm) || []).filter(l => !l.startsWith("+++")).length;
+        const dels = (out.match(/^-/gm) || []).filter(l => !l.startsWith("---")).length;
+        if (adds === 0 && dels === 0) return "ok";
+        return "+" + adds + " -" + dels;
+      },
+      body: (args, conversation) => {
+        const pre = document.createElement("pre");
+        pre.className = "diff-body";
+        conversation.appendChild(pre);
+        return { pre };
+      },
+      bodyDelta: (state, out) => { if (state.body) renderDiff(state.body.pre, out); },
+      bodyEnd: (state, data, out) => { if (state.body) renderDiff(state.body.pre, out); },
+    };
+  }
+
+  // task_list renderer — renders the actual checklist from arguments.
+  const taskListRenderer = {
+    mode: "card", friendly: "tasks",
+    target: (a) => {
+      if (a.action) return a.action;
+      if (Array.isArray(a.task_list)) return "update";
+      if (Array.isArray(a.updates) || Array.isArray(a.update)) return "update";
+      if (Array.isArray(a.add)) return "add " + a.add.length;
+      return "view";
+    },
+    result: (data, out, state) => {
+      const a = state.args || {};
+      if (Array.isArray(a.task_list)) return a.task_list.length + " items";
+      if (Array.isArray(a.add)) return "+" + a.add.length;
+      const updates = a.updates || a.update;
+      if (Array.isArray(updates)) return updates.length + " updated";
+      return "ok";
+    },
+    body: (args, conversation) => {
+      // Render task_list (full snapshot) or add/update batches as a checklist.
+      const items = Array.isArray(args.task_list) ? args.task_list : (Array.isArray(args.add) ? args.add : []);
+      if (items.length === 0) return null;
+      const list = document.createElement("ul");
+      list.className = "tool-body task-list-body";
+      for (const t of items) {
+        const li = document.createElement("li");
+        li.className = "task-row task-status-" + (t.status || "open").replace(/_/g, "-");
+        const icon = document.createElement("span");
+        icon.className = "task-icon";
+        icon.textContent = (t.status === "done" ? "✓" : t.status === "in_progress" ? "▶" : "○");
+        const desc = document.createElement("span");
+        desc.className = "task-desc";
+        desc.textContent = t.description || t.prompt || "";
+        li.appendChild(icon);
+        li.appendChild(desc);
+        list.appendChild(li);
+      }
+      conversation.appendChild(list);
+      return { list };
+    },
+  };
+
+  // web_fetch renderer.
+  const webFetchRenderer = {
+    mode: "card", friendly: "fetch",
+    target: (a) => a.url || "",
+    result: (data, out) => data.error ? "error" : (out.length + " bytes"),
+    body: (args, conversation) => {
+      const div = document.createElement("div");
+      div.className = "tool-body fetch-body";
+      conversation.appendChild(div);
+      return { div };
+    },
+    bodyEnd: (state, data, out) => {
+      if (!state.body) return;
+      state.body.div.textContent = clip((out || "").trim().split("\n").slice(0, 3).join(" / "), 240);
+    },
+  };
+
+  // web_search renderer.
+  const webSearchRenderer = {
+    mode: "card", friendly: "search",
+    target: (a) => clip(a.query || a.q || "", 120),
+    result: (data, out) => {
+      const lines = out.split("\n").filter(l => l.trim()).length;
+      return lines + " results";
+    },
+    body: (args, conversation) => {
+      const ul = document.createElement("ul");
+      ul.className = "tool-body search-body";
+      conversation.appendChild(ul);
+      return { ul };
+    },
+    bodyEnd: (state, data, out) => {
+      if (!state.body) return;
+      const lines = out.split("\n").map(l => l.trim()).filter(Boolean).slice(0, 5);
+      state.body.ul.innerHTML = "";
+      for (const l of lines) {
+        const li = document.createElement("li");
+        li.textContent = clip(l, 200);
+        state.body.ul.appendChild(li);
+      }
+    },
+  };
+
+  // spawn_agent renderer — replaces the tool-call line with a subagent
+  // reference card on completion (clickable, navigates to subagent session).
+  const spawnAgentRenderer = {
+    mode: "default", friendly: "subagent",
+    target: (a) => clip(a.task || "", 80),
+    result: (data) => {
+      const st = parseToolState(data.tool_state);
+      if (st && st.status) return st.status;
+      return "done";
+    },
+    replace: (state, data) => {
+      const st = parseToolState(data.tool_state);
+      if (!st || !st.session_id) return null;
+      const ref = document.createElement("div");
+      ref.className = "subagent-reference";
+      ref.dataset.subagentId = st.session_id;
+      ref.innerHTML = '<span class="verb">subagent</span> <span class="target"></span>' +
+                      ' <span class="sep">·</span> <span class="result-good">●</span>' +
+                      ' <span class="result">' + (st.status || "done") + '</span>' +
+                      ' <span class="sep">·</span> <span class="result">' + (st.turns_used || 0) + ' turns</span>';
+      ref.querySelector(".target").textContent = clip(st.task || state.args.task || "", 80);
+      ref.onclick = () => { window.location.href = "/s/" + encodeURIComponent(st.session_id); };
+      return ref;
+    },
+  };
+
+  const subagentControlRenderer = (friendly) => ({
+    mode: "cheap", friendly,
+    target: (a) => clip(a.session_id || a.agent_id || a.id || "", 26),
+    result: () => "ok",
+  });
+
+  const defaultRenderer = {
+    mode: "default",
+    friendly: undefined, // fallback to tool name
+    target: (a) => Object.values(a || {}).map(v => typeof v === "string" ? v : "").filter(Boolean).slice(0, 2).join(" "),
+    result: (data) => data.error ? "error" : "ok",
+  };
+
+  const toolRenderers = {
+    __default__: defaultRenderer,
+    "read_file": readRenderer,
+    "grep_files": grepRenderer,
+    "grep": grepRenderer,
+    "grep_search": grepRenderer,
+    "list_dir": lsRenderer,
+    "list_directory": lsRenderer,
+    "glob": globRenderer,
+    "shell": shellRenderer,
+    "exec_command": shellRenderer,
+    "run_shell_command": shellRenderer,
+    "edit_file": diffRenderer("edit"),
+    "write_file": diffRenderer("write"),
+    "apply_patch": diffRenderer("patch"),
+    "task_list": taskListRenderer,
+    "web_fetch": webFetchRenderer,
+    "web_search": webSearchRenderer,
+    "spawn_agent": spawnAgentRenderer,
+    "resume_agent": subagentControlRenderer("resume"),
+    "wait": subagentControlRenderer("wait"),
+    "close_agent": subagentControlRenderer("close"),
+  };
 
   window.SerfRenderer = SerfRenderer;
 
