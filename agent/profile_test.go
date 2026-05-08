@@ -735,6 +735,84 @@ func TestResolveOpenRouterAnthropicWebSearch(t *testing.T) {
 		"anthropic/m", true)
 }
 
+// TestNewOpenRouterAnthropicProfile_StripsBareUpstreamCtxFallback verifies
+// that the catalog context-window resolution falls through to the
+// bare-upstream-stripped lookup when neither the openrouter-prefixed
+// nor the bare-direct entries supply one. Concrete case:
+// "anthropic/claude-sonnet-4-5" — no openrouter/anthropic/... or
+// anthropic/claude-sonnet-4-5 entry, but bare "claude-sonnet-4-5" has
+// max_input_tokens=200000.
+func TestNewOpenRouterAnthropicProfile_StripsBareUpstreamCtxFallback(t *testing.T) {
+	p := NewOpenRouterAnthropicProfile("anthropic/claude-sonnet-4-5")
+	if got := p.ContextWindowSize(); got != 200_000 {
+		t.Fatalf("ContextWindowSize() = %d, want 200000 from bare upstream catalog entry — step 3 ctx fallback missing", got)
+	}
+}
+
+// TestBaseProfile_WithModel_OpenRouterSwitchesToUnambiguousProvider
+// verifies that from meta-provider profiles (openrouter,
+// openrouter-anthropic), WithModel still does cross-provider switches
+// when the prefix is unambiguously a Serf-internal provider that
+// OpenRouter does NOT route to as an upstream — ollama (local), kimi,
+// glm (independent), and openrouter-anthropic (sister Serf mode).
+func TestBaseProfile_WithModel_OpenRouterSwitchesToUnambiguousProvider(t *testing.T) {
+	cases := []struct {
+		startProfile func() ProviderProfile
+		input        string
+		wantID       string
+		wantModel    string
+	}{
+		{func() ProviderProfile { return NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0) }, "ollama/llama3.1", "ollama", "llama3.1"},
+		{func() ProviderProfile { return NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0) }, "kimi/kimi-k2.5", "kimi", "kimi-k2.5"},
+		{func() ProviderProfile { return NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0) }, "glm/glm-5", "glm", "glm-5"},
+		{func() ProviderProfile { return NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0) }, "openrouter-anthropic/claude-3-5-sonnet", "openrouter-anthropic", "claude-3-5-sonnet"},
+		{func() ProviderProfile { return NewOpenRouterAnthropicProfile("anthropic/claude-3-haiku-20240307") }, "ollama/llama3.1", "ollama", "llama3.1"},
+		{func() ProviderProfile { return NewOpenRouterAnthropicProfile("anthropic/claude-3-haiku-20240307") }, "kimi/kimi-k2.5", "kimi", "kimi-k2.5"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			cloned := tc.startProfile().WithModel(tc.input)
+			if cloned.ID() != tc.wantID {
+				t.Errorf("ID() = %q, want %q (unambiguous Serf provider prefix should switch)", cloned.ID(), tc.wantID)
+			}
+			if cloned.Model() != tc.wantModel {
+				t.Errorf("Model() = %q, want %q", cloned.Model(), tc.wantModel)
+			}
+		})
+	}
+}
+
+// TestBaseProfile_WithModel_OpenRouterKeepsUpstreamNamespace verifies
+// the other half of the meta-provider rule: prefixes that COULD be
+// OpenRouter upstreams (anthropic, openai, google, gemini, minimax)
+// stay as model namespaces and don't trigger a provider switch.
+func TestBaseProfile_WithModel_OpenRouterKeepsUpstreamNamespace(t *testing.T) {
+	cases := []struct {
+		startProfile func() ProviderProfile
+		startID      string
+		input        string
+	}{
+		{func() ProviderProfile { return NewOpenAICompatProfile("openrouter", "x", 0) }, "openrouter", "anthropic/claude-3-haiku"},
+		{func() ProviderProfile { return NewOpenAICompatProfile("openrouter", "x", 0) }, "openrouter", "openai/gpt-5"},
+		{func() ProviderProfile { return NewOpenAICompatProfile("openrouter", "x", 0) }, "openrouter", "google/gemini-3"},
+		{func() ProviderProfile { return NewOpenAICompatProfile("openrouter", "x", 0) }, "openrouter", "minimax/minimax-m2.7"},
+		{func() ProviderProfile { return NewOpenAICompatProfile("openrouter", "x", 0) }, "openrouter", "deepseek/deepseek-r1"},
+		{func() ProviderProfile { return NewOpenRouterAnthropicProfile("x") }, "openrouter-anthropic", "anthropic/claude-3-5-sonnet"},
+		{func() ProviderProfile { return NewOpenRouterAnthropicProfile("x") }, "openrouter-anthropic", "minimax/minimax-m2.7"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.startID+"_"+tc.input, func(t *testing.T) {
+			cloned := tc.startProfile().WithModel(tc.input)
+			if cloned.ID() != tc.startID {
+				t.Errorf("ID() = %q, want %q (upstream namespace prefix must NOT switch providers)", cloned.ID(), tc.startID)
+			}
+			if cloned.Model() != tc.input {
+				t.Errorf("Model() = %q, want %q", cloned.Model(), tc.input)
+			}
+		})
+	}
+}
+
 // TestNewOpenRouterAnthropicProfile_HonorsExplicitWebSearchFalse verifies
 // that when a bare-direct catalog match (no openrouter prefix) explicitly
 // sets supports_web_search to false, that signal is respected. This is

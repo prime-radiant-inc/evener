@@ -171,8 +171,12 @@ const (
 //
 //   - openrouter / openrouter-anthropic: prefix == id → strip (canonical
 //     wire model is the bare upstream form, e.g. "anthropic/claude-3"
-//     after stripping "openrouter/"). prefix != id → keep (the slash is
-//     an upstream namespace, not a provider switch).
+//     after stripping "openrouter/"). Switch when the prefix is an
+//     unambiguous Serf-internal provider that OpenRouter does NOT
+//     route to as an upstream (ollama, kimi, glm, the other
+//     openrouter* mode). All other prefixes (anthropic, openai,
+//     google, gemini, minimax, deepseek, ...) are upstream model
+//     namespaces — keep verbatim.
 //   - minimax: prefix == "minimax" → keep ("minimax/m2.7" is the
 //     canonical wire model on minimax). Other prefixes → switch (a
 //     legitimate cross-provider override).
@@ -183,6 +187,13 @@ func decidePrefixAction(id, prefix string) prefixAction {
 	case "openrouter", "openrouter-anthropic":
 		if prefix == id {
 			return prefixActionStrip
+		}
+		// Unambiguous Serf-internal provider switches are allowed even
+		// from meta-provider sessions. Everything else is an upstream
+		// namespace.
+		switch prefix {
+		case "ollama", "kimi", "glm", "openrouter", "openrouter-anthropic":
+			return prefixActionSwitch
 		}
 		return prefixActionKeep
 	case "minimax":
@@ -565,18 +576,20 @@ func resolveOpenRouterAnthropicWebSearch(lookup func(string) *llm.ModelInfo, mod
 
 // resolveOpenRouterAnthropicCtxAndEfforts handles the context-window and
 // effort-levels resolution for openrouter-anthropic profiles. Same
-// three-step precedence as the web-search resolver, but these fields
-// were never affected by the step-3-overwrites-step-2 bug because the
-// existing per-field "only fill if not yet set" guards cover them.
+// three-step precedence as the web-search resolver: step 1 prefixed,
+// step 2 bare-direct (only when step 1 misses), step 3
+// bare-upstream-stripped (fallback only — never overwrites earlier).
 func resolveOpenRouterAnthropicCtxAndEfforts(lookup func(string) *llm.ModelInfo, model string, defaultCtx int, defaultEfforts []string) (int, []string) {
 	ctx := defaultCtx
 	efforts := defaultEfforts
 
+	ctxResolved := false
 	prefixedHit := false
 	if mi := lookup("openrouter/" + model); mi != nil {
 		prefixedHit = true
 		if mi.ContextWindow > 0 {
 			ctx = mi.ContextWindow
+			ctxResolved = true
 		}
 		if len(mi.ReasoningEffortLevels) > 0 {
 			efforts = append([]string(nil), mi.ReasoningEffortLevels...)
@@ -587,6 +600,7 @@ func resolveOpenRouterAnthropicCtxAndEfforts(lookup func(string) *llm.ModelInfo,
 		if mi := lookup(model); mi != nil {
 			if mi.ContextWindow > 0 {
 				ctx = mi.ContextWindow
+				ctxResolved = true
 			}
 			if len(mi.ReasoningEffortLevels) > 0 {
 				efforts = append([]string(nil), mi.ReasoningEffortLevels...)
@@ -594,8 +608,13 @@ func resolveOpenRouterAnthropicCtxAndEfforts(lookup func(string) *llm.ModelInfo,
 		}
 	}
 
+	// Step 3 fallback: fills both ctx and efforts only when no earlier
+	// step provided them.
 	if _, after, hasSlash := strings.Cut(model, "/"); hasSlash && after != "" {
 		if mi := lookup(after); mi != nil {
+			if !ctxResolved && mi.ContextWindow > 0 {
+				ctx = mi.ContextWindow
+			}
 			if efforts == nil && len(mi.ReasoningEffortLevels) > 0 {
 				efforts = append([]string(nil), mi.ReasoningEffortLevels...)
 			}
