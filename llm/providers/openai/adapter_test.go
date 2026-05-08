@@ -1447,6 +1447,90 @@ func TestAdapter_Complete_OAuthTransportUsesCodexEndpointAndAccountHeader(t *tes
 	}
 }
 
+func TestAdapter_Complete_OAuthTransportPreservesStreamedToolCallsWhenCompletedOutputIsEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.output_item.added\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"status\":\"in_progress\",\"arguments\":\"\",\"call_id\":\"call_1\",\"name\":\"task_list\"}}\n\n")
+		_, _ = io.WriteString(w, "event: response.function_call_arguments.delta\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.function_call_arguments.delta\",\"delta\":\"{\\\"action\\\":\\\"update\\\"}\",\"item_id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"task_list\"}\n\n")
+		_, _ = io.WriteString(w, "event: response.output_item.done\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"status\":\"completed\",\"arguments\":\"{\\\"action\\\":\\\"update\\\"}\",\"call_id\":\"call_1\",\"name\":\"task_list\"}}\n\n")
+		_, _ = io.WriteString(w, "event: response.completed\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"model\":\"gpt-5.5\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey:           "oauth-token",
+		BaseURL:          srv.URL,
+		ResponsesPath:    "/backend-api/codex/responses",
+		ChatGPTAccountID: "acct_123",
+		Client:           srv.Client(),
+	}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gpt-5.5",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if len(resp.ToolCalls()) != 1 {
+		t.Fatalf("tool calls = %d, want 1", len(resp.ToolCalls()))
+	}
+	if resp.ToolCalls()[0].Name != "task_list" {
+		t.Fatalf("tool name = %q, want %q", resp.ToolCalls()[0].Name, "task_list")
+	}
+}
+
+func TestAdapter_Complete_OAuthTransportTracksItemIDAndFragmentedToolArguments(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.output_item.added\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"status\":\"in_progress\",\"arguments\":\"\",\"call_id\":\"call_1\",\"name\":\"task_list\"}}\n\n")
+		_, _ = io.WriteString(w, "event: response.function_call_arguments.delta\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.function_call_arguments.delta\",\"delta\":\"{\\\"\",\"item_id\":\"fc_1\"}\n\n")
+		_, _ = io.WriteString(w, "event: response.function_call_arguments.delta\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.function_call_arguments.delta\",\"delta\":\"action\",\"item_id\":\"fc_1\"}\n\n")
+		_, _ = io.WriteString(w, "event: response.function_call_arguments.delta\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.function_call_arguments.delta\",\"delta\":\"\\\":\\\"update\\\"}\",\"item_id\":\"fc_1\"}\n\n")
+		_, _ = io.WriteString(w, "event: response.function_call_arguments.done\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.function_call_arguments.done\",\"arguments\":\"{\\\"action\\\":\\\"update\\\"}\",\"item_id\":\"fc_1\"}\n\n")
+		_, _ = io.WriteString(w, "event: response.output_item.done\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"status\":\"completed\",\"arguments\":\"{\\\"action\\\":\\\"update\\\"}\",\"call_id\":\"call_1\",\"name\":\"task_list\"}}\n\n")
+		_, _ = io.WriteString(w, "event: response.completed\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"model\":\"gpt-5.5\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey:           "oauth-token",
+		BaseURL:          srv.URL,
+		ResponsesPath:    "/backend-api/codex/responses",
+		ChatGPTAccountID: "acct_123",
+		Client:           srv.Client(),
+	}
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gpt-5.5",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if len(resp.ToolCalls()) != 1 {
+		t.Fatalf("tool calls = %d, want 1", len(resp.ToolCalls()))
+	}
+	if resp.ToolCalls()[0].ID != "call_1" {
+		t.Fatalf("tool id = %q, want %q", resp.ToolCalls()[0].ID, "call_1")
+	}
+	if resp.ToolCalls()[0].Name != "task_list" {
+		t.Fatalf("tool name = %q, want %q", resp.ToolCalls()[0].Name, "task_list")
+	}
+	if got := string(resp.ToolCalls()[0].Arguments); got != `{"action":"update"}` {
+		t.Fatalf("tool args = %q, want %q", got, `{"action":"update"}`)
+	}
+}
+
 func TestComplete_SendsOrgAndProjectHeaders(t *testing.T) {
 	var gotHeaders http.Header
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -116,6 +116,43 @@ func TestStreamAccumulator_ToolCallEvents_AccumulatedInResponse(t *testing.T) {
 	}
 }
 
+func TestStreamAccumulator_ToolCallEndOverridesAccumulatedArgumentsAndName(t *testing.T) {
+	acc := NewStreamAccumulator()
+	acc.Process(StreamEvent{Type: StreamEventStreamStart})
+	acc.Process(StreamEvent{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{
+		ID: "call_1", Type: "function",
+	}})
+	acc.Process(StreamEvent{Type: StreamEventToolCallDelta, ToolCall: &ToolCallData{
+		ID: "call_1", Arguments: json.RawMessage(`{"ac`),
+	}})
+	acc.Process(StreamEvent{Type: StreamEventToolCallDelta, ToolCall: &ToolCallData{
+		ID: "call_1", Arguments: json.RawMessage(`tion":"u`),
+	}})
+	acc.Process(StreamEvent{Type: StreamEventToolCallEnd, ToolCall: &ToolCallData{
+		ID:        "call_1",
+		Name:      "task_list",
+		Type:      "function",
+		Arguments: json.RawMessage(`{"action":"update"}`),
+	}})
+	f := FinishReason{Reason: "tool_calls"}
+	acc.Process(StreamEvent{Type: StreamEventFinish, FinishReason: &f})
+
+	resp := acc.Response()
+	if resp == nil {
+		t.Fatalf("expected response, got nil")
+	}
+	calls := resp.ToolCalls()
+	if len(calls) != 1 {
+		t.Fatalf("tool calls: got %d, want 1", len(calls))
+	}
+	if calls[0].Name != "task_list" {
+		t.Fatalf("tool call name: got %q, want %q", calls[0].Name, "task_list")
+	}
+	if got := string(calls[0].Arguments); got != `{"action":"update"}` {
+		t.Fatalf("tool call arguments: got %q, want %q", got, `{"action":"update"}`)
+	}
+}
+
 func TestStreamAccumulator_MultipleToolCalls(t *testing.T) {
 	acc := NewStreamAccumulator()
 	acc.Process(StreamEvent{Type: StreamEventStreamStart})

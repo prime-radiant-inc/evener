@@ -39,9 +39,18 @@ func ParseIDTokenClaims(idToken string) (TokenClaims, error) {
 	}
 
 	return TokenClaims{
-		Email:       claimString(raw, "email"),
-		AccountID:   claimString(raw, "chatgpt_account_id", "account_id", "account"),
-		WorkspaceID: claimString(raw, "workspace_id", "workspace"),
+		Email: firstNonEmpty(
+			claimString(raw, "email"),
+			claimNestedString(raw, "https://api.openai.com/profile", "email"),
+		),
+		AccountID: firstNonEmpty(
+			claimString(raw, "chatgpt_account_id", "account_id", "account"),
+			claimNestedString(raw, "https://api.openai.com/auth", "chatgpt_account_id", "account_id"),
+		),
+		WorkspaceID: firstNonEmpty(
+			claimString(raw, "workspace_id", "workspace"),
+			claimNestedString(raw, "https://api.openai.com/auth", "workspace_id"),
+		),
 	}, nil
 }
 
@@ -61,4 +70,16 @@ func claimString(raw map[string]any, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func claimNestedString(raw map[string]any, parent string, keys ...string) string {
+	value, ok := raw[parent]
+	if !ok {
+		return ""
+	}
+	nested, ok := value.(map[string]any)
+	if !ok {
+		return ""
+	}
+	return claimString(nested, keys...)
 }

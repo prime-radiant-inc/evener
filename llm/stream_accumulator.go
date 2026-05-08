@@ -77,8 +77,32 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 				a.toolCalls[ev.ToolCall.ID] = tc
 				a.toolCallOrder = append(a.toolCallOrder, ev.ToolCall.ID)
 			}
+			if tc.Name == "" && ev.ToolCall.Name != "" {
+				tc.Name = ev.ToolCall.Name
+			}
+			if tc.Type == "" && ev.ToolCall.Type != "" {
+				tc.Type = ev.ToolCall.Type
+			}
 			if len(ev.ToolCall.Arguments) > 0 {
 				tc.Arguments = append(tc.Arguments, ev.ToolCall.Arguments...)
+			}
+		}
+	case StreamEventToolCallEnd:
+		if ev.ToolCall != nil && ev.ToolCall.ID != "" {
+			tc, ok := a.toolCalls[ev.ToolCall.ID]
+			if !ok {
+				tc = &ToolCallData{ID: ev.ToolCall.ID}
+				a.toolCalls[ev.ToolCall.ID] = tc
+				a.toolCallOrder = append(a.toolCallOrder, ev.ToolCall.ID)
+			}
+			if tc.Name == "" && ev.ToolCall.Name != "" {
+				tc.Name = ev.ToolCall.Name
+			}
+			if tc.Type == "" && ev.ToolCall.Type != "" {
+				tc.Type = ev.ToolCall.Type
+			}
+			if len(ev.ToolCall.Arguments) > 0 {
+				tc.Arguments = append(tc.Arguments[:0], ev.ToolCall.Arguments...)
 			}
 		}
 	case StreamEventFinish:

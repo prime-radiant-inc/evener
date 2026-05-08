@@ -37,7 +37,9 @@ func TestTokenClaimsParsesAccountAndWorkspaceMetadata(t *testing.T) {
 
 func TestTokenClaimsParsesChatGPTAccountID(t *testing.T) {
 	claims, err := ParseIDTokenClaims(testJWT(t, map[string]any{
-		"chatgpt_account_id": "acct_chatgpt",
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id": "acct_chatgpt",
+		},
 	}))
 	if err != nil {
 		t.Fatalf("ParseIDTokenClaims() error = %v", err)

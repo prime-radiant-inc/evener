@@ -103,6 +103,17 @@ func NewFromEnv(cfgs ...Config) (*Adapter, error) {
 	if accountID == "" {
 		accountID = strings.TrimSpace(status.WorkspaceID)
 	}
+	if accountID == "" {
+		record, loadErr := authopenai.LoadAuth(cfg.StateDir)
+		if loadErr == nil {
+			if claims, parseErr := authopenai.ParseIDTokenClaims(record.IDToken); parseErr == nil {
+				accountID = strings.TrimSpace(claims.AccountID)
+				if accountID == "" {
+					accountID = strings.TrimSpace(claims.WorkspaceID)
+				}
+			}
+		}
+	}
 	return &Adapter{
 		APIKey:           creds.BearerToken,
 		BaseURL:          strings.TrimRight(base, "/"),
@@ -349,11 +360,13 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		finished := false
 		type toolState struct {
 			id      string
+			itemID  string
 			name    string
 			started bool
 			args    strings.Builder
 		}
 		toolStates := map[string]*toolState{}
+		itemToCallID := map[string]string{}
 
 		var sseBody io.Reader = resp.Body
 		var sseBuf *bytes.Buffer
@@ -381,6 +394,38 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 			}
 
 			switch typ {
+			case "response.output_item.added":
+				itemAny := payload["item"]
+				if item, ok := itemAny.(map[string]any); ok {
+					if itemType, _ := item["type"].(string); itemType == "function_call" {
+						callID, _ := item["call_id"].(string)
+						itemID, _ := item["id"].(string)
+						name, _ := item["name"].(string)
+						stateID := callID
+						if stateID == "" {
+							stateID = itemID
+						}
+						if stateID != "" {
+							st := toolStates[stateID]
+							if st == nil {
+								st = &toolState{id: stateID}
+							}
+							if callID != "" {
+								st.id = callID
+								toolStates[callID] = st
+							}
+							if itemID != "" {
+								st.itemID = itemID
+								itemToCallID[itemID] = st.id
+								toolStates[itemID] = st
+							}
+							if st.name == "" && name != "" {
+								st.name = name
+							}
+							toolStates[stateID] = st
+						}
+					}
+				}
 			case "response.output_text.delta":
 				delta, _ := payload["delta"].(string)
 				if delta == "" {
@@ -400,8 +445,12 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 					delta, _ = payload["arguments"].(string)
 				}
 				callID, _ := payload["call_id"].(string)
+				itemID, _ := payload["item_id"].(string)
+				if callID == "" && itemID != "" {
+					callID = itemToCallID[itemID]
+				}
 				if callID == "" {
-					callID, _ = payload["item_id"].(string)
+					callID = itemID
 				}
 				if callID == "" {
 					callID, _ = payload["id"].(string)
@@ -414,6 +463,12 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 				}
 
 				st := toolStates[callID]
+				if st == nil && itemID != "" {
+					st = toolStates[itemID]
+					if st != nil {
+						callID = st.id
+					}
+				}
 				if st == nil {
 					st = &toolState{id: callID, name: name}
 					toolStates[callID] = st
@@ -429,8 +484,41 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 					tc := llm.ToolCallData{ID: st.id, Name: st.name, Type: "function"}
 					s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
 				}
-				tc := llm.ToolCallData{ID: st.id, Name: st.name, Arguments: []byte(st.args.String()), Type: "function"}
+				tc := llm.ToolCallData{ID: st.id, Name: st.name, Arguments: []byte(delta), Type: "function"}
 				s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &tc})
+			case "response.function_call_arguments.done":
+				argsStr, _ := payload["arguments"].(string)
+				callID, _ := payload["call_id"].(string)
+				itemID, _ := payload["item_id"].(string)
+				if callID == "" && itemID != "" {
+					callID = itemToCallID[itemID]
+				}
+				if callID == "" {
+					callID = itemID
+				}
+				if callID == "" {
+					s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
+					return nil
+				}
+				st := toolStates[callID]
+				if st == nil && itemID != "" {
+					st = toolStates[itemID]
+					if st != nil {
+						callID = st.id
+					}
+				}
+				if st == nil {
+					st = &toolState{id: callID}
+					toolStates[callID] = st
+				}
+				if itemID != "" {
+					st.itemID = itemID
+					itemToCallID[itemID] = st.id
+				}
+				if argsStr != "" {
+					st.args.Reset()
+					st.args.WriteString(argsStr)
+				}
 			case "response.output_item.done":
 				itemAny := payload["item"]
 				if itemAny == nil {
@@ -441,18 +529,34 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 					switch it {
 					case "function_call":
 						callID, _ := item["call_id"].(string)
+						itemID, _ := item["id"].(string)
 						name, _ := item["name"].(string)
 						argsStr, _ := item["arguments"].(string)
+						if callID == "" && itemID != "" {
+							callID = itemToCallID[itemID]
+						}
 						if callID != "" {
 							st := toolStates[callID]
+							if st == nil && itemID != "" {
+								st = toolStates[itemID]
+								if st != nil {
+									callID = st.id
+								}
+							}
 							if st == nil {
 								st = &toolState{id: callID, name: name}
 								toolStates[callID] = st
 							}
+							if itemID != "" {
+								st.itemID = itemID
+								itemToCallID[itemID] = st.id
+								toolStates[itemID] = st
+							}
 							if st.name == "" && name != "" {
 								st.name = name
 							}
-							if argsStr != "" && st.args.Len() == 0 {
+							if argsStr != "" {
+								st.args.Reset()
 								st.args.WriteString(argsStr)
 							}
 							if argsStr == "" {
@@ -492,12 +596,16 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 					s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: textID})
 					textStarted = false
 				}
-				rp := r
-				if sseBuf != nil {
-					rp.RawRequestBody = rawReqBody
-					rp.RawResponseBody = sseBuf.String()
+				if responseHasAssistantContent(r) {
+					rp := r
+					if sseBuf != nil {
+						rp.RawRequestBody = rawReqBody
+						rp.RawResponseBody = sseBuf.String()
+					}
+					s.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp})
+				} else {
+					s.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage})
 				}
-				s.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp})
 				// Stop parsing after finish.
 				finished = true
 				cancel()
@@ -531,6 +639,10 @@ func (a *Adapter) responsesURL() string {
 
 func (a *Adapter) requiresStreamingComplete() bool {
 	return a.ChatGPTAccountID != "" || a.ResponsesPath == defaultCodexResponses
+}
+
+func responseHasAssistantContent(r llm.Response) bool {
+	return strings.TrimSpace(r.Text()) != "" || len(r.ToolCalls()) > 0
 }
 
 func isUnconfigured(err error) bool {
