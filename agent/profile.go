@@ -144,6 +144,37 @@ func (p *baseProfile) CheapModel() string {
 		return p.model
 	}
 }
+// modelPrefixIsProviderSwitch reports whether WithModel should interpret
+// a slash-prefixed model string "X/Y" as a provider override when called
+// on a profile with the given id. The slash on the second arg is the
+// would-be provider name extracted from the model string.
+//
+// Returns false for the meta-provider cases where the slash is part of
+// the model namespace, not a provider switch:
+//
+//   - openrouter / openrouter-anthropic: slash-prefixed model strings
+//     ("anthropic/claude-3-haiku", "minimax/minimax-m2.7") are upstream
+//     model namespaces. Calling WithModel("minimax/X") on an openrouter
+//     profile must NOT switch to the standalone minimax adapter —
+//     OpenRouter routes there itself.
+//   - minimax + "minimax/...": same-provider with a slash that's part
+//     of the canonical model name. Stripping it would yield an invalid
+//     wire model. Cross-provider switches from minimax (e.g.
+//     "anthropic/claude-opus") still work — they're a different
+//     provider and the prefix is unambiguously a switch.
+//
+// Returns true for everyone else, preserving the existing harbor / CLI
+// convention where "--model openai/gpt-5.4" means "switch to OpenAI".
+func modelPrefixIsProviderSwitch(id, prefix string) bool {
+	switch id {
+	case "openrouter", "openrouter-anthropic":
+		return false
+	case "minimax":
+		return prefix != "minimax"
+	}
+	return true
+}
+
 func (p *baseProfile) WithModel(model string) ProviderProfile {
 	model = strings.TrimSpace(model)
 	if model == "" {
@@ -152,28 +183,33 @@ func (p *baseProfile) WithModel(model string) ProviderProfile {
 	// Parse "provider/model" strings (e.g. "openai/gpt-5.4-mini") into the
 	// correct provider profile with the bare model name. This is the same
 	// format used by harbor and the CLI (--model openai/gpt-5.4).
+	//
+	// EXCEPT for meta-provider profiles whose model IDs legitimately
+	// contain slashes — see modelPrefixIsProviderSwitch for the gate.
 	if parts := strings.SplitN(model, "/", 2); len(parts) == 2 {
 		provider := strings.ToLower(parts[0])
 		bareModel := parts[1]
-		if provider != p.id {
-			// Different provider — construct the right profile type.
-			switch provider {
-			case "openai":
-				return NewOpenAIProfile(bareModel)
-			case "anthropic":
-				return NewAnthropicProfile(bareModel)
-			case "google", "gemini":
-				return NewGeminiProfile(bareModel)
-			case "minimax":
-				return NewMiniMaxProfile(bareModel)
-			case "openrouter-anthropic":
-				return NewOpenRouterAnthropicProfile(bareModel)
-			case "kimi", "glm", "openrouter", "ollama":
-				return NewOpenAICompatProfile(provider, bareModel, 0)
+		if modelPrefixIsProviderSwitch(p.id, provider) {
+			if provider != p.id {
+				// Different provider — construct the right profile type.
+				switch provider {
+				case "openai":
+					return NewOpenAIProfile(bareModel)
+				case "anthropic":
+					return NewAnthropicProfile(bareModel)
+				case "google", "gemini":
+					return NewGeminiProfile(bareModel)
+				case "minimax":
+					return NewMiniMaxProfile(bareModel)
+				case "openrouter-anthropic":
+					return NewOpenRouterAnthropicProfile(bareModel)
+				case "kimi", "glm", "openrouter", "ollama":
+					return NewOpenAICompatProfile(provider, bareModel, 0)
+				}
 			}
+			// Same provider — just use the bare model name.
+			model = bareModel
 		}
-		// Same provider — just use the bare model name.
-		model = bareModel
 	}
 	clone := *p
 	clone.model = model

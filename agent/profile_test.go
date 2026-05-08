@@ -524,6 +524,115 @@ func TestNewOpenAICompatProfile_OllamaDoesNotPickUpAnthropicCatalog(t *testing.T
 	}
 }
 
+// TestBaseProfile_WithModel_PreservesSlashOnMetaProviders verifies that
+// for meta-providers whose model IDs legitimately contain slashes
+// (openrouter, openrouter-anthropic, minimax), WithModel does NOT
+// reinterpret the slash as a provider-switch prefix. The model string
+// must be passed through verbatim and the profile id must not change.
+//
+// Specific failure modes this guards against, all reachable via
+// runtime paths like Session.SetModel and subagent model overrides:
+//   - openrouter profile + WithModel("minimax/minimax-m2.7") would have
+//     switched to the standalone minimax adapter and dropped the
+//     OpenRouter routing, mangling tool calls
+//   - minimax profile + WithModel("minimax/minimax-m2.7") would have
+//     stripped the model to "minimax-m2.7", which is not a valid model
+//     name on that adapter
+//   - openrouter-anthropic profile + WithModel(prefixed) similarly
+//     loses the OpenRouter-Anthropic routing
+func TestBaseProfile_WithModel_PreservesSlashOnMetaProviders(t *testing.T) {
+	cases := []struct {
+		startProfile func() ProviderProfile
+		startID      string
+		input        string
+	}{
+		{func() ProviderProfile { return NewMiniMaxProfile("minimax/minimax-m2.7") }, "minimax", "minimax/minimax-m2.7"},
+		{func() ProviderProfile { return NewMiniMaxProfile("minimax/minimax-m2.7") }, "minimax", "minimax/minimax-m2.1"},
+		{func() ProviderProfile { return NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0) }, "openrouter", "minimax/minimax-m2.7"},
+		{func() ProviderProfile { return NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0) }, "openrouter", "anthropic/claude-3-haiku-20240307"},
+		{func() ProviderProfile { return NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0) }, "openrouter", "deepseek/deepseek-r1"},
+		{func() ProviderProfile { return NewOpenRouterAnthropicProfile("minimax/minimax-m2.7") }, "openrouter-anthropic", "minimax/minimax-m2.7"},
+		{func() ProviderProfile { return NewOpenRouterAnthropicProfile("minimax/minimax-m2.7") }, "openrouter-anthropic", "anthropic/claude-3-5-sonnet"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.startID+"_"+tc.input, func(t *testing.T) {
+			orig := tc.startProfile()
+			cloned := orig.WithModel(tc.input)
+			if cloned.ID() != tc.startID {
+				t.Errorf("ID() = %q, want %q (meta-provider must not be switched away from)", cloned.ID(), tc.startID)
+			}
+			if cloned.Model() != tc.input {
+				t.Errorf("Model() = %q, want %q (slash-containing model must be preserved verbatim)", cloned.Model(), tc.input)
+			}
+		})
+	}
+}
+
+// TestBaseProfile_WithModel_StillSwitchesFromNonMeta verifies the
+// existing prefix-switch feature still works from non-meta-provider
+// profiles. This is the original use case: harbor and the CLI pass
+// "provider/model" strings and expect WithModel to produce the right
+// profile type. The meta-provider gate must not affect this path.
+func TestBaseProfile_WithModel_StillSwitchesFromNonMeta(t *testing.T) {
+	cases := []struct {
+		startID   string
+		newOrig   func() ProviderProfile
+		input     string
+		wantID    string
+		wantModel string
+	}{
+		{"openai", func() ProviderProfile { return NewOpenAIProfile("gpt-5.4") }, "anthropic/claude-3-opus", "anthropic", "claude-3-opus"},
+		{"openai", func() ProviderProfile { return NewOpenAIProfile("gpt-5.4") }, "ollama/llama3.1", "ollama", "llama3.1"},
+		{"openai", func() ProviderProfile { return NewOpenAIProfile("gpt-5.4") }, "openrouter/anthropic/claude-3-haiku-20240307", "openrouter", "anthropic/claude-3-haiku-20240307"},
+		{"google", func() ProviderProfile { return NewGeminiProfile("gemini-3-flash") }, "openai/gpt-5.4", "openai", "gpt-5.4"},
+		{"kimi", func() ProviderProfile { return NewOpenAICompatProfile("kimi", "kimi-k2.5", 0) }, "openai/gpt-5.4", "openai", "gpt-5.4"},
+		{"ollama", func() ProviderProfile { return NewOpenAICompatProfile("ollama", "llama3.1", 0) }, "openai/gpt-5.4", "openai", "gpt-5.4"},
+		// Cross-provider switch from minimax must still work — only the
+		// same-provider "minimax/..." case is exempted from prefix parsing.
+		{"minimax", func() ProviderProfile { return NewMiniMaxProfile("minimax/minimax-m2.7") }, "anthropic/claude-opus", "anthropic", "claude-opus"},
+		{"minimax", func() ProviderProfile { return NewMiniMaxProfile("minimax/minimax-m2.7") }, "openai/gpt-5.4", "openai", "gpt-5.4"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.startID+"_"+tc.input, func(t *testing.T) {
+			cloned := tc.newOrig().WithModel(tc.input)
+			if cloned.ID() != tc.wantID {
+				t.Errorf("ID() = %q, want %q", cloned.ID(), tc.wantID)
+			}
+			if cloned.Model() != tc.wantModel {
+				t.Errorf("Model() = %q, want %q", cloned.Model(), tc.wantModel)
+			}
+		})
+	}
+}
+
+// TestBaseProfile_WithModel_SameProviderStripStillWorksForKimiGlm
+// verifies the "WithModel('kimi/kimi-k2.5') on a kimi profile strips
+// to 'kimi-k2.5'" convenience still works for non-meta same-provider
+// prefixes. kimi/glm catalog keys are unprefixed so the stripped form
+// is the canonical wire model.
+func TestBaseProfile_WithModel_SameProviderStripStillWorksForKimiGlm(t *testing.T) {
+	cases := []struct {
+		startID   string
+		input     string
+		wantModel string
+	}{
+		{"kimi", "kimi/kimi-k2.5", "kimi-k2.5"},
+		{"glm", "glm/glm-5", "glm-5"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.startID, func(t *testing.T) {
+			orig := NewOpenAICompatProfile(tc.startID, "placeholder", 0)
+			cloned := orig.WithModel(tc.input)
+			if cloned.ID() != tc.startID {
+				t.Errorf("ID() = %q, want %q", cloned.ID(), tc.startID)
+			}
+			if cloned.Model() != tc.wantModel {
+				t.Errorf("Model() = %q, want %q (same-provider prefix should strip for kimi/glm)", cloned.Model(), tc.wantModel)
+			}
+		})
+	}
+}
+
 // TestNewOpenAICompatProfile_OpenRouterUpstreamBareEntry verifies the
 // OpenRouter side of the bare-key contract: openrouter routes to
 // upstreams whose models often appear only under bare keys
