@@ -5,7 +5,16 @@
   <meta charset="utf-8">
   <title>{{.Title}} — serf hub</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%237aa2f7'/%3E%3Ctext x='50%25' y='55%25' text-anchor='middle' dominant-baseline='middle' font-family='ui-monospace,monospace' font-size='18' font-weight='600' fill='%230c0c10'%3Es%3C/text%3E%3C/svg%3E">
+  <script>
+    (function () {
+      var pref = localStorage.getItem("serf-hub.theme");
+      if (pref === "light" || pref === "dark") {
+        document.documentElement.setAttribute("data-theme", pref);
+      }
+    })();
+  </script>
   <link rel="stylesheet" href="/assets/style.css">
+  <script src="/assets/theme.js"></script>
   <script src="/assets/htmx.min.js"></script>
 </head>
 <body>

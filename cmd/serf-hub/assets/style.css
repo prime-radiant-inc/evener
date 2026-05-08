@@ -1,16 +1,109 @@
+/* Color tokens — both palettes ship; theme is selected by data-theme on :root.
+   Default rules use prefers-color-scheme; data-theme="light"/"dark" overrides. */
+
 :root {
-  --bg: #0c0c10;
-  --panel: #15151b;
-  --panel-2: #1c1c24;
-  --border: #2a2a33;
-  --text: #e5e5e9;
-  --muted: #9a9aa6;
+  --bg: #0a0a0e;
+  --bg-raised: #16161e;
+  --text: #ececf0;
+  --text-muted: #7a7a86;
+  --text-dim: #5a5a64;
+  --rule: #1a1a20;
   --accent: #7aa2f7;
+  --state-awaiting: #f7768e;
+  --state-processing: #7aa2f7;
+  --state-warning: #e0af68;
+  --state-idle: #9ece6a;
+  --state-ended: #3a3a44;
+  --state-subagent: #bb9af7;
+
+  /* Legacy aliases for the existing rule set; remove these once the rest
+     of style.css migrates to the new token names. */
+  --panel: var(--bg-raised);
+  --panel-2: #1c1c24;
+  --border: var(--rule);
+  --muted: var(--text-muted);
   --accent-2: #bb9af7;
-  --tool: #e0af68;
-  --user: #9ece6a;
-  --error: #f7768e;
+  --tool: var(--state-warning);
+  --user: var(--state-idle);
+  --error: var(--state-awaiting);
   --pad: 12px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #fafafa;
+    --bg-raised: #f0f0f1;
+    --text: #16161e;
+    --text-muted: #6a6a76;
+    --text-dim: #a0a0a8;
+    --rule: #e0e0e3;
+    --accent: #3b6fc9;
+    --state-awaiting: #c43755;
+    --state-processing: #3b6fc9;
+    --state-warning: #a06f1e;
+    --state-idle: #3f7a1e;
+    --state-ended: #c0c0c8;
+    --state-subagent: #7449c7;
+
+    --panel: var(--bg-raised);
+    --panel-2: #e8e8ea;
+    --border: var(--rule);
+    --muted: var(--text-muted);
+    --accent-2: #7449c7;
+    --tool: var(--state-warning);
+    --user: var(--state-idle);
+    --error: var(--state-awaiting);
+  }
+}
+
+:root[data-theme="dark"] {
+  /* Force dark — duplicate the default :root values so they win over media query. */
+  --bg: #0a0a0e;
+  --bg-raised: #16161e;
+  --text: #ececf0;
+  --text-muted: #7a7a86;
+  --text-dim: #5a5a64;
+  --rule: #1a1a20;
+  --accent: #7aa2f7;
+  --state-awaiting: #f7768e;
+  --state-processing: #7aa2f7;
+  --state-warning: #e0af68;
+  --state-idle: #9ece6a;
+  --state-ended: #3a3a44;
+  --state-subagent: #bb9af7;
+  --panel: var(--bg-raised);
+  --panel-2: #1c1c24;
+  --border: var(--rule);
+  --muted: var(--text-muted);
+  --accent-2: #bb9af7;
+  --tool: var(--state-warning);
+  --user: var(--state-idle);
+  --error: var(--state-awaiting);
+}
+
+:root[data-theme="light"] {
+  /* Force light. */
+  --bg: #fafafa;
+  --bg-raised: #f0f0f1;
+  --text: #16161e;
+  --text-muted: #6a6a76;
+  --text-dim: #a0a0a8;
+  --rule: #e0e0e3;
+  --accent: #3b6fc9;
+  --state-awaiting: #c43755;
+  --state-processing: #3b6fc9;
+  --state-warning: #a06f1e;
+  --state-idle: #3f7a1e;
+  --state-ended: #c0c0c8;
+  --state-subagent: #7449c7;
+  --panel: var(--bg-raised);
+  --panel-2: #e8e8ea;
+  --border: var(--rule);
+  --muted: var(--text-muted);
+  --accent-2: #7449c7;
+  --tool: var(--state-warning);
+  --user: var(--state-idle);
+  --error: var(--state-awaiting);
 }
 * { box-sizing: border-box; }
 body {
