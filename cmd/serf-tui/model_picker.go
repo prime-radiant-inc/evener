@@ -49,6 +49,16 @@ func newTranscriptPicker(items []modelPickerItem, activeSessionID string, width 
 	}
 }
 
+func newActionPicker(title, footer string, items []modelPickerItem, width int) modelPicker {
+	return modelPicker{
+		title:     title,
+		emptyText: "  No actions available.",
+		footer:    footer,
+		items:     items,
+		width:     width,
+	}
+}
+
 func (m modelPicker) Init() tea.Cmd { return nil }
 
 func (m modelPicker) filtered() []modelPickerItem {

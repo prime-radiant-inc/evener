@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmdutil"
+	authopenai "primeradiant.com/serf/internal/auth/openai"
 )
 
 func main() {
@@ -84,18 +85,29 @@ func main() {
 	var serverAddr string
 	var initialMessages []chatMessage
 	var resolvedStateDir string
+	var err error
+	asyncCh := make(chan tea.Msg, 64)
+	var embedded *embeddedServer
 
 	if *addr != "" {
 		// Connect to an existing server.
 		serverAddr = *addr
+		resolvedStateDir, err = resolveTUIStateDir(*workDir, *stateDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "serf-tui: %v\n", err)
+			os.Exit(1)
+		}
 	} else {
-		// Start embedded server.
-		ctx := context.Background()
-		embedded, err := startEmbedded(ctx, embeddedConfig{
+		resolvedStateDir, err = resolveTUIStateDir(*workDir, *stateDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "serf-tui: %v\n", err)
+			os.Exit(1)
+		}
+		cfg := embeddedConfig{
 			provider:           *provider,
 			model:              *modelFlag,
 			workDir:            *workDir,
-			stateDir:           *stateDir,
+			stateDir:           resolvedStateDir,
 			systemPrompt:       *systemPrompt,
 			systemPromptAppend: []string(systemPromptAppend),
 			maxRounds:          *maxRounds,
@@ -116,38 +128,88 @@ func main() {
 			resume:             *resume,
 			resumeWith:         *resumeWith,
 			resumeLast:         *resumeLast,
-		})
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "serf-tui: %v\n", err)
-			os.Exit(1)
 		}
-		defer embedded.Close()
-		serverAddr = embedded.addr
-		resolvedStateDir = embedded.stateDir()
+		authBootstrap := false
+		prov, provErr := cmdutil.ResolveProvider(*provider)
+		if provErr == nil && prov == "openai" {
+			status, statusErr := authopenai.NewService(authopenai.DefaultConfig(), nil).Status(resolvedStateDir)
+			if statusErr != nil {
+				fmt.Fprintf(os.Stderr, "serf-tui: %v\n", statusErr)
+				os.Exit(1)
+			}
+			authBootstrap = !status.SignedIn || status.Source == authopenai.AuthSourceSignedOut
+			if authBootstrap {
+				initialMessages = append(initialMessages, chatMessage{
+					Kind: msgSystem,
+					Text: "OpenAI login required before this session can start. Use /openai to sign in.",
+				})
+			}
+		}
 
-		if len(embedded.history) > 0 {
-			initialMessages = historyToMessages(embedded.history)
+		// Start embedded server.
+		if !authBootstrap {
+			ctx := context.Background()
+			embedded, err = startEmbedded(ctx, cfg)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "serf-tui: %v\n", err)
+				os.Exit(1)
+			}
+			serverAddr = embedded.addr
+			resolvedStateDir = embedded.stateDir()
+			if len(embedded.history) > 0 {
+				initialMessages = historyToMessages(embedded.history)
+			}
 		}
 	}
 
 	initTheme()
-	m := newModel(serverAddr, resolvedStateDir, initialMessages)
+	m := newConfiguredModel(serverAddr, resolvedStateDir, initialMessages, embeddedConfig{
+		provider:           *provider,
+		model:              *modelFlag,
+		workDir:            *workDir,
+		stateDir:           resolvedStateDir,
+		systemPrompt:       *systemPrompt,
+		systemPromptAppend: []string(systemPromptAppend),
+		maxRounds:          *maxRounds,
+		maxSubagentDepth:   *maxSubagentDepth,
+		shareTaskStore:     *shareTaskStore,
+		resultToolName:     *resultToolName,
+		exportATIF:         *exportATIF,
+		contextStrategy:    *contextStrategy,
+		verbose:            *verbose,
+		noProjectPrompts:   *noProjectPrompts,
+		agentName:          *agentName,
+		systemPromptAsUser: *systemPromptAsUser,
+		reasoningEffort:    *reasoningEffort,
+		skillsDirs:         []string(skillsDirs),
+		mcpServers:         []string(mcpServers),
+		mcpConfigs:         []string(mcpConfigs),
+		pluginDirs:         []string(pluginDirs),
+		resume:             *resume,
+		resumeWith:         *resumeWith,
+		resumeLast:         *resumeLast,
+	}, embedded, asyncCh, embedded == nil && serverAddr == "")
+	if serverAddr != "" {
+		m.streamID = 1
+		go streamSSE(context.Background(), serverAddr, m.streamID, func(msg tea.Msg) {
+			asyncCh <- msg
+		})
+	}
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
-	// Start SSE streaming in background, sending events to Bubble Tea.
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		streamSSE(ctx, serverAddr, p.Send)
-	}()
-
 	finalModel, err := p.Run()
-	cancel()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "serf-tui: %v\n", err)
 		os.Exit(1)
 	}
 
 	if m, ok := finalModel.(model); ok {
+		if m.streamCancel != nil {
+			m.streamCancel()
+		}
+		if m.embedded != nil {
+			m.embedded.Close()
+		}
 		printResumeHint(os.Stderr, m.sessionID)
 	}
 }
@@ -164,6 +226,22 @@ func printResumeHint(w io.Writer, sessionID string) {
 
 // pickSession resolves the state directory and shows an interactive session picker.
 func pickSession(workDir, stateDirFlag string) (string, error) {
+	sd, err := resolveTUIStateDir(workDir, stateDirFlag)
+	if err != nil {
+		return "", err
+	}
+	sessions, err := agent.ListSessions(sd)
+	if err != nil {
+		return "", fmt.Errorf("list sessions: %w", err)
+	}
+
+	return runSessionPicker(sessions)
+}
+
+func resolveTUIStateDir(workDir, stateDirFlag string) (string, error) {
+	if stateDirFlag != "" {
+		return stateDirFlag, nil
+	}
 	wd := workDir
 	if wd == "" {
 		var err error
@@ -172,17 +250,6 @@ func pickSession(workDir, stateDirFlag string) (string, error) {
 			return "", fmt.Errorf("cannot determine working directory: %w", err)
 		}
 	}
-
-	sd := stateDirFlag
-	if sd == "" {
-		originURL := cmdutil.GitOriginURLFromDir(wd)
-		sd = agent.RuntimeDir(originURL, wd, "")
-	}
-
-	sessions, err := agent.ListSessions(sd)
-	if err != nil {
-		return "", fmt.Errorf("list sessions: %w", err)
-	}
-
-	return runSessionPicker(sessions)
+	originURL := cmdutil.GitOriginURLFromDir(wd)
+	return agent.RuntimeDir(originURL, wd, ""), nil
 }

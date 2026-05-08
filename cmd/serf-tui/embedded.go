@@ -24,6 +24,8 @@ import (
 	_ "primeradiant.com/serf/llm/providers/openrouter"
 	_ "primeradiant.com/serf/llm/providers/openrouter_anthropic"
 	"primeradiant.com/serf/server"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // embeddedConfig holds options for the embedded server.
@@ -74,6 +76,11 @@ type embeddedServer struct {
 	sessionCfg agent.SessionConfig
 
 	eventObserver func(agent.SessionEvent)
+}
+
+type embeddedStartedMsg struct {
+	server *embeddedServer
+	err    error
 }
 
 // startEmbedded creates an agent session and HTTP server in-process,
@@ -344,4 +351,34 @@ func (e *embeddedServer) Close() {
 // stateDir returns the resolved runtime state directory.
 func (e *embeddedServer) stateDir() string {
 	return e.sessionCfg.StateDir
+}
+
+func startEmbeddedCmd(cfg embeddedConfig) tea.Cmd {
+	return func() tea.Msg {
+		server, err := startEmbedded(context.Background(), cfg)
+		if err != nil {
+			return embeddedStartedMsg{err: err}
+		}
+		return embeddedStartedMsg{server: server}
+	}
+}
+
+func (m *model) startSSEStream() tea.Cmd {
+	if m.asyncCh == nil || m.addr == "" {
+		return nil
+	}
+	if m.streamCancel != nil {
+		m.streamCancel()
+	}
+	m.streamID++
+	streamID := m.streamID
+	addr := m.addr
+	ctx, cancel := context.WithCancel(context.Background())
+	m.streamCancel = cancel
+	return func() tea.Msg {
+		go streamSSE(ctx, addr, streamID, func(msg tea.Msg) {
+			m.asyncCh <- msg
+		})
+		return nil
+	}
 }

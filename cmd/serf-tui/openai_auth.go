@@ -3,8 +3,12 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os/exec"
+	"runtime"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	authopenai "primeradiant.com/serf/internal/auth/openai"
 )
 
@@ -27,6 +31,30 @@ type openAILoginHooks struct {
 	OnAuthURL       func(string)
 	OpenBrowser     func(string) error
 	WaitForRedirect func(context.Context) (string, error)
+}
+
+type openAIAuthStatusMsg struct {
+	status openAIAuthStatus
+	err    error
+}
+
+type openAIAuthURLMsg struct {
+	url string
+}
+
+type openAIAuthBrowserErrorMsg struct {
+	err error
+}
+
+type openAIAuthLoginMsg struct {
+	status openAIAuthStatus
+	err    error
+}
+
+type openAIAuthLogoutMsg struct {
+	removed bool
+	status  openAIAuthStatus
+	err     error
 }
 
 type openAIService interface {
@@ -146,4 +174,84 @@ func firstNonEmptyString(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func openAIAuthHint(status openAIAuthStatus) string {
+	switch status.ActiveSource {
+	case authopenai.AuthSourceEnv:
+		if status.HasStoredOAuth {
+			return "oa: env+oauth"
+		}
+		return "oa: env"
+	case authopenai.AuthSourceOAuth:
+		return "oa: oauth"
+	default:
+		return "oa: login"
+	}
+}
+
+func loadOpenAIAuthStatusCmd(helper *openAIAuthHelper) tea.Cmd {
+	return func() tea.Msg {
+		status, err := helper.Status()
+		return openAIAuthStatusMsg{status: status, err: err}
+	}
+}
+
+func openAILoginCmd(ctx context.Context, helper *openAIAuthHelper, asyncCh chan<- tea.Msg, openBrowser func(string) error, redirectCh <-chan string) tea.Cmd {
+	return func() tea.Msg {
+		status, err := helper.Login(ctx, openAILoginHooks{
+			OnAuthURL: func(rawURL string) {
+				if asyncCh != nil {
+					asyncCh <- openAIAuthURLMsg{url: rawURL}
+				}
+			},
+			OpenBrowser: func(rawURL string) error {
+				if openBrowser == nil {
+					return nil
+				}
+				if err := openBrowser(rawURL); err != nil {
+					if asyncCh != nil {
+						asyncCh <- openAIAuthBrowserErrorMsg{err: err}
+					}
+				}
+				return nil
+			},
+			WaitForRedirect: func(ctx context.Context) (string, error) {
+				if redirectCh == nil {
+					return "", fmt.Errorf("redirect channel is required")
+				}
+				select {
+				case <-ctx.Done():
+					return "", ctx.Err()
+				case rawURL := <-redirectCh:
+					return rawURL, nil
+				}
+			},
+		})
+		return openAIAuthLoginMsg{status: status, err: err}
+	}
+}
+
+func openAILogoutCmd(helper *openAIAuthHelper) tea.Cmd {
+	return func() tea.Msg {
+		removed, err := helper.Logout()
+		if err != nil {
+			return openAIAuthLogoutMsg{err: err}
+		}
+		status, statusErr := helper.Status()
+		return openAIAuthLogoutMsg{removed: removed, status: status, err: statusErr}
+	}
+}
+
+func openURLInBrowser(rawURL string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", rawURL)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", rawURL)
+	default:
+		cmd = exec.Command("xdg-open", rawURL)
+	}
+	return cmd.Start()
 }

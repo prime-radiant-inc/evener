@@ -16,6 +16,17 @@ type inputSentMsg struct{ err error }
 type steerSentMsg struct{ err error }
 type compactDoneMsg struct{ err error }
 type transcriptRefreshMsg struct{}
+type asyncMsg struct{ msg tea.Msg }
+
+func waitForAsync(ch <-chan tea.Msg) tea.Cmd {
+	return func() tea.Msg {
+		msg, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return asyncMsg{msg: msg}
+	}
+}
 
 // parseSlashCommand returns the command name and arguments if the input starts
 // with a slash command. Returns ("", "") if not a slash command.
@@ -42,6 +53,7 @@ func slashCommandHelp() string {
 		"  /tasks     Show the agent's task list",
 		"  /agents    View the main or subagent transcript",
 		"  /model     Switch model (picker) or /model <name>",
+		"  /openai    Open OpenAI login, status, and logout actions",
 		"  /theme     Pick a theme (dark/light)",
 		"  /clear     Start a new session",
 		"  /quit      Exit the TUI",

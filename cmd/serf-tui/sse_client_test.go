@@ -123,7 +123,7 @@ func TestStreamSSE(t *testing.T) {
 
 	// Strip "http://" to get addr for streamSSE (which adds its own "http://").
 	addr := strings.TrimPrefix(srv.URL, "http://")
-	streamSSE(context.Background(), addr, send)
+	streamSSE(context.Background(), addr, 1, send)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -133,24 +133,29 @@ func TestStreamSSE(t *testing.T) {
 		t.Fatalf("expected at least 3 messages, got %d: %+v", len(msgs), msgs)
 	}
 
-	if _, ok := msgs[0].(sseConnectedMsg); !ok {
+	if got, ok := msgs[0].(sseConnectedMsg); !ok {
 		t.Errorf("msgs[0]: expected sseConnectedMsg, got %T", msgs[0])
+	} else if got.streamID != 1 {
+		t.Errorf("msgs[0].streamID: got %d, want 1", got.streamID)
 	}
 
 	ev1, ok := msgs[1].(sseEventMsg)
 	if !ok {
 		t.Fatalf("msgs[1]: expected sseEventMsg, got %T", msgs[1])
 	}
-	if ev1.Event != "SESSION_START" {
-		t.Errorf("msgs[1].Event: got %q, want SESSION_START", ev1.Event)
+	if ev1.streamID != 1 {
+		t.Errorf("msgs[1].streamID: got %d, want 1", ev1.streamID)
+	}
+	if ev1.event.Event != "SESSION_START" {
+		t.Errorf("msgs[1].Event: got %q, want SESSION_START", ev1.event.Event)
 	}
 
 	ev2, ok := msgs[2].(sseEventMsg)
 	if !ok {
 		t.Fatalf("msgs[2]: expected sseEventMsg, got %T", msgs[2])
 	}
-	if ev2.Event != "ASSISTANT_TEXT_DELTA" {
-		t.Errorf("msgs[2].Event: got %q, want ASSISTANT_TEXT_DELTA", ev2.Event)
+	if ev2.event.Event != "ASSISTANT_TEXT_DELTA" {
+		t.Errorf("msgs[2].Event: got %q, want ASSISTANT_TEXT_DELTA", ev2.event.Event)
 	}
 
 	// Last message should be sseErrorMsg (stream closed).
@@ -167,7 +172,7 @@ func TestStreamSSE_ConnectionRefused(t *testing.T) {
 	}
 
 	// Use a port that nothing is listening on.
-	streamSSE(context.Background(), "127.0.0.1:0", send)
+	streamSSE(context.Background(), "127.0.0.1:0", 7, send)
 
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(msgs))
@@ -176,6 +181,8 @@ func TestStreamSSE_ConnectionRefused(t *testing.T) {
 		t.Errorf("expected sseErrorMsg, got %T", msgs[0])
 	} else if errMsg.err == nil {
 		t.Error("expected non-nil error")
+	} else if errMsg.streamID != 7 {
+		t.Errorf("streamID: got %d, want 7", errMsg.streamID)
 	}
 }
 

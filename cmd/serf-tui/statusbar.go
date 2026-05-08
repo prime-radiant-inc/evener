@@ -8,7 +8,7 @@ import (
 
 const compactThreshold = 0.90 // must match agent/context_manager.go SummarizeThreshold
 
-func renderStatusBar(connected bool, model, sessionID string, turns, contextTokens, contextWindowSize int, processing bool, turnIn, turnOut int, scrollMode bool, width int) string {
+func renderStatusBar(connected bool, model, sessionID, authHint string, turns, contextTokens, contextWindowSize int, processing bool, turnIn, turnOut int, scrollMode bool, width int) string {
 	var connIndicator string
 	if connected {
 		connIndicator = statusConnected.Render("● connected")
@@ -22,6 +22,9 @@ func renderStatusBar(connected bool, model, sessionID string, turns, contextToke
 		right = scrollModeStyle.Render(" SCROLL  esc to exit ")
 	} else if model != "" {
 		right = fmt.Sprintf("model: %s  turns: %d", model, turns)
+		if authHint != "" {
+			right += "  " + authHint
+		}
 		if processing && (turnIn > 0 || turnOut > 0) {
 			right += fmt.Sprintf("  ↑%s ↓%s", formatTokens(turnIn), formatTokens(turnOut))
 		}
