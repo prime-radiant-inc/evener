@@ -36,6 +36,7 @@ Assert:
 - the arguments equal the authoritative final JSON
 
 - [ ] **Step 2: Run the focused adapter test and verify failure before cleanup**
+- [ ] **Step 2: Run the focused adapter test and capture the baseline behavior**
 
 Run:
 
@@ -45,7 +46,8 @@ go test ./llm/providers/openai -run 'TestAdapter_Complete_OAuthTransportTracksIt
 
 Expected:
 
-- either failure in the pre-cleanup state or confirmation that the current branch already needs the extracted helper preserved
+- if run before refactor on the broken baseline, FAIL with duplicate or malformed tool-call behavior
+- if run after a hotfix branch already passes, treat the passing result as proof that the extracted tracker must preserve current live behavior exactly
 
 - [ ] **Step 3: Introduce a focused tool-call tracker inside the OpenAI adapter**
 
@@ -118,6 +120,7 @@ Assert:
 - the final arguments equal the authoritative final payload, not concatenated duplicate snapshots
 
 - [ ] **Step 2: Run the focused accumulator test and verify failure before code change**
+- [ ] **Step 2: Run the focused accumulator test and capture the baseline behavior**
 
 Run:
 
@@ -127,7 +130,8 @@ go test ./llm -run 'TestStreamAccumulator_ToolCallEndOverridesAccumulatedArgumen
 
 Expected:
 
-- FAIL if the accumulator is still relying only on appended deltas
+- if run before the semantic fix, FAIL because final name/arguments are not authoritative
+- if the branch already passes, use the passing result as the regression target while simplifying the implementation
 
 - [ ] **Step 3: Update accumulator `ToolCallEnd` handling**
 
@@ -164,7 +168,6 @@ git commit -m "fix: preserve authoritative streamed tool call payloads"
 **Files:**
 - Create: `cmd/serf-tui/openai_auth.go`
 - Modify: `cmd/serf-tui/model.go`
-- Modify: `cmd/serf-tui/main.go`
 - Test: `cmd/serf-tui/*_test.go`
 
 - [ ] **Step 1: Inspect current TUI command and state patterns**
@@ -240,7 +243,33 @@ On failure:
 - remain usable
 - append a clear error message
 
-- [ ] **Step 7: Run the focused TUI auth tests**
+- [ ] **Step 7: Add explicit status and logout actions**
+
+Wire the same auth action sheet to:
+
+- show current OpenAI auth status in a system message
+- sign out locally using the existing auth service
+
+Cover auth precedence text for:
+
+- env only
+- OAuth only
+- env plus stored OAuth
+- signed out
+
+- [ ] **Step 8: Add focused failure-path tests**
+
+Add tests for:
+
+- browser-open failure still surfacing the URL
+- invalid pasted redirect URL or state mismatch
+- cancelling redirect-paste mode
+- attempting login while login is already in progress
+- logout when already signed out
+
+Keep these controller-focused and offline.
+
+- [ ] **Step 9: Run the focused TUI auth tests**
 
 Run:
 
@@ -252,7 +281,7 @@ Expected:
 
 - PASS
 
-- [ ] **Step 8: Commit the TUI auth controller**
+- [ ] **Step 10: Commit the TUI auth controller**
 
 ```bash
 git add cmd/serf-tui/openai_auth.go cmd/serf-tui/model.go cmd/serf-tui/*.go
@@ -300,7 +329,17 @@ Use `message.go` and existing system-message patterns so auth operations append 
 - logout success
 - status summary
 
-- [ ] **Step 4: Run targeted TUI UX tests**
+- [ ] **Step 4: Verify the auth action sheet and input routing**
+
+Confirm the chosen v1 UX model is implemented exactly:
+
+- one OpenAI auth action sheet
+- no separate modal stack
+- redirect paste uses the main textarea/input path
+
+If `cmd/serf-tui/input.go` owns the necessary routing, move the minimum logic there and add it to the commit scope. Otherwise keep the implementation in `model.go`.
+
+- [ ] **Step 5: Run targeted TUI UX tests**
 
 Run:
 
@@ -312,7 +351,7 @@ Expected:
 
 - PASS
 
-- [ ] **Step 5: Commit the UX polish**
+- [ ] **Step 6: Commit the UX polish**
 
 ```bash
 git add cmd/serf-tui/statusbar.go cmd/serf-tui/model.go cmd/serf-tui/message.go cmd/serf-tui/*_test.go
@@ -340,16 +379,18 @@ Expected:
 - PASS
 
 - [ ] **Step 2: Build the TUI binary**
+- [ ] **Step 2: Build exact local binaries for manual verification**
 
 Run:
 
 ```bash
-go build ./cmd/serf-tui
+go build -o ./serf-tui ./cmd/serf-tui
+go build -o ./serf ./cmd/serf
 ```
 
 Expected:
 
-- successful build with no compile errors
+- both binaries are produced at repo root with no compile errors
 
 - [ ] **Step 3: Manually exercise local TUI login flow**
 

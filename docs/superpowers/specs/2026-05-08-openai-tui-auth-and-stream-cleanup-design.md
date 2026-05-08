@@ -83,6 +83,20 @@ This is not recommended.
 
 Use Approach B.
 
+### Concrete v1 UX choice
+
+Use one explicit keyboard-triggered OpenAI auth menu inside `serf-tui`, not a free-form mixture of menus, modals, and transcript-only commands.
+
+Concrete interaction model:
+
+- one keybinding opens an OpenAI auth action sheet when the active provider is OpenAI
+- the action sheet offers exactly:
+  - `Sign in with OpenAI`
+  - `Show OpenAI auth status`
+  - `Sign out of OpenAI`
+- choosing `Sign in with OpenAI` appends the auth URL as a system message and immediately switches the main input into a temporary redirect-paste mode
+- redirect-paste mode reuses the main input widget with different placeholder/help text; no separate modal component is introduced in v1
+
 ### 1. OpenAI stream tool-call tracker
 
 Introduce a small helper local to the OpenAI adapter, either as a private type in `llm/providers/openai/adapter.go` or a focused sibling file in the same package.
@@ -102,6 +116,17 @@ Invariants:
 - `item_id` is never emitted as the tool-call id if `call_id` exists
 - `ToolCallEnd` is authoritative for name and arguments
 - finish events without assistant content must not overwrite accumulated tool-call content
+
+Authoritative finalization rules:
+
+- canonical public identity is `call_id` when present
+- `response.output_item.added` establishes the alias between `item_id` and `call_id`
+- `response.function_call_arguments.delta` contributes only incremental argument fragments
+- `response.function_call_arguments.done` is the authoritative full argument payload when present
+- `response.output_item.done` is the authoritative full tool-call envelope for final name and id reconciliation
+- if both done events provide arguments, prefer `response.output_item.done` as the final source of truth because it carries the final completed item envelope
+- duplicate done events for the same logical call must be idempotent and must not emit a second logical tool call
+- an unresolved function-call event with no known alias remains a provider event, not a synthetic tool call
 
 ### 2. Stream accumulator semantics
 
@@ -126,6 +151,18 @@ Responsibilities:
 
 The TUI must not shell out to `serf openai login`. It should call `internal/auth/openai.Service` directly with TUI-provided browser and manual-input hooks.
 
+Controller contract:
+
+- login starts asynchronously from the Bubble Tea update loop
+- the controller returns Bubble Tea messages back into the model, rather than mutating UI state directly from goroutines
+- the model owns all visual state transitions:
+  - enter auth action sheet
+  - enter redirect-paste mode
+  - leave redirect-paste mode on success, cancel, or fatal error
+- the controller owns the auth operation context and exposes cancellation
+- starting login while login is already in progress is rejected with a user-visible system message
+- quitting the TUI or cancelling the flow must cancel the in-flight auth context cleanly
+
 ### 4. Clean UX in `serf-tui`
 
 User-visible behavior:
@@ -141,18 +178,48 @@ User-visible behavior:
 
 Recommended UX shape:
 
-- keybinding to open an OpenAI auth menu or action sheet
-- actions:
+- keybinding to open an OpenAI auth action sheet
+- actions are exactly:
   - `Sign in with OpenAI`
-  - `Sign out of OpenAI`
   - `Show OpenAI auth status`
+  - `Sign out of OpenAI`
 - login flow:
   - append a system message explaining that the browser will open and that the URL is also available for remote/manual flow
   - display the URL in the transcript for copy/paste
-  - transition input into a temporary “Paste redirect URL” mode
+  - transition the main textarea into a temporary “Paste redirect URL” mode
   - on success, append a system confirmation with email/account summary
 
 This keeps the UX consistent with the rest of the TUI: transcript-driven, keyboard-first, no extra windows beyond the optional browser open.
+
+### 5. Auth source precedence
+
+The TUI must reflect the same runtime precedence as the underlying provider resolution:
+
+1. `OPENAI_API_KEY`
+2. stored OpenAI OAuth session in the Serf state dir
+3. signed out
+
+Behavior matrix:
+
+- env key only:
+  - runtime uses env key
+  - status shows `oa: env`
+  - login is allowed but is non-effective until the env key is removed
+  - logout only removes stored OAuth state if present; it does not affect runtime while env key is set
+- OAuth only:
+  - runtime uses stored OAuth session
+  - status shows `oa: oauth`
+  - logout signs the TUI out locally
+- both env key and OAuth:
+  - runtime uses env key
+  - status must make precedence explicit, e.g. “env active, oauth stored”
+  - login success may update the stored OAuth record but does not change active runtime auth
+  - logout removes stored OAuth state only
+- neither:
+  - runtime is unconfigured for OpenAI
+  - status shows `oa: login`
+
+This keeps TUI behavior aligned with `llm.NewFromEnv(llm.WithStateDir(...))` and avoids a second precedence model.
 
 ## Architecture
 
@@ -168,18 +235,26 @@ This keeps the UX consistent with the rest of the TUI: transcript-driven, keyboa
   - cover provider-independent end-of-call replacement semantics
 - `cmd/serf-tui/model.go`
   - add auth UI state and key handling
+- `cmd/serf-tui/openai_auth.go`
+  - own TUI auth orchestration and Bubble Tea message types
 - `cmd/serf-tui/main.go`
-  - wire new commands or startup status checks if needed
+  - only if needed to initialize any auth-related startup refresh command
 - `cmd/serf-tui/statusbar.go`
   - surface compact OpenAI auth status when relevant
 - `cmd/serf-tui/message.go`
   - reuse or extend transcript/system message rendering for auth prompts
 - `cmd/serf-tui/input.go`
-  - add temporary redirect-paste mode if that code owns input behavior
+  - only if required by current textarea command routing; otherwise keep auth input behavior in `model.go`
 - `cmd/serf-tui/*_test.go`
   - add focused tests for key flow, auth mode transitions, and status rendering
 
-If the TUI auth orchestration grows beyond a few methods, create a small focused file such as `cmd/serf-tui/openai_auth.go` rather than bloating `model.go`.
+Ownership map:
+
+- `adapter.go`: OpenAI protocol translation only
+- `stream_accumulator.go`: provider-agnostic stream assembly semantics only
+- `openai_auth.go`: TUI auth orchestration only
+- `model.go`: TUI state transitions and key handling only
+- `statusbar.go`: compact status rendering only
 
 ## Data Flow
 
@@ -199,7 +274,7 @@ If the TUI auth orchestration grows beyond a few methods, create a small focused
    - browser opener callback that both opens and surfaces the URL in the transcript
    - manual redirect reader bound to a temporary paste-input mode
 3. Service runs the existing callback + manual race.
-4. TUI receives success/failure and appends a system message.
+4. TUI receives success/failure through Bubble Tea messages and appends a system message.
 5. Future OpenAI model requests use the same stored auth via `llm.NewFromEnv(llm.WithStateDir(...))`.
 
 ## Error Handling
@@ -215,6 +290,9 @@ If the TUI auth orchestration grows beyond a few methods, create a small focused
 - browser-open failure is non-fatal; still show the URL and continue
 - callback timeout or inability to reach localhost should not abort manual pasteback
 - invalid pasted URL or state mismatch should produce a clear transcript error and keep the TUI usable
+- cancel/escape from redirect-paste mode should cancel the in-flight login context and append a cancellation message
+- starting login while one is already in progress should append a non-fatal “login already in progress” system message
+- quitting the TUI during login should cancel the in-flight auth context without leaking goroutines
 - logout should be idempotent
 - auth status should clearly distinguish:
   - env API key
