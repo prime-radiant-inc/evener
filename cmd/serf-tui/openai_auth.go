@@ -39,14 +39,17 @@ type openAIAuthStatusMsg struct {
 }
 
 type openAIAuthURLMsg struct {
-	url string
+	flowID int
+	url    string
 }
 
 type openAIAuthBrowserErrorMsg struct {
-	err error
+	flowID int
+	err    error
 }
 
 type openAIAuthLoginMsg struct {
+	flowID int
 	status openAIAuthStatus
 	err    error
 }
@@ -197,12 +200,12 @@ func loadOpenAIAuthStatusCmd(helper *openAIAuthHelper) tea.Cmd {
 	}
 }
 
-func openAILoginCmd(ctx context.Context, helper *openAIAuthHelper, asyncCh chan<- tea.Msg, openBrowser func(string) error, redirectCh <-chan string) tea.Cmd {
+func openAILoginCmd(ctx context.Context, flowID int, helper *openAIAuthHelper, asyncCh chan<- tea.Msg, openBrowser func(string) error, redirectCh <-chan string) tea.Cmd {
 	return func() tea.Msg {
 		status, err := helper.Login(ctx, openAILoginHooks{
 			OnAuthURL: func(rawURL string) {
 				if asyncCh != nil {
-					asyncCh <- openAIAuthURLMsg{url: rawURL}
+					asyncCh <- openAIAuthURLMsg{flowID: flowID, url: rawURL}
 				}
 			},
 			OpenBrowser: func(rawURL string) error {
@@ -211,7 +214,7 @@ func openAILoginCmd(ctx context.Context, helper *openAIAuthHelper, asyncCh chan<
 				}
 				if err := openBrowser(rawURL); err != nil {
 					if asyncCh != nil {
-						asyncCh <- openAIAuthBrowserErrorMsg{err: err}
+						asyncCh <- openAIAuthBrowserErrorMsg{flowID: flowID, err: err}
 					}
 				}
 				return nil
@@ -228,7 +231,7 @@ func openAILoginCmd(ctx context.Context, helper *openAIAuthHelper, asyncCh chan<
 				}
 			},
 		})
-		return openAIAuthLoginMsg{status: status, err: err}
+		return openAIAuthLoginMsg{flowID: flowID, status: status, err: err}
 	}
 }
 

@@ -73,6 +73,7 @@ type model struct {
 	openAIStatus      openAIAuthStatus
 	openAIStatusSeen  bool
 	openAILoginFlow   bool
+	openAIFlowID      int
 	openAILoginCancel context.CancelFunc
 	openAIRedirectCh  chan string
 	showOpenAIStatus  bool
@@ -351,6 +352,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c":
 			now := time.Now()
 			if now.Sub(m.lastInterrupt) < time.Second {
+				m.cancelOpenAILogin("")
 				return m, tea.Quit
 			}
 			m.lastInterrupt = now
@@ -405,7 +407,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if m.openAILoginFlow {
 				if m.openAIRedirectCh != nil {
-					m.openAIRedirectCh <- text
+					select {
+					case m.openAIRedirectCh <- text:
+					default:
+					}
 				}
 				m.resetInput()
 				m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "Finishing OpenAI login..."})
@@ -416,6 +421,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if cmd, args := parseSlashCommand(text); cmd != "" {
 				switch cmd {
 				case "quit":
+					m.cancelOpenAILogin("")
 					return m, tea.Quit
 				case "help":
 					m.resetInput()
@@ -423,19 +429,43 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.refreshViewport()
 					return m, tea.Batch(cmds...)
 				case "status":
+					if m.authBootstrap && m.addr == "" {
+						m.resetInput()
+						m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "No session is running yet. Use /openai to sign in first."})
+						m.refreshViewport()
+						return m, tea.Batch(cmds...)
+					}
 					m.resetInput()
 					return m, fetchStatus(m.addr)
 				case "tasks":
+					if m.authBootstrap && m.addr == "" {
+						m.resetInput()
+						m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "No session is running yet. Use /openai to sign in first."})
+						m.refreshViewport()
+						return m, tea.Batch(cmds...)
+					}
 					m.resetInput()
 					m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "Fetching tasks..."})
 					m.refreshViewport()
 					cmds = append(cmds, fetchTasks(m.addr))
 					return m, tea.Batch(cmds...)
 				case "agents":
+					if m.authBootstrap && m.addr == "" {
+						m.resetInput()
+						m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "No session is running yet. Use /openai to sign in first."})
+						m.refreshViewport()
+						return m, tea.Batch(cmds...)
+					}
 					m.resetInput()
 					cmds = append(cmds, fetchTranscriptTargets(m.addr))
 					return m, tea.Batch(cmds...)
 				case "model":
+					if m.authBootstrap && m.addr == "" {
+						m.resetInput()
+						m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "No session is running yet. Use /openai to sign in first."})
+						m.refreshViewport()
+						return m, tea.Batch(cmds...)
+					}
 					m.resetInput()
 					if args == "" {
 						m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "Fetching available models..."})
@@ -453,6 +483,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.themePicker = &p
 					return m, tea.Batch(cmds...)
 				case "clear":
+					if m.authBootstrap && m.addr == "" {
+						m.resetInput()
+						m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "No session is running yet. Use /openai to sign in first."})
+						m.refreshViewport()
+						return m, tea.Batch(cmds...)
+					}
 					m.resetInput()
 					m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "Starting new session..."})
 					m.refreshViewport()
@@ -767,6 +803,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case openAIAuthURLMsg:
+		if msg.flowID != m.openAIFlowID {
+			return m, tea.Batch(cmds...)
+		}
 		m.messages = append(m.messages, chatMessage{
 			Kind: msgSystem,
 			Text: "OpenAI sign-in URL:\n" + msg.url,
@@ -775,6 +814,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case openAIAuthBrowserErrorMsg:
+		if msg.flowID != m.openAIFlowID {
+			return m, tea.Batch(cmds...)
+		}
 		m.messages = append(m.messages, chatMessage{
 			Kind: msgSystem,
 			Text: fmt.Sprintf("Browser open failed: %s", msg.err),
@@ -783,6 +825,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case openAIAuthLoginMsg:
+		if msg.flowID != m.openAIFlowID {
+			return m, tea.Batch(cmds...)
+		}
 		m.openAILoginFlow = false
 		m.openAIRedirectCh = nil
 		m.openAILoginCancel = nil
@@ -1156,6 +1201,7 @@ func (m *model) cancelOpenAILogin(message string) {
 		m.openAILoginCancel = nil
 	}
 	m.openAILoginFlow = false
+	m.openAIFlowID++
 	m.openAIRedirectCh = nil
 	m.resetInput()
 	if message != "" {
@@ -1179,6 +1225,7 @@ func (m model) handlePickerSelection(selected string, cmd tea.Cmd, cmds []tea.Cm
 		}
 		ctx, cancel := context.WithCancel(context.Background())
 		m.openAILoginFlow = true
+		m.openAIFlowID++
 		m.openAILoginCancel = cancel
 		m.openAIRedirectCh = make(chan string, 1)
 		m.input.Placeholder = "Paste the full OpenAI redirect URL..."
@@ -1187,7 +1234,7 @@ func (m model) handlePickerSelection(selected string, cmd tea.Cmd, cmds []tea.Cm
 			Text: "Opening OpenAI sign-in. The URL will also be shown here for manual copy/paste.",
 		})
 		m.refreshViewport()
-		cmds = append(cmds, openAILoginCmd(ctx, m.openAIAuth, m.asyncCh, openURLInBrowser, m.openAIRedirectCh))
+		cmds = append(cmds, openAILoginCmd(ctx, m.openAIFlowID, m.openAIAuth, m.asyncCh, openURLInBrowser, m.openAIRedirectCh))
 		return m, tea.Batch(cmds...)
 	case "openai-status":
 		m.showOpenAIStatus = true

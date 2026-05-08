@@ -92,6 +92,10 @@ func streamSSE(ctx context.Context, addr string, streamID int, send func(tea.Msg
 		return
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		send(sseErrorMsg{streamID: streamID, err: fmt.Errorf("SSE connect failed: %s", resp.Status)})
+		return
+	}
 
 	send(sseConnectedMsg{streamID: streamID})
 
@@ -107,6 +111,10 @@ func streamSSE(ctx context.Context, addr string, streamID int, send func(tea.Msg
 			continue
 		}
 		current.parseLine(line)
+	}
+	if err := scanner.Err(); err != nil {
+		send(sseErrorMsg{streamID: streamID, err: err})
+		return
 	}
 	send(sseErrorMsg{streamID: streamID, err: fmt.Errorf("SSE stream closed")})
 }

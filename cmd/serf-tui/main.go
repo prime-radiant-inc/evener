@@ -204,6 +204,9 @@ func main() {
 	}
 
 	if m, ok := finalModel.(model); ok {
+		if m.openAILoginCancel != nil {
+			m.openAILoginCancel()
+		}
 		if m.streamCancel != nil {
 			m.streamCancel()
 		}
