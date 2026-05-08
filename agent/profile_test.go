@@ -865,6 +865,59 @@ func equalStringSlices(a, b []string) bool {
 	return true
 }
 
+// TestBaseProfile_WithModel_PreservesToolDefOverridesAcrossProviderSwitch
+// verifies that a cross-provider WithModel ("openai/...", "ollama/...",
+// etc.) also preserves tool-schema overrides applied via
+// WithCommunicateOutputSchema. Without this, Session.SetModel that
+// switches provider mid-session — or subagent/plugin overrides that
+// choose a different backend — silently revert the communicate
+// contract to the new provider's default.
+func TestBaseProfile_WithModel_PreservesToolDefOverridesAcrossProviderSwitch(t *testing.T) {
+	customSchema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"my_field": map[string]any{"type": "string"},
+		},
+		"required":             []any{"my_field"},
+		"additionalProperties": false,
+	}
+
+	cases := []struct {
+		name     string
+		newOrig  func() ProviderProfile
+		newModel string
+	}{
+		{"openai-to-ollama", func() ProviderProfile { return NewOpenAIProfile("gpt-5.4") }, "ollama/llama3.1"},
+		{"openrouter-to-ollama", func() ProviderProfile {
+			return NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0)
+		}, "ollama/llama3.1"},
+		{"openai-to-anthropic", func() ProviderProfile { return NewOpenAIProfile("gpt-5.4") }, "anthropic/claude-3-opus"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withSchema := WithCommunicateOutputSchema(tc.newOrig(), customSchema)
+			afterSwitch := withSchema.WithModel(tc.newModel)
+
+			var found bool
+			for _, td := range afterSwitch.ToolDefinitions() {
+				if td.Name != "communicate" {
+					continue
+				}
+				found = true
+				props, _ := td.Parameters["properties"].(map[string]any)
+				output, _ := props["output"].(map[string]any)
+				outProps, _ := output["properties"].(map[string]any)
+				if _, ok := outProps["my_field"]; !ok {
+					t.Errorf("after WithModel(%q) cross-provider switch, communicate.output.properties is missing my_field — custom schema was dropped during provider switch. Got: %v", tc.newModel, outProps)
+				}
+			}
+			if !found {
+				t.Fatal("communicate tool not found in switched profile")
+			}
+		})
+	}
+}
+
 // TestBaseProfile_WithModel_PreservesToolDefOverrides verifies that
 // same-provider WithModel rebuilds (which now go through the
 // constructor for openrouter/openrouter-anthropic/kimi/glm/ollama)

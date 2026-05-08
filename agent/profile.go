@@ -208,35 +208,71 @@ func decidePrefixAction(id, prefix string) prefixAction {
 	return prefixActionSwitch
 }
 
-// preserveBaseOverrides carries forward toolDefs from an existing
-// profile onto a freshly rebuilt one. The constructor handles
-// model-derived state (context window, effort levels, providerOpts,
-// default tool defs); this helper restores caller-applied
-// modifications layered on top so WithCommunicateOutputSchema /
-// WithAllowedDecisions overrides survive a same-provider WithModel
-// rebuild.
+// preserveBaseOverrides carries forward caller-applied tool-schema
+// overrides from `original` onto a freshly-rebuilt profile. The
+// constructor for the new profile/model handles model-derived state
+// (context window, effort levels, providerOpts, the new provider's
+// default toolset); this helper layers caller modifications back on
+// top so WithCommunicateOutputSchema / WithAllowedDecisions overrides
+// survive both same-provider WithModel rebuilds AND cross-provider
+// WithModel switches.
 //
-// Only toolDefs are preserved — those are the only baseProfile fields
-// the With* override helpers mutate. providerOpts intentionally
-// re-derive from the new model (e.g. so switching to/from
-// minimax/* models on openrouter correctly toggles the
-// reasoning_details option).
+// Only the "communicate" tool is preserved — both With* helpers
+// modify that tool exclusively. Other tools recompute from the new
+// constructor so the new provider's defaults (toolNameMap, etc.) take
+// effect.
 //
-// If either side isn't a *baseProfile, the rebuilt profile is
-// returned unchanged.
+// Handles both *baseProfile and *anthropicProfile shapes; returns
+// `rebuilt` unchanged for any other type.
 func preserveBaseOverrides(rebuilt, original ProviderProfile) ProviderProfile {
-	rebuiltBP, ok := rebuilt.(*baseProfile)
-	if !ok {
+	rebuiltBP := basePtrOf(rebuilt)
+	if rebuiltBP == nil {
 		return rebuilt
 	}
-	origBP, ok := original.(*baseProfile)
-	if !ok {
+	origBP := basePtrOf(original)
+	if origBP == nil {
 		return rebuilt
 	}
-	if origBP.toolDefs != nil {
-		rebuiltBP.toolDefs = origBP.toolDefs
+
+	var origCommunicate *llm.ToolDefinition
+	for i := range origBP.toolDefs {
+		if origBP.toolDefs[i].Name == "communicate" {
+			origCommunicate = &origBP.toolDefs[i]
+			break
+		}
 	}
-	return rebuiltBP
+	if origCommunicate == nil {
+		return rebuilt
+	}
+
+	defs := append([]llm.ToolDefinition(nil), rebuiltBP.toolDefs...)
+	replaced := false
+	for i := range defs {
+		if defs[i].Name == "communicate" {
+			defs[i] = *origCommunicate
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		// Rebuilt provider's defaults don't include communicate (unusual
+		// for Serf profiles but possible for custom callers); append it.
+		defs = append(defs, *origCommunicate)
+	}
+	rebuiltBP.toolDefs = defs
+	return rebuilt
+}
+
+// basePtrOf returns the embedded *baseProfile if the profile is a
+// *baseProfile or *anthropicProfile, else nil.
+func basePtrOf(p ProviderProfile) *baseProfile {
+	switch v := p.(type) {
+	case *baseProfile:
+		return v
+	case *anthropicProfile:
+		return &v.baseProfile
+	}
+	return nil
 }
 
 // rebuildOnSameProviderChange reports whether a same-provider WithModel
@@ -271,19 +307,26 @@ func (p *baseProfile) WithModel(model string) ProviderProfile {
 		bareModel := parts[1]
 		switch decidePrefixAction(p.id, provider) {
 		case prefixActionSwitch:
+			var switched ProviderProfile
 			switch provider {
 			case "openai":
-				return NewOpenAIProfile(bareModel)
+				switched = NewOpenAIProfile(bareModel)
 			case "anthropic":
-				return NewAnthropicProfile(bareModel)
+				switched = NewAnthropicProfile(bareModel)
 			case "google", "gemini":
-				return NewGeminiProfile(bareModel)
+				switched = NewGeminiProfile(bareModel)
 			case "minimax":
-				return NewMiniMaxProfile(bareModel)
+				switched = NewMiniMaxProfile(bareModel)
 			case "openrouter-anthropic":
-				return NewOpenRouterAnthropicProfile(bareModel)
+				switched = NewOpenRouterAnthropicProfile(bareModel)
 			case "kimi", "glm", "openrouter", "ollama":
-				return NewOpenAICompatProfile(provider, bareModel, 0)
+				switched = NewOpenAICompatProfile(provider, bareModel, 0)
+			}
+			if switched != nil {
+				// Carry caller-applied tool-schema overrides forward
+				// across the cross-provider switch — the same
+				// preservation contract as same-provider rebuilds.
+				return preserveBaseOverrides(switched, p)
 			}
 			// Unknown provider name — fall through to clone with the
 			// model unchanged rather than silently stripping.
@@ -398,17 +441,21 @@ func (p *anthropicProfile) WithModel(model string) ProviderProfile {
 		provider := strings.ToLower(parts[0])
 		bareModel := parts[1]
 		if provider != "anthropic" {
+			var switched ProviderProfile
 			switch provider {
 			case "openai":
-				return NewOpenAIProfile(bareModel)
+				switched = NewOpenAIProfile(bareModel)
 			case "google", "gemini":
-				return NewGeminiProfile(bareModel)
+				switched = NewGeminiProfile(bareModel)
 			case "minimax":
-				return NewMiniMaxProfile(bareModel)
+				switched = NewMiniMaxProfile(bareModel)
 			case "openrouter-anthropic":
-				return NewOpenRouterAnthropicProfile(bareModel)
+				switched = NewOpenRouterAnthropicProfile(bareModel)
 			case "kimi", "glm", "openrouter", "ollama":
-				return NewOpenAICompatProfile(provider, bareModel, 0)
+				switched = NewOpenAICompatProfile(provider, bareModel, 0)
+			}
+			if switched != nil {
+				return preserveBaseOverrides(switched, p)
 			}
 		}
 		model = bareModel
