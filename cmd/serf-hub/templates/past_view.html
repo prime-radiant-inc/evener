@@ -1,13 +1,20 @@
 {{define "body"}}
 <section class="panel">
-  <h2>past session {{.Meta.ID}}</h2>
-  <div class="meta" style="margin-bottom:12px">
-    {{.Meta.EnvInfo.WorkingDir}} · {{.Meta.Model}} · {{.Meta.UpdatedAt.Format "2006-01-02 15:04"}}
-    {{if .Meta.OriginalTask}}<br>task: {{.Meta.OriginalTask}}{{end}}
+  <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:var(--pad)">
+    <div style="flex:1; min-width:0">
+      <h2 style="margin-top:0">past session {{.Meta.ID}}</h2>
+      <div class="meta" style="margin-bottom:8px">
+        <span class="wd" style="font-family:ui-monospace,monospace">{{.Meta.EnvInfo.WorkingDir}}</span> ·
+        {{.Meta.Model}} · {{.Meta.UpdatedAt.Format "2006-01-02 15:04"}}
+      </div>
+      {{if .Meta.OriginalTask}}
+      <div style="color:var(--text); margin-top:8px">{{.Meta.OriginalTask}}</div>
+      {{end}}
+    </div>
+    <form method="post" action="/past/{{.Meta.ID}}/resume" style="flex-shrink:0">
+      <input type="submit" value="resume into new live session">
+    </form>
   </div>
-  <form method="post" action="/past/{{.Meta.ID}}/resume" style="display:inline">
-    <input type="submit" value="resume">
-  </form>
 </section>
 
 <div id="transcript" data-session-id="{{.Meta.ID}}"></div>
