@@ -25,6 +25,7 @@ func (e *nonHTTPErrorBase) Error() string {
 	return fmt.Sprintf("%s error: %s", e.provider, msg)
 }
 func (e *nonHTTPErrorBase) Provider() string           { return e.provider }
+func (e *nonHTTPErrorBase) setProvider(name string)    { e.provider = strings.TrimSpace(name) }
 func (e *nonHTTPErrorBase) StatusCode() int            { return 0 }
 func (e *nonHTTPErrorBase) ErrorCode() string          { return "" }
 func (e *nonHTTPErrorBase) Retryable() bool            { return e.retryable }

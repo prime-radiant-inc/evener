@@ -457,6 +457,36 @@ func TestAdapter_Stream_RewritesStartupErrorProvider(t *testing.T) {
 	}
 }
 
+// TestAdapter_Complete_RewritesNonHTTPErrorProvider verifies that
+// non-HTTP typed adapter errors (e.g. UnsupportedToolChoiceError, which
+// the inner adapter returns synchronously before any network call) are
+// also stamped with "ollama". These derive from nonHTTPErrorBase, a
+// different type than httpErrorBase, so the rewrite plumbing must
+// cover both.
+func TestAdapter_Complete_RewritesNonHTTPErrorProvider(t *testing.T) {
+	// No server needed — the error fires before any HTTP call.
+	a := &adapter{inner: &openaicompat.Adapter{
+		BaseURL: "http://unreachable.invalid",
+		Client:  &http.Client{},
+	}}
+
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:      "llama3.2",
+		Messages:   []llm.Message{llm.User("hi")},
+		ToolChoice: &llm.ToolChoice{Mode: "definitely-not-a-mode"},
+	})
+	if err == nil {
+		t.Fatal("expected an error from invalid ToolChoice.Mode")
+	}
+	var llmErr llm.Error
+	if !errors.As(err, &llmErr) {
+		t.Fatalf("error is not a llm.Error: %T %v", err, err)
+	}
+	if llmErr.Provider() != "ollama" {
+		t.Fatalf("err.Provider() = %q, want ollama", llmErr.Provider())
+	}
+}
+
 // TestAdapter_Stream_RewritesEventErrorProvider verifies that an error
 // surfaced via StreamEventError (from a mid-stream failure on the inner
 // stream) is also stamped with the ollama provider name.
