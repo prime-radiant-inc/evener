@@ -810,6 +810,8 @@ func (s *Session) Meta() SessionMeta {
 		TurnCount:       s.modelResponses,
 		LastInputTokens: s.contextMgr.LastInputTokens(),
 		OriginalTask:    originalTask,
+		ParentSessionID: s.cfg.ParentSessionID,
+		IsSubagent:      s.cfg.ParentSessionID != "",
 	}
 }
 
