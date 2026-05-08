@@ -234,15 +234,30 @@ Behavior matrix:
 
 This keeps TUI behavior aligned with `llm.NewFromEnv(llm.WithStateDir(...))` and avoids a second precedence model.
 
+To support `env active, oauth stored`, the TUI-visible status model should include:
+
+- active auth source
+- whether stored OAuth credentials also exist locally
+
+The branch-local auth service remains the primary source of truth for active auth. The TUI may perform an additional local storage existence check when it needs to distinguish `env` from `env + stored oauth`.
+
 ### 6. Live runtime reconfiguration
 
 Successful OpenAI login/logout inside `serf-tui` must affect the current interactive session without requiring the user to restart the TUI manually.
 
 Chosen strategy:
 
+- when `serf-tui` starts with `--provider openai` and no usable OpenAI auth, it starts in auth-first mode:
+  - do not start the embedded OpenAI session yet
+  - append a one-time system message pointing the user at `/openai`
+  - allow slash-command help, auth actions, and quit/navigation only
+  - start the embedded OpenAI session after successful login
 - after successful login or logout, if the current provider/session profile is OpenAI, recreate the embedded LLM client and embedded session using the existing startup config and current state dir
 - preserve transcript/history in the TUI view by appending a system message and continuing in the same client shell
 - do not attempt deep hot-swapping inside an already-running agent session
+- auth-changing actions are allowed only while the session is idle
+- recreation starts a fresh embedded session and may change the session id; the TUI should append a concise system message when that happens
+- recreation preserves visible transcript messages in the TUI shell, but not in-memory agent/subagent execution state
 
 This is the smallest practical way to align the live runtime with the updated auth state while preserving the existing `startEmbedded` architecture.
 
@@ -262,6 +277,8 @@ This is the smallest practical way to align the live runtime with the updated au
   - add auth UI state and key handling
 - `cmd/serf-tui/openai_auth.go`
   - own TUI auth orchestration and Bubble Tea message types
+- `cmd/serf-tui/embedded.go`
+  - own auth-first startup and embedded-session recreation behavior
 - `cmd/serf-tui/main.go`
   - only if needed to initialize any auth-related startup refresh command
 - `cmd/serf-tui/statusbar.go`
@@ -293,6 +310,13 @@ If picker reuse requires a small extension, that belongs in `cmd/serf-tui/model_
 4. Tracker emits stream events using canonical `call_id`.
 5. Accumulator assembles fragments and authoritative end data into one tool call.
 6. Subsequent history serialization sends exactly one valid `function_call` item back to OpenAI.
+
+Minimum supported event sequences:
+
+- `call_id` present from the first function-call event
+- `item_id` present on delta events and `call_id` only on `.added` or `.done`
+- no `response.output_item.added`, with enough information arriving by `.done` to finalize canonically
+- no `response.function_call_arguments.done`, with `response.output_item.done` providing the authoritative final arguments
 
 ### TUI auth flow
 
@@ -338,6 +362,7 @@ If picker reuse requires a small extension, that belongs in `cmd/serf-tui/model_
 - no phantom `item_id` tool call is emitted
 - authoritative final arguments replace fragment assembly
 - finish with empty provider `output` still preserves streamed tool calls
+- existing Anthropic, Google, and OpenAI-compatible streaming tests continue to pass unchanged after accumulator semantics are tightened
 
 ### TUI auth tests
 
@@ -345,7 +370,12 @@ If picker reuse requires a small extension, that belongs in `cmd/serf-tui/model_
 - manual pasteback path completes and appends success message
 - invalid pasteback appends error and leaves TUI responsive
 - logout action clears stored auth and updates status
-- status bar changes when OpenAI auth is signed in or missing
+- status bar and transcript messaging cover:
+  - signed out
+  - env only
+  - oauth only
+  - env active plus oauth stored
+- quitting the TUI during pending auth cancels cleanly
 
 ## Rollout Notes
 

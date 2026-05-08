@@ -168,6 +168,7 @@ git commit -m "fix: preserve authoritative streamed tool call payloads"
 - Modify: `cmd/serf-tui/model.go`
 - Modify: `cmd/serf-tui/input.go`
 - Modify: `cmd/serf-tui/model_picker.go`
+- Modify: `cmd/serf-tui/embedded.go`
 - Test: `cmd/serf-tui/*_test.go`
 
 - [ ] **Step 1: Inspect current TUI command and state patterns**
@@ -289,8 +290,15 @@ When the embedded session is OpenAI-backed:
 - load auth status on startup
 - if signed out, append a one-time system message that points the user at `/openai`
 - after successful login or logout, recreate the embedded client/session so live requests pick up the new auth state
+- reuse or extend the existing embedded-session reset pattern in `cmd/serf-tui/embedded.go` rather than inventing a second lifecycle path
 
 Keep the TUI shell alive while refreshing the embedded runtime.
+
+Auth-changing actions must:
+
+- be rejected while the session is busy
+- be allowed only while idle
+- append a concise system message if they create a new embedded session id
 
 - [ ] **Step 11: Add focused failure-path tests**
 
@@ -351,6 +359,7 @@ Update `statusbar.go` so when the active provider/model is OpenAI, the right sid
 - `oa: oauth`
 - `oa: env`
 - `oa: login`
+- `oa: env+oauth`
 
 Keep this subordinate to model/turn/context information.
 
@@ -432,7 +441,7 @@ Expected:
 Run:
 
 ```bash
-./serf-tui --provider openai --model gpt-5.5
+env -u OPENAI_API_KEY ./serf-tui --state-dir /tmp/serf-openai-empty --provider openai --model gpt-5.5
 ```
 
 Verify:
@@ -444,6 +453,21 @@ Verify:
 
 - [ ] **Step 4: Manually exercise live local TUI login flow**
 
+Preconditions and scenarios:
+
+- signed-out case:
+  - unset `OPENAI_API_KEY`
+  - use a clean temp `--state-dir`
+- env-only case:
+  - set `OPENAI_API_KEY`
+  - use a clean temp `--state-dir`
+- oauth-only case:
+  - unset `OPENAI_API_KEY`
+  - log in through `/openai`
+- both-present case:
+  - first store OAuth in the temp `--state-dir`
+  - then set `OPENAI_API_KEY`
+
 Verify:
 
 - OpenAI login action is discoverable
@@ -451,6 +475,8 @@ Verify:
 - manual pasteback works
 - success state updates in the TUI
 - an OpenAI prompt can complete successfully after login
+- env-only and env+oauth states surface precedence clearly
+- in an OAuth-only setup, logout updates status immediately and subsequent OpenAI requests fail or point the user back at `/openai` without restarting the TUI
 
 - [ ] **Step 5: Check for regressions in CLI auth**
 
