@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"primeradiant.com/serf/rendezvous"
@@ -43,6 +44,9 @@ type WebServer struct {
 	pastViewTmpl *template.Template
 	rest         *RESTProxy
 	sse          *SSEProxy
+
+	resumeMu    sync.Mutex
+	resumeLocks map[string]*sync.Mutex // sessionID -> per-session lock
 }
 
 // NewWebServer constructs the web server. Templates are parsed from embed.FS.
@@ -78,7 +82,21 @@ func NewWebServer(cfg WebConfig) *WebServer {
 	return &WebServer{
 		cfg: cfg, templates: tmpl, liveTmpl: liveTmpl, liveNewTmpl: liveNewTmpl,
 		pastTmpl: pastTmpl, pastViewTmpl: pastViewTmpl, rest: rest, sse: sse,
+		resumeLocks: map[string]*sync.Mutex{},
 	}
+}
+
+// lockForSession returns (creating if necessary) the per-session mutex for
+// serializing concurrent resume requests on the same session_id.
+func (s *WebServer) lockForSession(sessionID string) *sync.Mutex {
+	s.resumeMu.Lock()
+	defer s.resumeMu.Unlock()
+	m, ok := s.resumeLocks[sessionID]
+	if !ok {
+		m = &sync.Mutex{}
+		s.resumeLocks[sessionID] = m
+	}
+	return m
 }
 
 // Handler returns the http.Handler with all routes wired and the security
@@ -279,6 +297,9 @@ func (s *WebServer) handlePastID(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "resume not configured", http.StatusServiceUnavailable)
 			return
 		}
+		lock := s.lockForSession(id)
+		lock.Lock()
+		defer lock.Unlock()
 		entry, err := s.cfg.Spawner.Resume(r.Context(), id)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
