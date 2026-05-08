@@ -53,7 +53,7 @@ func slashCommandHelp() string {
 		"  /tasks     Show the agent's task list",
 		"  /agents    View the main or subagent transcript",
 		"  /model     Switch model (picker) or /model <name>",
-		"  /openai    Open OpenAI login, status, and logout actions",
+		"  /auth      Open provider auth actions",
 		"  /theme     Pick a theme (dark/light)",
 		"  /clear     Start a new session",
 		"  /quit      Exit the TUI",

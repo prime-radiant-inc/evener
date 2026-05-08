@@ -69,14 +69,14 @@ type model struct {
 	streamID       int
 	authBootstrap  bool
 
-	openAIAuth        *openAIAuthHelper
-	openAIStatus      openAIAuthStatus
-	openAIStatusSeen  bool
-	openAILoginFlow   bool
-	openAIFlowID      int
-	openAILoginCancel context.CancelFunc
-	openAIRedirectCh  chan string
-	showOpenAIStatus  bool
+	authController  *authController
+	authStatus      authStatus
+	authStatusSeen  bool
+	authLoginFlow   bool
+	authFlowID      int
+	authLoginCancel context.CancelFunc
+	authRedirectCh  chan string
+	showAuthStatus  bool
 }
 
 // applyInputTheme sets the textarea's style to match the active theme colours.
@@ -130,7 +130,7 @@ func newConfiguredModel(addr, stateDir string, initialMessages []chatMessage, cf
 		embedded:          embedded,
 		asyncCh:           asyncCh,
 		authBootstrap:     authBootstrap,
-		openAIAuth:        newOpenAIAuthHelper(stateDir),
+		authController:    newAuthController(stateDir),
 	}
 }
 
@@ -139,8 +139,8 @@ func (m model) Init() tea.Cmd {
 	if m.asyncCh != nil {
 		cmds = append(cmds, waitForAsync(m.asyncCh))
 	}
-	if m.isOpenAIProvider() && m.openAIAuth != nil {
-		cmds = append(cmds, loadOpenAIAuthStatusCmd(m.openAIAuth))
+	if m.isOpenAIProvider() && m.authController != nil {
+		cmds = append(cmds, loadAuthStatusCmd(m.authController, "openai"))
 	}
 	return tea.Batch(cmds...)
 }
@@ -344,7 +344,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 		case "esc":
-			if m.openAILoginFlow {
+			if m.authLoginFlow {
 				m.cancelOpenAILogin("OpenAI login cancelled.")
 				m.refreshViewport()
 				return m, tea.Batch(cmds...)
@@ -405,10 +405,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if text == "" {
 				return m, tea.Batch(cmds...)
 			}
-			if m.openAILoginFlow {
-				if m.openAIRedirectCh != nil {
+			if m.authLoginFlow {
+				if m.authRedirectCh != nil {
 					select {
-					case m.openAIRedirectCh <- text:
+					case m.authRedirectCh <- text:
 					default:
 					}
 				}
@@ -431,7 +431,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "status":
 					if m.authBootstrap && m.addr == "" {
 						m.resetInput()
-						m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "No session is running yet. Use /openai to sign in first."})
+						m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "No session is running yet. Use /auth to sign in first."})
 						m.refreshViewport()
 						return m, tea.Batch(cmds...)
 					}
@@ -440,7 +440,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "tasks":
 					if m.authBootstrap && m.addr == "" {
 						m.resetInput()
-						m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "No session is running yet. Use /openai to sign in first."})
+						m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "No session is running yet. Use /auth to sign in first."})
 						m.refreshViewport()
 						return m, tea.Batch(cmds...)
 					}
@@ -452,7 +452,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "agents":
 					if m.authBootstrap && m.addr == "" {
 						m.resetInput()
-						m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "No session is running yet. Use /openai to sign in first."})
+						m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "No session is running yet. Use /auth to sign in first."})
 						m.refreshViewport()
 						return m, tea.Batch(cmds...)
 					}
@@ -462,7 +462,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "model":
 					if m.authBootstrap && m.addr == "" {
 						m.resetInput()
-						m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "No session is running yet. Use /openai to sign in first."})
+						m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "No session is running yet. Use /auth to sign in first."})
 						m.refreshViewport()
 						return m, tea.Batch(cmds...)
 					}
@@ -485,7 +485,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "clear":
 					if m.authBootstrap && m.addr == "" {
 						m.resetInput()
-						m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "No session is running yet. Use /openai to sign in first."})
+						m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "No session is running yet. Use /auth to sign in first."})
 						m.refreshViewport()
 						return m, tea.Batch(cmds...)
 					}
@@ -494,20 +494,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.refreshViewport()
 					cmds = append(cmds, sendClear(m.addr))
 					return m, tea.Batch(cmds...)
-				case "openai":
+				case "auth":
 					m.resetInput()
-					if !m.isOpenAIProvider() {
+					provider := m.currentProvider()
+					if provider != "openai" {
 						m.messages = append(m.messages, chatMessage{
 							Kind: msgSystem,
-							Text: "This session is not using the OpenAI provider.",
+							Text: formatAuthStatusSummary(authStatus{Provider: provider}),
 						})
 						m.refreshViewport()
 						return m, tea.Batch(cmds...)
 					}
-					picker := newActionPicker("OpenAI", "↑/↓ navigate  enter select  esc cancel", []modelPickerItem{
-						{id: "openai-login", display: "Sign in with OpenAI"},
-						{id: "openai-status", display: "Show OpenAI auth status"},
-						{id: "openai-logout", display: "Sign out of OpenAI"},
+					picker := newActionPicker("Auth", "↑/↓ navigate  enter select  esc cancel", []modelPickerItem{
+						{id: "auth-login", display: "Sign in with OpenAI"},
+						{id: "auth-status", display: "Show auth status"},
+						{id: "auth-logout", display: "Sign out of OpenAI"},
 					}, m.width)
 					m.picker = &picker
 					m.refreshViewport()
@@ -529,7 +530,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.resetInput()
 				m.messages = append(m.messages, chatMessage{
 					Kind: msgSystem,
-					Text: "OpenAI login required. Use /openai to sign in before sending prompts.",
+					Text: "OpenAI login required. Use /auth to sign in before sending prompts.",
 				})
 				m.refreshViewport()
 				return m, tea.Batch(cmds...)
@@ -782,28 +783,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.startSSEStream())
 		return m, tea.Batch(cmds...)
 
-	case openAIAuthStatusMsg:
+	case authStatusMsg:
 		if msg.err != nil {
 			m.messages = append(m.messages, chatMessage{
 				Kind: msgSystem,
 				Text: fmt.Sprintf("OpenAI auth status failed: %s", msg.err),
 			})
 		} else {
-			m.openAIStatus = msg.status
-			m.openAIStatusSeen = true
-			if m.showOpenAIStatus {
+			m.authStatus = msg.status
+			m.authStatusSeen = true
+			if m.showAuthStatus {
 				m.messages = append(m.messages, chatMessage{
 					Kind: msgSystem,
-					Text: formatOpenAIAuthStatusSummary(msg.status),
+					Text: formatAuthStatusSummary(msg.status),
 				})
 			}
 		}
-		m.showOpenAIStatus = false
+		m.showAuthStatus = false
 		m.refreshViewport()
 		return m, tea.Batch(cmds...)
 
-	case openAIAuthURLMsg:
-		if msg.flowID != m.openAIFlowID {
+	case authURLMsg:
+		if msg.flowID != m.authFlowID {
 			return m, tea.Batch(cmds...)
 		}
 		m.messages = append(m.messages, chatMessage{
@@ -813,8 +814,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, tea.Batch(cmds...)
 
-	case openAIAuthBrowserErrorMsg:
-		if msg.flowID != m.openAIFlowID {
+	case authBrowserErrorMsg:
+		if msg.flowID != m.authFlowID {
 			return m, tea.Batch(cmds...)
 		}
 		m.messages = append(m.messages, chatMessage{
@@ -824,13 +825,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, tea.Batch(cmds...)
 
-	case openAIAuthLoginMsg:
-		if msg.flowID != m.openAIFlowID {
+	case authLoginMsg:
+		if msg.flowID != m.authFlowID {
 			return m, tea.Batch(cmds...)
 		}
-		m.openAILoginFlow = false
-		m.openAIRedirectCh = nil
-		m.openAILoginCancel = nil
+		m.authLoginFlow = false
+		m.authRedirectCh = nil
+		m.authLoginCancel = nil
 		m.resetInput()
 		if msg.err != nil {
 			if errors.Is(msg.err, context.Canceled) {
@@ -844,11 +845,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshViewport()
 			return m, tea.Batch(cmds...)
 		}
-		m.openAIStatus = msg.status
-		m.openAIStatusSeen = true
+		m.authStatus = msg.status
+		m.authStatusSeen = true
 		m.messages = append(m.messages, chatMessage{
 			Kind: msgSystem,
-			Text: fmt.Sprintf("OpenAI login complete. %s", formatOpenAIAuthStatusSummary(msg.status)),
+			Text: fmt.Sprintf("OpenAI login complete. %s", formatAuthStatusSummary(msg.status)),
 		})
 		if m.authBootstrap && m.addr == "" && m.embedded == nil && m.isOpenAIProvider() {
 			cmds = append(cmds, startEmbeddedCmd(m.embeddedCfg))
@@ -858,7 +859,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, tea.Batch(cmds...)
 
-	case openAIAuthLogoutMsg:
+	case authLogoutMsg:
 		if msg.err != nil {
 			m.messages = append(m.messages, chatMessage{
 				Kind: msgSystem,
@@ -867,8 +868,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshViewport()
 			return m, tea.Batch(cmds...)
 		}
-		m.openAIStatus = msg.status
-		m.openAIStatusSeen = true
+		m.authStatus = msg.status
+		m.authStatusSeen = true
 		if msg.removed {
 			m.messages = append(m.messages, chatMessage{
 				Kind: msgSystem,
@@ -892,7 +893,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.authBootstrap = true
 			m.messages = append(m.messages, chatMessage{
 				Kind: msgSystem,
-				Text: "OpenAI login required before sending more prompts. Use /openai to sign in again.",
+				Text: "OpenAI login required before sending more prompts. Use /auth to sign in again.",
 			})
 		}
 		m.refreshViewport()
@@ -953,9 +954,9 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 			m.turns = d.Turns
 			m.contextTokens = d.LastInputTokens
 		}
-		if prevProfile != "openai" && m.sessionProfile == "openai" && m.openAIAuth != nil && m.asyncCh != nil {
+		if prevProfile != "openai" && m.sessionProfile == "openai" && m.authController != nil && m.asyncCh != nil {
 			go func() {
-				m.asyncCh <- loadOpenAIAuthStatusCmd(m.openAIAuth)()
+				m.asyncCh <- loadAuthStatusCmd(m.authController, "openai")()
 			}()
 		}
 
@@ -1181,11 +1182,15 @@ func (m *model) refreshViewport() {
 }
 
 func (m *model) isOpenAIProvider() bool {
+	return m.currentProvider() == "openai"
+}
+
+func (m *model) currentProvider() string {
 	provider := strings.TrimSpace(m.sessionProfile)
 	if provider == "" {
 		provider = strings.TrimSpace(m.configProvider)
 	}
-	return provider == "openai"
+	return provider
 }
 
 func (m *model) activeModelName() string {
@@ -1196,13 +1201,13 @@ func (m *model) activeModelName() string {
 }
 
 func (m *model) cancelOpenAILogin(message string) {
-	if m.openAILoginCancel != nil {
-		m.openAILoginCancel()
-		m.openAILoginCancel = nil
+	if m.authLoginCancel != nil {
+		m.authLoginCancel()
+		m.authLoginCancel = nil
 	}
-	m.openAILoginFlow = false
-	m.openAIFlowID++
-	m.openAIRedirectCh = nil
+	m.authLoginFlow = false
+	m.authFlowID++
+	m.authRedirectCh = nil
 	m.resetInput()
 	if message != "" {
 		m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: message})
@@ -1214,8 +1219,8 @@ func (m model) handlePickerSelection(selected string, cmd tea.Cmd, cmds []tea.Cm
 	case "":
 		m.refreshViewport()
 		return m, tea.Batch(cmds...)
-	case "openai-login":
-		if m.processing || m.openAILoginFlow {
+	case "auth-login":
+		if m.processing || m.authLoginFlow {
 			m.messages = append(m.messages, chatMessage{
 				Kind: msgSystem,
 				Text: "Wait for the current session to go idle before changing OpenAI auth.",
@@ -1224,24 +1229,24 @@ func (m model) handlePickerSelection(selected string, cmd tea.Cmd, cmds []tea.Cm
 			return m, tea.Batch(cmds...)
 		}
 		ctx, cancel := context.WithCancel(context.Background())
-		m.openAILoginFlow = true
-		m.openAIFlowID++
-		m.openAILoginCancel = cancel
-		m.openAIRedirectCh = make(chan string, 1)
+		m.authLoginFlow = true
+		m.authFlowID++
+		m.authLoginCancel = cancel
+		m.authRedirectCh = make(chan string, 1)
 		m.input.Placeholder = "Paste the full OpenAI redirect URL..."
 		m.messages = append(m.messages, chatMessage{
 			Kind: msgSystem,
 			Text: "Opening OpenAI sign-in. The URL will also be shown here for manual copy/paste.",
 		})
 		m.refreshViewport()
-		cmds = append(cmds, openAILoginCmd(ctx, m.openAIFlowID, m.openAIAuth, m.asyncCh, openURLInBrowser, m.openAIRedirectCh))
+		cmds = append(cmds, authLoginCmd(ctx, m.authFlowID, m.authController, "openai", m.asyncCh, openURLInBrowser, m.authRedirectCh))
 		return m, tea.Batch(cmds...)
-	case "openai-status":
-		m.showOpenAIStatus = true
-		cmds = append(cmds, loadOpenAIAuthStatusCmd(m.openAIAuth))
+	case "auth-status":
+		m.showAuthStatus = true
+		cmds = append(cmds, loadAuthStatusCmd(m.authController, "openai"))
 		return m, tea.Batch(cmds...)
-	case "openai-logout":
-		if m.processing || m.openAILoginFlow {
+	case "auth-logout":
+		if m.processing || m.authLoginFlow {
 			m.messages = append(m.messages, chatMessage{
 				Kind: msgSystem,
 				Text: "Wait for the current session to go idle before changing OpenAI auth.",
@@ -1249,7 +1254,7 @@ func (m model) handlePickerSelection(selected string, cmd tea.Cmd, cmds []tea.Cm
 			m.refreshViewport()
 			return m, tea.Batch(cmds...)
 		}
-		cmds = append(cmds, openAILogoutCmd(m.openAIAuth))
+		cmds = append(cmds, authLogoutCmd(m.authController, "openai"))
 		return m, tea.Batch(cmds...)
 	default:
 		if selected != "" && selected != m.sessionModel {
@@ -1277,11 +1282,11 @@ func (m model) View() string {
 		Width(m.width).
 		Height(m.height)
 
-	authHint := ""
-	if m.isOpenAIProvider() && m.openAIStatusSeen {
-		authHint = openAIAuthHint(m.openAIStatus)
+	authHintText := ""
+	if m.isOpenAIProvider() && m.authStatusSeen {
+		authHintText = authHint(m.authStatus)
 	}
-	statusBar := renderStatusBar(m.connected, m.activeModelName(), m.sessionID, authHint, m.turns, m.contextTokens, m.contextWindowSize, m.processing, m.turnInputTokens, m.turnOutputTokens, m.scrollMode, m.width)
+	statusBar := renderStatusBar(m.connected, m.activeModelName(), m.sessionID, authHintText, m.turns, m.contextTokens, m.contextWindowSize, m.processing, m.turnInputTokens, m.turnOutputTokens, m.scrollMode, m.width)
 
 	var body string
 	if m.picker != nil {

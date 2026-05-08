@@ -8,10 +8,10 @@ import (
 	authopenai "primeradiant.com/serf/internal/auth/openai"
 )
 
-func TestOpenAIAuthHelperStatusSignedOut(t *testing.T) {
-	helper := newOpenAIAuthHelper(t.TempDir())
+func TestAuthControllerStatusSignedOut(t *testing.T) {
+	controller := newAuthController(t.TempDir())
 
-	status, err := helper.Status()
+	status, err := controller.Status("openai")
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
@@ -26,14 +26,14 @@ func TestOpenAIAuthHelperStatusSignedOut(t *testing.T) {
 	}
 }
 
-func TestOpenAIAuthHelperStatusOAuthWithEmail(t *testing.T) {
+func TestAuthControllerStatusOAuthWithEmail(t *testing.T) {
 	stateDir := t.TempDir()
 	if err := authopenai.SaveAuth(stateDir, testOpenAIAuthRecord("bot@example.com")); err != nil {
 		t.Fatalf("SaveAuth() error = %v", err)
 	}
 
-	helper := newOpenAIAuthHelper(stateDir)
-	status, err := helper.Status()
+	controller := newAuthController(stateDir)
+	status, err := controller.Status("openai")
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
@@ -48,15 +48,15 @@ func TestOpenAIAuthHelperStatusOAuthWithEmail(t *testing.T) {
 	}
 }
 
-func TestOpenAIAuthHelperStatusDistinguishesEnvAndStoredOAuth(t *testing.T) {
+func TestAuthControllerStatusDistinguishesEnvAndStoredOAuth(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "sk-env")
 	stateDir := t.TempDir()
 	if err := authopenai.SaveAuth(stateDir, testOpenAIAuthRecord("bot@example.com")); err != nil {
 		t.Fatalf("SaveAuth() error = %v", err)
 	}
 
-	helper := newOpenAIAuthHelper(stateDir)
-	status, err := helper.Status()
+	controller := newAuthController(stateDir)
+	status, err := controller.Status("openai")
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
@@ -71,47 +71,66 @@ func TestOpenAIAuthHelperStatusDistinguishesEnvAndStoredOAuth(t *testing.T) {
 	}
 }
 
-func TestOpenAIAuthHelperSummaryFormatting(t *testing.T) {
+func TestAuthControllerStatusUnsupportedProvider(t *testing.T) {
+	controller := newAuthController(t.TempDir())
+	status, err := controller.Status("anthropic")
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if status.Supported {
+		t.Fatal("Supported = true, want false")
+	}
+	if status.Provider != "anthropic" {
+		t.Fatalf("Provider = %q, want anthropic", status.Provider)
+	}
+}
+
+func TestAuthSummaryFormatting(t *testing.T) {
 	tests := []struct {
 		name   string
-		status openAIAuthStatus
+		status authStatus
 		want   string
 	}{
 		{
 			name:   "signed out",
-			status: openAIAuthStatus{ActiveSource: authopenai.AuthSourceSignedOut},
+			status: authStatus{Provider: "openai", ActiveSource: authopenai.AuthSourceSignedOut},
 			want:   "OpenAI auth: signed out",
 		},
 		{
 			name:   "oauth email",
-			status: openAIAuthStatus{ActiveSource: authopenai.AuthSourceOAuth, SignedIn: true, HasStoredOAuth: true, Email: "bot@example.com"},
+			status: authStatus{Provider: "openai", ActiveSource: authopenai.AuthSourceOAuth, SignedIn: true, HasStoredOAuth: true, Email: "bot@example.com"},
 			want:   "OpenAI auth: oauth (bot@example.com)",
 		},
 		{
 			name:   "env and oauth",
-			status: openAIAuthStatus{ActiveSource: authopenai.AuthSourceEnv, SignedIn: true, HasStoredOAuth: true, StoredEmail: "bot@example.com"},
+			status: authStatus{Provider: "openai", ActiveSource: authopenai.AuthSourceEnv, SignedIn: true, HasStoredOAuth: true, StoredEmail: "bot@example.com"},
 			want:   "OpenAI auth: env+oauth (bot@example.com)",
 		},
 		{
 			name:   "env only",
-			status: openAIAuthStatus{ActiveSource: authopenai.AuthSourceEnv, SignedIn: true},
+			status: authStatus{Provider: "openai", ActiveSource: authopenai.AuthSourceEnv, SignedIn: true},
 			want:   "OpenAI auth: env",
+		},
+		{
+			name:   "unsupported provider",
+			status: authStatus{Provider: "anthropic"},
+			want:   `Auth is not supported for provider "anthropic".`,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := formatOpenAIAuthStatusSummary(tc.status); got != tc.want {
-				t.Fatalf("formatOpenAIAuthStatusSummary() = %q, want %q", got, tc.want)
+			if got := formatAuthStatusSummary(tc.status); got != tc.want {
+				t.Fatalf("formatAuthStatusSummary() = %q, want %q", got, tc.want)
 			}
 		})
 	}
 }
 
-func TestOpenAIAuthHelperLogoutWhenAlreadySignedOut(t *testing.T) {
-	helper := newOpenAIAuthHelper(t.TempDir())
+func TestAuthControllerLogoutWhenAlreadySignedOut(t *testing.T) {
+	controller := newAuthController(t.TempDir())
 
-	loggedOut, err := helper.Logout()
+	loggedOut, err := controller.Logout("openai")
 	if err != nil {
 		t.Fatalf("Logout() error = %v", err)
 	}
@@ -120,9 +139,11 @@ func TestOpenAIAuthHelperLogoutWhenAlreadySignedOut(t *testing.T) {
 	}
 }
 
-func TestOpenAIAuthHelperLoginPassesURLHooksToService(t *testing.T) {
-	helper := newOpenAIAuthHelper(t.TempDir())
-	wantStatus := openAIAuthStatus{
+func TestAuthControllerLoginPassesURLHooksToProvider(t *testing.T) {
+	controller := newAuthController(t.TempDir())
+	wantStatus := authStatus{
+		Provider:       "openai",
+		Supported:      true,
 		SignedIn:       true,
 		ActiveSource:   authopenai.AuthSourceOAuth,
 		HasStoredOAuth: true,
@@ -132,13 +153,13 @@ func TestOpenAIAuthHelperLoginPassesURLHooksToService(t *testing.T) {
 
 	var gotURL string
 	var waited bool
-	helper.newService = func() openAIService {
-		return stubOpenAIService{
-			loginFunc: func(ctx context.Context, stateDir string, hooks openAILoginHooks) (openAIAuthStatus, error) {
-				if stateDir != helper.stateDir {
-					t.Fatalf("stateDir = %q, want %q", stateDir, helper.stateDir)
+	controller.newOpenAIProvider = func() openAIAuthProvider {
+		return stubOpenAIAuthProvider{
+			loginFunc: func(ctx context.Context, stateDir string, hooks authLoginHooks) (authStatus, error) {
+				if stateDir != controller.stateDir {
+					t.Fatalf("stateDir = %q, want %q", stateDir, controller.stateDir)
 				}
-				hooks.OnAuthURL("https://auth.openai.com/authorize?state=abc")
+				hooks.OnURL("https://auth.openai.com/authorize?state=abc")
 				got, err := hooks.WaitForRedirect(ctx)
 				if err != nil {
 					t.Fatalf("WaitForRedirect() error = %v", err)
@@ -151,8 +172,8 @@ func TestOpenAIAuthHelperLoginPassesURLHooksToService(t *testing.T) {
 		}
 	}
 
-	status, err := helper.Login(context.Background(), openAILoginHooks{
-		OnAuthURL: func(rawURL string) {
+	status, err := controller.Login(context.Background(), "openai", authLoginHooks{
+		OnURL: func(rawURL string) {
 			gotURL = rawURL
 		},
 		WaitForRedirect: func(context.Context) (string, error) {
@@ -164,7 +185,7 @@ func TestOpenAIAuthHelperLoginPassesURLHooksToService(t *testing.T) {
 		t.Fatalf("Login() error = %v", err)
 	}
 	if gotURL == "" {
-		t.Fatal("OnAuthURL was not called")
+		t.Fatal("OnURL was not called")
 	}
 	if !waited {
 		t.Fatal("WaitForRedirect was not called")
@@ -191,20 +212,20 @@ func testOpenAIAuthRecord(email string) authopenai.AuthRecord {
 	}
 }
 
-type stubOpenAIService struct {
-	statusFunc func(string) (openAIAuthStatus, error)
-	loginFunc  func(context.Context, string, openAILoginHooks) (openAIAuthStatus, error)
+type stubOpenAIAuthProvider struct {
+	statusFunc func(string) (authStatus, error)
+	loginFunc  func(context.Context, string, authLoginHooks) (authStatus, error)
 	logoutFunc func(string) (bool, error)
 }
 
-func (s stubOpenAIService) Status(stateDir string) (openAIAuthStatus, error) {
+func (s stubOpenAIAuthProvider) Status(stateDir string) (authStatus, error) {
 	return s.statusFunc(stateDir)
 }
 
-func (s stubOpenAIService) Login(ctx context.Context, stateDir string, hooks openAILoginHooks) (openAIAuthStatus, error) {
+func (s stubOpenAIAuthProvider) Login(ctx context.Context, stateDir string, hooks authLoginHooks) (authStatus, error) {
 	return s.loginFunc(ctx, stateDir, hooks)
 }
 
-func (s stubOpenAIService) Logout(stateDir string) (bool, error) {
+func (s stubOpenAIAuthProvider) Logout(stateDir string) (bool, error) {
 	return s.logoutFunc(stateDir)
 }

@@ -141,7 +141,7 @@ func main() {
 			if authBootstrap {
 				initialMessages = append(initialMessages, chatMessage{
 					Kind: msgSystem,
-					Text: "OpenAI login required before this session can start. Use /openai to sign in.",
+					Text: "OpenAI login required before this session can start. Use /auth to sign in.",
 				})
 			}
 		}
@@ -204,8 +204,8 @@ func main() {
 	}
 
 	if m, ok := finalModel.(model); ok {
-		if m.openAILoginCancel != nil {
-			m.openAILoginCancel()
+		if m.authLoginCancel != nil {
+			m.authLoginCancel()
 		}
 		if m.streamCancel != nil {
 			m.streamCancel()

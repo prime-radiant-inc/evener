@@ -236,7 +236,7 @@ func TestFetchTranscriptTargets(t *testing.T) {
 
 func TestSlashCommandHelp(t *testing.T) {
 	help := slashCommandHelp()
-	for _, cmd := range []string{"/help", "/compact", "/status", "/agents", "/model", "/theme", "/clear", "/quit"} {
+	for _, cmd := range []string{"/help", "/compact", "/status", "/agents", "/model", "/auth", "/theme", "/clear", "/quit"} {
 		if !strings.Contains(help, cmd) {
 			t.Errorf("help text missing %q", cmd)
 		}
