@@ -5,6 +5,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync"
 )
 
 // SessionResolver resolves a session_id to a live daemon entry.
@@ -17,10 +18,33 @@ type SessionResolver interface {
 // reverse-proxying to the daemon's matching endpoint.
 type RESTProxy struct {
 	resolver SessionResolver
+
+	mu      sync.RWMutex
+	proxies map[string]*httputil.ReverseProxy // address -> proxy
 }
 
 func NewRESTProxy(resolver SessionResolver) *RESTProxy {
-	return &RESTProxy{resolver: resolver}
+	return &RESTProxy{
+		resolver: resolver,
+		proxies:  make(map[string]*httputil.ReverseProxy),
+	}
+}
+
+// proxyFor returns a cached reverse proxy for the given daemon address,
+// creating one on first use. Caching allows HTTP keepalive reuse.
+func (p *RESTProxy) proxyFor(address string) *httputil.ReverseProxy {
+	p.mu.RLock()
+	rp, ok := p.proxies[address]
+	p.mu.RUnlock()
+	if ok {
+		return rp
+	}
+	target := &url.URL{Scheme: "http", Host: address}
+	rp = httputil.NewSingleHostReverseProxy(target)
+	p.mu.Lock()
+	p.proxies[address] = rp
+	p.mu.Unlock()
+	return rp
 }
 
 func (p *RESTProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -34,17 +58,9 @@ func (p *RESTProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	target := &url.URL{
-		Scheme: "http",
-		Host:   entry.Address,
-	}
-	rp := httputil.NewSingleHostReverseProxy(target)
-	originalDirector := rp.Director
-	rp.Director = func(req *http.Request) {
-		originalDirector(req)
-		req.URL.Path = "/" + rest
-		req.Host = entry.Address
-	}
+	rp := p.proxyFor(entry.Address)
+	r.URL.Path = "/" + rest
+	r.Host = entry.Address
 	rp.ServeHTTP(w, r)
 }
 
