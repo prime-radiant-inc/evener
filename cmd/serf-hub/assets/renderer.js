@@ -1181,6 +1181,26 @@
     if (btn) btn.classList.toggle("active", !!active);
   }
 
+  // bindClickOutside dismisses a slide-over panel when the user clicks
+  // anywhere outside it AND outside the trigger button that opened it.
+  // Capture-phase mousedown so a click that would otherwise land on a
+  // different control still closes the panel first. The handler self-removes
+  // when (a) it dismisses the panel or (b) it sees the panel was already
+  // detached (e.g. because the OTHER panel was opened, swapping it out).
+  function bindClickOutside(panel, triggerSelector, closeFn) {
+    const onDown = (ev) => {
+      if (!panel.parentNode) {
+        document.removeEventListener("mousedown", onDown, true);
+        return;
+      }
+      if (panel.contains(ev.target)) return;
+      if (ev.target.closest && ev.target.closest(triggerSelector)) return;
+      closeFn();
+      document.removeEventListener("mousedown", onDown, true);
+    };
+    document.addEventListener("mousedown", onDown, true);
+  }
+
   function toggleTasksPanel() {
     const existing = document.getElementById("tasks-panel");
     if (existing) {
@@ -1217,14 +1237,18 @@
     panel.__pollTimer = setInterval(refresh, 2000);
     setPanelToggleActive("[data-tasks-trigger]", true);
 
+    const close = () => {
+      if (panel.__pollTimer) clearInterval(panel.__pollTimer);
+      panel.remove();
+      setPanelToggleActive("[data-tasks-trigger]", false);
+    };
     document.addEventListener("keydown", function escClose(ev) {
       if (ev.key === "Escape") {
-        if (panel.__pollTimer) clearInterval(panel.__pollTimer);
-        panel.remove();
-        setPanelToggleActive("[data-tasks-trigger]", false);
+        close();
         document.removeEventListener("keydown", escClose);
       }
     });
+    bindClickOutside(panel, "[data-tasks-trigger]", close);
   }
 
   function renderTasksInto(panel, tasks) {
@@ -1375,13 +1399,17 @@
     }).catch(() => { panel.innerHTML = "<div class='details-loading'>failed to load</div>"; });
     setPanelToggleActive("[data-details-trigger]", true);
 
+    const close = () => {
+      panel.remove();
+      setPanelToggleActive("[data-details-trigger]", false);
+    };
     document.addEventListener("keydown", function escClose(ev) {
       if (ev.key === "Escape") {
-        panel.remove();
-        setPanelToggleActive("[data-details-trigger]", false);
+        close();
         document.removeEventListener("keydown", escClose);
       }
     });
+    bindClickOutside(panel, "[data-details-trigger]", close);
   }
 
   document.addEventListener("DOMContentLoaded", refreshTabTitle);
