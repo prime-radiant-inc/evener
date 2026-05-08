@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmdutil"
@@ -359,8 +360,37 @@ func startEmbeddedCmd(cfg embeddedConfig) tea.Cmd {
 		if err != nil {
 			return embeddedStartedMsg{err: err}
 		}
+		if err := waitForEmbeddedReady(server.addr, 2*time.Second); err != nil {
+			server.Close()
+			return embeddedStartedMsg{err: err}
+		}
 		return embeddedStartedMsg{server: server}
 	}
+}
+
+func waitForEmbeddedReady(addr string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	url := fmt.Sprintf("http://%s/status", addr)
+	client := &http.Client{Timeout: 200 * time.Millisecond}
+
+	var lastErr error
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(url)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return nil
+			}
+			lastErr = fmt.Errorf("embedded status returned %s", resp.Status)
+		} else {
+			lastErr = err
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("timed out waiting for embedded server readiness")
+	}
+	return fmt.Errorf("wait for embedded server readiness: %w", lastErr)
 }
 
 func (m *model) startSSEStream() tea.Cmd {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -118,6 +119,35 @@ func TestEmbeddedServer_RoundTrip(t *testing.T) {
 		t.Error("never received any assistant activity (text delta or tool call)")
 	}
 	t.Logf("received %d SSE events", len(events))
+}
+
+func TestWaitForEmbeddedReady(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := listener.Addr().String()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		time.Sleep(50 * time.Millisecond)
+		_ = http.Serve(listener, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/status" {
+				http.NotFound(w, r)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}))
+	}()
+	defer func() {
+		_ = listener.Close()
+		<-done
+	}()
+
+	if err := waitForEmbeddedReady(addr, time.Second); err != nil {
+		t.Fatalf("waitForEmbeddedReady() error = %v", err)
+	}
 }
 
 // readSSEUntil reads SSE events from r until an event with the given type is seen.
