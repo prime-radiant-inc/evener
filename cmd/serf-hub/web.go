@@ -2,10 +2,12 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
@@ -25,6 +27,7 @@ type WebConfig struct {
 	Past        *PastIndex
 	Spawner     Spawner // optional; nil disables /live/new
 	PastPerPage int     // results per page for /past; defaults to 50 when zero
+	StateDir    string  // root of the projects/<sha> state directory; needed for ForkSession
 }
 
 // Spawner forks a serf serve subprocess from a SpawnTemplate and waits for
@@ -47,6 +50,8 @@ type WebServer struct {
 	pastTmpl        *template.Template
 	pastResultsTmpl *template.Template
 	pastViewTmpl    *template.Template
+	workspaceTmpl   *template.Template
+	inputStripTmpl  *template.Template
 	rest            *RESTProxy
 	sse             *SSEProxy
 
@@ -84,6 +89,12 @@ func NewWebServer(cfg WebConfig) *WebServer {
 		"templates/base.html",
 		"templates/past_view.html",
 	))
+	workspaceTmpl := template.Must(template.ParseFS(templatesFS,
+		"templates/partials/workspace.html",
+	))
+	inputStripTmpl := template.Must(template.ParseFS(templatesFS,
+		"templates/partials/input_strip.html",
+	))
 	var rest *RESTProxy
 	var sse *SSEProxy
 	if cfg.Roster != nil {
@@ -94,6 +105,7 @@ func NewWebServer(cfg WebConfig) *WebServer {
 		cfg: cfg, templates: tmpl, appTmpl: appTmpl, sidebarTmpl: sidebarTmpl,
 		liveTmpl: liveTmpl, liveNewTmpl: liveNewTmpl,
 		pastTmpl: pastTmpl, pastResultsTmpl: pastResultsTmpl, pastViewTmpl: pastViewTmpl,
+		workspaceTmpl: workspaceTmpl, inputStripTmpl: inputStripTmpl,
 		rest: rest, sse: sse,
 		resumeLocks: map[string]*sync.Mutex{},
 	}
@@ -123,7 +135,7 @@ func (s *WebServer) Handler() http.Handler {
 
 	// Pages
 	mux.HandleFunc("/", s.handleIndex)
-	mux.HandleFunc("/s/", s.handleIndex)     // SPA route — app shell handles client-side routing via htmx
+	mux.HandleFunc("/s/", s.handleSession)   // workspace — detects HX-Request and serves partial or app shell
 	mux.HandleFunc("/new", s.handleIndex)    // ditto
 	mux.HandleFunc("/sidebar", s.handleSidebar)
 	mux.HandleFunc("/workspace/empty", s.handleWorkspaceEmpty)
@@ -141,7 +153,7 @@ func (s *WebServer) Handler() http.Handler {
 }
 
 func (s *WebServer) handleIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" && !strings.HasPrefix(r.URL.Path, "/s/") && r.URL.Path != "/new" {
+	if r.URL.Path != "/" && r.URL.Path != "/new" {
 		http.NotFound(w, r)
 		return
 	}
@@ -646,4 +658,309 @@ func (s *WebServer) handleLiveNew(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// handleSession is the router for all /s/<id>[/<sub>] routes.
+// When HX-Request is true and sub is "", it serves the workspace partial;
+// otherwise it serves the app shell for full-page navigation.
+func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/s/")
+	parts := strings.SplitN(path, "/", 2)
+	id := parts[0]
+	if id == "" {
+		http.NotFound(w, r)
+		return
+	}
+	sub := ""
+	if len(parts) == 2 {
+		sub = parts[1]
+	}
+
+	switch sub {
+	case "":
+		if r.Header.Get("HX-Request") == "true" {
+			s.renderWorkspacePartial(w, r, id)
+			return
+		}
+		// Full-page navigation: serve the app shell.
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := s.appTmpl.ExecuteTemplate(w, "app", nil); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	case "state":
+		s.renderInputStrip(w, r, id)
+	case "send":
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST required", http.StatusMethodNotAllowed)
+			return
+		}
+		s.handleSend(w, r, id)
+	case "fork":
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST required", http.StatusMethodNotAllowed)
+			return
+		}
+		s.handleFork(w, r, id)
+	case "events":
+		if s.sse == nil {
+			http.NotFound(w, r)
+			return
+		}
+		// Rewrite the path so the SSE proxy's splitLivePath can parse it.
+		r.URL.Path = "/live/" + id + "/events"
+		s.sse.ServeHTTP(w, r)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// WorkspaceData is the template data for the workspace partial.
+type WorkspaceData struct {
+	ID             string
+	Title          string
+	Branch         string
+	State          string
+	StateLabel     string
+	TurnCount      int
+	Model          string
+	ContextPercent int
+	ContextNumbers string
+	Cost           string
+	ReplayURL      string
+	EventsURL      string
+}
+
+func (s *WebServer) renderWorkspacePartial(w http.ResponseWriter, r *http.Request, id string) {
+	data := s.workspaceData(id)
+	if data.ID == "" {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.workspaceTmpl.ExecuteTemplate(w, "workspace", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (s *WebServer) workspaceData(id string) WorkspaceData {
+	if s.cfg.Roster != nil {
+		if le, ok := s.cfg.Roster.Find(id); ok {
+			return WorkspaceData{
+				ID:        id,
+				Title:     liveTitle(le),
+				State:     le.Status,
+				StateLabel: stateLabel(le.Status),
+				Model:     le.Model,
+				EventsURL: "/s/" + id + "/events",
+			}
+		}
+	}
+	if s.cfg.Past != nil {
+		if pe, ok := s.cfg.Past.Find(id); ok {
+			return WorkspaceData{
+				ID:         id,
+				Title:      pastTitle(pe),
+				State:      "ended",
+				StateLabel: stateLabel("ended"),
+				TurnCount:  pe.Meta.TurnCount,
+				Model:      pe.Meta.Model,
+				ReplayURL:  "/past/" + id + "/replay",
+			}
+		}
+	}
+	return WorkspaceData{}
+}
+
+func liveTitle(le LiveEntry) string {
+	return le.SessionID
+}
+
+func pastTitle(pe PastEntry) string {
+	if pe.Meta.OriginalTask != "" {
+		return pe.Meta.OriginalTask
+	}
+	return pe.Meta.ID
+}
+
+func stateLabel(state string) string {
+	switch state {
+	case "awaiting":
+		return "● awaiting"
+	case "processing":
+		return "● processing"
+	case "warning":
+		return "● warning"
+	case "idle":
+		return "● idle"
+	case "ended":
+		return "ended"
+	}
+	return state
+}
+
+func (s *WebServer) renderInputStrip(w http.ResponseWriter, r *http.Request, id string) {
+	data := map[string]any{
+		"Model":          "—",
+		"ContextPercent": 0,
+		"ContextNumbers": "",
+		"Cost":           "",
+	}
+	if s.cfg.Roster != nil {
+		if le, ok := s.cfg.Roster.Find(id); ok {
+			if info := s.fetchStatus(le); info != nil {
+				data["Model"] = info.Model
+				data["ContextPercent"] = int(info.ContextPressure * 100)
+				if info.ContextUsed > 0 || info.ContextWindow > 0 {
+					data["ContextNumbers"] = fmt.Sprintf("%d/%d", info.ContextUsed, info.ContextWindow)
+				}
+			}
+		}
+	}
+	if data["Model"] == "—" && s.cfg.Past != nil {
+		if pe, ok := s.cfg.Past.Find(id); ok {
+			data["Model"] = pe.Meta.Model
+		}
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.inputStripTmpl.ExecuteTemplate(w, "input_strip", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string) {
+	var body struct {
+		Text string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var le LiveEntry
+	if s.cfg.Roster != nil {
+		var ok bool
+		le, ok = s.cfg.Roster.Find(id)
+		if !ok {
+			// Session is not live — try to resume it.
+			if s.cfg.Spawner == nil {
+				http.Error(w, "spawner not configured", http.StatusServiceUnavailable)
+				return
+			}
+			lock := s.lockForSession(id)
+			lock.Lock()
+			defer lock.Unlock()
+			// Re-check after acquiring the lock — another request may have resumed it.
+			if le2, ok2 := s.cfg.Roster.Find(id); ok2 {
+				le = le2
+			} else {
+				entry, err := s.cfg.Spawner.Resume(r.Context(), id)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				le = waitForRosterMatch(s.cfg.Roster, id, entry.PID, 3*time.Second)
+				if le.Address == "" {
+					http.Error(w, "daemon not in roster after resume", http.StatusInternalServerError)
+					return
+				}
+			}
+		}
+	} else {
+		http.Error(w, "spawner not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Forward the message to the daemon's /input endpoint.
+	payload, _ := json.Marshal(map[string]string{"text": body.Text})
+	daemonURL := "http://" + le.Address + "/input"
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, daemonURL, bytes.NewReader(payload))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body) //nolint:errcheck
+}
+
+func (s *WebServer) handleFork(w http.ResponseWriter, r *http.Request, parentID string) {
+	var body struct {
+		Turn          int    `json:"turn"`
+		EditedMessage string `json:"edited_message"`
+		Label         string `json:"label"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Resolve the state dir for the parent session.
+	stateDir := s.cfg.StateDir
+	if stateDir == "" && s.cfg.Past != nil {
+		if pe, ok := s.cfg.Past.Find(parentID); ok {
+			stateDir = pe.StateDir
+		}
+	}
+	if stateDir == "" {
+		http.Error(w, "state dir not configured or session not found", http.StatusInternalServerError)
+		return
+	}
+
+	childID, err := agent.ForkSession(stateDir, parentID, body.Turn, body.EditedMessage, body.Label)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Refresh past index so the new session shows up immediately in the sidebar.
+	if s.cfg.Past != nil {
+		_ = s.cfg.Past.Rebuild()
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"child_session_id": childID}) //nolint:errcheck
+}
+
+// waitForRosterMatch polls the roster until it sees a daemon with the given PID
+// and session ID, or until timeout. Returns the matched LiveEntry (Address == "" on timeout).
+func waitForRosterMatch(r *Roster, sessionID string, pid int, timeout time.Duration) LiveEntry {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		r.Refresh()
+		if le, ok := r.Find(sessionID); ok && le.PID == pid {
+			return le
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	return LiveEntry{}
+}
+
+// daemonStatus is the subset of /status fields the hub cares about.
+type daemonStatus struct {
+	Model           string  `json:"model"`
+	Profile         string  `json:"profile"`
+	State           string  `json:"state"`
+	Turns           int     `json:"turns"`
+	ContextPressure float64 `json:"context_pressure"`
+	ContextUsed     int     `json:"context_used,omitempty"`
+	ContextWindow   int     `json:"context_window,omitempty"`
+}
+
+// fetchStatus reads /status from the daemon at le.Address, returning nil on any error.
+func (s *WebServer) fetchStatus(le LiveEntry) *daemonStatus {
+	client := &http.Client{Timeout: 1 * time.Second}
+	resp, err := client.Get("http://" + le.Address + "/status") //nolint:gosec
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	var info daemonStatus
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return nil
+	}
+	return &info
 }

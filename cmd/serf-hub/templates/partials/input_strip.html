@@ -1,0 +1,13 @@
+{{define "input_strip"}}
+<span class="model">{{.Model}}</span>
+<span class="rule-dot">·</span>
+<span class="context">
+  <span class="context-bar"><span class="context-fill" style="width:{{.ContextPercent}}%"></span></span>
+  <span class="context-numbers">{{.ContextNumbers}}</span>
+</span>
+{{if .Cost}}
+<span class="rule-dot">·</span>
+<span class="cost">{{.Cost}}</span>
+{{end}}
+<button class="send-btn" type="submit" form="" data-send-trigger>send <kbd>⌘↵</kbd></button>
+{{end}}

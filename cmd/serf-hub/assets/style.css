@@ -279,3 +279,71 @@ body.app { display: flex; min-height: 100vh; margin: 0; background: var(--bg); c
 .row-age { color: var(--text-muted); font-size: 11px; margin-left: auto; }
 .live-row { background: transparent; }
 .live-row[data-state="awaiting"] { /* could add subtle highlight here, but spec wants quiet */ }
+
+/* Workspace pane */
+.workspace-header { padding: 14px 28px 12px; border-bottom: 1px solid var(--rule); }
+.workspace-title { display: flex; align-items: baseline; gap: 14px; }
+.workspace-title .title { font-weight: 500; font-size: 15px; color: var(--text); }
+.details-link { margin-left: auto; color: var(--text-muted); font-size: 12px; text-decoration: none; cursor: pointer; }
+.details-link:hover { color: var(--text); }
+.workspace-meta { display: flex; align-items: baseline; gap: 12px; margin-top: 2px; color: var(--text-muted); font-size: 12px; }
+.workspace-meta .branch { font-family: ui-monospace, "SFMono-Regular", monospace; }
+.rule-dot { color: var(--text-dim); }
+.status-pill { display: inline-flex; align-items: baseline; gap: 6px; }
+.conversation { flex: 1; padding: 32px 64px; overflow-y: auto; font-size: 15px; line-height: 1.7; color: var(--text); }
+.workspace-input { padding: 14px 28px 16px; border-top: 1px solid var(--rule); }
+.message-input { width: 100%; min-height: 60px; max-height: 240px; background: transparent; border: none; resize: vertical; color: var(--text); font: inherit; outline: none; }
+.input-strip { display: flex; align-items: center; gap: 14px; padding-top: 12px; margin-top: 10px; border-top: 1px solid var(--rule); font-size: 11.5px; color: var(--text-muted); }
+.input-strip .model { font-family: ui-monospace, "SFMono-Regular", monospace; }
+.context { display: inline-flex; align-items: center; gap: 8px; }
+.context-bar { display: inline-block; width: 80px; height: 2px; background: var(--rule); vertical-align: middle; overflow: hidden; }
+.context-fill { display: block; height: 100%; background: var(--accent); }
+.context-numbers { font-family: ui-monospace, "SFMono-Regular", monospace; }
+.cost { font-family: ui-monospace, "SFMono-Regular", monospace; }
+.send-btn { margin-left: auto; padding: 4px 12px; background: transparent; border: 1px solid var(--rule); color: var(--text); border-radius: 4px; font-size: 11.5px; cursor: pointer; font: inherit; }
+.send-btn:hover { background: var(--bg-raised); }
+.send-btn kbd { font-family: ui-monospace, "SFMono-Regular", monospace; opacity: 0.6; }
+
+/* Conversation tiers */
+.user-message { display: flex; justify-content: flex-end; margin-bottom: 28px; position: relative; }
+.user-message .pill { max-width: 62%; padding: 8px 14px; background: var(--bg-raised); border-radius: 14px; font-size: 14.5px; color: var(--text); line-height: 1.55; }
+.user-message-actions { position: absolute; right: 0; top: -22px; display: none; gap: 14px; font-size: 11px; color: var(--text-muted); }
+.user-message:hover .user-message-actions { display: flex; }
+.user-message-actions .action { cursor: pointer; }
+.user-message-actions .edit { color: var(--text); }
+.assistant-message { margin-bottom: 24px; max-width: 680px; font-size: 15px; line-height: 1.7; color: var(--text); }
+.assistant-message code { background: var(--bg-raised); padding: 1px 6px; border-radius: 3px; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 14px; color: var(--text); }
+.assistant-message pre { background: var(--bg-raised); padding: 12px 16px; border-radius: 6px; overflow-x: auto; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 13px; }
+
+/* Annotation tier — tool calls, diffs, subagent references */
+.tool-call { margin: 0 0 6px 28px; font-size: 12.5px; color: var(--text-muted); display: flex; gap: 14px; flex-wrap: wrap; }
+.tool-call-cluster { margin-bottom: 24px; }
+.tool-call-cluster .tool-call:last-child { margin-bottom: 0; }
+.tool-call .verb { color: var(--text-muted); font-family: ui-monospace, "SFMono-Regular", monospace; }
+.tool-call .target { color: var(--text); font-family: ui-monospace, "SFMono-Regular", monospace; word-break: break-all; }
+.tool-call .sep { color: var(--text-dim); }
+.tool-call .result { color: var(--text-muted); }
+.tool-call .result-good { color: var(--state-idle); }
+.tool-call .result-bad { color: var(--state-awaiting); }
+.diff-body { margin: 0 0 24px 44px; padding-left: 14px; border-left: 1px solid var(--rule); font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; line-height: 1.65; color: var(--text-muted); white-space: pre-wrap; }
+.diff-body .add { color: var(--state-idle); }
+.diff-body .del { color: var(--state-awaiting); }
+.subagent-reference { margin: 0 0 26px 28px; font-size: 12.5px; color: var(--text-muted); cursor: pointer; }
+.subagent-reference .verb { color: var(--state-subagent); font-family: ui-monospace, "SFMono-Regular", monospace; }
+.subagent-reference:hover { color: var(--text); }
+.banner { margin: 0 0 18px 28px; padding: 6px 12px; font-size: 12.5px; border-radius: 4px; }
+.banner.error { color: var(--state-awaiting); border-left: 2px solid var(--state-awaiting); padding-left: 10px; }
+.banner.warning { color: var(--state-warning); border-left: 2px solid var(--state-warning); padding-left: 10px; }
+.banner.note { color: var(--text-muted); border-left: 2px solid var(--rule); padding-left: 10px; }
+
+/* Fork dialog */
+.fork-dialog { margin-bottom: 24px; padding: 12px 16px; background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 8px; max-width: 480px; margin-left: auto; }
+.fork-dialog-title { font-weight: 500; color: var(--text); font-size: 13px; margin-bottom: 6px; }
+.fork-dialog-body { color: var(--text-muted); font-size: 12.5px; line-height: 1.55; margin-bottom: 10px; }
+.fork-dialog-label { color: var(--text-muted); font-size: 12px; }
+.fork-dialog-input { background: transparent; border: 1px solid var(--rule); border-radius: 3px; padding: 4px 8px; color: var(--text); font: inherit; font-size: 12px; width: 220px; margin-left: 8px; outline: none; }
+.fork-dialog-input:focus { border-color: var(--accent); }
+.fork-dialog-actions { display: flex; gap: 14px; align-items: center; margin-top: 10px; font-size: 12px; }
+.fork-cancel { background: transparent; border: none; color: var(--text-muted); cursor: pointer; font: inherit; padding: 4px 8px; }
+.fork-confirm { margin-left: auto; padding: 6px 14px; background: var(--accent); color: var(--bg); border: none; border-radius: 4px; font-weight: 500; cursor: pointer; font: inherit; }
+.fork-confirm kbd { font-family: ui-monospace, "SFMono-Regular", monospace; opacity: 0.7; margin-left: 4px; }

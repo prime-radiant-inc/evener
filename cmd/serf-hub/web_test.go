@@ -490,3 +490,187 @@ func TestWeb_PastResume_503WhenNoSpawner(t *testing.T) {
 		t.Fatalf("status: %d, want 503", rec.Code)
 	}
 }
+
+// TestWeb_SessionRoute_FullPage_ServesAppShell verifies that GET /s/<id> without
+// HX-Request returns the app shell (not the workspace partial).
+func TestWeb_SessionRoute_FullPage_ServesAppShell(t *testing.T) {
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    NewPastIndex(""),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/s/anysession", nil)
+	req.Host = "127.0.0.1:9180"
+	// No HX-Request header — should serve full app shell.
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="sidebar"`) {
+		t.Errorf("full-page /s/<id> missing app shell sidebar")
+	}
+	if !strings.Contains(body, `id="workspace"`) {
+		t.Errorf("full-page /s/<id> missing app shell workspace mount")
+	}
+}
+
+// TestWeb_WorkspacePartial_LiveSession_RendersHeader verifies that GET /s/<id>
+// with HX-Request:true returns the workspace partial with the session title and status.
+func TestWeb_WorkspacePartial_LiveSession_RendersHeader(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 10, Address: "127.0.0.1:55556"})
+	r := NewRoster(dir, fakeProber{sessionID: "01LIVE001", status: "idle"})
+	r.Refresh()
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  r,
+		Past:    NewPastIndex(""),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/s/01LIVE001", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "01LIVE001") {
+		t.Errorf("body missing session id 01LIVE001: %q", body)
+	}
+	if !strings.Contains(body, "idle") {
+		t.Errorf("body missing status 'idle': %q", body)
+	}
+	if !strings.Contains(body, "workspace-header") {
+		t.Errorf("body missing workspace-header class: %q", body)
+	}
+}
+
+// TestWeb_WorkspacePartial_PastSession_RendersTitleAndState verifies that a past session
+// renders via the workspace partial with its OriginalTask and state="ended".
+func TestWeb_WorkspacePartial_PastSession_RendersTitleAndState(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	_ = os.MkdirAll(proj, 0o755)
+	_ = agent.SaveSessionMeta(proj, agent.SessionMeta{
+		ID: "01PAST001", UpdatedAt: time.Now(), OriginalTask: "fix the widget", TurnCount: 7,
+	})
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    idx,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/s/01PAST001", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "fix the widget") {
+		t.Errorf("body missing OriginalTask 'fix the widget': %q", body)
+	}
+	if !strings.Contains(body, "ended") {
+		t.Errorf("body missing state 'ended': %q", body)
+	}
+}
+
+// TestWeb_Send_ClosedSessionRequiresSpawner verifies that POSTing to /s/<id>/send
+// when the session is not live and no spawner is configured returns 503.
+func TestWeb_Send_ClosedSessionRequiresSpawner(t *testing.T) {
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    NewPastIndex(""),
+	})
+	body := strings.NewReader(`{"text":"hi"}`)
+	req := httptest.NewRequest(http.MethodPost, "/s/NOSESSION/send", body)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status: %d, want 503", rec.Code)
+	}
+}
+
+// TestWeb_Fork_CallsForkSession verifies end-to-end fork: set up a parent transcript
+// + meta, POST /s/<id>/fork, expect 200 + JSON child_session_id.
+func TestWeb_Fork_CallsForkSession(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+
+	// Build the parent session using the shared helper from agent fork tests.
+	// We mirror the logic inline here since it's in a different package.
+	parentID := "01PARENT00000000000000001"
+	sessionsDir := filepath.Join(proj, "sessions")
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tpath := filepath.Join(sessionsDir, parentID+".transcript.jsonl")
+	tw, err := agent.NewTranscriptWriter(tpath, agent.TranscriptHeader{
+		SessionID: parentID, ProfileID: "openai", Model: "gpt-5",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Append(agent.NewTurn(agent.TurnUserInput, llm.User("first task"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Append(agent.NewTurn(agent.TurnAssistant, llm.Assistant("first reply"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Append(agent.NewTurn(agent.TurnUserInput, llm.User("second task"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+		ID: parentID, UpdatedAt: time.Now(), OriginalTask: "test fork",
+		ProfileID: "openai", Model: "gpt-5",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	web := NewWebServer(WebConfig{
+		HubAddr:  "127.0.0.1:9180",
+		Roster:   NewRoster(t.TempDir(), nil),
+		Past:     idx,
+		StateDir: proj,
+	})
+	reqBody := strings.NewReader(`{"turn":3,"edited_message":"second task revised","label":"old branch"}`)
+	req := httptest.NewRequest(http.MethodPost, "/s/"+parentID+"/fork", reqBody)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	respBody := rec.Body.String()
+	if !strings.Contains(respBody, "child_session_id") {
+		t.Errorf("response missing child_session_id: %q", respBody)
+	}
+}

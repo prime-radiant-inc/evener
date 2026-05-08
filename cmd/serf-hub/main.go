@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -72,6 +73,10 @@ func main() {
 		RunDir:     runDir,
 	}
 
+	// stateDir is the parent of the projects/ directory; used for ForkSession
+	// as a fallback when a session's project dir can't be found in the past index.
+	stateDir := filepath.Dir(filepath.Clean(strings.TrimSuffix(stateGlob, "*")))
+
 	// Web
 	web := NewWebServer(WebConfig{
 		HubAddr:     cfg.Addr,
@@ -79,6 +84,7 @@ func main() {
 		Past:        past,
 		Spawner:     spawner,
 		PastPerPage: cfg.PastResultsPerPage,
+		StateDir:    stateDir,
 	})
 
 	// Lifecycle

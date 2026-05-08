@@ -1,36 +1,35 @@
-// SerfRenderer: client-side SSE coalescing for the hub drive page.
-// Subscribes to /live/<sessionId>/events, parses event frames, and
-// updates the transcript pane with coalesced messages, tool calls,
-// and status. Mirrors serf-tui's coalescing model.
-
 (function () {
   "use strict";
 
   const SerfRenderer = {
-    init(opts) {
-      this.opts = opts;
-      this.sessionId = opts.sessionId;
-      this.transcript = opts.transcript;
-      this.statusBar = opts.statusBar;
-      this.input = opts.input;
-      this.activeMessages = new Map(); // messageId -> {el, textBuf}
-      this.activeTools = new Map();    // callId -> {el, outputBuf}
+    init(conversationEl) {
+      if (!conversationEl) return;
+      this.conversation = conversationEl;
+      this.sessionId = conversationEl.dataset.sessionId;
+      this.replayUrl = conversationEl.dataset.replayUrl || "";
+      this.eventsUrl = conversationEl.dataset.eventsUrl || "";
+      this.state = conversationEl.dataset.state || "ended";
+
+      this.activeMessages = new Map();   // messageId -> {el, textBuf, markdownTimer}
+      this.activeTools = new Map();      // callId -> {el, outputBuf}
       this.suppressedToolCalls = new Set();
       this.currentMessageId = null;
       this.eventSource = null;
-      this.transcript.innerHTML = "";
-      this.connect(opts.replayUrl);
-      if (!opts.readOnly) {
-        this.bindButtons();
-      }
+      this.userTurnIndex = 0;            // counts user turns rendered (for fork divergence)
+      this.entryIndex = 0;               // counts ALL entries rendered (matches transcript entry index)
+      this.cheapToolCluster = null;      // current cluster div for batching cheap reads
+
+      this.conversation.innerHTML = "";
+
+      const url = this.replayUrl || this.eventsUrl;
+      if (url) this.connect(url);
+
+      this.bindInputForm();
+      this.bindKeyboard();
     },
 
     connect(url) {
-      if (!url) {
-        url = "/live/" + encodeURIComponent(this.sessionId) + "/events";
-      }
       this.eventSource = new EventSource(url);
-
       const kinds = [
         "SESSION_START", "SESSION_END", "USER_INPUT",
         "ASSISTANT_TEXT_START", "ASSISTANT_TEXT_DELTA", "ASSISTANT_TEXT_END",
@@ -38,32 +37,32 @@
         "STEERING_INJECTED", "WARNING", "ERROR",
         "SUBAGENT_START", "SUBAGENT_END", "COMMUNICATE",
       ];
-      kinds.forEach((kind) => {
-        this.eventSource.addEventListener(kind, (ev) => this.handle(kind, ev));
-      });
-      this.eventSource.onerror = () => {
-        // Browser auto-reconnects; nothing to do here.
-      };
+      kinds.forEach((k) => this.eventSource.addEventListener(k, (ev) => this.handle(k, ev)));
+      this.eventSource.onerror = () => { /* browser auto-reconnects */ };
     },
 
     handle(kind, ev) {
       let data = {};
-      try { data = JSON.parse(ev.data); } catch (e) { /* ignore */ }
+      try { data = JSON.parse(ev.data); } catch (e) {}
       switch (kind) {
         case "SESSION_START":
           if (data.session_id && data.session_id !== this.sessionId) {
-            // /clear minted a new session; rebind URL and clear transcript.
             this.sessionId = data.session_id;
-            history.replaceState(null, "", "/live/" + encodeURIComponent(data.session_id));
-            this.transcript.innerHTML = "";
+            history.replaceState(null, "", "/s/" + encodeURIComponent(data.session_id));
+            this.conversation.innerHTML = "";
             this.activeMessages.clear();
             this.activeTools.clear();
+            this.userTurnIndex = 0;
+            this.entryIndex = 0;
           }
           break;
         case "USER_INPUT":
-          this.appendUserMessage(data.text || "");
+          this.userTurnIndex++;
+          this.entryIndex++;
+          this.appendUserMessage(data.text || "", this.entryIndex);
           break;
         case "ASSISTANT_TEXT_START":
+          this.entryIndex++;
           this.beginAssistantMessage();
           break;
         case "ASSISTANT_TEXT_DELTA":
@@ -77,6 +76,7 @@
             this.suppressedToolCalls.add(data.call_id);
             break;
           }
+          this.entryIndex++;
           this.beginToolCall(data);
           break;
         case "TOOL_CALL_OUTPUT_DELTA":
@@ -111,54 +111,148 @@
         case "COMMUNICATE":
           this.appendUserMessage("[communicate] " + (data.message || ""));
           break;
-        default:
-          break;
       }
       this.scrollToBottom();
     },
 
-    appendUserMessage(text) {
-      const el = document.createElement("div");
-      el.className = "msg user";
-      el.innerHTML = '<div class="role">user</div>';
+    appendUserMessage(text, entryIdx) {
+      this.cheapToolCluster = null;
+      const wrap = document.createElement("div");
+      wrap.className = "user-message";
+      wrap.dataset.entryIdx = String(entryIdx || "");
+      wrap.dataset.userTurn = String(this.userTurnIndex || "");
+      const pill = document.createElement("div");
+      pill.className = "pill";
+      pill.textContent = text;
+      const actions = document.createElement("div");
+      actions.className = "user-message-actions";
+      const copy = document.createElement("span");
+      copy.className = "action copy"; copy.textContent = "copy";
+      copy.onclick = () => navigator.clipboard.writeText(text);
+      const edit = document.createElement("span");
+      edit.className = "action edit"; edit.textContent = "✎ edit";
+      edit.onclick = () => this.startEdit(wrap, pill, text);
+      actions.appendChild(copy); actions.appendChild(edit);
+      wrap.appendChild(pill); wrap.appendChild(actions);
+      this.conversation.appendChild(wrap);
+    },
+
+    startEdit(wrap, pill, originalText) {
+      pill.contentEditable = "true";
+      pill.focus();
+      const range = document.createRange();
+      range.selectNodeContents(pill);
+      const sel = window.getSelection();
+      sel.removeAllRanges(); sel.addRange(range);
+      const onKey = (e) => {
+        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+          e.preventDefault();
+          const newText = pill.textContent.trim();
+          if (newText && newText !== originalText) {
+            pill.removeEventListener("keydown", onKey);
+            this.showForkDialog(wrap, originalText, newText);
+          } else {
+            pill.contentEditable = "false";
+            pill.textContent = originalText;
+            pill.removeEventListener("keydown", onKey);
+          }
+        } else if (e.key === "Escape") {
+          pill.contentEditable = "false";
+          pill.textContent = originalText;
+          pill.removeEventListener("keydown", onKey);
+        }
+      };
+      pill.addEventListener("keydown", onKey);
+    },
+
+    showForkDialog(userWrap, originalText, editedText) {
+      const dialog = document.createElement("div");
+      dialog.className = "fork-dialog";
+      const title = document.createElement("div");
+      title.className = "fork-dialog-title";
+      title.textContent = "Editing this message will fork the conversation.";
       const body = document.createElement("div");
-      body.textContent = text;
-      el.appendChild(body);
-      this.transcript.appendChild(el);
+      body.className = "fork-dialog-body";
+      body.textContent = "The current branch continues with your edited message. The original is preserved as a sibling fork.";
+      const labelRow = document.createElement("div");
+      labelRow.className = "fork-dialog-label";
+      labelRow.innerHTML = "label the original ";
+      const input = document.createElement("input");
+      input.className = "fork-dialog-input";
+      input.value = autoLabel(originalText);
+      labelRow.appendChild(input);
+      const actions = document.createElement("div");
+      actions.className = "fork-dialog-actions";
+      const cancel = document.createElement("button");
+      cancel.className = "fork-cancel"; cancel.textContent = "cancel"; cancel.type = "button";
+      const confirm = document.createElement("button");
+      confirm.className = "fork-confirm"; confirm.type = "button";
+      confirm.innerHTML = "fork <kbd>⌘↩</kbd>";
+      actions.appendChild(cancel); actions.appendChild(confirm);
+      dialog.appendChild(title); dialog.appendChild(body); dialog.appendChild(labelRow); dialog.appendChild(actions);
+      userWrap.parentNode.insertBefore(dialog, userWrap.nextSibling);
+
+      const cleanup = () => {
+        dialog.remove();
+        const pill = userWrap.querySelector(".pill");
+        pill.contentEditable = "false";
+      };
+      cancel.onclick = () => {
+        cleanup();
+        const pill = userWrap.querySelector(".pill");
+        pill.textContent = originalText;
+      };
+      confirm.onclick = async () => {
+        const turn = parseInt(userWrap.dataset.entryIdx || "1", 10);
+        try {
+          const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/fork", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ turn, edited_message: editedText, label: input.value || autoLabel(originalText) }),
+          });
+          if (!resp.ok) {
+            cleanup();
+            this.appendBanner("error", "fork failed: " + (await resp.text()));
+            return;
+          }
+          const json = await resp.json();
+          // Refresh sidebar so new fork shows up.
+          if (window.htmx) htmx.trigger(document.body, "sidebar:refresh");
+          // Navigate to the child session.
+          window.location.href = "/s/" + encodeURIComponent(json.child_session_id);
+        } catch (e) {
+          cleanup();
+          this.appendBanner("error", "fork failed: " + e.message);
+        }
+      };
+      input.focus();
+      input.select();
     },
 
     beginAssistantMessage() {
+      this.cheapToolCluster = null;
       const id = "msg-" + Math.random().toString(36).slice(2, 9);
       this.currentMessageId = id;
       const el = document.createElement("div");
-      el.className = "msg assistant";
-      el.innerHTML = '<div class="role">assistant</div><div class="body"></div>';
-      this.transcript.appendChild(el);
-      this.activeMessages.set(id, { el, textBuf: "" });
+      el.className = "assistant-message";
+      this.conversation.appendChild(el);
+      this.activeMessages.set(id, { el, textBuf: "", markdownTimer: null });
     },
 
     appendAssistantDelta(delta) {
-      const id = this.currentMessageId;
-      const m = this.activeMessages.get(id);
+      const m = this.activeMessages.get(this.currentMessageId);
       if (!m) return;
       m.textBuf += delta;
-      // Stream as plain text — marked.parse is O(n²) on the growing buffer
-      // and visibly stalls on long doc-style outputs. We re-parse once on
-      // ASSISTANT_TEXT_END (or on an idle tick if no end arrives).
-      const body = m.el.querySelector(".body");
-      body.textContent = m.textBuf;
-      this.scheduleMarkdownRefresh(id);
+      m.el.textContent = m.textBuf;
+      this.scheduleMarkdownRefresh(m);
     },
 
-    scheduleMarkdownRefresh(id) {
-      if (this._markdownTimer) return;
-      this._markdownTimer = setTimeout(() => {
-        this._markdownTimer = null;
-        const m = this.activeMessages.get(id);
-        if (!m) return;
-        const body = m.el.querySelector(".body");
-        try { body.innerHTML = window.marked.parse(m.textBuf); }
-        catch (e) { body.textContent = m.textBuf; }
+    scheduleMarkdownRefresh(m) {
+      if (m.markdownTimer) return;
+      m.markdownTimer = setTimeout(() => {
+        m.markdownTimer = null;
+        try { m.el.innerHTML = window.marked.parse(m.textBuf); }
+        catch (e) { m.el.textContent = m.textBuf; }
       }, 500);
     },
 
@@ -166,108 +260,210 @@
       const id = this.currentMessageId;
       const m = this.activeMessages.get(id);
       if (!m) return;
-      const final = (data && data.text) || m.textBuf;
-      const body = m.el.querySelector(".body");
-      try { body.innerHTML = window.marked.parse(final); }
-      catch (e) { body.textContent = final; }
-      if (this._markdownTimer) {
-        clearTimeout(this._markdownTimer);
-        this._markdownTimer = null;
-      }
+      const finalText = (data && data.text) || m.textBuf;
+      try { m.el.innerHTML = window.marked.parse(finalText); }
+      catch (e) { m.el.textContent = finalText; }
+      if (m.markdownTimer) { clearTimeout(m.markdownTimer); m.markdownTimer = null; }
       this.activeMessages.delete(id);
       this.currentMessageId = null;
     },
 
     beginToolCall(data) {
       const callId = data.call_id || ("tool-" + Math.random().toString(36).slice(2, 9));
+      const tool = data.tool_name || "?";
+      const isCheap = ["read_file", "grep_files", "list_dir", "glob"].includes(tool);
+
+      // Cluster cheap reads
+      let parent = this.conversation;
+      if (isCheap) {
+        if (!this.cheapToolCluster) {
+          this.cheapToolCluster = document.createElement("div");
+          this.cheapToolCluster.className = "tool-call-cluster";
+          this.conversation.appendChild(this.cheapToolCluster);
+        }
+        parent = this.cheapToolCluster;
+      } else {
+        this.cheapToolCluster = null;
+      }
+
+      // Tool call line
       const el = document.createElement("div");
-      el.className = "msg tool";
-      el.innerHTML = '<div class="role">tool · ' + escapeHtml(data.tool_name || "?") + '</div>';
-      const args = document.createElement("div");
-      args.className = "tool-args";
-      args.textContent = (data.arguments_json || "").slice(0, 200);
-      el.appendChild(args);
-      const out = document.createElement("pre");
-      out.className = "tool-output";
-      out.textContent = "";
-      el.appendChild(out);
-      this.transcript.appendChild(el);
-      this.activeTools.set(callId, { el, outputBuf: "" });
+      el.className = "tool-call " + tool;
+      const verb = document.createElement("span");
+      verb.className = "verb"; verb.textContent = friendlyToolName(tool);
+      el.appendChild(verb);
+      const target = document.createElement("span");
+      target.className = "target";
+      target.textContent = describeTarget(tool, data);
+      el.appendChild(target);
+      const sep = document.createElement("span"); sep.className = "sep"; sep.textContent = "·";
+      const result = document.createElement("span");
+      result.className = "result";
+      result.textContent = "…";
+      el.appendChild(sep); el.appendChild(result);
+      parent.appendChild(el);
+
+      // Diff body for mutating tools
+      let diffEl = null;
+      if (["edit_file", "write_file", "apply_patch"].includes(tool)) {
+        diffEl = document.createElement("pre");
+        diffEl.className = "diff-body";
+        this.conversation.appendChild(diffEl);
+      }
+      this.activeTools.set(callId, { el, resultEl: result, diffEl, outputBuf: "", tool });
     },
 
     appendToolDelta(data) {
       const m = this.activeTools.get(data.call_id);
       if (!m) return;
       m.outputBuf += data.delta || "";
-      const out = m.el.querySelector(".tool-output");
-      out.textContent = m.outputBuf;
+      if (m.diffEl) renderDiffPreview(m.diffEl, m.outputBuf);
     },
 
     finalizeToolCall(data) {
       const m = this.activeTools.get(data.call_id);
       if (!m) return;
-      const out = m.el.querySelector(".tool-output");
-      out.textContent = (data.output || m.outputBuf || "");
+      const tool = m.tool;
+      const out = data.output || m.outputBuf || "";
       if (data.error) {
-        const errEl = document.createElement("div");
-        errEl.className = "tool-error";
-        errEl.style.color = "var(--error)";
-        errEl.textContent = data.error;
-        m.el.appendChild(errEl);
+        m.resultEl.textContent = "error";
+        m.resultEl.className = "result result-bad";
+      } else {
+        m.resultEl.textContent = friendlyResult(tool, data, out);
+        m.resultEl.className = "result " + (looksGood(tool, data) ? "result-good" : "result");
+      }
+      if (m.diffEl) renderDiffPreview(m.diffEl, out);
+      // Subagent: spawn_agent end → render as subagent reference
+      if (tool === "spawn_agent" && data.tool_state) {
+        try {
+          const st = typeof data.tool_state === "string" ? JSON.parse(data.tool_state) : data.tool_state;
+          if (st && st.session_id) {
+            const ref = document.createElement("div");
+            ref.className = "subagent-reference";
+            ref.dataset.subagentId = st.session_id;
+            ref.innerHTML = '<span class="verb">subagent</span> <span class="target"></span>' +
+                            ' <span class="sep">·</span> <span class="result-good">●</span>' +
+                            ' <span class="result">' + (st.status || "done") + '</span>' +
+                            ' <span class="sep">·</span> <span class="result">' + (st.turns_used || 0) + ' turns</span>';
+            ref.querySelector(".target").textContent = (st.task || "").slice(0, 80);
+            ref.onclick = () => { window.location.href = "/s/" + encodeURIComponent(st.session_id); };
+            m.el.parentNode.replaceChild(ref, m.el);
+          }
+        } catch (e) {}
       }
       this.activeTools.delete(data.call_id);
     },
 
     appendBanner(kind, text) {
+      this.cheapToolCluster = null;
       const el = document.createElement("div");
-      el.className = "msg " + kind;
+      el.className = "banner " + kind;
       el.textContent = "[" + kind + "] " + text;
-      this.transcript.appendChild(el);
+      this.conversation.appendChild(el);
     },
 
     scrollToBottom() {
-      this.transcript.scrollTop = this.transcript.scrollHeight;
+      this.conversation.scrollTop = this.conversation.scrollHeight;
     },
 
-    bindButtons() {
-      const post = (path, body) => {
-        return fetch("/live/" + encodeURIComponent(this.sessionId) + path, {
+    bindInputForm() {
+      const form = document.querySelector("form[data-input-form]");
+      if (!form) return;
+      const ta = form.querySelector(".message-input");
+      const submit = (e) => {
+        e.preventDefault();
+        const text = ta.value.trim();
+        if (!text) return;
+        ta.value = "";
+        fetch("/s/" + encodeURIComponent(this.sessionId) + "/send", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: body ? JSON.stringify(body) : null,
-        });
+          body: JSON.stringify({ text }),
+        }).catch(err => this.appendBanner("error", "send failed: " + err.message));
       };
-      this.opts.sendBtn.addEventListener("click", () => {
-        const text = this.input.value.trim();
-        if (!text) return;
-        post("/input", { text });
-        this.input.value = "";
-      });
-      this.opts.steerBtn.addEventListener("click", () => {
-        const text = this.input.value.trim();
-        if (!text) return;
-        post("/steer", { text });
-        this.input.value = "";
-      });
-      this.opts.interruptBtn.addEventListener("click", () => post("/interrupt"));
-      this.opts.compactBtn.addEventListener("click", () => post("/compact"));
-      this.opts.clearBtn.addEventListener("click", () => post("/clear"));
-      this.opts.shutdownBtn.addEventListener("click", () => {
-        if (confirm("shut down this daemon?")) post("/shutdown");
-      });
-      this.input.addEventListener("keydown", (e) => {
+      form.addEventListener("submit", submit);
+    },
+
+    bindKeyboard() {
+      const ta = document.querySelector(".message-input");
+      if (!ta) return;
+      ta.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
           e.preventDefault();
-          this.opts.sendBtn.click();
+          const form = ta.closest("form");
+          if (form) form.requestSubmit();
         }
       });
     },
   };
 
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, (c) => ({
-      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
-    }[c]));
+  function autoLabel(text) {
+    return "before " + text.slice(0, 40).replace(/\s+/g, " ").trim();
+  }
+  function friendlyToolName(tool) {
+    return ({ "read_file": "read", "write_file": "write", "edit_file": "edit",
+              "apply_patch": "patch", "grep_files": "grep", "list_dir": "ls",
+              "shell": "shell", "exec_command": "shell", "glob": "find",
+              "spawn_agent": "subagent", "web_fetch": "fetch" }[tool] || tool);
+  }
+  function describeTarget(tool, data) {
+    const args = data.arguments_json || "{}";
+    try {
+      const a = JSON.parse(args);
+      if (tool === "shell" || tool === "exec_command") return a.command || "";
+      if (tool === "read_file" || tool === "write_file" || tool === "edit_file") return a.file_path || a.path || "";
+      if (tool === "grep_files") return '"' + (a.pattern || "") + '" in ' + (a.path || ".");
+      if (tool === "list_dir") return a.path || ".";
+      if (tool === "web_fetch") return a.url || "";
+      if (tool === "spawn_agent") return a.task || "";
+      return Object.values(a).slice(0, 2).join(" ");
+    } catch (e) { return args; }
+  }
+  function friendlyResult(tool, data, out) {
+    if (tool === "shell" || tool === "exec_command") {
+      if (data.tool_state) {
+        try { const st = typeof data.tool_state === "string" ? JSON.parse(data.tool_state) : data.tool_state;
+          return "exit " + (st.exit_code != null ? st.exit_code : "?");
+        } catch (e) {}
+      }
+      return data.error ? "error" : "ok";
+    }
+    if (tool === "read_file") {
+      const lines = (out.match(/\n/g) || []).length;
+      return lines + " lines";
+    }
+    if (tool === "edit_file" || tool === "write_file" || tool === "apply_patch") {
+      const adds = (out.match(/^\+/gm) || []).length;
+      return "+" + adds;
+    }
+    if (tool === "grep_files") {
+      const hits = (out.match(/\n/g) || []).length;
+      return hits + " hits";
+    }
+    return "ok";
+  }
+  function looksGood(tool, data) {
+    if (data.error) return false;
+    if (data.tool_state) {
+      try {
+        const st = typeof data.tool_state === "string" ? JSON.parse(data.tool_state) : data.tool_state;
+        if (st.exit_code && st.exit_code !== 0) return false;
+      } catch (e) {}
+    }
+    return true;
+  }
+  function renderDiffPreview(el, content) {
+    const max = 800;
+    const trimmed = content.length > max ? content.slice(0, max) + "\n…" : content;
+    el.innerHTML = "";
+    const lines = trimmed.split("\n");
+    lines.forEach(line => {
+      const span = document.createElement("span");
+      if (line.startsWith("+")) span.className = "add";
+      else if (line.startsWith("-")) span.className = "del";
+      span.textContent = line + "\n";
+      el.appendChild(span);
+    });
   }
 
   window.SerfRenderer = SerfRenderer;

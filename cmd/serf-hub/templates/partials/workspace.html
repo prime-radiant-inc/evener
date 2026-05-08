@@ -1,0 +1,40 @@
+{{define "workspace"}}
+<header class="workspace-header">
+  <div class="workspace-title">
+    <span class="title">{{.Title}}</span>
+    <a class="details-link" href="#" data-details-trigger>details</a>
+  </div>
+  <div class="workspace-meta">
+    {{if .Branch}}<span class="branch">{{.Branch}}</span>{{end}}
+    {{if .Branch}}<span class="rule-dot">·</span>{{end}}
+    <span class="status-pill" data-state="{{.State}}">
+      <span class="status-dot" data-state="{{.State}}"></span>
+      {{.StateLabel}}
+    </span>
+    <span class="rule-dot">·</span>
+    <span class="turn-count">{{.TurnCount}} turns</span>
+  </div>
+</header>
+
+<div class="conversation"
+     id="conversation"
+     data-session-id="{{.ID}}"
+     data-replay-url="{{.ReplayURL}}"
+     data-events-url="{{.EventsURL}}"
+     data-state="{{.State}}"></div>
+
+<form class="workspace-input" data-input-form data-session-id="{{.ID}}">
+  <textarea class="message-input" placeholder="message the agent…" autofocus></textarea>
+  <div id="input-strip"
+       class="input-strip"
+       hx-get="/s/{{.ID}}/state"
+       hx-trigger="load, every 2s"
+       hx-swap="innerHTML">
+    <span class="model">{{.Model}}</span>
+  </div>
+</form>
+
+<script src="/assets/marked.min.js"></script>
+<script src="/assets/renderer.js"></script>
+<script>window.SerfRenderer && window.SerfRenderer.init(document.getElementById('conversation'));</script>
+{{end}}
