@@ -4,7 +4,7 @@
 
 **Goal:** Clean up OpenAI Responses streamed tool-call handling and add first-class OpenAI OAuth login/logout/status UX inside `serf-tui`.
 
-**Architecture:** Keep the existing OpenAI auth service and storage model, but move TUI auth into a native interactive flow that calls `internal/auth/openai.Service` directly. Refactor the OpenAI streaming adapter so one logical backend function call always maps to one canonical Serf tool call keyed by `call_id`, with `item_id` used only as an internal alias.
+**Architecture:** Keep the existing OpenAI auth service and storage model, and move TUI auth into a native interactive flow that calls the branch-local `internal/auth/openai.Service` directly. Use the existing slash-command and picker patterns in `serf-tui`, and recreate the embedded OpenAI session after login/logout so live requests pick up the new auth state without requiring a full TUI restart. Refactor the OpenAI streaming adapter so one logical backend function call always maps to one canonical Serf tool call keyed by `call_id`, with `item_id` used only as an internal alias.
 
 **Tech Stack:** Go, Bubble Tea, existing `internal/auth/openai` service, OpenAI Responses SSE adapter tests.
 
@@ -35,7 +35,6 @@ Assert:
 - the tool call name is `task_list`
 - the arguments equal the authoritative final JSON
 
-- [ ] **Step 2: Run the focused adapter test and verify failure before cleanup**
 - [ ] **Step 2: Run the focused adapter test and capture the baseline behavior**
 
 Run:
@@ -119,7 +118,6 @@ Assert:
 - the final tool call name comes from `ToolCallEnd`
 - the final arguments equal the authoritative final payload, not concatenated duplicate snapshots
 
-- [ ] **Step 2: Run the focused accumulator test and verify failure before code change**
 - [ ] **Step 2: Run the focused accumulator test and capture the baseline behavior**
 
 Run:
@@ -168,6 +166,8 @@ git commit -m "fix: preserve authoritative streamed tool call payloads"
 **Files:**
 - Create: `cmd/serf-tui/openai_auth.go`
 - Modify: `cmd/serf-tui/model.go`
+- Modify: `cmd/serf-tui/input.go`
+- Modify: `cmd/serf-tui/model_picker.go`
 - Test: `cmd/serf-tui/*_test.go`
 
 - [ ] **Step 1: Inspect current TUI command and state patterns**
@@ -181,7 +181,18 @@ Read and reuse patterns from:
 
 Confirm where temporary modal/input states belong before writing code.
 
-- [ ] **Step 2: Write the failing TUI auth flow test**
+- [ ] **Step 2: Verify the branch-local OpenAI auth seam and exact reuse points**
+
+Confirm this work will reuse:
+
+- `internal/auth/openai/service.go`
+- `cmd/serf/openai_login.go`
+- `cmd/serf/openai_logout.go`
+- `cmd/serf/openai_status.go`
+
+Do not duplicate token exchange or storage logic in `cmd/serf-tui`.
+
+- [ ] **Step 3: Write the failing TUI auth flow test**
 
 Add a focused test that exercises:
 
@@ -193,7 +204,7 @@ Add a focused test that exercises:
 
 Use a fake `authopenai.Service` seam or injectable function to avoid live OAuth in tests.
 
-- [ ] **Step 3: Create `cmd/serf-tui/openai_auth.go`**
+- [ ] **Step 4: Create `cmd/serf-tui/openai_auth.go`**
 
 Add a focused controller with responsibilities like:
 
@@ -204,7 +215,7 @@ Add a focused controller with responsibilities like:
 
 Keep it TUI-local. Do not move generic auth logic out of `internal/auth/openai`.
 
-- [ ] **Step 4: Add auth UI state to the TUI model**
+- [ ] **Step 5: Add auth UI state to the TUI model**
 
 Modify `cmd/serf-tui/model.go` to track:
 
@@ -215,9 +226,23 @@ Modify `cmd/serf-tui/model.go` to track:
 
 Use a narrow state shape. Avoid introducing a generic modal framework.
 
-- [ ] **Step 5: Wire a clean login trigger**
+- [ ] **Step 6: Add `/openai` slash command and picker-backed action sheet**
 
-Add a keyboard path in `model.go` for OpenAI auth actions when relevant. The UX should:
+Extend the existing TUI slash-command flow so:
+
+- `/openai` appears in `slashCommandHelp()`
+- `/openai` opens one picker-backed action sheet
+- the picker choices are exactly:
+  - `Sign in with OpenAI`
+  - `Show OpenAI auth status`
+  - `Sign out of OpenAI`
+- if the active provider is not OpenAI, `/openai` appends a concise system message instead of opening the picker
+
+Reuse the current picker model; do not add a second action-sheet framework.
+
+- [ ] **Step 7: Wire the login action**
+
+The login action should:
 
 - append a system message like “Opening OpenAI sign-in…”
 - always show the auth URL in the transcript for copy/paste
@@ -225,7 +250,7 @@ Add a keyboard path in `model.go` for OpenAI auth actions when relevant. The UX 
 
 Do not block on browser success.
 
-- [ ] **Step 6: Implement redirect-paste mode**
+- [ ] **Step 8: Implement redirect-paste mode**
 
 While auth mode is active:
 
@@ -243,7 +268,7 @@ On failure:
 - remain usable
 - append a clear error message
 
-- [ ] **Step 7: Add explicit status and logout actions**
+- [ ] **Step 9: Add explicit status and logout actions**
 
 Wire the same auth action sheet to:
 
@@ -257,7 +282,17 @@ Cover auth precedence text for:
 - env plus stored OAuth
 - signed out
 
-- [ ] **Step 8: Add focused failure-path tests**
+- [ ] **Step 10: Add startup status refresh and live-session reload behavior**
+
+When the embedded session is OpenAI-backed:
+
+- load auth status on startup
+- if signed out, append a one-time system message that points the user at `/openai`
+- after successful login or logout, recreate the embedded client/session so live requests pick up the new auth state
+
+Keep the TUI shell alive while refreshing the embedded runtime.
+
+- [ ] **Step 11: Add focused failure-path tests**
 
 Add tests for:
 
@@ -266,10 +301,11 @@ Add tests for:
 - cancelling redirect-paste mode
 - attempting login while login is already in progress
 - logout when already signed out
+- quitting the program while login is pending cancels the in-flight auth context
 
 Keep these controller-focused and offline.
 
-- [ ] **Step 9: Run the focused TUI auth tests**
+- [ ] **Step 12: Run the focused TUI auth tests**
 
 Run:
 
@@ -281,10 +317,10 @@ Expected:
 
 - PASS
 
-- [ ] **Step 10: Commit the TUI auth controller**
+- [ ] **Step 13: Commit the TUI auth controller**
 
 ```bash
-git add cmd/serf-tui/openai_auth.go cmd/serf-tui/model.go cmd/serf-tui/*.go
+git add cmd/serf-tui/openai_auth.go cmd/serf-tui/model.go cmd/serf-tui/input.go cmd/serf-tui/model_picker.go cmd/serf-tui/*_test.go
 git commit -m "feat: add OpenAI login flow to serf-tui"
 ```
 
@@ -337,7 +373,7 @@ Confirm the chosen v1 UX model is implemented exactly:
 - no separate modal stack
 - redirect paste uses the main textarea/input path
 
-If `cmd/serf-tui/input.go` owns the necessary routing, move the minimum logic there and add it to the commit scope. Otherwise keep the implementation in `model.go`.
+Keep `model.go` responsible only for state transitions and command dispatch. Put auth orchestration in `openai_auth.go`, and put any picker reuse helpers in `model_picker.go` if needed so `model.go` does not grow substantially beyond its current size.
 
 - [ ] **Step 5: Run targeted TUI UX tests**
 
@@ -378,7 +414,6 @@ Expected:
 
 - PASS
 
-- [ ] **Step 2: Build the TUI binary**
 - [ ] **Step 2: Build exact local binaries for manual verification**
 
 Run:
@@ -392,7 +427,7 @@ Expected:
 
 - both binaries are produced at repo root with no compile errors
 
-- [ ] **Step 3: Manually exercise local TUI login flow**
+- [ ] **Step 3: Manually exercise deterministic local TUI auth UX first**
 
 Run:
 
@@ -402,13 +437,22 @@ Run:
 
 Verify:
 
+- `/help` shows `/openai`
+- `/openai` opens the auth action sheet
+- signed-out OpenAI startup state is obvious before auth is triggered
+- cancel paths work without crashing
+
+- [ ] **Step 4: Manually exercise live local TUI login flow**
+
+Verify:
+
 - OpenAI login action is discoverable
 - browser URL is shown and usable
 - manual pasteback works
 - success state updates in the TUI
 - an OpenAI prompt can complete successfully after login
 
-- [ ] **Step 4: Check for regressions in CLI auth**
+- [ ] **Step 5: Check for regressions in CLI auth**
 
 Run:
 
@@ -422,14 +466,14 @@ Expected:
 
 - CLI surface still behaves as before
 
-- [ ] **Step 5: Final commit for integration fixes if needed**
+- [ ] **Step 6: Final commit for integration fixes if needed**
 
 ```bash
 git add <exact files changed during verification>
 git commit -m "fix: finalize OpenAI TUI auth integration"
 ```
 
-- [ ] **Step 6: Summarize outcomes and residual risks**
+- [ ] **Step 7: Summarize outcomes and residual risks**
 
 Document in the final handoff:
 

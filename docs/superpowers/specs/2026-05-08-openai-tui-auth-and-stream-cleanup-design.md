@@ -83,19 +83,32 @@ This is not recommended.
 
 Use Approach B.
 
+### Existing code reality
+
+This branch already contains the reusable OpenAI auth seam:
+
+- `internal/auth/openai/service.go`
+- `cmd/serf/openai_login.go`
+- `cmd/serf/openai_logout.go`
+- `cmd/serf/openai_status.go`
+
+The TUI should reuse that branch-local service layer directly. It should not shell out to the CLI and it should not reimplement storage/token exchange in `cmd/serf-tui`.
+
 ### Concrete v1 UX choice
 
-Use one explicit keyboard-triggered OpenAI auth menu inside `serf-tui`, not a free-form mixture of menus, modals, and transcript-only commands.
+Use one explicit slash-command-triggered OpenAI auth menu inside `serf-tui`, not a free-form mixture of menus, modals, and transcript-only commands.
 
 Concrete interaction model:
 
-- one keybinding opens an OpenAI auth action sheet when the active provider is OpenAI
+- one slash command, `/openai`, opens an OpenAI auth action sheet
 - the action sheet offers exactly:
   - `Sign in with OpenAI`
   - `Show OpenAI auth status`
   - `Sign out of OpenAI`
 - choosing `Sign in with OpenAI` appends the auth URL as a system message and immediately switches the main input into a temporary redirect-paste mode
 - redirect-paste mode reuses the main input widget with different placeholder/help text; no separate modal component is introduced in v1
+- the action sheet reuses the existing picker pattern rather than inventing a second menu system
+- when the active provider is not OpenAI, `/openai` is still listed in help but responds with a concise system message that the current session is not using OpenAI
 
 ### 1. OpenAI stream tool-call tracker
 
@@ -178,7 +191,7 @@ User-visible behavior:
 
 Recommended UX shape:
 
-- keybinding to open an OpenAI auth action sheet
+- `/openai` opens an OpenAI auth action sheet
 - actions are exactly:
   - `Sign in with OpenAI`
   - `Show OpenAI auth status`
@@ -221,6 +234,18 @@ Behavior matrix:
 
 This keeps TUI behavior aligned with `llm.NewFromEnv(llm.WithStateDir(...))` and avoids a second precedence model.
 
+### 6. Live runtime reconfiguration
+
+Successful OpenAI login/logout inside `serf-tui` must affect the current interactive session without requiring the user to restart the TUI manually.
+
+Chosen strategy:
+
+- after successful login or logout, if the current provider/session profile is OpenAI, recreate the embedded LLM client and embedded session using the existing startup config and current state dir
+- preserve transcript/history in the TUI view by appending a system message and continuing in the same client shell
+- do not attempt deep hot-swapping inside an already-running agent session
+
+This is the smallest practical way to align the live runtime with the updated auth state while preserving the existing `startEmbedded` architecture.
+
 ## Architecture
 
 ### Files likely affected
@@ -256,6 +281,8 @@ Ownership map:
 - `model.go`: TUI state transitions and key handling only
 - `statusbar.go`: compact status rendering only
 
+If picker reuse requires a small extension, that belongs in `cmd/serf-tui/model_picker.go` or a focused sibling file, not in `model.go`.
+
 ## Data Flow
 
 ### Stream cleanup
@@ -275,7 +302,8 @@ Ownership map:
    - manual redirect reader bound to a temporary paste-input mode
 3. Service runs the existing callback + manual race.
 4. TUI receives success/failure through Bubble Tea messages and appends a system message.
-5. Future OpenAI model requests use the same stored auth via `llm.NewFromEnv(llm.WithStateDir(...))`.
+5. On successful login/logout, the embedded OpenAI session is recreated if the active provider is OpenAI.
+6. Future OpenAI model requests use the same stored auth via `llm.NewFromEnv(llm.WithStateDir(...))`.
 
 ## Error Handling
 
@@ -298,6 +326,9 @@ Ownership map:
   - env API key
   - stored OAuth session
   - signed out
+- on startup for OpenAI-backed sessions, signed-out state should be surfaced proactively through:
+  - a compact status hint
+  - and a one-time system message pointing the user at `/openai`
 
 ## Testing Strategy
 
