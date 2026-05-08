@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -54,6 +55,7 @@ func (e *httpErrorBase) Error() string {
 	return fmt.Sprintf("%s error (status=%d): %s", e.provider, e.statusCode, msg)
 }
 func (e *httpErrorBase) Provider() string           { return e.provider }
+func (e *httpErrorBase) setProvider(name string)    { e.provider = strings.TrimSpace(name) }
 func (e *httpErrorBase) StatusCode() int            { return e.statusCode }
 func (e *httpErrorBase) ErrorCode() string          { return e.errorCode }
 func (e *httpErrorBase) Retryable() bool            { return e.retryable }
@@ -89,6 +91,29 @@ func extractErrorCode(raw any) string {
 		}
 	}
 	return ""
+}
+
+// providerSetter is implemented by errors whose provider name can be
+// rewritten in place. Used by thin provider wrappers (e.g. the ollama
+// adapter, which delegates to openaicompat) so errors carry the wrapper's
+// own provider stamp instead of the inner adapter's.
+type providerSetter interface {
+	setProvider(string)
+}
+
+// RewriteErrorProvider rewrites err's provider name in place if the error
+// (or any error in its Unwrap chain) supports it. Returns err unchanged
+// otherwise. Safe to call on nil. Thin wrappers should call this on every
+// error they forward so failures aren't misattributed to the inner adapter.
+func RewriteErrorProvider(err error, provider string) error {
+	if err == nil {
+		return nil
+	}
+	var ps providerSetter
+	if errors.As(err, &ps) {
+		ps.setProvider(provider)
+	}
+	return err
 }
 
 func ErrorFromHTTPStatus(provider string, statusCode int, message string, raw any, retryAfter *time.Duration) error {

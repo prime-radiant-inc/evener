@@ -2,6 +2,7 @@ package ollama
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -390,6 +391,100 @@ func TestAdapter_Stream_CloseIsIdempotent(t *testing.T) {
 	}
 	// Second close must not panic.
 	_ = stream.Close()
+}
+
+// TestAdapter_Complete_RewritesErrorProvider verifies that an HTTP error
+// from the inner openai-compatible adapter has its provider stamp
+// rewritten to "ollama" before bubbling up. Without this, an Ollama
+// outage / auth failure would surface as an "openai-compatible" error
+// in logs and metrics.
+func TestAdapter_Complete_RewritesErrorProvider(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"bad token"}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &adapter{inner: &openaicompat.Adapter{
+		BaseURL: srv.URL,
+		Client:  srv.Client(),
+	}}
+
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model:    "llama3.2",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err == nil {
+		t.Fatal("expected an error from 401 response")
+	}
+	var llmErr llm.Error
+	if !errors.As(err, &llmErr) {
+		t.Fatalf("error is not a llm.Error: %T %v", err, err)
+	}
+	if llmErr.Provider() != "ollama" {
+		t.Fatalf("err.Provider() = %q, want ollama", llmErr.Provider())
+	}
+}
+
+// TestAdapter_Stream_RewritesStartupErrorProvider verifies that a
+// non-200 startup response on the streaming endpoint surfaces as an
+// ollama-stamped error.
+func TestAdapter_Stream_RewritesStartupErrorProvider(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"oops"}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &adapter{inner: &openaicompat.Adapter{
+		BaseURL: srv.URL,
+		Client:  srv.Client(),
+	}}
+
+	_, err := a.Stream(context.Background(), llm.Request{
+		Model:    "llama3.2",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err == nil {
+		t.Fatal("expected a startup error from 500 response")
+	}
+	var llmErr llm.Error
+	if !errors.As(err, &llmErr) {
+		t.Fatalf("error is not a llm.Error: %T %v", err, err)
+	}
+	if llmErr.Provider() != "ollama" {
+		t.Fatalf("err.Provider() = %q, want ollama", llmErr.Provider())
+	}
+}
+
+// TestAdapter_Stream_RewritesEventErrorProvider verifies that an error
+// surfaced via StreamEventError (from a mid-stream failure on the inner
+// stream) is also stamped with the ollama provider name.
+func TestAdapter_Stream_RewritesEventErrorProvider(t *testing.T) {
+	// Use the stub stream so we can synthesize a StreamEventError directly.
+	inner := &stubStream{events: make(chan llm.StreamEvent, 1)}
+	// Build an error whose original Provider() is the inner adapter's
+	// "openai-compatible" stamp so we can assert the rewrite worked.
+	innerErr := llm.ErrorFromHTTPStatus("openai-compatible", 502, "upstream gone", nil, nil)
+	inner.events <- llm.StreamEvent{Type: llm.StreamEventError, Err: innerErr}
+	close(inner.events) // signal end-of-stream so pump can exit cleanly
+
+	ws := newRewriteStream(inner)
+
+	var seen llm.Error
+	for ev := range ws.Events() {
+		if ev.Type == llm.StreamEventError && ev.Err != nil {
+			if !errors.As(ev.Err, &seen) {
+				t.Fatalf("ev.Err is not a llm.Error: %T", ev.Err)
+			}
+		}
+	}
+	if seen == nil {
+		t.Fatal("did not observe a StreamEventError on the wrapper stream")
+	}
+	if seen.Provider() != "ollama" {
+		t.Fatalf("event err.Provider() = %q, want ollama", seen.Provider())
+	}
 }
 
 // TestProviderRegistered_WhenEnvSet verifies that init() has registered the

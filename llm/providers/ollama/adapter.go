@@ -41,13 +41,13 @@ func (a *adapter) Name() string { return providerName }
 func (a *adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	resp, err := a.inner.Complete(ctx, req)
 	resp.Provider = providerName
-	return resp, err
+	return resp, llm.RewriteErrorProvider(err, providerName)
 }
 
 func (a *adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	inner, err := a.inner.Stream(ctx, req)
 	if err != nil {
-		return nil, err
+		return nil, llm.RewriteErrorProvider(err, providerName)
 	}
 	return newRewriteStream(inner), nil
 }
@@ -104,6 +104,9 @@ func (s *rewriteStream) pump() {
 			}
 			if ev.Response != nil {
 				ev.Response.Provider = providerName
+			}
+			if ev.Err != nil {
+				ev.Err = llm.RewriteErrorProvider(ev.Err, providerName)
 			}
 			select {
 			case s.out <- ev:
