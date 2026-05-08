@@ -41,17 +41,33 @@ section.panel {
 section.panel h2 { margin-top: 0; font-size: 14px; color: var(--muted); font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; }
 .row {
   display: flex;
+  align-items: center;
   justify-content: space-between;
+  gap: var(--pad);
   padding: 8px 4px;
   border-bottom: 1px solid var(--border);
   cursor: pointer;
   text-decoration: none;
   color: var(--text);
+  min-width: 0;
 }
 .row:hover { background: var(--panel-2); }
 .row:last-child { border-bottom: none; }
-.row .meta { color: var(--muted); font-size: 12px; }
-.row .wd { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; }
+.row .meta {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.row .wd {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
+}
 
 button, input[type=submit], a.btn {
   background: var(--panel-2);
