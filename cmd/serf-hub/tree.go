@@ -135,12 +135,17 @@ func normalizeState(s string) string {
 }
 
 // nodeKind returns "fork", "subagent", or "session" for a meta.
+//
+// A "fork" is the *snapshotted original* of an edit — the older branch that
+// was preserved when the user edited a prior message. It carries the
+// user-supplied ForkLabel.  The newer (active) branch carries
+// ParentSessionID but no ForkLabel and renders as a normal session.
 func nodeKind(m agent.SessionMeta) string {
-	if m.ParentSessionID != "" && !m.IsSubagent {
-		return "fork"
-	}
 	if m.IsSubagent {
 		return "subagent"
+	}
+	if m.ForkLabel != "" {
+		return "fork"
 	}
 	return "session"
 }
@@ -174,6 +179,18 @@ func BuildTree(metas []agent.SessionMeta, live []LiveEntry) Tree {
 	projects := make(map[string]*projectAccum)
 	projectOrder := []string{} // insertion order for stable output
 
+	// Build a reverse-lookup index: which session forked from each origin?
+	// Used to attach a "snapshotted original" (the parent meta with ForkLabel
+	// set) under the new active branch (the child whose ParentSessionID
+	// matches). Per spec: the new active branch is top-level; the original
+	// is the dim sibling.
+	forkChildren := make(map[string]string) // origin_id -> latest_child_id
+	for _, m := range metas {
+		if m.ParentSessionID != "" && !m.IsSubagent {
+			forkChildren[m.ParentSessionID] = m.ID
+		}
+	}
+
 	for _, m := range metas {
 		pname := projectName(m)
 		if _, ok := projects[pname]; !ok {
@@ -183,10 +200,24 @@ func BuildTree(metas []agent.SessionMeta, live []LiveEntry) Tree {
 			projectOrder = append(projectOrder, pname)
 		}
 		acc := projects[pname]
-		if m.ParentSessionID == "" {
-			acc.topLevel = append(acc.topLevel, m)
-		} else {
+		switch {
+		case m.IsSubagent && m.ParentSessionID != "":
+			// Subagents nest under their origin.
 			acc.children[m.ParentSessionID] = append(acc.children[m.ParentSessionID], m)
+		case m.ForkLabel != "":
+			// This meta is the snapshotted original of a fork. The active
+			// branch (the meta whose ParentSessionID == m.ID) is top-level;
+			// this one becomes the dim child of that active branch.
+			if newID, ok := forkChildren[m.ID]; ok {
+				acc.children[newID] = append(acc.children[newID], m)
+			} else {
+				// No active branch references this — keep top-level.
+				acc.topLevel = append(acc.topLevel, m)
+			}
+		default:
+			// Top-level: either no parent, or the active branch of a fork
+			// (parent set but no ForkLabel of its own).
+			acc.topLevel = append(acc.topLevel, m)
 		}
 	}
 
@@ -217,9 +248,13 @@ func BuildTree(metas []agent.SessionMeta, live []LiveEntry) Tree {
 			for _, c := range childMetas {
 				if c.IsSubagent {
 					subagents = append(subagents, c)
-				} else {
+				} else if c.ForkLabel != "" {
+					// Snapshotted original of a fork.
 					forks = append(forks, c)
 				}
+				// Other children of m (e.g., active branches of forks where
+				// m IS the original) are not displayed under m — they're
+				// top-level. Defensive: ignore any other category.
 			}
 			sort.Slice(subagents, func(i, j int) bool {
 				return subagents[i].UpdatedAt.After(subagents[j].UpdatedAt)
@@ -299,11 +334,13 @@ func BuildTree(metas []agent.SessionMeta, live []LiveEntry) Tree {
 			Kind:  "session",
 		}
 		if meta != nil {
-			node.Title = nodeTitle(*meta, "session")
+			kind := nodeKind(*meta)
+			node.Kind = kind
+			node.Title = nodeTitle(*meta, kind)
 			node.Project = projectName(*meta)
 			node.Age = ageString(meta.UpdatedAt)
 		} else {
-			node.Title = le.SessionID
+			node.Title = shortID(le.SessionID)
 			node.Age = "now"
 		}
 		liveNodes = append(liveNodes, node)

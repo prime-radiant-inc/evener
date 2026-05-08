@@ -13,14 +13,14 @@
       <span class="row-meta">{{len .Live}}</span>
     </header>
     {{range .Live}}
-    <a class="live-row session-row"
+    <a class="live-row {{if eq .Kind "fork"}}fork-row{{else if eq .Kind "subagent"}}subagent-row{{else}}session-row{{end}}"
        data-state="{{.State}}"
        href="/s/{{.ID}}"
        hx-get="/s/{{.ID}}"
        hx-target="#workspace"
        hx-swap="innerHTML"
        hx-push-url="/s/{{.ID}}">
-      <span class="status-dot" data-state="{{.State}}"></span>
+      {{if eq .Kind "fork"}}<span class="fork-glyph" data-state="{{.State}}">⎇</span>{{else}}<span class="status-dot{{if eq .Kind "subagent"}} subagent{{end}}" data-state="{{.State}}"></span>{{end}}
       <span class="row-title">{{.Title}}</span>
       <span class="row-meta">{{.Project}}</span>
       <span class="row-age">{{.Age}}</span>

@@ -12,23 +12,25 @@ import (
 func TestBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 	now := time.Now()
 	metas := []agent.SessionMeta{
-		// Top-level live session
-		{ID: "01PARENT", UpdatedAt: now, OriginalTask: "fix replay bug",
-			EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"}},
-		// Subagent
+		// Active branch — newer, holds the original session's name. Top-level.
+		{ID: "01ACTIVE", UpdatedAt: now, OriginalTask: "fix replay bug",
+			EnvInfo:         agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
+			ParentSessionID: "01OLDORIG", DivergenceTurn: 7},
+		// Subagent of the active branch.
 		{ID: "01SUB1", UpdatedAt: now.Add(-time.Minute), OriginalTask: "verify",
 			EnvInfo:         agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
-			ParentSessionID: "01PARENT", IsSubagent: true},
-		// Fork (closed/dim)
-		{ID: "01FORK1", UpdatedAt: now.Add(-2 * time.Hour), OriginalTask: "fix replay bug",
-			EnvInfo:         agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
-			ParentSessionID: "01PARENT", DivergenceTurn: 7, ForkLabel: "before TDD"},
-		// Unrelated session in same project
+			ParentSessionID: "01ACTIVE", IsSubagent: true},
+		// Snapshotted original — older transcript preserved. Has ForkLabel.
+		// Becomes a dim child of 01ACTIVE (the active branch references it).
+		{ID: "01OLDORIG", UpdatedAt: now.Add(-2 * time.Hour), OriginalTask: "fix replay bug",
+			EnvInfo:   agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
+			ForkLabel: "before TDD"},
+		// Unrelated session in same project.
 		{ID: "01OTHER", UpdatedAt: now.Add(-15 * time.Minute), OriginalTask: "htmx swap",
 			EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"}},
 	}
 	live := []LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01PARENT", Status: "processing"},
+		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01ACTIVE", Status: "processing"},
 		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01SUB1", Status: "processing"},
 	}
 
@@ -43,18 +45,19 @@ func TestBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 		t.Errorf("name: %q", proj.Name)
 	}
 
-	// Top-level sessions: 01PARENT then 01OTHER (by recency)
+	// Top-level sessions: 01ACTIVE then 01OTHER (by recency).
+	// 01OLDORIG is NOT top-level — it's the snapshotted original under 01ACTIVE.
 	if len(proj.Sessions) != 2 {
 		t.Fatalf("sessions: %d", len(proj.Sessions))
 	}
-	if proj.Sessions[0].ID != "01PARENT" {
+	if proj.Sessions[0].ID != "01ACTIVE" {
 		t.Errorf("[0]: %q", proj.Sessions[0].ID)
 	}
 	if proj.Sessions[1].ID != "01OTHER" {
 		t.Errorf("[1]: %q", proj.Sessions[1].ID)
 	}
 
-	// Children of 01PARENT: subagent first, then fork
+	// Children of 01ACTIVE: subagent first, then the snapshotted original (fork).
 	children := proj.Sessions[0].Children
 	if len(children) != 2 {
 		t.Fatalf("children: %d", len(children))
@@ -62,10 +65,10 @@ func TestBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 	if children[0].ID != "01SUB1" || children[0].Kind != "subagent" {
 		t.Errorf("[0]: %s/%s", children[0].ID, children[0].Kind)
 	}
-	if children[1].ID != "01FORK1" || children[1].Kind != "fork" {
+	if children[1].ID != "01OLDORIG" || children[1].Kind != "fork" {
 		t.Errorf("[1]: %s/%s", children[1].ID, children[1].Kind)
 	}
-	// Fork title includes the label
+	// Fork title includes the label.
 	if !strings.Contains(children[1].Title, "before TDD") {
 		t.Errorf("fork title missing label: %q", children[1].Title)
 	}
