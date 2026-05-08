@@ -50,6 +50,35 @@ func TestNewFromEnv_PassesStateDirOptionToFactories(t *testing.T) {
 	}
 }
 
+func TestNewFromEnv_UsesSERFStateDirEnvByDefault(t *testing.T) {
+	// Isolate global registry.
+	envFactoriesMu.Lock()
+	saved := append([]EnvAdapterFactory{}, envFactories...)
+	envFactories = nil
+	envFactoriesMu.Unlock()
+	t.Cleanup(func() {
+		envFactoriesMu.Lock()
+		envFactories = saved
+		envFactoriesMu.Unlock()
+	})
+
+	const wantStateDir = "/tmp/serf-state-from-env"
+	var gotStateDir string
+	t.Setenv("SERF_STATE_DIR", wantStateDir)
+
+	RegisterEnvAdapterFactory(func(cfg EnvConfig) (ProviderAdapter, bool, error) {
+		gotStateDir = cfg.StateDir
+		return &envFakeAdapter{name: "openai"}, true, nil
+	})
+
+	if _, err := NewFromEnv(); err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+	if gotStateDir != wantStateDir {
+		t.Fatalf("factory state dir = %q, want %q", gotStateDir, wantStateDir)
+	}
+}
+
 func TestNewFromEnv_UsesRegisteredFactories(t *testing.T) {
 	// Isolate global registry.
 	envFactoriesMu.Lock()

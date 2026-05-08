@@ -2,6 +2,7 @@ package llm
 
 import (
 	"fmt"
+	"os"
 	"sync"
 )
 
@@ -45,7 +46,7 @@ func NewFromEnv(opts ...EnvOption) (*Client, error) {
 	factories := append([]EnvAdapterFactory{}, envFactories...)
 	envFactoriesMu.Unlock()
 
-	var cfg EnvConfig
+	cfg := EnvConfig{StateDir: os.Getenv("SERF_STATE_DIR")}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&cfg)

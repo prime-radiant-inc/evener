@@ -117,6 +117,52 @@ func TestLoginSucceedsViaManualPastebackPath(t *testing.T) {
 	}
 }
 
+func TestLoginManualPastebackDoesNotWaitForCallbackTimeout(t *testing.T) {
+	stateDir := t.TempDir()
+	now := time.Date(2026, 5, 7, 23, 22, 0, 0, time.UTC)
+	var expectedState string
+
+	svc := newTestService(now)
+	svc.cfg = Config{CallbackTimeout: 10 * time.Second}
+	svc.startCallbackServer = func(_ Config, _ int, state string) (callbackServer, error) {
+		expectedState = state
+		return &stubCallbackServer{
+			redirectURI: "http://localhost:1455/auth/callback",
+			waitFunc: func(ctx context.Context) (CallbackResult, error) {
+				<-ctx.Done()
+				return CallbackResult{}, ctx.Err()
+			},
+		}, nil
+	}
+	svc.readRedirectURL = func(context.Context) (string, error) {
+		return "http://localhost:1455/auth/callback?code=manual-code&state=" + expectedState, nil
+	}
+	svc.exchangeCode = func(context.Context, *http.Client, Config, TokenExchangeRequest) (TokenSet, error) {
+		return TokenSet{
+			AccessToken:  "manual-access-token",
+			RefreshToken: "manual-refresh-token",
+			TokenType:    "Bearer",
+			Scope:        "openid profile email offline_access",
+			Expiry:       now.Add(time.Hour),
+		}, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	status, err := svc.Login(ctx, stateDir)
+	if err != nil {
+		t.Fatalf("Login() error = %v", err)
+	}
+	if !status.SignedIn {
+		t.Fatal("SignedIn = false, want true")
+	}
+	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+		t.Fatalf("Login() took %v, want manual fallback without waiting for callback timeout", elapsed)
+	}
+}
+
 func TestLoginBrowserOpenFailureIsNonFatal(t *testing.T) {
 	stateDir := t.TempDir()
 	now := time.Date(2026, 5, 7, 23, 25, 0, 0, time.UTC)
@@ -388,8 +434,9 @@ func newTestService(now time.Time) *Service {
 		},
 		now:         func() time.Time { return now },
 		openBrowser: func(string) error { return nil },
-		readRedirectURL: func(context.Context) (string, error) {
-			return "", errors.New("unexpected manual redirect prompt")
+		readRedirectURL: func(ctx context.Context) (string, error) {
+			<-ctx.Done()
+			return "", ctx.Err()
 		},
 		startCallbackServer: func(Config, int, string) (callbackServer, error) {
 			return &stubCallbackServer{
@@ -410,6 +457,7 @@ type stubCallbackServer struct {
 	redirectURI string
 	waitResult  CallbackResult
 	waitErr     error
+	waitFunc    func(context.Context) (CallbackResult, error)
 	closed      bool
 }
 
@@ -417,7 +465,10 @@ func (s *stubCallbackServer) RedirectURI() string {
 	return s.redirectURI
 }
 
-func (s *stubCallbackServer) Wait(context.Context) (CallbackResult, error) {
+func (s *stubCallbackServer) Wait(ctx context.Context) (CallbackResult, error) {
+	if s.waitFunc != nil {
+		return s.waitFunc(ctx)
+	}
 	return s.waitResult, s.waitErr
 }
 

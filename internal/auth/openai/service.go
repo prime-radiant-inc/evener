@@ -67,8 +67,9 @@ func NewService(cfg Config, client *http.Client) *Service {
 		client:      client,
 		now:         time.Now,
 		openBrowser: defaultBrowserOpener,
-		readRedirectURL: func(context.Context) (string, error) {
-			return "", context.DeadlineExceeded
+		readRedirectURL: func(ctx context.Context) (string, error) {
+			<-ctx.Done()
+			return "", ctx.Err()
 		},
 		startCallbackServer: func(cfg Config, port int, expectedState string) (callbackServer, error) {
 			return StartCallbackServer(cfg, port, expectedState)
@@ -125,25 +126,39 @@ func (s *Service) Login(ctx context.Context, stateDir string) (AuthStatus, error
 
 	_ = s.openBrowser(authorizeURL)
 
-	result, err := callback.Wait(ctx)
-	if err != nil {
-		if !errors.Is(err, context.DeadlineExceeded) {
-			return AuthStatus{}, err
-		}
+	loginCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-		rawRedirectURL, promptErr := s.readRedirectURL(ctx)
-		if promptErr != nil {
-			return AuthStatus{}, promptErr
+	callbackResults := make(chan callbackResult, 1)
+	go func() {
+		result, err := callback.Wait(loginCtx)
+		callbackResults <- callbackResult{result: result, err: err}
+	}()
+
+	manualResults := make(chan callbackResult, 1)
+	go func() {
+		rawRedirectURL, err := s.readRedirectURL(loginCtx)
+		if err != nil {
+			manualResults <- callbackResult{err: err}
+			return
 		}
-		code, returnedState, parseErr := ParseRedirectURL(rawRedirectURL)
-		if parseErr != nil {
-			return AuthStatus{}, parseErr
+		code, returnedState, err := ParseRedirectURL(rawRedirectURL)
+		if err != nil {
+			manualResults <- callbackResult{err: err}
+			return
 		}
 		if err := ValidateState(state, returnedState); err != nil {
-			return AuthStatus{}, err
+			manualResults <- callbackResult{err: err}
+			return
 		}
-		result = CallbackResult{Code: code, State: returnedState}
+		manualResults <- callbackResult{result: CallbackResult{Code: code, State: returnedState}}
+	}()
+
+	result, err := waitForLoginCompletion(ctx, callbackResults, manualResults)
+	if err != nil {
+		return AuthStatus{}, err
 	}
+	cancel()
 
 	tokens, err := s.exchangeCode(ctx, s.client, s.config(), TokenExchangeRequest{
 		Code:         result.Code,
@@ -345,6 +360,50 @@ func mergeConfigDefaults(cfg Config) Config {
 		defaults.CallbackTimeout = cfg.CallbackTimeout
 	}
 	return defaults
+}
+
+func waitForLoginCompletion(
+	ctx context.Context,
+	callbackResults <-chan callbackResult,
+	manualResults <-chan callbackResult,
+) (CallbackResult, error) {
+	for callbackResults != nil || manualResults != nil {
+		select {
+		case <-ctx.Done():
+			return CallbackResult{}, ctx.Err()
+		case result := <-callbackResults:
+			if result.err == nil {
+				return result.result, nil
+			}
+			if errors.Is(result.err, context.Canceled) {
+				callbackResults = nil
+				continue
+			}
+			if errors.Is(result.err, context.DeadlineExceeded) {
+				callbackResults = nil
+				continue
+			}
+			return CallbackResult{}, result.err
+		case result := <-manualResults:
+			if result.err == nil {
+				return result.result, nil
+			}
+			if errors.Is(result.err, context.Canceled) {
+				manualResults = nil
+				continue
+			}
+			if errors.Is(result.err, context.DeadlineExceeded) {
+				manualResults = nil
+				continue
+			}
+			return CallbackResult{}, result.err
+		}
+	}
+
+	if err := ctx.Err(); err != nil {
+		return CallbackResult{}, err
+	}
+	return CallbackResult{}, context.DeadlineExceeded
 }
 
 func firstNonEmpty(values ...string) string {
