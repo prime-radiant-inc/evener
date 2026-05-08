@@ -30,19 +30,5 @@
 
 <script src="/assets/marked.min.js"></script>
 <script src="/assets/renderer.js"></script>
-<script>
-  // renderer.js exposes window.SerfRenderer; init it for this page.
-  window.SerfRenderer.init({
-    sessionId: {{.SessionID}},
-    transcript: document.getElementById("transcript"),
-    statusBar: document.getElementById("status-bar"),
-    input: document.getElementById("input-text"),
-    sendBtn: document.getElementById("btn-send"),
-    steerBtn: document.getElementById("btn-steer"),
-    interruptBtn: document.getElementById("btn-interrupt"),
-    compactBtn: document.getElementById("btn-compact"),
-    clearBtn: document.getElementById("btn-clear"),
-    shutdownBtn: document.getElementById("btn-shutdown"),
-  });
-</script>
+<script src="/assets/init-live.js"></script>
 {{end}}

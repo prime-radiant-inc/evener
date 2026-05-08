@@ -17,23 +17,10 @@
   </div>
 </section>
 
-<div id="transcript" data-session-id="{{.Meta.ID}}"></div>
+<div id="transcript"
+     data-session-id="{{.Meta.ID}}"
+     data-replay-url="/past/{{.Meta.ID}}/replay"></div>
 <script src="/assets/marked.min.js"></script>
 <script src="/assets/renderer.js"></script>
-<script>
-  window.SerfRenderer.init({
-    sessionId: {{.Meta.ID}},
-    transcript: document.getElementById("transcript"),
-    statusBar: document.createElement("div"),
-    input: document.createElement("textarea"),
-    sendBtn: document.createElement("button"),
-    steerBtn: document.createElement("button"),
-    interruptBtn: document.createElement("button"),
-    compactBtn: document.createElement("button"),
-    clearBtn: document.createElement("button"),
-    shutdownBtn: document.createElement("button"),
-    replayUrl: "/past/" + encodeURIComponent({{.Meta.ID}}) + "/replay",
-    readOnly: true,
-  });
-</script>
+<script src="/assets/init-past.js"></script>
 {{end}}

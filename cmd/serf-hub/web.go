@@ -120,7 +120,7 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/live/", s.handleLiveProxy)
 
 	guard := SameOriginGuard(s.cfg.HubAddr)
-	return guard(mux)
+	return guard(CSPMiddleware(mux))
 }
 
 func (s *WebServer) handleIndex(w http.ResponseWriter, r *http.Request) {
