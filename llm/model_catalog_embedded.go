@@ -70,6 +70,10 @@ func applyOverrides(cat *ModelCatalog, data []byte) {
 		if v, ok := ov["supports_effort_parameter"].(bool); ok {
 			m.SupportsEffortParameter = v
 		}
+		if v, ok := ov["supports_web_search"].(bool); ok {
+			b := v
+			m.SupportsWebSearch = &b
+		}
 	}
 
 	// Rebuild index after modifications.

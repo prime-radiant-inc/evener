@@ -542,47 +542,56 @@ func NewOpenRouterAnthropicProfile(model string) ProviderProfile {
 
 	cat := llm.EmbeddedModelCatalog()
 	if cat != nil {
-		// Step 1: prefixed lookup (sparse — positive-only overrides).
+		// Step 1: prefixed lookup (openrouter-served entry). Treat as
+		// authoritative — explicit catalog values (true OR false) for
+		// presence-aware fields like SupportsWebSearch are honored.
+		// For absent fields, the constructor default sticks.
 		var prefixedHit bool
 		if mi := cat.GetModelInfo("openrouter/" + model); mi != nil {
 			prefixedHit = true
 			if mi.ContextWindow > 0 {
 				contextWindow = mi.ContextWindow
 			}
-			if mi.SupportsWebSearch {
-				ws = true
+			if mi.SupportsWebSearch != nil {
+				ws = *mi.SupportsWebSearch
 			}
 			if len(mi.ReasoningEffortLevels) > 0 {
 				efforts = append([]string(nil), mi.ReasoningEffortLevels...)
 			}
 		}
 
-		// Step 2: bare-direct lookup (authoritative — honor explicit values).
-		// Only run when the prefixed lookup didn't already match — the
-		// prefixed entry takes precedence for context window and only
-		// adds positive overrides; if it matched, the model is "served
-		// via OpenRouter" and the bare entry is just a different
-		// provider's view of the same model that we shouldn't conflate.
+		// Step 2: bare-direct lookup (authoritative). Only run when the
+		// prefixed lookup didn't match — if it did, the prefixed entry
+		// already represents the OpenRouter view of the model; the bare
+		// entry is a different provider's view that we shouldn't conflate.
 		if !prefixedHit {
 			if mi := cat.GetModelInfo(model); mi != nil {
 				if mi.ContextWindow > 0 {
 					contextWindow = mi.ContextWindow
 				}
-				ws = mi.SupportsWebSearch
+				if mi.SupportsWebSearch != nil {
+					ws = *mi.SupportsWebSearch
+				}
 				if len(mi.ReasoningEffortLevels) > 0 {
 					efforts = append([]string(nil), mi.ReasoningEffortLevels...)
 				}
 			}
 		}
 
-		// Step 3: bare-upstream-stripped lookup (positive-only — picks
-		// up serf overrides keyed under bare upstream IDs). Only fires
-		// when the model has an "<upstream>/" prefix; the stripped form
-		// is what serf overrides typically use as their key.
+		// Step 3: bare-upstream-stripped lookup, picking up serf-shipped
+		// overrides keyed under bare upstream IDs (e.g.
+		// "anthropic/claude-sonnet-4-5" → "claude-sonnet-4-5"). Only
+		// supplements fields the earlier steps didn't fill — this is a
+		// fallback for capability metadata, not an override of decisions
+		// made by step 1 or 2.
 		if _, after, hasSlash := strings.Cut(model, "/"); hasSlash && after != "" {
 			if mi := cat.GetModelInfo(after); mi != nil {
-				if mi.SupportsWebSearch {
-					ws = true
+				// Only fill ws if the earlier steps didn't already set
+				// it explicitly. Step 1's prefixed match is the
+				// authoritative OpenRouter view; the bare upstream entry
+				// is for fallback only.
+				if !prefixedHit && mi.SupportsWebSearch != nil {
+					ws = *mi.SupportsWebSearch
 				}
 				if efforts == nil && len(mi.ReasoningEffortLevels) > 0 {
 					efforts = append([]string(nil), mi.ReasoningEffortLevels...)

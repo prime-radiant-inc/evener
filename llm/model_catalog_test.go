@@ -364,3 +364,68 @@ func TestParseLiteLLMCatalog_ReasoningEffortFields(t *testing.T) {
 		t.Fatal("sonnet-4-5 SupportsEffortParameter should default to false")
 	}
 }
+
+// TestParseLiteLLMCatalog_WebSearchPresence verifies that
+// SupportsWebSearch is presence-aware: the parsed ModelInfo carries a
+// distinguishable "field absent" vs "explicitly false" vs "explicitly
+// true" state. Without that, downstream callers can't tell whether the
+// catalog is silent on web-search support (so the constructor default
+// should win) or has explicitly disabled it (which must be honored).
+func TestParseLiteLLMCatalog_WebSearchPresence(t *testing.T) {
+	data := []byte(`{
+        "model-explicit-true":  {"litellm_provider": "x", "supports_web_search": true},
+        "model-explicit-false": {"litellm_provider": "x", "supports_web_search": false},
+        "model-field-absent":   {"litellm_provider": "x"}
+    }`)
+	cat, err := parseLiteLLMCatalog(data)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	mTrue := cat.GetModelInfo("model-explicit-true")
+	if mTrue == nil || mTrue.SupportsWebSearch == nil {
+		t.Fatal("explicit-true: SupportsWebSearch is nil, want non-nil pointer to true")
+	}
+	if !*mTrue.SupportsWebSearch {
+		t.Fatal("explicit-true: *SupportsWebSearch = false, want true")
+	}
+
+	mFalse := cat.GetModelInfo("model-explicit-false")
+	if mFalse == nil || mFalse.SupportsWebSearch == nil {
+		t.Fatal("explicit-false: SupportsWebSearch is nil, want non-nil pointer to false (must distinguish from absent)")
+	}
+	if *mFalse.SupportsWebSearch {
+		t.Fatal("explicit-false: *SupportsWebSearch = true, want false")
+	}
+
+	mAbsent := cat.GetModelInfo("model-field-absent")
+	if mAbsent == nil {
+		t.Fatal("absent: model not found")
+	}
+	if mAbsent.SupportsWebSearch != nil {
+		t.Fatalf("absent: SupportsWebSearch = %v, want nil (field omitted in catalog)", *mAbsent.SupportsWebSearch)
+	}
+}
+
+// TestApplyOverrides_MergesWebSearch verifies that the serf override
+// layer can flip supports_web_search on a base catalog entry. Before
+// this, only effort_levels and a couple of effort flags were merged,
+// so an override saying supports_web_search:false was silently lost.
+func TestApplyOverrides_MergesWebSearch(t *testing.T) {
+	cat, err := parseLiteLLMCatalog([]byte(`{
+        "some-model": {"litellm_provider": "x", "supports_web_search": true}
+    }`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	applyOverrides(cat, []byte(`{"some-model": {"supports_web_search": false}}`))
+
+	mi := cat.GetModelInfo("some-model")
+	if mi == nil || mi.SupportsWebSearch == nil {
+		t.Fatal("merged entry has SupportsWebSearch == nil; override should set it")
+	}
+	if *mi.SupportsWebSearch {
+		t.Fatal("*SupportsWebSearch = true, want false (override flipped it)")
+	}
+}

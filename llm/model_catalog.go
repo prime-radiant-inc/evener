@@ -24,7 +24,12 @@ type ModelInfo struct {
 	ReasoningEffortLevels    []string `json:"reasoning_effort_levels,omitempty"`
 	SupportsAdaptiveThinking bool     `json:"supports_adaptive_thinking,omitempty"`
 	SupportsEffortParameter  bool     `json:"supports_effort_parameter,omitempty"`
-	SupportsWebSearch        bool     `json:"supports_web_search,omitempty"`
+	// SupportsWebSearch is presence-aware: nil means the catalog is silent
+	// on web-search support (caller should use its default), &true / &false
+	// reflect explicit catalog values. The override layer can flip an
+	// inherited value; absence stays nil so a missing field doesn't
+	// authoritatively disable web search.
+	SupportsWebSearch *bool `json:"supports_web_search,omitempty"`
 	InputCostPerMillion      *float64 `json:"input_cost_per_million,omitempty"`
 	OutputCostPerMillion     *float64 `json:"output_cost_per_million,omitempty"`
 	// Cache-tier pricing. All optional — providers that don't charge separately for cached
@@ -215,6 +220,7 @@ func parseLiteLLMCatalog(data []byte) (*ModelCatalog, error) {
 			ReasoningEffortLevels:    effortLevels,
 			SupportsAdaptiveThinking: parseBool(v["supports_adaptive_thinking"]),
 			SupportsEffortParameter:  parseBool(v["supports_effort_parameter"]),
+			SupportsWebSearch:        parseBoolPtr(v["supports_web_search"]),
 			InputCostPerMillion:           inPerM,
 			OutputCostPerMillion:          outPerM,
 			CacheReadInputCostPerMillion:  cacheReadPerM,
@@ -269,6 +275,27 @@ func parseBool(v any) bool {
 		return b
 	default:
 		return false
+	}
+}
+
+// parseBoolPtr returns nil when the value is absent (nil) or unparseable,
+// and a non-nil pointer when the input was an explicit bool or a parseable
+// bool string. Unlike parseBool, it preserves the absent-vs-explicit-false
+// distinction needed for catalog merge semantics.
+func parseBoolPtr(v any) *bool {
+	switch x := v.(type) {
+	case nil:
+		return nil
+	case bool:
+		return &x
+	case string:
+		b, err := strconv.ParseBool(strings.TrimSpace(x))
+		if err != nil {
+			return nil
+		}
+		return &b
+	default:
+		return nil
 	}
 }
 
