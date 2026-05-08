@@ -30,7 +30,12 @@ header {
 }
 header h1 { font-size: 16px; margin: 0; font-weight: 500; }
 header h1 a { color: var(--text); text-decoration: none; }
-main { padding: calc(var(--pad) * 2); max-width: 1400px; margin: 0 auto; }
+main {
+  padding: calc(var(--pad) * 2);
+  padding-bottom: calc(var(--pad) * 4);
+  max-width: 1400px;
+  margin: 0 auto;
+}
 .cols { display: grid; grid-template-columns: 1fr 1fr; gap: calc(var(--pad) * 2); }
 section.panel {
   background: var(--panel);
@@ -122,7 +127,16 @@ textarea { width: 100%; min-height: 60px; resize: vertical; }
 .msg pre, .msg code { font-family: ui-monospace, SFMono-Regular, monospace; }
 .msg pre { background: var(--bg); padding: 8px; border-radius: 4px; overflow-x: auto; }
 
-#input-area { margin-top: var(--pad); display: flex; flex-direction: column; gap: 8px; }
-#input-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
+#input-area {
+  margin-top: var(--pad);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: var(--pad);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+#input-buttons { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .hint { color: var(--muted); font-size: 11px; padding: 4px; }
 .empty { color: var(--muted); font-style: italic; padding: 16px; text-align: center; }
