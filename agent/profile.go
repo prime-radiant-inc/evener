@@ -481,6 +481,20 @@ func NewOpenRouterAnthropicProfile(model string) ProviderProfile {
 	}
 }
 
+// providerUsesPrefixedCatalogKeys reports whether a provider's entries
+// in the embedded catalog are stored under provider-qualified keys
+// (e.g. "ollama/llama3.1", "openrouter/anthropic/..."). For these
+// providers, a bare-name lookup is almost always an unrelated provider's
+// entry — falling back to it would silently inherit wrong metadata,
+// so the catalog resolver skips that branch.
+func providerUsesPrefixedCatalogKeys(id string) bool {
+	switch id {
+	case "ollama", "openrouter":
+		return true
+	}
+	return false
+}
+
 // resolveOpenAICompatCatalogModel runs the OpenAI-compatible catalog
 // lookup precedence used by NewOpenAICompatProfile, returning the first
 // matching ModelInfo or nil. Pulled out as a pure function so it can be
@@ -493,21 +507,22 @@ func NewOpenRouterAnthropicProfile(model string) ProviderProfile {
 //     "deepseek/deepseek-r1" is a different provider's entry) and any
 //     tagged ollama variant the catalog ships with its tag (e.g.
 //     "ollama/llama3:8b")
-//  2. bare model name — covers kimi and glm (unprefixed catalog keys)
+//  2. bare model name — covers kimi and glm (unprefixed catalog keys).
+//     SKIPPED for providers whose catalog uses prefixed keys (ollama,
+//     openrouter) because a bare match would just inherit some other
+//     provider's metadata; e.g. asking ollama for "claude-3-haiku" must
+//     not silently pick up Anthropic's 200K context window.
 //  3. "<id>/<base>" where base is `model` with any ":<tag>" suffix
 //     stripped — covers typical Ollama tagged variants whose catalog
 //     entry is the untagged family ("llama3.1:8b" -> "ollama/llama3.1")
-//
-// Prefixed-first matters whenever the bare model string happens to match
-// a different provider's entry — historically this affected only
-// OpenRouter, but the prefixed form is always the more specific match
-// for any provider that uses provider-qualified catalog keys.
 func resolveOpenAICompatCatalogModel(lookup func(string) *llm.ModelInfo, id, model string) *llm.ModelInfo {
 	if mi := lookup(id + "/" + model); mi != nil {
 		return mi
 	}
-	if mi := lookup(model); mi != nil {
-		return mi
+	if !providerUsesPrefixedCatalogKeys(id) {
+		if mi := lookup(model); mi != nil {
+			return mi
+		}
 	}
 	if base, _, hasTag := strings.Cut(model, ":"); hasTag && base != "" {
 		if mi := lookup(id + "/" + base); mi != nil {
@@ -548,8 +563,12 @@ func NewOpenAICompatProfile(id, model string, contextWindow int) ProviderProfile
 	// MiniMax via OpenRouter uses reasoning_details for multi-turn reasoning
 	// (not OpenAI's reasoning_content). Set the provider option that tells the
 	// openai-compat adapter to serialize/deserialize reasoning_details.
+	// Gated on id=="openrouter" so other providers that route through this
+	// constructor (e.g. ollama, where a user could legitimately have a model
+	// named under a "minimax/..." namespace) don't get the OpenRouter-specific
+	// option injected.
 	var providerOpts map[string]any
-	if strings.HasPrefix(model, "minimax/") {
+	if id == "openrouter" && strings.HasPrefix(model, "minimax/") {
 		providerOpts = map[string]any{
 			"openai-compatible": map[string]any{
 				"reasoning": map[string]any{"enabled": true},

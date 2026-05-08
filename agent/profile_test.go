@@ -466,6 +466,75 @@ func TestResolveOpenAICompatCatalogModel(t *testing.T) {
 			t.Fatalf("got %+v, want nil — there is no tag to strip", mi)
 		}
 	})
+
+	t.Run("ollama does not bare-fall-back to unrelated provider entries", func(t *testing.T) {
+		// Real-world hazard: the catalog has bare anthropic entries
+		// ("claude-3-haiku-20240307": 200000). Asking for that name
+		// under ollama must NOT pick up Anthropic's metadata — the
+		// 200K window would silently mask Ollama context truncation.
+		lookup := fake(map[string]int{
+			"claude-3-haiku-20240307": 200000, // Anthropic's bare entry
+		})
+		mi := resolveOpenAICompatCatalogModel(lookup, "ollama", "claude-3-haiku-20240307")
+		if mi != nil {
+			t.Fatalf("got %+v, want nil — bare-key fallback must be disabled for ollama", mi)
+		}
+	})
+
+	t.Run("openrouter does not bare-fall-back either", func(t *testing.T) {
+		// Same hazard for openrouter: bare "deepseek-r1" might match
+		// the deepseek provider's entry, which is wrong for a request
+		// addressed to openrouter.
+		lookup := fake(map[string]int{
+			"deepseek-r1": 65536,
+		})
+		mi := resolveOpenAICompatCatalogModel(lookup, "openrouter", "deepseek-r1")
+		if mi != nil {
+			t.Fatalf("got %+v, want nil — bare-key fallback must be disabled for openrouter", mi)
+		}
+	})
+
+	t.Run("kimi still uses bare-key fallback", func(t *testing.T) {
+		// Sanity: providers whose catalog keys are unprefixed (kimi,
+		// glm) must still hit the bare lookup.
+		lookup := fake(map[string]int{"kimi-k2.5": 100})
+		mi := resolveOpenAICompatCatalogModel(lookup, "kimi", "kimi-k2.5")
+		if mi == nil || mi.ContextWindow != 100 {
+			t.Fatalf("got %+v, want kimi-k2.5 bare match", mi)
+		}
+	})
+}
+
+// TestNewOpenAICompatProfile_OllamaDoesNotPickUpAnthropicCatalog is the
+// integration-level version of the bare-key skip: the embedded catalog
+// has Anthropic models like "claude-3-haiku-20240307" with 200K windows.
+// Without the skip, asking ollama for that name would silently inherit
+// Anthropic's window. Asserts the catalog miss falls back to 128K.
+func TestNewOpenAICompatProfile_OllamaDoesNotPickUpAnthropicCatalog(t *testing.T) {
+	p := NewOpenAICompatProfile("ollama", "claude-3-haiku-20240307", 0)
+	if got := p.ContextWindowSize(); got != 128_000 {
+		t.Fatalf("ContextWindowSize() = %d, want 128000 generic fallback — bare-key lookup leaked anthropic catalog metadata into ollama", got)
+	}
+}
+
+// TestNewOpenAICompatProfile_MinimaxOptOnlyForOpenRouter verifies that
+// the OpenRouter-specific reasoning_details provider option is gated on
+// id=="openrouter" and is NOT injected for other providers (e.g. ollama)
+// even when the model name starts with "minimax/". A user could
+// legitimately have a custom Ollama model named under that namespace.
+func TestNewOpenAICompatProfile_MinimaxOptOnlyForOpenRouter(t *testing.T) {
+	openrouter := NewOpenAICompatProfile("openrouter", "minimax/minimax-m2.7", 0).(*baseProfile)
+	if openrouter.providerOpts == nil {
+		t.Fatal("openrouter+minimax/* profile is missing the reasoning provider option")
+	}
+	if _, ok := openrouter.providerOpts["openai-compatible"]; !ok {
+		t.Fatalf("openrouter providerOpts = %+v, want openai-compatible.reasoning", openrouter.providerOpts)
+	}
+
+	ollama := NewOpenAICompatProfile("ollama", "minimax/whatever", 0).(*baseProfile)
+	if ollama.providerOpts != nil {
+		t.Fatalf("ollama+minimax/* profile got OpenRouter-specific providerOpts = %+v, want nil", ollama.providerOpts)
+	}
 }
 
 // TestNewOpenAICompatProfile_OllamaTaggedModelEndToEnd is a thin
