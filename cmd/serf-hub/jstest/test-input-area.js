@@ -38,10 +38,21 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
 const { window } = dom;
 window.marked = { parse: (t) => t };
 
-// Track fetch calls so we can verify reset-on-success behavior.
+// Track fetch calls so we can verify reset-on-success behavior. Mock /tasks
+// to return [] so the cold-load hydration resolves cleanly.
 let lastFetch = null;
 let fetchResponseOk = true;
+let fetchCallCount = 0;
 window.fetch = (url, opts) => {
+  fetchCallCount++;
+  if (typeof url === "string" && url.includes("/tasks")) {
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve([]),
+      text: () => Promise.resolve(""),
+    });
+  }
   lastFetch = { url, opts };
   return Promise.resolve({
     ok: fetchResponseOk,
@@ -149,10 +160,175 @@ function checkSteerNoop() {
   pass(warned, "expected console.warn from steer click");
 }
 
+// --- Attachment tests ---
+
+// 1×1 transparent PNG (base64) — a valid image file body for tests.
+const PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+P+/HgAFhAJ/wlseKgAAAABJRU5ErkJggg==";
+const PNG_BYTES = Buffer.from(PNG_BASE64, "base64");
+
+function makePngFile(name) {
+  return new window.File([new Uint8Array(PNG_BYTES)], name, { type: "image/png" });
+}
+
+// JSDOM's FileReader fires onload async; wait for the renderer's enqueue
+// promise to settle by yielding a few microtasks/timers.
+async function waitForReads(n = 8) {
+  for (let i = 0; i < n; i++) {
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
+const filePicker = window.document.querySelector("[data-file-picker]");
+const dropZone = window.document.querySelector("[data-drop-zone]");
+const attContainer = window.document.querySelector("[data-attachments]");
+
+// Reset queue before attachment tests run (after the earlier checkReset
+// scenarios have left it empty already, but be explicit).
+window.SerfRenderer.pendingAttachments = [];
+window.SerfRenderer.attachmentErrors = [];
+window.SerfRenderer.renderAttachments();
+
+// Helper: simulate a file picker change with a list of files. JSDOM's
+// HTMLInputElement.files is read-only via assignment in some setups, so
+// stub the property explicitly.
+function dispatchPickerChange(files) {
+  Object.defineProperty(filePicker, "files", {
+    configurable: true,
+    get() { return files; },
+  });
+  filePicker.dispatchEvent(new window.Event("change", { bubbles: true }));
+}
+
+async function testFilePickerAddsChip() {
+  const before = window.SerfRenderer.pendingAttachments.length;
+  dispatchPickerChange([makePngFile("hello.png")]);
+  await waitForReads();
+  pass(window.SerfRenderer.pendingAttachments.length === before + 1,
+    "expected 1 queued attachment, got " + window.SerfRenderer.pendingAttachments.length);
+  const chips = attContainer.querySelectorAll(".attachment-chip");
+  pass(chips.length === 1, "expected 1 chip, got " + chips.length);
+  pass(chips[0].querySelector(".att-name").textContent.includes("hello.png"),
+    "chip name missing 'hello.png': " + chips[0].textContent);
+}
+
+async function testDropAddsChips() {
+  // Reset queue so we measure only this test's adds.
+  window.SerfRenderer.pendingAttachments = [];
+  window.SerfRenderer.renderAttachments();
+  const dropEvent = new window.Event("drop", { bubbles: true, cancelable: true });
+  // Stub dataTransfer with two PNG files.
+  Object.defineProperty(dropEvent, "dataTransfer", {
+    value: { files: [makePngFile("a.png"), makePngFile("b.png")] },
+  });
+  dropZone.dispatchEvent(dropEvent);
+  await waitForReads();
+  const chips = attContainer.querySelectorAll(".attachment-chip");
+  pass(chips.length === 2, "expected 2 chips after drop, got " + chips.length);
+  pass(window.SerfRenderer.pendingAttachments.length === 2,
+    "expected queue length 2, got " + window.SerfRenderer.pendingAttachments.length);
+}
+
+async function testRemoveChip() {
+  // Should still have 2 from the drop test; click × on the first.
+  const removeBtns = attContainer.querySelectorAll(".att-remove");
+  pass(removeBtns.length === 2, "expected 2 remove buttons, got " + removeBtns.length);
+  removeBtns[0].click();
+  pass(window.SerfRenderer.pendingAttachments.length === 1,
+    "expected queue length 1 after remove, got " + window.SerfRenderer.pendingAttachments.length);
+  const chips = attContainer.querySelectorAll(".attachment-chip");
+  pass(chips.length === 1, "expected 1 chip after remove, got " + chips.length);
+}
+
+async function testSubmitWithTextAndImage() {
+  // Reset queue, queue one PNG, set text, submit.
+  window.SerfRenderer.pendingAttachments = [];
+  window.SerfRenderer.renderAttachments();
+  dispatchPickerChange([makePngFile("snap.png")]);
+  await waitForReads();
+  pass(window.SerfRenderer.pendingAttachments.length === 1, "expected 1 queued before submit");
+
+  ta.value = "look at this";
+  ta.dispatchEvent(new window.Event("input", { bubbles: true }));
+  fetchResponseOk = true;
+  lastFetch = null;
+  form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+  await waitForReads();
+
+  pass(lastFetch !== null, "expected fetch on submit");
+  const body = lastFetch && lastFetch.opts && JSON.parse(lastFetch.opts.body);
+  pass(body && body.text === "look at this", "expected text in body, got " + JSON.stringify(body));
+  pass(body && Array.isArray(body.images) && body.images.length === 1,
+    "expected 1 image in body, got " + JSON.stringify(body && body.images));
+  pass(body.images[0].media_type === "image/png",
+    "expected image/png media_type, got " + body.images[0].media_type);
+  pass(body.images[0].data === PNG_BASE64,
+    "expected base64 to match expected, got " + body.images[0].data);
+  pass(body.images[0].name === "snap.png",
+    "expected name 'snap.png', got " + body.images[0].name);
+}
+
+async function testSubmitClearsQueue() {
+  // Continuation of testSubmitWithTextAndImage's success path.
+  pass(window.SerfRenderer.pendingAttachments.length === 0,
+    "expected queue cleared after success, got " + window.SerfRenderer.pendingAttachments.length);
+  const chips = attContainer.querySelectorAll(".attachment-chip");
+  pass(chips.length === 0, "expected no chips after success, got " + chips.length);
+}
+
+async function testSubmitEmptyDoesNothing() {
+  ta.value = "";
+  ta.dispatchEvent(new window.Event("input", { bubbles: true }));
+  window.SerfRenderer.pendingAttachments = [];
+  window.SerfRenderer.renderAttachments();
+  lastFetch = null;
+  form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+  await waitForReads();
+  pass(lastFetch === null, "expected no fetch on empty submit, got " + JSON.stringify(lastFetch));
+}
+
+async function testRejectsOversize() {
+  window.SerfRenderer.pendingAttachments = [];
+  window.SerfRenderer.attachmentErrors = [];
+  window.SerfRenderer.renderAttachments();
+  // Make a "file" whose .size reports 9MB without holding 9MB of bytes.
+  const tiny = new window.File([new Uint8Array(8)], "huge.png", { type: "image/png" });
+  Object.defineProperty(tiny, "size", { value: 9 * 1024 * 1024 });
+  dispatchPickerChange([tiny]);
+  await waitForReads();
+  pass(window.SerfRenderer.pendingAttachments.length === 0,
+    "expected oversize rejected from queue");
+  const errs = attContainer.querySelectorAll(".attachment-chip.error");
+  pass(errs.length === 1, "expected 1 error chip for oversize, got " + errs.length);
+}
+
+async function testRejectsNonImage() {
+  window.SerfRenderer.pendingAttachments = [];
+  window.SerfRenderer.attachmentErrors = [];
+  window.SerfRenderer.renderAttachments();
+  const txt = new window.File([new Uint8Array([1, 2, 3])], "notes.txt", { type: "text/plain" });
+  dispatchPickerChange([txt]);
+  await waitForReads();
+  pass(window.SerfRenderer.pendingAttachments.length === 0,
+    "expected non-image rejected from queue");
+  const errs = attContainer.querySelectorAll(".attachment-chip.error");
+  pass(errs.length === 1, "expected 1 error chip for non-image, got " + errs.length);
+  pass(errs[0].textContent.includes("notes.txt"),
+    "expected error chip to mention filename, got " + errs[0].textContent);
+}
+
 (async () => {
   await checkReset();
   await checkFailureKeepsValue();
   checkSteerNoop();
+
+  await testFilePickerAddsChip();
+  await testDropAddsChips();
+  await testRemoveChip();
+  await testSubmitWithTextAndImage();
+  await testSubmitClearsQueue();
+  await testSubmitEmptyDoesNothing();
+  await testRejectsOversize();
+  await testRejectsNonImage();
 
   if (failures.length === 0) {
     console.log("PASS: all assertions");

@@ -38,6 +38,7 @@
       this.userTurnIndex = 0;            // counts user turns rendered (for fork divergence)
       this.entryIndex = 0;               // counts ALL entries rendered (matches transcript entry index)
       this.cheapToolCluster = null;      // current cluster div for batching cheap reads
+      this.pendingAttachments = [];      // queued image attachments awaiting send
 
       this.conversation.innerHTML = "";
 
@@ -144,6 +145,8 @@
             this.lastCurrentTaskId = null;
             this.userTurnIndex = 0;
             this.entryIndex = 0;
+            this.pendingAttachments = [];
+            this.renderAttachments();
           }
           break;
         case "USER_INPUT":
@@ -703,17 +706,79 @@
         });
       }
 
+      // Attachments: file picker, drag-drop, paste pipelines all funnel
+      // images through addFiles() which validates and pushes onto the queue.
+      const filePicker = form.querySelector("[data-file-picker]");
+      const attachTrigger = form.querySelector("[data-attach-trigger]");
+      const dropZone = form.querySelector("[data-drop-zone]");
+
+      if (attachTrigger && filePicker) {
+        attachTrigger.addEventListener("click", () => filePicker.click());
+      }
+      if (filePicker) {
+        filePicker.addEventListener("change", (e) => {
+          this.addFiles(e.target.files);
+          // Reset so re-selecting the same file fires another change.
+          e.target.value = "";
+        });
+      }
+      if (dropZone) {
+        const stopAndOver = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          dropZone.classList.add("drag-over");
+        };
+        dropZone.addEventListener("dragenter", stopAndOver);
+        dropZone.addEventListener("dragover", stopAndOver);
+        dropZone.addEventListener("dragleave", (e) => {
+          // Only remove the class when truly leaving the drop zone.
+          if (e.target === dropZone) dropZone.classList.remove("drag-over");
+        });
+        dropZone.addEventListener("drop", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          dropZone.classList.remove("drag-over");
+          if (e.dataTransfer && e.dataTransfer.files) {
+            this.addFiles(e.dataTransfer.files);
+          }
+        });
+      }
+      ta.addEventListener("paste", (e) => {
+        const items = e.clipboardData && e.clipboardData.items;
+        if (!items) return;
+        const files = [];
+        for (const item of items) {
+          if (item.kind === "file" && item.type && item.type.startsWith("image/")) {
+            const f = item.getAsFile();
+            if (f) files.push(f);
+          }
+        }
+        if (files.length > 0) {
+          e.preventDefault();
+          this.addFiles(files);
+        }
+      });
+
       const submit = async (e) => {
         e.preventDefault();
         const text = ta.value.trim();
-        if (!text) return;
+        const hasAttachments = this.pendingAttachments && this.pendingAttachments.length > 0;
+        if (!text && !hasAttachments) return;
         const sendBtn = form.querySelector(".send-btn");
         if (sendBtn) sendBtn.disabled = true;
         try {
+          const body = {
+            text,
+            images: (this.pendingAttachments || []).map((a) => ({
+              media_type: a.mediaType,
+              data: a.dataBase64,
+              name: a.name,
+            })),
+          };
           const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/send", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text }),
+            body: JSON.stringify(body),
           });
           if (!resp.ok) {
             const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
@@ -722,6 +787,8 @@
             ta.value = "";
             ta.style.height = "";
             grow();
+            this.pendingAttachments = [];
+            this.renderAttachments();
           }
         } catch (err) {
           this.appendBanner("error", "send failed: " + err.message);
@@ -730,6 +797,112 @@
         }
       };
       form.addEventListener("submit", submit);
+    },
+
+    // addFiles validates and enqueues image files coming from the picker,
+    // drag-drop, or clipboard paste. Errors render as inline error chips.
+    addFiles(fileList) {
+      const allowed = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+      const maxBytes = 8 * 1024 * 1024;
+      const maxQueue = 10;
+      const files = Array.from(fileList || []);
+      const errors = [];
+      const accepted = [];
+      for (const file of files) {
+        if ((this.pendingAttachments.length + accepted.length) >= maxQueue) {
+          errors.push("max 10 attachments");
+          break;
+        }
+        if (!allowed.has(file.type)) {
+          errors.push("not an image: " + file.name);
+          continue;
+        }
+        if (file.size > maxBytes) {
+          errors.push("too large (>8MB): " + file.name);
+          continue;
+        }
+        accepted.push(file);
+      }
+      // Render errors immediately even if reads are in flight.
+      this.attachmentErrors = (this.attachmentErrors || []).concat(errors);
+      if (accepted.length === 0) {
+        this.renderAttachments();
+        return;
+      }
+      // Read each accepted file as a data URL, then queue.
+      const reads = accepted.map((file) => new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = reader.result || "";
+          // Strip "data:image/png;base64," prefix to keep just base64.
+          const comma = result.indexOf(",");
+          const dataBase64 = comma >= 0 ? result.slice(comma + 1) : result;
+          this.pendingAttachments.push({
+            name: file.name,
+            mediaType: file.type,
+            dataBase64,
+            thumbnail: result,
+          });
+          resolve();
+        };
+        reader.onerror = () => {
+          this.attachmentErrors = (this.attachmentErrors || []).concat(["read failed: " + file.name]);
+          resolve();
+        };
+        reader.readAsDataURL(file);
+      }));
+      Promise.all(reads).then(() => this.renderAttachments());
+      // Render now too so error chips show up without waiting for reads.
+      this.renderAttachments();
+    },
+
+    renderAttachments() {
+      const container = document.querySelector("[data-attachments]");
+      if (!container) return;
+      container.innerHTML = "";
+      const truncate = (s, n) => (s && s.length > n ? s.slice(0, n - 1) + "…" : s || "");
+      (this.pendingAttachments || []).forEach((att, idx) => {
+        const chip = document.createElement("div");
+        chip.className = "attachment-chip";
+        const img = document.createElement("img");
+        img.className = "att-thumb";
+        img.src = att.thumbnail;
+        img.alt = att.name;
+        chip.appendChild(img);
+        const label = document.createElement("span");
+        label.className = "att-name";
+        label.textContent = truncate(att.name, 24);
+        chip.appendChild(label);
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "att-remove";
+        remove.textContent = "×";
+        remove.addEventListener("click", () => {
+          this.pendingAttachments.splice(idx, 1);
+          this.renderAttachments();
+        });
+        chip.appendChild(remove);
+        container.appendChild(chip);
+      });
+      const errors = this.attachmentErrors || [];
+      errors.forEach((msg, idx) => {
+        const chip = document.createElement("div");
+        chip.className = "attachment-chip error";
+        const label = document.createElement("span");
+        label.className = "att-name";
+        label.textContent = msg;
+        chip.appendChild(label);
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "att-remove";
+        remove.textContent = "×";
+        remove.addEventListener("click", () => {
+          this.attachmentErrors.splice(idx, 1);
+          this.renderAttachments();
+        });
+        chip.appendChild(remove);
+        container.appendChild(chip);
+      });
     },
 
     bindKeyboard() {
