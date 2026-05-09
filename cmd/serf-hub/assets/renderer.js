@@ -152,7 +152,7 @@
         case "USER_INPUT":
           this.userTurnIndex++;
           this.entryIndex++;
-          this.appendUserMessage(data.text || "", this.entryIndex);
+          this.appendUserMessage(data.text || "", this.entryIndex, data.images || []);
           break;
         case "ASSISTANT_TEXT_START":
           this.entryIndex++;
@@ -242,7 +242,7 @@
       this.scrollToBottom();
     },
 
-    appendUserMessage(text, entryIdx) {
+    appendUserMessage(text, entryIdx, images) {
       this.cheapToolCluster = null;
       const wrap = document.createElement("div");
       wrap.className = "user-message";
@@ -250,7 +250,27 @@
       wrap.dataset.userTurn = String(this.userTurnIndex || "");
       const pill = document.createElement("div");
       pill.className = "pill";
-      pill.textContent = text;
+      // Thumbnails first so they sit above the prompt text inside the pill.
+      if (Array.isArray(images) && images.length > 0) {
+        const gallery = document.createElement("div");
+        gallery.className = "user-message-images";
+        for (const img of images) {
+          if (!img || !img.data) continue;
+          const el = document.createElement("img");
+          el.className = "user-image-thumb";
+          el.src = "data:" + (img.media_type || "image/png") + ";base64," + img.data;
+          if (img.name) el.alt = img.name;
+          el.title = img.name || "attached image";
+          gallery.appendChild(el);
+        }
+        if (gallery.children.length > 0) pill.appendChild(gallery);
+      }
+      if (text) {
+        const t = document.createElement("div");
+        t.className = "user-message-text";
+        t.textContent = text;
+        pill.appendChild(t);
+      }
       const actions = document.createElement("div");
       actions.className = "user-message-actions";
       const copy = document.createElement("span");
@@ -265,31 +285,36 @@
     },
 
     startEdit(wrap, pill, originalText) {
-      pill.contentEditable = "true";
-      pill.focus();
+      // When images are present the pill has structured children — edit the
+      // text node in place so we don't clobber the gallery.
+      const textEl = pill.querySelector(".user-message-text") || pill;
+      textEl.contentEditable = "true";
+      textEl.focus();
       const range = document.createRange();
-      range.selectNodeContents(pill);
+      range.selectNodeContents(textEl);
       const sel = window.getSelection();
       sel.removeAllRanges(); sel.addRange(range);
+      const restore = () => {
+        textEl.contentEditable = "false";
+        textEl.textContent = originalText;
+      };
       const onKey = (e) => {
         if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
           e.preventDefault();
-          const newText = pill.textContent.trim();
+          const newText = textEl.textContent.trim();
           if (newText && newText !== originalText) {
-            pill.removeEventListener("keydown", onKey);
+            textEl.removeEventListener("keydown", onKey);
             this.showForkDialog(wrap, originalText, newText);
           } else {
-            pill.contentEditable = "false";
-            pill.textContent = originalText;
-            pill.removeEventListener("keydown", onKey);
+            restore();
+            textEl.removeEventListener("keydown", onKey);
           }
         } else if (e.key === "Escape") {
-          pill.contentEditable = "false";
-          pill.textContent = originalText;
-          pill.removeEventListener("keydown", onKey);
+          restore();
+          textEl.removeEventListener("keydown", onKey);
         }
       };
-      pill.addEventListener("keydown", onKey);
+      textEl.addEventListener("keydown", onKey);
     },
 
     showForkDialog(userWrap, originalText, editedText) {
@@ -322,12 +347,14 @@
       const cleanup = () => {
         dialog.remove();
         const pill = userWrap.querySelector(".pill");
-        pill.contentEditable = "false";
+        const tEl = pill.querySelector(".user-message-text") || pill;
+        tEl.contentEditable = "false";
       };
       cancel.onclick = () => {
         cleanup();
         const pill = userWrap.querySelector(".pill");
-        pill.textContent = originalText;
+        const tEl = pill.querySelector(".user-message-text") || pill;
+        tEl.textContent = originalText;
       };
       confirm.onclick = async () => {
         const turn = parseInt(userWrap.dataset.entryIdx || "1", 10);

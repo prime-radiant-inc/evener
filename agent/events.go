@@ -114,7 +114,17 @@ type SessionEndData struct {
 }
 
 type UserInputData struct {
-	Text string `json:"text"`
+	Text   string                  `json:"text"`
+	Images []UserInputImage        `json:"images,omitempty"`
+}
+
+// UserInputImage carries enough metadata for the UI to render a thumbnail.
+// MediaType is e.g. "image/png"; Data is the raw bytes (JSON un/marshals as
+// base64); Name is the original filename when known.
+type UserInputImage struct {
+	MediaType string `json:"media_type"`
+	Data      []byte `json:"data,omitempty"`
+	Name      string `json:"name,omitempty"`
 }
 
 type AssistantTextStartData struct {

@@ -672,8 +672,15 @@ type replayMessage struct {
 type replayPart struct {
 	Kind       string             `json:"kind"`
 	Text       string             `json:"text,omitempty"`
+	Image      *replayImage       `json:"image,omitempty"`
 	ToolCall   *replayToolCall    `json:"tool_call,omitempty"`
 	ToolResult *replayToolResult  `json:"tool_result,omitempty"`
+}
+
+type replayImage struct {
+	Data      []byte `json:"data,omitempty"`
+	MediaType string `json:"media_type,omitempty"`
+	Name      string `json:"name,omitempty"`
 }
 
 type replayToolCall struct {
@@ -696,7 +703,22 @@ func emitTurnEvents(emit func(string, any), turn replayTurn, toolNames map[strin
 	switch turn.Kind {
 	case "USER_INPUT":
 		text := joinText(turn.Message.Content)
-		emit("USER_INPUT", map[string]any{"text": text})
+		payload := map[string]any{"text": text}
+		var images []map[string]any
+		for _, p := range turn.Message.Content {
+			if p.Kind != "image" || p.Image == nil {
+				continue
+			}
+			images = append(images, map[string]any{
+				"media_type": p.Image.MediaType,
+				"data":       p.Image.Data, // []byte is base64-encoded by encoding/json
+				"name":       p.Image.Name,
+			})
+		}
+		if len(images) > 0 {
+			payload["images"] = images
+		}
+		emit("USER_INPUT", payload)
 	case "STEERING":
 		text := joinText(turn.Message.Content)
 		emit("STEERING_INJECTED", map[string]any{"text": text})

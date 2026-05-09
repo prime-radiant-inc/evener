@@ -352,6 +352,10 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .user-message:hover .user-message-actions { display: flex; }
 .user-message-actions .action { cursor: pointer; }
 .user-message-actions .edit { color: var(--text); }
+.user-message-images { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+.user-message-images:empty { display: none; }
+.user-image-thumb { max-width: 220px; max-height: 220px; border-radius: 8px; display: block; object-fit: cover; border: 1px solid var(--rule); }
+.user-message-text { white-space: pre-wrap; word-wrap: break-word; }
 .assistant-message { margin-bottom: 24px; max-width: 680px; font-size: 15px; line-height: 1.7; color: var(--text); }
 .assistant-message code { background: var(--bg-raised); padding: 1px 6px; border-radius: 3px; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 14px; color: var(--text); }
 .assistant-message pre { background: var(--bg-raised); padding: 12px 16px; border-radius: 6px; overflow-x: auto; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 13px; }

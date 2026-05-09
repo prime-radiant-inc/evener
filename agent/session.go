@@ -1500,7 +1500,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	default:
 	}
 
-	s.emit(EventUserInput, UserInputData{Text: input})
+	s.emit(EventUserInput, UserInputData{Text: input, Images: userInputImagesFromAttachments(images)})
 	s.appendTurn(TurnUserInput, buildUserInputMessage(input, images))
 
 	// UserPromptSubmit hooks

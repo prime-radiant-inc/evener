@@ -10,6 +10,24 @@ type ImageAttachment struct {
 	Name      string `json:"name,omitempty"`
 }
 
+// userInputImagesFromAttachments shapes the slice the way the
+// USER_INPUT event payload expects (smaller field set than the
+// internal type and conventionally nil-when-empty).
+func userInputImagesFromAttachments(images []ImageAttachment) []UserInputImage {
+	if len(images) == 0 {
+		return nil
+	}
+	out := make([]UserInputImage, 0, len(images))
+	for _, img := range images {
+		out = append(out, UserInputImage{
+			MediaType: img.MediaType,
+			Data:      img.Data,
+			Name:      img.Name,
+		})
+	}
+	return out
+}
+
 // buildUserInputMessage constructs the multi-part user message that begins a
 // turn. Text becomes a ContentText part (omitted only if empty and at least
 // one image is supplied); each image becomes a ContentImage part.
