@@ -1440,3 +1440,108 @@ func TestWeb_SessionAction_NotLive_404(t *testing.T) {
 		}
 	}
 }
+
+// perAddrProber returns a different (sessionID, status) per address. Used
+// to stage a project with multiple live children in distinct states.
+type perAddrProber struct {
+	byAddr map[string]struct{ SessionID, Status string }
+}
+
+func (p perAddrProber) Probe(addr string) (sessionID, status string, ok bool) {
+	v, present := p.byAddr[addr]
+	if !present {
+		return "", "", false
+	}
+	return v.SessionID, v.Status, true
+}
+
+// TestWeb_Sidebar_RollupState_AwaitingHasPriority confirms that when a
+// project has both an awaiting and an idle live child, the rollup dot
+// reflects "awaiting" — the most-attention-needing state per spec.
+func TestWeb_Sidebar_RollupState_AwaitingHasPriority(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+		ID: "01AWAIT", UpdatedAt: time.Now(), OriginalTask: "needs reply",
+		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+		ID: "01IDLE", UpdatedAt: time.Now(), OriginalTask: "ticking over",
+		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	rDir := t.TempDir()
+	if _, err := rendezvous.Write(rDir, rendezvous.Entry{PID: 1001, Address: "127.0.0.1:1001"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rendezvous.Write(rDir, rendezvous.Entry{PID: 1002, Address: "127.0.0.1:1002"}); err != nil {
+		t.Fatal(err)
+	}
+	prober := perAddrProber{byAddr: map[string]struct{ SessionID, Status string }{
+		"127.0.0.1:1001": {SessionID: "01AWAIT", Status: "AWAITING_REPLY"},
+		"127.0.0.1:1002": {SessionID: "01IDLE", Status: "IDLE"},
+	}}
+	r := NewRoster(rDir, prober)
+	r.Refresh()
+
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
+	req := httptest.NewRequest(http.MethodGet, "/sidebar", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `class="project-rollup-dot" data-state="awaiting"`) {
+		t.Errorf("rollup dot should have data-state=\"awaiting\"; body=\n%s", body)
+	}
+}
+
+// TestWeb_Sidebar_RollupState_NoLiveChildrenHides confirms that a
+// past-only project renders the dot with an empty data-state, which the
+// CSS rule hides.
+func TestWeb_Sidebar_RollupState_NoLiveChildrenHides(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+		ID: "01PAST", UpdatedAt: time.Now(), OriginalTask: "done long ago",
+		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    idx,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/sidebar", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `class="project-rollup-dot" data-state=""`) {
+		t.Errorf("past-only project rollup dot should have empty data-state; body=\n%s", body)
+	}
+}

@@ -30,14 +30,15 @@
   {{end}}
 
   {{range .Projects}}
-  <section class="sidebar-section project-section">
-    <header class="project-header" data-project-key="{{.Name}}">
+  <section class="sidebar-section project-section" data-project-key="{{.Name}}">
+    <header class="project-header">
       <span class="project-chevron" role="button" aria-label="collapse project">▾</span>
       <span class="project-folder" aria-hidden="true">📁</span>
       <span class="project-name">{{.Name}}</span>
       <span class="row-meta project-count">{{len .Sessions}}</span>
-      {{if .RollupState}}<span class="status-dot rollup project-rollup-dot" data-state="{{.RollupState}}"></span>{{end}}
+      <span class="project-rollup-dot" data-state="{{.RollupState}}"></span>
     </header>
+    <div class="project-children">
     {{range .Sessions}}
     <a class="session-row"
        data-state="{{.State}}"
@@ -78,6 +79,7 @@
       {{end}}
     {{end}}
     {{end}}
+    </div>
   </section>
   {{end}}
 </nav>

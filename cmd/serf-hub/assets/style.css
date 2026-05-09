@@ -289,11 +289,25 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .live-row[data-state="warning"]    { background: rgba(224,175,104,0.06); border-left: 2px solid var(--state-warning); }
 
 /* Project header glyphs: chevron + folder. Click target is the chevron;
-   collapse/expand wiring lives in a follow-up task. */
+   the count and rollup dot are passive (no toggle on click). */
 .project-header { cursor: default; }
-.project-chevron { display: inline-block; width: 12px; color: var(--text-muted); cursor: pointer; }
+.project-chevron { display: inline-block; width: 12px; color: var(--text-muted); cursor: pointer; user-select: none; }
 .project-folder { display: inline-block; }
 .project-name { color: var(--text-dim); }
+
+/* Per-project collapse: hide the children container. The rollup dot stays
+   visible in the header so the collapsed row still communicates urgency. */
+.project-section.collapsed .project-children { display: none; }
+
+/* Rollup dot: mirrors live-row state colours. Hidden when state is empty
+   ("no live children") or "ended" (project has only past sessions). */
+.project-rollup-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-left: 4px; background: var(--text-dim); flex-shrink: 0; }
+.project-rollup-dot[data-state=""]           { display: none; }
+.project-rollup-dot[data-state="ended"]      { display: none; }
+.project-rollup-dot[data-state="awaiting"]   { background: var(--state-awaiting); }
+.project-rollup-dot[data-state="processing"] { background: var(--state-processing); }
+.project-rollup-dot[data-state="warning"]    { background: var(--state-warning); }
+.project-rollup-dot[data-state="idle"]       { background: var(--state-idle); }
 
 /* Fork title-bar prefix: shown above the title for the dim, preserved-original
    side of a fork. */
@@ -560,6 +574,16 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .settings-row-meta { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
 .settings-row-detail { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
 .model-chip { background: var(--bg-raised); padding: 2px 8px; border-radius: 10px; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 11px; color: var(--text); }
+.settings-row-version { color: var(--text-muted); font-size: 11px; margin-left: 8px; font-family: ui-monospace, "SFMono-Regular", monospace; font-weight: 400; }
+.settings-row-path,
+.settings-row-cmd { font-family: ui-monospace, "SFMono-Regular", monospace; word-break: break-all; }
+.settings-row-desc { line-height: 1.5; max-width: 640px; }
+.settings-error { color: var(--state-awaiting); }
+.settings-row-title .status-pill { margin-left: 8px; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-family: ui-monospace, "SFMono-Regular", monospace; font-weight: 400; }
+.status-pill.status-running { background: rgba(158, 206, 106, 0.15); color: var(--state-idle); }
+.status-pill.status-stopped { background: var(--bg-raised); color: var(--text-muted); }
+.status-pill.status-error { background: rgba(247, 118, 142, 0.15); color: var(--state-awaiting); }
+.status-pill.status-unknown { background: var(--bg-raised); color: var(--text-muted); }
 
 /* Sidebar settings link — pushed to the right */
 .sidebar-action.settings-link { margin-left: auto; }

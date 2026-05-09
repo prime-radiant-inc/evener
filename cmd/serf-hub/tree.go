@@ -57,6 +57,27 @@ func attentionRank(state string) int {
 	}
 }
 
+// rollupRank ranks states for a project's rollup dot. Per spec the dot
+// reflects the most-attention-needing live child:
+//   awaiting > warning > processing > idle
+// (warning beats processing here because a warning is something the user
+// likely needs to look at, while processing is the daemon making progress
+// on its own.)
+func rollupRank(state string) int {
+	switch state {
+	case "awaiting":
+		return 4
+	case "warning":
+		return 3
+	case "processing":
+		return 2
+	case "idle":
+		return 1
+	default: // "ended" and unknown
+		return 0
+	}
+}
+
 // ageString formats a duration since t as a human-readable string.
 func ageString(t time.Time) string {
 	d := time.Since(t)
@@ -303,7 +324,7 @@ func BuildTree(metas []agent.SessionMeta, live []LiveEntry) Tree {
 				continue
 			}
 			state := stateFor(le.SessionID)
-			if attentionRank(state) > attentionRank(rollup) {
+			if rollupRank(state) > rollupRank(rollup) {
 				rollup = state
 			}
 		}
