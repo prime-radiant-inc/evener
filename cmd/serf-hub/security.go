@@ -33,7 +33,6 @@ func CSPMiddleware(next http.Handler) http.Handler {
 //
 // Browser tabs from other origins cannot pass either check.
 func SameOriginGuard(hubAddr string) func(http.Handler) http.Handler {
-	want := "http://" + hubAddr
 	parts := strings.SplitN(hubAddr, ":", 2)
 	port := ""
 	if len(parts) == 2 {
@@ -45,6 +44,15 @@ func SameOriginGuard(hubAddr string) func(http.Handler) http.Handler {
 	if port != "" {
 		allowedHosts["localhost:"+port] = struct{}{}
 	}
+	// Origins matching either Host alias are same-origin from the user's
+	// perspective; both must be accepted, otherwise a tab loaded as
+	// localhost:<port> fails to POST to a hub bound on 127.0.0.1:<port>.
+	allowedOrigins := map[string]struct{}{
+		"http://" + hubAddr: {},
+	}
+	if port != "" {
+		allowedOrigins["http://localhost:"+port] = struct{}{}
+	}
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -52,9 +60,11 @@ func SameOriginGuard(hubAddr string) func(http.Handler) http.Handler {
 				http.Error(w, "forbidden host", http.StatusForbidden)
 				return
 			}
-			if origin := r.Header.Get("Origin"); origin != "" && origin != want {
-				http.Error(w, "forbidden origin", http.StatusForbidden)
-				return
+			if origin := r.Header.Get("Origin"); origin != "" {
+				if _, ok := allowedOrigins[origin]; !ok {
+					http.Error(w, "forbidden origin", http.StatusForbidden)
+					return
+				}
 			}
 			next.ServeHTTP(w, r)
 		})

@@ -123,7 +123,10 @@ body {
 }
 .page-header h1 { font-size: 16px; margin: 0; font-weight: 500; }
 .page-header h1 a { color: var(--text); text-decoration: none; }
-main {
+/* Legacy landing-page main padding. Scoped away from the app shell
+ * (which uses #workspace flex layout); otherwise it injects 24/48px
+ * padding into the workspace and the input form floats off the bottom. */
+body:not(.app) main {
   padding: calc(var(--pad) * 2);
   padding-bottom: calc(var(--pad) * 4);
   max-width: 1400px;
