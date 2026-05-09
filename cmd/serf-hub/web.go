@@ -18,20 +18,23 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/frontmatter"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/rendezvous"
 )
 
 // WebConfig is everything the web server needs.
 type WebConfig struct {
-	HubAddr     string
-	RunDir      string            // run directory where rendezvous files live
-	Roster      *Roster
-	Past        *PastIndex
-	Spawner     Spawner           // optional; nil disables spawn
-	Models      []modelDescriptor // available models for the spawn chip
-	PastPerPage int               // results per page for /past; defaults to 50 when zero
-	StateDir    string            // root of the projects/<sha> state directory; needed for ForkSession
+	HubAddr       string
+	RunDir        string            // run directory where rendezvous files live
+	Roster        *Roster
+	Past          *PastIndex
+	Spawner       Spawner           // optional; nil disables spawn
+	Models        []modelDescriptor // available models for the spawn chip
+	PastPerPage   int               // results per page for /past; defaults to 50 when zero
+	StateDir      string            // root of the projects/<sha> state directory; needed for ForkSession
+	PluginDirs    []string          // explicit plugin dirs; when empty, default to ~/.config/serf/plugins/*
+	MCPConfigPath string            // MCP config file path; when empty, default to ~/.config/serf/mcp.json
 }
 
 // Spawner forks a serf serve subprocess and waits for its rendezvous file to appear.
@@ -216,17 +219,59 @@ type agentDisplay struct {
 	EditPath string
 }
 
+// pluginCounts summarises components contributed by a plugin.
+type pluginCounts struct {
+	Skills int
+	Agents int
+	Mcps   int
+	Hooks  int
+}
+
+// pluginDisplay is one row in Settings → Plugins.
+type pluginDisplay struct {
+	Name     string
+	Path     string
+	Version  string
+	Counts   pluginCounts
+	EditPath template.URL
+}
+
+// skillDisplay is one row in Settings → Skills.
+type skillDisplay struct {
+	Name        string
+	Plugin      string
+	Description string
+	EditPath    template.URL
+}
+
+// mcpDisplay is one row in Settings → MCP servers.
+type mcpDisplay struct {
+	Name     string
+	Command  string
+	Args     []string
+	Status   string // "running" | "stopped" | "error" | "unknown"
+	Tools    int
+	Agents   []string
+	EditPath template.URL
+}
+
 // settingsData is the template data passed to all settings section templates.
 type settingsData struct {
-	Active       string
-	HubAddr      string
-	RunDir       string
-	StateDir     string
-	SpawnTimeout string
-	PastPerPage  int
-	Providers    []providerDisplay
-	Agents       []agentDisplay
-	PastCount    int
+	Active        string
+	HubAddr       string
+	RunDir        string
+	StateDir      string
+	SpawnTimeout  string
+	PastPerPage   int
+	Providers     []providerDisplay
+	Agents        []agentDisplay
+	Plugins       []pluginDisplay
+	PluginsError  string
+	Skills        []skillDisplay
+	Mcps          []mcpDisplay
+	McpsError     string
+	McpConfigPath string
+	PastCount     int
 }
 
 // providerDisplay groups model descriptors by provider for the providers page.
@@ -284,16 +329,27 @@ func (s *WebServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 		pastCount = len(s.cfg.Past.AllMetas())
 	}
 
+	plugins, pluginsErr := s.discoverPluginsForSettings()
+	skills := skillsFromPlugins(plugins)
+	mcpPath := s.mcpConfigPathForSettings()
+	mcps, mcpsErr := s.discoverMCPsForSettings(mcpPath)
+
 	data := settingsData{
-		Active:       section,
-		HubAddr:      s.cfg.HubAddr,
-		RunDir:       s.cfg.RunDir,
-		StateDir:     s.cfg.StateDir,
-		SpawnTimeout: "30s",
-		PastPerPage:  s.cfg.PastPerPage,
-		Providers:    providers,
-		Agents:       agents,
-		PastCount:    pastCount,
+		Active:        section,
+		HubAddr:       s.cfg.HubAddr,
+		RunDir:        s.cfg.RunDir,
+		StateDir:      s.cfg.StateDir,
+		SpawnTimeout:  "30s",
+		PastPerPage:   s.cfg.PastPerPage,
+		Providers:     providers,
+		Agents:        agents,
+		Plugins:       plugins,
+		PluginsError:  errString(pluginsErr),
+		Skills:        skills,
+		Mcps:          mcps,
+		McpsError:     errString(mcpsErr),
+		McpConfigPath: mcpPath,
+		PastCount:     pastCount,
 	}
 
 	// Render just the inner settings-content partial when htmx is targeting
@@ -310,6 +366,220 @@ func (s *WebServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// errString returns err.Error() or "" when err is nil. Used to thread
+// recoverable settings-discovery errors into the template without a 5xx.
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+// defaultPluginsRoot is the conventional XDG location for serf plugins:
+// ~/.config/serf/plugins (or $XDG_CONFIG_HOME/serf/plugins).
+func defaultPluginsRoot() string {
+	dir := os.Getenv("XDG_CONFIG_HOME")
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		dir = filepath.Join(home, ".config")
+	}
+	return filepath.Join(dir, "serf", "plugins")
+}
+
+// defaultMCPConfigPath is the conventional XDG location for the global
+// MCP config (~/.config/serf/mcp.json), matching agent.globalMCPConfigPath.
+func defaultMCPConfigPath() string {
+	dir := os.Getenv("XDG_CONFIG_HOME")
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		dir = filepath.Join(home, ".config")
+	}
+	return filepath.Join(dir, "serf", "mcp.json")
+}
+
+// pluginsRootForSettings returns explicit PluginDirs verbatim, or expands
+// the default plugins root into one entry per immediate subdirectory
+// containing a .claude-plugin/plugin.json manifest.
+func (s *WebServer) pluginsRootForSettings() []string {
+	if len(s.cfg.PluginDirs) > 0 {
+		return s.cfg.PluginDirs
+	}
+	root := defaultPluginsRoot()
+	if root == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	var dirs []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		dir := filepath.Join(root, e.Name())
+		if _, err := os.Stat(filepath.Join(dir, ".claude-plugin", "plugin.json")); err != nil {
+			continue
+		}
+		dirs = append(dirs, dir)
+	}
+	sort.Strings(dirs)
+	return dirs
+}
+
+// discoverPluginsForSettings loads plugin manifests for the Settings →
+// Plugins pane. A discovery failure returns nil rows plus a non-nil error
+// that the template renders inline.
+func (s *WebServer) discoverPluginsForSettings() ([]pluginDisplay, error) {
+	dirs := s.pluginsRootForSettings()
+	if len(dirs) == 0 {
+		return nil, nil
+	}
+	loaded, err := agent.LoadPlugins(dirs)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]pluginDisplay, 0, len(loaded))
+	for _, lp := range loaded {
+		out = append(out, pluginDisplay{
+			Name:    lp.Manifest.Name,
+			Path:    lp.Dir,
+			Version: lp.Manifest.Version,
+			Counts: pluginCounts{
+				Skills: len(lp.Skills),
+				Agents: len(lp.Agents),
+				Mcps:   len(lp.MCPConfigs),
+				Hooks:  countHooks(lp.Hooks),
+			},
+			EditPath: template.URL("file://" + filepath.Join(lp.Dir, ".claude-plugin", "plugin.json")),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+// countHooks sums all RegisteredHook entries across hook events.
+func countHooks(h map[agent.HookEvent][]agent.RegisteredHook) int {
+	n := 0
+	for _, hs := range h {
+		n += len(hs)
+	}
+	return n
+}
+
+// skillsFromPlugins flattens per-plugin skills directories into rows for
+// the Skills pane. Plugins is the already-loaded list so we know each
+// plugin's path and name.
+func skillsFromPlugins(plugins []pluginDisplay) []skillDisplay {
+	var out []skillDisplay
+	for _, p := range plugins {
+		out = append(out, collectSkillsForPlugin(p)...)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Plugin != out[j].Plugin {
+			return out[i].Plugin < out[j].Plugin
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
+// collectSkillsForPlugin scans <pluginPath>/skills/ for SKILL.md files and
+// returns one display row per skill. Returns nil if the dir is missing.
+func collectSkillsForPlugin(p pluginDisplay) []skillDisplay {
+	skillsDir := filepath.Join(p.Path, "skills")
+	entries, err := os.ReadDir(skillsDir)
+	if err != nil {
+		return nil
+	}
+	var out []skillDisplay
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		skillFile := filepath.Join(skillsDir, e.Name(), "SKILL.md")
+		name, desc, ok := readSkillFrontmatter(skillFile)
+		if !ok {
+			continue
+		}
+		out = append(out, skillDisplay{
+			Name:        name,
+			Plugin:      p.Name,
+			Description: desc,
+			EditPath:    template.URL("file://" + skillFile),
+		})
+	}
+	return out
+}
+
+// readSkillFrontmatter reads a SKILL.md file and returns its name and
+// description from the YAML frontmatter. Returns ("","",false) if the
+// file is missing, unparseable, or lacks required fields.
+func readSkillFrontmatter(path string) (string, string, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", "", false
+	}
+	doc, err := frontmatter.Parse(string(data))
+	if err != nil || doc.Meta == nil {
+		return "", "", false
+	}
+	name, _ := doc.Meta["name"].(string)
+	desc, _ := doc.Meta["description"].(string)
+	if strings.TrimSpace(name) == "" || strings.TrimSpace(desc) == "" {
+		return "", "", false
+	}
+	return name, desc, true
+}
+
+// mcpConfigPathForSettings returns the configured MCP file path, or the
+// XDG default when WebConfig.MCPConfigPath is empty.
+func (s *WebServer) mcpConfigPathForSettings() string {
+	if s.cfg.MCPConfigPath != "" {
+		return s.cfg.MCPConfigPath
+	}
+	return defaultMCPConfigPath()
+}
+
+// discoverMCPsForSettings reads the MCP config file at path and returns
+// rows for the MCP servers pane. A missing file is the empty state, not
+// an error. Parse errors return an inline error string.
+func (s *WebServer) discoverMCPsForSettings(path string) ([]mcpDisplay, error) {
+	if path == "" {
+		return nil, nil
+	}
+	if _, err := os.Stat(path); err != nil {
+		return nil, nil
+	}
+	configs, err := agent.LoadMCPConfigFile(path)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]mcpDisplay, 0, len(configs))
+	for _, c := range configs {
+		cmd := c.Command
+		if cmd == "" {
+			cmd = c.URL
+		}
+		out = append(out, mcpDisplay{
+			Name:     c.Name,
+			Command:  cmd,
+			Args:     c.Args,
+			Status:   "unknown", // hub doesn't run MCP servers; live status is per-session
+			Tools:    0,
+			Agents:   nil,
+			EditPath: template.URL("file://" + path),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
 
 func (s *WebServer) handleSidebar(w http.ResponseWriter, r *http.Request) {
 	var metas []agent.SessionMeta

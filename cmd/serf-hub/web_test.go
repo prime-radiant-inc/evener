@@ -1545,3 +1545,150 @@ func TestWeb_Sidebar_RollupState_NoLiveChildrenHides(t *testing.T) {
 		t.Errorf("past-only project rollup dot should have empty data-state; body=\n%s", body)
 	}
 }
+
+// settingsRequest is a small helper for the settings pane tests.
+func settingsRequest(t *testing.T, web *WebServer, section string) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/settings/"+section, nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	return rec.Body.String()
+}
+
+// writeFakePlugin creates a minimal plugin tree at <root>/<name>:
+//   .claude-plugin/plugin.json with the given name+version
+//   skills/<skillName>/SKILL.md with name+description frontmatter (when set)
+func writeFakePlugin(t *testing.T, root, name, version, skillName, skillDesc string) string {
+	t.Helper()
+	dir := filepath.Join(root, name)
+	if err := os.MkdirAll(filepath.Join(dir, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := []byte(`{"name":"` + name + `","version":"` + version + `"}`)
+	if err := os.WriteFile(filepath.Join(dir, ".claude-plugin", "plugin.json"), manifest, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if skillName != "" {
+		skillDir := filepath.Join(dir, "skills", skillName)
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := "---\nname: " + skillName + "\ndescription: " + skillDesc + "\n---\n\nbody\n"
+		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+// TestWeb_Settings_PluginsPane_RendersDiscoveredPlugins seeds a fake
+// plugin dir and asserts the rendered HTML contains its name and path.
+func TestWeb_Settings_PluginsPane_RendersDiscoveredPlugins(t *testing.T) {
+	root := t.TempDir()
+	pluginDir := writeFakePlugin(t, root, "demo-plugin", "1.2.3", "", "")
+	web := NewWebServer(WebConfig{
+		HubAddr:    "127.0.0.1:9180",
+		Roster:     NewRoster(t.TempDir(), nil),
+		Past:       NewPastIndex(""),
+		PluginDirs: []string{pluginDir},
+	})
+	body := settingsRequest(t, web, "plugins")
+	for _, want := range []string{"demo-plugin", "1.2.3", pluginDir, "open in editor"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q: %q", want, body)
+		}
+	}
+}
+
+// TestWeb_Settings_PluginsPane_EmptyState renders cleanly when no
+// PluginDirs are configured and the default root has no plugins.
+func TestWeb_Settings_PluginsPane_EmptyState(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // empty XDG → no plugins
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    NewPastIndex(""),
+	})
+	body := settingsRequest(t, web, "plugins")
+	if !strings.Contains(body, "No plugins found") {
+		t.Errorf("expected empty-state copy in body: %q", body)
+	}
+}
+
+// TestWeb_Settings_SkillsPane_RendersDiscoveredSkills seeds a plugin
+// containing one skill and asserts the rendered HTML contains the skill's
+// name and description.
+func TestWeb_Settings_SkillsPane_RendersDiscoveredSkills(t *testing.T) {
+	root := t.TempDir()
+	pluginDir := writeFakePlugin(t, root, "demo-plugin", "0.1.0", "frobnicate", "Use this when you need to frobnicate widgets.")
+	web := NewWebServer(WebConfig{
+		HubAddr:    "127.0.0.1:9180",
+		Roster:     NewRoster(t.TempDir(), nil),
+		Past:       NewPastIndex(""),
+		PluginDirs: []string{pluginDir},
+	})
+	body := settingsRequest(t, web, "skills")
+	for _, want := range []string{"frobnicate", "demo-plugin", "frobnicate widgets"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q: %q", want, body)
+		}
+	}
+}
+
+// TestWeb_Settings_SkillsPane_EmptyState renders cleanly when nothing
+// has been discovered.
+func TestWeb_Settings_SkillsPane_EmptyState(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    NewPastIndex(""),
+	})
+	body := settingsRequest(t, web, "skills")
+	if !strings.Contains(body, "No skills discovered") {
+		t.Errorf("expected empty-state copy in body: %q", body)
+	}
+}
+
+// TestWeb_Settings_McpPane_RendersConfiguredServers writes a small mcp.json
+// and asserts the server name + command appear in the rendered HTML.
+func TestWeb_Settings_McpPane_RendersConfiguredServers(t *testing.T) {
+	dir := t.TempDir()
+	mcpPath := filepath.Join(dir, "mcp.json")
+	cfg := `{"mcpServers":{"linear":{"command":"npx","args":["-y","@linear/mcp"]}}}`
+	if err := os.WriteFile(mcpPath, []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(WebConfig{
+		HubAddr:       "127.0.0.1:9180",
+		Roster:        NewRoster(t.TempDir(), nil),
+		Past:          NewPastIndex(""),
+		MCPConfigPath: mcpPath,
+	})
+	body := settingsRequest(t, web, "mcp")
+	for _, want := range []string{"linear", "npx", "unknown", "open in editor"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q: %q", want, body)
+		}
+	}
+}
+
+// TestWeb_Settings_McpPane_EmptyState renders cleanly when the config
+// file is missing.
+func TestWeb_Settings_McpPane_EmptyState(t *testing.T) {
+	web := NewWebServer(WebConfig{
+		HubAddr:       "127.0.0.1:9180",
+		Roster:        NewRoster(t.TempDir(), nil),
+		Past:          NewPastIndex(""),
+		MCPConfigPath: filepath.Join(t.TempDir(), "does-not-exist.json"),
+	})
+	body := settingsRequest(t, web, "mcp")
+	if !strings.Contains(body, "No MCP servers configured") {
+		t.Errorf("expected empty-state copy in body: %q", body)
+	}
+}

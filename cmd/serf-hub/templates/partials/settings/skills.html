@@ -1,4 +1,21 @@
 {{define "settings-content"}}
 <h2 class="settings-h2">Skills</h2>
-<p class="settings-help">Skills are scoped per-agent and per-plugin. Live inspection is not yet implemented.</p>
+{{if .Skills}}
+<div class="settings-rows">
+  {{range .Skills}}
+  <div class="settings-row">
+    <div class="settings-row-title">
+      {{.Name}}
+      <span class="model-chip">{{.Plugin}}</span>
+    </div>
+    <div class="settings-row-meta settings-row-desc">{{.Description}}</div>
+    <div class="settings-row-detail">
+      <a class="settings-open-link" href="{{.EditPath}}" target="_blank" rel="noopener">open in editor ↗</a>
+    </div>
+  </div>
+  {{end}}
+</div>
+{{else}}
+<p class="settings-help">No skills discovered. Skills live under <code>&lt;plugin&gt;/skills/&lt;name&gt;/SKILL.md</code> with <code>name</code> and <code>description</code> in YAML frontmatter.</p>
+{{end}}
 {{end}}

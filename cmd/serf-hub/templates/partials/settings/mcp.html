@@ -1,4 +1,27 @@
 {{define "settings-content"}}
 <h2 class="settings-h2">MCP servers</h2>
-<p class="settings-help">MCP servers are configured per-agent in <code>.mcp.json</code> files. Live status across daemons isn't aggregated in v1; check individual sessions to see their server connections.</p>
+<p class="settings-help">Read from <code>{{.McpConfigPath}}</code>. Live status is not aggregated at the hub; check individual sessions to see active connections.</p>
+{{if .McpsError}}
+<p class="settings-help settings-error">MCP discovery failed: <code>{{.McpsError}}</code></p>
+{{end}}
+{{if .Mcps}}
+<div class="settings-rows">
+  {{range .Mcps}}
+  <div class="settings-row">
+    <div class="settings-row-title">
+      {{.Name}}
+      <span class="status-pill status-{{.Status}}">{{.Status}}</span>
+    </div>
+    <div class="settings-row-meta settings-row-cmd">{{.Command}}{{range .Args}} {{.}}{{end}}</div>
+    <div class="settings-row-detail">
+      <span class="model-chip">{{.Tools}} tool{{if ne .Tools 1}}s{{end}}</span>
+      {{range .Agents}}<span class="model-chip">{{.}}</span>{{end}}
+      <a class="settings-open-link" href="{{.EditPath}}" target="_blank" rel="noopener">open in editor ↗</a>
+    </div>
+  </div>
+  {{end}}
+</div>
+{{else if not .McpsError}}
+<p class="settings-help">No MCP servers configured. Add an <code>mcpServers</code> entry to <code>{{.McpConfigPath}}</code>.</p>
+{{end}}
 {{end}}

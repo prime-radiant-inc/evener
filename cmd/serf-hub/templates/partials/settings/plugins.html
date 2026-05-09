@@ -1,4 +1,28 @@
 {{define "settings-content"}}
 <h2 class="settings-h2">Plugins</h2>
-<p class="settings-help">Plugins are configured in <code>~/.config/serf/plugins/</code> directories. Live inspection is not yet implemented.</p>
+{{if .PluginsError}}
+<p class="settings-help settings-error">Plugin discovery failed: <code>{{.PluginsError}}</code></p>
+{{end}}
+{{if .Plugins}}
+<div class="settings-rows">
+  {{range .Plugins}}
+  <div class="settings-row">
+    <div class="settings-row-title">
+      {{.Name}}
+      {{if .Version}}<span class="settings-row-version">{{.Version}}</span>{{end}}
+    </div>
+    <div class="settings-row-meta settings-row-path">{{.Path}}</div>
+    <div class="settings-row-detail">
+      <span class="model-chip">{{.Counts.Skills}} skill{{if ne .Counts.Skills 1}}s{{end}}</span>
+      <span class="model-chip">{{.Counts.Agents}} agent{{if ne .Counts.Agents 1}}s{{end}}</span>
+      <span class="model-chip">{{.Counts.Mcps}} mcp</span>
+      <span class="model-chip">{{.Counts.Hooks}} hook{{if ne .Counts.Hooks 1}}s{{end}}</span>
+      <a class="settings-open-link" href="{{.EditPath}}" target="_blank" rel="noopener">open in editor ↗</a>
+    </div>
+  </div>
+  {{end}}
+</div>
+{{else if not .PluginsError}}
+<p class="settings-help">No plugins found. Drop plugin directories into <code>~/.config/serf/plugins/</code> (each must contain a <code>.claude-plugin/plugin.json</code> manifest).</p>
+{{end}}
 {{end}}
