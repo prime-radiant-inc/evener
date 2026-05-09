@@ -23,6 +23,9 @@
       if (key === "os" && target.checked && "Notification" in window) {
         Notification.requestPermission().catch(() => {});
       }
+      document.dispatchEvent(new CustomEvent("serf-hub:notifications-changed", {
+        detail: { key, value: target.checked },
+      }));
       return;
     }
   });
