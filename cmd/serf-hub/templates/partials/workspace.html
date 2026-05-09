@@ -1,5 +1,8 @@
 {{define "workspace"}}
 <header class="workspace-header" data-session-id="{{.ID}}">
+  {{if .ForkLabel}}
+  <div class="fork-original-banner">↳ original of {{if .ForkOfTitle}}<span class="fork-original-target">{{.ForkOfTitle}}</span>{{else}}fork{{end}}{{if .DivergenceTurn}}, divergence at turn {{.DivergenceTurn}}{{end}}</div>
+  {{end}}
   <div class="workspace-title-row">
     <div class="workspace-title">
       <span class="title">{{.Title}}</span>

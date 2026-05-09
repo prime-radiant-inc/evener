@@ -962,6 +962,14 @@ type WorkspaceData struct {
 	Cost           string
 	ReplayURL      string
 	EventsURL      string
+	// Fork lineage for the preserved-original side of a fork. Non-empty
+	// only when this session's meta carries ForkLabel — i.e., it's the
+	// dim, snapshotted original. ForkOfTitle is the title of the new
+	// branch (the session whose ParentSessionID == this.ID); empty if the
+	// new branch is not in the past index.
+	ForkLabel      string
+	ForkOfTitle    string
+	DivergenceTurn int
 }
 
 func (s *WebServer) renderWorkspacePartial(w http.ResponseWriter, r *http.Request, id string) {
@@ -1120,6 +1128,7 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 					if data.WorkingDir == "" {
 						data.WorkingDir = pe.Meta.EnvInfo.WorkingDir
 					}
+					s.fillForkLineage(&data, pe.Meta)
 				}
 			}
 			return data
@@ -1127,7 +1136,7 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 	}
 	if s.cfg.Past != nil {
 		if pe, ok := s.cfg.Past.Find(id); ok {
-			return WorkspaceData{
+			data := WorkspaceData{
 				ID:         id,
 				Title:      pastTitle(pe),
 				State:      "ended",
@@ -1138,9 +1147,38 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 				Branch:     pe.Meta.EnvInfo.GitBranch,
 				ReplayURL:  "/past/" + id + "/replay",
 			}
+			s.fillForkLineage(&data, pe.Meta)
+			return data
 		}
 	}
 	return WorkspaceData{}
+}
+
+// fillForkLineage populates the WorkspaceData fork-banner fields for the
+// preserved-original side of a fork. The dim original is the meta with a
+// non-empty ForkLabel; the new branch is the meta whose ParentSessionID
+// equals this session's ID. ForkOfTitle is best-effort — if the new branch
+// isn't in the past index, we leave it empty and the template falls back to
+// "fork at turn N".
+func (s *WebServer) fillForkLineage(data *WorkspaceData, m agent.SessionMeta) {
+	if m.ForkLabel == "" {
+		return
+	}
+	data.ForkLabel = m.ForkLabel
+	data.DivergenceTurn = m.DivergenceTurn
+	if s.cfg.Past == nil {
+		return
+	}
+	for _, candidate := range s.cfg.Past.AllMetas() {
+		if candidate.ParentSessionID == m.ID && !candidate.IsSubagent && candidate.ForkLabel == "" {
+			if candidate.OriginalTask != "" {
+				data.ForkOfTitle = candidate.OriginalTask
+			} else {
+				data.ForkOfTitle = shortID(candidate.ID)
+			}
+			return
+		}
+	}
 }
 
 // liveTitle prefers a friendly title for a running session: pull

@@ -31,10 +31,12 @@
 
   {{range .Projects}}
   <section class="sidebar-section project-section">
-    <header class="project-header">
-      <span>{{.Name}}</span>
-      {{if .RollupState}}<span class="status-dot rollup" data-state="{{.RollupState}}"></span>{{end}}
-      <span class="row-meta">{{len .Sessions}}</span>
+    <header class="project-header" data-project-key="{{.Name}}">
+      <span class="project-chevron" role="button" aria-label="collapse project">▾</span>
+      <span class="project-folder" aria-hidden="true">📁</span>
+      <span class="project-name">{{.Name}}</span>
+      <span class="row-meta project-count">{{len .Sessions}}</span>
+      {{if .RollupState}}<span class="status-dot rollup project-rollup-dot" data-state="{{.RollupState}}"></span>{{end}}
     </header>
     {{range .Sessions}}
     <a class="session-row"

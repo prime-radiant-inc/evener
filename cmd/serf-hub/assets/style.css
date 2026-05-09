@@ -283,8 +283,22 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .status-dot.rollup { margin-left: auto; }
 .row-meta { color: var(--text-muted); font-size: 11px; }
 .row-age { color: var(--text-muted); font-size: 11px; margin-left: auto; }
-.live-row { background: transparent; }
-.live-row[data-state="awaiting"] { /* could add subtle highlight here, but spec wants quiet */ }
+.live-row { background: transparent; border-left: 2px solid transparent; }
+.live-row[data-state="awaiting"]   { background: rgba(247,118,142,0.08); border-left: 2px solid var(--state-awaiting); }
+.live-row[data-state="processing"] { background: rgba(122,162,247,0.08); border-left: 2px solid var(--state-processing); }
+.live-row[data-state="warning"]    { background: rgba(224,175,104,0.06); border-left: 2px solid var(--state-warning); }
+
+/* Project header glyphs: chevron + folder. Click target is the chevron;
+   collapse/expand wiring lives in a follow-up task. */
+.project-header { cursor: default; }
+.project-chevron { display: inline-block; width: 12px; color: var(--text-muted); cursor: pointer; }
+.project-folder { display: inline-block; }
+.project-name { color: var(--text-dim); }
+
+/* Fork title-bar prefix: shown above the title for the dim, preserved-original
+   side of a fork. */
+.fork-original-banner { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; padding: 0; }
+.fork-original-target { color: var(--text); }
 
 /* Workspace pane */
 .workspace-header { padding: 12px 24px 10px; border-bottom: 1px solid var(--rule); }
@@ -298,6 +312,11 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .panel-toggle.active { color: var(--text); background: var(--bg-raised); border-color: var(--rule); }
 .panel-toggle-icon { font-size: 13px; line-height: 1; }
 .panel-toggle-label { font-size: 12px; }
+.header-action { display: inline-flex; align-items: center; padding: 4px 8px; background: transparent; border: none; border-radius: 4px; color: var(--text-muted); font-size: 12px; font-family: inherit; cursor: pointer; transition: background 0.1s, color 0.1s; }
+.header-action:hover:not([disabled]) { color: var(--text); background: var(--bg-raised); }
+.header-action-danger { color: var(--state-awaiting); }
+.header-action-danger:hover:not([disabled]) { color: var(--state-awaiting); background: rgba(247, 118, 142, 0.1); }
+.header-action[disabled] { opacity: 0.4; cursor: not-allowed; }
 .workspace-meta .branch { font-family: ui-monospace, "SFMono-Regular", monospace; }
 .rule-dot { color: var(--text-dim); }
 .status-pill { display: inline-flex; align-items: baseline; gap: 6px; }

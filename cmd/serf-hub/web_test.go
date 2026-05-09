@@ -1171,3 +1171,159 @@ func TestWeb_Send_RejectsEmptyTextAndNoImages(t *testing.T) {
 		}
 	}
 }
+
+// TestWeb_Sidebar_LiveRowDataState verifies that a live entry in the sidebar
+// renders with data-state on the .live-row anchor itself, so the CSS state
+// accents (left border + tinted background) can apply.
+func TestWeb_Sidebar_LiveRowDataState(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 30, Address: "127.0.0.1:55570"})
+	r := NewRoster(dir, fakeProber{sessionID: "01LIVEACC", status: "AWAITING_REPLY"})
+	r.Refresh()
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  r,
+		Past:    NewPastIndex(""),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/sidebar", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	body := rec.Body.String()
+	// The live-row anchor must carry data-state="awaiting" so the state-accent
+	// CSS rules match. The template line-wraps the anchor, so flatten whitespace
+	// before looking for the two attributes adjacent on the same element.
+	if !strings.Contains(body, "live-row") {
+		t.Fatalf("body missing live-row class: %q", body)
+	}
+	flat := strings.Join(strings.Fields(body), " ")
+	if !strings.Contains(flat, `live-row`) || !strings.Contains(flat, `data-state="awaiting"`) {
+		t.Errorf("live-row missing data-state=\"awaiting\": %q", body)
+	}
+	// And confirm they're on the same opening tag: find <a ... > containing both.
+	tagFound := false
+	for _, chunk := range strings.Split(flat, "<a ") {
+		// The first split chunk is everything before the first <a; subsequent
+		// chunks each begin with the anchor's attribute list.
+		if !strings.HasPrefix(chunk, "class=\"live-row") {
+			continue
+		}
+		end := strings.Index(chunk, ">")
+		if end < 0 {
+			continue
+		}
+		if strings.Contains(chunk[:end], `data-state="awaiting"`) {
+			tagFound = true
+			break
+		}
+	}
+	if !tagFound {
+		t.Errorf("data-state=\"awaiting\" not on the live-row <a> element: %q", body)
+	}
+}
+
+// TestWeb_Sidebar_ProjectHeader_HasChevronAndFolder verifies that the project
+// header renders with the new ▾ 📁 <name> shape so the spec mockups match.
+func TestWeb_Sidebar_ProjectHeader_HasChevronAndFolder(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+		ID: "01PROJHDR", UpdatedAt: time.Now(), OriginalTask: "x",
+		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/widgets"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    idx,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/sidebar", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	body := rec.Body.String()
+	wants := []string{`class="project-header"`, "project-chevron", "📁", "project-name"}
+	for _, w := range wants {
+		if !strings.Contains(body, w) {
+			t.Errorf("project-header missing %q: %q", w, body)
+		}
+	}
+}
+
+// TestWeb_Workspace_ForkOriginalBanner verifies that a session whose meta
+// carries ForkLabel renders the "↳ original of <new-branch-title>, divergence
+// at turn N" banner above the workspace title.
+func TestWeb_Workspace_ForkOriginalBanner(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Original (preserved) branch — carries ForkLabel.
+	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+		ID: "01ORIGINAL", UpdatedAt: time.Now().Add(-time.Hour),
+		OriginalTask:   "the original task",
+		ForkLabel:      "before TDD",
+		DivergenceTurn: 5,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// New branch — its ParentSessionID points back at the original.
+	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+		ID: "01NEWBRANCH", UpdatedAt: time.Now(),
+		OriginalTask:    "the new branch title",
+		ParentSessionID: "01ORIGINAL",
+		DivergenceTurn:  5,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    idx,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/s/01ORIGINAL", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	wants := []string{
+		"fork-original-banner",
+		"↳ original of",
+		"the new branch title",
+		"divergence at turn 5",
+	}
+	for _, w := range wants {
+		if !strings.Contains(body, w) {
+			t.Errorf("fork banner missing %q: %q", w, body)
+		}
+	}
+}
