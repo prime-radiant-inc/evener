@@ -1405,17 +1405,36 @@ func (s *WebServer) renderInputStrip(w http.ResponseWriter, r *http.Request, id 
 	}
 }
 
+// sendRequest is the JSON body accepted by POST /s/<id>/send. The shape is
+// wire-compatible with the daemon's server.InputRequest, so we forward by
+// re-marshaling this struct directly.
+type sendRequest struct {
+	Text   string                  `json:"text"`
+	Images []agent.ImageAttachment `json:"images,omitempty"`
+}
+
 func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string) {
-	var body struct {
-		Text string `json:"text"`
-	}
+	var body sendRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	// Match the daemon's validation: at least one of text or images is required.
+	if body.Text == "" && len(body.Images) == 0 {
+		http.Error(w, "text or images required", http.StatusBadRequest)
 		return
 	}
 
 	if s.cfg.Roster == nil {
 		http.Error(w, "spawner not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Marshal the body once; tryForward builds a fresh bytes.Reader on each
+	// call so the retry-after-resume path can replay the same payload.
+	payload, err := json.Marshal(body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -1447,7 +1466,6 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 	}
 
 	tryForward := func(le LiveEntry) (int, []byte, error) {
-		payload, _ := json.Marshal(map[string]string{"text": body.Text})
 		req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, "http://"+le.Address+"/input", bytes.NewReader(payload))
 		if err != nil {
 			return 0, nil, err

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1188,5 +1189,176 @@ func TestWeb_SessionTasks_LiveProxiesDaemon(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"live task"`) {
 		t.Errorf("body missing daemon payload: %q", rec.Body.String())
+	}
+}
+
+// stubDaemonForSend stands up an httptest server that records the body posted
+// to /input and replies 202. Returns the server (caller must Close), a pointer
+// to the captured body bytes, and the host:port string.
+func stubDaemonForSend(t *testing.T) (*httptest.Server, *[]byte, string) {
+	t.Helper()
+	var captured []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/input" || r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		buf, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		captured = buf
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	return srv, &captured, strings.TrimPrefix(srv.URL, "http://")
+}
+
+// TestWeb_Send_ForwardsTextAndImages verifies POST /s/<id>/send with both text
+// and an image attachment forwards a JSON body matching server.InputRequest's
+// schema to the daemon's /input.
+func TestWeb_Send_ForwardsTextAndImages(t *testing.T) {
+	daemon, captured, addr := stubDaemonForSend(t)
+	defer daemon.Close()
+
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 21, Address: addr})
+	r := NewRoster(dir, fakeProber{sessionID: "01SENDIMG", status: "idle"})
+	r.Refresh()
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  r,
+		Past:    NewPastIndex(""),
+	})
+
+	imgBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a} // PNG header
+	reqBody, err := json.Marshal(map[string]any{
+		"text": "caption",
+		"images": []map[string]any{{
+			"media_type": "image/png",
+			"data":       imgBytes,
+			"name":       "x.png",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/s/01SENDIMG/send", strings.NewReader(string(reqBody)))
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code < 200 || rec.Code >= 300 {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	if len(*captured) == 0 {
+		t.Fatal("daemon did not receive a request body")
+	}
+	var got sendRequest
+	if err := json.Unmarshal(*captured, &got); err != nil {
+		t.Fatalf("decode forwarded body: %v (raw=%q)", err, *captured)
+	}
+	if got.Text != "caption" {
+		t.Errorf("forwarded text=%q, want %q", got.Text, "caption")
+	}
+	if len(got.Images) != 1 {
+		t.Fatalf("forwarded images=%d, want 1", len(got.Images))
+	}
+	if got.Images[0].MediaType != "image/png" {
+		t.Errorf("media_type=%q, want image/png", got.Images[0].MediaType)
+	}
+	if got.Images[0].Name != "x.png" {
+		t.Errorf("name=%q, want x.png", got.Images[0].Name)
+	}
+	if len(got.Images[0].Data) != len(imgBytes) {
+		t.Errorf("forwarded image data len=%d, want %d", len(got.Images[0].Data), len(imgBytes))
+	}
+}
+
+// TestWeb_Send_ImageOnly_Forwards verifies that a send with empty text and one
+// image is accepted and forwarded.
+func TestWeb_Send_ImageOnly_Forwards(t *testing.T) {
+	daemon, captured, addr := stubDaemonForSend(t)
+	defer daemon.Close()
+
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 22, Address: addr})
+	r := NewRoster(dir, fakeProber{sessionID: "01IMGONLY", status: "idle"})
+	r.Refresh()
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  r,
+		Past:    NewPastIndex(""),
+	})
+
+	imgBytes := []byte{0xff, 0xd8, 0xff, 0xe0} // JPEG header bytes
+	reqBody, err := json.Marshal(map[string]any{
+		"text": "",
+		"images": []map[string]any{{
+			"media_type": "image/jpeg",
+			"data":       imgBytes,
+			"name":       "y.jpg",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/s/01IMGONLY/send", strings.NewReader(string(reqBody)))
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code < 200 || rec.Code >= 300 {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	var got sendRequest
+	if err := json.Unmarshal(*captured, &got); err != nil {
+		t.Fatalf("decode forwarded body: %v (raw=%q)", err, *captured)
+	}
+	if got.Text != "" {
+		t.Errorf("forwarded text=%q, want empty", got.Text)
+	}
+	if len(got.Images) != 1 {
+		t.Fatalf("forwarded images=%d, want 1", len(got.Images))
+	}
+	if got.Images[0].MediaType != "image/jpeg" {
+		t.Errorf("media_type=%q, want image/jpeg", got.Images[0].MediaType)
+	}
+	if len(got.Images[0].Data) != len(imgBytes) {
+		t.Errorf("forwarded image data len=%d, want %d", len(got.Images[0].Data), len(imgBytes))
+	}
+}
+
+// TestWeb_Send_RejectsEmptyTextAndNoImages verifies that the hub returns 400
+// when neither text nor images are supplied — matching the daemon's rule.
+func TestWeb_Send_RejectsEmptyTextAndNoImages(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 23, Address: "127.0.0.1:55557"})
+	r := NewRoster(dir, fakeProber{sessionID: "01NOEMPTY", status: "idle"})
+	r.Refresh()
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  r,
+		Past:    NewPastIndex(""),
+	})
+
+	cases := []string{`{}`, `{"text":""}`, `{"text":"","images":[]}`}
+	for _, payload := range cases {
+		req := httptest.NewRequest(http.MethodPost, "/s/01NOEMPTY/send", strings.NewReader(payload))
+		req.Host = "127.0.0.1:9180"
+		req.Header.Set("Origin", "http://127.0.0.1:9180")
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		web.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("payload=%s: status=%d, want 400 (body=%q)", payload, rec.Code, rec.Body.String())
+		}
 	}
 }
