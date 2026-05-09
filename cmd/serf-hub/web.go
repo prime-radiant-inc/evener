@@ -933,6 +933,12 @@ func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleFork(w, r, id)
+	case "interrupt":
+		s.handleSessionAction(w, r, id, "interrupt")
+	case "compact":
+		s.handleSessionAction(w, r, id, "compact")
+	case "shutdown":
+		s.handleSessionAction(w, r, id, "shutdown")
 	case "events":
 		if s.sse == nil {
 			http.NotFound(w, r)
@@ -1358,6 +1364,43 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(status)
+	w.Write(buf) //nolint:errcheck
+}
+
+// handleSessionAction forwards an imperative action (interrupt/compact/
+// shutdown) to the live daemon for the given session. Unlike /send, these
+// actions do NOT auto-resume an ended session: if there is no roster entry
+// the action is a no-op and we return 404. The daemon's status code (204 or
+// 202) is forwarded to the client.
+func (s *WebServer) handleSessionAction(w http.ResponseWriter, r *http.Request, id, action string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.cfg.Roster == nil {
+		http.Error(w, "roster not configured", http.StatusServiceUnavailable)
+		return
+	}
+	le, ok := s.cfg.Roster.Find(id)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	url := "http://" + le.Address + "/" + action
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, url, nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req) //nolint:gosec
+	if err != nil {
+		http.Error(w, "daemon unreachable: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	buf, _ := io.ReadAll(resp.Body)
+	w.WriteHeader(resp.StatusCode)
 	w.Write(buf) //nolint:errcheck
 }
 

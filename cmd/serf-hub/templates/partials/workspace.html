@@ -9,6 +9,9 @@
       <button class="title-action" type="button" data-copy-id="{{.ID}}" title="copy session ID">⧉</button>
     </div>
     <div class="workspace-actions">
+      <button type="button" class="header-action" data-action-trigger="interrupt" title="cancel the in-flight model call"{{if and (ne .State "processing") (ne .State "awaiting")}} disabled{{end}}>interrupt</button>
+      <button type="button" class="header-action" data-action-trigger="compact" title="compact the transcript"{{if eq .State "ended"}} disabled{{end}}>compact</button>
+      <button type="button" class="header-action header-action-danger" data-action-trigger="shutdown" title="shut down this daemon"{{if eq .State "ended"}} disabled{{end}}>shutdown</button>
       <button type="button" class="panel-toggle" data-tasks-trigger title="task list">
         <span class="panel-toggle-icon">☑</span><span class="panel-toggle-label">tasks</span>
       </button>

@@ -1415,8 +1415,42 @@
     } else if (t.matches("[data-tasks-trigger]") || t.closest && t.closest("[data-tasks-trigger]")) {
       e.preventDefault();
       toggleTasksPanel();
+    } else {
+      const actionBtn = t.matches("[data-action-trigger]") ? t : (t.closest && t.closest("[data-action-trigger]"));
+      if (actionBtn) {
+        e.preventDefault();
+        if (actionBtn.disabled) return;
+        triggerSessionAction(actionBtn.getAttribute("data-action-trigger"));
+      }
     }
   });
+
+  // triggerSessionAction posts to /s/<id>/<action> for the currently-rendered
+  // workspace session. shutdown asks for confirmation first; interrupt and
+  // compact are silent on success and surface failures via appendBanner.
+  function triggerSessionAction(action) {
+    const conv = document.getElementById("conversation");
+    const sessionId = conv && conv.getAttribute("data-session-id");
+    if (!sessionId) return;
+    if (action === "shutdown") {
+      if (!window.confirm("Shut down this daemon? The session will end.")) return;
+    }
+    fetch("/s/" + encodeURIComponent(sessionId) + "/" + action, { method: "POST" })
+      .then((resp) => {
+        if (!resp.ok) {
+          return resp.text().then((txt) => {
+            if (window.SerfRenderer && window.SerfRenderer.appendBanner) {
+              window.SerfRenderer.appendBanner("error", action + " failed: " + (txt || resp.status));
+            }
+          });
+        }
+      })
+      .catch((err) => {
+        if (window.SerfRenderer && window.SerfRenderer.appendBanner) {
+          window.SerfRenderer.appendBanner("error", action + " failed: " + err.message);
+        }
+      });
+  }
 
   function setPanelToggleActive(selector, active) {
     const btn = document.querySelector(selector);

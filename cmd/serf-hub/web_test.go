@@ -1327,3 +1327,116 @@ func TestWeb_Workspace_ForkOriginalBanner(t *testing.T) {
 		}
 	}
 }
+
+// stubDaemonForAction stands up an httptest server that records the path of
+// any POST and replies with the given status code. Returns the server, a
+// pointer to the captured path, and the host:port string.
+func stubDaemonForAction(t *testing.T, replyStatus int) (*httptest.Server, *string, string) {
+	t.Helper()
+	var capturedPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST required", http.StatusMethodNotAllowed)
+			return
+		}
+		capturedPath = r.URL.Path
+		w.WriteHeader(replyStatus)
+	}))
+	return srv, &capturedPath, strings.TrimPrefix(srv.URL, "http://")
+}
+
+func TestWeb_SessionAction_InterruptForwards(t *testing.T) {
+	daemon, capturedPath, addr := stubDaemonForAction(t, http.StatusNoContent)
+	defer daemon.Close()
+
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 30, Address: addr})
+	r := NewRoster(dir, fakeProber{sessionID: "01ACTINT", status: "processing"})
+	r.Refresh()
+
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+
+	req := httptest.NewRequest(http.MethodPost, "/s/01ACTINT/interrupt", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status=%d, want 204 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if *capturedPath != "/interrupt" {
+		t.Errorf("daemon path=%q, want /interrupt", *capturedPath)
+	}
+}
+
+func TestWeb_SessionAction_CompactForwards(t *testing.T) {
+	daemon, capturedPath, addr := stubDaemonForAction(t, http.StatusAccepted)
+	defer daemon.Close()
+
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 31, Address: addr})
+	r := NewRoster(dir, fakeProber{sessionID: "01ACTCMP", status: "idle"})
+	r.Refresh()
+
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+
+	req := httptest.NewRequest(http.MethodPost, "/s/01ACTCMP/compact", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status=%d, want 202 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if *capturedPath != "/compact" {
+		t.Errorf("daemon path=%q, want /compact", *capturedPath)
+	}
+}
+
+func TestWeb_SessionAction_ShutdownForwards(t *testing.T) {
+	daemon, capturedPath, addr := stubDaemonForAction(t, http.StatusAccepted)
+	defer daemon.Close()
+
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 32, Address: addr})
+	r := NewRoster(dir, fakeProber{sessionID: "01ACTSHD", status: "idle"})
+	r.Refresh()
+
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+
+	req := httptest.NewRequest(http.MethodPost, "/s/01ACTSHD/shutdown", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status=%d, want 202 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if *capturedPath != "/shutdown" {
+		t.Errorf("daemon path=%q, want /shutdown", *capturedPath)
+	}
+}
+
+// TestWeb_SessionAction_NotLive_404 verifies that posting to an action route
+// for a session with no roster entry returns 404 rather than auto-resuming
+// or otherwise side-effecting.
+func TestWeb_SessionAction_NotLive_404(t *testing.T) {
+	dir := t.TempDir()
+	r := NewRoster(dir, fakeProber{})
+	r.Refresh()
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+
+	for _, action := range []string{"interrupt", "compact", "shutdown"} {
+		req := httptest.NewRequest(http.MethodPost, "/s/01NOLIVE/"+action, nil)
+		req.Host = "127.0.0.1:9180"
+		req.Header.Set("Origin", "http://127.0.0.1:9180")
+		rec := httptest.NewRecorder()
+		web.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s: status=%d, want 404 (body=%q)", action, rec.Code, rec.Body.String())
+		}
+	}
+}
