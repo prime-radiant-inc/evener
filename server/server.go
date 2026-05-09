@@ -70,14 +70,28 @@ type DetailedStatus struct {
 
 // StatusInfo is the JSON response for GET /status.
 type StatusInfo struct {
-	SessionID       string          `json:"session_id"`
-	State           string          `json:"state"`
-	Turns           int             `json:"turns"`
-	Model           string          `json:"model"`
-	Profile         string          `json:"profile"`
-	WorkingDir      string          `json:"working_dir,omitempty"`
-	ContextPressure float64         `json:"context_pressure"`
-	Detailed        *DetailedStatus `json:"detailed,omitempty"`
+	SessionID       string             `json:"session_id"`
+	State           string             `json:"state"`
+	Turns           int                `json:"turns"`
+	Model           string             `json:"model"`
+	Profile         string             `json:"profile"`
+	WorkingDir      string             `json:"working_dir,omitempty"`
+	ContextPressure float64            `json:"context_pressure"`
+	Detailed        *DetailedStatus    `json:"detailed,omitempty"`
+	Capabilities    ActionCapabilities `json:"capabilities"`
+}
+
+// ActionCapabilities reports which mutating session actions are currently
+// supported by this daemon.
+type ActionCapabilities struct {
+	Send           bool   `json:"send"`
+	Steer          bool   `json:"steer"`
+	Interrupt      bool   `json:"interrupt"`
+	Compact        bool   `json:"compact"`
+	Clear          bool   `json:"clear"`
+	Shutdown       bool   `json:"shutdown"`
+	ChangeModel    bool   `json:"change_model"`
+	ReadOnlyReason string `json:"read_only_reason,omitempty"`
 }
 
 // ServerConfig holds configuration for the HTTP server.
@@ -431,6 +445,16 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	status := s.status
 	pfn := s.pressureFn
 	dfn := s.detailedStatusFn
+	processing := s.processing
+	capabilities := ActionCapabilities{
+		Send:        !processing,
+		Steer:       s.steerFunc != nil,
+		Interrupt:   s.cancelFunc != nil,
+		Compact:     s.compactFunc != nil,
+		Clear:       s.clearFunc != nil && !processing,
+		Shutdown:    s.shutdownFunc != nil,
+		ChangeModel: s.modelFunc != nil,
+	}
 	s.mu.RUnlock()
 
 	if pfn != nil {
@@ -440,6 +464,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		ds := dfn()
 		status.Detailed = &ds
 	}
+	status.Capabilities = capabilities
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)

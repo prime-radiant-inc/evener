@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/internal/hubapi"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/rendezvous"
 )
@@ -251,7 +252,7 @@ type fakeSpawner struct{}
 func (fakeSpawner) Spawn(_ context.Context, _ SpawnRequest) (rendezvous.Entry, error) {
 	return rendezvous.Entry{PID: 1, Address: "127.0.0.1:0"}, nil
 }
-func (fakeSpawner) Resume(_ context.Context, sessionID string) (rendezvous.Entry, error) {
+func (fakeSpawner) Resume(_ context.Context, _ ResumeRequest) (rendezvous.Entry, error) {
 	return rendezvous.Entry{PID: 1, Address: "127.0.0.1:0"}, nil
 }
 
@@ -1561,8 +1562,9 @@ func settingsRequest(t *testing.T, web *WebServer, section string) string {
 }
 
 // writeFakePlugin creates a minimal plugin tree at <root>/<name>:
-//   .claude-plugin/plugin.json with the given name+version
-//   skills/<skillName>/SKILL.md with name+description frontmatter (when set)
+//
+//	.claude-plugin/plugin.json with the given name+version
+//	skills/<skillName>/SKILL.md with name+description frontmatter (when set)
 func writeFakePlugin(t *testing.T, root, name, version, skillName, skillDesc string) string {
 	t.Helper()
 	dir := filepath.Join(root, name)
@@ -1690,5 +1692,223 @@ func TestWeb_Settings_McpPane_EmptyState(t *testing.T) {
 	body := settingsRequest(t, web, "mcp")
 	if !strings.Contains(body, "No MCP servers configured") {
 		t.Errorf("expected empty-state copy in body: %q", body)
+	}
+}
+
+func TestWeb_APIHealth(t *testing.T) {
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		RunDir:  "/tmp/serf-run",
+		Past:    NewPastIndex("/tmp/state/projects/*"),
+		Spawner: &fakeSpawner{},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	var got hubapi.HealthResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Version == "" || got.HubAddr != "127.0.0.1:9180" {
+		t.Fatalf("unexpected health: %+v", got)
+	}
+	if !got.Capabilities.Tree || !got.Capabilities.SpawnSchema || !got.Capabilities.TranscriptFollow {
+		t.Fatalf("missing capabilities: %+v", got.Capabilities)
+	}
+}
+
+func TestWeb_APITreeReturnsRefsAndNormalizesAwaitingInput(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+		ID: "01TREE", UpdatedAt: time.Now(), OriginalTask: "tree task",
+		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID: 44, Address: "127.0.0.1:4444", WorkingDir: "/projects/serf", Model: "gpt-5",
+	})
+	r := NewRoster(runDir, fakeProber{sessionID: "01TREE", status: "AWAITING_INPUT"})
+	r.Refresh()
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	var got hubapi.TreeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Live) != 1 {
+		t.Fatalf("live=%d: %+v", len(got.Live), got.Live)
+	}
+	if got.Live[0].Ref != "local:01TREE" || got.Live[0].RowID != "live:local:01TREE" || got.Live[0].State != "awaiting" {
+		t.Fatalf("unexpected live node: %+v", got.Live[0])
+	}
+	if len(got.Projects) != 1 || len(got.Projects[0].Sessions) != 1 {
+		t.Fatalf("projects=%+v", got.Projects)
+	}
+	if got.Projects[0].Sessions[0].Ref != "local:01TREE" {
+		t.Fatalf("project node missing ref: %+v", got.Projects[0].Sessions[0])
+	}
+}
+
+func TestWeb_APITreeGroupsLiveOnlySessionsByProject(t *testing.T) {
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 50, Address: "127.0.0.1:4050", WorkingDir: "/projects/serf", Model: "gpt-5"})
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 51, Address: "127.0.0.1:4051", WorkingDir: "/projects/serf", Model: "gpt-5"})
+	r := NewRoster(runDir, perAddrProber{byAddr: map[string]struct{ SessionID, Status string }{
+		"127.0.0.1:4050": {SessionID: "01LIVEA", Status: "IDLE"},
+		"127.0.0.1:4051": {SessionID: "01LIVEB", Status: "AWAITING_INPUT"},
+	}})
+	r.Refresh()
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	var got hubapi.TreeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	var serfProjects []hubapi.TreeProject
+	for _, p := range got.Projects {
+		if p.Name == "serf" {
+			serfProjects = append(serfProjects, p)
+		}
+	}
+	if len(serfProjects) != 1 {
+		t.Fatalf("serf projects=%d: %+v", len(serfProjects), got.Projects)
+	}
+	if len(serfProjects[0].Sessions) != 2 || serfProjects[0].RollupState != "awaiting" {
+		t.Fatalf("unexpected serf project: %+v", serfProjects[0])
+	}
+}
+
+func TestWeb_APISessionDetailsLiveAndPast(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+		ID: "01DETAIL", UpdatedAt: time.Now(), OriginalTask: "details task", Model: "gpt-5", ProfileID: "openai", TurnCount: 3,
+		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf", GitBranch: "serf-hub"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 45, Address: "127.0.0.1:4545", WorkingDir: "/projects/serf", Model: "gpt-5"})
+	r := NewRoster(runDir, fakeProber{sessionID: "01DETAIL", status: "IDLE"})
+	r.Refresh()
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/local:01DETAIL", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	var got hubapi.SessionDetail
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Ref != "local:01DETAIL" || !got.Live || got.Title != "details task" || got.WorkingDir != "/projects/serf" {
+		t.Fatalf("unexpected detail: %+v", got)
+	}
+	if !got.Capabilities.Send || !got.Capabilities.Interrupt || !got.Capabilities.Resume {
+		t.Fatalf("missing live capabilities: %+v", got.Capabilities)
+	}
+}
+
+func TestWeb_APISpawnSchema(t *testing.T) {
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180"})
+	req := httptest.NewRequest(http.MethodGet, "/api/spawn-schema", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	var got hubapi.SpawnSchema
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	names := map[string]bool{}
+	for _, f := range got.Fields {
+		names[f.Name] = true
+	}
+	for _, want := range []string{"task", "working_dir", "model", "agent", "reasoning_effort"} {
+		if !names[want] {
+			t.Fatalf("schema missing %q: %+v", want, got.Fields)
+		}
+	}
+	if names["branch"] || names["access_mode"] {
+		t.Fatalf("schema exposes unsupported field: %+v", got.Fields)
+	}
+}
+
+func TestWeb_APISessionActionClearReturnsRef(t *testing.T) {
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/clear":
+			if r.Method != http.MethodPost {
+				t.Fatalf("clear method=%s", r.Method)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case "/status":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"session_id":"01NEW","state":"IDLE","model":"gpt-5","profile":"openai"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer daemon.Close()
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 46, Address: strings.TrimPrefix(daemon.URL, "http://")})
+	r := NewRoster(runDir, fakeProber{sessionID: "01OLD", status: "IDLE"})
+	r.Refresh()
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:01OLD/clear", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	var got hubapi.RefResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Ref != "local:01NEW" || got.SessionID != "01NEW" {
+		t.Fatalf("unexpected clear response: %+v", got)
 	}
 }

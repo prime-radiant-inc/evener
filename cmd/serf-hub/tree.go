@@ -19,9 +19,9 @@ type Tree struct {
 
 // TreeProject groups sessions by working-directory basename.
 type TreeProject struct {
-	Name         string
-	Sessions     []TreeNode
-	RollupState  string // highest-attention state across this project's live sessions; "" if none
+	Name        string
+	Sessions    []TreeNode
+	RollupState string // highest-attention state across this project's live sessions; "" if none
 }
 
 // TreeNode represents a row in the sidebar.
@@ -59,7 +59,9 @@ func attentionRank(state string) int {
 
 // rollupRank ranks states for a project's rollup dot. Per spec the dot
 // reflects the most-attention-needing live child:
-//   awaiting > warning > processing > idle
+//
+//	awaiting > warning > processing > idle
+//
 // (warning beats processing here because a warning is something the user
 // likely needs to look at, while processing is the daemon making progress
 // on its own.)
@@ -139,7 +141,7 @@ func normalizeState(s string) string {
 	switch s {
 	case "":
 		return "idle"
-	case "AWAITING_REPLY", "AWAITING":
+	case "AWAITING_REPLY", "AWAITING", "AWAITING_INPUT":
 		return "awaiting"
 	case "PROCESSING", "STREAMING", "TOOL", "COMPACTING":
 		return "processing"

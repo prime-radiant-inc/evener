@@ -20,6 +20,13 @@ type SpawnRequest struct {
 	ReasoningEffort string
 }
 
+// ResumeRequest carries the resolved state needed to resume a saved session.
+type ResumeRequest struct {
+	SessionID  string
+	WorkingDir string
+	StateDir   string
+}
+
 // HubSpawner fulfills the Spawner interface using SpawnDaemon.
 type HubSpawner struct {
 	Cfg        Config
@@ -35,12 +42,12 @@ func (h *HubSpawner) Spawn(ctx context.Context, req SpawnRequest) (rendezvous.En
 	return SpawnDaemon(ctx, h.SerfBinary, h.RunDir, req, timeout)
 }
 
-func (h *HubSpawner) Resume(ctx context.Context, sessionID string) (rendezvous.Entry, error) {
+func (h *HubSpawner) Resume(ctx context.Context, req ResumeRequest) (rendezvous.Entry, error) {
 	timeout := h.Cfg.SpawnTimeout
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
-	return ResumeDaemon(ctx, h.SerfBinary, h.RunDir, sessionID, timeout)
+	return ResumeDaemon(ctx, h.SerfBinary, h.RunDir, req, timeout)
 }
 
 // buildSpawnArgs assembles the arg slice for `serf serve` from a SpawnRequest.
@@ -147,11 +154,17 @@ func WaitForRendezvous(ctx context.Context, runDir string, pid int, opts ...Wait
 //
 // Note: resume always creates a NEW session_id (the daemon mints a fresh
 // one). Caller resolves it via roster lookup after rendezvous appears.
-func ResumeDaemon(ctx context.Context, serfBinary, runDir, sessionID string, timeout time.Duration) (rendezvous.Entry, error) {
+func ResumeDaemon(ctx context.Context, serfBinary, runDir string, req ResumeRequest, timeout time.Duration) (rendezvous.Entry, error) {
 	if serfBinary == "" {
 		serfBinary = "serf"
 	}
-	args := []string{"serve", "--addr", "127.0.0.1:0", "--resume", sessionID}
+	args := []string{"serve", "--addr", "127.0.0.1:0", "--resume", req.SessionID}
+	if req.WorkingDir != "" {
+		args = append(args, "--dir", req.WorkingDir)
+	}
+	if req.StateDir != "" {
+		args = append(args, "--state-dir", req.StateDir)
+	}
 	cmd := exec.Command(serfBinary, args...)
 	cmd.Env = append(os.Environ(), "SERF_HUB_SPAWNED=1")
 	cmd.Stdout = os.Stderr

@@ -18,7 +18,9 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/frontmatter"
+	"primeradiant.com/serf/internal/hubapi"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/rendezvous"
 )
@@ -26,7 +28,7 @@ import (
 // WebConfig is everything the web server needs.
 type WebConfig struct {
 	HubAddr       string
-	RunDir        string            // run directory where rendezvous files live
+	RunDir        string // run directory where rendezvous files live
 	Roster        *Roster
 	Past          *PastIndex
 	Spawner       Spawner           // optional; nil disables spawn
@@ -41,7 +43,7 @@ type WebConfig struct {
 // Returns the discovered Entry on success.
 type Spawner interface {
 	Spawn(ctx context.Context, req SpawnRequest) (rendezvous.Entry, error)
-	Resume(ctx context.Context, sessionID string) (rendezvous.Entry, error)
+	Resume(ctx context.Context, req ResumeRequest) (rendezvous.Entry, error)
 }
 
 // modelDescriptor is a provider/model pair used by the spawn chip and /api/models.
@@ -60,6 +62,7 @@ type WebServer struct {
 	inputStripTmpl *template.Template
 	settingsTmpls  map[string]*template.Template
 	sse            *SSEProxy
+	startedAt      time.Time
 
 	resumeMu    sync.Mutex
 	resumeLocks map[string]*sync.Mutex // sessionID -> per-session lock
@@ -96,6 +99,7 @@ func NewWebServer(cfg WebConfig) *WebServer {
 		workspaceTmpl: workspaceTmpl, spawnTmpl: spawnTmpl, inputStripTmpl: inputStripTmpl,
 		settingsTmpls: settingsTmpls,
 		sse:           sse,
+		startedAt:     time.Now().UTC(),
 		resumeLocks:   map[string]*sync.Mutex{},
 	}
 }
@@ -140,6 +144,10 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/api/models", s.handleApiModels)
 	mux.HandleFunc("/api/dirs", s.handleApiDirs)
 	mux.HandleFunc("/api/search", s.handleApiSearch)
+	mux.HandleFunc("/api/health", s.handleAPIHealth)
+	mux.HandleFunc("/api/tree", s.handleAPITree)
+	mux.HandleFunc("/api/spawn-schema", s.handleAPISpawnSchema)
+	mux.HandleFunc("/api/sessions/", s.handleAPISession)
 
 	guard := SameOriginGuard(s.cfg.HubAddr)
 	return guard(CSPMiddleware(mux))
@@ -211,6 +219,431 @@ func (s *WebServer) handleApiSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp) //nolint:errcheck
+}
+
+func writeAPIJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeAPIError(w http.ResponseWriter, status int, msg string) {
+	writeAPIJSON(w, status, hubapi.ErrorResponse{Error: msg})
+}
+
+func (s *WebServer) handleAPIHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
+		return
+	}
+	writeAPIJSON(w, http.StatusOK, hubapi.HealthResponse{
+		Version:   buildinfo.Version(),
+		StartedAt: s.startedAt,
+		HubAddr:   s.cfg.HubAddr,
+		RunDir:    s.cfg.RunDir,
+		StateGlob: s.apiStateGlob(),
+		Capabilities: hubapi.HealthCapabilities{
+			Tree:             true,
+			TranscriptFollow: true,
+			SpawnSchema:      true,
+			Spawn:            s.cfg.Spawner != nil,
+			Fork:             true,
+			RemoteSources:    false,
+		},
+	})
+}
+
+func (s *WebServer) apiStateGlob() string {
+	if s.cfg.Past == nil {
+		return ""
+	}
+	return s.cfg.Past.stateGlob
+}
+
+func (s *WebServer) handleAPISpawnSchema(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
+		return
+	}
+	writeAPIJSON(w, http.StatusOK, hubapi.SpawnSchema{Fields: []hubapi.SpawnField{
+		{Name: "task", Type: "text"},
+		{Name: "working_dir", Type: "path"},
+		{Name: "model", Type: "model"},
+		{Name: "agent", Type: "string"},
+		{Name: "reasoning_effort", Type: "enum", Values: []string{"low", "medium", "high"}},
+	}})
+}
+
+func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
+		return
+	}
+	var live []LiveEntry
+	if s.cfg.Roster != nil {
+		live = s.cfg.Roster.List()
+	}
+	var metas []agent.SessionMeta
+	if s.cfg.Past != nil {
+		metas = s.cfg.Past.AllMetas()
+	}
+	tree := BuildTree(metas, live)
+	resp := hubapi.TreeResponse{
+		GeneratedAt: time.Now().UTC(),
+		Sources: []hubapi.Source{{
+			ID:     "local",
+			Label:  "this host",
+			Kind:   "local",
+			Online: true,
+		}},
+	}
+	for _, n := range tree.Live {
+		resp.Live = append(resp.Live, s.apiTreeNode("live", "", n, true))
+	}
+	seenProjectRefs := map[string]bool{}
+	projectIndexes := map[string]int{}
+	for _, p := range tree.Projects {
+		key := projectKey(p.Name)
+		ap := hubapi.TreeProject{
+			Key:         key,
+			Name:        p.Name,
+			RollupState: p.RollupState,
+		}
+		for _, n := range p.Sessions {
+			ap.Sessions = append(ap.Sessions, s.apiTreeNode("project", key, n, s.isLive(n.ID)))
+			seenProjectRefs[n.ID] = true
+		}
+		projectIndexes[key] = len(resp.Projects)
+		resp.Projects = append(resp.Projects, ap)
+	}
+	for _, le := range live {
+		if le.SessionID == "" || seenProjectRefs[le.SessionID] {
+			continue
+		}
+		project := filepath.Base(le.WorkingDir)
+		if project == "" || project == "." {
+			project = "(no project)"
+		}
+		key := projectKey(project)
+		node := TreeNode{
+			ID:      le.SessionID,
+			Title:   liveTitle(le.SessionID, le, s.cfg.Past),
+			Project: project,
+			State:   normalizeState(le.Status),
+			Kind:    "session",
+			Age:     "now",
+		}
+		apiNode := s.apiTreeNode("project", key, node, true)
+		if idx, ok := projectIndexes[key]; ok {
+			p := &resp.Projects[idx]
+			p.Sessions = append(p.Sessions, apiNode)
+			if attentionRank(node.State) > attentionRank(p.RollupState) {
+				p.RollupState = node.State
+			}
+			continue
+		}
+		projectIndexes[key] = len(resp.Projects)
+		resp.Projects = append(resp.Projects, hubapi.TreeProject{
+			Key:         key,
+			Name:        project,
+			RollupState: node.State,
+			Sessions:    []hubapi.TreeNode{apiNode},
+		})
+	}
+	writeAPIJSON(w, http.StatusOK, resp)
+}
+
+func projectKey(name string) string {
+	if name == "" {
+		return "project"
+	}
+	return strings.NewReplacer("/", "_", ":", "_", " ", "_").Replace(name)
+}
+
+func (s *WebServer) isLive(sessionID string) bool {
+	if s.cfg.Roster == nil {
+		return false
+	}
+	_, ok := s.cfg.Roster.Find(sessionID)
+	return ok
+}
+
+func (s *WebServer) apiTreeNode(scope, projectKey string, n TreeNode, live bool) hubapi.TreeNode {
+	ref := hubapi.LocalRef(n.ID).String()
+	rowID := scope + ":" + ref
+	if projectKey != "" {
+		rowID = scope + ":" + projectKey + ":" + ref
+	}
+	out := hubapi.TreeNode{
+		RowID:     rowID,
+		Ref:       ref,
+		HostID:    "local",
+		SessionID: n.ID,
+		Title:     n.Title,
+		Project:   n.Project,
+		State:     n.State,
+		Kind:      n.Kind,
+		Live:      live,
+		Age:       n.Age,
+	}
+	if le, ok := s.liveEntry(n.ID); ok {
+		out.Model = le.Model
+	}
+	for _, child := range n.Children {
+		out.Children = append(out.Children, s.apiTreeNode("project", projectKey, child, s.isLive(child.ID)))
+	}
+	return out
+}
+
+func (s *WebServer) liveEntry(sessionID string) (LiveEntry, bool) {
+	if s.cfg.Roster == nil {
+		return LiveEntry{}, false
+	}
+	return s.cfg.Roster.Find(sessionID)
+}
+
+func (s *WebServer) handleAPISession(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
+	refText, sub, _ := strings.Cut(path, "/")
+	ref, err := hubapi.ParseRef(refText)
+	if err != nil || ref.HostID != "local" {
+		writeAPIError(w, http.StatusNotFound, "session not found")
+		return
+	}
+
+	switch sub {
+	case "":
+		if r.Method != http.MethodGet {
+			writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
+			return
+		}
+		detail, ok := s.apiSessionDetail(ref.SessionID)
+		if !ok {
+			writeAPIError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		writeAPIJSON(w, http.StatusOK, detail)
+	case "details":
+		if r.Method != http.MethodGet {
+			writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
+			return
+		}
+		detail, ok := s.apiSessionDetail(ref.SessionID)
+		if !ok {
+			writeAPIError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		writeAPIJSON(w, http.StatusOK, detail)
+	case "events":
+		s.handleAPISessionEvents(w, r, ref.SessionID)
+	case "send":
+		s.handleSend(w, r, ref.SessionID)
+	case "tasks":
+		s.renderSessionTasks(w, r, ref.SessionID)
+	case "fork":
+		s.handleAPIFork(w, r, ref.SessionID)
+	case "clear":
+		s.handleAPIClear(w, r, ref.SessionID)
+	case "interrupt", "compact", "shutdown":
+		s.handleSessionAction(w, r, ref.SessionID, sub)
+	default:
+		writeAPIError(w, http.StatusNotFound, "session not found")
+	}
+}
+
+func (s *WebServer) apiSessionDetail(id string) (hubapi.SessionDetail, bool) {
+	wd := s.workspaceData(id)
+	if wd.ID == "" {
+		return hubapi.SessionDetail{}, false
+	}
+	ref := hubapi.LocalRef(id)
+	live := s.isLive(id)
+	detail := hubapi.SessionDetail{
+		Ref:            ref.String(),
+		HostID:         ref.HostID,
+		SessionID:      ref.SessionID,
+		Title:          wd.Title,
+		State:          wd.State,
+		Live:           live,
+		Project:        filepath.Base(wd.WorkingDir),
+		WorkingDir:     wd.WorkingDir,
+		Branch:         wd.Branch,
+		Model:          wd.Model,
+		TurnCount:      wd.TurnCount,
+		ForkLabel:      wd.ForkLabel,
+		DivergenceTurn: wd.DivergenceTurn,
+		Capabilities:   s.apiSessionCapabilities(id, live),
+		Streams: hubapi.SessionStreams{
+			TranscriptFollow: "/api/sessions/" + ref.PathEscaped() + "/events?mode=transcript-follow",
+		},
+	}
+	if detail.Project == "" || detail.Project == "." {
+		detail.Project = "(no project)"
+	}
+	if live {
+		detail.Streams.Live = "/api/sessions/" + ref.PathEscaped() + "/events?mode=live"
+		if le, ok := s.liveEntry(id); ok {
+			if le.WorkingDir != "" {
+				detail.WorkingDir = le.WorkingDir
+				detail.Project = filepath.Base(le.WorkingDir)
+			}
+			if le.Model != "" && detail.Model == "" {
+				detail.Model = le.Model
+			}
+			if info := s.fetchStatus(le); info != nil {
+				if info.State != "" {
+					detail.State = normalizeState(info.State)
+				}
+				if info.Model != "" {
+					detail.Model = info.Model
+				}
+				detail.Profile = info.Profile
+				detail.TurnCount = info.Turns
+				detail.ContextPressure = info.ContextPressure
+				if info.WorkingDir != "" {
+					detail.WorkingDir = info.WorkingDir
+					detail.Project = filepath.Base(info.WorkingDir)
+				}
+			}
+		}
+	}
+	if s.cfg.Past != nil {
+		if pe, ok := s.cfg.Past.Find(id); ok {
+			detail.Streams.Replay = "/api/sessions/" + ref.PathEscaped() + "/events?mode=replay"
+			if detail.Title == "" {
+				detail.Title = pastTitle(pe)
+			}
+			if detail.Model == "" {
+				detail.Model = pe.Meta.Model
+			}
+			if detail.Profile == "" {
+				detail.Profile = pe.Meta.ProfileID
+			}
+			if detail.TurnCount == 0 {
+				detail.TurnCount = pe.Meta.TurnCount
+			}
+			detail.ParentSessionID = pe.Meta.ParentSessionID
+			detail.DivergenceTurn = pe.Meta.DivergenceTurn
+			detail.ForkLabel = pe.Meta.ForkLabel
+			detail.IsSubagent = pe.Meta.IsSubagent
+		}
+	}
+	return detail, true
+}
+
+func (s *WebServer) apiSessionCapabilities(id string, live bool) hubapi.SessionCapabilities {
+	pastExists := false
+	if s.cfg.Past != nil {
+		_, pastExists = s.cfg.Past.Find(id)
+	}
+	caps := hubapi.SessionCapabilities{
+		Fork:   pastExists,
+		Resume: pastExists,
+	}
+	if live {
+		caps.Send = true
+		caps.Steer = true
+		caps.Interrupt = true
+		caps.Compact = true
+		caps.Clear = true
+		caps.Shutdown = true
+		caps.ChangeModel = true
+	} else if s.cfg.Spawner != nil && pastExists {
+		caps.Send = true
+	}
+	if !caps.Send && !caps.Steer && !caps.Interrupt && !caps.Compact && !caps.Clear && !caps.Fork && !caps.Resume && !caps.Shutdown && !caps.ChangeModel {
+		caps.ReadOnlyReason = "session is not live and cannot be resumed"
+	}
+	return caps
+}
+
+func (s *WebServer) handleAPISessionEvents(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
+		return
+	}
+	mode := r.URL.Query().Get("mode")
+	if mode == "" {
+		mode = "transcript-follow"
+	}
+	switch mode {
+	case "live":
+		if s.sse == nil {
+			writeAPIError(w, http.StatusNotFound, "session not live")
+			return
+		}
+		r.URL.Path = "/live/" + id + "/events"
+		s.sse.ServeHTTP(w, r)
+	case "replay", "transcript-follow":
+		if s.cfg.Past != nil {
+			if pe, ok := s.cfg.Past.Find(id); ok {
+				s.serveReplay(w, r, pe)
+				return
+			}
+		}
+		if mode == "transcript-follow" && s.sse != nil && s.isLive(id) {
+			r.URL.Path = "/live/" + id + "/events"
+			s.sse.ServeHTTP(w, r)
+			return
+		}
+		writeAPIError(w, http.StatusNotFound, "session not found")
+	default:
+		writeAPIError(w, http.StatusBadRequest, "unknown events mode")
+	}
+}
+
+func (s *WebServer) handleAPIClear(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "POST required")
+		return
+	}
+	if s.cfg.Roster == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "roster not configured")
+		return
+	}
+	le, ok := s.cfg.Roster.Find(id)
+	if !ok {
+		writeAPIError(w, http.StatusNotFound, "session not live")
+		return
+	}
+	status, buf, err := s.postLiveAction(r.Context(), le, "clear")
+	if err != nil {
+		writeAPIError(w, http.StatusBadGateway, "daemon unreachable: "+err.Error())
+		return
+	}
+	if status < 200 || status >= 300 {
+		msg := strings.TrimSpace(string(buf))
+		if msg == "" {
+			msg = http.StatusText(status)
+		}
+		writeAPIError(w, status, msg)
+		return
+	}
+	sessionID := id
+	if info := s.fetchStatus(le); info != nil && info.SessionID != "" {
+		sessionID = info.SessionID
+	}
+	ref := hubapi.LocalRef(sessionID)
+	writeAPIJSON(w, http.StatusOK, hubapi.RefResponse{
+		Ref:       ref.String(),
+		HostID:    ref.HostID,
+		SessionID: ref.SessionID,
+	})
+}
+
+func (s *WebServer) postLiveAction(ctx context.Context, le LiveEntry, action string) (int, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+le.Address+"/"+action, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req) //nolint:gosec
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	buf, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, buf, nil
 }
 
 // agentDisplay is one row in Settings → Agents.
@@ -719,21 +1152,21 @@ type replayEntry struct {
 }
 
 type replayTurn struct {
-	Kind    string         `json:"kind"`
-	Message replayMessage  `json:"message"`
+	Kind    string        `json:"kind"`
+	Message replayMessage `json:"message"`
 }
 
 type replayMessage struct {
-	Role    string         `json:"role"`
-	Content []replayPart   `json:"content"`
+	Role    string       `json:"role"`
+	Content []replayPart `json:"content"`
 }
 
 type replayPart struct {
-	Kind       string             `json:"kind"`
-	Text       string             `json:"text,omitempty"`
-	Image      *replayImage       `json:"image,omitempty"`
-	ToolCall   *replayToolCall    `json:"tool_call,omitempty"`
-	ToolResult *replayToolResult  `json:"tool_result,omitempty"`
+	Kind       string            `json:"kind"`
+	Text       string            `json:"text,omitempty"`
+	Image      *replayImage      `json:"image,omitempty"`
+	ToolCall   *replayToolCall   `json:"tool_call,omitempty"`
+	ToolResult *replayToolResult `json:"tool_result,omitempty"`
 }
 
 type replayImage struct {
@@ -970,8 +1403,12 @@ func (s *WebServer) handleApiSpawn(w http.ResponseWriter, r *http.Request) {
 			resp.Body.Close() //nolint:errcheck
 		}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"session_id": sessID}) //nolint:errcheck
+	ref := hubapi.LocalRef(sessID)
+	writeAPIJSON(w, http.StatusOK, hubapi.SpawnResponse{
+		Ref:       ref.String(),
+		HostID:    ref.HostID,
+		SessionID: ref.SessionID,
+	})
 }
 
 // parseModel splits "provider/model" into its components.
@@ -1579,7 +2016,7 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 		if le, ok := s.cfg.Roster.Find(id); ok && !forceResume {
 			return le, nil
 		}
-		entry, err := s.cfg.Spawner.Resume(r.Context(), id)
+		entry, err := s.cfg.Spawner.Resume(r.Context(), s.resumeRequestFor(id))
 		if err != nil {
 			return LiveEntry{}, fmt.Errorf("resume: %w", err)
 		}
@@ -1637,6 +2074,17 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 	w.Write(buf) //nolint:errcheck
 }
 
+func (s *WebServer) resumeRequestFor(id string) ResumeRequest {
+	req := ResumeRequest{SessionID: id}
+	if s.cfg.Past != nil {
+		if pe, ok := s.cfg.Past.Find(id); ok {
+			req.WorkingDir = pe.Meta.EnvInfo.WorkingDir
+			req.StateDir = pe.StateDir
+		}
+	}
+	return req
+}
+
 // handleSessionAction forwards an imperative action (interrupt/compact/
 // shutdown) to the live daemon for the given session. Unlike /send, these
 // actions do NOT auto-resume an ended session: if there is no roster entry
@@ -1674,17 +2122,53 @@ func (s *WebServer) handleSessionAction(w http.ResponseWriter, r *http.Request, 
 	w.Write(buf) //nolint:errcheck
 }
 
+type forkRequest struct {
+	Turn          int    `json:"turn"`
+	EditedMessage string `json:"edited_message"`
+	Label         string `json:"label"`
+}
+
 func (s *WebServer) handleFork(w http.ResponseWriter, r *http.Request, parentID string) {
-	var body struct {
-		Turn          int    `json:"turn"`
-		EditedMessage string `json:"edited_message"`
-		Label         string `json:"label"`
-	}
+	var body forkRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
+	childID, err := s.forkSession(parentID, body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"child_session_id": childID}) //nolint:errcheck
+}
+
+func (s *WebServer) handleAPIFork(w http.ResponseWriter, r *http.Request, parentID string) {
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "POST required")
+		return
+	}
+	var body forkRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	childID, err := s.forkSession(parentID, body)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	ref := hubapi.LocalRef(childID)
+	writeAPIJSON(w, http.StatusOK, hubapi.RefResponse{
+		Ref:       ref.String(),
+		HostID:    ref.HostID,
+		SessionID: ref.SessionID,
+	})
+}
+
+func (s *WebServer) forkSession(parentID string, body forkRequest) (string, error) {
 	// Resolve the state dir for the parent session. Forks must write into
 	// the same project's state-dir as the parent (so they appear in the
 	// project tree). Past index knows the per-project state-dir; cfg.StateDir
@@ -1700,21 +2184,18 @@ func (s *WebServer) handleFork(w http.ResponseWriter, r *http.Request, parentID 
 		stateDir = s.cfg.StateDir
 	}
 	if stateDir == "" {
-		http.Error(w, "state dir not resolvable for parent session", http.StatusInternalServerError)
-		return
+		return "", fmt.Errorf("state dir not resolvable for parent session")
 	}
 
 	childID, err := agent.ForkSession(stateDir, parentID, body.Turn, body.EditedMessage, body.Label)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return "", err
 	}
 	// Refresh past index so the new session shows up immediately in the sidebar.
 	if s.cfg.Past != nil {
 		_ = s.cfg.Past.Rebuild()
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"child_session_id": childID}) //nolint:errcheck
+	return childID, nil
 }
 
 // waitForRosterMatch polls the roster until it sees a daemon with the given PID
@@ -1733,6 +2214,7 @@ func waitForRosterMatch(r *Roster, sessionID string, pid int, timeout time.Durat
 
 // daemonStatus is the subset of /status fields the hub cares about.
 type daemonStatus struct {
+	SessionID       string  `json:"session_id"`
 	Model           string  `json:"model"`
 	Profile         string  `json:"profile"`
 	State           string  `json:"state"`
