@@ -352,10 +352,18 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .user-message:hover .user-message-actions { display: flex; }
 .user-message-actions .action { cursor: pointer; }
 .user-message-actions .edit { color: var(--text); }
-.user-message-images { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+.user-message-images { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
 .user-message-images:empty { display: none; }
-.user-image-thumb { max-width: 220px; max-height: 220px; border-radius: 8px; display: block; object-fit: cover; border: 1px solid var(--rule); }
+.user-image-card { display: inline-flex; flex-direction: column; align-items: stretch; gap: 4px; padding: 0; background: transparent; border: 1px solid var(--rule); border-radius: 8px; cursor: pointer; overflow: hidden; max-width: 220px; }
+.user-image-card:hover { border-color: var(--state-processing); }
+.user-image-thumb { display: block; max-width: 220px; max-height: 220px; object-fit: cover; }
+.user-image-name { display: block; padding: 4px 8px; font-size: 11px; color: var(--text-muted); font-family: ui-monospace, "SFMono-Regular", monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; text-align: left; }
 .user-message-text { white-space: pre-wrap; word-wrap: break-word; }
+
+/* Image lightbox: full-screen overlay shown when a user-image card is clicked. */
+.image-lightbox { position: fixed; inset: 0; background: rgba(0,0,0,0.8); display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 12px; z-index: 200; cursor: zoom-out; padding: 32px; }
+.image-lightbox img { max-width: 90vw; max-height: 85vh; object-fit: contain; border-radius: 6px; box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
+.image-lightbox-caption { color: #fff; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; opacity: 0.75; }
 .assistant-message { margin-bottom: 24px; max-width: 680px; font-size: 15px; line-height: 1.7; color: var(--text); }
 .assistant-message code { background: var(--bg-raised); padding: 1px 6px; border-radius: 3px; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 14px; color: var(--text); }
 .assistant-message pre { background: var(--bg-raised); padding: 12px 16px; border-radius: 6px; overflow-x: auto; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 13px; }
@@ -500,6 +508,14 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .search-age { color: var(--text-muted); font-size: 11px; }
 .search-empty { padding: 24px; color: var(--text-muted); text-align: center; font-size: 12px; }
 .search-dialog-footer { padding: 8px 16px; border-top: 1px solid var(--rule); display: flex; gap: 18px; font-size: 11px; color: var(--text-muted); }
+.search-row-insession .search-insession-glyph { flex-shrink: 0; color: var(--text-muted); width: 14px; text-align: center; }
+.search-snippet { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.search-results mark { background: var(--state-warning, #e0af68); color: var(--bg, #1a1b26); border-radius: 2px; padding: 0 2px; }
+.search-hit { outline: 2px solid var(--state-warning, #e0af68); outline-offset: 4px; transition: outline-color 0.4s ease-out; animation: search-hit-flash 2s ease-out; }
+@keyframes search-hit-flash {
+  0%   { background-color: rgba(224, 175, 104, 0.35); }
+  100% { background-color: transparent; }
+}
 
 /* ── Settings page ───────────────────────────────────────────────────────── */
 .settings-pane { display: flex; flex: 1; padding: 0; overflow: hidden; }

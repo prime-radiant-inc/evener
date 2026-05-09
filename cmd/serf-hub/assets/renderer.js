@@ -251,17 +251,31 @@
       const pill = document.createElement("div");
       pill.className = "pill";
       // Thumbnails first so they sit above the prompt text inside the pill.
+      // Each attachment renders as a card with the image thumbnail, filename,
+      // and a click handler that opens it in a lightbox at full size.
       if (Array.isArray(images) && images.length > 0) {
         const gallery = document.createElement("div");
         gallery.className = "user-message-images";
         for (const img of images) {
           if (!img || !img.data) continue;
-          const el = document.createElement("img");
-          el.className = "user-image-thumb";
-          el.src = "data:" + (img.media_type || "image/png") + ";base64," + img.data;
-          if (img.name) el.alt = img.name;
-          el.title = img.name || "attached image";
-          gallery.appendChild(el);
+          const src = "data:" + (img.media_type || "image/png") + ";base64," + img.data;
+          const card = document.createElement("button");
+          card.type = "button";
+          card.className = "user-image-card";
+          card.title = "click to enlarge";
+          const thumb = document.createElement("img");
+          thumb.className = "user-image-thumb";
+          thumb.src = src;
+          if (img.name) thumb.alt = img.name;
+          card.appendChild(thumb);
+          if (img.name) {
+            const name = document.createElement("span");
+            name.className = "user-image-name";
+            name.textContent = img.name;
+            card.appendChild(name);
+          }
+          card.onclick = (e) => { e.stopPropagation(); openImageLightbox(src, img.name || ""); };
+          gallery.appendChild(card);
         }
         if (gallery.children.length > 0) pill.appendChild(gallery);
       }
@@ -947,6 +961,34 @@
 
   function autoLabel(text) {
     return "before " + text.slice(0, 40).replace(/\s+/g, " ").trim();
+  }
+
+  // openImageLightbox shows a full-size image overlay. Click backdrop or press
+  // Esc to dismiss. One overlay at a time.
+  function openImageLightbox(src, name) {
+    const existing = document.getElementById("image-lightbox");
+    if (existing) existing.remove();
+    const overlay = document.createElement("div");
+    overlay.id = "image-lightbox";
+    overlay.className = "image-lightbox";
+    const img = document.createElement("img");
+    img.src = src;
+    if (name) img.alt = name;
+    overlay.appendChild(img);
+    if (name) {
+      const cap = document.createElement("div");
+      cap.className = "image-lightbox-caption";
+      cap.textContent = name;
+      overlay.appendChild(cap);
+    }
+    const close = () => {
+      overlay.remove();
+      document.removeEventListener("keydown", onKey);
+    };
+    const onKey = (e) => { if (e.key === "Escape") close(); };
+    overlay.addEventListener("click", close);
+    document.addEventListener("keydown", onKey);
+    document.body.appendChild(overlay);
   }
 
   // Client-side cache of task id → description, keyed by integer id. Seeded
