@@ -49,20 +49,14 @@ type modelDescriptor struct {
 
 // WebServer wires routes, templates, and middleware.
 type WebServer struct {
-	cfg             WebConfig
-	templates       *template.Template
-	appTmpl         *template.Template
-	sidebarTmpl     *template.Template
-	liveTmpl        *template.Template
-	pastTmpl        *template.Template
-	pastResultsTmpl *template.Template
-	pastViewTmpl    *template.Template
-	workspaceTmpl   *template.Template
-	spawnTmpl       *template.Template
-	inputStripTmpl  *template.Template
-	settingsTmpls   map[string]*template.Template
-	rest            *RESTProxy
-	sse             *SSEProxy
+	cfg            WebConfig
+	appTmpl        *template.Template
+	sidebarTmpl    *template.Template
+	workspaceTmpl  *template.Template
+	spawnTmpl      *template.Template
+	inputStripTmpl *template.Template
+	settingsTmpls  map[string]*template.Template
+	sse            *SSEProxy
 
 	resumeMu    sync.Mutex
 	resumeLocks map[string]*sync.Mutex // sessionID -> per-session lock
@@ -70,30 +64,8 @@ type WebServer struct {
 
 // NewWebServer constructs the web server. Templates are parsed from embed.FS.
 func NewWebServer(cfg WebConfig) *WebServer {
-	tmpl := template.Must(template.ParseFS(templatesFS,
-		"templates/base.html",
-		"templates/landing.html",
-		"templates/partials/live_roster.html",
-	))
 	appTmpl := template.Must(template.ParseFS(templatesFS, "templates/app.html"))
 	sidebarTmpl := template.Must(template.ParseFS(templatesFS, "templates/partials/sidebar.html"))
-	liveTmpl := template.Must(template.ParseFS(templatesFS,
-		"templates/base.html",
-		"templates/live.html",
-		"templates/partials/status_bar.html",
-	))
-	pastTmpl := template.Must(template.ParseFS(templatesFS,
-		"templates/base.html",
-		"templates/past.html",
-		"templates/partials/past_results.html",
-	))
-	pastResultsTmpl := template.Must(template.ParseFS(templatesFS,
-		"templates/partials/past_results.html",
-	))
-	pastViewTmpl := template.Must(template.ParseFS(templatesFS,
-		"templates/base.html",
-		"templates/past_view.html",
-	))
 	workspaceTmpl := template.Must(template.ParseFS(templatesFS,
 		"templates/partials/workspace.html",
 		"templates/partials/input_strip.html",
@@ -112,20 +84,16 @@ func NewWebServer(cfg WebConfig) *WebServer {
 			"templates/partials/settings/"+sec+".html",
 		))
 	}
-	var rest *RESTProxy
 	var sse *SSEProxy
 	if cfg.Roster != nil {
-		rest = NewRESTProxy(cfg.Roster)
 		sse = NewSSEProxy(cfg.Roster)
 	}
 	return &WebServer{
-		cfg: cfg, templates: tmpl, appTmpl: appTmpl, sidebarTmpl: sidebarTmpl,
-		liveTmpl: liveTmpl,
-		pastTmpl: pastTmpl, pastResultsTmpl: pastResultsTmpl, pastViewTmpl: pastViewTmpl,
+		cfg: cfg, appTmpl: appTmpl, sidebarTmpl: sidebarTmpl,
 		workspaceTmpl: workspaceTmpl, spawnTmpl: spawnTmpl, inputStripTmpl: inputStripTmpl,
 		settingsTmpls: settingsTmpls,
-		rest: rest, sse: sse,
-		resumeLocks: map[string]*sync.Mutex{},
+		sse:           sse,
+		resumeLocks:   map[string]*sync.Mutex{},
 	}
 }
 
@@ -153,15 +121,12 @@ func (s *WebServer) Handler() http.Handler {
 
 	// Pages
 	mux.HandleFunc("/", s.handleIndex)
-	mux.HandleFunc("/s/", s.handleSession)   // workspace — detects HX-Request and serves partial or app shell
-	mux.HandleFunc("/new", s.handleIndex)    // ditto
+	mux.HandleFunc("/s/", s.handleSession) // workspace — detects HX-Request and serves partial or app shell
+	mux.HandleFunc("/new", s.handleIndex)  // ditto
 	mux.HandleFunc("/sidebar", s.handleSidebar)
 	mux.HandleFunc("/workspace/empty", s.handleWorkspaceEmpty)
 	mux.HandleFunc("/workspace/spawn", s.handleWorkspaceSpawn)
-	mux.HandleFunc("/live", s.handleLiveRoster)
-	mux.HandleFunc("/past", s.handlePast)
-	mux.HandleFunc("/past/results", s.handlePastResults) // must be before /past/
-	mux.HandleFunc("/past/", s.handlePastID)
+	mux.HandleFunc("/past/", s.handlePastID) // /past/<id>/replay
 
 	// Settings
 	mux.HandleFunc("/settings", s.handleSettings)
@@ -172,9 +137,6 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/api/models", s.handleApiModels)
 	mux.HandleFunc("/api/dirs", s.handleApiDirs)
 	mux.HandleFunc("/api/search", s.handleApiSearch)
-
-	// Live drive proxied routes (REST and SSE)
-	mux.HandleFunc("/live/", s.handleLiveProxy)
 
 	guard := SameOriginGuard(s.cfg.HubAddr)
 	return guard(CSPMiddleware(mux))
@@ -370,154 +332,14 @@ func (s *WebServer) handleWorkspaceEmpty(w http.ResponseWriter, r *http.Request)
 	fmt.Fprint(w, `<div class="workspace-empty"><p>No session selected.</p><p style="margin-top:1em"><a href="/new" hx-get="/workspace/spawn" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/new">＋ new session</a></p></div>`)
 }
 
-func (s *WebServer) handleLiveRoster(w http.ResponseWriter, r *http.Request) {
-	var live []LiveEntry
-	if s.cfg.Roster != nil {
-		live = s.cfg.Roster.List()
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, "live_roster", map[string]any{"Live": live}); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
-}
-
-func (s *WebServer) handlePast(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query().Get("q")
-	if s.cfg.Past == nil {
-		http.Error(w, "no past index", http.StatusServiceUnavailable)
-		return
-	}
-	limit := s.cfg.PastPerPage
-	if limit <= 0 {
-		limit = 50
-	}
-	results := s.cfg.Past.Search(q, limit, 0)
-	data := map[string]any{
-		"Title": "past",
-		"Past":  results,
-		"Q":     q,
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.pastTmpl.ExecuteTemplate(w, "base", data); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
-}
-
-// handlePastResults renders just the past_results partial (htmx swap target).
-// The /past page form posts here on input changes and on submit.
-func (s *WebServer) handlePastResults(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.Past == nil {
-		http.Error(w, "no past index", http.StatusServiceUnavailable)
-		return
-	}
-	q := r.URL.Query().Get("q")
-	limit := s.cfg.PastPerPage
-	if limit <= 0 {
-		limit = 50
-	}
-	results := s.cfg.Past.Search(q, limit, 0)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.pastResultsTmpl.ExecuteTemplate(w, "past_results", map[string]any{"Past": results}); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
-}
-
-// handleLiveProxy dispatches /live/<session_id>/* to the appropriate proxy.
-// Reserved as a placeholder; concrete drive page handler is added in Task 16.
-func (s *WebServer) handleLiveProxy(w http.ResponseWriter, r *http.Request) {
-	// /live/<session_id>/events -> SSE proxy
-	// /live/<session_id>/<other> -> REST proxy
-	// /live/<session_id> -> drive page (Task 16)
-	path := r.URL.Path
-	if path == "/live" || path == "/live/" {
-		http.Redirect(w, r, "/", http.StatusFound)
-		return
-	}
-	if sessID, rest, ok := splitLivePath(path); ok {
-		switch {
-		case rest == "events":
-			if s.sse == nil {
-				http.NotFound(w, r)
-				return
-			}
-			s.sse.ServeHTTP(w, r)
-		case rest == "":
-			entry, ok := s.cfg.Roster.Find(sessID)
-			if !ok {
-				http.NotFound(w, r)
-				return
-			}
-			data := map[string]any{
-				"Title":     "drive",
-				"SessionID": entry.SessionID,
-				"Entry":     entry,
-			}
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			if err := s.liveTmpl.ExecuteTemplate(w, "base", data); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-			}
-		case rest == "status-bar":
-			s.handleStatusBar(w, r, sessID)
-		default:
-			if s.rest == nil {
-				http.NotFound(w, r)
-				return
-			}
-			s.rest.ServeHTTP(w, r)
-		}
-		return
-	}
-	http.NotFound(w, r)
-}
-
-// handleStatusBar fetches /status from the daemon, decodes a subset of fields,
-// and renders the status_bar partial as an htmx fragment.
-func (s *WebServer) handleStatusBar(w http.ResponseWriter, r *http.Request, sessID string) {
-	entry, ok := s.cfg.Roster.Find(sessID)
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	statusURL := "http://" + entry.Address + "/status"
-	client := &http.Client{Timeout: 1 * time.Second}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, statusURL, nil)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-	resp, err := client.Do(req) //nolint:gosec // address comes from trusted roster
-	if err != nil {
-		http.Error(w, "daemon unreachable", http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-	var info struct {
-		Model           string  `json:"model"`
-		Profile         string  `json:"profile"`
-		State           string  `json:"state"`
-		Turns           int     `json:"turns"`
-		ContextPressure float64 `json:"context_pressure"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.liveTmpl.ExecuteTemplate(w, "status_bar", info); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
-}
-
-// handlePastID dispatches /past/<id>, /past/<id>/replay, and /past/<id>/resume.
+// handlePastID dispatches /past/<id>/replay (the only past route still served
+// by the new app — the workspace partial points its renderer at it for past
+// sessions).
 func (s *WebServer) handlePastID(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/past/")
 	parts := strings.SplitN(rest, "/", 2)
 	id := parts[0]
-	if id == "" {
-		http.Redirect(w, r, "/past", http.StatusFound)
-		return
-	}
-	if s.cfg.Past == nil {
+	if id == "" || s.cfg.Past == nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -530,44 +352,11 @@ func (s *WebServer) handlePastID(w http.ResponseWriter, r *http.Request) {
 	if len(parts) == 2 {
 		tail = parts[1]
 	}
-	switch tail {
-	case "":
-		data := map[string]any{
-			"Title":    "past",
-			"Meta":     entry.Meta,
-			"StateDir": entry.StateDir,
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := s.pastViewTmpl.ExecuteTemplate(w, "base", data); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-		}
-	case "resume":
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		if s.cfg.Spawner == nil {
-			http.Error(w, "resume not configured", http.StatusServiceUnavailable)
-			return
-		}
-		lock := s.lockForSession(id)
-		lock.Lock()
-		defer lock.Unlock()
-		entry, err := s.cfg.Spawner.Resume(r.Context(), id)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if sessID := s.findNewSession(entry.PID); sessID != "" {
-			http.Redirect(w, r, "/live/"+sessID, http.StatusFound)
-			return
-		}
-		http.Redirect(w, r, "/", http.StatusFound)
-	case "replay":
-		s.serveReplay(w, r, entry)
-	default:
+	if tail != "replay" {
 		http.NotFound(w, r)
+		return
 	}
+	s.serveReplay(w, r, entry)
 }
 
 // serveReplay reads <state_dir>/sessions/<id>.transcript.jsonl and translates
