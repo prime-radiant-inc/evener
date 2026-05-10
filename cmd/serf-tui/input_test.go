@@ -236,9 +236,18 @@ func TestFetchTranscriptTargets(t *testing.T) {
 
 func TestSlashCommandHelp(t *testing.T) {
 	help := slashCommandHelp()
-	for _, cmd := range []string{"/help", "/compact", "/status", "/agents", "/model", "/auth", "/theme", "/clear", "/quit"} {
+	for _, cmd := range []string{"/help", "/compact", "/status", "/agents", "/model", "/auth", "/theme", "/clear", "/dashboard", "/project", "/quit"} {
 		if !strings.Contains(help, cmd) {
 			t.Errorf("help text missing %q", cmd)
+		}
+	}
+}
+
+func TestSlashCommandHelpMentionsDashboardProjectAndBrowse(t *testing.T) {
+	help := slashCommandHelp()
+	for _, want := range []string{"  /dashboard Go to live dashboard", "  /project   Go to this session's project", "  esc              Browse transcript / select turns"} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("help text missing %q:\n%s", want, help)
 		}
 	}
 }

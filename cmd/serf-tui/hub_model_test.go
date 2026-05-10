@@ -518,6 +518,49 @@ func TestHubModelBrowseForkRequiresUserTurnWithTurnIndex(t *testing.T) {
 	}
 }
 
+func TestHubModelDashboardEmptyStateIsLiveOnly(t *testing.T) {
+	m := newHubModel(nil, "http://hub.test")
+	m.tree = hubapi.TreeResponse{Projects: []hubapi.TreeProject{{
+		Key:  "serf",
+		Name: "serf",
+		Sessions: []hubapi.TreeNode{
+			{Ref: "local:01ENDED", SessionID: "01ENDED", Title: "ended history", State: "ended", Project: "serf"},
+		},
+	}}}
+	m.rows = buildDashboardRows(m.tree)
+
+	got := m.dashboardView()
+	for _, want := range []string{"No live sessions are running", "s start a session", "/projects browse project history"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("dashboard empty state missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "ended history") {
+		t.Fatalf("dashboard empty state rendered ended session:\n%s", got)
+	}
+}
+
+func TestHubModelSessionFooterShowsBrowseAndDashboardKeys(t *testing.T) {
+	m := newSessionHubModel(nil)
+	got := m.sessionView()
+	for _, want := range []string{"esc: browse", "ctrl+o: dashboard"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("session footer missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "esc: dashboard") {
+		t.Fatalf("session footer still advertises esc dashboard:\n%s", got)
+	}
+
+	m.enterSessionBrowse(false)
+	got = m.sessionView()
+	for _, want := range []string{"esc/i/q: compose", "f: fork", "ctrl+o: dashboard"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("browse footer missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func newSessionHubModel(client *hubapi.Client) hubModel {
 	m := newHubModel(client, "http://hub.test")
 	m.mode = hubModeSession

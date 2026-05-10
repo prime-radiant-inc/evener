@@ -1068,7 +1068,14 @@ func (m hubModel) sessionView() string {
 			b.WriteString("\n")
 		}
 	}
-	b.WriteString("\nesc: dashboard  q: quit\n")
+	switch {
+	case m.forkDraft != nil:
+		b.WriteString("\nfork draft: enter fork  esc cancel  ctrl+o: dashboard\n")
+	case m.session.scrollMode:
+		b.WriteString("\nesc/i/q: compose  f: fork  ctrl+o: dashboard\n")
+	default:
+		b.WriteString("\nenter: send  esc: browse  ctrl+o: dashboard  /help\n")
+	}
 	if v := strings.TrimSpace(m.session.input.Value()); v != "" {
 		b.WriteString("> ")
 		b.WriteString(v)
