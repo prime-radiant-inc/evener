@@ -148,6 +148,40 @@ async function checkFailureKeepsValue() {
   pass(ta.value === "won't go", "expected textarea preserved on failure, got " + JSON.stringify(ta.value));
 }
 
+// 5b. Replying to an ended session (replayUrl-only, replay finished and
+//     closed the EventSource) must reconnect to /events on send-success
+//     so the new turn renders without a page reload.
+async function checkReconnectsLiveAfterSendOnEndedSession() {
+  // Simulate the post-replay state: no eventSource open, no eventsUrl.
+  window.SerfRenderer.eventSource = null;
+  window.SerfRenderer.eventsUrl = "";
+  ta.value = "resume me";
+  ta.dispatchEvent(new window.Event("input", { bubbles: true }));
+  fetchResponseOk = true;
+  const submitEvent = new window.Event("submit", { bubbles: true, cancelable: true });
+  form.dispatchEvent(submitEvent);
+  await new Promise(r => setTimeout(r, 10));
+  pass(window.SerfRenderer.eventSource !== null, "expected EventSource re-opened after send-success on ended session");
+  pass(
+    window.SerfRenderer.eventsUrl === "/s/01TEST/events",
+    "expected eventsUrl set to /s/01TEST/events, got " + JSON.stringify(window.SerfRenderer.eventsUrl)
+  );
+}
+
+// 5c. A failed send must NOT open a live stream — connecting to a daemon
+//     that just refused our send would just queue stale events.
+async function checkNoReconnectOnSendFailure() {
+  window.SerfRenderer.eventSource = null;
+  window.SerfRenderer.eventsUrl = "";
+  ta.value = "broken";
+  ta.dispatchEvent(new window.Event("input", { bubbles: true }));
+  fetchResponseOk = false;
+  const submitEvent = new window.Event("submit", { bubbles: true, cancelable: true });
+  form.dispatchEvent(submitEvent);
+  await new Promise(r => setTimeout(r, 10));
+  pass(window.SerfRenderer.eventSource === null, "expected no EventSource opened on send failure");
+}
+
 // 6. The steer button posts to /s/<id>/steer when the textarea has text,
 //    or focuses the textarea when it is empty.
 async function checkSteerWired() {
@@ -337,6 +371,8 @@ async function testRejectsNonImage() {
 (async () => {
   await checkReset();
   await checkFailureKeepsValue();
+  await checkReconnectsLiveAfterSendOnEndedSession();
+  await checkNoReconnectOnSendFailure();
   await checkSteerWired();
 
   await testFilePickerAddsChip();
