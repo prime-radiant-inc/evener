@@ -1241,13 +1241,17 @@ func emitTurnEvents(emit func(string, any), turnIndex int, turn replayTurn, tool
 		payload := map[string]any{"text": text, "turn": turnIndex}
 		var images []map[string]any
 		for _, p := range turn.Message.Content {
-			if p.Kind != "image" || p.Image == nil {
+			if p.Kind != "image" || p.Image == nil || len(p.Image.Data) == 0 {
 				continue
 			}
+			// Strip raw bytes from the replay payload — multi-MB transcripts
+			// were re-emitted on every reload. The renderer fetches lazily
+			// via /s/<id>/images/<sha> instead.
 			images = append(images, map[string]any{
 				"media_type": p.Image.MediaType,
-				"data":       p.Image.Data, // []byte is base64-encoded by encoding/json
+				"sha":        imageSha(p.Image.Data),
 				"name":       p.Image.Name,
+				"size":       len(p.Image.Data),
 			})
 		}
 		if len(images) > 0 {
@@ -1720,6 +1724,12 @@ func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 		r.URL.Path = "/live/" + id + "/events"
 		s.sse.ServeHTTP(w, r)
 	default:
+		// /s/<id>/images/<sha> — sha-addressed image fetch for replay.
+		if strings.HasPrefix(sub, "images/") {
+			sha := strings.TrimPrefix(sub, "images/")
+			s.handleSessionImage(w, r, id, sha)
+			return
+		}
 		http.NotFound(w, r)
 	}
 }
@@ -2040,7 +2050,17 @@ type sendRequest struct {
 	Images []agent.ImageAttachment `json:"images,omitempty"`
 }
 
+// Per-request limits for image attachments. The browser-side cap is 8 MB per
+// image; these are slightly looser to leave a margin while still protecting
+// the hub from runaway uploads. A malicious or buggy client cannot push a
+// session's transcript past sendMaxRequestBytes.
+const (
+	sendMaxImageBytes   = 12 * 1024 * 1024 // per-image
+	sendMaxRequestBytes = 40 * 1024 * 1024 // total request body
+)
+
 func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string) {
+	r.Body = http.MaxBytesReader(w, r.Body, sendMaxRequestBytes)
 	var body sendRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -2050,6 +2070,12 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 	if body.Text == "" && len(body.Images) == 0 {
 		http.Error(w, "text or images required", http.StatusBadRequest)
 		return
+	}
+	for i, img := range body.Images {
+		if len(img.Data) > sendMaxImageBytes {
+			http.Error(w, fmt.Sprintf("image[%d] %q exceeds %d-byte limit", i, img.Name, sendMaxImageBytes), http.StatusRequestEntityTooLarge)
+			return
+		}
 	}
 
 	if s.cfg.Roster == nil {

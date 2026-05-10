@@ -257,8 +257,18 @@
         const gallery = document.createElement("div");
         gallery.className = "user-message-images";
         for (const img of images) {
-          if (!img || !img.data) continue;
-          const src = "data:" + (img.media_type || "image/png") + ";base64," + img.data;
+          if (!img) continue;
+          // Live USER_INPUT: bytes inline as base64 in img.data.
+          // Replay USER_INPUT: bytes referenced by sha; fetch lazily from
+          // /s/<id>/images/<sha> so SSE replay payloads stay small.
+          let src = "";
+          if (img.data) {
+            src = "data:" + (img.media_type || "image/png") + ";base64," + img.data;
+          } else if (img.sha) {
+            src = "/s/" + encodeURIComponent(this.sessionId) + "/images/" + encodeURIComponent(img.sha);
+          } else {
+            continue;
+          }
           const card = document.createElement("button");
           card.type = "button";
           card.className = "user-image-card";

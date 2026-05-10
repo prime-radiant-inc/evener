@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -162,6 +163,145 @@ func TestWeb_WorkspaceSpawn_RendersForm(t *testing.T) {
 	}
 	if !strings.Contains(body, `data-chip-value-access_mode`) {
 		t.Errorf("body missing data-chip-value-access_mode: %q", body)
+	}
+}
+
+// TestWeb_PastReplay_ImagesAreShaReferenced verifies that USER_INPUT turns
+// containing image bytes get their bytes stripped from the SSE replay; the
+// renderer fetches lazily via /s/<id>/images/<sha>. Without this, multi-MB
+// transcripts would re-emit every byte on every reload.
+func TestWeb_PastReplay_ImagesAreShaReferenced(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+		ID: "01IMG", UpdatedAt: time.Now(), OriginalTask: "image demo",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	imgBytes := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 'p', 'a', 'y', 'l', 'o', 'a', 'd'}
+	wantSha := imageSha(imgBytes)
+
+	tpath := filepath.Join(proj, "sessions", "01IMG.transcript.jsonl")
+	tw, err := agent.NewTranscriptWriter(tpath, agent.TranscriptHeader{
+		SessionID: "01IMG", ProfileID: "openai", Model: "gpt-5",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	userMsg := llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{
+		{Kind: llm.ContentText, Text: "what color?"},
+		{Kind: llm.ContentImage, Image: &llm.ImageData{Data: imgBytes, MediaType: "image/png"}},
+	}}
+	if err := tw.Append(agent.NewTurn(agent.TurnUserInput, userMsg)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    idx,
+	})
+
+	// Replay should emit sha, not data, in the USER_INPUT event.
+	req := httptest.NewRequest(http.MethodGet, "/past/01IMG/replay", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("replay status=%d, body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"sha":"`+wantSha+`"`) {
+		t.Errorf("replay missing sha reference; body=%q", body)
+	}
+	// USER_INPUT replay payload must not carry the raw bytes (base64-encoded
+	// or otherwise). Check for the field name itself.
+	if strings.Contains(body, `"data":`) {
+		t.Errorf("replay still includes raw image data field; body excerpt=%q", body)
+	}
+
+	// Image fetch should return the original bytes.
+	imgReq := httptest.NewRequest(http.MethodGet, "/s/01IMG/images/"+wantSha, nil)
+	imgReq.Host = "127.0.0.1:9180"
+	imgRec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(imgRec, imgReq)
+	if imgRec.Code != http.StatusOK {
+		t.Fatalf("image status=%d, body=%q", imgRec.Code, imgRec.Body.String())
+	}
+	if !bytes.Equal(imgRec.Body.Bytes(), imgBytes) {
+		t.Errorf("image bytes mismatch: got %d bytes, want %d", imgRec.Body.Len(), len(imgBytes))
+	}
+	if ct := imgRec.Header().Get("Content-Type"); ct != "image/png" {
+		t.Errorf("Content-Type=%q, want image/png", ct)
+	}
+}
+
+// TestWeb_SessionImage_BadSha verifies that non-hex sha paths get 400.
+func TestWeb_SessionImage_BadSha(t *testing.T) {
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    NewPastIndex(""),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/s/01ABC/images/not-hex", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400 (body=%q)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestWeb_SessionImage_UnknownSha verifies 404 when the sha isn't in any
+// USER_INPUT turn for the session.
+func TestWeb_SessionImage_UnknownSha(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "y")
+	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+		ID: "01NOIMG", UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tpath := filepath.Join(proj, "sessions", "01NOIMG.transcript.jsonl")
+	tw, err := agent.NewTranscriptWriter(tpath, agent.TranscriptHeader{
+		SessionID: "01NOIMG", ProfileID: "openai", Model: "gpt-5",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Append(agent.NewTurn(agent.TurnUserInput, llm.User("text only"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: NewRoster(t.TempDir(), nil), Past: idx})
+
+	allZeros := strings.Repeat("0", 64)
+	req := httptest.NewRequest(http.MethodGet, "/s/01NOIMG/images/"+allZeros, nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status=%d, want 404 (body=%q)", rec.Code, rec.Body.String())
 	}
 }
 
@@ -1228,6 +1368,47 @@ func TestWeb_Send_RejectsEmptyTextAndNoImages(t *testing.T) {
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("payload=%s: status=%d, want 400 (body=%q)", payload, rec.Code, rec.Body.String())
 		}
+	}
+}
+
+// TestWeb_Send_RejectsOversizeImage verifies that the hub-side accept cap
+// rejects images larger than sendMaxImageBytes with 413, before forwarding
+// to the daemon.
+func TestWeb_Send_RejectsOversizeImage(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 99, Address: "127.0.0.1:1"})
+	r := NewRoster(dir, fakeProber{sessionID: "01TOOBIG", status: "idle"})
+	r.Refresh()
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  r,
+		Past:    NewPastIndex(""),
+	})
+
+	// One byte over the per-image cap.
+	bigData := make([]byte, sendMaxImageBytes+1)
+	body := sendRequest{
+		Text: "look",
+		Images: []agent.ImageAttachment{{
+			MediaType: "image/png", Data: bigData, Name: "big.png",
+		}},
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/s/01TOOBIG/send", bytes.NewReader(payload))
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	// Either a 413 (body parse succeeded, individual image too big) or a 400
+	// (MaxBytesReader tripped first because the total request exceeded the
+	// outer cap) is acceptable: both reject the upload before forwarding.
+	if rec.Code != http.StatusRequestEntityTooLarge && rec.Code != http.StatusBadRequest {
+		t.Errorf("status=%d, want 413 or 400 (body=%q)", rec.Code, rec.Body.String())
 	}
 }
 
