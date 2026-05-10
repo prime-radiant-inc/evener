@@ -158,4 +158,5 @@ console.log("Total elements: " + conv.children.length);
 console.log("System-lines:   " + conv.querySelectorAll(".system-line").length);
 console.log("Steerings kept: " + conv.querySelectorAll(".steering").length);
 console.log("Tool cards:     " + conv.querySelectorAll(".tool-call").length);
+process.exit(0);
 })();

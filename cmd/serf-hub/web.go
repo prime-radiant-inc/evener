@@ -1366,10 +1366,8 @@ type spawnViewData struct {
 func (s *WebServer) handleWorkspaceSpawn(w http.ResponseWriter, r *http.Request) {
 	defaultWorkingDir := "(pick a directory)"
 	if dir := strings.TrimSpace(r.URL.Query().Get("dir")); dir != "" {
-		if filepath.IsAbs(dir) {
-			if info, err := os.Stat(dir); err == nil && info.IsDir() {
-				defaultWorkingDir = dir
-			}
+		if resolved, err := canonicalizeDir(dir); err == nil {
+			defaultWorkingDir = resolved
 		}
 	}
 	data := spawnViewData{
@@ -1419,15 +1417,12 @@ func (s *WebServer) handleApiSpawn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.WorkingDir != "" {
-		if !filepath.IsAbs(req.WorkingDir) {
-			http.Error(w, "working_dir must be absolute", http.StatusBadRequest)
+		resolved, err := canonicalizeDir(req.WorkingDir)
+		if err != nil {
+			http.Error(w, "working_dir: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		info, err := os.Stat(req.WorkingDir)
-		if err != nil || !info.IsDir() {
-			http.Error(w, "working_dir does not exist or is not a directory", http.StatusBadRequest)
-			return
-		}
+		req.WorkingDir = resolved
 	}
 	provider, model := parseModel(req.Model)
 	entry, err := s.cfg.Spawner.Spawn(r.Context(), SpawnRequest{
@@ -1590,6 +1585,15 @@ func (s *WebServer) handleApiDirs(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(prefix, "~/") || prefix == "~" {
 		prefix = filepath.Join(os.Getenv("HOME"), strings.TrimPrefix(prefix, "~"))
 	}
+	// Reject traversal; preserve trailing slash so the listDir/filter logic
+	// below still distinguishes "list dir contents" from "filter siblings".
+	cleaned, err := sanitizeDirPrefix(prefix)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results":[]}`)) //nolint:errcheck
+		return
+	}
+	prefix = cleaned
 
 	// If prefix ends with "/", list contents of that directory.
 	// Otherwise, list contents of the parent and filter by basename prefix.

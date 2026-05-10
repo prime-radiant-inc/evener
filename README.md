@@ -262,6 +262,10 @@ models = ["claude-opus-4-7", "claude-sonnet-4-6"]
 
 Daemons are loopback-only. Each writes a rendezvous file to `~/.serf/run/<pid>.json`; the hub watches the directory, probes daemons for state, and proxies REST + SSE so the browser only ever talks to the hub origin. Same-origin guard + strict CSP defend against DNS-rebinding and cross-origin attacks.
 
+### Operating notes
+
+- **Daemons keep the binary they were spawned from.** Rebuilding `serf` does not update already-running daemons; live sessions continue to run the old code until they shut down. To pick up changes mid-session, end the session (which terminates its daemon), rebuild, and resume — resume reads the new binary. This matches typical daemonized-server behavior and is the same model as restarting a long-lived service after a deploy.
+
 Design spec, plans, and notes live under `docs/superpowers/`.
 
 ## Acknowledgments

@@ -21,7 +21,10 @@ func requireNpx(t *testing.T) {
 func newEverythingManager(t *testing.T) *MCPManager {
 	t.Helper()
 	requireNpx(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// 60s instead of 30s: npx startup is fork+exec heavy and load-sensitive.
+	// These are correctness tests, not perf budgets — give them headroom so
+	// they don't flake under parallel `go test ./... -count=1`.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	t.Cleanup(cancel)
 
 	mgr, err := NewMCPManager(ctx, []MCPServerConfig{{
@@ -155,7 +158,10 @@ func TestRealMCP_ImageContent(t *testing.T) {
 
 func TestRealMCP_EnvPassing(t *testing.T) {
 	requireNpx(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// 60s instead of 30s: npx startup is fork+exec heavy and load-sensitive.
+	// These are correctness tests, not perf budgets — give them headroom so
+	// they don't flake under parallel `go test ./... -count=1`.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	t.Cleanup(cancel)
 
 	mgr, err := NewMCPManager(ctx, []MCPServerConfig{{
