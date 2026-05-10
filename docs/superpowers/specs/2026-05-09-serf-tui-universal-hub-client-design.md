@@ -4,9 +4,11 @@ Date: 2026-05-09
 Status: Draft after two-agent critique
 Linear: PRI-1542
 
+UX note: `docs/superpowers/specs/2026-05-09-serf-tui-dashboard-ux-design.md` is authoritative for dashboard, project drill-down, session navigation, and transcript browse/fork behavior. Where that focused UX spec conflicts with this document's earlier generic dashboard/drill-in wording, use the focused UX spec.
+
 ## Summary
 
-`serf-tui` becomes the terminal client for the same multi-session system that powers `serf-hub`. It stops being a single-session app that embeds or connects directly to one daemon. On startup it connects to a local hub, starts one if none is running, then presents a dashboard for live and past sessions across projects. Users can drill into any session, read the full transcript, follow live activity, send input where supported, and use the same spawn, resume, fork, and control flows as the web hub.
+`serf-tui` becomes the terminal client for the same multi-session system that powers `serf-hub`. It stops being a single-session app that embeds or connects directly to one daemon. On startup it connects to a local hub, starts one if none is running, then presents a live dashboard grouped by project, with project drill-down for history. Users can drill into any session, read the full transcript, follow live activity, send input where supported, and use the same spawn, resume, fork, and control flows as the web hub.
 
 This is intentionally a breaking design. There is no compatibility mode for the old embedded/direct single-session `serf-tui`. The hub is the control plane; the TUI is a hub client.
 
@@ -98,16 +100,13 @@ TUI redirects detached hub stdout/stderr to `~/.serf/logs/hub-<timestamp>.log`. 
 
 ### Dashboard
 
-The default screen is a two-pane dashboard:
+The default screen is a live-only dashboard grouped by project. The focused dashboard UX spec defines the exact layout and keyboard behavior.
 
-- Left pane: session tree.
-- Right pane: preview, details, or selected session.
-- Bottom strip: global help and hub status.
+The dashboard may use one pane on narrow terminals or add a preview/details pane when there is enough space. It always keeps the same information architecture:
 
-The tree has two sections:
-
-- Live: every live session sorted by attention state, then recency.
-- Projects: sessions grouped by working-directory project, with subagents and forks attached to their parent sessions.
+- Root dashboard: live sessions only, grouped under project headers.
+- Project drill-down: live sessions first, then recent ended sessions for that project.
+- Session workspace: chat-first view with transcript browse/fork focus.
 
 Rows show:
 
@@ -118,7 +117,7 @@ Rows show:
 - Short model label when space allows.
 - Host label once remote hosts exist.
 
-Rows also have stable row IDs distinct from session refs because the same session appears in both Live and Projects. Example row IDs: `live:<ref>` and `project:<project-key>:<ref>`. The dashboard preserves selection by row ID when possible and falls back to session ref only when that row disappears.
+Rows also have stable row IDs distinct from session refs. Example row IDs: `project:<project-key>` and `project:<project-key>:<ref>`. The dashboard preserves selection by row ID when possible and falls back to session ref only when that row disappears.
 
 Keyboard:
 
@@ -145,7 +144,8 @@ Session view includes:
 
 Keyboard:
 
-- `esc` returns to dashboard.
+- `esc` enters transcript browse/fork focus or returns from browse focus to compose; it does not leave the session.
+- `ctrl+o` returns to the dashboard.
 - `enter` sends input when focused in input.
 - `alt+enter` inserts newline.
 - `ctrl+j` inserts newline as the reliable terminal fallback.
