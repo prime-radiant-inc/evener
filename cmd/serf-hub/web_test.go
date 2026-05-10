@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -163,6 +164,56 @@ func TestWeb_WorkspaceSpawn_RendersForm(t *testing.T) {
 	}
 	if !strings.Contains(body, `data-chip-value-access_mode`) {
 		t.Errorf("body missing data-chip-value-access_mode: %q", body)
+	}
+}
+
+func TestWeb_WorkspaceSpawn_DoesNotSubmitPlaceholderDefaults(t *testing.T) {
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    NewPastIndex(""),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/workspace/spawn", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`name="model" value=""`,
+		`name="working_dir" value=""`,
+		`name="branch" value=""`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("spawn form missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestWeb_WorkspaceSpawn_SubmitsPrefilledWorkingDir(t *testing.T) {
+	dir := t.TempDir()
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    NewPastIndex(""),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/workspace/spawn?dir="+url.QueryEscape(dir), nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	body := rec.Body.String()
+	resolved, err := canonicalizeDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `name="working_dir" value="` + resolved + `"`
+	if !strings.Contains(body, want) {
+		t.Fatalf("spawn form missing %q:\n%s", want, body)
 	}
 }
 
@@ -2129,6 +2180,51 @@ func TestWeb_APITreeGroupsLiveOnlySessionsByProject(t *testing.T) {
 	}
 	if len(serfProjects[0].Sessions) != 2 || serfProjects[0].RollupState != "awaiting" {
 		t.Fatalf("unexpected serf project: %+v", serfProjects[0])
+	}
+	if serfProjects[0].WorkingDir != "/projects/serf" {
+		t.Fatalf("working_dir=%q, want /projects/serf", serfProjects[0].WorkingDir)
+	}
+}
+
+func TestWeb_APITreeSkipsLiveEntriesUntilSessionIDKnown(t *testing.T) {
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 52, Address: "127.0.0.1:4052", WorkingDir: "/projects/serf", Model: "gpt-5"})
+	r := NewRoster(runDir, fakeProber{sessionID: "", status: "IDLE"})
+	r.Refresh()
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	var got hubapi.TreeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Live) != 0 || len(got.Projects) != 0 {
+		t.Fatalf("tree rendered undrillable live entry: %+v", got)
+	}
+}
+
+func TestWeb_SidebarSkipsLiveEntriesUntilSessionIDKnown(t *testing.T) {
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 53, Address: "127.0.0.1:4053", WorkingDir: "/projects/serf", Model: "gpt-5"})
+	r := NewRoster(runDir, fakeProber{sessionID: "", status: "IDLE"})
+	r.Refresh()
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+
+	req := httptest.NewRequest(http.MethodGet, "/sidebar", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), `href="/s/`) {
+		t.Fatalf("sidebar rendered undrillable session link:\n%s", rec.Body.String())
 	}
 }
 

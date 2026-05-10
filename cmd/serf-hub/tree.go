@@ -199,7 +199,7 @@ func BuildTree(metas []agent.SessionMeta, live []LiveEntry) Tree {
 	type projectAccum struct {
 		topLevel   []agent.SessionMeta
 		children   map[string][]agent.SessionMeta // parentID -> children
-		workingDir string                          // first non-empty WorkingDir seen in this project
+		workingDir string                         // first non-empty WorkingDir seen in this project
 	}
 	projects := make(map[string]*projectAccum)
 	projectOrder := []string{} // insertion order for stable output
@@ -348,6 +348,9 @@ func BuildTree(metas []agent.SessionMeta, live []LiveEntry) Tree {
 	// sorted by attention rank desc then UpdatedAt desc.
 	liveNodes := make([]TreeNode, 0, len(live))
 	for _, le := range live {
+		if le.SessionID == "" {
+			continue
+		}
 		// Find the meta for this live entry.
 		var meta *agent.SessionMeta
 		for i := range metas {

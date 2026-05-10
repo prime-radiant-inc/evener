@@ -55,6 +55,11 @@ type hubForkMsg struct {
 	err  error
 }
 
+type hubSpawnMsg struct {
+	resp hubapi.SpawnResponse
+	err  error
+}
+
 func fetchHubTree(client *hubapi.Client) tea.Cmd {
 	return func() tea.Msg {
 		tree, err := client.Tree(context.Background())
@@ -66,6 +71,13 @@ func fetchHubSession(client *hubapi.Client, ref hubapi.Ref) tea.Cmd {
 	return func() tea.Msg {
 		detail, err := client.Session(context.Background(), ref)
 		return hubSessionMsg{detail: detail, err: err}
+	}
+}
+
+func sendHubSpawn(client *hubapi.Client, req hubapi.SpawnRequest) tea.Cmd {
+	return func() tea.Msg {
+		resp, err := client.Spawn(context.Background(), req)
+		return hubSpawnMsg{resp: resp, err: err}
 	}
 }
 

@@ -39,6 +39,7 @@ type Source struct {
 type TreeProject struct {
 	Key         string     `json:"key"`
 	Name        string     `json:"name"`
+	WorkingDir  string     `json:"working_dir,omitempty"`
 	RollupState string     `json:"rollup_state,omitempty"`
 	Sessions    []TreeNode `json:"sessions"`
 }

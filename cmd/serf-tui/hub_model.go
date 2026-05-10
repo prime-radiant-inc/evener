@@ -211,6 +211,17 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, fetchHubSession(m.client, ref)
+	case hubSpawnMsg:
+		if msg.err != nil {
+			m.err = fmt.Errorf("spawn failed: %w", msg.err)
+			return m, nil
+		}
+		ref, err := hubapi.ParseRef(msg.resp.Ref)
+		if err != nil {
+			m.err = fmt.Errorf("spawn returned invalid ref: %s", msg.resp.Ref)
+			return m, nil
+		}
+		return m, fetchHubSession(m.client, ref)
 	case sseEventMsg:
 		m.applyHubSSEEvent(SSEEvent(msg))
 		return m, nil
@@ -256,6 +267,8 @@ func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.client != nil {
 			return m, fetchHubTree(m.client)
 		}
+	case "s":
+		return m, m.spawnSession()
 	case "up", "k":
 		if m.selected > 0 {
 			m.selected--
@@ -293,6 +306,8 @@ func (m hubModel) updateProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.client != nil {
 			return m, fetchHubTree(m.client)
 		}
+	case "s":
+		return m, m.spawnSession()
 	case "up", "k":
 		if m.selected > 0 {
 			m.selected--
@@ -516,6 +531,42 @@ func (m *hubModel) returnToDashboard() {
 	}
 	m.mode = hubModeDashboard
 	m.clampSelection()
+}
+
+func (m hubModel) spawnSession() tea.Cmd {
+	if m.client == nil {
+		return nil
+	}
+	return sendHubSpawn(m.client, hubapi.SpawnRequest{WorkingDir: m.spawnWorkingDir()})
+}
+
+func (m hubModel) spawnWorkingDir() string {
+	if m.mode == hubModeProject {
+		if p, ok := m.selectedProject(); ok {
+			return p.WorkingDir
+		}
+		return ""
+	}
+	if len(m.rows) == 0 || m.selected < 0 || m.selected >= len(m.rows) {
+		return ""
+	}
+	return m.workingDirForProjectKey(m.rows[m.selected].projectKey)
+}
+
+func (m hubModel) workingDirForProjectKey(projectKey string) string {
+	if projectKey == "" {
+		return ""
+	}
+	for _, p := range m.tree.Projects {
+		key := p.Key
+		if key == "" {
+			key = hubProjectKey(p.Name)
+		}
+		if key == projectKey {
+			return p.WorkingDir
+		}
+	}
+	return ""
 }
 
 func (m hubModel) projectKeyForSession() (string, bool) {

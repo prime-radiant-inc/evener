@@ -282,6 +282,56 @@ func TestHubModelEnterOpensSessionDetail(t *testing.T) {
 	}
 }
 
+func TestHubModelDashboardSpawnUsesSelectedProjectWorkingDir(t *testing.T) {
+	var gotSpawn hubapi.SpawnRequest
+	client, cleanup := newTestHubClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/spawn":
+			if r.Method != http.MethodPost {
+				t.Fatalf("spawn method=%s", r.Method)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&gotSpawn); err != nil {
+				t.Fatal(err)
+			}
+			writeJSON(t, w, hubapi.SpawnResponse{Ref: "local:02NEW", HostID: "local", SessionID: "02NEW"})
+		case "/api/sessions/local:02NEW":
+			writeJSON(t, w, hubapi.SessionDetail{
+				Ref: "local:02NEW", SessionID: "02NEW", Title: "new session", State: "idle", Live: true, WorkingDir: "/tmp/serf",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer cleanup()
+
+	m := newHubModel(client, "http://hub.test")
+	m.tree = hubapi.TreeResponse{Projects: []hubapi.TreeProject{{
+		Key: "serf", Name: "serf", WorkingDir: "/tmp/serf",
+		Sessions: []hubapi.TreeNode{
+			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true},
+		},
+	}}}
+	m.rows = buildDashboardRows(m.tree)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	if cmd == nil {
+		t.Fatal("dashboard spawn returned nil command")
+	}
+	updated, cmd = updated.(hubModel).Update(cmd())
+	if cmd == nil {
+		t.Fatal("spawn response did not fetch new session detail")
+	}
+	updated, _ = updated.(hubModel).Update(cmd())
+	got := updated.(hubModel)
+
+	if gotSpawn.WorkingDir != "/tmp/serf" {
+		t.Fatalf("working_dir=%q, want /tmp/serf", gotSpawn.WorkingDir)
+	}
+	if got.mode != hubModeSession || got.detail.SessionID != "02NEW" {
+		t.Fatalf("mode=%v detail=%+v", got.mode, got.detail)
+	}
+}
+
 func TestModelSSEReplayUserInputRendersMessage(t *testing.T) {
 	m := newModel("", "", nil)
 	m.handleSSEEvent(SSEEvent{Event: "USER_INPUT", Data: `{"text":"hello from replay"}`})
