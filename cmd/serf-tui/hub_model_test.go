@@ -36,10 +36,13 @@ func TestHubModelInitialFetchRendersRows(t *testing.T) {
 	msg := m.Init()()
 	updated, _ := m.Update(msg)
 	got := updated.(hubModel).View()
-	for _, want := range []string{"live task", "past task", "awaiting", "serf"} {
+	for _, want := range []string{"live task", "awaiting", "serf"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("view missing %q:\n%s", want, got)
 		}
+	}
+	if strings.Contains(got, "past task") {
+		t.Fatalf("dashboard rendered ended session:\n%s", got)
 	}
 }
 
@@ -162,6 +165,7 @@ func TestHubModelEnterOpensSessionDetail(t *testing.T) {
 
 	m := newHubModel(client, "http://hub.test")
 	updated, _ := m.Update(m.Init()())
+	updated, _ = updated.(hubModel).Update(tea.KeyMsg{Type: tea.KeyDown})
 	updated, cmd := updated.(hubModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("enter did not return a session fetch command")
