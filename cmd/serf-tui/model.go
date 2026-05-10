@@ -964,6 +964,14 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 		m.processing = true
 		m.turnInputTokens = 0
 		m.turnOutputTokens = 0
+		var d struct {
+			Text string `json:"text"`
+		}
+		if ev.Event == "USER_INPUT" && json.Unmarshal([]byte(ev.Data), &d) == nil && strings.TrimSpace(d.Text) != "" {
+			if len(m.messages) == 0 || m.messages[len(m.messages)-1].Kind != msgUser || m.messages[len(m.messages)-1].Text != d.Text {
+				m.messages = append(m.messages, chatMessage{Kind: msgUser, Text: d.Text})
+			}
+		}
 
 	case "SESSION_END":
 		m.processing = false
@@ -980,6 +988,7 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 	case "ASSISTANT_TEXT_END":
 		m.turns++
 		var d struct {
+			Text  string `json:"text"`
 			Usage *struct {
 				InputTokens  int  `json:"input_tokens"`
 				OutputTokens int  `json:"output_tokens"`
@@ -1003,6 +1012,15 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 			m.contextTokens = total
 			m.turnInputTokens += total
 			m.turnOutputTokens += u.OutputTokens
+		}
+		if strings.TrimSpace(d.Text) != "" {
+			if len(m.messages) > 0 && m.messages[len(m.messages)-1].Kind == msgAssistant {
+				if m.messages[len(m.messages)-1].Text == "" {
+					m.messages[len(m.messages)-1].Text = d.Text
+				}
+			} else {
+				m.messages = append(m.messages, chatMessage{Kind: msgAssistant, Text: d.Text})
+			}
 		}
 
 	case "ASSISTANT_TEXT_DELTA":
@@ -1055,6 +1073,7 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 			ToolName   string `json:"tool_name"`
 			Error      string `json:"error"`
 			Result     string `json:"result"`
+			Output     string `json:"output"`
 			DurationMS int64  `json:"duration_ms"`
 		}
 		json.Unmarshal([]byte(ev.Data), &d)
@@ -1066,6 +1085,9 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 				tc.Error = d.Error
 				if tc.Output == "" {
 					tc.Output = d.Result
+					if tc.Output == "" {
+						tc.Output = d.Output
+					}
 				}
 				// Auto-expand: expand if Detail exists, or if output is short.
 				if tc.Detail != "" {

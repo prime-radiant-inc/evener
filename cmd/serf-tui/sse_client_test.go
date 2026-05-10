@@ -201,3 +201,63 @@ func TestParseSSEStream_LargeDataLine(t *testing.T) {
 		t.Fatal("large data payload was not preserved")
 	}
 }
+
+func TestParseSSEStream_MultilineDataAndNoSpaceAfterColon(t *testing.T) {
+	input := "id:42\nevent:ASSISTANT_TEXT_END\ndata:{\"text\":\"hello\"\ndata:\"world\"}\n\n"
+	events, err := parseSSEStream(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events=%d", len(events))
+	}
+	if events[0].ID != "42" || events[0].Event != "ASSISTANT_TEXT_END" {
+		t.Fatalf("event=%+v", events[0])
+	}
+	if events[0].Data != "{\"text\":\"hello\"\n\"world\"}" {
+		t.Fatalf("data=%q", events[0].Data)
+	}
+}
+
+func TestParseSSEStream_FinalEventWithoutBlankTerminator(t *testing.T) {
+	events, err := parseSSEStream(strings.NewReader("event: REPLAY_DONE\ndata: {}\n"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 || events[0].Event != "REPLAY_DONE" {
+		t.Fatalf("events=%+v", events)
+	}
+}
+
+func TestStreamSSEURL_Non200ReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusTeapot)
+	}))
+	defer srv.Close()
+
+	var msgs []tea.Msg
+	streamSSEURL(context.Background(), srv.URL, "", func(msg tea.Msg) {
+		msgs = append(msgs, msg)
+	})
+	if len(msgs) != 1 {
+		t.Fatalf("msgs=%d: %+v", len(msgs), msgs)
+	}
+	if _, ok := msgs[0].(sseErrorMsg); !ok {
+		t.Fatalf("msg=%T", msgs[0])
+	}
+}
+
+func TestStreamSSEURL_SendsLastEventID(t *testing.T) {
+	got := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got <- r.Header.Get("Last-Event-ID")
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: REPLAY_DONE\ndata: {}\n\n")
+	}))
+	defer srv.Close()
+
+	streamSSEURL(context.Background(), srv.URL, "ev-123", func(tea.Msg) {})
+	if header := <-got; header != "ev-123" {
+		t.Fatalf("Last-Event-ID=%q", header)
+	}
+}

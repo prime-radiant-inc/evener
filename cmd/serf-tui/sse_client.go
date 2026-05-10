@@ -28,12 +28,27 @@ type SSEEvent struct {
 
 // parseLine applies a single SSE line to the current event being built.
 func (e *SSEEvent) parseLine(line string) {
-	if strings.HasPrefix(line, "id: ") {
-		e.ID = strings.TrimPrefix(line, "id: ")
-	} else if strings.HasPrefix(line, "event: ") {
-		e.Event = strings.TrimPrefix(line, "event: ")
-	} else if strings.HasPrefix(line, "data: ") {
-		e.Data = strings.TrimPrefix(line, "data: ")
+	if line == "" || strings.HasPrefix(line, ":") {
+		return
+	}
+	field, value, ok := strings.Cut(line, ":")
+	if !ok {
+		field = line
+		value = ""
+	}
+	if strings.HasPrefix(value, " ") {
+		value = value[1:]
+	}
+	switch field {
+	case "id":
+		e.ID = value
+	case "event":
+		e.Event = value
+	case "data":
+		if e.Data != "" {
+			e.Data += "\n"
+		}
+		e.Data += value
 	}
 }
 
@@ -58,46 +73,50 @@ func parseSSEStream(r io.Reader) ([]SSEEvent, error) {
 		}
 		current.parseLine(line)
 	}
+	if current.hasContent() {
+		events = append(events, current)
+	}
 	return events, scanner.Err()
 }
 
 // sseEventMsg is a Bubble Tea message wrapping a parsed SSE event.
-type sseEventMsg struct {
-	streamID int
-	event    SSEEvent
-}
+type sseEventMsg SSEEvent
 
 // sseConnectedMsg signals successful SSE connection.
-type sseConnectedMsg struct{ streamID int }
+type sseConnectedMsg struct{}
 
 // sseErrorMsg signals an SSE connection error.
-type sseErrorMsg struct {
-	streamID int
-	err      error
-}
+type sseErrorMsg struct{ err error }
 
 // streamSSE connects to the SSE endpoint and sends events as Bubble Tea
 // messages. It blocks until the stream ends or context is cancelled.
-func streamSSE(ctx context.Context, addr string, streamID int, send func(tea.Msg)) {
+func streamSSE(ctx context.Context, addr string, send func(tea.Msg)) {
 	url := fmt.Sprintf("http://%s/events", addr)
+	streamSSEURL(ctx, url, "", send)
+}
+
+func streamSSEURL(ctx context.Context, url, lastEventID string, send func(tea.Msg)) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		send(sseErrorMsg{streamID: streamID, err: err})
+		send(sseErrorMsg{err})
 		return
+	}
+	if lastEventID != "" {
+		req.Header.Set("Last-Event-ID", lastEventID)
 	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		send(sseErrorMsg{streamID: streamID, err: err})
+		send(sseErrorMsg{err})
 		return
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		send(sseErrorMsg{streamID: streamID, err: fmt.Errorf("SSE connect failed: %s", resp.Status)})
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		send(sseErrorMsg{fmt.Errorf("SSE stream returned %d", resp.StatusCode)})
 		return
 	}
 
-	send(sseConnectedMsg{streamID: streamID})
+	send(sseConnectedMsg{})
 
 	scanner := newSSEScanner(resp.Body)
 	var current SSEEvent
@@ -105,16 +124,19 @@ func streamSSE(ctx context.Context, addr string, streamID int, send func(tea.Msg
 		line := scanner.Text()
 		if line == "" {
 			if current.hasContent() {
-				send(sseEventMsg{streamID: streamID, event: current})
+				send(sseEventMsg(current))
 				current = SSEEvent{}
 			}
 			continue
 		}
 		current.parseLine(line)
 	}
+	if current.hasContent() {
+		send(sseEventMsg(current))
+	}
 	if err := scanner.Err(); err != nil {
-		send(sseErrorMsg{streamID: streamID, err: err})
+		send(sseErrorMsg{err})
 		return
 	}
-	send(sseErrorMsg{streamID: streamID, err: fmt.Errorf("SSE stream closed")})
+	send(sseErrorMsg{fmt.Errorf("SSE stream closed")})
 }
