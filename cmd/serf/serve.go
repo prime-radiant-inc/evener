@@ -110,12 +110,33 @@ func runServe(args []string) error {
 		sd = agent.RuntimeDir(originURL, wd, "")
 	}
 
-	// Resolve provider and model (flag > env var).
-	prov, err := cmdutil.ResolveProvider(*provider)
+	// Resolve provider and model. Order:
+	//   1. Explicit --provider / --model / SERF_PROVIDER / SERF_MODEL.
+	//   2. When resuming, fall back to the resumed session's meta so
+	//      `serf serve --resume <id>` works without re-specifying them.
+	//   3. Otherwise the flag's normal "missing required" error applies.
+	resuming := *resume != "" || *resumeLast
+	var resumedMeta agent.SessionMeta
+	if resuming {
+		var metaErr error
+		resumedMeta, metaErr = cmdutil.ResolveSessionMeta(sd, *resume, *resumeLast)
+		if metaErr != nil {
+			return metaErr
+		}
+	}
+	provFlag := *provider
+	if provFlag == "" && resuming {
+		provFlag = resumedMeta.ProfileID
+	}
+	modFlag := *model
+	if modFlag == "" && resuming {
+		modFlag = resumedMeta.Model
+	}
+	prov, err := cmdutil.ResolveProvider(provFlag)
 	if err != nil {
 		return err
 	}
-	mod, err := cmdutil.ResolveModel(*model)
+	mod, err := cmdutil.ResolveModel(modFlag)
 	if err != nil {
 		return err
 	}
@@ -161,19 +182,15 @@ func runServe(args []string) error {
 	}
 
 	var sess *agent.Session
-	if *resume != "" || *resumeLast {
-		meta, metaErr := cmdutil.ResolveSessionMeta(sd, *resume, *resumeLast)
-		if metaErr != nil {
-			return metaErr
-		}
-		sess, err = agent.RestoreSessionFromMeta(client, profile, env, meta, sd)
+	if resuming {
+		sess, err = agent.RestoreSessionFromMeta(client, profile, env, resumedMeta, sd)
 		if err != nil {
 			return fmt.Errorf("restore session: %w", err)
 		}
 		if effort.Set {
 			sess.SetReasoningEffort(effort.Value)
 		}
-		fmt.Fprintf(os.Stderr, "[serve] resumed session %s (%d turns)\n", meta.ID, meta.TurnCount)
+		fmt.Fprintf(os.Stderr, "[serve] resumed session %s (%d turns)\n", resumedMeta.ID, resumedMeta.TurnCount)
 	} else {
 		sess, err = agent.NewSession(client, profile, env, sessionCfg)
 		if err != nil {
