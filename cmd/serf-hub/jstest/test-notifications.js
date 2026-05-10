@@ -210,6 +210,64 @@ function assert(cond, msg) {
     );
   }
 
+  // 7. First-poll seeding: a session already in `awaiting` at init time
+  //    must NOT fire a notification when the very next poll returns the
+  //    same state. This is the failure mode kata #28 calls out — opening
+  //    the hub on a long-idle awaiting session would otherwise spam an OS
+  //    notification on every reload.
+  {
+    const w = makeWindow({
+      prefs: { os: true, sound: true },
+      live: [{ id: "a", state: "awaiting", title: "Already Awaiting" }],
+    });
+    load(w);
+    await flush(w);
+    await flush(w);
+    // Same state on the next poll.
+    await w.serfHubNotifications.poll();
+    await flush(w);
+    assert(
+      w.__notifications.length === 0,
+      "expected 0 notifications when init found session already awaiting; got: " +
+        w.__notifications.length
+    );
+    assert(
+      w.__audioCalls.indexOf("createOscillator") === -1,
+      "expected no tone; got: " + JSON.stringify(w.__audioCalls)
+    );
+  }
+
+  // 8. Multiple existing awaiting sessions, then a new idle session
+  //    transitions to awaiting — only the new transition fires.
+  {
+    const w = makeWindow({
+      prefs: { os: true },
+      live: [
+        { id: "a", state: "awaiting", title: "Was Awaiting" },
+        { id: "b", state: "idle", title: "Was Idle" },
+      ],
+    });
+    load(w);
+    await flush(w);
+    await flush(w);
+    // a stays awaiting (no fire), b idle->awaiting (fire).
+    w.__liveRef.value = [
+      { id: "a", state: "awaiting", title: "Was Awaiting" },
+      { id: "b", state: "awaiting", title: "Was Idle" },
+    ];
+    await w.serfHubNotifications.poll();
+    await flush(w);
+    assert(
+      w.__notifications.length === 1,
+      "expected exactly 1 notification (only b's transition), got: " +
+        w.__notifications.length
+    );
+    assert(
+      (w.__notifications[0].title || "").indexOf("Was Idle") !== -1,
+      "expected b to fire, got: " + w.__notifications[0].title
+    );
+  }
+
   console.log("notifications.js tests passed");
   process.exit(0);
 })();

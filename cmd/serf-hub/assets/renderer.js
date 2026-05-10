@@ -102,6 +102,19 @@
       this.taskBadgeTimer = setInterval(tick, 5000);
     },
 
+    // ensureLiveStream wires up the live SSE source for the current session
+    // when no EventSource is open. Called after sending to an ended session:
+    // the daemon was just resumed and the past replay finished and closed,
+    // so without this the new turn would only appear on a full page reload.
+    // We don't wipe rendered content — the past replay sequence already
+    // populated the DOM, and this just appends new events on top.
+    ensureLiveStream() {
+      if (this.eventSource) return;
+      if (!this.sessionId) return;
+      this.eventsUrl = "/s/" + encodeURIComponent(this.sessionId) + "/events";
+      this.connect(this.eventsUrl);
+    },
+
     connect(url) {
       this.eventSource = new EventSource(url);
       const kinds = [
@@ -868,6 +881,10 @@
             grow();
             this.pendingAttachments = [];
             this.renderAttachments();
+            // Replying to an ended session resumes its daemon; switch the
+            // SSE source from the now-closed past replay to the live events
+            // stream so the new turn renders without a page reload.
+            this.ensureLiveStream();
           }
         } catch (err) {
           this.appendBanner("error", "send failed: " + err.message);

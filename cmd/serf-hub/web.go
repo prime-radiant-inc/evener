@@ -195,6 +195,9 @@ func (s *WebServer) handleApiSearch(w http.ResponseWriter, r *http.Request) {
 	var resp searchResponse
 	if s.cfg.Roster != nil {
 		for _, le := range s.cfg.Roster.List() {
+			if le.SessionID == "" {
+				continue
+			}
 			title := liveTitle(le.SessionID, le, s.cfg.Past)
 			if q == "" || strings.Contains(strings.ToLower(le.SessionID), q) || strings.Contains(strings.ToLower(title), q) {
 				resp.Live = append(resp.Live, searchResult{
@@ -314,6 +317,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		ap := hubapi.TreeProject{
 			Key:         key,
 			Name:        p.Name,
+			WorkingDir:  p.WorkingDir,
 			RollupState: p.RollupState,
 		}
 		for _, n := range p.Sessions {
@@ -353,6 +357,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		resp.Projects = append(resp.Projects, hubapi.TreeProject{
 			Key:         key,
 			Name:        project,
+			WorkingDir:  le.WorkingDir,
 			RollupState: node.State,
 			Sessions:    []hubapi.TreeNode{apiNode},
 		})
@@ -1357,11 +1362,14 @@ func (s *WebServer) findNewSession(pid int) string {
 
 // spawnViewData is the template data for the spawn partial.
 type spawnViewData struct {
-	DefaultModel      string
-	DefaultWorkingDir string
-	DefaultBranch     string
-	DefaultAccessMode string
-	RecentTasks       []string
+	DefaultModel           string
+	DefaultModelValue      string
+	DefaultWorkingDir      string
+	DefaultWorkingDirValue string
+	DefaultBranch          string
+	DefaultBranchValue     string
+	DefaultAccessMode      string
+	RecentTasks            []string
 }
 
 // handleWorkspaceSpawn renders the prompt-first spawn surface partial.
@@ -1371,16 +1379,19 @@ type spawnViewData struct {
 // project.
 func (s *WebServer) handleWorkspaceSpawn(w http.ResponseWriter, r *http.Request) {
 	defaultWorkingDir := "(pick a directory)"
+	defaultWorkingDirValue := ""
 	if dir := strings.TrimSpace(r.URL.Query().Get("dir")); dir != "" {
 		if resolved, err := canonicalizeDir(dir); err == nil {
 			defaultWorkingDir = resolved
+			defaultWorkingDirValue = resolved
 		}
 	}
 	data := spawnViewData{
-		DefaultModel:      "(pick a model)",
-		DefaultWorkingDir: defaultWorkingDir,
-		DefaultBranch:     "(default)",
-		DefaultAccessMode: "full",
+		DefaultModel:           "(pick a model)",
+		DefaultWorkingDir:      defaultWorkingDir,
+		DefaultWorkingDirValue: defaultWorkingDirValue,
+		DefaultBranch:          "(default)",
+		DefaultAccessMode:      "full",
 	}
 	if s.cfg.Past != nil {
 		results := s.cfg.Past.Search("", 5, 0)
@@ -1906,7 +1917,6 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 				StateLabel: stateLabel(state),
 				Model:      le.Model,
 				WorkingDir: le.WorkingDir,
-				EventsURL:  "/s/" + id + "/events",
 			}
 			// Branch isn't on the rendezvous entry or daemon /status — fall
 			// back to the past index where the agent persists EnvInfo.
@@ -1919,6 +1929,19 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 					s.fillForkLineage(&data, pe.Meta)
 				}
 			}
+			// A daemon reporting ENDED is still in the roster (its rendezvous
+			// file lingers until pruned) but its /events stream will never
+			// emit anything new. Treat it as past content: serve replay so
+			// the user sees the full transcript. The renderer will switch
+			// to /events on the next send-to-ended (which resumes a fresh
+			// daemon).
+			if state == "ended" && s.cfg.Past != nil {
+				if _, ok := s.cfg.Past.Find(id); ok {
+					data.ReplayURL = "/past/" + id + "/replay"
+					return data
+				}
+			}
+			data.EventsURL = "/s/" + id + "/events"
 			return data
 		}
 	}

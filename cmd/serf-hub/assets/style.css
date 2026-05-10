@@ -386,9 +386,14 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .cost { font-family: ui-monospace, "SFMono-Regular", monospace; }
 
 /* Conversation tiers */
-.user-message { display: flex; justify-content: flex-end; margin-bottom: 28px; position: relative; }
+/* The pill is the visible bubble; the .user-message wrapper extends 22px
+   above it to reserve a hit zone for the hover-only action chrome. Without
+   that reserved region the cursor crosses an unhovered gap on the way up
+   to the actions, hover drops, and the actions disappear before they can
+   be clicked. */
+.user-message { display: flex; justify-content: flex-end; margin-bottom: 28px; padding-top: 22px; position: relative; }
 .user-message .pill { max-width: 62%; padding: 8px 14px; background: var(--bg-raised); border-radius: 14px; font-size: 14.5px; color: var(--text); line-height: 1.55; }
-.user-message-actions { position: absolute; right: 0; top: -22px; display: none; gap: 14px; font-size: 11px; color: var(--text-muted); }
+.user-message-actions { position: absolute; right: 0; top: 4px; display: none; gap: 14px; font-size: 11px; color: var(--text-muted); }
 .user-message:hover .user-message-actions { display: flex; }
 .user-message-actions .action { cursor: pointer; }
 .user-message-actions .edit { color: var(--text); }
