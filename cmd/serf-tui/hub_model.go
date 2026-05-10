@@ -202,20 +202,25 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "ctrl+c", "q":
+	case "ctrl+o":
+		m.returnToDashboard()
+		return m, nil
+	case "ctrl+c":
+		if m.mode == hubModeSession {
+			return m.updateSessionKey(msg)
+		}
 		if m.streamCancel != nil {
 			m.streamCancel()
 		}
 		return m, tea.Quit
-	case "esc", "backspace":
-		if m.mode == hubModeSession {
-			if m.streamCancel != nil {
-				m.streamCancel()
-				m.streamCancel = nil
-			}
-			m.mode = hubModeDashboard
-			return m, nil
+	case "q":
+		if m.mode == hubModeSession && m.session.scrollMode {
+			return m.updateSessionKey(msg)
 		}
+		if m.streamCancel != nil {
+			m.streamCancel()
+		}
+		return m, tea.Quit
 	}
 	if m.mode == hubModeSession {
 		return m.updateSessionKey(msg)
@@ -236,11 +241,18 @@ func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.selected < len(m.rows)-1 {
 			m.selected++
 		}
+	case "p":
+		if len(m.rows) > 0 {
+			m.openProject(m.rows[m.selected].projectKey)
+		}
 	case "enter":
-		if len(m.rows) > 0 && m.client != nil {
+		if len(m.rows) > 0 {
 			row := m.rows[m.selected]
 			if row.kind == hubRowProject {
 				m.openProject(row.projectKey)
+				return m, nil
+			}
+			if m.client == nil {
 				return m, nil
 			}
 			return m, fetchHubSession(m.client, row.ref)
@@ -275,6 +287,61 @@ func (m hubModel) updateProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.session.scrollMode {
+		switch msg.String() {
+		case "esc", "i", "q":
+			m.exitSessionBrowse()
+		case "up":
+			m.session.focusTool(-1)
+			m.session.refreshViewport()
+			if m.session.focusedToolIdx >= 0 {
+				m.session.scrollToMessage(m.session.focusedToolIdx)
+			} else {
+				m.session.viewport, _ = m.session.viewport.Update(msg)
+			}
+		case "down":
+			m.session.focusTool(1)
+			m.session.refreshViewport()
+			if m.session.focusedToolIdx >= 0 {
+				m.session.scrollToMessage(m.session.focusedToolIdx)
+			} else {
+				m.session.viewport, _ = m.session.viewport.Update(msg)
+			}
+		case "tab", "enter":
+			if m.session.focusedToolIdx >= 0 && m.session.focusedToolIdx < len(m.session.messages) {
+				msg := &m.session.messages[m.session.focusedToolIdx]
+				if msg.Kind == msgTool && msg.Tool != nil && msg.Tool.Done {
+					msg.Tool.Expanded = !msg.Tool.Expanded
+					m.session.refreshViewport()
+					m.session.scrollToMessage(m.session.focusedToolIdx)
+				}
+			}
+		default:
+			m.session.viewport, _ = m.session.viewport.Update(msg)
+		}
+		return m, nil
+	}
+
+	switch msg.String() {
+	case "esc":
+		m.enterSessionBrowse(false)
+		return m, nil
+	case "pgup":
+		m.enterSessionBrowse(true)
+		return m, nil
+	case "ctrl+c":
+		if !m.detail.Capabilities.Interrupt {
+			m.addSessionSystem("Interrupt is not available for this session.")
+			return m, nil
+		}
+		ref, ok := m.currentRef()
+		if !ok {
+			m.addSessionSystem("Session ref is invalid.")
+			return m, nil
+		}
+		return m, sendHubAction(m.client, ref, "interrupt")
+	}
+
 	if msg.String() == "enter" {
 		text := strings.TrimSpace(m.session.input.Value())
 		if text == "" {
@@ -325,6 +392,20 @@ func (m *hubModel) runHubSlashCommand(cmd, args string) tea.Cmd {
 		return nil
 	}
 	switch cmd {
+	case "dashboard":
+		m.returnToDashboard()
+		return nil
+	case "project":
+		key, ok := m.projectKeyForSession()
+		if !ok {
+			m.addSessionSystem("Project is not available for this session.")
+			return nil
+		}
+		m.openProject(key)
+		return nil
+	case "projects":
+		m.addSessionSystem("Project switcher is not available yet. Use /project for this session or ctrl+o for the live dashboard.")
+		return nil
 	case "tasks":
 		return fetchHubTasks(m.client, ref)
 	case "details", "status":
@@ -365,6 +446,54 @@ func (m *hubModel) runHubSlashCommand(cmd, args string) tea.Cmd {
 		m.addSessionSystem("Unknown command: /" + cmd)
 		return nil
 	}
+}
+
+func (m *hubModel) enterSessionBrowse(pageUp bool) {
+	m.session.scrollMode = true
+	m.session.focusedToolIdx = -1
+	m.session.input.Blur()
+	if pageUp {
+		m.session.viewport, _ = m.session.viewport.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	}
+}
+
+func (m *hubModel) exitSessionBrowse() {
+	m.session.scrollMode = false
+	m.session.focusedToolIdx = -1
+	m.session.input.Focus()
+}
+
+func (m *hubModel) returnToDashboard() {
+	if m.streamCancel != nil {
+		m.streamCancel()
+		m.streamCancel = nil
+	}
+	m.mode = hubModeDashboard
+	m.clampSelection()
+}
+
+func (m hubModel) projectKeyForSession() (string, bool) {
+	project := strings.TrimSpace(m.detail.Project)
+	if project == "" || project == "." {
+		if m.detail.WorkingDir != "" {
+			parts := strings.Split(strings.TrimRight(m.detail.WorkingDir, "/"), "/")
+			project = parts[len(parts)-1]
+		}
+	}
+	if project == "" {
+		return "", false
+	}
+	want := hubProjectKey(project)
+	for _, p := range m.tree.Projects {
+		key := p.Key
+		if key == "" {
+			key = hubProjectKey(p.Name)
+		}
+		if key == want || p.Name == project {
+			return key, true
+		}
+	}
+	return want, true
 }
 
 func (m *hubModel) addSessionSystem(text string) {

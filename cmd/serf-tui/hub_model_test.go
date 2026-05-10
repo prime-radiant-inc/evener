@@ -146,6 +146,109 @@ func TestHubModelProjectViewShowsLiveThenRecent(t *testing.T) {
 	}
 }
 
+func TestHubModelDashboardProjectHeaderOpensProject(t *testing.T) {
+	m := newHubModel(nil, "http://hub.test")
+	m.tree = hubapi.TreeResponse{Projects: []hubapi.TreeProject{{
+		Key:  "serf",
+		Name: "serf",
+		Sessions: []hubapi.TreeNode{
+			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true},
+		},
+	}}}
+	m.rows = buildDashboardRows(m.tree)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("project header enter should not fetch a session")
+	}
+	got := updated.(hubModel)
+	if got.mode != hubModeProject || got.selectedProjectKey != "serf" {
+		t.Fatalf("mode=%v project=%q", got.mode, got.selectedProjectKey)
+	}
+	if !strings.Contains(got.View(), "serf / project / serf") {
+		t.Fatalf("project view not rendered:\n%s", got.View())
+	}
+}
+
+func TestHubModelProjectEscReturnsDashboard(t *testing.T) {
+	m := newHubModel(nil, "http://hub.test")
+	m.tree = hubapi.TreeResponse{Projects: []hubapi.TreeProject{{
+		Key:  "serf",
+		Name: "serf",
+		Sessions: []hubapi.TreeNode{
+			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true},
+		},
+	}}}
+	m.rows = buildDashboardRows(m.tree)
+	m.openProject("serf")
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	got := updated.(hubModel)
+	if got.mode != hubModeDashboard {
+		t.Fatalf("mode=%v, want dashboard", got.mode)
+	}
+	if !strings.Contains(got.View(), "serf live") {
+		t.Fatalf("dashboard not rendered:\n%s", got.View())
+	}
+}
+
+func TestHubModelSessionEscEntersBrowseInsteadOfDashboard(t *testing.T) {
+	m := newSessionHubModel(nil)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	got := updated.(hubModel)
+	if got.mode != hubModeSession {
+		t.Fatalf("mode=%v, want session", got.mode)
+	}
+	if !got.session.scrollMode {
+		t.Fatal("esc should enter browse focus")
+	}
+}
+
+func TestHubModelCtrlOReturnsDashboardFromSession(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.rows = []hubRow{{kind: hubRowProject, project: "serf", projectKey: "serf"}}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	got := updated.(hubModel)
+	if got.mode != hubModeDashboard {
+		t.Fatalf("mode=%v, want dashboard", got.mode)
+	}
+}
+
+func TestHubModelSlashDashboardAndProjectNavigate(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.tree = hubapi.TreeResponse{Projects: []hubapi.TreeProject{{
+		Key:  "serf",
+		Name: "serf",
+		Sessions: []hubapi.TreeNode{
+			{Ref: "local:01SEND", SessionID: "01SEND", Title: "send task", State: "idle", Project: "serf", Live: true},
+		},
+	}}}
+	m.rows = buildDashboardRows(m.tree)
+	m.detail.Project = "serf"
+
+	m.session.setInputValue("/dashboard")
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("/dashboard should not need an async command")
+	}
+	got := updated.(hubModel)
+	if got.mode != hubModeDashboard {
+		t.Fatalf("/dashboard mode=%v", got.mode)
+	}
+
+	got.mode = hubModeSession
+	got.session.setInputValue("/project")
+	updated, cmd = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("/project should not need an async command")
+	}
+	got = updated.(hubModel)
+	if got.mode != hubModeProject || got.selectedProjectKey != "serf" {
+		t.Fatalf("/project mode=%v project=%q", got.mode, got.selectedProjectKey)
+	}
+}
+
 func TestHubModelEnterOpensSessionDetail(t *testing.T) {
 	client, cleanup := newTestHubClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
