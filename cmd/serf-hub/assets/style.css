@@ -656,3 +656,96 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 
 /* Tasks button progress badge */
 .panel-toggle-badge { display: inline-flex; align-items: center; padding: 1px 6px; margin-left: 4px; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 10px; color: var(--text-muted); background: var(--bg); border: 1px solid var(--rule); border-radius: 3px; }
+
+/* ----- Mobile (<= 767px): off-canvas sidebar, full-width panels, stacked input controls.
+   Phone screens get ~390px viewport; the desktop two-pane layout collapses
+   to single-pane workspace, with the sidebar and slide-over panels turned
+   into full-screen drawers triggered by the hamburger and existing buttons.
+   The hamburger lives at the body level (#mobile-hamburger) so it's
+   reachable even when the workspace is showing the empty state, settings,
+   or any other partial that doesn't render its own header. */
+#mobile-hamburger { display: none; }
+
+@media (max-width: 767px) {
+  /* Single-column layout: workspace fills the screen, sidebar lives off-canvas. */
+  body.app { display: block; }
+  #sidebar {
+    position: fixed;
+    top: 0; left: 0; bottom: 0;
+    width: 80vw;
+    max-width: 320px;
+    z-index: 200;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    box-shadow: 4px 0 24px rgba(0,0,0,0.4);
+  }
+  body.app[data-sidebar-open] #sidebar { transform: translateX(0); }
+  body.app[data-sidebar-open]::before {
+    content: "";
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 199;
+  }
+  #workspace { width: 100%; height: 100vh; }
+
+  /* Hamburger pinned to the top-left, available from any workspace state. */
+  #mobile-hamburger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    position: fixed;
+    top: 8px;
+    left: 8px;
+    width: 36px;
+    height: 36px;
+    background: var(--bg-raised);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 18px;
+    cursor: pointer;
+    z-index: 150;
+  }
+
+  /* Workspace header: leave room for the fixed hamburger; allow wrap. */
+  .workspace-header { padding: 10px 14px 8px 56px; }
+  .workspace-title-row { gap: 8px; flex-wrap: wrap; }
+  .workspace-actions { gap: 4px; flex-wrap: wrap; }
+  .header-action,
+  .panel-toggle { padding: 4px 8px; font-size: 11px; }
+  .panel-toggle-icon { display: none; }
+  .workspace-meta { font-size: 11px; }
+
+  /* Empty state and other workspace partials don't have a header to push;
+     pad the content itself away from the fixed hamburger. */
+  .workspace-empty { padding-top: 64px; }
+
+  /* Tasks/details: full screen on mobile so they're actually readable. */
+  .details-panel {
+    width: 100%;
+    padding: 14px;
+    box-shadow: none;
+  }
+
+  /* Bottom strip: keep horizontal but allow wrap so chips reflow rather than overflow. */
+  .workspace-input { padding: 8px 12px 10px; }
+  .input-controls { flex-wrap: wrap; gap: 6px; }
+  .controls-spacer { display: none; }
+  .input-btn-primary kbd { display: none; }
+  .input-status { flex-wrap: wrap; }
+
+  /* Search palette: full-screen on mobile so the keyboard doesn't shove it. */
+  .search-dialog-inner {
+    width: 100%;
+    max-width: 100%;
+    margin: 0;
+    height: 100vh;
+    border-radius: 0;
+    border: none;
+  }
+
+  /* User-message pill: more breathing room because the screen is narrower. */
+  .user-message .pill { max-width: 90%; }
+  .conversation { padding: 12px 14px; }
+}

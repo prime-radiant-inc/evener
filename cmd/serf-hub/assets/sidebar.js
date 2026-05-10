@@ -71,4 +71,58 @@
   });
 
   document.addEventListener("click", onChevronClick);
+
+  // Mobile hamburger: toggle a body[data-sidebar-open] flag that the
+  // mobile media query reads to slide the sidebar in. Tapping a sidebar
+  // link also closes (via htmx:beforeRequest) so navigating to a session
+  // doesn't leave the drawer hanging. The close-on-outside handler is
+  // only armed while open — keeping it always-on caused double-fires
+  // under mobile emulation where the synthetic click stack toggled
+  // open then immediately closed.
+  function setSidebarOpen(open) {
+    if (open) {
+      document.body.setAttribute("data-sidebar-open", "");
+      document.addEventListener("click", onOutsideClick, true);
+    } else {
+      document.body.removeAttribute("data-sidebar-open");
+      document.removeEventListener("click", onOutsideClick, true);
+    }
+  }
+
+  function isSidebarOpen() {
+    return document.body.hasAttribute("data-sidebar-open");
+  }
+
+  function onOutsideClick(e) {
+    var t = e.target;
+    if (!t) return;
+    if (t.closest && (t.closest("#sidebar") || t.closest("[data-sidebar-toggle]"))) {
+      return;
+    }
+    setSidebarOpen(false);
+  }
+
+  document.addEventListener("click", function (e) {
+    var t = e.target;
+    if (!t) return;
+    var trigger = t.closest && t.closest("[data-sidebar-toggle]");
+    if (trigger) {
+      e.preventDefault();
+      e.stopPropagation();
+      setSidebarOpen(!isSidebarOpen());
+    }
+  });
+
+  document.addEventListener("htmx:beforeRequest", function (e) {
+    var trigger = e.detail && e.detail.elt;
+    if (trigger && trigger.closest && trigger.closest("#sidebar")) {
+      setSidebarOpen(false);
+    }
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && isSidebarOpen()) {
+      setSidebarOpen(false);
+    }
+  });
 })();
