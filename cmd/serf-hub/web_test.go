@@ -1912,3 +1912,32 @@ func TestWeb_APISessionActionClearReturnsRef(t *testing.T) {
 		t.Fatalf("unexpected clear response: %+v", got)
 	}
 }
+
+func TestWeb_APISessionActionModelForwardsBody(t *testing.T) {
+	var gotPath, gotBody string
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer daemon.Close()
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 47, Address: strings.TrimPrefix(daemon.URL, "http://")})
+	r := NewRoster(runDir, fakeProber{sessionID: "01MODEL", status: "IDLE"})
+	r.Refresh()
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:01MODEL/model", strings.NewReader(`{"model":"gpt-5.5"}`))
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if gotPath != "/model" || gotBody != `{"model":"gpt-5.5"}` {
+		t.Fatalf("path=%q body=%q", gotPath, gotBody)
+	}
+}

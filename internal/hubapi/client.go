@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"primeradiant.com/serf/agent"
 )
 
 // Client is a small typed HTTP client for the serf hub JSON API.
@@ -114,4 +116,32 @@ func (c *Client) Spawn(ctx context.Context, req SpawnRequest) (SpawnResponse, er
 	var out SpawnResponse
 	err := c.post(ctx, "/api/spawn", req, &out)
 	return out, err
+}
+
+func (c *Client) Send(ctx context.Context, ref Ref, text string) error {
+	return c.post(ctx, "/api/sessions/"+ref.PathEscaped()+"/send", map[string]string{"text": text}, nil)
+}
+
+func (c *Client) Tasks(ctx context.Context, ref Ref) ([]agent.Task, error) {
+	var out []agent.Task
+	err := c.get(ctx, "/api/sessions/"+ref.PathEscaped()+"/tasks", &out)
+	return out, err
+}
+
+func (c *Client) Interrupt(ctx context.Context, ref Ref) error {
+	return c.post(ctx, "/api/sessions/"+ref.PathEscaped()+"/interrupt", nil, nil)
+}
+
+func (c *Client) Compact(ctx context.Context, ref Ref) error {
+	return c.post(ctx, "/api/sessions/"+ref.PathEscaped()+"/compact", nil, nil)
+}
+
+func (c *Client) Clear(ctx context.Context, ref Ref) (RefResponse, error) {
+	var out RefResponse
+	err := c.post(ctx, "/api/sessions/"+ref.PathEscaped()+"/clear", nil, &out)
+	return out, err
+}
+
+func (c *Client) SetModel(ctx context.Context, ref Ref, model string) error {
+	return c.post(ctx, "/api/sessions/"+ref.PathEscaped()+"/model", map[string]string{"model": model}, nil)
 }

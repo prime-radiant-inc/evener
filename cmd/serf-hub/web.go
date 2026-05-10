@@ -444,6 +444,8 @@ func (s *WebServer) handleAPISession(w http.ResponseWriter, r *http.Request) {
 		s.handleAPIFork(w, r, ref.SessionID)
 	case "clear":
 		s.handleAPIClear(w, r, ref.SessionID)
+	case "model":
+		s.handleAPIModel(w, r, ref.SessionID)
 	case "interrupt", "compact", "shutdown":
 		s.handleSessionAction(w, r, ref.SessionID, sub)
 	default:
@@ -629,6 +631,38 @@ func (s *WebServer) handleAPIClear(w http.ResponseWriter, r *http.Request, id st
 		HostID:    ref.HostID,
 		SessionID: ref.SessionID,
 	})
+}
+
+func (s *WebServer) handleAPIModel(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "POST required")
+		return
+	}
+	if s.cfg.Roster == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "roster not configured")
+		return
+	}
+	le, ok := s.cfg.Roster.Find(id)
+	if !ok {
+		writeAPIError(w, http.StatusNotFound, "session not live")
+		return
+	}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, "http://"+le.Address+"/model", r.Body)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	req.Header.Set("Content-Type", r.Header.Get("Content-Type"))
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req) //nolint:gosec
+	if err != nil {
+		writeAPIError(w, http.StatusBadGateway, "daemon unreachable: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	buf, _ := io.ReadAll(resp.Body)
+	w.WriteHeader(resp.StatusCode)
+	w.Write(buf) //nolint:errcheck
 }
 
 func (s *WebServer) postLiveAction(ctx context.Context, le LiveEntry, action string) (int, []byte, error) {
