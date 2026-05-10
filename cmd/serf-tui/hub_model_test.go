@@ -316,8 +316,14 @@ func TestHubModelDashboardSpawnUsesSelectedProjectWorkingDir(t *testing.T) {
 	m.rows = buildDashboardRows(m.tree)
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	if cmd != nil {
+		t.Fatal("dashboard spawn should open form before returning a command")
+	}
+	form := updated.(hubModel)
+	form.session.setInputValue("build the thing")
+	updated, cmd = form.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
-		t.Fatal("dashboard spawn returned nil command")
+		t.Fatal("spawn form submit returned nil command")
 	}
 	updated, cmd = updated.(hubModel).Update(cmd())
 	if cmd == nil {
@@ -329,8 +335,45 @@ func TestHubModelDashboardSpawnUsesSelectedProjectWorkingDir(t *testing.T) {
 	if gotSpawn.WorkingDir != "/tmp/serf" {
 		t.Fatalf("working_dir=%q, want /tmp/serf", gotSpawn.WorkingDir)
 	}
+	if gotSpawn.Task != "build the thing" {
+		t.Fatalf("task=%q, want build the thing", gotSpawn.Task)
+	}
 	if got.mode != hubModeSession || got.detail.SessionID != "02NEW" {
 		t.Fatalf("mode=%v detail=%+v", got.mode, got.detail)
+	}
+}
+
+func TestHubModelDashboardSpawnOpensFormBeforePosting(t *testing.T) {
+	var posted bool
+	client, cleanup := newTestHubClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/spawn" {
+			posted = true
+		}
+		http.NotFound(w, r)
+	}))
+	defer cleanup()
+
+	m := newHubModel(client, "http://hub.test")
+	m.tree = hubapi.TreeResponse{Projects: []hubapi.TreeProject{{
+		Key:        "serf",
+		Name:       "serf",
+		WorkingDir: "/tmp/serf",
+		Sessions: []hubapi.TreeNode{
+			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true},
+		},
+	}}}
+	m.rows = buildDashboardRows(m.tree)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	if cmd != nil {
+		t.Fatal("spawn key should open a form before posting")
+	}
+	got := updated.(hubModel)
+	if posted {
+		t.Fatal("spawn key posted before form submission")
+	}
+	if !strings.Contains(got.View(), "serf / new session") || !strings.Contains(got.View(), "/tmp/serf") {
+		t.Fatalf("spawn form not rendered:\n%s", got.View())
 	}
 }
 
@@ -383,12 +426,17 @@ func TestHubDashboardSpawnWaitsForSlowHubSpawn(t *testing.T) {
 	model = updated.(hubModel)
 
 	updated, cmd = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
-	if cmd == nil {
-		t.Fatal("dashboard spawn returned nil command")
+	if cmd != nil {
+		t.Fatal("dashboard spawn should open form before returning a command")
 	}
 	model = updated.(hubModel)
+	model.session.setInputValue("slow spawn")
 
-	updated, cmd = model.Update(cmd())
+	updated, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("spawn form submit returned nil command")
+	}
+	updated, cmd = updated.(hubModel).Update(cmd())
 	model = updated.(hubModel)
 	if model.err != nil {
 		t.Fatalf("spawn failed: %v", model.err)
@@ -407,6 +455,9 @@ func TestHubDashboardSpawnWaitsForSlowHubSpawn(t *testing.T) {
 	}
 	if gotSpawn.WorkingDir != "/tmp/serf" {
 		t.Fatalf("working_dir=%q, want /tmp/serf", gotSpawn.WorkingDir)
+	}
+	if gotSpawn.Task != "slow spawn" {
+		t.Fatalf("task=%q, want slow spawn", gotSpawn.Task)
 	}
 }
 

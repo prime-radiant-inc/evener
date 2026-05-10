@@ -38,7 +38,14 @@ func NewClient(base string, httpClient *http.Client) (*Client, error) {
 
 func (c *Client) URL(path string) string {
 	u := *c.baseURL
-	u.Path = strings.TrimRight(c.baseURL.Path, "/") + "/" + strings.TrimLeft(path, "/")
+	fullPath := strings.TrimRight(c.baseURL.Path, "/") + "/" + strings.TrimLeft(path, "/")
+	if p, q, ok := strings.Cut(fullPath, "?"); ok {
+		u.Path = p
+		u.RawQuery = q
+	} else {
+		u.Path = fullPath
+		u.RawQuery = ""
+	}
 	return u.String()
 }
 

@@ -15,6 +15,7 @@ const (
 	hubModeDashboard hubMode = iota
 	hubModeProject
 	hubModeSession
+	hubModeSpawn
 )
 
 type hubRowKind int
@@ -60,6 +61,10 @@ type hubModel struct {
 	projectRows        []hubRow
 	browseSelected     int
 	forkDraft          *hubForkDraft
+	spawnReturnMode    hubMode
+	spawnDir           string
+	spawnProject       string
+	spawnSubmitting    bool
 
 	detail        hubapi.SessionDetail
 	session       model
@@ -113,6 +118,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.err = nil
+		m.spawnSubmitting = false
 		if m.mode == hubModeSession && m.detail.Ref == msg.detail.Ref {
 			m.detail = msg.detail
 			m.session.messages = append(m.session.messages, chatMessage{Kind: msgSystem, Text: m.renderSessionDetails()})
@@ -212,6 +218,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, fetchHubSession(m.client, ref)
 	case hubSpawnMsg:
+		m.spawnSubmitting = false
 		if msg.err != nil {
 			m.err = fmt.Errorf("spawn failed: %w", msg.err)
 			return m, nil
@@ -248,6 +255,9 @@ func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Quit
 	case "q":
+		if m.mode == hubModeSpawn {
+			return m.updateSpawnKey(msg)
+		}
 		if m.mode == hubModeSession && m.session.scrollMode {
 			return m.updateSessionKey(msg)
 		}
@@ -259,6 +269,9 @@ func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.mode == hubModeSession {
 		return m.updateSessionKey(msg)
 	}
+	if m.mode == hubModeSpawn {
+		return m.updateSpawnKey(msg)
+	}
 	if m.mode == hubModeProject {
 		return m.updateProjectKey(msg)
 	}
@@ -268,7 +281,8 @@ func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, fetchHubTree(m.client)
 		}
 	case "s":
-		return m, m.spawnSession()
+		m.openSpawnForm()
+		return m, nil
 	case "up", "k":
 		if m.selected > 0 {
 			m.selected--
@@ -307,7 +321,8 @@ func (m hubModel) updateProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, fetchHubTree(m.client)
 		}
 	case "s":
-		return m, m.spawnSession()
+		m.openSpawnForm()
+		return m, nil
 	case "up", "k":
 		if m.selected > 0 {
 			m.selected--
@@ -322,6 +337,40 @@ func (m hubModel) updateProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.closeSpawnForm()
+		return m, nil
+	case "enter":
+		if m.client == nil || m.spawnSubmitting {
+			return m, nil
+		}
+		req := hubapi.SpawnRequest{
+			Task:       strings.TrimSpace(m.session.input.Value()),
+			WorkingDir: m.spawnDir,
+		}
+		m.err = nil
+		m.spawnSubmitting = true
+		return m, sendHubSpawn(m.client, req)
+	}
+
+	prevHeight := m.session.input.Height()
+	var cmd tea.Cmd
+	m.session.input, cmd = m.session.input.Update(msg)
+	wantHeight := m.session.input.LineCount()
+	if wantHeight < 1 {
+		wantHeight = 1
+	}
+	if wantHeight > m.session.input.MaxHeight {
+		wantHeight = m.session.input.MaxHeight
+	}
+	if wantHeight != prevHeight {
+		m.session.input.SetHeight(wantHeight)
+	}
+	return m, cmd
 }
 
 func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -529,15 +578,49 @@ func (m *hubModel) returnToDashboard() {
 		m.streamCancel()
 		m.streamCancel = nil
 	}
+	if m.mode == hubModeSpawn {
+		m.resetSpawnForm()
+	}
 	m.mode = hubModeDashboard
 	m.clampSelection()
 }
 
-func (m hubModel) spawnSession() tea.Cmd {
-	if m.client == nil {
-		return nil
+func (m *hubModel) openSpawnForm() {
+	returnMode := m.mode
+	dir := m.spawnWorkingDir()
+	project := ""
+	if m.mode == hubModeProject {
+		if p, ok := m.selectedProject(); ok {
+			project = p.Name
+		}
+	} else if len(m.rows) > 0 && m.selected >= 0 && m.selected < len(m.rows) {
+		project = m.rows[m.selected].project
 	}
-	return sendHubSpawn(m.client, hubapi.SpawnRequest{WorkingDir: m.spawnWorkingDir()})
+	m.resetSpawnForm()
+	m.spawnReturnMode = returnMode
+	m.spawnDir = dir
+	m.spawnProject = project
+	m.mode = hubModeSpawn
+	m.err = nil
+	m.session.input.Focus()
+}
+
+func (m *hubModel) closeSpawnForm() {
+	returnMode := m.spawnReturnMode
+	if returnMode != hubModeProject {
+		returnMode = hubModeDashboard
+	}
+	m.resetSpawnForm()
+	m.mode = returnMode
+	m.clampSelection()
+}
+
+func (m *hubModel) resetSpawnForm() {
+	m.spawnReturnMode = hubModeDashboard
+	m.spawnDir = ""
+	m.spawnProject = ""
+	m.spawnSubmitting = false
+	m.session.resetInput()
 }
 
 func (m hubModel) spawnWorkingDir() string {
@@ -929,6 +1012,9 @@ func (m hubModel) View() string {
 	if m.mode == hubModeSession {
 		return m.sessionView()
 	}
+	if m.mode == hubModeSpawn {
+		return m.spawnView()
+	}
 	if m.mode == hubModeProject {
 		return m.projectView()
 	}
@@ -1089,6 +1175,28 @@ func attentionRankLabel(state string) int {
 	default:
 		return 0
 	}
+}
+
+func (m hubModel) spawnView() string {
+	var b strings.Builder
+	b.WriteString("serf / new session\n\n")
+	if m.spawnProject != "" {
+		fmt.Fprintf(&b, "Project:  %s\n", m.spawnProject)
+	}
+	if m.spawnDir != "" {
+		fmt.Fprintf(&b, "Dir:      %s\n", m.spawnDir)
+	}
+	if m.err != nil {
+		fmt.Fprintf(&b, "\nerror: %v\n", m.err)
+	}
+	if m.spawnSubmitting {
+		b.WriteString("\nStarting session...\n")
+	}
+	b.WriteString("\nTask (optional):\n")
+	b.WriteString("> ")
+	b.WriteString(m.session.input.Value())
+	b.WriteString("\n\nenter: spawn  esc: cancel  ctrl+o: dashboard\n")
+	return b.String()
 }
 
 func (m hubModel) sessionView() string {
