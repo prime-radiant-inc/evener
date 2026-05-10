@@ -167,7 +167,7 @@ When resuming, the provider and model from the original session are used by defa
 
 ## Serf TUI (Terminal User Interface)
 
-`serf-tui` is an interactive terminal interface for Serf, providing a real-time view of agent progress with markdown rendering, tool call inspection, and user input handling.
+`serf-tui` is a hub-backed terminal dashboard for Serf sessions. It connects to `serf-hub`, lists live and saved sessions, lets you drill into a transcript, and sends session actions through the hub API.
 
 ### Build
 
@@ -177,51 +177,45 @@ make build-tui
 
 ### Usage
 
-Start with an embedded agent server (auto-starts Serf):
+Start the dashboard:
 
 ```bash
-serf-tui --provider openai --model gpt-5.2 --dir /path/to/work
+serf-tui
 ```
 
-Or connect to an existing Serf server:
+By default `serf-tui` connects to `http://127.0.0.1:9180`. If no local hub is running, it starts `serf-hub` automatically and waits for `/api/health`.
+
+Connect to a specific hub:
 
 ```bash
-# In one terminal, start a Serf server
-serf serve --provider openai --model gpt-5.2 --port 8080
+serf-tui --hub-addr http://127.0.0.1:9180
+```
 
-# In another, connect the TUI
-serf-tui --addr localhost:8080
+Use a specific hub binary or disable auto-start:
+
+```bash
+serf-tui --hub-bin /path/to/serf-hub
+serf-tui --no-auto-start-hub
 ```
 
 ### Flags
 
-All flags from the `serf` CLI are supported, plus `--addr` for remote connections:
-
 | Flag | Description |
 |---|---|
-| `--provider <name>` | LLM provider (see above) |
-| `--model <name>` | LLM model identifier |
-| `--dir <path>` | Working directory for the agent |
-| `--state-dir <path>` | Override runtime state directory |
-| `--system-prompt <path>` | Path to a custom system prompt file |
-| `--system-prompt-append <path>` | Append to system prompt (repeatable) |
-| `--max-rounds <n>` | Max tool rounds per input (0=unlimited, default: 200) |
-| `--reasoning-effort <level>` | Reasoning effort: low\|medium\|high\|none |
-| `--skills-dir <path>` | Extra skill directory (repeatable) |
-| `--mcp <spec>` | MCP server (repeatable, format: name:command args...) |
-| `--mcp-config <path>` | Path to .mcp.json file (repeatable) |
-| `--plugin-dir <path>` | Plugin directory (repeatable) |
-| `--resume <id>` | Resume a previous session by ID |
-| `--resume-last` | Resume the most recent session |
-| `--addr <host:port>` | Connect to existing server (skip embedded startup) |
+| `--hub-addr <url>` | Hub URL or host:port (default: `127.0.0.1:9180`) |
+| `--hub-bin <path>` | Hub binary to auto-start when the local hub is down |
+| `--no-auto-start-hub` | Fail instead of starting a missing local hub |
+| `--log-file <path>` | Write auto-started hub logs to this file |
+| `--debug` | Disable the alternate screen |
 
 ### Features
 
-- **Real-time streaming**: Watch agent progress as it unfolds via SSE
+- **Dashboard**: Browse live and saved sessions from the hub roster and past-session index
+- **Session drill-in**: Open a session transcript from the dashboard
+- **Hub actions**: Send input, view tasks/details, interrupt, compact, clear, and switch models through hub endpoints
+- **Streaming**: Follow session SSE streams through the hub
 - **Markdown rendering**: Format-aware display of assistant messages
 - **Tool inspection**: Collapse/expand tool calls and view arguments
-- **User input**: Send messages and provide input to the agent
-- **Session support**: Full session persistence and resume capabilities
 
 ## Serf Hub (Web Orchestrator)
 
