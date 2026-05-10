@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -161,6 +162,12 @@ func (s *WebServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	workspaceURL := "/workspace/empty"
 	if r.URL.Path == "/new" {
 		workspaceURL = "/workspace/spawn"
+		// Forward an optional ?dir= so /new?dir=/path opens the spawn
+		// pane with the working_dir pre-filled (used by the sidebar's
+		// per-project "+" button).
+		if dir := strings.TrimSpace(r.URL.Query().Get("dir")); dir != "" {
+			workspaceURL += "?dir=" + url.QueryEscape(dir)
+		}
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.appTmpl.ExecuteTemplate(w, "app", map[string]string{"WorkspaceURL": workspaceURL}); err != nil {
@@ -1352,10 +1359,22 @@ type spawnViewData struct {
 }
 
 // handleWorkspaceSpawn renders the prompt-first spawn surface partial.
+// Accepts an optional ?dir=<absolute path> query param. When present and the
+// path is absolute and exists, it pre-fills the working_dir chip — used by
+// the sidebar's per-project "+" button to open spawn already scoped to a
+// project.
 func (s *WebServer) handleWorkspaceSpawn(w http.ResponseWriter, r *http.Request) {
+	defaultWorkingDir := "(pick a directory)"
+	if dir := strings.TrimSpace(r.URL.Query().Get("dir")); dir != "" {
+		if filepath.IsAbs(dir) {
+			if info, err := os.Stat(dir); err == nil && info.IsDir() {
+				defaultWorkingDir = dir
+			}
+		}
+	}
 	data := spawnViewData{
 		DefaultModel:      "(pick a model)",
-		DefaultWorkingDir: "(pick a directory)",
+		DefaultWorkingDir: defaultWorkingDir,
 		DefaultBranch:     "(default)",
 		DefaultAccessMode: "full",
 	}

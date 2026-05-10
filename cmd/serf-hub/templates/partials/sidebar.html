@@ -37,6 +37,15 @@
       <span class="project-name">{{.Name}}</span>
       <span class="row-meta project-count">{{len .Sessions}}</span>
       <span class="project-rollup-dot" data-state="{{.RollupState}}"></span>
+      {{if .WorkingDir}}
+      <a class="project-new-btn"
+         title="new session in {{.Name}}"
+         href="/new?dir={{.WorkingDir}}"
+         hx-get="/workspace/spawn?dir={{.WorkingDir}}"
+         hx-target="#workspace"
+         hx-swap="innerHTML"
+         hx-push-url="/new?dir={{.WorkingDir}}">＋</a>
+      {{end}}
     </header>
     <div class="project-children">
     {{range .Sessions}}

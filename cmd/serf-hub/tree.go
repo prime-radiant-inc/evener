@@ -20,6 +20,7 @@ type Tree struct {
 // TreeProject groups sessions by working-directory basename.
 type TreeProject struct {
 	Name        string
+	WorkingDir  string // absolute path of the project's working directory; used to prefill the spawn form
 	Sessions    []TreeNode
 	RollupState string // highest-attention state across this project's live sessions; "" if none
 }
@@ -196,8 +197,9 @@ func BuildTree(metas []agent.SessionMeta, live []LiveEntry) Tree {
 
 	// Group metas by project name.
 	type projectAccum struct {
-		topLevel []agent.SessionMeta
-		children map[string][]agent.SessionMeta // parentID -> children
+		topLevel   []agent.SessionMeta
+		children   map[string][]agent.SessionMeta // parentID -> children
+		workingDir string                          // first non-empty WorkingDir seen in this project
 	}
 	projects := make(map[string]*projectAccum)
 	projectOrder := []string{} // insertion order for stable output
@@ -223,6 +225,9 @@ func BuildTree(metas []agent.SessionMeta, live []LiveEntry) Tree {
 			projectOrder = append(projectOrder, pname)
 		}
 		acc := projects[pname]
+		if acc.workingDir == "" && m.EnvInfo.WorkingDir != "" {
+			acc.workingDir = m.EnvInfo.WorkingDir
+		}
 		switch {
 		case m.IsSubagent && m.ParentSessionID != "":
 			// Subagents nest under their origin.
@@ -333,6 +338,7 @@ func BuildTree(metas []agent.SessionMeta, live []LiveEntry) Tree {
 
 		treeProjects = append(treeProjects, TreeProject{
 			Name:        pname,
+			WorkingDir:  projects[pname].workingDir,
 			Sessions:    sessions,
 			RollupState: rollup,
 		})
