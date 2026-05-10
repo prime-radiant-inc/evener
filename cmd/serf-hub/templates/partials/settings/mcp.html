@@ -1,6 +1,6 @@
 {{define "settings-content"}}
 <h2 class="settings-h2">MCP servers</h2>
-<p class="settings-help">Read from <code>{{.McpConfigPath}}</code>. Live status is not aggregated at the hub; check individual sessions to see active connections.</p>
+<p class="settings-help">Read from <code>{{.McpConfigPath}}</code>. Status is a single-snapshot probe: <code>available</code> means the configured target is reachable (stdio command on PATH, or HTTP/SSE URL responds). It does <em>not</em> mean the server is currently running — agents spawn MCP servers per session.</p>
 {{if .McpsError}}
 <p class="settings-help settings-error">MCP discovery failed: <code>{{.McpsError}}</code></p>
 {{end}}

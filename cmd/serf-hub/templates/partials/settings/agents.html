@@ -5,7 +5,7 @@
   <div class="settings-row">
     <div class="settings-row-title">{{.Name}}</div>
     <div class="settings-row-detail">
-      <a class="settings-open-link" href="{{.EditPath}}" target="_blank" rel="noopener">open in editor ↗</a>
+      {{if .EditPath}}<a class="settings-open-link" href="{{.EditPath}}" target="_blank" rel="noopener">open in editor ↗</a>{{else}}<span class="settings-row-meta">built-in</span>{{end}}
     </div>
   </div>
   {{end}}

@@ -1750,10 +1750,19 @@ func TestWeb_Settings_McpPane_RendersConfiguredServers(t *testing.T) {
 		MCPConfigPath: mcpPath,
 	})
 	body := settingsRequest(t, web, "mcp")
-	for _, want := range []string{"linear", "npx", "unknown", "open in editor"} {
+	// "available" because npx is normally on PATH; if not, "missing" is fine.
+	// Either way, the status pill must NOT say "unknown" — that was the old
+	// placeholder before #22.
+	for _, want := range []string{"linear", "npx", "open in editor"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q: %q", want, body)
 		}
+	}
+	if !strings.Contains(body, "status-available") && !strings.Contains(body, "status-missing") {
+		t.Errorf("expected status-available or status-missing pill, got: %q", body)
+	}
+	if strings.Contains(body, "status-unknown") {
+		t.Errorf("status-unknown pill should not appear for stdio configs: %q", body)
 	}
 }
 

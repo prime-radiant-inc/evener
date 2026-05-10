@@ -690,7 +690,7 @@ func (s *WebServer) postLiveAction(ctx context.Context, le LiveEntry, action str
 // agentDisplay is one row in Settings → Agents.
 type agentDisplay struct {
 	Name     string
-	EditPath string
+	EditPath template.URL
 }
 
 // pluginCounts summarises components contributed by a plugin.
@@ -789,13 +789,13 @@ func (s *WebServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Built-in agents are compiled into the binary (defaultPersona.txt etc.)
+	// and don't have an on-disk file to open. EditPath stays empty so the
+	// template can omit the link rather than rendering a broken one.
 	agentNames := []string{"default", "explorer", "subagent"}
 	agents := make([]agentDisplay, 0, len(agentNames))
 	for _, name := range agentNames {
-		agents = append(agents, agentDisplay{
-			Name:     name,
-			EditPath: "agent/agents/" + name + ".md",
-		})
+		agents = append(agents, agentDisplay{Name: name})
 	}
 
 	var pastCount int
@@ -931,7 +931,7 @@ func (s *WebServer) discoverPluginsForSettings() ([]pluginDisplay, error) {
 				Mcps:   len(lp.MCPConfigs),
 				Hooks:  countHooks(lp.Hooks),
 			},
-			EditPath: template.URL("file://" + filepath.Join(lp.Dir, ".claude-plugin", "plugin.json")),
+			EditPath: editorURL(filepath.Join(lp.Dir, ".claude-plugin", "plugin.json")),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -986,7 +986,7 @@ func collectSkillsForPlugin(p pluginDisplay) []skillDisplay {
 			Name:        name,
 			Plugin:      p.Name,
 			Description: desc,
-			EditPath:    template.URL("file://" + skillFile),
+			EditPath:    editorURL(skillFile),
 		})
 	}
 	return out
@@ -1045,10 +1045,10 @@ func (s *WebServer) discoverMCPsForSettings(path string) ([]mcpDisplay, error) {
 			Name:     c.Name,
 			Command:  cmd,
 			Args:     c.Args,
-			Status:   "unknown", // hub doesn't run MCP servers; live status is per-session
+			Status:   probeMCPStatus(c),
 			Tools:    0,
 			Agents:   nil,
-			EditPath: template.URL("file://" + path),
+			EditPath: editorURL(path),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

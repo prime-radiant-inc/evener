@@ -588,8 +588,11 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .settings-error { color: var(--state-awaiting); }
 .settings-row-title .status-pill { margin-left: 8px; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-family: ui-monospace, "SFMono-Regular", monospace; font-weight: 400; }
 .status-pill.status-running { background: rgba(158, 206, 106, 0.15); color: var(--state-idle); }
+.status-pill.status-available { background: rgba(158, 206, 106, 0.15); color: var(--state-idle); }
 .status-pill.status-stopped { background: var(--bg-raised); color: var(--text-muted); }
 .status-pill.status-error { background: rgba(247, 118, 142, 0.15); color: var(--state-awaiting); }
+.status-pill.status-missing { background: rgba(247, 118, 142, 0.15); color: var(--state-awaiting); }
+.status-pill.status-unreachable { background: rgba(224, 175, 104, 0.15); color: var(--state-warning); }
 .status-pill.status-unknown { background: var(--bg-raised); color: var(--text-muted); }
 
 /* Sidebar settings link — pushed to the right */
