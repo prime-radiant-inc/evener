@@ -50,6 +50,11 @@ type hubClearMsg struct {
 	err  error
 }
 
+type hubForkMsg struct {
+	resp hubapi.RefResponse
+	err  error
+}
+
 func fetchHubTree(client *hubapi.Client) tea.Cmd {
 	return func() tea.Msg {
 		tree, err := client.Tree(context.Background())
@@ -97,6 +102,13 @@ func sendHubClear(client *hubapi.Client, ref hubapi.Ref) tea.Cmd {
 	return func() tea.Msg {
 		resp, err := client.Clear(context.Background(), ref)
 		return hubClearMsg{resp: resp, err: err}
+	}
+}
+
+func sendHubFork(client *hubapi.Client, ref hubapi.Ref, req hubapi.ForkRequest) tea.Cmd {
+	return func() tea.Msg {
+		resp, err := client.Fork(context.Background(), ref, req)
+		return hubForkMsg{resp: resp, err: err}
 	}
 }
 

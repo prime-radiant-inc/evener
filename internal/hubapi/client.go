@@ -142,6 +142,12 @@ func (c *Client) Clear(ctx context.Context, ref Ref) (RefResponse, error) {
 	return out, err
 }
 
+func (c *Client) Fork(ctx context.Context, ref Ref, req ForkRequest) (RefResponse, error) {
+	var out RefResponse
+	err := c.post(ctx, "/api/sessions/"+ref.PathEscaped()+"/fork", req, &out)
+	return out, err
+}
+
 func (c *Client) SetModel(ctx context.Context, ref Ref, model string) error {
 	return c.post(ctx, "/api/sessions/"+ref.PathEscaped()+"/model", map[string]string{"model": model}, nil)
 }

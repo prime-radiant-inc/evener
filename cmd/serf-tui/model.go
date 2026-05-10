@@ -966,10 +966,11 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 		m.turnOutputTokens = 0
 		var d struct {
 			Text string `json:"text"`
+			Turn int    `json:"turn"`
 		}
 		if ev.Event == "USER_INPUT" && json.Unmarshal([]byte(ev.Data), &d) == nil && strings.TrimSpace(d.Text) != "" {
 			if len(m.messages) == 0 || m.messages[len(m.messages)-1].Kind != msgUser || m.messages[len(m.messages)-1].Text != d.Text {
-				m.messages = append(m.messages, chatMessage{Kind: msgUser, Text: d.Text})
+				m.messages = append(m.messages, chatMessage{Kind: msgUser, Text: d.Text, TurnIndex: d.Turn})
 			}
 		}
 

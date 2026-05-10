@@ -61,25 +61,25 @@ type TreeNode struct {
 
 // SessionDetail is returned by GET /api/sessions/{ref}.
 type SessionDetail struct {
-	Ref              string              `json:"ref"`
-	HostID           string              `json:"host_id"`
-	SessionID        string              `json:"session_id"`
-	Title            string              `json:"title"`
-	State            string              `json:"state"`
-	Live             bool                `json:"live"`
-	Project          string              `json:"project"`
-	WorkingDir       string              `json:"working_dir,omitempty"`
-	Branch           string              `json:"branch,omitempty"`
-	Model            string              `json:"model,omitempty"`
-	Profile          string              `json:"profile,omitempty"`
-	TurnCount        int                 `json:"turn_count"`
-	ContextPressure  float64             `json:"context_pressure"`
-	ParentSessionID  string              `json:"parent_session_id,omitempty"`
-	DivergenceTurn   int                 `json:"divergence_turn,omitempty"`
-	ForkLabel        string              `json:"fork_label,omitempty"`
-	IsSubagent       bool                `json:"is_subagent"`
-	Capabilities     SessionCapabilities `json:"capabilities"`
-	Streams          SessionStreams      `json:"streams"`
+	Ref             string              `json:"ref"`
+	HostID          string              `json:"host_id"`
+	SessionID       string              `json:"session_id"`
+	Title           string              `json:"title"`
+	State           string              `json:"state"`
+	Live            bool                `json:"live"`
+	Project         string              `json:"project"`
+	WorkingDir      string              `json:"working_dir,omitempty"`
+	Branch          string              `json:"branch,omitempty"`
+	Model           string              `json:"model,omitempty"`
+	Profile         string              `json:"profile,omitempty"`
+	TurnCount       int                 `json:"turn_count"`
+	ContextPressure float64             `json:"context_pressure"`
+	ParentSessionID string              `json:"parent_session_id,omitempty"`
+	DivergenceTurn  int                 `json:"divergence_turn,omitempty"`
+	ForkLabel       string              `json:"fork_label,omitempty"`
+	IsSubagent      bool                `json:"is_subagent"`
+	Capabilities    SessionCapabilities `json:"capabilities"`
+	Streams         SessionStreams      `json:"streams"`
 }
 
 type SessionCapabilities struct {
@@ -127,6 +127,12 @@ type SpawnResponse struct {
 }
 
 type RefResponse = SpawnResponse
+
+type ForkRequest struct {
+	Turn          int    `json:"turn"`
+	EditedMessage string `json:"edited_message"`
+	Label         string `json:"label"`
+}
 
 type ErrorResponse struct {
 	Error string `json:"error"`

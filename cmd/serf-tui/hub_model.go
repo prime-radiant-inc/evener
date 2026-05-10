@@ -37,6 +37,13 @@ type hubRow struct {
 	rowID      string
 }
 
+type hubForkDraft struct {
+	Ref          hubapi.Ref
+	Turn         int
+	OriginalText string
+	Label        string
+}
+
 type hubModel struct {
 	client *hubapi.Client
 	hubURL string
@@ -51,6 +58,8 @@ type hubModel struct {
 
 	selectedProjectKey string
 	projectRows        []hubRow
+	browseSelected     int
+	forkDraft          *hubForkDraft
 
 	detail        hubapi.SessionDetail
 	session       model
@@ -62,7 +71,7 @@ type hubModel struct {
 
 func newHubModel(client *hubapi.Client, hubURL string) hubModel {
 	session := newModel("", "", nil)
-	return hubModel{client: client, hubURL: hubURL, session: session}
+	return hubModel{client: client, hubURL: hubURL, session: session, browseSelected: -1}
 }
 
 func (m hubModel) Init() tea.Cmd {
@@ -122,6 +131,8 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.session.viewport.Width = m.width
 		m.session.viewport.Height = m.session.vpHeight()
 		m.session.refreshViewport()
+		m.browseSelected = -1
+		m.forkDraft = nil
 		return m, m.startSessionStream()
 	case hubStreamStartedMsg:
 		if m.streamCancel != nil {
@@ -185,6 +196,18 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		ref, err := hubapi.ParseRef(msg.resp.Ref)
 		if err != nil {
 			m.addSessionSystem("Clear returned invalid ref: " + msg.resp.Ref)
+			return m, nil
+		}
+		return m, fetchHubSession(m.client, ref)
+	case hubForkMsg:
+		if msg.err != nil {
+			m.addSessionSystem("Fork failed: " + msg.err.Error())
+			return m, nil
+		}
+		m.forkDraft = nil
+		ref, err := hubapi.ParseRef(msg.resp.Ref)
+		if err != nil {
+			m.addSessionSystem("Fork returned invalid ref: " + msg.resp.Ref)
 			return m, nil
 		}
 		return m, fetchHubSession(m.client, ref)
@@ -287,33 +310,52 @@ func (m hubModel) updateProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.forkDraft != nil {
+		switch msg.String() {
+		case "esc":
+			m.forkDraft = nil
+			m.session.resetInput()
+			m.enterSessionBrowse(false)
+			m.addSessionSystem("Fork cancelled.")
+			return m, nil
+		case "enter":
+			text := strings.TrimSpace(m.session.input.Value())
+			if text == "" {
+				m.addSessionSystem("Fork message cannot be empty.")
+				return m, nil
+			}
+			if m.client == nil {
+				m.addSessionSystem("Fork is not available without a hub client.")
+				return m, nil
+			}
+			draft := *m.forkDraft
+			m.session.resetInput()
+			m.addSessionSystem(fmt.Sprintf("Forking from turn %d...", draft.Turn))
+			return m, sendHubFork(m.client, draft.Ref, hubapi.ForkRequest{
+				Turn:          draft.Turn,
+				EditedMessage: text,
+				Label:         draft.Label,
+			})
+		}
+	}
+
 	if m.session.scrollMode {
 		switch msg.String() {
 		case "esc", "i", "q":
 			m.exitSessionBrowse()
-		case "up":
-			m.session.focusTool(-1)
-			m.session.refreshViewport()
-			if m.session.focusedToolIdx >= 0 {
-				m.session.scrollToMessage(m.session.focusedToolIdx)
-			} else {
-				m.session.viewport, _ = m.session.viewport.Update(msg)
-			}
-		case "down":
-			m.session.focusTool(1)
-			m.session.refreshViewport()
-			if m.session.focusedToolIdx >= 0 {
-				m.session.scrollToMessage(m.session.focusedToolIdx)
-			} else {
-				m.session.viewport, _ = m.session.viewport.Update(msg)
-			}
+		case "up", "k":
+			m.moveBrowseSelection(-1)
+		case "down", "j":
+			m.moveBrowseSelection(1)
+		case "f":
+			m.startForkDraft()
 		case "tab", "enter":
-			if m.session.focusedToolIdx >= 0 && m.session.focusedToolIdx < len(m.session.messages) {
-				msg := &m.session.messages[m.session.focusedToolIdx]
+			if m.browseSelected >= 0 && m.browseSelected < len(m.session.messages) {
+				msg := &m.session.messages[m.browseSelected]
 				if msg.Kind == msgTool && msg.Tool != nil && msg.Tool.Done {
 					msg.Tool.Expanded = !msg.Tool.Expanded
 					m.session.refreshViewport()
-					m.session.scrollToMessage(m.session.focusedToolIdx)
+					m.session.scrollToMessage(m.browseSelected)
 				}
 			}
 		default:
@@ -452,6 +494,9 @@ func (m *hubModel) enterSessionBrowse(pageUp bool) {
 	m.session.scrollMode = true
 	m.session.focusedToolIdx = -1
 	m.session.input.Blur()
+	if m.browseSelected < 0 || m.browseSelected >= len(m.session.messages) {
+		m.browseSelected = m.lastBrowseMessageIndex()
+	}
 	if pageUp {
 		m.session.viewport, _ = m.session.viewport.Update(tea.KeyMsg{Type: tea.KeyPgUp})
 	}
@@ -460,6 +505,7 @@ func (m *hubModel) enterSessionBrowse(pageUp bool) {
 func (m *hubModel) exitSessionBrowse() {
 	m.session.scrollMode = false
 	m.session.focusedToolIdx = -1
+	m.browseSelected = -1
 	m.session.input.Focus()
 }
 
@@ -494,6 +540,82 @@ func (m hubModel) projectKeyForSession() (string, bool) {
 		}
 	}
 	return want, true
+}
+
+func (m hubModel) lastBrowseMessageIndex() int {
+	for i := len(m.session.messages) - 1; i >= 0; i-- {
+		if renderMessage(m.session.messages[i], max(m.width, 80), false) != "" {
+			return i
+		}
+	}
+	return -1
+}
+
+func (m *hubModel) moveBrowseSelection(delta int) {
+	if len(m.session.messages) == 0 {
+		m.browseSelected = -1
+		return
+	}
+	idx := m.browseSelected
+	if idx < 0 || idx >= len(m.session.messages) {
+		idx = m.lastBrowseMessageIndex()
+	}
+	for {
+		idx += delta
+		if idx < 0 || idx >= len(m.session.messages) {
+			break
+		}
+		if renderMessage(m.session.messages[idx], max(m.width, 80), false) != "" {
+			m.browseSelected = idx
+			m.session.scrollToMessage(idx)
+			return
+		}
+	}
+	m.session.viewport, _ = m.session.viewport.Update(tea.KeyMsg{Type: tea.KeyUp})
+	if delta > 0 {
+		m.session.viewport, _ = m.session.viewport.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+}
+
+func (m hubModel) selectedBrowseMessage() (int, chatMessage, bool) {
+	if m.browseSelected < 0 || m.browseSelected >= len(m.session.messages) {
+		return -1, chatMessage{}, false
+	}
+	return m.browseSelected, m.session.messages[m.browseSelected], true
+}
+
+func (m *hubModel) startForkDraft() {
+	_, msg, ok := m.selectedBrowseMessage()
+	if !ok {
+		m.addSessionSystem("Select a user turn to fork.")
+		return
+	}
+	if msg.Kind != msgUser {
+		m.addSessionSystem("Select a user turn to fork.")
+		return
+	}
+	if msg.TurnIndex <= 0 {
+		m.addSessionSystem("fork requires persisted transcript turn identity.")
+		return
+	}
+	if !m.detail.Capabilities.Fork {
+		m.addSessionSystem("Fork is not available for this session.")
+		return
+	}
+	ref, ok := m.currentRef()
+	if !ok {
+		m.addSessionSystem("Session ref is invalid.")
+		return
+	}
+	m.forkDraft = &hubForkDraft{
+		Ref:          ref,
+		Turn:         msg.TurnIndex,
+		OriginalText: msg.Text,
+		Label:        "original before fork",
+	}
+	m.exitSessionBrowse()
+	m.session.setInputValue(msg.Text)
+	m.addSessionSystem(fmt.Sprintf("Fork draft for turn %d. Edit the input, press enter to fork, or esc to cancel.", msg.TurnIndex))
 }
 
 func (m *hubModel) addSessionSystem(text string) {

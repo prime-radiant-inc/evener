@@ -247,6 +247,65 @@ func TestWeb_PastReplay_TranslatesTurnsToSSEEvents(t *testing.T) {
 	}
 }
 
+func TestHubReplayUserInputIncludesTurnIndex(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+		ID: "01REPLAYTURN", UpdatedAt: time.Now(), OriginalTask: "demo",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	tpath := filepath.Join(proj, "sessions", "01REPLAYTURN.transcript.jsonl")
+	tw, err := agent.NewTranscriptWriter(tpath, agent.TranscriptHeader{
+		SessionID: "01REPLAYTURN",
+		ProfileID: "openai",
+		Model:     "gpt-5",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Append(agent.NewTurn(agent.TurnUserInput, llm.User("first"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Append(agent.NewTurn(agent.TurnAssistant, llm.Assistant("reply"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Append(agent.NewTurn(agent.TurnUserInput, llm.User("second"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    idx,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/past/01REPLAYTURN/replay", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{`"text":"first","turn":1`, `"text":"second","turn":3`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("replay body missing %q\nbody:\n%s", want, body)
+		}
+	}
+}
+
 type fakeSpawner struct{}
 
 func (fakeSpawner) Spawn(_ context.Context, _ SpawnRequest) (rendezvous.Entry, error) {

@@ -189,9 +189,10 @@ func wrapText(text string, firstBudget, contBudget int) []string {
 }
 
 type chatMessage struct {
-	Kind messageKind
-	Text string
-	Tool *toolCallInfo
+	Kind      messageKind
+	Text      string
+	TurnIndex int
+	Tool      *toolCallInfo
 }
 
 // historyToMessages converts session history turns into TUI chat messages

@@ -435,6 +435,89 @@ func TestHubModelActionsAndClearUseHubEndpoints(t *testing.T) {
 	}
 }
 
+func TestHubModelBrowseForkDraftPostsForkAndNavigatesToChild(t *testing.T) {
+	var gotPath string
+	var gotReq hubapi.ForkRequest
+	client, cleanup := newTestHubClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		switch r.URL.Path {
+		case "/api/sessions/local:01SEND/fork":
+			if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
+				t.Fatal(err)
+			}
+			writeJSON(t, w, hubapi.RefResponse{Ref: "local:02CHILD", HostID: "local", SessionID: "02CHILD"})
+		case "/api/sessions/local:02CHILD":
+			writeJSON(t, w, hubapi.SessionDetail{Ref: "local:02CHILD", SessionID: "02CHILD", Title: "child"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	m.detail.Capabilities.Fork = true
+	m.session.messages = []chatMessage{
+		{Kind: msgUser, Text: "original request", TurnIndex: 3},
+		{Kind: msgAssistant, Text: "answer"},
+	}
+	m.session.scrollMode = true
+	m.browseSelected = 0
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	if cmd != nil {
+		t.Fatal("starting a fork draft should be synchronous")
+	}
+	draft := updated.(hubModel)
+	if draft.forkDraft == nil || draft.forkDraft.Turn != 3 {
+		t.Fatalf("fork draft=%+v", draft.forkDraft)
+	}
+	if draft.session.scrollMode {
+		t.Fatal("fork draft should return to compose focus")
+	}
+	if draft.session.input.Value() != "original request" {
+		t.Fatalf("draft input=%q", draft.session.input.Value())
+	}
+
+	draft.session.setInputValue("edited request")
+	updated, cmd = draft.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("confirming fork draft should post to hub")
+	}
+	updated, cmd = updated.(hubModel).Update(cmd())
+	if cmd == nil {
+		t.Fatal("successful fork should fetch child session")
+	}
+	updated, _ = updated.(hubModel).Update(cmd())
+	got := updated.(hubModel)
+	if got.detail.SessionID != "02CHILD" {
+		t.Fatalf("detail=%+v", got.detail)
+	}
+	if gotPath != "/api/sessions/local:02CHILD" {
+		t.Fatalf("last path=%q", gotPath)
+	}
+	if gotReq.Turn != 3 || gotReq.EditedMessage != "edited request" || gotReq.Label != "original before fork" {
+		t.Fatalf("fork request=%+v", gotReq)
+	}
+}
+
+func TestHubModelBrowseForkRequiresUserTurnWithTurnIndex(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.Capabilities.Fork = true
+	m.session.messages = []chatMessage{{Kind: msgUser, Text: "not persisted"}}
+	m.session.scrollMode = true
+	m.browseSelected = 0
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	got := updated.(hubModel)
+	if got.forkDraft != nil {
+		t.Fatalf("fork draft=%+v, want nil", got.forkDraft)
+	}
+	view := got.View()
+	if !strings.Contains(view, "fork requires persisted transcript") {
+		t.Fatalf("missing fork reason:\n%s", view)
+	}
+}
+
 func newSessionHubModel(client *hubapi.Client) hubModel {
 	m := newHubModel(client, "http://hub.test")
 	m.mode = hubModeSession

@@ -1144,6 +1144,7 @@ func (s *WebServer) serveReplay(w http.ResponseWriter, r *http.Request, entry Pa
 	toolNames := map[string]string{}
 
 	first := true
+	entryIndex := 0
 	for scanner.Scan() {
 		raw := scanner.Bytes()
 		var head struct {
@@ -1175,7 +1176,8 @@ func (s *WebServer) serveReplay(w http.ResponseWriter, r *http.Request, entry Pa
 		if err := json.Unmarshal(raw, &entryRec); err != nil {
 			continue
 		}
-		emitTurnEvents(emit, entryRec.Turn, toolNames)
+		entryIndex++
+		emitTurnEvents(emit, entryIndex, entryRec.Turn, toolNames)
 	}
 	// Tell EventSource clients we're done. The browser would otherwise
 	// auto-reconnect on close and the replay would re-run from the top.
@@ -1232,11 +1234,11 @@ type replayToolResult struct {
 // emitTurnEvents translates a single transcript Turn into the SSE events
 // the renderer consumes. toolNames carries call_id -> tool_name across calls
 // so we can populate TOOL_CALL_END from a TOOL_RESULTS turn.
-func emitTurnEvents(emit func(string, any), turn replayTurn, toolNames map[string]string) {
+func emitTurnEvents(emit func(string, any), turnIndex int, turn replayTurn, toolNames map[string]string) {
 	switch turn.Kind {
 	case "USER_INPUT":
 		text := joinText(turn.Message.Content)
-		payload := map[string]any{"text": text}
+		payload := map[string]any{"text": text, "turn": turnIndex}
 		var images []map[string]any
 		for _, p := range turn.Message.Content {
 			if p.Kind != "image" || p.Image == nil {
