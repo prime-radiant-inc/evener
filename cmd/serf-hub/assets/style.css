@@ -366,7 +366,6 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .input-btn-primary kbd { background: rgba(0,0,0,0.2); border: 1px solid rgba(0,0,0,0.3); color: inherit; font-family: ui-monospace, "SFMono-Regular", monospace; padding: 0 4px; border-radius: 3px; }
 
 .input-chip { font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 11px; }
-.mode-chip { display: inline-flex; align-items: center; padding: 3px 9px; background: rgba(224,175,104,0.12); color: var(--state-warning); border-radius: 10px; font-size: 11px; }
 .chip-caret { color: var(--text-muted); margin-left: 2px; }
 
 .input-status { display: flex; align-items: center; gap: 14px; padding: 10px 0 0; margin-top: 6px; border-top: 1px solid var(--rule); font-size: 11px; color: var(--text-muted); flex-wrap: wrap; }

@@ -442,7 +442,6 @@ func TestWeb_WorkspacePartial_RendersBottomStripAffordances(t *testing.T) {
 	wants := []string{
 		"data-attach-trigger",
 		"data-drop-zone",
-		"mode-chip",
 		"controls-spacer",
 		"input-status",
 		"data-file-picker",
@@ -1439,6 +1438,84 @@ func TestWeb_SessionAction_NotLive_404(t *testing.T) {
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("%s: status=%d, want 404 (body=%q)", action, rec.Code, rec.Body.String())
 		}
+	}
+}
+
+// TestWeb_Steer_ForwardsBodyToDaemon verifies that POST /s/<id>/steer with a
+// JSON body forwards both path and body to the daemon's /steer endpoint.
+func TestWeb_Steer_ForwardsBodyToDaemon(t *testing.T) {
+	var capturedPath string
+	var capturedBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		buf, _ := io.ReadAll(r.Body)
+		capturedBody = string(buf)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	addr := strings.TrimPrefix(srv.URL, "http://")
+
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 33, Address: addr})
+	r := NewRoster(dir, fakeProber{sessionID: "01STEER", status: "processing"})
+	r.Refresh()
+
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+
+	req := httptest.NewRequest(http.MethodPost, "/s/01STEER/steer", strings.NewReader(`{"text":"stop using mocks"}`))
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status=%d, want 204 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if capturedPath != "/steer" {
+		t.Errorf("daemon path=%q, want /steer", capturedPath)
+	}
+	if !strings.Contains(capturedBody, "stop using mocks") {
+		t.Errorf("daemon body=%q, want to contain 'stop using mocks'", capturedBody)
+	}
+}
+
+// TestWeb_Steer_RejectsEmptyText verifies that empty text returns 400
+// without forwarding to the daemon.
+func TestWeb_Steer_RejectsEmptyText(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 34, Address: "127.0.0.1:1"})
+	r := NewRoster(dir, fakeProber{sessionID: "01STEEREMPTY", status: "processing"})
+	r.Refresh()
+
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+	req := httptest.NewRequest(http.MethodPost, "/s/01STEEREMPTY/steer", strings.NewReader(`{"text":"   "}`))
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400 (body=%q)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestWeb_Steer_NotLive_404 verifies that steering an ended session returns
+// 404 (no auto-resume — steering an ended model isn't meaningful).
+func TestWeb_Steer_NotLive_404(t *testing.T) {
+	dir := t.TempDir()
+	r := NewRoster(dir, fakeProber{})
+	r.Refresh()
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+
+	req := httptest.NewRequest(http.MethodPost, "/s/01STEEROFF/steer", strings.NewReader(`{"text":"hello"}`))
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status=%d, want 404 (body=%q)", rec.Code, rec.Body.String())
 	}
 }
 

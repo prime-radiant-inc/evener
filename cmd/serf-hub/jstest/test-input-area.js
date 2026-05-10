@@ -148,16 +148,34 @@ async function checkFailureKeepsValue() {
   pass(ta.value === "won't go", "expected textarea preserved on failure, got " + JSON.stringify(ta.value));
 }
 
-// 6. The steer button is wired to a no-op console.warn (Step 4 territory).
-function checkSteerNoop() {
+// 6. The steer button posts to /s/<id>/steer when the textarea has text,
+//    or focuses the textarea when it is empty.
+async function checkSteerWired() {
   const steer = form.querySelector("[data-steer-trigger]");
   pass(steer !== null, "steer button missing");
-  let warned = false;
-  const origWarn = console.warn;
-  console.warn = (msg) => { if (typeof msg === "string" && msg.includes("steer")) warned = true; };
+
+  // Empty textarea: click should not POST; should focus.
+  ta.value = "";
+  let posted = false;
+  const origFetch = window.fetch;
+  window.fetch = (url, init) => {
+    if (typeof url === "string" && url.includes("/steer")) posted = true;
+    return origFetch(url, init);
+  };
   steer.click();
-  console.warn = origWarn;
-  pass(warned, "expected console.warn from steer click");
+  await new Promise(r => setTimeout(r, 5));
+  pass(!posted, "expected no /steer POST when textarea is empty");
+
+  // With text: click should POST and clear the textarea.
+  ta.value = "stop using mocks";
+  ta.dispatchEvent(new window.Event("input", { bubbles: true }));
+  fetchResponseOk = true;
+  steer.click();
+  await new Promise(r => setTimeout(r, 10));
+  pass(posted, "expected /steer POST when textarea has text");
+  pass(ta.value === "", "expected textarea cleared after successful steer, got " + JSON.stringify(ta.value));
+
+  window.fetch = origFetch;
 }
 
 // --- Attachment tests ---
@@ -319,7 +337,7 @@ async function testRejectsNonImage() {
 (async () => {
   await checkReset();
   await checkFailureKeepsValue();
-  checkSteerNoop();
+  await checkSteerWired();
 
   await testFilePickerAddsChip();
   await testDropAddsChips();

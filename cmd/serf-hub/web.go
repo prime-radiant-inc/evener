@@ -1703,6 +1703,12 @@ func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 		s.handleSessionAction(w, r, id, "compact")
 	case "shutdown":
 		s.handleSessionAction(w, r, id, "shutdown")
+	case "steer":
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST required", http.StatusMethodNotAllowed)
+			return
+		}
+		s.handleSteer(w, r, id)
 	case "events":
 		if s.sse == nil {
 			http.NotFound(w, r)
@@ -2140,6 +2146,58 @@ func (s *WebServer) resumeRequestFor(id string) ResumeRequest {
 		}
 	}
 	return req
+}
+
+// steerRequest is the JSON body for POST /s/<id>/steer.
+type steerRequest struct {
+	Text string `json:"text"`
+}
+
+// handleSteer forwards a steering message to the live daemon for the given
+// session. Steer requires the session to already have a live daemon — we do
+// not auto-resume on steer, since steering an ended session has no useful
+// meaning (the model isn't running).
+func (s *WebServer) handleSteer(w http.ResponseWriter, r *http.Request, id string) {
+	var body steerRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	body.Text = strings.TrimSpace(body.Text)
+	if body.Text == "" {
+		http.Error(w, "text required", http.StatusBadRequest)
+		return
+	}
+	if s.cfg.Roster == nil {
+		http.Error(w, "roster not configured", http.StatusServiceUnavailable)
+		return
+	}
+	le, ok := s.cfg.Roster.Find(id)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, "http://"+le.Address+"/steer", bytes.NewReader(payload))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req) //nolint:gosec
+	if err != nil {
+		http.Error(w, "daemon unreachable: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	buf, _ := io.ReadAll(resp.Body)
+	w.WriteHeader(resp.StatusCode)
+	w.Write(buf) //nolint:errcheck
 }
 
 // handleSessionAction forwards an imperative action (interrupt/compact/

@@ -739,11 +739,39 @@
       ta.addEventListener("input", grow);
       grow();
 
-      // Steer button: not wired to /steer yet (Step 4 of the bottom-strip plan).
+      // Steer: takes the current textarea content (if any) and posts it to
+      // /s/<id>/steer. Steering injects a system-reminder into the running
+      // model loop without queuing as user input. If the textarea is empty,
+      // focus it instead.
       const steerBtn = form.querySelector("[data-steer-trigger]");
       if (steerBtn) {
-        steerBtn.addEventListener("click", () => {
-          console.warn("steer not wired yet");
+        steerBtn.addEventListener("click", async () => {
+          const text = ta.value.trim();
+          if (!text) {
+            ta.placeholder = "type a steering message, then click steer…";
+            ta.focus();
+            return;
+          }
+          steerBtn.disabled = true;
+          try {
+            const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/steer", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ text }),
+            });
+            if (!resp.ok) {
+              const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
+              this.appendBanner("error", "steer failed: " + detail);
+            } else {
+              ta.value = "";
+              ta.style.height = "";
+              grow();
+            }
+          } catch (err) {
+            this.appendBanner("error", "steer failed: " + err.message);
+          } finally {
+            steerBtn.disabled = false;
+          }
         });
       }
 
