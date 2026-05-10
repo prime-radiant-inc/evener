@@ -1009,6 +1009,16 @@
           e.preventDefault();
           const form = ta.closest("form");
           if (form) form.requestSubmit();
+          return;
+        }
+        // "/" as the first character of an empty textarea opens the command
+        // palette. Any other "/" (mid-text, or in a non-empty textarea) is
+        // literal slash input.
+        if (e.key === "/" && !e.metaKey && !e.ctrlKey && !e.altKey && ta.value === "") {
+          if (window.SerfSearch && typeof window.SerfSearch.openWith === "function") {
+            e.preventDefault();
+            window.SerfSearch.openWith("/");
+          }
         }
       });
     },

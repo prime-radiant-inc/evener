@@ -1720,6 +1720,8 @@ func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 		s.handleSessionAction(w, r, id, "compact")
 	case "shutdown":
 		s.handleSessionAction(w, r, id, "shutdown")
+	case "clear":
+		s.handleSessionAction(w, r, id, "clear")
 	case "steer":
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST required", http.StatusMethodNotAllowed)

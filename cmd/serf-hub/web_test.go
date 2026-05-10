@@ -1792,6 +1792,31 @@ func TestWeb_SessionAction_ShutdownForwards(t *testing.T) {
 	}
 }
 
+func TestWeb_SessionAction_ClearForwards(t *testing.T) {
+	daemon, capturedPath, addr := stubDaemonForAction(t, http.StatusNoContent)
+	defer daemon.Close()
+
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 33, Address: addr})
+	r := NewRoster(dir, fakeProber{sessionID: "01ACTCLR", status: "idle"})
+	r.Refresh()
+
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+
+	req := httptest.NewRequest(http.MethodPost, "/s/01ACTCLR/clear", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status=%d, want 204 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if *capturedPath != "/clear" {
+		t.Errorf("daemon path=%q, want /clear", *capturedPath)
+	}
+}
+
 // TestWeb_SessionAction_NotLive_404 verifies that posting to an action route
 // for a session with no roster entry returns 404 rather than auto-resuming
 // or otherwise side-effecting.
@@ -1801,7 +1826,7 @@ func TestWeb_SessionAction_NotLive_404(t *testing.T) {
 	r.Refresh()
 	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
 
-	for _, action := range []string{"interrupt", "compact", "shutdown"} {
+	for _, action := range []string{"interrupt", "compact", "shutdown", "clear"} {
 		req := httptest.NewRequest(http.MethodPost, "/s/01NOLIVE/"+action, nil)
 		req.Host = "127.0.0.1:9180"
 		req.Header.Set("Origin", "http://127.0.0.1:9180")

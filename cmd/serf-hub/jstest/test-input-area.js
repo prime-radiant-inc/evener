@@ -212,6 +212,33 @@ async function checkSteerWired() {
   window.fetch = origFetch;
 }
 
+// 7. "/" at the start of an empty textarea routes to the command palette
+//    via window.SerfSearch.openWith("/"). Anywhere else "/" is literal.
+async function checkSlashOpensPalette() {
+  let openedWith = null;
+  window.SerfSearch = { openWith: (q) => { openedWith = q; } };
+
+  // Empty textarea + "/" → palette opens.
+  ta.value = "";
+  ta.dispatchEvent(new window.KeyboardEvent("keydown", { key: "/", bubbles: true, cancelable: true }));
+  pass(openedWith === "/", 'expected SerfSearch.openWith("/") for / on empty textarea, got ' + JSON.stringify(openedWith));
+
+  // Non-empty textarea + "/" → palette does NOT open.
+  openedWith = null;
+  ta.value = "already typing";
+  ta.dispatchEvent(new window.KeyboardEvent("keydown", { key: "/", bubbles: true, cancelable: true }));
+  pass(openedWith === null, 'expected no openWith for / mid-text, got ' + JSON.stringify(openedWith));
+
+  // Cmd-/ or Alt-/ should be ignored too (modifier-bearing keystrokes are literal).
+  openedWith = null;
+  ta.value = "";
+  ta.dispatchEvent(new window.KeyboardEvent("keydown", { key: "/", metaKey: true, bubbles: true, cancelable: true }));
+  pass(openedWith === null, "expected no openWith for Cmd-/");
+
+  // Restore for safety; later tests don't depend on this.
+  delete window.SerfSearch;
+}
+
 // --- Attachment tests ---
 
 // 1×1 transparent PNG (base64) — a valid image file body for tests.
@@ -374,6 +401,7 @@ async function testRejectsNonImage() {
   await checkReconnectsLiveAfterSendOnEndedSession();
   await checkNoReconnectOnSendFailure();
   await checkSteerWired();
+  await checkSlashOpensPalette();
 
   await testFilePickerAddsChip();
   await testDropAddsChips();

@@ -554,6 +554,16 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .search-empty { padding: 24px; color: var(--text-muted); text-align: center; font-size: 12px; }
 .search-dialog-footer { padding: 8px 16px; border-top: 1px solid var(--rule); display: flex; gap: 18px; font-size: 11px; color: var(--text-muted); }
 .search-row-insession .search-insession-glyph { flex-shrink: 0; color: var(--text-muted); width: 14px; text-align: center; }
+.search-row-command .search-cmd-glyph { flex-shrink: 0; color: var(--text-muted); width: 14px; text-align: center; font-weight: 600; }
+.search-row-command .search-cmd-id { color: var(--text-muted); font-size: 11px; font-family: var(--font-mono, ui-monospace, monospace); }
+.search-row-command .search-cmd-hint { color: var(--text-muted); font-size: 11px; }
+.search-row-argitem .search-cmd-hint { color: var(--text-muted); font-size: 11px; }
+.search-cmd-pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 6px 2px 8px; background: var(--bg-input, rgba(122, 162, 247, 0.15)); color: var(--text); border-radius: 12px; font-size: 12px; line-height: 1; }
+.search-cmd-pill[hidden] { display: none; }
+.search-cmd-pill-label { white-space: nowrap; }
+.search-cmd-pill-back { background: transparent; border: none; color: var(--text-muted); cursor: pointer; padding: 0 2px; font-size: 14px; line-height: 1; }
+.search-cmd-pill-back:hover { color: var(--text); }
+.search-empty code { font-family: var(--font-mono, ui-monospace, monospace); background: rgba(122, 162, 247, 0.12); padding: 0 4px; border-radius: 3px; color: var(--text); }
 .search-snippet { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .search-results mark { background: var(--state-warning, #e0af68); color: var(--bg, #1a1b26); border-radius: 2px; padding: 0 2px; }
 .search-hit { outline: 2px solid var(--state-warning, #e0af68); outline-offset: 4px; transition: outline-color 0.4s ease-out; animation: search-hit-flash 2s ease-out; }
