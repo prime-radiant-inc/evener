@@ -506,6 +506,87 @@ func (fakeSpawner) Resume(_ context.Context, _ ResumeRequest) (rendezvous.Entry,
 	return rendezvous.Entry{PID: 1, Address: "127.0.0.1:0"}, nil
 }
 
+type delayedRosterSpawner struct {
+	runDir string
+	delay  time.Duration
+	entry  rendezvous.Entry
+	got    SpawnRequest
+}
+
+func (s *delayedRosterSpawner) Spawn(ctx context.Context, req SpawnRequest) (rendezvous.Entry, error) {
+	s.got = req
+	timer := time.NewTimer(s.delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return rendezvous.Entry{}, ctx.Err()
+	case <-timer.C:
+	}
+	entry := s.entry
+	if entry.StartedAt.IsZero() {
+		entry.StartedAt = time.Now().UTC()
+	}
+	if _, err := rendezvous.Write(s.runDir, entry); err != nil {
+		return rendezvous.Entry{}, err
+	}
+	return entry, nil
+}
+
+func (s *delayedRosterSpawner) Resume(_ context.Context, _ ResumeRequest) (rendezvous.Entry, error) {
+	return rendezvous.Entry{}, nil
+}
+
+func TestWeb_ApiSpawn_WaitsForSlowSpawnerAndReturnsSession(t *testing.T) {
+	runDir := t.TempDir()
+	workDir := t.TempDir()
+	spawner := &delayedRosterSpawner{
+		runDir: runDir,
+		delay:  1500 * time.Millisecond,
+		entry: rendezvous.Entry{
+			PID:        54,
+			Address:    "127.0.0.1:4054",
+			WorkingDir: workDir,
+			Model:      "gpt-5",
+		},
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(WebConfig{
+		HubAddr: srv.Listener.Addr().String(),
+		Roster:  NewRoster(runDir, fakeProber{sessionID: "01SLOWSPAWN", status: "idle"}),
+		Past:    NewPastIndex(""),
+		Spawner: spawner,
+	})
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client, err := hubapi.NewClient(srv.URL, srv.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Spawn(context.Background(), hubapi.SpawnRequest{
+		Model:      "openai/gpt-5",
+		WorkingDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+
+	if resp.Ref != "local:01SLOWSPAWN" || resp.SessionID != "01SLOWSPAWN" {
+		t.Fatalf("spawn response=%+v", resp)
+	}
+	if spawner.got.Provider != "openai" || spawner.got.Model != "gpt-5" {
+		t.Fatalf("spawn model provider=%q model=%q", spawner.got.Provider, spawner.got.Model)
+	}
+	wantWorkingDir, err := canonicalizeDir(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spawner.got.WorkingDir != wantWorkingDir {
+		t.Fatalf("working_dir=%q, want %q", spawner.got.WorkingDir, wantWorkingDir)
+	}
+}
+
 func TestWeb_ApiSpawn_RejectsRelativeWorkingDir(t *testing.T) {
 	web := NewWebServer(WebConfig{
 		HubAddr: "127.0.0.1:9180",

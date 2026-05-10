@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/agent"
@@ -329,6 +331,82 @@ func TestHubModelDashboardSpawnUsesSelectedProjectWorkingDir(t *testing.T) {
 	}
 	if got.mode != hubModeSession || got.detail.SessionID != "02NEW" {
 		t.Fatalf("mode=%v detail=%+v", got.mode, got.detail)
+	}
+}
+
+func TestHubDashboardSpawnWaitsForSlowHubSpawn(t *testing.T) {
+	var gotSpawn hubapi.SpawnRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/health":
+			writeJSON(t, w, hubapi.HealthResponse{})
+		case "/api/tree":
+			writeJSON(t, w, hubapi.TreeResponse{Projects: []hubapi.TreeProject{{
+				Key:        "serf",
+				Name:       "serf",
+				WorkingDir: "/tmp/serf",
+				Sessions: []hubapi.TreeNode{
+					{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true},
+				},
+			}}})
+		case "/api/spawn":
+			if r.Method != http.MethodPost {
+				t.Fatalf("spawn method=%s", r.Method)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&gotSpawn); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(1500 * time.Millisecond)
+			writeJSON(t, w, hubapi.SpawnResponse{Ref: "local:02SLOW", HostID: "local", SessionID: "02SLOW"})
+		case "/api/sessions/local:02SLOW":
+			writeJSON(t, w, hubapi.SessionDetail{
+				Ref: "local:02SLOW", SessionID: "02SLOW", Title: "spawned session", State: "idle", Live: true, WorkingDir: "/tmp/serf",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	runtime, err := startHubClient(context.Background(), hubStartConfig{
+		RawAddr:   srv.URL,
+		AutoStart: false,
+	})
+	if err != nil {
+		t.Fatalf("start hub client: %v", err)
+	}
+	model := newHubModel(runtime.Client, runtime.Address.BaseURL)
+	updated, cmd := model.Update(model.Init()())
+	if cmd != nil {
+		t.Fatal("initial tree load returned unexpected command")
+	}
+	model = updated.(hubModel)
+
+	updated, cmd = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	if cmd == nil {
+		t.Fatal("dashboard spawn returned nil command")
+	}
+	model = updated.(hubModel)
+
+	updated, cmd = model.Update(cmd())
+	model = updated.(hubModel)
+	if model.err != nil {
+		t.Fatalf("spawn failed: %v", model.err)
+	}
+	if cmd == nil {
+		t.Fatal("spawn response did not fetch new session detail")
+	}
+
+	updated, cmd = model.Update(cmd())
+	if cmd != nil {
+		t.Fatal("session detail returned unexpected command")
+	}
+	model = updated.(hubModel)
+	if model.mode != hubModeSession || model.detail.SessionID != "02SLOW" {
+		t.Fatalf("mode=%v detail=%+v", model.mode, model.detail)
+	}
+	if gotSpawn.WorkingDir != "/tmp/serf" {
+		t.Fatalf("working_dir=%q, want /tmp/serf", gotSpawn.WorkingDir)
 	}
 }
 

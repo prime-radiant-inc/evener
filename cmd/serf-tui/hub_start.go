@@ -86,7 +86,7 @@ func startHubClient(ctx context.Context, cfg hubStartConfig) (hubRuntime, error)
 		return hubRuntime{}, err
 	}
 	if cfg.HTTPClient == nil {
-		cfg.HTTPClient = &http.Client{Timeout: 1 * time.Second}
+		cfg.HTTPClient = &http.Client{}
 	}
 	if cfg.HealthTimeout == 0 {
 		cfg.HealthTimeout = 5 * time.Second
