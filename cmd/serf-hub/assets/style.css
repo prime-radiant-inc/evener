@@ -310,11 +310,12 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .project-rollup-dot[data-state="idle"]       { background: var(--state-idle); }
 
 /* Per-project "+ new session" button. Sits at the right of the project header
-   next to the rollup dot. Hover reveals it; otherwise dim so it doesn't compete
-   with project state cues. */
-.project-new-btn { color: var(--text-dim); text-decoration: none; padding: 0 4px; font-size: 14px; line-height: 1; opacity: 0; transition: opacity 0.1s, color 0.1s; cursor: pointer; }
-.project-section:hover .project-new-btn { opacity: 1; }
-.project-new-btn:hover { color: var(--text); }
+   next to the rollup dot. Always visible (mobile has no hover); kept dim
+   by default so it doesn't compete with project state cues, and the touch
+   target is ≥24×24 with padding for thumbs. */
+.project-new-btn { color: var(--text-dim); text-decoration: none; padding: 4px 6px; font-size: 14px; line-height: 1; cursor: pointer; transition: color 0.1s, background 0.1s; border-radius: 4px; }
+.project-new-btn:hover { color: var(--text); background: var(--bg-raised); }
+.project-section:hover .project-new-btn { color: var(--text-muted); }
 
 /* Fork title-bar prefix: shown above the title for the dim, preserved-original
    side of a fork. */
