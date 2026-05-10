@@ -43,6 +43,106 @@ func TestHubModelInitialFetchRendersRows(t *testing.T) {
 	}
 }
 
+func TestHubModelDashboardShowsOnlyLiveSessionsGroupedByProject(t *testing.T) {
+	tree := hubapi.TreeResponse{
+		Live: []hubapi.TreeNode{
+			{Ref: "local:01LIVEA", SessionID: "01LIVEA", Title: "live alpha", State: "awaiting", Project: "serf", Live: true},
+			{Ref: "local:01LIVEB", SessionID: "01LIVEB", Title: "live beta", State: "idle", Project: "serf", Live: true},
+			{Ref: "local:01BRAIN", SessionID: "01BRAIN", Title: "brain live", State: "processing", Project: "brainstorm", Live: true},
+		},
+		Projects: []hubapi.TreeProject{
+			{
+				Key:         "serf",
+				Name:        "serf",
+				RollupState: "awaiting",
+				Sessions: []hubapi.TreeNode{
+					{Ref: "local:01LIVEA", SessionID: "01LIVEA", Title: "live alpha", State: "awaiting", Project: "serf", Live: true},
+					{Ref: "local:01LIVEB", SessionID: "01LIVEB", Title: "live beta", State: "idle", Project: "serf", Live: true},
+					{Ref: "local:01ENDED", SessionID: "01ENDED", Title: "ended history", State: "ended", Project: "serf", Live: false},
+				},
+			},
+			{
+				Key:         "brainstorm",
+				Name:        "brainstorm",
+				RollupState: "processing",
+				Sessions: []hubapi.TreeNode{
+					{Ref: "local:01BRAIN", SessionID: "01BRAIN", Title: "brain live", State: "processing", Project: "brainstorm", Live: true},
+				},
+			},
+		},
+	}
+
+	rows := buildDashboardRows(tree)
+	if len(rows) != 5 {
+		t.Fatalf("rows=%d: %+v", len(rows), rows)
+	}
+	if rows[0].kind != hubRowProject || rows[0].project != "serf" {
+		t.Fatalf("first row=%+v, want serf project header", rows[0])
+	}
+	if rows[1].kind != hubRowSession || rows[1].title != "live alpha" {
+		t.Fatalf("second row=%+v, want live alpha session", rows[1])
+	}
+	if rows[3].kind != hubRowProject || rows[3].project != "brainstorm" {
+		t.Fatalf("fourth row=%+v, want brainstorm project header", rows[3])
+	}
+	for _, row := range rows {
+		if row.title == "ended history" {
+			t.Fatalf("dashboard row included ended session: %+v", row)
+		}
+	}
+
+	m := newHubModel(nil, "http://hub.test")
+	m.tree = tree
+	m.rows = rows
+	got := m.dashboardView()
+	for _, want := range []string{"serf", "live alpha", "live beta", "brainstorm", "brain live"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("dashboard missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "ended history") {
+		t.Fatalf("dashboard rendered ended session:\n%s", got)
+	}
+}
+
+func TestHubModelProjectViewShowsLiveThenRecent(t *testing.T) {
+	project := hubapi.TreeProject{
+		Key:         "serf",
+		Name:        "serf",
+		RollupState: "awaiting",
+		Sessions: []hubapi.TreeNode{
+			{Ref: "local:01ENDED", SessionID: "01ENDED", Title: "ended history", State: "ended", Project: "serf", Live: false},
+			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "awaiting", Project: "serf", Live: true},
+		},
+	}
+
+	rows := buildProjectRows(project)
+	if len(rows) != 2 {
+		t.Fatalf("rows=%d: %+v", len(rows), rows)
+	}
+	if rows[0].title != "live task" || !rows[0].live {
+		t.Fatalf("first row=%+v, want live task", rows[0])
+	}
+	if rows[1].title != "ended history" || rows[1].live {
+		t.Fatalf("second row=%+v, want ended history", rows[1])
+	}
+
+	m := newHubModel(nil, "http://hub.test")
+	m.mode = hubModeProject
+	m.tree = hubapi.TreeResponse{Projects: []hubapi.TreeProject{project}}
+	m.selectedProjectKey = "serf"
+	m.projectRows = rows
+	got := m.projectView()
+	for _, want := range []string{"serf / project / serf", "Live now", "Recent in this project", "live task", "ended history"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("project view missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Index(got, "live task") > strings.Index(got, "ended history") {
+		t.Fatalf("project view rendered ended before live:\n%s", got)
+	}
+}
+
 func TestHubModelEnterOpensSessionDetail(t *testing.T) {
 	client, cleanup := newTestHubClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

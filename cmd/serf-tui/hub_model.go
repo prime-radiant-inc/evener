@@ -13,15 +13,28 @@ type hubMode int
 
 const (
 	hubModeDashboard hubMode = iota
+	hubModeProject
 	hubModeSession
 )
 
+type hubRowKind int
+
+const (
+	hubRowProject hubRowKind = iota
+	hubRowSession
+)
+
 type hubRow struct {
-	ref     hubapi.Ref
-	title   string
-	project string
-	state   string
-	live    bool
+	kind       hubRowKind
+	ref        hubapi.Ref
+	title      string
+	project    string
+	projectKey string
+	state      string
+	live       bool
+	model      string
+	age        string
+	rowID      string
 }
 
 type hubModel struct {
@@ -35,6 +48,9 @@ type hubModel struct {
 	tree     hubapi.TreeResponse
 	rows     []hubRow
 	selected int
+
+	selectedProjectKey string
+	projectRows        []hubRow
 
 	detail        hubapi.SessionDetail
 	session       model
@@ -76,13 +92,11 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.err = nil
 		m.tree = msg.tree
-		m.rows = buildHubRows(msg.tree)
-		if m.selected >= len(m.rows) {
-			m.selected = len(m.rows) - 1
+		m.rows = buildDashboardRows(msg.tree)
+		if m.mode == hubModeProject {
+			m.projectRows = m.rowsForSelectedProject()
 		}
-		if m.selected < 0 {
-			m.selected = 0
-		}
+		m.clampSelection()
 		return m, nil
 	case hubSessionMsg:
 		if msg.err != nil {
@@ -206,6 +220,9 @@ func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.mode == hubModeSession {
 		return m.updateSessionKey(msg)
 	}
+	if m.mode == hubModeProject {
+		return m.updateProjectKey(msg)
+	}
 	switch msg.String() {
 	case "r":
 		if m.client != nil {
@@ -221,7 +238,37 @@ func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		if len(m.rows) > 0 && m.client != nil {
-			return m, fetchHubSession(m.client, m.rows[m.selected].ref)
+			row := m.rows[m.selected]
+			if row.kind == hubRowProject {
+				m.openProject(row.projectKey)
+				return m, nil
+			}
+			return m, fetchHubSession(m.client, row.ref)
+		}
+	}
+	return m, nil
+}
+
+func (m hubModel) updateProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "backspace":
+		m.mode = hubModeDashboard
+		m.clampSelection()
+	case "r":
+		if m.client != nil {
+			return m, fetchHubTree(m.client)
+		}
+	case "up", "k":
+		if m.selected > 0 {
+			m.selected--
+		}
+	case "down", "j":
+		if m.selected < len(m.projectRows)-1 {
+			m.selected++
+		}
+	case "enter":
+		if len(m.projectRows) > 0 && m.client != nil {
+			return m, fetchHubSession(m.client, m.projectRows[m.selected].ref)
 		}
 	}
 	return m, nil
@@ -361,51 +408,249 @@ func (m hubModel) startSessionStream() tea.Cmd {
 }
 
 func buildHubRows(tree hubapi.TreeResponse) []hubRow {
+	return buildDashboardRows(tree)
+}
+
+func buildDashboardRows(tree hubapi.TreeResponse) []hubRow {
 	var rows []hubRow
 	seen := map[string]bool{}
-	add := func(n hubapi.TreeNode) {
+	projectIndexes := map[string]int{}
+
+	addProject := func(key, name, state string) {
+		if name == "" {
+			name = "(no project)"
+		}
+		if key == "" {
+			key = hubProjectKey(name)
+		}
+		if _, ok := projectIndexes[key]; ok {
+			return
+		}
+		projectIndexes[key] = len(rows)
+		rows = append(rows, hubRow{
+			kind:       hubRowProject,
+			title:      name,
+			project:    name,
+			projectKey: key,
+			state:      state,
+			live:       true,
+			rowID:      "project:" + key,
+		})
+	}
+	addSession := func(key, project string, n hubapi.TreeNode) {
+		if !n.Live {
+			return
+		}
 		ref, err := hubapi.ParseRef(n.Ref)
 		if err != nil || seen[n.Ref] {
 			return
 		}
 		seen[n.Ref] = true
+		if project == "" {
+			project = n.Project
+		}
+		if project == "" {
+			project = "(no project)"
+		}
+		if key == "" {
+			key = hubProjectKey(project)
+		}
+		title := n.Title
+		if title == "" {
+			title = n.SessionID
+		}
+		rowID := n.RowID
+		if rowID == "" {
+			rowID = "project:" + key + ":" + n.Ref
+		}
 		rows = append(rows, hubRow{
-			ref:     ref,
-			title:   n.Title,
-			project: n.Project,
-			state:   n.State,
-			live:    n.Live,
+			kind:       hubRowSession,
+			ref:        ref,
+			title:      title,
+			project:    project,
+			projectKey: key,
+			state:      n.State,
+			live:       n.Live,
+			model:      n.Model,
+			age:        n.Age,
+			rowID:      rowID,
 		})
 	}
-	for _, n := range tree.Live {
-		add(n)
-	}
+
 	for _, p := range tree.Projects {
+		var live []hubapi.TreeNode
 		for _, n := range p.Sessions {
-			if n.Project == "" {
-				n.Project = p.Name
+			if n.Live {
+				live = append(live, n)
 			}
-			add(n)
+		}
+		if len(live) == 0 {
+			continue
+		}
+		key := p.Key
+		if key == "" {
+			key = hubProjectKey(p.Name)
+		}
+		addProject(key, p.Name, p.RollupState)
+		for _, n := range live {
+			addSession(key, p.Name, n)
 		}
 	}
+
+	for _, n := range tree.Live {
+		if seen[n.Ref] {
+			continue
+		}
+		project := n.Project
+		if project == "" {
+			project = "(no project)"
+		}
+		key := hubProjectKey(project)
+		addProject(key, project, n.State)
+		addSession(key, project, n)
+	}
+
 	return rows
+}
+
+func buildProjectRows(project hubapi.TreeProject) []hubRow {
+	var liveRows []hubRow
+	var recentRows []hubRow
+	key := project.Key
+	if key == "" {
+		key = hubProjectKey(project.Name)
+	}
+	add := func(n hubapi.TreeNode) {
+		ref, err := hubapi.ParseRef(n.Ref)
+		if err != nil {
+			return
+		}
+		title := n.Title
+		if title == "" {
+			title = n.SessionID
+		}
+		state := n.State
+		if state == "" && !n.Live {
+			state = "ended"
+		}
+		rowID := n.RowID
+		if rowID == "" {
+			rowID = "project:" + key + ":" + n.Ref
+		}
+		row := hubRow{
+			kind:       hubRowSession,
+			ref:        ref,
+			title:      title,
+			project:    project.Name,
+			projectKey: key,
+			state:      state,
+			live:       n.Live,
+			model:      n.Model,
+			age:        n.Age,
+			rowID:      rowID,
+		}
+		if n.Live {
+			liveRows = append(liveRows, row)
+		} else {
+			recentRows = append(recentRows, row)
+		}
+	}
+	for _, n := range project.Sessions {
+		add(n)
+		for _, child := range n.Children {
+			add(child)
+		}
+	}
+	rows := make([]hubRow, 0, len(liveRows)+len(recentRows))
+	rows = append(rows, liveRows...)
+	rows = append(rows, recentRows...)
+	return rows
+}
+
+func hubProjectKey(name string) string {
+	if name == "" {
+		return "project"
+	}
+	return strings.NewReplacer("/", "_", ":", "_", " ", "_").Replace(name)
+}
+
+func (m *hubModel) openProject(key string) {
+	if key == "" {
+		return
+	}
+	m.mode = hubModeProject
+	m.selectedProjectKey = key
+	m.projectRows = m.rowsForSelectedProject()
+	m.selected = 0
+	m.clampSelection()
+}
+
+func (m hubModel) selectedProject() (hubapi.TreeProject, bool) {
+	for _, p := range m.tree.Projects {
+		key := p.Key
+		if key == "" {
+			key = hubProjectKey(p.Name)
+		}
+		if key == m.selectedProjectKey {
+			return p, true
+		}
+	}
+	return hubapi.TreeProject{}, false
+}
+
+func (m hubModel) rowsForSelectedProject() []hubRow {
+	project, ok := m.selectedProject()
+	if !ok {
+		return nil
+	}
+	return buildProjectRows(project)
+}
+
+func (m *hubModel) clampSelection() {
+	n := len(m.rows)
+	if m.mode == hubModeProject {
+		n = len(m.projectRows)
+	}
+	if n == 0 {
+		m.selected = 0
+		return
+	}
+	if m.selected >= n {
+		m.selected = n - 1
+	}
+	if m.selected < 0 {
+		m.selected = 0
+	}
 }
 
 func (m hubModel) View() string {
 	if m.mode == hubModeSession {
 		return m.sessionView()
 	}
+	if m.mode == hubModeProject {
+		return m.projectView()
+	}
 	return m.dashboardView()
 }
 
 func (m hubModel) dashboardView() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "serf hub\n%s\n\n", m.hubURL)
+	liveCount := 0
+	for _, row := range m.rows {
+		if row.kind == hubRowSession && row.live {
+			liveCount++
+		}
+	}
+	fmt.Fprintf(&b, "serf live                                      %s · %d live\n\n", m.hubURL, liveCount)
 	if m.err != nil {
 		fmt.Fprintf(&b, "error: %v\n\n", m.err)
 	}
 	if len(m.rows) == 0 {
-		b.WriteString("No sessions found.\n")
+		b.WriteString("No live sessions are running.\n\n")
+		b.WriteString("s start a session\n")
+		b.WriteString("/projects browse project history\n")
+		b.WriteString("/ search sessions\n")
+		b.WriteString("q quit\n")
 		return b.String()
 	}
 	for i, row := range m.rows {
@@ -413,14 +658,135 @@ func (m hubModel) dashboardView() string {
 		if i == m.selected {
 			cursor = ">"
 		}
-		live := " "
-		if row.live {
-			live = "*"
+		if row.kind == hubRowProject {
+			fmt.Fprintf(&b, "%s %s %-28s %s\n", cursor, statusDot(row.state), row.project, projectSummary(row, m.rows))
+			continue
 		}
-		fmt.Fprintf(&b, "%s %s %-10s %-14s %s\n", cursor, live, row.state, row.project, row.title)
+		fmt.Fprintf(&b, "%s   %s %-10s %-32s %-10s %s\n", cursor, statusDot(row.state), stateLabel(row.state), row.title, row.model, row.age)
 	}
-	b.WriteString("\nenter: open  r: refresh  q: quit\n")
+	b.WriteString("\n↑/↓ select  enter open  p project  s spawn  / filter  ctrl+o dashboard  q quit\n")
 	return b.String()
+}
+
+func (m hubModel) projectView() string {
+	var b strings.Builder
+	project, ok := m.selectedProject()
+	name := m.selectedProjectKey
+	if ok {
+		name = project.Name
+	}
+	liveCount := 0
+	recentCount := 0
+	for _, row := range m.projectRows {
+		if row.live {
+			liveCount++
+		} else {
+			recentCount++
+		}
+	}
+	fmt.Fprintf(&b, "serf / project / %s                         %d live · %d recent\n\n", name, liveCount, recentCount)
+	if m.err != nil {
+		fmt.Fprintf(&b, "error: %v\n\n", m.err)
+	}
+	idx := 0
+	if liveCount > 0 {
+		b.WriteString("Live now\n")
+		for _, row := range m.projectRows {
+			if !row.live {
+				continue
+			}
+			writeProjectRow(&b, row, idx == m.selected)
+			idx++
+		}
+		b.WriteString("\n")
+	}
+	if recentCount > 0 {
+		b.WriteString("Recent in this project\n")
+		for _, row := range m.projectRows {
+			if row.live {
+				continue
+			}
+			writeProjectRow(&b, row, idx == m.selected)
+			idx++
+		}
+	} else {
+		b.WriteString("No ended sessions in this project yet.\n")
+	}
+	b.WriteString("\n↑/↓ select  enter open  r resume  s spawn here  / filter  esc dashboard\n")
+	return b.String()
+}
+
+func writeProjectRow(b *strings.Builder, row hubRow, selected bool) {
+	cursor := " "
+	if selected {
+		cursor = ">"
+	}
+	fmt.Fprintf(b, "%s %s %-10s %-34s %-10s %s\n", cursor, statusDot(row.state), stateLabel(row.state), row.title, row.model, row.age)
+}
+
+func statusDot(state string) string {
+	switch stateLabel(state) {
+	case "awaiting":
+		return "●"
+	case "processing":
+		return "●"
+	case "warning":
+		return "●"
+	case "idle":
+		return "●"
+	default:
+		return "○"
+	}
+}
+
+func stateLabel(state string) string {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "awaiting", "awaiting_reply", "needs-input":
+		return "awaiting"
+	case "processing", "running", "working":
+		return "processing"
+	case "warning", "warn":
+		return "warning"
+	case "idle", "ready":
+		return "idle"
+	case "ended", "done", "closed":
+		return "ended"
+	default:
+		if strings.TrimSpace(state) == "" {
+			return "ended"
+		}
+		return state
+	}
+}
+
+func projectSummary(project hubRow, rows []hubRow) string {
+	count := 0
+	attention := stateLabel(project.state)
+	for _, row := range rows {
+		if row.kind != hubRowSession || row.projectKey != project.projectKey {
+			continue
+		}
+		count++
+		if attentionRankLabel(row.state) > attentionRankLabel(attention) {
+			attention = stateLabel(row.state)
+		}
+	}
+	return fmt.Sprintf("%d live · %s", count, attention)
+}
+
+func attentionRankLabel(state string) int {
+	switch stateLabel(state) {
+	case "awaiting":
+		return 4
+	case "processing":
+		return 3
+	case "warning":
+		return 2
+	case "idle":
+		return 1
+	default:
+		return 0
+	}
 }
 
 func (m hubModel) sessionView() string {
