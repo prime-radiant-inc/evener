@@ -1076,6 +1076,46 @@ func TestWeb_ApiModels_ReturnsListWithProviderEnv(t *testing.T) {
 	}
 }
 
+func TestWeb_ApiModels_ReturnsConfiguredModelsWhenLiveUnavailable(t *testing.T) {
+	liveModelsCache.mu.Lock()
+	liveModelsCache.expires = time.Time{}
+	liveModelsCache.models = nil
+	liveModelsCache.mu.Unlock()
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("GEMINI_API_KEY", "")
+	t.Setenv("GLM_API_KEY", "")
+	t.Setenv("GROK_API_KEY", "")
+	t.Setenv("KIMI_API_KEY", "")
+	t.Setenv("MINIMAX_API_KEY", "")
+	t.Setenv("OPENROUTER_API_KEY", "")
+	t.Setenv("OLLAMA_BASE_URL", "")
+	t.Setenv("OLLAMA_HOST", "")
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Models:  []modelDescriptor{{Provider: "openai", Model: "gpt-5.2"}},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/models", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	var models []hubapi.ModelOption
+	if err := json.Unmarshal(rec.Body.Bytes(), &models); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("models: got %d, want 1; body=%s", len(models), rec.Body.String())
+	}
+	if models[0].Provider != "openai" || models[0].Model != "gpt-5.2" {
+		t.Fatalf("model mismatch: %+v", models[0])
+	}
+}
+
 // TestWeb_ApiModels_NoProvidersConfigured returns an empty list when no
 // providers have keys in the environment.
 func TestWeb_ApiModels_NoProvidersConfigured(t *testing.T) {

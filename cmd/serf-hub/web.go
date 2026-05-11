@@ -1491,8 +1491,40 @@ func (s *WebServer) handleApiSpawn(w http.ResponseWriter, r *http.Request) {
 // hub's Spawn() target, which is local-only today.
 func (s *WebServer) handleApiModels(w http.ResponseWriter, r *http.Request) {
 	models := s.fetchLiveModels(r.Context())
+	if len(models) == 0 {
+		models = s.configuredModels()
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(models) //nolint:errcheck
+}
+
+func (s *WebServer) configuredModels() []map[string]any {
+	if len(s.cfg.Models) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(s.cfg.Models))
+	cat := llm.EmbeddedModelCatalog()
+	for _, m := range s.cfg.Models {
+		if m.Provider == "" || m.Model == "" {
+			continue
+		}
+		entry := map[string]any{
+			"provider": m.Provider,
+			"model":    m.Model,
+		}
+		if cat != nil {
+			if mi := cat.GetModelInfo(m.Model); mi != nil {
+				entry["display_name"] = mi.DisplayName
+				entry["context_window"] = mi.ContextWindow
+				entry["supports_tools"] = mi.SupportsTools
+				entry["supports_reasoning"] = mi.SupportsReasoning
+				entry["input_cost_per_million"] = mi.InputCostPerMillion
+				entry["output_cost_per_million"] = mi.OutputCostPerMillion
+			}
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 // modelsCache holds a per-process cache of live ListModels results keyed by
