@@ -64,6 +64,49 @@ func TestResolveReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestResolveModelRef_QualifiedModelSuppliesProvider(t *testing.T) {
+	got, err := ResolveModelRef("openai/gpt-5.2", "", "", "")
+	if err != nil {
+		t.Fatalf("ResolveModelRef: %v", err)
+	}
+	if got.Provider != "openai" || got.Model != "gpt-5.2" {
+		t.Fatalf("got provider=%q model=%q, want openai/gpt-5.2", got.Provider, got.Model)
+	}
+	if got.Qualified() != "openai/gpt-5.2" {
+		t.Fatalf("Qualified()=%q", got.Qualified())
+	}
+}
+
+func TestResolveModelRef_EnvModelSuppliesProvider(t *testing.T) {
+	got, err := ResolveModelRef("", "Anthropic/claude-opus-4-6", "", "")
+	if err != nil {
+		t.Fatalf("ResolveModelRef: %v", err)
+	}
+	if got.Provider != "anthropic" || got.Model != "claude-opus-4-6" {
+		t.Fatalf("got provider=%q model=%q, want anthropic/claude-opus-4-6", got.Provider, got.Model)
+	}
+}
+
+func TestResolveModelRef_RejectsBareStartupModel(t *testing.T) {
+	_, err := ResolveModelRef("gpt-5.2", "", "", "")
+	if err == nil {
+		t.Fatal("expected error for bare startup model")
+	}
+	if !strings.Contains(err.Error(), "provider/model") {
+		t.Fatalf("error=%q, want provider/model guidance", err.Error())
+	}
+}
+
+func TestResolveModelRef_ResumeMetaSuppliesBareModelProvider(t *testing.T) {
+	got, err := ResolveModelRef("", "", "anthropic", "claude-opus-4-6")
+	if err != nil {
+		t.Fatalf("ResolveModelRef: %v", err)
+	}
+	if got.Provider != "anthropic" || got.Model != "claude-opus-4-6" {
+		t.Fatalf("got provider=%q model=%q, want anthropic/claude-opus-4-6", got.Provider, got.Model)
+	}
+}
+
 func TestParseAllowedDecisions_CommaSeparated(t *testing.T) {
 	got := parseAllowedDecisions("approved,changes_requested")
 	if len(got) != 2 || got[0] != "approved" || got[1] != "changes_requested" {

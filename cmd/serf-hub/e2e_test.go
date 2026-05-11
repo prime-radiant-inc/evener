@@ -48,7 +48,7 @@ func TestE2E_HubAndDaemon(t *testing.T) {
 
 	// Launch a serf serve daemon.
 	dCmd := exec.Command(serfBin, "serve",
-		"--provider", provider, "--model", model,
+		"--model", provider+"/"+model,
 		"--addr", "127.0.0.1:0",
 		"--dir", t.TempDir(),
 	)

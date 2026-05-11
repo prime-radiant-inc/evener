@@ -31,7 +31,6 @@ import (
 
 // embeddedConfig holds options for the embedded server.
 type embeddedConfig struct {
-	provider           string
 	model              string
 	workDir            string
 	stateDir           string
@@ -102,11 +101,7 @@ func startEmbedded(ctx context.Context, cfg embeddedConfig) (*embeddedServer, er
 		sd = agent.RuntimeDir(originURL, wd, "")
 	}
 
-	prov, err := cmdutil.ResolveProvider(cfg.provider)
-	if err != nil {
-		return nil, err
-	}
-	mod, err := cmdutil.ResolveModel(cfg.model)
+	modelRef, err := cmdutil.ResolveModelRef(cfg.model, os.Getenv("SERF_MODEL"), "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +116,7 @@ func startEmbedded(ctx context.Context, cfg embeddedConfig) (*embeddedServer, er
 		return nil, fmt.Errorf("LLM client: %w", err)
 	}
 
-	profile, err := cmdutil.SelectProfile(prov, mod, "")
+	profile, err := cmdutil.SelectProfile(modelRef.Provider, modelRef.Model, "")
 	if err != nil {
 		return nil, err
 	}

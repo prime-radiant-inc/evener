@@ -48,9 +48,9 @@ func SelectProfile(provider, model, outputSchemaJSON string) (agent.ProviderProf
 
 	// Normalize once: registered adapter names are lowercase, so the
 	// profile's id must also be lowercase or the runtime won't find a
-	// matching provider for "--provider OLLAMA" / "--provider Kimi" / etc.
-	// Also trim surrounding whitespace so SERF_PROVIDER="  OLLAMA  " from
-	// a sloppy env file works the same as "ollama".
+	// matching provider for mixed-case provider/model values.
+	// Also trim surrounding whitespace so sloppy env/config values work the
+	// same as canonical provider names.
 	provider = strings.ToLower(strings.TrimSpace(provider))
 
 	var raw agent.ProviderProfile
@@ -77,26 +77,51 @@ func SelectProfile(provider, model, outputSchemaJSON string) (agent.ProviderProf
 	return p, nil
 }
 
-// ResolveProvider returns the provider from the flag value or SERF_PROVIDER env var.
-func ResolveProvider(flagValue string) (string, error) {
-	if flagValue != "" {
-		return flagValue, nil
-	}
-	if v := os.Getenv("SERF_PROVIDER"); v != "" {
-		return v, nil
-	}
-	return "", fmt.Errorf("no provider: use --provider or set SERF_PROVIDER")
+// ModelRef is a provider-qualified model identifier.
+type ModelRef struct {
+	Provider string
+	Model    string
 }
 
-// ResolveModel returns the model from the flag value or SERF_MODEL env var.
-func ResolveModel(flagValue string) (string, error) {
-	if flagValue != "" {
-		return flagValue, nil
+func (r ModelRef) Qualified() string {
+	if r.Provider == "" || r.Model == "" {
+		return strings.Trim(r.Provider+"/"+r.Model, "/")
 	}
-	if v := os.Getenv("SERF_MODEL"); v != "" {
-		return v, nil
+	return r.Provider + "/" + r.Model
+}
+
+// ParseModelRef parses "provider/model" into a ModelRef. Model names may
+// contain additional slashes; the provider is the first path segment.
+func ParseModelRef(raw string) (ModelRef, error) {
+	raw = strings.TrimSpace(raw)
+	provider, model, ok := strings.Cut(raw, "/")
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	model = strings.TrimSpace(model)
+	if raw == "" {
+		return ModelRef{}, fmt.Errorf("model is required: use provider/model")
 	}
-	return "", fmt.Errorf("no model: use --model or set SERF_MODEL")
+	if !ok || provider == "" || model == "" {
+		return ModelRef{}, fmt.Errorf("model %q must use provider/model", raw)
+	}
+	return ModelRef{Provider: provider, Model: model}, nil
+}
+
+// ResolveModelRef resolves a provider-qualified model from CLI, env, or resume
+// metadata. New invocations require --model/SERF_MODEL to be provider/model;
+// resumed sessions keep their persisted provider and bare model.
+func ResolveModelRef(modelValue, envModel, resumeProvider, resumeModel string) (ModelRef, error) {
+	if strings.TrimSpace(modelValue) != "" {
+		return ParseModelRef(modelValue)
+	}
+	if strings.TrimSpace(envModel) != "" {
+		return ParseModelRef(envModel)
+	}
+	resumeProvider = strings.ToLower(strings.TrimSpace(resumeProvider))
+	resumeModel = strings.TrimSpace(resumeModel)
+	if resumeProvider != "" && resumeModel != "" {
+		return ModelRef{Provider: resumeProvider, Model: resumeModel}, nil
+	}
+	return ModelRef{}, fmt.Errorf("no model: use --model provider/model or set SERF_MODEL=provider/model")
 }
 
 // StringSliceFlag implements flag.Value for a repeatable string flag.

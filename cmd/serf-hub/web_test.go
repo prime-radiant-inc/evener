@@ -575,8 +575,8 @@ func TestWeb_ApiSpawn_WaitsForSlowSpawnerAndReturnsSession(t *testing.T) {
 	if resp.Ref != "local:01SLOWSPAWN" || resp.SessionID != "01SLOWSPAWN" {
 		t.Fatalf("spawn response=%+v", resp)
 	}
-	if spawner.got.Provider != "openai" || spawner.got.Model != "gpt-5" {
-		t.Fatalf("spawn model provider=%q model=%q", spawner.got.Provider, spawner.got.Model)
+	if spawner.got.Model != "openai/gpt-5" {
+		t.Fatalf("spawn model=%q, want openai/gpt-5", spawner.got.Model)
 	}
 	wantWorkingDir, err := canonicalizeDir(workDir)
 	if err != nil {
@@ -584,6 +584,28 @@ func TestWeb_ApiSpawn_WaitsForSlowSpawnerAndReturnsSession(t *testing.T) {
 	}
 	if spawner.got.WorkingDir != wantWorkingDir {
 		t.Fatalf("working_dir=%q, want %q", spawner.got.WorkingDir, wantWorkingDir)
+	}
+}
+
+func TestWeb_ApiSpawn_RejectsBareModel(t *testing.T) {
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    NewPastIndex(""),
+		Spawner: &fakeSpawner{},
+	})
+	body := strings.NewReader(`{"model":"gpt-5","working_dir":"/tmp"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/spawn", body)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "provider/model") {
+		t.Fatalf("body=%q, want provider/model guidance", rec.Body.String())
 	}
 }
 

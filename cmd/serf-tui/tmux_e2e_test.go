@@ -59,6 +59,9 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	if spawns[0].Task != "spawn from dashboard" {
 		t.Fatalf("dashboard spawn task=%q, want spawn from dashboard", spawns[0].Task)
 	}
+	if spawns[0].Model != "openai/gpt-5" {
+		t.Fatalf("dashboard spawn model=%q, want openai/gpt-5", spawns[0].Model)
+	}
 
 	app.SendKeys("C-o")
 	app.WaitFor("serf live", "live task")
@@ -74,6 +77,9 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	}
 	if spawns[1].Task != "spawn from project" {
 		t.Fatalf("project spawn task=%q, want spawn from project", spawns[1].Task)
+	}
+	if spawns[1].Model != "openai/gpt-5" {
+		t.Fatalf("project spawn model=%q, want openai/gpt-5", spawns[1].Model)
 	}
 
 	app.SendKeys("C-o")
@@ -517,6 +523,8 @@ func (h *tuiE2EHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.treeGets++
 		h.mu.Unlock()
 		writeTUIE2EJSON(w, h.tree())
+	case r.Method == http.MethodGet && r.URL.Path == "/api/models":
+		writeTUIE2EJSON(w, []hubapi.ModelOption{{Provider: "openai", Model: "gpt-5"}})
 	case r.Method == http.MethodPost && r.URL.Path == "/api/spawn":
 		h.handleSpawn(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/sessions/"):
@@ -587,7 +595,7 @@ func (h *tuiE2EHub) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		State:      "idle",
 		Project:    "serf",
 		WorkingDir: req.WorkingDir,
-		Model:      "gpt-5",
+		Model:      req.Model,
 		Live:       true,
 		Capabilities: hubapi.SessionCapabilities{
 			Send:        true,

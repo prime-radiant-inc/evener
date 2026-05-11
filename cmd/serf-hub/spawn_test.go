@@ -10,16 +10,14 @@ import (
 
 func TestBuildSpawnArgs(t *testing.T) {
 	req := SpawnRequest{
-		Provider:        "openai",
-		Model:           "gpt-5.2",
+		Model:           "openai/gpt-5.2",
 		Agent:           "default",
 		WorkingDir:      "/Users/jesse/git/foo",
 		ReasoningEffort: "medium",
 	}
 	args := buildSpawnArgs(req)
 	want := map[string]string{
-		"--provider":         "openai",
-		"--model":            "gpt-5.2",
+		"--model":            "openai/gpt-5.2",
 		"--agent":            "default",
 		"--reasoning-effort": "medium",
 		"--dir":              "/Users/jesse/git/foo",
@@ -30,6 +28,9 @@ func TestBuildSpawnArgs(t *testing.T) {
 		if got[k] != v {
 			t.Errorf("arg %s: got %q, want %q", k, got[k], v)
 		}
+	}
+	if _, ok := got["--provider"]; ok {
+		t.Fatal("spawn args must not pass --provider; provider belongs in --model provider/model")
 	}
 }
 

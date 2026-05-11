@@ -25,17 +25,17 @@ make build-hub
 ## Usage
 
 ```
-serf --provider <provider> --model <model> [flags] <task>
+serf --model <provider/model> [flags] <task>
 ```
 
 The task can be passed as arguments or piped via stdin:
 
 ```bash
 # Task as arguments
-serf --provider openai --model gpt-5.2 "add input validation to the signup handler"
+serf --model openai/gpt-5.2 "add input validation to the signup handler"
 
 # Task piped via stdin
-echo "refactor auth to use JWT" | serf --provider anthropic --model claude-opus-4-6
+echo "refactor auth to use JWT" | serf --model anthropic/claude-opus-4-6
 ```
 
 ## llmcall (One-Shot LLM Client)
@@ -71,11 +71,11 @@ echo 'Return JSON: {"ok": true}' | ./llmcall --provider openai --model gpt-5-min
 - `LLM_PROVIDER` or `SERF_PROVIDER`
 - `LLM_MODEL` or `SERF_MODEL`
 
-### Provider and model (required)
+### Provider and model
 
-Both `--provider` and `--model` are required. Providers: `openai`, `anthropic`, `google`, `minimax`, `openrouter`, `openrouter-anthropic`, `kimi`, `glm`, `ollama`.
+Serf takes a provider-qualified model in one value: `--model <provider/model>`. Providers: `openai`, `anthropic`, `google`, `minimax`, `openrouter`, `openrouter-anthropic`, `kimi`, `glm`, `ollama`.
 
-Use flags or set `SERF_PROVIDER` and `SERF_MODEL` environment variables.
+Use `--model` or set `SERF_MODEL` to the same `provider/model` format.
 
 For local models via Ollama, see [docs/ollama.md](docs/ollama.md).
 
@@ -83,8 +83,7 @@ For local models via Ollama, see [docs/ollama.md](docs/ollama.md).
 
 | Variable | Description |
 |---|---|
-| `SERF_PROVIDER` | Default provider (used when `--provider` is omitted) |
-| `SERF_MODEL` | Default model (used when `--model` is omitted) |
+| `SERF_MODEL` | Default model as `provider/model` (used when `--model` is omitted) |
 | `OPENAI_API_KEY` | OpenAI API key |
 | `ANTHROPIC_API_KEY` | Anthropic API key |
 | `GEMINI_API_KEY` | Google Gemini API key |
@@ -96,8 +95,7 @@ For local models via Ollama, see [docs/ollama.md](docs/ollama.md).
 
 | Flag | Description |
 |---|---|
-| `--provider <name>` | LLM provider (see above) (required) |
-| `--model <name>` | LLM model identifier (required) |
+| `--model <provider/model>` | LLM model identifier (required unless resuming an existing session) |
 | `--dir <path>` | Working directory (default: current directory) |
 | `--output-schema <json>` | Inline JSON Schema replacing the default `communicate.output` schema |
 | `--verbose` | Emit NDJSON events to stderr (replaces human-readable output) |
@@ -111,7 +109,7 @@ For local models via Ollama, see [docs/ollama.md](docs/ollama.md).
 Pass `--output-schema <json>` to replace the `communicate` tool's `output` field schema with your own. The flag takes an inline JSON string (file paths are not supported).
 
 ```bash
-serf --provider openai --model gpt-5.2 \
+serf --model openai/gpt-5.2 \
   --output-schema '{"type":"object","properties":{"plan":{"type":"string"}},"required":["plan"],"additionalProperties":false}' \
   "Draft a one-paragraph plan for fixing the flaky test."
 ```
@@ -140,7 +138,7 @@ The supplied schema replaces `output` wholesale — the default `message`/`data`
 
 **`--verbose` (NDJSON):** Each event is a JSON object on one line, suitable for piping to `jq` or log aggregation:
 ```bash
-serf --provider openai --model gpt-5.2 --verbose "fix the bug" 2>events.ndjson
+serf --model openai/gpt-5.2 --verbose "fix the bug" 2>events.ndjson
 ```
 
 NDJSON events include: `SESSION_START`, `ASSISTANT_TEXT_END` (with usage, reasoning, finish_reason), `TOOL_CALL_START` (with arguments), `TOOL_CALL_END`, `WARNING`, `ERROR`, and others.
@@ -160,10 +158,10 @@ serf --resume-last
 serf --resume 01JTEST000000000000000001
 
 # New task, but carry forward a previous session's conversation context
-serf --provider openai --model gpt-5.2 --resume-with 01JTEST000000000000000001 "now add tests"
+serf --model openai/gpt-5.2 --resume-with 01JTEST000000000000000001 "now add tests"
 ```
 
-When resuming, the provider and model from the original session are used by default. You can override them with `--provider` and `--model`.
+When resuming, the provider and model from the original session are used by default. You can override them with `--model <provider/model>`.
 
 ## Serf TUI (Terminal User Interface)
 

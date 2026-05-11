@@ -17,7 +17,7 @@ The serf binary has built-in Go profiling support:
 
 ```bash
 # CPU profile (go tool pprof)
-serf --provider openai --model gpt-5.4-mini \
+serf --model openai/gpt-5.4-mini \
      --cpu-profile profile.prof \
      "your task here"
 
@@ -25,7 +25,7 @@ serf --provider openai --model gpt-5.4-mini \
 go tool pprof -http=:8080 $(which serf) profile.prof
 
 # Execution trace (go tool trace)
-serf --provider openai --model gpt-5.4-mini \
+serf --model openai/gpt-5.4-mini \
      --trace trace.out \
      "your task here"
 

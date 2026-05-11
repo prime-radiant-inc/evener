@@ -28,7 +28,6 @@ import (
 type runConfig struct {
 	task               string
 	model              string
-	provider           string
 	workDir            string
 	stateDir           string   // --state-dir override
 	systemPrompt       string   // --system-prompt file path
@@ -116,28 +115,15 @@ func run(ctx context.Context, cfg runConfig) error {
 		return err
 	}
 
-	// Resolve provider: explicit flag > meta > SERF_PROVIDER env var.
-	provider := cfg.provider
-	if provider == "" && meta != nil {
-		provider = meta.ProfileID
+	resumeProvider := ""
+	resumeModel := ""
+	if meta != nil {
+		resumeProvider = meta.ProfileID
+		resumeModel = meta.Model
 	}
-	if provider == "" {
-		provider = os.Getenv("SERF_PROVIDER")
-	}
-	if provider == "" {
-		return fmt.Errorf("no provider specified: use --provider or set SERF_PROVIDER")
-	}
-
-	// Resolve model: explicit flag > meta > SERF_MODEL env var.
-	model := cfg.model
-	if model == "" && meta != nil {
-		model = meta.Model
-	}
-	if model == "" {
-		model = os.Getenv("SERF_MODEL")
-	}
-	if model == "" {
-		return fmt.Errorf("no model specified: use --model or set SERF_MODEL")
+	modelRef, err := cmdutil.ResolveModelRef(cfg.model, os.Getenv("SERF_MODEL"), resumeProvider, resumeModel)
+	if err != nil {
+		return err
 	}
 
 	client, err := llm.NewFromEnv(llm.WithStateDir(stateDir))
@@ -162,7 +148,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		defer apiLog.Close()
 	}
 
-	profile, err := cmdutil.SelectProfile(provider, model, cfg.outputSchema)
+	profile, err := cmdutil.SelectProfile(modelRef.Provider, modelRef.Model, cfg.outputSchema)
 	if err != nil {
 		return err
 	}

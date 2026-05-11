@@ -31,8 +31,7 @@ func main() {
 		return
 	}
 
-	model := flag.String("model", "", "LLM model identifier")
-	provider := flag.String("provider", "", "LLM provider")
+	model := flag.String("model", "", "LLM model identifier (provider/model)")
 	workDir := flag.String("dir", "", "working directory (default: current directory)")
 	systemPrompt := flag.String("system-prompt", "", "path to a custom system prompt file")
 	stateDir := flag.String("state-dir", "", "override runtime state directory (default: XDG-computed)")
@@ -66,12 +65,11 @@ func main() {
 	flag.Var(&systemPromptAppend, "system-prompt-append", "path to append to system prompt (repeatable)")
 
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: serf --provider <provider> --model <model> [flags] <task>\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: serf --model <provider/model> [flags] <task>\n\n")
 		fmt.Fprintf(os.Stderr, "A non-interactive coding agent.\n\n")
 		fmt.Fprintf(os.Stderr, "The task can be passed as arguments or piped via stdin.\n\n")
 		fmt.Fprintf(os.Stderr, "Required:\n")
-		fmt.Fprintf(os.Stderr, "  --provider <name>    LLM provider: openai, anthropic, google, minimax, openrouter, openrouter-anthropic, kimi, glm, ollama\n")
-		fmt.Fprintf(os.Stderr, "  --model <name>       LLM model (e.g. gpt-5.2, claude-opus-4-6, gemini-3-flash-preview)\n\n")
+		fmt.Fprintf(os.Stderr, "  --model <provider/model> LLM model (e.g. openai/gpt-5.2, anthropic/claude-opus-4-6, google/gemini-3-flash-preview)\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		fmt.Fprintf(os.Stderr, "  --dir <path>         Working directory (default: current directory)\n")
 		fmt.Fprintf(os.Stderr, "  --system-prompt <path> Path to a custom system prompt file (replaces default)\n")
@@ -98,8 +96,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  --resume-last        Resume the most recent session\n")
 		fmt.Fprintf(os.Stderr, "  --list-sessions      List saved sessions\n\n")
 		fmt.Fprintf(os.Stderr, "Environment variables:\n")
-		fmt.Fprintf(os.Stderr, "  SERF_MODEL           Default model (used when --model is omitted)\n")
-		fmt.Fprintf(os.Stderr, "  SERF_PROVIDER        Default provider (used when --provider is omitted)\n")
+		fmt.Fprintf(os.Stderr, "  SERF_MODEL           Default model as provider/model (used when --model is omitted)\n")
 		fmt.Fprintf(os.Stderr, "  SERF_REASONING_EFFORT Default reasoning effort (low|medium|high|xhigh|none)\n")
 		fmt.Fprintf(os.Stderr, "  OPENAI_API_KEY       OpenAI API key\n")
 		fmt.Fprintf(os.Stderr, "  ANTHROPIC_API_KEY    Anthropic API key\n")
@@ -140,7 +137,6 @@ func main() {
 	err := run(ctx, runConfig{
 		task:               task,
 		model:              *model,
-		provider:           *provider,
 		workDir:            *workDir,
 		stateDir:           *stateDir,
 		systemPrompt:       *systemPrompt,

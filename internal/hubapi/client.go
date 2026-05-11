@@ -125,6 +125,12 @@ func (c *Client) Spawn(ctx context.Context, req SpawnRequest) (SpawnResponse, er
 	return out, err
 }
 
+func (c *Client) Models(ctx context.Context) ([]ModelOption, error) {
+	var out []ModelOption
+	err := c.get(ctx, "/api/models", &out)
+	return out, err
+}
+
 func (c *Client) Send(ctx context.Context, ref Ref, text string) error {
 	return c.post(ctx, "/api/sessions/"+ref.PathEscaped()+"/send", map[string]string{"text": text}, nil)
 }

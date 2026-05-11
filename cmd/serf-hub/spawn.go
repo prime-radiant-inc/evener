@@ -13,7 +13,6 @@ import (
 
 // SpawnRequest carries the per-spawn knobs passed directly from the caller.
 type SpawnRequest struct {
-	Provider        string
 	Model           string
 	Agent           string
 	WorkingDir      string
@@ -53,15 +52,11 @@ func (h *HubSpawner) Resume(ctx context.Context, req ResumeRequest) (rendezvous.
 // buildSpawnArgs assembles the arg slice for `serf serve` from a SpawnRequest.
 //
 // Always passes --addr 127.0.0.1:0 so the daemon binds an ephemeral port,
-// which it reports via its rendezvous file. Empty fields are omitted so
-// `serf serve` can fall back to its environment.
+// which it reports via its rendezvous file.
 func buildSpawnArgs(req SpawnRequest) []string {
 	args := []string{"--addr", "127.0.0.1:0"}
 	if req.WorkingDir != "" {
 		args = append(args, "--dir", req.WorkingDir)
-	}
-	if req.Provider != "" {
-		args = append(args, "--provider", req.Provider)
 	}
 	if req.Model != "" {
 		args = append(args, "--model", req.Model)

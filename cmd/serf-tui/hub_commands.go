@@ -60,6 +60,11 @@ type hubSpawnMsg struct {
 	err  error
 }
 
+type hubModelsMsg struct {
+	models []modelPickerItem
+	err    error
+}
+
 func fetchHubTree(client *hubapi.Client) tea.Cmd {
 	return func() tea.Msg {
 		tree, err := client.Tree(context.Background())
@@ -78,6 +83,28 @@ func sendHubSpawn(client *hubapi.Client, req hubapi.SpawnRequest) tea.Cmd {
 	return func() tea.Msg {
 		resp, err := client.Spawn(context.Background(), req)
 		return hubSpawnMsg{resp: resp, err: err}
+	}
+}
+
+func fetchHubModels(client *hubapi.Client) tea.Cmd {
+	return func() tea.Msg {
+		options, err := client.Models(context.Background())
+		if err != nil {
+			return hubModelsMsg{err: err}
+		}
+		items := make([]modelPickerItem, 0, len(options))
+		for _, option := range options {
+			if option.Provider == "" || option.Model == "" {
+				continue
+			}
+			id := option.Provider + "/" + option.Model
+			display := id
+			if option.DisplayName != "" && option.DisplayName != option.Model {
+				display = option.DisplayName + "  " + id
+			}
+			items = append(items, modelPickerItem{id: id, display: display})
+		}
+		return hubModelsMsg{models: items}
 	}
 }
 

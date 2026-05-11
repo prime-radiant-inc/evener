@@ -11,24 +11,12 @@ import (
 	"primeradiant.com/serf/rendezvous"
 )
 
-// TestRunServe_MissingProvider verifies runServe returns an error when no
-// --provider flag is set and SERF_PROVIDER is unset.
-func TestRunServe_MissingProvider(t *testing.T) {
-	old := os.Getenv("SERF_PROVIDER")
-	if err := os.Unsetenv("SERF_PROVIDER"); err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if old != "" {
-			os.Setenv("SERF_PROVIDER", old)
-		}
-	}()
-
+func TestRunServe_BareModelRejected(t *testing.T) {
 	err := runServe([]string{"--model", "gpt-5.2"})
 	if err == nil {
-		t.Fatal("expected error for missing provider")
+		t.Fatal("expected error for bare model")
 	}
-	if got := err.Error(); got != "no provider: use --provider or set SERF_PROVIDER" {
+	if got := err.Error(); got != `model "gpt-5.2" must use provider/model` {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -46,11 +34,11 @@ func TestRunServe_MissingModel(t *testing.T) {
 		}
 	}()
 
-	err := runServe([]string{"--provider", "openai"})
+	err := runServe(nil)
 	if err == nil {
 		t.Fatal("expected error for missing model")
 	}
-	if got := err.Error(); got != "no model: use --model or set SERF_MODEL" {
+	if got := err.Error(); got != "no model: use --model provider/model or set SERF_MODEL=provider/model" {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -67,12 +55,11 @@ func TestServe_WritesAndRemovesRendezvousFile(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	args := []string{
-		"--provider", os.Getenv("SERF_TEST_PROVIDER"),
-		"--model", os.Getenv("SERF_TEST_MODEL"),
+		"--model", os.Getenv("SERF_TEST_PROVIDER") + "/" + os.Getenv("SERF_TEST_MODEL"),
 		"--addr", "127.0.0.1:0",
 		"--dir", t.TempDir(),
 	}
-	if args[1] == "" || args[3] == "" {
+	if os.Getenv("SERF_TEST_PROVIDER") == "" || os.Getenv("SERF_TEST_MODEL") == "" {
 		t.Skip("set SERF_TEST_PROVIDER and SERF_TEST_MODEL to run this test")
 	}
 

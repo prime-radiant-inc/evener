@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
-"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm"
 )
 
 // TestRunWithArgs verifies that the run function processes a task from CLI args
@@ -22,12 +22,11 @@ func TestRunWithArgs(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
-		task:     "Reply with exactly the word PONG and nothing else.",
-		provider: "openai",
-		model:    "gpt-5-mini-2025-08-07",
-		workDir:  t.TempDir(),
-		stdout:   &stdout,
-		stderr:   &stderr,
+		task:    "Reply with exactly the word PONG and nothing else.",
+		model:   "openai/gpt-5-mini-2025-08-07",
+		workDir: t.TempDir(),
+		stdout:  &stdout,
+		stderr:  &stderr,
 	})
 	if err != nil {
 		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
@@ -47,12 +46,11 @@ func TestRunEmitsToolEvents(t *testing.T) {
 	tmpDir := t.TempDir()
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
-		task:     "Create a file called test.txt in " + tmpDir + " with content 'hello'. Use the write_file tool.",
-		provider: "openai",
-		model:    "gpt-5-mini-2025-08-07",
-		workDir:  tmpDir,
-		stdout:   &stdout,
-		stderr:   &stderr,
+		task:    "Create a file called test.txt in " + tmpDir + " with content 'hello'. Use the write_file tool.",
+		model:   "openai/gpt-5-mini-2025-08-07",
+		workDir: tmpDir,
+		stdout:  &stdout,
+		stderr:  &stderr,
 	})
 	if err != nil {
 		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
@@ -78,11 +76,10 @@ func TestRunEmitsToolEvents(t *testing.T) {
 func TestRunMissingTask(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
-		task:     "",
-		provider: "openai",
-		model:    "gpt-5-mini-2025-08-07",
-		stdout:   &stdout,
-		stderr:   &stderr,
+		task:   "",
+		model:  "openai/gpt-5-mini-2025-08-07",
+		stdout: &stdout,
+		stderr: &stderr,
 	})
 	if err == nil {
 		t.Fatal("expected error for empty task")
@@ -116,45 +113,29 @@ func TestRunMissingAPIKey(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
-		task:     "do something",
-		provider: "openai",
-		model:    "gpt-5-mini-2025-08-07",
-		stdout:   &stdout,
-		stderr:   &stderr,
+		task:   "do something",
+		model:  "openai/gpt-5-mini-2025-08-07",
+		stdout: &stdout,
+		stderr: &stderr,
 	})
 	if err == nil {
 		t.Fatal("expected error when no API keys configured")
 	}
 }
 
-// TestRunMissingProvider verifies that run returns an error when no --provider
-// is specified and SERF_PROVIDER is unset.
-func TestRunMissingProvider(t *testing.T) {
-	old := os.Getenv("SERF_PROVIDER")
-	if err := os.Unsetenv("SERF_PROVIDER"); err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if old != "" {
-			if err := os.Setenv("SERF_PROVIDER", old); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}()
-
+func TestRunBareModelRejected(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
-		task:     "do something",
-		provider: "",
-		model:    "gpt-5.2",
-		stdout:   &stdout,
-		stderr:   &stderr,
+		task:   "do something",
+		model:  "gpt-5.2",
+		stdout: &stdout,
+		stderr: &stderr,
 	})
 	if err == nil {
-		t.Fatal("expected error when no provider specified")
+		t.Fatal("expected error when model is not provider-qualified")
 	}
-	if !strings.Contains(err.Error(), "provider") {
-		t.Fatalf("expected error to mention 'provider', got: %v", err)
+	if !strings.Contains(err.Error(), "provider/model") {
+		t.Fatalf("expected provider/model guidance, got: %v", err)
 	}
 }
 
@@ -171,8 +152,7 @@ func TestRunInvalidOutputSchema(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
 		task:         "do something",
-		provider:     "openai",
-		model:        "gpt-5.2",
+		model:        "openai/gpt-5.2",
 		outputSchema: "{not json",
 		workDir:      t.TempDir(),
 		stateDir:     t.TempDir(),
@@ -204,11 +184,10 @@ func TestRunMissingModel(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
-		task:     "do something",
-		provider: "openai",
-		model:    "",
-		stdout:   &stdout,
-		stderr:   &stderr,
+		task:   "do something",
+		model:  "",
+		stdout: &stdout,
+		stderr: &stderr,
 	})
 	if err == nil {
 		t.Fatal("expected error when no model specified")
@@ -535,8 +514,7 @@ func TestRunWithContextStrategy(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
 		task:            "Reply with exactly the word PONG and nothing else.",
-		provider:        "openai",
-		model:           "gpt-5-mini-2025-08-07",
+		model:           "openai/gpt-5-mini-2025-08-07",
 		workDir:         t.TempDir(),
 		contextStrategy: "compact",
 		stdout:          &stdout,

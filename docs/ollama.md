@@ -21,7 +21,7 @@ OpenAI-compatible Chat Completions endpoint at `/v1/chat/completions`.
 4. **Run Serf**:
 
    ```bash
-   serf --provider ollama --model llama3.1:8b "summarize the README"
+   OLLAMA_HOST=localhost serf --model ollama/llama3.1:8b "summarize the README"
    ```
 
    No API key, no env vars, nothing else needed if Ollama is at the
@@ -29,8 +29,9 @@ OpenAI-compatible Chat Completions endpoint at `/v1/chat/completions`.
    to point at a non-default endpoint (see below).
 
    Ollama is always registered as an addressable provider, but it never
-   becomes Serf's silent default — you must address it explicitly with
-   `--provider ollama` (or `SERF_PROVIDER=ollama`).
+   becomes Serf's silent default — you must address it explicitly with a
+   provider-qualified model such as `--model ollama/llama3.1:8b` or
+   `SERF_MODEL=ollama/llama3.1:8b`.
 
 ## How it works
 
@@ -50,12 +51,12 @@ path.
 | `OLLAMA_HOST` | Ollama's canonical env var (`host`, `host:port`, or full URL) | unset |
 | `OLLAMA_API_KEY` | API key for authenticated proxies or Ollama Cloud | unset |
 
-**Always registered:** the `ollama` provider is always available by
-explicit name (`--provider ollama` / `SERF_PROVIDER=ollama`). It is
-never auto-elected as Serf's default provider — that role goes to
-whichever conventional API-key provider you have configured (OpenAI,
-Anthropic, etc.). So leaving all OLLAMA_* env vars unset is fine; it
-just means Ollama answers on `http://localhost:11434/v1`.
+**Always registered:** the `ollama` provider is always available through
+provider-qualified model names such as `ollama/llama3.1:8b`. It is never
+auto-elected as Serf's default provider — that role goes to whichever
+conventional API-key provider you have configured (OpenAI, Anthropic,
+etc.). So leaving all OLLAMA_* env vars unset is fine; it just means
+Ollama answers on `http://localhost:11434/v1`.
 
 Resolution order for the base URL:
 
@@ -72,14 +73,14 @@ Resolution order for the base URL:
 ### Local default
 
 ```bash
-serf --provider ollama --model llama3.1:8b "what does main.go do?"
+OLLAMA_HOST=localhost serf --model ollama/llama3.1:8b "what does main.go do?"
 ```
 
 ### Remote Ollama on your LAN
 
 ```bash
 OLLAMA_HOST=192.168.1.5:11434 \
-  serf --provider ollama --model qwen2.5-coder:7b "fix the failing test"
+  serf --model ollama/qwen2.5-coder:7b "fix the failing test"
 ```
 
 ### Ollama behind an authenticated proxy
@@ -87,7 +88,7 @@ OLLAMA_HOST=192.168.1.5:11434 \
 ```bash
 OLLAMA_BASE_URL=https://ollama.example.com/v1 \
 OLLAMA_API_KEY=$MY_PROXY_TOKEN \
-  serf --provider ollama --model llama3.1:70b "task"
+  serf --model ollama/llama3.1:70b "task"
 ```
 
 ### One-shot calls with `llmcall`
@@ -128,11 +129,11 @@ cannot auto-detect the model's window from the API. Resolution order:
    like `llama3.1:8b` fall back to the untagged base entry.
 2. **128K** generic default for unknown models.
 
-So, for example, `--model llama3.1` or `--model llama3.1:8b` picks up
-the catalog's 8192 token window, while a model Serf has never heard of
-gets the 128K fallback. The catalog is conservative — it reflects each
-model family's typical default, not whatever you may have configured
-locally with `num_ctx`.
+So, for example, `--model ollama/llama3.1` or `--model
+ollama/llama3.1:8b` picks up the catalog's 8192 token window, while a
+model Serf has never heard of gets the 128K fallback. The catalog is
+conservative — it reflects each model family's typical default, not
+whatever you may have configured locally with `num_ctx`.
 
 **Limitation:** Serf has no way to detect your actual configured
 `num_ctx`. The catalog is static. So if you bump `num_ctx` in a custom

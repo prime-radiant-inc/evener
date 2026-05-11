@@ -20,6 +20,7 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/buildinfo"
+	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/frontmatter"
 	"primeradiant.com/serf/internal/hubapi"
 	"primeradiant.com/serf/llm"
@@ -1441,10 +1442,13 @@ func (s *WebServer) handleApiSpawn(w http.ResponseWriter, r *http.Request) {
 		}
 		req.WorkingDir = resolved
 	}
-	provider, model := parseModel(req.Model)
+	modelRef, err := cmdutil.ParseModelRef(req.Model)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	entry, err := s.cfg.Spawner.Spawn(r.Context(), SpawnRequest{
-		Provider:        provider,
-		Model:           model,
+		Model:           modelRef.Qualified(),
 		Agent:           req.Agent,
 		WorkingDir:      req.WorkingDir,
 		ReasoningEffort: req.ReasoningEffort,
@@ -1474,15 +1478,6 @@ func (s *WebServer) handleApiSpawn(w http.ResponseWriter, r *http.Request) {
 		HostID:    ref.HostID,
 		SessionID: ref.SessionID,
 	})
-}
-
-// parseModel splits "provider/model" into its components.
-// If there is no slash, provider is returned as empty.
-func parseModel(s string) (provider, model string) {
-	if i := strings.Index(s, "/"); i > 0 {
-		return s[:i], s[i+1:]
-	}
-	return "", s
 }
 
 // handleApiModels returns the models the hub can spawn for. The list is what

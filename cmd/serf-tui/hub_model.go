@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -64,6 +65,9 @@ type hubModel struct {
 	spawnReturnMode    hubMode
 	spawnDir           string
 	spawnProject       string
+	spawnModel         string
+	spawnModels        []modelPickerItem
+	spawnModelPicker   *modelPicker
 	spawnSubmitting    bool
 
 	detail        hubapi.SessionDetail
@@ -229,6 +233,18 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, fetchHubSession(m.client, ref)
+	case hubModelsMsg:
+		if msg.err != nil {
+			if m.mode == hubModeSpawn {
+				m.err = fmt.Errorf("models failed: %w", msg.err)
+			}
+			return m, nil
+		}
+		m.spawnModels = msg.models
+		if m.mode == hubModeSpawn && m.spawnModel == "" && len(msg.models) > 0 {
+			m.spawnModel = msg.models[0].id
+		}
+		return m, nil
 	case sseEventMsg:
 		m.applyHubSSEEvent(SSEEvent(msg))
 		return m, nil
@@ -282,6 +298,9 @@ func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "s":
 		m.openSpawnForm()
+		if m.client != nil {
+			return m, fetchHubModels(m.client)
+		}
 		return m, nil
 	case "up", "k":
 		if m.selected > 0 {
@@ -322,6 +341,9 @@ func (m hubModel) updateProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "s":
 		m.openSpawnForm()
+		if m.client != nil {
+			return m, fetchHubModels(m.client)
+		}
 		return m, nil
 	case "up", "k":
 		if m.selected > 0 {
@@ -340,16 +362,43 @@ func (m hubModel) updateProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.spawnModelPicker != nil {
+		updated, cmd := m.spawnModelPicker.Update(msg)
+		picker := updated.(modelPicker)
+		m.spawnModelPicker = &picker
+		if picker.done {
+			m.spawnModelPicker = nil
+			if picker.selected != "" {
+				m.spawnModel = picker.selected
+			}
+		}
+		return m, cmd
+	}
+
 	switch msg.String() {
 	case "esc":
 		m.closeSpawnForm()
+		return m, nil
+	case "m":
+		if len(m.spawnModels) == 0 {
+			m.err = fmt.Errorf("no models available")
+			return m, nil
+		}
+		picker := newModelPicker(m.spawnModels, m.spawnModel, m.width)
+		picker.title = "Select spawn model"
+		m.spawnModelPicker = &picker
 		return m, nil
 	case "enter":
 		if m.client == nil || m.spawnSubmitting {
 			return m, nil
 		}
+		if strings.TrimSpace(m.spawnModel) == "" {
+			m.err = fmt.Errorf("choose a model before spawning")
+			return m, nil
+		}
 		req := hubapi.SpawnRequest{
 			Task:       strings.TrimSpace(m.session.input.Value()),
+			Model:      strings.TrimSpace(m.spawnModel),
 			WorkingDir: m.spawnDir,
 		}
 		m.err = nil
@@ -619,8 +668,14 @@ func (m *hubModel) resetSpawnForm() {
 	m.spawnReturnMode = hubModeDashboard
 	m.spawnDir = ""
 	m.spawnProject = ""
+	m.spawnModel = ""
+	m.spawnModels = nil
+	m.spawnModelPicker = nil
 	m.spawnSubmitting = false
 	m.session.resetInput()
+	if envModel := strings.TrimSpace(os.Getenv("SERF_MODEL")); strings.Contains(envModel, "/") {
+		m.spawnModel = envModel
+	}
 }
 
 func (m hubModel) spawnWorkingDir() string {
@@ -1180,6 +1235,19 @@ func attentionRankLabel(state string) int {
 func (m hubModel) spawnView() string {
 	var b strings.Builder
 	b.WriteString("serf / new session\n\n")
+	if m.spawnModelPicker != nil {
+		b.WriteString(m.spawnModelPicker.View())
+		b.WriteString("\n")
+		return b.String()
+	}
+	model := m.spawnModel
+	if model == "" && len(m.spawnModels) == 0 {
+		model = "(loading models...)"
+	}
+	if model == "" {
+		model = "(choose a model)"
+	}
+	fmt.Fprintf(&b, "Model:    %s\n", model)
 	if m.spawnProject != "" {
 		fmt.Fprintf(&b, "Project:  %s\n", m.spawnProject)
 	}
@@ -1195,7 +1263,7 @@ func (m hubModel) spawnView() string {
 	b.WriteString("\nTask (optional):\n")
 	b.WriteString("> ")
 	b.WriteString(m.session.input.Value())
-	b.WriteString("\n\nenter: spawn  esc: cancel  ctrl+o: dashboard\n")
+	b.WriteString("\n\nm: model  enter: spawn  esc: cancel  ctrl+o: dashboard\n")
 	return b.String()
 }
 

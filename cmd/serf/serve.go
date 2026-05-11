@@ -16,7 +16,6 @@ import (
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/rendezvous"
 	_ "primeradiant.com/serf/llm/providers/anthropic"
 	_ "primeradiant.com/serf/llm/providers/glm"
 	_ "primeradiant.com/serf/llm/providers/google"
@@ -27,14 +26,14 @@ import (
 	_ "primeradiant.com/serf/llm/providers/openaicompat"
 	_ "primeradiant.com/serf/llm/providers/openrouter"
 	_ "primeradiant.com/serf/llm/providers/openrouter_anthropic"
+	"primeradiant.com/serf/rendezvous"
 	"primeradiant.com/serf/server"
 )
 
 func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", "127.0.0.1:9131", "listen address")
-	model := fs.String("model", "", "LLM model identifier")
-	provider := fs.String("provider", "", "LLM provider")
+	model := fs.String("model", "", "LLM model identifier (provider/model)")
 	workDir := fs.String("dir", "", "working directory")
 	stateDir := fs.String("state-dir", "", "override runtime state directory")
 	resume := fs.String("resume", "", "resume a previous session by ID")
@@ -110,11 +109,6 @@ func runServe(args []string) error {
 		sd = agent.RuntimeDir(originURL, wd, "")
 	}
 
-	// Resolve provider and model. Order:
-	//   1. Explicit --provider / --model / SERF_PROVIDER / SERF_MODEL.
-	//   2. When resuming, fall back to the resumed session's meta so
-	//      `serf serve --resume <id>` works without re-specifying them.
-	//   3. Otherwise the flag's normal "missing required" error applies.
 	resuming := *resume != "" || *resumeLast
 	var resumedMeta agent.SessionMeta
 	if resuming {
@@ -124,19 +118,13 @@ func runServe(args []string) error {
 			return metaErr
 		}
 	}
-	provFlag := *provider
-	if provFlag == "" && resuming {
-		provFlag = resumedMeta.ProfileID
+	resumeProvider := ""
+	resumeModel := ""
+	if resuming {
+		resumeProvider = resumedMeta.ProfileID
+		resumeModel = resumedMeta.Model
 	}
-	modFlag := *model
-	if modFlag == "" && resuming {
-		modFlag = resumedMeta.Model
-	}
-	prov, err := cmdutil.ResolveProvider(provFlag)
-	if err != nil {
-		return err
-	}
-	mod, err := cmdutil.ResolveModel(modFlag)
+	modelRef, err := cmdutil.ResolveModelRef(*model, os.Getenv("SERF_MODEL"), resumeProvider, resumeModel)
 	if err != nil {
 		return err
 	}
@@ -151,7 +139,7 @@ func runServe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("LLM client: %w", err)
 	}
-	profile, err := cmdutil.SelectProfile(prov, mod, *outputSchema)
+	profile, err := cmdutil.SelectProfile(modelRef.Provider, modelRef.Model, *outputSchema)
 	if err != nil {
 		return err
 	}
@@ -306,8 +294,8 @@ func runServe(args []string) error {
 		WorkingDir: wd,
 		StateDir:   sd,
 		Agent:      *agentName,
-		Model:      mod,
-		Provider:   prov,
+		Model:      modelRef.Model,
+		Provider:   modelRef.Provider,
 		StartedAt:  time.Now().UTC(),
 		SpawnedBy:  spawnedBy,
 	}

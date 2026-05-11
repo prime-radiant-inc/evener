@@ -135,7 +135,7 @@ Edit `agent/prompts/base.md` in the serf repo.
 ```bash
 go build -o /tmp/serf-mac ./cmd/serf/
 export $(cat .env | xargs)
-/tmp/serf-mac --provider openai --model gpt-5.2-codex --max-rounds 8 \
+/tmp/serf-mac --model openai/gpt-5.2-codex --max-rounds 8 \
   --state-dir /tmp/test-state -- 'task instructions here'
 ```
 - Use low --max-rounds (5-15) for quick attitude checks
@@ -144,7 +144,7 @@ export $(cat .env | xargs)
 
 ### 3. Resume to interrogate decisions
 ```bash
-/tmp/serf-mac --provider openai --model gpt-5.2-codex --max-rounds 3 \
+/tmp/serf-mac --model openai/gpt-5.2-codex --max-rounds 3 \
   --state-dir /tmp/test-state \
   --resume-with <SESSION_ID> \
   -- 'Why did you choose X instead of Y?'

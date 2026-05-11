@@ -230,7 +230,7 @@ implementer needs to see a prompt change, modify the section files in
 ```bash
 set -a; source .env; set +a
 make build
-./serf --provider openai --model gpt-5.4-mini \
+./serf --model openai/gpt-5.4-mini \
   --max-rounds 20 \
   --state-dir /tmp/serf-test-TASK \
   -- "$(cat /tmp/task-description.md)"

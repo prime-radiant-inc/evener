@@ -288,6 +288,8 @@ func TestHubModelDashboardSpawnUsesSelectedProjectWorkingDir(t *testing.T) {
 	var gotSpawn hubapi.SpawnRequest
 	client, cleanup := newTestHubClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/api/models":
+			writeJSON(t, w, []hubapi.ModelOption{{Provider: "openai", Model: "gpt-5"}})
 		case "/api/spawn":
 			if r.Method != http.MethodPost {
 				t.Fatalf("spawn method=%s", r.Method)
@@ -316,9 +318,10 @@ func TestHubModelDashboardSpawnUsesSelectedProjectWorkingDir(t *testing.T) {
 	m.rows = buildDashboardRows(m.tree)
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
-	if cmd != nil {
-		t.Fatal("dashboard spawn should open form before returning a command")
+	if cmd == nil {
+		t.Fatal("dashboard spawn should fetch models")
 	}
+	updated, _ = updated.(hubModel).Update(cmd())
 	form := updated.(hubModel)
 	form.session.setInputValue("build the thing")
 	updated, cmd = form.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -338,6 +341,9 @@ func TestHubModelDashboardSpawnUsesSelectedProjectWorkingDir(t *testing.T) {
 	if gotSpawn.Task != "build the thing" {
 		t.Fatalf("task=%q, want build the thing", gotSpawn.Task)
 	}
+	if gotSpawn.Model != "openai/gpt-5" {
+		t.Fatalf("model=%q, want openai/gpt-5", gotSpawn.Model)
+	}
 	if got.mode != hubModeSession || got.detail.SessionID != "02NEW" {
 		t.Fatalf("mode=%v detail=%+v", got.mode, got.detail)
 	}
@@ -346,6 +352,10 @@ func TestHubModelDashboardSpawnUsesSelectedProjectWorkingDir(t *testing.T) {
 func TestHubModelDashboardSpawnOpensFormBeforePosting(t *testing.T) {
 	var posted bool
 	client, cleanup := newTestHubClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/models" {
+			writeJSON(t, w, []hubapi.ModelOption{{Provider: "openai", Model: "gpt-5"}})
+			return
+		}
 		if r.URL.Path == "/api/spawn" {
 			posted = true
 		}
@@ -365,14 +375,15 @@ func TestHubModelDashboardSpawnOpensFormBeforePosting(t *testing.T) {
 	m.rows = buildDashboardRows(m.tree)
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
-	if cmd != nil {
-		t.Fatal("spawn key should open a form before posting")
+	if cmd == nil {
+		t.Fatal("spawn key should fetch models")
 	}
+	updated, _ = updated.(hubModel).Update(cmd())
 	got := updated.(hubModel)
 	if posted {
 		t.Fatal("spawn key posted before form submission")
 	}
-	if !strings.Contains(got.View(), "serf / new session") || !strings.Contains(got.View(), "/tmp/serf") {
+	if !strings.Contains(got.View(), "serf / new session") || !strings.Contains(got.View(), "/tmp/serf") || !strings.Contains(got.View(), "openai/gpt-5") {
 		t.Fatalf("spawn form not rendered:\n%s", got.View())
 	}
 }
@@ -392,6 +403,8 @@ func TestHubDashboardSpawnWaitsForSlowHubSpawn(t *testing.T) {
 					{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true},
 				},
 			}}})
+		case "/api/models":
+			writeJSON(t, w, []hubapi.ModelOption{{Provider: "openai", Model: "gpt-5"}})
 		case "/api/spawn":
 			if r.Method != http.MethodPost {
 				t.Fatalf("spawn method=%s", r.Method)
@@ -426,9 +439,10 @@ func TestHubDashboardSpawnWaitsForSlowHubSpawn(t *testing.T) {
 	model = updated.(hubModel)
 
 	updated, cmd = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
-	if cmd != nil {
-		t.Fatal("dashboard spawn should open form before returning a command")
+	if cmd == nil {
+		t.Fatal("dashboard spawn should fetch models")
 	}
+	updated, _ = updated.(hubModel).Update(cmd())
 	model = updated.(hubModel)
 	model.session.setInputValue("slow spawn")
 
@@ -458,6 +472,9 @@ func TestHubDashboardSpawnWaitsForSlowHubSpawn(t *testing.T) {
 	}
 	if gotSpawn.Task != "slow spawn" {
 		t.Fatalf("task=%q, want slow spawn", gotSpawn.Task)
+	}
+	if gotSpawn.Model != "openai/gpt-5" {
+		t.Fatalf("model=%q, want openai/gpt-5", gotSpawn.Model)
 	}
 }
 
