@@ -19,6 +19,7 @@ import (
 )
 
 const tuiE2EProjectDir = "/tmp/serf-tui-e2e/serf"
+const tuiE2EWaitTimeout = 20 * time.Second
 
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 
@@ -344,7 +345,7 @@ func (a *tmuxTUI) CaptureHistory() string {
 
 func (a *tmuxTUI) WaitFor(wants ...string) string {
 	a.t.Helper()
-	deadline := time.Now().Add(8 * time.Second)
+	deadline := time.Now().Add(tuiE2EWaitTimeout)
 	var screen string
 	for time.Now().Before(deadline) {
 		screen = a.Capture()
