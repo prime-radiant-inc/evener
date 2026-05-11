@@ -245,11 +245,185 @@ function tick(ms) { return new Promise(r => setTimeout(r, ms)); }
     pass(/Commands/.test(ctx.results.innerHTML), "openWith with / enters command-filter mode");
   }
 
+  // -------- Scenario 11: Every command dispatches its declared side effect --------
+  // One row per registered command. Build a fresh JSDOM per case so fetches,
+  // clicks, and navigations don't leak.
+  await commandSweep();
+
   if (failures.length === 0) {
-    console.log("PASS: command palette covers filter, args, scope, openWith");
+    console.log("PASS: command palette covers filter, args, scope, openWith, dispatch");
     process.exit(0);
   } else {
     for (const f of failures) console.log(f);
     process.exit(1);
   }
 })();
+
+async function commandSweep() {
+  const cases = [
+    { name: "new", page: "home", query: "/new s",
+      expect: (c) => assertCS(c, c.calls.navigations.slice(-1)[0] === "/new", "navigated to /new") },
+    { name: "spawn", page: "home", query: "/spawn", argEntry: "do the thing",
+      expect: (c) => assertCS(c, c.calls.navigations.slice(-1)[0] === "/new?task=do%20the%20thing", "navigated to /new?task=<encoded>") },
+    { name: "settings", page: "home", query: "/settings",
+      expect: (c) => assertCS(c, c.calls.navigations.slice(-1)[0] === "/settings", "navigated to /settings") },
+    { name: "theme", page: "home", query: "/theme", argEntry: "light",
+      expect: (c) => {
+        assertCS(c, c.document.body.classList.contains("light-theme"), "body has light-theme class");
+        assertCS(c, !c.document.body.classList.contains("dark-theme"), "body no longer has dark-theme class");
+        let stored = null;
+        try { stored = c.window.localStorage.getItem("serf-hub.theme"); } catch (_) {}
+        assertCS(c, stored === "light", "theme persisted to localStorage (got " + stored + ")");
+      } },
+    { name: "dashboard", page: "home", query: "/dashboard",
+      expect: (c) => assertCS(c, c.calls.navigations.slice(-1)[0] === "/", "navigated to /") },
+    { name: "search", page: "home", query: "/search", expectStaysOpen: true,
+      expect: (c) => assertCS(c, c.input.value === "", "search command clears input") },
+    { name: "help", page: "home", query: "/help", expectStaysOpen: true,
+      expect: (c) => assertCS(c, c.input.value === "/", "help command sets input to /") },
+    { name: "compact", page: "session", query: "/compact",
+      expect: (c) => assertCS(c, sawFetchCS(c, "POST", "/s/01S/compact"), "POST /s/01S/compact") },
+    { name: "interrupt", page: "session", query: "/interrupt",
+      expect: (c) => assertCS(c, sawFetchCS(c, "POST", "/s/01S/interrupt"), "POST /s/01S/interrupt") },
+    { name: "clear", page: "session", query: "/clear",
+      expect: (c) => assertCS(c, sawFetchCS(c, "POST", "/s/01S/clear"), "POST /s/01S/clear") },
+    { name: "shutdown", page: "session", query: "/shutdown", confirmAnswer: true,
+      expect: (c) => {
+        assertCS(c, c.calls.confirms === 1, "shutdown asks confirm()");
+        assertCS(c, sawFetchCS(c, "POST", "/s/01S/shutdown"), "POST /s/01S/shutdown when confirmed");
+      } },
+    { name: "shutdown-cancelled", page: "session", query: "/shutdown", confirmAnswer: false,
+      expect: (c) => {
+        assertCS(c, c.calls.confirms === 1, "shutdown asks confirm()");
+        assertCS(c, !sawFetchCS(c, "POST", "/s/01S/shutdown"), "no POST when confirm cancelled");
+      } },
+    { name: "model", page: "session", query: "/model", argEntry: "opus",
+      modelsResponse: { models: [{ id: "claude-opus-4-7", display_name: "Opus 4.7" }] },
+      expect: (c) => {
+        const hit = c.calls.fetches.find(f => f.url === "/s/01S/model");
+        assertCS(c, !!hit, "POST /s/01S/model");
+        assertCS(c, /claude-opus-4-7/.test(String(hit && hit.opts && hit.opts.body)), "body carries chosen model id");
+      } },
+    { name: "steer", page: "session", query: "/steer", argEntry: "less rambling",
+      expect: (c) => {
+        const hit = c.calls.fetches.find(f => f.url === "/s/01S/steer");
+        assertCS(c, !!hit, "POST /s/01S/steer");
+        assertCS(c, /less rambling/.test(String(hit && hit.opts && hit.opts.body)), "body carries steer text");
+      } },
+    { name: "fork", page: "session", query: "/fork", argEntry: "",
+      withUserTurns: ["please reproduce the bug", "and one more thing"],
+      expect: (c) => {
+        const hit = c.calls.fetches.find(f => f.url === "/s/01S/fork");
+        assertCS(c, !!hit, "POST /s/01S/fork");
+        assertCS(c, /"turn":1/.test(String(hit && hit.opts && hit.opts.body)), "body carries chosen turn index");
+      } },
+    { name: "copy-id", page: "session", query: "/copy",
+      expect: (c) => assertCS(c, c.calls.clipboardWrites.slice(-1)[0] === "01S", "wrote session ID to clipboard") },
+    { name: "tasks", page: "session", query: "/tasks",
+      expect: (c) => assertCS(c, c.calls.panelClicks.tasks === 1, "tasks trigger clicked") },
+    { name: "status", page: "session", query: "/status",
+      expect: (c) => assertCS(c, c.calls.panelClicks.details === 1, "details trigger clicked") },
+    { name: "project", page: "session", query: "/project", withSidebarLink: true,
+      expect: (c) => {
+        const section = c.document.querySelector("[data-project-key]");
+        assertCS(c, section && !section.classList.contains("collapsed"), "project section uncollapsed");
+        assertCS(c, c.calls.scrolledSections.includes("demo"), "project section scrolled into view");
+      } },
+  ];
+  for (const tc of cases) await runCaseCS(tc);
+}
+
+function assertCS(ctx, cond, msg) {
+  if (!cond) failures.push("FAIL [" + ctx.caseName + "]: " + msg);
+}
+function sawFetchCS(ctx, method, url) {
+  return ctx.calls.fetches.some(f => f.url === url && (f.opts && f.opts.method) === method);
+}
+
+async function runCaseCS(tc) {
+  let extraBody = "";
+  let url = "http://localhost/";
+  if (tc.page === "session") {
+    extraBody = `<div id="conversation" data-session-id="01S" data-state="live">`;
+    if (tc.withUserTurns) tc.withUserTurns.forEach(t => { extraBody += `<div class="user-message">${t}</div>`; });
+    extraBody += `</div>`;
+    extraBody += `<button data-tasks-trigger></button><button data-details-trigger></button>`;
+    if (tc.withSidebarLink) {
+      extraBody += `<nav class="sidebar"><section class="sidebar-section" data-project-key="demo"><a href="/s/01S">my live session</a></section></nav>`;
+    }
+    url = "http://localhost/s/01S";
+  }
+  const dom = makeDom(extraBody, { url: url });
+  const { window } = dom;
+  const dlg = window.document.getElementById("search-dialog");
+  if (typeof dlg.showModal !== "function") {
+    dlg.showModal = function () { this.setAttribute("open", ""); this.open = true; };
+    dlg.close = function () { this.removeAttribute("open"); this.open = false; };
+  }
+
+  const calls = {
+    navigations: [],
+    fetches: [],
+    clipboardWrites: [],
+    confirms: 0,
+    panelClicks: { tasks: 0, details: 0 },
+    scrolledSections: [],
+  };
+
+  window.fetch = (u, opts) => {
+    if (u === "/models") {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(tc.modelsResponse || { models: [] }) });
+    }
+    calls.fetches.push({ url: u, opts: opts || {} });
+    return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+  };
+  window.confirm = () => { calls.confirms += 1; return tc.confirmAnswer === undefined ? true : tc.confirmAnswer; };
+  Object.defineProperty(window.navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: (s) => { calls.clipboardWrites.push(s); return Promise.resolve(); } },
+  });
+  window.document.querySelectorAll("[data-project-key]").forEach(sec => {
+    sec.scrollIntoView = function () { calls.scrolledSections.push(this.getAttribute("data-project-key")); };
+  });
+  const tasksBtn = window.document.querySelector("[data-tasks-trigger]");
+  if (tasksBtn) tasksBtn.click = () => { calls.panelClicks.tasks += 1; };
+  const detailsBtn = window.document.querySelector("[data-details-trigger]");
+  if (detailsBtn) detailsBtn.click = () => { calls.panelClicks.details += 1; };
+
+  window.eval(searchSrc);
+  await new Promise(r => setTimeout(r, 30));
+  const input = window.document.getElementById("search-input");
+  const results = window.document.getElementById("search-results");
+
+  // JSDOM's Location.assign is non-configurable; production routes through
+  // window.SerfSearch.Nav.go so tests can capture targets.
+  if (window.SerfSearch && window.SerfSearch.Nav) {
+    window.SerfSearch.Nav.go = (u) => { calls.navigations.push(u); };
+  }
+
+  const ctx = { caseName: tc.name, window: window, document: window.document, dialog: dlg, input: input, results: results, calls: calls };
+
+  window.SerfSearch.open();
+  input.value = tc.query;
+  input.dispatchEvent(new window.Event("input", { bubbles: true }));
+  await new Promise(r => setTimeout(r, 20));
+  input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+  await new Promise(r => setTimeout(r, 30));
+
+  if (tc.argEntry !== undefined) {
+    input.value = tc.argEntry;
+    input.dispatchEvent(new window.Event("input", { bubbles: true }));
+    await new Promise(r => setTimeout(r, 30));
+    input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await new Promise(r => setTimeout(r, 20));
+  }
+
+  tc.expect(ctx);
+
+  if (!tc.expectStaysOpen) {
+    assertCS(ctx, dlg.open === false, "dialog closed after run");
+  } else {
+    assertCS(ctx, dlg.open === true, "dialog stays open");
+  }
+}
+

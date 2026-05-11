@@ -177,26 +177,33 @@
     return out;
   }
 
+  // Nav is the navigation indirection. JSDOM's Location.assign is
+  // non-configurable, so production code routes navigations through this
+  // mutable holder. Tests replace Nav.go to capture targets.
+  const Nav = { go: (url) => { window.location.assign(url); } };
+
   function commands() {
     return [
       // global
-      { id: "new", title: "New session", hint: "spawn page", keywords: ["spawn"], scope: "global",
-        run: () => { window.location.assign("/new"); } },
+      { id: "new", title: "New session", hint: "blank spawn page", keywords: [], scope: "global",
+        run: () => { Nav.go("/new"); } },
       { id: "spawn", title: "Spawn with task", hint: "new session, prefilled", keywords: ["start"], scope: "global",
         args: { kind: "free", placeholder: "task to spawn…",
-          run: (_ctx, text) => { window.location.assign("/new?task=" + encodeURIComponent(text || "")); } } },
+          run: (_ctx, text) => { Nav.go("/new?task=" + encodeURIComponent(text || "")); } } },
       { id: "settings", title: "Open settings", hint: "", keywords: ["prefs"], scope: "global",
-        run: () => { window.location.assign("/settings"); } },
+        run: () => { Nav.go("/settings"); } },
       { id: "theme", title: "Switch theme", hint: "dark/light", keywords: [], scope: "global",
         args: { kind: "enum", placeholder: "choose a theme…",
           source: () => [{ id: "dark", label: "Dark" }, { id: "light", label: "Light" }],
           run: (_ctx, item) => { applyTheme(item.id); } } },
       { id: "dashboard", title: "Go to dashboard", hint: "", keywords: ["home"], scope: "global",
-        run: () => { window.location.assign("/"); } },
+        run: () => { Nav.go("/"); } },
       { id: "search", title: "Search sessions", hint: "clear / and search", keywords: ["find"], scope: "global",
-        run: () => { input.value = ""; input.dispatchEvent(new Event("input", { bubbles: true })); } },
+        stayOpen: true,
+        run: () => { input.value = ""; input.dispatchEvent(new Event("input", { bubbles: true })); input.focus(); } },
       { id: "help", title: "Show all commands", hint: "TUI parity reference", keywords: ["?"], scope: "global",
-        run: () => { input.value = "/"; input.dispatchEvent(new Event("input", { bubbles: true })); } },
+        stayOpen: true,
+        run: () => { input.value = "/"; input.dispatchEvent(new Event("input", { bubbles: true })); input.focus(); } },
 
       // session (live only)
       { id: "compact", title: "Compact transcript", hint: "free up token space", keywords: ["compress"], scope: "session",
@@ -427,23 +434,15 @@
 
   function runArgless(cmd) {
     const ctx = buildCtx();
-    let result;
-    try { result = cmd.run(ctx); } catch (_) { result = undefined; }
-    finishRun(result, cmd);
+    try { cmd.run(ctx); } catch (_) {}
+    // Commands flagged stayOpen reroute the palette in-place (search/help)
+    // and should keep the modal open.
+    if (!cmd.stayOpen) close();
   }
 
   function runWithArg(cmd, arg) {
     const ctx = buildCtx();
-    let result;
-    try { result = cmd.args.run(ctx, arg); } catch (_) { result = undefined; }
-    finishRun(result, cmd);
-  }
-
-  function finishRun(result, cmd) {
-    // Navigation commands cause a page load; closing is harmless either way.
-    // Otherwise close immediately. We don't await fetch — the command's
-    // visible effect lands via the SSE event stream the renderer is already
-    // listening on.
+    try { cmd.args.run(ctx, arg); } catch (_) {}
     close();
   }
 
@@ -625,5 +624,5 @@
     init();
   }
 
-  window.SerfSearch = { open: open, close: close, openWith: openWith };
+  window.SerfSearch = { open: open, close: close, openWith: openWith, Nav: Nav };
 })();
