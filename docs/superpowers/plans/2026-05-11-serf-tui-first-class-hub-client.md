@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Rebuild `serf-tui` as a polished Bubble Tea hub client with dashboard, project drilldown, session workspace, command parity, spawn/model discovery, transcript browse/fork, and end-to-end tmux coverage.
+**Goal:** Rebuild `serf-tui` as a polished Bubble Tea hub client with dashboard, project drilldown, session workspace, command parity, Serf-owned OpenAI OAuth, spawn/model discovery, transcript browse/fork, and end-to-end tmux coverage.
 
-**Architecture:** Keep `serf-tui` hub-backed only. Split the current hub model into a top-level app shell plus focused Dashboard, Project, Session, Spawn, Palette, Command Registry, and Styles modules. All backend work goes through `internal/hubapi.Client`; no direct daemon or filesystem discovery from the TUI.
+**Architecture:** Keep `serf-tui` hub-backed only. Split the current hub model into a top-level app shell plus focused Dashboard, Project, Session, Auth, Spawn, Palette, Command Registry, and Styles modules. All backend work goes through `internal/hubapi.Client`; no direct daemon or filesystem discovery from the TUI. The `serf-hub` branch predates the main-line OpenAI auth commits, so integrate those commits into this branch and expose auth through the hub rather than having the TUI read auth files directly.
 
 **Tech Stack:** Go, Bubble Tea, Bubbles, Lip Gloss, `httptest`, `tmux`, Serf hub JSON/SSE APIs.
 
@@ -15,8 +15,37 @@
 - Start from a git branch/worktree where unrelated dirty work is either committed, stashed, or explicitly left alone by file path.
 - Do not use `git add -A`.
 - Do not remove old embedded/direct code until parity tests prove the hub TUI covers its user-facing behavior.
+- Do not redesign OpenAI OAuth from scratch. Bring forward the main-line implementation and adapt it unless a specific piece is proven technically obsolete.
 - Do not implement backward compatibility for old `--provider` or old `[[spawn_template]]` unless Jesse explicitly asks.
+- Do not reuse Codex auth state, `~/.codex/auth.json`, browser cookies, or any product-owned credentials outside Serf.
 - Every task below starts with tests, watches them fail, implements the smallest fix, runs targeted tests, and commits.
+
+## Branch And Auth Integration Facts
+
+- `serf-hub` branched from `main` at `d3114c9` on 2026-05-07.
+- The Serf-owned OpenAI auth stack landed on `main` after that branch point on 2026-05-08.
+- Source commits to integrate:
+  - `c72f4b1 feat: add OpenAI auth foundations`
+  - `9772717 fix: validate persisted OpenAI auth records`
+  - `33f5efd feat: add OpenAI auth token and callback flows`
+  - `377b7d4 feat: route OpenAI OAuth traffic via Codex transport`
+  - `2c2712a feat: add openai auth service and claims`
+  - `62ade8b Add explicit OpenAI auth CLI commands`
+  - `08ca76c fix: harden OpenAI OAuth refresh handling`
+  - `24d6111 fix: support immediate OpenAI pasteback login`
+  - `7795345 fix: align OpenAI authorize URL with Codex flow`
+  - `8c5089e fix: match Pi OpenAI login flow`
+  - `6885106 fix: stream OAuth-backed OpenAI responses`
+  - `0bf4745 fix: stabilize OpenAI OAuth streamed tool calls`
+  - `01e93ba Add TUI-local OpenAI auth helper`
+  - `84c92a8 feat: add OpenAI login flow to serf-tui`
+  - `f8a17f4 fix: refresh TUI OpenAI auth status on demand`
+  - `48933a9 fix: harden TUI OpenAI auth lifecycle`
+  - `018a67a refactor: route TUI auth through provider context`
+  - `a4aa58a fix: wait for embedded TUI server readiness`
+  - `715f06a fix: keep TUI async SSE consumption armed`
+- Treat missing auth in this branch as a stale-branch integration gap, not as a deleted feature.
+- Prefer a merge from current local `main` if conflicts are manageable. If a full merge drags unrelated risk into the TUI branch, cherry-pick the auth commits in order and document any skipped commits with exact rationale in the parity checklist.
 
 ## File Structure
 
@@ -24,6 +53,7 @@ Create or reshape these TUI files:
 
 - Create: `cmd/serf-tui/app_model.go` - top-level Bubble Tea shell, mode routing, global keys, shared status/error.
 - Create: `cmd/serf-tui/app_modes.go` - mode enum, navigation helpers, return targets.
+- Integrate/adapt from main: `cmd/serf-tui/openai_auth.go` - TUI auth status/login/logout orchestration over hub APIs.
 - Create: `cmd/serf-tui/command_registry.go` - command definitions, slash parser integration, help generator, palette source.
 - Create: `cmd/serf-tui/command_registry_test.go` - command/help/parity tests.
 - Create: `cmd/serf-tui/dashboard_model.go` - dashboard state, selection, refresh handling.
@@ -48,9 +78,245 @@ Modify these existing files:
 - Modify: `cmd/serf-tui/hub_model.go` - shrink or delete after replacement; do not keep duplicated command logic.
 - Modify: `cmd/serf-tui/model.go` - preserve reusable rendering/data structures only; remove direct daemon ownership after parity.
 - Modify: `cmd/serf-tui/input.go` - keep slash parsing if useful, but move help generation to command registry.
+- Modify: `cmd/serf-tui/history.go` - preserve persisted input history semantics in the new session composer.
+- Modify: `cmd/serf-tui/theme_picker.go` and `cmd/serf-tui/theme_test.go` - keep real theme picker behavior and persistence.
+- Modify: `cmd/serf-tui/transcript_view.go` - preserve main/subagent transcript picker behavior behind hub-backed data.
 - Modify: `cmd/serf-tui/tmux_e2e_test.go` - expand full terminal journey coverage.
-- Modify: `internal/hubapi/client.go` and `internal/hubapi/types.go` - add the typed endpoints listed in the spec: project, replay transcript, transcript follow, tasks, fork, clear, and model change.
+- Modify: `internal/hubapi/client.go` and `internal/hubapi/types.go` - add the typed endpoints listed in the spec: project, replay transcript, transcript follow, tasks, details, subagent transcripts, auth, steer, fork, clear, and model change.
 - Modify: `cmd/serf-hub/web.go` and tests - only for hub API gaps required by TUI.
+- Integrate/adapt from main: `internal/auth/openai/config.go`, `pkce.go`, `server.go`, `manual.go`, `tokens.go`, `storage.go`, `claims.go`, `service.go` - Serf-owned OpenAI OAuth lifecycle.
+- Integrate/adapt from main: `internal/auth/openai/*_test.go` - auth storage, PKCE, manual pasteback, callback, token exchange, refresh, and status tests.
+- Integrate/adapt from main: `cmd/serf/openai_login.go`, `cmd/serf/openai_logout.go`, `cmd/serf/openai_status.go` - canonical CLI auth commands.
+- Modify: `cmd/serf/main.go` - dispatch the OpenAI command family.
+- Modify: `llm/providers/openai/adapter.go` and tests - resolve env key first, then Serf OAuth, with refresh.
+
+## Task 0: Integrate Main-Line OpenAI Auth And Build The Parity Inventory
+
+**Files:**
+- Create: `docs/superpowers/notes/2026-05-11-serf-tui-parity-checklist.md`
+- Integrate/modify: `internal/auth/openai/*`
+- Integrate/modify: `cmd/serf/openai_*.go`
+- Integrate/modify: `cmd/serf-tui/openai_auth.go`
+- Modify: `cmd/serf/main.go`
+- Modify: `cmd/serf-tui/main.go`
+- Modify: `cmd/serf-tui/model.go`
+- Modify: `cmd/serf-tui/input.go`
+- Modify: `cmd/serf-tui/sse_client.go`
+- Modify: `cmd/serf-tui/statusbar.go`
+- Modify: `llm/providers/openai/adapter.go`
+- Modify: `cmd/serf-tui/tmux_e2e_test.go`
+
+- [ ] **Step 1: Prove the auth gap is branch-base drift**
+
+Run:
+
+```bash
+mb=$(git merge-base HEAD main)
+git show -s --format='%h %ci %s' "$mb"
+for c in c72f4b1 62ade8b 84c92a8 f8a17f4 48933a9; do
+	git merge-base --is-ancestor "$c" "$mb"
+	echo "$c ancestor_of_merge_base=$?"
+	git merge-base --is-ancestor "$c" main
+	echo "$c ancestor_of_main=$?"
+	git merge-base --is-ancestor "$c" HEAD
+	echo "$c ancestor_of_head=$?"
+done
+```
+
+Expected:
+
+```text
+d3114c9 ... fix(agent,cmdutil): symmetric WithModel dispatch and provider case normalization
+c72f4b1 ancestor_of_merge_base=1
+c72f4b1 ancestor_of_main=0
+c72f4b1 ancestor_of_head=1
+...
+48933a9 ancestor_of_merge_base=1
+48933a9 ancestor_of_main=0
+48933a9 ancestor_of_head=1
+```
+
+Interpretation:
+
+- exit `0` means the commit is present in that target.
+- exit `1` means it is absent.
+- The auth commits are present in local `main`, absent from the `serf-hub` merge base, and absent from current `HEAD`.
+- This means the branch predated auth; do not describe this as a dropped/deleted feature.
+
+- [ ] **Step 2: Create the parity checklist**
+
+Create a parity checklist that maps each old user-visible behavior to one of: `restored`, `replaced by hub-native equivalent`, or `explicitly removed with rationale`.
+
+Required rows:
+
+- Startup flags: `--hub-addr`, `--hub-bin`, `--no-auto-start-hub`, `--log-file`, `--debug`, and `--state-dir`.
+- Slash commands: `/help`, `/dashboard`, `/project`, `/projects`, `/new`, `/search`, `/steer`, `/compact`, `/status`, `/details`, `/tasks`, `/agents`, `/model`, `/clear`, `/interrupt`, `/fork`, `/theme`, `/auth`, `/login openai`, `/logout openai`, `/quit`.
+- Input behavior: send, multiline, persisted history, send-failure draft preservation, busy `/input` handling, steering.
+- Pickers: model picker, theme picker, agent/subagent transcript picker, command palette.
+- Details/status sections: tools, MCP servers, skills, plugins, hooks, agents, subagents, tasks, context/tokens, auth, capabilities.
+- Transcript events: session start/end, user input, steering, assistant text deltas, communicate events, tool lifecycle, subagent start/end, context updates, token updates, task updates, errors.
+- Spawn fields: task, model, directory, project, agent, reasoning effort.
+- Auth source commits: `c72f4b1`, `62ade8b`, `84c92a8`, `f8a17f4`, `48933a9`, plus follow-up auth commits listed in "Branch And Auth Integration Facts".
+
+- [ ] **Step 3: Verify the current branch lacks the auth stack**
+
+Run:
+
+```bash
+test ! -d internal/auth/openai
+rg -n "openai login|OpenAIAuth|oauth|auth/openai" cmd/serf cmd/serf-tui llm/providers/openai
+```
+
+Expected:
+
+```text
+test ! -d internal/auth/openai
+```
+
+exits `0`, and `rg` shows only env-key OpenAI adapter references. If `internal/auth/openai` already exists because a prior task integrated it, replace this step with:
+
+```bash
+go test ./internal/auth/openai -count=1
+```
+
+- [ ] **Step 4: Integrate auth source commits from local `main`**
+
+Preferred path: merge local `main` into the implementation branch, because `main` already contains the auth stack plus later hardening fixes.
+
+Run:
+
+```bash
+git status --short
+git merge --no-ff main
+```
+
+Expected:
+
+- If conflicts are small and mostly in `cmd/serf-tui`, resolve them by preserving hub-backed TUI architecture and main-line auth behavior.
+- If conflicts are broad outside auth/TUI/provider files, abort only the merge operation with `git merge --abort`, then use the cherry-pick path below. Do not reset the worktree.
+
+Cherry-pick fallback:
+
+```bash
+git cherry-pick -n \
+	c72f4b1 9772717 33f5efd 377b7d4 2c2712a 62ade8b \
+	08ca76c 24d6111 7795345 8c5089e 6885106 0bf4745 \
+	01e93ba 84c92a8 f8a17f4 48933a9 018a67a a4aa58a 715f06a
+```
+
+Expected:
+
+- Auth package, CLI commands, OpenAI adapter auth resolution, and old TUI auth support appear in the worktree.
+- Conflicts in `cmd/serf-tui/*` are expected because hub TUI work also changed those files.
+- Resolve conflicts in favor of: hub-backed navigation and sessions from `serf-hub`, auth lifecycle and provider-context behavior from `main`.
+
+- [ ] **Step 5: Validate auth foundation after integration**
+
+The integrated auth implementation should provide:
+
+- `internal/auth/openai/config.go`
+- `internal/auth/openai/pkce.go`
+- `internal/auth/openai/server.go`
+- `internal/auth/openai/manual.go`
+- `internal/auth/openai/tokens.go`
+- `internal/auth/openai/storage.go`
+- `internal/auth/openai/claims.go`
+- `internal/auth/openai/service.go`
+
+Run:
+
+```bash
+go test ./internal/auth/openai -count=1
+```
+
+- [ ] **Step 6: Validate canonical CLI commands**
+
+The integrated CLI must provide:
+
+- `serf openai login`
+- `serf openai logout`
+- `serf openai status`
+
+Tests must cover signed-out, env-auth, stored-auth, logout, callback login, and manual pasteback login.
+
+Run:
+
+```bash
+go test ./cmd/serf -run 'OpenAI|Auth|Login|Logout|Status' -count=1
+```
+
+- [ ] **Step 7: Validate OpenAI adapter credential resolution**
+
+The OpenAI adapter must resolve credentials in this order:
+
+1. `OPENAI_API_KEY`
+2. stored Serf OAuth from resolved state dir
+3. refresh stored OAuth when expired or near expiry
+4. return a clear re-login error when refresh is permanently invalid
+
+Run:
+
+```bash
+go test ./llm/providers/openai -run 'Auth|Credential|Refresh|Authorization' -count=1
+```
+
+- [ ] **Step 8: Adapt auth to hub APIs**
+
+Add typed hub API methods and server endpoints:
+
+- `AuthStatus(provider string)`
+- `AuthLoginBegin(provider string)`
+- `AuthLoginComplete(provider string, redirectURL string)`
+- `AuthLogout(provider string)`
+
+Hub tests must prove the hub never returns token secrets and never reads Codex credential state.
+
+Run:
+
+```bash
+go test ./internal/hubapi ./cmd/serf-hub -run 'Auth|OpenAI' -count=1
+```
+
+- [ ] **Step 9: Adapt TUI auth UX over hub APIs**
+
+`serf-tui` must support:
+
+- `/auth`
+- `/auth openai`
+- `/login openai`
+- `/logout openai`
+- dashboard auth summary
+- spawn/model auth-required disabled reasons
+- clear errors when login is required or refresh failed
+
+Run:
+
+```bash
+go test ./cmd/serf-tui -run 'Auth|OpenAI|CommandRegistry' -count=1
+```
+
+- [ ] **Step 10: Add auth E2E coverage**
+
+Extend the fake hub/tmux harness to cover:
+
+- dashboard shows OpenAI signed-out state
+- `/login openai` shows authorize URL and accepts pasteback
+- auth status updates to signed-in
+- spawn with OpenAI model is disabled before auth and enabled after auth
+- `/logout openai` returns to signed-out state
+
+Run:
+
+```bash
+go test ./cmd/serf-tui -run TestTUIE2E_OpenAIAuth -count=1
+```
+
+- [ ] **Step 11: Commit**
+
+```bash
+git add docs/superpowers/notes/2026-05-11-serf-tui-parity-checklist.md internal/auth/openai cmd/serf/openai_login.go cmd/serf/openai_logout.go cmd/serf/openai_status.go cmd/serf/main.go cmd/serf-tui/openai_auth.go cmd/serf-tui/tmux_e2e_test.go llm/providers/openai/adapter.go
+git commit -m "feat(serf): integrate Serf-owned OpenAI auth"
+```
 
 ## Task 1: Lock The Current Gaps With Command Registry Tests
 
@@ -76,9 +342,10 @@ func TestCommandRegistryHelpOnlyListsImplementedCommands(t *testing.T) {
 	help := reg.Help(commandContext{Scope: commandScopeSession})
 
 	for _, name := range []string{
-		"help", "dashboard", "project", "projects", "new", "search",
-		"compact", "status", "details", "tasks", "agents", "model",
-		"clear", "interrupt", "fork", "theme", "quit",
+		"help", "auth", "login", "logout", "dashboard", "project",
+		"projects", "new", "search", "steer", "compact", "status",
+		"details", "tasks", "agents", "model", "clear", "interrupt",
+		"fork", "theme", "quit",
 	} {
 		if _, ok := reg.Lookup(name); !ok {
 			t.Fatalf("registry missing /%s", name)
@@ -153,6 +420,8 @@ type commandContext struct {
 	CanClear     bool
 	CanModel     bool
 	CanFork      bool
+	CanSteer     bool
+	CanAuth      bool
 }
 
 type commandInvocation struct {
@@ -180,11 +449,15 @@ type commandRegistry struct {
 func defaultCommandRegistry() commandRegistry {
 	entries := []commandEntry{
 		{Name: "help", Description: "Show command help", Usage: "/help", Scopes: allCommandScopes()},
+		{Name: "auth", Description: "Show provider auth status", Usage: "/auth [provider]", Scopes: allCommandScopes()},
+		{Name: "login", Description: "Log in to a provider", Usage: "/login openai", Scopes: allCommandScopes()},
+		{Name: "logout", Description: "Log out from a provider", Usage: "/logout openai", Scopes: allCommandScopes()},
 		{Name: "dashboard", Description: "Go to live dashboard", Usage: "/dashboard", Scopes: allCommandScopes(), KeyHint: "ctrl+o"},
 		{Name: "project", Description: "Open this session's project", Usage: "/project", Scopes: []commandScope{commandScopeSession}},
 		{Name: "projects", Description: "Open project picker", Usage: "/projects", Scopes: allCommandScopes()},
 		{Name: "new", Aliases: []string{"spawn"}, Description: "Create a new session", Usage: "/new", Scopes: allCommandScopes(), KeyHint: "n"},
 		{Name: "search", Description: "Search commands and sessions", Usage: "/search", Scopes: allCommandScopes(), KeyHint: "/"},
+		{Name: "steer", Description: "Send guidance to a busy session", Usage: "/steer <message>", Scopes: []commandScope{commandScopeSession}},
 		{Name: "compact", Description: "Compact current session", Usage: "/compact", Scopes: []commandScope{commandScopeSession}},
 		{Name: "status", Description: "Show session status", Usage: "/status", Scopes: []commandScope{commandScopeSession}},
 		{Name: "details", Description: "Show session details", Usage: "/details", Scopes: []commandScope{commandScopeSession}},
@@ -1623,14 +1896,22 @@ Extend the fake hub in `cmd/serf-tui/tmux_e2e_test.go` to serve:
 
 - `GET /api/tree`
 - `GET /api/models`
+- `GET /api/auth`
+- `GET /api/auth/openai`
+- `POST /api/auth/openai/login`
+- `POST /api/auth/openai/complete`
+- `POST /api/auth/openai/logout`
 - `POST /api/spawn`
 - `GET /api/sessions/{ref}`
 - `POST /api/sessions/{ref}/send`
+- `POST /api/sessions/{ref}/steer`
 - `POST /api/sessions/{ref}/compact`
 - `POST /api/sessions/{ref}/model`
 - `POST /api/sessions/{ref}/clear`
 - `POST /api/sessions/{ref}/fork`
 - `GET /api/sessions/{ref}/tasks`
+- `GET /api/sessions/{ref}/details`
+- `GET /api/sessions/{ref}/agents`
 - `GET /api/sessions/{ref}/events?mode=replay`
 - `GET /api/sessions/{ref}/events?mode=transcript-follow`
 
@@ -1665,9 +1946,13 @@ func TestTUITmuxE2E_SessionSlashCommands(t *testing.T) {
 
 	app.OpenFirstSession()
 	app.TypeLine("/help")
-	app.WaitFor("Available commands:", "/dashboard", "/model [provider/model]", "/tasks")
+	app.WaitFor("Available commands:", "/dashboard", "/model [provider/model]", "/tasks", "/auth")
 	app.TypeLine("/tasks")
 	app.WaitFor("task list")
+	app.TypeLine("/details")
+	app.WaitFor("MCP", "skills", "plugins")
+	app.TypeLine("/agents")
+	app.WaitFor("main", "subagent")
 	app.TypeLine("/model")
 	app.WaitFor("Select model")
 	app.TypeKey("Esc")
@@ -1695,7 +1980,33 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 }
 ```
 
-- [ ] **Step 5: Verify E2E**
+- [ ] **Step 5: Write E2E auth and busy-input test**
+
+Add:
+
+```go
+func TestTUITmuxE2E_OpenAIAuthAndSteer(t *testing.T) {
+	app := startTUITmuxWithFakeHub(t)
+	defer app.Close()
+
+	app.WaitFor("openai: login required")
+	app.TypeLine("/login openai")
+	app.WaitFor("https://", "paste redirect")
+	app.TypeLine("http://127.0.0.1/callback?code=test-code&state=test-state")
+	app.WaitFor("openai: signed in")
+
+	app.OpenBusySession()
+	app.TypeLine("try this next")
+	app.WaitFor("session is busy", "/steer")
+	app.TypeLine("/steer try this next")
+	app.WaitFor("steered")
+
+	app.TypeLine("/logout openai")
+	app.WaitFor("openai: login required")
+}
+```
+
+- [ ] **Step 6: Verify E2E**
 
 Run:
 
@@ -1705,7 +2016,7 @@ go test ./cmd/serf-tui -run TestTUITmuxE2E -count=1
 
 Expected: pass. If tmux is missing, tests should skip with a clear message.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add cmd/serf-tui/tmux_e2e_test.go
@@ -1772,7 +2083,7 @@ git commit -m "refactor(serf-tui): remove direct session mode"
 Run:
 
 ```bash
-go test ./cmd/serf-tui ./cmd/serf-hub ./internal/hubapi -count=1
+go test ./cmd/serf-tui ./cmd/serf-hub ./cmd/serf ./internal/hubapi ./internal/auth/openai ./llm/providers/openai ./llm -count=1
 ```
 
 Expected: pass.
@@ -1826,9 +2137,16 @@ Only commit if there are actual fixes.
 - [ ] Project drilldown shows live and recent ended sessions.
 - [ ] Session view supports generated `/help`.
 - [ ] Every advertised slash command is implemented or visibly disabled with a reason.
+- [ ] `serf openai login`, `serf openai status`, and `serf openai logout` work from the main-line auth stack.
+- [ ] TUI `/auth`, `/auth openai`, `/login openai`, and `/logout openai` work through hub APIs.
+- [ ] OpenAI adapter uses `OPENAI_API_KEY` first and Serf-owned OAuth second.
+- [ ] Hub-spawned daemons receive the same state-dir/auth context as the TUI.
 - [ ] `/model` opens picker; `/model provider/model` switches directly.
 - [ ] Spawn loads models and submits successfully.
 - [ ] OpenRouter live model list is filtered to tool-capable entries.
+- [ ] Busy input preserves the draft and `/steer` works when the hub advertises steering.
+- [ ] Input history and multiline composition match old TUI behavior.
+- [ ] `/status`, `/details`, `/tasks`, and `/agents` render hub-backed real data.
 - [ ] Ended session opens with replay history.
 - [ ] Sending to ended session resumes through hub.
 - [ ] `esc` enters browse mode.

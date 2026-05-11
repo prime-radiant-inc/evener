@@ -5,14 +5,14 @@ Status: Draft for implementation planning
 
 ## Summary
 
-`serf-tui` should be a first-class universal terminal client for Serf, not a thin dashboard wrapped around fragments of the old single-session TUI. The app starts at a live-session dashboard grouped by project, drills into a polished session workspace, supports spawning and resuming through the hub, and preserves the interaction quality users expect from Codex: clear navigation, slash commands, scrollback, fork-from-turn, model picking, task/status views, and reliable end-to-end behavior.
+`serf-tui` should be a first-class universal terminal client for Serf, not a thin dashboard wrapped around fragments of the old single-session TUI. The app starts at a live-session dashboard grouped by project, drills into a polished session workspace, supports spawning and resuming through the hub, integrates the main-line Serf-owned OpenAI OAuth stack as a first-class auth flow, and preserves the interaction quality users expect from Codex: clear navigation, slash commands, scrollback, fork-from-turn, model picking, task/status views, and reliable end-to-end behavior.
 
 The implementation foundation remains Bubble Tea. The repair is not a rewrite away from Bubble Tea; it is a Bubble Tea architecture cleanup:
 
 - One app shell owns navigation, global key handling, and layout.
 - One command registry owns slash commands, palette commands, help text, key hints, capability checks, and dispatch.
 - One reusable session surface owns transcript rendering, input, scrollback, tool expansion, fork selection, task/status overlays, and live/replay reduction.
-- The hub remains the only backend seam for discovery, spawn, resume, fork, model listing, task/status, REST actions, and SSE.
+- The hub remains the only backend seam for discovery, spawn, resume, fork, auth status/login/logout, model listing, task/status, REST actions, and SSE.
 
 This is a breaking design. There is no embedded/direct TUI compatibility path.
 
@@ -36,6 +36,7 @@ The TUI should be at least as good as Codex for daily work. That means:
 - Clean visual hierarchy in a terminal: a calm dashboard, readable transcript, restrained borders, consistent color states, good spacing, and no noisy chrome.
 - Fast drilldown from "what is running?" to "what happened?" to "what do I do next?"
 - Slash commands and command palette are reliable and discoverable.
+- Auth state is visible before it causes spawn/model failures.
 - Help text is generated from actual command definitions.
 - Every disabled action explains why.
 - Every network/backend failure is visible, specific, and recoverable.
@@ -50,6 +51,8 @@ The TUI should be at least as good as Codex for daily work. That means:
 - Let users return to the dashboard from anywhere with `ctrl+o` and `/dashboard`.
 - Let `esc` in a session enter transcript browse mode, where users can scroll back, select prior turns, expand tools, and fork a selected user turn.
 - Let spawn work from the dashboard with live model discovery, filtered to models usable by Serf.
+- Make Serf-owned OpenAI OAuth available from CLI, hub, and TUI without reusing Codex credentials.
+- Ensure hub-spawned daemons resolve the same Serf state-dir auth as manually started `serf` processes.
 - Use provider-qualified models everywhere: `provider/model`.
 - Keep hub APIs as the only backend contract so future remote hosts fit naturally.
 - Build automated tmux E2E coverage for the full user journey.
@@ -62,6 +65,9 @@ The TUI should be at least as good as Codex for daily work. That means:
 - No complete remote-host implementation in this phase.
 - No attempt to clone every Codex feature before the core hub TUI is correct.
 - No terminal editor for provider config, plugin code, MCP definitions, or prompts.
+- No reuse of Codex auth state, `~/.codex/auth.json`, browser profile cookies, or any other tool-owned credentials.
+- No generic multi-provider OAuth framework before OpenAI is correct end-to-end.
+- No OS keychain dependency in this phase; storage remains Serf-owned state-dir storage with owner-only permissions.
 - No broad visual redesign of the web hub as part of this work.
 
 ## Brainstormed Approaches
@@ -129,10 +135,12 @@ Chosen. This is the only approach that gets to "Codex-grade or better" without c
 Startup behavior:
 
 1. Resolve hub address from CLI flag, environment, config, then default `127.0.0.1:9180`.
-2. Probe hub health.
-3. If no local hub is running, start one.
-4. If a hub is already running, connect to it. The TUI must not assume new environment variables apply to an existing hub process.
-5. Show a useful startup error screen if hub startup/connect fails.
+2. Resolve the Serf state dir from CLI flag, environment, config, then default.
+3. Probe hub health.
+4. If no local hub is running, start one with the resolved state dir and current environment.
+5. If a hub is already running, connect to it. The TUI must not assume new environment variables or state-dir flags apply to an existing hub process.
+6. Fetch auth status and model summary before rendering spawn/model actions as ready.
+7. Show a useful startup error screen if hub startup/connect fails.
 
 The startup screen must distinguish:
 
@@ -140,7 +148,19 @@ The startup screen must distinguish:
 - Hub failed to bind.
 - Hub is running but unhealthy.
 - Hub exists but is an older incompatible API version.
+- Existing hub was started with a different state dir or stale provider/auth environment.
 - Hub is remote, so auto-start is not attempted.
+
+CLI startup contract:
+
+- `--hub-addr`: connect to an explicit hub address.
+- `--hub-bin`: explicit local `serf-hub` binary for auto-start.
+- `--no-auto-start-hub`: fail clearly instead of starting a local hub.
+- `--state-dir`: resolved Serf state dir used for auth, history, preferences, hub auto-start, and hub-spawned daemons.
+- `--log-file`: write TUI diagnostics without polluting the terminal UI.
+- `--debug`: enable verbose TUI/hub diagnostics in the log file and optional debug overlay.
+
+Precedence must be tested: CLI flags, environment, config, defaults.
 
 ### Dashboard
 
@@ -301,7 +321,9 @@ Behavior:
 - `m` opens model picker.
 - Model picker uses live hub discovery.
 - Live OpenRouter discovery includes only models Serf can use with tools.
-- If no models are available, the form says exactly why: no configured provider, provider listing failed, or all live models were filtered out.
+- If no models are available, the form says exactly why: no configured provider, provider listing failed, auth missing/expired, or all live models were filtered out.
+- If OpenAI models are selected but neither `OPENAI_API_KEY` nor stored Serf OpenAI OAuth is usable, the form shows `OpenAI login required` and offers `/login openai` instead of timing out on spawn.
+- Spawn requests include the resolved state-dir/profile identity so the hub can start daemons that see the same Serf-owned auth record as the TUI.
 - `enter` spawns.
 - Success opens the new session.
 - Failure stays in the form and shows the error.
@@ -315,6 +337,7 @@ Sources:
 - Hub `/api/models`.
 - Each entry is `provider/model`.
 - The hub enriches with catalog metadata when available.
+- The hub includes provider auth readiness and auth error metadata when a provider cannot list or use models.
 
 Filtering:
 
@@ -322,6 +345,7 @@ Filtering:
 - OpenRouter models require known tool support.
 - Other providers may include unknown metadata if the provider API itself is already scoped to usable chat models.
 - Configured models are used as a fallback when live discovery returns none.
+- OpenAI configured models remain visible when auth is missing, but disabled with a login-required reason.
 
 Presentation:
 
@@ -339,6 +363,74 @@ anthropic
 keys: type filter  enter choose  esc cancel
 ```
 
+### OpenAI Auth And Account State
+
+OpenAI OAuth was already implemented after the `serf-hub` branch point and landed on `main`. The hub TUI work must integrate and adapt that main-line implementation, not redesign a weaker replacement.
+
+Branching fact:
+
+- `serf-hub` branched at `d3114c9` on 2026-05-07.
+- Core OpenAI auth landed later on `main` in `c72f4b1`, `62ade8b`, `84c92a8`, `f8a17f4`, and `48933a9` on 2026-05-08.
+- Therefore the missing auth in `serf-hub` is a stale branch-base integration gap, not a later deletion.
+
+Hard requirements:
+
+- Serf owns the OpenAI login. Do not reuse Codex auth state, `~/.codex/auth.json`, browser cookies, or any other product's credential cache.
+- The canonical CLI remains `serf openai login`, `serf openai logout`, and `serf openai status`.
+- The TUI exposes the same capability through slash/palette commands: `/auth`, `/login openai`, `/logout openai`, and `/auth openai`.
+- `OPENAI_API_KEY` takes precedence over stored Serf OAuth and is reported as the active source.
+- Stored OAuth lives under the resolved Serf state dir at `<state-dir>/auth/openai.json` with owner-only permissions and atomic writes.
+- Login uses browser PKCE with a localhost callback, always prints the authorize URL, and supports pasted final redirect URL fallback for remote sessions.
+- The OpenAI adapter resolves credentials through the shared auth service: env key first, then stored OAuth, then refresh if needed.
+- Hub-spawned daemons receive the same state-dir/profile context as the TUI, so OAuth works for sessions spawned from the dashboard.
+- Logout deletes only Serf-owned OpenAI auth state and never mutates env credentials.
+
+TUI status surfaces:
+
+- Dashboard status area shows provider readiness summary, for example `openai: env`, `openai: signed in`, `openai: login required`, or `openai: refresh failed`.
+- Spawn form shows provider-specific auth reasons before submit.
+- Model picker keeps disabled OpenAI configured models visible when auth is missing, with `login required` instead of hiding every option.
+- Session workspace status line reports auth failures from send/model/compact actions with a direct next step.
+
+Hub auth contract:
+
+- The TUI never reads auth files directly.
+- The hub exposes typed auth status/login/logout endpoints through `internal/hubapi.Client`.
+- Login begin returns the authorize URL, callback state, and whether a local callback is active.
+- Login completion supports both callback-completed and manual pasteback completion.
+- Auth status includes source, signed-in state, email/account metadata when known, expiry/refresh status, and a re-login reason when unusable.
+
+### Input, Busy State, And Steering
+
+The old TUI had important input behavior that must survive the hub rebuild:
+
+- `enter` sends, `alt+enter` and `ctrl+j` insert newlines.
+- Up/down recall persisted input history when the composer is empty.
+- Failed sends preserve the draft exactly.
+- If a live session rejects `/input` because it is busy but supports steering, the TUI offers steering instead of dropping input.
+- `/steer` sends guidance to a busy processing session through the hub `Steer` action.
+- When steering is unavailable, the composer explains why and keeps the draft.
+- Input grows to a bounded max height, then scrolls internally rather than pushing the transcript off screen.
+
+### Status, Details, And Subagents
+
+`/status`, `/details`, `/tasks`, and `/agents` must not be placeholders.
+
+Status/details parity:
+
+- `/status` opens a concise overlay with session state, model, project dir, turns, context pressure, current task summary, and recent errors.
+- `/details` opens the full diagnostic view.
+- Full details include tools, MCP servers, skills, plugins, hooks, main/subagent agents, auth source, hub ref, daemon address when local, transcript replay/live URLs, and capabilities.
+- The details view is backed by a hub `Details` endpoint, not direct daemon/filesystem reads from the TUI.
+
+Subagent transcript behavior:
+
+- `/agents` opens a picker for main transcript plus subagent transcripts.
+- The hub owns subagent discovery and returns stable transcript identities, labels, status, and replay/follow URLs.
+- Selecting a subagent switches the session surface to that transcript while preserving the session header and dashboard return behavior.
+- Replay/live dedupe rules are identical for main and subagent transcripts.
+- If a subagent transcript is unavailable, the picker shows the exact reason and keeps the user in the parent session.
+
 ### Slash Commands
 
 Slash commands are first-class and generated from one registry.
@@ -346,11 +438,16 @@ Slash commands are first-class and generated from one registry.
 Required commands:
 
 - `/help`: show generated command and key help.
+- `/auth`: show provider auth summary.
+- `/auth openai`: show detailed OpenAI auth status.
+- `/login openai`: start Serf-owned OpenAI login.
+- `/logout openai`: remove Serf-owned OpenAI auth state.
 - `/dashboard`: return to live dashboard.
 - `/project`: open current session's project.
 - `/projects`: open project picker.
 - `/new`: open spawn form.
 - `/search`: open command/search palette.
+- `/steer`: send guidance to a busy session when supported.
 - `/compact`: compact current live session.
 - `/status`: show session details/status.
 - `/details`: alias for `/status`.
@@ -436,6 +533,7 @@ Keep package `main` for now, but split files by responsibility.
 cmd/serf-tui/
   main.go                    startup only
   hub_start.go               hub auto-start and health
+  openai_auth.go             TUI auth commands/status/login orchestration
   app_model.go               top-level Bubble Tea app shell
   app_modes.go               mode enum and navigation helpers
   command_registry.go        slash, palette, help, key hint registry
@@ -453,6 +551,21 @@ cmd/serf-tui/
   theme_model.go             theme picker integration
   styles.go                  Lip Gloss theme tokens
   tmux_e2e_test.go           full terminal coverage
+
+cmd/serf/
+  openai_login.go            CLI OpenAI login
+  openai_logout.go           CLI OpenAI logout
+  openai_status.go           CLI OpenAI status
+
+internal/auth/openai/
+  config.go                  OAuth endpoints/client config
+  pkce.go                    verifier/challenge/state generation
+  server.go                  localhost callback listener
+  manual.go                  pasted redirect URL parsing
+  tokens.go                  code/refresh exchange
+  storage.go                 state-dir auth record
+  claims.go                  account metadata extraction
+  service.go                 login/logout/status/runtime token service
 ```
 
 Do not create a separate package yet. The first goal is clear file boundaries inside the existing binary.
@@ -463,6 +576,7 @@ Do not create a separate package yet. The first goal is clear file boundaries in
 
 - Hub client.
 - Hub base URL.
+- Resolved Serf state dir.
 - Current mode.
 - Navigation stack or return target.
 - Dashboard state.
@@ -478,7 +592,7 @@ It routes Bubble Tea messages to the active component and handles global keys:
 - `ctrl+o`: dashboard.
 - `ctrl+c`: mode-aware interrupt/quit.
 - Window size: propagate dimensions.
-- Hub tree/session/model/task/stream messages: route to relevant component.
+- Hub tree/session/model/task/auth/detail/stream messages: route to relevant component.
 
 ### Command Registry
 
@@ -567,6 +681,13 @@ Needed client methods:
 - `Clear`
 - `Fork`
 - `SetModel`
+- `Steer`
+- `Details`
+- `SubagentTranscripts`
+- `AuthStatus`
+- `AuthLoginBegin`
+- `AuthLoginComplete`
+- `AuthLogout`
 - `ReplayTranscript`
 - `FollowTranscript`
 
@@ -590,26 +711,50 @@ Unit tests:
 
 Hub API tests:
 
+- Auth status reports env, signed-out, signed-in, expired, and refresh-failed states.
+- Auth login begin returns authorize URL and callback metadata without leaking secrets.
+- Auth login complete accepts manual pasteback and rejects mismatched state.
+- Auth logout deletes only Serf OpenAI auth state.
 - `/api/models` filters OpenRouter live discovery to tool-capable models.
 - `/api/models` falls back to configured models if live discovery returns none.
+- `/api/models` returns auth readiness/disabled reasons for OpenAI when auth is missing.
 - Spawn accepts provider-qualified model.
+- Spawn propagates state-dir/auth context to hub-started daemons.
 - Resume returns replay plus live capability.
+- Details returns tools, MCP servers, skills, plugins, hooks, agents, subagents, capabilities, auth, and runtime metadata.
+- Subagent transcript listing returns stable replay/follow sources.
 - Actions return capability-appropriate status.
 
 Tmux E2E tests:
 
+- Start TUI with each startup flag and verify precedence/behavior.
 - Start TUI against fake hub.
 - Dashboard shows live sessions only.
 - Project drilldown shows live plus recent ended.
+- Auth status appears on dashboard and spawn form.
+- `/login openai` drives a fake PKCE/pasteback flow.
+- `/auth openai` and `/logout openai` update visible auth state.
 - Open live session and see replay.
 - Type `/help`; every listed command is executable or explicitly disabled.
 - `/model` opens picker.
+- Model picker supports grouping, filtering, active model, disabled auth-required options, and direct `/model provider/model`.
 - Spawn form loads models and submits.
+- Spawn form edits task, directory, agent, reasoning effort, and provider-qualified model.
 - Spawn success opens new session.
 - Ended session opens with history.
 - Sending to ended session resumes and sends.
+- Busy send preserves input and offers `/steer` when supported.
+- Input history persists and multiline composition works.
 - `esc` browse, select user turn, fork.
+- `/status`, `/details`, `/tasks`, and `/agents` render real hub-backed data.
+- Subagent transcript picker can open replay and live streams.
+- Theme picker changes and persists `system`, `dark`, and `light`.
 - `ctrl+o` returns to dashboard.
+
+Parity checklist:
+
+- Every old TUI user-visible flag, slash command, keybinding, input behavior, picker behavior, status/detail section, and transcript event type is mapped to a spec requirement and at least one unit or tmux E2E test.
+- If a behavior is intentionally removed, the spec must name it as a non-goal with rationale before code is deleted.
 
 ## Rollout
 
@@ -631,10 +776,16 @@ Implement in small commits:
 - Dashboard root shows only live sessions grouped by project.
 - Project drilldown shows project history.
 - Session view has working slash commands, generated help, scrollback, tool expansion, fork, tasks, status, model switch, compact, clear, interrupt, and dashboard return.
+- Session input supports persisted history, multiline composition, draft preservation on failure, and busy-session steering.
+- `/status`, `/details`, `/tasks`, and `/agents` are backed by hub data and render parity-level detail from the old TUI.
 - Spawn loads live models, filters unusable OpenRouter models, submits, and opens the new session.
+- Spawn supports task, directory, agent, reasoning effort, provider-qualified model, and auth-aware disabled states.
+- Serf-owned OpenAI OAuth works through CLI, hub, and TUI without Codex credential reuse.
+- Hub-spawned daemons can use stored Serf OpenAI OAuth from the resolved state dir.
 - Resume from ended session loads transcript history and sends through hub.
 - No command advertised in `/help` is missing.
 - No action fails silently.
+- No old TUI user-visible behavior is dropped without an explicit spec non-goal and test adjustment.
 - Tmux E2E tests cover the full flows above.
-- `go test ./cmd/serf-tui ./cmd/serf-hub ./internal/hubapi` passes.
+- `go test ./cmd/serf-tui ./cmd/serf-hub ./cmd/serf ./internal/hubapi ./internal/auth/openai ./llm/providers/openai ./llm` passes.
 - `go test ./...` passes before merge.
