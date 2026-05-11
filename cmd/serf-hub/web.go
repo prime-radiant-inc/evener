@@ -163,11 +163,18 @@ func (s *WebServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	workspaceURL := "/workspace/empty"
 	if r.URL.Path == "/new" {
 		workspaceURL = "/workspace/spawn"
-		// Forward an optional ?dir= so /new?dir=/path opens the spawn
-		// pane with the working_dir pre-filled (used by the sidebar's
-		// per-project "+" button).
+		// Forward optional pre-fill params:
+		//   ?dir=<path> — sidebar's per-project "+" button uses this.
+		//   ?task=<text> — the palette's /spawn command seeds the textarea.
+		params := url.Values{}
 		if dir := strings.TrimSpace(r.URL.Query().Get("dir")); dir != "" {
-			workspaceURL += "?dir=" + url.QueryEscape(dir)
+			params.Set("dir", dir)
+		}
+		if task := r.URL.Query().Get("task"); task != "" {
+			params.Set("task", task)
+		}
+		if encoded := params.Encode(); encoded != "" {
+			workspaceURL += "?" + encoded
 		}
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1370,6 +1377,7 @@ type spawnViewData struct {
 	DefaultBranch          string
 	DefaultBranchValue     string
 	DefaultAccessMode      string
+	DefaultTask            string // optional ?task= pre-fill
 	RecentTasks            []string
 }
 
@@ -1393,6 +1401,7 @@ func (s *WebServer) handleWorkspaceSpawn(w http.ResponseWriter, r *http.Request)
 		DefaultWorkingDirValue: defaultWorkingDirValue,
 		DefaultBranch:          "(default)",
 		DefaultAccessMode:      "full",
+		DefaultTask:            r.URL.Query().Get("task"),
 	}
 	if s.cfg.Past != nil {
 		results := s.cfg.Past.Search("", 5, 0)
@@ -1587,6 +1596,10 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 				strings.Contains(lower, "image") {
 				continue
 			}
+			mi := catalogModelInfo(cat, m.ID)
+			if prov == "openrouter" && (mi == nil || !mi.SupportsTools) {
+				continue
+			}
 			// Use the registered provider name (prov), not m.Provider — wrapper
 			// adapters like openrouter forward to openaicompat which reports
 			// itself as "openai-compatible". The hub's spawn flow needs the
@@ -1599,14 +1612,12 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 			}
 			// Enrich from the embedded catalog where the live API doesn't
 			// carry context window or pricing.
-			if cat != nil {
-				if mi := cat.GetModelInfo(m.ID); mi != nil {
-					entry["context_window"] = mi.ContextWindow
-					entry["supports_tools"] = mi.SupportsTools
-					entry["supports_reasoning"] = mi.SupportsReasoning
-					entry["input_cost_per_million"] = mi.InputCostPerMillion
-					entry["output_cost_per_million"] = mi.OutputCostPerMillion
-				}
+			if mi != nil {
+				entry["context_window"] = mi.ContextWindow
+				entry["supports_tools"] = mi.SupportsTools
+				entry["supports_reasoning"] = mi.SupportsReasoning
+				entry["input_cost_per_million"] = mi.InputCostPerMillion
+				entry["output_cost_per_million"] = mi.OutputCostPerMillion
 			}
 			out = append(out, entry)
 		}
@@ -1617,6 +1628,13 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 	liveModelsCache.expires = time.Now().Add(liveModelsTTL)
 	liveModelsCache.mu.Unlock()
 	return out
+}
+
+func catalogModelInfo(cat *llm.ModelCatalog, modelID string) *llm.ModelInfo {
+	if cat == nil {
+		return nil
+	}
+	return cat.GetModelInfo(modelID)
 }
 
 // handleApiDirs returns directories matching a path prefix for the directory autocomplete.

@@ -172,15 +172,13 @@ function tick(ms) { return new Promise(r => setTimeout(r, ms)); }
     const dom = makeDom(`<div id="conversation" data-session-id="01S" data-state="live"></div>`,
       { url: "http://localhost/s/01S" });
     const ctx = await loadAndOpen(dom);
-    // Provide /models response so the model command's enum source resolves.
+    // Provide /api/models response so the model command's enum source resolves.
     ctx.window.fetch = (url) => {
-      if (url === "/models") {
-        return Promise.resolve({ ok: true, json: () => Promise.resolve({
-          models: [
-            { id: "claude-opus-4-7", display_name: "Opus 4.7" },
-            { id: "claude-sonnet-4-6", display_name: "Sonnet 4.6" },
-          ]
-        })});
+      if (url === "/api/models") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve([
+          { provider: "anthropic", model: "claude-opus-4-7", display_name: "Opus 4.7" },
+          { provider: "anthropic", model: "claude-sonnet-4-6", display_name: "Sonnet 4.6" },
+        ])});
       }
       return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
     };
@@ -201,6 +199,9 @@ function tick(ms) { return new Promise(r => setTimeout(r, ms)); }
     pass(ctx.dialog.open === true, "Esc from args mode does NOT close the dialog");
     pass(pillEl.hidden === true, "args-mode pill hidden after Esc");
     pass(/Commands/.test(ctx.results.innerHTML), "Esc from args returns to command-filter");
+    // The user typed "/model" to get into args mode. After backing out
+    // they should see that same filter restored, not a generic "/".
+    pass(ctx.input.value === "/model", "Esc from args restores pre-args filter (got " + JSON.stringify(ctx.input.value) + ")");
   }
 
   // -------- Scenario 9: Selecting an enum item POSTs to /s/<id>/model --------
@@ -211,10 +212,10 @@ function tick(ms) { return new Promise(r => setTimeout(r, ms)); }
     let postedPath = null;
     let postedBody = null;
     ctx.window.fetch = (url, opts) => {
-      if (url === "/models") {
-        return Promise.resolve({ ok: true, json: () => Promise.resolve({
-          models: [{ id: "claude-opus-4-7", display_name: "Opus 4.7" }]
-        })});
+      if (url === "/api/models") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve([
+          { provider: "anthropic", model: "claude-opus-4-7", display_name: "Opus 4.7" },
+        ])});
       }
       postedPath = url;
       postedBody = opts && opts.body;
@@ -229,7 +230,7 @@ function tick(ms) { return new Promise(r => setTimeout(r, ms)); }
     ctx.input.dispatchEvent(new ctx.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     await tick(10);
     pass(postedPath === "/s/01S/model", "selecting a model POSTs to /s/<id>/model (got " + postedPath + ")");
-    pass(/claude-opus-4-7/.test(String(postedBody)), "POST body contains chosen model id");
+    pass(/anthropic\/claude-opus-4-7/.test(String(postedBody)), "POST body contains provider/model id");
     pass(ctx.dialog.open === false, "dialog closes after selecting a model");
   }
 
@@ -243,6 +244,29 @@ function tick(ms) { return new Promise(r => setTimeout(r, ms)); }
     pass(ctx.dialog.open === true, "openWith opens the dialog");
     pass(ctx.input.value === "/", "openWith seeds the input with the given query");
     pass(/Commands/.test(ctx.results.innerHTML), "openWith with / enters command-filter mode");
+  }
+
+  // -------- Scenario 10b: ARIA roles and active-descendant tracking --------
+  {
+    const dom = makeDom("");
+    const ctx = await loadAndOpen(dom);
+    // Add ARIA to test markup that paletteHTML() leaves bare.
+    ctx.results.setAttribute("role", "listbox");
+    ctx.input.setAttribute("role", "combobox");
+    ctx.input.setAttribute("aria-controls", "search-results");
+    ctx.window.SerfSearch.open();
+    ctx.input.value = "/";
+    ctx.input.dispatchEvent(new ctx.window.Event("input", { bubbles: true }));
+    await tick(20);
+    const rows = ctx.results.querySelectorAll(".search-row");
+    pass(rows.length > 0, "command-filter renders rows");
+    pass(rows[0].getAttribute("role") === "option", "row has role=option");
+    pass(rows[0].getAttribute("aria-selected") === "true", "active row has aria-selected=true");
+    pass(ctx.input.getAttribute("aria-activedescendant") === rows[0].id, "input aria-activedescendant points at active row");
+    // Move down; assert active-descendant follows.
+    ctx.input.dispatchEvent(new ctx.window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    await tick(10);
+    pass(ctx.input.getAttribute("aria-activedescendant") === rows[1].id, "ArrowDown moves aria-activedescendant");
   }
 
   // -------- Scenario 11: Every command dispatches its declared side effect --------
@@ -280,7 +304,10 @@ async function commandSweep() {
     { name: "search", page: "home", query: "/search", expectStaysOpen: true,
       expect: (c) => assertCS(c, c.input.value === "", "search command clears input") },
     { name: "help", page: "home", query: "/help", expectStaysOpen: true,
-      expect: (c) => assertCS(c, c.input.value === "/", "help command sets input to /") },
+      expect: (c) => {
+        assertCS(c, /Keyboard shortcuts/.test(c.results.innerHTML), "help renders Keyboard shortcuts section");
+        assertCS(c, /⌘K/.test(c.results.innerHTML), "help mentions ⌘K");
+      } },
     { name: "compact", page: "session", query: "/compact",
       expect: (c) => assertCS(c, sawFetchCS(c, "POST", "/s/01S/compact"), "POST /s/01S/compact") },
     { name: "interrupt", page: "session", query: "/interrupt",
@@ -298,24 +325,18 @@ async function commandSweep() {
         assertCS(c, !sawFetchCS(c, "POST", "/s/01S/shutdown"), "no POST when confirm cancelled");
       } },
     { name: "model", page: "session", query: "/model", argEntry: "opus",
-      modelsResponse: { models: [{ id: "claude-opus-4-7", display_name: "Opus 4.7" }] },
+      modelsResponse: [{ provider: "anthropic", model: "claude-opus-4-7", display_name: "Opus 4.7" }],
       expect: (c) => {
         const hit = c.calls.fetches.find(f => f.url === "/s/01S/model");
         assertCS(c, !!hit, "POST /s/01S/model");
-        assertCS(c, /claude-opus-4-7/.test(String(hit && hit.opts && hit.opts.body)), "body carries chosen model id");
+        const body = String(hit && hit.opts && hit.opts.body || "");
+        assertCS(c, body.indexOf("anthropic/claude-opus-4-7") >= 0, "body carries provider/model id (got " + body + ")");
       } },
     { name: "steer", page: "session", query: "/steer", argEntry: "less rambling",
       expect: (c) => {
         const hit = c.calls.fetches.find(f => f.url === "/s/01S/steer");
         assertCS(c, !!hit, "POST /s/01S/steer");
         assertCS(c, /less rambling/.test(String(hit && hit.opts && hit.opts.body)), "body carries steer text");
-      } },
-    { name: "fork", page: "session", query: "/fork", argEntry: "",
-      withUserTurns: ["please reproduce the bug", "and one more thing"],
-      expect: (c) => {
-        const hit = c.calls.fetches.find(f => f.url === "/s/01S/fork");
-        assertCS(c, !!hit, "POST /s/01S/fork");
-        assertCS(c, /"turn":1/.test(String(hit && hit.opts && hit.opts.body)), "body carries chosen turn index");
       } },
     { name: "copy-id", page: "session", query: "/copy",
       expect: (c) => assertCS(c, c.calls.clipboardWrites.slice(-1)[0] === "01S", "wrote session ID to clipboard") },
@@ -371,8 +392,8 @@ async function runCaseCS(tc) {
   };
 
   window.fetch = (u, opts) => {
-    if (u === "/models") {
-      return Promise.resolve({ ok: true, json: () => Promise.resolve(tc.modelsResponse || { models: [] }) });
+    if (u === "/api/models") {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(tc.modelsResponse || []) });
     }
     calls.fetches.push({ url: u, opts: opts || {} });
     return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });

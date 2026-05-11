@@ -217,6 +217,54 @@ func TestWeb_WorkspaceSpawn_SubmitsPrefilledWorkingDir(t *testing.T) {
 	}
 }
 
+// TestWeb_WorkspaceSpawn_PrefillsTaskFromQuery verifies that ?task=<text>
+// on /workspace/spawn (and the /new wrapper that forwards it) reaches the
+// rendered textarea. The palette's /spawn command relies on this.
+func TestWeb_WorkspaceSpawn_PrefillsTaskFromQuery(t *testing.T) {
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    NewPastIndex(""),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/workspace/spawn?task="+url.QueryEscape("do the thing"), nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	body := rec.Body.String()
+	// The textarea is name="task" and the content sits between the open/close tags.
+	want := `name="task" placeholder="describe the task…" autofocus>do the thing</textarea>`
+	if !strings.Contains(body, want) {
+		t.Fatalf("spawn form missing prefilled task %q:\n%s", want, body)
+	}
+}
+
+// TestWeb_Index_NewRouteForwardsTaskToWorkspace verifies that /new?task=<text>
+// renders the app shell wired to /workspace/spawn?task=<text> so the textarea
+// pre-fill kicks in once the workspace partial loads.
+func TestWeb_Index_NewRouteForwardsTaskToWorkspace(t *testing.T) {
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    NewPastIndex(""),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/new?task="+url.QueryEscape("hello world"), nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	body := rec.Body.String()
+	// html/template escapes "+" → "&#43;" inside attribute values.
+	want := `/workspace/spawn?task=hello&#43;world`
+	if !strings.Contains(body, want) {
+		t.Fatalf("app shell missing forwarded ?task in workspace url %q:\n%s", want, body)
+	}
+}
+
 // TestWeb_PastReplay_ImagesAreShaReferenced verifies that USER_INPUT turns
 // containing image bytes get their bytes stripped from the SSE replay; the
 // renderer fetches lazily via /s/<id>/images/<sha>. Without this, multi-MB
@@ -1113,6 +1161,58 @@ func TestWeb_ApiModels_ReturnsConfiguredModelsWhenLiveUnavailable(t *testing.T) 
 	}
 	if models[0].Provider != "openai" || models[0].Model != "gpt-5.2" {
 		t.Fatalf("model mismatch: %+v", models[0])
+	}
+}
+
+func TestWeb_ApiModels_FiltersOpenRouterLiveModelsToToolCapable(t *testing.T) {
+	liveModelsCache.mu.Lock()
+	liveModelsCache.expires = time.Time{}
+	liveModelsCache.models = nil
+	liveModelsCache.mu.Unlock()
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("GEMINI_API_KEY", "")
+	t.Setenv("GLM_API_KEY", "")
+	t.Setenv("GROK_API_KEY", "")
+	t.Setenv("KIMI_API_KEY", "")
+	t.Setenv("MINIMAX_API_KEY", "")
+	t.Setenv("OPENROUTER_API_KEY", "")
+	t.Setenv("OLLAMA_HOST", "")
+	t.Setenv("OLLAMA_API_KEY", "")
+
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data":[{"id":"deepseek/deepseek-chat"},{"id":"morph/morph-v3-fast"},{"id":"unknown/no-tools"}]}`)) //nolint:errcheck
+	}))
+	defer live.Close()
+	t.Setenv("OPENROUTER_API_KEY", "test-key")
+	t.Setenv("OPENROUTER_BASE_URL", live.URL+"/v1")
+
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180"})
+	req := httptest.NewRequest(http.MethodGet, "/api/models", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	var models []hubapi.ModelOption
+	if err := json.Unmarshal(rec.Body.Bytes(), &models); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("models: got %d, want 1; body=%s", len(models), rec.Body.String())
+	}
+	if models[0].Provider != "openrouter" || models[0].Model != "deepseek/deepseek-chat" {
+		t.Fatalf("model mismatch: %+v", models[0])
+	}
+	if !models[0].SupportsTools {
+		t.Fatalf("model should be marked tool-capable: %+v", models[0])
 	}
 }
 

@@ -11,6 +11,7 @@
   let items = [], active = -1;
   let selectedCommand = null;   // non-null only in command-args mode
   let argsEnumLoaded = false;   // tracks whether async enum source resolved
+  let preArgsFilter = "/";       // input value before entering args mode; restored on back-out
 
   function init() {
     dialog = document.getElementById("search-dialog");
@@ -154,28 +155,19 @@
   }
 
   function fetchModels() {
-    return fetch("/models").then(r => r.ok ? r.json() : { models: [] }).then(resp => {
-      const list = (resp && resp.models) || [];
+    // /api/models returns an array of { provider, model, display_name, ... }.
+    // The session /model POST mirrors the spawn picker convention by sending
+    // "provider/model" so the daemon can route across providers.
+    return fetch("/api/models").then(r => r.ok ? r.json() : []).then(list => {
+      if (!Array.isArray(list)) return [];
       return list.map(m => ({
-        id: m.id,
-        label: m.display_name || m.id,
-        hint: m.id !== (m.display_name || m.id) ? m.id : "",
+        id: m.provider + "/" + m.model,
+        label: m.display_name || m.model,
+        hint: m.provider,
       }));
     }).catch(() => []);
   }
 
-  function collectUserTurns() {
-    const conv = document.getElementById("conversation");
-    if (!conv) return [];
-    const out = [];
-    let turn = 0;
-    conv.querySelectorAll(".user-message").forEach(el => {
-      turn += 1;
-      const text = (el.textContent || "").replace(/\s+/g, " ").trim();
-      out.push({ id: String(turn), label: text.slice(0, 80) || ("turn " + turn), hint: "turn " + turn });
-    });
-    return out;
-  }
 
   // Nav is the navigation indirection. JSDOM's Location.assign is
   // non-configurable, so production code routes navigations through this
@@ -201,9 +193,9 @@
       { id: "search", title: "Search sessions", hint: "clear / and search", keywords: ["find"], scope: "global",
         stayOpen: true,
         run: () => { input.value = ""; input.dispatchEvent(new Event("input", { bubbles: true })); input.focus(); } },
-      { id: "help", title: "Show all commands", hint: "TUI parity reference", keywords: ["?"], scope: "global",
+      { id: "help", title: "Show keyboard shortcuts", hint: "TUI parity reference", keywords: ["?", "keys", "shortcuts"], scope: "global",
         stayOpen: true,
-        run: () => { input.value = "/"; input.dispatchEvent(new Event("input", { bubbles: true })); input.focus(); } },
+        run: () => { renderHelpPanel(); input.focus(); } },
 
       // session (live only)
       { id: "compact", title: "Compact transcript", hint: "free up token space", keywords: ["compress"], scope: "session",
@@ -230,21 +222,19 @@
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ text: text }),
           }) } },
-      { id: "fork", title: "Fork from turn", hint: "edit and branch", keywords: ["branch"], scope: "session",
-        args: { kind: "enum", placeholder: "choose a turn…",
-          source: () => collectUserTurns(),
-          run: (ctx, item) => fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/fork", {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ turn: parseInt(item.id, 10), edited_message: "", label: "fork" }),
-          }) } },
+      // /fork omitted: fork requires an edited message and the palette has
+      // no way to gather one. Use the "edit" affordance on the user-message
+      // row in the transcript instead. See kata #34.
 
       // session info (live or ended)
       { id: "copy-id", title: "Copy session ID", hint: "clipboard", keywords: ["clipboard"], scope: "ended-ok",
         run: (ctx) => {
           if (!ctx.sessionId) return;
-          if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(ctx.sessionId);
-          }
+          copyToClipboard(ctx.sessionId).catch(() => {
+            if (window.SerfRenderer && window.SerfRenderer.appendBanner) {
+              window.SerfRenderer.appendBanner("error", "couldn't copy to clipboard");
+            }
+          });
         } },
       { id: "tasks", title: "Toggle tasks panel", hint: "", keywords: [], scope: "ended-ok",
         run: () => { const btn = document.querySelector("[data-tasks-trigger]"); if (btn) btn.click(); } },
@@ -253,6 +243,36 @@
       { id: "project", title: "Reveal session's project", hint: "scroll sidebar", keywords: ["folder"], scope: "ended-ok",
         run: (ctx) => revealProject(ctx) },
     ];
+  }
+
+  // copyToClipboard prefers the async Clipboard API but falls back to the
+  // legacy execCommand path when the page isn't a secure context (HTTP-only
+  // deployments, file://, etc.). Returns a Promise<boolean>; rejects only if
+  // both paths fail outright.
+  function copyToClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).catch(() => execCopyFallback(text));
+    }
+    return execCopyFallback(text);
+  }
+
+  function execCopyFallback(text) {
+    return new Promise((resolve, reject) => {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "absolute";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand && document.execCommand("copy");
+        document.body.removeChild(ta);
+        if (ok) resolve(true); else reject(new Error("execCommand copy returned false"));
+      } catch (e) {
+        reject(e);
+      }
+    });
   }
 
   function applyTheme(name) {
@@ -327,17 +347,46 @@
   }
 
   function renderCommandRow(c, idx) {
-    return '<a class="search-row search-row-command" data-idx="' + idx + '">' +
-           '<span class="search-cmd-glyph">/</span>' +
+    return '<a class="search-row search-row-command" role="option" id="search-row-' + idx + '" data-idx="' + idx + '">' +
+           '<span class="search-cmd-glyph" aria-hidden="true">/</span>' +
            '<span class="search-title">' + escapeHtml(c.title) + '</span>' +
            '<span class="search-cmd-id">/' + escapeHtml(c.id) + '</span>' +
            '<span class="search-cmd-hint">' + escapeHtml(c.hint || "") + '</span>' +
            '</a>';
   }
 
+  // renderHelpPanel paints a keyboard-shortcut reference into the results
+  // pane and clears the active item list so Enter is a no-op. Typing
+  // anything new fires the input event and restores normal filtering.
+  function renderHelpPanel() {
+    items = [];
+    active = -1;
+    const rows = [
+      ["⌘K / Ctrl-K", "open the palette from anywhere"],
+      ["/", "at the start of an empty message textarea — opens command mode"],
+      ["↑ ↓", "navigate the list"],
+      ["↵", "run the highlighted command (or open a search result)"],
+      ["⌘↵", "open a search result in a new tab"],
+      ["⇧↵", "jump to a turn in the current session"],
+      ["Esc", "close the palette (or back out of args mode)"],
+    ];
+    let html = '<div class="search-section-header">Keyboard shortcuts</div>';
+    rows.forEach(([keys, desc]) => {
+      html += '<div class="search-help-row">' +
+              '<span class="search-help-keys">' + escapeHtml(keys) + '</span>' +
+              '<span class="search-help-desc">' + escapeHtml(desc) + '</span>' +
+              '</div>';
+    });
+    results.innerHTML = html;
+  }
+
   // -------- command-args mode --------
 
   function enterArgsMode(cmd) {
+    // Remember the filter that got us here so Esc back-out doesn't reset
+    // the user's typing. Default to "/" so an empty filter still drops
+    // them in command-filter mode rather than empty search mode.
+    preArgsFilter = input.value && input.value.startsWith("/") ? input.value : "/";
     selectedCommand = cmd;
     argsEnumLoaded = false;
     showPill(cmd.title);
@@ -355,10 +404,10 @@
     selectedCommand = null;
     argsEnumLoaded = false;
     hidePill();
-    input.value = "/";
+    input.value = preArgsFilter || "/";
     input.placeholder = "search live + past sessions";
     input.focus();
-    renderCommands("/");
+    renderCommands(input.value);
   }
 
   function showPill(title) {
@@ -424,7 +473,7 @@
   }
 
   function renderArgItemRow(it, idx) {
-    return '<a class="search-row search-row-argitem" data-idx="' + idx + '">' +
+    return '<a class="search-row search-row-argitem" role="option" id="search-row-' + idx + '" data-idx="' + idx + '">' +
            '<span class="search-title">' + escapeHtml(it.label || it.id) + '</span>' +
            '<span class="search-cmd-hint">' + escapeHtml(it.hint || "") + '</span>' +
            '</a>';
@@ -549,7 +598,7 @@
   }
 
   function renderRow(r, idx, query) {
-    return '<a class="search-row" data-idx="' + idx + '">' +
+    return '<a class="search-row" role="option" id="search-row-' + idx + '" data-idx="' + idx + '">' +
            '<span class="status-dot" data-state="' + escapeHtml(r.state || "ended") + '"></span>' +
            '<span class="search-title">' + highlight(r.title || "", query) + '</span>' +
            '<span class="search-project">' + highlight(r.project || "", query) + '</span>' +
@@ -558,8 +607,8 @@
   }
 
   function renderInSessionRow(r, idx) {
-    return '<a class="search-row search-row-insession" data-idx="' + idx + '">' +
-           '<span class="search-insession-glyph">↳</span>' +
+    return '<a class="search-row search-row-insession" role="option" id="search-row-' + idx + '" data-idx="' + idx + '">' +
+           '<span class="search-insession-glyph" aria-hidden="true">↳</span>' +
            '<span class="search-title search-snippet">' + r.snippet + '</span>' +
            '<span class="search-age">turn ' + r.turn + '</span>' +
            '</a>';
@@ -577,12 +626,22 @@
     updateActive();
   }
   function updateActive() {
+    let activeId = "";
     results.querySelectorAll(".search-row").forEach((el, i) => {
-      el.classList.toggle("active", i === active);
-      if (i === active && typeof el.scrollIntoView === "function") {
-        el.scrollIntoView({ block: "nearest" });
+      const isActive = i === active;
+      el.classList.toggle("active", isActive);
+      el.setAttribute("aria-selected", isActive ? "true" : "false");
+      if (isActive) {
+        activeId = el.id || "";
+        if (typeof el.scrollIntoView === "function") {
+          el.scrollIntoView({ block: "nearest" });
+        }
       }
     });
+    if (input) {
+      if (activeId) input.setAttribute("aria-activedescendant", activeId);
+      else input.removeAttribute("aria-activedescendant");
+    }
   }
   function openActive() {
     if (active < 0 || !items[active]) return;

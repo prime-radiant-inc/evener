@@ -30,7 +30,7 @@
         <span class="chip-caret">▾</span>
       </button>
     </div>
-    <textarea class="spawn-input" name="task" placeholder="describe the task…" autofocus></textarea>
+    <textarea class="spawn-input" name="task" placeholder="describe the task…" autofocus>{{.DefaultTask}}</textarea>
     <input type="hidden" name="model" value="{{.DefaultModelValue}}">
     <input type="hidden" name="working_dir" value="{{.DefaultWorkingDirValue}}">
     <input type="hidden" name="branch" value="{{.DefaultBranchValue}}">

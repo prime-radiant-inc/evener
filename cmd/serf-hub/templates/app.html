@@ -29,15 +29,17 @@
         hx-trigger="load"
         hx-swap="innerHTML">
   </main>
-  <dialog id="search-dialog" class="search-dialog">
+  <dialog id="search-dialog" class="search-dialog" aria-label="search and commands">
     <div class="search-dialog-inner">
       <header class="search-dialog-header">
-        <span class="search-icon">🔍</span>
-        <input id="search-input" type="text" autocomplete="off" placeholder="search live + past sessions">
-        <span class="search-dialog-hint">esc</span>
+        <span class="search-icon" aria-hidden="true">🔍</span>
+        <input id="search-input" type="text" autocomplete="off" placeholder="search live + past sessions"
+               role="combobox" aria-expanded="true" aria-controls="search-results"
+               aria-autocomplete="list" aria-label="search sessions or run a command">
+        <span class="search-dialog-hint" aria-hidden="true">esc</span>
       </header>
-      <div id="search-results" class="search-results"></div>
-      <footer class="search-dialog-footer">
+      <div id="search-results" class="search-results" role="listbox" aria-label="results"></div>
+      <footer class="search-dialog-footer" aria-hidden="true">
         <span>↑↓ nav</span>
         <span>↵ open</span>
         <span>⌘↵ new tab</span>
