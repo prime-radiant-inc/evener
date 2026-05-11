@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -217,8 +216,7 @@ func TestTUIEnterSubmitsInput(t *testing.T) {
 	addr := strings.TrimPrefix(ts.URL, "http://")
 	asyncCh := make(chan tea.Msg, 8)
 	m := newConfiguredModel(addr, t.TempDir(), nil, embeddedConfig{
-		provider: "openai",
-		model:    "gpt-5.5",
+		model: "openai/gpt-5.5",
 	}, nil, asyncCh, false)
 
 	p := tea.NewProgram(m, tea.WithInput(nil), tea.WithOutput(io.Discard))
@@ -256,24 +254,17 @@ func TestUpdateAsyncSSEConnectedKeepsWaitingForAsync(t *testing.T) {
 
 	asyncCh := make(chan tea.Msg, 64)
 	m := newConfiguredModel("127.0.0.1:1234", t.TempDir(), nil, embeddedConfig{}, nil, asyncCh, false)
-	m.streamID = 1
 
 	asyncCh <- sseEventMsg{
-		streamID: 1,
-		event: SSEEvent{
-			Event: "COMMUNICATE",
-			Data:  `{"message":"Hi. What can I help with?"}`,
-		},
+		Event: "COMMUNICATE",
+		Data:  `{"message":"Hi. What can I help with?"}`,
 	}
 	asyncCh <- sseEventMsg{
-		streamID: 1,
-		event: SSEEvent{
-			Event: "SESSION_END",
-			Data:  `{"reason":"input_complete","state":"IDLE","turns":1}`,
-		},
+		Event: "SESSION_END",
+		Data:  `{"reason":"input_complete","state":"IDLE","turns":1}`,
 	}
 
-	updated, cmd := m.Update(asyncMsg{msg: sseConnectedMsg{streamID: 1}})
+	updated, cmd := m.Update(asyncMsg{msg: sseConnectedMsg{}})
 	if cmd == nil {
 		t.Fatal("Update() returned nil cmd; want waitForAsync to remain armed")
 	}
@@ -287,8 +278,8 @@ func TestUpdateAsyncSSEConnectedKeepsWaitingForAsync(t *testing.T) {
 	if !ok {
 		t.Fatalf("wrapped.msg = %T, want sseEventMsg", wrapped.msg)
 	}
-	if ev.event.Event != "COMMUNICATE" {
-		t.Fatalf("event type = %q, want COMMUNICATE", ev.event.Event)
+	if ev.Event != "COMMUNICATE" {
+		t.Fatalf("event type = %q, want COMMUNICATE", ev.Event)
 	}
 
 	m2 := updated.(model)
@@ -314,7 +305,7 @@ func TestUpdateAsyncSSEConnectedKeepsWaitingForAsync(t *testing.T) {
 	if !ok {
 		t.Fatalf("second wrapped.msg = %T, want sseEventMsg", wrapped.msg)
 	}
-	if ev.event.Event != "SESSION_END" {
-		t.Fatalf("second event type = %q, want SESSION_END", ev.event.Event)
+	if ev.Event != "SESSION_END" {
+		t.Fatalf("second event type = %q, want SESSION_END", ev.Event)
 	}
 }

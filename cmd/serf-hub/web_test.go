@@ -1124,6 +1124,15 @@ func TestWeb_ApiModels_ReturnsListWithProviderEnv(t *testing.T) {
 	}
 }
 
+func disableLiveOllamaForModelTest(t *testing.T) {
+	t.Helper()
+	srv := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(srv.Close)
+	t.Setenv("OLLAMA_BASE_URL", srv.URL+"/v1")
+	t.Setenv("OLLAMA_HOST", "")
+	t.Setenv("OLLAMA_API_KEY", "")
+}
+
 func TestWeb_ApiModels_ReturnsConfiguredModelsWhenLiveUnavailable(t *testing.T) {
 	liveModelsCache.mu.Lock()
 	liveModelsCache.expires = time.Time{}
@@ -1137,8 +1146,7 @@ func TestWeb_ApiModels_ReturnsConfiguredModelsWhenLiveUnavailable(t *testing.T) 
 	t.Setenv("KIMI_API_KEY", "")
 	t.Setenv("MINIMAX_API_KEY", "")
 	t.Setenv("OPENROUTER_API_KEY", "")
-	t.Setenv("OLLAMA_BASE_URL", "")
-	t.Setenv("OLLAMA_HOST", "")
+	disableLiveOllamaForModelTest(t)
 
 	web := NewWebServer(WebConfig{
 		HubAddr: "127.0.0.1:9180",
@@ -1177,8 +1185,7 @@ func TestWeb_ApiModels_FiltersOpenRouterLiveModelsToToolCapable(t *testing.T) {
 	t.Setenv("KIMI_API_KEY", "")
 	t.Setenv("MINIMAX_API_KEY", "")
 	t.Setenv("OPENROUTER_API_KEY", "")
-	t.Setenv("OLLAMA_HOST", "")
-	t.Setenv("OLLAMA_API_KEY", "")
+	disableLiveOllamaForModelTest(t)
 
 	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" {
@@ -1231,8 +1238,7 @@ func TestWeb_ApiModels_NoProvidersConfigured(t *testing.T) {
 	t.Setenv("KIMI_API_KEY", "")
 	t.Setenv("MINIMAX_API_KEY", "")
 	t.Setenv("OPENROUTER_API_KEY", "")
-	t.Setenv("OLLAMA_BASE_URL", "")
-	t.Setenv("OLLAMA_HOST", "")
+	disableLiveOllamaForModelTest(t)
 
 	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180"})
 	req := httptest.NewRequest(http.MethodGet, "/api/models", nil)

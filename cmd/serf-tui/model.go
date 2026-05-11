@@ -115,6 +115,13 @@ func newConfiguredModel(addr, stateDir string, initialMessages []chatMessage, cf
 	ta.KeyMap.InsertNewline.SetEnabled(false)
 	applyInputTheme(&ta)
 
+	configProvider := ""
+	configModel := strings.TrimSpace(cfg.model)
+	if provider, modelName, ok := strings.Cut(configModel, "/"); ok {
+		configProvider = strings.ToLower(strings.TrimSpace(provider))
+		configModel = strings.TrimSpace(modelName)
+	}
+
 	return model{
 		addr:              addr,
 		stateDir:          stateDir,
@@ -124,8 +131,8 @@ func newConfiguredModel(addr, stateDir string, initialMessages []chatMessage, cf
 		history:           loadHistory(stateDir),
 		historyIdx:        -1,
 		observedSubagents: make(map[string]subagentUI),
-		configProvider:    cfg.provider,
-		configModel:       cfg.model,
+		configProvider:    configProvider,
+		configModel:       configModel,
 		embeddedCfg:       cfg,
 		embedded:          embedded,
 		asyncCh:           asyncCh,
@@ -558,25 +565,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case sseConnectedMsg:
-		if msg.streamID != m.streamID {
-			return m, tea.Batch(cmds...)
-		}
 		m.connected = true
 		return m, tea.Batch(cmds...)
 
 	case sseErrorMsg:
-		if msg.streamID != m.streamID {
-			return m, tea.Batch(cmds...)
-		}
 		m.connected = false
 		m.err = msg.err
 		return m, tea.Batch(cmds...)
 
 	case sseEventMsg:
-		if msg.streamID != m.streamID {
-			return m, tea.Batch(cmds...)
-		}
-		m.handleSSEEvent(msg.event)
+		m.handleSSEEvent(SSEEvent(msg))
 		m.refreshViewport()
 		return m, tea.Batch(cmds...)
 

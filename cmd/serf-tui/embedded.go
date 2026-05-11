@@ -395,13 +395,11 @@ func (m *model) startSSEStream() tea.Cmd {
 	if m.streamCancel != nil {
 		m.streamCancel()
 	}
-	m.streamID++
-	streamID := m.streamID
 	addr := m.addr
 	ctx, cancel := context.WithCancel(context.Background())
 	m.streamCancel = cancel
 	return func() tea.Msg {
-		go streamSSE(ctx, addr, streamID, func(msg tea.Msg) {
+		go streamSSE(ctx, addr, func(msg tea.Msg) {
 			m.asyncCh <- msg
 		})
 		return nil
