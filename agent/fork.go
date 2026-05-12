@@ -179,14 +179,16 @@ func ForkSession(stateDir, parentID string, divergenceTurn int) (string, error) 
 	}
 	defer tw.Close()
 
-	// Replay prefix entries into the child transcript.
-	userInputs := 0
+	// Replay prefix entries into the child transcript. Count assistant
+	// entries — TurnCount on a SessionMeta tracks model-response turns
+	// (matches Session.modelResponses semantics), not user inputs.
+	modelResponses := 0
 	for _, entry := range prefixEntries {
 		if err := tw.Append(entry.Turn); err != nil {
 			return "", fmt.Errorf("append prefix turn to child transcript: %w", err)
 		}
-		if entry.Turn.Kind == TurnUserInput {
-			userInputs++
+		if entry.Turn.Kind == TurnAssistant {
+			modelResponses++
 		}
 	}
 
@@ -194,9 +196,7 @@ func ForkSession(stateDir, parentID string, divergenceTurn int) (string, error) 
 		return "", fmt.Errorf("close child transcript: %w", err)
 	}
 
-	// Build and save the child meta. TurnCount counts USER_INPUT turns in
-	// the child's transcript (matches the meaning used elsewhere — number
-	// of user-driven exchanges).
+	// Build and save the child meta.
 	childMeta := SessionMeta{
 		ID:              childID,
 		ProfileID:       parentMeta.ProfileID,
@@ -205,7 +205,7 @@ func ForkSession(stateDir, parentID string, divergenceTurn int) (string, error) 
 		EnvInfo:         parentMeta.EnvInfo,
 		CreatedAt:       now,
 		UpdatedAt:       now,
-		TurnCount:       userInputs,
+		TurnCount:       modelResponses,
 		OriginalTask:    parentMeta.OriginalTask,
 		ParentSessionID: parentID,
 		DivergenceTurn:  divergenceTurn,

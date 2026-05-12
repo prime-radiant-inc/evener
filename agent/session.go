@@ -228,6 +228,13 @@ type Session struct {
 	modelResponses int // LLM round-trip count (for meta.json turn_count)
 	history        []Turn
 
+	// Fork lineage, populated from SessionMeta at restore time. Carried on
+	// the Session so that autosaves via Meta() preserve the fields across
+	// the child's lifetime. Distinct from cfg.ParentSessionID which is the
+	// subagent-spawn parent.
+	forkParentID    string
+	forkDivergence  int
+
 	reg *ToolRegistry
 
 	steeringQueue []string
@@ -666,6 +673,11 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 		events:         make(chan SessionEvent, 256),
 		history:        resumeHistory,
 		modelResponses: meta.TurnCount,
+		// Carry fork lineage across the session's lifetime. Distinct from
+		// cfg.ParentSessionID (subagent parent); for a fork child,
+		// DivergenceTurn > 0 and IsSubagent is false.
+		forkParentID:   meta.ParentSessionID,
+		forkDivergence: meta.DivergenceTurn,
 		subagents:      map[string]*subagent{},
 		readFiles:      map[string]bool{},
 		sessionCtx:     sessCtx,
@@ -814,6 +826,18 @@ func (s *Session) Meta() SessionMeta {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now().UTC()
+	// Subagent lineage lives on cfg; fork lineage lives on the session
+	// (forkParentID + forkDivergence, populated by RestoreSessionFromMeta).
+	// A session is one or the other — never both — but check explicitly so
+	// neither path silently drops fields.
+	parentID := s.cfg.ParentSessionID
+	divergence := 0
+	isSubagent := s.cfg.ParentSessionID != ""
+	if s.forkDivergence > 0 {
+		parentID = s.forkParentID
+		divergence = s.forkDivergence
+		isSubagent = false
+	}
 	return SessionMeta{
 		ID:              s.id,
 		ProfileID:       s.profile.ID(),
@@ -825,8 +849,9 @@ func (s *Session) Meta() SessionMeta {
 		TurnCount:       s.modelResponses,
 		LastInputTokens: s.contextMgr.LastInputTokens(),
 		OriginalTask:    originalTask,
-		ParentSessionID: s.cfg.ParentSessionID,
-		IsSubagent:      s.cfg.ParentSessionID != "",
+		ParentSessionID: parentID,
+		DivergenceTurn:  divergence,
+		IsSubagent:      isSubagent,
 	}
 }
 
