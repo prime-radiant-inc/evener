@@ -79,6 +79,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  --max-subagent-depth <n> Max subagent nesting depth (default: 1)\n")
 		fmt.Fprintf(os.Stderr, "  --share-task-store   Share task list between parent and child sessions\n")
 		fmt.Fprintf(os.Stderr, "  --context-strategy <name> Context management strategy: compact|recall|session-log|ooda (default: compact)\n")
+		fmt.Fprintf(os.Stderr, "  --reasoning-effort <level> Reasoning effort: low|medium|high|xhigh|none (or set SERF_REASONING_EFFORT)\n")
 		fmt.Fprintf(os.Stderr, "  --verbose            Emit NDJSON events to stderr (replaces human-readable output)\n")
 		fmt.Fprintf(os.Stderr, "  --no-project-prompts Suppress .serf/prompts/ loading (match Docker container behavior)\n")
 		fmt.Fprintf(os.Stderr, "  --agent <name>       Agent persona: default (default), explorer, or another available agent name\n")
