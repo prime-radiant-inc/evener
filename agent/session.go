@@ -1540,7 +1540,18 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	default:
 	}
 
-	s.emit(EventUserInput, UserInputData{Text: input, Images: userInputImagesFromAttachments(images)})
+	// Capture the entry index this USER_INPUT will receive when appended so
+	// consumers can identify it later (e.g. fork-from-turn). ProcessInput
+	// is serialized, so no concurrent appendTurn can race between the read
+	// and the append below.
+	s.mu.Lock()
+	turnIndex := len(s.history) + 1
+	s.mu.Unlock()
+	s.emit(EventUserInput, UserInputData{
+		Text:   input,
+		Images: userInputImagesFromAttachments(images),
+		Turn:   turnIndex,
+	})
 	s.appendTurn(TurnUserInput, buildUserInputMessage(input, images))
 
 	// UserPromptSubmit hooks

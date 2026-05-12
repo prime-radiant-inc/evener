@@ -164,7 +164,15 @@
           break;
         case "USER_INPUT":
           this.userTurnIndex++;
-          this.entryIndex++;
+          // Prefer the authoritative transcript entry index when the
+          // event provides it (replay always does; live does as of the
+          // agent emitting data.turn in USER_INPUT). Falls back to a
+          // synthesized counter only for legacy streams.
+          if (typeof data.turn === "number" && data.turn > 0) {
+            this.entryIndex = data.turn;
+          } else {
+            this.entryIndex++;
+          }
           this.appendUserMessage(data.text || "", this.entryIndex, data.images || []);
           break;
         case "ASSISTANT_TEXT_START":
