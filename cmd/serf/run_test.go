@@ -504,6 +504,37 @@ func TestFork_CreatesChild(t *testing.T) {
 	}
 }
 
+// TestFork_NoChildOnSetupFailure verifies that --fork does not leave a
+// stale child session on disk when downstream setup fails before
+// ProcessInput would have appended the edited message. Triggers the
+// failure via an invalid --reasoning-effort value, which errors out
+// after the fork validation but before the model is invoked.
+func TestFork_NoChildOnSetupFailure(t *testing.T) {
+	dir := t.TempDir()
+	parentID := buildForkParentSession(t, dir)
+
+	var stdout, stderr bytes.Buffer
+	cfg := runConfig{
+		task:            "edited",
+		resume:          parentID,
+		fork:            true,
+		forkTurn:        3,
+		reasoningEffort: "definitely-not-a-valid-effort",
+		workDir:         dir,
+		stateDir:        dir,
+		stdout:          &stdout,
+		stderr:          &stderr,
+	}
+	err := run(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected error from invalid --reasoning-effort")
+	}
+
+	if child := findForkChild(t, dir, parentID); child != nil {
+		t.Errorf("setup failed but a child session was created: %s\nstderr: %s", child.ID, stderr.String())
+	}
+}
+
 func TestFork_VerboseEmitsNDJSONEvent(t *testing.T) {
 	dir := t.TempDir()
 	parentID := buildForkParentSession(t, dir)

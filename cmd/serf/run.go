@@ -130,18 +130,6 @@ func run(ctx context.Context, cfg runConfig) error {
 		return fmt.Errorf("no task provided")
 	}
 
-	// --fork: branch the resolved parent into a fresh child session, then
-	// fall through to the normal restore-and-process path with the child's
-	// meta. The task argument will be applied via ProcessInput below — it
-	// is appended to the child's transcript as the edited USER_INPUT turn.
-	if cfg.fork {
-		childMeta, _, err := forkResumedSession(cfg, stateDir, meta.ID)
-		if err != nil {
-			return err
-		}
-		meta = childMeta
-	}
-
 	effort, err := cmdutil.ResolveReasoningEffort(cfg.reasoningEffort, os.Getenv("SERF_REASONING_EFFORT"))
 	if err != nil {
 		return err
@@ -185,6 +173,19 @@ func run(ctx context.Context, cfg runConfig) error {
 		return err
 	}
 	env := agent.NewLocalExecutionEnvironment(cfg.workDir)
+
+	// --fork: branch the resolved parent into a fresh child session and
+	// continue with the child's meta. Deferred until after all the
+	// fallible setup above so a setup failure cannot leave a stale
+	// prefix-only child on disk. The task arg is appended to the child's
+	// transcript by ProcessInput below as the edited USER_INPUT turn.
+	if cfg.fork {
+		childMeta, _, err := forkResumedSession(cfg, stateDir, meta.ID)
+		if err != nil {
+			return err
+		}
+		meta = childMeta
+	}
 
 	var sess *agent.Session
 	if meta != nil {
