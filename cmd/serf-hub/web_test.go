@@ -1018,6 +1018,34 @@ func TestWeb_Fork_CallsForkSession(t *testing.T) {
 	if !strings.Contains(respBody, "child_session_id") {
 		t.Errorf("response missing child_session_id: %q", respBody)
 	}
+
+	// Decode the response to get the child ID and verify the child's
+	// transcript ends with the edited USER_INPUT — the hub is responsible
+	// for appending the edited turn after ForkSession copies the prefix.
+	var resp struct {
+		ChildSessionID string `json:"child_session_id"`
+	}
+	if err := json.Unmarshal([]byte(respBody), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.ChildSessionID == "" {
+		t.Fatal("child_session_id is empty")
+	}
+	childTranscript := filepath.Join(sessionsDir, resp.ChildSessionID+".transcript.jsonl")
+	_, entries, _, err := agent.ReadTranscript(childTranscript)
+	if err != nil {
+		t.Fatalf("ReadTranscript(child): %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("child transcript has no entries")
+	}
+	last := entries[len(entries)-1]
+	if last.Turn.Kind != agent.TurnUserInput {
+		t.Errorf("last child entry kind = %q, want USER_INPUT", last.Turn.Kind)
+	}
+	if last.Turn.Message.Text() != "second task revised" {
+		t.Errorf("last child entry text = %q, want %q", last.Turn.Message.Text(), "second task revised")
+	}
 }
 
 // TestWeb_ApiSearch_FiltersPast populates the past index with two metas,

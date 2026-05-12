@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -62,10 +61,11 @@ func buildParentSession(t *testing.T) (stateDir, parentID string) {
 	return stateDir, parentID
 }
 
-// TestForkSession_CopiesPrefixAndAppliesEdit verifies the core fork semantics:
-// the child gets the first (divergenceTurn-1) USER_INPUT turns from the parent
-// followed by the edited message, and meta is wired up correctly on both sides.
-func TestForkSession_CopiesPrefixAndAppliesEdit(t *testing.T) {
+// TestForkSession_CopiesPrefixOnly verifies the new fork semantics: the child
+// gets only the prefix entries from the parent (everything strictly before the
+// divergence turn). The caller is responsible for whatever comes next — there
+// is no "edited message" parameter.
+func TestForkSession_CopiesPrefixOnly(t *testing.T) {
 	stateDir, parentID := buildParentSession(t)
 
 	// Snapshot parent meta before fork to verify it is not mutated.
@@ -74,12 +74,11 @@ func TestForkSession_CopiesPrefixAndAppliesEdit(t *testing.T) {
 		t.Fatalf("LoadSessionMeta(parent before): %v", err)
 	}
 
-	childID, err := ForkSession(stateDir, parentID, 3, "second task, table-driven")
+	childID, err := ForkSession(stateDir, parentID, 3)
 	if err != nil {
 		t.Fatalf("ForkSession: %v", err)
 	}
 
-	// childID must be non-empty and distinct from parentID.
 	if childID == "" {
 		t.Fatal("childID is empty")
 	}
@@ -108,47 +107,25 @@ func TestForkSession_CopiesPrefixAndAppliesEdit(t *testing.T) {
 		t.Errorf("parent meta mutated by ForkSession:\n before=%+v\n after=%+v", parentBefore, parentAfter)
 	}
 
-	// Child transcript must contain the edited message in its last entry line.
+	// Child transcript must contain only the prefix — no edited message text.
 	childTranscriptPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
-	data, err := os.ReadFile(childTranscriptPath)
-	if err != nil {
-		t.Fatalf("ReadFile(child transcript): %v", err)
-	}
-	if !contains(string(data), "second task, table-driven") {
-		t.Error("child transcript does not contain the edited message text")
-	}
-
-	// Read child transcript via ReadTranscript and verify structure.
 	_, entries, _, err := ReadTranscript(childTranscriptPath)
 	if err != nil {
 		t.Fatalf("ReadTranscript(child): %v", err)
 	}
 
-	// Expected entries:
-	//   0: USER_INPUT "first task"         (turn 1 from parent)
-	//   1: ASSISTANT  "first reply"        (non-USER turn, included in prefix)
-	//   2: USER_INPUT "second task, table-driven"  (the edited divergence turn)
-	if len(entries) != 3 {
-		t.Fatalf("child transcript entry count: got %d, want 3", len(entries))
+	// Expected entries (parent transcript [U1, A1, U2, A2], divergenceTurn=3):
+	//   0: USER_INPUT  "first task"
+	//   1: ASSISTANT   "first reply"
+	// Entry at divergenceTurn-1 (the original U2) is NOT copied.
+	if len(entries) != 2 {
+		t.Fatalf("child transcript entry count: got %d, want 2 (prefix only)", len(entries))
 	}
-
-	// First two entries are the prefix (turn 1 user + turn 1 assistant from parent).
-	if entries[0].Turn.Kind != TurnUserInput {
-		t.Errorf("entries[0].Kind: got %q, want %q", entries[0].Turn.Kind, TurnUserInput)
-	}
-	if entries[0].Turn.Message.Text() != "first task" {
-		t.Errorf("entries[0] text: got %q, want %q", entries[0].Turn.Message.Text(), "first task")
+	if entries[0].Turn.Kind != TurnUserInput || entries[0].Turn.Message.Text() != "first task" {
+		t.Errorf("entries[0]: got %s %q, want USER_INPUT 'first task'", entries[0].Turn.Kind, entries[0].Turn.Message.Text())
 	}
 	if entries[1].Turn.Kind != TurnAssistant {
 		t.Errorf("entries[1].Kind: got %q, want %q", entries[1].Turn.Kind, TurnAssistant)
-	}
-
-	// Third entry is the edited turn.
-	if entries[2].Turn.Kind != TurnUserInput {
-		t.Errorf("entries[2].Kind: got %q, want %q", entries[2].Turn.Kind, TurnUserInput)
-	}
-	if entries[2].Turn.Message.Text() != "second task, table-driven" {
-		t.Errorf("entries[2] text: got %q, want %q", entries[2].Turn.Message.Text(), "second task, table-driven")
 	}
 }
 
@@ -158,13 +135,13 @@ func TestForkSession_RejectsOutOfRangeDivergence(t *testing.T) {
 	stateDir, parentID := buildParentSession(t)
 
 	// divergenceTurn=0 must error.
-	_, err := ForkSession(stateDir, parentID, 0, "irrelevant")
+	_, err := ForkSession(stateDir, parentID, 0)
 	if err == nil {
 		t.Error("ForkSession(divergenceTurn=0) should return an error")
 	}
 
 	// divergenceTurn exceeding count (parent has 2 USER_INPUT turns).
-	_, err = ForkSession(stateDir, parentID, 10, "irrelevant")
+	_, err = ForkSession(stateDir, parentID, 10)
 	if err == nil {
 		t.Error("ForkSession(divergenceTurn=10) should return an error when parent has only 2 USER_INPUT turns")
 	}
@@ -175,7 +152,7 @@ func TestForkSession_RejectsOutOfRangeDivergence(t *testing.T) {
 func TestForkSession_RejectsMissingParent(t *testing.T) {
 	stateDir := t.TempDir()
 
-	_, err := ForkSession(stateDir, "NONEXISTENT_SESSION", 1, "hello")
+	_, err := ForkSession(stateDir, "NONEXISTENT_SESSION", 1)
 	if err == nil {
 		t.Error("ForkSession with missing parent should return an error")
 	}

@@ -436,7 +436,27 @@ func TestFork_RequiresTask(t *testing.T) {
 	}
 }
 
-func TestFork_CreatesChildAndPrintsID(t *testing.T) {
+// findForkChild scans state dir for the (single) non-subagent meta whose
+// ParentSessionID matches parentID. Returns nil if none.
+func findForkChild(t *testing.T, dir, parentID string) *agent.SessionMeta {
+	t.Helper()
+	metas, err := agent.ListSessionMetas(dir)
+	if err != nil {
+		t.Fatalf("ListSessionMetas: %v", err)
+	}
+	for i := range metas {
+		if metas[i].ParentSessionID == parentID && !metas[i].IsSubagent {
+			return &metas[i]
+		}
+	}
+	return nil
+}
+
+// TestFork_CreatesChild verifies that --fork creates a child branched from
+// the resolved parent at the right divergence turn, with the parent meta
+// unmutated. It runs run() to exercise the full CLI path, ignoring the
+// downstream LLM error (no API key in tests).
+func TestFork_CreatesChild(t *testing.T) {
 	dir := t.TempDir()
 	parentID := buildForkParentSession(t, dir)
 
@@ -456,27 +476,22 @@ func TestFork_CreatesChildAndPrintsID(t *testing.T) {
 		stdout:   &stdout,
 		stderr:   &stderr,
 	}
-	if err := run(context.Background(), cfg); err != nil {
-		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
+	_ = run(context.Background(), cfg) // LLM unavailable in test; we verify fork side-effects.
+
+	child := findForkChild(t, dir, parentID)
+	if child == nil {
+		t.Fatalf("no child meta found referencing parent %s\nstderr: %s", parentID, stderr.String())
+	}
+	if child.ID == parentID {
+		t.Fatalf("child ID must differ from parent, got %q", child.ID)
+	}
+	if child.DivergenceTurn != 3 {
+		t.Errorf("child DivergenceTurn = %d, want 3", child.DivergenceTurn)
 	}
 
-	childID := strings.TrimSpace(stdout.String())
-	if childID == "" {
-		t.Fatalf("expected child session ID on stdout, got empty")
-	}
-	if childID == parentID {
-		t.Fatalf("child ID must differ from parent, got %q", childID)
-	}
-
-	childMeta, err := agent.LoadSessionMeta(dir, childID)
-	if err != nil {
-		t.Fatalf("LoadSessionMeta(child): %v", err)
-	}
-	if childMeta.ParentSessionID != parentID {
-		t.Errorf("child ParentSessionID = %q, want %q", childMeta.ParentSessionID, parentID)
-	}
-	if childMeta.DivergenceTurn != 3 {
-		t.Errorf("child DivergenceTurn = %d, want 3", childMeta.DivergenceTurn)
+	// stderr must announce the fork.
+	if !strings.Contains(stderr.String(), "[forked] new session "+child.ID) {
+		t.Errorf("stderr missing [forked] line for %s:\n%s", child.ID, stderr.String())
 	}
 
 	// Forking must not mutate the parent meta.
@@ -506,16 +521,13 @@ func TestFork_DefaultsToMostRecentUserInput(t *testing.T) {
 		stdout:   &stdout,
 		stderr:   &stderr,
 	}
-	if err := run(context.Background(), cfg); err != nil {
-		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
+	_ = run(context.Background(), cfg)
+	child := findForkChild(t, dir, parentID)
+	if child == nil {
+		t.Fatalf("no child meta found referencing parent %s", parentID)
 	}
-	childID := strings.TrimSpace(stdout.String())
-	childMeta, err := agent.LoadSessionMeta(dir, childID)
-	if err != nil {
-		t.Fatalf("LoadSessionMeta(child): %v", err)
-	}
-	if childMeta.DivergenceTurn != 3 {
-		t.Errorf("child DivergenceTurn = %d, want 3 (last USER_INPUT in [U1,A1,U2,A2])", childMeta.DivergenceTurn)
+	if child.DivergenceTurn != 3 {
+		t.Errorf("child DivergenceTurn = %d, want 3 (last USER_INPUT in [U1,A1,U2,A2])", child.DivergenceTurn)
 	}
 }
 
@@ -534,16 +546,10 @@ func TestFork_WithResumeLast(t *testing.T) {
 		stdout:     &stdout,
 		stderr:     &stderr,
 	}
-	if err := run(context.Background(), cfg); err != nil {
-		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
-	}
-	childID := strings.TrimSpace(stdout.String())
-	childMeta, err := agent.LoadSessionMeta(dir, childID)
-	if err != nil {
-		t.Fatalf("LoadSessionMeta(child): %v", err)
-	}
-	if childMeta.ParentSessionID != parentID {
-		t.Errorf("child ParentSessionID = %q, want %q", childMeta.ParentSessionID, parentID)
+	_ = run(context.Background(), cfg)
+	child := findForkChild(t, dir, parentID)
+	if child == nil {
+		t.Fatalf("no child meta found referencing parent %s", parentID)
 	}
 }
 

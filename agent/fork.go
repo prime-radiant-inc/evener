@@ -13,6 +13,23 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// AppendUserInput appends a USER_INPUT turn to the given session's transcript.
+// It is intended for callers that want to seed a session's history with a
+// pending user message without running a model turn — for example, the hub
+// after creating a fork child.
+func AppendUserInput(stateDir, sessionID, text string) error {
+	transcriptPath := filepath.Join(stateDir, sessionsSubdir, sessionID+".transcript.jsonl")
+	tw, err := OpenTranscriptWriter(transcriptPath)
+	if err != nil {
+		return fmt.Errorf("open transcript for %s: %w", sessionID, err)
+	}
+	defer tw.Close()
+	if err := tw.Append(NewTurn(TurnUserInput, llm.User(text))); err != nil {
+		return fmt.Errorf("append user input turn: %w", err)
+	}
+	return nil
+}
+
 // LatestUserInputTurn returns the 1-based entry index of the most recent
 // USER_INPUT turn in the given session's transcript. This is the natural
 // default divergence point for "fork from the most recent turn".
@@ -32,15 +49,16 @@ func LatestUserInputTurn(stateDir, sessionID string) (int, error) {
 
 // ForkSession creates a new session branched from a parent session at a given divergence turn.
 //
-// It copies the parent's first (divergenceTurn-1) USER_INPUT-counted turns into a new
-// child transcript, then appends the edited message as a new USER_INPUT turn at position
-// divergenceTurn. The child gets its own fresh session ID and metadata pointing back to
-// the parent.
+// The child transcript receives the parent's prefix entries — every entry strictly
+// before divergenceTurn (1-based). The entry at divergenceTurn must be a USER_INPUT
+// in the parent; that turn is replaced by whatever the caller does next (e.g. a new
+// ProcessInput on a restored session, or an explicit transcript append by the hub).
+// ForkSession does not write any turn beyond the prefix.
 //
 // The parent session is never mutated. UIs that want to surface the "original branch"
 // can detect it as a meta whose ID appears as ParentSessionID on some non-subagent
 // child with DivergenceTurn > 0.
-func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage string) (string, error) {
+func ForkSession(stateDir, parentID string, divergenceTurn int) (string, error) {
 	if divergenceTurn < 1 {
 		return "", fmt.Errorf("divergenceTurn must be >= 1, got %d", divergenceTurn)
 	}
@@ -162,23 +180,23 @@ func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage st
 	defer tw.Close()
 
 	// Replay prefix entries into the child transcript.
+	userInputs := 0
 	for _, entry := range prefixEntries {
 		if err := tw.Append(entry.Turn); err != nil {
 			return "", fmt.Errorf("append prefix turn to child transcript: %w", err)
 		}
-	}
-
-	// Append the edited turn as a new USER_INPUT turn.
-	editedTurn := NewTurn(TurnUserInput, llm.User(editedMessage))
-	if err := tw.Append(editedTurn); err != nil {
-		return "", fmt.Errorf("append edited turn to child transcript: %w", err)
+		if entry.Turn.Kind == TurnUserInput {
+			userInputs++
+		}
 	}
 
 	if err := tw.Close(); err != nil {
 		return "", fmt.Errorf("close child transcript: %w", err)
 	}
 
-	// Build and save the child meta.
+	// Build and save the child meta. TurnCount counts USER_INPUT turns in
+	// the child's transcript (matches the meaning used elsewhere — number
+	// of user-driven exchanges).
 	childMeta := SessionMeta{
 		ID:              childID,
 		ProfileID:       parentMeta.ProfileID,
@@ -187,7 +205,7 @@ func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage st
 		EnvInfo:         parentMeta.EnvInfo,
 		CreatedAt:       now,
 		UpdatedAt:       now,
-		TurnCount:       divergenceTurn,
+		TurnCount:       userInputs,
 		OriginalTask:    parentMeta.OriginalTask,
 		ParentSessionID: parentID,
 		DivergenceTurn:  divergenceTurn,

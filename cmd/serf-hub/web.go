@@ -2394,9 +2394,16 @@ func (s *WebServer) forkSession(parentID string, body forkRequest) (string, erro
 		return "", fmt.Errorf("state dir not resolvable for parent session")
 	}
 
-	childID, err := agent.ForkSession(stateDir, parentID, body.Turn, body.EditedMessage)
+	childID, err := agent.ForkSession(stateDir, parentID, body.Turn)
 	if err != nil {
 		return "", err
+	}
+	// Seed the child's transcript with the edited message so it's already
+	// present when the user opens the child session. ForkSession itself
+	// only copies the prefix — appending the edited turn is the caller's
+	// responsibility.
+	if err := agent.AppendUserInput(stateDir, childID, body.EditedMessage); err != nil {
+		return "", fmt.Errorf("seed child transcript: %w", err)
 	}
 	// Refresh past index so the new session shows up immediately in the sidebar.
 	if s.cfg.Past != nil {
