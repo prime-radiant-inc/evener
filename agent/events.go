@@ -33,6 +33,7 @@ const (
 	EventHookStart           EventKind = "HOOK_START"
 	EventHookEnd             EventKind = "HOOK_END"
 	EventForkSummary         EventKind = "FORK_SUMMARY"
+	EventForkCreated         EventKind = "FORK_CREATED"
 	EventPromptLoaded        EventKind = "PROMPT_LOADED"
 	EventRoundTimings        EventKind = "ROUND_TIMINGS"
 )
@@ -247,6 +248,16 @@ type HookEndData struct {
 
 type ForkSummaryData struct {
 	Turn int `json:"turn"`
+}
+
+// ForkCreatedData carries the lineage of a fork operation emitted by callers
+// of agent.ForkSession. ParentSessionID is the session that was branched
+// from; ChildSessionID is the new session; DivergenceTurn is the 1-based
+// entry index in the parent's transcript at which the prefix was cut.
+type ForkCreatedData struct {
+	ParentSessionID string `json:"parent_session_id"`
+	ChildSessionID  string `json:"child_session_id"`
+	DivergenceTurn  int    `json:"divergence_turn"`
 }
 
 type PromptLoadedData struct {

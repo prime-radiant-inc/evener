@@ -489,9 +489,9 @@ func TestFork_CreatesChild(t *testing.T) {
 		t.Errorf("child DivergenceTurn = %d, want 3", child.DivergenceTurn)
 	}
 
-	// stderr must announce the fork.
-	if !strings.Contains(stderr.String(), "[forked] new session "+child.ID) {
-		t.Errorf("stderr missing [forked] line for %s:\n%s", child.ID, stderr.String())
+	// stderr must announce the fork (human format).
+	if !strings.Contains(stderr.String(), "[fork] new session "+child.ID) {
+		t.Errorf("stderr missing [fork] line for %s:\n%s", child.ID, stderr.String())
 	}
 
 	// Forking must not mutate the parent meta.
@@ -501,6 +501,63 @@ func TestFork_CreatesChild(t *testing.T) {
 	}
 	if !reflect.DeepEqual(parentAfter, parentBefore) {
 		t.Errorf("parent meta mutated by fork:\n before=%+v\n after=%+v", parentBefore, parentAfter)
+	}
+}
+
+func TestFork_VerboseEmitsNDJSONEvent(t *testing.T) {
+	dir := t.TempDir()
+	parentID := buildForkParentSession(t, dir)
+
+	var stdout, stderr bytes.Buffer
+	cfg := runConfig{
+		task:     "edited",
+		resume:   parentID,
+		fork:     true,
+		forkTurn: 3,
+		verbose:  true,
+		workDir:  dir,
+		stateDir: dir,
+		stdout:   &stdout,
+		stderr:   &stderr,
+	}
+	_ = run(context.Background(), cfg)
+
+	child := findForkChild(t, dir, parentID)
+	if child == nil {
+		t.Fatalf("no child meta found")
+	}
+
+	// Find the FORK_CREATED NDJSON line on stderr.
+	var found map[string]any
+	for _, line := range strings.Split(stderr.String(), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(line), &obj); err != nil {
+			continue
+		}
+		if obj["kind"] == "FORK_CREATED" {
+			found = obj
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("no FORK_CREATED NDJSON line in stderr:\n%s", stderr.String())
+	}
+	if found["session_id"] != child.ID {
+		t.Errorf("session_id = %v, want %q", found["session_id"], child.ID)
+	}
+	data, ok := found["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("FORK_CREATED missing data: %v", found)
+	}
+	if data["parent_session_id"] != parentID {
+		t.Errorf("parent_session_id = %v, want %q", data["parent_session_id"], parentID)
+	}
+	if data["divergence_turn"] != float64(3) {
+		t.Errorf("divergence_turn = %v, want 3", data["divergence_turn"])
 	}
 }
 

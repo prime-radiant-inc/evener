@@ -134,19 +134,13 @@ func run(ctx context.Context, cfg runConfig) error {
 	// fall through to the normal restore-and-process path with the child's
 	// meta. The task argument will be applied via ProcessInput below — it
 	// is appended to the child's transcript as the edited USER_INPUT turn.
-	var forkParentID string
-	var forkDivergence int
 	if cfg.fork {
-		childMeta, turn, err := forkResumedSession(cfg, stateDir, meta.ID)
+		childMeta, _, err := forkResumedSession(cfg, stateDir, meta.ID)
 		if err != nil {
 			return err
 		}
-		forkParentID = meta.ID
-		forkDivergence = turn
 		meta = childMeta
 	}
-	_ = forkParentID
-	_ = forkDivergence
 
 	effort, err := cmdutil.ResolveReasoningEffort(cfg.reasoningEffort, os.Getenv("SERF_REASONING_EFFORT"))
 	if err != nil {
@@ -367,8 +361,9 @@ func resolveSessionMeta(cfg runConfig, stateDir string) (agent.SessionMeta, erro
 
 // forkResumedSession creates a child branched from parentID. If cfg.forkTurn
 // is 0, the divergence defaults to the 1-based index of the most recent
-// USER_INPUT entry in the parent's transcript. Returns the child's loaded
-// meta and the resolved divergence turn.
+// USER_INPUT entry in the parent's transcript. Emits a FORK_CREATED event
+// (NDJSON in verbose mode, human-formatted otherwise) on stderr and returns
+// the child's loaded meta and the resolved divergence turn.
 func forkResumedSession(cfg runConfig, stateDir, parentID string) (*agent.SessionMeta, int, error) {
 	turn := cfg.forkTurn
 	if turn == 0 {
@@ -386,8 +381,31 @@ func forkResumedSession(cfg runConfig, stateDir, parentID string) (*agent.Sessio
 	if err != nil {
 		return nil, 0, fmt.Errorf("load child session meta: %w", err)
 	}
-	fmt.Fprintf(cfg.stderr, "[forked] new session %s from %s at turn %d\n", childID, parentID, turn) //nolint:errcheck
+	emitForkCreated(cfg, childID, parentID, turn)
 	return &childMeta, turn, nil
+}
+
+// emitForkCreated writes a FORK_CREATED event to stderr in the same format
+// as the running drainEvents* loop would render it: NDJSON when --verbose,
+// otherwise a human-readable line.
+func emitForkCreated(cfg runConfig, childID, parentID string, turn int) {
+	if cfg.verbose {
+		ev := agent.SessionEvent{
+			Kind:      agent.EventForkCreated,
+			Timestamp: time.Now().UTC(),
+			SessionID: childID,
+			Data: agent.ForkCreatedData{
+				ParentSessionID: parentID,
+				ChildSessionID:  childID,
+				DivergenceTurn:  turn,
+			},
+		}
+		enc := json.NewEncoder(cfg.stderr)
+		enc.SetEscapeHTML(false)
+		_ = enc.Encode(ev)
+		return
+	}
+	fmt.Fprintf(cfg.stderr, "[fork] new session %s from %s at turn %d\n", childID, parentID, turn) //nolint:errcheck
 }
 
 // listSessions prints all saved sessions and returns.
