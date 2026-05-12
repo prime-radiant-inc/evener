@@ -504,6 +504,57 @@ func TestFork_CreatesChild(t *testing.T) {
 	}
 }
 
+// TestFork_NoChildOnRestoreFailure verifies that --fork cleans up the
+// newly-created child when RestoreSessionFromMeta fails after the fork.
+// The parent's meta carries a bogus context-strategy that the child
+// inherits (since ForkSession copies meta.Config), forcing
+// selectStrategy to error during restore.
+func TestFork_NoChildOnRestoreFailure(t *testing.T) {
+	if os.Getenv("OPENAI_API_KEY") == "" {
+		t.Setenv("OPENAI_API_KEY", "dummy-for-restore-failure")
+	}
+
+	dir := t.TempDir()
+	parentID := buildForkParentSession(t, dir)
+
+	// Mutate the parent meta so its Config has an invalid context strategy.
+	// ForkSession copies Config verbatim, so the child's restore will fail
+	// inside selectStrategy.
+	parent, err := agent.LoadSessionMeta(dir, parentID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	parent.Config.ContextStrategy = "definitely-not-a-strategy"
+	if err := agent.SaveSessionMeta(dir, parent); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cfg := runConfig{
+		task:     "edited",
+		resume:   parentID,
+		fork:     true,
+		forkTurn: 3,
+		workDir:  dir,
+		stateDir: dir,
+		stdout:   &stdout,
+		stderr:   &stderr,
+	}
+	err = run(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected error from invalid context strategy")
+	}
+
+	if child := findForkChild(t, dir, parentID); child != nil {
+		t.Errorf("restore failed but child session remained: %s\nstderr: %s", child.ID, stderr.String())
+	}
+	// No [fork] event should have been emitted either, since the fork
+	// never reached its commit point.
+	if strings.Contains(stderr.String(), "[fork] new session") {
+		t.Errorf("[fork] event emitted despite restore failure:\n%s", stderr.String())
+	}
+}
+
 // TestFork_NoChildOnSetupFailure verifies that --fork does not leave a
 // stale child session on disk when downstream setup fails before
 // ProcessInput would have appended the edited message. Triggers the

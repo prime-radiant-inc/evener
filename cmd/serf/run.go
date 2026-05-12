@@ -179,11 +179,20 @@ func run(ctx context.Context, cfg runConfig) error {
 	// fallible setup above so a setup failure cannot leave a stale
 	// prefix-only child on disk. The task arg is appended to the child's
 	// transcript by ProcessInput below as the edited USER_INPUT turn.
+	//
+	// The child is created silently; emission of the FORK_CREATED event is
+	// withheld until restore succeeds (commit point). If restore fails the
+	// child is deleted to avoid leaving a half-built session on disk.
+	var forkParentID, forkChildID string
+	var forkDivergence int
 	if cfg.fork {
-		childMeta, _, err := forkResumedSession(cfg, stateDir, meta.ID)
+		childMeta, turn, err := forkResumedSession(cfg, stateDir, meta.ID)
 		if err != nil {
 			return err
 		}
+		forkParentID = meta.ID
+		forkChildID = childMeta.ID
+		forkDivergence = turn
 		meta = childMeta
 	}
 
@@ -191,10 +200,16 @@ func run(ctx context.Context, cfg runConfig) error {
 	if meta != nil {
 		sess, err = agent.RestoreSessionFromMeta(client, profile, env, *meta, stateDir)
 		if err != nil {
+			if forkChildID != "" {
+				_ = agent.DeleteSession(stateDir, forkChildID)
+			}
 			return fmt.Errorf("restore session: %w", err)
 		}
 		if effort.Set {
 			sess.SetReasoningEffort(effort.Value)
+		}
+		if forkChildID != "" {
+			emitForkCreated(cfg, forkChildID, forkParentID, forkDivergence)
 		}
 	} else {
 		sessionCfg := agent.SessionConfig{
@@ -366,9 +381,14 @@ func resolveSessionMeta(cfg runConfig, stateDir string) (agent.SessionMeta, erro
 
 // forkResumedSession creates a child branched from parentID. If cfg.forkTurn
 // is 0, the divergence defaults to the 1-based index of the most recent
-// USER_INPUT entry in the parent's transcript. Emits a FORK_CREATED event
-// (NDJSON in verbose mode, human-formatted otherwise) on stderr and returns
-// the child's loaded meta and the resolved divergence turn.
+// USER_INPUT entry in the parent's transcript. Returns the child's loaded
+// meta and the resolved divergence turn.
+//
+// This function does not emit any events — the caller is responsible for
+// announcing the fork via emitForkCreated once it has decided the child
+// will be kept (i.e. session restore succeeded and ProcessInput will run).
+// That keeps fork creation rollback-safe: a setup failure between fork and
+// ProcessInput can delete the child without leaving a stale stderr line.
 func forkResumedSession(cfg runConfig, stateDir, parentID string) (*agent.SessionMeta, int, error) {
 	turn := cfg.forkTurn
 	if turn == 0 {
@@ -386,7 +406,6 @@ func forkResumedSession(cfg runConfig, stateDir, parentID string) (*agent.Sessio
 	if err != nil {
 		return nil, 0, fmt.Errorf("load child session meta: %w", err)
 	}
-	emitForkCreated(cfg, childID, parentID, turn)
 	return &childMeta, turn, nil
 }
 

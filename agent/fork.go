@@ -13,6 +13,22 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// DeleteSession removes the meta and transcript files for sessionID from
+// stateDir. Intended for rollback paths that need to undo a freshly-created
+// session (e.g. cleaning up a fork child that never reached its first model
+// turn). Missing files are not an error.
+func DeleteSession(stateDir, sessionID string) error {
+	metaPath := filepath.Join(stateDir, sessionsSubdir, sessionID+".meta.json")
+	transcriptPath := filepath.Join(stateDir, sessionsSubdir, sessionID+".transcript.jsonl")
+	if err := os.Remove(metaPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove meta: %w", err)
+	}
+	if err := os.Remove(transcriptPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove transcript: %w", err)
+	}
+	return nil
+}
+
 // AppendUserInput appends a USER_INPUT turn to the given session's transcript.
 // It is intended for callers that want to seed a session's history with a
 // pending user message without running a model turn — for example, the hub
