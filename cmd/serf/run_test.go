@@ -634,6 +634,7 @@ func testEvents() []agent.SessionEvent {
 		}},
 		{Kind: agent.EventWarning, Timestamp: now, SessionID: "sess1", Data: agent.WarningData{Message: "context window 80% full"}},
 		{Kind: agent.EventError, Timestamp: now, SessionID: "sess1", Data: agent.ErrorData{Error: "something went wrong"}},
+		{Kind: agent.EventSessionEnd, Timestamp: now, SessionID: "sess1", Data: agent.SessionEndData{Reason: "input_complete"}},
 	}
 }
 
@@ -754,6 +755,11 @@ func TestDrainEventsHuman(t *testing.T) {
 	// Should contain error.
 	if !strings.Contains(output, "[error]") {
 		t.Fatalf("expected [error] in output:\n%s", output)
+	}
+
+	// Should announce the session ID at SESSION_END.
+	if !strings.Contains(output, "[session] sess1") {
+		t.Fatalf("expected [session] sess1 line in output:\n%s", output)
 	}
 }
 

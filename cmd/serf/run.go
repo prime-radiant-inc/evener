@@ -195,7 +195,6 @@ func run(ctx context.Context, cfg runConfig) error {
 		if effort.Set {
 			sess.SetReasoningEffort(effort.Value)
 		}
-		fmt.Fprintf(cfg.stderr, "[resumed] session %s (%d turns)\n", meta.ID, meta.TurnCount) //nolint:errcheck
 	} else {
 		sessionCfg := agent.SessionConfig{
 			MaxToolRoundsPerInput:  cmdutil.MaxRoundsToConfig(cfg.maxRounds),
@@ -343,6 +342,11 @@ func drainEventsHuman(events <-chan agent.SessionEvent, w io.Writer) <-chan stru
 			case agent.EventError:
 				if d, ok := ev.Data.(agent.ErrorData); ok {
 					fmt.Fprintf(w, "[error] %s\n", d.Error) //nolint:errcheck
+				}
+			case agent.EventSessionEnd:
+				// Always announce the session ID a caller could resume from.
+				if ev.SessionID != "" {
+					fmt.Fprintf(w, "[session] %s\n", ev.SessionID) //nolint:errcheck
 				}
 			}
 		}
