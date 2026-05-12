@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -67,7 +68,13 @@ func buildParentSession(t *testing.T) (stateDir, parentID string) {
 func TestForkSession_CopiesPrefixAndAppliesEdit(t *testing.T) {
 	stateDir, parentID := buildParentSession(t)
 
-	childID, err := ForkSession(stateDir, parentID, 3, "second task, table-driven", "before TDD")
+	// Snapshot parent meta before fork to verify it is not mutated.
+	parentBefore, err := LoadSessionMeta(stateDir, parentID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(parent before): %v", err)
+	}
+
+	childID, err := ForkSession(stateDir, parentID, 3, "second task, table-driven")
 	if err != nil {
 		t.Fatalf("ForkSession: %v", err)
 	}
@@ -91,17 +98,14 @@ func TestForkSession_CopiesPrefixAndAppliesEdit(t *testing.T) {
 	if childMeta.DivergenceTurn != 3 {
 		t.Errorf("child DivergenceTurn: got %d, want 3", childMeta.DivergenceTurn)
 	}
-	if childMeta.ForkLabel != "" {
-		t.Errorf("child ForkLabel should be empty, got %q", childMeta.ForkLabel)
-	}
 
-	// Parent meta should have been updated with the fork label.
-	parentMeta, err := LoadSessionMeta(stateDir, parentID)
+	// Forking must not mutate the parent meta.
+	parentAfter, err := LoadSessionMeta(stateDir, parentID)
 	if err != nil {
-		t.Fatalf("LoadSessionMeta(parent): %v", err)
+		t.Fatalf("LoadSessionMeta(parent after): %v", err)
 	}
-	if parentMeta.ForkLabel != "before TDD" {
-		t.Errorf("parent ForkLabel: got %q, want %q", parentMeta.ForkLabel, "before TDD")
+	if !reflect.DeepEqual(parentAfter, parentBefore) {
+		t.Errorf("parent meta mutated by ForkSession:\n before=%+v\n after=%+v", parentBefore, parentAfter)
 	}
 
 	// Child transcript must contain the edited message in its last entry line.
@@ -154,13 +158,13 @@ func TestForkSession_RejectsOutOfRangeDivergence(t *testing.T) {
 	stateDir, parentID := buildParentSession(t)
 
 	// divergenceTurn=0 must error.
-	_, err := ForkSession(stateDir, parentID, 0, "irrelevant", "")
+	_, err := ForkSession(stateDir, parentID, 0, "irrelevant")
 	if err == nil {
 		t.Error("ForkSession(divergenceTurn=0) should return an error")
 	}
 
 	// divergenceTurn exceeding count (parent has 2 USER_INPUT turns).
-	_, err = ForkSession(stateDir, parentID, 10, "irrelevant", "")
+	_, err = ForkSession(stateDir, parentID, 10, "irrelevant")
 	if err == nil {
 		t.Error("ForkSession(divergenceTurn=10) should return an error when parent has only 2 USER_INPUT turns")
 	}
@@ -171,7 +175,7 @@ func TestForkSession_RejectsOutOfRangeDivergence(t *testing.T) {
 func TestForkSession_RejectsMissingParent(t *testing.T) {
 	stateDir := t.TempDir()
 
-	_, err := ForkSession(stateDir, "NONEXISTENT_SESSION", 1, "hello", "")
+	_, err := ForkSession(stateDir, "NONEXISTENT_SESSION", 1, "hello")
 	if err == nil {
 		t.Error("ForkSession with missing parent should return an error")
 	}

@@ -20,11 +20,11 @@ func TestBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 		{ID: "01SUB1", UpdatedAt: now.Add(-time.Minute), OriginalTask: "verify",
 			EnvInfo:         agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
 			ParentSessionID: "01ACTIVE", IsSubagent: true},
-		// Snapshotted original — older transcript preserved. Has ForkLabel.
-		// Becomes a dim child of 01ACTIVE (the active branch references it).
+		// Snapshotted original — older transcript preserved. Detected as a
+		// fork-original because 01ACTIVE references it via ParentSessionID +
+		// DivergenceTurn. Becomes a dim child of 01ACTIVE.
 		{ID: "01OLDORIG", UpdatedAt: now.Add(-2 * time.Hour), OriginalTask: "fix replay bug",
-			EnvInfo:   agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
-			ForkLabel: "before TDD"},
+			EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"}},
 		// Unrelated session in same project.
 		{ID: "01OTHER", UpdatedAt: now.Add(-15 * time.Minute), OriginalTask: "htmx swap",
 			EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"}},
@@ -68,9 +68,9 @@ func TestBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 	if children[1].ID != "01OLDORIG" || children[1].Kind != "fork" {
 		t.Errorf("[1]: %s/%s", children[1].ID, children[1].Kind)
 	}
-	// Fork title includes the label.
-	if !strings.Contains(children[1].Title, "before TDD") {
-		t.Errorf("fork title missing label: %q", children[1].Title)
+	// Fork title is suffixed with " · original".
+	if !strings.HasSuffix(children[1].Title, "· original") {
+		t.Errorf("fork title should end in '· original', got: %q", children[1].Title)
 	}
 
 	// 01OTHER has no children

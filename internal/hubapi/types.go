@@ -77,7 +77,6 @@ type SessionDetail struct {
 	ContextPressure float64             `json:"context_pressure"`
 	ParentSessionID string              `json:"parent_session_id,omitempty"`
 	DivergenceTurn  int                 `json:"divergence_turn,omitempty"`
-	ForkLabel       string              `json:"fork_label,omitempty"`
 	IsSubagent      bool                `json:"is_subagent"`
 	Capabilities    SessionCapabilities `json:"capabilities"`
 	Streams         SessionStreams      `json:"streams"`
@@ -143,7 +142,6 @@ type RefResponse = SpawnResponse
 type ForkRequest struct {
 	Turn          int    `json:"turn"`
 	EditedMessage string `json:"edited_message"`
-	Label         string `json:"label"`
 }
 
 type ErrorResponse struct {

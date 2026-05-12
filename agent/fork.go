@@ -20,9 +20,10 @@ import (
 // divergenceTurn. The child gets its own fresh session ID and metadata pointing back to
 // the parent.
 //
-// If parentForkLabel is non-empty, the parent's meta is updated with that label so the
-// parent branch can be identified in session listings.
-func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage, parentForkLabel string) (string, error) {
+// The parent session is never mutated. UIs that want to surface the "original branch"
+// can detect it as a meta whose ID appears as ParentSessionID on some non-subagent
+// child with DivergenceTurn > 0.
+func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage string) (string, error) {
 	if divergenceTurn < 1 {
 		return "", fmt.Errorf("divergenceTurn must be >= 1, got %d", divergenceTurn)
 	}
@@ -173,19 +174,10 @@ func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage, p
 		OriginalTask:    parentMeta.OriginalTask,
 		ParentSessionID: parentID,
 		DivergenceTurn:  divergenceTurn,
-		ForkLabel:       "", // child carries no fork label; parent gets it
 	}
 
 	if err := SaveSessionMeta(stateDir, childMeta); err != nil {
 		return "", fmt.Errorf("save child session meta: %w", err)
-	}
-
-	// Update the parent meta with the fork label if provided.
-	if parentForkLabel != "" {
-		parentMeta.ForkLabel = parentForkLabel
-		if err := SaveSessionMeta(stateDir, parentMeta); err != nil {
-			return "", fmt.Errorf("update parent session meta with fork label: %w", err)
-		}
 	}
 
 	return childID, nil

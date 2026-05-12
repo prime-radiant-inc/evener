@@ -492,7 +492,6 @@ func (s *WebServer) apiSessionDetail(id string) (hubapi.SessionDetail, bool) {
 		Branch:         wd.Branch,
 		Model:          wd.Model,
 		TurnCount:      wd.TurnCount,
-		ForkLabel:      wd.ForkLabel,
 		DivergenceTurn: wd.DivergenceTurn,
 		Capabilities:   s.apiSessionCapabilities(id, live),
 		Streams: hubapi.SessionStreams{
@@ -546,7 +545,6 @@ func (s *WebServer) apiSessionDetail(id string) (hubapi.SessionDetail, bool) {
 			}
 			detail.ParentSessionID = pe.Meta.ParentSessionID
 			detail.DivergenceTurn = pe.Meta.DivergenceTurn
-			detail.ForkLabel = pe.Meta.ForkLabel
 			detail.IsSubagent = pe.Meta.IsSubagent
 		}
 	}
@@ -1808,12 +1806,12 @@ type WorkspaceData struct {
 	Cost           string
 	ReplayURL      string
 	EventsURL      string
-	// Fork lineage for the preserved-original side of a fork. Non-empty
-	// only when this session's meta carries ForkLabel — i.e., it's the
-	// dim, snapshotted original. ForkOfTitle is the title of the new
-	// branch (the session whose ParentSessionID == this.ID); empty if the
-	// new branch is not in the past index.
-	ForkLabel      string
+	// Fork lineage for the preserved-original side of a fork. Set when
+	// another non-subagent meta references this session via
+	// ParentSessionID + DivergenceTurn — i.e., this is the dim, snapshotted
+	// original. ForkOfTitle is the title of the new branch; empty if it's
+	// not in the past index.
+	IsForkOriginal bool
 	ForkOfTitle    string
 	DivergenceTurn int
 }
@@ -2013,22 +2011,19 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 }
 
 // fillForkLineage populates the WorkspaceData fork-banner fields for the
-// preserved-original side of a fork. The dim original is the meta with a
-// non-empty ForkLabel; the new branch is the meta whose ParentSessionID
-// equals this session's ID. ForkOfTitle is best-effort — if the new branch
-// isn't in the past index, we leave it empty and the template falls back to
-// "fork at turn N".
+// preserved-original side of a fork. The dim original is detected by
+// scanning the past index for a non-subagent meta whose ParentSessionID
+// equals this session's ID and whose DivergenceTurn is set. ForkOfTitle
+// is best-effort — if the new branch isn't in the past index, the banner
+// falls back to "↳ original of fork".
 func (s *WebServer) fillForkLineage(data *WorkspaceData, m agent.SessionMeta) {
-	if m.ForkLabel == "" {
-		return
-	}
-	data.ForkLabel = m.ForkLabel
-	data.DivergenceTurn = m.DivergenceTurn
 	if s.cfg.Past == nil {
 		return
 	}
 	for _, candidate := range s.cfg.Past.AllMetas() {
-		if candidate.ParentSessionID == m.ID && !candidate.IsSubagent && candidate.ForkLabel == "" {
+		if candidate.ParentSessionID == m.ID && !candidate.IsSubagent && candidate.DivergenceTurn > 0 {
+			data.IsForkOriginal = true
+			data.DivergenceTurn = candidate.DivergenceTurn
 			if candidate.OriginalTask != "" {
 				data.ForkOfTitle = candidate.OriginalTask
 			} else {
@@ -2338,7 +2333,6 @@ func (s *WebServer) handleSessionAction(w http.ResponseWriter, r *http.Request, 
 type forkRequest struct {
 	Turn          int    `json:"turn"`
 	EditedMessage string `json:"edited_message"`
-	Label         string `json:"label"`
 }
 
 func (s *WebServer) handleFork(w http.ResponseWriter, r *http.Request, parentID string) {
@@ -2400,7 +2394,7 @@ func (s *WebServer) forkSession(parentID string, body forkRequest) (string, erro
 		return "", fmt.Errorf("state dir not resolvable for parent session")
 	}
 
-	childID, err := agent.ForkSession(stateDir, parentID, body.Turn, body.EditedMessage, body.Label)
+	childID, err := agent.ForkSession(stateDir, parentID, body.Turn, body.EditedMessage)
 	if err != nil {
 		return "", err
 	}

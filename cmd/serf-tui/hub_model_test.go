@@ -691,7 +691,7 @@ func TestHubModelBrowseForkDraftPostsForkAndNavigatesToChild(t *testing.T) {
 	if gotPath != "/api/sessions/local:02CHILD" {
 		t.Fatalf("last path=%q", gotPath)
 	}
-	if gotReq.Turn != 3 || gotReq.EditedMessage != "edited request" || gotReq.Label != "original before fork" {
+	if gotReq.Turn != 3 || gotReq.EditedMessage != "edited request" {
 		t.Fatalf("fork request=%+v", gotReq)
 	}
 }

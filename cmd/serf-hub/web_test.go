@@ -1808,21 +1808,21 @@ func TestWeb_Sidebar_ProjectHeader_HasChevronAndFolder(t *testing.T) {
 	}
 }
 
-// TestWeb_Workspace_ForkOriginalBanner verifies that a session whose meta
-// carries ForkLabel renders the "↳ original of <new-branch-title>, divergence
-// at turn N" banner above the workspace title.
+// TestWeb_Workspace_ForkOriginalBanner verifies that a session referenced by
+// another non-subagent meta via ParentSessionID + DivergenceTurn renders the
+// "↳ original of <new-branch-title>, divergence at turn N" banner above the
+// workspace title.
 func TestWeb_Workspace_ForkOriginalBanner(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Original (preserved) branch — carries ForkLabel.
+	// Original (preserved) branch — un-mutated; detected via the new branch's
+	// back-reference.
 	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
 		ID: "01ORIGINAL", UpdatedAt: time.Now().Add(-time.Hour),
-		OriginalTask:   "the original task",
-		ForkLabel:      "before TDD",
-		DivergenceTurn: 5,
+		OriginalTask: "the original task",
 	}); err != nil {
 		t.Fatal(err)
 	}

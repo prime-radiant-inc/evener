@@ -43,7 +43,6 @@ type hubForkDraft struct {
 	Ref          hubapi.Ref
 	Turn         int
 	OriginalText string
-	Label        string
 }
 
 type hubModel struct {
@@ -447,7 +446,6 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, sendHubFork(m.client, draft.Ref, hubapi.ForkRequest{
 				Turn:          draft.Turn,
 				EditedMessage: text,
-				Label:         draft.Label,
 			})
 		}
 	}
@@ -800,7 +798,6 @@ func (m *hubModel) startForkDraft() {
 		Ref:          ref,
 		Turn:         msg.TurnIndex,
 		OriginalText: msg.Text,
-		Label:        "original before fork",
 	}
 	m.exitSessionBrowse()
 	m.session.setInputValue(msg.Text)
