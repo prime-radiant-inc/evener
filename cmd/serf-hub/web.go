@@ -2401,8 +2401,10 @@ func (s *WebServer) forkSession(parentID string, body forkRequest) (string, erro
 	// Seed the child's transcript with the edited message so it's already
 	// present when the user opens the child session. ForkSession itself
 	// only copies the prefix — appending the edited turn is the caller's
-	// responsibility.
+	// responsibility. If seeding fails, roll back the freshly-created
+	// child rather than leaving a prefix-only orphan on disk.
 	if err := agent.AppendUserInput(stateDir, childID, body.EditedMessage); err != nil {
+		_ = agent.DeleteSession(stateDir, childID)
 		return "", fmt.Errorf("seed child transcript: %w", err)
 	}
 	// Refresh past index so the new session shows up immediately in the sidebar.
