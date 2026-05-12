@@ -474,9 +474,6 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .fork-dialog { margin-bottom: 24px; padding: 12px 16px; background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 8px; max-width: 480px; margin-left: auto; }
 .fork-dialog-title { font-weight: 500; color: var(--text); font-size: 13px; margin-bottom: 6px; }
 .fork-dialog-body { color: var(--text-muted); font-size: 12.5px; line-height: 1.55; margin-bottom: 10px; }
-.fork-dialog-label { color: var(--text-muted); font-size: 12px; }
-.fork-dialog-input { background: transparent; border: 1px solid var(--rule); border-radius: 3px; padding: 4px 8px; color: var(--text); font: inherit; font-size: 12px; width: 220px; margin-left: 8px; outline: none; }
-.fork-dialog-input:focus { border-color: var(--accent); }
 .fork-dialog-actions { display: flex; gap: 14px; align-items: center; margin-top: 10px; font-size: 12px; }
 .fork-cancel { background: transparent; border: none; color: var(--text-muted); cursor: pointer; font: inherit; padding: 4px 8px; }
 .fork-confirm { margin-left: auto; padding: 6px 14px; background: var(--accent); color: var(--bg); border: none; border-radius: 4px; font-weight: 500; cursor: pointer; font: inherit; }

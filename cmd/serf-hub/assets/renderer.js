@@ -363,13 +363,6 @@
       const body = document.createElement("div");
       body.className = "fork-dialog-body";
       body.textContent = "The current branch continues with your edited message. The original is preserved as a sibling fork.";
-      const labelRow = document.createElement("div");
-      labelRow.className = "fork-dialog-label";
-      labelRow.innerHTML = "label the original ";
-      const input = document.createElement("input");
-      input.className = "fork-dialog-input";
-      input.value = autoLabel(originalText);
-      labelRow.appendChild(input);
       const actions = document.createElement("div");
       actions.className = "fork-dialog-actions";
       const cancel = document.createElement("button");
@@ -378,7 +371,7 @@
       confirm.className = "fork-confirm"; confirm.type = "button";
       confirm.innerHTML = "fork <kbd>⌘↩</kbd>";
       actions.appendChild(cancel); actions.appendChild(confirm);
-      dialog.appendChild(title); dialog.appendChild(body); dialog.appendChild(labelRow); dialog.appendChild(actions);
+      dialog.appendChild(title); dialog.appendChild(body); dialog.appendChild(actions);
       userWrap.parentNode.insertBefore(dialog, userWrap.nextSibling);
 
       const cleanup = () => {
@@ -399,7 +392,7 @@
           const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/fork", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ turn, edited_message: editedText, label: input.value || autoLabel(originalText) }),
+            body: JSON.stringify({ turn, edited_message: editedText }),
           });
           if (!resp.ok) {
             cleanup();
@@ -416,8 +409,7 @@
           this.appendBanner("error", "fork failed: " + e.message);
         }
       };
-      input.focus();
-      input.select();
+      confirm.focus();
     },
 
     beginAssistantMessage() {
@@ -1023,10 +1015,6 @@
       });
     },
   };
-
-  function autoLabel(text) {
-    return "before " + text.slice(0, 40).replace(/\s+/g, " ").trim();
-  }
 
   // openImageLightbox shows a full-size image overlay. Click backdrop or press
   // Esc to dismiss. One overlay at a time.
