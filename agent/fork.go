@@ -13,6 +13,23 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// LatestUserInputTurn returns the 1-based entry index of the most recent
+// USER_INPUT turn in the given session's transcript. This is the natural
+// default divergence point for "fork from the most recent turn".
+func LatestUserInputTurn(stateDir, sessionID string) (int, error) {
+	transcriptPath := filepath.Join(stateDir, sessionsSubdir, sessionID+".transcript.jsonl")
+	_, entries, _, err := ReadTranscript(transcriptPath)
+	if err != nil {
+		return 0, fmt.Errorf("read transcript for %s: %w", sessionID, err)
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].Turn.Kind == TurnUserInput {
+			return i + 1, nil
+		}
+	}
+	return 0, fmt.Errorf("no USER_INPUT turns in transcript for %s", sessionID)
+}
+
 // ForkSession creates a new session branched from a parent session at a given divergence turn.
 //
 // It copies the parent's first (divergenceTurn-1) USER_INPUT-counted turns into a new

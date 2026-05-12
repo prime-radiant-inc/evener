@@ -39,6 +39,8 @@ func main() {
 	resumeWith := flag.String("resume-with", "", "start a new task using a previous session's context")
 	resumeLast := flag.Bool("resume-last", false, "resume the most recent session")
 	listSessionsFlag := flag.Bool("list-sessions", false, "list saved sessions and exit")
+	fork := flag.Bool("fork", false, "fork the resumed session instead of continuing it; the task arg becomes the edited message")
+	forkTurn := flag.Int("fork-turn", 0, "1-based divergence turn for --fork (defaults to the most recent USER_INPUT turn)")
 	maxRounds := flag.Int("max-rounds", -1, "max tool rounds per input (0=unlimited, default: 200)")
 	maxSubagentDepth := flag.Int("max-subagent-depth", -1, "max subagent nesting depth (default: 1)")
 	shareTaskStore := flag.Bool("share-task-store", false, "share task list between parent and child sessions")
@@ -95,7 +97,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  --resume <id>        Resume a previous session\n")
 		fmt.Fprintf(os.Stderr, "  --resume-with <id>   New task using a previous session's context\n")
 		fmt.Fprintf(os.Stderr, "  --resume-last        Resume the most recent session\n")
-		fmt.Fprintf(os.Stderr, "  --list-sessions      List saved sessions\n\n")
+		fmt.Fprintf(os.Stderr, "  --list-sessions      List saved sessions\n")
+		fmt.Fprintf(os.Stderr, "  --fork               Fork the resumed session (task arg is the edited message); requires --resume*\n")
+		fmt.Fprintf(os.Stderr, "  --fork-turn <n>      1-based divergence turn for --fork (defaults to the most recent USER_INPUT)\n\n")
 		fmt.Fprintf(os.Stderr, "Environment variables:\n")
 		fmt.Fprintf(os.Stderr, "  SERF_MODEL           Default model as provider/model (used when --model is omitted)\n")
 		fmt.Fprintf(os.Stderr, "  SERF_REASONING_EFFORT Default reasoning effort (low|medium|high|xhigh|none)\n")
@@ -164,6 +168,8 @@ func main() {
 		resumeWith:         *resumeWith,
 		resumeLast:         *resumeLast,
 		listSessions:       *listSessionsFlag,
+		fork:               *fork,
+		forkTurn:           *forkTurn,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "serf: %v\n", err)

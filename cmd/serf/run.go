@@ -52,11 +52,17 @@ type runConfig struct {
 	pluginDirs         []string // --plugin-dir directories
 	systemPromptAsUser bool     // --system-prompt-as-user
 
-	// Resume options.
+	// Resume options. --fork, when combined with any --resume*, turns the
+	// resume into a fork: the task arg becomes the edited message at the
+	// divergence turn (defaulting to the most recent USER_INPUT, or set
+	// explicitly via --fork-turn), and a child session ID is printed to
+	// stdout. --fork-turn without --fork is an error.
 	resume       string // session ID to resume
 	resumeWith   string // session ID whose context to reuse with a new task
 	resumeLast   bool   // resume the most recent session
 	listSessions bool   // print saved sessions and exit
+	fork         bool   // fork the resumed session instead of continuing it
+	forkTurn     int    // explicit 1-based divergence turn; 0 = most recent USER_INPUT
 }
 
 func run(ctx context.Context, cfg runConfig) error {
@@ -90,6 +96,11 @@ func run(ctx context.Context, cfg runConfig) error {
 		return listSessions(cfg, stateDir)
 	}
 
+	// --fork-turn is only meaningful as a modifier on --fork.
+	if cfg.forkTurn != 0 && !cfg.fork {
+		return fmt.Errorf("--fork-turn is only valid with --fork")
+	}
+
 	// Resolve resume target.
 	var meta *agent.SessionMeta
 	if cfg.resume != "" || cfg.resumeWith != "" || cfg.resumeLast {
@@ -98,6 +109,16 @@ func run(ctx context.Context, cfg runConfig) error {
 			return err
 		}
 		meta = &m
+	}
+
+	// --fork: branch from the resolved parent, using the task arg as the
+	// edited message at cfg.forkTurn (defaulting to the most recent
+	// USER_INPUT turn). Prints the child session ID and exits.
+	if cfg.fork {
+		if meta == nil {
+			return fmt.Errorf("--fork requires a parent session (use --resume, --resume-with, or --resume-last)")
+		}
+		return forkResumedSession(cfg, stateDir, meta.ID)
 	}
 
 	// Determine task.
@@ -325,6 +346,32 @@ func resolveSessionMeta(cfg runConfig, stateDir string) (agent.SessionMeta, erro
 		id = cfg.resumeWith
 	}
 	return cmdutil.ResolveSessionMeta(stateDir, id, cfg.resumeLast)
+}
+
+// forkResumedSession creates a child branched from parentID at cfg.forkTurn,
+// using cfg.task as the edited message. If cfg.forkTurn is 0, the divergence
+// defaults to the 1-based index of the most recent USER_INPUT entry in the
+// parent's transcript. Prints the child session ID.
+func forkResumedSession(cfg runConfig, stateDir, parentID string) error {
+	task := strings.TrimSpace(cfg.task)
+	if task == "" {
+		return fmt.Errorf("--fork requires a task (the edited message at the divergence turn)")
+	}
+	turn := cfg.forkTurn
+	if turn == 0 {
+		var err error
+		turn, err = agent.LatestUserInputTurn(stateDir, parentID)
+		if err != nil {
+			return fmt.Errorf("locate most recent user input in %s: %w", parentID, err)
+		}
+	}
+	childID, err := agent.ForkSession(stateDir, parentID, turn, task)
+	if err != nil {
+		return fmt.Errorf("fork session: %w", err)
+	}
+	fmt.Fprintf(cfg.stderr, "[forked] new session %s from %s at turn %d\n", childID, parentID, turn) //nolint:errcheck
+	fmt.Fprintln(cfg.stdout, childID)                                                                //nolint:errcheck
+	return nil
 }
 
 // listSessions prints all saved sessions and returns.

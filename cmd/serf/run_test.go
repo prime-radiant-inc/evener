@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -298,6 +299,251 @@ func TestResumeLast_NoSessions(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no saved sessions") {
 		t.Fatalf("expected error about no sessions, got: %v", err)
+	}
+}
+
+// --- Fork tests ---
+
+// buildForkParentSession writes a parent transcript + meta with the same
+// shape used by the agent fork tests: [U1, A1, U2, A2]. Returns parentID.
+func buildForkParentSession(t *testing.T, stateDir string) string {
+	t.Helper()
+	parentID := "01PARENT00000000000000FORK"
+	sessDir := stateDir + "/sessions"
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	tpath := sessDir + "/" + parentID + ".transcript.jsonl"
+	tw, err := agent.NewTranscriptWriter(tpath, agent.TranscriptHeader{
+		SessionID: parentID,
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		CreatedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("NewTranscriptWriter: %v", err)
+	}
+	for _, turn := range []agent.Turn{
+		agent.NewTurn(agent.TurnUserInput, llm.User("first task")),
+		agent.NewTurn(agent.TurnAssistant, llm.Assistant("first reply")),
+		agent.NewTurn(agent.TurnUserInput, llm.User("second task")),
+		agent.NewTurn(agent.TurnAssistant, llm.Assistant("second reply")),
+	} {
+		if err := tw.Append(turn); err != nil {
+			t.Fatalf("Append turn: %v", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close transcript: %v", err)
+	}
+	if err := agent.SaveSessionMeta(stateDir, agent.SessionMeta{
+		ID:        parentID,
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+		TurnCount: 2,
+	}); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+	return parentID
+}
+
+func TestFork_ForkTurnWithoutForkErrors(t *testing.T) {
+	dir := t.TempDir()
+	parentID := buildForkParentSession(t, dir)
+	var stdout, stderr bytes.Buffer
+	cfg := runConfig{
+		task:     "edited message",
+		resume:   parentID,
+		forkTurn: 3, // set without fork=true
+		workDir:  dir,
+		stateDir: dir,
+		stdout:   &stdout,
+		stderr:   &stderr,
+	}
+	err := run(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected error when --fork-turn is set without --fork")
+	}
+	if !strings.Contains(err.Error(), "--fork-turn") || !strings.Contains(err.Error(), "--fork") {
+		t.Fatalf("expected error to mention --fork-turn and --fork, got: %v", err)
+	}
+}
+
+func TestFork_RequiresResumeTarget(t *testing.T) {
+	dir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	cfg := runConfig{
+		task:     "edited message",
+		fork:     true,
+		workDir:  dir,
+		stateDir: dir,
+		stdout:   &stdout,
+		stderr:   &stderr,
+	}
+	err := run(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected error when --fork is set without a resume target")
+	}
+	if !strings.Contains(err.Error(), "--fork") {
+		t.Fatalf("expected error to mention --fork, got: %v", err)
+	}
+}
+
+func TestFork_NonexistentParent(t *testing.T) {
+	dir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	cfg := runConfig{
+		task:     "edited message",
+		resume:   "01NOSUCHPARENT0000000000XX",
+		fork:     true,
+		forkTurn: 3,
+		workDir:  dir,
+		stateDir: dir,
+		stdout:   &stdout,
+		stderr:   &stderr,
+	}
+	err := run(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected error for nonexistent parent")
+	}
+	if !strings.Contains(err.Error(), "01NOSUCHPARENT0000000000XX") {
+		t.Fatalf("expected error to mention parent ID, got: %v", err)
+	}
+}
+
+func TestFork_RequiresTask(t *testing.T) {
+	dir := t.TempDir()
+	parentID := buildForkParentSession(t, dir)
+	var stdout, stderr bytes.Buffer
+	cfg := runConfig{
+		task:     "",
+		resume:   parentID,
+		fork:     true,
+		forkTurn: 3,
+		workDir:  dir,
+		stateDir: dir,
+		stdout:   &stdout,
+		stderr:   &stderr,
+	}
+	err := run(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected error when forking without a task")
+	}
+	if !strings.Contains(err.Error(), "task") {
+		t.Fatalf("expected error to mention task, got: %v", err)
+	}
+}
+
+func TestFork_CreatesChildAndPrintsID(t *testing.T) {
+	dir := t.TempDir()
+	parentID := buildForkParentSession(t, dir)
+
+	parentBefore, err := agent.LoadSessionMeta(dir, parentID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(parent before): %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cfg := runConfig{
+		task:     "edited second task",
+		resume:   parentID,
+		fork:     true,
+		forkTurn: 3,
+		workDir:  dir,
+		stateDir: dir,
+		stdout:   &stdout,
+		stderr:   &stderr,
+	}
+	if err := run(context.Background(), cfg); err != nil {
+		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
+	}
+
+	childID := strings.TrimSpace(stdout.String())
+	if childID == "" {
+		t.Fatalf("expected child session ID on stdout, got empty")
+	}
+	if childID == parentID {
+		t.Fatalf("child ID must differ from parent, got %q", childID)
+	}
+
+	childMeta, err := agent.LoadSessionMeta(dir, childID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(child): %v", err)
+	}
+	if childMeta.ParentSessionID != parentID {
+		t.Errorf("child ParentSessionID = %q, want %q", childMeta.ParentSessionID, parentID)
+	}
+	if childMeta.DivergenceTurn != 3 {
+		t.Errorf("child DivergenceTurn = %d, want 3", childMeta.DivergenceTurn)
+	}
+
+	// Forking must not mutate the parent meta.
+	parentAfter, err := agent.LoadSessionMeta(dir, parentID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(parent after): %v", err)
+	}
+	if !reflect.DeepEqual(parentAfter, parentBefore) {
+		t.Errorf("parent meta mutated by fork:\n before=%+v\n after=%+v", parentBefore, parentAfter)
+	}
+}
+
+// --fork with no --fork-turn defaults to the most recent USER_INPUT turn.
+// The fixture transcript is [U1, A1, U2, A2]; most recent USER_INPUT is at
+// entry index 3 (1-based).
+func TestFork_DefaultsToMostRecentUserInput(t *testing.T) {
+	dir := t.TempDir()
+	parentID := buildForkParentSession(t, dir)
+
+	var stdout, stderr bytes.Buffer
+	cfg := runConfig{
+		task:     "edited most recent",
+		resume:   parentID,
+		fork:     true,
+		workDir:  dir,
+		stateDir: dir,
+		stdout:   &stdout,
+		stderr:   &stderr,
+	}
+	if err := run(context.Background(), cfg); err != nil {
+		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
+	}
+	childID := strings.TrimSpace(stdout.String())
+	childMeta, err := agent.LoadSessionMeta(dir, childID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(child): %v", err)
+	}
+	if childMeta.DivergenceTurn != 3 {
+		t.Errorf("child DivergenceTurn = %d, want 3 (last USER_INPUT in [U1,A1,U2,A2])", childMeta.DivergenceTurn)
+	}
+}
+
+func TestFork_WithResumeLast(t *testing.T) {
+	dir := t.TempDir()
+	parentID := buildForkParentSession(t, dir)
+
+	var stdout, stderr bytes.Buffer
+	cfg := runConfig{
+		task:       "edited via resume-last",
+		resumeLast: true,
+		fork:       true,
+		forkTurn:   3,
+		workDir:    dir,
+		stateDir:   dir,
+		stdout:     &stdout,
+		stderr:     &stderr,
+	}
+	if err := run(context.Background(), cfg); err != nil {
+		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
+	}
+	childID := strings.TrimSpace(stdout.String())
+	childMeta, err := agent.LoadSessionMeta(dir, childID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(child): %v", err)
+	}
+	if childMeta.ParentSessionID != parentID {
+		t.Errorf("child ParentSessionID = %q, want %q", childMeta.ParentSessionID, parentID)
 	}
 }
 
