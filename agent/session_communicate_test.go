@@ -188,19 +188,21 @@ func TestCommunicate_StructuredOutputExitsLoop(t *testing.T) {
 	}
 }
 
-func TestCommunicate_BareTextFallback(t *testing.T) {
+func TestCommunicate_BareTextAutoWrappedInInteractive(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	// Model keeps returning bare text (no tool calls) — simulating a provider
-	// that doesn't honor tool_choice=required.
+	// Interactive session: bare text from a non-compliant provider should be
+	// auto-wrapped as a communicate(message=..., await_reply=true) call rather
+	// than steering and retrying.
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("bare text response")} },
-			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("bare text response")} },
-			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("bare text response")} },
-			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("bare text response")} },
+			func(req llm.Request) llm.Response {
+				t.Fatalf("should not reach a second request; bare text must be auto-wrapped on first occurrence")
+				return llm.Response{}
+			},
 		},
 	}
 	c.Register(f)
@@ -209,19 +211,23 @@ func TestCommunicate_BareTextFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
+	defer sess.Close()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	out, err := sess.ProcessInput(ctx, "hi", nil)
-	if err == nil {
-		t.Fatalf("expected bare-text contract error, got output %q", out)
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
 	}
-	if out != "" {
-		t.Fatalf("out: %q, want empty string on error", out)
+	if out != "bare text response" {
+		t.Fatalf("out: %q, want %q", out, "bare text response")
 	}
-	if !strings.Contains(err.Error(), "bare text without calling communicate") {
-		t.Fatalf("unexpected error: %v", err)
+	if !sess.Communicated() {
+		t.Fatal("expected Communicated() to be true after auto-wrap")
 	}
-	sess.Close()
+	if got := len(f.Requests()); got != 1 {
+		t.Fatalf("requests: got %d want 1", got)
+	}
 }
 
 func TestCommunicate_InboxDrainsSteering(t *testing.T) {

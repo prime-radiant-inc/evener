@@ -54,6 +54,21 @@ func (e *bareTextWithoutResultToolError) Is(target error) bool {
 	return target == errBareTextWithoutResultTool
 }
 
+var errEmptyResponsesExhausted = errors.New("model returned empty responses past retry budget")
+
+type emptyResponsesExhaustedError struct {
+	consecutive int
+	total       int
+}
+
+func (e *emptyResponsesExhaustedError) Error() string {
+	return fmt.Sprintf("model returned empty response after %d consecutive retries (%d total this turn)", e.consecutive, e.total)
+}
+
+func (e *emptyResponsesExhaustedError) Is(target error) bool {
+	return target == errEmptyResponsesExhausted
+}
+
 type SessionConfig struct {
 	MaxToolRoundsPerInput   int `json:"max_tool_rounds_per_input,omitempty"`
 	MaxTurns                int `json:"max_turns,omitempty"`
@@ -1898,6 +1913,59 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				// Non-empty bare text without tool calls violates the contract:
 				// all user-facing messages must go through communicate.
 				consecutiveEmptyResponses = 0
+
+				// Interactive root session: auto-wrap the bare text as a
+				// communicate call rather than spending turns nudging the model
+				// to comply. Several models intermittently skip the result
+				// tool and the retry loop just produces the same text wrapped
+				// on a later turn — costing latency and tokens for no
+				// behavioral change. Subagents are excluded: their parents
+				// rely on the structured envelope, and the existing
+				// auto-nudge in spawnAgent handles that case.
+				// We still emit a warning so transcripts and metrics surface
+				// the underlying protocol violation.
+				if !s.cfg.NonInteractive && s.cfg.ParentSessionID == "" {
+					consecutiveBareTextResponses = 0
+					s.emit(EventWarning, WarningData{
+						Message: "bare text response auto-wrapped as " + s.resultToolName() + " (await_reply=true)",
+					})
+					synthesizedOutput := canonicalNodeOutputText(nodeOutput{
+						Message:   txt,
+						Data:      map[string]any{},
+						Artifacts: []string{},
+					})
+					s.emit(EventCommunicate, CommunicateData{
+						AwaitReply: true,
+						Message:    txt,
+					})
+					s.mu.Lock()
+					s.communicated = true
+					s.communicateAwaitReply = true
+					s.communicateText = txt
+					s.communicateReply = txt
+					s.communicateOutput = synthesizedOutput
+					s.mu.Unlock()
+					timings.TotalRound = time.Since(roundStart)
+					timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
+					s.emit(EventRoundTimings, timings)
+					if s.hookRunner != nil {
+						hi := s.hookInput(HookStop)
+						hi.Reason = "communicate.await_reply"
+						stopResult := s.hookRunner.RunStop(ctx, hi)
+						for _, msg := range stopResult.SystemMessages {
+							s.Steer(msg)
+						}
+						if stopResult.Blocked {
+							round-- // Don't count the synthesized exit as a tool round when blocked.
+							continue
+						}
+					}
+					s.mu.Lock()
+					s.state = SessionAwaitingInput
+					s.mu.Unlock()
+					return txt, nil
+				}
+
 				consecutiveBareTextResponses++
 				if consecutiveBareTextResponses <= maxBareTextRetries {
 					s.emit(EventWarning, WarningData{
@@ -1926,6 +1994,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				return "", err
 			}
 
+			err := &emptyResponsesExhaustedError{
+				consecutive: consecutiveEmptyResponses,
+				total:       totalEmptyResponses,
+			}
+			s.emit(EventError, ErrorData{Error: err.Error()})
 			s.mu.Lock()
 			s.state = SessionIdle
 			s.mu.Unlock()
@@ -1933,7 +2006,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			timings.TotalRound = time.Since(roundStart)
 			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
 			s.emit(EventRoundTimings, timings)
-			return txt, nil
+			return "", err
 		}
 
 		// Model produced tool calls — reset retry counters.
