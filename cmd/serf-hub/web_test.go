@@ -96,7 +96,7 @@ func TestWeb_CodexSessionRouteReadsConfiguredSource(t *testing.T) {
 			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
 		}},
 	})
-	req := httptest.NewRequest(http.MethodGet, "/s/"+url.PathEscape("codex-local:th_codex"), nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/"+url.PathEscape("codex-local:th_codex")+"/workspace", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("HX-Request", "true")
 	rr := httptest.NewRecorder()
@@ -233,8 +233,56 @@ func TestWeb_AppShell_RendersSidebarAndWorkspaceMounts(t *testing.T) {
 	if !strings.Contains(body, `id="workspace"`) {
 		t.Errorf("missing #workspace")
 	}
-	if !strings.Contains(body, `hx-get="/sidebar"`) {
+	if !strings.Contains(body, `hx-get="/_partials/sidebar"`) {
 		t.Errorf("missing sidebar hx-get")
+	}
+	if !strings.Contains(body, `hx-get="/_partials/workspace/empty"`) {
+		t.Errorf("missing workspace partial hx-get")
+	}
+}
+
+func TestWeb_InternalPartialsRequireHXRequest(t *testing.T) {
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: NewRoster(t.TempDir(), nil), Past: NewPastIndex("")})
+	for _, path := range []string{
+		"/_partials/sidebar",
+		"/_partials/workspace/empty",
+		"/_partials/workspace/spawn",
+		"/_partials/settings/general",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Host = "127.0.0.1:9180"
+		rec := httptest.NewRecorder()
+		web.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s status=%d body=%q", path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestWeb_LegacyPartialRoutesDoNotServeFragments(t *testing.T) {
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: NewRoster(t.TempDir(), nil), Past: NewPastIndex("")})
+	for _, path := range []string{"/sidebar", "/workspace/empty", "/workspace/spawn"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Host = "127.0.0.1:9180"
+		rec := httptest.NewRecorder()
+		web.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s status=%d body=%q", path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestWeb_SettingsFullPageLoadsInternalPartial(t *testing.T) {
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: NewRoster(t.TempDir(), nil), Past: NewPastIndex("")})
+	req := httptest.NewRequest(http.MethodGet, "/settings/theme", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `hx-get="/_partials/settings/theme"`) {
+		t.Fatalf("settings full page did not load internal partial:\n%s", rec.Body.String())
 	}
 }
 
@@ -245,7 +293,7 @@ func TestWeb_Sidebar_RendersTreeWithLiveAndProjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
-		ID: "01PAST", UpdatedAt: time.Now(), OriginalTask: "fix bug",
+		ID: "01PAST", UpdatedAt: time.Now(), OriginalPrompt: "fix bug",
 		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
 	}); err != nil {
 		t.Fatal(err)
@@ -260,8 +308,9 @@ func TestWeb_Sidebar_RendersTreeWithLiveAndProjects(t *testing.T) {
 		Roster:  NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
-	req := httptest.NewRequest(http.MethodGet, "/sidebar", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar", nil)
 	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
 
@@ -314,8 +363,9 @@ func TestWeb_WorkspaceSpawn_RendersForm(t *testing.T) {
 		Roster:  NewRoster(t.TempDir(), nil),
 		Past:    NewPastIndex(""),
 	})
-	req := httptest.NewRequest(http.MethodGet, "/workspace/spawn", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/workspace/spawn", nil)
 	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -351,8 +401,9 @@ func TestWeb_WorkspaceSpawn_DoesNotSubmitPlaceholderDefaults(t *testing.T) {
 		Roster:  NewRoster(t.TempDir(), nil),
 		Past:    NewPastIndex(""),
 	})
-	req := httptest.NewRequest(http.MethodGet, "/workspace/spawn", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/workspace/spawn", nil)
 	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -377,8 +428,9 @@ func TestWeb_WorkspaceSpawn_SubmitsPrefilledWorkingDir(t *testing.T) {
 		Roster:  NewRoster(t.TempDir(), nil),
 		Past:    NewPastIndex(""),
 	})
-	req := httptest.NewRequest(http.MethodGet, "/workspace/spawn?dir="+url.QueryEscape(dir), nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/workspace/spawn?dir="+url.QueryEscape(dir), nil)
 	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -395,40 +447,41 @@ func TestWeb_WorkspaceSpawn_SubmitsPrefilledWorkingDir(t *testing.T) {
 	}
 }
 
-// TestWeb_WorkspaceSpawn_PrefillsTaskFromQuery verifies that ?task=<text>
-// on /workspace/spawn (and the /new wrapper that forwards it) reaches the
+// TestWeb_WorkspaceSpawn_PrefillsPromptFromQuery verifies that ?prompt=<text>
+// on /_partials/workspace/spawn (and the /new wrapper that forwards it) reaches the
 // rendered textarea. The palette's /spawn command relies on this.
-func TestWeb_WorkspaceSpawn_PrefillsTaskFromQuery(t *testing.T) {
+func TestWeb_WorkspaceSpawn_PrefillsPromptFromQuery(t *testing.T) {
 	web := NewWebServer(WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  NewRoster(t.TempDir(), nil),
 		Past:    NewPastIndex(""),
 	})
-	req := httptest.NewRequest(http.MethodGet, "/workspace/spawn?task="+url.QueryEscape("do the thing"), nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/workspace/spawn?prompt="+url.QueryEscape("do the thing"), nil)
 	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: %d", rec.Code)
 	}
 	body := rec.Body.String()
-	// The textarea is name="task" and the content sits between the open/close tags.
-	want := `name="task" placeholder="describe the task…" autofocus>do the thing</textarea>`
+	// The textarea is name="prompt" and the content sits between the open/close tags.
+	want := `name="prompt" placeholder="describe the prompt…" autofocus>do the thing</textarea>`
 	if !strings.Contains(body, want) {
-		t.Fatalf("spawn form missing prefilled task %q:\n%s", want, body)
+		t.Fatalf("spawn form missing prefilled prompt %q:\n%s", want, body)
 	}
 }
 
-// TestWeb_Index_NewRouteForwardsTaskToWorkspace verifies that /new?task=<text>
-// renders the app shell wired to /workspace/spawn?task=<text> so the textarea
+// TestWeb_Index_NewRouteForwardsPromptToWorkspace verifies that /new?prompt=<text>
+// renders the app shell wired to /_partials/workspace/spawn?prompt=<text> so the textarea
 // pre-fill kicks in once the workspace partial loads.
-func TestWeb_Index_NewRouteForwardsTaskToWorkspace(t *testing.T) {
+func TestWeb_Index_NewRouteForwardsPromptToWorkspace(t *testing.T) {
 	web := NewWebServer(WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  NewRoster(t.TempDir(), nil),
 		Past:    NewPastIndex(""),
 	})
-	req := httptest.NewRequest(http.MethodGet, "/new?task="+url.QueryEscape("hello world"), nil)
+	req := httptest.NewRequest(http.MethodGet, "/new?prompt="+url.QueryEscape("hello world"), nil)
 	req.Host = "127.0.0.1:9180"
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
@@ -437,9 +490,9 @@ func TestWeb_Index_NewRouteForwardsTaskToWorkspace(t *testing.T) {
 	}
 	body := rec.Body.String()
 	// html/template escapes "+" → "&#43;" inside attribute values.
-	want := `/workspace/spawn?task=hello&#43;world`
+	want := `/_partials/workspace/spawn?prompt=hello&#43;world`
 	if !strings.Contains(body, want) {
-		t.Fatalf("app shell missing forwarded ?task in workspace url %q:\n%s", want, body)
+		t.Fatalf("app shell missing forwarded ?prompt in workspace url %q:\n%s", want, body)
 	}
 }
 
@@ -454,7 +507,7 @@ func TestWeb_PastReplay_ImagesAreShaReferenced(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
-		ID: "01IMG", UpdatedAt: time.Now(), OriginalTask: "image demo",
+		ID: "01IMG", UpdatedAt: time.Now(), OriginalPrompt: "image demo",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -589,7 +642,7 @@ func TestWeb_PastReplay_TranslatesTurnsToSSEEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
-		ID: "01REPLAY", UpdatedAt: time.Now(), OriginalTask: "demo",
+		ID: "01REPLAY", UpdatedAt: time.Now(), OriginalPrompt: "demo",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1035,7 +1088,7 @@ func TestHubReplayUserInputIncludesTurnIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
-		ID: "01REPLAYTURN", UpdatedAt: time.Now(), OriginalTask: "demo",
+		ID: "01REPLAYTURN", UpdatedAt: time.Now(), OriginalPrompt: "demo",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1189,6 +1242,7 @@ func TestWeb_ApiSpawn_HarnessRoutesToConfiguredCodexSource(t *testing.T) {
 	workDir := t.TempDir()
 	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
 	var gotStart map[string]any
+	var gotTurnStart map[string]any
 	appserver.HandleTyped(codex.Router(), appwire.MethodThreadStart, func(_ context.Context, params map[string]any) (map[string]any, error) {
 		gotStart = params
 		return map[string]any{"thread": map[string]any{
@@ -1205,6 +1259,7 @@ func TestWeb_ApiSpawn_HarnessRoutesToConfiguredCodexSource(t *testing.T) {
 		}}, nil
 	})
 	appserver.HandleTyped(codex.Router(), appwire.MethodTurnStart, func(_ context.Context, params map[string]any) (map[string]any, error) {
+		gotTurnStart = params
 		return map[string]any{"turn": map[string]any{
 			"id":        "turn_codex",
 			"items":     []any{},
@@ -1223,7 +1278,7 @@ func TestWeb_ApiSpawn_HarnessRoutesToConfiguredCodexSource(t *testing.T) {
 			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
 		}},
 	})
-	body := strings.NewReader(fmt.Sprintf(`{"harness":"codex","task":"hello codex","model":"gpt-5.1-codex","working_dir":%q}`, workDir))
+	body := strings.NewReader(fmt.Sprintf(`{"harness":"codex","prompt":"hello codex","model":"gpt-5.1-codex","working_dir":%q}`, workDir))
 	req := httptest.NewRequest(http.MethodPost, "/api/spawn", body)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("Origin", "http://127.0.0.1:9180")
@@ -1235,6 +1290,14 @@ func TestWeb_ApiSpawn_HarnessRoutesToConfiguredCodexSource(t *testing.T) {
 	}
 	if gotStart["modelProvider"] != nil || gotStart["model"] != "gpt-5.1-codex" {
 		t.Fatalf("codex start params=%+v", gotStart)
+	}
+	input, ok := gotTurnStart["input"].([]any)
+	if !ok || len(input) != 1 {
+		t.Fatalf("codex turn input=%#v", gotTurnStart["input"])
+	}
+	text, ok := input[0].(map[string]any)
+	if !ok || text["type"] != "text" || text["text"] != "hello codex" {
+		t.Fatalf("codex turn text input=%#v", input[0])
 	}
 	var resp hubapi.SpawnResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
@@ -1289,6 +1352,28 @@ func TestWeb_ApiSpawn_CodexSourcePassesRemoteWorkingDirThrough(t *testing.T) {
 	}
 	if gotStart["cwd"] != remoteDir {
 		t.Fatalf("codex cwd=%q, want %q (params=%+v)", gotStart["cwd"], remoteDir, gotStart)
+	}
+}
+
+func TestSpawnRequestJSONAcceptsPromptAndLegacyTask(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "prompt", body: `{"prompt":"hello prompt"}`, want: "hello prompt"},
+		{name: "legacy_task", body: `{"task":"hello legacy"}`, want: "hello legacy"},
+		{name: "prompt_preferred", body: `{"prompt":"hello prompt","task":"hello legacy"}`, want: "hello prompt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got spawnRequest
+			if err := json.Unmarshal([]byte(tc.body), &got); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if got.Prompt != tc.want {
+				t.Fatalf("Prompt=%q, want %q", got.Prompt, tc.want)
+			}
+		})
 	}
 }
 
@@ -1358,7 +1443,7 @@ func TestWeb_ApiSpawn_503WhenNoSpawner(t *testing.T) {
 		Roster:  NewRoster(t.TempDir(), nil),
 		Past:    NewPastIndex(""),
 	})
-	body := strings.NewReader(`{"task":"do something"}`)
+	body := strings.NewReader(`{"prompt":"do something"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/spawn", body)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("Origin", "http://127.0.0.1:9180")
@@ -1382,7 +1467,7 @@ func TestWeb_ApiSpawn_CodexLaunchFailureReturnsStructuredDiagnostic(t *testing.T
 		CodexLaunches: []CodexLaunchConfig{cfg},
 		CodexLauncher: NewCodexLauncher([]CodexLaunchConfig{cfg}),
 	})
-	body := strings.NewReader(`{"harness":"codex-broken","working_dir":"/tmp","task":"hello"}`)
+	body := strings.NewReader(`{"harness":"codex-broken","working_dir":"/tmp","prompt":"hello"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/spawn", body)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("Origin", "http://127.0.0.1:9180")
@@ -1425,9 +1510,13 @@ func TestWeb_SessionRoute_FullPage_ServesAppShell(t *testing.T) {
 	if !strings.Contains(body, `id="workspace"`) {
 		t.Errorf("full-page /s/<id> missing app shell workspace mount")
 	}
+	if !strings.Contains(body, `hx-get="/_partials/s/anysession/workspace"`) {
+		t.Errorf("full-page /s/<id> missing internal workspace partial URL")
+	}
 }
 
-// TestWeb_WorkspacePartial_LiveSession_RendersHeader verifies that GET /s/<id>
+// TestWeb_WorkspacePartial_LiveSession_RendersHeader verifies that the internal
+// session workspace partial renders the session title and status.
 // with HX-Request:true returns the workspace partial with the session title and status.
 func TestWeb_WorkspacePartial_LiveSession_RendersHeader(t *testing.T) {
 	dir := t.TempDir()
@@ -1440,7 +1529,7 @@ func TestWeb_WorkspacePartial_LiveSession_RendersHeader(t *testing.T) {
 		Roster:  r,
 		Past:    NewPastIndex(""),
 	})
-	req := httptest.NewRequest(http.MethodGet, "/s/01LIVE001", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01LIVE001/workspace", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
@@ -1467,13 +1556,13 @@ func TestWeb_WorkspacePartial_LiveSession_RendersHeader(t *testing.T) {
 }
 
 // TestWeb_WorkspacePartial_PastSession_RendersTitleAndState verifies that a past session
-// renders via the workspace partial with its OriginalTask and state="ended".
+// renders via the workspace partial with its OriginalPrompt and state="ended".
 func TestWeb_WorkspacePartial_PastSession_RendersTitleAndState(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
 	_ = agent.SaveSessionMeta(proj, agent.SessionMeta{
-		ID: "01PAST001", UpdatedAt: time.Now(), OriginalTask: "fix the widget", TurnCount: 7,
+		ID: "01PAST001", UpdatedAt: time.Now(), OriginalPrompt: "fix the widget", TurnCount: 7,
 	})
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
@@ -1485,7 +1574,7 @@ func TestWeb_WorkspacePartial_PastSession_RendersTitleAndState(t *testing.T) {
 		Roster:  NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
-	req := httptest.NewRequest(http.MethodGet, "/s/01PAST001", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01PAST001/workspace", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
@@ -1496,7 +1585,7 @@ func TestWeb_WorkspacePartial_PastSession_RendersTitleAndState(t *testing.T) {
 	}
 	body := rec.Body.String()
 	if !strings.Contains(body, "fix the widget") {
-		t.Errorf("body missing OriginalTask 'fix the widget': %q", body)
+		t.Errorf("body missing OriginalPrompt 'fix the widget': %q", body)
 	}
 	if !strings.Contains(body, "ended") {
 		t.Errorf("body missing state 'ended': %q", body)
@@ -1511,7 +1600,7 @@ func TestWeb_WorkspacePartial_RendersBottomStripAffordances(t *testing.T) {
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
 	_ = agent.SaveSessionMeta(proj, agent.SessionMeta{
-		ID: "01BOTTOM01", UpdatedAt: time.Now(), OriginalTask: "render bottom strip",
+		ID: "01BOTTOM01", UpdatedAt: time.Now(), OriginalPrompt: "render bottom strip",
 	})
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
@@ -1523,7 +1612,7 @@ func TestWeb_WorkspacePartial_RendersBottomStripAffordances(t *testing.T) {
 		Roster:  NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
-	req := httptest.NewRequest(http.MethodGet, "/s/01BOTTOM01", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01BOTTOM01/workspace", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
@@ -1554,7 +1643,7 @@ func TestWeb_WorkspacePartial_RendersWorkingDirInStatusRow(t *testing.T) {
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
 	_ = agent.SaveSessionMeta(proj, agent.SessionMeta{
-		ID: "01CWD00001", UpdatedAt: time.Now(), OriginalTask: "cwd test",
+		ID: "01CWD00001", UpdatedAt: time.Now(), OriginalPrompt: "cwd test",
 		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/tmp/foo", GitBranch: "feature/bar"},
 	})
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
@@ -1567,7 +1656,7 @@ func TestWeb_WorkspacePartial_RendersWorkingDirInStatusRow(t *testing.T) {
 		Roster:  NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
-	req := httptest.NewRequest(http.MethodGet, "/s/01CWD00001", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01CWD00001/workspace", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
@@ -1608,8 +1697,9 @@ func TestWeb_State_RendersInputStatusPartial(t *testing.T) {
 		Roster:  NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
-	req := httptest.NewRequest(http.MethodGet, "/s/01STATE001/state", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01STATE001/state", nil)
 	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
 
@@ -1677,6 +1767,9 @@ func TestWeb_Send_ClosedSessionResumesForwardsAndKeepsReplay(t *testing.T) {
 			}
 			if req.StateDir != stateDir || req.WorkingDir != "/tmp/project" {
 				t.Fatalf("resume request=%+v", req)
+			}
+			if req.Model != "openai/gpt-5" {
+				t.Fatalf("resume model=%q, want openai/gpt-5", req.Model)
 			}
 			entry := rendezvous.Entry{
 				PID:        301,
@@ -1763,7 +1856,7 @@ func TestWeb_Fork_CallsForkSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
-		ID: parentID, UpdatedAt: time.Now(), OriginalTask: "test fork",
+		ID: parentID, UpdatedAt: time.Now(), OriginalPrompt: "test fork",
 		ProfileID: "openai", Model: "gpt-5",
 	}); err != nil {
 		t.Fatal(err)
@@ -1804,11 +1897,11 @@ func TestWeb_ApiSearch_FiltersPast(t *testing.T) {
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
 	_ = agent.SaveSessionMeta(proj, agent.SessionMeta{
-		ID: "01MATCH", UpdatedAt: time.Now(), OriginalTask: "fix the frobnitz",
+		ID: "01MATCH", UpdatedAt: time.Now(), OriginalPrompt: "fix the frobnitz",
 		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/alpha"},
 	})
 	_ = agent.SaveSessionMeta(proj, agent.SessionMeta{
-		ID: "01OTHER", UpdatedAt: time.Now(), OriginalTask: "unrelated work",
+		ID: "01OTHER", UpdatedAt: time.Now(), OriginalPrompt: "unrelated work",
 		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/beta"},
 	})
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
@@ -1897,7 +1990,7 @@ func TestWeb_Settings_Theme_Renders(t *testing.T) {
 		Roster:  NewRoster(t.TempDir(), nil),
 		Past:    NewPastIndex(""),
 	})
-	req := httptest.NewRequest(http.MethodGet, "/settings/theme", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/settings/theme", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
@@ -2185,7 +2278,7 @@ func TestWeb_Settings_Providers_RendersConfigured(t *testing.T) {
 			{Provider: "openai", Model: "gpt-5"},
 		},
 	})
-	req := httptest.NewRequest(http.MethodGet, "/settings/providers", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/settings/providers", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
@@ -2211,7 +2304,7 @@ func TestWeb_SessionTasks_PastReturnsPersistedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
-		ID: "01PASTTASK", UpdatedAt: time.Now(), OriginalTask: "demo",
+		ID: "01PASTTASK", UpdatedAt: time.Now(), OriginalPrompt: "demo",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -2238,8 +2331,9 @@ func TestWeb_SessionTasks_PastReturnsPersistedFile(t *testing.T) {
 		Past:    idx,
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/s/01PASTTASK/tasks", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01PASTTASK/tasks", nil)
 	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
 
@@ -2277,8 +2371,9 @@ func TestWeb_SessionTasks_PastNoTasksFile(t *testing.T) {
 		Roster:  NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
-	req := httptest.NewRequest(http.MethodGet, "/s/01NOTASKS/tasks", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01NOTASKS/tasks", nil)
 	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
 
@@ -2309,8 +2404,9 @@ func TestWeb_SessionTasks_LiveProxiesDaemon(t *testing.T) {
 		Roster:  r,
 		Past:    NewPastIndex(""),
 	})
-	req := httptest.NewRequest(http.MethodGet, "/s/01LIVETASK/tasks", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01LIVETASK/tasks", nil)
 	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
 
@@ -2601,8 +2697,9 @@ func TestWeb_Sidebar_LiveRowDataState(t *testing.T) {
 		Roster:  r,
 		Past:    NewPastIndex(""),
 	})
-	req := httptest.NewRequest(http.MethodGet, "/sidebar", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar", nil)
 	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
 
@@ -2651,7 +2748,7 @@ func TestWeb_Sidebar_ProjectHeader_HasChevronAndFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
-		ID: "01PROJHDR", UpdatedAt: time.Now(), OriginalTask: "x",
+		ID: "01PROJHDR", UpdatedAt: time.Now(), OriginalPrompt: "x",
 		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/widgets"},
 	}); err != nil {
 		t.Fatal(err)
@@ -2666,8 +2763,9 @@ func TestWeb_Sidebar_ProjectHeader_HasChevronAndFolder(t *testing.T) {
 		Roster:  NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
-	req := httptest.NewRequest(http.MethodGet, "/sidebar", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar", nil)
 	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
 
@@ -2695,7 +2793,7 @@ func TestWeb_Workspace_ForkOriginalBanner(t *testing.T) {
 	// Original (preserved) branch — carries ForkLabel.
 	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
 		ID: "01ORIGINAL", UpdatedAt: time.Now().Add(-time.Hour),
-		OriginalTask:   "the original task",
+		OriginalPrompt: "the original prompt",
 		ForkLabel:      "before TDD",
 		DivergenceTurn: 5,
 	}); err != nil {
@@ -2704,7 +2802,7 @@ func TestWeb_Workspace_ForkOriginalBanner(t *testing.T) {
 	// New branch — its ParentSessionID points back at the original.
 	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
 		ID: "01NEWBRANCH", UpdatedAt: time.Now(),
-		OriginalTask:    "the new branch title",
+		OriginalPrompt:  "the new branch title",
 		ParentSessionID: "01ORIGINAL",
 		DivergenceTurn:  5,
 	}); err != nil {
@@ -2720,7 +2818,7 @@ func TestWeb_Workspace_ForkOriginalBanner(t *testing.T) {
 		Roster:  NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
-	req := httptest.NewRequest(http.MethodGet, "/s/01ORIGINAL", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01ORIGINAL/workspace", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
@@ -2992,13 +3090,13 @@ func TestWeb_Sidebar_RollupState_AwaitingHasPriority(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
-		ID: "01AWAIT", UpdatedAt: time.Now(), OriginalTask: "needs reply",
+		ID: "01AWAIT", UpdatedAt: time.Now(), OriginalPrompt: "needs reply",
 		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
-		ID: "01IDLE", UpdatedAt: time.Now(), OriginalTask: "ticking over",
+		ID: "01IDLE", UpdatedAt: time.Now(), OriginalPrompt: "ticking over",
 		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
 	}); err != nil {
 		t.Fatal(err)
@@ -3023,8 +3121,9 @@ func TestWeb_Sidebar_RollupState_AwaitingHasPriority(t *testing.T) {
 	r.Refresh()
 
 	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
-	req := httptest.NewRequest(http.MethodGet, "/sidebar", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar", nil)
 	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -3046,7 +3145,7 @@ func TestWeb_Sidebar_RollupState_NoLiveChildrenHides(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
-		ID: "01PAST", UpdatedAt: time.Now(), OriginalTask: "done long ago",
+		ID: "01PAST", UpdatedAt: time.Now(), OriginalPrompt: "done long ago",
 		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
 	}); err != nil {
 		t.Fatal(err)
@@ -3060,8 +3159,9 @@ func TestWeb_Sidebar_RollupState_NoLiveChildrenHides(t *testing.T) {
 		Roster:  NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
-	req := httptest.NewRequest(http.MethodGet, "/sidebar", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar", nil)
 	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -3076,7 +3176,7 @@ func TestWeb_Sidebar_RollupState_NoLiveChildrenHides(t *testing.T) {
 // settingsRequest is a small helper for the settings pane tests.
 func settingsRequest(t *testing.T, web *WebServer, section string) string {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "/settings/"+section, nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/settings/"+section, nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
@@ -3284,7 +3384,7 @@ func TestWeb_APITreeReturnsRefsAndNormalizesAwaitingInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
-		ID: "01TREE", UpdatedAt: time.Now(), OriginalTask: "tree task",
+		ID: "01TREE", UpdatedAt: time.Now(), OriginalPrompt: "tree task",
 		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf"},
 	}); err != nil {
 		t.Fatal(err)
@@ -3395,8 +3495,9 @@ func TestWeb_SidebarSkipsLiveEntriesUntilSessionIDKnown(t *testing.T) {
 	r.Refresh()
 	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
 
-	req := httptest.NewRequest(http.MethodGet, "/sidebar", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar", nil)
 	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -3414,7 +3515,7 @@ func TestWeb_APISessionDetailsLiveAndPast(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
-		ID: "01DETAIL", UpdatedAt: time.Now(), OriginalTask: "details task", Model: "gpt-5", ProfileID: "openai", TurnCount: 3,
+		ID: "01DETAIL", UpdatedAt: time.Now(), OriginalPrompt: "details task", Model: "gpt-5", ProfileID: "openai", TurnCount: 3,
 		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf", GitBranch: "serf-hub"},
 	}); err != nil {
 		t.Fatal(err)
@@ -3546,7 +3647,7 @@ func TestWeb_APISpawnSchema(t *testing.T) {
 	for _, f := range got.Fields {
 		names[f.Name] = true
 	}
-	for _, want := range []string{"task", "harness", "working_dir", "model", "agent", "reasoning_effort"} {
+	for _, want := range []string{"prompt", "harness", "working_dir", "model", "agent", "reasoning_effort"} {
 		if !names[want] {
 			t.Fatalf("schema missing %q: %+v", want, got.Fields)
 		}

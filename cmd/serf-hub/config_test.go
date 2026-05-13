@@ -58,6 +58,10 @@ args = ["app-server"]
 
 [codex_launches.env]
 CODEX_HOME = "/tmp/codex-home"
+
+[serf_launch.env]
+OPENROUTER_API_KEY = "configured-openrouter-key"
+SERF_STATE_DIR = "/tmp/serf-state"
 `
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
@@ -100,6 +104,9 @@ CODEX_HOME = "/tmp/codex-home"
 	if launch.Env["CODEX_HOME"] != "/tmp/codex-home" {
 		t.Errorf("codex launch env mismatch: %+v", launch.Env)
 	}
+	if cfg.SerfLaunch.Env["OPENROUTER_API_KEY"] != "configured-openrouter-key" || cfg.SerfLaunch.Env["SERF_STATE_DIR"] != "/tmp/serf-state" {
+		t.Errorf("serf launch env mismatch: %+v", cfg.SerfLaunch.Env)
+	}
 }
 
 func TestDefaultConfigPath_RespectsHome(t *testing.T) {
@@ -108,5 +115,15 @@ func TestDefaultConfigPath_RespectsHome(t *testing.T) {
 	want := "/tmp/fakehome/.serf/hub.toml"
 	if got != want {
 		t.Fatalf("DefaultConfigPath: got %q, want %q", got, want)
+	}
+}
+
+func TestDefaultStateGlob_RespectsXDGStateHome(t *testing.T) {
+	t.Setenv("HOME", "/tmp/fakehome")
+	t.Setenv("XDG_STATE_HOME", "/srv/serf-state")
+	got := DefaultStateGlob()
+	want := "/srv/serf-state/serf/projects/*"
+	if got != want {
+		t.Fatalf("DefaultStateGlob: got %q, want %q", got, want)
 	}
 }

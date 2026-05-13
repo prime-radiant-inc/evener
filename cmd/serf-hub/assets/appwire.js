@@ -212,7 +212,7 @@
     return request(METHOD.threadStart, {
       harness: body.harness || "",
       cwd: body.working_dir || "",
-      prompt: body.task || "",
+      prompt: body.prompt || body.task || "",
       modelProvider: "",
       model: String(body.model || "").trim(),
       profile: body.agent || "",

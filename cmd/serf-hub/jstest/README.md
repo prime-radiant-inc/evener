@@ -19,4 +19,10 @@ node test-appwire-diagnostics.js
 node test-sidebar.js
 ```
 
+Or run the full loop:
+
+```sh
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh
+```
+
 Each script exits 0 on success and prints the rendered HTML on failure.

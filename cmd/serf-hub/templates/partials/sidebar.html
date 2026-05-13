@@ -1,9 +1,9 @@
 {{define "sidebar"}}
 <nav class="sidebar">
   <div class="sidebar-header">
-    <a class="sidebar-action" href="/new" hx-get="/workspace/spawn" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/new">＋ new</a>
+    <a class="sidebar-action" href="/new" hx-get="/_partials/workspace/spawn" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/new">＋ new</a>
     <a class="sidebar-action" href="#" data-search-trigger>search<kbd>⌘K</kbd></a>
-    <a class="sidebar-action settings-link" href="/settings" hx-get="/settings" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/settings">settings</a>
+    <a class="sidebar-action settings-link" href="/settings" hx-get="/_partials/settings/general" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/settings">settings</a>
   </div>
 
   {{if .Live}}
@@ -16,7 +16,7 @@
     <a class="live-row {{if eq .Kind "fork"}}fork-row{{else if eq .Kind "subagent"}}subagent-row{{else}}session-row{{end}}"
        data-state="{{.State}}"
        href="/s/{{.ID}}"
-       hx-get="/s/{{.ID}}"
+       hx-get="/_partials/s/{{.ID}}/workspace"
        hx-target="#workspace"
        hx-swap="innerHTML"
        hx-push-url="/s/{{.ID}}">
@@ -41,7 +41,7 @@
       <a class="project-new-btn"
          title="new session in {{.Name}}"
          href="/new?dir={{.WorkingDir}}"
-         hx-get="/workspace/spawn?dir={{.WorkingDir}}"
+         hx-get="/_partials/workspace/spawn?dir={{.WorkingDir}}"
          hx-target="#workspace"
          hx-swap="innerHTML"
          hx-push-url="/new?dir={{.WorkingDir}}">＋</a>
@@ -52,7 +52,7 @@
     <a class="session-row"
        data-state="{{.State}}"
        href="/s/{{.ID}}"
-       hx-get="/s/{{.ID}}"
+       hx-get="/_partials/s/{{.ID}}/workspace"
        hx-target="#workspace"
        hx-swap="innerHTML"
        hx-push-url="/s/{{.ID}}">
@@ -65,7 +65,7 @@
       <a class="subagent-row"
          data-state="{{.State}}"
          href="/s/{{.ID}}"
-         hx-get="/s/{{.ID}}"
+         hx-get="/_partials/s/{{.ID}}/workspace"
          hx-target="#workspace"
          hx-swap="innerHTML"
          hx-push-url="/s/{{.ID}}">
@@ -77,7 +77,7 @@
       <a class="fork-row"
          data-state="{{.State}}"
          href="/s/{{.ID}}"
-         hx-get="/s/{{.ID}}"
+         hx-get="/_partials/s/{{.ID}}/workspace"
          hx-target="#workspace"
          hx-swap="innerHTML"
          hx-push-url="/s/{{.ID}}">

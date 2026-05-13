@@ -6,19 +6,19 @@
 </header>
 <div class="settings-pane">
   <nav class="settings-nav">
-    <a class="settings-nav-link {{if eq .Active "general"}}active{{end}}" href="/settings/general" hx-get="/settings/general" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/general">General</a>
-    <a class="settings-nav-link {{if eq .Active "theme"}}active{{end}}" href="/settings/theme" hx-get="/settings/theme" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/theme">Theme</a>
-    <a class="settings-nav-link {{if eq .Active "notifications"}}active{{end}}" href="/settings/notifications" hx-get="/settings/notifications" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/notifications">Notifications</a>
+    <a class="settings-nav-link {{if eq .Active "general"}}active{{end}}" href="/settings/general" hx-get="/_partials/settings/general" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/general">General</a>
+    <a class="settings-nav-link {{if eq .Active "theme"}}active{{end}}" href="/settings/theme" hx-get="/_partials/settings/theme" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/theme">Theme</a>
+    <a class="settings-nav-link {{if eq .Active "notifications"}}active{{end}}" href="/settings/notifications" hx-get="/_partials/settings/notifications" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/notifications">Notifications</a>
     <div class="settings-nav-section">Agents &amp; models</div>
-    <a class="settings-nav-link {{if eq .Active "providers"}}active{{end}}" href="/settings/providers" hx-get="/settings/providers" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/providers">Providers</a>
-    <a class="settings-nav-link {{if eq .Active "agents"}}active{{end}}" href="/settings/agents" hx-get="/settings/agents" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/agents">Agents</a>
+    <a class="settings-nav-link {{if eq .Active "providers"}}active{{end}}" href="/settings/providers" hx-get="/_partials/settings/providers" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/providers">Providers</a>
+    <a class="settings-nav-link {{if eq .Active "agents"}}active{{end}}" href="/settings/agents" hx-get="/_partials/settings/agents" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/agents">Agents</a>
     <div class="settings-nav-section">Extensions</div>
-    <a class="settings-nav-link {{if eq .Active "plugins"}}active{{end}}" href="/settings/plugins" hx-get="/settings/plugins" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/plugins">Plugins</a>
-    <a class="settings-nav-link {{if eq .Active "skills"}}active{{end}}" href="/settings/skills" hx-get="/settings/skills" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/skills">Skills</a>
-    <a class="settings-nav-link {{if eq .Active "mcp"}}active{{end}}" href="/settings/mcp" hx-get="/settings/mcp" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/mcp">MCP servers</a>
+    <a class="settings-nav-link {{if eq .Active "plugins"}}active{{end}}" href="/settings/plugins" hx-get="/_partials/settings/plugins" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/plugins">Plugins</a>
+    <a class="settings-nav-link {{if eq .Active "skills"}}active{{end}}" href="/settings/skills" hx-get="/_partials/settings/skills" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/skills">Skills</a>
+    <a class="settings-nav-link {{if eq .Active "mcp"}}active{{end}}" href="/settings/mcp" hx-get="/_partials/settings/mcp" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/mcp">MCP servers</a>
     <div class="settings-nav-section">Daemon</div>
-    <a class="settings-nav-link {{if eq .Active "hub"}}active{{end}}" href="/settings/hub" hx-get="/settings/hub" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/hub">Hub</a>
-    <a class="settings-nav-link {{if eq .Active "storage"}}active{{end}}" href="/settings/storage" hx-get="/settings/storage" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/storage">Storage</a>
+    <a class="settings-nav-link {{if eq .Active "hub"}}active{{end}}" href="/settings/hub" hx-get="/_partials/settings/hub" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/hub">Hub</a>
+    <a class="settings-nav-link {{if eq .Active "storage"}}active{{end}}" href="/settings/storage" hx-get="/_partials/settings/storage" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/storage">Storage</a>
   </nav>
   <div id="settings-content" class="settings-content">
     {{template "settings-content" .}}

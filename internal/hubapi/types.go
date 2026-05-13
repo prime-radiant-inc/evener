@@ -124,8 +124,12 @@ type ModelOption struct {
 	OutputCostPerMillion float64 `json:"output_cost_per_million,omitempty"`
 }
 
+// SpawnRequest is the JSON body for POST /api/spawn.
+// Prompt is the current field; Task is accepted for legacy callers only.
 type SpawnRequest struct {
-	Task            string `json:"task,omitempty"`
+	Prompt          string `json:"prompt,omitempty"`
+	Task            string `json:"task,omitempty"` // Deprecated: use Prompt.
+	Harness         string `json:"harness,omitempty"`
 	Model           string `json:"model,omitempty"`
 	WorkingDir      string `json:"working_dir,omitempty"`
 	Agent           string `json:"agent,omitempty"`

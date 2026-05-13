@@ -74,6 +74,19 @@ function tick(ms) { return new Promise(r => setTimeout(r, ms)); }
     pass(!/Interrupt model call/.test(html), '"/comp" does not show Interrupt');
   }
 
+  // -------- Scenario 2b: fuzzy command matching supports abbreviations --------
+  {
+    const dom = makeDom(`<div id="conversation" data-session-id="01S" data-state="live"></div>`,
+      { url: "http://localhost/s/01S" });
+    const ctx = await loadAndOpen(dom);
+    ctx.window.SerfSearch.open();
+    ctx.input.value = "/cm";
+    ctx.input.dispatchEvent(new ctx.window.Event("input", { bubbles: true }));
+    await tick(20);
+    const html = ctx.results.innerHTML;
+    pass(/Compact transcript/.test(html), '"/cm" fuzzy-matches Compact transcript');
+  }
+
   // -------- Scenario 3: Backspacing "/" returns to search mode --------
   {
     const dom = makeDom("");
@@ -128,6 +141,18 @@ function tick(ms) { return new Promise(r => setTimeout(r, ms)); }
     live.input.dispatchEvent(new live.window.Event("input", { bubbles: true }));
     await tick(20);
     pass(/Compact transcript/.test(live.results.innerHTML), "compact shown on live session");
+  }
+
+  // -------- Scenario 5b: /project names the actual sidebar-reveal behavior --------
+  {
+    const dom = makeDom(`<div id="conversation" data-session-id="01S" data-state="live"></div>`,
+      { url: "http://localhost/s/01S" });
+    const ctx = await loadAndOpen(dom);
+    ctx.window.SerfSearch.open();
+    ctx.input.value = "/project";
+    ctx.input.dispatchEvent(new ctx.window.Event("input", { bubbles: true }));
+    await tick(20);
+    pass(/Reveal session's project in sidebar/.test(ctx.results.innerHTML), '"/project" labels sidebar reveal behavior');
   }
 
   // -------- Scenario 6: Session command absent when state=ended; ended-ok remains --------
@@ -269,6 +294,28 @@ function tick(ms) { return new Promise(r => setTimeout(r, ms)); }
     pass(ctx.input.getAttribute("aria-activedescendant") === rows[1].id, "ArrowDown moves aria-activedescendant");
   }
 
+  // -------- Scenario 10c: argless commands persist into Recent --------
+  {
+    const dom = makeDom(`<div id="conversation" data-session-id="01S" data-state="live"></div>`,
+      { url: "http://localhost/s/01S" });
+    const ctx = await loadAndOpen(dom);
+    ctx.window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    ctx.window.SerfSearch.open();
+    ctx.input.value = "/compact";
+    ctx.input.dispatchEvent(new ctx.window.Event("input", { bubbles: true }));
+    await tick(20);
+    ctx.input.dispatchEvent(new ctx.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await tick(20);
+
+    ctx.window.SerfSearch.openWith("/");
+    await tick(20);
+    const html = ctx.results.innerHTML;
+    pass(/Recent/.test(html), "recent section is shown after running an argless command");
+    pass(html.indexOf("Recent") < html.indexOf("Commands"), "recent section appears above commands");
+    pass(/Compact transcript/.test(html), "recent section includes Compact transcript");
+    pass(/compact/.test(ctx.window.localStorage.getItem("serf.search.recentCommands") || ""), "recent command persisted");
+  }
+
   // -------- Scenario 11: Every command dispatches its declared side effect --------
   // One row per registered command. Build a fresh JSDOM per case so fetches,
   // clicks, and navigations don't leak.
@@ -288,7 +335,7 @@ async function commandSweep() {
     { name: "new", page: "home", query: "/new s",
       expect: (c) => assertCS(c, c.calls.navigations.slice(-1)[0] === "/new", "navigated to /new") },
     { name: "spawn", page: "home", query: "/spawn", argEntry: "do the thing",
-      expect: (c) => assertCS(c, c.calls.navigations.slice(-1)[0] === "/new?task=do%20the%20thing", "navigated to /new?task=<encoded>") },
+      expect: (c) => assertCS(c, c.calls.navigations.slice(-1)[0] === "/new?prompt=do%20the%20thing", "navigated to /new?prompt=<encoded>") },
     { name: "settings", page: "home", query: "/settings",
       expect: (c) => assertCS(c, c.calls.navigations.slice(-1)[0] === "/settings", "navigated to /settings") },
     { name: "theme", page: "home", query: "/theme", argEntry: "light",

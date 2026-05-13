@@ -1056,38 +1056,52 @@ func TestMetaTurnCount_CountsModelResponses(t *testing.T) {
 	}
 }
 
-func TestSessionMeta_OriginalTask_RoundTrip(t *testing.T) {
+func TestSessionMeta_OriginalPrompt_RoundTrip(t *testing.T) {
 	original := SessionMeta{
-		ID:           "01TEST0001",
-		ProfileID:    "openai-gpt-5",
-		Model:        "gpt-5.2",
-		EnvInfo:      EnvironmentInfo{WorkingDir: "/tmp/x"},
-		CreatedAt:    time.Date(2026, 5, 7, 14, 32, 11, 0, time.UTC),
-		UpdatedAt:    time.Date(2026, 5, 7, 14, 32, 11, 0, time.UTC),
-		TurnCount:    3,
-		OriginalTask: "fix the bug in handler",
+		ID:             "01TEST0001",
+		ProfileID:      "openai-gpt-5",
+		Model:          "gpt-5.2",
+		EnvInfo:        EnvironmentInfo{WorkingDir: "/tmp/x"},
+		CreatedAt:      time.Date(2026, 5, 7, 14, 32, 11, 0, time.UTC),
+		UpdatedAt:      time.Date(2026, 5, 7, 14, 32, 11, 0, time.UTC),
+		TurnCount:      3,
+		OriginalPrompt: "fix the bug in handler",
 	}
 	data, err := json.Marshal(original)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
+	if got := string(data); !strings.Contains(got, "original_prompt") || strings.Contains(got, "original_task") {
+		t.Fatalf("expected current original_prompt JSON only, got: %s", got)
+	}
 	var got SessionMeta
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if got.OriginalTask != "fix the bug in handler" {
-		t.Fatalf("OriginalTask: got %q, want %q", got.OriginalTask, "fix the bug in handler")
+	if got.OriginalPrompt != "fix the bug in handler" {
+		t.Fatalf("OriginalPrompt: got %q, want %q", got.OriginalPrompt, "fix the bug in handler")
 	}
 }
 
-func TestSessionMeta_OriginalTask_OmitEmpty(t *testing.T) {
+func TestSessionMeta_OriginalPrompt_ReadsLegacyOriginalTask(t *testing.T) {
+	data := []byte(`{"id":"01TEST0001","original_task":"fix the bug in handler"}`)
+	var got SessionMeta
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.OriginalPrompt != "fix the bug in handler" {
+		t.Fatalf("OriginalPrompt: got %q, want %q", got.OriginalPrompt, "fix the bug in handler")
+	}
+}
+
+func TestSessionMeta_OriginalPrompt_OmitEmpty(t *testing.T) {
 	meta := SessionMeta{ID: "01TEST0001"}
 	data, err := json.Marshal(meta)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if got := string(data); strings.Contains(got, "original_task") {
-		t.Fatalf("expected original_task to be omitempty when empty, got: %s", got)
+	if got := string(data); strings.Contains(got, "original_prompt") || strings.Contains(got, "original_task") {
+		t.Fatalf("expected original prompt fields to be omitted when empty, got: %s", got)
 	}
 }
 

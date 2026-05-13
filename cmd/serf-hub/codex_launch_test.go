@@ -155,9 +155,19 @@ func assertHubLaunchError(t *testing.T, err error) {
 	if !errors.As(err, &wire) {
 		t.Fatalf("error %T is not appwire.WireError: %v", err, err)
 	}
-	data, ok := wire.Data.(appwire.ErrorData)
-	if !ok || data.SerfErrorInfo != appwire.ErrorHubLaunch {
+	if !wireErrorInfoIs(wire.Data, appwire.ErrorHubLaunch) {
 		t.Fatalf("wire error=%+v", wire)
+	}
+}
+
+func wireErrorInfoIs(data any, want appwire.ErrorInfo) bool {
+	switch v := data.(type) {
+	case appwire.ErrorData:
+		return v.SerfErrorInfo == want
+	case map[string]any:
+		return v["serfErrorInfo"] == string(want)
+	default:
+		return false
 	}
 }
 

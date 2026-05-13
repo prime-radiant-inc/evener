@@ -17,6 +17,11 @@ type ProviderConfig struct {
 	Models []string `toml:"models"`
 }
 
+// SerfLaunchConfig controls Hub-owned serf serve subprocesses.
+type SerfLaunchConfig struct {
+	Env map[string]string `toml:"env"`
+}
+
 // Config is the hub's runtime configuration loaded from ~/.serf/hub.toml.
 type Config struct {
 	Addr               string                        `toml:"addr"`
@@ -29,6 +34,7 @@ type Config struct {
 	Providers          []ProviderConfig              `toml:"providers"`
 	CodexSources       []appsource.CodexSourceConfig `toml:"codex_sources"`
 	CodexLaunches      []CodexLaunchConfig           `toml:"codex_launches"`
+	SerfLaunch         SerfLaunchConfig              `toml:"serf_launch"`
 }
 
 // DefaultConfig returns a Config populated with sensible defaults.
@@ -51,6 +57,19 @@ func DefaultConfigPath() string {
 		home = "."
 	}
 	return filepath.Join(home, ".serf", "hub.toml")
+}
+
+// DefaultStateGlob returns the project state roots indexed by the hub.
+func DefaultStateGlob() string {
+	base := os.Getenv("XDG_STATE_HOME")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			home = "."
+		}
+		base = filepath.Join(home, ".local", "state")
+	}
+	return filepath.Join(base, "serf", "projects", "*")
 }
 
 // LoadConfig reads path. A missing file returns DefaultConfig() and nil error.

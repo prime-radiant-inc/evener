@@ -247,10 +247,10 @@ func TestHubThreadListOrdersPastSearchByUpdatedCreatedTitleAndID(t *testing.T) {
 	}
 	updated := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	for _, meta := range []agent.SessionMeta{
-		{ID: "02OLD", CreatedAt: updated.Add(-2 * time.Hour), UpdatedAt: updated, OriginalTask: "beta task"},
-		{ID: "01NEW", CreatedAt: updated.Add(-time.Hour), UpdatedAt: updated, OriginalTask: "alpha task"},
-		{ID: "04TITLEB", CreatedAt: updated.Add(-3 * time.Hour), UpdatedAt: updated.Add(-time.Hour), OriginalTask: "bravo task"},
-		{ID: "03TITLEA", CreatedAt: updated.Add(-3 * time.Hour), UpdatedAt: updated.Add(-time.Hour), OriginalTask: "alpha task"},
+		{ID: "02OLD", CreatedAt: updated.Add(-2 * time.Hour), UpdatedAt: updated, OriginalPrompt: "beta task"},
+		{ID: "01NEW", CreatedAt: updated.Add(-time.Hour), UpdatedAt: updated, OriginalPrompt: "alpha task"},
+		{ID: "04TITLEB", CreatedAt: updated.Add(-3 * time.Hour), UpdatedAt: updated.Add(-time.Hour), OriginalPrompt: "bravo task"},
+		{ID: "03TITLEA", CreatedAt: updated.Add(-3 * time.Hour), UpdatedAt: updated.Add(-time.Hour), OriginalPrompt: "alpha task"},
 	} {
 		if err := agent.SaveSessionMeta(stateDir, meta); err != nil {
 			t.Fatal(err)
@@ -294,18 +294,18 @@ func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
 	liveStarted := base.Add(-24 * time.Hour)
 
 	if err := agent.SaveSessionMeta(stateDir, agent.SessionMeta{
-		ID:           "01LIVE",
-		CreatedAt:    base.Add(-2 * time.Hour),
-		UpdatedAt:    liveUpdated,
-		OriginalTask: "live task",
+		ID:             "01LIVE",
+		CreatedAt:      base.Add(-2 * time.Hour),
+		UpdatedAt:      liveUpdated,
+		OriginalPrompt: "live task",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := agent.SaveSessionMeta(stateDir, agent.SessionMeta{
-		ID:           "02PAST",
-		CreatedAt:    base.Add(-3 * time.Hour),
-		UpdatedAt:    pastUpdated,
-		OriginalTask: "past task",
+		ID:             "02PAST",
+		CreatedAt:      base.Add(-3 * time.Hour),
+		UpdatedAt:      pastUpdated,
+		OriginalPrompt: "past task",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -443,6 +443,38 @@ func TestHubRPCThreadReadIncludesAPICallErrorAsFailedTurn(t *testing.T) {
 		t.Fatalf("failed turn=%+v", failed)
 	}
 	if failed.Error.Source != string(diagnostic.SourceSerf) || failed.Error.Title != "Serf configuration error" {
+		t.Fatalf("failed turn diagnostic=%+v", failed.Error)
+	}
+}
+
+func TestHubRPCThreadReadUsesStructuredAPICallDiagnostic(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "failed")
+	sessionID := buildRPCStructuredFailedSession(t, stateDir)
+	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	hub := newHubRPCTestServer(t, WebConfig{Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true, ItemsView: "full"})
+	if err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	if len(resp.Thread.Turns) != 2 {
+		t.Fatalf("turns=%+v", resp.Thread.Turns)
+	}
+	failed := resp.Thread.Turns[1]
+	if failed.Error == nil {
+		t.Fatalf("failed turn=%+v", failed)
+	}
+	if failed.Error.Source != string(diagnostic.SourceProvider) || failed.Error.Title != "Provider error" || failed.Error.Hint != "structured provider diagnostic" {
 		t.Fatalf("failed turn diagnostic=%+v", failed.Error)
 	}
 }
@@ -794,6 +826,79 @@ func TestHubRPCThreadStartKeepsProviderForModelIDsWithSlashes(t *testing.T) {
 	}
 	if got.Model != "openrouter/deepseek/deepseek-v4-flash" {
 		t.Fatalf("spawn model=%q, want openrouter/deepseek/deepseek-v4-flash", got.Model)
+	}
+}
+
+func TestHubRPCThreadStartRejectsModelOutsideConfiguredSerfRosterBeforeSpawn(t *testing.T) {
+	runDir := t.TempDir()
+	var spawnCalled bool
+	spawner := &fakeRPCSpawner{
+		spawn: func(_ context.Context, req SpawnRequest) (rendezvous.Entry, error) {
+			spawnCalled = true
+			return rendezvous.Entry{}, nil
+		},
+	}
+	hub := newHubRPCTestServer(t, WebConfig{
+		RunDir:  runDir,
+		Spawner: spawner,
+		Past:    NewPastIndex(""),
+		Models:  []modelDescriptor{{Provider: "openai", Model: "gpt-5"}},
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	_, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		ModelProvider: "openrouter",
+		Model:         "free",
+		CWD:           "/tmp",
+	})
+	assertHubLaunchError(t, err)
+	if spawnCalled {
+		t.Fatal("spawn was called for a model outside the configured Serf roster")
+	}
+}
+
+func TestHubRPCThreadStartRejectsMalformedModelBeforeSpawn(t *testing.T) {
+	runDir := t.TempDir()
+	var spawnCalled bool
+	spawner := &fakeRPCSpawner{
+		spawn: func(_ context.Context, req SpawnRequest) (rendezvous.Entry, error) {
+			spawnCalled = true
+			return rendezvous.Entry{}, nil
+		},
+	}
+	hub := newHubRPCTestServer(t, WebConfig{
+		RunDir:  runDir,
+		Spawner: spawner,
+		Past:    NewPastIndex(""),
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	_, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		Model: "openrouter",
+		CWD:   "/tmp",
+	})
+	if err == nil {
+		t.Fatal("ThreadStart succeeded for malformed model")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error %T does not preserve WireError: %v", err, err)
+	}
+	if wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("wire=%+v", wire)
+	}
+	if spawnCalled {
+		t.Fatal("spawn was called for malformed model")
 	}
 }
 
@@ -1518,14 +1623,14 @@ func buildRPCParentSession(t *testing.T, stateDir string) string {
 		t.Fatal(err)
 	}
 	if err := agent.SaveSessionMeta(stateDir, agent.SessionMeta{
-		ID:           parentID,
-		ProfileID:    "openai",
-		Model:        "gpt-5",
-		EnvInfo:      agent.EnvironmentInfo{WorkingDir: "/tmp/project"},
-		CreatedAt:    time.Now().UTC(),
-		UpdatedAt:    time.Now().UTC(),
-		TurnCount:    2,
-		OriginalTask: "second task",
+		ID:             parentID,
+		ProfileID:      "openai",
+		Model:          "gpt-5",
+		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/tmp/project"},
+		CreatedAt:      time.Now().UTC(),
+		UpdatedAt:      time.Now().UTC(),
+		TurnCount:      2,
+		OriginalPrompt: "second task",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1566,14 +1671,64 @@ func buildRPCFailedSession(t *testing.T, stateDir string) string {
 	}
 	now := time.Now().UTC()
 	if err := agent.SaveSessionMeta(stateDir, agent.SessionMeta{
-		ID:           sessionID,
-		ProfileID:    "openai",
-		Model:        "gpt-5",
-		EnvInfo:      agent.EnvironmentInfo{WorkingDir: "/tmp/project"},
-		CreatedAt:    now,
-		UpdatedAt:    now,
-		TurnCount:    1,
-		OriginalTask: "hello",
+		ID:             sessionID,
+		ProfileID:      "openai",
+		Model:          "gpt-5",
+		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/tmp/project"},
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		TurnCount:      1,
+		OriginalPrompt: "hello",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return sessionID
+}
+
+func buildRPCStructuredFailedSession(t *testing.T, stateDir string) string {
+	t.Helper()
+	sessionID := "01FAILED0000000000000002"
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	transcriptPath := filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl")
+	writer, err := agent.NewTranscriptWriter(transcriptPath, agent.TranscriptHeader{
+		SessionID:  sessionID,
+		CreatedAt:  time.Now().UTC(),
+		ProfileID:  "openai",
+		Model:      "gpt-5",
+		WorkingDir: "/tmp/project",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Append(agent.NewTurn(agent.TurnUserInput, llm.User("hello"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(transcriptPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"kind":"api_call","seq":1,"round":1,"request":{"provider":"openai","model":"gpt-5"},"error":"configuration error: unknown provider: openai","source":"provider","title":"Provider error","hint":"structured provider diagnostic"}` + "\n"); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := agent.SaveSessionMeta(stateDir, agent.SessionMeta{
+		ID:             sessionID,
+		ProfileID:      "openai",
+		Model:          "gpt-5",
+		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/tmp/project"},
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		TurnCount:      1,
+		OriginalPrompt: "hello",
 	}); err != nil {
 		t.Fatal(err)
 	}

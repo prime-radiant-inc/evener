@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -981,7 +982,11 @@ func TestSession_ContextLengthError_EmitsWarningAndClosesSession(t *testing.T) {
 	end := false
 	for ev := range sess.Events() {
 		if ev.Kind == EventWarning {
-			if msg, ok := ev.DataMap()["message"].(string); ok && strings.Contains(msg, "Context length") {
+			data := ev.DataMap()
+			if msg, ok := data["message"].(string); ok && strings.Contains(msg, "Context length") {
+				if data["source"] != "provider" || data["title"] != "Provider error" {
+					t.Fatalf("warning diagnostic=%+v", data)
+				}
 				warn = true
 			}
 		}
@@ -1021,7 +1026,11 @@ func TestSession_LLMError_EmitsErrorEvent(t *testing.T) {
 	errEv := false
 	for ev := range sess.Events() {
 		if ev.Kind == EventError {
-			if s, _ := ev.DataMap()["error"].(string); strings.Contains(s, "openai") {
+			data := ev.DataMap()
+			if s, _ := data["error"].(string); strings.Contains(s, "openai") {
+				if data["source"] != "provider" || data["title"] != "Provider error" {
+					t.Fatalf("error diagnostic=%+v", data)
+				}
 				errEv = true
 			}
 		}
@@ -1029,6 +1038,117 @@ func TestSession_LLMError_EmitsErrorEvent(t *testing.T) {
 	if !errEv {
 		t.Fatalf("expected ERROR event")
 	}
+}
+
+func TestSession_LLMError_WritesStructuredAPICallDiagnostic(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	c := llm.NewClient()
+	a := &errAdapter{name: "openai", err: llm.ErrorFromHTTPStatus("openai", 500, "boom", nil, nil)}
+	c.Register(a)
+
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:       stateDir,
+		LLMRetryPolicy: &policy,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "hi", nil)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	sess.Close()
+	for range sess.Events() {
+	}
+
+	lines := readTranscriptLines(t, sess.TranscriptPath())
+	var got TranscriptAPICall
+	for _, line := range lines {
+		if strings.Contains(line, `"kind":"api_call"`) {
+			if err := json.Unmarshal([]byte(line), &got); err != nil {
+				t.Fatalf("unmarshal api call: %v", err)
+			}
+			break
+		}
+	}
+	if got.Kind != "api_call" {
+		t.Fatalf("api_call not found in transcript: %v", lines)
+	}
+	if got.Source != "provider" || got.Title != "Provider error" {
+		t.Fatalf("api_call diagnostic=%+v", got)
+	}
+}
+
+func TestSession_ConfigurationError_EmitsSerfDiagnosticEvent(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	a := &errAdapter{name: "openai", err: &llm.ConfigurationError{Message: "unknown provider: openrouter"}}
+	c.Register(a)
+
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		LLMRetryPolicy: &policy,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "hi", nil)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	sess.Close()
+
+	for ev := range sess.Events() {
+		if ev.Kind != EventError {
+			continue
+		}
+		data := ev.DataMap()
+		if data["source"] != "serf" || data["title"] != "Serf configuration error" {
+			t.Fatalf("error diagnostic=%+v", data)
+		}
+		return
+	}
+	t.Fatalf("expected ERROR event")
+}
+
+func TestSession_RuntimeError_EmitsSerfDiagnosticEvent(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	a := &errAdapter{name: "openai", err: errors.New("session runtime exploded")}
+	c.Register(a)
+
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		LLMRetryPolicy: &policy,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "hi", nil)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	sess.Close()
+
+	for ev := range sess.Events() {
+		if ev.Kind != EventError {
+			continue
+		}
+		data := ev.DataMap()
+		if data["source"] != "serf" || data["title"] != "Serf error" {
+			t.Fatalf("error diagnostic=%+v", data)
+		}
+		return
+	}
+	t.Fatalf("expected ERROR event")
 }
 
 func TestSession_LLMTransientErrors_RetryWithBackoff(t *testing.T) {

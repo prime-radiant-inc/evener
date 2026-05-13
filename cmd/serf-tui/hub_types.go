@@ -73,7 +73,7 @@ type hubSpawnResponse struct {
 }
 
 type hubSpawnRequest struct {
-	Task       string
+	Prompt     string
 	Harness    string
 	Model      string
 	WorkingDir string
@@ -204,6 +204,9 @@ func messagesFromThread(thread appwire.Thread) []chatMessage {
 					activeTools[key] = idx
 				}
 			}
+		}
+		if turn.Status == appwire.TurnStatusFailed && turn.Error != nil {
+			messages = append(messages, chatMessage{Kind: msgSystem, Text: formatHubTurnError(turn.Error, "Session error")})
 		}
 	}
 	return messages

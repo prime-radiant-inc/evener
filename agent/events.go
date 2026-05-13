@@ -114,8 +114,8 @@ type SessionEndData struct {
 }
 
 type UserInputData struct {
-	Text   string                  `json:"text"`
-	Images []UserInputImage        `json:"images,omitempty"`
+	Text   string           `json:"text"`
+	Images []UserInputImage `json:"images,omitempty"`
 }
 
 // UserInputImage carries enough metadata for the UI to render a thumbnail.
@@ -201,13 +201,19 @@ type ContextCompactionData struct {
 
 type WarningData struct {
 	Message           string `json:"message"`
+	Source            string `json:"source,omitempty"`
+	Title             string `json:"title,omitempty"`
+	Hint              string `json:"hint,omitempty"`
 	ApproxTokens      int    `json:"approx_tokens,omitempty"`
 	ContextWindowSize int    `json:"context_window_size,omitempty"`
 	Percent           int    `json:"percent,omitempty"`
 }
 
 type ErrorData struct {
-	Error string `json:"error"`
+	Error  string `json:"error"`
+	Source string `json:"source,omitempty"`
+	Title  string `json:"title,omitempty"`
+	Hint   string `json:"hint,omitempty"`
 }
 
 type SubagentStartData struct {

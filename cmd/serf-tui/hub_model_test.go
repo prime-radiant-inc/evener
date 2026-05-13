@@ -368,7 +368,7 @@ func TestHubSpawnSendsHarnessSeparatelyFromModel(t *testing.T) {
 	defer cleanup()
 
 	cmd := sendHubSpawn(client, hubSpawnRequest{
-		Task:       "build the thing",
+		Prompt:     "build the thing",
 		Harness:    "codex",
 		Model:      "openai/gpt-5",
 		WorkingDir: "/tmp/serf",
@@ -705,6 +705,10 @@ func TestHubModelActionsAndClearUseAppWire(t *testing.T) {
 			methods = append(methods, appwire.MethodThreadModelSet)
 			return appwire.EmptyResponse{}, nil
 		})
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadShutdown, func(context.Context, appwire.ThreadShutdownParams) (appwire.EmptyResponse, error) {
+			methods = append(methods, appwire.MethodThreadShutdown)
+			return appwire.EmptyResponse{}, nil
+		})
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadClear, func(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
 			methods = append(methods, appwire.MethodThreadClear)
 			thread := appwireThread(hubTreeNode{Ref: "local:02NEW", SessionID: "02NEW", Title: "new session", State: "idle", Project: "serf", Live: true}, "/tmp/serf")
@@ -718,7 +722,8 @@ func TestHubModelActionsAndClearUseAppWire(t *testing.T) {
 	defer cleanup()
 
 	m := newSessionHubModel(client)
-	for _, input := range []string{"/interrupt", "/compact", "/model gpt-5.5"} {
+	m.detail.Capabilities.Shutdown = true
+	for _, input := range []string{"/interrupt", "/compact", "/model gpt-5.5", "/shutdown"} {
 		m.session.setInputValue(input)
 		updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 		if cmd == nil {
@@ -741,6 +746,7 @@ func TestHubModelActionsAndClearUseAppWire(t *testing.T) {
 		appwire.MethodTurnInterrupt,
 		appwire.MethodThreadCompactStart,
 		appwire.MethodThreadModelSet,
+		appwire.MethodThreadShutdown,
 		appwire.MethodThreadClear,
 		appwire.MethodThreadRead,
 	}, ",")
@@ -898,10 +904,24 @@ func TestHubModelHelpRespectsSessionCapabilities(t *testing.T) {
 	if !strings.Contains(got, "/compact") {
 		t.Fatalf("help missing supported compact:\n%s", got)
 	}
-	for _, unavailable := range []string{"/model", "/clear"} {
+	for _, unavailable := range []string{"/model", "/clear", "/shutdown"} {
 		if strings.Contains(got, unavailable) {
 			t.Fatalf("help advertised unavailable command %q:\n%s", unavailable, got)
 		}
+	}
+
+	m = newSessionHubModel(nil)
+	m.detail.Capabilities = hubSessionCapabilities{
+		Shutdown: true,
+	}
+	m.session.setInputValue("/help")
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("/help should not need an async command")
+	}
+	got = updated.(hubModel).View()
+	if !strings.Contains(got, "/shutdown") {
+		t.Fatalf("help missing supported shutdown:\n%s", got)
 	}
 }
 

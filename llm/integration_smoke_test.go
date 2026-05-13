@@ -28,28 +28,54 @@ import (
 	_ "primeradiant.com/serf/llm/providers/openrouter_anthropic"
 )
 
-// providerConfig holds a test model and the env key that gates the provider.
+// providerConfig holds a test model and the env keys that gate the provider.
 type providerConfig struct {
-	envKey   string
+	envKeys  []string
 	model    string
 	provider string
 }
 
 var providers = []providerConfig{
-	{"OPENAI_API_KEY", "gpt-5-mini-2025-08-07", "openai"},
-	{"ANTHROPIC_API_KEY", "claude-sonnet-4-5-20250929", "anthropic"},
-	{"GEMINI_API_KEY", "gemini-2.5-flash", "google"},
-	{"MINIMAX_API_KEY", "MiniMax-M2.7", "minimax"},
+	{[]string{"OPENAI_API_KEY"}, "gpt-5-mini-2025-08-07", "openai"},
+	{[]string{"ANTHROPIC_API_KEY"}, "claude-sonnet-4-5-20250929", "anthropic"},
+	{[]string{"GEMINI_API_KEY", "GOOGLE_API_KEY"}, "gemini-2.5-flash", "google"},
+	{[]string{"MINIMAX_API_KEY"}, "MiniMax-M2.7", "minimax"},
+}
+
+var imageProviders = []providerConfig{
+	{[]string{"OPENAI_API_KEY"}, "gpt-5.2", "openai"},
+	{[]string{"ANTHROPIC_API_KEY"}, "claude-sonnet-4-5-20250929", "anthropic"},
+	{[]string{"GEMINI_API_KEY", "GOOGLE_API_KEY"}, "gemini-2.5-flash", "google"},
+	{[]string{"OPENROUTER_API_KEY"}, "google/gemini-2.5-flash", "openrouter"},
+}
+
+func (p providerConfig) available() bool {
+	for _, key := range p.envKeys {
+		if os.Getenv(key) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func skipIfNoProviders(t *testing.T) {
 	t.Helper()
 	for _, p := range providers {
-		if os.Getenv(p.envKey) != "" {
+		if p.available() {
 			return
 		}
 	}
 	t.Skip("no LLM API keys set; skipping integration smoke test")
+}
+
+func skipIfNoImageProviders(t *testing.T) {
+	t.Helper()
+	for _, p := range imageProviders {
+		if p.available() {
+			return
+		}
+	}
+	t.Skip("no vision-capable LLM API keys set; skipping image integration smoke test")
 }
 
 func TestIntegration_BasicGeneration(t *testing.T) {
@@ -60,7 +86,7 @@ func TestIntegration_BasicGeneration(t *testing.T) {
 	}
 
 	for _, p := range providers {
-		if os.Getenv(p.envKey) == "" {
+		if !p.available() {
 			continue
 		}
 		t.Run(p.provider, func(t *testing.T) {
@@ -95,7 +121,7 @@ func TestIntegration_Streaming(t *testing.T) {
 	}
 
 	for _, p := range providers {
-		if os.Getenv(p.envKey) == "" {
+		if !p.available() {
 			continue
 		}
 		t.Run(p.provider, func(t *testing.T) {
@@ -153,7 +179,7 @@ func TestIntegration_ToolCalling(t *testing.T) {
 	}
 
 	for _, p := range providers {
-		if os.Getenv(p.envKey) == "" {
+		if !p.available() {
 			continue
 		}
 		t.Run(p.provider, func(t *testing.T) {
@@ -193,7 +219,7 @@ func TestIntegration_ToolCalling(t *testing.T) {
 }
 
 func TestIntegration_ImageInput(t *testing.T) {
-	skipIfNoProviders(t)
+	skipIfNoImageProviders(t)
 	client, err := llm.NewFromEnv()
 	if err != nil {
 		t.Fatalf("NewFromEnv: %v", err)
@@ -212,8 +238,8 @@ func TestIntegration_ImageInput(t *testing.T) {
 	}
 	redPNG := redPNGBuf.Bytes()
 
-	for _, p := range providers {
-		if os.Getenv(p.envKey) == "" {
+	for _, p := range imageProviders {
+		if !p.available() {
 			continue
 		}
 		t.Run(p.provider, func(t *testing.T) {
@@ -221,13 +247,14 @@ func TestIntegration_ImageInput(t *testing.T) {
 			defer cancel()
 
 			res, err := llm.Generate(ctx, llm.GenerateOptions{
-				Client:   client,
-				Model:    p.model,
-				Provider: p.provider,
+				Client:    client,
+				Model:     p.model,
+				Provider:  p.provider,
+				MaxTokens: intPtr(100),
 				Messages: []llm.Message{{
 					Role: llm.RoleUser,
 					Content: []llm.ContentPart{
-						{Kind: llm.ContentText, Text: "Describe this image in one sentence."},
+						{Kind: llm.ContentText, Text: "What is the dominant color in this single-color image? Reply in one short sentence."},
 						{Kind: llm.ContentImage, Image: &llm.ImageData{
 							MediaType: "image/png",
 							Data:      redPNG,
@@ -240,6 +267,9 @@ func TestIntegration_ImageInput(t *testing.T) {
 			}
 			if strings.TrimSpace(res.Text) == "" {
 				t.Fatalf("expected non-empty text")
+			}
+			if !strings.Contains(strings.ToLower(res.Text), "red") {
+				t.Fatalf("expected image color to be red, got %q", res.Text)
 			}
 			t.Logf("text (truncated): %.100s", res.Text)
 		})
@@ -264,7 +294,7 @@ func TestIntegration_StructuredOutput(t *testing.T) {
 	}
 
 	for _, p := range providers {
-		if os.Getenv(p.envKey) == "" {
+		if !p.available() {
 			continue
 		}
 		t.Run(p.provider, func(t *testing.T) {
@@ -306,7 +336,7 @@ func TestIntegration_ErrorHandling(t *testing.T) {
 	}
 
 	for _, p := range providers {
-		if os.Getenv(p.envKey) == "" {
+		if !p.available() {
 			continue
 		}
 		t.Run(p.provider, func(t *testing.T) {
@@ -348,7 +378,7 @@ func TestIntegration_ImageInputURL(t *testing.T) {
 	imageURL := "https://httpbin.org/image/png"
 
 	for _, p := range providers {
-		if os.Getenv(p.envKey) == "" {
+		if !p.available() {
 			continue
 		}
 		t.Run(p.provider, func(t *testing.T) {
@@ -402,7 +432,7 @@ func TestIntegration_StreamingWithTools(t *testing.T) {
 	}
 
 	for _, p := range providers {
-		if os.Getenv(p.envKey) == "" {
+		if !p.available() {
 			continue
 		}
 		t.Run(p.provider, func(t *testing.T) {
@@ -461,8 +491,8 @@ func TestIntegration_PromptCaching_MultiTurn(t *testing.T) {
 
 	for _, p := range providers {
 		t.Run(p.provider, func(t *testing.T) {
-			if os.Getenv(p.envKey) == "" {
-				t.Skipf("no %s key", p.envKey)
+			if !p.available() {
+				t.Skip("provider API key not set")
 			}
 
 			history := []llm.Message{llm.System(systemPrompt)}
@@ -538,7 +568,7 @@ func TestIntegration_ParallelToolCalls(t *testing.T) {
 	}
 
 	for _, p := range providers {
-		if os.Getenv(p.envKey) == "" {
+		if !p.available() {
 			continue
 		}
 		t.Run(p.provider, func(t *testing.T) {
@@ -600,7 +630,7 @@ func TestIntegration_MultiStepToolLoop(t *testing.T) {
 	}
 
 	for _, p := range providers {
-		if os.Getenv(p.envKey) == "" {
+		if !p.available() {
 			continue
 		}
 		t.Run(p.provider, func(t *testing.T) {
@@ -642,10 +672,10 @@ func TestIntegration_MultiStepToolLoop(t *testing.T) {
 
 // reasoningProviders lists models that support extended thinking / reasoning.
 var reasoningProviders = []providerConfig{
-	{"OPENAI_API_KEY", "o4-mini", "openai"},
-	{"ANTHROPIC_API_KEY", "claude-sonnet-4-5-20250929", "anthropic"},
-	{"GEMINI_API_KEY", "gemini-2.5-flash", "google"},
-	{"MINIMAX_API_KEY", "MiniMax-M2.7", "minimax"},
+	{[]string{"OPENAI_API_KEY"}, "o4-mini", "openai"},
+	{[]string{"ANTHROPIC_API_KEY"}, "claude-sonnet-4-5-20250929", "anthropic"},
+	{[]string{"GEMINI_API_KEY", "GOOGLE_API_KEY"}, "gemini-2.5-flash", "google"},
+	{[]string{"MINIMAX_API_KEY"}, "MiniMax-M2.7", "minimax"},
 }
 
 func TestIntegration_ReasoningTokens(t *testing.T) {
@@ -660,7 +690,7 @@ func TestIntegration_ReasoningTokens(t *testing.T) {
 	}
 
 	for _, p := range reasoningProviders {
-		if os.Getenv(p.envKey) == "" {
+		if !p.available() {
 			continue
 		}
 		t.Run(p.provider, func(t *testing.T) {

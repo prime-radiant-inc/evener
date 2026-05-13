@@ -184,6 +184,46 @@ func TestHubModelCompletesLiveToolWithoutDuplicateMessage(t *testing.T) {
 	}
 }
 
+func TestHubModelSurfacesStructuredWarningDiagnostic(t *testing.T) {
+	m := newHubModel(nil, "")
+	m.mode = hubModeSession
+	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1"}
+
+	updated, _ := m.Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifyWarning, map[string]any{
+			"threadId": "th_1",
+			"ref":      "local:th_1",
+			"message":  "openai error (status=429): rate limited",
+			"source":   "provider",
+			"title":    "Provider error",
+		}).Notification,
+	})
+
+	got := updated.(hubModel)
+	if len(got.session.messages) != 1 || got.session.messages[0].Kind != msgSystem || got.session.messages[0].Text != "Provider error: openai error (status=429): rate limited" {
+		t.Fatalf("messages=%+v", got.session.messages)
+	}
+}
+
+func TestMessagesFromThreadIncludesFailedTurnDiagnostic(t *testing.T) {
+	messages := messagesFromThread(appwire.Thread{
+		Turns: []appwire.Turn{{
+			ID:     "turn_1",
+			Status: appwire.TurnStatusFailed,
+			Error: &appwire.TurnError{
+				Message: "configuration error: unknown provider: openrouter",
+				Source:  "serf",
+				Title:   "Serf configuration error",
+			},
+		}},
+	})
+
+	if len(messages) != 1 || messages[0].Kind != msgSystem || messages[0].Text != "Serf configuration error: configuration error: unknown provider: openrouter" {
+		t.Fatalf("messages=%+v", messages)
+	}
+}
+
 func TestHubThreadFixtureKeepsSplitToolResultsGrouped(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "internal", "appwire", "testdata", "tool-groups-thread.json"))
 	if err != nil {

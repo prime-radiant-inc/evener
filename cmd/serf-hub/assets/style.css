@@ -801,6 +801,34 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
     border-radius: 0;
     border: none;
   }
+  .search-dialog-header {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    background: var(--bg-raised);
+  }
+  #search-input { min-width: 0; }
+  .search-results {
+    max-height: calc(100vh - 64px);
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
+  }
+  .search-row {
+    min-height: 48px;
+    align-items: flex-start;
+    padding: 12px 14px;
+  }
+  .search-cmd-pill {
+    flex-wrap: wrap;
+    max-width: 100%;
+    line-height: 1.3;
+    border-radius: 8px;
+  }
+  .search-cmd-pill-label {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
 
   /* User-message pill: more breathing room because the screen is narrower. */
   .user-message .pill { max-width: 90%; }

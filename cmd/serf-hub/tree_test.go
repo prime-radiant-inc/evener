@@ -13,20 +13,20 @@ func TestBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 	now := time.Now()
 	metas := []agent.SessionMeta{
 		// Active branch — newer, holds the original session's name. Top-level.
-		{ID: "01ACTIVE", UpdatedAt: now, OriginalTask: "fix replay bug",
+		{ID: "01ACTIVE", UpdatedAt: now, OriginalPrompt: "fix replay bug",
 			EnvInfo:         agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
 			ParentSessionID: "01OLDORIG", DivergenceTurn: 7},
 		// Subagent of the active branch.
-		{ID: "01SUB1", UpdatedAt: now.Add(-time.Minute), OriginalTask: "verify",
+		{ID: "01SUB1", UpdatedAt: now.Add(-time.Minute), OriginalPrompt: "verify",
 			EnvInfo:         agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
 			ParentSessionID: "01ACTIVE", IsSubagent: true},
 		// Snapshotted original — older transcript preserved. Has ForkLabel.
 		// Becomes a dim child of 01ACTIVE (the active branch references it).
-		{ID: "01OLDORIG", UpdatedAt: now.Add(-2 * time.Hour), OriginalTask: "fix replay bug",
+		{ID: "01OLDORIG", UpdatedAt: now.Add(-2 * time.Hour), OriginalPrompt: "fix replay bug",
 			EnvInfo:   agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
 			ForkLabel: "before TDD"},
 		// Unrelated session in same project.
-		{ID: "01OTHER", UpdatedAt: now.Add(-15 * time.Minute), OriginalTask: "htmx swap",
+		{ID: "01OTHER", UpdatedAt: now.Add(-15 * time.Minute), OriginalPrompt: "htmx swap",
 			EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"}},
 	}
 	live := []LiveEntry{
@@ -94,11 +94,11 @@ func TestBuildTree_AttentionSortsLive(t *testing.T) {
 	// Live should sort: awaiting, processing, idle.
 	now := time.Now()
 	metas := []agent.SessionMeta{
-		{ID: "01IDLE", UpdatedAt: now.Add(-3 * time.Minute), OriginalTask: "idle task",
+		{ID: "01IDLE", UpdatedAt: now.Add(-3 * time.Minute), OriginalPrompt: "idle task",
 			EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
-		{ID: "01AWAIT", UpdatedAt: now.Add(-2 * time.Minute), OriginalTask: "awaiting task",
+		{ID: "01AWAIT", UpdatedAt: now.Add(-2 * time.Minute), OriginalPrompt: "awaiting task",
 			EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
-		{ID: "01PROC", UpdatedAt: now.Add(-1 * time.Minute), OriginalTask: "processing task",
+		{ID: "01PROC", UpdatedAt: now.Add(-1 * time.Minute), OriginalPrompt: "processing task",
 			EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
 	}
 	live := []LiveEntry{
@@ -133,13 +133,13 @@ func TestBuildTree_AttentionSortsLive(t *testing.T) {
 func TestBuildTree_OrdersProjectSessionsByUpdatedCreatedTitleAndID(t *testing.T) {
 	updated := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	metas := []agent.SessionMeta{
-		{ID: "02OLD", CreatedAt: updated.Add(-2 * time.Hour), UpdatedAt: updated, OriginalTask: "beta task",
+		{ID: "02OLD", CreatedAt: updated.Add(-2 * time.Hour), UpdatedAt: updated, OriginalPrompt: "beta task",
 			EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
-		{ID: "01NEW", CreatedAt: updated.Add(-time.Hour), UpdatedAt: updated, OriginalTask: "alpha task",
+		{ID: "01NEW", CreatedAt: updated.Add(-time.Hour), UpdatedAt: updated, OriginalPrompt: "alpha task",
 			EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
-		{ID: "03TITLEB", CreatedAt: updated.Add(-3 * time.Hour), UpdatedAt: updated.Add(-time.Hour), OriginalTask: "bravo task",
+		{ID: "03TITLEB", CreatedAt: updated.Add(-3 * time.Hour), UpdatedAt: updated.Add(-time.Hour), OriginalPrompt: "bravo task",
 			EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
-		{ID: "04TITLEA", CreatedAt: updated.Add(-3 * time.Hour), UpdatedAt: updated.Add(-time.Hour), OriginalTask: "alpha task",
+		{ID: "04TITLEA", CreatedAt: updated.Add(-3 * time.Hour), UpdatedAt: updated.Add(-time.Hour), OriginalPrompt: "alpha task",
 			EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
 	}
 
@@ -181,7 +181,7 @@ func TestBuildTree_NoProjectFallback(t *testing.T) {
 	// A meta with empty WorkingDir — project name "(no project)".
 	now := time.Now()
 	metas := []agent.SessionMeta{
-		{ID: "01NOPROJ", UpdatedAt: now, OriginalTask: "orphan task",
+		{ID: "01NOPROJ", UpdatedAt: now, OriginalPrompt: "orphan task",
 			EnvInfo: agent.EnvironmentInfo{WorkingDir: ""}},
 	}
 	live := []LiveEntry{}

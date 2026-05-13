@@ -148,11 +148,9 @@ func (s *WebServer) Handler() http.Handler {
 
 	// Pages
 	mux.HandleFunc("/", s.handleIndex)
-	mux.HandleFunc("/s/", s.handleSession) // workspace — detects HX-Request and serves partial or app shell
-	mux.HandleFunc("/new", s.handleIndex)  // ditto
-	mux.HandleFunc("/sidebar", s.handleSidebar)
-	mux.HandleFunc("/workspace/empty", s.handleWorkspaceEmpty)
-	mux.HandleFunc("/workspace/spawn", s.handleWorkspaceSpawn)
+	mux.HandleFunc("/s/", s.handleSession)
+	mux.HandleFunc("/new", s.handleIndex)
+	mux.HandleFunc("/_partials/", s.handleInternalPartial)
 	mux.HandleFunc("/past/", s.handlePastID) // /past/<id>/replay
 
 	// Settings
@@ -178,18 +176,18 @@ func (s *WebServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	workspaceURL := "/workspace/empty"
+	workspaceURL := "/_partials/workspace/empty"
 	if r.URL.Path == "/new" {
-		workspaceURL = "/workspace/spawn"
+		workspaceURL = "/_partials/workspace/spawn"
 		// Forward optional pre-fill params:
 		//   ?dir=<path> — sidebar's per-project "+" button uses this.
-		//   ?task=<text> — the palette's /spawn command seeds the textarea.
+		//   ?prompt=<text> — the palette's /spawn command seeds the textarea.
 		params := url.Values{}
 		if dir := strings.TrimSpace(r.URL.Query().Get("dir")); dir != "" {
 			params.Set("dir", dir)
 		}
-		if task := r.URL.Query().Get("task"); task != "" {
-			params.Set("task", task)
+		if prompt := r.URL.Query().Get("prompt"); prompt != "" {
+			params.Set("prompt", prompt)
 		}
 		if encoded := params.Encode(); encoded != "" {
 			workspaceURL += "?" + encoded
@@ -198,6 +196,68 @@ func (s *WebServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.appTmpl.ExecuteTemplate(w, "app", map[string]string{"WorkspaceURL": workspaceURL}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// handleInternalPartial is the only route family that serves HTMX fragments.
+// Keeping fragments under /_partials prevents direct navigation to app-shell
+// internals that need sidebar scripts, client state, or a containing pane.
+func (s *WebServer) handleInternalPartial(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.Header.Get("HX-Request") != "true" {
+		http.NotFound(w, r)
+		return
+	}
+
+	switch {
+	case r.URL.Path == "/_partials/sidebar":
+		s.handleSidebar(w, r)
+	case r.URL.Path == "/_partials/workspace/empty":
+		s.handleWorkspaceEmpty(w, r)
+	case r.URL.Path == "/_partials/workspace/spawn":
+		s.handleWorkspaceSpawn(w, r)
+	case strings.HasPrefix(r.URL.Path, "/_partials/s/"):
+		s.handleSessionPartial(w, r)
+	case strings.HasPrefix(r.URL.Path, "/_partials/settings"):
+		section := strings.TrimPrefix(r.URL.Path, "/_partials/settings")
+		section = strings.TrimPrefix(section, "/")
+		if section == "" {
+			section = "general"
+		}
+		s.renderSettingsPartial(w, r, section)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (s *WebServer) handleSessionPartial(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/_partials/s/")
+	parts := strings.SplitN(path, "/", 2)
+	id := parts[0]
+	if id == "" {
+		http.NotFound(w, r)
+		return
+	}
+	sub := ""
+	if len(parts) == 2 {
+		sub = parts[1]
+	}
+	switch sub {
+	case "workspace":
+		s.renderWorkspacePartial(w, r, id)
+	case "state":
+		s.renderInputStrip(w, r, id)
+	case "meta":
+		s.renderWorkspaceMeta(w, r, id)
+	case "details":
+		s.renderDetailsPanel(w, r, id)
+	case "tasks":
+		s.renderSessionTasks(w, r, id)
+	default:
+		http.NotFound(w, r)
 	}
 }
 
@@ -244,7 +304,7 @@ func (s *WebServer) handleApiSearch(w http.ResponseWriter, r *http.Request) {
 		// Empty query → most-recent N. Substring match otherwise.
 		results := s.cfg.Past.Search(q, 20, 0)
 		for _, e := range results {
-			title := e.Meta.OriginalTask
+			title := e.Meta.OriginalPrompt
 			if title == "" {
 				title = shortID(e.Meta.ID)
 			}
@@ -356,7 +416,7 @@ func (s *WebServer) handleAPISpawnSchema(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeAPIJSON(w, http.StatusOK, hubapi.SpawnSchema{Fields: []hubapi.SpawnField{
-		{Name: "task", Type: "text"},
+		{Name: "prompt", Type: "text"},
 		{Name: "harness", Type: "enum", Values: launchHarnessIDs(s.cfg)},
 		{Name: "working_dir", Type: "path"},
 		{Name: "model", Type: "model"},
@@ -1218,22 +1278,22 @@ type providerDisplay struct {
 }
 
 func (s *WebServer) handleSettings(w http.ResponseWriter, r *http.Request) {
-	// Full-page navigation: serve the app shell, which htmx-loads the settings
-	// partial into the workspace pane. Same pattern as /s/<id>.
-	if r.Header.Get("HX-Request") != "true" {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := s.appTmpl.ExecuteTemplate(w, "app", map[string]string{"WorkspaceURL": r.URL.Path}); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-		}
+	if r.Header.Get("HX-Request") == "true" {
+		http.NotFound(w, r)
 		return
 	}
-
 	section := strings.TrimPrefix(r.URL.Path, "/settings")
 	section = strings.TrimPrefix(section, "/")
 	if section == "" {
 		section = "general"
 	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.appTmpl.ExecuteTemplate(w, "app", map[string]string{"WorkspaceURL": "/_partials/settings/" + section}); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
 
+func (s *WebServer) renderSettingsPartial(w http.ResponseWriter, r *http.Request, section string) {
 	settingsTmpl, ok := s.settingsTmpls[section]
 	if !ok {
 		http.NotFound(w, r)
@@ -1536,7 +1596,7 @@ func (s *WebServer) handleSidebar(w http.ResponseWriter, r *http.Request) {
 
 func (s *WebServer) handleWorkspaceEmpty(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprint(w, `<div class="workspace-empty"><p>No session selected.</p><p style="margin-top:1em"><a href="/new" hx-get="/workspace/spawn" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/new">＋ new session</a></p></div>`)
+	fmt.Fprint(w, `<div class="workspace-empty"><p>No session selected.</p><p style="margin-top:1em"><a href="/new" hx-get="/_partials/workspace/spawn" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/new">＋ new session</a></p></div>`)
 }
 
 // handlePastID dispatches /past/<id>/replay (the only past route still served
@@ -1834,8 +1894,8 @@ type spawnViewData struct {
 	DefaultBranch          string
 	DefaultBranchValue     string
 	DefaultAccessMode      string
-	DefaultTask            string // optional ?task= pre-fill
-	RecentTasks            []string
+	DefaultPrompt          string // optional ?prompt= pre-fill
+	RecentPrompts          []string
 	Harnesses              []launchHarness
 }
 
@@ -1865,7 +1925,7 @@ func (s *WebServer) handleWorkspaceSpawn(w http.ResponseWriter, r *http.Request)
 		DefaultWorkingDirValue: defaultWorkingDirValue,
 		DefaultBranch:          "(default)",
 		DefaultAccessMode:      "full",
-		DefaultTask:            r.URL.Query().Get("task"),
+		DefaultPrompt:          r.URL.Query().Get("prompt"),
 	}
 	for _, descriptor := range launchHarnessDescriptors(s.cfg) {
 		data.Harnesses = append(data.Harnesses, launchHarness{ID: descriptor.ID, Label: descriptor.Label})
@@ -1873,8 +1933,8 @@ func (s *WebServer) handleWorkspaceSpawn(w http.ResponseWriter, r *http.Request)
 	if s.cfg.Past != nil {
 		results := s.cfg.Past.Search("", 5, 0)
 		for _, e := range results {
-			if e.Meta.OriginalTask != "" {
-				data.RecentTasks = append(data.RecentTasks, e.Meta.OriginalTask)
+			if e.Meta.OriginalPrompt != "" {
+				data.RecentPrompts = append(data.RecentPrompts, e.Meta.OriginalPrompt)
 			}
 		}
 	}
@@ -1893,9 +1953,10 @@ func launchHarnessIDs(cfg WebConfig) []string {
 	return out
 }
 
-// spawnRequest is the JSON body for POST /api/spawn.
+// spawnRequest is the JSON body for POST /api/spawn. The prompt field is
+// current; task is accepted by UnmarshalJSON for legacy callers.
 type spawnRequest struct {
-	Task            string `json:"task"`
+	Prompt          string `json:"prompt"`
 	Harness         string `json:"harness"`
 	Model           string `json:"model"`
 	WorkingDir      string `json:"working_dir"`
@@ -1905,7 +1966,23 @@ type spawnRequest struct {
 	ReasoningEffort string `json:"reasoning_effort"`
 }
 
-// handleApiSpawn spawns a new daemon and optionally sends the initial task.
+func (r *spawnRequest) UnmarshalJSON(data []byte) error {
+	type spawnRequestAlias spawnRequest
+	var aux struct {
+		spawnRequestAlias
+		LegacyTask string `json:"task"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	*r = spawnRequest(aux.spawnRequestAlias)
+	if r.Prompt == "" {
+		r.Prompt = aux.LegacyTask
+	}
+	return nil
+}
+
+// handleApiSpawn spawns a new daemon and optionally sends the initial prompt.
 func (s *WebServer) handleApiSpawn(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
@@ -1923,7 +2000,7 @@ func (s *WebServer) handleApiSpawn(w http.ResponseWriter, r *http.Request) {
 	resp, err := hubThreadStart(r.Context(), s.cfg, s.sources, appwire.ThreadStartParams{
 		Harness:         req.Harness,
 		CWD:             req.WorkingDir,
-		Prompt:          req.Task,
+		Prompt:          req.Prompt,
 		Model:           req.Model,
 		Profile:         req.Agent,
 		ReasoningEffort: req.ReasoningEffort,
@@ -2176,9 +2253,9 @@ func (s *WebServer) handleApiDirs(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"results": results}) //nolint:errcheck
 }
 
-// handleSession is the router for all /s/<id>[/<sub>] routes.
-// When HX-Request is true and sub is "", it serves the workspace partial;
-// otherwise it serves the app shell for full-page navigation.
+// handleSession is the router for public /s/<id>[/<sub>] routes.
+// Session fragments live under /_partials/s/... so direct navigation always
+// lands in the app shell instead of a standalone workspace fragment.
 func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/s/")
 	parts := strings.SplitN(path, "/", 2)
@@ -2195,22 +2272,21 @@ func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 	switch sub {
 	case "":
 		if r.Header.Get("HX-Request") == "true" {
-			s.renderWorkspacePartial(w, r, id)
+			http.NotFound(w, r)
 			return
 		}
-		// Full-page navigation: serve the app shell, loading this session's workspace.
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := s.appTmpl.ExecuteTemplate(w, "app", map[string]string{"WorkspaceURL": "/s/" + id}); err != nil {
+		if err := s.appTmpl.ExecuteTemplate(w, "app", map[string]string{"WorkspaceURL": "/_partials/s/" + id + "/workspace"}); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	case "state":
-		s.renderInputStrip(w, r, id)
+		http.NotFound(w, r)
 	case "meta":
-		s.renderWorkspaceMeta(w, r, id)
+		http.NotFound(w, r)
 	case "details":
-		s.renderDetailsPanel(w, r, id)
+		http.NotFound(w, r)
 	case "tasks":
-		s.renderSessionTasks(w, r, id)
+		http.NotFound(w, r)
 	case "send":
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST required", http.StatusMethodNotAllowed)
@@ -2307,8 +2383,8 @@ func (s *WebServer) renderDetailsPanel(w http.ResponseWriter, r *http.Request, i
 	rows = append(rows, detailsRow{"session id", id})
 
 	addMeta := func(m agent.SessionMeta) {
-		if m.OriginalTask != "" {
-			rows = append(rows, detailsRow{"task", m.OriginalTask})
+		if m.OriginalPrompt != "" {
+			rows = append(rows, detailsRow{"prompt", m.OriginalPrompt})
 		}
 		if m.EnvInfo.WorkingDir != "" {
 			rows = append(rows, detailsRow{"working dir", m.EnvInfo.WorkingDir})
@@ -2573,8 +2649,8 @@ func (s *WebServer) fillForkLineage(data *WorkspaceData, m agent.SessionMeta) {
 	}
 	for _, candidate := range s.cfg.Past.AllMetas() {
 		if candidate.ParentSessionID == m.ID && !candidate.IsSubagent && candidate.ForkLabel == "" {
-			if candidate.OriginalTask != "" {
-				data.ForkOfTitle = candidate.OriginalTask
+			if candidate.OriginalPrompt != "" {
+				data.ForkOfTitle = candidate.OriginalPrompt
 			} else {
 				data.ForkOfTitle = shortID(candidate.ID)
 			}
@@ -2584,20 +2660,20 @@ func (s *WebServer) fillForkLineage(data *WorkspaceData, m agent.SessionMeta) {
 }
 
 // liveTitle prefers a friendly title for a running session: pull
-// OriginalTask from the past index if it's been written there, otherwise
+// OriginalPrompt from the past index if it's been written there, otherwise
 // fall back to a short session ID.
 func liveTitle(id string, le LiveEntry, past *PastIndex) string {
 	if past != nil {
-		if pe, ok := past.Find(id); ok && pe.Meta.OriginalTask != "" {
-			return pe.Meta.OriginalTask
+		if pe, ok := past.Find(id); ok && pe.Meta.OriginalPrompt != "" {
+			return pe.Meta.OriginalPrompt
 		}
 	}
 	return shortID(id)
 }
 
 func pastTitle(pe PastEntry) string {
-	if pe.Meta.OriginalTask != "" {
-		return pe.Meta.OriginalTask
+	if pe.Meta.OriginalPrompt != "" {
+		return pe.Meta.OriginalPrompt
 	}
 	return shortID(pe.Meta.ID)
 }

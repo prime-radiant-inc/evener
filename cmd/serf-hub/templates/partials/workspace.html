@@ -27,7 +27,7 @@
     </div>
   </div>
   <div class="workspace-meta"
-       hx-get="/s/{{.ID}}/meta"
+       hx-get="/_partials/s/{{.ID}}/meta"
        hx-trigger="load, every 2s"
        hx-swap="innerHTML">
     {{template "workspace_meta" .}}
@@ -63,7 +63,7 @@
   </div>
   <div id="input-status"
        class="input-status"
-       hx-get="/s/{{.ID}}/state"
+       hx-get="/_partials/s/{{.ID}}/state"
        hx-trigger="load, every 2s"
        hx-swap="innerHTML">
     {{template "input_status" .}}

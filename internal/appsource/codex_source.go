@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -25,6 +26,13 @@ type CodexSource struct {
 	bearerToken     string
 	bearerTokenFile string
 	client          *http.Client
+	mu              sync.Mutex
+	live            map[string]*codexLiveThread
+}
+
+type codexLiveThread struct {
+	client *appwire.Client
+	close  func() error
 }
 
 func NewCodexSource(cfg CodexSourceConfig, client *http.Client) *CodexSource {
@@ -38,6 +46,7 @@ func NewCodexSource(cfg CodexSourceConfig, client *http.Client) *CodexSource {
 		bearerToken:     cfg.BearerToken,
 		bearerTokenFile: cfg.BearerTokenFile,
 		client:          client,
+		live:            map[string]*codexLiveThread{},
 	}
 }
 
@@ -110,23 +119,29 @@ func codexTurnsUnavailableBeforeFirstMessage(err error) bool {
 }
 
 func (s *CodexSource) StartThread(ctx context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
-	var out codexThreadStartResponse
-	err := s.withClient(ctx, func(client *appwire.Client) error {
-		return client.Request(ctx, appwire.MethodThreadStart, map[string]any{
-			"cwd":           emptyNil(params.CWD),
-			"model":         emptyNil(params.Model),
-			"modelProvider": emptyNil(params.ModelProvider),
-			"threadSource":  "user",
-		}, &out)
-	})
+	client, closeClient, err := s.connect(ctx)
 	if err != nil {
 		return appwire.ThreadStartResponse{}, err
 	}
+	var out codexThreadStartResponse
+	if err := client.Request(ctx, appwire.MethodThreadStart, map[string]any{
+		"cwd":           emptyNil(params.CWD),
+		"model":         emptyNil(params.Model),
+		"modelProvider": emptyNil(params.ModelProvider),
+		"threadSource":  "user",
+	}, &out); err != nil {
+		_ = closeClient()
+		return appwire.ThreadStartResponse{}, err
+	}
 	thread := s.mapThread(out.Thread)
+	live := &codexLiveThread{client: client, close: closeClient}
+	s.setLiveThread(thread.ID, live)
 	resp := appwire.ThreadStartResponse{Thread: thread}
 	if params.Prompt != "" || len(params.Items) > 0 {
 		turnResp, err := s.StartTurn(ctx, appwire.TurnStartParams{Ref: thread.Serf.Ref, Prompt: params.Prompt, Items: params.Items})
 		if err != nil {
+			s.removeLiveThread(thread.ID, live)
+			_ = live.close()
 			return appwire.ThreadStartResponse{}, err
 		}
 		resp.Turn = turnResp.Turn
@@ -270,6 +285,9 @@ func (s *CodexSource) SubscribeThread(ctx context.Context, params appwire.Thread
 	if err != nil {
 		return nil, err
 	}
+	if live := s.liveThread(threadID); live != nil {
+		return s.subscribeLiveThread(ctx, threadID, live), nil
+	}
 	client, closeClient, err := s.connect(ctx)
 	if err != nil {
 		return nil, err
@@ -279,15 +297,49 @@ func (s *CodexSource) SubscribeThread(ctx context.Context, params appwire.Thread
 		_ = closeClient()
 		return nil, err
 	}
+	live := &codexLiveThread{client: client, close: closeClient}
+	s.setLiveThread(threadID, live)
+	return s.subscribeLiveThread(ctx, threadID, live), nil
+}
+
+func (s *CodexSource) liveThread(threadID string) *codexLiveThread {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.live[threadID]
+}
+
+func (s *CodexSource) setLiveThread(threadID string, live *codexLiveThread) {
+	if threadID == "" {
+		return
+	}
+	s.mu.Lock()
+	previous := s.live[threadID]
+	s.live[threadID] = live
+	s.mu.Unlock()
+	if previous != nil && previous != live {
+		_ = previous.close()
+	}
+}
+
+func (s *CodexSource) removeLiveThread(threadID string, live *codexLiveThread) {
+	s.mu.Lock()
+	if s.live[threadID] == live {
+		delete(s.live, threadID)
+	}
+	s.mu.Unlock()
+}
+
+func (s *CodexSource) subscribeLiveThread(ctx context.Context, threadID string, live *codexLiveThread) <-chan appwire.Notification {
 	out := make(chan appwire.Notification, 128)
 	go func() {
 		defer close(out)
-		defer closeClient()
+		defer s.removeLiveThread(threadID, live)
+		defer live.close()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case notification, ok := <-client.Notifications():
+			case notification, ok := <-live.client.Notifications():
 				if !ok {
 					return
 				}
@@ -301,7 +353,7 @@ func (s *CodexSource) SubscribeThread(ctx context.Context, params appwire.Thread
 			}
 		}
 	}()
-	return out, nil
+	return out
 }
 
 func (s *CodexSource) withClient(ctx context.Context, fn func(*appwire.Client) error) error {

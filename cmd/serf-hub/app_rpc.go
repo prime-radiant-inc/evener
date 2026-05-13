@@ -578,7 +578,7 @@ func mergePastThreadForRead(cfg WebConfig, params appwire.ThreadReadParams, live
 }
 
 func pastEntryThread(entry PastEntry, includeTurns bool) appwire.Thread {
-	title := entry.Meta.OriginalTask
+	title := entry.Meta.OriginalPrompt
 	if title == "" {
 		title = entry.Meta.ID
 	}
@@ -635,7 +635,7 @@ func pastEntryTurns(entry PastEntry) []appwire.Turn {
 			if head.Kind == "api_call" {
 				var call agent.TranscriptAPICall
 				if err := json.Unmarshal(raw, &call); err == nil && strings.TrimSpace(call.Error) != "" {
-					info := diagnostic.Classify(call.Error)
+					info := diagnostic.FromFields(call.Source, call.Title, call.Hint, call.Error)
 					entryIndex++
 					turns = append(turns, appwire.Turn{
 						ID:        fmt.Sprintf("turn_%d", entryIndex),
@@ -805,6 +805,9 @@ func hubThreadStart(ctx context.Context, cfg WebConfig, sources *appsource.Regis
 	if err != nil {
 		return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
 	}
+	if err := validateConfiguredSerfModel(cfg.Models, modelRef); err != nil {
+		return appwire.ThreadStartResponse{}, err
+	}
 	workingDir := params.CWD
 	if workingDir != "" {
 		resolved, err := canonicalizeDir(workingDir)
@@ -879,6 +882,18 @@ func launchSourceID(params appwire.ThreadStartParams) string {
 		return harness
 	}
 	return ""
+}
+
+func validateConfiguredSerfModel(models []modelDescriptor, ref cmdutil.ModelRef) error {
+	if len(models) == 0 {
+		return nil
+	}
+	for _, model := range models {
+		if strings.EqualFold(strings.TrimSpace(model.Provider), ref.Provider) && strings.TrimSpace(model.Model) == ref.Model {
+			return nil
+		}
+	}
+	return appwire.HubLaunchError("model is not configured for Serf launch: " + ref.Qualified())
 }
 
 func launchHarnessDescriptors(cfg WebConfig) []appwire.HarnessDescriptor {
@@ -966,6 +981,9 @@ func resumeRequestForConfig(cfg WebConfig, id string) ResumeRequest {
 		if pe, ok := cfg.Past.Find(id); ok {
 			req.WorkingDir = pe.Meta.EnvInfo.WorkingDir
 			req.StateDir = pe.StateDir
+			if pe.Meta.ProfileID != "" && pe.Meta.Model != "" {
+				req.Model = pe.Meta.ProfileID + "/" + pe.Meta.Model
+			}
 		}
 	}
 	return req

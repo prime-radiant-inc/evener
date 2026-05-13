@@ -114,16 +114,16 @@
       chip.addEventListener("click", () => openPicker(chip));
     });
 
-    // Recent task click pre-fills
-    document.querySelectorAll("[data-recent-task]").forEach(row => {
+    // Recent prompt click pre-fills
+    document.querySelectorAll("[data-recent-prompt]").forEach(row => {
       row.addEventListener("click", () => {
-        form.querySelector("textarea[name=task]").value = row.dataset.recentTask;
-        form.querySelector("textarea[name=task]").focus();
+        form.querySelector("textarea[name=prompt]").value = row.dataset.recentPrompt;
+        form.querySelector("textarea[name=prompt]").focus();
       });
     });
 
     // ⌘↵ submits
-    form.querySelector("textarea[name=task]").addEventListener("keydown", (e) => {
+    form.querySelector("textarea[name=prompt]").addEventListener("keydown", (e) => {
       if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         form.requestSubmit();
@@ -135,7 +135,7 @@
       e.preventDefault();
       const fd = new FormData(form);
       const body = {
-        task: fd.get("task") || "",
+        prompt: fd.get("prompt") || "",
         harness: fd.get("harness") || "serf",
         model: fd.get("model") || "",
         working_dir: fd.get("working_dir") || "",
@@ -144,7 +144,7 @@
         agent: fd.get("agent_override") || fd.get("agent") || "default",
         reasoning_effort: fd.get("reasoning_effort_override") || fd.get("reasoning_effort") || "",
       };
-      // Persist sticky defaults (excluding the per-task override)
+      // Persist sticky defaults (excluding the prompt override)
       saveDefaults({
         model: body.model,
         harness: body.harness,

@@ -1,13 +1,21 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
+	"strings"
 	"time"
 
+	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/cmdutil"
+	"primeradiant.com/serf/internal/appwire"
+	authopenai "primeradiant.com/serf/internal/auth/openai"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -16,7 +24,10 @@ type SpawnRequest struct {
 	Model           string
 	Agent           string
 	WorkingDir      string
+	StateDir        string
+	RunDir          string
 	ReasoningEffort string
+	Env             []string
 }
 
 // ResumeRequest carries the resolved state needed to resume a saved session.
@@ -24,6 +35,9 @@ type ResumeRequest struct {
 	SessionID  string
 	WorkingDir string
 	StateDir   string
+	Model      string
+	RunDir     string
+	Env        []string
 }
 
 // HubSpawner fulfills the Spawner interface using SpawnDaemon.
@@ -38,6 +52,17 @@ func (h *HubSpawner) Spawn(ctx context.Context, req SpawnRequest) (rendezvous.En
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
+	if req.StateDir == "" {
+		req.StateDir = resolveSerfStateDir(req.WorkingDir, h.Cfg.SerfLaunch.Env["SERF_STATE_DIR"])
+	}
+	req.RunDir = h.RunDir
+	req.Env = buildSerfChildEnv(h.Cfg, h.RunDir, req.StateDir)
+	if err := validateProviderCredentials(req.Model, req.Env, req.StateDir); err != nil {
+		return rendezvous.Entry{}, err
+	}
+	if err := validateSerfLaunchContract(ctx, h.SerfBinary, req.Model, req.Env); err != nil {
+		return rendezvous.Entry{}, err
+	}
 	return SpawnDaemon(ctx, h.SerfBinary, h.RunDir, req, timeout)
 }
 
@@ -45,6 +70,19 @@ func (h *HubSpawner) Resume(ctx context.Context, req ResumeRequest) (rendezvous.
 	timeout := h.Cfg.SpawnTimeout
 	if timeout == 0 {
 		timeout = 30 * time.Second
+	}
+	if req.StateDir == "" {
+		req.StateDir = resolveSerfStateDir(req.WorkingDir, h.Cfg.SerfLaunch.Env["SERF_STATE_DIR"])
+	}
+	req.RunDir = h.RunDir
+	req.Env = buildSerfChildEnv(h.Cfg, h.RunDir, req.StateDir)
+	if req.Model != "" {
+		if err := validateProviderCredentials(req.Model, req.Env, req.StateDir); err != nil {
+			return rendezvous.Entry{}, err
+		}
+	}
+	if err := validateSerfLaunchContract(ctx, h.SerfBinary, req.Model, req.Env); err != nil {
+		return rendezvous.Entry{}, err
 	}
 	return ResumeDaemon(ctx, h.SerfBinary, h.RunDir, req, timeout)
 }
@@ -57,6 +95,12 @@ func buildSpawnArgs(req SpawnRequest) []string {
 	args := []string{"--addr", "127.0.0.1:0"}
 	if req.WorkingDir != "" {
 		args = append(args, "--dir", req.WorkingDir)
+	}
+	if req.StateDir != "" {
+		args = append(args, "--state-dir", req.StateDir)
+	}
+	if req.RunDir != "" {
+		args = append(args, "--run-dir", req.RunDir)
 	}
 	if req.Model != "" {
 		args = append(args, "--model", req.Model)
@@ -83,7 +127,11 @@ func SpawnDaemon(ctx context.Context, serfBinary string, runDir string, req Spaw
 	args := append([]string{"serve"}, buildSpawnArgs(req)...)
 
 	cmd := exec.Command(serfBinary, args...)
-	cmd.Env = append(os.Environ(), "SERF_HUB_SPAWNED=1")
+	if len(req.Env) > 0 {
+		cmd.Env = req.Env
+	} else {
+		cmd.Env = buildDefaultSerfChildEnv(runDir, req.StateDir)
+	}
 	cmd.Stdout = os.Stderr // forward to hub stderr for now
 	cmd.Stderr = os.Stderr
 
@@ -164,8 +212,15 @@ func ResumeDaemon(ctx context.Context, serfBinary, runDir string, req ResumeRequ
 	if req.StateDir != "" {
 		args = append(args, "--state-dir", req.StateDir)
 	}
+	if req.RunDir != "" {
+		args = append(args, "--run-dir", req.RunDir)
+	}
 	cmd := exec.Command(serfBinary, args...)
-	cmd.Env = append(os.Environ(), "SERF_HUB_SPAWNED=1")
+	if len(req.Env) > 0 {
+		cmd.Env = req.Env
+	} else {
+		cmd.Env = buildDefaultSerfChildEnv(runDir, req.StateDir)
+	}
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	startedAt := time.Now()
@@ -184,6 +239,174 @@ func ResumeDaemon(ctx context.Context, serfBinary, runDir string, req ResumeRequ
 		return rendezvous.Entry{}, fmt.Errorf("resume timed out: %w", err)
 	}
 	return entry, nil
+}
+
+func resolveSerfStateDir(workDir, override string) string {
+	if strings.TrimSpace(override) != "" {
+		return override
+	}
+	wd := strings.TrimSpace(workDir)
+	if wd == "" {
+		if got, err := os.Getwd(); err == nil {
+			wd = got
+		}
+	}
+	return agent.RuntimeDir(cmdutil.GitOriginURLFromDir(wd), wd, "")
+}
+
+func buildSerfChildEnv(cfg Config, runDir, stateDir string) []string {
+	env := buildDefaultSerfChildEnv(runDir, stateDir)
+	keys := make([]string, 0, len(cfg.SerfLaunch.Env))
+	for key := range cfg.SerfLaunch.Env {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		env = setEnvValue(env, key, cfg.SerfLaunch.Env[key])
+	}
+	return env
+}
+
+func buildDefaultSerfChildEnv(runDir, stateDir string) []string {
+	env := append([]string{}, os.Environ()...)
+	env = setEnvValue(env, "SERF_HUB_SPAWNED", "1")
+	if runDir != "" {
+		env = setEnvValue(env, "SERF_RUN_DIR", runDir)
+	}
+	if stateDir != "" {
+		env = setEnvValue(env, "SERF_STATE_DIR", stateDir)
+	}
+	return env
+}
+
+func setEnvValue(env []string, key, value string) []string {
+	prefix := key + "="
+	for i, kv := range env {
+		if strings.HasPrefix(kv, prefix) {
+			env[i] = prefix + value
+			return env
+		}
+	}
+	return append(env, prefix+value)
+}
+
+func validateProviderCredentials(model string, env []string, stateDir string) error {
+	ref, err := cmdutil.ParseModelRef(model)
+	if err != nil {
+		return appwire.InvalidParams(err.Error())
+	}
+	envMap := envToMap(env)
+	switch ref.Provider {
+	case "openai":
+		if strings.TrimSpace(envMap["OPENAI_API_KEY"]) != "" {
+			return nil
+		}
+		if stateDir != "" {
+			if _, err := authopenai.LoadAuth(stateDir); err == nil {
+				return nil
+			} else if !errors.Is(err, authopenai.ErrAuthNotFound) {
+				return appwire.HubLaunchError("load OpenAI credentials: " + err.Error())
+			}
+		}
+		return missingProviderCredential(ref.Provider, "OPENAI_API_KEY or Serf OpenAI login")
+	case "anthropic":
+		return requireAnyEnv(ref.Provider, envMap, "ANTHROPIC_API_KEY")
+	case "google", "gemini":
+		return requireAnyEnv(ref.Provider, envMap, "GEMINI_API_KEY", "GOOGLE_API_KEY")
+	case "minimax":
+		return requireAnyEnv(ref.Provider, envMap, "MINIMAX_API_KEY")
+	case "openrouter", "openrouter-anthropic":
+		return requireAnyEnv(ref.Provider, envMap, "OPENROUTER_API_KEY")
+	case "kimi":
+		return requireAnyEnv(ref.Provider, envMap, "KIMI_API_KEY")
+	case "glm":
+		return requireAnyEnv(ref.Provider, envMap, "GLM_API_KEY")
+	case "openai-compatible":
+		return requireAnyEnv(ref.Provider, envMap, "OPENAI_COMPATIBLE_BASE_URL")
+	case "ollama":
+		return nil
+	default:
+		return nil
+	}
+}
+
+func requireAnyEnv(provider string, env map[string]string, keys ...string) error {
+	for _, key := range keys {
+		if strings.TrimSpace(env[key]) != "" {
+			return nil
+		}
+	}
+	return missingProviderCredential(provider, strings.Join(keys, " or "))
+}
+
+func missingProviderCredential(provider, keys string) error {
+	return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: configure %s in hub serf_launch env or inherited environment", provider, keys))
+}
+
+func envToMap(env []string) map[string]string {
+	out := make(map[string]string, len(env))
+	for _, kv := range env {
+		key, value, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		out[key] = value
+	}
+	return out
+}
+
+func validateSerfLaunchContract(ctx context.Context, serfBinary, model string, env []string) error {
+	if serfBinary == "" {
+		serfBinary = "serf"
+	}
+	args := []string{"launch-check", "--protocol", appwire.ProtocolVersion, "--json"}
+	if strings.TrimSpace(model) != "" {
+		args = append(args, "--model", model)
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(checkCtx, serfBinary, args...)
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if checkCtx.Err() != nil {
+		return appwire.HubLaunchError("serf launch-check timed out")
+	}
+	if err != nil {
+		msg := strings.TrimSpace(redactEnvSecrets(string(out), env))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return appwire.HubLaunchError("serf launch-check failed: " + msg)
+	}
+	var resp struct {
+		Protocol string `json:"protocol"`
+	}
+	if err := json.NewDecoder(bytes.NewReader(out)).Decode(&resp); err != nil {
+		return appwire.HubLaunchError("serf launch-check returned invalid response")
+	}
+	if resp.Protocol != appwire.ProtocolVersion {
+		return appwire.HubLaunchError(fmt.Sprintf("serf launch-check protocol %q does not match Hub protocol %q", resp.Protocol, appwire.ProtocolVersion))
+	}
+	return nil
+}
+
+func redactEnvSecrets(text string, env []string) string {
+	for key, value := range envToMap(env) {
+		if !isSensitiveEnvKey(key) || len(value) < 8 {
+			continue
+		}
+		text = strings.ReplaceAll(text, value, "[redacted]")
+	}
+	return text
+}
+
+func isSensitiveEnvKey(key string) bool {
+	key = strings.ToUpper(key)
+	return strings.Contains(key, "KEY") ||
+		strings.Contains(key, "TOKEN") ||
+		strings.Contains(key, "SECRET") ||
+		strings.Contains(key, "PASSWORD") ||
+		strings.Contains(key, "CREDENTIAL")
 }
 
 func waitForRendezvousOrExit(ctx context.Context, runDir string, pid int, exited <-chan error, opts ...WaitOption) (rendezvous.Entry, error) {

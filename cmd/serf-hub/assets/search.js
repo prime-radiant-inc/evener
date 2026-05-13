@@ -12,6 +12,8 @@
   let selectedCommand = null;   // non-null only in command-args mode
   let argsEnumLoaded = false;   // tracks whether async enum source resolved
   let preArgsFilter = "/";       // input value before entering args mode; restored on back-out
+  const recentCommandsKey = "serf.search.recentCommands";
+  const recentCommandsLimit = 5;
 
   function init() {
     dialog = document.getElementById("search-dialog");
@@ -183,9 +185,9 @@
       // global
       { id: "new", title: "New session", hint: "blank spawn page", keywords: [], scope: "global",
         run: () => { Nav.go("/new"); } },
-      { id: "spawn", title: "Spawn with task", hint: "new session, prefilled", keywords: ["start"], scope: "global",
-        args: { kind: "free", placeholder: "task to spawn…",
-          run: (_ctx, text) => { Nav.go("/new?task=" + encodeURIComponent(text || "")); } } },
+      { id: "spawn", title: "Spawn with prompt", hint: "new session, prefilled", keywords: ["start"], scope: "global",
+        args: { kind: "free", placeholder: "prompt to spawn…",
+          run: (_ctx, text) => { Nav.go("/new?prompt=" + encodeURIComponent(text || "")); } } },
       { id: "settings", title: "Open settings", hint: "", keywords: ["prefs"], scope: "global",
         run: () => { Nav.go("/settings"); } },
       { id: "theme", title: "Switch theme", hint: "dark/light", keywords: [], scope: "global",
@@ -241,7 +243,7 @@
         run: () => { const btn = document.querySelector("[data-tasks-trigger]"); if (btn) btn.click(); } },
       { id: "status", title: "Toggle session details", hint: "", keywords: ["details", "info"], scope: "ended-ok",
         run: () => { const btn = document.querySelector("[data-details-trigger]"); if (btn) btn.click(); } },
-      { id: "project", title: "Reveal session's project", hint: "scroll sidebar", keywords: ["folder"], scope: "ended-ok",
+      { id: "project", title: "Reveal session's project in sidebar", hint: "scroll sidebar", keywords: ["folder"], scope: "ended-ok",
         run: (ctx) => revealProject(ctx) },
     ];
   }
@@ -316,27 +318,88 @@
     });
   }
 
+  function commandScore(command, q) {
+    if (!q) return 0;
+    const fields = [command.id, command.title].concat(command.keywords || []);
+    let best = -1;
+    for (const raw of fields) {
+      const text = String(raw || "").toLowerCase();
+      const exact = text.indexOf(q);
+      if (exact >= 0) best = Math.max(best, 200 - exact);
+      best = Math.max(best, fuzzyScore(q, text));
+    }
+    return best;
+  }
+
+  function fuzzyScore(needle, haystack) {
+    if (!needle) return 0;
+    let score = 0;
+    let pos = -1;
+    let streak = 0;
+    for (const ch of needle) {
+      const next = haystack.indexOf(ch, pos + 1);
+      if (next < 0) return -1;
+      streak = next === pos + 1 ? streak + 1 : 0;
+      const boundary = next === 0 || /[\s/_-]/.test(haystack.charAt(next - 1));
+      score += 10 + (boundary ? 8 : 0) + (streak * 4) - Math.min(next - pos - 1, 8);
+      pos = next;
+    }
+    return score;
+  }
+
+  function readRecentCommandIDs() {
+    try {
+      const raw = window.localStorage && window.localStorage.getItem(recentCommandsKey);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed.filter(id => typeof id === "string") : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function rememberCommand(id) {
+    if (!id || !window.localStorage) return;
+    const next = [id].concat(readRecentCommandIDs().filter(existing => existing !== id)).slice(0, recentCommandsLimit);
+    try { window.localStorage.setItem(recentCommandsKey, JSON.stringify(next)); } catch (_) {}
+  }
+
   // -------- command-filter rendering --------
 
   function renderCommands(query) {
     const ctx = buildCtx();
     const q = (query || "").replace(/^\//, "").toLowerCase().trim();
-    const visible = commandsInScope(ctx).filter(c => {
-      if (!q) return true;
-      if (c.id.toLowerCase().indexOf(q) >= 0) return true;
-      if (c.title.toLowerCase().indexOf(q) >= 0) return true;
-      if (c.keywords.some(k => k.toLowerCase().indexOf(q) >= 0)) return true;
-      return false;
-    });
-    items = visible.map(c => ({ kind: "command", command: c }));
-    active = items.length > 0 ? 0 : -1;
+    const scoped = commandsInScope(ctx);
+    const recentCommands = !q
+      ? readRecentCommandIDs().map(id => scoped.find(c => c.id === id)).filter(Boolean)
+      : [];
+    const recentSet = new Set(recentCommands.map(c => c.id));
+    const visible = q
+      ? scoped.map((c, idx) => ({ command: c, idx: idx, score: commandScore(c, q) }))
+          .filter(row => row.score >= 0)
+          .sort((a, b) => (b.score - a.score) || (a.idx - b.idx))
+          .map(row => row.command)
+      : scoped.filter(c => !recentSet.has(c.id));
+    items = [];
 
-    let html = '<div class="search-section-header">Commands</div>';
+    let html = "";
+    if (recentCommands.length) {
+      html += '<div class="search-section-header">Recent</div>';
+      recentCommands.forEach(c => {
+        const idx = items.length;
+        items.push({ kind: "command", command: c });
+        html += renderCommandRow(c, idx);
+      });
+    }
+    html += '<div class="search-section-header">Commands</div>';
+    visible.forEach(c => {
+      const idx = items.length;
+      items.push({ kind: "command", command: c });
+      html += renderCommandRow(c, idx);
+    });
     if (!items.length) {
       html += '<div class="search-empty">no commands match.</div>';
-    } else {
-      items.forEach((it, idx) => { html += renderCommandRow(it.command, idx); });
     }
+    active = items.length > 0 ? 0 : -1;
     results.innerHTML = html;
     updateActive();
     results.querySelectorAll("[data-idx]").forEach(el => {
@@ -485,6 +548,7 @@
   function runArgless(cmd) {
     const ctx = buildCtx();
     try { cmd.run(ctx); } catch (_) {}
+    if (!cmd.stayOpen) rememberCommand(cmd.id);
     // Commands flagged stayOpen reroute the palette in-place (search/help)
     // and should keep the modal open.
     if (!cmd.stayOpen) close();

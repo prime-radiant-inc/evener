@@ -26,7 +26,7 @@ import (
 )
 
 type runConfig struct {
-	task               string
+	prompt             string
 	model              string
 	workDir            string
 	stateDir           string   // --state-dir override
@@ -54,7 +54,7 @@ type runConfig struct {
 
 	// Resume options.
 	resume       string // session ID to resume
-	resumeWith   string // session ID whose context to reuse with a new task
+	resumeWith   string // session ID whose context to reuse with a new prompt
 	resumeLast   bool   // resume the most recent session
 	listSessions bool   // print saved sessions and exit
 }
@@ -100,14 +100,14 @@ func run(ctx context.Context, cfg runConfig) error {
 		meta = &m
 	}
 
-	// Determine task.
-	task := strings.TrimSpace(cfg.task)
-	if meta != nil && cfg.resumeWith == "" && task == "" {
-		// --resume without a task: continue with a generic prompt.
-		task = "Continue where you left off."
+	// Determine prompt.
+	prompt := strings.TrimSpace(cfg.prompt)
+	if meta != nil && cfg.resumeWith == "" && prompt == "" {
+		// --resume without a prompt: continue with a generic prompt.
+		prompt = "Continue where you left off."
 	}
-	if task == "" && meta == nil {
-		return fmt.Errorf("no task provided")
+	if prompt == "" && meta == nil {
+		return fmt.Errorf("no prompt provided")
 	}
 
 	effort, err := cmdutil.ResolveReasoningEffort(cfg.reasoningEffort, os.Getenv("SERF_REASONING_EFFORT"))
@@ -203,7 +203,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		done = drainEventsHuman(sess.Events(), cfg.stderr)
 	}
 
-	result, err := sess.ProcessInput(ctx, task, nil)
+	result, err := sess.ProcessInput(ctx, prompt, nil)
 	sess.Close()
 	<-done
 

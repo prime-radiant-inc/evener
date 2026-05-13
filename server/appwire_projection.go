@@ -160,7 +160,7 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 		})}
 	case agent.EventWarning:
 		data := eventData[agent.WarningData](event.Data)
-		info := diagnostic.Classify(data.Message)
+		info := diagnostic.FromFields(data.Source, data.Title, data.Hint, data.Message)
 		return []AppNotification{p.notification(appwire.NotifyWarning, map[string]any{
 			"threadId": p.threadID,
 			"ref":      p.ref,
@@ -176,7 +176,7 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 		if message == "" {
 			message = "session error"
 		}
-		info := diagnostic.Classify(message)
+		info := diagnostic.FromFields(data.Source, data.Title, data.Hint, message)
 		p.ensureTurn()
 		turnID := p.activeTurnID
 		p.activeTurnID = ""
@@ -189,7 +189,12 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 				"source":   string(info.Source),
 				"title":    info.Title,
 				"hint":     info.Hint,
-				"warning":  agent.WarningData{Message: message},
+				"warning": agent.WarningData{
+					Message: message,
+					Source:  string(info.Source),
+					Title:   info.Title,
+					Hint:    info.Hint,
+				},
 			}),
 			p.notification(appwire.NotifyTurnCompleted, map[string]any{
 				"threadId": p.threadID,

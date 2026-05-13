@@ -1,6 +1,18 @@
 (function () {
   "use strict";
 
+  function partialFetch(path, options) {
+    options = options || {};
+    const headers = new Headers(options.headers || {});
+    headers.set("HX-Request", "true");
+    options.headers = headers;
+    return fetch(path, options);
+  }
+
+  function sessionPartialPath(id, name) {
+    return "/_partials/s/" + encodeURIComponent(id) + "/" + name;
+  }
+
   const SerfRenderer = {
     init(conversationEl) {
       if (!conversationEl) return;
@@ -97,7 +109,7 @@
           .then(tasks => this.applyTasks(tasks))
           .catch(() => {});
       }
-      return fetch("/s/" + encodeURIComponent(this.sessionId) + "/tasks")
+      return partialFetch(sessionPartialPath(this.sessionId, "tasks"))
         .then(r => r.ok ? r.json() : [])
         .then(tasks => this.applyTasks(tasks)).catch(() => {});
     },
@@ -126,7 +138,7 @@
             .catch(() => {});
           return;
         }
-        fetch("/s/" + encodeURIComponent(this.sessionId) + "/tasks")
+        partialFetch(sessionPartialPath(this.sessionId, "tasks"))
           .then(r => r.ok ? r.json() : [])
           .then(tasks => this.applyTasks(tasks))
           .catch(() => {});
@@ -939,7 +951,7 @@
           .catch(() => {});
         return;
       }
-      fetch("/s/" + encodeURIComponent(this.sessionId) + "/tasks")
+      partialFetch(sessionPartialPath(this.sessionId, "tasks"))
         .then(r => r.ok ? r.json() : [])
         .then(tasks => this.applyTasks(tasks)).catch(() => {});
     },
@@ -1781,7 +1793,7 @@
     const refresh = () => {
       const tasksPromise = window.SerfAppwire
         ? window.SerfAppwire.tasks(id)
-        : fetch("/s/" + encodeURIComponent(id) + "/tasks").then(r => r.json());
+        : partialFetch(sessionPartialPath(id, "tasks")).then(r => r.json());
       tasksPromise.then(tasks => {
         renderTasksInto(panel, tasks);
       }).catch(() => {
@@ -1949,7 +1961,7 @@
     panel.className = "details-panel";
     panel.innerHTML = "<div class='details-loading'>loading…</div>";
     document.body.appendChild(panel);
-    fetch("/s/" + encodeURIComponent(id) + "/details").then(r => r.text()).then(html => {
+    partialFetch(sessionPartialPath(id, "details")).then(r => r.text()).then(html => {
       panel.innerHTML = html;
     }).catch(() => { panel.innerHTML = "<div class='details-loading'>failed to load</div>"; });
     setPanelToggleActive("[data-details-trigger]", true);

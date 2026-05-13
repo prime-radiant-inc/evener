@@ -47,9 +47,9 @@ func TestNewSessionFromEnv(t *testing.T) {
 	}
 }
 
-// TestProcessInputSimpleTask sends a simple prompt to the model and verifies
+// TestProcessInputSimplePrompt sends a simple prompt to the model and verifies
 // that the session returns a non-empty text response.
-func TestProcessInputSimpleTask(t *testing.T) {
+func TestProcessInputSimplePrompt(t *testing.T) {
 	if os.Getenv("OPENAI_API_KEY") == "" {
 		t.Skip("OPENAI_API_KEY not set")
 	}
@@ -82,7 +82,7 @@ func TestProcessInputSimpleTask(t *testing.T) {
 	}
 }
 
-// TestProcessInputWithToolUse sends a task that requires the model to use a tool
+// TestProcessInputWithToolUse sends a prompt that requires the model to use a tool
 // (write a file), then verifies the file was created.
 func TestProcessInputWithToolUse(t *testing.T) {
 	if os.Getenv("OPENAI_API_KEY") == "" {

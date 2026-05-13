@@ -91,6 +91,9 @@ func hubSlashCommandHelp(caps hubSessionCapabilities) string {
 	if caps.Clear {
 		lines = append(lines, "  /clear     Start a new session")
 	}
+	if caps.Shutdown {
+		lines = append(lines, "  /shutdown  Stop this resumable session")
+	}
 	lines = append(lines,
 		"  /dashboard Go to live dashboard",
 		"  /project   Go to this session's project",

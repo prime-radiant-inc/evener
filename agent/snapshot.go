@@ -40,7 +40,7 @@ type SessionMeta struct {
 	UpdatedAt       time.Time       `json:"updated_at"`
 	TurnCount       int             `json:"turn_count"`
 	LastInputTokens int             `json:"last_input_tokens,omitempty"`
-	OriginalTask    string          `json:"original_task,omitempty"`
+	OriginalPrompt  string          `json:"original_prompt,omitempty"`
 	// ParentSessionID, DivergenceTurn, and ForkLabel are non-empty on sessions
 	// that branched from another via the fork operation. ParentSessionID names
 	// the original session (the one whose transcript prefix this session shares);
@@ -54,6 +54,22 @@ type SessionMeta struct {
 	// NOTE: The agent's spawn-subagent code does not yet set this field;
 	// wiring the write path is a follow-up task.
 	IsSubagent bool `json:"is_subagent,omitempty"`
+}
+
+func (m *SessionMeta) UnmarshalJSON(data []byte) error {
+	type sessionMetaAlias SessionMeta
+	var aux struct {
+		sessionMetaAlias
+		LegacyOriginalPrompt string `json:"original_task,omitempty"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	*m = SessionMeta(aux.sessionMetaAlias)
+	if m.OriginalPrompt == "" {
+		m.OriginalPrompt = aux.LegacyOriginalPrompt
+	}
+	return nil
 }
 
 const sessionsSubdir = "sessions"

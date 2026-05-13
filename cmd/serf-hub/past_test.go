@@ -29,20 +29,20 @@ func TestPastIndex_RebuildLoadsAllMetas(t *testing.T) {
 
 	now := time.Now().UTC()
 	writeMeta(t, projA, agent.SessionMeta{
-		ID:           "01A",
-		Model:        "gpt-5.2",
-		EnvInfo:      agent.EnvironmentInfo{WorkingDir: "/work/a"},
-		CreatedAt:    now.Add(-2 * time.Hour),
-		UpdatedAt:    now.Add(-1 * time.Hour),
-		OriginalTask: "fix the bug",
+		ID:             "01A",
+		Model:          "gpt-5.2",
+		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/work/a"},
+		CreatedAt:      now.Add(-2 * time.Hour),
+		UpdatedAt:      now.Add(-1 * time.Hour),
+		OriginalPrompt: "fix the bug",
 	})
 	writeMeta(t, projB, agent.SessionMeta{
-		ID:           "01B",
-		Model:        "claude-opus-4-7",
-		EnvInfo:      agent.EnvironmentInfo{WorkingDir: "/work/b"},
-		CreatedAt:    now.Add(-30 * time.Minute),
-		UpdatedAt:    now,
-		OriginalTask: "refactor auth",
+		ID:             "01B",
+		Model:          "claude-opus-4-7",
+		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/work/b"},
+		CreatedAt:      now.Add(-30 * time.Minute),
+		UpdatedAt:      now,
+		OriginalPrompt: "refactor auth",
 	})
 
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
@@ -68,28 +68,28 @@ func TestPastIndex_RebuildOrdersByUpdatedCreatedTitleAndID(t *testing.T) {
 
 	updated := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	writeMeta(t, proj, agent.SessionMeta{
-		ID:           "02OLD",
-		CreatedAt:    updated.Add(-2 * time.Hour),
-		UpdatedAt:    updated,
-		OriginalTask: "beta task",
+		ID:             "02OLD",
+		CreatedAt:      updated.Add(-2 * time.Hour),
+		UpdatedAt:      updated,
+		OriginalPrompt: "beta task",
 	})
 	writeMeta(t, proj, agent.SessionMeta{
-		ID:           "01NEW",
-		CreatedAt:    updated.Add(-time.Hour),
-		UpdatedAt:    updated,
-		OriginalTask: "alpha task",
+		ID:             "01NEW",
+		CreatedAt:      updated.Add(-time.Hour),
+		UpdatedAt:      updated,
+		OriginalPrompt: "alpha task",
 	})
 	writeMeta(t, proj, agent.SessionMeta{
-		ID:           "03TITLEB",
-		CreatedAt:    updated.Add(-3 * time.Hour),
-		UpdatedAt:    updated.Add(-time.Hour),
-		OriginalTask: "bravo task",
+		ID:             "03TITLEB",
+		CreatedAt:      updated.Add(-3 * time.Hour),
+		UpdatedAt:      updated.Add(-time.Hour),
+		OriginalPrompt: "bravo task",
 	})
 	writeMeta(t, proj, agent.SessionMeta{
-		ID:           "04TITLEA",
-		CreatedAt:    updated.Add(-3 * time.Hour),
-		UpdatedAt:    updated.Add(-time.Hour),
-		OriginalTask: "alpha task",
+		ID:             "04TITLEA",
+		CreatedAt:      updated.Add(-3 * time.Hour),
+		UpdatedAt:      updated.Add(-time.Hour),
+		OriginalPrompt: "alpha task",
 	})
 
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
@@ -113,16 +113,16 @@ func TestPastIndex_Search(t *testing.T) {
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
 	writeMeta(t, proj, agent.SessionMeta{
-		ID:           "01A",
-		EnvInfo:      agent.EnvironmentInfo{WorkingDir: "/work/a"},
-		UpdatedAt:    time.Now(),
-		OriginalTask: "fix the bug in handler",
+		ID:             "01A",
+		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/work/a"},
+		UpdatedAt:      time.Now(),
+		OriginalPrompt: "fix the bug in handler",
 	})
 	writeMeta(t, proj, agent.SessionMeta{
-		ID:           "01B",
-		EnvInfo:      agent.EnvironmentInfo{WorkingDir: "/work/b"},
-		UpdatedAt:    time.Now(),
-		OriginalTask: "refactor auth flow",
+		ID:             "01B",
+		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/work/b"},
+		UpdatedAt:      time.Now(),
+		OriginalPrompt: "refactor auth flow",
 	})
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
@@ -206,9 +206,9 @@ func TestPastIndex_FindRefreshesNewSessionOnMiss(t *testing.T) {
 	}
 
 	writeMeta(t, proj, agent.SessionMeta{
-		ID:           "01NEW",
-		UpdatedAt:    time.Now(),
-		OriginalTask: "created after hub start",
+		ID:             "01NEW",
+		UpdatedAt:      time.Now(),
+		OriginalPrompt: "created after hub start",
 	})
 	got, ok := idx.Find("01NEW")
 	if !ok {

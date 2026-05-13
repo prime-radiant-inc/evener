@@ -206,6 +206,50 @@ func TestCodexSourceStartThreadUsesCodexUserThreadSource(t *testing.T) {
 	}
 }
 
+func TestCodexSourceSubscribeReusesStartedThreadConnection(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadStart, func(ctx context.Context, _ map[string]any) (map[string]any, error) {
+		appserver.Subscribe(ctx, "th_codex")
+		return map[string]any{"thread": codexThreadMap("th_codex")}, nil
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadResume, func(_ context.Context, _ map[string]any) (map[string]any, error) {
+		return nil, appwire.InvalidParams("no rollout found for thread id th_codex")
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+
+	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
+	resp, err := source.StartThread(context.Background(), appwire.ThreadStartParams{CWD: "/work/project"})
+	if err != nil {
+		t.Fatalf("StartThread: %v", err)
+	}
+	notifications, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: resp.Thread.Serf.Ref})
+	if err != nil {
+		t.Fatalf("SubscribeThread: %v", err)
+	}
+
+	server.Broadcast("th_codex", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+		ThreadID: "th_codex",
+		Delta:    "hello",
+	})
+
+	select {
+	case got := <-notifications:
+		if got.Method != appwire.NotifyAgentMessageDelta {
+			t.Fatalf("method=%q", got.Method)
+		}
+		var params appwire.AgentMessageDeltaParams
+		if err := json.Unmarshal(got.Params, &params); err != nil {
+			t.Fatalf("params: %v", err)
+		}
+		if params.Ref != "codex:th_codex" || params.Delta != "hello" {
+			t.Fatalf("params=%+v", params)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for notification")
+	}
+}
+
 func TestCodexSourceReadThreadRetriesWithoutTurnsBeforeFirstMessage(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
 	var includeTurnsValues []any

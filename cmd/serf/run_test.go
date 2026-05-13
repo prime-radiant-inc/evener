@@ -13,7 +13,7 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// TestRunWithArgs verifies that the run function processes a task from CLI args
+// TestRunWithArgs verifies that the run function processes a prompt from CLI args
 // and produces output on stdout.
 func TestRunWithArgs(t *testing.T) {
 	if os.Getenv("OPENAI_API_KEY") == "" {
@@ -22,7 +22,7 @@ func TestRunWithArgs(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
-		task:    "Reply with exactly the word PONG and nothing else.",
+		prompt:  "Reply with exactly the word PONG and nothing else.",
 		model:   "openai/gpt-5-mini-2025-08-07",
 		workDir: t.TempDir(),
 		stdout:  &stdout,
@@ -46,7 +46,7 @@ func TestRunEmitsToolEvents(t *testing.T) {
 	tmpDir := t.TempDir()
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
-		task:    "Create a file called test.txt in " + tmpDir + " with content 'hello'. Use the write_file tool.",
+		prompt:  "Create a file called test.txt in " + tmpDir + " with content 'hello'. Use the write_file tool.",
 		model:   "openai/gpt-5-mini-2025-08-07",
 		workDir: tmpDir,
 		stdout:  &stdout,
@@ -72,20 +72,20 @@ func TestRunEmitsToolEvents(t *testing.T) {
 	}
 }
 
-// TestRunMissingTask verifies that run returns an error when no task is provided.
-func TestRunMissingTask(t *testing.T) {
+// TestRunMissingPrompt verifies that run returns an error when no prompt is provided.
+func TestRunMissingPrompt(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
-		task:   "",
+		prompt: "",
 		model:  "openai/gpt-5-mini-2025-08-07",
 		stdout: &stdout,
 		stderr: &stderr,
 	})
 	if err == nil {
-		t.Fatal("expected error for empty task")
+		t.Fatal("expected error for empty prompt")
 	}
-	if !strings.Contains(err.Error(), "task") {
-		t.Fatalf("expected error to mention 'task', got: %v", err)
+	if !strings.Contains(err.Error(), "prompt") {
+		t.Fatalf("expected error to mention 'prompt', got: %v", err)
 	}
 }
 
@@ -113,7 +113,7 @@ func TestRunMissingAPIKey(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
-		task:   "do something",
+		prompt: "do something",
 		model:  "openai/gpt-5-mini-2025-08-07",
 		stdout: &stdout,
 		stderr: &stderr,
@@ -126,7 +126,7 @@ func TestRunMissingAPIKey(t *testing.T) {
 func TestRunBareModelRejected(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
-		task:   "do something",
+		prompt: "do something",
 		model:  "gpt-5.2",
 		stdout: &stdout,
 		stderr: &stderr,
@@ -151,7 +151,7 @@ func TestRunInvalidOutputSchema(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
-		task:         "do something",
+		prompt:       "do something",
 		model:        "openai/gpt-5.2",
 		outputSchema: "{not json",
 		workDir:      t.TempDir(),
@@ -184,7 +184,7 @@ func TestRunMissingModel(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
-		task:   "do something",
+		prompt: "do something",
 		model:  "",
 		stdout: &stdout,
 		stderr: &stderr,
@@ -513,7 +513,7 @@ func TestRunWithContextStrategy(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
-		task:            "Reply with exactly the word PONG and nothing else.",
+		prompt:          "Reply with exactly the word PONG and nothing else.",
 		model:           "openai/gpt-5-mini-2025-08-07",
 		workDir:         t.TempDir(),
 		contextStrategy: "compact",

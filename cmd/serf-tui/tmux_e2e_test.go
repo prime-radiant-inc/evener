@@ -50,7 +50,7 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app.WaitFor("serf live", "live task")
 
 	app.SendKeys("s")
-	app.WaitFor("serf / new session", "Dir:      "+tuiE2EProjectDir, "Task (optional):")
+	app.WaitFor("serf / new session", "Dir:      "+tuiE2EProjectDir, "Prompt (optional):")
 	app.TypeLine("spawn from dashboard")
 	app.WaitFor("spawned session 1", "local:02SPAWN1")
 	spawns := hub.WaitForSpawns(t, 1)
@@ -69,7 +69,7 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app.SendKeys("Enter")
 	app.WaitFor("serf / project / serf", "Recent in this project")
 	app.SendKeys("s")
-	app.WaitFor("serf / new session", "Dir:      "+tuiE2EProjectDir, "Task (optional):")
+	app.WaitFor("serf / new session", "Dir:      "+tuiE2EProjectDir, "Prompt (optional):")
 	app.TypeLine("spawn from project")
 	app.WaitFor("spawned session 2", "local:02SPAWN2")
 	spawns = hub.WaitForSpawns(t, 2)
@@ -310,7 +310,7 @@ func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 	app.WaitFor("serf live", "live task")
 	hub.SetFailSpawn(true)
 	app.SendKeys("s")
-	app.WaitFor("serf / new session", "Task (optional):")
+	app.WaitFor("serf / new session", "Prompt (optional):")
 	app.TypeLine("spawn should fail")
 	app.WaitFor("error: spawn failed: appwire thread/start: spawn failed")
 }
@@ -355,6 +355,7 @@ func startTUITmux(t *testing.T, bin, hubURL string) *tmuxTUI {
 	session := fmt.Sprintf("serf-tui-e2e-%d", time.Now().UnixNano())
 	command := shellQuote(bin) + " -debug -no-auto-start-hub -hub-addr " + shellQuote(hubURL)
 	runTmux(t, "new-session", "-d", "-x", "120", "-y", "40", "-s", session, command)
+	runTmux(t, "set-option", "-t", session, "remain-on-exit", "on")
 	app := &tmuxTUI{t: t, session: session}
 	app.WaitFor("serf live")
 	return app
@@ -399,6 +400,9 @@ func (a *tmuxTUI) WaitFor(wants ...string) string {
 	deadline := time.Now().Add(tuiE2EWaitTimeout)
 	var screen string
 	for time.Now().Before(deadline) {
+		if status, dead := a.PaneDeadStatus(); dead {
+			a.t.Fatalf("serf-tui exited before %q (status %s)\nvisible pane:\n%s\nrecent history:\n%s", wants, status, a.Capture(), a.CaptureHistory())
+		}
 		screen = a.Capture()
 		ok := true
 		for _, want := range wants {
@@ -420,12 +424,56 @@ func (a *tmuxTUI) WaitForExit() {
 	a.t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
+		if _, dead := a.PaneDeadStatus(); dead {
+			return
+		}
 		if err := exec.Command("tmux", "has-session", "-t", a.session).Run(); err != nil {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	a.t.Fatalf("tmux session did not exit\nvisible pane:\n%s\nrecent history:\n%s", a.Capture(), a.CaptureHistory())
+}
+
+func (a *tmuxTUI) PaneDeadStatus() (string, bool) {
+	a.t.Helper()
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", a.session, "#{pane_dead} #{pane_dead_status}").CombinedOutput()
+	if err != nil {
+		return "", false
+	}
+	return parsePaneDeadStatus(string(out))
+}
+
+func parsePaneDeadStatus(raw string) (string, bool) {
+	fields := strings.Fields(raw)
+	if len(fields) == 0 || fields[0] != "1" {
+		return "", false
+	}
+	if len(fields) > 1 && fields[1] != "" {
+		return fields[1], true
+	}
+	return "unknown", true
+}
+
+func TestParsePaneDeadStatus(t *testing.T) {
+	tests := []struct {
+		raw    string
+		status string
+		dead   bool
+	}{
+		{raw: "0 \n", dead: false},
+		{raw: "1 0\n", status: "0", dead: true},
+		{raw: "1 2\n", status: "2", dead: true},
+		{raw: "1\n", status: "unknown", dead: true},
+	}
+	for _, tt := range tests {
+		t.Run(strings.TrimSpace(tt.raw), func(t *testing.T) {
+			status, dead := parsePaneDeadStatus(tt.raw)
+			if status != tt.status || dead != tt.dead {
+				t.Fatalf("parsePaneDeadStatus(%q) = %q, %v; want %q, %v", tt.raw, status, dead, tt.status, tt.dead)
+			}
+		})
+	}
 }
 
 func runTmux(t *testing.T, args ...string) {

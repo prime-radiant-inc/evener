@@ -795,7 +795,7 @@ func (s *Session) Snapshot() SessionSnapshot {
 
 // Meta returns the current session metadata without the conversation history.
 func (s *Session) Meta() SessionMeta {
-	originalTask := s.extractOriginalTask()
+	originalPrompt := s.extractOriginalPrompt()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -810,7 +810,7 @@ func (s *Session) Meta() SessionMeta {
 		UpdatedAt:       now,
 		TurnCount:       s.modelResponses,
 		LastInputTokens: s.contextMgr.LastInputTokens(),
-		OriginalTask:    originalTask,
+		OriginalPrompt:  originalPrompt,
 		ParentSessionID: s.cfg.ParentSessionID,
 		IsSubagent:      s.cfg.ParentSessionID != "",
 	}
@@ -1175,9 +1175,9 @@ func (s *Session) Close() {
 	})
 }
 
-// extractOriginalTask returns the text of the first user input in the session history.
+// extractOriginalPrompt returns the text of the first user input in the session history.
 // If compaction removed it, falls back to the SubagentTask from config.
-func (s *Session) extractOriginalTask() string {
+func (s *Session) extractOriginalPrompt() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, t := range s.history {
@@ -1444,6 +1444,7 @@ func (s *Session) emit(kind EventKind, data any) {
 	if s == nil || s.events == nil {
 		return
 	}
+	data = enrichDiagnosticData(kind, data)
 	ev := SessionEvent{
 		Kind:      kind,
 		Timestamp: time.Now().UTC(),
@@ -1496,7 +1497,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 	select {
 	case <-ctx.Done():
-		s.emit(EventError, ErrorData{Error: ctx.Err().Error()})
+		s.emit(EventError, errorDataFromError(ctx.Err()))
 		return "", ctx.Err()
 	default:
 	}
@@ -1560,7 +1561,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		select {
 		case <-ctx.Done():
-			s.emit(EventError, ErrorData{Error: ctx.Err().Error()})
+			s.emit(EventError, errorDataFromError(ctx.Err()))
 			return "", ctx.Err()
 		default:
 		}
@@ -1594,7 +1595,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			s.contextMgr.Meta = s.buildCompactionMeta()
 
 			if err := s.strategy.ManageContext(ctx, &historyTurns, len(sys), s.emit); err != nil {
-				s.emit(EventWarning, WarningData{Message: "context strategy error: " + err.Error()})
+				s.emit(EventWarning, warningDataFromError("context strategy error: "+err.Error(), err))
 			}
 
 			s.mu.Lock()
@@ -1724,6 +1725,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			}
 			if err != nil {
 				apiCall.Error = err.Error()
+				setAPICallDiagnostic(&apiCall, err)
 			} else {
 				apiCall.Response = &llm.APILogResponse{
 					ID:            resp.ID,
@@ -1739,14 +1741,14 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 
 		if err != nil {
-			s.emit(EventError, ErrorData{Error: err.Error()})
+			s.emit(EventError, errorDataFromError(err))
 
 			// Content filter recovery: compaction often removes the offending
 			// content, allowing the next request to succeed. Try once.
 			var cfe *llm.ContentFilterError
 			if errors.As(err, &cfe) && !contentFilterRetried && s.contextMgr != nil {
 				contentFilterRetried = true
-				s.emit(EventWarning, WarningData{Message: "Content filter hit — compacting context and retrying"})
+				s.emit(EventWarning, warningDataFromError("Content filter hit — compacting context and retrying", err))
 				s.mu.Lock()
 				s.contextMgr.ForceCompact(ctx, &s.history, s.emit)
 				s.mu.Unlock()
@@ -1756,7 +1758,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			// Spec: context overflow should emit a warning (no automatic compaction).
 			var cle *llm.ContextLengthError
 			if errors.As(err, &cle) {
-				s.emit(EventWarning, WarningData{Message: "Context length exceeded"})
+				s.emit(EventWarning, warningDataFromError("Context length exceeded", err))
 			}
 			// Spec: non-retryable/unrecoverable errors transition the session to CLOSED.
 			var le llm.Error
@@ -1921,7 +1923,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 					toolName: s.resultToolName(),
 					retries:  maxBareTextRetries,
 				}
-				s.emit(EventError, ErrorData{Error: err.Error()})
+				s.emit(EventError, errorDataFromError(err))
 				s.mu.Lock()
 				s.state = SessionIdle
 				s.mu.Unlock()

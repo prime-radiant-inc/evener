@@ -59,7 +59,7 @@ and you reject again for the next issue. Be thorough up front.
 4. **Read the implementer's code.** Trace the logic. Check for stubs, placeholders,
    spec violations, logic errors, ignored input data, and test gaming.
 
-5. **Map requirements to evidence.** Re-read the original task. For each requirement,
+5. **Map requirements to evidence.** Re-read the original prompt. For each requirement,
    cite specific evidence it is satisfied — command output, file contents, test results.
    "The script would do this if run" is not evidence. Evidence is output you observed.
 

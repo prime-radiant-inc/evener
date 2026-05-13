@@ -35,7 +35,7 @@
         <span class="chip-caret">▾</span>
       </button>
     </div>
-    <textarea class="spawn-input" name="task" placeholder="describe the task…" autofocus>{{.DefaultTask}}</textarea>
+    <textarea class="spawn-input" name="prompt" placeholder="describe the prompt…" autofocus>{{.DefaultPrompt}}</textarea>
     <input type="hidden" name="harness" value="{{.DefaultHarness}}">
     {{range .Harnesses}}<input type="hidden" data-harness-option value="{{.ID}}" data-label="{{.Label}}">{{end}}
     <input type="hidden" name="model" value="{{.DefaultModelValue}}">
@@ -57,11 +57,11 @@
     </div>
   </form>
 
-  {{if .RecentTasks}}
+  {{if .RecentPrompts}}
   <div class="spawn-recent">
-    <div class="spawn-recent-header">recent tasks</div>
-    {{range .RecentTasks}}
-    <a class="spawn-recent-row" data-recent-task="{{.}}">↻ {{.}}</a>
+    <div class="spawn-recent-header">recent prompts</div>
+    {{range .RecentPrompts}}
+    <a class="spawn-recent-row" data-recent-prompt="{{.}}">↻ {{.}}</a>
     {{end}}
   </div>
   {{end}}

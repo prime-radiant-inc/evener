@@ -64,11 +64,25 @@ window.fetch = (url, opts) => {
 
 // Stub EventSource so init() doesn't try to open one (no events url anyway).
 class MockEventSource {
-  constructor() { this.listeners = new Map(); }
-  addEventListener() {}
+  constructor(url) {
+    this.url = url;
+    this.listeners = new Map();
+    this.closed = false;
+    MockEventSource.instances.push(this);
+  }
+  addEventListener(name, fn) {
+    const listeners = this.listeners.get(name) || [];
+    listeners.push(fn);
+    this.listeners.set(name, listeners);
+  }
   set onerror(_) {}
-  close() {}
+  close() { this.closed = true; }
+  emit(name, data) {
+    const event = { data: JSON.stringify(data || {}) };
+    for (const fn of this.listeners.get(name) || []) fn(event);
+  }
 }
+MockEventSource.instances = [];
 window.EventSource = MockEventSource;
 
 // JSDOM doesn't lay out text, so scrollHeight is always 0. Override it on
@@ -155,6 +169,7 @@ async function checkReconnectsLiveAfterSendOnEndedSession() {
   // Simulate the post-replay state: no eventSource open, no eventsUrl.
   window.SerfRenderer.eventSource = null;
   window.SerfRenderer.eventsUrl = "";
+  const beforeCount = MockEventSource.instances.length;
   ta.value = "resume me";
   ta.dispatchEvent(new window.Event("input", { bubbles: true }));
   fetchResponseOk = true;
@@ -166,6 +181,19 @@ async function checkReconnectsLiveAfterSendOnEndedSession() {
     window.SerfRenderer.eventsUrl === "/s/01TEST/events",
     "expected eventsUrl set to /s/01TEST/events, got " + JSON.stringify(window.SerfRenderer.eventsUrl)
   );
+
+  const liveSource = MockEventSource.instances[MockEventSource.instances.length - 1];
+  pass(MockEventSource.instances.length === beforeCount + 1, "expected exactly one live EventSource after resumed send");
+  pass(liveSource && liveSource.url === "/s/01TEST/events", "expected live EventSource URL /s/01TEST/events, got " + (liveSource && liveSource.url));
+
+  liveSource.emit("USER_INPUT", { text: "resume me", turn: 4 });
+  liveSource.emit("ASSISTANT_TEXT_START", { turn: 4, message_id: "msg_resume" });
+  liveSource.emit("ASSISTANT_TEXT_DELTA", { message_id: "msg_resume", delta: "live resumed answer" });
+  liveSource.emit("ASSISTANT_TEXT_END", { message_id: "msg_resume" });
+  await new Promise(r => setTimeout(r, 10));
+
+  pass(conv.textContent.includes("resume me"), "expected resumed user message to render without refresh");
+  pass(conv.textContent.includes("live resumed answer"), "expected resumed assistant answer to render without refresh");
 }
 
 // 5c. A failed send must NOT open a live stream — connecting to a daemon

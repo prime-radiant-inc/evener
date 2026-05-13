@@ -2477,7 +2477,7 @@ func TestSession_SystemPromptAsUser_CombinesIntoOneMessage(t *testing.T) {
 	}
 }
 
-func TestSession_Meta_PopulatesOriginalTask(t *testing.T) {
+func TestSession_Meta_PopulatesOriginalPrompt(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -2500,13 +2500,13 @@ func TestSession_Meta_PopulatesOriginalTask(t *testing.T) {
 	}
 
 	meta := sess.Meta()
-	if meta.OriginalTask != "write a haiku about goroutines" {
-		t.Fatalf("OriginalTask: got %q, want %q",
-			meta.OriginalTask, "write a haiku about goroutines")
+	if meta.OriginalPrompt != "write a haiku about goroutines" {
+		t.Fatalf("OriginalPrompt: got %q, want %q",
+			meta.OriginalPrompt, "write a haiku about goroutines")
 	}
 }
 
-func TestSession_Meta_OriginalTask_EmptyForFreshSession(t *testing.T) {
+func TestSession_Meta_OriginalPrompt_EmptyForFreshSession(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -2518,8 +2518,8 @@ func TestSession_Meta_OriginalTask_EmptyForFreshSession(t *testing.T) {
 	defer sess.Close()
 
 	meta := sess.Meta()
-	if meta.OriginalTask != "" {
-		t.Fatalf("OriginalTask: got %q, want empty", meta.OriginalTask)
+	if meta.OriginalPrompt != "" {
+		t.Fatalf("OriginalPrompt: got %q, want empty", meta.OriginalPrompt)
 	}
 }
 

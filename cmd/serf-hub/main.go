@@ -69,7 +69,7 @@ func main() {
 	}
 	stateGlob := cfg.StateGlob
 	if stateGlob == "" {
-		stateGlob = filepath.Join(home, ".local", "state", "serf", "projects", "*")
+		stateGlob = DefaultStateGlob()
 	}
 
 	// Roster + past index

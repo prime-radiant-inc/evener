@@ -190,7 +190,7 @@ The agent's conversation so far:
 %s
 
 Generate a checkpoint preserving:
-1. The original task/goal
+1. The original prompt/goal
 2. Key decisions already made
 3. Specific values, paths, or identifiers the agent will need
 4. Current state and what remains to be done

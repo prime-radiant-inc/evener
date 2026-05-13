@@ -5,10 +5,10 @@ import (
 	"strings"
 )
 
-func readTaskFromArgsOrStdin(args []string, listSessions bool, stdin io.Reader, stdinIsCharDevice bool) string {
-	task := strings.TrimSpace(strings.Join(args, " "))
-	if task != "" {
-		return task
+func readPromptFromArgsOrStdin(args []string, listSessions bool, stdin io.Reader, stdinIsCharDevice bool) string {
+	prompt := strings.TrimSpace(strings.Join(args, " "))
+	if prompt != "" {
+		return prompt
 	}
 	if listSessions || stdinIsCharDevice {
 		return ""
@@ -19,4 +19,3 @@ func readTaskFromArgsOrStdin(args []string, listSessions bool, stdin io.Reader, 
 	}
 	return strings.TrimSpace(string(b))
 }
-

@@ -82,7 +82,7 @@ func (i *PastIndex) All() []PastEntry {
 }
 
 // Search returns the limit results starting at offset whose
-// OriginalTask, ID, or WorkingDir contains q (case-insensitive). Empty q
+// OriginalPrompt, ID, or WorkingDir contains q (case-insensitive). Empty q
 // returns all entries.
 func (i *PastIndex) Search(q string, limit, offset int) []PastEntry {
 	i.mu.RLock()
@@ -106,7 +106,7 @@ func (i *PastIndex) Search(q string, limit, offset int) []PastEntry {
 }
 
 func matches(e PastEntry, lowerQ string) bool {
-	if strings.Contains(strings.ToLower(e.Meta.OriginalTask), lowerQ) {
+	if strings.Contains(strings.ToLower(e.Meta.OriginalPrompt), lowerQ) {
 		return true
 	}
 	if strings.Contains(strings.ToLower(e.Meta.ID), lowerQ) {

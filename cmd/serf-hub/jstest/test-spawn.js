@@ -39,7 +39,7 @@ const formDom = new JSDOM(`<!DOCTYPE html><html><body>
         <span class="chip-value" data-chip-value-model>(pick a model)</span>
       </button>
     </div>
-    <textarea name="task"></textarea>
+    <textarea name="prompt"></textarea>
     <input type="hidden" name="harness" value="serf">
     <input type="hidden" data-harness-option value="serf" data-label="serf">
     <input type="hidden" data-harness-option value="codex" data-label="codex">
@@ -51,6 +51,7 @@ const formDom = new JSDOM(`<!DOCTYPE html><html><body>
     <input type="hidden" name="reasoning_effort" value="">
     <button class="spawn-btn" type="submit">spawn</button>
   </form>
+  <a data-recent-prompt="ship the rename"></a>
 </body></html>`, {
   runScripts: "outside-only",
   pretendToBeVisual: true,
@@ -85,23 +86,35 @@ assert(
   "codex model picker should only offer the codex default",
 );
 
+formDom.window.document.querySelector("[data-recent-prompt]").click();
+assert(
+  formDom.window.document.querySelector('textarea[name="prompt"]').value === "ship the rename",
+  "recent prompt should prefill the prompt textarea",
+);
+
 let alertText = "";
 formDom.window.alert = (msg) => { alertText = msg; };
 formDom.window.SerfAppwire = null;
-formDom.window.fetch = () => Promise.resolve({
-  ok: false,
-  text: () => Promise.resolve(JSON.stringify({
-    error: "start codex app-server: no such file or directory",
-    code: -32014,
-    serfErrorInfo: "hubLaunch",
-  })),
-});
+let sentSpawnBody = null;
+formDom.window.fetch = (_url, opts) => {
+  sentSpawnBody = JSON.parse(opts.body);
+  return Promise.resolve({
+    ok: false,
+    text: () => Promise.resolve(JSON.stringify({
+      error: "start codex app-server: no such file or directory",
+      code: -32014,
+      serfErrorInfo: "hubLaunch",
+    })),
+  });
+};
 formDom.window.document.querySelector("[data-spawn-form]").dispatchEvent(new formDom.window.Event("submit", {
   bubbles: true,
   cancelable: true,
 }));
 
 setTimeout(() => {
+  assert(sentSpawnBody.prompt === "ship the rename", "spawn request should send prompt field");
+  assert(!Object.prototype.hasOwnProperty.call(sentSpawnBody, "task"), "spawn request should not send legacy task field");
   assert(alertText === "spawn failed: start codex app-server: no such file or directory", "spawn alert should show structured error message, got " + alertText);
   console.log("PASS: spawn navigation and harness-aware model defaults");
 }, 0);

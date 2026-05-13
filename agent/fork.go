@@ -170,7 +170,7 @@ func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage, p
 		CreatedAt:       now,
 		UpdatedAt:       now,
 		TurnCount:       divergenceTurn,
-		OriginalTask:    parentMeta.OriginalTask,
+		OriginalPrompt:  parentMeta.OriginalPrompt,
 		ParentSessionID: parentID,
 		DivergenceTurn:  divergenceTurn,
 		ForkLabel:       "", // child carries no fork label; parent gets it

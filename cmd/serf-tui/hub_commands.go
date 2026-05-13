@@ -94,7 +94,7 @@ func sendHubSpawn(client *appwire.Client, req hubSpawnRequest) tea.Cmd {
 		resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
 			Harness: req.Harness,
 			CWD:     req.WorkingDir,
-			Prompt:  req.Task,
+			Prompt:  req.Prompt,
 			Model:   strings.TrimSpace(req.Model),
 		})
 		return hubSpawnMsg{resp: hubSpawnResponse{Ref: resp.Thread.Serf.Ref}, err: err}
@@ -184,6 +184,8 @@ func sendHubAction(client *appwire.Client, ref appwire.Ref, action string) tea.C
 			err = client.TurnInterrupt(context.Background(), appwire.TurnInterruptParams{Ref: ref.String()})
 		case "compact":
 			err = client.ThreadCompactStart(context.Background(), appwire.ThreadCompactStartParams{Ref: ref.String()})
+		case "shutdown":
+			err = client.ThreadShutdown(context.Background(), appwire.ThreadShutdownParams{Ref: ref.String()})
 		default:
 			provider, model := splitProviderModel(action)
 			err = client.ThreadModelSet(context.Background(), appwire.ThreadModelSetParams{Ref: ref.String(), ModelProvider: provider, Model: model})

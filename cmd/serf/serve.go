@@ -37,6 +37,7 @@ func runServe(args []string) error {
 	model := fs.String("model", "", "LLM model identifier (provider/model)")
 	workDir := fs.String("dir", "", "working directory")
 	stateDir := fs.String("state-dir", "", "override runtime state directory")
+	runDirFlag := fs.String("run-dir", "", "override rendezvous run directory")
 	resume := fs.String("resume", "", "resume a previous session by ID")
 	resumeLast := fs.Bool("resume-last", false, "resume the most recent session")
 	systemPrompt := fs.String("system-prompt", "", "path to a custom system prompt file")
@@ -296,7 +297,13 @@ func runServe(args []string) error {
 	if os.Getenv("SERF_HUB_SPAWNED") == "1" {
 		spawnedBy = "hub"
 	}
-	runDir := rendezvous.DefaultDir()
+	runDir := *runDirFlag
+	if runDir == "" {
+		runDir = os.Getenv("SERF_RUN_DIR")
+	}
+	if runDir == "" {
+		runDir = rendezvous.DefaultDir()
+	}
 	rvEntry := rendezvous.Entry{
 		PID:        os.Getpid(),
 		Address:    listener.Addr().String(),

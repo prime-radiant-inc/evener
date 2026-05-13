@@ -174,6 +174,8 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addSessionSystem("Interrupt sent.")
 		case "compact":
 			m.addSessionSystem("Context compacted.")
+		case "shutdown":
+			m.addSessionSystem("Stop requested.")
 		case "model":
 			m.addSessionSystem("Model updated.")
 		}
@@ -399,7 +401,7 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		req := hubSpawnRequest{
-			Task:       strings.TrimSpace(m.session.input.Value()),
+			Prompt:     strings.TrimSpace(m.session.input.Value()),
 			Harness:    strings.TrimSpace(m.spawnHarness),
 			Model:      strings.TrimSpace(m.spawnModel),
 			WorkingDir: m.spawnDir,
@@ -586,6 +588,12 @@ func (m *hubModel) runHubSlashCommand(cmd, args string) tea.Cmd {
 			return nil
 		}
 		return sendHubClear(m.client, ref)
+	case "shutdown":
+		if !m.detail.Capabilities.Shutdown {
+			m.addSessionSystem("Shutdown is not available for this session.")
+			return nil
+		}
+		return sendHubAction(m.client, ref, "shutdown")
 	case "model":
 		model := strings.TrimSpace(args)
 		if model == "" {
@@ -874,6 +882,20 @@ func (m *hubModel) addSessionSystem(text string) {
 	m.session.refreshViewport()
 }
 
+func (m *hubModel) addSessionSystemOnce(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	if len(m.session.messages) > 0 {
+		last := m.session.messages[len(m.session.messages)-1]
+		if last.Kind == msgSystem && last.Text == text {
+			return
+		}
+	}
+	m.addSessionSystem(text)
+}
+
 func (m hubModel) currentRef() (appwire.Ref, bool) {
 	ref, err := appwire.ParseRef(m.detail.Ref)
 	if err != nil {
@@ -928,6 +950,29 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) {
 			if idx, ok := m.session.activeTools[params.ItemID]; ok && idx < len(m.session.messages) && m.session.messages[idx].Tool != nil {
 				m.session.messages[idx].Tool.Output += params.Delta
 			}
+		}
+	case appwire.NotifyTurnCompleted:
+		var params struct {
+			Turn appwire.Turn `json:"turn"`
+		}
+		if json.Unmarshal(notification.Params, &params) == nil && params.Turn.Status == appwire.TurnStatusFailed {
+			m.addSessionSystemOnce(formatHubTurnError(params.Turn.Error, "Session error"))
+		}
+	case appwire.NotifyWarning:
+		var params struct {
+			Message string `json:"message"`
+			Source  string `json:"source"`
+			Title   string `json:"title"`
+			Warning struct {
+				Message string `json:"message"`
+			} `json:"warning"`
+		}
+		if json.Unmarshal(notification.Params, &params) == nil {
+			message := params.Message
+			if strings.TrimSpace(message) == "" {
+				message = params.Warning.Message
+			}
+			m.addSessionSystemOnce(formatHubDiagnostic(params.Title, params.Source, message, "Session warning"))
 		}
 	}
 	m.session.refreshViewport()
@@ -1448,7 +1493,7 @@ func (m hubModel) spawnView() string {
 	if m.spawnSubmitting {
 		b.WriteString("\nStarting session...\n")
 	}
-	b.WriteString("\nTask (optional):\n")
+	b.WriteString("\nPrompt (optional):\n")
 	b.WriteString("> ")
 	b.WriteString(m.session.input.Value())
 	keys := []string{"h: harness"}
