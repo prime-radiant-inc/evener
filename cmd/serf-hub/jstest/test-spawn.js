@@ -42,6 +42,9 @@ const formDom = new JSDOM(`<!DOCTYPE html><html><body>
       <button class="chip" type="button" data-chip="model">
         <span class="chip-value" data-chip-value-model>(pick a model)</span>
       </button>
+      <button class="chip" type="button" data-chip="branch">
+        <span class="chip-value" data-chip-value-branch>(default)</span>
+      </button>
     </div>
     <textarea name="prompt"></textarea>
     <input type="hidden" name="harness" value="serf">
@@ -63,10 +66,17 @@ const formDom = new JSDOM(`<!DOCTYPE html><html><body>
 });
 
 let listModelsCalls = 0;
+let listModelsParams = null;
 formDom.window.SerfAppwire = {
-  listModels() {
+  listModels(params) {
     listModelsCalls++;
-    return Promise.resolve([{ provider: "openai", model: "gpt-5.2" }]);
+    listModelsParams = params || {};
+    return {
+      then(resolve) {
+        resolve([{ provider: "codex", model: "gpt-5.3-codex" }]);
+        return { catch() {} };
+      },
+    };
   },
 };
 formDom.window.localStorage.setItem("serf-hub.spawn-defaults.global.model", "openai/gpt-5.2");
@@ -84,10 +94,35 @@ assert(modelValue() === "", "codex harness should clear stale serf model value")
 assert(modelDisplay() === "codex default", "codex harness should show codex default model label");
 
 formDom.window.document.querySelector('button[data-chip="model"]').click();
-assert(listModelsCalls === 0, "codex model picker should not fetch serf model list");
+assert(listModelsCalls === 1, "codex model picker should fetch harness-scoped model list");
+assert(listModelsParams.harness === "codex", "codex model picker should pass selected harness");
 assert(
-  Array.from(formDom.window.document.querySelectorAll(".chip-picker-option")).map(el => el.textContent.trim()).join(",") === "codex default",
-  "codex model picker should only offer the codex default",
+  Array.from(formDom.window.document.querySelectorAll(".chip-picker-model-name")).map(el => el.textContent.trim()).join(",") === "gpt-5.3-codex",
+  "codex model picker should offer codex source models",
+);
+formDom.window.document.querySelector(".chip-picker-model").click();
+assert(modelValue() === "gpt-5.3-codex", "codex model picker should submit raw codex model id");
+assert(modelDisplay() === "codex/gpt-5.3-codex", "codex model picker should display source/model relationship");
+
+let promptCalled = false;
+formDom.window.prompt = () => {
+  promptCalled = true;
+  return "prompt-dialog-branch";
+};
+formDom.window.document.querySelector('button[data-chip="branch"]').click();
+assert(!promptCalled, "branch picker should not call window.prompt");
+const branchInput = formDom.window.document.querySelector(".chip-picker-search");
+assert(branchInput, "branch picker should render an inline input");
+branchInput.value = "feature/no-dialog";
+branchInput.dispatchEvent(new formDom.window.KeyboardEvent("keydown", {
+  key: "Enter",
+  bubbles: true,
+  cancelable: true,
+}));
+assert(formDom.window.document.querySelector('input[name="branch"]').value === "feature/no-dialog", "branch input should set hidden branch");
+assert(
+  formDom.window.document.querySelector("[data-chip-value-branch]").textContent.trim() === "feature/no-dialog",
+  "branch input should update chip text",
 );
 
 formDom.window.document.querySelector("[data-recent-prompt]").click();
@@ -96,8 +131,8 @@ assert(
   "recent prompt should prefill the prompt textarea",
 );
 
-let alertText = "";
-formDom.window.alert = (msg) => { alertText = msg; };
+let alertCalled = false;
+formDom.window.alert = () => { alertCalled = true; };
 formDom.window.SerfAppwire = null;
 let sentSpawnBody = null;
 formDom.window.fetch = (_url, opts) => {
@@ -119,6 +154,14 @@ formDom.window.document.querySelector("[data-spawn-form]").dispatchEvent(new for
 setTimeout(() => {
   assert(sentSpawnBody.prompt === "ship the rename", "spawn request should send prompt field");
   assert(!Object.prototype.hasOwnProperty.call(sentSpawnBody, "task"), "spawn request should not send legacy task field");
-  assert(alertText === "spawn failed: start codex app-server: no such file or directory", "spawn alert should show structured error message, got " + alertText);
+  assert(!alertCalled, "spawn failure should not call window.alert");
+  const diagnostic = formDom.window.document.querySelector('[role="alert"]');
+  assert(diagnostic, "spawn failure should render an in-page diagnostic");
+  assert(
+    diagnostic.textContent.includes("start codex app-server: no such file or directory"),
+    "spawn diagnostic should show structured error message, got " + diagnostic.textContent,
+  );
+  const spawnButton = formDom.window.document.querySelector(".spawn-btn");
+  assert(!spawnButton.disabled, "spawn button should be re-enabled after failed spawn");
   console.log("PASS: spawn navigation and harness-aware model defaults");
 }, 0);

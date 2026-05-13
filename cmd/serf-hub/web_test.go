@@ -360,6 +360,47 @@ func TestAPI_CodexUnsupportedActionReturnsStructuredUnavailable(t *testing.T) {
 	}
 }
 
+func TestAPI_CodexModelChangeReturnsStructuredUnavailable(t *testing.T) {
+	source := &scriptedAppSource{
+		id: "codex",
+		thread: appwire.Thread{
+			ID:            "th_codex",
+			SessionID:     "th_codex",
+			Source:        "codex",
+			Preview:       "Codex task",
+			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+			CWD:           "/work/project",
+			ModelProvider: "openai",
+			Serf: appwire.SerfThread{
+				Ref:          "codex:th_codex",
+				Capabilities: appwire.ThreadCapabilities{Send: true, Compact: true},
+			},
+		},
+	}
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Past:    NewPastIndex(""),
+	})
+	web.sources.Add(source)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+url.PathEscape("codex:th_codex")+"/model", strings.NewReader(`{"model":"gpt-5.5"}`))
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var out hubapi.ErrorResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v body=%s", err, rr.Body.String())
+	}
+	if out.SerfErrorInfo != string(appwire.ErrorActionUnavailable) {
+		t.Fatalf("error=%+v", out)
+	}
+}
+
 func TestAPI_SendUnavailableCapabilityDoesNotStartTurn(t *testing.T) {
 	startTurnCalls := 0
 	source := &scriptedAppSource{
@@ -2720,6 +2761,48 @@ func TestWeb_ApiModels_DoesNotUseLiveProvidersWhenLaunchContractIsEmpty(t *testi
 		t.Fatalf("invalid JSON: %v", err)
 	}
 	if len(models) != 0 {
+		t.Fatalf("models=%+v", models)
+	}
+}
+
+func TestWeb_ApiModels_RoutesCodexHarnessToSource(t *testing.T) {
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex-local"})
+	var gotParams appwire.ModelListParams
+	appserver.HandleTyped(codex.Router(), appwire.MethodModelList, func(_ context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
+		gotParams = params
+		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "codex-local", Model: "gpt-5.3-codex"}}}, nil
+	})
+	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
+	defer codexHTTP.Close()
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		CodexSources: []appsource.CodexSourceConfig{{
+			ID:       "codex-local",
+			Endpoint: "ws" + codexHTTP.URL[len("http"):],
+		}},
+		Spawner: &fakeRPCModelContractSpawner{
+			contract: appwire.ModelListResponse{
+				Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}},
+			},
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/models?harness=codex-local", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if gotParams.Harness != "" {
+		t.Fatalf("codex source received hub harness routing field: %+v", gotParams)
+	}
+	var models []hubapi.ModelOption
+	if err := json.Unmarshal(rec.Body.Bytes(), &models); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(models) != 1 || models[0].Provider != "codex-local" || models[0].Model != "gpt-5.3-codex" {
 		t.Fatalf("models=%+v", models)
 	}
 }

@@ -1803,6 +1803,46 @@ func TestHubRPCModelListPrefersSerfLaunchContract(t *testing.T) {
 	}
 }
 
+func TestHubRPCModelListRoutesCodexHarnessToSource(t *testing.T) {
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex-local"})
+	var gotParams appwire.ModelListParams
+	appserver.HandleTyped(codex.Router(), appwire.MethodModelList, func(_ context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
+		gotParams = params
+		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "codex-local", Model: "gpt-5.3-codex"}}}, nil
+	})
+	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
+	defer codexHTTP.Close()
+
+	hub := newHubRPCTestServer(t, WebConfig{
+		CodexSources: []appsource.CodexSourceConfig{{
+			ID:       "codex-local",
+			Endpoint: "ws" + codexHTTP.URL[len("http"):],
+		}},
+		Spawner: &fakeRPCModelContractSpawner{
+			contract: appwire.ModelListResponse{
+				Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}},
+			},
+		},
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ModelList(context.Background(), appwire.ModelListParams{Harness: "codex-local"})
+	if err != nil {
+		t.Fatalf("ModelList: %v", err)
+	}
+	if gotParams.Harness != "" {
+		t.Fatalf("codex source received hub harness routing field: %+v", gotParams)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].Provider != "codex-local" || resp.Data[0].Model != "gpt-5.3-codex" {
+		t.Fatalf("models=%+v", resp.Data)
+	}
+}
+
 func TestHubRPCModelListDoesNotUseLocalDaemonWhenLaunchContractIsEmpty(t *testing.T) {
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {

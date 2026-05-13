@@ -59,8 +59,9 @@ type hubSpawnMsg struct {
 }
 
 type hubModelsMsg struct {
-	models []modelPickerItem
-	err    error
+	harness string
+	models  []modelPickerItem
+	err     error
 }
 
 type hubSpawnOptionsMsg struct {
@@ -109,15 +110,18 @@ func fetchHubModels(client *appwire.Client) tea.Cmd {
 		if err != nil {
 			return hubModelsMsg{err: err}
 		}
-		items := make([]modelPickerItem, 0, len(resp.Data))
-		for _, option := range resp.Data {
-			if option.Provider == "" || option.Model == "" {
-				continue
-			}
-			id := option.Provider + "/" + option.Model
-			items = append(items, modelPickerItem{id: id, display: id})
+		return hubModelsMsg{models: modelPickerItems(resp.Data, false)}
+	}
+}
+
+func fetchHubModelsForHarness(client *appwire.Client, harness string) tea.Cmd {
+	harness = strings.TrimSpace(harness)
+	return func() tea.Msg {
+		resp, err := client.ModelList(context.Background(), appwire.ModelListParams{Harness: harness})
+		if err != nil {
+			return hubModelsMsg{harness: harness, err: err}
 		}
-		return hubModelsMsg{models: items}
+		return hubModelsMsg{harness: harness, models: modelPickerItems(resp.Data, harness != "")}
 	}
 }
 
@@ -144,16 +148,30 @@ func fetchHubSpawnOptions(client *appwire.Client) tea.Cmd {
 		if err != nil {
 			return hubSpawnOptionsMsg{harnesses: harnesses, harnessKinds: harnessKinds, modelErr: err}
 		}
-		models := make([]modelPickerItem, 0, len(modelResp.Data))
-		for _, option := range modelResp.Data {
-			if option.Provider == "" || option.Model == "" {
-				continue
-			}
-			id := option.Provider + "/" + option.Model
-			models = append(models, modelPickerItem{id: id, display: id})
-		}
+		models := modelPickerItems(modelResp.Data, false)
 		return hubSpawnOptionsMsg{harnesses: harnesses, harnessKinds: harnessKinds, models: models}
 	}
+}
+
+func modelPickerItems(models []appwire.ModelDescriptor, rawModelID bool) []modelPickerItem {
+	items := make([]modelPickerItem, 0, len(models))
+	for _, option := range models {
+		model := strings.TrimSpace(option.Model)
+		provider := strings.TrimSpace(option.Provider)
+		if model == "" || (!rawModelID && provider == "") {
+			continue
+		}
+		display := model
+		if provider != "" {
+			display = provider + "/" + model
+		}
+		id := display
+		if rawModelID {
+			id = model
+		}
+		items = append(items, modelPickerItem{id: id, display: display})
+	}
+	return items
 }
 
 func sendHubInput(client *appwire.Client, ref appwire.Ref, text string) tea.Cmd {

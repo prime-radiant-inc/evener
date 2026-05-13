@@ -89,7 +89,7 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app.WaitForExit()
 }
 
-func TestTUITmuxE2E_CodexSpawnOmitsSerfModel(t *testing.T) {
+func TestTUITmuxE2E_CodexSpawnUsesHarnessModelPicker(t *testing.T) {
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -106,14 +106,18 @@ func TestTUITmuxE2E_CodexSpawnOmitsSerfModel(t *testing.T) {
 	app.WaitFor("Harness:  serf", "Model:    openai/gpt-5")
 	app.SendKeys("h")
 	app.WaitFor("Harness:  codex-local", "Model:    (harness default)")
+	app.SendKeys("m")
+	app.WaitFor("Select codex-local model", "codex-local/gpt-5.3-codex")
+	app.SendKeys("Enter")
+	app.WaitFor("Harness:  codex-local", "Model:    codex-local/gpt-5.3-codex")
 	app.TypeLine("spawn via codex")
 	app.WaitFor("spawned session 1")
 	spawns := hub.WaitForSpawns(t, 1)
 	if spawns[0].Harness != "codex-local" {
 		t.Fatalf("harness=%q, want codex-local", spawns[0].Harness)
 	}
-	if spawns[0].ModelProvider != "" || spawns[0].Model != "" {
-		t.Fatalf("codex spawn should omit serf model, got %s/%s", spawns[0].ModelProvider, spawns[0].Model)
+	if spawns[0].ModelProvider != "" || spawns[0].Model != "gpt-5.3-codex" {
+		t.Fatalf("codex spawn model=%s/%s, want raw gpt-5.3-codex", spawns[0].ModelProvider, spawns[0].Model)
 	}
 }
 
@@ -699,7 +703,10 @@ func (h *tuiE2EHub) handleThreadRead(ctx context.Context, params appwire.ThreadR
 	return appwire.ThreadReadResponse{Thread: h.threadFromSessionLocked(s)}, nil
 }
 
-func (h *tuiE2EHub) handleModelList(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
+func (h *tuiE2EHub) handleModelList(_ context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
+	if params.Harness == "codex-local" {
+		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "codex-local", Model: "gpt-5.3-codex"}}}, nil
+	}
 	return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}, nil
 }
 

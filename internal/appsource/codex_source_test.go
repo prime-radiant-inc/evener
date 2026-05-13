@@ -419,6 +419,24 @@ func TestCodexSourceSubscribeReusesStartedThreadConnection(t *testing.T) {
 	}
 }
 
+func TestCodexSourceSubscribeTreatsNoRolloutAsIdle(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadResume, func(_ context.Context, _ map[string]any) (map[string]any, error) {
+		return nil, appwire.InvalidParams("no rollout found for thread id th_codex")
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+
+	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
+	notifications, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_codex"})
+	if err != nil {
+		t.Fatalf("SubscribeThread: %v", err)
+	}
+	if _, ok := <-notifications; ok {
+		t.Fatal("no-rollout subscription should return a closed idle channel")
+	}
+}
+
 func TestCodexSourceStartedThreadLiveConnectionSurvivesCallerCancel(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadStart, func(ctx context.Context, _ map[string]any) (map[string]any, error) {

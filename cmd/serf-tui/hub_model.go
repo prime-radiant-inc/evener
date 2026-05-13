@@ -71,6 +71,7 @@ type hubModel struct {
 	spawnHarnessKinds  map[string]string
 	spawnModel         string
 	spawnModels        []modelPickerItem
+	spawnHarnessModels map[string][]modelPickerItem
 	spawnModelPicker   *modelPicker
 	spawnSubmitting    bool
 
@@ -220,7 +221,25 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case hubModelsMsg:
 		if msg.err != nil {
 			if m.mode == hubModeSpawn {
-				m.err = fmt.Errorf("models failed: %w", msg.err)
+				if msg.harness != "" && !m.spawnHarnessUsesSerfModels() {
+					m.err = fmt.Errorf("%s models unavailable; using harness default: %w", msg.harness, msg.err)
+				} else {
+					m.err = fmt.Errorf("models failed: %w", msg.err)
+				}
+			}
+			return m, nil
+		}
+		if msg.harness != "" {
+			if m.spawnHarnessModels == nil {
+				m.spawnHarnessModels = map[string][]modelPickerItem{}
+			}
+			m.spawnHarnessModels[msg.harness] = msg.models
+			if m.mode == hubModeSpawn && m.spawnHarness == msg.harness {
+				if len(msg.models) == 0 {
+					m.err = fmt.Errorf("no %s models available; using harness default", msg.harness)
+					return m, nil
+				}
+				m.openSpawnModelPicker(msg.models)
 			}
 			return m, nil
 		}
@@ -255,7 +274,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spawnModels = msg.models
 		if m.mode == hubModeSpawn {
 			m.syncSpawnModelWithHarness()
-			if msg.modelErr != nil && m.spawnHarnessUsesHubModels() {
+			if msg.modelErr != nil && m.spawnHarnessUsesSerfModels() {
 				m.err = fmt.Errorf("models failed: %w", msg.modelErr)
 			}
 		}
@@ -382,17 +401,19 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "m":
 		models := m.spawnSelectableModels()
-		if !m.spawnHarnessUsesHubModels() {
-			m.err = fmt.Errorf("model selection is managed by the %s harness", m.spawnHarness)
-			return m, nil
+		if len(models) == 0 && !m.spawnHarnessUsesSerfModels() && m.client != nil {
+			m.err = nil
+			return m, fetchHubModelsForHarness(m.client, m.spawnHarness)
 		}
 		if len(models) == 0 {
-			m.err = fmt.Errorf("no models available")
+			if !m.spawnHarnessUsesSerfModels() {
+				m.err = fmt.Errorf("no %s models available; using harness default", m.spawnHarness)
+			} else {
+				m.err = fmt.Errorf("no models available")
+			}
 			return m, nil
 		}
-		picker := newModelPicker(models, m.spawnModel, m.width)
-		picker.title = "Select spawn model"
-		m.spawnModelPicker = &picker
+		m.openSpawnModelPicker(models)
 		return m, nil
 	case "h":
 		m.cycleSpawnHarness()
@@ -401,7 +422,7 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.client == nil || m.spawnSubmitting {
 			return m, nil
 		}
-		if m.spawnHarnessUsesHubModels() && strings.TrimSpace(m.spawnModel) == "" {
+		if m.spawnHarnessUsesSerfModels() && strings.TrimSpace(m.spawnModel) == "" {
 			m.err = fmt.Errorf("choose a model before spawning")
 			return m, nil
 		}
@@ -693,6 +714,7 @@ func (m *hubModel) resetSpawnForm() {
 	m.spawnHarnessKinds = map[string]string{"serf": "serf"}
 	m.spawnModel = ""
 	m.spawnModels = nil
+	m.spawnHarnessModels = nil
 	m.spawnModelPicker = nil
 	m.spawnSubmitting = false
 	m.session.resetInput()
@@ -727,20 +749,22 @@ func (m hubModel) spawnHarnessKind() string {
 	return "serf"
 }
 
-func (m hubModel) spawnHarnessUsesHubModels() bool {
+func (m hubModel) spawnHarnessUsesSerfModels() bool {
 	return m.spawnHarnessKind() != "codex"
 }
 
 func (m hubModel) spawnSelectableModels() []modelPickerItem {
-	if !m.spawnHarnessUsesHubModels() {
-		return nil
+	if !m.spawnHarnessUsesSerfModels() {
+		return m.spawnHarnessModels[m.spawnHarness]
 	}
 	return m.spawnModels
 }
 
 func (m *hubModel) syncSpawnModelWithHarness() {
-	if !m.spawnHarnessUsesHubModels() {
-		m.spawnModel = ""
+	if !m.spawnHarnessUsesSerfModels() {
+		if strings.Contains(strings.TrimSpace(m.spawnModel), "/") {
+			m.spawnModel = ""
+		}
 		m.spawnModelPicker = nil
 		return
 	}
@@ -750,6 +774,28 @@ func (m *hubModel) syncSpawnModelWithHarness() {
 			m.spawnModel = models[0].id
 		}
 	}
+}
+
+func (m *hubModel) openSpawnModelPicker(models []modelPickerItem) {
+	picker := newModelPicker(models, m.spawnModel, m.width)
+	picker.title = m.spawnModelPickerTitle()
+	m.spawnModelPicker = &picker
+	m.err = nil
+}
+
+func (m hubModel) spawnModelPickerTitle() string {
+	if m.spawnHarnessUsesSerfModels() {
+		return "Select spawn model"
+	}
+	return "Select " + m.spawnHarness + " model"
+}
+
+func (m hubModel) spawnHarnessModelDisplay() string {
+	model := strings.TrimSpace(m.spawnModel)
+	if model == "" || strings.Contains(model, "/") {
+		return model
+	}
+	return m.spawnHarness + "/" + model
 }
 
 func stringInSlice(needle string, haystack []string) bool {
@@ -1501,8 +1547,12 @@ func (m hubModel) spawnView() string {
 	}
 	model := m.spawnModel
 	models := m.spawnSelectableModels()
-	if !m.spawnHarnessUsesHubModels() {
-		model = "(harness default)"
+	if !m.spawnHarnessUsesSerfModels() {
+		if model == "" {
+			model = "(harness default)"
+		} else {
+			model = m.spawnHarnessModelDisplay()
+		}
 	} else if model == "" && len(models) == 0 {
 		model = "(loading models...)"
 	} else if model == "" {
@@ -1525,10 +1575,7 @@ func (m hubModel) spawnView() string {
 	b.WriteString("\nPrompt (optional):\n")
 	b.WriteString("> ")
 	b.WriteString(m.session.input.Value())
-	keys := []string{"h: harness"}
-	if m.spawnHarnessUsesHubModels() {
-		keys = append(keys, "m: model")
-	}
+	keys := []string{"h: harness", "m: model"}
 	keys = append(keys, "enter: spawn", "esc: cancel", "ctrl+o: dashboard")
 	b.WriteString("\n\n")
 	b.WriteString(strings.Join(keys, "  "))

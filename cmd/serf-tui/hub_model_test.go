@@ -482,8 +482,17 @@ func TestHubModelCodexSpawnSurvivesModelListFailure(t *testing.T) {
 	}
 }
 
-func TestHubModelCodexSpawnDoesNotOpenSerfModelPicker(t *testing.T) {
-	m := newHubModel(nil, "http://hub.test")
+func TestHubModelCodexSpawnOpensHarnessModelPicker(t *testing.T) {
+	var gotParams appwire.ModelListParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(_ context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
+			gotParams = params
+			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "codex-local", Model: "gpt-5.3-codex"}}}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newHubModel(client, "http://hub.test")
 	m.openSpawnForm()
 	m.spawnHarnesses = []string{"serf", "codex-local"}
 	m.spawnHarnessKinds = map[string]string{"serf": "serf", "codex-local": "codex"}
@@ -492,15 +501,27 @@ func TestHubModelCodexSpawnDoesNotOpenSerfModelPicker(t *testing.T) {
 	m.spawnModel = ""
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
-	if cmd != nil {
-		t.Fatal("codex model key should not start async command")
+	if cmd == nil {
+		t.Fatal("codex model key should fetch harness models")
 	}
+	updated, _ = updated.(hubModel).Update(cmd())
 	got := updated.(hubModel)
-	if got.spawnModelPicker != nil {
-		t.Fatalf("codex harness opened serf model picker:\n%s", got.spawnModelPicker.View())
+	if gotParams.Harness != "codex-local" {
+		t.Fatalf("model list params=%+v, want codex harness", gotParams)
 	}
-	if !strings.Contains(got.spawnView(), "harness default") {
-		t.Fatalf("codex spawn view should show harness default model:\n%s", got.spawnView())
+	if got.spawnModelPicker == nil {
+		t.Fatalf("codex harness did not open model picker:\n%s", got.spawnView())
+	}
+	if view := got.spawnModelPicker.View(); !strings.Contains(view, "codex-local/gpt-5.3-codex") || strings.Contains(view, "openai/gpt-5") {
+		t.Fatalf("codex harness picker should show only codex models:\n%s", view)
+	}
+	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got = updated.(hubModel)
+	if got.spawnModel != "gpt-5.3-codex" {
+		t.Fatalf("codex harness selected model=%q, want raw codex model id", got.spawnModel)
+	}
+	if view := got.spawnView(); !strings.Contains(view, "codex-local/gpt-5.3-codex") {
+		t.Fatalf("codex spawn view should show harness/model relationship:\n%s", view)
 	}
 }
 

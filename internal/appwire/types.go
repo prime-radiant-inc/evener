@@ -365,7 +365,9 @@ type HarnessListResponse struct {
 	Data []HarnessDescriptor `json:"data"`
 }
 
-type ModelListParams struct{}
+type ModelListParams struct {
+	Harness string `json:"harness,omitempty"`
+}
 
 type ModelDescriptor struct {
 	Provider string `json:"provider"`

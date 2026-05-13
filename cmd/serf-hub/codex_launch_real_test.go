@@ -88,6 +88,42 @@ func TestHubRPCRealCodexSourceAllowsBlankStart(t *testing.T) {
 	}
 }
 
+func TestHubRPCRealCodexSourceModelList(t *testing.T) {
+	binary := os.Getenv("SERF_CODEX_APP_SERVER_BINARY")
+	if binary == "" {
+		t.Skip("set SERF_CODEX_APP_SERVER_BINARY to run real Codex app-server smoke")
+	}
+	endpoint, shutdown := startRealCodexAppServer(t, binary)
+	defer shutdown()
+
+	hub := newHubRPCTestServer(t, WebConfig{
+		Past: NewPastIndex(""),
+		CodexSources: []appsource.CodexSourceConfig{{
+			ID:       "codex-real",
+			Endpoint: endpoint,
+		}},
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	resp, err := client.ModelList(context.Background(), appwire.ModelListParams{Harness: "codex-real"})
+	if err != nil {
+		t.Fatalf("ModelList: %v", err)
+	}
+	if len(resp.Data) == 0 {
+		t.Fatal("real Codex source returned no models")
+	}
+	for _, model := range resp.Data {
+		if model.Provider != "codex-real" {
+			t.Fatalf("model provider=%q, want codex-real in %+v", model.Provider, resp.Data)
+		}
+	}
+}
+
 func startRealCodexAppServer(t *testing.T, binary string) (string, func()) {
 	t.Helper()
 	args := append(realCodexAppServerArgs(binary), "--listen", "ws://127.0.0.1:0")

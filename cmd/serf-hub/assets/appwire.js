@@ -209,8 +209,8 @@
     });
   }
 
-  function listModels() {
-    return request(METHOD.modelList, {}).then((resp) => resp.data || []);
+  function listModels(params) {
+    return request(METHOD.modelList, params || {}).then((resp) => resp.data || []);
   }
 
   function completeDirs(prefix) {

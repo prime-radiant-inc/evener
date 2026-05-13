@@ -132,6 +132,10 @@ func codexTurnsUnavailableBeforeFirstMessage(err error) bool {
 	return strings.Contains(err.Error(), "includeTurns is unavailable before first user message")
 }
 
+func codexNoRolloutFound(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "no rollout found for thread id")
+}
+
 func (s *CodexSource) StartThread(ctx context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
 	client, closeClient, err := s.connect(ctx)
 	if err != nil {
@@ -317,7 +321,7 @@ func (s *CodexSource) ClearThread(context.Context, appwire.ThreadClearParams) (a
 func (s *CodexSource) ListModels(ctx context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
 	var out codexModelListResponse
 	err := s.withClient(ctx, func(client *appwire.Client) error {
-		return client.Request(ctx, appwire.MethodModelList, params, &out)
+		return client.Request(ctx, appwire.MethodModelList, codexModelListParams{}, &out)
 	})
 	if err != nil {
 		return appwire.ModelListResponse{}, err
@@ -348,6 +352,12 @@ func (s *CodexSource) SubscribeThread(ctx context.Context, params appwire.Thread
 	var resume codexThreadResumeResponse
 	if err := codexThreadResume(ctx, client, threadID, &resume); err != nil {
 		_ = closeClient()
+		if codexNoRolloutFound(err) {
+			// Codex has no live rollout to subscribe to, but thread/read can still render the idle transcript.
+			notifications := make(chan appwire.Notification)
+			close(notifications)
+			return notifications, nil
+		}
 		return nil, err
 	}
 	live := s.newLiveThread(threadID, client, closeClient)
@@ -824,6 +834,8 @@ type codexModelListResponse struct {
 		Model string `json:"model"`
 	} `json:"data"`
 }
+
+type codexModelListParams struct{}
 
 func mapCodexThreadStatus(status codexThreadStatus) appwire.ThreadStatus {
 	switch status.Type {

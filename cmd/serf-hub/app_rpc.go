@@ -393,21 +393,7 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		return appwire.EmptyResponse{}, source.SetThreadModel(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodModelList, func(ctx context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
-		launchResp, err := serfLaunchModelList(ctx, cfg)
-		if hasSerfLaunchModelLister(cfg) {
-			if err != nil {
-				return appwire.ModelListResponse{}, err
-			}
-			return launchResp, nil
-		}
-		source, ok := sources.Source("local")
-		if ok {
-			resp, err := source.ListModels(ctx, params)
-			if err == nil && len(resp.Data) > 0 {
-				return resp, nil
-			}
-		}
-		return appwire.ModelListResponse{}, nil
+		return hubModelList(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfTasksList, func(ctx context.Context, params appwire.TaskListParams) (appwire.TaskListResponse, error) {
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
@@ -423,6 +409,52 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		return appwire.HarnessListResponse{Data: launchHarnessDescriptors(cfg)}, nil
 	})
 	return server
+}
+
+func hubModelList(ctx context.Context, cfg WebConfig, sources *appsource.Registry, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
+	harness := strings.TrimSpace(params.Harness)
+	if harness != "" && harness != "serf" && harness != "local" {
+		source, err := sourceForModelHarness(ctx, cfg, sources, harness)
+		if err != nil {
+			return appwire.ModelListResponse{}, err
+		}
+		sourceParams := params
+		sourceParams.Harness = ""
+		resp, err := source.ListModels(ctx, sourceParams)
+		if err != nil {
+			return appwire.ModelListResponse{}, err
+		}
+		resp.Data = sanitizeModelDescriptors(resp.Data)
+		resp.Diagnostics = sanitizeModelDiagnostics(resp.Diagnostics)
+		return resp, nil
+	}
+
+	launchResp, err := serfLaunchModelList(ctx, cfg)
+	if hasSerfLaunchModelLister(cfg) {
+		if err != nil {
+			return appwire.ModelListResponse{}, err
+		}
+		return launchResp, nil
+	}
+	source, ok := sources.Source("local")
+	if ok {
+		resp, err := source.ListModels(ctx, params)
+		if err == nil && len(resp.Data) > 0 {
+			return resp, nil
+		}
+	}
+	return appwire.ModelListResponse{}, nil
+}
+
+func sourceForModelHarness(ctx context.Context, cfg WebConfig, sources *appsource.Registry, harness string) (appsource.Source, error) {
+	if cfg.CodexLauncher != nil && cfg.CodexLauncher.Manages(harness) {
+		return cfg.CodexLauncher.EnsureSource(ctx, harness, sources)
+	}
+	source, ok := sources.Source(harness)
+	if !ok {
+		return nil, appwire.Unavailable("model list source is not available: " + harness)
+	}
+	return source, nil
 }
 
 func shouldResumeAfterTurnStartError(err error) bool {

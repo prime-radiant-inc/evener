@@ -2373,6 +2373,17 @@ func writeSpawnError(w http.ResponseWriter, err error) {
 // server configurations. Pricing and context-window metadata come from the
 // embedded catalog where provider APIs don't carry it.
 func (s *WebServer) handleApiModels(w http.ResponseWriter, r *http.Request) {
+	harness := strings.TrimSpace(r.URL.Query().Get("harness"))
+	if harness != "" && harness != "serf" && harness != "local" {
+		resp, err := hubModelList(r.Context(), s.cfg, s.sources, appwire.ModelListParams{Harness: harness})
+		if err != nil {
+			writeAPIWireError(w, http.StatusBadGateway, err)
+			return
+		}
+		writeAPIJSON(w, http.StatusOK, modelDescriptorsToAPIModels(resp.Data))
+		return
+	}
+
 	launchResp, err := serfLaunchModelList(r.Context(), s.cfg)
 	if err != nil && hasSerfLaunchModelLister(s.cfg) {
 		writeAPIWireError(w, http.StatusBadGateway, err)

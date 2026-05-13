@@ -541,6 +541,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .chip-picker-option:hover { background: var(--rule); }
 .spawn-input { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 8px; padding: 18px; min-height: 160px; color: var(--text); font: inherit; font-size: 14px; line-height: 1.5; outline: none; resize: vertical; }
 .spawn-input:focus { border-color: var(--accent); }
+.spawn-form .diagnostic { margin: 0; max-width: none; }
 .spawn-advanced { color: var(--text-muted); font-size: 12px; }
 .spawn-advanced summary { cursor: pointer; padding: 5px 0; }
 .spawn-advanced-body { display: flex; flex-wrap: wrap; gap: 18px; padding: 12px 0; }

@@ -43,10 +43,10 @@
     return harnessUsesSerfModels(harness) ? "(pick a model)" : harness + " default";
   }
 
-  function setModelValue(value) {
+  function setModelValue(value, displayValue) {
     const display = document.querySelector("[data-chip-value-model]");
     const hidden = document.querySelector('input[type=hidden][name="model"]');
-    if (display) display.textContent = value || modelPlaceholder(currentHarness());
+    if (display) display.textContent = displayValue || value || modelPlaceholder(currentHarness());
     if (hidden) hidden.value = value || "";
   }
 
@@ -93,6 +93,54 @@
       // Plain-text errors come from older fallback paths.
     }
     return text;
+  }
+
+  function clearSpawnError(form) {
+    const existing = form.querySelector("[data-spawn-error]");
+    if (existing) existing.remove();
+  }
+
+  function spawnFailureMessage(err) {
+    const detail = (err && err.message) ? err.message : String(err || "unknown error");
+    return detail.toLowerCase().startsWith("spawn failed") ? detail : "spawn failed: " + detail;
+  }
+
+  function fallbackSpawnDiagnostic(message) {
+    const el = document.createElement("div");
+    el.className = "diagnostic diagnostic-error diagnostic-source-hub";
+    el.setAttribute("role", "alert");
+
+    const header = document.createElement("div");
+    header.className = "diagnostic-header";
+
+    const badge = document.createElement("span");
+    badge.className = "diagnostic-badge";
+    badge.textContent = "Hub error";
+    header.appendChild(badge);
+
+    const title = document.createElement("span");
+    title.className = "diagnostic-title";
+    title.textContent = "Hub spawn error";
+    header.appendChild(title);
+    el.appendChild(header);
+
+    const body = document.createElement("div");
+    body.className = "diagnostic-message";
+    body.textContent = message;
+    el.appendChild(body);
+
+    return el;
+  }
+
+  function renderSpawnError(form, err) {
+    clearSpawnError(form);
+    const message = spawnFailureMessage(err);
+    const el = window.SerfDiagnostics && window.SerfDiagnostics.render
+      ? window.SerfDiagnostics.render({ severity: "error", source: "hub", title: "Hub spawn error", message })
+      : fallbackSpawnDiagnostic(message);
+    el.dataset.spawnError = "true";
+    const actions = form.querySelector(".spawn-actions");
+    form.insertBefore(el, actions || null);
   }
 
   function init() {
@@ -153,6 +201,7 @@
         branch: body.branch,
         access_mode: body.access_mode,
       });
+      clearSpawnError(form);
       const btn = form.querySelector(".spawn-btn");
       if (btn) { btn.disabled = true; btn.textContent = "spawning…"; }
       try {
@@ -169,7 +218,7 @@
         window.location.href = sessionPath(json);
       } catch (err) {
         if (btn) { btn.disabled = false; btn.innerHTML = 'spawn <kbd>⌘↵</kbd>'; }
-        alert("spawn failed: " + err.message);
+        renderSpawnError(form, err);
       }
     });
   }
@@ -179,15 +228,66 @@
     if (kind === "harness") { openHarnessPicker(chip); return; }
     if (kind === "model") { openModelPicker(chip); return; }
     if (kind === "working_dir") { openDirPicker(chip); return; }
+    if (kind === "branch") { openTextPicker(chip, "branch", "branch / worktree"); return; }
     const display = chip.querySelector(".chip-value");
     const current = display.textContent.trim();
     let value;
-    if (kind === "branch") {
-      value = prompt("branch / worktree", current);
-    } else if (kind === "access_mode") {
+    if (kind === "access_mode") {
       value = current === "full" ? "read-only" : "full";
     }
     if (value !== null && value !== undefined && value !== "") setChipValue(kind, value);
+  }
+
+  function openTextPicker(chip, name, placeholder) {
+    const existing = document.querySelector(".chip-picker");
+    if (existing) { existing.remove(); return; }
+
+    const display = chip.querySelector(".chip-value");
+    const current = display ? display.textContent.trim() : "";
+
+    const picker = document.createElement("div");
+    picker.className = "chip-picker chip-picker-text";
+
+    const input = document.createElement("input");
+    input.className = "chip-picker-search";
+    input.placeholder = placeholder;
+    input.value = current === "(default)" ? "" : current;
+    picker.appendChild(input);
+
+    function accept() {
+      const value = input.value.trim();
+      if (value) setChipValue(name, value);
+      picker.remove();
+    }
+
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        accept();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        picker.remove();
+      }
+    });
+
+    chip.parentNode.style.position = "relative";
+    chip.parentNode.appendChild(picker);
+    picker.style.position = "absolute";
+    picker.style.top = (chip.offsetTop + chip.offsetHeight + 4) + "px";
+    picker.style.left = chip.offsetLeft + "px";
+    picker.style.zIndex = "50";
+
+    input.focus();
+
+    setTimeout(() => {
+      const offClick = (e) => {
+        if (!picker.contains(e.target)) {
+          picker.remove();
+          document.removeEventListener("click", offClick);
+        }
+      };
+      document.addEventListener("click", offClick);
+    }, 0);
   }
 
   function openHarnessPicker(chip) {
@@ -222,16 +322,15 @@
   function openModelPicker(chip) {
     const existing = document.querySelector(".chip-picker");
     if (existing) { existing.remove(); return; }
-    if (!harnessUsesSerfModels(currentHarness())) {
-      openHarnessDefaultModelPicker(chip);
-      return;
-    }
+    const harness = currentHarness();
 
-    const modelsPromise = window.SerfAppwire
-      ? window.SerfAppwire.listModels()
-      : fetch("/api/models").then(r => r.json());
+    const modelsPromise = listModelsForHarness(harness);
     modelsPromise.then(models => {
       if (!Array.isArray(models)) models = [];
+      if (models.length === 0 && !harnessUsesSerfModels(harness)) {
+        openHarnessDefaultModelPicker(chip);
+        return;
+      }
 
       // Group by provider
       const byProvider = {};
@@ -313,7 +412,11 @@
           el.appendChild(name);
           el.appendChild(meta);
           el.addEventListener("click", () => {
-            setChipValue("model", m.provider + "/" + m.model);
+            if (harnessUsesSerfModels(harness)) {
+              setChipValue("model", m.provider + "/" + m.model);
+            } else {
+              setModelValue(m.model, modelOptionLabel(m));
+            }
             picker.remove();
           });
           modelCol.appendChild(el);
@@ -362,7 +465,25 @@
         };
         document.addEventListener("click", offClick);
       }, 0);
+    }).catch(() => {
+      if (!harnessUsesSerfModels(harness)) {
+        openHarnessDefaultModelPicker(chip);
+      }
     });
+  }
+
+  function listModelsForHarness(harness) {
+    if (window.SerfAppwire) {
+      return window.SerfAppwire.listModels(harnessUsesSerfModels(harness) ? {} : { harness });
+    }
+    const suffix = harnessUsesSerfModels(harness) ? "" : "?harness=" + encodeURIComponent(harness);
+    return fetch("/api/models" + suffix).then(r => r.json());
+  }
+
+  function modelOptionLabel(model) {
+    const name = model && model.model ? String(model.model) : "";
+    const provider = model && model.provider ? String(model.provider) : "";
+    return provider ? provider + "/" + name : name;
   }
 
   function openHarnessDefaultModelPicker(chip) {
