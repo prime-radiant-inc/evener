@@ -251,15 +251,11 @@ past_index_db = "/Users/you/.serf/index.db"
 
 [serf_launch]
 sse_ring_size = 4096
-
-[[providers]]
-name = "openai"
-models = ["gpt-5", "gpt-5-mini"]
-
-[[providers]]
-name = "anthropic"
-models = ["claude-opus-4-7", "claude-sonnet-4-6"]
 ```
+
+Hub launch model choices come from the Serf launch harness contract
+(`serf launch-check --models`) using the hub process environment plus
+`[serf_launch.env]`, not from a static model roster in `hub.toml`.
 
 ### Architecture
 

@@ -173,7 +173,7 @@ Verified Codex:
 
 - `turn/start` accepts `threadId`, typed `input`, and optional per-turn overrides such as cwd, approval policy, sandbox policy, model, service tier, reasoning effort, summary, personality, output schema, experimental permissions, environments, and collaboration mode.
 - `turn/start` returns an initial `turn` with `status: "inProgress"` and emits `turn/started` when the turn actually begins.
-- Codex input variants are `text`, `image`, `localImage`, `skill`, and `mention`.
+- Codex input variants are `text` with `text`, `image` with `url`, `localImage` with `path`, `skill` with `name` and `path`, and `mention` with `name` and `path`.
 - `turn/steer` requires `threadId`, typed input, and `expectedTurnId`. It only applies to active regular turns; review and compaction turns reject steering.
 - `turn/interrupt` requires `threadId` and `turnId`, returns `{}`, and the interrupted turn completes with status `interrupted`.
 - Codex turn statuses are `completed`, `interrupted`, `failed`, and `inProgress`.

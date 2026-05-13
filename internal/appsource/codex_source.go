@@ -81,7 +81,7 @@ func (s *CodexSource) ListThreads(ctx context.Context, params appwire.ThreadList
 			SortKey:          params.SortKey,
 			SortDirection:    params.SortDirection,
 			SearchTerm:       params.SearchTerm,
-			Statuses:         params.Statuses,
+			Statuses:         codexThreadListStatuses(params.Statuses),
 			IncludeSubagents: params.IncludeSubagents,
 		}, &out)
 	})
@@ -151,7 +151,7 @@ func (s *CodexSource) StartThread(ctx context.Context, params appwire.ThreadStar
 	live := s.newLiveThread(thread.ID, client, closeClient)
 	s.setLiveThread(thread.ID, live)
 	resp := appwire.ThreadStartResponse{Thread: thread}
-	if params.Prompt != "" || len(params.Items) > 0 {
+	if strings.TrimSpace(params.Prompt) != "" || len(params.Items) > 0 {
 		turnResp, err := s.startTurnWithClient(ctx, client, appwire.TurnStartParams{Ref: thread.Serf.Ref, Prompt: params.Prompt, Items: params.Items})
 		if err != nil {
 			s.removeLiveThread(thread.ID, live)
@@ -170,7 +170,7 @@ func (s *CodexSource) ResumeThread(ctx context.Context, params appwire.ThreadRes
 	}
 	var out codexThreadResumeResponse
 	err = s.withClient(ctx, func(client *appwire.Client) error {
-		return client.Request(ctx, appwire.MethodThreadResume, map[string]any{"threadId": threadID}, &out)
+		return codexThreadResume(ctx, client, threadID, &out)
 	})
 	if err != nil {
 		return appwire.ThreadResumeResponse{}, err
@@ -182,6 +182,9 @@ func (s *CodexSource) ForkThread(ctx context.Context, params appwire.ThreadForkP
 	threadID, err := s.threadID(params.Ref, "")
 	if err != nil {
 		return appwire.ThreadForkResponse{}, err
+	}
+	if codexForkHasEditAtTurnMetadata(params) {
+		return appwire.ThreadForkResponse{}, appwire.Unavailable("edit-at-turn fork is not available for codex sessions")
 	}
 	var out codexThreadForkResponse
 	err = s.withClient(ctx, func(client *appwire.Client) error {
@@ -215,6 +218,11 @@ func (s *CodexSource) StartTurn(ctx context.Context, params appwire.TurnStartPar
 	}
 	client, closeClient, err := s.connect(ctx)
 	if err != nil {
+		return appwire.TurnStartResponse{}, err
+	}
+	var resume codexThreadResumeResponse
+	if err := codexThreadResume(ctx, client, threadID, &resume); err != nil {
+		_ = closeClient()
 		return appwire.TurnStartResponse{}, err
 	}
 	live := s.newLiveThread(threadID, client, closeClient)
@@ -338,13 +346,17 @@ func (s *CodexSource) SubscribeThread(ctx context.Context, params appwire.Thread
 		return nil, err
 	}
 	var resume codexThreadResumeResponse
-	if err := client.Request(ctx, appwire.MethodThreadResume, map[string]any{"threadId": threadID}, &resume); err != nil {
+	if err := codexThreadResume(ctx, client, threadID, &resume); err != nil {
 		_ = closeClient()
 		return nil, err
 	}
 	live := s.newLiveThread(threadID, client, closeClient)
 	s.setLiveThread(threadID, live)
 	return s.subscribeLiveThread(ctx, threadID, live), nil
+}
+
+func codexThreadResume(ctx context.Context, client *appwire.Client, threadID string, out *codexThreadResumeResponse) error {
+	return client.Request(ctx, appwire.MethodThreadResume, map[string]any{"threadId": threadID}, out)
 }
 
 func (s *CodexSource) liveThread(threadID string) *codexLiveThread {
@@ -407,15 +419,14 @@ func (s *CodexSource) runLiveThread(threadID string, live *codexLiveThread) {
 func (live *codexLiveThread) publish(notification appwire.Notification) {
 	live.mu.Lock()
 	defer live.mu.Unlock()
-	if live.closed {
+	if live.closed || live.retiring {
 		return
 	}
-	if len(live.subscribers) == 0 {
+	if len(live.subscribers) == 0 && !live.hadSub {
 		live.backlog = append(live.backlog, notification)
 		if len(live.backlog) > codexLiveBacklogLimit {
 			live.backlog = live.backlog[len(live.backlog)-codexLiveBacklogLimit:]
 		}
-		return
 	}
 	for subscriber := range live.subscribers {
 		select {
@@ -429,7 +440,7 @@ func (live *codexLiveThread) subscribe(ctx context.Context) <-chan appwire.Notif
 	live.mu.Lock()
 	capacity := codexLiveSubscriberBuffer + len(live.backlog)
 	out := make(chan appwire.Notification, capacity)
-	if live.closed {
+	if live.closed || live.retiring {
 		close(out)
 		live.mu.Unlock()
 		return out
@@ -437,7 +448,6 @@ func (live *codexLiveThread) subscribe(ctx context.Context) <-chan appwire.Notif
 	for _, notification := range live.backlog {
 		out <- notification
 	}
-	live.backlog = nil
 	live.subscribers[out] = struct{}{}
 	live.hadSub = true
 	live.mu.Unlock()
@@ -455,7 +465,10 @@ func (live *codexLiveThread) unsubscribe(out chan appwire.Notification) {
 		delete(live.subscribers, out)
 		close(out)
 	}
-	shouldRetire := live.hadSub && len(live.subscribers) == 0 && !live.closed
+	shouldRetire := live.hadSub && len(live.subscribers) == 0 && !live.closed && !live.retiring
+	if shouldRetire {
+		live.retiring = true
+	}
 	live.mu.Unlock()
 	if shouldRetire {
 		live.retire()
@@ -507,7 +520,7 @@ func (live *codexLiveThread) retire() {
 func (live *codexLiveThread) isClosed() bool {
 	live.mu.Lock()
 	defer live.mu.Unlock()
-	return live.closed
+	return live.closed || live.retiring
 }
 
 func (s *CodexSource) withClient(ctx context.Context, fn func(*appwire.Client) error) error {
@@ -604,7 +617,8 @@ func (s *CodexSource) mapThread(thread codexThread) appwire.Thread {
 		Serf: appwire.SerfThread{
 			Ref: ref,
 			Capabilities: appwire.ThreadCapabilities{
-				Send: true,
+				Send:    true,
+				Compact: true,
 			},
 		},
 	}
@@ -612,6 +626,36 @@ func (s *CodexSource) mapThread(thread codexThread) appwire.Thread {
 		out.Turns = append(out.Turns, mapCodexTurn(turn))
 	}
 	return out
+}
+
+func codexThreadListStatuses(statuses []string) []string {
+	if len(statuses) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(statuses))
+	for _, status := range statuses {
+		switch strings.ToLower(strings.TrimSpace(status)) {
+		case appwire.ThreadStatusProcessing:
+			out = append(out, "active")
+		case appwire.ThreadStatusEnded:
+			out = append(out, "notLoaded")
+		case appwire.ThreadStatusError:
+			out = append(out, "systemError")
+		case "notloaded":
+			out = append(out, "notLoaded")
+		case "systemerror":
+			out = append(out, "systemError")
+		default:
+			out = append(out, status)
+		}
+	}
+	return out
+}
+
+func codexForkHasEditAtTurnMetadata(params appwire.ThreadForkParams) bool {
+	return strings.TrimSpace(params.SourceTurnID) != "" ||
+		strings.TrimSpace(params.EditedInput) != "" ||
+		strings.TrimSpace(params.Label) != ""
 }
 
 func (s *CodexSource) mapNotification(threadID string, notification appwire.Notification) appwire.Notification {

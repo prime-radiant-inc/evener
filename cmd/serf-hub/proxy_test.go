@@ -82,6 +82,35 @@ func TestRESTProxyStampsHubTokenBearer(t *testing.T) {
 	}
 }
 
+func TestRESTProxyStripsBrowserOrigin(t *testing.T) {
+	gotOrigin := make(chan string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotOrigin <- r.Header.Get("Origin")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	resolver := fakeRoster{addr: upstream.Listener.Addr().String(), id: "01SESS001", token: "secret-token"}
+	proxy := NewRESTProxy(resolver)
+
+	req := httptest.NewRequest(http.MethodPost, "/live/01SESS001/input", strings.NewReader(`{"text":"hi"}`))
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	rec := httptest.NewRecorder()
+	proxy.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusNoContent)
+	}
+	select {
+	case origin := <-gotOrigin:
+		if origin != "" {
+			t.Fatalf("Origin=%q, want stripped", origin)
+		}
+	default:
+		t.Fatal("upstream did not receive request")
+	}
+}
+
 func TestRESTProxy_404UnknownSession(t *testing.T) {
 	resolver := fakeRoster{}
 	proxy := NewRESTProxy(resolver)
@@ -167,6 +196,37 @@ func TestSSEProxy_ForwardsLastEventID(t *testing.T) {
 		}
 	default:
 		t.Fatal("upstream never received Last-Event-ID header")
+	}
+}
+
+func TestSSEProxyStripsBrowserOrigin(t *testing.T) {
+	gotOrigin := make(chan string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotOrigin <- r.Header.Get("Origin")
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+	}))
+	defer upstream.Close()
+
+	resolver := fakeRoster{addr: upstream.Listener.Addr().String(), id: "01SESS001", token: "secret-token"}
+	proxy := NewSSEProxy(resolver)
+
+	req := httptest.NewRequest(http.MethodGet, "/live/01SESS001/events", nil)
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	rec := httptest.NewRecorder()
+	proxy.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusOK)
+	}
+	select {
+	case origin := <-gotOrigin:
+		if origin != "" {
+			t.Fatalf("Origin=%q, want stripped", origin)
+		}
+	default:
+		t.Fatal("upstream did not receive request")
 	}
 }
 

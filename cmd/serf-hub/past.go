@@ -105,17 +105,24 @@ func (i *PastIndex) All() []PastEntry {
 	return out
 }
 
-// Search returns the limit results starting at offset whose
-// OriginalPrompt, ID, or WorkingDir contains q (case-insensitive). Empty q
-// returns all entries.
+// Search returns the limit results starting at offset whose indexed text
+// matches q. SQLite FTS contributes token-prefix matches when available; the
+// in-memory scan preserves substring matches.
 func (i *PastIndex) Search(q string, limit, offset int) []PastEntry {
 	if strings.TrimSpace(q) != "" {
-		if out, ok := i.searchFTS(q, limit, offset); ok {
-			if len(out) > 0 {
-				return out
-			}
+		if fts, ok := i.searchFTS(q); ok {
+			mem := i.searchMemoryMatches(q)
+			return i.mergeSearchResults(fts, mem, limit, offset)
 		}
 	}
+	return i.searchMemory(q, limit, offset)
+}
+
+func (i *PastIndex) searchMemory(q string, limit, offset int) []PastEntry {
+	return paginatePastEntries(i.searchMemoryMatches(q), limit, offset)
+}
+
+func (i *PastIndex) searchMemoryMatches(q string) []PastEntry {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 
@@ -126,25 +133,58 @@ func (i *PastIndex) Search(q string, limit, offset int) []PastEntry {
 			out = append(out, e)
 		}
 	}
-	if offset >= len(out) {
+	return out
+}
+
+func paginatePastEntries(entries []PastEntry, limit, offset int) []PastEntry {
+	if limit <= 0 || offset >= len(entries) {
 		return nil
 	}
 	end := offset + limit
-	if end > len(out) {
-		end = len(out)
+	if end > len(entries) {
+		end = len(entries)
 	}
-	return out[offset:end]
+	return entries[offset:end]
+}
+
+func (i *PastIndex) mergeSearchResults(a, b []PastEntry, limit, offset int) []PastEntry {
+	ids := make(map[string]struct{}, len(a)+len(b))
+	for _, entry := range a {
+		ids[entry.ID] = struct{}{}
+	}
+	for _, entry := range b {
+		ids[entry.ID] = struct{}{}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	i.mu.RLock()
+	out := make([]PastEntry, 0, len(ids))
+	for _, entry := range i.all {
+		if _, ok := ids[entry.ID]; ok {
+			out = append(out, entry)
+		}
+	}
+	i.mu.RUnlock()
+	return paginatePastEntries(out, limit, offset)
 }
 
 func (i *PastIndex) rebuildFTS(entries []PastEntry) error {
-	if err := os.MkdirAll(filepath.Dir(i.dbPath), 0o700); err != nil {
+	dbDir := filepath.Dir(i.dbPath)
+	if err := os.MkdirAll(dbDir, 0o700); err != nil {
 		return err
 	}
 	db, err := sql.Open("sqlite", i.dbPath)
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	closed := false
+	defer func() {
+		if !closed {
+			_ = db.Close()
+		}
+	}()
 	if _, err := db.Exec(`CREATE VIRTUAL TABLE IF NOT EXISTS past_sessions_fts USING fts5(
 id,
 original_prompt,
@@ -172,12 +212,28 @@ sort_rank UNINDEXED
 			return err
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if err := db.Close(); err != nil {
+		return err
+	}
+	closed = true
+	return chmodSQLiteIndexFiles(i.dbPath)
 }
 
-func (i *PastIndex) searchFTS(q string, limit, offset int) ([]PastEntry, bool) {
+func chmodSQLiteIndexFiles(dbPath string) error {
+	for _, path := range []string{dbPath, dbPath + "-journal", dbPath + "-wal", dbPath + "-shm"} {
+		if err := os.Chmod(path, 0o600); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func (i *PastIndex) searchFTS(q string) ([]PastEntry, bool) {
 	query := ftsQuery(q)
-	if query == "" || limit <= 0 {
+	if query == "" {
 		return nil, false
 	}
 	i.mu.RLock()
@@ -191,7 +247,7 @@ func (i *PastIndex) searchFTS(q string, limit, offset int) ([]PastEntry, bool) {
 		return nil, false
 	}
 	defer db.Close()
-	rows, err := db.Query(`SELECT id FROM past_sessions_fts WHERE past_sessions_fts MATCH ? ORDER BY CAST(sort_rank AS INTEGER) ASC LIMIT ? OFFSET ?`, query, limit, offset)
+	rows, err := db.Query(`SELECT id FROM past_sessions_fts WHERE past_sessions_fts MATCH ? ORDER BY CAST(sort_rank AS INTEGER) ASC`, query)
 	if err != nil {
 		return nil, false
 	}

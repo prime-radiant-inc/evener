@@ -9,9 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
 
 	"github.com/oklog/ulid/v2"
 
@@ -2170,26 +2172,21 @@ type sessionModelResponse struct {
 
 func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, req llm.Request) (sessionModelResponse, error) {
 	if s.profile.SupportsStreaming() {
-		st, err := s.client.Stream(ctx, req)
-		if err == nil && st != nil {
+		st, err := llm.Retry(ctx, policy, s.cfg.LLMSleep, nil, func() (llm.Stream, error) {
+			st, err := s.client.Stream(ctx, req)
+			if err == nil && st == nil {
+				return nil, nil
+			}
+			if streamUnavailable(err) {
+				return nil, nil
+			}
+			return st, err
+		})
+		if err != nil {
+			return sessionModelResponse{}, err
+		}
+		if st != nil {
 			return s.consumeModelStream(ctx, req, st)
-		}
-		if err == nil {
-			err = errStreamUnavailable
-		}
-		if !streamUnavailable(err) {
-			st, err = llm.Retry(ctx, policy, s.cfg.LLMSleep, nil, func() (llm.Stream, error) {
-				return s.client.Stream(ctx, req)
-			})
-			if err == nil && st != nil {
-				return s.consumeModelStream(ctx, req, st)
-			}
-			if err == nil {
-				err = errStreamUnavailable
-			}
-			if !streamUnavailable(err) {
-				return sessionModelResponse{}, err
-			}
 		}
 	}
 
@@ -2348,39 +2345,65 @@ func partialJSONStringField(raw, field string) (string, bool) {
 	rest = rest[1:]
 
 	var b strings.Builder
-	escaped := false
-	for i := 0; i < len(rest); i++ {
-		ch := rest[i]
-		if escaped {
-			switch ch {
-			case '"', '\\', '/':
-				b.WriteByte(ch)
-			case 'b':
-				b.WriteByte('\b')
-			case 'f':
-				b.WriteByte('\f')
-			case 'n':
-				b.WriteByte('\n')
-			case 'r':
-				b.WriteByte('\r')
-			case 't':
-				b.WriteByte('\t')
-			default:
-				b.WriteByte(ch)
-			}
-			escaped = false
-			continue
-		}
-		if ch == '\\' {
-			escaped = true
-			continue
-		}
+	for len(rest) > 0 {
+		ch := rest[0]
 		if ch == '"' {
 			return b.String(), true
 		}
+		if ch == '\\' {
+			if len(rest) >= 2 && rest[1] == '/' {
+				b.WriteByte('/')
+				rest = rest[2:]
+				continue
+			}
+			if strings.HasPrefix(rest, `\u`) {
+				r, tail, ok := unquoteJSONUnicodeEscape(rest)
+				if !ok {
+					return b.String(), true
+				}
+				b.WriteRune(r)
+				rest = tail
+				continue
+			}
+			r, _, tail, err := strconv.UnquoteChar(rest, '"')
+			if err != nil {
+				return b.String(), true
+			}
+			b.WriteRune(r)
+			rest = tail
+			continue
+		}
 		b.WriteByte(ch)
+		rest = rest[1:]
 	}
 	return b.String(), true
+}
+
+func unquoteJSONUnicodeEscape(rest string) (rune, string, bool) {
+	if len(rest) < 6 {
+		return 0, "", false
+	}
+	value, err := strconv.ParseUint(rest[2:6], 16, 16)
+	if err != nil {
+		return 0, "", false
+	}
+	r := rune(value)
+	tail := rest[6:]
+	if r >= 0xD800 && r <= 0xDBFF {
+		if len(tail) < 6 || !strings.HasPrefix(tail, `\u`) {
+			return 0, "", false
+		}
+		lowValue, err := strconv.ParseUint(tail[2:6], 16, 16)
+		if err != nil {
+			return 0, "", false
+		}
+		low := rune(lowValue)
+		if low < 0xDC00 || low > 0xDFFF {
+			return 0, "", false
+		}
+		return utf16.DecodeRune(r, low), tail[6:], true
+	}
+	return r, tail, true
 }
 
 // stuckEscalation returns the steering message for the nth loop detection.

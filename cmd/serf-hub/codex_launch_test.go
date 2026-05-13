@@ -32,6 +32,38 @@ func TestCodexLauncherLaunchesProcessAndWaitsForReady(t *testing.T) {
 	}
 }
 
+func TestCodexLauncherRelaunchesAfterManagedProcessExits(t *testing.T) {
+	launcher := NewCodexLauncher([]CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
+	defer shutdownCodexLauncher(t, launcher)
+
+	first, err := launcher.EnsureSource(context.Background(), "codex-managed", nil)
+	if err != nil {
+		t.Fatalf("EnsureSource first: %v", err)
+	}
+	launcher.mu.Lock()
+	launched := launcher.running["codex-managed"]
+	launcher.mu.Unlock()
+	if launched == nil || launched.cmd.Process == nil {
+		t.Fatal("managed codex process was not tracked")
+	}
+	if err := launched.cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill managed codex: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		next, err := launcher.EnsureSource(context.Background(), "codex-managed", nil)
+		if err != nil {
+			t.Fatalf("EnsureSource after exit: %v", err)
+		}
+		if next != first {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("EnsureSource kept returning the exited managed Codex source")
+}
+
 func TestCodexLauncherEarlyExitReturnsStructuredDiagnostic(t *testing.T) {
 	launcher := NewCodexLauncher([]CodexLaunchConfig{fakeCodexLaunchConfig("codex-exit", "exit")})
 	defer shutdownCodexLauncher(t, launcher)
@@ -68,6 +100,16 @@ func TestCodexLauncherMissingBinaryReturnsStructuredDiagnostic(t *testing.T) {
 	assertHubLaunchError(t, err)
 	if !strings.Contains(err.Error(), "start codex app-server") {
 		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestParseCodexEndpointAcceptsJSONEndpointLine(t *testing.T) {
+	endpoint, ok := parseCodexEndpoint(`{"endpoint":"ws://127.0.0.1:1234/rpc"}`)
+	if !ok {
+		t.Fatal("endpoint not parsed")
+	}
+	if endpoint != "ws://127.0.0.1:1234/rpc" {
+		t.Fatalf("endpoint=%q", endpoint)
 	}
 }
 
@@ -111,6 +153,37 @@ func TestFakeCodexAppServerHelper(t *testing.T) {
 			"preview":   "fake codex",
 			"status":    map[string]any{"type": "idle"},
 			"cwd":       params["cwd"],
+			"source":    "appServer",
+		}}, nil
+	})
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadResume, func(_ context.Context, params map[string]any) (map[string]any, error) {
+		return map[string]any{"thread": map[string]any{
+			"id":        params["threadId"],
+			"sessionId": params["threadId"],
+			"preview":   "fake codex",
+			"status":    map[string]any{"type": "idle"},
+			"source":    "appServer",
+		}}, nil
+	})
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params map[string]any) (map[string]any, error) {
+		return map[string]any{"thread": map[string]any{
+			"id":        params["threadId"],
+			"sessionId": params["threadId"],
+			"preview":   "fake codex",
+			"status":    map[string]any{"type": "idle"},
+			"source":    "appServer",
+		}}, nil
+	})
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadFork, func(_ context.Context, params map[string]any) (map[string]any, error) {
+		threadID, _ := params["threadId"].(string)
+		if threadID == "" {
+			threadID = "th_fake"
+		}
+		return map[string]any{"thread": map[string]any{
+			"id":        threadID + "_child",
+			"sessionId": threadID + "_child",
+			"preview":   "fake codex fork",
+			"status":    map[string]any{"type": "idle"},
 			"source":    "appServer",
 		}}, nil
 	})

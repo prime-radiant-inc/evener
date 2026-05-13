@@ -190,6 +190,105 @@ func TestPastIndex_SearchUsesSQLiteFTSWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestPastIndex_SearchWithSQLitePreservesSubstringMatches(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	_ = os.MkdirAll(proj, 0o755)
+	writeMeta(t, proj, agent.SessionMeta{
+		ID:             "01PREFIX",
+		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/work/prefix"},
+		UpdatedAt:      time.Now(),
+		OriginalPrompt: "auth token cleanup",
+	})
+	writeMeta(t, proj, agent.SessionMeta{
+		ID:             "02SUBSTR",
+		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/work/substr"},
+		UpdatedAt:      time.Now().Add(-time.Minute),
+		OriginalPrompt: "preauth redirect cleanup",
+	})
+
+	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, ".serf", "index.db"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	got := idx.Search("auth", 50, 0)
+	gotIDs := make([]string, 0, len(got))
+	for _, entry := range got {
+		gotIDs = append(gotIDs, entry.ID)
+	}
+	want := []string{"01PREFIX", "02SUBSTR"}
+	if strings.Join(gotIDs, ",") != strings.Join(want, ",") {
+		t.Fatalf("Search auth IDs=%v, want %v", gotIDs, want)
+	}
+}
+
+func TestPastIndex_SearchWithSQLiteMergesFTSAndSubstringMatches(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	_ = os.MkdirAll(proj, 0o755)
+	writeMeta(t, proj, agent.SessionMeta{
+		ID:             "01FTS",
+		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/work/fts"},
+		UpdatedAt:      time.Now(),
+		OriginalPrompt: "auth token cleanup",
+	})
+	writeMeta(t, proj, agent.SessionMeta{
+		ID:             "02SUBSTR",
+		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/work/substr"},
+		UpdatedAt:      time.Now().Add(-time.Minute),
+		OriginalPrompt: "preauth cleanup",
+	})
+
+	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, ".serf", "index.db"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	got := idx.Search("auth cleanup", 50, 0)
+	gotIDs := make([]string, 0, len(got))
+	for _, entry := range got {
+		gotIDs = append(gotIDs, entry.ID)
+	}
+	want := []string{"01FTS", "02SUBSTR"}
+	if strings.Join(gotIDs, ",") != strings.Join(want, ",") {
+		t.Fatalf("Search auth cleanup IDs=%v, want %v", gotIDs, want)
+	}
+}
+
+func TestPastIndex_SQLiteIndexUsesPrivateFilePermissions(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	_ = os.MkdirAll(proj, 0o755)
+	writeMeta(t, proj, agent.SessionMeta{
+		ID:             "01PRIVATE",
+		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/work/private"},
+		UpdatedAt:      time.Now(),
+		OriginalPrompt: "sensitive prompt",
+	})
+	indexDir := filepath.Join(root, ".serf")
+	if err := os.MkdirAll(indexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(indexDir, "index.db")
+	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	dirInfo, err := os.Stat(indexDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dirInfo.Mode().Perm(); got != 0o755 {
+		t.Fatalf("index dir mode=%#o, want existing 0755", got)
+	}
+	dbInfo, err := os.Stat(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dbInfo.Mode().Perm(); got != 0o600 {
+		t.Fatalf("index db mode=%#o, want 0600", got)
+	}
+}
+
 func TestPastIndex_SearchFallsBackWhenSQLiteUnavailable(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")

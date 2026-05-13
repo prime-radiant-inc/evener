@@ -418,13 +418,15 @@ func BuildTree(metas []agent.SessionMeta, live []LiveEntry) Tree {
 }
 
 func treeNodeLess(a, b TreeNode, metaMap map[string]agent.SessionMeta, liveMap map[string]LiveEntry) bool {
-	if ma, ok := metaMap[a.ID]; ok {
-		if mb, ok := metaMap[b.ID]; ok {
-			return sessionMetaLess(ma, mb)
-		}
+	ma, aHasMeta := metaMap[a.ID]
+	mb, bHasMeta := metaMap[b.ID]
+	if aHasMeta && bHasMeta {
+		return sessionMetaLess(ma, mb)
 	}
-	if la, ok := liveMap[a.ID]; ok {
-		if lb, ok := liveMap[b.ID]; ok {
+	if !aHasMeta && !bHasMeta {
+		la, aLive := liveMap[a.ID]
+		lb, bLive := liveMap[b.ID]
+		if aLive && bLive {
 			return liveEntryLess(la, lb)
 		}
 	}

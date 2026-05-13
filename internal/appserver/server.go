@@ -73,6 +73,10 @@ func (s *Server) Broadcast(threadID, method string, params any) {
 	}
 }
 
+func (s *Server) SubscriberCount(threadID string) int {
+	return s.subs.ConnectionCount(threadID)
+}
+
 func (s *Server) initialize(context.Context, appwire.InitializeParams) (appwire.InitializeResponse, error) {
 	return appwire.InitializeResponse{
 		ServerInfo:      appwire.ServerInfo{Name: s.cfg.ServerName, Version: s.cfg.Version},
@@ -180,6 +184,14 @@ func Subscribe(ctx context.Context, threadID string) {
 		return
 	}
 	conn.Subscribe(threadID)
+}
+
+func Notify(ctx context.Context, method string, params any) {
+	conn, ok := ctx.Value(connectionContextKey{}).(*Connection)
+	if !ok || conn == nil || method == "" {
+		return
+	}
+	conn.enqueue(appwire.NotificationMessage(method, params))
 }
 
 func (c *Connection) isInitialized() bool {

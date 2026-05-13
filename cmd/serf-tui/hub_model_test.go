@@ -441,6 +441,46 @@ func TestHubModelSpawnCyclesConfiguredHarnesses(t *testing.T) {
 	}
 }
 
+func TestHubModelCodexSpawnSurvivesModelListFailure(t *testing.T) {
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
+			return appwire.ModelListResponse{}, appwire.Unavailable("models unavailable")
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodSerfHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
+			return appwire.HarnessListResponse{Data: []appwire.HarnessDescriptor{
+				{ID: "codex-local", Label: "codex-local", Kind: "codex"},
+			}}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newHubModel(client, "http://hub.test")
+	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
+		Key: "serf", Name: "serf", WorkingDir: "/tmp/serf",
+		Sessions: []hubTreeNode{{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true}},
+	}}}
+	m.rows = buildDashboardRows(m.tree)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	if cmd == nil {
+		t.Fatal("dashboard spawn should fetch spawn options")
+	}
+	updated, _ = updated.(hubModel).Update(cmd())
+	form := updated.(hubModel)
+	if form.err != nil {
+		t.Fatalf("codex spawn surfaced serf model-list error: %v", form.err)
+	}
+	if form.spawnHarness != "codex-local" || form.spawnHarnessKind() != "codex" {
+		t.Fatalf("spawn harness=%q kind=%q", form.spawnHarness, form.spawnHarnessKind())
+	}
+	if form.spawnModel != "" {
+		t.Fatalf("codex spawn retained model %q", form.spawnModel)
+	}
+	if view := form.spawnView(); !strings.Contains(view, "harness default") {
+		t.Fatalf("codex spawn should use harness default model:\n%s", view)
+	}
+}
+
 func TestHubModelCodexSpawnDoesNotOpenSerfModelPicker(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	m.openSpawnForm()

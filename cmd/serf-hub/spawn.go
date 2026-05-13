@@ -52,13 +52,35 @@ type HubSpawner struct {
 	HubToken   string
 }
 
+type SerfLaunchModelLister interface {
+	ListLaunchModels(context.Context) ([]appwire.ModelDescriptor, error)
+}
+
+type SerfLaunchModelContractLister interface {
+	ListLaunchModelContract(context.Context) (appwire.ModelListResponse, error)
+}
+
+func (h *HubSpawner) ListLaunchModels(ctx context.Context) ([]appwire.ModelDescriptor, error) {
+	resp, err := h.ListLaunchModelContract(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Data, nil
+}
+
+func (h *HubSpawner) ListLaunchModelContract(ctx context.Context) (appwire.ModelListResponse, error) {
+	stateDir := resolveSerfLaunchStateDir("", h.Cfg.SerfLaunch.Env)
+	env := buildSerfChildEnv(h.Cfg, h.RunDir, stateDir, h.HubToken)
+	return listSerfLaunchModelContract(ctx, h.SerfBinary, env)
+}
+
 func (h *HubSpawner) Spawn(ctx context.Context, req SpawnRequest) (rendezvous.Entry, error) {
 	timeout := h.Cfg.SpawnTimeout
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
 	if req.StateDir == "" {
-		req.StateDir = resolveSerfStateDir(req.WorkingDir, h.Cfg.SerfLaunch.Env["SERF_STATE_DIR"])
+		req.StateDir = resolveSerfLaunchStateDir(req.WorkingDir, h.Cfg.SerfLaunch.Env)
 	}
 	req.RunDir = h.RunDir
 	req.SSERingSize = h.Cfg.SerfLaunch.SSERingSize
@@ -78,7 +100,7 @@ func (h *HubSpawner) Resume(ctx context.Context, req ResumeRequest) (rendezvous.
 		timeout = 30 * time.Second
 	}
 	if req.StateDir == "" {
-		req.StateDir = resolveSerfStateDir(req.WorkingDir, h.Cfg.SerfLaunch.Env["SERF_STATE_DIR"])
+		req.StateDir = resolveSerfLaunchStateDir(req.WorkingDir, h.Cfg.SerfLaunch.Env)
 	}
 	req.RunDir = h.RunDir
 	req.SSERingSize = h.Cfg.SerfLaunch.SSERingSize
@@ -255,6 +277,17 @@ func ResumeDaemon(ctx context.Context, serfBinary, runDir string, req ResumeRequ
 }
 
 func resolveSerfStateDir(workDir, override string) string {
+	return resolveSerfStateDirWithStateHome(workDir, override, "")
+}
+
+func resolveSerfLaunchStateDir(workDir string, env map[string]string) string {
+	if env == nil {
+		return resolveSerfStateDir(workDir, "")
+	}
+	return resolveSerfStateDirWithStateHome(workDir, env["SERF_STATE_DIR"], env["XDG_STATE_HOME"])
+}
+
+func resolveSerfStateDirWithStateHome(workDir, override, stateHome string) string {
 	if strings.TrimSpace(override) != "" {
 		return override
 	}
@@ -264,7 +297,7 @@ func resolveSerfStateDir(workDir, override string) string {
 			wd = got
 		}
 	}
-	return agent.RuntimeDir(cmdutil.GitOriginURLFromDir(wd), wd, "")
+	return agent.RuntimeDirWithStateHome(cmdutil.GitOriginURLFromDir(wd), wd, "", strings.TrimSpace(stateHome))
 }
 
 func buildSerfChildEnv(cfg Config, runDir, stateDir, hubToken string) []string {
@@ -404,6 +437,68 @@ func validateSerfLaunchContract(ctx context.Context, serfBinary, model string, e
 		return appwire.HubLaunchError(fmt.Sprintf("serf launch-check protocol %q does not match Hub protocol %q", resp.Protocol, appwire.ProtocolVersion))
 	}
 	return nil
+}
+
+func listSerfLaunchModels(ctx context.Context, serfBinary string, env []string) ([]appwire.ModelDescriptor, error) {
+	resp, err := listSerfLaunchModelContract(ctx, serfBinary, env)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Data, nil
+}
+
+func listSerfLaunchModelContract(ctx context.Context, serfBinary string, env []string) (appwire.ModelListResponse, error) {
+	if serfBinary == "" {
+		serfBinary = "serf"
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, serfLaunchCheckTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(checkCtx, serfBinary, "launch-check", "--protocol", appwire.ProtocolVersion, "--json", "--models")
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if checkCtx.Err() != nil {
+		return appwire.ModelListResponse{}, appwire.HubLaunchError("serf launch-check timed out")
+	}
+	if err != nil {
+		msg := strings.TrimSpace(redactEnvSecrets(string(out), env))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return appwire.ModelListResponse{}, appwire.HubLaunchError("serf launch-check failed: " + msg)
+	}
+	var resp struct {
+		Protocol    string                        `json:"protocol"`
+		Models      []appwire.ModelDescriptor     `json:"models"`
+		Diagnostics []appwire.ModelListDiagnostic `json:"diagnostics"`
+	}
+	if err := json.NewDecoder(bytes.NewReader(out)).Decode(&resp); err != nil {
+		return appwire.ModelListResponse{}, appwire.HubLaunchError("serf launch-check returned invalid response")
+	}
+	if resp.Protocol != appwire.ProtocolVersion {
+		return appwire.ModelListResponse{}, appwire.HubLaunchError(fmt.Sprintf("serf launch-check protocol %q does not match Hub protocol %q", resp.Protocol, appwire.ProtocolVersion))
+	}
+	models := make([]appwire.ModelDescriptor, 0, len(resp.Models))
+	for _, model := range resp.Models {
+		provider := strings.TrimSpace(model.Provider)
+		name := strings.TrimSpace(model.Model)
+		if provider == "" || name == "" {
+			continue
+		}
+		models = append(models, appwire.ModelDescriptor{Provider: provider, Model: name})
+	}
+	diagnostics := make([]appwire.ModelListDiagnostic, 0, len(resp.Diagnostics))
+	for _, diag := range resp.Diagnostics {
+		diag.Provider = strings.TrimSpace(diag.Provider)
+		diag.Source = strings.TrimSpace(diag.Source)
+		diag.Title = strings.TrimSpace(diag.Title)
+		diag.Message = strings.TrimSpace(diag.Message)
+		diag.Hint = strings.TrimSpace(diag.Hint)
+		if diag.Message == "" {
+			continue
+		}
+		diagnostics = append(diagnostics, diag)
+	}
+	return appwire.ModelListResponse{Data: models, Diagnostics: diagnostics}, nil
 }
 
 func redactEnvSecrets(text string, env []string) string {

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmdutil"
@@ -94,13 +96,13 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		},
 	})
 	var relayMu sync.Mutex
-	relayedThreads := map[string]struct{}{}
+	relayedThreads := map[string]*hubRelayHandle{}
 	startRelay := func(ctx context.Context, source appsource.Source, params appwire.ThreadReadParams, thread appwire.Thread) error {
 		threadID := thread.ID
 		if threadID == "" {
 			return nil
 		}
-		appserver.Subscribe(ctx, threadID)
+		relayKey := source.ID() + ":" + threadID
 
 		subscribeParams := params
 		if subscribeParams.Ref == "" {
@@ -110,30 +112,96 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 			subscribeParams.Ref = appwire.Ref{SourceID: source.ID(), ThreadID: threadID}.String()
 		}
 
-		relayKey := source.ID() + ":" + threadID
-		relayMu.Lock()
-		if _, ok := relayedThreads[relayKey]; ok {
-			relayMu.Unlock()
-			return nil
-		}
-		relayedThreads[relayKey] = struct{}{}
-		relayMu.Unlock()
-
-		notifications, err := source.SubscribeThread(context.WithoutCancel(ctx), subscribeParams)
-		if err != nil {
+		var relayHandle *hubRelayHandle
+		for {
 			relayMu.Lock()
-			delete(relayedThreads, relayKey)
+			existing := relayedThreads[relayKey]
+			if existing == nil {
+				relayHandle = &hubRelayHandle{ready: make(chan struct{})}
+				relayedThreads[relayKey] = relayHandle
+				relayMu.Unlock()
+				break
+			}
+			ready := existing.ready
+			relayMu.Unlock()
+
+			select {
+			case <-ready:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+
+			relayMu.Lock()
+			active := relayedThreads[relayKey] == existing
+			err := existing.err
+			relayMu.Unlock()
+			if active && err == nil {
+				appserver.Subscribe(ctx, relayKey)
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+		}
+
+		relayCtx, cancelRelay := context.WithCancel(context.WithoutCancel(ctx))
+		notifications, err := source.SubscribeThread(relayCtx, subscribeParams)
+		if err != nil {
+			cancelRelay()
+			relayMu.Lock()
+			if relayedThreads[relayKey] == relayHandle {
+				delete(relayedThreads, relayKey)
+			}
+			relayHandle.err = err
+			close(relayHandle.ready)
 			relayMu.Unlock()
 			return err
 		}
+		appserver.Subscribe(ctx, relayKey)
+		relayMu.Lock()
+		close(relayHandle.ready)
+		relayMu.Unlock()
 		go func() {
-			defer func() {
+			ticker := time.NewTicker(250 * time.Millisecond)
+			cleanupRelay := func() {
+				cancelRelay()
 				relayMu.Lock()
-				delete(relayedThreads, relayKey)
+				if relayedThreads[relayKey] == relayHandle {
+					delete(relayedThreads, relayKey)
+				}
 				relayMu.Unlock()
-			}()
-			for notification := range notifications {
-				server.Broadcast(threadID, notification.Method, notification.Params)
+			}
+			defer ticker.Stop()
+			defer cleanupRelay()
+			for {
+				select {
+				case <-relayCtx.Done():
+					return
+				case <-ticker.C:
+					if server.SubscriberCount(relayKey) == 0 {
+						if hubRelayIdleExitHook != nil {
+							hubRelayIdleExitHook(threadID)
+						}
+						relayMu.Lock()
+						if server.SubscriberCount(relayKey) == 0 {
+							if relayedThreads[relayKey] == relayHandle {
+								delete(relayedThreads, relayKey)
+							}
+							relayMu.Unlock()
+							if hubRelayAfterIdleDeleteHook != nil {
+								hubRelayAfterIdleDeleteHook(threadID)
+							}
+							cancelRelay()
+							return
+						}
+						relayMu.Unlock()
+					}
+				case notification, ok := <-notifications:
+					if !ok {
+						return
+					}
+					server.Broadcast(relayKey, notification.Method, notification.Params)
+				}
 			}
 		}()
 		return nil
@@ -152,11 +220,38 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		}
 		return source.StartTurn(ctx, params)
 	}
+	startRelayForThread := func(ctx context.Context, thread appwire.Thread) error {
+		if thread.ID == "" {
+			thread.ID = thread.SessionID
+		}
+		if thread.ID == "" {
+			return nil
+		}
+		ref := thread.Serf.Ref
+		if ref == "" {
+			sourceID := strings.TrimSpace(thread.Source)
+			if sourceID == "" {
+				sourceID = "local"
+			}
+			ref = appwire.Ref{SourceID: sourceID, ThreadID: thread.ID}.String()
+		}
+		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, ref, thread.ID)
+		if err != nil {
+			return nil
+		}
+		if err := startRelay(ctx, source, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false}, thread); err != nil {
+			if isSessionUnavailableError(err) {
+				return nil
+			}
+			return err
+		}
+		return nil
+	}
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadList, func(ctx context.Context, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		return hubThreadList(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		source, err := sourceForThread(sources, params.Ref, params.ThreadID)
+		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
 		if err != nil {
 			if thread, ok := pastThreadForRead(cfg, params); ok {
 				return appwire.ThreadReadResponse{Thread: thread}, nil
@@ -179,21 +274,41 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		return resp, nil
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadStart, func(ctx context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
-		return hubThreadStart(ctx, cfg, sources, params)
+		resp, err := hubThreadStart(ctx, cfg, sources, params)
+		if err != nil {
+			return appwire.ThreadStartResponse{}, err
+		}
+		if err := startRelayForThread(ctx, resp.Thread); err != nil {
+			appserver.Notify(ctx, appwire.NotifyWarning, map[string]any{
+				"threadId": resp.Thread.ID,
+				"ref":      resp.Thread.Serf.Ref,
+				"source":   "hub",
+				"title":    "Live updates unavailable",
+				"message":  "thread started, but Hub could not attach live updates: " + err.Error(),
+			})
+		}
+		return resp, nil
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadResume, func(ctx context.Context, params appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
-		return hubThreadResume(ctx, cfg, sources, params)
+		resp, err := hubThreadResume(ctx, cfg, sources, params)
+		if err != nil {
+			return appwire.ThreadResumeResponse{}, err
+		}
+		if err := startRelayForThread(ctx, resp.Thread); err != nil {
+			return appwire.ThreadResumeResponse{}, err
+		}
+		return resp, nil
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadFork, func(ctx context.Context, params appwire.ThreadForkParams) (appwire.ThreadForkResponse, error) {
-		return hubThreadFork(ctx, cfg, params)
+		return hubThreadFork(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnStart, func(ctx context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-		source, err := sourceForThread(sources, params.Ref, "")
+		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
 		if err != nil {
 			if _, resumeErr := hubThreadResume(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref}); resumeErr != nil {
 				return appwire.TurnStartResponse{}, resumeErr
 			}
-			source, err = sourceForThread(sources, params.Ref, "")
+			source, err = sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
 			if err != nil {
 				return appwire.TurnStartResponse{}, err
 			}
@@ -205,17 +320,20 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		if _, ok := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: params.Ref}); !ok {
 			return appwire.TurnStartResponse{}, err
 		}
+		if !shouldResumeAfterTurnStartError(err) {
+			return appwire.TurnStartResponse{}, err
+		}
 		if _, resumeErr := hubThreadResume(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref}); resumeErr != nil {
 			return appwire.TurnStartResponse{}, resumeErr
 		}
-		source, sourceErr := sourceForThread(sources, params.Ref, "")
+		source, sourceErr := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
 		if sourceErr != nil {
 			return appwire.TurnStartResponse{}, sourceErr
 		}
 		return startTurn(ctx, source, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnSteer, func(ctx context.Context, params appwire.TurnSteerParams) (appwire.EmptyResponse, error) {
-		source, err := sourceForThread(sources, params.Ref, "")
+		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
 		if err != nil {
 			return appwire.EmptyResponse{}, err
 		}
@@ -225,7 +343,7 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		return appwire.EmptyResponse{}, source.SteerTurn(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnInterrupt, func(ctx context.Context, params appwire.TurnInterruptParams) (appwire.EmptyResponse, error) {
-		source, err := sourceForThread(sources, params.Ref, "")
+		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
 		if err != nil {
 			return appwire.EmptyResponse{}, err
 		}
@@ -235,7 +353,7 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		return appwire.EmptyResponse{}, source.InterruptTurn(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadClear, func(ctx context.Context, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
-		source, err := sourceForThread(sources, params.Ref, "")
+		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
 		if err != nil {
 			return appwire.ThreadClearResponse{}, err
 		}
@@ -245,7 +363,7 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		return source.ClearThread(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadCompactStart, func(ctx context.Context, params appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
-		source, err := sourceForThread(sources, params.Ref, "")
+		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
 		if err != nil {
 			return appwire.EmptyResponse{}, err
 		}
@@ -255,7 +373,7 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		return appwire.EmptyResponse{}, source.CompactThread(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadShutdown, func(ctx context.Context, params appwire.ThreadShutdownParams) (appwire.EmptyResponse, error) {
-		source, err := sourceForThread(sources, params.Ref, "")
+		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
 		if err != nil {
 			return appwire.EmptyResponse{}, err
 		}
@@ -265,7 +383,7 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		return appwire.EmptyResponse{}, source.ShutdownThread(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(ctx context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
-		source, err := sourceForThread(sources, params.Ref, "")
+		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
 		if err != nil {
 			return appwire.EmptyResponse{}, err
 		}
@@ -275,6 +393,13 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		return appwire.EmptyResponse{}, source.SetThreadModel(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodModelList, func(ctx context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
+		launchResp, err := serfLaunchModelList(ctx, cfg)
+		if hasSerfLaunchModelLister(cfg) {
+			if err != nil {
+				return appwire.ModelListResponse{}, err
+			}
+			return launchResp, nil
+		}
 		source, ok := sources.Source("local")
 		if ok {
 			resp, err := source.ListModels(ctx, params)
@@ -282,14 +407,10 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 				return resp, nil
 			}
 		}
-		out := make([]appwire.ModelDescriptor, 0, len(cfg.Models))
-		for _, model := range cfg.Models {
-			out = append(out, appwire.ModelDescriptor{Provider: model.Provider, Model: model.Model})
-		}
-		return appwire.ModelListResponse{Data: out}, nil
+		return appwire.ModelListResponse{}, nil
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfTasksList, func(ctx context.Context, params appwire.TaskListParams) (appwire.TaskListResponse, error) {
-		source, err := sourceForThread(sources, params.Ref, "")
+		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
 		if err != nil {
 			return appwire.TaskListResponse{}, err
 		}
@@ -302,6 +423,21 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		return appwire.HarnessListResponse{Data: launchHarnessDescriptors(cfg)}, nil
 	})
 	return server
+}
+
+func shouldResumeAfterTurnStartError(err error) bool {
+	return isSessionUnavailableError(err)
+}
+
+func isSessionUnavailableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		return false
+	}
+	return wire.Code == appwire.CodeUnavailable && serfErrorInfoFromData(wire.Data) == string(appwire.ErrorSessionUnavailable)
 }
 
 func ensureThreadActionAvailable(ctx context.Context, source appsource.Source, ref, action string) error {
@@ -347,16 +483,19 @@ func hubThreadList(ctx context.Context, cfg WebConfig, sources *appsource.Regist
 		}
 		resp, err := source.ListThreads(ctx, params)
 		if err != nil {
-			return appwire.ThreadListResponse{}, err
+			if sourceExplicitlyRequestedForList(source.ID(), params) {
+				return appwire.ThreadListResponse{}, err
+			}
+			continue
 		}
 		for _, thread := range resp.Data {
-			if thread.ID != "" {
-				liveIDs[thread.ID] = struct{}{}
+			sourceID := threadListSourceID(source.ID(), thread)
+			for _, id := range []string{thread.ID, thread.SessionID} {
+				if key := threadListSourceKey(sourceID, id); key != "" {
+					liveIDs[key] = struct{}{}
+				}
 			}
-			if thread.SessionID != "" {
-				liveIDs[thread.SessionID] = struct{}{}
-			}
-			thread = mergePastMetadataForList(cfg, thread)
+			thread = mergePastMetadataForList(cfg, source.ID(), thread)
 			if appThreadMatches(thread, params) {
 				threads = append(threads, thread)
 			}
@@ -368,7 +507,7 @@ func hubThreadList(ctx context.Context, cfg WebConfig, sources *appsource.Regist
 			limit = 100
 		}
 		for _, entry := range cfg.Past.Search(params.SearchTerm, limit, 0) {
-			if _, ok := liveIDs[entry.ID]; ok {
+			if _, ok := liveIDs[threadListSourceKey("local", entry.ID)]; ok {
 				continue
 			}
 			thread := pastEntryThread(entry, false)
@@ -386,6 +525,20 @@ func hubThreadList(ctx context.Context, cfg WebConfig, sources *appsource.Regist
 	return appwire.ThreadListResponse{Data: threads}, nil
 }
 
+func threadListSourceID(defaultSourceID string, thread appwire.Thread) string {
+	if thread.Source != "" {
+		return thread.Source
+	}
+	if ref, err := appwire.ParseRef(thread.Serf.Ref); err == nil && ref.SourceID != "" {
+		return ref.SourceID
+	}
+	return defaultSourceID
+}
+
+func threadListSourceKey(sourceID, threadID string) string {
+	return appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
+}
+
 func sourceAllowedForList(sourceID string, params appwire.ThreadListParams) bool {
 	if len(params.SourceIDs) == 0 {
 		return true
@@ -398,8 +551,20 @@ func sourceAllowedForList(sourceID string, params appwire.ThreadListParams) bool
 	return false
 }
 
-func mergePastMetadataForList(cfg WebConfig, live appwire.Thread) appwire.Thread {
+func sourceExplicitlyRequestedForList(sourceID string, params appwire.ThreadListParams) bool {
+	for _, requested := range params.SourceIDs {
+		if requested == sourceID {
+			return true
+		}
+	}
+	return false
+}
+
+func mergePastMetadataForList(cfg WebConfig, sourceID string, live appwire.Thread) appwire.Thread {
 	if cfg.Past == nil {
+		return live
+	}
+	if threadListSourceID(sourceID, live) != "local" {
 		return live
 	}
 	var entry PastEntry
@@ -461,7 +626,7 @@ func appThreadMatches(thread appwire.Thread, params appwire.ThreadListParams) bo
 		status := strings.ToLower(thread.Status.Type)
 		found := false
 		for _, want := range params.Statuses {
-			if strings.EqualFold(want, status) {
+			if strings.EqualFold(normalizeThreadListStatusFilter(want), status) {
 				found = true
 				break
 			}
@@ -498,19 +663,25 @@ func appThreadMatches(thread appwire.Thread, params appwire.ThreadListParams) bo
 	return strings.Contains(haystack, q)
 }
 
+func normalizeThreadListStatusFilter(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "active":
+		return appwire.ThreadStatusProcessing
+	case "notloaded":
+		return appwire.ThreadStatusEnded
+	case "systemerror":
+		return appwire.ThreadStatusError
+	default:
+		return strings.ToLower(strings.TrimSpace(status))
+	}
+}
+
 func pastThreadForRead(cfg WebConfig, params appwire.ThreadReadParams) (appwire.Thread, bool) {
 	if cfg.Past == nil {
 		return appwire.Thread{}, false
 	}
-	threadID := strings.TrimSpace(params.ThreadID)
-	if threadID == "" && params.Ref != "" {
-		ref, err := appwire.ParseRef(params.Ref)
-		if err != nil {
-			return appwire.Thread{}, false
-		}
-		threadID = ref.ThreadID
-	}
-	if threadID == "" {
+	threadID, ok := localPastThreadID(params)
+	if !ok {
 		return appwire.Thread{}, false
 	}
 	entry, ok := cfg.Past.Find(threadID)
@@ -520,7 +691,39 @@ func pastThreadForRead(cfg WebConfig, params appwire.ThreadReadParams) (appwire.
 	return pastEntryThread(entry, params.IncludeTurns), true
 }
 
+func localPastThreadID(params appwire.ThreadReadParams) (string, bool) {
+	if params.Ref != "" {
+		ref, err := appwire.ParseRef(params.Ref)
+		if err != nil {
+			return "", false
+		}
+		if ref.SourceID != "local" {
+			return "", false
+		}
+		return ref.ThreadID, true
+	}
+	threadID := strings.TrimSpace(params.ThreadID)
+	if threadID == "" {
+		return "", false
+	}
+	return threadID, true
+}
+
+func liveThreadCanMergeLocalPast(live appwire.Thread) bool {
+	if live.Serf.Ref != "" {
+		ref, err := appwire.ParseRef(live.Serf.Ref)
+		return err == nil && ref.SourceID == "local"
+	}
+	if live.Source != "" {
+		return live.Source == "local"
+	}
+	return true
+}
+
 func mergePastThreadForRead(cfg WebConfig, params appwire.ThreadReadParams, live appwire.Thread) appwire.Thread {
+	if !liveThreadCanMergeLocalPast(live) {
+		return live
+	}
 	if params.ThreadID == "" && params.Ref == "" {
 		switch {
 		case live.Serf.Ref != "":
@@ -775,22 +978,53 @@ func sourceForThread(sources *appsource.Registry, ref, threadID string) (appsour
 	return source, nil
 }
 
+func sourceForThreadWithManagedLaunch(ctx context.Context, cfg WebConfig, sources *appsource.Registry, ref, threadID string) (appsource.Source, error) {
+	if sourceID, ok := managedLaunchSourceIDForRef(cfg, ref); ok {
+		return cfg.CodexLauncher.EnsureSource(ctx, sourceID, sources)
+	}
+	return sourceForThread(sources, ref, threadID)
+}
+
+func managedLaunchSourceIDForRef(cfg WebConfig, ref string) (string, bool) {
+	if ref == "" || cfg.CodexLauncher == nil {
+		return "", false
+	}
+	parsed, err := appwire.ParseRef(ref)
+	if err != nil || parsed.SourceID == "local" || !cfg.CodexLauncher.Manages(parsed.SourceID) {
+		return "", false
+	}
+	return parsed.SourceID, true
+}
+
 func hubThreadStart(ctx context.Context, cfg WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
 	sourceID := launchSourceID(params)
 	if sourceID != "" && sourceID != "local" {
-		if strings.TrimSpace(params.Prompt) == "" && len(params.Items) == 0 {
-			return appwire.ThreadStartResponse{}, appwire.InvalidParams("initial prompt is required for Codex harness starts")
+		if strings.TrimSpace(params.Prompt) == "" {
+			params.Prompt = ""
 		}
-		source, ok := sources.Source(sourceID)
-		if !ok {
-			if cfg.CodexLauncher == nil {
-				return appwire.ThreadStartResponse{}, fmt.Errorf("source not found: %s", sourceID)
-			}
+		var source appsource.Source
+		if cfg.CodexLauncher != nil && cfg.CodexLauncher.Manages(sourceID) {
 			launched, err := cfg.CodexLauncher.EnsureSource(ctx, sourceID, sources)
 			if err != nil {
 				return appwire.ThreadStartResponse{}, err
 			}
 			source = launched
+		} else {
+			var ok bool
+			source, ok = sources.Source(sourceID)
+			if !ok {
+				if cfg.CodexLauncher == nil {
+					return appwire.ThreadStartResponse{}, fmt.Errorf("source not found: %s", sourceID)
+				}
+				launched, err := cfg.CodexLauncher.EnsureSource(ctx, sourceID, sources)
+				if err != nil {
+					return appwire.ThreadStartResponse{}, err
+				}
+				source = launched
+			}
+		}
+		if source == nil {
+			return appwire.ThreadStartResponse{}, fmt.Errorf("source not found: %s", sourceID)
 		}
 		return source.StartThread(ctx, params)
 	}
@@ -808,7 +1042,7 @@ func hubThreadStart(ctx context.Context, cfg WebConfig, sources *appsource.Regis
 	if err != nil {
 		return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
 	}
-	if err := validateConfiguredSerfModel(cfg.Models, modelRef); err != nil {
+	if err := validateSerfLaunchModel(ctx, cfg, modelRef); err != nil {
 		return appwire.ThreadStartResponse{}, err
 	}
 	workingDir := params.CWD
@@ -887,16 +1121,108 @@ func launchSourceID(params appwire.ThreadStartParams) string {
 	return ""
 }
 
-func validateConfiguredSerfModel(models []modelDescriptor, ref cmdutil.ModelRef) error {
-	if len(models) == 0 {
+func validateSerfLaunchModel(ctx context.Context, cfg WebConfig, ref cmdutil.ModelRef) error {
+	contract, err := serfLaunchModelList(ctx, cfg)
+	if err != nil || (len(contract.Data) == 0 && len(contract.Diagnostics) == 0) {
 		return nil
 	}
-	for _, model := range models {
-		if strings.EqualFold(strings.TrimSpace(model.Provider), ref.Provider) && strings.TrimSpace(model.Model) == ref.Model {
-			return nil
+	providerEnumerated := false
+	for _, model := range contract.Data {
+		if strings.EqualFold(strings.TrimSpace(model.Provider), ref.Provider) {
+			providerEnumerated = true
+			if strings.TrimSpace(model.Model) == ref.Model {
+				return nil
+			}
 		}
 	}
+	if !providerEnumerated {
+		if providerHasLaunchDiagnostic(contract.Diagnostics, ref.Provider) || launchProviderAllowsUnreportedModels(ref.Provider) {
+			return nil
+		}
+		return appwire.HubLaunchError("model provider is not reported by the Serf launch harness: " + ref.Provider)
+	}
 	return appwire.HubLaunchError("model is not configured for Serf launch: " + ref.Qualified())
+}
+
+func launchProviderAllowsUnreportedModels(provider string) bool {
+	return strings.EqualFold(strings.TrimSpace(provider), "openrouter-anthropic")
+}
+
+func providerHasLaunchDiagnostic(diagnostics []appwire.ModelListDiagnostic, provider string) bool {
+	for _, diag := range diagnostics {
+		if strings.EqualFold(strings.TrimSpace(diag.Provider), provider) {
+			return true
+		}
+	}
+	return false
+}
+
+func serfLaunchModels(ctx context.Context, cfg WebConfig) ([]appwire.ModelDescriptor, error) {
+	resp, err := serfLaunchModelList(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Data, nil
+}
+
+func serfLaunchModelList(ctx context.Context, cfg WebConfig) (appwire.ModelListResponse, error) {
+	if lister, ok := cfg.Spawner.(SerfLaunchModelContractLister); ok && lister != nil {
+		resp, err := lister.ListLaunchModelContract(ctx)
+		if err != nil {
+			return appwire.ModelListResponse{}, err
+		}
+		resp.Data = sanitizeModelDescriptors(resp.Data)
+		resp.Diagnostics = sanitizeModelDiagnostics(resp.Diagnostics)
+		return resp, nil
+	}
+	lister, ok := cfg.Spawner.(SerfLaunchModelLister)
+	if !ok || lister == nil {
+		return appwire.ModelListResponse{}, nil
+	}
+	models, err := lister.ListLaunchModels(ctx)
+	if err != nil {
+		return appwire.ModelListResponse{}, err
+	}
+	return appwire.ModelListResponse{Data: sanitizeModelDescriptors(models)}, nil
+}
+
+func hasSerfLaunchModelLister(cfg WebConfig) bool {
+	if lister, ok := cfg.Spawner.(SerfLaunchModelContractLister); ok && lister != nil {
+		return true
+	}
+	if lister, ok := cfg.Spawner.(SerfLaunchModelLister); ok && lister != nil {
+		return true
+	}
+	return false
+}
+
+func sanitizeModelDescriptors(models []appwire.ModelDescriptor) []appwire.ModelDescriptor {
+	out := make([]appwire.ModelDescriptor, 0, len(models))
+	for _, model := range models {
+		provider := strings.TrimSpace(model.Provider)
+		name := strings.TrimSpace(model.Model)
+		if provider == "" || name == "" {
+			continue
+		}
+		out = append(out, appwire.ModelDescriptor{Provider: provider, Model: name})
+	}
+	return out
+}
+
+func sanitizeModelDiagnostics(diagnostics []appwire.ModelListDiagnostic) []appwire.ModelListDiagnostic {
+	out := make([]appwire.ModelListDiagnostic, 0, len(diagnostics))
+	for _, diag := range diagnostics {
+		diag.Provider = strings.TrimSpace(diag.Provider)
+		diag.Source = strings.TrimSpace(diag.Source)
+		diag.Title = strings.TrimSpace(diag.Title)
+		diag.Message = strings.TrimSpace(diag.Message)
+		diag.Hint = strings.TrimSpace(diag.Hint)
+		if diag.Message == "" {
+			continue
+		}
+		out = append(out, diag)
+	}
+	return out
 }
 
 func launchHarnessDescriptors(cfg WebConfig) []appwire.HarnessDescriptor {
@@ -934,9 +1260,26 @@ func hubThreadResume(ctx context.Context, cfg WebConfig, sources *appsource.Regi
 			return appwire.ThreadResumeResponse{}, err
 		}
 		if ref.SourceID != "local" {
-			source, err := sourceForThread(sources, params.Ref, "")
-			if err != nil {
-				return appwire.ThreadResumeResponse{}, err
+			var source appsource.Source
+			if cfg.CodexLauncher != nil && cfg.CodexLauncher.Manages(ref.SourceID) {
+				launched, err := cfg.CodexLauncher.EnsureSource(ctx, ref.SourceID, sources)
+				if err != nil {
+					return appwire.ThreadResumeResponse{}, err
+				}
+				source = launched
+			} else {
+				var err error
+				source, err = sourceForThread(sources, params.Ref, "")
+				if err != nil {
+					if cfg.CodexLauncher == nil {
+						return appwire.ThreadResumeResponse{}, err
+					}
+					launched, launchErr := cfg.CodexLauncher.EnsureSource(ctx, ref.SourceID, sources)
+					if launchErr != nil {
+						return appwire.ThreadResumeResponse{}, launchErr
+					}
+					source = launched
+				}
 			}
 			return source.ResumeThread(ctx, params)
 		}
@@ -984,18 +1327,39 @@ func resumeRequestForConfig(cfg WebConfig, id string) ResumeRequest {
 		if pe, ok := cfg.Past.Find(id); ok {
 			req.WorkingDir = pe.Meta.EnvInfo.WorkingDir
 			req.StateDir = pe.StateDir
-			if pe.Meta.ProfileID != "" && pe.Meta.Model != "" {
-				req.Model = pe.Meta.ProfileID + "/" + pe.Meta.Model
+			if provider := resumeProviderFromProfileID(pe.Meta.ProfileID); provider != "" && pe.Meta.Model != "" {
+				req.Model = provider + "/" + pe.Meta.Model
 			}
 		}
 	}
 	return req
 }
 
-func hubThreadFork(_ context.Context, cfg WebConfig, params appwire.ThreadForkParams) (appwire.ThreadForkResponse, error) {
+func resumeProviderFromProfileID(profileID string) string {
+	switch provider := strings.ToLower(strings.TrimSpace(profileID)); provider {
+	case "openai", "anthropic", "google", "gemini", "minimax", "openrouter-anthropic", "kimi", "glm", "openrouter", "ollama":
+		return provider
+	default:
+		return ""
+	}
+}
+
+func hubThreadFork(ctx context.Context, cfg WebConfig, sources *appsource.Registry, params appwire.ThreadForkParams) (appwire.ThreadForkResponse, error) {
 	ref, err := appwire.ParseRef(params.Ref)
 	if err != nil {
 		return appwire.ThreadForkResponse{}, err
+	}
+	if ref.SourceID != "local" {
+		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
+		if err != nil {
+			return appwire.ThreadForkResponse{}, err
+		}
+		if threadForkRequiresTurnCapability(params) {
+			if err := ensureThreadActionAvailable(ctx, source, params.Ref, "fork"); err != nil {
+				return appwire.ThreadForkResponse{}, err
+			}
+		}
+		return source.ForkThread(ctx, params)
 	}
 	turn, err := parseSourceTurnID(params.SourceTurnID)
 	if err != nil {
@@ -1020,13 +1384,19 @@ func hubThreadFork(_ context.Context, cfg WebConfig, params appwire.ThreadForkPa
 	if cfg.Past != nil {
 		_ = cfg.Past.Rebuild()
 	}
-	childRef := appwire.Ref{SourceID: ref.SourceID, ThreadID: childID}.String()
+	childRef := appwire.Ref{SourceID: "local", ThreadID: childID}.String()
 	return appwire.ThreadForkResponse{Thread: appwire.Thread{
 		ID:        childID,
 		SessionID: childID,
-		Source:    ref.SourceID,
+		Source:    "local",
 		Serf:      appwire.SerfThread{Ref: childRef},
 	}}, nil
+}
+
+func threadForkRequiresTurnCapability(params appwire.ThreadForkParams) bool {
+	return strings.TrimSpace(params.SourceTurnID) != "" ||
+		strings.TrimSpace(params.EditedInput) != "" ||
+		strings.TrimSpace(params.Label) != ""
 }
 
 func parseSourceTurnID(raw string) (int, error) {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -111,12 +112,12 @@ func TestWeb_CodexSessionRouteReadsConfiguredSource(t *testing.T) {
 	if !strings.Contains(body, `data-source-label="codex-local"`) || !strings.Contains(body, ">codex-local<") {
 		t.Fatalf("body=%s", body)
 	}
-	for _, unsupported := range []string{`data-action-trigger="compact"`, `data-action-trigger="interrupt"`, `data-action-trigger="shutdown"`, `data-steer-trigger`, `data-model-trigger`} {
+	for _, unsupported := range []string{`data-action-trigger="interrupt"`, `data-action-trigger="shutdown"`, `data-steer-trigger`, `data-model-trigger`} {
 		if strings.Contains(body, unsupported) {
 			t.Fatalf("codex workspace advertised unsupported control %q:\n%s", unsupported, body)
 		}
 	}
-	for _, supported := range []string{`class="input-btn input-btn-primary send-btn"`} {
+	for _, supported := range []string{`data-action-trigger="compact"`, `class="input-btn input-btn-primary send-btn"`} {
 		if !strings.Contains(body, supported) {
 			t.Fatalf("codex workspace missing supported control %q:\n%s", supported, body)
 		}
@@ -168,8 +169,139 @@ func TestAPI_CodexSessionDetailReadsConfiguredSource(t *testing.T) {
 	if !detail.Capabilities.Send {
 		t.Fatalf("codex supported capabilities missing: %+v", detail.Capabilities)
 	}
-	if detail.Capabilities.Steer || detail.Capabilities.Interrupt || detail.Capabilities.Compact || detail.Capabilities.Clear || detail.Capabilities.Fork || detail.Capabilities.Shutdown || detail.Capabilities.ChangeModel {
+	if !detail.Capabilities.Compact {
+		t.Fatalf("codex compact capability missing: %+v", detail.Capabilities)
+	}
+	if detail.Capabilities.Steer || detail.Capabilities.Interrupt || detail.Capabilities.Clear || detail.Capabilities.Fork || detail.Capabilities.Shutdown || detail.Capabilities.ChangeModel {
 		t.Fatalf("codex unsupported capabilities exposed: %+v", detail.Capabilities)
+	}
+}
+
+func TestWeb_APITreeIncludesConfiguredCodexSourceThreads(t *testing.T) {
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	appserver.HandleTyped(codex.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (map[string]any, error) {
+		return map[string]any{"data": []map[string]any{{
+			"id":            "th_codex",
+			"sessionId":     "th_codex",
+			"preview":       "Codex tree task",
+			"modelProvider": "openai",
+			"createdAt":     100,
+			"updatedAt":     200,
+			"status":        map[string]any{"type": "idle"},
+			"cwd":           "/work/codex",
+			"cliVersion":    "codex-test",
+			"source":        "appServer",
+		}}}, nil
+	})
+	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
+	defer codexHTTP.Close()
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Past:    NewPastIndex(""),
+		CodexSources: []appsource.CodexSourceConfig{{
+			ID:       "codex",
+			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
+		}},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got hubapi.TreeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Live) != 1 {
+		t.Fatalf("live=%+v", got.Live)
+	}
+	if got.Live[0].Ref != "codex:th_codex" || got.Live[0].HostID != "codex" || got.Live[0].SessionID != "th_codex" {
+		t.Fatalf("codex live node lost source-qualified identity: %+v", got.Live[0])
+	}
+	var foundProject bool
+	for _, project := range got.Projects {
+		for _, session := range project.Sessions {
+			if session.Ref == "codex:th_codex" && session.Title == "Codex tree task" {
+				foundProject = true
+			}
+		}
+	}
+	if !foundProject {
+		t.Fatalf("codex thread missing from project tree: %+v", got.Projects)
+	}
+}
+
+func TestWeb_SidebarIncludesConfiguredCodexSourceThreads(t *testing.T) {
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	appserver.HandleTyped(codex.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (map[string]any, error) {
+		return map[string]any{"data": []map[string]any{{
+			"id":            "th_codex",
+			"sessionId":     "th_codex",
+			"preview":       "Codex sidebar task",
+			"modelProvider": "openai",
+			"createdAt":     100,
+			"updatedAt":     200,
+			"status":        map[string]any{"type": "idle"},
+			"cwd":           "/work/codex",
+			"cliVersion":    "codex-test",
+			"source":        "appServer",
+		}}}, nil
+	})
+	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
+	defer codexHTTP.Close()
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Past:    NewPastIndex(""),
+		CodexSources: []appsource.CodexSourceConfig{{
+			ID:       "codex",
+			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
+		}},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `href="/s/codex:th_codex"`) || !strings.Contains(body, `hx-get="/_partials/s/codex:th_codex/workspace"`) {
+		t.Fatalf("sidebar missing source-qualified codex link:\n%s", body)
+	}
+	if !strings.Contains(body, "Codex sidebar task") {
+		t.Fatalf("sidebar missing codex title:\n%s", body)
+	}
+}
+
+func TestAPI_ManagedCodexSessionDetailEnsuresSource(t *testing.T) {
+	launcher := NewCodexLauncher([]CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
+	defer shutdownCodexLauncher(t, launcher)
+	web := NewWebServer(WebConfig{
+		HubAddr:       "127.0.0.1:9180",
+		Past:          NewPastIndex(""),
+		CodexLaunches: []CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
+		CodexLauncher: launcher,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+url.PathEscape("codex-managed:th_fake"), nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var detail hubapi.SessionDetail
+	if err := json.Unmarshal(rec.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("decode: %v body=%s", err, rec.Body.String())
+	}
+	if detail.Ref != "codex-managed:th_fake" || !detail.Capabilities.Send {
+		t.Fatalf("detail=%+v", detail)
 	}
 }
 
@@ -214,6 +346,133 @@ func TestAPI_CodexUnsupportedActionReturnsStructuredUnavailable(t *testing.T) {
 	}
 	if out.SerfErrorInfo != string(appwire.ErrorActionUnavailable) {
 		t.Fatalf("error=%+v", out)
+	}
+}
+
+func TestAPI_SendUnavailableCapabilityDoesNotStartTurn(t *testing.T) {
+	startTurnCalls := 0
+	source := &scriptedAppSource{
+		id: "codex",
+		thread: appwire.Thread{
+			ID:            "th_no_send",
+			SessionID:     "th_no_send",
+			Source:        "codex",
+			Preview:       "Codex read-only task",
+			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+			CWD:           "/work/project",
+			ModelProvider: "openai",
+			Serf: appwire.SerfThread{
+				Ref:          "codex:th_no_send",
+				Capabilities: appwire.ThreadCapabilities{Compact: true},
+			},
+		},
+		startTurn: func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+			startTurnCalls++
+			return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_unavailable"}}, nil
+		},
+	}
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Past:    NewPastIndex(""),
+	})
+	web.sources.Add(source)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+url.PathEscape("codex:th_no_send")+"/send", strings.NewReader(`{"text":"hi"}`))
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if startTurnCalls != 0 {
+		t.Fatalf("StartTurn calls=%d, want 0", startTurnCalls)
+	}
+	var out hubapi.ErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v body=%s", err, rec.Body.String())
+	}
+	if out.SerfErrorInfo != string(appwire.ErrorActionUnavailable) || !strings.Contains(out.Error, "send is not available") {
+		t.Fatalf("error=%+v", out)
+	}
+}
+
+func TestAPI_SendEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
+	launcher := NewCodexLauncher([]CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
+	defer shutdownCodexLauncher(t, launcher)
+	if _, err := launcher.EnsureSource(context.Background(), "codex-managed", nil); err != nil {
+		t.Fatalf("EnsureSource: %v", err)
+	}
+	first := launcherRunningProcess(t, launcher, "codex-managed")
+	if err := first.cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill first codex: %v", err)
+	}
+	waitLaunchedCodexExited(t, first)
+
+	web := NewWebServer(WebConfig{
+		HubAddr:       "127.0.0.1:9180",
+		Past:          NewPastIndex(""),
+		CodexLaunches: []CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
+		CodexLauncher: launcher,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+url.PathEscape("codex-managed:th_fake")+"/send", strings.NewReader(`{"text":"hi"}`))
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	next := launcherRunningProcess(t, launcher, "codex-managed")
+	if next == first {
+		t.Fatal("send reused the exited managed Codex process")
+	}
+}
+
+func TestWeb_LocalSendUnavailableCapabilityDoesNotStartTurn(t *testing.T) {
+	startTurnCalls := 0
+	source := &scriptedAppSource{
+		id: "local",
+		thread: appwire.Thread{
+			ID:        "th_no_send",
+			SessionID: "th_no_send",
+			Source:    "local",
+			Preview:   "Local read-only task",
+			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+			CWD:       "/work/project",
+			Serf: appwire.SerfThread{
+				Ref:          "local:th_no_send",
+				Capabilities: appwire.ThreadCapabilities{Compact: true},
+			},
+		},
+		startTurn: func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+			startTurnCalls++
+			return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_unavailable"}}, nil
+		},
+	}
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Past:    NewPastIndex(""),
+	})
+	web.sources.Add(source)
+
+	req := httptest.NewRequest(http.MethodPost, "/s/th_no_send/send", strings.NewReader(`{"text":"hi"}`))
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if startTurnCalls != 0 {
+		t.Fatalf("StartTurn calls=%d, want 0", startTurnCalls)
+	}
+	if !strings.Contains(rec.Body.String(), "send is not available") {
+		t.Fatalf("body=%s", rec.Body.String())
 	}
 }
 
@@ -1096,6 +1355,48 @@ func TestNotificationSSECompletedTurnSnapshotDoesNotReplayStreamedToolOutputDelt
 	}
 }
 
+func TestNotificationSSECompletedTurnSnapshotEmitsMissingToolOutputSuffix(t *testing.T) {
+	var out bytes.Buffer
+	sw := newNotificationSSEWriter(&out, nil)
+	sw.write(appwire.Notification{
+		Method: appwire.NotifyToolOutputDelta,
+		Params: testRawJSON(t, map[string]any{
+			"itemId": "item_tool_delta",
+			"callId": "call_tool",
+			"delta":  "one\n",
+		}),
+	})
+	sw.write(appwire.Notification{
+		Method: appwire.NotifyTurnCompleted,
+		Params: testRawJSON(t, map[string]any{
+			"threadId": "th_1",
+			"turn": appwire.Turn{
+				ID:     "turn_1",
+				Status: appwire.TurnStatusCompleted,
+				Items: []appwire.ThreadItem{{
+					Type:     "tool_call",
+					ID:       "item_tool_result",
+					CallID:   "call_tool",
+					TurnID:   "turn_1",
+					ToolName: "shell",
+					Output:   "one\ntwo\n",
+					Status:   "completed",
+				}},
+			},
+		}),
+	})
+	body := out.String()
+	if got := strings.Count(body, "event: TOOL_CALL_OUTPUT_DELTA"); got != 2 {
+		t.Fatalf("tool output delta events=%d, want 2\nbody:\n%s", got, body)
+	}
+	if !strings.Contains(body, `"delta":"two\n"`) {
+		t.Fatalf("completed tool output suffix missing\nbody:\n%s", body)
+	}
+	if !strings.Contains(body, "event: TOOL_CALL_END") || !strings.Contains(body, `"output":"one\ntwo\n"`) {
+		t.Fatalf("completed tool final state missing\nbody:\n%s", body)
+	}
+}
+
 func TestNotificationSSECompletedTurnSnapshotUsesCallIDForStartedTool(t *testing.T) {
 	var out bytes.Buffer
 	sw := newNotificationSSEWriter(&out, nil)
@@ -1149,6 +1450,7 @@ type scriptedAppSource struct {
 	id            string
 	thread        appwire.Thread
 	notifications []appwire.Notification
+	startTurn     func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error)
 }
 
 func (s *scriptedAppSource) ID() string { return s.id }
@@ -1173,7 +1475,10 @@ func (s *scriptedAppSource) ForkThread(context.Context, appwire.ThreadForkParams
 	return appwire.ThreadForkResponse{}, appwire.Unavailable("scripted source does not fork threads")
 }
 
-func (s *scriptedAppSource) StartTurn(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+func (s *scriptedAppSource) StartTurn(ctx context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+	if s.startTurn != nil {
+		return s.startTurn(ctx, params)
+	}
 	return appwire.TurnStartResponse{}, appwire.Unavailable("scripted source does not start turns")
 }
 
@@ -1501,10 +1806,11 @@ func TestWeb_ApiSpawn_CodexSourcePassesRemoteWorkingDirThrough(t *testing.T) {
 	}
 }
 
-func TestWeb_ApiSpawn_RejectsBlankCodexPromptBeforeSourceStart(t *testing.T) {
+func TestWeb_ApiSpawn_AllowsBlankCodexPromptWithoutTurnStart(t *testing.T) {
 	workDir := t.TempDir()
 	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
 	var startCalled bool
+	var turnCalled bool
 	appserver.HandleTyped(codex.Router(), appwire.MethodThreadStart, func(_ context.Context, _ map[string]any) (map[string]any, error) {
 		startCalled = true
 		return map[string]any{"thread": map[string]any{
@@ -1513,6 +1819,10 @@ func TestWeb_ApiSpawn_RejectsBlankCodexPromptBeforeSourceStart(t *testing.T) {
 			"status":    map[string]any{"type": "idle"},
 			"source":    "appServer",
 		}}, nil
+	})
+	appserver.HandleTyped(codex.Router(), appwire.MethodTurnStart, func(_ context.Context, _ map[string]any) (map[string]any, error) {
+		turnCalled = true
+		return nil, errors.New("blank prompt should not start a turn")
 	})
 	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
 	defer codexHTTP.Close()
@@ -1532,18 +1842,21 @@ func TestWeb_ApiSpawn_RejectsBlankCodexPromptBeforeSourceStart(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	var out hubapi.ErrorResponse
+	var out hubapi.SpawnResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode: %v body=%q", err, rec.Body.String())
 	}
-	if out.Code != appwire.CodeInvalidParams || !strings.Contains(out.Error, "initial prompt") {
-		t.Fatalf("error response=%+v", out)
+	if out.Ref != "codex:th_blank" {
+		t.Fatalf("spawn response=%+v", out)
 	}
-	if startCalled {
-		t.Fatal("Codex source was started for blank prompt")
+	if !startCalled {
+		t.Fatal("Codex source was not started for blank prompt")
+	}
+	if turnCalled {
+		t.Fatal("Codex turn was started for blank prompt")
 	}
 }
 
@@ -1972,7 +2285,7 @@ func TestWeb_Send_ClosedSessionRequiresSpawner(t *testing.T) {
 	}
 }
 
-func TestWeb_Send_ClosedSessionResumesForwardsAndKeepsReplay(t *testing.T) {
+func TestWeb_Send_EndedRosterEntryResumesForwardsAndKeepsReplay(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "past")
 	sessionID := buildRPCParentSession(t, stateDir)
@@ -1997,6 +2310,18 @@ func TestWeb_Send_ClosedSessionResumesForwardsAndKeepsReplay(t *testing.T) {
 	defer daemonHTTP.Close()
 
 	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:        300,
+		Address:    "127.0.0.1:1",
+		Protocol:   appwire.ProtocolVersion,
+		Endpoint:   "ws://127.0.0.1:1/rpc",
+		SourceID:   "local",
+		ThreadID:   sessionID,
+		SessionID:  sessionID,
+		WorkingDir: "/tmp/project",
+		Model:      "gpt-5",
+		StartedAt:  time.Now().Add(-time.Hour),
+	})
 	spawner := &fakeRPCSpawner{
 		resume: func(_ context.Context, req ResumeRequest) (rendezvous.Entry, error) {
 			if req.SessionID != sessionID {
@@ -2018,12 +2343,14 @@ func TestWeb_Send_ClosedSessionResumesForwardsAndKeepsReplay(t *testing.T) {
 				SessionID:  sessionID,
 				WorkingDir: "/tmp/project",
 				Model:      "gpt-5",
+				StartedAt:  time.Now(),
 			}
 			writeRendezvous(t, runDir, entry)
 			return entry, nil
 		},
 	}
-	roster := NewRoster(runDir, fakeProber{sessionID: sessionID, status: "idle"})
+	roster := NewRoster(runDir, fakeProber{sessionID: sessionID, status: "ended"})
+	roster.Refresh()
 	web := NewWebServer(WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		RunDir:  runDir,
@@ -2292,7 +2619,7 @@ func disableLiveOllamaForModelTest(t *testing.T) {
 	t.Setenv("OLLAMA_API_KEY", "")
 }
 
-func TestWeb_ApiModels_ReturnsConfiguredModelsWhenLiveUnavailable(t *testing.T) {
+func TestWeb_ApiModels_ReturnsSerfLaunchContractWhenLiveUnavailable(t *testing.T) {
 	liveModelsCache.mu.Lock()
 	liveModelsCache.expires = time.Time{}
 	liveModelsCache.models = nil
@@ -2309,7 +2636,12 @@ func TestWeb_ApiModels_ReturnsConfiguredModelsWhenLiveUnavailable(t *testing.T) 
 
 	web := NewWebServer(WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Models:  []modelDescriptor{{Provider: "openai", Model: "gpt-5.2"}},
+		Spawner: &fakeRPCSpawner{
+			launchModels: func(context.Context) ([]appwire.ModelDescriptor, error) {
+				return []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}, nil
+			},
+		},
+		Models: []modelDescriptor{{Provider: "openai", Model: "gpt-stale"}},
 	})
 	req := httptest.NewRequest(http.MethodGet, "/api/models", nil)
 	req.Host = "127.0.0.1:9180"
@@ -2326,8 +2658,135 @@ func TestWeb_ApiModels_ReturnsConfiguredModelsWhenLiveUnavailable(t *testing.T) 
 	if len(models) != 1 {
 		t.Fatalf("models: got %d, want 1; body=%s", len(models), rec.Body.String())
 	}
-	if models[0].Provider != "openai" || models[0].Model != "gpt-5.2" {
+	if models[0].Provider != "openai" || models[0].Model != "gpt-5.5" {
 		t.Fatalf("model mismatch: %+v", models[0])
+	}
+}
+
+func TestWeb_ApiModels_DoesNotUseLiveProvidersWhenLaunchContractIsEmpty(t *testing.T) {
+	liveModelsCache.mu.Lock()
+	liveModelsCache.expires = time.Time{}
+	liveModelsCache.models = nil
+	liveModelsCache.mu.Unlock()
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("GEMINI_API_KEY", "")
+	t.Setenv("GLM_API_KEY", "")
+	t.Setenv("GROK_API_KEY", "")
+	t.Setenv("KIMI_API_KEY", "")
+	t.Setenv("MINIMAX_API_KEY", "")
+	t.Setenv("OPENROUTER_API_KEY", "")
+	disableLiveOllamaForModelTest(t)
+
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data":[{"id":"deepseek/deepseek-chat"}]}`)) //nolint:errcheck
+	}))
+	defer live.Close()
+	t.Setenv("OPENROUTER_API_KEY", "test-key")
+	t.Setenv("OPENROUTER_BASE_URL", live.URL+"/v1")
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Spawner: &fakeRPCModelContractSpawner{
+			contract: appwire.ModelListResponse{},
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/models", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	var models []hubapi.ModelOption
+	if err := json.Unmarshal(rec.Body.Bytes(), &models); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(models) != 0 {
+		t.Fatalf("models=%+v", models)
+	}
+}
+
+func TestWeb_ApiModels_ReturnsLaunchErrorWhenLaunchModelListerFails(t *testing.T) {
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Spawner: &fakeRPCModelContractSpawner{
+			err: errors.New("serf launch-check returned invalid response"),
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/models", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusOK {
+		t.Fatalf("status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "invalid response") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestWeb_SettingsProvidersShowsLaunchModelDiagnostics(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "fake-serf")
+	script := `#!/bin/sh
+if [ "$1" = "launch-check" ]; then
+  printf '{"protocol":"serf-appwire-v1","models":[{"provider":"ollama","model":"local"}],"diagnostics":[{"provider":"openai","source":"provider","title":"Provider error","message":"HTTP 403"}]}\n'
+  exit 0
+fi
+exit 2
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Spawner: &HubSpawner{Cfg: DefaultConfig(), SerfBinary: bin, RunDir: t.TempDir(), HubToken: "generated-token"},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/_partials/settings/providers", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"ollama", "local", "openai", "HTTP 403"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("settings providers missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestWeb_SettingsProvidersShowsLaunchModelErrorDiagnostic(t *testing.T) {
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Spawner: &fakeRPCModelContractSpawner{
+			err: errors.New("serf launch-check returned invalid response"),
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/_partials/settings/providers", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "model list") || !strings.Contains(body, "invalid response") {
+		t.Fatalf("settings providers missing launch error diagnostic:\n%s", body)
 	}
 }
 
@@ -2502,18 +2961,23 @@ func TestWeb_ApiDirs_FiltersByBasename(t *testing.T) {
 	}
 }
 
-// TestWeb_Settings_Providers_RendersConfigured checks that GET /settings/providers
-// with Models in WebConfig renders the provider names.
-func TestWeb_Settings_Providers_RendersConfigured(t *testing.T) {
+// TestWeb_Settings_Providers_RendersSerfLaunchContract checks that
+// GET /settings/providers renders the Serf launch harness model contract.
+func TestWeb_Settings_Providers_RendersSerfLaunchContract(t *testing.T) {
 	web := NewWebServer(WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  NewRoster(t.TempDir(), nil),
 		Past:    NewPastIndex(""),
-		Models: []modelDescriptor{
-			{Provider: "anthropic", Model: "claude-sonnet-4-6"},
-			{Provider: "anthropic", Model: "claude-opus-4-7"},
-			{Provider: "openai", Model: "gpt-5"},
+		Spawner: &fakeRPCSpawner{
+			launchModels: func(context.Context) ([]appwire.ModelDescriptor, error) {
+				return []appwire.ModelDescriptor{
+					{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+					{Provider: "anthropic", Model: "claude-opus-4-7"},
+					{Provider: "openai", Model: "gpt-5.5"},
+				}, nil
+			},
 		},
+		Models: []modelDescriptor{{Provider: "openai", Model: "gpt-stale"}},
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/settings/providers", nil)
 	req.Host = "127.0.0.1:9180"
@@ -2525,10 +2989,13 @@ func TestWeb_Settings_Providers_RendersConfigured(t *testing.T) {
 		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"anthropic", "openai", "claude-sonnet-4-6", "gpt-5"} {
+	for _, want := range []string{"anthropic", "openai", "claude-sonnet-4-6", "gpt-5.5"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q: %q", want, body)
 		}
+	}
+	if strings.Contains(body, "gpt-stale") {
+		t.Fatalf("settings rendered stale configured model: %q", body)
 	}
 }
 
@@ -3858,6 +4325,22 @@ func TestWeb_WorkspaceDataLocalLiveUsesAppWireCapabilities(t *testing.T) {
 	}
 	if got.Capabilities.Send || got.Capabilities.Steer || got.Capabilities.Interrupt || got.Capabilities.Clear || got.Capabilities.Shutdown || got.Capabilities.ChangeModel {
 		t.Fatalf("workspace exposed unsupported capabilities: %+v", got.Capabilities)
+	}
+}
+
+func TestWeb_ManagedCodexLiveWorkspaceCapabilitiesEnsureSource(t *testing.T) {
+	launcher := NewCodexLauncher([]CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
+	defer shutdownCodexLauncher(t, launcher)
+	web := NewWebServer(WebConfig{
+		HubAddr:       "127.0.0.1:9180",
+		Past:          NewPastIndex(""),
+		CodexLaunches: []CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
+		CodexLauncher: launcher,
+	})
+
+	caps := web.liveWorkspaceCapabilities("codex-managed:th_fake", hubapi.SessionCapabilities{})
+	if !caps.Send {
+		t.Fatalf("capabilities=%+v", caps)
 	}
 }
 

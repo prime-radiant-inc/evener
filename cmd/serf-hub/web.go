@@ -431,23 +431,11 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
 		return
 	}
-	var live []LiveEntry
-	if s.cfg.Roster != nil {
-		live = s.cfg.Roster.List()
-	}
-	var metas []agent.SessionMeta
-	if s.cfg.Past != nil {
-		metas = s.cfg.Past.AllMetas()
-	}
+	metas, live := s.navigationTreeInputs(r.Context())
 	tree := BuildTree(metas, live)
 	resp := hubapi.TreeResponse{
 		GeneratedAt: time.Now().UTC(),
-		Sources: []hubapi.Source{{
-			ID:     "local",
-			Label:  "this host",
-			Kind:   "local",
-			Online: true,
-		}},
+		Sources:     s.apiTreeSources(),
 	}
 	for _, n := range tree.Live {
 		resp.Live = append(resp.Live, s.apiTreeNode("live", "", n, true))
@@ -507,6 +495,142 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeAPIJSON(w, http.StatusOK, resp)
+}
+
+func (s *WebServer) navigationTreeInputs(ctx context.Context) ([]agent.SessionMeta, []LiveEntry) {
+	var live []LiveEntry
+	if s.cfg.Roster != nil {
+		live = s.cfg.Roster.List()
+	}
+	var metas []agent.SessionMeta
+	if s.cfg.Past != nil {
+		metas = s.cfg.Past.AllMetas()
+	}
+	for _, thread := range s.remoteTreeThreads(ctx) {
+		meta, entry, ok := appThreadTreeEntries(thread)
+		if !ok {
+			continue
+		}
+		metas = append(metas, meta)
+		if appThreadTreeLive(thread) {
+			live = append(live, entry)
+		}
+	}
+	return metas, live
+}
+
+func (s *WebServer) remoteTreeThreads(ctx context.Context) []appwire.Thread {
+	if s.sources == nil {
+		return nil
+	}
+	var threads []appwire.Thread
+	for _, source := range s.sources.All() {
+		if source.ID() == "local" {
+			continue
+		}
+		resp, err := source.ListThreads(ctx, appwire.ThreadListParams{IncludeSubagents: true})
+		if err != nil {
+			continue
+		}
+		for _, thread := range resp.Data {
+			sourceID := threadListSourceID(source.ID(), thread)
+			thread.Source = sourceID
+			if thread.Serf.Ref == "" {
+				threadID := firstNonEmpty(thread.ID, thread.SessionID)
+				if threadID != "" {
+					thread.Serf.Ref = appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
+				}
+			}
+			threads = append(threads, thread)
+		}
+	}
+	return threads
+}
+
+func appThreadTreeEntries(thread appwire.Thread) (agent.SessionMeta, LiveEntry, bool) {
+	ref, ok := appThreadTreeRef(thread)
+	if !ok {
+		return agent.SessionMeta{}, LiveEntry{}, false
+	}
+	refText := ref.String()
+	title := firstNonEmpty(thread.Name, thread.Preview, thread.SessionID, thread.ID, refText)
+	createdAt := unixTime(thread.CreatedAt)
+	updatedAt := unixTime(thread.UpdatedAt)
+	meta := agent.SessionMeta{
+		ID:             refText,
+		ProfileID:      ref.SourceID,
+		Model:          thread.ModelProvider,
+		CreatedAt:      createdAt,
+		UpdatedAt:      updatedAt,
+		OriginalPrompt: title,
+		EnvInfo: agent.EnvironmentInfo{
+			WorkingDir: thread.CWD,
+		},
+	}
+	if thread.GitInfo != nil {
+		meta.EnvInfo.GitBranch = thread.GitInfo.Branch
+		meta.EnvInfo.GitOriginURL = thread.GitInfo.OriginURL
+	}
+	entry := LiveEntry{
+		Entry: rendezvous.Entry{
+			SourceID:   ref.SourceID,
+			ThreadID:   ref.ThreadID,
+			SessionID:  refText,
+			WorkingDir: thread.CWD,
+			Model:      thread.ModelProvider,
+			StartedAt:  orderCreatedAt(createdAt, updatedAt),
+		},
+		SessionID: refText,
+		Status:    thread.Status.Type,
+	}
+	return meta, entry, true
+}
+
+func appThreadTreeRef(thread appwire.Thread) (appwire.Ref, bool) {
+	if thread.Serf.Ref != "" {
+		if ref, err := appwire.ParseRef(thread.Serf.Ref); err == nil {
+			return ref, true
+		}
+	}
+	sourceID := strings.TrimSpace(thread.Source)
+	threadID := firstNonEmpty(thread.ID, thread.SessionID)
+	if sourceID == "" || threadID == "" {
+		return appwire.Ref{}, false
+	}
+	return appwire.Ref{SourceID: sourceID, ThreadID: threadID}, true
+}
+
+func appThreadTreeLive(thread appwire.Thread) bool {
+	switch thread.Status.Type {
+	case appwire.ThreadStatusClosed, appwire.ThreadStatusEnded:
+		return false
+	default:
+		return true
+	}
+}
+
+func (s *WebServer) apiTreeSources() []hubapi.Source {
+	sources := []hubapi.Source{{
+		ID:     "local",
+		Label:  "this host",
+		Kind:   "local",
+		Online: true,
+	}}
+	if s.sources == nil {
+		return sources
+	}
+	for _, source := range s.sources.All() {
+		if source.ID() == "local" {
+			continue
+		}
+		sources = append(sources, hubapi.Source{
+			ID:     source.ID(),
+			Label:  source.ID(),
+			Kind:   "appwire",
+			Online: true,
+		})
+	}
+	return sources
 }
 
 func projectKey(name string) string {
@@ -618,7 +742,9 @@ func hubDetailFromAppThread(thread appwire.Thread) hubapi.SessionDetail {
 
 func (s *WebServer) isLive(sessionID string) bool {
 	if !isLocalRouteID(sessionID) {
-		_, err := sourceForThread(s.sources, appRefFromRouteID(sessionID), "")
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_, err := sourceForThreadWithManagedLaunch(ctx, s.cfg, s.sources, appRefFromRouteID(sessionID), "")
 		return err == nil
 	}
 	if s.cfg.Roster == nil {
@@ -629,16 +755,17 @@ func (s *WebServer) isLive(sessionID string) bool {
 }
 
 func (s *WebServer) apiTreeNode(scope, projectKey string, n TreeNode, live bool) hubapi.TreeNode {
-	ref := hubapi.LocalRef(n.ID).String()
-	rowID := scope + ":" + ref
+	ref := hubRefFromTreeNodeID(n.ID)
+	refText := ref.String()
+	rowID := scope + ":" + refText
 	if projectKey != "" {
-		rowID = scope + ":" + projectKey + ":" + ref
+		rowID = scope + ":" + projectKey + ":" + refText
 	}
 	out := hubapi.TreeNode{
 		RowID:     rowID,
-		Ref:       ref,
-		HostID:    "local",
-		SessionID: n.ID,
+		Ref:       refText,
+		HostID:    ref.HostID,
+		SessionID: ref.SessionID,
 		Title:     n.Title,
 		Project:   n.Project,
 		State:     n.State,
@@ -654,6 +781,13 @@ func (s *WebServer) apiTreeNode(scope, projectKey string, n TreeNode, live bool)
 		out.Children = append(out.Children, s.apiTreeNode("project", projectKey, child, s.isLive(child.ID)))
 	}
 	return out
+}
+
+func hubRefFromTreeNodeID(id string) hubapi.Ref {
+	if ref, err := hubapi.ParseRef(id); err == nil {
+		return ref
+	}
+	return hubapi.LocalRef(id)
 }
 
 func (s *WebServer) liveEntry(sessionID string) (LiveEntry, bool) {
@@ -758,7 +892,7 @@ func (s *WebServer) apiSessionDetail(id string) (hubapi.SessionDetail, bool) {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		appRef := appRefFromRouteID(id)
-		if source, err := sourceForThread(s.sources, appRef, ""); err == nil {
+		if source, err := sourceForThreadWithManagedLaunch(ctx, s.cfg, s.sources, appRef, ""); err == nil {
 			if resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: appRef, IncludeTurns: true, ItemsView: "full"}); err == nil {
 				appDetail := hubDetailFromAppThread(resp.Thread)
 				appDetail.Streams = detail.Streams
@@ -855,7 +989,7 @@ func (s *WebServer) handleAPISessionEvents(w http.ResponseWriter, r *http.Reques
 
 func (s *WebServer) serveAppwireEvents(w http.ResponseWriter, r *http.Request, id string, includeReplay bool) {
 	ref := appRefFromRouteID(id)
-	source, err := sourceForThread(s.sources, ref, "")
+	source, err := sourceForThreadWithManagedLaunch(r.Context(), s.cfg, s.sources, ref, "")
 	if err != nil {
 		writeAPIError(w, http.StatusNotFound, "session not live")
 		return
@@ -1014,7 +1148,7 @@ type notificationSSEWriter struct {
 	flusher        http.Flusher
 	startedItems   map[string]struct{}
 	completedItems map[string]struct{}
-	outputDeltas   map[string]struct{}
+	outputDeltas   map[string]string
 }
 
 func newNotificationSSEWriter(w io.Writer, flusher http.Flusher) *notificationSSEWriter {
@@ -1023,7 +1157,7 @@ func newNotificationSSEWriter(w io.Writer, flusher http.Flusher) *notificationSS
 		flusher:        flusher,
 		startedItems:   map[string]struct{}{},
 		completedItems: map[string]struct{}{},
-		outputDeltas:   map[string]struct{}{},
+		outputDeltas:   map[string]string{},
 	}
 }
 
@@ -1066,7 +1200,7 @@ func (sw *notificationSSEWriter) write(notification appwire.Notification) {
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
 			callID := firstNonEmpty(params.CallID, params.ItemID)
-			sw.markOutputDelta(callID)
+			sw.markOutputDelta(params.ItemID, params.CallID, params.Delta)
 			writeSSE(sw.w, sw.flusher, "TOOL_CALL_OUTPUT_DELTA", map[string]any{"call_id": callID, "item_id": params.ItemID, "delta": params.Delta})
 		}
 	case appwire.NotifyItemCompleted:
@@ -1135,11 +1269,11 @@ func (sw *notificationSSEWriter) writeCompletedTurnItem(turnIndex int, item appw
 				"arguments_json": item.ArgumentsJSON,
 			})
 		}
-		if item.Output != "" && !sw.hasOutputDelta(item) {
+		if delta, ok := sw.completedOutputDelta(item); ok && delta != "" {
 			writeSSE(sw.w, sw.flusher, "TOOL_CALL_OUTPUT_DELTA", map[string]any{
 				"call_id": firstNonEmpty(item.CallID, item.ID),
 				"item_id": item.ID,
-				"delta":   item.Output,
+				"delta":   delta,
 				"turn":    turnIndex,
 			})
 		}
@@ -1156,22 +1290,44 @@ func (sw *notificationSSEWriter) writeCompletedTurnItem(turnIndex int, item appw
 	sw.markCompleted(item)
 }
 
-func (sw *notificationSSEWriter) markOutputDelta(itemID string) {
-	if itemID != "" {
-		sw.outputDeltas[itemID] = struct{}{}
+func (sw *notificationSSEWriter) markOutputDelta(itemID, callID, delta string) {
+	seen := map[string]struct{}{}
+	for _, key := range []string{itemID, callID} {
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		sw.outputDeltas[key] += delta
 	}
 }
 
-func (sw *notificationSSEWriter) hasOutputDelta(item appwire.ThreadItem) bool {
+func (sw *notificationSSEWriter) completedOutputDelta(item appwire.ThreadItem) (string, bool) {
+	if item.Output == "" {
+		return "", false
+	}
+	streamed, ok := sw.streamedOutput(item)
+	if !ok {
+		return item.Output, true
+	}
+	if strings.HasPrefix(item.Output, streamed) {
+		return item.Output[len(streamed):], true
+	}
+	return "", false
+}
+
+func (sw *notificationSSEWriter) streamedOutput(item appwire.ThreadItem) (string, bool) {
 	for _, key := range []string{item.ID, item.CallID} {
 		if key == "" {
 			continue
 		}
-		if _, ok := sw.outputDeltas[key]; ok {
-			return true
+		if streamed, ok := sw.outputDeltas[key]; ok {
+			return streamed, true
 		}
 	}
-	return false
+	return "", false
 }
 
 func (sw *notificationSSEWriter) markStarted(item appwire.ThreadItem) {
@@ -1422,21 +1578,22 @@ type mcpDisplay struct {
 
 // settingsData is the template data passed to all settings section templates.
 type settingsData struct {
-	Active        string
-	HubAddr       string
-	RunDir        string
-	StateDir      string
-	SpawnTimeout  string
-	PastPerPage   int
-	Providers     []providerDisplay
-	Agents        []agentDisplay
-	Plugins       []pluginDisplay
-	PluginsError  string
-	Skills        []skillDisplay
-	Mcps          []mcpDisplay
-	McpsError     string
-	McpConfigPath string
-	PastCount     int
+	Active           string
+	HubAddr          string
+	RunDir           string
+	StateDir         string
+	SpawnTimeout     string
+	PastPerPage      int
+	Providers        []providerDisplay
+	ModelDiagnostics []appwire.ModelListDiagnostic
+	Agents           []agentDisplay
+	Plugins          []pluginDisplay
+	PluginsError     string
+	Skills           []skillDisplay
+	Mcps             []mcpDisplay
+	McpsError        string
+	McpConfigPath    string
+	PastCount        int
 }
 
 // providerDisplay groups model descriptors by provider for the providers page.
@@ -1468,10 +1625,16 @@ func (s *WebServer) renderSettingsPartial(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Group flat Models list by provider for the providers page.
+	// Group launch harness models by provider for the providers page.
+	launchModelList, launchModelErr := serfLaunchModelList(r.Context(), s.cfg)
+	if launchModelErr != nil {
+		launchModelList = appwire.ModelListResponse{
+			Diagnostics: []appwire.ModelListDiagnostic{launchModelListErrorDiagnostic(launchModelErr)},
+		}
+	}
 	var providers []providerDisplay
 	byProvider := map[string]int{} // provider name -> index in providers
-	for _, m := range s.cfg.Models {
+	for _, m := range launchModelList.Data {
 		if idx, exists := byProvider[m.Provider]; exists {
 			providers[idx].Models = append(providers[idx].Models, m.Model)
 		} else {
@@ -1500,21 +1663,22 @@ func (s *WebServer) renderSettingsPartial(w http.ResponseWriter, r *http.Request
 	mcps, mcpsErr := s.discoverMCPsForSettings(mcpPath)
 
 	data := settingsData{
-		Active:        section,
-		HubAddr:       s.cfg.HubAddr,
-		RunDir:        s.cfg.RunDir,
-		StateDir:      s.cfg.StateDir,
-		SpawnTimeout:  "30s",
-		PastPerPage:   s.cfg.PastPerPage,
-		Providers:     providers,
-		Agents:        agents,
-		Plugins:       plugins,
-		PluginsError:  errString(pluginsErr),
-		Skills:        skills,
-		Mcps:          mcps,
-		McpsError:     errString(mcpsErr),
-		McpConfigPath: mcpPath,
-		PastCount:     pastCount,
+		Active:           section,
+		HubAddr:          s.cfg.HubAddr,
+		RunDir:           s.cfg.RunDir,
+		StateDir:         s.cfg.StateDir,
+		SpawnTimeout:     "30s",
+		PastPerPage:      s.cfg.PastPerPage,
+		Providers:        providers,
+		ModelDiagnostics: launchModelList.Diagnostics,
+		Agents:           agents,
+		Plugins:          plugins,
+		PluginsError:     errString(pluginsErr),
+		Skills:           skills,
+		Mcps:             mcps,
+		McpsError:        errString(mcpsErr),
+		McpConfigPath:    mcpPath,
+		PastCount:        pastCount,
 	}
 
 	// Render just the inner settings-content partial when htmx is targeting
@@ -1747,14 +1911,7 @@ func (s *WebServer) discoverMCPsForSettings(path string) ([]mcpDisplay, error) {
 }
 
 func (s *WebServer) handleSidebar(w http.ResponseWriter, r *http.Request) {
-	var metas []agent.SessionMeta
-	if s.cfg.Past != nil {
-		metas = s.cfg.Past.AllMetas()
-	}
-	var live []LiveEntry
-	if s.cfg.Roster != nil {
-		live = s.cfg.Roster.List()
-	}
+	metas, live := s.navigationTreeInputs(r.Context())
 	tree := BuildTree(metas, live)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.sidebarTmpl.ExecuteTemplate(w, "sidebar", tree); err != nil {
@@ -2198,31 +2355,54 @@ func writeSpawnError(w http.ResponseWriter, err error) {
 	writeAPIWireError(w, status, err)
 }
 
-// handleApiModels returns the models the hub can spawn for. The list is what
-// each configured provider's /models API returns RIGHT NOW (a live call to
-// the provider, the same path the daemon's /models endpoint uses). Pricing
-// and context-window metadata come from the embedded catalog where the live
-// API doesn't carry it.
-//
-// Future: when the hub talks to a remote serf daemon, this handler will
-// proxy to that daemon's /models. The cache here is shared across the
-// hub's Spawn() target, which is local-only today.
+// handleApiModels returns the models the hub can spawn for. Hub-owned Serf
+// launches report their model choices through the Serf launch harness contract;
+// the direct live provider query remains a fallback for tests and non-spawning
+// server configurations. Pricing and context-window metadata come from the
+// embedded catalog where provider APIs don't carry it.
 func (s *WebServer) handleApiModels(w http.ResponseWriter, r *http.Request) {
-	models := s.fetchLiveModels(r.Context())
-	if len(models) == 0 {
-		models = s.configuredModels()
+	launchResp, err := serfLaunchModelList(r.Context(), s.cfg)
+	if err != nil && hasSerfLaunchModelLister(s.cfg) {
+		writeAPIWireError(w, http.StatusBadGateway, err)
+		return
+	}
+	models := modelDescriptorsToAPIModels(launchResp.Data)
+	if len(models) == 0 && !hasSerfLaunchModelLister(s.cfg) {
+		models = s.fetchLiveModels(r.Context())
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(models) //nolint:errcheck
 }
 
-func (s *WebServer) configuredModels() []map[string]any {
-	if len(s.cfg.Models) == 0 {
+func serfLaunchModelsOrEmpty(ctx context.Context, cfg WebConfig) []appwire.ModelDescriptor {
+	return serfLaunchModelListOrEmpty(ctx, cfg).Data
+}
+
+func serfLaunchModelListOrEmpty(ctx context.Context, cfg WebConfig) appwire.ModelListResponse {
+	resp, err := serfLaunchModelList(ctx, cfg)
+	if err != nil {
+		return appwire.ModelListResponse{}
+	}
+	return resp
+}
+
+func launchModelListErrorDiagnostic(err error) appwire.ModelListDiagnostic {
+	info := diagnostic.FromFields(string(diagnostic.SourceHub), "Model list unavailable", "", err.Error())
+	return appwire.ModelListDiagnostic{
+		Source:  string(info.Source),
+		Title:   info.Title,
+		Message: err.Error(),
+		Hint:    info.Hint,
+	}
+}
+
+func modelDescriptorsToAPIModels(models []appwire.ModelDescriptor) []map[string]any {
+	if len(models) == 0 {
 		return nil
 	}
-	out := make([]map[string]any, 0, len(s.cfg.Models))
+	out := make([]map[string]any, 0, len(models))
 	cat := llm.EmbeddedModelCatalog()
-	for _, m := range s.cfg.Models {
+	for _, m := range models {
 		if m.Provider == "" || m.Model == "" {
 			continue
 		}
@@ -2668,12 +2848,12 @@ func (s *WebServer) renderWorkspaceMeta(w http.ResponseWriter, r *http.Request, 
 func (s *WebServer) workspaceData(id string) WorkspaceData {
 	if !isLocalRouteID(id) {
 		ref := appRefFromRouteID(id)
-		source, err := sourceForThread(s.sources, ref, "")
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		source, err := sourceForThreadWithManagedLaunch(ctx, s.cfg, s.sources, ref, "")
 		if err != nil {
 			return WorkspaceData{}
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
 		resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
 		if err != nil {
 			return WorkspaceData{}
@@ -2775,12 +2955,12 @@ func workspaceDataFromAppThread(thread appwire.Thread) WorkspaceData {
 
 func (s *WebServer) liveWorkspaceCapabilities(id string, fallback hubapi.SessionCapabilities) hubapi.SessionCapabilities {
 	ref := appRefFromRouteID(id)
-	source, err := sourceForThread(s.sources, ref, "")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	source, err := sourceForThreadWithManagedLaunch(ctx, s.cfg, s.sources, ref, "")
 	if err != nil {
 		return fallback
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
 	resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false})
 	if err != nil {
 		return fallback
@@ -2930,6 +3110,25 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 			return
 		}
 	}
+	ref := appRefFromRouteID(id)
+	if !isLocalRouteID(id) {
+		if _, managed := managedLaunchSourceIDForRef(s.cfg, ref); managed {
+			source, err := sourceForThreadWithManagedLaunch(r.Context(), s.cfg, s.sources, ref, "")
+			if err != nil {
+				writeSessionActionError(w, r, err)
+				return
+			}
+			if err := ensureThreadActionAvailable(r.Context(), source, ref, "send"); err != nil {
+				writeSessionActionError(w, r, err)
+				return
+			}
+		} else {
+			if err := s.ensureSessionActionAvailable(id, "send"); err != nil {
+				writeSessionActionError(w, r, err)
+				return
+			}
+		}
+	}
 
 	resolve := func(forceResume bool) (LiveEntry, error) {
 		if s.cfg.Roster == nil {
@@ -2961,7 +3160,6 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 		return le, nil
 	}
 
-	ref := appRefFromRouteID(id)
 	turnParams := appwire.TurnStartParams{Ref: ref, Prompt: body.Text}
 	for _, img := range body.Images {
 		turnParams.Items = append(turnParams.Items, appwire.InputItem{
@@ -2991,11 +3189,20 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 		if err != nil {
 			return err
 		}
+		if !forceResume {
+			if err := ensureThreadActionAvailable(r.Context(), source, ref, "send"); err != nil {
+				return err
+			}
+		}
 		_, err = source.StartTurn(r.Context(), turnParams)
 		return err
 	}
 
 	if err := startTurn(false); err != nil {
+		if isActionUnavailable(err) {
+			writeSessionActionError(w, r, err)
+			return
+		}
 		if strings.Contains(err.Error(), "spawner not configured") {
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
@@ -3146,6 +3353,11 @@ func writeSessionActionError(w http.ResponseWriter, r *http.Request, err error) 
 		status = statusForWireError(wire, status)
 	}
 	http.Error(w, err.Error(), status)
+}
+
+func isActionUnavailable(err error) bool {
+	wire, ok := wireErrorFromError(err)
+	return ok && wire.Code == appwire.CodeUnavailable && serfErrorInfoFromData(wire.Data) == string(appwire.ErrorActionUnavailable)
 }
 
 type forkRequest struct {

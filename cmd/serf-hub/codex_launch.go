@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -63,14 +64,9 @@ func NewCodexLauncher(configs []CodexLaunchConfig) *CodexLauncher {
 }
 
 func (l *CodexLauncher) EnsureSource(ctx context.Context, sourceID string, sources *appsource.Registry) (appsource.Source, error) {
-	if sources != nil {
-		if source, ok := sources.Source(sourceID); ok {
-			return source, nil
-		}
-	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if source, ok := l.sources[sourceID]; ok {
+	if source, ok := l.cachedSourceLocked(sourceID, sources); ok {
 		if sources != nil {
 			sources.Add(source)
 		}
@@ -96,6 +92,39 @@ func (l *CodexLauncher) EnsureSource(ctx context.Context, sourceID string, sourc
 		sources.Add(source)
 	}
 	return source, nil
+}
+
+func (l *CodexLauncher) Manages(sourceID string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	_, ok := l.configs[sourceID]
+	return ok
+}
+
+func (l *CodexLauncher) cachedSourceLocked(sourceID string, sources *appsource.Registry) (appsource.Source, bool) {
+	source, hasSource := l.sources[sourceID]
+	launched := l.running[sourceID]
+	if !hasSource {
+		return nil, false
+	}
+	if launched != nil && !launchedCodexExited(launched) {
+		return source, true
+	}
+	delete(l.running, sourceID)
+	delete(l.sources, sourceID)
+	if sources != nil {
+		sources.Remove(sourceID)
+	}
+	return nil, false
+}
+
+func launchedCodexExited(launched *launchedCodex) bool {
+	select {
+	case <-launched.exited:
+		return true
+	default:
+		return false
+	}
 }
 
 func (l *CodexLauncher) Shutdown(ctx context.Context) error {
@@ -228,6 +257,9 @@ func scanCodexEndpoint(r io.Reader, endpoints chan<- string) {
 }
 
 func parseCodexEndpoint(line string) (string, bool) {
+	if endpoint, ok := parseCodexEndpointJSON(line); ok {
+		return endpoint, true
+	}
 	idx := strings.Index(line, "ws://")
 	if idx < 0 {
 		return "", false
@@ -237,7 +269,29 @@ func parseCodexEndpoint(line string) (string, bool) {
 		raw = fields[0]
 	}
 	raw = strings.TrimRight(raw, ".,)")
-	return raw, raw != ""
+	return validCodexEndpoint(raw)
+}
+
+func parseCodexEndpointJSON(line string) (string, bool) {
+	var payload struct {
+		Endpoint string `json:"endpoint"`
+	}
+	if err := json.Unmarshal([]byte(line), &payload); err != nil {
+		return "", false
+	}
+	return validCodexEndpoint(payload.Endpoint)
+}
+
+func validCodexEndpoint(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", false
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "ws" || u.Host == "" {
+		return "", false
+	}
+	return raw, true
 }
 
 func configuredCodexEndpoint(listen string) string {

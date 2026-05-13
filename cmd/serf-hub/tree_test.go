@@ -177,6 +177,30 @@ func TestBuildTree_OrdersLiveRowsWithoutMetasByStartedAtAndID(t *testing.T) {
 	}
 }
 
+func TestBuildTree_OrdersMixedLiveRowsByMergedMetadata(t *testing.T) {
+	base := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	metas := []agent.SessionMeta{{
+		ID:             "01META",
+		UpdatedAt:      base.Add(time.Hour),
+		CreatedAt:      base.Add(-time.Hour),
+		OriginalPrompt: "meta-backed live row",
+	}}
+	live := []LiveEntry{
+		{Entry: rendezvous.Entry{PID: 1, StartedAt: base.Add(-2 * time.Hour)}, SessionID: "01META", Status: "IDLE"},
+		{Entry: rendezvous.Entry{PID: 2, StartedAt: base}, SessionID: "02FRESH", Status: "IDLE"},
+	}
+
+	tree := BuildTree(metas, live)
+	got := make([]string, 0, len(tree.Live))
+	for _, node := range tree.Live {
+		got = append(got, node.ID)
+	}
+	want := []string{"01META", "02FRESH"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("live order=%v, want %v", got, want)
+	}
+}
+
 func TestBuildTree_NoProjectFallback(t *testing.T) {
 	// A meta with empty WorkingDir — project name "(no project)".
 	now := time.Now()

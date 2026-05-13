@@ -3705,17 +3705,6 @@ func TestSubagent_MaxTurns_DefaultsTo500_NotInheritedFromParent(t *testing.T) {
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
-			return llm.Response{
-				Message: llm.Message{
-					Role: llm.RoleAssistant,
-					Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-						ID: "c1", Name: "spawn_agent", Type: "function",
-						Arguments: json.RawMessage(`{"task":"test task"}`),
-					}}},
-				},
-			}
-		},
-		func(req llm.Request) llm.Response {
 			return finalResponse("done")
 		},
 	}}
@@ -3727,10 +3716,14 @@ func TestSubagent_MaxTurns_DefaultsTo500_NotInheritedFromParent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sess.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "spawn something", nil); err != nil {
-		t.Fatal(err)
+
+	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"test task"}`),
+	})
+	if spawnRes.IsError {
+		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
 	}
 
 	// Check the subagent's MaxTurns.

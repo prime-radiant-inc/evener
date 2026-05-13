@@ -16,6 +16,7 @@ class FakeWebSocket {
     this.url = url;
     this.readyState = FakeWebSocket.OPEN;
     this.listeners = new Map();
+    FakeWebSocket.instances.push(this);
     setTimeout(() => this.dispatch("open", {}), 0);
   }
 
@@ -65,6 +66,7 @@ class FakeWebSocket {
   }
 }
 FakeWebSocket.OPEN = 1;
+FakeWebSocket.instances = [];
 
 const context = {
   window: {
@@ -119,8 +121,12 @@ vm.runInContext(SRC, context);
     serf: { ref: "codex:th_codex" },
     turns: [],
   });
-  assert(replayEvents[0][1].session_id === "th_codex", "browser appwire replay should keep session_id as the bare thread id");
+  assert(replayEvents[0][1].session_id === "codex:th_codex", "browser appwire replay should keep source-qualified session identity");
   assert(replayEvents[0][1].ref === "codex:th_codex", "browser appwire replay should preserve canonical ref separately");
+  await context.window.SerfAppwire.readThread("codex:th_codex", true, true);
+  const read = sent.find((msg) => msg.method === "thread/read");
+  assert(read && read.params.ref === "codex:th_codex", "browser appwire read should pass canonical ref");
+  assert(read.params.subscribe === true, "browser appwire hydration read should request live subscription");
   const replayedAssistantEvents = context.window.SerfAppwire.eventsFromThread({
     id: "th_codex",
     sessionId: "th_codex",
@@ -154,6 +160,82 @@ vm.runInContext(SRC, context);
   assert(structuredError.code === -32004, "browser appwire should preserve error code");
   assert(structuredError.data && structuredError.data.serfErrorInfo === "actionUnavailable", "browser appwire should preserve structured error data");
   assert(structuredError.serfErrorInfo === "actionUnavailable", "browser appwire should expose serfErrorInfo directly");
+  context.window.SerfAppwire.eventsFromNotification("item/started", {
+    threadId: "th_codex",
+    turnId: "turn_dedupe",
+    item: { id: "msg_dedupe", type: "agent_message" },
+  });
+  context.window.SerfAppwire.eventsFromNotification("item/agentMessage/delta", {
+    threadId: "th_codex",
+    turnId: "turn_dedupe",
+    itemId: "msg_dedupe",
+    delta: "CODEX_DEDUPE_",
+  });
+  context.window.SerfAppwire.eventsFromNotification("item/completed", {
+    threadId: "th_codex",
+    turnId: "turn_dedupe",
+    item: { id: "msg_dedupe", turnId: "turn_dedupe", type: "agent_message", text: "CODEX_DEDUPE_OK" },
+  });
+  assert(typeof context.window.SerfAppwire.liveItemStateSize === "function", "browser appwire should expose live item state size for regression coverage");
+  const liveStateBeforeCompletedTurn = context.window.SerfAppwire.liveItemStateSize();
+  const dedupedCompletedTurnEvents = context.window.SerfAppwire.eventsFromNotification("turn/completed", {
+    threadId: "th_codex",
+    turn: {
+      id: "turn_dedupe",
+      status: "completed",
+      items: [{ id: "msg_dedupe", turnId: "turn_dedupe", type: "agent_message", text: "CODEX_DEDUPE_OK" }],
+    },
+  });
+  assert(!dedupedCompletedTurnEvents.some(([kind, data]) => kind === "ASSISTANT_TEXT_END" && data.text === "CODEX_DEDUPE_OK"), "completed turn should not replay already completed assistant item");
+  assert(context.window.SerfAppwire.liveItemStateSize() === liveStateBeforeCompletedTurn - 1, "completed turn should evict reconciled live item state");
+  const reusedItemNextTurnEvents = context.window.SerfAppwire.eventsFromNotification("turn/completed", {
+    threadId: "th_codex",
+    turn: {
+      id: "turn_reused",
+      status: "completed",
+      items: [{ id: "msg_dedupe", turnId: "turn_reused", type: "agent_message", text: "CODEX_REUSED_TURN_OK" }],
+    },
+  });
+  assert(reusedItemNextTurnEvents.some(([kind, data]) => kind === "ASSISTANT_TEXT_END" && data.text === "CODEX_REUSED_TURN_OK"), "completed turn should render same item id reused in a later turn");
+  const reusedItemOtherThreadEvents = context.window.SerfAppwire.eventsFromNotification("turn/completed", {
+    threadId: "th_other",
+    turn: {
+      id: "turn_other",
+      status: "completed",
+      items: [{ id: "msg_dedupe", type: "agent_message", text: "CODEX_OTHER_OK" }],
+    },
+  });
+  assert(reusedItemOtherThreadEvents.some(([kind, data]) => kind === "ASSISTANT_TEXT_END" && data.text === "CODEX_OTHER_OK"), "completed turn should render same item id in a different thread");
+  context.window.SerfAppwire.eventsFromNotification("item/toolOutput/delta", {
+    threadId: "th_tool_delta",
+    itemId: "tool_delta_only",
+    callId: "call_delta_only",
+    delta: "partial output",
+  });
+  const deltaOnlyToolFinalEvents = context.window.SerfAppwire.eventsFromNotification("turn/completed", {
+    threadId: "th_tool_delta",
+    turn: {
+      id: "turn_tool_delta",
+      status: "completed",
+      items: [{
+        id: "tool_delta_only",
+        callId: "call_delta_only",
+        type: "tool_call",
+        toolName: "shell",
+        output: "partial output",
+        status: "completed",
+      }],
+    },
+  });
+  const deltaOnlyStart = deltaOnlyToolFinalEvents.findIndex(([kind]) => kind === "TOOL_CALL_START");
+  const deltaOnlyEnd = deltaOnlyToolFinalEvents.findIndex(([kind]) => kind === "TOOL_CALL_END");
+  assert(deltaOnlyStart >= 0 && deltaOnlyStart < deltaOnlyEnd, "delta-only tool final snapshot should synthesize start before end");
+  assert(typeof context.window.SerfAppwire.onConnectionLost === "function", "browser appwire should expose connection-loss callbacks");
+  let lostCount = 0;
+  context.window.SerfAppwire.onConnectionLost(() => { lostCount++; });
+  FakeWebSocket.instances[0].dispatch("close", {});
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert(lostCount === 1, "browser appwire should notify connection-loss callbacks on websocket close");
   console.log("PASS: appwire browser client uses JSON-RPC-lite envelopes");
 })().catch((err) => {
   console.error(err);

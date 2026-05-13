@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -55,7 +54,7 @@ func TestCodexLauncherRealAppServerSmoke(t *testing.T) {
 	}
 }
 
-func TestHubRPCRealCodexSourceRejectsBlankStart(t *testing.T) {
+func TestHubRPCRealCodexSourceAllowsBlankStart(t *testing.T) {
 	binary := os.Getenv("SERF_CODEX_APP_SERVER_BINARY")
 	if binary == "" {
 		t.Skip("set SERF_CODEX_APP_SERVER_BINARY to run real Codex app-server smoke")
@@ -77,19 +76,15 @@ func TestHubRPCRealCodexSourceRejectsBlankStart(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	_, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
 		Harness: "codex-real",
 		CWD:     t.TempDir(),
 	})
-	if err == nil {
-		t.Fatal("ThreadStart succeeded for blank real Codex source")
+	if err != nil {
+		t.Fatalf("ThreadStart: %v", err)
 	}
-	var wire appwire.WireError
-	if !errors.As(err, &wire) {
-		t.Fatalf("error %T does not preserve WireError: %v", err, err)
-	}
-	if wire.Code != appwire.CodeInvalidParams || !wireErrorInfoIs(wire.Data, appwire.ErrorInvalidParams) {
-		t.Fatalf("wire error=%+v", wire)
+	if resp.Thread.Serf.Ref == "" || resp.Thread.Source != "codex-real" || resp.Turn.ID != "" {
+		t.Fatalf("resp=%+v", resp)
 	}
 }
 

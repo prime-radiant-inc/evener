@@ -2,6 +2,8 @@ package appsource
 
 import (
 	"context"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -102,6 +104,37 @@ func TestLocalDaemonSourceReadsThreadOverAppWire(t *testing.T) {
 	}
 	if resp.Thread.ID != "th_1" || resp.Thread.Serf.Ref != "local:th_1" {
 		t.Fatalf("thread=%+v", resp.Thread)
+	}
+}
+
+func TestLocalDaemonSourceSubscribeThreadMapsConnectionRefused(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	endpoint := "ws://" + listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+
+	source := NewLocalDaemonSource("local", func() []rendezvous.Entry {
+		return []rendezvous.Entry{{
+			Protocol:  appwire.ProtocolVersion,
+			Endpoint:  endpoint,
+			SourceID:  "local",
+			ThreadID:  "th_1",
+			SessionID: "sess_1",
+		}}
+	}, nil)
+
+	_, err = source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: "local:th_1"})
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("SubscribeThread error %T=%v, want WireError", err, err)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok || wire.Code != appwire.CodeUnavailable || data.SerfErrorInfo != appwire.ErrorSessionUnavailable {
+		t.Fatalf("wire=%+v", wire)
 	}
 }
 

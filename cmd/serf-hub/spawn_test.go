@@ -243,6 +243,109 @@ exit 2
 	}
 }
 
+func TestHubSpawnerSpawnUsesConfiguredXDGStateHomeForStateDir(t *testing.T) {
+	dir := t.TempDir()
+	runDir := filepath.Join(dir, "run")
+	workDir := filepath.Join(dir, "work")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stateHome := filepath.Join(dir, "xdg-state")
+	argsOut := filepath.Join(dir, "args.txt")
+	envOut := filepath.Join(dir, "env.txt")
+	t.Setenv("ARGS_OUT", argsOut)
+	t.Setenv("ENV_OUT", envOut)
+	bin := filepath.Join(dir, "fake-serf")
+	script := `#!/bin/sh
+if [ "$1" = "launch-check" ]; then
+  printf '{"protocol":"serf-appwire-v1"}\n'
+  exit 0
+fi
+if [ "$1" = "serve" ]; then
+  printf '%s\n' "$@" > "$ARGS_OUT"
+  env > "$ENV_OUT"
+  mkdir -p "$SERF_RUN_DIR"
+  cat > "$SERF_RUN_DIR/$$.json" <<EOF
+{"pid":$$,"address":"127.0.0.1:1","started_at":"2999-01-01T00:00:00Z"}
+EOF
+  sleep 1
+  exit 0
+fi
+exit 2
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := DefaultConfig()
+	cfg.SpawnTimeout = 2 * time.Second
+	cfg.StateGlob = filepath.Join(stateHome, "serf", "projects", "*")
+	cfg.SerfLaunch.Env = map[string]string{"XDG_STATE_HOME": stateHome}
+	spawner := HubSpawner{Cfg: cfg, SerfBinary: bin, RunDir: runDir, HubToken: "generated-token"}
+
+	if _, err := spawner.Spawn(context.Background(), SpawnRequest{
+		Model:      "ollama/test",
+		WorkingDir: workDir,
+	}); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	argsData, err := os.ReadFile(argsOut)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	stateDir := argValue(strings.Fields(string(argsData)), "--state-dir")
+	wantPrefix := filepath.Join(stateHome, "serf", "projects") + string(os.PathSeparator)
+	if !strings.HasPrefix(stateDir, wantPrefix) {
+		t.Fatalf("--state-dir=%q, want under %q\nargs:\n%s", stateDir, wantPrefix, argsData)
+	}
+	envData, err := os.ReadFile(envOut)
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	env := envMap(strings.Split(strings.TrimSpace(string(envData)), "\n"))
+	if env["XDG_STATE_HOME"] != stateHome {
+		t.Fatalf("child XDG_STATE_HOME=%q, want %q", env["XDG_STATE_HOME"], stateHome)
+	}
+	if env["SERF_STATE_DIR"] != stateDir {
+		t.Fatalf("child SERF_STATE_DIR=%q, want %q", env["SERF_STATE_DIR"], stateDir)
+	}
+}
+
+func argValue(args []string, flag string) string {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+func TestHubSpawnerListsModelsFromSerfLaunchContract(t *testing.T) {
+	dir := t.TempDir()
+	runDir := filepath.Join(dir, "run")
+	bin := filepath.Join(dir, "fake-serf")
+	script := `#!/bin/sh
+if [ "$1" = "launch-check" ]; then
+  printf '{"protocol":"serf-appwire-v1","models":[{"provider":"openai","model":"gpt-5.5"}]}\n'
+  exit 0
+fi
+exit 2
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	spawner := HubSpawner{Cfg: DefaultConfig(), SerfBinary: bin, RunDir: runDir, HubToken: "generated-token"}
+
+	models, err := spawner.ListLaunchModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListLaunchModels: %v", err)
+	}
+	if len(models) != 1 || models[0].Provider != "openai" || models[0].Model != "gpt-5.5" {
+		t.Fatalf("models=%+v", models)
+	}
+}
+
 func TestProviderCredentialPreflightRequiresOpenRouterKey(t *testing.T) {
 	err := validateProviderCredentials("openrouter/free", envFromMap(map[string]string{}), "")
 	assertHubLaunchError(t, err)

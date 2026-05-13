@@ -2,11 +2,13 @@ package appsource
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/rendezvous"
@@ -199,7 +201,7 @@ func (s *LocalDaemonSource) SubscribeThread(ctx context.Context, params appwire.
 	}
 	transport, err := appwire.DialWebSocketWithHeaders(ctx, entry.Endpoint, s.client, daemonAuthHeader(entry.HubToken))
 	if err != nil {
-		return nil, err
+		return nil, localDaemonDialError(err)
 	}
 	client := appwire.NewClient(transport)
 	client.Start(ctx)
@@ -238,7 +240,7 @@ func (s *LocalDaemonSource) SubscribeThread(ctx context.Context, params appwire.
 func (s *LocalDaemonSource) withClient(ctx context.Context, entry rendezvous.Entry, fn func(*appwire.Client) error) error {
 	transport, err := appwire.DialWebSocketWithHeaders(ctx, entry.Endpoint, s.client, daemonAuthHeader(entry.HubToken))
 	if err != nil {
-		return err
+		return localDaemonDialError(err)
 	}
 	defer transport.Close()
 	client := appwire.NewClient(transport)
@@ -247,6 +249,13 @@ func (s *LocalDaemonSource) withClient(ctx context.Context, entry rendezvous.Ent
 		return err
 	}
 	return fn(client)
+}
+
+func localDaemonDialError(err error) error {
+	if errors.Is(err, syscall.ECONNREFUSED) {
+		return appwire.SessionUnavailable("local daemon unavailable: " + err.Error())
+	}
+	return err
 }
 
 func daemonAuthHeader(token string) http.Header {
@@ -276,7 +285,7 @@ func (s *LocalDaemonSource) entryForRef(rawRef, threadID string) (rendezvous.Ent
 			return entry, nil
 		}
 	}
-	return rendezvous.Entry{}, fmt.Errorf("thread not found: %s", threadID)
+	return rendezvous.Entry{}, appwire.SessionUnavailable("thread not found: " + threadID)
 }
 
 func (s *LocalDaemonSource) liveEntries() []LocalDaemonEntry {

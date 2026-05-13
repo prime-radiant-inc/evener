@@ -55,6 +55,12 @@ func (s *Subscriptions) Connections(threadID string) []string {
 	return conns
 }
 
+func (s *Subscriptions) ConnectionCount(threadID string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.byThread[threadID])
+}
+
 func (s *Subscriptions) RemoveConnection(connID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -87,6 +87,14 @@ func Unavailable(message string) WireError {
 	}
 }
 
+func SessionUnavailable(message string) WireError {
+	return WireError{
+		Code:    CodeUnavailable,
+		Message: message,
+		Data:    ErrorData{SerfErrorInfo: ErrorSessionUnavailable},
+	}
+}
+
 func HubLaunchError(message string) WireError {
 	return WireError{
 		Code:    CodeUnavailable,

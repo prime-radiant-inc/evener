@@ -23,6 +23,12 @@ func (r *Registry) Add(source Source) {
 	r.sources[source.ID()] = source
 }
 
+func (r *Registry) Remove(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.sources, id)
+}
+
 func (r *Registry) Source(id string) (Source, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

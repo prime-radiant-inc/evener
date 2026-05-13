@@ -64,6 +64,7 @@ type streamingAdapter struct {
 	streamCalls    int
 	requests       []llm.Request
 	completeResult llm.Response
+	streamErr      error
 	streamScript   func(*llm.ChanStream)
 }
 
@@ -87,8 +88,12 @@ func (a *streamingAdapter) Stream(ctx context.Context, req llm.Request) (llm.Str
 	a.mu.Lock()
 	a.streamCalls++
 	a.requests = append(a.requests, req)
+	err := a.streamErr
 	script := a.streamScript
 	a.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
 	streamCtx, cancel := context.WithCancel(ctx)
 	_ = streamCtx
 	st := llm.NewChanStream(cancel)
@@ -105,6 +110,40 @@ func (a *streamingAdapter) Counts() (completeCalls int, streamCalls int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.completeCalls, a.streamCalls
+}
+
+func TestSession_StreamOpenFailureHonorsRetryBudget(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &streamingAdapter{
+		name:      "openai",
+		streamErr: llm.ErrorFromHTTPStatus("openai", 500, "temporary upstream failure", nil, nil),
+	}
+	c.Register(f)
+
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		LLMRetryPolicy: &policy,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "hi", nil)
+	if err == nil {
+		t.Fatal("expected stream error")
+	}
+	sess.Close()
+
+	completeCalls, streamCalls := f.Counts()
+	if got, want := streamCalls, 1; got != want {
+		t.Fatalf("stream calls: got %d want %d", got, want)
+	}
+	if got, want := completeCalls, 0; got != want {
+		t.Fatalf("complete calls: got %d want %d", got, want)
+	}
 }
 
 // fakeErrAdapter is like fakeAdapter but supports steps that return errors.
@@ -1895,6 +1934,32 @@ func TestSession_StreamsCommunicateToolArgumentsAsAssistantDeltas(t *testing.T) 
 	}
 	if len(deltas) < 2 {
 		t.Fatalf("assistant deltas = %q, want multiple streamed chunks", deltas)
+	}
+}
+
+func TestPartialJSONStringFieldDecodesUnicodeEscapes(t *testing.T) {
+	got, ok := partialJSONStringField(`{"message":"Hello \u263A"}`, "message")
+	if !ok {
+		t.Fatal("message field not found")
+	}
+	if got != "Hello \u263A" {
+		t.Fatalf("message=%q, want decoded unicode escape", got)
+	}
+
+	got, ok = partialJSONStringField(`{"message":"Hello \ud83d\ude00"}`, "message")
+	if !ok {
+		t.Fatal("message field with surrogate pair not found")
+	}
+	if got != "Hello 😀" {
+		t.Fatalf("message=%q, want decoded surrogate pair", got)
+	}
+
+	got, ok = partialJSONStringField(`{"message":"Hello \u26`, "message")
+	if !ok {
+		t.Fatal("partial message field not found")
+	}
+	if got != "Hello " {
+		t.Fatalf("partial message=%q, want prefix before incomplete unicode escape", got)
 	}
 }
 

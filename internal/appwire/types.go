@@ -372,8 +372,17 @@ type ModelDescriptor struct {
 	Model    string `json:"model"`
 }
 
+type ModelListDiagnostic struct {
+	Provider string `json:"provider,omitempty"`
+	Source   string `json:"source,omitempty"`
+	Title    string `json:"title,omitempty"`
+	Message  string `json:"message"`
+	Hint     string `json:"hint,omitempty"`
+}
+
 type ModelListResponse struct {
-	Data []ModelDescriptor `json:"data"`
+	Data        []ModelDescriptor     `json:"data"`
+	Diagnostics []ModelListDiagnostic `json:"diagnostics,omitempty"`
 }
 
 type EmptyResponse struct{}

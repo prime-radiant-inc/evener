@@ -106,7 +106,8 @@ func main() {
 	// as a fallback when a session's project dir can't be found in the past index.
 	stateDir := filepath.Dir(filepath.Clean(strings.TrimSuffix(stateGlob, "*")))
 
-	// Build model list from provider config for the spawn chip.
+	// Keep configured providers available for settings; launch choices come
+	// from the Serf harness contract exposed by HubSpawner.
 	var models []modelDescriptor
 	for _, p := range cfg.Providers {
 		for _, m := range p.Models {

@@ -67,6 +67,7 @@ type hubSpawnOptionsMsg struct {
 	harnessKinds map[string]string
 	models       []modelPickerItem
 	err          error
+	modelErr     error
 }
 
 func fetchHubTree(client *appwire.Client) tea.Cmd {
@@ -125,10 +126,6 @@ func fetchHubSpawnOptions(client *appwire.Client) tea.Cmd {
 		if err != nil {
 			return hubSpawnOptionsMsg{err: err}
 		}
-		modelResp, err := client.ModelList(context.Background(), appwire.ModelListParams{})
-		if err != nil {
-			return hubSpawnOptionsMsg{err: err}
-		}
 		harnesses := make([]string, 0, len(harnessResp.Data))
 		harnessKinds := map[string]string{}
 		for _, option := range harnessResp.Data {
@@ -141,6 +138,10 @@ func fetchHubSpawnOptions(client *appwire.Client) tea.Cmd {
 				kind = "serf"
 			}
 			harnessKinds[option.ID] = kind
+		}
+		modelResp, err := client.ModelList(context.Background(), appwire.ModelListParams{})
+		if err != nil {
+			return hubSpawnOptionsMsg{harnesses: harnesses, harnessKinds: harnessKinds, modelErr: err}
 		}
 		models := make([]modelPickerItem, 0, len(modelResp.Data))
 		for _, option := range modelResp.Data {

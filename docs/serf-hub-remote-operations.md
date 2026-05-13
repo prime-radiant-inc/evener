@@ -67,14 +67,6 @@ past_results_per_page = 50
 [serf_launch]
 sse_ring_size = 4096
 
-[[providers]]
-name = "openai"
-models = ["gpt-5.2", "gpt-5.2-mini"]
-
-[[providers]]
-name = "anthropic"
-models = ["claude-opus-4-7", "claude-sonnet-4-6"]
-
 [serf_launch.env]
 XDG_STATE_HOME = "/var/lib/serf/state"
 ```
@@ -103,6 +95,9 @@ children. Hub also sets `SERF_HUB_SPAWNED=1`, `SERF_RUN_DIR`,
 `SERF_STATE_DIR`, and a generated `SERF_HUB_TOKEN` for each child. Do not set
 `SERF_HUB_TOKEN` in config; Hub-owned launches replace it with the generated
 per-Hub token.
+Launch model choices come from that same Serf launch harness contract
+(`serf launch-check --models`) rather than a static model roster in
+`hub.toml`.
 
 `serf_launch.sse_ring_size` passes `--sse-ring-size` to Hub-owned Serf daemons.
 Increase it when long sessions produce enough token delta events that late SSE

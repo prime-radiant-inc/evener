@@ -160,6 +160,10 @@
     ensureLiveStream() {
       if (this.eventSource) return;
       if (!this.sessionId) return;
+      if (window.SerfAppwire) {
+        this.connectAppwire();
+        return;
+      }
       this.eventsUrl = "/s/" + encodeURIComponent(this.sessionId) + "/events";
       this.connectEventSource(this.eventsUrl);
     },
@@ -585,7 +589,7 @@
           // Refresh sidebar so new fork shows up.
           if (window.htmx) htmx.trigger(document.body, "sidebar:refresh");
           // Navigate to the child session.
-          window.location.href = "/s/" + encodeURIComponent(json.child_session_id || json.session_id);
+          window.location.href = "/s/" + encodeURIComponent(json.ref || json.child_session_id || json.session_id);
         } catch (e) {
           cleanup();
           this.appendBanner("error", "fork failed: " + e.message, { source: "hub", title: "Hub fork error" });

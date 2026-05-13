@@ -25,6 +25,7 @@
   const pending = new Map();
   const notificationHandlers = new Set();
   const connectionLostHandlers = new Set();
+  const liveItemState = new Map();
 
   function rpcURL() {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -37,6 +38,7 @@
     connecting = new Promise((resolve, reject) => {
       const sock = new WebSocket(rpcURL());
       let disconnected = false;
+      let initializeFailed = false;
       const markDisconnected = (err) => {
         if (disconnected) return;
         disconnected = true;
@@ -51,7 +53,14 @@
         request(METHOD.initialize, {
           clientInfo: { name: "serf-web", version: "0.1.0" },
           capabilities: {},
-        }).then(() => resolve(sock), reject);
+        }).then(() => resolve(sock), (err) => {
+          initializeFailed = true;
+          if (ws === sock) ws = null;
+          connecting = null;
+          rejectPending(err);
+          try { sock.close(); } catch (_) {}
+          reject(err);
+        });
       });
       sock.addEventListener("message", (event) => handleMessage(event.data));
       sock.addEventListener("error", () => {
@@ -63,11 +72,13 @@
         reject(err);
       });
       sock.addEventListener("close", () => {
-        ws = null;
-        connecting = null;
         const err = new Error("appwire connection closed");
-        rejectPending(err);
-        markDisconnected(err);
+        if (ws === sock) {
+          ws = null;
+          connecting = null;
+          rejectPending(err);
+          if (!initializeFailed) markDisconnected(err);
+        }
       });
     });
     return connecting;
@@ -453,6 +464,7 @@
       return [["THREAD_STATUS_CHANGED", { status: params.status && params.status.type || "" }]];
     }
     if (method === "item/started") {
+      markLiveItem(params, item, { started: true });
       if (item.type === "agent_message") return [["ASSISTANT_TEXT_START", {}]];
       if (item.type === "tool_call") return [["TOOL_CALL_START", {
         call_id: firstNonEmpty(item.callId, item.id),
@@ -463,6 +475,7 @@
       return [];
     }
     if (method === "item/completed") {
+      markLiveItem(params, item, { completed: true });
       if (item.type === "tool_call") return [["TOOL_CALL_END", {
         call_id: firstNonEmpty(item.callId, item.id),
         item_id: item.id || "",
@@ -492,7 +505,10 @@
         return [["ERROR", errorPayload(params.turn.error, "turn failed")]];
       }
       const out = [];
-      for (const item of params.turn.items || []) out.push.apply(out, eventsFromItem(item));
+      for (const item of params.turn.items || []) {
+        out.push.apply(out, eventsFromCompletedTurnItem(params, item));
+        deleteLiveItem(params, item);
+      }
       return out;
     }
     if (method === "warning") {
@@ -531,5 +547,6 @@
     forkThread,
     eventsFromThread,
     eventsFromNotification,
+    liveItemStateSize() { return liveItemState.size; },
   };
 })();

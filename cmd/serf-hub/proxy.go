@@ -61,6 +61,7 @@ func (p *RESTProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rp := p.proxyFor(entry.Address)
 	r.URL.Path = "/" + rest
 	r.Host = entry.Address
+	r.Header.Del("Origin")
 	setDaemonAuthorization(r.Header, entry.HubToken)
 	rp.ServeHTTP(w, r)
 }

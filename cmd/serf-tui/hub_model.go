@@ -253,6 +253,9 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spawnModels = msg.models
 		if m.mode == hubModeSpawn {
 			m.syncSpawnModelWithHarness()
+			if msg.modelErr != nil && m.spawnHarnessUsesHubModels() {
+				m.err = fmt.Errorf("models failed: %w", msg.modelErr)
+			}
 		}
 		return m, nil
 	}
