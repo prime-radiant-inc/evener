@@ -104,6 +104,12 @@ formDom.window.document.querySelector(".chip-picker-model").click();
 assert(modelValue() === "gpt-5.3-codex", "codex model picker should submit raw codex model id");
 assert(modelDisplay() === "codex/gpt-5.3-codex", "codex model picker should display source/model relationship");
 
+formDom.window.document.querySelector('button[data-chip="harness"]').click();
+formDom.window.document.querySelectorAll(".chip-picker-option")[0].click();
+assert(formDom.window.document.querySelector('input[name="harness"]').value === "serf", "harness should switch back to serf");
+assert(modelValue() === "", "switching back to serf should clear raw codex model value");
+assert(modelDisplay() === "(pick a model)", "switching back to serf should show serf model placeholder");
+
 let promptCalled = false;
 formDom.window.prompt = () => {
   promptCalled = true;

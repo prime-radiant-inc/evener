@@ -67,7 +67,7 @@
       return;
     }
     const hidden = document.querySelector('input[type=hidden][name="model"]');
-    if (!hidden || !hidden.value) setModelValue("");
+    if (!hidden || !hidden.value || !hidden.value.includes("/")) setModelValue("");
   }
 
   function routeID(spawnResult) {
