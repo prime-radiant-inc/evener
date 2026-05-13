@@ -55,7 +55,7 @@ func TestCodexLauncherRealAppServerSmoke(t *testing.T) {
 	}
 }
 
-func TestHubRPCRealCodexSourceConnectsAndGatesCapabilities(t *testing.T) {
+func TestHubRPCRealCodexSourceRejectsBlankStart(t *testing.T) {
 	binary := os.Getenv("SERF_CODEX_APP_SERVER_BINARY")
 	if binary == "" {
 		t.Skip("set SERF_CODEX_APP_SERVER_BINARY to run real Codex app-server smoke")
@@ -77,35 +77,18 @@ func TestHubRPCRealCodexSourceConnectsAndGatesCapabilities(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+	_, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
 		Harness: "codex-real",
 		CWD:     t.TempDir(),
 	})
-	if err != nil {
-		t.Fatalf("ThreadStart: %v", err)
-	}
-	if resp.Thread.Source != "codex-real" || resp.Thread.Serf.Ref == "" {
-		t.Fatalf("thread=%+v", resp.Thread)
-	}
-
-	read, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: resp.Thread.Serf.Ref})
-	if err != nil {
-		t.Fatalf("ThreadRead: %v", err)
-	}
-	caps := read.Thread.Serf.Capabilities
-	if !caps.Send || !caps.Compact || caps.Shutdown || caps.Steer || caps.Clear {
-		t.Fatalf("codex capabilities=%+v", caps)
-	}
-
-	err = client.ThreadShutdown(context.Background(), appwire.ThreadShutdownParams{Ref: resp.Thread.Serf.Ref})
 	if err == nil {
-		t.Fatal("ThreadShutdown succeeded for real Codex source")
+		t.Fatal("ThreadStart succeeded for blank real Codex source")
 	}
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
 		t.Fatalf("error %T does not preserve WireError: %v", err, err)
 	}
-	if wire.Code != appwire.CodeUnavailable || !wireErrorInfoIs(wire.Data, appwire.ErrorActionUnavailable) {
+	if wire.Code != appwire.CodeInvalidParams || !wireErrorInfoIs(wire.Data, appwire.ErrorInvalidParams) {
 		t.Fatalf("wire error=%+v", wire)
 	}
 }

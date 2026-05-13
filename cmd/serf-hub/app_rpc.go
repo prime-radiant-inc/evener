@@ -778,6 +778,9 @@ func sourceForThread(sources *appsource.Registry, ref, threadID string) (appsour
 func hubThreadStart(ctx context.Context, cfg WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
 	sourceID := launchSourceID(params)
 	if sourceID != "" && sourceID != "local" {
+		if strings.TrimSpace(params.Prompt) == "" && len(params.Items) == 0 {
+			return appwire.ThreadStartResponse{}, appwire.InvalidParams("initial prompt is required for Codex harness starts")
+		}
 		source, ok := sources.Source(sourceID)
 		if !ok {
 			if cfg.CodexLauncher == nil {

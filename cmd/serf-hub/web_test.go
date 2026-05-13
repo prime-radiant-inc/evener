@@ -717,6 +717,68 @@ func TestWeb_PastReplay_TranslatesTurnsToSSEEvents(t *testing.T) {
 	}
 }
 
+func TestWriteThreadReplaySSEUsesCanonicalSourceRef(t *testing.T) {
+	var out bytes.Buffer
+	writeThreadReplaySSE(&out, nil, appwire.Thread{
+		ID:            "th_codex",
+		SessionID:     "th_codex",
+		ModelProvider: "openai",
+		Serf: appwire.SerfThread{
+			Ref: "codex:th_codex",
+		},
+	})
+	body := out.String()
+	if !strings.Contains(body, `"session_id":"codex:th_codex"`) {
+		t.Fatalf("SESSION_START lost source ref:\n%s", body)
+	}
+	if strings.Contains(body, `"session_id":"th_codex"`) {
+		t.Fatalf("SESSION_START used raw Codex id:\n%s", body)
+	}
+}
+
+func TestWriteThreadReplaySSEGroupsSplitToolItemsByCallID(t *testing.T) {
+	var out bytes.Buffer
+	writeThreadReplaySSE(&out, nil, appwire.Thread{
+		ID:        "th_codex",
+		SessionID: "th_codex",
+		Serf:      appwire.SerfThread{Ref: "codex:th_codex"},
+		Turns: []appwire.Turn{{
+			ID:     "turn_1",
+			Status: appwire.TurnStatusCompleted,
+			Items: []appwire.ThreadItem{
+				{
+					Type:          "tool_call",
+					ID:            "item_tool_start",
+					CallID:        "call_tool",
+					TurnID:        "turn_1",
+					ToolName:      "shell",
+					ArgumentsJSON: `{"command":"printf ok"}`,
+					Status:        "running",
+				},
+				{
+					Type:     "tool_call",
+					ID:       "item_tool_result",
+					CallID:   "call_tool",
+					TurnID:   "turn_1",
+					ToolName: "shell",
+					Output:   "ok",
+					Status:   "completed",
+				},
+			},
+		}},
+	})
+	body := out.String()
+	if got := strings.Count(body, "event: TOOL_CALL_START"); got != 1 {
+		t.Fatalf("tool starts=%d, want 1\nbody:\n%s", got, body)
+	}
+	if got := strings.Count(body, "event: TOOL_CALL_END"); got != 1 {
+		t.Fatalf("tool ends=%d, want 1\nbody:\n%s", got, body)
+	}
+	if !strings.Contains(body, `"call_id":"call_tool"`) || !strings.Contains(body, `"output":"ok"`) {
+		t.Fatalf("grouped tool replay missing final fields\nbody:\n%s", body)
+	}
+}
+
 func TestWriteNotificationSSEWarningExtractsMessage(t *testing.T) {
 	var out bytes.Buffer
 	writeNotificationSSE(&out, nil, appwire.Notification{
@@ -883,7 +945,7 @@ func TestWebAPISessionEventsTranscriptFollowPrefersLiveWhenPastExists(t *testing
 		t.Fatal(err)
 	}
 	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
-		ID: "01FOLLOW", UpdatedAt: time.Now(), OriginalTask: "past prompt",
+		ID: "01FOLLOW", UpdatedAt: time.Now(), OriginalPrompt: "past prompt",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -995,11 +1057,98 @@ func TestWebSessionEventsDirectRouteReplaysPastWhenNotLive(t *testing.T) {
 	}
 }
 
+func TestNotificationSSECompletedTurnSnapshotDoesNotReplayStreamedToolOutputDelta(t *testing.T) {
+	var out bytes.Buffer
+	sw := newNotificationSSEWriter(&out, nil)
+	sw.write(appwire.Notification{
+		Method: appwire.NotifyToolOutputDelta,
+		Params: testRawJSON(t, map[string]any{
+			"itemId": "item_tool_delta",
+			"callId": "call_tool",
+			"delta":  "ok",
+		}),
+	})
+	sw.write(appwire.Notification{
+		Method: appwire.NotifyTurnCompleted,
+		Params: testRawJSON(t, map[string]any{
+			"threadId": "th_1",
+			"turn": appwire.Turn{
+				ID:     "turn_1",
+				Status: appwire.TurnStatusCompleted,
+				Items: []appwire.ThreadItem{{
+					Type:     "tool_call",
+					ID:       "item_tool_result",
+					CallID:   "call_tool",
+					TurnID:   "turn_1",
+					ToolName: "shell",
+					Output:   "ok",
+					Status:   "completed",
+				}},
+			},
+		}),
+	})
+	body := out.String()
+	if got := strings.Count(body, "event: TOOL_CALL_OUTPUT_DELTA"); got != 1 {
+		t.Fatalf("tool output delta events=%d, want 1\nbody:\n%s", got, body)
+	}
+	if !strings.Contains(body, "event: TOOL_CALL_END") || !strings.Contains(body, `"output":"ok"`) {
+		t.Fatalf("completed tool final state missing\nbody:\n%s", body)
+	}
+}
+
+func TestNotificationSSECompletedTurnSnapshotUsesCallIDForStartedTool(t *testing.T) {
+	var out bytes.Buffer
+	sw := newNotificationSSEWriter(&out, nil)
+	sw.write(appwire.Notification{
+		Method: appwire.NotifyItemStarted,
+		Params: testRawJSON(t, map[string]any{
+			"threadId": "th_1",
+			"item": appwire.ThreadItem{
+				Type:          "tool_call",
+				ID:            "item_tool_start",
+				CallID:        "call_tool",
+				TurnID:        "turn_1",
+				ToolName:      "shell",
+				ArgumentsJSON: `{"command":"printf ok"}`,
+				Status:        "running",
+			},
+		}),
+	})
+	sw.write(appwire.Notification{
+		Method: appwire.NotifyTurnCompleted,
+		Params: testRawJSON(t, map[string]any{
+			"threadId": "th_1",
+			"turn": appwire.Turn{
+				ID:     "turn_1",
+				Status: appwire.TurnStatusCompleted,
+				Items: []appwire.ThreadItem{{
+					Type:     "tool_call",
+					ID:       "item_tool_result",
+					CallID:   "call_tool",
+					TurnID:   "turn_1",
+					ToolName: "shell",
+					Output:   "ok",
+					Status:   "completed",
+				}},
+			},
+		}),
+	})
+	body := out.String()
+	if got := strings.Count(body, "event: TOOL_CALL_START"); got != 1 {
+		t.Fatalf("tool starts=%d, want 1\nbody:\n%s", got, body)
+	}
+	if got := strings.Count(body, "event: TOOL_CALL_END"); got != 1 {
+		t.Fatalf("tool ends=%d, want 1\nbody:\n%s", got, body)
+	}
+	if !strings.Contains(body, `"output":"ok"`) {
+		t.Fatalf("completed tool final state missing\nbody:\n%s", body)
+	}
+}
+
 type scriptedAppSource struct {
 	id            string
 	thread        appwire.Thread
 	notifications []appwire.Notification
-	startTurn     func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error)
 }
 
 func (s *scriptedAppSource) ID() string { return s.id }
@@ -1024,10 +1173,7 @@ func (s *scriptedAppSource) ForkThread(context.Context, appwire.ThreadForkParams
 	return appwire.ThreadForkResponse{}, appwire.Unavailable("scripted source does not fork threads")
 }
 
-func (s *scriptedAppSource) StartTurn(ctx context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-	if s.startTurn != nil {
-		return s.startTurn(ctx, params)
-	}
+func (s *scriptedAppSource) StartTurn(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 	return appwire.TurnStartResponse{}, appwire.Unavailable("scripted source does not start turns")
 }
 
@@ -1355,6 +1501,52 @@ func TestWeb_ApiSpawn_CodexSourcePassesRemoteWorkingDirThrough(t *testing.T) {
 	}
 }
 
+func TestWeb_ApiSpawn_RejectsBlankCodexPromptBeforeSourceStart(t *testing.T) {
+	workDir := t.TempDir()
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	var startCalled bool
+	appserver.HandleTyped(codex.Router(), appwire.MethodThreadStart, func(_ context.Context, _ map[string]any) (map[string]any, error) {
+		startCalled = true
+		return map[string]any{"thread": map[string]any{
+			"id":        "th_blank",
+			"sessionId": "th_blank",
+			"status":    map[string]any{"type": "idle"},
+			"source":    "appServer",
+		}}, nil
+	})
+	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
+	defer codexHTTP.Close()
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Past:    NewPastIndex(""),
+		CodexSources: []appsource.CodexSourceConfig{{
+			ID:       "codex",
+			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
+		}},
+	})
+	body := strings.NewReader(fmt.Sprintf(`{"harness":"codex","prompt":"   ","model":"gpt-5.1-codex","working_dir":%q}`, workDir))
+	req := httptest.NewRequest(http.MethodPost, "/api/spawn", body)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out hubapi.ErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v body=%q", err, rec.Body.String())
+	}
+	if out.Code != appwire.CodeInvalidParams || !strings.Contains(out.Error, "initial prompt") {
+		t.Fatalf("error response=%+v", out)
+	}
+	if startCalled {
+		t.Fatal("Codex source was started for blank prompt")
+	}
+}
+
 func TestSpawnRequestJSONAcceptsPromptAndLegacyTask(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -1515,6 +1707,26 @@ func TestWeb_SessionRoute_FullPage_ServesAppShell(t *testing.T) {
 	}
 }
 
+func TestWeb_SessionRoute_LocalRefCanonicalizesWorkspaceURL(t *testing.T) {
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    NewPastIndex(""),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/s/local:01LOCAL", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `hx-get="/_partials/s/01LOCAL/workspace"`) {
+		t.Fatalf("local ref route did not canonicalize workspace partial URL:\n%s", body)
+	}
+}
+
 // TestWeb_WorkspacePartial_LiveSession_RendersHeader verifies that the internal
 // session workspace partial renders the session title and status.
 // with HX-Request:true returns the workspace partial with the session title and status.
@@ -1552,6 +1764,31 @@ func TestWeb_WorkspacePartial_LiveSession_RendersHeader(t *testing.T) {
 		if strings.Contains(body, unavailable) {
 			t.Errorf("serf live workspace advertised unavailable control %q:\n%s", unavailable, body)
 		}
+	}
+}
+
+func TestWeb_WorkspacePartial_LocalRefCanonicalizesToLiveSession(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 10, Address: "127.0.0.1:55556"})
+	r := NewRoster(dir, fakeProber{sessionID: "01LIVE001", status: "idle"})
+	r.Refresh()
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  r,
+		Past:    NewPastIndex(""),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/local:01LIVE001/workspace", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "01LIVE001") {
+		t.Fatalf("body missing canonical local session id: %q", body)
 	}
 }
 
@@ -3072,8 +3309,8 @@ type perAddrProber struct {
 	byAddr map[string]struct{ SessionID, Status string }
 }
 
-func (p perAddrProber) Probe(addr string) (sessionID, status string, ok bool) {
-	v, present := p.byAddr[addr]
+func (p perAddrProber) Probe(entry rendezvous.Entry) (sessionID, status string, ok bool) {
+	v, present := p.byAddr[entry.Address]
 	if !present {
 		return "", "", false
 	}

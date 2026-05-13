@@ -43,7 +43,9 @@ class FakeWebSocket {
         return;
       }
       const result = msg.method === "thread/start"
-        ? { thread: { id: "th_codex", sessionId: "th_codex", serf: { ref: "codex:th_codex" } } }
+        ? msg.params.harness === "serf"
+          ? { thread: { id: "01LOCAL", session_id: "01LOCAL", serf: { ref: "local:01LOCAL" } } }
+          : { thread: { id: "th_codex", sessionId: "th_codex", serf: { ref: "codex:th_codex" } } }
         : msg.method === "thread/list"
           ? { data: [{ id: "th_codex", sessionId: "th_codex", preview: "Codex task", status: { type: "idle" }, serf: { ref: "codex:th_codex" } }] }
           : msg.method === "model/list"

@@ -61,6 +61,7 @@ func (p *RESTProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rp := p.proxyFor(entry.Address)
 	r.URL.Path = "/" + rest
 	r.Host = entry.Address
+	setDaemonAuthorization(r.Header, entry.HubToken)
 	rp.ServeHTTP(w, r)
 }
 
@@ -122,6 +123,7 @@ func (p *SSEProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		upstreamReq.Header.Set("Last-Event-ID", id)
 	}
 	upstreamReq.Header.Set("Accept", "text/event-stream")
+	setDaemonAuthorization(upstreamReq.Header, entry.HubToken)
 
 	// Disable client-side timeouts; SSE is a long-lived connection.
 	client := &http.Client{Timeout: 0}

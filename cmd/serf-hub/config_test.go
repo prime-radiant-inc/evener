@@ -32,6 +32,7 @@ func TestLoadConfig_ParsesFile(t *testing.T) {
 	path := filepath.Join(dir, "hub.toml")
 	body := `
 addr = "127.0.0.1:9180"
+past_index_db = "/tmp/serf-index.db"
 spawn_timeout = "10s"
 past_results_per_page = 25
 
@@ -59,6 +60,9 @@ args = ["app-server"]
 [codex_launches.env]
 CODEX_HOME = "/tmp/codex-home"
 
+[serf_launch]
+sse_ring_size = 4096
+
 [serf_launch.env]
 OPENROUTER_API_KEY = "configured-openrouter-key"
 SERF_STATE_DIR = "/tmp/serf-state"
@@ -75,6 +79,9 @@ SERF_STATE_DIR = "/tmp/serf-state"
 	}
 	if cfg.PastResultsPerPage != 25 {
 		t.Errorf("PastResultsPerPage: got %d", cfg.PastResultsPerPage)
+	}
+	if cfg.PastIndexDB != "/tmp/serf-index.db" {
+		t.Errorf("PastIndexDB: got %q", cfg.PastIndexDB)
 	}
 	if len(cfg.Providers) != 2 {
 		t.Fatalf("providers: got %d, want 2", len(cfg.Providers))
@@ -107,6 +114,9 @@ SERF_STATE_DIR = "/tmp/serf-state"
 	if cfg.SerfLaunch.Env["OPENROUTER_API_KEY"] != "configured-openrouter-key" || cfg.SerfLaunch.Env["SERF_STATE_DIR"] != "/tmp/serf-state" {
 		t.Errorf("serf launch env mismatch: %+v", cfg.SerfLaunch.Env)
 	}
+	if cfg.SerfLaunch.SSERingSize != 4096 {
+		t.Errorf("serf launch sse_ring_size: got %d, want 4096", cfg.SerfLaunch.SSERingSize)
+	}
 }
 
 func TestDefaultConfigPath_RespectsHome(t *testing.T) {
@@ -125,5 +135,14 @@ func TestDefaultStateGlob_RespectsXDGStateHome(t *testing.T) {
 	want := "/srv/serf-state/serf/projects/*"
 	if got != want {
 		t.Fatalf("DefaultStateGlob: got %q, want %q", got, want)
+	}
+}
+
+func TestDefaultPastIndexDBPath_RespectsHome(t *testing.T) {
+	t.Setenv("HOME", "/tmp/fakehome")
+	got := DefaultPastIndexDBPath()
+	want := "/tmp/fakehome/.serf/index.db"
+	if got != want {
+		t.Fatalf("DefaultPastIndexDBPath: got %q, want %q", got, want)
 	}
 }

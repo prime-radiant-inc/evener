@@ -71,21 +71,31 @@ func main() {
 	if stateGlob == "" {
 		stateGlob = DefaultStateGlob()
 	}
+	pastIndexDB := cfg.PastIndexDB
+	if pastIndexDB == "" {
+		pastIndexDB = DefaultPastIndexDBPath()
+	}
 
 	// Roster + past index
 	prober := &StatusProber{Timeout: 500 * time.Millisecond}
 	roster := NewRoster(runDir, prober)
 
-	past := NewPastIndex(stateGlob)
+	past := NewPastIndexWithDB(stateGlob, pastIndexDB)
 	if err := past.Rebuild(); err != nil {
 		fmt.Fprintf(os.Stderr, "[hub] past index rebuild: %v\n", err)
 	}
 
 	// Spawner
+	hubToken, err := newHubToken()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[hub] %v\n", err)
+		os.Exit(1)
+	}
 	spawner := &HubSpawner{
 		Cfg:        cfg,
 		SerfBinary: *serfBinary,
 		RunDir:     runDir,
+		HubToken:   hubToken,
 	}
 	var codexLauncher *CodexLauncher
 	if len(cfg.CodexLaunches) > 0 {

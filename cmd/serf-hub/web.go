@@ -241,6 +241,7 @@ func (s *WebServer) handleSessionPartial(w http.ResponseWriter, r *http.Request)
 		http.NotFound(w, r)
 		return
 	}
+	id = canonicalRouteID(id)
 	sub := ""
 	if len(parts) == 2 {
 		sub = parts[1]
@@ -529,6 +530,14 @@ func appRefFromRouteID(id string) string {
 func isLocalRouteID(id string) bool {
 	ref, err := appwire.ParseRef(id)
 	return err != nil || ref.SourceID == "local"
+}
+
+func canonicalRouteID(id string) string {
+	ref, err := appwire.ParseRef(id)
+	if err != nil || ref.SourceID != "local" {
+		return id
+	}
+	return ref.ThreadID
 }
 
 func splitProviderModel(raw string) (string, string) {
@@ -865,6 +874,7 @@ func (s *WebServer) serveAppwireEvents(w http.ResponseWriter, r *http.Request, i
 		writeSSE(w, flusher, "ERROR", map[string]any{"error": err.Error()})
 		return
 	}
+	sseWriter := newNotificationSSEWriter(w, flusher)
 	for {
 		select {
 		case <-ctx.Done():
@@ -873,20 +883,25 @@ func (s *WebServer) serveAppwireEvents(w http.ResponseWriter, r *http.Request, i
 			if !ok {
 				return
 			}
-			writeNotificationSSE(w, flusher, notification)
+			sseWriter.write(notification)
 		}
 	}
 }
 
 func writeThreadReplaySSE(w io.Writer, flusher http.Flusher, thread appwire.Thread) {
 	writeSSE(w, flusher, "SESSION_START", map[string]any{
-		"session_id": thread.SessionID,
+		"session_id": threadReplaySessionID(thread),
 		"model":      thread.ModelProvider,
 		"profile":    thread.Serf.Profile,
 	})
+	activeToolCalls := map[string]struct{}{}
 	for _, turn := range thread.Turns {
 		turnIndex := turnIndexFromAppwireID(turn.ID)
 		for _, item := range turn.Items {
+			if item.Type == "tool_call" {
+				writeToolReplaySSE(w, flusher, turnIndex, item, activeToolCalls)
+				continue
+			}
 			writeItemReplaySSE(w, flusher, turnIndex, item)
 		}
 		if turn.Status == appwire.TurnStatusFailed {
@@ -897,6 +912,64 @@ func writeThreadReplaySSE(w io.Writer, flusher http.Flusher, thread appwire.Thre
 			writeSSE(w, flusher, "ERROR", errorPayload(message, turn.Error))
 		}
 	}
+}
+
+func writeToolReplaySSE(w io.Writer, flusher http.Flusher, turnIndex int, item appwire.ThreadItem, activeToolCalls map[string]struct{}) {
+	callID := firstNonEmpty(item.CallID, item.ID)
+	completed := item.Status == appwire.TurnStatusCompleted || item.Output != "" || item.Error != ""
+	if completed && callID != "" {
+		if _, ok := activeToolCalls[callID]; ok {
+			writeToolReplayEndSSE(w, flusher, item)
+			delete(activeToolCalls, callID)
+			return
+		}
+	}
+	writeSSE(w, flusher, "TOOL_CALL_START", map[string]any{
+		"call_id":        callID,
+		"tool_name":      item.ToolName,
+		"arguments_json": item.ArgumentsJSON,
+	})
+	if !completed {
+		if callID != "" {
+			activeToolCalls[callID] = struct{}{}
+		}
+		return
+	}
+	if item.Output != "" {
+		writeSSE(w, flusher, "TOOL_CALL_OUTPUT_DELTA", map[string]any{
+			"call_id": callID,
+			"delta":   item.Output,
+			"turn":    turnIndex,
+		})
+	}
+	writeToolReplayEndSSE(w, flusher, item)
+}
+
+func writeToolReplayEndSSE(w io.Writer, flusher http.Flusher, item appwire.ThreadItem) {
+	writeSSE(w, flusher, "TOOL_CALL_END", map[string]any{
+		"call_id":        firstNonEmpty(item.CallID, item.ID),
+		"item_id":        item.ID,
+		"tool_name":      item.ToolName,
+		"arguments_json": item.ArgumentsJSON,
+		"output":         item.Output,
+		"error":          item.Error,
+		"tool_state":     item.Raw,
+	})
+}
+
+func threadReplaySessionID(thread appwire.Thread) string {
+	if ref, err := appwire.ParseRef(thread.Serf.Ref); err == nil {
+		if ref.SourceID != "local" {
+			return ref.String()
+		}
+		if thread.SessionID == "" {
+			return ref.ThreadID
+		}
+	}
+	if thread.SessionID != "" {
+		return thread.SessionID
+	}
+	return thread.ID
 }
 
 func writeItemReplaySSE(w io.Writer, flusher http.Flusher, turnIndex int, item appwire.ThreadItem) {
@@ -928,35 +1001,38 @@ func writeItemReplaySSE(w io.Writer, flusher http.Flusher, turnIndex int, item a
 			writeSSE(w, flusher, "ASSISTANT_TEXT_END", map[string]any{"text": item.Text})
 		}
 	case "tool_call":
-		writeSSE(w, flusher, "TOOL_CALL_START", map[string]any{
-			"call_id":        firstNonEmpty(item.CallID, item.ID),
-			"tool_name":      item.ToolName,
-			"arguments_json": item.ArgumentsJSON,
-		})
-		if item.Output != "" {
-			writeSSE(w, flusher, "TOOL_CALL_OUTPUT_DELTA", map[string]any{
-				"call_id": firstNonEmpty(item.CallID, item.ID),
-				"delta":   item.Output,
-			})
-		}
-		writeSSE(w, flusher, "TOOL_CALL_END", map[string]any{
-			"call_id":        firstNonEmpty(item.CallID, item.ID),
-			"item_id":        item.ID,
-			"tool_name":      item.ToolName,
-			"arguments_json": item.ArgumentsJSON,
-			"output":         item.Output,
-			"error":          item.Error,
-			"tool_state":     item.Raw,
-		})
+		writeToolReplaySSE(w, flusher, turnIndex, item, map[string]struct{}{})
 	}
 }
 
 func writeNotificationSSE(w io.Writer, flusher http.Flusher, notification appwire.Notification) {
+	newNotificationSSEWriter(w, flusher).write(notification)
+}
+
+type notificationSSEWriter struct {
+	w              io.Writer
+	flusher        http.Flusher
+	startedItems   map[string]struct{}
+	completedItems map[string]struct{}
+	outputDeltas   map[string]struct{}
+}
+
+func newNotificationSSEWriter(w io.Writer, flusher http.Flusher) *notificationSSEWriter {
+	return &notificationSSEWriter{
+		w:              w,
+		flusher:        flusher,
+		startedItems:   map[string]struct{}{},
+		completedItems: map[string]struct{}{},
+		outputDeltas:   map[string]struct{}{},
+	}
+}
+
+func (sw *notificationSSEWriter) write(notification appwire.Notification) {
 	switch notification.Method {
 	case appwire.NotifyThreadStatusChanged:
 		var params appwire.ThreadStatusChangedParams
 		if json.Unmarshal(notification.Params, &params) == nil {
-			writeSSE(w, flusher, "THREAD_STATUS_CHANGED", map[string]any{"status": params.Status.Type})
+			writeSSE(sw.w, sw.flusher, "THREAD_STATUS_CHANGED", map[string]any{"status": params.Status.Type})
 		}
 	case appwire.NotifyItemStarted:
 		var params struct {
@@ -965,29 +1041,33 @@ func writeNotificationSSE(w io.Writer, flusher http.Flusher, notification appwir
 		if json.Unmarshal(notification.Params, &params) == nil {
 			switch params.Item.Type {
 			case "user_message":
-				writeSSE(w, flusher, "USER_INPUT", map[string]any{"text": params.Item.Text, "turn": turnIndexFromAppwireID(params.Item.TurnID)})
+				writeSSE(sw.w, sw.flusher, "USER_INPUT", map[string]any{"text": params.Item.Text, "turn": turnIndexFromAppwireID(params.Item.TurnID)})
 			case "agent_message":
-				writeSSE(w, flusher, "ASSISTANT_TEXT_START", map[string]any{})
+				writeSSE(sw.w, sw.flusher, "ASSISTANT_TEXT_START", map[string]any{})
 			case "tool_call":
-				writeSSE(w, flusher, "TOOL_CALL_START", map[string]any{
+				writeSSE(sw.w, sw.flusher, "TOOL_CALL_START", map[string]any{
 					"call_id":        firstNonEmpty(params.Item.CallID, params.Item.ID),
 					"tool_name":      params.Item.ToolName,
 					"arguments_json": params.Item.ArgumentsJSON,
 				})
 			}
+			sw.markStarted(params.Item)
 		}
 	case appwire.NotifyAgentMessageDelta:
 		var params appwire.AgentMessageDeltaParams
 		if json.Unmarshal(notification.Params, &params) == nil {
-			writeSSE(w, flusher, "ASSISTANT_TEXT_DELTA", map[string]any{"delta": params.Delta})
+			writeSSE(sw.w, sw.flusher, "ASSISTANT_TEXT_DELTA", map[string]any{"delta": params.Delta})
 		}
 	case appwire.NotifyToolOutputDelta:
 		var params struct {
 			ItemID string `json:"itemId"`
+			CallID string `json:"callId"`
 			Delta  string `json:"delta"`
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
-			writeSSE(w, flusher, "TOOL_CALL_OUTPUT_DELTA", map[string]any{"call_id": params.ItemID, "delta": params.Delta})
+			callID := firstNonEmpty(params.CallID, params.ItemID)
+			sw.markOutputDelta(callID)
+			writeSSE(sw.w, sw.flusher, "TOOL_CALL_OUTPUT_DELTA", map[string]any{"call_id": callID, "item_id": params.ItemID, "delta": params.Delta})
 		}
 	case appwire.NotifyItemCompleted:
 		var params struct {
@@ -995,10 +1075,10 @@ func writeNotificationSSE(w io.Writer, flusher http.Flusher, notification appwir
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
 			if params.Item.Type == "agent_message" {
-				writeSSE(w, flusher, "ASSISTANT_TEXT_END", map[string]any{"text": params.Item.Text})
+				writeSSE(sw.w, sw.flusher, "ASSISTANT_TEXT_END", map[string]any{"text": params.Item.Text})
 			}
 			if params.Item.Type == "tool_call" {
-				writeSSE(w, flusher, "TOOL_CALL_END", map[string]any{
+				writeSSE(sw.w, sw.flusher, "TOOL_CALL_END", map[string]any{
 					"call_id":        firstNonEmpty(params.Item.CallID, params.Item.ID),
 					"item_id":        params.Item.ID,
 					"tool_name":      params.Item.ToolName,
@@ -1008,6 +1088,7 @@ func writeNotificationSSE(w io.Writer, flusher http.Flusher, notification appwir
 					"tool_state":     params.Item.Raw,
 				})
 			}
+			sw.markCompleted(params.Item)
 		}
 	case appwire.NotifyTurnCompleted:
 		var params struct {
@@ -1018,18 +1099,105 @@ func writeNotificationSSE(w io.Writer, flusher http.Flusher, notification appwir
 			if params.Turn.Error != nil && strings.TrimSpace(params.Turn.Error.Message) != "" {
 				message = params.Turn.Error.Message
 			}
-			writeSSE(w, flusher, "ERROR", errorPayload(message, params.Turn.Error))
+			writeSSE(sw.w, sw.flusher, "ERROR", errorPayload(message, params.Turn.Error))
+		} else if params.Turn.Status != appwire.TurnStatusFailed {
+			turnIndex := turnIndexFromAppwireID(params.Turn.ID)
+			for _, item := range params.Turn.Items {
+				sw.writeCompletedTurnItem(turnIndex, item)
+			}
 		}
 	case appwire.NotifyWarning:
-		writeSSE(w, flusher, "WARNING", warningPayload(notification.Params))
+		writeSSE(sw.w, sw.flusher, "WARNING", warningPayload(notification.Params))
 	case appwire.NotifySerfSteeringInjected:
 		var params struct {
 			Text string `json:"text"`
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
-			writeSSE(w, flusher, "STEERING_INJECTED", map[string]any{"text": params.Text})
+			writeSSE(sw.w, sw.flusher, "STEERING_INJECTED", map[string]any{"text": params.Text})
 		}
 	}
+}
+
+func (sw *notificationSSEWriter) writeCompletedTurnItem(turnIndex int, item appwire.ThreadItem) {
+	if sw.isCompleted(item) {
+		return
+	}
+	switch item.Type {
+	case "agent_message":
+		if item.Text != "" {
+			writeSSE(sw.w, sw.flusher, "ASSISTANT_TEXT_END", map[string]any{"text": item.Text})
+		}
+	case "tool_call":
+		if !sw.isStarted(item) {
+			writeSSE(sw.w, sw.flusher, "TOOL_CALL_START", map[string]any{
+				"call_id":        firstNonEmpty(item.CallID, item.ID),
+				"tool_name":      item.ToolName,
+				"arguments_json": item.ArgumentsJSON,
+			})
+		}
+		if item.Output != "" && !sw.hasOutputDelta(item) {
+			writeSSE(sw.w, sw.flusher, "TOOL_CALL_OUTPUT_DELTA", map[string]any{
+				"call_id": firstNonEmpty(item.CallID, item.ID),
+				"item_id": item.ID,
+				"delta":   item.Output,
+				"turn":    turnIndex,
+			})
+		}
+		writeSSE(sw.w, sw.flusher, "TOOL_CALL_END", map[string]any{
+			"call_id":        firstNonEmpty(item.CallID, item.ID),
+			"item_id":        item.ID,
+			"tool_name":      item.ToolName,
+			"arguments_json": item.ArgumentsJSON,
+			"output":         item.Output,
+			"error":          item.Error,
+			"tool_state":     item.Raw,
+		})
+	}
+	sw.markCompleted(item)
+}
+
+func (sw *notificationSSEWriter) markOutputDelta(itemID string) {
+	if itemID != "" {
+		sw.outputDeltas[itemID] = struct{}{}
+	}
+}
+
+func (sw *notificationSSEWriter) hasOutputDelta(item appwire.ThreadItem) bool {
+	for _, key := range []string{item.ID, item.CallID} {
+		if key == "" {
+			continue
+		}
+		if _, ok := sw.outputDeltas[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (sw *notificationSSEWriter) markStarted(item appwire.ThreadItem) {
+	if key := itemSSEKey(item); key != "" {
+		sw.startedItems[key] = struct{}{}
+	}
+}
+
+func (sw *notificationSSEWriter) markCompleted(item appwire.ThreadItem) {
+	if key := itemSSEKey(item); key != "" {
+		sw.completedItems[key] = struct{}{}
+	}
+}
+
+func (sw *notificationSSEWriter) isStarted(item appwire.ThreadItem) bool {
+	_, ok := sw.startedItems[itemSSEKey(item)]
+	return ok
+}
+
+func (sw *notificationSSEWriter) isCompleted(item appwire.ThreadItem) bool {
+	_, ok := sw.completedItems[itemSSEKey(item)]
+	return ok
+}
+
+func itemSSEKey(item appwire.ThreadItem) string {
+	return firstNonEmpty(item.CallID, item.ID)
 }
 
 func errorPayload(message string, turnErr *appwire.TurnError) map[string]any {
@@ -2264,6 +2432,7 @@ func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	id = canonicalRouteID(id)
 	sub := ""
 	if len(parts) == 2 {
 		sub = parts[1]
@@ -3085,7 +3254,12 @@ type daemonStatus struct {
 // fetchStatus reads /status from the daemon at le.Address, returning nil on any error.
 func (s *WebServer) fetchStatus(le LiveEntry) *daemonStatus {
 	client := &http.Client{Timeout: 1 * time.Second}
-	resp, err := client.Get("http://" + le.Address + "/status") //nolint:gosec
+	req, err := http.NewRequest(http.MethodGet, "http://"+le.Address+"/status", nil) //nolint:gosec
+	if err != nil {
+		return nil
+	}
+	setDaemonAuthorization(req.Header, le.HubToken)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil
 	}

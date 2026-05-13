@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -31,9 +32,22 @@ type CodexSource struct {
 }
 
 type codexLiveThread struct {
-	client *appwire.Client
-	close  func() error
+	client      *appwire.Client
+	close       func() error
+	closeOnce   sync.Once
+	done        chan struct{}
+	mu          sync.Mutex
+	subscribers map[chan appwire.Notification]struct{}
+	backlog     []appwire.Notification
+	retiring    bool
+	closed      bool
+	hadSub      bool
 }
+
+const codexLiveSubscriberBuffer = 128
+const codexLiveBacklogLimit = 4096
+
+var codexLiveNoSubscriberTimeout = 30 * time.Second
 
 func NewCodexSource(cfg CodexSourceConfig, client *http.Client) *CodexSource {
 	sourceID := cfg.ID
@@ -134,14 +148,14 @@ func (s *CodexSource) StartThread(ctx context.Context, params appwire.ThreadStar
 		return appwire.ThreadStartResponse{}, err
 	}
 	thread := s.mapThread(out.Thread)
-	live := &codexLiveThread{client: client, close: closeClient}
+	live := s.newLiveThread(thread.ID, client, closeClient)
 	s.setLiveThread(thread.ID, live)
 	resp := appwire.ThreadStartResponse{Thread: thread}
 	if params.Prompt != "" || len(params.Items) > 0 {
-		turnResp, err := s.StartTurn(ctx, appwire.TurnStartParams{Ref: thread.Serf.Ref, Prompt: params.Prompt, Items: params.Items})
+		turnResp, err := s.startTurnWithClient(ctx, client, appwire.TurnStartParams{Ref: thread.Serf.Ref, Prompt: params.Prompt, Items: params.Items})
 		if err != nil {
 			s.removeLiveThread(thread.ID, live)
-			_ = live.close()
+			live.retire()
 			return appwire.ThreadStartResponse{}, err
 		}
 		resp.Turn = turnResp.Turn
@@ -193,16 +207,47 @@ func (s *CodexSource) StartTurn(ctx context.Context, params appwire.TurnStartPar
 		return appwire.TurnStartResponse{}, err
 	}
 	var out codexTurnStartResponse
-	err = s.withClient(ctx, func(client *appwire.Client) error {
-		return client.Request(ctx, appwire.MethodTurnStart, map[string]any{
-			"threadId": threadID,
-			"input":    input,
-		}, &out)
-	})
+	if live := s.liveThread(threadID); live != nil {
+		if err := codexTurnStart(ctx, live.client, threadID, input, &out); err != nil {
+			return appwire.TurnStartResponse{}, err
+		}
+		return appwire.TurnStartResponse{Turn: mapCodexTurn(out.Turn)}, nil
+	}
+	client, closeClient, err := s.connect(ctx)
 	if err != nil {
 		return appwire.TurnStartResponse{}, err
 	}
+	live := s.newLiveThread(threadID, client, closeClient)
+	s.setLiveThread(threadID, live)
+	if err := codexTurnStart(ctx, client, threadID, input, &out); err != nil {
+		s.removeLiveThread(threadID, live)
+		live.retire()
+		return appwire.TurnStartResponse{}, err
+	}
 	return appwire.TurnStartResponse{Turn: mapCodexTurn(out.Turn)}, nil
+}
+
+func (s *CodexSource) startTurnWithClient(ctx context.Context, client *appwire.Client, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+	threadID, err := s.threadID(params.Ref, "")
+	if err != nil {
+		return appwire.TurnStartResponse{}, err
+	}
+	input, err := codexInput(params.Prompt, params.Items)
+	if err != nil {
+		return appwire.TurnStartResponse{}, err
+	}
+	var out codexTurnStartResponse
+	if err := codexTurnStart(ctx, client, threadID, input, &out); err != nil {
+		return appwire.TurnStartResponse{}, err
+	}
+	return appwire.TurnStartResponse{Turn: mapCodexTurn(out.Turn)}, nil
+}
+
+func codexTurnStart(ctx context.Context, client *appwire.Client, threadID string, input []map[string]any, out *codexTurnStartResponse) error {
+	return client.Request(ctx, appwire.MethodTurnStart, map[string]any{
+		"threadId": threadID,
+		"input":    input,
+	}, out)
 }
 
 func (s *CodexSource) SteerTurn(ctx context.Context, params appwire.TurnSteerParams) error {
@@ -297,7 +342,7 @@ func (s *CodexSource) SubscribeThread(ctx context.Context, params appwire.Thread
 		_ = closeClient()
 		return nil, err
 	}
-	live := &codexLiveThread{client: client, close: closeClient}
+	live := s.newLiveThread(threadID, client, closeClient)
 	s.setLiveThread(threadID, live)
 	return s.subscribeLiveThread(ctx, threadID, live), nil
 }
@@ -305,7 +350,24 @@ func (s *CodexSource) SubscribeThread(ctx context.Context, params appwire.Thread
 func (s *CodexSource) liveThread(threadID string) *codexLiveThread {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.live[threadID]
+	live := s.live[threadID]
+	if live != nil && live.isClosed() {
+		delete(s.live, threadID)
+		return nil
+	}
+	return live
+}
+
+func (s *CodexSource) newLiveThread(threadID string, client *appwire.Client, closeClient func() error) *codexLiveThread {
+	live := &codexLiveThread{
+		client:      client,
+		close:       closeClient,
+		done:        make(chan struct{}),
+		subscribers: map[chan appwire.Notification]struct{}{},
+	}
+	go s.runLiveThread(threadID, live)
+	go live.retireIfNoSubscriber(codexLiveNoSubscriberTimeout)
+	return live
 }
 
 func (s *CodexSource) setLiveThread(threadID string, live *codexLiveThread) {
@@ -317,7 +379,7 @@ func (s *CodexSource) setLiveThread(threadID string, live *codexLiveThread) {
 	s.live[threadID] = live
 	s.mu.Unlock()
 	if previous != nil && previous != live {
-		_ = previous.close()
+		previous.retire()
 	}
 }
 
@@ -330,30 +392,122 @@ func (s *CodexSource) removeLiveThread(threadID string, live *codexLiveThread) {
 }
 
 func (s *CodexSource) subscribeLiveThread(ctx context.Context, threadID string, live *codexLiveThread) <-chan appwire.Notification {
-	out := make(chan appwire.Notification, 128)
-	go func() {
-		defer close(out)
-		defer s.removeLiveThread(threadID, live)
-		defer live.close()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case notification, ok := <-live.client.Notifications():
-				if !ok {
-					return
-				}
-				mapped := s.mapNotification(threadID, notification)
-				select {
-				case <-ctx.Done():
-					return
-				case out <- mapped:
-				default:
-				}
-			}
+	return live.subscribe(ctx)
+}
+
+func (s *CodexSource) runLiveThread(threadID string, live *codexLiveThread) {
+	defer s.removeLiveThread(threadID, live)
+	defer live.retire()
+	defer live.finish()
+	for notification := range live.client.Notifications() {
+		live.publish(s.mapNotification(threadID, notification))
+	}
+}
+
+func (live *codexLiveThread) publish(notification appwire.Notification) {
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	if live.closed {
+		return
+	}
+	if len(live.subscribers) == 0 {
+		live.backlog = append(live.backlog, notification)
+		if len(live.backlog) > codexLiveBacklogLimit {
+			live.backlog = live.backlog[len(live.backlog)-codexLiveBacklogLimit:]
 		}
+		return
+	}
+	for subscriber := range live.subscribers {
+		select {
+		case subscriber <- notification:
+		default:
+		}
+	}
+}
+
+func (live *codexLiveThread) subscribe(ctx context.Context) <-chan appwire.Notification {
+	live.mu.Lock()
+	capacity := codexLiveSubscriberBuffer + len(live.backlog)
+	out := make(chan appwire.Notification, capacity)
+	if live.closed {
+		close(out)
+		live.mu.Unlock()
+		return out
+	}
+	for _, notification := range live.backlog {
+		out <- notification
+	}
+	live.backlog = nil
+	live.subscribers[out] = struct{}{}
+	live.hadSub = true
+	live.mu.Unlock()
+
+	go func() {
+		<-ctx.Done()
+		live.unsubscribe(out)
 	}()
 	return out
+}
+
+func (live *codexLiveThread) unsubscribe(out chan appwire.Notification) {
+	live.mu.Lock()
+	if _, ok := live.subscribers[out]; ok {
+		delete(live.subscribers, out)
+		close(out)
+	}
+	shouldRetire := live.hadSub && len(live.subscribers) == 0 && !live.closed
+	live.mu.Unlock()
+	if shouldRetire {
+		live.retire()
+	}
+}
+
+func (live *codexLiveThread) retireIfNoSubscriber(timeout time.Duration) {
+	if timeout <= 0 {
+		return
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-live.done:
+		return
+	}
+	live.mu.Lock()
+	shouldRetire := !live.hadSub && len(live.subscribers) == 0 && !live.closed && !live.retiring
+	if shouldRetire {
+		live.retiring = true
+	}
+	live.mu.Unlock()
+	if shouldRetire {
+		live.retire()
+	}
+}
+
+func (live *codexLiveThread) finish() {
+	live.mu.Lock()
+	if !live.closed {
+		live.closed = true
+		for subscriber := range live.subscribers {
+			close(subscriber)
+		}
+		live.subscribers = map[chan appwire.Notification]struct{}{}
+		live.backlog = nil
+	}
+	live.mu.Unlock()
+	close(live.done)
+}
+
+func (live *codexLiveThread) retire() {
+	live.closeOnce.Do(func() {
+		_ = live.close()
+	})
+}
+
+func (live *codexLiveThread) isClosed() bool {
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	return live.closed
 }
 
 func (s *CodexSource) withClient(ctx context.Context, fn func(*appwire.Client) error) error {
@@ -378,7 +532,7 @@ func (s *CodexSource) connect(ctx context.Context) (*appwire.Client, func() erro
 		return nil, nil, err
 	}
 	client := appwire.NewClient(transport)
-	client.Start(ctx)
+	client.Start(context.WithoutCancel(ctx))
 	if _, err := client.Initialize(ctx, appwire.InitializeParams{
 		ClientInfo:   appwire.ClientInfo{Name: "serf-hub", Version: "0.1.0"},
 		Capabilities: appwire.Capabilities{ExperimentalAPI: true},
@@ -506,8 +660,10 @@ func (s *CodexSource) mapNotification(threadID string, notification appwire.Noti
 			Item     json.RawMessage `json:"item"`
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
+			mappedThreadID := firstNonEmpty(params.ThreadID, threadID)
 			return notificationMessage(notification.Method, map[string]any{
-				"threadId": firstNonEmpty(params.ThreadID, threadID),
+				"threadId": mappedThreadID,
+				"ref":      appwire.Ref{SourceID: s.sourceID, ThreadID: mappedThreadID}.String(),
 				"turnId":   params.TurnID,
 				"item":     mapCodexItem(params.TurnID, params.Item),
 			})
@@ -518,8 +674,10 @@ func (s *CodexSource) mapNotification(threadID string, notification appwire.Noti
 			Turn     codexTurn `json:"turn"`
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
+			mappedThreadID := firstNonEmpty(params.ThreadID, threadID)
 			return notificationMessage(appwire.NotifyTurnCompleted, map[string]any{
-				"threadId": firstNonEmpty(params.ThreadID, threadID),
+				"threadId": mappedThreadID,
+				"ref":      appwire.Ref{SourceID: s.sourceID, ThreadID: mappedThreadID}.String(),
 				"turn":     mapCodexTurn(params.Turn),
 			})
 		}

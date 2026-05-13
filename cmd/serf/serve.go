@@ -53,6 +53,7 @@ func runServe(args []string) error {
 	contextStrategy := fs.String("context-strategy", "", "context management strategy")
 	outputSchema := fs.String("output-schema", "", "inline JSON Schema applied to the communicate tool's output field")
 	verbose := fs.Bool("verbose", false, "emit NDJSON events to stderr")
+	sseRingSize := fs.Int("sse-ring-size", 0, "SSE/AppWire replay ring size (default 1000)")
 	noProjectPrompts := fs.Bool("no-project-prompts", false, "suppress .serf/prompts/ loading")
 	agentName := fs.String("agent", "", "agent persona name (default: default)")
 	var skillsDirs cmdutil.StringSliceFlag
@@ -192,7 +193,18 @@ func runServe(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	srv := server.NewServer(server.ServerConfig{})
+	listener, err := net.Listen("tcp", *addr)
+	if err != nil {
+		sess.Close()
+		return fmt.Errorf("listen %s: %w", *addr, err)
+	}
+
+	hubToken := os.Getenv("SERF_HUB_TOKEN")
+	srv := server.NewServer(server.ServerConfig{
+		RingBufferSize: *sseRingSize,
+		HubToken:       hubToken,
+		AllowedHost:    listener.Addr().String(),
+	})
 	srv.SetAppIdentity("local", sess.ID())
 	rvRegistration := &serveRendezvousRegistration{}
 
@@ -286,11 +298,6 @@ func runServe(args []string) error {
 	}()
 
 	// Start HTTP server.
-	listener, err := net.Listen("tcp", *addr)
-	if err != nil {
-		getSession().Close()
-		return fmt.Errorf("listen %s: %w", *addr, err)
-	}
 	fmt.Fprintf(os.Stderr, "[serve] listening on %s (session %s)\n", listener.Addr(), getSession().ID())
 
 	spawnedBy := "user"
@@ -317,6 +324,7 @@ func runServe(args []string) error {
 		Agent:      *agentName,
 		Model:      modelRef.Model,
 		Provider:   modelRef.Provider,
+		HubToken:   hubToken,
 		StartedAt:  time.Now().UTC(),
 		SpawnedBy:  spawnedBy,
 	}

@@ -1002,6 +1002,54 @@ func TestHubRPCThreadStartLaunchesConfiguredCodexAppServer(t *testing.T) {
 	}
 }
 
+func TestHubRPCThreadStartRejectsBlankCodexPromptBeforeSourceStart(t *testing.T) {
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	var startCalled bool
+	appserver.HandleTyped(codex.Router(), appwire.MethodThreadStart, func(_ context.Context, _ map[string]any) (map[string]any, error) {
+		startCalled = true
+		return map[string]any{"thread": map[string]any{
+			"id":        "th_blank",
+			"sessionId": "th_blank",
+			"status":    map[string]any{"type": "idle"},
+			"source":    "appServer",
+		}}, nil
+	})
+	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
+	defer codexHTTP.Close()
+
+	hub := newHubRPCTestServer(t, WebConfig{
+		Past: NewPastIndex(""),
+		CodexSources: []appsource.CodexSourceConfig{{
+			ID:       "codex",
+			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
+		}},
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	_, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		Harness: "codex",
+		CWD:     "/work/project",
+		Prompt:  "   ",
+	})
+	if err == nil {
+		t.Fatal("ThreadStart succeeded for blank Codex prompt")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error %T does not preserve WireError: %v", err, err)
+	}
+	if wire.Code != appwire.CodeInvalidParams || !strings.Contains(wire.Message, "initial prompt") {
+		t.Fatalf("wire=%+v", wire)
+	}
+	if startCalled {
+		t.Fatal("Codex source was started for blank prompt")
+	}
+}
+
 func TestHubRPCHarnessListIncludesConfiguredCodexSources(t *testing.T) {
 	hub := newHubRPCTestServer(t, WebConfig{
 		CodexSources: []appsource.CodexSourceConfig{{

@@ -246,6 +246,11 @@ Open `http://127.0.0.1:9180` in your browser.
 addr = "127.0.0.1:9180"
 spawn_timeout = "30s"
 past_results_per_page = 50
+# Optional; default is ~/.serf/index.db.
+past_index_db = "/Users/you/.serf/index.db"
+
+[serf_launch]
+sse_ring_size = 4096
 
 [[providers]]
 name = "openai"
@@ -258,7 +263,7 @@ models = ["claude-opus-4-7", "claude-sonnet-4-6"]
 
 ### Architecture
 
-Daemons are loopback-only. Each writes a rendezvous file to `~/.serf/run/<pid>.json`; the hub watches the directory, probes daemons for state, and proxies REST + SSE so the browser only ever talks to the hub origin. Same-origin guard + strict CSP defend against DNS-rebinding and cross-origin attacks.
+Daemons are loopback-only. Each writes a private rendezvous file to `~/.serf/run/<pid>.json`; the hub watches the directory, probes daemons for state, and proxies AppWire/REST/SSE so the browser only ever talks to the hub origin. Hub-spawned daemons require the per-hub bearer token recorded in their rendezvous file. Daemon and Hub same-origin guards plus strict Hub CSP defend against DNS-rebinding and cross-origin attacks.
 
 ### Operating notes
 

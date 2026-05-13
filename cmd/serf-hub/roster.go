@@ -27,7 +27,7 @@ type LiveEntry struct {
 // session_id (which may have changed under POST /clear since the
 // rendezvous file was written) and the daemon's current state.
 type Prober interface {
-	Probe(addr string) (sessionID, status string, ok bool)
+	Probe(entry rendezvous.Entry) (sessionID, status string, ok bool)
 }
 
 // Roster maintains the live-daemon set on the host. Reads of the underlying
@@ -77,7 +77,7 @@ func (r *Roster) Refresh() {
 		var sessID, status string
 		ok := true
 		if r.prober != nil {
-			sessID, status, ok = r.prober.Probe(e.Address)
+			sessID, status, ok = r.prober.Probe(e)
 		}
 		if !ok {
 			r.failCount[e.PID]++
@@ -162,7 +162,7 @@ func (r *Roster) Find(sessionID string) (LiveEntry, bool) {
 }
 
 func ensureDir(dir string) error {
-	return os.MkdirAll(dir, 0o755)
+	return os.MkdirAll(dir, 0o700)
 }
 
 // Watch blocks: it scans once, then refreshes on every fsnotify event and

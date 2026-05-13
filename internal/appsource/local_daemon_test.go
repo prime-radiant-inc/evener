@@ -104,3 +104,39 @@ func TestLocalDaemonSourceReadsThreadOverAppWire(t *testing.T) {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 }
+
+func TestLocalDaemonSourceSendsHubTokenBearer(t *testing.T) {
+	gotAuth := make(chan string, 1)
+	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_1", SessionID: "sess_1", Serf: appwire.SerfThread{Ref: "local:th_1"}}}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth <- r.Header.Get("Authorization")
+		app.ServeWebSocket(w, r)
+	}))
+	defer httpServer.Close()
+
+	source := NewLocalDaemonSource("local", func() []rendezvous.Entry {
+		return []rendezvous.Entry{{
+			Protocol:  appwire.ProtocolVersion,
+			Endpoint:  "ws" + httpServer.URL[len("http"):],
+			SourceID:  "local",
+			ThreadID:  "th_1",
+			SessionID: "sess_1",
+			HubToken:  "secret-token",
+		}}
+	}, httpServer.Client())
+
+	if _, err := source.ReadThread(context.Background(), appwire.ThreadReadParams{Ref: "local:th_1"}); err != nil {
+		t.Fatalf("ReadThread: %v", err)
+	}
+	select {
+	case auth := <-gotAuth:
+		if auth != "Bearer secret-token" {
+			t.Fatalf("Authorization=%q, want bearer token", auth)
+		}
+	default:
+		t.Fatal("daemon did not receive websocket request")
+	}
+}

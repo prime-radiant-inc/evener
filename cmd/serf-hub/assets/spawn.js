@@ -74,8 +74,9 @@
     spawnResult = spawnResult || {};
     const ref = String(spawnResult.ref || "");
     if (ref && !ref.startsWith("local:")) return ref;
-    if (spawnResult.session_id) return String(spawnResult.session_id);
-    if (spawnResult.sessionId) return String(spawnResult.sessionId);
+    const sessionID = String(spawnResult.session_id || spawnResult.sessionId || "");
+    if (sessionID.startsWith("local:")) return sessionID.slice("local:".length);
+    if (sessionID) return sessionID;
     if (ref.startsWith("local:")) return ref.slice("local:".length);
     return ref;
   }

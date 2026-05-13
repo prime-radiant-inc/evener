@@ -20,12 +20,14 @@ func TestBuildSpawnArgs(t *testing.T) {
 		StateDir:        "/Users/jesse/.local/state/serf/projects/foo",
 		RunDir:          "/Users/jesse/.cache/serf/run",
 		ReasoningEffort: "medium",
+		SSERingSize:     4096,
 	}
 	args := buildSpawnArgs(req)
 	want := map[string]string{
 		"--model":            "openai/gpt-5.2",
 		"--agent":            "default",
 		"--reasoning-effort": "medium",
+		"--sse-ring-size":    "4096",
 		"--dir":              "/Users/jesse/git/foo",
 		"--state-dir":        "/Users/jesse/.local/state/serf/projects/foo",
 		"--run-dir":          "/Users/jesse/.cache/serf/run",
@@ -156,7 +158,7 @@ func TestBuildSerfChildEnvUsesExplicitConfigBeforeInheritedEnv(t *testing.T) {
 		"OPENROUTER_API_KEY": "configured-secret",
 	}
 
-	env := buildSerfChildEnv(cfg, "/tmp/run", "/tmp/state")
+	env := buildSerfChildEnv(cfg, "/tmp/run", "/tmp/state", "generated-token")
 	got := envMap(env)
 
 	if got["SERF_HUB_SPAWNED"] != "1" {
@@ -168,11 +170,76 @@ func TestBuildSerfChildEnvUsesExplicitConfigBeforeInheritedEnv(t *testing.T) {
 	if got["SERF_STATE_DIR"] != "/tmp/state" {
 		t.Fatalf("SERF_STATE_DIR=%q, want /tmp/state", got["SERF_STATE_DIR"])
 	}
+	if got["SERF_HUB_TOKEN"] != "generated-token" {
+		t.Fatalf("SERF_HUB_TOKEN=%q, want generated-token", got["SERF_HUB_TOKEN"])
+	}
 	if got["OPENROUTER_API_KEY"] != "configured-secret" {
 		t.Fatalf("OPENROUTER_API_KEY=%q, want configured-secret", got["OPENROUTER_API_KEY"])
 	}
 	if got["ANTHROPIC_API_KEY"] != "anthropic-parent-secret" {
 		t.Fatalf("ANTHROPIC_API_KEY was not inherited")
+	}
+}
+
+func TestBuildSerfChildEnvGeneratedHubTokenOverridesConfig(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.SerfLaunch.Env = map[string]string{
+		"SERF_HUB_TOKEN": "configured-token",
+	}
+
+	got := envMap(buildSerfChildEnv(cfg, "/tmp/run", "/tmp/state", "generated-token"))
+
+	if got["SERF_HUB_TOKEN"] != "generated-token" {
+		t.Fatalf("SERF_HUB_TOKEN=%q, want generated-token", got["SERF_HUB_TOKEN"])
+	}
+}
+
+func TestHubSpawnerSpawnPassesHubTokenToDaemon(t *testing.T) {
+	dir := t.TempDir()
+	runDir := filepath.Join(dir, "run")
+	tokenOut := filepath.Join(dir, "token.txt")
+	t.Setenv("TOKEN_OUT", tokenOut)
+	bin := filepath.Join(dir, "fake-serf")
+	script := `#!/bin/sh
+if [ "$1" = "launch-check" ]; then
+  printf '{"protocol":"serf-appwire-v1"}\n'
+  exit 0
+fi
+if [ "$1" = "serve" ]; then
+  printf '%s' "$SERF_HUB_TOKEN" > "$TOKEN_OUT"
+  mkdir -p "$SERF_RUN_DIR"
+  cat > "$SERF_RUN_DIR/$$.json" <<EOF
+{"pid":$$,"address":"127.0.0.1:1","hub_token":"$SERF_HUB_TOKEN","started_at":"2999-01-01T00:00:00Z"}
+EOF
+  sleep 1
+  exit 0
+fi
+exit 2
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := DefaultConfig()
+	cfg.SpawnTimeout = 2 * time.Second
+	spawner := HubSpawner{Cfg: cfg, SerfBinary: bin, RunDir: runDir, HubToken: "generated-token"}
+
+	entry, err := spawner.Spawn(context.Background(), SpawnRequest{
+		Model:      "ollama/test",
+		WorkingDir: dir,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if entry.HubToken != "generated-token" {
+		t.Fatalf("rendezvous hub token=%q, want generated-token", entry.HubToken)
+	}
+	data, err := os.ReadFile(tokenOut)
+	if err != nil {
+		t.Fatalf("read token output: %v", err)
+	}
+	if string(data) != "generated-token" {
+		t.Fatalf("child SERF_HUB_TOKEN=%q, want generated-token", data)
 	}
 }
 

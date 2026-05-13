@@ -146,6 +146,71 @@ func TestPastIndex_Search(t *testing.T) {
 	}
 }
 
+func TestPastIndex_SearchUsesSQLiteFTSWhenConfigured(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	_ = os.MkdirAll(proj, 0o755)
+	writeMeta(t, proj, agent.SessionMeta{
+		ID:             "01AUTH",
+		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/work/auth-service"},
+		UpdatedAt:      time.Now().Add(time.Hour),
+		OriginalPrompt: "repair login token refresh",
+	})
+	writeMeta(t, proj, agent.SessionMeta{
+		ID:             "01BILLING",
+		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/work/invoices"},
+		UpdatedAt:      time.Now(),
+		OriginalPrompt: "invoice cleanup",
+	})
+
+	dbPath := filepath.Join(root, ".serf", "index.db")
+	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Fatalf("expected sqlite index at %s: %v", dbPath, err)
+	}
+
+	got := idx.Search("token", 50, 0)
+	if len(got) != 1 || got[0].ID != "01AUTH" {
+		t.Fatalf("Search token: got %v", got)
+	}
+	got = idx.Search("auth-service", 50, 0)
+	if len(got) != 1 || got[0].ID != "01AUTH" {
+		t.Fatalf("Search working dir: got %v", got)
+	}
+	got = idx.Search("01BILL", 50, 0)
+	if len(got) != 1 || got[0].ID != "01BILLING" {
+		t.Fatalf("Search ID prefix: got %v", got)
+	}
+	got = idx.Search("BILL", 50, 0)
+	if len(got) != 1 || got[0].ID != "01BILLING" {
+		t.Fatalf("Search ID substring: got %v", got)
+	}
+}
+
+func TestPastIndex_SearchFallsBackWhenSQLiteUnavailable(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	_ = os.MkdirAll(proj, 0o755)
+	writeMeta(t, proj, agent.SessionMeta{
+		ID:             "01A",
+		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/work/a"},
+		UpdatedAt:      time.Now(),
+		OriginalPrompt: "fix auth",
+	})
+
+	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), root)
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	got := idx.Search("auth", 50, 0)
+	if len(got) != 1 || got[0].ID != "01A" {
+		t.Fatalf("fallback search: got %v", got)
+	}
+}
+
 func TestPastIndex_Pagination(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")

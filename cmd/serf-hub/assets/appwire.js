@@ -330,6 +330,73 @@
     return [];
   }
 
+  function liveThreadKey(params, item) {
+    params = params || {};
+    item = item || {};
+    return firstNonEmpty(params.ref, params.threadRef, params.threadId, item.ref, item.threadRef, item.threadId);
+  }
+
+  function liveItemKey(params, item) {
+    params = params || {};
+    item = item || {};
+    const itemKey = firstNonEmpty(item.callId, item.id, item.itemId);
+    if (!itemKey) return "";
+    const threadKey = liveThreadKey(params, item);
+    const turn = params.turn || {};
+    const turnKey = firstNonEmpty(params.turnId, item.turnId, turn.id);
+    const parts = [];
+    if (threadKey) parts.push("thread:" + threadKey);
+    if (turnKey) parts.push("turn:" + turnKey);
+    parts.push("item:" + itemKey);
+    return parts.join("\x00");
+  }
+
+  function markLiveItem(params, item, patch) {
+    const key = liveItemKey(params, item);
+    if (!key) return null;
+    const state = liveItemState.get(key) || {};
+    Object.assign(state, patch || {});
+    liveItemState.set(key, state);
+    return state;
+  }
+
+  function deleteLiveItem(params, item) {
+    const key = liveItemKey(params, item);
+    if (key) liveItemState.delete(key);
+  }
+
+  function eventsFromCompletedTurnItem(params, item) {
+    const key = liveItemKey(params, item);
+    const state = key ? liveItemState.get(key) : null;
+    if (!state) return eventsFromItem(item);
+    if (state.completed) return [];
+    if (item.type === "agent_message") return [["ASSISTANT_TEXT_END", { text: item.text || "" }]];
+    if (item.type === "tool_call") {
+      const callID = firstNonEmpty(item.callId, item.id);
+      const itemID = item.id || "";
+      const out = [];
+      if (!state.started) {
+        out.push(["TOOL_CALL_START", {
+          call_id: callID,
+          item_id: itemID,
+          tool_name: item.toolName || "",
+          arguments_json: item.argumentsJson || "",
+        }]);
+      }
+      out.push(["TOOL_CALL_END", {
+        call_id: callID,
+        item_id: itemID,
+        tool_name: item.toolName || "",
+        arguments_json: item.argumentsJson || "",
+        output: item.output || "",
+        error: item.error || "",
+        tool_state: item.raw || "",
+      }]);
+      return out;
+    }
+    return [];
+  }
+
   function eventsFromThread(thread) {
     const events = [["SESSION_START", {
       session_id: replaySessionID(thread),
@@ -408,20 +475,24 @@
       if (item.type === "agent_message") return [["ASSISTANT_TEXT_END", { text: item.text || "" }]];
       return eventsFromItem(item);
     }
-    if (method === "item/agentMessage/delta") return [["ASSISTANT_TEXT_DELTA", { delta: params.delta || "" }]];
-    if (method === "item/toolOutput/delta") return [["TOOL_CALL_OUTPUT_DELTA", {
-      call_id: firstNonEmpty(params.callId, params.itemId),
-      item_id: params.itemId || "",
-      delta: params.delta || "",
-    }]];
+    if (method === "item/agentMessage/delta") {
+      markLiveItem(params, { id: params.itemId }, { delta: true });
+      return [["ASSISTANT_TEXT_DELTA", { delta: params.delta || "" }]];
+    }
+    if (method === "item/toolOutput/delta") {
+      markLiveItem(params, { itemId: params.itemId, callId: params.callId }, { delta: true });
+      return [["TOOL_CALL_OUTPUT_DELTA", {
+        call_id: firstNonEmpty(params.callId, params.itemId),
+        item_id: params.itemId || "",
+        delta: params.delta || "",
+      }]];
+    }
     if (method === "turn/completed" && params.turn) {
       if (params.turn.status === "failed") {
         return [["ERROR", errorPayload(params.turn.error, "turn failed")]];
       }
       const out = [];
-      for (const item of params.turn.items || []) {
-        out.push.apply(out, eventsFromItem(item));
-      }
+      for (const item of params.turn.items || []) out.push.apply(out, eventsFromItem(item));
       return out;
     }
     if (method === "warning") {

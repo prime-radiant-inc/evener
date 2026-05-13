@@ -19,6 +19,8 @@ import (
 	"primeradiant.com/serf/rendezvous"
 )
 
+const serfLaunchCheckTimeout = 30 * time.Second
+
 // SpawnRequest carries the per-spawn knobs passed directly from the caller.
 type SpawnRequest struct {
 	Model           string
@@ -27,17 +29,19 @@ type SpawnRequest struct {
 	StateDir        string
 	RunDir          string
 	ReasoningEffort string
+	SSERingSize     int
 	Env             []string
 }
 
 // ResumeRequest carries the resolved state needed to resume a saved session.
 type ResumeRequest struct {
-	SessionID  string
-	WorkingDir string
-	StateDir   string
-	Model      string
-	RunDir     string
-	Env        []string
+	SessionID   string
+	WorkingDir  string
+	StateDir    string
+	Model       string
+	RunDir      string
+	SSERingSize int
+	Env         []string
 }
 
 // HubSpawner fulfills the Spawner interface using SpawnDaemon.
@@ -45,6 +49,7 @@ type HubSpawner struct {
 	Cfg        Config
 	SerfBinary string // path to the serf binary; "" → "serf" on PATH
 	RunDir     string
+	HubToken   string
 }
 
 func (h *HubSpawner) Spawn(ctx context.Context, req SpawnRequest) (rendezvous.Entry, error) {
@@ -56,7 +61,8 @@ func (h *HubSpawner) Spawn(ctx context.Context, req SpawnRequest) (rendezvous.En
 		req.StateDir = resolveSerfStateDir(req.WorkingDir, h.Cfg.SerfLaunch.Env["SERF_STATE_DIR"])
 	}
 	req.RunDir = h.RunDir
-	req.Env = buildSerfChildEnv(h.Cfg, h.RunDir, req.StateDir)
+	req.SSERingSize = h.Cfg.SerfLaunch.SSERingSize
+	req.Env = buildSerfChildEnv(h.Cfg, h.RunDir, req.StateDir, h.HubToken)
 	if err := validateProviderCredentials(req.Model, req.Env, req.StateDir); err != nil {
 		return rendezvous.Entry{}, err
 	}
@@ -75,7 +81,8 @@ func (h *HubSpawner) Resume(ctx context.Context, req ResumeRequest) (rendezvous.
 		req.StateDir = resolveSerfStateDir(req.WorkingDir, h.Cfg.SerfLaunch.Env["SERF_STATE_DIR"])
 	}
 	req.RunDir = h.RunDir
-	req.Env = buildSerfChildEnv(h.Cfg, h.RunDir, req.StateDir)
+	req.SSERingSize = h.Cfg.SerfLaunch.SSERingSize
+	req.Env = buildSerfChildEnv(h.Cfg, h.RunDir, req.StateDir, h.HubToken)
 	if req.Model != "" {
 		if err := validateProviderCredentials(req.Model, req.Env, req.StateDir); err != nil {
 			return rendezvous.Entry{}, err
@@ -110,6 +117,9 @@ func buildSpawnArgs(req SpawnRequest) []string {
 	}
 	if req.ReasoningEffort != "" {
 		args = append(args, "--reasoning-effort", req.ReasoningEffort)
+	}
+	if req.SSERingSize > 0 {
+		args = append(args, "--sse-ring-size", fmt.Sprintf("%d", req.SSERingSize))
 	}
 	return args
 }
@@ -215,6 +225,9 @@ func ResumeDaemon(ctx context.Context, serfBinary, runDir string, req ResumeRequ
 	if req.RunDir != "" {
 		args = append(args, "--run-dir", req.RunDir)
 	}
+	if req.SSERingSize > 0 {
+		args = append(args, "--sse-ring-size", fmt.Sprintf("%d", req.SSERingSize))
+	}
 	cmd := exec.Command(serfBinary, args...)
 	if len(req.Env) > 0 {
 		cmd.Env = req.Env
@@ -254,7 +267,7 @@ func resolveSerfStateDir(workDir, override string) string {
 	return agent.RuntimeDir(cmdutil.GitOriginURLFromDir(wd), wd, "")
 }
 
-func buildSerfChildEnv(cfg Config, runDir, stateDir string) []string {
+func buildSerfChildEnv(cfg Config, runDir, stateDir, hubToken string) []string {
 	env := buildDefaultSerfChildEnv(runDir, stateDir)
 	keys := make([]string, 0, len(cfg.SerfLaunch.Env))
 	for key := range cfg.SerfLaunch.Env {
@@ -263,6 +276,9 @@ func buildSerfChildEnv(cfg Config, runDir, stateDir string) []string {
 	sort.Strings(keys)
 	for _, key := range keys {
 		env = setEnvValue(env, key, cfg.SerfLaunch.Env[key])
+	}
+	if strings.TrimSpace(hubToken) != "" {
+		env = setEnvValue(env, "SERF_HUB_TOKEN", hubToken)
 	}
 	return env
 }
@@ -363,7 +379,7 @@ func validateSerfLaunchContract(ctx context.Context, serfBinary, model string, e
 	if strings.TrimSpace(model) != "" {
 		args = append(args, "--model", model)
 	}
-	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	checkCtx, cancel := context.WithTimeout(ctx, serfLaunchCheckTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(checkCtx, serfBinary, args...)
 	cmd.Env = env

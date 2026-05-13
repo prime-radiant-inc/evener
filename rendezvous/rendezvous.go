@@ -29,6 +29,7 @@ type Entry struct {
 	Agent      string    `json:"agent,omitempty"`
 	Model      string    `json:"model,omitempty"`
 	Provider   string    `json:"provider,omitempty"`
+	HubToken   string    `json:"hub_token,omitempty"`
 	StartedAt  time.Time `json:"started_at"`
 	SpawnedBy  string    `json:"spawned_by,omitempty"`
 }
@@ -45,8 +46,11 @@ func DefaultDir() string {
 // Write creates dir if necessary and writes <dir>/<pid>.json atomically.
 // Returns the absolute path that was written.
 func Write(dir string, entry Entry) (string, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create rendezvous dir: %w", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return "", fmt.Errorf("secure rendezvous dir: %w", err)
 	}
 	data, err := json.Marshal(entry)
 	if err != nil {
@@ -54,8 +58,12 @@ func Write(dir string, entry Entry) (string, error) {
 	}
 	target := filepath.Join(dir, fmt.Sprintf("%d.json", entry.PID))
 	tmp := target + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return "", fmt.Errorf("write tmp: %w", err)
+	}
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		_ = os.Remove(tmp)
+		return "", fmt.Errorf("secure tmp: %w", err)
 	}
 	if err := os.Rename(tmp, target); err != nil {
 		_ = os.Remove(tmp)

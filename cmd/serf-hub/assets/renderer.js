@@ -70,7 +70,11 @@
       this.conversation.innerHTML = "";
 
       const url = this.replayUrl || this.eventsUrl;
-      if (url) this.connect(url);
+      if (this.eventsUrl) {
+        this.connectEventSource(this.eventsUrl);
+      } else if (url) {
+        this.connect(url);
+      }
 
       this.bindInputForm();
       this.bindKeyboard();
@@ -156,12 +160,8 @@
     ensureLiveStream() {
       if (this.eventSource) return;
       if (!this.sessionId) return;
-      if (window.SerfAppwire) {
-        this.connectAppwire();
-        return;
-      }
       this.eventsUrl = "/s/" + encodeURIComponent(this.sessionId) + "/events";
-      this.connect(this.eventsUrl);
+      this.connectEventSource(this.eventsUrl);
     },
 
     connect(url) {
@@ -169,6 +169,10 @@
         this.connectAppwire();
         return;
       }
+      this.connectEventSource(url);
+    },
+
+    connectEventSource(url) {
       this.eventSource = new EventSource(url);
       const kinds = [
         "SESSION_START", "SESSION_END", "USER_INPUT",

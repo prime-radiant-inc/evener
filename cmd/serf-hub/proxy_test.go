@@ -12,8 +12,9 @@ import (
 
 // fakeRoster lets proxy tests resolve session_id -> addr without scanning.
 type fakeRoster struct {
-	addr string
-	id   string
+	addr  string
+	id    string
+	token string
 }
 
 func (f fakeRoster) Find(sessionID string) (LiveEntry, bool) {
@@ -22,7 +23,7 @@ func (f fakeRoster) Find(sessionID string) (LiveEntry, bool) {
 	}
 	return LiveEntry{
 		SessionID: f.id,
-		Entry:     rendezvous.Entry{PID: 1, Address: f.addr},
+		Entry:     rendezvous.Entry{PID: 1, Address: f.addr, HubToken: f.token},
 	}, true
 }
 
@@ -49,6 +50,35 @@ func TestRESTProxy_RoutesByPath(t *testing.T) {
 	}
 	if body := rec.Body.String(); body != "hello-from-daemon" {
 		t.Errorf("body: got %q", body)
+	}
+}
+
+func TestRESTProxyStampsHubTokenBearer(t *testing.T) {
+	gotAuth := make(chan string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth <- r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	resolver := fakeRoster{addr: upstream.Listener.Addr().String(), id: "01SESS001", token: "secret-token"}
+	proxy := NewRESTProxy(resolver)
+
+	req := httptest.NewRequest(http.MethodPost, "/live/01SESS001/input", strings.NewReader(`{"text":"hi"}`))
+	req.Header.Set("Authorization", "Bearer browser-token")
+	rec := httptest.NewRecorder()
+	proxy.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusNoContent)
+	}
+	select {
+	case auth := <-gotAuth:
+		if auth != "Bearer secret-token" {
+			t.Fatalf("Authorization=%q, want bearer token", auth)
+		}
+	default:
+		t.Fatal("upstream did not receive request")
 	}
 }
 
@@ -137,5 +167,36 @@ func TestSSEProxy_ForwardsLastEventID(t *testing.T) {
 		}
 	default:
 		t.Fatal("upstream never received Last-Event-ID header")
+	}
+}
+
+func TestSSEProxyStampsHubTokenBearer(t *testing.T) {
+	gotAuth := make(chan string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth <- r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+	}))
+	defer upstream.Close()
+
+	resolver := fakeRoster{addr: upstream.Listener.Addr().String(), id: "01SESS001", token: "secret-token"}
+	proxy := NewSSEProxy(resolver)
+
+	req := httptest.NewRequest(http.MethodGet, "/live/01SESS001/events", nil)
+	req.Header.Set("Authorization", "Bearer browser-token")
+	rec := httptest.NewRecorder()
+	proxy.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusOK)
+	}
+	select {
+	case auth := <-gotAuth:
+		if auth != "Bearer secret-token" {
+			t.Fatalf("Authorization=%q, want bearer token", auth)
+		}
+	default:
+		t.Fatal("upstream did not receive request")
 	}
 }

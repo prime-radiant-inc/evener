@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"nhooyr.io/websocket"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -250,6 +251,379 @@ func TestCodexSourceSubscribeReusesStartedThreadConnection(t *testing.T) {
 	}
 }
 
+func TestCodexSourceStartedThreadLiveConnectionSurvivesCallerCancel(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadStart, func(ctx context.Context, _ map[string]any) (map[string]any, error) {
+		appserver.Subscribe(ctx, "th_codex")
+		return map[string]any{"thread": codexThreadMap("th_codex")}, nil
+	})
+	var resumed bool
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadResume, func(_ context.Context, _ map[string]any) (map[string]any, error) {
+		resumed = true
+		return nil, appwire.InvalidParams("no rollout found for thread id th_codex")
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+
+	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
+	ctx, cancel := context.WithCancel(context.Background())
+	resp, err := source.StartThread(ctx, appwire.ThreadStartParams{CWD: "/work/project"})
+	if err != nil {
+		t.Fatalf("StartThread: %v", err)
+	}
+	cancel()
+	time.Sleep(50 * time.Millisecond)
+
+	notifications, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: resp.Thread.Serf.Ref})
+	if err != nil {
+		t.Fatalf("SubscribeThread: %v", err)
+	}
+	if resumed {
+		t.Fatal("SubscribeThread fell back to thread/resume")
+	}
+	server.Broadcast("th_codex", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+		ThreadID: "th_codex",
+		Delta:    "survived",
+	})
+
+	select {
+	case got, ok := <-notifications:
+		if !ok {
+			t.Fatal("live notifications closed after caller context cancellation")
+		}
+		if got.Method != appwire.NotifyAgentMessageDelta {
+			t.Fatalf("method=%q", got.Method)
+		}
+		var params appwire.AgentMessageDeltaParams
+		if err := json.Unmarshal(got.Params, &params); err != nil {
+			t.Fatalf("params: %v", err)
+		}
+		if params.Ref != "codex:th_codex" || params.Delta != "survived" {
+			t.Fatalf("params=%+v", params)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for live notification after caller context cancellation")
+	}
+}
+
+func TestCodexSourceStartThreadRetiresLiveConnectionWithoutSubscriber(t *testing.T) {
+	withCodexLiveNoSubscriberTimeout(t, 20*time.Millisecond)
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadStart, func(ctx context.Context, _ map[string]any) (map[string]any, error) {
+		appserver.Subscribe(ctx, "th_codex")
+		return map[string]any{"thread": codexThreadMap("th_codex")}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+
+	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
+	if _, err := source.StartThread(context.Background(), appwire.ThreadStartParams{CWD: "/work/project"}); err != nil {
+		t.Fatalf("StartThread: %v", err)
+	}
+
+	waitForNoLiveThread(t, source, "th_codex")
+}
+
+func TestCodexSourceLiveThreadFansOutToMultipleSubscribers(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadStart, func(ctx context.Context, _ map[string]any) (map[string]any, error) {
+		appserver.Subscribe(ctx, "th_codex")
+		return map[string]any{"thread": codexThreadMap("th_codex")}, nil
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadResume, func(_ context.Context, _ map[string]any) (map[string]any, error) {
+		return nil, appwire.InvalidParams("thread/resume should not be used while the live client exists")
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+
+	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
+	resp, err := source.StartThread(context.Background(), appwire.ThreadStartParams{CWD: "/work/project"})
+	if err != nil {
+		t.Fatalf("StartThread: %v", err)
+	}
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	sub1, err := source.SubscribeThread(ctx1, appwire.ThreadReadParams{Ref: resp.Thread.Serf.Ref})
+	if err != nil {
+		t.Fatalf("SubscribeThread 1: %v", err)
+	}
+	sub2, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: resp.Thread.Serf.Ref})
+	if err != nil {
+		t.Fatalf("SubscribeThread 2: %v", err)
+	}
+
+	server.Broadcast("th_codex", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+		ThreadID: "th_codex",
+		Delta:    "fanout one",
+	})
+	assertDelta(t, sub1, "fanout one")
+	assertDelta(t, sub2, "fanout one")
+
+	cancel1()
+	time.Sleep(50 * time.Millisecond)
+	server.Broadcast("th_codex", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+		ThreadID: "th_codex",
+		Delta:    "fanout two",
+	})
+	assertDelta(t, sub2, "fanout two")
+}
+
+func TestCodexSourceStartThreadSpoolsInitialTurnNotificationsBeforeSubscribe(t *testing.T) {
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer ws.Close(websocket.StatusNormalClosure, "")
+		transport := appwire.NewWSTransport(ws)
+		for {
+			msg, err := transport.Recv(context.Background())
+			if err != nil {
+				return
+			}
+			if msg.Notification != nil {
+				continue
+			}
+			if msg.Request == nil {
+				continue
+			}
+			req := *msg.Request
+			switch req.Method {
+			case appwire.MethodInitialize:
+				_ = transport.Send(context.Background(), appwire.ResponseMessage(req.ID, appwire.InitializeResponse{
+					ServerInfo:      appwire.ServerInfo{Name: "codex-test"},
+					ProtocolVersion: appwire.ProtocolVersion,
+					SourceID:        "codex",
+				}))
+			case appwire.MethodThreadStart:
+				_ = transport.Send(context.Background(), appwire.ResponseMessage(req.ID, map[string]any{"thread": codexThreadMap("th_codex")}))
+			case appwire.MethodTurnStart:
+				for i := 0; i < 160; i++ {
+					_ = transport.Send(context.Background(), appwire.NotificationMessage(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+						ThreadID: "th_codex",
+						Delta:    "initial backlog",
+					}))
+				}
+				_ = transport.Send(context.Background(), appwire.ResponseMessage(req.ID, map[string]any{"turn": map[string]any{
+					"id":        "turn_codex",
+					"items":     []any{},
+					"itemsView": "full",
+					"status":    "inProgress",
+				}}))
+			default:
+				_ = transport.Send(context.Background(), appwire.ErrorMessage(req.ID, appwire.MethodNotFound(req.Method)))
+			}
+		}
+	}))
+	defer httpServer.Close()
+
+	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	resp, err := source.StartThread(ctx, appwire.ThreadStartParams{CWD: "/work/project", Prompt: "hello codex"})
+	if err != nil {
+		t.Fatalf("StartThread: %v", err)
+	}
+	notifications, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: resp.Thread.Serf.Ref})
+	if err != nil {
+		t.Fatalf("SubscribeThread: %v", err)
+	}
+	assertDelta(t, notifications, "initial backlog")
+}
+
+func TestCodexSourceStartThreadWithPromptKeepsTurnNotificationsOnLiveConnection(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadStart, func(_ context.Context, _ map[string]any) (map[string]any, error) {
+		return map[string]any{"thread": codexThreadMap("th_codex")}, nil
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodTurnStart, func(ctx context.Context, params map[string]any) (map[string]any, error) {
+		if params["threadId"] != "th_codex" {
+			t.Fatalf("threadId=%v", params["threadId"])
+		}
+		appserver.Subscribe(ctx, "th_codex")
+		server.Broadcast("th_codex", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+			ThreadID: "th_codex",
+			Delta:    "hello from initial turn",
+		})
+		return map[string]any{"turn": map[string]any{
+			"id":        "turn_codex",
+			"items":     []any{},
+			"itemsView": "full",
+			"status":    "inProgress",
+		}}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+
+	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
+	resp, err := source.StartThread(context.Background(), appwire.ThreadStartParams{CWD: "/work/project", Prompt: "hello codex"})
+	if err != nil {
+		t.Fatalf("StartThread: %v", err)
+	}
+	notifications, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: resp.Thread.Serf.Ref})
+	if err != nil {
+		t.Fatalf("SubscribeThread: %v", err)
+	}
+
+	select {
+	case got := <-notifications:
+		if got.Method != appwire.NotifyAgentMessageDelta {
+			t.Fatalf("method=%q", got.Method)
+		}
+		var params appwire.AgentMessageDeltaParams
+		if err := json.Unmarshal(got.Params, &params); err != nil {
+			t.Fatalf("params: %v", err)
+		}
+		if params.Ref != "codex:th_codex" || params.Delta != "hello from initial turn" {
+			t.Fatalf("params=%+v", params)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial-turn notification")
+	}
+}
+
+func TestCodexSourceStartTurnUsesLiveConnectionForNotifications(t *testing.T) {
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer ws.Close(websocket.StatusNormalClosure, "")
+		transport := appwire.NewWSTransport(ws)
+		for {
+			msg, err := transport.Recv(context.Background())
+			if err != nil {
+				return
+			}
+			if msg.Notification != nil {
+				continue
+			}
+			if msg.Request == nil {
+				continue
+			}
+			req := *msg.Request
+			switch req.Method {
+			case appwire.MethodInitialize:
+				_ = transport.Send(context.Background(), appwire.ResponseMessage(req.ID, appwire.InitializeResponse{
+					ServerInfo:      appwire.ServerInfo{Name: "codex-test"},
+					ProtocolVersion: appwire.ProtocolVersion,
+					SourceID:        "codex",
+				}))
+			case appwire.MethodThreadResume:
+				_ = transport.Send(context.Background(), appwire.ResponseMessage(req.ID, map[string]any{"thread": codexThreadMap("th_codex")}))
+			case appwire.MethodTurnStart:
+				_ = transport.Send(context.Background(), appwire.NotificationMessage(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+					ThreadID: "th_codex",
+					Delta:    "follow-up live",
+				}))
+				_ = transport.Send(context.Background(), appwire.ResponseMessage(req.ID, map[string]any{"turn": map[string]any{
+					"id":        "turn_codex",
+					"items":     []any{},
+					"itemsView": "full",
+					"status":    "inProgress",
+				}}))
+			default:
+				_ = transport.Send(context.Background(), appwire.ErrorMessage(req.ID, appwire.MethodNotFound(req.Method)))
+			}
+		}
+	}))
+	defer httpServer.Close()
+
+	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
+	notifications, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_codex"})
+	if err != nil {
+		t.Fatalf("SubscribeThread: %v", err)
+	}
+	if _, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Prompt: "follow up"}); err != nil {
+		t.Fatalf("StartTurn: %v", err)
+	}
+
+	assertDelta(t, notifications, "follow-up live")
+}
+
+func TestCodexSourceStartTurnRetiresLiveConnectionWithoutSubscriber(t *testing.T) {
+	withCodexLiveNoSubscriberTimeout(t, 20*time.Millisecond)
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	appserver.HandleTyped(server.Router(), appwire.MethodTurnStart, func(ctx context.Context, params map[string]any) (map[string]any, error) {
+		if params["threadId"] != "th_codex" {
+			t.Fatalf("threadId=%v", params["threadId"])
+		}
+		appserver.Subscribe(ctx, "th_codex")
+		return map[string]any{"turn": map[string]any{
+			"id":        "turn_codex",
+			"items":     []any{},
+			"itemsView": "full",
+			"status":    "inProgress",
+		}}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+
+	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
+	if _, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Prompt: "follow up"}); err != nil {
+		t.Fatalf("StartTurn: %v", err)
+	}
+
+	waitForNoLiveThread(t, source, "th_codex")
+}
+
+func withCodexLiveNoSubscriberTimeout(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	previous := codexLiveNoSubscriberTimeout
+	codexLiveNoSubscriberTimeout = timeout
+	t.Cleanup(func() {
+		codexLiveNoSubscriberTimeout = previous
+	})
+}
+
+func waitForNoLiveThread(t *testing.T, source *CodexSource, threadID string) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if source.liveThread(threadID) == nil {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("live thread %q remained retained without a subscriber", threadID)
+		case <-ticker.C:
+		}
+	}
+}
+
+func deltaNotification(delta string) appwire.Notification {
+	msg := appwire.NotificationMessage(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+		ThreadID: "th_codex",
+		TurnID:   "turn_codex",
+		ItemID:   "item_codex",
+		Delta:    delta,
+	})
+	return *msg.Notification
+}
+
+func assertDelta(t *testing.T, notifications <-chan appwire.Notification, want string) {
+	t.Helper()
+	select {
+	case got, ok := <-notifications:
+		if !ok {
+			t.Fatalf("notification channel closed before delta %q", want)
+		}
+		if got.Method != appwire.NotifyAgentMessageDelta {
+			t.Fatalf("method=%q", got.Method)
+		}
+		var params appwire.AgentMessageDeltaParams
+		if err := json.Unmarshal(got.Params, &params); err != nil {
+			t.Fatalf("params: %v", err)
+		}
+		if params.Delta != want {
+			t.Fatalf("delta=%q, want %q", params.Delta, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for delta %q", want)
+	}
+}
+
 func TestCodexSourceReadThreadRetriesWithoutTurnsBeforeFirstMessage(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
 	var includeTurnsValues []any
@@ -325,6 +699,53 @@ func TestCodexSourceSubscribeTranslatesNotifications(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for translated notification")
+	}
+}
+
+func TestCodexSourceTurnCompletedNotificationIncludesCanonicalRef(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadResume, func(ctx context.Context, params struct {
+		ThreadID string `json:"threadId"`
+	}) (map[string]any, error) {
+		appserver.Subscribe(ctx, params.ThreadID)
+		return map[string]any{"thread": codexThreadMap(params.ThreadID)}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+
+	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
+	notifications, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_codex"})
+	if err != nil {
+		t.Fatalf("SubscribeThread: %v", err)
+	}
+
+	server.Broadcast("th_codex", appwire.NotifyTurnCompleted, map[string]any{
+		"threadId": "th_codex",
+		"turn": map[string]any{
+			"id":        "turn_codex",
+			"items":     []any{},
+			"itemsView": "full",
+			"status":    "completed",
+		},
+	})
+
+	select {
+	case got := <-notifications:
+		if got.Method != appwire.NotifyTurnCompleted {
+			t.Fatalf("method=%q", got.Method)
+		}
+		var params struct {
+			ThreadID string `json:"threadId"`
+			Ref      string `json:"ref"`
+		}
+		if err := json.Unmarshal(got.Params, &params); err != nil {
+			t.Fatalf("params: %v", err)
+		}
+		if params.ThreadID != "th_codex" || params.Ref != "codex:th_codex" {
+			t.Fatalf("params=%+v", params)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for turn/completed notification")
 	}
 }
 

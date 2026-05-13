@@ -51,6 +51,7 @@ func TestEntryRoundTripIncludesAppWireEndpoint(t *testing.T) {
 		SourceID:  "local",
 		ThreadID:  "th_1",
 		SessionID: "sess_1",
+		HubToken:  "secret-token",
 	}
 	if _, err := Write(dir, entry); err != nil {
 		t.Fatalf("Write: %v", err)
@@ -64,6 +65,31 @@ func TestEntryRoundTripIncludesAppWireEndpoint(t *testing.T) {
 	}
 	if entries[0].Protocol != "serf-appwire-v1" || entries[0].Endpoint == "" || entries[0].ThreadID != "th_1" {
 		t.Fatalf("entry=%+v", entries[0])
+	}
+	if entries[0].HubToken != "secret-token" {
+		t.Fatalf("hub token was not preserved")
+	}
+}
+
+func TestWrite_UsesPrivatePermissionsForTokenFile(t *testing.T) {
+	dir := t.TempDir()
+	path, err := Write(dir, Entry{PID: 12345, Address: "127.0.0.1:1", HubToken: "secret-token"})
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat file: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("file mode=%#o, want 0600", got)
+	}
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat dir: %v", err)
+	}
+	if got := dirInfo.Mode().Perm(); got != 0o700 {
+		t.Fatalf("dir mode=%#o, want 0700", got)
 	}
 }
 

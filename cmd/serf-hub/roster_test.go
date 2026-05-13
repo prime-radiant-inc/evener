@@ -184,7 +184,7 @@ type fakeProber struct {
 	shouldFail bool
 }
 
-func (p fakeProber) Probe(addr string) (sessionID, status string, ok bool) {
+func (p fakeProber) Probe(rendezvous.Entry) (sessionID, status string, ok bool) {
 	if p.shouldFail {
 		return "", "", false
 	}

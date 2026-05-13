@@ -25,6 +25,10 @@ assert(
   "local spawn should preserve bare session route",
 );
 assert(
+  dom.window.SerfSpawn.sessionPath({ ref: "local:01LOCAL", session_id: "local:01LOCAL" }) === "/s/01LOCAL",
+  "local spawn should canonicalize local-ref session IDs to bare session routes",
+);
+assert(
   dom.window.SerfSpawn.sessionPath({ ref: "codex:th_codex", session_id: "th_codex" }) === "/s/codex%3Ath_codex",
   "remote spawn should navigate by canonical ref",
 );

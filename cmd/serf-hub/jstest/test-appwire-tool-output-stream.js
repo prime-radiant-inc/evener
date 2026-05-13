@@ -75,7 +75,7 @@ async function run() {
     turnId: "turn_1",
     item: {
       type: "tool_call",
-      id: "item_tool_1",
+      id: "item_tool_start_1",
       callId: "call_1",
       turnId: "turn_1",
       toolName: "shell",
@@ -87,14 +87,16 @@ async function run() {
     threadId: "01TEST",
     ref: "local:01TEST",
     turnId: "turn_1",
-    itemId: "item_tool_1",
+    itemId: "item_tool_delta_1",
+    callId: "call_1",
     delta: "one\n",
   });
   deliver("item/toolOutput/delta", {
     threadId: "01TEST",
     ref: "local:01TEST",
     turnId: "turn_1",
-    itemId: "item_tool_1",
+    itemId: "item_tool_delta_1",
+    callId: "call_1",
     delta: "two\n",
   });
 
@@ -105,19 +107,25 @@ async function run() {
   pass(!Array.from(conv.querySelectorAll(".assistant-message")).some((el) => !el.textContent.trim()), "empty live assistant placeholder should be removed");
   pass(shellOutput && shellOutput.textContent.includes("one\ntwo\n"), "live tool output delta did not render before completion");
 
-  deliver("item/completed", {
+  const liveStateBeforeToolTurnCompletion = window.SerfAppwire.liveItemStateSize();
+  deliver("turn/completed", {
     threadId: "01TEST",
     ref: "local:01TEST",
-    turnId: "turn_1",
-    item: {
-      type: "tool_call",
-      id: "item_tool_1",
-      callId: "call_1",
-      turnId: "turn_1",
-      toolName: "shell",
+    turn: {
+      id: "turn_1",
       status: "completed",
+      items: [{
+        type: "tool_call",
+        id: "item_tool_result_1",
+        callId: "call_1",
+        turnId: "turn_1",
+        toolName: "shell",
+        output: "one\ntwo\n",
+        status: "completed",
+      }],
     },
   });
+  pass(window.SerfAppwire.liveItemStateSize() === liveStateBeforeToolTurnCompletion - 1, "completed turn should evict live tool state keyed by callId");
   deliver("item/started", {
     threadId: "01TEST",
     ref: "local:01TEST",
@@ -164,7 +172,7 @@ async function run() {
   const assistantMessages = Array.from(conv.querySelectorAll(".assistant-message")).map((el) => el.textContent);
   pass(conv.querySelectorAll(".tool-call.shell").length === 1, "tool completion should not create a duplicate tool card");
   pass(shellCard && shellOutput && shellCard.contains(shellOutput), "tool output should be contained by its tool call card");
-  pass(shellOutput && shellOutput.textContent.includes("one\ntwo\n"), "tool output was lost on completion");
+  pass(shellOutput && shellOutput.textContent === "one\ntwo\n", "tool output should not replay after streamed deltas; got " + JSON.stringify(shellOutput && shellOutput.textContent));
   pass(assistantMessages.some((text) => text.includes("stream still attached")), "assistant delta after tool completion did not render");
   pass(assistantMessages.some((text) => text.includes("completed communicate text")), "completed communicate arguments did not render");
 

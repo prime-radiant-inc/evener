@@ -99,6 +99,8 @@ type ActionCapabilities struct {
 // ServerConfig holds configuration for the HTTP server.
 type ServerConfig struct {
 	RingBufferSize int // default: 1000
+	HubToken       string
+	AllowedHost    string
 }
 
 // Server is the HTTP server that bridges an agent.Session to REST+SSE clients.
@@ -126,6 +128,8 @@ type Server struct {
 	shutdownFunc     func()
 	processing       bool
 	inputCh          chan InputMessage
+	hubToken         string
+	sameOrigin       sameOriginPolicy
 }
 
 // NewServer creates a new Server.
@@ -157,6 +161,8 @@ func NewServer(cfg ServerConfig) *Server {
 		appNotifier: appserver.NewNotifier(ringSize),
 		appSourceID: "local",
 		inputCh:     make(chan InputMessage, 1),
+		hubToken:    strings.TrimSpace(cfg.HubToken),
+		sameOrigin:  newSameOriginPolicy(cfg.AllowedHost),
 	}
 	s.registerAppWireHandlers()
 	s.mux.HandleFunc("/rpc", s.appServer.ServeWebSocket)
@@ -175,6 +181,15 @@ func NewServer(cfg ServerConfig) *Server {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if message := s.sameOrigin.rejection(r); message != "" {
+		http.Error(w, message, http.StatusForbidden)
+		return
+	}
+	if !hubTokenAuthorized(s.hubToken, r.Header.Get("Authorization")) {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		http.Error(w, "missing or invalid bearer token", http.StatusUnauthorized)
+		return
+	}
 	s.mux.ServeHTTP(w, r)
 }
 

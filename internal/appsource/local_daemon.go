@@ -197,7 +197,7 @@ func (s *LocalDaemonSource) SubscribeThread(ctx context.Context, params appwire.
 	if err != nil {
 		return nil, err
 	}
-	transport, err := appwire.DialWebSocket(ctx, entry.Endpoint, s.client)
+	transport, err := appwire.DialWebSocketWithHeaders(ctx, entry.Endpoint, s.client, daemonAuthHeader(entry.HubToken))
 	if err != nil {
 		return nil, err
 	}
@@ -236,7 +236,7 @@ func (s *LocalDaemonSource) SubscribeThread(ctx context.Context, params appwire.
 }
 
 func (s *LocalDaemonSource) withClient(ctx context.Context, entry rendezvous.Entry, fn func(*appwire.Client) error) error {
-	transport, err := appwire.DialWebSocket(ctx, entry.Endpoint, s.client)
+	transport, err := appwire.DialWebSocketWithHeaders(ctx, entry.Endpoint, s.client, daemonAuthHeader(entry.HubToken))
 	if err != nil {
 		return err
 	}
@@ -247,6 +247,16 @@ func (s *LocalDaemonSource) withClient(ctx context.Context, entry rendezvous.Ent
 		return err
 	}
 	return fn(client)
+}
+
+func daemonAuthHeader(token string) http.Header {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil
+	}
+	header := http.Header{}
+	header.Set("Authorization", "Bearer "+token)
+	return header
 }
 
 func (s *LocalDaemonSource) entryForRef(rawRef, threadID string) (rendezvous.Entry, error) {

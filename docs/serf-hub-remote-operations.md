@@ -6,8 +6,9 @@ host. It describes the current code, not a future deployment system.
 ## Trust Boundary
 
 `serf-hub` is a local orchestrator with same-origin checks and CSP, but it does
-not currently provide hub-edge authentication. Do not expose it directly on an
-untrusted network.
+not currently provide hub-edge authentication. Hub-spawned daemons use an
+internal bearer token, but that does not authenticate users at the Hub edge. Do
+not expose Hub directly on an untrusted network.
 
 Use one of these access patterns:
 
@@ -58,9 +59,13 @@ Example `/etc/serf/hub.toml`:
 addr = "127.0.0.1:9180"
 run_dir = "/var/lib/serf/run"
 state_glob = "/var/lib/serf/state/serf/projects/*"
+past_index_db = "/var/lib/serf/index.db"
 spawn_timeout = "30s"
 past_index_rebuild_interval = "60s"
 past_results_per_page = 50
+
+[serf_launch]
+sse_ring_size = 4096
 
 [[providers]]
 name = "openai"
@@ -78,16 +83,31 @@ XDG_STATE_HOME = "/var/lib/serf/state"
 
 `run_dir` holds daemon rendezvous files. Hub watches this directory and probes
 the daemons it finds there. It is runtime state, not the durable transcript
-store.
+store. Hub-spawned daemons record their internal `hub_token` there so a
+restarted Hub can keep talking to already-running daemons. Keep the directory
+private to the service user; current `serf serve` writes it as `0700` with
+`0600` files.
 
 `state_glob` tells Hub where to find saved sessions. Each match must be a state
 directory containing `sessions/*.meta.json` and transcript JSONL files. When
 `state_glob` is omitted, Hub uses `$XDG_STATE_HOME/serf/projects/*`, falling
 back to `~/.local/state/serf/projects/*`.
 
+`past_index_db` is the SQLite FTS search index. When omitted, Hub uses
+`~/.serf/index.db`. The in-memory past index remains the source of truth; if the
+SQLite index cannot be opened or rebuilt, Hub falls back to substring search
+over the loaded metadata.
+
 `serf_launch.env` overrides the environment inherited by spawned `serf serve`
-children. Hub also sets `SERF_HUB_SPAWNED=1`, `SERF_RUN_DIR`, and
-`SERF_STATE_DIR` for each child.
+children. Hub also sets `SERF_HUB_SPAWNED=1`, `SERF_RUN_DIR`,
+`SERF_STATE_DIR`, and a generated `SERF_HUB_TOKEN` for each child. Do not set
+`SERF_HUB_TOKEN` in config; Hub-owned launches replace it with the generated
+per-Hub token.
+
+`serf_launch.sse_ring_size` passes `--sse-ring-size` to Hub-owned Serf daemons.
+Increase it when long sessions produce enough token delta events that late SSE
+or AppWire clients need a deeper replay window than the daemon default of 1000
+events.
 
 Prefer setting `XDG_STATE_HOME` for service deployments so Serf keeps its
 per-project state layout:

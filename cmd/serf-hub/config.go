@@ -19,7 +19,8 @@ type ProviderConfig struct {
 
 // SerfLaunchConfig controls Hub-owned serf serve subprocesses.
 type SerfLaunchConfig struct {
-	Env map[string]string `toml:"env"`
+	SSERingSize int               `toml:"sse_ring_size"`
+	Env         map[string]string `toml:"env"`
 }
 
 // Config is the hub's runtime configuration loaded from ~/.serf/hub.toml.
@@ -27,6 +28,7 @@ type Config struct {
 	Addr               string                        `toml:"addr"`
 	StateGlob          string                        `toml:"state_glob"`
 	RunDir             string                        `toml:"run_dir"`
+	PastIndexDB        string                        `toml:"past_index_db"`
 	StatusPollInterval time.Duration                 `toml:"status_poll_interval"`
 	PastIndexRebuild   time.Duration                 `toml:"past_index_rebuild_interval"`
 	SpawnTimeout       time.Duration                 `toml:"spawn_timeout"`
@@ -70,6 +72,15 @@ func DefaultStateGlob() string {
 		base = filepath.Join(home, ".local", "state")
 	}
 	return filepath.Join(base, "serf", "projects", "*")
+}
+
+// DefaultPastIndexDBPath returns ~/.serf/index.db.
+func DefaultPastIndexDBPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		home = "."
+	}
+	return filepath.Join(home, ".serf", "index.db")
 }
 
 // LoadConfig reads path. A missing file returns DefaultConfig() and nil error.
