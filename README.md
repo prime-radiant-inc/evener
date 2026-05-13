@@ -227,6 +227,8 @@ serf-hub  # default 127.0.0.1:9180
 ```
 
 Open `http://127.0.0.1:9180` in your browser.
+For production-style setup, credentials, Codex app-server sources, and smoke
+checks, see [`cmd/serf-hub/README.md`](cmd/serf-hub/README.md).
 
 ### What's there
 
