@@ -981,6 +981,12 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 		}
 		json.Unmarshal([]byte(ev.Data), &d)
 		if d.Message != "" {
+			if len(m.messages) > 0 &&
+				m.messages[len(m.messages)-1].Kind == msgAssistant &&
+				strings.TrimSpace(m.messages[len(m.messages)-1].Text) == strings.TrimSpace(d.Message) {
+				m.messages[len(m.messages)-1].Kind = msgCommunicate
+				break
+			}
 			m.messages = append(m.messages, chatMessage{Kind: msgCommunicate, Text: d.Message})
 		}
 

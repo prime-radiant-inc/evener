@@ -22,16 +22,76 @@
   }
   function saveDefaults(d) {
     const wd = currentWorkingDir();
-    localStorage.setItem(projectKey(wd), JSON.stringify(d));
+    const saved = Object.assign({}, d);
+    if (!harnessUsesSerfModels(saved.harness)) delete saved.model;
+    localStorage.setItem(projectKey(wd), JSON.stringify(saved));
     // Persist model globally across projects
-    if (d.model) localStorage.setItem("serf-hub.spawn-defaults.global.model", d.model);
+    if (harnessUsesSerfModels(d.harness) && d.model) localStorage.setItem("serf-hub.spawn-defaults.global.model", d.model);
+  }
+
+  function currentHarness() {
+    const el = document.querySelector('input[type=hidden][name="harness"]');
+    return (el && el.value) || "serf";
+  }
+
+  function harnessUsesSerfModels(harness) {
+    return !harness || harness === "serf";
+  }
+
+  function modelPlaceholder(harness) {
+    harness = harness || "serf";
+    return harnessUsesSerfModels(harness) ? "(pick a model)" : harness + " default";
+  }
+
+  function setModelValue(value) {
+    const display = document.querySelector("[data-chip-value-model]");
+    const hidden = document.querySelector('input[type=hidden][name="model"]');
+    if (display) display.textContent = value || modelPlaceholder(currentHarness());
+    if (hidden) hidden.value = value || "";
   }
 
   function setChipValue(name, value) {
+    if (name === "model") {
+      setModelValue(value);
+      return;
+    }
     const display = document.querySelector('[data-chip-value-' + name + ']');
     const hidden = document.querySelector('input[type=hidden][name="' + name + '"]');
     if (display) display.textContent = value || "(default)";
     if (hidden) hidden.value = value || "";
+  }
+
+  function applyHarnessModelPolicy(harness) {
+    if (!harnessUsesSerfModels(harness)) {
+      setModelValue("");
+      return;
+    }
+    const hidden = document.querySelector('input[type=hidden][name="model"]');
+    if (!hidden || !hidden.value) setModelValue("");
+  }
+
+  function routeID(spawnResult) {
+    spawnResult = spawnResult || {};
+    const ref = String(spawnResult.ref || "");
+    if (ref && !ref.startsWith("local:")) return ref;
+    if (spawnResult.session_id) return String(spawnResult.session_id);
+    if (spawnResult.sessionId) return String(spawnResult.sessionId);
+    if (ref.startsWith("local:")) return ref.slice("local:".length);
+    return ref;
+  }
+
+  function sessionPath(spawnResult) {
+    return "/s/" + encodeURIComponent(routeID(spawnResult));
+  }
+
+  function spawnErrorMessage(text) {
+    try {
+      const parsed = JSON.parse(text || "{}");
+      if (parsed && parsed.error) return parsed.error;
+    } catch (e) {
+      // Plain-text errors come from older fallback paths.
+    }
+    return text;
   }
 
   function init() {
@@ -40,9 +100,14 @@
 
     // Apply sticky defaults on top of server-provided defaults
     const defaults = loadDefaults();
-    ["model", "working_dir", "branch", "access_mode"].forEach(k => {
+    ["harness", "working_dir", "branch", "access_mode"].forEach(k => {
       if (defaults[k]) setChipValue(k, defaults[k]);
     });
+    if (harnessUsesSerfModels(currentHarness()) && defaults.model) {
+      setChipValue("model", defaults.model);
+    } else {
+      applyHarnessModelPolicy(currentHarness());
+    }
 
     // Chip pickers
     document.querySelectorAll(".chip").forEach(chip => {
@@ -71,6 +136,7 @@
       const fd = new FormData(form);
       const body = {
         task: fd.get("task") || "",
+        harness: fd.get("harness") || "serf",
         model: fd.get("model") || "",
         working_dir: fd.get("working_dir") || "",
         branch: fd.get("branch") || "",
@@ -81,6 +147,7 @@
       // Persist sticky defaults (excluding the per-task override)
       saveDefaults({
         model: body.model,
+        harness: body.harness,
         working_dir: body.working_dir,
         branch: body.branch,
         access_mode: body.access_mode,
@@ -95,10 +162,10 @@
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(body),
             }).then(async (resp) => {
-              if (!resp.ok) throw new Error(await resp.text());
+              if (!resp.ok) throw new Error(spawnErrorMessage(await resp.text()));
               return resp.json();
             });
-        window.location.href = "/s/" + encodeURIComponent(json.session_id);
+        window.location.href = sessionPath(json);
       } catch (err) {
         if (btn) { btn.disabled = false; btn.innerHTML = 'spawn <kbd>⌘↵</kbd>'; }
         alert("spawn failed: " + err.message);
@@ -108,6 +175,7 @@
 
   function openPicker(chip) {
     const kind = chip.dataset.chip;
+    if (kind === "harness") { openHarnessPicker(chip); return; }
     if (kind === "model") { openModelPicker(chip); return; }
     if (kind === "working_dir") { openDirPicker(chip); return; }
     const display = chip.querySelector(".chip-value");
@@ -121,9 +189,42 @@
     if (value !== null && value !== undefined && value !== "") setChipValue(kind, value);
   }
 
+  function openHarnessPicker(chip) {
+    const existing = document.querySelector(".chip-picker");
+    if (existing) { existing.remove(); return; }
+    const picker = document.createElement("div");
+    picker.className = "chip-picker";
+    const options = Array.from(document.querySelectorAll("[data-harness-option]")).map(el => ({
+      id: el.value || "",
+      label: el.dataset.label || el.value || "",
+    })).filter(opt => opt.id);
+    if (options.length === 0) options.push({ id: "serf", label: "serf" });
+    for (const opt of options) {
+      const row = document.createElement("div");
+      row.className = "chip-picker-option";
+      row.textContent = opt.label;
+      row.addEventListener("click", () => {
+        setChipValue("harness", opt.id);
+        applyHarnessModelPolicy(opt.id);
+        picker.remove();
+      });
+      picker.appendChild(row);
+    }
+    chip.parentNode.style.position = "relative";
+    chip.parentNode.appendChild(picker);
+    picker.style.position = "absolute";
+    picker.style.top = (chip.offsetTop + chip.offsetHeight + 4) + "px";
+    picker.style.left = chip.offsetLeft + "px";
+    picker.style.zIndex = "50";
+  }
+
   function openModelPicker(chip) {
     const existing = document.querySelector(".chip-picker");
     if (existing) { existing.remove(); return; }
+    if (!harnessUsesSerfModels(currentHarness())) {
+      openHarnessDefaultModelPicker(chip);
+      return;
+    }
 
     const modelsPromise = window.SerfAppwire
       ? window.SerfAppwire.listModels()
@@ -263,6 +364,25 @@
     });
   }
 
+  function openHarnessDefaultModelPicker(chip) {
+    const picker = document.createElement("div");
+    picker.className = "chip-picker";
+    const row = document.createElement("div");
+    row.className = "chip-picker-option";
+    row.textContent = modelPlaceholder(currentHarness());
+    row.addEventListener("click", () => {
+      setModelValue("");
+      picker.remove();
+    });
+    picker.appendChild(row);
+    chip.parentNode.style.position = "relative";
+    chip.parentNode.appendChild(picker);
+    picker.style.position = "absolute";
+    picker.style.top = (chip.offsetTop + chip.offsetHeight + 4) + "px";
+    picker.style.left = chip.offsetLeft + "px";
+    picker.style.zIndex = "50";
+  }
+
   function openDirPicker(chip) {
     const existing = document.querySelector(".chip-picker");
     if (existing) { existing.remove(); return; }
@@ -382,4 +502,8 @@
     document.body.addEventListener("htmx:afterSwap", tryInit);
   });
   if (document.body) document.body.addEventListener("htmx:afterSwap", tryInit);
+  window.SerfSpawn = {
+    sessionPath,
+    spawnErrorMessage,
+  };
 })();

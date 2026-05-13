@@ -451,7 +451,7 @@ func (a *releaseAdapter) Complete(ctx context.Context, req llm.Request) (llm.Res
 func (a *releaseAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	_ = ctx
 	_ = req
-	return nil, fmt.Errorf("stream not implemented")
+	return nil, llm.ErrStreamUnsupported
 }
 
 func TestSpawnAgent_NonBlockingSubagentSurvivesParentContextCancellation(t *testing.T) {

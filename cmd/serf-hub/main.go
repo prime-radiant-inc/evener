@@ -87,6 +87,10 @@ func main() {
 		SerfBinary: *serfBinary,
 		RunDir:     runDir,
 	}
+	var codexLauncher *CodexLauncher
+	if len(cfg.CodexLaunches) > 0 {
+		codexLauncher = NewCodexLauncher(cfg.CodexLaunches)
+	}
 
 	// stateDir is the parent of the projects/ directory; used for ForkSession
 	// as a fallback when a session's project dir can't be found in the past index.
@@ -102,14 +106,17 @@ func main() {
 
 	// Web
 	web := NewWebServer(WebConfig{
-		HubAddr:     cfg.Addr,
-		RunDir:      runDir,
-		Roster:      roster,
-		Past:        past,
-		Spawner:     spawner,
-		Models:      models,
-		PastPerPage: cfg.PastResultsPerPage,
-		StateDir:    stateDir,
+		HubAddr:       cfg.Addr,
+		RunDir:        runDir,
+		Roster:        roster,
+		Past:          past,
+		Spawner:       spawner,
+		Models:        models,
+		PastPerPage:   cfg.PastResultsPerPage,
+		StateDir:      stateDir,
+		CodexSources:  cfg.CodexSources,
+		CodexLaunches: cfg.CodexLaunches,
+		CodexLauncher: codexLauncher,
 	})
 
 	// Lifecycle
@@ -145,6 +152,9 @@ func main() {
 		shutdownCtx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer scancel()
 		_ = srv.Shutdown(shutdownCtx)
+		if codexLauncher != nil {
+			_ = codexLauncher.Shutdown(shutdownCtx)
+		}
 	}()
 
 	fmt.Fprintf(os.Stderr, "[hub] serf-hub %s listening on %s (run_dir=%s)\n", Version, cfg.Addr, runDir)

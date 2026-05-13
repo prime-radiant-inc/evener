@@ -1769,7 +1769,7 @@ func (a *errorAdapter) Complete(ctx context.Context, req llm.Request) (llm.Respo
 	return llm.Response{}, fmt.Errorf("simulated LLM error")
 }
 func (a *errorAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
-	return nil, fmt.Errorf("stream not implemented")
+	return nil, llm.ErrStreamUnsupported
 }
 
 func assistantWithToolCall(id, name, argsJSON string) llm.Message {

@@ -9,6 +9,9 @@ const rendererSrc = fs.readFileSync(path.resolve(__dirname, "../assets/renderer.
 
 const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <div class="workspace-actions">
+    <button data-action-trigger="interrupt" disabled>interrupt</button>
+    <button data-action-trigger="compact">compact</button>
+    <button data-action-trigger="shutdown">shutdown</button>
     <button data-tasks-trigger><span class="panel-toggle-label">tasks</span></button>
     <button data-details-trigger><span class="panel-toggle-label">details</span></button>
   </div>
@@ -55,6 +58,7 @@ window.SerfAppwire = {
     restored: true,
   }]],
   eventsFromNotification: (method, params) => {
+    if (method === "thread/status/changed") return [["THREAD_STATUS_CHANGED", { status: params.status && params.status.type || "" }]];
     if (method === "item/started") return [["ASSISTANT_TEXT_START", {}]];
     if (method === "item/agentMessage/delta") return [["ASSISTANT_TEXT_DELTA", { delta: params.delta || "" }]];
     return [];
@@ -101,6 +105,23 @@ async function run() {
 
   const assistant = conv.querySelector(".assistant-message");
   pass(assistant && assistant.textContent.includes("hello from live turn"), "live AppWire update was not rendered");
+
+  notificationHandler("thread/status/changed", {
+    threadId: "thread-live",
+    ref: "local:thread-live",
+    status: { type: "processing" },
+  });
+  pass(conv.dataset.state === "processing", "processing status did not update conversation state");
+  pass(!window.document.querySelector('[data-action-trigger="interrupt"]').disabled, "interrupt should enable while processing");
+
+  notificationHandler("thread/status/changed", {
+    threadId: "thread-live",
+    ref: "local:thread-live",
+    status: { type: "idle" },
+  });
+  pass(conv.dataset.state === "idle", "idle status did not update conversation state");
+  pass(window.document.querySelector('[data-action-trigger="interrupt"]').disabled, "interrupt should disable while idle");
+  pass(!window.document.querySelector('[data-action-trigger="shutdown"]').disabled, "shutdown should stay enabled while idle");
 
   if (failures.length > 0) {
     console.log("Rendered conversation HTML:");

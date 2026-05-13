@@ -77,7 +77,7 @@
     const id = nextId++;
     const send = () => new Promise((resolve, reject) => {
       pending.set(String(id), { resolve, reject });
-      ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params: params || {} }));
+      ws.send(JSON.stringify({ id, method, params: params || {} }));
     });
     if (ws && ws.readyState === WebSocket.OPEN) return send();
     if (method === METHOD.initialize) return send();
@@ -168,11 +168,12 @@
 
   function searchResult(thread) {
     const id = threadID(thread);
+    const ref = threadRef(thread);
     const state = (thread.status && thread.status.type) || "ended";
     const title = thread.name || thread.preview || id;
     return {
-      id,
-      ref: threadRef(thread),
+      id: ref || id,
+      ref,
       title,
       state,
       project: thread.path || basename(thread.cwd),
@@ -208,12 +209,12 @@
   }
 
   function startThread(body) {
-    const model = splitProviderModel(body.model || "");
     return request(METHOD.threadStart, {
+      harness: body.harness || "",
       cwd: body.working_dir || "",
       prompt: body.task || "",
-      modelProvider: model.provider,
-      model: model.model,
+      modelProvider: "",
+      model: String(body.model || "").trim(),
       profile: body.agent || "",
       reasoningEffort: body.reasoning_effort || "",
     }).then((resp) => {
@@ -234,6 +235,7 @@
     return (images || []).map((img) => ({
       type: "input_image",
       mediaType: img.media_type || img.mediaType || "",
+      url: img.url || "",
       data: img.data || "",
       name: img.name || "",
     }));
@@ -317,9 +319,12 @@
     }
     if (item.type === "tool_call") {
       const callID = firstNonEmpty(item.callId, item.id);
-      const out = [["TOOL_CALL_START", { call_id: callID, tool_name: item.toolName || "", arguments_json: item.argumentsJson || "" }]];
-      if (item.output) out.push(["TOOL_CALL_OUTPUT_DELTA", { call_id: callID, delta: item.output }]);
-      out.push(["TOOL_CALL_END", { call_id: callID, tool_name: item.toolName || "", error: item.error || "" }]);
+      const itemID = item.id || "";
+      const completed = item.status === "completed" || !!item.output || !!item.error;
+      const out = [["TOOL_CALL_START", { call_id: callID, item_id: itemID, tool_name: item.toolName || "", arguments_json: item.argumentsJson || "" }]];
+      if (!completed) return out;
+      if (item.output) out.push(["TOOL_CALL_OUTPUT_DELTA", { call_id: callID, item_id: itemID, delta: item.output }]);
+      out.push(["TOOL_CALL_END", { call_id: callID, item_id: itemID, tool_name: item.toolName || "", output: item.output || "", error: item.error || "", tool_state: item.raw || "" }]);
       return out;
     }
     return [];
@@ -333,8 +338,29 @@
       profile: thread.serf && thread.serf.profile || "",
       restored: true,
     }]];
+    const activeToolCalls = new Set();
     for (const turn of thread.turns || []) {
       for (const item of turn.items || []) {
+        if (item && item.type === "tool_call") {
+          const callID = firstNonEmpty(item.callId, item.id);
+          const itemID = item.id || "";
+          const completed = item.status === "completed" || !!item.output || !!item.error;
+          if (completed && activeToolCalls.has(callID)) {
+            events.push(["TOOL_CALL_END", {
+              call_id: callID,
+              item_id: itemID,
+              tool_name: item.toolName || "",
+              output: item.output || "",
+              error: item.error || "",
+              tool_state: item.raw || "",
+            }]);
+            activeToolCalls.delete(callID);
+            continue;
+          }
+          events.push.apply(events, eventsFromItem(item));
+          if (!completed && callID) activeToolCalls.add(callID);
+          continue;
+        }
         events.push.apply(events, eventsFromItem(item));
       }
       if (turn.status === "failed") {
@@ -356,20 +382,47 @@
   function eventsFromNotification(method, params) {
     params = params || {};
     const item = params.item || {};
+    if (method === "thread/status/changed") {
+      return [["THREAD_STATUS_CHANGED", { status: params.status && params.status.type || "" }]];
+    }
     if (method === "item/started") {
       if (item.type === "agent_message") return [["ASSISTANT_TEXT_START", {}]];
       if (item.type === "tool_call") return [["TOOL_CALL_START", {
         call_id: firstNonEmpty(item.callId, item.id),
+        item_id: item.id || "",
         tool_name: item.toolName || "",
         arguments_json: item.argumentsJson || "",
       }]];
       return [];
     }
-    if (method === "item/completed") return eventsFromItem(item);
+    if (method === "item/completed") {
+      if (item.type === "tool_call") return [["TOOL_CALL_END", {
+        call_id: firstNonEmpty(item.callId, item.id),
+        item_id: item.id || "",
+        tool_name: item.toolName || "",
+        arguments_json: item.argumentsJson || "",
+        output: item.output || "",
+        error: item.error || "",
+        tool_state: item.raw || "",
+      }]];
+      if (item.type === "agent_message") return [["ASSISTANT_TEXT_END", { text: item.text || "" }]];
+      return eventsFromItem(item);
+    }
     if (method === "item/agentMessage/delta") return [["ASSISTANT_TEXT_DELTA", { delta: params.delta || "" }]];
-    if (method === "item/toolOutput/delta") return [["TOOL_CALL_OUTPUT_DELTA", { call_id: firstNonEmpty(params.itemId, params.callId), delta: params.delta || "" }]];
-    if (method === "turn/completed" && params.turn && params.turn.status === "failed") {
-      return [["ERROR", errorPayload(params.turn.error, "turn failed")]];
+    if (method === "item/toolOutput/delta") return [["TOOL_CALL_OUTPUT_DELTA", {
+      call_id: firstNonEmpty(params.callId, params.itemId),
+      item_id: params.itemId || "",
+      delta: params.delta || "",
+    }]];
+    if (method === "turn/completed" && params.turn) {
+      if (params.turn.status === "failed") {
+        return [["ERROR", errorPayload(params.turn.error, "turn failed")]];
+      }
+      const out = [];
+      for (const item of params.turn.items || []) {
+        out.push.apply(out, eventsFromItem(item));
+      }
+      return out;
     }
     if (method === "warning") {
       const warning = params.warning || "";

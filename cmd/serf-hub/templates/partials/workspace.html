@@ -1,5 +1,5 @@
 {{define "workspace"}}
-<header class="workspace-header" data-session-id="{{.ID}}">
+<header class="workspace-header" data-session-id="{{.ID}}" data-source-label="{{.SourceLabel}}">
   {{if .ForkLabel}}
   <div class="fork-original-banner">↳ original of {{if .ForkOfTitle}}<span class="fork-original-target">{{.ForkOfTitle}}</span>{{else}}fork{{end}}{{if .DivergenceTurn}}, divergence at turn {{.DivergenceTurn}}{{end}}</div>
   {{end}}
@@ -9,9 +9,15 @@
       <button class="title-action" type="button" data-copy-id="{{.ID}}" title="copy session ID">⧉</button>
     </div>
     <div class="workspace-actions">
+      {{if .Capabilities.Interrupt}}
       <button type="button" class="header-action" data-action-trigger="interrupt" title="cancel the in-flight model call"{{if and (ne .State "processing") (ne .State "awaiting")}} disabled{{end}}>interrupt</button>
+      {{end}}
+      {{if .Capabilities.Compact}}
       <button type="button" class="header-action" data-action-trigger="compact" title="compact the transcript"{{if eq .State "ended"}} disabled{{end}}>compact</button>
+      {{end}}
+      {{if .Capabilities.Shutdown}}
       <button type="button" class="header-action header-action-danger" data-action-trigger="shutdown" title="shut down this daemon"{{if eq .State "ended"}} disabled{{end}}>shutdown</button>
+      {{end}}
       <button type="button" class="panel-toggle" data-tasks-trigger title="task list">
         <span class="panel-toggle-icon">☑</span><span class="panel-toggle-label">tasks</span>
       </button>
@@ -44,10 +50,16 @@
   </div>
   <div class="input-controls">
     <button type="button" class="input-btn" data-attach-trigger title="attach image">＋</button>
+    {{if .Capabilities.ChangeModel}}
     <button type="button" class="input-chip model-chip" data-model-trigger>{{if .Model}}{{.Model}}{{else}}—{{end}} <span class="chip-caret">▾</span></button>
+    {{else}}
+    <span class="input-chip model-chip" title="model changes unavailable">{{if .Model}}{{.Model}}{{else}}—{{end}}</span>
+    {{end}}
     <span class="controls-spacer"></span>
+    {{if .Capabilities.Steer}}
     <button type="button" class="input-btn input-btn-ghost" data-steer-trigger>steer</button>
-    <button type="submit" class="input-btn input-btn-primary send-btn">send <kbd>⌘↵</kbd></button>
+    {{end}}
+    <button type="submit" class="input-btn input-btn-primary send-btn" data-capability-send="{{.Capabilities.Send}}"{{if not .Capabilities.Send}} disabled title="send unavailable"{{end}}>send <kbd>⌘↵</kbd></button>
   </div>
   <div id="input-status"
        class="input-status"
@@ -60,4 +72,4 @@
 </form>
 {{end}}
 
-{{define "workspace_meta"}}{{if .Branch}}<span class="branch">{{.Branch}}</span><span class="rule-dot">·</span>{{end}}<span class="status-pill" data-state="{{.State}}"><span class="status-dot" data-state="{{.State}}"></span> {{.StateLabel}}</span><span class="rule-dot">·</span><span class="turn-count">{{.TurnCount}} turn{{if ne .TurnCount 1}}s{{end}}</span>{{end}}
+{{define "workspace_meta"}}{{if .SourceLabel}}<span class="source-label" data-source-label="{{.SourceLabel}}">{{.SourceLabel}}</span><span class="rule-dot">·</span>{{end}}{{if .Branch}}<span class="branch">{{.Branch}}</span><span class="rule-dot">·</span>{{end}}<span class="status-pill" data-state="{{.State}}"><span class="status-dot" data-state="{{.State}}"></span> {{.StateLabel}}</span><span class="rule-dot">·</span><span class="turn-count">{{.TurnCount}} turn{{if ne .TurnCount 1}}s{{end}}</span>{{end}}

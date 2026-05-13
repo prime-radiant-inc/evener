@@ -21,6 +21,7 @@ const (
 	ErrorSessionUnavailable  ErrorInfo = "sessionUnavailable"
 	ErrorConflict            ErrorInfo = "conflict"
 	ErrorActionUnavailable   ErrorInfo = "actionUnavailable"
+	ErrorHubLaunch           ErrorInfo = "hubLaunch"
 	ErrorInternal            ErrorInfo = "internal"
 )
 
@@ -83,5 +84,13 @@ func Unavailable(message string) WireError {
 		Code:    CodeUnavailable,
 		Message: message,
 		Data:    ErrorData{SerfErrorInfo: ErrorActionUnavailable},
+	}
+}
+
+func HubLaunchError(message string) WireError {
+	return WireError{
+		Code:    CodeUnavailable,
+		Message: message,
+		Data:    ErrorData{SerfErrorInfo: ErrorHubLaunch},
 	}
 }

@@ -72,3 +72,17 @@ func TestRegistryRejectsMissingSource(t *testing.T) {
 		t.Fatal("expected missing source error")
 	}
 }
+
+func TestRegistryAllReturnsSourcesInIDOrder(t *testing.T) {
+	reg := NewRegistry()
+	reg.Add(fakeSource{id: "serf"})
+	reg.Add(fakeSource{id: "codex"})
+
+	sources := reg.All()
+	if len(sources) != 2 {
+		t.Fatalf("sources=%d", len(sources))
+	}
+	if sources[0].ID() != "codex" || sources[1].ID() != "serf" {
+		t.Fatalf("source order=%s,%s", sources[0].ID(), sources[1].ID())
+	}
+}

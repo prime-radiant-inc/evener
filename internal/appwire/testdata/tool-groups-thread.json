@@ -1,0 +1,72 @@
+{
+  "id": "th_tool_groups",
+  "sessionId": "sess_tool_groups",
+  "ref": "local:th_tool_groups",
+  "source": "local",
+  "status": {
+    "type": "idle"
+  },
+  "turns": [
+    {
+      "id": "turn_1",
+      "status": "completed",
+      "items": [
+        {
+          "type": "agent_message",
+          "id": "item_msg_1",
+          "turnId": "turn_1",
+          "text": "I'll inspect the file first.",
+          "status": "completed"
+        },
+        {
+          "type": "tool_call",
+          "id": "item_shell_start",
+          "turnId": "turn_1",
+          "toolName": "shell",
+          "callId": "call_shell",
+          "argumentsJson": "{\"command\":\"printf 'alpha\\nbeta\\n'\"}",
+          "status": "running"
+        },
+        {
+          "type": "agent_message",
+          "id": "item_msg_2",
+          "turnId": "turn_1",
+          "text": "I need one more check.",
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "turn_2",
+      "status": "completed",
+      "items": [
+        {
+          "type": "tool_call",
+          "id": "item_shell_result",
+          "turnId": "turn_2",
+          "toolName": "shell",
+          "callId": "call_shell",
+          "output": "alpha\nbeta\n",
+          "status": "completed"
+        },
+        {
+          "type": "tool_call",
+          "id": "item_missing_file",
+          "turnId": "turn_2",
+          "toolName": "read_file",
+          "callId": "call_missing_file",
+          "argumentsJson": "{\"file_path\":\"/tmp/does-not-exist\"}",
+          "error": "open /tmp/does-not-exist: no such file or directory",
+          "status": "completed"
+        },
+        {
+          "type": "agent_message",
+          "id": "item_msg_3",
+          "turnId": "turn_2",
+          "text": "Done.",
+          "status": "completed"
+        }
+      ]
+    }
+  ]
+}

@@ -2,6 +2,7 @@ package appsource
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 
 	"primeradiant.com/serf/internal/appwire"
@@ -27,6 +28,21 @@ func (r *Registry) Source(id string) (Source, bool) {
 	defer r.mu.RUnlock()
 	source, ok := r.sources[id]
 	return source, ok
+}
+
+func (r *Registry) All() []Source {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ids := make([]string, 0, len(r.sources))
+	for id := range r.sources {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	sources := make([]Source, 0, len(ids))
+	for _, id := range ids {
+		sources = append(sources, r.sources[id])
+	}
+	return sources
 }
 
 func (r *Registry) SourceForRef(raw string) (Source, error) {

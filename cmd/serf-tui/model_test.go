@@ -309,3 +309,31 @@ func TestUpdateAsyncSSEConnectedKeepsWaitingForAsync(t *testing.T) {
 		t.Fatalf("second event type = %q, want SESSION_END", ev.Event)
 	}
 }
+
+func TestUpdateCommunicateDoesNotDuplicateStreamedAssistant(t *testing.T) {
+	initTheme()
+
+	m := newConfiguredModel("127.0.0.1:1234", t.TempDir(), nil, embeddedConfig{}, nil, make(chan tea.Msg, 8), false)
+	updated, _ := m.Update(asyncMsg{msg: sseEventMsg{
+		Event: "ASSISTANT_TEXT_DELTA",
+		Data:  `{"delta":"Hel"}`,
+	}})
+	m = updated.(model)
+	updated, _ = m.Update(asyncMsg{msg: sseEventMsg{
+		Event: "ASSISTANT_TEXT_DELTA",
+		Data:  `{"delta":"lo"}`,
+	}})
+	m = updated.(model)
+	updated, _ = m.Update(asyncMsg{msg: sseEventMsg{
+		Event: "COMMUNICATE",
+		Data:  `{"message":"Hello"}`,
+	}})
+	m = updated.(model)
+
+	if len(m.messages) != 1 {
+		t.Fatalf("messages = %+v, want one streamed communicate message", m.messages)
+	}
+	if m.messages[0].Kind != msgCommunicate || m.messages[0].Text != "Hello" {
+		t.Fatalf("message = %+v, want communicate Hello", m.messages[0])
+	}
+}

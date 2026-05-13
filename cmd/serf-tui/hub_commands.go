@@ -62,6 +62,13 @@ type hubModelsMsg struct {
 	err    error
 }
 
+type hubSpawnOptionsMsg struct {
+	harnesses    []string
+	harnessKinds map[string]string
+	models       []modelPickerItem
+	err          error
+}
+
 func fetchHubTree(client *appwire.Client) tea.Cmd {
 	return func() tea.Msg {
 		resp, err := client.ThreadList(context.Background(), appwire.ThreadListParams{IncludeSubagents: true})
@@ -84,12 +91,11 @@ func fetchHubSession(client *appwire.Client, ref appwire.Ref) tea.Cmd {
 
 func sendHubSpawn(client *appwire.Client, req hubSpawnRequest) tea.Cmd {
 	return func() tea.Msg {
-		provider, model := splitProviderModel(req.Model)
 		resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
-			CWD:           req.WorkingDir,
-			Prompt:        req.Task,
-			ModelProvider: provider,
-			Model:         model,
+			Harness: req.Harness,
+			CWD:     req.WorkingDir,
+			Prompt:  req.Task,
+			Model:   strings.TrimSpace(req.Model),
 		})
 		return hubSpawnMsg{resp: hubSpawnResponse{Ref: resp.Thread.Serf.Ref}, err: err}
 	}
@@ -110,6 +116,41 @@ func fetchHubModels(client *appwire.Client) tea.Cmd {
 			items = append(items, modelPickerItem{id: id, display: id})
 		}
 		return hubModelsMsg{models: items}
+	}
+}
+
+func fetchHubSpawnOptions(client *appwire.Client) tea.Cmd {
+	return func() tea.Msg {
+		harnessResp, err := client.HarnessList(context.Background(), appwire.HarnessListParams{})
+		if err != nil {
+			return hubSpawnOptionsMsg{err: err}
+		}
+		modelResp, err := client.ModelList(context.Background(), appwire.ModelListParams{})
+		if err != nil {
+			return hubSpawnOptionsMsg{err: err}
+		}
+		harnesses := make([]string, 0, len(harnessResp.Data))
+		harnessKinds := map[string]string{}
+		for _, option := range harnessResp.Data {
+			if option.ID == "" {
+				continue
+			}
+			harnesses = append(harnesses, option.ID)
+			kind := strings.TrimSpace(option.Kind)
+			if kind == "" {
+				kind = "serf"
+			}
+			harnessKinds[option.ID] = kind
+		}
+		models := make([]modelPickerItem, 0, len(modelResp.Data))
+		for _, option := range modelResp.Data {
+			if option.Provider == "" || option.Model == "" {
+				continue
+			}
+			id := option.Provider + "/" + option.Model
+			models = append(models, modelPickerItem{id: id, display: id})
+		}
+		return hubSpawnOptionsMsg{harnesses: harnesses, harnessKinds: harnessKinds, models: models}
 	}
 }
 

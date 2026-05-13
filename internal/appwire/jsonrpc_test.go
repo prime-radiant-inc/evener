@@ -1,12 +1,13 @@
 package appwire
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 )
 
 func TestRequestRoundTrip(t *testing.T) {
-	raw := []byte(`{"jsonrpc":"2.0","id":7,"method":"thread/list","params":{"limit":25}}`)
+	raw := []byte(`{"id":7,"method":"thread/list","params":{"limit":25}}`)
 	var msg Message
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -26,7 +27,7 @@ func TestRequestRoundTrip(t *testing.T) {
 }
 
 func TestNotificationRoundTrip(t *testing.T) {
-	raw := []byte(`{"jsonrpc":"2.0","method":"thread/status/changed","params":{"threadId":"th_1"}}`)
+	raw := []byte(`{"method":"thread/status/changed","params":{"threadId":"th_1"}}`)
 	var msg Message
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -46,9 +47,8 @@ func TestErrorResponseEncoding(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	var decoded struct {
-		JSONRPC string `json:"jsonrpc"`
-		ID      int64  `json:"id"`
-		Error   struct {
+		ID    int64 `json:"id"`
+		Error struct {
 			Code    int    `json:"code"`
 			Message string `json:"message"`
 		} `json:"error"`
@@ -56,10 +56,21 @@ func TestErrorResponseEncoding(t *testing.T) {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("decode output: %v", err)
 	}
-	if decoded.JSONRPC != "2.0" || decoded.ID != 3 {
+	if bytes.Contains(data, []byte(`"jsonrpc"`)) {
+		t.Fatalf("encoded JSON-RPC-lite envelope included jsonrpc: %s", data)
+	}
+	if decoded.ID != 3 {
 		t.Fatalf("decoded envelope=%+v", decoded)
 	}
 	if decoded.Error.Code != CodeInvalidParams {
 		t.Fatalf("code=%d, want %d", decoded.Error.Code, CodeInvalidParams)
+	}
+}
+
+func TestRejectsJSONRPCField(t *testing.T) {
+	raw := []byte(`{"jsonrpc":"2.0","id":7,"method":"thread/list"}`)
+	var msg Message
+	if err := json.Unmarshal(raw, &msg); err == nil {
+		t.Fatal("expected jsonrpc field to be rejected")
 	}
 }

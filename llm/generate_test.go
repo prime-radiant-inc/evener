@@ -38,7 +38,7 @@ func (a *scriptedAdapter) Complete(ctx context.Context, req Request) (Response, 
 func (a *scriptedAdapter) Stream(ctx context.Context, req Request) (Stream, error) {
 	_ = ctx
 	_ = req
-	return nil, errors.New("stream not implemented in scriptedAdapter")
+	return nil, ErrStreamUnsupported
 }
 
 type blockingAdapter struct {
@@ -61,7 +61,7 @@ func (a *blockingAdapter) Complete(ctx context.Context, req Request) (Response, 
 func (a *blockingAdapter) Stream(ctx context.Context, req Request) (Stream, error) {
 	_ = ctx
 	_ = req
-	return nil, errors.New("stream not implemented in blockingAdapter")
+	return nil, ErrStreamUnsupported
 }
 
 func TestGenerate_SimplePrompt(t *testing.T) {

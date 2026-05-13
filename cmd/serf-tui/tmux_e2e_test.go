@@ -60,7 +60,7 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	if spawns[0].Prompt != "spawn from dashboard" {
 		t.Fatalf("dashboard spawn prompt=%q, want spawn from dashboard", spawns[0].Prompt)
 	}
-	if spawns[0].ModelProvider != "openai" || spawns[0].Model != "gpt-5" {
+	if spawns[0].ModelProvider != "" || spawns[0].Model != "openai/gpt-5" {
 		t.Fatalf("dashboard spawn model=%s/%s, want openai/gpt-5", spawns[0].ModelProvider, spawns[0].Model)
 	}
 
@@ -79,7 +79,7 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	if spawns[1].Prompt != "spawn from project" {
 		t.Fatalf("project spawn prompt=%q, want spawn from project", spawns[1].Prompt)
 	}
-	if spawns[1].ModelProvider != "openai" || spawns[1].Model != "gpt-5" {
+	if spawns[1].ModelProvider != "" || spawns[1].Model != "openai/gpt-5" {
 		t.Fatalf("project spawn model=%s/%s, want openai/gpt-5", spawns[1].ModelProvider, spawns[1].Model)
 	}
 
@@ -87,6 +87,34 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app.WaitFor("serf live", "live task")
 	app.SendKeys("q")
 	app.WaitForExit()
+}
+
+func TestTUITmuxE2E_CodexSpawnOmitsSerfModel(t *testing.T) {
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	hub.SetHarnesses([]appwire.HarnessDescriptor{
+		{ID: "serf", Label: "serf", Kind: "serf"},
+		{ID: "codex-local", Label: "codex-local", Kind: "codex"},
+	})
+	defer hub.Close()
+	app := startTUITmux(t, bin, hub.URL())
+	defer app.Close()
+
+	app.WaitFor("serf live", "live task")
+	app.SendKeys("s")
+	app.WaitFor("Harness:  serf", "Model:    openai/gpt-5")
+	app.SendKeys("h")
+	app.WaitFor("Harness:  codex-local", "Model:    (harness default)")
+	app.TypeLine("spawn via codex")
+	app.WaitFor("spawned session 1")
+	spawns := hub.WaitForSpawns(t, 1)
+	if spawns[0].Harness != "codex-local" {
+		t.Fatalf("harness=%q, want codex-local", spawns[0].Harness)
+	}
+	if spawns[0].ModelProvider != "" || spawns[0].Model != "" {
+		t.Fatalf("codex spawn should omit serf model, got %s/%s", spawns[0].ModelProvider, spawns[0].Model)
+	}
 }
 
 func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
@@ -194,7 +222,7 @@ func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
 	app.WaitFor("live task", "initial question")
 
 	app.SendKeys("Escape")
-	app.WaitFor("esc/i/q: compose", "f: fork")
+	app.WaitFor("esc/i/q: compose", "ctrl+o: dashboard")
 	app.SendKeys("k")
 	app.SendKeys("k")
 	app.SendKeys("f")
@@ -203,7 +231,7 @@ func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
 		t.Fatalf("fork should not call hub when capability is disabled: %+v", forks)
 	}
 	app.SendKeys("i")
-	app.WaitFor("enter: send", "/help")
+	app.WaitFor("/help")
 
 	app.TypeLine("/interrupt")
 	app.WaitFor("Interrupt is not available for this session.")
@@ -234,6 +262,29 @@ func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
 	if sends := hub.Sends(); len(sends) != 0 {
 		t.Fatalf("send should not call hub when capability is disabled: %+v", sends)
 	}
+}
+
+func TestTUITmuxE2E_HubStreamingAssistantDeltaBeforeRefresh(t *testing.T) {
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	defer hub.Close()
+	app := startTUITmux(t, bin, hub.URL())
+	defer app.Close()
+
+	openLiveSession(t, app)
+	app.WaitFor("live task", "initial answer")
+	app.TypeLine("stream please")
+	hub.WaitForSends(t, 1)
+
+	hub.BroadcastAgentDelta("01LIVE", "partial live answer")
+	app.WaitFor("partial live answer")
+
+	hub.AppendAssistantFinal("01LIVE", "partial live answer done")
+	app.SendKeys("C-o")
+	app.WaitFor("serf live", "live task")
+	openLiveSession(t, app)
+	app.WaitFor("partial live answer done")
 }
 
 func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
@@ -398,6 +449,7 @@ func normalizePane(s string) string {
 type tuiE2EHub struct {
 	t      *testing.T
 	server *httptest.Server
+	app    *appserver.Server
 
 	mu         sync.Mutex
 	order      []string
@@ -407,6 +459,7 @@ type tuiE2EHub struct {
 	actions    map[string]int
 	models     []string
 	forks      []appwire.ThreadForkParams
+	harnesses  []appwire.HarnessDescriptor
 	spawnCount int
 	treeGets   int
 	failTasks  bool
@@ -429,9 +482,10 @@ type tuiE2ESession struct {
 func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 	t.Helper()
 	h := &tuiE2EHub{
-		t:        t,
-		sessions: map[string]*tuiE2ESession{},
-		actions:  map[string]int{},
+		t:         t,
+		sessions:  map[string]*tuiE2ESession{},
+		actions:   map[string]int{},
+		harnesses: []appwire.HarnessDescriptor{{ID: "serf", Label: "serf", Kind: "serf"}},
 	}
 	h.addSession(&tuiE2ESession{
 		ID:           "01LIVE",
@@ -480,6 +534,7 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 	})
 
 	app := appserver.NewServer(appserver.ServerConfig{ServerName: "serf-hub", SourceID: "local"})
+	h.app = app
 	h.registerHandlers(app)
 	h.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/rpc" {
@@ -508,6 +563,7 @@ func (h *tuiE2EHub) registerHandlers(app *appserver.Server) {
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadList, h.handleThreadList)
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, h.handleThreadRead)
 	appserver.HandleTyped(app.Router(), appwire.MethodModelList, h.handleModelList)
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfHarnessesList, h.handleHarnessList)
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadStart, h.handleThreadStart)
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnStart, h.handleTurnStart)
 	appserver.HandleTyped(app.Router(), appwire.MethodSerfTasksList, h.handleTasksList)
@@ -518,12 +574,48 @@ func (h *tuiE2EHub) registerHandlers(app *appserver.Server) {
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadFork, h.handleThreadFork)
 }
 
+func (h *tuiE2EHub) handleHarnessList(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return appwire.HarnessListResponse{Data: append([]appwire.HarnessDescriptor(nil), h.harnesses...)}, nil
+}
+
 func (h *tuiE2EHub) URL() string {
 	return h.server.URL
 }
 
 func (h *tuiE2EHub) Close() {
 	h.server.Close()
+}
+
+func (h *tuiE2EHub) SetHarnesses(harnesses []appwire.HarnessDescriptor) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.harnesses = append([]appwire.HarnessDescriptor(nil), harnesses...)
+}
+
+func (h *tuiE2EHub) BroadcastAgentDelta(threadID, delta string) {
+	h.app.Broadcast(threadID, appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+		ThreadID: threadID,
+		Ref:      "local:" + threadID,
+		TurnID:   "turn_stream",
+		ItemID:   "agent_stream",
+		Delta:    delta,
+	})
+}
+
+func (h *tuiE2EHub) AppendAssistantFinal(threadID, text string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if s := h.sessions[threadID]; s != nil {
+		s.Turns = append(s.Turns, appwire.Turn{
+			ID:     "turn_stream",
+			Status: appwire.TurnStatusCompleted,
+			Items: []appwire.ThreadItem{
+				{Type: "agent_message", ID: "agent_stream", TurnID: "turn_stream", Text: text, Status: "completed"},
+			},
+		})
+	}
 }
 
 func (h *tuiE2EHub) addSession(s *tuiE2ESession) {
@@ -544,7 +636,7 @@ func (h *tuiE2EHub) handleThreadList(context.Context, appwire.ThreadListParams) 
 	return out, nil
 }
 
-func (h *tuiE2EHub) handleThreadRead(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+func (h *tuiE2EHub) handleThreadRead(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 	id := threadIDFromParams(params.Ref, params.ThreadID)
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -552,6 +644,7 @@ func (h *tuiE2EHub) handleThreadRead(_ context.Context, params appwire.ThreadRea
 	if s == nil {
 		return appwire.ThreadReadResponse{}, appwire.Unavailable("thread not found: " + id)
 	}
+	appserver.Subscribe(ctx, id)
 	return appwire.ThreadReadResponse{Thread: h.threadFromSessionLocked(s)}, nil
 }
 

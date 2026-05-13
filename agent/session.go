@@ -40,6 +40,7 @@ const (
 )
 
 var errBareTextWithoutResultTool = errors.New("model returned bare text without calling result tool")
+var errStreamUnavailable = errors.New("stream unavailable")
 
 type bareTextWithoutResultToolError struct {
 	toolName string
@@ -1692,9 +1693,8 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			policy = *s.cfg.LLMRetryPolicy
 		}
 		callCtx := llm.WithAPILogContext(ctx, s.id, round)
-		resp, err := llm.Retry(callCtx, policy, s.cfg.LLMSleep, nil, func() (llm.Response, error) {
-			return s.client.Complete(callCtx, req)
-		})
+		modelResp, err := s.callModel(callCtx, policy, req)
+		resp := modelResp.Response
 
 		timings.LLMCall = time.Since(tPhaseStart)
 
@@ -1825,13 +1825,15 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 		skipHistory := noContent && !hasPhase
 
-		s.emit(EventAssistantTextStart, AssistantTextStartData{
-			Model: resp.Model,
-		})
+		if !modelResp.StreamedAssistant {
+			s.emit(EventAssistantTextStart, AssistantTextStartData{
+				Model: resp.Model,
+			})
+		}
 		if !skipHistory {
 			s.appendAssistantTurn(resp)
 		}
-		if strings.TrimSpace(txt) != "" {
+		if !modelResp.StreamedAssistant && strings.TrimSpace(txt) != "" {
 			s.emit(EventAssistantTextDelta, AssistantTextDeltaData{Delta: txt})
 		}
 		textEndData := AssistantTextEndData{
@@ -2157,6 +2159,226 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	s.state = SessionIdle
 	s.mu.Unlock()
 	return lastText, nil
+}
+
+type sessionModelResponse struct {
+	Response          llm.Response
+	StreamedAssistant bool
+}
+
+func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, req llm.Request) (sessionModelResponse, error) {
+	if s.profile.SupportsStreaming() {
+		st, err := s.client.Stream(ctx, req)
+		if err == nil && st != nil {
+			return s.consumeModelStream(ctx, req, st)
+		}
+		if err == nil {
+			err = errStreamUnavailable
+		}
+		if !streamUnavailable(err) {
+			st, err = llm.Retry(ctx, policy, s.cfg.LLMSleep, nil, func() (llm.Stream, error) {
+				return s.client.Stream(ctx, req)
+			})
+			if err == nil && st != nil {
+				return s.consumeModelStream(ctx, req, st)
+			}
+			if err == nil {
+				err = errStreamUnavailable
+			}
+			if !streamUnavailable(err) {
+				return sessionModelResponse{}, err
+			}
+		}
+	}
+
+	resp, err := llm.Retry(ctx, policy, s.cfg.LLMSleep, nil, func() (llm.Response, error) {
+		return s.client.Complete(ctx, req)
+	})
+	if err != nil {
+		return sessionModelResponse{}, err
+	}
+	return sessionModelResponse{Response: resp}, nil
+}
+
+func streamUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errStreamUnavailable) {
+		return true
+	}
+	return errors.Is(err, llm.ErrStreamUnsupported)
+}
+
+func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st llm.Stream) (sessionModelResponse, error) {
+	defer st.Close() //nolint:errcheck
+
+	acc := llm.NewStreamAccumulator()
+	toolArgs := map[string]*strings.Builder{}
+	toolNames := map[string]string{}
+	communicateText := map[string]string{}
+	streamedAssistant := false
+	assistantStarted := false
+	finished := false
+
+	emitAssistantStart := func() {
+		if assistantStarted {
+			return
+		}
+		s.emit(EventAssistantTextStart, AssistantTextStartData{Model: req.Model})
+		assistantStarted = true
+		streamedAssistant = true
+	}
+	emitAssistantDelta := func(delta string) {
+		if delta == "" {
+			return
+		}
+		emitAssistantStart()
+		s.emit(EventAssistantTextDelta, AssistantTextDeltaData{Delta: delta})
+	}
+	emitCommunicatePreview := func(callID string) {
+		args := ""
+		if b := toolArgs[callID]; b != nil {
+			args = b.String()
+		}
+		message, ok := partialJSONStringField(args, "message")
+		if !ok || message == "" {
+			return
+		}
+		prev := communicateText[callID]
+		if len(message) <= len(prev) || !strings.HasPrefix(message, prev) {
+			return
+		}
+		communicateText[callID] = message
+		emitAssistantDelta(message[len(prev):])
+	}
+
+	for ev := range st.Events() {
+		acc.Process(ev)
+		switch ev.Type {
+		case llm.StreamEventTextStart:
+			emitAssistantStart()
+		case llm.StreamEventTextDelta:
+			emitAssistantDelta(ev.Delta)
+		case llm.StreamEventToolCallStart:
+			if ev.ToolCall == nil || ev.ToolCall.ID == "" {
+				break
+			}
+			toolNames[ev.ToolCall.ID] = s.canonicalToolName(ev.ToolCall.Name)
+			if _, ok := toolArgs[ev.ToolCall.ID]; !ok {
+				toolArgs[ev.ToolCall.ID] = &strings.Builder{}
+			}
+		case llm.StreamEventToolCallDelta:
+			if ev.ToolCall == nil || ev.ToolCall.ID == "" {
+				break
+			}
+			if ev.ToolCall.Name != "" {
+				toolNames[ev.ToolCall.ID] = s.canonicalToolName(ev.ToolCall.Name)
+			}
+			if _, ok := toolArgs[ev.ToolCall.ID]; !ok {
+				toolArgs[ev.ToolCall.ID] = &strings.Builder{}
+			}
+			if len(ev.ToolCall.Arguments) > 0 {
+				toolArgs[ev.ToolCall.ID].Write(ev.ToolCall.Arguments)
+			}
+			if toolNames[ev.ToolCall.ID] == s.resultToolName() {
+				emitCommunicatePreview(ev.ToolCall.ID)
+			}
+		case llm.StreamEventToolCallEnd:
+			if ev.ToolCall == nil || ev.ToolCall.ID == "" {
+				break
+			}
+			if ev.ToolCall.Name != "" {
+				toolNames[ev.ToolCall.ID] = s.canonicalToolName(ev.ToolCall.Name)
+			}
+			if len(ev.ToolCall.Arguments) > 0 {
+				b := &strings.Builder{}
+				b.Write(ev.ToolCall.Arguments)
+				toolArgs[ev.ToolCall.ID] = b
+			}
+			if toolNames[ev.ToolCall.ID] == s.resultToolName() {
+				emitCommunicatePreview(ev.ToolCall.ID)
+			}
+		case llm.StreamEventFinish:
+			finished = true
+		case llm.StreamEventError:
+			if ev.Err != nil {
+				return sessionModelResponse{}, ev.Err
+			}
+			return sessionModelResponse{}, fmt.Errorf("stream error")
+		}
+	}
+
+	if !finished {
+		if err := ctx.Err(); err != nil {
+			return sessionModelResponse{}, err
+		}
+		return sessionModelResponse{}, fmt.Errorf("stream ended without finish event")
+	}
+	resp := acc.Response()
+	if resp == nil {
+		return sessionModelResponse{}, fmt.Errorf("stream ended without response")
+	}
+	if resp.Provider == "" {
+		resp.Provider = req.Provider
+	}
+	if resp.Model == "" {
+		resp.Model = req.Model
+	}
+	return sessionModelResponse{Response: *resp, StreamedAssistant: streamedAssistant}, nil
+}
+
+func partialJSONStringField(raw, field string) (string, bool) {
+	key := `"` + field + `"`
+	idx := strings.Index(raw, key)
+	if idx < 0 {
+		return "", false
+	}
+	rest := raw[idx+len(key):]
+	colon := strings.Index(rest, ":")
+	if colon < 0 {
+		return "", false
+	}
+	rest = strings.TrimLeft(rest[colon+1:], " \t\r\n")
+	if !strings.HasPrefix(rest, `"`) {
+		return "", false
+	}
+	rest = rest[1:]
+
+	var b strings.Builder
+	escaped := false
+	for i := 0; i < len(rest); i++ {
+		ch := rest[i]
+		if escaped {
+			switch ch {
+			case '"', '\\', '/':
+				b.WriteByte(ch)
+			case 'b':
+				b.WriteByte('\b')
+			case 'f':
+				b.WriteByte('\f')
+			case 'n':
+				b.WriteByte('\n')
+			case 'r':
+				b.WriteByte('\r')
+			case 't':
+				b.WriteByte('\t')
+			default:
+				b.WriteByte(ch)
+			}
+			escaped = false
+			continue
+		}
+		if ch == '\\' {
+			escaped = true
+			continue
+		}
+		if ch == '"' {
+			return b.String(), true
+		}
+		b.WriteByte(ch)
+	}
+	return b.String(), true
 }
 
 // stuckEscalation returns the steering message for the nth loop detection.

@@ -343,7 +343,8 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .header-action-danger { color: var(--state-awaiting); }
 .header-action-danger:hover:not([disabled]) { color: var(--state-awaiting); background: rgba(247, 118, 142, 0.1); }
 .header-action[disabled] { opacity: 0.4; cursor: not-allowed; }
-.workspace-meta .branch { font-family: ui-monospace, "SFMono-Regular", monospace; }
+.workspace-meta .branch,
+.workspace-meta .source-label { font-family: ui-monospace, "SFMono-Regular", monospace; }
 .rule-dot { color: var(--text-dim); }
 .status-pill { display: inline-flex; align-items: baseline; gap: 6px; }
 .conversation { flex: 1; min-height: 0; padding: 32px 64px; overflow-y: auto; font-size: 15px; line-height: 1.7; color: var(--text); }
@@ -427,6 +428,11 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .tool-call .result { color: var(--text-muted); }
 .tool-call .result-good { color: var(--state-idle); }
 .tool-call .result-bad { color: var(--state-awaiting); }
+.tool-call .diff-body,
+.tool-call .tool-body {
+  flex: 0 0 100%;
+  margin: 4px 0 0;
+}
 .diff-body { margin: 0 0 24px 44px; padding-left: 14px; border-left: 1px solid var(--rule); font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; line-height: 1.65; color: var(--text-muted); white-space: pre-wrap; }
 .diff-body .add { color: var(--state-idle); }
 .diff-body .del { color: var(--state-awaiting); }

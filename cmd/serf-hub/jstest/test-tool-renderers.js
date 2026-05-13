@@ -130,5 +130,36 @@ await scenario("communicate renders as assistant block", [
   return { ok: true };
 });
 
+// communicate with an empty/whitespace message — should not leave a bubble.
+await scenario("communicate ignores empty message", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "c1", tool_name: "communicate", arguments_json: JSON.stringify({ message: "\n\n" }) }],
+  ["TOOL_CALL_END", { call_id: "c1", output: "{}", tool_name: "communicate" }],
+], ({ conv }) => {
+  const assistants = conv.querySelectorAll(".assistant-message");
+  if (assistants.length !== 0) return { ok: false, detail: "expected 0 assistant-message, got " + assistants.length };
+  const tc = conv.querySelector(".tool-call");
+  if (tc) return { ok: false, detail: "communicate should not produce a tool-call card" };
+  return { ok: true };
+});
+
+// communicate after streamed assistant deltas — final tool start should not duplicate.
+await scenario("streamed communicate is not duplicated by tool completion", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["ASSISTANT_TEXT_START", {}],
+  ["ASSISTANT_TEXT_DELTA", { delta: "Hel" }],
+  ["ASSISTANT_TEXT_DELTA", { delta: "lo" }],
+  ["ASSISTANT_TEXT_END", {}],
+  ["TOOL_CALL_START", { call_id: "c1", tool_name: "communicate", arguments_json: JSON.stringify({ message: "Hello" }) }],
+  ["TOOL_CALL_END", { call_id: "c1", output: "{}", tool_name: "communicate" }],
+], ({ conv }) => {
+  const assistants = conv.querySelectorAll(".assistant-message");
+  if (assistants.length !== 1) return { ok: false, detail: "expected 1 assistant-message, got " + assistants.length };
+  if (assistants[0].textContent !== "Hello") return { ok: false, detail: "assistant text wrong: " + assistants[0].textContent };
+  const tc = conv.querySelector(".tool-call");
+  if (tc) return { ok: false, detail: "communicate should not produce a tool-call card" };
+  return { ok: true };
+});
+
 process.exit(allPass ? 0 : 1);
 })();

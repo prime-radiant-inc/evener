@@ -1,6 +1,6 @@
 // Verify the workspace title-bar action buttons (interrupt, compact,
-// shutdown) post to /s/<id>/<action> via fetch, that shutdown asks for
-// confirmation first, and that disabled buttons don't fire.
+// shutdown) post to /s/<id>/<action> via fetch and that disabled buttons
+// don't fire.
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
 
@@ -61,22 +61,22 @@ pass(calls.length === 1, "compact should make exactly one fetch call");
 pass(calls[0] && calls[0].url === "/s/01ACT001/compact", "compact URL should be /s/01ACT001/compact");
 pass(!confirmCalled, "compact should NOT call window.confirm");
 
-// 3. shutdown with confirm() → true: fetch fires.
+// 3. shutdown → fetch posts immediately; stopping a daemon is resumable.
 confirmCalled = false;
 window.confirm = () => { confirmCalled = true; return true; };
 calls.length = 0;
 shutdownBtn.click();
-pass(confirmCalled, "shutdown SHOULD call window.confirm");
-pass(calls.length === 1, "shutdown(confirm=true) should make a fetch call");
+pass(!confirmCalled, "shutdown should NOT call window.confirm");
+pass(calls.length === 1, "shutdown should make a fetch call");
 pass(calls[0] && calls[0].url === "/s/01ACT001/shutdown", "shutdown URL should be /s/01ACT001/shutdown");
 
-// 4. shutdown with confirm() → false: no fetch.
+// 4. shutdown still posts even when window.confirm would decline.
 confirmCalled = false;
 window.confirm = () => { confirmCalled = true; return false; };
 calls.length = 0;
 shutdownBtn.click();
-pass(confirmCalled, "shutdown should still call window.confirm when user will decline");
-pass(calls.length === 0, "shutdown(confirm=false) must NOT fetch (got " + calls.length + " calls)");
+pass(!confirmCalled, "shutdown should not ask for confirmation");
+pass(calls.length === 1, "shutdown should POST without confirmation");
 
 // 5. disabled interrupt button → no fetch.
 confirmCalled = false;

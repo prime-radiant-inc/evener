@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -70,9 +73,142 @@ func TestHubModelAppliesAppWireNotifications(t *testing.T) {
 			Delta:    "hello",
 		}).Notification,
 	})
+	updated, _ = updated.(hubModel).Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+			ThreadID: "th_1",
+			Ref:      "local:th_1",
+			TurnID:   "turn_1",
+			ItemID:   "item_1",
+			Delta:    " world",
+		}).Notification,
+	})
 	got := updated.(hubModel)
-	if len(got.session.messages) != 1 || got.session.messages[0].Kind != msgAssistant || got.session.messages[0].Text != "hello" {
+	if len(got.session.messages) != 1 || got.session.messages[0].Kind != msgAssistant || got.session.messages[0].Text != "hello world" {
 		t.Fatalf("messages=%+v", got.session.messages)
+	}
+	updated, _ = got.Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{
+			"threadId": "th_1",
+			"turnId":   "turn_1",
+			"item": appwire.ThreadItem{
+				Type:   "agent_message",
+				ID:     "item_1",
+				TurnID: "turn_1",
+				Text:   "hello world final",
+			},
+		}).Notification,
+	})
+	got = updated.(hubModel)
+	if len(got.session.messages) != 1 || got.session.messages[0].Text != "hello world final" {
+		t.Fatalf("final messages=%+v", got.session.messages)
+	}
+}
+
+func TestHubModelCompletesLiveToolWithoutDuplicateMessage(t *testing.T) {
+	m := newHubModel(nil, "")
+	m.mode = hubModeSession
+	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1"}
+
+	updated, _ := m.Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{
+			"threadId": "th_1",
+			"turnId":   "turn_1",
+			"item": appwire.ThreadItem{
+				Type:          "tool_call",
+				ID:            "item_tool_1",
+				CallID:        "call_1",
+				TurnID:        "turn_1",
+				ToolName:      "shell",
+				ArgumentsJSON: `{"command":"printf 'one\ntwo\n'"}`,
+				Status:        "running",
+			},
+		}).Notification,
+	})
+	updated, _ = updated.(hubModel).Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifyToolOutputDelta, map[string]any{
+			"threadId": "th_1",
+			"turnId":   "turn_1",
+			"itemId":   "item_tool_1",
+			"delta":    "one\n",
+		}).Notification,
+	})
+	updated, _ = updated.(hubModel).Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifyToolOutputDelta, map[string]any{
+			"threadId": "th_1",
+			"turnId":   "turn_1",
+			"itemId":   "item_tool_1",
+			"delta":    "two\n",
+		}).Notification,
+	})
+	updated, _ = updated.(hubModel).Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{
+			"threadId": "th_1",
+			"turnId":   "turn_1",
+			"item": appwire.ThreadItem{
+				Type:     "tool_call",
+				ID:       "item_tool_1",
+				CallID:   "call_1",
+				TurnID:   "turn_1",
+				ToolName: "shell",
+				Output:   "one\ntwo\n",
+				Status:   "completed",
+			},
+		}).Notification,
+	})
+
+	got := updated.(hubModel)
+	var tools []chatMessage
+	for _, msg := range got.session.messages {
+		if msg.Kind == msgTool {
+			tools = append(tools, msg)
+		}
+	}
+	if len(tools) != 1 {
+		t.Fatalf("expected one tool message, got %d: %+v", len(tools), got.session.messages)
+	}
+	tool := tools[0].Tool
+	if tool == nil || tool.Output != "one\ntwo\n" || !tool.Done {
+		t.Fatalf("tool=%+v messages=%+v", tool, got.session.messages)
+	}
+	if _, ok := got.session.activeTools["item_tool_1"]; ok {
+		t.Fatalf("completed item id still active: %+v", got.session.activeTools)
+	}
+	if _, ok := got.session.activeTools["call_1"]; ok {
+		t.Fatalf("completed call id still active: %+v", got.session.activeTools)
+	}
+}
+
+func TestHubThreadFixtureKeepsSplitToolResultsGrouped(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "internal", "appwire", "testdata", "tool-groups-thread.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var thread appwire.Thread
+	if err := json.Unmarshal(data, &thread); err != nil {
+		t.Fatal(err)
+	}
+
+	messages := messagesFromThread(thread)
+	var tools []toolCallInfo
+	for _, msg := range messages {
+		if msg.Kind == msgTool && msg.Tool != nil {
+			tools = append(tools, *msg.Tool)
+		}
+	}
+	if len(tools) != 2 {
+		t.Fatalf("expected shell and failed read_file tools, got %d tools in %+v", len(tools), messages)
+	}
+	if tools[0].Name != "shell" || tools[0].Output != "alpha\nbeta\n" || !tools[0].Done {
+		t.Fatalf("shell tool not grouped with result: %+v", tools[0])
+	}
+	if tools[1].Name != "read_file" || tools[1].Error == "" || !tools[1].Done {
+		t.Fatalf("failed read_file not represented as completed tool: %+v", tools[1])
 	}
 }
 

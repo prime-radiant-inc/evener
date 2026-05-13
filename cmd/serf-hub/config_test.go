@@ -42,6 +42,22 @@ models = ["gpt-5", "gpt-5-mini"]
 [[providers]]
 name = "anthropic"
 models = ["claude-opus-4-7", "claude-sonnet-4-6"]
+
+[[codex_sources]]
+id = "codex-local"
+endpoint = "ws://127.0.0.1:9900"
+bearer_token_file = "/tmp/codex-token"
+
+[[codex_launches]]
+id = "codex-managed"
+binary = "/usr/local/bin/codex"
+working_dir = "/tmp/work"
+listen = "ws://127.0.0.1:9901"
+timeout = "5s"
+args = ["app-server"]
+
+[codex_launches.env]
+CODEX_HOME = "/tmp/codex-home"
 `
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
@@ -64,6 +80,25 @@ models = ["claude-opus-4-7", "claude-sonnet-4-6"]
 	}
 	if cfg.Providers[1].Name != "anthropic" || cfg.Providers[1].Models[0] != "claude-opus-4-7" {
 		t.Errorf("providers[1] mismatch: %+v", cfg.Providers[1])
+	}
+	if len(cfg.CodexSources) != 1 {
+		t.Fatalf("codex sources: got %d, want 1", len(cfg.CodexSources))
+	}
+	if cfg.CodexSources[0].ID != "codex-local" || cfg.CodexSources[0].Endpoint != "ws://127.0.0.1:9900" || cfg.CodexSources[0].BearerTokenFile != "/tmp/codex-token" {
+		t.Errorf("codex source mismatch: %+v", cfg.CodexSources[0])
+	}
+	if len(cfg.CodexLaunches) != 1 {
+		t.Fatalf("codex launches: got %d, want 1", len(cfg.CodexLaunches))
+	}
+	launch := cfg.CodexLaunches[0]
+	if launch.ID != "codex-managed" || launch.Binary != "/usr/local/bin/codex" || launch.WorkingDir != "/tmp/work" || launch.Listen != "ws://127.0.0.1:9901" || launch.Timeout != 5*time.Second {
+		t.Errorf("codex launch mismatch: %+v", launch)
+	}
+	if len(launch.Args) != 1 || launch.Args[0] != "app-server" {
+		t.Errorf("codex launch args mismatch: %+v", launch.Args)
+	}
+	if launch.Env["CODEX_HOME"] != "/tmp/codex-home" {
+		t.Errorf("codex launch env mismatch: %+v", launch.Env)
 	}
 }
 

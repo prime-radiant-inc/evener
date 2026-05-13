@@ -27,16 +27,17 @@ const (
 )
 
 type hubRow struct {
-	kind       hubRowKind
-	ref        appwire.Ref
-	title      string
-	project    string
-	projectKey string
-	state      string
-	live       bool
-	model      string
-	age        string
-	rowID      string
+	kind        hubRowKind
+	ref         appwire.Ref
+	sourceLabel string
+	title       string
+	project     string
+	projectKey  string
+	state       string
+	live        bool
+	model       string
+	age         string
+	rowID       string
 }
 
 type hubForkDraft struct {
@@ -65,6 +66,9 @@ type hubModel struct {
 	spawnReturnMode    hubMode
 	spawnDir           string
 	spawnProject       string
+	spawnHarness       string
+	spawnHarnesses     []string
+	spawnHarnessKinds  map[string]string
 	spawnModel         string
 	spawnModels        []modelPickerItem
 	spawnModelPicker   *modelPicker
@@ -217,8 +221,36 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.spawnModels = msg.models
-		if m.mode == hubModeSpawn && m.spawnModel == "" && len(msg.models) > 0 {
-			m.spawnModel = msg.models[0].id
+		if m.mode == hubModeSpawn {
+			m.syncSpawnModelWithHarness()
+		}
+		return m, nil
+	case hubSpawnOptionsMsg:
+		if msg.err != nil {
+			if m.mode == hubModeSpawn {
+				m.err = fmt.Errorf("spawn options failed: %w", msg.err)
+			}
+			return m, nil
+		}
+		m.spawnHarnesses = msg.harnesses
+		if len(m.spawnHarnesses) == 0 {
+			m.spawnHarnesses = []string{"serf"}
+		}
+		m.spawnHarnessKinds = msg.harnessKinds
+		if m.spawnHarnessKinds == nil {
+			m.spawnHarnessKinds = map[string]string{}
+		}
+		for _, harness := range m.spawnHarnesses {
+			if m.spawnHarnessKinds[harness] == "" {
+				m.spawnHarnessKinds[harness] = "serf"
+			}
+		}
+		if !stringInSlice(m.spawnHarness, m.spawnHarnesses) {
+			m.spawnHarness = m.spawnHarnesses[0]
+		}
+		m.spawnModels = msg.models
+		if m.mode == hubModeSpawn {
+			m.syncSpawnModelWithHarness()
 		}
 		return m, nil
 	}
@@ -261,7 +293,7 @@ func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		m.openSpawnForm()
 		if m.client != nil {
-			return m, fetchHubModels(m.client)
+			return m, fetchHubSpawnOptions(m.client)
 		}
 		return m, nil
 	case "up", "k":
@@ -304,7 +336,7 @@ func (m hubModel) updateProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		m.openSpawnForm()
 		if m.client != nil {
-			return m, fetchHubModels(m.client)
+			return m, fetchHubSpawnOptions(m.client)
 		}
 		return m, nil
 	case "up", "k":
@@ -342,24 +374,33 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.closeSpawnForm()
 		return m, nil
 	case "m":
-		if len(m.spawnModels) == 0 {
+		models := m.spawnSelectableModels()
+		if !m.spawnHarnessUsesHubModels() {
+			m.err = fmt.Errorf("model selection is managed by the %s harness", m.spawnHarness)
+			return m, nil
+		}
+		if len(models) == 0 {
 			m.err = fmt.Errorf("no models available")
 			return m, nil
 		}
-		picker := newModelPicker(m.spawnModels, m.spawnModel, m.width)
+		picker := newModelPicker(models, m.spawnModel, m.width)
 		picker.title = "Select spawn model"
 		m.spawnModelPicker = &picker
+		return m, nil
+	case "h":
+		m.cycleSpawnHarness()
 		return m, nil
 	case "enter":
 		if m.client == nil || m.spawnSubmitting {
 			return m, nil
 		}
-		if strings.TrimSpace(m.spawnModel) == "" {
+		if m.spawnHarnessUsesHubModels() && strings.TrimSpace(m.spawnModel) == "" {
 			m.err = fmt.Errorf("choose a model before spawning")
 			return m, nil
 		}
 		req := hubSpawnRequest{
 			Task:       strings.TrimSpace(m.session.input.Value()),
+			Harness:    strings.TrimSpace(m.spawnHarness),
 			Model:      strings.TrimSpace(m.spawnModel),
 			WorkingDir: m.spawnDir,
 		}
@@ -557,7 +598,7 @@ func (m *hubModel) runHubSlashCommand(cmd, args string) tea.Cmd {
 		}
 		return sendHubAction(m.client, ref, model)
 	case "help":
-		m.addSessionSystem(slashCommandHelp())
+		m.addSessionSystem(hubSlashCommandHelp(m.detail.Capabilities))
 		return nil
 	default:
 		m.addSessionSystem("Unknown command: /" + cmd)
@@ -626,6 +667,9 @@ func (m *hubModel) resetSpawnForm() {
 	m.spawnReturnMode = hubModeDashboard
 	m.spawnDir = ""
 	m.spawnProject = ""
+	m.spawnHarness = "serf"
+	m.spawnHarnesses = []string{"serf"}
+	m.spawnHarnessKinds = map[string]string{"serf": "serf"}
 	m.spawnModel = ""
 	m.spawnModels = nil
 	m.spawnModelPicker = nil
@@ -634,6 +678,66 @@ func (m *hubModel) resetSpawnForm() {
 	if envModel := strings.TrimSpace(os.Getenv("SERF_MODEL")); strings.Contains(envModel, "/") {
 		m.spawnModel = envModel
 	}
+}
+
+func (m *hubModel) cycleSpawnHarness() {
+	if len(m.spawnHarnesses) == 0 {
+		m.spawnHarnesses = []string{"serf"}
+	}
+	for i, harness := range m.spawnHarnesses {
+		if harness == m.spawnHarness {
+			m.spawnHarness = m.spawnHarnesses[(i+1)%len(m.spawnHarnesses)]
+			m.spawnModel = ""
+			m.spawnModelPicker = nil
+			m.syncSpawnModelWithHarness()
+			return
+		}
+	}
+	m.spawnHarness = m.spawnHarnesses[0]
+	m.spawnModel = ""
+	m.spawnModelPicker = nil
+	m.syncSpawnModelWithHarness()
+}
+
+func (m hubModel) spawnHarnessKind() string {
+	if kind := strings.TrimSpace(m.spawnHarnessKinds[m.spawnHarness]); kind != "" {
+		return kind
+	}
+	return "serf"
+}
+
+func (m hubModel) spawnHarnessUsesHubModels() bool {
+	return m.spawnHarnessKind() != "codex"
+}
+
+func (m hubModel) spawnSelectableModels() []modelPickerItem {
+	if !m.spawnHarnessUsesHubModels() {
+		return nil
+	}
+	return m.spawnModels
+}
+
+func (m *hubModel) syncSpawnModelWithHarness() {
+	if !m.spawnHarnessUsesHubModels() {
+		m.spawnModel = ""
+		m.spawnModelPicker = nil
+		return
+	}
+	if strings.TrimSpace(m.spawnModel) == "" {
+		models := m.spawnSelectableModels()
+		if len(models) > 0 {
+			m.spawnModel = models[0].id
+		}
+	}
+}
+
+func stringInSlice(needle string, haystack []string) bool {
+	for _, item := range haystack {
+		if item == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func (m hubModel) spawnWorkingDir() string {
@@ -871,25 +975,58 @@ func (m *hubModel) applyThreadItem(item appwire.ThreadItem, completed bool) {
 			}
 		}
 	case "tool_call":
-		desc, detail := summarizeTool(item.ToolName, item.ArgumentsJSON)
+		done := threadItemToolDone(item, completed)
+		if idx, ok := m.activeHubToolIndex(item); ok {
+			info := m.session.messages[idx].Tool
+			if info == nil {
+				return
+			}
+			mergeThreadItemIntoToolInfo(info, item, done)
+			if done {
+				m.clearActiveHubTool(item)
+			} else {
+				m.rememberActiveHubTool(item, idx)
+			}
+			return
+		}
+		info := toolInfoFromThreadItem(item, done)
 		idx := len(m.session.messages)
-		info := &toolCallInfo{
-			Name:        item.ToolName,
-			Description: desc,
-			Detail:      detail,
-			Output:      item.Output,
-			Error:       item.Error,
-			Done:        completed || item.Status == "completed",
-			Expanded:    detail != "",
-			Hidden:      item.ToolName == "communicate",
-		}
 		m.session.messages = append(m.session.messages, chatMessage{Kind: msgTool, Tool: info})
-		if item.ID != "" {
-			m.session.activeTools[item.ID] = idx
+		if !done {
+			m.rememberActiveHubTool(item, idx)
 		}
-		if item.CallID != "" {
-			m.session.activeTools[item.CallID] = idx
+	}
+}
+
+func (m *hubModel) activeHubToolIndex(item appwire.ThreadItem) (int, bool) {
+	if item.ID != "" {
+		if idx, ok := m.session.activeTools[item.ID]; ok && idx < len(m.session.messages) {
+			return idx, true
 		}
+	}
+	if item.CallID != "" {
+		if idx, ok := m.session.activeTools[item.CallID]; ok && idx < len(m.session.messages) {
+			return idx, true
+		}
+	}
+	return 0, false
+}
+
+func (m *hubModel) rememberActiveHubTool(item appwire.ThreadItem, idx int) {
+	if item.ID != "" {
+		m.session.activeTools[item.ID] = idx
+	}
+	if item.CallID != "" {
+		m.session.activeTools[item.CallID] = idx
+	}
+}
+
+func (m *hubModel) clearActiveHubTool(item appwire.ThreadItem) {
+	if item.ID != "" {
+		delete(m.session.activeTools, item.ID)
+	}
+	if item.CallID != "" {
+		delete(m.session.activeTools, item.CallID)
 	}
 }
 
@@ -950,16 +1087,17 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 			rowID = "project:" + key + ":" + n.Ref
 		}
 		rows = append(rows, hubRow{
-			kind:       hubRowSession,
-			ref:        ref,
-			title:      title,
-			project:    project,
-			projectKey: key,
-			state:      n.State,
-			live:       n.Live,
-			model:      n.Model,
-			age:        n.Age,
-			rowID:      rowID,
+			kind:        hubRowSession,
+			ref:         ref,
+			sourceLabel: sourceLabelFromRef(ref),
+			title:       title,
+			project:     project,
+			projectKey:  key,
+			state:       n.State,
+			live:        n.Live,
+			model:       n.Model,
+			age:         n.Age,
+			rowID:       rowID,
 		})
 	}
 
@@ -1024,16 +1162,17 @@ func buildProjectRows(project hubTreeProject) []hubRow {
 			rowID = "project:" + key + ":" + n.Ref
 		}
 		row := hubRow{
-			kind:       hubRowSession,
-			ref:        ref,
-			title:      title,
-			project:    project.Name,
-			projectKey: key,
-			state:      state,
-			live:       n.Live,
-			model:      n.Model,
-			age:        n.Age,
-			rowID:      rowID,
+			kind:        hubRowSession,
+			ref:         ref,
+			sourceLabel: sourceLabelFromRef(ref),
+			title:       title,
+			project:     project.Name,
+			projectKey:  key,
+			state:       state,
+			live:        n.Live,
+			model:       n.Model,
+			age:         n.Age,
+			rowID:       rowID,
 		}
 		if n.Live {
 			liveRows = append(liveRows, row)
@@ -1151,7 +1290,7 @@ func (m hubModel) dashboardView() string {
 			fmt.Fprintf(&b, "%s %s %-28s %s\n", cursor, statusDot(row.state), row.project, projectSummary(row, m.rows))
 			continue
 		}
-		fmt.Fprintf(&b, "%s   %s %-10s %-32s %-10s %s\n", cursor, statusDot(row.state), stateLabel(row.state), row.title, row.model, row.age)
+		fmt.Fprintf(&b, "%s   %s %-10s %-12s %-28s %-10s %s\n", cursor, statusDot(row.state), stateLabel(row.state), row.sourceLabel, row.title, row.model, row.age)
 	}
 	b.WriteString("\n↑/↓ select  enter open  p project  s spawn  / filter  ctrl+o dashboard  q quit\n")
 	return b.String()
@@ -1210,7 +1349,7 @@ func writeProjectRow(b *strings.Builder, row hubRow, selected bool) {
 	if selected {
 		cursor = ">"
 	}
-	fmt.Fprintf(b, "%s %s %-10s %-34s %-10s %s\n", cursor, statusDot(row.state), stateLabel(row.state), row.title, row.model, row.age)
+	fmt.Fprintf(b, "%s %s %-10s %-12s %-34s %-10s %s\n", cursor, statusDot(row.state), stateLabel(row.state), row.sourceLabel, row.title, row.model, row.age)
 }
 
 func statusDot(state string) string {
@@ -1287,12 +1426,15 @@ func (m hubModel) spawnView() string {
 		return b.String()
 	}
 	model := m.spawnModel
-	if model == "" && len(m.spawnModels) == 0 {
+	models := m.spawnSelectableModels()
+	if !m.spawnHarnessUsesHubModels() {
+		model = "(harness default)"
+	} else if model == "" && len(models) == 0 {
 		model = "(loading models...)"
-	}
-	if model == "" {
+	} else if model == "" {
 		model = "(choose a model)"
 	}
+	fmt.Fprintf(&b, "Harness:  %s\n", m.spawnHarness)
 	fmt.Fprintf(&b, "Model:    %s\n", model)
 	if m.spawnProject != "" {
 		fmt.Fprintf(&b, "Project:  %s\n", m.spawnProject)
@@ -1309,7 +1451,14 @@ func (m hubModel) spawnView() string {
 	b.WriteString("\nTask (optional):\n")
 	b.WriteString("> ")
 	b.WriteString(m.session.input.Value())
-	b.WriteString("\n\nm: model  enter: spawn  esc: cancel  ctrl+o: dashboard\n")
+	keys := []string{"h: harness"}
+	if m.spawnHarnessUsesHubModels() {
+		keys = append(keys, "m: model")
+	}
+	keys = append(keys, "enter: spawn", "esc: cancel", "ctrl+o: dashboard")
+	b.WriteString("\n\n")
+	b.WriteString(strings.Join(keys, "  "))
+	b.WriteString("\n")
 	return b.String()
 }
 
@@ -1320,7 +1469,7 @@ func (m hubModel) sessionView() string {
 		title = m.detail.SessionID
 	}
 	fmt.Fprintf(&b, "%s\n", title)
-	fmt.Fprintf(&b, "%s  %s  %s\n", m.detail.Ref, m.detail.State, m.detail.WorkingDir)
+	fmt.Fprintf(&b, "%s  %s  %s  %s\n", m.detail.SourceLabel, m.detail.Ref, m.detail.State, m.detail.WorkingDir)
 	if m.err != nil {
 		fmt.Fprintf(&b, "\nerror: %v\n", m.err)
 	}
@@ -1345,9 +1494,23 @@ func (m hubModel) sessionView() string {
 	case m.forkDraft != nil:
 		b.WriteString("\nfork draft: enter fork  esc cancel  ctrl+o: dashboard\n")
 	case m.session.scrollMode:
-		b.WriteString("\nesc/i/q: compose  f: fork  ctrl+o: dashboard\n")
+		keys := []string{"esc/i/q: compose"}
+		if m.detail.Capabilities.Fork {
+			keys = append(keys, "f: fork")
+		}
+		keys = append(keys, "ctrl+o: dashboard")
+		b.WriteString("\n")
+		b.WriteString(strings.Join(keys, "  "))
+		b.WriteString("\n")
 	default:
-		b.WriteString("\nenter: send  esc: browse  ctrl+o: dashboard  /help\n")
+		keys := []string{}
+		if m.detail.Capabilities.Send {
+			keys = append(keys, "enter: send")
+		}
+		keys = append(keys, "esc: browse", "ctrl+o: dashboard", "/help")
+		b.WriteString("\n")
+		b.WriteString(strings.Join(keys, "  "))
+		b.WriteString("\n")
 	}
 	if v := strings.TrimSpace(m.session.input.Value()); v != "" {
 		b.WriteString("> ")
@@ -1361,6 +1524,9 @@ func (m hubModel) renderSessionDetails() string {
 	var b strings.Builder
 	if m.detail.SessionID != "" {
 		fmt.Fprintf(&b, "Session:  %s\n", m.detail.SessionID)
+	}
+	if m.detail.SourceLabel != "" {
+		fmt.Fprintf(&b, "Source:   %s\n", m.detail.SourceLabel)
 	}
 	if m.detail.Model != "" || m.detail.Profile != "" {
 		fmt.Fprintf(&b, "Model:    %s (%s)\n", m.detail.Model, m.detail.Profile)

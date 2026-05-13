@@ -22,6 +22,7 @@ const (
 	MethodTurnInterrupt       = "turn/interrupt"
 	MethodSerfTasksList       = "serf/tasks/list"
 	MethodSerfDirsComplete    = "serf/dirs/complete"
+	MethodSerfHarnessesList   = "serf/harnesses/list"
 	MethodModelList           = "model/list"
 )
 
@@ -190,9 +191,11 @@ type ThreadItem struct {
 type InputItem struct {
 	Type      string            `json:"type"`
 	Text      string            `json:"text,omitempty"`
+	URL       string            `json:"url,omitempty"`
 	MediaType string            `json:"mediaType,omitempty"`
 	Data      []byte            `json:"data,omitempty"`
 	Name      string            `json:"name,omitempty"`
+	Path      string            `json:"path,omitempty"`
 	Metadata  map[string]string `json:"metadata,omitempty"`
 }
 
@@ -348,6 +351,18 @@ type DirsCompleteParams struct {
 
 type DirsCompleteResponse struct {
 	Data []string `json:"data"`
+}
+
+type HarnessListParams struct{}
+
+type HarnessDescriptor struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	Kind  string `json:"kind,omitempty"`
+}
+
+type HarnessListResponse struct {
+	Data []HarnessDescriptor `json:"data"`
 }
 
 type ModelListParams struct{}

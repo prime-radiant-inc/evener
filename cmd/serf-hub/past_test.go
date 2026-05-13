@@ -191,3 +191,30 @@ func TestPastIndex_Find(t *testing.T) {
 		t.Errorf("StateDir: %q want %q", got.StateDir, proj)
 	}
 }
+
+func TestPastIndex_FindRefreshesNewSessionOnMiss(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	_ = os.MkdirAll(proj, 0o755)
+
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := idx.Find("01NEW"); ok {
+		t.Fatal("session should not be indexed before meta exists")
+	}
+
+	writeMeta(t, proj, agent.SessionMeta{
+		ID:           "01NEW",
+		UpdatedAt:    time.Now(),
+		OriginalTask: "created after hub start",
+	})
+	got, ok := idx.Find("01NEW")
+	if !ok {
+		t.Fatal("expected Find to refresh a newly persisted session")
+	}
+	if got.StateDir != proj {
+		t.Errorf("StateDir: %q want %q", got.StateDir, proj)
+	}
+}

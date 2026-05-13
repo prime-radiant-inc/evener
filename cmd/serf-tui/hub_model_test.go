@@ -109,6 +109,19 @@ func TestHubModelDashboardShowsOnlyLiveSessionsGroupedByProject(t *testing.T) {
 	}
 }
 
+func TestHubModelDashboardShowsSourceLabels(t *testing.T) {
+	m := newHubModel(nil, "http://hub.test")
+	m.tree = hubTreeResponse{Live: []hubTreeNode{{
+		Ref: "codex-local:01LIVE", SessionID: "01LIVE", Title: "external task", State: "idle", Project: "serf", Model: "openai", Live: true,
+	}}}
+	m.rows = buildDashboardRows(m.tree)
+
+	got := m.dashboardView()
+	if !strings.Contains(got, "codex-local") {
+		t.Fatalf("dashboard missing source label:\n%s", got)
+	}
+}
+
 func TestHubModelProjectViewShowsLiveThenRecent(t *testing.T) {
 	project := hubTreeProject{
 		Key:         "serf",
@@ -334,11 +347,119 @@ func TestHubModelDashboardSpawnUsesSelectedProjectWorkingDir(t *testing.T) {
 	if gotSpawn.Prompt != "build the thing" {
 		t.Fatalf("prompt=%q, want build the thing", gotSpawn.Prompt)
 	}
-	if gotSpawn.ModelProvider != "openai" || gotSpawn.Model != "gpt-5" {
+	if gotSpawn.ModelProvider != "" || gotSpawn.Model != "openai/gpt-5" {
 		t.Fatalf("model=%s/%s, want openai/gpt-5", gotSpawn.ModelProvider, gotSpawn.Model)
 	}
 	if got.mode != hubModeSession || got.detail.SessionID != "02NEW" {
 		t.Fatalf("mode=%v detail=%+v", got.mode, got.detail)
+	}
+}
+
+func TestHubSpawnSendsHarnessSeparatelyFromModel(t *testing.T) {
+	var gotSpawn appwire.ThreadStartParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadStart, func(_ context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+			gotSpawn = params
+			return appwire.ThreadStartResponse{Thread: appwireThread(hubTreeNode{
+				Ref: "codex:02NEW", SessionID: "02NEW", Title: "new session", State: "idle", Project: "serf", Live: true,
+			}, "/tmp/serf")}, nil
+		})
+	})
+	defer cleanup()
+
+	cmd := sendHubSpawn(client, hubSpawnRequest{
+		Task:       "build the thing",
+		Harness:    "codex",
+		Model:      "openai/gpt-5",
+		WorkingDir: "/tmp/serf",
+	})
+	if cmd == nil {
+		t.Fatal("spawn command was nil")
+	}
+	msg := cmd().(hubSpawnMsg)
+	if msg.err != nil {
+		t.Fatalf("spawn: %v", msg.err)
+	}
+	if gotSpawn.Harness != "codex" || gotSpawn.ModelProvider != "" || gotSpawn.Model != "openai/gpt-5" {
+		t.Fatalf("spawn params=%+v", gotSpawn)
+	}
+}
+
+func TestHubModelSpawnCyclesConfiguredHarnesses(t *testing.T) {
+	var gotSpawn appwire.ThreadStartParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
+			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodSerfHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
+			return appwire.HarnessListResponse{Data: []appwire.HarnessDescriptor{
+				{ID: "serf", Label: "serf", Kind: "serf"},
+				{ID: "codex-local", Label: "codex-local", Kind: "codex"},
+			}}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadStart, func(_ context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+			gotSpawn = params
+			return appwire.ThreadStartResponse{Thread: appwireThread(hubTreeNode{
+				Ref: "codex-local:02NEW", SessionID: "02NEW", Title: "new session", State: "idle", Project: "serf", Live: true,
+			}, "/tmp/serf")}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newHubModel(client, "http://hub.test")
+	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
+		Key: "serf", Name: "serf", WorkingDir: "/tmp/serf",
+		Sessions: []hubTreeNode{{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true}},
+	}}}
+	m.rows = buildDashboardRows(m.tree)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	if cmd == nil {
+		t.Fatal("dashboard spawn should fetch spawn options")
+	}
+	updated, _ = updated.(hubModel).Update(cmd())
+	form := updated.(hubModel)
+	updated, _ = form.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	form = updated.(hubModel)
+	if form.spawnModel != "" {
+		t.Fatalf("codex harness carried stale model %q", form.spawnModel)
+	}
+	view := form.spawnView()
+	if strings.Contains(view, "openai/gpt-5") {
+		t.Fatalf("codex harness offered serf model:\n%s", view)
+	}
+	updated, cmd = form.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("spawn form submit returned nil command")
+	}
+	msg := cmd().(hubSpawnMsg)
+	if msg.err != nil {
+		t.Fatalf("spawn: %v", msg.err)
+	}
+	if gotSpawn.Harness != "codex-local" || gotSpawn.ModelProvider != "" || gotSpawn.Model != "" {
+		t.Fatalf("spawn params=%+v", gotSpawn)
+	}
+}
+
+func TestHubModelCodexSpawnDoesNotOpenSerfModelPicker(t *testing.T) {
+	m := newHubModel(nil, "http://hub.test")
+	m.openSpawnForm()
+	m.spawnHarnesses = []string{"serf", "codex-local"}
+	m.spawnHarnessKinds = map[string]string{"serf": "serf", "codex-local": "codex"}
+	m.spawnHarness = "codex-local"
+	m.spawnModels = []modelPickerItem{{id: "openai/gpt-5", display: "openai/gpt-5"}}
+	m.spawnModel = ""
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	if cmd != nil {
+		t.Fatal("codex model key should not start async command")
+	}
+	got := updated.(hubModel)
+	if got.spawnModelPicker != nil {
+		t.Fatalf("codex harness opened serf model picker:\n%s", got.spawnModelPicker.View())
+	}
+	if !strings.Contains(got.spawnView(), "harness default") {
+		t.Fatalf("codex spawn view should show harness default model:\n%s", got.spawnView())
 	}
 }
 
@@ -395,6 +516,9 @@ func TestHubDashboardSpawnWaitsForSlowHubSpawn(t *testing.T) {
 	})
 	appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
 		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}, nil
+	})
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
+		return appwire.HarnessListResponse{Data: []appwire.HarnessDescriptor{{ID: "serf", Label: "serf", Kind: "serf"}}}, nil
 	})
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadStart, func(_ context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
 		gotSpawn = params
@@ -469,7 +593,7 @@ func TestHubDashboardSpawnWaitsForSlowHubSpawn(t *testing.T) {
 	if gotSpawn.Prompt != "slow spawn" {
 		t.Fatalf("prompt=%q, want slow spawn", gotSpawn.Prompt)
 	}
-	if gotSpawn.ModelProvider != "openai" || gotSpawn.Model != "gpt-5" {
+	if gotSpawn.ModelProvider != "" || gotSpawn.Model != "openai/gpt-5" {
 		t.Fatalf("model=%s/%s, want openai/gpt-5", gotSpawn.ModelProvider, gotSpawn.Model)
 	}
 }
@@ -729,15 +853,54 @@ func TestHubModelSessionFooterShowsBrowseAndDashboardKeys(t *testing.T) {
 			t.Fatalf("session footer missing %q:\n%s", want, got)
 		}
 	}
+	if !strings.Contains(got, "enter: send") {
+		t.Fatalf("session footer missing send key:\n%s", got)
+	}
 	if strings.Contains(got, "esc: dashboard") {
 		t.Fatalf("session footer still advertises esc dashboard:\n%s", got)
 	}
 
+	m.detail.Capabilities.Send = false
+	got = m.sessionView()
+	if strings.Contains(got, "enter: send") {
+		t.Fatalf("session footer advertised unavailable send:\n%s", got)
+	}
+
+	m.detail.Capabilities.Send = true
+	m.detail.Capabilities.Fork = true
 	m.enterSessionBrowse(false)
 	got = m.sessionView()
 	for _, want := range []string{"esc/i/q: compose", "f: fork", "ctrl+o: dashboard"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("browse footer missing %q:\n%s", want, got)
+		}
+	}
+	m.detail.Capabilities.Fork = false
+	got = m.sessionView()
+	if strings.Contains(got, "f: fork") {
+		t.Fatalf("browse footer advertised unavailable fork:\n%s", got)
+	}
+}
+
+func TestHubModelHelpRespectsSessionCapabilities(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.Capabilities = hubSessionCapabilities{
+		Send:    true,
+		Compact: true,
+	}
+
+	m.session.setInputValue("/help")
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("/help should not need an async command")
+	}
+	got := updated.(hubModel).View()
+	if !strings.Contains(got, "/compact") {
+		t.Fatalf("help missing supported compact:\n%s", got)
+	}
+	for _, unavailable := range []string{"/model", "/clear"} {
+		if strings.Contains(got, unavailable) {
+			t.Fatalf("help advertised unavailable command %q:\n%s", unavailable, got)
 		}
 	}
 }
@@ -794,6 +957,9 @@ func TestHubModelIgnoresNotificationsForOtherSessions(t *testing.T) {
 func newTestHubClient(t *testing.T, register func(*appserver.Server)) (*appwire.Client, func()) {
 	t.Helper()
 	app := appserver.NewServer(appserver.ServerConfig{ServerName: "serf-hub", SourceID: "local"})
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
+		return appwire.HarnessListResponse{Data: []appwire.HarnessDescriptor{{ID: "serf", Label: "serf", Kind: "serf"}}}, nil
+	})
 	if register != nil {
 		register(app)
 	}

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
@@ -19,7 +20,6 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/buildinfo"
-	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/frontmatter"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appsource"
@@ -42,6 +42,9 @@ type WebConfig struct {
 	StateDir      string            // root of the projects/<sha> state directory; needed for ForkSession
 	PluginDirs    []string          // explicit plugin dirs; when empty, default to ~/.config/serf/plugins/*
 	MCPConfigPath string            // MCP config file path; when empty, default to ~/.config/serf/mcp.json
+	CodexSources  []appsource.CodexSourceConfig
+	CodexLaunches []CodexLaunchConfig
+	CodexLauncher *CodexLauncher
 }
 
 // Spawner forks a serf serve subprocess and waits for its rendezvous file to appear.
@@ -102,6 +105,9 @@ func NewWebServer(cfg WebConfig) *WebServer {
 		sse = NewSSEProxy(cfg.Roster)
 	}
 	sources := newHubSourceRegistry(cfg)
+	if cfg.CodexLauncher == nil && len(cfg.CodexLaunches) > 0 {
+		cfg.CodexLauncher = NewCodexLauncher(cfg.CodexLaunches)
+	}
 	web := &WebServer{
 		cfg: cfg, appTmpl: appTmpl, sidebarTmpl: sidebarTmpl,
 		workspaceTmpl: workspaceTmpl, spawnTmpl: spawnTmpl, inputStripTmpl: inputStripTmpl,
@@ -265,6 +271,56 @@ func writeAPIError(w http.ResponseWriter, status int, msg string) {
 	writeAPIJSON(w, status, hubapi.ErrorResponse{Error: msg})
 }
 
+func writeAPIWireError(w http.ResponseWriter, fallbackStatus int, err error) {
+	wire, ok := wireErrorFromError(err)
+	if !ok {
+		writeAPIError(w, fallbackStatus, err.Error())
+		return
+	}
+	writeAPIJSON(w, statusForWireError(wire, fallbackStatus), hubapi.ErrorResponse{
+		Error:         wire.Message,
+		Code:          wire.Code,
+		SerfErrorInfo: serfErrorInfoFromData(wire.Data),
+	})
+}
+
+func wireErrorFromError(err error) (appwire.WireError, bool) {
+	var wire appwire.WireError
+	if errors.As(err, &wire) {
+		return wire, true
+	}
+	return appwire.WireError{}, false
+}
+
+func statusForWireError(wire appwire.WireError, fallback int) int {
+	switch wire.Code {
+	case appwire.CodeInvalidParams, appwire.CodeInvalidRequest:
+		return http.StatusBadRequest
+	case appwire.CodeMethodNotFound:
+		return http.StatusNotFound
+	case appwire.CodeConflict:
+		return http.StatusConflict
+	case appwire.CodeUnavailable:
+		return http.StatusServiceUnavailable
+	case appwire.CodeInternalError:
+		return http.StatusInternalServerError
+	default:
+		return fallback
+	}
+}
+
+func serfErrorInfoFromData(data any) string {
+	switch v := data.(type) {
+	case appwire.ErrorData:
+		return string(v.SerfErrorInfo)
+	case map[string]any:
+		if info, ok := v["serfErrorInfo"].(string); ok {
+			return info
+		}
+	}
+	return ""
+}
+
 func (s *WebServer) handleAPIHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
@@ -280,9 +336,9 @@ func (s *WebServer) handleAPIHealth(w http.ResponseWriter, r *http.Request) {
 			Tree:             true,
 			TranscriptFollow: true,
 			SpawnSchema:      true,
-			Spawn:            s.cfg.Spawner != nil,
+			Spawn:            s.cfg.Spawner != nil || len(s.cfg.CodexSources) > 0 || len(s.cfg.CodexLaunches) > 0 || s.cfg.CodexLauncher != nil,
 			Fork:             true,
-			RemoteSources:    false,
+			RemoteSources:    len(s.cfg.CodexSources) > 0,
 		},
 	})
 }
@@ -301,6 +357,7 @@ func (s *WebServer) handleAPISpawnSchema(w http.ResponseWriter, r *http.Request)
 	}
 	writeAPIJSON(w, http.StatusOK, hubapi.SpawnSchema{Fields: []hubapi.SpawnField{
 		{Name: "task", Type: "text"},
+		{Name: "harness", Type: "enum", Values: launchHarnessIDs(s.cfg)},
 		{Name: "working_dir", Type: "path"},
 		{Name: "model", Type: "model"},
 		{Name: "agent", Type: "string"},
@@ -402,6 +459,18 @@ func localAppRef(threadID string) string {
 	return appwire.Ref{SourceID: "local", ThreadID: threadID}.String()
 }
 
+func appRefFromRouteID(id string) string {
+	if ref, err := appwire.ParseRef(id); err == nil {
+		return ref.String()
+	}
+	return localAppRef(id)
+}
+
+func isLocalRouteID(id string) bool {
+	ref, err := appwire.ParseRef(id)
+	return err != nil || ref.SourceID == "local"
+}
+
 func splitProviderModel(raw string) (string, string) {
 	provider, model, ok := strings.Cut(strings.TrimSpace(raw), "/")
 	if !ok {
@@ -471,11 +540,6 @@ func hubDetailFromAppThread(thread appwire.Thread) hubapi.SessionDetail {
 	if detail.SessionID == "" {
 		detail.SessionID = thread.ID
 	}
-	if detail.Capabilities == (hubapi.SessionCapabilities{}) && detail.Live {
-		detail.Capabilities = hubapi.SessionCapabilities{
-			Send: true, Steer: true, Interrupt: true, Compact: true, Clear: true, Fork: true, Shutdown: true, ChangeModel: true,
-		}
-	}
 	detail.Streams.TranscriptFollow = "/api/sessions/" + ref.PathEscaped() + "/events?mode=transcript-follow"
 	if detail.Live {
 		detail.Streams.Live = "/api/sessions/" + ref.PathEscaped() + "/events?mode=live"
@@ -484,6 +548,10 @@ func hubDetailFromAppThread(thread appwire.Thread) hubapi.SessionDetail {
 }
 
 func (s *WebServer) isLive(sessionID string) bool {
+	if !isLocalRouteID(sessionID) {
+		_, err := sourceForThread(s.sources, appRefFromRouteID(sessionID), "")
+		return err == nil
+	}
 	if s.cfg.Roster == nil {
 		return false
 	}
@@ -529,10 +597,17 @@ func (s *WebServer) liveEntry(sessionID string) (LiveEntry, bool) {
 func (s *WebServer) handleAPISession(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
 	refText, sub, _ := strings.Cut(path, "/")
+	if unescaped, err := url.PathUnescape(refText); err == nil {
+		refText = unescaped
+	}
 	ref, err := hubapi.ParseRef(refText)
-	if err != nil || ref.HostID != "local" {
+	if err != nil {
 		writeAPIError(w, http.StatusNotFound, "session not found")
 		return
+	}
+	routeID := ref.SessionID
+	if ref.HostID != "local" {
+		routeID = ref.String()
 	}
 
 	switch sub {
@@ -541,7 +616,7 @@ func (s *WebServer) handleAPISession(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
 			return
 		}
-		detail, ok := s.apiSessionDetail(ref.SessionID)
+		detail, ok := s.apiSessionDetail(routeID)
 		if !ok {
 			writeAPIError(w, http.StatusNotFound, "session not found")
 			return
@@ -552,26 +627,26 @@ func (s *WebServer) handleAPISession(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
 			return
 		}
-		detail, ok := s.apiSessionDetail(ref.SessionID)
+		detail, ok := s.apiSessionDetail(routeID)
 		if !ok {
 			writeAPIError(w, http.StatusNotFound, "session not found")
 			return
 		}
 		writeAPIJSON(w, http.StatusOK, detail)
 	case "events":
-		s.handleAPISessionEvents(w, r, ref.SessionID)
+		s.handleAPISessionEvents(w, r, routeID)
 	case "send":
-		s.handleSend(w, r, ref.SessionID)
+		s.handleSend(w, r, routeID)
 	case "tasks":
-		s.renderSessionTasks(w, r, ref.SessionID)
+		s.renderSessionTasks(w, r, routeID)
 	case "fork":
-		s.handleAPIFork(w, r, ref.SessionID)
+		s.handleAPIFork(w, r, routeID)
 	case "clear":
-		s.handleAPIClear(w, r, ref.SessionID)
+		s.handleAPIClear(w, r, routeID)
 	case "model":
-		s.handleAPIModel(w, r, ref.SessionID)
+		s.handleAPIModel(w, r, routeID)
 	case "interrupt", "compact", "shutdown":
-		s.handleSessionAction(w, r, ref.SessionID, sub)
+		s.handleSessionAction(w, r, routeID, sub)
 	default:
 		writeAPIError(w, http.StatusNotFound, "session not found")
 	}
@@ -582,7 +657,10 @@ func (s *WebServer) apiSessionDetail(id string) (hubapi.SessionDetail, bool) {
 	if wd.ID == "" {
 		return hubapi.SessionDetail{}, false
 	}
-	ref := hubapi.LocalRef(id)
+	ref, err := hubapi.ParseRef(appRefFromRouteID(id))
+	if err != nil {
+		ref = hubapi.LocalRef(id)
+	}
 	live := s.isLive(id)
 	detail := hubapi.SessionDetail{
 		Ref:            ref.String(),
@@ -610,8 +688,9 @@ func (s *WebServer) apiSessionDetail(id string) (hubapi.SessionDetail, bool) {
 		detail.Streams.Live = "/api/sessions/" + ref.PathEscaped() + "/events?mode=live"
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		if source, err := sourceForThread(s.sources, localAppRef(id), ""); err == nil {
-			if resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: localAppRef(id), IncludeTurns: true, ItemsView: "full"}); err == nil {
+		appRef := appRefFromRouteID(id)
+		if source, err := sourceForThread(s.sources, appRef, ""); err == nil {
+			if resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: appRef, IncludeTurns: true, ItemsView: "full"}); err == nil {
 				appDetail := hubDetailFromAppThread(resp.Thread)
 				appDetail.Streams = detail.Streams
 				appDetail.ParentSessionID = detail.ParentSessionID
@@ -655,19 +734,15 @@ func (s *WebServer) apiSessionCapabilities(id string, live bool) hubapi.SessionC
 		Fork:   pastExists,
 		Resume: pastExists,
 	}
-	if live {
-		caps.Send = true
-		caps.Steer = true
-		caps.Interrupt = true
-		caps.Compact = true
-		caps.Clear = true
-		caps.Shutdown = true
-		caps.ChangeModel = true
-	} else if s.cfg.Spawner != nil && pastExists {
+	if !live && s.cfg.Spawner != nil && pastExists {
 		caps.Send = true
 	}
 	if !caps.Send && !caps.Steer && !caps.Interrupt && !caps.Compact && !caps.Clear && !caps.Fork && !caps.Resume && !caps.Shutdown && !caps.ChangeModel {
-		caps.ReadOnlyReason = "session is not live and cannot be resumed"
+		if live {
+			caps.ReadOnlyReason = "live session source is unavailable"
+		} else {
+			caps.ReadOnlyReason = "session is not live and cannot be resumed"
+		}
 	}
 	return caps
 }
@@ -684,16 +759,24 @@ func (s *WebServer) handleAPISessionEvents(w http.ResponseWriter, r *http.Reques
 	switch mode {
 	case "live":
 		s.serveAppwireEvents(w, r, id, false)
-	case "replay", "transcript-follow":
+	case "transcript-follow":
+		if s.isLive(id) {
+			s.serveAppwireEvents(w, r, id, true)
+			return
+		}
 		if s.cfg.Past != nil {
 			if pe, ok := s.cfg.Past.Find(id); ok {
 				s.serveReplay(w, r, pe)
 				return
 			}
 		}
-		if mode == "transcript-follow" && s.isLive(id) {
-			s.serveAppwireEvents(w, r, id, true)
-			return
+		writeAPIError(w, http.StatusNotFound, "session not found")
+	case "replay":
+		if s.cfg.Past != nil {
+			if pe, ok := s.cfg.Past.Find(id); ok {
+				s.serveReplay(w, r, pe)
+				return
+			}
 		}
 		writeAPIError(w, http.StatusNotFound, "session not found")
 	default:
@@ -702,7 +785,8 @@ func (s *WebServer) handleAPISessionEvents(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *WebServer) serveAppwireEvents(w http.ResponseWriter, r *http.Request, id string, includeReplay bool) {
-	source, err := sourceForThread(s.sources, localAppRef(id), "")
+	ref := appRefFromRouteID(id)
+	source, err := sourceForThread(s.sources, ref, "")
 	if err != nil {
 		writeAPIError(w, http.StatusNotFound, "session not live")
 		return
@@ -711,7 +795,6 @@ func (s *WebServer) serveAppwireEvents(w http.ResponseWriter, r *http.Request, i
 	w.Header().Set("Cache-Control", "no-cache")
 	flusher, _ := w.(http.Flusher)
 	ctx := r.Context()
-	ref := localAppRef(id)
 	if includeReplay {
 		if resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"}); err == nil {
 			writeThreadReplaySSE(w, flusher, resp.Thread)
@@ -797,14 +880,24 @@ func writeItemReplaySSE(w io.Writer, flusher http.Flusher, turnIndex int, item a
 			})
 		}
 		writeSSE(w, flusher, "TOOL_CALL_END", map[string]any{
-			"call_id":   firstNonEmpty(item.CallID, item.ID),
-			"tool_name": item.ToolName,
+			"call_id":        firstNonEmpty(item.CallID, item.ID),
+			"item_id":        item.ID,
+			"tool_name":      item.ToolName,
+			"arguments_json": item.ArgumentsJSON,
+			"output":         item.Output,
+			"error":          item.Error,
+			"tool_state":     item.Raw,
 		})
 	}
 }
 
 func writeNotificationSSE(w io.Writer, flusher http.Flusher, notification appwire.Notification) {
 	switch notification.Method {
+	case appwire.NotifyThreadStatusChanged:
+		var params appwire.ThreadStatusChangedParams
+		if json.Unmarshal(notification.Params, &params) == nil {
+			writeSSE(w, flusher, "THREAD_STATUS_CHANGED", map[string]any{"status": params.Status.Type})
+		}
 	case appwire.NotifyItemStarted:
 		var params struct {
 			Item appwire.ThreadItem `json:"item"`
@@ -846,8 +939,13 @@ func writeNotificationSSE(w io.Writer, flusher http.Flusher, notification appwir
 			}
 			if params.Item.Type == "tool_call" {
 				writeSSE(w, flusher, "TOOL_CALL_END", map[string]any{
-					"call_id":   firstNonEmpty(params.Item.CallID, params.Item.ID),
-					"tool_name": params.Item.ToolName,
+					"call_id":        firstNonEmpty(params.Item.CallID, params.Item.ID),
+					"item_id":        params.Item.ID,
+					"tool_name":      params.Item.ToolName,
+					"arguments_json": params.Item.ArgumentsJSON,
+					"output":         params.Item.Output,
+					"error":          params.Item.Error,
+					"tool_state":     params.Item.Raw,
 				})
 			}
 		}
@@ -985,21 +1083,26 @@ func (s *WebServer) handleAPIClear(w http.ResponseWriter, r *http.Request, id st
 		writeAPIError(w, http.StatusNotFound, "session not live")
 		return
 	}
-	source, err := sourceForThread(s.sources, localAppRef(id), "")
+	if err := s.ensureSessionActionAvailable(id, "clear"); err != nil {
+		writeAPIWireError(w, http.StatusBadGateway, err)
+		return
+	}
+	refText := appRefFromRouteID(id)
+	source, err := sourceForThread(s.sources, refText, "")
 	if err != nil {
 		writeAPIError(w, http.StatusNotFound, "session not live")
 		return
 	}
-	resp, err := source.ClearThread(r.Context(), appwire.ThreadClearParams{Ref: localAppRef(id)})
+	resp, err := source.ClearThread(r.Context(), appwire.ThreadClearParams{Ref: refText})
 	if err != nil {
-		writeAPIError(w, http.StatusBadGateway, err.Error())
+		writeAPIWireError(w, http.StatusBadGateway, err)
 		return
 	}
-	refText := resp.Ref
-	if refText == "" {
-		refText = resp.Thread.Serf.Ref
+	outRefText := resp.Ref
+	if outRefText == "" {
+		outRefText = resp.Thread.Serf.Ref
 	}
-	ref, err := hubapi.ParseRef(refText)
+	ref, err := hubapi.ParseRef(outRefText)
 	if err != nil {
 		ref = hubapi.LocalRef(resp.Thread.ID)
 	}
@@ -1019,7 +1122,8 @@ func (s *WebServer) handleAPIModel(w http.ResponseWriter, r *http.Request, id st
 		writeAPIError(w, http.StatusNotFound, "session not live")
 		return
 	}
-	source, err := sourceForThread(s.sources, localAppRef(id), "")
+	ref := appRefFromRouteID(id)
+	source, err := sourceForThread(s.sources, ref, "")
 	if err != nil {
 		writeAPIError(w, http.StatusNotFound, "session not live")
 		return
@@ -1035,8 +1139,12 @@ func (s *WebServer) handleAPIModel(w http.ResponseWriter, r *http.Request, id st
 	if model == "" {
 		model = body.Model
 	}
-	if err := source.SetThreadModel(r.Context(), appwire.ThreadModelSetParams{Ref: localAppRef(id), ModelProvider: provider, Model: model}); err != nil {
-		writeAPIError(w, http.StatusBadGateway, err.Error())
+	if err := s.ensureSessionActionAvailable(id, "model"); err != nil {
+		writeAPIWireError(w, http.StatusBadGateway, err)
+		return
+	}
+	if err := source.SetThreadModel(r.Context(), appwire.ThreadModelSetParams{Ref: ref, ModelProvider: provider, Model: model}); err != nil {
+		writeAPIWireError(w, http.StatusBadGateway, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -1720,6 +1828,7 @@ func (s *WebServer) findNewSession(pid int) string {
 type spawnViewData struct {
 	DefaultModel           string
 	DefaultModelValue      string
+	DefaultHarness         string
 	DefaultWorkingDir      string
 	DefaultWorkingDirValue string
 	DefaultBranch          string
@@ -1727,6 +1836,12 @@ type spawnViewData struct {
 	DefaultAccessMode      string
 	DefaultTask            string // optional ?task= pre-fill
 	RecentTasks            []string
+	Harnesses              []launchHarness
+}
+
+type launchHarness struct {
+	ID    string
+	Label string
 }
 
 // handleWorkspaceSpawn renders the prompt-first spawn surface partial.
@@ -1745,11 +1860,15 @@ func (s *WebServer) handleWorkspaceSpawn(w http.ResponseWriter, r *http.Request)
 	}
 	data := spawnViewData{
 		DefaultModel:           "(pick a model)",
+		DefaultHarness:         "serf",
 		DefaultWorkingDir:      defaultWorkingDir,
 		DefaultWorkingDirValue: defaultWorkingDirValue,
 		DefaultBranch:          "(default)",
 		DefaultAccessMode:      "full",
 		DefaultTask:            r.URL.Query().Get("task"),
+	}
+	for _, descriptor := range launchHarnessDescriptors(s.cfg) {
+		data.Harnesses = append(data.Harnesses, launchHarness{ID: descriptor.ID, Label: descriptor.Label})
 	}
 	if s.cfg.Past != nil {
 		results := s.cfg.Past.Search("", 5, 0)
@@ -1765,9 +1884,19 @@ func (s *WebServer) handleWorkspaceSpawn(w http.ResponseWriter, r *http.Request)
 	}
 }
 
+func launchHarnessIDs(cfg WebConfig) []string {
+	descriptors := launchHarnessDescriptors(cfg)
+	out := make([]string, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		out = append(out, descriptor.ID)
+	}
+	return out
+}
+
 // spawnRequest is the JSON body for POST /api/spawn.
 type spawnRequest struct {
 	Task            string `json:"task"`
+	Harness         string `json:"harness"`
 	Model           string `json:"model"`
 	WorkingDir      string `json:"working_dir"`
 	Branch          string `json:"branch"`
@@ -1782,38 +1911,25 @@ func (s *WebServer) handleApiSpawn(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
-	if s.cfg.Spawner == nil {
-		http.Error(w, "spawner not configured", http.StatusServiceUnavailable)
-		return
-	}
 	var req spawnRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if req.WorkingDir != "" {
-		resolved, err := canonicalizeDir(req.WorkingDir)
-		if err != nil {
-			http.Error(w, "working_dir: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		req.WorkingDir = resolved
-	}
-	modelRef, err := cmdutil.ParseModelRef(req.Model)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if s.cfg.Spawner == nil && len(s.cfg.CodexSources) == 0 && len(s.cfg.CodexLaunches) == 0 {
+		writeSpawnError(w, appwire.Unavailable("spawner not configured"))
 		return
 	}
 	resp, err := hubThreadStart(r.Context(), s.cfg, s.sources, appwire.ThreadStartParams{
+		Harness:         req.Harness,
 		CWD:             req.WorkingDir,
 		Prompt:          req.Task,
-		ModelProvider:   modelRef.Provider,
-		Model:           modelRef.Model,
+		Model:           req.Model,
 		Profile:         req.Agent,
 		ReasoningEffort: req.ReasoningEffort,
 	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeSpawnError(w, err)
 		return
 	}
 	ref := hubRefFromAppThread(resp.Thread)
@@ -1822,6 +1938,19 @@ func (s *WebServer) handleApiSpawn(w http.ResponseWriter, r *http.Request) {
 		HostID:    ref.HostID,
 		SessionID: ref.SessionID,
 	})
+}
+
+func writeSpawnError(w http.ResponseWriter, err error) {
+	status := http.StatusInternalServerError
+	if wire, ok := err.(appwire.WireError); ok {
+		switch wire.Code {
+		case appwire.CodeInvalidParams:
+			status = http.StatusBadRequest
+		case appwire.CodeUnavailable:
+			status = http.StatusServiceUnavailable
+		}
+	}
+	writeAPIWireError(w, status, err)
 }
 
 // handleApiModels returns the models the hub can spawn for. The list is what
@@ -2130,6 +2259,7 @@ func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 // WorkspaceData is the template data for the workspace partial.
 type WorkspaceData struct {
 	ID             string
+	SourceLabel    string
 	Title          string
 	Branch         string
 	WorkingDir     string
@@ -2143,6 +2273,7 @@ type WorkspaceData struct {
 	Cost           string
 	ReplayURL      string
 	EventsURL      string
+	Capabilities   hubapi.SessionCapabilities
 	// Fork lineage for the preserved-original side of a fork. Non-empty
 	// only when this session's meta carries ForkLabel — i.e., it's the
 	// dim, snapshotted original. ForkOfTitle is the title of the new
@@ -2172,6 +2303,7 @@ func (s *WebServer) renderWorkspacePartial(w http.ResponseWriter, r *http.Reques
 func (s *WebServer) renderDetailsPanel(w http.ResponseWriter, r *http.Request, id string) {
 	type detailsRow struct{ Label, Value string }
 	var rows []detailsRow
+	rows = append(rows, detailsRow{"source", sourceLabelFromRefText(appRefFromRouteID(id))})
 	rows = append(rows, detailsRow{"session id", id})
 
 	addMeta := func(m agent.SessionMeta) {
@@ -2231,8 +2363,9 @@ func (s *WebServer) renderDetailsPanel(w http.ResponseWriter, r *http.Request, i
 func (s *WebServer) renderSessionTasks(w http.ResponseWriter, r *http.Request, id string) {
 	w.Header().Set("Content-Type", "application/json")
 
-	if source, err := sourceForThread(s.sources, localAppRef(id), ""); err == nil {
-		resp, err := source.ListTasks(r.Context(), appwire.TaskListParams{Ref: localAppRef(id)})
+	ref := appRefFromRouteID(id)
+	if source, err := sourceForThread(s.sources, ref, ""); err == nil {
+		resp, err := source.ListTasks(r.Context(), appwire.TaskListParams{Ref: ref})
 		if err == nil {
 			_ = json.NewEncoder(w).Encode(resp.Data)
 			return
@@ -2240,7 +2373,7 @@ func (s *WebServer) renderSessionTasks(w http.ResponseWriter, r *http.Request, i
 		// fall through to disk on daemon error
 	}
 
-	if s.cfg.Past != nil {
+	if isLocalRouteID(id) && s.cfg.Past != nil {
 		if pe, ok := s.cfg.Past.Find(id); ok && pe.StateDir != "" {
 			path := filepath.Join(pe.StateDir, "tasks", id+".json")
 			if data, err := os.ReadFile(path); err == nil {
@@ -2288,16 +2421,32 @@ func (s *WebServer) renderWorkspaceMeta(w http.ResponseWriter, r *http.Request, 
 }
 
 func (s *WebServer) workspaceData(id string) WorkspaceData {
+	if !isLocalRouteID(id) {
+		ref := appRefFromRouteID(id)
+		source, err := sourceForThread(s.sources, ref, "")
+		if err != nil {
+			return WorkspaceData{}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
+		if err != nil {
+			return WorkspaceData{}
+		}
+		return workspaceDataFromAppThread(resp.Thread)
+	}
 	if s.cfg.Roster != nil {
 		if le, ok := s.cfg.Roster.Find(id); ok {
 			state := normalizeState(le.Status)
 			data := WorkspaceData{
-				ID:         id,
-				Title:      liveTitle(id, le, s.cfg.Past),
-				State:      state,
-				StateLabel: stateLabel(state),
-				Model:      le.Model,
-				WorkingDir: le.WorkingDir,
+				ID:           id,
+				SourceLabel:  "serf",
+				Title:        liveTitle(id, le, s.cfg.Past),
+				State:        state,
+				StateLabel:   stateLabel(state),
+				Model:        le.Model,
+				WorkingDir:   le.WorkingDir,
+				Capabilities: s.apiSessionCapabilities(id, true),
 			}
 			// Branch isn't on the rendezvous entry or daemon /status — fall
 			// back to the past index where the agent persists EnvInfo.
@@ -2322,6 +2471,7 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 					return data
 				}
 			}
+			data.Capabilities = s.liveWorkspaceCapabilities(id, data.Capabilities)
 			data.EventsURL = "/s/" + id + "/events"
 			return data
 		}
@@ -2329,21 +2479,81 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 	if s.cfg.Past != nil {
 		if pe, ok := s.cfg.Past.Find(id); ok {
 			data := WorkspaceData{
-				ID:         id,
-				Title:      pastTitle(pe),
-				State:      "ended",
-				StateLabel: stateLabel("ended"),
-				TurnCount:  pe.Meta.TurnCount,
-				Model:      pe.Meta.Model,
-				WorkingDir: pe.Meta.EnvInfo.WorkingDir,
-				Branch:     pe.Meta.EnvInfo.GitBranch,
-				ReplayURL:  "/past/" + id + "/replay",
+				ID:           id,
+				SourceLabel:  "serf",
+				Title:        pastTitle(pe),
+				State:        "ended",
+				StateLabel:   stateLabel("ended"),
+				TurnCount:    pe.Meta.TurnCount,
+				Model:        pe.Meta.Model,
+				WorkingDir:   pe.Meta.EnvInfo.WorkingDir,
+				Branch:       pe.Meta.EnvInfo.GitBranch,
+				ReplayURL:    "/past/" + id + "/replay",
+				Capabilities: s.apiSessionCapabilities(id, false),
 			}
 			s.fillForkLineage(&data, pe.Meta)
 			return data
 		}
 	}
 	return WorkspaceData{}
+}
+
+func workspaceDataFromAppThread(thread appwire.Thread) WorkspaceData {
+	ref := thread.Serf.Ref
+	if ref == "" {
+		ref = appwire.Ref{SourceID: thread.Source, ThreadID: thread.ID}.String()
+	}
+	title := thread.Name
+	if title == "" {
+		title = thread.Preview
+	}
+	if title == "" {
+		title = firstNonEmpty(thread.SessionID, thread.ID)
+	}
+	state := normalizeState(thread.Status.Type)
+	if state == "" {
+		state = "idle"
+	}
+	return WorkspaceData{
+		ID:           ref,
+		SourceLabel:  sourceLabelFromRefText(ref),
+		Title:        title,
+		State:        state,
+		StateLabel:   stateLabel(state),
+		TurnCount:    len(thread.Turns),
+		Model:        thread.ModelProvider,
+		WorkingDir:   thread.CWD,
+		EventsURL:    "/s/" + url.PathEscape(ref) + "/events",
+		Capabilities: hubCapabilitiesFromAppwire(thread.Serf.Capabilities),
+	}
+}
+
+func (s *WebServer) liveWorkspaceCapabilities(id string, fallback hubapi.SessionCapabilities) hubapi.SessionCapabilities {
+	ref := appRefFromRouteID(id)
+	source, err := sourceForThread(s.sources, ref, "")
+	if err != nil {
+		return fallback
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false})
+	if err != nil {
+		return fallback
+	}
+	caps := hubCapabilitiesFromAppwire(resp.Thread.Serf.Capabilities)
+	caps.Resume = fallback.Resume
+	return caps
+}
+
+func sourceLabelFromRefText(refText string) string {
+	ref, err := appwire.ParseRef(refText)
+	if err != nil {
+		return "serf"
+	}
+	if ref.SourceID == "" || ref.SourceID == "local" {
+		return "serf"
+	}
+	return ref.SourceID
 }
 
 // fillForkLineage populates the WorkspaceData fork-banner fields for the
@@ -2506,7 +2716,8 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 		return le, nil
 	}
 
-	turnParams := appwire.TurnStartParams{Ref: localAppRef(id), Prompt: body.Text}
+	ref := appRefFromRouteID(id)
+	turnParams := appwire.TurnStartParams{Ref: ref, Prompt: body.Text}
 	for _, img := range body.Images {
 		turnParams.Items = append(turnParams.Items, appwire.InputItem{
 			Type:      "image",
@@ -2517,15 +2728,21 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 	}
 	startTurn := func(forceResume bool) error {
 		if forceResume {
+			if !isLocalRouteID(id) {
+				return fmt.Errorf("remote source session is not resumable by local spawner")
+			}
 			if _, rerr := resolve(forceResume); rerr != nil {
 				return rerr
 			}
-		} else if _, err := sourceForThread(s.sources, localAppRef(id), ""); err != nil {
+		} else if _, err := sourceForThread(s.sources, ref, ""); err != nil {
+			if !isLocalRouteID(id) {
+				return err
+			}
 			if _, rerr := resolve(forceResume); rerr != nil {
 				return rerr
 			}
 		}
-		source, err := sourceForThread(s.sources, localAppRef(id), "")
+		source, err := sourceForThread(s.sources, ref, "")
 		if err != nil {
 			return err
 		}
@@ -2579,13 +2796,18 @@ func (s *WebServer) handleSteer(w http.ResponseWriter, r *http.Request, id strin
 		http.NotFound(w, r)
 		return
 	}
-	source, err := sourceForThread(s.sources, localAppRef(id), "")
+	if err := s.ensureSessionActionAvailable(id, "steer"); err != nil {
+		writeSessionActionError(w, r, err)
+		return
+	}
+	ref := appRefFromRouteID(id)
+	source, err := sourceForThread(s.sources, ref, "")
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	if err := source.SteerTurn(r.Context(), appwire.TurnSteerParams{Ref: localAppRef(id), Text: body.Text}); err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+	if err := source.SteerTurn(r.Context(), appwire.TurnSteerParams{Ref: ref, Text: body.Text}); err != nil {
+		writeSessionActionError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -2605,29 +2827,80 @@ func (s *WebServer) handleSessionAction(w http.ResponseWriter, r *http.Request, 
 		http.NotFound(w, r)
 		return
 	}
-	source, err := sourceForThread(s.sources, localAppRef(id), "")
+	if err := s.ensureSessionActionAvailable(id, action); err != nil {
+		writeSessionActionError(w, r, err)
+		return
+	}
+	ref := appRefFromRouteID(id)
+	source, err := sourceForThread(s.sources, ref, "")
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
 	switch action {
 	case "interrupt":
-		err = source.InterruptTurn(r.Context(), appwire.TurnInterruptParams{Ref: localAppRef(id)})
+		err = source.InterruptTurn(r.Context(), appwire.TurnInterruptParams{Ref: ref})
 	case "compact":
-		err = source.CompactThread(r.Context(), appwire.ThreadCompactStartParams{Ref: localAppRef(id)})
+		err = source.CompactThread(r.Context(), appwire.ThreadCompactStartParams{Ref: ref})
 	case "clear":
-		_, err = source.ClearThread(r.Context(), appwire.ThreadClearParams{Ref: localAppRef(id)})
+		_, err = source.ClearThread(r.Context(), appwire.ThreadClearParams{Ref: ref})
 	case "shutdown":
-		err = source.ShutdownThread(r.Context(), appwire.ThreadShutdownParams{Ref: localAppRef(id)})
+		err = source.ShutdownThread(r.Context(), appwire.ThreadShutdownParams{Ref: ref})
 	default:
 		http.NotFound(w, r)
 		return
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		writeSessionActionError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *WebServer) ensureSessionActionAvailable(id, action string) error {
+	detail, ok := s.apiSessionDetail(id)
+	if !ok {
+		return appwire.Unavailable("session action is not available")
+	}
+	if sessionCapabilityAvailable(detail.Capabilities, action) {
+		return nil
+	}
+	return appwire.Unavailable(action + " is not available for this session")
+}
+
+func sessionCapabilityAvailable(caps hubapi.SessionCapabilities, action string) bool {
+	switch action {
+	case "send":
+		return caps.Send
+	case "steer":
+		return caps.Steer
+	case "interrupt":
+		return caps.Interrupt
+	case "compact":
+		return caps.Compact
+	case "clear":
+		return caps.Clear
+	case "fork":
+		return caps.Fork
+	case "shutdown":
+		return caps.Shutdown
+	case "model":
+		return caps.ChangeModel
+	default:
+		return false
+	}
+}
+
+func writeSessionActionError(w http.ResponseWriter, r *http.Request, err error) {
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		writeAPIWireError(w, http.StatusBadGateway, err)
+		return
+	}
+	status := http.StatusBadGateway
+	if wire, ok := wireErrorFromError(err); ok {
+		status = statusForWireError(wire, status)
+	}
+	http.Error(w, err.Error(), status)
 }
 
 type forkRequest struct {

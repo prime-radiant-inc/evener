@@ -18,10 +18,9 @@ func TestRouterDispatchesTypedHandler(t *testing.T) {
 	})
 	raw, _ := json.Marshal(appwire.ThreadListParams{Limit: 3})
 	resp, err := router.Dispatch(context.Background(), appwire.Request{
-		JSONRPC: "2.0",
-		ID:      appwire.NewIntID(1),
-		Method:  appwire.MethodThreadList,
-		Params:  raw,
+		ID:     appwire.NewIntID(1),
+		Method: appwire.MethodThreadList,
+		Params: raw,
 	})
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)

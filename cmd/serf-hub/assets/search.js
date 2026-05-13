@@ -209,10 +209,7 @@
       { id: "clear", title: "Clear context", hint: "start fresh in this session", keywords: [], scope: "session",
         run: (ctx) => postSession(ctx, "clear") },
       { id: "shutdown", title: "Shut down daemon", hint: "ends this session", keywords: ["kill"], scope: "session",
-        run: (ctx) => {
-          if (!window.confirm("Shut down this daemon? The session will end.")) return Promise.resolve();
-          return postSession(ctx, "shutdown");
-        } },
+        run: (ctx) => postSession(ctx, "shutdown") },
       { id: "model", title: "Switch model", hint: "", keywords: [], scope: "session",
         args: { kind: "enum", placeholder: "choose a model…",
           source: () => fetchModels(),

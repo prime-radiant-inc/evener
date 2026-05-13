@@ -897,7 +897,7 @@ func (a *errAdapter) Complete(ctx context.Context, req llm.Request) (llm.Respons
 func (a *errAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	_ = ctx
 	_ = req
-	return nil, fmt.Errorf("stream not implemented in errAdapter")
+	return nil, llm.ErrStreamUnsupported
 }
 
 type flaky429Adapter struct {
@@ -919,7 +919,7 @@ func (a *flaky429Adapter) Complete(ctx context.Context, req llm.Request) (llm.Re
 func (a *flaky429Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	_ = ctx
 	_ = req
-	return nil, fmt.Errorf("stream not implemented in flaky429Adapter")
+	return nil, llm.ErrStreamUnsupported
 }
 
 func TestSession_AuthenticationError_ClosesSession(t *testing.T) {

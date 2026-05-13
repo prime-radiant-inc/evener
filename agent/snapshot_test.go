@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -248,7 +247,7 @@ func (a *snapshotFakeAdapter) Complete(ctx context.Context, req llm.Request) (ll
 	return wrapCommunicateResponse(llm.Response{Provider: a.name, Model: req.Model, Message: llm.Assistant("restored response")}), nil
 }
 func (a *snapshotFakeAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
-	return nil, errors.New("not implemented")
+	return nil, llm.ErrStreamUnsupported
 }
 func (a *snapshotFakeAdapter) Requests() []llm.Request {
 	a.mu.Lock()

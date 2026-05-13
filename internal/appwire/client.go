@@ -107,7 +107,9 @@ func (c *Client) request(ctx context.Context, method string, params any, out any
 	}
 
 	if msg.Error != nil {
-		return fmt.Errorf("appwire %s: %s", method, msg.Error.Error.Message)
+		wire := msg.Error.Error
+		wire.Message = fmt.Sprintf("appwire %s: %s", method, wire.Message)
+		return wire
 	}
 	if msg.Response == nil {
 		return fmt.Errorf("appwire %s: expected response", method)
@@ -120,6 +122,16 @@ func (c *Client) request(ctx context.Context, method string, params any, out any
 		return err
 	}
 	return json.Unmarshal(data, out)
+}
+
+func (c *Client) Request(ctx context.Context, method string, params any, out any) error {
+	return c.request(ctx, method, params, out)
+}
+
+func (c *Client) Notify(ctx context.Context, method string, params any) error {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	return c.transport.Send(ctx, NotificationMessage(method, params))
 }
 
 func (c *Client) removePending(id ID) {
@@ -226,6 +238,12 @@ func (c *Client) TasksList(ctx context.Context, params TaskListParams) (TaskList
 func (c *Client) DirsComplete(ctx context.Context, params DirsCompleteParams) (DirsCompleteResponse, error) {
 	var out DirsCompleteResponse
 	err := c.request(ctx, MethodSerfDirsComplete, params, &out)
+	return out, err
+}
+
+func (c *Client) HarnessList(ctx context.Context, params HarnessListParams) (HarnessListResponse, error) {
+	var out HarnessListResponse
+	err := c.request(ctx, MethodSerfHarnessesList, params, &out)
 	return out, err
 }
 

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -83,6 +84,36 @@ func TestRosterListOrdersByStartedAtAndID(t *testing.T) {
 	want := []string{"01NEW", "02OLD", "03TIEA", "04TIEB"}
 	if strings.Join(gotIDs, ",") != strings.Join(want, ",") {
 		t.Fatalf("order=%v, want %v", gotIDs, want)
+	}
+}
+
+func TestRosterListDedupesSessionIDPreferringAppWireEntry(t *testing.T) {
+	base := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	r := NewRoster(t.TempDir(), nil)
+	r.byPID = map[int]LiveEntry{
+		1: {
+			Entry:     rendezvous.Entry{PID: 1, StartedAt: base.Add(time.Hour)},
+			SessionID: "01SAME",
+		},
+		2: {
+			Entry: rendezvous.Entry{
+				PID:       2,
+				Protocol:  appwire.ProtocolVersion,
+				Endpoint:  "ws://127.0.0.1:2/rpc",
+				ThreadID:  "01SAME",
+				SessionID: "01SAME",
+				StartedAt: base,
+			},
+			SessionID: "01SAME",
+		},
+	}
+
+	got := r.List()
+	if len(got) != 1 {
+		t.Fatalf("got %d entries, want 1: %+v", len(got), got)
+	}
+	if got[0].PID != 2 {
+		t.Fatalf("pid=%d, want appwire pid 2", got[0].PID)
 	}
 }
 

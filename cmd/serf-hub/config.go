@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"primeradiant.com/serf/internal/appsource"
 )
 
 // ProviderConfig lists the models available from a single provider.
@@ -18,14 +19,16 @@ type ProviderConfig struct {
 
 // Config is the hub's runtime configuration loaded from ~/.serf/hub.toml.
 type Config struct {
-	Addr               string           `toml:"addr"`
-	StateGlob          string           `toml:"state_glob"`
-	RunDir             string           `toml:"run_dir"`
-	StatusPollInterval time.Duration    `toml:"status_poll_interval"`
-	PastIndexRebuild   time.Duration    `toml:"past_index_rebuild_interval"`
-	SpawnTimeout       time.Duration    `toml:"spawn_timeout"`
-	PastResultsPerPage int              `toml:"past_results_per_page"`
-	Providers          []ProviderConfig `toml:"providers"`
+	Addr               string                        `toml:"addr"`
+	StateGlob          string                        `toml:"state_glob"`
+	RunDir             string                        `toml:"run_dir"`
+	StatusPollInterval time.Duration                 `toml:"status_poll_interval"`
+	PastIndexRebuild   time.Duration                 `toml:"past_index_rebuild_interval"`
+	SpawnTimeout       time.Duration                 `toml:"spawn_timeout"`
+	PastResultsPerPage int                           `toml:"past_results_per_page"`
+	Providers          []ProviderConfig              `toml:"providers"`
+	CodexSources       []appsource.CodexSourceConfig `toml:"codex_sources"`
+	CodexLaunches      []CodexLaunchConfig           `toml:"codex_launches"`
 }
 
 // DefaultConfig returns a Config populated with sensible defaults.

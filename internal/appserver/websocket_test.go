@@ -10,7 +10,7 @@ import (
 	"primeradiant.com/serf/internal/appwire"
 )
 
-func TestServeWebSocketHandlesJSONRPC(t *testing.T) {
+func TestServeWebSocketHandlesAppWire(t *testing.T) {
 	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
 	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: "th_1"}}}, nil

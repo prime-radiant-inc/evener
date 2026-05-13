@@ -76,6 +76,20 @@
       this.startTaskBadgePoller();
     },
 
+    updateThreadState(state) {
+      state = String(state || "").trim();
+      if (!state) return;
+      this.state = state;
+      if (this.conversation) this.conversation.dataset.state = state;
+      const interrupt = document.querySelector('[data-action-trigger="interrupt"]');
+      if (interrupt) interrupt.disabled = !(state === "processing" || state === "awaiting");
+      const ended = state === "ended" || state === "closed";
+      for (const action of ["compact", "shutdown"]) {
+        const btn = document.querySelector('[data-action-trigger="' + action + '"]');
+        if (btn) btn.disabled = ended;
+      }
+    },
+
     hydrateDescriptions() {
       if (!this.sessionId) return Promise.resolve();
       if (window.SerfAppwire) {
@@ -146,6 +160,7 @@
       this.eventSource = new EventSource(url);
       const kinds = [
         "SESSION_START", "SESSION_END", "USER_INPUT",
+        "THREAD_STATUS_CHANGED",
         "ASSISTANT_TEXT_START", "ASSISTANT_TEXT_DELTA", "ASSISTANT_TEXT_END",
         "TOOL_CALL_START", "TOOL_CALL_OUTPUT_DELTA", "TOOL_CALL_END",
         "STEERING_INJECTED", "WARNING", "ERROR",
@@ -279,6 +294,9 @@
       let data = {};
       try { data = JSON.parse(ev.data); } catch (e) {}
       switch (kind) {
+        case "THREAD_STATUS_CHANGED":
+          this.updateThreadState(data.status || "");
+          break;
         case "SESSION_START":
           if (data.session_id && data.session_id !== this.sessionId) {
             this.sessionId = data.session_id;
@@ -319,7 +337,7 @@
             this.suppressedToolCalls.add(data.call_id);
             try {
               const args = JSON.parse(data.arguments_json || "{}");
-              if (args.message) this.appendAssistantBlock(args.message);
+              if (String(args.message || "").trim() && !this.lastElementIsAssistantText(args.message)) this.appendAssistantBlock(args.message);
             } catch (e) { /* ignore */ }
             break;
           }
@@ -348,6 +366,12 @@
         case "TOOL_CALL_END":
           if (this.suppressedToolCalls.has(data.call_id)) {
             this.suppressedToolCalls.delete(data.call_id);
+            if (data.tool_name === "communicate") {
+              try {
+                const args = JSON.parse(data.arguments_json || "{}");
+                if (String(args.message || "").trim() && !this.lastElementIsAssistantText(args.message)) this.appendAssistantBlock(args.message);
+              } catch (e) { /* ignore */ }
+            }
             const pending = this.pendingTaskCalls && this.pendingTaskCalls.get(data.call_id);
             if (pending !== undefined) {
               this.pendingTaskCalls.delete(data.call_id);
@@ -568,12 +592,19 @@
     // appendAssistantBlock renders a complete assistant message in one shot —
     // no begin/delta/end. Used by COMMUNICATE events.
     appendAssistantBlock(text) {
+      if (!String(text || "").trim()) return;
       this.cheapToolCluster = null;
       const el = document.createElement("div");
       el.className = "assistant-message";
       try { el.innerHTML = window.marked.parse(text); }
       catch (e) { el.textContent = text; }
       this.conversation.appendChild(el);
+    },
+
+    lastElementIsAssistantText(text) {
+      const last = this.conversation && this.conversation.lastElementChild;
+      if (!last || !last.classList || !last.classList.contains("assistant-message")) return false;
+      return (last.textContent || "").trim() === String(text || "").trim();
     },
 
     appendAssistantDelta(delta) {
@@ -596,17 +627,30 @@
     finalizeAssistantMessage(data) {
       const id = this.currentMessageId;
       const m = this.activeMessages.get(id);
-      if (!m) return;
-      const finalText = (data && data.text) || m.textBuf;
-      try { m.el.innerHTML = window.marked.parse(finalText); }
-      catch (e) { m.el.textContent = finalText; }
+      const finalText = (data && data.text) || (m && m.textBuf) || "";
+      if (!m) {
+        this.appendAssistantBlock(finalText);
+        return;
+      }
       if (m.markdownTimer) { clearTimeout(m.markdownTimer); m.markdownTimer = null; }
       this.activeMessages.delete(id);
       this.currentMessageId = null;
+      if (!String(finalText || "").trim()) {
+        if (m.el.parentNode) m.el.parentNode.removeChild(m.el);
+        return;
+      }
+      try { m.el.innerHTML = window.marked.parse(finalText); }
+      catch (e) { m.el.textContent = finalText; }
     },
 
     beginToolCall(data) {
       const callId = data.call_id || ("tool-" + Math.random().toString(36).slice(2, 9));
+      const existing = this.toolStateFor(data);
+      if (existing) {
+        this.rememberToolAlias(existing, callId);
+        this.rememberToolAlias(existing, data.item_id);
+        return;
+      }
       const tool = data.tool_name || "?";
       const renderer = toolRendererFor(tool);
       const args = parseArgs(data.arguments_json);
@@ -642,20 +686,21 @@
       el.appendChild(sep); el.appendChild(result);
       parent.appendChild(el);
 
-      const state = { el, resultEl: result, outputBuf: "", tool, args, renderer, body: null };
-      if (renderer.body) state.body = renderer.body(args, this.conversation, data);
-      this.activeTools.set(callId, state);
+      const state = { el, resultEl: result, outputBuf: "", tool, args, renderer, body: null, ids: [] };
+      if (renderer.body) state.body = renderer.body(args, el, data);
+      this.rememberToolAlias(state, callId);
+      this.rememberToolAlias(state, data.item_id);
     },
 
     appendToolDelta(data) {
-      const m = this.activeTools.get(data.call_id);
+      const m = this.toolStateFor(data);
       if (!m) return;
       m.outputBuf += data.delta || "";
       if (m.renderer.bodyDelta) m.renderer.bodyDelta(m, m.outputBuf);
     },
 
     finalizeToolCall(data) {
-      const m = this.activeTools.get(data.call_id);
+      const m = this.toolStateFor(data);
       if (!m) return;
       const out = data.output || m.outputBuf || "";
 
@@ -672,7 +717,21 @@
         const replacement = m.renderer.replace(m, data);
         if (replacement && m.el.parentNode) m.el.parentNode.replaceChild(replacement, m.el);
       }
-      this.activeTools.delete(data.call_id);
+      for (const id of m.ids || []) {
+        this.activeTools.delete(id);
+      }
+    },
+
+    toolStateFor(data) {
+      if (!data) return null;
+      return this.activeTools.get(data.call_id) || this.activeTools.get(data.item_id) || null;
+    },
+
+    rememberToolAlias(state, id) {
+      if (!state || !id) return;
+      if (!state.ids) state.ids = [];
+      if (!state.ids.includes(id)) state.ids.push(id);
+      this.activeTools.set(id, state);
     },
 
     beginSubagentRef(data) {
@@ -1001,6 +1060,11 @@
         const hasAttachments = this.pendingAttachments && this.pendingAttachments.length > 0;
         if (!text && !hasAttachments) return;
         const sendBtn = form.querySelector(".send-btn");
+        const canSend = !sendBtn || sendBtn.getAttribute("data-capability-send") !== "false";
+        if (!canSend) {
+          this.appendBanner("error", "send is not available for this session", { source: "hub", title: "Hub send error" });
+          return;
+        }
         if (sendBtn) sendBtn.disabled = true;
         try {
           const body = {
@@ -1034,7 +1098,7 @@
         } catch (err) {
           this.appendBanner("error", "send failed: " + err.message, { source: "hub", title: "Hub send error" });
         } finally {
-          if (sendBtn) sendBtn.disabled = false;
+          if (sendBtn && canSend) sendBtn.disabled = false;
         }
       };
       form.addEventListener("submit", submit);
@@ -1639,15 +1703,12 @@
   });
 
   // triggerSessionAction sends the app-wire action for the currently-rendered
-  // workspace session. shutdown asks for confirmation first; interrupt and
-  // compact are silent on success and surface failures via appendBanner.
+  // workspace session. Actions are silent on success and surface failures via
+  // appendBanner.
   function triggerSessionAction(action) {
     const conv = document.getElementById("conversation");
     const sessionId = conv && conv.getAttribute("data-session-id");
     if (!sessionId) return;
-    if (action === "shutdown") {
-      if (!window.confirm("Shut down this daemon? The session will end.")) return;
-    }
     const actionPromise = window.SerfAppwire
       ? window.SerfAppwire.action(sessionId, action).then(() => ({ ok: true, text: () => Promise.resolve("") }))
       : fetch("/s/" + encodeURIComponent(sessionId) + "/" + action, { method: "POST" });

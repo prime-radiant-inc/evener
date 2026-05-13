@@ -21,7 +21,7 @@ func (a *fakeAdapter) Complete(ctx context.Context, req Request) (Response, erro
 func (a *fakeAdapter) Stream(ctx context.Context, req Request) (Stream, error) {
 	_ = ctx
 	_ = req
-	return nil, errors.New("stream not implemented in fakeAdapter")
+	return nil, ErrStreamUnsupported
 }
 
 type recordReqAdapter struct {
@@ -74,7 +74,7 @@ func (a *stepAdapter) Complete(ctx context.Context, req Request) (Response, erro
 func (a *stepAdapter) Stream(ctx context.Context, req Request) (Stream, error) {
 	_ = ctx
 	_ = req
-	return nil, errors.New("stream not implemented in stepAdapter")
+	return nil, ErrStreamUnsupported
 }
 
 func TestClient_DefaultProviderRouting(t *testing.T) {

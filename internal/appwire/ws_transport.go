@@ -13,7 +13,11 @@ type WSTransport struct {
 }
 
 func DialWebSocket(ctx context.Context, url string, client *http.Client) (*WSTransport, error) {
-	opts := &websocket.DialOptions{HTTPClient: client}
+	return DialWebSocketWithHeaders(ctx, url, client, nil)
+}
+
+func DialWebSocketWithHeaders(ctx context.Context, url string, client *http.Client, header http.Header) (*WSTransport, error) {
+	opts := &websocket.DialOptions{HTTPClient: client, HTTPHeader: header}
 	conn, _, err := websocket.Dial(ctx, url, opts)
 	if err != nil {
 		return nil, err

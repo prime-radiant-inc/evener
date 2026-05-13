@@ -314,15 +314,10 @@ async function commandSweep() {
       expect: (c) => assertCS(c, sawFetchCS(c, "POST", "/s/01S/interrupt"), "POST /s/01S/interrupt") },
     { name: "clear", page: "session", query: "/clear",
       expect: (c) => assertCS(c, sawFetchCS(c, "POST", "/s/01S/clear"), "POST /s/01S/clear") },
-    { name: "shutdown", page: "session", query: "/shutdown", confirmAnswer: true,
+    { name: "shutdown", page: "session", query: "/shutdown", confirmAnswer: false,
       expect: (c) => {
-        assertCS(c, c.calls.confirms === 1, "shutdown asks confirm()");
-        assertCS(c, sawFetchCS(c, "POST", "/s/01S/shutdown"), "POST /s/01S/shutdown when confirmed");
-      } },
-    { name: "shutdown-cancelled", page: "session", query: "/shutdown", confirmAnswer: false,
-      expect: (c) => {
-        assertCS(c, c.calls.confirms === 1, "shutdown asks confirm()");
-        assertCS(c, !sawFetchCS(c, "POST", "/s/01S/shutdown"), "no POST when confirm cancelled");
+        assertCS(c, c.calls.confirms === 0, "shutdown does not ask confirm()");
+        assertCS(c, sawFetchCS(c, "POST", "/s/01S/shutdown"), "POST /s/01S/shutdown");
       } },
     { name: "model", page: "session", query: "/model", argEntry: "opus",
       modelsResponse: [{ provider: "anthropic", model: "claude-opus-4-7", display_name: "Opus 4.7" }],
@@ -447,4 +442,3 @@ async function runCaseCS(tc) {
     assertCS(ctx, dlg.open === true, "dialog stays open");
   }
 }
-

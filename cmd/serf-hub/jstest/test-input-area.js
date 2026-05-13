@@ -365,6 +365,21 @@ async function testSubmitEmptyDoesNothing() {
   pass(lastFetch === null, "expected no fetch on empty submit, got " + JSON.stringify(lastFetch));
 }
 
+async function testUnavailableSendDoesNotSubmit() {
+  const send = form.querySelector(".send-btn");
+  send.setAttribute("data-capability-send", "false");
+  send.disabled = true;
+  ta.value = "blocked";
+  ta.dispatchEvent(new window.Event("input", { bubbles: true }));
+  lastFetch = null;
+  form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+  await waitForReads();
+  pass(lastFetch === null, "expected no fetch when send capability is unavailable");
+  pass(send.disabled === true, "expected send button to remain disabled");
+  send.setAttribute("data-capability-send", "true");
+  send.disabled = false;
+}
+
 async function testRejectsOversize() {
   window.SerfRenderer.pendingAttachments = [];
   window.SerfRenderer.attachmentErrors = [];
@@ -409,6 +424,7 @@ async function testRejectsNonImage() {
   await testSubmitWithTextAndImage();
   await testSubmitClearsQueue();
   await testSubmitEmptyDoesNothing();
+  await testUnavailableSendDoesNotSubmit();
   await testRejectsOversize();
   await testRejectsNonImage();
 

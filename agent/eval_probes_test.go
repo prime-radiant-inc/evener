@@ -31,7 +31,7 @@ func (a *stubProbeAdapter) Complete(_ context.Context, req llm.Request) (llm.Res
 	return llm.Response{Message: llm.Assistant("")}, nil
 }
 func (a *stubProbeAdapter) Stream(_ context.Context, _ llm.Request) (llm.Stream, error) {
-	return nil, fmt.Errorf("stream not implemented")
+	return nil, llm.ErrStreamUnsupported
 }
 
 func TestRunRetentionProbes_SingleQuestion_Correct(t *testing.T) {

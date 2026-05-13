@@ -10,6 +10,11 @@
     <h2 class="spawn-prompt">What should the agent do?</h2>
     <p class="spawn-subtitle">Leave blank to start a dormant session.</p>
     <div class="spawn-chips" id="spawn-chips">
+      <button class="chip" type="button" data-chip="harness">
+        <span class="chip-label">harness</span>
+        <span class="chip-value" data-chip-value-harness>{{.DefaultHarness}}</span>
+        <span class="chip-caret">▾</span>
+      </button>
       <button class="chip" type="button" data-chip="model">
         <span class="chip-label">model</span>
         <span class="chip-value" data-chip-value-model>{{.DefaultModel}}</span>
@@ -31,6 +36,8 @@
       </button>
     </div>
     <textarea class="spawn-input" name="task" placeholder="describe the task…" autofocus>{{.DefaultTask}}</textarea>
+    <input type="hidden" name="harness" value="{{.DefaultHarness}}">
+    {{range .Harnesses}}<input type="hidden" data-harness-option value="{{.ID}}" data-label="{{.Label}}">{{end}}
     <input type="hidden" name="model" value="{{.DefaultModelValue}}">
     <input type="hidden" name="working_dir" value="{{.DefaultWorkingDirValue}}">
     <input type="hidden" name="branch" value="{{.DefaultBranchValue}}">

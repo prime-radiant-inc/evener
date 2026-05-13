@@ -131,6 +131,19 @@ func (i *PastIndex) AllMetas() []agent.SessionMeta {
 
 // Find returns the entry for a given session_id.
 func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
+	if e, ok := i.findCached(sessionID); ok {
+		return e, true
+	}
+	if sessionID == "" || i.stateGlob == "" {
+		return PastEntry{}, false
+	}
+	if err := i.Rebuild(); err != nil {
+		return PastEntry{}, false
+	}
+	return i.findCached(sessionID)
+}
+
+func (i *PastIndex) findCached(sessionID string) (PastEntry, bool) {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	e, ok := i.byID[sessionID]

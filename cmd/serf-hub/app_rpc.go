@@ -50,7 +50,18 @@ func newHubSourceRegistry(cfg WebConfig) *appsource.Registry {
 		}
 		return entries
 	}, http.DefaultClient))
+	for _, source := range cfg.CodexSources {
+		registry.Add(appsource.NewCodexSource(source, http.DefaultClient))
+	}
 	return registry
+}
+
+var hubRelayIdleExitHook func(threadID string)
+var hubRelayAfterIdleDeleteHook func(threadID string)
+
+type hubRelayHandle struct {
+	ready chan struct{}
+	err   error
 }
 
 type threadReadRelayPolicy interface {
@@ -133,6 +144,9 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		if err != nil {
 			return appwire.TurnStartResponse{}, err
 		}
+		if !threadActionAvailable(threadResp.Thread.Serf.Capabilities, "send") {
+			return appwire.TurnStartResponse{}, appwire.Unavailable("send is not available for this session")
+		}
 		if err := startRelay(ctx, source, readParams, threadResp.Thread); err != nil {
 			return appwire.TurnStartResponse{}, err
 		}
@@ -205,11 +219,17 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		if err != nil {
 			return appwire.EmptyResponse{}, err
 		}
+		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "steer"); err != nil {
+			return appwire.EmptyResponse{}, err
+		}
 		return appwire.EmptyResponse{}, source.SteerTurn(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnInterrupt, func(ctx context.Context, params appwire.TurnInterruptParams) (appwire.EmptyResponse, error) {
 		source, err := sourceForThread(sources, params.Ref, "")
 		if err != nil {
+			return appwire.EmptyResponse{}, err
+		}
+		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "interrupt"); err != nil {
 			return appwire.EmptyResponse{}, err
 		}
 		return appwire.EmptyResponse{}, source.InterruptTurn(ctx, params)
@@ -219,11 +239,17 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		if err != nil {
 			return appwire.ThreadClearResponse{}, err
 		}
+		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "clear"); err != nil {
+			return appwire.ThreadClearResponse{}, err
+		}
 		return source.ClearThread(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadCompactStart, func(ctx context.Context, params appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
 		source, err := sourceForThread(sources, params.Ref, "")
 		if err != nil {
+			return appwire.EmptyResponse{}, err
+		}
+		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "compact"); err != nil {
 			return appwire.EmptyResponse{}, err
 		}
 		return appwire.EmptyResponse{}, source.CompactThread(ctx, params)
@@ -233,11 +259,17 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		if err != nil {
 			return appwire.EmptyResponse{}, err
 		}
+		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "shutdown"); err != nil {
+			return appwire.EmptyResponse{}, err
+		}
 		return appwire.EmptyResponse{}, source.ShutdownThread(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(ctx context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
 		source, err := sourceForThread(sources, params.Ref, "")
 		if err != nil {
+			return appwire.EmptyResponse{}, err
+		}
+		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "model"); err != nil {
 			return appwire.EmptyResponse{}, err
 		}
 		return appwire.EmptyResponse{}, source.SetThreadModel(ctx, params)
@@ -266,13 +298,53 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfDirsComplete, func(_ context.Context, params appwire.DirsCompleteParams) (appwire.DirsCompleteResponse, error) {
 		return completeDirs(params)
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
+		return appwire.HarnessListResponse{Data: launchHarnessDescriptors(cfg)}, nil
+	})
 	return server
+}
+
+func ensureThreadActionAvailable(ctx context.Context, source appsource.Source, ref, action string) error {
+	resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false})
+	if err != nil {
+		return err
+	}
+	if threadActionAvailable(resp.Thread.Serf.Capabilities, action) {
+		return nil
+	}
+	return appwire.Unavailable(action + " is not available for this session")
+}
+
+func threadActionAvailable(caps appwire.ThreadCapabilities, action string) bool {
+	switch action {
+	case "send":
+		return caps.Send
+	case "steer":
+		return caps.Steer
+	case "interrupt":
+		return caps.Interrupt
+	case "compact":
+		return caps.Compact
+	case "clear":
+		return caps.Clear
+	case "fork":
+		return caps.ForkFromTurn
+	case "shutdown":
+		return caps.Shutdown
+	case "model":
+		return caps.ChangeModel
+	default:
+		return false
+	}
 }
 
 func hubThreadList(ctx context.Context, cfg WebConfig, sources *appsource.Registry, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 	var threads []appwire.Thread
 	liveIDs := map[string]struct{}{}
-	if source, ok := sources.Source("local"); ok {
+	for _, source := range sources.All() {
+		if !sourceAllowedForList(source.ID(), params) {
+			continue
+		}
 		resp, err := source.ListThreads(ctx, params)
 		if err != nil {
 			return appwire.ThreadListResponse{}, err
@@ -312,6 +384,18 @@ func hubThreadList(ctx context.Context, cfg WebConfig, sources *appsource.Regist
 		threads = threads[:params.Limit]
 	}
 	return appwire.ThreadListResponse{Data: threads}, nil
+}
+
+func sourceAllowedForList(sourceID string, params appwire.ThreadListParams) bool {
+	if len(params.SourceIDs) == 0 {
+		return true
+	}
+	for _, want := range params.SourceIDs {
+		if want == sourceID {
+			return true
+		}
+	}
+	return false
 }
 
 func mergePastMetadataForList(cfg WebConfig, live appwire.Thread) appwire.Thread {
@@ -692,11 +776,26 @@ func sourceForThread(sources *appsource.Registry, ref, threadID string) (appsour
 }
 
 func hubThreadStart(ctx context.Context, cfg WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+	sourceID := launchSourceID(params)
+	if sourceID != "" && sourceID != "local" {
+		source, ok := sources.Source(sourceID)
+		if !ok {
+			if cfg.CodexLauncher == nil {
+				return appwire.ThreadStartResponse{}, fmt.Errorf("source not found: %s", sourceID)
+			}
+			launched, err := cfg.CodexLauncher.EnsureSource(ctx, sourceID, sources)
+			if err != nil {
+				return appwire.ThreadStartResponse{}, err
+			}
+			source = launched
+		}
+		return source.StartThread(ctx, params)
+	}
 	if cfg.Spawner == nil {
 		return appwire.ThreadStartResponse{}, appwire.Unavailable("spawner not configured")
 	}
 	model := params.Model
-	if params.ModelProvider != "" && params.Model != "" && !strings.Contains(params.Model, "/") {
+	if params.ModelProvider != "" && params.Model != "" && !strings.HasPrefix(params.Model, params.ModelProvider+"/") {
 		model = params.ModelProvider + "/" + params.Model
 	}
 	if model == "" {
@@ -771,7 +870,59 @@ func hubThreadStart(ctx context.Context, cfg WebConfig, sources *appsource.Regis
 	return appwire.ThreadStartResponse{Thread: threadResp.Thread, Turn: turn}, nil
 }
 
+func launchSourceID(params appwire.ThreadStartParams) string {
+	harness := strings.TrimSpace(params.Harness)
+	if harness != "" {
+		if harness == "serf" {
+			return "local"
+		}
+		return harness
+	}
+	return ""
+}
+
+func launchHarnessDescriptors(cfg WebConfig) []appwire.HarnessDescriptor {
+	out := []appwire.HarnessDescriptor{{ID: "serf", Label: "serf", Kind: "serf"}}
+	seen := map[string]bool{"serf": true}
+	for _, source := range cfg.CodexSources {
+		id := strings.TrimSpace(source.ID)
+		if id == "" {
+			id = "codex"
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, appwire.HarnessDescriptor{ID: id, Label: id, Kind: "codex"})
+	}
+	for _, launch := range cfg.CodexLaunches {
+		id := strings.TrimSpace(launch.ID)
+		if id == "" {
+			id = "codex"
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, appwire.HarnessDescriptor{ID: id, Label: id, Kind: "codex"})
+	}
+	return out
+}
+
 func hubThreadResume(ctx context.Context, cfg WebConfig, sources *appsource.Registry, params appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+	if params.Ref != "" {
+		ref, err := appwire.ParseRef(params.Ref)
+		if err != nil {
+			return appwire.ThreadResumeResponse{}, err
+		}
+		if ref.SourceID != "local" {
+			source, err := sourceForThread(sources, params.Ref, "")
+			if err != nil {
+				return appwire.ThreadResumeResponse{}, err
+			}
+			return source.ResumeThread(ctx, params)
+		}
+	}
 	if cfg.Spawner == nil {
 		return appwire.ThreadResumeResponse{}, appwire.Unavailable("spawner not configured")
 	}

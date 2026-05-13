@@ -23,16 +23,17 @@ type hubTreeProject struct {
 }
 
 type hubTreeNode struct {
-	Ref       string
-	SessionID string
-	Title     string
-	Project   string
-	State     string
-	Model     string
-	Age       string
-	RowID     string
-	Live      bool
-	Children  []hubTreeNode
+	Ref         string
+	SessionID   string
+	SourceLabel string
+	Title       string
+	Project     string
+	State       string
+	Model       string
+	Age         string
+	RowID       string
+	Live        bool
+	Children    []hubTreeNode
 }
 
 type hubSessionCapabilities struct {
@@ -50,6 +51,7 @@ type hubSessionCapabilities struct {
 type hubSessionDetail struct {
 	Ref          string
 	SessionID    string
+	SourceLabel  string
 	Title        string
 	State        string
 	Model        string
@@ -72,6 +74,7 @@ type hubSpawnResponse struct {
 
 type hubSpawnRequest struct {
 	Task       string
+	Harness    string
 	Model      string
 	WorkingDir string
 }
@@ -115,14 +118,15 @@ func hubNodeFromThread(thread appwire.Thread) hubTreeNode {
 	}
 	project := projectNameFromCWD(thread.CWD)
 	return hubTreeNode{
-		Ref:       ref,
-		SessionID: thread.SessionID,
-		Title:     title,
-		Project:   project,
-		State:     thread.Status.Type,
-		Model:     thread.ModelProvider,
-		RowID:     "project:" + hubProjectKey(project) + ":" + ref,
-		Live:      thread.Status.Type != appwire.ThreadStatusClosed && thread.Status.Type != appwire.ThreadStatusEnded,
+		Ref:         ref,
+		SessionID:   thread.SessionID,
+		SourceLabel: sourceLabelFromRefText(ref),
+		Title:       title,
+		Project:     project,
+		State:       thread.Status.Type,
+		Model:       thread.ModelProvider,
+		RowID:       "project:" + hubProjectKey(project) + ":" + ref,
+		Live:        thread.Status.Type != appwire.ThreadStatusClosed && thread.Status.Type != appwire.ThreadStatusEnded,
 	}
 }
 
@@ -130,16 +134,17 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 	node := hubNodeFromThread(thread)
 	caps := thread.Serf.Capabilities
 	return hubSessionDetail{
-		Ref:        node.Ref,
-		SessionID:  thread.SessionID,
-		Title:      node.Title,
-		State:      node.State,
-		Model:      thread.ModelProvider,
-		Profile:    thread.Serf.Profile,
-		WorkingDir: thread.CWD,
-		Project:    node.Project,
-		TurnCount:  len(thread.Turns),
-		Live:       node.Live,
+		Ref:         node.Ref,
+		SessionID:   thread.SessionID,
+		SourceLabel: node.SourceLabel,
+		Title:       node.Title,
+		State:       node.State,
+		Model:       thread.ModelProvider,
+		Profile:     thread.Serf.Profile,
+		WorkingDir:  thread.CWD,
+		Project:     node.Project,
+		TurnCount:   len(thread.Turns),
+		Live:        node.Live,
 		Capabilities: hubSessionCapabilities{
 			Send:        caps.Send,
 			Steer:       caps.Steer,
@@ -153,8 +158,24 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 	}
 }
 
+func sourceLabelFromRefText(refText string) string {
+	ref, err := appwire.ParseRef(refText)
+	if err != nil {
+		return "serf"
+	}
+	return sourceLabelFromRef(ref)
+}
+
+func sourceLabelFromRef(ref appwire.Ref) string {
+	if ref.SourceID == "" || ref.SourceID == "local" {
+		return "serf"
+	}
+	return ref.SourceID
+}
+
 func messagesFromThread(thread appwire.Thread) []chatMessage {
 	var messages []chatMessage
+	activeTools := make(map[string]int)
 	for _, turn := range thread.Turns {
 		turnIndex := turnIndexFromID(turn.ID)
 		for _, item := range turn.Items {
@@ -168,22 +189,80 @@ func messagesFromThread(thread appwire.Thread) []chatMessage {
 					messages = append(messages, chatMessage{Kind: msgAssistant, Text: item.Text})
 				}
 			case "tool_call":
-				desc, detail := summarizeTool(item.ToolName, item.ArgumentsJSON)
-				messages = append(messages, chatMessage{Kind: msgTool, Tool: &toolCallInfo{
-					Name:        item.ToolName,
-					Description: desc,
-					Detail:      detail,
-					Output:      item.Output,
-					Error:       item.Error,
-					Done:        item.Status == "completed",
-					Expanded:    detail != "" || strings.Count(item.Output, "\n")+1 <= toolCollapseThreshold,
-					Hidden:      item.ToolName == "communicate",
-					Duration:    itemDuration(item),
-				}})
+				done := threadItemToolDone(item, false)
+				key := threadItemToolKey(item)
+				if done && key != "" {
+					if idx, ok := activeTools[key]; ok && idx < len(messages) && messages[idx].Tool != nil {
+						mergeThreadItemIntoToolInfo(messages[idx].Tool, item, done)
+						delete(activeTools, key)
+						continue
+					}
+				}
+				idx := len(messages)
+				messages = append(messages, chatMessage{Kind: msgTool, Tool: toolInfoFromThreadItem(item, done)})
+				if !done && key != "" {
+					activeTools[key] = idx
+				}
 			}
 		}
 	}
 	return messages
+}
+
+func threadItemToolKey(item appwire.ThreadItem) string {
+	if item.CallID != "" {
+		return item.CallID
+	}
+	return item.ID
+}
+
+func threadItemToolDone(item appwire.ThreadItem, completed bool) bool {
+	return completed || item.Status == "completed" || item.Output != "" || item.Error != ""
+}
+
+func toolInfoFromThreadItem(item appwire.ThreadItem, done bool) *toolCallInfo {
+	desc, detail := summarizeTool(item.ToolName, item.ArgumentsJSON)
+	return &toolCallInfo{
+		Name:        item.ToolName,
+		Description: desc,
+		Detail:      detail,
+		Output:      item.Output,
+		Error:       item.Error,
+		Done:        done,
+		Duration:    itemDuration(item),
+		Expanded:    detail != "" || (done && strings.Count(item.Output, "\n")+1 <= toolCollapseThreshold),
+		Hidden:      item.ToolName == "communicate",
+	}
+}
+
+func mergeThreadItemIntoToolInfo(info *toolCallInfo, item appwire.ThreadItem, done bool) {
+	if info == nil {
+		return
+	}
+	if item.ToolName != "" {
+		info.Name = item.ToolName
+		info.Hidden = item.ToolName == "communicate"
+	}
+	if item.ArgumentsJSON != "" || info.Description == "" {
+		desc, detail := summarizeTool(item.ToolName, item.ArgumentsJSON)
+		info.Description = desc
+		info.Detail = detail
+	}
+	if item.Output != "" {
+		info.Output = item.Output
+	}
+	if item.Error != "" {
+		info.Error = item.Error
+	}
+	if done {
+		info.Done = true
+		info.Duration = itemDuration(item)
+		if info.Detail != "" {
+			info.Expanded = true
+		} else {
+			info.Expanded = strings.Count(info.Output, "\n")+1 <= toolCollapseThreshold
+		}
+	}
 }
 
 func turnIndexFromID(raw string) int {

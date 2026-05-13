@@ -55,28 +55,24 @@ func (id ID) String() string {
 }
 
 type Request struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      ID              `json:"id"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
+	ID     ID              `json:"id"`
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params,omitempty"`
 }
 
 type Notification struct {
-	JSONRPC string          `json:"jsonrpc"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params,omitempty"`
 }
 
 type Response struct {
-	JSONRPC string `json:"jsonrpc"`
-	ID      ID     `json:"id"`
-	Result  any    `json:"result"`
+	ID     ID  `json:"id"`
+	Result any `json:"result"`
 }
 
 type ErrorResponse struct {
-	JSONRPC string    `json:"jsonrpc"`
-	ID      ID        `json:"id"`
-	Error   WireError `json:"error"`
+	ID    ID        `json:"id"`
+	Error WireError `json:"error"`
 }
 
 type Message struct {
@@ -116,7 +112,7 @@ func (m Message) IDString() string {
 
 func (m *Message) UnmarshalJSON(data []byte) error {
 	var probe struct {
-		JSONRPC string           `json:"jsonrpc"`
+		JSONRPC *json.RawMessage `json:"jsonrpc"`
 		ID      *json.RawMessage `json:"id"`
 		Method  string           `json:"method"`
 		Result  json.RawMessage  `json:"result"`
@@ -125,8 +121,8 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &probe); err != nil {
 		return err
 	}
-	if probe.JSONRPC != "2.0" {
-		return fmt.Errorf("jsonrpc=%q, want 2.0", probe.JSONRPC)
+	if probe.JSONRPC != nil {
+		return fmt.Errorf("jsonrpc field is not part of AppWire")
 	}
 	switch {
 	case len(probe.Error) > 0:
@@ -175,19 +171,19 @@ func (m Message) MarshalJSON() ([]byte, error) {
 }
 
 func RequestMessage(id ID, method string, params any) Message {
-	return Message{Request: &Request{JSONRPC: "2.0", ID: id, Method: method, Params: mustRaw(params)}}
+	return Message{Request: &Request{ID: id, Method: method, Params: mustRaw(params)}}
 }
 
 func NotificationMessage(method string, params any) Message {
-	return Message{Notification: &Notification{JSONRPC: "2.0", Method: method, Params: mustRaw(params)}}
+	return Message{Notification: &Notification{Method: method, Params: mustRaw(params)}}
 }
 
 func ResponseMessage(id ID, result any) Message {
-	return Message{Response: &Response{JSONRPC: "2.0", ID: id, Result: result}}
+	return Message{Response: &Response{ID: id, Result: result}}
 }
 
 func ErrorMessage(id ID, err WireError) Message {
-	return Message{Error: &ErrorResponse{JSONRPC: "2.0", ID: id, Error: err}}
+	return Message{Error: &ErrorResponse{ID: id, Error: err}}
 }
 
 func mustRaw(v any) json.RawMessage {

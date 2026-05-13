@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -179,6 +181,61 @@ func TestHubRPCThreadListOrdersLiveThreadsDeterministically(t *testing.T) {
 	}
 	if resp.Data[0].ID != "02NEW" || resp.Data[1].ID != "01OLD" {
 		t.Fatalf("order=%s,%s", resp.Data[0].ID, resp.Data[1].ID)
+	}
+}
+
+func TestHubThreadListIncludesEveryRegisteredSource(t *testing.T) {
+	base := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	entries := []rendezvous.Entry{
+		{
+			PID:       101,
+			Protocol:  appwire.ProtocolVersion,
+			Endpoint:  "ws://127.0.0.1:1/rpc",
+			SourceID:  "local",
+			ThreadID:  "01SERF",
+			SessionID: "01SERF",
+			StartedAt: base.Add(-time.Minute),
+		},
+		{
+			PID:       102,
+			Protocol:  appwire.ProtocolVersion,
+			Endpoint:  "ws://127.0.0.1:2/rpc",
+			SourceID:  "codex",
+			ThreadID:  "02CODEX",
+			SessionID: "02CODEX",
+			StartedAt: base,
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(appsource.NewLocalDaemonSource("local", func() []rendezvous.Entry { return entries }, nil))
+	sources.Add(appsource.NewLocalDaemonSource("codex", func() []rendezvous.Entry { return entries }, nil))
+
+	resp, err := hubThreadList(context.Background(), WebConfig{Past: NewPastIndex("")}, sources, appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("hubThreadList: %v", err)
+	}
+	if len(resp.Data) != 2 {
+		t.Fatalf("threads=%+v", resp.Data)
+	}
+	if resp.Data[0].Serf.Ref != "codex:02CODEX" || resp.Data[1].Serf.Ref != "local:01SERF" {
+		t.Fatalf("refs=%s,%s", resp.Data[0].Serf.Ref, resp.Data[1].Serf.Ref)
+	}
+}
+
+func TestNewHubSourceRegistryAddsConfiguredCodexSources(t *testing.T) {
+	sources := newHubSourceRegistry(WebConfig{
+		CodexSources: []appsource.CodexSourceConfig{{
+			ID:       "codex-local",
+			Endpoint: "ws://127.0.0.1:9900",
+		}},
+	})
+	if _, ok := sources.Source("local"); !ok {
+		t.Fatal("local source missing")
+	}
+	if source, ok := sources.Source("codex-local"); !ok {
+		t.Fatal("codex source missing")
+	} else if source.ID() != "codex-local" {
+		t.Fatalf("source=%q", source.ID())
 	}
 }
 
@@ -508,6 +565,28 @@ func TestHubRPCThreadActionsRouteToDaemon(t *testing.T) {
 	compactCalled := false
 	shutdownCalled := false
 	modelCalled := ""
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		if params.Ref != "local:th_1" {
+			t.Fatalf("read ref=%q", params.Ref)
+		}
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        "th_1",
+			SessionID: "sess_1",
+			Serf: appwire.SerfThread{
+				Ref: "local:th_1",
+				Capabilities: appwire.ThreadCapabilities{
+					Send:         true,
+					Steer:        true,
+					Interrupt:    true,
+					Compact:      true,
+					Clear:        true,
+					ForkFromTurn: true,
+					Shutdown:     true,
+					ChangeModel:  true,
+				},
+			},
+		}}, nil
+	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadCompactStart, func(_ context.Context, params appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
 		if params.Ref != "local:th_1" {
 			t.Fatalf("compact ref=%q", params.Ref)
@@ -576,6 +655,72 @@ func TestHubRPCThreadActionsRouteToDaemon(t *testing.T) {
 	}
 }
 
+func TestHubRPCUnsupportedThreadActionReturnsStructuredUnavailable(t *testing.T) {
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	shutdownCalled := false
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		if params.Ref != "local:th_1" {
+			t.Fatalf("read ref=%q", params.Ref)
+		}
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        "th_1",
+			SessionID: "sess_1",
+			Serf: appwire.SerfThread{
+				Ref: "local:th_1",
+				Capabilities: appwire.ThreadCapabilities{
+					Send:    true,
+					Compact: true,
+				},
+			},
+		}}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadShutdown, func(_ context.Context, params appwire.ThreadShutdownParams) (appwire.EmptyResponse, error) {
+		shutdownCalled = true
+		return appwire.EmptyResponse{}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       105,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+		SourceID:  "local",
+		ThreadID:  "th_1",
+		SessionID: "sess_1",
+	})
+	roster := NewRoster(runDir, nil)
+	roster.Refresh()
+
+	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Roster: roster, Past: NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	err := client.ThreadShutdown(context.Background(), appwire.ThreadShutdownParams{Ref: "local:th_1"})
+	if err == nil {
+		t.Fatal("ThreadShutdown succeeded for unsupported action")
+	}
+	if shutdownCalled {
+		t.Fatal("unsupported shutdown reached source")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error %T does not preserve WireError: %v", err, err)
+	}
+	if wire.Code != appwire.CodeUnavailable {
+		t.Fatalf("wire=%+v", wire)
+	}
+	data, ok := wire.Data.(map[string]any)
+	if !ok || data["serfErrorInfo"] != string(appwire.ErrorActionUnavailable) {
+		t.Fatalf("wire data=%#v", wire.Data)
+	}
+}
+
 func TestHubRPCModelListFallsBackToConfigWhenDaemonFails(t *testing.T) {
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
@@ -614,6 +759,173 @@ func TestHubRPCModelListFallsBackToConfigWhenDaemonFails(t *testing.T) {
 	}
 	if len(resp.Data) != 1 || resp.Data[0].Provider != "openai" || resp.Data[0].Model != "gpt-5.2" {
 		t.Fatalf("models=%+v", resp.Data)
+	}
+}
+
+func TestHubRPCThreadStartKeepsProviderForModelIDsWithSlashes(t *testing.T) {
+	runDir := t.TempDir()
+	var got SpawnRequest
+	spawner := &fakeRPCSpawner{
+		spawn: func(_ context.Context, req SpawnRequest) (rendezvous.Entry, error) {
+			got = req
+			return rendezvous.Entry{
+				PID:       106,
+				Protocol:  appwire.ProtocolVersion,
+				SourceID:  "local",
+				ThreadID:  "th_slash_model",
+				SessionID: "sess_slash_model",
+			}, nil
+		},
+	}
+	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Spawner: spawner, Past: NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		ModelProvider: "openrouter",
+		Model:         "deepseek/deepseek-v4-flash",
+		CWD:           "/tmp",
+	}); err != nil {
+		t.Fatalf("ThreadStart: %v", err)
+	}
+	if got.Model != "openrouter/deepseek/deepseek-v4-flash" {
+		t.Fatalf("spawn model=%q, want openrouter/deepseek/deepseek-v4-flash", got.Model)
+	}
+}
+
+func TestHubRPCThreadStartRoutesByHarnessToConfiguredCodexSource(t *testing.T) {
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	var startCalled bool
+	var turnCalled bool
+	appserver.HandleTyped(codex.Router(), appwire.MethodThreadStart, func(_ context.Context, params map[string]any) (map[string]any, error) {
+		startCalled = true
+		if params["cwd"] != "/work/project" || params["model"] != "gpt-5.1-codex" {
+			t.Fatalf("thread/start params=%+v", params)
+		}
+		if _, ok := params["harness"]; ok {
+			t.Fatalf("codex thread/start should not receive hub harness routing field: %+v", params)
+		}
+		if _, ok := params["sourceId"]; ok {
+			t.Fatalf("codex thread/start should not receive hub source routing field: %+v", params)
+		}
+		return map[string]any{"thread": map[string]any{
+			"id":            "th_codex",
+			"sessionId":     "th_codex",
+			"preview":       "codex task",
+			"modelProvider": "openai",
+			"createdAt":     100,
+			"updatedAt":     100,
+			"status":        map[string]any{"type": "idle"},
+			"cwd":           "/work/project",
+			"cliVersion":    "codex-test",
+			"source":        "appServer",
+		}}, nil
+	})
+	appserver.HandleTyped(codex.Router(), appwire.MethodTurnStart, func(_ context.Context, params map[string]any) (map[string]any, error) {
+		turnCalled = true
+		if params["threadId"] != "th_codex" {
+			t.Fatalf("turn/start params=%+v", params)
+		}
+		return map[string]any{"turn": map[string]any{
+			"id":        "turn_codex",
+			"items":     []any{},
+			"itemsView": "full",
+			"status":    "inProgress",
+		}}, nil
+	})
+	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
+	defer codexHTTP.Close()
+
+	hub := newHubRPCTestServer(t, WebConfig{
+		Past: NewPastIndex(""),
+		CodexSources: []appsource.CodexSourceConfig{{
+			ID:       "codex",
+			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
+		}},
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		Harness: "codex",
+		CWD:     "/work/project",
+		Prompt:  "hello codex",
+		Model:   "gpt-5.1-codex",
+	})
+	if err != nil {
+		t.Fatalf("ThreadStart: %v", err)
+	}
+	if !startCalled || !turnCalled {
+		t.Fatalf("startCalled=%v turnCalled=%v", startCalled, turnCalled)
+	}
+	if resp.Thread.Serf.Ref != "codex:th_codex" || resp.Turn.ID != "turn_codex" {
+		t.Fatalf("resp=%+v", resp)
+	}
+}
+
+func TestHubRPCThreadStartLaunchesConfiguredCodexAppServer(t *testing.T) {
+	launcher := NewCodexLauncher([]CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
+	defer shutdownCodexLauncher(t, launcher)
+	hub := newHubRPCTestServer(t, WebConfig{
+		Past:          NewPastIndex(""),
+		CodexLaunches: []CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
+		CodexLauncher: launcher,
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		Harness: "codex-managed",
+		CWD:     "/tmp/project",
+		Prompt:  "hello launched codex",
+	})
+	if err != nil {
+		t.Fatalf("ThreadStart: %v", err)
+	}
+	if resp.Thread.Serf.Ref != "codex-managed:th_fake" || resp.Turn.ID != "turn_fake" {
+		t.Fatalf("resp=%+v", resp)
+	}
+}
+
+func TestHubRPCHarnessListIncludesConfiguredCodexSources(t *testing.T) {
+	hub := newHubRPCTestServer(t, WebConfig{
+		CodexSources: []appsource.CodexSourceConfig{{
+			ID: "codex-local",
+		}, {}},
+		CodexLaunches: []CodexLaunchConfig{{ID: "codex-managed"}},
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	var resp struct {
+		Data []struct {
+			ID    string `json:"id"`
+			Label string `json:"label"`
+			Kind  string `json:"kind"`
+		} `json:"data"`
+	}
+	if err := client.Request(context.Background(), appwire.MethodSerfHarnessesList, map[string]any{}, &resp); err != nil {
+		t.Fatalf("serf/harnesses/list: %v", err)
+	}
+	got := map[string]string{}
+	for _, h := range resp.Data {
+		got[h.ID] = h.Kind
+	}
+	if got["serf"] != "serf" || got["codex-local"] != "codex" || got["codex"] != "codex" || got["codex-managed"] != "codex" {
+		t.Fatalf("harnesses=%+v", resp.Data)
 	}
 }
 
@@ -664,6 +976,310 @@ func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
 	}
 }
 
+func TestHubRPCThreadResumeRoutesConfiguredCodexSource(t *testing.T) {
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	var resumeCalled bool
+	appserver.HandleTyped(codex.Router(), appwire.MethodThreadResume, func(_ context.Context, params map[string]any) (map[string]any, error) {
+		resumeCalled = true
+		if params["threadId"] != "th_codex" {
+			t.Fatalf("thread/resume params=%+v", params)
+		}
+		return map[string]any{"thread": map[string]any{
+			"id":            "th_codex",
+			"sessionId":     "th_codex",
+			"preview":       "resumed codex",
+			"modelProvider": "openai",
+			"status":        map[string]any{"type": "idle"},
+			"source":        "appServer",
+		}}, nil
+	})
+	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
+	defer codexHTTP.Close()
+
+	hub := newHubRPCTestServer(t, WebConfig{
+		Past: NewPastIndex(""),
+		CodexSources: []appsource.CodexSourceConfig{{
+			ID:       "codex",
+			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
+		}},
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Ref: "codex:th_codex"})
+	if err != nil {
+		t.Fatalf("ThreadResume: %v", err)
+	}
+	if !resumeCalled {
+		t.Fatal("codex resume was not routed")
+	}
+	if resp.Thread.Serf.Ref != "codex:th_codex" {
+		t.Fatalf("thread=%+v", resp.Thread)
+	}
+}
+
+func TestHubRPCThreadReadDoesNotResumeConfiguredCodexSource(t *testing.T) {
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	var readCalled bool
+	appserver.HandleTyped(codex.Router(), appwire.MethodThreadRead, func(_ context.Context, params map[string]any) (map[string]any, error) {
+		readCalled = true
+		if params["threadId"] != "th_codex" {
+			t.Fatalf("thread/read params=%+v", params)
+		}
+		return map[string]any{"thread": map[string]any{
+			"id":        "th_codex",
+			"sessionId": "th_codex",
+			"preview":   "read-only codex",
+			"status":    map[string]any{"type": "idle"},
+			"source":    "appServer",
+		}}, nil
+	})
+	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
+	defer codexHTTP.Close()
+
+	hub := newHubRPCTestServer(t, WebConfig{
+		Past: NewPastIndex(""),
+		CodexSources: []appsource.CodexSourceConfig{{
+			ID:       "codex",
+			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
+		}},
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_codex"})
+	if err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	if !readCalled {
+		t.Fatal("codex read was not routed")
+	}
+	if resp.Thread.Serf.Ref != "codex:th_codex" {
+		t.Fatalf("thread=%+v", resp.Thread)
+	}
+}
+
+func TestHubRPCThreadForkRoutesConfiguredCodexSource(t *testing.T) {
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	var forkCalled bool
+	appserver.HandleTyped(codex.Router(), appwire.MethodThreadRead, func(_ context.Context, params map[string]any) (map[string]any, error) {
+		if params["threadId"] != "th_codex" {
+			t.Fatalf("thread/read params=%+v", params)
+		}
+		return map[string]any{"thread": map[string]any{
+			"id":        "th_codex",
+			"sessionId": "th_codex",
+			"status":    map[string]any{"type": "idle"},
+			"source":    "appServer",
+		}}, nil
+	})
+	appserver.HandleTyped(codex.Router(), appwire.MethodThreadFork, func(_ context.Context, params map[string]any) (map[string]any, error) {
+		forkCalled = true
+		if params["threadId"] != "th_codex" {
+			t.Fatalf("thread/fork params=%+v", params)
+		}
+		return map[string]any{"thread": map[string]any{
+			"id":        "th_codex_child",
+			"sessionId": "th_codex_child",
+			"status":    map[string]any{"type": "idle"},
+			"source":    "appServer",
+		}}, nil
+	})
+	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
+	defer codexHTTP.Close()
+
+	hub := newHubRPCTestServer(t, WebConfig{
+		Past: NewPastIndex(""),
+		CodexSources: []appsource.CodexSourceConfig{{
+			ID:       "codex",
+			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
+		}},
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{Ref: "codex:th_codex"})
+	if err != nil {
+		t.Fatalf("ThreadFork: %v", err)
+	}
+	if !forkCalled {
+		t.Fatal("configured Codex source was not forked")
+	}
+	if resp.Thread.Serf.Ref != "codex:th_codex_child" {
+		t.Fatalf("thread=%+v", resp.Thread)
+	}
+}
+
+func TestHubRPCThreadStartRelaysReturnedSourceThread(t *testing.T) {
+	source := &startResumeRelaySource{
+		relayBroadcastSource: relayBroadcastSource{
+			id: "codex",
+			thread: appwire.Thread{
+				ID:        "th_start_relay",
+				SessionID: "th_start_relay",
+				Source:    "codex",
+				Serf:      appwire.SerfThread{Ref: "codex:th_start_relay", Capabilities: appwire.ThreadCapabilities{Send: true}},
+			},
+			notifications: make(chan appwire.Notification, 4),
+			subscribed:    make(chan struct{}, 1),
+			canceled:      make(chan struct{}, 1),
+		},
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(WebConfig{HubAddr: srv.Listener.Addr().String(), Past: NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{Harness: "codex", CWD: "/work", Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("ThreadStart: %v", err)
+	}
+	if resp.Thread.Serf.Ref != "codex:th_start_relay" {
+		t.Fatalf("thread=%+v", resp.Thread)
+	}
+	expectRelaySubscription(t, source.subscribed)
+
+	source.notifications <- appwire.Notification{
+		Method: appwire.NotifyAgentMessageDelta,
+		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			ThreadID: "th_start_relay",
+			Ref:      "codex:th_start_relay",
+			TurnID:   "turn_1",
+			ItemID:   "item_1",
+			Delta:    "after start",
+		}),
+	}
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifyAgentMessageDelta {
+			t.Fatalf("method=%q", got.Method)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for start relay notification")
+	}
+}
+
+func TestHubRPCThreadStartReturnsThreadWhenPostStartRelayFails(t *testing.T) {
+	source := &startRelayFailureSource{
+		startResumeRelaySource: startResumeRelaySource{
+			relayBroadcastSource: relayBroadcastSource{
+				id: "codex",
+				thread: appwire.Thread{
+					ID:        "th_start_relay_fail",
+					SessionID: "th_start_relay_fail",
+					Source:    "codex",
+					Serf:      appwire.SerfThread{Ref: "codex:th_start_relay_fail", Capabilities: appwire.ThreadCapabilities{Send: true}},
+				},
+			},
+		},
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(WebConfig{HubAddr: srv.Listener.Addr().String(), Past: NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{Harness: "codex", CWD: "/work", Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("ThreadStart: %v", err)
+	}
+	if resp.Thread.Serf.Ref != "codex:th_start_relay_fail" {
+		t.Fatalf("thread=%+v", resp.Thread)
+	}
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifyWarning {
+			t.Fatalf("method=%q, want warning", got.Method)
+		}
+		if !strings.Contains(string(got.Params), "subscribe failed after start") || !strings.Contains(string(got.Params), `"source":"hub"`) {
+			t.Fatalf("warning params=%s", got.Params)
+		}
+		payload := warningPayload(got.Params)
+		if payload["source"] != "hub" || payload["title"] != "Live updates unavailable" {
+			t.Fatalf("warning payload=%+v", payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for relay warning")
+	}
+}
+
+func TestHubRPCThreadResumeRelaysReturnedSourceThread(t *testing.T) {
+	source := &startResumeRelaySource{
+		relayBroadcastSource: relayBroadcastSource{
+			id: "codex",
+			thread: appwire.Thread{
+				ID:        "th_resume_relay",
+				SessionID: "th_resume_relay",
+				Source:    "codex",
+				Serf:      appwire.SerfThread{Ref: "codex:th_resume_relay", Capabilities: appwire.ThreadCapabilities{Send: true}},
+			},
+			notifications: make(chan appwire.Notification, 4),
+			subscribed:    make(chan struct{}, 1),
+			canceled:      make(chan struct{}, 1),
+		},
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(WebConfig{HubAddr: srv.Listener.Addr().String(), Past: NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Ref: "codex:th_resume_relay"})
+	if err != nil {
+		t.Fatalf("ThreadResume: %v", err)
+	}
+	if resp.Thread.Serf.Ref != "codex:th_resume_relay" {
+		t.Fatalf("thread=%+v", resp.Thread)
+	}
+	expectRelaySubscription(t, source.subscribed)
+
+	source.notifications <- appwire.Notification{
+		Method: appwire.NotifyAgentMessageDelta,
+		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			ThreadID: "th_resume_relay",
+			Ref:      "codex:th_resume_relay",
+			TurnID:   "turn_1",
+			ItemID:   "item_1",
+			Delta:    "after resume",
+		}),
+	}
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifyAgentMessageDelta {
+			t.Fatalf("method=%q", got.Method)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for resume relay notification")
+	}
+}
 func TestHubRPCTurnStartResumesPastThread(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "past")
@@ -675,7 +1291,7 @@ func TestHubRPCTurnStartResumesPastThread(t *testing.T) {
 
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Serf: appwire.SerfThread{Ref: params.Ref}}}, nil
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Serf: appwire.SerfThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
 	})
 	var gotPrompt string
 	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
@@ -729,7 +1345,7 @@ func TestHubRPCTurnStartResumesPastThreadAndRelaysNotifications(t *testing.T) {
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		appserver.Subscribe(ctx, sessionID)
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Serf: appwire.SerfThread{Ref: params.Ref}}}, nil
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Serf: appwire.SerfThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_4"}}, nil

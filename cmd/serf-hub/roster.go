@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -97,7 +98,9 @@ func (r *Roster) Refresh() {
 		r.failCount[e.PID] = 0
 		live := LiveEntry{Entry: e, SessionID: sessID, Status: status}
 		if sessID != "" {
-			bySess[sessID] = live
+			if prev, ok := bySess[sessID]; !ok || preferLiveEntry(live, prev) {
+				bySess[sessID] = live
+			}
 		}
 		byPID[e.PID] = live
 	}
@@ -117,14 +120,37 @@ func (r *Roster) Refresh() {
 func (r *Roster) List() []LiveEntry {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	bySession := make(map[string]LiveEntry, len(r.byPID))
 	out := make([]LiveEntry, 0, len(r.byPID))
 	for _, e := range r.byPID {
+		sessionID := firstNonEmpty(e.SessionID, e.Entry.SessionID, e.ThreadID)
+		if sessionID == "" {
+			out = append(out, e)
+			continue
+		}
+		if prev, ok := bySession[sessionID]; !ok || preferLiveEntry(e, prev) {
+			bySession[sessionID] = e
+		}
+	}
+	for _, e := range bySession {
 		out = append(out, e)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		return liveEntryLess(out[i], out[j])
 	})
 	return out
+}
+
+func preferLiveEntry(candidate, current LiveEntry) bool {
+	candidateAppWire := candidate.Protocol == appwire.ProtocolVersion && candidate.Endpoint != "" && candidate.ThreadID != ""
+	currentAppWire := current.Protocol == appwire.ProtocolVersion && current.Endpoint != "" && current.ThreadID != ""
+	if candidateAppWire != currentAppWire {
+		return candidateAppWire
+	}
+	if !candidate.StartedAt.Equal(current.StartedAt) {
+		return candidate.StartedAt.After(current.StartedAt)
+	}
+	return candidate.PID > current.PID
 }
 
 // Find returns the entry with the given session_id, or false if not present.

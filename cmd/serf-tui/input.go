@@ -73,6 +73,50 @@ func slashCommandHelp() string {
 	}, "\n")
 }
 
+func hubSlashCommandHelp(caps hubSessionCapabilities) string {
+	lines := []string{
+		"Available commands:",
+		"  /help      Show this help",
+	}
+	if caps.Compact {
+		lines = append(lines, "  /compact   Compact context (free up token space)")
+	}
+	lines = append(lines,
+		"  /status    Show session info and context pressure",
+		"  /tasks     Show the agent's task list",
+	)
+	if caps.ChangeModel {
+		lines = append(lines, "  /model     Switch model with /model <name>")
+	}
+	if caps.Clear {
+		lines = append(lines, "  /clear     Start a new session")
+	}
+	lines = append(lines,
+		"  /dashboard Go to live dashboard",
+		"  /project   Go to this session's project",
+		"",
+		"Keys:",
+	)
+	if caps.Send {
+		lines = append(lines, "  enter            Send message")
+	}
+	lines = append(lines,
+		"  alt+enter        New line in input",
+		"  ctrl+j           New line in input (alternative)",
+		"  esc              Browse transcript / select turns",
+		"  pgup             Browse transcript and page up",
+		"  esc / i          Return from browse to compose",
+	)
+	if caps.Fork {
+		lines = append(lines, "  f                Fork selected user turn in browse")
+	}
+	lines = append(lines,
+		"  ctrl+o           Go to live dashboard",
+		"  tab / enter      Expand/collapse focused tool call",
+	)
+	return strings.Join(lines, "\n")
+}
+
 func sendInput(addr, text string) tea.Cmd {
 	return func() tea.Msg {
 		body, _ := json.Marshal(map[string]string{"text": text})
