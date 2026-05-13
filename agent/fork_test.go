@@ -91,6 +91,9 @@ func TestForkSession_CopiesPrefixAndAppliesEdit(t *testing.T) {
 	if childMeta.DivergenceTurn != 3 {
 		t.Errorf("child DivergenceTurn: got %d, want 3", childMeta.DivergenceTurn)
 	}
+	if childMeta.TurnCount != 1 {
+		t.Errorf("child TurnCount: got %d, want 1", childMeta.TurnCount)
+	}
 	if childMeta.ForkLabel != "" {
 		t.Errorf("child ForkLabel should be empty, got %q", childMeta.ForkLabel)
 	}
@@ -148,6 +151,59 @@ func TestForkSession_CopiesPrefixAndAppliesEdit(t *testing.T) {
 	}
 }
 
+func TestForkSession_ChildLineagePreservedAcrossMetaRewrite(t *testing.T) {
+	stateDir, parentID := buildParentSession(t)
+	childID, err := ForkSession(stateDir, parentID, 3, "second task, table-driven", "before TDD")
+	if err != nil {
+		t.Fatalf("ForkSession: %v", err)
+	}
+	childMeta, err := LoadSessionMeta(stateDir, childID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(child): %v", err)
+	}
+
+	c := llm.NewClient()
+	sess, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(t.TempDir()), childMeta, stateDir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer sess.Close()
+
+	rewritten := sess.Meta()
+	if rewritten.ParentSessionID != parentID {
+		t.Errorf("rewritten ParentSessionID: got %q, want %q", rewritten.ParentSessionID, parentID)
+	}
+	if rewritten.DivergenceTurn != 3 {
+		t.Errorf("rewritten DivergenceTurn: got %d, want 3", rewritten.DivergenceTurn)
+	}
+	if rewritten.IsSubagent {
+		t.Error("rewritten IsSubagent: got true, want false for fork child")
+	}
+}
+
+func TestForkSession_ParentForkLabelPreservedAcrossMetaRewrite(t *testing.T) {
+	stateDir, parentID := buildParentSession(t)
+	if _, err := ForkSession(stateDir, parentID, 3, "second task, table-driven", "before TDD"); err != nil {
+		t.Fatalf("ForkSession: %v", err)
+	}
+	parentMeta, err := LoadSessionMeta(stateDir, parentID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(parent): %v", err)
+	}
+
+	c := llm.NewClient()
+	sess, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(t.TempDir()), parentMeta, stateDir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer sess.Close()
+
+	rewritten := sess.Meta()
+	if rewritten.ForkLabel != "before TDD" {
+		t.Errorf("rewritten ForkLabel: got %q, want %q", rewritten.ForkLabel, "before TDD")
+	}
+}
+
 // TestForkSession_RejectsOutOfRangeDivergence verifies that divergenceTurn=0
 // and divergenceTurn exceeding the parent's USER_INPUT count both return errors.
 func TestForkSession_RejectsOutOfRangeDivergence(t *testing.T) {
@@ -176,4 +232,3 @@ func TestForkSession_RejectsMissingParent(t *testing.T) {
 		t.Error("ForkSession with missing parent should return an error")
 	}
 }
-

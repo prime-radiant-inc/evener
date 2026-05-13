@@ -116,6 +116,9 @@ type SessionEndData struct {
 type UserInputData struct {
 	Text   string           `json:"text"`
 	Images []UserInputImage `json:"images,omitempty"`
+	// Turn is the 1-based transcript entry index for this USER_INPUT turn.
+	// The hub renderer uses it for turn-targeted operations such as fork.
+	Turn int `json:"turn,omitempty"`
 }
 
 // UserInputImage carries enough metadata for the UI to render a thumbnail.

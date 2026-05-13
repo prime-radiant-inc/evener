@@ -42,7 +42,20 @@ const (
 )
 
 var errBareTextWithoutResultTool = errors.New("model returned bare text without calling result tool")
+var errEmptyResponseExhausted = errors.New("model returned empty response")
 var errStreamUnavailable = errors.New("stream unavailable")
+
+type emptyResponseExhaustedError struct {
+	retries int
+}
+
+func (e *emptyResponseExhaustedError) Error() string {
+	return fmt.Sprintf("model returned empty response after %d retries", e.retries)
+}
+
+func (e *emptyResponseExhaustedError) Is(target error) bool {
+	return target == errEmptyResponseExhausted
+}
 
 type bareTextWithoutResultToolError struct {
 	toolName string
@@ -215,6 +228,10 @@ type Session struct {
 	turns          int // user input count (for MaxTurns enforcement)
 	modelResponses int // LLM round-trip count (for meta.json turn_count)
 	history        []Turn
+
+	forkParentID   string
+	forkDivergence int
+	forkLabel      string
 
 	reg *ToolRegistry
 
@@ -654,6 +671,9 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 		events:         make(chan SessionEvent, 256),
 		history:        resumeHistory,
 		modelResponses: meta.TurnCount,
+		forkParentID:   meta.ParentSessionID,
+		forkDivergence: meta.DivergenceTurn,
+		forkLabel:      meta.ForkLabel,
 		subagents:      map[string]*subagent{},
 		readFiles:      map[string]bool{},
 		sessionCtx:     sessCtx,
@@ -802,6 +822,14 @@ func (s *Session) Meta() SessionMeta {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now().UTC()
+	parentID := s.cfg.ParentSessionID
+	divergence := 0
+	isSubagent := s.cfg.ParentSessionID != ""
+	if s.forkDivergence > 0 {
+		parentID = s.forkParentID
+		divergence = s.forkDivergence
+		isSubagent = false
+	}
 	return SessionMeta{
 		ID:              s.id,
 		ProfileID:       s.profile.ID(),
@@ -813,8 +841,10 @@ func (s *Session) Meta() SessionMeta {
 		TurnCount:       s.modelResponses,
 		LastInputTokens: s.contextMgr.LastInputTokens(),
 		OriginalPrompt:  originalPrompt,
-		ParentSessionID: s.cfg.ParentSessionID,
-		IsSubagent:      s.cfg.ParentSessionID != "",
+		ParentSessionID: parentID,
+		DivergenceTurn:  divergence,
+		ForkLabel:       s.forkLabel,
+		IsSubagent:      isSubagent,
 	}
 }
 
@@ -1504,7 +1534,14 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	default:
 	}
 
-	s.emit(EventUserInput, UserInputData{Text: input, Images: userInputImagesFromAttachments(images)})
+	s.mu.Lock()
+	userInputTurn := len(s.history) + 1
+	s.mu.Unlock()
+	s.emit(EventUserInput, UserInputData{
+		Text:   input,
+		Images: userInputImagesFromAttachments(images),
+		Turn:   userInputTurn,
+	})
 	s.appendTurn(TurnUserInput, buildUserInputMessage(input, images))
 
 	// UserPromptSubmit hooks
@@ -1899,7 +1936,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 					s.emit(EventRoundTimings, timings)
 					continue
 				}
-				// Exhausted retries — fall through to exit.
+				err := &emptyResponseExhaustedError{retries: maxEmptyRetries}
+				s.emit(EventError, errorDataFromError(err))
+				s.mu.Lock()
+				s.state = SessionIdle
+				s.mu.Unlock()
+				return "", err
 			} else {
 				// Non-empty bare text without tool calls violates the contract:
 				// all user-facing messages must go through communicate.

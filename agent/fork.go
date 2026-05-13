@@ -143,10 +143,14 @@ func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage, p
 	}
 	defer tw.Close()
 
+	modelResponses := 0
 	// Replay prefix entries into the child transcript.
 	for _, entry := range prefixEntries {
 		if err := tw.Append(entry.Turn); err != nil {
 			return "", fmt.Errorf("append prefix turn to child transcript: %w", err)
+		}
+		if entry.Turn.Kind == TurnAssistant {
+			modelResponses++
 		}
 	}
 
@@ -169,7 +173,7 @@ func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage, p
 		EnvInfo:         parentMeta.EnvInfo,
 		CreatedAt:       now,
 		UpdatedAt:       now,
-		TurnCount:       divergenceTurn,
+		TurnCount:       modelResponses,
 		OriginalPrompt:  parentMeta.OriginalPrompt,
 		ParentSessionID: parentID,
 		DivergenceTurn:  divergenceTurn,

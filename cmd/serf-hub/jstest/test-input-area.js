@@ -194,6 +194,10 @@ async function checkReconnectsLiveAfterSendOnEndedSession() {
   await new Promise(r => setTimeout(r, 10));
 
   pass(conv.textContent.includes("resume me"), "expected resumed user message to render without refresh");
+  pass(
+    !!conv.querySelector('.user-message[data-entry-idx="4"]'),
+    "expected resumed user message to use authoritative turn index 4"
+  );
   pass(conv.textContent.includes("live resumed answer"), "expected resumed assistant answer to render without refresh");
 }
 

@@ -96,12 +96,14 @@ func TestEmptyResponse_ExhaustsRetries(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	out, err := sess.ProcessInput(ctx, "do the task", nil)
-	if err != nil {
-		t.Fatalf("ProcessInput: %v", err)
+	if err == nil {
+		t.Fatalf("expected empty-response contract error, got output %q", out)
 	}
-	// After exhausting retries, should return empty string.
-	if strings.TrimSpace(out) != "" {
-		t.Fatalf("expected empty output after exhausted retries, got %q", out)
+	if out != "" {
+		t.Fatalf("expected empty output on error, got %q", out)
+	}
+	if !strings.Contains(err.Error(), "empty response") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 	sess.Close()
 
