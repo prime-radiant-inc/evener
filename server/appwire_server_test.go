@@ -362,6 +362,64 @@ func TestServerAppWireTurnSteerRejectsMismatchedTurnID(t *testing.T) {
 	}
 }
 
+func TestServerAppWireTurnSteerRequiresTurnID(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetSteerFunc(func(string) {})
+
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnSteer, appwire.TurnSteerParams{
+		Ref:  "local:th_1",
+		Text: "missing turn",
+	}))
+	if resp.Kind() != appwire.MessageError {
+		t.Fatalf("steer without turn id response=%v", resp.Kind())
+	}
+	if resp.Error.Error.Code != appwire.CodeInvalidParams {
+		t.Fatalf("error=%+v", resp.Error.Error)
+	}
+}
+
+func TestServerAppWireTurnInterruptRequiresActiveTurnID(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	cancelled := 0
+	srv.SetCancelFunc(func() { cancelled++ })
+
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	start := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{
+		Ref:    "local:th_1",
+		Prompt: "hello",
+	}))
+	startResp := start.Response.Result.(appwire.TurnStartResponse)
+
+	missing := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
+		Ref: "local:th_1",
+	}))
+	if missing.Kind() != appwire.MessageError || missing.Error.Error.Code != appwire.CodeInvalidParams {
+		t.Fatalf("interrupt without turn id=%+v", missing)
+	}
+	stale := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(4), appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
+		Ref:    "local:th_1",
+		TurnID: startResp.Turn.ID + "-stale",
+	}))
+	if stale.Kind() != appwire.MessageError || stale.Error.Error.Code != appwire.CodeConflict {
+		t.Fatalf("stale interrupt=%+v", stale)
+	}
+	good := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(5), appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
+		Ref:    "local:th_1",
+		TurnID: startResp.Turn.ID,
+	}))
+	if good.Kind() != appwire.MessageResponse {
+		t.Fatalf("good interrupt=%+v", good)
+	}
+	if cancelled != 1 {
+		t.Fatalf("cancelled=%d, want 1", cancelled)
+	}
+}
+
 func TestServerAppWireThreadModelSetQualifiesProvider(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")

@@ -17,6 +17,7 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <header class="workspace-header" data-session-id="01ACT001"></header>
   <div class="conversation" id="conversation"
        data-session-id="01ACT001"
+       data-active-turn-id="turn_1"
        data-replay-url=""
        data-events-url=""
        data-state="processing">conversation body</div>
@@ -51,6 +52,7 @@ interruptBtn.click();
 pass(calls.length === 1, "interrupt should make exactly one fetch call");
 pass(calls[0] && calls[0].url === "/s/01ACT001/interrupt", "interrupt URL should be /s/01ACT001/interrupt, got " + (calls[0] && calls[0].url));
 pass(calls[0] && calls[0].opts && calls[0].opts.method === "POST", "interrupt should use POST");
+pass(calls[0] && /"turnId":"turn_1"/.test(calls[0].opts.body || ""), "interrupt should send active turn id");
 pass(!confirmCalled, "interrupt should NOT call window.confirm");
 
 // 2. compact button → fetch posts to /s/01ACT001/compact, no confirm.

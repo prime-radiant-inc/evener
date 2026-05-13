@@ -107,6 +107,58 @@ func TestCodexSourceListThreadsTranslatesSerfStatusFilters(t *testing.T) {
 	}
 }
 
+func TestCodexSourceLoadedThreadAdvertisesTurnActions(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (map[string]any, error) {
+		return map[string]any{"data": []map[string]any{
+			{
+				"id":        "th_active",
+				"sessionId": "th_active",
+				"preview":   "active codex",
+				"status":    map[string]any{"type": "active"},
+				"source":    "appServer",
+			},
+			{
+				"id":        "th_idle",
+				"sessionId": "th_idle",
+				"preview":   "idle codex",
+				"status":    map[string]any{"type": "idle"},
+				"source":    "appServer",
+			},
+			{
+				"id":        "th_unloaded",
+				"sessionId": "th_unloaded",
+				"preview":   "unloaded codex",
+				"status":    map[string]any{"type": "notLoaded"},
+				"source":    "appServer",
+			},
+		}}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+
+	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
+	resp, err := source.ListThreads(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	if len(resp.Data) != 3 {
+		t.Fatalf("threads=%+v", resp.Data)
+	}
+	active := resp.Data[0].Serf.Capabilities
+	if !active.Send || !active.Compact || !active.Steer || !active.Interrupt {
+		t.Fatalf("active capabilities=%+v", active)
+	}
+	idle := resp.Data[1].Serf.Capabilities
+	if !idle.Send || !idle.Compact || !idle.Steer || !idle.Interrupt {
+		t.Fatalf("idle capabilities=%+v", idle)
+	}
+	unloaded := resp.Data[2].Serf.Capabilities
+	if unloaded.Steer || unloaded.Interrupt {
+		t.Fatalf("unloaded capabilities=%+v", unloaded)
+	}
+}
+
 func TestCodexSourceStartTurnMapsPromptToInput(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
 	handleCodexResume(server)

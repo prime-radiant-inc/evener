@@ -59,6 +59,8 @@ window.SerfAppwire = {
   }]],
   eventsFromNotification: (method, params) => {
     if (method === "thread/status/changed") return [["THREAD_STATUS_CHANGED", { status: params.status && params.status.type || "" }]];
+    if (method === "turn/started") return [["TURN_STARTED", { turnId: params.turn && params.turn.id || "" }]];
+    if (method === "turn/completed") return [["TURN_COMPLETED", { turnId: params.turn && params.turn.id || "" }]];
     if (method === "item/started") return [["ASSISTANT_TEXT_START", {}]];
     if (method === "item/agentMessage/delta") return [["ASSISTANT_TEXT_DELTA", { delta: params.delta || "" }]];
     return [];
@@ -85,6 +87,7 @@ async function run() {
 
   const failures = [];
   const pass = (condition, message) => { if (!condition) failures.push("FAIL: " + message); };
+  pass(window.document.querySelector('[data-action-trigger="interrupt"]').disabled, "interrupt should start disabled without an active turn");
 
   pass(startTurnTarget === "local:thread-live", "send should target canonical AppWire ref, got " + startTurnTarget);
   pass(typeof notificationHandler === "function", "renderer did not subscribe to AppWire notifications");
@@ -112,7 +115,29 @@ async function run() {
     status: { type: "processing" },
   });
   pass(conv.dataset.state === "processing", "processing status did not update conversation state");
-  pass(!window.document.querySelector('[data-action-trigger="interrupt"]').disabled, "interrupt should enable while processing");
+  pass(!window.document.querySelector('[data-action-trigger="interrupt"]').disabled, "interrupt should enable while processing after turn/start returns an id");
+
+  notificationHandler("turn/started", {
+    threadId: "thread-live",
+    ref: "local:thread-live",
+    turn: { id: "turn_1", status: "running" },
+  });
+  pass(!window.document.querySelector('[data-action-trigger="interrupt"]').disabled, "interrupt should enable when a turn starts");
+
+  notificationHandler("thread/status/changed", {
+    threadId: "thread-live",
+    ref: "local:thread-live",
+    status: { type: "active" },
+  });
+  pass(conv.dataset.state === "active", "active status did not update conversation state");
+  pass(!window.document.querySelector('[data-action-trigger="interrupt"]').disabled, "active status should keep interrupt enabled while a turn is active");
+
+  notificationHandler("turn/completed", {
+    threadId: "thread-live",
+    ref: "local:thread-live",
+    turn: { id: "turn_1", status: "completed" },
+  });
+  pass(window.document.querySelector('[data-action-trigger="interrupt"]').disabled, "interrupt should disable when the active turn completes");
 
   notificationHandler("thread/status/changed", {
     threadId: "thread-live",

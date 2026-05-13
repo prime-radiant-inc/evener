@@ -323,6 +323,10 @@ func (s *Server) handleAppTurnSteer(_ context.Context, params appwire.TurnSteerP
 	if strings.TrimSpace(params.Text) == "" {
 		return appwire.EmptyResponse{}, appwire.InvalidParams("text is required")
 	}
+	turnID := strings.TrimSpace(params.TurnID)
+	if turnID == "" {
+		return appwire.EmptyResponse{}, appwire.InvalidParams("turnId is required")
+	}
 	s.mu.RLock()
 	fn := s.steerFunc
 	activeTurnID := s.appActiveTurnID
@@ -330,17 +334,25 @@ func (s *Server) handleAppTurnSteer(_ context.Context, params appwire.TurnSteerP
 	if fn == nil {
 		return appwire.EmptyResponse{}, appwire.Unavailable("steer not available")
 	}
-	if turnID := strings.TrimSpace(params.TurnID); turnID != "" && turnID != activeTurnID {
+	if turnID != activeTurnID {
 		return appwire.EmptyResponse{}, appwire.Conflict("turn is not active")
 	}
 	fn(params.Text)
 	return appwire.EmptyResponse{}, nil
 }
 
-func (s *Server) handleAppTurnInterrupt(context.Context, appwire.TurnInterruptParams) (appwire.EmptyResponse, error) {
+func (s *Server) handleAppTurnInterrupt(_ context.Context, params appwire.TurnInterruptParams) (appwire.EmptyResponse, error) {
+	turnID := strings.TrimSpace(params.TurnID)
+	if turnID == "" {
+		return appwire.EmptyResponse{}, appwire.InvalidParams("turnId is required")
+	}
 	s.mu.RLock()
 	cancel := s.cancelFunc
+	activeTurnID := s.appActiveTurnID
 	s.mu.RUnlock()
+	if turnID != activeTurnID {
+		return appwire.EmptyResponse{}, appwire.Conflict("turn is not active")
+	}
 	if cancel != nil {
 		cancel()
 	}

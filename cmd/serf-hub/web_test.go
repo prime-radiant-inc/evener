@@ -112,9 +112,14 @@ func TestWeb_CodexSessionRouteReadsConfiguredSource(t *testing.T) {
 	if !strings.Contains(body, `data-source-label="codex-local"`) || !strings.Contains(body, ">codex-local<") {
 		t.Fatalf("body=%s", body)
 	}
-	for _, unsupported := range []string{`data-action-trigger="interrupt"`, `data-action-trigger="shutdown"`, `data-steer-trigger`, `data-model-trigger`} {
+	for _, unsupported := range []string{`data-action-trigger="shutdown"`, `data-model-trigger`} {
 		if strings.Contains(body, unsupported) {
 			t.Fatalf("codex workspace advertised unsupported control %q:\n%s", unsupported, body)
+		}
+	}
+	for _, disabledUntilTurn := range []string{`data-action-trigger="interrupt" title="cancel the in-flight model call" disabled`, `data-steer-trigger disabled`} {
+		if !strings.Contains(body, disabledUntilTurn) {
+			t.Fatalf("codex workspace missing disabled turn control %q:\n%s", disabledUntilTurn, body)
 		}
 	}
 	for _, supported := range []string{`data-action-trigger="compact"`, `class="input-btn input-btn-primary send-btn"`} {
@@ -172,7 +177,13 @@ func TestAPI_CodexSessionDetailReadsConfiguredSource(t *testing.T) {
 	if !detail.Capabilities.Compact {
 		t.Fatalf("codex compact capability missing: %+v", detail.Capabilities)
 	}
-	if detail.Capabilities.Steer || detail.Capabilities.Interrupt || detail.Capabilities.Clear || detail.Capabilities.Fork || detail.Capabilities.Shutdown || detail.Capabilities.ChangeModel {
+	if !detail.Capabilities.Steer || !detail.Capabilities.Interrupt {
+		t.Fatalf("codex turn action support missing: %+v", detail.Capabilities)
+	}
+	if detail.ActiveTurnID != "" {
+		t.Fatalf("idle codex detail exposed active turn id %q", detail.ActiveTurnID)
+	}
+	if detail.Capabilities.Clear || detail.Capabilities.Fork || detail.Capabilities.Shutdown || detail.Capabilities.ChangeModel {
 		t.Fatalf("codex unsupported capabilities exposed: %+v", detail.Capabilities)
 	}
 }
@@ -4312,18 +4323,27 @@ func TestWeb_WorkspaceDataLocalLiveUsesAppWireCapabilities(t *testing.T) {
 			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
 			ModelProvider: "gpt-5",
 			CWD:           "/projects/serf",
+			Turns: []appwire.Turn{
+				{ID: "turn_live", Status: appwire.TurnStatusRunning},
+			},
 			Serf: appwire.SerfThread{
 				Ref:          "local:01CAPS",
-				Capabilities: appwire.ThreadCapabilities{Compact: true},
+				Capabilities: appwire.ThreadCapabilities{Steer: true, Interrupt: true, Compact: true},
 			},
 		},
 	})
 
 	got := web.workspaceData("01CAPS")
+	if got.ActiveTurnID != "turn_live" {
+		t.Fatalf("active turn id=%q", got.ActiveTurnID)
+	}
 	if !got.Capabilities.Compact {
 		t.Fatalf("compact capability missing: %+v", got.Capabilities)
 	}
-	if got.Capabilities.Send || got.Capabilities.Steer || got.Capabilities.Interrupt || got.Capabilities.Clear || got.Capabilities.Shutdown || got.Capabilities.ChangeModel {
+	if !got.Capabilities.Steer || !got.Capabilities.Interrupt {
+		t.Fatalf("turn capabilities missing: %+v", got.Capabilities)
+	}
+	if got.Capabilities.Send || got.Capabilities.Clear || got.Capabilities.Shutdown || got.Capabilities.ChangeModel {
 		t.Fatalf("workspace exposed unsupported capabilities: %+v", got.Capabilities)
 	}
 }

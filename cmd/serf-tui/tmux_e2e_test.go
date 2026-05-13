@@ -538,7 +538,7 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 	h.addSession(&tuiE2ESession{
 		ID:           "01LIVE",
 		Title:        "live task",
-		State:        appwire.ThreadStatusIdle,
+		State:        appwire.ThreadStatusProcessing,
 		Project:      "serf",
 		WorkingDir:   tuiE2EProjectDir,
 		Model:        "gpt-5",
@@ -552,6 +552,9 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 				{Type: "tool_call", ID: "tool-1", TurnID: "turn_1", ToolName: "exec", ArgumentsJSON: `{"cmd":"echo e2e"}`, Output: "tool output from e2e", Status: "completed"},
 				{Type: "agent_message", ID: "agent-1", TurnID: "turn_1", Text: "initial answer", Status: "completed"},
 			},
+		}, {
+			ID:     "turn_active",
+			Status: appwire.TurnStatusRunning,
 		}},
 	})
 	h.addSession(&tuiE2ESession{

@@ -46,6 +46,7 @@
       this.appwireRef = null;
       this.appwireThreadId = null;
       this.appwireHydrated = false;
+      this.activeTurnId = conversationEl.dataset.activeTurnId || "";
       this.replayUrl = conversationEl.dataset.replayUrl || "";
       this.eventsUrl = conversationEl.dataset.eventsUrl || "";
       this.state = conversationEl.dataset.state || "ended";
@@ -77,6 +78,7 @@
       }
 
       this.bindInputForm();
+      this.syncTurnActionControls();
       this.bindKeyboard();
       // Cold-load hydration: fetch the task list ONCE before processing any
       // events so the first transition (system-line) renders with task
@@ -97,13 +99,32 @@
       if (!state) return;
       this.state = state;
       if (this.conversation) this.conversation.dataset.state = state;
-      const interrupt = document.querySelector('[data-action-trigger="interrupt"]');
-      if (interrupt) interrupt.disabled = !(state === "processing" || state === "awaiting");
       const ended = state === "ended" || state === "closed";
+      if (!this.turnAcceptsActions(state)) this.setActiveTurnId("");
+      this.syncTurnActionControls();
       for (const action of ["compact", "shutdown"]) {
         const btn = document.querySelector('[data-action-trigger="' + action + '"]');
         if (btn) btn.disabled = ended;
       }
+    },
+
+    setActiveTurnId(turnId) {
+      this.activeTurnId = turnId || "";
+      if (this.conversation) this.conversation.dataset.activeTurnId = this.activeTurnId;
+      this.syncTurnActionControls();
+    },
+
+    syncTurnActionControls() {
+      const hasActiveTurn = !!this.activeTurnId;
+      const turnAcceptsActions = this.turnAcceptsActions(this.state);
+      const interrupt = document.querySelector('[data-action-trigger="interrupt"]');
+      if (interrupt) interrupt.disabled = !hasActiveTurn || !turnAcceptsActions;
+      const steer = document.querySelector("[data-steer-trigger]");
+      if (steer) steer.disabled = !hasActiveTurn || !turnAcceptsActions;
+    },
+
+    turnAcceptsActions(state) {
+      return state === "processing" || state === "awaiting" || state === "active";
     },
 
     hydrateDescriptions() {
@@ -180,7 +201,7 @@
       this.eventSource = new EventSource(url);
       const kinds = [
         "SESSION_START", "SESSION_END", "USER_INPUT",
-        "THREAD_STATUS_CHANGED",
+        "THREAD_STATUS_CHANGED", "TURN_STARTED", "TURN_COMPLETED",
         "ASSISTANT_TEXT_START", "ASSISTANT_TEXT_DELTA", "ASSISTANT_TEXT_END",
         "TOOL_CALL_START", "TOOL_CALL_OUTPUT_DELTA", "TOOL_CALL_END",
         "STEERING_INJECTED", "WARNING", "ERROR",
@@ -249,6 +270,9 @@
           if (this.appwireHydrated) this.resetTranscriptReplay();
           this.appwireThreadId = thread.id || this.appwireThreadId;
           this.appwireRef = (thread.serf && thread.serf.ref) || (this.appwireThreadId ? window.SerfAppwire.refForSession(this.appwireThreadId) : null);
+          if (typeof window.SerfAppwire.activeTurnIDFromThread === "function") {
+            this.setActiveTurnId(window.SerfAppwire.activeTurnIDFromThread(thread));
+          }
           for (const [kind, data] of window.SerfAppwire.eventsFromThread(thread)) {
             this.handleData(kind, data);
           }
@@ -316,6 +340,12 @@
       switch (kind) {
         case "THREAD_STATUS_CHANGED":
           this.updateThreadState(data.status || "");
+          break;
+        case "TURN_STARTED":
+          this.setActiveTurnId(data.turnId || "");
+          break;
+        case "TURN_COMPLETED":
+          if (!data.turnId || data.turnId === this.activeTurnId) this.setActiveTurnId("");
           break;
         case "SESSION_START":
           if (data.session_id && data.session_id !== this.sessionId) {
@@ -997,12 +1027,16 @@
           steerBtn.disabled = true;
           try {
             if (window.SerfAppwire) {
-              await window.SerfAppwire.steer(this.sessionId, text);
+              if (!this.activeTurnId) {
+                this.appendBanner("error", "steer failed: no active turn", { source: "hub", title: "Hub steer error" });
+                return;
+              }
+              await window.SerfAppwire.steer(this.sessionId, this.activeTurnId, text);
             } else {
               const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/steer", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ text }),
+                body: JSON.stringify({ text, turnId: this.activeTurnId || "" }),
               });
               if (!resp.ok) {
                 const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
@@ -1016,7 +1050,7 @@
           } catch (err) {
             this.appendBanner("error", "steer failed: " + err.message, { source: "hub", title: "Hub steer error" });
           } finally {
-            steerBtn.disabled = false;
+            this.syncTurnActionControls();
           }
         });
       }
@@ -1096,7 +1130,8 @@
             })),
           };
           if (window.SerfAppwire) {
-            await window.SerfAppwire.startTurn(this.appwireRef || this.sessionId, body.text, body.images);
+            const resp = await window.SerfAppwire.startTurn(this.appwireRef || this.sessionId, body.text, body.images);
+            this.setActiveTurnId(resp && resp.turn && resp.turn.id || this.activeTurnId);
           } else {
             const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/send", {
               method: "POST",
@@ -1729,9 +1764,20 @@
     const conv = document.getElementById("conversation");
     const sessionId = conv && conv.getAttribute("data-session-id");
     if (!sessionId) return;
+    const turnId = (window.SerfRenderer && window.SerfRenderer.activeTurnId) || (conv && conv.getAttribute("data-active-turn-id")) || "";
+    if (action === "interrupt" && !turnId) {
+      if (window.SerfRenderer && window.SerfRenderer.appendBanner) {
+        window.SerfRenderer.appendBanner("error", "interrupt failed: no active turn", { source: "hub", title: "Hub action error" });
+      }
+      return;
+    }
     const actionPromise = window.SerfAppwire
-      ? window.SerfAppwire.action(sessionId, action).then(() => ({ ok: true, text: () => Promise.resolve("") }))
-      : fetch("/s/" + encodeURIComponent(sessionId) + "/" + action, { method: "POST" });
+      ? window.SerfAppwire.action(sessionId, action, turnId).then(() => ({ ok: true, text: () => Promise.resolve("") }))
+      : fetch("/s/" + encodeURIComponent(sessionId) + "/" + action, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: action === "interrupt" ? JSON.stringify({ turnId }) : undefined,
+      });
     actionPromise
       .then((resp) => {
         if (!resp.ok) {

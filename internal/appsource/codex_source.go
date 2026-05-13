@@ -617,8 +617,10 @@ func (s *CodexSource) mapThread(thread codexThread) appwire.Thread {
 		Serf: appwire.SerfThread{
 			Ref: ref,
 			Capabilities: appwire.ThreadCapabilities{
-				Send:    true,
-				Compact: true,
+				Send:      true,
+				Steer:     codexThreadSupportsTurnActions(thread.Status.Type),
+				Interrupt: codexThreadSupportsTurnActions(thread.Status.Type),
+				Compact:   true,
 			},
 		},
 	}
@@ -626,6 +628,15 @@ func (s *CodexSource) mapThread(thread codexThread) appwire.Thread {
 		out.Turns = append(out.Turns, mapCodexTurn(turn))
 	}
 	return out
+}
+
+func codexThreadSupportsTurnActions(status string) bool {
+	switch status {
+	case "active", "idle":
+		return true
+	default:
+		return false
+	}
 }
 
 func codexThreadListStatuses(statuses []string) []string {

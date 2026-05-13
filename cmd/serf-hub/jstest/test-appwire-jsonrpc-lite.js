@@ -151,10 +151,12 @@ vm.runInContext(SRC, context);
   assert(completedTurnEvents.some(([kind, data]) => kind === "ASSISTANT_TEXT_END" && data.text === "CODEX_LIVE_OK"), "completed Codex turn should render live assistant text");
   let structuredError;
   try {
-    await context.window.SerfAppwire.action("01NOINTERRUPT", "interrupt");
+    await context.window.SerfAppwire.action("01NOINTERRUPT", "interrupt", "turn_web");
   } catch (err) {
     structuredError = err;
   }
+  const interrupt = sent.filter((msg) => msg.method === "turn/interrupt").pop();
+  assert(interrupt && interrupt.params.turnId === "turn_web", "browser appwire interrupt should include active turn id");
   assert(structuredError, "browser appwire should reject failed RPC requests");
   assert(structuredError.message === "interrupt is not available", "browser appwire should preserve error message");
   assert(structuredError.code === -32004, "browser appwire should preserve error code");

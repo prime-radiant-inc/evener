@@ -28,8 +28,9 @@ type hubNotificationMsg struct {
 }
 
 type hubSendMsg struct {
-	text string
-	err  error
+	text   string
+	turnID string
+	err    error
 }
 
 type hubTasksMsg struct {
@@ -157,8 +158,8 @@ func fetchHubSpawnOptions(client *appwire.Client) tea.Cmd {
 
 func sendHubInput(client *appwire.Client, ref appwire.Ref, text string) tea.Cmd {
 	return func() tea.Msg {
-		_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: ref.String(), Prompt: text})
-		return hubSendMsg{text: text, err: err}
+		resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: ref.String(), Prompt: text})
+		return hubSendMsg{text: text, turnID: resp.Turn.ID, err: err}
 	}
 }
 
@@ -177,12 +178,12 @@ func fetchHubTasks(client *appwire.Client, ref appwire.Ref) tea.Cmd {
 	}
 }
 
-func sendHubAction(client *appwire.Client, ref appwire.Ref, action string) tea.Cmd {
+func sendHubAction(client *appwire.Client, ref appwire.Ref, action string, turnID string) tea.Cmd {
 	return func() tea.Msg {
 		var err error
 		switch action {
 		case "interrupt":
-			err = client.TurnInterrupt(context.Background(), appwire.TurnInterruptParams{Ref: ref.String()})
+			err = client.TurnInterrupt(context.Background(), appwire.TurnInterruptParams{Ref: ref.String(), TurnID: turnID})
 		case "compact":
 			err = client.ThreadCompactStart(context.Background(), appwire.ThreadCompactStartParams{Ref: ref.String()})
 		case "shutdown":

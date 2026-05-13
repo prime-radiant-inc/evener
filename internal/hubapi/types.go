@@ -74,6 +74,7 @@ type SessionDetail struct {
 	Model           string              `json:"model,omitempty"`
 	Profile         string              `json:"profile,omitempty"`
 	TurnCount       int                 `json:"turn_count"`
+	ActiveTurnID    string              `json:"active_turn_id,omitempty"`
 	ContextPressure float64             `json:"context_pressure"`
 	ParentSessionID string              `json:"parent_session_id,omitempty"`
 	DivergenceTurn  int                 `json:"divergence_turn,omitempty"`

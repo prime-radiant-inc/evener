@@ -727,6 +727,7 @@ func hubDetailFromAppThread(thread appwire.Thread) hubapi.SessionDetail {
 		Model:           thread.ModelProvider,
 		Profile:         thread.Serf.Profile,
 		TurnCount:       len(thread.Turns),
+		ActiveTurnID:    activeTurnIDFromAppwireThread(thread),
 		ContextPressure: thread.Serf.ContextPressure,
 		Capabilities:    hubCapabilitiesFromAppwire(thread.Serf.Capabilities),
 	}
@@ -1168,6 +1169,13 @@ func (sw *notificationSSEWriter) write(notification appwire.Notification) {
 		if json.Unmarshal(notification.Params, &params) == nil {
 			writeSSE(sw.w, sw.flusher, "THREAD_STATUS_CHANGED", map[string]any{"status": params.Status.Type})
 		}
+	case appwire.NotifyTurnStarted:
+		var params struct {
+			Turn appwire.Turn `json:"turn"`
+		}
+		if json.Unmarshal(notification.Params, &params) == nil {
+			writeSSE(sw.w, sw.flusher, "TURN_STARTED", map[string]any{"turnId": params.Turn.ID})
+		}
 	case appwire.NotifyItemStarted:
 		var params struct {
 			Item appwire.ThreadItem `json:"item"`
@@ -1228,7 +1236,11 @@ func (sw *notificationSSEWriter) write(notification appwire.Notification) {
 		var params struct {
 			Turn appwire.Turn `json:"turn"`
 		}
-		if json.Unmarshal(notification.Params, &params) == nil && params.Turn.Status == appwire.TurnStatusFailed {
+		if json.Unmarshal(notification.Params, &params) != nil {
+			return
+		}
+		writeSSE(sw.w, sw.flusher, "TURN_COMPLETED", map[string]any{"turnId": params.Turn.ID})
+		if params.Turn.Status == appwire.TurnStatusFailed {
 			message := "turn failed"
 			if params.Turn.Error != nil && strings.TrimSpace(params.Turn.Error.Message) != "" {
 				message = params.Turn.Error.Message
@@ -2696,6 +2708,7 @@ type WorkspaceData struct {
 	ContextPercent int
 	ContextNumbers string
 	Cost           string
+	ActiveTurnID   string
 	ReplayURL      string
 	EventsURL      string
 	Capabilities   hubapi.SessionCapabilities
@@ -2896,7 +2909,7 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 					return data
 				}
 			}
-			data.Capabilities = s.liveWorkspaceCapabilities(id, data.Capabilities)
+			data.Capabilities, data.ActiveTurnID = s.liveWorkspaceSnapshot(id, data.Capabilities)
 			data.EventsURL = "/s/" + id + "/events"
 			return data
 		}
@@ -2946,6 +2959,7 @@ func workspaceDataFromAppThread(thread appwire.Thread) WorkspaceData {
 		State:        state,
 		StateLabel:   stateLabel(state),
 		TurnCount:    len(thread.Turns),
+		ActiveTurnID: activeTurnIDFromAppwireThread(thread),
 		Model:        thread.ModelProvider,
 		WorkingDir:   thread.CWD,
 		EventsURL:    "/s/" + url.PathEscape(ref) + "/events",
@@ -2953,21 +2967,35 @@ func workspaceDataFromAppThread(thread appwire.Thread) WorkspaceData {
 	}
 }
 
+func activeTurnIDFromAppwireThread(thread appwire.Thread) string {
+	for _, turn := range thread.Turns {
+		if turn.Status == appwire.TurnStatusRunning {
+			return turn.ID
+		}
+	}
+	return ""
+}
+
 func (s *WebServer) liveWorkspaceCapabilities(id string, fallback hubapi.SessionCapabilities) hubapi.SessionCapabilities {
+	caps, _ := s.liveWorkspaceSnapshot(id, fallback)
+	return caps
+}
+
+func (s *WebServer) liveWorkspaceSnapshot(id string, fallback hubapi.SessionCapabilities) (hubapi.SessionCapabilities, string) {
 	ref := appRefFromRouteID(id)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	source, err := sourceForThreadWithManagedLaunch(ctx, s.cfg, s.sources, ref, "")
 	if err != nil {
-		return fallback
+		return fallback, ""
 	}
-	resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false})
+	resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true})
 	if err != nil {
-		return fallback
+		return fallback, ""
 	}
 	caps := hubCapabilitiesFromAppwire(resp.Thread.Serf.Capabilities)
 	caps.Resume = fallback.Resume
-	return caps
+	return caps, activeTurnIDFromAppwireThread(resp.Thread)
 }
 
 func sourceLabelFromRefText(refText string) string {
@@ -3226,7 +3254,12 @@ func (s *WebServer) resumeRequestFor(id string) ResumeRequest {
 
 // steerRequest is the JSON body for POST /s/<id>/steer.
 type steerRequest struct {
-	Text string `json:"text"`
+	Text   string `json:"text"`
+	TurnID string `json:"turnId"`
+}
+
+type sessionActionRequest struct {
+	TurnID string `json:"turnId"`
 }
 
 // handleSteer forwards a steering message to the live daemon for the given
@@ -3258,7 +3291,7 @@ func (s *WebServer) handleSteer(w http.ResponseWriter, r *http.Request, id strin
 		http.NotFound(w, r)
 		return
 	}
-	if err := source.SteerTurn(r.Context(), appwire.TurnSteerParams{Ref: ref, Text: body.Text}); err != nil {
+	if err := source.SteerTurn(r.Context(), appwire.TurnSteerParams{Ref: ref, TurnID: strings.TrimSpace(body.TurnID), Text: body.Text}); err != nil {
 		writeSessionActionError(w, r, err)
 		return
 	}
@@ -3289,9 +3322,13 @@ func (s *WebServer) handleSessionAction(w http.ResponseWriter, r *http.Request, 
 		http.NotFound(w, r)
 		return
 	}
+	var body sessionActionRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
 	switch action {
 	case "interrupt":
-		err = source.InterruptTurn(r.Context(), appwire.TurnInterruptParams{Ref: ref})
+		err = source.InterruptTurn(r.Context(), appwire.TurnInterruptParams{Ref: ref, TurnID: strings.TrimSpace(body.TurnID)})
 	case "compact":
 		err = source.CompactThread(r.Context(), appwire.ThreadCompactStartParams{Ref: ref})
 	case "clear":

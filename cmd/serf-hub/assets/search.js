@@ -153,8 +153,28 @@
 
   function postSession(ctx, action) {
     if (!ctx.sessionId) return Promise.resolve();
-    if (window.SerfAppwire) return window.SerfAppwire.action(ctx.sessionId, action);
-    return fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/" + action, { method: "POST" });
+    const turnId = activeTurnId();
+    if (action === "interrupt" && !turnId) {
+      showTurnActionUnavailable("interrupt failed: no active turn");
+      return Promise.resolve();
+    }
+    if (window.SerfAppwire) return window.SerfAppwire.action(ctx.sessionId, action, turnId);
+    return fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/" + action, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: action === "interrupt" ? JSON.stringify({ turnId }) : undefined,
+    });
+  }
+
+  function activeTurnId() {
+    const conv = document.getElementById("conversation");
+    return (window.SerfRenderer && window.SerfRenderer.activeTurnId) || (conv && conv.getAttribute("data-active-turn-id")) || "";
+  }
+
+  function showTurnActionUnavailable(message) {
+    if (window.SerfRenderer && window.SerfRenderer.appendBanner) {
+      window.SerfRenderer.appendBanner("error", message, { source: "hub", title: "Hub action error" });
+    }
   }
 
   function fetchModels() {
@@ -221,10 +241,17 @@
           }) } },
       { id: "steer", title: "Steer model", hint: "inject mid-turn", keywords: [], scope: "session",
         args: { kind: "free", placeholder: "steer text…",
-          run: (ctx, text) => window.SerfAppwire ? window.SerfAppwire.steer(ctx.sessionId, text) : fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/steer", {
+          run: (ctx, text) => {
+            const turnId = activeTurnId();
+            if (!turnId) {
+              showTurnActionUnavailable("steer failed: no active turn");
+              return Promise.resolve();
+            }
+            return window.SerfAppwire ? window.SerfAppwire.steer(ctx.sessionId, turnId, text) : fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/steer", {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: text }),
-          }) } },
+            body: JSON.stringify({ text: text, turnId: turnId }),
+          });
+          } } },
       // /fork omitted: fork requires an edited message and the palette has
       // no way to gather one. Use the "edit" affordance on the user-message
       // row in the transcript instead. See kata #34.

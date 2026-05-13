@@ -357,8 +357,17 @@ async function commandSweep() {
       } },
     { name: "compact", page: "session", query: "/compact",
       expect: (c) => assertCS(c, sawFetchCS(c, "POST", "/s/01S/compact"), "POST /s/01S/compact") },
-    { name: "interrupt", page: "session", query: "/interrupt",
-      expect: (c) => assertCS(c, sawFetchCS(c, "POST", "/s/01S/interrupt"), "POST /s/01S/interrupt") },
+    { name: "interrupt-blocked", page: "session", query: "/interrupt",
+      expect: (c) => {
+        assertCS(c, !sawFetchCS(c, "POST", "/s/01S/interrupt"), "no POST /s/01S/interrupt without active turn");
+        assertCS(c, c.calls.banners.some(b => /no active turn/.test(b.message || "")), "shows no active turn banner");
+      } },
+    { name: "interrupt", page: "session", query: "/interrupt", activeTurn: "turn_cmd",
+      expect: (c) => {
+        const hit = c.calls.fetches.find(f => f.url === "/s/01S/interrupt");
+        assertCS(c, !!hit, "POST /s/01S/interrupt");
+        assertCS(c, /"turnId":"turn_cmd"/.test(String(hit && hit.opts && hit.opts.body)), "body carries turn id");
+      } },
     { name: "clear", page: "session", query: "/clear",
       expect: (c) => assertCS(c, sawFetchCS(c, "POST", "/s/01S/clear"), "POST /s/01S/clear") },
     { name: "shutdown", page: "session", query: "/shutdown", confirmAnswer: false,
@@ -374,11 +383,18 @@ async function commandSweep() {
         const body = String(hit && hit.opts && hit.opts.body || "");
         assertCS(c, body.indexOf("anthropic/claude-opus-4-7") >= 0, "body carries provider/model id (got " + body + ")");
       } },
-    { name: "steer", page: "session", query: "/steer", argEntry: "less rambling",
+    { name: "steer-blocked", page: "session", query: "/steer", argEntry: "less rambling",
+      expect: (c) => {
+        const hit = c.calls.fetches.find(f => f.url === "/s/01S/steer");
+        assertCS(c, !hit, "no POST /s/01S/steer without active turn");
+        assertCS(c, c.calls.banners.some(b => /no active turn/.test(b.message || "")), "shows no active turn banner");
+      } },
+    { name: "steer", page: "session", query: "/steer", argEntry: "less rambling", activeTurn: "turn_cmd",
       expect: (c) => {
         const hit = c.calls.fetches.find(f => f.url === "/s/01S/steer");
         assertCS(c, !!hit, "POST /s/01S/steer");
         assertCS(c, /less rambling/.test(String(hit && hit.opts && hit.opts.body)), "body carries steer text");
+        assertCS(c, /"turnId":"turn_cmd"/.test(String(hit && hit.opts && hit.opts.body)), "body carries turn id");
       } },
     { name: "copy-id", page: "session", query: "/copy",
       expect: (c) => assertCS(c, c.calls.clipboardWrites.slice(-1)[0] === "01S", "wrote session ID to clipboard") },
@@ -407,7 +423,7 @@ async function runCaseCS(tc) {
   let extraBody = "";
   let url = "http://localhost/";
   if (tc.page === "session") {
-    extraBody = `<div id="conversation" data-session-id="01S" data-state="live">`;
+    extraBody = `<div id="conversation" data-session-id="01S" data-state="live" data-active-turn-id="${tc.activeTurn || ""}">`;
     if (tc.withUserTurns) tc.withUserTurns.forEach(t => { extraBody += `<div class="user-message">${t}</div>`; });
     extraBody += `</div>`;
     extraBody += `<button data-tasks-trigger></button><button data-details-trigger></button>`;
@@ -431,6 +447,7 @@ async function runCaseCS(tc) {
     confirms: 0,
     panelClicks: { tasks: 0, details: 0 },
     scrolledSections: [],
+    banners: [],
   };
 
   window.fetch = (u, opts) => {
@@ -448,6 +465,10 @@ async function runCaseCS(tc) {
   window.document.querySelectorAll("[data-project-key]").forEach(sec => {
     sec.scrollIntoView = function () { calls.scrolledSections.push(this.getAttribute("data-project-key")); };
   });
+  window.SerfRenderer = {
+    activeTurnId: tc.activeTurn || "",
+    appendBanner: (kind, message, opts) => calls.banners.push({ kind, message, opts: opts || {} }),
+  };
   const tasksBtn = window.document.querySelector("[data-tasks-trigger]");
   if (tasksBtn) tasksBtn.click = () => { calls.panelClicks.tasks += 1; };
   const detailsBtn = window.document.querySelector("[data-details-trigger]");

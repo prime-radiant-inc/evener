@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -732,9 +733,11 @@ func TestHubModelTasksAndDetailsUseAppWire(t *testing.T) {
 
 func TestHubModelActionsAndClearUseAppWire(t *testing.T) {
 	var methods []string
+	var interruptTurnID string
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
-		appserver.HandleTyped(app.Router(), appwire.MethodTurnInterrupt, func(context.Context, appwire.TurnInterruptParams) (appwire.EmptyResponse, error) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnInterrupt, func(_ context.Context, params appwire.TurnInterruptParams) (appwire.EmptyResponse, error) {
 			methods = append(methods, appwire.MethodTurnInterrupt)
+			interruptTurnID = params.TurnID
 			return appwire.EmptyResponse{}, nil
 		})
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadCompactStart, func(context.Context, appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
@@ -792,6 +795,42 @@ func TestHubModelActionsAndClearUseAppWire(t *testing.T) {
 	}, ",")
 	if strings.Join(methods, ",") != want {
 		t.Fatalf("methods=%v", methods)
+	}
+	if interruptTurnID != "turn_active" {
+		t.Fatalf("interrupt turn id=%q", interruptTurnID)
+	}
+}
+
+func TestHubModelTurnStartEnablesTurnActions(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.ActiveTurnID = ""
+	m.detail.Capabilities.Interrupt = false
+	m.detail.Capabilities.Steer = false
+
+	updated, _ := m.Update(hubSendMsg{text: "hello", turnID: "turn_started"})
+	got := updated.(hubModel)
+	if got.detail.ActiveTurnID != "turn_started" {
+		t.Fatalf("active turn id=%q", got.detail.ActiveTurnID)
+	}
+	if got.detail.Capabilities.Interrupt || got.detail.Capabilities.Steer {
+		t.Fatalf("turn/start mutated unsupported turn actions: %+v", got.detail.Capabilities)
+	}
+
+	got.detail.ActiveTurnID = ""
+	got.detail.Capabilities.Interrupt = false
+	got.detail.Capabilities.Steer = false
+	params, err := json.Marshal(map[string]any{
+		"turn": appwire.Turn{ID: "turn_notified", Status: appwire.TurnStatusRunning},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got.applyHubNotification(appwire.Notification{Method: appwire.NotifyTurnStarted, Params: params})
+	if got.detail.ActiveTurnID != "turn_notified" {
+		t.Fatalf("notified active turn id=%q", got.detail.ActiveTurnID)
+	}
+	if got.detail.Capabilities.Interrupt || got.detail.Capabilities.Steer {
+		t.Fatalf("turn/started mutated unsupported turn actions: %+v", got.detail.Capabilities)
 	}
 }
 
@@ -965,14 +1004,31 @@ func TestHubModelHelpRespectsSessionCapabilities(t *testing.T) {
 	}
 }
 
+func TestHubDetailFromThreadIncludesActiveTurnID(t *testing.T) {
+	detail := hubDetailFromThread(appwire.Thread{
+		ID:        "th_1",
+		SessionID: "th_1",
+		Source:    "local",
+		Serf:      appwire.SerfThread{Ref: "local:th_1"},
+		Turns: []appwire.Turn{
+			{ID: "turn_done", Status: appwire.TurnStatusCompleted},
+			{ID: "turn_active", Status: appwire.TurnStatusRunning},
+		},
+	})
+	if detail.ActiveTurnID != "turn_active" {
+		t.Fatalf("active turn id=%q", detail.ActiveTurnID)
+	}
+}
+
 func newSessionHubModel(client *appwire.Client) hubModel {
 	m := newHubModel(client, "http://hub.test")
 	m.mode = hubModeSession
 	m.detail = hubSessionDetail{
-		Ref:       "local:01SEND",
-		SessionID: "01SEND",
-		Title:     "send task",
-		State:     "idle",
+		Ref:          "local:01SEND",
+		SessionID:    "01SEND",
+		Title:        "send task",
+		State:        "idle",
+		ActiveTurnID: "turn_active",
 		Capabilities: hubSessionCapabilities{
 			Send:        true,
 			Interrupt:   true,

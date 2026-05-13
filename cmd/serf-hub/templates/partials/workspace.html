@@ -10,7 +10,7 @@
     </div>
     <div class="workspace-actions">
       {{if .Capabilities.Interrupt}}
-      <button type="button" class="header-action" data-action-trigger="interrupt" title="cancel the in-flight model call"{{if and (ne .State "processing") (ne .State "awaiting")}} disabled{{end}}>interrupt</button>
+      <button type="button" class="header-action" data-action-trigger="interrupt" title="cancel the in-flight model call"{{if or (eq .ActiveTurnID "") (and (ne .State "processing") (ne .State "awaiting") (ne .State "active"))}} disabled{{end}}>interrupt</button>
       {{end}}
       {{if .Capabilities.Compact}}
       <button type="button" class="header-action" data-action-trigger="compact" title="compact the transcript"{{if eq .State "ended"}} disabled{{end}}>compact</button>
@@ -37,6 +37,7 @@
 <div class="conversation"
      id="conversation"
      data-session-id="{{.ID}}"
+     data-active-turn-id="{{.ActiveTurnID}}"
      data-replay-url="{{.ReplayURL}}"
      data-events-url="{{.EventsURL}}"
      data-state="{{.State}}">
@@ -57,7 +58,7 @@
     {{end}}
     <span class="controls-spacer"></span>
     {{if .Capabilities.Steer}}
-    <button type="button" class="input-btn input-btn-ghost" data-steer-trigger>steer</button>
+    <button type="button" class="input-btn input-btn-ghost" data-steer-trigger{{if or (eq .ActiveTurnID "") (and (ne .State "processing") (ne .State "awaiting") (ne .State "active"))}} disabled{{end}}>steer</button>
     {{end}}
     <button type="submit" class="input-btn input-btn-primary send-btn" data-capability-send="{{.Capabilities.Send}}"{{if not .Capabilities.Send}} disabled title="send unavailable"{{end}}>send <kbd>⌘↵</kbd></button>
   </div>

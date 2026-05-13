@@ -60,6 +60,7 @@ type hubSessionDetail struct {
 	Project      string
 	Branch       string
 	TurnCount    int
+	ActiveTurnID string
 	Live         bool
 	Capabilities hubSessionCapabilities
 }
@@ -134,17 +135,18 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 	node := hubNodeFromThread(thread)
 	caps := thread.Serf.Capabilities
 	return hubSessionDetail{
-		Ref:         node.Ref,
-		SessionID:   thread.SessionID,
-		SourceLabel: node.SourceLabel,
-		Title:       node.Title,
-		State:       node.State,
-		Model:       thread.ModelProvider,
-		Profile:     thread.Serf.Profile,
-		WorkingDir:  thread.CWD,
-		Project:     node.Project,
-		TurnCount:   len(thread.Turns),
-		Live:        node.Live,
+		Ref:          node.Ref,
+		SessionID:    thread.SessionID,
+		SourceLabel:  node.SourceLabel,
+		Title:        node.Title,
+		State:        node.State,
+		Model:        thread.ModelProvider,
+		Profile:      thread.Serf.Profile,
+		WorkingDir:   thread.CWD,
+		Project:      node.Project,
+		TurnCount:    len(thread.Turns),
+		ActiveTurnID: activeTurnIDFromThread(thread),
+		Live:         node.Live,
 		Capabilities: hubSessionCapabilities{
 			Send:        caps.Send,
 			Steer:       caps.Steer,
@@ -156,6 +158,15 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 			ChangeModel: caps.ChangeModel,
 		},
 	}
+}
+
+func activeTurnIDFromThread(thread appwire.Thread) string {
+	for _, turn := range thread.Turns {
+		if turn.Status == appwire.TurnStatusRunning {
+			return turn.ID
+		}
+	}
+	return ""
 }
 
 func sourceLabelFromRefText(refText string) string {

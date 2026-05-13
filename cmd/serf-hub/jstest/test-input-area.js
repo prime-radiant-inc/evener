@@ -17,9 +17,10 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <header class="workspace-header" data-session-id="01TEST"></header>
   <div id="conversation"
        data-session-id="01TEST"
+       data-active-turn-id="turn_steer"
        data-replay-url=""
        data-events-url=""
-       data-state="ended"></div>
+       data-state="processing"></div>
   <form class="workspace-input" data-input-form data-session-id="01TEST">
     <div class="input-attachments" data-attachments></div>
     <div class="input-card" data-drop-zone>
@@ -236,6 +237,32 @@ async function checkSteerWired() {
   await new Promise(r => setTimeout(r, 10));
   pass(posted, "expected /steer POST when textarea has text");
   pass(ta.value === "", "expected textarea cleared after successful steer, got " + JSON.stringify(ta.value));
+
+  // If the active turn ends while steer is in flight, the button must stay
+  // disabled after the request settles.
+  window.SerfRenderer.setActiveTurnId("turn_steer");
+  ta.value = "race the turn end";
+  ta.dispatchEvent(new window.Event("input", { bubbles: true }));
+  let settleSteer = null;
+  window.fetch = (url, init) => {
+    if (typeof url === "string" && url.includes("/steer")) {
+      return new Promise(resolve => {
+        settleSteer = () => resolve({
+          ok: true,
+          status: 202,
+          json: () => Promise.resolve([]),
+          text: () => Promise.resolve(""),
+        });
+      });
+    }
+    return origFetch(url, init);
+  };
+  steer.click();
+  await new Promise(r => setTimeout(r, 5));
+  window.SerfRenderer.setActiveTurnId("");
+  settleSteer();
+  await new Promise(r => setTimeout(r, 10));
+  pass(steer.disabled, "expected steer to remain disabled after active turn cleared during request");
 
   window.fetch = origFetch;
 }

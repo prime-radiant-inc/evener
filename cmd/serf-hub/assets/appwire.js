@@ -260,13 +260,13 @@
     });
   }
 
-  function steer(sessionId, text) {
-    return request(METHOD.turnSteer, { ref: refForSession(sessionId), text: text || "" });
+  function steer(sessionId, turnId, text) {
+    return request(METHOD.turnSteer, { ref: refForSession(sessionId), turnId: turnId || "", text: text || "" });
   }
 
-  function action(sessionId, name) {
+  function action(sessionId, name, turnId) {
     const ref = refForSession(sessionId);
-    if (name === "interrupt") return request(METHOD.turnInterrupt, { ref });
+    if (name === "interrupt") return request(METHOD.turnInterrupt, { ref, turnId: turnId || "" });
     if (name === "compact") return request(METHOD.threadCompactStart, { ref });
     if (name === "clear") return request(METHOD.threadClear, { ref });
     if (name === "shutdown") return request(METHOD.threadShutdown, { ref });
@@ -448,6 +448,14 @@
     return events;
   }
 
+  function activeTurnIDFromThread(thread) {
+    for (const turn of (thread && thread.turns) || []) {
+      if (turn && turn.status === "running") return turn.id || "";
+      if (turn && turn.status === "inProgress") return turn.id || "";
+    }
+    return "";
+  }
+
   function errorPayload(error, fallback) {
     error = error || {};
     const payload = { error: error.message || fallback || "turn failed" };
@@ -462,6 +470,10 @@
     const item = params.item || {};
     if (method === "thread/status/changed") {
       return [["THREAD_STATUS_CHANGED", { status: params.status && params.status.type || "" }]];
+    }
+    if (method === "turn/started") {
+      const turn = params.turn || {};
+      return [["TURN_STARTED", { turnId: firstNonEmpty(params.turnId, turn.id) }]];
     }
     if (method === "item/started") {
       markLiveItem(params, item, { started: true });
@@ -501,10 +513,11 @@
       }]];
     }
     if (method === "turn/completed" && params.turn) {
+      const turnId = firstNonEmpty(params.turnId, params.turn.id);
       if (params.turn.status === "failed") {
-        return [["ERROR", errorPayload(params.turn.error, "turn failed")]];
+        return [["TURN_COMPLETED", { turnId }], ["ERROR", errorPayload(params.turn.error, "turn failed")]];
       }
-      const out = [];
+      const out = [["TURN_COMPLETED", { turnId }]];
       for (const item of params.turn.items || []) {
         out.push.apply(out, eventsFromCompletedTurnItem(params, item));
         deleteLiveItem(params, item);
@@ -546,6 +559,7 @@
     setModel,
     forkThread,
     eventsFromThread,
+    activeTurnIDFromThread,
     eventsFromNotification,
     liveItemStateSize() { return liveItemState.size; },
   };

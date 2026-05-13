@@ -155,6 +155,8 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.session.setInputValue(msg.text)
 			m.addSessionSystem("Send failed: " + msg.err.Error())
+		} else {
+			m.setActiveTurnID(msg.turnID)
 		}
 		return m, nil
 	case hubTasksMsg:
@@ -497,12 +499,16 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.addSessionSystem("Interrupt is not available for this session.")
 			return m, nil
 		}
+		if strings.TrimSpace(m.detail.ActiveTurnID) == "" {
+			m.addSessionSystem("Interrupt is not available until an active turn starts.")
+			return m, nil
+		}
 		ref, ok := m.currentRef()
 		if !ok {
 			m.addSessionSystem("Session ref is invalid.")
 			return m, nil
 		}
-		return m, sendHubAction(m.client, ref, "interrupt")
+		return m, sendHubAction(m.client, ref, "interrupt", m.detail.ActiveTurnID)
 	}
 
 	if msg.String() == "enter" {
@@ -578,13 +584,17 @@ func (m *hubModel) runHubSlashCommand(cmd, args string) tea.Cmd {
 			m.addSessionSystem("Interrupt is not available for this session.")
 			return nil
 		}
-		return sendHubAction(m.client, ref, "interrupt")
+		if strings.TrimSpace(m.detail.ActiveTurnID) == "" {
+			m.addSessionSystem("Interrupt is not available until an active turn starts.")
+			return nil
+		}
+		return sendHubAction(m.client, ref, "interrupt", m.detail.ActiveTurnID)
 	case "compact":
 		if !m.detail.Capabilities.Compact {
 			m.addSessionSystem("Compact is not available for this session.")
 			return nil
 		}
-		return sendHubAction(m.client, ref, "compact")
+		return sendHubAction(m.client, ref, "compact", "")
 	case "clear":
 		if !m.detail.Capabilities.Clear {
 			m.addSessionSystem("Clear is not available for this session.")
@@ -596,7 +606,7 @@ func (m *hubModel) runHubSlashCommand(cmd, args string) tea.Cmd {
 			m.addSessionSystem("Shutdown is not available for this session.")
 			return nil
 		}
-		return sendHubAction(m.client, ref, "shutdown")
+		return sendHubAction(m.client, ref, "shutdown", "")
 	case "model":
 		model := strings.TrimSpace(args)
 		if model == "" {
@@ -607,7 +617,7 @@ func (m *hubModel) runHubSlashCommand(cmd, args string) tea.Cmd {
 			m.addSessionSystem("Model change is not available for this session.")
 			return nil
 		}
-		return sendHubAction(m.client, ref, model)
+		return sendHubAction(m.client, ref, model, "")
 	case "help":
 		m.addSessionSystem(hubSlashCommandHelp(m.detail.Capabilities))
 		return nil
@@ -915,6 +925,13 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) {
 		return
 	}
 	switch notification.Method {
+	case appwire.NotifyTurnStarted:
+		var params struct {
+			Turn appwire.Turn `json:"turn"`
+		}
+		if json.Unmarshal(notification.Params, &params) == nil {
+			m.setActiveTurnID(params.Turn.ID)
+		}
 	case appwire.NotifyThreadStatusChanged:
 		var params appwire.ThreadStatusChangedParams
 		if json.Unmarshal(notification.Params, &params) == nil {
@@ -958,8 +975,13 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) {
 		var params struct {
 			Turn appwire.Turn `json:"turn"`
 		}
-		if json.Unmarshal(notification.Params, &params) == nil && params.Turn.Status == appwire.TurnStatusFailed {
-			m.addSessionSystemOnce(formatHubTurnError(params.Turn.Error, "Session error"))
+		if json.Unmarshal(notification.Params, &params) == nil {
+			if params.Turn.ID != "" && params.Turn.ID == m.detail.ActiveTurnID {
+				m.detail.ActiveTurnID = ""
+			}
+			if params.Turn.Status == appwire.TurnStatusFailed {
+				m.addSessionSystemOnce(formatHubTurnError(params.Turn.Error, "Session error"))
+			}
 		}
 	case appwire.NotifyWarning:
 		var params struct {
@@ -979,6 +1001,10 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) {
 		}
 	}
 	m.session.refreshViewport()
+}
+
+func (m *hubModel) setActiveTurnID(turnID string) {
+	m.detail.ActiveTurnID = turnID
 }
 
 func (m hubModel) notificationMatchesCurrentSession(notification appwire.Notification) bool {
