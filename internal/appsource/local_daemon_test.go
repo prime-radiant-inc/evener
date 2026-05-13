@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"nhooyr.io/websocket"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/rendezvous"
@@ -131,6 +132,53 @@ func TestLocalDaemonSourceSubscribeThreadMapsConnectionRefused(t *testing.T) {
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
 		t.Fatalf("SubscribeThread error %T=%v, want WireError", err, err)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok || wire.Code != appwire.CodeUnavailable || data.SerfErrorInfo != appwire.ErrorSessionUnavailable {
+		t.Fatalf("wire=%+v", wire)
+	}
+}
+
+func TestLocalDaemonSourceStartTurnMapsDroppedTransportToSessionUnavailable(t *testing.T) {
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("accept websocket: %v", err)
+			return
+		}
+		transport := appwire.NewWSTransport(conn)
+		msg, err := transport.Recv(r.Context())
+		if err != nil {
+			t.Errorf("receive initialize: %v", err)
+			return
+		}
+		if msg.Request == nil {
+			t.Errorf("initialize message=%+v", msg)
+			return
+		}
+		if err := transport.Send(r.Context(), appwire.ResponseMessage(msg.Request.ID, appwire.InitializeResponse{})); err != nil {
+			t.Errorf("send initialize response: %v", err)
+			return
+		}
+		_, _ = transport.Recv(r.Context())
+		_ = conn.Close(websocket.StatusAbnormalClosure, "dropped")
+	}))
+	defer httpServer.Close()
+
+	source := NewLocalDaemonSource("local", func() []rendezvous.Entry {
+		return []rendezvous.Entry{{
+			Protocol:  appwire.ProtocolVersion,
+			Endpoint:  "ws" + httpServer.URL[len("http"):],
+			SourceID:  "local",
+			ThreadID:  "th_1",
+			SessionID: "sess_1",
+		}}
+	}, httpServer.Client())
+
+	_, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "local:th_1", Prompt: "hi"})
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("StartTurn error %T=%v, want WireError", err, err)
 	}
 	data, ok := wire.Data.(appwire.ErrorData)
 	if !ok || wire.Code != appwire.CodeUnavailable || data.SerfErrorInfo != appwire.ErrorSessionUnavailable {

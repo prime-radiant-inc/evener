@@ -906,11 +906,12 @@ func appItemsFromReplayTurn(turnID string, turnIndex int, turn replayTurn, toolN
 	switch turn.Kind {
 	case "USER_INPUT":
 		item := appwire.ThreadItem{
-			Type:   "user_message",
-			ID:     fmt.Sprintf("item_user_%d", turnIndex),
-			TurnID: turnID,
-			Text:   joinText(turn.Message.Content),
-			Status: "completed",
+			Type:                 "user_message",
+			ID:                   fmt.Sprintf("item_user_%d", turnIndex),
+			TurnID:               turnID,
+			TranscriptEntryIndex: turnIndex,
+			Text:                 joinText(turn.Message.Content),
+			Status:               "completed",
 		}
 		for _, part := range turn.Message.Content {
 			if part.Kind != "image" || part.Image == nil || len(part.Image.Data) == 0 {

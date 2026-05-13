@@ -29,6 +29,15 @@ func TestAppEventProjectorProjectsAssistantDelta(t *testing.T) {
 	}
 }
 
+func TestAppEventProjectorCarriesUserInputTranscriptEntryIndex(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	out := projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello", Turn: 3}})
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.TranscriptEntryIndex != 3 {
+		t.Fatalf("transcript entry index=%d, want 3", item.TranscriptEntryIndex)
+	}
+}
+
 func TestAppEventProjectorCompletesTurnOnSessionEnd(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	started := projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
@@ -160,6 +169,11 @@ func notificationTurnID(t *testing.T, items []AppNotification, method string) st
 
 func notificationItemTurnID(t *testing.T, items []AppNotification, method string) string {
 	t.Helper()
+	return notificationThreadItem(t, items, method).TurnID
+}
+
+func notificationThreadItem(t *testing.T, items []AppNotification, method string) appwire.ThreadItem {
+	t.Helper()
 	for _, item := range items {
 		if item.Method != method {
 			continue
@@ -172,8 +186,8 @@ func notificationItemTurnID(t *testing.T, items []AppNotification, method string
 		if !ok {
 			t.Fatalf("item param=%T in %+v", params["item"], params)
 		}
-		return threadItem.TurnID
+		return threadItem
 	}
 	t.Fatalf("missing notification %q in %+v", method, items)
-	return ""
+	return appwire.ThreadItem{}
 }

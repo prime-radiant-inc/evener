@@ -46,12 +46,14 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 		return []AppNotification{p.threadStatus(appwire.ThreadStatusIdle)}
 	case agent.EventUserInput:
 		turnID := p.startTurn()
+		data := eventData[agent.UserInputData](event.Data)
 		item := appwire.ThreadItem{
-			Type:   "user_message",
-			ID:     p.nextItemID("user"),
-			TurnID: turnID,
-			Text:   eventData[agent.UserInputData](event.Data).Text,
-			Status: "completed",
+			Type:                 "user_message",
+			ID:                   p.nextItemID("user"),
+			TurnID:               turnID,
+			TranscriptEntryIndex: data.Turn,
+			Text:                 data.Text,
+			Status:               "completed",
 		}
 		return []AppNotification{
 			p.notification(appwire.NotifyTurnStarted, map[string]any{

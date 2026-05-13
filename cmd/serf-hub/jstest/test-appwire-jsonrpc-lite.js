@@ -149,6 +149,26 @@ vm.runInContext(SRC, context);
   });
   assert(completedTurnEvents.some(([kind, data]) => kind === "USER_INPUT" && data.text === "hello codex"), "completed Codex turn should replay live user input");
   assert(completedTurnEvents.some(([kind, data]) => kind === "ASSISTANT_TEXT_END" && data.text === "CODEX_LIVE_OK"), "completed Codex turn should render live assistant text");
+  const appTurnUserEvents = context.window.SerfAppwire.eventsFromNotification("turn/completed", {
+    threadId: "th_codex",
+    turn: {
+      id: "turn_2",
+      status: "completed",
+      items: [{ type: "user_message", text: "numeric app turn", turnId: "turn_2" }],
+    },
+  });
+  const appTurnUser = appTurnUserEvents.find(([kind]) => kind === "USER_INPUT");
+  assert(appTurnUser && !Object.prototype.hasOwnProperty.call(appTurnUser[1], "turn"), "appwire turn id must not be treated as transcript entry index");
+  const transcriptIndexedUserEvents = context.window.SerfAppwire.eventsFromNotification("turn/completed", {
+    threadId: "th_codex",
+    turn: {
+      id: "turn_2",
+      status: "completed",
+      items: [{ type: "user_message", text: "indexed user", turnId: "turn_2", transcriptEntryIndex: 3 }],
+    },
+  });
+  const transcriptIndexedUser = transcriptIndexedUserEvents.find(([kind]) => kind === "USER_INPUT");
+  assert(transcriptIndexedUser && transcriptIndexedUser[1].turn === 3, "Serf transcript entry index should drive fork turn metadata");
   let structuredError;
   try {
     await context.window.SerfAppwire.action("01NOINTERRUPT", "interrupt", "turn_web");

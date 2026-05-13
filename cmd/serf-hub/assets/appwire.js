@@ -301,9 +301,9 @@
     return "";
   }
 
-  function turnIndex(raw) {
-    const n = parseInt(String(raw || "").replace(/^turn_/, ""), 10);
-    return Number.isFinite(n) ? n : 0;
+  function transcriptEntryIndex(item) {
+    const n = Number(item && item.transcriptEntryIndex);
+    return Number.isFinite(n) && n > 0 ? n : 0;
   }
 
   function imagesForUserItem(item) {
@@ -319,7 +319,10 @@
   function eventsFromItem(item) {
     if (!item) return [];
     if (item.type === "user_message") {
-      return [["USER_INPUT", { text: item.text || "", turn: turnIndex(item.turnId), images: imagesForUserItem(item) }]];
+      const event = { text: item.text || "", images: imagesForUserItem(item) };
+      const entryIndex = transcriptEntryIndex(item);
+      if (entryIndex > 0) event.turn = entryIndex;
+      return [["USER_INPUT", event]];
     }
     if (item.type === "steering") {
       return [["STEERING_INJECTED", { text: item.text || "" }]];

@@ -171,21 +171,22 @@ type TurnError struct {
 }
 
 type ThreadItem struct {
-	Type          string          `json:"type"`
-	ID            string          `json:"id"`
-	TurnID        string          `json:"turnId,omitempty"`
-	Text          string          `json:"text,omitempty"`
-	Delta         string          `json:"delta,omitempty"`
-	Images        []InputItem     `json:"images,omitempty"`
-	ToolName      string          `json:"toolName,omitempty"`
-	CallID        string          `json:"callId,omitempty"`
-	ArgumentsJSON string          `json:"argumentsJson,omitempty"`
-	Output        string          `json:"output,omitempty"`
-	Error         string          `json:"error,omitempty"`
-	Status        string          `json:"status,omitempty"`
-	StartedAt     *int64          `json:"startedAt,omitempty"`
-	CompletedAt   *int64          `json:"completedAt,omitempty"`
-	Raw           json.RawMessage `json:"raw,omitempty"`
+	Type                 string          `json:"type"`
+	ID                   string          `json:"id"`
+	TurnID               string          `json:"turnId,omitempty"`
+	TranscriptEntryIndex int             `json:"transcriptEntryIndex,omitempty"`
+	Text                 string          `json:"text,omitempty"`
+	Delta                string          `json:"delta,omitempty"`
+	Images               []InputItem     `json:"images,omitempty"`
+	ToolName             string          `json:"toolName,omitempty"`
+	CallID               string          `json:"callId,omitempty"`
+	ArgumentsJSON        string          `json:"argumentsJson,omitempty"`
+	Output               string          `json:"output,omitempty"`
+	Error                string          `json:"error,omitempty"`
+	Status               string          `json:"status,omitempty"`
+	StartedAt            *int64          `json:"startedAt,omitempty"`
+	CompletedAt          *int64          `json:"completedAt,omitempty"`
+	Raw                  json.RawMessage `json:"raw,omitempty"`
 }
 
 type InputItem struct {

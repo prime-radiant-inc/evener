@@ -248,12 +248,32 @@ func (s *LocalDaemonSource) withClient(ctx context.Context, entry rendezvous.Ent
 	if _, err := client.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "serf-hub"}}); err != nil {
 		return err
 	}
-	return fn(client)
+	if err := fn(client); err != nil {
+		return localDaemonCallError(err)
+	}
+	return nil
 }
 
 func localDaemonDialError(err error) error {
 	if errors.Is(err, syscall.ECONNREFUSED) {
 		return appwire.SessionUnavailable("local daemon unavailable: " + err.Error())
+	}
+	return err
+}
+
+func localDaemonCallError(err error) error {
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
+		return err
+	}
+	msg := strings.ToLower(wire.Message)
+	if strings.Contains(msg, "failed to get reader") ||
+		strings.Contains(msg, "websocket") ||
+		strings.Contains(msg, "eof") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "use of closed network connection") {
+		return appwire.SessionUnavailable("local daemon unavailable: " + wire.Message)
 	}
 	return err
 }
