@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -120,6 +121,9 @@ func (r *Roster) List() []LiveEntry {
 	for _, e := range r.byPID {
 		out = append(out, e)
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return liveEntryLess(out[i], out[j])
+	})
 	return out
 }
 

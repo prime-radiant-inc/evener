@@ -54,21 +54,6 @@ func (e *bareTextWithoutResultToolError) Is(target error) bool {
 	return target == errBareTextWithoutResultTool
 }
 
-var errEmptyResponsesExhausted = errors.New("model returned empty responses past retry budget")
-
-type emptyResponsesExhaustedError struct {
-	consecutive int
-	total       int
-}
-
-func (e *emptyResponsesExhaustedError) Error() string {
-	return fmt.Sprintf("model returned empty response after %d consecutive retries (%d total this turn)", e.consecutive, e.total)
-}
-
-func (e *emptyResponsesExhaustedError) Is(target error) bool {
-	return target == errEmptyResponsesExhausted
-}
-
 type SessionConfig struct {
 	MaxToolRoundsPerInput   int `json:"max_tool_rounds_per_input,omitempty"`
 	MaxTurns                int `json:"max_turns,omitempty"`
@@ -227,13 +212,6 @@ type Session struct {
 	turns          int // user input count (for MaxTurns enforcement)
 	modelResponses int // LLM round-trip count (for meta.json turn_count)
 	history        []Turn
-
-	// Fork lineage, populated from SessionMeta at restore time. Carried on
-	// the Session so that autosaves via Meta() preserve the fields across
-	// the child's lifetime. Distinct from cfg.ParentSessionID which is the
-	// subagent-spawn parent.
-	forkParentID    string
-	forkDivergence  int
 
 	reg *ToolRegistry
 
@@ -673,11 +651,6 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 		events:         make(chan SessionEvent, 256),
 		history:        resumeHistory,
 		modelResponses: meta.TurnCount,
-		// Carry fork lineage across the session's lifetime. Distinct from
-		// cfg.ParentSessionID (subagent parent); for a fork child,
-		// DivergenceTurn > 0 and IsSubagent is false.
-		forkParentID:   meta.ParentSessionID,
-		forkDivergence: meta.DivergenceTurn,
 		subagents:      map[string]*subagent{},
 		readFiles:      map[string]bool{},
 		sessionCtx:     sessCtx,
@@ -826,18 +799,6 @@ func (s *Session) Meta() SessionMeta {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now().UTC()
-	// Subagent lineage lives on cfg; fork lineage lives on the session
-	// (forkParentID + forkDivergence, populated by RestoreSessionFromMeta).
-	// A session is one or the other — never both — but check explicitly so
-	// neither path silently drops fields.
-	parentID := s.cfg.ParentSessionID
-	divergence := 0
-	isSubagent := s.cfg.ParentSessionID != ""
-	if s.forkDivergence > 0 {
-		parentID = s.forkParentID
-		divergence = s.forkDivergence
-		isSubagent = false
-	}
 	return SessionMeta{
 		ID:              s.id,
 		ProfileID:       s.profile.ID(),
@@ -849,9 +810,8 @@ func (s *Session) Meta() SessionMeta {
 		TurnCount:       s.modelResponses,
 		LastInputTokens: s.contextMgr.LastInputTokens(),
 		OriginalTask:    originalTask,
-		ParentSessionID: parentID,
-		DivergenceTurn:  divergence,
-		IsSubagent:      isSubagent,
+		ParentSessionID: s.cfg.ParentSessionID,
+		IsSubagent:      s.cfg.ParentSessionID != "",
 	}
 }
 
@@ -1540,18 +1500,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	default:
 	}
 
-	// Capture the entry index this USER_INPUT will receive when appended so
-	// consumers can identify it later (e.g. fork-from-turn). ProcessInput
-	// is serialized, so no concurrent appendTurn can race between the read
-	// and the append below.
-	s.mu.Lock()
-	turnIndex := len(s.history) + 1
-	s.mu.Unlock()
-	s.emit(EventUserInput, UserInputData{
-		Text:   input,
-		Images: userInputImagesFromAttachments(images),
-		Turn:   turnIndex,
-	})
+	s.emit(EventUserInput, UserInputData{Text: input, Images: userInputImagesFromAttachments(images)})
 	s.appendTurn(TurnUserInput, buildUserInputMessage(input, images))
 
 	// UserPromptSubmit hooks
@@ -1949,59 +1898,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				// Non-empty bare text without tool calls violates the contract:
 				// all user-facing messages must go through communicate.
 				consecutiveEmptyResponses = 0
-
-				// Interactive root session: auto-wrap the bare text as a
-				// communicate call rather than spending turns nudging the model
-				// to comply. Several models intermittently skip the result
-				// tool and the retry loop just produces the same text wrapped
-				// on a later turn — costing latency and tokens for no
-				// behavioral change. Subagents are excluded: their parents
-				// rely on the structured envelope, and the existing
-				// auto-nudge in spawnAgent handles that case.
-				// We still emit a warning so transcripts and metrics surface
-				// the underlying protocol violation.
-				if !s.cfg.NonInteractive && s.cfg.ParentSessionID == "" {
-					consecutiveBareTextResponses = 0
-					s.emit(EventWarning, WarningData{
-						Message: "bare text response auto-wrapped as " + s.resultToolName() + " (await_reply=true)",
-					})
-					synthesizedOutput := canonicalNodeOutputText(nodeOutput{
-						Message:   txt,
-						Data:      map[string]any{},
-						Artifacts: []string{},
-					})
-					s.emit(EventCommunicate, CommunicateData{
-						AwaitReply: true,
-						Message:    txt,
-					})
-					s.mu.Lock()
-					s.communicated = true
-					s.communicateAwaitReply = true
-					s.communicateText = txt
-					s.communicateReply = txt
-					s.communicateOutput = synthesizedOutput
-					s.mu.Unlock()
-					timings.TotalRound = time.Since(roundStart)
-					timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
-					s.emit(EventRoundTimings, timings)
-					if s.hookRunner != nil {
-						hi := s.hookInput(HookStop)
-						hi.Reason = "communicate.await_reply"
-						stopResult := s.hookRunner.RunStop(ctx, hi)
-						for _, msg := range stopResult.SystemMessages {
-							s.Steer(msg)
-						}
-						if stopResult.Blocked {
-							round-- // Don't count the synthesized exit as a tool round when blocked.
-							continue
-						}
-					}
-					s.mu.Lock()
-					s.state = SessionAwaitingInput
-					s.mu.Unlock()
-					return txt, nil
-				}
-
 				consecutiveBareTextResponses++
 				if consecutiveBareTextResponses <= maxBareTextRetries {
 					s.emit(EventWarning, WarningData{
@@ -2030,11 +1926,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				return "", err
 			}
 
-			err := &emptyResponsesExhaustedError{
-				consecutive: consecutiveEmptyResponses,
-				total:       totalEmptyResponses,
-			}
-			s.emit(EventError, ErrorData{Error: err.Error()})
 			s.mu.Lock()
 			s.state = SessionIdle
 			s.mu.Unlock()
@@ -2042,7 +1933,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			timings.TotalRound = time.Since(roundStart)
 			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
 			s.emit(EventRoundTimings, timings)
-			return "", err
+			return txt, nil
 		}
 
 		// Model produced tool calls — reset retry counters.

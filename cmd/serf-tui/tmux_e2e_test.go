@@ -1,11 +1,10 @@
 package main
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -15,7 +14,8 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/internal/hubapi"
+	"primeradiant.com/serf/internal/appserver"
+	"primeradiant.com/serf/internal/appwire"
 )
 
 const tuiE2EProjectDir = "/tmp/serf-tui-e2e/serf"
@@ -54,14 +54,14 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app.TypeLine("spawn from dashboard")
 	app.WaitFor("spawned session 1", "local:02SPAWN1")
 	spawns := hub.WaitForSpawns(t, 1)
-	if spawns[0].WorkingDir != tuiE2EProjectDir {
-		t.Fatalf("dashboard spawn working_dir=%q, want %q", spawns[0].WorkingDir, tuiE2EProjectDir)
+	if spawns[0].CWD != tuiE2EProjectDir {
+		t.Fatalf("dashboard spawn cwd=%q, want %q", spawns[0].CWD, tuiE2EProjectDir)
 	}
-	if spawns[0].Task != "spawn from dashboard" {
-		t.Fatalf("dashboard spawn task=%q, want spawn from dashboard", spawns[0].Task)
+	if spawns[0].Prompt != "spawn from dashboard" {
+		t.Fatalf("dashboard spawn prompt=%q, want spawn from dashboard", spawns[0].Prompt)
 	}
-	if spawns[0].Model != "openai/gpt-5" {
-		t.Fatalf("dashboard spawn model=%q, want openai/gpt-5", spawns[0].Model)
+	if spawns[0].ModelProvider != "openai" || spawns[0].Model != "gpt-5" {
+		t.Fatalf("dashboard spawn model=%s/%s, want openai/gpt-5", spawns[0].ModelProvider, spawns[0].Model)
 	}
 
 	app.SendKeys("C-o")
@@ -73,14 +73,14 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app.TypeLine("spawn from project")
 	app.WaitFor("spawned session 2", "local:02SPAWN2")
 	spawns = hub.WaitForSpawns(t, 2)
-	if spawns[1].WorkingDir != tuiE2EProjectDir {
-		t.Fatalf("project spawn working_dir=%q, want %q", spawns[1].WorkingDir, tuiE2EProjectDir)
+	if spawns[1].CWD != tuiE2EProjectDir {
+		t.Fatalf("project spawn cwd=%q, want %q", spawns[1].CWD, tuiE2EProjectDir)
 	}
-	if spawns[1].Task != "spawn from project" {
-		t.Fatalf("project spawn task=%q, want spawn from project", spawns[1].Task)
+	if spawns[1].Prompt != "spawn from project" {
+		t.Fatalf("project spawn prompt=%q, want spawn from project", spawns[1].Prompt)
 	}
-	if spawns[1].Model != "openai/gpt-5" {
-		t.Fatalf("project spawn model=%q, want openai/gpt-5", spawns[1].Model)
+	if spawns[1].ModelProvider != "openai" || spawns[1].Model != "gpt-5" {
+		t.Fatalf("project spawn model=%s/%s, want openai/gpt-5", spawns[1].ModelProvider, spawns[1].Model)
 	}
 
 	app.SendKeys("C-o")
@@ -173,11 +173,11 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 	app.SendKeys("Enter")
 	app.WaitFor("fork child", "local:02FORK")
 	forks := hub.WaitForForks(t, 1)
-	if forks[0].Turn != 1 {
-		t.Fatalf("fork turn=%d, want 1", forks[0].Turn)
+	if forks[0].SourceTurnID != "1" {
+		t.Fatalf("fork source turn=%q, want 1", forks[0].SourceTurnID)
 	}
-	if forks[0].EditedMessage != "initial question" {
-		t.Fatalf("fork edited_message=%q, want initial question", forks[0].EditedMessage)
+	if forks[0].EditedInput != "initial question" {
+		t.Fatalf("fork edited input=%q, want initial question", forks[0].EditedInput)
 	}
 }
 
@@ -185,7 +185,7 @@ func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	hub.SetSessionCapabilities("01LIVE", hubapi.SessionCapabilities{})
+	hub.SetSessionCapabilities("01LIVE", appwire.ThreadCapabilities{})
 	defer hub.Close()
 	app := startTUITmux(t, bin, hub.URL())
 	defer app.Close()
@@ -249,11 +249,11 @@ func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 
 	hub.SetFailTasks(true)
 	app.TypeLine("/tasks")
-	app.WaitFor("Tasks error: hub returned 500")
+	app.WaitFor("Tasks error: appwire serf/tasks/list: tasks failed")
 
 	hub.SetFailSend(true)
 	app.TypeLine("send should fail")
-	app.WaitFor("Send failed: hub returned 500", "> send should fail")
+	app.WaitFor("Send failed: appwire turn/start: send failed", "> send should fail")
 
 	app.SendKeys("C-o")
 	app.WaitFor("serf live", "live task")
@@ -261,7 +261,7 @@ func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 	app.SendKeys("s")
 	app.WaitFor("serf / new session", "Task (optional):")
 	app.TypeLine("spawn should fail")
-	app.WaitFor("error: spawn failed: hub returned 500")
+	app.WaitFor("error: spawn failed: appwire thread/start: spawn failed")
 }
 
 func openLiveSession(t *testing.T, app *tmuxTUI) {
@@ -400,12 +400,13 @@ type tuiE2EHub struct {
 	server *httptest.Server
 
 	mu         sync.Mutex
+	order      []string
 	sessions   map[string]*tuiE2ESession
-	spawns     []hubapi.SpawnRequest
+	spawns     []appwire.ThreadStartParams
 	sends      []string
 	actions    map[string]int
 	models     []string
-	forks      []hubapi.ForkRequest
+	forks      []appwire.ThreadForkParams
 	spawnCount int
 	treeGets   int
 	failTasks  bool
@@ -421,13 +422,8 @@ type tuiE2ESession struct {
 	WorkingDir   string
 	Model        string
 	Live         bool
-	Capabilities hubapi.SessionCapabilities
-	Events       []tuiE2ESSEEvent
-}
-
-type tuiE2ESSEEvent struct {
-	Name string
-	Data any
+	Capabilities appwire.ThreadCapabilities
+	Turns        []appwire.Turn
 }
 
 func newTUIE2EHub(t *testing.T) *tuiE2EHub {
@@ -437,65 +433,89 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 		sessions: map[string]*tuiE2ESession{},
 		actions:  map[string]int{},
 	}
-	h.sessions["01LIVE"] = &tuiE2ESession{
-		ID:         "01LIVE",
-		Title:      "live task",
-		State:      "idle",
-		Project:    "serf",
-		WorkingDir: tuiE2EProjectDir,
-		Model:      "gpt-5",
-		Live:       true,
-		Capabilities: hubapi.SessionCapabilities{
-			Send:        true,
-			Interrupt:   true,
-			Compact:     true,
-			Clear:       true,
-			Fork:        true,
-			ChangeModel: true,
-		},
-		Events: []tuiE2ESSEEvent{
-			{Name: "SESSION_START", Data: map[string]any{"session_id": "01LIVE", "model": "gpt-5", "profile": "default", "context_window_size": 200000}},
-			{Name: "USER_INPUT", Data: map[string]any{"text": "initial question", "turn": 1}},
-			{Name: "TOOL_CALL_START", Data: map[string]any{"call_id": "tool-1", "tool_name": "exec", "arguments_json": `{"cmd":"echo e2e"}`}},
-			{Name: "TOOL_CALL_OUTPUT_DELTA", Data: map[string]any{"call_id": "tool-1", "delta": "tool output from e2e"}},
-			{Name: "TOOL_CALL_END", Data: map[string]any{"call_id": "tool-1", "tool_name": "exec", "duration_ms": 10}},
-			{Name: "ASSISTANT_TEXT_END", Data: map[string]any{"text": "initial answer", "usage": map[string]any{"input_tokens": 12, "output_tokens": 4}}},
-			{Name: "REPLAY_DONE", Data: map[string]any{}},
-		},
-	}
-	h.sessions["01PAST"] = &tuiE2ESession{
+	h.addSession(&tuiE2ESession{
+		ID:           "01LIVE",
+		Title:        "live task",
+		State:        appwire.ThreadStatusIdle,
+		Project:      "serf",
+		WorkingDir:   tuiE2EProjectDir,
+		Model:        "gpt-5",
+		Live:         true,
+		Capabilities: fullTUIE2ECapabilities(),
+		Turns: []appwire.Turn{{
+			ID:     "turn_1",
+			Status: appwire.TurnStatusCompleted,
+			Items: []appwire.ThreadItem{
+				{Type: "user_message", ID: "user-1", TurnID: "turn_1", Text: "initial question"},
+				{Type: "tool_call", ID: "tool-1", TurnID: "turn_1", ToolName: "exec", ArgumentsJSON: `{"cmd":"echo e2e"}`, Output: "tool output from e2e", Status: "completed"},
+				{Type: "agent_message", ID: "agent-1", TurnID: "turn_1", Text: "initial answer", Status: "completed"},
+			},
+		}},
+	})
+	h.addSession(&tuiE2ESession{
 		ID:         "01PAST",
 		Title:      "ended maintenance",
-		State:      "ended",
+		State:      appwire.ThreadStatusEnded,
 		Project:    "serf",
 		WorkingDir: tuiE2EProjectDir,
 		Model:      "gpt-5",
 		Live:       false,
-	}
-	h.sessions["01OPS"] = &tuiE2ESession{
-		ID:         "01OPS",
-		Title:      "ops task",
-		State:      "processing",
-		Project:    "ops",
-		WorkingDir: "/tmp/serf-tui-e2e/ops",
-		Model:      "gpt-5",
-		Live:       true,
-		Capabilities: hubapi.SessionCapabilities{
-			Send:        true,
-			Interrupt:   true,
-			Compact:     true,
-			Clear:       true,
-			Fork:        true,
-			ChangeModel: true,
-		},
-		Events: []tuiE2ESSEEvent{
-			{Name: "SESSION_START", Data: map[string]any{"session_id": "01OPS", "model": "gpt-5", "profile": "default"}},
-			{Name: "ASSISTANT_TEXT_END", Data: map[string]any{"text": "ops transcript"}},
-			{Name: "REPLAY_DONE", Data: map[string]any{}},
-		},
-	}
-	h.server = httptest.NewServer(http.HandlerFunc(h.ServeHTTP))
+	})
+	h.addSession(&tuiE2ESession{
+		ID:           "01OPS",
+		Title:        "ops task",
+		State:        appwire.ThreadStatusProcessing,
+		Project:      "ops",
+		WorkingDir:   "/tmp/serf-tui-e2e/ops",
+		Model:        "gpt-5",
+		Live:         true,
+		Capabilities: fullTUIE2ECapabilities(),
+		Turns: []appwire.Turn{{
+			ID:     "turn_1",
+			Status: appwire.TurnStatusCompleted,
+			Items: []appwire.ThreadItem{
+				{Type: "agent_message", ID: "ops-agent-1", TurnID: "turn_1", Text: "ops transcript", Status: "completed"},
+			},
+		}},
+	})
+
+	app := appserver.NewServer(appserver.ServerConfig{ServerName: "serf-hub", SourceID: "local"})
+	h.registerHandlers(app)
+	h.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rpc" {
+			http.NotFound(w, r)
+			return
+		}
+		app.ServeWebSocket(w, r)
+	}))
 	return h
+}
+
+func fullTUIE2ECapabilities() appwire.ThreadCapabilities {
+	return appwire.ThreadCapabilities{
+		Send:         true,
+		Steer:        true,
+		Interrupt:    true,
+		Compact:      true,
+		Clear:        true,
+		ForkFromTurn: true,
+		Shutdown:     true,
+		ChangeModel:  true,
+	}
+}
+
+func (h *tuiE2EHub) registerHandlers(app *appserver.Server) {
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadList, h.handleThreadList)
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, h.handleThreadRead)
+	appserver.HandleTyped(app.Router(), appwire.MethodModelList, h.handleModelList)
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadStart, h.handleThreadStart)
+	appserver.HandleTyped(app.Router(), appwire.MethodTurnStart, h.handleTurnStart)
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfTasksList, h.handleTasksList)
+	appserver.HandleTyped(app.Router(), appwire.MethodTurnInterrupt, h.handleTurnInterrupt)
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadCompactStart, h.handleThreadCompactStart)
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadModelSet, h.handleThreadModelSet)
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadClear, h.handleThreadClear)
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadFork, h.handleThreadFork)
 }
 
 func (h *tuiE2EHub) URL() string {
@@ -506,321 +526,188 @@ func (h *tuiE2EHub) Close() {
 	h.server.Close()
 }
 
-func (h *tuiE2EHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	switch {
-	case r.Method == http.MethodGet && r.URL.Path == "/api/health":
-		writeTUIE2EJSON(w, hubapi.HealthResponse{
-			Version: "e2e",
-			HubAddr: strings.TrimPrefix(h.server.URL, "http://"),
-			Capabilities: hubapi.HealthCapabilities{
-				Tree:             true,
-				TranscriptFollow: true,
-				Spawn:            true,
-				Fork:             true,
-			},
-		})
-	case r.Method == http.MethodGet && r.URL.Path == "/api/tree":
-		h.mu.Lock()
-		h.treeGets++
-		h.mu.Unlock()
-		writeTUIE2EJSON(w, h.tree())
-	case r.Method == http.MethodGet && r.URL.Path == "/api/models":
-		writeTUIE2EJSON(w, []hubapi.ModelOption{{Provider: "openai", Model: "gpt-5"}})
-	case r.Method == http.MethodPost && r.URL.Path == "/api/spawn":
-		h.handleSpawn(w, r)
-	case strings.HasPrefix(r.URL.Path, "/api/sessions/"):
-		h.handleSession(w, r)
-	default:
-		http.NotFound(w, r)
-	}
+func (h *tuiE2EHub) addSession(s *tuiE2ESession) {
+	h.sessions[s.ID] = s
+	h.order = append(h.order, s.ID)
 }
 
-func (h *tuiE2EHub) tree() hubapi.TreeResponse {
+func (h *tuiE2EHub) handleThreadList(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	projects := map[string]*hubapi.TreeProject{}
-	for _, s := range h.sessions {
-		p := projects[s.Project]
-		if p == nil {
-			p = &hubapi.TreeProject{
-				Key:         hubProjectKey(s.Project),
-				Name:        s.Project,
-				WorkingDir:  s.WorkingDir,
-				RollupState: s.State,
-			}
-			projects[s.Project] = p
-		}
-		p.Sessions = append(p.Sessions, hubapi.TreeNode{
-			Ref:       hubapi.LocalRef(s.ID).String(),
-			HostID:    "local",
-			SessionID: s.ID,
-			Title:     s.Title,
-			Project:   s.Project,
-			State:     s.State,
-			Live:      s.Live,
-			Model:     s.Model,
-			Age:       "now",
-		})
-	}
-	out := hubapi.TreeResponse{
-		Sources: []hubapi.Source{{ID: "local", Label: "local", Kind: "local", Online: true}},
-	}
-	for _, name := range []string{"serf", "ops"} {
-		if p := projects[name]; p != nil {
-			out.Projects = append(out.Projects, *p)
+	h.treeGets++
+	out := appwire.ThreadListResponse{}
+	for _, id := range h.order {
+		if s := h.sessions[id]; s != nil {
+			out.Data = append(out.Data, h.threadFromSessionLocked(s))
 		}
 	}
-	return out
+	return out, nil
 }
 
-func (h *tuiE2EHub) handleSpawn(w http.ResponseWriter, r *http.Request) {
+func (h *tuiE2EHub) handleThreadRead(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	id := threadIDFromParams(params.Ref, params.ThreadID)
 	h.mu.Lock()
-	fail := h.failSpawn
-	h.mu.Unlock()
-	if fail {
-		http.Error(w, "spawn failed", http.StatusInternalServerError)
-		return
+	defer h.mu.Unlock()
+	s := h.sessions[id]
+	if s == nil {
+		return appwire.ThreadReadResponse{}, appwire.Unavailable("thread not found: " + id)
 	}
-	var req hubapi.SpawnRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
+	return appwire.ThreadReadResponse{Thread: h.threadFromSessionLocked(s)}, nil
+}
+
+func (h *tuiE2EHub) handleModelList(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
+	return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}, nil
+}
+
+func (h *tuiE2EHub) handleThreadStart(_ context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
 	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.failSpawn {
+		return appwire.ThreadStartResponse{}, fmt.Errorf("spawn failed")
+	}
 	h.spawnCount++
 	id := fmt.Sprintf("02SPAWN%d", h.spawnCount)
-	h.spawns = append(h.spawns, req)
-	h.sessions[id] = &tuiE2ESession{
-		ID:         id,
-		Title:      fmt.Sprintf("spawned session %d", h.spawnCount),
-		State:      "idle",
-		Project:    "serf",
-		WorkingDir: req.WorkingDir,
-		Model:      req.Model,
-		Live:       true,
-		Capabilities: hubapi.SessionCapabilities{
-			Send:        true,
-			Interrupt:   true,
-			Compact:     true,
-			Clear:       true,
-			Fork:        true,
-			ChangeModel: true,
-		},
-		Events: []tuiE2ESSEEvent{
-			{Name: "SESSION_START", Data: map[string]any{"session_id": id, "model": "gpt-5", "profile": "default"}},
-			{Name: "ASSISTANT_TEXT_END", Data: map[string]any{"text": "spawn transcript ready"}},
-			{Name: "REPLAY_DONE", Data: map[string]any{}},
-		},
+	h.spawns = append(h.spawns, params)
+	model := params.Model
+	if model == "" {
+		model = "gpt-5"
 	}
-	h.mu.Unlock()
-	ref := hubapi.LocalRef(id)
-	writeTUIE2EJSON(w, hubapi.SpawnResponse{Ref: ref.String(), HostID: ref.HostID, SessionID: ref.SessionID})
+	s := &tuiE2ESession{
+		ID:           id,
+		Title:        fmt.Sprintf("spawned session %d", h.spawnCount),
+		State:        appwire.ThreadStatusIdle,
+		Project:      "serf",
+		WorkingDir:   params.CWD,
+		Model:        model,
+		Live:         true,
+		Capabilities: fullTUIE2ECapabilities(),
+		Turns: []appwire.Turn{{
+			ID:     "turn_1",
+			Status: appwire.TurnStatusCompleted,
+			Items: []appwire.ThreadItem{
+				{Type: "agent_message", ID: "spawn-agent-1", TurnID: "turn_1", Text: "spawn transcript ready", Status: "completed"},
+			},
+		}},
+	}
+	h.addSession(s)
+	return appwire.ThreadStartResponse{Thread: h.threadFromSessionLocked(s)}, nil
 }
 
-func (h *tuiE2EHub) handleSession(w http.ResponseWriter, r *http.Request) {
-	ref, rest, ok := parseTUIE2ESessionPath(r.URL.Path)
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	switch {
-	case r.Method == http.MethodGet && rest == "":
-		h.writeSessionDetail(w, ref.SessionID)
-	case r.Method == http.MethodGet && rest == "events":
-		h.writeSessionEvents(w, ref.SessionID)
-	case r.Method == http.MethodPost && rest == "send":
-		h.handleSend(w, r, ref.SessionID)
-	case r.Method == http.MethodGet && rest == "tasks":
-		h.mu.Lock()
-		fail := h.failTasks
-		h.mu.Unlock()
-		if fail {
-			http.Error(w, "tasks failed", http.StatusInternalServerError)
-			return
-		}
-		writeTUIE2EJSON(w, []agent.Task{{ID: 1, Type: agent.TaskTypeImplement, Description: "wire tui e2e", Status: agent.TaskInProgress}})
-	case r.Method == http.MethodPost && rest == "interrupt":
-		h.recordAction("interrupt")
-		w.WriteHeader(http.StatusOK)
-	case r.Method == http.MethodPost && rest == "compact":
-		h.recordAction("compact")
-		w.WriteHeader(http.StatusOK)
-	case r.Method == http.MethodPost && rest == "model":
-		h.handleModel(w, r)
-	case r.Method == http.MethodPost && rest == "clear":
-		h.handleClear(w)
-	case r.Method == http.MethodPost && rest == "fork":
-		h.handleFork(w, r)
-	default:
-		http.NotFound(w, r)
-	}
-}
-
-func parseTUIE2ESessionPath(path string) (hubapi.Ref, string, bool) {
-	rest := strings.TrimPrefix(path, "/api/sessions/")
-	refPart, suffix, _ := strings.Cut(rest, "/")
-	rawRef, err := url.PathUnescape(refPart)
-	if err != nil {
-		return hubapi.Ref{}, "", false
-	}
-	ref, err := hubapi.ParseRef(rawRef)
-	if err != nil {
-		return hubapi.Ref{}, "", false
-	}
-	return ref, suffix, true
-}
-
-func (h *tuiE2EHub) writeSessionDetail(w http.ResponseWriter, id string) {
+func (h *tuiE2EHub) handleTurnStart(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 	h.mu.Lock()
-	s := h.sessions[id]
-	h.mu.Unlock()
-	if s == nil {
-		http.Error(w, "session not found", http.StatusNotFound)
-		return
+	defer h.mu.Unlock()
+	if h.failSend {
+		return appwire.TurnStartResponse{}, fmt.Errorf("send failed")
 	}
-	ref := hubapi.LocalRef(s.ID)
-	writeTUIE2EJSON(w, hubapi.SessionDetail{
-		Ref:          ref.String(),
-		HostID:       ref.HostID,
-		SessionID:    ref.SessionID,
-		Title:        s.Title,
-		State:        s.State,
-		Live:         s.Live,
-		Project:      s.Project,
-		WorkingDir:   s.WorkingDir,
-		Model:        s.Model,
-		Profile:      "default",
-		TurnCount:    1,
-		Capabilities: s.Capabilities,
-		Streams: hubapi.SessionStreams{
-			TranscriptFollow: "/api/sessions/" + ref.PathEscaped() + "/events?mode=transcript-follow",
-		},
-	})
+	h.sends = append(h.sends, params.Prompt)
+	return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_sent", Status: appwire.TurnStatusRunning}}, nil
 }
 
-func (h *tuiE2EHub) writeSessionEvents(w http.ResponseWriter, id string) {
+func (h *tuiE2EHub) handleTasksList(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error) {
 	h.mu.Lock()
-	s := h.sessions[id]
-	h.mu.Unlock()
-	if s == nil {
-		http.Error(w, "session not found", http.StatusNotFound)
-		return
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	flusher, _ := w.(http.Flusher)
-	for i, ev := range s.Events {
-		data, err := json.Marshal(ev.Data)
-		if err != nil {
-			continue
-		}
-		fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", i+1, ev.Name, data)
-		if flusher != nil {
-			flusher.Flush()
-		}
-	}
-}
-
-func (h *tuiE2EHub) handleSend(w http.ResponseWriter, r *http.Request, _ string) {
-	h.mu.Lock()
-	fail := h.failSend
+	fail := h.failTasks
 	h.mu.Unlock()
 	if fail {
-		http.Error(w, "send failed", http.StatusInternalServerError)
-		return
+		return appwire.TaskListResponse{}, fmt.Errorf("tasks failed")
 	}
-	var body struct {
-		Text string `json:"text"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	h.mu.Lock()
-	h.sends = append(h.sends, body.Text)
-	h.mu.Unlock()
-	w.WriteHeader(http.StatusOK)
+	return appwire.TaskListResponse{Data: []agent.Task{{ID: 1, Type: agent.TaskTypeImplement, Description: "wire tui e2e", Status: agent.TaskInProgress}}}, nil
 }
 
-func (h *tuiE2EHub) handleModel(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Model string `json:"model"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	h.mu.Lock()
-	h.models = append(h.models, body.Model)
-	h.mu.Unlock()
-	w.WriteHeader(http.StatusOK)
+func (h *tuiE2EHub) handleTurnInterrupt(context.Context, appwire.TurnInterruptParams) (appwire.EmptyResponse, error) {
+	h.recordAction("interrupt")
+	return appwire.EmptyResponse{}, nil
 }
 
-func (h *tuiE2EHub) handleClear(w http.ResponseWriter) {
+func (h *tuiE2EHub) handleThreadCompactStart(context.Context, appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
+	h.recordAction("compact")
+	return appwire.EmptyResponse{}, nil
+}
+
+func (h *tuiE2EHub) handleThreadModelSet(_ context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+	h.mu.Lock()
+	h.models = append(h.models, params.Model)
+	h.mu.Unlock()
+	return appwire.EmptyResponse{}, nil
+}
+
+func (h *tuiE2EHub) handleThreadClear(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
 	h.recordAction("clear")
-	id := "02CLEAR"
 	h.mu.Lock()
-	h.sessions[id] = &tuiE2ESession{
-		ID:         id,
-		Title:      "cleared session",
-		State:      "idle",
-		Project:    "serf",
-		WorkingDir: tuiE2EProjectDir,
-		Model:      "gpt-5",
-		Live:       true,
-		Capabilities: hubapi.SessionCapabilities{
-			Send:        true,
-			Interrupt:   true,
-			Compact:     true,
-			Clear:       true,
-			Fork:        true,
-			ChangeModel: true,
-		},
-		Events: []tuiE2ESSEEvent{
-			{Name: "SESSION_START", Data: map[string]any{"session_id": id, "model": "gpt-5", "profile": "default"}},
-			{Name: "REPLAY_DONE", Data: map[string]any{}},
-		},
+	defer h.mu.Unlock()
+	id := "02CLEAR"
+	s := &tuiE2ESession{
+		ID:           id,
+		Title:        "cleared session",
+		State:        appwire.ThreadStatusIdle,
+		Project:      "serf",
+		WorkingDir:   tuiE2EProjectDir,
+		Model:        "gpt-5",
+		Live:         true,
+		Capabilities: fullTUIE2ECapabilities(),
 	}
-	h.mu.Unlock()
-	ref := hubapi.LocalRef(id)
-	writeTUIE2EJSON(w, hubapi.RefResponse{Ref: ref.String(), HostID: ref.HostID, SessionID: ref.SessionID})
+	h.addSession(s)
+	thread := h.threadFromSessionLocked(s)
+	return appwire.ThreadClearResponse{Thread: thread, Ref: thread.Serf.Ref}, nil
 }
 
-func (h *tuiE2EHub) handleFork(w http.ResponseWriter, r *http.Request) {
-	var req hubapi.ForkRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	id := "02FORK"
+func (h *tuiE2EHub) handleThreadFork(_ context.Context, params appwire.ThreadForkParams) (appwire.ThreadForkResponse, error) {
 	h.mu.Lock()
-	h.forks = append(h.forks, req)
-	h.sessions[id] = &tuiE2ESession{
-		ID:         id,
-		Title:      "fork child",
-		State:      "idle",
-		Project:    "serf",
-		WorkingDir: tuiE2EProjectDir,
-		Model:      "gpt-5",
-		Live:       true,
-		Capabilities: hubapi.SessionCapabilities{
-			Send:        true,
-			Interrupt:   true,
-			Compact:     true,
-			Clear:       true,
-			Fork:        true,
-			ChangeModel: true,
-		},
-		Events: []tuiE2ESSEEvent{
-			{Name: "SESSION_START", Data: map[string]any{"session_id": id, "model": "gpt-5", "profile": "default"}},
-			{Name: "USER_INPUT", Data: map[string]any{"text": req.EditedMessage, "turn": 1}},
-			{Name: "ASSISTANT_TEXT_END", Data: map[string]any{"text": "fork answer"}},
-			{Name: "REPLAY_DONE", Data: map[string]any{}},
+	defer h.mu.Unlock()
+	id := "02FORK"
+	h.forks = append(h.forks, params)
+	s := &tuiE2ESession{
+		ID:           id,
+		Title:        "fork child",
+		State:        appwire.ThreadStatusIdle,
+		Project:      "serf",
+		WorkingDir:   tuiE2EProjectDir,
+		Model:        "gpt-5",
+		Live:         true,
+		Capabilities: fullTUIE2ECapabilities(),
+		Turns: []appwire.Turn{{
+			ID:     "turn_1",
+			Status: appwire.TurnStatusCompleted,
+			Items: []appwire.ThreadItem{
+				{Type: "user_message", ID: "fork-user-1", TurnID: "turn_1", Text: params.EditedInput},
+				{Type: "agent_message", ID: "fork-agent-1", TurnID: "turn_1", Text: "fork answer", Status: "completed"},
+			},
+		}},
+	}
+	h.addSession(s)
+	return appwire.ThreadForkResponse{Thread: h.threadFromSessionLocked(s)}, nil
+}
+
+func (h *tuiE2EHub) threadFromSessionLocked(s *tuiE2ESession) appwire.Thread {
+	status := s.State
+	if status == "" {
+		status = appwire.ThreadStatusIdle
+	}
+	return appwire.Thread{
+		ID:            s.ID,
+		SessionID:     s.ID,
+		Preview:       s.Title,
+		Name:          s.Title,
+		ModelProvider: s.Model,
+		CWD:           s.WorkingDir,
+		Source:        "local",
+		Status:        appwire.ThreadStatus{Type: status},
+		Turns:         append([]appwire.Turn(nil), s.Turns...),
+		Serf: appwire.SerfThread{
+			Ref:          appwire.Ref{SourceID: "local", ThreadID: s.ID}.String(),
+			Profile:      "default",
+			Capabilities: s.Capabilities,
 		},
 	}
-	h.mu.Unlock()
-	ref := hubapi.LocalRef(id)
-	writeTUIE2EJSON(w, hubapi.RefResponse{Ref: ref.String(), HostID: ref.HostID, SessionID: ref.SessionID})
+}
+
+func threadIDFromParams(rawRef, threadID string) string {
+	if rawRef != "" {
+		ref, err := appwire.ParseRef(rawRef)
+		if err == nil {
+			return ref.ThreadID
+		}
+	}
+	return threadID
 }
 
 func (h *tuiE2EHub) recordAction(action string) {
@@ -829,7 +716,7 @@ func (h *tuiE2EHub) recordAction(action string) {
 	h.mu.Unlock()
 }
 
-func (h *tuiE2EHub) SetSessionCapabilities(id string, caps hubapi.SessionCapabilities) {
+func (h *tuiE2EHub) SetSessionCapabilities(id string, caps appwire.ThreadCapabilities) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if s := h.sessions[id]; s != nil {
@@ -867,10 +754,10 @@ func (h *tuiE2EHub) Models() []string {
 	return append([]string(nil), h.models...)
 }
 
-func (h *tuiE2EHub) Forks() []hubapi.ForkRequest {
+func (h *tuiE2EHub) Forks() []appwire.ThreadForkParams {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return append([]hubapi.ForkRequest(nil), h.forks...)
+	return append([]appwire.ThreadForkParams(nil), h.forks...)
 }
 
 func (h *tuiE2EHub) ActionCount(action string) int {
@@ -891,13 +778,13 @@ func (h *tuiE2EHub) WaitForTreeRequests(t *testing.T, count int) int {
 	return got
 }
 
-func (h *tuiE2EHub) WaitForSpawns(t *testing.T, count int) []hubapi.SpawnRequest {
+func (h *tuiE2EHub) WaitForSpawns(t *testing.T, count int) []appwire.ThreadStartParams {
 	t.Helper()
-	var out []hubapi.SpawnRequest
+	var out []appwire.ThreadStartParams
 	h.waitFor(t, func() bool {
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		out = append([]hubapi.SpawnRequest(nil), h.spawns...)
+		out = append([]appwire.ThreadStartParams(nil), h.spawns...)
 		return len(out) >= count
 	}, fmt.Sprintf("%d spawn requests", count))
 	return out
@@ -927,13 +814,13 @@ func (h *tuiE2EHub) WaitForModels(t *testing.T, count int) []string {
 	return out
 }
 
-func (h *tuiE2EHub) WaitForForks(t *testing.T, count int) []hubapi.ForkRequest {
+func (h *tuiE2EHub) WaitForForks(t *testing.T, count int) []appwire.ThreadForkParams {
 	t.Helper()
-	var out []hubapi.ForkRequest
+	var out []appwire.ThreadForkParams
 	h.waitFor(t, func() bool {
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		out = append([]hubapi.ForkRequest(nil), h.forks...)
+		out = append([]appwire.ThreadForkParams(nil), h.forks...)
 		return len(out) >= count
 	}, fmt.Sprintf("%d fork requests", count))
 	return out
@@ -961,11 +848,4 @@ func (h *tuiE2EHub) waitFor(t *testing.T, pred func() bool, desc string) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", desc)
-}
-
-func writeTUIE2EJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		panic(err)
-	}
 }

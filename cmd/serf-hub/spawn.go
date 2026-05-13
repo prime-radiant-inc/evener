@@ -91,10 +91,14 @@ func SpawnDaemon(ctx context.Context, serfBinary string, runDir string, req Spaw
 	if err := cmd.Start(); err != nil {
 		return rendezvous.Entry{}, fmt.Errorf("start daemon: %w", err)
 	}
+	exited := make(chan error, 1)
+	go func() {
+		exited <- cmd.Wait()
+	}()
 
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	entry, err := WaitForRendezvous(waitCtx, runDir, cmd.Process.Pid, WithStartedAfter(startedAt))
+	entry, err := waitForRendezvousOrExit(waitCtx, runDir, cmd.Process.Pid, exited, WithStartedAfter(startedAt))
 	if err != nil {
 		_ = cmd.Process.Kill()
 		return rendezvous.Entry{}, fmt.Errorf("daemon spawn timed out: %w", err)
@@ -168,12 +172,47 @@ func ResumeDaemon(ctx context.Context, serfBinary, runDir string, req ResumeRequ
 	if err := cmd.Start(); err != nil {
 		return rendezvous.Entry{}, fmt.Errorf("start daemon: %w", err)
 	}
+	exited := make(chan error, 1)
+	go func() {
+		exited <- cmd.Wait()
+	}()
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	entry, err := WaitForRendezvous(waitCtx, runDir, cmd.Process.Pid, WithStartedAfter(startedAt))
+	entry, err := waitForRendezvousOrExit(waitCtx, runDir, cmd.Process.Pid, exited, WithStartedAfter(startedAt))
 	if err != nil {
 		_ = cmd.Process.Kill()
 		return rendezvous.Entry{}, fmt.Errorf("resume timed out: %w", err)
 	}
 	return entry, nil
+}
+
+func waitForRendezvousOrExit(ctx context.Context, runDir string, pid int, exited <-chan error, opts ...WaitOption) (rendezvous.Entry, error) {
+	cfg := waitConfig{}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		entries, _ := rendezvous.List(runDir)
+		for _, e := range entries {
+			if e.PID != pid {
+				continue
+			}
+			if !cfg.startedAfter.IsZero() && !e.StartedAt.After(cfg.startedAfter) {
+				continue
+			}
+			return e, nil
+		}
+		select {
+		case <-ctx.Done():
+			return rendezvous.Entry{}, errors.New("timeout waiting for rendezvous")
+		case err := <-exited:
+			if err != nil {
+				return rendezvous.Entry{}, fmt.Errorf("process exited before rendezvous: %w", err)
+			}
+			return rendezvous.Entry{}, errors.New("process exited before rendezvous")
+		case <-ticker.C:
+		}
+	}
 }

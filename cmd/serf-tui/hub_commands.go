@@ -2,33 +2,30 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/internal/hubapi"
+	"primeradiant.com/serf/internal/appwire"
 )
 
 type hubTreeMsg struct {
-	tree hubapi.TreeResponse
+	tree hubTreeResponse
 	err  error
 }
 
 type hubSessionMsg struct {
-	detail hubapi.SessionDetail
-	err    error
+	detail   hubSessionDetail
+	messages []chatMessage
+	err      error
 }
 
-type hubStreamStartedMsg struct {
-	ch     <-chan tea.Msg
-	cancel context.CancelFunc
+type hubNotificationMsg struct {
+	notification appwire.Notification
+	ok           bool
 }
-
-type hubStreamMsg struct {
-	ch  <-chan tea.Msg
-	msg tea.Msg
-}
-
-type hubStreamClosedMsg struct{}
 
 type hubSendMsg struct {
 	text string
@@ -46,17 +43,17 @@ type hubActionMsg struct {
 }
 
 type hubClearMsg struct {
-	resp hubapi.RefResponse
+	resp hubRefResponse
 	err  error
 }
 
 type hubForkMsg struct {
-	resp hubapi.RefResponse
+	resp hubRefResponse
 	err  error
 }
 
 type hubSpawnMsg struct {
-	resp hubapi.SpawnResponse
+	resp hubSpawnResponse
 	err  error
 }
 
@@ -65,115 +62,126 @@ type hubModelsMsg struct {
 	err    error
 }
 
-func fetchHubTree(client *hubapi.Client) tea.Cmd {
+func fetchHubTree(client *appwire.Client) tea.Cmd {
 	return func() tea.Msg {
-		tree, err := client.Tree(context.Background())
-		return hubTreeMsg{tree: tree, err: err}
+		resp, err := client.ThreadList(context.Background(), appwire.ThreadListParams{IncludeSubagents: true})
+		if err != nil {
+			return hubTreeMsg{err: err}
+		}
+		return hubTreeMsg{tree: hubTreeFromThreads(resp.Data)}
 	}
 }
 
-func fetchHubSession(client *hubapi.Client, ref hubapi.Ref) tea.Cmd {
+func fetchHubSession(client *appwire.Client, ref appwire.Ref) tea.Cmd {
 	return func() tea.Msg {
-		detail, err := client.Session(context.Background(), ref)
-		return hubSessionMsg{detail: detail, err: err}
+		resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: ref.String(), IncludeTurns: true, ItemsView: "full"})
+		if err != nil {
+			return hubSessionMsg{err: err}
+		}
+		return hubSessionMsg{detail: hubDetailFromThread(resp.Thread), messages: messagesFromThread(resp.Thread)}
 	}
 }
 
-func sendHubSpawn(client *hubapi.Client, req hubapi.SpawnRequest) tea.Cmd {
+func sendHubSpawn(client *appwire.Client, req hubSpawnRequest) tea.Cmd {
 	return func() tea.Msg {
-		resp, err := client.Spawn(context.Background(), req)
-		return hubSpawnMsg{resp: resp, err: err}
+		provider, model := splitProviderModel(req.Model)
+		resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+			CWD:           req.WorkingDir,
+			Prompt:        req.Task,
+			ModelProvider: provider,
+			Model:         model,
+		})
+		return hubSpawnMsg{resp: hubSpawnResponse{Ref: resp.Thread.Serf.Ref}, err: err}
 	}
 }
 
-func fetchHubModels(client *hubapi.Client) tea.Cmd {
+func fetchHubModels(client *appwire.Client) tea.Cmd {
 	return func() tea.Msg {
-		options, err := client.Models(context.Background())
+		resp, err := client.ModelList(context.Background(), appwire.ModelListParams{})
 		if err != nil {
 			return hubModelsMsg{err: err}
 		}
-		items := make([]modelPickerItem, 0, len(options))
-		for _, option := range options {
+		items := make([]modelPickerItem, 0, len(resp.Data))
+		for _, option := range resp.Data {
 			if option.Provider == "" || option.Model == "" {
 				continue
 			}
 			id := option.Provider + "/" + option.Model
-			display := id
-			if option.DisplayName != "" && option.DisplayName != option.Model {
-				display = option.DisplayName + "  " + id
-			}
-			items = append(items, modelPickerItem{id: id, display: display})
+			items = append(items, modelPickerItem{id: id, display: id})
 		}
 		return hubModelsMsg{models: items}
 	}
 }
 
-func sendHubInput(client *hubapi.Client, ref hubapi.Ref, text string) tea.Cmd {
+func sendHubInput(client *appwire.Client, ref appwire.Ref, text string) tea.Cmd {
 	return func() tea.Msg {
-		return hubSendMsg{text: text, err: client.Send(context.Background(), ref, text)}
+		_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: ref.String(), Prompt: text})
+		return hubSendMsg{text: text, err: err}
 	}
 }
 
-func fetchHubTasks(client *hubapi.Client, ref hubapi.Ref) tea.Cmd {
+func fetchHubTasks(client *appwire.Client, ref appwire.Ref) tea.Cmd {
 	return func() tea.Msg {
-		tasks, err := client.Tasks(context.Background(), ref)
-		return hubTasksMsg{tasks: tasks, err: err}
+		resp, err := client.TasksList(context.Background(), appwire.TaskListParams{Ref: ref.String()})
+		if err != nil {
+			return hubTasksMsg{err: err}
+		}
+		var tasks []agent.Task
+		data, _ := json.Marshal(resp.Data)
+		if len(data) > 0 {
+			_ = json.Unmarshal(data, &tasks)
+		}
+		return hubTasksMsg{tasks: tasks}
 	}
 }
 
-func sendHubAction(client *hubapi.Client, ref hubapi.Ref, action string) tea.Cmd {
+func sendHubAction(client *appwire.Client, ref appwire.Ref, action string) tea.Cmd {
 	return func() tea.Msg {
 		var err error
 		switch action {
 		case "interrupt":
-			err = client.Interrupt(context.Background(), ref)
+			err = client.TurnInterrupt(context.Background(), appwire.TurnInterruptParams{Ref: ref.String()})
 		case "compact":
-			err = client.Compact(context.Background(), ref)
+			err = client.ThreadCompactStart(context.Background(), appwire.ThreadCompactStartParams{Ref: ref.String()})
 		default:
-			err = client.SetModel(context.Background(), ref, action)
+			provider, model := splitProviderModel(action)
+			err = client.ThreadModelSet(context.Background(), appwire.ThreadModelSetParams{Ref: ref.String(), ModelProvider: provider, Model: model})
 			action = "model"
 		}
 		return hubActionMsg{action: action, err: err}
 	}
 }
 
-func sendHubClear(client *hubapi.Client, ref hubapi.Ref) tea.Cmd {
+func sendHubClear(client *appwire.Client, ref appwire.Ref) tea.Cmd {
 	return func() tea.Msg {
-		resp, err := client.Clear(context.Background(), ref)
-		return hubClearMsg{resp: resp, err: err}
+		resp, err := client.ThreadClear(context.Background(), appwire.ThreadClearParams{Ref: ref.String()})
+		return hubClearMsg{resp: hubRefResponse{Ref: resp.Ref}, err: err}
 	}
 }
 
-func sendHubFork(client *hubapi.Client, ref hubapi.Ref, req hubapi.ForkRequest) tea.Cmd {
+func sendHubFork(client *appwire.Client, ref appwire.Ref, req hubForkRequest) tea.Cmd {
 	return func() tea.Msg {
-		resp, err := client.Fork(context.Background(), ref, req)
-		return hubForkMsg{resp: resp, err: err}
+		resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
+			Ref:          ref.String(),
+			SourceTurnID: fmt.Sprint(req.Turn),
+			EditedInput:  req.EditedMessage,
+			Label:        req.Label,
+		})
+		return hubForkMsg{resp: hubRefResponse{Ref: resp.Thread.Serf.Ref}, err: err}
 	}
 }
 
-func startHubStream(streamURL, lastEventID string) tea.Cmd {
+func waitHubNotification(client *appwire.Client) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithCancel(context.Background())
-		ch := make(chan tea.Msg)
-		go func() {
-			defer close(ch)
-			streamSSEURL(ctx, streamURL, lastEventID, func(msg tea.Msg) {
-				select {
-				case <-ctx.Done():
-				case ch <- msg:
-				}
-			})
-		}()
-		return hubStreamStartedMsg{ch: ch, cancel: cancel}
+		notification, ok := <-client.Notifications()
+		return hubNotificationMsg{notification: notification, ok: ok}
 	}
 }
 
-func waitHubStream(ch <-chan tea.Msg) tea.Cmd {
-	return func() tea.Msg {
-		msg, ok := <-ch
-		if !ok {
-			return hubStreamClosedMsg{}
-		}
-		return hubStreamMsg{ch: ch, msg: msg}
+func splitProviderModel(raw string) (string, string) {
+	provider, model, ok := strings.Cut(strings.TrimSpace(raw), "/")
+	if !ok {
+		return "", strings.TrimSpace(raw)
 	}
+	return provider, model
 }

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/internal/appwire"
 )
 
 func TestBridge_ForwardsEvents(t *testing.T) {
@@ -132,6 +133,39 @@ func TestBridge_UsesSessionEndStateWhenProvided(t *testing.T) {
 	}
 }
 
+func TestBridge_IgnoresStaleEventsAfterSessionIdentityChanges(t *testing.T) {
+	srv := NewServer(ServerConfig{RingBufferSize: 100})
+	srv.SetAppIdentity("local", "new-session")
+	srv.UpdateSessionInfo("new-session", "gpt-5", "openai")
+	srv.SetState("IDLE")
+	events := make(chan agent.SessionEvent, 10)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		Bridge(srv, events)
+	}()
+
+	events <- agent.SessionEvent{
+		Kind:      agent.EventSessionEnd,
+		SessionID: "old-session",
+		Data:      agent.SessionEndData{Reason: "clear", State: "CLOSED"},
+	}
+	close(events)
+	<-done
+
+	status := srv.GetStatus()
+	if status.SessionID != "new-session" || status.State != "IDLE" {
+		t.Fatalf("status after stale event=%+v, want new-session IDLE", status)
+	}
+	if items := srv.broadcaster.ring.After(0); len(items) != 0 {
+		t.Fatalf("stale event was broadcast: %+v", items)
+	}
+	if items := srv.AppNotificationsAfter(0, "new-session"); len(items) != 0 {
+		t.Fatalf("stale event was projected under new session: %+v", items)
+	}
+}
+
 func TestBridgeWithObserver_InvokesObserverAndForwardsEvents(t *testing.T) {
 	srv := NewServer(ServerConfig{RingBufferSize: 100})
 	events := make(chan agent.SessionEvent, 10)
@@ -205,5 +239,40 @@ func TestBridge_SessionStartEnrichesSSEData(t *testing.T) {
 	dataStr := string(raw)
 	if !strings.Contains(dataStr, `"session_id":"sess-abc"`) {
 		t.Errorf("SSE data should contain session_id, got: %s", dataStr)
+	}
+}
+
+func TestBridge_RecordsAppWireNotifications(t *testing.T) {
+	srv := NewServer(ServerConfig{RingBufferSize: 100})
+	srv.SetAppIdentity("local", "th_1")
+	events := make(chan agent.SessionEvent, 10)
+
+	go Bridge(srv, events)
+
+	events <- agent.SessionEvent{
+		Kind:      agent.EventUserInput,
+		SessionID: "th_1",
+		Data:      agent.UserInputData{Text: "hello"},
+	}
+	events <- agent.SessionEvent{
+		Kind:      agent.EventAssistantTextDelta,
+		SessionID: "th_1",
+		Data:      agent.AssistantTextDeltaData{Delta: "hi"},
+	}
+	close(events)
+	time.Sleep(50 * time.Millisecond)
+
+	items := srv.AppNotificationsAfter(0, "th_1")
+	if len(items) == 0 {
+		t.Fatal("expected app-wire notifications")
+	}
+	found := false
+	for _, item := range items {
+		if item.Notification.Method == appwire.NotifyAgentMessageDelta {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("notifications=%+v", items)
 	}
 }

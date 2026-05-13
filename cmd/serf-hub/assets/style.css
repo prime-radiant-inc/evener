@@ -15,6 +15,10 @@
   --state-idle: #9ece6a;
   --state-ended: #3a3a44;
   --state-subagent: #bb9af7;
+  --diagnostic-provider: var(--state-awaiting);
+  --diagnostic-serf: var(--state-warning);
+  --diagnostic-hub: var(--state-processing);
+  --diagnostic-ui: var(--state-subagent);
 
   /* Legacy aliases for the existing rule set; remove these once the rest
      of style.css migrates to the new token names. */
@@ -446,6 +450,40 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .subagent-reference { margin: 0 0 26px 28px; font-size: 12.5px; color: var(--text-muted); cursor: pointer; }
 .subagent-reference .verb { color: var(--state-subagent); font-family: ui-monospace, "SFMono-Regular", monospace; }
 .subagent-reference:hover { color: var(--text); }
+.diagnostic {
+  --diagnostic-accent: var(--state-warning);
+  margin: 0 0 18px 28px;
+  max-width: 720px;
+  padding: 10px 12px 11px;
+  background: var(--bg-raised);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--diagnostic-accent);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.diagnostic-source-provider { --diagnostic-accent: var(--diagnostic-provider); }
+.diagnostic-source-serf { --diagnostic-accent: var(--diagnostic-serf); }
+.diagnostic-source-hub { --diagnostic-accent: var(--diagnostic-hub); }
+.diagnostic-source-ui { --diagnostic-accent: var(--diagnostic-ui); }
+.diagnostic-header { display: flex; align-items: baseline; gap: 9px; margin-bottom: 5px; flex-wrap: wrap; }
+.diagnostic-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 1px 6px;
+  border: 1px solid var(--diagnostic-accent);
+  border-radius: 4px;
+  color: var(--diagnostic-accent);
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+.diagnostic-title { color: var(--text); font-weight: 500; }
+.diagnostic-message { color: var(--text); word-break: break-word; }
+.diagnostic-hint { margin-top: 5px; color: var(--text-muted); word-break: break-word; }
+
 .banner { margin: 0 0 18px 28px; padding: 6px 12px; font-size: 12.5px; border-radius: 4px; }
 .banner.error { color: var(--state-awaiting); border-left: 2px solid var(--state-awaiting); padding-left: 10px; }
 .banner.warning { color: var(--state-warning); border-left: 2px solid var(--state-warning); padding-left: 10px; }
@@ -474,6 +512,9 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .fork-dialog { margin-bottom: 24px; padding: 12px 16px; background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 8px; max-width: 480px; margin-left: auto; }
 .fork-dialog-title { font-weight: 500; color: var(--text); font-size: 13px; margin-bottom: 6px; }
 .fork-dialog-body { color: var(--text-muted); font-size: 12.5px; line-height: 1.55; margin-bottom: 10px; }
+.fork-dialog-label { color: var(--text-muted); font-size: 12px; }
+.fork-dialog-input { background: transparent; border: 1px solid var(--rule); border-radius: 3px; padding: 4px 8px; color: var(--text); font: inherit; font-size: 12px; width: 220px; margin-left: 8px; outline: none; }
+.fork-dialog-input:focus { border-color: var(--accent); }
 .fork-dialog-actions { display: flex; gap: 14px; align-items: center; margin-top: 10px; font-size: 12px; }
 .fork-cancel { background: transparent; border: none; color: var(--text-muted); cursor: pointer; font: inherit; padding: 4px 8px; }
 .fork-confirm { margin-left: auto; padding: 6px 14px; background: var(--accent); color: var(--bg); border: none; border-radius: 4px; font-weight: 500; cursor: pointer; font: inherit; }
@@ -758,4 +799,5 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
   /* User-message pill: more breathing room because the screen is narrower. */
   .user-message .pill { max-width: 90%; }
   .conversation { padding: 12px 14px; }
+  .diagnostic { margin-left: 0; max-width: none; }
 }

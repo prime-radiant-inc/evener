@@ -52,17 +52,11 @@ type runConfig struct {
 	pluginDirs         []string // --plugin-dir directories
 	systemPromptAsUser bool     // --system-prompt-as-user
 
-	// Resume options. --fork, when combined with any --resume*, turns the
-	// resume into a fork: the task arg becomes the edited message at the
-	// divergence turn (defaulting to the most recent USER_INPUT, or set
-	// explicitly via --fork-turn), and a child session ID is printed to
-	// stdout. --fork-turn without --fork is an error.
+	// Resume options.
 	resume       string // session ID to resume
 	resumeWith   string // session ID whose context to reuse with a new task
 	resumeLast   bool   // resume the most recent session
 	listSessions bool   // print saved sessions and exit
-	fork         bool   // fork the resumed session instead of continuing it
-	forkTurn     int    // explicit 1-based divergence turn; 0 = most recent USER_INPUT
 }
 
 func run(ctx context.Context, cfg runConfig) error {
@@ -96,11 +90,6 @@ func run(ctx context.Context, cfg runConfig) error {
 		return listSessions(cfg, stateDir)
 	}
 
-	// --fork-turn is only meaningful as a modifier on --fork.
-	if cfg.forkTurn != 0 && !cfg.fork {
-		return fmt.Errorf("--fork-turn is only valid with --fork")
-	}
-
 	// Resolve resume target.
 	var meta *agent.SessionMeta
 	if cfg.resume != "" || cfg.resumeWith != "" || cfg.resumeLast {
@@ -111,17 +100,8 @@ func run(ctx context.Context, cfg runConfig) error {
 		meta = &m
 	}
 
-	// Determine task. For --fork, the task is the edited message at the
-	// divergence turn and is required.
+	// Determine task.
 	task := strings.TrimSpace(cfg.task)
-	if cfg.fork {
-		if meta == nil {
-			return fmt.Errorf("--fork requires a parent session (use --resume, --resume-with, or --resume-last)")
-		}
-		if task == "" {
-			return fmt.Errorf("--fork requires a task (the edited message at the divergence turn)")
-		}
-	}
 	if meta != nil && cfg.resumeWith == "" && task == "" {
 		// --resume without a task: continue with a generic prompt.
 		task = "Continue where you left off."
@@ -174,43 +154,16 @@ func run(ctx context.Context, cfg runConfig) error {
 	}
 	env := agent.NewLocalExecutionEnvironment(cfg.workDir)
 
-	// --fork: branch the resolved parent into a fresh child session and
-	// continue with the child's meta. Deferred until after all the
-	// fallible setup above so a setup failure cannot leave a stale
-	// prefix-only child on disk. The task arg is appended to the child's
-	// transcript by ProcessInput below as the edited USER_INPUT turn.
-	//
-	// The child is created silently; emission of the FORK_CREATED event is
-	// withheld until restore succeeds (commit point). If restore fails the
-	// child is deleted to avoid leaving a half-built session on disk.
-	var forkParentID, forkChildID string
-	var forkDivergence int
-	if cfg.fork {
-		childMeta, turn, err := forkResumedSession(cfg, stateDir, meta.ID)
-		if err != nil {
-			return err
-		}
-		forkParentID = meta.ID
-		forkChildID = childMeta.ID
-		forkDivergence = turn
-		meta = childMeta
-	}
-
 	var sess *agent.Session
 	if meta != nil {
 		sess, err = agent.RestoreSessionFromMeta(client, profile, env, *meta, stateDir)
 		if err != nil {
-			if forkChildID != "" {
-				_ = agent.DeleteSession(stateDir, forkChildID)
-			}
 			return fmt.Errorf("restore session: %w", err)
 		}
 		if effort.Set {
 			sess.SetReasoningEffort(effort.Value)
 		}
-		if forkChildID != "" {
-			emitForkCreated(cfg, forkChildID, forkParentID, forkDivergence)
-		}
+		fmt.Fprintf(cfg.stderr, "[resumed] session %s (%d turns)\n", meta.ID, meta.TurnCount) //nolint:errcheck
 	} else {
 		sessionCfg := agent.SessionConfig{
 			MaxToolRoundsPerInput:  cmdutil.MaxRoundsToConfig(cfg.maxRounds),
@@ -359,11 +312,6 @@ func drainEventsHuman(events <-chan agent.SessionEvent, w io.Writer) <-chan stru
 				if d, ok := ev.Data.(agent.ErrorData); ok {
 					fmt.Fprintf(w, "[error] %s\n", d.Error) //nolint:errcheck
 				}
-			case agent.EventSessionEnd:
-				// Always announce the session ID a caller could resume from.
-				if ev.SessionID != "" {
-					fmt.Fprintf(w, "[session] %s\n", ev.SessionID) //nolint:errcheck
-				}
 			}
 		}
 	}()
@@ -377,59 +325,6 @@ func resolveSessionMeta(cfg runConfig, stateDir string) (agent.SessionMeta, erro
 		id = cfg.resumeWith
 	}
 	return cmdutil.ResolveSessionMeta(stateDir, id, cfg.resumeLast)
-}
-
-// forkResumedSession creates a child branched from parentID. If cfg.forkTurn
-// is 0, the divergence defaults to the 1-based index of the most recent
-// USER_INPUT entry in the parent's transcript. Returns the child's loaded
-// meta and the resolved divergence turn.
-//
-// This function does not emit any events — the caller is responsible for
-// announcing the fork via emitForkCreated once it has decided the child
-// will be kept (i.e. session restore succeeded and ProcessInput will run).
-// That keeps fork creation rollback-safe: a setup failure between fork and
-// ProcessInput can delete the child without leaving a stale stderr line.
-func forkResumedSession(cfg runConfig, stateDir, parentID string) (*agent.SessionMeta, int, error) {
-	turn := cfg.forkTurn
-	if turn == 0 {
-		var err error
-		turn, err = agent.LatestUserInputTurn(stateDir, parentID)
-		if err != nil {
-			return nil, 0, fmt.Errorf("locate most recent user input in %s: %w", parentID, err)
-		}
-	}
-	childID, err := agent.ForkSession(stateDir, parentID, turn)
-	if err != nil {
-		return nil, 0, fmt.Errorf("fork session: %w", err)
-	}
-	childMeta, err := agent.LoadSessionMeta(stateDir, childID)
-	if err != nil {
-		return nil, 0, fmt.Errorf("load child session meta: %w", err)
-	}
-	return &childMeta, turn, nil
-}
-
-// emitForkCreated writes a FORK_CREATED event to stderr in the same format
-// as the running drainEvents* loop would render it: NDJSON when --verbose,
-// otherwise a human-readable line.
-func emitForkCreated(cfg runConfig, childID, parentID string, turn int) {
-	if cfg.verbose {
-		ev := agent.SessionEvent{
-			Kind:      agent.EventForkCreated,
-			Timestamp: time.Now().UTC(),
-			SessionID: childID,
-			Data: agent.ForkCreatedData{
-				ParentSessionID: parentID,
-				ChildSessionID:  childID,
-				DivergenceTurn:  turn,
-			},
-		}
-		enc := json.NewEncoder(cfg.stderr)
-		enc.SetEscapeHTML(false)
-		_ = enc.Encode(ev)
-		return
-	}
-	fmt.Fprintf(cfg.stderr, "[fork] new session %s from %s at turn %d\n", childID, parentID, turn) //nolint:errcheck
 }
 
 // listSessions prints all saved sessions and returns.

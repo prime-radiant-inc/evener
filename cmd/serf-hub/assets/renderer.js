@@ -16,9 +16,24 @@
         try { this.eventSource.close(); } catch (e) {}
         this.eventSource = null;
       }
+      if (this.appwireUnsubscribe) {
+        try { this.appwireUnsubscribe(); } catch (e) {}
+        this.appwireUnsubscribe = null;
+      }
+      if (this.appwireConnectionLostUnsubscribe) {
+        try { this.appwireConnectionLostUnsubscribe(); } catch (e) {}
+        this.appwireConnectionLostUnsubscribe = null;
+      }
+      if (this.appwireReconnectTimer) {
+        clearTimeout(this.appwireReconnectTimer);
+        this.appwireReconnectTimer = null;
+      }
 
       this.conversation = conversationEl;
       this.sessionId = conversationEl.dataset.sessionId;
+      this.appwireRef = null;
+      this.appwireThreadId = null;
+      this.appwireHydrated = false;
       this.replayUrl = conversationEl.dataset.replayUrl || "";
       this.eventsUrl = conversationEl.dataset.eventsUrl || "";
       this.state = conversationEl.dataset.state || "ended";
@@ -63,18 +78,25 @@
 
     hydrateDescriptions() {
       if (!this.sessionId) return Promise.resolve();
+      if (window.SerfAppwire) {
+        return window.SerfAppwire.tasks(this.sessionId)
+          .then(tasks => this.applyTasks(tasks))
+          .catch(() => {});
+      }
       return fetch("/s/" + encodeURIComponent(this.sessionId) + "/tasks")
         .then(r => r.ok ? r.json() : [])
-        .then(tasks => {
-          if (!Array.isArray(tasks)) return;
-          for (const t of tasks) {
-            if (t && t.id != null && t.description) {
-              taskDescriptions.set(t.id, t.description);
-            }
-          }
-          const done = tasks.filter(t => t.status === "done").length;
-          updateTasksBadge(done, tasks.length);
-        }).catch(() => {});
+        .then(tasks => this.applyTasks(tasks)).catch(() => {});
+    },
+
+    applyTasks(tasks) {
+      if (!Array.isArray(tasks)) return;
+      for (const t of tasks) {
+        if (t && t.id != null && t.description) {
+          taskDescriptions.set(t.id, t.description);
+        }
+      }
+      const done = tasks.filter(t => t.status === "done").length;
+      updateTasksBadge(done, tasks.length);
     },
 
     // Periodically pull /tasks to keep the workspace tasks-button badge
@@ -84,18 +106,15 @@
       if (this.taskBadgeTimer) clearInterval(this.taskBadgeTimer);
       const tick = () => {
         if (!this.sessionId) return;
+        if (window.SerfAppwire) {
+          window.SerfAppwire.tasks(this.sessionId)
+            .then(tasks => this.applyTasks(tasks))
+            .catch(() => {});
+          return;
+        }
         fetch("/s/" + encodeURIComponent(this.sessionId) + "/tasks")
           .then(r => r.ok ? r.json() : [])
-          .then(tasks => {
-            if (!Array.isArray(tasks)) return;
-            for (const t of tasks) {
-              if (t && t.id != null && t.description) {
-                taskDescriptions.set(t.id, t.description);
-              }
-            }
-            const done = tasks.filter(t => t.status === "done").length;
-            updateTasksBadge(done, tasks.length);
-          })
+          .then(tasks => this.applyTasks(tasks))
           .catch(() => {});
       };
       tick();
@@ -111,11 +130,19 @@
     ensureLiveStream() {
       if (this.eventSource) return;
       if (!this.sessionId) return;
+      if (window.SerfAppwire) {
+        this.connectAppwire();
+        return;
+      }
       this.eventsUrl = "/s/" + encodeURIComponent(this.sessionId) + "/events";
       this.connect(this.eventsUrl);
     },
 
     connect(url) {
+      if (window.SerfAppwire) {
+        this.connectAppwire();
+        return;
+      }
       this.eventSource = new EventSource(url);
       const kinds = [
         "SESSION_START", "SESSION_END", "USER_INPUT",
@@ -131,6 +158,114 @@
         if (this.eventSource) { this.eventSource.close(); this.eventSource = null; }
       });
       this.eventSource.onerror = () => { /* browser auto-reconnects for live streams */ };
+    },
+
+    connectAppwire() {
+      if (!window.SerfAppwire || !this.sessionId) return;
+      const sessionId = this.sessionId;
+      const conversation = this.conversation;
+      this.clearAppwireStream();
+      this.eventSource = {
+        close: () => this.clearAppwireStream(),
+      };
+      const pendingNotifications = [];
+      const deliverNotification = (method, params) => {
+        for (const [kind, data] of window.SerfAppwire.eventsFromNotification(method, params)) {
+          this.handleData(kind, data);
+        }
+      };
+      const notificationMatches = (params) => {
+        const ref = params && (params.ref || (params.item && params.item.ref));
+        const threadId = params && (params.threadId || (params.item && params.item.threadId));
+        const acceptedRefs = new Set([window.SerfAppwire.refForSession(sessionId)]);
+        if (this.appwireRef) acceptedRefs.add(this.appwireRef);
+        const acceptedThreadIds = new Set([sessionId]);
+        if (this.appwireThreadId) acceptedThreadIds.add(this.appwireThreadId);
+        if (ref && !acceptedRefs.has(ref)) return false;
+        if (!ref && threadId && !acceptedThreadIds.has(threadId)) return false;
+        return true;
+      };
+      const shouldWaitForHydration = (params) => {
+        if (this.appwireRef || this.appwireThreadId) return false;
+        const ref = params && (params.ref || (params.item && params.item.ref));
+        const threadId = params && (params.threadId || (params.item && params.item.threadId));
+        if (ref && ref !== window.SerfAppwire.refForSession(sessionId)) return true;
+        if (!ref && threadId && threadId !== sessionId) return true;
+        return false;
+      };
+      this.appwireUnsubscribe = window.SerfAppwire.onNotification((method, params) => {
+        if (shouldWaitForHydration(params)) {
+          pendingNotifications.push([method, params]);
+          return;
+        }
+        if (!notificationMatches(params)) return;
+        deliverNotification(method, params);
+      });
+      if (typeof window.SerfAppwire.onConnectionLost === "function") {
+        this.appwireConnectionLostUnsubscribe = window.SerfAppwire.onConnectionLost(() => {
+          this.clearAppwireStream();
+          this.scheduleAppwireReconnect();
+        });
+      }
+      window.SerfAppwire.readThread(sessionId, true, true)
+        .then((resp) => {
+          if (this.sessionId !== sessionId || this.conversation !== conversation) return;
+          const thread = resp.thread || {};
+          if (this.appwireHydrated) this.resetTranscriptReplay();
+          this.appwireThreadId = thread.id || this.appwireThreadId;
+          this.appwireRef = (thread.serf && thread.serf.ref) || (this.appwireThreadId ? window.SerfAppwire.refForSession(this.appwireThreadId) : null);
+          for (const [kind, data] of window.SerfAppwire.eventsFromThread(thread)) {
+            this.handleData(kind, data);
+          }
+          while (pendingNotifications.length > 0) {
+            const [method, params] = pendingNotifications.shift();
+            if (notificationMatches(params)) deliverNotification(method, params);
+          }
+          this.appwireHydrated = true;
+        })
+        .catch((err) => {
+          if (this.sessionId !== sessionId || this.conversation !== conversation) return;
+          this.appendBanner("error", "stream failed: " + err.message, { source: "hub", title: "Hub stream error" });
+          this.clearAppwireStream();
+        });
+    },
+
+    clearAppwireStream() {
+      if (this.appwireUnsubscribe) {
+        try { this.appwireUnsubscribe(); } catch (e) {}
+        this.appwireUnsubscribe = null;
+      }
+      if (this.appwireConnectionLostUnsubscribe) {
+        try { this.appwireConnectionLostUnsubscribe(); } catch (e) {}
+        this.appwireConnectionLostUnsubscribe = null;
+      }
+      this.eventSource = null;
+    },
+
+    scheduleAppwireReconnect() {
+      if (this.appwireReconnectTimer || !this.sessionId || !window.SerfAppwire) return;
+      this.appwireReconnectTimer = setTimeout(() => {
+        this.appwireReconnectTimer = null;
+        this.ensureLiveStream();
+      }, 250);
+    },
+
+    resetTranscriptReplay() {
+      if (!this.conversation) return;
+      this.conversation.innerHTML = "";
+      this.activeMessages.clear();
+      this.activeTools.clear();
+      this.activeSubagents.clear();
+      this.suppressedToolCalls.clear();
+      this.pendingTaskCalls.clear();
+      this.currentMessageId = null;
+      this.userTurnIndex = 0;
+      this.entryIndex = 0;
+      this.cheapToolCluster = null;
+    },
+
+    handleData(kind, data) {
+      this.handle(kind, { data: JSON.stringify(data || {}) });
     },
 
     handle(kind, ev) {
@@ -164,15 +299,7 @@
           break;
         case "USER_INPUT":
           this.userTurnIndex++;
-          // Prefer the authoritative transcript entry index when the
-          // event provides it (replay always does; live does as of the
-          // agent emitting data.turn in USER_INPUT). Falls back to a
-          // synthesized counter only for legacy streams.
-          if (typeof data.turn === "number" && data.turn > 0) {
-            this.entryIndex = data.turn;
-          } else {
-            this.entryIndex++;
-          }
+          this.entryIndex++;
           this.appendUserMessage(data.text || "", this.entryIndex, data.images || []);
           break;
         case "ASSISTANT_TEXT_START":
@@ -231,10 +358,10 @@
           this.finalizeToolCall(data);
           break;
         case "WARNING":
-          this.appendBanner("warning", data.message || "");
+          this.appendBanner("warning", data.message || "", data);
           break;
         case "ERROR":
-          this.appendBanner("error", data.error || "");
+          this.appendBanner("error", data.error || data.message || "", data);
           break;
         case "STEERING_INJECTED":
           this.appendSteeringMessage(data.text || "");
@@ -371,6 +498,13 @@
       const body = document.createElement("div");
       body.className = "fork-dialog-body";
       body.textContent = "The current branch continues with your edited message. The original is preserved as a sibling fork.";
+      const labelRow = document.createElement("div");
+      labelRow.className = "fork-dialog-label";
+      labelRow.innerHTML = "label the original ";
+      const input = document.createElement("input");
+      input.className = "fork-dialog-input";
+      input.value = autoLabel(originalText);
+      labelRow.appendChild(input);
       const actions = document.createElement("div");
       actions.className = "fork-dialog-actions";
       const cancel = document.createElement("button");
@@ -379,7 +513,7 @@
       confirm.className = "fork-confirm"; confirm.type = "button";
       confirm.innerHTML = "fork <kbd>⌘↩</kbd>";
       actions.appendChild(cancel); actions.appendChild(confirm);
-      dialog.appendChild(title); dialog.appendChild(body); dialog.appendChild(actions);
+      dialog.appendChild(title); dialog.appendChild(body); dialog.appendChild(labelRow); dialog.appendChild(actions);
       userWrap.parentNode.insertBefore(dialog, userWrap.nextSibling);
 
       const cleanup = () => {
@@ -397,27 +531,28 @@
       confirm.onclick = async () => {
         const turn = parseInt(userWrap.dataset.entryIdx || "1", 10);
         try {
-          const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/fork", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ turn, edited_message: editedText }),
-          });
-          if (!resp.ok) {
-            cleanup();
-            this.appendBanner("error", "fork failed: " + (await resp.text()));
-            return;
-          }
-          const json = await resp.json();
+          const body = { turn, edited_message: editedText, label: input.value || autoLabel(originalText) };
+          const json = window.SerfAppwire
+            ? await window.SerfAppwire.forkThread(this.sessionId, body)
+            : await fetch("/s/" + encodeURIComponent(this.sessionId) + "/fork", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body),
+              }).then(async (resp) => {
+                if (!resp.ok) throw new Error(await resp.text());
+                return resp.json();
+              });
           // Refresh sidebar so new fork shows up.
           if (window.htmx) htmx.trigger(document.body, "sidebar:refresh");
           // Navigate to the child session.
-          window.location.href = "/s/" + encodeURIComponent(json.child_session_id);
+          window.location.href = "/s/" + encodeURIComponent(json.child_session_id || json.session_id);
         } catch (e) {
           cleanup();
-          this.appendBanner("error", "fork failed: " + e.message);
+          this.appendBanner("error", "fork failed: " + e.message, { source: "hub", title: "Hub fork error" });
         }
       };
-      confirm.focus();
+      input.focus();
+      input.select();
     },
 
     beginAssistantMessage() {
@@ -605,8 +740,16 @@
       }
     },
 
-    appendBanner(kind, text) {
+    appendBanner(kind, text, diagnostic) {
       this.cheapToolCluster = null;
+      if ((kind === "error" || kind === "warning") && window.SerfDiagnostics && window.SerfDiagnostics.render) {
+        const payload = Object.assign({}, diagnostic || {}, {
+          severity: kind,
+          message: text || (diagnostic && (diagnostic.message || diagnostic.error)) || "",
+        });
+        this.conversation.appendChild(window.SerfDiagnostics.render(payload));
+        return;
+      }
       const el = document.createElement("div");
       el.className = "banner " + kind;
       el.textContent = "[" + kind + "] " + text;
@@ -731,18 +874,15 @@
 
     refreshTaskBadgeSoon() {
       if (!this.sessionId) return;
+      if (window.SerfAppwire) {
+        window.SerfAppwire.tasks(this.sessionId)
+          .then(tasks => this.applyTasks(tasks))
+          .catch(() => {});
+        return;
+      }
       fetch("/s/" + encodeURIComponent(this.sessionId) + "/tasks")
         .then(r => r.ok ? r.json() : [])
-        .then(tasks => {
-          if (!Array.isArray(tasks)) return;
-          for (const t of tasks) {
-            if (t && t.id != null && t.description) {
-              taskDescriptions.set(t.id, t.description);
-            }
-          }
-          const done = tasks.filter(t => t.status === "done").length;
-          updateTasksBadge(done, tasks.length);
-        }).catch(() => {});
+        .then(tasks => this.applyTasks(tasks)).catch(() => {});
     },
 
     scrollToBottom() {
@@ -777,21 +917,25 @@
           }
           steerBtn.disabled = true;
           try {
-            const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/steer", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ text }),
-            });
-            if (!resp.ok) {
-              const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
-              this.appendBanner("error", "steer failed: " + detail);
+            if (window.SerfAppwire) {
+              await window.SerfAppwire.steer(this.sessionId, text);
             } else {
-              ta.value = "";
-              ta.style.height = "";
-              grow();
+              const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/steer", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ text }),
+              });
+              if (!resp.ok) {
+                const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
+                this.appendBanner("error", "steer failed: " + detail, { source: "hub", title: "Hub steer error" });
+                return;
+              }
             }
+            ta.value = "";
+            ta.style.height = "";
+            grow();
           } catch (err) {
-            this.appendBanner("error", "steer failed: " + err.message);
+            this.appendBanner("error", "steer failed: " + err.message, { source: "hub", title: "Hub steer error" });
           } finally {
             steerBtn.disabled = false;
           }
@@ -867,27 +1011,28 @@
               name: a.name,
             })),
           };
-          const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/send", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          });
-          if (!resp.ok) {
-            const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
-            this.appendBanner("error", "send failed: " + detail);
+          if (window.SerfAppwire) {
+            await window.SerfAppwire.startTurn(this.appwireRef || this.sessionId, body.text, body.images);
           } else {
-            ta.value = "";
-            ta.style.height = "";
-            grow();
-            this.pendingAttachments = [];
-            this.renderAttachments();
-            // Replying to an ended session resumes its daemon; switch the
-            // SSE source from the now-closed past replay to the live events
-            // stream so the new turn renders without a page reload.
-            this.ensureLiveStream();
+            const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/send", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            });
+            if (!resp.ok) {
+              const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
+              this.appendBanner("error", "send failed: " + detail, { source: "hub", title: "Hub send error" });
+              return;
+            }
           }
+          ta.value = "";
+          ta.style.height = "";
+          grow();
+          this.pendingAttachments = [];
+          this.renderAttachments();
+          this.ensureLiveStream();
         } catch (err) {
-          this.appendBanner("error", "send failed: " + err.message);
+          this.appendBanner("error", "send failed: " + err.message, { source: "hub", title: "Hub send error" });
         } finally {
           if (sendBtn) sendBtn.disabled = false;
         }
@@ -1023,6 +1168,10 @@
       });
     },
   };
+
+  function autoLabel(text) {
+    return "before " + text.slice(0, 40).replace(/\s+/g, " ").trim();
+  }
 
   // openImageLightbox shows a full-size image overlay. Click backdrop or press
   // Esc to dismiss. One overlay at a time.
@@ -1445,7 +1594,10 @@
       document.title = "serf hub";
       return;
     }
-    fetch("/api/search?q=").then(r => r.json()).then(resp => {
+    const searchPromise = window.SerfAppwire
+      ? window.SerfAppwire.search("")
+      : fetch("/api/search?q=").then(r => r.json());
+    searchPromise.then(resp => {
       const awaiting = (resp.live || []).filter(s => s.state === "awaiting").length;
       const sessTitle = document.querySelector(".workspace-title .title")?.textContent?.trim() || "serf hub";
       document.title = (awaiting > 0 ? "(" + awaiting + ") " : "") + sessTitle;
@@ -1486,7 +1638,7 @@
     }
   });
 
-  // triggerSessionAction posts to /s/<id>/<action> for the currently-rendered
+  // triggerSessionAction sends the app-wire action for the currently-rendered
   // workspace session. shutdown asks for confirmation first; interrupt and
   // compact are silent on success and surface failures via appendBanner.
   function triggerSessionAction(action) {
@@ -1496,19 +1648,22 @@
     if (action === "shutdown") {
       if (!window.confirm("Shut down this daemon? The session will end.")) return;
     }
-    fetch("/s/" + encodeURIComponent(sessionId) + "/" + action, { method: "POST" })
+    const actionPromise = window.SerfAppwire
+      ? window.SerfAppwire.action(sessionId, action).then(() => ({ ok: true, text: () => Promise.resolve("") }))
+      : fetch("/s/" + encodeURIComponent(sessionId) + "/" + action, { method: "POST" });
+    actionPromise
       .then((resp) => {
         if (!resp.ok) {
           return resp.text().then((txt) => {
             if (window.SerfRenderer && window.SerfRenderer.appendBanner) {
-              window.SerfRenderer.appendBanner("error", action + " failed: " + (txt || resp.status));
+              window.SerfRenderer.appendBanner("error", action + " failed: " + (txt || resp.status), { source: "hub", title: "Hub action error" });
             }
           });
         }
       })
       .catch((err) => {
         if (window.SerfRenderer && window.SerfRenderer.appendBanner) {
-          window.SerfRenderer.appendBanner("error", action + " failed: " + err.message);
+          window.SerfRenderer.appendBanner("error", action + " failed: " + err.message, { source: "hub", title: "Hub action error" });
         }
       });
   }
@@ -1562,9 +1717,11 @@
     panel.innerHTML = "<div class='details-loading'>loading…</div>";
     document.body.appendChild(panel);
 
-    const tasksURL = "/s/" + encodeURIComponent(id) + "/tasks";
     const refresh = () => {
-      fetch(tasksURL).then(r => r.json()).then(tasks => {
+      const tasksPromise = window.SerfAppwire
+        ? window.SerfAppwire.tasks(id)
+        : fetch("/s/" + encodeURIComponent(id) + "/tasks").then(r => r.json());
+      tasksPromise.then(tasks => {
         renderTasksInto(panel, tasks);
       }).catch(() => {
         panel.innerHTML = "<div class='details-loading'>failed to load</div>";

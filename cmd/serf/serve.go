@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmdutil"
+	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/anthropic"
 	_ "primeradiant.com/serf/llm/providers/glm"
@@ -66,7 +67,7 @@ func runServe(args []string) error {
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: serf serve [flags]\n\n")
-		fmt.Fprintf(os.Stderr, "Start serf as an HTTP server with REST+SSE API.\n\n")
+		fmt.Fprintf(os.Stderr, "Start serf as an app-wire JSON-RPC server.\n\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -191,6 +192,8 @@ func runServe(args []string) error {
 	defer cancel()
 
 	srv := server.NewServer(server.ServerConfig{})
+	srv.SetAppIdentity("local", sess.ID())
+	rvRegistration := &serveRendezvousRegistration{}
 
 	var currentMu sync.RWMutex
 	currentSess := sess
@@ -232,13 +235,19 @@ func runServe(args []string) error {
 	srv.SetTasksFunc(func() any { return getSession().Tasks() })
 	srv.SetClearFunc(func(ctx context.Context) error {
 		oldSess := getSession()
-		oldSess.Close()
-
 		newSess, err := agent.NewSession(client, profile, env, sessionCfg)
 		if err != nil {
 			return fmt.Errorf("new session: %w", err)
 		}
 		setSession(newSess)
+		srv.SetAppIdentity("local", newSess.ID())
+		if err := rvRegistration.UpdateSessionID(newSess.ID()); err != nil {
+			setSession(oldSess)
+			srv.SetAppIdentity("local", oldSess.ID())
+			newSess.Close()
+			return fmt.Errorf("rendezvous update: %w", err)
+		}
+		oldSess.Close()
 		bridgeSession(newSess)
 		return nil
 	})
@@ -291,6 +300,11 @@ func runServe(args []string) error {
 	rvEntry := rendezvous.Entry{
 		PID:        os.Getpid(),
 		Address:    listener.Addr().String(),
+		Protocol:   appwire.ProtocolVersion,
+		Endpoint:   "ws://" + listener.Addr().String() + "/rpc",
+		SourceID:   "local",
+		ThreadID:   getSession().ID(),
+		SessionID:  getSession().ID(),
 		WorkingDir: wd,
 		StateDir:   sd,
 		Agent:      *agentName,
@@ -299,11 +313,11 @@ func runServe(args []string) error {
 		StartedAt:  time.Now().UTC(),
 		SpawnedBy:  spawnedBy,
 	}
-	if _, err := rendezvous.Write(runDir, rvEntry); err != nil {
+	if err := rvRegistration.Register(runDir, rvEntry); err != nil {
 		fmt.Fprintf(os.Stderr, "[serve] rendezvous write failed: %v\n", err)
 	} else {
 		defer func() {
-			_ = rendezvous.Remove(runDir, rvEntry.PID)
+			_ = rvRegistration.Remove()
 		}()
 	}
 

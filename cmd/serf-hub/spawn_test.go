@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -118,5 +121,24 @@ func TestWaitForRendezvous_IgnoresStaleEntryFromBeforeStart(t *testing.T) {
 	}
 	if got.Address != "127.0.0.1:22222" {
 		t.Errorf("matched stale entry: address=%q", got.Address)
+	}
+}
+
+func TestSpawnDaemonReturnsWhenProcessExitsBeforeRendezvous(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "fake-serf")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 42\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, err := SpawnDaemon(context.Background(), bin, filepath.Join(dir, "run"), SpawnRequest{Model: "openai/gpt-5.2"}, 10*time.Second)
+	if err == nil {
+		t.Fatal("expected spawn error")
+	}
+	if time.Since(start) > 8*time.Second {
+		t.Fatalf("spawn waited for timeout instead of process exit: %v", time.Since(start))
+	}
+	if !strings.Contains(err.Error(), "exited before rendezvous") {
+		t.Fatalf("error=%v", err)
 	}
 }

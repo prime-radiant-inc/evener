@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/internal/appserver"
+	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/hubapi"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/rendezvous"
@@ -42,6 +44,22 @@ func TestWeb_Landing_Renders(t *testing.T) {
 	}
 	if !strings.Contains(body, `id="workspace"`) {
 		t.Errorf("body missing #workspace: %q", body)
+	}
+}
+
+func TestHubDetailFromAppThreadTreatsClosedAsNotLive(t *testing.T) {
+	detail := hubDetailFromAppThread(appwire.Thread{
+		ID:        "th_closed",
+		SessionID: "th_closed",
+		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusClosed},
+		Source:    "local",
+		Serf:      appwire.SerfThread{Ref: "local:th_closed"},
+	})
+	if detail.Live {
+		t.Fatalf("closed detail marked live: %+v", detail)
+	}
+	if detail.Streams.Live != "" {
+		t.Fatalf("closed detail has live stream URL: %+v", detail.Streams)
 	}
 }
 
@@ -486,6 +504,47 @@ func TestWeb_PastReplay_TranslatesTurnsToSSEEvents(t *testing.T) {
 	}
 }
 
+func TestWriteNotificationSSEWarningExtractsMessage(t *testing.T) {
+	var out bytes.Buffer
+	writeNotificationSSE(&out, nil, appwire.Notification{
+		Method: appwire.NotifyWarning,
+		Params: testRawJSON(t, map[string]any{
+			"threadId": "th_1",
+			"warning":  agent.WarningData{Message: "provider unavailable"},
+		}),
+	})
+	if got := out.String(); !strings.Contains(got, `event: WARNING`) || !strings.Contains(got, `"message":"provider unavailable"`) || !strings.Contains(got, `"source":"provider"`) {
+		t.Fatalf("warning SSE=%q", got)
+	}
+}
+
+func TestWriteNotificationSSEFailedTurnEmitsError(t *testing.T) {
+	var out bytes.Buffer
+	writeNotificationSSE(&out, nil, appwire.Notification{
+		Method: appwire.NotifyTurnCompleted,
+		Params: testRawJSON(t, map[string]any{
+			"threadId": "th_1",
+			"turn": appwire.Turn{
+				ID:     "turn_1",
+				Status: appwire.TurnStatusFailed,
+				Error:  &appwire.TurnError{Message: "provider unavailable"},
+			},
+		}),
+	})
+	if got := out.String(); !strings.Contains(got, `event: ERROR`) || !strings.Contains(got, `"error":"provider unavailable"`) || !strings.Contains(got, `"source":"provider"`) {
+		t.Fatalf("failed turn SSE=%q", got)
+	}
+}
+
+func testRawJSON(t *testing.T, v any) json.RawMessage {
+	t.Helper()
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
 func TestHubReplayUserInputIncludesTurnIndex(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
@@ -613,8 +672,10 @@ func TestWeb_ApiSpawn_WaitsForSlowSpawnerAndReturnsSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp, err := client.Spawn(context.Background(), hubapi.SpawnRequest{
-		Model:      "openai/gpt-5",
-		WorkingDir: workDir,
+		Model:           "openai/gpt-5",
+		WorkingDir:      workDir,
+		Agent:           "reviewer",
+		ReasoningEffort: "high",
 	})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
@@ -632,6 +693,12 @@ func TestWeb_ApiSpawn_WaitsForSlowSpawnerAndReturnsSession(t *testing.T) {
 	}
 	if spawner.got.WorkingDir != wantWorkingDir {
 		t.Fatalf("working_dir=%q, want %q", spawner.got.WorkingDir, wantWorkingDir)
+	}
+	if spawner.got.Agent != "reviewer" {
+		t.Fatalf("agent=%q, want reviewer", spawner.got.Agent)
+	}
+	if spawner.got.ReasoningEffort != "high" {
+		t.Fatalf("reasoning_effort=%q, want high", spawner.got.ReasoningEffort)
 	}
 }
 
@@ -953,6 +1020,94 @@ func TestWeb_Send_ClosedSessionRequiresSpawner(t *testing.T) {
 	}
 }
 
+func TestWeb_Send_ClosedSessionResumesForwardsAndKeepsReplay(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "past")
+	sessionID := buildRPCParentSession(t, stateDir)
+	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotPrompt string
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+		gotPrompt = params.Prompt
+		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_4"}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rpc" {
+			http.NotFound(w, r)
+			return
+		}
+		daemon.ServeWebSocket(w, r)
+	}))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	spawner := &fakeRPCSpawner{
+		resume: func(_ context.Context, req ResumeRequest) (rendezvous.Entry, error) {
+			if req.SessionID != sessionID {
+				t.Fatalf("resume session=%q, want %q", req.SessionID, sessionID)
+			}
+			if req.StateDir != stateDir || req.WorkingDir != "/tmp/project" {
+				t.Fatalf("resume request=%+v", req)
+			}
+			if req.Model != "openai/gpt-5" {
+				t.Fatalf("resume model=%q, want openai/gpt-5", req.Model)
+			}
+			entry := rendezvous.Entry{
+				PID:        301,
+				Address:    strings.TrimPrefix(daemonHTTP.URL, "http://"),
+				Protocol:   appwire.ProtocolVersion,
+				Endpoint:   "ws" + daemonHTTP.URL[len("http"):] + "/rpc",
+				SourceID:   "local",
+				ThreadID:   sessionID,
+				SessionID:  sessionID,
+				WorkingDir: "/tmp/project",
+				Model:      "gpt-5",
+			}
+			writeRendezvous(t, runDir, entry)
+			return entry, nil
+		},
+	}
+	roster := NewRoster(runDir, fakeProber{sessionID: sessionID, status: "idle"})
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		RunDir:  runDir,
+		Roster:  roster,
+		Spawner: spawner,
+		Past:    past,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/s/"+sessionID+"/send", strings.NewReader(`{"text":"resume work"}`))
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("send status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if gotPrompt != "resume work" {
+		t.Fatalf("prompt=%q, want resume work", gotPrompt)
+	}
+
+	replayReq := httptest.NewRequest(http.MethodGet, "/past/"+sessionID+"/replay", nil)
+	replayReq.Host = "127.0.0.1:9180"
+	replayRec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(replayRec, replayReq)
+	if replayRec.Code != http.StatusOK {
+		t.Fatalf("replay status=%d body=%q", replayRec.Code, replayRec.Body.String())
+	}
+	body := replayRec.Body.String()
+	for _, want := range []string{`"text":"first task"`, `"text":"first reply"`, `"text":"second task"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("replay body missing preserved history %q\nbody:\n%s", want, body)
+		}
+	}
+}
+
 // TestWeb_Fork_CallsForkSession verifies end-to-end fork: set up a parent transcript
 // + meta, POST /s/<id>/fork, expect 200 + JSON child_session_id.
 func TestWeb_Fork_CallsForkSession(t *testing.T) {
@@ -1018,34 +1173,6 @@ func TestWeb_Fork_CallsForkSession(t *testing.T) {
 	if !strings.Contains(respBody, "child_session_id") {
 		t.Errorf("response missing child_session_id: %q", respBody)
 	}
-
-	// Decode the response to get the child ID and verify the child's
-	// transcript ends with the edited USER_INPUT — the hub is responsible
-	// for appending the edited turn after ForkSession copies the prefix.
-	var resp struct {
-		ChildSessionID string `json:"child_session_id"`
-	}
-	if err := json.Unmarshal([]byte(respBody), &resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if resp.ChildSessionID == "" {
-		t.Fatal("child_session_id is empty")
-	}
-	childTranscript := filepath.Join(sessionsDir, resp.ChildSessionID+".transcript.jsonl")
-	_, entries, _, err := agent.ReadTranscript(childTranscript)
-	if err != nil {
-		t.Fatalf("ReadTranscript(child): %v", err)
-	}
-	if len(entries) == 0 {
-		t.Fatal("child transcript has no entries")
-	}
-	last := entries[len(entries)-1]
-	if last.Turn.Kind != agent.TurnUserInput {
-		t.Errorf("last child entry kind = %q, want USER_INPUT", last.Turn.Kind)
-	}
-	if last.Turn.Message.Text() != "second task revised" {
-		t.Errorf("last child entry text = %q, want %q", last.Turn.Message.Text(), "second task revised")
-	}
 }
 
 // TestWeb_ApiSearch_FiltersPast populates the past index with two metas,
@@ -1085,6 +1212,58 @@ func TestWeb_ApiSearch_FiltersPast(t *testing.T) {
 	}
 	if strings.Contains(body, "01OTHER") {
 		t.Errorf("body incorrectly includes 01OTHER: %q", body)
+	}
+}
+
+func TestWeb_ApiSearch_OrdersLiveResultsByStartedAtAndID(t *testing.T) {
+	base := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	r := NewRoster(t.TempDir(), nil)
+	r.byPID = map[int]LiveEntry{
+		2: {
+			Entry:     rendezvous.Entry{PID: 2, StartedAt: base.Add(-time.Hour), WorkingDir: "/projects/serf"},
+			SessionID: "02LIVEOLD",
+			Status:    "IDLE",
+		},
+		1: {
+			Entry:     rendezvous.Entry{PID: 1, StartedAt: base, WorkingDir: "/projects/serf"},
+			SessionID: "01LIVENEW",
+			Status:    "IDLE",
+		},
+		4: {
+			Entry:     rendezvous.Entry{PID: 4, StartedAt: base.Add(-2 * time.Hour), WorkingDir: "/projects/serf"},
+			SessionID: "04LIVETIEB",
+			Status:    "IDLE",
+		},
+		3: {
+			Entry:     rendezvous.Entry{PID: 3, StartedAt: base.Add(-2 * time.Hour), WorkingDir: "/projects/serf"},
+			SessionID: "03LIVETIEA",
+			Status:    "IDLE",
+		},
+	}
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  r,
+		Past:    NewPastIndex(""),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/search?q=live", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	var got searchResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	gotIDs := make([]string, 0, len(got.Live))
+	for _, result := range got.Live {
+		gotIDs = append(gotIDs, result.ID)
+	}
+	want := []string{"01LIVENEW", "02LIVEOLD", "03LIVETIEA", "04LIVETIEB"}
+	if strings.Join(gotIDs, ",") != strings.Join(want, ",") {
+		t.Fatalf("live order=%v, want %v", gotIDs, want)
 	}
 }
 
@@ -1493,20 +1672,13 @@ func TestWeb_SessionTasks_PastNoTasksFile(t *testing.T) {
 // TestWeb_SessionTasks_LiveProxiesDaemon stands up a fake daemon serving /tasks
 // and verifies the hub proxies through.
 func TestWeb_SessionTasks_LiveProxiesDaemon(t *testing.T) {
-	daemonResp := `[{"id":1,"type":"implement","description":"live task","status":"in_progress"}]`
-	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/tasks" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(daemonResp))
-	}))
-	defer daemon.Close()
-
-	addr := strings.TrimPrefix(daemon.URL, "http://")
 	dir := t.TempDir()
-	writeRendezvous(t, dir, rendezvous.Entry{PID: 11, Address: addr})
+	daemon := startAppwireTestDaemon(t, dir, "01LIVETASK", func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodSerfTasksList, func(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error) {
+			return appwire.TaskListResponse{Data: []agent.Task{{ID: 1, Type: agent.TaskTypeImplement, Description: "live task", Status: agent.TaskInProgress}}}, nil
+		})
+	})
+	defer daemon.Close()
 	r := NewRoster(dir, fakeProber{sessionID: "01LIVETASK", status: "idle"})
 	r.Refresh()
 
@@ -1550,15 +1722,46 @@ func stubDaemonForSend(t *testing.T) (*httptest.Server, *[]byte, string) {
 	return srv, &captured, strings.TrimPrefix(srv.URL, "http://")
 }
 
+func startAppwireTestDaemon(t *testing.T, dir, sessionID string, register func(*appserver.Server)) *httptest.Server {
+	t.Helper()
+	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	if register != nil {
+		register(app)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rpc" {
+			http.NotFound(w, r)
+			return
+		}
+		app.ServeWebSocket(w, r)
+	}))
+	writeRendezvous(t, dir, rendezvous.Entry{
+		PID:        200,
+		Address:    strings.TrimPrefix(srv.URL, "http://"),
+		Protocol:   appwire.ProtocolVersion,
+		Endpoint:   "ws" + srv.URL[len("http"):] + "/rpc",
+		SourceID:   "local",
+		ThreadID:   sessionID,
+		SessionID:  sessionID,
+		WorkingDir: "/tmp",
+		Model:      "gpt-5",
+	})
+	return srv
+}
+
 // TestWeb_Send_ForwardsTextAndImages verifies POST /s/<id>/send with both text
 // and an image attachment forwards a JSON body matching server.InputRequest's
 // schema to the daemon's /input.
 func TestWeb_Send_ForwardsTextAndImages(t *testing.T) {
-	daemon, captured, addr := stubDaemonForSend(t)
-	defer daemon.Close()
-
+	var got appwire.TurnStartParams
 	dir := t.TempDir()
-	writeRendezvous(t, dir, rendezvous.Entry{PID: 21, Address: addr})
+	daemon := startAppwireTestDaemon(t, dir, "01SENDIMG", func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+			got = params
+			return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_1"}}, nil
+		})
+	})
+	defer daemon.Close()
 	r := NewRoster(dir, fakeProber{sessionID: "01SENDIMG", status: "idle"})
 	r.Refresh()
 
@@ -1590,38 +1793,35 @@ func TestWeb_Send_ForwardsTextAndImages(t *testing.T) {
 	if rec.Code < 200 || rec.Code >= 300 {
 		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
 	}
-	if len(*captured) == 0 {
-		t.Fatal("daemon did not receive a request body")
+	if got.Prompt != "caption" {
+		t.Errorf("prompt=%q, want %q", got.Prompt, "caption")
 	}
-	var got sendRequest
-	if err := json.Unmarshal(*captured, &got); err != nil {
-		t.Fatalf("decode forwarded body: %v (raw=%q)", err, *captured)
+	if len(got.Items) != 1 {
+		t.Fatalf("items=%d, want 1", len(got.Items))
 	}
-	if got.Text != "caption" {
-		t.Errorf("forwarded text=%q, want %q", got.Text, "caption")
+	if got.Items[0].MediaType != "image/png" {
+		t.Errorf("media_type=%q, want image/png", got.Items[0].MediaType)
 	}
-	if len(got.Images) != 1 {
-		t.Fatalf("forwarded images=%d, want 1", len(got.Images))
+	if got.Items[0].Name != "x.png" {
+		t.Errorf("name=%q, want x.png", got.Items[0].Name)
 	}
-	if got.Images[0].MediaType != "image/png" {
-		t.Errorf("media_type=%q, want image/png", got.Images[0].MediaType)
-	}
-	if got.Images[0].Name != "x.png" {
-		t.Errorf("name=%q, want x.png", got.Images[0].Name)
-	}
-	if len(got.Images[0].Data) != len(imgBytes) {
-		t.Errorf("forwarded image data len=%d, want %d", len(got.Images[0].Data), len(imgBytes))
+	if len(got.Items[0].Data) != len(imgBytes) {
+		t.Errorf("image data len=%d, want %d", len(got.Items[0].Data), len(imgBytes))
 	}
 }
 
 // TestWeb_Send_ImageOnly_Forwards verifies that a send with empty text and one
 // image is accepted and forwarded.
 func TestWeb_Send_ImageOnly_Forwards(t *testing.T) {
-	daemon, captured, addr := stubDaemonForSend(t)
-	defer daemon.Close()
-
+	var got appwire.TurnStartParams
 	dir := t.TempDir()
-	writeRendezvous(t, dir, rendezvous.Entry{PID: 22, Address: addr})
+	daemon := startAppwireTestDaemon(t, dir, "01IMGONLY", func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+			got = params
+			return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_1"}}, nil
+		})
+	})
+	defer daemon.Close()
 	r := NewRoster(dir, fakeProber{sessionID: "01IMGONLY", status: "idle"})
 	r.Refresh()
 
@@ -1653,21 +1853,20 @@ func TestWeb_Send_ImageOnly_Forwards(t *testing.T) {
 	if rec.Code < 200 || rec.Code >= 300 {
 		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
 	}
-	var got sendRequest
-	if err := json.Unmarshal(*captured, &got); err != nil {
-		t.Fatalf("decode forwarded body: %v (raw=%q)", err, *captured)
+	if got.Prompt != "" {
+		t.Errorf("prompt=%q, want empty", got.Prompt)
 	}
-	if got.Text != "" {
-		t.Errorf("forwarded text=%q, want empty", got.Text)
+	if len(got.Items) != 1 {
+		t.Fatalf("items=%d, want 1", len(got.Items))
 	}
-	if len(got.Images) != 1 {
-		t.Fatalf("forwarded images=%d, want 1", len(got.Images))
+	if got.Items[0].MediaType != "image/jpeg" {
+		t.Errorf("media_type=%q, want image/jpeg", got.Items[0].MediaType)
 	}
-	if got.Images[0].MediaType != "image/jpeg" {
-		t.Errorf("media_type=%q, want image/jpeg", got.Images[0].MediaType)
+	if got.Items[0].Name != "y.jpg" {
+		t.Errorf("name=%q, want y.jpg", got.Items[0].Name)
 	}
-	if len(got.Images[0].Data) != len(imgBytes) {
-		t.Errorf("forwarded image data len=%d, want %d", len(got.Images[0].Data), len(imgBytes))
+	if len(got.Items[0].Data) != len(imgBytes) {
+		t.Errorf("image data len=%d, want %d", len(got.Items[0].Data), len(imgBytes))
 	}
 }
 
@@ -1836,21 +2035,21 @@ func TestWeb_Sidebar_ProjectHeader_HasChevronAndFolder(t *testing.T) {
 	}
 }
 
-// TestWeb_Workspace_ForkOriginalBanner verifies that a session referenced by
-// another non-subagent meta via ParentSessionID + DivergenceTurn renders the
-// "↳ original of <new-branch-title>, divergence at turn N" banner above the
-// workspace title.
+// TestWeb_Workspace_ForkOriginalBanner verifies that a session whose meta
+// carries ForkLabel renders the "↳ original of <new-branch-title>, divergence
+// at turn N" banner above the workspace title.
 func TestWeb_Workspace_ForkOriginalBanner(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Original (preserved) branch — un-mutated; detected via the new branch's
-	// back-reference.
+	// Original (preserved) branch — carries ForkLabel.
 	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
 		ID: "01ORIGINAL", UpdatedAt: time.Now().Add(-time.Hour),
-		OriginalTask: "the original task",
+		OriginalTask:   "the original task",
+		ForkLabel:      "before TDD",
+		DivergenceTurn: 5,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1914,11 +2113,15 @@ func stubDaemonForAction(t *testing.T, replyStatus int) (*httptest.Server, *stri
 }
 
 func TestWeb_SessionAction_InterruptForwards(t *testing.T) {
-	daemon, capturedPath, addr := stubDaemonForAction(t, http.StatusNoContent)
-	defer daemon.Close()
-
+	var called bool
 	dir := t.TempDir()
-	writeRendezvous(t, dir, rendezvous.Entry{PID: 30, Address: addr})
+	daemon := startAppwireTestDaemon(t, dir, "01ACTINT", func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnInterrupt, func(context.Context, appwire.TurnInterruptParams) (appwire.EmptyResponse, error) {
+			called = true
+			return appwire.EmptyResponse{}, nil
+		})
+	})
+	defer daemon.Close()
 	r := NewRoster(dir, fakeProber{sessionID: "01ACTINT", status: "processing"})
 	r.Refresh()
 
@@ -1933,17 +2136,21 @@ func TestWeb_SessionAction_InterruptForwards(t *testing.T) {
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status=%d, want 204 (body=%q)", rec.Code, rec.Body.String())
 	}
-	if *capturedPath != "/interrupt" {
-		t.Errorf("daemon path=%q, want /interrupt", *capturedPath)
+	if !called {
+		t.Error("interrupt appwire handler was not called")
 	}
 }
 
 func TestWeb_SessionAction_CompactForwards(t *testing.T) {
-	daemon, capturedPath, addr := stubDaemonForAction(t, http.StatusAccepted)
-	defer daemon.Close()
-
+	var called bool
 	dir := t.TempDir()
-	writeRendezvous(t, dir, rendezvous.Entry{PID: 31, Address: addr})
+	daemon := startAppwireTestDaemon(t, dir, "01ACTCMP", func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadCompactStart, func(context.Context, appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
+			called = true
+			return appwire.EmptyResponse{}, nil
+		})
+	})
+	defer daemon.Close()
 	r := NewRoster(dir, fakeProber{sessionID: "01ACTCMP", status: "idle"})
 	r.Refresh()
 
@@ -1955,20 +2162,24 @@ func TestWeb_SessionAction_CompactForwards(t *testing.T) {
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status=%d, want 202 (body=%q)", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status=%d, want 204 (body=%q)", rec.Code, rec.Body.String())
 	}
-	if *capturedPath != "/compact" {
-		t.Errorf("daemon path=%q, want /compact", *capturedPath)
+	if !called {
+		t.Error("compact appwire handler was not called")
 	}
 }
 
 func TestWeb_SessionAction_ShutdownForwards(t *testing.T) {
-	daemon, capturedPath, addr := stubDaemonForAction(t, http.StatusAccepted)
-	defer daemon.Close()
-
+	var called bool
 	dir := t.TempDir()
-	writeRendezvous(t, dir, rendezvous.Entry{PID: 32, Address: addr})
+	daemon := startAppwireTestDaemon(t, dir, "01ACTSHD", func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadShutdown, func(context.Context, appwire.ThreadShutdownParams) (appwire.EmptyResponse, error) {
+			called = true
+			return appwire.EmptyResponse{}, nil
+		})
+	})
+	defer daemon.Close()
 	r := NewRoster(dir, fakeProber{sessionID: "01ACTSHD", status: "idle"})
 	r.Refresh()
 
@@ -1980,20 +2191,24 @@ func TestWeb_SessionAction_ShutdownForwards(t *testing.T) {
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status=%d, want 202 (body=%q)", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status=%d, want 204 (body=%q)", rec.Code, rec.Body.String())
 	}
-	if *capturedPath != "/shutdown" {
-		t.Errorf("daemon path=%q, want /shutdown", *capturedPath)
+	if !called {
+		t.Error("shutdown appwire handler was not called")
 	}
 }
 
 func TestWeb_SessionAction_ClearForwards(t *testing.T) {
-	daemon, capturedPath, addr := stubDaemonForAction(t, http.StatusNoContent)
-	defer daemon.Close()
-
+	var called bool
 	dir := t.TempDir()
-	writeRendezvous(t, dir, rendezvous.Entry{PID: 33, Address: addr})
+	daemon := startAppwireTestDaemon(t, dir, "01ACTCLR", func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadClear, func(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
+			called = true
+			return appwire.ThreadClearResponse{Ref: "local:01ACTCLR"}, nil
+		})
+	})
+	defer daemon.Close()
 	r := NewRoster(dir, fakeProber{sessionID: "01ACTCLR", status: "idle"})
 	r.Refresh()
 
@@ -2008,8 +2223,8 @@ func TestWeb_SessionAction_ClearForwards(t *testing.T) {
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status=%d, want 204 (body=%q)", rec.Code, rec.Body.String())
 	}
-	if *capturedPath != "/clear" {
-		t.Errorf("daemon path=%q, want /clear", *capturedPath)
+	if !called {
+		t.Error("clear appwire handler was not called")
 	}
 }
 
@@ -2037,19 +2252,15 @@ func TestWeb_SessionAction_NotLive_404(t *testing.T) {
 // TestWeb_Steer_ForwardsBodyToDaemon verifies that POST /s/<id>/steer with a
 // JSON body forwards both path and body to the daemon's /steer endpoint.
 func TestWeb_Steer_ForwardsBodyToDaemon(t *testing.T) {
-	var capturedPath string
-	var capturedBody string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedPath = r.URL.Path
-		buf, _ := io.ReadAll(r.Body)
-		capturedBody = string(buf)
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer srv.Close()
-	addr := strings.TrimPrefix(srv.URL, "http://")
-
+	var got appwire.TurnSteerParams
 	dir := t.TempDir()
-	writeRendezvous(t, dir, rendezvous.Entry{PID: 33, Address: addr})
+	daemon := startAppwireTestDaemon(t, dir, "01STEER", func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnSteer, func(_ context.Context, params appwire.TurnSteerParams) (appwire.EmptyResponse, error) {
+			got = params
+			return appwire.EmptyResponse{}, nil
+		})
+	})
+	defer daemon.Close()
 	r := NewRoster(dir, fakeProber{sessionID: "01STEER", status: "processing"})
 	r.Refresh()
 
@@ -2065,11 +2276,8 @@ func TestWeb_Steer_ForwardsBodyToDaemon(t *testing.T) {
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status=%d, want 204 (body=%q)", rec.Code, rec.Body.String())
 	}
-	if capturedPath != "/steer" {
-		t.Errorf("daemon path=%q, want /steer", capturedPath)
-	}
-	if !strings.Contains(capturedBody, "stop using mocks") {
-		t.Errorf("daemon body=%q, want to contain 'stop using mocks'", capturedBody)
+	if got.Ref != "local:01STEER" || got.Text != "stop using mocks" {
+		t.Errorf("steer params=%+v", got)
 	}
 }
 
@@ -2599,23 +2807,23 @@ func TestWeb_APISpawnSchema(t *testing.T) {
 }
 
 func TestWeb_APISessionActionClearReturnsRef(t *testing.T) {
-	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/clear":
-			if r.Method != http.MethodPost {
-				t.Fatalf("clear method=%s", r.Method)
-			}
-			w.WriteHeader(http.StatusNoContent)
-		case "/status":
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"session_id":"01NEW","state":"IDLE","model":"gpt-5","profile":"openai"}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer daemon.Close()
+	var clearParams appwire.ThreadClearParams
 	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{PID: 46, Address: strings.TrimPrefix(daemon.URL, "http://")})
+	daemon := startAppwireTestDaemon(t, runDir, "01OLD", func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadClear, func(_ context.Context, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
+			clearParams = params
+			return appwire.ThreadClearResponse{
+				Ref: "local:01NEW",
+				Thread: appwire.Thread{
+					ID:        "01NEW",
+					SessionID: "01NEW",
+					Source:    "local",
+					Serf:      appwire.SerfThread{Ref: "local:01NEW"},
+				},
+			}, nil
+		})
+	})
+	defer daemon.Close()
 	r := NewRoster(runDir, fakeProber{sessionID: "01OLD", status: "IDLE"})
 	r.Refresh()
 	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
@@ -2628,26 +2836,28 @@ func TestWeb_APISessionActionClearReturnsRef(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
 	}
-	var got hubapi.RefResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+	var clearResp hubapi.RefResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &clearResp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.Ref != "local:01NEW" || got.SessionID != "01NEW" {
-		t.Fatalf("unexpected clear response: %+v", got)
+	if clearResp.Ref != "local:01NEW" || clearResp.SessionID != "01NEW" {
+		t.Fatalf("unexpected clear response: %+v", clearResp)
+	}
+	if clearParams.Ref != "local:01OLD" {
+		t.Fatalf("clear params ref=%q, want local:01OLD", clearParams.Ref)
 	}
 }
 
 func TestWeb_APISessionActionModelForwardsBody(t *testing.T) {
-	var gotPath, gotBody string
-	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		body, _ := io.ReadAll(r.Body)
-		gotBody = string(body)
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer daemon.Close()
+	var got appwire.ThreadModelSetParams
 	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{PID: 47, Address: strings.TrimPrefix(daemon.URL, "http://")})
+	daemon := startAppwireTestDaemon(t, runDir, "01MODEL", func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadModelSet, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+			got = params
+			return appwire.EmptyResponse{}, nil
+		})
+	})
+	defer daemon.Close()
 	r := NewRoster(runDir, fakeProber{sessionID: "01MODEL", status: "IDLE"})
 	r.Refresh()
 	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
@@ -2661,7 +2871,7 @@ func TestWeb_APISessionActionModelForwardsBody(t *testing.T) {
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
 	}
-	if gotPath != "/model" || gotBody != `{"model":"gpt-5.5"}` {
-		t.Fatalf("path=%q body=%q", gotPath, gotBody)
+	if got.Ref != "local:01MODEL" || got.Model != "gpt-5.5" || got.ModelProvider != "" {
+		t.Fatalf("model params=%+v", got)
 	}
 }

@@ -14,6 +14,8 @@ cd cmd/serf-hub/jstest
 npm init -y > /dev/null && npm install jsdom --silent
 node test-renderer.js
 node test-renderer-advanced.js
+node test-diagnostics.js
+node test-appwire-diagnostics.js
 node test-sidebar.js
 ```
 

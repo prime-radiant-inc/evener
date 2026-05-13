@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -277,76 +276,6 @@ func TestSession_EventSystem_NaturalCompletion_EmitsUserAndAssistantTextEventsIn
 	}
 	if at != len(want) {
 		t.Fatalf("event order missing; got kinds=%v want subsequence=%v", kinds, want)
-	}
-}
-
-// Verifies that the USER_INPUT event carries the 1-based transcript entry
-// index in UserInputData.Turn — the hub renderer uses this to identify the
-// turn for fork-from-turn instead of synthesizing a counter on the client.
-//
-// The exact entry indices depend on what other turns (assistant, tool
-// results, system) get appended between user inputs, so the test reads the
-// transcript and asserts the emitted Turn matches the actual entry index
-// of each USER_INPUT in the transcript.
-func TestSession_EventSystem_UserInputCarriesTurnIndex(t *testing.T) {
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ok-1") },
-			func(req llm.Request) llm.Response { return finalResponse("ok-2") },
-		},
-	})
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	sessID := sess.ID()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "first", nil); err != nil {
-		t.Fatalf("ProcessInput #1: %v", err)
-	}
-	if _, err := sess.ProcessInput(ctx, "second", nil); err != nil {
-		t.Fatalf("ProcessInput #2: %v", err)
-	}
-	sess.Close()
-
-	var emittedTurns []int
-	for ev := range sess.Events() {
-		if ev.Kind != EventUserInput {
-			continue
-		}
-		d, ok := ev.Data.(UserInputData)
-		if !ok {
-			t.Fatalf("USER_INPUT data type: %T", ev.Data)
-		}
-		if d.Turn <= 0 {
-			t.Fatalf("USER_INPUT.Turn = %d, want > 0", d.Turn)
-		}
-		emittedTurns = append(emittedTurns, d.Turn)
-	}
-	if len(emittedTurns) != 2 {
-		t.Fatalf("expected 2 USER_INPUT events, got %d (turns=%v)", len(emittedTurns), emittedTurns)
-	}
-
-	// Cross-check: the emitted Turn values must match the 1-based entry
-	// indices of the USER_INPUT entries in the transcript.
-	tpath := filepath.Join(dir, sessionsSubdir, sessID+".transcript.jsonl")
-	_, entries, _, err := ReadTranscript(tpath)
-	if err != nil {
-		t.Fatalf("ReadTranscript: %v", err)
-	}
-	var transcriptTurns []int
-	for i, e := range entries {
-		if e.Turn.Kind == TurnUserInput {
-			transcriptTurns = append(transcriptTurns, i+1)
-		}
-	}
-	if !reflect.DeepEqual(emittedTurns, transcriptTurns) {
-		t.Fatalf("emitted USER_INPUT turns %v != transcript USER_INPUT entry indices %v", emittedTurns, transcriptTurns)
 	}
 }
 

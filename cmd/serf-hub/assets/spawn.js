@@ -88,17 +88,16 @@
       const btn = form.querySelector(".spawn-btn");
       if (btn) { btn.disabled = true; btn.textContent = "spawning…"; }
       try {
-        const resp = await fetch("/api/spawn", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-        if (!resp.ok) {
-          if (btn) { btn.disabled = false; btn.innerHTML = 'spawn <kbd>⌘↵</kbd>'; }
-          alert("spawn failed: " + (await resp.text()));
-          return;
-        }
-        const json = await resp.json();
+        const json = window.SerfAppwire
+          ? await window.SerfAppwire.startThread(body)
+          : await fetch("/api/spawn", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            }).then(async (resp) => {
+              if (!resp.ok) throw new Error(await resp.text());
+              return resp.json();
+            });
         window.location.href = "/s/" + encodeURIComponent(json.session_id);
       } catch (err) {
         if (btn) { btn.disabled = false; btn.innerHTML = 'spawn <kbd>⌘↵</kbd>'; }
@@ -126,7 +125,10 @@
     const existing = document.querySelector(".chip-picker");
     if (existing) { existing.remove(); return; }
 
-    fetch("/api/models").then(r => r.json()).then(models => {
+    const modelsPromise = window.SerfAppwire
+      ? window.SerfAppwire.listModels()
+      : fetch("/api/models").then(r => r.json());
+    modelsPromise.then(models => {
       if (!Array.isArray(models)) models = [];
 
       // Group by provider
@@ -284,7 +286,10 @@
     let timer = null;
 
     function fetchDirs(prefix) {
-      fetch("/api/dirs?prefix=" + encodeURIComponent(prefix)).then(r => r.json()).then(data => {
+      const dirsPromise = window.SerfAppwire
+        ? window.SerfAppwire.completeDirs(prefix)
+        : fetch("/api/dirs?prefix=" + encodeURIComponent(prefix)).then(r => r.json());
+      dirsPromise.then(data => {
         results.innerHTML = "";
         const list = data.results || [];
         if (list.length === 0) {

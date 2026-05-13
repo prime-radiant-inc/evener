@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -61,6 +62,27 @@ func TestRoster_FindBySessionID(t *testing.T) {
 	}
 	if got.Address != "127.0.0.1:50001" {
 		t.Errorf("Address: got %q", got.Address)
+	}
+}
+
+func TestRosterListOrdersByStartedAtAndID(t *testing.T) {
+	base := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	r := NewRoster(t.TempDir(), nil)
+	r.byPID = map[int]LiveEntry{
+		2: {Entry: rendezvous.Entry{PID: 2, StartedAt: base.Add(-time.Hour)}, SessionID: "02OLD"},
+		1: {Entry: rendezvous.Entry{PID: 1, StartedAt: base}, SessionID: "01NEW"},
+		4: {Entry: rendezvous.Entry{PID: 4, StartedAt: base.Add(-2 * time.Hour)}, SessionID: "04TIEB"},
+		3: {Entry: rendezvous.Entry{PID: 3, StartedAt: base.Add(-2 * time.Hour)}, SessionID: "03TIEA"},
+	}
+
+	got := r.List()
+	gotIDs := make([]string, 0, len(got))
+	for _, entry := range got {
+		gotIDs = append(gotIDs, entry.SessionID)
+	}
+	want := []string{"01NEW", "02OLD", "03TIEA", "04TIEB"}
+	if strings.Join(gotIDs, ",") != strings.Join(want, ",") {
+		t.Fatalf("order=%v, want %v", gotIDs, want)
 	}
 }
 

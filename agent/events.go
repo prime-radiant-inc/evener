@@ -33,7 +33,6 @@ const (
 	EventHookStart           EventKind = "HOOK_START"
 	EventHookEnd             EventKind = "HOOK_END"
 	EventForkSummary         EventKind = "FORK_SUMMARY"
-	EventForkCreated         EventKind = "FORK_CREATED"
 	EventPromptLoaded        EventKind = "PROMPT_LOADED"
 	EventRoundTimings        EventKind = "ROUND_TIMINGS"
 )
@@ -115,13 +114,8 @@ type SessionEndData struct {
 }
 
 type UserInputData struct {
-	Text   string           `json:"text"`
-	Images []UserInputImage `json:"images,omitempty"`
-	// Turn is the 1-based transcript entry index of this USER_INPUT turn.
-	// Consumers (e.g. the hub web renderer) use it to identify a turn for
-	// later operations like fork-from-turn. Matches the `turn` field on
-	// replay USER_INPUT events emitted by the hub.
-	Turn int `json:"turn,omitempty"`
+	Text   string                  `json:"text"`
+	Images []UserInputImage        `json:"images,omitempty"`
 }
 
 // UserInputImage carries enough metadata for the UI to render a thumbnail.
@@ -253,16 +247,6 @@ type HookEndData struct {
 
 type ForkSummaryData struct {
 	Turn int `json:"turn"`
-}
-
-// ForkCreatedData carries the lineage of a fork operation emitted by callers
-// of agent.ForkSession. ParentSessionID is the session that was branched
-// from; ChildSessionID is the new session; DivergenceTurn is the 1-based
-// entry index in the parent's transcript at which the prefix was cut.
-type ForkCreatedData struct {
-	ParentSessionID string `json:"parent_session_id"`
-	ChildSessionID  string `json:"child_session_id"`
-	DivergenceTurn  int    `json:"divergence_turn"`
 }
 
 type PromptLoadedData struct {

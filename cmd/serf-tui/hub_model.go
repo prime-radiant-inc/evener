@@ -1,13 +1,13 @@
 package main
 
 import (
-	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"primeradiant.com/serf/internal/hubapi"
+	"primeradiant.com/serf/internal/appwire"
 )
 
 type hubMode int
@@ -28,7 +28,7 @@ const (
 
 type hubRow struct {
 	kind       hubRowKind
-	ref        hubapi.Ref
+	ref        appwire.Ref
 	title      string
 	project    string
 	projectKey string
@@ -40,20 +40,21 @@ type hubRow struct {
 }
 
 type hubForkDraft struct {
-	Ref          hubapi.Ref
+	Ref          appwire.Ref
 	Turn         int
 	OriginalText string
+	Label        string
 }
 
 type hubModel struct {
-	client *hubapi.Client
+	client *appwire.Client
 	hubURL string
 	width  int
 	height int
 	err    error
 
 	mode     hubMode
-	tree     hubapi.TreeResponse
+	tree     hubTreeResponse
 	rows     []hubRow
 	selected int
 
@@ -69,15 +70,11 @@ type hubModel struct {
 	spawnModelPicker   *modelPicker
 	spawnSubmitting    bool
 
-	detail        hubapi.SessionDetail
-	session       model
-	streamCancel  context.CancelFunc
-	streamDone    bool
-	streamLastID  string
-	streamStarted bool
+	detail  hubSessionDetail
+	session model
 }
 
-func newHubModel(client *hubapi.Client, hubURL string) hubModel {
+func newHubModel(client *appwire.Client, hubURL string) hubModel {
 	session := newModel("", "", nil)
 	return hubModel{client: client, hubURL: hubURL, session: session, browseSelected: -1}
 }
@@ -86,7 +83,7 @@ func (m hubModel) Init() tea.Cmd {
 	if m.client == nil {
 		return nil
 	}
-	return fetchHubTree(m.client)
+	return tea.Batch(fetchHubTree(m.client), waitHubNotification(m.client))
 }
 
 func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -137,39 +134,19 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.session.sessionModel = msg.detail.Model
 		m.session.sessionProfile = msg.detail.Profile
 		m.session.processing = msg.detail.State == "processing"
+		m.session.messages = msg.messages
 		m.session.viewport.Width = m.width
 		m.session.viewport.Height = m.session.vpHeight()
 		m.session.refreshViewport()
 		m.browseSelected = -1
 		m.forkDraft = nil
-		return m, m.startSessionStream()
-	case hubStreamStartedMsg:
-		if m.streamCancel != nil {
-			m.streamCancel()
-		}
-		m.streamCancel = msg.cancel
-		m.streamStarted = true
-		m.streamDone = false
-		m.streamLastID = ""
-		return m, waitHubStream(msg.ch)
-	case hubStreamMsg:
-		cmd := waitHubStream(msg.ch)
-		switch ev := msg.msg.(type) {
-		case sseConnectedMsg:
-			return m, cmd
-		case sseEventMsg:
-			m.applyHubSSEEvent(SSEEvent(ev))
-			return m, cmd
-		case sseErrorMsg:
-			if !m.streamDone {
-				m.err = ev.err
-			}
-			return m, cmd
-		default:
-			return m, cmd
-		}
-	case hubStreamClosedMsg:
 		return m, nil
+	case hubNotificationMsg:
+		if !msg.ok {
+			return m, nil
+		}
+		m.applyHubNotification(msg.notification)
+		return m, waitHubNotification(m.client)
 	case hubSendMsg:
 		if msg.err != nil {
 			m.session.setInputValue(msg.text)
@@ -202,7 +179,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addSessionSystem("Clear failed: " + msg.err.Error())
 			return m, nil
 		}
-		ref, err := hubapi.ParseRef(msg.resp.Ref)
+		ref, err := appwire.ParseRef(msg.resp.Ref)
 		if err != nil {
 			m.addSessionSystem("Clear returned invalid ref: " + msg.resp.Ref)
 			return m, nil
@@ -214,7 +191,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.forkDraft = nil
-		ref, err := hubapi.ParseRef(msg.resp.Ref)
+		ref, err := appwire.ParseRef(msg.resp.Ref)
 		if err != nil {
 			m.addSessionSystem("Fork returned invalid ref: " + msg.resp.Ref)
 			return m, nil
@@ -226,7 +203,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = fmt.Errorf("spawn failed: %w", msg.err)
 			return m, nil
 		}
-		ref, err := hubapi.ParseRef(msg.resp.Ref)
+		ref, err := appwire.ParseRef(msg.resp.Ref)
 		if err != nil {
 			m.err = fmt.Errorf("spawn returned invalid ref: %s", msg.resp.Ref)
 			return m, nil
@@ -244,14 +221,6 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.spawnModel = msg.models[0].id
 		}
 		return m, nil
-	case sseEventMsg:
-		m.applyHubSSEEvent(SSEEvent(msg))
-		return m, nil
-	case sseErrorMsg:
-		if !m.streamDone {
-			m.err = msg.err
-		}
-		return m, nil
 	}
 	return m, nil
 }
@@ -265,9 +234,6 @@ func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.mode == hubModeSession {
 			return m.updateSessionKey(msg)
 		}
-		if m.streamCancel != nil {
-			m.streamCancel()
-		}
 		return m, tea.Quit
 	case "q":
 		if m.mode == hubModeSpawn {
@@ -275,9 +241,6 @@ func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.mode == hubModeSession && m.session.scrollMode {
 			return m.updateSessionKey(msg)
-		}
-		if m.streamCancel != nil {
-			m.streamCancel()
 		}
 		return m, tea.Quit
 	}
@@ -395,7 +358,7 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.err = fmt.Errorf("choose a model before spawning")
 			return m, nil
 		}
-		req := hubapi.SpawnRequest{
+		req := hubSpawnRequest{
 			Task:       strings.TrimSpace(m.session.input.Value()),
 			Model:      strings.TrimSpace(m.spawnModel),
 			WorkingDir: m.spawnDir,
@@ -443,9 +406,10 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			draft := *m.forkDraft
 			m.session.resetInput()
 			m.addSessionSystem(fmt.Sprintf("Forking from turn %d...", draft.Turn))
-			return m, sendHubFork(m.client, draft.Ref, hubapi.ForkRequest{
+			return m, sendHubFork(m.client, draft.Ref, hubForkRequest{
 				Turn:          draft.Turn,
 				EditedMessage: text,
+				Label:         draft.Label,
 			})
 		}
 	}
@@ -621,10 +585,6 @@ func (m *hubModel) exitSessionBrowse() {
 }
 
 func (m *hubModel) returnToDashboard() {
-	if m.streamCancel != nil {
-		m.streamCancel()
-		m.streamCancel = nil
-	}
 	if m.mode == hubModeSpawn {
 		m.resetSpawnForm()
 	}
@@ -798,6 +758,7 @@ func (m *hubModel) startForkDraft() {
 		Ref:          ref,
 		Turn:         msg.TurnIndex,
 		OriginalText: msg.Text,
+		Label:        "original before fork",
 	}
 	m.exitSessionBrowse()
 	m.session.setInputValue(msg.Text)
@@ -809,46 +770,134 @@ func (m *hubModel) addSessionSystem(text string) {
 	m.session.refreshViewport()
 }
 
-func (m hubModel) currentRef() (hubapi.Ref, bool) {
-	ref, err := hubapi.ParseRef(m.detail.Ref)
+func (m hubModel) currentRef() (appwire.Ref, bool) {
+	ref, err := appwire.ParseRef(m.detail.Ref)
 	if err != nil {
-		return hubapi.Ref{}, false
+		return appwire.Ref{}, false
 	}
 	return ref, true
 }
 
-func (m *hubModel) applyHubSSEEvent(ev SSEEvent) {
-	if ev.ID != "" {
-		m.streamLastID = ev.ID
-	}
-	if ev.Event == "REPLAY_DONE" {
-		m.streamDone = true
+func (m *hubModel) applyHubNotification(notification appwire.Notification) {
+	if m.mode != hubModeSession {
 		return
 	}
-	m.session.handleSSEEvent(ev)
+	if !m.notificationMatchesCurrentSession(notification) {
+		return
+	}
+	switch notification.Method {
+	case appwire.NotifyThreadStatusChanged:
+		var params appwire.ThreadStatusChangedParams
+		if json.Unmarshal(notification.Params, &params) == nil {
+			m.detail.State = params.Status.Type
+			m.session.processing = params.Status.Type == appwire.ThreadStatusProcessing
+		}
+	case appwire.NotifyItemStarted:
+		var params struct {
+			Item appwire.ThreadItem `json:"item"`
+		}
+		if json.Unmarshal(notification.Params, &params) == nil {
+			m.applyThreadItem(params.Item, false)
+		}
+	case appwire.NotifyItemCompleted:
+		var params struct {
+			Item appwire.ThreadItem `json:"item"`
+		}
+		if json.Unmarshal(notification.Params, &params) == nil {
+			m.applyThreadItem(params.Item, true)
+		}
+	case appwire.NotifyAgentMessageDelta:
+		var params appwire.AgentMessageDeltaParams
+		if json.Unmarshal(notification.Params, &params) == nil {
+			if len(m.session.messages) > 0 && m.session.messages[len(m.session.messages)-1].Kind == msgAssistant {
+				m.session.messages[len(m.session.messages)-1].Text += params.Delta
+			} else {
+				m.session.messages = append(m.session.messages, chatMessage{Kind: msgAssistant, Text: params.Delta})
+			}
+		}
+	case appwire.NotifyToolOutputDelta:
+		var params struct {
+			ItemID string `json:"itemId"`
+			Delta  string `json:"delta"`
+		}
+		if json.Unmarshal(notification.Params, &params) == nil {
+			if idx, ok := m.session.activeTools[params.ItemID]; ok && idx < len(m.session.messages) && m.session.messages[idx].Tool != nil {
+				m.session.messages[idx].Tool.Output += params.Delta
+			}
+		}
+	}
 	m.session.refreshViewport()
 }
 
-func (m hubModel) startSessionStream() tea.Cmd {
-	stream := m.detail.Streams.TranscriptFollow
-	if stream == "" {
-		if m.detail.Live {
-			stream = m.detail.Streams.Live
-		} else {
-			stream = m.detail.Streams.Replay
-		}
+func (m hubModel) notificationMatchesCurrentSession(notification appwire.Notification) bool {
+	var params struct {
+		Ref      string `json:"ref"`
+		ThreadID string `json:"threadId"`
 	}
-	if stream == "" || m.client == nil {
-		return nil
+	if json.Unmarshal(notification.Params, &params) != nil {
+		return true
 	}
-	return startHubStream(m.client.URL(stream), m.streamLastID)
+
+	detailRef := strings.TrimSpace(m.detail.Ref)
+	if params.Ref != "" && detailRef != "" {
+		return params.Ref == detailRef
+	}
+
+	threadID := strings.TrimSpace(params.ThreadID)
+	if threadID == "" {
+		return true
+	}
+	if threadID == strings.TrimSpace(m.detail.SessionID) {
+		return true
+	}
+	if ref, err := appwire.ParseRef(detailRef); err == nil && ref.ThreadID != "" {
+		return threadID == ref.ThreadID
+	}
+	return false
 }
 
-func buildHubRows(tree hubapi.TreeResponse) []hubRow {
+func (m *hubModel) applyThreadItem(item appwire.ThreadItem, completed bool) {
+	switch item.Type {
+	case "user_message":
+		if strings.TrimSpace(item.Text) != "" {
+			m.session.messages = append(m.session.messages, chatMessage{Kind: msgUser, Text: item.Text, TurnIndex: turnIndexFromID(item.TurnID)})
+		}
+	case "agent_message":
+		if strings.TrimSpace(item.Text) != "" {
+			if len(m.session.messages) > 0 && m.session.messages[len(m.session.messages)-1].Kind == msgAssistant {
+				m.session.messages[len(m.session.messages)-1].Text = item.Text
+			} else {
+				m.session.messages = append(m.session.messages, chatMessage{Kind: msgAssistant, Text: item.Text})
+			}
+		}
+	case "tool_call":
+		desc, detail := summarizeTool(item.ToolName, item.ArgumentsJSON)
+		idx := len(m.session.messages)
+		info := &toolCallInfo{
+			Name:        item.ToolName,
+			Description: desc,
+			Detail:      detail,
+			Output:      item.Output,
+			Error:       item.Error,
+			Done:        completed || item.Status == "completed",
+			Expanded:    detail != "",
+			Hidden:      item.ToolName == "communicate",
+		}
+		m.session.messages = append(m.session.messages, chatMessage{Kind: msgTool, Tool: info})
+		if item.ID != "" {
+			m.session.activeTools[item.ID] = idx
+		}
+		if item.CallID != "" {
+			m.session.activeTools[item.CallID] = idx
+		}
+	}
+}
+
+func buildHubRows(tree hubTreeResponse) []hubRow {
 	return buildDashboardRows(tree)
 }
 
-func buildDashboardRows(tree hubapi.TreeResponse) []hubRow {
+func buildDashboardRows(tree hubTreeResponse) []hubRow {
 	var rows []hubRow
 	seen := map[string]bool{}
 	projectIndexes := map[string]int{}
@@ -874,11 +923,11 @@ func buildDashboardRows(tree hubapi.TreeResponse) []hubRow {
 			rowID:      "project:" + key,
 		})
 	}
-	addSession := func(key, project string, n hubapi.TreeNode) {
+	addSession := func(key, project string, n hubTreeNode) {
 		if !n.Live {
 			return
 		}
-		ref, err := hubapi.ParseRef(n.Ref)
+		ref, err := appwire.ParseRef(n.Ref)
 		if err != nil || seen[n.Ref] {
 			return
 		}
@@ -915,7 +964,7 @@ func buildDashboardRows(tree hubapi.TreeResponse) []hubRow {
 	}
 
 	for _, p := range tree.Projects {
-		var live []hubapi.TreeNode
+		var live []hubTreeNode
 		for _, n := range p.Sessions {
 			if n.Live {
 				live = append(live, n)
@@ -950,15 +999,15 @@ func buildDashboardRows(tree hubapi.TreeResponse) []hubRow {
 	return rows
 }
 
-func buildProjectRows(project hubapi.TreeProject) []hubRow {
+func buildProjectRows(project hubTreeProject) []hubRow {
 	var liveRows []hubRow
 	var recentRows []hubRow
 	key := project.Key
 	if key == "" {
 		key = hubProjectKey(project.Name)
 	}
-	add := func(n hubapi.TreeNode) {
-		ref, err := hubapi.ParseRef(n.Ref)
+	add := func(n hubTreeNode) {
+		ref, err := appwire.ParseRef(n.Ref)
 		if err != nil {
 			return
 		}
@@ -1022,7 +1071,7 @@ func (m *hubModel) openProject(key string) {
 	m.clampSelection()
 }
 
-func (m hubModel) selectedProject() (hubapi.TreeProject, bool) {
+func (m hubModel) selectedProject() (hubTreeProject, bool) {
 	for _, p := range m.tree.Projects {
 		key := p.Key
 		if key == "" {
@@ -1032,7 +1081,7 @@ func (m hubModel) selectedProject() (hubapi.TreeProject, bool) {
 			return p, true
 		}
 	}
-	return hubapi.TreeProject{}, false
+	return hubTreeProject{}, false
 }
 
 func (m hubModel) rowsForSelectedProject() []hubRow {

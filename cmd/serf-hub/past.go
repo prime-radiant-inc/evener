@@ -22,9 +22,9 @@ type PastEntry struct {
 type PastIndex struct {
 	stateGlob string
 
-	mu      sync.RWMutex
-	all     []PastEntry  // sorted by UpdatedAt desc
-	byID    map[string]PastEntry
+	mu   sync.RWMutex
+	all  []PastEntry // sorted by the Hub session ordering contract
+	byID map[string]PastEntry
 }
 
 // NewPastIndex returns a PastIndex configured to glob projectGlob.
@@ -62,8 +62,8 @@ func (i *PastIndex) Rebuild() error {
 			byID[m.ID] = pe
 		}
 	}
-	sort.Slice(all, func(a, b int) bool {
-		return all[a].Meta.UpdatedAt.After(all[b].Meta.UpdatedAt)
+	sort.SliceStable(all, func(a, b int) bool {
+		return sessionMetaLess(all[a].Meta, all[b].Meta)
 	})
 	i.mu.Lock()
 	i.all = all
@@ -72,7 +72,7 @@ func (i *PastIndex) Rebuild() error {
 	return nil
 }
 
-// All returns the full index sorted by UpdatedAt desc (most recent first).
+// All returns the full index sorted by the Hub session ordering contract.
 func (i *PastIndex) All() []PastEntry {
 	i.mu.RLock()
 	defer i.mu.RUnlock()

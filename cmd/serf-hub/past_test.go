@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,6 +56,55 @@ func TestPastIndex_RebuildLoadsAllMetas(t *testing.T) {
 	// Sorted by UpdatedAt desc.
 	if got[0].ID != "01B" {
 		t.Errorf("first: %s", got[0].ID)
+	}
+}
+
+func TestPastIndex_RebuildOrdersByUpdatedCreatedTitleAndID(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	updated := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	writeMeta(t, proj, agent.SessionMeta{
+		ID:           "02OLD",
+		CreatedAt:    updated.Add(-2 * time.Hour),
+		UpdatedAt:    updated,
+		OriginalTask: "beta task",
+	})
+	writeMeta(t, proj, agent.SessionMeta{
+		ID:           "01NEW",
+		CreatedAt:    updated.Add(-time.Hour),
+		UpdatedAt:    updated,
+		OriginalTask: "alpha task",
+	})
+	writeMeta(t, proj, agent.SessionMeta{
+		ID:           "03TITLEB",
+		CreatedAt:    updated.Add(-3 * time.Hour),
+		UpdatedAt:    updated.Add(-time.Hour),
+		OriginalTask: "bravo task",
+	})
+	writeMeta(t, proj, agent.SessionMeta{
+		ID:           "04TITLEA",
+		CreatedAt:    updated.Add(-3 * time.Hour),
+		UpdatedAt:    updated.Add(-time.Hour),
+		OriginalTask: "alpha task",
+	})
+
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	got := idx.Search("task", 10, 0)
+	gotIDs := make([]string, 0, len(got))
+	for _, entry := range got {
+		gotIDs = append(gotIDs, entry.ID)
+	}
+	want := []string{"01NEW", "02OLD", "04TITLEA", "03TITLEB"}
+	if strings.Join(gotIDs, ",") != strings.Join(want, ",") {
+		t.Fatalf("order=%v, want %v", gotIDs, want)
 	}
 }
 

@@ -151,6 +151,7 @@
 
   function postSession(ctx, action) {
     if (!ctx.sessionId) return Promise.resolve();
+    if (window.SerfAppwire) return window.SerfAppwire.action(ctx.sessionId, action);
     return fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/" + action, { method: "POST" });
   }
 
@@ -158,7 +159,10 @@
     // /api/models returns an array of { provider, model, display_name, ... }.
     // The session /model POST mirrors the spawn picker convention by sending
     // "provider/model" so the daemon can route across providers.
-    return fetch("/api/models").then(r => r.ok ? r.json() : []).then(list => {
+    const modelsPromise = window.SerfAppwire
+      ? window.SerfAppwire.listModels()
+      : fetch("/api/models").then(r => r.ok ? r.json() : []);
+    return modelsPromise.then(list => {
       if (!Array.isArray(list)) return [];
       return list.map(m => ({
         id: m.provider + "/" + m.model,
@@ -212,13 +216,13 @@
       { id: "model", title: "Switch model", hint: "", keywords: [], scope: "session",
         args: { kind: "enum", placeholder: "choose a model…",
           source: () => fetchModels(),
-          run: (ctx, item) => fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/model", {
+          run: (ctx, item) => window.SerfAppwire ? window.SerfAppwire.setModel(ctx.sessionId, item.id) : fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/model", {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ model: item.id }),
           }) } },
       { id: "steer", title: "Steer model", hint: "inject mid-turn", keywords: [], scope: "session",
         args: { kind: "free", placeholder: "steer text…",
-          run: (ctx, text) => fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/steer", {
+          run: (ctx, text) => window.SerfAppwire ? window.SerfAppwire.steer(ctx.sessionId, text) : fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/steer", {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ text: text }),
           }) } },
@@ -232,7 +236,7 @@
           if (!ctx.sessionId) return;
           copyToClipboard(ctx.sessionId).catch(() => {
             if (window.SerfRenderer && window.SerfRenderer.appendBanner) {
-              window.SerfRenderer.appendBanner("error", "couldn't copy to clipboard");
+              window.SerfRenderer.appendBanner("error", "couldn't copy to clipboard", { source: "ui", title: "UI error" });
             }
           });
         } },
@@ -505,8 +509,10 @@
       results.innerHTML = "";
       return;
     }
-    fetch("/api/search?q=" + encodeURIComponent(query))
-      .then(r => r.json())
+    const searchPromise = window.SerfAppwire
+      ? window.SerfAppwire.search(query)
+      : fetch("/api/search?q=" + encodeURIComponent(query)).then(r => r.json());
+    searchPromise
       .then(resp => render(resp, query))
       .catch(() => { results.innerHTML = '<div class="search-empty">search failed</div>'; });
   }

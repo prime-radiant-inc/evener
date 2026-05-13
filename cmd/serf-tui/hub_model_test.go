@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,31 +11,30 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/internal/hubapi"
+	"primeradiant.com/serf/internal/appserver"
+	"primeradiant.com/serf/internal/appwire"
 )
 
 func TestHubModelInitialFetchRendersRows(t *testing.T) {
-	client, cleanup := newTestHubClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/tree" {
-			http.NotFound(w, r)
-			return
-		}
-		writeJSON(t, w, hubapi.TreeResponse{
-			Live: []hubapi.TreeNode{{
-				Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "awaiting", Project: "serf", Live: true,
-			}},
-			Projects: []hubapi.TreeProject{{
-				Name: "serf",
-				Sessions: []hubapi.TreeNode{{
-					Ref: "local:01PAST", SessionID: "01PAST", Title: "past task", State: "ended", Project: "serf",
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+			return threadListResponse(hubTreeResponse{
+				Live: []hubTreeNode{{
+					Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "awaiting", Project: "serf", Live: true,
 				}},
-			}},
+				Projects: []hubTreeProject{{
+					Name: "serf",
+					Sessions: []hubTreeNode{{
+						Ref: "local:01PAST", SessionID: "01PAST", Title: "past task", State: "ended", Project: "serf",
+					}},
+				}},
+			}), nil
 		})
-	}))
+	})
 	defer cleanup()
 
 	m := newHubModel(client, "http://hub.test")
-	msg := m.Init()()
+	msg := fetchHubTree(client)()
 	updated, _ := m.Update(msg)
 	got := updated.(hubModel).View()
 	for _, want := range []string{"live task", "awaiting", "serf"} {
@@ -49,18 +48,18 @@ func TestHubModelInitialFetchRendersRows(t *testing.T) {
 }
 
 func TestHubModelDashboardShowsOnlyLiveSessionsGroupedByProject(t *testing.T) {
-	tree := hubapi.TreeResponse{
-		Live: []hubapi.TreeNode{
+	tree := hubTreeResponse{
+		Live: []hubTreeNode{
 			{Ref: "local:01LIVEA", SessionID: "01LIVEA", Title: "live alpha", State: "awaiting", Project: "serf", Live: true},
 			{Ref: "local:01LIVEB", SessionID: "01LIVEB", Title: "live beta", State: "idle", Project: "serf", Live: true},
 			{Ref: "local:01BRAIN", SessionID: "01BRAIN", Title: "brain live", State: "processing", Project: "brainstorm", Live: true},
 		},
-		Projects: []hubapi.TreeProject{
+		Projects: []hubTreeProject{
 			{
 				Key:         "serf",
 				Name:        "serf",
 				RollupState: "awaiting",
-				Sessions: []hubapi.TreeNode{
+				Sessions: []hubTreeNode{
 					{Ref: "local:01LIVEA", SessionID: "01LIVEA", Title: "live alpha", State: "awaiting", Project: "serf", Live: true},
 					{Ref: "local:01LIVEB", SessionID: "01LIVEB", Title: "live beta", State: "idle", Project: "serf", Live: true},
 					{Ref: "local:01ENDED", SessionID: "01ENDED", Title: "ended history", State: "ended", Project: "serf", Live: false},
@@ -70,7 +69,7 @@ func TestHubModelDashboardShowsOnlyLiveSessionsGroupedByProject(t *testing.T) {
 				Key:         "brainstorm",
 				Name:        "brainstorm",
 				RollupState: "processing",
-				Sessions: []hubapi.TreeNode{
+				Sessions: []hubTreeNode{
 					{Ref: "local:01BRAIN", SessionID: "01BRAIN", Title: "brain live", State: "processing", Project: "brainstorm", Live: true},
 				},
 			},
@@ -111,11 +110,11 @@ func TestHubModelDashboardShowsOnlyLiveSessionsGroupedByProject(t *testing.T) {
 }
 
 func TestHubModelProjectViewShowsLiveThenRecent(t *testing.T) {
-	project := hubapi.TreeProject{
+	project := hubTreeProject{
 		Key:         "serf",
 		Name:        "serf",
 		RollupState: "awaiting",
-		Sessions: []hubapi.TreeNode{
+		Sessions: []hubTreeNode{
 			{Ref: "local:01ENDED", SessionID: "01ENDED", Title: "ended history", State: "ended", Project: "serf", Live: false},
 			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "awaiting", Project: "serf", Live: true},
 		},
@@ -134,7 +133,7 @@ func TestHubModelProjectViewShowsLiveThenRecent(t *testing.T) {
 
 	m := newHubModel(nil, "http://hub.test")
 	m.mode = hubModeProject
-	m.tree = hubapi.TreeResponse{Projects: []hubapi.TreeProject{project}}
+	m.tree = hubTreeResponse{Projects: []hubTreeProject{project}}
 	m.selectedProjectKey = "serf"
 	m.projectRows = rows
 	got := m.projectView()
@@ -150,10 +149,10 @@ func TestHubModelProjectViewShowsLiveThenRecent(t *testing.T) {
 
 func TestHubModelDashboardProjectHeaderOpensProject(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
-	m.tree = hubapi.TreeResponse{Projects: []hubapi.TreeProject{{
+	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
 		Key:  "serf",
 		Name: "serf",
-		Sessions: []hubapi.TreeNode{
+		Sessions: []hubTreeNode{
 			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true},
 		},
 	}}}
@@ -174,10 +173,10 @@ func TestHubModelDashboardProjectHeaderOpensProject(t *testing.T) {
 
 func TestHubModelProjectEscReturnsDashboard(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
-	m.tree = hubapi.TreeResponse{Projects: []hubapi.TreeProject{{
+	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
 		Key:  "serf",
 		Name: "serf",
-		Sessions: []hubapi.TreeNode{
+		Sessions: []hubTreeNode{
 			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true},
 		},
 	}}}
@@ -219,10 +218,10 @@ func TestHubModelCtrlOReturnsDashboardFromSession(t *testing.T) {
 
 func TestHubModelSlashDashboardAndProjectNavigate(t *testing.T) {
 	m := newSessionHubModel(nil)
-	m.tree = hubapi.TreeResponse{Projects: []hubapi.TreeProject{{
+	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
 		Key:  "serf",
 		Name: "serf",
-		Sessions: []hubapi.TreeNode{
+		Sessions: []hubTreeNode{
 			{Ref: "local:01SEND", SessionID: "01SEND", Title: "send task", State: "idle", Project: "serf", Live: true},
 		},
 	}}}
@@ -252,24 +251,22 @@ func TestHubModelSlashDashboardAndProjectNavigate(t *testing.T) {
 }
 
 func TestHubModelEnterOpensSessionDetail(t *testing.T) {
-	client, cleanup := newTestHubClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/tree":
-			writeJSON(t, w, hubapi.TreeResponse{Live: []hubapi.TreeNode{{
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+			return threadListResponse(hubTreeResponse{Live: []hubTreeNode{{
 				Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true,
-			}}})
-		case "/api/sessions/local:01LIVE":
-			writeJSON(t, w, hubapi.SessionDetail{
-				Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Live: true, WorkingDir: "/tmp/serf",
-			})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
+			}}}), nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return appwire.ThreadReadResponse{Thread: appwireThread(hubTreeNode{
+				Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true,
+			}, "/tmp/serf")}, nil
+		})
+	})
 	defer cleanup()
 
 	m := newHubModel(client, "http://hub.test")
-	updated, _ := m.Update(m.Init()())
+	updated, _ := m.Update(fetchHubTree(client)())
 	updated, _ = updated.(hubModel).Update(tea.KeyMsg{Type: tea.KeyDown})
 	updated, cmd := updated.(hubModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
@@ -285,33 +282,29 @@ func TestHubModelEnterOpensSessionDetail(t *testing.T) {
 }
 
 func TestHubModelDashboardSpawnUsesSelectedProjectWorkingDir(t *testing.T) {
-	var gotSpawn hubapi.SpawnRequest
-	client, cleanup := newTestHubClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/models":
-			writeJSON(t, w, []hubapi.ModelOption{{Provider: "openai", Model: "gpt-5"}})
-		case "/api/spawn":
-			if r.Method != http.MethodPost {
-				t.Fatalf("spawn method=%s", r.Method)
-			}
-			if err := json.NewDecoder(r.Body).Decode(&gotSpawn); err != nil {
-				t.Fatal(err)
-			}
-			writeJSON(t, w, hubapi.SpawnResponse{Ref: "local:02NEW", HostID: "local", SessionID: "02NEW"})
-		case "/api/sessions/local:02NEW":
-			writeJSON(t, w, hubapi.SessionDetail{
-				Ref: "local:02NEW", SessionID: "02NEW", Title: "new session", State: "idle", Live: true, WorkingDir: "/tmp/serf",
-			})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
+	var gotSpawn appwire.ThreadStartParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
+			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadStart, func(_ context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+			gotSpawn = params
+			return appwire.ThreadStartResponse{Thread: appwireThread(hubTreeNode{
+				Ref: "local:02NEW", SessionID: "02NEW", Title: "new session", State: "idle", Project: "serf", Live: true,
+			}, "/tmp/serf")}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return appwire.ThreadReadResponse{Thread: appwireThread(hubTreeNode{
+				Ref: "local:02NEW", SessionID: "02NEW", Title: "new session", State: "idle", Project: "serf", Live: true,
+			}, "/tmp/serf")}, nil
+		})
+	})
 	defer cleanup()
 
 	m := newHubModel(client, "http://hub.test")
-	m.tree = hubapi.TreeResponse{Projects: []hubapi.TreeProject{{
+	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
 		Key: "serf", Name: "serf", WorkingDir: "/tmp/serf",
-		Sessions: []hubapi.TreeNode{
+		Sessions: []hubTreeNode{
 			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true},
 		},
 	}}}
@@ -335,14 +328,14 @@ func TestHubModelDashboardSpawnUsesSelectedProjectWorkingDir(t *testing.T) {
 	updated, _ = updated.(hubModel).Update(cmd())
 	got := updated.(hubModel)
 
-	if gotSpawn.WorkingDir != "/tmp/serf" {
-		t.Fatalf("working_dir=%q, want /tmp/serf", gotSpawn.WorkingDir)
+	if gotSpawn.CWD != "/tmp/serf" {
+		t.Fatalf("cwd=%q, want /tmp/serf", gotSpawn.CWD)
 	}
-	if gotSpawn.Task != "build the thing" {
-		t.Fatalf("task=%q, want build the thing", gotSpawn.Task)
+	if gotSpawn.Prompt != "build the thing" {
+		t.Fatalf("prompt=%q, want build the thing", gotSpawn.Prompt)
 	}
-	if gotSpawn.Model != "openai/gpt-5" {
-		t.Fatalf("model=%q, want openai/gpt-5", gotSpawn.Model)
+	if gotSpawn.ModelProvider != "openai" || gotSpawn.Model != "gpt-5" {
+		t.Fatalf("model=%s/%s, want openai/gpt-5", gotSpawn.ModelProvider, gotSpawn.Model)
 	}
 	if got.mode != hubModeSession || got.detail.SessionID != "02NEW" {
 		t.Fatalf("mode=%v detail=%+v", got.mode, got.detail)
@@ -351,24 +344,23 @@ func TestHubModelDashboardSpawnUsesSelectedProjectWorkingDir(t *testing.T) {
 
 func TestHubModelDashboardSpawnOpensFormBeforePosting(t *testing.T) {
 	var posted bool
-	client, cleanup := newTestHubClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/models" {
-			writeJSON(t, w, []hubapi.ModelOption{{Provider: "openai", Model: "gpt-5"}})
-			return
-		}
-		if r.URL.Path == "/api/spawn" {
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
+			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadStart, func(context.Context, appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
 			posted = true
-		}
-		http.NotFound(w, r)
-	}))
+			return appwire.ThreadStartResponse{}, nil
+		})
+	})
 	defer cleanup()
 
 	m := newHubModel(client, "http://hub.test")
-	m.tree = hubapi.TreeResponse{Projects: []hubapi.TreeProject{{
+	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
 		Key:        "serf",
 		Name:       "serf",
 		WorkingDir: "/tmp/serf",
-		Sessions: []hubapi.TreeNode{
+		Sessions: []hubTreeNode{
 			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true},
 		},
 	}}}
@@ -389,50 +381,54 @@ func TestHubModelDashboardSpawnOpensFormBeforePosting(t *testing.T) {
 }
 
 func TestHubDashboardSpawnWaitsForSlowHubSpawn(t *testing.T) {
-	var gotSpawn hubapi.SpawnRequest
+	var gotSpawn appwire.ThreadStartParams
+	app := appserver.NewServer(appserver.ServerConfig{ServerName: "serf-hub", SourceID: "local"})
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+		return threadListResponse(hubTreeResponse{Projects: []hubTreeProject{{
+			Key:        "serf",
+			Name:       "serf",
+			WorkingDir: "/tmp/serf",
+			Sessions: []hubTreeNode{
+				{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true},
+			},
+		}}}), nil
+	})
+	appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
+		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}, nil
+	})
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadStart, func(_ context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+		gotSpawn = params
+		time.Sleep(1500 * time.Millisecond)
+		return appwire.ThreadStartResponse{Thread: appwireThread(hubTreeNode{
+			Ref: "local:02SLOW", SessionID: "02SLOW", Title: "spawned session", State: "idle", Project: "serf", Live: true,
+		}, "/tmp/serf")}, nil
+	})
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwireThread(hubTreeNode{
+			Ref: "local:02SLOW", SessionID: "02SLOW", Title: "spawned session", State: "idle", Project: "serf", Live: true,
+		}, "/tmp/serf")}, nil
+	})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/health":
-			writeJSON(t, w, hubapi.HealthResponse{})
-		case "/api/tree":
-			writeJSON(t, w, hubapi.TreeResponse{Projects: []hubapi.TreeProject{{
-				Key:        "serf",
-				Name:       "serf",
-				WorkingDir: "/tmp/serf",
-				Sessions: []hubapi.TreeNode{
-					{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true},
-				},
-			}}})
-		case "/api/models":
-			writeJSON(t, w, []hubapi.ModelOption{{Provider: "openai", Model: "gpt-5"}})
-		case "/api/spawn":
-			if r.Method != http.MethodPost {
-				t.Fatalf("spawn method=%s", r.Method)
-			}
-			if err := json.NewDecoder(r.Body).Decode(&gotSpawn); err != nil {
-				t.Fatal(err)
-			}
-			time.Sleep(1500 * time.Millisecond)
-			writeJSON(t, w, hubapi.SpawnResponse{Ref: "local:02SLOW", HostID: "local", SessionID: "02SLOW"})
-		case "/api/sessions/local:02SLOW":
-			writeJSON(t, w, hubapi.SessionDetail{
-				Ref: "local:02SLOW", SessionID: "02SLOW", Title: "spawned session", State: "idle", Live: true, WorkingDir: "/tmp/serf",
-			})
-		default:
+		if r.URL.Path != "/rpc" {
 			http.NotFound(w, r)
+			return
 		}
+		app.ServeWebSocket(w, r)
 	}))
 	defer srv.Close()
 
 	runtime, err := startHubClient(context.Background(), hubStartConfig{
-		RawAddr:   srv.URL,
-		AutoStart: false,
+		RawAddr:    srv.URL,
+		AutoStart:  false,
+		HTTPClient: srv.Client(),
 	})
 	if err != nil {
 		t.Fatalf("start hub client: %v", err)
 	}
+	defer runtime.Client.Close()
+
 	model := newHubModel(runtime.Client, runtime.Address.BaseURL)
-	updated, cmd := model.Update(model.Init()())
+	updated, cmd := model.Update(fetchHubTree(runtime.Client)())
 	if cmd != nil {
 		t.Fatal("initial tree load returned unexpected command")
 	}
@@ -467,55 +463,34 @@ func TestHubDashboardSpawnWaitsForSlowHubSpawn(t *testing.T) {
 	if model.mode != hubModeSession || model.detail.SessionID != "02SLOW" {
 		t.Fatalf("mode=%v detail=%+v", model.mode, model.detail)
 	}
-	if gotSpawn.WorkingDir != "/tmp/serf" {
-		t.Fatalf("working_dir=%q, want /tmp/serf", gotSpawn.WorkingDir)
+	if gotSpawn.CWD != "/tmp/serf" {
+		t.Fatalf("cwd=%q, want /tmp/serf", gotSpawn.CWD)
 	}
-	if gotSpawn.Task != "slow spawn" {
-		t.Fatalf("task=%q, want slow spawn", gotSpawn.Task)
+	if gotSpawn.Prompt != "slow spawn" {
+		t.Fatalf("prompt=%q, want slow spawn", gotSpawn.Prompt)
 	}
-	if gotSpawn.Model != "openai/gpt-5" {
-		t.Fatalf("model=%q, want openai/gpt-5", gotSpawn.Model)
-	}
-}
-
-func TestModelSSEReplayUserInputRendersMessage(t *testing.T) {
-	m := newModel("", "", nil)
-	m.handleSSEEvent(SSEEvent{Event: "USER_INPUT", Data: `{"text":"hello from replay"}`})
-	if len(m.messages) != 1 || m.messages[0].Kind != msgUser || m.messages[0].Text != "hello from replay" {
-		t.Fatalf("messages=%+v", m.messages)
+	if gotSpawn.ModelProvider != "openai" || gotSpawn.Model != "gpt-5" {
+		t.Fatalf("model=%s/%s, want openai/gpt-5", gotSpawn.ModelProvider, gotSpawn.Model)
 	}
 }
 
-func TestModelSSEReplayAssistantTextEndRendersMessage(t *testing.T) {
-	m := newModel("", "", nil)
-	m.handleSSEEvent(SSEEvent{Event: "ASSISTANT_TEXT_END", Data: `{"text":"assistant replay"}`})
-	if len(m.messages) != 1 || m.messages[0].Kind != msgAssistant || m.messages[0].Text != "assistant replay" {
-		t.Fatalf("messages=%+v", m.messages)
-	}
-}
-
-func TestHubModelReplayDoneIsNotError(t *testing.T) {
+func TestHubModelNotificationClosedIsNotError(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
-	updated, _ := m.Update(sseEventMsg{Event: "REPLAY_DONE", Data: `{}`})
+	updated, _ := m.Update(hubNotificationMsg{ok: false})
 	got := updated.(hubModel)
 	if got.err != nil {
 		t.Fatalf("err=%v", got.err)
 	}
 }
 
-func TestHubModelSendPostsThroughHub(t *testing.T) {
-	var gotPath, gotText string
-	client, cleanup := newTestHubClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		var body struct {
-			Text string `json:"text"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatal(err)
-		}
-		gotText = body.Text
-		w.WriteHeader(http.StatusAccepted)
-	}))
+func TestHubModelSendUsesAppWireTurnStart(t *testing.T) {
+	var got appwire.TurnStartParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+			got = params
+			return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_1"}}, nil
+		})
+	})
 	defer cleanup()
 
 	m := newSessionHubModel(client)
@@ -525,19 +500,21 @@ func TestHubModelSendPostsThroughHub(t *testing.T) {
 		t.Fatal("send returned nil command")
 	}
 	updated, _ = updated.(hubModel).Update(cmd())
-	got := updated.(hubModel)
-	if gotPath != "/api/sessions/local:01SEND/send" || gotText != "ship it" {
-		t.Fatalf("path=%q text=%q", gotPath, gotText)
+	gotModel := updated.(hubModel)
+	if got.Ref != "local:01SEND" || got.Prompt != "ship it" {
+		t.Fatalf("params=%+v", got)
 	}
-	if got.session.input.Value() != "" {
-		t.Fatalf("input not reset: %q", got.session.input.Value())
+	if gotModel.session.input.Value() != "" {
+		t.Fatalf("input not reset: %q", gotModel.session.input.Value())
 	}
 }
 
 func TestHubModelBusySendPreservesInput(t *testing.T) {
-	client, cleanup := newTestHubClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "busy", http.StatusConflict)
-	}))
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+			return appwire.TurnStartResponse{}, fmt.Errorf("busy")
+		})
+	})
 	defer cleanup()
 
 	m := newSessionHubModel(client)
@@ -553,19 +530,20 @@ func TestHubModelBusySendPreservesInput(t *testing.T) {
 	}
 }
 
-func TestHubModelTasksAndDetailsUseHubEndpoints(t *testing.T) {
-	var paths []string
-	client, cleanup := newTestHubClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		paths = append(paths, r.URL.Path)
-		switch r.URL.Path {
-		case "/api/sessions/local:01SEND/tasks":
-			writeJSON(t, w, []agent.Task{{ID: 1, Type: agent.TaskTypeImplement, Description: "wire actions", Status: agent.TaskDone}})
-		case "/api/sessions/local:01SEND":
-			writeJSON(t, w, hubapi.SessionDetail{Ref: "local:01SEND", SessionID: "01SEND", Title: "send task", WorkingDir: "/tmp/details"})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
+func TestHubModelTasksAndDetailsUseAppWire(t *testing.T) {
+	var methods []string
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodSerfTasksList, func(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error) {
+			methods = append(methods, appwire.MethodSerfTasksList)
+			return appwire.TaskListResponse{Data: []agent.Task{{ID: 1, Type: agent.TaskTypeImplement, Description: "wire actions", Status: agent.TaskDone}}}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			methods = append(methods, appwire.MethodThreadRead)
+			return appwire.ThreadReadResponse{Thread: appwireThread(hubTreeNode{
+				Ref: "local:01SEND", SessionID: "01SEND", Title: "send task", State: "idle", Project: "details", Live: true,
+			}, "/tmp/details")}, nil
+		})
+	})
 	defer cleanup()
 
 	m := newSessionHubModel(client)
@@ -583,26 +561,36 @@ func TestHubModelTasksAndDetailsUseHubEndpoints(t *testing.T) {
 	if !strings.Contains(updated.(hubModel).View(), "/tmp/details") {
 		t.Fatalf("details view missing:\n%s", updated.(hubModel).View())
 	}
-	if strings.Join(paths, ",") != "/api/sessions/local:01SEND/tasks,/api/sessions/local:01SEND" {
-		t.Fatalf("paths=%v", paths)
+	if strings.Join(methods, ",") != appwire.MethodSerfTasksList+","+appwire.MethodThreadRead {
+		t.Fatalf("methods=%v", methods)
 	}
 }
 
-func TestHubModelActionsAndClearUseHubEndpoints(t *testing.T) {
-	var paths []string
-	client, cleanup := newTestHubClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		paths = append(paths, r.URL.Path)
-		switch r.URL.Path {
-		case "/api/sessions/local:01SEND/interrupt", "/api/sessions/local:01SEND/compact", "/api/sessions/local:01SEND/model":
-			w.WriteHeader(http.StatusNoContent)
-		case "/api/sessions/local:01SEND/clear":
-			writeJSON(t, w, hubapi.RefResponse{Ref: "local:02NEW", HostID: "local", SessionID: "02NEW"})
-		case "/api/sessions/local:02NEW":
-			writeJSON(t, w, hubapi.SessionDetail{Ref: "local:02NEW", SessionID: "02NEW", Title: "new session"})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
+func TestHubModelActionsAndClearUseAppWire(t *testing.T) {
+	var methods []string
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnInterrupt, func(context.Context, appwire.TurnInterruptParams) (appwire.EmptyResponse, error) {
+			methods = append(methods, appwire.MethodTurnInterrupt)
+			return appwire.EmptyResponse{}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadCompactStart, func(context.Context, appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
+			methods = append(methods, appwire.MethodThreadCompactStart)
+			return appwire.EmptyResponse{}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadModelSet, func(context.Context, appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+			methods = append(methods, appwire.MethodThreadModelSet)
+			return appwire.EmptyResponse{}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadClear, func(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
+			methods = append(methods, appwire.MethodThreadClear)
+			thread := appwireThread(hubTreeNode{Ref: "local:02NEW", SessionID: "02NEW", Title: "new session", State: "idle", Project: "serf", Live: true}, "/tmp/serf")
+			return appwire.ThreadClearResponse{Thread: thread, Ref: thread.Serf.Ref}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			methods = append(methods, appwire.MethodThreadRead)
+			return appwire.ThreadReadResponse{Thread: appwireThread(hubTreeNode{Ref: "local:02NEW", SessionID: "02NEW", Title: "new session", State: "idle", Project: "serf", Live: true}, "/tmp/serf")}, nil
+		})
+	})
 	defer cleanup()
 
 	m := newSessionHubModel(client)
@@ -625,29 +613,29 @@ func TestHubModelActionsAndClearUseHubEndpoints(t *testing.T) {
 	if updated.(hubModel).detail.SessionID != "02NEW" {
 		t.Fatalf("detail=%+v", updated.(hubModel).detail)
 	}
-	want := "/api/sessions/local:01SEND/interrupt,/api/sessions/local:01SEND/compact,/api/sessions/local:01SEND/model,/api/sessions/local:01SEND/clear,/api/sessions/local:02NEW"
-	if strings.Join(paths, ",") != want {
-		t.Fatalf("paths=%v", paths)
+	want := strings.Join([]string{
+		appwire.MethodTurnInterrupt,
+		appwire.MethodThreadCompactStart,
+		appwire.MethodThreadModelSet,
+		appwire.MethodThreadClear,
+		appwire.MethodThreadRead,
+	}, ",")
+	if strings.Join(methods, ",") != want {
+		t.Fatalf("methods=%v", methods)
 	}
 }
 
 func TestHubModelBrowseForkDraftPostsForkAndNavigatesToChild(t *testing.T) {
-	var gotPath string
-	var gotReq hubapi.ForkRequest
-	client, cleanup := newTestHubClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		switch r.URL.Path {
-		case "/api/sessions/local:01SEND/fork":
-			if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
-				t.Fatal(err)
-			}
-			writeJSON(t, w, hubapi.RefResponse{Ref: "local:02CHILD", HostID: "local", SessionID: "02CHILD"})
-		case "/api/sessions/local:02CHILD":
-			writeJSON(t, w, hubapi.SessionDetail{Ref: "local:02CHILD", SessionID: "02CHILD", Title: "child"})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
+	var gotReq appwire.ThreadForkParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadFork, func(_ context.Context, params appwire.ThreadForkParams) (appwire.ThreadForkResponse, error) {
+			gotReq = params
+			return appwire.ThreadForkResponse{Thread: appwireThread(hubTreeNode{Ref: "local:02CHILD", SessionID: "02CHILD", Title: "child", State: "idle", Project: "serf", Live: true}, "/tmp/serf")}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return appwire.ThreadReadResponse{Thread: appwireThread(hubTreeNode{Ref: "local:02CHILD", SessionID: "02CHILD", Title: "child", State: "idle", Project: "serf", Live: true}, "/tmp/serf")}, nil
+		})
+	})
 	defer cleanup()
 
 	m := newSessionHubModel(client)
@@ -688,10 +676,7 @@ func TestHubModelBrowseForkDraftPostsForkAndNavigatesToChild(t *testing.T) {
 	if got.detail.SessionID != "02CHILD" {
 		t.Fatalf("detail=%+v", got.detail)
 	}
-	if gotPath != "/api/sessions/local:02CHILD" {
-		t.Fatalf("last path=%q", gotPath)
-	}
-	if gotReq.Turn != 3 || gotReq.EditedMessage != "edited request" {
+	if gotReq.Ref != "local:01SEND" || gotReq.SourceTurnID != "3" || gotReq.EditedInput != "edited request" || gotReq.Label != "original before fork" {
 		t.Fatalf("fork request=%+v", gotReq)
 	}
 }
@@ -716,10 +701,10 @@ func TestHubModelBrowseForkRequiresUserTurnWithTurnIndex(t *testing.T) {
 
 func TestHubModelDashboardEmptyStateIsLiveOnly(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
-	m.tree = hubapi.TreeResponse{Projects: []hubapi.TreeProject{{
+	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
 		Key:  "serf",
 		Name: "serf",
-		Sessions: []hubapi.TreeNode{
+		Sessions: []hubTreeNode{
 			{Ref: "local:01ENDED", SessionID: "01ENDED", Title: "ended history", State: "ended", Project: "serf"},
 		},
 	}}}
@@ -757,15 +742,15 @@ func TestHubModelSessionFooterShowsBrowseAndDashboardKeys(t *testing.T) {
 	}
 }
 
-func newSessionHubModel(client *hubapi.Client) hubModel {
+func newSessionHubModel(client *appwire.Client) hubModel {
 	m := newHubModel(client, "http://hub.test")
 	m.mode = hubModeSession
-	m.detail = hubapi.SessionDetail{
+	m.detail = hubSessionDetail{
 		Ref:       "local:01SEND",
 		SessionID: "01SEND",
 		Title:     "send task",
 		State:     "idle",
-		Capabilities: hubapi.SessionCapabilities{
+		Capabilities: hubSessionCapabilities{
 			Send:        true,
 			Interrupt:   true,
 			Compact:     true,
@@ -777,20 +762,143 @@ func newSessionHubModel(client *hubapi.Client) hubModel {
 	return m
 }
 
-func newTestHubClient(t *testing.T, handler http.Handler) (*hubapi.Client, func()) {
-	t.Helper()
-	srv := httptest.NewServer(handler)
-	client, err := hubapi.NewClient(srv.URL, srv.Client())
-	if err != nil {
-		t.Fatal(err)
+func TestHubModelIgnoresNotificationsForOtherSessions(t *testing.T) {
+	m := hubModel{
+		mode: hubModeSession,
+		detail: hubSessionDetail{
+			Ref:       "local:current",
+			SessionID: "current",
+		},
+		session: newModel("", "", nil),
 	}
-	return client, srv.Close
+
+	m.applyHubNotification(*appwire.NotificationMessage(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+		ThreadID: "other",
+		Ref:      "local:other",
+		Delta:    "wrong",
+	}).Notification)
+	if len(m.session.messages) != 0 {
+		t.Fatalf("messages=%+v, want no mutation from other session", m.session.messages)
+	}
+
+	m.applyHubNotification(*appwire.NotificationMessage(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+		ThreadID: "current",
+		Ref:      "local:current",
+		Delta:    "right",
+	}).Notification)
+	if len(m.session.messages) != 1 || m.session.messages[0].Text != "right" {
+		t.Fatalf("messages=%+v", m.session.messages)
+	}
 }
 
-func writeJSON(t *testing.T, w http.ResponseWriter, v any) {
+func newTestHubClient(t *testing.T, register func(*appserver.Server)) (*appwire.Client, func()) {
 	t.Helper()
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		t.Fatal(err)
+	app := appserver.NewServer(appserver.ServerConfig{ServerName: "serf-hub", SourceID: "local"})
+	if register != nil {
+		register(app)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rpc" {
+			http.NotFound(w, r)
+			return
+		}
+		app.ServeWebSocket(w, r)
+	}))
+	transport, err := appwire.DialWebSocket(context.Background(), "ws"+srv.URL[len("http"):]+"/rpc", srv.Client())
+	if err != nil {
+		srv.Close()
+		t.Fatalf("dial: %v", err)
+	}
+	client := appwire.NewClient(transport)
+	client.Start(context.Background())
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		_ = client.Close()
+		srv.Close()
+		t.Fatalf("initialize: %v", err)
+	}
+	return client, func() {
+		_ = client.Close()
+		srv.Close()
+	}
+}
+
+func threadListResponse(tree hubTreeResponse) appwire.ThreadListResponse {
+	seen := map[string]bool{}
+	var data []appwire.Thread
+	add := func(node hubTreeNode, cwd string) {
+		if node.Ref == "" || seen[node.Ref] {
+			return
+		}
+		seen[node.Ref] = true
+		data = append(data, appwireThread(node, cwd))
+	}
+	for _, node := range tree.Live {
+		add(node, "")
+	}
+	for _, project := range tree.Projects {
+		for _, node := range project.Sessions {
+			add(node, project.WorkingDir)
+			for _, child := range node.Children {
+				add(child, project.WorkingDir)
+			}
+		}
+	}
+	return appwire.ThreadListResponse{Data: data}
+}
+
+func appwireThread(node hubTreeNode, cwd string) appwire.Thread {
+	ref, _ := appwire.ParseRef(node.Ref)
+	if cwd == "" {
+		project := node.Project
+		if project == "" {
+			project = "serf"
+		}
+		cwd = "/tmp/" + project
+	}
+	status := node.State
+	if status == "" {
+		if node.Live {
+			status = appwire.ThreadStatusIdle
+		} else {
+			status = appwire.ThreadStatusEnded
+		}
+	}
+	if !node.Live && status == appwire.ThreadStatusIdle {
+		status = appwire.ThreadStatusEnded
+	}
+	threadID := ref.ThreadID
+	if threadID == "" {
+		threadID = node.SessionID
+	}
+	sessionID := node.SessionID
+	if sessionID == "" {
+		sessionID = threadID
+	}
+	title := node.Title
+	if title == "" {
+		title = sessionID
+	}
+	return appwire.Thread{
+		ID:            threadID,
+		SessionID:     sessionID,
+		Preview:       title,
+		Name:          title,
+		ModelProvider: node.Model,
+		CWD:           cwd,
+		Source:        ref.SourceID,
+		Status:        appwire.ThreadStatus{Type: status},
+		Serf: appwire.SerfThread{
+			Ref: node.Ref,
+			Capabilities: appwire.ThreadCapabilities{
+				Send:         true,
+				Steer:        true,
+				Interrupt:    true,
+				Compact:      true,
+				Clear:        true,
+				ForkFromTurn: true,
+				Shutdown:     true,
+				ChangeModel:  true,
+			},
+		},
 	}
 }

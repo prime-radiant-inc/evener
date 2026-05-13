@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/internal/hubapi"
+	"primeradiant.com/serf/internal/appwire"
 )
 
 const defaultHubAddr = "127.0.0.1:9180"
@@ -37,7 +37,7 @@ type hubStartConfig struct {
 
 type hubRuntime struct {
 	Address hubAddress
-	Client  *hubapi.Client
+	Client  *appwire.Client
 }
 
 func normalizeHubAddress(raw string) (hubAddress, error) {
@@ -91,11 +91,8 @@ func startHubClient(ctx context.Context, cfg hubStartConfig) (hubRuntime, error)
 	if cfg.HealthTimeout == 0 {
 		cfg.HealthTimeout = 5 * time.Second
 	}
-	client, err := hubapi.NewClient(addr.BaseURL, cfg.HTTPClient)
-	if err != nil {
-		return hubRuntime{}, err
-	}
-	if err := waitForHubHealth(ctx, client, 500*time.Millisecond); err == nil {
+	client, err := waitForHubHealth(ctx, addr, cfg.HTTPClient, 500*time.Millisecond)
+	if err == nil {
 		return hubRuntime{Address: addr, Client: client}, nil
 	}
 	if !cfg.AutoStart {
@@ -114,31 +111,60 @@ func startHubClient(ctx context.Context, cfg hubStartConfig) (hubRuntime, error)
 	if err := startLocalHub(bin, addr.BindAddr, cfg.LogFile); err != nil {
 		return hubRuntime{}, err
 	}
-	if err := waitForHubHealth(ctx, client, cfg.HealthTimeout); err != nil {
+	client, err = waitForHubHealth(ctx, addr, cfg.HTTPClient, cfg.HealthTimeout)
+	if err != nil {
 		return hubRuntime{}, fmt.Errorf("started hub but health check failed: %w", err)
 	}
 	return hubRuntime{Address: addr, Client: client}, nil
 }
 
-func waitForHubHealth(ctx context.Context, client *hubapi.Client, timeout time.Duration) error {
+func waitForHubHealth(ctx context.Context, addr hubAddress, httpClient *http.Client, timeout time.Duration) (*appwire.Client, error) {
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for {
 		waitCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
-		_, err := client.Health(waitCtx)
+		client, err := dialHubRPC(waitCtx, addr, httpClient)
 		cancel()
 		if err == nil {
-			return nil
+			return client, nil
 		}
 		lastErr = err
 		if time.Now().After(deadline) {
-			return lastErr
+			return nil, lastErr
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return nil, ctx.Err()
 		case <-time.After(100 * time.Millisecond):
 		}
+	}
+}
+
+func dialHubRPC(ctx context.Context, addr hubAddress, httpClient *http.Client) (*appwire.Client, error) {
+	transport, err := appwire.DialWebSocket(ctx, hubRPCURL(addr), httpClient)
+	if err != nil {
+		return nil, err
+	}
+	client := appwire.NewClient(transport)
+	client.Start(context.WithoutCancel(ctx))
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{
+		ClientInfo: appwire.ClientInfo{Name: "serf-tui", Version: "tui"},
+	}); err != nil {
+		client.Close()
+		return nil, err
+	}
+	return client, nil
+}
+
+func hubRPCURL(addr hubAddress) string {
+	base := addr.BaseURL
+	switch {
+	case strings.HasPrefix(base, "https://"):
+		return "wss://" + strings.TrimPrefix(base, "https://") + "/rpc"
+	case strings.HasPrefix(base, "http://"):
+		return "ws://" + strings.TrimPrefix(base, "http://") + "/rpc"
+	default:
+		return base + "/rpc"
 	}
 }
 

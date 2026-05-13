@@ -42,6 +42,31 @@ func TestWrite_CreatesFileWithExpectedShape(t *testing.T) {
 	}
 }
 
+func TestEntryRoundTripIncludesAppWireEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	entry := Entry{
+		PID:       123,
+		Protocol:  "serf-appwire-v1",
+		Endpoint:  "ws://127.0.0.1:49152/rpc",
+		SourceID:  "local",
+		ThreadID:  "th_1",
+		SessionID: "sess_1",
+	}
+	if _, err := Write(dir, entry); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	entries, err := List(dir)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries=%d, want 1", len(entries))
+	}
+	if entries[0].Protocol != "serf-appwire-v1" || entries[0].Endpoint == "" || entries[0].ThreadID != "th_1" {
+		t.Fatalf("entry=%+v", entries[0])
+	}
+}
+
 func TestRemove_TolerantOfMissingFile(t *testing.T) {
 	dir := t.TempDir()
 	if err := Remove(dir, 99999); err != nil {

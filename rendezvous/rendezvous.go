@@ -16,12 +16,14 @@ import (
 )
 
 // Entry describes one live serf serve daemon.
-//
-// SessionID is intentionally absent: it can change under POST /clear, so the
-// hub fetches the current value from the daemon's /status on demand.
 type Entry struct {
 	PID        int       `json:"pid"`
 	Address    string    `json:"address"`
+	Protocol   string    `json:"protocol,omitempty"`
+	Endpoint   string    `json:"endpoint,omitempty"`
+	SourceID   string    `json:"source_id,omitempty"`
+	ThreadID   string    `json:"thread_id,omitempty"`
+	SessionID  string    `json:"session_id,omitempty"`
 	WorkingDir string    `json:"working_dir,omitempty"`
 	StateDir   string    `json:"state_dir,omitempty"`
 	Agent      string    `json:"agent,omitempty"`

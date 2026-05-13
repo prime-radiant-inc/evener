@@ -72,7 +72,7 @@ func TestBuiltinAgents_DefaultUsesAllToolsShorthand(t *testing.T) {
 	}
 }
 
-func TestBuiltinAgents_DefaultHasNoDefaultTasks(t *testing.T) {
+func TestBuiltinAgents_DefaultTaskWorkflowAcceptsParentTasks(t *testing.T) {
 	agents, err := builtinAgents()
 	if err != nil {
 		t.Fatalf("builtinAgents: %v", err)
@@ -81,8 +81,15 @@ func TestBuiltinAgents_DefaultHasNoDefaultTasks(t *testing.T) {
 	if !ok {
 		t.Fatal("expected built-in 'default' agent")
 	}
-	if len(def.Tasks) != 0 {
-		t.Fatalf("default agent should not ship with a default task list, got %#v", def.Tasks)
+	found := false
+	for _, task := range def.Tasks {
+		if task.Title == "Do the work" && task.Insert == "parent_tasks" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("default agent should have a Do the work task with insert=parent_tasks, got %#v", def.Tasks)
 	}
 }
 
