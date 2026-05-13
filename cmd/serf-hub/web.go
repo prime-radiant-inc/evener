@@ -3246,6 +3246,10 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
+		if !shouldResumeAfterTurnStartError(err) {
+			writeSessionActionError(w, r, err)
+			return
+		}
 		if rerr := startTurn(true); rerr != nil {
 			if strings.Contains(rerr.Error(), "spawner not configured") {
 				http.Error(w, rerr.Error(), http.StatusServiceUnavailable)

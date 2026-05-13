@@ -2337,6 +2337,84 @@ func TestWeb_Send_ClosedSessionRequiresSpawner(t *testing.T) {
 	}
 }
 
+func TestWeb_SendLiveStartTurnErrorDoesNotResume(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "past")
+	sessionID := buildRPCParentSession(t, stateDir)
+	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		appserver.Subscribe(ctx, sessionID)
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			Source:    "local",
+			Serf:      appwire.SerfThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		}}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+		return appwire.TurnStartResponse{}, appwire.InternalError("model provider exploded")
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rpc" {
+			http.NotFound(w, r)
+			return
+		}
+		daemon.ServeWebSocket(w, r)
+	}))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:        302,
+		Address:    strings.TrimPrefix(daemonHTTP.URL, "http://"),
+		Protocol:   appwire.ProtocolVersion,
+		Endpoint:   "ws" + daemonHTTP.URL[len("http"):] + "/rpc",
+		SourceID:   "local",
+		ThreadID:   sessionID,
+		SessionID:  sessionID,
+		WorkingDir: "/tmp/project",
+		Model:      "gpt-5",
+		StartedAt:  time.Now(),
+	})
+	roster := NewRoster(runDir, fakeProber{sessionID: sessionID, status: "idle"})
+	roster.Refresh()
+	resumeCalled := false
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		RunDir:  runDir,
+		Roster:  roster,
+		Spawner: &fakeRPCSpawner{
+			resume: func(context.Context, ResumeRequest) (rendezvous.Entry, error) {
+				resumeCalled = true
+				return rendezvous.Entry{}, errors.New("resume should not be called")
+			},
+		},
+		Past: past,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/s/"+sessionID+"/send", strings.NewReader(`{"text":"resume work"}`))
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if resumeCalled {
+		t.Fatal("resume was called for a live StartTurn error")
+	}
+	if !strings.Contains(rec.Body.String(), "model provider exploded") {
+		t.Fatalf("body=%q, want original StartTurn error", rec.Body.String())
+	}
+}
+
 func TestWeb_Send_EndedRosterEntryResumesForwardsAndKeepsReplay(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "past")

@@ -190,6 +190,29 @@ vm.runInContext(SRC, context);
   });
   assert(!dedupedCompletedTurnEvents.some(([kind, data]) => kind === "ASSISTANT_TEXT_END" && data.text === "CODEX_DEDUPE_OK"), "completed turn should not replay already completed assistant item");
   assert(context.window.SerfAppwire.liveItemStateSize() === liveStateBeforeCompletedTurn - 1, "completed turn should evict reconciled live item state");
+  context.window.SerfAppwire.eventsFromNotification("item/started", {
+    threadId: "th_failed",
+    turnId: "turn_failed",
+    item: { id: "msg_failed", type: "agent_message" },
+  });
+  context.window.SerfAppwire.eventsFromNotification("item/agentMessage/delta", {
+    threadId: "th_failed",
+    turnId: "turn_failed",
+    itemId: "msg_failed",
+    delta: "partial failure",
+  });
+  const liveStateBeforeFailedTurn = context.window.SerfAppwire.liveItemStateSize();
+  const failedTurnEvents = context.window.SerfAppwire.eventsFromNotification("turn/completed", {
+    threadId: "th_failed",
+    turn: {
+      id: "turn_failed",
+      status: "failed",
+      error: { message: "turn failed for test" },
+      items: [{ id: "msg_failed", turnId: "turn_failed", type: "agent_message" }],
+    },
+  });
+  assert(failedTurnEvents.some(([kind]) => kind === "ERROR"), "failed turn should render an error event");
+  assert(context.window.SerfAppwire.liveItemStateSize() === liveStateBeforeFailedTurn - 1, "failed turn should evict live item state");
   const reusedItemNextTurnEvents = context.window.SerfAppwire.eventsFromNotification("turn/completed", {
     threadId: "th_codex",
     turn: {
