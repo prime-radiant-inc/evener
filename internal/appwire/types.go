@@ -368,6 +368,7 @@ type HarnessListResponse struct {
 
 type ModelListParams struct {
 	Harness string `json:"harness,omitempty"`
+	CWD     string `json:"cwd,omitempty"`
 }
 
 type ModelDescriptor struct {

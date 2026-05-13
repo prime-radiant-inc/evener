@@ -1652,6 +1652,23 @@ func (fakeSpawner) Resume(_ context.Context, _ ResumeRequest) (rendezvous.Entry,
 	return rendezvous.Entry{PID: 1, Address: "127.0.0.1:0"}, nil
 }
 
+type fakeWorkingDirModelContractSpawner struct {
+	fakeSpawner
+	fallback              appwire.ModelListResponse
+	contractForWorkingDir func(context.Context, string) (appwire.ModelListResponse, error)
+}
+
+func (f *fakeWorkingDirModelContractSpawner) ListLaunchModelContract(context.Context) (appwire.ModelListResponse, error) {
+	return f.fallback, nil
+}
+
+func (f *fakeWorkingDirModelContractSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, cwd string) (appwire.ModelListResponse, error) {
+	if f.contractForWorkingDir == nil {
+		return appwire.ModelListResponse{}, nil
+	}
+	return f.contractForWorkingDir(ctx, cwd)
+}
+
 type delayedRosterSpawner struct {
 	runDir string
 	delay  time.Duration
@@ -2790,6 +2807,42 @@ func TestWeb_ApiModels_ReturnsSerfLaunchContractWhenLiveUnavailable(t *testing.T
 	}
 	if models[0].Provider != "openai" || models[0].Model != "gpt-5.5" {
 		t.Fatalf("model mismatch: %+v", models[0])
+	}
+}
+
+func TestWeb_ApiModels_UsesWorkingDirForSerfLaunchContract(t *testing.T) {
+	spawner := &fakeWorkingDirModelContractSpawner{
+		fallback: appwire.ModelListResponse{
+			Data: []appwire.ModelDescriptor{{Provider: "stale", Model: "wrong"}},
+		},
+		contractForWorkingDir: func(_ context.Context, cwd string) (appwire.ModelListResponse, error) {
+			if cwd != "/tmp/project-with-oauth" {
+				return appwire.ModelListResponse{}, fmt.Errorf("cwd=%q, want /tmp/project-with-oauth", cwd)
+			}
+			return appwire.ModelListResponse{
+				Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-visible-to-agent"}},
+			}, nil
+		},
+	}
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Spawner: spawner,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/models?cwd=/tmp/project-with-oauth", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var models []hubapi.ModelOption
+	if err := json.Unmarshal(rec.Body.Bytes(), &models); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(models) != 1 || models[0].Provider != "openai" || models[0].Model != "gpt-visible-to-agent" {
+		t.Fatalf("models=%+v", models)
 	}
 }
 

@@ -51,7 +51,7 @@ const formDom = new JSDOM(`<!DOCTYPE html><html><body>
     <input type="hidden" data-harness-option value="serf" data-label="serf">
     <input type="hidden" data-harness-option value="codex" data-label="codex">
     <input type="hidden" name="model" value="">
-    <input type="hidden" name="working_dir" value="">
+    <input type="hidden" name="working_dir" value="/tmp/project-with-oauth">
     <input type="hidden" name="branch" value="">
     <input type="hidden" name="access_mode" value="full">
     <input type="hidden" name="agent" value="default">
@@ -87,6 +87,11 @@ const modelDisplay = () => formDom.window.document.querySelector("[data-chip-val
 const modelValue = () => formDom.window.document.querySelector('input[name="model"]').value;
 assert(modelDisplay() === "openai/gpt-5.2", "serf spawn should apply stored serf model default");
 
+formDom.window.document.querySelector('button[data-chip="model"]').click();
+assert(listModelsCalls === 1, "serf model picker should fetch launch-scoped model list");
+assert(listModelsParams.cwd === "/tmp/project-with-oauth", "serf model picker should pass selected working directory");
+formDom.window.document.querySelector(".chip-picker").remove();
+
 formDom.window.document.querySelector('button[data-chip="harness"]').click();
 formDom.window.document.querySelectorAll(".chip-picker-option")[1].click();
 assert(formDom.window.document.querySelector('input[name="harness"]').value === "codex", "harness should switch to codex");
@@ -94,8 +99,9 @@ assert(modelValue() === "", "codex harness should clear stale serf model value")
 assert(modelDisplay() === "codex default", "codex harness should show codex default model label");
 
 formDom.window.document.querySelector('button[data-chip="model"]').click();
-assert(listModelsCalls === 1, "codex model picker should fetch harness-scoped model list");
+assert(listModelsCalls === 2, "codex model picker should fetch harness-scoped model list");
 assert(listModelsParams.harness === "codex", "codex model picker should pass selected harness");
+assert(listModelsParams.cwd === "/tmp/project-with-oauth", "codex model picker should pass selected working directory");
 assert(
   Array.from(formDom.window.document.querySelectorAll(".chip-picker-model-name")).map(el => el.textContent.trim()).join(",") === "gpt-5.3-codex",
   "codex model picker should offer codex source models",

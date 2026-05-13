@@ -319,7 +319,7 @@ func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		m.openSpawnForm()
 		if m.client != nil {
-			return m, fetchHubSpawnOptions(m.client)
+			return m, fetchHubSpawnOptions(m.client, m.spawnDir)
 		}
 		return m, nil
 	case "up", "k":
@@ -362,7 +362,7 @@ func (m hubModel) updateProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		m.openSpawnForm()
 		if m.client != nil {
-			return m, fetchHubSpawnOptions(m.client)
+			return m, fetchHubSpawnOptions(m.client, m.spawnDir)
 		}
 		return m, nil
 	case "up", "k":
@@ -403,7 +403,7 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		models := m.spawnSelectableModels()
 		if len(models) == 0 && !m.spawnHarnessUsesSerfModels() && m.client != nil {
 			m.err = nil
-			return m, fetchHubModelsForHarness(m.client, m.spawnHarness)
+			return m, fetchHubModelsForHarness(m.client, m.spawnHarness, m.spawnDir)
 		}
 		if len(models) == 0 {
 			if !m.spawnHarnessUsesSerfModels() {

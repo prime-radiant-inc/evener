@@ -1638,7 +1638,7 @@ func (s *WebServer) renderSettingsPartial(w http.ResponseWriter, r *http.Request
 	}
 
 	// Group launch harness models by provider for the providers page.
-	launchModelList, launchModelErr := serfLaunchModelList(r.Context(), s.cfg)
+	launchModelList, launchModelErr := serfLaunchModelList(r.Context(), s.cfg, "")
 	if launchModelErr != nil {
 		launchModelList = appwire.ModelListResponse{
 			Diagnostics: []appwire.ModelListDiagnostic{launchModelListErrorDiagnostic(launchModelErr)},
@@ -2374,8 +2374,9 @@ func writeSpawnError(w http.ResponseWriter, err error) {
 // embedded catalog where provider APIs don't carry it.
 func (s *WebServer) handleApiModels(w http.ResponseWriter, r *http.Request) {
 	harness := strings.TrimSpace(r.URL.Query().Get("harness"))
+	workingDir := strings.TrimSpace(r.URL.Query().Get("cwd"))
 	if harness != "" && harness != "serf" && harness != "local" {
-		resp, err := hubModelList(r.Context(), s.cfg, s.sources, appwire.ModelListParams{Harness: harness})
+		resp, err := hubModelList(r.Context(), s.cfg, s.sources, appwire.ModelListParams{Harness: harness, CWD: workingDir})
 		if err != nil {
 			writeAPIWireError(w, http.StatusBadGateway, err)
 			return
@@ -2384,7 +2385,7 @@ func (s *WebServer) handleApiModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	launchResp, err := serfLaunchModelList(r.Context(), s.cfg)
+	launchResp, err := serfLaunchModelList(r.Context(), s.cfg, workingDir)
 	if err != nil && hasSerfLaunchModelLister(s.cfg) {
 		writeAPIWireError(w, http.StatusBadGateway, err)
 		return
@@ -2402,7 +2403,7 @@ func serfLaunchModelsOrEmpty(ctx context.Context, cfg WebConfig) []appwire.Model
 }
 
 func serfLaunchModelListOrEmpty(ctx context.Context, cfg WebConfig) appwire.ModelListResponse {
-	resp, err := serfLaunchModelList(ctx, cfg)
+	resp, err := serfLaunchModelList(ctx, cfg, "")
 	if err != nil {
 		return appwire.ModelListResponse{}
 	}

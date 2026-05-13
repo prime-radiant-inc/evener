@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1799,6 +1800,37 @@ func TestHubRPCModelListPrefersSerfLaunchContract(t *testing.T) {
 		t.Fatalf("ModelList: %v", err)
 	}
 	if len(resp.Data) != 1 || resp.Data[0].Provider != "openai" || resp.Data[0].Model != "gpt-5.5" {
+		t.Fatalf("models=%+v", resp.Data)
+	}
+}
+
+func TestHubRPCModelListUsesWorkingDirForSerfLaunchContract(t *testing.T) {
+	spawner := &fakeRPCWorkingDirModelContractSpawner{
+		fallback: appwire.ModelListResponse{
+			Data: []appwire.ModelDescriptor{{Provider: "stale", Model: "wrong"}},
+		},
+		contractForWorkingDir: func(_ context.Context, cwd string) (appwire.ModelListResponse, error) {
+			if cwd != "/tmp/project-with-oauth" {
+				return appwire.ModelListResponse{}, fmt.Errorf("cwd=%q, want /tmp/project-with-oauth", cwd)
+			}
+			return appwire.ModelListResponse{
+				Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-visible-to-agent"}},
+			}, nil
+		},
+	}
+	hub := newHubRPCTestServer(t, WebConfig{Spawner: spawner})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ModelList(context.Background(), appwire.ModelListParams{CWD: "/tmp/project-with-oauth"})
+	if err != nil {
+		t.Fatalf("ModelList: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].Provider != "openai" || resp.Data[0].Model != "gpt-visible-to-agent" {
 		t.Fatalf("models=%+v", resp.Data)
 	}
 }
@@ -3605,6 +3637,23 @@ func (f *fakeRPCModelContractSpawner) ListLaunchModelContract(context.Context) (
 		return appwire.ModelListResponse{}, f.err
 	}
 	return f.contract, nil
+}
+
+type fakeRPCWorkingDirModelContractSpawner struct {
+	fakeRPCSpawner
+	fallback              appwire.ModelListResponse
+	contractForWorkingDir func(context.Context, string) (appwire.ModelListResponse, error)
+}
+
+func (f *fakeRPCWorkingDirModelContractSpawner) ListLaunchModelContract(context.Context) (appwire.ModelListResponse, error) {
+	return f.fallback, nil
+}
+
+func (f *fakeRPCWorkingDirModelContractSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, cwd string) (appwire.ModelListResponse, error) {
+	if f.contractForWorkingDir == nil {
+		return appwire.ModelListResponse{}, nil
+	}
+	return f.contractForWorkingDir(ctx, cwd)
 }
 
 func (f *fakeRPCSpawner) Spawn(ctx context.Context, req SpawnRequest) (rendezvous.Entry, error) {

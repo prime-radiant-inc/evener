@@ -429,7 +429,7 @@ func hubModelList(ctx context.Context, cfg WebConfig, sources *appsource.Registr
 		return resp, nil
 	}
 
-	launchResp, err := serfLaunchModelList(ctx, cfg)
+	launchResp, err := serfLaunchModelList(ctx, cfg, params.CWD)
 	if hasSerfLaunchModelLister(cfg) {
 		if err != nil {
 			return appwire.ModelListResponse{}, err
@@ -1075,9 +1075,6 @@ func hubThreadStart(ctx context.Context, cfg WebConfig, sources *appsource.Regis
 	if err != nil {
 		return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
 	}
-	if err := validateSerfLaunchModel(ctx, cfg, modelRef); err != nil {
-		return appwire.ThreadStartResponse{}, err
-	}
 	workingDir := params.CWD
 	if workingDir != "" {
 		resolved, err := canonicalizeDir(workingDir)
@@ -1085,6 +1082,9 @@ func hubThreadStart(ctx context.Context, cfg WebConfig, sources *appsource.Regis
 			return appwire.ThreadStartResponse{}, appwire.InvalidParams("cwd: " + err.Error())
 		}
 		workingDir = resolved
+	}
+	if err := validateSerfLaunchModel(ctx, cfg, modelRef, workingDir); err != nil {
+		return appwire.ThreadStartResponse{}, err
 	}
 	entry, err := cfg.Spawner.Spawn(ctx, SpawnRequest{
 		Model:           modelRef.Qualified(),
@@ -1154,8 +1154,8 @@ func launchSourceID(params appwire.ThreadStartParams) string {
 	return ""
 }
 
-func validateSerfLaunchModel(ctx context.Context, cfg WebConfig, ref cmdutil.ModelRef) error {
-	contract, err := serfLaunchModelList(ctx, cfg)
+func validateSerfLaunchModel(ctx context.Context, cfg WebConfig, ref cmdutil.ModelRef, workingDir string) error {
+	contract, err := serfLaunchModelList(ctx, cfg, workingDir)
 	if err != nil || (len(contract.Data) == 0 && len(contract.Diagnostics) == 0) {
 		return nil
 	}
@@ -1191,14 +1191,25 @@ func providerHasLaunchDiagnostic(diagnostics []appwire.ModelListDiagnostic, prov
 }
 
 func serfLaunchModels(ctx context.Context, cfg WebConfig) ([]appwire.ModelDescriptor, error) {
-	resp, err := serfLaunchModelList(ctx, cfg)
+	resp, err := serfLaunchModelList(ctx, cfg, "")
 	if err != nil {
 		return nil, err
 	}
 	return resp.Data, nil
 }
 
-func serfLaunchModelList(ctx context.Context, cfg WebConfig) (appwire.ModelListResponse, error) {
+func serfLaunchModelList(ctx context.Context, cfg WebConfig, workingDir string) (appwire.ModelListResponse, error) {
+	if strings.TrimSpace(workingDir) != "" {
+		if lister, ok := cfg.Spawner.(SerfLaunchModelContractWorkingDirLister); ok && lister != nil {
+			resp, err := lister.ListLaunchModelContractForWorkingDir(ctx, workingDir)
+			if err != nil {
+				return appwire.ModelListResponse{}, err
+			}
+			resp.Data = sanitizeModelDescriptors(resp.Data)
+			resp.Diagnostics = sanitizeModelDiagnostics(resp.Diagnostics)
+			return resp, nil
+		}
+	}
 	if lister, ok := cfg.Spawner.(SerfLaunchModelContractLister); ok && lister != nil {
 		resp, err := lister.ListLaunchModelContract(ctx)
 		if err != nil {
@@ -1220,6 +1231,9 @@ func serfLaunchModelList(ctx context.Context, cfg WebConfig) (appwire.ModelListR
 }
 
 func hasSerfLaunchModelLister(cfg WebConfig) bool {
+	if lister, ok := cfg.Spawner.(SerfLaunchModelContractWorkingDirLister); ok && lister != nil {
+		return true
+	}
 	if lister, ok := cfg.Spawner.(SerfLaunchModelContractLister); ok && lister != nil {
 		return true
 	}

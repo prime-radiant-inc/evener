@@ -297,8 +297,10 @@ func TestHubModelEnterOpensSessionDetail(t *testing.T) {
 
 func TestHubModelDashboardSpawnUsesSelectedProjectWorkingDir(t *testing.T) {
 	var gotSpawn appwire.ThreadStartParams
+	var gotModelList appwire.ModelListParams
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
-		appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
+		appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(_ context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
+			gotModelList = params
 			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}, nil
 		})
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadStart, func(_ context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
@@ -344,6 +346,9 @@ func TestHubModelDashboardSpawnUsesSelectedProjectWorkingDir(t *testing.T) {
 
 	if gotSpawn.CWD != "/tmp/serf" {
 		t.Fatalf("cwd=%q, want /tmp/serf", gotSpawn.CWD)
+	}
+	if gotModelList.CWD != "/tmp/serf" {
+		t.Fatalf("model list cwd=%q, want /tmp/serf", gotModelList.CWD)
 	}
 	if gotSpawn.Prompt != "build the thing" {
 		t.Fatalf("prompt=%q, want build the thing", gotSpawn.Prompt)
@@ -497,6 +502,7 @@ func TestHubModelCodexSpawnOpensHarnessModelPicker(t *testing.T) {
 	m.spawnHarnesses = []string{"serf", "codex-local"}
 	m.spawnHarnessKinds = map[string]string{"serf": "serf", "codex-local": "codex"}
 	m.spawnHarness = "codex-local"
+	m.spawnDir = "/tmp/serf"
 	m.spawnModels = []modelPickerItem{{id: "openai/gpt-5", display: "openai/gpt-5"}}
 	m.spawnModel = ""
 
@@ -508,6 +514,9 @@ func TestHubModelCodexSpawnOpensHarnessModelPicker(t *testing.T) {
 	got := updated.(hubModel)
 	if gotParams.Harness != "codex-local" {
 		t.Fatalf("model list params=%+v, want codex harness", gotParams)
+	}
+	if gotParams.CWD != "/tmp/serf" {
+		t.Fatalf("model list cwd=%q, want /tmp/serf", gotParams.CWD)
 	}
 	if got.spawnModelPicker == nil {
 		t.Fatalf("codex harness did not open model picker:\n%s", got.spawnView())

@@ -60,6 +60,10 @@ type SerfLaunchModelContractLister interface {
 	ListLaunchModelContract(context.Context) (appwire.ModelListResponse, error)
 }
 
+type SerfLaunchModelContractWorkingDirLister interface {
+	ListLaunchModelContractForWorkingDir(context.Context, string) (appwire.ModelListResponse, error)
+}
+
 func (h *HubSpawner) ListLaunchModels(ctx context.Context) ([]appwire.ModelDescriptor, error) {
 	resp, err := h.ListLaunchModelContract(ctx)
 	if err != nil {
@@ -70,6 +74,12 @@ func (h *HubSpawner) ListLaunchModels(ctx context.Context) ([]appwire.ModelDescr
 
 func (h *HubSpawner) ListLaunchModelContract(ctx context.Context) (appwire.ModelListResponse, error) {
 	stateDir := resolveSerfLaunchStateDir("", h.Cfg.SerfLaunch.Env)
+	env := buildSerfChildEnv(h.Cfg, h.RunDir, stateDir, h.HubToken)
+	return listSerfLaunchModelContract(ctx, h.SerfBinary, env)
+}
+
+func (h *HubSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, workingDir string) (appwire.ModelListResponse, error) {
+	stateDir := resolveSerfLaunchStateDir(workingDir, h.Cfg.SerfLaunch.Env)
 	env := buildSerfChildEnv(h.Cfg, h.RunDir, stateDir, h.HubToken)
 	return listSerfLaunchModelContract(ctx, h.SerfBinary, env)
 }

@@ -104,9 +104,9 @@ func sendHubSpawn(client *appwire.Client, req hubSpawnRequest) tea.Cmd {
 	}
 }
 
-func fetchHubModels(client *appwire.Client) tea.Cmd {
+func fetchHubModels(client *appwire.Client, workingDir string) tea.Cmd {
 	return func() tea.Msg {
-		resp, err := client.ModelList(context.Background(), appwire.ModelListParams{})
+		resp, err := client.ModelList(context.Background(), appwire.ModelListParams{CWD: strings.TrimSpace(workingDir)})
 		if err != nil {
 			return hubModelsMsg{err: err}
 		}
@@ -114,10 +114,11 @@ func fetchHubModels(client *appwire.Client) tea.Cmd {
 	}
 }
 
-func fetchHubModelsForHarness(client *appwire.Client, harness string) tea.Cmd {
+func fetchHubModelsForHarness(client *appwire.Client, harness string, workingDir string) tea.Cmd {
 	harness = strings.TrimSpace(harness)
+	workingDir = strings.TrimSpace(workingDir)
 	return func() tea.Msg {
-		resp, err := client.ModelList(context.Background(), appwire.ModelListParams{Harness: harness})
+		resp, err := client.ModelList(context.Background(), appwire.ModelListParams{Harness: harness, CWD: workingDir})
 		if err != nil {
 			return hubModelsMsg{harness: harness, err: err}
 		}
@@ -125,7 +126,8 @@ func fetchHubModelsForHarness(client *appwire.Client, harness string) tea.Cmd {
 	}
 }
 
-func fetchHubSpawnOptions(client *appwire.Client) tea.Cmd {
+func fetchHubSpawnOptions(client *appwire.Client, workingDir string) tea.Cmd {
+	workingDir = strings.TrimSpace(workingDir)
 	return func() tea.Msg {
 		harnessResp, err := client.HarnessList(context.Background(), appwire.HarnessListParams{})
 		if err != nil {
@@ -144,7 +146,7 @@ func fetchHubSpawnOptions(client *appwire.Client) tea.Cmd {
 			}
 			harnessKinds[option.ID] = kind
 		}
-		modelResp, err := client.ModelList(context.Background(), appwire.ModelListParams{})
+		modelResp, err := client.ModelList(context.Background(), appwire.ModelListParams{CWD: workingDir})
 		if err != nil {
 			return hubSpawnOptionsMsg{harnesses: harnesses, harnessKinds: harnessKinds, modelErr: err}
 		}

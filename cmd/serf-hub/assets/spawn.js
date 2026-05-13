@@ -473,10 +473,16 @@
   }
 
   function listModelsForHarness(harness) {
+    const params = {};
+    if (!harnessUsesSerfModels(harness)) params.harness = harness;
+    const cwd = currentWorkingDir();
+    if (cwd) params.cwd = cwd;
     if (window.SerfAppwire) {
-      return window.SerfAppwire.listModels(harnessUsesSerfModels(harness) ? {} : { harness });
+      return window.SerfAppwire.listModels(params);
     }
-    const suffix = harnessUsesSerfModels(harness) ? "" : "?harness=" + encodeURIComponent(harness);
+    const query = new URLSearchParams();
+    Object.keys(params).forEach(k => query.set(k, params[k]));
+    const suffix = query.toString() ? "?" + query.toString() : "";
     return fetch("/api/models" + suffix).then(r => r.json());
   }
 
