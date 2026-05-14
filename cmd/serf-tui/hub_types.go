@@ -94,6 +94,7 @@ type hubForkRequest struct {
 type hubTranscriptViewState struct {
 	Ref      string
 	Title    string
+	Source   string
 	Messages []chatMessage
 }
 
@@ -106,6 +107,10 @@ func (p hubSessionPanel) View() string {
 }
 
 func (t hubTranscriptViewState) banner() string {
+	source := strings.TrimSpace(t.Source)
+	if source != "" {
+		return "Viewing " + t.Title + " [" + source + "]. Press esc to return to chat."
+	}
 	return "Viewing " + t.Title + ". Press esc to return to chat."
 }
 

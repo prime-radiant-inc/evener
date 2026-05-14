@@ -387,6 +387,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.transcriptView = &hubTranscriptViewState{
 			Ref:      msg.target.Ref,
 			Title:    msg.target.Title,
+			Source:   transcriptTargetSourceLabel(msg.target),
 			Messages: msg.messages,
 		}
 		m.session.scrollMode = true

@@ -17,21 +17,32 @@ func hubTranscriptPickerItems(targets []appwire.ThreadTranscriptTarget) []modelP
 		if display == "" {
 			display = target.Ref
 		}
-		if target.Kind == "subagent" {
-			details := []string{}
-			if target.Status != "" {
-				details = append(details, target.Status)
-			}
-			if target.TurnsUsed > 0 {
-				details = append(details, fmt.Sprintf("%d turns", target.TurnsUsed))
-			}
-			if len(details) > 0 {
-				display += " (" + strings.Join(details, ", ") + ")"
-			}
+		details := []string{}
+		if source := transcriptTargetSourceLabel(target); source != "" {
+			details = append(details, source)
+		}
+		if target.Status != "" {
+			details = append(details, target.Status)
+		}
+		if target.Kind == "subagent" && target.TurnsUsed > 0 {
+			details = append(details, fmt.Sprintf("%d turns", target.TurnsUsed))
+		}
+		if len(details) > 0 {
+			display += " (" + strings.Join(details, ", ") + ")"
 		}
 		items = append(items, modelPickerItem{id: target.Ref, display: display})
 	}
 	return items
+}
+
+func transcriptTargetSourceLabel(target appwire.ThreadTranscriptTarget) string {
+	if source := strings.TrimSpace(target.Source); source != "" {
+		return source
+	}
+	if ref := strings.TrimSpace(target.Ref); ref != "" {
+		return sourceLabelFromRefText(ref)
+	}
+	return ""
 }
 
 func hubTranscriptTargetByRef(targets []appwire.ThreadTranscriptTarget, ref string) (appwire.ThreadTranscriptTarget, bool) {
