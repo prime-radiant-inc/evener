@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"os"
 	"time"
@@ -11,34 +10,34 @@ import (
 )
 
 func main() {
-	hubAddr := flag.String("hub-addr", defaultHubAddr, "serf hub address")
-	hubBin := flag.String("hub-bin", "", "path to serf-hub binary")
-	noAutoStartHub := flag.Bool("no-auto-start-hub", false, "do not start a local hub when unreachable")
-	logFile := flag.String("log-file", "", "write auto-started hub logs to this file")
-	debug := flag.Bool("debug", false, "disable alternate screen")
-	flag.Parse()
+	startupOpts, err := parseTUIStartupOptions(os.Args[1:], os.Getenv)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "serf-tui: %v\n", err)
+		os.Exit(2)
+	}
 
 	ctx := context.Background()
 	runtime, err := startHubClient(ctx, hubStartConfig{
-		RawAddr:           *hubAddr,
-		HubBin:            *hubBin,
-		LogFile:           *logFile,
+		RawAddr:           startupOpts.HubAddr,
+		HubBin:            startupOpts.HubBin,
+		StateDir:          startupOpts.StateDir,
+		LogFile:           startupOpts.LogFile,
 		CurrentExecutable: os.Args[0],
-		AutoStart:         !*noAutoStartHub,
+		AutoStart:         startupOpts.AutoStartHub,
 		HealthTimeout:     5 * time.Second,
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "serf-tui: %v\n", err)
+		fmt.Fprint(os.Stderr, startupErrorScreen(err))
 		os.Exit(1)
 	}
 
 	initTheme()
 	m := newHubModel(runtime.Client, runtime.Address.BaseURL)
-	var opts []tea.ProgramOption
-	if !*debug {
-		opts = append(opts, tea.WithAltScreen())
+	var programOpts []tea.ProgramOption
+	if !startupOpts.Debug {
+		programOpts = append(programOpts, tea.WithAltScreen())
 	}
-	if _, err := tea.NewProgram(m, opts...).Run(); err != nil {
+	if _, err := tea.NewProgram(m, programOpts...).Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "serf-tui: %v\n", err)
 		os.Exit(1)
 	}
