@@ -452,6 +452,7 @@ func (s *Server) appThread() appwire.Thread {
 	threadID := s.appThreadID
 	processing := s.processing
 	pfn := s.pressureFn
+	dfn := s.detailedStatusFn
 	s.mu.RUnlock()
 
 	if sourceID == "" {
@@ -464,6 +465,11 @@ func (s *Server) appThread() appwire.Thread {
 	pressure := status.ContextPressure
 	if pfn != nil {
 		pressure = pfn()
+	}
+	var diagnostics *appwire.SerfDiagnostics
+	if dfn != nil {
+		ds := dfn()
+		diagnostics = appDiagnosticsFromDetailedStatus(ds)
 	}
 	return appwire.Thread{
 		ID:            threadID,
@@ -479,8 +485,42 @@ func (s *Server) appThread() appwire.Thread {
 			Profile:         status.Profile,
 			ContextPressure: pressure,
 			Capabilities:    s.appCapabilities(status.State, processing),
+			Diagnostics:     diagnostics,
 		},
 	}
+}
+
+func appDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.SerfDiagnostics {
+	out := &appwire.SerfDiagnostics{
+		Hooks: make(map[string]int, len(ds.Hooks)),
+	}
+	for _, tool := range ds.Tools {
+		out.Tools = append(out.Tools, appwire.SerfToolInfo{Name: tool.Name, Source: tool.Source})
+	}
+	for _, srv := range ds.MCP {
+		out.MCP = append(out.MCP, appwire.SerfMCPServerInfo{Name: srv.Name, Tools: append([]string(nil), srv.Tools...)})
+	}
+	for _, skill := range ds.Skills {
+		out.Skills = append(out.Skills, appwire.SerfSkillInfo{Name: skill.Name, Description: skill.Description})
+	}
+	for _, plugin := range ds.Plugins {
+		out.Plugins = append(out.Plugins, appwire.SerfPluginInfo{
+			Name:       plugin.Name,
+			Version:    plugin.Version,
+			SkillCount: plugin.SkillCount,
+			AgentCount: plugin.AgentCount,
+			HookCount:  plugin.HookCount,
+			MCPCount:   plugin.MCPCount,
+		})
+	}
+	for event, count := range ds.Hooks {
+		out.Hooks[event] = count
+	}
+	for _, sub := range ds.Subagents {
+		out.Subagents = append(out.Subagents, appwire.SerfSubagentInfo{ID: sub.ID, Status: sub.Status, TurnsUsed: sub.TurnsUsed})
+	}
+	out.Agents = append(out.Agents, ds.Agents...)
+	return out
 }
 
 func (s *Server) appCapabilities(state string, processing bool) appwire.ThreadCapabilities {

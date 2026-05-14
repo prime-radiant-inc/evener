@@ -1503,6 +1503,64 @@ func TestHubModelTasksAndDetailsUseAppWire(t *testing.T) {
 	}
 }
 
+func TestHubModelStatusUsesHubThreadTasksAndAuth(t *testing.T) {
+	var methods []string
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			methods = append(methods, appwire.MethodThreadRead)
+			thread := appwireThread(hubTreeNode{
+				Ref: "local:01SEND", SessionID: "01SEND", Title: "send task", State: "idle", Model: "gpt-5", Project: "details", Live: true,
+			}, "/tmp/details")
+			thread.Serf.Profile = "openai"
+			thread.Serf.ContextPressure = 0.42
+			thread.Turns = []appwire.Turn{
+				{ID: "turn_1", Status: appwire.TurnStatusCompleted},
+				{ID: "turn_2", Status: appwire.TurnStatusFailed, Error: &appwire.TurnError{Message: "provider quota exceeded"}},
+			}
+			return appwire.ThreadReadResponse{Thread: thread}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodSerfTasksList, func(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error) {
+			methods = append(methods, appwire.MethodSerfTasksList)
+			return appwire.TaskListResponse{Data: []agent.Task{
+				{ID: 1, Type: agent.TaskTypeImplement, Description: "wire status", Status: agent.TaskDone},
+				{ID: 2, Type: agent.TaskTypeVerify, Description: "verify status", Status: agent.TaskInProgress},
+			}}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodSerfAuthStatus, func(context.Context, appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
+			methods = append(methods, appwire.MethodSerfAuthStatus)
+			return appwire.AuthStatusResponse{Provider: "openai", Supported: true, SignedIn: true, ActiveSource: "oauth", Email: "jesse@example.test"}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	m.session.setInputValue("/status")
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("/status should fetch Hub status data")
+	}
+	updated, _ = updated.(hubModel).Update(cmd())
+	got := updated.(hubModel).View()
+	for _, want := range []string{
+		"status",
+		"Model:    gpt-5 (openai)",
+		"Dir:      /tmp/details",
+		"Turns:    2",
+		"Context:  42% used",
+		"Tasks:    1/2 done, 1 active",
+		"Auth:     openai oauth jesse@example.test",
+		"Recent errors:",
+		"turn_2: provider quota exceeded",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("status output missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Join(methods, ",") != appwire.MethodThreadRead+","+appwire.MethodSerfTasksList+","+appwire.MethodSerfAuthStatus {
+		t.Fatalf("methods=%v", methods)
+	}
+}
+
 func TestHubModelActionsAndClearUseAppWire(t *testing.T) {
 	var methods []string
 	var interruptTurnID string

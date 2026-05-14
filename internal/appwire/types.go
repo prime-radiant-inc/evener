@@ -148,6 +148,7 @@ type SerfThread struct {
 	Profile         string             `json:"profile,omitempty"`
 	ContextPressure float64            `json:"contextPressure,omitempty"`
 	Capabilities    ThreadCapabilities `json:"capabilities"`
+	Diagnostics     *SerfDiagnostics   `json:"diagnostics,omitempty"`
 }
 
 type ThreadCapabilities struct {
@@ -159,6 +160,46 @@ type ThreadCapabilities struct {
 	ForkFromTurn bool `json:"forkFromTurn"`
 	Shutdown     bool `json:"shutdown"`
 	ChangeModel  bool `json:"changeModel"`
+}
+
+type SerfDiagnostics struct {
+	Tools     []SerfToolInfo      `json:"tools,omitempty"`
+	MCP       []SerfMCPServerInfo `json:"mcp,omitempty"`
+	Skills    []SerfSkillInfo     `json:"skills,omitempty"`
+	Plugins   []SerfPluginInfo    `json:"plugins,omitempty"`
+	Hooks     map[string]int      `json:"hooks,omitempty"`
+	Subagents []SerfSubagentInfo  `json:"subagents,omitempty"`
+	Agents    []string            `json:"agents,omitempty"`
+}
+
+type SerfToolInfo struct {
+	Name   string `json:"name"`
+	Source string `json:"source"`
+}
+
+type SerfMCPServerInfo struct {
+	Name  string   `json:"name"`
+	Tools []string `json:"tools"`
+}
+
+type SerfSkillInfo struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+type SerfPluginInfo struct {
+	Name       string `json:"name"`
+	Version    string `json:"version,omitempty"`
+	SkillCount int    `json:"skillCount"`
+	AgentCount int    `json:"agentCount"`
+	HookCount  int    `json:"hookCount"`
+	MCPCount   int    `json:"mcpCount"`
+}
+
+type SerfSubagentInfo struct {
+	ID        string `json:"id"`
+	Status    string `json:"status"`
+	TurnsUsed int    `json:"turnsUsed"`
 }
 
 type Turn struct {

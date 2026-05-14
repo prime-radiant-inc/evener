@@ -167,7 +167,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 		PaletteLabel:  "/status",
 		PaletteDetail: "show session details",
 		Scopes:        hubCommandSession,
-		Run:           fetchCurrentHubSession,
+		Run:           fetchCurrentHubStatus,
 	},
 	{
 		Name:          "details",
@@ -318,6 +318,15 @@ func fetchCurrentHubSession(m *hubModel, _ string) tea.Cmd {
 		return nil
 	}
 	return fetchHubSession(m.client, ref)
+}
+
+func fetchCurrentHubStatus(m *hubModel, _ string) tea.Cmd {
+	ref, ok := m.currentRef()
+	if !ok {
+		m.addSessionSystem("Session ref is invalid.")
+		return nil
+	}
+	return fetchHubStatus(m.client, ref)
 }
 
 func hubCommandByName(name string) (hubCommandDefinition, bool) {

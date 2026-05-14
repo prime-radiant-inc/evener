@@ -38,6 +38,15 @@ type hubTasksMsg struct {
 	err   error
 }
 
+type hubStatusMsg struct {
+	detail  hubSessionDetail
+	tasks   []agent.Task
+	auth    appwire.AuthStatusResponse
+	taskErr error
+	authErr error
+	err     error
+}
+
 type hubActionMsg struct {
 	action string
 	err    error
@@ -132,6 +141,19 @@ func fetchHubSession(client *appwire.Client, ref appwire.Ref) tea.Cmd {
 			return hubSessionMsg{err: err}
 		}
 		return hubSessionMsg{detail: hubDetailFromThread(resp.Thread), messages: messagesFromThread(resp.Thread)}
+	}
+}
+
+func fetchHubStatus(client *appwire.Client, ref appwire.Ref) tea.Cmd {
+	return func() tea.Msg {
+		resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: ref.String(), IncludeTurns: true, ItemsView: "full"})
+		if err != nil {
+			return hubStatusMsg{err: err}
+		}
+		detail := hubDetailFromThread(resp.Thread)
+		tasks, taskErr := fetchHubTasksSync(context.Background(), client, ref)
+		auth, authErr := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: authProviderForStatus(detail)})
+		return hubStatusMsg{detail: detail, tasks: tasks, auth: auth, taskErr: taskErr, authErr: authErr}
 	}
 }
 
@@ -363,17 +385,25 @@ func sendHubInput(client *appwire.Client, ref appwire.Ref, text string) tea.Cmd 
 
 func fetchHubTasks(client *appwire.Client, ref appwire.Ref) tea.Cmd {
 	return func() tea.Msg {
-		resp, err := client.TasksList(context.Background(), appwire.TaskListParams{Ref: ref.String()})
+		tasks, err := fetchHubTasksSync(context.Background(), client, ref)
 		if err != nil {
 			return hubTasksMsg{err: err}
 		}
-		var tasks []agent.Task
-		data, _ := json.Marshal(resp.Data)
-		if len(data) > 0 {
-			_ = json.Unmarshal(data, &tasks)
-		}
 		return hubTasksMsg{tasks: tasks}
 	}
+}
+
+func fetchHubTasksSync(ctx context.Context, client *appwire.Client, ref appwire.Ref) ([]agent.Task, error) {
+	resp, err := client.TasksList(ctx, appwire.TaskListParams{Ref: ref.String()})
+	if err != nil {
+		return nil, err
+	}
+	var tasks []agent.Task
+	data, _ := json.Marshal(resp.Data)
+	if len(data) > 0 {
+		_ = json.Unmarshal(data, &tasks)
+	}
+	return tasks, nil
 }
 
 func sendHubAction(client *appwire.Client, ref appwire.Ref, action string, turnID string) tea.Cmd {

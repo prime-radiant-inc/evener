@@ -615,6 +615,20 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 		Profile:    "openai",
 		WorkingDir: "/tmp/project",
 	})
+	srv.SetContextPressureFunc(func() float64 { return 0.42 })
+	srv.SetDetailedStatusFunc(func() DetailedStatus {
+		return DetailedStatus{
+			Tools: []ToolInfo{{Name: "shell", Source: "core"}},
+			MCP:   []MCPServerInfo{{Name: "linear", Tools: []string{"search"}}},
+			Skills: []SkillInfo{
+				{Name: "superpowers:systematic-debugging", Description: "debug"},
+			},
+			Plugins:   []PluginStatusInfo{{Name: "superpowers", Version: "4.3.0", SkillCount: 12, AgentCount: 2, HookCount: 4}},
+			Hooks:     map[string]int{"PreToolUse": 3},
+			Subagents: []SubagentStatusInfo{{ID: "sub-1", Status: "completed", TurnsUsed: 2}},
+			Agents:    []string{"explorer"},
+		}
+	})
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
@@ -631,6 +645,16 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 	}
 	if data.Thread.ModelProvider != "gpt-5" || data.Thread.Serf.Profile != "openai" {
 		t.Fatalf("thread model/profile=%+v", data.Thread)
+	}
+	if data.Thread.Serf.ContextPressure != 0.42 {
+		t.Fatalf("context pressure=%v", data.Thread.Serf.ContextPressure)
+	}
+	diag := data.Thread.Serf.Diagnostics
+	if diag == nil || len(diag.Tools) != 1 || len(diag.MCP) != 1 || len(diag.Skills) != 1 || len(diag.Plugins) != 1 || len(diag.Subagents) != 1 || len(diag.Agents) != 1 {
+		t.Fatalf("diagnostics=%+v", diag)
+	}
+	if diag.Hooks["PreToolUse"] != 3 {
+		t.Fatalf("hooks=%+v", diag.Hooks)
 	}
 }
 

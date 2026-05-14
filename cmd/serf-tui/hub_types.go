@@ -51,20 +51,23 @@ type hubSessionCapabilities struct {
 }
 
 type hubSessionDetail struct {
-	Ref          string
-	SessionID    string
-	SourceLabel  string
-	Title        string
-	State        string
-	Model        string
-	Profile      string
-	WorkingDir   string
-	Project      string
-	Branch       string
-	TurnCount    int
-	ActiveTurnID string
-	Live         bool
-	Capabilities hubSessionCapabilities
+	Ref             string
+	SessionID       string
+	SourceLabel     string
+	Title           string
+	State           string
+	Model           string
+	Profile         string
+	WorkingDir      string
+	Project         string
+	Branch          string
+	TurnCount       int
+	ActiveTurnID    string
+	ContextPressure float64
+	RecentErrors    []string
+	Diagnostics     *appwire.SerfDiagnostics
+	Live            bool
+	Capabilities    hubSessionCapabilities
 }
 
 type hubRefResponse struct {
@@ -169,20 +172,51 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 		capabilities.Resume = true
 	}
 	return hubSessionDetail{
-		Ref:          node.Ref,
-		SessionID:    thread.SessionID,
-		SourceLabel:  node.SourceLabel,
-		Title:        node.Title,
-		State:        node.State,
-		Model:        thread.ModelProvider,
-		Profile:      thread.Serf.Profile,
-		WorkingDir:   thread.CWD,
-		Project:      node.Project,
-		TurnCount:    len(thread.Turns),
-		ActiveTurnID: activeTurnIDFromThread(thread),
-		Live:         node.Live,
-		Capabilities: capabilities,
+		Ref:             node.Ref,
+		SessionID:       thread.SessionID,
+		SourceLabel:     node.SourceLabel,
+		Title:           node.Title,
+		State:           node.State,
+		Model:           thread.ModelProvider,
+		Profile:         thread.Serf.Profile,
+		WorkingDir:      thread.CWD,
+		Project:         node.Project,
+		Branch:          gitBranchFromThread(thread),
+		TurnCount:       len(thread.Turns),
+		ActiveTurnID:    activeTurnIDFromThread(thread),
+		ContextPressure: thread.Serf.ContextPressure,
+		RecentErrors:    recentTurnErrors(thread),
+		Diagnostics:     thread.Serf.Diagnostics,
+		Live:            node.Live,
+		Capabilities:    capabilities,
 	}
+}
+
+func gitBranchFromThread(thread appwire.Thread) string {
+	if thread.GitInfo == nil {
+		return ""
+	}
+	return thread.GitInfo.Branch
+}
+
+func recentTurnErrors(thread appwire.Thread) []string {
+	var out []string
+	for _, turn := range thread.Turns {
+		if turn.Error == nil {
+			continue
+		}
+		label := turn.ID
+		if label == "" {
+			label = "turn"
+		}
+		if turn.Error.Message != "" {
+			out = append(out, label+": "+turn.Error.Message)
+		}
+	}
+	if len(out) > 3 {
+		return out[len(out)-3:]
+	}
+	return out
 }
 
 func activeTurnIDFromThread(thread appwire.Thread) string {

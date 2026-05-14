@@ -85,3 +85,47 @@ func TestHubModelAgentsPickerReadsSelectedTranscriptThroughAppWire(t *testing.T)
 		t.Fatalf("main transcript was not restored:\n%s", got)
 	}
 }
+
+func TestHubModelUnavailableAgentTranscriptKeepsParentSession(t *testing.T) {
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodSerfThreadTranscriptsList, func(_ context.Context, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
+			if params.Ref != "local:01SEND" {
+				t.Fatalf("transcript list ref=%q, want local:01SEND", params.Ref)
+			}
+			return appwire.ThreadTranscriptListResponse{Data: []appwire.ThreadTranscriptTarget{
+				{Ref: "local:01SEND", Title: "main session", Kind: "main", Status: appwire.ThreadStatusIdle},
+				{Ref: "local:01SUB", Title: "subagent archived", Kind: "subagent", Status: appwire.ThreadStatusEnded},
+			}}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			if params.Ref != "local:01SUB" {
+				t.Fatalf("thread/read ref=%q, want local:01SUB", params.Ref)
+			}
+			return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("transcript archived by source")
+		})
+	})
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	m.session.messages = []chatMessage{{Kind: msgCommunicate, Text: "main answer"}}
+	m.session.setInputValue("/agents")
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = updated.(hubModel).Update(cmd())
+	m = updated.(hubModel)
+
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	updated, cmd = updated.(hubModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("selecting unavailable transcript should attempt a Hub read")
+	}
+	updated, _ = updated.(hubModel).Update(cmd())
+	got := updated.(hubModel).View()
+	for _, want := range []string{"main answer", "Could not read transcript: transcript archived by source"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("unavailable transcript view missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "Viewing subagent archived") {
+		t.Fatalf("unavailable transcript should not replace parent session:\n%s", got)
+	}
+}

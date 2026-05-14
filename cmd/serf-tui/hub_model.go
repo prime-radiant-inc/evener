@@ -213,6 +213,14 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addSessionSystem(renderTasks(msg.tasks, m.width))
 		}
 		return m, nil
+	case hubStatusMsg:
+		if msg.err != nil {
+			m.addSessionSystem("Status error: " + msg.err.Error())
+			return m, nil
+		}
+		m.detail = msg.detail
+		m.addSessionSystem(renderHubSessionStatus(msg.detail, msg.tasks, msg.auth, msg.taskErr, msg.authErr))
+		return m, nil
 	case hubActionMsg:
 		if msg.err != nil {
 			m.addHubErrorNotice("Action failed", "action", msg.err, "Open /help to see source-supported actions.")
@@ -355,7 +363,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case hubTranscriptMsg:
 		if msg.err != nil {
-			m.addSessionSystem("Could not read transcript: " + msg.err.Error())
+			m.addSessionSystem("Could not read transcript: " + hubErrorReason(msg.err))
 			return m, nil
 		}
 		m.transcriptView = &hubTranscriptViewState{
@@ -2655,5 +2663,5 @@ func (m hubModel) sessionView() string {
 }
 
 func (m hubModel) renderSessionDetails() string {
-	return detailsDrawer{Detail: m.detail}.View()
+	return detailsDrawer{Detail: m.detail, HubURL: m.hubURL}.View()
 }
