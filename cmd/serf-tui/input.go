@@ -74,55 +74,7 @@ func slashCommandHelp() string {
 }
 
 func hubSlashCommandHelp(caps hubSessionCapabilities) string {
-	lines := []string{
-		"Available commands:",
-		"  /help      Show this help",
-	}
-	if caps.Compact {
-		lines = append(lines, "  /compact   Compact context (free up token space)")
-	}
-	lines = append(lines,
-		"  /status    Show session info and context pressure",
-		"  /tasks     Show the agent's task list",
-		"  /agents    View the main or subagent transcript",
-		"  /auth      Show OpenAI auth status",
-		"  /login     Start OpenAI OAuth login",
-		"  /logout    Sign out of OpenAI OAuth",
-	)
-	if caps.ChangeModel {
-		lines = append(lines, "  /model     Switch model (picker) or /model <name>")
-	}
-	if caps.Clear {
-		lines = append(lines, "  /clear     Start a new session")
-	}
-	if caps.Shutdown {
-		lines = append(lines, "  /shutdown  Stop this resumable session")
-	}
-	lines = append(lines,
-		"  /dashboard Go to live dashboard",
-		"  /project   Go to this session's project",
-		"  /theme     Pick a theme (dark/light)",
-		"",
-		"Keys:",
-	)
-	if caps.Send {
-		lines = append(lines, "  enter            Send message")
-	}
-	lines = append(lines,
-		"  alt+enter        New line in input",
-		"  ctrl+j           New line in input (alternative)",
-		"  esc              Browse transcript / select turns",
-		"  pgup             Browse transcript and page up",
-		"  esc / i          Return from browse to compose",
-	)
-	if caps.Fork {
-		lines = append(lines, "  f                Fork selected user turn in browse")
-	}
-	lines = append(lines,
-		"  ctrl+o           Go to live dashboard",
-		"  tab / enter      Expand/collapse focused tool call",
-	)
-	return strings.Join(lines, "\n")
+	return hubCommandHelp(caps)
 }
 
 func sendInput(addr, text string) tea.Cmd {

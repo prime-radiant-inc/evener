@@ -50,6 +50,14 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 
 	app.SendKeys("Enter")
 	app.WaitFor("serf / project / serf", "Live now", "live task", "Recent in this project", "ended maintenance")
+	app.SendKeys("/")
+	app.TypeText("ended")
+	screen = app.WaitFor("Command palette", "Filter: ended", "ended maintenance")
+	if strings.Contains(screen, "live task") {
+		t.Fatalf("project palette should hide non-matching live session:\n%s", screen)
+	}
+	app.SendKeys("Escape")
+	app.WaitFor("serf / project / serf", "live task", "ended maintenance")
 
 	app.SendKeys("Escape")
 	app.WaitFor("serf live", "live task")
@@ -150,6 +158,16 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 
 	app.TypeLine("/help")
 	app.WaitFor("Available commands:", "/dashboard Go to live dashboard", "/theme")
+
+	app.TypeLine("/wat")
+	app.WaitFor("Unknown command: /wat. Type /help for available commands.")
+
+	app.TypeLine("/search")
+	app.WaitFor("Command palette", "live task", "ended maintenance")
+	app.TypeText("ended")
+	app.WaitFor("Filter: ended", "ended maintenance")
+	app.SendKeys("Escape")
+	app.WaitFor("enter: send")
 
 	app.TypeLine("/auth openai")
 	app.WaitFor("OpenAI auth: signed out")
@@ -309,6 +327,10 @@ func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
 	if models := hub.Models(); len(models) != 0 {
 		t.Fatalf("model should not call hub when capability is disabled: %+v", models)
 	}
+
+	app.TypeLine("/search")
+	app.WaitFor("Command palette", "/clear", "disabled: source does not advertise clear", "/shutdown", "disabled: source does not advertise shutdown")
+	app.SendKeys("Escape")
 
 	app.TypeLine("blocked send")
 	app.WaitFor("Send is not available for this session.", "> blocked send")

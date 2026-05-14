@@ -572,8 +572,10 @@ func (m *hubModel) openCommandPalette() {
 	rows := m.dashboardRows()
 	if m.mode == hubModeProject {
 		rows = m.projectDisplayRows()
+	} else if m.mode == hubModeSession {
+		rows = m.sessionSearchRows()
 	}
-	palette := newCommandPalette("Command palette", commandPaletteEntriesForRows(m.mode, rows), width)
+	palette := newCommandPalette("Command palette", commandPaletteEntriesForRows(m.mode, m.detail.Capabilities, rows), width)
 	m.commandPalette = &palette
 }
 
@@ -612,21 +614,16 @@ func (m hubModel) updateCommandPaletteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m hubModel) runCommandPaletteCommand(command string) (tea.Model, tea.Cmd) {
-	switch command {
-	case "new":
-		m.openSpawnForm()
-		if m.client != nil {
-			return m, fetchHubSpawnOptions(m.client, m.spawnDir)
-		}
-		return m, nil
-	case "refresh":
-		if m.client != nil {
-			return m, fetchHubTree(m.client)
-		}
-		return m, nil
-	default:
+	definition, ok := hubCommandByName(command)
+	if !ok {
 		return m, nil
 	}
+	available, _ := hubCommandAvailable(definition, hubCommandContext{mode: m.mode, caps: m.detail.Capabilities})
+	if !available {
+		return m, nil
+	}
+	cmd := runHubCommandDefinition(&m, definition, "")
+	return m, cmd
 }
 
 func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1066,92 +1063,17 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *hubModel) runHubSlashCommand(cmd, args string) tea.Cmd {
-	ref, ok := m.currentRef()
-	if !ok {
-		m.addSessionSystem("Session ref is invalid.")
+	definition, ok := hubCommandByName(cmd)
+	if !ok || definition.Scopes&hubCommandSession == 0 {
+		m.addSessionSystem("Unknown command: /" + cmd + ". Type /help for available commands.")
 		return nil
 	}
-	switch cmd {
-	case "dashboard":
-		m.returnToDashboard()
-		return nil
-	case "project":
-		key, ok := m.projectKeyForSession()
-		if !ok {
-			m.addSessionSystem("Project is not available for this session.")
-			return nil
-		}
-		m.openProject(key)
-		return nil
-	case "projects":
-		m.addSessionSystem("Project switcher is not available yet. Use /project for this session or ctrl+o for the live dashboard.")
-		return nil
-	case "auth":
-		return fetchHubAuthStatus(m.client, authProviderArg(args))
-	case "login":
-		return startHubAuthLogin(m.client, authProviderArg(args))
-	case "logout":
-		return logoutHubAuth(m.client, authProviderArg(args))
-	case "tasks":
-		return fetchHubTasks(m.client, ref)
-	case "agents":
-		return fetchHubTranscriptTargets(m.client, ref)
-	case "details", "status":
-		return fetchHubSession(m.client, ref)
-	case "interrupt":
-		if !m.detail.Capabilities.Interrupt {
-			m.addActionUnavailableNotice("interrupt", "Interrupt is not available for this session.", "")
-			return nil
-		}
-		if strings.TrimSpace(m.detail.ActiveTurnID) == "" {
-			m.addSessionSystem("Interrupt is not available until an active turn starts.")
-			return nil
-		}
-		return sendHubAction(m.client, ref, "interrupt", m.detail.ActiveTurnID)
-	case "compact":
-		if !m.detail.Capabilities.Compact {
-			m.addActionUnavailableNotice("compact", "Compact is not available for this session.", "")
-			return nil
-		}
-		return sendHubAction(m.client, ref, "compact", "")
-	case "clear":
-		if !m.detail.Capabilities.Clear {
-			m.addActionUnavailableNotice("clear", "Clear is not available for this session.", "")
-			return nil
-		}
-		return sendHubClear(m.client, ref)
-	case "shutdown":
-		if !m.detail.Capabilities.Shutdown {
-			m.addActionUnavailableNotice("shutdown", "Shutdown is not available for this session.", "")
-			return nil
-		}
-		return sendHubAction(m.client, ref, "shutdown", "")
-	case "model":
-		model := strings.TrimSpace(args)
-		if !m.detail.Capabilities.ChangeModel {
-			m.addActionUnavailableNotice("change model", "Model change is not available for this session.", "source does not advertise change model")
-			return nil
-		}
-		if model == "" {
-			if m.client == nil {
-				m.addSessionSystem("Model picker is not available without a hub client.")
-				return nil
-			}
-			m.addSessionSystem("Fetching available models...")
-			return fetchHubSessionModels(m.client, m.detail.WorkingDir)
-		}
-		return sendHubAction(m.client, ref, model, "")
-	case "theme":
-		picker := newThemePicker()
-		m.sessionThemePicker = &picker
-		return nil
-	case "help":
-		m.addSessionSystem(hubSlashCommandHelp(m.detail.Capabilities))
-		return nil
-	default:
-		m.addSessionSystem("Unknown command: /" + cmd)
+	available, reason := hubCommandAvailable(definition, hubCommandContext{mode: hubModeSession, caps: m.detail.Capabilities})
+	if !available {
+		m.addActionUnavailableNotice(definition.UnavailableAction, definition.UnavailableSummary, reason)
 		return nil
 	}
+	return runHubCommandDefinition(m, definition, args)
 }
 
 func (m *hubModel) enterSessionBrowse(pageUp bool) {
@@ -1826,6 +1748,22 @@ func (m hubModel) projectDisplayRows() []hubRow {
 	return filterHubRows(m.projectRows, m.dashboardFilter.Value())
 }
 
+func (m hubModel) sessionSearchRows() []hubRow {
+	key, ok := m.projectKeyForSession()
+	if ok {
+		for _, project := range m.tree.Projects {
+			projectKey := project.Key
+			if projectKey == "" {
+				projectKey = hubProjectKey(project.Name)
+			}
+			if projectKey == key {
+				return buildProjectRows(project)
+			}
+		}
+	}
+	return m.dashboardRows()
+}
+
 func filterHubRows(rows []hubRow, query string) []hubRow {
 	query = strings.ToLower(strings.TrimSpace(query))
 	if query == "" {
@@ -2178,6 +2116,11 @@ func (m hubModel) sessionView() string {
 	if m.sessionTranscriptPicker != nil {
 		b.WriteString("\n")
 		b.WriteString(m.sessionTranscriptPicker.View())
+		b.WriteString("\n")
+	}
+	if m.commandPalette != nil {
+		b.WriteString("\n")
+		b.WriteString(m.commandPalette.View())
 		b.WriteString("\n")
 	}
 	switch {

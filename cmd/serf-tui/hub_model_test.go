@@ -1433,6 +1433,106 @@ func TestHubModelHelpRespectsSessionCapabilities(t *testing.T) {
 	}
 }
 
+func TestHubModelHelpAndPaletteShareSessionCommands(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.Capabilities = hubSessionCapabilities{
+		Send:        true,
+		Steer:       true,
+		Interrupt:   true,
+		Compact:     true,
+		Clear:       true,
+		Fork:        true,
+		Shutdown:    true,
+		ChangeModel: true,
+	}
+
+	help := hubSlashCommandHelp(m.detail.Capabilities)
+	m.openCommandPalette()
+	if m.commandPalette == nil {
+		t.Fatal("session palette did not open")
+	}
+	palette := m.commandPalette.View()
+
+	for _, command := range []string{"/help", "/search", "/tasks", "/agents", "/auth", "/login", "/logout", "/model", "/clear", "/shutdown", "/theme", "/dashboard", "/project"} {
+		if !strings.Contains(help, command) {
+			t.Fatalf("help missing command %q:\n%s", command, help)
+		}
+		if !strings.Contains(palette, command) {
+			t.Fatalf("palette missing command %q:\n%s", command, palette)
+		}
+	}
+}
+
+func TestHubModelSessionPaletteShowsDisabledCommandReasons(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.Capabilities = hubSessionCapabilities{Send: true}
+
+	m.openCommandPalette()
+	if m.commandPalette == nil {
+		t.Fatal("session palette did not open")
+	}
+	got := m.commandPalette.View()
+	for _, want := range []string{
+		"/model",
+		"disabled: source does not advertise change model",
+		"/clear",
+		"disabled: source does not advertise clear",
+		"/shutdown",
+		"disabled: source does not advertise shutdown",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("session palette missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestHubModelSearchCommandOpensSessionSearchWithoutReplacingDraft(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.Project = "serf"
+	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
+		Key: "serf", Name: "serf",
+		Sessions: []hubTreeNode{
+			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live scoring", State: "idle", Project: "serf", Live: true},
+			{Ref: "local:01PAST", SessionID: "01PAST", Title: "past renderer", State: "ended", Project: "serf", Live: false},
+		},
+	}}}
+	m.rows = buildDashboardRows(m.tree)
+	m.session.setInputValue("keep this draft")
+
+	cmd := m.runHubSlashCommand("search", "")
+	if cmd != nil {
+		t.Fatal("/search should open the local palette synchronously")
+	}
+	if got := m.session.input.Value(); got != "keep this draft" {
+		t.Fatalf("/search replaced composer draft with %q", got)
+	}
+	if m.commandPalette == nil {
+		t.Fatal("/search did not open command palette")
+	}
+	got := m.sessionView()
+	for _, want := range []string{"Command palette", "live scoring", "past renderer"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("session search missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestHubModelUnknownSlashCommandIncludesHelpHint(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.session.setInputValue("/wat")
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("unknown command should not need an async command")
+	}
+	got := updated.(hubModel).View()
+	for _, want := range []string{"Unknown command: /wat", "/help"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("unknown command output missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestHubDetailFromThreadIncludesActiveTurnID(t *testing.T) {
 	detail := hubDetailFromThread(appwire.Thread{
 		ID:        "th_1",

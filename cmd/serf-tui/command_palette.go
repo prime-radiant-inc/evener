@@ -62,36 +62,32 @@ func (p commandPalette) selectedEntry() (commandPaletteEntry, bool) {
 	return commandPaletteEntry{}, false
 }
 
-func commandPaletteEntriesForRows(mode hubMode, rows []hubRow) []commandPaletteEntry {
-	entries := []commandPaletteEntry{{
-		Item: pickerPanelItem{
-			ID:     "command:new",
-			Label:  "New session",
-			Detail: "open spawn form",
-		},
-		Kind:    commandPaletteCommand,
-		Command: "new",
-	}}
-	if mode == hubModeDashboard {
+func commandPaletteEntriesForRows(mode hubMode, caps hubSessionCapabilities, rows []hubRow) []commandPaletteEntry {
+	scope := hubCommandDashboard
+	if mode == hubModeProject {
+		scope = hubCommandProject
+	} else if mode == hubModeSession {
+		scope = hubCommandSession
+	}
+	ctx := hubCommandContext{mode: mode, caps: caps}
+	entries := make([]commandPaletteEntry, 0, len(rows)+len(hubCommandRegistry))
+	for _, command := range hubCommandsForScope(scope) {
+		available, reason := hubCommandAvailable(command, ctx)
+		item := pickerPanelItem{
+			ID:             "command:" + command.Name,
+			Label:          command.PaletteLabel,
+			Detail:         command.PaletteDetail,
+			DisabledReason: reason,
+		}
+		if !available && item.DisabledReason == "" {
+			item.DisabledReason = "not available"
+		}
 		entries = append(entries, commandPaletteEntry{
-			Item: pickerPanelItem{
-				ID:     "command:refresh",
-				Label:  "Refresh dashboard",
-				Detail: "fetch live sessions",
-			},
+			Item:    item,
 			Kind:    commandPaletteCommand,
-			Command: "refresh",
+			Command: command.Name,
 		})
 	}
-	entries = append(entries, commandPaletteEntry{
-		Item: pickerPanelItem{
-			ID:             "command:clear",
-			Label:          "Clear current session",
-			DisabledReason: "open a session first",
-		},
-		Kind:    commandPaletteCommand,
-		Command: "clear",
-	})
 
 	seenProjects := map[string]bool{}
 	for _, row := range rows {
