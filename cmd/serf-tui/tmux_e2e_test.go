@@ -381,9 +381,22 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 	app.WaitFor("live task", "initial question", "initial answer")
 
 	app.SendKeys("Escape")
-	app.WaitFor("esc/i/q: compose", "f: fork")
+	app.WaitFor("esc/i/q: compose", "f: fork", "▶ initial answer")
+	app.SendKeys("f")
+	app.WaitFor("Select a user turn to fork.")
+	if forks := hub.Forks(); len(forks) != 0 {
+		t.Fatalf("invalid fork selection should not call hub: %+v", forks)
+	}
+	app.SendKeys("i")
+	app.WaitFor("enter: send")
+	app.SendKeys("Escape")
+	app.WaitFor("esc/i/q: compose", "▶ Select a user turn to fork.")
 	app.SendKeys("k")
+	app.WaitFor("▶ initial answer")
 	app.SendKeys("k")
+	app.WaitFor("▶ exec")
+	app.SendKeys("k")
+	app.WaitFor("▶  > initial question")
 	app.SendKeys("f")
 	app.WaitFor("Fork draft for turn 1", "> initial question")
 
@@ -395,6 +408,38 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 	}
 	if forks[0].EditedInput != "initial question" {
 		t.Fatalf("fork edited input=%q, want initial question", forks[0].EditedInput)
+	}
+	app.SendKeys("C-o")
+	app.WaitFor("serf live", "live task")
+}
+
+func TestTUITmuxE2E_FailedForkPreservesDraft(t *testing.T) {
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	hub.SetFailFork(true)
+	defer hub.Close()
+	app := startTUITmux(t, bin, hub.URL())
+	defer app.Close()
+
+	openLiveSession(t, app)
+	app.WaitFor("live task", "initial question", "initial answer")
+
+	app.SendKeys("Escape")
+	app.WaitFor("esc/i/q: compose", "f: fork")
+	app.SendKeys("k")
+	app.SendKeys("k")
+	app.SendKeys("f")
+	app.WaitFor("Fork draft for turn 1", "> initial question")
+	app.TypeText(" with edit")
+	app.SendKeys("Enter")
+	app.WaitFor("Fork failed: appwire thread/fork: fork failed", "fork draft", "> initial question with edit")
+	forks := hub.WaitForForks(t, 1)
+	if forks[0].EditedInput != "initial question with edit" {
+		t.Fatalf("failed fork edited input=%q, want edited text", forks[0].EditedInput)
+	}
+	if forks[0].Label != "original before fork" {
+		t.Fatalf("failed fork label=%q, want original before fork", forks[0].Label)
 	}
 }
 
@@ -762,6 +807,7 @@ type tuiE2EHub struct {
 	failTasks       bool
 	failSend        bool
 	failSpawn       bool
+	failFork        bool
 }
 
 type tuiE2ESession struct {
@@ -1247,6 +1293,10 @@ func (h *tuiE2EHub) handleThreadClear(context.Context, appwire.ThreadClearParams
 func (h *tuiE2EHub) handleThreadFork(_ context.Context, params appwire.ThreadForkParams) (appwire.ThreadForkResponse, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.failFork {
+		h.forks = append(h.forks, params)
+		return appwire.ThreadForkResponse{}, fmt.Errorf("fork failed")
+	}
 	id := "02FORK"
 	h.forks = append(h.forks, params)
 	s := &tuiE2ESession{
@@ -1343,6 +1393,12 @@ func (h *tuiE2EHub) SetFailSend(fail bool) {
 func (h *tuiE2EHub) SetFailSpawn(fail bool) {
 	h.mu.Lock()
 	h.failSpawn = fail
+	h.mu.Unlock()
+}
+
+func (h *tuiE2EHub) SetFailFork(fail bool) {
+	h.mu.Lock()
+	h.failFork = fail
 	h.mu.Unlock()
 }
 

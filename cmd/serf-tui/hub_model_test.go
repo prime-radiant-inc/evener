@@ -721,6 +721,40 @@ func TestHubModelBrowsePageKeysMoveSelection(t *testing.T) {
 	}
 }
 
+func TestHubModelBrowseLineKeysMoveSelection(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.session.messages = []chatMessage{
+		{Kind: msgUser, Text: "first", TurnIndex: 1},
+		{Kind: msgAssistant, Text: "middle"},
+		{Kind: msgUser, Text: "last", TurnIndex: 2},
+	}
+	m.enterSessionBrowse(false)
+	if m.browseSelected != 2 {
+		t.Fatalf("initial browse selection=%d, want last message", m.browseSelected)
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	got := updated.(hubModel)
+	if got.browseSelected != 1 {
+		t.Fatalf("up selection=%d, want 1", got.browseSelected)
+	}
+	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	got = updated.(hubModel)
+	if got.browseSelected != 0 {
+		t.Fatalf("k selection=%d, want 0", got.browseSelected)
+	}
+	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyDown})
+	got = updated.(hubModel)
+	if got.browseSelected != 1 {
+		t.Fatalf("down selection=%d, want 1", got.browseSelected)
+	}
+	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	got = updated.(hubModel)
+	if got.browseSelected != 2 {
+		t.Fatalf("j selection=%d, want 2", got.browseSelected)
+	}
+}
+
 func TestHubModelSessionBrowseExitKeysReturnToCompose(t *testing.T) {
 	for _, tc := range []struct {
 		name string
