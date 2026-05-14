@@ -53,6 +53,11 @@ type hubForkMsg struct {
 	err  error
 }
 
+type hubResumeMsg struct {
+	resp hubRefResponse
+	err  error
+}
+
 type hubSpawnMsg struct {
 	resp hubSpawnResponse
 	err  error
@@ -327,6 +332,13 @@ func sendHubClear(client *appwire.Client, ref appwire.Ref) tea.Cmd {
 	return func() tea.Msg {
 		resp, err := client.ThreadClear(context.Background(), appwire.ThreadClearParams{Ref: ref.String()})
 		return hubClearMsg{resp: hubRefResponse{Ref: resp.Ref}, err: err}
+	}
+}
+
+func sendHubResume(client *appwire.Client, ref appwire.Ref) tea.Cmd {
+	return func() tea.Msg {
+		resp, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Ref: ref.String()})
+		return hubResumeMsg{resp: hubRefResponse{Ref: hubNodeFromThread(resp.Thread).Ref}, err: err}
 	}
 }
 

@@ -391,6 +391,105 @@ func TestHubModelProjectViewShowsLiveThenRecent(t *testing.T) {
 	}
 }
 
+func TestHubModelEndedSessionOpensReadOnly(t *testing.T) {
+	detail := hubDetailFromThread(appwireThread(hubTreeNode{
+		Ref:       "local:01ENDED",
+		SessionID: "01ENDED",
+		Title:     "ended history",
+		State:     appwire.ThreadStatusEnded,
+		Project:   "serf",
+		Live:      false,
+	}, "/tmp/serf"))
+	if detail.Live {
+		t.Fatal("ended thread detail reported live")
+	}
+	if detail.Capabilities.Send || detail.Capabilities.Steer || detail.Capabilities.Interrupt || detail.Capabilities.Compact || detail.Capabilities.Clear || detail.Capabilities.Shutdown || detail.Capabilities.ChangeModel {
+		t.Fatalf("ended thread kept write/action capabilities: %+v", detail.Capabilities)
+	}
+
+	m := newHubModel(nil, "http://hub.test")
+	m.mode = hubModeSession
+	m.detail = detail
+	m.session = newModel("", "", nil)
+	m.session.messages = []chatMessage{{Kind: msgAssistant, Text: "finished transcript"}}
+
+	got := m.sessionView()
+	for _, want := range []string{"read-only", "source does not support send"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("ended session view missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "enter: send") {
+		t.Fatalf("ended session advertised send:\n%s", got)
+	}
+}
+
+func TestHubModelProjectResumeEndedSessionThroughHub(t *testing.T) {
+	var gotResume appwire.ThreadResumeParams
+	var gotReadRef string
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadResume, func(_ context.Context, params appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+			gotResume = params
+			return appwire.ThreadResumeResponse{Thread: appwireThread(hubTreeNode{
+				Ref:       "local:02RESUMED",
+				SessionID: "02RESUMED",
+				Title:     "resumed history",
+				State:     appwire.ThreadStatusIdle,
+				Project:   "serf",
+				Live:      true,
+			}, "/tmp/serf")}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			gotReadRef = params.Ref
+			if params.Ref != "local:02RESUMED" {
+				return appwire.ThreadReadResponse{}, fmt.Errorf("read ref=%q, want resumed ref", params.Ref)
+			}
+			return appwire.ThreadReadResponse{Thread: appwireThread(hubTreeNode{
+				Ref:       "local:02RESUMED",
+				SessionID: "02RESUMED",
+				Title:     "resumed history",
+				State:     appwire.ThreadStatusIdle,
+				Project:   "serf",
+				Live:      true,
+			}, "/tmp/serf")}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newHubModel(client, "http://hub.test")
+	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
+		Key:        "serf",
+		Name:       "serf",
+		WorkingDir: "/tmp/serf",
+		Sessions: []hubTreeNode{
+			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true},
+			{Ref: "local:01ENDED", SessionID: "01ENDED", Title: "ended history", State: "ended", Project: "serf", Live: false},
+		},
+	}}}
+	m.rows = buildDashboardRows(m.tree)
+	m.openProject("serf")
+	m.selected = 1
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if cmd == nil {
+		t.Fatal("resume key did not return a Hub command")
+	}
+	updated, cmd = updated.(hubModel).Update(cmd())
+	if gotResume.Ref != "local:01ENDED" {
+		t.Fatalf("resume params=%+v, want ended ref", gotResume)
+	}
+	if cmd != nil {
+		updated, _ = updated.(hubModel).Update(cmd())
+	}
+	if gotReadRef != "local:02RESUMED" {
+		t.Fatalf("read ref=%q, want resumed ref", gotReadRef)
+	}
+	got := updated.(hubModel)
+	if got.mode != hubModeSession || got.detail.Ref != "local:02RESUMED" {
+		t.Fatalf("resume did not open returned session: mode=%v ref=%q err=%v", got.mode, got.detail.Ref, got.err)
+	}
+}
+
 func TestHubModelProjectSlashOpensCommandPalette(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
@@ -512,25 +611,55 @@ func TestHubModelDashboardProjectHeaderOpensProject(t *testing.T) {
 	}
 }
 
-func TestHubModelProjectEscReturnsDashboard(t *testing.T) {
+func TestHubModelProjectNavigationReturnsDashboard(t *testing.T) {
+	for name, key := range map[string]tea.KeyMsg{
+		"esc":       {Type: tea.KeyEsc},
+		"backspace": {Type: tea.KeyBackspace},
+		"ctrl+o":    {Type: tea.KeyCtrlO},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := newHubModel(nil, "http://hub.test")
+			m.tree = hubTreeResponse{Projects: []hubTreeProject{{
+				Key:  "serf",
+				Name: "serf",
+				Sessions: []hubTreeNode{
+					{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true},
+				},
+			}}}
+			m.rows = buildDashboardRows(m.tree)
+			m.openProject("serf")
+
+			updated, _ := m.Update(key)
+			got := updated.(hubModel)
+			if got.mode != hubModeDashboard {
+				t.Fatalf("mode=%v, want dashboard", got.mode)
+			}
+			if !strings.Contains(got.View(), "serf live") {
+				t.Fatalf("dashboard not rendered:\n%s", got.View())
+			}
+		})
+	}
+}
+
+func TestHubModelProjectViewHasNoComposer(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
-		Key:  "serf",
-		Name: "serf",
+		Key:        "serf",
+		Name:       "serf",
+		WorkingDir: "/tmp/serf",
 		Sessions: []hubTreeNode{
 			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true},
+			{Ref: "local:01ENDED", SessionID: "01ENDED", Title: "ended history", State: "ended", Project: "serf", Live: false},
 		},
 	}}}
 	m.rows = buildDashboardRows(m.tree)
 	m.openProject("serf")
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	got := updated.(hubModel)
-	if got.mode != hubModeDashboard {
-		t.Fatalf("mode=%v, want dashboard", got.mode)
-	}
-	if !strings.Contains(got.View(), "serf live") {
-		t.Fatalf("dashboard not rendered:\n%s", got.View())
+	got := m.projectView()
+	for _, unwanted := range []string{"enter: send", "message\n>", "read-only:"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("project view rendered composer text %q:\n%s", unwanted, got)
+		}
 	}
 }
 

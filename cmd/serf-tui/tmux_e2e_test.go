@@ -192,6 +192,38 @@ func TestTUITmuxE2E_DashboardEmptyState(t *testing.T) {
 	app.WaitForExit()
 }
 
+func TestTUITmuxE2E_ProjectHistoryReadOnlyAndResume(t *testing.T) {
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	defer hub.Close()
+	app := startTUITmux(t, bin, hub.URL())
+	defer app.Close()
+
+	app.WaitFor("serf live", "live task")
+	app.SendKeys("Enter")
+	screen := app.WaitFor("serf / project / serf", "Live now", "live task", "Recent in this project", "ended maintenance")
+	for _, unwanted := range []string{"enter: send", "Prompt (optional):"} {
+		if strings.Contains(screen, unwanted) {
+			t.Fatalf("project view rendered composer/spawn text %q:\n%s", unwanted, screen)
+		}
+	}
+
+	app.SendKeys("Down", "Enter")
+	app.WaitFor("ended maintenance", "local:01PAST", "read-only", "source does not support send")
+
+	app.SendKeys("C-o")
+	app.WaitFor("serf live", "live task")
+	app.SendKeys("p")
+	app.WaitFor("serf / project / serf", "ended maintenance")
+	app.SendKeys("Down", "r")
+	app.WaitFor("resumed maintenance", "local:02RESUME", "enter: send")
+	resumes := hub.WaitForResumes(t, 1)
+	if resumes[0].Ref != "local:01PAST" {
+		t.Fatalf("resume ref=%q, want local:01PAST", resumes[0].Ref)
+	}
+}
+
 func TestTUITmuxE2E_CodexSpawnUsesHarnessModelPicker(t *testing.T) {
 	requireTmux(t)
 	bin := buildTUIBinary(t)
@@ -721,6 +753,7 @@ type tuiE2EHub struct {
 	actions         map[string]int
 	models          []string
 	forks           []appwire.ThreadForkParams
+	resumes         []appwire.ThreadResumeParams
 	authCalls       []string
 	authCompletions []appwire.AuthLoginCompleteParams
 	harnesses       []appwire.HarnessDescriptor
@@ -800,15 +833,16 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 		}},
 	}
 	h.addSession(&tuiE2ESession{
-		ID:         "01PAST",
-		Title:      "ended maintenance",
-		State:      appwire.ThreadStatusEnded,
-		Project:    "serf",
-		WorkingDir: tuiE2EProjectDir,
-		Model:      "gpt-5",
-		Live:       false,
-		CreatedAt:  10,
-		UpdatedAt:  10,
+		ID:           "01PAST",
+		Title:        "ended maintenance",
+		State:        appwire.ThreadStatusEnded,
+		Project:      "serf",
+		WorkingDir:   tuiE2EProjectDir,
+		Model:        "gpt-5",
+		Live:         false,
+		CreatedAt:    10,
+		UpdatedAt:    10,
+		Capabilities: fullTUIE2ECapabilities(),
 	})
 	h.addSession(&tuiE2ESession{
 		ID:           "01OPS",
@@ -862,6 +896,7 @@ func (h *tuiE2EHub) registerHandlers(app *appserver.Server) {
 	appserver.HandleTyped(app.Router(), appwire.MethodModelList, h.handleModelList)
 	appserver.HandleTyped(app.Router(), appwire.MethodSerfHarnessesList, h.handleHarnessList)
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadStart, h.handleThreadStart)
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadResume, h.handleThreadResume)
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnStart, h.handleTurnStart)
 	appserver.HandleTyped(app.Router(), appwire.MethodSerfTasksList, h.handleTasksList)
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnInterrupt, h.handleTurnInterrupt)
@@ -1116,6 +1151,31 @@ func (h *tuiE2EHub) handleThreadStart(_ context.Context, params appwire.ThreadSt
 	return appwire.ThreadStartResponse{Thread: h.threadFromSessionLocked(s)}, nil
 }
 
+func (h *tuiE2EHub) handleThreadResume(_ context.Context, params appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.resumes = append(h.resumes, params)
+	s := &tuiE2ESession{
+		ID:           "02RESUME",
+		Title:        "resumed maintenance",
+		State:        appwire.ThreadStatusIdle,
+		Project:      "serf",
+		WorkingDir:   tuiE2EProjectDir,
+		Model:        "gpt-5",
+		Live:         true,
+		Capabilities: fullTUIE2ECapabilities(),
+		Turns: []appwire.Turn{{
+			ID:     "turn_1",
+			Status: appwire.TurnStatusCompleted,
+			Items: []appwire.ThreadItem{
+				{Type: "agent_message", ID: "resume-agent-1", TurnID: "turn_1", Text: "resume transcript ready", Status: "completed"},
+			},
+		}},
+	}
+	h.addSession(s)
+	return appwire.ThreadResumeResponse{Thread: h.threadFromSessionLocked(s)}, nil
+}
+
 func (h *tuiE2EHub) handleTurnStart(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -1367,6 +1427,18 @@ func (h *tuiE2EHub) WaitForForks(t *testing.T, count int) []appwire.ThreadForkPa
 		out = append([]appwire.ThreadForkParams(nil), h.forks...)
 		return len(out) >= count
 	}, fmt.Sprintf("%d fork requests", count))
+	return out
+}
+
+func (h *tuiE2EHub) WaitForResumes(t *testing.T, count int) []appwire.ThreadResumeParams {
+	t.Helper()
+	var out []appwire.ThreadResumeParams
+	h.waitFor(t, func() bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		out = append([]appwire.ThreadResumeParams(nil), h.resumes...)
+		return len(out) >= count
+	}, fmt.Sprintf("%d resume requests", count))
 	return out
 }
 

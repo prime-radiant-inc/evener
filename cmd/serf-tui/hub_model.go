@@ -248,6 +248,17 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, fetchHubSession(m.client, ref)
+	case hubResumeMsg:
+		if msg.err != nil {
+			m.err = fmt.Errorf("resume failed: %w", msg.err)
+			return m, nil
+		}
+		ref, err := appwire.ParseRef(msg.resp.Ref)
+		if err != nil {
+			m.err = fmt.Errorf("resume returned invalid ref: %s", msg.resp.Ref)
+			return m, nil
+		}
+		return m, fetchHubSession(m.client, ref)
 	case hubSpawnMsg:
 		m.spawnSubmitting = false
 		if msg.err != nil {
@@ -495,8 +506,11 @@ func (m hubModel) updateProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = hubModeDashboard
 		m.clampSelection()
 	case "r":
-		if m.client != nil {
-			return m, fetchHubTree(m.client)
+		if len(rows) > 0 && m.client != nil {
+			row := rows[m.selected]
+			if !row.live {
+				return m, sendHubResume(m.client, row.ref)
+			}
 		}
 	case "n":
 		m.openSpawnForm()

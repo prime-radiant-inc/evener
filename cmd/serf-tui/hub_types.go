@@ -148,6 +148,26 @@ func hubNodeFromThread(thread appwire.Thread) hubTreeNode {
 func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 	node := hubNodeFromThread(thread)
 	caps := thread.Serf.Capabilities
+	capabilities := hubSessionCapabilities{
+		Send:        caps.Send,
+		Steer:       caps.Steer,
+		Interrupt:   caps.Interrupt,
+		Compact:     caps.Compact,
+		Clear:       caps.Clear,
+		Fork:        caps.ForkFromTurn,
+		Shutdown:    caps.Shutdown,
+		ChangeModel: caps.ChangeModel,
+	}
+	if !node.Live {
+		capabilities.Send = false
+		capabilities.Steer = false
+		capabilities.Interrupt = false
+		capabilities.Compact = false
+		capabilities.Clear = false
+		capabilities.Shutdown = false
+		capabilities.ChangeModel = false
+		capabilities.Resume = true
+	}
 	return hubSessionDetail{
 		Ref:          node.Ref,
 		SessionID:    thread.SessionID,
@@ -161,16 +181,7 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 		TurnCount:    len(thread.Turns),
 		ActiveTurnID: activeTurnIDFromThread(thread),
 		Live:         node.Live,
-		Capabilities: hubSessionCapabilities{
-			Send:        caps.Send,
-			Steer:       caps.Steer,
-			Interrupt:   caps.Interrupt,
-			Compact:     caps.Compact,
-			Clear:       caps.Clear,
-			Fork:        caps.ForkFromTurn,
-			Shutdown:    caps.Shutdown,
-			ChangeModel: caps.ChangeModel,
-		},
+		Capabilities: capabilities,
 	}
 }
 
