@@ -8,6 +8,7 @@ type composerPanel struct {
 	Draft          string
 	Keys           []string
 	ShowInput      bool
+	Width          int
 }
 
 type hubComposerMode int
@@ -68,6 +69,7 @@ func (m hubModel) sessionComposerPanel() composerPanel {
 		Draft:     m.session.input.Value(),
 		Keys:      keys,
 		ShowInput: true,
+		Width:     m.width,
 	}
 	switch m.sessionComposerMode() {
 	case hubComposerModeFork:
@@ -108,7 +110,7 @@ func (p composerPanel) View() string {
 		b.WriteString(renderComposerDraft(p.Draft))
 	}
 	if len(p.Keys) > 0 {
-		b.WriteString(strings.Join(p.Keys, "  "))
+		b.WriteString(actionBarForWidth(p.Width, p.Keys...))
 		b.WriteString("\n")
 	}
 	return b.String()

@@ -106,6 +106,38 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app.WaitForExit()
 }
 
+func TestTUITmuxE2E_AppShellPreservesLayoutAcrossWidths(t *testing.T) {
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	defer hub.Close()
+	app := startTUITmux(t, bin, hub.URL())
+	defer app.Close()
+
+	screen := app.WaitFor("serf live", "live task", "ctrl+o dashboard")
+	requirePaneOrder(t, screen, "serf live", "live task", "ctrl+o dashboard")
+
+	app.SendKeys("/")
+	screen = app.WaitFor("Command palette", "ctrl+o dashboard")
+	requirePaneOrder(t, screen, "serf live", "Command palette", "ctrl+o dashboard")
+
+	app.Resize(60, 30)
+	screen = app.WaitFor("Command palette", "ctrl+o dashboard")
+	requirePaneOrder(t, screen, "serf live", "Command palette", "ctrl+o dashboard")
+
+	app.SendKeys("C-o")
+	screen = app.WaitFor("serf live", "live task", "ctrl+o dashboard")
+	requirePaneOrder(t, screen, "serf live", "live task", "ctrl+o dashboard")
+
+	app.SendKeys("n")
+	screen = app.WaitFor("serf / new session", "Prompt (optional):", "ctrl+o: dashboard")
+	requirePaneOrder(t, screen, "serf / new session", "Prompt (optional):", "ctrl+o: dashboard")
+
+	app.SendKeys("C-o")
+	screen = app.WaitFor("serf live", "live task", "ctrl+o dashboard")
+	requirePaneOrder(t, screen, "serf live", "live task", "ctrl+o dashboard")
+}
+
 func TestTUITmuxE2E_CodexSpawnUsesHarnessModelPicker(t *testing.T) {
 	requireTmux(t)
 	bin := buildTUIBinary(t)
@@ -498,6 +530,11 @@ func (a *tmuxTUI) CaptureHistory() string {
 	return normalizePane(string(out))
 }
 
+func (a *tmuxTUI) Resize(width, height int) {
+	a.t.Helper()
+	runTmux(a.t, "resize-window", "-t", a.session, "-x", fmt.Sprint(width), "-y", fmt.Sprint(height))
+}
+
 func (a *tmuxTUI) WaitFor(wants ...string) string {
 	a.t.Helper()
 	deadline := time.Now().Add(tuiE2EWaitTimeout)
@@ -521,6 +558,21 @@ func (a *tmuxTUI) WaitFor(wants ...string) string {
 	}
 	a.t.Fatalf("timed out waiting for %q\nvisible pane:\n%s\nrecent history:\n%s", wants, screen, a.CaptureHistory())
 	return ""
+}
+
+func requirePaneOrder(t *testing.T, screen string, parts ...string) {
+	t.Helper()
+	pos := -1
+	for _, part := range parts {
+		next := strings.Index(screen, part)
+		if next < 0 {
+			t.Fatalf("pane missing %q:\n%s", part, screen)
+		}
+		if next < pos {
+			t.Fatalf("pane rendered %q before prior parts %v:\n%s", part, parts, screen)
+		}
+		pos = next
+	}
 }
 
 func (a *tmuxTUI) WaitForExit() {

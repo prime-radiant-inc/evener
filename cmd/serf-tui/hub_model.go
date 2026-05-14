@@ -411,9 +411,6 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.commandPalette != nil {
-		return m.updateCommandPaletteKey(msg)
-	}
 	switch msg.String() {
 	case "ctrl+o":
 		m.returnToDashboard()
@@ -423,6 +420,9 @@ func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.updateSessionKey(msg)
 		}
 		return m, tea.Quit
+	}
+	if m.commandPalette != nil {
+		return m.updateCommandPaletteKey(msg)
 	}
 	if m.mode == hubModeSession {
 		return m.updateSessionKey(msg)
@@ -1099,6 +1099,19 @@ func (m *hubModel) returnToDashboard() {
 	if m.mode == hubModeSpawn {
 		m.resetSpawnForm()
 	}
+	m.commandPalette = nil
+	m.sessionThemePicker = nil
+	m.sessionModelPicker = nil
+	m.sessionTranscriptPicker = nil
+	m.transcriptTargets = nil
+	m.transcriptView = nil
+	m.forkDraft = nil
+	m.spawnModelPicker = nil
+	m.session.scrollMode = false
+	m.session.focusedToolIdx = -1
+	m.browseSelected = -1
+	m.authLoginProvider = ""
+	m.authLoginFlowID = ""
 	m.mode = hubModeDashboard
 	m.clampSelection()
 }
@@ -1847,14 +1860,17 @@ func (m hubModel) dashboardView() string {
 			liveCount++
 		}
 	}
-	fmt.Fprintf(&b, "serf live                                      %s · %d live\n\n", m.hubURL, liveCount)
+	topBar := fmt.Sprintf("serf live                                      %s · %d live", m.hubURL, liveCount)
 	if m.err != nil {
 		fmt.Fprintf(&b, "error: %v\n\n", m.err)
 	}
 	if m.commandPalette != nil {
-		b.WriteString(m.commandPalette.View())
-		b.WriteString("\n")
-		return b.String()
+		return appShell{
+			TopBar:  topBar,
+			Body:    b.String(),
+			Overlay: m.commandPalette.View(),
+			Footer:  actionBarForWidth(m.width, "↑/↓ select", "enter open", "p project", "n new", "/ palette", "ctrl+o dashboard", "q quit"),
+		}.View()
 	}
 	if m.dashboardFilterActive || strings.TrimSpace(m.dashboardFilter.Value()) != "" {
 		b.WriteString(m.dashboardFilter.View())
@@ -1863,14 +1879,18 @@ func (m hubModel) dashboardView() string {
 	if len(rows) == 0 {
 		if strings.TrimSpace(m.dashboardFilter.Value()) != "" {
 			b.WriteString("No sessions match this filter.\n\n")
-			b.WriteString("esc clear filter\n")
-			return b.String()
+			return appShell{
+				TopBar: topBar,
+				Body:   b.String(),
+				Footer: "esc clear filter",
+			}.View()
 		}
 		b.WriteString("No live sessions are running.\n\n")
-		b.WriteString("n new session\n")
-		b.WriteString("/ palette\n")
-		b.WriteString("q quit\n")
-		return b.String()
+		return appShell{
+			TopBar: topBar,
+			Body:   b.String(),
+			Footer: strings.Join([]string{"n new session", "/ palette", "q quit"}, "\n"),
+		}.View()
 	}
 	for i, row := range rows {
 		cursor := " "
@@ -1883,8 +1903,11 @@ func (m hubModel) dashboardView() string {
 		}
 		fmt.Fprintf(&b, "%s   %s %-10s %-12s %-28s %-10s %s\n", cursor, statusDot(row.state), stateLabel(row.state), row.sourceLabel, row.title, row.model, row.age)
 	}
-	b.WriteString("\n↑/↓ select  enter open  p project  n new  / palette  ctrl+o dashboard  q quit\n")
-	return b.String()
+	return appShell{
+		TopBar: topBar,
+		Body:   b.String(),
+		Footer: actionBarForWidth(m.width, "↑/↓ select", "enter open", "p project", "n new", "/ palette", "ctrl+o dashboard", "q quit"),
+	}.View()
 }
 
 func (m hubModel) projectView() string {
@@ -1904,14 +1927,17 @@ func (m hubModel) projectView() string {
 			recentCount++
 		}
 	}
-	fmt.Fprintf(&b, "serf / project / %s                         %d live · %d recent\n\n", name, liveCount, recentCount)
+	topBar := fmt.Sprintf("serf / project / %s                         %d live · %d recent", name, liveCount, recentCount)
 	if m.err != nil {
 		fmt.Fprintf(&b, "error: %v\n\n", m.err)
 	}
 	if m.commandPalette != nil {
-		b.WriteString(m.commandPalette.View())
-		b.WriteString("\n")
-		return b.String()
+		return appShell{
+			TopBar:  topBar,
+			Body:    b.String(),
+			Overlay: m.commandPalette.View(),
+			Footer:  actionBarForWidth(m.width, "↑/↓ select", "enter open", "r resume", "n new here", "/ palette", "esc dashboard", "ctrl+o dashboard"),
+		}.View()
 	}
 	if m.dashboardFilterActive || strings.TrimSpace(m.dashboardFilter.Value()) != "" {
 		b.WriteString(m.dashboardFilter.View())
@@ -1943,8 +1969,11 @@ func (m hubModel) projectView() string {
 	} else {
 		b.WriteString("No ended sessions in this project yet.\n")
 	}
-	b.WriteString("\n↑/↓ select  enter open  r resume  n new here  / palette  esc dashboard\n")
-	return b.String()
+	return appShell{
+		TopBar: topBar,
+		Body:   b.String(),
+		Footer: actionBarForWidth(m.width, "↑/↓ select", "enter open", "r resume", "n new here", "/ palette", "esc dashboard", "ctrl+o dashboard"),
+	}.View()
 }
 
 func writeProjectRow(b *strings.Builder, row hubRow, selected bool) {
@@ -2022,10 +2051,10 @@ func attentionRankLabel(state string) int {
 
 func (m hubModel) spawnView() string {
 	var b strings.Builder
-	b.WriteString("serf / new session\n\n")
+	topBar := "serf / new session"
+	var overlay string
 	if m.spawnModelPicker != nil {
-		b.WriteString(m.spawnModelPicker.View())
-		b.WriteString("\n\n")
+		overlay = m.spawnModelPicker.View()
 	}
 	model := m.spawnModel
 	models := m.spawnSelectableModels()
@@ -2054,17 +2083,23 @@ func (m hubModel) spawnView() string {
 	if m.spawnSubmitting {
 		b.WriteString("\nStarting session...\n")
 	}
-	fmt.Fprintf(&b, "\n%s Prompt (optional):\n", m.spawnFieldPrefix(hubSpawnFieldPrompt))
+
+	var footer strings.Builder
+	fmt.Fprintf(&footer, "%s Prompt (optional):\n", m.spawnFieldPrefix(hubSpawnFieldPrompt))
 	for _, line := range strings.Split(strings.TrimSuffix(renderComposerDraft(m.session.input.Value()), "\n"), "\n") {
-		b.WriteString("  ")
-		b.WriteString(line)
-		b.WriteString("\n")
+		footer.WriteString("  ")
+		footer.WriteString(line)
+		footer.WriteString("\n")
 	}
 	keys := []string{"tab: next field", "shift+tab: previous", m.spawnFieldHint(), "esc: cancel", "ctrl+o: dashboard"}
-	b.WriteString("\n\n")
-	b.WriteString(strings.Join(keys, "  "))
-	b.WriteString("\n")
-	return b.String()
+	footer.WriteString("\n")
+	footer.WriteString(actionBarForWidth(m.width, keys...))
+	return appShell{
+		TopBar:  topBar,
+		Body:    b.String(),
+		Overlay: overlay,
+		Footer:  footer.String(),
+	}.View()
 }
 
 func (m hubModel) sessionView() string {
@@ -2073,7 +2108,7 @@ func (m hubModel) sessionView() string {
 	if title == "" {
 		title = m.detail.SessionID
 	}
-	fmt.Fprintf(&b, "%s\n", title)
+	topBar := fmt.Sprintf("serf / session / %s", title)
 	fmt.Fprintf(&b, "%s  %s  %s  %s\n", m.detail.SourceLabel, m.detail.Ref, m.detail.State, m.detail.WorkingDir)
 	if m.err != nil {
 		fmt.Fprintf(&b, "\nerror: %v\n", m.err)
@@ -2103,44 +2138,43 @@ func (m hubModel) sessionView() string {
 			b.WriteString("\n")
 		}
 	}
+	var overlay strings.Builder
 	if m.sessionModelPicker != nil {
-		b.WriteString("\n")
-		b.WriteString(m.sessionModelPicker.View())
-		b.WriteString("\n")
+		overlay.WriteString(m.sessionModelPicker.View())
+		overlay.WriteString("\n\n")
 	}
 	if m.sessionThemePicker != nil {
-		b.WriteString("\n")
-		b.WriteString(m.sessionThemePicker.View())
-		b.WriteString("\n")
+		overlay.WriteString(m.sessionThemePicker.View())
+		overlay.WriteString("\n\n")
 	}
 	if m.sessionTranscriptPicker != nil {
-		b.WriteString("\n")
-		b.WriteString(m.sessionTranscriptPicker.View())
-		b.WriteString("\n")
+		overlay.WriteString(m.sessionTranscriptPicker.View())
+		overlay.WriteString("\n\n")
 	}
 	if m.commandPalette != nil {
-		b.WriteString("\n")
-		b.WriteString(m.commandPalette.View())
-		b.WriteString("\n")
+		overlay.WriteString(m.commandPalette.View())
+		overlay.WriteString("\n\n")
 	}
+	var footer string
 	switch {
 	case m.transcriptView != nil:
-		b.WriteString("\n")
-		b.WriteString("esc/i/q: return to chat  ctrl+o: dashboard\n")
+		footer = actionBarForWidth(m.width, "esc/i/q: return to chat", "ctrl+o: dashboard")
 	case m.session.scrollMode:
 		keys := []string{"esc/i/q: compose"}
 		if m.detail.Capabilities.Fork {
 			keys = append(keys, "f: fork")
 		}
 		keys = append(keys, "ctrl+o: dashboard")
-		b.WriteString("\n")
-		b.WriteString(strings.Join(keys, "  "))
-		b.WriteString("\n")
+		footer = actionBarForWidth(m.width, keys...)
 	default:
-		b.WriteString("\n")
-		b.WriteString(m.sessionComposerPanel().View())
+		footer = m.sessionComposerPanel().View()
 	}
-	return b.String()
+	return appShell{
+		TopBar:  topBar,
+		Body:    b.String(),
+		Overlay: overlay.String(),
+		Footer:  footer,
+	}.View()
 }
 
 func (m hubModel) renderSessionDetails() string {
