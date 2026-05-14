@@ -534,7 +534,7 @@ func TestTUITmuxE2E_SessionLeadingSlashOpensPalette(t *testing.T) {
 	app.WaitFor("Command palette", "/help", "/model")
 }
 
-func TestTUITmuxE2E_CtrlCQuitsFromSession(t *testing.T) {
+func TestTUITmuxE2E_CtrlCWarnsThenQuitsFromSession(t *testing.T) {
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -543,6 +543,8 @@ func TestTUITmuxE2E_CtrlCQuitsFromSession(t *testing.T) {
 	defer app.Close()
 
 	openLiveSession(t, app)
+	app.SendKeys("C-c")
+	app.WaitFor("Press ctrl+c again to quit.", "Restore this session:", "local:01LIVE")
 	app.SendKeys("C-c")
 	app.WaitForExit()
 }

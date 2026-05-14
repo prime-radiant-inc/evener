@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -112,7 +113,11 @@ type hubModel struct {
 
 	authLoginProvider string
 	authLoginFlowID   string
+
+	lastCtrlC time.Time
 }
+
+const hubCtrlCQuitWindow = time.Second
 
 func newHubModel(client *appwire.Client, hubURL string, stateDirs ...string) hubModel {
 	stateDir := ""
@@ -509,6 +514,9 @@ func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.returnToDashboard()
 		return m, nil
 	case "ctrl+c":
+		if m.mode == hubModeSession && m.commandPalette == nil {
+			return m.updateSessionKey(msg)
+		}
 		return m, tea.Quit
 	}
 	if m.commandPalette != nil {
@@ -1100,6 +1108,14 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg.String() {
+	case "ctrl+c":
+		now := time.Now()
+		if !m.lastCtrlC.IsZero() && now.Sub(m.lastCtrlC) <= hubCtrlCQuitWindow {
+			return m, tea.Quit
+		}
+		m.lastCtrlC = now
+		m.addSessionSystem(m.ctrlCRestoreMessage())
+		return m, nil
 	case "esc":
 		m.enterSessionBrowse(false)
 		return m, nil
@@ -1201,6 +1217,21 @@ func (m *hubModel) runHubSlashCommand(cmd, args string) tea.Cmd {
 		return nil
 	}
 	return runHubCommandDefinition(m, definition, args)
+}
+
+func (m hubModel) ctrlCRestoreMessage() string {
+	hubURL := strings.TrimSpace(m.hubURL)
+	if hubURL == "" {
+		hubURL = defaultHubAddr
+	}
+	ref := strings.TrimSpace(m.detail.Ref)
+	if ref == "" {
+		ref = strings.TrimSpace(m.session.sessionID)
+	}
+	if ref == "" {
+		return "Press ctrl+c again to quit."
+	}
+	return fmt.Sprintf("Press ctrl+c again to quit.\nRestore this session: serf-tui --hub-addr %s, then open %s", hubURL, ref)
 }
 
 func (m *hubModel) enterSessionBrowse(pageUp bool) {

@@ -2680,43 +2680,84 @@ func TestHubModelSessionLeadingSlashOpensCommandPalette(t *testing.T) {
 	}
 }
 
-func TestHubModelCtrlCQuitsFromSession(t *testing.T) {
+func TestHubModelCtrlCWarnsThenQuitsFromSession(t *testing.T) {
 	m := newSessionHubModel(nil)
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd != nil {
+		t.Fatal("first ctrl+c should warn without quitting")
+	}
+	m = updated.(hubModel)
+	got := m.View()
+	for _, want := range []string{
+		"Press ctrl+c again to quit.",
+		"Restore this session:",
+		"serf-tui --hub-addr http://hub.test",
+		"local:01SEND",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("ctrl+c warning missing %q:\n%s", want, got)
+		}
+	}
+
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if got := updated.(hubModel); got.commandPalette != nil {
-		t.Fatalf("ctrl+c should quit instead of opening/keeping palette: %+v", got.commandPalette)
+		t.Fatalf("second ctrl+c should quit instead of opening/keeping palette: %+v", got.commandPalette)
 	}
 	requireQuitCommand(t, cmd)
 }
 
-func TestHubModelCtrlCQuitsAcrossModes(t *testing.T) {
+func TestHubModelCtrlCWarningExpires(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.lastCtrlC = time.Now().Add(-2 * time.Second)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd != nil {
+		t.Fatal("expired ctrl+c warning should not quit")
+	}
+	got := updated.(hubModel).View()
+	if !strings.Contains(got, "Press ctrl+c again to quit.") || !strings.Contains(got, "local:01SEND") {
+		t.Fatalf("expired ctrl+c should print a fresh restore warning:\n%s", got)
+	}
+}
+
+func TestHubModelCtrlCQuitsOutsideSessionButWarnsInSession(t *testing.T) {
 	cases := []struct {
 		name  string
 		model hubModel
+		quits bool
 	}{
-		{name: "dashboard", model: newHubModel(nil, "http://hub.test")},
+		{name: "dashboard", model: newHubModel(nil, "http://hub.test"), quits: true},
 		{name: "project", model: func() hubModel {
 			m := sampleHubModel(100)
 			m.openProject("serf")
 			return m
-		}()},
+		}(), quits: true},
 		{name: "spawn", model: func() hubModel {
 			m := newHubModel(nil, "http://hub.test")
 			m.openSpawnForm()
 			return m
-		}()},
+		}(), quits: true},
 		{name: "palette", model: func() hubModel {
 			m := sampleHubModel(100)
 			m.openCommandPalette()
 			return m
-		}()},
-		{name: "session", model: newSessionHubModel(nil)},
+		}(), quits: true},
+		{name: "session", model: newSessionHubModel(nil), quits: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, cmd := tc.model.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-			requireQuitCommand(t, cmd)
+			updated, cmd := tc.model.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+			if tc.quits {
+				requireQuitCommand(t, cmd)
+				return
+			}
+			if cmd != nil {
+				t.Fatal("first session ctrl+c should warn without quitting")
+			}
+			if got := updated.(hubModel).View(); !strings.Contains(got, "Press ctrl+c again to quit.") {
+				t.Fatalf("session ctrl+c missing warning:\n%s", got)
+			}
 		})
 	}
 }
