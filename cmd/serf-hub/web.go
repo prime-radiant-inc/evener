@@ -40,6 +40,7 @@ type WebConfig struct {
 	Models        []modelDescriptor // available models for the spawn chip
 	PastPerPage   int               // results per page for /past; defaults to 50 when zero
 	StateDir      string            // root of the projects/<sha> state directory; needed for ForkSession
+	SerfLaunchEnv map[string]string // environment overrides used by Hub-owned serf launches
 	PluginDirs    []string          // explicit plugin dirs; when empty, default to ~/.config/serf/plugins/*
 	MCPConfigPath string            // MCP config file path; when empty, default to ~/.config/serf/mcp.json
 	CodexSources  []appsource.CodexSourceConfig

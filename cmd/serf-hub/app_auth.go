@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +17,7 @@ import (
 
 type hubAuthController struct {
 	stateDir     string
+	authEnv      map[string]string
 	cfg          authopenai.Config
 	client       *http.Client
 	now          func() time.Time
@@ -31,11 +34,16 @@ type hubAuthFlow struct {
 	RedirectURI  string
 }
 
-func newHubAuthController() *hubAuthController {
+func newHubAuthController(launchEnv ...map[string]string) *hubAuthController {
 	cfg := authopenai.DefaultConfig()
 	client := &http.Client{Timeout: cfg.HTTPTimeout}
+	authEnv := effectiveHubAuthEnv(nil)
+	if len(launchEnv) > 0 {
+		authEnv = effectiveHubAuthEnv(launchEnv[0])
+	}
 	return &hubAuthController{
-		stateDir:     authopenai.DefaultStateDir(),
+		stateDir:     openAIStateDirFromEnv(authEnv),
+		authEnv:      authEnv,
 		cfg:          cfg,
 		client:       client,
 		now:          time.Now,
@@ -167,9 +175,15 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 }
 
 func (c *hubAuthController) openAIStatus() (appwire.AuthStatusResponse, error) {
-	svc := authopenai.NewService(c.config(), c.client)
-	active, err := svc.Status(c.stateDir)
-	if err != nil {
+	active := authopenai.AuthStatus{Source: authopenai.AuthSourceSignedOut}
+	if strings.TrimSpace(c.authEnv["OPENAI_API_KEY"]) != "" {
+		active = authopenai.AuthStatus{
+			SignedIn: true,
+			Source:   authopenai.AuthSourceEnv,
+		}
+	} else if record, err := authopenai.LoadAuth(c.stateDir); err == nil {
+		active = openAIStatusFromRecord(c.now(), record)
+	} else if !errors.Is(err, authopenai.ErrAuthNotFound) {
 		return appwire.AuthStatusResponse{}, err
 	}
 
@@ -200,6 +214,36 @@ func (c *hubAuthController) openAIStatus() (appwire.AuthStatusResponse, error) {
 	}
 
 	return status, nil
+}
+
+func effectiveHubAuthEnv(launchEnv map[string]string) map[string]string {
+	out := envToMap(os.Environ())
+	for key, value := range launchEnv {
+		out[key] = value
+	}
+	return out
+}
+
+func openAIStateDirFromEnv(env map[string]string) string {
+	if stateHome := strings.TrimSpace(env["XDG_STATE_HOME"]); stateHome != "" {
+		return filepath.Join(stateHome, "serf")
+	}
+	if home := strings.TrimSpace(env["HOME"]); home != "" {
+		return filepath.Join(home, ".local", "state", "serf")
+	}
+	return authopenai.DefaultStateDirWithStateHome("")
+}
+
+func openAIStatusFromRecord(now time.Time, record authopenai.AuthRecord) authopenai.AuthStatus {
+	return authopenai.AuthStatus{
+		SignedIn:    true,
+		Source:      record.Source,
+		Email:       record.Email,
+		AccountID:   record.AccountID,
+		WorkspaceID: record.WorkspaceID,
+		Expiry:      record.Expiry,
+		NeedsLogin:  !record.Expiry.IsZero() && !record.Expiry.After(now),
+	}
 }
 
 func (c *hubAuthController) authRecordFromTokens(tokens authopenai.TokenSet) authopenai.AuthRecord {

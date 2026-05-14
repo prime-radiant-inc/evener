@@ -94,6 +94,94 @@ func TestHubRPCAuthStatusReportsEnvAndStoredOAuth(t *testing.T) {
 	}
 }
 
+func TestHubRPCAuthStatusUsesConfiguredSerfLaunchStateHome(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	launchStateHome := t.TempDir()
+	launchStateDir := authopenai.DefaultStateDirWithStateHome(launchStateHome)
+	if err := authopenai.SaveAuth(launchStateDir, authopenai.AuthRecord{
+		Version:      1,
+		Provider:     "openai",
+		Source:       authopenai.AuthSourceOAuth,
+		ObtainedAt:   time.Now().Add(-time.Hour),
+		TokenType:    "Bearer",
+		Scope:        "openid profile email",
+		AccessToken:  "configured-access-token",
+		RefreshToken: "configured-refresh-token",
+		Expiry:       time.Now().Add(time.Hour),
+		Email:        "configured@example.com",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	hub := newHubRPCTestServer(t, WebConfig{
+		Past:          NewPastIndex(""),
+		SerfLaunchEnv: map[string]string{"XDG_STATE_HOME": launchStateHome},
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	status, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai"})
+	if err != nil {
+		t.Fatalf("AuthStatus: %v", err)
+	}
+	if !status.SignedIn || status.ActiveSource != authopenai.AuthSourceOAuth || status.Email != "configured@example.com" {
+		t.Fatalf("status=%+v, want configured launch OAuth state", status)
+	}
+}
+
+func TestHubRPCAuthStatusUsesConfiguredSerfLaunchEnvToken(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	hub := newHubRPCTestServer(t, WebConfig{
+		Past:          NewPastIndex(""),
+		SerfLaunchEnv: map[string]string{"OPENAI_API_KEY": "configured-env-token"},
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	status, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai"})
+	if err != nil {
+		t.Fatalf("AuthStatus: %v", err)
+	}
+	if !status.SignedIn || status.ActiveSource != authopenai.AuthSourceEnv {
+		t.Fatalf("status=%+v, want configured launch env token", status)
+	}
+}
+
+func TestHubRPCAuthStatusHonorsEmptyConfiguredSerfLaunchEnvToken(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "process-env-token")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	hub := newHubRPCTestServer(t, WebConfig{
+		Past:          NewPastIndex(""),
+		SerfLaunchEnv: map[string]string{"OPENAI_API_KEY": ""},
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	status, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai"})
+	if err != nil {
+		t.Fatalf("AuthStatus: %v", err)
+	}
+	if status.SignedIn || status.ActiveSource != authopenai.AuthSourceSignedOut {
+		t.Fatalf("status=%+v, want configured empty token override to sign out", status)
+	}
+}
+
 func TestHubRPCAuthLogoutRemovesUserScopedOpenAIAuth(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "")
 	xdgStateHome := t.TempDir()

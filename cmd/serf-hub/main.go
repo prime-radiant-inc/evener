@@ -125,6 +125,7 @@ func main() {
 		Models:        models,
 		PastPerPage:   cfg.PastResultsPerPage,
 		StateDir:      stateDir,
+		SerfLaunchEnv: cfg.SerfLaunch.Env,
 		CodexSources:  cfg.CodexSources,
 		CodexLaunches: cfg.CodexLaunches,
 		CodexLauncher: codexLauncher,
