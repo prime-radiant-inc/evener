@@ -146,6 +146,21 @@ func TestHubModelDashboardSelectedRowUsesVisualStyle(t *testing.T) {
 	}
 }
 
+func TestHubModelDashboardDetailsRendersAsPane(t *testing.T) {
+	withTestColorProfile(t)
+	m := sampleHubModel(120)
+	rows := m.dashboardRows()
+
+	got := m.dashboardDetailsView(rows, 48)
+	if !strings.Contains(got, "\x1b[") {
+		t.Fatalf("dashboard details should render with pane styling:\n%q", got)
+	}
+	plain := ansiPattern.ReplaceAllString(got, "")
+	if !strings.Contains(plain, "  details") {
+		t.Fatalf("dashboard details should be offset inside the pane:\n%q", plain)
+	}
+}
+
 func TestHubModelDashboardSortsByAttentionThenRecency(t *testing.T) {
 	tree := hubTreeFromThreads([]appwire.Thread{
 		{
@@ -2741,6 +2756,28 @@ func TestHubModelCtrlCWarnsThenQuitsFromSession(t *testing.T) {
 		t.Fatalf("second ctrl+c should quit instead of opening/keeping palette: %+v", got.commandPalette)
 	}
 	requireQuitCommand(t, cmd)
+}
+
+func TestHubModelSecondCtrlCStoresPostQuitRestoreMessage(t *testing.T) {
+	m := newSessionHubModel(nil)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = updated.(hubModel)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	got := updated.(hubModel)
+
+	requireQuitCommand(t, cmd)
+	if got.postQuitMessage == "" {
+		t.Fatal("second ctrl+c did not preserve a post-quit restore message")
+	}
+	for _, want := range []string{"Restore this session:", "serf-tui --hub-addr http://hub.test", "local:01SEND"} {
+		if !strings.Contains(got.postQuitMessage, want) {
+			t.Fatalf("post-quit restore message missing %q: %q", want, got.postQuitMessage)
+		}
+	}
+	if strings.Contains(got.postQuitMessage, "Press ctrl+c again") {
+		t.Fatalf("post-quit message should only contain restoration instructions: %q", got.postQuitMessage)
+	}
 }
 
 func TestHubModelCtrlCWarningExpires(t *testing.T) {

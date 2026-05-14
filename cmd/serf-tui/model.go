@@ -514,7 +514,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.refreshViewport()
 						return m, tea.Batch(cmds...)
 					}
-					picker := newActionPicker("Auth", "↑/↓ navigate  enter select  esc cancel", []modelPickerItem{
+					picker := newActionPicker("Auth", "up/down navigate  enter select  esc cancel", []modelPickerItem{
 						{id: "auth-login", display: "Sign in with OpenAI"},
 						{id: "auth-status", display: "Show auth status"},
 						{id: "auth-logout", display: "Sign out of OpenAI"},

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -37,8 +38,20 @@ func main() {
 	if !startupOpts.Debug {
 		programOpts = append(programOpts, tea.WithAltScreen())
 	}
-	if _, err := tea.NewProgram(m, programOpts...).Run(); err != nil {
+	finalModel, err := tea.NewProgram(m, programOpts...).Run()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "serf-tui: %v\n", err)
 		os.Exit(1)
 	}
+	if message := postQuitMessageFromModel(finalModel); message != "" {
+		fmt.Fprintln(os.Stdout, message)
+	}
+}
+
+func postQuitMessageFromModel(model tea.Model) string {
+	m, ok := model.(hubModel)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(m.postQuitMessage)
 }

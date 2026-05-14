@@ -32,7 +32,7 @@ func newModelPicker(items []modelPickerItem, activeModel string, width int) mode
 	return modelPicker{
 		title:     "Select model",
 		emptyText: "  No matching models.",
-		footer:    "↑/↓ navigate  enter select  esc cancel",
+		footer:    "up/down navigate  enter select  esc cancel",
 		items:     items,
 		active:    activeModel,
 		width:     width,
@@ -43,7 +43,7 @@ func newTranscriptPicker(items []modelPickerItem, activeSessionID string, width 
 	return modelPicker{
 		title:     "Select transcript",
 		emptyText: "  No matching sessions.",
-		footer:    "↑/↓ navigate  enter select  esc cancel",
+		footer:    "up/down navigate  enter select  esc cancel",
 		items:     items,
 		active:    activeSessionID,
 		width:     width,
@@ -197,7 +197,7 @@ func (m modelPicker) View() string {
 	b.WriteString("\n")
 	footer := m.footer
 	if footer == "" {
-		footer = "↑/↓ navigate  enter select  esc cancel"
+		footer = "up/down navigate  enter select  esc cancel"
 	}
 	b.WriteString(mpDimStyle.Render(footer))
 	return b.String()

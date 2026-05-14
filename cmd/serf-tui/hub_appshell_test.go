@@ -45,6 +45,23 @@ func TestHubModelAppShellAddsSubtleChromeStyles(t *testing.T) {
 	}
 }
 
+func TestHubModelAppShellAnchorsFooterToKnownHeight(t *testing.T) {
+	got := appShell{
+		TopBar: "serf live",
+		Body:   "one live session",
+		Footer: "up/down select  enter open",
+		Height: 8,
+	}.View()
+
+	lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
+	if len(lines) != 8 {
+		t.Fatalf("shell height=%d, want 8:\n%q", len(lines), got)
+	}
+	if last := lines[len(lines)-1]; !strings.Contains(last, "up/down select") {
+		t.Fatalf("footer not anchored to bottom, last line=%q:\n%s", last, got)
+	}
+}
+
 func TestHubModelCtrlOReturnsDashboardFromCommandPaletteOverlay(t *testing.T) {
 	m := sampleHubModel(100)
 	m.openProject("serf")
@@ -82,7 +99,7 @@ func TestHubModelCtrlOClearsSessionOverlay(t *testing.T) {
 }
 
 func TestActionBarWrapsBeforeDroppingDashboardHint(t *testing.T) {
-	got := actionBarForWidth(60, "↑/↓ select", "enter open", "p project", "n new", "/ palette", "ctrl+o dashboard", "q quit")
+	got := actionBarForWidth(60, "up/down select", "enter open", "p project", "n new", "/ palette", "ctrl+o dashboard", "q quit")
 
 	if !strings.Contains(got, "ctrl+o dashboard") {
 		t.Fatalf("wrapped action bar dropped dashboard hint:\n%s", got)
@@ -91,6 +108,16 @@ func TestActionBarWrapsBeforeDroppingDashboardHint(t *testing.T) {
 		if len([]rune(line)) > 60 {
 			t.Fatalf("action bar line too wide (%d): %q\n%s", len([]rune(line)), line, got)
 		}
+	}
+}
+
+func TestDashboardFooterUsesTextKeyNames(t *testing.T) {
+	got := dashboardFooter(100)
+	if strings.ContainsAny(got, "↑↓") {
+		t.Fatalf("dashboard footer should use text key names instead of arrow glyphs:\n%s", got)
+	}
+	if !strings.Contains(got, "up/down select") {
+		t.Fatalf("dashboard footer missing text select hint:\n%s", got)
 	}
 }
 

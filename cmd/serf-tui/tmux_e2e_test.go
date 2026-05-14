@@ -169,6 +169,27 @@ func TestTUITmuxE2E_DashboardNarrowWideStates(t *testing.T) {
 	narrow.WaitForExit()
 }
 
+func TestTUITmuxE2E_DashboardFooterAnchorsToBottom(t *testing.T) {
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	defer hub.Close()
+	app := startTUITmuxSized(t, bin, hub.URL(), 124, 18)
+	defer app.Close()
+
+	screen := app.WaitFor("serf live", "up/down select")
+	lines := strings.Split(strings.TrimSuffix(screen, "\n"), "\n")
+	lastNonEmpty := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			lastNonEmpty = i
+		}
+	}
+	if lastNonEmpty != len(lines)-1 {
+		t.Fatalf("footer/action line is not anchored to the bottom (last non-empty row %d of %d):\n%s", lastNonEmpty+1, len(lines), screen)
+	}
+}
+
 func TestTUITmuxE2E_DashboardEmptyState(t *testing.T) {
 	requireTmux(t)
 	bin := buildTUIBinary(t)
@@ -549,6 +570,27 @@ func TestTUITmuxE2E_CtrlCWarnsThenQuitsFromSession(t *testing.T) {
 	app.WaitForExit()
 }
 
+func TestTUITmuxE2E_CtrlCRestoreMessageSurvivesAltScreenExit(t *testing.T) {
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	defer hub.Close()
+	app := startTUITmuxAltScreen(t, bin, hub.URL(), 120, 28)
+	defer app.Close()
+
+	openLiveSession(t, app)
+	app.SendKeys("C-c")
+	app.WaitFor("Press ctrl+c again to quit.", "Restore this session:", "local:01LIVE")
+	app.SendKeys("C-c")
+	app.WaitForExit()
+	history := app.CaptureHistory()
+	for _, want := range []string{"Restore this session:", "serf-tui --hub-addr " + hub.URL(), "local:01LIVE"} {
+		if !strings.Contains(history, want) {
+			t.Fatalf("normal scrollback missing %q after alt-screen exit:\n%s", want, history)
+		}
+	}
+}
+
 func TestTUITmuxE2E_ModelPickerShowsAuthRequiredModels(t *testing.T) {
 	requireTmux(t)
 	bin := buildTUIBinary(t)
@@ -749,6 +791,17 @@ func startTUITmuxSized(t *testing.T, bin, hubURL string, width, height int) *tmu
 	t.Helper()
 	session := fmt.Sprintf("serf-tui-e2e-%d", time.Now().UnixNano())
 	command := shellQuote(bin) + " -debug -no-auto-start-hub -hub-addr " + shellQuote(hubURL)
+	runTmux(t, "new-session", "-d", "-x", fmt.Sprint(width), "-y", fmt.Sprint(height), "-s", session, command)
+	runTmux(t, "set-option", "-t", session, "remain-on-exit", "on")
+	app := &tmuxTUI{t: t, session: session}
+	app.WaitFor("serf live")
+	return app
+}
+
+func startTUITmuxAltScreen(t *testing.T, bin, hubURL string, width, height int) *tmuxTUI {
+	t.Helper()
+	session := fmt.Sprintf("serf-tui-e2e-%d", time.Now().UnixNano())
+	command := shellQuote(bin) + " -no-auto-start-hub -hub-addr " + shellQuote(hubURL)
 	runTmux(t, "new-session", "-d", "-x", fmt.Sprint(width), "-y", fmt.Sprint(height), "-s", session, command)
 	runTmux(t, "set-option", "-t", session, "remain-on-exit", "on")
 	app := &tmuxTUI{t: t, session: session}

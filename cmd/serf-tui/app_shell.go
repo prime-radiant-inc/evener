@@ -11,27 +11,44 @@ type appShell struct {
 	Body    string
 	Overlay string
 	Footer  string
+	Height  int
 }
 
 func (s appShell) View() string {
-	sections := make([]string, 0, 4)
+	contentSections := make([]string, 0, 3)
 	styles := defaultTUIStyles()
 	if topBar := strings.TrimRight(s.TopBar, "\n"); topBar != "" {
-		sections = append(sections, styles.Title.Render(topBar))
+		contentSections = append(contentSections, styles.Title.Render(topBar))
 	}
 	if body := strings.TrimRight(s.Body, "\n"); body != "" {
-		sections = append(sections, body)
+		contentSections = append(contentSections, body)
 	}
 	if overlay := strings.TrimRight(s.Overlay, "\n"); overlay != "" {
-		sections = append(sections, overlay)
+		contentSections = append(contentSections, overlay)
 	}
-	if footer := strings.TrimRight(s.Footer, "\n"); footer != "" {
-		sections = append(sections, footer)
-	}
-	if len(sections) == 0 {
+	footer := strings.TrimRight(s.Footer, "\n")
+	if len(contentSections) == 0 && footer == "" {
 		return ""
 	}
-	return strings.Join(sections, "\n\n") + "\n"
+	content := strings.Join(contentSections, "\n\n")
+	if footer == "" {
+		return content + "\n"
+	}
+	if s.Height <= 0 {
+		if content == "" {
+			return footer + "\n"
+		}
+		return content + "\n\n" + footer + "\n"
+	}
+	if content == "" {
+		gap := max(0, s.Height-shellSectionLineCount(footer))
+		return strings.Repeat("\n", gap) + footer
+	}
+	gap := s.Height - shellSectionLineCount(content) - shellSectionLineCount(footer) + 1
+	if gap < 2 {
+		gap = 2
+	}
+	return content + strings.Repeat("\n", gap) + footer
 }
 
 func actionBar(keys ...string) string {

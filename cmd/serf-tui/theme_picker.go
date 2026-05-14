@@ -9,9 +9,9 @@ import (
 var themePickerItems = []string{"system", "dark", "light"}
 
 type themePicker struct {
-	cursor    int
-	done      bool
-	selected  string // set on enter; "" means cancelled
+	cursor   int
+	done     bool
+	selected string // set on enter; "" means cancelled
 }
 
 func newThemePicker() themePicker {
@@ -70,6 +70,6 @@ func (p themePicker) View() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(mpDimStyle.Render("↑/↓ navigate  enter select  esc cancel"))
+	b.WriteString(mpDimStyle.Render("up/down navigate  enter select  esc cancel"))
 	return b.String()
 }

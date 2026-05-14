@@ -93,7 +93,7 @@ func (m sessionPicker) View() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(pickerDim.Render("↑/↓ navigate  enter select  esc quit"))
+	b.WriteString(pickerDim.Render("up/down navigate  enter select  esc quit"))
 	return b.String()
 }
 

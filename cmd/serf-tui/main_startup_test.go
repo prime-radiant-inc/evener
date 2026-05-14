@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+)
 
 func TestParseTUIStartupOptionsDefaults(t *testing.T) {
 	opts, err := parseTUIStartupOptions(nil, func(string) string { return "" })
@@ -61,4 +65,34 @@ func TestParseTUIStartupOptionsFlagsOverrideEnvironment(t *testing.T) {
 	if !opts.Debug {
 		t.Fatal("Debug=false, want true")
 	}
+}
+
+func TestPostQuitMessageFromHubModel(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.postQuitMessage = "Restore this session: serf-tui --hub-addr http://hub.test, then open local:01SEND"
+
+	got := postQuitMessageFromModel(m)
+	if got != m.postQuitMessage {
+		t.Fatalf("postQuitMessageFromModel()=%q, want %q", got, m.postQuitMessage)
+	}
+}
+
+func TestPostQuitMessageIgnoresOtherModels(t *testing.T) {
+	if got := postQuitMessageFromModel(dummyTeaModel{}); got != "" {
+		t.Fatalf("postQuitMessageFromModel()=%q, want empty", got)
+	}
+}
+
+type dummyTeaModel struct{}
+
+func (dummyTeaModel) Init() tea.Cmd {
+	return nil
+}
+
+func (dummyTeaModel) Update(tea.Msg) (tea.Model, tea.Cmd) {
+	return dummyTeaModel{}, nil
+}
+
+func (dummyTeaModel) View() string {
+	return ""
 }

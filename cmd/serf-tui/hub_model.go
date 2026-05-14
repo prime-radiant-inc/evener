@@ -115,7 +115,8 @@ type hubModel struct {
 	authLoginProvider string
 	authLoginFlowID   string
 
-	lastCtrlC time.Time
+	lastCtrlC       time.Time
+	postQuitMessage string
 }
 
 const hubCtrlCQuitWindow = time.Second
@@ -1112,6 +1113,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		now := time.Now()
 		if !m.lastCtrlC.IsZero() && now.Sub(m.lastCtrlC) <= hubCtrlCQuitWindow {
+			m.postQuitMessage = m.restoreInstructionMessage()
 			return m, tea.Quit
 		}
 		m.lastCtrlC = now
@@ -1221,6 +1223,14 @@ func (m *hubModel) runHubSlashCommand(cmd, args string) tea.Cmd {
 }
 
 func (m hubModel) ctrlCRestoreMessage() string {
+	restore := m.restoreInstructionMessage()
+	if restore == "" {
+		return "Press ctrl+c again to quit."
+	}
+	return "Press ctrl+c again to quit.\n" + restore
+}
+
+func (m hubModel) restoreInstructionMessage() string {
 	hubURL := strings.TrimSpace(m.hubURL)
 	if hubURL == "" {
 		hubURL = defaultHubAddr
@@ -1230,9 +1240,9 @@ func (m hubModel) ctrlCRestoreMessage() string {
 		ref = strings.TrimSpace(m.session.sessionID)
 	}
 	if ref == "" {
-		return "Press ctrl+c again to quit."
+		return ""
 	}
-	return fmt.Sprintf("Press ctrl+c again to quit.\nRestore this session: serf-tui --hub-addr %s, then open %s", hubURL, ref)
+	return fmt.Sprintf("Restore this session: serf-tui --hub-addr %s, then open %s", hubURL, ref)
 }
 
 func (m *hubModel) enterSessionBrowse(pageUp bool) {
@@ -2214,7 +2224,8 @@ func (m hubModel) dashboardView() string {
 			TopBar:  topBar,
 			Body:    b.String(),
 			Overlay: m.commandPalette.View(),
-			Footer:  actionBarForWidth(m.width, "↑/↓ select", "enter open", "p project", "n new", "/ palette", "ctrl+o dashboard", "q quit"),
+			Footer:  actionBarForWidth(m.width, "up/down select", "enter open", "p project", "n new", "/ palette", "ctrl+o dashboard", "q quit"),
+			Height:  m.height,
 		}.View()
 	}
 	if m.dashboardFilterActive || strings.TrimSpace(m.dashboardFilter.Value()) != "" {
@@ -2228,6 +2239,7 @@ func (m hubModel) dashboardView() string {
 				TopBar: topBar,
 				Body:   b.String(),
 				Footer: "esc clear filter",
+				Height: m.height,
 			}.View()
 		}
 		b.WriteString("No live sessions are running.\n\n")
@@ -2235,6 +2247,7 @@ func (m hubModel) dashboardView() string {
 			TopBar: topBar,
 			Body:   b.String(),
 			Footer: emptyDashboardFooter(m.firstProjectHistoryKey() != "", width),
+			Height: m.height,
 		}.View()
 	}
 	if m.dashboardUsesWideLayout() {
@@ -2251,6 +2264,7 @@ func (m hubModel) dashboardView() string {
 		TopBar: topBar,
 		Body:   b.String(),
 		Footer: dashboardFooter(width),
+		Height: m.height,
 	}.View()
 }
 
@@ -2358,7 +2372,7 @@ func dashboardFooter(width int) string {
 	if width <= 72 {
 		return truncateText("keys: up/down enter p n new / palette ctrl+o dashboard q", width)
 	}
-	return truncateText("↑/↓ select  enter open  p project  n new  / palette  ctrl+o dashboard  q quit", width)
+	return truncateText("up/down select  enter open  p project  n new  / palette  ctrl+o dashboard  q quit", width)
 }
 
 func emptyDashboardFooter(hasProjectHistory bool, width int) string {
@@ -2427,7 +2441,7 @@ func joinDashboardColumns(left, right string, leftWidth, rightWidth, totalWidth 
 
 func (m hubModel) dashboardDetailsView(rows []hubRow, width int) string {
 	if m.err != nil {
-		return truncateMultilineText(strings.Join([]string{
+		return renderDetailsPane(strings.Join([]string{
 			"details",
 			"Diagnostic",
 			"Message:  " + m.err.Error(),
@@ -2435,17 +2449,26 @@ func (m hubModel) dashboardDetailsView(rows []hubRow, width int) string {
 		}, "\n"), width)
 	}
 	if len(rows) == 0 || m.selected >= len(rows) {
-		return truncateMultilineText("details\nNo dashboard row selected.", width)
+		return renderDetailsPane("details\nNo dashboard row selected.", width)
 	}
 	row := rows[m.selected]
 	switch row.kind {
 	case hubRowProject:
-		return truncateMultilineText(m.dashboardProjectDetails(row, rows), width)
+		return renderDetailsPane(m.dashboardProjectDetails(row, rows), width)
 	case hubRowSession:
-		return truncateMultilineText(dashboardSessionDetails(row), width)
+		return renderDetailsPane(dashboardSessionDetails(row), width)
 	default:
-		return truncateMultilineText("details\nNo dashboard row selected.", width)
+		return renderDetailsPane("details\nNo dashboard row selected.", width)
 	}
+}
+
+func renderDetailsPane(text string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	innerWidth := max(1, width-3)
+	body := truncateMultilineText(text, innerWidth)
+	return defaultTUIStyles().Pane.Width(width).Render(body)
 }
 
 func (m hubModel) dashboardProjectDetails(row hubRow, rows []hubRow) string {
@@ -2538,7 +2561,8 @@ func (m hubModel) projectView() string {
 			TopBar:  topBar,
 			Body:    b.String(),
 			Overlay: m.commandPalette.View(),
-			Footer:  actionBarForWidth(m.width, "↑/↓ select", "enter open", "r resume", "n new here", "/ palette", "esc dashboard", "ctrl+o dashboard"),
+			Footer:  actionBarForWidth(m.width, "up/down select", "enter open", "r resume", "n new here", "/ palette", "esc dashboard", "ctrl+o dashboard"),
+			Height:  m.height,
 		}.View()
 	}
 	if m.dashboardFilterActive || strings.TrimSpace(m.dashboardFilter.Value()) != "" {
@@ -2576,7 +2600,8 @@ func (m hubModel) projectView() string {
 	return appShell{
 		TopBar: topBar,
 		Body:   b.String(),
-		Footer: actionBarForWidth(m.width, "↑/↓ select", "enter open", "r resume", "n new here", "/ palette", "esc dashboard", "ctrl+o dashboard"),
+		Footer: actionBarForWidth(m.width, "up/down select", "enter open", "r resume", "n new here", "/ palette", "esc dashboard", "ctrl+o dashboard"),
+		Height: m.height,
 	}.View()
 }
 
@@ -2712,6 +2737,7 @@ func (m hubModel) spawnView() string {
 		Body:    b.String(),
 		Overlay: overlay,
 		Footer:  footer.String(),
+		Height:  m.height,
 	}.View()
 }
 
@@ -2926,6 +2952,7 @@ func (m hubModel) sessionView() string {
 		Body:    body,
 		Overlay: overlayText,
 		Footer:  footer,
+		Height:  m.height,
 	}.View()
 }
 
