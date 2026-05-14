@@ -65,7 +65,7 @@ func (m hubModel) sessionTurnActionState() bool {
 }
 
 func (m hubModel) sessionComposerPanel() composerPanel {
-	keys := []string{"esc: browse", "ctrl+o: dashboard", hubCommandHint("help")}
+	keys := []string{"esc: browse", "ctrl+p: palette", "ctrl+o: dashboard", hubCommandHint("help")}
 	panel := composerPanel{
 		Draft:         m.session.input.Value(),
 		MaxDraftLines: m.session.input.MaxHeight,

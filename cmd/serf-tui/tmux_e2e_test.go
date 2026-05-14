@@ -502,6 +502,25 @@ func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
 	}
 }
 
+func TestTUITmuxE2E_SessionSearchPalettePreservesDraft(t *testing.T) {
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	defer hub.Close()
+	app := startTUITmux(t, bin, hub.URL())
+	defer app.Close()
+
+	openLiveSession(t, app)
+	app.TypeText("draft before search")
+	app.SendKeys("C-p")
+	app.WaitFor("Command palette", "/search", "> draft before search")
+	app.TypeText("search")
+	app.SendKeys("Enter")
+	app.WaitFor("Command palette", "live task", "ended maintenance", "> draft before search")
+	app.SendKeys("Escape")
+	app.WaitFor("enter: send", "> draft before search")
+}
+
 func TestTUITmuxE2E_ModelPickerShowsAuthRequiredModels(t *testing.T) {
 	requireTmux(t)
 	bin := buildTUIBinary(t)

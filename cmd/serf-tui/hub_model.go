@@ -1087,6 +1087,10 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.resizeSessionInputFrom(prevHeight)
 		return m, nil
 	}
+	if msg.Type == tea.KeyCtrlP || msg.String() == "ctrl+p" {
+		m.openCommandPalette()
+		return m, nil
+	}
 
 	switch msg.String() {
 	case "esc":

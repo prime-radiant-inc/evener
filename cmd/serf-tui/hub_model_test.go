@@ -2488,6 +2488,57 @@ func TestHubModelSearchCommandOpensSessionSearchWithoutReplacingDraft(t *testing
 	}
 }
 
+func TestHubModelSessionPaletteShortcutRunsSearchWithoutReplacingDraft(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.Project = "serf"
+	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
+		Key: "serf", Name: "serf",
+		Sessions: []hubTreeNode{
+			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live scoring", State: "idle", Project: "serf", Live: true},
+			{Ref: "local:01PAST", SessionID: "01PAST", Title: "past renderer", State: "ended", Project: "serf", Live: false},
+		},
+	}}}
+	m.rows = buildDashboardRows(m.tree)
+	m.session.setInputValue("keep this draft")
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	if cmd != nil {
+		t.Fatal("opening session palette should be synchronous")
+	}
+	m = updated.(hubModel)
+	if got := m.session.input.Value(); got != "keep this draft" {
+		t.Fatalf("palette shortcut replaced composer draft with %q", got)
+	}
+	if m.commandPalette == nil {
+		t.Fatal("ctrl+p did not open session command palette")
+	}
+	if got := m.sessionView(); !strings.Contains(got, "/search") || !strings.Contains(got, "> keep this draft") {
+		t.Fatalf("session palette missing /search or draft:\n%s", got)
+	}
+
+	for _, r := range "search" {
+		updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		if cmd != nil {
+			t.Fatal("filtering session palette should be synchronous")
+		}
+		m = updated.(hubModel)
+	}
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("running /search from session palette should be synchronous")
+	}
+	m = updated.(hubModel)
+	if got := m.session.input.Value(); got != "keep this draft" {
+		t.Fatalf("/search from palette replaced composer draft with %q", got)
+	}
+	got := m.sessionView()
+	for _, want := range []string{"Command palette", "live scoring", "past renderer", "> keep this draft"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("session search after palette command missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestHubModelUnknownSlashCommandIncludesHelpHint(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.session.setInputValue("/wat")
