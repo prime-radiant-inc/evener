@@ -179,6 +179,12 @@ func (c *Client) ThreadTurnItemsList(ctx context.Context, params ThreadTurnItems
 	return out, err
 }
 
+func (c *Client) ThreadTranscriptList(ctx context.Context, params ThreadTranscriptListParams) (ThreadTranscriptListResponse, error) {
+	var out ThreadTranscriptListResponse
+	err := c.request(ctx, MethodSerfThreadTranscriptsList, params, &out)
+	return out, err
+}
+
 func (c *Client) ThreadStart(ctx context.Context, params ThreadStartParams) (ThreadStartResponse, error) {
 	var out ThreadStartResponse
 	err := c.request(ctx, MethodThreadStart, params, &out)

@@ -5,29 +5,30 @@ import "encoding/json"
 const ProtocolVersion = "serf-appwire-v1"
 
 const (
-	MethodInitialize            = "initialize"
-	MethodThreadList            = "thread/list"
-	MethodThreadRead            = "thread/read"
-	MethodThreadTurnsList       = "thread/turns/list"
-	MethodThreadTurnItemsList   = "thread/turns/items/list"
-	MethodThreadStart           = "thread/start"
-	MethodThreadResume          = "thread/resume"
-	MethodThreadFork            = "thread/fork"
-	MethodThreadClear           = "thread/clear"
-	MethodThreadModelSet        = "thread/model/set"
-	MethodThreadCompactStart    = "thread/compact/start"
-	MethodThreadShutdown        = "thread/shutdown"
-	MethodTurnStart             = "turn/start"
-	MethodTurnSteer             = "turn/steer"
-	MethodTurnInterrupt         = "turn/interrupt"
-	MethodSerfTasksList         = "serf/tasks/list"
-	MethodSerfDirsComplete      = "serf/dirs/complete"
-	MethodSerfHarnessesList     = "serf/harnesses/list"
-	MethodSerfAuthStatus        = "serf/auth/status"
-	MethodSerfAuthLoginStart    = "serf/auth/login/start"
-	MethodSerfAuthLoginComplete = "serf/auth/login/complete"
-	MethodSerfAuthLogout        = "serf/auth/logout"
-	MethodModelList             = "model/list"
+	MethodInitialize                = "initialize"
+	MethodThreadList                = "thread/list"
+	MethodThreadRead                = "thread/read"
+	MethodThreadTurnsList           = "thread/turns/list"
+	MethodThreadTurnItemsList       = "thread/turns/items/list"
+	MethodThreadStart               = "thread/start"
+	MethodThreadResume              = "thread/resume"
+	MethodThreadFork                = "thread/fork"
+	MethodThreadClear               = "thread/clear"
+	MethodThreadModelSet            = "thread/model/set"
+	MethodThreadCompactStart        = "thread/compact/start"
+	MethodThreadShutdown            = "thread/shutdown"
+	MethodTurnStart                 = "turn/start"
+	MethodTurnSteer                 = "turn/steer"
+	MethodTurnInterrupt             = "turn/interrupt"
+	MethodSerfTasksList             = "serf/tasks/list"
+	MethodSerfThreadTranscriptsList = "serf/thread/transcripts/list"
+	MethodSerfDirsComplete          = "serf/dirs/complete"
+	MethodSerfHarnessesList         = "serf/harnesses/list"
+	MethodSerfAuthStatus            = "serf/auth/status"
+	MethodSerfAuthLoginStart        = "serf/auth/login/start"
+	MethodSerfAuthLoginComplete     = "serf/auth/login/complete"
+	MethodSerfAuthLogout            = "serf/auth/logout"
+	MethodModelList                 = "model/list"
 )
 
 const (
@@ -100,6 +101,7 @@ type FeatureSet struct {
 	ThreadShutdown    bool `json:"threadShutdown"`
 	ForkFromTurn      bool `json:"forkFromTurn"`
 	Tasks             bool `json:"tasks"`
+	TranscriptList    bool `json:"transcriptList"`
 	ModelList         bool `json:"modelList"`
 	DirectoryComplete bool `json:"directoryComplete"`
 	Auth              bool `json:"auth"`
@@ -141,6 +143,8 @@ type ThreadStatus struct {
 
 type SerfThread struct {
 	Ref             string             `json:"ref"`
+	ParentRef       string             `json:"parentRef,omitempty"`
+	Kind            string             `json:"kind,omitempty"`
 	Profile         string             `json:"profile,omitempty"`
 	ContextPressure float64            `json:"contextPressure,omitempty"`
 	Capabilities    ThreadCapabilities `json:"capabilities"`
@@ -258,6 +262,24 @@ type ThreadTurnItemsListParams struct {
 type ThreadTurnItemsListResponse struct {
 	Data       []ThreadItem `json:"data"`
 	NextCursor string       `json:"nextCursor,omitempty"`
+}
+
+type ThreadTranscriptListParams struct {
+	Ref string `json:"ref"`
+}
+
+type ThreadTranscriptTarget struct {
+	Ref       string `json:"ref"`
+	ThreadID  string `json:"threadId,omitempty"`
+	Title     string `json:"title"`
+	Kind      string `json:"kind"`
+	Status    string `json:"status,omitempty"`
+	Source    string `json:"source,omitempty"`
+	TurnsUsed int    `json:"turnsUsed,omitempty"`
+}
+
+type ThreadTranscriptListResponse struct {
+	Data []ThreadTranscriptTarget `json:"data"`
 }
 
 type ThreadStartParams struct {

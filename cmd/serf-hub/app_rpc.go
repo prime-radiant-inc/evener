@@ -91,6 +91,7 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 			ThreadShutdown:    true,
 			ForkFromTurn:      true,
 			Tasks:             true,
+			TranscriptList:    true,
 			ModelList:         true,
 			DirectoryComplete: true,
 			Auth:              true,
@@ -416,6 +417,9 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		}
 		return source.ListTasks(ctx, params)
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfThreadTranscriptsList, func(ctx context.Context, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
+		return hubThreadTranscriptList(ctx, cfg, sources, params)
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfDirsComplete, func(_ context.Context, params appwire.DirsCompleteParams) (appwire.DirsCompleteResponse, error) {
 		return completeDirs(params)
 	})
@@ -458,6 +462,116 @@ func hubModelList(ctx context.Context, cfg WebConfig, sources *appsource.Registr
 		}
 	}
 	return appwire.ModelListResponse{}, nil
+}
+
+func hubThreadTranscriptList(ctx context.Context, cfg WebConfig, sources *appsource.Registry, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
+	root, err := hubTranscriptRoot(ctx, cfg, sources, params.Ref)
+	if err != nil {
+		return appwire.ThreadTranscriptListResponse{}, err
+	}
+	rootRef := threadRef(root)
+	if rootRef == "" {
+		rootRef = strings.TrimSpace(params.Ref)
+	}
+	if rootRef == "" {
+		return appwire.ThreadTranscriptListResponse{}, appwire.InvalidParams("thread ref is required")
+	}
+
+	targets := []appwire.ThreadTranscriptTarget{{
+		Ref:      rootRef,
+		ThreadID: firstNonEmpty(root.ID, root.SessionID),
+		Title:    "main session (live)",
+		Kind:     "main",
+		Status:   root.Status.Type,
+		Source:   transcriptTargetSource(rootRef, root.Source),
+	}}
+	seen := map[string]struct{}{rootRef: {}}
+	addTarget := func(thread appwire.Thread, turnsUsed int) {
+		if thread.Serf.Kind != "subagent" || thread.Serf.ParentRef != rootRef {
+			return
+		}
+		ref := threadRef(thread)
+		if ref == "" {
+			return
+		}
+		if _, ok := seen[ref]; ok {
+			return
+		}
+		seen[ref] = struct{}{}
+		title := firstNonEmpty(thread.Name, thread.Preview, thread.AgentNickname, "subagent "+firstNonEmpty(thread.ID, thread.SessionID, ref))
+		targets = append(targets, appwire.ThreadTranscriptTarget{
+			Ref:       ref,
+			ThreadID:  firstNonEmpty(thread.ID, thread.SessionID),
+			Title:     title,
+			Kind:      "subagent",
+			Status:    thread.Status.Type,
+			Source:    transcriptTargetSource(ref, thread.Source),
+			TurnsUsed: turnsUsed,
+		})
+	}
+
+	if sources != nil {
+		for _, source := range sources.All() {
+			resp, err := source.ListThreads(ctx, appwire.ThreadListParams{IncludeSubagents: true})
+			if err != nil {
+				continue
+			}
+			for _, thread := range resp.Data {
+				if thread.Source == "" {
+					thread.Source = source.ID()
+				}
+				if thread.Serf.Ref == "" {
+					threadID := firstNonEmpty(thread.ID, thread.SessionID)
+					if threadID != "" {
+						thread.Serf.Ref = appwire.Ref{SourceID: source.ID(), ThreadID: threadID}.String()
+					}
+				}
+				addTarget(thread, len(thread.Turns))
+			}
+		}
+	}
+	if cfg.Past != nil {
+		_ = cfg.Past.Rebuild()
+		for _, entry := range cfg.Past.All() {
+			addTarget(pastEntryThread(entry, false), entry.Meta.TurnCount)
+		}
+	}
+
+	return appwire.ThreadTranscriptListResponse{Data: targets}, nil
+}
+
+func hubTranscriptRoot(ctx context.Context, cfg WebConfig, sources *appsource.Registry, ref string) (appwire.Thread, error) {
+	source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, ref, "")
+	if err == nil {
+		resp, readErr := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false})
+		if readErr == nil {
+			return resp.Thread, nil
+		}
+		err = readErr
+	}
+	if thread, ok := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false}); ok {
+		return thread, nil
+	}
+	return appwire.Thread{}, err
+}
+
+func threadRef(thread appwire.Thread) string {
+	if strings.TrimSpace(thread.Serf.Ref) != "" {
+		return thread.Serf.Ref
+	}
+	sourceID := strings.TrimSpace(thread.Source)
+	threadID := firstNonEmpty(thread.ID, thread.SessionID)
+	if sourceID == "" || threadID == "" {
+		return ""
+	}
+	return appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
+}
+
+func transcriptTargetSource(refText, fallback string) string {
+	if ref, err := appwire.ParseRef(refText); err == nil && ref.SourceID != "" {
+		return ref.SourceID
+	}
+	return fallback
 }
 
 func sourceForModelHarness(ctx context.Context, cfg WebConfig, sources *appsource.Registry, harness string) (appsource.Source, error) {
@@ -833,6 +947,16 @@ func pastEntryThread(entry PastEntry, includeTurns bool) appwire.Thread {
 	}
 	cwd := entry.Meta.EnvInfo.WorkingDir
 	ref := appwire.Ref{SourceID: "local", ThreadID: entry.Meta.ID}.String()
+	parentRef := ""
+	if entry.Meta.ParentSessionID != "" {
+		parentRef = appwire.Ref{SourceID: "local", ThreadID: entry.Meta.ParentSessionID}.String()
+	}
+	kind := "session"
+	if entry.Meta.IsSubagent {
+		kind = "subagent"
+	} else if entry.Meta.ParentSessionID != "" {
+		kind = "fork"
+	}
 	createdAt := orderCreatedAt(entry.Meta.CreatedAt, entry.Meta.UpdatedAt)
 	updatedAt := orderUpdatedAt(entry.Meta.UpdatedAt, entry.Meta.CreatedAt)
 	thread := appwire.Thread{
@@ -848,8 +972,10 @@ func pastEntryThread(entry PastEntry, includeTurns bool) appwire.Thread {
 		CWD:           cwd,
 		Source:        "local",
 		Serf: appwire.SerfThread{
-			Ref:     ref,
-			Profile: entry.Meta.ProfileID,
+			Ref:       ref,
+			ParentRef: parentRef,
+			Kind:      kind,
+			Profile:   entry.Meta.ProfileID,
 			Capabilities: appwire.ThreadCapabilities{
 				Send:         true,
 				ForkFromTurn: true,

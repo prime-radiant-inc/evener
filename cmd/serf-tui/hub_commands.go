@@ -97,6 +97,17 @@ type hubAuthLogoutMsg struct {
 	err  error
 }
 
+type hubTranscriptTargetsMsg struct {
+	targets []appwire.ThreadTranscriptTarget
+	err     error
+}
+
+type hubTranscriptMsg struct {
+	target   appwire.ThreadTranscriptTarget
+	messages []chatMessage
+	err      error
+}
+
 func fetchHubTree(client *appwire.Client) tea.Cmd {
 	return func() tea.Msg {
 		resp, err := client.ThreadList(context.Background(), appwire.ThreadListParams{IncludeSubagents: true})
@@ -114,6 +125,26 @@ func fetchHubSession(client *appwire.Client, ref appwire.Ref) tea.Cmd {
 			return hubSessionMsg{err: err}
 		}
 		return hubSessionMsg{detail: hubDetailFromThread(resp.Thread), messages: messagesFromThread(resp.Thread)}
+	}
+}
+
+func fetchHubTranscriptTargets(client *appwire.Client, ref appwire.Ref) tea.Cmd {
+	return func() tea.Msg {
+		resp, err := client.ThreadTranscriptList(context.Background(), appwire.ThreadTranscriptListParams{Ref: ref.String()})
+		if err != nil {
+			return hubTranscriptTargetsMsg{err: err}
+		}
+		return hubTranscriptTargetsMsg{targets: resp.Data}
+	}
+}
+
+func fetchHubTranscript(client *appwire.Client, target appwire.ThreadTranscriptTarget) tea.Cmd {
+	return func() tea.Msg {
+		resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: target.Ref, IncludeTurns: true, ItemsView: "full"})
+		if err != nil {
+			return hubTranscriptMsg{target: target, err: err}
+		}
+		return hubTranscriptMsg{target: target, messages: messagesFromThread(resp.Thread)}
 	}
 }
 

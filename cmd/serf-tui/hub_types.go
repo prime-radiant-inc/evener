@@ -86,6 +86,16 @@ type hubForkRequest struct {
 	Label         string
 }
 
+type hubTranscriptViewState struct {
+	Ref      string
+	Title    string
+	Messages []chatMessage
+}
+
+func (t hubTranscriptViewState) banner() string {
+	return "Viewing " + t.Title + ". Press esc to return to chat."
+}
+
 func hubTreeFromThreads(threads []appwire.Thread) hubTreeResponse {
 	var out hubTreeResponse
 	projectIndexes := map[string]int{}

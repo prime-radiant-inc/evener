@@ -133,7 +133,7 @@ Current Serf:
 Serf extension:
 
 - `protocolVersion: "serf-appwire-v1"`, `sourceId`, and `features` are Serf-owned protocol metadata, not Codex fields.
-- Serf feature booleans currently cover thread list, turn list, turn start, steer, clear, shutdown, fork from turn, tasks, model list, directory completion, and Hub-owned auth.
+- Serf feature booleans currently cover thread list, turn list, turn start, steer, clear, shutdown, fork from turn, tasks, transcript target list, model list, directory completion, and Hub-owned auth.
 
 ## Thread and Session Lifecycle
 
@@ -157,12 +157,14 @@ Current Serf:
 - Serf thread status strings are `idle`, `processing`, `closed`, `ended`, and `error`.
 - Current Codex adapter maps Codex `active` to Serf `processing`, `idle` to `idle`, `systemError` to `error`, and `notLoaded` to `ended`.
 - Current Codex adapter retries `thread/read includeTurns=true` without turns when Codex reports that `includeTurns` is unavailable before the first user message.
+- Serf Hub exposes `serf/thread/transcripts/list` to list the current transcript and source-backed subagent transcript refs without requiring clients to read daemon-local status or transcript files.
 
 Serf extension:
 
-- `Thread.Serf` is a Serf-owned object with `ref`, optional `profile`, optional `contextPressure`, and per-thread action capabilities.
+- `Thread.Serf` is a Serf-owned object with `ref`, optional `parentRef`, optional `kind`, optional `profile`, optional `contextPressure`, and per-thread action capabilities.
 - `ThreadStartParams.harness` selects Serf vs configured Codex sources at the Hub launch boundary. Codex does not have a `harness` field.
 - `serf/harnesses/list` returns Hub launch choices with `id`, `label`, and `kind`.
+- `serf/thread/transcripts/list` returns transcript targets with refs, titles, kind, status, source, and turn counts. Clients should read the selected transcript through `thread/read includeTurns=true`.
 
 Open questions:
 
@@ -343,6 +345,7 @@ Current explicit Serf extensions:
 - Protocol metadata: `protocolVersion`, `serverInfo`, `sourceId`, and `features`.
 - Source identity: `Thread.Serf.Ref` as `sourceID:threadID`, and `Thread.Source` for the source label/id.
 - Action gating: `Thread.Serf.Capabilities`.
+- Transcript relationships: `Thread.Serf.ParentRef`, `Thread.Serf.Kind`, and `serf/thread/transcripts/list`.
 - Harnesses: `serf/harnesses/list`, `ThreadStartParams.harness`, and harness descriptors with `id`, `label`, `kind`.
 - Serf thread fields: `profile`, `contextPressure`, and capabilities.
 - Serf lifecycle actions: `thread/clear`, `thread/shutdown`, `thread/model/set`.
@@ -368,6 +371,7 @@ Rules for adoption:
 | Initialize response | `userAgent`, `codexHome`, platform fields | `serverInfo`, `protocolVersion`, `sourceId`, `features` | Adapter ignores missing Serf init fields for Codex | Keep response differences documented |
 | Thread identity | `threadId` | `ref` plus source ID | `sourceID:threadID` refs | Web/TUI must surface source labels |
 | Thread list/read | `thread/list`, `thread/read`, `thread/turns/list` | Same names plus Serf fields | Adapter maps Codex threads to Serf threads | `thread/turns/items/list` unsupported in Codex |
+| Transcript targets | No Serf-style main/subagent picker contract | `serf/thread/transcripts/list` plus `thread/read` | Hub returns source refs for main/subagent transcripts | Future Codex source support should populate parent/kind data when Codex exposes it |
 | Thread start | `thread/start` inside running process | `thread/start` with harness/prompt/items | Hub routes harness to source | Launching a Codex process is #58, not `thread/start` |
 | Fork | Whole-thread `thread/fork` | fork from turn/edit metadata | Adapter drops Serf fork metadata | #57/#66 resolve fork-from-turn claims |
 | Turn start | typed `input` | `prompt` plus `items` | Adapter converts to Codex input | Cover all item types used by clients |

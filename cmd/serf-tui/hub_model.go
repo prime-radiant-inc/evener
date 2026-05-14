@@ -72,24 +72,27 @@ type hubModel struct {
 	dashboardFilterActive bool
 	commandPalette        *commandPalette
 
-	selectedProjectKey string
-	projectRows        []hubRow
-	browseSelected     int
-	forkDraft          *hubForkDraft
-	sessionThemePicker *themePicker
-	sessionModelPicker *modelPicker
-	spawnReturnMode    hubMode
-	spawnDir           string
-	spawnProject       string
-	spawnHarness       string
-	spawnHarnesses     []string
-	spawnHarnessKinds  map[string]string
-	spawnModel         string
-	spawnModels        []modelPickerItem
-	spawnHarnessModels map[string][]modelPickerItem
-	spawnModelPicker   *modelPicker
-	spawnSubmitting    bool
-	spawnFocus         hubSpawnField
+	selectedProjectKey      string
+	projectRows             []hubRow
+	browseSelected          int
+	forkDraft               *hubForkDraft
+	sessionThemePicker      *themePicker
+	sessionModelPicker      *modelPicker
+	sessionTranscriptPicker *modelPicker
+	transcriptTargets       []appwire.ThreadTranscriptTarget
+	transcriptView          *hubTranscriptViewState
+	spawnReturnMode         hubMode
+	spawnDir                string
+	spawnProject            string
+	spawnHarness            string
+	spawnHarnesses          []string
+	spawnHarnessKinds       map[string]string
+	spawnModel              string
+	spawnModels             []modelPickerItem
+	spawnHarnessModels      map[string][]modelPickerItem
+	spawnModelPicker        *modelPicker
+	spawnSubmitting         bool
+	spawnFocus              hubSpawnField
 
 	detail  hubSessionDetail
 	session model
@@ -175,6 +178,9 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.forkDraft = nil
 		m.sessionThemePicker = nil
 		m.sessionModelPicker = nil
+		m.sessionTranscriptPicker = nil
+		m.transcriptTargets = nil
+		m.transcriptView = nil
 		return m, nil
 	case hubNotificationMsg:
 		if !msg.ok {
@@ -294,6 +300,40 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		picker := newModelPicker(msg.models, m.detail.Model, m.width)
 		m.sessionModelPicker = &picker
 		m.removeTrailingSessionSystem("Fetching available models...")
+		return m, nil
+	case hubTranscriptTargetsMsg:
+		if msg.err != nil {
+			m.addSessionSystem("Could not fetch session transcripts: " + msg.err.Error())
+			return m, nil
+		}
+		items := hubTranscriptPickerItems(msg.targets)
+		if len(items) == 0 {
+			m.addSessionSystem("No session transcripts are available yet.")
+			return m, nil
+		}
+		activeRef := m.detail.Ref
+		if m.transcriptView != nil {
+			activeRef = m.transcriptView.Ref
+		}
+		picker := newTranscriptPicker(items, activeRef, m.width)
+		m.transcriptTargets = append([]appwire.ThreadTranscriptTarget(nil), msg.targets...)
+		m.sessionTranscriptPicker = &picker
+		return m, nil
+	case hubTranscriptMsg:
+		if msg.err != nil {
+			m.addSessionSystem("Could not read transcript: " + msg.err.Error())
+			return m, nil
+		}
+		m.transcriptView = &hubTranscriptViewState{
+			Ref:      msg.target.Ref,
+			Title:    msg.target.Title,
+			Messages: msg.messages,
+		}
+		m.session.scrollMode = true
+		m.session.focusedToolIdx = -1
+		m.browseSelected = -1
+		m.session.input.Blur()
+		m.session.refreshViewport()
 		return m, nil
 	case hubSpawnOptionsMsg:
 		if msg.err != nil {
@@ -800,6 +840,48 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	if m.sessionTranscriptPicker != nil {
+		updated, cmd := m.sessionTranscriptPicker.Update(msg)
+		picker := updated.(modelPicker)
+		m.sessionTranscriptPicker = &picker
+		if picker.done {
+			selected := picker.selected
+			m.sessionTranscriptPicker = nil
+			if selected != "" {
+				target, ok := hubTranscriptTargetByRef(m.transcriptTargets, selected)
+				if !ok {
+					m.addSessionSystem("Transcript target is no longer available.")
+					return m, nil
+				}
+				if target.Kind == "main" {
+					m.transcriptView = nil
+					m.session.scrollMode = false
+					m.session.input.Focus()
+					m.session.refreshViewport()
+					return m, nil
+				}
+				return m, fetchHubTranscript(m.client, target)
+			}
+			m.session.refreshViewport()
+		}
+		return m, cmd
+	}
+
+	if m.transcriptView != nil {
+		switch msg.String() {
+		case "esc", "i", "q":
+			m.transcriptView = nil
+			m.session.scrollMode = false
+			m.session.focusedToolIdx = -1
+			m.browseSelected = -1
+			m.session.input.Focus()
+			m.session.refreshViewport()
+		default:
+			m.session.viewport, _ = m.session.viewport.Update(msg)
+		}
+		return m, nil
+	}
+
 	if m.forkDraft != nil {
 		switch msg.String() {
 		case "esc":
@@ -1009,6 +1091,8 @@ func (m *hubModel) runHubSlashCommand(cmd, args string) tea.Cmd {
 		return logoutHubAuth(m.client, authProviderArg(args))
 	case "tasks":
 		return fetchHubTasks(m.client, ref)
+	case "agents":
+		return fetchHubTranscriptTargets(m.client, ref)
 	case "details", "status":
 		return fetchHubSession(m.client, ref)
 	case "interrupt":
@@ -2053,15 +2137,23 @@ func (m hubModel) sessionView() string {
 	if m.err != nil {
 		fmt.Fprintf(&b, "\nerror: %v\n", m.err)
 	}
-	if len(m.session.messages) == 0 {
+	messages := m.session.messages
+	if m.transcriptView != nil {
+		b.WriteString("\n")
+		b.WriteString(systemStyle.Width(max(m.width, 80)).Render(m.transcriptView.banner()))
+		b.WriteString("\n")
+		messages = m.transcriptView.Messages
+	}
+	if len(messages) == 0 {
 		b.WriteString("\nNo transcript events yet.\n")
 	} else {
 		width := m.width
 		if width == 0 {
 			width = 100
 		}
-		for i, msg := range m.session.messages {
-			rendered := renderMessage(msg, width, m.session.isToolFocused(i))
+		for i, msg := range messages {
+			focused := m.transcriptView == nil && m.session.isToolFocused(i)
+			rendered := renderMessage(msg, width, focused)
 			if rendered == "" {
 				continue
 			}
@@ -2080,7 +2172,15 @@ func (m hubModel) sessionView() string {
 		b.WriteString(m.sessionThemePicker.View())
 		b.WriteString("\n")
 	}
+	if m.sessionTranscriptPicker != nil {
+		b.WriteString("\n")
+		b.WriteString(m.sessionTranscriptPicker.View())
+		b.WriteString("\n")
+	}
 	switch {
+	case m.transcriptView != nil:
+		b.WriteString("\n")
+		b.WriteString("esc/i/q: return to chat  ctrl+o: dashboard\n")
 	case m.session.scrollMode:
 		keys := []string{"esc/i/q: compose"}
 		if m.detail.Capabilities.Fork {

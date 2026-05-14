@@ -84,6 +84,7 @@ func hubSlashCommandHelp(caps hubSessionCapabilities) string {
 	lines = append(lines,
 		"  /status    Show session info and context pressure",
 		"  /tasks     Show the agent's task list",
+		"  /agents    View the main or subagent transcript",
 		"  /auth      Show OpenAI auth status",
 		"  /login     Start OpenAI OAuth login",
 		"  /logout    Sign out of OpenAI OAuth",

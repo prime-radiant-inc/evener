@@ -178,6 +178,13 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	app.TypeLine("/tasks")
 	app.WaitFor("Tasks (1):", "wire tui e2e")
 
+	app.TypeLine("/agents")
+	app.WaitFor("Select transcript", "subagent inspect")
+	app.SendKeys("Down", "Enter")
+	app.WaitFor("Viewing subagent inspect", "subagent transcript from e2e")
+	app.SendKeys("Escape")
+	app.WaitFor("enter: send")
+
 	app.TypeLine("/details")
 	app.WaitFor("Session:  01LIVE", "Dir:      "+tuiE2EProjectDir)
 
@@ -576,6 +583,8 @@ type tuiE2ESession struct {
 	WorkingDir   string
 	Model        string
 	Live         bool
+	Kind         string
+	ParentRef    string
 	Capabilities appwire.ThreadCapabilities
 	Turns        []appwire.Turn
 }
@@ -610,6 +619,24 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 			Status: appwire.TurnStatusRunning,
 		}},
 	})
+	h.sessions["01SUB"] = &tuiE2ESession{
+		ID:         "01SUB",
+		Title:      "subagent inspect",
+		State:      appwire.ThreadStatusEnded,
+		Project:    "serf",
+		WorkingDir: tuiE2EProjectDir,
+		Model:      "gpt-5",
+		Live:       false,
+		Kind:       "subagent",
+		ParentRef:  "local:01LIVE",
+		Turns: []appwire.Turn{{
+			ID:     "turn_1",
+			Status: appwire.TurnStatusCompleted,
+			Items: []appwire.ThreadItem{
+				{Type: "agent_message", ID: "sub-agent-1", TurnID: "turn_1", Text: "subagent transcript from e2e", Status: "completed"},
+			},
+		}},
+	}
 	h.addSession(&tuiE2ESession{
 		ID:         "01PAST",
 		Title:      "ended maintenance",
@@ -680,6 +707,7 @@ func (h *tuiE2EHub) registerHandlers(app *appserver.Server) {
 	appserver.HandleTyped(app.Router(), appwire.MethodSerfAuthLoginStart, h.handleAuthLoginStart)
 	appserver.HandleTyped(app.Router(), appwire.MethodSerfAuthLoginComplete, h.handleAuthLoginComplete)
 	appserver.HandleTyped(app.Router(), appwire.MethodSerfAuthLogout, h.handleAuthLogout)
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfThreadTranscriptsList, h.handleThreadTranscriptList)
 }
 
 func (h *tuiE2EHub) handleHarnessList(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
@@ -855,6 +883,17 @@ func (h *tuiE2EHub) handleTasksList(context.Context, appwire.TaskListParams) (ap
 	return appwire.TaskListResponse{Data: []agent.Task{{ID: 1, Type: agent.TaskTypeImplement, Description: "wire tui e2e", Status: agent.TaskInProgress}}}, nil
 }
 
+func (h *tuiE2EHub) handleThreadTranscriptList(_ context.Context, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
+	id := threadIDFromParams(params.Ref, "")
+	if id != "01LIVE" {
+		return appwire.ThreadTranscriptListResponse{}, appwire.Unavailable("thread not found: " + id)
+	}
+	return appwire.ThreadTranscriptListResponse{Data: []appwire.ThreadTranscriptTarget{
+		{Ref: "local:01LIVE", ThreadID: "01LIVE", Title: "main session (live)", Kind: "main", Status: appwire.ThreadStatusProcessing, Source: "local"},
+		{Ref: "local:01SUB", ThreadID: "01SUB", Title: "subagent inspect", Kind: "subagent", Status: appwire.ThreadStatusEnded, Source: "local", TurnsUsed: 1},
+	}}, nil
+}
+
 func (h *tuiE2EHub) handleTurnInterrupt(context.Context, appwire.TurnInterruptParams) (appwire.EmptyResponse, error) {
 	h.recordAction("interrupt")
 	return appwire.EmptyResponse{}, nil
@@ -936,6 +975,8 @@ func (h *tuiE2EHub) threadFromSessionLocked(s *tuiE2ESession) appwire.Thread {
 		Turns:         append([]appwire.Turn(nil), s.Turns...),
 		Serf: appwire.SerfThread{
 			Ref:          appwire.Ref{SourceID: "local", ThreadID: s.ID}.String(),
+			ParentRef:    s.ParentRef,
+			Kind:         s.Kind,
 			Profile:      "default",
 			Capabilities: s.Capabilities,
 		},
