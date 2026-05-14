@@ -640,7 +640,7 @@
       const el = document.createElement("div");
       el.className = "assistant-message";
       this.conversation.appendChild(el);
-      this.activeMessages.set(id, { el, textBuf: "", markdownTimer: null });
+      this.activeMessages.set(id, { el, textBuf: "" });
     },
 
     // appendAssistantBlock renders a complete assistant message in one shot —
@@ -676,17 +676,12 @@
       const m = this.activeMessages.get(this.currentMessageId);
       if (!m) return;
       m.textBuf += delta;
-      m.el.textContent = m.textBuf;
-      this.scheduleMarkdownRefresh(m);
+      this.renderAssistantMessage(m, m.textBuf);
     },
 
-    scheduleMarkdownRefresh(m) {
-      if (m.markdownTimer) return;
-      m.markdownTimer = setTimeout(() => {
-        m.markdownTimer = null;
-        try { m.el.innerHTML = window.marked.parse(m.textBuf); }
-        catch (e) { m.el.textContent = m.textBuf; }
-      }, 500);
+    renderAssistantMessage(m, text) {
+      try { m.el.innerHTML = window.marked.parse(text); }
+      catch (e) { m.el.textContent = text; }
     },
 
     finalizeAssistantMessage(data) {
@@ -697,15 +692,13 @@
         this.appendAssistantBlock(finalText);
         return;
       }
-      if (m.markdownTimer) { clearTimeout(m.markdownTimer); m.markdownTimer = null; }
       this.activeMessages.delete(id);
       this.currentMessageId = null;
       if (!String(finalText || "").trim()) {
         if (m.el.parentNode) m.el.parentNode.removeChild(m.el);
         return;
       }
-      try { m.el.innerHTML = window.marked.parse(finalText); }
-      catch (e) { m.el.textContent = finalText; }
+      this.renderAssistantMessage(m, finalText);
     },
 
     beginToolCall(data) {

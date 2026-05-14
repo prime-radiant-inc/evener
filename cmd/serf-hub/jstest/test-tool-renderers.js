@@ -48,6 +48,39 @@ async function scenario(name, eventSeq, check) {
   }
 }
 
+async function streamingMarkdownScenario() {
+  const { conv, es } = newHarness();
+  await new Promise(r => setTimeout(r, 30));
+  es.fire("SESSION_START", { session_id: "01TEST" });
+  es.fire("ASSISTANT_TEXT_START", {});
+  es.fire("ASSISTANT_TEXT_DELTA", { delta: "Harness is **serf**" });
+  await new Promise(r => setTimeout(r, 550));
+
+  const rendered = conv.querySelector(".assistant-message");
+  if (!rendered || !rendered.querySelector("strong")) {
+    allPass = false;
+    console.log("FAIL — streamed markdown renders before final event");
+    console.log("  detail: initial streamed markdown did not render");
+    console.log("  HTML: " + conv.innerHTML);
+    return;
+  }
+
+  es.fire("ASSISTANT_TEXT_DELTA", { delta: " and stable" });
+  await new Promise(r => setTimeout(r, 10));
+
+  const updated = conv.querySelector(".assistant-message");
+  const rawVisible = updated && updated.innerHTML.includes("**serf**");
+  const appended = updated && updated.textContent.includes("and stable");
+  const stillRendered = updated && updated.querySelector("strong");
+  const ok = updated && !rawVisible && appended && stillRendered;
+  console.log((ok ? "PASS" : "FAIL") + " — streamed markdown stays rendered after later deltas");
+  if (!ok) {
+    allPass = false;
+    console.log("  detail: rawVisible=" + rawVisible + " appended=" + appended + " stillRendered=" + !!stillRendered);
+    console.log("  HTML: " + conv.innerHTML);
+  }
+}
+
 (async () => {
 
 // Cheap-cluster — read_file should land in .tool-call-cluster, no body.
@@ -160,6 +193,8 @@ await scenario("streamed communicate is not duplicated by tool completion", [
   if (tc) return { ok: false, detail: "communicate should not produce a tool-call card" };
   return { ok: true };
 });
+
+await streamingMarkdownScenario();
 
 // communicate after an equivalent markdown assistant message — should not
 // duplicate when rendered textContent differs from raw markdown.
