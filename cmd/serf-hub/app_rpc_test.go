@@ -255,6 +255,28 @@ func TestHubThreadListIncludesEveryRegisteredSource(t *testing.T) {
 	}
 }
 
+func TestHubThreadListIncludesManagedCodexLaunchThreads(t *testing.T) {
+	launcher := NewCodexLauncher([]CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
+	defer shutdownCodexLauncher(t, launcher)
+	cfg := WebConfig{
+		Past:          NewPastIndex(""),
+		CodexLaunches: []CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
+		CodexLauncher: launcher,
+	}
+	sources := newHubSourceRegistry(cfg)
+
+	resp, err := hubThreadList(context.Background(), cfg, sources, appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("hubThreadList: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].Serf.Ref != "codex-managed:th_fake" {
+		t.Fatalf("threads=%+v", resp.Data)
+	}
+	if _, ok := sources.Source("codex-managed"); !ok {
+		t.Fatal("managed Codex source was not registered")
+	}
+}
+
 func TestHubThreadListContinuesWhenOptionalSourceFails(t *testing.T) {
 	localThread := appwire.Thread{
 		ID:        "01LOCAL",

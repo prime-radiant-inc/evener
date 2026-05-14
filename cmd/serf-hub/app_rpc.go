@@ -637,6 +637,7 @@ func threadActionAvailable(caps appwire.ThreadCapabilities, action string) bool 
 func hubThreadList(ctx context.Context, cfg WebConfig, sources *appsource.Registry, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 	var threads []appwire.Thread
 	liveIDs := map[string]struct{}{}
+	ensureManagedCodexSources(ctx, cfg, sources)
 	for _, source := range sources.All() {
 		if !sourceAllowedForList(source.ID(), params) {
 			continue
@@ -683,6 +684,19 @@ func hubThreadList(ctx context.Context, cfg WebConfig, sources *appsource.Regist
 		threads = threads[:params.Limit]
 	}
 	return appwire.ThreadListResponse{Data: threads}, nil
+}
+
+func ensureManagedCodexSources(ctx context.Context, cfg WebConfig, sources *appsource.Registry) {
+	if cfg.CodexLauncher == nil || sources == nil {
+		return
+	}
+	for _, launch := range cfg.CodexLaunches {
+		sourceID := strings.TrimSpace(launch.ID)
+		if sourceID == "" {
+			sourceID = "codex"
+		}
+		_, _ = cfg.CodexLauncher.EnsureSource(ctx, sourceID, sources)
+	}
 }
 
 func threadListSourceID(defaultSourceID string, thread appwire.Thread) string {
