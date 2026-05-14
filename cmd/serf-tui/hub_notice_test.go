@@ -53,6 +53,26 @@ func TestHubModelNoticesPersistUntilDismissed(t *testing.T) {
 	}
 }
 
+func TestHubModelClearsActionUnavailableNoticeWhenSessionChanges(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.SourceLabel = "codex-local"
+	m.addActionUnavailableNotice("send", "Send is not available for this session.", "source does not support send")
+
+	updated, _ := m.Update(hubSessionMsg{
+		detail: hubSessionDetail{
+			Ref:         "local:01SERF",
+			SessionID:   "01SERF",
+			SourceLabel: "serf",
+			Title:       "Serf replay",
+			State:       "ended",
+		},
+	})
+	got := updated.(hubModel).sessionView()
+	if strings.Contains(got, "Action unavailable") || strings.Contains(got, "source: codex-local") {
+		t.Fatalf("session-scoped notice leaked after session change:\n%s", got)
+	}
+}
+
 func TestHubModelAuthErrorsRenderStructuredNoticeAndClearOnSuccess(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail.SourceLabel = "serf"

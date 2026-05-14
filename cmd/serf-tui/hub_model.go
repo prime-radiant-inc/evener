@@ -61,12 +61,12 @@ type hubForkDraft struct {
 }
 
 type hubModel struct {
-	client *appwire.Client
-	hubURL string
+	client   *appwire.Client
+	hubURL   string
 	stateDir string
-	width  int
-	height int
-	err    error
+	width    int
+	height   int
+	err      error
 
 	mode     hubMode
 	tree     hubTreeResponse
@@ -180,6 +180,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.session.refreshViewport()
 			return m, nil
 		}
+		m.clearNoticesByCategory("action-unavailable")
 		m.mode = hubModeSession
 		m.detail = msg.detail
 		m.session = newModel("", "", nil)
