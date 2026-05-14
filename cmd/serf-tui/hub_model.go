@@ -83,6 +83,7 @@ type hubModel struct {
 	sessionThemePicker      *themePicker
 	sessionModelPicker      *modelPicker
 	sessionTranscriptPicker *modelPicker
+	sessionPanel            *hubSessionPanel
 	transcriptTargets       []appwire.ThreadTranscriptTarget
 	transcriptView          *hubTranscriptViewState
 	spawnReturnMode         hubMode
@@ -169,7 +170,9 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spawnSubmitting = false
 		if m.mode == hubModeSession && m.detail.Ref == msg.detail.Ref {
 			m.detail = msg.detail
-			m.session.messages = append(m.session.messages, chatMessage{Kind: msgSystem, Text: m.renderSessionDetails()})
+			panel := hubSessionPanel{Body: m.renderSessionDetails()}
+			m.sessionPanel = &panel
+			m.addSessionSystem(panel.Body)
 			m.session.refreshViewport()
 			return m, nil
 		}
@@ -191,6 +194,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionThemePicker = nil
 		m.sessionModelPicker = nil
 		m.sessionTranscriptPicker = nil
+		m.sessionPanel = nil
 		m.transcriptTargets = nil
 		m.transcriptView = nil
 		return m, nil
@@ -228,7 +232,10 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.clearSessionError()
 		m.detail = msg.detail
-		m.addSessionSystem(renderHubSessionStatus(msg.detail, msg.tasks, msg.auth, msg.taskErr, msg.authErr))
+		panel := hubSessionPanel{Body: renderHubSessionStatus(msg.detail, msg.tasks, msg.auth, msg.taskErr, msg.authErr)}
+		m.sessionPanel = &panel
+		m.addSessionSystem(panel.Body)
+		m.session.refreshViewport()
 		return m, nil
 	case hubActionMsg:
 		if msg.err != nil {
@@ -970,6 +977,12 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.session.refreshViewport()
 		}
 		return m, cmd
+	}
+
+	if m.sessionPanel != nil && msg.String() == "esc" {
+		m.sessionPanel = nil
+		m.session.refreshViewport()
+		return m, nil
 	}
 
 	if m.transcriptView != nil {
@@ -2784,7 +2797,18 @@ func (m hubModel) sessionView() string {
 			b.WriteString("\n")
 		}
 	}
+	body := b.String()
 	var overlay strings.Builder
+	if m.sessionPanel != nil {
+		panel := m.sessionPanel.View()
+		if m.width >= 120 {
+			drawerWidth := min(72, max(42, m.width/3))
+			bodyWidth := max(40, m.width-drawerWidth-2)
+			body = joinDashboardColumns(body, panel, bodyWidth, drawerWidth, m.width)
+		} else {
+			body = panel + "\n\n" + body
+		}
+	}
 	if m.sessionModelPicker != nil {
 		overlay.WriteString(m.sessionModelPicker.View())
 		overlay.WriteString("\n\n")
@@ -2817,7 +2841,7 @@ func (m hubModel) sessionView() string {
 	}
 	return appShell{
 		TopBar:  topBar,
-		Body:    b.String(),
+		Body:    body,
 		Overlay: overlay.String(),
 		Footer:  footer,
 	}.View()

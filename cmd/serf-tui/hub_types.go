@@ -97,6 +97,14 @@ type hubTranscriptViewState struct {
 	Messages []chatMessage
 }
 
+type hubSessionPanel struct {
+	Body string
+}
+
+func (p hubSessionPanel) View() string {
+	return strings.TrimSpace(p.Body)
+}
+
 func (t hubTranscriptViewState) banner() string {
 	return "Viewing " + t.Title + ". Press esc to return to chat."
 }

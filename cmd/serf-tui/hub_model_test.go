@@ -1632,8 +1632,12 @@ func TestHubModelTasksAndDetailsUseAppWire(t *testing.T) {
 	got.session.setInputValue("/details")
 	updated, cmd = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	updated, _ = updated.(hubModel).Update(cmd())
-	if !strings.Contains(updated.(hubModel).View(), "/tmp/details") {
-		t.Fatalf("details view missing:\n%s", updated.(hubModel).View())
+	got = updated.(hubModel)
+	if got.sessionPanel == nil || !strings.Contains(got.sessionPanel.Body, "/tmp/details") {
+		t.Fatalf("details panel missing: %+v", got.sessionPanel)
+	}
+	if !strings.Contains(got.View(), "/tmp/details") {
+		t.Fatalf("details view missing:\n%s", got.View())
 	}
 	if strings.Join(methods, ",") != appwire.MethodSerfTasksList+","+appwire.MethodThreadRead {
 		t.Fatalf("methods=%v", methods)
@@ -1677,7 +1681,11 @@ func TestHubModelStatusUsesHubThreadTasksAndAuth(t *testing.T) {
 		t.Fatal("/status should fetch Hub status data")
 	}
 	updated, _ = updated.(hubModel).Update(cmd())
-	got := updated.(hubModel).View()
+	model := updated.(hubModel)
+	if model.sessionPanel == nil {
+		t.Fatal("/status should open a session panel")
+	}
+	got := model.View()
 	for _, want := range []string{
 		"status",
 		"Model:    gpt-5 (openai)",
@@ -1695,6 +1703,33 @@ func TestHubModelStatusUsesHubThreadTasksAndAuth(t *testing.T) {
 	}
 	if strings.Join(methods, ",") != appwire.MethodThreadRead+","+appwire.MethodSerfTasksList+","+appwire.MethodSerfAuthStatus {
 		t.Fatalf("methods=%v", methods)
+	}
+}
+
+func TestHubModelSessionPanelUsesDrawerOnWideAndOverlayOnNarrow(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.session.messages = []chatMessage{{Kind: msgCommunicate, Text: "main transcript answer"}}
+	panel := hubSessionPanel{Body: "details\nSession:  01SEND\nDir:      /tmp/project"}
+	m.sessionPanel = &panel
+
+	m.width = 140
+	wide := m.sessionView()
+	if !strings.Contains(wide, "main transcript answer") || !strings.Contains(wide, "details") || !strings.Contains(wide, "Dir:      /tmp/project") {
+		t.Fatalf("wide details drawer missing content:\n%s", wide)
+	}
+
+	m.width = 80
+	narrow := m.sessionView()
+	if !strings.Contains(narrow, "main transcript answer") || !strings.Contains(narrow, "details") || !strings.Contains(narrow, "Dir:      /tmp/project") {
+		t.Fatalf("narrow details overlay missing content:\n%s", narrow)
+	}
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	if cmd != nil {
+		t.Fatal("closing session panel should be synchronous")
+	}
+	if updated.(hubModel).sessionPanel != nil {
+		t.Fatalf("escape should close session panel")
 	}
 }
 
