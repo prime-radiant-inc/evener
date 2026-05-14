@@ -582,11 +582,11 @@ func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 
 	hub.SetFailTasks(true)
 	app.TypeLine("/tasks")
-	app.WaitFor("Tasks error: appwire serf/tasks/list: tasks failed")
+	app.WaitFor("Tasks failed", "category: appwire", "reason: appwire serf/tasks/list: tasks failed")
 
 	hub.SetFailSend(true)
 	app.TypeLine("send should fail")
-	app.WaitFor("Send failed: appwire turn/start: send failed", "> send should fail")
+	app.WaitFor("Send failed", "category: appwire", "reason: appwire turn/start: send failed", "> send should fail")
 
 	app.SendKeys("C-o")
 	app.WaitFor("serf live", "live task")
@@ -594,7 +594,7 @@ func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 	app.SendKeys("n")
 	app.WaitFor("serf / new session", "Prompt (optional):")
 	app.TypeLine("spawn should fail")
-	app.WaitFor("error: spawn failed: appwire thread/start: spawn failed", "> spawn should fail")
+	app.WaitFor("Spawn failed", "category: launch", "reason: appwire thread/start: spawn failed", "> spawn should fail")
 }
 
 func openLiveSession(t *testing.T, app *tmuxTUI) {

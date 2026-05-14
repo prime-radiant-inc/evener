@@ -409,6 +409,9 @@ type AuthStatusResponse struct {
 	StoredEmail    string `json:"storedEmail,omitempty"`
 	AccountID      string `json:"accountId,omitempty"`
 	WorkspaceID    string `json:"workspaceId,omitempty"`
+	NeedsRefresh   bool   `json:"needsRefresh,omitempty"`
+	NeedsLogin     bool   `json:"needsLogin,omitempty"`
+	Error          string `json:"error,omitempty"`
 }
 
 type AuthLoginStartParams struct {

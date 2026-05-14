@@ -27,6 +27,9 @@ type authStatus struct {
 	StoredEmail    string
 	AccountID      string
 	WorkspaceID    string
+	NeedsRefresh   bool
+	NeedsLogin     bool
+	Error          string
 }
 
 type authLoginHooks struct {
@@ -117,11 +120,25 @@ func formatAuthStatusSummary(status authStatus) string {
 			}
 		case authopenai.AuthSourceOAuth:
 			label = "oauth"
+			if status.NeedsLogin {
+				label = "oauth expired"
+			} else if status.NeedsRefresh {
+				label = "oauth refreshable"
+			}
+		}
+		if status.ActiveSource == authopenai.AuthSourceSignedOut && status.HasStoredOAuth && strings.TrimSpace(status.Error) != "" {
+			label = "login required"
 		}
 
 		email := strings.TrimSpace(status.Email)
 		if email == "" {
 			email = strings.TrimSpace(status.StoredEmail)
+		}
+		if detail := strings.TrimSpace(status.Error); detail != "" {
+			if email != "" && label != "signed out" {
+				return "OpenAI auth: " + label + " (" + email + "): " + detail
+			}
+			return "OpenAI auth: " + label + ": " + detail
 		}
 		if email != "" && label != "signed out" {
 			return "OpenAI auth: " + label + " (" + email + ")"

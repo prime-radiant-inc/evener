@@ -25,5 +25,8 @@ func authStatusFromAppWire(status appwire.AuthStatusResponse) authStatus {
 		StoredEmail:    status.StoredEmail,
 		AccountID:      status.AccountID,
 		WorkspaceID:    status.WorkspaceID,
+		NeedsRefresh:   status.NeedsRefresh,
+		NeedsLogin:     status.NeedsLogin,
+		Error:          status.Error,
 	}
 }

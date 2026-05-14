@@ -102,6 +102,7 @@ type hubModel struct {
 
 	detail  hubSessionDetail
 	session model
+	notices []noticePanel
 
 	authLoginProvider string
 	authLoginFlowID   string
@@ -198,23 +199,26 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case hubSendMsg:
 		if msg.err != nil {
 			m.session.setInputValue(msg.text)
-			m.addSessionSystem("Send failed: " + msg.err.Error())
+			m.addHubErrorNotice("Send failed", "appwire", msg.err, "Check the hub connection and retry the action.")
 		} else {
+			m.clearNoticesByCategory("appwire")
 			m.setActiveTurnID(msg.turnID)
 		}
 		return m, nil
 	case hubTasksMsg:
 		if msg.err != nil {
-			m.addSessionSystem("Tasks error: " + msg.err.Error())
+			m.addHubErrorNotice("Tasks failed", "appwire", msg.err, "Check the hub connection and retry /tasks.")
 		} else {
+			m.clearNoticesByCategory("appwire")
 			m.addSessionSystem(renderTasks(msg.tasks, m.width))
 		}
 		return m, nil
 	case hubActionMsg:
 		if msg.err != nil {
-			m.addSessionSystem(fmt.Sprintf("%s failed: %s", msg.action, msg.err))
+			m.addHubErrorNotice("Action failed", "action", msg.err, "Open /help to see source-supported actions.")
 			return m, nil
 		}
+		m.clearNoticesByCategory("action")
 		switch msg.action {
 		case "interrupt":
 			m.addSessionSystem("Interrupt sent.")
@@ -269,9 +273,17 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case hubSpawnMsg:
 		m.spawnSubmitting = false
 		if msg.err != nil {
-			m.err = fmt.Errorf("spawn failed: %w", msg.err)
+			m.addNotice(noticePanel{
+				Title:      "Spawn failed",
+				Category:   "launch",
+				Summary:    "Hub spawn failed.",
+				Source:     m.sourceLabelForNotice(),
+				Reason:     msg.err.Error(),
+				NextAction: "Check Hub launch diagnostics, auth status, and spawn options.",
+			})
 			return m, nil
 		}
+		m.clearNoticesByCategory("launch")
 		ref, err := appwire.ParseRef(msg.resp.Ref)
 		if err != nil {
 			m.err = fmt.Errorf("spawn returned invalid ref: %s", msg.resp.Ref)
@@ -311,7 +323,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case hubSessionModelsMsg:
 		if msg.err != nil {
 			m.removeTrailingSessionSystem("Fetching available models...")
-			m.addSessionSystem(fmt.Sprintf("Could not fetch models: %s\nUse /model <name> to switch manually.", msg.err))
+			m.addHubErrorNotice("Provider unavailable", "provider", msg.err, "Check provider auth and model availability.")
 			return m, nil
 		}
 		if len(msg.models) == 0 {
@@ -398,14 +410,15 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case hubAuthStatusMsg:
 		if msg.err != nil {
-			m.addSessionSystem("Auth status failed: " + msg.err.Error())
+			m.addAuthErrorNotice("Auth error", msg.err)
 			return m, nil
 		}
+		m.clearNoticesByCategory("auth")
 		m.addSessionSystem(formatAuthStatusSummary(authStatusFromAppWire(msg.status)))
 		return m, nil
 	case hubAuthLoginStartMsg:
 		if msg.err != nil {
-			m.addSessionSystem("Login failed: " + msg.err.Error())
+			m.addAuthErrorNotice("Auth error", msg.err)
 			return m, nil
 		}
 		m.authLoginProvider = strings.TrimSpace(msg.resp.Provider)
@@ -417,18 +430,20 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case hubAuthLoginCompleteMsg:
 		if msg.err != nil {
-			m.addSessionSystem("Login failed: " + msg.err.Error())
+			m.addAuthErrorNotice("Auth error", msg.err)
 			return m, nil
 		}
+		m.clearNoticesByCategory("auth")
 		m.authLoginProvider = ""
 		m.authLoginFlowID = ""
 		m.addSessionSystem("OpenAI login complete. " + formatAuthStatusSummary(authStatusFromAppWire(msg.resp.Status)))
 		return m, nil
 	case hubAuthLogoutMsg:
 		if msg.err != nil {
-			m.addSessionSystem("Logout failed: " + msg.err.Error())
+			m.addAuthErrorNotice("Auth error", msg.err)
 			return m, nil
 		}
+		m.clearNoticesByCategory("auth")
 		if msg.resp.Removed {
 			m.addSessionSystem("OpenAI sign-out complete. " + formatAuthStatusSummary(authStatusFromAppWire(msg.resp.Status)))
 		} else {
@@ -440,6 +455,10 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "ctrl+x" && len(m.notices) > 0 {
+		m.dismissNotice()
+		return m, nil
+	}
 	switch msg.String() {
 	case "ctrl+o":
 		m.returnToDashboard()
@@ -1497,6 +1516,17 @@ func (m *hubModel) addSessionSystem(text string) {
 	m.session.refreshViewport()
 }
 
+func (m *hubModel) addAuthErrorNotice(title string, err error) {
+	m.addNotice(noticePanel{
+		Title:      title,
+		Category:   "auth",
+		Summary:    "OpenAI authentication failed.",
+		Source:     m.sourceLabelForNotice(),
+		Reason:     err.Error(),
+		NextAction: "Retry /auth openai or check Hub auth configuration.",
+	})
+}
+
 func (m *hubModel) removeTrailingSessionSystem(text string) {
 	if len(m.session.messages) == 0 {
 		return
@@ -2519,6 +2549,10 @@ func (m hubModel) spawnView() string {
 	if m.err != nil {
 		fmt.Fprintf(&b, "\nerror: %v\n", m.err)
 	}
+	if notices := m.renderNotices(); notices != "" {
+		b.WriteString("\n")
+		b.WriteString(notices)
+	}
 	if m.spawnSubmitting {
 		b.WriteString("\nStarting session...\n")
 	}
@@ -2551,6 +2585,10 @@ func (m hubModel) sessionView() string {
 	fmt.Fprintf(&b, "%s  %s  %s  %s\n", m.detail.SourceLabel, m.detail.Ref, m.detail.State, m.detail.WorkingDir)
 	if m.err != nil {
 		fmt.Fprintf(&b, "\nerror: %v\n", m.err)
+	}
+	if notices := m.renderNotices(); notices != "" {
+		b.WriteString("\n")
+		b.WriteString(notices)
 	}
 	messages := m.session.messages
 	if m.transcriptView != nil {

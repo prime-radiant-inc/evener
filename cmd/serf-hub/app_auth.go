@@ -195,6 +195,8 @@ func (c *hubAuthController) openAIStatus() (appwire.AuthStatusResponse, error) {
 		Email:        active.Email,
 		AccountID:    active.AccountID,
 		WorkspaceID:  active.WorkspaceID,
+		NeedsRefresh: active.NeedsRefresh,
+		NeedsLogin:   active.NeedsLogin,
 	}
 
 	record, err := authopenai.LoadAuth(c.stateDir)
@@ -235,15 +237,24 @@ func openAIStateDirFromEnv(env map[string]string) string {
 }
 
 func openAIStatusFromRecord(now time.Time, record authopenai.AuthRecord) authopenai.AuthStatus {
+	needsLogin := !record.Expiry.IsZero() && !record.Expiry.After(now)
 	return authopenai.AuthStatus{
-		SignedIn:    true,
-		Source:      record.Source,
-		Email:       record.Email,
-		AccountID:   record.AccountID,
-		WorkspaceID: record.WorkspaceID,
-		Expiry:      record.Expiry,
-		NeedsLogin:  !record.Expiry.IsZero() && !record.Expiry.After(now),
+		SignedIn:     !needsLogin,
+		Source:       record.Source,
+		Email:        record.Email,
+		AccountID:    record.AccountID,
+		WorkspaceID:  record.WorkspaceID,
+		Expiry:       record.Expiry,
+		NeedsRefresh: openAIRecordNeedsRefresh(now, record) && !needsLogin,
+		NeedsLogin:   needsLogin,
 	}
+}
+
+func openAIRecordNeedsRefresh(now time.Time, record authopenai.AuthRecord) bool {
+	if record.Expiry.IsZero() {
+		return false
+	}
+	return !record.Expiry.After(now.Add(5 * time.Minute))
 }
 
 func (c *hubAuthController) authRecordFromTokens(tokens authopenai.TokenSet) authopenai.AuthRecord {

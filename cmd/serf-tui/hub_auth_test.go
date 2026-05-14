@@ -106,3 +106,54 @@ func TestHubModelAuthCommandsAppearInHelp(t *testing.T) {
 		}
 	}
 }
+
+func TestHubAuthStatusSummaryDistinguishesRefreshAndExpiredOAuth(t *testing.T) {
+	tests := []struct {
+		name   string
+		status authStatus
+		want   string
+	}{
+		{
+			name: "refreshable oauth",
+			status: authStatus{
+				Provider:       "openai",
+				ActiveSource:   "oauth",
+				SignedIn:       true,
+				HasStoredOAuth: true,
+				Email:          "bot@example.com",
+				NeedsRefresh:   true,
+			},
+			want: "OpenAI auth: oauth refreshable (bot@example.com)",
+		},
+		{
+			name: "expired oauth",
+			status: authStatus{
+				Provider:       "openai",
+				ActiveSource:   "oauth",
+				HasStoredOAuth: true,
+				StoredEmail:    "bot@example.com",
+				NeedsLogin:     true,
+			},
+			want: "OpenAI auth: oauth expired (bot@example.com)",
+		},
+		{
+			name: "refresh failed",
+			status: authStatus{
+				Provider:       "openai",
+				ActiveSource:   "signed-out",
+				HasStoredOAuth: true,
+				StoredEmail:    "bot@example.com",
+				Error:          "refresh token rejected",
+			},
+			want: "OpenAI auth: login required (bot@example.com): refresh token rejected",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := formatAuthStatusSummary(tc.status); got != tc.want {
+				t.Fatalf("formatAuthStatusSummary() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

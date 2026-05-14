@@ -94,6 +94,59 @@ func TestHubRPCAuthStatusReportsEnvAndStoredOAuth(t *testing.T) {
 	}
 }
 
+func TestHubRPCAuthStatusReportsOAuthRefreshAndLoginStates(t *testing.T) {
+	now := time.Date(2026, 5, 14, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name         string
+		expiry       time.Time
+		wantSignedIn bool
+		wantRefresh  bool
+		wantLogin    bool
+	}{
+		{
+			name:         "refreshable",
+			expiry:       now.Add(2 * time.Minute),
+			wantSignedIn: true,
+			wantRefresh:  true,
+		},
+		{
+			name:      "expired",
+			expiry:    now.Add(-time.Minute),
+			wantLogin: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := newHubAuthController(map[string]string{"OPENAI_API_KEY": ""})
+			ctrl.stateDir = t.TempDir()
+			ctrl.now = func() time.Time { return now }
+			if err := authopenai.SaveAuth(ctrl.stateDir, authopenai.AuthRecord{
+				Version:      1,
+				Provider:     "openai",
+				Source:       authopenai.AuthSourceOAuth,
+				ObtainedAt:   now.Add(-time.Hour),
+				TokenType:    "Bearer",
+				Scope:        "openid profile email",
+				AccessToken:  "stored-access-token",
+				RefreshToken: "stored-refresh-token",
+				Expiry:       tc.expiry,
+				Email:        "stored@example.com",
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			status, err := ctrl.Status(appwire.AuthStatusParams{Provider: "openai"})
+			if err != nil {
+				t.Fatalf("Status: %v", err)
+			}
+			if status.SignedIn != tc.wantSignedIn || status.NeedsRefresh != tc.wantRefresh || status.NeedsLogin != tc.wantLogin {
+				t.Fatalf("status=%+v, want signedIn=%t needsRefresh=%t needsLogin=%t", status, tc.wantSignedIn, tc.wantRefresh, tc.wantLogin)
+			}
+		})
+	}
+}
+
 func TestHubRPCAuthStatusUsesConfiguredSerfLaunchStateHome(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
