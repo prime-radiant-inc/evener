@@ -6,7 +6,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-var themePickerItems = []string{"dark", "light"}
+var themePickerItems = []string{"system", "dark", "light"}
 
 type themePicker struct {
 	cursor    int

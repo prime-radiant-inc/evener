@@ -31,8 +31,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	initTheme()
-	m := newHubModel(runtime.Client, runtime.Address.BaseURL)
+	initThemeFromStateDir(startupOpts.StateDir)
+	m := newHubModel(runtime.Client, runtime.Address.BaseURL, startupOpts.StateDir)
 	var programOpts []tea.ProgramOption
 	if !startupOpts.Debug {
 		programOpts = append(programOpts, tea.WithAltScreen())

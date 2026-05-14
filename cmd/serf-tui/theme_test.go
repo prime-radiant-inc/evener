@@ -75,6 +75,35 @@ func TestSetTheme_Light(t *testing.T) {
 	}
 }
 
+func TestSetTheme_System(t *testing.T) {
+	applyTheme(darkTheme)
+	activeThemeName = "dark"
+
+	ok := setTheme("system")
+	if !ok {
+		t.Fatal("setTheme(\"system\") returned false")
+	}
+	if currentThemeName() != "system" {
+		t.Errorf("currentThemeName() = %q, want %q", currentThemeName(), "system")
+	}
+}
+
+func TestThemePreferencePersistsInStateDir(t *testing.T) {
+	stateDir := t.TempDir()
+	if !setThemeAndPersist(stateDir, "light") {
+		t.Fatal("setThemeAndPersist(light) returned false")
+	}
+	if got, ok := loadThemePreference(stateDir); !ok || got != "light" {
+		t.Fatalf("stored theme=%q ok=%v, want light", got, ok)
+	}
+
+	setTheme("dark")
+	initThemeFromStateDir(stateDir)
+	if currentThemeName() != "light" {
+		t.Fatalf("theme after initThemeFromStateDir=%q, want light", currentThemeName())
+	}
+}
+
 // TestSetTheme_Invalid returns false for unknown theme names.
 func TestSetTheme_Invalid(t *testing.T) {
 	for _, name := range []string{"", "auto", "solarized", "DARK"} {
@@ -123,9 +152,8 @@ func TestThemeCommand_PickerSelectDark(t *testing.T) {
 		t.Fatal("picker not opened")
 	}
 
-	// Navigate to "dark" (index 0) and confirm.
 	// The picker starts at the active theme; ensure we're on dark.
-	for m.themePicker.cursor != 0 {
+	for themePickerItems[m.themePicker.cursor] != "dark" {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 		m = updated.(model)
 	}
@@ -182,16 +210,23 @@ func TestThemeCommand_PickerCancel(t *testing.T) {
 
 // TestThemePicker_InitialCursor verifies the picker pre-selects the active theme.
 func TestThemePicker_InitialCursor(t *testing.T) {
-	setTheme("light")
+	setTheme("system")
 	p := newThemePicker()
-	want := 1 // "light" is index 1
+	want := 0 // "system" is index 0
+	if p.cursor != want {
+		t.Errorf("cursor = %d, want %d (system)", p.cursor, want)
+	}
+
+	setTheme("light")
+	p = newThemePicker()
+	want = 2 // "light" is index 2
 	if p.cursor != want {
 		t.Errorf("cursor = %d, want %d (light)", p.cursor, want)
 	}
 
 	setTheme("dark")
 	p = newThemePicker()
-	want = 0 // "dark" is index 0
+	want = 1 // "dark" is index 1
 	if p.cursor != want {
 		t.Errorf("cursor = %d, want %d (dark)", p.cursor, want)
 	}

@@ -290,7 +290,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 	},
 	{
 		Name:          "theme",
-		Summary:       "Pick a theme (dark/light)",
+		Summary:       "Pick a theme (system/dark/light)",
 		PaletteLabel:  "/theme",
 		PaletteDetail: "pick a theme",
 		Scopes:        hubCommandSession,

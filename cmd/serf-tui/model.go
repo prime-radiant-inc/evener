@@ -255,7 +255,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if p.done {
 				m.themePicker = nil
 				if p.selected != "" {
-					setTheme(p.selected)
+					setThemeAndPersist(m.stateDir, p.selected)
 					initMarkdownRenderer(m.width)
 					m.viewport.Style = viewportStyle
 					applyInputTheme(&m.input)

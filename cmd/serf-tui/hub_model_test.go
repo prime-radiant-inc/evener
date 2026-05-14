@@ -2041,6 +2041,39 @@ func TestHubModelThemePicker(t *testing.T) {
 	}
 }
 
+func TestHubModelThemePickerPersistsStateDirPreference(t *testing.T) {
+	previous := currentThemeName()
+	t.Cleanup(func() {
+		setTheme(previous)
+	})
+
+	stateDir := t.TempDir()
+	setTheme("light")
+	m := newHubModel(nil, "http://hub.test", stateDir)
+	m.mode = hubModeSession
+	m.detail = hubSessionDetail{Ref: "local:01SEND", SessionID: "01SEND", Capabilities: hubSessionCapabilities{Send: true}}
+	m.session.setInputValue("/theme")
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("/theme should not need an async command")
+	}
+	updated, cmd = updated.(hubModel).Update(tea.KeyMsg{Type: tea.KeyUp})
+	if cmd != nil {
+		t.Fatal("theme picker navigation should be synchronous")
+	}
+	updated, cmd = updated.(hubModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("theme picker selection should be synchronous")
+	}
+
+	if got, ok := loadThemePreference(stateDir); !ok || got != "dark" {
+		t.Fatalf("stored theme=%q ok=%v, want dark", got, ok)
+	}
+	if currentThemeName() != "dark" {
+		t.Fatalf("theme=%q, want dark", currentThemeName())
+	}
+}
+
 func TestHubModelTurnStartEnablesTurnActions(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail.ActiveTurnID = ""

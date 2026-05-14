@@ -54,7 +54,7 @@ func slashCommandHelp() string {
 		"  /agents    View the main or subagent transcript",
 		"  /model     Switch model (picker) or /model <name>",
 		"  /auth      Open provider auth actions",
-		"  /theme     Pick a theme (dark/light)",
+		"  /theme     Pick a theme (system/dark/light)",
 		"  /clear     Start a new session",
 		"  /dashboard Go to live dashboard",
 		"  /project   Go to this session's project",

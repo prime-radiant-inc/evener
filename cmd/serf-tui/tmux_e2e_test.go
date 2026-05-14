@@ -307,9 +307,9 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	}
 
 	app.TypeLine("/theme")
-	app.WaitFor("Select theme", "dark", "light")
-	app.SendKeys("Escape")
-	app.WaitFor("/help")
+	app.WaitFor("Select theme", "system", "dark", "light")
+	app.SendKeys("Down", "Enter")
+	app.WaitFor("Switched to dark theme.")
 
 	app.TypeLine("/tasks")
 	app.WaitFor("Tasks (1):", "wire tui e2e")

@@ -63,6 +63,7 @@ type hubForkDraft struct {
 type hubModel struct {
 	client *appwire.Client
 	hubURL string
+	stateDir string
 	width  int
 	height int
 	err    error
@@ -113,10 +114,14 @@ type hubModel struct {
 	authLoginFlowID   string
 }
 
-func newHubModel(client *appwire.Client, hubURL string) hubModel {
+func newHubModel(client *appwire.Client, hubURL string, stateDirs ...string) hubModel {
+	stateDir := ""
+	if len(stateDirs) > 0 {
+		stateDir = strings.TrimSpace(stateDirs[0])
+	}
 	session := newModel("", "", nil)
 	session.authController = nil
-	return hubModel{client: client, hubURL: hubURL, session: session, browseSelected: -1, dashboardFilter: newHubFilterInput()}
+	return hubModel{client: client, hubURL: hubURL, stateDir: stateDir, session: session, browseSelected: -1, dashboardFilter: newHubFilterInput()}
 }
 
 func newHubFilterInput() textinput.Model {
@@ -918,7 +923,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if picker.done {
 			m.sessionThemePicker = nil
 			if picker.selected != "" {
-				setTheme(picker.selected)
+				setThemeAndPersist(m.stateDir, picker.selected)
 				initMarkdownRenderer(m.width)
 				m.session.viewport.Style = viewportStyle
 				applyInputTheme(&m.session.input)
