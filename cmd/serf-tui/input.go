@@ -97,6 +97,7 @@ func hubSlashCommandHelp(caps hubSessionCapabilities) string {
 	lines = append(lines,
 		"  /dashboard Go to live dashboard",
 		"  /project   Go to this session's project",
+		"  /theme     Pick a theme (dark/light)",
 		"",
 		"Keys:",
 	)

@@ -149,7 +149,12 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	}
 
 	app.TypeLine("/help")
-	app.WaitFor("Available commands:", "/dashboard Go to live dashboard")
+	app.WaitFor("Available commands:", "/dashboard Go to live dashboard", "/theme")
+
+	app.TypeLine("/theme")
+	app.WaitFor("Select theme", "dark", "light")
+	app.SendKeys("Escape")
+	app.WaitFor("/help")
 
 	app.TypeLine("/tasks")
 	app.WaitFor("Tasks (1):", "wire tui e2e")

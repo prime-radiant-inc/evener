@@ -75,6 +75,7 @@ type hubModel struct {
 	projectRows        []hubRow
 	browseSelected     int
 	forkDraft          *hubForkDraft
+	sessionThemePicker *themePicker
 	sessionModelPicker *modelPicker
 	spawnReturnMode    hubMode
 	spawnDir           string
@@ -168,6 +169,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.session.refreshViewport()
 		m.browseSelected = -1
 		m.forkDraft = nil
+		m.sessionThemePicker = nil
 		m.sessionModelPicker = nil
 		return m, nil
 	case hubNotificationMsg:
@@ -634,6 +636,24 @@ func (m hubModel) spawnFieldHint() string {
 }
 
 func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.sessionThemePicker != nil {
+		picker, cmd := m.sessionThemePicker.Update(msg)
+		m.sessionThemePicker = &picker
+		if picker.done {
+			m.sessionThemePicker = nil
+			if picker.selected != "" {
+				setTheme(picker.selected)
+				initMarkdownRenderer(m.width)
+				m.session.viewport.Style = viewportStyle
+				applyInputTheme(&m.session.input)
+				m.addSessionSystem(fmt.Sprintf("Switched to %s theme.", picker.selected))
+			} else {
+				m.session.refreshViewport()
+			}
+		}
+		return m, cmd
+	}
+
 	if m.sessionModelPicker != nil {
 		updated, cmd := m.sessionModelPicker.Update(msg)
 		picker := updated.(modelPicker)
@@ -844,6 +864,10 @@ func (m *hubModel) runHubSlashCommand(cmd, args string) tea.Cmd {
 			return fetchHubSessionModels(m.client, m.detail.WorkingDir)
 		}
 		return sendHubAction(m.client, ref, model, "")
+	case "theme":
+		picker := newThemePicker()
+		m.sessionThemePicker = &picker
+		return nil
 	case "help":
 		m.addSessionSystem(hubSlashCommandHelp(m.detail.Capabilities))
 		return nil
@@ -1907,6 +1931,12 @@ func (m hubModel) sessionView() string {
 	if m.sessionModelPicker != nil {
 		b.WriteString("\n")
 		b.WriteString(m.sessionModelPicker.View())
+		b.WriteString("\n")
+		return b.String()
+	}
+	if m.sessionThemePicker != nil {
+		b.WriteString("\n")
+		b.WriteString(m.sessionThemePicker.View())
 		b.WriteString("\n")
 		return b.String()
 	}

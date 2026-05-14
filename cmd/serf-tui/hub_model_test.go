@@ -1054,6 +1054,47 @@ func TestHubModelSessionModelPickerRequiresCapability(t *testing.T) {
 	}
 }
 
+func TestHubModelThemePicker(t *testing.T) {
+	previous := currentThemeName()
+	t.Cleanup(func() {
+		setTheme(previous)
+	})
+	setTheme("light")
+
+	m := newSessionHubModel(nil)
+	m.session.setInputValue("/theme")
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("/theme should not need an async command")
+	}
+	m = updated.(hubModel)
+	if m.sessionThemePicker == nil {
+		t.Fatalf("expected theme picker:\n%s", m.View())
+	}
+	if got := m.View(); !strings.Contains(got, "Select theme") || !strings.Contains(got, "dark") || !strings.Contains(got, "light") {
+		t.Fatalf("theme picker view missing choices:\n%s", got)
+	}
+
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	if cmd != nil {
+		t.Fatal("theme picker navigation should be synchronous")
+	}
+	updated, cmd = updated.(hubModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("theme picker selection should be synchronous")
+	}
+	m = updated.(hubModel)
+	if m.sessionThemePicker != nil {
+		t.Fatal("theme picker should close after selection")
+	}
+	if currentThemeName() != "dark" {
+		t.Fatalf("theme=%q, want dark", currentThemeName())
+	}
+	if got := m.View(); !strings.Contains(got, "Switched to dark theme.") {
+		t.Fatalf("missing theme switch message:\n%s", got)
+	}
+}
+
 func TestHubModelTurnStartEnablesTurnActions(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail.ActiveTurnID = ""
