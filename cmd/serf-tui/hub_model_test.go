@@ -123,6 +123,31 @@ func TestHubModelDashboardShowsSourceLabels(t *testing.T) {
 	}
 }
 
+func TestHubModelDashboardUsesNForNewSession(t *testing.T) {
+	m := newHubModel(nil, "http://hub.test")
+	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
+		Key: "serf", Name: "serf", WorkingDir: "/tmp/serf",
+		Sessions: []hubTreeNode{{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true}},
+	}}}
+	m.rows = buildDashboardRows(m.tree)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	if cmd != nil {
+		t.Fatal("legacy s key should not start spawn")
+	}
+	if got := updated.(hubModel); got.mode == hubModeSpawn {
+		t.Fatal("legacy s key opened spawn; n is the approved new-session key")
+	}
+
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if cmd != nil {
+		t.Fatal("opening dashboard spawn without a client should be synchronous")
+	}
+	if got := updated.(hubModel); got.mode != hubModeSpawn || got.spawnDir != "/tmp/serf" {
+		t.Fatalf("n key did not open spawn with selected project dir: mode=%v dir=%q", got.mode, got.spawnDir)
+	}
+}
+
 func TestHubModelDashboardFilterUsesFocusedInput(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
@@ -230,6 +255,33 @@ func TestHubModelProjectFilterUsesFocusedInput(t *testing.T) {
 	}
 	if strings.Contains(view, "live scoring") {
 		t.Fatalf("filtered project still shows live row:\n%s", view)
+	}
+}
+
+func TestHubModelProjectUsesNForNewSession(t *testing.T) {
+	m := newHubModel(nil, "http://hub.test")
+	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
+		Key: "serf", Name: "serf", WorkingDir: "/tmp/serf",
+		Sessions: []hubTreeNode{{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true}},
+	}}}
+	m.rows = buildDashboardRows(m.tree)
+	m.openProject("serf")
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	if cmd != nil {
+		t.Fatal("legacy s key should not start project spawn")
+	}
+	if got := updated.(hubModel); got.mode == hubModeSpawn {
+		t.Fatal("legacy s key opened project spawn; n is the approved new-session key")
+	}
+
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if cmd != nil {
+		t.Fatal("opening project spawn without a client should be synchronous")
+	}
+	got := updated.(hubModel)
+	if got.mode != hubModeSpawn || got.spawnDir != "/tmp/serf" || got.spawnProject != "serf" {
+		t.Fatalf("n key did not open project spawn with context: mode=%v dir=%q project=%q", got.mode, got.spawnDir, got.spawnProject)
 	}
 }
 
@@ -398,7 +450,7 @@ func TestHubModelDashboardSpawnUsesSelectedProjectWorkingDir(t *testing.T) {
 	}}}
 	m.rows = buildDashboardRows(m.tree)
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	if cmd == nil {
 		t.Fatal("dashboard spawn should fetch models")
 	}
@@ -491,7 +543,7 @@ func TestHubModelSpawnCyclesConfiguredHarnesses(t *testing.T) {
 	}}}
 	m.rows = buildDashboardRows(m.tree)
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	if cmd == nil {
 		t.Fatal("dashboard spawn should fetch spawn options")
 	}
@@ -508,7 +560,9 @@ func TestHubModelSpawnCyclesConfiguredHarnesses(t *testing.T) {
 	if strings.Contains(view, "openai/gpt-5") {
 		t.Fatalf("codex harness offered serf model:\n%s", view)
 	}
-	updated, cmd = form.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	updated, _ = form.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	form = updated.(hubModel)
+	updated, cmd = form.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("spawn form submit returned nil command")
 	}
@@ -541,7 +595,7 @@ func TestHubModelCodexSpawnSurvivesModelListFailure(t *testing.T) {
 	}}}
 	m.rows = buildDashboardRows(m.tree)
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	if cmd == nil {
 		t.Fatal("dashboard spawn should fetch spawn options")
 	}
@@ -636,7 +690,7 @@ func TestHubModelDashboardSpawnOpensFormBeforePosting(t *testing.T) {
 	}}}
 	m.rows = buildDashboardRows(m.tree)
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	if cmd == nil {
 		t.Fatal("spawn key should fetch models")
 	}
@@ -772,7 +826,7 @@ func TestHubDashboardSpawnWaitsForSlowHubSpawn(t *testing.T) {
 	}
 	model = updated.(hubModel)
 
-	updated, cmd = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	updated, cmd = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	if cmd == nil {
 		t.Fatal("dashboard spawn should fetch models")
 	}
@@ -1214,13 +1268,53 @@ func TestHubModelDashboardEmptyStateIsLiveOnly(t *testing.T) {
 	m.rows = buildDashboardRows(m.tree)
 
 	got := m.dashboardView()
-	for _, want := range []string{"No live sessions are running", "s start a session", "/projects browse project history"} {
+	for _, want := range []string{"No live sessions are running", "n new session", "/ palette"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("dashboard empty state missing %q:\n%s", want, got)
 		}
 	}
+	if strings.Contains(got, "s start") {
+		t.Fatalf("dashboard empty state advertised legacy s key:\n%s", got)
+	}
 	if strings.Contains(got, "ended history") {
 		t.Fatalf("dashboard empty state rendered ended session:\n%s", got)
+	}
+}
+
+func TestHubModelActionBarsUseApprovedNewSessionKey(t *testing.T) {
+	corpus := newHubTUISampleCorpus()
+	m := newHubModel(nil, "http://hub.test")
+	m.tree = corpus.DashboardTree
+	m.rows = buildDashboardRows(corpus.DashboardTree)
+	if got := m.dashboardView(); !strings.Contains(got, "n new") || strings.Contains(got, "s spawn") {
+		t.Fatalf("dashboard action bar should advertise n new and not s spawn:\n%s", got)
+	}
+	m.openProject("serf")
+	if got := m.projectView(); !strings.Contains(got, "n new here") || strings.Contains(got, "s spawn") {
+		t.Fatalf("project action bar should advertise n new here and not s spawn:\n%s", got)
+	}
+}
+
+func TestHubModelSpawnFormDoesNotAdvertiseOrAcceptCtrlS(t *testing.T) {
+	m := newHubModel(nil, "http://hub.test")
+	m.mode = hubModeSpawn
+	m.spawnDir = "/tmp/serf"
+	m.spawnHarness = "serf"
+	m.spawnHarnesses = []string{"serf"}
+	m.spawnHarnessKinds = map[string]string{"serf": "serf"}
+	m.spawnModel = "openai/gpt-5"
+	m.session.setInputValue("draft")
+
+	if got := m.spawnView(); strings.Contains(got, "ctrl+s") {
+		t.Fatalf("spawn form advertised ctrl+s compatibility shortcut:\n%s", got)
+	}
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if cmd != nil {
+		t.Fatal("ctrl+s should not submit spawn")
+	}
+	if got := updated.(hubModel); got.mode != hubModeSpawn || got.session.input.Value() != "draft" {
+		t.Fatalf("ctrl+s should leave spawn draft in place: mode=%v draft=%q", got.mode, got.session.input.Value())
 	}
 }
 

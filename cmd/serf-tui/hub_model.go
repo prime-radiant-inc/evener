@@ -362,7 +362,7 @@ func (m hubModel) updateDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.client != nil {
 			return m, fetchHubTree(m.client)
 		}
-	case "s":
+	case "n":
 		m.openSpawnForm()
 		if m.client != nil {
 			return m, fetchHubSpawnOptions(m.client, m.spawnDir)
@@ -404,7 +404,7 @@ func (m hubModel) updateProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.client != nil {
 			return m, fetchHubTree(m.client)
 		}
-	case "s":
+	case "n":
 		m.openSpawnForm()
 		if m.client != nil {
 			return m, fetchHubSpawnOptions(m.client, m.spawnDir)
@@ -517,8 +517,6 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.spawnFocus == hubSpawnFieldModel {
 			return m.activateSpawnModelField()
 		}
-	case "ctrl+s":
-		return m.submitSpawnForm()
 	}
 
 	if m.spawnFocus != hubSpawnFieldPrompt {
@@ -1699,9 +1697,8 @@ func (m hubModel) dashboardView() string {
 			return b.String()
 		}
 		b.WriteString("No live sessions are running.\n\n")
-		b.WriteString("s start a session\n")
-		b.WriteString("/projects browse project history\n")
-		b.WriteString("/ search sessions\n")
+		b.WriteString("n new session\n")
+		b.WriteString("/ palette\n")
 		b.WriteString("q quit\n")
 		return b.String()
 	}
@@ -1716,7 +1713,7 @@ func (m hubModel) dashboardView() string {
 		}
 		fmt.Fprintf(&b, "%s   %s %-10s %-12s %-28s %-10s %s\n", cursor, statusDot(row.state), stateLabel(row.state), row.sourceLabel, row.title, row.model, row.age)
 	}
-	b.WriteString("\n↑/↓ select  enter open  p project  s spawn  / filter  ctrl+o dashboard  q quit\n")
+	b.WriteString("\n↑/↓ select  enter open  p project  n new  / palette  ctrl+o dashboard  q quit\n")
 	return b.String()
 }
 
@@ -1771,7 +1768,7 @@ func (m hubModel) projectView() string {
 	} else {
 		b.WriteString("No ended sessions in this project yet.\n")
 	}
-	b.WriteString("\n↑/↓ select  enter open  r resume  s spawn here  / filter  esc dashboard\n")
+	b.WriteString("\n↑/↓ select  enter open  r resume  n new here  / palette  esc dashboard\n")
 	return b.String()
 }
 
@@ -1893,7 +1890,7 @@ func (m hubModel) spawnView() string {
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
-	keys := []string{"tab: next field", "shift+tab: previous", m.spawnFieldHint(), "ctrl+s: spawn", "esc: cancel", "ctrl+o: dashboard"}
+	keys := []string{"tab: next field", "shift+tab: previous", m.spawnFieldHint(), "esc: cancel", "ctrl+o: dashboard"}
 	b.WriteString("\n\n")
 	b.WriteString(strings.Join(keys, "  "))
 	b.WriteString("\n")
