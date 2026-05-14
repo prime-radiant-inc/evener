@@ -841,6 +841,7 @@ func appThreadMatches(thread appwire.Thread, params appwire.ThreadListParams) bo
 		thread.CWD,
 		thread.Path,
 		thread.ModelProvider,
+		thread.Serf.Profile,
 	}, " "))
 	return strings.Contains(haystack, q)
 }

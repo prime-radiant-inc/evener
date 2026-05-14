@@ -2753,6 +2753,9 @@ func (m hubModel) sessionAuthReadinessLabel() string {
 		}
 		return "auth: " + provider + " " + source
 	}
+	if provider := strings.TrimSpace(m.detail.Profile); provider != "" {
+		return "provider: " + provider
+	}
 	if provider, _, ok := strings.Cut(strings.TrimSpace(m.detail.Model), "/"); ok && strings.TrimSpace(provider) != "" {
 		return "provider: " + provider
 	}

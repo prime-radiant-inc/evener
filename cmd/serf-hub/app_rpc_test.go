@@ -432,6 +432,29 @@ func TestHubThreadListOrdersPastSearchByUpdatedCreatedTitleAndID(t *testing.T) {
 	}
 }
 
+func TestHubThreadListSearchMatchesProviderOnlyProfile(t *testing.T) {
+	sources := appsource.NewRegistry()
+	sources.Add(&listThreadSource{id: "codex-local", thread: appwire.Thread{
+		ID:        "th_codex",
+		SessionID: "th_codex",
+		Source:    "codex-local",
+		Preview:   "codex replay",
+		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusEnded},
+		Serf: appwire.SerfThread{
+			Ref:     "codex-local:th_codex",
+			Profile: "openai",
+		},
+	}})
+
+	resp, err := hubThreadList(context.Background(), WebConfig{Past: NewPastIndex("")}, sources, appwire.ThreadListParams{SearchTerm: "openai"})
+	if err != nil {
+		t.Fatalf("hubThreadList: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].Serf.Ref != "codex-local:th_codex" {
+		t.Fatalf("threads=%+v", resp.Data)
+	}
+}
+
 func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "x")

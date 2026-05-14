@@ -923,6 +923,27 @@ func TestHubModelSessionHeaderShowsProviderWhenModelUnknown(t *testing.T) {
 	}
 }
 
+func TestHubModelSessionStatusLineUsesProfileWhenModelHasNoProviderPrefix(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.width = 120
+	m.detail = hubSessionDetail{
+		Ref:         "codex-local:01CODEX",
+		SourceLabel: "codex-local",
+		Title:       "codex task",
+		State:       "idle",
+		Model:       "gpt-5.3-codex",
+		Profile:     "openai",
+	}
+
+	got := m.sessionView()
+	if !strings.Contains(got, "provider: openai") {
+		t.Fatalf("status line missing provider profile:\n%s", got)
+	}
+	if strings.Contains(got, "auth: unknown") {
+		t.Fatalf("status line ignored provider profile:\n%s", got)
+	}
+}
+
 func TestHubModelSessionHeaderHandlesMissingMetadata(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail = hubSessionDetail{Ref: "local:01MISSING"}
