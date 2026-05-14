@@ -103,6 +103,7 @@ type hubModel struct {
 
 func newHubModel(client *appwire.Client, hubURL string) hubModel {
 	session := newModel("", "", nil)
+	session.authController = nil
 	return hubModel{client: client, hubURL: hubURL, session: session, browseSelected: -1, dashboardFilter: newHubFilterInput()}
 }
 
