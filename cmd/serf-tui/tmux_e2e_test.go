@@ -138,6 +138,60 @@ func TestTUITmuxE2E_AppShellPreservesLayoutAcrossWidths(t *testing.T) {
 	requirePaneOrder(t, screen, "serf live", "live task", "ctrl+o dashboard")
 }
 
+func TestTUITmuxE2E_DashboardNarrowWideStates(t *testing.T) {
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	hub.SetSessionTitle("01LIVE", "live dashboard task with a title long enough to truncate cleanly")
+	defer hub.Close()
+
+	wide := startTUITmuxSized(t, bin, hub.URL(), 140, 40)
+	defer wide.Close()
+	wideScreen := wide.WaitFor("serf live", "details", "Project:  serf", "Live:     1", "Dir:      "+tuiE2EProjectDir)
+	if strings.Contains(wideScreen, "Prompt (optional):") || strings.Contains(wideScreen, "enter: send") {
+		t.Fatalf("wide dashboard rendered a composer:\n%s", wideScreen)
+	}
+	t.Logf("wide dashboard capture:\n%s", wideScreen)
+	wide.SendKeys("q")
+	wide.WaitForExit()
+
+	narrow := startTUITmuxSized(t, bin, hub.URL(), 60, 30)
+	defer narrow.Close()
+	narrowScreen := narrow.WaitFor("serf live", "keys: up/down enter p n new / palette c-o q", "...")
+	if strings.Contains(narrowScreen, "details") {
+		t.Fatalf("narrow dashboard rendered details drawer:\n%s", narrowScreen)
+	}
+	if strings.Contains(narrowScreen, "Prompt (optional):") || strings.Contains(narrowScreen, "enter: send") {
+		t.Fatalf("narrow dashboard rendered a composer:\n%s", narrowScreen)
+	}
+	t.Logf("narrow dashboard capture:\n%s", narrowScreen)
+	narrow.SendKeys("q")
+	narrow.WaitForExit()
+}
+
+func TestTUITmuxE2E_DashboardEmptyState(t *testing.T) {
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	hub.EndDashboardSessions()
+	defer hub.Close()
+	app := startTUITmux(t, bin, hub.URL())
+	defer app.Close()
+
+	screen := app.WaitFor("No live sessions are running", "n new session", "p project history", "/ palette")
+	if strings.Contains(screen, "live task") || strings.Contains(screen, "ops task") || strings.Contains(screen, "Prompt (optional):") || strings.Contains(screen, "enter: send") {
+		t.Fatalf("empty dashboard rendered live/session composer content:\n%s", screen)
+	}
+	t.Logf("empty dashboard capture:\n%s", screen)
+
+	app.SendKeys("p")
+	app.WaitFor("serf / project / serf", "Recent in this project", "live task")
+	app.SendKeys("Escape")
+	app.WaitFor("No live sessions are running")
+	app.SendKeys("q")
+	app.WaitForExit()
+}
+
 func TestTUITmuxE2E_CodexSpawnUsesHarnessModelPicker(t *testing.T) {
 	requireTmux(t)
 	bin := buildTUIBinary(t)
@@ -482,9 +536,14 @@ type tmuxTUI struct {
 
 func startTUITmux(t *testing.T, bin, hubURL string) *tmuxTUI {
 	t.Helper()
+	return startTUITmuxSized(t, bin, hubURL, 120, 40)
+}
+
+func startTUITmuxSized(t *testing.T, bin, hubURL string, width, height int) *tmuxTUI {
+	t.Helper()
 	session := fmt.Sprintf("serf-tui-e2e-%d", time.Now().UnixNano())
 	command := shellQuote(bin) + " -debug -no-auto-start-hub -hub-addr " + shellQuote(hubURL)
-	runTmux(t, "new-session", "-d", "-x", "120", "-y", "40", "-s", session, command)
+	runTmux(t, "new-session", "-d", "-x", fmt.Sprint(width), "-y", fmt.Sprint(height), "-s", session, command)
 	runTmux(t, "set-option", "-t", session, "remain-on-exit", "on")
 	app := &tmuxTUI{t: t, session: session}
 	app.WaitFor("serf live")
@@ -680,6 +739,8 @@ type tuiE2ESession struct {
 	WorkingDir   string
 	Model        string
 	Live         bool
+	CreatedAt    int64
+	UpdatedAt    int64
 	Kind         string
 	ParentRef    string
 	Capabilities appwire.ThreadCapabilities
@@ -702,6 +763,8 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 		WorkingDir:   tuiE2EProjectDir,
 		Model:        "gpt-5",
 		Live:         true,
+		CreatedAt:    100,
+		UpdatedAt:    300,
 		Capabilities: fullTUIE2ECapabilities(),
 		Turns: []appwire.Turn{{
 			ID:     "turn_1",
@@ -724,6 +787,8 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 		WorkingDir: tuiE2EProjectDir,
 		Model:      "gpt-5",
 		Live:       false,
+		CreatedAt:  50,
+		UpdatedAt:  50,
 		Kind:       "subagent",
 		ParentRef:  "local:01LIVE",
 		Turns: []appwire.Turn{{
@@ -742,6 +807,8 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 		WorkingDir: tuiE2EProjectDir,
 		Model:      "gpt-5",
 		Live:       false,
+		CreatedAt:  10,
+		UpdatedAt:  10,
 	})
 	h.addSession(&tuiE2ESession{
 		ID:           "01OPS",
@@ -751,6 +818,8 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 		WorkingDir:   "/tmp/serf-tui-e2e/ops",
 		Model:        "gpt-5",
 		Live:         true,
+		CreatedAt:    80,
+		UpdatedAt:    200,
 		Capabilities: fullTUIE2ECapabilities(),
 		Turns: []appwire.Turn{{
 			ID:     "turn_1",
@@ -825,6 +894,25 @@ func (h *tuiE2EHub) SetHarnesses(harnesses []appwire.HarnessDescriptor) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.harnesses = append([]appwire.HarnessDescriptor(nil), harnesses...)
+}
+
+func (h *tuiE2EHub) SetSessionTitle(id, title string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if s := h.sessions[id]; s != nil {
+		s.Title = title
+	}
+}
+
+func (h *tuiE2EHub) EndDashboardSessions() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, id := range h.order {
+		if s := h.sessions[id]; s != nil {
+			s.State = appwire.ThreadStatusEnded
+			s.Live = false
+		}
+	}
 }
 
 func (h *tuiE2EHub) BroadcastAgentDelta(threadID, delta string) {
@@ -1134,6 +1222,8 @@ func (h *tuiE2EHub) threadFromSessionLocked(s *tuiE2ESession) appwire.Thread {
 		Preview:       s.Title,
 		Name:          s.Title,
 		ModelProvider: s.Model,
+		CreatedAt:     s.CreatedAt,
+		UpdatedAt:     s.UpdatedAt,
 		CWD:           s.WorkingDir,
 		Source:        "local",
 		Status:        appwire.ThreadStatus{Type: status},

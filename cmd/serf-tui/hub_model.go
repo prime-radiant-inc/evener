@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -47,6 +48,8 @@ type hubRow struct {
 	model       string
 	age         string
 	rowID       string
+	createdAt   int64
+	updatedAt   int64
 }
 
 type hubForkDraft struct {
@@ -468,6 +471,8 @@ func (m hubModel) updateDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "p":
 		if len(rows) > 0 {
 			m.openProject(rows[m.selected].projectKey)
+		} else if key := m.firstProjectHistoryKey(); key != "" {
+			m.openProject(key)
 		}
 	case "enter":
 		return m.activateDashboardRow(rows)
@@ -1557,30 +1562,36 @@ func buildHubRows(tree hubTreeResponse) []hubRow {
 }
 
 func buildDashboardRows(tree hubTreeResponse) []hubRow {
-	var rows []hubRow
-	seen := map[string]bool{}
-	projectIndexes := map[string]int{}
+	type dashboardGroup struct {
+		key       string
+		name      string
+		state     string
+		updatedAt int64
+		order     int
+		sessions  []hubRow
+	}
 
-	addProject := func(key, name, state string) {
+	seen := map[string]bool{}
+	groups := map[string]*dashboardGroup{}
+	var projectOrder []string
+
+	ensureGroup := func(key, name, state string) *dashboardGroup {
 		if name == "" {
 			name = "(no project)"
 		}
 		if key == "" {
 			key = hubProjectKey(name)
 		}
-		if _, ok := projectIndexes[key]; ok {
-			return
+		if group, ok := groups[key]; ok {
+			if group.name == "" || group.name == "(no project)" {
+				group.name = name
+			}
+			return group
 		}
-		projectIndexes[key] = len(rows)
-		rows = append(rows, hubRow{
-			kind:       hubRowProject,
-			title:      name,
-			project:    name,
-			projectKey: key,
-			state:      state,
-			live:       true,
-			rowID:      "project:" + key,
-		})
+		group := &dashboardGroup{key: key, name: name, state: state, order: len(projectOrder)}
+		groups[key] = group
+		projectOrder = append(projectOrder, key)
+		return group
 	}
 	addSession := func(key, project string, n hubTreeNode) {
 		if !n.Live {
@@ -1608,10 +1619,14 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 		if rowID == "" {
 			rowID = "project:" + key + ":" + n.Ref
 		}
-		rows = append(rows, hubRow{
+		sourceLabel := strings.TrimSpace(n.SourceLabel)
+		if sourceLabel == "" {
+			sourceLabel = sourceLabelFromRef(ref)
+		}
+		row := hubRow{
 			kind:        hubRowSession,
 			ref:         ref,
-			sourceLabel: sourceLabelFromRef(ref),
+			sourceLabel: sourceLabel,
 			title:       title,
 			project:     project,
 			projectKey:  key,
@@ -1620,7 +1635,17 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 			model:       n.Model,
 			age:         n.Age,
 			rowID:       rowID,
-		})
+			createdAt:   n.CreatedAt,
+			updatedAt:   n.UpdatedAt,
+		}
+		group := ensureGroup(key, project, n.State)
+		group.sessions = append(group.sessions, row)
+		if attentionRankLabel(n.State) > attentionRankLabel(group.state) {
+			group.state = stateLabel(n.State)
+		}
+		if recency := rowRecency(row); recency > group.updatedAt {
+			group.updatedAt = recency
+		}
 	}
 
 	for _, p := range tree.Projects {
@@ -1637,7 +1662,7 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 		if key == "" {
 			key = hubProjectKey(p.Name)
 		}
-		addProject(key, p.Name, p.RollupState)
+		ensureGroup(key, p.Name, p.RollupState)
 		for _, n := range live {
 			addSession(key, p.Name, n)
 		}
@@ -1652,11 +1677,69 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 			project = "(no project)"
 		}
 		key := hubProjectKey(project)
-		addProject(key, project, n.State)
 		addSession(key, project, n)
 	}
 
+	ordered := make([]*dashboardGroup, 0, len(projectOrder))
+	for _, key := range projectOrder {
+		group := groups[key]
+		if group == nil || len(group.sessions) == 0 {
+			continue
+		}
+		sort.SliceStable(group.sessions, func(i, j int) bool {
+			return dashboardRowLess(group.sessions[i], group.sessions[j])
+		})
+		ordered = append(ordered, group)
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		left := hubRow{state: ordered[i].state, updatedAt: ordered[i].updatedAt}
+		right := hubRow{state: ordered[j].state, updatedAt: ordered[j].updatedAt}
+		if dashboardRowLess(left, right) {
+			return true
+		}
+		if dashboardRowLess(right, left) {
+			return false
+		}
+		return ordered[i].order < ordered[j].order
+	})
+
+	rows := make([]hubRow, 0, len(seen)+len(ordered))
+	for _, group := range ordered {
+		rows = append(rows, hubRow{
+			kind:       hubRowProject,
+			title:      group.name,
+			project:    group.name,
+			projectKey: group.key,
+			state:      group.state,
+			live:       true,
+			rowID:      "project:" + group.key,
+			updatedAt:  group.updatedAt,
+		})
+		rows = append(rows, group.sessions...)
+	}
 	return rows
+}
+
+func dashboardRowLess(a, b hubRow) bool {
+	ar, br := attentionRankLabel(a.state), attentionRankLabel(b.state)
+	if ar != br {
+		return ar > br
+	}
+	au, bu := rowRecency(a), rowRecency(b)
+	if au != bu {
+		return au > bu
+	}
+	if a.project != b.project {
+		return strings.ToLower(a.project) < strings.ToLower(b.project)
+	}
+	return strings.ToLower(a.title) < strings.ToLower(b.title)
+}
+
+func rowRecency(row hubRow) int64 {
+	if row.updatedAt > 0 {
+		return row.updatedAt
+	}
+	return row.createdAt
 }
 
 func buildProjectRows(project hubTreeProject) []hubRow {
@@ -1683,10 +1766,14 @@ func buildProjectRows(project hubTreeProject) []hubRow {
 		if rowID == "" {
 			rowID = "project:" + key + ":" + n.Ref
 		}
+		sourceLabel := strings.TrimSpace(n.SourceLabel)
+		if sourceLabel == "" {
+			sourceLabel = sourceLabelFromRef(ref)
+		}
 		row := hubRow{
 			kind:        hubRowSession,
 			ref:         ref,
-			sourceLabel: sourceLabelFromRef(ref),
+			sourceLabel: sourceLabel,
 			title:       title,
 			project:     project.Name,
 			projectKey:  key,
@@ -1695,6 +1782,8 @@ func buildProjectRows(project hubTreeProject) []hubRow {
 			model:       n.Model,
 			age:         n.Age,
 			rowID:       rowID,
+			createdAt:   n.CreatedAt,
+			updatedAt:   n.UpdatedAt,
 		}
 		if n.Live {
 			liveRows = append(liveRows, row)
@@ -1751,6 +1840,20 @@ func (m hubModel) rowsForSelectedProject() []hubRow {
 		return nil
 	}
 	return buildProjectRows(project)
+}
+
+func (m hubModel) firstProjectHistoryKey() string {
+	for _, project := range m.tree.Projects {
+		if len(project.Sessions) == 0 && project.WorkingDir == "" {
+			continue
+		}
+		key := project.Key
+		if key == "" {
+			key = hubProjectKey(project.Name)
+		}
+		return key
+	}
+	return ""
 }
 
 func (m hubModel) dashboardRows() []hubRow {
@@ -1852,7 +1955,6 @@ func (m hubModel) View() string {
 }
 
 func (m hubModel) dashboardView() string {
-	var b strings.Builder
 	rows := m.dashboardRows()
 	liveCount := 0
 	for _, row := range rows {
@@ -1860,9 +1962,15 @@ func (m hubModel) dashboardView() string {
 			liveCount++
 		}
 	}
-	topBar := fmt.Sprintf("serf live                                      %s · %d live", m.hubURL, liveCount)
+	width := m.width
+	if width <= 0 {
+		width = 100
+	}
+	topBar := dashboardHeader(m.hubURL, liveCount, width)
+	var b strings.Builder
 	if m.err != nil {
-		fmt.Fprintf(&b, "error: %v\n\n", m.err)
+		b.WriteString(truncateText(fmt.Sprintf("error: %v", m.err), width))
+		b.WriteString("\n\n")
 	}
 	if m.commandPalette != nil {
 		return appShell{
@@ -1889,25 +1997,247 @@ func (m hubModel) dashboardView() string {
 		return appShell{
 			TopBar: topBar,
 			Body:   b.String(),
-			Footer: strings.Join([]string{"n new session", "/ palette", "q quit"}, "\n"),
+			Footer: emptyDashboardFooter(m.firstProjectHistoryKey() != "", width),
 		}.View()
 	}
-	for i, row := range rows {
-		cursor := " "
-		if i == m.selected {
-			cursor = ">"
-		}
-		if row.kind == hubRowProject {
-			fmt.Fprintf(&b, "%s %s %-28s %s\n", cursor, statusDot(row.state), row.project, projectSummary(row, rows))
-			continue
-		}
-		fmt.Fprintf(&b, "%s   %s %-10s %-12s %-28s %-10s %s\n", cursor, statusDot(row.state), stateLabel(row.state), row.sourceLabel, row.title, row.model, row.age)
+	if m.dashboardUsesWideLayout() {
+		drawerWidth := min(72, max(42, width/2))
+		listWidth := max(40, width-drawerWidth-2)
+		list := renderDashboardRows(rows, m.selected, listWidth, false)
+		drawer := m.dashboardDetailsView(rows, drawerWidth)
+		b.WriteString(joinDashboardColumns(list, drawer, listWidth, drawerWidth, width))
+	} else {
+		b.WriteString(renderDashboardRows(rows, m.selected, width, width <= 72))
 	}
+	b.WriteString("\n")
 	return appShell{
 		TopBar: topBar,
 		Body:   b.String(),
-		Footer: actionBarForWidth(m.width, "↑/↓ select", "enter open", "p project", "n new", "/ palette", "ctrl+o dashboard", "q quit"),
+		Footer: dashboardFooter(width),
 	}.View()
+}
+
+func (m hubModel) dashboardUsesWideLayout() bool {
+	return m.width >= 120 && m.commandPalette == nil
+}
+
+func dashboardHeader(hubURL string, liveCount int, width int) string {
+	left := "serf live"
+	right := fmt.Sprintf("%s · %d live", hubURL, liveCount)
+	if width <= 0 {
+		return left + "  " + right
+	}
+	gap := width - len([]rune(left)) - len([]rune(right))
+	if gap < 2 {
+		return truncateText(left+"  "+right, width)
+	}
+	return left + strings.Repeat(" ", gap) + right
+}
+
+func renderDashboardRows(rows []hubRow, selected int, width int, compact bool) string {
+	var b strings.Builder
+	for i, row := range rows {
+		if row.kind == hubRowProject {
+			b.WriteString(renderDashboardProjectRow(row, rows, i == selected, width))
+			b.WriteString("\n")
+			continue
+		}
+		b.WriteString(renderDashboardSessionRow(row, i == selected, width, compact))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func renderDashboardProjectRow(row hubRow, rows []hubRow, selected bool, width int) string {
+	cursor := " "
+	if selected {
+		cursor = ">"
+	}
+	line := fmt.Sprintf("%s %s %s  %s", cursor, statusDot(row.state), row.project, projectSummary(row, rows))
+	return truncateText(line, width)
+}
+
+func renderDashboardSessionRow(row hubRow, selected bool, width int, compact bool) string {
+	cursor := " "
+	if selected {
+		cursor = ">"
+	}
+	if compact {
+		line := strings.Join(nonEmptyStrings([]string{
+			cursor,
+			"  " + statusDot(row.state),
+			stateLabel(row.state),
+			row.title,
+			row.model,
+			row.age,
+		}), " ")
+		return truncateText(line, width)
+	}
+	line := strings.Join(nonEmptyStrings([]string{
+		cursor,
+		"  " + statusDot(row.state),
+		stateLabel(row.state),
+		row.sourceLabel,
+		row.title,
+		row.model,
+		row.age,
+	}), " ")
+	return truncateText(line, width)
+}
+
+func dashboardFooter(width int) string {
+	if width <= 72 {
+		return truncateText("keys: up/down enter p n new / palette c-o q", width)
+	}
+	return truncateText("↑/↓ select  enter open  p project  n new  / palette  ctrl+o dashboard  q quit", width)
+}
+
+func emptyDashboardFooter(hasProjectHistory bool, width int) string {
+	items := []string{"n new session"}
+	if hasProjectHistory {
+		items = append(items, "p project history")
+	}
+	items = append(items, "/ palette", "q quit")
+	if width <= 72 {
+		return strings.Join(items, "\n")
+	}
+	return strings.Join(items, "  ")
+}
+
+func nonEmptyStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func truncateText(text string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	runes := []rune(text)
+	if len(runes) <= width {
+		return text
+	}
+	if width <= 3 {
+		return string(runes[:width])
+	}
+	return string(runes[:width-3]) + "..."
+}
+
+func joinDashboardColumns(left, right string, leftWidth, rightWidth, totalWidth int) string {
+	leftLines := strings.Split(strings.TrimRight(left, "\n"), "\n")
+	rightLines := strings.Split(strings.TrimRight(right, "\n"), "\n")
+	lineCount := max(len(leftLines), len(rightLines))
+	var b strings.Builder
+	for i := 0; i < lineCount; i++ {
+		leftLine := ""
+		if i < len(leftLines) {
+			leftLine = truncateText(leftLines[i], leftWidth)
+		}
+		rightLine := ""
+		if i < len(rightLines) {
+			rightLine = truncateText(rightLines[i], rightWidth)
+		}
+		padding := leftWidth - len([]rune(leftLine))
+		if padding < 0 {
+			padding = 0
+		}
+		line := leftLine + strings.Repeat(" ", padding) + "  " + rightLine
+		b.WriteString(truncateText(line, totalWidth))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func (m hubModel) dashboardDetailsView(rows []hubRow, width int) string {
+	if m.err != nil {
+		return truncateMultilineText(strings.Join([]string{
+			"details",
+			"Diagnostic",
+			"Message:  " + m.err.Error(),
+			"Next:     refresh dashboard or check Hub health",
+		}, "\n"), width)
+	}
+	if len(rows) == 0 || m.selected >= len(rows) {
+		return truncateMultilineText("details\nNo dashboard row selected.", width)
+	}
+	row := rows[m.selected]
+	switch row.kind {
+	case hubRowProject:
+		return truncateMultilineText(m.dashboardProjectDetails(row, rows), width)
+	case hubRowSession:
+		return truncateMultilineText(dashboardSessionDetails(row), width)
+	default:
+		return truncateMultilineText("details\nNo dashboard row selected.", width)
+	}
+}
+
+func (m hubModel) dashboardProjectDetails(row hubRow, rows []hubRow) string {
+	var b strings.Builder
+	b.WriteString("details\n")
+	fmt.Fprintf(&b, "Project:  %s\n", row.project)
+	fmt.Fprintf(&b, "Live:     %d\n", projectLiveCount(row, rows))
+	fmt.Fprintf(&b, "State:    %s\n", stateLabel(row.state))
+	if dir := m.workingDirForProjectKey(row.projectKey); dir != "" {
+		fmt.Fprintf(&b, "Dir:      %s\n", dir)
+	}
+	b.WriteString("Action:   enter opens project")
+	return b.String()
+}
+
+func dashboardSessionDetails(row hubRow) string {
+	var b strings.Builder
+	b.WriteString("details\n")
+	sessionID := row.ref.ThreadID
+	if sessionID == "" {
+		sessionID = row.title
+	}
+	fmt.Fprintf(&b, "Session:  %s\n", sessionID)
+	if row.title != "" {
+		fmt.Fprintf(&b, "Title:    %s\n", row.title)
+	}
+	if ref := row.ref.String(); ref != ":" {
+		fmt.Fprintf(&b, "Ref:      %s\n", ref)
+	}
+	if row.project != "" {
+		fmt.Fprintf(&b, "Project:  %s\n", row.project)
+	}
+	if row.sourceLabel != "" {
+		fmt.Fprintf(&b, "Source:   %s\n", row.sourceLabel)
+	}
+	if row.state != "" {
+		fmt.Fprintf(&b, "State:    %s\n", stateLabel(row.state))
+	}
+	if row.model != "" {
+		fmt.Fprintf(&b, "Model:    %s\n", row.model)
+	}
+	if row.age != "" {
+		fmt.Fprintf(&b, "Updated:  %s\n", row.age)
+	}
+	b.WriteString("Action:   enter opens session")
+	return b.String()
+}
+
+func projectLiveCount(project hubRow, rows []hubRow) int {
+	count := 0
+	for _, row := range rows {
+		if row.kind == hubRowSession && row.projectKey == project.projectKey {
+			count++
+		}
+	}
+	return count
+}
+
+func truncateMultilineText(text string, width int) string {
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		lines[i] = truncateText(line, width)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m hubModel) projectView() string {

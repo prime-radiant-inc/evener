@@ -110,6 +110,70 @@ func TestHubModelDashboardShowsOnlyLiveSessionsGroupedByProject(t *testing.T) {
 	}
 }
 
+func TestHubModelDashboardSortsByAttentionThenRecency(t *testing.T) {
+	tree := hubTreeFromThreads([]appwire.Thread{
+		{
+			ID:            "01IDLE",
+			SessionID:     "01IDLE",
+			Name:          "idle recent",
+			ModelProvider: "gpt-5",
+			CWD:           "/repo/serf",
+			Source:        "local",
+			UpdatedAt:     300,
+			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+			Serf:          appwire.SerfThread{Ref: "local:01IDLE"},
+		},
+		{
+			ID:            "01OPSOLD",
+			SessionID:     "01OPSOLD",
+			Name:          "ops awaiting old",
+			ModelProvider: "gpt-5",
+			CWD:           "/repo/ops",
+			Source:        "local",
+			UpdatedAt:     100,
+			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusAwaiting},
+			Serf:          appwire.SerfThread{Ref: "local:01OPSOLD"},
+		},
+		{
+			ID:            "01BRAIN",
+			SessionID:     "01BRAIN",
+			Name:          "brain awaiting",
+			ModelProvider: "gpt-5",
+			CWD:           "/repo/brainstorm",
+			Source:        "local",
+			UpdatedAt:     400,
+			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusAwaiting},
+			Serf:          appwire.SerfThread{Ref: "local:01BRAIN"},
+		},
+		{
+			ID:            "01OPSNEW",
+			SessionID:     "01OPSNEW",
+			Name:          "ops awaiting new",
+			ModelProvider: "gpt-5",
+			CWD:           "/repo/ops",
+			Source:        "local",
+			UpdatedAt:     500,
+			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusAwaiting},
+			Serf:          appwire.SerfThread{Ref: "local:01OPSNEW"},
+		},
+	})
+
+	rows := buildDashboardRows(tree)
+	got := dashboardRowLabels(rows)
+	want := []string{
+		"project:ops",
+		"session:ops awaiting new",
+		"session:ops awaiting old",
+		"project:brainstorm",
+		"session:brain awaiting",
+		"project:serf",
+		"session:idle recent",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("dashboard order:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
 func TestHubModelDashboardShowsSourceLabels(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	m.tree = hubTreeResponse{Live: []hubTreeNode{{
@@ -120,6 +184,104 @@ func TestHubModelDashboardShowsSourceLabels(t *testing.T) {
 	got := m.dashboardView()
 	if !strings.Contains(got, "codex-local") {
 		t.Fatalf("dashboard missing source label:\n%s", got)
+	}
+}
+
+func TestHubModelDashboardNarrowUsesOneColumnWithEllipses(t *testing.T) {
+	m := newHubModel(nil, "http://hub.test/with/a/very/long/url/that/must/not/blow/out/the/header")
+	m.width = 60
+	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
+		Key:  "very-long-project",
+		Name: "very-long-project-name-that-needs-to-fit",
+		Sessions: []hubTreeNode{{
+			Ref:       "local:01LONG",
+			SessionID: "01LONG",
+			Title:     "this dashboard session title is long enough to require truncation",
+			State:     "awaiting",
+			Project:   "very-long-project-name-that-needs-to-fit",
+			Model:     "openai/gpt-5-with-a-long-suffix",
+			Age:       "42m",
+			Live:      true,
+		}},
+	}}}
+	m.rows = buildDashboardRows(m.tree)
+
+	got := m.dashboardView()
+	for _, line := range strings.Split(strings.TrimRight(got, "\n"), "\n") {
+		if len([]rune(line)) > m.width {
+			t.Fatalf("narrow dashboard line width=%d want <=%d:\n%s\n\nfull view:\n%s", len([]rune(line)), m.width, line, got)
+		}
+	}
+	if !strings.Contains(got, "...") {
+		t.Fatalf("narrow dashboard did not use ellipses:\n%s", got)
+	}
+	if strings.Contains(got, "details") {
+		t.Fatalf("narrow dashboard should stay one-column without details drawer:\n%s", got)
+	}
+	if strings.Contains(got, "ctrl+o dashboard") {
+		t.Fatalf("narrow dashboard should use short key hints:\n%s", got)
+	}
+}
+
+func TestHubModelDashboardWideDetailsFollowSelection(t *testing.T) {
+	m := sampleHubModel(140)
+	m.selected = 0
+
+	projectView := m.dashboardView()
+	for _, want := range []string{"details", "Project:  serf", "Live:     2", "Dir:      /Users/jesse/Documents/GitHub/prime-radiant-inc/serf"} {
+		if !strings.Contains(projectView, want) {
+			t.Fatalf("wide dashboard project details missing %q:\n%s", want, projectView)
+		}
+	}
+
+	m.selected = dashboardRowIndex(m.rows, "Restore hub TUI widgets")
+	sessionView := m.dashboardView()
+	for _, want := range []string{"details", "Session:  01SERF", "Title:    Restore hub TUI widgets", "Ref:      local:01SERF"} {
+		if !strings.Contains(sessionView, want) {
+			t.Fatalf("wide dashboard session details missing %q:\n%s", want, sessionView)
+		}
+	}
+	if strings.Contains(sessionView, "Live:     2") {
+		t.Fatalf("wide details did not update after selection change:\n%s", sessionView)
+	}
+}
+
+func TestHubModelDashboardWideDrawerDoesNotStealTextInput(t *testing.T) {
+	m := sampleHubModel(140)
+	if view := m.dashboardView(); !strings.Contains(view, "details") {
+		t.Fatalf("wide dashboard missing details drawer before input checks:\n%s", view)
+	}
+
+	m.enterHubFilter()
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	m = updated.(hubModel)
+	if m.mode == hubModeSpawn || m.dashboardFilter.Value() != "n" {
+		t.Fatalf("filter did not own printable n key: mode=%v filter=%q", m.mode, m.dashboardFilter.Value())
+	}
+
+	m.dashboardFilter.Reset()
+	m.dashboardFilterActive = false
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = updated.(hubModel)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if cmd != nil {
+		t.Fatal("palette-owned printable key should not run a command")
+	}
+	m = updated.(hubModel)
+	if m.mode == hubModeSpawn || m.commandPalette == nil || m.commandPalette.panel.filter != "n" {
+		t.Fatalf("palette did not own printable n key: mode=%v palette=%+v", m.mode, m.commandPalette)
+	}
+}
+
+func TestHubModelDashboardWideDetailsShowDiagnosticSelection(t *testing.T) {
+	m := sampleHubModel(140)
+	m.err = fmt.Errorf("hub connection lost")
+
+	got := m.dashboardView()
+	for _, want := range []string{"Diagnostic", "hub connection lost", "Next:     refresh dashboard or check Hub health"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("wide dashboard diagnostic details missing %q:\n%s", want, got)
+		}
 	}
 }
 
@@ -1314,11 +1476,39 @@ func TestHubModelDashboardEmptyStateIsLiveOnly(t *testing.T) {
 			t.Fatalf("dashboard empty state missing %q:\n%s", want, got)
 		}
 	}
+	if !strings.Contains(got, "project history") {
+		t.Fatalf("dashboard empty state missing project history entry point:\n%s", got)
+	}
 	if strings.Contains(got, "s start") {
 		t.Fatalf("dashboard empty state advertised legacy s key:\n%s", got)
 	}
 	if strings.Contains(got, "ended history") {
 		t.Fatalf("dashboard empty state rendered ended session:\n%s", got)
+	}
+}
+
+func TestHubModelDashboardEmptyStateCanOpenProjectHistory(t *testing.T) {
+	m := newHubModel(nil, "http://hub.test")
+	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
+		Key:        "serf",
+		Name:       "serf",
+		WorkingDir: "/tmp/serf",
+		Sessions: []hubTreeNode{
+			{Ref: "local:01ENDED", SessionID: "01ENDED", Title: "ended history", State: "ended", Project: "serf"},
+		},
+	}}}
+	m.rows = buildDashboardRows(m.tree)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	if cmd != nil {
+		t.Fatal("project history shortcut should be synchronous")
+	}
+	got := updated.(hubModel)
+	if got.mode != hubModeProject || got.selectedProjectKey != "serf" {
+		t.Fatalf("empty dashboard p mode=%v project=%q", got.mode, got.selectedProjectKey)
+	}
+	if view := got.projectView(); !strings.Contains(view, "ended history") {
+		t.Fatalf("project history did not render ended session:\n%s", view)
 	}
 }
 
@@ -1334,6 +1524,28 @@ func TestHubModelActionBarsUseApprovedNewSessionKey(t *testing.T) {
 	if got := m.projectView(); !strings.Contains(got, "n new here") || strings.Contains(got, "s spawn") {
 		t.Fatalf("project action bar should advertise n new here and not s spawn:\n%s", got)
 	}
+}
+
+func dashboardRowLabels(rows []hubRow) []string {
+	labels := make([]string, 0, len(rows))
+	for _, row := range rows {
+		switch row.kind {
+		case hubRowProject:
+			labels = append(labels, "project:"+row.project)
+		case hubRowSession:
+			labels = append(labels, "session:"+row.title)
+		}
+	}
+	return labels
+}
+
+func dashboardRowIndex(rows []hubRow, title string) int {
+	for i, row := range rows {
+		if row.title == title {
+			return i
+		}
+	}
+	return 0
 }
 
 func TestHubModelSpawnFormDoesNotAdvertiseOrAcceptCtrlS(t *testing.T) {

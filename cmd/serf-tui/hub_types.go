@@ -32,6 +32,8 @@ type hubTreeNode struct {
 	Model       string
 	Age         string
 	RowID       string
+	CreatedAt   int64
+	UpdatedAt   int64
 	Live        bool
 	Children    []hubTreeNode
 }
@@ -137,6 +139,8 @@ func hubNodeFromThread(thread appwire.Thread) hubTreeNode {
 		State:       thread.Status.Type,
 		Model:       thread.ModelProvider,
 		RowID:       "project:" + hubProjectKey(project) + ":" + ref,
+		CreatedAt:   thread.CreatedAt,
+		UpdatedAt:   thread.UpdatedAt,
 		Live:        thread.Status.Type != appwire.ThreadStatusClosed && thread.Status.Type != appwire.ThreadStatusEnded,
 	}
 }
