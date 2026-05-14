@@ -524,6 +524,7 @@ func (s *WebServer) remoteTreeThreads(ctx context.Context) []appwire.Thread {
 	if s.sources == nil {
 		return nil
 	}
+	s.ensureManagedCodexSources(ctx)
 	var threads []appwire.Thread
 	for _, source := range s.sources.All() {
 		if source.ID() == "local" {
@@ -546,6 +547,19 @@ func (s *WebServer) remoteTreeThreads(ctx context.Context) []appwire.Thread {
 		}
 	}
 	return threads
+}
+
+func (s *WebServer) ensureManagedCodexSources(ctx context.Context) {
+	if s.cfg.CodexLauncher == nil {
+		return
+	}
+	for _, launch := range s.cfg.CodexLaunches {
+		sourceID := strings.TrimSpace(launch.ID)
+		if sourceID == "" {
+			sourceID = "codex"
+		}
+		_, _ = s.cfg.CodexLauncher.EnsureSource(ctx, sourceID, s.sources)
+	}
 }
 
 func appThreadTreeEntries(thread appwire.Thread) (agent.SessionMeta, LiveEntry, bool) {

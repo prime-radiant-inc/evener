@@ -146,6 +146,17 @@ func TestFakeCodexAppServerHelper(t *testing.T) {
 		os.Exit(2)
 	}
 	app := appserver.NewServer(appserver.ServerConfig{ServerName: "fake-codex", SourceID: "codex-managed"})
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (map[string]any, error) {
+		return map[string]any{"data": []map[string]any{{
+			"id":            "th_fake",
+			"sessionId":     "th_fake",
+			"preview":       "fake codex",
+			"modelProvider": "openai",
+			"status":        map[string]any{"type": "ended"},
+			"cwd":           "/tmp/fake-codex",
+			"source":        "appServer",
+		}}}, nil
+	})
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadStart, func(_ context.Context, params map[string]any) (map[string]any, error) {
 		return map[string]any{"thread": map[string]any{
 			"id":        "th_fake",

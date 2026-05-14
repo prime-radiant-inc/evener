@@ -316,6 +316,45 @@ func TestAPI_ManagedCodexSessionDetailEnsuresSource(t *testing.T) {
 	}
 }
 
+func TestWeb_APITreeIncludesManagedCodexLaunchThreads(t *testing.T) {
+	launcher := NewCodexLauncher([]CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
+	defer shutdownCodexLauncher(t, launcher)
+	web := NewWebServer(WebConfig{
+		HubAddr:       "127.0.0.1:9180",
+		Past:          NewPastIndex(""),
+		CodexLaunches: []CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
+		CodexLauncher: launcher,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got hubapi.TreeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v body=%s", err, rec.Body.String())
+	}
+	var hasSource, hasThread bool
+	for _, source := range got.Sources {
+		if source.ID == "codex-managed" && source.Online {
+			hasSource = true
+		}
+	}
+	for _, project := range got.Projects {
+		for _, session := range project.Sessions {
+			if session.Ref == "codex-managed:th_fake" && session.Title == "fake codex" {
+				hasThread = true
+			}
+		}
+	}
+	if !hasSource || !hasThread {
+		t.Fatalf("managed codex launch missing from tree: source=%v thread=%v tree=%+v", hasSource, hasThread, got)
+	}
+}
+
 func TestAPI_CodexUnsupportedActionReturnsStructuredUnavailable(t *testing.T) {
 	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
 	appserver.HandleTyped(codex.Router(), appwire.MethodThreadRead, func(_ context.Context, params map[string]any) (map[string]any, error) {
