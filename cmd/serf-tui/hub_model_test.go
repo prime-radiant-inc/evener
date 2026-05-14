@@ -1685,6 +1685,9 @@ func TestHubModelStatusUsesHubThreadTasksAndAuth(t *testing.T) {
 	if model.sessionPanel == nil {
 		t.Fatal("/status should open a session panel")
 	}
+	if len(model.session.messages) != 0 {
+		t.Fatalf("/status should not append diagnostics to transcript history: %+v", model.session.messages)
+	}
 	got := model.View()
 	for _, want := range []string{
 		"status",
@@ -1730,6 +1733,24 @@ func TestHubModelSessionPanelUsesDrawerOnWideAndOverlayOnNarrow(t *testing.T) {
 	}
 	if updated.(hubModel).sessionPanel != nil {
 		t.Fatalf("escape should close session panel")
+	}
+}
+
+func TestHubModelSessionPanelBoundsLongTranscriptToVisibleShell(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.width = 140
+	m.height = 18
+	for i := 0; i < 30; i++ {
+		m.session.messages = append(m.session.messages, chatMessage{Kind: msgCommunicate, Text: fmt.Sprintf("main transcript answer %02d", i)})
+	}
+	m.sessionPanel = &hubSessionPanel{Body: "details\nSession:  01SEND\nDir:      /tmp/project"}
+
+	got := m.sessionView()
+	if gotLines := renderedLineCount(got); gotLines > m.height {
+		t.Fatalf("session view should fit terminal height; got %d lines for height %d:\n%s", gotLines, m.height, got)
+	}
+	if !strings.Contains(got, "Dir:      /tmp/project") {
+		t.Fatalf("details panel should remain visible with long transcript:\n%s", got)
 	}
 }
 
@@ -2518,6 +2539,14 @@ func newSessionHubModel(client *appwire.Client) hubModel {
 	}
 	m.session.sessionID = "01SEND"
 	return m
+}
+
+func renderedLineCount(view string) int {
+	view = strings.TrimRight(view, "\n")
+	if view == "" {
+		return 0
+	}
+	return strings.Count(view, "\n") + 1
 }
 
 func TestHubModelIgnoresNotificationsForOtherSessions(t *testing.T) {

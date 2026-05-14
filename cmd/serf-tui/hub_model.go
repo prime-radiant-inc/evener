@@ -172,7 +172,6 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.detail = msg.detail
 			panel := hubSessionPanel{Body: m.renderSessionDetails()}
 			m.sessionPanel = &panel
-			m.addSessionSystem(panel.Body)
 			m.session.refreshViewport()
 			return m, nil
 		}
@@ -234,7 +233,6 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.detail = msg.detail
 		panel := hubSessionPanel{Body: renderHubSessionStatus(msg.detail, msg.tasks, msg.auth, msg.taskErr, msg.authErr)}
 		m.sessionPanel = &panel
-		m.addSessionSystem(panel.Body)
 		m.session.refreshViewport()
 		return m, nil
 	case hubActionMsg:
@@ -2797,18 +2795,8 @@ func (m hubModel) sessionView() string {
 			b.WriteString("\n")
 		}
 	}
-	body := b.String()
+	mainBody := b.String()
 	var overlay strings.Builder
-	if m.sessionPanel != nil {
-		panel := m.sessionPanel.View()
-		if m.width >= 120 {
-			drawerWidth := min(72, max(42, m.width/3))
-			bodyWidth := max(40, m.width-drawerWidth-2)
-			body = joinDashboardColumns(body, panel, bodyWidth, drawerWidth, m.width)
-		} else {
-			body = panel + "\n\n" + body
-		}
-	}
 	if m.sessionModelPicker != nil {
 		overlay.WriteString(m.sessionModelPicker.View())
 		overlay.WriteString("\n\n")
@@ -2839,14 +2827,131 @@ func (m hubModel) sessionView() string {
 	default:
 		footer = m.sessionComposerPanel().View()
 	}
+	overlayText := overlay.String()
+	bodyHeight := sessionShellBodyHeight(m.height, topBar, overlayText, footer)
+	body := m.sessionBody(mainBody, bodyHeight)
 	return appShell{
 		TopBar:  topBar,
 		Body:    body,
-		Overlay: overlay.String(),
+		Overlay: overlayText,
 		Footer:  footer,
 	}.View()
 }
 
 func (m hubModel) renderSessionDetails() string {
 	return detailsDrawer{Detail: m.detail, HubURL: m.hubURL}.View()
+}
+
+func (m hubModel) sessionBody(mainBody string, bodyHeight int) string {
+	if m.sessionPanel == nil {
+		return mainBody
+	}
+
+	panel := m.sessionPanel.View()
+	if bodyHeight <= 0 {
+		if m.width >= 120 {
+			drawerWidth := min(72, max(42, m.width/3))
+			bodyWidth := max(40, m.width-drawerWidth-2)
+			return joinDashboardColumns(mainBody, panel, bodyWidth, drawerWidth, m.width)
+		}
+		return panel + "\n\n" + mainBody
+	}
+	if m.width >= 120 {
+		drawerWidth := min(72, max(42, m.width/3))
+		bodyWidth := max(40, m.width-drawerWidth-2)
+		return joinDashboardColumns(
+			limitSessionBodyLines(mainBody, bodyHeight),
+			limitFirstLines(panel, bodyHeight),
+			bodyWidth,
+			drawerWidth,
+			m.width,
+		)
+	}
+
+	panelLines := multilineLines(panel)
+	if len(panelLines) >= bodyHeight {
+		return strings.Join(panelLines[:bodyHeight], "\n")
+	}
+	remaining := bodyHeight - len(panelLines)
+	if remaining > 0 {
+		remaining--
+	}
+	main := limitSessionBodyLines(mainBody, remaining)
+	if strings.TrimSpace(main) == "" {
+		return strings.Join(panelLines, "\n")
+	}
+	return strings.Join(panelLines, "\n") + "\n\n" + main
+}
+
+func sessionShellBodyHeight(totalHeight int, topBar, overlay, footer string) int {
+	if totalHeight <= 0 {
+		return 0
+	}
+	fixedLines := 0
+	sections := 1
+	for _, section := range []string{topBar, overlay, footer} {
+		if lines := shellSectionLineCount(section); lines > 0 {
+			fixedLines += lines
+			sections++
+		}
+	}
+	if sections > 1 {
+		fixedLines += 2 * (sections - 1)
+	}
+	height := totalHeight - fixedLines
+	if height < 1 {
+		return 1
+	}
+	return height
+}
+
+func shellSectionLineCount(section string) int {
+	section = strings.TrimRight(section, "\n")
+	if section == "" {
+		return 0
+	}
+	return strings.Count(section, "\n") + 1
+}
+
+func limitFirstLines(text string, maxLines int) string {
+	if maxLines <= 0 {
+		return text
+	}
+	lines := multilineLines(text)
+	if len(lines) <= maxLines {
+		return strings.Join(lines, "\n")
+	}
+	return strings.Join(lines[:maxLines], "\n")
+}
+
+func limitSessionBodyLines(text string, maxLines int) string {
+	if maxLines <= 0 {
+		return ""
+	}
+	lines := multilineLines(text)
+	if len(lines) <= maxLines {
+		return strings.Join(lines, "\n")
+	}
+	if maxLines <= 4 {
+		return strings.Join(lines[len(lines)-maxLines:], "\n")
+	}
+	head := 4
+	tail := maxLines - head - 1
+	if tail < 1 {
+		tail = 1
+		head = maxLines - tail - 1
+	}
+	limited := make([]string, 0, maxLines)
+	limited = append(limited, lines[:head]...)
+	limited = append(limited, "...")
+	limited = append(limited, lines[len(lines)-tail:]...)
+	return strings.Join(limited, "\n")
+}
+
+func multilineLines(text string) []string {
+	text = strings.TrimRight(text, "\n")
+	if text == "" {
+		return nil
+	}
+	return strings.Split(text, "\n")
 }
