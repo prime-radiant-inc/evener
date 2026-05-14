@@ -35,6 +35,15 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	if strings.Contains(screen, "ended maintenance") {
 		t.Fatalf("dashboard should not render ended sessions:\n%s", screen)
 	}
+	app.SendKeys("/")
+	app.TypeText("ops")
+	screen = app.WaitFor("filter: ops", "ops task")
+	if strings.Contains(screen, "live task") {
+		t.Fatalf("dashboard filter should hide non-matching sessions:\n%s", screen)
+	}
+	app.SendKeys("Escape")
+	app.WaitFor("serf live", "live task", "ops task")
+
 	initialTreeRequests := hub.WaitForTreeRequests(t, 1)
 	app.SendKeys("r")
 	hub.WaitForTreeRequests(t, initialTreeRequests+1)
@@ -378,8 +387,13 @@ func (a *tmuxTUI) SendKeys(keys ...string) {
 
 func (a *tmuxTUI) TypeLine(text string) {
 	a.t.Helper()
-	runTmux(a.t, "send-keys", "-t", a.session, "-l", text)
+	a.TypeText(text)
 	runTmux(a.t, "send-keys", "-t", a.session, "Enter")
+}
+
+func (a *tmuxTUI) TypeText(text string) {
+	a.t.Helper()
+	runTmux(a.t, "send-keys", "-t", a.session, "-l", text)
 }
 
 func (a *tmuxTUI) Capture() string {

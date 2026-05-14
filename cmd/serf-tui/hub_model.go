@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -67,6 +68,9 @@ type hubModel struct {
 	rows     []hubRow
 	selected int
 
+	dashboardFilter       textinput.Model
+	dashboardFilterActive bool
+
 	selectedProjectKey string
 	projectRows        []hubRow
 	browseSelected     int
@@ -90,7 +94,15 @@ type hubModel struct {
 
 func newHubModel(client *appwire.Client, hubURL string) hubModel {
 	session := newModel("", "", nil)
-	return hubModel{client: client, hubURL: hubURL, session: session, browseSelected: -1}
+	return hubModel{client: client, hubURL: hubURL, session: session, browseSelected: -1, dashboardFilter: newHubFilterInput()}
+}
+
+func newHubFilterInput() textinput.Model {
+	input := textinput.New()
+	input.Prompt = "filter: "
+	input.Placeholder = "title, project, model, source"
+	input.CharLimit = 0
+	return input
 }
 
 func (m hubModel) Init() tea.Cmd {
@@ -112,6 +124,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.session.viewport.Width = msg.Width
 		m.session.viewport.Height = m.session.vpHeight()
 		m.session.refreshViewport()
+		m.dashboardFilter.Width = max(1, msg.Width-8)
 		return m, nil
 	case hubTreeMsg:
 		if msg.err != nil {
@@ -302,14 +315,6 @@ func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.updateSessionKey(msg)
 		}
 		return m, tea.Quit
-	case "q":
-		if m.mode == hubModeSpawn {
-			return m.updateSpawnKey(msg)
-		}
-		if m.mode == hubModeSession && m.session.scrollMode {
-			return m.updateSessionKey(msg)
-		}
-		return m, tea.Quit
 	}
 	if m.mode == hubModeSession {
 		return m.updateSessionKey(msg)
@@ -320,7 +325,20 @@ func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.mode == hubModeProject {
 		return m.updateProjectKey(msg)
 	}
+	return m.updateDashboardKey(msg)
+}
+
+func (m hubModel) updateDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.dashboardFilterActive {
+		return m.updateHubFilterKey(msg)
+	}
+	rows := m.dashboardRows()
 	switch msg.String() {
+	case "/":
+		m.enterHubFilter()
+		return m, nil
+	case "q":
+		return m, tea.Quit
 	case "r":
 		if m.client != nil {
 			return m, fetchHubTree(m.client)
@@ -336,31 +354,30 @@ func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.selected--
 		}
 	case "down", "j":
-		if m.selected < len(m.rows)-1 {
+		if m.selected < len(rows)-1 {
 			m.selected++
 		}
 	case "p":
-		if len(m.rows) > 0 {
-			m.openProject(m.rows[m.selected].projectKey)
+		if len(rows) > 0 {
+			m.openProject(rows[m.selected].projectKey)
 		}
 	case "enter":
-		if len(m.rows) > 0 {
-			row := m.rows[m.selected]
-			if row.kind == hubRowProject {
-				m.openProject(row.projectKey)
-				return m, nil
-			}
-			if m.client == nil {
-				return m, nil
-			}
-			return m, fetchHubSession(m.client, row.ref)
-		}
+		return m.activateDashboardRow(rows)
 	}
 	return m, nil
 }
 
 func (m hubModel) updateProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.dashboardFilterActive {
+		return m.updateHubFilterKey(msg)
+	}
+	rows := m.projectDisplayRows()
 	switch msg.String() {
+	case "/":
+		m.enterHubFilter()
+		return m, nil
+	case "q":
+		return m, tea.Quit
 	case "esc", "backspace":
 		m.mode = hubModeDashboard
 		m.clampSelection()
@@ -379,15 +396,64 @@ func (m hubModel) updateProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.selected--
 		}
 	case "down", "j":
-		if m.selected < len(m.projectRows)-1 {
+		if m.selected < len(rows)-1 {
 			m.selected++
 		}
 	case "enter":
-		if len(m.projectRows) > 0 && m.client != nil {
-			return m, fetchHubSession(m.client, m.projectRows[m.selected].ref)
-		}
+		return m.activateProjectRow(rows)
 	}
 	return m, nil
+}
+
+func (m hubModel) updateHubFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.dashboardFilter.Reset()
+		m.dashboardFilter.Blur()
+		m.dashboardFilterActive = false
+		m.clampSelection()
+		return m, nil
+	case "enter":
+		m.dashboardFilter.Blur()
+		m.dashboardFilterActive = false
+		m.clampSelection()
+		if m.mode == hubModeProject {
+			return m.activateProjectRow(m.projectDisplayRows())
+		}
+		return m.activateDashboardRow(m.dashboardRows())
+	}
+	var cmd tea.Cmd
+	m.dashboardFilter, cmd = m.dashboardFilter.Update(msg)
+	m.clampSelection()
+	return m, cmd
+}
+
+func (m hubModel) activateDashboardRow(rows []hubRow) (tea.Model, tea.Cmd) {
+	if len(rows) == 0 {
+		return m, nil
+	}
+	row := rows[m.selected]
+	if row.kind == hubRowProject {
+		m.openProject(row.projectKey)
+		return m, nil
+	}
+	if m.client == nil {
+		return m, nil
+	}
+	return m, fetchHubSession(m.client, row.ref)
+}
+
+func (m hubModel) activateProjectRow(rows []hubRow) (tea.Model, tea.Cmd) {
+	if len(rows) == 0 || m.client == nil {
+		return m, nil
+	}
+	return m, fetchHubSession(m.client, rows[m.selected].ref)
+}
+
+func (m *hubModel) enterHubFilter() {
+	m.dashboardFilterActive = true
+	m.dashboardFilter.Focus()
+	m.clampSelection()
 }
 
 func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1449,10 +1515,62 @@ func (m hubModel) rowsForSelectedProject() []hubRow {
 	return buildProjectRows(project)
 }
 
+func (m hubModel) dashboardRows() []hubRow {
+	return filterHubRows(m.rows, m.dashboardFilter.Value())
+}
+
+func (m hubModel) projectDisplayRows() []hubRow {
+	return filterHubRows(m.projectRows, m.dashboardFilter.Value())
+}
+
+func filterHubRows(rows []hubRow, query string) []hubRow {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return rows
+	}
+	projectMatches := map[string]bool{}
+	childMatches := map[string]bool{}
+	for _, row := range rows {
+		if rowMatchesFilter(row, query) {
+			if row.kind == hubRowProject {
+				projectMatches[row.projectKey] = true
+			} else {
+				childMatches[row.projectKey] = true
+			}
+		}
+	}
+	filtered := make([]hubRow, 0, len(rows))
+	for _, row := range rows {
+		if row.kind == hubRowProject {
+			if projectMatches[row.projectKey] || childMatches[row.projectKey] {
+				filtered = append(filtered, row)
+			}
+			continue
+		}
+		if projectMatches[row.projectKey] || rowMatchesFilter(row, query) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
+func rowMatchesFilter(row hubRow, query string) bool {
+	haystack := strings.ToLower(strings.Join([]string{
+		row.title,
+		row.project,
+		row.projectKey,
+		row.sourceLabel,
+		row.model,
+		row.state,
+		row.age,
+	}, " "))
+	return strings.Contains(haystack, query)
+}
+
 func (m *hubModel) clampSelection() {
-	n := len(m.rows)
+	n := len(m.dashboardRows())
 	if m.mode == hubModeProject {
-		n = len(m.projectRows)
+		n = len(m.projectDisplayRows())
 	}
 	if n == 0 {
 		m.selected = 0
@@ -1481,8 +1599,9 @@ func (m hubModel) View() string {
 
 func (m hubModel) dashboardView() string {
 	var b strings.Builder
+	rows := m.dashboardRows()
 	liveCount := 0
-	for _, row := range m.rows {
+	for _, row := range rows {
 		if row.kind == hubRowSession && row.live {
 			liveCount++
 		}
@@ -1491,7 +1610,16 @@ func (m hubModel) dashboardView() string {
 	if m.err != nil {
 		fmt.Fprintf(&b, "error: %v\n\n", m.err)
 	}
-	if len(m.rows) == 0 {
+	if m.dashboardFilterActive || strings.TrimSpace(m.dashboardFilter.Value()) != "" {
+		b.WriteString(m.dashboardFilter.View())
+		b.WriteString("\n\n")
+	}
+	if len(rows) == 0 {
+		if strings.TrimSpace(m.dashboardFilter.Value()) != "" {
+			b.WriteString("No sessions match this filter.\n\n")
+			b.WriteString("esc clear filter\n")
+			return b.String()
+		}
 		b.WriteString("No live sessions are running.\n\n")
 		b.WriteString("s start a session\n")
 		b.WriteString("/projects browse project history\n")
@@ -1499,13 +1627,13 @@ func (m hubModel) dashboardView() string {
 		b.WriteString("q quit\n")
 		return b.String()
 	}
-	for i, row := range m.rows {
+	for i, row := range rows {
 		cursor := " "
 		if i == m.selected {
 			cursor = ">"
 		}
 		if row.kind == hubRowProject {
-			fmt.Fprintf(&b, "%s %s %-28s %s\n", cursor, statusDot(row.state), row.project, projectSummary(row, m.rows))
+			fmt.Fprintf(&b, "%s %s %-28s %s\n", cursor, statusDot(row.state), row.project, projectSummary(row, rows))
 			continue
 		}
 		fmt.Fprintf(&b, "%s   %s %-10s %-12s %-28s %-10s %s\n", cursor, statusDot(row.state), stateLabel(row.state), row.sourceLabel, row.title, row.model, row.age)
@@ -1516,6 +1644,7 @@ func (m hubModel) dashboardView() string {
 
 func (m hubModel) projectView() string {
 	var b strings.Builder
+	rows := m.projectDisplayRows()
 	project, ok := m.selectedProject()
 	name := m.selectedProjectKey
 	if ok {
@@ -1523,7 +1652,7 @@ func (m hubModel) projectView() string {
 	}
 	liveCount := 0
 	recentCount := 0
-	for _, row := range m.projectRows {
+	for _, row := range rows {
 		if row.live {
 			liveCount++
 		} else {
@@ -1534,10 +1663,14 @@ func (m hubModel) projectView() string {
 	if m.err != nil {
 		fmt.Fprintf(&b, "error: %v\n\n", m.err)
 	}
+	if m.dashboardFilterActive || strings.TrimSpace(m.dashboardFilter.Value()) != "" {
+		b.WriteString(m.dashboardFilter.View())
+		b.WriteString("\n\n")
+	}
 	idx := 0
 	if liveCount > 0 {
 		b.WriteString("Live now\n")
-		for _, row := range m.projectRows {
+		for _, row := range rows {
 			if !row.live {
 				continue
 			}
@@ -1548,13 +1681,15 @@ func (m hubModel) projectView() string {
 	}
 	if recentCount > 0 {
 		b.WriteString("Recent in this project\n")
-		for _, row := range m.projectRows {
+		for _, row := range rows {
 			if row.live {
 				continue
 			}
 			writeProjectRow(&b, row, idx == m.selected)
 			idx++
 		}
+	} else if strings.TrimSpace(m.dashboardFilter.Value()) != "" {
+		b.WriteString("No sessions match this filter.\n")
 	} else {
 		b.WriteString("No ended sessions in this project yet.\n")
 	}

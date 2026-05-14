@@ -123,6 +123,49 @@ func TestHubModelDashboardShowsSourceLabels(t *testing.T) {
 	}
 }
 
+func TestHubModelDashboardFilterUsesFocusedInput(t *testing.T) {
+	m := newHubModel(nil, "http://hub.test")
+	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
+		Key:  "serf",
+		Name: "serf",
+		Sessions: []hubTreeNode{
+			{Ref: "local:01ALPHA", SessionID: "01ALPHA", Title: "alpha task", State: "idle", Project: "serf", Live: true},
+			{Ref: "local:01BETA", SessionID: "01BETA", Title: "beta task", State: "idle", Project: "serf", Live: true},
+		},
+	}}}
+	m.rows = buildDashboardRows(m.tree)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if cmd != nil {
+		t.Fatal("opening dashboard filter should be synchronous")
+	}
+	m = updated.(hubModel)
+	for _, r := range "beta" {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(hubModel)
+	}
+
+	if got := m.dashboardFilter.Value(); got != "beta" {
+		t.Fatalf("filter=%q, want beta", got)
+	}
+	view := m.dashboardView()
+	if !strings.Contains(view, "filter: beta") || !strings.Contains(view, "beta task") {
+		t.Fatalf("filtered dashboard missing active filter/beta row:\n%s", view)
+	}
+	if strings.Contains(view, "alpha task") {
+		t.Fatalf("filtered dashboard still shows alpha row:\n%s", view)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(hubModel)
+	if m.dashboardFilter.Value() != "" {
+		t.Fatalf("filter after esc=%q, want cleared", m.dashboardFilter.Value())
+	}
+	if view := m.dashboardView(); !strings.Contains(view, "alpha task") || !strings.Contains(view, "beta task") {
+		t.Fatalf("dashboard did not restore rows after clearing filter:\n%s", view)
+	}
+}
+
 func TestHubModelProjectViewShowsLiveThenRecent(t *testing.T) {
 	project := hubTreeProject{
 		Key:         "serf",
@@ -158,6 +201,35 @@ func TestHubModelProjectViewShowsLiveThenRecent(t *testing.T) {
 	}
 	if strings.Index(got, "live task") > strings.Index(got, "ended history") {
 		t.Fatalf("project view rendered ended before live:\n%s", got)
+	}
+}
+
+func TestHubModelProjectFilterUsesFocusedInput(t *testing.T) {
+	m := newHubModel(nil, "http://hub.test")
+	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
+		Key:  "serf",
+		Name: "serf",
+		Sessions: []hubTreeNode{
+			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live scoring", State: "idle", Project: "serf", Live: true},
+			{Ref: "local:01PAST", SessionID: "01PAST", Title: "past renderer", State: "ended", Project: "serf", Live: false},
+		},
+	}}}
+	m.rows = buildDashboardRows(m.tree)
+	m.openProject("serf")
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = updated.(hubModel)
+	for _, r := range "past" {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(hubModel)
+	}
+
+	view := m.projectView()
+	if !strings.Contains(view, "filter: past") || !strings.Contains(view, "past renderer") {
+		t.Fatalf("filtered project missing active filter/past row:\n%s", view)
+	}
+	if strings.Contains(view, "live scoring") {
+		t.Fatalf("filtered project still shows live row:\n%s", view)
 	}
 }
 
