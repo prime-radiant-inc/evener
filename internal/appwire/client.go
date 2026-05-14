@@ -247,6 +247,30 @@ func (c *Client) HarnessList(ctx context.Context, params HarnessListParams) (Har
 	return out, err
 }
 
+func (c *Client) AuthStatus(ctx context.Context, params AuthStatusParams) (AuthStatusResponse, error) {
+	var out AuthStatusResponse
+	err := c.request(ctx, MethodSerfAuthStatus, params, &out)
+	return out, err
+}
+
+func (c *Client) AuthLoginStart(ctx context.Context, params AuthLoginStartParams) (AuthLoginStartResponse, error) {
+	var out AuthLoginStartResponse
+	err := c.request(ctx, MethodSerfAuthLoginStart, params, &out)
+	return out, err
+}
+
+func (c *Client) AuthLoginComplete(ctx context.Context, params AuthLoginCompleteParams) (AuthLoginCompleteResponse, error) {
+	var out AuthLoginCompleteResponse
+	err := c.request(ctx, MethodSerfAuthLoginComplete, params, &out)
+	return out, err
+}
+
+func (c *Client) AuthLogout(ctx context.Context, params AuthLogoutParams) (AuthLogoutResponse, error) {
+	var out AuthLogoutResponse
+	err := c.request(ctx, MethodSerfAuthLogout, params, &out)
+	return out, err
+}
+
 func (c *Client) ModelList(ctx context.Context, params ModelListParams) (ModelListResponse, error) {
 	var out ModelListResponse
 	err := c.request(ctx, MethodModelList, params, &out)

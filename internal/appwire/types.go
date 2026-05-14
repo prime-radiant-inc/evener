@@ -5,25 +5,29 @@ import "encoding/json"
 const ProtocolVersion = "serf-appwire-v1"
 
 const (
-	MethodInitialize          = "initialize"
-	MethodThreadList          = "thread/list"
-	MethodThreadRead          = "thread/read"
-	MethodThreadTurnsList     = "thread/turns/list"
-	MethodThreadTurnItemsList = "thread/turns/items/list"
-	MethodThreadStart         = "thread/start"
-	MethodThreadResume        = "thread/resume"
-	MethodThreadFork          = "thread/fork"
-	MethodThreadClear         = "thread/clear"
-	MethodThreadModelSet      = "thread/model/set"
-	MethodThreadCompactStart  = "thread/compact/start"
-	MethodThreadShutdown      = "thread/shutdown"
-	MethodTurnStart           = "turn/start"
-	MethodTurnSteer           = "turn/steer"
-	MethodTurnInterrupt       = "turn/interrupt"
-	MethodSerfTasksList       = "serf/tasks/list"
-	MethodSerfDirsComplete    = "serf/dirs/complete"
-	MethodSerfHarnessesList   = "serf/harnesses/list"
-	MethodModelList           = "model/list"
+	MethodInitialize            = "initialize"
+	MethodThreadList            = "thread/list"
+	MethodThreadRead            = "thread/read"
+	MethodThreadTurnsList       = "thread/turns/list"
+	MethodThreadTurnItemsList   = "thread/turns/items/list"
+	MethodThreadStart           = "thread/start"
+	MethodThreadResume          = "thread/resume"
+	MethodThreadFork            = "thread/fork"
+	MethodThreadClear           = "thread/clear"
+	MethodThreadModelSet        = "thread/model/set"
+	MethodThreadCompactStart    = "thread/compact/start"
+	MethodThreadShutdown        = "thread/shutdown"
+	MethodTurnStart             = "turn/start"
+	MethodTurnSteer             = "turn/steer"
+	MethodTurnInterrupt         = "turn/interrupt"
+	MethodSerfTasksList         = "serf/tasks/list"
+	MethodSerfDirsComplete      = "serf/dirs/complete"
+	MethodSerfHarnessesList     = "serf/harnesses/list"
+	MethodSerfAuthStatus        = "serf/auth/status"
+	MethodSerfAuthLoginStart    = "serf/auth/login/start"
+	MethodSerfAuthLoginComplete = "serf/auth/login/complete"
+	MethodSerfAuthLogout        = "serf/auth/logout"
+	MethodModelList             = "model/list"
 )
 
 const (
@@ -98,6 +102,7 @@ type FeatureSet struct {
 	Tasks             bool `json:"tasks"`
 	ModelList         bool `json:"modelList"`
 	DirectoryComplete bool `json:"directoryComplete"`
+	Auth              bool `json:"auth"`
 }
 
 type Thread struct {
@@ -364,6 +369,51 @@ type HarnessDescriptor struct {
 
 type HarnessListResponse struct {
 	Data []HarnessDescriptor `json:"data"`
+}
+
+type AuthStatusParams struct {
+	Provider string `json:"provider"`
+}
+
+type AuthStatusResponse struct {
+	Provider       string `json:"provider"`
+	Supported      bool   `json:"supported"`
+	SignedIn       bool   `json:"signedIn"`
+	ActiveSource   string `json:"activeSource"`
+	HasStoredOAuth bool   `json:"hasStoredOAuth"`
+	Email          string `json:"email,omitempty"`
+	StoredEmail    string `json:"storedEmail,omitempty"`
+	AccountID      string `json:"accountId,omitempty"`
+	WorkspaceID    string `json:"workspaceId,omitempty"`
+}
+
+type AuthLoginStartParams struct {
+	Provider string `json:"provider"`
+}
+
+type AuthLoginStartResponse struct {
+	Provider string `json:"provider"`
+	FlowID   string `json:"flowId"`
+	URL      string `json:"url"`
+}
+
+type AuthLoginCompleteParams struct {
+	Provider    string `json:"provider"`
+	FlowID      string `json:"flowId"`
+	RedirectURL string `json:"redirectUrl"`
+}
+
+type AuthLoginCompleteResponse struct {
+	Status AuthStatusResponse `json:"status"`
+}
+
+type AuthLogoutParams struct {
+	Provider string `json:"provider"`
+}
+
+type AuthLogoutResponse struct {
+	Removed bool               `json:"removed"`
+	Status  AuthStatusResponse `json:"status"`
 }
 
 type ModelListParams struct {

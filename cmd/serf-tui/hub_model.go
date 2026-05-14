@@ -93,6 +93,9 @@ type hubModel struct {
 
 	detail  hubSessionDetail
 	session model
+
+	authLoginProvider string
+	authLoginFlowID   string
 }
 
 func newHubModel(client *appwire.Client, hubURL string) hubModel {
@@ -321,6 +324,45 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.modelErr != nil && m.spawnHarnessUsesSerfModels() {
 				m.err = fmt.Errorf("models failed: %w", msg.modelErr)
 			}
+		}
+		return m, nil
+	case hubAuthStatusMsg:
+		if msg.err != nil {
+			m.addSessionSystem("Auth status failed: " + msg.err.Error())
+			return m, nil
+		}
+		m.addSessionSystem(formatAuthStatusSummary(authStatusFromAppWire(msg.status)))
+		return m, nil
+	case hubAuthLoginStartMsg:
+		if msg.err != nil {
+			m.addSessionSystem("Login failed: " + msg.err.Error())
+			return m, nil
+		}
+		m.authLoginProvider = strings.TrimSpace(msg.resp.Provider)
+		if m.authLoginProvider == "" {
+			m.authLoginProvider = "openai"
+		}
+		m.authLoginFlowID = msg.resp.FlowID
+		m.addSessionSystem("OpenAI sign-in URL:\n" + msg.resp.URL + "\nPaste the full OpenAI redirect URL and press enter.")
+		return m, nil
+	case hubAuthLoginCompleteMsg:
+		if msg.err != nil {
+			m.addSessionSystem("Login failed: " + msg.err.Error())
+			return m, nil
+		}
+		m.authLoginProvider = ""
+		m.authLoginFlowID = ""
+		m.addSessionSystem("OpenAI login complete. " + formatAuthStatusSummary(authStatusFromAppWire(msg.resp.Status)))
+		return m, nil
+	case hubAuthLogoutMsg:
+		if msg.err != nil {
+			m.addSessionSystem("Logout failed: " + msg.err.Error())
+			return m, nil
+		}
+		if msg.resp.Removed {
+			m.addSessionSystem("OpenAI sign-out complete. " + formatAuthStatusSummary(authStatusFromAppWire(msg.resp.Status)))
+		} else {
+			m.addSessionSystem("OpenAI auth was already signed out. " + formatAuthStatusSummary(authStatusFromAppWire(msg.resp.Status)))
 		}
 		return m, nil
 	}
@@ -812,6 +854,27 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if strings.TrimSpace(m.authLoginFlowID) != "" {
+		switch msg.String() {
+		case "esc":
+			m.authLoginProvider = ""
+			m.authLoginFlowID = ""
+			m.session.resetInput()
+			m.addSessionSystem("OpenAI login cancelled.")
+			return m, nil
+		case "enter":
+			redirectURL := strings.TrimSpace(m.session.input.Value())
+			if redirectURL == "" {
+				return m, nil
+			}
+			provider := m.authLoginProvider
+			flowID := m.authLoginFlowID
+			m.session.resetInput()
+			m.addSessionSystem("Finishing OpenAI login...")
+			return m, completeHubAuthLogin(m.client, provider, flowID, redirectURL)
+		}
+	}
+
 	if (msg.Type == tea.KeyEnter && msg.Alt) || msg.Type == tea.KeyCtrlJ {
 		prevHeight := m.session.input.Height()
 		m.session.input.InsertString("\n")
@@ -938,6 +1001,12 @@ func (m *hubModel) runHubSlashCommand(cmd, args string) tea.Cmd {
 	case "projects":
 		m.addSessionSystem("Project switcher is not available yet. Use /project for this session or ctrl+o for the live dashboard.")
 		return nil
+	case "auth":
+		return fetchHubAuthStatus(m.client, authProviderArg(args))
+	case "login":
+		return startHubAuthLogin(m.client, authProviderArg(args))
+	case "logout":
+		return logoutHubAuth(m.client, authProviderArg(args))
 	case "tasks":
 		return fetchHubTasks(m.client, ref)
 	case "details", "status":

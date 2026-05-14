@@ -46,9 +46,11 @@ Primary Serf evidence:
 - [`internal/appsource/source.go`](../../../internal/appsource/source.go)
 - [`internal/appsource/codex_source.go`](../../../internal/appsource/codex_source.go)
 - [`cmd/serf-hub/app_rpc.go`](../../../cmd/serf-hub/app_rpc.go)
+- [`cmd/serf-hub/app_auth.go`](../../../cmd/serf-hub/app_auth.go)
 - [`cmd/serf-hub/config.go`](../../../cmd/serf-hub/config.go)
 - [`cmd/serf-hub/web.go`](../../../cmd/serf-hub/web.go)
 - [`cmd/serf-hub/assets/appwire.js`](../../../cmd/serf-hub/assets/appwire.js)
+- [`internal/auth/openai`](../../../internal/auth/openai)
 - [`cmd/serf-tui/hub_model.go`](../../../cmd/serf-tui/hub_model.go)
 
 ## Claim Types
@@ -131,7 +133,7 @@ Current Serf:
 Serf extension:
 
 - `protocolVersion: "serf-appwire-v1"`, `sourceId`, and `features` are Serf-owned protocol metadata, not Codex fields.
-- Serf feature booleans currently cover thread list, turn list, turn start, steer, clear, shutdown, fork from turn, tasks, model list, and directory completion.
+- Serf feature booleans currently cover thread list, turn list, turn start, steer, clear, shutdown, fork from turn, tasks, model list, directory completion, and Hub-owned auth.
 
 ## Thread and Session Lifecycle
 
@@ -278,11 +280,14 @@ Current Serf:
 - Serf provider/model refs are represented as `ModelDescriptor{Provider, Model}` and thread start fields `modelProvider` plus `model`.
 - Current Codex adapter maps Codex models into Serf model descriptors with `Provider` set to the Codex source ID.
 - Recent Hub work routes harness/source selection separately from `model`; the protocol doc should preserve that boundary.
+- Hub exposes Serf-owned auth methods as AppWire extensions: `serf/auth/status`, `serf/auth/login/start`, `serf/auth/login/complete`, and `serf/auth/logout`.
+- Hub auth currently supports OpenAI and uses Serf-owned user-scoped OAuth state under `internal/auth/openai.DefaultStateDir()`. It does not read or mutate Codex account state.
 
 Serf extension:
 
 - Serf-owned auth and provider config remain separate from Codex credentials. Codex account state must not be treated as Serf provider state.
 - Harness/source selection is a Hub concern. `model` must remain a model choice, not a hidden Codex-vs-Serf selector.
+- Hub auth login is split into an authorize-URL start method and a manual redirect pasteback complete method so local and remote Hub clients can use the same contract.
 
 Open questions:
 
@@ -341,7 +346,7 @@ Current explicit Serf extensions:
 - Harnesses: `serf/harnesses/list`, `ThreadStartParams.harness`, and harness descriptors with `id`, `label`, `kind`.
 - Serf thread fields: `profile`, `contextPressure`, and capabilities.
 - Serf lifecycle actions: `thread/clear`, `thread/shutdown`, `thread/model/set`.
-- Serf support APIs: `serf/tasks/list` and `serf/dirs/complete`.
+- Serf support APIs: `serf/tasks/list`, `serf/dirs/complete`, and Hub-owned `serf/auth/*` methods.
 - Serf notifications: `item/toolOutput/delta`, `serf/thread/contextPressure/updated`, `serf/task/updated`, `serf/steering/injected`, `serf/subagent/started`, and `serf/subagent/completed`.
 - Serf diagnostics: `data.serfErrorInfo`, including `actionUnavailable`.
 - Serf fork/edit metadata: `sourceTurnId`, `editedInput`, and `label`.
@@ -371,6 +376,7 @@ Rules for adoption:
 | Compact | `thread/compact/start` | same method | Adapter calls Codex | Capability should reflect source/thread state |
 | Clear/shutdown/change model | Not Codex thread actions in current adapter | Serf actions | Adapter returns action unavailable | #68 structured unavailable diagnostics |
 | Models | `model/list`, provider capabilities | provider/model descriptors | Adapter uses source ID as provider | #57/#64 avoid lossy source/model mapping |
+| Auth | Codex account/auth/config methods | Serf-owned OpenAI OAuth state | Hub exposes `serf/auth/*` methods | Keep Codex account state separate from Serf provider auth |
 | Tasks | Not Codex | `serf/tasks/list` | Adapter unavailable | Web/TUI hide for Codex |
 | Assistant deltas | `item/agentMessage/delta` | same method | Web/TUI consume it | #65 live and replay proof |
 | Command output deltas | `item/commandExecution/outputDelta` | `item/toolOutput/delta` | Adapter currently checks wrong Codex method name | #65 red test and fix |

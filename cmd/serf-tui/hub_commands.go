@@ -77,6 +77,26 @@ type hubSpawnOptionsMsg struct {
 	modelErr     error
 }
 
+type hubAuthStatusMsg struct {
+	status appwire.AuthStatusResponse
+	err    error
+}
+
+type hubAuthLoginStartMsg struct {
+	resp appwire.AuthLoginStartResponse
+	err  error
+}
+
+type hubAuthLoginCompleteMsg struct {
+	resp appwire.AuthLoginCompleteResponse
+	err  error
+}
+
+type hubAuthLogoutMsg struct {
+	resp appwire.AuthLogoutResponse
+	err  error
+}
+
 func fetchHubTree(client *appwire.Client) tea.Cmd {
 	return func() tea.Msg {
 		resp, err := client.ThreadList(context.Background(), appwire.ThreadListParams{IncludeSubagents: true})
@@ -168,6 +188,38 @@ func fetchHubSpawnOptions(client *appwire.Client, workingDir string) tea.Cmd {
 		}
 		models := modelPickerItems(modelResp.Data, false)
 		return hubSpawnOptionsMsg{harnesses: harnesses, harnessKinds: harnessKinds, models: models}
+	}
+}
+
+func fetchHubAuthStatus(client *appwire.Client, provider string) tea.Cmd {
+	return func() tea.Msg {
+		resp, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: provider})
+		return hubAuthStatusMsg{status: resp, err: err}
+	}
+}
+
+func startHubAuthLogin(client *appwire.Client, provider string) tea.Cmd {
+	return func() tea.Msg {
+		resp, err := client.AuthLoginStart(context.Background(), appwire.AuthLoginStartParams{Provider: provider})
+		return hubAuthLoginStartMsg{resp: resp, err: err}
+	}
+}
+
+func completeHubAuthLogin(client *appwire.Client, provider, flowID, redirectURL string) tea.Cmd {
+	return func() tea.Msg {
+		resp, err := client.AuthLoginComplete(context.Background(), appwire.AuthLoginCompleteParams{
+			Provider:    provider,
+			FlowID:      flowID,
+			RedirectURL: redirectURL,
+		})
+		return hubAuthLoginCompleteMsg{resp: resp, err: err}
+	}
+}
+
+func logoutHubAuth(client *appwire.Client, provider string) tea.Cmd {
+	return func() tea.Msg {
+		resp, err := client.AuthLogout(context.Background(), appwire.AuthLogoutParams{Provider: provider})
+		return hubAuthLogoutMsg{resp: resp, err: err}
 	}
 }
 

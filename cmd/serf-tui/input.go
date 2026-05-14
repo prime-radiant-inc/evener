@@ -84,6 +84,9 @@ func hubSlashCommandHelp(caps hubSessionCapabilities) string {
 	lines = append(lines,
 		"  /status    Show session info and context pressure",
 		"  /tasks     Show the agent's task list",
+		"  /auth      Show OpenAI auth status",
+		"  /login     Start OpenAI OAuth login",
+		"  /logout    Sign out of OpenAI OAuth",
 	)
 	if caps.ChangeModel {
 		lines = append(lines, "  /model     Switch model (picker) or /model <name>")

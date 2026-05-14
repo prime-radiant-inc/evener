@@ -151,6 +151,25 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	app.TypeLine("/help")
 	app.WaitFor("Available commands:", "/dashboard Go to live dashboard", "/theme")
 
+	app.TypeLine("/auth openai")
+	app.WaitFor("OpenAI auth: signed out")
+
+	app.TypeLine("/login openai")
+	app.WaitFor("OpenAI sign-in URL:", "https://auth.example/authorize", "Paste the full OpenAI redirect URL")
+	app.TypeLine("http://localhost:1455/auth/callback?code=abc&state=flow")
+	app.WaitFor("OpenAI login complete. OpenAI auth: oauth (tmux@example.com)")
+	completions := hub.WaitForAuthCompletions(t, 1)
+	if completions[0].FlowID != "flow-1" || completions[0].RedirectURL == "" {
+		t.Fatalf("auth completion=%+v, want flow-1 and redirect URL", completions[0])
+	}
+
+	app.TypeLine("/logout openai")
+	app.WaitFor("OpenAI sign-out complete.")
+	authCalls := hub.WaitForAuthCalls(t, 4)
+	if got := strings.Join(authCalls, ","); got != "status:openai,login-start:openai,login-complete:openai,logout:openai" {
+		t.Fatalf("auth calls=%s", got)
+	}
+
 	app.TypeLine("/theme")
 	app.WaitFor("Select theme", "dark", "light")
 	app.SendKeys("Escape")
@@ -531,20 +550,22 @@ type tuiE2EHub struct {
 	server *httptest.Server
 	app    *appserver.Server
 
-	mu         sync.Mutex
-	order      []string
-	sessions   map[string]*tuiE2ESession
-	spawns     []appwire.ThreadStartParams
-	sends      []string
-	actions    map[string]int
-	models     []string
-	forks      []appwire.ThreadForkParams
-	harnesses  []appwire.HarnessDescriptor
-	spawnCount int
-	treeGets   int
-	failTasks  bool
-	failSend   bool
-	failSpawn  bool
+	mu              sync.Mutex
+	order           []string
+	sessions        map[string]*tuiE2ESession
+	spawns          []appwire.ThreadStartParams
+	sends           []string
+	actions         map[string]int
+	models          []string
+	forks           []appwire.ThreadForkParams
+	authCalls       []string
+	authCompletions []appwire.AuthLoginCompleteParams
+	harnesses       []appwire.HarnessDescriptor
+	spawnCount      int
+	treeGets        int
+	failTasks       bool
+	failSend        bool
+	failSpawn       bool
 }
 
 type tuiE2ESession struct {
@@ -655,6 +676,10 @@ func (h *tuiE2EHub) registerHandlers(app *appserver.Server) {
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadModelSet, h.handleThreadModelSet)
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadClear, h.handleThreadClear)
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadFork, h.handleThreadFork)
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfAuthStatus, h.handleAuthStatus)
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfAuthLoginStart, h.handleAuthLoginStart)
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfAuthLoginComplete, h.handleAuthLoginComplete)
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfAuthLogout, h.handleAuthLogout)
 }
 
 func (h *tuiE2EHub) handleHarnessList(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
@@ -736,6 +761,44 @@ func (h *tuiE2EHub) handleModelList(_ context.Context, params appwire.ModelListP
 		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "codex-local", Model: "gpt-5.3-codex"}}}, nil
 	}
 	return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}, nil
+}
+
+func (h *tuiE2EHub) handleAuthStatus(_ context.Context, params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
+	h.recordAuthCall("status", params.Provider)
+	return appwire.AuthStatusResponse{Provider: "openai", Supported: true, ActiveSource: "signed-out"}, nil
+}
+
+func (h *tuiE2EHub) handleAuthLoginStart(_ context.Context, params appwire.AuthLoginStartParams) (appwire.AuthLoginStartResponse, error) {
+	h.recordAuthCall("login-start", params.Provider)
+	return appwire.AuthLoginStartResponse{
+		Provider: "openai",
+		FlowID:   "flow-1",
+		URL:      "https://auth.example/authorize",
+	}, nil
+}
+
+func (h *tuiE2EHub) handleAuthLoginComplete(_ context.Context, params appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
+	h.recordAuthCall("login-complete", params.Provider)
+	h.mu.Lock()
+	h.authCompletions = append(h.authCompletions, params)
+	h.mu.Unlock()
+	return appwire.AuthLoginCompleteResponse{
+		Status: appwire.AuthStatusResponse{
+			Provider:     "openai",
+			Supported:    true,
+			SignedIn:     true,
+			ActiveSource: "oauth",
+			Email:        "tmux@example.com",
+		},
+	}, nil
+}
+
+func (h *tuiE2EHub) handleAuthLogout(_ context.Context, params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
+	h.recordAuthCall("logout", params.Provider)
+	return appwire.AuthLogoutResponse{
+		Removed: true,
+		Status:  appwire.AuthStatusResponse{Provider: "openai", Supported: true, ActiveSource: "signed-out"},
+	}, nil
 }
 
 func (h *tuiE2EHub) handleThreadStart(_ context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
@@ -895,6 +958,12 @@ func (h *tuiE2EHub) recordAction(action string) {
 	h.mu.Unlock()
 }
 
+func (h *tuiE2EHub) recordAuthCall(action, provider string) {
+	h.mu.Lock()
+	h.authCalls = append(h.authCalls, action+":"+provider)
+	h.mu.Unlock()
+}
+
 func (h *tuiE2EHub) SetSessionCapabilities(id string, caps appwire.ThreadCapabilities) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -1002,6 +1071,30 @@ func (h *tuiE2EHub) WaitForForks(t *testing.T, count int) []appwire.ThreadForkPa
 		out = append([]appwire.ThreadForkParams(nil), h.forks...)
 		return len(out) >= count
 	}, fmt.Sprintf("%d fork requests", count))
+	return out
+}
+
+func (h *tuiE2EHub) WaitForAuthCalls(t *testing.T, count int) []string {
+	t.Helper()
+	var out []string
+	h.waitFor(t, func() bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		out = append([]string(nil), h.authCalls...)
+		return len(out) >= count
+	}, fmt.Sprintf("%d auth calls", count))
+	return out
+}
+
+func (h *tuiE2EHub) WaitForAuthCompletions(t *testing.T, count int) []appwire.AuthLoginCompleteParams {
+	t.Helper()
+	var out []appwire.AuthLoginCompleteParams
+	h.waitFor(t, func() bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		out = append([]appwire.AuthLoginCompleteParams(nil), h.authCompletions...)
+		return len(out) >= count
+	}, fmt.Sprintf("%d auth completions", count))
 	return out
 }
 

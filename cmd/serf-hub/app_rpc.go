@@ -93,8 +93,10 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 			Tasks:             true,
 			ModelList:         true,
 			DirectoryComplete: true,
+			Auth:              true,
 		},
 	})
+	authController := newHubAuthController()
 	var relayMu sync.Mutex
 	relayedThreads := map[string]*hubRelayHandle{}
 	startRelay := func(ctx context.Context, source appsource.Source, params appwire.ThreadReadParams, thread appwire.Thread) error {
@@ -391,6 +393,18 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 			return appwire.EmptyResponse{}, err
 		}
 		return appwire.EmptyResponse{}, source.SetThreadModel(ctx, params)
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthStatus, func(_ context.Context, params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
+		return authController.Status(params)
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthLoginStart, func(_ context.Context, params appwire.AuthLoginStartParams) (appwire.AuthLoginStartResponse, error) {
+		return authController.LoginStart(params)
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthLoginComplete, func(ctx context.Context, params appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
+		return authController.LoginComplete(ctx, params)
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthLogout, func(_ context.Context, params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
+		return authController.Logout(params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodModelList, func(ctx context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
 		return hubModelList(ctx, cfg, sources, params)
