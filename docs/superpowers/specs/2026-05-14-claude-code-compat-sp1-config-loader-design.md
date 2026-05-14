@@ -1,7 +1,7 @@
 # SP1 — Config Loader (Detailed Design)
 
 Date: 2026-05-14
-Status: ready for TDD implementation
+Status: ready for TDD implementation (2026-05-14 scope reduction: the `Marketplaces`, `EnabledPlugins`, and `Permissions` fields remain in the schema and are parsed as `json.RawMessage`, but they are not consumed by downstream sub-projects in this release — each emits a one-time "field accepted but not yet enforced" warning when present. The merge and validation logic for those fields lands as written; only the consumers are deferred.)
 Parent spec: `docs/superpowers/specs/2026-05-14-claude-code-compat-design.md`
 
 ## 1. Goal

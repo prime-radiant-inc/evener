@@ -1,9 +1,9 @@
 # SP8 — Discovery Integration (Detailed Design)
 
 Date: 2026-05-14
-Status: ready for TDD implementation
+Status: ready for TDD implementation (2026-05-14 scope reduction: SP2 permissions, SP3 marketplace, and SP4 install are deferred. Their wire-up sections in this spec are skipped for the initial release. SP-A — filesystem plugin discovery — replaces SP4's `enabledPlugins`→cache-path resolution: the loader walks known plugin directories and `--plugin-dir` paths instead. End-to-end test no longer requires `serf plugin install`; it stages a fixture plugin directory directly under a temp plugins root.)
 Parent spec: `docs/superpowers/specs/2026-05-14-claude-code-compat-design.md`
-Depends on: SP1, SP2, SP3, SP4, SP5, SP6, SP7
+Depends on: SP1, SP5, SP6, SP7, SP-A, SP-B (formerly also SP2, SP3, SP4 — deferred)
 
 ## 1. Goal
 

@@ -1,7 +1,7 @@
 # SP7 — Plugin Manifest Extensions (Detailed Design)
 
 Date: 2026-05-14
-Status: ready for TDD implementation
+Status: ready for TDD implementation (2026-05-14 scope reduction: `userConfig` prompt-on-enable becomes `userConfig` **prompt-on-first-load**, because there is no install flow in the initial release. First-load prompts trigger when a plugin's manifest declares `userConfig` and the persisted value file for that plugin is missing or incomplete. All other surface — `bin/`, plugin-root `settings.json`, custom `skills` paths, warn-on-unsupported, sensitive-value keychain storage — is unchanged.)
 Parent spec: `docs/superpowers/specs/2026-05-14-claude-code-compat-design.md`
 Sibling specs: SP1 (`...-sp1-config-loader-design.md`)
 

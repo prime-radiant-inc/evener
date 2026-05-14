@@ -1,7 +1,7 @@
 # SP4 — Plugin Install, Uninstall, Update (Detailed Design)
 
 Date: 2026-05-14
-Status: ready for TDD implementation
+Status: DEFERRED (2026-05-14 scope reduction). Go-side plugin install/uninstall/update is not in the initial release. Plugin lifecycle is handled by filesystem auto-discovery (SP-A) plus the SP-B manage-plugins skill — the agent stages plugin directories under `~/.config/serf/plugins/` or `<project>/.serf/plugins/`, where SP-A picks them up at session start. This spec stands as the design when CLI-driven install tooling is reintroduced.
 Parent spec: `docs/superpowers/specs/2026-05-14-claude-code-compat-design.md`
 Depends on: SP1 (config loader), SP3 (marketplace resolution)
 

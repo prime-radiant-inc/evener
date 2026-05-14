@@ -1,7 +1,7 @@
 # SP3 — Marketplace Management (Detailed Design)
 
 Date: 2026-05-14
-Status: ready for TDD implementation
+Status: DEFERRED (2026-05-14 scope reduction). Go-side marketplace tooling is not in the initial release. Marketplace fetching is handled by the agent via the SP-B manage-plugins skill, using its existing Bash/git/WebFetch tools. This spec stands as the design when CLI-driven marketplace tooling is reintroduced.
 Parent spec: `docs/superpowers/specs/2026-05-14-claude-code-compat-design.md`
 Companion spec: `docs/superpowers/specs/2026-05-14-claude-code-compat-sp1-config-loader-design.md`
 

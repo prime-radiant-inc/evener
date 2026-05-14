@@ -1,7 +1,7 @@
 # SP2 — Permissions Matcher and Enforcement (Detailed Design)
 
 Date: 2026-05-14
-Status: ready for TDD implementation
+Status: DEFERRED (2026-05-14 scope reduction). Permissions enforcement is not in the initial release. The parent design accepts `permissions` in `config.json` with a warning that it is unenforced. This spec stands as the design when permissions enforcement is reintroduced.
 Parent spec: `docs/superpowers/specs/2026-05-14-claude-code-compat-design.md`
 Depends on: `docs/superpowers/specs/2026-05-14-claude-code-compat-sp1-config-loader-design.md`
 
