@@ -351,6 +351,50 @@ func TestCodexSourceStartThreadUsesCodexUserThreadSource(t *testing.T) {
 	}
 }
 
+func TestCodexSourceUsesLifecycleModelMetadata(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	response := func(id string) map[string]any {
+		return map[string]any{
+			"thread":        codexThreadMap(id),
+			"model":         "gpt-5.3-codex",
+			"modelProvider": "openai",
+		}
+	}
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadStart, func(_ context.Context, _ map[string]any) (map[string]any, error) {
+		return response("th_started"), nil
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadResume, func(ctx context.Context, params struct {
+		ThreadID string `json:"threadId"`
+	}) (map[string]any, error) {
+		appserver.Subscribe(ctx, params.ThreadID)
+		return response(params.ThreadID), nil
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadFork, func(_ context.Context, _ map[string]any) (map[string]any, error) {
+		return response("th_child"), nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+
+	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
+	start, err := source.StartThread(context.Background(), appwire.ThreadStartParams{CWD: "/work/project"})
+	if err != nil {
+		t.Fatalf("StartThread: %v", err)
+	}
+	resume, err := source.ResumeThread(context.Background(), appwire.ThreadResumeParams{Ref: "codex:th_started"})
+	if err != nil {
+		t.Fatalf("ResumeThread: %v", err)
+	}
+	fork, err := source.ForkThread(context.Background(), appwire.ThreadForkParams{Ref: "codex:th_started"})
+	if err != nil {
+		t.Fatalf("ForkThread: %v", err)
+	}
+	for _, thread := range []appwire.Thread{start.Thread, resume.Thread, fork.Thread} {
+		if thread.ModelProvider != "gpt-5.3-codex" || thread.Serf.Profile != "openai" {
+			t.Fatalf("thread model metadata=%+v", thread)
+		}
+	}
+}
+
 func TestCodexSourceForkThreadRejectsEditAtTurnMetadata(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
 	var forkCalled bool

@@ -151,7 +151,7 @@ func (s *CodexSource) StartThread(ctx context.Context, params appwire.ThreadStar
 		_ = closeClient()
 		return appwire.ThreadStartResponse{}, err
 	}
-	thread := s.mapThread(out.Thread)
+	thread := s.mapLifecycleThread(out.Thread, out.Model, out.ModelProvider)
 	live := s.newLiveThread(thread.ID, client, closeClient)
 	s.setLiveThread(thread.ID, live)
 	resp := appwire.ThreadStartResponse{Thread: thread}
@@ -179,7 +179,7 @@ func (s *CodexSource) ResumeThread(ctx context.Context, params appwire.ThreadRes
 	if err != nil {
 		return appwire.ThreadResumeResponse{}, err
 	}
-	return appwire.ThreadResumeResponse{Thread: s.mapThread(out.Thread)}, nil
+	return appwire.ThreadResumeResponse{Thread: s.mapLifecycleThread(out.Thread, out.Model, out.ModelProvider)}, nil
 }
 
 func (s *CodexSource) ForkThread(ctx context.Context, params appwire.ThreadForkParams) (appwire.ThreadForkResponse, error) {
@@ -201,7 +201,7 @@ func (s *CodexSource) ForkThread(ctx context.Context, params appwire.ThreadForkP
 	if err != nil {
 		return appwire.ThreadForkResponse{}, err
 	}
-	return appwire.ThreadForkResponse{Thread: s.mapThread(out.Thread)}, nil
+	return appwire.ThreadForkResponse{Thread: s.mapLifecycleThread(out.Thread, out.Model, out.ModelProvider)}, nil
 }
 
 func (s *CodexSource) StartTurn(ctx context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
@@ -612,7 +612,6 @@ func (s *CodexSource) mapThread(thread codexThread) appwire.Thread {
 		ForkedFromID:  thread.ForkedFromID,
 		Preview:       thread.Preview,
 		Ephemeral:     thread.Ephemeral,
-		ModelProvider: thread.ModelProvider,
 		CreatedAt:     thread.CreatedAt,
 		UpdatedAt:     thread.UpdatedAt,
 		Status:        mapCodexThreadStatus(thread.Status),
@@ -625,7 +624,8 @@ func (s *CodexSource) mapThread(thread codexThread) appwire.Thread {
 		AgentRole:     thread.AgentRole,
 		Name:          thread.Name,
 		Serf: appwire.SerfThread{
-			Ref: ref,
+			Profile: thread.ModelProvider,
+			Ref:     ref,
 			Capabilities: appwire.ThreadCapabilities{
 				Send:      true,
 				Steer:     codexThreadSupportsTurnActions(thread.Status.Type),
@@ -636,6 +636,17 @@ func (s *CodexSource) mapThread(thread codexThread) appwire.Thread {
 	}
 	for _, turn := range thread.Turns {
 		out.Turns = append(out.Turns, mapCodexTurn(turn))
+	}
+	return out
+}
+
+func (s *CodexSource) mapLifecycleThread(thread codexThread, model, modelProvider string) appwire.Thread {
+	out := s.mapThread(thread)
+	if model = strings.TrimSpace(model); model != "" {
+		out.ModelProvider = model
+	}
+	if modelProvider = strings.TrimSpace(modelProvider); modelProvider != "" {
+		out.Serf.Profile = modelProvider
 	}
 	return out
 }
@@ -771,15 +782,21 @@ type codexThreadReadResponse struct {
 }
 
 type codexThreadStartResponse struct {
-	Thread codexThread `json:"thread"`
+	Thread        codexThread `json:"thread"`
+	Model         string      `json:"model"`
+	ModelProvider string      `json:"modelProvider"`
 }
 
 type codexThreadResumeResponse struct {
-	Thread codexThread `json:"thread"`
+	Thread        codexThread `json:"thread"`
+	Model         string      `json:"model"`
+	ModelProvider string      `json:"modelProvider"`
 }
 
 type codexThreadForkResponse struct {
-	Thread codexThread `json:"thread"`
+	Thread        codexThread `json:"thread"`
+	Model         string      `json:"model"`
+	ModelProvider string      `json:"modelProvider"`
 }
 
 type codexTurnStartResponse struct {

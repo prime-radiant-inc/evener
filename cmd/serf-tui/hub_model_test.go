@@ -862,7 +862,7 @@ func TestHubModelSessionHeaderShowsCodexMetadata(t *testing.T) {
 		SessionID:     "01CODEX",
 		Source:        "codex-local",
 		Name:          "codex task",
-		ModelProvider: "codex-local/gpt-5.3-codex",
+		ModelProvider: "gpt-5.3-codex",
 		CWD:           "/tmp/serf",
 		Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusProcessing},
 		Turns: []appwire.Turn{
@@ -871,6 +871,7 @@ func TestHubModelSessionHeaderShowsCodexMetadata(t *testing.T) {
 		},
 		Serf: appwire.SerfThread{
 			Ref:             "codex-local:01CODEX",
+			Profile:         "openai",
 			ContextPressure: 0.73,
 			Capabilities:    appwire.ThreadCapabilities{Send: true, Steer: true},
 		},
@@ -884,7 +885,7 @@ func TestHubModelSessionHeaderShowsCodexMetadata(t *testing.T) {
 		"codex task",
 		"source: codex-local",
 		"state: processing",
-		"model: codex-local/gpt-5.3-codex",
+		"model: gpt-5.3-codex",
 		"project: serf",
 		"cwd: /tmp/serf",
 		"turns: 2",
@@ -893,6 +894,32 @@ func TestHubModelSessionHeaderShowsCodexMetadata(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("session header missing %q:\n%s", want, got)
 		}
+	}
+}
+
+func TestHubModelSessionHeaderShowsProviderWhenModelUnknown(t *testing.T) {
+	thread := appwire.Thread{
+		ID:        "01CODEX",
+		SessionID: "01CODEX",
+		Source:    "codex-local",
+		Name:      "codex replay",
+		CWD:       "/tmp/serf",
+		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusEnded},
+		Serf: appwire.SerfThread{
+			Ref:     "codex-local:01CODEX",
+			Profile: "openai",
+		},
+	}
+	m := newSessionHubModel(nil)
+	m.width = 120
+	m.detail = hubDetailFromThread(thread)
+
+	got := m.sessionView()
+	if !strings.Contains(got, "provider: openai") {
+		t.Fatalf("session header missing provider metadata:\n%s", got)
+	}
+	if strings.Contains(got, "model: openai") || strings.Contains(got, "Model:    openai") {
+		t.Fatalf("provider was mislabeled as model:\n%s", got)
 	}
 }
 

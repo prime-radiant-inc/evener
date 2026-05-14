@@ -149,6 +149,7 @@ Verified Codex:
 - `thread/turns/items/list` exists in the protocol as an experimental shape, but the app-server currently returns a method-not-supported JSON-RPC error.
 - Thread status is a tagged enum: `notLoaded`, `idle`, `systemError`, or `active` with `activeFlags`.
 - Codex `Thread` includes `id`, `sessionId`, `forkedFromId`, `preview`, `ephemeral`, `modelProvider`, timestamps, status, path, cwd, CLI version, source, threadSource, optional agent metadata, optional name, and turns.
+- Codex `thread/start`, `thread/resume`, and `thread/fork` responses also include top-level `model` and `modelProvider` fields. `thread/list` and `thread/read` return only the `Thread` object, so they report provider metadata but not a selected model.
 - `thread/start`, `thread/resume`, and `thread/fork` responses include turns only where the method is documented to include them; otherwise `turns` can be empty even for valid threads.
 
 Current Serf:
@@ -281,6 +282,7 @@ Current Serf:
 
 - Serf provider/model refs are represented as `ModelDescriptor{Provider, Model}` and thread start fields `modelProvider` plus `model`.
 - Current Codex adapter maps Codex models into Serf model descriptors with `Provider` set to the Codex source ID.
+- Current Codex adapter maps lifecycle response top-level `model` into the displayed thread model and preserves the top-level provider in `Thread.Serf.Profile`. For list/read responses where Codex does not report the selected model, Hub clients should label the value as provider metadata rather than a model.
 - Recent Hub work routes harness/source selection separately from `model`; the protocol doc should preserve that boundary.
 - Hub exposes Serf-owned auth methods as AppWire extensions: `serf/auth/status`, `serf/auth/login/start`, `serf/auth/login/complete`, and `serf/auth/logout`.
 - Hub auth currently supports OpenAI and uses Serf-owned user-scoped OAuth state under `internal/auth/openai.DefaultStateDir()`. It does not read or mutate Codex account state.

@@ -27,9 +27,7 @@ func (d detailsDrawer) View() string {
 	if detail.SourceLabel != "" {
 		fmt.Fprintf(&b, "Source:   %s\n", detail.SourceLabel)
 	}
-	if detail.Model != "" || detail.Profile != "" {
-		fmt.Fprintf(&b, "Model:    %s\n", modelAndProfile(detail.Model, detail.Profile))
-	}
+	writeModelOrProviderLine(&b, detail.Model, detail.Profile)
 	if detail.WorkingDir != "" {
 		fmt.Fprintf(&b, "Dir:      %s\n", detail.WorkingDir)
 	}
@@ -74,6 +72,17 @@ func modelAndProfile(model, profile string) string {
 		return model
 	default:
 		return profile
+	}
+}
+
+func writeModelOrProviderLine(b *strings.Builder, model, profile string) {
+	model = strings.TrimSpace(model)
+	profile = strings.TrimSpace(profile)
+	switch {
+	case model != "":
+		fmt.Fprintf(b, "Model:    %s\n", modelAndProfile(model, profile))
+	case profile != "":
+		fmt.Fprintf(b, "Provider: %s\n", profile)
 	}
 }
 

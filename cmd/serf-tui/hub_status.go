@@ -17,9 +17,7 @@ func renderHubSessionStatus(detail hubSessionDetail, tasks []agent.Task, auth ap
 	if detail.SourceLabel != "" {
 		fmt.Fprintf(&b, "Source:   %s\n", detail.SourceLabel)
 	}
-	if detail.Model != "" || detail.Profile != "" {
-		fmt.Fprintf(&b, "Model:    %s\n", modelAndProfile(detail.Model, detail.Profile))
-	}
+	writeModelOrProviderLine(&b, detail.Model, detail.Profile)
 	if detail.WorkingDir != "" {
 		fmt.Fprintf(&b, "Dir:      %s\n", detail.WorkingDir)
 	}

@@ -153,12 +153,22 @@ func hubNodeFromThread(thread appwire.Thread) hubTreeNode {
 		Title:       title,
 		Project:     project,
 		State:       thread.Status.Type,
-		Model:       thread.ModelProvider,
+		Model:       hubThreadModelLabel(thread),
 		RowID:       "project:" + hubProjectKey(project) + ":" + ref,
 		CreatedAt:   thread.CreatedAt,
 		UpdatedAt:   thread.UpdatedAt,
 		Live:        thread.Status.Type != appwire.ThreadStatusClosed && thread.Status.Type != appwire.ThreadStatusEnded,
 	}
+}
+
+func hubThreadModelLabel(thread appwire.Thread) string {
+	if model := strings.TrimSpace(thread.ModelProvider); model != "" {
+		return model
+	}
+	if provider := strings.TrimSpace(thread.Serf.Profile); provider != "" {
+		return "provider: " + provider
+	}
+	return ""
 }
 
 func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {

@@ -2665,12 +2665,12 @@ func (m hubModel) sessionHeaderLines() []string {
 	} else {
 		state = stateLabel(state)
 	}
-	model := firstNonEmptyString(m.detail.Model, "unknown")
+	model := sessionHeaderModelSummary(m.detail)
 	project := firstNonEmptyString(m.detail.Project, "unknown")
 	cwd := firstNonEmptyString(m.detail.WorkingDir, "unknown")
 	ref := firstNonEmptyString(m.detail.Ref, "unknown")
 
-	meta := fmt.Sprintf("source: %s  ref: %s  state: %s  model: %s", source, ref, state, model)
+	meta := fmt.Sprintf("source: %s  ref: %s  state: %s  %s", source, ref, state, model)
 	location := fmt.Sprintf("project: %s  cwd: %s  turns: %d", project, cwd, m.detail.TurnCount)
 	if m.detail.ContextPressure > 0 {
 		location += fmt.Sprintf("  ctx: %.0f%%", m.detail.ContextPressure*100)
@@ -2682,6 +2682,16 @@ func (m hubModel) sessionHeaderLines() []string {
 		truncateSessionLine(location, width),
 		truncateSessionLine(m.sessionStatusLine(), width),
 	}
+}
+
+func sessionHeaderModelSummary(detail hubSessionDetail) string {
+	if model := strings.TrimSpace(detail.Model); model != "" {
+		return "model: " + model
+	}
+	if provider := strings.TrimSpace(detail.Profile); provider != "" {
+		return "provider: " + provider
+	}
+	return "model: unknown"
 }
 
 func (m hubModel) sessionHeaderWidth() int {
