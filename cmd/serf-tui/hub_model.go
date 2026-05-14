@@ -208,6 +208,8 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addSessionSystem("Stop requested.")
 		case "model":
 			m.addSessionSystem("Model updated.")
+		case "steer":
+			m.addSessionSystem("Steering sent.")
 		}
 		return m, nil
 	case hubClearMsg:
@@ -681,6 +683,20 @@ func (m *hubModel) resizeSpawnInputFrom(prevHeight int) {
 	}
 }
 
+func (m *hubModel) resizeSessionInputFrom(prevHeight int) {
+	wantHeight := m.session.input.LineCount()
+	if wantHeight < 1 {
+		wantHeight = 1
+	}
+	if wantHeight > m.session.input.MaxHeight {
+		wantHeight = m.session.input.MaxHeight
+	}
+	if wantHeight != prevHeight {
+		m.session.input.SetHeight(wantHeight)
+		m.session.viewport.Height = m.session.vpHeight()
+	}
+}
+
 func (m hubModel) spawnFieldPrefix(field hubSpawnField) string {
 	if m.spawnFocus == field {
 		return ">"
@@ -796,10 +812,40 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if (msg.Type == tea.KeyEnter && msg.Alt) || msg.Type == tea.KeyCtrlJ {
+		prevHeight := m.session.input.Height()
+		m.session.input.InsertString("\n")
+		m.resizeSessionInputFrom(prevHeight)
+		return m, nil
+	}
+
 	switch msg.String() {
 	case "esc":
 		m.enterSessionBrowse(false)
 		return m, nil
+	case "up":
+		if m.session.input.Line() == 0 && len(m.session.history) > 0 {
+			if m.session.historyIdx == -1 {
+				m.session.historyDraft = m.session.input.Value()
+				m.session.historyIdx = len(m.session.history) - 1
+			} else if m.session.historyIdx > 0 {
+				m.session.historyIdx--
+			}
+			m.session.setInputValue(unescapeHistory(m.session.history[m.session.historyIdx]))
+			return m, nil
+		}
+	case "down":
+		if m.session.historyIdx >= 0 {
+			if m.session.historyIdx < len(m.session.history)-1 {
+				m.session.historyIdx++
+				m.session.setInputValue(unescapeHistory(m.session.history[m.session.historyIdx]))
+			} else {
+				m.session.historyIdx = -1
+				m.session.setInputValue(m.session.historyDraft)
+				m.session.historyDraft = ""
+			}
+			return m, nil
+		}
 	case "pgup":
 		m.enterSessionBrowse(true)
 		return m, nil
@@ -830,8 +876,25 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			next := m.runHubSlashCommand(cmd, args)
 			return m, next
 		}
-		if !m.detail.Capabilities.Send {
-			m.addSessionSystem("Send is not available for this session.")
+		composerMode := m.sessionComposerMode()
+		if composerMode == hubComposerModeSteer {
+			if strings.TrimSpace(m.detail.ActiveTurnID) == "" {
+				m.addSessionSystem("Steer is not available until an active turn starts.")
+				return m, nil
+			}
+			ref, ok := m.currentRef()
+			if !ok {
+				m.addSessionSystem("Session ref is invalid.")
+				return m, nil
+			}
+			return m, sendHubSteer(m.client, ref, m.detail.ActiveTurnID, text)
+		}
+		if composerMode == hubComposerModeReadOnly || !m.detail.Capabilities.Send {
+			reason := m.sessionComposerReadOnlyReason()
+			if reason == "" {
+				reason = "send is not available for this session"
+			}
+			m.addSessionSystem("Send is not available for this session. " + reason + ".")
 			return m, nil
 		}
 		ref, ok := m.currentRef()
@@ -841,6 +904,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.session.messages = append(m.session.messages, chatMessage{Kind: msgUser, Text: text})
 		m.session.lastSentText = text
+		m.session.addHistory(text)
 		m.session.resetInput()
 		m.session.refreshViewport()
 		return m, sendHubInput(m.client, ref, text)
@@ -849,17 +913,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	prevHeight := m.session.input.Height()
 	var cmd tea.Cmd
 	m.session.input, cmd = m.session.input.Update(msg)
-	wantHeight := m.session.input.LineCount()
-	if wantHeight < 1 {
-		wantHeight = 1
-	}
-	if wantHeight > m.session.input.MaxHeight {
-		wantHeight = m.session.input.MaxHeight
-	}
-	if wantHeight != prevHeight {
-		m.session.input.SetHeight(wantHeight)
-		m.session.viewport.Height = m.session.vpHeight()
-	}
+	m.resizeSessionInputFrom(prevHeight)
 	return m, cmd
 }
 
@@ -1929,8 +1983,7 @@ func (m hubModel) spawnView() string {
 	b.WriteString("serf / new session\n\n")
 	if m.spawnModelPicker != nil {
 		b.WriteString(m.spawnModelPicker.View())
-		b.WriteString("\n")
-		return b.String()
+		b.WriteString("\n\n")
 	}
 	model := m.spawnModel
 	models := m.spawnSelectableModels()
@@ -1960,11 +2013,7 @@ func (m hubModel) spawnView() string {
 		b.WriteString("\nStarting session...\n")
 	}
 	fmt.Fprintf(&b, "\n%s Prompt (optional):\n", m.spawnFieldPrefix(hubSpawnFieldPrompt))
-	prompt := m.session.input.View()
-	if strings.TrimSpace(prompt) == "" {
-		prompt = m.session.input.Value()
-	}
-	for _, line := range strings.Split(prompt, "\n") {
+	for _, line := range strings.Split(strings.TrimSuffix(renderComposerDraft(m.session.input.Value()), "\n"), "\n") {
 		b.WriteString("  ")
 		b.WriteString(line)
 		b.WriteString("\n")
@@ -2008,17 +2057,13 @@ func (m hubModel) sessionView() string {
 		b.WriteString("\n")
 		b.WriteString(m.sessionModelPicker.View())
 		b.WriteString("\n")
-		return b.String()
 	}
 	if m.sessionThemePicker != nil {
 		b.WriteString("\n")
 		b.WriteString(m.sessionThemePicker.View())
 		b.WriteString("\n")
-		return b.String()
 	}
 	switch {
-	case m.forkDraft != nil:
-		b.WriteString("\nfork draft: enter fork  esc cancel  ctrl+o: dashboard\n")
 	case m.session.scrollMode:
 		keys := []string{"esc/i/q: compose"}
 		if m.detail.Capabilities.Fork {
@@ -2029,19 +2074,8 @@ func (m hubModel) sessionView() string {
 		b.WriteString(strings.Join(keys, "  "))
 		b.WriteString("\n")
 	default:
-		keys := []string{}
-		if m.detail.Capabilities.Send {
-			keys = append(keys, "enter: send")
-		}
-		keys = append(keys, "esc: browse", "ctrl+o: dashboard", "/help")
 		b.WriteString("\n")
-		b.WriteString(strings.Join(keys, "  "))
-		b.WriteString("\n")
-	}
-	if v := strings.TrimSpace(m.session.input.Value()); v != "" {
-		b.WriteString("> ")
-		b.WriteString(v)
-		b.WriteString("\n")
+		b.WriteString(m.sessionComposerPanel().View())
 	}
 	return b.String()
 }

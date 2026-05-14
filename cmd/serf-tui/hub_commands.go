@@ -233,6 +233,13 @@ func sendHubAction(client *appwire.Client, ref appwire.Ref, action string, turnI
 	}
 }
 
+func sendHubSteer(client *appwire.Client, ref appwire.Ref, turnID string, text string) tea.Cmd {
+	return func() tea.Msg {
+		err := client.TurnSteer(context.Background(), appwire.TurnSteerParams{Ref: ref.String(), TurnID: turnID, Text: text})
+		return hubActionMsg{action: "steer", err: err}
+	}
+}
+
 func sendHubClear(client *appwire.Client, ref appwire.Ref) tea.Cmd {
 	return func() tea.Msg {
 		resp, err := client.ThreadClear(context.Background(), appwire.ThreadClearParams{Ref: ref.String()})
