@@ -37,9 +37,9 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	}
 	app.SendKeys("/")
 	app.TypeText("ops")
-	screen = app.WaitFor("filter: ops", "ops task")
+	screen = app.WaitFor("Command palette", "Filter: ops", "ops task")
 	if strings.Contains(screen, "live task") {
-		t.Fatalf("dashboard filter should hide non-matching sessions:\n%s", screen)
+		t.Fatalf("dashboard palette should hide non-matching sessions:\n%s", screen)
 	}
 	app.SendKeys("Escape")
 	app.WaitFor("serf live", "live task", "ops task")

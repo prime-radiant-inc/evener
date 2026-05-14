@@ -70,6 +70,7 @@ type hubModel struct {
 
 	dashboardFilter       textinput.Model
 	dashboardFilterActive bool
+	commandPalette        *commandPalette
 
 	selectedProjectKey string
 	projectRows        []hubRow
@@ -325,6 +326,9 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.commandPalette != nil {
+		return m.updateCommandPaletteKey(msg)
+	}
 	switch msg.String() {
 	case "ctrl+o":
 		m.returnToDashboard()
@@ -354,7 +358,7 @@ func (m hubModel) updateDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	rows := m.dashboardRows()
 	switch msg.String() {
 	case "/":
-		m.enterHubFilter()
+		m.openCommandPalette()
 		return m, nil
 	case "q":
 		return m, tea.Quit
@@ -393,7 +397,7 @@ func (m hubModel) updateProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	rows := m.projectDisplayRows()
 	switch msg.String() {
 	case "/":
-		m.enterHubFilter()
+		m.openCommandPalette()
 		return m, nil
 	case "q":
 		return m, tea.Quit
@@ -473,6 +477,71 @@ func (m *hubModel) enterHubFilter() {
 	m.dashboardFilterActive = true
 	m.dashboardFilter.Focus()
 	m.clampSelection()
+}
+
+func (m *hubModel) openCommandPalette() {
+	width := m.width
+	if width <= 0 {
+		width = 100
+	}
+	rows := m.dashboardRows()
+	if m.mode == hubModeProject {
+		rows = m.projectDisplayRows()
+	}
+	palette := newCommandPalette("Command palette", commandPaletteEntriesForRows(m.mode, rows), width)
+	m.commandPalette = &palette
+}
+
+func (m hubModel) updateCommandPaletteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.commandPalette == nil {
+		return m, nil
+	}
+	updated, cmd := m.commandPalette.Update(msg)
+	palette := updated.(commandPalette)
+	m.commandPalette = &palette
+	if !palette.panel.done {
+		return m, cmd
+	}
+	m.commandPalette = nil
+	if palette.panel.cancelled {
+		return m, cmd
+	}
+	entry, ok := palette.selectedEntry()
+	if !ok {
+		return m, cmd
+	}
+	switch entry.Kind {
+	case commandPaletteCommand:
+		return m.runCommandPaletteCommand(entry.Command)
+	case commandPaletteProject:
+		m.openProject(entry.ProjectKey)
+		return m, nil
+	case commandPaletteSession:
+		if m.client == nil {
+			return m, nil
+		}
+		return m, fetchHubSession(m.client, entry.Ref)
+	default:
+		return m, cmd
+	}
+}
+
+func (m hubModel) runCommandPaletteCommand(command string) (tea.Model, tea.Cmd) {
+	switch command {
+	case "new":
+		m.openSpawnForm()
+		if m.client != nil {
+			return m, fetchHubSpawnOptions(m.client, m.spawnDir)
+		}
+		return m, nil
+	case "refresh":
+		if m.client != nil {
+			return m, fetchHubTree(m.client)
+		}
+		return m, nil
+	default:
+		return m, nil
+	}
 }
 
 func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1686,6 +1755,11 @@ func (m hubModel) dashboardView() string {
 	if m.err != nil {
 		fmt.Fprintf(&b, "error: %v\n\n", m.err)
 	}
+	if m.commandPalette != nil {
+		b.WriteString(m.commandPalette.View())
+		b.WriteString("\n")
+		return b.String()
+	}
 	if m.dashboardFilterActive || strings.TrimSpace(m.dashboardFilter.Value()) != "" {
 		b.WriteString(m.dashboardFilter.View())
 		b.WriteString("\n\n")
@@ -1737,6 +1811,11 @@ func (m hubModel) projectView() string {
 	fmt.Fprintf(&b, "serf / project / %s                         %d live · %d recent\n\n", name, liveCount, recentCount)
 	if m.err != nil {
 		fmt.Fprintf(&b, "error: %v\n\n", m.err)
+	}
+	if m.commandPalette != nil {
+		b.WriteString(m.commandPalette.View())
+		b.WriteString("\n")
+		return b.String()
 	}
 	if m.dashboardFilterActive || strings.TrimSpace(m.dashboardFilter.Value()) != "" {
 		b.WriteString(m.dashboardFilter.View())

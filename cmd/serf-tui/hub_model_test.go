@@ -148,7 +148,7 @@ func TestHubModelDashboardUsesNForNewSession(t *testing.T) {
 	}
 }
 
-func TestHubModelDashboardFilterUsesFocusedInput(t *testing.T) {
+func TestHubModelDashboardSlashOpensCommandPalette(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
 		Key:  "serf",
@@ -162,7 +162,7 @@ func TestHubModelDashboardFilterUsesFocusedInput(t *testing.T) {
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
 	if cmd != nil {
-		t.Fatal("opening dashboard filter should be synchronous")
+		t.Fatal("opening dashboard palette should be synchronous")
 	}
 	m = updated.(hubModel)
 	for _, r := range "beta" {
@@ -170,24 +170,24 @@ func TestHubModelDashboardFilterUsesFocusedInput(t *testing.T) {
 		m = updated.(hubModel)
 	}
 
-	if got := m.dashboardFilter.Value(); got != "beta" {
-		t.Fatalf("filter=%q, want beta", got)
+	if m.commandPalette == nil {
+		t.Fatal("dashboard slash did not open command palette")
 	}
 	view := m.dashboardView()
-	if !strings.Contains(view, "filter: beta") || !strings.Contains(view, "beta task") {
+	if !strings.Contains(view, "Command palette") || !strings.Contains(view, "Filter: beta") || !strings.Contains(view, "beta task") {
 		t.Fatalf("filtered dashboard missing active filter/beta row:\n%s", view)
 	}
 	if strings.Contains(view, "alpha task") {
-		t.Fatalf("filtered dashboard still shows alpha row:\n%s", view)
+		t.Fatalf("dashboard palette still shows alpha row after filtering beta:\n%s", view)
 	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m = updated.(hubModel)
-	if m.dashboardFilter.Value() != "" {
-		t.Fatalf("filter after esc=%q, want cleared", m.dashboardFilter.Value())
+	if m.commandPalette != nil {
+		t.Fatalf("palette after esc=%+v, want closed", m.commandPalette)
 	}
 	if view := m.dashboardView(); !strings.Contains(view, "alpha task") || !strings.Contains(view, "beta task") {
-		t.Fatalf("dashboard did not restore rows after clearing filter:\n%s", view)
+		t.Fatalf("dashboard did not restore rows after closing palette:\n%s", view)
 	}
 }
 
@@ -229,7 +229,7 @@ func TestHubModelProjectViewShowsLiveThenRecent(t *testing.T) {
 	}
 }
 
-func TestHubModelProjectFilterUsesFocusedInput(t *testing.T) {
+func TestHubModelProjectSlashOpensCommandPalette(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
 		Key:  "serf",
@@ -250,11 +250,52 @@ func TestHubModelProjectFilterUsesFocusedInput(t *testing.T) {
 	}
 
 	view := m.projectView()
-	if !strings.Contains(view, "filter: past") || !strings.Contains(view, "past renderer") {
-		t.Fatalf("filtered project missing active filter/past row:\n%s", view)
+	if !strings.Contains(view, "Command palette") || !strings.Contains(view, "Filter: past") || !strings.Contains(view, "past renderer") {
+		t.Fatalf("project palette missing active filter/past row:\n%s", view)
 	}
 	if strings.Contains(view, "live scoring") {
-		t.Fatalf("filtered project still shows live row:\n%s", view)
+		t.Fatalf("project palette still shows live row after filtering past:\n%s", view)
+	}
+}
+
+func TestHubModelCommandPaletteOwnsPrintableKeys(t *testing.T) {
+	m := newHubModel(nil, "http://hub.test")
+	m.tree = newHubTUISampleCorpus().DashboardTree
+	m.rows = buildDashboardRows(m.tree)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = updated.(hubModel)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if cmd != nil {
+		t.Fatal("palette-owned printable key should not run global new-session action")
+	}
+	m = updated.(hubModel)
+	if m.mode == hubModeSpawn {
+		t.Fatal("palette-owned n key opened spawn")
+	}
+	if m.commandPalette == nil || m.commandPalette.panel.filter != "n" {
+		t.Fatalf("palette did not own printable n key: %+v", m.commandPalette)
+	}
+}
+
+func TestHubModelCommandPaletteCanOpenNewSession(t *testing.T) {
+	m := newHubModel(nil, "http://hub.test")
+	m.tree = newHubTUISampleCorpus().DashboardTree
+	m.rows = buildDashboardRows(m.tree)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = updated.(hubModel)
+	for _, r := range "new" {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(hubModel)
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("opening spawn from command palette without a client should be synchronous")
+	}
+	got := updated.(hubModel)
+	if got.commandPalette != nil || got.mode != hubModeSpawn {
+		t.Fatalf("palette did not open spawn: mode=%v palette=%+v", got.mode, got.commandPalette)
 	}
 }
 
