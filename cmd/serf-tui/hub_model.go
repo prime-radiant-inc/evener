@@ -206,8 +206,8 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !msg.ok {
 			return m, nil
 		}
-		m.applyHubNotification(msg.notification)
-		return m, waitHubNotification(m.client)
+		cmd := m.applyHubNotification(msg.notification)
+		return m, tea.Batch(cmd, waitHubNotification(m.client))
 	case hubSendMsg:
 		if msg.err != nil {
 			m.session.setInputValue(msg.draft)
@@ -1633,13 +1633,14 @@ func (m hubModel) currentRef() (appwire.Ref, bool) {
 	return ref, true
 }
 
-func (m *hubModel) applyHubNotification(notification appwire.Notification) {
+func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.Cmd {
 	if m.mode != hubModeSession {
-		return
+		return nil
 	}
 	if !m.notificationMatchesCurrentSession(notification) {
-		return
+		return nil
 	}
+	var cmd tea.Cmd
 	switch notification.Method {
 	case appwire.NotifyTurnStarted:
 		var params struct {
@@ -1653,6 +1654,11 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) {
 		if json.Unmarshal(notification.Params, &params) == nil {
 			m.detail.State = params.Status.Type
 			m.session.processing = params.Status.Type == appwire.ThreadStatusProcessing
+			if params.Status.Type != appwire.ThreadStatusProcessing && m.client != nil {
+				if ref, ok := m.currentRef(); ok {
+					cmd = fetchHubSession(m.client, ref)
+				}
+			}
 		}
 	case appwire.NotifyItemStarted:
 		var params struct {
@@ -1713,6 +1719,7 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) {
 		}
 	}
 	m.session.refreshViewport()
+	return cmd
 }
 
 func (m *hubModel) setActiveTurnID(turnID string) {

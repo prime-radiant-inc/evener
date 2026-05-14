@@ -1557,6 +1557,46 @@ func TestHubModelNotificationClosedIsNotError(t *testing.T) {
 	}
 }
 
+func TestHubModelStatusIdleRefreshesSessionCapabilities(t *testing.T) {
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			if params.Ref != "local:01SEND" {
+				t.Fatalf("ref=%q, want local:01SEND", params.Ref)
+			}
+			return appwire.ThreadReadResponse{Thread: appwireThread(hubTreeNode{
+				Ref: "local:01SEND", SessionID: "01SEND", Title: "send task", State: "idle", Model: "gpt-5", Project: "serf", Live: true,
+			}, "/tmp/serf")}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	m.detail.State = appwire.ThreadStatusProcessing
+	m.detail.Capabilities.Send = false
+	m.session.processing = true
+	notification := appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
+		ThreadID: "01SEND",
+		Ref:      "local:01SEND",
+		Status:   appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+	})
+
+	cmd := m.applyHubNotification(*notification.Notification)
+	if cmd == nil {
+		t.Fatal("idle status notification should refresh session detail")
+	}
+	updated, _ := m.Update(cmd())
+	got := updated.(hubModel)
+	if !got.detail.Capabilities.Send {
+		t.Fatalf("send capability was not refreshed: %+v", got.detail.Capabilities)
+	}
+	if got.session.processing {
+		t.Fatal("session stayed processing after idle status refresh")
+	}
+	if view := got.sessionView(); !strings.Contains(view, "send: ready") {
+		t.Fatalf("session view did not show send-ready after refresh:\n%s", view)
+	}
+}
+
 func TestHubModelSendUsesAppWireTurnStart(t *testing.T) {
 	var got appwire.TurnStartParams
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
