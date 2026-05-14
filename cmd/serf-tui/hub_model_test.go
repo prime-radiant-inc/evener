@@ -675,6 +675,77 @@ func TestHubModelSessionEscEntersBrowseInsteadOfDashboard(t *testing.T) {
 	}
 }
 
+func TestHubModelBrowseSelectionHighlightsSelectedMessage(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.width = 100
+	m.session.width = 100
+	m.session.messages = []chatMessage{
+		{Kind: msgUser, Text: "first request", TurnIndex: 1},
+		{Kind: msgAssistant, Text: "first response"},
+	}
+	m.session.scrollMode = true
+	m.browseSelected = 0
+
+	got := m.sessionView()
+	if !strings.Contains(got, "▶ > first request") {
+		t.Fatalf("selected user message not highlighted:\n%s", got)
+	}
+	if strings.Contains(got, "▶ first response") {
+		t.Fatalf("unselected assistant message was highlighted:\n%s", got)
+	}
+}
+
+func TestHubModelBrowsePageKeysMoveSelection(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.width = 100
+	m.session.width = 100
+	m.session.viewport.Height = 3
+	for i := 1; i <= 8; i++ {
+		m.session.messages = append(m.session.messages, chatMessage{Kind: msgUser, Text: fmt.Sprintf("request %d", i), TurnIndex: i})
+	}
+	m.enterSessionBrowse(false)
+	if m.browseSelected != 7 {
+		t.Fatalf("initial browse selection=%d, want last message", m.browseSelected)
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	got := updated.(hubModel)
+	if got.browseSelected != 4 {
+		t.Fatalf("pgup selection=%d, want 4", got.browseSelected)
+	}
+
+	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	got = updated.(hubModel)
+	if got.browseSelected != 7 {
+		t.Fatalf("pgdown selection=%d, want 7", got.browseSelected)
+	}
+}
+
+func TestHubModelSessionBrowseExitKeysReturnToCompose(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		msg  tea.KeyMsg
+	}{
+		{name: "esc", msg: tea.KeyMsg{Type: tea.KeyEsc}},
+		{name: "i", msg: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}}},
+		{name: "q", msg: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newSessionHubModel(nil)
+			m.session.messages = []chatMessage{{Kind: msgUser, Text: "request", TurnIndex: 1}}
+			m.enterSessionBrowse(false)
+			updated, _ := m.Update(tc.msg)
+			got := updated.(hubModel)
+			if got.session.scrollMode {
+				t.Fatalf("%s should return to compose", tc.msg.String())
+			}
+			if got.browseSelected != -1 {
+				t.Fatalf("%s browse selection=%d, want -1", tc.msg.String(), got.browseSelected)
+			}
+		})
+	}
+}
+
 func TestHubModelCtrlOReturnsDashboardFromSession(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.rows = []hubRow{{kind: hubRowProject, project: "serf", projectKey: "serf"}}
@@ -1585,6 +1656,76 @@ func TestHubModelBrowseForkRequiresUserTurnWithTurnIndex(t *testing.T) {
 	view := got.View()
 	if !strings.Contains(view, "fork requires persisted transcript") {
 		t.Fatalf("missing fork reason:\n%s", view)
+	}
+}
+
+func TestHubModelBrowseForkRequiresSelectedUserMessage(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.Capabilities.Fork = true
+	m.session.messages = []chatMessage{
+		{Kind: msgAssistant, Text: "assistant answer"},
+		{Kind: msgUser, Text: "forkable request", TurnIndex: 1},
+	}
+	m.session.scrollMode = true
+	m.browseSelected = 0
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	if cmd != nil {
+		t.Fatal("invalid fork selection should not call hub")
+	}
+	got := updated.(hubModel)
+	if got.forkDraft != nil {
+		t.Fatalf("fork draft=%+v, want nil", got.forkDraft)
+	}
+	if !strings.Contains(got.View(), "Select a user turn to fork.") {
+		t.Fatalf("missing invalid selection reason:\n%s", got.View())
+	}
+}
+
+func TestHubModelForkFailurePreservesDraftAndLabel(t *testing.T) {
+	var gotReq appwire.ThreadForkParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadFork, func(_ context.Context, params appwire.ThreadForkParams) (appwire.ThreadForkResponse, error) {
+			gotReq = params
+			return appwire.ThreadForkResponse{}, fmt.Errorf("fork failed from test")
+		})
+	})
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	m.detail.Capabilities.Fork = true
+	m.session.messages = []chatMessage{{Kind: msgUser, Text: "original request", TurnIndex: 3}}
+	m.session.scrollMode = true
+	m.browseSelected = 0
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	if cmd != nil {
+		t.Fatal("starting a fork draft should be synchronous")
+	}
+	draft := updated.(hubModel)
+	draft.session.setInputValue("edited request")
+
+	updated, cmd = draft.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("confirming fork draft should post to hub")
+	}
+	updated, _ = updated.(hubModel).Update(cmd())
+	got := updated.(hubModel)
+	if got.forkDraft == nil {
+		t.Fatal("failed fork should keep the draft active")
+	}
+	if got.forkDraft.Label != "original before fork" {
+		t.Fatalf("draft label=%q", got.forkDraft.Label)
+	}
+	if got.session.input.Value() != "edited request" {
+		t.Fatalf("draft input=%q, want edited request", got.session.input.Value())
+	}
+	view := got.View()
+	if !strings.Contains(view, "Fork failed:") || !strings.Contains(view, "fork failed from test") {
+		t.Fatalf("missing fork failure notice:\n%s", view)
+	}
+	if gotReq.Ref != "local:01SEND" || gotReq.SourceTurnID != "3" || gotReq.EditedInput != "edited request" || gotReq.Label != "original before fork" {
+		t.Fatalf("fork request=%+v", gotReq)
 	}
 }
 

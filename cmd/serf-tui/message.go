@@ -60,26 +60,39 @@ type toolCallInfo struct {
 const toolCollapseThreshold = 5
 
 func renderMessage(msg chatMessage, width int, focused bool) string {
+	messageWidth := width
+	if focused {
+		messageWidth = max(1, width-2)
+	}
 	switch msg.Kind {
 	case msgUser:
-		return userBlockStyle.Width(width).Render("> " + msg.Text)
+		return renderSelectedMessage(userBlockStyle.Width(messageWidth).Render("> "+msg.Text), focused)
 	case msgAssistant:
 		text := strings.TrimSpace(msg.Text)
 		if text == "" {
 			return ""
 		}
-		return thinkingStyle.Width(width).Render(text)
+		return renderSelectedMessage(thinkingStyle.Width(messageWidth).Render(text), focused)
 	case msgCommunicate:
-		return communicateStyle.Width(width).Render(renderMarkdown(msg.Text))
+		return renderSelectedMessage(communicateStyle.Width(messageWidth).Render(renderMarkdown(msg.Text)), focused)
 	case msgTool:
 		if msg.Tool == nil || msg.Tool.Hidden {
 			return ""
 		}
 		return renderToolCall(*msg.Tool, width, focused)
 	case msgSystem:
-		return systemStyle.Width(width).Render(msg.Text)
+		return renderSelectedMessage(systemStyle.Width(messageWidth).Render(msg.Text), focused)
 	}
 	return ""
+}
+
+func renderSelectedMessage(rendered string, focused bool) string {
+	if !focused || rendered == "" {
+		return rendered
+	}
+	lines := strings.Split(rendered, "\n")
+	lines[0] = "▶ " + lines[0]
+	return strings.Join(lines, "\n")
 }
 
 func renderToolCall(tc toolCallInfo, width int, focused bool) string {

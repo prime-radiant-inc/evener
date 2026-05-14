@@ -57,6 +57,7 @@ type hubForkDraft struct {
 	Turn         int
 	OriginalText string
 	Label        string
+	Submitting   bool
 }
 
 type hubModel struct {
@@ -238,10 +239,14 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, fetchHubSession(m.client, ref)
 	case hubForkMsg:
 		if msg.err != nil {
+			if m.forkDraft != nil {
+				m.forkDraft.Submitting = false
+			}
 			m.addSessionSystem("Fork failed: " + msg.err.Error())
 			return m, nil
 		}
 		m.forkDraft = nil
+		m.session.resetInput()
 		ref, err := appwire.ParseRef(msg.resp.Ref)
 		if err != nil {
 			m.addSessionSystem("Fork returned invalid ref: " + msg.resp.Ref)
@@ -908,6 +913,9 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.addSessionSystem("Fork cancelled.")
 			return m, nil
 		case "enter":
+			if m.forkDraft.Submitting {
+				return m, nil
+			}
 			text := strings.TrimSpace(m.session.input.Value())
 			if text == "" {
 				m.addSessionSystem("Fork message cannot be empty.")
@@ -918,7 +926,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			draft := *m.forkDraft
-			m.session.resetInput()
+			m.forkDraft.Submitting = true
 			m.addSessionSystem(fmt.Sprintf("Forking from turn %d...", draft.Turn))
 			return m, sendHubFork(m.client, draft.Ref, hubForkRequest{
 				Turn:          draft.Turn,
@@ -936,6 +944,10 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.moveBrowseSelection(-1)
 		case "down", "j":
 			m.moveBrowseSelection(1)
+		case "pgup":
+			m.moveBrowsePage(-1)
+		case "pgdown":
+			m.moveBrowsePage(1)
 		case "f":
 			m.startForkDraft()
 		case "tab", "enter":
@@ -1353,6 +1365,20 @@ func (m *hubModel) moveBrowseSelection(delta int) {
 	m.session.viewport, _ = m.session.viewport.Update(tea.KeyMsg{Type: tea.KeyUp})
 	if delta > 0 {
 		m.session.viewport, _ = m.session.viewport.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+}
+
+func (m *hubModel) moveBrowsePage(direction int) {
+	step := m.session.viewport.Height
+	if step < 1 {
+		step = 5
+	}
+	for i := 0; i < step; i++ {
+		before := m.browseSelected
+		m.moveBrowseSelection(direction)
+		if m.browseSelected == before {
+			return
+		}
 	}
 }
 
