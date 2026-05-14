@@ -299,29 +299,44 @@ func sampleSpawnOptions() []tuiSpawnSample {
 }
 
 func sampleRenders() []tuiSampleRender {
-	return []tuiSampleRender{
-		renderSample("dashboard-narrow", 60, "serf hub\nserf 2 live\n> Restore hub TUI widgets serf\nn new  / palette", "serf hub", "n new", "/ palette"),
-		renderSample("dashboard-normal", 100, "serf hub connected openai:signed in\nserf 2 live\n> Restore hub TUI widgets serf idle\ncodex-src 1 live\nCodex app-server smoke codex-local", "codex-local", "Restore hub TUI widgets"),
-		renderSample("dashboard-wide", 140, "serf hub connected\nleft: live sessions\nright: DetailsDrawer selected session capabilities and diagnostics", "DetailsDrawer", "diagnostics"),
-		renderSample("project-narrow", 60, "project serf\nlive\n> Restore hub TUI widgets\nrecent\nDocument protocol adoption\nn new here  / palette", "live", "recent"),
-		renderSample("project-normal", 100, "project serf\nLive now Restore hub TUI widgets\nRecent in this project Document protocol adoption", "Live now", "Recent in this project"),
-		renderSample("project-wide", 140, "project serf\nSessionList left\nDetailsDrawer right with selected row capabilities", "DetailsDrawer", "capabilities"),
-		renderSample("session-idle", 100, "session ZYMEYZ serf idle gpt-5.5\nmessage\n> draft stays visible\n/help /model /tasks", "message", "draft stays visible"),
-		renderSample("session-streaming", 100, "assistant streaming\n1. Reproduce\n2. Patch\n3. Verify\nmarkdown render stays stable", "assistant streaming", "markdown"),
-		renderSample("session-busy-steer", 100, "busy session\nsteer\n> Please also check old TUI command parity", "steer", "Please also check"),
-		renderSample("session-busy-readonly", 100, "busy session\nread-only: source does not advertise steer\ndraft kept", "read-only", "draft kept"),
-		renderSample("session-browse", 100, "browse ZYMEYZ\n> turn_0 user\nf fork user turn\nesc compose", "browse", "f fork"),
-		renderSample("session-fork", 100, "fork draft from turn_0\noriginal before fork\n> edited prompt\nenter fork", "fork draft", "edited prompt"),
-		renderSample("spawn-serf", 100, "new session\nHarness serf\nModel openai/gpt-5.5\nPrompt\n> Implement the next TUI task", "Harness serf", "openai/gpt-5.5"),
-		renderSample("spawn-codex", 100, "new session\nHarness codex-local\nModel codex-local/gpt-5.3-codex\nNo OpenAI provider namespace", "codex-local", "gpt-5.3-codex"),
-		renderSample("spawn-auth-required", 100, "new session\nModel openai/gpt-4.1 disabled\nOpenAI login required\n/login openai", "OpenAI login required", "/login openai"),
-		renderSample("model-picker", 100, "Select model\nFilter: gpt\n> openai/gpt-5.5\nopenai/gpt-4.1 disabled: login required", "Select model", "login required"),
-		renderSample("theme-picker", 80, "Select theme\n> system\n  dark\n  light", "Select theme", "system"),
-		renderSample("auth-overlay", 100, "auth openai\nsigned in through Serf state dir\nlogout openai\npaste final redirect URL", "Serf state dir", "paste final redirect URL"),
-		renderSample("agents-picker", 100, "Select transcript\n> main session\nworker - restore auth commands\nexplorer - inspect old TUI", "Select transcript", "main session"),
-		renderSample("help-overlay", 100, "Available commands for this source\n/model available\n/clear unavailable: Codex source lacks clear", "Available commands", "unavailable"),
-		renderSample("diagnostics", 100, "diagnostics\nspawn failed: model provider is not reported by harness\naction unavailable: clear", "spawn failed", "action unavailable"),
+	specs := []struct {
+		name     string
+		width    int
+		contains []string
+	}{
+		{name: "dashboard-narrow", width: 60, contains: []string{"serf live", "n new", "/ palette"}},
+		{name: "dashboard-normal", width: 100, contains: []string{"codex-local", "Restore hub TUI widgets"}},
+		{name: "dashboard-wide", width: 140, contains: []string{"serf live", "Codex app-server smoke"}},
+		{name: "project-narrow", width: 60, contains: []string{"Live now", "Recent in this project"}},
+		{name: "project-normal", width: 100, contains: []string{"Live now", "Recent in this project"}},
+		{name: "project-wide", width: 140, contains: []string{"Live now", "Document protocol adoption"}},
+		{name: "session-idle", width: 100, contains: []string{"message", "draft stays visible"}},
+		{name: "session-streaming", width: 100, contains: []string{"The running agent harness", "all task steps completed"}},
+		{name: "session-busy-steer", width: 100, contains: []string{"steer", "Please also check"}},
+		{name: "session-busy-readonly", width: 100, contains: []string{"read-only", "source does not advertise steer"}},
+		{name: "session-browse", width: 100, contains: []string{"esc/i/q: compose", "f: fork"}},
+		{name: "session-fork", width: 100, contains: []string{"fork draft", "edited prompt"}},
+		{name: "spawn-serf", width: 100, contains: []string{"Harness:  serf", "openai/gpt-5.5"}},
+		{name: "spawn-codex", width: 100, contains: []string{"Harness:  codex-local", "codex-local/gpt-5.3-codex"}},
+		{name: "spawn-auth-required", width: 100, contains: []string{"OpenAI login required", "openai/gpt-4.1"}},
+		{name: "model-picker", width: 100, contains: []string{"Select model", "openai/gpt-5.5"}},
+		{name: "theme-picker", width: 80, contains: []string{"Select theme", "dark", "light"}},
+		{name: "auth-overlay", width: 100, contains: []string{"OpenAI", "Serf-owned"}},
+		{name: "agents-picker", width: 100, contains: []string{"Select transcript", "main session"}},
+		{name: "help-overlay", width: 100, contains: []string{"Available commands", "/model"}},
+		{name: "diagnostics", width: 100, contains: []string{"Spawn failed", "Action unavailable"}},
 	}
+
+	out := make([]tuiSampleRender, 0, len(specs))
+	for _, spec := range specs {
+		render, ok := sampleRenderFromRealWidget(spec.name, spec.width)
+		if !ok {
+			continue
+		}
+		render.Contains = spec.contains
+		out = append(out, render)
+	}
+	return out
 }
 
 func sampleInteractions() []tuiInteractionSample {
@@ -341,4 +356,147 @@ func renderSample(name string, width int, view string, contains ...string) tuiSa
 		View:     strings.TrimSpace(view),
 		Contains: contains,
 	}
+}
+
+func sampleRenderFromRealWidget(name string, width int) (tuiSampleRender, bool) {
+	switch name {
+	case "dashboard-narrow", "dashboard-normal", "dashboard-wide":
+		m := sampleHubModel(width)
+		m.mode = hubModeDashboard
+		return renderSample(name, width, m.dashboardView()), true
+	case "project-narrow", "project-normal", "project-wide":
+		m := sampleHubModel(width)
+		m.openProject("serf")
+		return renderSample(name, width, m.projectView()), true
+	case "session-idle":
+		m := sampleSessionModel(width, sampleSessionDetails()["serf-idle"])
+		m.session.setInputValue("draft stays visible")
+		return renderSample(name, width, m.sessionView()), true
+	case "session-streaming":
+		m := sampleSessionModel(width, sampleSessionDetails()["serf-idle"])
+		m.session.messages = sampleTranscriptEvents()
+		m.session.refreshViewport()
+		return renderSample(name, width, m.sessionView()), true
+	case "session-busy-steer":
+		m := sampleSessionModel(width, sampleSessionDetails()["busy-steer"])
+		m.detail.ActiveTurnID = "turn_busy"
+		m.session.processing = true
+		m.session.setInputValue("Please also check old TUI command parity")
+		return renderSample(name, width, m.sessionView()), true
+	case "session-busy-readonly":
+		m := sampleSessionModel(width, sampleSessionDetails()["busy-readonly"])
+		m.session.processing = true
+		m.session.setInputValue("draft kept")
+		return renderSample(name, width, m.sessionView()), true
+	case "session-browse":
+		m := sampleSessionModel(width, sampleSessionDetails()["serf-idle"])
+		m.session.messages = sampleTranscriptEvents()
+		m.session.scrollMode = true
+		m.browseSelected = 0
+		m.session.refreshViewport()
+		return renderSample(name, width, m.sessionView()), true
+	case "session-fork":
+		m := sampleSessionModel(width, sampleSessionDetails()["serf-idle"])
+		m.forkDraft = &hubForkDraft{Turn: 1, OriginalText: "original before fork", Label: "original before fork"}
+		m.session.setInputValue("edited prompt")
+		return renderSample(name, width, m.sessionView()), true
+	case "spawn-serf":
+		m := sampleSpawnModel(width, sampleSpawnOptions()[0])
+		m.session.setInputValue("Implement the next TUI task")
+		return renderSample(name, width, m.spawnView()), true
+	case "spawn-codex":
+		m := sampleSpawnModel(width, sampleSpawnOptions()[1])
+		return renderSample(name, width, m.spawnView()), true
+	case "spawn-auth-required":
+		m := sampleSpawnModel(width, sampleSpawnOptions()[2])
+		m.err = stringsError("OpenAI login required")
+		return renderSample(name, width, m.spawnView()), true
+	case "model-picker":
+		picker := newModelPicker([]modelPickerItem{
+			{id: "openai/gpt-5.5", display: "openai/gpt-5.5"},
+			{id: "openai/gpt-4.1", display: "openai/gpt-4.1"},
+		}, "openai/gpt-5.5", width)
+		return renderSample(name, width, picker.View()), true
+	case "theme-picker":
+		picker := newThemePicker()
+		return renderSample(name, width, picker.View()), true
+	case "auth-overlay":
+		view := noticePanel{
+			Title:      "OpenAI auth",
+			Summary:    "Signed in with Serf-owned OAuth state.",
+			Source:     "serf",
+			NextAction: "Use /logout openai to sign out or paste final redirect URL during login.",
+		}.Text()
+		return renderSample(name, width, view), true
+	case "agents-picker":
+		picker := newTranscriptPicker([]modelPickerItem{
+			{id: "local:01SERF", display: "main session"},
+			{id: "local:01SERF:worker", display: "worker - restore auth commands"},
+			{id: "local:01SERF:explorer", display: "explorer - inspect old TUI"},
+		}, "local:01SERF", width)
+		return renderSample(name, width, picker.View()), true
+	case "help-overlay":
+		return renderSample(name, width, hubSlashCommandHelp(sampleSessionDetails()["serf-idle"].Capabilities)), true
+	case "diagnostics":
+		view := noticePanel{
+			Title:      "Spawn failed",
+			Summary:    sampleDiagnostics()[0].Summary,
+			Source:     sampleDiagnostics()[0].Source,
+			Reason:     sampleDiagnostics()[0].Cause,
+			NextAction: sampleDiagnostics()[0].NextAction,
+		}.Text() + "\n\n" + noticePanel{
+			Title:   "Action unavailable",
+			Summary: sampleDiagnostics()[1].Summary,
+			Source:  sampleDiagnostics()[1].Source,
+			Reason:  sampleDiagnostics()[1].Cause,
+		}.Text()
+		return renderSample(name, width, view), true
+	default:
+		return tuiSampleRender{}, false
+	}
+}
+
+func sampleHubModel(width int) hubModel {
+	m := newHubModel(nil, "http://hub.test")
+	m.width = width
+	m.height = 32
+	m.tree = sampleDashboardTree()
+	m.rows = buildDashboardRows(m.tree)
+	m.clampSelection()
+	return m
+}
+
+func sampleSessionModel(width int, detail hubSessionDetail) hubModel {
+	m := sampleHubModel(width)
+	m.mode = hubModeSession
+	m.detail = detail
+	m.session = newModel("", "", nil)
+	m.session.width = width
+	m.session.height = 32
+	m.session.messages = []chatMessage{{Kind: msgAssistant, Text: "Ready for the next task."}}
+	m.session.refreshViewport()
+	return m
+}
+
+func sampleSpawnModel(width int, sample tuiSpawnSample) hubModel {
+	m := sampleHubModel(width)
+	m.mode = hubModeSpawn
+	m.spawnHarness = sample.Harness
+	m.spawnHarnesses = []string{"serf", "codex-local"}
+	m.spawnHarnessKinds = map[string]string{"serf": "serf", "codex-local": "codex"}
+	m.spawnModel = sample.Model
+	m.spawnDir = sample.WorkingDir
+	m.spawnProject = "serf"
+	m.spawnModels = []modelPickerItem{{id: "openai/gpt-5.5", display: "openai/gpt-5.5"}, {id: "openai/gpt-4.1", display: "openai/gpt-4.1"}}
+	m.spawnHarnessModels = map[string][]modelPickerItem{
+		"codex-local": {{id: "gpt-5.3-codex", display: "gpt-5.3-codex"}},
+	}
+	m.setSpawnFocus(hubSpawnFieldPrompt)
+	return m
+}
+
+type stringsError string
+
+func (e stringsError) Error() string {
+	return string(e)
 }

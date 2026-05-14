@@ -91,6 +91,38 @@ func TestHubTUISampleCorpusHasGoldenRendersForCoreSurfaces(t *testing.T) {
 	}
 }
 
+func TestHubTUISampleRendersComeFromRealWidgets(t *testing.T) {
+	corpus := newHubTUISampleCorpus()
+	renders := map[string]tuiSampleRender{}
+	for _, render := range corpus.Renders {
+		renders[render.Name] = render
+	}
+
+	for _, name := range []string{
+		"dashboard-narrow",
+		"dashboard-normal",
+		"project-normal",
+		"session-idle",
+		"spawn-serf",
+		"model-picker",
+		"theme-picker",
+		"agents-picker",
+		"diagnostics",
+	} {
+		render, ok := renders[name]
+		if !ok {
+			t.Fatalf("missing render %q", name)
+		}
+		want, ok := sampleRenderFromRealWidget(name, render.Width)
+		if !ok {
+			t.Fatalf("no real-widget sample renderer for %q", name)
+		}
+		if render.View != want.View {
+			t.Fatalf("render %q drifted from real widget output\nwant:\n%s\n\ngot:\n%s", name, want.View, render.View)
+		}
+	}
+}
+
 func TestHubTUISampleCorpusHasFocusAndDraftInteractionSamples(t *testing.T) {
 	corpus := newHubTUISampleCorpus()
 	required := []string{
