@@ -366,13 +366,15 @@
           }
           break;
         case "USER_INPUT":
+          if (this.promoteLocalUserMessage(data)) break;
           this.userTurnIndex++;
           if (typeof data.turn === "number" && data.turn > 0) {
             this.entryIndex = data.turn;
           } else {
             this.entryIndex++;
           }
-          this.appendUserMessage(data.text || "", this.entryIndex, data.images || []);
+          const userWrap = this.appendUserMessage(data.text || "", this.entryIndex, data.images || []);
+          if (data.turnId) userWrap.dataset.turnId = String(data.turnId);
           break;
         case "ASSISTANT_TEXT_START":
           this.entryIndex++;
@@ -532,6 +534,50 @@
       actions.appendChild(copy); actions.appendChild(edit);
       wrap.appendChild(pill); wrap.appendChild(actions);
       this.conversation.appendChild(wrap);
+      return wrap;
+    },
+
+    appendLocalUserMessage(text, images, turnId, previousUserCount) {
+      if (this.userMessageCount() > previousUserCount) return;
+      this.userTurnIndex++;
+      this.entryIndex++;
+      const wrap = this.appendUserMessage(text || "", this.entryIndex, images || []);
+      wrap.dataset.localEcho = "true";
+      wrap.dataset.localImageCount = String(Array.isArray(images) ? images.length : 0);
+      if (turnId) wrap.dataset.turnId = String(turnId);
+      this.scrollToBottom();
+    },
+
+    userMessageCount() {
+      if (!this.conversation) return 0;
+      return this.conversation.querySelectorAll(".user-message").length;
+    },
+
+    promoteLocalUserMessage(data) {
+      if (!this.conversation) return false;
+      const text = this.normalizedUserText(data && data.text);
+      const turnId = data && data.turnId ? String(data.turnId) : "";
+      const imageCount = Array.isArray(data && data.images) ? data.images.length : 0;
+      const localMessages = this.conversation.querySelectorAll('.user-message[data-local-echo="true"]');
+      for (const wrap of localMessages) {
+        if (turnId && wrap.dataset.turnId && wrap.dataset.turnId !== turnId) continue;
+        const textEl = wrap.querySelector(".user-message-text");
+        if (this.normalizedUserText(textEl && textEl.textContent) !== text) continue;
+        if (Number(wrap.dataset.localImageCount || "0") !== imageCount) continue;
+        if (typeof data.turn === "number" && data.turn > 0) {
+          wrap.dataset.entryIdx = String(data.turn);
+          this.entryIndex = Math.max(this.entryIndex, data.turn);
+        }
+        if (turnId) wrap.dataset.turnId = turnId;
+        delete wrap.dataset.localEcho;
+        delete wrap.dataset.localImageCount;
+        return true;
+      }
+      return false;
+    },
+
+    normalizedUserText(text) {
+      return String(text || "").replace(/\s+/g, " ").trim();
     },
 
     startEdit(wrap, pill, originalText) {
@@ -1137,9 +1183,12 @@
               name: a.name,
             })),
           };
+          const previousUserCount = this.userMessageCount();
+          let turnId = "";
           if (window.SerfAppwire) {
             const resp = await window.SerfAppwire.startTurn(this.appwireRef || this.sessionId, body.text, body.images);
-            this.setActiveTurnId(resp && resp.turn && resp.turn.id || this.activeTurnId);
+            turnId = resp && resp.turn && resp.turn.id || "";
+            this.setActiveTurnId(turnId || this.activeTurnId);
           } else {
             const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/send", {
               method: "POST",
@@ -1152,6 +1201,7 @@
               return;
             }
           }
+          this.appendLocalUserMessage(body.text, body.images, turnId, previousUserCount);
           ta.value = "";
           ta.style.height = "";
           grow();

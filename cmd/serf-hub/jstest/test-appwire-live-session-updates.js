@@ -63,6 +63,9 @@ window.SerfAppwire = {
     if (method === "turn/completed") return [["TURN_COMPLETED", { turnId: params.turn && params.turn.id || "" }]];
     if (method === "item/started") return [["ASSISTANT_TEXT_START", {}]];
     if (method === "item/agentMessage/delta") return [["ASSISTANT_TEXT_DELTA", { delta: params.delta || "" }]];
+    if (method === "item/completed" && params.item && params.item.type === "user_message") {
+      return [["USER_INPUT", { text: params.item.text || "", images: params.item.images || [] }]];
+    }
     return [];
   },
   startTurn: (sessionIdOrRef) => {
@@ -91,6 +94,17 @@ async function run() {
 
   pass(startTurnTarget === "local:thread-live", "send should target canonical AppWire ref, got " + startTurnTarget);
   pass(typeof notificationHandler === "function", "renderer did not subscribe to AppWire notifications");
+
+  const userMessages = () => Array.from(conv.querySelectorAll(".user-message-text")).map((el) => el.textContent);
+  pass(userMessages().filter((text) => text === "ping").length === 1, "sent prompt should render before AppWire user-message notification");
+
+  notificationHandler("item/completed", {
+    threadId: "thread-live",
+    ref: "local:thread-live",
+    turnId: "turn_1",
+    item: { type: "user_message", id: "item_user_1", turnId: "turn_1", text: "ping", status: "completed" },
+  });
+  pass(userMessages().filter((text) => text === "ping").length === 1, "AppWire user-message notification should not duplicate the sent prompt");
 
   notificationHandler("item/started", {
     threadId: "thread-live",
