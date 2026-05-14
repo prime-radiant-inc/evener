@@ -2766,6 +2766,11 @@ func disableLiveOllamaForModelTest(t *testing.T) {
 	t.Setenv("OLLAMA_API_KEY", "")
 }
 
+func disableStoredOpenAIAuthForModelTest(t *testing.T) {
+	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+}
+
 func TestWeb_ApiModels_ReturnsSerfLaunchContractWhenLiveUnavailable(t *testing.T) {
 	liveModelsCache.mu.Lock()
 	liveModelsCache.expires = time.Time{}
@@ -2860,6 +2865,7 @@ func TestWeb_ApiModels_DoesNotUseLiveProvidersWhenLaunchContractIsEmpty(t *testi
 	t.Setenv("MINIMAX_API_KEY", "")
 	t.Setenv("OPENROUTER_API_KEY", "")
 	disableLiveOllamaForModelTest(t)
+	disableStoredOpenAIAuthForModelTest(t)
 
 	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" {
@@ -3029,6 +3035,7 @@ func TestWeb_ApiModels_FiltersOpenRouterLiveModelsToToolCapable(t *testing.T) {
 	t.Setenv("MINIMAX_API_KEY", "")
 	t.Setenv("OPENROUTER_API_KEY", "")
 	disableLiveOllamaForModelTest(t)
+	disableStoredOpenAIAuthForModelTest(t)
 
 	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" {
@@ -3082,6 +3089,7 @@ func TestWeb_ApiModels_NoProvidersConfigured(t *testing.T) {
 	t.Setenv("MINIMAX_API_KEY", "")
 	t.Setenv("OPENROUTER_API_KEY", "")
 	disableLiveOllamaForModelTest(t)
+	disableStoredOpenAIAuthForModelTest(t)
 
 	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180"})
 	req := httptest.NewRequest(http.MethodGet, "/api/models", nil)
