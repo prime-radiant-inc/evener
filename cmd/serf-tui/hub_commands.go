@@ -75,11 +75,13 @@ type hubSessionModelsMsg struct {
 }
 
 type hubSpawnOptionsMsg struct {
-	harnesses    []string
-	harnessKinds map[string]string
-	models       []modelPickerItem
-	err          error
-	modelErr     error
+	harnesses                   []string
+	harnessKinds                map[string]string
+	emptyTaskUnsupportedReasons map[string]string
+	emptyTaskUnsupportedNext    map[string]string
+	models                      []modelPickerItem
+	err                         error
+	modelErr                    error
 }
 
 type hubAuthStatusMsg struct {
@@ -171,7 +173,7 @@ func fetchHubModels(client *appwire.Client, workingDir string) tea.Cmd {
 		if err != nil {
 			return hubModelsMsg{err: err}
 		}
-		return hubModelsMsg{models: modelPickerItems(resp.Data, false)}
+		return hubModelsMsg{models: modelPickerItemsFromResponse(resp, false)}
 	}
 }
 
@@ -183,7 +185,7 @@ func fetchHubModelsForHarness(client *appwire.Client, harness string, workingDir
 		if err != nil {
 			return hubModelsMsg{harness: harness, err: err}
 		}
-		return hubModelsMsg{harness: harness, models: modelPickerItems(resp.Data, harness != "")}
+		return hubModelsMsg{harness: harness, models: modelPickerItemsFromResponse(resp, harness != "")}
 	}
 }
 
@@ -194,7 +196,7 @@ func fetchHubSessionModels(client *appwire.Client, workingDir string) tea.Cmd {
 		if err != nil {
 			return hubSessionModelsMsg{err: err}
 		}
-		return hubSessionModelsMsg{models: modelPickerItems(resp.Data, false)}
+		return hubSessionModelsMsg{models: modelPickerItemsFromResponse(resp, false)}
 	}
 }
 
@@ -207,6 +209,8 @@ func fetchHubSpawnOptions(client *appwire.Client, workingDir string) tea.Cmd {
 		}
 		harnesses := make([]string, 0, len(harnessResp.Data))
 		harnessKinds := map[string]string{}
+		emptyTaskUnsupportedReasons := map[string]string{}
+		emptyTaskUnsupportedNext := map[string]string{}
 		for _, option := range harnessResp.Data {
 			if option.ID == "" {
 				continue
@@ -217,13 +221,19 @@ func fetchHubSpawnOptions(client *appwire.Client, workingDir string) tea.Cmd {
 				kind = "serf"
 			}
 			harnessKinds[option.ID] = kind
+			if reason := strings.TrimSpace(option.EmptyTaskUnsupportedReason); reason != "" {
+				emptyTaskUnsupportedReasons[option.ID] = reason
+			}
+			if next := strings.TrimSpace(option.EmptyTaskUnsupportedNextAction); next != "" {
+				emptyTaskUnsupportedNext[option.ID] = next
+			}
 		}
 		modelResp, err := client.ModelList(context.Background(), appwire.ModelListParams{CWD: workingDir})
 		if err != nil {
-			return hubSpawnOptionsMsg{harnesses: harnesses, harnessKinds: harnessKinds, modelErr: err}
+			return hubSpawnOptionsMsg{harnesses: harnesses, harnessKinds: harnessKinds, emptyTaskUnsupportedReasons: emptyTaskUnsupportedReasons, emptyTaskUnsupportedNext: emptyTaskUnsupportedNext, modelErr: err}
 		}
-		models := modelPickerItems(modelResp.Data, false)
-		return hubSpawnOptionsMsg{harnesses: harnesses, harnessKinds: harnessKinds, models: models}
+		models := modelPickerItemsFromResponse(modelResp, false)
+		return hubSpawnOptionsMsg{harnesses: harnesses, harnessKinds: harnessKinds, emptyTaskUnsupportedReasons: emptyTaskUnsupportedReasons, emptyTaskUnsupportedNext: emptyTaskUnsupportedNext, models: models}
 	}
 }
 
@@ -278,6 +288,70 @@ func modelPickerItems(models []appwire.ModelDescriptor, rawModelID bool) []model
 		items = append(items, modelPickerItem{id: id, display: display})
 	}
 	return items
+}
+
+func modelPickerItemsFromResponse(resp appwire.ModelListResponse, rawModelID bool) []modelPickerItem {
+	items := modelPickerItems(resp.Data, rawModelID)
+	if len(resp.Diagnostics) == 0 {
+		return items
+	}
+	reasons := map[string]string{}
+	for _, diagnostic := range resp.Diagnostics {
+		provider := strings.TrimSpace(diagnostic.Provider)
+		if provider == "" {
+			continue
+		}
+		if _, exists := reasons[provider]; exists {
+			continue
+		}
+		reasons[provider] = modelDiagnosticDisabledReason(diagnostic)
+	}
+	if len(reasons) == 0 {
+		return items
+	}
+	for i := range items {
+		provider := modelPickerItemProvider(items[i])
+		if provider == "" {
+			continue
+		}
+		if reason := reasons[provider]; reason != "" {
+			items[i].disabledReason = reason
+		}
+	}
+	return items
+}
+
+func modelPickerItemProvider(item modelPickerItem) string {
+	display := strings.TrimSpace(item.display)
+	if display == "" {
+		display = strings.TrimSpace(item.id)
+	}
+	provider, _, ok := strings.Cut(display, "/")
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(provider)
+}
+
+func modelDiagnosticDisabledReason(diagnostic appwire.ModelListDiagnostic) string {
+	title := strings.TrimSpace(diagnostic.Title)
+	message := strings.TrimSpace(diagnostic.Message)
+	hint := strings.TrimSpace(diagnostic.Hint)
+	reason := title
+	if message != "" && !strings.EqualFold(message, title) {
+		if reason != "" {
+			reason += ": " + message
+		} else {
+			reason = message
+		}
+	}
+	if reason == "" {
+		reason = "provider unavailable"
+	}
+	if hint != "" {
+		reason += " (" + hint + ")"
+	}
+	return reason
 }
 
 func sendHubInput(client *appwire.Client, ref appwire.Ref, text string) tea.Cmd {

@@ -502,6 +502,27 @@ func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
 	}
 }
 
+func TestTUITmuxE2E_ModelPickerShowsAuthRequiredModels(t *testing.T) {
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	hub.SetAuthRequiredModels(true)
+	defer hub.Close()
+	app := startTUITmux(t, bin, hub.URL())
+	defer app.Close()
+
+	openLiveSession(t, app)
+	app.WaitFor("live task", "initial question")
+
+	app.TypeLine("/model")
+	app.WaitFor("Select model", "openai/gpt-5", "disabled: Login required", "/auth openai")
+	app.SendKeys("Enter")
+	app.WaitFor("Select model", "disabled: Login required")
+	if models := hub.Models(); len(models) != 0 {
+		t.Fatalf("auth-required model should not be selected: %+v", models)
+	}
+}
+
 func TestTUITmuxE2E_HubStreamingAssistantDeltaBeforeRefresh(t *testing.T) {
 	requireTmux(t)
 	bin := buildTUIBinary(t)
@@ -573,7 +594,7 @@ func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 	app.SendKeys("n")
 	app.WaitFor("serf / new session", "Prompt (optional):")
 	app.TypeLine("spawn should fail")
-	app.WaitFor("error: spawn failed: appwire thread/start: spawn failed")
+	app.WaitFor("error: spawn failed: appwire thread/start: spawn failed", "> spawn should fail")
 }
 
 func openLiveSession(t *testing.T, app *tmuxTUI) {
@@ -804,6 +825,7 @@ type tuiE2EHub struct {
 	harnesses       []appwire.HarnessDescriptor
 	spawnCount      int
 	treeGets        int
+	authRequired    bool
 	failTasks       bool
 	failSend        bool
 	failSpawn       bool
@@ -1119,8 +1141,22 @@ func (h *tuiE2EHub) handleThreadRead(ctx context.Context, params appwire.ThreadR
 }
 
 func (h *tuiE2EHub) handleModelList(_ context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
+	h.mu.Lock()
+	authRequired := h.authRequired
+	h.mu.Unlock()
 	if params.Harness == "codex-local" {
 		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "codex-local", Model: "gpt-5.3-codex"}}}, nil
+	}
+	if authRequired {
+		return appwire.ModelListResponse{
+			Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}},
+			Diagnostics: []appwire.ModelListDiagnostic{{
+				Provider: "openai",
+				Title:    "Login required",
+				Message:  "OpenAI login required",
+				Hint:     "run /auth openai",
+			}},
+		}, nil
 	}
 	return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}, nil
 }
@@ -1399,6 +1435,12 @@ func (h *tuiE2EHub) SetFailSpawn(fail bool) {
 func (h *tuiE2EHub) SetFailFork(fail bool) {
 	h.mu.Lock()
 	h.failFork = fail
+	h.mu.Unlock()
+}
+
+func (h *tuiE2EHub) SetAuthRequiredModels(required bool) {
+	h.mu.Lock()
+	h.authRequired = required
 	h.mu.Unlock()
 }
 

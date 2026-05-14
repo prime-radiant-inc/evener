@@ -384,9 +384,11 @@ type DirsCompleteResponse struct {
 type HarnessListParams struct{}
 
 type HarnessDescriptor struct {
-	ID    string `json:"id"`
-	Label string `json:"label"`
-	Kind  string `json:"kind,omitempty"`
+	ID                             string `json:"id"`
+	Label                          string `json:"label"`
+	Kind                           string `json:"kind,omitempty"`
+	EmptyTaskUnsupportedReason     string `json:"emptyTaskUnsupportedReason,omitempty"`
+	EmptyTaskUnsupportedNextAction string `json:"emptyTaskUnsupportedNextAction,omitempty"`
 }
 
 type HarnessListResponse struct {

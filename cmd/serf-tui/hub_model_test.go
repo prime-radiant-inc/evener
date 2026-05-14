@@ -1103,6 +1103,114 @@ func TestHubModelCodexSpawnOpensHarnessModelPicker(t *testing.T) {
 	}
 }
 
+func TestHubModelSpawnRejectsHubUnsupportedEmptyTaskBeforeStart(t *testing.T) {
+	var startCalled bool
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		app.Router().Handle(appwire.MethodSerfHarnessesList, func(context.Context, json.RawMessage) (any, error) {
+			return map[string]any{"data": []map[string]any{{
+				"id":                             "serf",
+				"label":                          "serf",
+				"kind":                           "serf",
+				"emptyTaskUnsupportedReason":     "task text is required by this hub",
+				"emptyTaskUnsupportedNextAction": "enter a task before spawning",
+			}}}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
+			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadStart, func(context.Context, appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+			startCalled = true
+			return appwire.ThreadStartResponse{}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newHubModel(client, "http://hub.test")
+	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
+		Key:        "serf",
+		Name:       "serf",
+		WorkingDir: "/tmp/serf",
+		Sessions: []hubTreeNode{
+			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true},
+		},
+	}}}
+	m.rows = buildDashboardRows(m.tree)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if cmd == nil {
+		t.Fatal("spawn key should fetch options")
+	}
+	updated, _ = updated.(hubModel).Update(cmd())
+	form := updated.(hubModel)
+	updated, cmd = form.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("empty unsupported task should fail before thread/start")
+	}
+	form = updated.(hubModel)
+	if startCalled {
+		t.Fatal("thread/start was called for a Hub-unsupported empty task")
+	}
+	if form.mode != hubModeSpawn || form.session.input.Value() != "" {
+		t.Fatalf("spawn form should stay open with draft preserved: mode=%v draft=%q", form.mode, form.session.input.Value())
+	}
+	if view := form.spawnView(); !strings.Contains(view, "Spawn unavailable") || !strings.Contains(view, "task text is required") || !strings.Contains(view, "enter a task before spawning") {
+		t.Fatalf("spawn rejection was not structured:\n%s", view)
+	}
+}
+
+func TestHubModelSpawnDefaultsToEnabledModelWhenAuthRequired(t *testing.T) {
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
+			return appwire.ModelListResponse{
+				Data: []appwire.ModelDescriptor{
+					{Provider: "openai", Model: "gpt-5"},
+					{Provider: "ollama", Model: "llama3"},
+				},
+				Diagnostics: []appwire.ModelListDiagnostic{{
+					Provider: "openai",
+					Title:    "Login required",
+					Message:  "OpenAI login required",
+					Hint:     "run /auth openai",
+				}},
+			}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newHubModel(client, "http://hub.test")
+	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
+		Key:        "serf",
+		Name:       "serf",
+		WorkingDir: "/tmp/serf",
+		Sessions: []hubTreeNode{
+			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true},
+		},
+	}}}
+	m.rows = buildDashboardRows(m.tree)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if cmd == nil {
+		t.Fatal("spawn key should fetch options")
+	}
+	updated, _ = updated.(hubModel).Update(cmd())
+	form := updated.(hubModel)
+	if form.spawnModel != "ollama/llama3" {
+		t.Fatalf("spawn model=%q, want first enabled ollama/llama3", form.spawnModel)
+	}
+	updated, _ = form.Update(tea.KeyMsg{Type: tea.KeyTab})
+	form = updated.(hubModel)
+	updated, _ = form.Update(tea.KeyMsg{Type: tea.KeyTab})
+	form = updated.(hubModel)
+	updated, _ = form.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	form = updated.(hubModel)
+	if form.spawnModelPicker == nil {
+		t.Fatalf("model field did not open picker:\n%s", form.spawnView())
+	}
+	if view := form.spawnModelPicker.View(); !strings.Contains(view, "openai/gpt-5") || !strings.Contains(view, "disabled: Login required") || !strings.Contains(view, "ollama/llama3") {
+		t.Fatalf("spawn picker missing disabled auth-required row:\n%s", view)
+	}
+}
+
 func TestHubModelDashboardSpawnOpensFormBeforePosting(t *testing.T) {
 	var posted bool
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
@@ -1465,6 +1573,32 @@ func TestHubModelActionsAndClearUseAppWire(t *testing.T) {
 	}
 }
 
+func TestHubModelDirectModelCommandSplitsProviderQualifiedModel(t *testing.T) {
+	var gotModel appwire.ThreadModelSetParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadModelSet, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+			gotModel = params
+			return appwire.EmptyResponse{}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	m.session.setInputValue("/model openai/gpt-5-mini")
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("direct /model provider/model returned nil command")
+	}
+	updated, _ = updated.(hubModel).Update(cmd())
+	m = updated.(hubModel)
+	if gotModel.Ref != "local:01SEND" || gotModel.ModelProvider != "openai" || gotModel.Model != "gpt-5-mini" {
+		t.Fatalf("model set params=%+v, want local:01SEND openai/gpt-5-mini", gotModel)
+	}
+	if view := m.View(); !strings.Contains(view, "Model updated.") {
+		t.Fatalf("missing model updated message:\n%s", view)
+	}
+}
+
 func TestHubModelSessionModelPickerUsesHubModels(t *testing.T) {
 	var gotList appwire.ModelListParams
 	var gotModel appwire.ThreadModelSetParams
@@ -1525,6 +1659,76 @@ func TestHubModelSessionModelPickerUsesHubModels(t *testing.T) {
 	}
 	if got := m.View(); !strings.Contains(got, "Model updated.") {
 		t.Fatalf("missing model updated message:\n%s", got)
+	}
+}
+
+func TestHubModelSessionModelPickerDisablesAuthRequiredModels(t *testing.T) {
+	var setCalls int
+	var gotModel appwire.ThreadModelSetParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
+			return appwire.ModelListResponse{
+				Data: []appwire.ModelDescriptor{
+					{Provider: "openai", Model: "gpt-5"},
+					{Provider: "ollama", Model: "llama3"},
+				},
+				Diagnostics: []appwire.ModelListDiagnostic{{
+					Provider: "openai",
+					Title:    "Login required",
+					Message:  "OpenAI login required",
+					Hint:     "run /auth openai",
+				}},
+			}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadModelSet, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+			setCalls++
+			gotModel = params
+			return appwire.EmptyResponse{}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	m.detail.WorkingDir = "/tmp/serf"
+	m.detail.Model = "ollama/llama3"
+	m.session.setInputValue("/model")
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatalf("/model should fetch models:\n%s", updated.(hubModel).View())
+	}
+	updated, _ = updated.(hubModel).Update(cmd())
+	m = updated.(hubModel)
+	if m.sessionModelPicker == nil {
+		t.Fatalf("expected session model picker:\n%s", m.View())
+	}
+	if view := m.View(); !strings.Contains(view, "openai/gpt-5") || !strings.Contains(view, "disabled: Login required") || !strings.Contains(view, "/auth openai") {
+		t.Fatalf("missing disabled auth-required model row:\n%s", view)
+	}
+
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("disabled model selection returned unexpected command")
+	}
+	m = updated.(hubModel)
+	if setCalls != 0 {
+		t.Fatalf("disabled model selection called thread/model/set %d time(s)", setCalls)
+	}
+	if m.sessionModelPicker == nil {
+		t.Fatal("disabled model selection should keep picker open")
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	updated, cmd = updated.(hubModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enabled model selection should call thread/model/set")
+	}
+	updated, _ = updated.(hubModel).Update(cmd())
+	m = updated.(hubModel)
+	if gotModel.Ref != "local:01SEND" || gotModel.ModelProvider != "ollama" || gotModel.Model != "llama3" {
+		t.Fatalf("model set params=%+v, want local:01SEND ollama/llama3", gotModel)
+	}
+	if m.sessionModelPicker != nil {
+		t.Fatal("enabled selection should close picker")
 	}
 }
 

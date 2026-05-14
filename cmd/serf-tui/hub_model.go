@@ -91,6 +91,8 @@ type hubModel struct {
 	spawnHarness            string
 	spawnHarnesses          []string
 	spawnHarnessKinds       map[string]string
+	spawnEmptyTaskReasons   map[string]string
+	spawnEmptyTaskNext      map[string]string
 	spawnModel              string
 	spawnModels             []modelPickerItem
 	spawnHarnessModels      map[string][]modelPickerItem
@@ -369,6 +371,14 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spawnHarnessKinds = msg.harnessKinds
 		if m.spawnHarnessKinds == nil {
 			m.spawnHarnessKinds = map[string]string{}
+		}
+		m.spawnEmptyTaskReasons = msg.emptyTaskUnsupportedReasons
+		if m.spawnEmptyTaskReasons == nil {
+			m.spawnEmptyTaskReasons = map[string]string{}
+		}
+		m.spawnEmptyTaskNext = msg.emptyTaskUnsupportedNext
+		if m.spawnEmptyTaskNext == nil {
+			m.spawnEmptyTaskNext = map[string]string{}
 		}
 		for _, harness := range m.spawnHarnesses {
 			if m.spawnHarnessKinds[harness] == "" {
@@ -733,12 +743,33 @@ func (m hubModel) submitSpawnForm() (tea.Model, tea.Cmd) {
 	if m.client == nil || m.spawnSubmitting {
 		return m, nil
 	}
+	prompt := strings.TrimSpace(m.session.input.Value())
+	if prompt == "" {
+		if reason := m.spawnEmptyTaskUnsupportedReason(); reason != "" {
+			m.err = fmt.Errorf("%s", noticePanel{
+				Title:      "Spawn unavailable",
+				Source:     strings.TrimSpace(m.spawnHarness),
+				Reason:     reason,
+				NextAction: m.spawnEmptyTaskUnsupportedNextAction(),
+			}.Text())
+			return m, nil
+		}
+	}
 	if m.spawnHarnessUsesSerfModels() && strings.TrimSpace(m.spawnModel) == "" {
 		m.err = fmt.Errorf("choose a model before spawning")
 		return m, nil
 	}
+	if reason := m.spawnModelDisabledReason(strings.TrimSpace(m.spawnModel)); reason != "" {
+		m.err = fmt.Errorf("%s", noticePanel{
+			Title:      "Spawn unavailable",
+			Source:     strings.TrimSpace(m.spawnHarness),
+			Reason:     "selected model is not available: " + reason,
+			NextAction: "choose an enabled model or resolve the provider requirement",
+		}.Text())
+		return m, nil
+	}
 	req := hubSpawnRequest{
-		Prompt:     strings.TrimSpace(m.session.input.Value()),
+		Prompt:     prompt,
 		Harness:    strings.TrimSpace(m.spawnHarness),
 		Model:      strings.TrimSpace(m.spawnModel),
 		WorkingDir: m.spawnDir,
@@ -1184,6 +1215,8 @@ func (m *hubModel) resetSpawnForm() {
 	m.spawnHarness = "serf"
 	m.spawnHarnesses = []string{"serf"}
 	m.spawnHarnessKinds = map[string]string{"serf": "serf"}
+	m.spawnEmptyTaskReasons = nil
+	m.spawnEmptyTaskNext = nil
 	m.spawnModel = ""
 	m.spawnModels = nil
 	m.spawnHarnessModels = nil
@@ -1243,10 +1276,46 @@ func (m *hubModel) syncSpawnModelWithHarness() {
 	}
 	if strings.TrimSpace(m.spawnModel) == "" {
 		models := m.spawnSelectableModels()
-		if len(models) > 0 {
-			m.spawnModel = models[0].id
+		if model, ok := firstEnabledModel(models); ok {
+			m.spawnModel = model.id
 		}
 	}
+}
+
+func firstEnabledModel(models []modelPickerItem) (modelPickerItem, bool) {
+	for _, model := range models {
+		if strings.TrimSpace(model.disabledReason) == "" {
+			return model, true
+		}
+	}
+	return modelPickerItem{}, false
+}
+
+func (m hubModel) spawnModelDisabledReason(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return ""
+	}
+	for _, item := range m.spawnSelectableModels() {
+		if strings.TrimSpace(item.id) == model || strings.TrimSpace(item.display) == model {
+			return strings.TrimSpace(item.disabledReason)
+		}
+	}
+	return ""
+}
+
+func (m hubModel) spawnEmptyTaskUnsupportedReason() string {
+	if m.spawnEmptyTaskReasons == nil {
+		return ""
+	}
+	return strings.TrimSpace(m.spawnEmptyTaskReasons[m.spawnHarness])
+}
+
+func (m hubModel) spawnEmptyTaskUnsupportedNextAction() string {
+	if m.spawnEmptyTaskNext == nil {
+		return ""
+	}
+	return strings.TrimSpace(m.spawnEmptyTaskNext[m.spawnHarness])
 }
 
 func (m *hubModel) openSpawnModelPicker(models []modelPickerItem) {
