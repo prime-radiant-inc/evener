@@ -169,10 +169,18 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 		t.Fatalf("compact count=%d, want 1", got)
 	}
 
+	app.TypeLine("/model")
+	app.WaitFor("Select model", "openai/gpt-5")
+	app.SendKeys("Enter")
+	app.WaitFor("Model updated.")
+	if models := hub.WaitForModels(t, 1); models[0] != "gpt-5" {
+		t.Fatalf("model request=%q, want gpt-5", models[0])
+	}
+
 	app.TypeLine("/model gpt-5-mini")
 	app.WaitFor("Model updated.")
-	if models := hub.WaitForModels(t, 1); models[0] != "gpt-5-mini" {
-		t.Fatalf("model request=%q, want gpt-5-mini", models[0])
+	if models := hub.WaitForModels(t, 2); models[1] != "gpt-5-mini" {
+		t.Fatalf("model request=%q, want gpt-5-mini", models[1])
 	}
 
 	app.TypeLine("/project")

@@ -75,6 +75,7 @@ type hubModel struct {
 	projectRows        []hubRow
 	browseSelected     int
 	forkDraft          *hubForkDraft
+	sessionModelPicker *modelPicker
 	spawnReturnMode    hubMode
 	spawnDir           string
 	spawnProject       string
@@ -167,6 +168,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.session.refreshViewport()
 		m.browseSelected = -1
 		m.forkDraft = nil
+		m.sessionModelPicker = nil
 		return m, nil
 	case hubNotificationMsg:
 		if !msg.ok {
@@ -269,6 +271,21 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mode == hubModeSpawn {
 			m.syncSpawnModelWithHarness()
 		}
+		return m, nil
+	case hubSessionModelsMsg:
+		if msg.err != nil {
+			m.removeTrailingSessionSystem("Fetching available models...")
+			m.addSessionSystem(fmt.Sprintf("Could not fetch models: %s\nUse /model <name> to switch manually.", msg.err))
+			return m, nil
+		}
+		if len(msg.models) == 0 {
+			m.removeTrailingSessionSystem("Fetching available models...")
+			m.addSessionSystem("No models available from provider.")
+			return m, nil
+		}
+		picker := newModelPicker(msg.models, m.detail.Model, m.width)
+		m.sessionModelPicker = &picker
+		m.removeTrailingSessionSystem("Fetching available models...")
 		return m, nil
 	case hubSpawnOptionsMsg:
 		if msg.err != nil {
@@ -617,6 +634,27 @@ func (m hubModel) spawnFieldHint() string {
 }
 
 func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.sessionModelPicker != nil {
+		updated, cmd := m.sessionModelPicker.Update(msg)
+		picker := updated.(modelPicker)
+		m.sessionModelPicker = &picker
+		if picker.done {
+			selected := picker.selected
+			m.sessionModelPicker = nil
+			if selected != "" {
+				ref, ok := m.currentRef()
+				if !ok {
+					m.addSessionSystem("Session ref is invalid.")
+					return m, nil
+				}
+				m.addSessionSystem(fmt.Sprintf("Switching to model %s...", selected))
+				return m, sendHubAction(m.client, ref, selected, "")
+			}
+			m.session.refreshViewport()
+		}
+		return m, cmd
+	}
+
 	if m.forkDraft != nil {
 		switch msg.String() {
 		case "esc":
@@ -793,13 +831,17 @@ func (m *hubModel) runHubSlashCommand(cmd, args string) tea.Cmd {
 		return sendHubAction(m.client, ref, "shutdown", "")
 	case "model":
 		model := strings.TrimSpace(args)
-		if model == "" {
-			m.addSessionSystem("Usage: /model <name>")
-			return nil
-		}
 		if !m.detail.Capabilities.ChangeModel {
 			m.addSessionSystem("Model change is not available for this session.")
 			return nil
+		}
+		if model == "" {
+			if m.client == nil {
+				m.addSessionSystem("Model picker is not available without a hub client.")
+				return nil
+			}
+			m.addSessionSystem("Fetching available models...")
+			return fetchHubSessionModels(m.client, m.detail.WorkingDir)
 		}
 		return sendHubAction(m.client, ref, model, "")
 	case "help":
@@ -1102,6 +1144,18 @@ func (m *hubModel) startForkDraft() {
 
 func (m *hubModel) addSessionSystem(text string) {
 	m.session.messages = append(m.session.messages, chatMessage{Kind: msgSystem, Text: text})
+	m.session.refreshViewport()
+}
+
+func (m *hubModel) removeTrailingSessionSystem(text string) {
+	if len(m.session.messages) == 0 {
+		return
+	}
+	last := m.session.messages[len(m.session.messages)-1]
+	if last.Kind != msgSystem || last.Text != text {
+		return
+	}
+	m.session.messages = m.session.messages[:len(m.session.messages)-1]
 	m.session.refreshViewport()
 }
 
@@ -1849,6 +1903,12 @@ func (m hubModel) sessionView() string {
 			b.WriteString(rendered)
 			b.WriteString("\n")
 		}
+	}
+	if m.sessionModelPicker != nil {
+		b.WriteString("\n")
+		b.WriteString(m.sessionModelPicker.View())
+		b.WriteString("\n")
+		return b.String()
 	}
 	switch {
 	case m.forkDraft != nil:

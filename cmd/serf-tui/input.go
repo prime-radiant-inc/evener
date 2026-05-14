@@ -86,7 +86,7 @@ func hubSlashCommandHelp(caps hubSessionCapabilities) string {
 		"  /tasks     Show the agent's task list",
 	)
 	if caps.ChangeModel {
-		lines = append(lines, "  /model     Switch model with /model <name>")
+		lines = append(lines, "  /model     Switch model (picker) or /model <name>")
 	}
 	if caps.Clear {
 		lines = append(lines, "  /clear     Start a new session")

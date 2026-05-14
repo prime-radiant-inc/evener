@@ -64,6 +64,11 @@ type hubModelsMsg struct {
 	err     error
 }
 
+type hubSessionModelsMsg struct {
+	models []modelPickerItem
+	err    error
+}
+
 type hubSpawnOptionsMsg struct {
 	harnesses    []string
 	harnessKinds map[string]string
@@ -123,6 +128,17 @@ func fetchHubModelsForHarness(client *appwire.Client, harness string, workingDir
 			return hubModelsMsg{harness: harness, err: err}
 		}
 		return hubModelsMsg{harness: harness, models: modelPickerItems(resp.Data, harness != "")}
+	}
+}
+
+func fetchHubSessionModels(client *appwire.Client, workingDir string) tea.Cmd {
+	workingDir = strings.TrimSpace(workingDir)
+	return func() tea.Msg {
+		resp, err := client.ModelList(context.Background(), appwire.ModelListParams{CWD: workingDir})
+		if err != nil {
+			return hubSessionModelsMsg{err: err}
+		}
+		return hubSessionModelsMsg{models: modelPickerItems(resp.Data, false)}
 	}
 }
 

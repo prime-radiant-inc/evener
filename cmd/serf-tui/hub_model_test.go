@@ -974,6 +974,86 @@ func TestHubModelActionsAndClearUseAppWire(t *testing.T) {
 	}
 }
 
+func TestHubModelSessionModelPickerUsesHubModels(t *testing.T) {
+	var gotList appwire.ModelListParams
+	var gotModel appwire.ThreadModelSetParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(_ context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
+			gotList = params
+			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{
+				{Provider: "openai", Model: "gpt-5"},
+				{Provider: "openai", Model: "gpt-5-mini"},
+			}}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadModelSet, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+			gotModel = params
+			return appwire.EmptyResponse{}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	m.detail.WorkingDir = "/tmp/serf"
+	m.detail.Model = "openai/gpt-5"
+	m.session.setInputValue("/model")
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatalf("/model should fetch models instead of showing usage:\n%s", updated.(hubModel).View())
+	}
+	updated, cmd = updated.(hubModel).Update(cmd())
+	if cmd != nil {
+		t.Fatal("model list result should not return another command")
+	}
+	m = updated.(hubModel)
+	if gotList.CWD != "/tmp/serf" {
+		t.Fatalf("model list cwd=%q, want /tmp/serf", gotList.CWD)
+	}
+	if m.sessionModelPicker == nil {
+		t.Fatalf("expected session model picker:\n%s", m.View())
+	}
+	if got := m.View(); !strings.Contains(got, "Select model") || !strings.Contains(got, "openai/gpt-5-mini") {
+		t.Fatalf("model picker view missing model choices:\n%s", got)
+	}
+
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("mini")})
+	if cmd != nil {
+		t.Fatal("filtering model picker should be synchronous")
+	}
+	updated, cmd = updated.(hubModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("selecting a model should call thread/model/set")
+	}
+	updated, _ = updated.(hubModel).Update(cmd())
+	m = updated.(hubModel)
+
+	if gotModel.Ref != "local:01SEND" || gotModel.ModelProvider != "openai" || gotModel.Model != "gpt-5-mini" {
+		t.Fatalf("model set params=%+v, want local:01SEND openai/gpt-5-mini", gotModel)
+	}
+	if m.sessionModelPicker != nil {
+		t.Fatal("session model picker should close after selection")
+	}
+	if got := m.View(); !strings.Contains(got, "Model updated.") {
+		t.Fatalf("missing model updated message:\n%s", got)
+	}
+}
+
+func TestHubModelSessionModelPickerRequiresCapability(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.Capabilities.ChangeModel = false
+	m.session.setInputValue("/model")
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("unavailable model picker should not fetch models")
+	}
+	got := updated.(hubModel)
+	if got.sessionModelPicker != nil {
+		t.Fatal("unavailable model picker should stay closed")
+	}
+	if view := got.View(); !strings.Contains(view, "Model change is not available for this session.") {
+		t.Fatalf("missing unavailable model message:\n%s", view)
+	}
+}
+
 func TestHubModelTurnStartEnablesTurnActions(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail.ActiveTurnID = ""
