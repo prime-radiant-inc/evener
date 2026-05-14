@@ -658,7 +658,18 @@
     lastElementIsAssistantText(text) {
       const last = this.conversation && this.conversation.lastElementChild;
       if (!last || !last.classList || !last.classList.contains("assistant-message")) return false;
-      return (last.textContent || "").trim() === String(text || "").trim();
+      return this.normalizedAssistantText(last.textContent) === this.renderedAssistantText(text);
+    },
+
+    normalizedAssistantText(text) {
+      return String(text || "").replace(/\s+/g, " ").trim();
+    },
+
+    renderedAssistantText(text) {
+      const el = document.createElement("div");
+      try { el.innerHTML = window.marked.parse(String(text || "")); }
+      catch (e) { el.textContent = String(text || ""); }
+      return this.normalizedAssistantText(el.textContent);
     },
 
     appendAssistantDelta(delta) {

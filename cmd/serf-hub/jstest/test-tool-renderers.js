@@ -18,7 +18,7 @@ function newHarness() {
     <form data-input-form data-session-id="01TEST"><textarea class="message-input"></textarea></form>
   </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
   const { window } = dom;
-  window.marked = { parse: t => t };
+  window.marked = { parse: t => String(t || "").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>") };
   window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
   class MockEventSource {
     constructor() { this.listeners = new Map(); MockEventSource.last = this; }
@@ -156,6 +156,22 @@ await scenario("streamed communicate is not duplicated by tool completion", [
   const assistants = conv.querySelectorAll(".assistant-message");
   if (assistants.length !== 1) return { ok: false, detail: "expected 1 assistant-message, got " + assistants.length };
   if (assistants[0].textContent !== "Hello") return { ok: false, detail: "assistant text wrong: " + assistants[0].textContent };
+  const tc = conv.querySelector(".tool-call");
+  if (tc) return { ok: false, detail: "communicate should not produce a tool-call card" };
+  return { ok: true };
+});
+
+// communicate after an equivalent markdown assistant message — should not
+// duplicate when rendered textContent differs from raw markdown.
+await scenario("markdown communicate after assistant text is not duplicated", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["ASSISTANT_TEXT_END", { text: "The harness is **serf**." }],
+  ["TOOL_CALL_START", { call_id: "c1", tool_name: "communicate", arguments_json: JSON.stringify({ message: "The harness is **serf**." }) }],
+  ["TOOL_CALL_END", { call_id: "c1", arguments_json: JSON.stringify({ message: "The harness is **serf**." }), output: "{}", tool_name: "communicate" }],
+], ({ conv }) => {
+  const assistants = conv.querySelectorAll(".assistant-message");
+  if (assistants.length !== 1) return { ok: false, detail: "expected 1 assistant-message, got " + assistants.length };
+  if (assistants[0].textContent.trim() !== "The harness is serf.") return { ok: false, detail: "assistant text wrong: " + assistants[0].textContent };
   const tc = conv.querySelector(".tool-call");
   if (tc) return { ok: false, detail: "communicate should not produce a tool-call card" };
   return { ok: true };
