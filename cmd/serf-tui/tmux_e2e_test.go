@@ -31,7 +31,7 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app := startTUITmux(t, bin, hub.URL())
 	defer app.Close()
 
-	screen := app.WaitFor("serf live", hub.URL(), "serf", "live task", "ops task")
+	screen := app.WaitFor("serf live", hub.URL(), "▾", "└─", "serf", "live task", "ops task")
 	if strings.Contains(screen, "ended maintenance") {
 		t.Fatalf("dashboard should not render ended sessions:\n%s", screen)
 	}

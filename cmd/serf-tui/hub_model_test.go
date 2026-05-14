@@ -110,6 +110,30 @@ func TestHubModelDashboardShowsOnlyLiveSessionsGroupedByProject(t *testing.T) {
 	}
 }
 
+func TestHubModelDashboardRendersProjectTreeHierarchy(t *testing.T) {
+	m := newHubModel(nil, "http://hub.test")
+	m.width = 100
+	m.tree = hubTreeResponse{
+		Projects: []hubTreeProject{{
+			Key:         "serf",
+			Name:        "serf",
+			RollupState: "idle",
+			Sessions: []hubTreeNode{
+				{Ref: "local:01ALPHA", SessionID: "01ALPHA", Title: "alpha task", State: "idle", Project: "serf", SourceLabel: "local", Model: "gpt-5", Live: true, UpdatedAt: 20},
+				{Ref: "codex-local:01BETA", SessionID: "01BETA", Title: "beta task", State: "processing", Project: "serf", SourceLabel: "codex-local", Model: "gpt-5.3-codex", Live: true, UpdatedAt: 10},
+			},
+		}},
+	}
+	m.rows = buildDashboardRows(m.tree)
+
+	got := m.dashboardView()
+	for _, want := range []string{"▾", "├─", "└─", "alpha task", "codex-local"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("dashboard tree missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestHubModelDashboardSortsByAttentionThenRecency(t *testing.T) {
 	tree := hubTreeFromThreads([]appwire.Thread{
 		{

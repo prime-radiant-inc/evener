@@ -2278,7 +2278,7 @@ func renderDashboardRows(rows []hubRow, selected int, width int, compact bool) s
 			b.WriteString("\n")
 			continue
 		}
-		b.WriteString(renderDashboardSessionRow(row, i == selected, width, compact))
+		b.WriteString(renderDashboardSessionRow(row, i == selected, width, compact, dashboardSessionBranch(rows, i)))
 		b.WriteString("\n")
 	}
 	return b.String()
@@ -2289,11 +2289,11 @@ func renderDashboardProjectRow(row hubRow, rows []hubRow, selected bool, width i
 	if selected {
 		cursor = ">"
 	}
-	line := fmt.Sprintf("%s %s %s  %s", cursor, statusDot(row.state), row.project, projectSummary(row, rows))
+	line := fmt.Sprintf("%s ▾ %s %s  %s", cursor, statusDot(row.state), row.project, projectSummary(row, rows))
 	return truncateText(line, width)
 }
 
-func renderDashboardSessionRow(row hubRow, selected bool, width int, compact bool) string {
+func renderDashboardSessionRow(row hubRow, selected bool, width int, compact bool, branch string) string {
 	cursor := " "
 	if selected {
 		cursor = ">"
@@ -2301,7 +2301,8 @@ func renderDashboardSessionRow(row hubRow, selected bool, width int, compact boo
 	if compact {
 		line := strings.Join(nonEmptyStrings([]string{
 			cursor,
-			"  " + statusDot(row.state),
+			branch,
+			statusDot(row.state),
 			stateLabel(row.state),
 			row.title,
 			row.model,
@@ -2311,7 +2312,8 @@ func renderDashboardSessionRow(row hubRow, selected bool, width int, compact boo
 	}
 	line := strings.Join(nonEmptyStrings([]string{
 		cursor,
-		"  " + statusDot(row.state),
+		branch,
+		statusDot(row.state),
 		stateLabel(row.state),
 		row.sourceLabel,
 		row.title,
@@ -2319,6 +2321,22 @@ func renderDashboardSessionRow(row hubRow, selected bool, width int, compact boo
 		row.age,
 	}), " ")
 	return truncateText(line, width)
+}
+
+func dashboardSessionBranch(rows []hubRow, index int) string {
+	if index < 0 || index >= len(rows) || rows[index].kind != hubRowSession {
+		return ""
+	}
+	projectKey := rows[index].projectKey
+	for i := index + 1; i < len(rows); i++ {
+		if rows[i].kind == hubRowProject {
+			break
+		}
+		if rows[i].kind == hubRowSession && rows[i].projectKey == projectKey {
+			return "├─"
+		}
+	}
+	return "└─"
 }
 
 func dashboardFooter(width int) string {
