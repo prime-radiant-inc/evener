@@ -372,9 +372,11 @@ func TestProviderCredentialPreflightAcceptsInheritedGoogleAlias(t *testing.T) {
 	}
 }
 
-func TestProviderCredentialPreflightAcceptsStoredOpenAIAuth(t *testing.T) {
-	stateDir := t.TempDir()
-	if err := authopenai.SaveAuth(stateDir, authopenai.AuthRecord{
+func TestProviderCredentialPreflightAcceptsUserScopedStoredOpenAIAuth(t *testing.T) {
+	xdgStateHome := t.TempDir()
+	userStateDir := authopenai.DefaultStateDirWithStateHome(xdgStateHome)
+	projectStateDir := filepath.Join(xdgStateHome, "serf", "projects", "repo")
+	if err := authopenai.SaveAuth(userStateDir, authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
 		Source:       authopenai.AuthSourceOAuth,
@@ -388,7 +390,9 @@ func TestProviderCredentialPreflightAcceptsStoredOpenAIAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := validateProviderCredentials("openai/gpt-5", envFromMap(map[string]string{}), stateDir)
+	err := validateProviderCredentials("openai/gpt-5", envFromMap(map[string]string{
+		"XDG_STATE_HOME": xdgStateHome,
+	}), projectStateDir)
 	if err != nil {
 		t.Fatalf("validateProviderCredentials: %v", err)
 	}

@@ -349,7 +349,7 @@ func setEnvValue(env []string, key, value string) []string {
 	return append(env, prefix+value)
 }
 
-func validateProviderCredentials(model string, env []string, stateDir string) error {
+func validateProviderCredentials(model string, env []string, _ string) error {
 	ref, err := cmdutil.ParseModelRef(model)
 	if err != nil {
 		return appwire.InvalidParams(err.Error())
@@ -360,12 +360,11 @@ func validateProviderCredentials(model string, env []string, stateDir string) er
 		if strings.TrimSpace(envMap["OPENAI_API_KEY"]) != "" {
 			return nil
 		}
-		if stateDir != "" {
-			if _, err := authopenai.LoadAuth(stateDir); err == nil {
-				return nil
-			} else if !errors.Is(err, authopenai.ErrAuthNotFound) {
-				return appwire.HubLaunchError("load OpenAI credentials: " + err.Error())
-			}
+		authStateDir := authopenai.DefaultStateDirWithStateHome(envMap["XDG_STATE_HOME"])
+		if _, err := authopenai.LoadAuth(authStateDir); err == nil {
+			return nil
+		} else if !errors.Is(err, authopenai.ErrAuthNotFound) {
+			return appwire.HubLaunchError("load OpenAI credentials: " + err.Error())
 		}
 		return missingProviderCredential(ref.Provider, "OPENAI_API_KEY or Serf OpenAI login")
 	case "anthropic":

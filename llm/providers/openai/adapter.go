@@ -27,9 +27,7 @@ const (
 	codexClientVersion = "0.0.0"
 )
 
-type Config struct {
-	StateDir string
-}
+type Config struct{}
 
 type Adapter struct {
 	APIKey           string
@@ -43,8 +41,8 @@ type Adapter struct {
 }
 
 func init() {
-	llm.RegisterEnvAdapterFactory(func(cfg llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
-		a, err := NewFromEnv(Config{StateDir: cfg.StateDir})
+	llm.RegisterEnvAdapterFactory(func(llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
+		a, err := NewFromEnv()
 		if err != nil {
 			if isUnconfigured(err) {
 				return nil, false, nil
@@ -56,11 +54,6 @@ func init() {
 }
 
 func NewFromEnv(cfgs ...Config) (*Adapter, error) {
-	var cfg Config
-	if len(cfgs) > 0 {
-		cfg = cfgs[0]
-	}
-
 	key := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	if key != "" {
 		base := strings.TrimSpace(os.Getenv("OPENAI_BASE_URL"))
@@ -78,12 +71,9 @@ func NewFromEnv(cfgs ...Config) (*Adapter, error) {
 		}, nil
 	}
 
-	if strings.TrimSpace(cfg.StateDir) == "" {
-		return nil, fmt.Errorf("no OpenAI credentials configured")
-	}
-
+	authStateDir := authopenai.DefaultStateDir()
 	service := authopenai.NewService(authopenai.DefaultConfig(), nil)
-	status, err := service.Status(cfg.StateDir)
+	status, err := service.Status(authStateDir)
 	if err != nil {
 		return nil, fmt.Errorf("load OpenAI auth: %w", err)
 	}
@@ -91,11 +81,11 @@ func NewFromEnv(cfgs ...Config) (*Adapter, error) {
 		return nil, fmt.Errorf("no OpenAI credentials configured")
 	}
 
-	creds, err := service.ResolveRuntimeCredentials(context.Background(), cfg.StateDir)
+	creds, err := service.ResolveRuntimeCredentials(context.Background(), authStateDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve OpenAI auth: %w", err)
 	}
-	status, err = service.Status(cfg.StateDir)
+	status, err = service.Status(authStateDir)
 	if err != nil {
 		return nil, fmt.Errorf("refresh OpenAI auth status: %w", err)
 	}
@@ -108,7 +98,7 @@ func NewFromEnv(cfgs ...Config) (*Adapter, error) {
 		accountID = strings.TrimSpace(status.WorkspaceID)
 	}
 	if accountID == "" {
-		record, loadErr := authopenai.LoadAuth(cfg.StateDir)
+		record, loadErr := authopenai.LoadAuth(authStateDir)
 		if loadErr == nil {
 			if claims, parseErr := authopenai.ParseIDTokenClaims(record.IDToken); parseErr == nil {
 				accountID = strings.TrimSpace(claims.AccountID)

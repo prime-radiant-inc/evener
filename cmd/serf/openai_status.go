@@ -17,14 +17,14 @@ func runOpenAIStatus(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("openai status", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
-	workDir := fs.String("dir", "", "working directory (default: current directory)")
-	stateDir := fs.String("state-dir", "", "override runtime state directory")
+	workDir := fs.String("dir", "", "working directory hint")
+	stateDir := fs.String("state-dir", "", "override OpenAI auth state directory")
 	fs.Usage = func() {
 		fmt.Fprintf(stderr, "Usage: serf openai status [flags]\n\n")
 		fmt.Fprintf(stderr, "Show the current OpenAI auth status.\n\n")
 		fmt.Fprintf(stderr, "Flags:\n")
-		fmt.Fprintf(stderr, "  --dir <path>         Working directory (default: current directory)\n")
-		fmt.Fprintf(stderr, "  --state-dir <path>   Override runtime state directory\n")
+		fmt.Fprintf(stderr, "  --dir <path>         Working directory hint\n")
+		fmt.Fprintf(stderr, "  --state-dir <path>   Override OpenAI auth state directory\n")
 	}
 
 	if err := fs.Parse(args); err != nil {

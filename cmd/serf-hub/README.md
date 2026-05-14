@@ -110,7 +110,7 @@ chmod 600 "$HOME/.serf/hub.env"
 
 Supported Serf launch credential checks:
 
-- OpenAI: `OPENAI_API_KEY` or Serf OpenAI login state in the selected state dir.
+- OpenAI: `OPENAI_API_KEY` or Serf OpenAI login state in the user state dir.
 - Anthropic: `ANTHROPIC_API_KEY`.
 - Google/Gemini: `GEMINI_API_KEY` or `GOOGLE_API_KEY`.
 - OpenRouter and OpenRouter Anthropic: `OPENROUTER_API_KEY`.
@@ -120,17 +120,17 @@ Supported Serf launch credential checks:
 - OpenAI-compatible: `OPENAI_COMPATIBLE_BASE_URL`.
 - Ollama: no API key check.
 
-For Serf-owned OpenAI OAuth, log in with the same state root and project working
-directory that Hub will spawn from:
+For Serf-owned OpenAI OAuth, log in once for the user account. The default auth
+file is `$XDG_STATE_HOME/serf/auth/openai.json`, or
+`$HOME/.local/state/serf/auth/openai.json` when `XDG_STATE_HOME` is not set:
 
 ```bash
-XDG_STATE_HOME="$HOME/.local/state" \
-  "$HOME/.local/bin/serf" openai login --dir /path/to/project
+XDG_STATE_HOME="$HOME/.local/state" "$HOME/.local/bin/serf" openai login
 ```
 
 Hub's provider picker asks the Serf launch harness for the models visible to
-the selected spawn working directory. That matters for Serf-owned OpenAI OAuth,
-because the working directory determines the default per-project state dir.
+the selected spawn working directory. Session state remains per project, but
+Serf-owned OpenAI OAuth is user-scoped by default.
 
 ## Start Hub
 

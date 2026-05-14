@@ -1357,8 +1357,12 @@ func TestNewFromEnv_ReadsOrgAndProjectID(t *testing.T) {
 }
 
 func TestNewFromEnv_UsesStoredOAuthTransportWhenAPIKeyAbsent(t *testing.T) {
-	stateDir := t.TempDir()
-	if err := authopenai.SaveAuth(stateDir, authopenai.AuthRecord{
+	xdgStateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", xdgStateHome)
+	userStateDir := authopenai.DefaultStateDir()
+	projectStateDir := filepath.Join(xdgStateHome, "serf", "projects", "repo")
+	t.Setenv("SERF_STATE_DIR", projectStateDir)
+	if err := authopenai.SaveAuth(userStateDir, authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
 		Source:       "oauth",
@@ -1375,7 +1379,7 @@ func TestNewFromEnv_UsesStoredOAuthTransportWhenAPIKeyAbsent(t *testing.T) {
 	}
 
 	t.Setenv("OPENAI_CHATGPT_BASE_URL", "https://chatgpt.example.test")
-	a, err := NewFromEnv(Config{StateDir: stateDir})
+	a, err := NewFromEnv()
 	if err != nil {
 		t.Fatalf("NewFromEnv: %v", err)
 	}

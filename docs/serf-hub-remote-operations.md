@@ -127,7 +127,7 @@ then `serf_launch.env` overrides.
 
 Supported current credential checks:
 
-- OpenAI: `OPENAI_API_KEY` or Serf OpenAI login state in the selected state dir.
+- OpenAI: `OPENAI_API_KEY` or Serf OpenAI login state in the user state dir.
 - Anthropic: `ANTHROPIC_API_KEY`.
 - Google/Gemini: `GEMINI_API_KEY` or `GOOGLE_API_KEY`.
 - OpenRouter and OpenRouter Anthropic: `OPENROUTER_API_KEY`.
@@ -141,6 +141,11 @@ Do not commit secrets in `hub.toml`. For a service, use a root-owned
 environment file with restrictive permissions, or a secret manager that injects
 environment variables into the Hub process. If secrets are placed directly in
 `hub.toml`, keep the file outside the repo and mode it `0600`.
+
+Serf-owned OpenAI OAuth is user-scoped by default. With the service layout above,
+`serf openai login` stores auth under `/var/lib/serf/state/serf/auth/openai.json`;
+spawned sessions still store transcript/runtime state under per-project
+directories.
 
 ## Codex App-Server Sources
 

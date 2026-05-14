@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -38,6 +39,25 @@ type AuthRecord struct {
 
 func AuthFilePath(stateDir string) string {
 	return filepath.Join(stateDir, authDirName, authFileName)
+}
+
+func DefaultStateDir() string {
+	return DefaultStateDirWithStateHome("")
+}
+
+func DefaultStateDirWithStateHome(stateHome string) string {
+	base := strings.TrimSpace(stateHome)
+	if base == "" {
+		base = strings.TrimSpace(os.Getenv("XDG_STATE_HOME"))
+	}
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			home = os.TempDir()
+		}
+		base = filepath.Join(home, ".local", "state")
+	}
+	return filepath.Join(base, "serf")
 }
 
 func LoadAuth(stateDir string) (AuthRecord, error) {

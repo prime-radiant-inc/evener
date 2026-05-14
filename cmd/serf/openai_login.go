@@ -12,8 +12,6 @@ import (
 	"runtime"
 	"strings"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/cmdutil"
 	authopenai "primeradiant.com/serf/internal/auth/openai"
 )
 
@@ -63,14 +61,14 @@ func runOpenAILogin(args []string, stdin io.Reader, stdout, stderr io.Writer) er
 	fs := flag.NewFlagSet("openai login", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
-	workDir := fs.String("dir", "", "working directory (default: current directory)")
-	stateDir := fs.String("state-dir", "", "override runtime state directory")
+	workDir := fs.String("dir", "", "working directory hint")
+	stateDir := fs.String("state-dir", "", "override OpenAI auth state directory")
 	fs.Usage = func() {
 		fmt.Fprintf(stderr, "Usage: serf openai login [flags]\n\n")
 		fmt.Fprintf(stderr, "Start the OpenAI OAuth login flow.\n\n")
 		fmt.Fprintf(stderr, "Flags:\n")
-		fmt.Fprintf(stderr, "  --dir <path>         Working directory (default: current directory)\n")
-		fmt.Fprintf(stderr, "  --state-dir <path>   Override runtime state directory\n")
+		fmt.Fprintf(stderr, "  --dir <path>         Working directory hint\n")
+		fmt.Fprintf(stderr, "  --state-dir <path>   Override OpenAI auth state directory\n")
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -106,21 +104,11 @@ func runOpenAILogin(args []string, stdin io.Reader, stdout, stderr io.Writer) er
 }
 
 func resolveOpenAIStateDir(workDir, override string) (string, error) {
-	if override != "" {
+	_ = workDir
+	if strings.TrimSpace(override) != "" {
 		return override, nil
 	}
-	if stateDir := os.Getenv("SERF_STATE_DIR"); stateDir != "" {
-		return stateDir, nil
-	}
-	if workDir == "" {
-		var err error
-		workDir, err = os.Getwd()
-		if err != nil {
-			return "", fmt.Errorf("cannot determine working directory: %w", err)
-		}
-	}
-	originURL := cmdutil.GitOriginURLFromDir(workDir)
-	return agent.RuntimeDir(originURL, workDir, ""), nil
+	return authopenai.DefaultStateDir(), nil
 }
 
 func makeRedirectURLReader(stdin io.Reader, stderr io.Writer) func(context.Context) (string, error) {
