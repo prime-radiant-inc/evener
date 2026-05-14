@@ -325,6 +325,15 @@ func sampleRenders() []tuiSampleRender {
 		{name: "agents-picker", width: 100, contains: []string{"Select transcript", "main session"}},
 		{name: "help-overlay", width: 100, contains: []string{"Available commands", "/model"}},
 		{name: "diagnostics", width: 100, contains: []string{"Spawn failed", "Action unavailable"}},
+		{name: "appshell-normal", width: 100, contains: []string{"serf live", "Live now", "ctrl+o dashboard"}},
+		{name: "appshell-loading", width: 100, contains: []string{"serf live", "Loading hub dashboard"}},
+		{name: "appshell-error", width: 100, contains: []string{"Hub unavailable", "Retry"}},
+		{name: "topbar-session", width: 80, contains: []string{"serf / session / Restore hub TUI widgets"}},
+		{name: "actionbar-normal", width: 80, contains: []string{"enter open", "ctrl+o dashboard"}},
+		{name: "actionbar-wrapped", width: 28, contains: []string{"enter open", "ctrl+o dashboard"}},
+		{name: "picker-empty", width: 80, contains: []string{"No matching items"}},
+		{name: "picker-disabled", width: 80, contains: []string{"disabled: source does not advertise clear"}},
+		{name: "picker-error", width: 80, contains: []string{"Provider unavailable", "provider listing failed"}},
 	}
 
 	out := make([]tuiSampleRender, 0, len(specs))
@@ -451,6 +460,50 @@ func sampleRenderFromRealWidget(name string, width int) (tuiSampleRender, bool) 
 			Reason:  sampleDiagnostics()[1].Cause,
 		}.Text()
 		return renderSample(name, width, view), true
+	case "appshell-normal":
+		return renderSample(name, width, appShell{
+			TopBar: "serf live",
+			Body:   "Live now\n> idle serf session\n  codex smoke",
+			Footer: actionBarForWidth(width, "enter open", "n new", "ctrl+o dashboard", "q quit"),
+		}.View()), true
+	case "appshell-loading":
+		return renderSample(name, width, appShell{
+			TopBar: "serf live",
+			Body:   "Loading hub dashboard...",
+			Footer: actionBarForWidth(width, "ctrl+o dashboard", "q quit"),
+		}.View()), true
+	case "appshell-error":
+		return renderSample(name, width, appShell{
+			TopBar: "serf live",
+			Body: noticePanel{
+				Title:      "Hub unavailable",
+				Summary:    "Could not reach the configured Hub.",
+				NextAction: "Retry after checking the hub process.",
+			}.Text(),
+			Footer: actionBarForWidth(width, "r retry", "ctrl+o dashboard", "q quit"),
+		}.View()), true
+	case "topbar-session":
+		title := "serf / session / Restore hub TUI widgets"
+		return renderSample(name, width, truncateSessionLine(title, width)), true
+	case "actionbar-normal":
+		return renderSample(name, width, actionBarForWidth(width, "enter open", "p project", "n new", "ctrl+o dashboard", "q quit")), true
+	case "actionbar-wrapped":
+		return renderSample(name, width, actionBarForWidth(width, "enter open", "p project", "n new", "ctrl+o dashboard", "q quit")), true
+	case "picker-empty":
+		picker := newPickerPanel("Command palette", []pickerPanelItem{{ID: "open", Label: "Open session"}}, width)
+		picker.filter = "missing"
+		return renderSample(name, width, picker.View()), true
+	case "picker-disabled":
+		picker := newPickerPanel("Command palette", []pickerPanelItem{
+			{ID: "clear", Label: "/clear", Detail: "clear transcript", DisabledReason: "source does not advertise clear"},
+		}, width)
+		return renderSample(name, width, picker.View()), true
+	case "picker-error":
+		return renderSample(name, width, noticePanel{
+			Title:      "Provider unavailable",
+			Summary:    "provider listing failed",
+			NextAction: "Retry /model after signing in.",
+		}.Text()), true
 	default:
 		return tuiSampleRender{}, false
 	}

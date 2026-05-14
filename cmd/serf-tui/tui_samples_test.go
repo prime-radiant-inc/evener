@@ -123,6 +123,41 @@ func TestHubTUISampleRendersComeFromRealWidgets(t *testing.T) {
 	}
 }
 
+func TestHubTUISampleCorpusHasShellAndWidgetStateRenders(t *testing.T) {
+	corpus := newHubTUISampleCorpus()
+	required := []string{
+		"appshell-normal",
+		"appshell-loading",
+		"appshell-error",
+		"topbar-session",
+		"actionbar-normal",
+		"actionbar-wrapped",
+		"picker-empty",
+		"picker-disabled",
+		"picker-error",
+	}
+	renders := map[string]tuiSampleRender{}
+	for _, render := range corpus.Renders {
+		renders[render.Name] = render
+		if strings.Contains(render.Name, "placeholder") {
+			t.Fatalf("sample render %q should not be a placeholder", render.Name)
+		}
+	}
+	for _, name := range required {
+		render, ok := renders[name]
+		if !ok {
+			t.Fatalf("missing shell/widget render sample %q", name)
+		}
+		want, ok := sampleRenderFromRealWidget(name, render.Width)
+		if !ok {
+			t.Fatalf("no real-widget sample renderer for %q", name)
+		}
+		if render.View != want.View {
+			t.Fatalf("render %q drifted from real widget output\nwant:\n%s\n\ngot:\n%s", name, want.View, render.View)
+		}
+	}
+}
+
 func TestHubTUISampleCorpusHasFocusAndDraftInteractionSamples(t *testing.T) {
 	corpus := newHubTUISampleCorpus()
 	required := []string{
