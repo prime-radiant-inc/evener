@@ -106,6 +106,8 @@ const (
 	startupErrorHubUnavailable    startupErrorKind = "hub-unavailable"
 )
 
+var localHubImmediateExitWindow = 750 * time.Millisecond
+
 type startupError struct {
 	Kind   startupErrorKind
 	Addr   string
@@ -400,7 +402,7 @@ func startLocalHub(req hubStartRequest) error {
 			return fmt.Errorf("serf-hub exited during startup: %w: %s", err, output)
 		}
 		return fmt.Errorf("serf-hub exited during startup: %w", err)
-	case <-time.After(750 * time.Millisecond):
+	case <-time.After(localHubImmediateExitWindow):
 	}
 	return cmd.Process.Release()
 }

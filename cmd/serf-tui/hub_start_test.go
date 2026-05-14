@@ -369,6 +369,7 @@ func TestStartHubClientWritesStartupDiagnosticsToLogFile(t *testing.T) {
 }
 
 func TestStartLocalHubReportsImmediateExitOutput(t *testing.T) {
+	withLocalHubImmediateExitWindow(t, 5*time.Second)
 	bin := filepath.Join(t.TempDir(), "serf-hub")
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho 'listen tcp 127.0.0.1:9180: bind: address already in use' >&2\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -381,6 +382,15 @@ func TestStartLocalHubReportsImmediateExitOutput(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "address already in use") {
 		t.Fatalf("startLocalHub error=%v, want immediate exit output", err)
 	}
+}
+
+func withLocalHubImmediateExitWindow(t *testing.T, window time.Duration) {
+	t.Helper()
+	previous := localHubImmediateExitWindow
+	localHubImmediateExitWindow = window
+	t.Cleanup(func() {
+		localHubImmediateExitWindow = previous
+	})
 }
 
 func writeExecutable(t *testing.T, path string) {
