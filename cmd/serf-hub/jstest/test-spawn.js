@@ -42,9 +42,6 @@ const formDom = new JSDOM(`<!DOCTYPE html><html><body>
       <button class="chip" type="button" data-chip="model">
         <span class="chip-value" data-chip-value-model>(pick a model)</span>
       </button>
-      <button class="chip" type="button" data-chip="working_dir">
-        <span class="chip-value" data-chip-value-working_dir>/tmp/project-with-oauth</span>
-      </button>
       <button class="chip" type="button" data-chip="branch">
         <span class="chip-value" data-chip-value-branch>(default)</span>
       </button>
@@ -81,13 +78,6 @@ formDom.window.SerfAppwire = {
       },
     };
   },
-  completeDirs() {
-    return {
-      then(resolve) {
-        resolve({ results: [] });
-      },
-    };
-  },
 };
 formDom.window.localStorage.setItem("serf-hub.spawn-defaults.global.model", "openai/gpt-5.2");
 formDom.window.eval(spawnSrc);
@@ -96,25 +86,6 @@ formDom.window.document.dispatchEvent(new formDom.window.Event("DOMContentLoaded
 const modelDisplay = () => formDom.window.document.querySelector("[data-chip-value-model]").textContent.trim();
 const modelValue = () => formDom.window.document.querySelector('input[name="model"]').value;
 assert(modelDisplay() === "openai/gpt-5.2", "serf spawn should apply stored serf model default");
-
-formDom.window.document.querySelector('button[data-chip="working_dir"]').click();
-const dirInput = formDom.window.document.querySelector(".chip-picker-search");
-dirInput.value = "/tmp/project-without-oauth";
-dirInput.dispatchEvent(new formDom.window.KeyboardEvent("keydown", {
-  key: "Enter",
-  bubbles: true,
-  cancelable: true,
-}));
-assert(modelValue() === "", "changing working directory should clear stale serf model");
-assert(modelDisplay() === "(pick a model)", "changing working directory should show serf model placeholder");
-setModelAfterWorkingDirChange();
-
-function setModelAfterWorkingDirChange() {
-  formDom.window.document.querySelector('input[name="working_dir"]').value = "/tmp/project-with-oauth";
-  formDom.window.document.querySelector("[data-chip-value-working_dir]").textContent = "/tmp/project-with-oauth";
-  formDom.window.document.querySelector('input[name="model"]').value = "openai/gpt-5.2";
-  formDom.window.document.querySelector("[data-chip-value-model]").textContent = "openai/gpt-5.2";
-}
 
 formDom.window.document.querySelector('button[data-chip="model"]').click();
 assert(listModelsCalls === 1, "serf model picker should fetch launch-scoped model list");

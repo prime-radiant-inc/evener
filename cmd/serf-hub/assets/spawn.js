@@ -57,12 +57,8 @@
     }
     const display = document.querySelector('[data-chip-value-' + name + ']');
     const hidden = document.querySelector('input[type=hidden][name="' + name + '"]');
-    const previous = hidden ? hidden.value : "";
     if (display) display.textContent = value || "(default)";
     if (hidden) hidden.value = value || "";
-    if (name === "working_dir" && previous !== (value || "") && harnessUsesSerfModels(currentHarness())) {
-      setModelValue("");
-    }
   }
 
   function applyHarnessModelPolicy(harness) {
