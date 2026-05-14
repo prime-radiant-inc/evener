@@ -1048,7 +1048,9 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.addSessionSystem("Session ref is invalid.")
 			return m, nil
 		}
-		m.session.messages = append(m.session.messages, chatMessage{Kind: msgUser, Text: text})
+		reducer := m.sessionTranscriptReducer()
+		reducer.applyUserMessageEcho(text)
+		m.applySessionTranscriptReducer(reducer)
 		m.session.lastSentText = text
 		m.session.addHistory(text)
 		m.session.resetInput()
@@ -1526,9 +1528,9 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) {
 			Delta  string `json:"delta"`
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
-			if idx, ok := m.session.activeTools[params.ItemID]; ok && idx < len(m.session.messages) && m.session.messages[idx].Tool != nil {
-				m.session.messages[idx].Tool.Output += params.Delta
-			}
+			reducer := m.sessionTranscriptReducer()
+			reducer.applyToolOutputDelta(params.ItemID, params.Delta)
+			m.applySessionTranscriptReducer(reducer)
 		}
 	case appwire.NotifyTurnCompleted:
 		var params struct {
@@ -2153,7 +2155,7 @@ func (m hubModel) sessionView() string {
 			width = 100
 		}
 		for i, msg := range messages {
-			focused := m.transcriptView == nil && m.session.isToolFocused(i)
+			focused := m.transcriptView == nil && (m.session.isToolFocused(i) || (m.session.scrollMode && m.browseSelected == i))
 			rendered := renderMessage(msg, width, focused)
 			if rendered == "" {
 				continue

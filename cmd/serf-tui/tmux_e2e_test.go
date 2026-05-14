@@ -340,6 +340,29 @@ func TestTUITmuxE2E_HubStreamingAssistantDeltaBeforeRefresh(t *testing.T) {
 	app.WaitFor("partial live answer done")
 }
 
+func TestTUITmuxE2E_HubStreamingToolGroupBeforeRefresh(t *testing.T) {
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	defer hub.Close()
+	app := startTUITmux(t, bin, hub.URL())
+	defer app.Close()
+
+	openLiveSession(t, app)
+	app.WaitFor("live task", "initial answer")
+
+	hub.BroadcastToolStarted("01LIVE")
+	hub.BroadcastToolOutputDelta("01LIVE", "tmux tool output\n")
+	hub.BroadcastToolCompleted("01LIVE")
+	app.WaitFor("read_file", "tmux tool output")
+
+	hub.AppendToolFinal("01LIVE")
+	app.SendKeys("C-o")
+	app.WaitFor("serf live", "live task")
+	openLiveSession(t, app)
+	app.WaitFor("read_file", "tmux tool output")
+}
+
 func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 	requireTmux(t)
 	bin := buildTUIBinary(t)
@@ -740,6 +763,51 @@ func (h *tuiE2EHub) BroadcastAgentDelta(threadID, delta string) {
 	})
 }
 
+func (h *tuiE2EHub) BroadcastToolStarted(threadID string) {
+	h.app.Broadcast(threadID, appwire.NotifyItemStarted, map[string]any{
+		"threadId": threadID,
+		"ref":      "local:" + threadID,
+		"turnId":   "turn_tool",
+		"item": appwire.ThreadItem{
+			Type:          "tool_call",
+			ID:            "tool_stream",
+			CallID:        "call_stream",
+			TurnID:        "turn_tool",
+			ToolName:      "read_file",
+			ArgumentsJSON: `{"file_path":"/tmp/tmux-tool.txt"}`,
+			Status:        "running",
+		},
+	})
+}
+
+func (h *tuiE2EHub) BroadcastToolOutputDelta(threadID, delta string) {
+	h.app.Broadcast(threadID, appwire.NotifyToolOutputDelta, map[string]any{
+		"threadId": threadID,
+		"ref":      "local:" + threadID,
+		"turnId":   "turn_tool",
+		"itemId":   "tool_stream",
+		"delta":    delta,
+	})
+}
+
+func (h *tuiE2EHub) BroadcastToolCompleted(threadID string) {
+	h.app.Broadcast(threadID, appwire.NotifyItemCompleted, map[string]any{
+		"threadId": threadID,
+		"ref":      "local:" + threadID,
+		"turnId":   "turn_tool",
+		"item": appwire.ThreadItem{
+			Type:          "tool_call",
+			ID:            "tool_stream",
+			CallID:        "call_stream",
+			TurnID:        "turn_tool",
+			ToolName:      "read_file",
+			ArgumentsJSON: `{"file_path":"/tmp/tmux-tool.txt"}`,
+			Output:        "tmux tool output\n",
+			Status:        "completed",
+		},
+	})
+}
+
 func (h *tuiE2EHub) AppendAssistantFinal(threadID, text string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -749,6 +817,29 @@ func (h *tuiE2EHub) AppendAssistantFinal(threadID, text string) {
 			Status: appwire.TurnStatusCompleted,
 			Items: []appwire.ThreadItem{
 				{Type: "agent_message", ID: "agent_stream", TurnID: "turn_stream", Text: text, Status: "completed"},
+			},
+		})
+	}
+}
+
+func (h *tuiE2EHub) AppendToolFinal(threadID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if s := h.sessions[threadID]; s != nil {
+		s.Turns = append(s.Turns, appwire.Turn{
+			ID:     "turn_tool",
+			Status: appwire.TurnStatusCompleted,
+			Items: []appwire.ThreadItem{
+				{
+					Type:          "tool_call",
+					ID:            "tool_stream",
+					CallID:        "call_stream",
+					TurnID:        "turn_tool",
+					ToolName:      "read_file",
+					ArgumentsJSON: `{"file_path":"/tmp/tmux-tool.txt"}`,
+					Output:        "tmux tool output\n",
+					Status:        "completed",
+				},
 			},
 		})
 	}

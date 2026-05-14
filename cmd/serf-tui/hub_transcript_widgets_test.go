@@ -85,6 +85,42 @@ func TestToolGroupRendersErrorResult(t *testing.T) {
 	}
 }
 
+func TestHubModelBrowseSelectedToolRendersFocusedAndToggles(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.session.messages = []chatMessage{
+		{Kind: msgAssistant, Text: "before tool"},
+		{
+			Kind: msgTool,
+			Tool: &toolCallInfo{
+				Name:        "shell",
+				Description: "run test",
+				Output:      "ok",
+				Done:        true,
+				Expanded:    false,
+			},
+		},
+	}
+	m.session.scrollMode = true
+	m.session.focusedToolIdx = -1
+	m.browseSelected = 1
+
+	if got := m.sessionView(); !strings.Contains(got, "▶") {
+		t.Fatalf("selected tool group should render focused:\n%s", got)
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	got := updated.(hubModel)
+	if !got.session.messages[1].Tool.Expanded {
+		t.Fatalf("tab should expand selected tool: %+v", got.session.messages[1].Tool)
+	}
+
+	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got = updated.(hubModel)
+	if got.session.messages[1].Tool.Expanded {
+		t.Fatalf("enter should collapse selected tool: %+v", got.session.messages[1].Tool)
+	}
+}
+
 func TestHubModelActionUnavailableNoticeIncludesSourceAndReason(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail.Ref = "codex-local:th_1"
