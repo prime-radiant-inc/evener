@@ -425,7 +425,9 @@ func TestHubModelSpawnCyclesConfiguredHarnesses(t *testing.T) {
 	}
 	updated, _ = updated.(hubModel).Update(cmd())
 	form := updated.(hubModel)
-	updated, _ = form.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	updated, _ = form.Update(tea.KeyMsg{Type: tea.KeyTab})
+	form = updated.(hubModel)
+	updated, _ = form.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	form = updated.(hubModel)
 	if form.spawnModel != "" {
 		t.Fatalf("codex harness carried stale model %q", form.spawnModel)
@@ -434,7 +436,7 @@ func TestHubModelSpawnCyclesConfiguredHarnesses(t *testing.T) {
 	if strings.Contains(view, "openai/gpt-5") {
 		t.Fatalf("codex harness offered serf model:\n%s", view)
 	}
-	updated, cmd = form.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, cmd = form.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
 	if cmd == nil {
 		t.Fatal("spawn form submit returned nil command")
 	}
@@ -506,9 +508,13 @@ func TestHubModelCodexSpawnOpensHarnessModelPicker(t *testing.T) {
 	m.spawnModels = []modelPickerItem{{id: "openai/gpt-5", display: "openai/gpt-5"}}
 	m.spawnModel = ""
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(hubModel)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(hubModel)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
-		t.Fatal("codex model key should fetch harness models")
+		t.Fatal("codex model field should fetch harness models")
 	}
 	updated, _ = updated.(hubModel).Update(cmd())
 	got := updated.(hubModel)
@@ -569,6 +575,71 @@ func TestHubModelDashboardSpawnOpensFormBeforePosting(t *testing.T) {
 	}
 	if !strings.Contains(got.View(), "serf / new session") || !strings.Contains(got.View(), "/tmp/serf") || !strings.Contains(got.View(), "openai/gpt-5") {
 		t.Fatalf("spawn form not rendered:\n%s", got.View())
+	}
+}
+
+func TestHubModelSpawnPromptAcceptsHarnessAndModelLetters(t *testing.T) {
+	m := newHubModel(nil, "http://hub.test")
+	m.openSpawnForm()
+
+	for _, r := range []rune{'m', 'h'} {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(hubModel)
+	}
+
+	if got := m.session.input.Value(); got != "mh" {
+		t.Fatalf("spawn prompt=%q, want mh", got)
+	}
+}
+
+func TestHubModelSpawnFormFocusControlsHarnessAndModel(t *testing.T) {
+	var gotParams appwire.ModelListParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(_ context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
+			gotParams = params
+			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "codex-local", Model: "gpt-5.3-codex"}}}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newHubModel(client, "http://hub.test")
+	m.openSpawnForm()
+	m.spawnDir = "/tmp/serf"
+	m.spawnHarnesses = []string{"serf", "codex-local"}
+	m.spawnHarnessKinds = map[string]string{"serf": "serf", "codex-local": "codex"}
+	m.spawnModels = []modelPickerItem{{id: "openai/gpt-5", display: "openai/gpt-5"}}
+	m.spawnModel = "openai/gpt-5"
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if cmd != nil {
+		t.Fatal("tab to harness returned unexpected command")
+	}
+	form := updated.(hubModel)
+	updated, cmd = form.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("harness field change returned unexpected command")
+	}
+	form = updated.(hubModel)
+	if form.spawnHarness != "codex-local" || form.spawnModel != "" {
+		t.Fatalf("harness=%q model=%q, want codex-local with cleared model", form.spawnHarness, form.spawnModel)
+	}
+
+	updated, cmd = form.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if cmd != nil {
+		t.Fatal("tab to model returned unexpected command")
+	}
+	form = updated.(hubModel)
+	updated, cmd = form.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("model field should fetch codex harness models")
+	}
+	updated, _ = updated.(hubModel).Update(cmd())
+	form = updated.(hubModel)
+	if gotParams.Harness != "codex-local" || gotParams.CWD != "/tmp/serf" {
+		t.Fatalf("model list params=%+v, want codex harness in /tmp/serf", gotParams)
+	}
+	if form.spawnModelPicker == nil {
+		t.Fatalf("model field did not open model picker:\n%s", form.spawnView())
 	}
 }
 

@@ -19,6 +19,14 @@ const (
 	hubModeSpawn
 )
 
+type hubSpawnField int
+
+const (
+	hubSpawnFieldPrompt hubSpawnField = iota
+	hubSpawnFieldHarness
+	hubSpawnFieldModel
+)
+
 type hubRowKind int
 
 const (
@@ -74,6 +82,7 @@ type hubModel struct {
 	spawnHarnessModels map[string][]modelPickerItem
 	spawnModelPicker   *modelPicker
 	spawnSubmitting    bool
+	spawnFocus         hubSpawnField
 
 	detail  hubSessionDetail
 	session model
@@ -399,47 +408,115 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.closeSpawnForm()
 		return m, nil
-	case "m":
-		models := m.spawnSelectableModels()
-		if len(models) == 0 && !m.spawnHarnessUsesSerfModels() && m.client != nil {
-			m.err = nil
-			return m, fetchHubModelsForHarness(m.client, m.spawnHarness, m.spawnDir)
-		}
-		if len(models) == 0 {
-			if !m.spawnHarnessUsesSerfModels() {
-				m.err = fmt.Errorf("no %s models available; using harness default", m.spawnHarness)
-			} else {
-				m.err = fmt.Errorf("no models available")
-			}
-			return m, nil
-		}
-		m.openSpawnModelPicker(models)
+	case "tab":
+		m.advanceSpawnFocus(1)
 		return m, nil
-	case "h":
-		m.cycleSpawnHarness()
+	case "shift+tab":
+		m.advanceSpawnFocus(-1)
 		return m, nil
 	case "enter":
-		if m.client == nil || m.spawnSubmitting {
+		switch m.spawnFocus {
+		case hubSpawnFieldHarness:
+			m.cycleSpawnHarness()
+			return m, nil
+		case hubSpawnFieldModel:
+			return m.activateSpawnModelField()
+		default:
+			return m.submitSpawnForm()
+		}
+	case " ":
+		if m.spawnFocus == hubSpawnFieldHarness {
+			m.cycleSpawnHarness()
 			return m, nil
 		}
-		if m.spawnHarnessUsesSerfModels() && strings.TrimSpace(m.spawnModel) == "" {
-			m.err = fmt.Errorf("choose a model before spawning")
-			return m, nil
+		if m.spawnFocus == hubSpawnFieldModel {
+			return m.activateSpawnModelField()
 		}
-		req := hubSpawnRequest{
-			Prompt:     strings.TrimSpace(m.session.input.Value()),
-			Harness:    strings.TrimSpace(m.spawnHarness),
-			Model:      strings.TrimSpace(m.spawnModel),
-			WorkingDir: m.spawnDir,
-		}
-		m.err = nil
-		m.spawnSubmitting = true
-		return m, sendHubSpawn(m.client, req)
+	case "ctrl+s":
+		return m.submitSpawnForm()
+	}
+
+	if m.spawnFocus != hubSpawnFieldPrompt {
+		return m, nil
+	}
+
+	if (msg.Type == tea.KeyEnter && msg.Alt) || msg.Type == tea.KeyCtrlJ {
+		m.session.input.InsertString("\n")
+		m.resizeSpawnInput()
+		return m, nil
 	}
 
 	prevHeight := m.session.input.Height()
 	var cmd tea.Cmd
 	m.session.input, cmd = m.session.input.Update(msg)
+	m.resizeSpawnInputFrom(prevHeight)
+	return m, cmd
+}
+
+func (m hubModel) activateSpawnModelField() (tea.Model, tea.Cmd) {
+	models := m.spawnSelectableModels()
+	if len(models) == 0 && !m.spawnHarnessUsesSerfModels() && m.client != nil {
+		m.err = nil
+		return m, fetchHubModelsForHarness(m.client, m.spawnHarness, m.spawnDir)
+	}
+	if len(models) == 0 {
+		if !m.spawnHarnessUsesSerfModels() {
+			m.err = fmt.Errorf("no %s models available; using harness default", m.spawnHarness)
+		} else {
+			m.err = fmt.Errorf("no models available")
+		}
+		return m, nil
+	}
+	m.openSpawnModelPicker(models)
+	return m, nil
+}
+
+func (m hubModel) submitSpawnForm() (tea.Model, tea.Cmd) {
+	if m.client == nil || m.spawnSubmitting {
+		return m, nil
+	}
+	if m.spawnHarnessUsesSerfModels() && strings.TrimSpace(m.spawnModel) == "" {
+		m.err = fmt.Errorf("choose a model before spawning")
+		return m, nil
+	}
+	req := hubSpawnRequest{
+		Prompt:     strings.TrimSpace(m.session.input.Value()),
+		Harness:    strings.TrimSpace(m.spawnHarness),
+		Model:      strings.TrimSpace(m.spawnModel),
+		WorkingDir: m.spawnDir,
+	}
+	m.err = nil
+	m.spawnSubmitting = true
+	return m, sendHubSpawn(m.client, req)
+}
+
+func (m *hubModel) setSpawnFocus(field hubSpawnField) {
+	if field < hubSpawnFieldPrompt || field > hubSpawnFieldModel {
+		field = hubSpawnFieldPrompt
+	}
+	m.spawnFocus = field
+	if field == hubSpawnFieldPrompt {
+		m.session.input.Focus()
+		return
+	}
+	m.session.input.Blur()
+}
+
+func (m *hubModel) advanceSpawnFocus(delta int) {
+	next := int(m.spawnFocus) + delta
+	count := int(hubSpawnFieldModel) + 1
+	for next < 0 {
+		next += count
+	}
+	next %= count
+	m.setSpawnFocus(hubSpawnField(next))
+}
+
+func (m *hubModel) resizeSpawnInput() {
+	m.resizeSpawnInputFrom(m.session.input.Height())
+}
+
+func (m *hubModel) resizeSpawnInputFrom(prevHeight int) {
 	wantHeight := m.session.input.LineCount()
 	if wantHeight < 1 {
 		wantHeight = 1
@@ -450,7 +527,27 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if wantHeight != prevHeight {
 		m.session.input.SetHeight(wantHeight)
 	}
-	return m, cmd
+}
+
+func (m hubModel) spawnFieldPrefix(field hubSpawnField) string {
+	if m.spawnFocus == field {
+		return ">"
+	}
+	return " "
+}
+
+func (m hubModel) spawnFieldHint() string {
+	switch m.spawnFocus {
+	case hubSpawnFieldHarness:
+		return "enter/space: change harness"
+	case hubSpawnFieldModel:
+		if !m.spawnHarnessUsesSerfModels() && len(m.spawnSelectableModels()) == 0 {
+			return "enter: fetch harness models"
+		}
+		return "enter: choose model"
+	default:
+		return "enter: spawn  ctrl+j: newline"
+	}
 }
 
 func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -692,7 +789,7 @@ func (m *hubModel) openSpawnForm() {
 	m.spawnProject = project
 	m.mode = hubModeSpawn
 	m.err = nil
-	m.session.input.Focus()
+	m.setSpawnFocus(hubSpawnFieldPrompt)
 }
 
 func (m *hubModel) closeSpawnForm() {
@@ -717,6 +814,7 @@ func (m *hubModel) resetSpawnForm() {
 	m.spawnHarnessModels = nil
 	m.spawnModelPicker = nil
 	m.spawnSubmitting = false
+	m.spawnFocus = hubSpawnFieldPrompt
 	m.session.resetInput()
 	if envModel := strings.TrimSpace(os.Getenv("SERF_MODEL")); strings.Contains(envModel, "/") {
 		m.spawnModel = envModel
@@ -1558,13 +1656,13 @@ func (m hubModel) spawnView() string {
 	} else if model == "" {
 		model = "(choose a model)"
 	}
-	fmt.Fprintf(&b, "Harness:  %s\n", m.spawnHarness)
-	fmt.Fprintf(&b, "Model:    %s\n", model)
+	fmt.Fprintf(&b, "%s Harness:  %s\n", m.spawnFieldPrefix(hubSpawnFieldHarness), m.spawnHarness)
+	fmt.Fprintf(&b, "%s Model:    %s\n", m.spawnFieldPrefix(hubSpawnFieldModel), model)
 	if m.spawnProject != "" {
-		fmt.Fprintf(&b, "Project:  %s\n", m.spawnProject)
+		fmt.Fprintf(&b, "  Project:  %s\n", m.spawnProject)
 	}
 	if m.spawnDir != "" {
-		fmt.Fprintf(&b, "Dir:      %s\n", m.spawnDir)
+		fmt.Fprintf(&b, "  Dir:      %s\n", m.spawnDir)
 	}
 	if m.err != nil {
 		fmt.Fprintf(&b, "\nerror: %v\n", m.err)
@@ -1572,11 +1670,17 @@ func (m hubModel) spawnView() string {
 	if m.spawnSubmitting {
 		b.WriteString("\nStarting session...\n")
 	}
-	b.WriteString("\nPrompt (optional):\n")
-	b.WriteString("> ")
-	b.WriteString(m.session.input.Value())
-	keys := []string{"h: harness", "m: model"}
-	keys = append(keys, "enter: spawn", "esc: cancel", "ctrl+o: dashboard")
+	fmt.Fprintf(&b, "\n%s Prompt (optional):\n", m.spawnFieldPrefix(hubSpawnFieldPrompt))
+	prompt := m.session.input.View()
+	if strings.TrimSpace(prompt) == "" {
+		prompt = m.session.input.Value()
+	}
+	for _, line := range strings.Split(prompt, "\n") {
+		b.WriteString("  ")
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	keys := []string{"tab: next field", "shift+tab: previous", m.spawnFieldHint(), "ctrl+s: spawn", "esc: cancel", "ctrl+o: dashboard"}
 	b.WriteString("\n\n")
 	b.WriteString(strings.Join(keys, "  "))
 	b.WriteString("\n")
