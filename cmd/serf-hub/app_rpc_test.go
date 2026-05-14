@@ -78,6 +78,36 @@ func TestHubRPCDoesNotAdvertiseUnsupportedTurnLists(t *testing.T) {
 	}
 }
 
+func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
+	toolNames := map[string]string{}
+	items := appItemsFromReplayTurn("turn_1", 1, replayTurn{
+		Kind: "ASSISTANT",
+		Message: replayMessage{Content: []replayPart{{
+			Kind: "tool_call",
+			ToolCall: &replayToolCall{
+				ID:        "call_1",
+				Name:      "communicate",
+				Arguments: []byte(`{"message":"done","await_reply":false}`),
+			},
+		}}},
+	}, toolNames)
+
+	if len(items) != 1 || items[0].Type != "agent_message" || items[0].Text != "done" {
+		t.Fatalf("communicate items=%+v", items)
+	}
+
+	results := appItemsFromReplayTurn("turn_2", 2, replayTurn{
+		Kind: "TOOL_RESULTS",
+		Message: replayMessage{Content: []replayPart{{
+			Kind:       "tool_result",
+			ToolResult: &replayToolResult{ToolCallID: "call_1", Content: `{"accepted":true}`},
+		}}},
+	}, toolNames)
+	if len(results) != 0 {
+		t.Fatalf("communicate tool results should be hidden, got %+v", results)
+	}
+}
+
 func TestHubRPCThreadListUsesRosterStatusAndSessionID(t *testing.T) {
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{

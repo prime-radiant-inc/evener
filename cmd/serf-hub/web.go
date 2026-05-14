@@ -2148,6 +2148,16 @@ func emitTurnEvents(emit func(string, any), turnIndex int, turn replayTurn, tool
 				if len(p.ToolCall.Arguments) > 0 {
 					args = string(p.ToolCall.Arguments)
 				}
+				if p.ToolCall.Name == "communicate" {
+					if text := communicateMessageFromArguments(p.ToolCall.Arguments); text != "" {
+						emit("ASSISTANT_TEXT_START", map[string]any{})
+						emit("ASSISTANT_TEXT_END", map[string]any{
+							"text":          text,
+							"finish_reason": "stop",
+						})
+					}
+					continue
+				}
 				emit("TOOL_CALL_START", map[string]any{
 					"tool_name":      p.ToolCall.Name,
 					"call_id":        p.ToolCall.ID,
@@ -2163,6 +2173,10 @@ func emitTurnEvents(emit func(string, any), turnIndex int, turn replayTurn, tool
 			name := p.ToolResult.Name
 			if name == "" {
 				name = toolNames[p.ToolResult.ToolCallID]
+			}
+			if name == "communicate" {
+				delete(toolNames, p.ToolResult.ToolCallID)
+				continue
 			}
 			out := stringifyToolContent(p.ToolResult.Content)
 			payload := map[string]any{
@@ -2201,6 +2215,25 @@ func stringifyToolContent(v any) string {
 		return ""
 	}
 	return string(b)
+}
+
+func communicateMessageFromArguments(raw json.RawMessage) string {
+	var args struct {
+		Message string `json:"message"`
+		Output  *struct {
+			Message string `json:"message"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return ""
+	}
+	if strings.TrimSpace(args.Message) != "" {
+		return args.Message
+	}
+	if args.Output != nil && strings.TrimSpace(args.Output.Message) != "" {
+		return args.Output.Message
+	}
+	return ""
 }
 
 // findNewSession polls the roster up to 3s for a daemon with the given pid.

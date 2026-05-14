@@ -1028,6 +1028,75 @@ func TestWeb_PastReplay_TranslatesTurnsToSSEEvents(t *testing.T) {
 	}
 }
 
+func TestWebPastReplayConvertsCommunicateToAssistantText(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+		ID: "01COMMREPLAY", UpdatedAt: time.Now(), OriginalPrompt: "demo",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	tpath := filepath.Join(proj, "sessions", "01COMMREPLAY.transcript.jsonl")
+	tw, err := agent.NewTranscriptWriter(tpath, agent.TranscriptHeader{
+		SessionID: "01COMMREPLAY",
+		ProfileID: "openai",
+		Model:     "gpt-5",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Append(agent.NewTurn(agent.TurnUserInput, llm.User("hello"))); err != nil {
+		t.Fatal(err)
+	}
+	communicateCall := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+		Kind: llm.ContentToolCall,
+		ToolCall: &llm.ToolCallData{
+			ID:        "call_communicate",
+			Name:      "communicate",
+			Arguments: []byte(`{"message":"done","await_reply":false}`),
+		},
+	}}}
+	if err := tw.Append(agent.NewTurn(agent.TurnAssistant, communicateCall)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Append(agent.NewTurn(agent.TurnToolResults,
+		llm.ToolResultNamed("call_communicate", "communicate", `{"accepted":true}`, false))); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    idx,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/past/01COMMREPLAY/replay", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if got := strings.Count(body, "event: ASSISTANT_TEXT_END"); got != 1 || !strings.Contains(body, `"text":"done"`) {
+		t.Fatalf("assistant replay events=%d, want one done message\nbody:\n%s", got, body)
+	}
+	if strings.Contains(body, "event: TOOL_CALL_START") || strings.Contains(body, `"tool_name":"communicate"`) {
+		t.Fatalf("communicate should not replay as a tool call\nbody:\n%s", body)
+	}
+}
+
 func TestWriteThreadReplaySSEUsesCanonicalSourceRef(t *testing.T) {
 	var out bytes.Buffer
 	writeThreadReplaySSE(&out, nil, appwire.Thread{

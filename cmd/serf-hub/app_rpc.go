@@ -953,6 +953,18 @@ func appItemsFromReplayTurn(turnID string, turnIndex int, turn replayTurn, toolN
 			case "tool_call":
 				if part.ToolCall != nil {
 					toolNames[part.ToolCall.ID] = part.ToolCall.Name
+					if part.ToolCall.Name == "communicate" {
+						if text := communicateMessageFromArguments(part.ToolCall.Arguments); text != "" {
+							items = append(items, appwire.ThreadItem{
+								Type:   "agent_message",
+								ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
+								TurnID: turnID,
+								Text:   text,
+								Status: "completed",
+							})
+						}
+						continue
+					}
 					items = append(items, appwire.ThreadItem{
 						Type:          "tool_call",
 						ID:            fmt.Sprintf("item_tool_%d_%d", turnIndex, i),
@@ -975,6 +987,10 @@ func appItemsFromReplayTurn(turnID string, turnIndex int, turn replayTurn, toolN
 			name := part.ToolResult.Name
 			if name == "" {
 				name = toolNames[part.ToolResult.ToolCallID]
+			}
+			if name == "communicate" {
+				delete(toolNames, part.ToolResult.ToolCallID)
+				continue
 			}
 			item := appwire.ThreadItem{
 				Type:     "tool_call",

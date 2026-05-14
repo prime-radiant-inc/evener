@@ -305,6 +305,59 @@ func TestServerAppWireThreadReadMergesCompletionItemsWithDeltas(t *testing.T) {
 	}
 }
 
+func TestServerAppWireThreadReadUsesCommunicateAsAssistantMessage(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	for _, ev := range []agent.SessionEvent{
+		{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}},
+		{Kind: agent.EventToolCallStart, SessionID: "th_1", Data: agent.ToolCallStartData{
+			ToolName:      "communicate",
+			CallID:        "call_1",
+			ArgumentsJSON: `{"message":"done","await_reply":false}`,
+		}},
+		{Kind: agent.EventCommunicate, SessionID: "th_1", Data: agent.CommunicateData{Message: "done"}},
+		{Kind: agent.EventToolCallOutputDelta, SessionID: "th_1", Data: agent.ToolCallOutputDeltaData{
+			ToolName: "communicate",
+			CallID:   "call_1",
+			Delta:    `{"accepted":true}`,
+		}},
+		{Kind: agent.EventToolCallEnd, SessionID: "th_1", Data: agent.ToolCallEndData{
+			ToolName: "communicate",
+			CallID:   "call_1",
+			Output:   `{"accepted":true}`,
+		}},
+		{Kind: agent.EventSessionEnd, SessionID: "th_1", Data: agent.SessionEndData{Reason: "input_complete", State: "IDLE"}},
+	} {
+		srv.RecordAppEvent(ev)
+	}
+
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1", IncludeTurns: true, ItemsView: "full"}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("resp=%v", resp.Kind())
+	}
+	data, ok := resp.Response.Result.(appwire.ThreadReadResponse)
+	if !ok {
+		t.Fatalf("result=%T", resp.Response.Result)
+	}
+	if len(data.Thread.Turns) != 1 {
+		t.Fatalf("turns=%+v", data.Thread.Turns)
+	}
+	var agentMessages, communicateTools int
+	for _, item := range data.Thread.Turns[0].Items {
+		if item.Type == "agent_message" && item.Text == "done" {
+			agentMessages++
+		}
+		if item.Type == "tool_call" && item.ToolName == "communicate" {
+			communicateTools++
+		}
+	}
+	if agentMessages != 1 || communicateTools != 0 {
+		t.Fatalf("items=%+v, want one agent message and no communicate tool", data.Thread.Turns[0].Items)
+	}
+}
+
 func TestServerAppWireInitializeDoesNotAdvertiseUnsupportedTurnList(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	conn := srv.AppServer().NewConnection("test")

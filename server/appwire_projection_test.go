@@ -78,6 +78,54 @@ func TestAppEventProjectorKeepsToolEventsInActiveTurnAfterAssistantText(t *testi
 	}
 }
 
+func TestAppEventProjectorProjectsCommunicateAsAssistantMessage(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
+
+	out := projector.Project(agent.SessionEvent{
+		Kind:      agent.EventCommunicate,
+		SessionID: "th_1",
+		Data:      agent.CommunicateData{Message: "done"},
+	})
+
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.Type != "agent_message" || item.Text != "done" || item.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("communicate item=%+v", item)
+	}
+}
+
+func TestAppEventProjectorSuppressesCommunicateToolEvents(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
+	projector.Project(agent.SessionEvent{
+		Kind:      agent.EventAssistantTextEnd,
+		SessionID: "th_1",
+		Data:      agent.AssistantTextEndData{Text: "done"},
+	})
+
+	for _, ev := range []agent.SessionEvent{
+		{Kind: agent.EventToolCallStart, SessionID: "th_1", Data: agent.ToolCallStartData{
+			ToolName:      "communicate",
+			CallID:        "call_1",
+			ArgumentsJSON: `{"message":"done"}`,
+		}},
+		{Kind: agent.EventToolCallOutputDelta, SessionID: "th_1", Data: agent.ToolCallOutputDeltaData{
+			ToolName: "communicate",
+			CallID:   "call_1",
+			Delta:    `{"accepted":true}`,
+		}},
+		{Kind: agent.EventToolCallEnd, SessionID: "th_1", Data: agent.ToolCallEndData{
+			ToolName: "communicate",
+			CallID:   "call_1",
+			Output:   `{"accepted":true}`,
+		}},
+	} {
+		if out := projector.Project(ev); len(out) != 0 {
+			t.Fatalf("%s projected communicate tool notifications: %+v", ev.Kind, out)
+		}
+	}
+}
+
 func TestAppEventProjectorIncludesCallIDOnToolOutputDelta(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
