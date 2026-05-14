@@ -277,6 +277,51 @@ func TestHubThreadListIncludesManagedCodexLaunchThreads(t *testing.T) {
 	}
 }
 
+func TestHubThreadListDoesNotLaunchManagedCodexOutsideSourceFilter(t *testing.T) {
+	launcher := NewCodexLauncher([]CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
+	defer shutdownCodexLauncher(t, launcher)
+	cfg := WebConfig{
+		Past:          NewPastIndex(""),
+		CodexLaunches: []CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
+		CodexLauncher: launcher,
+	}
+	localThread := appwire.Thread{
+		ID:        "01LOCAL",
+		SessionID: "01LOCAL",
+		Source:    "local",
+		Preview:   "local thread",
+		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+		Serf:      appwire.SerfThread{Ref: "local:01LOCAL"},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(&listThreadSource{id: "local", thread: localThread})
+
+	resp, err := hubThreadList(context.Background(), cfg, sources, appwire.ThreadListParams{SourceIDs: []string{"local"}})
+	if err != nil {
+		t.Fatalf("hubThreadList: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].Serf.Ref != "local:01LOCAL" {
+		t.Fatalf("threads=%+v", resp.Data)
+	}
+	if _, ok := sources.Source("codex-managed"); ok {
+		t.Fatal("managed Codex source was registered despite local-only source filter")
+	}
+}
+
+func TestHubThreadListReturnsManagedCodexLaunchErrorWhenSelectedSourceFails(t *testing.T) {
+	launcher := NewCodexLauncher([]CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "exit")})
+	defer shutdownCodexLauncher(t, launcher)
+	cfg := WebConfig{
+		Past:          NewPastIndex(""),
+		CodexLaunches: []CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "exit")},
+		CodexLauncher: launcher,
+	}
+	sources := newHubSourceRegistry(cfg)
+
+	_, err := hubThreadList(context.Background(), cfg, sources, appwire.ThreadListParams{SourceIDs: []string{"codex-managed"}})
+	assertHubLaunchError(t, err)
+}
+
 func TestHubThreadListContinuesWhenOptionalSourceFails(t *testing.T) {
 	localThread := appwire.Thread{
 		ID:        "01LOCAL",

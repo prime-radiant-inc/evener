@@ -550,7 +550,7 @@ func (s *WebServer) remoteTreeThreads(ctx context.Context) []appwire.Thread {
 }
 
 func (s *WebServer) ensureManagedCodexSources(ctx context.Context) {
-	ensureManagedCodexSources(ctx, s.cfg, s.sources)
+	_ = ensureManagedCodexSources(ctx, s.cfg, s.sources, appwire.ThreadListParams{})
 }
 
 func appThreadTreeEntries(thread appwire.Thread) (agent.SessionMeta, LiveEntry, bool) {
