@@ -32,6 +32,19 @@ func TestHubModelAppShellSessionTopBarAndComposerRegion(t *testing.T) {
 	requireOrderedText(t, got, "serf / session / send task", "Ready for shell work.", "message", "> ")
 }
 
+func TestHubModelAppShellAddsSubtleChromeStyles(t *testing.T) {
+	withTestColorProfile(t)
+	got := appShell{
+		TopBar: "serf live",
+		Body:   "Live now\n> idle serf session",
+		Footer: "enter open",
+	}.View()
+
+	if !strings.Contains(got, "\x1b[") {
+		t.Fatalf("app shell should style chrome for hierarchy:\n%q", got)
+	}
+}
+
 func TestHubModelCtrlOReturnsDashboardFromCommandPaletteOverlay(t *testing.T) {
 	m := sampleHubModel(100)
 	m.openProject("serf")

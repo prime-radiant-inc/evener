@@ -15,12 +15,18 @@ type appShell struct {
 
 func (s appShell) View() string {
 	sections := make([]string, 0, 4)
-	for _, section := range []string{s.TopBar, s.Body, s.Overlay, s.Footer} {
-		section = strings.TrimRight(section, "\n")
-		if section == "" {
-			continue
-		}
-		sections = append(sections, section)
+	styles := defaultTUIStyles()
+	if topBar := strings.TrimRight(s.TopBar, "\n"); topBar != "" {
+		sections = append(sections, styles.Title.Render(topBar))
+	}
+	if body := strings.TrimRight(s.Body, "\n"); body != "" {
+		sections = append(sections, body)
+	}
+	if overlay := strings.TrimRight(s.Overlay, "\n"); overlay != "" {
+		sections = append(sections, overlay)
+	}
+	if footer := strings.TrimRight(s.Footer, "\n"); footer != "" {
+		sections = append(sections, footer)
 	}
 	if len(sections) == 0 {
 		return ""

@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 // TestApplyTheme_DarkAndLightDiffer checks that dark and light themes produce
@@ -39,6 +40,24 @@ func TestInitTheme_SetsStyles(t *testing.T) {
 			t.Errorf("%s.Render(%q) returned empty string", tt.name, tt.input)
 		}
 	}
+}
+
+func TestTUIStylesRenderSelectedRow(t *testing.T) {
+	withTestColorProfile(t)
+	styles := defaultTUIStyles()
+	got := styles.Selected.Render("selected")
+	if got == "selected" {
+		t.Fatal("selected style should add terminal styling")
+	}
+}
+
+func withTestColorProfile(t *testing.T) {
+	t.Helper()
+	previous := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() {
+		lipgloss.SetColorProfile(previous)
+	})
 }
 
 // TestSetTheme_Dark switches to dark theme and checks the name.

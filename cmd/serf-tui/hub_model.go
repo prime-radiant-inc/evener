@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -2289,8 +2290,13 @@ func renderDashboardProjectRow(row hubRow, rows []hubRow, selected bool, width i
 	if selected {
 		cursor = ">"
 	}
+	styles := defaultTUIStyles()
 	line := fmt.Sprintf("%s ▾ %s %s  %s", cursor, statusDot(row.state), row.project, projectSummary(row, rows))
-	return truncateText(line, width)
+	line = truncateText(line, width)
+	if selected {
+		return styles.Selected.Render(line)
+	}
+	return styles.Section.Render(line)
 }
 
 func renderDashboardSessionRow(row hubRow, selected bool, width int, compact bool, branch string) string {
@@ -2298,6 +2304,7 @@ func renderDashboardSessionRow(row hubRow, selected bool, width int, compact boo
 	if selected {
 		cursor = ">"
 	}
+	styles := defaultTUIStyles()
 	if compact {
 		line := strings.Join(nonEmptyStrings([]string{
 			cursor,
@@ -2308,7 +2315,11 @@ func renderDashboardSessionRow(row hubRow, selected bool, width int, compact boo
 			row.model,
 			row.age,
 		}), " ")
-		return truncateText(line, width)
+		line = truncateText(line, width)
+		if selected {
+			return styles.Selected.Render(line)
+		}
+		return line
 	}
 	line := strings.Join(nonEmptyStrings([]string{
 		cursor,
@@ -2320,7 +2331,11 @@ func renderDashboardSessionRow(row hubRow, selected bool, width int, compact boo
 		row.model,
 		row.age,
 	}), " ")
-	return truncateText(line, width)
+	line = truncateText(line, width)
+	if selected {
+		return styles.Selected.Render(line)
+	}
+	return line
 }
 
 func dashboardSessionBranch(rows []hubRow, index int) string {
@@ -2372,6 +2387,9 @@ func truncateText(text string, width int) string {
 	if width <= 0 {
 		return ""
 	}
+	if lipgloss.Width(text) <= width {
+		return text
+	}
 	runes := []rune(text)
 	if len(runes) <= width {
 		return text
@@ -2396,7 +2414,7 @@ func joinDashboardColumns(left, right string, leftWidth, rightWidth, totalWidth 
 		if i < len(rightLines) {
 			rightLine = truncateText(rightLines[i], rightWidth)
 		}
-		padding := leftWidth - len([]rune(leftLine))
+		padding := leftWidth - lipgloss.Width(leftLine)
 		if padding < 0 {
 			padding = 0
 		}
@@ -2529,7 +2547,8 @@ func (m hubModel) projectView() string {
 	}
 	idx := 0
 	if liveCount > 0 {
-		b.WriteString("Live now\n")
+		b.WriteString(defaultTUIStyles().Section.Render("Live now"))
+		b.WriteString("\n")
 		for _, row := range rows {
 			if !row.live {
 				continue
@@ -2540,7 +2559,8 @@ func (m hubModel) projectView() string {
 		b.WriteString("\n")
 	}
 	if recentCount > 0 {
-		b.WriteString("Recent in this project\n")
+		b.WriteString(defaultTUIStyles().Section.Render("Recent in this project"))
+		b.WriteString("\n")
 		for _, row := range rows {
 			if row.live {
 				continue
@@ -2565,7 +2585,12 @@ func writeProjectRow(b *strings.Builder, row hubRow, selected bool) {
 	if selected {
 		cursor = ">"
 	}
-	fmt.Fprintf(b, "%s %s %-10s %-12s %-34s %-10s %s\n", cursor, statusDot(row.state), stateLabel(row.state), row.sourceLabel, row.title, row.model, row.age)
+	line := fmt.Sprintf("%s %s %-10s %-12s %-34s %-10s %s", cursor, statusDot(row.state), stateLabel(row.state), row.sourceLabel, row.title, row.model, row.age)
+	if selected {
+		line = defaultTUIStyles().Selected.Render(line)
+	}
+	b.WriteString(line)
+	b.WriteString("\n")
 }
 
 func statusDot(state string) string {

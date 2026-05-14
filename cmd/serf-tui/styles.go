@@ -47,6 +47,18 @@ type colorTheme struct {
 	pickerActiveFg   lipgloss.Color
 }
 
+type tuiStyles struct {
+	Title      lipgloss.Style
+	Section    lipgloss.Style
+	Muted      lipgloss.Style
+	Selected   lipgloss.Style
+	Error      lipgloss.Style
+	Idle       lipgloss.Style
+	Processing lipgloss.Style
+	Waiting    lipgloss.Style
+	Ended      lipgloss.Style
+}
+
 var darkTheme = colorTheme{
 	statusBarBg: lipgloss.Color("235"),
 	statusBarFg: lipgloss.Color("252"),
@@ -105,6 +117,28 @@ var lightTheme = colorTheme{
 	pickerNormalFg:   lipgloss.Color("236"),
 	pickerDimFg:      lipgloss.Color("244"),
 	pickerActiveFg:   lipgloss.Color("244"),
+}
+
+func defaultTUIStyles() tuiStyles {
+	t := effectiveTUITheme()
+	return tuiStyles{
+		Title:      lipgloss.NewStyle().Bold(true).Foreground(t.statusBarFg).Background(t.statusBarBg),
+		Section:    lipgloss.NewStyle().Bold(true).Foreground(t.pickerTitleFg),
+		Muted:      lipgloss.NewStyle().Foreground(t.pickerDimFg),
+		Selected:   lipgloss.NewStyle().Foreground(t.userBlockFg).Background(t.userBlockBg).Bold(true),
+		Error:      lipgloss.NewStyle().Foreground(t.disconnected).Bold(true),
+		Idle:       lipgloss.NewStyle().Foreground(t.connected),
+		Processing: lipgloss.NewStyle().Foreground(lipgloss.Color("111")),
+		Waiting:    lipgloss.NewStyle().Foreground(lipgloss.Color("210")),
+		Ended:      lipgloss.NewStyle().Foreground(t.pickerDimFg),
+	}
+}
+
+func effectiveTUITheme() colorTheme {
+	if activeTheme.statusBarFg == "" && activeTheme.statusBarBg == "" {
+		return darkTheme
+	}
+	return activeTheme
 }
 
 // activeTheme is set once at startup by initTheme().

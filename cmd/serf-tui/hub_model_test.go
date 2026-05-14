@@ -11,6 +11,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appwire"
@@ -134,6 +135,17 @@ func TestHubModelDashboardRendersProjectTreeHierarchy(t *testing.T) {
 	}
 }
 
+func TestHubModelDashboardSelectedRowUsesVisualStyle(t *testing.T) {
+	withTestColorProfile(t)
+	m := sampleHubModel(100)
+	m.selected = 0
+
+	got := m.dashboardView()
+	if !strings.Contains(got, "\x1b[") {
+		t.Fatalf("dashboard should use terminal styling for selected rows and section hierarchy:\n%q", got)
+	}
+}
+
 func TestHubModelDashboardSortsByAttentionThenRecency(t *testing.T) {
 	tree := hubTreeFromThreads([]appwire.Thread{
 		{
@@ -232,8 +244,8 @@ func TestHubModelDashboardNarrowUsesOneColumnWithEllipses(t *testing.T) {
 
 	got := m.dashboardView()
 	for _, line := range strings.Split(strings.TrimRight(got, "\n"), "\n") {
-		if len([]rune(line)) > m.width {
-			t.Fatalf("narrow dashboard line width=%d want <=%d:\n%s\n\nfull view:\n%s", len([]rune(line)), m.width, line, got)
+		if lipgloss.Width(line) > m.width {
+			t.Fatalf("narrow dashboard line width=%d want <=%d:\n%s\n\nfull view:\n%s", lipgloss.Width(line), m.width, line, got)
 		}
 	}
 	if !strings.Contains(got, "...") {
@@ -1005,8 +1017,8 @@ func TestHubModelSessionHeaderTruncatesLongLabels(t *testing.T) {
 	got := m.sessionView()
 	lines := strings.Split(got, "\n")
 	for i, line := range lines[:min(4, len(lines))] {
-		if len(line) > m.width {
-			t.Fatalf("header line %d width=%d exceeds %d:\n%s", i, len(line), m.width, got)
+		if lipgloss.Width(line) > m.width {
+			t.Fatalf("header line %d width=%d exceeds %d:\n%s", i, lipgloss.Width(line), m.width, got)
 		}
 	}
 }

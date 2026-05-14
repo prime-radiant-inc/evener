@@ -94,25 +94,24 @@ func (m hubModel) sessionComposerPanel() composerPanel {
 
 func (p composerPanel) View() string {
 	var b strings.Builder
+	styles := defaultTUIStyles()
 	label := strings.TrimSpace(p.Label)
 	reason := strings.TrimSpace(p.ReadOnlyReason)
 	if reason != "" {
 		if label == "" {
 			label = "read-only"
 		}
-		b.WriteString(label)
-		b.WriteString(": ")
-		b.WriteString(reason)
+		b.WriteString(styles.Error.Render(label + ": " + reason))
 		b.WriteString("\n")
 	} else if label != "" {
-		b.WriteString(label)
+		b.WriteString(styles.Section.Render(label))
 		b.WriteString("\n")
 	}
 	if p.ShowInput {
 		b.WriteString(renderComposerDraft(p.Draft, p.MaxDraftLines))
 	}
 	if len(p.Keys) > 0 {
-		b.WriteString(actionBarForWidth(p.Width, p.Keys...))
+		b.WriteString(styles.Muted.Render(actionBarForWidth(p.Width, p.Keys...)))
 		b.WriteString("\n")
 	}
 	return b.String()

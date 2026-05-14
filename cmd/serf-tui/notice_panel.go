@@ -18,23 +18,24 @@ type noticePanel struct {
 
 func (n noticePanel) Text() string {
 	var lines []string
+	styles := defaultTUIStyles()
 	if title := strings.TrimSpace(n.Title); title != "" {
-		lines = append(lines, title)
+		lines = append(lines, styles.Section.Render(title))
 	}
 	if summary := strings.TrimSpace(n.Summary); summary != "" {
 		lines = append(lines, summary)
 	}
 	if category := strings.TrimSpace(n.Category); category != "" {
-		lines = append(lines, "category: "+category)
+		lines = append(lines, styles.Muted.Render("category: "+category))
 	}
 	if source := strings.TrimSpace(n.Source); source != "" {
-		lines = append(lines, "source: "+source)
+		lines = append(lines, styles.Muted.Render("source: "+source))
 	}
 	if reason := strings.TrimSpace(n.Reason); reason != "" {
-		lines = append(lines, "reason: "+reason)
+		lines = append(lines, styles.Muted.Render("reason: "+reason))
 	}
 	if next := strings.TrimSpace(n.NextAction); next != "" {
-		lines = append(lines, "next: "+next)
+		lines = append(lines, styles.Muted.Render("next: "+next))
 	}
 	return strings.Join(lines, "\n")
 }
