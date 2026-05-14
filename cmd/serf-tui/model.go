@@ -47,8 +47,9 @@ type model struct {
 	historyIdx   int      // -1 = not browsing; len(history) = back to draft
 	historyDraft string   // saved current input when entering history browse
 
-	// Track active tool calls by call ID -> index in messages
+	// Track active transcript items by item/call ID -> index in messages.
 	activeTools       map[string]int
+	activeMessages    map[string]int
 	lastInterrupt     time.Time
 	lastSentText      string                // last user input, used for auto-steer on busy
 	picker            *modelPicker          // non-nil when model picker is active
@@ -128,6 +129,7 @@ func newConfiguredModel(addr, stateDir string, initialMessages []chatMessage, cf
 		input:             ta,
 		messages:          initialMessages,
 		activeTools:       make(map[string]int),
+		activeMessages:    make(map[string]int),
 		history:           loadHistory(stateDir),
 		historyIdx:        -1,
 		observedSubagents: make(map[string]subagentUI),

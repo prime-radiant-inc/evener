@@ -185,49 +185,17 @@ func sourceLabelFromRef(ref appwire.Ref) string {
 }
 
 func messagesFromThread(thread appwire.Thread) []chatMessage {
-	var messages []chatMessage
-	activeTools := make(map[string]int)
+	reducer := newHubTranscriptReducer(nil, nil, nil)
 	for _, turn := range thread.Turns {
 		turnIndex := turnIndexFromID(turn.ID)
 		for _, item := range turn.Items {
-			switch item.Type {
-			case "user_message":
-				if strings.TrimSpace(item.Text) != "" {
-					messages = append(messages, chatMessage{Kind: msgUser, Text: item.Text, TurnIndex: turnIndex})
-				}
-			case "agent_message":
-				if strings.TrimSpace(item.Text) != "" {
-					messages = append(messages, chatMessage{Kind: msgAssistant, Text: item.Text})
-				}
-			case "tool_call":
-				done := threadItemToolDone(item, false)
-				key := threadItemToolKey(item)
-				if done && key != "" {
-					if idx, ok := activeTools[key]; ok && idx < len(messages) && messages[idx].Tool != nil {
-						mergeThreadItemIntoToolInfo(messages[idx].Tool, item, done)
-						delete(activeTools, key)
-						continue
-					}
-				}
-				idx := len(messages)
-				messages = append(messages, chatMessage{Kind: msgTool, Tool: toolInfoFromThreadItem(item, done)})
-				if !done && key != "" {
-					activeTools[key] = idx
-				}
-			}
+			reducer.applyThreadItem(item, turnIndex, false)
 		}
 		if turn.Status == appwire.TurnStatusFailed && turn.Error != nil {
-			messages = append(messages, chatMessage{Kind: msgSystem, Text: formatHubTurnError(turn.Error, "Session error")})
+			reducer.messages = append(reducer.messages, chatMessage{Kind: msgSystem, Text: formatHubTurnError(turn.Error, "Session error")})
 		}
 	}
-	return messages
-}
-
-func threadItemToolKey(item appwire.ThreadItem) string {
-	if item.CallID != "" {
-		return item.CallID
-	}
-	return item.ID
+	return reducer.messages
 }
 
 func threadItemToolDone(item appwire.ThreadItem, completed bool) bool {

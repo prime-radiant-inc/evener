@@ -894,7 +894,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if reason == "" {
 				reason = "send is not available for this session"
 			}
-			m.addSessionSystem("Send is not available for this session. " + reason + ".")
+			m.addActionUnavailableNotice("send", "Send is not available for this session.", reason)
 			return m, nil
 		}
 		ref, ok := m.currentRef()
@@ -944,7 +944,7 @@ func (m *hubModel) runHubSlashCommand(cmd, args string) tea.Cmd {
 		return fetchHubSession(m.client, ref)
 	case "interrupt":
 		if !m.detail.Capabilities.Interrupt {
-			m.addSessionSystem("Interrupt is not available for this session.")
+			m.addActionUnavailableNotice("interrupt", "Interrupt is not available for this session.", "")
 			return nil
 		}
 		if strings.TrimSpace(m.detail.ActiveTurnID) == "" {
@@ -954,26 +954,26 @@ func (m *hubModel) runHubSlashCommand(cmd, args string) tea.Cmd {
 		return sendHubAction(m.client, ref, "interrupt", m.detail.ActiveTurnID)
 	case "compact":
 		if !m.detail.Capabilities.Compact {
-			m.addSessionSystem("Compact is not available for this session.")
+			m.addActionUnavailableNotice("compact", "Compact is not available for this session.", "")
 			return nil
 		}
 		return sendHubAction(m.client, ref, "compact", "")
 	case "clear":
 		if !m.detail.Capabilities.Clear {
-			m.addSessionSystem("Clear is not available for this session.")
+			m.addActionUnavailableNotice("clear", "Clear is not available for this session.", "")
 			return nil
 		}
 		return sendHubClear(m.client, ref)
 	case "shutdown":
 		if !m.detail.Capabilities.Shutdown {
-			m.addSessionSystem("Shutdown is not available for this session.")
+			m.addActionUnavailableNotice("shutdown", "Shutdown is not available for this session.", "")
 			return nil
 		}
 		return sendHubAction(m.client, ref, "shutdown", "")
 	case "model":
 		model := strings.TrimSpace(args)
 		if !m.detail.Capabilities.ChangeModel {
-			m.addSessionSystem("Model change is not available for this session.")
+			m.addActionUnavailableNotice("change model", "Model change is not available for this session.", "source does not advertise change model")
 			return nil
 		}
 		if model == "" {
@@ -1364,11 +1364,7 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) {
 	case appwire.NotifyAgentMessageDelta:
 		var params appwire.AgentMessageDeltaParams
 		if json.Unmarshal(notification.Params, &params) == nil {
-			if len(m.session.messages) > 0 && m.session.messages[len(m.session.messages)-1].Kind == msgAssistant {
-				m.session.messages[len(m.session.messages)-1].Text += params.Delta
-			} else {
-				m.session.messages = append(m.session.messages, chatMessage{Kind: msgAssistant, Text: params.Delta})
-			}
+			m.applyAgentMessageDelta(params.ItemID, params.Delta)
 		}
 	case appwire.NotifyToolOutputDelta:
 		var params struct {
@@ -1443,74 +1439,26 @@ func (m hubModel) notificationMatchesCurrentSession(notification appwire.Notific
 	return false
 }
 
+func (m *hubModel) applyAgentMessageDelta(itemID, delta string) {
+	reducer := m.sessionTranscriptReducer()
+	reducer.applyAgentMessageDelta(itemID, delta)
+	m.applySessionTranscriptReducer(reducer)
+}
+
 func (m *hubModel) applyThreadItem(item appwire.ThreadItem, completed bool) {
-	switch item.Type {
-	case "user_message":
-		if strings.TrimSpace(item.Text) != "" {
-			m.session.messages = append(m.session.messages, chatMessage{Kind: msgUser, Text: item.Text, TurnIndex: turnIndexFromID(item.TurnID)})
-		}
-	case "agent_message":
-		if strings.TrimSpace(item.Text) != "" {
-			if len(m.session.messages) > 0 && m.session.messages[len(m.session.messages)-1].Kind == msgAssistant {
-				m.session.messages[len(m.session.messages)-1].Text = item.Text
-			} else {
-				m.session.messages = append(m.session.messages, chatMessage{Kind: msgAssistant, Text: item.Text})
-			}
-		}
-	case "tool_call":
-		done := threadItemToolDone(item, completed)
-		if idx, ok := m.activeHubToolIndex(item); ok {
-			info := m.session.messages[idx].Tool
-			if info == nil {
-				return
-			}
-			mergeThreadItemIntoToolInfo(info, item, done)
-			if done {
-				m.clearActiveHubTool(item)
-			} else {
-				m.rememberActiveHubTool(item, idx)
-			}
-			return
-		}
-		info := toolInfoFromThreadItem(item, done)
-		idx := len(m.session.messages)
-		m.session.messages = append(m.session.messages, chatMessage{Kind: msgTool, Tool: info})
-		if !done {
-			m.rememberActiveHubTool(item, idx)
-		}
-	}
+	reducer := m.sessionTranscriptReducer()
+	reducer.applyThreadItem(item, turnIndexFromID(item.TurnID), completed)
+	m.applySessionTranscriptReducer(reducer)
 }
 
-func (m *hubModel) activeHubToolIndex(item appwire.ThreadItem) (int, bool) {
-	if item.ID != "" {
-		if idx, ok := m.session.activeTools[item.ID]; ok && idx < len(m.session.messages) {
-			return idx, true
-		}
-	}
-	if item.CallID != "" {
-		if idx, ok := m.session.activeTools[item.CallID]; ok && idx < len(m.session.messages) {
-			return idx, true
-		}
-	}
-	return 0, false
+func (m *hubModel) sessionTranscriptReducer() hubTranscriptReducer {
+	return newHubTranscriptReducer(m.session.messages, m.session.activeTools, m.session.activeMessages)
 }
 
-func (m *hubModel) rememberActiveHubTool(item appwire.ThreadItem, idx int) {
-	if item.ID != "" {
-		m.session.activeTools[item.ID] = idx
-	}
-	if item.CallID != "" {
-		m.session.activeTools[item.CallID] = idx
-	}
-}
-
-func (m *hubModel) clearActiveHubTool(item appwire.ThreadItem) {
-	if item.ID != "" {
-		delete(m.session.activeTools, item.ID)
-	}
-	if item.CallID != "" {
-		delete(m.session.activeTools, item.CallID)
-	}
+func (m *hubModel) applySessionTranscriptReducer(reducer hubTranscriptReducer) {
+	m.session.messages = reducer.messages
+	m.session.activeTools = reducer.activeTools
+	m.session.activeMessages = reducer.activeMessages
 }
 
 func buildHubRows(tree hubTreeResponse) []hubRow {
@@ -2081,24 +2029,5 @@ func (m hubModel) sessionView() string {
 }
 
 func (m hubModel) renderSessionDetails() string {
-	var b strings.Builder
-	if m.detail.SessionID != "" {
-		fmt.Fprintf(&b, "Session:  %s\n", m.detail.SessionID)
-	}
-	if m.detail.SourceLabel != "" {
-		fmt.Fprintf(&b, "Source:   %s\n", m.detail.SourceLabel)
-	}
-	if m.detail.Model != "" || m.detail.Profile != "" {
-		fmt.Fprintf(&b, "Model:    %s (%s)\n", m.detail.Model, m.detail.Profile)
-	}
-	if m.detail.WorkingDir != "" {
-		fmt.Fprintf(&b, "Dir:      %s\n", m.detail.WorkingDir)
-	}
-	if m.detail.Branch != "" {
-		fmt.Fprintf(&b, "Branch:   %s\n", m.detail.Branch)
-	}
-	if m.detail.TurnCount > 0 {
-		fmt.Fprintf(&b, "Turns:    %d\n", m.detail.TurnCount)
-	}
-	return strings.TrimSpace(b.String())
+	return detailsDrawer{Detail: m.detail}.View()
 }

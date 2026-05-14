@@ -142,7 +142,7 @@ func renderToolCall(tc toolCallInfo, width int, focused bool) string {
 
 	header := strings.Join(headerLines, "\n")
 
-	if !tc.Expanded || (tc.Detail == "" && tc.Output == "") {
+	if !tc.Expanded || (tc.Detail == "" && tc.Output == "" && tc.Error == "") {
 		return toolCollapsedStyle.Render(header)
 	}
 
@@ -155,6 +155,12 @@ func renderToolCall(tc toolCallInfo, width int, focused bool) string {
 			body.WriteString("\n")
 		}
 		body.WriteString(toolExpandedStyle.Width(width - 4).Render(tc.Output))
+	}
+	if tc.Error != "" {
+		if body.Len() > 0 {
+			body.WriteString("\n")
+		}
+		body.WriteString(toolExpandedStyle.Width(width - 4).Render("error: " + tc.Error))
 	}
 	return header + "\n" + body.String()
 }
