@@ -509,9 +509,6 @@ func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.returnToDashboard()
 		return m, nil
 	case "ctrl+c":
-		if m.mode == hubModeSession {
-			return m.updateSessionKey(msg)
-		}
 		return m, tea.Quit
 	}
 	if m.commandPalette != nil {
@@ -1093,6 +1090,10 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.resizeSessionInputFrom(prevHeight)
 		return m, nil
 	}
+	if msg.String() == "/" && strings.TrimSpace(m.session.input.Value()) == "" {
+		m.openCommandPalette()
+		return m, nil
+	}
 	if msg.Type == tea.KeyCtrlP || msg.String() == "ctrl+p" {
 		m.openCommandPalette()
 		return m, nil
@@ -1132,21 +1133,6 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "pgup":
 		m.enterSessionBrowse(true)
 		return m, nil
-	case "ctrl+c":
-		if !m.detail.Capabilities.Interrupt {
-			m.addSessionSystem("Interrupt is not available for this session.")
-			return m, nil
-		}
-		if strings.TrimSpace(m.detail.ActiveTurnID) == "" {
-			m.addSessionSystem("Interrupt is not available until an active turn starts.")
-			return m, nil
-		}
-		ref, ok := m.currentRef()
-		if !ok {
-			m.addSessionSystem("Session ref is invalid.")
-			return m, nil
-		}
-		return m, sendHubAction(m.client, ref, "interrupt", m.detail.ActiveTurnID)
 	}
 
 	if msg.String() == "enter" {

@@ -2660,6 +2660,67 @@ func TestHubModelSessionPaletteShortcutRunsSearchWithoutReplacingDraft(t *testin
 	}
 }
 
+func TestHubModelSessionLeadingSlashOpensCommandPalette(t *testing.T) {
+	m := newSessionHubModel(nil)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if cmd != nil {
+		t.Fatal("opening session slash palette should be synchronous")
+	}
+	m = updated.(hubModel)
+	if got := m.session.input.Value(); got != "" {
+		t.Fatalf("leading slash should open discovery instead of staying in composer, input=%q", got)
+	}
+	if m.commandPalette == nil {
+		t.Fatal("leading slash did not open session command palette")
+	}
+	got := m.sessionView()
+	if !strings.Contains(got, "Command palette") || !strings.Contains(got, "/help") || !strings.Contains(got, "/model") {
+		t.Fatalf("session slash palette missing commands:\n%s", got)
+	}
+}
+
+func TestHubModelCtrlCQuitsFromSession(t *testing.T) {
+	m := newSessionHubModel(nil)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if got := updated.(hubModel); got.commandPalette != nil {
+		t.Fatalf("ctrl+c should quit instead of opening/keeping palette: %+v", got.commandPalette)
+	}
+	requireQuitCommand(t, cmd)
+}
+
+func TestHubModelCtrlCQuitsAcrossModes(t *testing.T) {
+	cases := []struct {
+		name  string
+		model hubModel
+	}{
+		{name: "dashboard", model: newHubModel(nil, "http://hub.test")},
+		{name: "project", model: func() hubModel {
+			m := sampleHubModel(100)
+			m.openProject("serf")
+			return m
+		}()},
+		{name: "spawn", model: func() hubModel {
+			m := newHubModel(nil, "http://hub.test")
+			m.openSpawnForm()
+			return m
+		}()},
+		{name: "palette", model: func() hubModel {
+			m := sampleHubModel(100)
+			m.openCommandPalette()
+			return m
+		}()},
+		{name: "session", model: newSessionHubModel(nil)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, cmd := tc.model.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+			requireQuitCommand(t, cmd)
+		})
+	}
+}
+
 func TestHubModelUnknownSlashCommandIncludesHelpHint(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.session.setInputValue("/wat")
@@ -2673,6 +2734,17 @@ func TestHubModelUnknownSlashCommandIncludesHelpHint(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("unknown command output missing %q:\n%s", want, got)
 		}
+	}
+}
+
+func requireQuitCommand(t *testing.T, cmd tea.Cmd) {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("expected quit command, got nil")
+	}
+	msg := cmd()
+	if _, ok := msg.(tea.QuitMsg); !ok {
+		t.Fatalf("expected tea.QuitMsg, got %T", msg)
 	}
 }
 
