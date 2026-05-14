@@ -41,7 +41,7 @@ func TestHubModelSessionComposerShowsReadOnlyReasonAndDraft(t *testing.T) {
 func TestHubModelBusyComposerShowsSteerOrReadOnlyMode(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail.State = "processing"
-	m.detail.Capabilities.Send = false
+	m.detail.Capabilities.Send = true
 	m.detail.Capabilities.Steer = true
 	m.session.processing = true
 	m.session.setInputValue("nudge the running turn")
@@ -58,6 +58,30 @@ func TestHubModelBusyComposerShowsSteerOrReadOnlyMode(t *testing.T) {
 	for _, want := range []string{"read-only:", "source does not advertise steer", "> nudge the running turn"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("busy read-only composer missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestHubModelBusyEnterWithoutSteerPreservesDraftAndExplainsReason(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.State = "processing"
+	m.detail.Capabilities.Send = true
+	m.detail.Capabilities.Steer = false
+	m.session.processing = true
+	m.session.setInputValue("do not drop this")
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("busy read-only enter should not call the hub")
+	}
+	got := updated.(hubModel)
+	if got.session.input.Value() != "do not drop this" {
+		t.Fatalf("draft=%q, want preserved", got.session.input.Value())
+	}
+	view := got.sessionView()
+	for _, want := range []string{"Send is not available for this session.", "source does not advertise steer", "> do not drop this"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("busy unsupported steer view missing %q:\n%s", want, view)
 		}
 	}
 }
@@ -98,6 +122,23 @@ func TestHubModelBusyEnterRoutesToSteerAndPreservesDraft(t *testing.T) {
 	}
 }
 
+func TestHubModelSessionComposerAltEnterInsertsNewline(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.session.setInputValue("alpha")
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+	if cmd != nil {
+		t.Fatal("alt+enter newline should be synchronous")
+	}
+	m = updated.(hubModel)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("beta")})
+	m = updated.(hubModel)
+
+	if got := m.session.input.Value(); got != "alpha\nbeta" {
+		t.Fatalf("composer draft=%q, want alt-enter multiline draft", got)
+	}
+}
+
 func TestHubModelSessionComposerCtrlJInsertsNewline(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.session.setInputValue("line one")
@@ -118,7 +159,7 @@ func TestHubModelSessionComposerCtrlJInsertsNewline(t *testing.T) {
 	}
 }
 
-func TestHubModelSessionComposerUsesHistoryNavigation(t *testing.T) {
+func TestHubModelSessionComposerUsesHistoryNavigationOnlyWhenEmpty(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.session.history = []string{"first request", "second request"}
 	m.session.setInputValue("current draft")
@@ -128,14 +169,21 @@ func TestHubModelSessionComposerUsesHistoryNavigation(t *testing.T) {
 		t.Fatal("history up should be synchronous")
 	}
 	m = updated.(hubModel)
+	if got := m.session.input.Value(); got != "current draft" {
+		t.Fatalf("history up with non-empty draft input=%q, want current draft", got)
+	}
+
+	m.session.setInputValue("")
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m = updated.(hubModel)
 	if got := m.session.input.Value(); got != "second request" {
-		t.Fatalf("history up input=%q, want second request", got)
+		t.Fatalf("empty history up input=%q, want second request", got)
 	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	m = updated.(hubModel)
 	if got := m.session.input.Value(); got != "first request" {
-		t.Fatalf("second history up input=%q, want first request", got)
+		t.Fatalf("second empty history up input=%q, want first request", got)
 	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
@@ -146,8 +194,8 @@ func TestHubModelSessionComposerUsesHistoryNavigation(t *testing.T) {
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = updated.(hubModel)
-	if got := m.session.input.Value(); got != "current draft" {
-		t.Fatalf("history restored draft=%q, want current draft", got)
+	if got := m.session.input.Value(); got != "" {
+		t.Fatalf("history restored empty draft=%q, want empty", got)
 	}
 }
 
@@ -171,6 +219,55 @@ func TestHubModelSessionComposerAddsSentPromptsToHistory(t *testing.T) {
 
 	if len(m.session.history) == 0 || unescapeHistory(m.session.history[len(m.session.history)-1]) != "remember this" {
 		t.Fatalf("history=%v, want sent prompt appended", m.session.history)
+	}
+}
+
+func TestHubModelFailedSendPreservesDraftExactly(t *testing.T) {
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+			return appwire.TurnStartResponse{}, appwire.Conflict("session is busy")
+		})
+	})
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	draft := "  exact draft\nwith trailing spaces  "
+	m.session.setInputValue(draft)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("send returned nil command")
+	}
+	updated, _ = updated.(hubModel).Update(cmd())
+	got := updated.(hubModel)
+
+	if got.session.input.Value() != draft {
+		t.Fatalf("failed send draft=%q, want exact %q", got.session.input.Value(), draft)
+	}
+	view := got.sessionView()
+	for _, want := range []string{"Send failed: appwire turn/start: session is busy", ">   exact draft\n  with trailing spaces  "} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("failed send view missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestHubModelSessionComposerBoundsRenderedDraftHeight(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.session.setInputValue("one\ntwo\nthree\nfour\nfive\nsix\nseven")
+
+	got := m.sessionComposerPanel().View()
+	renderedDraft := renderComposerDraft(m.session.input.Value(), m.session.input.MaxHeight)
+	if gotLines := strings.Count(renderedDraft, "\n"); gotLines > m.session.input.MaxHeight {
+		t.Fatalf("rendered draft lines=%d, want at most %d:\n%s", gotLines, m.session.input.MaxHeight, renderedDraft)
+	}
+	if strings.Contains(got, "one") || strings.Contains(got, "two") || strings.Contains(got, "three") {
+		t.Fatalf("composer should scroll internally instead of rendering every old line:\n%s", got)
+	}
+	for _, want := range []string{"...", "four", "five", "six", "seven"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("bounded composer missing %q:\n%s", want, got)
+		}
 	}
 }
 

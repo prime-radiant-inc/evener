@@ -104,6 +104,10 @@ type hubModel struct {
 	session model
 	notices []noticePanel
 
+	authStatus         authStatus
+	authStatusSeen     bool
+	sessionStatusError string
+
 	authLoginProvider string
 	authLoginFlowID   string
 }
@@ -198,35 +202,42 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitHubNotification(m.client)
 	case hubSendMsg:
 		if msg.err != nil {
-			m.session.setInputValue(msg.text)
+			m.session.setInputValue(msg.draft)
 			m.addHubErrorNotice("Send failed", "appwire", msg.err, "Check the hub connection and retry the action.")
+			m.recordSessionError("Send failed: " + msg.err.Error())
 		} else {
 			m.clearNoticesByCategory("appwire")
+			m.clearSessionError()
 			m.setActiveTurnID(msg.turnID)
 		}
 		return m, nil
 	case hubTasksMsg:
 		if msg.err != nil {
 			m.addHubErrorNotice("Tasks failed", "appwire", msg.err, "Check the hub connection and retry /tasks.")
+			m.recordSessionError("Tasks error: " + msg.err.Error())
 		} else {
 			m.clearNoticesByCategory("appwire")
+			m.clearSessionError()
 			m.addSessionSystem(renderTasks(msg.tasks, m.width))
 		}
 		return m, nil
 	case hubStatusMsg:
 		if msg.err != nil {
-			m.addSessionSystem("Status error: " + msg.err.Error())
+			m.recordSessionError("Status error: " + msg.err.Error())
 			return m, nil
 		}
+		m.clearSessionError()
 		m.detail = msg.detail
 		m.addSessionSystem(renderHubSessionStatus(msg.detail, msg.tasks, msg.auth, msg.taskErr, msg.authErr))
 		return m, nil
 	case hubActionMsg:
 		if msg.err != nil {
 			m.addHubErrorNotice("Action failed", "action", msg.err, "Open /help to see source-supported actions.")
+			m.recordSessionError(fmt.Sprintf("%s failed: %s", msg.action, msg.err))
 			return m, nil
 		}
 		m.clearNoticesByCategory("action")
+		m.clearSessionError()
 		switch msg.action {
 		case "interrupt":
 			m.addSessionSystem("Interrupt sent.")
@@ -242,9 +253,10 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case hubClearMsg:
 		if msg.err != nil {
-			m.addSessionSystem("Clear failed: " + msg.err.Error())
+			m.recordSessionError("Clear failed: " + msg.err.Error())
 			return m, nil
 		}
+		m.clearSessionError()
 		ref, err := appwire.ParseRef(msg.resp.Ref)
 		if err != nil {
 			m.addSessionSystem("Clear returned invalid ref: " + msg.resp.Ref)
@@ -256,9 +268,10 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.forkDraft != nil {
 				m.forkDraft.Submitting = false
 			}
-			m.addSessionSystem("Fork failed: " + msg.err.Error())
+			m.recordSessionError("Fork failed: " + msg.err.Error())
 			return m, nil
 		}
+		m.clearSessionError()
 		m.forkDraft = nil
 		m.session.resetInput()
 		ref, err := appwire.ParseRef(msg.resp.Ref)
@@ -419,10 +432,14 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case hubAuthStatusMsg:
 		if msg.err != nil {
 			m.addAuthErrorNotice("Auth error", msg.err)
+			m.recordSessionError("Auth status failed: " + msg.err.Error())
 			return m, nil
 		}
 		m.clearNoticesByCategory("auth")
-		m.addSessionSystem(formatAuthStatusSummary(authStatusFromAppWire(msg.status)))
+		m.authStatus = authStatusFromAppWire(msg.status)
+		m.authStatusSeen = true
+		m.clearSessionError()
+		m.addSessionSystem(formatAuthStatusSummary(m.authStatus))
 		return m, nil
 	case hubAuthLoginStartMsg:
 		if msg.err != nil {
@@ -439,23 +456,31 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case hubAuthLoginCompleteMsg:
 		if msg.err != nil {
 			m.addAuthErrorNotice("Auth error", msg.err)
+			m.recordSessionError("Login failed: " + msg.err.Error())
 			return m, nil
 		}
 		m.clearNoticesByCategory("auth")
 		m.authLoginProvider = ""
 		m.authLoginFlowID = ""
-		m.addSessionSystem("OpenAI login complete. " + formatAuthStatusSummary(authStatusFromAppWire(msg.resp.Status)))
+		m.authStatus = authStatusFromAppWire(msg.resp.Status)
+		m.authStatusSeen = true
+		m.clearSessionError()
+		m.addSessionSystem("OpenAI login complete. " + formatAuthStatusSummary(m.authStatus))
 		return m, nil
 	case hubAuthLogoutMsg:
 		if msg.err != nil {
 			m.addAuthErrorNotice("Auth error", msg.err)
+			m.recordSessionError("Logout failed: " + msg.err.Error())
 			return m, nil
 		}
 		m.clearNoticesByCategory("auth")
+		m.authStatus = authStatusFromAppWire(msg.resp.Status)
+		m.authStatusSeen = true
+		m.clearSessionError()
 		if msg.resp.Removed {
-			m.addSessionSystem("OpenAI sign-out complete. " + formatAuthStatusSummary(authStatusFromAppWire(msg.resp.Status)))
+			m.addSessionSystem("OpenAI sign-out complete. " + formatAuthStatusSummary(m.authStatus))
 		} else {
-			m.addSessionSystem("OpenAI auth was already signed out. " + formatAuthStatusSummary(authStatusFromAppWire(msg.resp.Status)))
+			m.addSessionSystem("OpenAI auth was already signed out. " + formatAuthStatusSummary(m.authStatus))
 		}
 		return m, nil
 	}
@@ -1056,12 +1081,16 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.enterSessionBrowse(false)
 		return m, nil
 	case "up":
-		if m.session.input.Line() == 0 && len(m.session.history) > 0 {
-			if m.session.historyIdx == -1 {
+		if len(m.session.history) > 0 {
+			if m.session.historyIdx >= 0 {
+				if m.session.historyIdx > 0 {
+					m.session.historyIdx--
+				}
+			} else if m.session.input.Value() == "" {
 				m.session.historyDraft = m.session.input.Value()
 				m.session.historyIdx = len(m.session.history) - 1
-			} else if m.session.historyIdx > 0 {
-				m.session.historyIdx--
+			} else {
+				return m, nil
 			}
 			m.session.setInputValue(unescapeHistory(m.session.history[m.session.historyIdx]))
 			return m, nil
@@ -1099,7 +1128,8 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if msg.String() == "enter" {
-		text := strings.TrimSpace(m.session.input.Value())
+		draft := m.session.input.Value()
+		text := strings.TrimSpace(draft)
 		if text == "" {
 			return m, nil
 		}
@@ -1141,7 +1171,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.session.addHistory(text)
 		m.session.resetInput()
 		m.session.refreshViewport()
-		return m, sendHubInput(m.client, ref, text)
+		return m, sendHubInput(m.client, ref, text, draft)
 	}
 
 	prevHeight := m.session.input.Height()
@@ -1533,6 +1563,19 @@ func (m *hubModel) addAuthErrorNotice(title string, err error) {
 		Reason:     err.Error(),
 		NextAction: "Retry /auth openai or check Hub auth configuration.",
 	})
+}
+
+func (m *hubModel) recordSessionError(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	m.sessionStatusError = text
+	m.addSessionSystem(text)
+}
+
+func (m *hubModel) clearSessionError() {
+	m.sessionStatusError = ""
 }
 
 func (m *hubModel) removeTrailingSessionSystem(text string) {
@@ -2234,7 +2277,7 @@ func renderDashboardSessionRow(row hubRow, selected bool, width int, compact boo
 
 func dashboardFooter(width int) string {
 	if width <= 72 {
-		return truncateText("keys: up/down enter p n new / palette c-o q", width)
+		return truncateText("keys: up/down enter p n new / palette ctrl+o dashboard q", width)
 	}
 	return truncateText("↑/↓ select  enter open  p project  n new  / palette  ctrl+o dashboard  q quit", width)
 }
@@ -2583,14 +2626,132 @@ func (m hubModel) spawnView() string {
 	}.View()
 }
 
-func (m hubModel) sessionView() string {
-	var b strings.Builder
-	title := m.detail.Title
-	if title == "" {
-		title = m.detail.SessionID
+func (m hubModel) sessionHeaderLines() []string {
+	width := m.sessionHeaderWidth()
+	title := firstNonEmptyString(m.detail.Title, m.detail.SessionID, m.detail.Ref, "untitled session")
+	source := firstNonEmptyString(m.detail.SourceLabel, sourceLabelFromRefText(m.detail.Ref))
+	state := strings.TrimSpace(m.detail.State)
+	if state == "" {
+		state = "unknown"
+	} else {
+		state = stateLabel(state)
 	}
-	topBar := fmt.Sprintf("serf / session / %s", title)
-	fmt.Fprintf(&b, "%s  %s  %s  %s\n", m.detail.SourceLabel, m.detail.Ref, m.detail.State, m.detail.WorkingDir)
+	model := firstNonEmptyString(m.detail.Model, "unknown")
+	project := firstNonEmptyString(m.detail.Project, "unknown")
+	cwd := firstNonEmptyString(m.detail.WorkingDir, "unknown")
+	ref := firstNonEmptyString(m.detail.Ref, "unknown")
+
+	meta := fmt.Sprintf("source: %s  ref: %s  state: %s  model: %s", source, ref, state, model)
+	location := fmt.Sprintf("project: %s  cwd: %s  turns: %d", project, cwd, m.detail.TurnCount)
+	if m.detail.ContextPressure > 0 {
+		location += fmt.Sprintf("  ctx: %.0f%%", m.detail.ContextPressure*100)
+	}
+
+	return []string{
+		truncateSessionLine(title, width),
+		truncateSessionLine(meta, width),
+		truncateSessionLine(location, width),
+		truncateSessionLine(m.sessionStatusLine(), width),
+	}
+}
+
+func (m hubModel) sessionHeaderWidth() int {
+	if m.width > 0 {
+		return m.width
+	}
+	return 100
+}
+
+func truncateSessionLine(line string, width int) string {
+	if width <= 0 {
+		return line
+	}
+	runes := []rune(line)
+	if len(runes) <= width {
+		return line
+	}
+	if width <= 3 {
+		return string(runes[:width])
+	}
+	return string(runes[:width-3]) + "..."
+}
+
+func (m hubModel) sessionStatusLine() string {
+	parts := []string{"status: " + m.hubConnectionLabel()}
+	if readiness := m.sessionAuthReadinessLabel(); readiness != "" {
+		parts = append(parts, readiness)
+	}
+	parts = append(parts, m.sessionCapabilityStatusLabel())
+	if m.sessionTurnActionState() {
+		busy := "busy"
+		if turnID := strings.TrimSpace(m.detail.ActiveTurnID); turnID != "" {
+			busy += ": " + turnID
+		}
+		parts = append(parts, busy)
+	}
+	if errText := m.sessionStatusErrorText(); errText != "" {
+		parts = append(parts, "error: "+errText)
+	}
+	return strings.Join(parts, "  ")
+}
+
+func (m hubModel) hubConnectionLabel() string {
+	if m.client == nil {
+		return "hub disconnected"
+	}
+	return "hub connected"
+}
+
+func (m hubModel) sessionAuthReadinessLabel() string {
+	if m.authStatusSeen {
+		provider := firstNonEmptyString(m.authStatus.Provider, "provider")
+		source := strings.TrimSpace(m.authStatus.ActiveSource)
+		switch source {
+		case "":
+			source = "unknown"
+		case "signed-out":
+			source = "signed out"
+		}
+		return "auth: " + provider + " " + source
+	}
+	if provider, _, ok := strings.Cut(strings.TrimSpace(m.detail.Model), "/"); ok && strings.TrimSpace(provider) != "" {
+		return "provider: " + provider
+	}
+	return "auth: unknown"
+}
+
+func (m hubModel) sessionCapabilityStatusLabel() string {
+	switch m.sessionComposerMode() {
+	case hubComposerModeSteer:
+		return "steer: ready"
+	case hubComposerModeReadOnly:
+		reason := m.sessionComposerReadOnlyReason()
+		if reason == "" {
+			reason = "send is not available"
+		}
+		return "read-only: " + reason
+	case hubComposerModeFork:
+		return "fork: draft"
+	default:
+		return "send: ready"
+	}
+}
+
+func (m hubModel) sessionStatusErrorText() string {
+	if m.err != nil {
+		return m.err.Error()
+	}
+	return strings.TrimSpace(m.sessionStatusError)
+}
+
+func (m hubModel) sessionView() string {
+	title := firstNonEmptyString(m.detail.Title, m.detail.SessionID, m.detail.Ref, "untitled session")
+	topBar := truncateSessionLine(fmt.Sprintf("serf / session / %s", title), m.sessionHeaderWidth())
+	var b strings.Builder
+	for _, line := range m.sessionHeaderLines() {
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
 	if m.err != nil {
 		fmt.Fprintf(&b, "\nerror: %v\n", m.err)
 	}

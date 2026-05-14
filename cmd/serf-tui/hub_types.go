@@ -62,8 +62,8 @@ type hubSessionDetail struct {
 	Project         string
 	Branch          string
 	TurnCount       int
-	ActiveTurnID    string
 	ContextPressure float64
+	ActiveTurnID    string
 	RecentErrors    []string
 	Diagnostics     *appwire.SerfDiagnostics
 	Live            bool

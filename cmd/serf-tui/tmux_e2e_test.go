@@ -157,7 +157,7 @@ func TestTUITmuxE2E_DashboardNarrowWideStates(t *testing.T) {
 
 	narrow := startTUITmuxSized(t, bin, hub.URL(), 60, 30)
 	defer narrow.Close()
-	narrowScreen := narrow.WaitFor("serf live", "keys: up/down enter p n new / palette c-o q", "...")
+	narrowScreen := narrow.WaitFor("serf live", "keys: up/down enter p n new / palette ctrl+o dashboard q", "...")
 	if strings.Contains(narrowScreen, "details") {
 		t.Fatalf("narrow dashboard rendered details drawer:\n%s", narrowScreen)
 	}
@@ -523,6 +523,61 @@ func TestTUITmuxE2E_ModelPickerShowsAuthRequiredModels(t *testing.T) {
 	}
 }
 
+func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	hub.SetSessionState("01LIVE", appwire.ThreadStatusProcessing)
+	hub.SetSessionContextPressure("01LIVE", 0.66)
+	defer hub.Close()
+	app := startTUITmux(t, bin, hub.URL())
+	defer app.Close()
+
+	openLiveSession(t, app)
+	app.WaitFor(
+		"live task",
+		"source: serf",
+		"state: processing",
+		"model: gpt-5",
+		"project: serf",
+		"cwd: "+tuiE2EProjectDir,
+		"turns: 2",
+		"ctx: 66%",
+		"status: hub connected",
+		"steer: ready",
+		"busy: turn_active",
+	)
+
+	app.TypeLine("/auth openai")
+	app.WaitFor("OpenAI auth: signed out", "auth: openai signed out")
+
+	app.TypeText("first line")
+	app.SendKeys("C-j")
+	app.TypeLine("second line")
+	app.WaitFor("Steering sent.")
+	steers := hub.WaitForSteers(t, 1)
+	if steers[0].Text != "first line\nsecond line" {
+		t.Fatalf("steer text=%q, want multiline input", steers[0].Text)
+	}
+
+	hub.SetSessionState("01LIVE", appwire.ThreadStatusIdle)
+	app.SendKeys("C-o")
+	app.WaitFor("serf live")
+	openLiveSession(t, app)
+	app.WaitFor("state: idle", "send: ready")
+
+	hub.SetFailSend(true)
+	app.TypeLine("send failure draft")
+	app.WaitFor("Send failed: appwire turn/start: send failed", "error: Send failed: appwire turn/start: send failed", "> send failure draft")
+
+	app.SendKeys("C-o")
+	app.WaitFor("serf live")
+	app.SendKeys("Enter")
+	app.WaitFor("serf / project / serf")
+	app.SendKeys("Down", "Enter")
+	app.WaitFor("ended maintenance", "state: ended", "read-only: source does not support send")
+}
+
 func TestTUITmuxE2E_HubStreamingAssistantDeltaBeforeRefresh(t *testing.T) {
 	requireTmux(t)
 	bin := buildTUIBinary(t)
@@ -601,7 +656,13 @@ func openLiveSession(t *testing.T, app *tmuxTUI) {
 	t.Helper()
 	app.WaitFor("serf live", "serf", "live task")
 	app.SendKeys("Enter")
-	app.WaitFor("serf / project / serf", "Live now")
+	screen := app.WaitFor("serf / project /", "Live now")
+	if strings.Contains(screen, "serf / project / ops") {
+		app.SendKeys("C-o")
+		app.WaitFor("serf live", "live task")
+		app.SendKeys("Down", "Down", "Enter")
+		app.WaitFor("serf / project / serf", "Live now")
+	}
 	app.SendKeys("Enter")
 }
 
@@ -820,6 +881,7 @@ type tuiE2EHub struct {
 	models          []string
 	forks           []appwire.ThreadForkParams
 	resumes         []appwire.ThreadResumeParams
+	steers          []appwire.TurnSteerParams
 	authCalls       []string
 	authCompletions []appwire.AuthLoginCompleteParams
 	harnesses       []appwire.HarnessDescriptor
@@ -833,19 +895,20 @@ type tuiE2EHub struct {
 }
 
 type tuiE2ESession struct {
-	ID           string
-	Title        string
-	State        string
-	Project      string
-	WorkingDir   string
-	Model        string
-	Live         bool
-	CreatedAt    int64
-	UpdatedAt    int64
-	Kind         string
-	ParentRef    string
-	Capabilities appwire.ThreadCapabilities
-	Turns        []appwire.Turn
+	ID              string
+	Title           string
+	State           string
+	Project         string
+	WorkingDir      string
+	Model           string
+	ContextPressure float64
+	Live            bool
+	CreatedAt       int64
+	UpdatedAt       int64
+	Kind            string
+	ParentRef       string
+	Capabilities    appwire.ThreadCapabilities
+	Turns           []appwire.Turn
 }
 
 func newTUIE2EHub(t *testing.T) *tuiE2EHub {
@@ -859,7 +922,7 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 	h.addSession(&tuiE2ESession{
 		ID:           "01LIVE",
 		Title:        "live task",
-		State:        appwire.ThreadStatusProcessing,
+		State:        appwire.ThreadStatusIdle,
 		Project:      "serf",
 		WorkingDir:   tuiE2EProjectDir,
 		Model:        "gpt-5",
@@ -915,7 +978,7 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 	h.addSession(&tuiE2ESession{
 		ID:           "01OPS",
 		Title:        "ops task",
-		State:        appwire.ThreadStatusProcessing,
+		State:        appwire.ThreadStatusIdle,
 		Project:      "ops",
 		WorkingDir:   "/tmp/serf-tui-e2e/ops",
 		Model:        "gpt-5",
@@ -966,6 +1029,7 @@ func (h *tuiE2EHub) registerHandlers(app *appserver.Server) {
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadStart, h.handleThreadStart)
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadResume, h.handleThreadResume)
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnStart, h.handleTurnStart)
+	appserver.HandleTyped(app.Router(), appwire.MethodTurnSteer, h.handleTurnSteer)
 	appserver.HandleTyped(app.Router(), appwire.MethodSerfTasksList, h.handleTasksList)
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnInterrupt, h.handleTurnInterrupt)
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadCompactStart, h.handleThreadCompactStart)
@@ -1268,6 +1332,13 @@ func (h *tuiE2EHub) handleTurnStart(_ context.Context, params appwire.TurnStartP
 	return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_sent", Status: appwire.TurnStatusRunning}}, nil
 }
 
+func (h *tuiE2EHub) handleTurnSteer(_ context.Context, params appwire.TurnSteerParams) (appwire.EmptyResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.steers = append(h.steers, params)
+	return appwire.EmptyResponse{}, nil
+}
+
 func (h *tuiE2EHub) handleTasksList(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error) {
 	h.mu.Lock()
 	fail := h.failTasks
@@ -1375,11 +1446,12 @@ func (h *tuiE2EHub) threadFromSessionLocked(s *tuiE2ESession) appwire.Thread {
 		Status:        appwire.ThreadStatus{Type: status},
 		Turns:         append([]appwire.Turn(nil), s.Turns...),
 		Serf: appwire.SerfThread{
-			Ref:          appwire.Ref{SourceID: "local", ThreadID: s.ID}.String(),
-			ParentRef:    s.ParentRef,
-			Kind:         s.Kind,
-			Profile:      "default",
-			Capabilities: s.Capabilities,
+			Ref:             appwire.Ref{SourceID: "local", ThreadID: s.ID}.String(),
+			ParentRef:       s.ParentRef,
+			Kind:            s.Kind,
+			Profile:         "default",
+			ContextPressure: s.ContextPressure,
+			Capabilities:    s.Capabilities,
 		},
 	}
 }
@@ -1411,6 +1483,22 @@ func (h *tuiE2EHub) SetSessionCapabilities(id string, caps appwire.ThreadCapabil
 	defer h.mu.Unlock()
 	if s := h.sessions[id]; s != nil {
 		s.Capabilities = caps
+	}
+}
+
+func (h *tuiE2EHub) SetSessionContextPressure(id string, pressure float64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if s := h.sessions[id]; s != nil {
+		s.ContextPressure = pressure
+	}
+}
+
+func (h *tuiE2EHub) SetSessionState(id string, state string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if s := h.sessions[id]; s != nil {
+		s.State = state
 	}
 }
 
@@ -1537,6 +1625,18 @@ func (h *tuiE2EHub) WaitForResumes(t *testing.T, count int) []appwire.ThreadResu
 		out = append([]appwire.ThreadResumeParams(nil), h.resumes...)
 		return len(out) >= count
 	}, fmt.Sprintf("%d resume requests", count))
+	return out
+}
+
+func (h *tuiE2EHub) WaitForSteers(t *testing.T, count int) []appwire.TurnSteerParams {
+	t.Helper()
+	var out []appwire.TurnSteerParams
+	h.waitFor(t, func() bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		out = append([]appwire.TurnSteerParams(nil), h.steers...)
+		return len(out) >= count
+	}, fmt.Sprintf("%d steer requests", count))
 	return out
 }
 

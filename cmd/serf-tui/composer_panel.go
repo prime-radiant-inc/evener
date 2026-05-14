@@ -6,6 +6,7 @@ type composerPanel struct {
 	Label          string
 	ReadOnlyReason string
 	Draft          string
+	MaxDraftLines  int
 	Keys           []string
 	ShowInput      bool
 	Width          int
@@ -24,7 +25,7 @@ func (m hubModel) sessionComposerMode() hubComposerMode {
 	if m.forkDraft != nil {
 		return hubComposerModeFork
 	}
-	if m.sessionTurnActionState() && !m.detail.Capabilities.Send {
+	if m.sessionTurnActionState() {
 		if m.detail.Capabilities.Steer && strings.TrimSpace(m.detail.ActiveTurnID) != "" {
 			return hubComposerModeSteer
 		}
@@ -66,10 +67,11 @@ func (m hubModel) sessionTurnActionState() bool {
 func (m hubModel) sessionComposerPanel() composerPanel {
 	keys := []string{"esc: browse", "ctrl+o: dashboard", hubCommandHint("help")}
 	panel := composerPanel{
-		Draft:     m.session.input.Value(),
-		Keys:      keys,
-		ShowInput: true,
-		Width:     m.width,
+		Draft:         m.session.input.Value(),
+		MaxDraftLines: m.session.input.MaxHeight,
+		Keys:          keys,
+		ShowInput:     true,
+		Width:         m.width,
 	}
 	switch m.sessionComposerMode() {
 	case hubComposerModeFork:
@@ -107,7 +109,7 @@ func (p composerPanel) View() string {
 		b.WriteString("\n")
 	}
 	if p.ShowInput {
-		b.WriteString(renderComposerDraft(p.Draft))
+		b.WriteString(renderComposerDraft(p.Draft, p.MaxDraftLines))
 	}
 	if len(p.Keys) > 0 {
 		b.WriteString(actionBarForWidth(p.Width, p.Keys...))
@@ -116,11 +118,22 @@ func (p composerPanel) View() string {
 	return b.String()
 }
 
-func renderComposerDraft(draft string) string {
+func renderComposerDraft(draft string, maxLines ...int) string {
 	var b strings.Builder
 	lines := strings.Split(draft, "\n")
 	if len(lines) == 0 {
 		lines = []string{""}
+	}
+	limit := 0
+	if len(maxLines) > 0 {
+		limit = maxLines[0]
+	}
+	if limit > 0 && len(lines) > limit {
+		if limit == 1 {
+			lines = []string{"..."}
+		} else {
+			lines = append([]string{"..."}, lines[len(lines)-(limit-1):]...)
+		}
 	}
 	for i, line := range lines {
 		if i == 0 {

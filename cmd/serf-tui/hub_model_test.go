@@ -218,8 +218,8 @@ func TestHubModelDashboardNarrowUsesOneColumnWithEllipses(t *testing.T) {
 	if strings.Contains(got, "details") {
 		t.Fatalf("narrow dashboard should stay one-column without details drawer:\n%s", got)
 	}
-	if strings.Contains(got, "ctrl+o dashboard") {
-		t.Fatalf("narrow dashboard should use short key hints:\n%s", got)
+	if !strings.Contains(got, "ctrl+o dashboard") {
+		t.Fatalf("narrow dashboard should keep the dashboard shortcut explicit:\n%s", got)
 	}
 }
 
@@ -853,6 +853,143 @@ func TestHubModelEnterOpensSessionDetail(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("view missing %q:\n%s", want, got)
 		}
+	}
+}
+
+func TestHubModelSessionHeaderShowsCodexMetadata(t *testing.T) {
+	thread := appwire.Thread{
+		ID:            "01CODEX",
+		SessionID:     "01CODEX",
+		Source:        "codex-local",
+		Name:          "codex task",
+		ModelProvider: "codex-local/gpt-5.3-codex",
+		CWD:           "/tmp/serf",
+		Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusProcessing},
+		Turns: []appwire.Turn{
+			{ID: "turn_1", Status: appwire.TurnStatusCompleted},
+			{ID: "turn_2", Status: appwire.TurnStatusRunning},
+		},
+		Serf: appwire.SerfThread{
+			Ref:             "codex-local:01CODEX",
+			ContextPressure: 0.73,
+			Capabilities:    appwire.ThreadCapabilities{Send: true, Steer: true},
+		},
+	}
+	m := newSessionHubModel(nil)
+	m.width = 120
+	m.detail = hubDetailFromThread(thread)
+
+	got := m.sessionView()
+	for _, want := range []string{
+		"codex task",
+		"source: codex-local",
+		"state: processing",
+		"model: codex-local/gpt-5.3-codex",
+		"project: serf",
+		"cwd: /tmp/serf",
+		"turns: 2",
+		"ctx: 73%",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("session header missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestHubModelSessionHeaderHandlesMissingMetadata(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail = hubSessionDetail{Ref: "local:01MISSING"}
+
+	got := m.sessionView()
+	for _, want := range []string{
+		"local:01MISSING",
+		"source: serf",
+		"state: unknown",
+		"model: unknown",
+		"project: unknown",
+		"cwd: unknown",
+		"turns: 0",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing-metadata session header missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestHubModelSessionHeaderTruncatesLongLabels(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.width = 64
+	m.detail = hubSessionDetail{
+		Ref:         "codex-local-with-long-name:01LONG",
+		SourceLabel: "codex-local-with-long-name",
+		Title:       "review the very long generated migration transcript without overlap",
+		State:       "processing",
+		Model:       "openai/gpt-5.3-super-long-model-name-for-terminal-testing",
+		WorkingDir:  "/Users/jesse/Documents/GitHub/prime-radiant-inc/serf/.worktrees/tui-257-session-composer",
+		Project:     "serf",
+		TurnCount:   42,
+	}
+
+	got := m.sessionView()
+	lines := strings.Split(got, "\n")
+	for i, line := range lines[:min(4, len(lines))] {
+		if len(line) > m.width {
+			t.Fatalf("header line %d width=%d exceeds %d:\n%s", i, len(line), m.width, got)
+		}
+	}
+}
+
+func TestHubModelSessionStatusLineShowsConnectionAuthBusyAndError(t *testing.T) {
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {})
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	m.width = 120
+	m.detail.Model = "openai/gpt-5"
+	m.detail.State = "processing"
+	m.detail.ActiveTurnID = "turn_busy"
+	updated, _ := m.Update(hubAuthStatusMsg{status: appwire.AuthStatusResponse{
+		Provider:     "openai",
+		Supported:    true,
+		SignedIn:     true,
+		ActiveSource: "oauth",
+		Email:        "bot@example.com",
+	}})
+	m = updated.(hubModel)
+	m.err = fmt.Errorf("recoverable send failed")
+
+	got := m.sessionView()
+	for _, want := range []string{
+		"status: hub connected",
+		"auth: openai oauth",
+		"busy: turn_busy",
+		"error: recoverable send failed",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("status line missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestHubModelSessionStatusLineReflectsCapabilityChanges(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.width = 100
+
+	if got := m.sessionView(); !strings.Contains(got, "send: ready") {
+		t.Fatalf("send-ready status missing:\n%s", got)
+	}
+
+	m.detail.State = "processing"
+	m.detail.Capabilities.Send = true
+	m.detail.Capabilities.Steer = true
+	m.detail.ActiveTurnID = "turn_busy"
+	if got := m.sessionView(); !strings.Contains(got, "steer: ready") {
+		t.Fatalf("steer-ready status missing:\n%s", got)
+	}
+
+	m.detail.Capabilities.Steer = false
+	if got := m.sessionView(); !strings.Contains(got, "read-only: source does not advertise steer") {
+		t.Fatalf("read-only status missing:\n%s", got)
 	}
 }
 

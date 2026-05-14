@@ -29,6 +29,7 @@ type hubNotificationMsg struct {
 
 type hubSendMsg struct {
 	text   string
+	draft  string
 	turnID string
 	err    error
 }
@@ -376,10 +377,10 @@ func modelDiagnosticDisabledReason(diagnostic appwire.ModelListDiagnostic) strin
 	return reason
 }
 
-func sendHubInput(client *appwire.Client, ref appwire.Ref, text string) tea.Cmd {
+func sendHubInput(client *appwire.Client, ref appwire.Ref, text string, draft string) tea.Cmd {
 	return func() tea.Msg {
 		resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: ref.String(), Prompt: text})
-		return hubSendMsg{text: text, turnID: resp.Turn.ID, err: err}
+		return hubSendMsg{text: text, draft: draft, turnID: resp.Turn.ID, err: err}
 	}
 }
 
