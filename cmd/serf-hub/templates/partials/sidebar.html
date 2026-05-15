@@ -30,9 +30,9 @@
   {{end}}
 
   {{range .Projects}}
-  <section class="sidebar-section project-section" data-project-key="{{.Name}}">
+  <section class="sidebar-section project-section collapsed" data-project-key="{{.Name}}">
     <header class="project-header">
-      <span class="project-chevron" role="button" aria-label="collapse project">▾</span>
+      <span class="project-chevron" role="button" aria-label="expand project">▸</span>
       <span class="project-folder" aria-hidden="true">📁</span>
       <span class="project-name">{{.Name}}</span>
       <span class="row-meta project-count">{{len .Sessions}}</span>

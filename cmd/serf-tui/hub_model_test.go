@@ -39,10 +39,13 @@ func TestHubModelInitialFetchRendersLiveAndRecentRows(t *testing.T) {
 	msg := fetchHubTree(client)()
 	updated, _ := m.Update(msg)
 	got := updated.(hubModel).View()
-	for _, want := range []string{"live task", "past task", "awaiting", "serf"} {
+	for _, want := range []string{"Launch New Session", "live task", "awaiting", "serf", "1 recent"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("view missing %q:\n%s", want, got)
 		}
+	}
+	if strings.Contains(got, "past task") {
+		t.Fatalf("dashboard should fold ended sessions by default:\n%s", got)
 	}
 }
 
@@ -109,10 +112,21 @@ func TestHubModelDashboardShowsFullSessionTreeGroupedByProject(t *testing.T) {
 	m.tree = tree
 	m.rows = rows
 	got := m.dashboardView()
-	for _, want := range []string{"serf", "live alpha", "live beta", "ended history", "brainstorm", "brain live", "archive", "archived task"} {
+	for _, want := range []string{"Launch New Session", "serf", "live alpha", "live beta", "brainstorm", "brain live", "archive", "1 recent"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, got)
 		}
+	}
+	for _, folded := range []string{"ended history", "archived task"} {
+		if strings.Contains(got, folded) {
+			t.Fatalf("dashboard should fold ended session %q by default:\n%s", folded, got)
+		}
+	}
+	m.selected = 4
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	expanded := updated.(hubModel).dashboardView()
+	if !strings.Contains(expanded, "ended history") {
+		t.Fatalf("dashboard disclosure did not expand ended history:\n%s", expanded)
 	}
 }
 
@@ -140,10 +154,82 @@ func TestHubModelDashboardRendersProjectTreeHierarchy(t *testing.T) {
 	m.rows = buildDashboardRows(m.tree)
 
 	got := m.dashboardView()
-	for _, want := range []string{"▾", "├─", "└─", "alpha task", "codex-local"} {
+	for _, want := range []string{"Launch New Session", "▾", "├─", "└─", "alpha task", "codex-local"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("dashboard tree missing %q:\n%s", want, got)
 		}
+	}
+}
+
+func TestHubModelDashboardLaunchRowOpensUnscopedSpawn(t *testing.T) {
+	m := newHubModel(nil, "http://hub.test")
+	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
+		Key:        "serf",
+		Name:       "serf",
+		WorkingDir: "/tmp/serf",
+		Sessions: []hubTreeNode{
+			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true},
+		},
+	}}}
+	m.rows = buildDashboardRows(m.tree)
+	m.selected = 0
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := updated.(hubModel)
+	if got.mode != hubModeSpawn {
+		t.Fatalf("launch row did not open spawn mode: %v", got.mode)
+	}
+	if got.spawnDir != "" || got.spawnProject != "" {
+		t.Fatalf("global launch row should be unscoped, dir=%q project=%q", got.spawnDir, got.spawnProject)
+	}
+}
+
+func TestHubModelDashboardLaunchSelectionSurvivesTreeRefresh(t *testing.T) {
+	m := newHubModel(nil, "http://hub.test")
+	m.selected = 0
+	tree := hubTreeResponse{Projects: []hubTreeProject{{
+		Key:        "serf",
+		Name:       "serf",
+		WorkingDir: "/tmp/serf",
+		Sessions: []hubTreeNode{
+			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true},
+		},
+	}}}
+
+	updated, _ := m.Update(hubTreeMsg{tree: tree})
+	m = updated.(hubModel)
+	if m.selected != 1 {
+		t.Fatalf("initial dashboard selection=%d, want first project row", m.selected)
+	}
+
+	m.selected = 0
+	updated, _ = m.Update(hubTreeMsg{tree: tree})
+	m = updated.(hubModel)
+	if m.selected != 0 {
+		t.Fatalf("refresh should keep launch row selected, got selected=%d", m.selected)
+	}
+}
+
+func TestHubModelDashboardNewFromProjectRowUsesProjectDir(t *testing.T) {
+	m := newHubModel(nil, "http://hub.test")
+	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
+		Key:        "serf",
+		Name:       "serf",
+		WorkingDir: "/tmp/serf",
+		Sessions: []hubTreeNode{
+			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true},
+		},
+	}}}
+	m.rows = buildDashboardRows(m.tree)
+	m.selected = 1
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	got := updated.(hubModel)
+	if got.mode != hubModeSpawn {
+		t.Fatalf("new key did not open spawn mode: %v", got.mode)
+	}
+	if got.spawnDir != "/tmp/serf" || got.spawnProject != "serf" {
+		t.Fatalf("project row launch should inherit project scope, dir=%q project=%q", got.spawnDir, got.spawnProject)
 	}
 }
 
@@ -166,7 +252,8 @@ func TestHubModelDashboardClampsRowsToTerminalHeight(t *testing.T) {
 	}
 	m.tree = hubTreeResponse{Projects: []hubTreeProject{project}}
 	m.rows = buildDashboardRows(m.tree)
-	m.selected = len(m.rows) - 1
+	m.dashboardRecentOpen = map[string]bool{project.Key: true}
+	m.selected = len(m.dashboardRows()) - 1
 
 	got := m.dashboardView()
 	if lines := shellSectionLineCount(got); lines > m.height {
@@ -367,7 +454,7 @@ func TestHubModelDashboardNarrowUsesOneColumnWithEllipses(t *testing.T) {
 
 func TestHubModelDashboardWideDetailsFollowSelection(t *testing.T) {
 	m := sampleHubModel(140)
-	m.selected = 0
+	m.selected = 1
 
 	projectView := m.dashboardView()
 	for _, want := range []string{"details", "Project:  serf", "Live:     2", "Dir:      /Users/jesse/Documents/GitHub/prime-radiant-inc/serf"} {
@@ -376,7 +463,7 @@ func TestHubModelDashboardWideDetailsFollowSelection(t *testing.T) {
 		}
 	}
 
-	m.selected = dashboardRowIndex(m.rows, "Restore hub TUI widgets")
+	m.selected = dashboardRowIndex(m.dashboardRows(), "Restore hub TUI widgets")
 	sessionView := m.dashboardView()
 	for _, want := range []string{"details", "Session:  01SERF", "Title:    Restore hub TUI widgets", "Ref:      local:01SERF"} {
 		if !strings.Contains(sessionView, want) {
@@ -434,6 +521,7 @@ func TestHubModelDashboardUsesNForNewSession(t *testing.T) {
 		Sessions: []hubTreeNode{{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true}},
 	}}}
 	m.rows = buildDashboardRows(m.tree)
+	m.selected = 1
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
 	if cmd != nil {
@@ -533,7 +621,16 @@ func TestHubModelProjectViewShowsLiveThenRecent(t *testing.T) {
 	}
 }
 
-func TestHubModelEndedSessionOpensReadOnly(t *testing.T) {
+func TestHubModelEndedSessionCanResumeOnSend(t *testing.T) {
+	var gotStart appwire.TurnStartParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+			gotStart = params
+			return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_resumed"}}, nil
+		})
+	})
+	defer cleanup()
+
 	detail := hubDetailFromThread(appwireThread(hubTreeNode{
 		Ref:       "local:01ENDED",
 		SessionID: "01ENDED",
@@ -548,21 +645,38 @@ func TestHubModelEndedSessionOpensReadOnly(t *testing.T) {
 	if detail.Capabilities.Send || detail.Capabilities.Steer || detail.Capabilities.Interrupt || detail.Capabilities.Compact || detail.Capabilities.Clear || detail.Capabilities.Shutdown || detail.Capabilities.ChangeModel {
 		t.Fatalf("ended thread kept write/action capabilities: %+v", detail.Capabilities)
 	}
+	if !detail.Capabilities.Resume {
+		t.Fatalf("ended thread should advertise resume: %+v", detail.Capabilities)
+	}
 
-	m := newHubModel(nil, "http://hub.test")
+	m := newHubModel(client, "http://hub.test")
 	m.mode = hubModeSession
 	m.detail = detail
 	m.session = newModel("", "", nil)
 	m.session.messages = []chatMessage{{Kind: msgAssistant, Text: "finished transcript"}}
 
 	got := m.sessionView()
-	for _, want := range []string{"read-only", "source does not support send"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("ended session view missing %q:\n%s", want, got)
+	for _, unwanted := range []string{"read-only", "source does not support send"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("ended resumable session should not render %q:\n%s", unwanted, got)
 		}
 	}
-	if strings.Contains(got, "enter: send") {
-		t.Fatalf("ended session advertised send:\n%s", got)
+	if !strings.Contains(got, "enter: send") {
+		t.Fatalf("ended resumable session should accept a new message:\n%s", got)
+	}
+
+	m.session.setInputValue("restart with this")
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("sending to ended resumable session returned nil command")
+	}
+	updated, _ = updated.(hubModel).Update(cmd())
+	gotModel := updated.(hubModel)
+	if gotStart.Ref != "local:01ENDED" || gotStart.Prompt != "restart with this" {
+		t.Fatalf("turn start params=%+v", gotStart)
+	}
+	if gotModel.session.input.Value() != "" {
+		t.Fatalf("input not reset after resume-send: %q", gotModel.session.input.Value())
 	}
 }
 
@@ -739,6 +853,7 @@ func TestHubModelDashboardProjectHeaderOpensProject(t *testing.T) {
 		},
 	}}}
 	m.rows = buildDashboardRows(m.tree)
+	m.selected = 1
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd != nil {
@@ -1213,6 +1328,7 @@ func TestHubModelDashboardSpawnUsesSelectedProjectWorkingDir(t *testing.T) {
 		},
 	}}}
 	m.rows = buildDashboardRows(m.tree)
+	m.selected = 1
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	if cmd == nil {
@@ -1306,6 +1422,7 @@ func TestHubModelSpawnCyclesConfiguredHarnesses(t *testing.T) {
 		Sessions: []hubTreeNode{{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true}},
 	}}}
 	m.rows = buildDashboardRows(m.tree)
+	m.selected = 1
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	if cmd == nil {
@@ -1358,6 +1475,7 @@ func TestHubModelCodexSpawnSurvivesModelListFailure(t *testing.T) {
 		Sessions: []hubTreeNode{{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true}},
 	}}}
 	m.rows = buildDashboardRows(m.tree)
+	m.selected = 1
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	if cmd == nil {
@@ -1462,6 +1580,7 @@ func TestHubModelSpawnRejectsHubUnsupportedEmptyTaskBeforeStart(t *testing.T) {
 		},
 	}}}
 	m.rows = buildDashboardRows(m.tree)
+	m.selected = 1
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	if cmd == nil {
@@ -1561,6 +1680,7 @@ func TestHubModelDashboardSpawnOpensFormBeforePosting(t *testing.T) {
 		},
 	}}}
 	m.rows = buildDashboardRows(m.tree)
+	m.selected = 1
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	if cmd == nil {
@@ -2564,10 +2684,18 @@ func TestHubModelDashboardShowsRecentWhenNothingLive(t *testing.T) {
 	m.rows = buildDashboardRows(m.tree)
 
 	got := m.dashboardView()
-	for _, want := range []string{"0 live", "0 live · 1 recent", "ended history", "/ palette"} {
+	for _, want := range []string{"0 live", "0 live · 1 recent", "1 recent", "/ palette"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("dashboard recent-only state missing %q:\n%s", want, got)
 		}
+	}
+	if strings.Contains(got, "ended history") {
+		t.Fatalf("recent-only dashboard should fold ended sessions by default:\n%s", got)
+	}
+	m.selected = 2
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if expanded := updated.(hubModel).dashboardView(); !strings.Contains(expanded, "ended history") {
+		t.Fatalf("recent disclosure did not reveal ended session:\n%s", expanded)
 	}
 	if strings.Contains(got, "s start") {
 		t.Fatalf("dashboard recent-only state advertised legacy s key:\n%s", got)

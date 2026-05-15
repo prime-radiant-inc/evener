@@ -725,6 +725,9 @@ func TestWeb_Sidebar_RendersTreeWithLiveAndProjects(t *testing.T) {
 		t.Fatalf("status: %d", rec.Code)
 	}
 	body := rec.Body.String()
+	if !strings.Contains(body, `project-section collapsed`) {
+		t.Errorf("project section should default collapsed: %q", body)
+	}
 	if !strings.Contains(body, "fix bug") {
 		t.Errorf("missing title")
 	}
@@ -3842,7 +3845,7 @@ func TestWeb_Sidebar_LiveRowDataState(t *testing.T) {
 }
 
 // TestWeb_Sidebar_ProjectHeader_HasChevronAndFolder verifies that the project
-// header renders with the new ▾ 📁 <name> shape so the spec mockups match.
+// header renders with the compact collapsed ▸ 📁 <name> shape.
 func TestWeb_Sidebar_ProjectHeader_HasChevronAndFolder(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
@@ -3875,11 +3878,56 @@ func TestWeb_Sidebar_ProjectHeader_HasChevronAndFolder(t *testing.T) {
 		t.Fatalf("status: %d", rec.Code)
 	}
 	body := rec.Body.String()
-	wants := []string{`class="project-header"`, "project-chevron", "📁", "project-name"}
+	wants := []string{`class="project-header"`, "project-chevron", "▸", "📁", "project-name"}
 	for _, w := range wants {
 		if !strings.Contains(body, w) {
 			t.Errorf("project-header missing %q: %q", w, body)
 		}
+	}
+}
+
+func TestWeb_WorkspacePartial_RosterEndedSessionKeepsResumeSendEnabled(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+		ID: "01ENDED001", UpdatedAt: time.Now(), OriginalPrompt: "resume this", TurnCount: 2,
+		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 10, Address: "127.0.0.1:55556", WorkingDir: "/projects/serf"})
+	r := NewRoster(runDir, fakeProber{sessionID: "01ENDED001", status: "ENDED"})
+	r.Refresh()
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  r,
+		Past:    idx,
+		Spawner: &fakeSpawner{},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01ENDED001/workspace", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `data-capability-send="true"`) {
+		t.Fatalf("ended resumable workspace did not enable send:\n%s", body)
+	}
+	if strings.Contains(body, `disabled title="send unavailable"`) {
+		t.Fatalf("ended resumable workspace rendered disabled send:\n%s", body)
 	}
 }
 

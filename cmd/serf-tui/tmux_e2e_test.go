@@ -31,7 +31,10 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app := startTUITmux(t, bin, hub.URL())
 	defer app.Close()
 
-	screen := app.WaitFor("serf live", hub.URL(), "▾", "└─", "serf", "live task", "ops task", "ended maintenance")
+	screen := app.WaitFor("serf live", hub.URL(), "Launch New Session", "▾", "└─", "serf", "live task", "ops task", "1 recent")
+	if strings.Contains(screen, "ended maintenance") {
+		t.Fatalf("dashboard should fold ended sessions by default:\n%s", screen)
+	}
 	app.SendKeys("/")
 	app.TypeText("ops")
 	screen = app.WaitFor("Command palette", "Filter: ops", "ops task")
@@ -63,7 +66,7 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app.SendKeys("Escape")
 	app.WaitFor("serf live", "live task")
 
-	app.SendKeys("n")
+	app.SendKeys("Down", "n")
 	app.WaitFor("serf / new session", "Dir:      "+tuiE2EProjectDir, "Prompt (optional):")
 	app.SendKeys("Tab", "Tab", "Tab", "C-u")
 	app.TypeText("/tmp/serf-tui-e2e/custom")
@@ -200,7 +203,10 @@ func TestTUITmuxE2E_DashboardRecentOnlyState(t *testing.T) {
 	app := startTUITmux(t, bin, hub.URL())
 	defer app.Close()
 
-	screen := app.WaitFor("serf live", "0 live", "ended maintenance", "ops task", "/ palette")
+	screen := app.WaitFor("serf live", "0 live", "2 recent", "1 recent", "/ palette")
+	if strings.Contains(screen, "ended maintenance") || strings.Contains(screen, "ops task") {
+		t.Fatalf("recent-only dashboard should fold ended sessions by default:\n%s", screen)
+	}
 	if strings.Contains(screen, "Prompt (optional):") || strings.Contains(screen, "enter: send") {
 		t.Fatalf("recent-only dashboard rendered session composer content:\n%s", screen)
 	}
@@ -209,7 +215,7 @@ func TestTUITmuxE2E_DashboardRecentOnlyState(t *testing.T) {
 	app.SendKeys("p")
 	app.WaitFor("serf / project / serf", "Recent in this project", "live task")
 	app.SendKeys("Escape")
-	app.WaitFor("serf live", "ended maintenance")
+	app.WaitFor("serf live", "2 recent")
 	app.SendKeys("q")
 	app.WaitForExit()
 }
@@ -232,7 +238,10 @@ func TestTUITmuxE2E_ProjectHistoryReadOnlyAndResume(t *testing.T) {
 	}
 
 	app.SendKeys("Down", "Enter")
-	app.WaitFor("ended maintenance", "local:01PAST", "read-only", "source does not support send")
+	screen = app.WaitFor("ended maintenance", "local:01PAST", "enter: send")
+	if strings.Contains(screen, "read-only") || strings.Contains(screen, "source does not support send") {
+		t.Fatalf("ended resumable session should not render read-only:\n%s", screen)
+	}
 
 	app.SendKeys("C-o")
 	app.WaitFor("serf live", "live task")
@@ -388,7 +397,7 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 
 	app.TypeLine("/dashboard")
 	app.WaitFor("serf live", "live task")
-	app.SendKeys("Enter")
+	app.SendKeys("p")
 	app.WaitFor("serf / project / serf")
 	app.SendKeys("Enter")
 	app.WaitFor("live task", "local:01LIVE")
@@ -679,10 +688,13 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 
 	app.SendKeys("C-o")
 	app.WaitFor("serf live")
-	app.SendKeys("Enter")
+	app.SendKeys("p")
 	app.WaitFor("serf / project / serf")
 	app.SendKeys("Down", "Enter")
-	app.WaitFor("ended maintenance", "state: ended", "read-only: source does not support send")
+	screen := app.WaitFor("ended maintenance", "state: ended", "enter: send")
+	if strings.Contains(screen, "read-only") || strings.Contains(screen, "source does not support send") {
+		t.Fatalf("ended resumable session should not render read-only:\n%s", screen)
+	}
 }
 
 func TestTUITmuxE2E_HubStreamingAssistantDeltaBeforeRefresh(t *testing.T) {
@@ -762,7 +774,7 @@ func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 func openLiveSession(t *testing.T, app *tmuxTUI) {
 	t.Helper()
 	app.WaitFor("serf live", "serf", "live task")
-	app.SendKeys("Enter")
+	app.SendKeys("p")
 	screen := app.WaitFor("serf / project /", "Live now")
 	if strings.Contains(screen, "serf / project / ops") {
 		app.SendKeys("C-o")

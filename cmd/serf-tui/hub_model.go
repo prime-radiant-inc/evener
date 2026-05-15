@@ -35,8 +35,10 @@ const (
 type hubRowKind int
 
 const (
-	hubRowProject hubRowKind = iota
+	hubRowLaunch hubRowKind = iota
+	hubRowProject
 	hubRowSession
+	hubRowRecentToggle
 )
 
 type hubRow struct {
@@ -53,6 +55,8 @@ type hubRow struct {
 	rowID       string
 	createdAt   int64
 	updatedAt   int64
+	liveCount   int
+	recentCount int
 }
 
 type hubForkDraft struct {
@@ -78,6 +82,8 @@ type hubModel struct {
 
 	dashboardFilter       textinput.Model
 	dashboardFilterActive bool
+	dashboardRecentOpen   map[string]bool
+	dashboardSelectedOnce bool
 	commandPalette        *commandPalette
 
 	selectedProjectKey      string
@@ -131,7 +137,7 @@ func newHubModel(client *appwire.Client, hubURL string, stateDirs ...string) hub
 	}
 	session := newModel("", "", nil)
 	session.authController = nil
-	return hubModel{client: client, hubURL: hubURL, stateDir: stateDir, session: session, browseSelected: -1, dashboardFilter: newHubFilterInput(), spawnDirInput: newSpawnDirInput()}
+	return hubModel{client: client, hubURL: hubURL, stateDir: stateDir, session: session, browseSelected: -1, dashboardFilter: newHubFilterInput(), dashboardRecentOpen: map[string]bool{}, spawnDirInput: newSpawnDirInput()}
 }
 
 func newHubFilterInput() textinput.Model {
@@ -179,6 +185,12 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = nil
 		m.tree = msg.tree
 		m.rows = buildDashboardRows(msg.tree)
+		if m.mode == hubModeDashboard && !m.dashboardSelectedOnce {
+			if m.selected == 0 && len(m.dashboardRows()) > 1 {
+				m.selected = 1
+			}
+			m.dashboardSelectedOnce = true
+		}
 		if m.mode == hubModeProject {
 			m.projectRows = m.rowsForSelectedProject()
 		}
@@ -583,8 +595,12 @@ func (m hubModel) updateDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "p":
 		if len(rows) > 0 {
-			m.openProject(rows[m.selected].projectKey)
-		} else if key := m.firstProjectHistoryKey(); key != "" {
+			if key := rows[m.selected].projectKey; key != "" {
+				m.openProject(key)
+				return m, nil
+			}
+		}
+		if key := m.firstProjectHistoryKey(); key != "" {
 			m.openProject(key)
 		}
 	case "enter":
@@ -662,7 +678,18 @@ func (m hubModel) activateDashboardRow(rows []hubRow) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	row := rows[m.selected]
-	if row.kind == hubRowProject {
+	switch row.kind {
+	case hubRowLaunch:
+		m.openSpawnForm()
+		if m.client != nil {
+			return m, fetchHubSpawnOptions(m.client, m.spawnDir)
+		}
+		return m, nil
+	case hubRowRecentToggle:
+		m.toggleDashboardRecent(row.projectKey)
+		m.clampSelection()
+		return m, nil
+	case hubRowProject:
 		m.openProject(row.projectKey)
 		return m, nil
 	}
@@ -1218,7 +1245,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, sendHubSteer(m.client, ref, m.detail.ActiveTurnID, text)
 		}
-		if composerMode == hubComposerModeReadOnly || !m.detail.Capabilities.Send {
+		if composerMode == hubComposerModeReadOnly || !m.sessionCanStartTurn() {
 			reason := m.sessionComposerReadOnlyReason()
 			if reason == "" {
 				reason = "send is not available for this session"
@@ -1328,14 +1355,7 @@ func (m *hubModel) returnToDashboard() {
 func (m *hubModel) openSpawnForm() {
 	returnMode := m.mode
 	dir := m.spawnWorkingDir()
-	project := ""
-	if m.mode == hubModeProject {
-		if p, ok := m.selectedProject(); ok {
-			project = p.Name
-		}
-	} else if len(m.rows) > 0 && m.selected >= 0 && m.selected < len(m.rows) {
-		project = m.rows[m.selected].project
-	}
+	project := m.spawnProjectName()
 	m.resetSpawnForm()
 	m.spawnReturnMode = returnMode
 	m.setSpawnDir(dir)
@@ -1524,10 +1544,33 @@ func (m hubModel) spawnWorkingDir() string {
 		}
 		return ""
 	}
-	if len(m.rows) == 0 || m.selected < 0 || m.selected >= len(m.rows) {
+	row, ok := m.selectedDashboardRow()
+	if !ok {
 		return ""
 	}
-	return m.workingDirForProjectKey(m.rows[m.selected].projectKey)
+	return m.workingDirForProjectKey(row.projectKey)
+}
+
+func (m hubModel) spawnProjectName() string {
+	if m.mode == hubModeProject {
+		if p, ok := m.selectedProject(); ok {
+			return p.Name
+		}
+		return ""
+	}
+	row, ok := m.selectedDashboardRow()
+	if !ok || row.kind == hubRowLaunch {
+		return ""
+	}
+	return row.project
+}
+
+func (m hubModel) selectedDashboardRow() (hubRow, bool) {
+	rows := m.dashboardRows()
+	if len(rows) == 0 || m.selected < 0 || m.selected >= len(rows) {
+		return hubRow{}, false
+	}
+	return rows[m.selected], true
 }
 
 func (m hubModel) workingDirForProjectKey(projectKey string) string {
@@ -2007,15 +2050,25 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 
 	rows := make([]hubRow, 0, len(seen)+len(ordered))
 	for _, group := range ordered {
+		liveCount, recentCount := 0, 0
+		for _, row := range group.sessions {
+			if row.live && stateLabel(row.state) != "ended" {
+				liveCount++
+			} else {
+				recentCount++
+			}
+		}
 		rows = append(rows, hubRow{
-			kind:       hubRowProject,
-			title:      group.name,
-			project:    group.name,
-			projectKey: group.key,
-			state:      group.state,
-			live:       true,
-			rowID:      "project:" + group.key,
-			updatedAt:  group.updatedAt,
+			kind:        hubRowProject,
+			title:       group.name,
+			project:     group.name,
+			projectKey:  group.key,
+			state:       group.state,
+			live:        true,
+			rowID:       "project:" + group.key,
+			updatedAt:   group.updatedAt,
+			liveCount:   liveCount,
+			recentCount: recentCount,
 		})
 		rows = append(rows, group.sessions...)
 	}
@@ -2159,7 +2212,70 @@ func (m hubModel) firstProjectHistoryKey() string {
 }
 
 func (m hubModel) dashboardRows() []hubRow {
-	return filterHubRows(m.rows, m.dashboardFilter.Value())
+	if strings.TrimSpace(m.dashboardFilter.Value()) != "" {
+		return filterHubRows(m.rows, m.dashboardFilter.Value())
+	}
+	return m.foldedDashboardRows()
+}
+
+func (m hubModel) foldedDashboardRows() []hubRow {
+	rows := []hubRow{{
+		kind:  hubRowLaunch,
+		title: "Launch New Session",
+		rowID: "dashboard:launch",
+	}}
+	for i := 0; i < len(m.rows); {
+		project := m.rows[i]
+		if project.kind != hubRowProject {
+			i++
+			continue
+		}
+		rows = append(rows, project)
+		i++
+
+		recent := make([]hubRow, 0, project.recentCount)
+		for i < len(m.rows) && m.rows[i].kind != hubRowProject {
+			row := m.rows[i]
+			if row.kind == hubRowSession {
+				if row.live && stateLabel(row.state) != "ended" {
+					rows = append(rows, row)
+				} else {
+					recent = append(recent, row)
+				}
+			}
+			i++
+		}
+		if len(recent) == 0 {
+			continue
+		}
+		rows = append(rows, hubRow{
+			kind:        hubRowRecentToggle,
+			title:       "Ended Sessions",
+			project:     project.project,
+			projectKey:  project.projectKey,
+			state:       "ended",
+			rowID:       "project:" + project.projectKey + ":recent",
+			recentCount: len(recent),
+		})
+		if m.dashboardRecentOpen[project.projectKey] {
+			rows = append(rows, recent...)
+		}
+	}
+	return rows
+}
+
+func (m *hubModel) toggleDashboardRecent(projectKey string) {
+	if projectKey == "" {
+		return
+	}
+	if m.dashboardRecentOpen == nil {
+		m.dashboardRecentOpen = map[string]bool{}
+	}
+	if m.dashboardRecentOpen[projectKey] {
+		delete(m.dashboardRecentOpen, projectKey)
+		return
+	}
+	m.dashboardRecentOpen[projectKey] = true
 }
 
 func (m hubModel) projectDisplayRows() []hubRow {
@@ -2351,8 +2467,17 @@ func renderDashboardRowsWindow(rows []hubRow, selected int, width int, compact b
 	start, end := dashboardRowWindow(len(rows), selected, maxRows)
 	for i := start; i < end; i++ {
 		row := rows[i]
-		if row.kind == hubRowProject {
+		switch row.kind {
+		case hubRowLaunch:
+			b.WriteString(renderDashboardLaunchRow(row, i == selected, width))
+			b.WriteString("\n")
+			continue
+		case hubRowProject:
 			b.WriteString(renderDashboardProjectRow(row, rows, i == selected, width))
+			b.WriteString("\n")
+			continue
+		case hubRowRecentToggle:
+			b.WriteString(renderDashboardRecentToggleRow(row, dashboardRecentExpanded(rows, i), i == selected, width))
 			b.WriteString("\n")
 			continue
 		}
@@ -2385,6 +2510,18 @@ func dashboardRowWindow(count int, selected int, maxRows int) (int, int) {
 	return start, start + maxRows
 }
 
+func renderDashboardLaunchRow(row hubRow, selected bool, width int) string {
+	marker := "+"
+	if selected {
+		marker = ">"
+	}
+	line := truncateText(marker+" "+row.title, width)
+	if selected {
+		return defaultTUIStyles().Selected.Render(line)
+	}
+	return line
+}
+
 func dashboardRowLimit(totalHeight int, topBar string, bodyPrefix string, footer string) int {
 	if totalHeight <= 0 {
 		return 0
@@ -2409,6 +2546,26 @@ func renderDashboardProjectRow(row hubRow, rows []hubRow, selected bool, width i
 		return styles.Selected.Render(line)
 	}
 	return styles.Section.Render(line)
+}
+
+func renderDashboardRecentToggleRow(row hubRow, expanded bool, selected bool, width int) string {
+	marker := "▸"
+	if expanded {
+		marker = "▾"
+	}
+	if selected {
+		marker = ">"
+	}
+	count := row.recentCount
+	if count == 0 {
+		count = 1
+	}
+	label := "recent"
+	line := truncateText(fmt.Sprintf("%s %s %d %s", marker, dashboardCell(row.project), count, label), width)
+	if selected {
+		return defaultTUIStyles().Selected.Render(line)
+	}
+	return defaultTUIStyles().Muted.Render(line)
 }
 
 func renderDashboardSessionRow(row hubRow, selected bool, width int, compact bool, branch string) string {
@@ -2480,11 +2637,27 @@ func dashboardSessionBranch(rows []hubRow, index int) string {
 	return "└─"
 }
 
+func dashboardRecentExpanded(rows []hubRow, index int) bool {
+	if index < 0 || index >= len(rows) || rows[index].kind != hubRowRecentToggle {
+		return false
+	}
+	projectKey := rows[index].projectKey
+	for i := index + 1; i < len(rows); i++ {
+		if rows[i].kind == hubRowProject || rows[i].kind == hubRowRecentToggle {
+			return false
+		}
+		if rows[i].kind == hubRowSession && rows[i].projectKey == projectKey && (!rows[i].live || stateLabel(rows[i].state) == "ended") {
+			return true
+		}
+	}
+	return false
+}
+
 func dashboardFooter(width int) string {
 	if width <= 72 {
 		return truncateText("keys: up/down enter p n new / palette ctrl+o dashboard q", width)
 	}
-	return truncateText("up/down select  enter open  p project  n new  / palette  ctrl+o dashboard  q quit", width)
+	return truncateText("up/down select  enter open/toggle  p project  n new  / palette  ctrl+o dashboard  q quit", width)
 }
 
 func emptyDashboardFooter(hasProjectHistory bool, width int) string {
@@ -2565,8 +2738,12 @@ func (m hubModel) dashboardDetailsView(rows []hubRow, width int) string {
 	}
 	row := rows[m.selected]
 	switch row.kind {
+	case hubRowLaunch:
+		return renderDetailsPane("details\nAction:   enter launches an unscoped new session\nDir:      hub default", width)
 	case hubRowProject:
 		return renderDetailsPane(m.dashboardProjectDetails(row, rows), width)
+	case hubRowRecentToggle:
+		return renderDetailsPane(m.dashboardRecentDetails(row), width)
 	case hubRowSession:
 		return renderDetailsPane(dashboardSessionDetails(row), width)
 	default:
@@ -2590,6 +2767,18 @@ func (m hubModel) dashboardProjectDetails(row hubRow, rows []hubRow) string {
 		fmt.Fprintf(&b, "Dir:      %s\n", dir)
 	}
 	b.WriteString("Action:   enter opens project")
+	return b.String()
+}
+
+func (m hubModel) dashboardRecentDetails(row hubRow) string {
+	var b strings.Builder
+	b.WriteString("details\n")
+	fmt.Fprintf(&b, "Project:  %s\n", row.project)
+	fmt.Fprintf(&b, "Recent:   %d\n", row.recentCount)
+	if dir := m.workingDirForProjectKey(row.projectKey); dir != "" {
+		fmt.Fprintf(&b, "Dir:      %s\n", dir)
+	}
+	b.WriteString("Action:   enter toggles ended sessions")
 	return b.String()
 }
 
@@ -2632,6 +2821,9 @@ func projectLiveCount(project hubRow, rows []hubRow) int {
 }
 
 func projectSessionCounts(project hubRow, rows []hubRow) (int, int) {
+	if project.kind == hubRowProject && (project.liveCount > 0 || project.recentCount > 0) {
+		return project.liveCount, project.recentCount
+	}
 	count := 0
 	recent := 0
 	for _, row := range rows {
@@ -2773,16 +2965,11 @@ func stateLabel(state string) string {
 }
 
 func projectSummary(project hubRow, rows []hubRow) string {
-	liveCount, recentCount := 0, 0
+	liveCount, recentCount := projectSessionCounts(project, rows)
 	attention := stateLabel(project.state)
 	for _, row := range rows {
 		if row.kind != hubRowSession || row.projectKey != project.projectKey {
 			continue
-		}
-		if row.live && stateLabel(row.state) != "ended" {
-			liveCount++
-		} else {
-			recentCount++
 		}
 		if attentionRankLabel(row.state) > attentionRankLabel(attention) {
 			attention = stateLabel(row.state)

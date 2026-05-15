@@ -31,7 +31,7 @@ func (m hubModel) sessionComposerMode() hubComposerMode {
 		}
 		return hubComposerModeReadOnly
 	}
-	if m.detail.Capabilities.Send {
+	if m.sessionCanStartTurn() {
 		return hubComposerModeSend
 	}
 	return hubComposerModeReadOnly
@@ -46,10 +46,17 @@ func (m hubModel) sessionComposerReadOnlyReason() string {
 			return "no active turn is available for steer"
 		}
 	}
-	if !m.detail.Capabilities.Send {
+	if !m.sessionCanStartTurn() {
 		return "source does not support send"
 	}
 	return ""
+}
+
+func (m hubModel) sessionCanStartTurn() bool {
+	if m.detail.Capabilities.Send {
+		return true
+	}
+	return !m.detail.Live && m.detail.Capabilities.Resume
 }
 
 func (m hubModel) sessionTurnActionState() bool {
@@ -85,7 +92,7 @@ func (m hubModel) sessionComposerPanel() composerPanel {
 		panel.ReadOnlyReason = m.sessionComposerReadOnlyReason()
 	default:
 		panel.Label = "message"
-		if m.detail.Capabilities.Send {
+		if m.sessionCanStartTurn() {
 			panel.Keys = append([]string{"enter: send"}, keys...)
 		}
 	}

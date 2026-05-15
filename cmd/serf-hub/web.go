@@ -2963,6 +2963,7 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 			// daemon).
 			if state == "ended" && s.cfg.Past != nil {
 				if _, ok := s.cfg.Past.Find(id); ok {
+					data.Capabilities = s.apiSessionCapabilities(id, false)
 					data.ReplayURL = "/past/" + id + "/replay"
 					return data
 				}

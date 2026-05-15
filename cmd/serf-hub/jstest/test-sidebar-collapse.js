@@ -1,6 +1,6 @@
-// Verify that clicking a project chevron collapses the project's
-// children, persists state to localStorage, flips the chevron glyph,
-// and restores from storage on re-init.
+// Verify that project sections default collapsed, clicking a project chevron
+// expands the project's children, persists state to localStorage, flips the
+// chevron glyph, and restores from storage on re-init.
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
 
@@ -42,14 +42,14 @@ function buildDom() {
 
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
-const PERSISTED_KEY = "serf-hub.sidebar.collapsed.serf-hub";
+const PERSISTED_KEY = "serf-hub.sidebar.expanded.serf-hub";
 
 // JSDOM fires DOMContentLoaded asynchronously after script eval. Each round
 // awaits a microtask flush before asserting.
 const wait = () => new Promise(resolve => setTimeout(resolve, 30));
 
 (async () => {
-  // --- Round 1: fresh load, click chevron, verify collapse + storage write.
+  // --- Round 1: fresh load, click chevron, verify expand + storage write.
   let dom = buildDom();
   let { window } = dom;
   window.eval(sidebarSrc);
@@ -58,13 +58,13 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 30));
   let section = window.document.querySelector('[data-project-key="serf-hub"]');
   let chevron = section.querySelector(".project-chevron");
 
-  pass(!section.classList.contains("collapsed"), "initially not collapsed");
-  pass(chevron.textContent === "▾", "initial glyph should be ▾, got " + JSON.stringify(chevron.textContent));
+  pass(section.classList.contains("collapsed"), "initially collapsed");
+  pass(chevron.textContent === "▸", "initial glyph should be ▸, got " + JSON.stringify(chevron.textContent));
 
   chevron.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
 
-  pass(section.classList.contains("collapsed"), "after click, section should be collapsed");
-  pass(chevron.textContent === "▸", "after click glyph should be ▸, got " + JSON.stringify(chevron.textContent));
+  pass(!section.classList.contains("collapsed"), "after click, section should be expanded");
+  pass(chevron.textContent === "▾", "after click glyph should be ▾, got " + JSON.stringify(chevron.textContent));
 
   const stored = window.localStorage.getItem(PERSISTED_KEY);
   pass(stored === "true", `localStorage should be "true", got ${JSON.stringify(stored)}`);
@@ -78,18 +78,18 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 30));
 
   section = window.document.querySelector('[data-project-key="serf-hub"]');
   chevron = section.querySelector(".project-chevron");
-  pass(section.classList.contains("collapsed"), "restored: section should be collapsed from localStorage");
-  pass(chevron.textContent === "▸", "restored glyph should be ▸, got " + JSON.stringify(chevron.textContent));
+  pass(!section.classList.contains("collapsed"), "restored: section should be expanded from localStorage");
+  pass(chevron.textContent === "▾", "restored glyph should be ▾, got " + JSON.stringify(chevron.textContent));
 
   const other = window.document.querySelector('[data-project-key="other-proj"]');
-  pass(!other.classList.contains("collapsed"), "untouched project should not be collapsed");
-  pass(other.querySelector(".project-chevron").textContent === "▾", "untouched chevron stays ▾");
+  pass(other.classList.contains("collapsed"), "untouched project should default collapsed");
+  pass(other.querySelector(".project-chevron").textContent === "▸", "untouched chevron stays ▸");
 
-  // --- Round 3: click again to expand, localStorage cleared.
+  // --- Round 3: click again to collapse, localStorage cleared.
   chevron.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
-  pass(!section.classList.contains("collapsed"), "after second click, expanded again");
-  pass(chevron.textContent === "▾", "expanded glyph should be ▾, got " + JSON.stringify(chevron.textContent));
-  pass(window.localStorage.getItem(PERSISTED_KEY) === null, "localStorage entry should be cleared on expand");
+  pass(section.classList.contains("collapsed"), "after second click, collapsed again");
+  pass(chevron.textContent === "▸", "collapsed glyph should be ▸, got " + JSON.stringify(chevron.textContent));
+  pass(window.localStorage.getItem(PERSISTED_KEY) === null, "localStorage entry should be cleared on collapse");
 
   if (failures.length === 0) {
     console.log("PASS: sidebar collapse — toggle, persist, restore");
