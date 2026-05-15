@@ -88,6 +88,7 @@ type hubModel struct {
 	sessionModelPicker      *modelPicker
 	sessionTranscriptPicker *modelPicker
 	sessionPanel            *hubSessionPanel
+	sessionDetailsRequested bool
 	transcriptTargets       []appwire.ThreadTranscriptTarget
 	transcriptView          *hubTranscriptViewState
 	spawnReturnMode         hubMode
@@ -185,6 +186,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case hubSessionMsg:
 		if msg.err != nil {
+			m.sessionDetailsRequested = false
 			m.err = msg.err
 			return m, nil
 		}
@@ -192,8 +194,11 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spawnSubmitting = false
 		if m.mode == hubModeSession && m.detail.Ref == msg.detail.Ref {
 			m.detail = msg.detail
-			panel := hubSessionPanel{Body: m.renderSessionDetails()}
-			m.sessionPanel = &panel
+			if m.sessionDetailsRequested {
+				panel := hubSessionPanel{Body: m.renderSessionDetails()}
+				m.sessionPanel = &panel
+			}
+			m.sessionDetailsRequested = false
 			m.session.refreshViewport()
 			return m, nil
 		}
@@ -217,6 +222,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionModelPicker = nil
 		m.sessionTranscriptPicker = nil
 		m.sessionPanel = nil
+		m.sessionDetailsRequested = false
 		m.transcriptTargets = nil
 		m.transcriptView = nil
 		return m, nil

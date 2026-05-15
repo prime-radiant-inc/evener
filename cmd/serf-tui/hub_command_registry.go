@@ -325,6 +325,7 @@ func fetchCurrentHubSession(m *hubModel, _ string) tea.Cmd {
 		m.addSessionSystem("Session ref is invalid.")
 		return nil
 	}
+	m.sessionDetailsRequested = true
 	return fetchHubSession(m.client, ref)
 }
 

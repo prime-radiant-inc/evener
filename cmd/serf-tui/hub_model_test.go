@@ -1776,6 +1776,9 @@ func TestHubModelStatusIdleRefreshesSessionCapabilities(t *testing.T) {
 	}
 	updated, _ := m.Update(cmd())
 	got := updated.(hubModel)
+	if got.sessionPanel != nil {
+		t.Fatalf("idle status refresh should not open details panel: %+v", got.sessionPanel)
+	}
 	if !got.detail.Capabilities.Send {
 		t.Fatalf("send capability was not refreshed: %+v", got.detail.Capabilities)
 	}
