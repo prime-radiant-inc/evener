@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"flag"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -166,6 +168,31 @@ func TestOpenAIHelpShowsCommands(t *testing.T) {
 	if !strings.Contains(usage, "login") || !strings.Contains(usage, "logout") || !strings.Contains(usage, "status") {
 		t.Fatalf("usage = %q, want listed commands", usage)
 	}
+}
+
+func TestTopLevelHelpShowsReasoningEffort(t *testing.T) {
+	cmd := exec.Command("go", "run", ".", "--help")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("serf --help failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "--reasoning-effort") {
+		t.Fatalf("serf --help missing --reasoning-effort:\n%s", out)
+	}
+}
+
+func TestTopLevelHelpListsEveryRegisteredFlag(t *testing.T) {
+	var stderr bytes.Buffer
+	fs, _ := newRunFlagSet(&stderr)
+	fs.Usage()
+	usage := stderr.String()
+
+	fs.VisitAll(func(f *flag.Flag) {
+		want := "--" + f.Name
+		if !strings.Contains(usage, want) {
+			t.Errorf("usage missing registered flag %s:\n%s", want, usage)
+		}
+	})
 }
 
 func TestOpenAIStateDirDefaultIsUserScoped(t *testing.T) {

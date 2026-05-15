@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"text/tabwriter"
 
 	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/cmdutil"
@@ -14,6 +15,36 @@ import (
 
 // Alias for brevity within flag definitions.
 type stringSliceFlag = cmdutil.StringSliceFlag
+
+type runCLIFlags struct {
+	model              *string
+	workDir            *string
+	systemPrompt       *string
+	stateDir           *string
+	resume             *string
+	resumeWith         *string
+	resumeLast         *bool
+	listSessions       *bool
+	maxRounds          *int
+	maxSubagentDepth   *int
+	shareTaskStore     *bool
+	resultToolName     *string
+	reasoningEffort    *string
+	exportATIF         *string
+	contextStrategy    *string
+	outputSchema       *string
+	verbose            *bool
+	noProjectPrompts   *bool
+	agentName          *string
+	skillsDirs         stringSliceFlag
+	mcpServers         stringSliceFlag
+	mcpConfigs         stringSliceFlag
+	pluginDirs         stringSliceFlag
+	systemPromptAsUser *bool
+	cpuProfile         *string
+	traceFile          *string
+	systemPromptAppend stringSliceFlag
+}
 
 func main() {
 	// Quick flags that don't need full flag.Parse().
@@ -31,89 +62,24 @@ func main() {
 		return
 	}
 
-	model := flag.String("model", "", "LLM model identifier (provider/model)")
-	workDir := flag.String("dir", "", "working directory (default: current directory)")
-	systemPrompt := flag.String("system-prompt", "", "path to a custom system prompt file")
-	stateDir := flag.String("state-dir", "", "override runtime state directory (default: XDG-computed)")
-	resume := flag.String("resume", "", "resume a previous session by ID")
-	resumeWith := flag.String("resume-with", "", "start a new prompt using a previous session's context")
-	resumeLast := flag.Bool("resume-last", false, "resume the most recent session")
-	listSessionsFlag := flag.Bool("list-sessions", false, "list saved sessions and exit")
-	maxRounds := flag.Int("max-rounds", -1, "max tool rounds per input (0=unlimited, default: 200)")
-	maxSubagentDepth := flag.Int("max-subagent-depth", -1, "max subagent nesting depth (default: 1)")
-	shareTaskStore := flag.Bool("share-task-store", false, "share task list between parent and child sessions")
-	resultToolName := flag.String("result-tool-name", "", "override the result tool name (default: communicate)")
-	reasoningEffort := flag.String("reasoning-effort", "", "reasoning effort: low|medium|high|xhigh|none")
-	exportATIF := flag.String("export-atif", "", "export ATIF v1.6 trajectory to this path on session close")
-	contextStrategy := flag.String("context-strategy", "", "context management strategy: compact|recall|session-log|ooda (default: compact)")
-	outputSchema := flag.String("output-schema", "", "inline JSON Schema applied to the communicate tool's output field (replaces the default schema)")
-	verbose := flag.Bool("verbose", false, "emit NDJSON events to stderr")
-	noProjectPrompts := flag.Bool("no-project-prompts", false, "suppress .serf/prompts/ loading (match container behavior)")
-	agentName := flag.String("agent", "", "agent persona: default (default), explorer, or another available agent name")
-	var skillsDirs stringSliceFlag
-	flag.Var(&skillsDirs, "skills-dir", "extra skill directory (repeatable)")
-	var mcpServers stringSliceFlag
-	flag.Var(&mcpServers, "mcp", "MCP server (repeatable, format: name:command args...)")
-	var mcpConfigs stringSliceFlag
-	flag.Var(&mcpConfigs, "mcp-config", "path to .mcp.json file (repeatable)")
-	var pluginDirs stringSliceFlag
-	flag.Var(&pluginDirs, "plugin-dir", "plugin directory (repeatable)")
-	systemPromptAsUser := flag.Bool("system-prompt-as-user", false, "deliver system prompt as first user message instead of system instructions")
-	cpuProfile := flag.String("cpu-profile", "", "write CPU profile to this file path")
-	traceFile := flag.String("trace", "", "write execution trace to this file path")
-	var systemPromptAppend stringSliceFlag
-	flag.Var(&systemPromptAppend, "system-prompt-append", "path to append to system prompt (repeatable)")
-
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: serf --model <provider/model> [flags] <prompt>\n\n")
-		fmt.Fprintf(os.Stderr, "A non-interactive coding agent.\n\n")
-		fmt.Fprintf(os.Stderr, "The prompt can be passed as arguments or piped via stdin.\n\n")
-		fmt.Fprintf(os.Stderr, "Required:\n")
-		fmt.Fprintf(os.Stderr, "  --model <provider/model> LLM model (e.g. openai/gpt-5.2, anthropic/claude-opus-4-6, google/gemini-3-flash-preview)\n\n")
-		fmt.Fprintf(os.Stderr, "Options:\n")
-		fmt.Fprintf(os.Stderr, "  --dir <path>         Working directory (default: current directory)\n")
-		fmt.Fprintf(os.Stderr, "  --system-prompt <path> Path to a custom system prompt file (replaces default)\n")
-		fmt.Fprintf(os.Stderr, "  --system-prompt-append <path> Append to system prompt (repeatable)\n")
-		fmt.Fprintf(os.Stderr, "  --state-dir <path>   Override runtime state directory (sessions, tasks)\n")
-		fmt.Fprintf(os.Stderr, "  --max-rounds <n>     Max tool rounds per input (0=unlimited, default: 200)\n")
-		fmt.Fprintf(os.Stderr, "  --max-subagent-depth <n> Max subagent nesting depth (default: 1)\n")
-		fmt.Fprintf(os.Stderr, "  --share-task-store   Share task list between parent and child sessions\n")
-		fmt.Fprintf(os.Stderr, "  --context-strategy <name> Context management strategy: compact|recall|session-log|ooda (default: compact)\n")
-		fmt.Fprintf(os.Stderr, "  --verbose            Emit NDJSON events to stderr (replaces human-readable output)\n")
-		fmt.Fprintf(os.Stderr, "  --no-project-prompts Suppress .serf/prompts/ loading (match Docker container behavior)\n")
-		fmt.Fprintf(os.Stderr, "  --agent <name>       Agent persona: default (default), explorer, or another available agent name\n")
-		fmt.Fprintf(os.Stderr, "  --skills-dir <path>  Extra skill directory (repeatable)\n")
-		fmt.Fprintf(os.Stderr, "  --mcp <spec>         MCP server (repeatable, format: name:command args...)\n")
-		fmt.Fprintf(os.Stderr, "  --mcp-config <path>  Path to .mcp.json file (repeatable)\n")
-		fmt.Fprintf(os.Stderr, "  --plugin-dir <path>  Plugin directory (repeatable)\n")
-		fmt.Fprintf(os.Stderr, "  --export-atif <path> Export ATIF trajectory on session close\n")
-		fmt.Fprintf(os.Stderr, "  --output-schema <json> Inline JSON Schema for communicate.output (replaces default; see README)\n")
-		fmt.Fprintf(os.Stderr, "  --cpu-profile <path> Write CPU profile (go tool pprof compatible)\n")
-		fmt.Fprintf(os.Stderr, "  --trace <path>       Write execution trace (go tool trace compatible)\n\n")
-		fmt.Fprintf(os.Stderr, "Session resume:\n")
-		fmt.Fprintf(os.Stderr, "  --resume <id>        Resume a previous session\n")
-		fmt.Fprintf(os.Stderr, "  --resume-with <id>   New prompt using a previous session's context\n")
-		fmt.Fprintf(os.Stderr, "  --resume-last        Resume the most recent session\n")
-		fmt.Fprintf(os.Stderr, "  --list-sessions      List saved sessions\n\n")
-		fmt.Fprintf(os.Stderr, "Environment variables:\n")
-		fmt.Fprintf(os.Stderr, "  SERF_MODEL           Default model as provider/model (used when --model is omitted)\n")
-		fmt.Fprintf(os.Stderr, "  SERF_REASONING_EFFORT Default reasoning effort (low|medium|high|xhigh|none)\n")
-		fmt.Fprintf(os.Stderr, "  OPENAI_API_KEY       OpenAI API key\n")
-		fmt.Fprintf(os.Stderr, "  ANTHROPIC_API_KEY    Anthropic API key\n")
-		fmt.Fprintf(os.Stderr, "  GEMINI_API_KEY       Google Gemini API key\n")
+	fs, flags := newRunFlagSet(os.Stderr)
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		if err == flag.ErrHelp {
+			return
+		}
+		os.Exit(2)
 	}
-	flag.Parse()
 
-	if *cpuProfile != "" {
-		stop, err := cmdutil.StartCPUProfile(*cpuProfile)
+	if *flags.cpuProfile != "" {
+		stop, err := cmdutil.StartCPUProfile(*flags.cpuProfile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "serf: %v\n", err)
 			os.Exit(1)
 		}
 		defer stop()
 	}
-	if *traceFile != "" {
-		stop, err := cmdutil.StartTrace(*traceFile)
+	if *flags.traceFile != "" {
+		stop, err := cmdutil.StartTrace(*flags.traceFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "serf: %v\n", err)
 			os.Exit(1)
@@ -121,13 +87,13 @@ func main() {
 		defer stop()
 	}
 
-	isResume := *resume != "" || *resumeWith != "" || *resumeLast || *listSessionsFlag
+	isResume := *flags.resume != "" || *flags.resumeWith != "" || *flags.resumeLast || *flags.listSessions
 	stat, _ := os.Stdin.Stat()
 	stdinIsCharDevice := stat != nil && (stat.Mode()&os.ModeCharDevice) != 0
-	prompt := readPromptFromArgsOrStdin(flag.Args(), *listSessionsFlag, os.Stdin, stdinIsCharDevice)
+	prompt := readPromptFromArgsOrStdin(fs.Args(), *flags.listSessions, os.Stdin, stdinIsCharDevice)
 
 	if prompt == "" && !isResume {
-		flag.Usage()
+		fs.Usage()
 		os.Exit(1)
 	}
 
@@ -136,39 +102,116 @@ func main() {
 
 	err := run(ctx, runConfig{
 		prompt:             prompt,
-		model:              *model,
-		workDir:            *workDir,
-		stateDir:           *stateDir,
-		systemPrompt:       *systemPrompt,
-		systemPromptAppend: []string(systemPromptAppend),
-		maxRounds:          *maxRounds,
-		maxSubagentDepth:   *maxSubagentDepth,
-		shareTaskStore:     *shareTaskStore,
-		resultToolName:     *resultToolName,
-		reasoningEffort:    *reasoningEffort,
-		contextStrategy:    *contextStrategy,
-		exportATIF:         *exportATIF,
-		outputSchema:       *outputSchema,
-		verbose:            *verbose,
-		noProjectPrompts:   *noProjectPrompts,
-		agentName:          *agentName,
-		skillsDirs:         []string(skillsDirs),
-		mcpServers:         []string(mcpServers),
-		mcpConfigs:         []string(mcpConfigs),
-		pluginDirs:         []string(pluginDirs),
-		systemPromptAsUser: *systemPromptAsUser,
+		model:              *flags.model,
+		workDir:            *flags.workDir,
+		stateDir:           *flags.stateDir,
+		systemPrompt:       *flags.systemPrompt,
+		systemPromptAppend: []string(flags.systemPromptAppend),
+		maxRounds:          *flags.maxRounds,
+		maxSubagentDepth:   *flags.maxSubagentDepth,
+		shareTaskStore:     *flags.shareTaskStore,
+		resultToolName:     *flags.resultToolName,
+		reasoningEffort:    *flags.reasoningEffort,
+		contextStrategy:    *flags.contextStrategy,
+		exportATIF:         *flags.exportATIF,
+		outputSchema:       *flags.outputSchema,
+		verbose:            *flags.verbose,
+		noProjectPrompts:   *flags.noProjectPrompts,
+		agentName:          *flags.agentName,
+		skillsDirs:         []string(flags.skillsDirs),
+		mcpServers:         []string(flags.mcpServers),
+		mcpConfigs:         []string(flags.mcpConfigs),
+		pluginDirs:         []string(flags.pluginDirs),
+		systemPromptAsUser: *flags.systemPromptAsUser,
 		stdout:             os.Stdout,
 		stderr:             os.Stderr,
-		resume:             *resume,
-		resumeWith:         *resumeWith,
-		resumeLast:         *resumeLast,
-		listSessions:       *listSessionsFlag,
+		resume:             *flags.resume,
+		resumeWith:         *flags.resumeWith,
+		resumeLast:         *flags.resumeLast,
+		listSessions:       *flags.listSessions,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "serf: %v\n", err)
 		cancel()
 		os.Exit(1) //nolint:gocritic // cancel() called explicitly above
 	}
+}
+
+func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
+	fs := flag.NewFlagSet("serf", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	flags := &runCLIFlags{}
+
+	flags.model = fs.String("model", "", "LLM model identifier (`provider/model`)")
+	flags.workDir = fs.String("dir", "", "working `directory` (default: current directory)")
+	flags.systemPrompt = fs.String("system-prompt", "", "path to a custom system prompt `file`")
+	flags.stateDir = fs.String("state-dir", "", "override runtime state `directory` (default: XDG-computed)")
+	flags.resume = fs.String("resume", "", "resume a previous session by `id`")
+	flags.resumeWith = fs.String("resume-with", "", "start a new prompt using a previous session's `id` as context")
+	flags.resumeLast = fs.Bool("resume-last", false, "resume the most recent session")
+	flags.listSessions = fs.Bool("list-sessions", false, "list saved sessions and exit")
+	flags.maxRounds = fs.Int("max-rounds", -1, "max tool rounds per input (0=unlimited, default: 200)")
+	flags.maxSubagentDepth = fs.Int("max-subagent-depth", -1, "max subagent nesting depth (default: 1)")
+	flags.shareTaskStore = fs.Bool("share-task-store", false, "share task list between parent and child sessions")
+	flags.resultToolName = fs.String("result-tool-name", "", "override the result tool `name` (default: communicate)")
+	flags.reasoningEffort = fs.String("reasoning-effort", "", "reasoning effort `level`: low|medium|high|xhigh|none")
+	flags.exportATIF = fs.String("export-atif", "", "export ATIF v1.6 trajectory to this `path` on session close")
+	flags.contextStrategy = fs.String("context-strategy", "", "context management `strategy`: compact|recall|session-log|ooda (default: compact)")
+	flags.outputSchema = fs.String("output-schema", "", "inline JSON Schema `document` applied to the communicate tool's output field (replaces the default schema)")
+	flags.verbose = fs.Bool("verbose", false, "emit NDJSON events to stderr")
+	flags.noProjectPrompts = fs.Bool("no-project-prompts", false, "suppress .serf/prompts/ loading (match container behavior)")
+	flags.agentName = fs.String("agent", "", "agent persona `name`: default (default), explorer, or another available agent name")
+	fs.Var(&flags.skillsDirs, "skills-dir", "extra skill `directory` (repeatable)")
+	fs.Var(&flags.mcpServers, "mcp", "MCP server `spec` (repeatable, format: name:command args...)")
+	fs.Var(&flags.mcpConfigs, "mcp-config", "path to .mcp.json `file` (repeatable)")
+	fs.Var(&flags.pluginDirs, "plugin-dir", "plugin `directory` (repeatable)")
+	flags.systemPromptAsUser = fs.Bool("system-prompt-as-user", false, "deliver system prompt as first user message instead of system instructions")
+	flags.cpuProfile = fs.String("cpu-profile", "", "write CPU profile to this `file` path")
+	flags.traceFile = fs.String("trace", "", "write execution trace to this `file` path")
+	fs.Var(&flags.systemPromptAppend, "system-prompt-append", "path to append to system prompt `file` (repeatable)")
+
+	fs.Usage = func() {
+		printRunUsage(stderr, fs)
+	}
+	return fs, flags
+}
+
+func printRunUsage(w io.Writer, fs *flag.FlagSet) {
+	fmt.Fprintf(w, "Usage: serf --model <provider/model> [flags] <prompt>\n\n")
+	fmt.Fprintf(w, "A non-interactive coding agent.\n\n")
+	fmt.Fprintf(w, "The prompt can be passed as arguments or piped via stdin.\n")
+	fmt.Fprintf(w, "--model can be omitted when SERF_MODEL supplies a default or when resuming.\n\n")
+	fmt.Fprintf(w, "Options:\n")
+	printLongFlagDefaults(w, fs)
+	fmt.Fprintf(w, "\nEnvironment variables:\n")
+	printRunEnvVars(w)
+}
+
+type boolFlag interface {
+	IsBoolFlag() bool
+}
+
+func printLongFlagDefaults(w io.Writer, fs *flag.FlagSet) {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fs.VisitAll(func(f *flag.Flag) {
+		param, usage := flag.UnquoteUsage(f)
+		option := "--" + f.Name
+		if bf, ok := f.Value.(boolFlag); !ok || !bf.IsBoolFlag() {
+			option += " <" + param + ">"
+		}
+		fmt.Fprintf(tw, "  %s\t%s\n", option, usage)
+	})
+	_ = tw.Flush()
+}
+
+func printRunEnvVars(w io.Writer) {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintf(tw, "  SERF_MODEL\tDefault model as provider/model (used when --model is omitted)\n")
+	fmt.Fprintf(tw, "  SERF_REASONING_EFFORT\tDefault reasoning effort (low|medium|high|xhigh|none)\n")
+	fmt.Fprintf(tw, "  OPENAI_API_KEY\tOpenAI API key\n")
+	fmt.Fprintf(tw, "  ANTHROPIC_API_KEY\tAnthropic API key\n")
+	fmt.Fprintf(tw, "  GEMINI_API_KEY\tGoogle Gemini API key\n")
+	_ = tw.Flush()
 }
 
 func dispatchCLICommand(args []string, stdin io.Reader, stdout, stderr io.Writer) (bool, string, error) {
