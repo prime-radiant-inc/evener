@@ -1,5 +1,9 @@
 package llm
 
+import "errors"
+
+var ErrStreamUnsupported = errors.New("stream unsupported")
+
 // Stream is an asynchronous iterator of StreamEvent values. Implementations must
 // be explicitly closed when the consumer is done to avoid leaking connections.
 type Stream interface {

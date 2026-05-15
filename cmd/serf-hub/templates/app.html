@@ -19,7 +19,7 @@
 <body class="app">
   <button type="button" id="mobile-hamburger" data-sidebar-toggle title="open sidebar" aria-label="open sidebar">☰</button>
   <aside id="sidebar"
-         hx-get="/sidebar"
+         hx-get="/_partials/sidebar"
          hx-trigger="load, every 5s, sidebar:refresh from:body"
          hx-swap="innerHTML">
     <div class="sidebar-loading">loading…</div>
@@ -49,6 +49,7 @@
     </div>
   </dialog>
   <script src="/assets/htmx.min.js"></script>
+  <script src="/assets/appwire.js"></script>
   <script src="/assets/sidebar.js"></script>
   <script src="/assets/notifications.js"></script>
   <script src="/assets/theme.js"></script>
@@ -56,6 +57,7 @@
   <script src="/assets/settings.js"></script>
   <script src="/assets/spawn.js"></script>
   <script src="/assets/marked.min.js"></script>
+  <script src="/assets/diagnostics.js"></script>
   <script src="/assets/renderer.js"></script>
 </body>
 </html>

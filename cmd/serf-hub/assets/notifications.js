@@ -196,8 +196,10 @@
   }
 
   function poll() {
-    return fetch("/api/search?q=")
-      .then((r) => r.json())
+    const searchPromise = window.SerfAppwire
+      ? window.SerfAppwire.search("")
+      : fetch("/api/search?q=").then((r) => r.json());
+    return searchPromise
       .then((resp) => {
         const live = (resp && resp.live) || [];
         const prefs = readPrefs();
@@ -218,8 +220,10 @@
     const prefs = readPrefs();
     // Reset prev-state map on init so the first poll establishes a baseline.
     prevState.clear();
-    fetch("/api/search?q=")
-      .then((r) => r.json())
+    const initialSearch = window.SerfAppwire
+      ? window.SerfAppwire.search("")
+      : fetch("/api/search?q=").then((r) => r.json());
+    initialSearch
       .then((resp) => {
         const live = (resp && resp.live) || [];
         applyAll(prefs, live);

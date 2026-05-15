@@ -2,9 +2,9 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
@@ -20,8 +20,11 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/buildinfo"
-	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/frontmatter"
+	"primeradiant.com/serf/internal/appserver"
+	"primeradiant.com/serf/internal/appsource"
+	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/internal/diagnostic"
 	"primeradiant.com/serf/internal/hubapi"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/rendezvous"
@@ -37,8 +40,12 @@ type WebConfig struct {
 	Models        []modelDescriptor // available models for the spawn chip
 	PastPerPage   int               // results per page for /past; defaults to 50 when zero
 	StateDir      string            // root of the projects/<sha> state directory; needed for ForkSession
+	SerfLaunchEnv map[string]string // environment overrides used by Hub-owned serf launches
 	PluginDirs    []string          // explicit plugin dirs; when empty, default to ~/.config/serf/plugins/*
 	MCPConfigPath string            // MCP config file path; when empty, default to ~/.config/serf/mcp.json
+	CodexSources  []appsource.CodexSourceConfig
+	CodexLaunches []CodexLaunchConfig
+	CodexLauncher *CodexLauncher
 }
 
 // Spawner forks a serf serve subprocess and waits for its rendezvous file to appear.
@@ -64,6 +71,8 @@ type WebServer struct {
 	inputStripTmpl *template.Template
 	settingsTmpls  map[string]*template.Template
 	sse            *SSEProxy
+	appRPC         *appserver.Server
+	sources        *appsource.Registry
 	startedAt      time.Time
 
 	resumeMu    sync.Mutex
@@ -96,14 +105,21 @@ func NewWebServer(cfg WebConfig) *WebServer {
 	if cfg.Roster != nil {
 		sse = NewSSEProxy(cfg.Roster)
 	}
-	return &WebServer{
+	sources := newHubSourceRegistry(cfg)
+	if cfg.CodexLauncher == nil && len(cfg.CodexLaunches) > 0 {
+		cfg.CodexLauncher = NewCodexLauncher(cfg.CodexLaunches)
+	}
+	web := &WebServer{
 		cfg: cfg, appTmpl: appTmpl, sidebarTmpl: sidebarTmpl,
 		workspaceTmpl: workspaceTmpl, spawnTmpl: spawnTmpl, inputStripTmpl: inputStripTmpl,
 		settingsTmpls: settingsTmpls,
 		sse:           sse,
+		sources:       sources,
 		startedAt:     time.Now().UTC(),
 		resumeLocks:   map[string]*sync.Mutex{},
 	}
+	web.appRPC = newHubAppServer(cfg, sources)
+	return web
 }
 
 // lockForSession returns (creating if necessary) the per-session mutex for
@@ -128,13 +144,14 @@ func (s *WebServer) Handler() http.Handler {
 	sub, _ := fs.Sub(assetsFS, "assets")
 	mux.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.FS(sub))))
 
+	// App-wire RPC
+	mux.HandleFunc("/rpc", s.appRPC.ServeWebSocket)
+
 	// Pages
 	mux.HandleFunc("/", s.handleIndex)
-	mux.HandleFunc("/s/", s.handleSession) // workspace — detects HX-Request and serves partial or app shell
-	mux.HandleFunc("/new", s.handleIndex)  // ditto
-	mux.HandleFunc("/sidebar", s.handleSidebar)
-	mux.HandleFunc("/workspace/empty", s.handleWorkspaceEmpty)
-	mux.HandleFunc("/workspace/spawn", s.handleWorkspaceSpawn)
+	mux.HandleFunc("/s/", s.handleSession)
+	mux.HandleFunc("/new", s.handleIndex)
+	mux.HandleFunc("/_partials/", s.handleInternalPartial)
 	mux.HandleFunc("/past/", s.handlePastID) // /past/<id>/replay
 
 	// Settings
@@ -160,18 +177,18 @@ func (s *WebServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	workspaceURL := "/workspace/empty"
+	workspaceURL := "/_partials/workspace/empty"
 	if r.URL.Path == "/new" {
-		workspaceURL = "/workspace/spawn"
+		workspaceURL = "/_partials/workspace/spawn"
 		// Forward optional pre-fill params:
 		//   ?dir=<path> — sidebar's per-project "+" button uses this.
-		//   ?task=<text> — the palette's /spawn command seeds the textarea.
+		//   ?prompt=<text> — the palette's /spawn command seeds the textarea.
 		params := url.Values{}
 		if dir := strings.TrimSpace(r.URL.Query().Get("dir")); dir != "" {
 			params.Set("dir", dir)
 		}
-		if task := r.URL.Query().Get("task"); task != "" {
-			params.Set("task", task)
+		if prompt := r.URL.Query().Get("prompt"); prompt != "" {
+			params.Set("prompt", prompt)
 		}
 		if encoded := params.Encode(); encoded != "" {
 			workspaceURL += "?" + encoded
@@ -180,6 +197,69 @@ func (s *WebServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.appTmpl.ExecuteTemplate(w, "app", map[string]string{"WorkspaceURL": workspaceURL}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// handleInternalPartial is the only route family that serves HTMX fragments.
+// Keeping fragments under /_partials prevents direct navigation to app-shell
+// internals that need sidebar scripts, client state, or a containing pane.
+func (s *WebServer) handleInternalPartial(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.Header.Get("HX-Request") != "true" {
+		http.NotFound(w, r)
+		return
+	}
+
+	switch {
+	case r.URL.Path == "/_partials/sidebar":
+		s.handleSidebar(w, r)
+	case r.URL.Path == "/_partials/workspace/empty":
+		s.handleWorkspaceEmpty(w, r)
+	case r.URL.Path == "/_partials/workspace/spawn":
+		s.handleWorkspaceSpawn(w, r)
+	case strings.HasPrefix(r.URL.Path, "/_partials/s/"):
+		s.handleSessionPartial(w, r)
+	case strings.HasPrefix(r.URL.Path, "/_partials/settings"):
+		section := strings.TrimPrefix(r.URL.Path, "/_partials/settings")
+		section = strings.TrimPrefix(section, "/")
+		if section == "" {
+			section = "general"
+		}
+		s.renderSettingsPartial(w, r, section)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (s *WebServer) handleSessionPartial(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/_partials/s/")
+	parts := strings.SplitN(path, "/", 2)
+	id := parts[0]
+	if id == "" {
+		http.NotFound(w, r)
+		return
+	}
+	id = canonicalRouteID(id)
+	sub := ""
+	if len(parts) == 2 {
+		sub = parts[1]
+	}
+	switch sub {
+	case "workspace":
+		s.renderWorkspacePartial(w, r, id)
+	case "state":
+		s.renderInputStrip(w, r, id)
+	case "meta":
+		s.renderWorkspaceMeta(w, r, id)
+	case "details":
+		s.renderDetailsPanel(w, r, id)
+	case "tasks":
+		s.renderSessionTasks(w, r, id)
+	default:
+		http.NotFound(w, r)
 	}
 }
 
@@ -202,7 +282,11 @@ func (s *WebServer) handleApiSearch(w http.ResponseWriter, r *http.Request) {
 	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
 	var resp searchResponse
 	if s.cfg.Roster != nil {
-		for _, le := range s.cfg.Roster.List() {
+		live := s.cfg.Roster.List()
+		sort.SliceStable(live, func(i, j int) bool {
+			return liveEntryWithPastLess(live[i], live[j], s.cfg.Past)
+		})
+		for _, le := range live {
 			if le.SessionID == "" {
 				continue
 			}
@@ -222,7 +306,7 @@ func (s *WebServer) handleApiSearch(w http.ResponseWriter, r *http.Request) {
 		// Empty query → most-recent N. Substring match otherwise.
 		results := s.cfg.Past.Search(q, 20, 0)
 		for _, e := range results {
-			title := e.Meta.OriginalTask
+			title := e.Meta.OriginalPrompt
 			if title == "" {
 				title = shortID(e.Meta.ID)
 			}
@@ -249,6 +333,56 @@ func writeAPIError(w http.ResponseWriter, status int, msg string) {
 	writeAPIJSON(w, status, hubapi.ErrorResponse{Error: msg})
 }
 
+func writeAPIWireError(w http.ResponseWriter, fallbackStatus int, err error) {
+	wire, ok := wireErrorFromError(err)
+	if !ok {
+		writeAPIError(w, fallbackStatus, err.Error())
+		return
+	}
+	writeAPIJSON(w, statusForWireError(wire, fallbackStatus), hubapi.ErrorResponse{
+		Error:         wire.Message,
+		Code:          wire.Code,
+		SerfErrorInfo: serfErrorInfoFromData(wire.Data),
+	})
+}
+
+func wireErrorFromError(err error) (appwire.WireError, bool) {
+	var wire appwire.WireError
+	if errors.As(err, &wire) {
+		return wire, true
+	}
+	return appwire.WireError{}, false
+}
+
+func statusForWireError(wire appwire.WireError, fallback int) int {
+	switch wire.Code {
+	case appwire.CodeInvalidParams, appwire.CodeInvalidRequest:
+		return http.StatusBadRequest
+	case appwire.CodeMethodNotFound:
+		return http.StatusNotFound
+	case appwire.CodeConflict:
+		return http.StatusConflict
+	case appwire.CodeUnavailable:
+		return http.StatusServiceUnavailable
+	case appwire.CodeInternalError:
+		return http.StatusInternalServerError
+	default:
+		return fallback
+	}
+}
+
+func serfErrorInfoFromData(data any) string {
+	switch v := data.(type) {
+	case appwire.ErrorData:
+		return string(v.SerfErrorInfo)
+	case map[string]any:
+		if info, ok := v["serfErrorInfo"].(string); ok {
+			return info
+		}
+	}
+	return ""
+}
+
 func (s *WebServer) handleAPIHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
@@ -264,9 +398,9 @@ func (s *WebServer) handleAPIHealth(w http.ResponseWriter, r *http.Request) {
 			Tree:             true,
 			TranscriptFollow: true,
 			SpawnSchema:      true,
-			Spawn:            s.cfg.Spawner != nil,
+			Spawn:            s.cfg.Spawner != nil || len(s.cfg.CodexSources) > 0 || len(s.cfg.CodexLaunches) > 0 || s.cfg.CodexLauncher != nil,
 			Fork:             true,
-			RemoteSources:    false,
+			RemoteSources:    len(s.cfg.CodexSources) > 0,
 		},
 	})
 }
@@ -284,7 +418,8 @@ func (s *WebServer) handleAPISpawnSchema(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeAPIJSON(w, http.StatusOK, hubapi.SpawnSchema{Fields: []hubapi.SpawnField{
-		{Name: "task", Type: "text"},
+		{Name: "prompt", Type: "text"},
+		{Name: "harness", Type: "enum", Values: launchHarnessIDs(s.cfg)},
 		{Name: "working_dir", Type: "path"},
 		{Name: "model", Type: "model"},
 		{Name: "agent", Type: "string"},
@@ -297,25 +432,16 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
 		return
 	}
-	var live []LiveEntry
-	if s.cfg.Roster != nil {
-		live = s.cfg.Roster.List()
-	}
-	var metas []agent.SessionMeta
-	if s.cfg.Past != nil {
-		metas = s.cfg.Past.AllMetas()
-	}
+	metas, live := s.navigationTreeInputs(r.Context())
 	tree := BuildTree(metas, live)
 	resp := hubapi.TreeResponse{
 		GeneratedAt: time.Now().UTC(),
-		Sources: []hubapi.Source{{
-			ID:     "local",
-			Label:  "this host",
-			Kind:   "local",
-			Online: true,
-		}},
+		Sources:     s.apiTreeSources(),
 	}
 	for _, n := range tree.Live {
+		if !treeNodeCanActLive(n) {
+			continue
+		}
 		resp.Live = append(resp.Live, s.apiTreeNode("live", "", n, true))
 	}
 	seenProjectRefs := map[string]bool{}
@@ -329,7 +455,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 			RollupState: p.RollupState,
 		}
 		for _, n := range p.Sessions {
-			ap.Sessions = append(ap.Sessions, s.apiTreeNode("project", key, n, s.isLive(n.ID)))
+			ap.Sessions = append(ap.Sessions, s.apiTreeNode("project", key, n, treeNodeCanActLive(n) && s.isLive(n.ID)))
 			seenProjectRefs[n.ID] = true
 		}
 		projectIndexes[key] = len(resp.Projects)
@@ -345,12 +471,14 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		}
 		key := projectKey(project)
 		node := TreeNode{
-			ID:      le.SessionID,
-			Title:   liveTitle(le.SessionID, le, s.cfg.Past),
-			Project: project,
-			State:   normalizeState(le.Status),
-			Kind:    "session",
-			Age:     "now",
+			ID:        le.SessionID,
+			Title:     liveTitle(le.SessionID, le, s.cfg.Past),
+			Project:   project,
+			State:     normalizeState(le.Status),
+			Kind:      "session",
+			CreatedAt: le.StartedAt,
+			UpdatedAt: le.StartedAt,
+			Age:       ageString(le.StartedAt),
 		}
 		apiNode := s.apiTreeNode("project", key, node, true)
 		if idx, ok := projectIndexes[key]; ok {
@@ -373,6 +501,147 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 	writeAPIJSON(w, http.StatusOK, resp)
 }
 
+func (s *WebServer) navigationTreeInputs(ctx context.Context) ([]agent.SessionMeta, []LiveEntry) {
+	var live []LiveEntry
+	if s.cfg.Roster != nil {
+		live = s.cfg.Roster.List()
+	}
+	var metas []agent.SessionMeta
+	if s.cfg.Past != nil {
+		metas = s.cfg.Past.AllMetas()
+	}
+	for _, thread := range s.remoteTreeThreads(ctx) {
+		meta, entry, ok := appThreadTreeEntries(thread)
+		if !ok {
+			continue
+		}
+		metas = append(metas, meta)
+		if appThreadTreeLive(thread) {
+			live = append(live, entry)
+		}
+	}
+	return metas, live
+}
+
+func (s *WebServer) remoteTreeThreads(ctx context.Context) []appwire.Thread {
+	if s.sources == nil {
+		return nil
+	}
+	s.ensureManagedCodexSources(ctx)
+	var threads []appwire.Thread
+	for _, source := range s.sources.All() {
+		if source.ID() == "local" {
+			continue
+		}
+		resp, err := source.ListThreads(ctx, appwire.ThreadListParams{IncludeSubagents: true})
+		if err != nil {
+			continue
+		}
+		for _, thread := range resp.Data {
+			sourceID := threadListSourceID(source.ID(), thread)
+			thread.Source = sourceID
+			if thread.Serf.Ref == "" {
+				threadID := firstNonEmpty(thread.ID, thread.SessionID)
+				if threadID != "" {
+					thread.Serf.Ref = appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
+				}
+			}
+			threads = append(threads, thread)
+		}
+	}
+	return threads
+}
+
+func (s *WebServer) ensureManagedCodexSources(ctx context.Context) {
+	_ = ensureManagedCodexSources(ctx, s.cfg, s.sources, appwire.ThreadListParams{})
+}
+
+func appThreadTreeEntries(thread appwire.Thread) (agent.SessionMeta, LiveEntry, bool) {
+	ref, ok := appThreadTreeRef(thread)
+	if !ok {
+		return agent.SessionMeta{}, LiveEntry{}, false
+	}
+	refText := ref.String()
+	title := firstNonEmpty(thread.Name, thread.Preview, thread.SessionID, thread.ID, refText)
+	createdAt := unixTime(thread.CreatedAt)
+	updatedAt := unixTime(thread.UpdatedAt)
+	meta := agent.SessionMeta{
+		ID:             refText,
+		ProfileID:      ref.SourceID,
+		Model:          thread.ModelProvider,
+		CreatedAt:      createdAt,
+		UpdatedAt:      updatedAt,
+		OriginalPrompt: title,
+		EnvInfo: agent.EnvironmentInfo{
+			WorkingDir: thread.CWD,
+		},
+	}
+	if thread.GitInfo != nil {
+		meta.EnvInfo.GitBranch = thread.GitInfo.Branch
+		meta.EnvInfo.GitOriginURL = thread.GitInfo.OriginURL
+	}
+	entry := LiveEntry{
+		Entry: rendezvous.Entry{
+			SourceID:   ref.SourceID,
+			ThreadID:   ref.ThreadID,
+			SessionID:  refText,
+			WorkingDir: thread.CWD,
+			Model:      thread.ModelProvider,
+			StartedAt:  orderCreatedAt(createdAt, updatedAt),
+		},
+		SessionID: refText,
+		Status:    thread.Status.Type,
+	}
+	return meta, entry, true
+}
+
+func appThreadTreeRef(thread appwire.Thread) (appwire.Ref, bool) {
+	if thread.Serf.Ref != "" {
+		if ref, err := appwire.ParseRef(thread.Serf.Ref); err == nil {
+			return ref, true
+		}
+	}
+	sourceID := strings.TrimSpace(thread.Source)
+	threadID := firstNonEmpty(thread.ID, thread.SessionID)
+	if sourceID == "" || threadID == "" {
+		return appwire.Ref{}, false
+	}
+	return appwire.Ref{SourceID: sourceID, ThreadID: threadID}, true
+}
+
+func appThreadTreeLive(thread appwire.Thread) bool {
+	switch thread.Status.Type {
+	case appwire.ThreadStatusClosed, appwire.ThreadStatusEnded:
+		return false
+	default:
+		return true
+	}
+}
+
+func (s *WebServer) apiTreeSources() []hubapi.Source {
+	sources := []hubapi.Source{{
+		ID:     "local",
+		Label:  "this host",
+		Kind:   "local",
+		Online: true,
+	}}
+	if s.sources == nil {
+		return sources
+	}
+	for _, source := range s.sources.All() {
+		if source.ID() == "local" {
+			continue
+		}
+		sources = append(sources, hubapi.Source{
+			ID:     source.ID(),
+			Label:  source.ID(),
+			Kind:   "appwire",
+			Online: true,
+		})
+	}
+	return sources
+}
+
 func projectKey(name string) string {
 	if name == "" {
 		return "project"
@@ -380,7 +649,114 @@ func projectKey(name string) string {
 	return strings.NewReplacer("/", "_", ":", "_", " ", "_").Replace(name)
 }
 
+func localAppRef(threadID string) string {
+	return appwire.Ref{SourceID: "local", ThreadID: threadID}.String()
+}
+
+func appRefFromRouteID(id string) string {
+	if ref, err := appwire.ParseRef(id); err == nil {
+		return ref.String()
+	}
+	return localAppRef(id)
+}
+
+func isLocalRouteID(id string) bool {
+	ref, err := appwire.ParseRef(id)
+	return err != nil || ref.SourceID == "local"
+}
+
+func canonicalRouteID(id string) string {
+	ref, err := appwire.ParseRef(id)
+	if err != nil || ref.SourceID != "local" {
+		return id
+	}
+	return ref.ThreadID
+}
+
+func splitProviderModel(raw string) (string, string) {
+	provider, model, ok := strings.Cut(strings.TrimSpace(raw), "/")
+	if !ok {
+		return "", strings.TrimSpace(raw)
+	}
+	return provider, model
+}
+
+func hubRefFromAppThread(thread appwire.Thread) hubapi.Ref {
+	refText := thread.Serf.Ref
+	if refText == "" {
+		refText = appwire.Ref{SourceID: thread.Source, ThreadID: thread.ID}.String()
+	}
+	ref, err := hubapi.ParseRef(refText)
+	if err != nil {
+		return hubapi.LocalRef(thread.ID)
+	}
+	return ref
+}
+
+func hubCapabilitiesFromAppwire(caps appwire.ThreadCapabilities) hubapi.SessionCapabilities {
+	return hubapi.SessionCapabilities{
+		Send:        caps.Send,
+		Steer:       caps.Steer,
+		Interrupt:   caps.Interrupt,
+		Compact:     caps.Compact,
+		Clear:       caps.Clear,
+		Fork:        caps.ForkFromTurn,
+		Shutdown:    caps.Shutdown,
+		ChangeModel: caps.ChangeModel,
+	}
+}
+
+func hubDetailFromAppThread(thread appwire.Thread) hubapi.SessionDetail {
+	ref := hubRefFromAppThread(thread)
+	state := normalizeState(thread.Status.Type)
+	if state == "" {
+		state = "idle"
+	}
+	title := thread.Name
+	if title == "" {
+		title = thread.Preview
+	}
+	if title == "" {
+		title = thread.SessionID
+	}
+	project := filepath.Base(thread.CWD)
+	if project == "" || project == "." {
+		project = "(no project)"
+	}
+	live := state != "ended" && state != "closed"
+	detail := hubapi.SessionDetail{
+		Ref:             ref.String(),
+		HostID:          ref.HostID,
+		SessionID:       ref.SessionID,
+		Title:           title,
+		State:           state,
+		Live:            live,
+		Project:         project,
+		WorkingDir:      thread.CWD,
+		Model:           thread.ModelProvider,
+		Profile:         thread.Serf.Profile,
+		TurnCount:       len(thread.Turns),
+		ActiveTurnID:    activeTurnIDFromAppwireThread(thread),
+		ContextPressure: thread.Serf.ContextPressure,
+		Capabilities:    hubCapabilitiesFromAppwire(thread.Serf.Capabilities),
+	}
+	if detail.SessionID == "" {
+		detail.SessionID = thread.ID
+	}
+	detail.Streams.TranscriptFollow = "/api/sessions/" + ref.PathEscaped() + "/events?mode=transcript-follow"
+	if detail.Live {
+		detail.Streams.Live = "/api/sessions/" + ref.PathEscaped() + "/events?mode=live"
+	}
+	return detail
+}
+
 func (s *WebServer) isLive(sessionID string) bool {
+	if !isLocalRouteID(sessionID) {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_, err := sourceForThreadWithManagedLaunch(ctx, s.cfg, s.sources, appRefFromRouteID(sessionID), "")
+		return err == nil
+	}
 	if s.cfg.Roster == nil {
 		return false
 	}
@@ -388,31 +764,44 @@ func (s *WebServer) isLive(sessionID string) bool {
 	return ok
 }
 
+func treeNodeCanActLive(n TreeNode) bool {
+	return normalizeState(n.State) != "ended"
+}
+
 func (s *WebServer) apiTreeNode(scope, projectKey string, n TreeNode, live bool) hubapi.TreeNode {
-	ref := hubapi.LocalRef(n.ID).String()
-	rowID := scope + ":" + ref
+	ref := hubRefFromTreeNodeID(n.ID)
+	refText := ref.String()
+	rowID := scope + ":" + refText
 	if projectKey != "" {
-		rowID = scope + ":" + projectKey + ":" + ref
+		rowID = scope + ":" + projectKey + ":" + refText
 	}
 	out := hubapi.TreeNode{
 		RowID:     rowID,
-		Ref:       ref,
-		HostID:    "local",
-		SessionID: n.ID,
+		Ref:       refText,
+		HostID:    ref.HostID,
+		SessionID: ref.SessionID,
 		Title:     n.Title,
 		Project:   n.Project,
 		State:     n.State,
 		Kind:      n.Kind,
 		Live:      live,
+		UpdatedAt: n.UpdatedAt,
 		Age:       n.Age,
 	}
 	if le, ok := s.liveEntry(n.ID); ok {
 		out.Model = le.Model
 	}
 	for _, child := range n.Children {
-		out.Children = append(out.Children, s.apiTreeNode("project", projectKey, child, s.isLive(child.ID)))
+		out.Children = append(out.Children, s.apiTreeNode("project", projectKey, child, treeNodeCanActLive(child) && s.isLive(child.ID)))
 	}
 	return out
+}
+
+func hubRefFromTreeNodeID(id string) hubapi.Ref {
+	if ref, err := hubapi.ParseRef(id); err == nil {
+		return ref
+	}
+	return hubapi.LocalRef(id)
 }
 
 func (s *WebServer) liveEntry(sessionID string) (LiveEntry, bool) {
@@ -425,10 +814,17 @@ func (s *WebServer) liveEntry(sessionID string) (LiveEntry, bool) {
 func (s *WebServer) handleAPISession(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
 	refText, sub, _ := strings.Cut(path, "/")
+	if unescaped, err := url.PathUnescape(refText); err == nil {
+		refText = unescaped
+	}
 	ref, err := hubapi.ParseRef(refText)
-	if err != nil || ref.HostID != "local" {
+	if err != nil {
 		writeAPIError(w, http.StatusNotFound, "session not found")
 		return
+	}
+	routeID := ref.SessionID
+	if ref.HostID != "local" {
+		routeID = ref.String()
 	}
 
 	switch sub {
@@ -437,7 +833,7 @@ func (s *WebServer) handleAPISession(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
 			return
 		}
-		detail, ok := s.apiSessionDetail(ref.SessionID)
+		detail, ok := s.apiSessionDetail(routeID)
 		if !ok {
 			writeAPIError(w, http.StatusNotFound, "session not found")
 			return
@@ -448,26 +844,26 @@ func (s *WebServer) handleAPISession(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
 			return
 		}
-		detail, ok := s.apiSessionDetail(ref.SessionID)
+		detail, ok := s.apiSessionDetail(routeID)
 		if !ok {
 			writeAPIError(w, http.StatusNotFound, "session not found")
 			return
 		}
 		writeAPIJSON(w, http.StatusOK, detail)
 	case "events":
-		s.handleAPISessionEvents(w, r, ref.SessionID)
+		s.handleAPISessionEvents(w, r, routeID)
 	case "send":
-		s.handleSend(w, r, ref.SessionID)
+		s.handleSend(w, r, routeID)
 	case "tasks":
-		s.renderSessionTasks(w, r, ref.SessionID)
+		s.renderSessionTasks(w, r, routeID)
 	case "fork":
-		s.handleAPIFork(w, r, ref.SessionID)
+		s.handleAPIFork(w, r, routeID)
 	case "clear":
-		s.handleAPIClear(w, r, ref.SessionID)
+		s.handleAPIClear(w, r, routeID)
 	case "model":
-		s.handleAPIModel(w, r, ref.SessionID)
+		s.handleAPIModel(w, r, routeID)
 	case "interrupt", "compact", "shutdown":
-		s.handleSessionAction(w, r, ref.SessionID, sub)
+		s.handleSessionAction(w, r, routeID, sub)
 	default:
 		writeAPIError(w, http.StatusNotFound, "session not found")
 	}
@@ -478,7 +874,10 @@ func (s *WebServer) apiSessionDetail(id string) (hubapi.SessionDetail, bool) {
 	if wd.ID == "" {
 		return hubapi.SessionDetail{}, false
 	}
-	ref := hubapi.LocalRef(id)
+	ref, err := hubapi.ParseRef(appRefFromRouteID(id))
+	if err != nil {
+		ref = hubapi.LocalRef(id)
+	}
 	live := s.isLive(id)
 	detail := hubapi.SessionDetail{
 		Ref:            ref.String(),
@@ -492,6 +891,7 @@ func (s *WebServer) apiSessionDetail(id string) (hubapi.SessionDetail, bool) {
 		Branch:         wd.Branch,
 		Model:          wd.Model,
 		TurnCount:      wd.TurnCount,
+		ForkLabel:      wd.ForkLabel,
 		DivergenceTurn: wd.DivergenceTurn,
 		Capabilities:   s.apiSessionCapabilities(id, live),
 		Streams: hubapi.SessionStreams{
@@ -503,28 +903,18 @@ func (s *WebServer) apiSessionDetail(id string) (hubapi.SessionDetail, bool) {
 	}
 	if live {
 		detail.Streams.Live = "/api/sessions/" + ref.PathEscaped() + "/events?mode=live"
-		if le, ok := s.liveEntry(id); ok {
-			if le.WorkingDir != "" {
-				detail.WorkingDir = le.WorkingDir
-				detail.Project = filepath.Base(le.WorkingDir)
-			}
-			if le.Model != "" && detail.Model == "" {
-				detail.Model = le.Model
-			}
-			if info := s.fetchStatus(le); info != nil {
-				if info.State != "" {
-					detail.State = normalizeState(info.State)
-				}
-				if info.Model != "" {
-					detail.Model = info.Model
-				}
-				detail.Profile = info.Profile
-				detail.TurnCount = info.Turns
-				detail.ContextPressure = info.ContextPressure
-				if info.WorkingDir != "" {
-					detail.WorkingDir = info.WorkingDir
-					detail.Project = filepath.Base(info.WorkingDir)
-				}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		appRef := appRefFromRouteID(id)
+		if source, err := sourceForThreadWithManagedLaunch(ctx, s.cfg, s.sources, appRef, ""); err == nil {
+			if resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: appRef, IncludeTurns: true, ItemsView: "full"}); err == nil {
+				appDetail := hubDetailFromAppThread(resp.Thread)
+				appDetail.Streams = detail.Streams
+				appDetail.ParentSessionID = detail.ParentSessionID
+				appDetail.DivergenceTurn = detail.DivergenceTurn
+				appDetail.ForkLabel = detail.ForkLabel
+				appDetail.IsSubagent = detail.IsSubagent
+				detail = appDetail
 			}
 		}
 	}
@@ -545,6 +935,7 @@ func (s *WebServer) apiSessionDetail(id string) (hubapi.SessionDetail, bool) {
 			}
 			detail.ParentSessionID = pe.Meta.ParentSessionID
 			detail.DivergenceTurn = pe.Meta.DivergenceTurn
+			detail.ForkLabel = pe.Meta.ForkLabel
 			detail.IsSubagent = pe.Meta.IsSubagent
 		}
 	}
@@ -560,19 +951,15 @@ func (s *WebServer) apiSessionCapabilities(id string, live bool) hubapi.SessionC
 		Fork:   pastExists,
 		Resume: pastExists,
 	}
-	if live {
-		caps.Send = true
-		caps.Steer = true
-		caps.Interrupt = true
-		caps.Compact = true
-		caps.Clear = true
-		caps.Shutdown = true
-		caps.ChangeModel = true
-	} else if s.cfg.Spawner != nil && pastExists {
+	if !live && s.cfg.Spawner != nil && pastExists {
 		caps.Send = true
 	}
 	if !caps.Send && !caps.Steer && !caps.Interrupt && !caps.Compact && !caps.Clear && !caps.Fork && !caps.Resume && !caps.Shutdown && !caps.ChangeModel {
-		caps.ReadOnlyReason = "session is not live and cannot be resumed"
+		if live {
+			caps.ReadOnlyReason = "live session source is unavailable"
+		} else {
+			caps.ReadOnlyReason = "session is not live and cannot be resumed"
+		}
 	}
 	return caps
 }
@@ -588,23 +975,25 @@ func (s *WebServer) handleAPISessionEvents(w http.ResponseWriter, r *http.Reques
 	}
 	switch mode {
 	case "live":
-		if s.sse == nil {
-			writeAPIError(w, http.StatusNotFound, "session not live")
+		s.serveAppwireEvents(w, r, id, false)
+	case "transcript-follow":
+		if s.isLive(id) {
+			s.serveAppwireEvents(w, r, id, true)
 			return
 		}
-		r.URL.Path = "/live/" + id + "/events"
-		s.sse.ServeHTTP(w, r)
-	case "replay", "transcript-follow":
 		if s.cfg.Past != nil {
 			if pe, ok := s.cfg.Past.Find(id); ok {
 				s.serveReplay(w, r, pe)
 				return
 			}
 		}
-		if mode == "transcript-follow" && s.sse != nil && s.isLive(id) {
-			r.URL.Path = "/live/" + id + "/events"
-			s.sse.ServeHTTP(w, r)
-			return
+		writeAPIError(w, http.StatusNotFound, "session not found")
+	case "replay":
+		if s.cfg.Past != nil {
+			if pe, ok := s.cfg.Past.Find(id); ok {
+				s.serveReplay(w, r, pe)
+				return
+			}
 		}
 		writeAPIError(w, http.StatusNotFound, "session not found")
 	default:
@@ -612,38 +1001,520 @@ func (s *WebServer) handleAPISessionEvents(w http.ResponseWriter, r *http.Reques
 	}
 }
 
+func (s *WebServer) serveAppwireEvents(w http.ResponseWriter, r *http.Request, id string, includeReplay bool) {
+	ref := appRefFromRouteID(id)
+	source, err := sourceForThreadWithManagedLaunch(r.Context(), s.cfg, s.sources, ref, "")
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "session not live")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	flusher, _ := w.(http.Flusher)
+	ctx := r.Context()
+	if includeReplay {
+		if resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"}); err == nil {
+			writeThreadReplaySSE(w, flusher, resp.Thread)
+		}
+	}
+	notifications, err := source.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false})
+	if err != nil {
+		writeSSE(w, flusher, "ERROR", map[string]any{"error": err.Error()})
+		return
+	}
+	sseWriter := newNotificationSSEWriter(w, flusher)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case notification, ok := <-notifications:
+			if !ok {
+				return
+			}
+			sseWriter.write(notification)
+		}
+	}
+}
+
+func writeThreadReplaySSE(w io.Writer, flusher http.Flusher, thread appwire.Thread) {
+	writeSSE(w, flusher, "SESSION_START", map[string]any{
+		"session_id": threadReplaySessionID(thread),
+		"model":      thread.ModelProvider,
+		"profile":    thread.Serf.Profile,
+	})
+	activeToolCalls := map[string]struct{}{}
+	for _, turn := range thread.Turns {
+		turnIndex := turnIndexFromAppwireID(turn.ID)
+		for _, item := range turn.Items {
+			if item.Type == "tool_call" {
+				writeToolReplaySSE(w, flusher, turnIndex, item, activeToolCalls)
+				continue
+			}
+			writeItemReplaySSE(w, flusher, turnIndex, item)
+		}
+		if turn.Status == appwire.TurnStatusFailed {
+			message := "turn failed"
+			if turn.Error != nil && strings.TrimSpace(turn.Error.Message) != "" {
+				message = turn.Error.Message
+			}
+			writeSSE(w, flusher, "ERROR", errorPayload(message, turn.Error))
+		}
+	}
+}
+
+func writeToolReplaySSE(w io.Writer, flusher http.Flusher, turnIndex int, item appwire.ThreadItem, activeToolCalls map[string]struct{}) {
+	callID := firstNonEmpty(item.CallID, item.ID)
+	completed := item.Status == appwire.TurnStatusCompleted || item.Output != "" || item.Error != ""
+	if completed && callID != "" {
+		if _, ok := activeToolCalls[callID]; ok {
+			writeToolReplayEndSSE(w, flusher, item)
+			delete(activeToolCalls, callID)
+			return
+		}
+	}
+	writeSSE(w, flusher, "TOOL_CALL_START", map[string]any{
+		"call_id":        callID,
+		"tool_name":      item.ToolName,
+		"arguments_json": item.ArgumentsJSON,
+	})
+	if !completed {
+		if callID != "" {
+			activeToolCalls[callID] = struct{}{}
+		}
+		return
+	}
+	if item.Output != "" {
+		writeSSE(w, flusher, "TOOL_CALL_OUTPUT_DELTA", map[string]any{
+			"call_id": callID,
+			"delta":   item.Output,
+			"turn":    turnIndex,
+		})
+	}
+	writeToolReplayEndSSE(w, flusher, item)
+}
+
+func writeToolReplayEndSSE(w io.Writer, flusher http.Flusher, item appwire.ThreadItem) {
+	writeSSE(w, flusher, "TOOL_CALL_END", map[string]any{
+		"call_id":        firstNonEmpty(item.CallID, item.ID),
+		"item_id":        item.ID,
+		"tool_name":      item.ToolName,
+		"arguments_json": item.ArgumentsJSON,
+		"output":         item.Output,
+		"error":          item.Error,
+		"tool_state":     item.Raw,
+	})
+}
+
+func threadReplaySessionID(thread appwire.Thread) string {
+	if ref, err := appwire.ParseRef(thread.Serf.Ref); err == nil {
+		if ref.SourceID != "local" {
+			return ref.String()
+		}
+		if thread.SessionID == "" {
+			return ref.ThreadID
+		}
+	}
+	if thread.SessionID != "" {
+		return thread.SessionID
+	}
+	return thread.ID
+}
+
+func writeItemReplaySSE(w io.Writer, flusher http.Flusher, turnIndex int, item appwire.ThreadItem) {
+	switch item.Type {
+	case "user_message":
+		payload := map[string]any{"text": item.Text, "turn": turnIndex}
+		var images []map[string]any
+		for _, image := range item.Images {
+			record := map[string]any{
+				"media_type": image.MediaType,
+				"name":       image.Name,
+			}
+			if image.Metadata != nil {
+				record["sha"] = image.Metadata["sha"]
+				if size := image.Metadata["size"]; size != "" {
+					record["size"] = size
+				}
+			}
+			images = append(images, record)
+		}
+		if len(images) > 0 {
+			payload["images"] = images
+		}
+		writeSSE(w, flusher, "USER_INPUT", payload)
+	case "steering":
+		writeSSE(w, flusher, "STEERING_INJECTED", map[string]any{"text": item.Text})
+	case "agent_message":
+		if item.Text != "" {
+			writeSSE(w, flusher, "ASSISTANT_TEXT_END", map[string]any{"text": item.Text})
+		}
+	case "tool_call":
+		writeToolReplaySSE(w, flusher, turnIndex, item, map[string]struct{}{})
+	}
+}
+
+func writeNotificationSSE(w io.Writer, flusher http.Flusher, notification appwire.Notification) {
+	newNotificationSSEWriter(w, flusher).write(notification)
+}
+
+type notificationSSEWriter struct {
+	w              io.Writer
+	flusher        http.Flusher
+	startedItems   map[string]struct{}
+	completedItems map[string]struct{}
+	outputDeltas   map[string]string
+}
+
+func newNotificationSSEWriter(w io.Writer, flusher http.Flusher) *notificationSSEWriter {
+	return &notificationSSEWriter{
+		w:              w,
+		flusher:        flusher,
+		startedItems:   map[string]struct{}{},
+		completedItems: map[string]struct{}{},
+		outputDeltas:   map[string]string{},
+	}
+}
+
+func (sw *notificationSSEWriter) write(notification appwire.Notification) {
+	switch notification.Method {
+	case appwire.NotifyThreadStatusChanged:
+		var params appwire.ThreadStatusChangedParams
+		if json.Unmarshal(notification.Params, &params) == nil {
+			writeSSE(sw.w, sw.flusher, "THREAD_STATUS_CHANGED", map[string]any{"status": params.Status.Type})
+		}
+	case appwire.NotifyTurnStarted:
+		var params struct {
+			Turn appwire.Turn `json:"turn"`
+		}
+		if json.Unmarshal(notification.Params, &params) == nil {
+			writeSSE(sw.w, sw.flusher, "TURN_STARTED", map[string]any{"turnId": params.Turn.ID})
+		}
+	case appwire.NotifyItemStarted:
+		var params struct {
+			Item appwire.ThreadItem `json:"item"`
+		}
+		if json.Unmarshal(notification.Params, &params) == nil {
+			switch params.Item.Type {
+			case "user_message":
+				writeSSE(sw.w, sw.flusher, "USER_INPUT", map[string]any{"text": params.Item.Text, "turn": turnIndexFromAppwireID(params.Item.TurnID)})
+			case "agent_message":
+				writeSSE(sw.w, sw.flusher, "ASSISTANT_TEXT_START", map[string]any{})
+			case "tool_call":
+				writeSSE(sw.w, sw.flusher, "TOOL_CALL_START", map[string]any{
+					"call_id":        firstNonEmpty(params.Item.CallID, params.Item.ID),
+					"tool_name":      params.Item.ToolName,
+					"arguments_json": params.Item.ArgumentsJSON,
+				})
+			}
+			sw.markStarted(params.Item)
+		}
+	case appwire.NotifyAgentMessageDelta:
+		var params appwire.AgentMessageDeltaParams
+		if json.Unmarshal(notification.Params, &params) == nil {
+			writeSSE(sw.w, sw.flusher, "ASSISTANT_TEXT_DELTA", map[string]any{"delta": params.Delta})
+		}
+	case appwire.NotifyToolOutputDelta:
+		var params struct {
+			ItemID string `json:"itemId"`
+			CallID string `json:"callId"`
+			Delta  string `json:"delta"`
+		}
+		if json.Unmarshal(notification.Params, &params) == nil {
+			callID := firstNonEmpty(params.CallID, params.ItemID)
+			sw.markOutputDelta(params.ItemID, params.CallID, params.Delta)
+			writeSSE(sw.w, sw.flusher, "TOOL_CALL_OUTPUT_DELTA", map[string]any{"call_id": callID, "item_id": params.ItemID, "delta": params.Delta})
+		}
+	case appwire.NotifyItemCompleted:
+		var params struct {
+			Item appwire.ThreadItem `json:"item"`
+		}
+		if json.Unmarshal(notification.Params, &params) == nil {
+			if params.Item.Type == "agent_message" {
+				writeSSE(sw.w, sw.flusher, "ASSISTANT_TEXT_END", map[string]any{"text": params.Item.Text})
+			}
+			if params.Item.Type == "tool_call" {
+				writeSSE(sw.w, sw.flusher, "TOOL_CALL_END", map[string]any{
+					"call_id":        firstNonEmpty(params.Item.CallID, params.Item.ID),
+					"item_id":        params.Item.ID,
+					"tool_name":      params.Item.ToolName,
+					"arguments_json": params.Item.ArgumentsJSON,
+					"output":         params.Item.Output,
+					"error":          params.Item.Error,
+					"tool_state":     params.Item.Raw,
+				})
+			}
+			sw.markCompleted(params.Item)
+		}
+	case appwire.NotifyTurnCompleted:
+		var params struct {
+			Turn appwire.Turn `json:"turn"`
+		}
+		if json.Unmarshal(notification.Params, &params) != nil {
+			return
+		}
+		writeSSE(sw.w, sw.flusher, "TURN_COMPLETED", map[string]any{"turnId": params.Turn.ID})
+		if params.Turn.Status == appwire.TurnStatusFailed {
+			message := "turn failed"
+			if params.Turn.Error != nil && strings.TrimSpace(params.Turn.Error.Message) != "" {
+				message = params.Turn.Error.Message
+			}
+			writeSSE(sw.w, sw.flusher, "ERROR", errorPayload(message, params.Turn.Error))
+		} else if params.Turn.Status != appwire.TurnStatusFailed {
+			turnIndex := turnIndexFromAppwireID(params.Turn.ID)
+			for _, item := range params.Turn.Items {
+				sw.writeCompletedTurnItem(turnIndex, item)
+			}
+		}
+	case appwire.NotifyWarning:
+		writeSSE(sw.w, sw.flusher, "WARNING", warningPayload(notification.Params))
+	case appwire.NotifySerfSteeringInjected:
+		var params struct {
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(notification.Params, &params) == nil {
+			writeSSE(sw.w, sw.flusher, "STEERING_INJECTED", map[string]any{"text": params.Text})
+		}
+	}
+}
+
+func (sw *notificationSSEWriter) writeCompletedTurnItem(turnIndex int, item appwire.ThreadItem) {
+	if sw.isCompleted(item) {
+		return
+	}
+	switch item.Type {
+	case "agent_message":
+		if item.Text != "" {
+			writeSSE(sw.w, sw.flusher, "ASSISTANT_TEXT_END", map[string]any{"text": item.Text})
+		}
+	case "tool_call":
+		if !sw.isStarted(item) {
+			writeSSE(sw.w, sw.flusher, "TOOL_CALL_START", map[string]any{
+				"call_id":        firstNonEmpty(item.CallID, item.ID),
+				"tool_name":      item.ToolName,
+				"arguments_json": item.ArgumentsJSON,
+			})
+		}
+		if delta, ok := sw.completedOutputDelta(item); ok && delta != "" {
+			writeSSE(sw.w, sw.flusher, "TOOL_CALL_OUTPUT_DELTA", map[string]any{
+				"call_id": firstNonEmpty(item.CallID, item.ID),
+				"item_id": item.ID,
+				"delta":   delta,
+				"turn":    turnIndex,
+			})
+		}
+		writeSSE(sw.w, sw.flusher, "TOOL_CALL_END", map[string]any{
+			"call_id":        firstNonEmpty(item.CallID, item.ID),
+			"item_id":        item.ID,
+			"tool_name":      item.ToolName,
+			"arguments_json": item.ArgumentsJSON,
+			"output":         item.Output,
+			"error":          item.Error,
+			"tool_state":     item.Raw,
+		})
+	}
+	sw.markCompleted(item)
+}
+
+func (sw *notificationSSEWriter) markOutputDelta(itemID, callID, delta string) {
+	seen := map[string]struct{}{}
+	for _, key := range []string{itemID, callID} {
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		sw.outputDeltas[key] += delta
+	}
+}
+
+func (sw *notificationSSEWriter) completedOutputDelta(item appwire.ThreadItem) (string, bool) {
+	if item.Output == "" {
+		return "", false
+	}
+	streamed, ok := sw.streamedOutput(item)
+	if !ok {
+		return item.Output, true
+	}
+	if strings.HasPrefix(item.Output, streamed) {
+		return item.Output[len(streamed):], true
+	}
+	return "", false
+}
+
+func (sw *notificationSSEWriter) streamedOutput(item appwire.ThreadItem) (string, bool) {
+	for _, key := range []string{item.ID, item.CallID} {
+		if key == "" {
+			continue
+		}
+		if streamed, ok := sw.outputDeltas[key]; ok {
+			return streamed, true
+		}
+	}
+	return "", false
+}
+
+func (sw *notificationSSEWriter) markStarted(item appwire.ThreadItem) {
+	if key := itemSSEKey(item); key != "" {
+		sw.startedItems[key] = struct{}{}
+	}
+}
+
+func (sw *notificationSSEWriter) markCompleted(item appwire.ThreadItem) {
+	if key := itemSSEKey(item); key != "" {
+		sw.completedItems[key] = struct{}{}
+	}
+}
+
+func (sw *notificationSSEWriter) isStarted(item appwire.ThreadItem) bool {
+	_, ok := sw.startedItems[itemSSEKey(item)]
+	return ok
+}
+
+func (sw *notificationSSEWriter) isCompleted(item appwire.ThreadItem) bool {
+	_, ok := sw.completedItems[itemSSEKey(item)]
+	return ok
+}
+
+func itemSSEKey(item appwire.ThreadItem) string {
+	return firstNonEmpty(item.CallID, item.ID)
+}
+
+func errorPayload(message string, turnErr *appwire.TurnError) map[string]any {
+	payload := map[string]any{"error": message}
+	if turnErr != nil {
+		if turnErr.Source != "" {
+			payload["source"] = turnErr.Source
+		}
+		if turnErr.Title != "" {
+			payload["title"] = turnErr.Title
+		}
+		if turnErr.Hint != "" {
+			payload["hint"] = turnErr.Hint
+		}
+	}
+	addDiagnosticDefaults(payload, message)
+	return payload
+}
+
+func warningPayload(raw json.RawMessage) map[string]any {
+	message := warningMessage(raw)
+	payload := map[string]any{"message": message}
+	var params struct {
+		Source string `json:"source"`
+		Title  string `json:"title"`
+		Hint   string `json:"hint"`
+	}
+	if json.Unmarshal(raw, &params) == nil {
+		if params.Source != "" {
+			payload["source"] = params.Source
+		}
+		if params.Title != "" {
+			payload["title"] = params.Title
+		}
+		if params.Hint != "" {
+			payload["hint"] = params.Hint
+		}
+	}
+	addDiagnosticDefaults(payload, message)
+	return payload
+}
+
+func addDiagnosticDefaults(payload map[string]any, message string) {
+	info := diagnostic.Classify(message)
+	if _, ok := payload["source"]; !ok {
+		payload["source"] = string(info.Source)
+	}
+	if _, ok := payload["title"]; !ok {
+		payload["title"] = info.Title
+	}
+	if _, ok := payload["hint"]; !ok {
+		payload["hint"] = info.Hint
+	}
+}
+
+func warningMessage(raw json.RawMessage) string {
+	var params struct {
+		Message string `json:"message"`
+		Warning any    `json:"warning"`
+	}
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return string(raw)
+	}
+	if strings.TrimSpace(params.Message) != "" {
+		return params.Message
+	}
+	switch warning := params.Warning.(type) {
+	case string:
+		return warning
+	case map[string]any:
+		if message, ok := warning["message"].(string); ok {
+			return message
+		}
+	}
+	return string(raw)
+}
+
+func writeSSE(w io.Writer, flusher http.Flusher, event string, data any) {
+	payload, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, payload)
+	if flusher != nil {
+		flusher.Flush()
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func turnIndexFromAppwireID(raw string) int {
+	raw = strings.TrimPrefix(strings.TrimSpace(raw), "turn_")
+	var n int
+	_, _ = fmt.Sscanf(raw, "%d", &n)
+	return n
+}
+
 func (s *WebServer) handleAPIClear(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodPost {
 		writeAPIError(w, http.StatusMethodNotAllowed, "POST required")
 		return
 	}
-	if s.cfg.Roster == nil {
-		writeAPIError(w, http.StatusServiceUnavailable, "roster not configured")
-		return
-	}
-	le, ok := s.cfg.Roster.Find(id)
-	if !ok {
+	if !s.isLive(id) {
 		writeAPIError(w, http.StatusNotFound, "session not live")
 		return
 	}
-	status, buf, err := s.postLiveAction(r.Context(), le, "clear")
+	if err := s.ensureSessionActionAvailable(id, "clear"); err != nil {
+		writeAPIWireError(w, http.StatusBadGateway, err)
+		return
+	}
+	refText := appRefFromRouteID(id)
+	source, err := sourceForThread(s.sources, refText, "")
 	if err != nil {
-		writeAPIError(w, http.StatusBadGateway, "daemon unreachable: "+err.Error())
+		writeAPIError(w, http.StatusNotFound, "session not live")
 		return
 	}
-	if status < 200 || status >= 300 {
-		msg := strings.TrimSpace(string(buf))
-		if msg == "" {
-			msg = http.StatusText(status)
-		}
-		writeAPIError(w, status, msg)
+	resp, err := source.ClearThread(r.Context(), appwire.ThreadClearParams{Ref: refText})
+	if err != nil {
+		writeAPIWireError(w, http.StatusBadGateway, err)
 		return
 	}
-	sessionID := id
-	if info := s.fetchStatus(le); info != nil && info.SessionID != "" {
-		sessionID = info.SessionID
+	outRefText := resp.Ref
+	if outRefText == "" {
+		outRefText = resp.Thread.Serf.Ref
 	}
-	ref := hubapi.LocalRef(sessionID)
+	ref, err := hubapi.ParseRef(outRefText)
+	if err != nil {
+		ref = hubapi.LocalRef(resp.Thread.ID)
+	}
 	writeAPIJSON(w, http.StatusOK, hubapi.RefResponse{
 		Ref:       ref.String(),
 		HostID:    ref.HostID,
@@ -656,46 +1527,36 @@ func (s *WebServer) handleAPIModel(w http.ResponseWriter, r *http.Request, id st
 		writeAPIError(w, http.StatusMethodNotAllowed, "POST required")
 		return
 	}
-	if s.cfg.Roster == nil {
-		writeAPIError(w, http.StatusServiceUnavailable, "roster not configured")
-		return
-	}
-	le, ok := s.cfg.Roster.Find(id)
-	if !ok {
+	if !s.isLive(id) {
 		writeAPIError(w, http.StatusNotFound, "session not live")
 		return
 	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, "http://"+le.Address+"/model", r.Body)
+	ref := appRefFromRouteID(id)
+	source, err := sourceForThread(s.sources, ref, "")
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, err.Error())
+		writeAPIError(w, http.StatusNotFound, "session not live")
 		return
 	}
-	req.Header.Set("Content-Type", r.Header.Get("Content-Type"))
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req) //nolint:gosec
-	if err != nil {
-		writeAPIError(w, http.StatusBadGateway, "daemon unreachable: "+err.Error())
+	var body struct {
+		Model string `json:"model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	defer resp.Body.Close()
-	buf, _ := io.ReadAll(resp.Body)
-	w.WriteHeader(resp.StatusCode)
-	w.Write(buf) //nolint:errcheck
-}
-
-func (s *WebServer) postLiveAction(ctx context.Context, le LiveEntry, action string) (int, []byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+le.Address+"/"+action, nil)
-	if err != nil {
-		return 0, nil, err
+	provider, model := splitProviderModel(body.Model)
+	if model == "" {
+		model = body.Model
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req) //nolint:gosec
-	if err != nil {
-		return 0, nil, err
+	if err := s.ensureSessionActionAvailable(id, "model"); err != nil {
+		writeAPIWireError(w, http.StatusBadGateway, err)
+		return
 	}
-	defer resp.Body.Close()
-	buf, _ := io.ReadAll(resp.Body)
-	return resp.StatusCode, buf, nil
+	if err := source.SetThreadModel(r.Context(), appwire.ThreadModelSetParams{Ref: ref, ModelProvider: provider, Model: model}); err != nil {
+		writeAPIWireError(w, http.StatusBadGateway, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // agentDisplay is one row in Settings → Agents.
@@ -742,21 +1603,22 @@ type mcpDisplay struct {
 
 // settingsData is the template data passed to all settings section templates.
 type settingsData struct {
-	Active        string
-	HubAddr       string
-	RunDir        string
-	StateDir      string
-	SpawnTimeout  string
-	PastPerPage   int
-	Providers     []providerDisplay
-	Agents        []agentDisplay
-	Plugins       []pluginDisplay
-	PluginsError  string
-	Skills        []skillDisplay
-	Mcps          []mcpDisplay
-	McpsError     string
-	McpConfigPath string
-	PastCount     int
+	Active           string
+	HubAddr          string
+	RunDir           string
+	StateDir         string
+	SpawnTimeout     string
+	PastPerPage      int
+	Providers        []providerDisplay
+	ModelDiagnostics []appwire.ModelListDiagnostic
+	Agents           []agentDisplay
+	Plugins          []pluginDisplay
+	PluginsError     string
+	Skills           []skillDisplay
+	Mcps             []mcpDisplay
+	McpsError        string
+	McpConfigPath    string
+	PastCount        int
 }
 
 // providerDisplay groups model descriptors by provider for the providers page.
@@ -766,32 +1628,38 @@ type providerDisplay struct {
 }
 
 func (s *WebServer) handleSettings(w http.ResponseWriter, r *http.Request) {
-	// Full-page navigation: serve the app shell, which htmx-loads the settings
-	// partial into the workspace pane. Same pattern as /s/<id>.
-	if r.Header.Get("HX-Request") != "true" {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := s.appTmpl.ExecuteTemplate(w, "app", map[string]string{"WorkspaceURL": r.URL.Path}); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-		}
+	if r.Header.Get("HX-Request") == "true" {
+		http.NotFound(w, r)
 		return
 	}
-
 	section := strings.TrimPrefix(r.URL.Path, "/settings")
 	section = strings.TrimPrefix(section, "/")
 	if section == "" {
 		section = "general"
 	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.appTmpl.ExecuteTemplate(w, "app", map[string]string{"WorkspaceURL": "/_partials/settings/" + section}); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
 
+func (s *WebServer) renderSettingsPartial(w http.ResponseWriter, r *http.Request, section string) {
 	settingsTmpl, ok := s.settingsTmpls[section]
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
 
-	// Group flat Models list by provider for the providers page.
+	// Group launch harness models by provider for the providers page.
+	launchModelList, launchModelErr := serfLaunchModelList(r.Context(), s.cfg, "")
+	if launchModelErr != nil {
+		launchModelList = appwire.ModelListResponse{
+			Diagnostics: []appwire.ModelListDiagnostic{launchModelListErrorDiagnostic(launchModelErr)},
+		}
+	}
 	var providers []providerDisplay
 	byProvider := map[string]int{} // provider name -> index in providers
-	for _, m := range s.cfg.Models {
+	for _, m := range launchModelList.Data {
 		if idx, exists := byProvider[m.Provider]; exists {
 			providers[idx].Models = append(providers[idx].Models, m.Model)
 		} else {
@@ -820,21 +1688,22 @@ func (s *WebServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 	mcps, mcpsErr := s.discoverMCPsForSettings(mcpPath)
 
 	data := settingsData{
-		Active:        section,
-		HubAddr:       s.cfg.HubAddr,
-		RunDir:        s.cfg.RunDir,
-		StateDir:      s.cfg.StateDir,
-		SpawnTimeout:  "30s",
-		PastPerPage:   s.cfg.PastPerPage,
-		Providers:     providers,
-		Agents:        agents,
-		Plugins:       plugins,
-		PluginsError:  errString(pluginsErr),
-		Skills:        skills,
-		Mcps:          mcps,
-		McpsError:     errString(mcpsErr),
-		McpConfigPath: mcpPath,
-		PastCount:     pastCount,
+		Active:           section,
+		HubAddr:          s.cfg.HubAddr,
+		RunDir:           s.cfg.RunDir,
+		StateDir:         s.cfg.StateDir,
+		SpawnTimeout:     "30s",
+		PastPerPage:      s.cfg.PastPerPage,
+		Providers:        providers,
+		ModelDiagnostics: launchModelList.Diagnostics,
+		Agents:           agents,
+		Plugins:          plugins,
+		PluginsError:     errString(pluginsErr),
+		Skills:           skills,
+		Mcps:             mcps,
+		McpsError:        errString(mcpsErr),
+		McpConfigPath:    mcpPath,
+		PastCount:        pastCount,
 	}
 
 	// Render just the inner settings-content partial when htmx is targeting
@@ -1067,14 +1936,7 @@ func (s *WebServer) discoverMCPsForSettings(path string) ([]mcpDisplay, error) {
 }
 
 func (s *WebServer) handleSidebar(w http.ResponseWriter, r *http.Request) {
-	var metas []agent.SessionMeta
-	if s.cfg.Past != nil {
-		metas = s.cfg.Past.AllMetas()
-	}
-	var live []LiveEntry
-	if s.cfg.Roster != nil {
-		live = s.cfg.Roster.List()
-	}
+	metas, live := s.navigationTreeInputs(r.Context())
 	tree := BuildTree(metas, live)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.sidebarTmpl.ExecuteTemplate(w, "sidebar", tree); err != nil {
@@ -1084,7 +1946,7 @@ func (s *WebServer) handleSidebar(w http.ResponseWriter, r *http.Request) {
 
 func (s *WebServer) handleWorkspaceEmpty(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprint(w, `<div class="workspace-empty"><p>No session selected.</p><p style="margin-top:1em"><a href="/new" hx-get="/workspace/spawn" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/new">＋ new session</a></p></div>`)
+	fmt.Fprint(w, `<div class="workspace-empty"><p>No session selected.</p><p style="margin-top:1em"><a href="/new" hx-get="/_partials/workspace/spawn" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/new">＋ new session</a></p></div>`)
 }
 
 // handlePastID dispatches /past/<id>/replay (the only past route still served
@@ -1179,8 +2041,14 @@ func (s *WebServer) serveReplay(w http.ResponseWriter, r *http.Request, entry Pa
 				continue
 			}
 		}
+		if head.Kind == "api_call" {
+			var call agent.TranscriptAPICall
+			if err := json.Unmarshal(raw, &call); err == nil && strings.TrimSpace(call.Error) != "" {
+				emit("ERROR", errorPayload(call.Error, nil))
+			}
+			continue
+		}
 		if head.Kind != "entry" {
-			// Skip api_call records and unknown top-level kinds.
 			continue
 		}
 		var entryRec replayEntry
@@ -1293,6 +2161,16 @@ func emitTurnEvents(emit func(string, any), turnIndex int, turn replayTurn, tool
 				if len(p.ToolCall.Arguments) > 0 {
 					args = string(p.ToolCall.Arguments)
 				}
+				if p.ToolCall.Name == "communicate" {
+					if text := communicateMessageFromArguments(p.ToolCall.Arguments); text != "" {
+						emit("ASSISTANT_TEXT_START", map[string]any{})
+						emit("ASSISTANT_TEXT_END", map[string]any{
+							"text":          text,
+							"finish_reason": "stop",
+						})
+					}
+					continue
+				}
 				emit("TOOL_CALL_START", map[string]any{
 					"tool_name":      p.ToolCall.Name,
 					"call_id":        p.ToolCall.ID,
@@ -1308,6 +2186,10 @@ func emitTurnEvents(emit func(string, any), turnIndex int, turn replayTurn, tool
 			name := p.ToolResult.Name
 			if name == "" {
 				name = toolNames[p.ToolResult.ToolCallID]
+			}
+			if name == "communicate" {
+				delete(toolNames, p.ToolResult.ToolCallID)
+				continue
 			}
 			out := stringifyToolContent(p.ToolResult.Content)
 			payload := map[string]any{
@@ -1348,6 +2230,25 @@ func stringifyToolContent(v any) string {
 	return string(b)
 }
 
+func communicateMessageFromArguments(raw json.RawMessage) string {
+	var args struct {
+		Message string `json:"message"`
+		Output  *struct {
+			Message string `json:"message"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return ""
+	}
+	if strings.TrimSpace(args.Message) != "" {
+		return args.Message
+	}
+	if args.Output != nil && strings.TrimSpace(args.Output.Message) != "" {
+		return args.Output.Message
+	}
+	return ""
+}
+
 // findNewSession polls the roster up to 3s for a daemon with the given pid.
 // Returns the resolved session_id when found, or empty string on timeout.
 func (s *WebServer) findNewSession(pid int) string {
@@ -1370,13 +2271,20 @@ func (s *WebServer) findNewSession(pid int) string {
 type spawnViewData struct {
 	DefaultModel           string
 	DefaultModelValue      string
+	DefaultHarness         string
 	DefaultWorkingDir      string
 	DefaultWorkingDirValue string
 	DefaultBranch          string
 	DefaultBranchValue     string
 	DefaultAccessMode      string
-	DefaultTask            string // optional ?task= pre-fill
-	RecentTasks            []string
+	DefaultPrompt          string // optional ?prompt= pre-fill
+	RecentPrompts          []string
+	Harnesses              []launchHarness
+}
+
+type launchHarness struct {
+	ID    string
+	Label string
 }
 
 // handleWorkspaceSpawn renders the prompt-first spawn surface partial.
@@ -1395,17 +2303,21 @@ func (s *WebServer) handleWorkspaceSpawn(w http.ResponseWriter, r *http.Request)
 	}
 	data := spawnViewData{
 		DefaultModel:           "(pick a model)",
+		DefaultHarness:         "serf",
 		DefaultWorkingDir:      defaultWorkingDir,
 		DefaultWorkingDirValue: defaultWorkingDirValue,
 		DefaultBranch:          "(default)",
 		DefaultAccessMode:      "full",
-		DefaultTask:            r.URL.Query().Get("task"),
+		DefaultPrompt:          r.URL.Query().Get("prompt"),
+	}
+	for _, descriptor := range launchHarnessDescriptors(s.cfg) {
+		data.Harnesses = append(data.Harnesses, launchHarness{ID: descriptor.ID, Label: descriptor.Label})
 	}
 	if s.cfg.Past != nil {
 		results := s.cfg.Past.Search("", 5, 0)
 		for _, e := range results {
-			if e.Meta.OriginalTask != "" {
-				data.RecentTasks = append(data.RecentTasks, e.Meta.OriginalTask)
+			if e.Meta.OriginalPrompt != "" {
+				data.RecentPrompts = append(data.RecentPrompts, e.Meta.OriginalPrompt)
 			}
 		}
 	}
@@ -1415,9 +2327,20 @@ func (s *WebServer) handleWorkspaceSpawn(w http.ResponseWriter, r *http.Request)
 	}
 }
 
-// spawnRequest is the JSON body for POST /api/spawn.
+func launchHarnessIDs(cfg WebConfig) []string {
+	descriptors := launchHarnessDescriptors(cfg)
+	out := make([]string, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		out = append(out, descriptor.ID)
+	}
+	return out
+}
+
+// spawnRequest is the JSON body for POST /api/spawn. The prompt field is
+// current; task is accepted by UnmarshalJSON for legacy callers.
 type spawnRequest struct {
-	Task            string `json:"task"`
+	Prompt          string `json:"prompt"`
+	Harness         string `json:"harness"`
 	Model           string `json:"model"`
 	WorkingDir      string `json:"working_dir"`
 	Branch          string `json:"branch"`
@@ -1426,14 +2349,26 @@ type spawnRequest struct {
 	ReasoningEffort string `json:"reasoning_effort"`
 }
 
-// handleApiSpawn spawns a new daemon and optionally sends the initial task.
+func (r *spawnRequest) UnmarshalJSON(data []byte) error {
+	type spawnRequestAlias spawnRequest
+	var aux struct {
+		spawnRequestAlias
+		LegacyTask string `json:"task"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	*r = spawnRequest(aux.spawnRequestAlias)
+	if r.Prompt == "" {
+		r.Prompt = aux.LegacyTask
+	}
+	return nil
+}
+
+// handleApiSpawn spawns a new daemon and optionally sends the initial prompt.
 func (s *WebServer) handleApiSpawn(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
-		return
-	}
-	if s.cfg.Spawner == nil {
-		http.Error(w, "spawner not configured", http.StatusServiceUnavailable)
 		return
 	}
 	var req spawnRequest
@@ -1441,45 +2376,23 @@ func (s *WebServer) handleApiSpawn(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if req.WorkingDir != "" {
-		resolved, err := canonicalizeDir(req.WorkingDir)
-		if err != nil {
-			http.Error(w, "working_dir: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		req.WorkingDir = resolved
-	}
-	modelRef, err := cmdutil.ParseModelRef(req.Model)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if s.cfg.Spawner == nil && len(s.cfg.CodexSources) == 0 && len(s.cfg.CodexLaunches) == 0 {
+		writeSpawnError(w, appwire.Unavailable("spawner not configured"))
 		return
 	}
-	entry, err := s.cfg.Spawner.Spawn(r.Context(), SpawnRequest{
-		Model:           modelRef.Qualified(),
-		Agent:           req.Agent,
-		WorkingDir:      req.WorkingDir,
+	resp, err := hubThreadStart(r.Context(), s.cfg, s.sources, appwire.ThreadStartParams{
+		Harness:         req.Harness,
+		CWD:             req.WorkingDir,
+		Prompt:          req.Prompt,
+		Model:           req.Model,
+		Profile:         req.Agent,
 		ReasoningEffort: req.ReasoningEffort,
 	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeSpawnError(w, err)
 		return
 	}
-	sessID := s.findNewSession(entry.PID)
-	if sessID == "" {
-		http.Error(w, "daemon spawned but didn't appear in roster", http.StatusInternalServerError)
-		return
-	}
-	if req.Task != "" {
-		time.Sleep(300 * time.Millisecond)
-		payload, _ := json.Marshal(map[string]string{"text": req.Task})
-		url := "http://" + entry.Address + "/input"
-		ireq, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, url, bytes.NewReader(payload))
-		ireq.Header.Set("Content-Type", "application/json")
-		if resp, err := http.DefaultClient.Do(ireq); err == nil {
-			resp.Body.Close() //nolint:errcheck
-		}
-	}
-	ref := hubapi.LocalRef(sessID)
+	ref := hubRefFromAppThread(resp.Thread)
 	writeAPIJSON(w, http.StatusOK, hubapi.SpawnResponse{
 		Ref:       ref.String(),
 		HostID:    ref.HostID,
@@ -1487,31 +2400,79 @@ func (s *WebServer) handleApiSpawn(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleApiModels returns the models the hub can spawn for. The list is what
-// each configured provider's /models API returns RIGHT NOW (a live call to
-// the provider, the same path the daemon's /models endpoint uses). Pricing
-// and context-window metadata come from the embedded catalog where the live
-// API doesn't carry it.
-//
-// Future: when the hub talks to a remote serf daemon, this handler will
-// proxy to that daemon's /models. The cache here is shared across the
-// hub's Spawn() target, which is local-only today.
+func writeSpawnError(w http.ResponseWriter, err error) {
+	status := http.StatusInternalServerError
+	if wire, ok := err.(appwire.WireError); ok {
+		switch wire.Code {
+		case appwire.CodeInvalidParams:
+			status = http.StatusBadRequest
+		case appwire.CodeUnavailable:
+			status = http.StatusServiceUnavailable
+		}
+	}
+	writeAPIWireError(w, status, err)
+}
+
+// handleApiModels returns the models the hub can spawn for. Hub-owned Serf
+// launches report their model choices through the Serf launch harness contract;
+// the direct live provider query remains a fallback for tests and non-spawning
+// server configurations. Pricing and context-window metadata come from the
+// embedded catalog where provider APIs don't carry it.
 func (s *WebServer) handleApiModels(w http.ResponseWriter, r *http.Request) {
-	models := s.fetchLiveModels(r.Context())
-	if len(models) == 0 {
-		models = s.configuredModels()
+	harness := strings.TrimSpace(r.URL.Query().Get("harness"))
+	workingDir := strings.TrimSpace(r.URL.Query().Get("cwd"))
+	if harness != "" && harness != "serf" && harness != "local" {
+		resp, err := hubModelList(r.Context(), s.cfg, s.sources, appwire.ModelListParams{Harness: harness, CWD: workingDir})
+		if err != nil {
+			writeAPIWireError(w, http.StatusBadGateway, err)
+			return
+		}
+		writeAPIJSON(w, http.StatusOK, modelDescriptorsToAPIModels(resp.Data))
+		return
+	}
+
+	launchResp, err := serfLaunchModelList(r.Context(), s.cfg, workingDir)
+	if err != nil && hasSerfLaunchModelLister(s.cfg) {
+		writeAPIWireError(w, http.StatusBadGateway, err)
+		return
+	}
+	models := modelDescriptorsToAPIModels(launchResp.Data)
+	if len(models) == 0 && !hasSerfLaunchModelLister(s.cfg) {
+		models = s.fetchLiveModels(r.Context())
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(models) //nolint:errcheck
 }
 
-func (s *WebServer) configuredModels() []map[string]any {
-	if len(s.cfg.Models) == 0 {
+func serfLaunchModelsOrEmpty(ctx context.Context, cfg WebConfig) []appwire.ModelDescriptor {
+	return serfLaunchModelListOrEmpty(ctx, cfg).Data
+}
+
+func serfLaunchModelListOrEmpty(ctx context.Context, cfg WebConfig) appwire.ModelListResponse {
+	resp, err := serfLaunchModelList(ctx, cfg, "")
+	if err != nil {
+		return appwire.ModelListResponse{}
+	}
+	return resp
+}
+
+func launchModelListErrorDiagnostic(err error) appwire.ModelListDiagnostic {
+	info := diagnostic.FromFields(string(diagnostic.SourceHub), "Model list unavailable", "", err.Error())
+	return appwire.ModelListDiagnostic{
+		Source:  string(info.Source),
+		Title:   info.Title,
+		Message: err.Error(),
+		Hint:    info.Hint,
+	}
+}
+
+func modelDescriptorsToAPIModels(models []appwire.ModelDescriptor) []map[string]any {
+	if len(models) == 0 {
 		return nil
 	}
-	out := make([]map[string]any, 0, len(s.cfg.Models))
+	out := make([]map[string]any, 0, len(models))
 	cat := llm.EmbeddedModelCatalog()
-	for _, m := range s.cfg.Models {
+	for _, m := range models {
 		if m.Provider == "" || m.Model == "" {
 			continue
 		}
@@ -1710,9 +2671,9 @@ func (s *WebServer) handleApiDirs(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"results": results}) //nolint:errcheck
 }
 
-// handleSession is the router for all /s/<id>[/<sub>] routes.
-// When HX-Request is true and sub is "", it serves the workspace partial;
-// otherwise it serves the app shell for full-page navigation.
+// handleSession is the router for public /s/<id>[/<sub>] routes.
+// Session fragments live under /_partials/s/... so direct navigation always
+// lands in the app shell instead of a standalone workspace fragment.
 func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/s/")
 	parts := strings.SplitN(path, "/", 2)
@@ -1721,6 +2682,7 @@ func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	id = canonicalRouteID(id)
 	sub := ""
 	if len(parts) == 2 {
 		sub = parts[1]
@@ -1729,22 +2691,21 @@ func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 	switch sub {
 	case "":
 		if r.Header.Get("HX-Request") == "true" {
-			s.renderWorkspacePartial(w, r, id)
+			http.NotFound(w, r)
 			return
 		}
-		// Full-page navigation: serve the app shell, loading this session's workspace.
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := s.appTmpl.ExecuteTemplate(w, "app", map[string]string{"WorkspaceURL": "/s/" + id}); err != nil {
+		if err := s.appTmpl.ExecuteTemplate(w, "app", map[string]string{"WorkspaceURL": "/_partials/s/" + id + "/workspace"}); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	case "state":
-		s.renderInputStrip(w, r, id)
+		http.NotFound(w, r)
 	case "meta":
-		s.renderWorkspaceMeta(w, r, id)
+		http.NotFound(w, r)
 	case "details":
-		s.renderDetailsPanel(w, r, id)
+		http.NotFound(w, r)
 	case "tasks":
-		s.renderSessionTasks(w, r, id)
+		http.NotFound(w, r)
 	case "send":
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST required", http.StatusMethodNotAllowed)
@@ -1772,13 +2733,13 @@ func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 		}
 		s.handleSteer(w, r, id)
 	case "events":
-		if s.sse == nil {
-			http.NotFound(w, r)
-			return
+		if !s.isLive(id) && s.cfg.Past != nil {
+			if pe, ok := s.cfg.Past.Find(id); ok {
+				s.serveReplay(w, r, pe)
+				return
+			}
 		}
-		// Rewrite the path so the SSE proxy's splitLivePath can parse it.
-		r.URL.Path = "/live/" + id + "/events"
-		s.sse.ServeHTTP(w, r)
+		s.serveAppwireEvents(w, r, id, true)
 	default:
 		// /s/<id>/images/<sha> — sha-addressed image fetch for replay.
 		if strings.HasPrefix(sub, "images/") {
@@ -1793,6 +2754,7 @@ func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 // WorkspaceData is the template data for the workspace partial.
 type WorkspaceData struct {
 	ID             string
+	SourceLabel    string
 	Title          string
 	Branch         string
 	WorkingDir     string
@@ -1804,14 +2766,16 @@ type WorkspaceData struct {
 	ContextPercent int
 	ContextNumbers string
 	Cost           string
+	ActiveTurnID   string
 	ReplayURL      string
 	EventsURL      string
-	// Fork lineage for the preserved-original side of a fork. Set when
-	// another non-subagent meta references this session via
-	// ParentSessionID + DivergenceTurn — i.e., this is the dim, snapshotted
-	// original. ForkOfTitle is the title of the new branch; empty if it's
-	// not in the past index.
-	IsForkOriginal bool
+	Capabilities   hubapi.SessionCapabilities
+	// Fork lineage for the preserved-original side of a fork. Non-empty
+	// only when this session's meta carries ForkLabel — i.e., it's the
+	// dim, snapshotted original. ForkOfTitle is the title of the new
+	// branch (the session whose ParentSessionID == this.ID); empty if the
+	// new branch is not in the past index.
+	ForkLabel      string
 	ForkOfTitle    string
 	DivergenceTurn int
 }
@@ -1835,11 +2799,12 @@ func (s *WebServer) renderWorkspacePartial(w http.ResponseWriter, r *http.Reques
 func (s *WebServer) renderDetailsPanel(w http.ResponseWriter, r *http.Request, id string) {
 	type detailsRow struct{ Label, Value string }
 	var rows []detailsRow
+	rows = append(rows, detailsRow{"source", sourceLabelFromRefText(appRefFromRouteID(id))})
 	rows = append(rows, detailsRow{"session id", id})
 
 	addMeta := func(m agent.SessionMeta) {
-		if m.OriginalTask != "" {
-			rows = append(rows, detailsRow{"task", m.OriginalTask})
+		if m.OriginalPrompt != "" {
+			rows = append(rows, detailsRow{"prompt", m.OriginalPrompt})
 		}
 		if m.EnvInfo.WorkingDir != "" {
 			rows = append(rows, detailsRow{"working dir", m.EnvInfo.WorkingDir})
@@ -1894,20 +2859,17 @@ func (s *WebServer) renderDetailsPanel(w http.ResponseWriter, r *http.Request, i
 func (s *WebServer) renderSessionTasks(w http.ResponseWriter, r *http.Request, id string) {
 	w.Header().Set("Content-Type", "application/json")
 
-	if s.cfg.Roster != nil {
-		if le, ok := s.cfg.Roster.Find(id); ok {
-			client := &http.Client{Timeout: 2 * time.Second}
-			resp, err := client.Get("http://" + le.Address + "/tasks") //nolint:gosec
-			if err == nil {
-				defer resp.Body.Close()
-				_, _ = io.Copy(w, resp.Body)
-				return
-			}
-			// fall through to disk on daemon error
+	ref := appRefFromRouteID(id)
+	if source, err := sourceForThread(s.sources, ref, ""); err == nil {
+		resp, err := source.ListTasks(r.Context(), appwire.TaskListParams{Ref: ref})
+		if err == nil {
+			_ = json.NewEncoder(w).Encode(resp.Data)
+			return
 		}
+		// fall through to disk on daemon error
 	}
 
-	if s.cfg.Past != nil {
+	if isLocalRouteID(id) && s.cfg.Past != nil {
 		if pe, ok := s.cfg.Past.Find(id); ok && pe.StateDir != "" {
 			path := filepath.Join(pe.StateDir, "tasks", id+".json")
 			if data, err := os.ReadFile(path); err == nil {
@@ -1937,12 +2899,15 @@ func (s *WebServer) renderWorkspaceMeta(w http.ResponseWriter, r *http.Request, 
 		http.NotFound(w, r)
 		return
 	}
-	// Pull live turns from the daemon when available.
-	if s.cfg.Roster != nil {
-		if le, ok := s.cfg.Roster.Find(id); ok {
-			if info := s.fetchStatus(le); info != nil {
-				data.TurnCount = info.Turns
-			}
+	if detail, ok := s.apiSessionDetail(id); ok {
+		data.State = detail.State
+		data.StateLabel = stateLabel(detail.State)
+		data.TurnCount = detail.TurnCount
+		if detail.Model != "" {
+			data.Model = detail.Model
+		}
+		if detail.WorkingDir != "" {
+			data.WorkingDir = detail.WorkingDir
 		}
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1952,16 +2917,32 @@ func (s *WebServer) renderWorkspaceMeta(w http.ResponseWriter, r *http.Request, 
 }
 
 func (s *WebServer) workspaceData(id string) WorkspaceData {
+	if !isLocalRouteID(id) {
+		ref := appRefFromRouteID(id)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		source, err := sourceForThreadWithManagedLaunch(ctx, s.cfg, s.sources, ref, "")
+		if err != nil {
+			return WorkspaceData{}
+		}
+		resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
+		if err != nil {
+			return WorkspaceData{}
+		}
+		return workspaceDataFromAppThread(resp.Thread)
+	}
 	if s.cfg.Roster != nil {
 		if le, ok := s.cfg.Roster.Find(id); ok {
 			state := normalizeState(le.Status)
 			data := WorkspaceData{
-				ID:         id,
-				Title:      liveTitle(id, le, s.cfg.Past),
-				State:      state,
-				StateLabel: stateLabel(state),
-				Model:      le.Model,
-				WorkingDir: le.WorkingDir,
+				ID:           id,
+				SourceLabel:  "serf",
+				Title:        liveTitle(id, le, s.cfg.Past),
+				State:        state,
+				StateLabel:   stateLabel(state),
+				Model:        le.Model,
+				WorkingDir:   le.WorkingDir,
+				Capabilities: s.apiSessionCapabilities(id, true),
 			}
 			// Branch isn't on the rendezvous entry or daemon /status — fall
 			// back to the past index where the agent persists EnvInfo.
@@ -1982,10 +2963,12 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 			// daemon).
 			if state == "ended" && s.cfg.Past != nil {
 				if _, ok := s.cfg.Past.Find(id); ok {
+					data.Capabilities = s.apiSessionCapabilities(id, false)
 					data.ReplayURL = "/past/" + id + "/replay"
 					return data
 				}
 			}
+			data.Capabilities, data.ActiveTurnID = s.liveWorkspaceSnapshot(id, data.Capabilities)
 			data.EventsURL = "/s/" + id + "/events"
 			return data
 		}
@@ -1993,15 +2976,17 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 	if s.cfg.Past != nil {
 		if pe, ok := s.cfg.Past.Find(id); ok {
 			data := WorkspaceData{
-				ID:         id,
-				Title:      pastTitle(pe),
-				State:      "ended",
-				StateLabel: stateLabel("ended"),
-				TurnCount:  pe.Meta.TurnCount,
-				Model:      pe.Meta.Model,
-				WorkingDir: pe.Meta.EnvInfo.WorkingDir,
-				Branch:     pe.Meta.EnvInfo.GitBranch,
-				ReplayURL:  "/past/" + id + "/replay",
+				ID:           id,
+				SourceLabel:  "serf",
+				Title:        pastTitle(pe),
+				State:        "ended",
+				StateLabel:   stateLabel("ended"),
+				TurnCount:    pe.Meta.TurnCount,
+				Model:        pe.Meta.Model,
+				WorkingDir:   pe.Meta.EnvInfo.WorkingDir,
+				Branch:       pe.Meta.EnvInfo.GitBranch,
+				ReplayURL:    "/past/" + id + "/replay",
+				Capabilities: s.apiSessionCapabilities(id, false),
 			}
 			s.fillForkLineage(&data, pe.Meta)
 			return data
@@ -2010,22 +2995,98 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 	return WorkspaceData{}
 }
 
+func workspaceDataFromAppThread(thread appwire.Thread) WorkspaceData {
+	ref := thread.Serf.Ref
+	if ref == "" {
+		ref = appwire.Ref{SourceID: thread.Source, ThreadID: thread.ID}.String()
+	}
+	title := thread.Name
+	if title == "" {
+		title = thread.Preview
+	}
+	if title == "" {
+		title = firstNonEmpty(thread.SessionID, thread.ID)
+	}
+	state := normalizeState(thread.Status.Type)
+	if state == "" {
+		state = "idle"
+	}
+	return WorkspaceData{
+		ID:           ref,
+		SourceLabel:  sourceLabelFromRefText(ref),
+		Title:        title,
+		State:        state,
+		StateLabel:   stateLabel(state),
+		TurnCount:    len(thread.Turns),
+		ActiveTurnID: activeTurnIDFromAppwireThread(thread),
+		Model:        thread.ModelProvider,
+		WorkingDir:   thread.CWD,
+		EventsURL:    "/s/" + url.PathEscape(ref) + "/events",
+		Capabilities: hubCapabilitiesFromAppwire(thread.Serf.Capabilities),
+	}
+}
+
+func activeTurnIDFromAppwireThread(thread appwire.Thread) string {
+	for _, turn := range thread.Turns {
+		if turn.Status == appwire.TurnStatusRunning {
+			return turn.ID
+		}
+	}
+	return ""
+}
+
+func (s *WebServer) liveWorkspaceCapabilities(id string, fallback hubapi.SessionCapabilities) hubapi.SessionCapabilities {
+	caps, _ := s.liveWorkspaceSnapshot(id, fallback)
+	return caps
+}
+
+func (s *WebServer) liveWorkspaceSnapshot(id string, fallback hubapi.SessionCapabilities) (hubapi.SessionCapabilities, string) {
+	ref := appRefFromRouteID(id)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	source, err := sourceForThreadWithManagedLaunch(ctx, s.cfg, s.sources, ref, "")
+	if err != nil {
+		return fallback, ""
+	}
+	resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true})
+	if err != nil {
+		return fallback, ""
+	}
+	caps := hubCapabilitiesFromAppwire(resp.Thread.Serf.Capabilities)
+	caps.Resume = fallback.Resume
+	return caps, activeTurnIDFromAppwireThread(resp.Thread)
+}
+
+func sourceLabelFromRefText(refText string) string {
+	ref, err := appwire.ParseRef(refText)
+	if err != nil {
+		return "serf"
+	}
+	if ref.SourceID == "" || ref.SourceID == "local" {
+		return "serf"
+	}
+	return ref.SourceID
+}
+
 // fillForkLineage populates the WorkspaceData fork-banner fields for the
-// preserved-original side of a fork. The dim original is detected by
-// scanning the past index for a non-subagent meta whose ParentSessionID
-// equals this session's ID and whose DivergenceTurn is set. ForkOfTitle
-// is best-effort — if the new branch isn't in the past index, the banner
-// falls back to "↳ original of fork".
+// preserved-original side of a fork. The dim original is the meta with a
+// non-empty ForkLabel; the new branch is the meta whose ParentSessionID
+// equals this session's ID. ForkOfTitle is best-effort — if the new branch
+// isn't in the past index, we leave it empty and the template falls back to
+// "fork at turn N".
 func (s *WebServer) fillForkLineage(data *WorkspaceData, m agent.SessionMeta) {
+	if m.ForkLabel == "" {
+		return
+	}
+	data.ForkLabel = m.ForkLabel
+	data.DivergenceTurn = m.DivergenceTurn
 	if s.cfg.Past == nil {
 		return
 	}
 	for _, candidate := range s.cfg.Past.AllMetas() {
-		if candidate.ParentSessionID == m.ID && !candidate.IsSubagent && candidate.DivergenceTurn > 0 {
-			data.IsForkOriginal = true
-			data.DivergenceTurn = candidate.DivergenceTurn
-			if candidate.OriginalTask != "" {
-				data.ForkOfTitle = candidate.OriginalTask
+		if candidate.ParentSessionID == m.ID && !candidate.IsSubagent && candidate.ForkLabel == "" {
+			if candidate.OriginalPrompt != "" {
+				data.ForkOfTitle = candidate.OriginalPrompt
 			} else {
 				data.ForkOfTitle = shortID(candidate.ID)
 			}
@@ -2035,20 +3096,20 @@ func (s *WebServer) fillForkLineage(data *WorkspaceData, m agent.SessionMeta) {
 }
 
 // liveTitle prefers a friendly title for a running session: pull
-// OriginalTask from the past index if it's been written there, otherwise
+// OriginalPrompt from the past index if it's been written there, otherwise
 // fall back to a short session ID.
 func liveTitle(id string, le LiveEntry, past *PastIndex) string {
 	if past != nil {
-		if pe, ok := past.Find(id); ok && pe.Meta.OriginalTask != "" {
-			return pe.Meta.OriginalTask
+		if pe, ok := past.Find(id); ok && pe.Meta.OriginalPrompt != "" {
+			return pe.Meta.OriginalPrompt
 		}
 	}
 	return shortID(id)
 }
 
 func pastTitle(pe PastEntry) string {
-	if pe.Meta.OriginalTask != "" {
-		return pe.Meta.OriginalTask
+	if pe.Meta.OriginalPrompt != "" {
+		return pe.Meta.OriginalPrompt
 	}
 	return shortID(pe.Meta.ID)
 }
@@ -2086,19 +3147,13 @@ func (s *WebServer) renderInputStrip(w http.ResponseWriter, r *http.Request, id 
 	if data["Model"] == "" {
 		data["Model"] = "—"
 	}
-	if s.cfg.Roster != nil {
-		if le, ok := s.cfg.Roster.Find(id); ok {
-			if info := s.fetchStatus(le); info != nil {
-				data["Model"] = info.Model
-				data["ContextPercent"] = int(info.ContextPressure * 100)
-				data["ContextWindow"] = info.ContextWindow
-				if info.ContextUsed > 0 || info.ContextWindow > 0 {
-					data["ContextNumbers"] = fmt.Sprintf("%d/%d", info.ContextUsed, info.ContextWindow)
-				}
-				if info.WorkingDir != "" {
-					data["WorkingDir"] = info.WorkingDir
-				}
-			}
+	if detail, ok := s.apiSessionDetail(id); ok {
+		if detail.Model != "" {
+			data["Model"] = detail.Model
+		}
+		data["ContextPercent"] = int(detail.ContextPressure * 100)
+		if detail.WorkingDir != "" {
+			data["WorkingDir"] = detail.WorkingDir
 		}
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -2142,21 +3197,30 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 			return
 		}
 	}
-
-	if s.cfg.Roster == nil {
-		http.Error(w, "spawner not configured", http.StatusServiceUnavailable)
-		return
-	}
-
-	// Marshal the body once; tryForward builds a fresh bytes.Reader on each
-	// call so the retry-after-resume path can replay the same payload.
-	payload, err := json.Marshal(body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	ref := appRefFromRouteID(id)
+	if !isLocalRouteID(id) {
+		if _, managed := managedLaunchSourceIDForRef(s.cfg, ref); managed {
+			source, err := sourceForThreadWithManagedLaunch(r.Context(), s.cfg, s.sources, ref, "")
+			if err != nil {
+				writeSessionActionError(w, r, err)
+				return
+			}
+			if err := ensureThreadActionAvailable(r.Context(), source, ref, "send"); err != nil {
+				writeSessionActionError(w, r, err)
+				return
+			}
+		} else {
+			if err := s.ensureSessionActionAvailable(id, "send"); err != nil {
+				writeSessionActionError(w, r, err)
+				return
+			}
+		}
 	}
 
 	resolve := func(forceResume bool) (LiveEntry, error) {
+		if s.cfg.Roster == nil {
+			return LiveEntry{}, fmt.Errorf("spawner not configured")
+		}
 		if !forceResume {
 			if le, ok := s.cfg.Roster.Find(id); ok {
 				return le, nil
@@ -2183,67 +3247,82 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 		return le, nil
 	}
 
-	tryForward := func(le LiveEntry) (int, []byte, error) {
-		req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, "http://"+le.Address+"/input", bytes.NewReader(payload))
-		if err != nil {
-			return 0, nil, err
+	turnParams := appwire.TurnStartParams{Ref: ref, Prompt: body.Text}
+	for _, img := range body.Images {
+		turnParams.Items = append(turnParams.Items, appwire.InputItem{
+			Type:      "image",
+			MediaType: img.MediaType,
+			Data:      img.Data,
+			Name:      img.Name,
+		})
+	}
+	startTurn := func(forceResume bool) error {
+		if forceResume {
+			if !isLocalRouteID(id) {
+				return fmt.Errorf("remote source session is not resumable by local spawner")
+			}
+			if _, rerr := resolve(forceResume); rerr != nil {
+				return rerr
+			}
+		} else if _, err := sourceForThread(s.sources, ref, ""); err != nil {
+			if !isLocalRouteID(id) {
+				return err
+			}
+			if _, rerr := resolve(forceResume); rerr != nil {
+				return rerr
+			}
 		}
-		req.Header.Set("Content-Type", "application/json")
-		client := &http.Client{Timeout: 5 * time.Second}
-		resp, err := client.Do(req) //nolint:gosec
+		source, err := sourceForThread(s.sources, ref, "")
 		if err != nil {
-			return 0, nil, err
+			return err
 		}
-		defer resp.Body.Close()
-		buf, _ := io.ReadAll(resp.Body)
-		return resp.StatusCode, buf, nil
+		if !forceResume {
+			if err := ensureThreadActionAvailable(r.Context(), source, ref, "send"); err != nil {
+				return err
+			}
+		}
+		_, err = source.StartTurn(r.Context(), turnParams)
+		return err
 	}
 
-	le, err := resolve(false)
-	if err != nil {
-		// "spawner not configured" → 503 to match the legacy contract.
+	if err := startTurn(false); err != nil {
+		if isActionUnavailable(err) {
+			writeSessionActionError(w, r, err)
+			return
+		}
 		if strings.Contains(err.Error(), "spawner not configured") {
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	status, buf, err := tryForward(le)
-	if err != nil {
-		// Network error means the cached daemon address is stale (daemon
-		// died, rendezvous file lingering). Force a resume and retry once.
-		le2, rerr := resolve(true)
-		if rerr != nil {
-			http.Error(w, "daemon unreachable: "+err.Error()+" (resume failed: "+rerr.Error()+")", http.StatusBadGateway)
+		if !shouldResumeAfterTurnStartError(err) {
+			writeSessionActionError(w, r, err)
 			return
 		}
-		status, buf, err = tryForward(le2)
-		if err != nil {
-			http.Error(w, "daemon unreachable: "+err.Error(), http.StatusBadGateway)
+		if rerr := startTurn(true); rerr != nil {
+			if strings.Contains(rerr.Error(), "spawner not configured") {
+				http.Error(w, rerr.Error(), http.StatusServiceUnavailable)
+				return
+			}
+			http.Error(w, "daemon unreachable: "+err.Error()+" (resume failed: "+rerr.Error()+")", http.StatusBadGateway)
 			return
 		}
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(status)
-	w.Write(buf) //nolint:errcheck
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func (s *WebServer) resumeRequestFor(id string) ResumeRequest {
-	req := ResumeRequest{SessionID: id}
-	if s.cfg.Past != nil {
-		if pe, ok := s.cfg.Past.Find(id); ok {
-			req.WorkingDir = pe.Meta.EnvInfo.WorkingDir
-			req.StateDir = pe.StateDir
-		}
-	}
-	return req
+	return resumeRequestForConfig(s.cfg, id)
 }
 
 // steerRequest is the JSON body for POST /s/<id>/steer.
 type steerRequest struct {
-	Text string `json:"text"`
+	Text   string `json:"text"`
+	TurnID string `json:"turnId"`
+}
+
+type sessionActionRequest struct {
+	TurnID string `json:"turnId"`
 }
 
 // handleSteer forwards a steering message to the live daemon for the given
@@ -2261,36 +3340,25 @@ func (s *WebServer) handleSteer(w http.ResponseWriter, r *http.Request, id strin
 		http.Error(w, "text required", http.StatusBadRequest)
 		return
 	}
-	if s.cfg.Roster == nil {
-		http.Error(w, "roster not configured", http.StatusServiceUnavailable)
-		return
-	}
-	le, ok := s.cfg.Roster.Find(id)
-	if !ok {
+	if !s.isLive(id) {
 		http.NotFound(w, r)
 		return
 	}
-	payload, err := json.Marshal(body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := s.ensureSessionActionAvailable(id, "steer"); err != nil {
+		writeSessionActionError(w, r, err)
 		return
 	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, "http://"+le.Address+"/steer", bytes.NewReader(payload))
+	ref := appRefFromRouteID(id)
+	source, err := sourceForThread(s.sources, ref, "")
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.NotFound(w, r)
 		return
 	}
-	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req) //nolint:gosec
-	if err != nil {
-		http.Error(w, "daemon unreachable: "+err.Error(), http.StatusBadGateway)
+	if err := source.SteerTurn(r.Context(), appwire.TurnSteerParams{Ref: ref, TurnID: strings.TrimSpace(body.TurnID), Text: body.Text}); err != nil {
+		writeSessionActionError(w, r, err)
 		return
 	}
-	defer resp.Body.Close()
-	buf, _ := io.ReadAll(resp.Body)
-	w.WriteHeader(resp.StatusCode)
-	w.Write(buf) //nolint:errcheck
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleSessionAction forwards an imperative action (interrupt/compact/
@@ -2303,36 +3371,99 @@ func (s *WebServer) handleSessionAction(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
-	if s.cfg.Roster == nil {
-		http.Error(w, "roster not configured", http.StatusServiceUnavailable)
-		return
-	}
-	le, ok := s.cfg.Roster.Find(id)
-	if !ok {
+	if !s.isLive(id) {
 		http.NotFound(w, r)
 		return
 	}
-	url := "http://" + le.Address + "/" + action
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, url, nil)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := s.ensureSessionActionAvailable(id, action); err != nil {
+		writeSessionActionError(w, r, err)
 		return
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req) //nolint:gosec
+	ref := appRefFromRouteID(id)
+	source, err := sourceForThread(s.sources, ref, "")
 	if err != nil {
-		http.Error(w, "daemon unreachable: "+err.Error(), http.StatusBadGateway)
+		http.NotFound(w, r)
 		return
 	}
-	defer resp.Body.Close()
-	buf, _ := io.ReadAll(resp.Body)
-	w.WriteHeader(resp.StatusCode)
-	w.Write(buf) //nolint:errcheck
+	var body sessionActionRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
+	switch action {
+	case "interrupt":
+		err = source.InterruptTurn(r.Context(), appwire.TurnInterruptParams{Ref: ref, TurnID: strings.TrimSpace(body.TurnID)})
+	case "compact":
+		err = source.CompactThread(r.Context(), appwire.ThreadCompactStartParams{Ref: ref})
+	case "clear":
+		_, err = source.ClearThread(r.Context(), appwire.ThreadClearParams{Ref: ref})
+	case "shutdown":
+		err = source.ShutdownThread(r.Context(), appwire.ThreadShutdownParams{Ref: ref})
+	default:
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		writeSessionActionError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *WebServer) ensureSessionActionAvailable(id, action string) error {
+	detail, ok := s.apiSessionDetail(id)
+	if !ok {
+		return appwire.Unavailable("session action is not available")
+	}
+	if sessionCapabilityAvailable(detail.Capabilities, action) {
+		return nil
+	}
+	return appwire.Unavailable(action + " is not available for this session")
+}
+
+func sessionCapabilityAvailable(caps hubapi.SessionCapabilities, action string) bool {
+	switch action {
+	case "send":
+		return caps.Send
+	case "steer":
+		return caps.Steer
+	case "interrupt":
+		return caps.Interrupt
+	case "compact":
+		return caps.Compact
+	case "clear":
+		return caps.Clear
+	case "fork":
+		return caps.Fork
+	case "shutdown":
+		return caps.Shutdown
+	case "model":
+		return caps.ChangeModel
+	default:
+		return false
+	}
+}
+
+func writeSessionActionError(w http.ResponseWriter, r *http.Request, err error) {
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		writeAPIWireError(w, http.StatusBadGateway, err)
+		return
+	}
+	status := http.StatusBadGateway
+	if wire, ok := wireErrorFromError(err); ok {
+		status = statusForWireError(wire, status)
+	}
+	http.Error(w, err.Error(), status)
+}
+
+func isActionUnavailable(err error) bool {
+	wire, ok := wireErrorFromError(err)
+	return ok && wire.Code == appwire.CodeUnavailable && serfErrorInfoFromData(wire.Data) == string(appwire.ErrorActionUnavailable)
 }
 
 type forkRequest struct {
 	Turn          int    `json:"turn"`
 	EditedMessage string `json:"edited_message"`
+	Label         string `json:"label"`
 }
 
 func (s *WebServer) handleFork(w http.ResponseWriter, r *http.Request, parentID string) {
@@ -2394,18 +3525,9 @@ func (s *WebServer) forkSession(parentID string, body forkRequest) (string, erro
 		return "", fmt.Errorf("state dir not resolvable for parent session")
 	}
 
-	childID, err := agent.ForkSession(stateDir, parentID, body.Turn)
+	childID, err := agent.ForkSession(stateDir, parentID, body.Turn, body.EditedMessage, body.Label)
 	if err != nil {
 		return "", err
-	}
-	// Seed the child's transcript with the edited message so it's already
-	// present when the user opens the child session. ForkSession itself
-	// only copies the prefix — appending the edited turn is the caller's
-	// responsibility. If seeding fails, roll back the freshly-created
-	// child rather than leaving a prefix-only orphan on disk.
-	if err := agent.AppendUserInput(stateDir, childID, body.EditedMessage); err != nil {
-		_ = agent.DeleteSession(stateDir, childID)
-		return "", fmt.Errorf("seed child transcript: %w", err)
 	}
 	// Refresh past index so the new session shows up immediately in the sidebar.
 	if s.cfg.Past != nil {
@@ -2444,7 +3566,12 @@ type daemonStatus struct {
 // fetchStatus reads /status from the daemon at le.Address, returning nil on any error.
 func (s *WebServer) fetchStatus(le LiveEntry) *daemonStatus {
 	client := &http.Client{Timeout: 1 * time.Second}
-	resp, err := client.Get("http://" + le.Address + "/status") //nolint:gosec
+	req, err := http.NewRequest(http.MethodGet, "http://"+le.Address+"/status", nil) //nolint:gosec
+	if err != nil {
+		return nil
+	}
+	setDaemonAuthorization(req.Header, le.HubToken)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil
 	}

@@ -47,8 +47,9 @@ type model struct {
 	historyIdx   int      // -1 = not browsing; len(history) = back to draft
 	historyDraft string   // saved current input when entering history browse
 
-	// Track active tool calls by call ID -> index in messages
+	// Track active transcript items by item/call ID -> index in messages.
 	activeTools       map[string]int
+	activeMessages    map[string]int
 	lastInterrupt     time.Time
 	lastSentText      string                // last user input, used for auto-steer on busy
 	picker            *modelPicker          // non-nil when model picker is active
@@ -128,6 +129,7 @@ func newConfiguredModel(addr, stateDir string, initialMessages []chatMessage, cf
 		input:             ta,
 		messages:          initialMessages,
 		activeTools:       make(map[string]int),
+		activeMessages:    make(map[string]int),
 		history:           loadHistory(stateDir),
 		historyIdx:        -1,
 		observedSubagents: make(map[string]subagentUI),
@@ -253,7 +255,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if p.done {
 				m.themePicker = nil
 				if p.selected != "" {
-					setTheme(p.selected)
+					setThemeAndPersist(m.stateDir, p.selected)
 					initMarkdownRenderer(m.width)
 					m.viewport.Style = viewportStyle
 					applyInputTheme(&m.input)
@@ -512,7 +514,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.refreshViewport()
 						return m, tea.Batch(cmds...)
 					}
-					picker := newActionPicker("Auth", "↑/↓ navigate  enter select  esc cancel", []modelPickerItem{
+					picker := newActionPicker("Auth", "up/down navigate  enter select  esc cancel", []modelPickerItem{
 						{id: "auth-login", display: "Sign in with OpenAI"},
 						{id: "auth-status", display: "Show auth status"},
 						{id: "auth-logout", display: "Sign out of OpenAI"},
@@ -981,6 +983,12 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 		}
 		json.Unmarshal([]byte(ev.Data), &d)
 		if d.Message != "" {
+			if len(m.messages) > 0 &&
+				m.messages[len(m.messages)-1].Kind == msgAssistant &&
+				strings.TrimSpace(m.messages[len(m.messages)-1].Text) == strings.TrimSpace(d.Message) {
+				m.messages[len(m.messages)-1].Kind = msgCommunicate
+				break
+			}
 			m.messages = append(m.messages, chatMessage{Kind: msgCommunicate, Text: d.Message})
 		}
 

@@ -47,13 +47,103 @@ func (a *fakeAdapter) Complete(ctx context.Context, req llm.Request) (llm.Respon
 func (a *fakeAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	_ = ctx
 	_ = req
-	return nil, errors.New("stream not implemented in fakeAdapter")
+	return nil, llm.ErrStreamUnsupported
 }
 
 func (a *fakeAdapter) Requests() []llm.Request {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]llm.Request{}, a.requests...)
+}
+
+type streamingAdapter struct {
+	name string
+
+	mu             sync.Mutex
+	completeCalls  int
+	streamCalls    int
+	requests       []llm.Request
+	completeResult llm.Response
+	streamErr      error
+	streamScript   func(*llm.ChanStream)
+}
+
+func (a *streamingAdapter) Name() string { return a.name }
+
+func (a *streamingAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	_ = ctx
+	a.mu.Lock()
+	a.completeCalls++
+	a.requests = append(a.requests, req)
+	resp := a.completeResult
+	a.mu.Unlock()
+	resp.Provider = a.name
+	if resp.Model == "" {
+		resp.Model = req.Model
+	}
+	return resp, nil
+}
+
+func (a *streamingAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	a.mu.Lock()
+	a.streamCalls++
+	a.requests = append(a.requests, req)
+	err := a.streamErr
+	script := a.streamScript
+	a.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	streamCtx, cancel := context.WithCancel(ctx)
+	_ = streamCtx
+	st := llm.NewChanStream(cancel)
+	go func() {
+		defer st.CloseSend()
+		if script != nil {
+			script(st)
+		}
+	}()
+	return st, nil
+}
+
+func (a *streamingAdapter) Counts() (completeCalls int, streamCalls int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.completeCalls, a.streamCalls
+}
+
+func TestSession_StreamOpenFailureHonorsRetryBudget(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &streamingAdapter{
+		name:      "openai",
+		streamErr: llm.ErrorFromHTTPStatus("openai", 500, "temporary upstream failure", nil, nil),
+	}
+	c.Register(f)
+
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		LLMRetryPolicy: &policy,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "hi", nil)
+	if err == nil {
+		t.Fatal("expected stream error")
+	}
+	sess.Close()
+
+	completeCalls, streamCalls := f.Counts()
+	if got, want := streamCalls, 1; got != want {
+		t.Fatalf("stream calls: got %d want %d", got, want)
+	}
+	if got, want := completeCalls, 0; got != want {
+		t.Fatalf("complete calls: got %d want %d", got, want)
+	}
 }
 
 // fakeErrAdapter is like fakeAdapter but supports steps that return errors.
@@ -89,13 +179,25 @@ func (a *fakeErrAdapter) Complete(ctx context.Context, req llm.Request) (llm.Res
 }
 
 func (a *fakeErrAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
-	return nil, errors.New("stream not implemented in fakeErrAdapter")
+	return nil, llm.ErrStreamUnsupported
 }
 
 func (a *fakeErrAdapter) Requests() []llm.Request {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]llm.Request{}, a.requests...)
+}
+
+func TestStreamUnavailableIgnoresPlainTextUnsupportedMessages(t *testing.T) {
+	if !streamUnavailable(errStreamUnavailable) {
+		t.Fatal("expected internal sentinel to mark stream unavailable")
+	}
+	if !streamUnavailable(llm.ErrStreamUnsupported) {
+		t.Fatal("expected LLM sentinel to mark stream unavailable")
+	}
+	if streamUnavailable(errors.New("provider returned: streaming not supported for this request")) {
+		t.Fatal("plain error text should not mark stream unavailable")
+	}
 }
 
 func TestSession_NaturalCompletion_LoadsOnlyProfileDocs(t *testing.T) {
@@ -1322,7 +1424,7 @@ func (a *blockingAdapter) Complete(ctx context.Context, req llm.Request) (llm.Re
 	return llm.Response{}, ctx.Err()
 }
 func (a *blockingAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
-	return nil, errors.New("stream not implemented")
+	return nil, llm.ErrStreamUnsupported
 }
 
 func TestSession_Close_CancelsInFlightLLMCall(t *testing.T) {
@@ -1740,6 +1842,124 @@ func TestSession_AssistantTextStart_IncludesModel(t *testing.T) {
 	model, ok := found.DataMap()["model"].(string)
 	if !ok || model != "test-model-42" {
 		t.Fatalf("expected model 'test-model-42' in ASSISTANT_TEXT_START, got: %v", found.Data)
+	}
+}
+
+func TestSession_StreamsCommunicateToolArgumentsAsAssistantDeltas(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	comm := communicateCall("c1", "Hello")
+	f := &streamingAdapter{
+		name:           "openai",
+		completeResult: toolCallResponse(comm),
+		streamScript: func(st *llm.ChanStream) {
+			st.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
+			st.Send(llm.StreamEvent{
+				Type: llm.StreamEventToolCallStart,
+				ToolCall: &llm.ToolCallData{
+					ID:   "c1",
+					Name: "communicate",
+					Type: "function",
+				},
+			})
+			st.Send(llm.StreamEvent{
+				Type: llm.StreamEventToolCallDelta,
+				ToolCall: &llm.ToolCallData{
+					ID:        "c1",
+					Arguments: json.RawMessage(`{"message":"Hel`),
+				},
+			})
+			st.Send(llm.StreamEvent{
+				Type: llm.StreamEventToolCallDelta,
+				ToolCall: &llm.ToolCallData{
+					ID:        "c1",
+					Arguments: json.RawMessage(`lo","await_reply":false,"output":{"message":"","data":{},"artifacts":[]}}`),
+				},
+			})
+			st.Send(llm.StreamEvent{
+				Type:     llm.StreamEventToolCallEnd,
+				ToolCall: &comm,
+			})
+			finish := llm.FinishReason{Reason: llm.FinishReasonToolCalls}
+			st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &finish})
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	var events []SessionEvent
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range sess.Events() {
+			events = append(events, ev)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := sess.ProcessInput(ctx, "hi", nil)
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+	<-done
+
+	if out != "Hello" {
+		t.Fatalf("ProcessInput output = %q, want Hello", out)
+	}
+	completeCalls, streamCalls := f.Counts()
+	if completeCalls != 0 || streamCalls != 1 {
+		t.Fatalf("model calls: complete=%d stream=%d, want complete=0 stream=1", completeCalls, streamCalls)
+	}
+
+	var deltas []string
+	for _, ev := range events {
+		if ev.Kind != EventAssistantTextDelta {
+			continue
+		}
+		data, ok := ev.Data.(AssistantTextDeltaData)
+		if !ok {
+			t.Fatalf("ASSISTANT_TEXT_DELTA data type = %T", ev.Data)
+		}
+		deltas = append(deltas, data.Delta)
+	}
+	if strings.Join(deltas, "") != "Hello" {
+		t.Fatalf("assistant deltas = %q, want chunks composing Hello; events=%v", deltas, events)
+	}
+	if len(deltas) < 2 {
+		t.Fatalf("assistant deltas = %q, want multiple streamed chunks", deltas)
+	}
+}
+
+func TestPartialJSONStringFieldDecodesUnicodeEscapes(t *testing.T) {
+	got, ok := partialJSONStringField(`{"message":"Hello \u263A"}`, "message")
+	if !ok {
+		t.Fatal("message field not found")
+	}
+	if got != "Hello \u263A" {
+		t.Fatalf("message=%q, want decoded unicode escape", got)
+	}
+
+	got, ok = partialJSONStringField(`{"message":"Hello \ud83d\ude00"}`, "message")
+	if !ok {
+		t.Fatal("message field with surrogate pair not found")
+	}
+	if got != "Hello 😀" {
+		t.Fatalf("message=%q, want decoded surrogate pair", got)
+	}
+
+	got, ok = partialJSONStringField(`{"message":"Hello \u26`, "message")
+	if !ok {
+		t.Fatal("partial message field not found")
+	}
+	if got != "Hello " {
+		t.Fatalf("partial message=%q, want prefix before incomplete unicode escape", got)
 	}
 }
 
@@ -2322,7 +2542,7 @@ func TestSession_SystemPromptAsUser_CombinesIntoOneMessage(t *testing.T) {
 	}
 }
 
-func TestSession_Meta_PopulatesOriginalTask(t *testing.T) {
+func TestSession_Meta_PopulatesOriginalPrompt(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -2345,13 +2565,13 @@ func TestSession_Meta_PopulatesOriginalTask(t *testing.T) {
 	}
 
 	meta := sess.Meta()
-	if meta.OriginalTask != "write a haiku about goroutines" {
-		t.Fatalf("OriginalTask: got %q, want %q",
-			meta.OriginalTask, "write a haiku about goroutines")
+	if meta.OriginalPrompt != "write a haiku about goroutines" {
+		t.Fatalf("OriginalPrompt: got %q, want %q",
+			meta.OriginalPrompt, "write a haiku about goroutines")
 	}
 }
 
-func TestSession_Meta_OriginalTask_EmptyForFreshSession(t *testing.T) {
+func TestSession_Meta_OriginalPrompt_EmptyForFreshSession(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -2363,8 +2583,8 @@ func TestSession_Meta_OriginalTask_EmptyForFreshSession(t *testing.T) {
 	defer sess.Close()
 
 	meta := sess.Meta()
-	if meta.OriginalTask != "" {
-		t.Fatalf("OriginalTask: got %q, want empty", meta.OriginalTask)
+	if meta.OriginalPrompt != "" {
+		t.Fatalf("OriginalPrompt: got %q, want empty", meta.OriginalPrompt)
 	}
 }
 

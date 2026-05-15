@@ -74,9 +74,11 @@ type SessionDetail struct {
 	Model           string              `json:"model,omitempty"`
 	Profile         string              `json:"profile,omitempty"`
 	TurnCount       int                 `json:"turn_count"`
+	ActiveTurnID    string              `json:"active_turn_id,omitempty"`
 	ContextPressure float64             `json:"context_pressure"`
 	ParentSessionID string              `json:"parent_session_id,omitempty"`
 	DivergenceTurn  int                 `json:"divergence_turn,omitempty"`
+	ForkLabel       string              `json:"fork_label,omitempty"`
 	IsSubagent      bool                `json:"is_subagent"`
 	Capabilities    SessionCapabilities `json:"capabilities"`
 	Streams         SessionStreams      `json:"streams"`
@@ -123,8 +125,12 @@ type ModelOption struct {
 	OutputCostPerMillion float64 `json:"output_cost_per_million,omitempty"`
 }
 
+// SpawnRequest is the JSON body for POST /api/spawn.
+// Prompt is the current field; Task is accepted for legacy callers only.
 type SpawnRequest struct {
-	Task            string `json:"task,omitempty"`
+	Prompt          string `json:"prompt,omitempty"`
+	Task            string `json:"task,omitempty"` // Deprecated: use Prompt.
+	Harness         string `json:"harness,omitempty"`
 	Model           string `json:"model,omitempty"`
 	WorkingDir      string `json:"working_dir,omitempty"`
 	Agent           string `json:"agent,omitempty"`
@@ -142,8 +148,11 @@ type RefResponse = SpawnResponse
 type ForkRequest struct {
 	Turn          int    `json:"turn"`
 	EditedMessage string `json:"edited_message"`
+	Label         string `json:"label"`
 }
 
 type ErrorResponse struct {
-	Error string `json:"error"`
+	Error         string `json:"error"`
+	Code          int    `json:"code,omitempty"`
+	SerfErrorInfo string `json:"serfErrorInfo,omitempty"`
 }

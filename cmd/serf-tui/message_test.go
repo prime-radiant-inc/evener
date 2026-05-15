@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"primeradiant.com/serf/agent"
@@ -120,5 +121,32 @@ func TestHistoryToMessages_Empty(t *testing.T) {
 	msgs := historyToMessages(nil)
 	if len(msgs) != 0 {
 		t.Fatalf("expected 0 messages for nil history, got %d", len(msgs))
+	}
+}
+
+func TestRenderMessage_RendersAssistantMarkdown(t *testing.T) {
+	previous := markdownRenderer
+	previousWidth := markdownRendererWidth
+	markdownRenderer = nil
+	t.Cleanup(func() {
+		markdownRenderer = previous
+		markdownRendererWidth = previousWidth
+	})
+
+	got := renderMessage(chatMessage{Kind: msgAssistant, Text: "**bold**\n\n- one"}, 80, false)
+
+	if strings.Contains(got, "**bold**") || strings.Contains(got, "- one") {
+		t.Fatalf("assistant markdown rendered raw:\n%q", got)
+	}
+	if !strings.Contains(got, "bold") || !strings.Contains(got, "one") {
+		t.Fatalf("assistant markdown lost content:\n%q", got)
+	}
+}
+
+func TestRenderMessage_KeepsPlainAssistantTextSearchable(t *testing.T) {
+	got := renderMessage(chatMessage{Kind: msgAssistant, Text: "main transcript answer"}, 80, false)
+
+	if !strings.Contains(got, "main transcript answer") {
+		t.Fatalf("plain assistant text should remain contiguous:\n%q", got)
 	}
 }

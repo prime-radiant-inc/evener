@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -248,7 +247,7 @@ func (a *snapshotFakeAdapter) Complete(ctx context.Context, req llm.Request) (ll
 	return wrapCommunicateResponse(llm.Response{Provider: a.name, Model: req.Model, Message: llm.Assistant("restored response")}), nil
 }
 func (a *snapshotFakeAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
-	return nil, errors.New("not implemented")
+	return nil, llm.ErrStreamUnsupported
 }
 func (a *snapshotFakeAdapter) Requests() []llm.Request {
 	a.mu.Lock()
@@ -1057,38 +1056,52 @@ func TestMetaTurnCount_CountsModelResponses(t *testing.T) {
 	}
 }
 
-func TestSessionMeta_OriginalTask_RoundTrip(t *testing.T) {
+func TestSessionMeta_OriginalPrompt_RoundTrip(t *testing.T) {
 	original := SessionMeta{
-		ID:           "01TEST0001",
-		ProfileID:    "openai-gpt-5",
-		Model:        "gpt-5.2",
-		EnvInfo:      EnvironmentInfo{WorkingDir: "/tmp/x"},
-		CreatedAt:    time.Date(2026, 5, 7, 14, 32, 11, 0, time.UTC),
-		UpdatedAt:    time.Date(2026, 5, 7, 14, 32, 11, 0, time.UTC),
-		TurnCount:    3,
-		OriginalTask: "fix the bug in handler",
+		ID:             "01TEST0001",
+		ProfileID:      "openai-gpt-5",
+		Model:          "gpt-5.2",
+		EnvInfo:        EnvironmentInfo{WorkingDir: "/tmp/x"},
+		CreatedAt:      time.Date(2026, 5, 7, 14, 32, 11, 0, time.UTC),
+		UpdatedAt:      time.Date(2026, 5, 7, 14, 32, 11, 0, time.UTC),
+		TurnCount:      3,
+		OriginalPrompt: "fix the bug in handler",
 	}
 	data, err := json.Marshal(original)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
+	if got := string(data); !strings.Contains(got, "original_prompt") || strings.Contains(got, "original_task") {
+		t.Fatalf("expected current original_prompt JSON only, got: %s", got)
+	}
 	var got SessionMeta
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if got.OriginalTask != "fix the bug in handler" {
-		t.Fatalf("OriginalTask: got %q, want %q", got.OriginalTask, "fix the bug in handler")
+	if got.OriginalPrompt != "fix the bug in handler" {
+		t.Fatalf("OriginalPrompt: got %q, want %q", got.OriginalPrompt, "fix the bug in handler")
 	}
 }
 
-func TestSessionMeta_OriginalTask_OmitEmpty(t *testing.T) {
+func TestSessionMeta_OriginalPrompt_ReadsLegacyOriginalTask(t *testing.T) {
+	data := []byte(`{"id":"01TEST0001","original_task":"fix the bug in handler"}`)
+	var got SessionMeta
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.OriginalPrompt != "fix the bug in handler" {
+		t.Fatalf("OriginalPrompt: got %q, want %q", got.OriginalPrompt, "fix the bug in handler")
+	}
+}
+
+func TestSessionMeta_OriginalPrompt_OmitEmpty(t *testing.T) {
 	meta := SessionMeta{ID: "01TEST0001"}
 	data, err := json.Marshal(meta)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if got := string(data); strings.Contains(got, "original_task") {
-		t.Fatalf("expected original_task to be omitempty when empty, got: %s", got)
+	if got := string(data); strings.Contains(got, "original_prompt") || strings.Contains(got, "original_task") {
+		t.Fatalf("expected original prompt fields to be omitted when empty, got: %s", got)
 	}
 }
 
@@ -1098,6 +1111,7 @@ func TestSessionMeta_ForkFieldsRoundTrip(t *testing.T) {
 		ID:              "01CHILD",
 		ParentSessionID: "01PARENT",
 		DivergenceTurn:  7,
+		ForkLabel:       "before TDD",
 		UpdatedAt:       time.Now(),
 	}
 	if err := SaveSessionMeta(dir, meta); err != nil {
@@ -1112,5 +1126,8 @@ func TestSessionMeta_ForkFieldsRoundTrip(t *testing.T) {
 	}
 	if got.DivergenceTurn != 7 {
 		t.Errorf("DivergenceTurn: %d", got.DivergenceTurn)
+	}
+	if got.ForkLabel != "before TDD" {
+		t.Errorf("ForkLabel: %q", got.ForkLabel)
 	}
 }

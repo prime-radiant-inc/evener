@@ -506,7 +506,7 @@ func TestCheckpoint_CreatesValidMessage(t *testing.T) {
 	}
 }
 
-func TestCheckpoint_IncludesOriginalTask(t *testing.T) {
+func TestCheckpoint_IncludesOriginalPrompt(t *testing.T) {
 	history := []Turn{
 		{Kind: TurnUserInput, Message: llm.User("Fix the auth bug in login.go")},
 		{Kind: TurnAssistant, Message: llm.Assistant("on it")},
@@ -516,13 +516,13 @@ func TestCheckpoint_IncludesOriginalTask(t *testing.T) {
 	result := checkpoint(history, 1, nil, "communicate")
 	text := result[0].Message.Text()
 	if !strings.Contains(text, "Fix the auth bug in login.go") {
-		t.Fatalf("checkpoint missing original task: %q", text)
+		t.Fatalf("checkpoint missing original prompt: %q", text)
 	}
 }
 
 func TestCheckpoint_TracksModifiedFiles(t *testing.T) {
 	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
+		{Kind: TurnUserInput, Message: llm.User("prompt")},
 		{Kind: TurnAssistant, Message: assistantWithToolCall("c1", "edit_file", `{"file_path":"auth.go"}`)},
 		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "edit_file", "OK", false)},
 		{Kind: TurnAssistant, Message: assistantWithToolCall("c2", "write_file", `{"file_path":"user.go"}`)},
@@ -1334,8 +1334,8 @@ func TestSummarizeWithLLM_AdapterError_ReturnsError(t *testing.T) {
 	}
 }
 
-// M1: Repeated checkpoint should still find the real original task, not the checkpoint message.
-func TestCheckpoint_RepeatedCheckpoint_PreservesOriginalTask(t *testing.T) {
+// M1: Repeated checkpoint should still find the real original prompt, not the checkpoint message.
+func TestCheckpoint_RepeatedCheckpoint_PreservesOriginalPrompt(t *testing.T) {
 	// Simulate first checkpoint output (legacy format with "Original task:").
 	firstCheckpoint := Turn{
 		Kind:    TurnUserInput,
@@ -1351,7 +1351,7 @@ func TestCheckpoint_RepeatedCheckpoint_PreservesOriginalTask(t *testing.T) {
 	result := checkpoint(history, 1, nil, "communicate")
 	text := result[0].Message.Text()
 
-	// The original task text should be preserved in the User messages section,
+	// The original prompt text should be preserved in the User messages section,
 	// extracted from the legacy "Original task:" line.
 	if !strings.Contains(text, "Fix the auth bug") {
 		t.Fatalf("repeated checkpoint should preserve user messages from prior checkpoint:\n%s", text)
@@ -1671,9 +1671,9 @@ func TestMaskObservations_SkipsShortResults(t *testing.T) {
 	}
 }
 
-// --- Fix: Checkpoint task extraction (M1) ---
+// --- Fix: Checkpoint prompt extraction (M1) ---
 
-func TestCheckpoint_OriginalTaskNotOverriddenByFollowup(t *testing.T) {
+func TestCheckpoint_OriginalPromptNotOverriddenByFollowup(t *testing.T) {
 	// After a previous checkpoint, history starts with the checkpoint message
 	// (which embeds "Original task: Fix the auth bug"). A follow-up user message
 	// "Also update the tests" appears in the preserved recent turns.
@@ -1693,7 +1693,7 @@ func TestCheckpoint_OriginalTaskNotOverriddenByFollowup(t *testing.T) {
 	result := checkpoint(history, 2, nil, "communicate")
 	text := result[0].Message.Text()
 
-	// The original task from the prior checkpoint should be preserved as a user message.
+	// The original prompt from the prior checkpoint should be preserved as a user message.
 	if !strings.Contains(text, "Fix the auth bug") {
 		t.Fatalf("checkpoint should preserve user messages from prior checkpoint:\n%s", text)
 	}
@@ -1769,7 +1769,7 @@ func (a *errorAdapter) Complete(ctx context.Context, req llm.Request) (llm.Respo
 	return llm.Response{}, fmt.Errorf("simulated LLM error")
 }
 func (a *errorAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
-	return nil, fmt.Errorf("stream not implemented")
+	return nil, llm.ErrStreamUnsupported
 }
 
 func assistantWithToolCall(id, name, argsJSON string) llm.Message {

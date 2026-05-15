@@ -22,7 +22,7 @@ func (a *stubSummarizeAdapter) Complete(_ context.Context, req llm.Request) (llm
 	return a.respFn(req)
 }
 func (a *stubSummarizeAdapter) Stream(_ context.Context, _ llm.Request) (llm.Stream, error) {
-	return nil, fmt.Errorf("stream not implemented")
+	return nil, llm.ErrStreamUnsupported
 }
 
 func TestForkSummarize_Success(t *testing.T) {

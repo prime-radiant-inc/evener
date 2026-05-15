@@ -36,11 +36,9 @@ func main() {
 	systemPrompt := flag.String("system-prompt", "", "path to a custom system prompt file")
 	stateDir := flag.String("state-dir", "", "override runtime state directory (default: XDG-computed)")
 	resume := flag.String("resume", "", "resume a previous session by ID")
-	resumeWith := flag.String("resume-with", "", "start a new task using a previous session's context")
+	resumeWith := flag.String("resume-with", "", "start a new prompt using a previous session's context")
 	resumeLast := flag.Bool("resume-last", false, "resume the most recent session")
 	listSessionsFlag := flag.Bool("list-sessions", false, "list saved sessions and exit")
-	fork := flag.Bool("fork", false, "fork the resumed session instead of continuing it; the task arg becomes the edited message")
-	forkTurn := flag.Int("fork-turn", 0, "1-based divergence turn for --fork (defaults to the most recent USER_INPUT turn)")
 	maxRounds := flag.Int("max-rounds", -1, "max tool rounds per input (0=unlimited, default: 200)")
 	maxSubagentDepth := flag.Int("max-subagent-depth", -1, "max subagent nesting depth (default: 1)")
 	shareTaskStore := flag.Bool("share-task-store", false, "share task list between parent and child sessions")
@@ -67,9 +65,9 @@ func main() {
 	flag.Var(&systemPromptAppend, "system-prompt-append", "path to append to system prompt (repeatable)")
 
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: serf --model <provider/model> [flags] <task>\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: serf --model <provider/model> [flags] <prompt>\n\n")
 		fmt.Fprintf(os.Stderr, "A non-interactive coding agent.\n\n")
-		fmt.Fprintf(os.Stderr, "The task can be passed as arguments or piped via stdin.\n\n")
+		fmt.Fprintf(os.Stderr, "The prompt can be passed as arguments or piped via stdin.\n\n")
 		fmt.Fprintf(os.Stderr, "Required:\n")
 		fmt.Fprintf(os.Stderr, "  --model <provider/model> LLM model (e.g. openai/gpt-5.2, anthropic/claude-opus-4-6, google/gemini-3-flash-preview)\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
@@ -81,7 +79,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  --max-subagent-depth <n> Max subagent nesting depth (default: 1)\n")
 		fmt.Fprintf(os.Stderr, "  --share-task-store   Share task list between parent and child sessions\n")
 		fmt.Fprintf(os.Stderr, "  --context-strategy <name> Context management strategy: compact|recall|session-log|ooda (default: compact)\n")
-		fmt.Fprintf(os.Stderr, "  --reasoning-effort <level> Reasoning effort: low|medium|high|xhigh|none (or set SERF_REASONING_EFFORT)\n")
 		fmt.Fprintf(os.Stderr, "  --verbose            Emit NDJSON events to stderr (replaces human-readable output)\n")
 		fmt.Fprintf(os.Stderr, "  --no-project-prompts Suppress .serf/prompts/ loading (match Docker container behavior)\n")
 		fmt.Fprintf(os.Stderr, "  --agent <name>       Agent persona: default (default), explorer, or another available agent name\n")
@@ -95,11 +92,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  --trace <path>       Write execution trace (go tool trace compatible)\n\n")
 		fmt.Fprintf(os.Stderr, "Session resume:\n")
 		fmt.Fprintf(os.Stderr, "  --resume <id>        Resume a previous session\n")
-		fmt.Fprintf(os.Stderr, "  --resume-with <id>   New task using a previous session's context\n")
+		fmt.Fprintf(os.Stderr, "  --resume-with <id>   New prompt using a previous session's context\n")
 		fmt.Fprintf(os.Stderr, "  --resume-last        Resume the most recent session\n")
-		fmt.Fprintf(os.Stderr, "  --list-sessions      List saved sessions\n")
-		fmt.Fprintf(os.Stderr, "  --fork               Fork the resumed session (task arg is the edited message); requires --resume*\n")
-		fmt.Fprintf(os.Stderr, "  --fork-turn <n>      1-based divergence turn for --fork (defaults to the most recent USER_INPUT)\n\n")
+		fmt.Fprintf(os.Stderr, "  --list-sessions      List saved sessions\n\n")
 		fmt.Fprintf(os.Stderr, "Environment variables:\n")
 		fmt.Fprintf(os.Stderr, "  SERF_MODEL           Default model as provider/model (used when --model is omitted)\n")
 		fmt.Fprintf(os.Stderr, "  SERF_REASONING_EFFORT Default reasoning effort (low|medium|high|xhigh|none)\n")
@@ -129,9 +124,9 @@ func main() {
 	isResume := *resume != "" || *resumeWith != "" || *resumeLast || *listSessionsFlag
 	stat, _ := os.Stdin.Stat()
 	stdinIsCharDevice := stat != nil && (stat.Mode()&os.ModeCharDevice) != 0
-	task := readTaskFromArgsOrStdin(flag.Args(), *listSessionsFlag, os.Stdin, stdinIsCharDevice)
+	prompt := readPromptFromArgsOrStdin(flag.Args(), *listSessionsFlag, os.Stdin, stdinIsCharDevice)
 
-	if task == "" && !isResume {
+	if prompt == "" && !isResume {
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -140,7 +135,7 @@ func main() {
 	defer cancel()
 
 	err := run(ctx, runConfig{
-		task:               task,
+		prompt:             prompt,
 		model:              *model,
 		workDir:            *workDir,
 		stateDir:           *stateDir,
@@ -168,8 +163,6 @@ func main() {
 		resumeWith:         *resumeWith,
 		resumeLast:         *resumeLast,
 		listSessions:       *listSessionsFlag,
-		fork:               *fork,
-		forkTurn:           *forkTurn,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "serf: %v\n", err)
@@ -186,6 +179,8 @@ func dispatchCLICommand(args []string, stdin io.Reader, stdout, stderr io.Writer
 	switch args[0] {
 	case "serve":
 		return true, "serf serve", runServe(args[1:])
+	case "launch-check":
+		return true, "serf launch-check", runLaunchCheck(args[1:], stdout, stderr)
 	case "openai":
 		return true, "serf openai", runOpenAI(args[1:], stdin, stdout, stderr)
 	default:

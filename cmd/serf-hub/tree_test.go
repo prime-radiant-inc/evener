@@ -13,20 +13,20 @@ func TestBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 	now := time.Now()
 	metas := []agent.SessionMeta{
 		// Active branch — newer, holds the original session's name. Top-level.
-		{ID: "01ACTIVE", UpdatedAt: now, OriginalTask: "fix replay bug",
+		{ID: "01ACTIVE", UpdatedAt: now, OriginalPrompt: "fix replay bug",
 			EnvInfo:         agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
 			ParentSessionID: "01OLDORIG", DivergenceTurn: 7},
 		// Subagent of the active branch.
-		{ID: "01SUB1", UpdatedAt: now.Add(-time.Minute), OriginalTask: "verify",
+		{ID: "01SUB1", UpdatedAt: now.Add(-time.Minute), OriginalPrompt: "verify",
 			EnvInfo:         agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
 			ParentSessionID: "01ACTIVE", IsSubagent: true},
-		// Snapshotted original — older transcript preserved. Detected as a
-		// fork-original because 01ACTIVE references it via ParentSessionID +
-		// DivergenceTurn. Becomes a dim child of 01ACTIVE.
-		{ID: "01OLDORIG", UpdatedAt: now.Add(-2 * time.Hour), OriginalTask: "fix replay bug",
-			EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"}},
+		// Snapshotted original — older transcript preserved. Has ForkLabel.
+		// Becomes a dim child of 01ACTIVE (the active branch references it).
+		{ID: "01OLDORIG", UpdatedAt: now.Add(-2 * time.Hour), OriginalPrompt: "fix replay bug",
+			EnvInfo:   agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
+			ForkLabel: "before TDD"},
 		// Unrelated session in same project.
-		{ID: "01OTHER", UpdatedAt: now.Add(-15 * time.Minute), OriginalTask: "htmx swap",
+		{ID: "01OTHER", UpdatedAt: now.Add(-15 * time.Minute), OriginalPrompt: "htmx swap",
 			EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"}},
 	}
 	live := []LiveEntry{
@@ -68,9 +68,9 @@ func TestBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 	if children[1].ID != "01OLDORIG" || children[1].Kind != "fork" {
 		t.Errorf("[1]: %s/%s", children[1].ID, children[1].Kind)
 	}
-	// Fork title is suffixed with " · original".
-	if !strings.HasSuffix(children[1].Title, "· original") {
-		t.Errorf("fork title should end in '· original', got: %q", children[1].Title)
+	// Fork title includes the label.
+	if !strings.Contains(children[1].Title, "before TDD") {
+		t.Errorf("fork title missing label: %q", children[1].Title)
 	}
 
 	// 01OTHER has no children
@@ -94,11 +94,11 @@ func TestBuildTree_AttentionSortsLive(t *testing.T) {
 	// Live should sort: awaiting, processing, idle.
 	now := time.Now()
 	metas := []agent.SessionMeta{
-		{ID: "01IDLE", UpdatedAt: now.Add(-3 * time.Minute), OriginalTask: "idle task",
+		{ID: "01IDLE", UpdatedAt: now.Add(-3 * time.Minute), OriginalPrompt: "idle task",
 			EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
-		{ID: "01AWAIT", UpdatedAt: now.Add(-2 * time.Minute), OriginalTask: "awaiting task",
+		{ID: "01AWAIT", UpdatedAt: now.Add(-2 * time.Minute), OriginalPrompt: "awaiting task",
 			EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
-		{ID: "01PROC", UpdatedAt: now.Add(-1 * time.Minute), OriginalTask: "processing task",
+		{ID: "01PROC", UpdatedAt: now.Add(-1 * time.Minute), OriginalPrompt: "processing task",
 			EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
 	}
 	live := []LiveEntry{
@@ -130,11 +130,82 @@ func TestBuildTree_AttentionSortsLive(t *testing.T) {
 	}
 }
 
+func TestBuildTree_OrdersProjectSessionsByUpdatedCreatedTitleAndID(t *testing.T) {
+	updated := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	metas := []agent.SessionMeta{
+		{ID: "02OLD", CreatedAt: updated.Add(-2 * time.Hour), UpdatedAt: updated, OriginalPrompt: "beta task",
+			EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
+		{ID: "01NEW", CreatedAt: updated.Add(-time.Hour), UpdatedAt: updated, OriginalPrompt: "alpha task",
+			EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
+		{ID: "03TITLEB", CreatedAt: updated.Add(-3 * time.Hour), UpdatedAt: updated.Add(-time.Hour), OriginalPrompt: "bravo task",
+			EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
+		{ID: "04TITLEA", CreatedAt: updated.Add(-3 * time.Hour), UpdatedAt: updated.Add(-time.Hour), OriginalPrompt: "alpha task",
+			EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
+	}
+
+	tree := BuildTree(metas, nil)
+	if len(tree.Projects) != 1 {
+		t.Fatalf("projects=%d", len(tree.Projects))
+	}
+	got := make([]string, 0, len(tree.Projects[0].Sessions))
+	for _, node := range tree.Projects[0].Sessions {
+		got = append(got, node.ID)
+	}
+	want := []string{"01NEW", "02OLD", "04TITLEA", "03TITLEB"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("order=%v, want %v", got, want)
+	}
+}
+
+func TestBuildTree_OrdersLiveRowsWithoutMetasByStartedAtAndID(t *testing.T) {
+	base := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	live := []LiveEntry{
+		{Entry: rendezvous.Entry{PID: 1, StartedAt: base.Add(-time.Hour)}, SessionID: "02OLD", Status: "IDLE"},
+		{Entry: rendezvous.Entry{PID: 2, StartedAt: base}, SessionID: "01NEW", Status: "IDLE"},
+		{Entry: rendezvous.Entry{PID: 3, StartedAt: base.Add(-2 * time.Hour)}, SessionID: "04TIEA", Status: "IDLE"},
+		{Entry: rendezvous.Entry{PID: 4, StartedAt: base.Add(-2 * time.Hour)}, SessionID: "03TIEB", Status: "IDLE"},
+	}
+
+	tree := BuildTree(nil, live)
+	got := make([]string, 0, len(tree.Live))
+	for _, node := range tree.Live {
+		got = append(got, node.ID)
+	}
+	want := []string{"01NEW", "02OLD", "03TIEB", "04TIEA"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("live order=%v, want %v", got, want)
+	}
+}
+
+func TestBuildTree_OrdersMixedLiveRowsByMergedMetadata(t *testing.T) {
+	base := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	metas := []agent.SessionMeta{{
+		ID:             "01META",
+		UpdatedAt:      base.Add(time.Hour),
+		CreatedAt:      base.Add(-time.Hour),
+		OriginalPrompt: "meta-backed live row",
+	}}
+	live := []LiveEntry{
+		{Entry: rendezvous.Entry{PID: 1, StartedAt: base.Add(-2 * time.Hour)}, SessionID: "01META", Status: "IDLE"},
+		{Entry: rendezvous.Entry{PID: 2, StartedAt: base}, SessionID: "02FRESH", Status: "IDLE"},
+	}
+
+	tree := BuildTree(metas, live)
+	got := make([]string, 0, len(tree.Live))
+	for _, node := range tree.Live {
+		got = append(got, node.ID)
+	}
+	want := []string{"01META", "02FRESH"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("live order=%v, want %v", got, want)
+	}
+}
+
 func TestBuildTree_NoProjectFallback(t *testing.T) {
 	// A meta with empty WorkingDir — project name "(no project)".
 	now := time.Now()
 	metas := []agent.SessionMeta{
-		{ID: "01NOPROJ", UpdatedAt: now, OriginalTask: "orphan task",
+		{ID: "01NOPROJ", UpdatedAt: now, OriginalPrompt: "orphan task",
 			EnvInfo: agent.EnvironmentInfo{WorkingDir: ""}},
 	}
 	live := []LiveEntry{}

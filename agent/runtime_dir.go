@@ -12,10 +12,17 @@ import (
 // Otherwise: $XDG_STATE_HOME/serf/projects/<hash>/
 // where <hash> is derived from originURL (if non-empty) or workDir.
 func RuntimeDir(originURL, workDir, overrideDir string) string {
+	return RuntimeDirWithStateHome(originURL, workDir, overrideDir, "")
+}
+
+func RuntimeDirWithStateHome(originURL, workDir, overrideDir, stateHome string) string {
 	if overrideDir != "" {
 		return overrideDir
 	}
-	base := xdgStateHome()
+	base := stateHome
+	if base == "" {
+		base = xdgStateHome()
+	}
 	key := originURL
 	if key == "" {
 		key = workDir

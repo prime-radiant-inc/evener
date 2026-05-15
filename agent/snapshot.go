@@ -40,20 +40,36 @@ type SessionMeta struct {
 	UpdatedAt       time.Time       `json:"updated_at"`
 	TurnCount       int             `json:"turn_count"`
 	LastInputTokens int             `json:"last_input_tokens,omitempty"`
-	OriginalTask    string          `json:"original_task,omitempty"`
-	// ParentSessionID and DivergenceTurn are non-empty on sessions that
-	// branched from another via the fork operation. ParentSessionID names
-	// the original session (the one whose transcript prefix this session
-	// shares); DivergenceTurn is the turn index immediately after the shared
-	// prefix (the first turn unique to this branch). The parent session is
-	// never mutated by forking — readers detect the original branch by
-	// noting that some other meta references it via ParentSessionID.
+	OriginalPrompt  string          `json:"original_prompt,omitempty"`
+	// ParentSessionID, DivergenceTurn, and ForkLabel are non-empty on sessions
+	// that branched from another via the fork operation. ParentSessionID names
+	// the original session (the one whose transcript prefix this session shares);
+	// DivergenceTurn is the turn index immediately after the shared prefix
+	// (the first turn unique to this branch). ForkLabel, if set, is the
+	// user-supplied display name for the original branch.
 	ParentSessionID string `json:"parent_session_id,omitempty"`
 	DivergenceTurn  int    `json:"divergence_turn,omitempty"`
+	ForkLabel       string `json:"fork_label,omitempty"`
 	// IsSubagent is true on sessions spawned via spawn_agent.
 	// NOTE: The agent's spawn-subagent code does not yet set this field;
 	// wiring the write path is a follow-up task.
 	IsSubagent bool `json:"is_subagent,omitempty"`
+}
+
+func (m *SessionMeta) UnmarshalJSON(data []byte) error {
+	type sessionMetaAlias SessionMeta
+	var aux struct {
+		sessionMetaAlias
+		LegacyOriginalPrompt string `json:"original_task,omitempty"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	*m = SessionMeta(aux.sessionMetaAlias)
+	if m.OriginalPrompt == "" {
+		m.OriginalPrompt = aux.LegacyOriginalPrompt
+	}
+	return nil
 }
 
 const sessionsSubdir = "sessions"

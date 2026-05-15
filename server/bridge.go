@@ -31,6 +31,10 @@ func BridgeWithObserver(srv *Server, events <-chan agent.SessionEvent, observer 
 		if observer != nil {
 			observer(ev)
 		}
+		if !srv.acceptsSessionEvent(ev.SessionID) {
+			continue
+		}
+		srv.RecordAppEvent(ev)
 		data, _ := json.Marshal(ev.Data)
 
 		switch ev.Kind {

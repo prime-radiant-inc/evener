@@ -14,7 +14,15 @@ cd cmd/serf-hub/jstest
 npm init -y > /dev/null && npm install jsdom --silent
 node test-renderer.js
 node test-renderer-advanced.js
+node test-diagnostics.js
+node test-appwire-diagnostics.js
 node test-sidebar.js
+```
+
+Or run the full loop:
+
+```sh
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh
 ```
 
 Each script exits 0 on success and prints the rendered HTML on failure.

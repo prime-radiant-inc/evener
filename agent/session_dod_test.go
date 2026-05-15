@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -280,14 +281,6 @@ func TestSession_EventSystem_NaturalCompletion_EmitsUserAndAssistantTextEventsIn
 	}
 }
 
-// Verifies that the USER_INPUT event carries the 1-based transcript entry
-// index in UserInputData.Turn — the hub renderer uses this to identify the
-// turn for fork-from-turn instead of synthesizing a counter on the client.
-//
-// The exact entry indices depend on what other turns (assistant, tool
-// results, system) get appended between user inputs, so the test reads the
-// transcript and asserts the emitted Turn matches the actual entry index
-// of each USER_INPUT in the transcript.
 func TestSession_EventSystem_UserInputCarriesTurnIndex(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -332,8 +325,6 @@ func TestSession_EventSystem_UserInputCarriesTurnIndex(t *testing.T) {
 		t.Fatalf("expected 2 USER_INPUT events, got %d (turns=%v)", len(emittedTurns), emittedTurns)
 	}
 
-	// Cross-check: the emitted Turn values must match the 1-based entry
-	// indices of the USER_INPUT entries in the transcript.
 	tpath := filepath.Join(dir, sessionsSubdir, sessID+".transcript.jsonl")
 	_, entries, _, err := ReadTranscript(tpath)
 	if err != nil {
@@ -968,7 +959,7 @@ func (a *errAdapter) Complete(ctx context.Context, req llm.Request) (llm.Respons
 func (a *errAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	_ = ctx
 	_ = req
-	return nil, fmt.Errorf("stream not implemented in errAdapter")
+	return nil, llm.ErrStreamUnsupported
 }
 
 type flaky429Adapter struct {
@@ -990,7 +981,7 @@ func (a *flaky429Adapter) Complete(ctx context.Context, req llm.Request) (llm.Re
 func (a *flaky429Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	_ = ctx
 	_ = req
-	return nil, fmt.Errorf("stream not implemented in flaky429Adapter")
+	return nil, llm.ErrStreamUnsupported
 }
 
 func TestSession_AuthenticationError_ClosesSession(t *testing.T) {
@@ -1052,7 +1043,11 @@ func TestSession_ContextLengthError_EmitsWarningAndClosesSession(t *testing.T) {
 	end := false
 	for ev := range sess.Events() {
 		if ev.Kind == EventWarning {
-			if msg, ok := ev.DataMap()["message"].(string); ok && strings.Contains(msg, "Context length") {
+			data := ev.DataMap()
+			if msg, ok := data["message"].(string); ok && strings.Contains(msg, "Context length") {
+				if data["source"] != "provider" || data["title"] != "Provider error" {
+					t.Fatalf("warning diagnostic=%+v", data)
+				}
 				warn = true
 			}
 		}
@@ -1092,7 +1087,11 @@ func TestSession_LLMError_EmitsErrorEvent(t *testing.T) {
 	errEv := false
 	for ev := range sess.Events() {
 		if ev.Kind == EventError {
-			if s, _ := ev.DataMap()["error"].(string); strings.Contains(s, "openai") {
+			data := ev.DataMap()
+			if s, _ := data["error"].(string); strings.Contains(s, "openai") {
+				if data["source"] != "provider" || data["title"] != "Provider error" {
+					t.Fatalf("error diagnostic=%+v", data)
+				}
 				errEv = true
 			}
 		}
@@ -1100,6 +1099,117 @@ func TestSession_LLMError_EmitsErrorEvent(t *testing.T) {
 	if !errEv {
 		t.Fatalf("expected ERROR event")
 	}
+}
+
+func TestSession_LLMError_WritesStructuredAPICallDiagnostic(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	c := llm.NewClient()
+	a := &errAdapter{name: "openai", err: llm.ErrorFromHTTPStatus("openai", 500, "boom", nil, nil)}
+	c.Register(a)
+
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:       stateDir,
+		LLMRetryPolicy: &policy,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "hi", nil)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	sess.Close()
+	for range sess.Events() {
+	}
+
+	lines := readTranscriptLines(t, sess.TranscriptPath())
+	var got TranscriptAPICall
+	for _, line := range lines {
+		if strings.Contains(line, `"kind":"api_call"`) {
+			if err := json.Unmarshal([]byte(line), &got); err != nil {
+				t.Fatalf("unmarshal api call: %v", err)
+			}
+			break
+		}
+	}
+	if got.Kind != "api_call" {
+		t.Fatalf("api_call not found in transcript: %v", lines)
+	}
+	if got.Source != "provider" || got.Title != "Provider error" {
+		t.Fatalf("api_call diagnostic=%+v", got)
+	}
+}
+
+func TestSession_ConfigurationError_EmitsSerfDiagnosticEvent(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	a := &errAdapter{name: "openai", err: &llm.ConfigurationError{Message: "unknown provider: openrouter"}}
+	c.Register(a)
+
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		LLMRetryPolicy: &policy,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "hi", nil)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	sess.Close()
+
+	for ev := range sess.Events() {
+		if ev.Kind != EventError {
+			continue
+		}
+		data := ev.DataMap()
+		if data["source"] != "serf" || data["title"] != "Serf configuration error" {
+			t.Fatalf("error diagnostic=%+v", data)
+		}
+		return
+	}
+	t.Fatalf("expected ERROR event")
+}
+
+func TestSession_RuntimeError_EmitsSerfDiagnosticEvent(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	a := &errAdapter{name: "openai", err: errors.New("session runtime exploded")}
+	c.Register(a)
+
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		LLMRetryPolicy: &policy,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "hi", nil)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	sess.Close()
+
+	for ev := range sess.Events() {
+		if ev.Kind != EventError {
+			continue
+		}
+		data := ev.DataMap()
+		if data["source"] != "serf" || data["title"] != "Serf error" {
+			t.Fatalf("error diagnostic=%+v", data)
+		}
+		return
+	}
+	t.Fatalf("expected ERROR event")
 }
 
 func TestSession_LLMTransientErrors_RetryWithBackoff(t *testing.T) {
@@ -3656,17 +3766,6 @@ func TestSubagent_MaxTurns_DefaultsTo500_NotInheritedFromParent(t *testing.T) {
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
-			return llm.Response{
-				Message: llm.Message{
-					Role: llm.RoleAssistant,
-					Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-						ID: "c1", Name: "spawn_agent", Type: "function",
-						Arguments: json.RawMessage(`{"task":"test task"}`),
-					}}},
-				},
-			}
-		},
-		func(req llm.Request) llm.Response {
 			return finalResponse("done")
 		},
 	}}
@@ -3678,10 +3777,14 @@ func TestSubagent_MaxTurns_DefaultsTo500_NotInheritedFromParent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sess.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "spawn something", nil); err != nil {
-		t.Fatal(err)
+
+	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"test task"}`),
+	})
+	if spawnRes.IsError {
+		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
 	}
 
 	// Check the subagent's MaxTurns.
@@ -4489,5 +4592,94 @@ func TestSession_Subagent_AutoNudgeOnMissingCommunicate(t *testing.T) {
 	mu.Unlock()
 	if cc < 2 {
 		t.Errorf("expected at least 2 LLM calls (original + nudge), got %d", cc)
+	}
+}
+
+func TestSession_Subagent_AutoNudgeOnEmptyResponseExhaustion(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	var mu sync.Mutex
+	callCount := 0
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				mu.Lock()
+				callCount++
+				mu.Unlock()
+				return emptyResponse()
+			},
+			func(req llm.Request) llm.Response {
+				mu.Lock()
+				callCount++
+				mu.Unlock()
+				return emptyResponse()
+			},
+			func(req llm.Request) llm.Response {
+				mu.Lock()
+				callCount++
+				mu.Unlock()
+				return emptyResponse()
+			},
+			func(req llm.Request) llm.Response {
+				mu.Lock()
+				callCount++
+				mu.Unlock()
+				return emptyResponse()
+			},
+			func(req llm.Request) llm.Response {
+				mu.Lock()
+				callCount++
+				mu.Unlock()
+				return finalResponse("Recovered after nudge")
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.3-codex"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+	defer sess.Close()
+
+	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"survey the project"}`),
+	})
+	if spawnRes.IsError {
+		t.Fatal(spawnRes.Output)
+	}
+	var parsed map[string]any
+	json.Unmarshal([]byte(spawnRes.Output), &parsed)
+	agentID := fmt.Sprint(parsed["agent_id"])
+
+	waitRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c2",
+		Name:      "wait",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":120000}`, agentID)),
+	})
+	if waitRes.IsError {
+		t.Fatalf("wait error: %s", waitRes.Output)
+	}
+
+	var result SubAgentResult
+	json.Unmarshal([]byte(waitRes.Output), &result)
+	if !strings.Contains(result.Output, "Recovered after nudge") {
+		t.Errorf("expected nudged subagent to report findings via communicate, got: %q", result.Output)
+	}
+	mu.Lock()
+	cc := callCount
+	mu.Unlock()
+	if cc != 5 {
+		t.Errorf("expected 5 LLM calls (4 empty + nudge), got %d", cc)
 	}
 }

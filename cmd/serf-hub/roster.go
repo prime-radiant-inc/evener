@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -25,7 +27,7 @@ type LiveEntry struct {
 // session_id (which may have changed under POST /clear since the
 // rendezvous file was written) and the daemon's current state.
 type Prober interface {
-	Probe(addr string) (sessionID, status string, ok bool)
+	Probe(entry rendezvous.Entry) (sessionID, status string, ok bool)
 }
 
 // Roster maintains the live-daemon set on the host. Reads of the underlying
@@ -75,7 +77,7 @@ func (r *Roster) Refresh() {
 		var sessID, status string
 		ok := true
 		if r.prober != nil {
-			sessID, status, ok = r.prober.Probe(e.Address)
+			sessID, status, ok = r.prober.Probe(e)
 		}
 		if !ok {
 			r.failCount[e.PID]++
@@ -96,7 +98,9 @@ func (r *Roster) Refresh() {
 		r.failCount[e.PID] = 0
 		live := LiveEntry{Entry: e, SessionID: sessID, Status: status}
 		if sessID != "" {
-			bySess[sessID] = live
+			if prev, ok := bySess[sessID]; !ok || preferLiveEntry(live, prev) {
+				bySess[sessID] = live
+			}
 		}
 		byPID[e.PID] = live
 	}
@@ -116,11 +120,37 @@ func (r *Roster) Refresh() {
 func (r *Roster) List() []LiveEntry {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	bySession := make(map[string]LiveEntry, len(r.byPID))
 	out := make([]LiveEntry, 0, len(r.byPID))
 	for _, e := range r.byPID {
+		sessionID := firstNonEmpty(e.SessionID, e.Entry.SessionID, e.ThreadID)
+		if sessionID == "" {
+			out = append(out, e)
+			continue
+		}
+		if prev, ok := bySession[sessionID]; !ok || preferLiveEntry(e, prev) {
+			bySession[sessionID] = e
+		}
+	}
+	for _, e := range bySession {
 		out = append(out, e)
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return liveEntryLess(out[i], out[j])
+	})
 	return out
+}
+
+func preferLiveEntry(candidate, current LiveEntry) bool {
+	candidateAppWire := candidate.Protocol == appwire.ProtocolVersion && candidate.Endpoint != "" && candidate.ThreadID != ""
+	currentAppWire := current.Protocol == appwire.ProtocolVersion && current.Endpoint != "" && current.ThreadID != ""
+	if candidateAppWire != currentAppWire {
+		return candidateAppWire
+	}
+	if !candidate.StartedAt.Equal(current.StartedAt) {
+		return candidate.StartedAt.After(current.StartedAt)
+	}
+	return candidate.PID > current.PID
 }
 
 // Find returns the entry with the given session_id, or false if not present.
@@ -132,7 +162,7 @@ func (r *Roster) Find(sessionID string) (LiveEntry, bool) {
 }
 
 func ensureDir(dir string) error {
-	return os.MkdirAll(dir, 0o755)
+	return os.MkdirAll(dir, 0o700)
 }
 
 // Watch blocks: it scans once, then refreshes on every fsnotify event and

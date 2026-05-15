@@ -44,6 +44,29 @@ func TestAuthStorageSaveWritesExpectedPath(t *testing.T) {
 	}
 }
 
+func TestDefaultStateDirIsUserScoped(t *testing.T) {
+	xdgStateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", xdgStateHome)
+
+	got := DefaultStateDir()
+	want := filepath.Join(xdgStateHome, "serf")
+	if got != want {
+		t.Fatalf("DefaultStateDir() = %q, want %q", got, want)
+	}
+}
+
+func TestDefaultStateDirWithStateHomeUsesChildEnvStateHome(t *testing.T) {
+	processStateHome := filepath.Join(t.TempDir(), "process")
+	childStateHome := filepath.Join(t.TempDir(), "child")
+	t.Setenv("XDG_STATE_HOME", processStateHome)
+
+	got := DefaultStateDirWithStateHome(childStateHome)
+	want := filepath.Join(childStateHome, "serf")
+	if got != want {
+		t.Fatalf("DefaultStateDirWithStateHome() = %q, want %q", got, want)
+	}
+}
+
 func TestAuthStorageSaveIsAtomic(t *testing.T) {
 	stateDir := t.TempDir()
 	record := sampleAuthRecord()

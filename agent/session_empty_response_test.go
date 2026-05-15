@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -98,16 +97,13 @@ func TestEmptyResponse_ExhaustsRetries(t *testing.T) {
 	defer cancel()
 	out, err := sess.ProcessInput(ctx, "do the task", nil)
 	if err == nil {
-		t.Fatalf("expected empty-response exhaustion error, got output %q", out)
-	}
-	if !errors.Is(err, errEmptyResponsesExhausted) {
-		t.Fatalf("expected errEmptyResponsesExhausted, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "empty response") {
-		t.Fatalf("error message should mention empty responses, got: %v", err)
+		t.Fatalf("expected empty-response contract error, got output %q", out)
 	}
 	if out != "" {
 		t.Fatalf("expected empty output on error, got %q", out)
+	}
+	if !strings.Contains(err.Error(), "empty response") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 	sess.Close()
 

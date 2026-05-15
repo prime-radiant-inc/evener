@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -17,30 +18,31 @@ import (
 )
 
 const (
-	defaultAPIBaseURL      = "https://api.openai.com"
-	defaultResponsesPath   = "/v1/responses"
-	defaultChatGPTBaseURL  = "https://chatgpt.com"
-	defaultCodexResponses  = "/backend-api/codex/responses"
+	defaultAPIBaseURL     = "https://api.openai.com"
+	defaultResponsesPath  = "/v1/responses"
+	defaultChatGPTBaseURL = "https://chatgpt.com"
+	defaultCodexResponses = "/backend-api/codex/responses"
+	// ChatGPT Codex /models requires semver, and 0.0.0 is the Codex
+	// workspace development version without claiming a Codex release.
+	codexClientVersion = "0.0.0"
 )
 
-type Config struct {
-	StateDir string
-}
+type Config struct{}
 
 type Adapter struct {
-	APIKey         string
-	BaseURL        string
-	ResponsesPath  string
-	OrgID          string
-	ProjectID      string
+	APIKey           string
+	BaseURL          string
+	ResponsesPath    string
+	OrgID            string
+	ProjectID        string
 	ChatGPTAccountID string
-	Client         *http.Client
-	DefaultHeaders map[string]string
+	Client           *http.Client
+	DefaultHeaders   map[string]string
 }
 
 func init() {
-	llm.RegisterEnvAdapterFactory(func(cfg llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
-		a, err := NewFromEnv(Config{StateDir: cfg.StateDir})
+	llm.RegisterEnvAdapterFactory(func(llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
+		a, err := NewFromEnv()
 		if err != nil {
 			if isUnconfigured(err) {
 				return nil, false, nil
@@ -52,11 +54,6 @@ func init() {
 }
 
 func NewFromEnv(cfgs ...Config) (*Adapter, error) {
-	var cfg Config
-	if len(cfgs) > 0 {
-		cfg = cfgs[0]
-	}
-
 	key := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	if key != "" {
 		base := strings.TrimSpace(os.Getenv("OPENAI_BASE_URL"))
@@ -74,12 +71,9 @@ func NewFromEnv(cfgs ...Config) (*Adapter, error) {
 		}, nil
 	}
 
-	if strings.TrimSpace(cfg.StateDir) == "" {
-		return nil, fmt.Errorf("no OpenAI credentials configured")
-	}
-
+	authStateDir := authopenai.DefaultStateDir()
 	service := authopenai.NewService(authopenai.DefaultConfig(), nil)
-	status, err := service.Status(cfg.StateDir)
+	status, err := service.Status(authStateDir)
 	if err != nil {
 		return nil, fmt.Errorf("load OpenAI auth: %w", err)
 	}
@@ -87,11 +81,11 @@ func NewFromEnv(cfgs ...Config) (*Adapter, error) {
 		return nil, fmt.Errorf("no OpenAI credentials configured")
 	}
 
-	creds, err := service.ResolveRuntimeCredentials(context.Background(), cfg.StateDir)
+	creds, err := service.ResolveRuntimeCredentials(context.Background(), authStateDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve OpenAI auth: %w", err)
 	}
-	status, err = service.Status(cfg.StateDir)
+	status, err = service.Status(authStateDir)
 	if err != nil {
 		return nil, fmt.Errorf("refresh OpenAI auth status: %w", err)
 	}
@@ -104,7 +98,7 @@ func NewFromEnv(cfgs ...Config) (*Adapter, error) {
 		accountID = strings.TrimSpace(status.WorkspaceID)
 	}
 	if accountID == "" {
-		record, loadErr := authopenai.LoadAuth(cfg.StateDir)
+		record, loadErr := authopenai.LoadAuth(authStateDir)
 		if loadErr == nil {
 			if claims, parseErr := authopenai.ParseIDTokenClaims(record.IDToken); parseErr == nil {
 				accountID = strings.TrimSpace(claims.AccountID)
@@ -1155,7 +1149,7 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 		a.Client = &http.Client{Timeout: 0}
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, a.BaseURL+"/v1/models", nil)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, a.modelsURL(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1176,6 +1170,12 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 			ID      string `json:"id"`
 			OwnedBy string `json:"owned_by"`
 		} `json:"data"`
+		Models []struct {
+			Slug        string `json:"slug"`
+			ID          string `json:"id"`
+			Model       string `json:"model"`
+			DisplayName string `json:"display_name"`
+		} `json:"models"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, err
@@ -1192,8 +1192,52 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 			DisplayName: m.ID,
 		})
 	}
+	for _, m := range result.Models {
+		id := firstNonEmpty(m.Slug, m.Model, m.ID)
+		if id == "" || skipOpenAIModel(id) {
+			continue
+		}
+		models = append(models, llm.ModelInfo{
+			ID:          id,
+			Provider:    "openai",
+			DisplayName: firstNonEmpty(m.DisplayName, id),
+		})
+	}
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 	return models, nil
+}
+
+func (a *Adapter) modelsURL() string {
+	if a.usesCodexBackend() {
+		u := a.codexBackendURL("models")
+		sep := "?"
+		if strings.Contains(u, "?") {
+			sep = "&"
+		}
+		return u + sep + url.Values{"client_version": []string{codexClientVersion}}.Encode()
+	}
+	return strings.TrimRight(a.BaseURL, "/") + "/v1/models"
+}
+
+func (a *Adapter) usesCodexBackend() bool {
+	return a.ChatGPTAccountID != "" || strings.TrimSpace(a.ResponsesPath) == defaultCodexResponses
+}
+
+func (a *Adapter) codexBackendURL(path string) string {
+	base := strings.TrimRight(a.BaseURL, "/")
+	if strings.HasSuffix(base, "/backend-api/codex") {
+		return base + "/" + strings.TrimLeft(path, "/")
+	}
+	return base + "/backend-api/codex/" + strings.TrimLeft(path, "/")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func skipOpenAIModel(id string) bool {

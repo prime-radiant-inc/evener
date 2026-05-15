@@ -69,30 +69,45 @@ func main() {
 	}
 	stateGlob := cfg.StateGlob
 	if stateGlob == "" {
-		stateGlob = filepath.Join(home, ".local", "state", "serf", "projects", "*")
+		stateGlob = DefaultStateGlob()
+	}
+	pastIndexDB := cfg.PastIndexDB
+	if pastIndexDB == "" {
+		pastIndexDB = DefaultPastIndexDBPath()
 	}
 
 	// Roster + past index
 	prober := &StatusProber{Timeout: 500 * time.Millisecond}
 	roster := NewRoster(runDir, prober)
 
-	past := NewPastIndex(stateGlob)
+	past := NewPastIndexWithDB(stateGlob, pastIndexDB)
 	if err := past.Rebuild(); err != nil {
 		fmt.Fprintf(os.Stderr, "[hub] past index rebuild: %v\n", err)
 	}
 
 	// Spawner
+	hubToken, err := newHubToken()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[hub] %v\n", err)
+		os.Exit(1)
+	}
 	spawner := &HubSpawner{
 		Cfg:        cfg,
 		SerfBinary: *serfBinary,
 		RunDir:     runDir,
+		HubToken:   hubToken,
+	}
+	var codexLauncher *CodexLauncher
+	if len(cfg.CodexLaunches) > 0 {
+		codexLauncher = NewCodexLauncher(cfg.CodexLaunches)
 	}
 
 	// stateDir is the parent of the projects/ directory; used for ForkSession
 	// as a fallback when a session's project dir can't be found in the past index.
 	stateDir := filepath.Dir(filepath.Clean(strings.TrimSuffix(stateGlob, "*")))
 
-	// Build model list from provider config for the spawn chip.
+	// Keep configured providers available for settings; launch choices come
+	// from the Serf harness contract exposed by HubSpawner.
 	var models []modelDescriptor
 	for _, p := range cfg.Providers {
 		for _, m := range p.Models {
@@ -102,14 +117,18 @@ func main() {
 
 	// Web
 	web := NewWebServer(WebConfig{
-		HubAddr:     cfg.Addr,
-		RunDir:      runDir,
-		Roster:      roster,
-		Past:        past,
-		Spawner:     spawner,
-		Models:      models,
-		PastPerPage: cfg.PastResultsPerPage,
-		StateDir:    stateDir,
+		HubAddr:       cfg.Addr,
+		RunDir:        runDir,
+		Roster:        roster,
+		Past:          past,
+		Spawner:       spawner,
+		Models:        models,
+		PastPerPage:   cfg.PastResultsPerPage,
+		StateDir:      stateDir,
+		SerfLaunchEnv: cfg.SerfLaunch.Env,
+		CodexSources:  cfg.CodexSources,
+		CodexLaunches: cfg.CodexLaunches,
+		CodexLauncher: codexLauncher,
 	})
 
 	// Lifecycle
@@ -145,6 +164,9 @@ func main() {
 		shutdownCtx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer scancel()
 		_ = srv.Shutdown(shutdownCtx)
+		if codexLauncher != nil {
+			_ = codexLauncher.Shutdown(shutdownCtx)
+		}
 	}()
 
 	fmt.Fprintf(os.Stderr, "[hub] serf-hub %s listening on %s (run_dir=%s)\n", Version, cfg.Addr, runDir)

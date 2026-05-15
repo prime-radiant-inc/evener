@@ -454,7 +454,7 @@ func (a *subagent) run(ctx context.Context, input string) {
 	// loop before the subagent had a chance to report back.
 	shouldNudge := a.nudgeEnabled &&
 		!a.sess.Communicated() &&
-		(err == nil || errors.Is(err, errBareTextWithoutResultTool))
+		(err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted))
 	if shouldNudge {
 		res, err = a.sess.ProcessInput(ctx, communicateNudge(a.sess.resultToolName()), nil)
 	}

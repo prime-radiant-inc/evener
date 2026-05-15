@@ -1,6 +1,11 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 )
@@ -40,6 +45,20 @@ type colorTheme struct {
 	pickerNormalFg   lipgloss.Color
 	pickerDimFg      lipgloss.Color
 	pickerActiveFg   lipgloss.Color
+}
+
+type tuiStyles struct {
+	Title      lipgloss.Style
+	Section    lipgloss.Style
+	Muted      lipgloss.Style
+	Selected   lipgloss.Style
+	Pane       lipgloss.Style
+	Modal      lipgloss.Style
+	Error      lipgloss.Style
+	Idle       lipgloss.Style
+	Processing lipgloss.Style
+	Waiting    lipgloss.Style
+	Ended      lipgloss.Style
 }
 
 var darkTheme = colorTheme{
@@ -102,10 +121,34 @@ var lightTheme = colorTheme{
 	pickerActiveFg:   lipgloss.Color("244"),
 }
 
+func defaultTUIStyles() tuiStyles {
+	t := effectiveTUITheme()
+	return tuiStyles{
+		Title:      lipgloss.NewStyle().Bold(true).Foreground(t.statusBarFg).Background(t.statusBarBg),
+		Section:    lipgloss.NewStyle().Bold(true).Foreground(t.pickerTitleFg),
+		Muted:      lipgloss.NewStyle().Foreground(t.pickerDimFg),
+		Selected:   lipgloss.NewStyle().Foreground(t.userBlockFg).Background(t.userBlockBg).Bold(true),
+		Pane:       lipgloss.NewStyle().Foreground(t.statusBarFg).Background(t.statusBarBg).PaddingLeft(2).PaddingRight(1),
+		Modal:      lipgloss.NewStyle().Foreground(t.statusBarFg).Background(t.statusBarBg).Border(lipgloss.RoundedBorder()).BorderForeground(t.inputBorderFg).PaddingLeft(2).PaddingRight(2),
+		Error:      lipgloss.NewStyle().Foreground(t.disconnected).Bold(true),
+		Idle:       lipgloss.NewStyle().Foreground(t.connected),
+		Processing: lipgloss.NewStyle().Foreground(lipgloss.Color("111")),
+		Waiting:    lipgloss.NewStyle().Foreground(lipgloss.Color("210")),
+		Ended:      lipgloss.NewStyle().Foreground(t.pickerDimFg),
+	}
+}
+
+func effectiveTUITheme() colorTheme {
+	if activeTheme.statusBarFg == "" && activeTheme.statusBarBg == "" {
+		return darkTheme
+	}
+	return activeTheme
+}
+
 // activeTheme is set once at startup by initTheme().
 var activeTheme colorTheme
 
-// activeThemeName tracks the name of the active theme ("dark" or "light").
+// activeThemeName tracks the selected theme ("system", "dark", or "light").
 var activeThemeName string
 
 // Derived style vars — re-initialized by initTheme().
@@ -147,20 +190,29 @@ var (
 // initTheme detects the terminal background and populates all style vars.
 // Call once at program startup before creating the bubbletea program.
 func initTheme() {
-	if termenv.HasDarkBackground() {
-		activeTheme = darkTheme
-		activeThemeName = "dark"
-	} else {
-		activeTheme = lightTheme
-		activeThemeName = "light"
-	}
-	applyTheme(activeTheme)
+	setTheme("system")
 }
 
-// setTheme switches to the named theme ("dark" or "light"). Returns false if
-// the name is unrecognised.
+func initThemeFromStateDir(stateDir string) {
+	if name, ok := loadThemePreference(stateDir); ok && setTheme(name) {
+		return
+	}
+	setTheme("system")
+}
+
+func systemTheme() colorTheme {
+	if termenv.HasDarkBackground() {
+		return darkTheme
+	}
+	return lightTheme
+}
+
+// setTheme switches to the named theme. Returns false if the name is unrecognised.
 func setTheme(name string) bool {
 	switch name {
+	case "system":
+		activeTheme = systemTheme()
+		activeThemeName = "system"
 	case "dark":
 		activeTheme = darkTheme
 		activeThemeName = "dark"
@@ -174,9 +226,74 @@ func setTheme(name string) bool {
 	return true
 }
 
+func setThemeAndPersist(stateDir, name string) bool {
+	if !setTheme(name) {
+		return false
+	}
+	_ = saveThemePreference(stateDir, name)
+	return true
+}
+
 // currentThemeName returns the name of the active theme.
 func currentThemeName() string {
 	return activeThemeName
+}
+
+type tuiPreferences struct {
+	Theme string `json:"theme"`
+}
+
+func themePreferencePath(stateDir string) string {
+	stateDir = strings.TrimSpace(stateDir)
+	if stateDir == "" {
+		return ""
+	}
+	return filepath.Join(stateDir, "tui", "preferences.json")
+}
+
+func loadThemePreference(stateDir string) (string, bool) {
+	path := themePreferencePath(stateDir)
+	if path == "" {
+		return "", false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	var prefs tuiPreferences
+	if err := json.Unmarshal(data, &prefs); err != nil {
+		return "", false
+	}
+	name := strings.TrimSpace(prefs.Theme)
+	if !validThemeName(name) {
+		return "", false
+	}
+	return name, true
+}
+
+func saveThemePreference(stateDir, name string) error {
+	path := themePreferencePath(stateDir)
+	if path == "" || !validThemeName(name) {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(tuiPreferences{Theme: name}, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	return os.WriteFile(path, data, 0o644)
+}
+
+func validThemeName(name string) bool {
+	switch name {
+	case "system", "dark", "light":
+		return true
+	default:
+		return false
+	}
 }
 
 func applyTheme(t colorTheme) {

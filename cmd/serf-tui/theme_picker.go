@@ -6,12 +6,12 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-var themePickerItems = []string{"dark", "light"}
+var themePickerItems = []string{"system", "dark", "light"}
 
 type themePicker struct {
-	cursor    int
-	done      bool
-	selected  string // set on enter; "" means cancelled
+	cursor   int
+	done     bool
+	selected string // set on enter; "" means cancelled
 }
 
 func newThemePicker() themePicker {
@@ -70,6 +70,6 @@ func (p themePicker) View() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(mpDimStyle.Render("↑/↓ navigate  enter select  esc cancel"))
-	return b.String()
+	b.WriteString(mpDimStyle.Render("up/down navigate  enter select  esc cancel"))
+	return renderPopupPane(b.String(), 44)
 }

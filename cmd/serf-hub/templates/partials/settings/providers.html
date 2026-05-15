@@ -11,6 +11,17 @@
   {{end}}
 </div>
 {{else}}
-<p class="settings-help">No providers configured. Add <code>[[providers]]</code> blocks to <code>~/.serf/hub.toml</code>.</p>
+<p class="settings-help">No launch models reported by the Serf harness. Check provider credentials in the hub environment or <code>[serf_launch.env]</code>.</p>
+{{end}}
+{{if .ModelDiagnostics}}
+<div class="settings-rows">
+  {{range .ModelDiagnostics}}
+  <div class="settings-row">
+    <div class="settings-row-title">{{if .Provider}}{{.Provider}}{{else}}model list{{end}}</div>
+    <div class="settings-row-meta">{{if .Title}}{{.Title}}{{else}}Model list unavailable{{end}}</div>
+    <div class="settings-row-detail">{{.Message}}</div>
+  </div>
+  {{end}}
+</div>
 {{end}}
 {{end}}

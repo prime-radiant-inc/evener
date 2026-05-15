@@ -47,9 +47,9 @@ func TestNewSessionFromEnv(t *testing.T) {
 	}
 }
 
-// TestProcessInputSimpleTask sends a simple prompt to the model and verifies
+// TestProcessInputSimplePrompt sends a simple prompt to the model and verifies
 // that the session returns a non-empty text response.
-func TestProcessInputSimpleTask(t *testing.T) {
+func TestProcessInputSimplePrompt(t *testing.T) {
 	if os.Getenv("OPENAI_API_KEY") == "" {
 		t.Skip("OPENAI_API_KEY not set")
 	}
@@ -82,7 +82,7 @@ func TestProcessInputSimpleTask(t *testing.T) {
 	}
 }
 
-// TestProcessInputWithToolUse sends a task that requires the model to use a tool
+// TestProcessInputWithToolUse sends a prompt that requires the model to use a tool
 // (write a file), then verifies the file was created.
 func TestProcessInputWithToolUse(t *testing.T) {
 	if os.Getenv("OPENAI_API_KEY") == "" {
@@ -168,9 +168,37 @@ func TestOpenAIHelpShowsCommands(t *testing.T) {
 	}
 }
 
+func TestOpenAIStateDirDefaultIsUserScoped(t *testing.T) {
+	xdgStateHome := t.TempDir()
+	projectStateDir := filepath.Join(t.TempDir(), "project-state")
+	t.Setenv("XDG_STATE_HOME", xdgStateHome)
+	t.Setenv("SERF_STATE_DIR", projectStateDir)
+
+	workDirA := filepath.Join(t.TempDir(), "repo-a")
+	workDirB := filepath.Join(t.TempDir(), "repo-b")
+	if err := os.MkdirAll(workDirA, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(workDirB, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	gotA, err := resolveOpenAIStateDir(workDirA, "")
+	if err != nil {
+		t.Fatalf("resolveOpenAIStateDir() error = %v", err)
+	}
+	gotB, err := resolveOpenAIStateDir(workDirB, "")
+	if err != nil {
+		t.Fatalf("resolveOpenAIStateDir() error = %v", err)
+	}
+	want := filepath.Join(xdgStateHome, "serf")
+	if gotA != want || gotB != want {
+		t.Fatalf("state dirs = %q, %q; want both %q", gotA, gotB, want)
+	}
+}
+
 func TestOpenAILoginPrintsURLAndSupportsManualFallback(t *testing.T) {
 	stateDir := t.TempDir()
-	t.Setenv("SERF_STATE_DIR", stateDir)
 	redirectURL := "http://127.0.0.1:1455/auth/callback?code=manual-code&state=expected-state"
 
 	origLogin := openAILoginAction
@@ -208,7 +236,7 @@ func TestOpenAILoginPrintsURLAndSupportsManualFallback(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	if err := runOpenAI([]string{"login"}, strings.NewReader(redirectURL+"\n"), &stdout, &stderr); err != nil {
+	if err := runOpenAI([]string{"login", "--state-dir", stateDir}, strings.NewReader(redirectURL+"\n"), &stdout, &stderr); err != nil {
 		t.Fatalf("runOpenAI() error = %v", err)
 	}
 
@@ -225,7 +253,6 @@ func TestOpenAILoginPrintsURLAndSupportsManualFallback(t *testing.T) {
 
 func TestOpenAIStatusIsCompactAndScriptFriendly(t *testing.T) {
 	stateDir := t.TempDir()
-	t.Setenv("SERF_STATE_DIR", stateDir)
 
 	origStatus := openAIStatusAction
 	t.Cleanup(func() { openAIStatusAction = origStatus })
@@ -248,7 +275,7 @@ func TestOpenAIStatusIsCompactAndScriptFriendly(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	if err := runOpenAI([]string{"status"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+	if err := runOpenAI([]string{"status", "--state-dir", stateDir}, strings.NewReader(""), &stdout, &stderr); err != nil {
 		t.Fatalf("runOpenAI() error = %v", err)
 	}
 
@@ -262,7 +289,6 @@ func TestOpenAIStatusIsCompactAndScriptFriendly(t *testing.T) {
 
 func TestOpenAILogoutDeletesOnlySerfOwnedAuthState(t *testing.T) {
 	stateDir := t.TempDir()
-	t.Setenv("SERF_STATE_DIR", stateDir)
 
 	if err := authopenai.SaveAuth(stateDir, authopenai.AuthRecord{
 		Version:      1,
@@ -284,7 +310,7 @@ func TestOpenAILogoutDeletesOnlySerfOwnedAuthState(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	if err := runOpenAI([]string{"logout"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+	if err := runOpenAI([]string{"logout", "--state-dir", stateDir}, strings.NewReader(""), &stdout, &stderr); err != nil {
 		t.Fatalf("runOpenAI() error = %v", err)
 	}
 

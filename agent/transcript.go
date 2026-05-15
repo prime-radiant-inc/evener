@@ -57,6 +57,9 @@ type TranscriptAPICall struct {
 	Request      llm.APILogRequest   `json:"request"`
 	Response     *llm.APILogResponse `json:"response,omitempty"`
 	Error        string              `json:"error,omitempty"`
+	Source       string              `json:"source,omitempty"`
+	Title        string              `json:"title,omitempty"`
+	Hint         string              `json:"hint,omitempty"`
 }
 
 // TranscriptWriter appends turns to an immutable JSONL transcript file.

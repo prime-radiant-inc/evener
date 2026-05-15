@@ -1,0 +1,26 @@
+package appsource
+
+import (
+	"context"
+
+	"primeradiant.com/serf/internal/appwire"
+)
+
+type Source interface {
+	ID() string
+	ListThreads(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error)
+	ReadThread(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error)
+	StartThread(context.Context, appwire.ThreadStartParams) (appwire.ThreadStartResponse, error)
+	ResumeThread(context.Context, appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error)
+	ForkThread(context.Context, appwire.ThreadForkParams) (appwire.ThreadForkResponse, error)
+	StartTurn(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error)
+	SteerTurn(context.Context, appwire.TurnSteerParams) error
+	InterruptTurn(context.Context, appwire.TurnInterruptParams) error
+	CompactThread(context.Context, appwire.ThreadCompactStartParams) error
+	ShutdownThread(context.Context, appwire.ThreadShutdownParams) error
+	SetThreadModel(context.Context, appwire.ThreadModelSetParams) error
+	ClearThread(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error)
+	ListModels(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error)
+	ListTasks(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error)
+	SubscribeThread(context.Context, appwire.ThreadReadParams) (<-chan appwire.Notification, error)
+}

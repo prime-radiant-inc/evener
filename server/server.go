@@ -9,6 +9,8 @@ import (
 	"sync"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/internal/appserver"
+	"primeradiant.com/serf/internal/appwire"
 )
 
 // ImageAttachment is re-exported from package agent so HTTP clients and the
@@ -97,15 +99,23 @@ type ActionCapabilities struct {
 // ServerConfig holds configuration for the HTTP server.
 type ServerConfig struct {
 	RingBufferSize int // default: 1000
+	HubToken       string
+	AllowedHost    string
 }
 
 // Server is the HTTP server that bridges an agent.Session to REST+SSE clients.
 type Server struct {
 	mux         *http.ServeMux
 	broadcaster *Broadcaster
+	appServer   *appserver.Server
+	appNotifier *appserver.Notifier
 
 	mu               sync.RWMutex
 	status           StatusInfo
+	appSourceID      string
+	appThreadID      string
+	appProjector     *AppEventProjector
+	appActiveTurnID  string
 	cancelFunc       context.CancelFunc
 	steerFunc        func(string)
 	compactFunc      func(context.Context) error
@@ -118,6 +128,8 @@ type Server struct {
 	shutdownFunc     func()
 	processing       bool
 	inputCh          chan InputMessage
+	hubToken         string
+	sameOrigin       sameOriginPolicy
 }
 
 // NewServer creates a new Server.
@@ -130,8 +142,30 @@ func NewServer(cfg ServerConfig) *Server {
 	s := &Server{
 		mux:         http.NewServeMux(),
 		broadcaster: NewBroadcaster(ringSize),
+		appServer: appserver.NewServer(appserver.ServerConfig{
+			ServerName: "serf-serve",
+			SourceID:   "local",
+			Features: appwire.FeatureSet{
+				ThreadList:        true,
+				ThreadTurnsList:   false,
+				TurnStart:         true,
+				TurnSteer:         true,
+				ThreadClear:       true,
+				ThreadShutdown:    true,
+				ForkFromTurn:      false,
+				Tasks:             true,
+				ModelList:         true,
+				DirectoryComplete: false,
+			},
+		}),
+		appNotifier: appserver.NewNotifier(ringSize),
+		appSourceID: "local",
 		inputCh:     make(chan InputMessage, 1),
+		hubToken:    strings.TrimSpace(cfg.HubToken),
+		sameOrigin:  newSameOriginPolicy(cfg.AllowedHost),
 	}
+	s.registerAppWireHandlers()
+	s.mux.HandleFunc("/rpc", s.appServer.ServeWebSocket)
 	s.mux.HandleFunc("/status", s.handleStatus)
 	s.mux.HandleFunc("/interrupt", s.handleInterrupt)
 	s.mux.HandleFunc("/steer", s.handleSteer)
@@ -147,6 +181,15 @@ func NewServer(cfg ServerConfig) *Server {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if message := s.sameOrigin.rejection(r); message != "" {
+		http.Error(w, message, http.StatusForbidden)
+		return
+	}
+	if !hubTokenAuthorized(s.hubToken, r.Header.Get("Authorization")) {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		http.Error(w, "missing or invalid bearer token", http.StatusUnauthorized)
+		return
+	}
 	s.mux.ServeHTTP(w, r)
 }
 
@@ -446,14 +489,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	pfn := s.pressureFn
 	dfn := s.detailedStatusFn
 	processing := s.processing
+	closed := appStatus(status.State, processing) == appwire.ThreadStatusClosed
 	capabilities := ActionCapabilities{
-		Send:        !processing,
+		Send:        !processing && !closed,
 		Steer:       s.steerFunc != nil,
 		Interrupt:   s.cancelFunc != nil,
-		Compact:     s.compactFunc != nil,
-		Clear:       s.clearFunc != nil && !processing,
+		Compact:     s.compactFunc != nil && !closed,
+		Clear:       s.clearFunc != nil && !processing && !closed,
 		Shutdown:    s.shutdownFunc != nil,
-		ChangeModel: s.modelFunc != nil,
+		ChangeModel: s.modelFunc != nil && !closed,
 	}
 	s.mu.RUnlock()
 
@@ -511,8 +555,13 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.RLock()
 	processing := s.processing
+	closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
 	s.mu.RUnlock()
 
+	if closed {
+		http.Error(w, "session is closed", http.StatusConflict)
+		return
+	}
 	if processing {
 		http.Error(w, "session is processing", http.StatusConflict)
 		return

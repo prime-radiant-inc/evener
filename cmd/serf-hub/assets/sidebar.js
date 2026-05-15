@@ -1,27 +1,27 @@
-// Sidebar project collapse/expand. Per-project state is persisted under
-// localStorage["serf-hub.sidebar.collapsed.<key>"] = "true" | (absent).
+// Sidebar project collapse/expand. Projects default collapsed; explicit
+// expansions persist under localStorage["serf-hub.sidebar.expanded.<key>"].
 // The chevron glyph is the only click target on the header — count and
 // rollup dot remain passive so they don't accidentally toggle when users
 // glance at the row.
 (function () {
   "use strict";
 
-  var STORAGE_PREFIX = "serf-hub.sidebar.collapsed.";
+  var STORAGE_PREFIX = "serf-hub.sidebar.expanded.";
 
   function isCollapsed(key) {
     try {
-      return window.localStorage.getItem(STORAGE_PREFIX + key) === "true";
+      return window.localStorage.getItem(STORAGE_PREFIX + key) !== "true";
     } catch (e) {
-      return false;
+      return true;
     }
   }
 
   function setCollapsed(key, collapsed) {
     try {
       if (collapsed) {
-        window.localStorage.setItem(STORAGE_PREFIX + key, "true");
-      } else {
         window.localStorage.removeItem(STORAGE_PREFIX + key);
+      } else {
+        window.localStorage.setItem(STORAGE_PREFIX + key, "true");
       }
     } catch (e) {
       // localStorage may be disabled; collapse still works for this session.

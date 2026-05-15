@@ -177,15 +177,15 @@ func (s *SessionLogStrategy) sessionLogCheckpoint(history []Turn, preserveRecent
 		return history
 	}
 
-	// Extract original task from old history (same logic as checkpoint()).
-	originalTask := extractOriginalTask(history[:cutoff])
-	if len(originalTask) > 500 {
-		originalTask = originalTask[:500] + "..."
+	// Extract original prompt from old history (same logic as checkpoint()).
+	originalPrompt := extractOriginalPrompt(history[:cutoff])
+	if len(originalPrompt) > 500 {
+		originalPrompt = originalPrompt[:500] + "..."
 	}
 
 	var b strings.Builder
 	b.WriteString("[CONTEXT CHECKPOINT - SESSION LOG]\n")
-	b.WriteString(fmt.Sprintf("Original task: %s\n\n", originalTask))
+	b.WriteString(fmt.Sprintf("Original prompt: %s\n\n", originalPrompt))
 
 	b.WriteString("Session log:\n")
 	logStr := s.log.String()
@@ -203,22 +203,20 @@ func (s *SessionLogStrategy) sessionLogCheckpoint(history []Turn, preserveRecent
 	return result
 }
 
-// extractOriginalTask finds the original user task from history, handling
+// extractOriginalPrompt finds the original user prompt from history, handling
 // previous checkpoints and summaries.
-func extractOriginalTask(history []Turn) string {
+func extractOriginalPrompt(history []Turn) string {
 	for _, t := range history {
 		if t.Kind != TurnUserInput {
 			continue
 		}
 		text := t.Message.Text()
 		if strings.HasPrefix(text, "[CONTEXT CHECKPOINT]") || strings.HasPrefix(text, "[CONTEXT CHECKPOINT - SESSION LOG]") {
-			// Extract "Original task: ..." from a previous checkpoint.
-			if idx := strings.Index(text, "Original task: "); idx >= 0 {
-				rest := text[idx+len("Original task: "):]
-				if nl := strings.Index(rest, "\n"); nl >= 0 {
-					return rest[:nl]
-				}
-				return rest
+			if prompt := extractOriginalPromptLine(text, "Original prompt: "); prompt != "" {
+				return prompt
+			}
+			if prompt := extractOriginalPromptLine(text, "Original task: "); prompt != "" {
+				return prompt
 			}
 			continue
 		}
@@ -228,6 +226,18 @@ func extractOriginalTask(history []Turn) string {
 		return text
 	}
 	return ""
+}
+
+func extractOriginalPromptLine(text, prefix string) string {
+	idx := strings.Index(text, prefix)
+	if idx < 0 {
+		return ""
+	}
+	rest := text[idx+len(prefix):]
+	if nl := strings.Index(rest, "\n"); nl >= 0 {
+		return rest[:nl]
+	}
+	return rest
 }
 
 // AfterAction forks a summarization of the recent turns and appends the

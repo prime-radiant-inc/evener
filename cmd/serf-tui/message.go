@@ -13,18 +13,36 @@ import (
 )
 
 var markdownRenderer *glamour.TermRenderer
+var markdownRendererWidth int
 
 func initMarkdownRenderer(width int) {
+	if width <= 0 {
+		width = 80
+	}
 	r, err := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
-		glamour.WithWordWrap(width-4),
+		glamour.WithStandardStyle(markdownStyleName()),
+		glamour.WithWordWrap(max(1, width-4)),
 	)
 	if err == nil {
 		markdownRenderer = r
+		markdownRendererWidth = width
 	}
 }
 
-func renderMarkdown(text string) string {
+func markdownStyleName() string {
+	if effectiveTUITheme() == lightTheme {
+		return "light"
+	}
+	return "dark"
+}
+
+func renderMarkdown(text string, width int) string {
+	if !containsMarkdownSyntax(text) {
+		return text
+	}
+	if markdownRenderer == nil || markdownRendererWidth != width {
+		initMarkdownRenderer(width)
+	}
 	if markdownRenderer == nil {
 		return text
 	}
@@ -33,6 +51,38 @@ func renderMarkdown(text string) string {
 		return text
 	}
 	return strings.TrimSpace(rendered)
+}
+
+func containsMarkdownSyntax(text string) bool {
+	if strings.ContainsAny(text, "`*_[]") {
+		return true
+	}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "# ") ||
+			strings.HasPrefix(line, "## ") ||
+			strings.HasPrefix(line, "### ") ||
+			strings.HasPrefix(line, "> ") ||
+			strings.HasPrefix(line, "- ") ||
+			strings.HasPrefix(line, "+ ") {
+			return true
+		}
+		if isOrderedMarkdownListItem(line) {
+			return true
+		}
+	}
+	return false
+}
+
+func isOrderedMarkdownListItem(line string) bool {
+	i := 0
+	for i < len(line) && line[i] >= '0' && line[i] <= '9' {
+		i++
+	}
+	return i > 0 && i+1 < len(line) && line[i] == '.' && line[i+1] == ' '
 }
 
 type messageKind int
@@ -60,26 +110,39 @@ type toolCallInfo struct {
 const toolCollapseThreshold = 5
 
 func renderMessage(msg chatMessage, width int, focused bool) string {
+	messageWidth := width
+	if focused {
+		messageWidth = max(1, width-2)
+	}
 	switch msg.Kind {
 	case msgUser:
-		return userBlockStyle.Width(width).Render("> " + msg.Text)
+		return renderSelectedMessage(userBlockStyle.Width(messageWidth).Render("> "+msg.Text), focused)
 	case msgAssistant:
 		text := strings.TrimSpace(msg.Text)
 		if text == "" {
 			return ""
 		}
-		return thinkingStyle.Width(width).Render(text)
+		return renderSelectedMessage(thinkingStyle.Width(messageWidth).Render(renderMarkdown(text, messageWidth)), focused)
 	case msgCommunicate:
-		return communicateStyle.Width(width).Render(renderMarkdown(msg.Text))
+		return renderSelectedMessage(communicateStyle.Width(messageWidth).Render(renderMarkdown(msg.Text, messageWidth)), focused)
 	case msgTool:
 		if msg.Tool == nil || msg.Tool.Hidden {
 			return ""
 		}
 		return renderToolCall(*msg.Tool, width, focused)
 	case msgSystem:
-		return systemStyle.Width(width).Render(msg.Text)
+		return renderSelectedMessage(systemStyle.Width(messageWidth).Render(msg.Text), focused)
 	}
 	return ""
+}
+
+func renderSelectedMessage(rendered string, focused bool) string {
+	if !focused || rendered == "" {
+		return rendered
+	}
+	lines := strings.Split(rendered, "\n")
+	lines[0] = "▶ " + lines[0]
+	return strings.Join(lines, "\n")
 }
 
 func renderToolCall(tc toolCallInfo, width int, focused bool) string {
@@ -142,7 +205,7 @@ func renderToolCall(tc toolCallInfo, width int, focused bool) string {
 
 	header := strings.Join(headerLines, "\n")
 
-	if !tc.Expanded || (tc.Detail == "" && tc.Output == "") {
+	if !tc.Expanded || (tc.Detail == "" && tc.Output == "" && tc.Error == "") {
 		return toolCollapsedStyle.Render(header)
 	}
 
@@ -155,6 +218,12 @@ func renderToolCall(tc toolCallInfo, width int, focused bool) string {
 			body.WriteString("\n")
 		}
 		body.WriteString(toolExpandedStyle.Width(width - 4).Render(tc.Output))
+	}
+	if tc.Error != "" {
+		if body.Len() > 0 {
+			body.WriteString("\n")
+		}
+		body.WriteString(toolExpandedStyle.Width(width - 4).Render("error: " + tc.Error))
 	}
 	return header + "\n" + body.String()
 }
@@ -189,10 +258,12 @@ func wrapText(text string, firstBudget, contBudget int) []string {
 }
 
 type chatMessage struct {
-	Kind      messageKind
-	Text      string
-	TurnIndex int
-	Tool      *toolCallInfo
+	Kind       messageKind
+	Text       string
+	TurnIndex  int
+	ItemID     string
+	ToolCallID string
+	Tool       *toolCallInfo
 }
 
 // historyToMessages converts session history turns into TUI chat messages

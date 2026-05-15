@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmdutil"
+	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/anthropic"
 	_ "primeradiant.com/serf/llm/providers/glm"
@@ -36,6 +37,7 @@ func runServe(args []string) error {
 	model := fs.String("model", "", "LLM model identifier (provider/model)")
 	workDir := fs.String("dir", "", "working directory")
 	stateDir := fs.String("state-dir", "", "override runtime state directory")
+	runDirFlag := fs.String("run-dir", "", "override rendezvous run directory")
 	resume := fs.String("resume", "", "resume a previous session by ID")
 	resumeLast := fs.Bool("resume-last", false, "resume the most recent session")
 	systemPrompt := fs.String("system-prompt", "", "path to a custom system prompt file")
@@ -51,6 +53,7 @@ func runServe(args []string) error {
 	contextStrategy := fs.String("context-strategy", "", "context management strategy")
 	outputSchema := fs.String("output-schema", "", "inline JSON Schema applied to the communicate tool's output field")
 	verbose := fs.Bool("verbose", false, "emit NDJSON events to stderr")
+	sseRingSize := fs.Int("sse-ring-size", 0, "SSE/AppWire replay ring size (default 1000)")
 	noProjectPrompts := fs.Bool("no-project-prompts", false, "suppress .serf/prompts/ loading")
 	agentName := fs.String("agent", "", "agent persona name (default: default)")
 	var skillsDirs cmdutil.StringSliceFlag
@@ -66,7 +69,7 @@ func runServe(args []string) error {
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: serf serve [flags]\n\n")
-		fmt.Fprintf(os.Stderr, "Start serf as an HTTP server with REST+SSE API.\n\n")
+		fmt.Fprintf(os.Stderr, "Start serf as an app-wire JSON-RPC server.\n\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -190,7 +193,20 @@ func runServe(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	srv := server.NewServer(server.ServerConfig{})
+	listener, err := net.Listen("tcp", *addr)
+	if err != nil {
+		sess.Close()
+		return fmt.Errorf("listen %s: %w", *addr, err)
+	}
+
+	hubToken := os.Getenv("SERF_HUB_TOKEN")
+	srv := server.NewServer(server.ServerConfig{
+		RingBufferSize: *sseRingSize,
+		HubToken:       hubToken,
+		AllowedHost:    listener.Addr().String(),
+	})
+	srv.SetAppIdentity("local", sess.ID())
+	rvRegistration := &serveRendezvousRegistration{}
 
 	var currentMu sync.RWMutex
 	currentSess := sess
@@ -232,13 +248,19 @@ func runServe(args []string) error {
 	srv.SetTasksFunc(func() any { return getSession().Tasks() })
 	srv.SetClearFunc(func(ctx context.Context) error {
 		oldSess := getSession()
-		oldSess.Close()
-
 		newSess, err := agent.NewSession(client, profile, env, sessionCfg)
 		if err != nil {
 			return fmt.Errorf("new session: %w", err)
 		}
 		setSession(newSess)
+		srv.SetAppIdentity("local", newSess.ID())
+		if err := rvRegistration.UpdateSessionID(newSess.ID()); err != nil {
+			setSession(oldSess)
+			srv.SetAppIdentity("local", oldSess.ID())
+			newSess.Close()
+			return fmt.Errorf("rendezvous update: %w", err)
+		}
+		oldSess.Close()
 		bridgeSession(newSess)
 		return nil
 	})
@@ -276,34 +298,41 @@ func runServe(args []string) error {
 	}()
 
 	// Start HTTP server.
-	listener, err := net.Listen("tcp", *addr)
-	if err != nil {
-		getSession().Close()
-		return fmt.Errorf("listen %s: %w", *addr, err)
-	}
 	fmt.Fprintf(os.Stderr, "[serve] listening on %s (session %s)\n", listener.Addr(), getSession().ID())
 
 	spawnedBy := "user"
 	if os.Getenv("SERF_HUB_SPAWNED") == "1" {
 		spawnedBy = "hub"
 	}
-	runDir := rendezvous.DefaultDir()
+	runDir := *runDirFlag
+	if runDir == "" {
+		runDir = os.Getenv("SERF_RUN_DIR")
+	}
+	if runDir == "" {
+		runDir = rendezvous.DefaultDir()
+	}
 	rvEntry := rendezvous.Entry{
 		PID:        os.Getpid(),
 		Address:    listener.Addr().String(),
+		Protocol:   appwire.ProtocolVersion,
+		Endpoint:   "ws://" + listener.Addr().String() + "/rpc",
+		SourceID:   "local",
+		ThreadID:   getSession().ID(),
+		SessionID:  getSession().ID(),
 		WorkingDir: wd,
 		StateDir:   sd,
 		Agent:      *agentName,
 		Model:      modelRef.Model,
 		Provider:   modelRef.Provider,
+		HubToken:   hubToken,
 		StartedAt:  time.Now().UTC(),
 		SpawnedBy:  spawnedBy,
 	}
-	if _, err := rendezvous.Write(runDir, rvEntry); err != nil {
+	if err := rvRegistration.Register(runDir, rvEntry); err != nil {
 		fmt.Fprintf(os.Stderr, "[serve] rendezvous write failed: %v\n", err)
 	} else {
 		defer func() {
-			_ = rendezvous.Remove(runDir, rvEntry.PID)
+			_ = rvRegistration.Remove()
 		}()
 	}
 

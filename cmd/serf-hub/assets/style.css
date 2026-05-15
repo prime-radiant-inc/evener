@@ -15,6 +15,10 @@
   --state-idle: #9ece6a;
   --state-ended: #3a3a44;
   --state-subagent: #bb9af7;
+  --diagnostic-provider: var(--state-awaiting);
+  --diagnostic-serf: var(--state-warning);
+  --diagnostic-hub: var(--state-processing);
+  --diagnostic-ui: var(--state-subagent);
 
   /* Legacy aliases for the existing rule set; remove these once the rest
      of style.css migrates to the new token names. */
@@ -339,7 +343,8 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .header-action-danger { color: var(--state-awaiting); }
 .header-action-danger:hover:not([disabled]) { color: var(--state-awaiting); background: rgba(247, 118, 142, 0.1); }
 .header-action[disabled] { opacity: 0.4; cursor: not-allowed; }
-.workspace-meta .branch { font-family: ui-monospace, "SFMono-Regular", monospace; }
+.workspace-meta .branch,
+.workspace-meta .source-label { font-family: ui-monospace, "SFMono-Regular", monospace; }
 .rule-dot { color: var(--text-dim); }
 .status-pill { display: inline-flex; align-items: baseline; gap: 6px; }
 .conversation { flex: 1; min-height: 0; padding: 32px 64px; overflow-y: auto; font-size: 15px; line-height: 1.7; color: var(--text); }
@@ -423,6 +428,11 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .tool-call .result { color: var(--text-muted); }
 .tool-call .result-good { color: var(--state-idle); }
 .tool-call .result-bad { color: var(--state-awaiting); }
+.tool-call .diff-body,
+.tool-call .tool-body {
+  flex: 0 0 100%;
+  margin: 4px 0 0;
+}
 .diff-body { margin: 0 0 24px 44px; padding-left: 14px; border-left: 1px solid var(--rule); font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; line-height: 1.65; color: var(--text-muted); white-space: pre-wrap; }
 .diff-body .add { color: var(--state-idle); }
 .diff-body .del { color: var(--state-awaiting); }
@@ -446,6 +456,40 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .subagent-reference { margin: 0 0 26px 28px; font-size: 12.5px; color: var(--text-muted); cursor: pointer; }
 .subagent-reference .verb { color: var(--state-subagent); font-family: ui-monospace, "SFMono-Regular", monospace; }
 .subagent-reference:hover { color: var(--text); }
+.diagnostic {
+  --diagnostic-accent: var(--state-warning);
+  margin: 0 0 18px 28px;
+  max-width: 720px;
+  padding: 10px 12px 11px;
+  background: var(--bg-raised);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--diagnostic-accent);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.diagnostic-source-provider { --diagnostic-accent: var(--diagnostic-provider); }
+.diagnostic-source-serf { --diagnostic-accent: var(--diagnostic-serf); }
+.diagnostic-source-hub { --diagnostic-accent: var(--diagnostic-hub); }
+.diagnostic-source-ui { --diagnostic-accent: var(--diagnostic-ui); }
+.diagnostic-header { display: flex; align-items: baseline; gap: 9px; margin-bottom: 5px; flex-wrap: wrap; }
+.diagnostic-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 1px 6px;
+  border: 1px solid var(--diagnostic-accent);
+  border-radius: 4px;
+  color: var(--diagnostic-accent);
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+.diagnostic-title { color: var(--text); font-weight: 500; }
+.diagnostic-message { color: var(--text); word-break: break-word; }
+.diagnostic-hint { margin-top: 5px; color: var(--text-muted); word-break: break-word; }
+
 .banner { margin: 0 0 18px 28px; padding: 6px 12px; font-size: 12.5px; border-radius: 4px; }
 .banner.error { color: var(--state-awaiting); border-left: 2px solid var(--state-awaiting); padding-left: 10px; }
 .banner.warning { color: var(--state-warning); border-left: 2px solid var(--state-warning); padding-left: 10px; }
@@ -474,6 +518,9 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .fork-dialog { margin-bottom: 24px; padding: 12px 16px; background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 8px; max-width: 480px; margin-left: auto; }
 .fork-dialog-title { font-weight: 500; color: var(--text); font-size: 13px; margin-bottom: 6px; }
 .fork-dialog-body { color: var(--text-muted); font-size: 12.5px; line-height: 1.55; margin-bottom: 10px; }
+.fork-dialog-label { color: var(--text-muted); font-size: 12px; }
+.fork-dialog-input { background: transparent; border: 1px solid var(--rule); border-radius: 3px; padding: 4px 8px; color: var(--text); font: inherit; font-size: 12px; width: 220px; margin-left: 8px; outline: none; }
+.fork-dialog-input:focus { border-color: var(--accent); }
 .fork-dialog-actions { display: flex; gap: 14px; align-items: center; margin-top: 10px; font-size: 12px; }
 .fork-cancel { background: transparent; border: none; color: var(--text-muted); cursor: pointer; font: inherit; padding: 4px 8px; }
 .fork-confirm { margin-left: auto; padding: 6px 14px; background: var(--accent); color: var(--bg); border: none; border-radius: 4px; font-weight: 500; cursor: pointer; font: inherit; }
@@ -494,6 +541,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .chip-picker-option:hover { background: var(--rule); }
 .spawn-input { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 8px; padding: 18px; min-height: 160px; color: var(--text); font: inherit; font-size: 14px; line-height: 1.5; outline: none; resize: vertical; }
 .spawn-input:focus { border-color: var(--accent); }
+.spawn-form .diagnostic { margin: 0; max-width: none; }
 .spawn-advanced { color: var(--text-muted); font-size: 12px; }
 .spawn-advanced summary { cursor: pointer; padding: 5px 0; }
 .spawn-advanced-body { display: flex; flex-wrap: wrap; gap: 18px; padding: 12px 0; }
@@ -754,8 +802,37 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
     border-radius: 0;
     border: none;
   }
+  .search-dialog-header {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    background: var(--bg-raised);
+  }
+  #search-input { min-width: 0; }
+  .search-results {
+    max-height: calc(100vh - 64px);
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
+  }
+  .search-row {
+    min-height: 48px;
+    align-items: flex-start;
+    padding: 12px 14px;
+  }
+  .search-cmd-pill {
+    flex-wrap: wrap;
+    max-width: 100%;
+    line-height: 1.3;
+    border-radius: 8px;
+  }
+  .search-cmd-pill-label {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
 
   /* User-message pill: more breathing room because the screen is narrower. */
   .user-message .pill { max-width: 90%; }
   .conversation { padding: 12px 14px; }
+  .diagnostic { margin-left: 0; max-width: none; }
 }

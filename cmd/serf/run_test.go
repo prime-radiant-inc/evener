@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -14,7 +13,7 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// TestRunWithArgs verifies that the run function processes a task from CLI args
+// TestRunWithArgs verifies that the run function processes a prompt from CLI args
 // and produces output on stdout.
 func TestRunWithArgs(t *testing.T) {
 	if os.Getenv("OPENAI_API_KEY") == "" {
@@ -23,7 +22,7 @@ func TestRunWithArgs(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
-		task:    "Reply with exactly the word PONG and nothing else.",
+		prompt:  "Reply with exactly the word PONG and nothing else.",
 		model:   "openai/gpt-5-mini-2025-08-07",
 		workDir: t.TempDir(),
 		stdout:  &stdout,
@@ -47,7 +46,7 @@ func TestRunEmitsToolEvents(t *testing.T) {
 	tmpDir := t.TempDir()
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
-		task:    "Create a file called test.txt in " + tmpDir + " with content 'hello'. Use the write_file tool.",
+		prompt:  "Create a file called test.txt in " + tmpDir + " with content 'hello'. Use the write_file tool.",
 		model:   "openai/gpt-5-mini-2025-08-07",
 		workDir: tmpDir,
 		stdout:  &stdout,
@@ -73,20 +72,20 @@ func TestRunEmitsToolEvents(t *testing.T) {
 	}
 }
 
-// TestRunMissingTask verifies that run returns an error when no task is provided.
-func TestRunMissingTask(t *testing.T) {
+// TestRunMissingPrompt verifies that run returns an error when no prompt is provided.
+func TestRunMissingPrompt(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
-		task:   "",
+		prompt: "",
 		model:  "openai/gpt-5-mini-2025-08-07",
 		stdout: &stdout,
 		stderr: &stderr,
 	})
 	if err == nil {
-		t.Fatal("expected error for empty task")
+		t.Fatal("expected error for empty prompt")
 	}
-	if !strings.Contains(err.Error(), "task") {
-		t.Fatalf("expected error to mention 'task', got: %v", err)
+	if !strings.Contains(err.Error(), "prompt") {
+		t.Fatalf("expected error to mention 'prompt', got: %v", err)
 	}
 }
 
@@ -114,7 +113,7 @@ func TestRunMissingAPIKey(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
-		task:   "do something",
+		prompt: "do something",
 		model:  "openai/gpt-5-mini-2025-08-07",
 		stdout: &stdout,
 		stderr: &stderr,
@@ -127,7 +126,7 @@ func TestRunMissingAPIKey(t *testing.T) {
 func TestRunBareModelRejected(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
-		task:   "do something",
+		prompt: "do something",
 		model:  "gpt-5.2",
 		stdout: &stdout,
 		stderr: &stderr,
@@ -152,7 +151,7 @@ func TestRunInvalidOutputSchema(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
-		task:         "do something",
+		prompt:       "do something",
 		model:        "openai/gpt-5.2",
 		outputSchema: "{not json",
 		workDir:      t.TempDir(),
@@ -185,7 +184,7 @@ func TestRunMissingModel(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
-		task:   "do something",
+		prompt: "do something",
 		model:  "",
 		stdout: &stdout,
 		stderr: &stderr,
@@ -302,396 +301,6 @@ func TestResumeLast_NoSessions(t *testing.T) {
 	}
 }
 
-// --- Fork tests ---
-
-// buildForkParentSession writes a parent transcript + meta with the same
-// shape used by the agent fork tests: [U1, A1, U2, A2]. Returns parentID.
-func buildForkParentSession(t *testing.T, stateDir string) string {
-	t.Helper()
-	parentID := "01PARENT00000000000000FORK"
-	sessDir := stateDir + "/sessions"
-	if err := os.MkdirAll(sessDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-	tpath := sessDir + "/" + parentID + ".transcript.jsonl"
-	tw, err := agent.NewTranscriptWriter(tpath, agent.TranscriptHeader{
-		SessionID: parentID,
-		ProfileID: "openai",
-		Model:     "gpt-5.2",
-		CreatedAt: time.Now().UTC(),
-	})
-	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
-	}
-	for _, turn := range []agent.Turn{
-		agent.NewTurn(agent.TurnUserInput, llm.User("first task")),
-		agent.NewTurn(agent.TurnAssistant, llm.Assistant("first reply")),
-		agent.NewTurn(agent.TurnUserInput, llm.User("second task")),
-		agent.NewTurn(agent.TurnAssistant, llm.Assistant("second reply")),
-	} {
-		if err := tw.Append(turn); err != nil {
-			t.Fatalf("Append turn: %v", err)
-		}
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatalf("Close transcript: %v", err)
-	}
-	if err := agent.SaveSessionMeta(stateDir, agent.SessionMeta{
-		ID:        parentID,
-		ProfileID: "openai",
-		Model:     "gpt-5.2",
-		CreatedAt: time.Now().UTC(),
-		UpdatedAt: time.Now().UTC(),
-		TurnCount: 2,
-	}); err != nil {
-		t.Fatalf("SaveSessionMeta: %v", err)
-	}
-	return parentID
-}
-
-func TestFork_ForkTurnWithoutForkErrors(t *testing.T) {
-	dir := t.TempDir()
-	parentID := buildForkParentSession(t, dir)
-	var stdout, stderr bytes.Buffer
-	cfg := runConfig{
-		task:     "edited message",
-		resume:   parentID,
-		forkTurn: 3, // set without fork=true
-		workDir:  dir,
-		stateDir: dir,
-		stdout:   &stdout,
-		stderr:   &stderr,
-	}
-	err := run(context.Background(), cfg)
-	if err == nil {
-		t.Fatal("expected error when --fork-turn is set without --fork")
-	}
-	if !strings.Contains(err.Error(), "--fork-turn") || !strings.Contains(err.Error(), "--fork") {
-		t.Fatalf("expected error to mention --fork-turn and --fork, got: %v", err)
-	}
-}
-
-func TestFork_RequiresResumeTarget(t *testing.T) {
-	dir := t.TempDir()
-	var stdout, stderr bytes.Buffer
-	cfg := runConfig{
-		task:     "edited message",
-		fork:     true,
-		workDir:  dir,
-		stateDir: dir,
-		stdout:   &stdout,
-		stderr:   &stderr,
-	}
-	err := run(context.Background(), cfg)
-	if err == nil {
-		t.Fatal("expected error when --fork is set without a resume target")
-	}
-	if !strings.Contains(err.Error(), "--fork") {
-		t.Fatalf("expected error to mention --fork, got: %v", err)
-	}
-}
-
-func TestFork_NonexistentParent(t *testing.T) {
-	dir := t.TempDir()
-	var stdout, stderr bytes.Buffer
-	cfg := runConfig{
-		task:     "edited message",
-		resume:   "01NOSUCHPARENT0000000000XX",
-		fork:     true,
-		forkTurn: 3,
-		workDir:  dir,
-		stateDir: dir,
-		stdout:   &stdout,
-		stderr:   &stderr,
-	}
-	err := run(context.Background(), cfg)
-	if err == nil {
-		t.Fatal("expected error for nonexistent parent")
-	}
-	if !strings.Contains(err.Error(), "01NOSUCHPARENT0000000000XX") {
-		t.Fatalf("expected error to mention parent ID, got: %v", err)
-	}
-}
-
-func TestFork_RequiresTask(t *testing.T) {
-	dir := t.TempDir()
-	parentID := buildForkParentSession(t, dir)
-	var stdout, stderr bytes.Buffer
-	cfg := runConfig{
-		task:     "",
-		resume:   parentID,
-		fork:     true,
-		forkTurn: 3,
-		workDir:  dir,
-		stateDir: dir,
-		stdout:   &stdout,
-		stderr:   &stderr,
-	}
-	err := run(context.Background(), cfg)
-	if err == nil {
-		t.Fatal("expected error when forking without a task")
-	}
-	if !strings.Contains(err.Error(), "task") {
-		t.Fatalf("expected error to mention task, got: %v", err)
-	}
-}
-
-// findForkChild scans state dir for the (single) non-subagent meta whose
-// ParentSessionID matches parentID. Returns nil if none.
-func findForkChild(t *testing.T, dir, parentID string) *agent.SessionMeta {
-	t.Helper()
-	metas, err := agent.ListSessionMetas(dir)
-	if err != nil {
-		t.Fatalf("ListSessionMetas: %v", err)
-	}
-	for i := range metas {
-		if metas[i].ParentSessionID == parentID && !metas[i].IsSubagent {
-			return &metas[i]
-		}
-	}
-	return nil
-}
-
-// TestFork_CreatesChild verifies that --fork creates a child branched from
-// the resolved parent at the right divergence turn, with the parent meta
-// unmutated. It runs run() to exercise the full CLI path, ignoring the
-// downstream LLM error (no API key in tests).
-func TestFork_CreatesChild(t *testing.T) {
-	dir := t.TempDir()
-	parentID := buildForkParentSession(t, dir)
-
-	parentBefore, err := agent.LoadSessionMeta(dir, parentID)
-	if err != nil {
-		t.Fatalf("LoadSessionMeta(parent before): %v", err)
-	}
-
-	var stdout, stderr bytes.Buffer
-	cfg := runConfig{
-		task:     "edited second task",
-		resume:   parentID,
-		fork:     true,
-		forkTurn: 3,
-		workDir:  dir,
-		stateDir: dir,
-		stdout:   &stdout,
-		stderr:   &stderr,
-	}
-	_ = run(context.Background(), cfg) // LLM unavailable in test; we verify fork side-effects.
-
-	child := findForkChild(t, dir, parentID)
-	if child == nil {
-		t.Fatalf("no child meta found referencing parent %s\nstderr: %s", parentID, stderr.String())
-	}
-	if child.ID == parentID {
-		t.Fatalf("child ID must differ from parent, got %q", child.ID)
-	}
-	if child.DivergenceTurn != 3 {
-		t.Errorf("child DivergenceTurn = %d, want 3", child.DivergenceTurn)
-	}
-
-	// stderr must announce the fork (human format).
-	if !strings.Contains(stderr.String(), "[fork] new session "+child.ID) {
-		t.Errorf("stderr missing [fork] line for %s:\n%s", child.ID, stderr.String())
-	}
-
-	// Forking must not mutate the parent meta.
-	parentAfter, err := agent.LoadSessionMeta(dir, parentID)
-	if err != nil {
-		t.Fatalf("LoadSessionMeta(parent after): %v", err)
-	}
-	if !reflect.DeepEqual(parentAfter, parentBefore) {
-		t.Errorf("parent meta mutated by fork:\n before=%+v\n after=%+v", parentBefore, parentAfter)
-	}
-}
-
-// TestFork_NoChildOnRestoreFailure verifies that --fork cleans up the
-// newly-created child when RestoreSessionFromMeta fails after the fork.
-// The parent's meta carries a bogus context-strategy that the child
-// inherits (since ForkSession copies meta.Config), forcing
-// selectStrategy to error during restore.
-func TestFork_NoChildOnRestoreFailure(t *testing.T) {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Setenv("OPENAI_API_KEY", "dummy-for-restore-failure")
-	}
-
-	dir := t.TempDir()
-	parentID := buildForkParentSession(t, dir)
-
-	// Mutate the parent meta so its Config has an invalid context strategy.
-	// ForkSession copies Config verbatim, so the child's restore will fail
-	// inside selectStrategy.
-	parent, err := agent.LoadSessionMeta(dir, parentID)
-	if err != nil {
-		t.Fatalf("LoadSessionMeta: %v", err)
-	}
-	parent.Config.ContextStrategy = "definitely-not-a-strategy"
-	if err := agent.SaveSessionMeta(dir, parent); err != nil {
-		t.Fatalf("SaveSessionMeta: %v", err)
-	}
-
-	var stdout, stderr bytes.Buffer
-	cfg := runConfig{
-		task:     "edited",
-		resume:   parentID,
-		fork:     true,
-		forkTurn: 3,
-		workDir:  dir,
-		stateDir: dir,
-		stdout:   &stdout,
-		stderr:   &stderr,
-	}
-	err = run(context.Background(), cfg)
-	if err == nil {
-		t.Fatal("expected error from invalid context strategy")
-	}
-
-	if child := findForkChild(t, dir, parentID); child != nil {
-		t.Errorf("restore failed but child session remained: %s\nstderr: %s", child.ID, stderr.String())
-	}
-	// No [fork] event should have been emitted either, since the fork
-	// never reached its commit point.
-	if strings.Contains(stderr.String(), "[fork] new session") {
-		t.Errorf("[fork] event emitted despite restore failure:\n%s", stderr.String())
-	}
-}
-
-// TestFork_NoChildOnSetupFailure verifies that --fork does not leave a
-// stale child session on disk when downstream setup fails before
-// ProcessInput would have appended the edited message. Triggers the
-// failure via an invalid --reasoning-effort value, which errors out
-// after the fork validation but before the model is invoked.
-func TestFork_NoChildOnSetupFailure(t *testing.T) {
-	dir := t.TempDir()
-	parentID := buildForkParentSession(t, dir)
-
-	var stdout, stderr bytes.Buffer
-	cfg := runConfig{
-		task:            "edited",
-		resume:          parentID,
-		fork:            true,
-		forkTurn:        3,
-		reasoningEffort: "definitely-not-a-valid-effort",
-		workDir:         dir,
-		stateDir:        dir,
-		stdout:          &stdout,
-		stderr:          &stderr,
-	}
-	err := run(context.Background(), cfg)
-	if err == nil {
-		t.Fatal("expected error from invalid --reasoning-effort")
-	}
-
-	if child := findForkChild(t, dir, parentID); child != nil {
-		t.Errorf("setup failed but a child session was created: %s\nstderr: %s", child.ID, stderr.String())
-	}
-}
-
-func TestFork_VerboseEmitsNDJSONEvent(t *testing.T) {
-	dir := t.TempDir()
-	parentID := buildForkParentSession(t, dir)
-
-	var stdout, stderr bytes.Buffer
-	cfg := runConfig{
-		task:     "edited",
-		resume:   parentID,
-		fork:     true,
-		forkTurn: 3,
-		verbose:  true,
-		workDir:  dir,
-		stateDir: dir,
-		stdout:   &stdout,
-		stderr:   &stderr,
-	}
-	_ = run(context.Background(), cfg)
-
-	child := findForkChild(t, dir, parentID)
-	if child == nil {
-		t.Fatalf("no child meta found")
-	}
-
-	// Find the FORK_CREATED NDJSON line on stderr.
-	var found map[string]any
-	for _, line := range strings.Split(stderr.String(), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		var obj map[string]any
-		if err := json.Unmarshal([]byte(line), &obj); err != nil {
-			continue
-		}
-		if obj["kind"] == "FORK_CREATED" {
-			found = obj
-			break
-		}
-	}
-	if found == nil {
-		t.Fatalf("no FORK_CREATED NDJSON line in stderr:\n%s", stderr.String())
-	}
-	if found["session_id"] != child.ID {
-		t.Errorf("session_id = %v, want %q", found["session_id"], child.ID)
-	}
-	data, ok := found["data"].(map[string]any)
-	if !ok {
-		t.Fatalf("FORK_CREATED missing data: %v", found)
-	}
-	if data["parent_session_id"] != parentID {
-		t.Errorf("parent_session_id = %v, want %q", data["parent_session_id"], parentID)
-	}
-	if data["divergence_turn"] != float64(3) {
-		t.Errorf("divergence_turn = %v, want 3", data["divergence_turn"])
-	}
-}
-
-// --fork with no --fork-turn defaults to the most recent USER_INPUT turn.
-// The fixture transcript is [U1, A1, U2, A2]; most recent USER_INPUT is at
-// entry index 3 (1-based).
-func TestFork_DefaultsToMostRecentUserInput(t *testing.T) {
-	dir := t.TempDir()
-	parentID := buildForkParentSession(t, dir)
-
-	var stdout, stderr bytes.Buffer
-	cfg := runConfig{
-		task:     "edited most recent",
-		resume:   parentID,
-		fork:     true,
-		workDir:  dir,
-		stateDir: dir,
-		stdout:   &stdout,
-		stderr:   &stderr,
-	}
-	_ = run(context.Background(), cfg)
-	child := findForkChild(t, dir, parentID)
-	if child == nil {
-		t.Fatalf("no child meta found referencing parent %s", parentID)
-	}
-	if child.DivergenceTurn != 3 {
-		t.Errorf("child DivergenceTurn = %d, want 3 (last USER_INPUT in [U1,A1,U2,A2])", child.DivergenceTurn)
-	}
-}
-
-func TestFork_WithResumeLast(t *testing.T) {
-	dir := t.TempDir()
-	parentID := buildForkParentSession(t, dir)
-
-	var stdout, stderr bytes.Buffer
-	cfg := runConfig{
-		task:       "edited via resume-last",
-		resumeLast: true,
-		fork:       true,
-		forkTurn:   3,
-		workDir:    dir,
-		stateDir:   dir,
-		stdout:     &stdout,
-		stderr:     &stderr,
-	}
-	_ = run(context.Background(), cfg)
-	child := findForkChild(t, dir, parentID)
-	if child == nil {
-		t.Fatalf("no child meta found referencing parent %s", parentID)
-	}
-}
-
 // --- Drain event tests ---
 
 func testEvents() []agent.SessionEvent {
@@ -716,7 +325,6 @@ func testEvents() []agent.SessionEvent {
 		}},
 		{Kind: agent.EventWarning, Timestamp: now, SessionID: "sess1", Data: agent.WarningData{Message: "context window 80% full"}},
 		{Kind: agent.EventError, Timestamp: now, SessionID: "sess1", Data: agent.ErrorData{Error: "something went wrong"}},
-		{Kind: agent.EventSessionEnd, Timestamp: now, SessionID: "sess1", Data: agent.SessionEndData{Reason: "input_complete"}},
 	}
 }
 
@@ -838,11 +446,6 @@ func TestDrainEventsHuman(t *testing.T) {
 	if !strings.Contains(output, "[error]") {
 		t.Fatalf("expected [error] in output:\n%s", output)
 	}
-
-	// Should announce the session ID at SESSION_END.
-	if !strings.Contains(output, "[session] sess1") {
-		t.Fatalf("expected [session] sess1 line in output:\n%s", output)
-	}
 }
 
 func intPtr(v int) *int { return &v }
@@ -910,7 +513,7 @@ func TestRunWithContextStrategy(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
-		task:            "Reply with exactly the word PONG and nothing else.",
+		prompt:          "Reply with exactly the word PONG and nothing else.",
 		model:           "openai/gpt-5-mini-2025-08-07",
 		workDir:         t.TempDir(),
 		contextStrategy: "compact",

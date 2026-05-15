@@ -1,11 +1,10 @@
 package main
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -15,7 +14,8 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/internal/hubapi"
+	"primeradiant.com/serf/internal/appserver"
+	"primeradiant.com/serf/internal/appwire"
 )
 
 const tuiE2EProjectDir = "/tmp/serf-tui-e2e/serf"
@@ -31,62 +31,250 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app := startTUITmux(t, bin, hub.URL())
 	defer app.Close()
 
-	screen := app.WaitFor("serf live", hub.URL(), "serf", "live task", "ops task")
+	screen := app.WaitFor("serf live", hub.URL(), "Launch New Session", "▾", "└─", "serf", "live task", "ops task", "1 recent")
 	if strings.Contains(screen, "ended maintenance") {
-		t.Fatalf("dashboard should not render ended sessions:\n%s", screen)
+		t.Fatalf("dashboard should fold ended sessions by default:\n%s", screen)
 	}
+	app.SendKeys("/")
+	app.TypeText("ops")
+	screen = app.WaitFor("Command palette", "Filter: ops", "ops task")
+	if strings.Contains(screen, "live task") {
+		t.Fatalf("dashboard palette should hide non-matching sessions:\n%s", screen)
+	}
+	app.SendKeys("Escape")
+	app.WaitFor("serf live", "live task", "ops task")
+
 	initialTreeRequests := hub.WaitForTreeRequests(t, 1)
 	app.SendKeys("r")
 	hub.WaitForTreeRequests(t, initialTreeRequests+1)
 
 	app.SendKeys("Enter")
-	app.WaitFor("serf / project / serf", "Live now", "live task", "Recent in this project", "ended maintenance")
-
+	screen = app.WaitFor("serf live", "▸ ● serf", "Project:  serf", "Action:   enter toggles project")
+	if strings.Contains(screen, "live task") || strings.Contains(screen, "ended maintenance") {
+		t.Fatalf("collapsed project should hide child sessions:\n%s", screen)
+	}
+	app.SendKeys("Right")
+	app.WaitFor("serf live", "live task", "1 recent")
+	app.SendKeys("Down", "Down", "Enter")
+	app.WaitFor("serf live", "live task", "ended maintenance")
+	app.SendKeys("/")
+	app.TypeText("ended")
+	screen = app.WaitFor("Command palette", "Filter: ended", "ended maintenance")
+	if strings.Contains(screen, "live task") {
+		t.Fatalf("dashboard palette should hide non-matching live session:\n%s", screen)
+	}
 	app.SendKeys("Escape")
-	app.WaitFor("serf live", "live task")
-	app.SendKeys("p")
-	app.WaitFor("serf / project / serf", "Recent in this project")
-	app.SendKeys("Escape")
-	app.WaitFor("serf live", "live task")
+	app.WaitFor("serf live", "live task", "ended maintenance")
 
-	app.SendKeys("s")
-	app.WaitFor("serf / new session", "Dir:      "+tuiE2EProjectDir, "Task (optional):")
+	app.SendKeys("Down", "n")
+	app.WaitFor("serf / new session", "Dir:      "+tuiE2EProjectDir, "Prompt (optional):")
+	app.SendKeys("Tab", "Tab", "Tab", "C-u")
+	app.TypeText("/tmp/serf-tui-e2e/custom")
+	app.WaitFor("Dir:      /tmp/serf-tui-e2e/custom")
+	app.SendKeys("Tab")
 	app.TypeLine("spawn from dashboard")
 	app.WaitFor("spawned session 1", "local:02SPAWN1")
 	spawns := hub.WaitForSpawns(t, 1)
-	if spawns[0].WorkingDir != tuiE2EProjectDir {
-		t.Fatalf("dashboard spawn working_dir=%q, want %q", spawns[0].WorkingDir, tuiE2EProjectDir)
+	if spawns[0].CWD != "/tmp/serf-tui-e2e/custom" {
+		t.Fatalf("dashboard spawn cwd=%q, want /tmp/serf-tui-e2e/custom", spawns[0].CWD)
 	}
-	if spawns[0].Task != "spawn from dashboard" {
-		t.Fatalf("dashboard spawn task=%q, want spawn from dashboard", spawns[0].Task)
+	if spawns[0].Prompt != "spawn from dashboard" {
+		t.Fatalf("dashboard spawn prompt=%q, want spawn from dashboard", spawns[0].Prompt)
 	}
-	if spawns[0].Model != "openai/gpt-5" {
-		t.Fatalf("dashboard spawn model=%q, want openai/gpt-5", spawns[0].Model)
+	if spawns[0].ModelProvider != "" || spawns[0].Model != "openai/gpt-5" {
+		t.Fatalf("dashboard spawn model=%s/%s, want openai/gpt-5", spawns[0].ModelProvider, spawns[0].Model)
 	}
 
 	app.SendKeys("C-o")
 	app.WaitFor("serf live", "live task")
-	app.SendKeys("Enter")
-	app.WaitFor("serf / project / serf", "Recent in this project")
-	app.SendKeys("s")
-	app.WaitFor("serf / new session", "Dir:      "+tuiE2EProjectDir, "Task (optional):")
+	app.SendKeys("n")
+	app.WaitFor("serf / new session", "Dir:      "+tuiE2EProjectDir, "Prompt (optional):")
 	app.TypeLine("spawn from project")
 	app.WaitFor("spawned session 2", "local:02SPAWN2")
 	spawns = hub.WaitForSpawns(t, 2)
-	if spawns[1].WorkingDir != tuiE2EProjectDir {
-		t.Fatalf("project spawn working_dir=%q, want %q", spawns[1].WorkingDir, tuiE2EProjectDir)
+	if spawns[1].CWD != tuiE2EProjectDir {
+		t.Fatalf("project spawn cwd=%q, want %q", spawns[1].CWD, tuiE2EProjectDir)
 	}
-	if spawns[1].Task != "spawn from project" {
-		t.Fatalf("project spawn task=%q, want spawn from project", spawns[1].Task)
+	if spawns[1].Prompt != "spawn from project" {
+		t.Fatalf("project spawn prompt=%q, want spawn from project", spawns[1].Prompt)
 	}
-	if spawns[1].Model != "openai/gpt-5" {
-		t.Fatalf("project spawn model=%q, want openai/gpt-5", spawns[1].Model)
+	if spawns[1].ModelProvider != "" || spawns[1].Model != "openai/gpt-5" {
+		t.Fatalf("project spawn model=%s/%s, want openai/gpt-5", spawns[1].ModelProvider, spawns[1].Model)
 	}
 
 	app.SendKeys("C-o")
 	app.WaitFor("serf live", "live task")
 	app.SendKeys("q")
 	app.WaitForExit()
+}
+
+func TestTUITmuxE2E_AppShellPreservesLayoutAcrossWidths(t *testing.T) {
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	defer hub.Close()
+	app := startTUITmux(t, bin, hub.URL())
+	defer app.Close()
+
+	screen := app.WaitFor("serf live", "live task", "ctrl+o dashboard")
+	requirePaneOrder(t, screen, "serf live", "live task", "ctrl+o dashboard")
+
+	app.SendKeys("/")
+	screen = app.WaitFor("Command palette", "ctrl+o dashboard")
+	requirePaneOrder(t, screen, "serf live", "Command palette", "ctrl+o dashboard")
+
+	app.Resize(60, 30)
+	screen = app.WaitFor("Command palette", "ctrl+o dashboard")
+	requirePaneOrder(t, screen, "serf live", "Command palette", "ctrl+o dashboard")
+
+	app.SendKeys("C-o")
+	screen = app.WaitFor("serf live", "live task", "ctrl+o dashboard")
+	requirePaneOrder(t, screen, "serf live", "live task", "ctrl+o dashboard")
+
+	app.SendKeys("n")
+	screen = app.WaitFor("serf / new session", "Prompt (optional):", "ctrl+o: dashboard")
+	requirePaneOrder(t, screen, "serf / new session", "Prompt (optional):", "ctrl+o: dashboard")
+
+	app.SendKeys("C-o")
+	screen = app.WaitFor("serf live", "live task", "ctrl+o dashboard")
+	requirePaneOrder(t, screen, "serf live", "live task", "ctrl+o dashboard")
+}
+
+func TestTUITmuxE2E_DashboardNarrowWideStates(t *testing.T) {
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	hub.SetSessionTitle("01LIVE", "live dashboard task with a title long enough to truncate cleanly")
+	defer hub.Close()
+
+	wide := startTUITmuxSized(t, bin, hub.URL(), 140, 40)
+	defer wide.Close()
+	wideScreen := wide.WaitFor("serf live", "details", "Project:  serf", "Live:     1", "Dir:      "+tuiE2EProjectDir)
+	if strings.Contains(wideScreen, "Prompt (optional):") || strings.Contains(wideScreen, "enter: send") {
+		t.Fatalf("wide dashboard rendered a composer:\n%s", wideScreen)
+	}
+	t.Logf("wide dashboard capture:\n%s", wideScreen)
+	wide.SendKeys("q")
+	wide.WaitForExit()
+
+	narrow := startTUITmuxSized(t, bin, hub.URL(), 60, 30)
+	defer narrow.Close()
+	narrowScreen := narrow.WaitFor("serf live", "keys: up/down enter n new / palette ctrl+o dashboard q", "...")
+	if strings.Contains(narrowScreen, "details") {
+		t.Fatalf("narrow dashboard rendered details drawer:\n%s", narrowScreen)
+	}
+	if strings.Contains(narrowScreen, "Prompt (optional):") || strings.Contains(narrowScreen, "enter: send") {
+		t.Fatalf("narrow dashboard rendered a composer:\n%s", narrowScreen)
+	}
+	t.Logf("narrow dashboard capture:\n%s", narrowScreen)
+	narrow.SendKeys("q")
+	narrow.WaitForExit()
+}
+
+func TestTUITmuxE2E_DashboardFooterAnchorsToBottom(t *testing.T) {
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	defer hub.Close()
+	app := startTUITmuxSized(t, bin, hub.URL(), 124, 18)
+	defer app.Close()
+
+	screen := app.WaitFor("serf live", "up/down select")
+	lines := strings.Split(strings.TrimSuffix(screen, "\n"), "\n")
+	lastNonEmpty := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			lastNonEmpty = i
+		}
+	}
+	if lastNonEmpty != len(lines)-1 {
+		t.Fatalf("footer/action line is not anchored to the bottom (last non-empty row %d of %d):\n%s", lastNonEmpty+1, len(lines), screen)
+	}
+}
+
+func TestTUITmuxE2E_DashboardRecentOnlyState(t *testing.T) {
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	hub.EndDashboardSessions()
+	defer hub.Close()
+	app := startTUITmux(t, bin, hub.URL())
+	defer app.Close()
+
+	screen := app.WaitFor("serf live", "0 live", "2 recent", "1 recent", "/ palette")
+	if strings.Contains(screen, "ended maintenance") || strings.Contains(screen, "ops task") {
+		t.Fatalf("recent-only dashboard should fold ended sessions by default:\n%s", screen)
+	}
+	if strings.Contains(screen, "Prompt (optional):") || strings.Contains(screen, "enter: send") {
+		t.Fatalf("recent-only dashboard rendered session composer content:\n%s", screen)
+	}
+	t.Logf("recent-only dashboard capture:\n%s", screen)
+
+	app.SendKeys("Down", "Enter")
+	app.WaitFor("serf live", "ended maintenance")
+	app.SendKeys("q")
+	app.WaitForExit()
+}
+
+func TestTUITmuxE2E_ProjectHistoryReadOnlyAndResume(t *testing.T) {
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	defer hub.Close()
+	app := startTUITmux(t, bin, hub.URL())
+	defer app.Close()
+
+	app.WaitFor("serf live", "live task")
+	screen := app.WaitFor("serf live", "live task", "1 recent")
+	for _, unwanted := range []string{"enter: send", "Prompt (optional):"} {
+		if strings.Contains(screen, unwanted) {
+			t.Fatalf("dashboard rendered composer/spawn text %q:\n%s", unwanted, screen)
+		}
+	}
+
+	app.SendKeys("Down", "Down", "Enter", "Down", "Enter")
+	screen = app.WaitFor("ended maintenance", "local:01PAST", "enter: send")
+	if strings.Contains(screen, "read-only") || strings.Contains(screen, "source does not support send") {
+		t.Fatalf("ended resumable session should not render read-only:\n%s", screen)
+	}
+
+	app.TypeLine("resume from ended")
+	if sends := hub.WaitForSends(t, 1); sends[0] != "resume from ended" {
+		t.Fatalf("resumed send text=%q, want resume from ended", sends[0])
+	}
+}
+
+func TestTUITmuxE2E_CodexSpawnUsesHarnessModelPicker(t *testing.T) {
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	hub.SetHarnesses([]appwire.HarnessDescriptor{
+		{ID: "serf", Label: "serf", Kind: "serf"},
+		{ID: "codex-local", Label: "codex-local", Kind: "codex"},
+	})
+	defer hub.Close()
+	app := startTUITmux(t, bin, hub.URL())
+	defer app.Close()
+
+	app.WaitFor("serf live", "live task")
+	app.SendKeys("n")
+	app.WaitFor("Harness:  serf", "Model:    openai/gpt-5")
+	app.SendKeys("Tab", "Enter")
+	app.WaitFor("Harness:  codex-local", "Model:    (harness default)")
+	app.SendKeys("Tab", "Enter")
+	app.WaitFor("Select codex-local model", "codex-local/gpt-5.3-codex")
+	app.SendKeys("Enter")
+	app.WaitFor("Harness:  codex-local", "Model:    codex-local/gpt-5.3-codex")
+	app.SendKeys("Tab", "Tab")
+	app.TypeLine("spawn via codex")
+	app.WaitFor("spawned session 1")
+	spawns := hub.WaitForSpawns(t, 1)
+	if spawns[0].Harness != "codex-local" {
+		t.Fatalf("harness=%q, want codex-local", spawns[0].Harness)
+	}
+	if spawns[0].ModelProvider != "" || spawns[0].Model != "gpt-5.3-codex" {
+		t.Fatalf("codex spawn model=%s/%s, want raw gpt-5.3-codex", spawns[0].ModelProvider, spawns[0].Model)
+	}
 }
 
 func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
@@ -107,10 +295,61 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	}
 
 	app.TypeLine("/help")
-	app.WaitFor("Available commands:", "/dashboard Go to live dashboard")
+	app.WaitFor("Available commands:", "/dashboard Go to live dashboard", "/theme")
+
+	app.TypeLine("/fork")
+	app.WaitFor("Select a user turn, then press f to fork.", "f: fork selected user turn")
+	app.SendKeys("i")
+	app.WaitFor("enter: send")
+
+	app.TypeLine("/wat")
+	app.WaitFor("Unknown command: /wat. Type /help for available commands.")
+
+	app.TypeLine("/project")
+	app.WaitFor("serf live", "Project:  serf", "live task")
+	app.SendKeys("Down", "Down", "Enter")
+	app.WaitFor("serf live", "ended maintenance")
+	app.SendKeys("/")
+	app.WaitFor("Command palette", "live task", "ended maintenance")
+	app.TypeText("ended")
+	app.WaitFor("Filter: ended", "ended maintenance")
+	app.SendKeys("Escape")
+	openLiveSession(t, app)
+	app.WaitFor("serf / session / live task", "enter: send")
+
+	app.TypeLine("/auth openai")
+	app.WaitFor("OpenAI auth: signed out")
+
+	app.TypeLine("/login openai")
+	app.WaitFor("OpenAI sign-in URL:", "https://auth.example/authorize", "Paste the full OpenAI redirect URL")
+	app.TypeLine("http://localhost:1455/auth/callback?code=abc&state=flow")
+	app.WaitFor("OpenAI login complete. OpenAI auth: oauth (tmux@example.com)")
+	completions := hub.WaitForAuthCompletions(t, 1)
+	if completions[0].FlowID != "flow-1" || completions[0].RedirectURL == "" {
+		t.Fatalf("auth completion=%+v, want flow-1 and redirect URL", completions[0])
+	}
+
+	app.TypeLine("/logout openai")
+	app.WaitFor("OpenAI sign-out complete.")
+	authCalls := hub.WaitForAuthCalls(t, 4)
+	if got := strings.Join(authCalls, ","); got != "status:openai,login-start:openai,login-complete:openai,logout:openai" {
+		t.Fatalf("auth calls=%s", got)
+	}
+
+	app.TypeLine("/theme")
+	app.WaitFor("Select theme", "system", "dark", "light")
+	app.SendKeys("Down", "Enter")
+	app.WaitFor("Switched to dark theme.")
 
 	app.TypeLine("/tasks")
 	app.WaitFor("Tasks (1):", "wire tui e2e")
+
+	app.TypeLine("/agents")
+	app.WaitFor("Select transcript", "subagent inspect")
+	app.SendKeys("Down", "Enter")
+	app.WaitFor("Viewing subagent inspect", "subagent transcript from e2e")
+	app.SendKeys("Escape")
+	app.WaitFor("enter: send")
 
 	app.TypeLine("/details")
 	app.WaitFor("Session:  01LIVE", "Dir:      "+tuiE2EProjectDir)
@@ -127,22 +366,28 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 		t.Fatalf("compact count=%d, want 1", got)
 	}
 
+	app.TypeLine("/model")
+	app.WaitFor("Select model", "openai/gpt-5")
+	app.SendKeys("Enter")
+	app.WaitFor("Model updated.")
+	if models := hub.WaitForModels(t, 1); models[0] != "gpt-5" {
+		t.Fatalf("model request=%q, want gpt-5", models[0])
+	}
+
 	app.TypeLine("/model gpt-5-mini")
 	app.WaitFor("Model updated.")
-	if models := hub.WaitForModels(t, 1); models[0] != "gpt-5-mini" {
-		t.Fatalf("model request=%q, want gpt-5-mini", models[0])
+	if models := hub.WaitForModels(t, 2); models[1] != "gpt-5-mini" {
+		t.Fatalf("model request=%q, want gpt-5-mini", models[1])
 	}
 
 	app.TypeLine("/project")
-	app.WaitFor("serf / project / serf", "Recent in this project")
-	app.SendKeys("Enter")
+	app.WaitFor("serf live", "Project:  serf")
+	app.SendKeys("Down", "Enter")
 	app.WaitFor("live task", "local:01LIVE")
 
 	app.TypeLine("/dashboard")
 	app.WaitFor("serf live", "live task")
-	app.SendKeys("Enter")
-	app.WaitFor("serf / project / serf")
-	app.SendKeys("Enter")
+	openLiveSession(t, app)
 	app.WaitFor("live task", "local:01LIVE")
 
 	app.TypeLine("/clear")
@@ -164,20 +409,65 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 	app.WaitFor("live task", "initial question", "initial answer")
 
 	app.SendKeys("Escape")
-	app.WaitFor("esc/i/q: compose", "f: fork")
+	app.WaitFor("esc/i/q: compose", "f: fork selected user turn", "▶ initial answer")
+	app.SendKeys("f")
+	app.WaitFor("Select a user turn to fork.")
+	if forks := hub.Forks(); len(forks) != 0 {
+		t.Fatalf("invalid fork selection should not call hub: %+v", forks)
+	}
+	app.SendKeys("i")
+	app.WaitFor("enter: send")
+	app.SendKeys("Escape")
+	app.WaitFor("esc/i/q: compose", "▶ Select a user turn to fork.")
 	app.SendKeys("k")
+	app.WaitFor("▶ initial answer")
 	app.SendKeys("k")
+	app.WaitFor("▶ exec")
+	app.SendKeys("k")
+	app.WaitFor("▶  > initial question")
 	app.SendKeys("f")
 	app.WaitFor("Fork draft for turn 1", "> initial question")
 
 	app.SendKeys("Enter")
 	app.WaitFor("fork child", "local:02FORK")
 	forks := hub.WaitForForks(t, 1)
-	if forks[0].Turn != 1 {
-		t.Fatalf("fork turn=%d, want 1", forks[0].Turn)
+	if forks[0].SourceTurnID != "1" {
+		t.Fatalf("fork source turn=%q, want 1", forks[0].SourceTurnID)
 	}
-	if forks[0].EditedMessage != "initial question" {
-		t.Fatalf("fork edited_message=%q, want initial question", forks[0].EditedMessage)
+	if forks[0].EditedInput != "initial question" {
+		t.Fatalf("fork edited input=%q, want initial question", forks[0].EditedInput)
+	}
+	app.SendKeys("C-o")
+	app.WaitFor("serf live", "live task")
+}
+
+func TestTUITmuxE2E_FailedForkPreservesDraft(t *testing.T) {
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	hub.SetFailFork(true)
+	defer hub.Close()
+	app := startTUITmux(t, bin, hub.URL())
+	defer app.Close()
+
+	openLiveSession(t, app)
+	app.WaitFor("live task", "initial question", "initial answer")
+
+	app.SendKeys("Escape")
+	app.WaitFor("esc/i/q: compose", "f: fork selected user turn")
+	app.SendKeys("k")
+	app.SendKeys("k")
+	app.SendKeys("f")
+	app.WaitFor("Fork draft for turn 1", "> initial question")
+	app.TypeText(" with edit")
+	app.SendKeys("Enter")
+	app.WaitFor("Fork failed: appwire thread/fork: fork failed", "fork draft", "> initial question with edit")
+	forks := hub.WaitForForks(t, 1)
+	if forks[0].EditedInput != "initial question with edit" {
+		t.Fatalf("failed fork edited input=%q, want edited text", forks[0].EditedInput)
+	}
+	if forks[0].Label != "original before fork" {
+		t.Fatalf("failed fork label=%q, want original before fork", forks[0].Label)
 	}
 }
 
@@ -185,7 +475,7 @@ func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	hub.SetSessionCapabilities("01LIVE", hubapi.SessionCapabilities{})
+	hub.SetSessionCapabilities("01LIVE", appwire.ThreadCapabilities{})
 	defer hub.Close()
 	app := startTUITmux(t, bin, hub.URL())
 	defer app.Close()
@@ -194,7 +484,7 @@ func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
 	app.WaitFor("live task", "initial question")
 
 	app.SendKeys("Escape")
-	app.WaitFor("esc/i/q: compose", "f: fork")
+	app.WaitFor("esc/i/q: compose", "ctrl+o: dashboard")
 	app.SendKeys("k")
 	app.SendKeys("k")
 	app.SendKeys("f")
@@ -203,7 +493,7 @@ func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
 		t.Fatalf("fork should not call hub when capability is disabled: %+v", forks)
 	}
 	app.SendKeys("i")
-	app.WaitFor("enter: send", "/help")
+	app.WaitFor("/help")
 
 	app.TypeLine("/interrupt")
 	app.WaitFor("Interrupt is not available for this session.")
@@ -229,11 +519,214 @@ func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
 		t.Fatalf("model should not call hub when capability is disabled: %+v", models)
 	}
 
+	app.SendKeys("C-p")
+	app.WaitFor("Command palette", "/clear", "disabled: source does not advertise clear", "/shutdown", "disabled: source does not advertise shutdown")
+	app.SendKeys("Escape")
+
 	app.TypeLine("blocked send")
 	app.WaitFor("Send is not available for this session.", "> blocked send")
 	if sends := hub.Sends(); len(sends) != 0 {
 		t.Fatalf("send should not call hub when capability is disabled: %+v", sends)
 	}
+}
+
+func TestTUITmuxE2E_SessionCommandPalettePreservesDraft(t *testing.T) {
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	defer hub.Close()
+	app := startTUITmux(t, bin, hub.URL())
+	defer app.Close()
+
+	openLiveSession(t, app)
+	app.TypeText("draft before palette")
+	app.SendKeys("C-p")
+	screen := app.WaitFor("Command palette", "/help", "/model", "> draft before palette")
+	if strings.Contains(screen, "/search") || strings.Contains(screen, "ended maintenance") {
+		t.Fatalf("session palette should not expose cross-session search:\n%s", screen)
+	}
+	app.TypeText("model")
+	app.WaitFor("Filter: model", "/model", "> draft before palette")
+	app.SendKeys("Escape")
+	app.WaitFor("enter: send", "> draft before palette")
+}
+
+func TestTUITmuxE2E_SessionLeadingSlashOpensPalette(t *testing.T) {
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	defer hub.Close()
+	app := startTUITmux(t, bin, hub.URL())
+	defer app.Close()
+
+	openLiveSession(t, app)
+	app.TypeText("/")
+	app.WaitFor("Command palette", "/help", "/model")
+}
+
+func TestTUITmuxE2E_CtrlCRequiresDoublePressFromSession(t *testing.T) {
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	defer hub.Close()
+	app := startTUITmux(t, bin, hub.URL())
+	defer app.Close()
+
+	openLiveSession(t, app)
+	app.SendKeys("C-c")
+	time.Sleep(100 * time.Millisecond)
+	if screen := app.Capture(); strings.Contains(screen, "Press ctrl+c again") || strings.Contains(screen, "Restore this session:") {
+		t.Fatalf("first ctrl+c should not render an in-app quit warning:\n%s", screen)
+	}
+	app.SendKeys("C-c")
+	app.WaitForExit()
+}
+
+func TestTUITmuxE2E_CtrlCRestoreMessageSurvivesAltScreenExit(t *testing.T) {
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	defer hub.Close()
+	app := startTUITmuxAltScreen(t, bin, hub.URL(), 120, 28)
+	defer app.Close()
+
+	openLiveSession(t, app)
+	app.SendKeys("C-c")
+	time.Sleep(100 * time.Millisecond)
+	if screen := app.Capture(); strings.Contains(screen, "Press ctrl+c again") || strings.Contains(screen, "Restore this session:") {
+		t.Fatalf("first ctrl+c should not render an in-app quit warning:\n%s", screen)
+	}
+	app.SendKeys("C-c")
+	app.WaitForExit()
+	history := app.CaptureHistory()
+	for _, want := range []string{"Restore this session:", "serf-tui --hub-addr " + hub.URL(), "local:01LIVE"} {
+		if !strings.Contains(history, want) {
+			t.Fatalf("normal scrollback missing %q after alt-screen exit:\n%s", want, history)
+		}
+	}
+}
+
+func TestTUITmuxE2E_ModelPickerShowsAuthRequiredModels(t *testing.T) {
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	hub.SetAuthRequiredModels(true)
+	defer hub.Close()
+	app := startTUITmux(t, bin, hub.URL())
+	defer app.Close()
+
+	openLiveSession(t, app)
+	app.WaitFor("live task", "initial question")
+
+	app.TypeLine("/model")
+	app.WaitFor("Select model", "openai/gpt-5", "disabled: Login required", "/auth openai")
+	app.SendKeys("Enter")
+	app.WaitFor("Select model", "disabled: Login required")
+	if models := hub.Models(); len(models) != 0 {
+		t.Fatalf("auth-required model should not be selected: %+v", models)
+	}
+}
+
+func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	hub.SetSessionState("01LIVE", appwire.ThreadStatusProcessing)
+	hub.SetSessionContextPressure("01LIVE", 0.66)
+	defer hub.Close()
+	app := startTUITmux(t, bin, hub.URL())
+	defer app.Close()
+
+	openLiveSession(t, app)
+	app.WaitFor(
+		"live task",
+		"source: serf",
+		"state: processing",
+		"model: gpt-5",
+		"project: serf",
+		"cwd: "+tuiE2EProjectDir,
+		"turns: 2",
+		"ctx: 66%",
+		"status: hub connected",
+		"steer: ready",
+		"busy: turn_active",
+	)
+
+	app.TypeLine("/auth openai")
+	app.WaitFor("OpenAI auth: signed out", "auth: openai signed out")
+
+	app.TypeText("first line")
+	app.SendKeys("C-j")
+	app.TypeLine("second line")
+	app.WaitFor("Steering sent.")
+	steers := hub.WaitForSteers(t, 1)
+	if steers[0].Text != "first line\nsecond line" {
+		t.Fatalf("steer text=%q, want multiline input", steers[0].Text)
+	}
+
+	hub.SetSessionState("01LIVE", appwire.ThreadStatusIdle)
+	app.SendKeys("C-o")
+	app.WaitFor("serf live")
+	openLiveSession(t, app)
+	app.WaitFor("state: idle", "send: ready")
+
+	hub.SetFailSend(true)
+	app.TypeLine("send failure draft")
+	app.WaitFor("Send failed: appwire turn/start: send failed", "error: Send failed: appwire turn/start: send failed", "> send failure draft")
+
+	app.SendKeys("C-o")
+	app.WaitFor("serf live")
+	app.SendKeys("Down", "Enter", "Down", "Enter")
+	screen := app.WaitFor("ended maintenance", "state: ended", "enter: send")
+	if strings.Contains(screen, "read-only") || strings.Contains(screen, "source does not support send") {
+		t.Fatalf("ended resumable session should not render read-only:\n%s", screen)
+	}
+}
+
+func TestTUITmuxE2E_HubStreamingAssistantDeltaBeforeRefresh(t *testing.T) {
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	defer hub.Close()
+	app := startTUITmux(t, bin, hub.URL())
+	defer app.Close()
+
+	openLiveSession(t, app)
+	app.WaitFor("live task", "initial answer")
+	app.TypeLine("stream please")
+	hub.WaitForSends(t, 1)
+
+	hub.BroadcastAgentDelta("01LIVE", "partial live answer")
+	app.WaitFor("partial live answer")
+
+	hub.AppendAssistantFinal("01LIVE", "partial live answer done")
+	app.SendKeys("C-o")
+	app.WaitFor("serf live", "live task")
+	openLiveSession(t, app)
+	app.WaitFor("partial live answer done")
+}
+
+func TestTUITmuxE2E_HubStreamingToolGroupBeforeRefresh(t *testing.T) {
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	defer hub.Close()
+	app := startTUITmux(t, bin, hub.URL())
+	defer app.Close()
+
+	openLiveSession(t, app)
+	app.WaitFor("live task", "initial answer")
+
+	hub.BroadcastToolStarted("01LIVE")
+	hub.BroadcastToolOutputDelta("01LIVE", "tmux tool output\n")
+	hub.BroadcastToolCompleted("01LIVE")
+	app.WaitFor("read_file", "tmux tool output")
+
+	hub.AppendToolFinal("01LIVE")
+	app.SendKeys("C-o")
+	app.WaitFor("serf live", "live task")
+	openLiveSession(t, app)
+	app.WaitFor("read_file", "tmux tool output")
 }
 
 func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
@@ -249,27 +742,30 @@ func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 
 	hub.SetFailTasks(true)
 	app.TypeLine("/tasks")
-	app.WaitFor("Tasks error: hub returned 500")
+	app.WaitFor("Tasks failed", "category: appwire", "reason: appwire serf/tasks/list: tasks failed")
 
 	hub.SetFailSend(true)
 	app.TypeLine("send should fail")
-	app.WaitFor("Send failed: hub returned 500", "> send should fail")
+	app.WaitFor("Send failed", "category: appwire", "reason: appwire turn/start: send failed", "> send should fail")
 
 	app.SendKeys("C-o")
 	app.WaitFor("serf live", "live task")
 	hub.SetFailSpawn(true)
-	app.SendKeys("s")
-	app.WaitFor("serf / new session", "Task (optional):")
+	app.SendKeys("n")
+	app.WaitFor("serf / new session", "Prompt (optional):")
 	app.TypeLine("spawn should fail")
-	app.WaitFor("error: spawn failed: hub returned 500")
+	app.WaitFor("Spawn failed", "category: launch", "reason: appwire thread/start: spawn failed", "> spawn should fail")
 }
 
 func openLiveSession(t *testing.T, app *tmuxTUI) {
 	t.Helper()
 	app.WaitFor("serf live", "serf", "live task")
+	app.SendKeys("/")
+	app.TypeText("Project: serf")
+	app.WaitFor("Command palette", "Project: serf")
 	app.SendKeys("Enter")
-	app.WaitFor("serf / project / serf", "Live now")
-	app.SendKeys("Enter")
+	app.WaitFor("serf live", "Project:  serf", "live task")
+	app.SendKeys("Down", "Enter")
 }
 
 func requireTmux(t *testing.T) {
@@ -301,9 +797,26 @@ type tmuxTUI struct {
 
 func startTUITmux(t *testing.T, bin, hubURL string) *tmuxTUI {
 	t.Helper()
+	return startTUITmuxSized(t, bin, hubURL, 120, 40)
+}
+
+func startTUITmuxSized(t *testing.T, bin, hubURL string, width, height int) *tmuxTUI {
+	t.Helper()
 	session := fmt.Sprintf("serf-tui-e2e-%d", time.Now().UnixNano())
 	command := shellQuote(bin) + " -debug -no-auto-start-hub -hub-addr " + shellQuote(hubURL)
-	runTmux(t, "new-session", "-d", "-x", "120", "-y", "40", "-s", session, command)
+	runTmux(t, "new-session", "-d", "-x", fmt.Sprint(width), "-y", fmt.Sprint(height), "-s", session, command)
+	runTmux(t, "set-option", "-t", session, "remain-on-exit", "on")
+	app := &tmuxTUI{t: t, session: session}
+	app.WaitFor("serf live")
+	return app
+}
+
+func startTUITmuxAltScreen(t *testing.T, bin, hubURL string, width, height int) *tmuxTUI {
+	t.Helper()
+	session := fmt.Sprintf("serf-tui-e2e-%d", time.Now().UnixNano())
+	command := shellQuote(bin) + " -no-auto-start-hub -hub-addr " + shellQuote(hubURL)
+	runTmux(t, "new-session", "-d", "-x", fmt.Sprint(width), "-y", fmt.Sprint(height), "-s", session, command)
+	runTmux(t, "set-option", "-t", session, "remain-on-exit", "on")
 	app := &tmuxTUI{t: t, session: session}
 	app.WaitFor("serf live")
 	return app
@@ -321,8 +834,13 @@ func (a *tmuxTUI) SendKeys(keys ...string) {
 
 func (a *tmuxTUI) TypeLine(text string) {
 	a.t.Helper()
-	runTmux(a.t, "send-keys", "-t", a.session, "-l", text)
+	a.TypeText(text)
 	runTmux(a.t, "send-keys", "-t", a.session, "Enter")
+}
+
+func (a *tmuxTUI) TypeText(text string) {
+	a.t.Helper()
+	runTmux(a.t, "send-keys", "-t", a.session, "-l", text)
 }
 
 func (a *tmuxTUI) Capture() string {
@@ -343,11 +861,19 @@ func (a *tmuxTUI) CaptureHistory() string {
 	return normalizePane(string(out))
 }
 
+func (a *tmuxTUI) Resize(width, height int) {
+	a.t.Helper()
+	runTmux(a.t, "resize-window", "-t", a.session, "-x", fmt.Sprint(width), "-y", fmt.Sprint(height))
+}
+
 func (a *tmuxTUI) WaitFor(wants ...string) string {
 	a.t.Helper()
 	deadline := time.Now().Add(tuiE2EWaitTimeout)
 	var screen string
 	for time.Now().Before(deadline) {
+		if status, dead := a.PaneDeadStatus(); dead {
+			a.t.Fatalf("serf-tui exited before %q (status %s)\nvisible pane:\n%s\nrecent history:\n%s", wants, status, a.Capture(), a.CaptureHistory())
+		}
 		screen = a.Capture()
 		ok := true
 		for _, want := range wants {
@@ -365,16 +891,75 @@ func (a *tmuxTUI) WaitFor(wants ...string) string {
 	return ""
 }
 
+func requirePaneOrder(t *testing.T, screen string, parts ...string) {
+	t.Helper()
+	pos := -1
+	for _, part := range parts {
+		next := strings.Index(screen, part)
+		if next < 0 {
+			t.Fatalf("pane missing %q:\n%s", part, screen)
+		}
+		if next < pos {
+			t.Fatalf("pane rendered %q before prior parts %v:\n%s", part, parts, screen)
+		}
+		pos = next
+	}
+}
+
 func (a *tmuxTUI) WaitForExit() {
 	a.t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
+		if _, dead := a.PaneDeadStatus(); dead {
+			return
+		}
 		if err := exec.Command("tmux", "has-session", "-t", a.session).Run(); err != nil {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	a.t.Fatalf("tmux session did not exit\nvisible pane:\n%s\nrecent history:\n%s", a.Capture(), a.CaptureHistory())
+}
+
+func (a *tmuxTUI) PaneDeadStatus() (string, bool) {
+	a.t.Helper()
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", a.session, "#{pane_dead} #{pane_dead_status}").CombinedOutput()
+	if err != nil {
+		return "", false
+	}
+	return parsePaneDeadStatus(string(out))
+}
+
+func parsePaneDeadStatus(raw string) (string, bool) {
+	fields := strings.Fields(raw)
+	if len(fields) == 0 || fields[0] != "1" {
+		return "", false
+	}
+	if len(fields) > 1 && fields[1] != "" {
+		return fields[1], true
+	}
+	return "unknown", true
+}
+
+func TestParsePaneDeadStatus(t *testing.T) {
+	tests := []struct {
+		raw    string
+		status string
+		dead   bool
+	}{
+		{raw: "0 \n", dead: false},
+		{raw: "1 0\n", status: "0", dead: true},
+		{raw: "1 2\n", status: "2", dead: true},
+		{raw: "1\n", status: "unknown", dead: true},
+	}
+	for _, tt := range tests {
+		t.Run(strings.TrimSpace(tt.raw), func(t *testing.T) {
+			status, dead := parsePaneDeadStatus(tt.raw)
+			if status != tt.status || dead != tt.dead {
+				t.Fatalf("parsePaneDeadStatus(%q) = %q, %v; want %q, %v", tt.raw, status, dead, tt.status, tt.dead)
+			}
+		})
+	}
 }
 
 func runTmux(t *testing.T, args ...string) {
@@ -398,104 +983,183 @@ func normalizePane(s string) string {
 type tuiE2EHub struct {
 	t      *testing.T
 	server *httptest.Server
+	app    *appserver.Server
 
-	mu         sync.Mutex
-	sessions   map[string]*tuiE2ESession
-	spawns     []hubapi.SpawnRequest
-	sends      []string
-	actions    map[string]int
-	models     []string
-	forks      []hubapi.ForkRequest
-	spawnCount int
-	treeGets   int
-	failTasks  bool
-	failSend   bool
-	failSpawn  bool
+	mu              sync.Mutex
+	order           []string
+	sessions        map[string]*tuiE2ESession
+	spawns          []appwire.ThreadStartParams
+	sends           []string
+	actions         map[string]int
+	models          []string
+	forks           []appwire.ThreadForkParams
+	resumes         []appwire.ThreadResumeParams
+	steers          []appwire.TurnSteerParams
+	authCalls       []string
+	authCompletions []appwire.AuthLoginCompleteParams
+	harnesses       []appwire.HarnessDescriptor
+	spawnCount      int
+	treeGets        int
+	authRequired    bool
+	failTasks       bool
+	failSend        bool
+	failSpawn       bool
+	failFork        bool
 }
 
 type tuiE2ESession struct {
-	ID           string
-	Title        string
-	State        string
-	Project      string
-	WorkingDir   string
-	Model        string
-	Live         bool
-	Capabilities hubapi.SessionCapabilities
-	Events       []tuiE2ESSEEvent
-}
-
-type tuiE2ESSEEvent struct {
-	Name string
-	Data any
+	ID              string
+	Title           string
+	State           string
+	Project         string
+	WorkingDir      string
+	Model           string
+	ContextPressure float64
+	Live            bool
+	CreatedAt       int64
+	UpdatedAt       int64
+	Kind            string
+	ParentRef       string
+	Capabilities    appwire.ThreadCapabilities
+	Turns           []appwire.Turn
 }
 
 func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 	t.Helper()
 	h := &tuiE2EHub{
-		t:        t,
-		sessions: map[string]*tuiE2ESession{},
-		actions:  map[string]int{},
+		t:         t,
+		sessions:  map[string]*tuiE2ESession{},
+		actions:   map[string]int{},
+		harnesses: []appwire.HarnessDescriptor{{ID: "serf", Label: "serf", Kind: "serf"}},
 	}
-	h.sessions["01LIVE"] = &tuiE2ESession{
-		ID:         "01LIVE",
-		Title:      "live task",
-		State:      "idle",
-		Project:    "serf",
-		WorkingDir: tuiE2EProjectDir,
-		Model:      "gpt-5",
-		Live:       true,
-		Capabilities: hubapi.SessionCapabilities{
-			Send:        true,
-			Interrupt:   true,
-			Compact:     true,
-			Clear:       true,
-			Fork:        true,
-			ChangeModel: true,
-		},
-		Events: []tuiE2ESSEEvent{
-			{Name: "SESSION_START", Data: map[string]any{"session_id": "01LIVE", "model": "gpt-5", "profile": "default", "context_window_size": 200000}},
-			{Name: "USER_INPUT", Data: map[string]any{"text": "initial question", "turn": 1}},
-			{Name: "TOOL_CALL_START", Data: map[string]any{"call_id": "tool-1", "tool_name": "exec", "arguments_json": `{"cmd":"echo e2e"}`}},
-			{Name: "TOOL_CALL_OUTPUT_DELTA", Data: map[string]any{"call_id": "tool-1", "delta": "tool output from e2e"}},
-			{Name: "TOOL_CALL_END", Data: map[string]any{"call_id": "tool-1", "tool_name": "exec", "duration_ms": 10}},
-			{Name: "ASSISTANT_TEXT_END", Data: map[string]any{"text": "initial answer", "usage": map[string]any{"input_tokens": 12, "output_tokens": 4}}},
-			{Name: "REPLAY_DONE", Data: map[string]any{}},
-		},
-	}
-	h.sessions["01PAST"] = &tuiE2ESession{
-		ID:         "01PAST",
-		Title:      "ended maintenance",
-		State:      "ended",
+	h.addSession(&tuiE2ESession{
+		ID:           "01LIVE",
+		Title:        "live task",
+		State:        appwire.ThreadStatusIdle,
+		Project:      "serf",
+		WorkingDir:   tuiE2EProjectDir,
+		Model:        "gpt-5",
+		Live:         true,
+		CreatedAt:    100,
+		UpdatedAt:    300,
+		Capabilities: fullTUIE2ECapabilities(),
+		Turns: []appwire.Turn{{
+			ID:     "turn_1",
+			Status: appwire.TurnStatusCompleted,
+			Items: []appwire.ThreadItem{
+				{Type: "user_message", ID: "user-1", TurnID: "turn_1", Text: "initial question"},
+				{Type: "tool_call", ID: "tool-1", TurnID: "turn_1", ToolName: "exec", ArgumentsJSON: `{"cmd":"echo e2e"}`, Output: "tool output from e2e", Status: "completed"},
+				{Type: "agent_message", ID: "agent-1", TurnID: "turn_1", Text: "initial answer", Status: "completed"},
+			},
+		}, {
+			ID:     "turn_active",
+			Status: appwire.TurnStatusRunning,
+		}},
+	})
+	h.sessions["01SUB"] = &tuiE2ESession{
+		ID:         "01SUB",
+		Title:      "subagent inspect",
+		State:      appwire.ThreadStatusEnded,
 		Project:    "serf",
 		WorkingDir: tuiE2EProjectDir,
 		Model:      "gpt-5",
 		Live:       false,
+		CreatedAt:  50,
+		UpdatedAt:  50,
+		Kind:       "subagent",
+		ParentRef:  "local:01LIVE",
+		Turns: []appwire.Turn{{
+			ID:     "turn_1",
+			Status: appwire.TurnStatusCompleted,
+			Items: []appwire.ThreadItem{
+				{Type: "agent_message", ID: "sub-agent-1", TurnID: "turn_1", Text: "subagent transcript from e2e", Status: "completed"},
+			},
+		}},
 	}
-	h.sessions["01OPS"] = &tuiE2ESession{
-		ID:         "01OPS",
-		Title:      "ops task",
-		State:      "processing",
-		Project:    "ops",
-		WorkingDir: "/tmp/serf-tui-e2e/ops",
-		Model:      "gpt-5",
-		Live:       true,
-		Capabilities: hubapi.SessionCapabilities{
-			Send:        true,
-			Interrupt:   true,
-			Compact:     true,
-			Clear:       true,
-			Fork:        true,
-			ChangeModel: true,
-		},
-		Events: []tuiE2ESSEEvent{
-			{Name: "SESSION_START", Data: map[string]any{"session_id": "01OPS", "model": "gpt-5", "profile": "default"}},
-			{Name: "ASSISTANT_TEXT_END", Data: map[string]any{"text": "ops transcript"}},
-			{Name: "REPLAY_DONE", Data: map[string]any{}},
-		},
-	}
-	h.server = httptest.NewServer(http.HandlerFunc(h.ServeHTTP))
+	h.addSession(&tuiE2ESession{
+		ID:           "01PAST",
+		Title:        "ended maintenance",
+		State:        appwire.ThreadStatusEnded,
+		Project:      "serf",
+		WorkingDir:   tuiE2EProjectDir,
+		Model:        "gpt-5",
+		Live:         false,
+		CreatedAt:    10,
+		UpdatedAt:    10,
+		Capabilities: fullTUIE2ECapabilities(),
+	})
+	h.addSession(&tuiE2ESession{
+		ID:           "01OPS",
+		Title:        "ops task",
+		State:        appwire.ThreadStatusIdle,
+		Project:      "ops",
+		WorkingDir:   "/tmp/serf-tui-e2e/ops",
+		Model:        "gpt-5",
+		Live:         true,
+		CreatedAt:    80,
+		UpdatedAt:    200,
+		Capabilities: fullTUIE2ECapabilities(),
+		Turns: []appwire.Turn{{
+			ID:     "turn_1",
+			Status: appwire.TurnStatusCompleted,
+			Items: []appwire.ThreadItem{
+				{Type: "agent_message", ID: "ops-agent-1", TurnID: "turn_1", Text: "ops transcript", Status: "completed"},
+			},
+		}},
+	})
+
+	app := appserver.NewServer(appserver.ServerConfig{ServerName: "serf-hub", SourceID: "local"})
+	h.app = app
+	h.registerHandlers(app)
+	h.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rpc" {
+			http.NotFound(w, r)
+			return
+		}
+		app.ServeWebSocket(w, r)
+	}))
 	return h
+}
+
+func fullTUIE2ECapabilities() appwire.ThreadCapabilities {
+	return appwire.ThreadCapabilities{
+		Send:         true,
+		Steer:        true,
+		Interrupt:    true,
+		Compact:      true,
+		Clear:        true,
+		ForkFromTurn: true,
+		Shutdown:     true,
+		ChangeModel:  true,
+	}
+}
+
+func (h *tuiE2EHub) registerHandlers(app *appserver.Server) {
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadList, h.handleThreadList)
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, h.handleThreadRead)
+	appserver.HandleTyped(app.Router(), appwire.MethodModelList, h.handleModelList)
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfHarnessesList, h.handleHarnessList)
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadStart, h.handleThreadStart)
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadResume, h.handleThreadResume)
+	appserver.HandleTyped(app.Router(), appwire.MethodTurnStart, h.handleTurnStart)
+	appserver.HandleTyped(app.Router(), appwire.MethodTurnSteer, h.handleTurnSteer)
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfTasksList, h.handleTasksList)
+	appserver.HandleTyped(app.Router(), appwire.MethodTurnInterrupt, h.handleTurnInterrupt)
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadCompactStart, h.handleThreadCompactStart)
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadModelSet, h.handleThreadModelSet)
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadClear, h.handleThreadClear)
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadFork, h.handleThreadFork)
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfAuthStatus, h.handleAuthStatus)
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfAuthLoginStart, h.handleAuthLoginStart)
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfAuthLoginComplete, h.handleAuthLoginComplete)
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfAuthLogout, h.handleAuthLogout)
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfThreadTranscriptsList, h.handleThreadTranscriptList)
+}
+
+func (h *tuiE2EHub) handleHarnessList(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return appwire.HarnessListResponse{Data: append([]appwire.HarnessDescriptor(nil), h.harnesses...)}, nil
 }
 
 func (h *tuiE2EHub) URL() string {
@@ -506,321 +1170,413 @@ func (h *tuiE2EHub) Close() {
 	h.server.Close()
 }
 
-func (h *tuiE2EHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	switch {
-	case r.Method == http.MethodGet && r.URL.Path == "/api/health":
-		writeTUIE2EJSON(w, hubapi.HealthResponse{
-			Version: "e2e",
-			HubAddr: strings.TrimPrefix(h.server.URL, "http://"),
-			Capabilities: hubapi.HealthCapabilities{
-				Tree:             true,
-				TranscriptFollow: true,
-				Spawn:            true,
-				Fork:             true,
-			},
-		})
-	case r.Method == http.MethodGet && r.URL.Path == "/api/tree":
-		h.mu.Lock()
-		h.treeGets++
-		h.mu.Unlock()
-		writeTUIE2EJSON(w, h.tree())
-	case r.Method == http.MethodGet && r.URL.Path == "/api/models":
-		writeTUIE2EJSON(w, []hubapi.ModelOption{{Provider: "openai", Model: "gpt-5"}})
-	case r.Method == http.MethodPost && r.URL.Path == "/api/spawn":
-		h.handleSpawn(w, r)
-	case strings.HasPrefix(r.URL.Path, "/api/sessions/"):
-		h.handleSession(w, r)
-	default:
-		http.NotFound(w, r)
-	}
-}
-
-func (h *tuiE2EHub) tree() hubapi.TreeResponse {
+func (h *tuiE2EHub) SetHarnesses(harnesses []appwire.HarnessDescriptor) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	projects := map[string]*hubapi.TreeProject{}
-	for _, s := range h.sessions {
-		p := projects[s.Project]
-		if p == nil {
-			p = &hubapi.TreeProject{
-				Key:         hubProjectKey(s.Project),
-				Name:        s.Project,
-				WorkingDir:  s.WorkingDir,
-				RollupState: s.State,
-			}
-			projects[s.Project] = p
-		}
-		p.Sessions = append(p.Sessions, hubapi.TreeNode{
-			Ref:       hubapi.LocalRef(s.ID).String(),
-			HostID:    "local",
-			SessionID: s.ID,
-			Title:     s.Title,
-			Project:   s.Project,
-			State:     s.State,
-			Live:      s.Live,
-			Model:     s.Model,
-			Age:       "now",
-		})
+	h.harnesses = append([]appwire.HarnessDescriptor(nil), harnesses...)
+}
+
+func (h *tuiE2EHub) SetSessionTitle(id, title string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if s := h.sessions[id]; s != nil {
+		s.Title = title
 	}
-	out := hubapi.TreeResponse{
-		Sources: []hubapi.Source{{ID: "local", Label: "local", Kind: "local", Online: true}},
-	}
-	for _, name := range []string{"serf", "ops"} {
-		if p := projects[name]; p != nil {
-			out.Projects = append(out.Projects, *p)
+}
+
+func (h *tuiE2EHub) EndDashboardSessions() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, id := range h.order {
+		if s := h.sessions[id]; s != nil {
+			s.State = appwire.ThreadStatusEnded
+			s.Live = false
 		}
 	}
-	return out
 }
 
-func (h *tuiE2EHub) handleSpawn(w http.ResponseWriter, r *http.Request) {
-	h.mu.Lock()
-	fail := h.failSpawn
-	h.mu.Unlock()
-	if fail {
-		http.Error(w, "spawn failed", http.StatusInternalServerError)
-		return
-	}
-	var req hubapi.SpawnRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	h.mu.Lock()
-	h.spawnCount++
-	id := fmt.Sprintf("02SPAWN%d", h.spawnCount)
-	h.spawns = append(h.spawns, req)
-	h.sessions[id] = &tuiE2ESession{
-		ID:         id,
-		Title:      fmt.Sprintf("spawned session %d", h.spawnCount),
-		State:      "idle",
-		Project:    "serf",
-		WorkingDir: req.WorkingDir,
-		Model:      req.Model,
-		Live:       true,
-		Capabilities: hubapi.SessionCapabilities{
-			Send:        true,
-			Interrupt:   true,
-			Compact:     true,
-			Clear:       true,
-			Fork:        true,
-			ChangeModel: true,
-		},
-		Events: []tuiE2ESSEEvent{
-			{Name: "SESSION_START", Data: map[string]any{"session_id": id, "model": "gpt-5", "profile": "default"}},
-			{Name: "ASSISTANT_TEXT_END", Data: map[string]any{"text": "spawn transcript ready"}},
-			{Name: "REPLAY_DONE", Data: map[string]any{}},
-		},
-	}
-	h.mu.Unlock()
-	ref := hubapi.LocalRef(id)
-	writeTUIE2EJSON(w, hubapi.SpawnResponse{Ref: ref.String(), HostID: ref.HostID, SessionID: ref.SessionID})
+func (h *tuiE2EHub) BroadcastAgentDelta(threadID, delta string) {
+	h.app.Broadcast(threadID, appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+		ThreadID: threadID,
+		Ref:      "local:" + threadID,
+		TurnID:   "turn_stream",
+		ItemID:   "agent_stream",
+		Delta:    delta,
+	})
 }
 
-func (h *tuiE2EHub) handleSession(w http.ResponseWriter, r *http.Request) {
-	ref, rest, ok := parseTUIE2ESessionPath(r.URL.Path)
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	switch {
-	case r.Method == http.MethodGet && rest == "":
-		h.writeSessionDetail(w, ref.SessionID)
-	case r.Method == http.MethodGet && rest == "events":
-		h.writeSessionEvents(w, ref.SessionID)
-	case r.Method == http.MethodPost && rest == "send":
-		h.handleSend(w, r, ref.SessionID)
-	case r.Method == http.MethodGet && rest == "tasks":
-		h.mu.Lock()
-		fail := h.failTasks
-		h.mu.Unlock()
-		if fail {
-			http.Error(w, "tasks failed", http.StatusInternalServerError)
-			return
-		}
-		writeTUIE2EJSON(w, []agent.Task{{ID: 1, Type: agent.TaskTypeImplement, Description: "wire tui e2e", Status: agent.TaskInProgress}})
-	case r.Method == http.MethodPost && rest == "interrupt":
-		h.recordAction("interrupt")
-		w.WriteHeader(http.StatusOK)
-	case r.Method == http.MethodPost && rest == "compact":
-		h.recordAction("compact")
-		w.WriteHeader(http.StatusOK)
-	case r.Method == http.MethodPost && rest == "model":
-		h.handleModel(w, r)
-	case r.Method == http.MethodPost && rest == "clear":
-		h.handleClear(w)
-	case r.Method == http.MethodPost && rest == "fork":
-		h.handleFork(w, r)
-	default:
-		http.NotFound(w, r)
-	}
-}
-
-func parseTUIE2ESessionPath(path string) (hubapi.Ref, string, bool) {
-	rest := strings.TrimPrefix(path, "/api/sessions/")
-	refPart, suffix, _ := strings.Cut(rest, "/")
-	rawRef, err := url.PathUnescape(refPart)
-	if err != nil {
-		return hubapi.Ref{}, "", false
-	}
-	ref, err := hubapi.ParseRef(rawRef)
-	if err != nil {
-		return hubapi.Ref{}, "", false
-	}
-	return ref, suffix, true
-}
-
-func (h *tuiE2EHub) writeSessionDetail(w http.ResponseWriter, id string) {
-	h.mu.Lock()
-	s := h.sessions[id]
-	h.mu.Unlock()
-	if s == nil {
-		http.Error(w, "session not found", http.StatusNotFound)
-		return
-	}
-	ref := hubapi.LocalRef(s.ID)
-	writeTUIE2EJSON(w, hubapi.SessionDetail{
-		Ref:          ref.String(),
-		HostID:       ref.HostID,
-		SessionID:    ref.SessionID,
-		Title:        s.Title,
-		State:        s.State,
-		Live:         s.Live,
-		Project:      s.Project,
-		WorkingDir:   s.WorkingDir,
-		Model:        s.Model,
-		Profile:      "default",
-		TurnCount:    1,
-		Capabilities: s.Capabilities,
-		Streams: hubapi.SessionStreams{
-			TranscriptFollow: "/api/sessions/" + ref.PathEscaped() + "/events?mode=transcript-follow",
+func (h *tuiE2EHub) BroadcastToolStarted(threadID string) {
+	h.app.Broadcast(threadID, appwire.NotifyItemStarted, map[string]any{
+		"threadId": threadID,
+		"ref":      "local:" + threadID,
+		"turnId":   "turn_tool",
+		"item": appwire.ThreadItem{
+			Type:          "tool_call",
+			ID:            "tool_stream",
+			CallID:        "call_stream",
+			TurnID:        "turn_tool",
+			ToolName:      "read_file",
+			ArgumentsJSON: `{"file_path":"/tmp/tmux-tool.txt"}`,
+			Status:        "running",
 		},
 	})
 }
 
-func (h *tuiE2EHub) writeSessionEvents(w http.ResponseWriter, id string) {
+func (h *tuiE2EHub) BroadcastToolOutputDelta(threadID, delta string) {
+	h.app.Broadcast(threadID, appwire.NotifyToolOutputDelta, map[string]any{
+		"threadId": threadID,
+		"ref":      "local:" + threadID,
+		"turnId":   "turn_tool",
+		"itemId":   "tool_stream",
+		"delta":    delta,
+	})
+}
+
+func (h *tuiE2EHub) BroadcastToolCompleted(threadID string) {
+	h.app.Broadcast(threadID, appwire.NotifyItemCompleted, map[string]any{
+		"threadId": threadID,
+		"ref":      "local:" + threadID,
+		"turnId":   "turn_tool",
+		"item": appwire.ThreadItem{
+			Type:          "tool_call",
+			ID:            "tool_stream",
+			CallID:        "call_stream",
+			TurnID:        "turn_tool",
+			ToolName:      "read_file",
+			ArgumentsJSON: `{"file_path":"/tmp/tmux-tool.txt"}`,
+			Output:        "tmux tool output\n",
+			Status:        "completed",
+		},
+	})
+}
+
+func (h *tuiE2EHub) AppendAssistantFinal(threadID, text string) {
 	h.mu.Lock()
-	s := h.sessions[id]
-	h.mu.Unlock()
-	if s == nil {
-		http.Error(w, "session not found", http.StatusNotFound)
-		return
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	flusher, _ := w.(http.Flusher)
-	for i, ev := range s.Events {
-		data, err := json.Marshal(ev.Data)
-		if err != nil {
-			continue
-		}
-		fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", i+1, ev.Name, data)
-		if flusher != nil {
-			flusher.Flush()
-		}
+	defer h.mu.Unlock()
+	if s := h.sessions[threadID]; s != nil {
+		s.Turns = append(s.Turns, appwire.Turn{
+			ID:     "turn_stream",
+			Status: appwire.TurnStatusCompleted,
+			Items: []appwire.ThreadItem{
+				{Type: "agent_message", ID: "agent_stream", TurnID: "turn_stream", Text: text, Status: "completed"},
+			},
+		})
 	}
 }
 
-func (h *tuiE2EHub) handleSend(w http.ResponseWriter, r *http.Request, _ string) {
+func (h *tuiE2EHub) AppendToolFinal(threadID string) {
 	h.mu.Lock()
-	fail := h.failSend
+	defer h.mu.Unlock()
+	if s := h.sessions[threadID]; s != nil {
+		s.Turns = append(s.Turns, appwire.Turn{
+			ID:     "turn_tool",
+			Status: appwire.TurnStatusCompleted,
+			Items: []appwire.ThreadItem{
+				{
+					Type:          "tool_call",
+					ID:            "tool_stream",
+					CallID:        "call_stream",
+					TurnID:        "turn_tool",
+					ToolName:      "read_file",
+					ArgumentsJSON: `{"file_path":"/tmp/tmux-tool.txt"}`,
+					Output:        "tmux tool output\n",
+					Status:        "completed",
+				},
+			},
+		})
+	}
+}
+
+func (h *tuiE2EHub) addSession(s *tuiE2ESession) {
+	h.sessions[s.ID] = s
+	h.order = append(h.order, s.ID)
+}
+
+func (h *tuiE2EHub) handleThreadList(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.treeGets++
+	out := appwire.ThreadListResponse{}
+	for _, id := range h.order {
+		if s := h.sessions[id]; s != nil {
+			out.Data = append(out.Data, h.threadFromSessionLocked(s))
+		}
+	}
+	return out, nil
+}
+
+func (h *tuiE2EHub) handleThreadRead(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	id := threadIDFromParams(params.Ref, params.ThreadID)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	s := h.sessions[id]
+	if s == nil {
+		return appwire.ThreadReadResponse{}, appwire.Unavailable("thread not found: " + id)
+	}
+	appserver.Subscribe(ctx, id)
+	return appwire.ThreadReadResponse{Thread: h.threadFromSessionLocked(s)}, nil
+}
+
+func (h *tuiE2EHub) handleModelList(_ context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
+	h.mu.Lock()
+	authRequired := h.authRequired
+	h.mu.Unlock()
+	if params.Harness == "codex-local" {
+		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "codex-local", Model: "gpt-5.3-codex"}}}, nil
+	}
+	if authRequired {
+		return appwire.ModelListResponse{
+			Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}},
+			Diagnostics: []appwire.ModelListDiagnostic{{
+				Provider: "openai",
+				Title:    "Login required",
+				Message:  "OpenAI login required",
+				Hint:     "run /auth openai",
+			}},
+		}, nil
+	}
+	return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}, nil
+}
+
+func (h *tuiE2EHub) handleAuthStatus(_ context.Context, params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
+	h.recordAuthCall("status", params.Provider)
+	return appwire.AuthStatusResponse{Provider: "openai", Supported: true, ActiveSource: "signed-out"}, nil
+}
+
+func (h *tuiE2EHub) handleAuthLoginStart(_ context.Context, params appwire.AuthLoginStartParams) (appwire.AuthLoginStartResponse, error) {
+	h.recordAuthCall("login-start", params.Provider)
+	return appwire.AuthLoginStartResponse{
+		Provider: "openai",
+		FlowID:   "flow-1",
+		URL:      "https://auth.example/authorize",
+	}, nil
+}
+
+func (h *tuiE2EHub) handleAuthLoginComplete(_ context.Context, params appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
+	h.recordAuthCall("login-complete", params.Provider)
+	h.mu.Lock()
+	h.authCompletions = append(h.authCompletions, params)
+	h.mu.Unlock()
+	return appwire.AuthLoginCompleteResponse{
+		Status: appwire.AuthStatusResponse{
+			Provider:     "openai",
+			Supported:    true,
+			SignedIn:     true,
+			ActiveSource: "oauth",
+			Email:        "tmux@example.com",
+		},
+	}, nil
+}
+
+func (h *tuiE2EHub) handleAuthLogout(_ context.Context, params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
+	h.recordAuthCall("logout", params.Provider)
+	return appwire.AuthLogoutResponse{
+		Removed: true,
+		Status:  appwire.AuthStatusResponse{Provider: "openai", Supported: true, ActiveSource: "signed-out"},
+	}, nil
+}
+
+func (h *tuiE2EHub) handleThreadStart(_ context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.failSpawn {
+		return appwire.ThreadStartResponse{}, fmt.Errorf("spawn failed")
+	}
+	h.spawnCount++
+	id := fmt.Sprintf("02SPAWN%d", h.spawnCount)
+	h.spawns = append(h.spawns, params)
+	model := params.Model
+	if model == "" {
+		model = "gpt-5"
+	}
+	s := &tuiE2ESession{
+		ID:           id,
+		Title:        fmt.Sprintf("spawned session %d", h.spawnCount),
+		State:        appwire.ThreadStatusIdle,
+		Project:      "serf",
+		WorkingDir:   params.CWD,
+		Model:        model,
+		Live:         true,
+		Capabilities: fullTUIE2ECapabilities(),
+		Turns: []appwire.Turn{{
+			ID:     "turn_1",
+			Status: appwire.TurnStatusCompleted,
+			Items: []appwire.ThreadItem{
+				{Type: "agent_message", ID: "spawn-agent-1", TurnID: "turn_1", Text: "spawn transcript ready", Status: "completed"},
+			},
+		}},
+	}
+	h.addSession(s)
+	return appwire.ThreadStartResponse{Thread: h.threadFromSessionLocked(s)}, nil
+}
+
+func (h *tuiE2EHub) handleThreadResume(_ context.Context, params appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.resumes = append(h.resumes, params)
+	s := &tuiE2ESession{
+		ID:           "02RESUME",
+		Title:        "resumed maintenance",
+		State:        appwire.ThreadStatusIdle,
+		Project:      "serf",
+		WorkingDir:   tuiE2EProjectDir,
+		Model:        "gpt-5",
+		Live:         true,
+		Capabilities: fullTUIE2ECapabilities(),
+		Turns: []appwire.Turn{{
+			ID:     "turn_1",
+			Status: appwire.TurnStatusCompleted,
+			Items: []appwire.ThreadItem{
+				{Type: "agent_message", ID: "resume-agent-1", TurnID: "turn_1", Text: "resume transcript ready", Status: "completed"},
+			},
+		}},
+	}
+	h.addSession(s)
+	return appwire.ThreadResumeResponse{Thread: h.threadFromSessionLocked(s)}, nil
+}
+
+func (h *tuiE2EHub) handleTurnStart(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.failSend {
+		return appwire.TurnStartResponse{}, fmt.Errorf("send failed")
+	}
+	h.sends = append(h.sends, params.Prompt)
+	return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_sent", Status: appwire.TurnStatusRunning}}, nil
+}
+
+func (h *tuiE2EHub) handleTurnSteer(_ context.Context, params appwire.TurnSteerParams) (appwire.EmptyResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.steers = append(h.steers, params)
+	return appwire.EmptyResponse{}, nil
+}
+
+func (h *tuiE2EHub) handleTasksList(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error) {
+	h.mu.Lock()
+	fail := h.failTasks
 	h.mu.Unlock()
 	if fail {
-		http.Error(w, "send failed", http.StatusInternalServerError)
-		return
+		return appwire.TaskListResponse{}, fmt.Errorf("tasks failed")
 	}
-	var body struct {
-		Text string `json:"text"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	h.mu.Lock()
-	h.sends = append(h.sends, body.Text)
-	h.mu.Unlock()
-	w.WriteHeader(http.StatusOK)
+	return appwire.TaskListResponse{Data: []agent.Task{{ID: 1, Type: agent.TaskTypeImplement, Description: "wire tui e2e", Status: agent.TaskInProgress}}}, nil
 }
 
-func (h *tuiE2EHub) handleModel(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Model string `json:"model"`
+func (h *tuiE2EHub) handleThreadTranscriptList(_ context.Context, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
+	id := threadIDFromParams(params.Ref, "")
+	if id != "01LIVE" {
+		return appwire.ThreadTranscriptListResponse{}, appwire.Unavailable("thread not found: " + id)
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	h.mu.Lock()
-	h.models = append(h.models, body.Model)
-	h.mu.Unlock()
-	w.WriteHeader(http.StatusOK)
+	return appwire.ThreadTranscriptListResponse{Data: []appwire.ThreadTranscriptTarget{
+		{Ref: "local:01LIVE", ThreadID: "01LIVE", Title: "main session (live)", Kind: "main", Status: appwire.ThreadStatusProcessing, Source: "local"},
+		{Ref: "local:01SUB", ThreadID: "01SUB", Title: "subagent inspect", Kind: "subagent", Status: appwire.ThreadStatusEnded, Source: "local", TurnsUsed: 1},
+	}}, nil
 }
 
-func (h *tuiE2EHub) handleClear(w http.ResponseWriter) {
+func (h *tuiE2EHub) handleTurnInterrupt(context.Context, appwire.TurnInterruptParams) (appwire.EmptyResponse, error) {
+	h.recordAction("interrupt")
+	return appwire.EmptyResponse{}, nil
+}
+
+func (h *tuiE2EHub) handleThreadCompactStart(context.Context, appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
+	h.recordAction("compact")
+	return appwire.EmptyResponse{}, nil
+}
+
+func (h *tuiE2EHub) handleThreadModelSet(_ context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+	h.mu.Lock()
+	h.models = append(h.models, params.Model)
+	h.mu.Unlock()
+	return appwire.EmptyResponse{}, nil
+}
+
+func (h *tuiE2EHub) handleThreadClear(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
 	h.recordAction("clear")
-	id := "02CLEAR"
 	h.mu.Lock()
-	h.sessions[id] = &tuiE2ESession{
-		ID:         id,
-		Title:      "cleared session",
-		State:      "idle",
-		Project:    "serf",
-		WorkingDir: tuiE2EProjectDir,
-		Model:      "gpt-5",
-		Live:       true,
-		Capabilities: hubapi.SessionCapabilities{
-			Send:        true,
-			Interrupt:   true,
-			Compact:     true,
-			Clear:       true,
-			Fork:        true,
-			ChangeModel: true,
-		},
-		Events: []tuiE2ESSEEvent{
-			{Name: "SESSION_START", Data: map[string]any{"session_id": id, "model": "gpt-5", "profile": "default"}},
-			{Name: "REPLAY_DONE", Data: map[string]any{}},
-		},
+	defer h.mu.Unlock()
+	id := "02CLEAR"
+	s := &tuiE2ESession{
+		ID:           id,
+		Title:        "cleared session",
+		State:        appwire.ThreadStatusIdle,
+		Project:      "serf",
+		WorkingDir:   tuiE2EProjectDir,
+		Model:        "gpt-5",
+		Live:         true,
+		Capabilities: fullTUIE2ECapabilities(),
 	}
-	h.mu.Unlock()
-	ref := hubapi.LocalRef(id)
-	writeTUIE2EJSON(w, hubapi.RefResponse{Ref: ref.String(), HostID: ref.HostID, SessionID: ref.SessionID})
+	h.addSession(s)
+	thread := h.threadFromSessionLocked(s)
+	return appwire.ThreadClearResponse{Thread: thread, Ref: thread.Serf.Ref}, nil
 }
 
-func (h *tuiE2EHub) handleFork(w http.ResponseWriter, r *http.Request) {
-	var req hubapi.ForkRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+func (h *tuiE2EHub) handleThreadFork(_ context.Context, params appwire.ThreadForkParams) (appwire.ThreadForkResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.failFork {
+		h.forks = append(h.forks, params)
+		return appwire.ThreadForkResponse{}, fmt.Errorf("fork failed")
 	}
 	id := "02FORK"
-	h.mu.Lock()
-	h.forks = append(h.forks, req)
-	h.sessions[id] = &tuiE2ESession{
-		ID:         id,
-		Title:      "fork child",
-		State:      "idle",
-		Project:    "serf",
-		WorkingDir: tuiE2EProjectDir,
-		Model:      "gpt-5",
-		Live:       true,
-		Capabilities: hubapi.SessionCapabilities{
-			Send:        true,
-			Interrupt:   true,
-			Compact:     true,
-			Clear:       true,
-			Fork:        true,
-			ChangeModel: true,
-		},
-		Events: []tuiE2ESSEEvent{
-			{Name: "SESSION_START", Data: map[string]any{"session_id": id, "model": "gpt-5", "profile": "default"}},
-			{Name: "USER_INPUT", Data: map[string]any{"text": req.EditedMessage, "turn": 1}},
-			{Name: "ASSISTANT_TEXT_END", Data: map[string]any{"text": "fork answer"}},
-			{Name: "REPLAY_DONE", Data: map[string]any{}},
+	h.forks = append(h.forks, params)
+	s := &tuiE2ESession{
+		ID:           id,
+		Title:        "fork child",
+		State:        appwire.ThreadStatusIdle,
+		Project:      "serf",
+		WorkingDir:   tuiE2EProjectDir,
+		Model:        "gpt-5",
+		Live:         true,
+		Capabilities: fullTUIE2ECapabilities(),
+		Turns: []appwire.Turn{{
+			ID:     "turn_1",
+			Status: appwire.TurnStatusCompleted,
+			Items: []appwire.ThreadItem{
+				{Type: "user_message", ID: "fork-user-1", TurnID: "turn_1", Text: params.EditedInput},
+				{Type: "agent_message", ID: "fork-agent-1", TurnID: "turn_1", Text: "fork answer", Status: "completed"},
+			},
+		}},
+	}
+	h.addSession(s)
+	return appwire.ThreadForkResponse{Thread: h.threadFromSessionLocked(s)}, nil
+}
+
+func (h *tuiE2EHub) threadFromSessionLocked(s *tuiE2ESession) appwire.Thread {
+	status := s.State
+	if status == "" {
+		status = appwire.ThreadStatusIdle
+	}
+	return appwire.Thread{
+		ID:            s.ID,
+		SessionID:     s.ID,
+		Preview:       s.Title,
+		Name:          s.Title,
+		ModelProvider: s.Model,
+		CreatedAt:     s.CreatedAt,
+		UpdatedAt:     s.UpdatedAt,
+		CWD:           s.WorkingDir,
+		Source:        "local",
+		Status:        appwire.ThreadStatus{Type: status},
+		Turns:         append([]appwire.Turn(nil), s.Turns...),
+		Serf: appwire.SerfThread{
+			Ref:             appwire.Ref{SourceID: "local", ThreadID: s.ID}.String(),
+			ParentRef:       s.ParentRef,
+			Kind:            s.Kind,
+			Profile:         "default",
+			ContextPressure: s.ContextPressure,
+			Capabilities:    s.Capabilities,
 		},
 	}
-	h.mu.Unlock()
-	ref := hubapi.LocalRef(id)
-	writeTUIE2EJSON(w, hubapi.RefResponse{Ref: ref.String(), HostID: ref.HostID, SessionID: ref.SessionID})
+}
+
+func threadIDFromParams(rawRef, threadID string) string {
+	if rawRef != "" {
+		ref, err := appwire.ParseRef(rawRef)
+		if err == nil {
+			return ref.ThreadID
+		}
+	}
+	return threadID
 }
 
 func (h *tuiE2EHub) recordAction(action string) {
@@ -829,11 +1585,33 @@ func (h *tuiE2EHub) recordAction(action string) {
 	h.mu.Unlock()
 }
 
-func (h *tuiE2EHub) SetSessionCapabilities(id string, caps hubapi.SessionCapabilities) {
+func (h *tuiE2EHub) recordAuthCall(action, provider string) {
+	h.mu.Lock()
+	h.authCalls = append(h.authCalls, action+":"+provider)
+	h.mu.Unlock()
+}
+
+func (h *tuiE2EHub) SetSessionCapabilities(id string, caps appwire.ThreadCapabilities) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if s := h.sessions[id]; s != nil {
 		s.Capabilities = caps
+	}
+}
+
+func (h *tuiE2EHub) SetSessionContextPressure(id string, pressure float64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if s := h.sessions[id]; s != nil {
+		s.ContextPressure = pressure
+	}
+}
+
+func (h *tuiE2EHub) SetSessionState(id string, state string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if s := h.sessions[id]; s != nil {
+		s.State = state
 	}
 }
 
@@ -855,6 +1633,18 @@ func (h *tuiE2EHub) SetFailSpawn(fail bool) {
 	h.mu.Unlock()
 }
 
+func (h *tuiE2EHub) SetFailFork(fail bool) {
+	h.mu.Lock()
+	h.failFork = fail
+	h.mu.Unlock()
+}
+
+func (h *tuiE2EHub) SetAuthRequiredModels(required bool) {
+	h.mu.Lock()
+	h.authRequired = required
+	h.mu.Unlock()
+}
+
 func (h *tuiE2EHub) Sends() []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -867,10 +1657,10 @@ func (h *tuiE2EHub) Models() []string {
 	return append([]string(nil), h.models...)
 }
 
-func (h *tuiE2EHub) Forks() []hubapi.ForkRequest {
+func (h *tuiE2EHub) Forks() []appwire.ThreadForkParams {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return append([]hubapi.ForkRequest(nil), h.forks...)
+	return append([]appwire.ThreadForkParams(nil), h.forks...)
 }
 
 func (h *tuiE2EHub) ActionCount(action string) int {
@@ -891,13 +1681,13 @@ func (h *tuiE2EHub) WaitForTreeRequests(t *testing.T, count int) int {
 	return got
 }
 
-func (h *tuiE2EHub) WaitForSpawns(t *testing.T, count int) []hubapi.SpawnRequest {
+func (h *tuiE2EHub) WaitForSpawns(t *testing.T, count int) []appwire.ThreadStartParams {
 	t.Helper()
-	var out []hubapi.SpawnRequest
+	var out []appwire.ThreadStartParams
 	h.waitFor(t, func() bool {
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		out = append([]hubapi.SpawnRequest(nil), h.spawns...)
+		out = append([]appwire.ThreadStartParams(nil), h.spawns...)
 		return len(out) >= count
 	}, fmt.Sprintf("%d spawn requests", count))
 	return out
@@ -927,15 +1717,63 @@ func (h *tuiE2EHub) WaitForModels(t *testing.T, count int) []string {
 	return out
 }
 
-func (h *tuiE2EHub) WaitForForks(t *testing.T, count int) []hubapi.ForkRequest {
+func (h *tuiE2EHub) WaitForForks(t *testing.T, count int) []appwire.ThreadForkParams {
 	t.Helper()
-	var out []hubapi.ForkRequest
+	var out []appwire.ThreadForkParams
 	h.waitFor(t, func() bool {
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		out = append([]hubapi.ForkRequest(nil), h.forks...)
+		out = append([]appwire.ThreadForkParams(nil), h.forks...)
 		return len(out) >= count
 	}, fmt.Sprintf("%d fork requests", count))
+	return out
+}
+
+func (h *tuiE2EHub) WaitForResumes(t *testing.T, count int) []appwire.ThreadResumeParams {
+	t.Helper()
+	var out []appwire.ThreadResumeParams
+	h.waitFor(t, func() bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		out = append([]appwire.ThreadResumeParams(nil), h.resumes...)
+		return len(out) >= count
+	}, fmt.Sprintf("%d resume requests", count))
+	return out
+}
+
+func (h *tuiE2EHub) WaitForSteers(t *testing.T, count int) []appwire.TurnSteerParams {
+	t.Helper()
+	var out []appwire.TurnSteerParams
+	h.waitFor(t, func() bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		out = append([]appwire.TurnSteerParams(nil), h.steers...)
+		return len(out) >= count
+	}, fmt.Sprintf("%d steer requests", count))
+	return out
+}
+
+func (h *tuiE2EHub) WaitForAuthCalls(t *testing.T, count int) []string {
+	t.Helper()
+	var out []string
+	h.waitFor(t, func() bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		out = append([]string(nil), h.authCalls...)
+		return len(out) >= count
+	}, fmt.Sprintf("%d auth calls", count))
+	return out
+}
+
+func (h *tuiE2EHub) WaitForAuthCompletions(t *testing.T, count int) []appwire.AuthLoginCompleteParams {
+	t.Helper()
+	var out []appwire.AuthLoginCompleteParams
+	h.waitFor(t, func() bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		out = append([]appwire.AuthLoginCompleteParams(nil), h.authCompletions...)
+		return len(out) >= count
+	}, fmt.Sprintf("%d auth completions", count))
 	return out
 }
 
@@ -961,11 +1799,4 @@ func (h *tuiE2EHub) waitFor(t *testing.T, pred func() bool, desc string) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", desc)
-}
-
-func writeTUIE2EJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		panic(err)
-	}
 }

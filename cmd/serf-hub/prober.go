@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"time"
+
+	"primeradiant.com/serf/rendezvous"
 )
 
 // StatusProber checks daemon liveness by issuing GET <addr>/status and
@@ -19,13 +21,18 @@ type statusInfo struct {
 }
 
 // Probe implements Prober.
-func (p *StatusProber) Probe(addr string) (sessionID, status string, ok bool) {
+func (p *StatusProber) Probe(entry rendezvous.Entry) (sessionID, status string, ok bool) {
 	timeout := p.Timeout
 	if timeout == 0 {
 		timeout = 500 * time.Millisecond
 	}
 	client := &http.Client{Timeout: timeout}
-	resp, err := client.Get("http://" + addr + "/status")
+	req, err := http.NewRequest(http.MethodGet, "http://"+entry.Address+"/status", nil)
+	if err != nil {
+		return "", "", false
+	}
+	setDaemonAuthorization(req.Header, entry.HubToken)
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", "", false
 	}

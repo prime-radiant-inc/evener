@@ -1,6 +1,18 @@
 (function () {
   "use strict";
 
+  function partialFetch(path, options) {
+    options = options || {};
+    const headers = new Headers(options.headers || {});
+    headers.set("HX-Request", "true");
+    options.headers = headers;
+    return fetch(path, options);
+  }
+
+  function sessionPartialPath(id, name) {
+    return "/_partials/s/" + encodeURIComponent(id) + "/" + name;
+  }
+
   const SerfRenderer = {
     init(conversationEl) {
       if (!conversationEl) return;
@@ -16,9 +28,25 @@
         try { this.eventSource.close(); } catch (e) {}
         this.eventSource = null;
       }
+      if (this.appwireUnsubscribe) {
+        try { this.appwireUnsubscribe(); } catch (e) {}
+        this.appwireUnsubscribe = null;
+      }
+      if (this.appwireConnectionLostUnsubscribe) {
+        try { this.appwireConnectionLostUnsubscribe(); } catch (e) {}
+        this.appwireConnectionLostUnsubscribe = null;
+      }
+      if (this.appwireReconnectTimer) {
+        clearTimeout(this.appwireReconnectTimer);
+        this.appwireReconnectTimer = null;
+      }
 
       this.conversation = conversationEl;
       this.sessionId = conversationEl.dataset.sessionId;
+      this.appwireRef = null;
+      this.appwireThreadId = null;
+      this.appwireHydrated = false;
+      this.activeTurnId = conversationEl.dataset.activeTurnId || "";
       this.replayUrl = conversationEl.dataset.replayUrl || "";
       this.eventsUrl = conversationEl.dataset.eventsUrl || "";
       this.state = conversationEl.dataset.state || "ended";
@@ -43,9 +71,14 @@
       this.conversation.innerHTML = "";
 
       const url = this.replayUrl || this.eventsUrl;
-      if (url) this.connect(url);
+      if (this.eventsUrl) {
+        this.connectEventSource(this.eventsUrl);
+      } else if (url) {
+        this.connect(url);
+      }
 
       this.bindInputForm();
+      this.syncTurnActionControls();
       this.bindKeyboard();
       // Cold-load hydration: fetch the task list ONCE before processing any
       // events so the first transition (system-line) renders with task
@@ -61,20 +94,60 @@
       this.startTaskBadgePoller();
     },
 
+    updateThreadState(state) {
+      state = String(state || "").trim();
+      if (!state) return;
+      this.state = state;
+      if (this.conversation) this.conversation.dataset.state = state;
+      const ended = state === "ended" || state === "closed";
+      if (!this.turnAcceptsActions(state)) this.setActiveTurnId("");
+      this.syncTurnActionControls();
+      for (const action of ["compact", "shutdown"]) {
+        const btn = document.querySelector('[data-action-trigger="' + action + '"]');
+        if (btn) btn.disabled = ended;
+      }
+    },
+
+    setActiveTurnId(turnId) {
+      this.activeTurnId = turnId || "";
+      if (this.conversation) this.conversation.dataset.activeTurnId = this.activeTurnId;
+      this.syncTurnActionControls();
+    },
+
+    syncTurnActionControls() {
+      const hasActiveTurn = !!this.activeTurnId;
+      const turnAcceptsActions = this.turnAcceptsActions(this.state);
+      const interrupt = document.querySelector('[data-action-trigger="interrupt"]');
+      if (interrupt) interrupt.disabled = !hasActiveTurn || !turnAcceptsActions;
+      const steer = document.querySelector("[data-steer-trigger]");
+      if (steer) steer.disabled = !hasActiveTurn || !turnAcceptsActions;
+    },
+
+    turnAcceptsActions(state) {
+      return state === "processing" || state === "awaiting" || state === "active";
+    },
+
     hydrateDescriptions() {
       if (!this.sessionId) return Promise.resolve();
-      return fetch("/s/" + encodeURIComponent(this.sessionId) + "/tasks")
+      if (window.SerfAppwire) {
+        return window.SerfAppwire.tasks(this.sessionId)
+          .then(tasks => this.applyTasks(tasks))
+          .catch(() => {});
+      }
+      return partialFetch(sessionPartialPath(this.sessionId, "tasks"))
         .then(r => r.ok ? r.json() : [])
-        .then(tasks => {
-          if (!Array.isArray(tasks)) return;
-          for (const t of tasks) {
-            if (t && t.id != null && t.description) {
-              taskDescriptions.set(t.id, t.description);
-            }
-          }
-          const done = tasks.filter(t => t.status === "done").length;
-          updateTasksBadge(done, tasks.length);
-        }).catch(() => {});
+        .then(tasks => this.applyTasks(tasks)).catch(() => {});
+    },
+
+    applyTasks(tasks) {
+      if (!Array.isArray(tasks)) return;
+      for (const t of tasks) {
+        if (t && t.id != null && t.description) {
+          taskDescriptions.set(t.id, t.description);
+        }
+      }
+      const done = tasks.filter(t => t.status === "done").length;
+      updateTasksBadge(done, tasks.length);
     },
 
     // Periodically pull /tasks to keep the workspace tasks-button badge
@@ -84,18 +157,15 @@
       if (this.taskBadgeTimer) clearInterval(this.taskBadgeTimer);
       const tick = () => {
         if (!this.sessionId) return;
-        fetch("/s/" + encodeURIComponent(this.sessionId) + "/tasks")
+        if (window.SerfAppwire) {
+          window.SerfAppwire.tasks(this.sessionId)
+            .then(tasks => this.applyTasks(tasks))
+            .catch(() => {});
+          return;
+        }
+        partialFetch(sessionPartialPath(this.sessionId, "tasks"))
           .then(r => r.ok ? r.json() : [])
-          .then(tasks => {
-            if (!Array.isArray(tasks)) return;
-            for (const t of tasks) {
-              if (t && t.id != null && t.description) {
-                taskDescriptions.set(t.id, t.description);
-              }
-            }
-            const done = tasks.filter(t => t.status === "done").length;
-            updateTasksBadge(done, tasks.length);
-          })
+          .then(tasks => this.applyTasks(tasks))
           .catch(() => {});
       };
       tick();
@@ -111,14 +181,27 @@
     ensureLiveStream() {
       if (this.eventSource) return;
       if (!this.sessionId) return;
+      if (window.SerfAppwire) {
+        this.connectAppwire();
+        return;
+      }
       this.eventsUrl = "/s/" + encodeURIComponent(this.sessionId) + "/events";
-      this.connect(this.eventsUrl);
+      this.connectEventSource(this.eventsUrl);
     },
 
     connect(url) {
+      if (window.SerfAppwire) {
+        this.connectAppwire();
+        return;
+      }
+      this.connectEventSource(url);
+    },
+
+    connectEventSource(url) {
       this.eventSource = new EventSource(url);
       const kinds = [
         "SESSION_START", "SESSION_END", "USER_INPUT",
+        "THREAD_STATUS_CHANGED", "TURN_STARTED", "TURN_COMPLETED",
         "ASSISTANT_TEXT_START", "ASSISTANT_TEXT_DELTA", "ASSISTANT_TEXT_END",
         "TOOL_CALL_START", "TOOL_CALL_OUTPUT_DELTA", "TOOL_CALL_END",
         "STEERING_INJECTED", "WARNING", "ERROR",
@@ -133,6 +216,117 @@
       this.eventSource.onerror = () => { /* browser auto-reconnects for live streams */ };
     },
 
+    connectAppwire() {
+      if (!window.SerfAppwire || !this.sessionId) return;
+      const sessionId = this.sessionId;
+      const conversation = this.conversation;
+      this.clearAppwireStream();
+      this.eventSource = {
+        close: () => this.clearAppwireStream(),
+      };
+      const pendingNotifications = [];
+      const deliverNotification = (method, params) => {
+        for (const [kind, data] of window.SerfAppwire.eventsFromNotification(method, params)) {
+          this.handleData(kind, data);
+        }
+      };
+      const notificationMatches = (params) => {
+        const ref = params && (params.ref || (params.item && params.item.ref));
+        const threadId = params && (params.threadId || (params.item && params.item.threadId));
+        const acceptedRefs = new Set([window.SerfAppwire.refForSession(sessionId)]);
+        if (this.appwireRef) acceptedRefs.add(this.appwireRef);
+        const acceptedThreadIds = new Set([sessionId]);
+        if (this.appwireThreadId) acceptedThreadIds.add(this.appwireThreadId);
+        if (ref && !acceptedRefs.has(ref)) return false;
+        if (!ref && threadId && !acceptedThreadIds.has(threadId)) return false;
+        return true;
+      };
+      const shouldWaitForHydration = (params) => {
+        if (this.appwireRef || this.appwireThreadId) return false;
+        const ref = params && (params.ref || (params.item && params.item.ref));
+        const threadId = params && (params.threadId || (params.item && params.item.threadId));
+        if (ref && ref !== window.SerfAppwire.refForSession(sessionId)) return true;
+        if (!ref && threadId && threadId !== sessionId) return true;
+        return false;
+      };
+      this.appwireUnsubscribe = window.SerfAppwire.onNotification((method, params) => {
+        if (shouldWaitForHydration(params)) {
+          pendingNotifications.push([method, params]);
+          return;
+        }
+        if (!notificationMatches(params)) return;
+        deliverNotification(method, params);
+      });
+      if (typeof window.SerfAppwire.onConnectionLost === "function") {
+        this.appwireConnectionLostUnsubscribe = window.SerfAppwire.onConnectionLost(() => {
+          this.clearAppwireStream();
+          this.scheduleAppwireReconnect();
+        });
+      }
+      window.SerfAppwire.readThread(sessionId, true, true)
+        .then((resp) => {
+          if (this.sessionId !== sessionId || this.conversation !== conversation) return;
+          const thread = resp.thread || {};
+          if (this.appwireHydrated) this.resetTranscriptReplay();
+          this.appwireThreadId = thread.id || this.appwireThreadId;
+          this.appwireRef = (thread.serf && thread.serf.ref) || (this.appwireThreadId ? window.SerfAppwire.refForSession(this.appwireThreadId) : null);
+          if (typeof window.SerfAppwire.activeTurnIDFromThread === "function") {
+            this.setActiveTurnId(window.SerfAppwire.activeTurnIDFromThread(thread));
+          }
+          for (const [kind, data] of window.SerfAppwire.eventsFromThread(thread)) {
+            this.handleData(kind, data);
+          }
+          while (pendingNotifications.length > 0) {
+            const [method, params] = pendingNotifications.shift();
+            if (notificationMatches(params)) deliverNotification(method, params);
+          }
+          this.appwireHydrated = true;
+        })
+        .catch((err) => {
+          if (this.sessionId !== sessionId || this.conversation !== conversation) return;
+          this.appendBanner("error", "stream failed: " + err.message, { source: "hub", title: "Hub stream error" });
+          this.clearAppwireStream();
+        });
+    },
+
+    clearAppwireStream() {
+      if (this.appwireUnsubscribe) {
+        try { this.appwireUnsubscribe(); } catch (e) {}
+        this.appwireUnsubscribe = null;
+      }
+      if (this.appwireConnectionLostUnsubscribe) {
+        try { this.appwireConnectionLostUnsubscribe(); } catch (e) {}
+        this.appwireConnectionLostUnsubscribe = null;
+      }
+      this.eventSource = null;
+    },
+
+    scheduleAppwireReconnect() {
+      if (this.appwireReconnectTimer || !this.sessionId || !window.SerfAppwire) return;
+      this.appwireReconnectTimer = setTimeout(() => {
+        this.appwireReconnectTimer = null;
+        this.ensureLiveStream();
+      }, 250);
+    },
+
+    resetTranscriptReplay() {
+      if (!this.conversation) return;
+      this.conversation.innerHTML = "";
+      this.activeMessages.clear();
+      this.activeTools.clear();
+      this.activeSubagents.clear();
+      this.suppressedToolCalls.clear();
+      this.pendingTaskCalls.clear();
+      this.currentMessageId = null;
+      this.userTurnIndex = 0;
+      this.entryIndex = 0;
+      this.cheapToolCluster = null;
+    },
+
+    handleData(kind, data) {
+      this.handle(kind, { data: JSON.stringify(data || {}) });
+    },
+
     handle(kind, ev) {
       // Buffer events until the cold-load /tasks fetch resolves, so the
       // first batch of system-lines renders with task descriptions and
@@ -144,6 +338,15 @@
       let data = {};
       try { data = JSON.parse(ev.data); } catch (e) {}
       switch (kind) {
+        case "THREAD_STATUS_CHANGED":
+          this.updateThreadState(data.status || "");
+          break;
+        case "TURN_STARTED":
+          this.setActiveTurnId(data.turnId || "");
+          break;
+        case "TURN_COMPLETED":
+          if (!data.turnId || data.turnId === this.activeTurnId) this.setActiveTurnId("");
+          break;
         case "SESSION_START":
           if (data.session_id && data.session_id !== this.sessionId) {
             this.sessionId = data.session_id;
@@ -163,17 +366,15 @@
           }
           break;
         case "USER_INPUT":
+          if (this.promoteLocalUserMessage(data)) break;
           this.userTurnIndex++;
-          // Prefer the authoritative transcript entry index when the
-          // event provides it (replay always does; live does as of the
-          // agent emitting data.turn in USER_INPUT). Falls back to a
-          // synthesized counter only for legacy streams.
           if (typeof data.turn === "number" && data.turn > 0) {
             this.entryIndex = data.turn;
           } else {
             this.entryIndex++;
           }
-          this.appendUserMessage(data.text || "", this.entryIndex, data.images || []);
+          const userWrap = this.appendUserMessage(data.text || "", this.entryIndex, data.images || []);
+          if (data.turnId) userWrap.dataset.turnId = String(data.turnId);
           break;
         case "ASSISTANT_TEXT_START":
           this.entryIndex++;
@@ -192,7 +393,7 @@
             this.suppressedToolCalls.add(data.call_id);
             try {
               const args = JSON.parse(data.arguments_json || "{}");
-              if (args.message) this.appendAssistantBlock(args.message);
+              if (String(args.message || "").trim() && !this.lastElementIsAssistantText(args.message)) this.appendAssistantBlock(args.message);
             } catch (e) { /* ignore */ }
             break;
           }
@@ -221,6 +422,12 @@
         case "TOOL_CALL_END":
           if (this.suppressedToolCalls.has(data.call_id)) {
             this.suppressedToolCalls.delete(data.call_id);
+            if (data.tool_name === "communicate") {
+              try {
+                const args = JSON.parse(data.arguments_json || "{}");
+                if (String(args.message || "").trim() && !this.lastElementIsAssistantText(args.message)) this.appendAssistantBlock(args.message);
+              } catch (e) { /* ignore */ }
+            }
             const pending = this.pendingTaskCalls && this.pendingTaskCalls.get(data.call_id);
             if (pending !== undefined) {
               this.pendingTaskCalls.delete(data.call_id);
@@ -231,10 +438,10 @@
           this.finalizeToolCall(data);
           break;
         case "WARNING":
-          this.appendBanner("warning", data.message || "");
+          this.appendBanner("warning", data.message || "", data);
           break;
         case "ERROR":
-          this.appendBanner("error", data.error || "");
+          this.appendBanner("error", data.error || data.message || "", data);
           break;
         case "STEERING_INJECTED":
           this.appendSteeringMessage(data.text || "");
@@ -327,6 +534,50 @@
       actions.appendChild(copy); actions.appendChild(edit);
       wrap.appendChild(pill); wrap.appendChild(actions);
       this.conversation.appendChild(wrap);
+      return wrap;
+    },
+
+    appendLocalUserMessage(text, images, turnId, previousUserCount) {
+      if (this.userMessageCount() > previousUserCount) return;
+      this.userTurnIndex++;
+      this.entryIndex++;
+      const wrap = this.appendUserMessage(text || "", this.entryIndex, images || []);
+      wrap.dataset.localEcho = "true";
+      wrap.dataset.localImageCount = String(Array.isArray(images) ? images.length : 0);
+      if (turnId) wrap.dataset.turnId = String(turnId);
+      this.scrollToBottom();
+    },
+
+    userMessageCount() {
+      if (!this.conversation) return 0;
+      return this.conversation.querySelectorAll(".user-message").length;
+    },
+
+    promoteLocalUserMessage(data) {
+      if (!this.conversation) return false;
+      const text = this.normalizedUserText(data && data.text);
+      const turnId = data && data.turnId ? String(data.turnId) : "";
+      const imageCount = Array.isArray(data && data.images) ? data.images.length : 0;
+      const localMessages = this.conversation.querySelectorAll('.user-message[data-local-echo="true"]');
+      for (const wrap of localMessages) {
+        if (turnId && wrap.dataset.turnId && wrap.dataset.turnId !== turnId) continue;
+        const textEl = wrap.querySelector(".user-message-text");
+        if (this.normalizedUserText(textEl && textEl.textContent) !== text) continue;
+        if (Number(wrap.dataset.localImageCount || "0") !== imageCount) continue;
+        if (typeof data.turn === "number" && data.turn > 0) {
+          wrap.dataset.entryIdx = String(data.turn);
+          this.entryIndex = Math.max(this.entryIndex, data.turn);
+        }
+        if (turnId) wrap.dataset.turnId = turnId;
+        delete wrap.dataset.localEcho;
+        delete wrap.dataset.localImageCount;
+        return true;
+      }
+      return false;
+    },
+
+    normalizedUserText(text) {
+      return String(text || "").replace(/\s+/g, " ").trim();
     },
 
     startEdit(wrap, pill, originalText) {
@@ -371,6 +622,13 @@
       const body = document.createElement("div");
       body.className = "fork-dialog-body";
       body.textContent = "The current branch continues with your edited message. The original is preserved as a sibling fork.";
+      const labelRow = document.createElement("div");
+      labelRow.className = "fork-dialog-label";
+      labelRow.innerHTML = "label the original ";
+      const input = document.createElement("input");
+      input.className = "fork-dialog-input";
+      input.value = autoLabel(originalText);
+      labelRow.appendChild(input);
       const actions = document.createElement("div");
       actions.className = "fork-dialog-actions";
       const cancel = document.createElement("button");
@@ -379,7 +637,7 @@
       confirm.className = "fork-confirm"; confirm.type = "button";
       confirm.innerHTML = "fork <kbd>⌘↩</kbd>";
       actions.appendChild(cancel); actions.appendChild(confirm);
-      dialog.appendChild(title); dialog.appendChild(body); dialog.appendChild(actions);
+      dialog.appendChild(title); dialog.appendChild(body); dialog.appendChild(labelRow); dialog.appendChild(actions);
       userWrap.parentNode.insertBefore(dialog, userWrap.nextSibling);
 
       const cleanup = () => {
@@ -397,27 +655,28 @@
       confirm.onclick = async () => {
         const turn = parseInt(userWrap.dataset.entryIdx || "1", 10);
         try {
-          const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/fork", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ turn, edited_message: editedText }),
-          });
-          if (!resp.ok) {
-            cleanup();
-            this.appendBanner("error", "fork failed: " + (await resp.text()));
-            return;
-          }
-          const json = await resp.json();
+          const body = { turn, edited_message: editedText, label: input.value || autoLabel(originalText) };
+          const json = window.SerfAppwire
+            ? await window.SerfAppwire.forkThread(this.sessionId, body)
+            : await fetch("/s/" + encodeURIComponent(this.sessionId) + "/fork", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body),
+              }).then(async (resp) => {
+                if (!resp.ok) throw new Error(await resp.text());
+                return resp.json();
+              });
           // Refresh sidebar so new fork shows up.
           if (window.htmx) htmx.trigger(document.body, "sidebar:refresh");
           // Navigate to the child session.
-          window.location.href = "/s/" + encodeURIComponent(json.child_session_id);
+          window.location.href = "/s/" + encodeURIComponent(json.ref || json.child_session_id || json.session_id);
         } catch (e) {
           cleanup();
-          this.appendBanner("error", "fork failed: " + e.message);
+          this.appendBanner("error", "fork failed: " + e.message, { source: "hub", title: "Hub fork error" });
         }
       };
-      confirm.focus();
+      input.focus();
+      input.select();
     },
 
     beginAssistantMessage() {
@@ -427,12 +686,13 @@
       const el = document.createElement("div");
       el.className = "assistant-message";
       this.conversation.appendChild(el);
-      this.activeMessages.set(id, { el, textBuf: "", markdownTimer: null });
+      this.activeMessages.set(id, { el, textBuf: "" });
     },
 
     // appendAssistantBlock renders a complete assistant message in one shot —
     // no begin/delta/end. Used by COMMUNICATE events.
     appendAssistantBlock(text) {
+      if (!String(text || "").trim()) return;
       this.cheapToolCluster = null;
       const el = document.createElement("div");
       el.className = "assistant-message";
@@ -441,37 +701,60 @@
       this.conversation.appendChild(el);
     },
 
+    lastElementIsAssistantText(text) {
+      const last = this.conversation && this.conversation.lastElementChild;
+      if (!last || !last.classList || !last.classList.contains("assistant-message")) return false;
+      return this.normalizedAssistantText(last.textContent) === this.renderedAssistantText(text);
+    },
+
+    normalizedAssistantText(text) {
+      return String(text || "").replace(/\s+/g, " ").trim();
+    },
+
+    renderedAssistantText(text) {
+      const el = document.createElement("div");
+      try { el.innerHTML = window.marked.parse(String(text || "")); }
+      catch (e) { el.textContent = String(text || ""); }
+      return this.normalizedAssistantText(el.textContent);
+    },
+
     appendAssistantDelta(delta) {
       const m = this.activeMessages.get(this.currentMessageId);
       if (!m) return;
       m.textBuf += delta;
-      m.el.textContent = m.textBuf;
-      this.scheduleMarkdownRefresh(m);
+      this.renderAssistantMessage(m, m.textBuf);
     },
 
-    scheduleMarkdownRefresh(m) {
-      if (m.markdownTimer) return;
-      m.markdownTimer = setTimeout(() => {
-        m.markdownTimer = null;
-        try { m.el.innerHTML = window.marked.parse(m.textBuf); }
-        catch (e) { m.el.textContent = m.textBuf; }
-      }, 500);
+    renderAssistantMessage(m, text) {
+      try { m.el.innerHTML = window.marked.parse(text); }
+      catch (e) { m.el.textContent = text; }
     },
 
     finalizeAssistantMessage(data) {
       const id = this.currentMessageId;
       const m = this.activeMessages.get(id);
-      if (!m) return;
-      const finalText = (data && data.text) || m.textBuf;
-      try { m.el.innerHTML = window.marked.parse(finalText); }
-      catch (e) { m.el.textContent = finalText; }
-      if (m.markdownTimer) { clearTimeout(m.markdownTimer); m.markdownTimer = null; }
+      const finalText = (data && data.text) || (m && m.textBuf) || "";
+      if (!m) {
+        this.appendAssistantBlock(finalText);
+        return;
+      }
       this.activeMessages.delete(id);
       this.currentMessageId = null;
+      if (!String(finalText || "").trim()) {
+        if (m.el.parentNode) m.el.parentNode.removeChild(m.el);
+        return;
+      }
+      this.renderAssistantMessage(m, finalText);
     },
 
     beginToolCall(data) {
       const callId = data.call_id || ("tool-" + Math.random().toString(36).slice(2, 9));
+      const existing = this.toolStateFor(data);
+      if (existing) {
+        this.rememberToolAlias(existing, callId);
+        this.rememberToolAlias(existing, data.item_id);
+        return;
+      }
       const tool = data.tool_name || "?";
       const renderer = toolRendererFor(tool);
       const args = parseArgs(data.arguments_json);
@@ -507,20 +790,21 @@
       el.appendChild(sep); el.appendChild(result);
       parent.appendChild(el);
 
-      const state = { el, resultEl: result, outputBuf: "", tool, args, renderer, body: null };
-      if (renderer.body) state.body = renderer.body(args, this.conversation, data);
-      this.activeTools.set(callId, state);
+      const state = { el, resultEl: result, outputBuf: "", tool, args, renderer, body: null, ids: [] };
+      if (renderer.body) state.body = renderer.body(args, el, data);
+      this.rememberToolAlias(state, callId);
+      this.rememberToolAlias(state, data.item_id);
     },
 
     appendToolDelta(data) {
-      const m = this.activeTools.get(data.call_id);
+      const m = this.toolStateFor(data);
       if (!m) return;
       m.outputBuf += data.delta || "";
       if (m.renderer.bodyDelta) m.renderer.bodyDelta(m, m.outputBuf);
     },
 
     finalizeToolCall(data) {
-      const m = this.activeTools.get(data.call_id);
+      const m = this.toolStateFor(data);
       if (!m) return;
       const out = data.output || m.outputBuf || "";
 
@@ -537,7 +821,21 @@
         const replacement = m.renderer.replace(m, data);
         if (replacement && m.el.parentNode) m.el.parentNode.replaceChild(replacement, m.el);
       }
-      this.activeTools.delete(data.call_id);
+      for (const id of m.ids || []) {
+        this.activeTools.delete(id);
+      }
+    },
+
+    toolStateFor(data) {
+      if (!data) return null;
+      return this.activeTools.get(data.call_id) || this.activeTools.get(data.item_id) || null;
+    },
+
+    rememberToolAlias(state, id) {
+      if (!state || !id) return;
+      if (!state.ids) state.ids = [];
+      if (!state.ids.includes(id)) state.ids.push(id);
+      this.activeTools.set(id, state);
     },
 
     beginSubagentRef(data) {
@@ -605,8 +903,16 @@
       }
     },
 
-    appendBanner(kind, text) {
+    appendBanner(kind, text, diagnostic) {
       this.cheapToolCluster = null;
+      if ((kind === "error" || kind === "warning") && window.SerfDiagnostics && window.SerfDiagnostics.render) {
+        const payload = Object.assign({}, diagnostic || {}, {
+          severity: kind,
+          message: text || (diagnostic && (diagnostic.message || diagnostic.error)) || "",
+        });
+        this.conversation.appendChild(window.SerfDiagnostics.render(payload));
+        return;
+      }
       const el = document.createElement("div");
       el.className = "banner " + kind;
       el.textContent = "[" + kind + "] " + text;
@@ -731,18 +1037,15 @@
 
     refreshTaskBadgeSoon() {
       if (!this.sessionId) return;
-      fetch("/s/" + encodeURIComponent(this.sessionId) + "/tasks")
+      if (window.SerfAppwire) {
+        window.SerfAppwire.tasks(this.sessionId)
+          .then(tasks => this.applyTasks(tasks))
+          .catch(() => {});
+        return;
+      }
+      partialFetch(sessionPartialPath(this.sessionId, "tasks"))
         .then(r => r.ok ? r.json() : [])
-        .then(tasks => {
-          if (!Array.isArray(tasks)) return;
-          for (const t of tasks) {
-            if (t && t.id != null && t.description) {
-              taskDescriptions.set(t.id, t.description);
-            }
-          }
-          const done = tasks.filter(t => t.status === "done").length;
-          updateTasksBadge(done, tasks.length);
-        }).catch(() => {});
+        .then(tasks => this.applyTasks(tasks)).catch(() => {});
     },
 
     scrollToBottom() {
@@ -777,23 +1080,31 @@
           }
           steerBtn.disabled = true;
           try {
-            const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/steer", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ text }),
-            });
-            if (!resp.ok) {
-              const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
-              this.appendBanner("error", "steer failed: " + detail);
+            if (window.SerfAppwire) {
+              if (!this.activeTurnId) {
+                this.appendBanner("error", "steer failed: no active turn", { source: "hub", title: "Hub steer error" });
+                return;
+              }
+              await window.SerfAppwire.steer(this.sessionId, this.activeTurnId, text);
             } else {
-              ta.value = "";
-              ta.style.height = "";
-              grow();
+              const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/steer", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ text, turnId: this.activeTurnId || "" }),
+              });
+              if (!resp.ok) {
+                const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
+                this.appendBanner("error", "steer failed: " + detail, { source: "hub", title: "Hub steer error" });
+                return;
+              }
             }
+            ta.value = "";
+            ta.style.height = "";
+            grow();
           } catch (err) {
-            this.appendBanner("error", "steer failed: " + err.message);
+            this.appendBanner("error", "steer failed: " + err.message, { source: "hub", title: "Hub steer error" });
           } finally {
-            steerBtn.disabled = false;
+            this.syncTurnActionControls();
           }
         });
       }
@@ -857,6 +1168,11 @@
         const hasAttachments = this.pendingAttachments && this.pendingAttachments.length > 0;
         if (!text && !hasAttachments) return;
         const sendBtn = form.querySelector(".send-btn");
+        const canSend = !sendBtn || sendBtn.getAttribute("data-capability-send") !== "false";
+        if (!canSend) {
+          this.appendBanner("error", "send is not available for this session", { source: "hub", title: "Hub send error" });
+          return;
+        }
         if (sendBtn) sendBtn.disabled = true;
         try {
           const body = {
@@ -867,29 +1183,35 @@
               name: a.name,
             })),
           };
-          const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/send", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          });
-          if (!resp.ok) {
-            const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
-            this.appendBanner("error", "send failed: " + detail);
+          const previousUserCount = this.userMessageCount();
+          let turnId = "";
+          if (window.SerfAppwire) {
+            const resp = await window.SerfAppwire.startTurn(this.appwireRef || this.sessionId, body.text, body.images);
+            turnId = resp && resp.turn && resp.turn.id || "";
+            this.setActiveTurnId(turnId || this.activeTurnId);
           } else {
-            ta.value = "";
-            ta.style.height = "";
-            grow();
-            this.pendingAttachments = [];
-            this.renderAttachments();
-            // Replying to an ended session resumes its daemon; switch the
-            // SSE source from the now-closed past replay to the live events
-            // stream so the new turn renders without a page reload.
-            this.ensureLiveStream();
+            const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/send", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            });
+            if (!resp.ok) {
+              const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
+              this.appendBanner("error", "send failed: " + detail, { source: "hub", title: "Hub send error" });
+              return;
+            }
           }
+          this.appendLocalUserMessage(body.text, body.images, turnId, previousUserCount);
+          ta.value = "";
+          ta.style.height = "";
+          grow();
+          this.pendingAttachments = [];
+          this.renderAttachments();
+          this.ensureLiveStream();
         } catch (err) {
-          this.appendBanner("error", "send failed: " + err.message);
+          this.appendBanner("error", "send failed: " + err.message, { source: "hub", title: "Hub send error" });
         } finally {
-          if (sendBtn) sendBtn.disabled = false;
+          if (sendBtn && canSend) sendBtn.disabled = false;
         }
       };
       form.addEventListener("submit", submit);
@@ -1023,6 +1345,10 @@
       });
     },
   };
+
+  function autoLabel(text) {
+    return "before " + text.slice(0, 40).replace(/\s+/g, " ").trim();
+  }
 
   // openImageLightbox shows a full-size image overlay. Click backdrop or press
   // Esc to dismiss. One overlay at a time.
@@ -1445,7 +1771,10 @@
       document.title = "serf hub";
       return;
     }
-    fetch("/api/search?q=").then(r => r.json()).then(resp => {
+    const searchPromise = window.SerfAppwire
+      ? window.SerfAppwire.search("")
+      : fetch("/api/search?q=").then(r => r.json());
+    searchPromise.then(resp => {
       const awaiting = (resp.live || []).filter(s => s.state === "awaiting").length;
       const sessTitle = document.querySelector(".workspace-title .title")?.textContent?.trim() || "serf hub";
       document.title = (awaiting > 0 ? "(" + awaiting + ") " : "") + sessTitle;
@@ -1486,29 +1815,40 @@
     }
   });
 
-  // triggerSessionAction posts to /s/<id>/<action> for the currently-rendered
-  // workspace session. shutdown asks for confirmation first; interrupt and
-  // compact are silent on success and surface failures via appendBanner.
+  // triggerSessionAction sends the app-wire action for the currently-rendered
+  // workspace session. Actions are silent on success and surface failures via
+  // appendBanner.
   function triggerSessionAction(action) {
     const conv = document.getElementById("conversation");
     const sessionId = conv && conv.getAttribute("data-session-id");
     if (!sessionId) return;
-    if (action === "shutdown") {
-      if (!window.confirm("Shut down this daemon? The session will end.")) return;
+    const turnId = (window.SerfRenderer && window.SerfRenderer.activeTurnId) || (conv && conv.getAttribute("data-active-turn-id")) || "";
+    if (action === "interrupt" && !turnId) {
+      if (window.SerfRenderer && window.SerfRenderer.appendBanner) {
+        window.SerfRenderer.appendBanner("error", "interrupt failed: no active turn", { source: "hub", title: "Hub action error" });
+      }
+      return;
     }
-    fetch("/s/" + encodeURIComponent(sessionId) + "/" + action, { method: "POST" })
+    const actionPromise = window.SerfAppwire
+      ? window.SerfAppwire.action(sessionId, action, turnId).then(() => ({ ok: true, text: () => Promise.resolve("") }))
+      : fetch("/s/" + encodeURIComponent(sessionId) + "/" + action, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: action === "interrupt" ? JSON.stringify({ turnId }) : undefined,
+      });
+    actionPromise
       .then((resp) => {
         if (!resp.ok) {
           return resp.text().then((txt) => {
             if (window.SerfRenderer && window.SerfRenderer.appendBanner) {
-              window.SerfRenderer.appendBanner("error", action + " failed: " + (txt || resp.status));
+              window.SerfRenderer.appendBanner("error", action + " failed: " + (txt || resp.status), { source: "hub", title: "Hub action error" });
             }
           });
         }
       })
       .catch((err) => {
         if (window.SerfRenderer && window.SerfRenderer.appendBanner) {
-          window.SerfRenderer.appendBanner("error", action + " failed: " + err.message);
+          window.SerfRenderer.appendBanner("error", action + " failed: " + err.message, { source: "hub", title: "Hub action error" });
         }
       });
   }
@@ -1562,9 +1902,11 @@
     panel.innerHTML = "<div class='details-loading'>loading…</div>";
     document.body.appendChild(panel);
 
-    const tasksURL = "/s/" + encodeURIComponent(id) + "/tasks";
     const refresh = () => {
-      fetch(tasksURL).then(r => r.json()).then(tasks => {
+      const tasksPromise = window.SerfAppwire
+        ? window.SerfAppwire.tasks(id)
+        : partialFetch(sessionPartialPath(id, "tasks")).then(r => r.json());
+      tasksPromise.then(tasks => {
         renderTasksInto(panel, tasks);
       }).catch(() => {
         panel.innerHTML = "<div class='details-loading'>failed to load</div>";
@@ -1731,7 +2073,7 @@
     panel.className = "details-panel";
     panel.innerHTML = "<div class='details-loading'>loading…</div>";
     document.body.appendChild(panel);
-    fetch("/s/" + encodeURIComponent(id) + "/details").then(r => r.text()).then(html => {
+    partialFetch(sessionPartialPath(id, "details")).then(r => r.text()).then(html => {
       panel.innerHTML = html;
     }).catch(() => { panel.innerHTML = "<div class='details-loading'>failed to load</div>"; });
     setPanelToggleActive("[data-details-trigger]", true);

@@ -166,6 +166,24 @@ func TestInputEndpoint_Conflict(t *testing.T) {
 	}
 }
 
+func TestInputEndpoint_ClosedSessionConflict(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetState("CLOSED")
+
+	body := strings.NewReader(`{"text":"hello"}`)
+	req := httptest.NewRequest(http.MethodPost, "/input", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status code: got %d, want 409", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "session is closed") {
+		t.Fatalf("body=%q", w.Body.String())
+	}
+}
+
 func TestInputEndpoint_EmptyTextAndNoImages(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetProcessing(false)

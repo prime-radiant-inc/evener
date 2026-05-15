@@ -18,7 +18,7 @@ function newHarness() {
     <form data-input-form data-session-id="01TEST"><textarea class="message-input"></textarea></form>
   </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
   const { window } = dom;
-  window.marked = { parse: t => t };
+  window.marked = { parse: t => String(t || "").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>") };
   window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
   class MockEventSource {
     constructor() { this.listeners = new Map(); MockEventSource.last = this; }
@@ -44,6 +44,39 @@ async function scenario(name, eventSeq, check) {
   if (!result.ok) {
     allPass = false;
     console.log("  detail: " + result.detail);
+    console.log("  HTML: " + conv.innerHTML);
+  }
+}
+
+async function streamingMarkdownScenario() {
+  const { conv, es } = newHarness();
+  await new Promise(r => setTimeout(r, 30));
+  es.fire("SESSION_START", { session_id: "01TEST" });
+  es.fire("ASSISTANT_TEXT_START", {});
+  es.fire("ASSISTANT_TEXT_DELTA", { delta: "Harness is **serf**" });
+  await new Promise(r => setTimeout(r, 550));
+
+  const rendered = conv.querySelector(".assistant-message");
+  if (!rendered || !rendered.querySelector("strong")) {
+    allPass = false;
+    console.log("FAIL — streamed markdown renders before final event");
+    console.log("  detail: initial streamed markdown did not render");
+    console.log("  HTML: " + conv.innerHTML);
+    return;
+  }
+
+  es.fire("ASSISTANT_TEXT_DELTA", { delta: " and stable" });
+  await new Promise(r => setTimeout(r, 10));
+
+  const updated = conv.querySelector(".assistant-message");
+  const rawVisible = updated && updated.innerHTML.includes("**serf**");
+  const appended = updated && updated.textContent.includes("and stable");
+  const stillRendered = updated && updated.querySelector("strong");
+  const ok = updated && !rawVisible && appended && stillRendered;
+  console.log((ok ? "PASS" : "FAIL") + " — streamed markdown stays rendered after later deltas");
+  if (!ok) {
+    allPass = false;
+    console.log("  detail: rawVisible=" + rawVisible + " appended=" + appended + " stillRendered=" + !!stillRendered);
     console.log("  HTML: " + conv.innerHTML);
   }
 }
@@ -127,6 +160,55 @@ await scenario("communicate renders as assistant block", [
   if (tc) return { ok: false, detail: "communicate should not produce a tool-call card" };
   const am = conv.querySelector(".assistant-message");
   if (!am || !am.textContent.includes("Hello")) return { ok: false, detail: "no assistant message" };
+  return { ok: true };
+});
+
+// communicate with an empty/whitespace message — should not leave a bubble.
+await scenario("communicate ignores empty message", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "c1", tool_name: "communicate", arguments_json: JSON.stringify({ message: "\n\n" }) }],
+  ["TOOL_CALL_END", { call_id: "c1", output: "{}", tool_name: "communicate" }],
+], ({ conv }) => {
+  const assistants = conv.querySelectorAll(".assistant-message");
+  if (assistants.length !== 0) return { ok: false, detail: "expected 0 assistant-message, got " + assistants.length };
+  const tc = conv.querySelector(".tool-call");
+  if (tc) return { ok: false, detail: "communicate should not produce a tool-call card" };
+  return { ok: true };
+});
+
+// communicate after streamed assistant deltas — final tool start should not duplicate.
+await scenario("streamed communicate is not duplicated by tool completion", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["ASSISTANT_TEXT_START", {}],
+  ["ASSISTANT_TEXT_DELTA", { delta: "Hel" }],
+  ["ASSISTANT_TEXT_DELTA", { delta: "lo" }],
+  ["ASSISTANT_TEXT_END", {}],
+  ["TOOL_CALL_START", { call_id: "c1", tool_name: "communicate", arguments_json: JSON.stringify({ message: "Hello" }) }],
+  ["TOOL_CALL_END", { call_id: "c1", output: "{}", tool_name: "communicate" }],
+], ({ conv }) => {
+  const assistants = conv.querySelectorAll(".assistant-message");
+  if (assistants.length !== 1) return { ok: false, detail: "expected 1 assistant-message, got " + assistants.length };
+  if (assistants[0].textContent !== "Hello") return { ok: false, detail: "assistant text wrong: " + assistants[0].textContent };
+  const tc = conv.querySelector(".tool-call");
+  if (tc) return { ok: false, detail: "communicate should not produce a tool-call card" };
+  return { ok: true };
+});
+
+await streamingMarkdownScenario();
+
+// communicate after an equivalent markdown assistant message — should not
+// duplicate when rendered textContent differs from raw markdown.
+await scenario("markdown communicate after assistant text is not duplicated", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["ASSISTANT_TEXT_END", { text: "The harness is **serf**." }],
+  ["TOOL_CALL_START", { call_id: "c1", tool_name: "communicate", arguments_json: JSON.stringify({ message: "The harness is **serf**." }) }],
+  ["TOOL_CALL_END", { call_id: "c1", arguments_json: JSON.stringify({ message: "The harness is **serf**." }), output: "{}", tool_name: "communicate" }],
+], ({ conv }) => {
+  const assistants = conv.querySelectorAll(".assistant-message");
+  if (assistants.length !== 1) return { ok: false, detail: "expected 1 assistant-message, got " + assistants.length };
+  if (assistants[0].textContent.trim() !== "The harness is serf.") return { ok: false, detail: "assistant text wrong: " + assistants[0].textContent };
+  const tc = conv.querySelector(".tool-call");
+  if (tc) return { ok: false, detail: "communicate should not produce a tool-call card" };
   return { ok: true };
 });
 

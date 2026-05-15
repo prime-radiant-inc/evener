@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1356,8 +1357,12 @@ func TestNewFromEnv_ReadsOrgAndProjectID(t *testing.T) {
 }
 
 func TestNewFromEnv_UsesStoredOAuthTransportWhenAPIKeyAbsent(t *testing.T) {
-	stateDir := t.TempDir()
-	if err := authopenai.SaveAuth(stateDir, authopenai.AuthRecord{
+	xdgStateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", xdgStateHome)
+	userStateDir := authopenai.DefaultStateDir()
+	projectStateDir := filepath.Join(xdgStateHome, "serf", "projects", "repo")
+	t.Setenv("SERF_STATE_DIR", projectStateDir)
+	if err := authopenai.SaveAuth(userStateDir, authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
 		Source:       "oauth",
@@ -1374,7 +1379,7 @@ func TestNewFromEnv_UsesStoredOAuthTransportWhenAPIKeyAbsent(t *testing.T) {
 	}
 
 	t.Setenv("OPENAI_CHATGPT_BASE_URL", "https://chatgpt.example.test")
-	a, err := NewFromEnv(Config{StateDir: stateDir})
+	a, err := NewFromEnv()
 	if err != nil {
 		t.Fatalf("NewFromEnv: %v", err)
 	}
@@ -2304,6 +2309,62 @@ func TestAdapter_ListModels(t *testing.T) {
 		if models[i].ID < models[i-1].ID {
 			t.Errorf("models not sorted: %s before %s", models[i-1].ID, models[i].ID)
 		}
+	}
+}
+
+func TestAdapter_ListModels_OAuthTransportUsesCodexModelsEndpoint(t *testing.T) {
+	var gotPath string
+	var gotQuery string
+	var gotAuth string
+	var gotAccount string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		gotAuth = r.Header.Get("Authorization")
+		gotAccount = r.Header.Get("ChatGPT-Account-ID")
+		if r.Method != http.MethodGet || r.URL.Path != "/backend-api/codex/models" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"models": [
+				{"slug": "gpt-5.3-codex", "display_name": "GPT-5.3 Codex"},
+				{"slug": "gpt-image-1", "display_name": "Image"}
+			]
+		}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey:           "oauth-token",
+		BaseURL:          srv.URL,
+		ResponsesPath:    defaultCodexResponses,
+		ChatGPTAccountID: "acct_123",
+		Client:           srv.Client(),
+	}
+	models, err := a.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if gotPath != "/backend-api/codex/models" {
+		t.Fatalf("path = %q, want /backend-api/codex/models", gotPath)
+	}
+	values, err := url.ParseQuery(gotQuery)
+	if err != nil {
+		t.Fatalf("parse query %q: %v", gotQuery, err)
+	}
+	if values.Get("client_version") != "0.0.0" {
+		t.Fatalf("client_version = %q, want 0.0.0", values.Get("client_version"))
+	}
+	if gotAuth != "Bearer oauth-token" {
+		t.Fatalf("Authorization = %q", gotAuth)
+	}
+	if gotAccount != "acct_123" {
+		t.Fatalf("ChatGPT-Account-ID = %q", gotAccount)
+	}
+	if len(models) != 1 || models[0].ID != "gpt-5.3-codex" || models[0].DisplayName != "GPT-5.3 Codex" || models[0].Provider != "openai" {
+		t.Fatalf("models=%+v", models)
 	}
 }
 

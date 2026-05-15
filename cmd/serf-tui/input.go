@@ -54,10 +54,10 @@ func slashCommandHelp() string {
 		"  /agents    View the main or subagent transcript",
 		"  /model     Switch model (picker) or /model <name>",
 		"  /auth      Open provider auth actions",
-		"  /theme     Pick a theme (dark/light)",
+		"  /theme     Pick a theme (system/dark/light)",
 		"  /clear     Start a new session",
 		"  /dashboard Go to live dashboard",
-		"  /project   Go to this session's project",
+		"  /project   Show this session's project in dashboard",
 		"  /quit      Exit the TUI",
 		"",
 		"Keys:",
@@ -71,6 +71,10 @@ func slashCommandHelp() string {
 		"  ctrl+o           Go to live dashboard",
 		"  tab / enter      Expand/collapse focused tool call",
 	}, "\n")
+}
+
+func hubSlashCommandHelp(caps hubSessionCapabilities) string {
+	return hubCommandHelp(caps)
 }
 
 func sendInput(addr, text string) tea.Cmd {

@@ -52,9 +52,9 @@ func TestSessionLogStrategy_ManageContext_ObservationMaskAtHighPressure(t *testi
 
 	// Set a low observation mask threshold so compaction triggers on our test data.
 	cm.ObservationMaskThreshold = 0.05
-	cm.ThinkingClearThreshold = 0.95   // high enough to not trigger
-	cm.CheckpointThreshold = 0.95      // high enough to not trigger
-	cm.SummarizeThreshold = 0.99       // high enough to not trigger
+	cm.ThinkingClearThreshold = 0.95 // high enough to not trigger
+	cm.CheckpointThreshold = 0.95    // high enough to not trigger
+	cm.SummarizeThreshold = 0.99     // high enough to not trigger
 	cm.PreserveRecentTurns = 2
 
 	dir := t.TempDir()
@@ -215,8 +215,8 @@ func TestSessionLogStrategy_ManageContext_SessionLogCheckpointAtHighPressure(t *
 	if !strings.Contains(checkpointText, "[CONTEXT CHECKPOINT - SESSION LOG]") {
 		t.Errorf("expected checkpoint header, got: %s", checkpointText[:min(200, len(checkpointText))])
 	}
-	if !strings.Contains(checkpointText, "Original task: fix the login bug") {
-		t.Errorf("expected original task in checkpoint, got: %s", checkpointText)
+	if !strings.Contains(checkpointText, "Original prompt: fix the login bug") {
+		t.Errorf("expected original prompt in checkpoint, got: %s", checkpointText)
 	}
 	// Verify session log entries appear in the checkpoint.
 	if !strings.Contains(checkpointText, "Ran git status") {
@@ -361,8 +361,25 @@ func TestSessionLogStrategy_SessionLogCheckpoint_EmptyLog(t *testing.T) {
 	if !strings.Contains(checkpointText, "[CONTEXT CHECKPOINT - SESSION LOG]") {
 		t.Errorf("expected checkpoint header in: %s", checkpointText)
 	}
-	if !strings.Contains(checkpointText, "Original task: do something") {
-		t.Errorf("expected original task in checkpoint, got: %s", checkpointText)
+	if !strings.Contains(checkpointText, "Original prompt: do something") {
+		t.Errorf("expected original prompt in checkpoint, got: %s", checkpointText)
+	}
+}
+
+func TestSessionLogStrategy_ExtractOriginalPromptReadsCurrentAndLegacyCheckpoints(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		text string
+	}{
+		{name: "current", text: "[CONTEXT CHECKPOINT - SESSION LOG]\nOriginal prompt: fix the login bug\n\n[END CHECKPOINT]\n"},
+		{name: "legacy", text: "[CONTEXT CHECKPOINT - SESSION LOG]\nOriginal task: fix the auth bug\n\n[END CHECKPOINT]\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractOriginalPrompt([]Turn{{Kind: TurnUserInput, Message: llm.User(tc.text)}})
+			if got == "" {
+				t.Fatalf("expected prompt extracted from checkpoint")
+			}
+		})
 	}
 }
 
@@ -375,7 +392,7 @@ func TestSessionLogStrategy_SessionLogCheckpoint_PreservesRecentTurns(t *testing
 	}
 
 	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("original task")},
+		{Kind: TurnUserInput, Message: llm.User("original prompt")},
 		{Kind: TurnAssistant, Message: llm.Assistant("old response")},
 		{Kind: TurnUserInput, Message: llm.User("keep this")},
 		{Kind: TurnAssistant, Message: llm.Assistant("and this")},

@@ -1,12 +1,17 @@
 package main
 
 import (
+	"database/sql"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"unicode"
 
 	"primeradiant.com/serf/agent"
+
+	_ "modernc.org/sqlite"
 )
 
 // PastEntry is one indexed past session.
@@ -21,10 +26,12 @@ type PastEntry struct {
 // All metas are kept in memory; rebuild is lazy or scheduled.
 type PastIndex struct {
 	stateGlob string
+	dbPath    string
 
-	mu      sync.RWMutex
-	all     []PastEntry  // sorted by UpdatedAt desc
-	byID    map[string]PastEntry
+	mu   sync.RWMutex
+	all  []PastEntry // sorted by the Hub session ordering contract
+	byID map[string]PastEntry
+	fts  bool
 }
 
 // NewPastIndex returns a PastIndex configured to glob projectGlob.
@@ -38,6 +45,15 @@ func NewPastIndex(projectGlob string) *PastIndex {
 		stateGlob: projectGlob,
 		byID:      make(map[string]PastEntry),
 	}
+}
+
+// NewPastIndexWithDB returns a PastIndex that mirrors rebuilt metadata into a
+// SQLite FTS index. Search falls back to the in-memory index if SQLite is not
+// available or the FTS index cannot satisfy the query.
+func NewPastIndexWithDB(projectGlob, dbPath string) *PastIndex {
+	idx := NewPastIndex(projectGlob)
+	idx.dbPath = dbPath
+	return idx
 }
 
 // Rebuild scans every project under stateGlob and reloads the index.
@@ -62,17 +78,25 @@ func (i *PastIndex) Rebuild() error {
 			byID[m.ID] = pe
 		}
 	}
-	sort.Slice(all, func(a, b int) bool {
-		return all[a].Meta.UpdatedAt.After(all[b].Meta.UpdatedAt)
+	sort.SliceStable(all, func(a, b int) bool {
+		return sessionMetaLess(all[a].Meta, all[b].Meta)
 	})
 	i.mu.Lock()
 	i.all = all
 	i.byID = byID
+	i.fts = false
 	i.mu.Unlock()
+	if i.dbPath != "" {
+		if err := i.rebuildFTS(all); err == nil {
+			i.mu.Lock()
+			i.fts = true
+			i.mu.Unlock()
+		}
+	}
 	return nil
 }
 
-// All returns the full index sorted by UpdatedAt desc (most recent first).
+// All returns the full index sorted by the Hub session ordering contract.
 func (i *PastIndex) All() []PastEntry {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
@@ -81,10 +105,24 @@ func (i *PastIndex) All() []PastEntry {
 	return out
 }
 
-// Search returns the limit results starting at offset whose
-// OriginalTask, ID, or WorkingDir contains q (case-insensitive). Empty q
-// returns all entries.
+// Search returns the limit results starting at offset whose indexed text
+// matches q. SQLite FTS contributes token-prefix matches when available; the
+// in-memory scan preserves substring matches.
 func (i *PastIndex) Search(q string, limit, offset int) []PastEntry {
+	if strings.TrimSpace(q) != "" {
+		if fts, ok := i.searchFTS(q); ok {
+			mem := i.searchMemoryMatches(q)
+			return i.mergeSearchResults(fts, mem, limit, offset)
+		}
+	}
+	return i.searchMemory(q, limit, offset)
+}
+
+func (i *PastIndex) searchMemory(q string, limit, offset int) []PastEntry {
+	return paginatePastEntries(i.searchMemoryMatches(q), limit, offset)
+}
+
+func (i *PastIndex) searchMemoryMatches(q string) []PastEntry {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 
@@ -95,18 +133,167 @@ func (i *PastIndex) Search(q string, limit, offset int) []PastEntry {
 			out = append(out, e)
 		}
 	}
-	if offset >= len(out) {
+	return out
+}
+
+func paginatePastEntries(entries []PastEntry, limit, offset int) []PastEntry {
+	if limit <= 0 || offset >= len(entries) {
 		return nil
 	}
 	end := offset + limit
-	if end > len(out) {
-		end = len(out)
+	if end > len(entries) {
+		end = len(entries)
 	}
-	return out[offset:end]
+	return entries[offset:end]
+}
+
+func (i *PastIndex) mergeSearchResults(a, b []PastEntry, limit, offset int) []PastEntry {
+	ids := make(map[string]struct{}, len(a)+len(b))
+	for _, entry := range a {
+		ids[entry.ID] = struct{}{}
+	}
+	for _, entry := range b {
+		ids[entry.ID] = struct{}{}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	i.mu.RLock()
+	out := make([]PastEntry, 0, len(ids))
+	for _, entry := range i.all {
+		if _, ok := ids[entry.ID]; ok {
+			out = append(out, entry)
+		}
+	}
+	i.mu.RUnlock()
+	return paginatePastEntries(out, limit, offset)
+}
+
+func (i *PastIndex) rebuildFTS(entries []PastEntry) error {
+	dbDir := filepath.Dir(i.dbPath)
+	if err := os.MkdirAll(dbDir, 0o700); err != nil {
+		return err
+	}
+	db, err := sql.Open("sqlite", i.dbPath)
+	if err != nil {
+		return err
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			_ = db.Close()
+		}
+	}()
+	if _, err := db.Exec(`CREATE VIRTUAL TABLE IF NOT EXISTS past_sessions_fts USING fts5(
+id,
+original_prompt,
+working_dir,
+state_dir UNINDEXED,
+sort_rank UNINDEXED
+)`); err != nil {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM past_sessions_fts`); err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare(`INSERT INTO past_sessions_fts(id, original_prompt, working_dir, state_dir, sort_rank) VALUES (?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for rank, entry := range entries {
+		if _, err := stmt.Exec(entry.ID, entry.Meta.OriginalPrompt, entry.Meta.EnvInfo.WorkingDir, entry.StateDir, rank); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if err := db.Close(); err != nil {
+		return err
+	}
+	closed = true
+	return chmodSQLiteIndexFiles(i.dbPath)
+}
+
+func chmodSQLiteIndexFiles(dbPath string) error {
+	for _, path := range []string{dbPath, dbPath + "-journal", dbPath + "-wal", dbPath + "-shm"} {
+		if err := os.Chmod(path, 0o600); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func (i *PastIndex) searchFTS(q string) ([]PastEntry, bool) {
+	query := ftsQuery(q)
+	if query == "" {
+		return nil, false
+	}
+	i.mu.RLock()
+	available := i.fts
+	i.mu.RUnlock()
+	if !available || i.dbPath == "" {
+		return nil, false
+	}
+	db, err := sql.Open("sqlite", i.dbPath)
+	if err != nil {
+		return nil, false
+	}
+	defer db.Close()
+	rows, err := db.Query(`SELECT id FROM past_sessions_fts WHERE past_sessions_fts MATCH ? ORDER BY CAST(sort_rank AS INTEGER) ASC`, query)
+	if err != nil {
+		return nil, false
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, false
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	out := make([]PastEntry, 0, len(ids))
+	for _, id := range ids {
+		if entry, ok := i.byID[id]; ok {
+			out = append(out, entry)
+		}
+	}
+	return out, true
+}
+
+func ftsQuery(q string) string {
+	tokens := strings.FieldsFunc(strings.ToLower(q), func(r rune) bool {
+		return !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_')
+	})
+	if len(tokens) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			continue
+		}
+		parts = append(parts, token+"*")
+	}
+	return strings.Join(parts, " AND ")
 }
 
 func matches(e PastEntry, lowerQ string) bool {
-	if strings.Contains(strings.ToLower(e.Meta.OriginalTask), lowerQ) {
+	if strings.Contains(strings.ToLower(e.Meta.OriginalPrompt), lowerQ) {
 		return true
 	}
 	if strings.Contains(strings.ToLower(e.Meta.ID), lowerQ) {
@@ -131,6 +318,19 @@ func (i *PastIndex) AllMetas() []agent.SessionMeta {
 
 // Find returns the entry for a given session_id.
 func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
+	if e, ok := i.findCached(sessionID); ok {
+		return e, true
+	}
+	if sessionID == "" || i.stateGlob == "" {
+		return PastEntry{}, false
+	}
+	if err := i.Rebuild(); err != nil {
+		return PastEntry{}, false
+	}
+	return i.findCached(sessionID)
+}
+
+func (i *PastIndex) findCached(sessionID string) (PastEntry, bool) {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	e, ok := i.byID[sessionID]

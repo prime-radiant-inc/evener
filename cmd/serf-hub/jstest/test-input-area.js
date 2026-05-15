@@ -17,9 +17,10 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <header class="workspace-header" data-session-id="01TEST"></header>
   <div id="conversation"
        data-session-id="01TEST"
+       data-active-turn-id="turn_steer"
        data-replay-url=""
        data-events-url=""
-       data-state="ended"></div>
+       data-state="processing"></div>
   <form class="workspace-input" data-input-form data-session-id="01TEST">
     <div class="input-attachments" data-attachments></div>
     <div class="input-card" data-drop-zone>
@@ -64,11 +65,25 @@ window.fetch = (url, opts) => {
 
 // Stub EventSource so init() doesn't try to open one (no events url anyway).
 class MockEventSource {
-  constructor() { this.listeners = new Map(); }
-  addEventListener() {}
+  constructor(url) {
+    this.url = url;
+    this.listeners = new Map();
+    this.closed = false;
+    MockEventSource.instances.push(this);
+  }
+  addEventListener(name, fn) {
+    const listeners = this.listeners.get(name) || [];
+    listeners.push(fn);
+    this.listeners.set(name, listeners);
+  }
   set onerror(_) {}
-  close() {}
+  close() { this.closed = true; }
+  emit(name, data) {
+    const event = { data: JSON.stringify(data || {}) };
+    for (const fn of this.listeners.get(name) || []) fn(event);
+  }
 }
+MockEventSource.instances = [];
 window.EventSource = MockEventSource;
 
 // JSDOM doesn't lay out text, so scrollHeight is always 0. Override it on
@@ -155,6 +170,7 @@ async function checkReconnectsLiveAfterSendOnEndedSession() {
   // Simulate the post-replay state: no eventSource open, no eventsUrl.
   window.SerfRenderer.eventSource = null;
   window.SerfRenderer.eventsUrl = "";
+  const beforeCount = MockEventSource.instances.length;
   ta.value = "resume me";
   ta.dispatchEvent(new window.Event("input", { bubbles: true }));
   fetchResponseOk = true;
@@ -166,6 +182,23 @@ async function checkReconnectsLiveAfterSendOnEndedSession() {
     window.SerfRenderer.eventsUrl === "/s/01TEST/events",
     "expected eventsUrl set to /s/01TEST/events, got " + JSON.stringify(window.SerfRenderer.eventsUrl)
   );
+
+  const liveSource = MockEventSource.instances[MockEventSource.instances.length - 1];
+  pass(MockEventSource.instances.length === beforeCount + 1, "expected exactly one live EventSource after resumed send");
+  pass(liveSource && liveSource.url === "/s/01TEST/events", "expected live EventSource URL /s/01TEST/events, got " + (liveSource && liveSource.url));
+
+  liveSource.emit("USER_INPUT", { text: "resume me", turn: 4 });
+  liveSource.emit("ASSISTANT_TEXT_START", { turn: 4, message_id: "msg_resume" });
+  liveSource.emit("ASSISTANT_TEXT_DELTA", { message_id: "msg_resume", delta: "live resumed answer" });
+  liveSource.emit("ASSISTANT_TEXT_END", { message_id: "msg_resume" });
+  await new Promise(r => setTimeout(r, 10));
+
+  pass(conv.textContent.includes("resume me"), "expected resumed user message to render without refresh");
+  pass(
+    !!conv.querySelector('.user-message[data-entry-idx="4"]'),
+    "expected resumed user message to use authoritative turn index 4"
+  );
+  pass(conv.textContent.includes("live resumed answer"), "expected resumed assistant answer to render without refresh");
 }
 
 // 5c. A failed send must NOT open a live stream — connecting to a daemon
@@ -208,6 +241,32 @@ async function checkSteerWired() {
   await new Promise(r => setTimeout(r, 10));
   pass(posted, "expected /steer POST when textarea has text");
   pass(ta.value === "", "expected textarea cleared after successful steer, got " + JSON.stringify(ta.value));
+
+  // If the active turn ends while steer is in flight, the button must stay
+  // disabled after the request settles.
+  window.SerfRenderer.setActiveTurnId("turn_steer");
+  ta.value = "race the turn end";
+  ta.dispatchEvent(new window.Event("input", { bubbles: true }));
+  let settleSteer = null;
+  window.fetch = (url, init) => {
+    if (typeof url === "string" && url.includes("/steer")) {
+      return new Promise(resolve => {
+        settleSteer = () => resolve({
+          ok: true,
+          status: 202,
+          json: () => Promise.resolve([]),
+          text: () => Promise.resolve(""),
+        });
+      });
+    }
+    return origFetch(url, init);
+  };
+  steer.click();
+  await new Promise(r => setTimeout(r, 5));
+  window.SerfRenderer.setActiveTurnId("");
+  settleSteer();
+  await new Promise(r => setTimeout(r, 10));
+  pass(steer.disabled, "expected steer to remain disabled after active turn cleared during request");
 
   window.fetch = origFetch;
 }
@@ -365,6 +424,21 @@ async function testSubmitEmptyDoesNothing() {
   pass(lastFetch === null, "expected no fetch on empty submit, got " + JSON.stringify(lastFetch));
 }
 
+async function testUnavailableSendDoesNotSubmit() {
+  const send = form.querySelector(".send-btn");
+  send.setAttribute("data-capability-send", "false");
+  send.disabled = true;
+  ta.value = "blocked";
+  ta.dispatchEvent(new window.Event("input", { bubbles: true }));
+  lastFetch = null;
+  form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+  await waitForReads();
+  pass(lastFetch === null, "expected no fetch when send capability is unavailable");
+  pass(send.disabled === true, "expected send button to remain disabled");
+  send.setAttribute("data-capability-send", "true");
+  send.disabled = false;
+}
+
 async function testRejectsOversize() {
   window.SerfRenderer.pendingAttachments = [];
   window.SerfRenderer.attachmentErrors = [];
@@ -409,6 +483,7 @@ async function testRejectsNonImage() {
   await testSubmitWithTextAndImage();
   await testSubmitClearsQueue();
   await testSubmitEmptyDoesNothing();
+  await testUnavailableSendDoesNotSubmit();
   await testRejectsOversize();
   await testRejectsNonImage();
 

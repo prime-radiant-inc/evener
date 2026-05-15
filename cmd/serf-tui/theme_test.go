@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 // TestApplyTheme_DarkAndLightDiffer checks that dark and light themes produce
@@ -41,6 +42,24 @@ func TestInitTheme_SetsStyles(t *testing.T) {
 	}
 }
 
+func TestTUIStylesRenderSelectedRow(t *testing.T) {
+	withTestColorProfile(t)
+	styles := defaultTUIStyles()
+	got := styles.Selected.Render("selected")
+	if got == "selected" {
+		t.Fatal("selected style should add terminal styling")
+	}
+}
+
+func withTestColorProfile(t *testing.T) {
+	t.Helper()
+	previous := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() {
+		lipgloss.SetColorProfile(previous)
+	})
+}
+
 // TestSetTheme_Dark switches to dark theme and checks the name.
 func TestSetTheme_Dark(t *testing.T) {
 	applyTheme(lightTheme)
@@ -72,6 +91,35 @@ func TestSetTheme_Light(t *testing.T) {
 	}
 	if activeTheme.statusBarBg != lightTheme.statusBarBg {
 		t.Errorf("activeTheme.statusBarBg = %q, want %q", activeTheme.statusBarBg, lightTheme.statusBarBg)
+	}
+}
+
+func TestSetTheme_System(t *testing.T) {
+	applyTheme(darkTheme)
+	activeThemeName = "dark"
+
+	ok := setTheme("system")
+	if !ok {
+		t.Fatal("setTheme(\"system\") returned false")
+	}
+	if currentThemeName() != "system" {
+		t.Errorf("currentThemeName() = %q, want %q", currentThemeName(), "system")
+	}
+}
+
+func TestThemePreferencePersistsInStateDir(t *testing.T) {
+	stateDir := t.TempDir()
+	if !setThemeAndPersist(stateDir, "light") {
+		t.Fatal("setThemeAndPersist(light) returned false")
+	}
+	if got, ok := loadThemePreference(stateDir); !ok || got != "light" {
+		t.Fatalf("stored theme=%q ok=%v, want light", got, ok)
+	}
+
+	setTheme("dark")
+	initThemeFromStateDir(stateDir)
+	if currentThemeName() != "light" {
+		t.Fatalf("theme after initThemeFromStateDir=%q, want light", currentThemeName())
 	}
 }
 
@@ -123,9 +171,8 @@ func TestThemeCommand_PickerSelectDark(t *testing.T) {
 		t.Fatal("picker not opened")
 	}
 
-	// Navigate to "dark" (index 0) and confirm.
 	// The picker starts at the active theme; ensure we're on dark.
-	for m.themePicker.cursor != 0 {
+	for themePickerItems[m.themePicker.cursor] != "dark" {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 		m = updated.(model)
 	}
@@ -182,16 +229,23 @@ func TestThemeCommand_PickerCancel(t *testing.T) {
 
 // TestThemePicker_InitialCursor verifies the picker pre-selects the active theme.
 func TestThemePicker_InitialCursor(t *testing.T) {
-	setTheme("light")
+	setTheme("system")
 	p := newThemePicker()
-	want := 1 // "light" is index 1
+	want := 0 // "system" is index 0
+	if p.cursor != want {
+		t.Errorf("cursor = %d, want %d (system)", p.cursor, want)
+	}
+
+	setTheme("light")
+	p = newThemePicker()
+	want = 2 // "light" is index 2
 	if p.cursor != want {
 		t.Errorf("cursor = %d, want %d (light)", p.cursor, want)
 	}
 
 	setTheme("dark")
 	p = newThemePicker()
-	want = 0 // "dark" is index 0
+	want = 1 // "dark" is index 1
 	if p.cursor != want {
 		t.Errorf("cursor = %d, want %d (dark)", p.cursor, want)
 	}
@@ -206,6 +260,21 @@ func TestThemePicker_ViewContainsThemes(t *testing.T) {
 		if !strings.Contains(view, name) {
 			t.Errorf("picker view missing theme %q", name)
 		}
+	}
+}
+
+func TestThemePickerRendersAsPopupPane(t *testing.T) {
+	withTestColorProfile(t)
+	setTheme("dark")
+	p := newThemePicker()
+
+	view := p.View()
+	if !strings.Contains(view, "\x1b[") {
+		t.Fatalf("theme picker popup should render terminal styling:\n%s", view)
+	}
+	plain := ansiPattern.ReplaceAllString(view, "")
+	if !strings.Contains(plain, "  Select theme") {
+		t.Fatalf("theme picker popup should have pane padding:\n%s", plain)
 	}
 }
 

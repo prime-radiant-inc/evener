@@ -72,7 +72,7 @@ func TestBuiltinAgents_DefaultUsesAllToolsShorthand(t *testing.T) {
 	}
 }
 
-func TestBuiltinAgents_DefaultHasNoDefaultTasks(t *testing.T) {
+func TestBuiltinAgents_DefaultHasNoTaskWorkflow(t *testing.T) {
 	agents, err := builtinAgents()
 	if err != nil {
 		t.Fatalf("builtinAgents: %v", err)
@@ -82,7 +82,7 @@ func TestBuiltinAgents_DefaultHasNoDefaultTasks(t *testing.T) {
 		t.Fatal("expected built-in 'default' agent")
 	}
 	if len(def.Tasks) != 0 {
-		t.Fatalf("default agent should not ship with a default task list, got %#v", def.Tasks)
+		t.Fatalf("default agent should not define task templates, got %#v", def.Tasks)
 	}
 }
 
@@ -444,7 +444,7 @@ func (a *releaseAdapter) Complete(ctx context.Context, req llm.Request) (llm.Res
 func (a *releaseAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	_ = ctx
 	_ = req
-	return nil, fmt.Errorf("stream not implemented")
+	return nil, llm.ErrStreamUnsupported
 }
 
 func TestSpawnAgent_NonBlockingSubagentSurvivesParentContextCancellation(t *testing.T) {

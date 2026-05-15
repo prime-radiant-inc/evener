@@ -1,8 +1,8 @@
 # Serf
 
-A non-interactive coding agent. Give it a task, it does the work.
+A non-interactive coding agent. Give it a prompt, it does the work.
 
-Serf uses the LLM's native tool-calling to read files, write files, run commands, and search code in a loop until the task is complete. It supports OpenAI, Anthropic, and Google models.
+Serf uses the LLM's native tool-calling to read files, write files, run commands, and search code in a loop until the work is complete. It supports OpenAI, Anthropic, and Google models.
 
 ## Build
 
@@ -25,16 +25,16 @@ make build-hub
 ## Usage
 
 ```
-serf --model <provider/model> [flags] <task>
+serf --model <provider/model> [flags] <prompt>
 ```
 
-The task can be passed as arguments or piped via stdin:
+The prompt can be passed as arguments or piped via stdin:
 
 ```bash
-# Task as arguments
+# Prompt as arguments
 serf --model openai/gpt-5.2 "add input validation to the signup handler"
 
-# Task piped via stdin
+# Prompt piped via stdin
 echo "refactor auth to use JWT" | serf --model anthropic/claude-opus-4-6
 ```
 
@@ -100,7 +100,7 @@ For local models via Ollama, see [docs/ollama.md](docs/ollama.md).
 | `--output-schema <json>` | Inline JSON Schema replacing the default `communicate.output` schema |
 | `--verbose` | Emit NDJSON events to stderr (replaces human-readable output) |
 | `--resume <id>` | Resume a previous session by ID |
-| `--resume-with <id>` | Start a new task using a previous session's context |
+| `--resume-with <id>` | Start a new prompt using a previous session's context |
 | `--resume-last` | Resume the most recent session |
 | `--list-sessions` | List saved sessions and exit |
 
@@ -157,7 +157,7 @@ serf --resume-last
 # Resume a specific session
 serf --resume 01JTEST000000000000000001
 
-# New task, but carry forward a previous session's conversation context
+# New prompt, but carry forward a previous session's conversation context
 serf --model openai/gpt-5.2 --resume-with 01JTEST000000000000000001 "now add tests"
 ```
 
@@ -227,6 +227,8 @@ serf-hub  # default 127.0.0.1:9180
 ```
 
 Open `http://127.0.0.1:9180` in your browser.
+For production-style setup, credentials, Codex app-server sources, and smoke
+checks, see [`cmd/serf-hub/README.md`](cmd/serf-hub/README.md).
 
 ### What's there
 
@@ -246,24 +248,26 @@ Open `http://127.0.0.1:9180` in your browser.
 addr = "127.0.0.1:9180"
 spawn_timeout = "30s"
 past_results_per_page = 50
+# Optional; default is ~/.serf/index.db.
+past_index_db = "/Users/you/.serf/index.db"
 
-[[providers]]
-name = "openai"
-models = ["gpt-5", "gpt-5-mini"]
-
-[[providers]]
-name = "anthropic"
-models = ["claude-opus-4-7", "claude-sonnet-4-6"]
+[serf_launch]
+sse_ring_size = 4096
 ```
+
+Hub launch model choices come from the Serf launch harness contract
+(`serf launch-check --models`) using the hub process environment plus
+`[serf_launch.env]`, not from a static model roster in `hub.toml`.
 
 ### Architecture
 
-Daemons are loopback-only. Each writes a rendezvous file to `~/.serf/run/<pid>.json`; the hub watches the directory, probes daemons for state, and proxies REST + SSE so the browser only ever talks to the hub origin. Same-origin guard + strict CSP defend against DNS-rebinding and cross-origin attacks.
+Daemons are loopback-only. Each writes a private rendezvous file to `~/.serf/run/<pid>.json`; the hub watches the directory, probes daemons for state, and proxies AppWire/REST/SSE so the browser only ever talks to the hub origin. Hub-spawned daemons require the per-hub bearer token recorded in their rendezvous file. Daemon and Hub same-origin guards plus strict Hub CSP defend against DNS-rebinding and cross-origin attacks.
 
 ### Operating notes
 
 - **Daemons keep the binary they were spawned from.** Rebuilding `serf` does not update already-running daemons; live sessions continue to run the old code until they shut down. To pick up changes mid-session, end the session (which terminates its daemon), rebuild, and resume — resume reads the new binary. This matches typical daemonized-server behavior and is the same model as restarting a long-lived service after a deploy.
 - **Open-in-editor links** in `/settings/*` use `vscode://file/<path>` by default. Override with `SERF_HUB_EDITOR_URL_TEMPLATE` — a template string with the literal token `{path}` (URL-encoded but with `/` preserved). Examples: `cursor://file/{path}`, `zed://file/{path}`, `idea://open?file={path}`.
+- **Remote hosts**: see `docs/serf-hub-remote-operations.md` for the current deployment runbook, including credential handling, state directories, browser/TUI access, health checks, and Codex app-server sources.
 
 Design spec, plans, and notes live under `docs/superpowers/`.
 

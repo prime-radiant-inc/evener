@@ -77,7 +77,7 @@ internal/hubapi/*                   # delete after TUI and web no longer import 
 - Create: `internal/appwire/jsonrpc_test.go`
 - Create: `internal/appwire/errors.go`
 
-- [ ] **Step 1: Write failing JSON-RPC tests**
+- [x] **Step 1: Write failing JSON-RPC tests**
 
 Create `internal/appwire/jsonrpc_test.go`:
 
@@ -149,7 +149,7 @@ func TestErrorResponseEncoding(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests and verify they fail**
+- [x] **Step 2: Run the tests and verify they fail**
 
 Run:
 
@@ -159,7 +159,7 @@ go test ./internal/appwire
 
 Expected: package or type definitions are missing.
 
-- [ ] **Step 3: Add JSON-RPC envelope implementation**
+- [x] **Step 3: Add JSON-RPC envelope implementation**
 
 Create `internal/appwire/jsonrpc.go`:
 
@@ -425,7 +425,7 @@ func InternalError(message string) WireError {
 }
 ```
 
-- [ ] **Step 4: Run tests and commit**
+- [x] **Step 4: Run tests and commit**
 
 Run:
 
@@ -451,7 +451,7 @@ git commit -m "feat(appwire): add JSON-RPC envelope types"
 - Create: `internal/appwire/refs.go`
 - Create: `internal/appwire/refs_test.go`
 
-- [ ] **Step 1: Write failing ref tests**
+- [x] **Step 1: Write failing ref tests**
 
 Create `internal/appwire/refs_test.go`:
 
@@ -483,7 +483,7 @@ func TestParseRefRejectsUnsafeValues(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test and verify failure**
+- [x] **Step 2: Run test and verify failure**
 
 Run:
 
@@ -493,7 +493,7 @@ go test ./internal/appwire
 
 Expected: missing `Ref` and `ParseRef`.
 
-- [ ] **Step 3: Add refs and core types**
+- [x] **Step 3: Add refs and core types**
 
 Create `internal/appwire/refs.go`:
 
@@ -707,7 +707,7 @@ type ThreadReadResponse struct {
 }
 ```
 
-- [ ] **Step 4: Run tests and commit**
+- [x] **Step 4: Run tests and commit**
 
 Run:
 
@@ -736,7 +736,7 @@ git commit -m "feat(appwire): define thread refs and core types"
 - Create: `internal/appwire/ws_transport_test.go`
 - Modify: `go.mod`
 
-- [ ] **Step 1: Write failing typed client test**
+- [x] **Step 1: Write failing typed client test**
 
 Create `internal/appwire/client_test.go`:
 
@@ -846,7 +846,7 @@ func TestClientRoutesResponsesAndNotifications(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test and verify failure**
+- [x] **Step 2: Run test and verify failure**
 
 Run:
 
@@ -856,7 +856,7 @@ go test ./internal/appwire
 
 Expected: missing `Transport`, `Client`, and `NewClient`.
 
-- [ ] **Step 3: Add transport and client**
+- [x] **Step 3: Add transport and client**
 
 Create `internal/appwire/transport.go`:
 
@@ -1004,7 +1004,7 @@ func (c *Client) ThreadRead(ctx context.Context, params ThreadReadParams) (Threa
 }
 ```
 
-- [ ] **Step 4: Add websocket transport**
+- [x] **Step 4: Add websocket transport**
 
 Use `nhooyr.io/websocket` unless the repo already contains another websocket dependency when this task starts.
 
@@ -1059,7 +1059,7 @@ func (t *WSTransport) Close() error {
 }
 ```
 
-- [ ] **Step 5: Add websocket transport test**
+- [x] **Step 5: Add websocket transport test**
 
 Create `internal/appwire/ws_transport_test.go`:
 
@@ -1131,7 +1131,7 @@ func TestWSTransportRoundTrip(t *testing.T) {
 }
 ```
 
-- [ ] **Step 6: Run tests and tidy**
+- [x] **Step 6: Run tests and tidy**
 
 Run:
 
@@ -1142,7 +1142,7 @@ go mod tidy
 
 Expected: PASS and `go.mod` includes the websocket module if it was new.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/appwire/transport.go internal/appwire/client.go internal/appwire/client_test.go internal/appwire/ws_transport.go internal/appwire/ws_transport_test.go go.mod go.sum
@@ -1163,7 +1163,7 @@ git commit -m "feat(appwire): add typed client transport"
 - Create: `internal/appserver/notifier.go`
 - Create: `internal/appserver/notifier_test.go`
 
-- [ ] **Step 1: Write router dispatch test**
+- [x] **Step 1: Write router dispatch test**
 
 Create `internal/appserver/router_test.go`:
 
@@ -1206,7 +1206,7 @@ func TestRouterDispatchesTypedHandler(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Implement router**
+- [x] **Step 2: Implement router**
 
 Create `internal/appserver/router.go`:
 
@@ -1270,7 +1270,7 @@ func WireError(err error) appwire.WireError {
 }
 ```
 
-- [ ] **Step 3: Add server initialize gate tests**
+- [x] **Step 3: Add server initialize gate tests**
 
 Create `internal/appserver/server_test.go` with tests that send `thread/list` before `initialize` and expect `invalid request`, then send `initialize` and expect success:
 
@@ -1312,7 +1312,7 @@ func TestServerInitializeAllowsLaterRequests(t *testing.T) {
 }
 ```
 
-- [ ] **Step 4: Implement app server**
+- [x] **Step 4: Implement app server**
 
 Create `internal/appserver/server.go`:
 
@@ -1374,7 +1374,7 @@ func (s *Server) initialize(context.Context, appwire.InitializeParams) (appwire.
 }
 ```
 
-- [ ] **Step 5: Add subscription and notifier packages**
+- [x] **Step 5: Add subscription and notifier packages**
 
 Create focused tests for:
 
@@ -1385,7 +1385,7 @@ Create focused tests for:
 
 Create `subscriptions.go` and `notifier.go` with small in-memory maps. Use `sync.Mutex` and do not import hub packages.
 
-- [ ] **Step 6: Run tests and commit**
+- [x] **Step 6: Run tests and commit**
 
 Run:
 
@@ -1407,12 +1407,11 @@ git commit -m "feat(appserver): add JSON-RPC router and subscriptions"
 ## Task 5: Project Serf Agent Events Into App-Wire Notifications
 
 **Files:**
-- Create: `internal/appwire/projection.go`
-- Create: `internal/appwire/projection_test.go`
-- Modify: `agent/session.go`
-- Test: `agent/events_test.go`
+- Create: `server/appwire_projection.go`
+- Create: `server/appwire_projection_test.go`
+- Note: projection lives in `server` so `internal/appwire` remains protocol-only and does not import `agent`.
 
-- [ ] **Step 1: Write projection tests**
+- [x] **Step 1: Write projection tests**
 
 Create `internal/appwire/projection_test.go`:
 
@@ -1463,7 +1462,7 @@ func TestProjectSubagentStart(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Implement projector**
+- [x] **Step 2: Implement projector**
 
 Create `internal/appwire/projection.go`:
 
@@ -1548,34 +1547,24 @@ func (p *Projector) Project(event agent.SessionEvent) []ServerNotification {
 }
 ```
 
-- [ ] **Step 3: Expose stable active turn IDs**
+- [x] **Step 3: Keep stable turn and item IDs in the projector**
 
-Modify `agent/session.go` to expose the active turn ID and item IDs used by the projector. Add a small method next to existing session status helpers:
+`agent.SessionEvent` does not currently carry app-wire turn IDs, so `server.AppEventProjector` owns stable per-thread turn and item IDs while projecting the event stream. No `agent/session.go` change is needed for this task.
 
-```go
-func (s *Session) ActiveTurnID() string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.activeTurnID
-}
-```
-
-If `Session` does not yet store `activeTurnID`, add it where turn execution starts and clears. The value must be stable for the duration of a user turn.
-
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run:
 
 ```bash
-go test ./internal/appwire ./agent
+go test ./server
 ```
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
-git add internal/appwire/projection.go internal/appwire/projection_test.go agent/session.go agent/events_test.go
+git add server/appwire_projection.go server/appwire_projection_test.go
 git commit -m "feat(appwire): project serf events into app notifications"
 ```
 
@@ -1585,15 +1574,15 @@ git commit -m "feat(appwire): project serf events into app notifications"
 
 **Files:**
 - Modify: `server/server.go`
-- Delete: `server/broadcaster.go`
-- Delete: `server/broadcaster_test.go`
+- Delete in Task 11: `server/broadcaster.go`
+- Delete in Task 11: `server/broadcaster_test.go`
 - Modify: `server/server_test.go`
 - Modify: `cmd/serf/serve.go`
 - Modify: `cmd/serf/serve_test.go`
 - Modify: `rendezvous/rendezvous.go`
 - Modify: `rendezvous/rendezvous_test.go`
 
-- [ ] **Step 1: Add failing rendezvous test for app-wire endpoint**
+- [x] **Step 1: Add failing rendezvous test for app-wire endpoint**
 
 Update `rendezvous/rendezvous_test.go` with:
 
@@ -1624,7 +1613,7 @@ func TestEntryRoundTripIncludesAppWireEndpoint(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Update rendezvous entry**
+- [x] **Step 2: Add app-wire fields to rendezvous entry**
 
 Modify `rendezvous/rendezvous.go`:
 
@@ -1646,9 +1635,9 @@ type Entry struct {
 }
 ```
 
-Remove uses of the old `Address` and `Provider` fields in code touched by this task.
+The app-wire fields are present now. Removing old `Address` and `Provider` usage is deferred until the hub source driver and clients are migrated, then completed in Task 11.
 
-- [ ] **Step 3: Replace server tests**
+- [x] **Step 3: Add app-wire runtime server tests**
 
 Rewrite `server/server_test.go` around app-wire behavior:
 
@@ -1658,11 +1647,11 @@ Rewrite `server/server_test.go` around app-wire behavior:
 - `turn/steer` rejects a mismatched active turn ID.
 - `turn/interrupt` invokes the cancel function.
 
-Use in-memory `appwire.Transport` from Task 3 for tests. Remove tests for `/status`, `/input`, `/events`, `/models`, and `/shutdown`.
+Use in-memory `appwire.Transport` from Task 3 for tests. Legacy REST/SSE tests remain until the old runtime paths are removed in Task 11.
 
-- [ ] **Step 4: Implement app-wire runtime handler**
+- [x] **Step 4: Implement app-wire runtime handler**
 
-In `server/server.go`, replace `http.ServeMux` route setup with an appserver router. The exported constructor should become:
+In `server/server.go`, add the appserver router and expose it through `/rpc`. Full removal of `http.ServeMux` route setup happens in Task 11 after hub and client migration.
 
 ```go
 func NewAppServer(cfg ServerConfig, runtime Runtime) *appserver.Server
@@ -1686,7 +1675,7 @@ type Runtime interface {
 
 Register each method with `appserver.Router`.
 
-- [ ] **Step 5: Update `cmd/serf serve`**
+- [x] **Step 5: Update `cmd/serf serve`**
 
 Modify `cmd/serf/serve.go` so it:
 
@@ -1694,9 +1683,9 @@ Modify `cmd/serf/serve.go` so it:
 - Builds a `server.Runtime` around the existing `agent.Session`.
 - Serves websocket `/rpc`.
 - Writes rendezvous with `Protocol`, `Endpoint`, `SourceID`, `ThreadID`, and `SessionID`.
-- Removes REST endpoint route setup.
+- Leaves REST endpoint route setup in place until Task 11 removes old clients and tests.
 
-- [ ] **Step 6: Run tests**
+- [x] **Step 6: Run tests**
 
 Run:
 
@@ -1706,7 +1695,7 @@ go test ./rendezvous ./server ./cmd/serf
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add rendezvous/rendezvous.go rendezvous/rendezvous_test.go server cmd/serf

@@ -9,9 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
 
 	"github.com/oklog/ulid/v2"
 
@@ -40,6 +42,20 @@ const (
 )
 
 var errBareTextWithoutResultTool = errors.New("model returned bare text without calling result tool")
+var errEmptyResponseExhausted = errors.New("model returned empty response")
+var errStreamUnavailable = errors.New("stream unavailable")
+
+type emptyResponseExhaustedError struct {
+	retries int
+}
+
+func (e *emptyResponseExhaustedError) Error() string {
+	return fmt.Sprintf("model returned empty response after %d retries", e.retries)
+}
+
+func (e *emptyResponseExhaustedError) Is(target error) bool {
+	return target == errEmptyResponseExhausted
+}
 
 type bareTextWithoutResultToolError struct {
 	toolName string
@@ -52,21 +68,6 @@ func (e *bareTextWithoutResultToolError) Error() string {
 
 func (e *bareTextWithoutResultToolError) Is(target error) bool {
 	return target == errBareTextWithoutResultTool
-}
-
-var errEmptyResponsesExhausted = errors.New("model returned empty responses past retry budget")
-
-type emptyResponsesExhaustedError struct {
-	consecutive int
-	total       int
-}
-
-func (e *emptyResponsesExhaustedError) Error() string {
-	return fmt.Sprintf("model returned empty response after %d consecutive retries (%d total this turn)", e.consecutive, e.total)
-}
-
-func (e *emptyResponsesExhaustedError) Is(target error) bool {
-	return target == errEmptyResponsesExhausted
 }
 
 type SessionConfig struct {
@@ -228,12 +229,9 @@ type Session struct {
 	modelResponses int // LLM round-trip count (for meta.json turn_count)
 	history        []Turn
 
-	// Fork lineage, populated from SessionMeta at restore time. Carried on
-	// the Session so that autosaves via Meta() preserve the fields across
-	// the child's lifetime. Distinct from cfg.ParentSessionID which is the
-	// subagent-spawn parent.
-	forkParentID    string
-	forkDivergence  int
+	forkParentID   string
+	forkDivergence int
+	forkLabel      string
 
 	reg *ToolRegistry
 
@@ -673,11 +671,9 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 		events:         make(chan SessionEvent, 256),
 		history:        resumeHistory,
 		modelResponses: meta.TurnCount,
-		// Carry fork lineage across the session's lifetime. Distinct from
-		// cfg.ParentSessionID (subagent parent); for a fork child,
-		// DivergenceTurn > 0 and IsSubagent is false.
 		forkParentID:   meta.ParentSessionID,
 		forkDivergence: meta.DivergenceTurn,
+		forkLabel:      meta.ForkLabel,
 		subagents:      map[string]*subagent{},
 		readFiles:      map[string]bool{},
 		sessionCtx:     sessCtx,
@@ -821,15 +817,11 @@ func (s *Session) Snapshot() SessionSnapshot {
 
 // Meta returns the current session metadata without the conversation history.
 func (s *Session) Meta() SessionMeta {
-	originalTask := s.extractOriginalTask()
+	originalPrompt := s.extractOriginalPrompt()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now().UTC()
-	// Subagent lineage lives on cfg; fork lineage lives on the session
-	// (forkParentID + forkDivergence, populated by RestoreSessionFromMeta).
-	// A session is one or the other — never both — but check explicitly so
-	// neither path silently drops fields.
 	parentID := s.cfg.ParentSessionID
 	divergence := 0
 	isSubagent := s.cfg.ParentSessionID != ""
@@ -848,9 +840,10 @@ func (s *Session) Meta() SessionMeta {
 		UpdatedAt:       now,
 		TurnCount:       s.modelResponses,
 		LastInputTokens: s.contextMgr.LastInputTokens(),
-		OriginalTask:    originalTask,
+		OriginalPrompt:  originalPrompt,
 		ParentSessionID: parentID,
 		DivergenceTurn:  divergence,
+		ForkLabel:       s.forkLabel,
 		IsSubagent:      isSubagent,
 	}
 }
@@ -1214,9 +1207,9 @@ func (s *Session) Close() {
 	})
 }
 
-// extractOriginalTask returns the text of the first user input in the session history.
+// extractOriginalPrompt returns the text of the first user input in the session history.
 // If compaction removed it, falls back to the SubagentTask from config.
-func (s *Session) extractOriginalTask() string {
+func (s *Session) extractOriginalPrompt() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, t := range s.history {
@@ -1483,6 +1476,7 @@ func (s *Session) emit(kind EventKind, data any) {
 	if s == nil || s.events == nil {
 		return
 	}
+	data = enrichDiagnosticData(kind, data)
 	ev := SessionEvent{
 		Kind:      kind,
 		Timestamp: time.Now().UTC(),
@@ -1535,22 +1529,18 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 	select {
 	case <-ctx.Done():
-		s.emit(EventError, ErrorData{Error: ctx.Err().Error()})
+		s.emit(EventError, errorDataFromError(ctx.Err()))
 		return "", ctx.Err()
 	default:
 	}
 
-	// Capture the entry index this USER_INPUT will receive when appended so
-	// consumers can identify it later (e.g. fork-from-turn). ProcessInput
-	// is serialized, so no concurrent appendTurn can race between the read
-	// and the append below.
 	s.mu.Lock()
-	turnIndex := len(s.history) + 1
+	userInputTurn := len(s.history) + 1
 	s.mu.Unlock()
 	s.emit(EventUserInput, UserInputData{
 		Text:   input,
 		Images: userInputImagesFromAttachments(images),
-		Turn:   turnIndex,
+		Turn:   userInputTurn,
 	})
 	s.appendTurn(TurnUserInput, buildUserInputMessage(input, images))
 
@@ -1610,7 +1600,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		select {
 		case <-ctx.Done():
-			s.emit(EventError, ErrorData{Error: ctx.Err().Error()})
+			s.emit(EventError, errorDataFromError(ctx.Err()))
 			return "", ctx.Err()
 		default:
 		}
@@ -1644,7 +1634,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			s.contextMgr.Meta = s.buildCompactionMeta()
 
 			if err := s.strategy.ManageContext(ctx, &historyTurns, len(sys), s.emit); err != nil {
-				s.emit(EventWarning, WarningData{Message: "context strategy error: " + err.Error()})
+				s.emit(EventWarning, warningDataFromError("context strategy error: "+err.Error(), err))
 			}
 
 			s.mu.Lock()
@@ -1743,9 +1733,8 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			policy = *s.cfg.LLMRetryPolicy
 		}
 		callCtx := llm.WithAPILogContext(ctx, s.id, round)
-		resp, err := llm.Retry(callCtx, policy, s.cfg.LLMSleep, nil, func() (llm.Response, error) {
-			return s.client.Complete(callCtx, req)
-		})
+		modelResp, err := s.callModel(callCtx, policy, req)
+		resp := modelResp.Response
 
 		timings.LLMCall = time.Since(tPhaseStart)
 
@@ -1775,6 +1764,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			}
 			if err != nil {
 				apiCall.Error = err.Error()
+				setAPICallDiagnostic(&apiCall, err)
 			} else {
 				apiCall.Response = &llm.APILogResponse{
 					ID:            resp.ID,
@@ -1790,14 +1780,14 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 
 		if err != nil {
-			s.emit(EventError, ErrorData{Error: err.Error()})
+			s.emit(EventError, errorDataFromError(err))
 
 			// Content filter recovery: compaction often removes the offending
 			// content, allowing the next request to succeed. Try once.
 			var cfe *llm.ContentFilterError
 			if errors.As(err, &cfe) && !contentFilterRetried && s.contextMgr != nil {
 				contentFilterRetried = true
-				s.emit(EventWarning, WarningData{Message: "Content filter hit — compacting context and retrying"})
+				s.emit(EventWarning, warningDataFromError("Content filter hit — compacting context and retrying", err))
 				s.mu.Lock()
 				s.contextMgr.ForceCompact(ctx, &s.history, s.emit)
 				s.mu.Unlock()
@@ -1807,7 +1797,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			// Spec: context overflow should emit a warning (no automatic compaction).
 			var cle *llm.ContextLengthError
 			if errors.As(err, &cle) {
-				s.emit(EventWarning, WarningData{Message: "Context length exceeded"})
+				s.emit(EventWarning, warningDataFromError("Context length exceeded", err))
 			}
 			// Spec: non-retryable/unrecoverable errors transition the session to CLOSED.
 			var le llm.Error
@@ -1876,13 +1866,15 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 		skipHistory := noContent && !hasPhase
 
-		s.emit(EventAssistantTextStart, AssistantTextStartData{
-			Model: resp.Model,
-		})
+		if !modelResp.StreamedAssistant {
+			s.emit(EventAssistantTextStart, AssistantTextStartData{
+				Model: resp.Model,
+			})
+		}
 		if !skipHistory {
 			s.appendAssistantTurn(resp)
 		}
-		if strings.TrimSpace(txt) != "" {
+		if !modelResp.StreamedAssistant && strings.TrimSpace(txt) != "" {
 			s.emit(EventAssistantTextDelta, AssistantTextDeltaData{Delta: txt})
 		}
 		textEndData := AssistantTextEndData{
@@ -1944,64 +1936,16 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 					s.emit(EventRoundTimings, timings)
 					continue
 				}
-				// Exhausted retries — fall through to exit.
+				err := &emptyResponseExhaustedError{retries: maxEmptyRetries}
+				s.emit(EventError, errorDataFromError(err))
+				s.mu.Lock()
+				s.state = SessionIdle
+				s.mu.Unlock()
+				return "", err
 			} else {
 				// Non-empty bare text without tool calls violates the contract:
 				// all user-facing messages must go through communicate.
 				consecutiveEmptyResponses = 0
-
-				// Interactive root session: auto-wrap the bare text as a
-				// communicate call rather than spending turns nudging the model
-				// to comply. Several models intermittently skip the result
-				// tool and the retry loop just produces the same text wrapped
-				// on a later turn — costing latency and tokens for no
-				// behavioral change. Subagents are excluded: their parents
-				// rely on the structured envelope, and the existing
-				// auto-nudge in spawnAgent handles that case.
-				// We still emit a warning so transcripts and metrics surface
-				// the underlying protocol violation.
-				if !s.cfg.NonInteractive && s.cfg.ParentSessionID == "" {
-					consecutiveBareTextResponses = 0
-					s.emit(EventWarning, WarningData{
-						Message: "bare text response auto-wrapped as " + s.resultToolName() + " (await_reply=true)",
-					})
-					synthesizedOutput := canonicalNodeOutputText(nodeOutput{
-						Message:   txt,
-						Data:      map[string]any{},
-						Artifacts: []string{},
-					})
-					s.emit(EventCommunicate, CommunicateData{
-						AwaitReply: true,
-						Message:    txt,
-					})
-					s.mu.Lock()
-					s.communicated = true
-					s.communicateAwaitReply = true
-					s.communicateText = txt
-					s.communicateReply = txt
-					s.communicateOutput = synthesizedOutput
-					s.mu.Unlock()
-					timings.TotalRound = time.Since(roundStart)
-					timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
-					s.emit(EventRoundTimings, timings)
-					if s.hookRunner != nil {
-						hi := s.hookInput(HookStop)
-						hi.Reason = "communicate.await_reply"
-						stopResult := s.hookRunner.RunStop(ctx, hi)
-						for _, msg := range stopResult.SystemMessages {
-							s.Steer(msg)
-						}
-						if stopResult.Blocked {
-							round-- // Don't count the synthesized exit as a tool round when blocked.
-							continue
-						}
-					}
-					s.mu.Lock()
-					s.state = SessionAwaitingInput
-					s.mu.Unlock()
-					return txt, nil
-				}
-
 				consecutiveBareTextResponses++
 				if consecutiveBareTextResponses <= maxBareTextRetries {
 					s.emit(EventWarning, WarningData{
@@ -2023,18 +1967,13 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 					toolName: s.resultToolName(),
 					retries:  maxBareTextRetries,
 				}
-				s.emit(EventError, ErrorData{Error: err.Error()})
+				s.emit(EventError, errorDataFromError(err))
 				s.mu.Lock()
 				s.state = SessionIdle
 				s.mu.Unlock()
 				return "", err
 			}
 
-			err := &emptyResponsesExhaustedError{
-				consecutive: consecutiveEmptyResponses,
-				total:       totalEmptyResponses,
-			}
-			s.emit(EventError, ErrorData{Error: err.Error()})
 			s.mu.Lock()
 			s.state = SessionIdle
 			s.mu.Unlock()
@@ -2042,7 +1981,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			timings.TotalRound = time.Since(roundStart)
 			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
 			s.emit(EventRoundTimings, timings)
-			return "", err
+			return txt, nil
 		}
 
 		// Model produced tool calls — reset retry counters.
@@ -2266,6 +2205,247 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	s.state = SessionIdle
 	s.mu.Unlock()
 	return lastText, nil
+}
+
+type sessionModelResponse struct {
+	Response          llm.Response
+	StreamedAssistant bool
+}
+
+func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, req llm.Request) (sessionModelResponse, error) {
+	if s.profile.SupportsStreaming() {
+		st, err := llm.Retry(ctx, policy, s.cfg.LLMSleep, nil, func() (llm.Stream, error) {
+			st, err := s.client.Stream(ctx, req)
+			if err == nil && st == nil {
+				return nil, nil
+			}
+			if streamUnavailable(err) {
+				return nil, nil
+			}
+			return st, err
+		})
+		if err != nil {
+			return sessionModelResponse{}, err
+		}
+		if st != nil {
+			return s.consumeModelStream(ctx, req, st)
+		}
+	}
+
+	resp, err := llm.Retry(ctx, policy, s.cfg.LLMSleep, nil, func() (llm.Response, error) {
+		return s.client.Complete(ctx, req)
+	})
+	if err != nil {
+		return sessionModelResponse{}, err
+	}
+	return sessionModelResponse{Response: resp}, nil
+}
+
+func streamUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errStreamUnavailable) {
+		return true
+	}
+	return errors.Is(err, llm.ErrStreamUnsupported)
+}
+
+func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st llm.Stream) (sessionModelResponse, error) {
+	defer st.Close() //nolint:errcheck
+
+	acc := llm.NewStreamAccumulator()
+	toolArgs := map[string]*strings.Builder{}
+	toolNames := map[string]string{}
+	communicateText := map[string]string{}
+	streamedAssistant := false
+	assistantStarted := false
+	finished := false
+
+	emitAssistantStart := func() {
+		if assistantStarted {
+			return
+		}
+		s.emit(EventAssistantTextStart, AssistantTextStartData{Model: req.Model})
+		assistantStarted = true
+		streamedAssistant = true
+	}
+	emitAssistantDelta := func(delta string) {
+		if delta == "" {
+			return
+		}
+		emitAssistantStart()
+		s.emit(EventAssistantTextDelta, AssistantTextDeltaData{Delta: delta})
+	}
+	emitCommunicatePreview := func(callID string) {
+		args := ""
+		if b := toolArgs[callID]; b != nil {
+			args = b.String()
+		}
+		message, ok := partialJSONStringField(args, "message")
+		if !ok || message == "" {
+			return
+		}
+		prev := communicateText[callID]
+		if len(message) <= len(prev) || !strings.HasPrefix(message, prev) {
+			return
+		}
+		communicateText[callID] = message
+		emitAssistantDelta(message[len(prev):])
+	}
+
+	for ev := range st.Events() {
+		acc.Process(ev)
+		switch ev.Type {
+		case llm.StreamEventTextStart:
+			emitAssistantStart()
+		case llm.StreamEventTextDelta:
+			emitAssistantDelta(ev.Delta)
+		case llm.StreamEventToolCallStart:
+			if ev.ToolCall == nil || ev.ToolCall.ID == "" {
+				break
+			}
+			toolNames[ev.ToolCall.ID] = s.canonicalToolName(ev.ToolCall.Name)
+			if _, ok := toolArgs[ev.ToolCall.ID]; !ok {
+				toolArgs[ev.ToolCall.ID] = &strings.Builder{}
+			}
+		case llm.StreamEventToolCallDelta:
+			if ev.ToolCall == nil || ev.ToolCall.ID == "" {
+				break
+			}
+			if ev.ToolCall.Name != "" {
+				toolNames[ev.ToolCall.ID] = s.canonicalToolName(ev.ToolCall.Name)
+			}
+			if _, ok := toolArgs[ev.ToolCall.ID]; !ok {
+				toolArgs[ev.ToolCall.ID] = &strings.Builder{}
+			}
+			if len(ev.ToolCall.Arguments) > 0 {
+				toolArgs[ev.ToolCall.ID].Write(ev.ToolCall.Arguments)
+			}
+			if toolNames[ev.ToolCall.ID] == s.resultToolName() {
+				emitCommunicatePreview(ev.ToolCall.ID)
+			}
+		case llm.StreamEventToolCallEnd:
+			if ev.ToolCall == nil || ev.ToolCall.ID == "" {
+				break
+			}
+			if ev.ToolCall.Name != "" {
+				toolNames[ev.ToolCall.ID] = s.canonicalToolName(ev.ToolCall.Name)
+			}
+			if len(ev.ToolCall.Arguments) > 0 {
+				b := &strings.Builder{}
+				b.Write(ev.ToolCall.Arguments)
+				toolArgs[ev.ToolCall.ID] = b
+			}
+			if toolNames[ev.ToolCall.ID] == s.resultToolName() {
+				emitCommunicatePreview(ev.ToolCall.ID)
+			}
+		case llm.StreamEventFinish:
+			finished = true
+		case llm.StreamEventError:
+			if ev.Err != nil {
+				return sessionModelResponse{}, ev.Err
+			}
+			return sessionModelResponse{}, fmt.Errorf("stream error")
+		}
+	}
+
+	if !finished {
+		if err := ctx.Err(); err != nil {
+			return sessionModelResponse{}, err
+		}
+		return sessionModelResponse{}, fmt.Errorf("stream ended without finish event")
+	}
+	resp := acc.Response()
+	if resp == nil {
+		return sessionModelResponse{}, fmt.Errorf("stream ended without response")
+	}
+	if resp.Provider == "" {
+		resp.Provider = req.Provider
+	}
+	if resp.Model == "" {
+		resp.Model = req.Model
+	}
+	return sessionModelResponse{Response: *resp, StreamedAssistant: streamedAssistant}, nil
+}
+
+func partialJSONStringField(raw, field string) (string, bool) {
+	key := `"` + field + `"`
+	idx := strings.Index(raw, key)
+	if idx < 0 {
+		return "", false
+	}
+	rest := raw[idx+len(key):]
+	colon := strings.Index(rest, ":")
+	if colon < 0 {
+		return "", false
+	}
+	rest = strings.TrimLeft(rest[colon+1:], " \t\r\n")
+	if !strings.HasPrefix(rest, `"`) {
+		return "", false
+	}
+	rest = rest[1:]
+
+	var b strings.Builder
+	for len(rest) > 0 {
+		ch := rest[0]
+		if ch == '"' {
+			return b.String(), true
+		}
+		if ch == '\\' {
+			if len(rest) >= 2 && rest[1] == '/' {
+				b.WriteByte('/')
+				rest = rest[2:]
+				continue
+			}
+			if strings.HasPrefix(rest, `\u`) {
+				r, tail, ok := unquoteJSONUnicodeEscape(rest)
+				if !ok {
+					return b.String(), true
+				}
+				b.WriteRune(r)
+				rest = tail
+				continue
+			}
+			r, _, tail, err := strconv.UnquoteChar(rest, '"')
+			if err != nil {
+				return b.String(), true
+			}
+			b.WriteRune(r)
+			rest = tail
+			continue
+		}
+		b.WriteByte(ch)
+		rest = rest[1:]
+	}
+	return b.String(), true
+}
+
+func unquoteJSONUnicodeEscape(rest string) (rune, string, bool) {
+	if len(rest) < 6 {
+		return 0, "", false
+	}
+	value, err := strconv.ParseUint(rest[2:6], 16, 16)
+	if err != nil {
+		return 0, "", false
+	}
+	r := rune(value)
+	tail := rest[6:]
+	if r >= 0xD800 && r <= 0xDBFF {
+		if len(tail) < 6 || !strings.HasPrefix(tail, `\u`) {
+			return 0, "", false
+		}
+		lowValue, err := strconv.ParseUint(tail[2:6], 16, 16)
+		if err != nil {
+			return 0, "", false
+		}
+		low := rune(lowValue)
+		if low < 0xDC00 || low > 0xDFFF {
+			return 0, "", false
+		}
+		return utf16.DecodeRune(r, low), tail[6:], true
+	}
+	return r, tail, true
 }
 
 // stuckEscalation returns the steering message for the nth loop detection.

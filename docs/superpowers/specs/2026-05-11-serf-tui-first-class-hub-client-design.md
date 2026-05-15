@@ -3,6 +3,11 @@
 Date: 2026-05-11
 Status: Draft for implementation planning
 
+Revision note, 2026-05-14: Jesse approved a design-system pass before further
+implementation. This spec now treats the view taxonomy, widget catalog, focus
+contract, and fixture-backed samples as required implementation inputs, not
+optional polish.
+
 ## Summary
 
 `serf-tui` should be a first-class universal terminal client for Serf, not a thin dashboard wrapped around fragments of the old single-session TUI. The app starts at a live-session dashboard grouped by project, drills into a polished session workspace, supports spawning and resuming through the hub, integrates the main-line Serf-owned OpenAI OAuth stack as a first-class auth flow, and preserves the interaction quality users expect from Codex: clear navigation, slash commands, scrollback, fork-from-turn, model picking, task/status views, and reliable end-to-end behavior.
@@ -126,6 +131,62 @@ Cons:
 
 Chosen. This is the only approach that gets to "Codex-grade or better" without carrying the current confusion forward.
 
+## View And Widget System
+
+The TUI has two kinds of surfaces:
+
+- Navigation/control surfaces: dashboard and project. These show lists,
+  filters, command/search palette entries, launch entry points, details, and
+  diagnostics. They do not have a chat composer and never treat bare printable
+  text as a prompt.
+- Work surfaces: session, busy/steer, browse/fork, and spawn. These reserve
+  stable space for the current input or form state. The input mode can change,
+  but drafts must remain visible and recoverable.
+
+The approved widget catalog is:
+
+- `AppShell`: owns top bar, body region, overlay slot, footer/composer region,
+  responsive layout, and global key dispatch.
+- `TopBar`: shows current scope, source label, cwd/project, connection state,
+  selected model, and auth summary.
+- `ActionBar`: renders generated key hints and disabled reasons from the
+  command registry. It never advertises unsupported actions.
+- `SessionList`: renders dashboard/project rows for project headers, live
+  sessions, recent sessions, and diagnostic notices.
+- `CommandPalette`: combined command/search surface opened by `/` on
+  dashboard/project and by `/search` from sessions.
+- `PickerPanel`: shared filterable list for model, theme, auth actions, agent
+  transcripts, help, and command choices.
+- `Composer`: shared textarea for message, steer, fork draft, read-only draft
+  preservation, and unavailable-action explanations.
+- `FormField`: focused field primitive for spawn prompt, harness, model,
+  project/cwd, and future spawn options.
+- `TranscriptView`: one reducer-backed renderer for replay and live transcript
+  events.
+- `ToolGroup`: groups tool calls and results into one coherent transcript unit.
+- `DetailsDrawer`: wide-terminal side panel and narrow-terminal explicit
+  overlay for selected row/session diagnostics.
+- `Notice`: structured error, warning, auth-required, and action-unavailable
+  display. The TUI must not use browser dialogs or transient alerts.
+
+Focus contract:
+
+- Printable keys go to the focused widget first.
+- Global keys run only when the focused widget declines them.
+- A widget that accepts text input owns printable keys, cursor movement,
+  history movement, multiline insertion, and draft preservation.
+- Pickers own filter text, arrow navigation, enter selection, and escape close.
+- The app shell owns only mode navigation, dashboard return, quit, and
+  connection/window messages that are not handled by the focused widget.
+
+Design decisions from the mockup pass:
+
+- `/` is the combined command/search palette on dashboard and project views.
+- Wide terminals show a details drawer by default. Narrow terminals open the
+  same details as an explicit overlay.
+- `n` is the primary new/spawn key. Do not add an `s` compatibility alias
+  unless Jesse explicitly approves backward compatibility.
+
 ## User Experience
 
 ### Startup
@@ -180,11 +241,12 @@ terminal-tetris                            2 live
 serf                                      1 live
     waiting   tui model picker             openai/gpt-5.2      12m
 
-keys: enter open  p project  n new  / search  r refresh  ? help  q quit
+keys: enter open  p project  n new  / palette  r refresh  ? help  q quit
 ```
 
 Behavior:
 
+- The dashboard is a navigation/control surface, not a composer surface.
 - Shows only live sessions at root.
 - Groups by project.
 - Sorts projects by most important live child, then recent activity.
@@ -192,7 +254,7 @@ Behavior:
 - `enter` opens selected session.
 - `p` opens project drilldown for selected project.
 - `n` opens spawn.
-- `/` opens command/search palette.
+- `/` opens the combined command/search palette.
 - `r` refreshes.
 - `?` opens help overlay.
 - `q` quits.
@@ -206,8 +268,10 @@ Narrow layout:
 
 Wide layout:
 
-- Left list plus right preview.
-- Preview shows selected session summary, last assistant/user snippets, current task list summary, and available actions.
+- Left `SessionList` plus right `DetailsDrawer`.
+- Details drawer shows selected session summary, last assistant/user snippets,
+  current task list summary, available actions, disabled reasons, and structured
+  diagnostics.
 
 ### Project Drilldown
 
@@ -224,17 +288,20 @@ recent
     ended     initial terminal renderer    yesterday
     ended     collision refactor           May 9
 
-keys: enter open  b back  n new here  / search  r refresh  ctrl+o dashboard
+keys: enter open  b back  n new here  / palette  r refresh  ctrl+o dashboard
 ```
 
 Behavior:
 
+- The project view is a navigation/control surface, not a composer surface.
 - Shows live sessions first.
 - Shows recent ended sessions for that project.
 - Keeps project context for spawn defaults.
 - `b` returns to dashboard.
 - `ctrl+o` always returns to dashboard.
 - `/project` from a session opens this view for that session's project.
+- `/` opens the combined command/search palette scoped to this project.
+- Wide layout uses `DetailsDrawer` for the selected session or diagnostic row.
 
 ### Session Workspace
 
@@ -265,7 +332,10 @@ Behavior:
 - Header shows session title, state, model, project dir, turns, and context pressure when available.
 - Transcript prioritizes user and assistant text.
 - Tool calls are visually secondary but accessible.
-- Input appears only when send is supported. Otherwise a read-only reason appears.
+- The bottom `Composer` region remains visible on session/workflow surfaces.
+  It can be in send, steer, fork, read-only, or unavailable mode.
+- If send is unsupported, the composer shows the exact read-only reason and
+  preserves any draft. It must not disappear behind pickers or overlays.
 - Live stream updates the transcript without duplicating replayed events.
 - Errors appear inline as system messages and in the status line until cleared by next successful action.
 
@@ -275,7 +345,8 @@ Behavior:
 
 Browse mode:
 
-- Input blurs.
+- Composer focus moves to browse selection; the composer/footer region changes
+  to browse key hints instead of accepting prompt text.
 - The selected transcript item is highlighted.
 - `j/k` or arrows move selection by message/tool.
 - Page keys scroll.
@@ -287,7 +358,7 @@ Fork flow:
 
 1. Select a prior user message.
 2. Press `f`.
-3. Input is prefilled with that message.
+3. The composer enters fork mode and is prefilled with that message.
 4. User edits it.
 5. `enter` confirms fork; `esc` cancels.
 6. TUI calls hub fork API with turn index, edited message, and optional label.
@@ -310,16 +381,20 @@ Project     terminal-tetris
 Directory   /Users/jesse/terminal-tetris
 Agent       default
 
-keys: enter spawn  tab next field  m model  d directory  a agent  esc cancel  ctrl+o dashboard
+keys: enter spawn  tab next field  shift+tab previous  esc cancel  ctrl+o dashboard
 ```
 
 Behavior:
 
 - Defaults project/dir from current dashboard selection or current project view.
 - Task may be empty if hub supports dormant sessions.
-- Model is provider-qualified.
-- `m` opens model picker.
-- Model picker uses live hub discovery.
+- Spawn uses `FormField` focus. Text fields own printable input; select/path
+  fields open pickers or editors when focused.
+- Serf harness models are provider-qualified.
+- Codex harness models are whatever the selected Codex harness/source reports;
+  do not overload `model` to mean harness/source.
+- The model field opens a `PickerPanel` when focused and activated.
+- Model picker uses live hub discovery or harness-specific discovery.
 - Live OpenRouter discovery includes only models Serf can use with tools.
 - If no models are available, the form says exactly why: no configured provider, provider listing failed, auth missing/expired, or all live models were filtered out.
 - If OpenAI models are selected but neither `OPENAI_API_KEY` nor stored Serf OpenAI OAuth is usable, the form shows `OpenAI login required` and offers `/login openai` instead of timing out on spawn.
@@ -482,12 +557,57 @@ Modes:
 
 The palette uses the same command registry as slash commands.
 
+### Sample Corpus
+
+The design system must be built against a small fixture and sample corpus before
+the widgets are integrated into the live app. This is not a separate TUI
+storybook app; it is a set of static inputs and golden terminal renders that
+drive the real widgets.
+
+Required fixtures:
+
+- Dashboard tree: multiple projects, live sessions, recent sessions, source
+  labels, attention states, and diagnostics.
+- Project history: live first, recent ended sessions, empty project, and
+  selected-row details.
+- Session detail: Serf source, Codex source, ended session, busy session,
+  capabilities, tasks, details, and unavailable actions.
+- Transcript events: replay-only, live streaming, markdown deltas, tool
+  call/result grouping, system notices, duplicate replay/live events, and
+  missing turn identity.
+- Spawn options: Serf harness with provider models, Codex harness with
+  harness-reported models, no models, auth-required models, and launch failure.
+- Auth states: env key, signed-out OAuth, signed-in OAuth, expired refreshable,
+  refresh failed, and remote pasteback login.
+- Picker states: loading, populated, filtered empty, disabled rows, and fetch
+  error.
+
+Required sample renders:
+
+- Narrow, normal, and wide dashboard.
+- Narrow, normal, and wide project view.
+- Session idle, streaming, busy-with-steer, busy-read-only, browse, and fork.
+- Spawn with Serf harness, Codex harness, auth-required model, and launch error.
+- Model, theme, auth, agents, help, and command palette overlays.
+- Structured diagnostics and action-unavailable notices.
+
+Required interaction samples:
+
+- Typing `m` and `h` enters the focused prompt/form field.
+- Picker owns printable filter input and arrow/enter/escape handling.
+- Composer draft survives opening and closing model/theme/help/details overlays.
+- Busy send keeps draft and switches to steer when supported.
+- Unsupported Codex actions are absent or visibly disabled with a reason.
+
 ### Theme And Visual Design
 
 Use Bubble Tea with Lip Gloss styles. The goal is calm, dense, and readable.
 
 Design language:
 
+- Build from the approved widgets: `AppShell`, `TopBar`, `ActionBar`,
+  `SessionList`, `CommandPalette`, `PickerPanel`, `Composer`, `FormField`,
+  `TranscriptView`, `ToolGroup`, `DetailsDrawer`, and `Notice`.
 - Avoid heavy boxes around every area.
 - Use section labels and spacing before borders.
 - Use color sparingly for state and focus.
@@ -536,8 +656,18 @@ cmd/serf-tui/
   openai_auth.go             TUI auth commands/status/login orchestration
   app_model.go               top-level Bubble Tea app shell
   app_modes.go               mode enum and navigation helpers
+  tui_widgets.go             shared widget interfaces and focus contract
+  tui_samples.go             static sample fixtures for widget tests
+  tui_samples_test.go        golden sample renders and focus/key samples
   command_registry.go        slash, palette, help, key hint registry
   command_registry_test.go
+  command_palette.go         command/search palette widget
+  picker_panel.go            shared picker widget
+  composer.go                session/fork/steer composer widget
+  spawn_form.go              focused spawn form widget
+  transcript_view.go         reducer-backed transcript renderer
+  details_drawer.go          selected-row/session diagnostic drawer
+  notices.go                 structured diagnostic/action-unavailable notices
   dashboard_model.go         live dashboard state/update/view
   dashboard_view.go          dashboard rendering
   project_model.go           project drilldown state/update/view
@@ -725,6 +855,19 @@ Hub API tests:
 - Subagent transcript listing returns stable replay/follow sources.
 - Actions return capability-appropriate status.
 
+Sample/golden tests:
+
+- Each approved widget has fixture-backed render samples for its normal, empty,
+  loading, disabled, and error states where applicable.
+- Golden terminal renders cover narrow, normal, and wide widths for dashboard,
+  project, session, spawn, and overlays.
+- Key-ownership samples prove focused text inputs receive printable keys before
+  global shortcuts.
+- Draft-preservation samples prove overlays do not drop composer or spawn form
+  input.
+- Sample fixtures are reused by tmux E2E tests where practical so design
+  examples and product behavior stay aligned.
+
 Tmux E2E tests:
 
 - Start TUI with each startup flag and verify precedence/behavior.
@@ -786,6 +929,8 @@ Implement in small commits:
 - No command advertised in `/help` is missing.
 - No action fails silently.
 - No old TUI user-visible behavior is dropped without an explicit spec non-goal and test adjustment.
+- Approved widgets have fixture-backed render samples and focus/key tests before
+  they are integrated into the live app.
 - Tmux E2E tests cover the full flows above.
 - `go test ./cmd/serf-tui ./cmd/serf-hub ./cmd/serf ./internal/hubapi ./internal/auth/openai ./llm/providers/openai ./llm` passes.
 - `go test ./...` passes before merge.

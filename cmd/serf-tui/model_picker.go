@@ -8,8 +8,9 @@ import (
 )
 
 type modelPickerItem struct {
-	id      string
-	display string
+	id             string
+	display        string
+	disabledReason string
 }
 
 // modelPicker is an inline Bubble Tea model for selecting from a filtered list.
@@ -31,7 +32,7 @@ func newModelPicker(items []modelPickerItem, activeModel string, width int) mode
 	return modelPicker{
 		title:     "Select model",
 		emptyText: "  No matching models.",
-		footer:    "↑/↓ navigate  enter select  esc cancel",
+		footer:    "up/down navigate  enter select  esc cancel",
 		items:     items,
 		active:    activeModel,
 		width:     width,
@@ -42,7 +43,7 @@ func newTranscriptPicker(items []modelPickerItem, activeSessionID string, width 
 	return modelPicker{
 		title:     "Select transcript",
 		emptyText: "  No matching sessions.",
-		footer:    "↑/↓ navigate  enter select  esc cancel",
+		footer:    "up/down navigate  enter select  esc cancel",
 		items:     items,
 		active:    activeSessionID,
 		width:     width,
@@ -69,7 +70,8 @@ func (m modelPicker) filtered() []modelPickerItem {
 	var out []modelPickerItem
 	for _, item := range m.items {
 		if strings.Contains(strings.ToLower(item.id), lower) ||
-			strings.Contains(strings.ToLower(item.display), lower) {
+			strings.Contains(strings.ToLower(item.display), lower) ||
+			strings.Contains(strings.ToLower(item.disabledReason), lower) {
 			out = append(out, item)
 		}
 	}
@@ -86,9 +88,14 @@ func (m modelPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case tea.KeyEnter:
 			filtered := m.filtered()
-			if len(filtered) > 0 && m.cursor < len(filtered) {
-				m.selected = filtered[m.cursor].id
+			if len(filtered) == 0 || m.cursor >= len(filtered) {
+				return m, nil
 			}
+			item := filtered[m.cursor]
+			if item.disabledReason != "" {
+				return m, nil
+			}
+			m.selected = item.id
 			m.done = true
 			return m, nil
 		case tea.KeyUp:
@@ -174,6 +181,9 @@ func (m modelPicker) View() string {
 			if item.id == m.active {
 				line += "  " + mpActiveTag.Render("(active)")
 			}
+			if item.disabledReason != "" {
+				line += "  " + mpDimStyle.Render("disabled: "+item.disabledReason)
+			}
 			b.WriteString(line)
 			b.WriteString("\n")
 		}
@@ -187,8 +197,8 @@ func (m modelPicker) View() string {
 	b.WriteString("\n")
 	footer := m.footer
 	if footer == "" {
-		footer = "↑/↓ navigate  enter select  esc cancel"
+		footer = "up/down navigate  enter select  esc cancel"
 	}
 	b.WriteString(mpDimStyle.Render(footer))
-	return b.String()
+	return renderPopupPane(b.String(), m.width)
 }

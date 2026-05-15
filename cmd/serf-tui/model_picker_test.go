@@ -67,6 +67,34 @@ func TestModelPicker_ActiveHighlight(t *testing.T) {
 	}
 }
 
+func TestModelPicker_DisabledItemRendersReasonAndCannotSelect(t *testing.T) {
+	items := []modelPickerItem{
+		{id: "openai/gpt-5", display: "openai/gpt-5", disabledReason: "login required: run /auth openai"},
+		{id: "ollama/llama3", display: "ollama/llama3"},
+	}
+	p := newModelPicker(items, "", 80)
+
+	if view := p.View(); !strings.Contains(view, "disabled: login required") || !strings.Contains(view, "/auth openai") {
+		t.Fatalf("picker did not render disabled reason:\n%s", view)
+	}
+
+	tm, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("disabled selection returned unexpected command")
+	}
+	mp := tm.(modelPicker)
+	if mp.done || mp.selected != "" {
+		t.Fatalf("disabled row should keep picker open without selection: done=%v selected=%q", mp.done, mp.selected)
+	}
+
+	tm, _ = mp.Update(tea.KeyMsg{Type: tea.KeyDown})
+	tm, _ = tm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	mp = tm.(modelPicker)
+	if !mp.done || mp.selected != "ollama/llama3" {
+		t.Fatalf("enabled row selection done=%v selected=%q, want ollama/llama3", mp.done, mp.selected)
+	}
+}
+
 func TestModelPicker_Navigation(t *testing.T) {
 	items := []modelPickerItem{
 		{id: "a", display: "a"},
@@ -134,5 +162,19 @@ func TestModelPicker_Backspace(t *testing.T) {
 	}
 	if len(mp.filtered()) != 2 {
 		t.Errorf("expected 2 filtered after clearing, got %d", len(mp.filtered()))
+	}
+}
+
+func TestModelPickerRendersAsPopupPane(t *testing.T) {
+	withTestColorProfile(t)
+	p := newModelPicker([]modelPickerItem{{id: "openai/gpt-5", display: "openai/gpt-5"}}, "", 80)
+
+	view := p.View()
+	if !strings.Contains(view, "\x1b[") {
+		t.Fatalf("model picker popup should render terminal styling:\n%s", view)
+	}
+	plain := ansiPattern.ReplaceAllString(view, "")
+	if !strings.Contains(plain, "  Select model") {
+		t.Fatalf("model picker popup should have pane padding:\n%s", plain)
 	}
 }

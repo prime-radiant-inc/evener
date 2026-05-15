@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"primeradiant.com/serf/internal/appsource"
 )
 
 // ProviderConfig lists the models available from a single provider.
@@ -16,16 +17,26 @@ type ProviderConfig struct {
 	Models []string `toml:"models"`
 }
 
+// SerfLaunchConfig controls Hub-owned serf serve subprocesses.
+type SerfLaunchConfig struct {
+	SSERingSize int               `toml:"sse_ring_size"`
+	Env         map[string]string `toml:"env"`
+}
+
 // Config is the hub's runtime configuration loaded from ~/.serf/hub.toml.
 type Config struct {
-	Addr               string           `toml:"addr"`
-	StateGlob          string           `toml:"state_glob"`
-	RunDir             string           `toml:"run_dir"`
-	StatusPollInterval time.Duration    `toml:"status_poll_interval"`
-	PastIndexRebuild   time.Duration    `toml:"past_index_rebuild_interval"`
-	SpawnTimeout       time.Duration    `toml:"spawn_timeout"`
-	PastResultsPerPage int              `toml:"past_results_per_page"`
-	Providers          []ProviderConfig `toml:"providers"`
+	Addr               string                        `toml:"addr"`
+	StateGlob          string                        `toml:"state_glob"`
+	RunDir             string                        `toml:"run_dir"`
+	PastIndexDB        string                        `toml:"past_index_db"`
+	StatusPollInterval time.Duration                 `toml:"status_poll_interval"`
+	PastIndexRebuild   time.Duration                 `toml:"past_index_rebuild_interval"`
+	SpawnTimeout       time.Duration                 `toml:"spawn_timeout"`
+	PastResultsPerPage int                           `toml:"past_results_per_page"`
+	Providers          []ProviderConfig              `toml:"providers"`
+	CodexSources       []appsource.CodexSourceConfig `toml:"codex_sources"`
+	CodexLaunches      []CodexLaunchConfig           `toml:"codex_launches"`
+	SerfLaunch         SerfLaunchConfig              `toml:"serf_launch"`
 }
 
 // DefaultConfig returns a Config populated with sensible defaults.
@@ -48,6 +59,28 @@ func DefaultConfigPath() string {
 		home = "."
 	}
 	return filepath.Join(home, ".serf", "hub.toml")
+}
+
+// DefaultStateGlob returns the project state roots indexed by the hub.
+func DefaultStateGlob() string {
+	base := os.Getenv("XDG_STATE_HOME")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			home = "."
+		}
+		base = filepath.Join(home, ".local", "state")
+	}
+	return filepath.Join(base, "serf", "projects", "*")
+}
+
+// DefaultPastIndexDBPath returns ~/.serf/index.db.
+func DefaultPastIndexDBPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		home = "."
+	}
+	return filepath.Join(home, ".serf", "index.db")
 }
 
 // LoadConfig reads path. A missing file returns DefaultConfig() and nil error.
