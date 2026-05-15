@@ -80,11 +80,12 @@ type hubModel struct {
 	rows     []hubRow
 	selected int
 
-	dashboardFilter       textinput.Model
-	dashboardFilterActive bool
-	dashboardRecentOpen   map[string]bool
-	dashboardSelectedOnce bool
-	commandPalette        *commandPalette
+	dashboardFilter        textinput.Model
+	dashboardFilterActive  bool
+	dashboardRecentOpen    map[string]bool
+	dashboardProjectClosed map[string]bool
+	dashboardSelectedOnce  bool
+	commandPalette         *commandPalette
 
 	selectedProjectKey      string
 	projectRows             []hubRow
@@ -137,7 +138,7 @@ func newHubModel(client *appwire.Client, hubURL string, stateDirs ...string) hub
 	}
 	session := newModel("", "", nil)
 	session.authController = nil
-	return hubModel{client: client, hubURL: hubURL, stateDir: stateDir, session: session, browseSelected: -1, dashboardFilter: newHubFilterInput(), dashboardRecentOpen: map[string]bool{}, spawnDirInput: newSpawnDirInput()}
+	return hubModel{client: client, hubURL: hubURL, stateDir: stateDir, session: session, browseSelected: -1, dashboardFilter: newHubFilterInput(), dashboardRecentOpen: map[string]bool{}, dashboardProjectClosed: map[string]bool{}, spawnDirInput: newSpawnDirInput()}
 }
 
 func newHubFilterInput() textinput.Model {
@@ -593,16 +594,10 @@ func (m hubModel) updateDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.selected < len(rows)-1 {
 			m.selected++
 		}
-	case "p":
-		if len(rows) > 0 {
-			if key := rows[m.selected].projectKey; key != "" {
-				m.openProject(key)
-				return m, nil
-			}
-		}
-		if key := m.firstProjectHistoryKey(); key != "" {
-			m.openProject(key)
-		}
+	case "right", "l":
+		m.setSelectedDashboardProjectExpanded(rows, true)
+	case "left", "h":
+		m.setSelectedDashboardProjectExpanded(rows, false)
 	case "enter":
 		return m.activateDashboardRow(rows)
 	}
@@ -690,7 +685,8 @@ func (m hubModel) activateDashboardRow(rows []hubRow) (tea.Model, tea.Cmd) {
 		m.clampSelection()
 		return m, nil
 	case hubRowProject:
-		m.openProject(row.projectKey)
+		m.toggleDashboardProject(row.projectKey)
+		m.clampSelection()
 		return m, nil
 	}
 	if m.client == nil {
@@ -749,7 +745,7 @@ func (m hubModel) updateCommandPaletteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case commandPaletteCommand:
 		return m.runCommandPaletteCommand(entry.Command)
 	case commandPaletteProject:
-		m.openProject(entry.ProjectKey)
+		m.focusDashboardProject(entry.ProjectKey)
 		return m, nil
 	case commandPaletteSession:
 		if m.client == nil {
@@ -2232,6 +2228,12 @@ func (m hubModel) foldedDashboardRows() []hubRow {
 		}
 		rows = append(rows, project)
 		i++
+		if !m.dashboardProjectExpanded(project.projectKey) {
+			for i < len(m.rows) && m.rows[i].kind != hubRowProject {
+				i++
+			}
+			continue
+		}
 
 		recent := make([]hubRow, 0, project.recentCount)
 		for i < len(m.rows) && m.rows[i].kind != hubRowProject {
@@ -2264,6 +2266,40 @@ func (m hubModel) foldedDashboardRows() []hubRow {
 	return rows
 }
 
+func (m hubModel) dashboardProjectExpanded(projectKey string) bool {
+	return !m.dashboardProjectClosed[projectKey]
+}
+
+func (m *hubModel) setSelectedDashboardProjectExpanded(rows []hubRow, expanded bool) {
+	if len(rows) == 0 || m.selected < 0 || m.selected >= len(rows) {
+		return
+	}
+	row := rows[m.selected]
+	if row.kind != hubRowProject {
+		return
+	}
+	m.setDashboardProjectExpanded(row.projectKey, expanded)
+	m.clampSelection()
+}
+
+func (m *hubModel) toggleDashboardProject(projectKey string) {
+	m.setDashboardProjectExpanded(projectKey, !m.dashboardProjectExpanded(projectKey))
+}
+
+func (m *hubModel) setDashboardProjectExpanded(projectKey string, expanded bool) {
+	if projectKey == "" {
+		return
+	}
+	if m.dashboardProjectClosed == nil {
+		m.dashboardProjectClosed = map[string]bool{}
+	}
+	if expanded {
+		delete(m.dashboardProjectClosed, projectKey)
+		return
+	}
+	m.dashboardProjectClosed[projectKey] = true
+}
+
 func (m *hubModel) toggleDashboardRecent(projectKey string) {
 	if projectKey == "" {
 		return
@@ -2276,6 +2312,26 @@ func (m *hubModel) toggleDashboardRecent(projectKey string) {
 		return
 	}
 	m.dashboardRecentOpen[projectKey] = true
+}
+
+func (m *hubModel) focusDashboardProject(projectKey string) {
+	if projectKey == "" {
+		m.returnToDashboard()
+		return
+	}
+	m.mode = hubModeDashboard
+	m.dashboardFilter.Reset()
+	m.dashboardFilter.Blur()
+	m.dashboardFilterActive = false
+	m.setDashboardProjectExpanded(projectKey, true)
+	rows := m.dashboardRows()
+	for i, row := range rows {
+		if row.kind == hubRowProject && row.projectKey == projectKey {
+			m.selected = i
+			return
+		}
+	}
+	m.clampSelection()
 }
 
 func (m hubModel) projectDisplayRows() []hubRow {
@@ -2375,7 +2431,7 @@ func (m hubModel) View() string {
 func (m hubModel) dashboardView() string {
 	rows := m.dashboardRows()
 	liveCount := 0
-	for _, row := range rows {
+	for _, row := range m.rows {
 		if row.kind == hubRowSession && row.live {
 			liveCount++
 		}
@@ -2395,7 +2451,7 @@ func (m hubModel) dashboardView() string {
 			TopBar:  topBar,
 			Body:    b.String(),
 			Overlay: m.commandPalette.View(),
-			Footer:  actionBarForWidth(m.width, "up/down select", "enter open", "p project", "n new", "/ palette", "ctrl+o dashboard", "q quit"),
+			Footer:  actionBarForWidth(m.width, "up/down select", "enter open/toggle", "n new", "/ palette", "ctrl+o dashboard", "q quit"),
 			Height:  m.height,
 		}.View()
 	}
@@ -2417,7 +2473,7 @@ func (m hubModel) dashboardView() string {
 		return appShell{
 			TopBar: topBar,
 			Body:   b.String(),
-			Footer: emptyDashboardFooter(m.firstProjectHistoryKey() != "", width),
+			Footer: emptyDashboardFooter(width),
 			Height: m.height,
 		}.View()
 	}
@@ -2473,7 +2529,7 @@ func renderDashboardRowsWindow(rows []hubRow, selected int, width int, compact b
 			b.WriteString("\n")
 			continue
 		case hubRowProject:
-			b.WriteString(renderDashboardProjectRow(row, rows, i == selected, width))
+			b.WriteString(renderDashboardProjectRow(row, rows, i == selected, width, dashboardProjectExpanded(rows, i)))
 			b.WriteString("\n")
 			continue
 		case hubRowRecentToggle:
@@ -2511,11 +2567,11 @@ func dashboardRowWindow(count int, selected int, maxRows int) (int, int) {
 }
 
 func renderDashboardLaunchRow(row hubRow, selected bool, width int) string {
-	marker := "+"
+	cursor := " "
 	if selected {
-		marker = ">"
+		cursor = ">"
 	}
-	line := truncateText(marker+" "+row.title, width)
+	line := truncateText(cursor+" + "+row.title, width)
 	if selected {
 		return defaultTUIStyles().Selected.Render(line)
 	}
@@ -2534,13 +2590,17 @@ func dashboardRowLimit(totalHeight int, topBar string, bodyPrefix string, footer
 	return limit
 }
 
-func renderDashboardProjectRow(row hubRow, rows []hubRow, selected bool, width int) string {
+func renderDashboardProjectRow(row hubRow, rows []hubRow, selected bool, width int, expanded bool) string {
 	marker := "▾"
+	if !expanded {
+		marker = "▸"
+	}
+	cursor := " "
 	if selected {
-		marker = ">"
+		cursor = ">"
 	}
 	styles := defaultTUIStyles()
-	line := fmt.Sprintf("%s %s %s  %s", marker, statusDot(row.state), dashboardCell(row.project), projectSummary(row, rows))
+	line := fmt.Sprintf("%s %s %s %s  %s", cursor, marker, statusDot(row.state), dashboardCell(row.project), projectSummary(row, rows))
 	line = truncateText(line, width)
 	if selected {
 		return styles.Selected.Render(line)
@@ -2553,15 +2613,16 @@ func renderDashboardRecentToggleRow(row hubRow, expanded bool, selected bool, wi
 	if expanded {
 		marker = "▾"
 	}
+	cursor := " "
 	if selected {
-		marker = ">"
+		cursor = ">"
 	}
 	count := row.recentCount
 	if count == 0 {
 		count = 1
 	}
 	label := "recent"
-	line := truncateText(fmt.Sprintf("%s %s %d %s", marker, dashboardCell(row.project), count, label), width)
+	line := truncateText(fmt.Sprintf("%s %s %s %d %s", cursor, marker, dashboardCell(row.project), count, label), width)
 	if selected {
 		return defaultTUIStyles().Selected.Render(line)
 	}
@@ -2653,18 +2714,31 @@ func dashboardRecentExpanded(rows []hubRow, index int) bool {
 	return false
 }
 
-func dashboardFooter(width int) string {
-	if width <= 72 {
-		return truncateText("keys: up/down enter p n new / palette ctrl+o dashboard q", width)
+func dashboardProjectExpanded(rows []hubRow, index int) bool {
+	if index < 0 || index >= len(rows) || rows[index].kind != hubRowProject {
+		return false
 	}
-	return truncateText("up/down select  enter open/toggle  p project  n new  / palette  ctrl+o dashboard  q quit", width)
+	projectKey := rows[index].projectKey
+	for i := index + 1; i < len(rows); i++ {
+		if rows[i].kind == hubRowProject {
+			return false
+		}
+		if rows[i].projectKey == projectKey {
+			return true
+		}
+	}
+	return rows[index].liveCount == 0 && rows[index].recentCount == 0
 }
 
-func emptyDashboardFooter(hasProjectHistory bool, width int) string {
-	items := []string{"n new session"}
-	if hasProjectHistory {
-		items = append(items, "p project history")
+func dashboardFooter(width int) string {
+	if width <= 72 {
+		return truncateText("keys: up/down enter n new / palette ctrl+o dashboard q", width)
 	}
+	return truncateText("up/down select  enter open/toggle  n new  / palette  ctrl+o dashboard  q quit", width)
+}
+
+func emptyDashboardFooter(width int) string {
+	items := []string{"n new session"}
 	items = append(items, "/ palette", "q quit")
 	if width <= 72 {
 		return strings.Join(items, "\n")
@@ -2766,7 +2840,7 @@ func (m hubModel) dashboardProjectDetails(row hubRow, rows []hubRow) string {
 	if dir := m.workingDirForProjectKey(row.projectKey); dir != "" {
 		fmt.Fprintf(&b, "Dir:      %s\n", dir)
 	}
-	b.WriteString("Action:   enter opens project")
+	b.WriteString("Action:   enter toggles project")
 	return b.String()
 }
 

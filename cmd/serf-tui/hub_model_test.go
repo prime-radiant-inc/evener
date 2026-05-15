@@ -317,7 +317,7 @@ func TestHubModelDashboardSelectedTreeRowsDoNotMixCursorAndBranchGlyphs(t *testi
 
 	got := renderDashboardRows(rows, 0, 100, false) + renderDashboardRows(rows, 1, 100, false)
 	plain := ansiPattern.ReplaceAllString(got, "")
-	for _, bad := range []string{"> ▾", "> ├", "> └"} {
+	for _, bad := range []string{">▾", ">├", ">└"} {
 		if strings.Contains(plain, bad) {
 			t.Fatalf("selected dashboard rows should not combine cursor and tree glyph %q:\n%s", bad, plain)
 		}
@@ -843,7 +843,7 @@ func TestHubModelProjectUsesNForNewSession(t *testing.T) {
 	}
 }
 
-func TestHubModelDashboardProjectHeaderOpensProject(t *testing.T) {
+func TestHubModelDashboardProjectHeaderTogglesChildren(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
 		Key:  "serf",
@@ -860,11 +860,23 @@ func TestHubModelDashboardProjectHeaderOpensProject(t *testing.T) {
 		t.Fatal("project header enter should not fetch a session")
 	}
 	got := updated.(hubModel)
-	if got.mode != hubModeProject || got.selectedProjectKey != "serf" {
-		t.Fatalf("mode=%v project=%q", got.mode, got.selectedProjectKey)
+	if got.mode != hubModeDashboard {
+		t.Fatalf("mode=%v, want dashboard", got.mode)
 	}
-	if !strings.Contains(got.View(), "serf / project / serf") {
-		t.Fatalf("project view not rendered:\n%s", got.View())
+	if strings.Contains(got.dashboardView(), "live task") {
+		t.Fatalf("collapsed project still rendered child session:\n%s", got.dashboardView())
+	}
+
+	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyRight})
+	got = updated.(hubModel)
+	if !strings.Contains(got.dashboardView(), "live task") {
+		t.Fatalf("right arrow did not expand project children:\n%s", got.dashboardView())
+	}
+
+	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	got = updated.(hubModel)
+	if strings.Contains(got.dashboardView(), "live task") {
+		t.Fatalf("left arrow did not collapse project children:\n%s", got.dashboardView())
 	}
 }
 
@@ -1077,8 +1089,12 @@ func TestHubModelSlashDashboardAndProjectNavigate(t *testing.T) {
 		t.Fatal("/project should not need an async command")
 	}
 	got = updated.(hubModel)
-	if got.mode != hubModeProject || got.selectedProjectKey != "serf" {
-		t.Fatalf("/project mode=%v project=%q", got.mode, got.selectedProjectKey)
+	if got.mode != hubModeDashboard {
+		t.Fatalf("/project mode=%v, want dashboard", got.mode)
+	}
+	rows := got.dashboardRows()
+	if got.selected >= len(rows) || rows[got.selected].kind != hubRowProject || rows[got.selected].projectKey != "serf" {
+		t.Fatalf("/project selected row=%d rows=%+v, want serf project row", got.selected, rows)
 	}
 }
 
@@ -2702,7 +2718,7 @@ func TestHubModelDashboardShowsRecentWhenNothingLive(t *testing.T) {
 	}
 }
 
-func TestHubModelDashboardCanOpenRecentOnlyProject(t *testing.T) {
+func TestHubModelDashboardCanExpandRecentOnlyProject(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
 		Key:        "serf",
@@ -2713,17 +2729,18 @@ func TestHubModelDashboardCanOpenRecentOnlyProject(t *testing.T) {
 		},
 	}}}
 	m.rows = buildDashboardRows(m.tree)
+	m.selected = 2
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd != nil {
-		t.Fatal("project history shortcut should be synchronous")
+		t.Fatal("recent disclosure should be synchronous")
 	}
 	got := updated.(hubModel)
-	if got.mode != hubModeProject || got.selectedProjectKey != "serf" {
-		t.Fatalf("empty dashboard p mode=%v project=%q", got.mode, got.selectedProjectKey)
+	if got.mode != hubModeDashboard {
+		t.Fatalf("recent disclosure mode=%v, want dashboard", got.mode)
 	}
-	if view := got.projectView(); !strings.Contains(view, "ended history") {
-		t.Fatalf("project history did not render ended session:\n%s", view)
+	if view := got.dashboardView(); !strings.Contains(view, "ended history") {
+		t.Fatalf("recent disclosure did not render ended session:\n%s", view)
 	}
 }
 
@@ -2732,12 +2749,8 @@ func TestHubModelActionBarsUseApprovedNewSessionKey(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	m.tree = corpus.DashboardTree
 	m.rows = buildDashboardRows(corpus.DashboardTree)
-	if got := m.dashboardView(); !strings.Contains(got, "n new") || strings.Contains(got, "s spawn") {
-		t.Fatalf("dashboard action bar should advertise n new and not s spawn:\n%s", got)
-	}
-	m.openProject("serf")
-	if got := m.projectView(); !strings.Contains(got, "n new here") || strings.Contains(got, "s spawn") {
-		t.Fatalf("project action bar should advertise n new here and not s spawn:\n%s", got)
+	if got := m.dashboardView(); !strings.Contains(got, "n new") || strings.Contains(got, "s spawn") || strings.Contains(got, "p project") {
+		t.Fatalf("dashboard action bar should advertise n new without legacy project/spawn keys:\n%s", got)
 	}
 }
 

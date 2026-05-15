@@ -57,7 +57,7 @@ func slashCommandHelp() string {
 		"  /theme     Pick a theme (system/dark/light)",
 		"  /clear     Start a new session",
 		"  /dashboard Go to live dashboard",
-		"  /project   Go to this session's project",
+		"  /project   Show this session's project in dashboard",
 		"  /quit      Exit the TUI",
 		"",
 		"Keys:",

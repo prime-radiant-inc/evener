@@ -80,9 +80,9 @@ var hubCommandRegistry = []hubCommandDefinition{
 	},
 	{
 		Name:          "project",
-		Summary:       "Go to this session's project",
+		Summary:       "Show this session's project in the dashboard",
 		PaletteLabel:  "/project",
-		PaletteDetail: "go to this session's project",
+		PaletteDetail: "show this session's project in dashboard",
 		Scopes:        hubCommandSession,
 		Run: func(m *hubModel, _ string) tea.Cmd {
 			key, ok := m.projectKeyForSession()
@@ -90,7 +90,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 				m.addSessionSystem("Project is not available for this session.")
 				return nil
 			}
-			m.openProject(key)
+			m.focusDashboardProject(key)
 			return nil
 		},
 	},
