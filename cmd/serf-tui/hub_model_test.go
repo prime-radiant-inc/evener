@@ -123,6 +123,13 @@ func TestHubModelDashboardRendersProjectTreeHierarchy(t *testing.T) {
 				{Ref: "local:01ALPHA", SessionID: "01ALPHA", Title: "alpha task", State: "idle", Project: "serf", SourceLabel: "local", Model: "gpt-5", Live: true, UpdatedAt: 20},
 				{Ref: "codex-local:01BETA", SessionID: "01BETA", Title: "beta task", State: "processing", Project: "serf", SourceLabel: "codex-local", Model: "gpt-5.3-codex", Live: true, UpdatedAt: 10},
 			},
+		}, {
+			Key:         "codex",
+			Name:        "codex",
+			RollupState: "idle",
+			Sessions: []hubTreeNode{
+				{Ref: "codex:01GAMMA", SessionID: "01GAMMA", Title: "gamma task", State: "idle", Project: "codex", SourceLabel: "codex", Model: "gpt-5.3-codex", Live: true, UpdatedAt: 5},
+			},
 		}},
 	}
 	m.rows = buildDashboardRows(m.tree)
@@ -143,6 +150,19 @@ func TestHubModelDashboardSelectedRowUsesVisualStyle(t *testing.T) {
 	got := m.dashboardView()
 	if !strings.Contains(got, "\x1b[") {
 		t.Fatalf("dashboard should use terminal styling for selected rows and section hierarchy:\n%q", got)
+	}
+}
+
+func TestHubModelDashboardSelectedTreeRowsDoNotMixCursorAndBranchGlyphs(t *testing.T) {
+	m := sampleHubModel(100)
+	rows := m.dashboardRows()
+
+	got := renderDashboardRows(rows, 0, 100, false) + renderDashboardRows(rows, 1, 100, false)
+	plain := ansiPattern.ReplaceAllString(got, "")
+	for _, bad := range []string{"> ▾", "> ├", "> └"} {
+		if strings.Contains(plain, bad) {
+			t.Fatalf("selected dashboard rows should not combine cursor and tree glyph %q:\n%s", bad, plain)
+		}
 	}
 }
 
@@ -2527,7 +2547,7 @@ func TestHubModelSessionFooterShowsBrowseAndDashboardKeys(t *testing.T) {
 	m.detail.Capabilities.Fork = true
 	m.enterSessionBrowse(false)
 	got = m.sessionView()
-	for _, want := range []string{"esc/i/q: compose", "f: fork", "ctrl+o: dashboard"} {
+	for _, want := range []string{"esc/i/q: compose", "f: fork selected user turn", "ctrl+o: dashboard"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("browse footer missing %q:\n%s", want, got)
 		}
@@ -2536,6 +2556,32 @@ func TestHubModelSessionFooterShowsBrowseAndDashboardKeys(t *testing.T) {
 	got = m.sessionView()
 	if strings.Contains(got, "f: fork") {
 		t.Fatalf("browse footer advertised unavailable fork:\n%s", got)
+	}
+}
+
+func TestHubModelForkCommandEntersBrowseMode(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.Capabilities.Fork = true
+	m.session.messages = []chatMessage{
+		{Kind: msgUser, Text: "original request", TurnIndex: 1},
+		{Kind: msgAssistant, Text: "answer", TurnIndex: 1},
+	}
+	m.session.refreshViewport()
+	m.session.setInputValue("/fork")
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("/fork should enter browse mode synchronously")
+	}
+	got := updated.(hubModel)
+	if !got.session.scrollMode {
+		t.Fatal("/fork should enter transcript browse mode")
+	}
+	view := got.sessionView()
+	for _, want := range []string{"Select a user turn, then press f to fork.", "f: fork selected user turn", "original request"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("/fork view missing %q:\n%s", want, view)
+		}
 	}
 }
 
@@ -2555,7 +2601,7 @@ func TestHubModelHelpRespectsSessionCapabilities(t *testing.T) {
 	if !strings.Contains(got, "/compact") {
 		t.Fatalf("help missing supported compact:\n%s", got)
 	}
-	for _, unavailable := range []string{"/model", "/clear", "/shutdown"} {
+	for _, unavailable := range []string{"/model", "/clear", "/fork", "/shutdown"} {
 		if strings.Contains(got, unavailable) {
 			t.Fatalf("help advertised unavailable command %q:\n%s", unavailable, got)
 		}
@@ -2573,6 +2619,20 @@ func TestHubModelHelpRespectsSessionCapabilities(t *testing.T) {
 	got = updated.(hubModel).View()
 	if !strings.Contains(got, "/shutdown") {
 		t.Fatalf("help missing supported shutdown:\n%s", got)
+	}
+
+	m = newSessionHubModel(nil)
+	m.detail.Capabilities = hubSessionCapabilities{
+		Fork: true,
+	}
+	m.session.setInputValue("/help")
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("/help should not need an async command")
+	}
+	got = updated.(hubModel).View()
+	if !strings.Contains(got, "/fork") || !strings.Contains(got, "Fork selected user turn") {
+		t.Fatalf("help missing supported fork:\n%s", got)
 	}
 }
 
@@ -2596,7 +2656,7 @@ func TestHubModelHelpAndPaletteShareSessionCommands(t *testing.T) {
 	}
 	palette := m.commandPalette.View()
 
-	for _, command := range []string{"/help", "/search", "/tasks", "/agents", "/auth", "/login", "/logout", "/model", "/clear", "/shutdown", "/theme", "/dashboard", "/project"} {
+	for _, command := range []string{"/help", "/search", "/tasks", "/agents", "/auth", "/login", "/logout", "/model", "/clear", "/fork", "/shutdown", "/theme", "/dashboard", "/project"} {
 		if !strings.Contains(help, command) {
 			t.Fatalf("help missing command %q:\n%s", command, help)
 		}
@@ -2620,6 +2680,8 @@ func TestHubModelSessionPaletteShowsDisabledCommandReasons(t *testing.T) {
 		"disabled: source does not advertise change model",
 		"/clear",
 		"disabled: source does not advertise clear",
+		"/fork",
+		"disabled: source does not advertise fork",
 		"/shutdown",
 		"disabled: source does not advertise shutdown",
 	} {
@@ -2731,23 +2793,18 @@ func TestHubModelSessionLeadingSlashOpensCommandPalette(t *testing.T) {
 	}
 }
 
-func TestHubModelCtrlCWarnsThenQuitsFromSession(t *testing.T) {
+func TestHubModelCtrlCQuitsWithoutInAppWarningFromSession(t *testing.T) {
 	m := newSessionHubModel(nil)
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if cmd != nil {
-		t.Fatal("first ctrl+c should warn without quitting")
+		t.Fatal("first ctrl+c should arm quit without quitting")
 	}
 	m = updated.(hubModel)
 	got := m.View()
-	for _, want := range []string{
-		"Press ctrl+c again to quit.",
-		"Restore this session:",
-		"serf-tui --hub-addr http://hub.test",
-		"local:01SEND",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("ctrl+c warning missing %q:\n%s", want, got)
+	for _, unwanted := range []string{"Press ctrl+c again", "Restore this session:"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("first ctrl+c should not render in-app quit warning %q:\n%s", unwanted, got)
 		}
 	}
 
@@ -2789,12 +2846,14 @@ func TestHubModelCtrlCWarningExpires(t *testing.T) {
 		t.Fatal("expired ctrl+c warning should not quit")
 	}
 	got := updated.(hubModel).View()
-	if !strings.Contains(got, "Press ctrl+c again to quit.") || !strings.Contains(got, "local:01SEND") {
-		t.Fatalf("expired ctrl+c should print a fresh restore warning:\n%s", got)
+	for _, unwanted := range []string{"Press ctrl+c again", "Restore this session:"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("expired first ctrl+c should not render in-app warning %q:\n%s", unwanted, got)
+		}
 	}
 }
 
-func TestHubModelCtrlCQuitsOutsideSessionButWarnsInSession(t *testing.T) {
+func TestHubModelCtrlCQuitsOutsideSessionButArmsQuitInSession(t *testing.T) {
 	cases := []struct {
 		name  string
 		model hubModel
@@ -2826,10 +2885,10 @@ func TestHubModelCtrlCQuitsOutsideSessionButWarnsInSession(t *testing.T) {
 				return
 			}
 			if cmd != nil {
-				t.Fatal("first session ctrl+c should warn without quitting")
+				t.Fatal("first session ctrl+c should arm quit without quitting")
 			}
-			if got := updated.(hubModel).View(); !strings.Contains(got, "Press ctrl+c again to quit.") {
-				t.Fatalf("session ctrl+c missing warning:\n%s", got)
+			if got := updated.(hubModel).View(); strings.Contains(got, "Press ctrl+c again") {
+				t.Fatalf("session ctrl+c rendered in-app warning:\n%s", got)
 			}
 		})
 	}

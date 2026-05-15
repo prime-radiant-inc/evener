@@ -244,6 +244,21 @@ var hubCommandRegistry = []hubCommandDefinition{
 		},
 	},
 	{
+		Name:               "fork",
+		Summary:            "Fork selected user turn",
+		PaletteLabel:       "/fork",
+		PaletteDetail:      "browse and fork a user turn",
+		Scopes:             hubCommandSession,
+		UnavailableAction:  "fork",
+		UnavailableSummary: "Fork is not available for this session.",
+		Available:          capabilityAvailable(func(c hubSessionCapabilities) bool { return c.Fork }, "source does not advertise fork"),
+		Run: func(m *hubModel, _ string) tea.Cmd {
+			m.enterSessionBrowse(false)
+			m.addSessionSystem("Select a user turn, then press f to fork.")
+			return nil
+		},
+	},
+	{
 		Name:               "shutdown",
 		Summary:            "Stop this resumable session",
 		PaletteLabel:       "/shutdown",

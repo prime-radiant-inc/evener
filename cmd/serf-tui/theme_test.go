@@ -263,6 +263,21 @@ func TestThemePicker_ViewContainsThemes(t *testing.T) {
 	}
 }
 
+func TestThemePickerRendersAsPopupPane(t *testing.T) {
+	withTestColorProfile(t)
+	setTheme("dark")
+	p := newThemePicker()
+
+	view := p.View()
+	if !strings.Contains(view, "\x1b[") {
+		t.Fatalf("theme picker popup should render terminal styling:\n%s", view)
+	}
+	plain := ansiPattern.ReplaceAllString(view, "")
+	if !strings.Contains(plain, "  Select theme") {
+		t.Fatalf("theme picker popup should have pane padding:\n%s", plain)
+	}
+}
+
 // TestRenderStatusBar_Width verifies that the rendered status bar is exactly
 // terminal-width columns wide (no padding — spacing is embedded in the content string).
 func TestRenderStatusBar_Width(t *testing.T) {

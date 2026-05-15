@@ -49,7 +49,7 @@ func (m hubModel) renderNotices() string {
 		lines = append(lines, notice.Text())
 	}
 	lines = append(lines, "ctrl+x: dismiss notice")
-	return strings.Join(lines, "\n\n") + "\n"
+	return renderPopupPane(strings.Join(lines, "\n\n"), m.width) + "\n"
 }
 
 func (m *hubModel) addNotice(notice noticePanel) {

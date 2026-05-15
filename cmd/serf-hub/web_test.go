@@ -4678,6 +4678,43 @@ func TestWeb_WorkspaceDataLocalLiveUsesAppWireCapabilities(t *testing.T) {
 	}
 }
 
+func TestWeb_APISessionDetailsLocalLiveUsesAppWireForkCapability(t *testing.T) {
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 65, Address: "127.0.0.1:6565", WorkingDir: "/projects/serf", Model: "gpt-5"})
+	r := NewRoster(runDir, fakeProber{sessionID: "01FORKCAP", status: "IDLE"})
+	r.Refresh()
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+	web.sources.Add(&scriptedAppSource{
+		id: "local",
+		thread: appwire.Thread{
+			ID:        "01FORKCAP",
+			SessionID: "01FORKCAP",
+			Source:    "local",
+			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+			CWD:       "/projects/serf",
+			Serf: appwire.SerfThread{
+				Ref:          "local:01FORKCAP",
+				Capabilities: appwire.ThreadCapabilities{Send: true, ForkFromTurn: true},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/local:01FORKCAP", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	var got hubapi.SessionDetail
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !got.Capabilities.Fork {
+		t.Fatalf("api session detail dropped fork capability: %+v", got.Capabilities)
+	}
+}
+
 func TestWeb_ManagedCodexLiveWorkspaceCapabilitiesEnsureSource(t *testing.T) {
 	launcher := NewCodexLauncher([]CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
 	defer shutdownCodexLauncher(t, launcher)

@@ -164,3 +164,17 @@ func TestModelPicker_Backspace(t *testing.T) {
 		t.Errorf("expected 2 filtered after clearing, got %d", len(mp.filtered()))
 	}
 }
+
+func TestModelPickerRendersAsPopupPane(t *testing.T) {
+	withTestColorProfile(t)
+	p := newModelPicker([]modelPickerItem{{id: "openai/gpt-5", display: "openai/gpt-5"}}, "", 80)
+
+	view := p.View()
+	if !strings.Contains(view, "\x1b[") {
+		t.Fatalf("model picker popup should render terminal styling:\n%s", view)
+	}
+	plain := ansiPattern.ReplaceAllString(view, "")
+	if !strings.Contains(plain, "  Select model") {
+		t.Fatalf("model picker popup should have pane padding:\n%s", plain)
+	}
+}

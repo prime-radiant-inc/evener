@@ -71,5 +71,5 @@ func (p themePicker) View() string {
 
 	b.WriteString("\n")
 	b.WriteString(mpDimStyle.Render("up/down navigate  enter select  esc cancel"))
-	return b.String()
+	return renderPopupPane(b.String(), 44)
 }

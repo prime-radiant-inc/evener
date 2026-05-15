@@ -127,5 +127,5 @@ func (p pickerPanel) View() string {
 	}
 	b.WriteString("\n")
 	b.WriteString("type filter  up/down navigate  enter select  esc close")
-	return b.String()
+	return renderPopupPane(b.String(), p.width)
 }

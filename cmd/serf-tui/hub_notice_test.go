@@ -53,6 +53,26 @@ func TestHubModelNoticesPersistUntilDismissed(t *testing.T) {
 	}
 }
 
+func TestHubModelNoticesRenderAsPane(t *testing.T) {
+	withTestColorProfile(t)
+	m := newSessionHubModel(nil)
+	m.width = 100
+	m.addNotice(noticePanel{
+		Title:    "AppWire error",
+		Category: "appwire",
+		Summary:  "Hub request failed.",
+	})
+
+	got := m.renderNotices()
+	if !strings.Contains(got, "\x1b[") {
+		t.Fatalf("notice pane should render terminal styling:\n%s", got)
+	}
+	plain := ansiPattern.ReplaceAllString(got, "")
+	if !strings.Contains(plain, "  AppWire error") || !strings.Contains(plain, "  ctrl+x: dismiss notice") {
+		t.Fatalf("notice pane should have pane padding:\n%s", plain)
+	}
+}
+
 func TestHubModelClearsActionUnavailableNoticeWhenSessionChanges(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail.SourceLabel = "codex-local"

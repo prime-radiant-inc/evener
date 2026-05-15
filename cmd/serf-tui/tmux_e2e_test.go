@@ -298,6 +298,11 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	app.TypeLine("/help")
 	app.WaitFor("Available commands:", "/dashboard Go to live dashboard", "/theme")
 
+	app.TypeLine("/fork")
+	app.WaitFor("Select a user turn, then press f to fork.", "f: fork selected user turn")
+	app.SendKeys("i")
+	app.WaitFor("enter: send")
+
 	app.TypeLine("/wat")
 	app.WaitFor("Unknown command: /wat. Type /help for available commands.")
 
@@ -402,7 +407,7 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 	app.WaitFor("live task", "initial question", "initial answer")
 
 	app.SendKeys("Escape")
-	app.WaitFor("esc/i/q: compose", "f: fork", "▶ initial answer")
+	app.WaitFor("esc/i/q: compose", "f: fork selected user turn", "▶ initial answer")
 	app.SendKeys("f")
 	app.WaitFor("Select a user turn to fork.")
 	if forks := hub.Forks(); len(forks) != 0 {
@@ -447,7 +452,7 @@ func TestTUITmuxE2E_FailedForkPreservesDraft(t *testing.T) {
 	app.WaitFor("live task", "initial question", "initial answer")
 
 	app.SendKeys("Escape")
-	app.WaitFor("esc/i/q: compose", "f: fork")
+	app.WaitFor("esc/i/q: compose", "f: fork selected user turn")
 	app.SendKeys("k")
 	app.SendKeys("k")
 	app.SendKeys("f")
@@ -555,7 +560,7 @@ func TestTUITmuxE2E_SessionLeadingSlashOpensPalette(t *testing.T) {
 	app.WaitFor("Command palette", "/help", "/model")
 }
 
-func TestTUITmuxE2E_CtrlCWarnsThenQuitsFromSession(t *testing.T) {
+func TestTUITmuxE2E_CtrlCRequiresDoublePressFromSession(t *testing.T) {
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -565,7 +570,10 @@ func TestTUITmuxE2E_CtrlCWarnsThenQuitsFromSession(t *testing.T) {
 
 	openLiveSession(t, app)
 	app.SendKeys("C-c")
-	app.WaitFor("Press ctrl+c again to quit.", "Restore this session:", "local:01LIVE")
+	time.Sleep(100 * time.Millisecond)
+	if screen := app.Capture(); strings.Contains(screen, "Press ctrl+c again") || strings.Contains(screen, "Restore this session:") {
+		t.Fatalf("first ctrl+c should not render an in-app quit warning:\n%s", screen)
+	}
 	app.SendKeys("C-c")
 	app.WaitForExit()
 }
@@ -580,7 +588,10 @@ func TestTUITmuxE2E_CtrlCRestoreMessageSurvivesAltScreenExit(t *testing.T) {
 
 	openLiveSession(t, app)
 	app.SendKeys("C-c")
-	app.WaitFor("Press ctrl+c again to quit.", "Restore this session:", "local:01LIVE")
+	time.Sleep(100 * time.Millisecond)
+	if screen := app.Capture(); strings.Contains(screen, "Press ctrl+c again") || strings.Contains(screen, "Restore this session:") {
+		t.Fatalf("first ctrl+c should not render an in-app quit warning:\n%s", screen)
+	}
 	app.SendKeys("C-c")
 	app.WaitForExit()
 	history := app.CaptureHistory()

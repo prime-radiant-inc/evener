@@ -200,5 +200,5 @@ func (m modelPicker) View() string {
 		footer = "up/down navigate  enter select  esc cancel"
 	}
 	b.WriteString(mpDimStyle.Render(footer))
-	return b.String()
+	return renderPopupPane(b.String(), m.width)
 }

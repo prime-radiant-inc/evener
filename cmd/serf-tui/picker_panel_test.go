@@ -54,3 +54,19 @@ func TestPickerPanelCannotSelectDisabledRow(t *testing.T) {
 		t.Fatalf("enabled row not selected: %+v", panel)
 	}
 }
+
+func TestPickerPanelRendersAsPopupPane(t *testing.T) {
+	withTestColorProfile(t)
+	panel := newPickerPanel("Command palette", []pickerPanelItem{
+		{ID: "new", Label: "New session", Detail: "open spawn form"},
+	}, 80)
+
+	view := panel.View()
+	if !strings.Contains(view, "\x1b[") {
+		t.Fatalf("picker popup should render terminal styling:\n%s", view)
+	}
+	plain := ansiPattern.ReplaceAllString(view, "")
+	if !strings.Contains(plain, "  Command palette") {
+		t.Fatalf("picker popup should have pane padding:\n%s", plain)
+	}
+}

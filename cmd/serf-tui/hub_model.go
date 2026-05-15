@@ -1117,7 +1117,6 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		m.lastCtrlC = now
-		m.addSessionSystem(m.ctrlCRestoreMessage())
 		return m, nil
 	case "esc":
 		m.enterSessionBrowse(false)
@@ -2300,12 +2299,12 @@ func renderDashboardRows(rows []hubRow, selected int, width int, compact bool) s
 }
 
 func renderDashboardProjectRow(row hubRow, rows []hubRow, selected bool, width int) string {
-	cursor := " "
+	marker := "▾"
 	if selected {
-		cursor = ">"
+		marker = ">"
 	}
 	styles := defaultTUIStyles()
-	line := fmt.Sprintf("%s ▾ %s %s  %s", cursor, statusDot(row.state), row.project, projectSummary(row, rows))
+	line := fmt.Sprintf("%s %s %s  %s", marker, statusDot(row.state), row.project, projectSummary(row, rows))
 	line = truncateText(line, width)
 	if selected {
 		return styles.Selected.Render(line)
@@ -2314,15 +2313,14 @@ func renderDashboardProjectRow(row hubRow, rows []hubRow, selected bool, width i
 }
 
 func renderDashboardSessionRow(row hubRow, selected bool, width int, compact bool, branch string) string {
-	cursor := " "
+	marker := branch
 	if selected {
-		cursor = ">"
+		marker = ">"
 	}
 	styles := defaultTUIStyles()
 	if compact {
 		line := strings.Join(nonEmptyStrings([]string{
-			cursor,
-			branch,
+			marker,
 			statusDot(row.state),
 			stateLabel(row.state),
 			row.title,
@@ -2336,8 +2334,7 @@ func renderDashboardSessionRow(row hubRow, selected bool, width int, compact boo
 		return line
 	}
 	line := strings.Join(nonEmptyStrings([]string{
-		cursor,
-		branch,
+		marker,
 		statusDot(row.state),
 		stateLabel(row.state),
 		row.sourceLabel,
@@ -2463,12 +2460,7 @@ func (m hubModel) dashboardDetailsView(rows []hubRow, width int) string {
 }
 
 func renderDetailsPane(text string, width int) string {
-	if width <= 0 {
-		return ""
-	}
-	innerWidth := max(1, width-3)
-	body := truncateMultilineText(text, innerWidth)
-	return defaultTUIStyles().Pane.Width(width).Render(body)
+	return renderStyledPane(text, width)
 }
 
 func (m hubModel) dashboardProjectDetails(row hubRow, rows []hubRow) string {
@@ -2937,7 +2929,7 @@ func (m hubModel) sessionView() string {
 	case m.session.scrollMode:
 		keys := []string{"esc/i/q: compose"}
 		if m.detail.Capabilities.Fork {
-			keys = append(keys, "f: fork")
+			keys = append(keys, "f: fork selected user turn")
 		}
 		keys = append(keys, "ctrl+o: dashboard")
 		footer = actionBarForWidth(m.width, keys...)
