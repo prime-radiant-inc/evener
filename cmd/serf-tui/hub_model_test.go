@@ -17,7 +17,7 @@ import (
 	"primeradiant.com/serf/internal/appwire"
 )
 
-func TestHubModelInitialFetchRendersRows(t *testing.T) {
+func TestHubModelInitialFetchRendersLiveAndRecentRows(t *testing.T) {
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 			return threadListResponse(hubTreeResponse{
@@ -39,17 +39,14 @@ func TestHubModelInitialFetchRendersRows(t *testing.T) {
 	msg := fetchHubTree(client)()
 	updated, _ := m.Update(msg)
 	got := updated.(hubModel).View()
-	for _, want := range []string{"live task", "awaiting", "serf"} {
+	for _, want := range []string{"live task", "past task", "awaiting", "serf"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("view missing %q:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "past task") {
-		t.Fatalf("dashboard rendered ended session:\n%s", got)
-	}
 }
 
-func TestHubModelDashboardShowsOnlyLiveSessionsGroupedByProject(t *testing.T) {
+func TestHubModelDashboardShowsFullSessionTreeGroupedByProject(t *testing.T) {
 	tree := hubTreeResponse{
 		Live: []hubTreeNode{
 			{Ref: "local:01LIVEA", SessionID: "01LIVEA", Title: "live alpha", State: "awaiting", Project: "serf", Live: true},
@@ -75,11 +72,18 @@ func TestHubModelDashboardShowsOnlyLiveSessionsGroupedByProject(t *testing.T) {
 					{Ref: "local:01BRAIN", SessionID: "01BRAIN", Title: "brain live", State: "processing", Project: "brainstorm", Live: true},
 				},
 			},
+			{
+				Key:  "archive",
+				Name: "archive",
+				Sessions: []hubTreeNode{
+					{Ref: "local:01ARCHIVE", SessionID: "01ARCHIVE", Title: "archived task", State: "ended", Project: "archive", Live: false},
+				},
+			},
 		},
 	}
 
 	rows := buildDashboardRows(tree)
-	if len(rows) != 5 {
+	if len(rows) != 8 {
 		t.Fatalf("rows=%d: %+v", len(rows), rows)
 	}
 	if rows[0].kind != hubRowProject || rows[0].project != "serf" {
@@ -88,26 +92,27 @@ func TestHubModelDashboardShowsOnlyLiveSessionsGroupedByProject(t *testing.T) {
 	if rows[1].kind != hubRowSession || rows[1].title != "live alpha" {
 		t.Fatalf("second row=%+v, want live alpha session", rows[1])
 	}
-	if rows[3].kind != hubRowProject || rows[3].project != "brainstorm" {
-		t.Fatalf("fourth row=%+v, want brainstorm project header", rows[3])
+	if rows[3].kind != hubRowSession || rows[3].title != "ended history" {
+		t.Fatalf("fourth row=%+v, want ended history session", rows[3])
 	}
-	for _, row := range rows {
-		if row.title == "ended history" {
-			t.Fatalf("dashboard row included ended session: %+v", row)
-		}
+	if rows[4].kind != hubRowProject || rows[4].project != "brainstorm" {
+		t.Fatalf("fifth row=%+v, want brainstorm project header", rows[4])
+	}
+	if rows[6].kind != hubRowProject || rows[6].project != "archive" {
+		t.Fatalf("seventh row=%+v, want archive project header", rows[6])
+	}
+	if rows[7].kind != hubRowSession || rows[7].title != "archived task" {
+		t.Fatalf("eighth row=%+v, want archived task session", rows[7])
 	}
 
 	m := newHubModel(nil, "http://hub.test")
 	m.tree = tree
 	m.rows = rows
 	got := m.dashboardView()
-	for _, want := range []string{"serf", "live alpha", "live beta", "brainstorm", "brain live"} {
+	for _, want := range []string{"serf", "live alpha", "live beta", "ended history", "brainstorm", "brain live", "archive", "archived task"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, got)
 		}
-	}
-	if strings.Contains(got, "ended history") {
-		t.Fatalf("dashboard rendered ended session:\n%s", got)
 	}
 }
 
@@ -2481,7 +2486,7 @@ func TestHubModelForkFailurePreservesDraftAndLabel(t *testing.T) {
 	}
 }
 
-func TestHubModelDashboardEmptyStateIsLiveOnly(t *testing.T) {
+func TestHubModelDashboardShowsRecentWhenNothingLive(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
 		Key:  "serf",
@@ -2493,23 +2498,17 @@ func TestHubModelDashboardEmptyStateIsLiveOnly(t *testing.T) {
 	m.rows = buildDashboardRows(m.tree)
 
 	got := m.dashboardView()
-	for _, want := range []string{"No live sessions are running", "n new session", "/ palette"} {
+	for _, want := range []string{"0 live", "0 live · 1 recent", "ended history", "/ palette"} {
 		if !strings.Contains(got, want) {
-			t.Fatalf("dashboard empty state missing %q:\n%s", want, got)
+			t.Fatalf("dashboard recent-only state missing %q:\n%s", want, got)
 		}
 	}
-	if !strings.Contains(got, "project history") {
-		t.Fatalf("dashboard empty state missing project history entry point:\n%s", got)
-	}
 	if strings.Contains(got, "s start") {
-		t.Fatalf("dashboard empty state advertised legacy s key:\n%s", got)
-	}
-	if strings.Contains(got, "ended history") {
-		t.Fatalf("dashboard empty state rendered ended session:\n%s", got)
+		t.Fatalf("dashboard recent-only state advertised legacy s key:\n%s", got)
 	}
 }
 
-func TestHubModelDashboardEmptyStateCanOpenProjectHistory(t *testing.T) {
+func TestHubModelDashboardCanOpenRecentOnlyProject(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
 		Key:        "serf",

@@ -1902,9 +1902,6 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 		return group
 	}
 	addSession := func(key, project string, n hubTreeNode) {
-		if !n.Live {
-			return
-		}
 		ref, err := appwire.ParseRef(n.Ref)
 		if err != nil || seen[n.Ref] {
 			return
@@ -1957,13 +1954,7 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 	}
 
 	for _, p := range tree.Projects {
-		var live []hubTreeNode
-		for _, n := range p.Sessions {
-			if n.Live {
-				live = append(live, n)
-			}
-		}
-		if len(live) == 0 {
+		if len(p.Sessions) == 0 {
 			continue
 		}
 		key := p.Key
@@ -1971,8 +1962,11 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 			key = hubProjectKey(p.Name)
 		}
 		ensureGroup(key, p.Name, p.RollupState)
-		for _, n := range live {
+		for _, n := range p.Sessions {
 			addSession(key, p.Name, n)
+			for _, child := range n.Children {
+				addSession(key, p.Name, child)
+			}
 		}
 	}
 
@@ -2528,8 +2522,10 @@ func renderDetailsPane(text string, width int) string {
 func (m hubModel) dashboardProjectDetails(row hubRow, rows []hubRow) string {
 	var b strings.Builder
 	b.WriteString("details\n")
+	liveCount, recentCount := projectSessionCounts(row, rows)
 	fmt.Fprintf(&b, "Project:  %s\n", row.project)
-	fmt.Fprintf(&b, "Live:     %d\n", projectLiveCount(row, rows))
+	fmt.Fprintf(&b, "Live:     %d\n", liveCount)
+	fmt.Fprintf(&b, "Recent:   %d\n", recentCount)
 	fmt.Fprintf(&b, "State:    %s\n", stateLabel(row.state))
 	if dir := m.workingDirForProjectKey(row.projectKey); dir != "" {
 		fmt.Fprintf(&b, "Dir:      %s\n", dir)
@@ -2572,13 +2568,23 @@ func dashboardSessionDetails(row hubRow) string {
 }
 
 func projectLiveCount(project hubRow, rows []hubRow) int {
+	liveCount, _ := projectSessionCounts(project, rows)
+	return liveCount
+}
+
+func projectSessionCounts(project hubRow, rows []hubRow) (int, int) {
 	count := 0
+	recent := 0
 	for _, row := range rows {
 		if row.kind == hubRowSession && row.projectKey == project.projectKey {
-			count++
+			if row.live && stateLabel(row.state) != "ended" {
+				count++
+			} else {
+				recent++
+			}
 		}
 	}
-	return count
+	return count, recent
 }
 
 func truncateMultilineText(text string, width int) string {
@@ -2708,18 +2714,25 @@ func stateLabel(state string) string {
 }
 
 func projectSummary(project hubRow, rows []hubRow) string {
-	count := 0
+	liveCount, recentCount := 0, 0
 	attention := stateLabel(project.state)
 	for _, row := range rows {
 		if row.kind != hubRowSession || row.projectKey != project.projectKey {
 			continue
 		}
-		count++
+		if row.live && stateLabel(row.state) != "ended" {
+			liveCount++
+		} else {
+			recentCount++
+		}
 		if attentionRankLabel(row.state) > attentionRankLabel(attention) {
 			attention = stateLabel(row.state)
 		}
 	}
-	return fmt.Sprintf("%d live · %s", count, attention)
+	if recentCount > 0 {
+		return fmt.Sprintf("%d live · %d recent · %s", liveCount, recentCount, attention)
+	}
+	return fmt.Sprintf("%d live · %s", liveCount, attention)
 }
 
 func attentionRankLabel(state string) int {

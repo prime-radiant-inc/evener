@@ -439,6 +439,9 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		Sources:     s.apiTreeSources(),
 	}
 	for _, n := range tree.Live {
+		if !treeNodeCanActLive(n) {
+			continue
+		}
 		resp.Live = append(resp.Live, s.apiTreeNode("live", "", n, true))
 	}
 	seenProjectRefs := map[string]bool{}
@@ -452,7 +455,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 			RollupState: p.RollupState,
 		}
 		for _, n := range p.Sessions {
-			ap.Sessions = append(ap.Sessions, s.apiTreeNode("project", key, n, s.isLive(n.ID)))
+			ap.Sessions = append(ap.Sessions, s.apiTreeNode("project", key, n, treeNodeCanActLive(n) && s.isLive(n.ID)))
 			seenProjectRefs[n.ID] = true
 		}
 		projectIndexes[key] = len(resp.Projects)
@@ -761,6 +764,10 @@ func (s *WebServer) isLive(sessionID string) bool {
 	return ok
 }
 
+func treeNodeCanActLive(n TreeNode) bool {
+	return normalizeState(n.State) != "ended"
+}
+
 func (s *WebServer) apiTreeNode(scope, projectKey string, n TreeNode, live bool) hubapi.TreeNode {
 	ref := hubRefFromTreeNodeID(n.ID)
 	refText := ref.String()
@@ -785,7 +792,7 @@ func (s *WebServer) apiTreeNode(scope, projectKey string, n TreeNode, live bool)
 		out.Model = le.Model
 	}
 	for _, child := range n.Children {
-		out.Children = append(out.Children, s.apiTreeNode("project", projectKey, child, s.isLive(child.ID)))
+		out.Children = append(out.Children, s.apiTreeNode("project", projectKey, child, treeNodeCanActLive(child) && s.isLive(child.ID)))
 	}
 	return out
 }

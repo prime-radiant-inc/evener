@@ -31,10 +31,7 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app := startTUITmux(t, bin, hub.URL())
 	defer app.Close()
 
-	screen := app.WaitFor("serf live", hub.URL(), "▾", "└─", "serf", "live task", "ops task")
-	if strings.Contains(screen, "ended maintenance") {
-		t.Fatalf("dashboard should not render ended sessions:\n%s", screen)
-	}
+	screen := app.WaitFor("serf live", hub.URL(), "▾", "└─", "serf", "live task", "ops task", "ended maintenance")
 	app.SendKeys("/")
 	app.TypeText("ops")
 	screen = app.WaitFor("Command palette", "Filter: ops", "ops task")
@@ -194,7 +191,7 @@ func TestTUITmuxE2E_DashboardFooterAnchorsToBottom(t *testing.T) {
 	}
 }
 
-func TestTUITmuxE2E_DashboardEmptyState(t *testing.T) {
+func TestTUITmuxE2E_DashboardRecentOnlyState(t *testing.T) {
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -203,16 +200,16 @@ func TestTUITmuxE2E_DashboardEmptyState(t *testing.T) {
 	app := startTUITmux(t, bin, hub.URL())
 	defer app.Close()
 
-	screen := app.WaitFor("No live sessions are running", "n new session", "p project history", "/ palette")
-	if strings.Contains(screen, "live task") || strings.Contains(screen, "ops task") || strings.Contains(screen, "Prompt (optional):") || strings.Contains(screen, "enter: send") {
-		t.Fatalf("empty dashboard rendered live/session composer content:\n%s", screen)
+	screen := app.WaitFor("serf live", "0 live", "ended maintenance", "ops task", "/ palette")
+	if strings.Contains(screen, "Prompt (optional):") || strings.Contains(screen, "enter: send") {
+		t.Fatalf("recent-only dashboard rendered session composer content:\n%s", screen)
 	}
-	t.Logf("empty dashboard capture:\n%s", screen)
+	t.Logf("recent-only dashboard capture:\n%s", screen)
 
 	app.SendKeys("p")
 	app.WaitFor("serf / project / serf", "Recent in this project", "live task")
 	app.SendKeys("Escape")
-	app.WaitFor("No live sessions are running")
+	app.WaitFor("serf live", "ended maintenance")
 	app.SendKeys("q")
 	app.WaitForExit()
 }

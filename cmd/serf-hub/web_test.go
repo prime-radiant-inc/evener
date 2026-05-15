@@ -245,6 +245,63 @@ func TestWeb_APITreeIncludesConfiguredCodexSourceThreads(t *testing.T) {
 	}
 }
 
+func TestWeb_APITreeMarksConfiguredCodexEndedThreadsRecent(t *testing.T) {
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	appserver.HandleTyped(codex.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (map[string]any, error) {
+		return map[string]any{"data": []map[string]any{{
+			"id":            "th_codex_ended",
+			"sessionId":     "th_codex_ended",
+			"preview":       "Codex ended tree task",
+			"modelProvider": "openai",
+			"createdAt":     100,
+			"updatedAt":     200,
+			"status":        map[string]any{"type": "ended"},
+			"cwd":           "/work/codex",
+			"cliVersion":    "codex-test",
+			"source":        "appServer",
+		}}}, nil
+	})
+	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
+	defer codexHTTP.Close()
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Past:    NewPastIndex(""),
+		CodexSources: []appsource.CodexSourceConfig{{
+			ID:       "codex",
+			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
+		}},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got hubapi.TreeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Live) != 0 {
+		t.Fatalf("ended codex thread appeared in live tree: %+v", got.Live)
+	}
+	var found *hubapi.TreeNode
+	for _, project := range got.Projects {
+		for i := range project.Sessions {
+			if project.Sessions[i].Ref == "codex:th_codex_ended" {
+				found = &project.Sessions[i]
+			}
+		}
+	}
+	if found == nil {
+		t.Fatalf("ended codex thread missing from project tree: %+v", got.Projects)
+	}
+	if found.Live || found.State != "ended" {
+		t.Fatalf("ended codex thread live metadata = %+v, want live=false state=ended", *found)
+	}
+}
+
 func TestWeb_SidebarIncludesConfiguredCodexSourceThreads(t *testing.T) {
 	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
 	appserver.HandleTyped(codex.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (map[string]any, error) {
