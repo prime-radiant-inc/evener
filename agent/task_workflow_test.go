@@ -324,6 +324,31 @@ func TestTaskWorkflow_RootSessionPopulatesTasks(t *testing.T) {
 	}
 }
 
+func TestTaskWorkflow_DefaultRootSessionDoesNotPopulateTasks(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(llm.Request) llm.Response{
+			func(r llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("ok")} },
+		},
+	})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		AgentName:      "default",
+		NonInteractive: true,
+		StateDir:       dir,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	if tasks := sess.getOrCreateTaskStore().View(); len(tasks) != 0 {
+		t.Fatalf("default root session should not auto-populate tasks, got %#v", tasks)
+	}
+}
+
 func TestTaskWorkflow_NewSessionPopulatesCorrectTasks(t *testing.T) {
 	// Simulates what happens when spawnAgent creates a subagent with
 	// AgentName="implementer" and NonInteractive=true. The task store
