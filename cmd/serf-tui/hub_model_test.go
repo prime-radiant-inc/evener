@@ -1505,6 +1505,77 @@ func TestHubModelDashboardSpawnOpensFormBeforePosting(t *testing.T) {
 	}
 }
 
+func TestHubModelDashboardSpawnEditsWorkingDirBeforePosting(t *testing.T) {
+	var gotSpawn appwire.ThreadStartParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
+			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadStart, func(_ context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+			gotSpawn = params
+			return appwire.ThreadStartResponse{Thread: appwireThread(hubTreeNode{
+				Ref: "local:02NEW", SessionID: "02NEW", Title: "new session", State: "idle", Project: "custom", Live: true,
+			}, "/tmp/custom-serf")}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newHubModel(client, "http://hub.test")
+	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
+		Key:        "serf",
+		Name:       "serf",
+		WorkingDir: "/tmp/serf",
+		Sessions: []hubTreeNode{
+			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true},
+		},
+	}}}
+	m.rows = buildDashboardRows(m.tree)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if cmd == nil {
+		t.Fatal("spawn key should fetch models")
+	}
+	updated, _ = updated.(hubModel).Update(cmd())
+	form := updated.(hubModel)
+	for range 3 {
+		updated, cmd = form.Update(tea.KeyMsg{Type: tea.KeyTab})
+		if cmd != nil {
+			t.Fatal("tab to directory returned unexpected command")
+		}
+		form = updated.(hubModel)
+	}
+	if form.spawnFocus != hubSpawnFieldDir {
+		t.Fatalf("spawn focus=%v, want directory", form.spawnFocus)
+	}
+	if view := form.spawnView(); !strings.Contains(view, "> Dir:") {
+		t.Fatalf("directory field was not focused:\n%s", view)
+	}
+	updated, _ = form.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
+	form = updated.(hubModel)
+	for _, r := range "/tmp/custom-serf" {
+		updated, _ = form.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		form = updated.(hubModel)
+	}
+	updated, _ = form.Update(tea.KeyMsg{Type: tea.KeyTab})
+	form = updated.(hubModel)
+	form.session.setInputValue("spawn with custom cwd")
+
+	updated, cmd = form.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("spawn form submit returned nil command")
+	}
+	msg := cmd().(hubSpawnMsg)
+	if msg.err != nil {
+		t.Fatalf("spawn: %v", msg.err)
+	}
+	if gotSpawn.CWD != "/tmp/custom-serf" {
+		t.Fatalf("spawn cwd=%q, want /tmp/custom-serf", gotSpawn.CWD)
+	}
+	if gotSpawn.Prompt != "spawn with custom cwd" {
+		t.Fatalf("spawn prompt=%q", gotSpawn.Prompt)
+	}
+}
+
 func TestHubModelSpawnPromptAcceptsHarnessAndModelLetters(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	m.openSpawnForm()

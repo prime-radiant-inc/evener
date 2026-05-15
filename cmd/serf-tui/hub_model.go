@@ -29,6 +29,7 @@ const (
 	hubSpawnFieldPrompt hubSpawnField = iota
 	hubSpawnFieldHarness
 	hubSpawnFieldModel
+	hubSpawnFieldDir
 )
 
 type hubRowKind int
@@ -101,6 +102,7 @@ type hubModel struct {
 	spawnModels             []modelPickerItem
 	spawnHarnessModels      map[string][]modelPickerItem
 	spawnModelPicker        *modelPicker
+	spawnDirInput           textinput.Model
 	spawnSubmitting         bool
 	spawnFocus              hubSpawnField
 
@@ -128,13 +130,21 @@ func newHubModel(client *appwire.Client, hubURL string, stateDirs ...string) hub
 	}
 	session := newModel("", "", nil)
 	session.authController = nil
-	return hubModel{client: client, hubURL: hubURL, stateDir: stateDir, session: session, browseSelected: -1, dashboardFilter: newHubFilterInput()}
+	return hubModel{client: client, hubURL: hubURL, stateDir: stateDir, session: session, browseSelected: -1, dashboardFilter: newHubFilterInput(), spawnDirInput: newSpawnDirInput()}
 }
 
 func newHubFilterInput() textinput.Model {
 	input := textinput.New()
 	input.Prompt = "filter: "
 	input.Placeholder = "title, project, model, source"
+	input.CharLimit = 0
+	return input
+}
+
+func newSpawnDirInput() textinput.Model {
+	input := textinput.New()
+	input.Prompt = ""
+	input.Placeholder = "working directory"
 	input.CharLimit = 0
 	return input
 }
@@ -762,6 +772,9 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case hubSpawnFieldModel:
 			return m.activateSpawnModelField()
+		case hubSpawnFieldDir:
+			m.advanceSpawnFocus(1)
+			return m, nil
 		default:
 			return m.submitSpawnForm()
 		}
@@ -773,6 +786,17 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.spawnFocus == hubSpawnFieldModel {
 			return m.activateSpawnModelField()
 		}
+	}
+
+	if m.spawnFocus == hubSpawnFieldDir {
+		if msg.Type == tea.KeyCtrlU {
+			m.setSpawnDir("")
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.spawnDirInput, cmd = m.spawnDirInput.Update(msg)
+		m.spawnDir = strings.TrimSpace(m.spawnDirInput.Value())
+		return m, cmd
 	}
 
 	if m.spawnFocus != hubSpawnFieldPrompt {
@@ -843,7 +867,7 @@ func (m hubModel) submitSpawnForm() (tea.Model, tea.Cmd) {
 		Prompt:     prompt,
 		Harness:    strings.TrimSpace(m.spawnHarness),
 		Model:      strings.TrimSpace(m.spawnModel),
-		WorkingDir: m.spawnDir,
+		WorkingDir: strings.TrimSpace(m.spawnDir),
 	}
 	m.err = nil
 	m.spawnSubmitting = true
@@ -851,20 +875,29 @@ func (m hubModel) submitSpawnForm() (tea.Model, tea.Cmd) {
 }
 
 func (m *hubModel) setSpawnFocus(field hubSpawnField) {
-	if field < hubSpawnFieldPrompt || field > hubSpawnFieldModel {
+	if field < hubSpawnFieldPrompt || field > hubSpawnFieldDir {
 		field = hubSpawnFieldPrompt
 	}
 	m.spawnFocus = field
 	if field == hubSpawnFieldPrompt {
 		m.session.input.Focus()
+		m.spawnDirInput.Blur()
 		return
 	}
 	m.session.input.Blur()
+	if field == hubSpawnFieldDir {
+		if strings.TrimSpace(m.spawnDirInput.Value()) == "" && strings.TrimSpace(m.spawnDir) != "" {
+			m.spawnDirInput.SetValue(strings.TrimSpace(m.spawnDir))
+		}
+		m.spawnDirInput.Focus()
+		return
+	}
+	m.spawnDirInput.Blur()
 }
 
 func (m *hubModel) advanceSpawnFocus(delta int) {
 	next := int(m.spawnFocus) + delta
-	count := int(hubSpawnFieldModel) + 1
+	count := int(hubSpawnFieldDir) + 1
 	for next < 0 {
 		next += count
 	}
@@ -919,6 +952,8 @@ func (m hubModel) spawnFieldHint() string {
 			return "enter: fetch harness models"
 		}
 		return "enter: choose model"
+	case hubSpawnFieldDir:
+		return "type path  enter: next  ctrl+u clear"
 	default:
 		return "enter: spawn  ctrl+j: newline"
 	}
@@ -1297,7 +1332,7 @@ func (m *hubModel) openSpawnForm() {
 	}
 	m.resetSpawnForm()
 	m.spawnReturnMode = returnMode
-	m.spawnDir = dir
+	m.setSpawnDir(dir)
 	m.spawnProject = project
 	m.mode = hubModeSpawn
 	m.err = nil
@@ -1316,7 +1351,7 @@ func (m *hubModel) closeSpawnForm() {
 
 func (m *hubModel) resetSpawnForm() {
 	m.spawnReturnMode = hubModeDashboard
-	m.spawnDir = ""
+	m.setSpawnDir("")
 	m.spawnProject = ""
 	m.spawnHarness = "serf"
 	m.spawnHarnesses = []string{"serf"}
@@ -1329,9 +1364,20 @@ func (m *hubModel) resetSpawnForm() {
 	m.spawnModelPicker = nil
 	m.spawnSubmitting = false
 	m.spawnFocus = hubSpawnFieldPrompt
+	m.spawnDirInput.Blur()
 	m.session.resetInput()
 	if envModel := strings.TrimSpace(os.Getenv("SERF_MODEL")); strings.Contains(envModel, "/") {
 		m.spawnModel = envModel
+	}
+}
+
+func (m *hubModel) setSpawnDir(dir string) {
+	dir = strings.TrimSpace(dir)
+	m.spawnDir = dir
+	m.spawnDirInput = newSpawnDirInput()
+	m.spawnDirInput.SetValue(dir)
+	if m.spawnFocus == hubSpawnFieldDir {
+		m.spawnDirInput.Focus()
 	}
 }
 
@@ -1444,6 +1490,16 @@ func (m hubModel) spawnHarnessModelDisplay() string {
 		return model
 	}
 	return m.spawnHarness + "/" + model
+}
+
+func (m hubModel) spawnDirView() string {
+	if m.spawnFocus == hubSpawnFieldDir {
+		return m.spawnDirInput.View()
+	}
+	if dir := strings.TrimSpace(m.spawnDir); dir != "" {
+		return dir
+	}
+	return "(hub default)"
 }
 
 func stringInSlice(needle string, haystack []string) bool {
@@ -2700,9 +2756,7 @@ func (m hubModel) spawnView() string {
 	if m.spawnProject != "" {
 		fmt.Fprintf(&b, "  Project:  %s\n", m.spawnProject)
 	}
-	if m.spawnDir != "" {
-		fmt.Fprintf(&b, "  Dir:      %s\n", m.spawnDir)
-	}
+	fmt.Fprintf(&b, "%s Dir:      %s\n", m.spawnFieldPrefix(hubSpawnFieldDir), m.spawnDirView())
 	if m.err != nil {
 		fmt.Fprintf(&b, "\nerror: %v\n", m.err)
 	}

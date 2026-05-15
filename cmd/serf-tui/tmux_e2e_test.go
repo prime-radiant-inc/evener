@@ -68,11 +68,15 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 
 	app.SendKeys("n")
 	app.WaitFor("serf / new session", "Dir:      "+tuiE2EProjectDir, "Prompt (optional):")
+	app.SendKeys("Tab", "Tab", "Tab", "C-u")
+	app.TypeText("/tmp/serf-tui-e2e/custom")
+	app.WaitFor("Dir:      /tmp/serf-tui-e2e/custom")
+	app.SendKeys("Tab")
 	app.TypeLine("spawn from dashboard")
 	app.WaitFor("spawned session 1", "local:02SPAWN1")
 	spawns := hub.WaitForSpawns(t, 1)
-	if spawns[0].CWD != tuiE2EProjectDir {
-		t.Fatalf("dashboard spawn cwd=%q, want %q", spawns[0].CWD, tuiE2EProjectDir)
+	if spawns[0].CWD != "/tmp/serf-tui-e2e/custom" {
+		t.Fatalf("dashboard spawn cwd=%q, want /tmp/serf-tui-e2e/custom", spawns[0].CWD)
 	}
 	if spawns[0].Prompt != "spawn from dashboard" {
 		t.Fatalf("dashboard spawn prompt=%q, want spawn from dashboard", spawns[0].Prompt)
@@ -266,7 +270,7 @@ func TestTUITmuxE2E_CodexSpawnUsesHarnessModelPicker(t *testing.T) {
 	app.WaitFor("Select codex-local model", "codex-local/gpt-5.3-codex")
 	app.SendKeys("Enter")
 	app.WaitFor("Harness:  codex-local", "Model:    codex-local/gpt-5.3-codex")
-	app.SendKeys("Tab")
+	app.SendKeys("Tab", "Tab")
 	app.TypeLine("spawn via codex")
 	app.WaitFor("spawned session 1")
 	spawns := hub.WaitForSpawns(t, 1)
