@@ -64,9 +64,7 @@ func (p commandPalette) selectedEntry() (commandPaletteEntry, bool) {
 
 func commandPaletteEntriesForRows(mode hubMode, caps hubSessionCapabilities, rows []hubRow) []commandPaletteEntry {
 	scope := hubCommandDashboard
-	if mode == hubModeProject {
-		scope = hubCommandProject
-	} else if mode == hubModeSession {
+	if mode == hubModeSession {
 		scope = hubCommandSession
 	}
 	ctx := hubCommandContext{mode: mode, caps: caps}

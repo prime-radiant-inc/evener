@@ -18,7 +18,6 @@ type hubMode int
 
 const (
 	hubModeDashboard hubMode = iota
-	hubModeProject
 	hubModeSession
 	hubModeSpawn
 )
@@ -87,8 +86,6 @@ type hubModel struct {
 	dashboardSelectedOnce  bool
 	commandPalette         *commandPalette
 
-	selectedProjectKey      string
-	projectRows             []hubRow
 	browseSelected          int
 	forkDraft               *hubForkDraft
 	sessionThemePicker      *themePicker
@@ -191,9 +188,6 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.selected = 1
 			}
 			m.dashboardSelectedOnce = true
-		}
-		if m.mode == hubModeProject {
-			m.projectRows = m.rowsForSelectedProject()
 		}
 		m.clampSelection()
 		return m, nil
@@ -324,17 +318,6 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		ref, err := appwire.ParseRef(msg.resp.Ref)
 		if err != nil {
 			m.addSessionSystem("Fork returned invalid ref: " + msg.resp.Ref)
-			return m, nil
-		}
-		return m, fetchHubSession(m.client, ref)
-	case hubResumeMsg:
-		if msg.err != nil {
-			m.err = fmt.Errorf("resume failed: %w", msg.err)
-			return m, nil
-		}
-		ref, err := appwire.ParseRef(msg.resp.Ref)
-		if err != nil {
-			m.err = fmt.Errorf("resume returned invalid ref: %s", msg.resp.Ref)
 			return m, nil
 		}
 		return m, fetchHubSession(m.client, ref)
@@ -559,9 +542,6 @@ func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.mode == hubModeSpawn {
 		return m.updateSpawnKey(msg)
 	}
-	if m.mode == hubModeProject {
-		return m.updateProjectKey(msg)
-	}
 	return m.updateDashboardKey(msg)
 }
 
@@ -604,47 +584,6 @@ func (m hubModel) updateDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m hubModel) updateProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.dashboardFilterActive {
-		return m.updateHubFilterKey(msg)
-	}
-	rows := m.projectDisplayRows()
-	switch msg.String() {
-	case "/":
-		m.openCommandPalette()
-		return m, nil
-	case "q":
-		return m, tea.Quit
-	case "esc", "backspace":
-		m.mode = hubModeDashboard
-		m.clampSelection()
-	case "r":
-		if len(rows) > 0 && m.client != nil {
-			row := rows[m.selected]
-			if !row.live {
-				return m, sendHubResume(m.client, row.ref)
-			}
-		}
-	case "n":
-		m.openSpawnForm()
-		if m.client != nil {
-			return m, fetchHubSpawnOptions(m.client, m.spawnDir)
-		}
-		return m, nil
-	case "up", "k":
-		if m.selected > 0 {
-			m.selected--
-		}
-	case "down", "j":
-		if m.selected < len(rows)-1 {
-			m.selected++
-		}
-	case "enter":
-		return m.activateProjectRow(rows)
-	}
-	return m, nil
-}
-
 func (m hubModel) updateHubFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
@@ -657,9 +596,6 @@ func (m hubModel) updateHubFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.dashboardFilter.Blur()
 		m.dashboardFilterActive = false
 		m.clampSelection()
-		if m.mode == hubModeProject {
-			return m.activateProjectRow(m.projectDisplayRows())
-		}
 		return m.activateDashboardRow(m.dashboardRows())
 	}
 	var cmd tea.Cmd
@@ -695,13 +631,6 @@ func (m hubModel) activateDashboardRow(rows []hubRow) (tea.Model, tea.Cmd) {
 	return m, fetchHubSession(m.client, row.ref)
 }
 
-func (m hubModel) activateProjectRow(rows []hubRow) (tea.Model, tea.Cmd) {
-	if len(rows) == 0 || m.client == nil {
-		return m, nil
-	}
-	return m, fetchHubSession(m.client, rows[m.selected].ref)
-}
-
 func (m *hubModel) enterHubFilter() {
 	m.dashboardFilterActive = true
 	m.dashboardFilter.Focus()
@@ -714,9 +643,7 @@ func (m *hubModel) openCommandPalette() {
 		width = 100
 	}
 	rows := m.dashboardRows()
-	if m.mode == hubModeProject {
-		rows = m.projectDisplayRows()
-	} else if m.mode == hubModeSession {
+	if m.mode == hubModeSession {
 		rows = nil
 	}
 	palette := newCommandPalette("Command palette", commandPaletteEntriesForRows(m.mode, m.detail.Capabilities, rows), width)
@@ -1362,12 +1289,8 @@ func (m *hubModel) openSpawnForm() {
 }
 
 func (m *hubModel) closeSpawnForm() {
-	returnMode := m.spawnReturnMode
-	if returnMode != hubModeProject {
-		returnMode = hubModeDashboard
-	}
 	m.resetSpawnForm()
-	m.mode = returnMode
+	m.mode = hubModeDashboard
 	m.clampSelection()
 }
 
@@ -1534,12 +1457,6 @@ func stringInSlice(needle string, haystack []string) bool {
 }
 
 func (m hubModel) spawnWorkingDir() string {
-	if m.mode == hubModeProject {
-		if p, ok := m.selectedProject(); ok {
-			return p.WorkingDir
-		}
-		return ""
-	}
 	row, ok := m.selectedDashboardRow()
 	if !ok {
 		return ""
@@ -1548,12 +1465,6 @@ func (m hubModel) spawnWorkingDir() string {
 }
 
 func (m hubModel) spawnProjectName() string {
-	if m.mode == hubModeProject {
-		if p, ok := m.selectedProject(); ok {
-			return p.Name
-		}
-		return ""
-	}
 	row, ok := m.selectedDashboardRow()
 	if !ok || row.kind == hubRowLaunch {
 		return ""
@@ -2161,52 +2072,6 @@ func hubProjectKey(name string) string {
 	return strings.NewReplacer("/", "_", ":", "_", " ", "_").Replace(name)
 }
 
-func (m *hubModel) openProject(key string) {
-	if key == "" {
-		return
-	}
-	m.mode = hubModeProject
-	m.selectedProjectKey = key
-	m.projectRows = m.rowsForSelectedProject()
-	m.selected = 0
-	m.clampSelection()
-}
-
-func (m hubModel) selectedProject() (hubTreeProject, bool) {
-	for _, p := range m.tree.Projects {
-		key := p.Key
-		if key == "" {
-			key = hubProjectKey(p.Name)
-		}
-		if key == m.selectedProjectKey {
-			return p, true
-		}
-	}
-	return hubTreeProject{}, false
-}
-
-func (m hubModel) rowsForSelectedProject() []hubRow {
-	project, ok := m.selectedProject()
-	if !ok {
-		return nil
-	}
-	return buildProjectRows(project)
-}
-
-func (m hubModel) firstProjectHistoryKey() string {
-	for _, project := range m.tree.Projects {
-		if len(project.Sessions) == 0 && project.WorkingDir == "" {
-			continue
-		}
-		key := project.Key
-		if key == "" {
-			key = hubProjectKey(project.Name)
-		}
-		return key
-	}
-	return ""
-}
-
 func (m hubModel) dashboardRows() []hubRow {
 	if strings.TrimSpace(m.dashboardFilter.Value()) != "" {
 		return filterHubRows(m.rows, m.dashboardFilter.Value())
@@ -2334,10 +2199,6 @@ func (m *hubModel) focusDashboardProject(projectKey string) {
 	m.clampSelection()
 }
 
-func (m hubModel) projectDisplayRows() []hubRow {
-	return filterHubRows(m.projectRows, m.dashboardFilter.Value())
-}
-
 func (m hubModel) sessionSearchRows() []hubRow {
 	key, ok := m.projectKeyForSession()
 	if ok {
@@ -2400,9 +2261,6 @@ func rowMatchesFilter(row hubRow, query string) bool {
 
 func (m *hubModel) clampSelection() {
 	n := len(m.dashboardRows())
-	if m.mode == hubModeProject {
-		n = len(m.projectDisplayRows())
-	}
 	if n == 0 {
 		m.selected = 0
 		return
@@ -2421,9 +2279,6 @@ func (m hubModel) View() string {
 	}
 	if m.mode == hubModeSpawn {
 		return m.spawnView()
-	}
-	if m.mode == hubModeProject {
-		return m.projectView()
 	}
 	return m.dashboardView()
 }
@@ -2918,89 +2773,6 @@ func truncateMultilineText(text string, width int) string {
 		lines[i] = truncateText(line, width)
 	}
 	return strings.Join(lines, "\n")
-}
-
-func (m hubModel) projectView() string {
-	var b strings.Builder
-	rows := m.projectDisplayRows()
-	project, ok := m.selectedProject()
-	name := m.selectedProjectKey
-	if ok {
-		name = project.Name
-	}
-	liveCount := 0
-	recentCount := 0
-	for _, row := range rows {
-		if row.live {
-			liveCount++
-		} else {
-			recentCount++
-		}
-	}
-	topBar := fmt.Sprintf("serf / project / %s                         %d live · %d recent", name, liveCount, recentCount)
-	if m.err != nil {
-		fmt.Fprintf(&b, "error: %v\n\n", m.err)
-	}
-	if m.commandPalette != nil {
-		return appShell{
-			TopBar:  topBar,
-			Body:    b.String(),
-			Overlay: m.commandPalette.View(),
-			Footer:  actionBarForWidth(m.width, "up/down select", "enter open", "r resume", "n new here", "/ palette", "esc dashboard", "ctrl+o dashboard"),
-			Height:  m.height,
-		}.View()
-	}
-	if m.dashboardFilterActive || strings.TrimSpace(m.dashboardFilter.Value()) != "" {
-		b.WriteString(m.dashboardFilter.View())
-		b.WriteString("\n\n")
-	}
-	idx := 0
-	if liveCount > 0 {
-		b.WriteString(defaultTUIStyles().Section.Render("Live now"))
-		b.WriteString("\n")
-		for _, row := range rows {
-			if !row.live {
-				continue
-			}
-			writeProjectRow(&b, row, idx == m.selected)
-			idx++
-		}
-		b.WriteString("\n")
-	}
-	if recentCount > 0 {
-		b.WriteString(defaultTUIStyles().Section.Render("Recent in this project"))
-		b.WriteString("\n")
-		for _, row := range rows {
-			if row.live {
-				continue
-			}
-			writeProjectRow(&b, row, idx == m.selected)
-			idx++
-		}
-	} else if strings.TrimSpace(m.dashboardFilter.Value()) != "" {
-		b.WriteString("No sessions match this filter.\n")
-	} else {
-		b.WriteString("No ended sessions in this project yet.\n")
-	}
-	return appShell{
-		TopBar: topBar,
-		Body:   b.String(),
-		Footer: actionBarForWidth(m.width, "up/down select", "enter open", "r resume", "n new here", "/ palette", "esc dashboard", "ctrl+o dashboard"),
-		Height: m.height,
-	}.View()
-}
-
-func writeProjectRow(b *strings.Builder, row hubRow, selected bool) {
-	cursor := " "
-	if selected {
-		cursor = ">"
-	}
-	line := fmt.Sprintf("%s %s %-10s %-12s %-34s %-10s %s", cursor, statusDot(row.state), stateLabel(row.state), row.sourceLabel, row.title, row.model, row.age)
-	if selected {
-		line = defaultTUIStyles().Selected.Render(line)
-	}
-	b.WriteString(line)
-	b.WriteString("\n")
 }
 
 func statusDot(state string) string {

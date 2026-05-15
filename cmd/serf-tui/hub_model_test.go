@@ -583,7 +583,7 @@ func TestHubModelDashboardSlashOpensCommandPalette(t *testing.T) {
 	}
 }
 
-func TestHubModelProjectViewShowsLiveThenRecent(t *testing.T) {
+func TestBuildProjectRowsShowsLiveThenRecent(t *testing.T) {
 	project := hubTreeProject{
 		Key:         "serf",
 		Name:        "serf",
@@ -603,21 +603,6 @@ func TestHubModelProjectViewShowsLiveThenRecent(t *testing.T) {
 	}
 	if rows[1].title != "ended history" || rows[1].live {
 		t.Fatalf("second row=%+v, want ended history", rows[1])
-	}
-
-	m := newHubModel(nil, "http://hub.test")
-	m.mode = hubModeProject
-	m.tree = hubTreeResponse{Projects: []hubTreeProject{project}}
-	m.selectedProjectKey = "serf"
-	m.projectRows = rows
-	got := m.projectView()
-	for _, want := range []string{"serf / project / serf", "Live now", "Recent in this project", "live task", "ended history"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("project view missing %q:\n%s", want, got)
-		}
-	}
-	if strings.Index(got, "live task") > strings.Index(got, "ended history") {
-		t.Fatalf("project view rendered ended before live:\n%s", got)
 	}
 }
 
@@ -680,101 +665,6 @@ func TestHubModelEndedSessionCanResumeOnSend(t *testing.T) {
 	}
 }
 
-func TestHubModelProjectResumeEndedSessionThroughHub(t *testing.T) {
-	var gotResume appwire.ThreadResumeParams
-	var gotReadRef string
-	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
-		appserver.HandleTyped(app.Router(), appwire.MethodThreadResume, func(_ context.Context, params appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
-			gotResume = params
-			return appwire.ThreadResumeResponse{Thread: appwireThread(hubTreeNode{
-				Ref:       "local:02RESUMED",
-				SessionID: "02RESUMED",
-				Title:     "resumed history",
-				State:     appwire.ThreadStatusIdle,
-				Project:   "serf",
-				Live:      true,
-			}, "/tmp/serf")}, nil
-		})
-		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-			gotReadRef = params.Ref
-			if params.Ref != "local:02RESUMED" {
-				return appwire.ThreadReadResponse{}, fmt.Errorf("read ref=%q, want resumed ref", params.Ref)
-			}
-			return appwire.ThreadReadResponse{Thread: appwireThread(hubTreeNode{
-				Ref:       "local:02RESUMED",
-				SessionID: "02RESUMED",
-				Title:     "resumed history",
-				State:     appwire.ThreadStatusIdle,
-				Project:   "serf",
-				Live:      true,
-			}, "/tmp/serf")}, nil
-		})
-	})
-	defer cleanup()
-
-	m := newHubModel(client, "http://hub.test")
-	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
-		Key:        "serf",
-		Name:       "serf",
-		WorkingDir: "/tmp/serf",
-		Sessions: []hubTreeNode{
-			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true},
-			{Ref: "local:01ENDED", SessionID: "01ENDED", Title: "ended history", State: "ended", Project: "serf", Live: false},
-		},
-	}}}
-	m.rows = buildDashboardRows(m.tree)
-	m.openProject("serf")
-	m.selected = 1
-
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
-	if cmd == nil {
-		t.Fatal("resume key did not return a Hub command")
-	}
-	updated, cmd = updated.(hubModel).Update(cmd())
-	if gotResume.Ref != "local:01ENDED" {
-		t.Fatalf("resume params=%+v, want ended ref", gotResume)
-	}
-	if cmd != nil {
-		updated, _ = updated.(hubModel).Update(cmd())
-	}
-	if gotReadRef != "local:02RESUMED" {
-		t.Fatalf("read ref=%q, want resumed ref", gotReadRef)
-	}
-	got := updated.(hubModel)
-	if got.mode != hubModeSession || got.detail.Ref != "local:02RESUMED" {
-		t.Fatalf("resume did not open returned session: mode=%v ref=%q err=%v", got.mode, got.detail.Ref, got.err)
-	}
-}
-
-func TestHubModelProjectSlashOpensCommandPalette(t *testing.T) {
-	m := newHubModel(nil, "http://hub.test")
-	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
-		Key:  "serf",
-		Name: "serf",
-		Sessions: []hubTreeNode{
-			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live scoring", State: "idle", Project: "serf", Live: true},
-			{Ref: "local:01PAST", SessionID: "01PAST", Title: "past renderer", State: "ended", Project: "serf", Live: false},
-		},
-	}}}
-	m.rows = buildDashboardRows(m.tree)
-	m.openProject("serf")
-
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
-	m = updated.(hubModel)
-	for _, r := range "past" {
-		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-		m = updated.(hubModel)
-	}
-
-	view := m.projectView()
-	if !strings.Contains(view, "Command palette") || !strings.Contains(view, "Filter: past") || !strings.Contains(view, "past renderer") {
-		t.Fatalf("project palette missing active filter/past row:\n%s", view)
-	}
-	if strings.Contains(view, "live scoring") {
-		t.Fatalf("project palette still shows live row after filtering past:\n%s", view)
-	}
-}
-
 func TestHubModelCommandPaletteOwnsPrintableKeys(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	m.tree = newHubTUISampleCorpus().DashboardTree
@@ -816,33 +706,6 @@ func TestHubModelCommandPaletteCanOpenNewSession(t *testing.T) {
 	}
 }
 
-func TestHubModelProjectUsesNForNewSession(t *testing.T) {
-	m := newHubModel(nil, "http://hub.test")
-	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
-		Key: "serf", Name: "serf", WorkingDir: "/tmp/serf",
-		Sessions: []hubTreeNode{{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true}},
-	}}}
-	m.rows = buildDashboardRows(m.tree)
-	m.openProject("serf")
-
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
-	if cmd != nil {
-		t.Fatal("legacy s key should not start project spawn")
-	}
-	if got := updated.(hubModel); got.mode == hubModeSpawn {
-		t.Fatal("legacy s key opened project spawn; n is the approved new-session key")
-	}
-
-	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
-	if cmd != nil {
-		t.Fatal("opening project spawn without a client should be synchronous")
-	}
-	got := updated.(hubModel)
-	if got.mode != hubModeSpawn || got.spawnDir != "/tmp/serf" || got.spawnProject != "serf" {
-		t.Fatalf("n key did not open project spawn with context: mode=%v dir=%q project=%q", got.mode, got.spawnDir, got.spawnProject)
-	}
-}
-
 func TestHubModelDashboardProjectHeaderTogglesChildren(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
@@ -877,58 +740,6 @@ func TestHubModelDashboardProjectHeaderTogglesChildren(t *testing.T) {
 	got = updated.(hubModel)
 	if strings.Contains(got.dashboardView(), "live task") {
 		t.Fatalf("left arrow did not collapse project children:\n%s", got.dashboardView())
-	}
-}
-
-func TestHubModelProjectNavigationReturnsDashboard(t *testing.T) {
-	for name, key := range map[string]tea.KeyMsg{
-		"esc":       {Type: tea.KeyEsc},
-		"backspace": {Type: tea.KeyBackspace},
-		"ctrl+o":    {Type: tea.KeyCtrlO},
-	} {
-		t.Run(name, func(t *testing.T) {
-			m := newHubModel(nil, "http://hub.test")
-			m.tree = hubTreeResponse{Projects: []hubTreeProject{{
-				Key:  "serf",
-				Name: "serf",
-				Sessions: []hubTreeNode{
-					{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true},
-				},
-			}}}
-			m.rows = buildDashboardRows(m.tree)
-			m.openProject("serf")
-
-			updated, _ := m.Update(key)
-			got := updated.(hubModel)
-			if got.mode != hubModeDashboard {
-				t.Fatalf("mode=%v, want dashboard", got.mode)
-			}
-			if !strings.Contains(got.View(), "serf live") {
-				t.Fatalf("dashboard not rendered:\n%s", got.View())
-			}
-		})
-	}
-}
-
-func TestHubModelProjectViewHasNoComposer(t *testing.T) {
-	m := newHubModel(nil, "http://hub.test")
-	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
-		Key:        "serf",
-		Name:       "serf",
-		WorkingDir: "/tmp/serf",
-		Sessions: []hubTreeNode{
-			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "serf", Live: true},
-			{Ref: "local:01ENDED", SessionID: "01ENDED", Title: "ended history", State: "ended", Project: "serf", Live: false},
-		},
-	}}}
-	m.rows = buildDashboardRows(m.tree)
-	m.openProject("serf")
-
-	got := m.projectView()
-	for _, unwanted := range []string{"enter: send", "message\n>", "read-only:"} {
-		if strings.Contains(got, unwanted) {
-			t.Fatalf("project view rendered composer text %q:\n%s", unwanted, got)
-		}
 	}
 }
 
@@ -3184,11 +2995,6 @@ func TestHubModelCtrlCQuitsOutsideSessionButArmsQuitInSession(t *testing.T) {
 		quits bool
 	}{
 		{name: "dashboard", model: newHubModel(nil, "http://hub.test"), quits: true},
-		{name: "project", model: func() hubModel {
-			m := sampleHubModel(100)
-			m.openProject("serf")
-			return m
-		}(), quits: true},
 		{name: "spawn", model: func() hubModel {
 			m := newHubModel(nil, "http://hub.test")
 			m.openSpawnForm()

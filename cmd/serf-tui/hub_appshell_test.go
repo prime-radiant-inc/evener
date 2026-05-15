@@ -15,15 +15,6 @@ func TestHubModelAppShellKeepsDashboardFooterUnderPaletteOverlay(t *testing.T) {
 	requireOrderedText(t, got, "serf live", "Command palette", "ctrl+o dashboard")
 }
 
-func TestHubModelAppShellKeepsProjectFooterUnderPaletteOverlay(t *testing.T) {
-	m := sampleHubModel(100)
-	m.openProject("serf")
-	m.openCommandPalette()
-
-	got := m.View()
-	requireOrderedText(t, got, "serf / project / serf", "Command palette", "ctrl+o dashboard")
-}
-
 func TestHubModelAppShellSessionTopBarAndComposerRegion(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.session.messages = []chatMessage{{Kind: msgAssistant, Text: "Ready for shell work."}}
@@ -64,7 +55,6 @@ func TestHubModelAppShellAnchorsFooterToKnownHeight(t *testing.T) {
 
 func TestHubModelCtrlOReturnsDashboardFromCommandPaletteOverlay(t *testing.T) {
 	m := sampleHubModel(100)
-	m.openProject("serf")
 	m.openCommandPalette()
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})

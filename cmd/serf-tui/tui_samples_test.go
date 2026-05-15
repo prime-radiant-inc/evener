@@ -49,9 +49,6 @@ func TestHubTUISampleCorpusHasGoldenRendersForCoreSurfaces(t *testing.T) {
 		"dashboard-narrow",
 		"dashboard-normal",
 		"dashboard-wide",
-		"project-narrow",
-		"project-normal",
-		"project-wide",
 		"session-idle",
 		"session-streaming",
 		"session-busy-steer",
@@ -101,7 +98,6 @@ func TestHubTUISampleRendersComeFromRealWidgets(t *testing.T) {
 	for _, name := range []string{
 		"dashboard-narrow",
 		"dashboard-normal",
-		"project-normal",
 		"session-idle",
 		"spawn-serf",
 		"model-picker",

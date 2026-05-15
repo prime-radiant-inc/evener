@@ -307,9 +307,6 @@ func sampleRenders() []tuiSampleRender {
 		{name: "dashboard-narrow", width: 60, contains: []string{"serf live", "n new", "/ palette"}},
 		{name: "dashboard-normal", width: 100, contains: []string{"codex-local", "Restore hub TUI widgets"}},
 		{name: "dashboard-wide", width: 140, contains: []string{"serf live", "Codex app-server smoke"}},
-		{name: "project-narrow", width: 60, contains: []string{"Live now", "Recent in this project"}},
-		{name: "project-normal", width: 100, contains: []string{"Live now", "Recent in this project"}},
-		{name: "project-wide", width: 140, contains: []string{"Live now", "Document protocol adoption"}},
 		{name: "session-idle", width: 100, contains: []string{"message", "draft stays visible"}},
 		{name: "session-streaming", width: 100, contains: []string{"The running agent harness", "all task steps completed"}},
 		{name: "session-busy-steer", width: 100, contains: []string{"steer", "Please also check"}},
@@ -373,10 +370,6 @@ func sampleRenderFromRealWidget(name string, width int) (tuiSampleRender, bool) 
 		m := sampleHubModel(width)
 		m.mode = hubModeDashboard
 		return renderSample(name, width, m.dashboardView()), true
-	case "project-narrow", "project-normal", "project-wide":
-		m := sampleHubModel(width)
-		m.openProject("serf")
-		return renderSample(name, width, m.projectView()), true
 	case "session-idle":
 		m := sampleSessionModel(width, sampleSessionDetails()["serf-idle"])
 		m.session.setInputValue("draft stays visible")

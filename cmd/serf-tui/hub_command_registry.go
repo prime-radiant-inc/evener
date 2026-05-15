@@ -11,7 +11,6 @@ type hubCommandScope uint8
 
 const (
 	hubCommandDashboard hubCommandScope = 1 << iota
-	hubCommandProject
 	hubCommandSession
 )
 
@@ -38,7 +37,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 		Summary:       "Open spawn form",
 		PaletteLabel:  "/new",
 		PaletteDetail: "open spawn form",
-		Scopes:        hubCommandDashboard | hubCommandProject,
+		Scopes:        hubCommandDashboard,
 		Run: func(m *hubModel, _ string) tea.Cmd {
 			m.openSpawnForm()
 			if m.client != nil {
@@ -52,7 +51,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 		Summary:       "Fetch live sessions",
 		PaletteLabel:  "/refresh",
 		PaletteDetail: "fetch live sessions",
-		Scopes:        hubCommandDashboard | hubCommandProject,
+		Scopes:        hubCommandDashboard,
 		Run: func(m *hubModel, _ string) tea.Cmd {
 			if m.client != nil {
 				return fetchHubTree(m.client)
@@ -215,7 +214,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 		Summary:            "Start a new session",
 		PaletteLabel:       "/clear",
 		PaletteDetail:      "clear current session",
-		Scopes:             hubCommandDashboard | hubCommandProject | hubCommandSession,
+		Scopes:             hubCommandDashboard | hubCommandSession,
 		UnavailableAction:  "clear",
 		UnavailableSummary: "Clear is not available for this session.",
 		Available: func(ctx hubCommandContext) (bool, string) {
