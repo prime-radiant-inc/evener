@@ -2305,20 +2305,22 @@ func (m hubModel) dashboardView() string {
 			Height: m.height,
 		}.View()
 	}
+	footer := dashboardFooter(width)
+	rowLimit := dashboardRowLimit(m.height, topBar, b.String(), footer)
 	if m.dashboardUsesWideLayout() {
 		drawerWidth := min(72, max(42, width/2))
 		listWidth := max(40, width-drawerWidth-2)
-		list := renderDashboardRows(rows, m.selected, listWidth, false)
-		drawer := m.dashboardDetailsView(rows, drawerWidth)
+		list := renderDashboardRowsWindow(rows, m.selected, listWidth, false, rowLimit)
+		drawer := limitFirstLines(m.dashboardDetailsView(rows, drawerWidth), rowLimit)
 		b.WriteString(joinDashboardColumns(list, drawer, listWidth, drawerWidth, width))
 	} else {
-		b.WriteString(renderDashboardRows(rows, m.selected, width, width <= 72))
+		b.WriteString(renderDashboardRowsWindow(rows, m.selected, width, width <= 72, rowLimit))
 	}
 	b.WriteString("\n")
 	return appShell{
 		TopBar: topBar,
 		Body:   b.String(),
-		Footer: dashboardFooter(width),
+		Footer: footer,
 		Height: m.height,
 	}.View()
 }
@@ -2341,8 +2343,14 @@ func dashboardHeader(hubURL string, liveCount int, width int) string {
 }
 
 func renderDashboardRows(rows []hubRow, selected int, width int, compact bool) string {
+	return renderDashboardRowsWindow(rows, selected, width, compact, 0)
+}
+
+func renderDashboardRowsWindow(rows []hubRow, selected int, width int, compact bool, maxRows int) string {
 	var b strings.Builder
-	for i, row := range rows {
+	start, end := dashboardRowWindow(len(rows), selected, maxRows)
+	for i := start; i < end; i++ {
+		row := rows[i]
 		if row.kind == hubRowProject {
 			b.WriteString(renderDashboardProjectRow(row, rows, i == selected, width))
 			b.WriteString("\n")
@@ -2354,13 +2362,48 @@ func renderDashboardRows(rows []hubRow, selected int, width int, compact bool) s
 	return b.String()
 }
 
+func dashboardRowWindow(count int, selected int, maxRows int) (int, int) {
+	if count <= 0 {
+		return 0, 0
+	}
+	if maxRows <= 0 || maxRows >= count {
+		return 0, count
+	}
+	if selected < 0 {
+		selected = 0
+	}
+	if selected >= count {
+		selected = count - 1
+	}
+	start := selected - maxRows/2
+	if start < 0 {
+		start = 0
+	}
+	if start+maxRows > count {
+		start = count - maxRows
+	}
+	return start, start + maxRows
+}
+
+func dashboardRowLimit(totalHeight int, topBar string, bodyPrefix string, footer string) int {
+	if totalHeight <= 0 {
+		return 0
+	}
+	limit := sessionShellBodyHeight(totalHeight, topBar, "", footer)
+	limit -= shellSectionLineCount(bodyPrefix)
+	if limit < 1 {
+		return 1
+	}
+	return limit
+}
+
 func renderDashboardProjectRow(row hubRow, rows []hubRow, selected bool, width int) string {
 	marker := "▾"
 	if selected {
 		marker = ">"
 	}
 	styles := defaultTUIStyles()
-	line := fmt.Sprintf("%s %s %s  %s", marker, statusDot(row.state), row.project, projectSummary(row, rows))
+	line := fmt.Sprintf("%s %s %s  %s", marker, statusDot(row.state), dashboardCell(row.project), projectSummary(row, rows))
 	line = truncateText(line, width)
 	if selected {
 		return styles.Selected.Render(line)
@@ -2379,9 +2422,11 @@ func renderDashboardSessionRow(row hubRow, selected bool, width int, compact boo
 			marker,
 			statusDot(row.state),
 			stateLabel(row.state),
-			row.title,
-			row.model,
-			row.age,
+			dashboardCell(row.sourceLabel),
+			dashboardCell(row.project),
+			dashboardTitle(row.title),
+			dashboardCell(row.model),
+			dashboardCell(row.age),
 		}), " ")
 		line = truncateText(line, width)
 		if selected {
@@ -2393,16 +2438,30 @@ func renderDashboardSessionRow(row hubRow, selected bool, width int, compact boo
 		marker,
 		statusDot(row.state),
 		stateLabel(row.state),
-		row.sourceLabel,
-		row.title,
-		row.model,
-		row.age,
+		dashboardCell(row.sourceLabel),
+		dashboardCell(row.project),
+		dashboardTitle(row.title),
+		dashboardCell(row.model),
+		dashboardCell(row.age),
 	}), " ")
 	line = truncateText(line, width)
 	if selected {
 		return styles.Selected.Render(line)
 	}
 	return line
+}
+
+func dashboardCell(text string) string {
+	return strings.Join(strings.Fields(text), " ")
+}
+
+func dashboardTitle(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		if line = dashboardCell(line); line != "" {
+			return line
+		}
+	}
+	return dashboardCell(text)
 }
 
 func dashboardSessionBranch(rows []hubRow, index int) string {

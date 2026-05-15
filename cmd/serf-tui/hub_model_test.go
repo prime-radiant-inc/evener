@@ -147,6 +147,72 @@ func TestHubModelDashboardRendersProjectTreeHierarchy(t *testing.T) {
 	}
 }
 
+func TestHubModelDashboardClampsRowsToTerminalHeight(t *testing.T) {
+	m := newHubModel(nil, "http://hub.test")
+	m.width = 80
+	m.height = 12
+	project := hubTreeProject{
+		Key:  "implementation-swift-iris-velvet-task-0",
+		Name: "implementation-swift-iris-velvet-task-0",
+	}
+	for i := range 20 {
+		project.Sessions = append(project.Sessions, hubTreeNode{
+			Ref:       fmt.Sprintf("local:01TASK%02d", i),
+			SessionID: fmt.Sprintf("01TASK%02d", i),
+			Title:     fmt.Sprintf("task %02d", i),
+			State:     "ended",
+			Project:   project.Name,
+		})
+	}
+	m.tree = hubTreeResponse{Projects: []hubTreeProject{project}}
+	m.rows = buildDashboardRows(m.tree)
+	m.selected = len(m.rows) - 1
+
+	got := m.dashboardView()
+	if lines := shellSectionLineCount(got); lines > m.height {
+		t.Fatalf("dashboard rendered %d lines, want <= %d:\n%s", lines, m.height, got)
+	}
+	if !strings.Contains(got, "task 19") {
+		t.Fatalf("selected row was scrolled out of bounded dashboard:\n%s", got)
+	}
+	if strings.Contains(got, "task 00") {
+		t.Fatalf("bounded dashboard still rendered rows outside the visible window:\n%s", got)
+	}
+}
+
+func TestRenderDashboardRowsKeepsLongPromptsSingleLineAndProjectVisible(t *testing.T) {
+	rows := []hubRow{
+		{kind: hubRowProject, project: "implementation-swift-iris-velvet-task-0", projectKey: "implementation-swift-iris-velvet-task-0", state: "ended"},
+		{
+			kind:        hubRowSession,
+			ref:         appwire.Ref{SourceID: "local", ThreadID: "01TASK"},
+			sourceLabel: "serf",
+			title:       "# Debugger\n\nFind the root cause before proposing any fix. You do not implement fixes.",
+			project:     "implementation-swift-iris-velvet-task-0",
+			projectKey:  "implementation-swift-iris-velvet-task-0",
+			state:       "ended",
+			age:         "2d",
+		},
+	}
+
+	got := ansiPattern.ReplaceAllString(renderDashboardRows(rows, 1, 80, false), "")
+	lines := strings.Split(strings.TrimRight(got, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("dashboard rows should be one physical line per row, got %d lines:\n%s", len(lines), got)
+	}
+	if !strings.Contains(lines[1], "implementation-swift-iris-velvet-task-0") {
+		t.Fatalf("session row missing project label:\n%s", lines[1])
+	}
+	if !strings.Contains(lines[1], "# Debugger") || strings.Contains(lines[1], "Find the root cause") {
+		t.Fatalf("session row should show a truncated single-line title, got:\n%s", lines[1])
+	}
+	for _, line := range lines {
+		if lipgloss.Width(line) > 80 {
+			t.Fatalf("line width=%d, want <= 80: %q", lipgloss.Width(line), line)
+		}
+	}
+}
+
 func TestHubModelDashboardSelectedRowUsesVisualStyle(t *testing.T) {
 	withTestColorProfile(t)
 	m := sampleHubModel(100)
