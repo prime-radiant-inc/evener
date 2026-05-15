@@ -53,6 +53,7 @@ type tuiStyles struct {
 	Muted      lipgloss.Style
 	Selected   lipgloss.Style
 	Pane       lipgloss.Style
+	Modal      lipgloss.Style
 	Error      lipgloss.Style
 	Idle       lipgloss.Style
 	Processing lipgloss.Style
@@ -128,6 +129,7 @@ func defaultTUIStyles() tuiStyles {
 		Muted:      lipgloss.NewStyle().Foreground(t.pickerDimFg),
 		Selected:   lipgloss.NewStyle().Foreground(t.userBlockFg).Background(t.userBlockBg).Bold(true),
 		Pane:       lipgloss.NewStyle().Foreground(t.statusBarFg).Background(t.statusBarBg).PaddingLeft(2).PaddingRight(1),
+		Modal:      lipgloss.NewStyle().Foreground(t.statusBarFg).Background(t.statusBarBg).Border(lipgloss.RoundedBorder()).BorderForeground(t.inputBorderFg).PaddingLeft(2).PaddingRight(2),
 		Error:      lipgloss.NewStyle().Foreground(t.disconnected).Bold(true),
 		Idle:       lipgloss.NewStyle().Foreground(t.connected),
 		Processing: lipgloss.NewStyle().Foreground(lipgloss.Color("111")),

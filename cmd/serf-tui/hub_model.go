@@ -688,7 +688,7 @@ func (m *hubModel) openCommandPalette() {
 	if m.mode == hubModeProject {
 		rows = m.projectDisplayRows()
 	} else if m.mode == hubModeSession {
-		rows = m.sessionSearchRows()
+		rows = nil
 	}
 	palette := newCommandPalette("Command palette", commandPaletteEntriesForRows(m.mode, m.detail.Capabilities, rows), width)
 	m.commandPalette = &palette
@@ -2757,6 +2757,12 @@ func (m hubModel) spawnView() string {
 		fmt.Fprintf(&b, "  Project:  %s\n", m.spawnProject)
 	}
 	fmt.Fprintf(&b, "%s Dir:      %s\n", m.spawnFieldPrefix(hubSpawnFieldDir), m.spawnDirView())
+	fmt.Fprintf(&b, "%s Prompt (optional):\n", m.spawnFieldPrefix(hubSpawnFieldPrompt))
+	for _, line := range strings.Split(strings.TrimSuffix(renderComposerDraft(m.session.input.Value()), "\n"), "\n") {
+		b.WriteString("  ")
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
 	if m.err != nil {
 		fmt.Fprintf(&b, "\nerror: %v\n", m.err)
 	}
@@ -2769,14 +2775,7 @@ func (m hubModel) spawnView() string {
 	}
 
 	var footer strings.Builder
-	fmt.Fprintf(&footer, "%s Prompt (optional):\n", m.spawnFieldPrefix(hubSpawnFieldPrompt))
-	for _, line := range strings.Split(strings.TrimSuffix(renderComposerDraft(m.session.input.Value()), "\n"), "\n") {
-		footer.WriteString("  ")
-		footer.WriteString(line)
-		footer.WriteString("\n")
-	}
 	keys := []string{"tab: next field", "shift+tab: previous", m.spawnFieldHint(), "esc: cancel", "ctrl+o: dashboard"}
-	footer.WriteString("\n")
 	footer.WriteString(actionBarForWidth(m.width, keys...))
 	return appShell{
 		TopBar:  topBar,
@@ -2972,6 +2971,10 @@ func (m hubModel) sessionView() string {
 		overlay.WriteString(m.sessionTranscriptPicker.View())
 		overlay.WriteString("\n\n")
 	}
+	if m.sessionPanel != nil {
+		overlay.WriteString(m.sessionPanelOverlay())
+		overlay.WriteString("\n\n")
+	}
 	if m.commandPalette != nil {
 		overlay.WriteString(m.commandPalette.View())
 		overlay.WriteString("\n\n")
@@ -2992,7 +2995,7 @@ func (m hubModel) sessionView() string {
 	}
 	overlayText := overlay.String()
 	bodyHeight := sessionShellBodyHeight(m.height, topBar, overlayText, footer)
-	body := m.sessionBody(mainBody, bodyHeight)
+	body := m.sessionBody(mainBody, bodyHeight, overlayText != "")
 	return appShell{
 		TopBar:  topBar,
 		Body:    body,
@@ -3006,45 +3009,25 @@ func (m hubModel) renderSessionDetails() string {
 	return detailsDrawer{Detail: m.detail, HubURL: m.hubURL}.View()
 }
 
-func (m hubModel) sessionBody(mainBody string, bodyHeight int) string {
-	if m.sessionPanel == nil {
+func (m hubModel) sessionBody(mainBody string, bodyHeight int, hasOverlay bool) string {
+	if !hasOverlay && m.sessionPanel == nil {
 		return mainBody
 	}
-
-	panel := m.sessionPanel.View()
 	if bodyHeight <= 0 {
-		if m.width >= 120 {
-			drawerWidth := min(72, max(42, m.width/3))
-			bodyWidth := max(40, m.width-drawerWidth-2)
-			return joinDashboardColumns(mainBody, panel, bodyWidth, drawerWidth, m.width)
-		}
-		return panel + "\n\n" + mainBody
+		return mainBody
 	}
-	if m.width >= 120 {
-		drawerWidth := min(72, max(42, m.width/3))
-		bodyWidth := max(40, m.width-drawerWidth-2)
-		return joinDashboardColumns(
-			limitSessionBodyLines(mainBody, bodyHeight),
-			limitFirstLines(panel, bodyHeight),
-			bodyWidth,
-			drawerWidth,
-			m.width,
-		)
-	}
+	return limitSessionBodyLines(mainBody, bodyHeight)
+}
 
-	panelLines := multilineLines(panel)
-	if len(panelLines) >= bodyHeight {
-		return strings.Join(panelLines[:bodyHeight], "\n")
+func (m hubModel) sessionPanelOverlay() string {
+	if m.sessionPanel == nil {
+		return ""
 	}
-	remaining := bodyHeight - len(panelLines)
-	if remaining > 0 {
-		remaining--
+	width := m.width
+	if width <= 0 {
+		width = 100
 	}
-	main := limitSessionBodyLines(mainBody, remaining)
-	if strings.TrimSpace(main) == "" {
-		return strings.Join(panelLines, "\n")
-	}
-	return strings.Join(panelLines, "\n") + "\n\n" + main
+	return renderPopupPane(m.sessionPanel.View(), width)
 }
 
 func sessionShellBodyHeight(totalHeight int, topBar, overlay, footer string) int {

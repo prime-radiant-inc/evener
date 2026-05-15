@@ -1939,23 +1939,20 @@ func TestHubModelStatusUsesHubThreadTasksAndAuth(t *testing.T) {
 	}
 }
 
-func TestHubModelSessionPanelUsesDrawerOnWideAndOverlayOnNarrow(t *testing.T) {
+func TestHubModelSessionPanelRendersAsCenteredModalOverlay(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.session.messages = []chatMessage{{Kind: msgCommunicate, Text: "main transcript answer"}}
 	panel := hubSessionPanel{Body: "details\nSession:  01SEND\nDir:      /tmp/project"}
 	m.sessionPanel = &panel
 
 	m.width = 140
-	wide := m.sessionView()
-	if !strings.Contains(wide, "main transcript answer") || !strings.Contains(wide, "details") || !strings.Contains(wide, "Dir:      /tmp/project") {
-		t.Fatalf("wide details drawer missing content:\n%s", wide)
+	got := m.sessionView()
+	for _, want := range []string{"main transcript answer", "details", "Dir:      /tmp/project", "╭", "╰"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("details modal missing %q:\n%s", want, got)
+		}
 	}
-
-	m.width = 80
-	narrow := m.sessionView()
-	if !strings.Contains(narrow, "main transcript answer") || !strings.Contains(narrow, "details") || !strings.Contains(narrow, "Dir:      /tmp/project") {
-		t.Fatalf("narrow details overlay missing content:\n%s", narrow)
-	}
+	requireOrderedText(t, got, "details", "main transcript answer", "message")
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEscape})
 	if cmd != nil {
@@ -2727,12 +2724,39 @@ func TestHubModelHelpAndPaletteShareSessionCommands(t *testing.T) {
 	}
 	palette := m.commandPalette.View()
 
-	for _, command := range []string{"/help", "/search", "/tasks", "/agents", "/auth", "/login", "/logout", "/model", "/clear", "/fork", "/shutdown", "/theme", "/dashboard", "/project"} {
+	for _, command := range []string{"/help", "/tasks", "/agents", "/auth", "/login", "/logout", "/model", "/clear", "/fork", "/shutdown", "/theme", "/dashboard", "/project"} {
 		if !strings.Contains(help, command) {
 			t.Fatalf("help missing command %q:\n%s", command, help)
 		}
 		if !strings.Contains(palette, command) {
 			t.Fatalf("palette missing command %q:\n%s", command, palette)
+		}
+	}
+}
+
+func TestHubModelSessionCommandPaletteDoesNotShowOtherSessions(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.Project = "serf"
+	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
+		Key: "serf", Name: "serf",
+		Sessions: []hubTreeNode{
+			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "Please reply exactly: old smoke", State: "idle", Project: "serf", Live: true},
+			{Ref: "local:01PAST", SessionID: "01PAST", Title: "past renderer", State: "idle", Project: "serf", Live: true},
+		},
+	}}}
+	m.rows = buildDashboardRows(m.tree)
+
+	m.openCommandPalette()
+	if m.commandPalette == nil {
+		t.Fatal("session palette did not open")
+	}
+	got := m.sessionView()
+	if !strings.Contains(got, "Command palette") || !strings.Contains(got, "/help") {
+		t.Fatalf("session command palette missing commands:\n%s", got)
+	}
+	for _, unwanted := range []string{"Please reply exactly: old smoke", "past renderer", "/search"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("session command palette should not show cross-session search entry %q:\n%s", unwanted, got)
 		}
 	}
 }
@@ -2762,7 +2786,38 @@ func TestHubModelSessionPaletteShowsDisabledCommandReasons(t *testing.T) {
 	}
 }
 
-func TestHubModelSearchCommandOpensSessionSearchWithoutReplacingDraft(t *testing.T) {
+func TestHubModelDashboardPaletteCanSearchOtherSessions(t *testing.T) {
+	m := newHubModel(nil, "http://hub.test")
+	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
+		Key: "serf", Name: "serf",
+		Sessions: []hubTreeNode{
+			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live scoring", State: "idle", Project: "serf", Live: true},
+			{Ref: "local:01PAST", SessionID: "01PAST", Title: "past renderer", State: "idle", Project: "serf", Live: true},
+		},
+	}}}
+	m.rows = buildDashboardRows(m.tree)
+
+	m.openCommandPalette()
+	if m.commandPalette == nil {
+		t.Fatal("dashboard palette did not open")
+	}
+	for _, r := range "past" {
+		updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		if cmd != nil {
+			t.Fatal("filtering dashboard palette should be synchronous")
+		}
+		m = updated.(hubModel)
+	}
+	got := m.dashboardView()
+	if !strings.Contains(got, "Command palette") || !strings.Contains(got, "past renderer") {
+		t.Fatalf("dashboard palette should search sessions:\n%s", got)
+	}
+	if strings.Contains(got, "live scoring") {
+		t.Fatalf("dashboard session search should honor palette filter:\n%s", got)
+	}
+}
+
+func TestHubModelSearchCommandIsNotASessionCommand(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail.Project = "serf"
 	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
@@ -2777,23 +2832,20 @@ func TestHubModelSearchCommandOpensSessionSearchWithoutReplacingDraft(t *testing
 
 	cmd := m.runHubSlashCommand("search", "")
 	if cmd != nil {
-		t.Fatal("/search should open the local palette synchronously")
+		t.Fatal("/search should not run an async session command")
+	}
+	if m.commandPalette != nil {
+		t.Fatal("/search should not open cross-session search from a session")
 	}
 	if got := m.session.input.Value(); got != "keep this draft" {
-		t.Fatalf("/search replaced composer draft with %q", got)
+		t.Fatalf("/search should not replace composer draft, got %q", got)
 	}
-	if m.commandPalette == nil {
-		t.Fatal("/search did not open command palette")
-	}
-	got := m.sessionView()
-	for _, want := range []string{"Command palette", "live scoring", "past renderer"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("session search missing %q:\n%s", want, got)
-		}
+	if got := m.sessionView(); !strings.Contains(got, "Unknown command: /search") {
+		t.Fatalf("/search should not be advertised as a session command:\n%s", got)
 	}
 }
 
-func TestHubModelSessionPaletteShortcutRunsSearchWithoutReplacingDraft(t *testing.T) {
+func TestHubModelSessionPaletteShortcutDoesNotExposeCrossSessionSearch(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail.Project = "serf"
 	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
@@ -2817,29 +2869,21 @@ func TestHubModelSessionPaletteShortcutRunsSearchWithoutReplacingDraft(t *testin
 	if m.commandPalette == nil {
 		t.Fatal("ctrl+p did not open session command palette")
 	}
-	if got := m.sessionView(); !strings.Contains(got, "/search") || !strings.Contains(got, "> keep this draft") {
-		t.Fatalf("session palette missing /search or draft:\n%s", got)
+	if got := m.sessionView(); !strings.Contains(got, "/help") || strings.Contains(got, "/search") || strings.Contains(got, "live scoring") || !strings.Contains(got, "> keep this draft") {
+		t.Fatalf("session palette should show commands, not cross-session search:\n%s", got)
 	}
 
-	for _, r := range "search" {
+	for _, r := range "model" {
 		updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 		if cmd != nil {
 			t.Fatal("filtering session palette should be synchronous")
 		}
 		m = updated.(hubModel)
 	}
-	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd != nil {
-		t.Fatal("running /search from session palette should be synchronous")
-	}
-	m = updated.(hubModel)
-	if got := m.session.input.Value(); got != "keep this draft" {
-		t.Fatalf("/search from palette replaced composer draft with %q", got)
-	}
 	got := m.sessionView()
-	for _, want := range []string{"Command palette", "live scoring", "past renderer", "> keep this draft"} {
+	for _, want := range []string{"Command palette", "/model", "> keep this draft"} {
 		if !strings.Contains(got, want) {
-			t.Fatalf("session search after palette command missing %q:\n%s", want, got)
+			t.Fatalf("session command palette missing %q:\n%s", want, got)
 		}
 	}
 }

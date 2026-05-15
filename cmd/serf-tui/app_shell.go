@@ -20,11 +20,11 @@ func (s appShell) View() string {
 	if topBar := strings.TrimRight(s.TopBar, "\n"); topBar != "" {
 		contentSections = append(contentSections, styles.Title.Render(topBar))
 	}
-	if body := strings.TrimRight(s.Body, "\n"); body != "" {
-		contentSections = append(contentSections, body)
-	}
 	if overlay := strings.TrimRight(s.Overlay, "\n"); overlay != "" {
 		contentSections = append(contentSections, overlay)
+	}
+	if body := strings.TrimRight(s.Body, "\n"); body != "" {
+		contentSections = append(contentSections, body)
 	}
 	footer := strings.TrimRight(s.Footer, "\n")
 	if len(contentSections) == 0 && footer == "" {

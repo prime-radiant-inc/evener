@@ -271,6 +271,13 @@ func TestHubModelSessionComposerBoundsRenderedDraftHeight(t *testing.T) {
 	}
 }
 
+func TestHubModelSessionComposerShowsStaticCursorWhenEmpty(t *testing.T) {
+	got := renderComposerDraft("")
+	if !strings.Contains(got, "> █") {
+		t.Fatalf("empty composer should show a visible cursor:\n%q", got)
+	}
+}
+
 func TestHubModelSessionPickerOverlayKeepsComposerDraftVisible(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.session.setInputValue("draft survives overlay")
@@ -299,4 +306,33 @@ func TestHubModelSpawnModelPickerKeepsFormDraftVisible(t *testing.T) {
 			t.Fatalf("spawn model picker overlay missing %q:\n%s", want, got)
 		}
 	}
+}
+
+func TestHubModelSpawnPromptIsGroupedWithLaunchFields(t *testing.T) {
+	m := newHubModel(nil, "http://hub.test")
+	m.openSpawnForm()
+	m.height = 20
+	m.spawnDir = "/tmp/serf"
+	m.spawnDirInput.SetValue(m.spawnDir)
+	m.session.setInputValue("launch task")
+
+	got := m.spawnView()
+	requireOrderedText(t, got, "Harness:", "Model:", "Dir:", "Prompt", "> launch task", "tab: next field")
+	dirLine := renderedLineContaining(got, "Dir:")
+	promptLine := renderedLineContaining(got, "Prompt")
+	if dirLine < 0 || promptLine < 0 {
+		t.Fatalf("spawn view missing dir or prompt:\n%s", got)
+	}
+	if promptLine-dirLine > 3 {
+		t.Fatalf("prompt should be grouped with launch fields, dir line=%d prompt line=%d:\n%s", dirLine, promptLine, got)
+	}
+}
+
+func renderedLineContaining(view, needle string) int {
+	for i, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, needle) {
+			return i
+		}
+	}
+	return -1
 }

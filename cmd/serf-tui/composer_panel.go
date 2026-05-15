@@ -140,6 +140,9 @@ func renderComposerDraft(draft string, maxLines ...int) string {
 		} else {
 			b.WriteString("  ")
 		}
+		if i == len(lines)-1 {
+			line += "█"
+		}
 		b.WriteString(line)
 		b.WriteString("\n")
 	}

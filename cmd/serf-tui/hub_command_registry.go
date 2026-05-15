@@ -68,13 +68,6 @@ var hubCommandRegistry = []hubCommandDefinition{
 		Scopes:        hubCommandSession,
 	},
 	{
-		Name:          "search",
-		Summary:       "Search commands and sessions",
-		PaletteLabel:  "/search",
-		PaletteDetail: "search commands and sessions",
-		Scopes:        hubCommandSession,
-	},
-	{
 		Name:          "dashboard",
 		Summary:       "Go to live dashboard",
 		PaletteLabel:  "/dashboard",
@@ -165,7 +158,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 		Name:          "status",
 		Summary:       "Show session info and context pressure",
 		PaletteLabel:  "/status",
-		PaletteDetail: "show session details",
+		PaletteDetail: "show live session summary",
 		Scopes:        hubCommandSession,
 		Run:           fetchCurrentHubStatus,
 	},
@@ -173,7 +166,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 		Name:          "details",
 		Summary:       "Show session details",
 		PaletteLabel:  "/details",
-		PaletteDetail: "show session details",
+		PaletteDetail: "show full metadata and diagnostics",
 		Scopes:        hubCommandSession,
 		Run:           fetchCurrentHubSession,
 	},
@@ -374,10 +367,6 @@ func hubCommandAvailable(command hubCommandDefinition, ctx hubCommandContext) (b
 func runHubCommandDefinition(m *hubModel, command hubCommandDefinition, args string) tea.Cmd {
 	if command.Name == "help" {
 		m.addSessionSystem(hubSlashCommandHelp(m.detail.Capabilities))
-		return nil
-	}
-	if command.Name == "search" {
-		m.openCommandPalette()
 		return nil
 	}
 	if command.Run == nil {

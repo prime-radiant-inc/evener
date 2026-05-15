@@ -310,12 +310,16 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	app.TypeLine("/wat")
 	app.WaitFor("Unknown command: /wat. Type /help for available commands.")
 
-	app.TypeLine("/search")
+	app.TypeLine("/project")
+	app.WaitFor("serf / project / serf", "live task", "ended maintenance")
+	app.SendKeys("/")
 	app.WaitFor("Command palette", "live task", "ended maintenance")
 	app.TypeText("ended")
 	app.WaitFor("Filter: ended", "ended maintenance")
 	app.SendKeys("Escape")
-	app.WaitFor("enter: send")
+	app.SendKeys("Escape")
+	openLiveSession(t, app)
+	app.WaitFor("serf / session / live task", "enter: send")
 
 	app.TypeLine("/auth openai")
 	app.WaitFor("OpenAI auth: signed out")
@@ -521,7 +525,7 @@ func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
 		t.Fatalf("model should not call hub when capability is disabled: %+v", models)
 	}
 
-	app.TypeLine("/search")
+	app.SendKeys("C-p")
 	app.WaitFor("Command palette", "/clear", "disabled: source does not advertise clear", "/shutdown", "disabled: source does not advertise shutdown")
 	app.SendKeys("Escape")
 
@@ -532,7 +536,7 @@ func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
 	}
 }
 
-func TestTUITmuxE2E_SessionSearchPalettePreservesDraft(t *testing.T) {
+func TestTUITmuxE2E_SessionCommandPalettePreservesDraft(t *testing.T) {
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -541,14 +545,16 @@ func TestTUITmuxE2E_SessionSearchPalettePreservesDraft(t *testing.T) {
 	defer app.Close()
 
 	openLiveSession(t, app)
-	app.TypeText("draft before search")
+	app.TypeText("draft before palette")
 	app.SendKeys("C-p")
-	app.WaitFor("Command palette", "/search", "> draft before search")
-	app.TypeText("search")
-	app.SendKeys("Enter")
-	app.WaitFor("Command palette", "live task", "ended maintenance", "> draft before search")
+	screen := app.WaitFor("Command palette", "/help", "/model", "> draft before palette")
+	if strings.Contains(screen, "/search") || strings.Contains(screen, "ended maintenance") {
+		t.Fatalf("session palette should not expose cross-session search:\n%s", screen)
+	}
+	app.TypeText("model")
+	app.WaitFor("Filter: model", "/model", "> draft before palette")
 	app.SendKeys("Escape")
-	app.WaitFor("enter: send", "> draft before search")
+	app.WaitFor("enter: send", "> draft before palette")
 }
 
 func TestTUITmuxE2E_SessionLeadingSlashOpensPalette(t *testing.T) {
