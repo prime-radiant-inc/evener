@@ -25,6 +25,10 @@ func isCredentialEnvKey(key string) bool {
 	return false
 }
 
+// IsCredentialEnvKey is the exported version of the internal blocklist
+// check, used by hub RPC handlers to refuse credential keys at write time.
+func IsCredentialEnvKey(key string) bool { return isCredentialEnvKey(key) }
+
 // mergeLayers composes the supplied layers in canonical order. Layers not
 // present in the map are treated as empty. Returns the resolved effective
 // view plus any non-fatal diagnostics found while merging (duplicate MCP
