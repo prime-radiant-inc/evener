@@ -271,14 +271,31 @@
 
   // Re-apply title/favicon immediately after HTMX swaps the workspace
   // (e.g., navigating between settings sections). Otherwise the title
-  // stays stale until the next poll cycle.
+  // stays stale until the next poll cycle. Also sync the settings
+  // header's visible .title span to the new section so the workspace
+  // header doesn't read the previous tab name.
   document.body.addEventListener("htmx:afterSettle", () => {
     if (!initialized) return;
+    syncSettingsHeader();
     const prefs = readPrefs();
-    // Use the current live state without re-fetching — the existing
-    // prevState is good enough for the title.
     applyTitle(prefs, []);
   });
+
+  function syncSettingsHeader() {
+    const headerTitle = document.querySelector(".workspace-header .workspace-title .title[data-settings-section]");
+    if (!headerTitle) return;
+    const urlMatch = location.pathname.match(/^\/settings\/([^/?]+)/);
+    if (!urlMatch) return;
+    const section = urlMatch[1];
+    if (headerTitle.dataset.settingsSection === section) return;
+    headerTitle.dataset.settingsSection = section;
+    headerTitle.textContent = SECTION_LABELS[section] || section;
+    // Also fix the active link highlight so the nav reflects the URL.
+    document.querySelectorAll(".settings-nav-link").forEach((a) => {
+      const href = a.getAttribute("href") || "";
+      a.classList.toggle("active", href === "/settings/" + section);
+    });
+  }
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init);
