@@ -643,6 +643,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .settings-h2 { margin: 0 0 12px; font-size: 18px; font-weight: 500; color: var(--text); }
 .settings-help { color: var(--text-muted); font-size: 13px; max-width: 560px; margin: 0 0 24px; line-height: 1.6; }
 .settings-help code { background: var(--bg-raised); padding: 1px 6px; border-radius: 3px; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; }
+.settings-h3 { margin: 28px 0 10px; font-size: 13px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; }
 .settings-form { display: flex; flex-direction: column; gap: 12px; max-width: 480px; }
 .settings-radio,
 .settings-toggle { display: flex; align-items: center; gap: 10px; color: var(--text); font-size: 13px; cursor: pointer; }
@@ -672,6 +673,42 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 
 /* Sidebar settings link — pushed to the right */
 .sidebar-action.settings-link { margin-left: auto; }
+
+/* Settings launch-form field rows */
+.settings-launch-form { display: flex; flex-direction: column; gap: 10px; max-width: 480px; margin-bottom: 24px; }
+.settings-launch-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-muted); }
+.settings-launch-form label > input[type=text],
+.settings-launch-form label > input[type=number],
+.settings-launch-form label > select { font-size: 13px; color: var(--text); background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 4px; padding: 6px 8px; outline: none; }
+.settings-launch-form label > input[type=text]:focus,
+.settings-launch-form label > input[type=number]:focus,
+.settings-launch-form label > select:focus { border-color: var(--accent); }
+.settings-launch-form label.checkbox-label { flex-direction: row; align-items: center; gap: 8px; color: var(--text); font-size: 13px; }
+.settings-launch-form .form-actions { margin-top: 6px; display: flex; align-items: center; gap: 12px; }
+
+/* Model + dir picker widgets used in settings pages */
+.sp-model-wrap,
+.sp-dir-wrap { display: flex; align-items: center; gap: 6px; }
+.sp-model-wrap input[type=hidden] { display: none; }
+.sp-model-btn,
+.sp-dir-btn { display: inline-flex; align-items: baseline; gap: 6px; padding: 5px 10px; background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 14px; color: var(--text); font-size: 12px; cursor: pointer; font: inherit; white-space: nowrap; }
+.sp-model-btn:hover,
+.sp-dir-btn:hover { border-color: var(--accent); }
+.sp-model-display,
+.sp-dir-display { font-family: ui-monospace, "SFMono-Regular", monospace; color: var(--text); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-model-caret,
+.sp-dir-caret { color: var(--text-muted); font-size: 9px; }
+.sp-clear-btn { background: none; border: none; color: var(--text-muted); font-size: 13px; padding: 0 4px; cursor: pointer; line-height: 1; }
+.sp-clear-btn:hover { color: var(--text); background: none; border: none; }
+
+/* Inline add-row forms in project settings */
+.settings-add-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+.settings-add-row input[type=text] { flex: 1; min-width: 200px; }
+.settings-items-list { list-style: none; padding: 0; margin: 0 0 4px; display: flex; flex-direction: column; gap: 4px; }
+.settings-items-list li { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--rule); font-size: 13px; }
+.settings-items-list li:last-child { border-bottom: none; }
+.settings-items-list li code { font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-items-list li button { flex-shrink: 0; font-size: 11px; padding: 2px 7px; }
 
 /* Title-bar copy button */
 .title-action { background: transparent; border: none; color: var(--text-muted); font-size: 13px; cursor: pointer; padding: 0 4px; }

@@ -33,12 +33,24 @@
       const mcpConfigPaths = launch.mcpConfigPaths || [];
       const systemPromptAppendPaths = launch.systemPromptAppendPaths || [];
       const env = launch.env || {};
+      const modelVal = escapeHtml(launch.model || "");
 
       root.innerHTML = `
         <h3 class="settings-h3">Launch defaults</h3>
-        <form id="proj-launch-form">
-          <label>Model <input type="text" name="model" value="${escapeHtml(launch.model || "")}" placeholder="(inherit global)"></label>
-          <label>Agent <input type="text" name="agent" value="${escapeHtml(launch.agent || "")}" placeholder="(inherit global)"></label>
+        <form id="proj-launch-form" class="settings-launch-form">
+          <label>Model
+            <div class="sp-model-wrap">
+              <input type="hidden" name="model" id="proj-model-hidden" value="${modelVal}">
+              <button class="sp-model-btn" type="button" data-settings-model-picker>
+                <span class="sp-model-display" id="proj-model-display">${modelVal || "(inherit global)"}</span>
+                <span class="sp-model-caret">▾</span>
+              </button>
+              <button class="sp-clear-btn" type="button" id="proj-model-clear" title="clear">✕</button>
+            </div>
+          </label>
+          <label>Agent
+            <input type="text" name="agent" value="${escapeHtml(launch.agent || "")}" placeholder="(inherit global)">
+          </label>
           <label>Reasoning effort
             <select name="reasoningEffort">
               <option value="">(use global default)</option>
@@ -58,93 +70,132 @@
               <option ${launch.contextStrategy === "ooda" ? "selected" : ""}>ooda</option>
             </select>
           </label>
-          <label>Max rounds <input type="number" name="maxRounds" min="0" step="1" value="${launch.maxRounds ?? ""}"></label>
-          <label>Max subagent depth <input type="number" name="maxSubagentDepth" min="0" step="1" value="${launch.maxSubagentDepth ?? ""}"></label>
-          <label><input type="checkbox" name="noProjectPrompts" ${launch.noProjectPrompts ? "checked" : ""}> Suppress .serf/prompts loading</label>
-          <button type="submit">Save launch defaults</button>
-          <p id="proj-status" class="settings-help"></p>
+          <label>Max rounds
+            <input type="number" name="maxRounds" min="0" step="1" value="${launch.maxRounds ?? ""}">
+          </label>
+          <label>Max subagent depth
+            <input type="number" name="maxSubagentDepth" min="0" step="1" value="${launch.maxSubagentDepth ?? ""}">
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" name="noProjectPrompts" ${launch.noProjectPrompts ? "checked" : ""}> Suppress .serf/prompts loading
+          </label>
+          <div class="form-actions">
+            <button type="submit">Save launch defaults</button>
+            <p id="proj-status" class="settings-help" style="margin:0"></p>
+          </div>
         </form>
 
         <h3 class="settings-h3">Plugin directories</h3>
-        <ul class="settings-list" id="proj-plugin-dirs">
+        <ul class="settings-items-list" id="proj-plugin-dirs">
           ${pluginDirs.map((d, i) => `
-            <li><code>${escapeHtml(d)}</code> <button data-i="${i}" data-action="rm-plugin">remove</button></li>
+            <li><code>${escapeHtml(d)}</code> <button data-i="${i}" data-action="rm-plugin" class="danger">remove</button></li>
           `).join("")}
         </ul>
-        <form id="proj-plugins-add">
-          <input type="text" name="dir" placeholder="/absolute/path" required>
+        <form id="proj-plugins-add" class="settings-add-row">
+          <div class="sp-dir-wrap" style="flex:1;min-width:200px;">
+            <input type="text" name="dir" placeholder="/absolute/path" required style="flex:1;min-width:0;">
+            <button type="button" class="sp-dir-btn" data-settings-dir-picker>
+              <span class="sp-dir-caret">📁</span>
+            </button>
+          </div>
           <button type="submit">Add plugin dir</button>
         </form>
 
         <h3 class="settings-h3">Skill directories</h3>
-        <ul class="settings-list" id="proj-skill-dirs">
+        <ul class="settings-items-list" id="proj-skill-dirs">
           ${skillsDirs.map((d, i) => `
-            <li><code>${escapeHtml(d)}</code> <button data-i="${i}" data-action="rm-skill">remove</button></li>
+            <li><code>${escapeHtml(d)}</code> <button data-i="${i}" data-action="rm-skill" class="danger">remove</button></li>
           `).join("")}
         </ul>
-        <form id="proj-skills-add">
-          <input type="text" name="dir" placeholder="/absolute/path" required>
+        <form id="proj-skills-add" class="settings-add-row">
+          <div class="sp-dir-wrap" style="flex:1;min-width:200px;">
+            <input type="text" name="dir" placeholder="/absolute/path" required style="flex:1;min-width:0;">
+            <button type="button" class="sp-dir-btn" data-settings-dir-picker>
+              <span class="sp-dir-caret">📁</span>
+            </button>
+          </div>
           <button type="submit">Add skill dir</button>
         </form>
 
         <h3 class="settings-h3">MCP servers</h3>
-        <ul class="settings-list" id="proj-mcps">
+        <ul class="settings-items-list" id="proj-mcps">
           ${mcps.map((m, i) => `
             <li>
-              <code>${escapeHtml(m.name)}</code> →
+              <code>${escapeHtml(m.name)}</code>
               <code>${escapeHtml(m.command)} ${(m.args || []).map(escapeHtml).join(" ")}</code>
-              <button data-i="${i}" data-action="rm-mcp">remove</button>
+              <button data-i="${i}" data-action="rm-mcp" class="danger">remove</button>
             </li>
           `).join("")}
         </ul>
-        <form id="proj-mcps-add">
-          <input type="text" name="name" placeholder="name" required>
-          <input type="text" name="command" placeholder="command" required>
-          <input type="text" name="args" placeholder="args (space-separated)">
+        <form id="proj-mcps-add" class="settings-add-row" style="flex-wrap:wrap;">
+          <input type="text" name="name" placeholder="name" required style="width:120px;">
+          <input type="text" name="command" placeholder="command" required style="flex:1;min-width:120px;">
+          <input type="text" name="args" placeholder="args (space-separated)" style="flex:1;min-width:120px;">
           <button type="submit">Add MCP server</button>
         </form>
 
         <h3 class="settings-h3">MCP config paths</h3>
-        <ul class="settings-list" id="proj-mcp-paths">
+        <ul class="settings-items-list" id="proj-mcp-paths">
           ${mcpConfigPaths.map((p, i) => `
-            <li><code>${escapeHtml(p)}</code> <button data-i="${i}" data-action="rm-mcp-path">remove</button></li>
+            <li><code>${escapeHtml(p)}</code> <button data-i="${i}" data-action="rm-mcp-path" class="danger">remove</button></li>
           `).join("")}
         </ul>
-        <form id="proj-mcp-paths-add">
-          <input type="text" name="path" placeholder="/path/to/mcp.json" required>
+        <form id="proj-mcp-paths-add" class="settings-add-row">
+          <div class="sp-dir-wrap" style="flex:1;min-width:200px;">
+            <input type="text" name="path" placeholder="/path/to/mcp.json" required style="flex:1;min-width:0;">
+            <button type="button" class="sp-dir-btn" data-settings-dir-picker>
+              <span class="sp-dir-caret">📁</span>
+            </button>
+          </div>
           <button type="submit">Add MCP config path</button>
         </form>
 
         <h3 class="settings-h3">System prompt append paths</h3>
-        <ul class="settings-list" id="proj-prompt-paths">
+        <ul class="settings-items-list" id="proj-prompt-paths">
           ${systemPromptAppendPaths.map((p, i) => `
-            <li><code>${escapeHtml(p)}</code> <button data-i="${i}" data-action="rm-prompt-path">remove</button></li>
+            <li><code>${escapeHtml(p)}</code> <button data-i="${i}" data-action="rm-prompt-path" class="danger">remove</button></li>
           `).join("")}
         </ul>
-        <form id="proj-prompt-paths-add">
-          <input type="text" name="path" placeholder="/path/to/prompt.txt" required>
+        <form id="proj-prompt-paths-add" class="settings-add-row">
+          <div class="sp-dir-wrap" style="flex:1;min-width:200px;">
+            <input type="text" name="path" placeholder="/path/to/prompt.txt" required style="flex:1;min-width:0;">
+            <button type="button" class="sp-dir-btn" data-settings-dir-picker>
+              <span class="sp-dir-caret">📁</span>
+            </button>
+          </div>
           <button type="submit">Add prompt path</button>
         </form>
 
         <h3 class="settings-h3">Environment variables</h3>
-        <ul class="settings-list" id="proj-env">
+        <ul class="settings-items-list" id="proj-env">
           ${Object.entries(env).map(([k, v], i) => `
-            <li><code>${escapeHtml(k)}</code> = <code>${escapeHtml(v)}</code> <button data-k="${escapeHtml(k)}" data-action="rm-env">remove</button></li>
+            <li><code>${escapeHtml(k)}</code><span style="color:var(--text-muted);padding:0 4px;">=</span><code>${escapeHtml(v)}</code> <button data-k="${escapeHtml(k)}" data-action="rm-env" class="danger">remove</button></li>
           `).join("")}
         </ul>
-        <form id="proj-env-add">
-          <input type="text" name="key" placeholder="KEY" required>
-          <input type="text" name="value" placeholder="value">
+        <form id="proj-env-add" class="settings-add-row">
+          <input type="text" name="key" placeholder="KEY" required style="width:140px;">
+          <input type="text" name="value" placeholder="value" style="flex:1;min-width:120px;">
           <button type="submit">Add env var</button>
         </form>
       `;
+
+      // Wire up model picker clear button
+      const modelHidden = root.querySelector("#proj-model-hidden");
+      const modelDisplay = root.querySelector("#proj-model-display");
+      root.querySelector("#proj-model-clear").addEventListener("click", () => {
+        modelHidden.value = "";
+        modelDisplay.textContent = "(inherit global)";
+      });
+
+      // Init settings pickers (model + dir) for this render
+      if (window.SettingsPickers) window.SettingsPickers.init(root);
 
       // Launch form save
       root.querySelector("#proj-launch-form").addEventListener("submit", async (e) => {
         e.preventDefault();
         const form = e.target;
         const out = { ...current,
-          model: form.model.value.trim() || undefined,
+          model: modelHidden.value.trim() || undefined,
           agent: form.agent.value.trim() || undefined,
           reasoningEffort: form.reasoningEffort.value || undefined,
           contextStrategy: form.contextStrategy.value || undefined,
