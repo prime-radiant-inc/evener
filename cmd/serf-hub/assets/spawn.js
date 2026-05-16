@@ -195,6 +195,17 @@
     attachListAdd("ovr-skill", "ovr-skill-add", "ovr-skill-list");
     attachListAdd("ovr-plugin", "ovr-plugin-add", "ovr-plugin-list");
 
+    // Scroll the advanced section into view when it opens so the content
+    // isn't clipped below the viewport.
+    const advancedDetails = form.querySelector(".spawn-advanced");
+    if (advancedDetails) {
+      advancedDetails.addEventListener("toggle", () => {
+        if (advancedDetails.open) {
+          advancedDetails.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        }
+      });
+    }
+
     // Show resolved config
     const showResolvedBtn = document.getElementById("ovr-show-resolved");
     if (showResolvedBtn) {
