@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -200,8 +201,143 @@ func renderRepoView(r *appwire.RepoLaunchConfigStatus) string {
 	return b.String()
 }
 
+// launchSettingsEditRequestMsg is emitted when the user presses Enter on
+// an editable field; the hub model translates it into a textInputModal.
+type launchSettingsEditRequestMsg struct {
+	Layer        string
+	Field        string
+	CurrentValue string
+}
+
 func (p launchSettingsPanel) editCurrent() (tea.Model, tea.Cmd) {
-	// Task 6 will fill this in. For now, just note that editing isn't wired.
-	p.statusMessage = "(editor not yet wired; coming in Task 6)"
-	return p, nil
+	if p.tab == launchTabRepo {
+		// In-repo tab: Enter applies trust when state is untrusted/changed.
+		if p.resolved.Repo == nil || p.resolved.Repo.Hash == "" {
+			return p, nil
+		}
+		if p.resolved.Repo.Trust == "untrusted" || p.resolved.Repo.Trust == "changed" {
+			return p, cmdTrustRepo(p.client, p.cwd, p.resolved.Repo.Hash)
+		}
+		return p, nil
+	}
+	rows := layerRows(p.currentLayer())
+	if p.cursor >= len(rows) {
+		return p, nil
+	}
+	row := rows[p.cursor]
+	return p, func() tea.Msg {
+		return launchSettingsEditRequestMsg{
+			Layer:        p.tabName(),
+			Field:        row.field,
+			CurrentValue: row.value,
+		}
+	}
+}
+
+func (p launchSettingsPanel) tabName() string {
+	switch p.tab {
+	case launchTabProject:
+		return "project"
+	default:
+		return "global"
+	}
+}
+
+func (p launchSettingsPanel) currentLayer() appwire.LaunchConfigLayer {
+	if p.tab == launchTabProject {
+		return p.project
+	}
+	return p.global
+}
+
+// ApplyEdit returns a copy of the current panel with the field updated to
+// `value`. Used by the hub model after a textInputModal returns a result.
+func (p launchSettingsPanel) ApplyEdit(field, value string) (launchSettingsPanel, appwire.LaunchConfigLayer, error) {
+	layer := p.currentLayer()
+	updated, err := applyEdit(layer, field, value)
+	if err != nil {
+		return p, layer, err
+	}
+	if p.tab == launchTabProject {
+		p.project = updated
+	} else {
+		p.global = updated
+	}
+	return p, updated, nil
+}
+
+func applyEdit(layer appwire.LaunchConfigLayer, field, value string) (appwire.LaunchConfigLayer, error) {
+	switch field {
+	case "model":
+		layer.Model = strings.TrimSpace(value)
+	case "agent":
+		layer.Agent = strings.TrimSpace(value)
+	case "reasoning_effort":
+		layer.ReasoningEffort = strings.TrimSpace(value)
+	case "context_strategy":
+		layer.ContextStrategy = strings.TrimSpace(value)
+	case "max_rounds":
+		v, err := parseOptionalInt(value)
+		if err != nil {
+			return layer, err
+		}
+		layer.MaxRounds = v
+	case "max_subagent_depth":
+		v, err := parseOptionalInt(value)
+		if err != nil {
+			return layer, err
+		}
+		layer.MaxSubagentDepth = v
+	case "no_project_prompts":
+		switch strings.TrimSpace(value) {
+		case "", "(default)":
+			layer.NoProjectPrompts = nil
+		case "true", "yes", "1":
+			t := true
+			layer.NoProjectPrompts = &t
+		case "false", "no", "0":
+			f := false
+			layer.NoProjectPrompts = &f
+		default:
+			return layer, fmt.Errorf("bool required, got %q", value)
+		}
+	case "skills_dirs", "plugin_dirs", "mcp_configs", "system_prompt_append":
+		entries := splitTrim(value, ",")
+		switch field {
+		case "skills_dirs":
+			layer.SkillsDirs = entries
+		case "plugin_dirs":
+			layer.PluginDirs = entries
+		case "mcp_configs":
+			layer.MCPConfigs = entries
+		case "system_prompt_append":
+			layer.SystemPromptAppend = entries
+		}
+	default:
+		return layer, fmt.Errorf("editing %q in TUI not yet supported; use the web UI", field)
+	}
+	return layer, nil
+}
+
+func parseOptionalInt(value string) (*int, error) {
+	v := strings.TrimSpace(value)
+	if v == "" || v == "(default)" {
+		return nil, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return nil, err
+	}
+	return &n, nil
+}
+
+func splitTrim(s, sep string) []string {
+	parts := strings.Split(s, sep)
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }

@@ -544,6 +544,13 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, nil
+	case launchSettingsEditRequestMsg:
+		modal := newTextInputModal(
+			fmt.Sprintf("Edit %s.%s (current: %s):", msg.Layer, msg.Field, msg.CurrentValue),
+			fmt.Sprintf("settings-edit:%s:%s", msg.Layer, msg.Field),
+		)
+		m.followupModal = &modal
+		return m, nil
 	case textInputResultMsg:
 		if strings.HasPrefix(msg.Tag, "credential-set:") {
 			provider := strings.TrimPrefix(msg.Tag, "credential-set:")
@@ -566,6 +573,27 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, cmdAuthLoginComplete(m.client, parts[0], parts[1], msg.Value)
 			}
 			return m, nil
+		}
+		if strings.HasPrefix(msg.Tag, "settings-edit:") {
+			parts := strings.SplitN(strings.TrimPrefix(msg.Tag, "settings-edit:"), ":", 2)
+			if len(parts) != 2 {
+				return m, nil
+			}
+			layer, field := parts[0], parts[1]
+			m.followupModal = nil
+			if msg.Cancelled {
+				return m, nil
+			}
+			if m.launchSettingsPanel == nil {
+				return m, nil
+			}
+			panel, updatedLayer, err := m.launchSettingsPanel.ApplyEdit(field, msg.Value)
+			if err != nil {
+				m.err = err
+				return m, nil
+			}
+			m.launchSettingsPanel = &panel
+			return m, cmdSetLayer(m.client, panel.cwd, layer, updatedLayer)
 		}
 		return m, nil
 	case authApiKeySetResultMsg:
@@ -597,7 +625,19 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmdAuthList(m.client)
 		}
 		return m, nil
-	case launchLayerResultMsg, launchResolveResultMsg, launchSetLayerResultMsg, launchTrustResultMsg:
+	case launchSetLayerResultMsg:
+		if m.launchSettingsPanel != nil {
+			updated, cmd := m.launchSettingsPanel.Update(msg)
+			p := updated.(launchSettingsPanel)
+			m.launchSettingsPanel = &p
+			if msg.Err == nil && m.client != nil {
+				// Refresh the just-saved layer from disk.
+				return m, tea.Batch(cmd, cmdGetLayer(m.client, msg.CWD, msg.Layer))
+			}
+			return m, cmd
+		}
+		return m, nil
+	case launchLayerResultMsg, launchResolveResultMsg, launchTrustResultMsg:
 		if m.launchSettingsPanel != nil {
 			updated, cmd := m.launchSettingsPanel.Update(msg)
 			p := updated.(launchSettingsPanel)
