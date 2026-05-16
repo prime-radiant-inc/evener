@@ -75,6 +75,12 @@ func LoadMeta(path string) (Meta, error) {
 	return out, nil
 }
 
+// tomlDecode is the inverse of SaveLayer's encoder; exposed for use by
+// callers (the resolver) that have already read raw bytes.
+func tomlDecode(data []byte, out interface{}) (toml.MetaData, error) {
+	return toml.Decode(string(data), out)
+}
+
 // SaveMeta writes a Meta to path atomically.
 func SaveMeta(path string, meta Meta) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
