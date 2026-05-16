@@ -122,6 +122,9 @@ type hubModel struct {
 	authLoginProvider string
 	authLoginFlowID   string
 
+	credentialsPanel *credentialsPanel
+	followupModal    *textInputModal
+
 	lastCtrlC       time.Time
 	postQuitMessage string
 }
@@ -514,6 +517,85 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addSessionSystem("OpenAI auth was already signed out. " + formatAuthStatusSummary(m.authStatus))
 		}
 		return m, nil
+	case authListResultMsg:
+		if m.credentialsPanel != nil {
+			updated, cmd := m.credentialsPanel.Update(msg)
+			panel := updated.(credentialsPanel)
+			m.credentialsPanel = &panel
+			return m, cmd
+		}
+		return m, nil
+	case credentialsActionMsg:
+		switch msg.Action {
+		case "set":
+			modal := newTextInputModalMasked(fmt.Sprintf("API key for %s:", msg.Provider), "credential-set:"+msg.Provider)
+			m.followupModal = &modal
+			return m, nil
+		case "logout":
+			if m.client != nil {
+				return m, cmdAuthLogout(m.client, msg.Provider)
+			}
+			return m, nil
+		case "oauth":
+			if m.client != nil {
+				return m, cmdAuthLoginStart(m.client, msg.Provider)
+			}
+			return m, nil
+		}
+		return m, nil
+	case textInputResultMsg:
+		if strings.HasPrefix(msg.Tag, "credential-set:") {
+			provider := strings.TrimPrefix(msg.Tag, "credential-set:")
+			m.followupModal = nil
+			if msg.Cancelled || msg.Value == "" {
+				return m, nil
+			}
+			if m.client != nil {
+				return m, cmdAuthApiKeySet(m.client, provider, msg.Value)
+			}
+			return m, nil
+		}
+		if strings.HasPrefix(msg.Tag, "oauth-redirect:") {
+			parts := strings.SplitN(strings.TrimPrefix(msg.Tag, "oauth-redirect:"), ":", 2)
+			m.followupModal = nil
+			if msg.Cancelled || msg.Value == "" {
+				return m, nil
+			}
+			if len(parts) == 2 && m.client != nil {
+				return m, cmdAuthLoginComplete(m.client, parts[0], parts[1], msg.Value)
+			}
+			return m, nil
+		}
+		return m, nil
+	case authApiKeySetResultMsg:
+		if msg.Err != nil {
+			m.err = msg.Err
+			return m, nil
+		}
+		m.err = nil
+		if m.credentialsPanel != nil && m.client != nil {
+			return m, cmdAuthList(m.client)
+		}
+		return m, nil
+	case authLoginStartResultMsg:
+		if msg.Err != nil {
+			m.err = msg.Err
+			return m, nil
+		}
+		m.err = nil
+		modal := newTextInputModal("Paste full redirect URL after sign-in:\n"+msg.URL, "oauth-redirect:"+msg.Provider+":"+msg.FlowID)
+		m.followupModal = &modal
+		return m, nil
+	case authLoginCompleteResultMsg:
+		if msg.Err != nil {
+			m.err = msg.Err
+			return m, nil
+		}
+		m.err = nil
+		if m.credentialsPanel != nil && m.client != nil {
+			return m, cmdAuthList(m.client)
+		}
+		return m, nil
 	}
 	return m, nil
 }
@@ -546,6 +628,24 @@ func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m hubModel) updateDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.followupModal != nil {
+		updated, cmd := m.followupModal.Update(msg)
+		modal := updated.(textInputModal)
+		m.followupModal = &modal
+		if modal.done {
+			m.followupModal = nil
+		}
+		return m, cmd
+	}
+	if m.credentialsPanel != nil {
+		updated, cmd := m.credentialsPanel.Update(msg)
+		panel := updated.(credentialsPanel)
+		m.credentialsPanel = &panel
+		if panel.done {
+			m.credentialsPanel = nil
+		}
+		return m, cmd
+	}
 	if m.dashboardFilterActive {
 		return m.updateHubFilterKey(msg)
 	}
@@ -1266,6 +1366,8 @@ func (m *hubModel) returnToDashboard() {
 	m.transcriptView = nil
 	m.forkDraft = nil
 	m.spawnModelPicker = nil
+	m.credentialsPanel = nil
+	m.followupModal = nil
 	m.session.scrollMode = false
 	m.session.focusedToolIdx = -1
 	m.browseSelected = -1
@@ -2307,6 +2409,24 @@ func (m hubModel) dashboardView() string {
 			Body:    b.String(),
 			Overlay: m.commandPalette.View(),
 			Footer:  actionBarForWidth(m.width, "up/down select", "enter open/toggle", "n new", "/ palette", "ctrl+o dashboard", "q quit"),
+			Height:  m.height,
+		}.View()
+	}
+	if m.followupModal != nil {
+		return appShell{
+			TopBar:  topBar,
+			Body:    b.String(),
+			Overlay: m.followupModal.View(),
+			Footer:  "[Enter] confirm  [Esc] cancel",
+			Height:  m.height,
+		}.View()
+	}
+	if m.credentialsPanel != nil {
+		return appShell{
+			TopBar:  topBar,
+			Body:    b.String(),
+			Overlay: m.credentialsPanel.View(),
+			Footer:  "[Enter] set api key  [O] OAuth sign-in  [C] clear  [Esc] close",
 			Height:  m.height,
 		}.View()
 	}

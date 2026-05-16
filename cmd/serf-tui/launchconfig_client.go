@@ -127,3 +127,19 @@ func cmdAuthLoginStart(client *appwire.Client, provider string) tea.Cmd {
 		return authLoginStartResultMsg{Provider: provider, URL: resp.URL, FlowID: resp.FlowID, Err: err}
 	}
 }
+
+type authLoginCompleteResultMsg struct {
+	Provider string
+	Status   appwire.AuthStatusResponse
+	Err      error
+}
+
+func cmdAuthLoginComplete(client *appwire.Client, provider, flowID, redirectURL string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		var resp appwire.AuthLoginCompleteResponse
+		err := client.Request(ctx, appwire.MethodSerfAuthLoginComplete, appwire.AuthLoginCompleteParams{Provider: provider, FlowID: flowID, RedirectURL: redirectURL}, &resp)
+		return authLoginCompleteResultMsg{Provider: provider, Status: resp.Status, Err: err}
+	}
+}
