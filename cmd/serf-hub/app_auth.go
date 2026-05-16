@@ -13,11 +13,13 @@ import (
 
 	"primeradiant.com/serf/internal/appwire"
 	authopenai "primeradiant.com/serf/internal/auth/openai"
+	"primeradiant.com/serf/internal/credentials"
 )
 
 type hubAuthController struct {
 	stateDir     string
 	authEnv      map[string]string
+	creds        *credentials.Store
 	cfg          authopenai.Config
 	client       *http.Client
 	now          func() time.Time
@@ -41,9 +43,31 @@ func newHubAuthController(launchEnv ...map[string]string) *hubAuthController {
 	if len(launchEnv) > 0 {
 		authEnv = effectiveHubAuthEnv(launchEnv[0])
 	}
+	stateDir := openAIStateDirFromEnv(authEnv)
+	credsPath := filepath.Join(filepath.Dir(stateDir), "credentials.toml")
+	store, _ := credentials.LoadStore(credsPath)
 	return &hubAuthController{
-		stateDir:     openAIStateDirFromEnv(authEnv),
+		stateDir:     stateDir,
 		authEnv:      authEnv,
+		creds:        store,
+		cfg:          cfg,
+		client:       client,
+		now:          time.Now,
+		exchangeCode: authopenai.ExchangeCode,
+		flows:        map[string]hubAuthFlow{},
+	}
+}
+
+// newHubAuthControllerWithStore creates a controller with an explicit stateDir and credentials store.
+// This is the primary constructor used in tests and contexts where the caller owns the store.
+func newHubAuthControllerWithStore(stateDir string, store *credentials.Store) *hubAuthController {
+	authEnv := effectiveHubAuthEnv(nil)
+	cfg := authopenai.DefaultConfig()
+	client := &http.Client{Timeout: cfg.HTTPTimeout}
+	return &hubAuthController{
+		stateDir:     stateDir,
+		authEnv:      authEnv,
+		creds:        store,
 		cfg:          cfg,
 		client:       client,
 		now:          time.Now,
@@ -54,10 +78,42 @@ func newHubAuthController(launchEnv ...map[string]string) *hubAuthController {
 
 func (c *hubAuthController) Status(params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
 	provider := normalizeAuthProvider(params.Provider)
-	if provider != "openai" {
-		return appwire.AuthStatusResponse{Provider: provider, ActiveSource: authopenai.AuthSourceSignedOut}, nil
+	if provider == "openai" {
+		resp, err := c.openAIStatus()
+		if err != nil {
+			return resp, err
+		}
+		resp.AuthModes = []string{"apiKey", "oauth"}
+		return resp, nil
 	}
-	return c.openAIStatus()
+	modes := credentialAuthModes(provider)
+	if modes == nil {
+		return appwire.AuthStatusResponse{Provider: provider, Supported: false, ActiveSource: string(credentials.SourceAbsent)}, nil
+	}
+	v, src := c.creds.Get(provider)
+	return appwire.AuthStatusResponse{
+		Provider:     provider,
+		Supported:    true,
+		SignedIn:     v != "",
+		ActiveSource: string(src),
+		AuthModes:    modes,
+	}, nil
+}
+
+func credentialAuthModes(provider string) []string {
+	known := map[string][]string{
+		"anthropic":            {"apiKey"},
+		"google":               {"apiKey"},
+		"gemini":               {"apiKey"},
+		"minimax":              {"apiKey"},
+		"openrouter":           {"apiKey"},
+		"openrouter-anthropic": {"apiKey"},
+		"kimi":                 {"apiKey"},
+		"glm":                  {"apiKey"},
+		"openai-compatible":    {"apiKey"},
+		"ollama":               {"none"},
+	}
+	return known[provider]
 }
 
 func (c *hubAuthController) LoginStart(params appwire.AuthLoginStartParams) (appwire.AuthLoginStartResponse, error) {
@@ -161,7 +217,11 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
 	provider := normalizeAuthProvider(params.Provider)
 	if provider != "openai" {
-		return appwire.AuthLogoutResponse{}, appwire.InvalidParams(fmt.Sprintf("auth is not supported for provider %q", provider))
+		if err := c.creds.Clear(provider); err != nil {
+			return appwire.AuthLogoutResponse{}, err
+		}
+		status, _ := c.Status(appwire.AuthStatusParams{Provider: provider})
+		return appwire.AuthLogoutResponse{Removed: true, Status: status}, nil
 	}
 	removed, err := authopenai.DeleteAuth(c.stateDir)
 	if err != nil {
@@ -172,6 +232,41 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 		return appwire.AuthLogoutResponse{}, err
 	}
 	return appwire.AuthLogoutResponse{Removed: removed, Status: status}, nil
+}
+
+func (c *hubAuthController) List(_ appwire.EmptyParams) (appwire.AuthListResponse, error) {
+	out := appwire.AuthListResponse{}
+	openaiResp, err := c.Status(appwire.AuthStatusParams{Provider: "openai"})
+	if err == nil {
+		out.Providers = append(out.Providers, openaiResp)
+	}
+	for _, p := range c.creds.List() {
+		if p.Name == "openai" {
+			continue
+		}
+		out.Providers = append(out.Providers, appwire.AuthStatusResponse{
+			Provider:     p.Name,
+			Supported:    true,
+			SignedIn:     p.Source == credentials.SourceFile || p.Source == credentials.SourceEnv,
+			ActiveSource: string(p.Source),
+			AuthModes:    p.AuthModes,
+		})
+	}
+	return out, nil
+}
+
+func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwire.AuthStatusResponse, error) {
+	provider := normalizeAuthProvider(params.Provider)
+	if provider == "openai" {
+		return appwire.AuthStatusResponse{}, appwire.InvalidParams("openai api keys must be configured via env or hub.env; use serf/auth/login/start for OAuth")
+	}
+	if strings.TrimSpace(params.Value) == "" {
+		return appwire.AuthStatusResponse{}, appwire.InvalidParams("value is required")
+	}
+	if err := c.creds.Set(provider, params.Value); err != nil {
+		return appwire.AuthStatusResponse{}, err
+	}
+	return c.Status(appwire.AuthStatusParams{Provider: provider})
 }
 
 func (c *hubAuthController) openAIStatus() (appwire.AuthStatusResponse, error) {

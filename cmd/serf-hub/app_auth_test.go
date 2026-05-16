@@ -7,11 +7,13 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"primeradiant.com/serf/internal/appwire"
 	authopenai "primeradiant.com/serf/internal/auth/openai"
+	"primeradiant.com/serf/internal/credentials"
 )
 
 func TestHubRPCAuthStatusUsesUserScopedOpenAIAuth(t *testing.T) {
@@ -340,4 +342,62 @@ func hubAuthTestJWT(t *testing.T, payload map[string]any) string {
 	}
 	return base64.RawURLEncoding.EncodeToString(headerBytes) + "." +
 		base64.RawURLEncoding.EncodeToString(payloadBytes) + "."
+}
+
+func TestAuth_List_IncludesAllProviders(t *testing.T) {
+	stateDir := t.TempDir()
+	credsPath := filepath.Join(stateDir, "credentials.toml")
+	store, _ := credentials.LoadStore(credsPath)
+	c := newHubAuthControllerWithStore(stateDir, store)
+	got, err := c.List(appwire.EmptyParams{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	names := map[string]bool{}
+	for _, p := range got.Providers {
+		names[p.Provider] = true
+	}
+	for _, want := range []string{"openai", "anthropic", "ollama"} {
+		if !names[want] {
+			t.Errorf("List missing %q; got %v", want, names)
+		}
+	}
+}
+
+func TestAuth_ApiKeySet_WritesAndReports(t *testing.T) {
+	stateDir := t.TempDir()
+	credsPath := filepath.Join(stateDir, "credentials.toml")
+	store, _ := credentials.LoadStore(credsPath)
+	c := newHubAuthControllerWithStore(stateDir, store)
+	got, err := c.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "anthropic", Value: "sk-ant-XXX"})
+	if err != nil {
+		t.Fatalf("ApiKeySet: %v", err)
+	}
+	if got.ActiveSource != string(credentials.SourceFile) {
+		t.Errorf("ActiveSource = %q, want file", got.ActiveSource)
+	}
+	// Reload from disk; value should persist.
+	store2, _ := credentials.LoadStore(credsPath)
+	v, src := store2.Get("anthropic")
+	if v != "sk-ant-XXX" || src != credentials.SourceFile {
+		t.Errorf("after ApiKeySet: v=%q src=%q", v, src)
+	}
+}
+
+func TestAuth_Status_AnthropicViaStore(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	stateDir := t.TempDir()
+	store, _ := credentials.LoadStore(filepath.Join(stateDir, "credentials.toml"))
+	_ = store.Set("anthropic", "key")
+	c := newHubAuthControllerWithStore(stateDir, store)
+	got, err := c.Status(appwire.AuthStatusParams{Provider: "anthropic"})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !got.SignedIn || got.ActiveSource != string(credentials.SourceFile) {
+		t.Errorf("Status anthropic = %+v", got)
+	}
+	if len(got.AuthModes) == 0 {
+		t.Errorf("AuthModes empty: %+v", got)
+	}
 }
