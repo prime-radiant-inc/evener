@@ -123,16 +123,18 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 
 	// Generate synthetic [1m] variants for models that support 1M context.
 	// Eligible: claude-opus-4- and claude-sonnet-4- prefixes (not haiku).
+	// Inherit pricing and other metadata from the base model so the model
+	// picker shows complete info for the variants too.
 	eligible1M := []string{"claude-opus-4-", "claude-sonnet-4-"}
 	var extras []llm.ModelInfo
 	for _, m := range models {
 		for _, prefix := range eligible1M {
 			if strings.HasPrefix(m.ID, prefix) {
-				extras = append(extras, llm.ModelInfo{
-					ID:          m.ID + "[1m]",
-					Provider:    "anthropic",
-					DisplayName: m.DisplayName + " (1M context)",
-				})
+				variant := m
+				variant.ID = m.ID + "[1m]"
+				variant.DisplayName = m.DisplayName + " (1M context)"
+				variant.ContextWindow = 1_000_000
+				extras = append(extras, variant)
 				break
 			}
 		}
