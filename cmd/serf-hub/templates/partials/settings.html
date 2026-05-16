@@ -11,6 +11,7 @@
     <a class="settings-nav-link {{if eq .Active "notifications"}}active{{end}}" href="/settings/notifications" hx-get="/_partials/settings/notifications" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/notifications">Notifications</a>
     <div class="settings-nav-section">Agents &amp; models</div>
     <a class="settings-nav-link {{if eq .Active "providers"}}active{{end}}" href="/settings/providers" hx-get="/_partials/settings/providers" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/providers">Providers</a>
+    <a class="settings-nav-link" href="/credentials" hx-get="/_partials/credentials" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/credentials">Credentials</a>
     <a class="settings-nav-link {{if eq .Active "agents"}}active{{end}}" href="/settings/agents" hx-get="/_partials/settings/agents" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/agents">Agents</a>
     <a class="settings-nav-link {{if eq .Active "launch-serf"}}active{{end}}" href="/settings/launch-serf" hx-get="/_partials/settings/launch-serf" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/launch-serf">Serf launch</a>
     <a class="settings-nav-link {{if eq .Active "launch-codex"}}active{{end}}" href="/settings/launch-codex" hx-get="/_partials/settings/launch-codex" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/launch-codex">Codex launch</a>
