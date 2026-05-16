@@ -100,14 +100,14 @@ function assert(cond, msg) {
 }
 
 (async function main() {
-  // 1. title:true with one awaiting session yields "(1) serf — …".
+  // 1. title:true with one awaiting session yields "(1) <section> · serf hub".
   {
     const w = makeWindow({ prefs: { title: true }, live: [{ id: "a", state: "awaiting" }] });
     load(w);
     await flush(w);
     await flush(w);
     assert(
-      w.document.title === "(1) serf — my session",
+      w.document.title === "(1) my session \xb7 serf hub",
       "title prefix expected, got: " + JSON.stringify(w.document.title)
     );
   }
@@ -205,7 +205,7 @@ function assert(cond, msg) {
     await flush(w);
     await flush(w);
     assert(
-      w.document.title.indexOf("(1) serf — ") === 0,
+      w.document.title.indexOf("(1) ") === 0,
       "after event title should have count, got: " + w.document.title
     );
   }

@@ -1765,10 +1765,38 @@
 
   // Tab title — track sessions awaiting reply for the title-count notification
   // (off by default; opt-in via Settings → Notifications).
+  // Pattern: "<section> · serf hub" for named pages; "serf hub" for the root.
+  const SETTINGS_SECTION_LABELS = {
+    "general": "general", "theme": "theme", "notifications": "notifications",
+    "providers": "providers", "agents": "agents",
+    "launch-serf": "serf launch", "launch-codex": "codex launch",
+    "inrepo": "in-repo config",
+    "plugins": "plugins", "skills": "skills", "mcp": "mcp servers",
+    "hub": "hub", "storage": "storage", "project": "project",
+  };
+  function pageSection() {
+    // First check for an explicit data-settings-section attribute on the title span
+    // (set by the settings shell on initial load).
+    const el = document.querySelector(".workspace-title .title[data-settings-section]");
+    if (el) {
+      // After htmx nav within settings the URL may have changed — prefer the URL.
+      const urlMatch = location.pathname.match(/^\/settings\/([^/?]+)/);
+      if (urlMatch) return SETTINGS_SECTION_LABELS[urlMatch[1]] || urlMatch[1];
+      const sec = el.dataset.settingsSection;
+      return SETTINGS_SECTION_LABELS[sec] || sec;
+    }
+    const titleEl = document.querySelector(".workspace-title .title");
+    return titleEl ? titleEl.textContent.trim() : "";
+  }
+  function formatTitle(section, prefix) {
+    const base = section ? section + " \xb7 serf hub" : "serf hub";
+    return prefix ? prefix + base : base;
+  }
   function refreshTabTitle() {
     const prefs = readNotifPrefs();
+    const section = pageSection();
     if (!prefs.title) {
-      document.title = "serf hub";
+      document.title = formatTitle(section);
       return;
     }
     const searchPromise = window.SerfAppwire
@@ -1776,9 +1804,9 @@
       : fetch("/api/search?q=").then(r => r.json());
     searchPromise.then(resp => {
       const awaiting = (resp.live || []).filter(s => s.state === "awaiting").length;
-      const sessTitle = document.querySelector(".workspace-title .title")?.textContent?.trim() || "serf hub";
-      document.title = (awaiting > 0 ? "(" + awaiting + ") " : "") + sessTitle;
-    }).catch(() => { document.title = "serf hub"; });
+      const prefix = awaiting > 0 ? "(" + awaiting + ") " : "";
+      document.title = formatTitle(section, prefix);
+    }).catch(() => { document.title = formatTitle(section); });
   }
   function readNotifPrefs() {
     try { return JSON.parse(localStorage.getItem("serf-hub.notifications") || "{}"); }
