@@ -1938,6 +1938,20 @@ func (m hubModel) currentRef() (appwire.Ref, bool) {
 }
 
 func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.Cmd {
+	// Panel-refresh notifications fire regardless of current mode.
+	switch notification.Method {
+	case appwire.NotifySerfAuthUpdated:
+		if m.credentialsPanel != nil && m.client != nil {
+			return cmdAuthList(m.client)
+		}
+		return nil
+	case appwire.NotifySerfLaunchUpdated:
+		if m.launchSettingsPanel != nil {
+			return m.launchSettingsPanel.initialCmd()
+		}
+		return nil
+	}
+
 	if m.mode != hubModeSession {
 		return nil
 	}
