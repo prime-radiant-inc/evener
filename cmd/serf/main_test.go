@@ -181,6 +181,22 @@ func TestTopLevelHelpShowsReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestTopLevelHelpListsSubcommands(t *testing.T) {
+	var stderr bytes.Buffer
+	fs, _ := newRunFlagSet(&stderr)
+	fs.Usage()
+	usage := stderr.String()
+
+	for _, cmd := range []string{"openai", "serve", "launch-check"} {
+		if !strings.Contains(usage, cmd) {
+			t.Errorf("usage missing subcommand %q:\n%s", cmd, usage)
+		}
+	}
+	if !strings.Contains(usage, "Commands:") {
+		t.Errorf("usage missing Commands section:\n%s", usage)
+	}
+}
+
 func TestTopLevelHelpListsEveryRegisteredFlag(t *testing.T) {
 	var stderr bytes.Buffer
 	fs, _ := newRunFlagSet(&stderr)

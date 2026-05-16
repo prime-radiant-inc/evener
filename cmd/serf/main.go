@@ -177,14 +177,26 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 }
 
 func printRunUsage(w io.Writer, fs *flag.FlagSet) {
-	fmt.Fprintf(w, "Usage: serf --model <provider/model> [flags] <prompt>\n\n")
+	fmt.Fprintf(w, "Usage: serf --model <provider/model> [flags] <prompt>\n")
+	fmt.Fprintf(w, "       serf <command> [flags]\n\n")
 	fmt.Fprintf(w, "A non-interactive coding agent.\n\n")
 	fmt.Fprintf(w, "The prompt can be passed as arguments or piped via stdin.\n")
 	fmt.Fprintf(w, "--model can be omitted when SERF_MODEL supplies a default or when resuming.\n\n")
+	fmt.Fprintf(w, "Commands:\n")
+	printRunCommands(w)
+	fmt.Fprintf(w, "\nRun 'serf <command> --help' for command-specific flags.\n\n")
 	fmt.Fprintf(w, "Options:\n")
 	printLongFlagDefaults(w, fs)
 	fmt.Fprintf(w, "\nEnvironment variables:\n")
 	printRunEnvVars(w)
+}
+
+func printRunCommands(w io.Writer) {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintf(tw, "  openai\tManage OpenAI OAuth login (login, logout, status)\n")
+	fmt.Fprintf(tw, "  serve\tRun the serf HTTP/RPC server\n")
+	fmt.Fprintf(tw, "  launch-check\tValidate launch contract for a provider/model\n")
+	_ = tw.Flush()
 }
 
 type boolFlag interface {
