@@ -114,7 +114,7 @@ func providerFailure() Info {
 	return Info{
 		Source: SourceProvider,
 		Title:  "Provider error",
-		Hint:   "Check provider credentials, account access, rate limits, and the selected model.",
+		Hint:   "The model provider failed to complete the response. Check the selected model, credentials, account access, and rate limits. The daemon is fine — retrying the turn or switching models may help.",
 	}
 }
 
@@ -175,5 +175,13 @@ func isProviderFailure(message string) bool {
 		strings.Contains(message, "quota") ||
 		strings.Contains(message, "unauthorized") ||
 		strings.Contains(message, "invalid_grant") ||
-		strings.Contains(message, "token endpoint")
+		strings.Contains(message, "token endpoint") ||
+		// Stream-truncation patterns: the LLM provider closed the stream
+		// without emitting a finish event or response. The previous
+		// classifier mislabeled these as Serf errors and told users to
+		// check the daemon — but the daemon is fine; the upstream API
+		// stream is what failed.
+		strings.Contains(message, "stream ended without") ||
+		strings.Contains(message, "stream error") ||
+		strings.Contains(message, "missing response in finish event")
 }

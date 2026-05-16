@@ -2349,7 +2349,7 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 			if ev.Err != nil {
 				return sessionModelResponse{}, ev.Err
 			}
-			return sessionModelResponse{}, fmt.Errorf("stream error")
+			return sessionModelResponse{}, llm.NewStreamError(req.Provider, "stream error")
 		}
 	}
 
@@ -2357,11 +2357,11 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 		if err := ctx.Err(); err != nil {
 			return sessionModelResponse{}, err
 		}
-		return sessionModelResponse{}, fmt.Errorf("stream ended without finish event")
+		return sessionModelResponse{}, llm.NewStreamError(req.Provider, "stream ended without finish event")
 	}
 	resp := acc.Response()
 	if resp == nil {
-		return sessionModelResponse{}, fmt.Errorf("stream ended without response")
+		return sessionModelResponse{}, llm.NewStreamError(req.Provider, "stream ended without response")
 	}
 	if resp.Provider == "" {
 		resp.Provider = req.Provider

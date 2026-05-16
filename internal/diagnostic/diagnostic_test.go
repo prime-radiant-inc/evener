@@ -31,3 +31,21 @@ func TestClassifySpawnFailureAsHub(t *testing.T) {
 		t.Fatalf("Source=%q, want %q", info.Source, SourceHub)
 	}
 }
+
+func TestClassifyStreamTruncationAsProvider(t *testing.T) {
+	cases := []string{
+		"stream ended without finish event",
+		"stream ended without response",
+		"stream error",
+		"missing response in finish event",
+	}
+	for _, msg := range cases {
+		info := Classify(msg)
+		if info.Source != SourceProvider {
+			t.Errorf("Classify(%q): Source=%q, want %q", msg, info.Source, SourceProvider)
+		}
+		if info.Title != "Provider error" {
+			t.Errorf("Classify(%q): Title=%q, want Provider error", msg, info.Title)
+		}
+	}
+}
