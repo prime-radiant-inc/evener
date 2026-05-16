@@ -85,7 +85,12 @@
       message.includes("quota") ||
       message.includes("unauthorized") ||
       message.includes("invalid_grant") ||
-      message.includes("token endpoint");
+      message.includes("token endpoint") ||
+      // Stream-truncation: provider closed the stream early. The daemon
+      // is fine; the upstream API is what failed.
+      message.includes("stream ended without") ||
+      message.includes("stream error") ||
+      message.includes("missing response in finish event");
   }
 
   function isHubFailure(message) {
@@ -123,7 +128,7 @@
       return "Hub launched Serf with provider configuration this Serf runtime does not recognize. Check the model/provider passed by Hub and the Serf binary Hub is using.";
     }
     if (source === "provider") {
-      return "Check provider credentials, account access, rate limits, and the selected model.";
+      return "The model provider failed to complete the response. Check the selected model, credentials, account access, and rate limits. The daemon is fine — retrying the turn or switching models may help.";
     }
     if (source === "hub") {
       return "Check the hub process, AppWire connection, spawn arguments, and rendezvous state.";
