@@ -28,6 +28,12 @@ const (
 	MethodSerfAuthLoginStart        = "serf/auth/login/start"
 	MethodSerfAuthLoginComplete     = "serf/auth/login/complete"
 	MethodSerfAuthLogout            = "serf/auth/logout"
+	MethodSerfAuthList              = "serf/auth/list"
+	MethodSerfAuthApiKeySet         = "serf/auth/apiKey/set"
+	MethodSerfLaunchResolve         = "serf/launch/resolve"
+	MethodSerfLaunchGetLayer        = "serf/launch/getLayer"
+	MethodSerfLaunchSetLayer        = "serf/launch/setLayer"
+	MethodSerfLaunchTrustRepo       = "serf/launch/trustRepo"
 	MethodModelList                 = "model/list"
 )
 
@@ -46,6 +52,8 @@ const (
 	NotifySerfSteeringInjected = "serf/steering/injected"
 	NotifySerfSubagentStarted  = "serf/subagent/started"
 	NotifySerfSubagentEnded    = "serf/subagent/completed"
+	NotifySerfAuthUpdated      = "serf/auth/updated"
+	NotifySerfLaunchUpdated    = "serf/launch/updated"
 )
 
 const (
@@ -324,14 +332,15 @@ type ThreadTranscriptListResponse struct {
 }
 
 type ThreadStartParams struct {
-	Harness         string      `json:"harness,omitempty"`
-	CWD             string      `json:"cwd"`
-	Prompt          string      `json:"prompt,omitempty"`
-	Items           []InputItem `json:"items,omitempty"`
-	ModelProvider   string      `json:"modelProvider,omitempty"`
-	Model           string      `json:"model,omitempty"`
-	Profile         string      `json:"profile,omitempty"`
-	ReasoningEffort string      `json:"reasoningEffort,omitempty"`
+	Harness         string             `json:"harness,omitempty"`
+	CWD             string             `json:"cwd"`
+	Prompt          string             `json:"prompt,omitempty"`
+	Items           []InputItem        `json:"items,omitempty"`
+	ModelProvider   string             `json:"modelProvider,omitempty"`
+	Model           string             `json:"model,omitempty"`
+	Profile         string             `json:"profile,omitempty"`
+	ReasoningEffort string             `json:"reasoningEffort,omitempty"`
+	LaunchOverrides *LaunchConfigLayer `json:"launchOverrides,omitempty"`
 }
 
 type ThreadStartResponse struct {
@@ -441,11 +450,12 @@ type AuthStatusParams struct {
 }
 
 type AuthStatusResponse struct {
-	Provider       string `json:"provider"`
-	Supported      bool   `json:"supported"`
-	SignedIn       bool   `json:"signedIn"`
-	ActiveSource   string `json:"activeSource"`
-	HasStoredOAuth bool   `json:"hasStoredOAuth"`
+	Provider       string   `json:"provider"`
+	Supported      bool     `json:"supported"`
+	SignedIn       bool     `json:"signedIn"`
+	ActiveSource   string   `json:"activeSource"`
+	AuthModes      []string `json:"authModes,omitempty"`
+	HasStoredOAuth bool     `json:"hasStoredOAuth"`
 	Email          string `json:"email,omitempty"`
 	StoredEmail    string `json:"storedEmail,omitempty"`
 	AccountID      string `json:"accountId,omitempty"`
@@ -521,4 +531,88 @@ type AgentMessageDeltaParams struct {
 	TurnID   string `json:"turnId"`
 	ItemID   string `json:"itemId"`
 	Delta    string `json:"delta"`
+}
+
+// EmptyParams is the typed-empty params shape used by methods that take none.
+type EmptyParams struct{}
+
+// AuthListResponse is the result of serf/auth/list.
+type AuthListResponse struct {
+	Providers []AuthStatusResponse `json:"providers"`
+}
+
+// AuthApiKeySetParams is the params for serf/auth/apiKey/set.
+type AuthApiKeySetParams struct {
+	Provider string `json:"provider"`
+	Value    string `json:"value"`
+}
+
+// LaunchConfigLayer is the wire-level partial layer (every field optional;
+// pointer-typed scalars so "not set" is distinguishable from zero).
+type LaunchConfigLayer struct {
+	Schema             *int              `json:"schema,omitempty"`
+	Model              string            `json:"model,omitempty"`
+	Agent              string            `json:"agent,omitempty"`
+	ReasoningEffort    string            `json:"reasoningEffort,omitempty"`
+	ContextStrategy    string            `json:"contextStrategy,omitempty"`
+	MaxRounds          *int              `json:"maxRounds,omitempty"`
+	MaxSubagentDepth   *int              `json:"maxSubagentDepth,omitempty"`
+	NoProjectPrompts   *bool             `json:"noProjectPrompts,omitempty"`
+	SSERingSize        *int              `json:"sseRingSize,omitempty"`
+	SkillsDirs         []string          `json:"skillsDirs,omitempty"`
+	PluginDirs         []string          `json:"pluginDirs,omitempty"`
+	MCPConfigs         []string          `json:"mcpConfigs,omitempty"`
+	SystemPromptAppend []string          `json:"systemPromptAppend,omitempty"`
+	MCPs               []MCPServerSpec   `json:"mcps,omitempty"`
+	Env                map[string]string `json:"env,omitempty"`
+}
+
+// MCPServerSpec mirrors launchconfig.MCPServerSpec on the wire.
+type MCPServerSpec struct {
+	Name    string   `json:"name"`
+	Command string   `json:"command"`
+	Args    []string `json:"args,omitempty"`
+}
+
+// LaunchConfigResolved is the wire representation of launchconfig.Resolved.
+type LaunchConfigResolved struct {
+	Effective   LaunchConfigLayer            `json:"effective"`
+	Layers      map[string]LaunchConfigLayer `json:"layers"`
+	Provenance  map[string]string            `json:"provenance"`
+	Repo        *RepoLaunchConfigStatus      `json:"repo,omitempty"`
+	Diagnostics []LaunchConfigDiagnostic     `json:"diagnostics,omitempty"`
+}
+
+type RepoLaunchConfigStatus struct {
+	Path    string `json:"path"`
+	Hash    string `json:"hash,omitempty"`
+	Trust   string `json:"trust"`
+	Preview string `json:"preview,omitempty"`
+}
+
+type LaunchConfigDiagnostic struct {
+	Layer   string `json:"layer"`
+	Field   string `json:"field"`
+	Message string `json:"message"`
+}
+
+type LaunchConfigResolveParams struct {
+	CWD             string             `json:"cwd"`
+	LaunchOverrides *LaunchConfigLayer `json:"launchOverrides,omitempty"`
+}
+
+type LaunchConfigGetLayerParams struct {
+	CWD   string `json:"cwd"`
+	Layer string `json:"layer"` // "global" | "project"
+}
+
+type LaunchConfigSetLayerParams struct {
+	CWD    string            `json:"cwd"`
+	Layer  string            `json:"layer"`
+	Config LaunchConfigLayer `json:"config"`
+}
+
+type LaunchConfigTrustRepoParams struct {
+	CWD  string `json:"cwd"`
+	Hash string `json:"hash"`
 }
