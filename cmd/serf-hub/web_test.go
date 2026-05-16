@@ -3133,22 +3133,12 @@ func TestWeb_ApiModels_ReturnsLaunchErrorWhenLaunchModelListerFails(t *testing.T
 }
 
 func TestWeb_SettingsProvidersShowsLaunchModelDiagnostics(t *testing.T) {
-	dir := t.TempDir()
-	bin := filepath.Join(dir, "fake-serf")
-	script := `#!/bin/sh
-if [ "$1" = "launch-check" ]; then
-  printf '{"protocol":"serf-appwire-v1","models":[{"provider":"ollama","model":"local"}],"diagnostics":[{"provider":"openai","source":"provider","title":"Provider error","message":"HTTP 403"}]}\n'
-  exit 0
-fi
-exit 2
-`
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
+	// The providers tab is now JS-driven via launchconfig.authList(); provider
+	// data is no longer server-rendered. Verify the page loads and wires up the
+	// JS hook correctly.
 	web := NewWebServer(WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Spawner: &HubSpawner{Cfg: DefaultConfig(), SerfBinary: bin, RunDir: t.TempDir(), HubToken: "generated-token"},
+		Spawner: &fakeRPCSpawner{},
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/settings/providers", nil)
 	req.Host = "127.0.0.1:9180"
@@ -3160,7 +3150,7 @@ exit 2
 		t.Fatalf("status: %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"ollama", "local", "openai", "HTTP 403"} {
+	for _, want := range []string{"providers-rows", "launchconfig.authList"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("settings providers missing %q:\n%s", want, body)
 		}
@@ -3168,6 +3158,9 @@ exit 2
 }
 
 func TestWeb_SettingsProvidersShowsLaunchModelErrorDiagnostic(t *testing.T) {
+	// The providers tab is now JS-driven via launchconfig.authList(); error
+	// diagnostics are surfaced at runtime by the JS, not server-rendered.
+	// Verify the page still returns 200 and includes the JS entry point.
 	web := NewWebServer(WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Spawner: &fakeRPCModelContractSpawner{
@@ -3184,8 +3177,8 @@ func TestWeb_SettingsProvidersShowsLaunchModelErrorDiagnostic(t *testing.T) {
 		t.Fatalf("status: %d body=%s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "model list") || !strings.Contains(body, "invalid response") {
-		t.Fatalf("settings providers missing launch error diagnostic:\n%s", body)
+	if !strings.Contains(body, "launchconfig.authList") {
+		t.Fatalf("settings providers missing JS hook:\n%s", body)
 	}
 }
 
@@ -3363,7 +3356,8 @@ func TestWeb_ApiDirs_FiltersByBasename(t *testing.T) {
 }
 
 // TestWeb_Settings_Providers_RendersSerfLaunchContract checks that
-// GET /settings/providers renders the Serf launch harness model contract.
+// GET /settings/providers returns 200 and includes the JS entry point that
+// fetches auth/list at runtime (provider data is no longer server-rendered).
 func TestWeb_Settings_Providers_RendersSerfLaunchContract(t *testing.T) {
 	web := NewWebServer(WebConfig{
 		HubAddr: "127.0.0.1:9180",
@@ -3390,13 +3384,10 @@ func TestWeb_Settings_Providers_RendersSerfLaunchContract(t *testing.T) {
 		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"anthropic", "openai", "claude-sonnet-4-6", "gpt-5.5"} {
+	for _, want := range []string{"providers-rows", "launchconfig.authList"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q: %q", want, body)
 		}
-	}
-	if strings.Contains(body, "gpt-stale") {
-		t.Fatalf("settings rendered stale configured model: %q", body)
 	}
 }
 
