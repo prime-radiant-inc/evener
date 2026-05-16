@@ -66,6 +66,7 @@
 </form>
 <script>
   (function () {
+    function escapeHtml(s) { return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
     const cwdIn = document.getElementById("proj-launch-cwd");
     const form = document.getElementById("project-launch-form");
     cwdIn.value = localStorage.getItem("lastCwd") || "";
@@ -75,8 +76,8 @@
       if (!cwd) { form.innerHTML = "<p>Enter a working dir above.</p>"; return; }
       current = await launchconfig.getLayer(cwd, "project");
       form.innerHTML = `
-        <label>Model <input type="text" name="model" value="${current.model || ""}"></label>
-        <label>Agent <input type="text" name="agent" value="${current.agent || ""}"></label>
+        <label>Model <input type="text" name="model" value="${escapeHtml(current.model || "")}"></label>
+        <label>Agent <input type="text" name="agent" value="${escapeHtml(current.agent || "")}"></label>
         <label>Reasoning effort
           <select name="reasoningEffort">
             <option value="">(use defaults)</option>
