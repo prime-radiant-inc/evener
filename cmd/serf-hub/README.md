@@ -55,18 +55,13 @@ TOML itself does not expand shell variables.
 ```bash
 cat > "$HOME/.serf/hub.toml" <<EOF
 addr = "127.0.0.1:9180"
+hub_state_root = "$HOME/.serf"
 run_dir = "$HOME/.serf/run"
 state_glob = "$HOME/.local/state/serf/projects/*"
 past_index_db = "$HOME/.serf/index.db"
 spawn_timeout = "30s"
 past_index_rebuild_interval = "60s"
 past_results_per_page = 50
-
-[serf_launch]
-sse_ring_size = 4096
-
-[serf_launch.env]
-XDG_STATE_HOME = "$HOME/.local/state"
 
 [[codex_launches]]
 id = "codex-local"
@@ -92,59 +87,72 @@ endpoint = "ws://127.0.0.1:9900"
 bearer_token_file = "/run/secrets/codex-token"
 ```
 
+## Launch Configuration
+
+Hub-spawned `serf serve` daemons get their flags from a layered config:
+
+- **Global**: `~/.serf/launch.toml` — hub-wide defaults (model, agent,
+  reasoning effort, skills/plugin dirs, MCP servers, etc.). Editable from
+  the Hub UI's Launch settings tab or by hand.
+- **In-repo**: `<cwd>/.serf/launch.toml` — per-project config shipped in
+  the working directory. Trust-on-first-use: the Hub UI prompts to review
+  and approve before applying. Untrusted in-repo files are skipped.
+- **Hub-side per-project**: `~/.serf/projects/<id>/launch.toml` — per-project
+  config that doesn't pollute the working directory. The `<id>` is
+  `sha256(cwd)[:16]`.
+- **Per-launch overrides**: `launchOverrides` on `ThreadStart` — applied to
+  a single spawn only.
+
+Layers merge in order: global → in-repo → project → per-launch.
+- **Scalars** (model, reasoning_effort, etc.): most-specific value wins.
+- **Lists** (skills_dirs, plugin_dirs, mcps, mcp_configs,
+  system_prompt_append): concatenate in layer order; no dedup.
+- **Env map** (`[env]`): merge by key; most-specific wins per key.
+
+See `docs/superpowers/specs/2026-05-16-hub-serf-launch-config-design.md`
+for the full schema and semantics.
+
 ## Provider Credentials
 
-Do not commit secrets in `hub.toml`. Prefer a private environment file loaded
-by the supervisor that starts Hub:
+Hub-managed at `~/.serf/credentials.toml` (chmod 600). The file's format
+is a small TOML document:
 
-```bash
-cat > "$HOME/.serf/hub.env" <<'EOF'
-export OPENAI_API_KEY='...'
-export ANTHROPIC_API_KEY='...'
-export GEMINI_API_KEY='...'
-export OPENROUTER_API_KEY='...'
-EOF
+```toml
+schema = 1
 
-chmod 600 "$HOME/.serf/hub.env"
+[providers.anthropic]
+api_key = "sk-ant-..."
+
+[providers.openrouter]
+api_key = "..."
 ```
 
-Supported Serf launch credential checks:
+The Hub UI (`/credentials`) or TUI (`:credentials`) writes this file via
+the `serf/auth/apiKey/set` RPC. OpenAI OAuth state remains in the existing
+`~/.serf/auth/openai.json` file; OAuth flows are triggered from the same
+UIs via `serf/auth/login/start`.
 
-- OpenAI: `OPENAI_API_KEY` or Serf OpenAI login state in the user state dir.
-- Anthropic: `ANTHROPIC_API_KEY`.
-- Google/Gemini: `GEMINI_API_KEY` or `GOOGLE_API_KEY`.
-- OpenRouter and OpenRouter Anthropic: `OPENROUTER_API_KEY`.
-- Minimax: `MINIMAX_API_KEY`.
-- Kimi: `KIMI_API_KEY`.
-- GLM: `GLM_API_KEY`.
-- OpenAI-compatible: `OPENAI_COMPATIBLE_BASE_URL`.
-- Ollama: no API key check.
-
-For Serf-owned OpenAI OAuth, log in once for the user account. The default auth
-file is `$XDG_STATE_HOME/serf/auth/openai.json`, or
-`$HOME/.local/state/serf/auth/openai.json` when `XDG_STATE_HOME` is not set:
-
-```bash
-XDG_STATE_HOME="$HOME/.local/state" "$HOME/.local/bin/serf" openai login
-```
-
-Hub's provider picker asks the Serf launch harness for the models visible to
-the selected spawn working directory. Session state remains per project, but
-Serf-owned OpenAI OAuth is user-scoped by default.
+Process-env credentials (e.g., `ANTHROPIC_API_KEY` exported in the shell)
+still work as a fallback when no file entry exists for the provider —
+matches the existing `hub.env` style for users who prefer external secret
+management.
 
 ## Start Hub
 
 Foreground run with logs:
 
 ```bash
-set -a
-source "$HOME/.serf/hub.env"
-set +a
-
 "$HOME/.local/bin/serf-hub" \
   --config "$HOME/.serf/hub.toml" \
   --serf "$HOME/.local/bin/serf" \
   2>&1 | tee -a "$HOME/.serf/log/hub.log"
+```
+
+If you manage credentials via environment variables rather than
+`~/.serf/credentials.toml`, source your env file before starting:
+
+```bash
+set -a; source "$HOME/.serf/hub.env"; set +a
 ```
 
 Production deployments should run the same command under a supervisor and
