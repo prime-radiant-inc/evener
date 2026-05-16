@@ -1313,12 +1313,26 @@ func hubThreadStart(ctx context.Context, cfg WebConfig, sources *appsource.Regis
 	if err := validateSerfLaunchModel(ctx, cfg, modelRef, workingDir); err != nil {
 		return appwire.ThreadStartResponse{}, err
 	}
+	var overrides launchconfig.Layer
+	if params.LaunchOverrides != nil {
+		overrides = launchconfig.FromWire(*params.LaunchOverrides)
+	}
+	// Legacy scalar fields win over launchOverrides (per spec §5.4).
+	if params.Model != "" {
+		overrides.Model = modelRef.Qualified()
+	}
+	if params.Profile != "" {
+		overrides.Agent = params.Profile
+	}
+	if params.ReasoningEffort != "" {
+		overrides.ReasoningEffort = params.ReasoningEffort
+	}
+	spawnResolved, resolveErr := launchconfig.Resolve(cfg.HubStateRoot, workingDir, overrides)
+	if resolveErr != nil {
+		return appwire.ThreadStartResponse{}, resolveErr
+	}
 	entry, err := cfg.Spawner.Spawn(ctx, SpawnRequest{
-		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{
-			Model:           modelRef.Qualified(),
-			Agent:           params.Profile,
-			ReasoningEffort: params.ReasoningEffort,
-		}},
+		Resolved:   spawnResolved,
 		WorkingDir: workingDir,
 		Provider:   modelRef.Provider,
 	})

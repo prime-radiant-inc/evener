@@ -2414,6 +2414,65 @@ func TestHubRPCThreadStartRejectsMalformedModelBeforeSpawn(t *testing.T) {
 	}
 }
 
+func TestThreadStart_LaunchOverridesApplied(t *testing.T) {
+	runDir := t.TempDir()
+	var got SpawnRequest
+	spawner := &fakeRPCSpawner{
+		spawn: func(_ context.Context, req SpawnRequest) (rendezvous.Entry, error) {
+			got = req
+			return rendezvous.Entry{
+				PID:       200,
+				Protocol:  appwire.ProtocolVersion,
+				SourceID:  "local",
+				ThreadID:  "th_overrides",
+				SessionID: "sess_overrides",
+			}, nil
+		},
+	}
+	maxRounds := 7
+	hub := newHubRPCTestServer(t, WebConfig{
+		RunDir:       runDir,
+		HubStateRoot: t.TempDir(),
+		Spawner:      spawner,
+		Past:         NewPastIndex(""),
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		Model: "openai/gpt-5",
+		CWD:   "/tmp",
+		LaunchOverrides: &appwire.LaunchConfigLayer{
+			SkillsDirs: []string{"/per-launch"},
+			MaxRounds:  &maxRounds,
+		},
+	}); err != nil {
+		t.Fatalf("ThreadStart: %v", err)
+	}
+	eff := got.Resolved.Effective
+	found := false
+	for _, d := range eff.SkillsDirs {
+		if d == "/per-launch" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("SkillsDirs = %v, want /per-launch", eff.SkillsDirs)
+	}
+	if eff.MaxRounds == nil || *eff.MaxRounds != 7 {
+		t.Errorf("MaxRounds = %v, want 7", eff.MaxRounds)
+	}
+	// Legacy scalar wins: model comes from params.Model, not launchOverrides.
+	if eff.Model != "openai/gpt-5" {
+		t.Errorf("Model = %q, want openai/gpt-5", eff.Model)
+	}
+}
+
 func TestHubRPCThreadStartRoutesByHarnessToConfiguredCodexSource(t *testing.T) {
 	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
 	var startCalled bool
