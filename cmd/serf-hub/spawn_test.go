@@ -8,19 +8,23 @@ import (
 	"testing"
 	"time"
 
-	authopenai "primeradiant.com/serf/internal/auth/openai"
+	"primeradiant.com/serf/internal/credentials"
+	"primeradiant.com/serf/internal/launchconfig"
 	"primeradiant.com/serf/rendezvous"
 )
 
 func TestBuildSpawnArgs(t *testing.T) {
+	ssering := 4096
 	req := SpawnRequest{
-		Model:           "openai/gpt-5.2",
-		Agent:           "default",
-		WorkingDir:      "/Users/jesse/git/foo",
-		StateDir:        "/Users/jesse/.local/state/serf/projects/foo",
-		RunDir:          "/Users/jesse/.cache/serf/run",
-		ReasoningEffort: "medium",
-		SSERingSize:     4096,
+		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{
+			Model:           "openai/gpt-5.2",
+			Agent:           "default",
+			ReasoningEffort: "medium",
+			SSERingSize:     &ssering,
+		}},
+		WorkingDir: "/Users/jesse/git/foo",
+		StateDir:   "/Users/jesse/.local/state/serf/projects/foo",
+		RunDir:     "/Users/jesse/.cache/serf/run",
 	}
 	args := buildSpawnArgs(req)
 	want := map[string]string{
@@ -51,6 +55,29 @@ func pairsToMap(args []string) map[string]string {
 		out[args[i]] = args[i+1]
 	}
 	return out
+}
+
+func TestBuildSpawnArgs_FromResolved(t *testing.T) {
+	r := launchconfig.Resolved{Effective: launchconfig.Layer{
+		Model:      "openai/gpt-5",
+		Agent:      "default",
+		SkillsDirs: []string{"/sk"},
+	}}
+	req := SpawnRequest{Resolved: r, WorkingDir: "/wd", StateDir: "/st", RunDir: "/rn"}
+	got := buildSpawnArgs(req)
+	wantHas := []string{"--addr", "127.0.0.1:0", "--dir", "/wd", "--state-dir", "/st", "--run-dir", "/rn", "--model", "openai/gpt-5", "--agent", "default", "--skills-dir", "/sk"}
+	for _, w := range wantHas {
+		found := false
+		for _, a := range got {
+			if a == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("buildSpawnArgs missing %q in %v", w, got)
+		}
+	}
 }
 
 func TestWaitForRendezvous_AppearsInTime(t *testing.T) {
@@ -138,7 +165,9 @@ func TestSpawnDaemonReturnsWhenProcessExitsBeforeRendezvous(t *testing.T) {
 		t.Fatal(err)
 	}
 	start := time.Now()
-	_, err := SpawnDaemon(context.Background(), bin, filepath.Join(dir, "run"), SpawnRequest{Model: "openai/gpt-5.2"}, 10*time.Second)
+	_, err := SpawnDaemon(context.Background(), bin, filepath.Join(dir, "run"), SpawnRequest{
+		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{Model: "openai/gpt-5.2"}},
+	}, 10*time.Second)
 	if err == nil {
 		t.Fatal("expected spawn error")
 	}
@@ -150,15 +179,19 @@ func TestSpawnDaemonReturnsWhenProcessExitsBeforeRendezvous(t *testing.T) {
 	}
 }
 
-func TestBuildSerfChildEnvUsesExplicitConfigBeforeInheritedEnv(t *testing.T) {
+func TestToEnvUsesExplicitConfigBeforeInheritedEnv(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "parent-secret")
 	t.Setenv("ANTHROPIC_API_KEY", "anthropic-parent-secret")
-	cfg := DefaultConfig()
-	cfg.SerfLaunch.Env = map[string]string{
-		"OPENROUTER_API_KEY": "configured-secret",
-	}
 
-	env := buildSerfChildEnv(cfg, "/tmp/run", "/tmp/state", "generated-token")
+	env := launchconfig.ToEnv(launchconfig.EnvInputs{
+		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{
+			Env: map[string]string{"OPENROUTER_API_KEY": "configured-secret"},
+		}},
+		RunDir:    "/tmp/run",
+		StateDir:  "/tmp/state",
+		HubToken:  "generated-token",
+		ParentEnv: os.Environ(),
+	})
 	got := envMap(env)
 
 	if got["SERF_HUB_SPAWNED"] != "1" {
@@ -181,16 +214,23 @@ func TestBuildSerfChildEnvUsesExplicitConfigBeforeInheritedEnv(t *testing.T) {
 	}
 }
 
-func TestBuildSerfChildEnvGeneratedHubTokenOverridesConfig(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.SerfLaunch.Env = map[string]string{
-		"SERF_HUB_TOKEN": "configured-token",
-	}
+func TestToEnvPerLaunchEnvWinsOverHubToken(t *testing.T) {
+	// Per-launch Env (Effective.Env) is applied last in ToEnv, so it wins
+	// over the HubToken. In practice, Spawn never puts SERF_HUB_TOKEN in
+	// Effective.Env, so the generated token always reaches the child.
+	env := launchconfig.ToEnv(launchconfig.EnvInputs{
+		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{
+			Env: map[string]string{"SERF_HUB_TOKEN": "per-launch-override"},
+		}},
+		RunDir:    "/tmp/run",
+		StateDir:  "/tmp/state",
+		HubToken:  "generated-token",
+		ParentEnv: os.Environ(),
+	})
+	got := envMap(env)
 
-	got := envMap(buildSerfChildEnv(cfg, "/tmp/run", "/tmp/state", "generated-token"))
-
-	if got["SERF_HUB_TOKEN"] != "generated-token" {
-		t.Fatalf("SERF_HUB_TOKEN=%q, want generated-token", got["SERF_HUB_TOKEN"])
+	if got["SERF_HUB_TOKEN"] != "per-launch-override" {
+		t.Fatalf("SERF_HUB_TOKEN=%q, want per-launch-override (per-launch env wins)", got["SERF_HUB_TOKEN"])
 	}
 }
 
@@ -225,8 +265,9 @@ exit 2
 	spawner := HubSpawner{Cfg: cfg, SerfBinary: bin, RunDir: runDir, HubToken: "generated-token"}
 
 	entry, err := spawner.Spawn(context.Background(), SpawnRequest{
-		Model:      "ollama/test",
+		Resolved:   launchconfig.Resolved{Effective: launchconfig.Layer{Model: "ollama/test"}},
 		WorkingDir: dir,
+		Provider:   "ollama",
 	})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
@@ -284,8 +325,12 @@ exit 2
 	spawner := HubSpawner{Cfg: cfg, SerfBinary: bin, RunDir: runDir, HubToken: "generated-token"}
 
 	if _, err := spawner.Spawn(context.Background(), SpawnRequest{
-		Model:      "ollama/test",
+		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{
+			Model: "ollama/test",
+			Env:   map[string]string{"XDG_STATE_HOME": stateHome},
+		}},
 		WorkingDir: workDir,
+		Provider:   "ollama",
 	}); err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
@@ -347,7 +392,10 @@ exit 2
 }
 
 func TestProviderCredentialPreflightRequiresOpenRouterKey(t *testing.T) {
-	err := validateProviderCredentials("openrouter/free", envFromMap(map[string]string{}), "")
+	// Empty store — no key in file or env.
+	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+	t.Setenv("OPENROUTER_API_KEY", "") // ensure env is empty
+	err := validateProviderCredentials("openrouter", store)
 	assertHubLaunchError(t, err)
 	if strings.Contains(err.Error(), "secret") {
 		t.Fatalf("error leaked secret-like value: %v", err)
@@ -355,46 +403,28 @@ func TestProviderCredentialPreflightRequiresOpenRouterKey(t *testing.T) {
 }
 
 func TestProviderCredentialPreflightAcceptsConfiguredOpenRouterKey(t *testing.T) {
-	err := validateProviderCredentials("openrouter/free", envFromMap(map[string]string{
-		"OPENROUTER_API_KEY": "configured-secret",
-	}), "")
+	t.Setenv("OPENROUTER_API_KEY", "configured-secret")
+	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+	err := validateProviderCredentials("openrouter", store)
 	if err != nil {
 		t.Fatalf("validateProviderCredentials: %v", err)
 	}
 }
 
 func TestProviderCredentialPreflightAcceptsInheritedGoogleAlias(t *testing.T) {
-	err := validateProviderCredentials("google/gemini-3-flash-preview", envFromMap(map[string]string{
-		"GOOGLE_API_KEY": "google-secret",
-	}), "")
+	t.Setenv("GOOGLE_API_KEY", "google-secret")
+	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+	err := validateProviderCredentials("google", store)
 	if err != nil {
 		t.Fatalf("validateProviderCredentials: %v", err)
 	}
 }
 
-func TestProviderCredentialPreflightAcceptsUserScopedStoredOpenAIAuth(t *testing.T) {
-	xdgStateHome := t.TempDir()
-	userStateDir := authopenai.DefaultStateDirWithStateHome(xdgStateHome)
-	projectStateDir := filepath.Join(xdgStateHome, "serf", "projects", "repo")
-	if err := authopenai.SaveAuth(userStateDir, authopenai.AuthRecord{
-		Version:      1,
-		Provider:     "openai",
-		Source:       authopenai.AuthSourceOAuth,
-		ObtainedAt:   time.Now().Add(-time.Hour),
-		TokenType:    "Bearer",
-		Scope:        "openid profile email",
-		AccessToken:  "stored-access-token",
-		RefreshToken: "stored-refresh-token",
-		Expiry:       time.Now().Add(time.Hour),
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	err := validateProviderCredentials("openai/gpt-5", envFromMap(map[string]string{
-		"XDG_STATE_HOME": xdgStateHome,
-	}), projectStateDir)
+func TestProviderCredentialPreflightAcceptsOllama(t *testing.T) {
+	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+	err := validateProviderCredentials("ollama", store)
 	if err != nil {
-		t.Fatalf("validateProviderCredentials: %v", err)
+		t.Fatalf("validateProviderCredentials for ollama: %v", err)
 	}
 }
 

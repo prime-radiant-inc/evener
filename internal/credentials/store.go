@@ -152,6 +152,13 @@ func (s *Store) List() []Provider {
 	return out
 }
 
+// APIKeyFor implements launchconfig.CredentialResolver.
+// Returns the API key value and the source label (e.g. "file", "env", "absent").
+func (s *Store) APIKeyFor(provider string) (string, string) {
+	v, src := s.Get(provider)
+	return v, string(src)
+}
+
 func (s *Store) save() error {
 	if s.path == "" {
 		return nil

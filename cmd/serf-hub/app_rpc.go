@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/serf/internal/appsource"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/diagnostic"
+	"primeradiant.com/serf/internal/launchconfig"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -1313,10 +1314,13 @@ func hubThreadStart(ctx context.Context, cfg WebConfig, sources *appsource.Regis
 		return appwire.ThreadStartResponse{}, err
 	}
 	entry, err := cfg.Spawner.Spawn(ctx, SpawnRequest{
-		Model:           modelRef.Qualified(),
-		WorkingDir:      workingDir,
-		Agent:           params.Profile,
-		ReasoningEffort: params.ReasoningEffort,
+		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{
+			Model:           modelRef.Qualified(),
+			Agent:           params.Profile,
+			ReasoningEffort: params.ReasoningEffort,
+		}},
+		WorkingDir: workingDir,
+		Provider:   modelRef.Provider,
 	})
 	if err != nil {
 		return appwire.ThreadStartResponse{}, err
@@ -1600,8 +1604,12 @@ func resumeRequestForConfig(cfg WebConfig, id string) ResumeRequest {
 		if pe, ok := cfg.Past.Find(id); ok {
 			req.WorkingDir = pe.Meta.EnvInfo.WorkingDir
 			req.StateDir = pe.StateDir
-			if provider := resumeProviderFromProfileID(pe.Meta.ProfileID); provider != "" && pe.Meta.Model != "" {
-				req.Model = provider + "/" + pe.Meta.Model
+			provider := resumeProviderFromProfileID(pe.Meta.ProfileID)
+			if provider != "" && pe.Meta.Model != "" {
+				req.Provider = provider
+				req.Resolved = launchconfig.Resolved{Effective: launchconfig.Layer{
+					Model: provider + "/" + pe.Meta.Model,
+				}}
 			}
 		}
 	}

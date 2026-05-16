@@ -2165,8 +2165,8 @@ func TestHubRPCThreadStartKeepsProviderForModelIDsWithSlashes(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("ThreadStart: %v", err)
 	}
-	if got.Model != "openrouter/deepseek/deepseek-v4-flash" {
-		t.Fatalf("spawn model=%q, want openrouter/deepseek/deepseek-v4-flash", got.Model)
+	if got.Resolved.Effective.Model != "openrouter/deepseek/deepseek-v4-flash" {
+		t.Fatalf("spawn model=%q, want openrouter/deepseek/deepseek-v4-flash", got.Resolved.Effective.Model)
 	}
 }
 
@@ -2244,8 +2244,8 @@ func TestHubRPCThreadStartAllowsModelWhenProviderDoesNotEnumerateLaunchModels(t 
 	}); err != nil {
 		t.Fatalf("ThreadStart: %v", err)
 	}
-	if got.Model != "openai/gpt-5.5" {
-		t.Fatalf("spawn model=%q, want openai/gpt-5.5", got.Model)
+	if got.Resolved.Effective.Model != "openai/gpt-5.5" {
+		t.Fatalf("spawn model=%q, want openai/gpt-5.5", got.Resolved.Effective.Model)
 	}
 }
 
@@ -2287,8 +2287,8 @@ func TestHubRPCThreadStartAllowsModelWhenProviderHasLaunchDiagnostic(t *testing.
 	}); err != nil {
 		t.Fatalf("ThreadStart: %v", err)
 	}
-	if got.Model != "openai/gpt-5.5" {
-		t.Fatalf("spawn model=%q, want openai/gpt-5.5", got.Model)
+	if got.Resolved.Effective.Model != "openai/gpt-5.5" {
+		t.Fatalf("spawn model=%q, want openai/gpt-5.5", got.Resolved.Effective.Model)
 	}
 }
 
@@ -2366,8 +2366,8 @@ func TestHubRPCThreadStartAllowsIntentionallySkippedLaunchProvider(t *testing.T)
 	if err != nil {
 		t.Fatalf("ThreadStart: %v", err)
 	}
-	if got.Model != "openrouter-anthropic/anthropic/claude-3-5-sonnet" {
-		t.Fatalf("spawn model=%q", got.Model)
+	if got.Resolved.Effective.Model != "openrouter-anthropic/anthropic/claude-3-5-sonnet" {
+		t.Fatalf("spawn model=%q", got.Resolved.Effective.Model)
 	}
 	if resp.Thread.Serf.Ref != "local:th_openrouter_anthropic" {
 		t.Fatalf("thread=%+v", resp.Thread)
@@ -2678,8 +2678,8 @@ func TestResumeRequestForConfigDoesNotTreatProfileIDAsProvider(t *testing.T) {
 	}
 
 	req := resumeRequestForConfig(WebConfig{Past: past}, sessionID)
-	if req.Model != "" {
-		t.Fatalf("resume model=%q, want empty for non-provider profile id", req.Model)
+	if req.Resolved.Effective.Model != "" {
+		t.Fatalf("resume model=%q, want empty for non-provider profile id", req.Resolved.Effective.Model)
 	}
 	if req.WorkingDir != "/tmp/project" || req.StateDir != stateDir {
 		t.Fatalf("resume request=%+v", req)

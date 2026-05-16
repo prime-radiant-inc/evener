@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"primeradiant.com/serf/internal/credentials"
 	"primeradiant.com/serf/rendezvous"
 
 	// Side-effect imports register provider adapters. These are the same
@@ -91,11 +92,15 @@ func main() {
 		fmt.Fprintf(os.Stderr, "[hub] %v\n", err)
 		os.Exit(1)
 	}
+	hubStateRoot := cfg.HubStateRoot
+	credsStore, _ := credentials.LoadStore(filepath.Join(hubStateRoot, "credentials.toml"))
 	spawner := &HubSpawner{
 		Cfg:        cfg,
 		SerfBinary: *serfBinary,
 		RunDir:     runDir,
 		HubToken:   hubToken,
+		Creds:      credsStore,
+		StateRoot:  hubStateRoot,
 	}
 	var codexLauncher *CodexLauncher
 	if len(cfg.CodexLaunches) > 0 {

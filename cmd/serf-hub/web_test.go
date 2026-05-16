@@ -1908,8 +1908,8 @@ func TestWeb_ApiSpawn_WaitsForSlowSpawnerAndReturnsSession(t *testing.T) {
 	if resp.Ref != "local:01SLOWSPAWN" || resp.SessionID != "01SLOWSPAWN" {
 		t.Fatalf("spawn response=%+v", resp)
 	}
-	if spawner.got.Model != "openai/gpt-5" {
-		t.Fatalf("spawn model=%q, want openai/gpt-5", spawner.got.Model)
+	if spawner.got.Resolved.Effective.Model != "openai/gpt-5" {
+		t.Fatalf("spawn model=%q, want openai/gpt-5", spawner.got.Resolved.Effective.Model)
 	}
 	wantWorkingDir, err := canonicalizeDir(workDir)
 	if err != nil {
@@ -1918,11 +1918,11 @@ func TestWeb_ApiSpawn_WaitsForSlowSpawnerAndReturnsSession(t *testing.T) {
 	if spawner.got.WorkingDir != wantWorkingDir {
 		t.Fatalf("working_dir=%q, want %q", spawner.got.WorkingDir, wantWorkingDir)
 	}
-	if spawner.got.Agent != "reviewer" {
-		t.Fatalf("agent=%q, want reviewer", spawner.got.Agent)
+	if spawner.got.Resolved.Effective.Agent != "reviewer" {
+		t.Fatalf("agent=%q, want reviewer", spawner.got.Resolved.Effective.Agent)
 	}
-	if spawner.got.ReasoningEffort != "high" {
-		t.Fatalf("reasoning_effort=%q, want high", spawner.got.ReasoningEffort)
+	if spawner.got.Resolved.Effective.ReasoningEffort != "high" {
+		t.Fatalf("reasoning_effort=%q, want high", spawner.got.Resolved.Effective.ReasoningEffort)
 	}
 }
 
@@ -2645,8 +2645,8 @@ func TestWeb_Send_EndedRosterEntryResumesForwardsAndKeepsReplay(t *testing.T) {
 			if req.StateDir != stateDir || req.WorkingDir != "/tmp/project" {
 				t.Fatalf("resume request=%+v", req)
 			}
-			if req.Model != "openai/gpt-5" {
-				t.Fatalf("resume model=%q, want openai/gpt-5", req.Model)
+			if req.Resolved.Effective.Model != "openai/gpt-5" {
+				t.Fatalf("resume model=%q, want openai/gpt-5", req.Resolved.Effective.Model)
 			}
 			entry := rendezvous.Entry{
 				PID:        301,

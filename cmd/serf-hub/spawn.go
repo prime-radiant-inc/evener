@@ -8,14 +8,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"sort"
 	"strings"
 	"time"
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/internal/appwire"
-	authopenai "primeradiant.com/serf/internal/auth/openai"
+	"primeradiant.com/serf/internal/credentials"
+	"primeradiant.com/serf/internal/launchconfig"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -23,14 +23,13 @@ const serfLaunchCheckTimeout = 30 * time.Second
 
 // SpawnRequest carries the per-spawn knobs passed directly from the caller.
 type SpawnRequest struct {
-	Model           string
-	Agent           string
-	WorkingDir      string
-	StateDir        string
-	RunDir          string
-	ReasoningEffort string
-	SSERingSize     int
-	Env             []string
+	Resolved    launchconfig.Resolved
+	WorkingDir  string
+	StateDir    string
+	RunDir      string
+	SSERingSize int
+	Env         []string // populated by ToEnv during Spawn
+	Provider    string   // for credential injection
 }
 
 // ResumeRequest carries the resolved state needed to resume a saved session.
@@ -38,10 +37,11 @@ type ResumeRequest struct {
 	SessionID   string
 	WorkingDir  string
 	StateDir    string
-	Model       string
+	Resolved    launchconfig.Resolved
 	RunDir      string
 	SSERingSize int
-	Env         []string
+	Env         []string // populated by ToEnv during Resume
+	Provider    string   // for credential injection
 }
 
 // HubSpawner fulfills the Spawner interface using SpawnDaemon.
@@ -50,6 +50,8 @@ type HubSpawner struct {
 	SerfBinary string // path to the serf binary; "" → "serf" on PATH
 	RunDir     string
 	HubToken   string
+	Creds      *credentials.Store // credentials store for provider key injection
+	StateRoot  string             // hub-level state root; used for resolving
 }
 
 type SerfLaunchModelLister interface {
@@ -74,13 +76,27 @@ func (h *HubSpawner) ListLaunchModels(ctx context.Context) ([]appwire.ModelDescr
 
 func (h *HubSpawner) ListLaunchModelContract(ctx context.Context) (appwire.ModelListResponse, error) {
 	stateDir := resolveSerfLaunchStateDir("", h.Cfg.SerfLaunch.Env)
-	env := buildSerfChildEnv(h.Cfg, h.RunDir, stateDir, h.HubToken)
+	env := launchconfig.ToEnv(launchconfig.EnvInputs{
+		Resolved:  launchconfig.Resolved{Effective: launchconfig.Layer{Env: h.Cfg.SerfLaunch.Env}},
+		RunDir:    h.RunDir,
+		StateDir:  stateDir,
+		HubToken:  h.HubToken,
+		Creds:     h.Creds,
+		ParentEnv: os.Environ(),
+	})
 	return listSerfLaunchModelContract(ctx, h.SerfBinary, env)
 }
 
 func (h *HubSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, workingDir string) (appwire.ModelListResponse, error) {
 	stateDir := resolveSerfLaunchStateDir(workingDir, h.Cfg.SerfLaunch.Env)
-	env := buildSerfChildEnv(h.Cfg, h.RunDir, stateDir, h.HubToken)
+	env := launchconfig.ToEnv(launchconfig.EnvInputs{
+		Resolved:  launchconfig.Resolved{Effective: launchconfig.Layer{Env: h.Cfg.SerfLaunch.Env}},
+		RunDir:    h.RunDir,
+		StateDir:  stateDir,
+		HubToken:  h.HubToken,
+		Creds:     h.Creds,
+		ParentEnv: os.Environ(),
+	})
 	return listSerfLaunchModelContract(ctx, h.SerfBinary, env)
 }
 
@@ -90,15 +106,25 @@ func (h *HubSpawner) Spawn(ctx context.Context, req SpawnRequest) (rendezvous.En
 		timeout = 30 * time.Second
 	}
 	if req.StateDir == "" {
-		req.StateDir = resolveSerfLaunchStateDir(req.WorkingDir, h.Cfg.SerfLaunch.Env)
+		req.StateDir = resolveSerfLaunchStateDir(req.WorkingDir, req.Resolved.Effective.Env)
 	}
 	req.RunDir = h.RunDir
-	req.SSERingSize = h.Cfg.SerfLaunch.SSERingSize
-	req.Env = buildSerfChildEnv(h.Cfg, h.RunDir, req.StateDir, h.HubToken)
-	if err := validateProviderCredentials(req.Model, req.Env, req.StateDir); err != nil {
+	if req.Resolved.Effective.SSERingSize != nil {
+		req.SSERingSize = *req.Resolved.Effective.SSERingSize
+	}
+	req.Env = launchconfig.ToEnv(launchconfig.EnvInputs{
+		Resolved:  req.Resolved,
+		Provider:  req.Provider,
+		Creds:     h.Creds,
+		ParentEnv: os.Environ(),
+		RunDir:    h.RunDir,
+		StateDir:  req.StateDir,
+		HubToken:  h.HubToken,
+	})
+	if err := validateProviderCredentials(req.Provider, h.Creds); err != nil {
 		return rendezvous.Entry{}, err
 	}
-	if err := validateSerfLaunchContract(ctx, h.SerfBinary, req.Model, req.Env); err != nil {
+	if err := validateSerfLaunchContract(ctx, h.SerfBinary, req.Resolved.Effective.Model, req.Env); err != nil {
 		return rendezvous.Entry{}, err
 	}
 	return SpawnDaemon(ctx, h.SerfBinary, h.RunDir, req, timeout)
@@ -110,17 +136,27 @@ func (h *HubSpawner) Resume(ctx context.Context, req ResumeRequest) (rendezvous.
 		timeout = 30 * time.Second
 	}
 	if req.StateDir == "" {
-		req.StateDir = resolveSerfLaunchStateDir(req.WorkingDir, h.Cfg.SerfLaunch.Env)
+		req.StateDir = resolveSerfLaunchStateDir(req.WorkingDir, req.Resolved.Effective.Env)
 	}
 	req.RunDir = h.RunDir
-	req.SSERingSize = h.Cfg.SerfLaunch.SSERingSize
-	req.Env = buildSerfChildEnv(h.Cfg, h.RunDir, req.StateDir, h.HubToken)
-	if req.Model != "" {
-		if err := validateProviderCredentials(req.Model, req.Env, req.StateDir); err != nil {
+	if req.Resolved.Effective.SSERingSize != nil {
+		req.SSERingSize = *req.Resolved.Effective.SSERingSize
+	}
+	req.Env = launchconfig.ToEnv(launchconfig.EnvInputs{
+		Resolved:  req.Resolved,
+		Provider:  req.Provider,
+		Creds:     h.Creds,
+		ParentEnv: os.Environ(),
+		RunDir:    h.RunDir,
+		StateDir:  req.StateDir,
+		HubToken:  h.HubToken,
+	})
+	if req.Provider != "" {
+		if err := validateProviderCredentials(req.Provider, h.Creds); err != nil {
 			return rendezvous.Entry{}, err
 		}
 	}
-	if err := validateSerfLaunchContract(ctx, h.SerfBinary, req.Model, req.Env); err != nil {
+	if err := validateSerfLaunchContract(ctx, h.SerfBinary, req.Resolved.Effective.Model, req.Env); err != nil {
 		return rendezvous.Entry{}, err
 	}
 	return ResumeDaemon(ctx, h.SerfBinary, h.RunDir, req, timeout)
@@ -141,18 +177,10 @@ func buildSpawnArgs(req SpawnRequest) []string {
 	if req.RunDir != "" {
 		args = append(args, "--run-dir", req.RunDir)
 	}
-	if req.Model != "" {
-		args = append(args, "--model", req.Model)
-	}
-	if req.Agent != "" {
-		args = append(args, "--agent", req.Agent)
-	}
-	if req.ReasoningEffort != "" {
-		args = append(args, "--reasoning-effort", req.ReasoningEffort)
-	}
 	if req.SSERingSize > 0 {
 		args = append(args, "--sse-ring-size", fmt.Sprintf("%d", req.SSERingSize))
 	}
+	args = append(args, launchconfig.ToArgs(req.Resolved)...)
 	return args
 }
 
@@ -169,11 +197,7 @@ func SpawnDaemon(ctx context.Context, serfBinary string, runDir string, req Spaw
 	args := append([]string{"serve"}, buildSpawnArgs(req)...)
 
 	cmd := exec.Command(serfBinary, args...)
-	if len(req.Env) > 0 {
-		cmd.Env = req.Env
-	} else {
-		cmd.Env = buildDefaultSerfChildEnv(runDir, req.StateDir)
-	}
+	cmd.Env = req.Env
 	cmd.Stdout = os.Stderr // forward to hub stderr for now
 	cmd.Stderr = os.Stderr
 
@@ -260,12 +284,9 @@ func ResumeDaemon(ctx context.Context, serfBinary, runDir string, req ResumeRequ
 	if req.SSERingSize > 0 {
 		args = append(args, "--sse-ring-size", fmt.Sprintf("%d", req.SSERingSize))
 	}
+	args = append(args, launchconfig.ToArgs(req.Resolved)...)
 	cmd := exec.Command(serfBinary, args...)
-	if len(req.Env) > 0 {
-		cmd.Env = req.Env
-	} else {
-		cmd.Env = buildDefaultSerfChildEnv(runDir, req.StateDir)
-	}
+	cmd.Env = req.Env
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	startedAt := time.Now()
@@ -310,34 +331,6 @@ func resolveSerfStateDirWithStateHome(workDir, override, stateHome string) strin
 	return agent.RuntimeDirWithStateHome(cmdutil.GitOriginURLFromDir(wd), wd, "", strings.TrimSpace(stateHome))
 }
 
-func buildSerfChildEnv(cfg Config, runDir, stateDir, hubToken string) []string {
-	env := buildDefaultSerfChildEnv(runDir, stateDir)
-	keys := make([]string, 0, len(cfg.SerfLaunch.Env))
-	for key := range cfg.SerfLaunch.Env {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		env = setEnvValue(env, key, cfg.SerfLaunch.Env[key])
-	}
-	if strings.TrimSpace(hubToken) != "" {
-		env = setEnvValue(env, "SERF_HUB_TOKEN", hubToken)
-	}
-	return env
-}
-
-func buildDefaultSerfChildEnv(runDir, stateDir string) []string {
-	env := append([]string{}, os.Environ()...)
-	env = setEnvValue(env, "SERF_HUB_SPAWNED", "1")
-	if runDir != "" {
-		env = setEnvValue(env, "SERF_RUN_DIR", runDir)
-	}
-	if stateDir != "" {
-		env = setEnvValue(env, "SERF_STATE_DIR", stateDir)
-	}
-	return env
-}
-
 func setEnvValue(env []string, key, value string) []string {
 	prefix := key + "="
 	for i, kv := range env {
@@ -349,56 +342,33 @@ func setEnvValue(env []string, key, value string) []string {
 	return append(env, prefix+value)
 }
 
-func validateProviderCredentials(model string, env []string, _ string) error {
-	ref, err := cmdutil.ParseModelRef(model)
-	if err != nil {
-		return appwire.InvalidParams(err.Error())
-	}
-	envMap := envToMap(env)
-	switch ref.Provider {
-	case "openai":
-		if strings.TrimSpace(envMap["OPENAI_API_KEY"]) != "" {
-			return nil
-		}
-		authStateDir := authopenai.DefaultStateDirWithStateHome(envMap["XDG_STATE_HOME"])
-		if _, err := authopenai.LoadAuth(authStateDir); err == nil {
-			return nil
-		} else if !errors.Is(err, authopenai.ErrAuthNotFound) {
-			return appwire.HubLaunchError("load OpenAI credentials: " + err.Error())
-		}
-		return missingProviderCredential(ref.Provider, "OPENAI_API_KEY or Serf OpenAI login")
-	case "anthropic":
-		return requireAnyEnv(ref.Provider, envMap, "ANTHROPIC_API_KEY")
-	case "google", "gemini":
-		return requireAnyEnv(ref.Provider, envMap, "GEMINI_API_KEY", "GOOGLE_API_KEY")
-	case "minimax":
-		return requireAnyEnv(ref.Provider, envMap, "MINIMAX_API_KEY")
-	case "openrouter", "openrouter-anthropic":
-		return requireAnyEnv(ref.Provider, envMap, "OPENROUTER_API_KEY")
-	case "kimi":
-		return requireAnyEnv(ref.Provider, envMap, "KIMI_API_KEY")
-	case "glm":
-		return requireAnyEnv(ref.Provider, envMap, "GLM_API_KEY")
-	case "openai-compatible":
-		return requireAnyEnv(ref.Provider, envMap, "OPENAI_COMPATIBLE_BASE_URL")
-	case "ollama":
-		return nil
-	default:
+// validateProviderCredentials checks that the credentials store has a value
+// for the given provider. Providers listed with auth mode "none" (e.g. ollama)
+// are always accepted. A configured provider with no resolvable credential
+// returns a structured launch error.
+//
+// If store is nil, credential validation is skipped (the spawned process
+// inherits env credentials or will fail at the LLM provider level instead).
+func validateProviderCredentials(provider string, store *credentials.Store) error {
+	if provider == "" || store == nil {
 		return nil
 	}
-}
-
-func requireAnyEnv(provider string, env map[string]string, keys ...string) error {
-	for _, key := range keys {
-		if strings.TrimSpace(env[key]) != "" {
+	// Use List() so providers that need no credentials (e.g. ollama) are
+	// correctly identified via their SourceNone status.
+	for _, p := range store.List() {
+		if p.Name != strings.ToLower(provider) {
+			continue
+		}
+		if p.Source == credentials.SourceNone {
 			return nil
 		}
+		if p.Source == credentials.SourceAbsent {
+			return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: set via serf/auth/apiKey/set or set the matching env var", provider))
+		}
+		return nil
 	}
-	return missingProviderCredential(provider, strings.Join(keys, " or "))
-}
-
-func missingProviderCredential(provider, keys string) error {
-	return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: configure %s in hub serf_launch env or inherited environment", provider, keys))
+	// Unknown provider — don't block launch.
+	return nil
 }
 
 func envToMap(env []string) map[string]string {
