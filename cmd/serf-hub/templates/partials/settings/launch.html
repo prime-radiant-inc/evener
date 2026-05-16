@@ -59,4 +59,71 @@
     });
   })();
 </script>
+<h3 class="settings-h3">Project overrides</h3>
+<label>Working dir <input type="text" id="proj-launch-cwd" placeholder="/path/to/project"></label>
+<form id="project-launch-form" data-loaded="false">
+  <p>Enter a working dir above.</p>
+</form>
+<script>
+  (function () {
+    const cwdIn = document.getElementById("proj-launch-cwd");
+    const form = document.getElementById("project-launch-form");
+    cwdIn.value = localStorage.getItem("lastCwd") || "";
+    let current = null;
+    async function refresh() {
+      const cwd = cwdIn.value.trim();
+      if (!cwd) { form.innerHTML = "<p>Enter a working dir above.</p>"; return; }
+      current = await launchconfig.getLayer(cwd, "project");
+      form.innerHTML = `
+        <label>Model <input type="text" name="model" value="${current.model || ""}"></label>
+        <label>Agent <input type="text" name="agent" value="${current.agent || ""}"></label>
+        <label>Reasoning effort
+          <select name="reasoningEffort">
+            <option value="">(use defaults)</option>
+            <option ${current.reasoningEffort === "low" ? "selected" : ""}>low</option>
+            <option ${current.reasoningEffort === "medium" ? "selected" : ""}>medium</option>
+            <option ${current.reasoningEffort === "high" ? "selected" : ""}>high</option>
+            <option ${current.reasoningEffort === "xhigh" ? "selected" : ""}>xhigh</option>
+            <option ${current.reasoningEffort === "none" ? "selected" : ""}>none</option>
+          </select>
+        </label>
+        <label>Context strategy
+          <select name="contextStrategy">
+            <option value="">(use defaults)</option>
+            <option ${current.contextStrategy === "compact" ? "selected" : ""}>compact</option>
+            <option ${current.contextStrategy === "recall" ? "selected" : ""}>recall</option>
+            <option ${current.contextStrategy === "session-log" ? "selected" : ""}>session-log</option>
+            <option ${current.contextStrategy === "ooda" ? "selected" : ""}>ooda</option>
+          </select>
+        </label>
+        <label>Max rounds <input type="number" name="maxRounds" min="0" step="1" value="${current.maxRounds ?? ""}"></label>
+        <label>Max subagent depth <input type="number" name="maxSubagentDepth" min="0" step="1" value="${current.maxSubagentDepth ?? ""}"></label>
+        <label><input type="checkbox" name="noProjectPrompts" ${current.noProjectPrompts ? "checked" : ""}> Suppress .serf/prompts loading</label>
+        <button type="submit">Save</button>
+        <p id="proj-launch-status" class="settings-help"></p>
+      `;
+      form.dataset.loaded = "true";
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const out = { ...current,
+          model: form.model.value.trim(),
+          agent: form.agent.value.trim(),
+          reasoningEffort: form.reasoningEffort.value || undefined,
+          contextStrategy: form.contextStrategy.value || undefined,
+          maxRounds: form.maxRounds.value === "" ? undefined : +form.maxRounds.value,
+          maxSubagentDepth: form.maxSubagentDepth.value === "" ? undefined : +form.maxSubagentDepth.value,
+          noProjectPrompts: form.noProjectPrompts.checked || undefined,
+        };
+        try {
+          await launchconfig.setLayer(cwd, "project", out);
+          document.getElementById("proj-launch-status").textContent = "Saved at " + new Date().toLocaleTimeString();
+        } catch (err) {
+          document.getElementById("proj-launch-status").textContent = "Error: " + err.message;
+        }
+      }, { once: false });
+    }
+    cwdIn.addEventListener("change", refresh);
+    refresh();
+  })();
+</script>
 {{end}}

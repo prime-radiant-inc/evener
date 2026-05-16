@@ -49,4 +49,62 @@
     root.dataset.loaded = "true";
   })();
 </script>
+<h3 class="settings-h3">Project overrides</h3>
+<label>Working dir <input type="text" id="proj-mcp-cwd" placeholder="/path/to/project"></label>
+<div id="project-mcps-form" data-loaded="false"><p>Enter a working dir above.</p></div>
+<script>
+  (function () {
+    const cwdIn = document.getElementById("proj-mcp-cwd");
+    const root = document.getElementById("project-mcps-form");
+    cwdIn.value = localStorage.getItem("lastCwd") || "";
+    let current = null;
+    let mcps = [];
+    async function refresh() {
+      const cwd = cwdIn.value.trim();
+      if (!cwd) { root.innerHTML = "<p>Enter a working dir above.</p>"; return; }
+      current = await launchconfig.getLayer(cwd, "project");
+      mcps = current.mcps || [];
+      render(cwd);
+    }
+    function render(cwd) {
+      root.innerHTML = `
+        <ul class="settings-list">
+          ${mcps.map((m, i) => `
+            <li>
+              <code>${m.name}</code> →
+              <code>${m.command} ${(m.args || []).join(" ")}</code>
+              <button data-i="${i}" data-action="rm">remove</button>
+            </li>
+          `).join("")}
+        </ul>
+        <form id="proj-mcps-add">
+          <input type="text" name="name" placeholder="name" required>
+          <input type="text" name="command" placeholder="command" required>
+          <input type="text" name="args" placeholder="args (space-separated)">
+          <button type="submit">Add</button>
+        </form>
+      `;
+      root.querySelectorAll("button[data-action=rm]").forEach(b => {
+        b.addEventListener("click", async () => {
+          mcps.splice(+b.dataset.i, 1);
+          await launchconfig.setLayer(cwd, "project", { ...current, mcps });
+          await refresh();
+        });
+      });
+      root.querySelector("#proj-mcps-add").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const name = e.target.name.value.trim();
+        const command = e.target.command.value.trim();
+        const args = e.target.args.value.trim().split(/\s+/).filter(Boolean);
+        mcps.push({ name, command, args });
+        await launchconfig.setLayer(cwd, "project", { ...current, mcps });
+        e.target.reset();
+        await refresh();
+      });
+      root.dataset.loaded = "true";
+    }
+    cwdIn.addEventListener("change", refresh);
+    refresh();
+  })();
+</script>
 {{end}}
