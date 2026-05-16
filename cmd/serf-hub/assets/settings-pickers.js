@@ -252,6 +252,41 @@
     }, 0);
   }
 
+  // ---------- inline dir autocomplete ----------
+
+  function wireDirInput(input) {
+    if (input.__spDirInit) return;
+    input.__spDirInit = true;
+
+    // Create a datalist for suggestions
+    const listId = "sp-dir-list-" + Math.random().toString(36).slice(2);
+    const dl = document.createElement("datalist");
+    dl.id = listId;
+    input.setAttribute("list", listId);
+    input.parentNode.insertBefore(dl, input.nextSibling);
+
+    let timer = null;
+    input.addEventListener("input", () => {
+      if (timer) clearTimeout(timer);
+      const prefix = input.value;
+      if (!prefix) { dl.innerHTML = ""; return; }
+      timer = setTimeout(() => {
+        const p = window.SerfAppwire
+          ? window.SerfAppwire.completeDirs(prefix)
+          : fetch("/api/dirs?prefix=" + encodeURIComponent(prefix), { credentials: "same-origin" }).then(r => r.json());
+        p.then(data => {
+          const list = (data && data.results) || [];
+          dl.innerHTML = "";
+          list.forEach(r => {
+            const opt = document.createElement("option");
+            opt.value = r.path;
+            dl.appendChild(opt);
+          });
+        }).catch(() => {});
+      }, 150);
+    });
+  }
+
   // ---------- init ----------
 
   function initSettingsPickers(root) {
@@ -284,6 +319,12 @@
         e.preventDefault();
         buildDirPicker(btn, input);
       });
+    });
+
+    // Inline dir autocomplete: input[data-settings-dir-input] gets a datalist
+    // wired to /api/dirs completions, no separate picker button needed.
+    root.querySelectorAll("input[data-settings-dir-input]").forEach(input => {
+      wireDirInput(input);
     });
   }
 

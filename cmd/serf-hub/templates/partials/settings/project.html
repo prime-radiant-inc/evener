@@ -2,7 +2,7 @@
 <h2 class="settings-h2">Project settings</h2>
 {{if .ProjectCWD}}
 <p class="settings-help"><code>{{.ProjectCWD}}</code></p>
-<div id="project-settings-root" data-cwd="{{.ProjectCWD}}" data-loaded="false">
+<div id="project-settings-root" data-cwd="{{.ProjectCWD}}" data-loaded="false" hx-disable hx-disinherit="*">
   <p>Loading…</p>
 </div>
 <script>
@@ -37,7 +37,7 @@
 
       root.innerHTML = `
         <h3 class="settings-h3">Launch defaults</h3>
-        <form id="proj-launch-form" class="settings-launch-form">
+        <div id="proj-launch-form" class="settings-launch-form">
           <label>Model
             <div class="sp-model-wrap">
               <input type="hidden" name="model" id="proj-model-hidden" value="${modelVal}">
@@ -80,10 +80,10 @@
             <input type="checkbox" name="noProjectPrompts" ${launch.noProjectPrompts ? "checked" : ""}> Suppress .serf/prompts loading
           </label>
           <div class="form-actions">
-            <button type="submit">Save launch defaults</button>
+            <button type="button" id="proj-launch-save">Save launch defaults</button>
             <p id="proj-status" class="settings-help" style="margin:0"></p>
           </div>
-        </form>
+        </div>
 
         <h3 class="settings-h3">Plugin directories</h3>
         <ul class="settings-items-list" id="proj-plugin-dirs">
@@ -91,15 +91,10 @@
             <li><code>${escapeHtml(d)}</code> <button data-i="${i}" data-action="rm-plugin" class="danger">remove</button></li>
           `).join("")}
         </ul>
-        <form id="proj-plugins-add" class="settings-add-row">
-          <div class="sp-dir-wrap" style="flex:1;min-width:200px;">
-            <input type="text" name="dir" placeholder="/absolute/path" required style="flex:1;min-width:0;">
-            <button type="button" class="sp-dir-btn" data-settings-dir-picker>
-              <span class="sp-dir-caret">📁</span>
-            </button>
-          </div>
-          <button type="submit">Add plugin dir</button>
-        </form>
+        <div id="proj-plugins-add" class="settings-add-row">
+          <input type="text" name="dir" placeholder="/absolute/path" style="flex:1;min-width:200px;" data-settings-dir-input>
+          <button type="button" data-action="add-plugin">Add plugin dir</button>
+        </div>
 
         <h3 class="settings-h3">Skill directories</h3>
         <ul class="settings-items-list" id="proj-skill-dirs">
@@ -107,15 +102,10 @@
             <li><code>${escapeHtml(d)}</code> <button data-i="${i}" data-action="rm-skill" class="danger">remove</button></li>
           `).join("")}
         </ul>
-        <form id="proj-skills-add" class="settings-add-row">
-          <div class="sp-dir-wrap" style="flex:1;min-width:200px;">
-            <input type="text" name="dir" placeholder="/absolute/path" required style="flex:1;min-width:0;">
-            <button type="button" class="sp-dir-btn" data-settings-dir-picker>
-              <span class="sp-dir-caret">📁</span>
-            </button>
-          </div>
-          <button type="submit">Add skill dir</button>
-        </form>
+        <div id="proj-skills-add" class="settings-add-row">
+          <input type="text" name="dir" placeholder="/absolute/path" style="flex:1;min-width:200px;" data-settings-dir-input>
+          <button type="button" data-action="add-skill">Add skill dir</button>
+        </div>
 
         <h3 class="settings-h3">MCP servers</h3>
         <ul class="settings-items-list" id="proj-mcps">
@@ -127,12 +117,12 @@
             </li>
           `).join("")}
         </ul>
-        <form id="proj-mcps-add" class="settings-add-row" style="flex-wrap:wrap;">
-          <input type="text" name="name" placeholder="name" required style="width:120px;">
-          <input type="text" name="command" placeholder="command" required style="flex:1;min-width:120px;">
+        <div id="proj-mcps-add" class="settings-add-row" style="flex-wrap:wrap;">
+          <input type="text" name="name" placeholder="name" style="width:120px;">
+          <input type="text" name="command" placeholder="command" style="flex:1;min-width:120px;">
           <input type="text" name="args" placeholder="args (space-separated)" style="flex:1;min-width:120px;">
-          <button type="submit">Add MCP server</button>
-        </form>
+          <button type="button" data-action="add-mcp">Add MCP server</button>
+        </div>
 
         <h3 class="settings-h3">MCP config paths</h3>
         <ul class="settings-items-list" id="proj-mcp-paths">
@@ -140,15 +130,10 @@
             <li><code>${escapeHtml(p)}</code> <button data-i="${i}" data-action="rm-mcp-path" class="danger">remove</button></li>
           `).join("")}
         </ul>
-        <form id="proj-mcp-paths-add" class="settings-add-row">
-          <div class="sp-dir-wrap" style="flex:1;min-width:200px;">
-            <input type="text" name="path" placeholder="/path/to/mcp.json" required style="flex:1;min-width:0;">
-            <button type="button" class="sp-dir-btn" data-settings-dir-picker>
-              <span class="sp-dir-caret">📁</span>
-            </button>
-          </div>
-          <button type="submit">Add MCP config path</button>
-        </form>
+        <div id="proj-mcp-paths-add" class="settings-add-row">
+          <input type="text" name="path" placeholder="/path/to/mcp.json" style="flex:1;min-width:200px;" data-settings-dir-input>
+          <button type="button" data-action="add-mcp-path">Add MCP config path</button>
+        </div>
 
         <h3 class="settings-h3">System prompt append paths</h3>
         <ul class="settings-items-list" id="proj-prompt-paths">
@@ -156,15 +141,10 @@
             <li><code>${escapeHtml(p)}</code> <button data-i="${i}" data-action="rm-prompt-path" class="danger">remove</button></li>
           `).join("")}
         </ul>
-        <form id="proj-prompt-paths-add" class="settings-add-row">
-          <div class="sp-dir-wrap" style="flex:1;min-width:200px;">
-            <input type="text" name="path" placeholder="/path/to/prompt.txt" required style="flex:1;min-width:0;">
-            <button type="button" class="sp-dir-btn" data-settings-dir-picker>
-              <span class="sp-dir-caret">📁</span>
-            </button>
-          </div>
-          <button type="submit">Add prompt path</button>
-        </form>
+        <div id="proj-prompt-paths-add" class="settings-add-row">
+          <input type="text" name="path" placeholder="/path/to/prompt.txt" style="flex:1;min-width:200px;" data-settings-dir-input>
+          <button type="button" data-action="add-prompt-path">Add prompt path</button>
+        </div>
 
         <h3 class="settings-h3">Environment variables</h3>
         <ul class="settings-items-list" id="proj-env">
@@ -172,11 +152,11 @@
             <li><code>${escapeHtml(k)}</code><span style="color:var(--text-muted);padding:0 4px;">=</span><code>${escapeHtml(v)}</code> <button data-k="${escapeHtml(k)}" data-action="rm-env" class="danger">remove</button></li>
           `).join("")}
         </ul>
-        <form id="proj-env-add" class="settings-add-row">
-          <input type="text" name="key" placeholder="KEY" required style="width:140px;">
+        <div id="proj-env-add" class="settings-add-row">
+          <input type="text" name="key" placeholder="KEY" style="width:140px;">
           <input type="text" name="value" placeholder="value" style="flex:1;min-width:120px;">
-          <button type="submit">Add env var</button>
-        </form>
+          <button type="button" data-action="add-env">Add env var</button>
+        </div>
       `;
 
       // Wire up model picker clear button
@@ -191,17 +171,16 @@
       if (window.SettingsPickers) window.SettingsPickers.init(root);
 
       // Launch form save
-      root.querySelector("#proj-launch-form").addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const form = e.target;
+      root.querySelector("#proj-launch-save").addEventListener("click", async () => {
+        const fld = (name) => root.querySelector(`[name="${name}"]`);
         const out = { ...current,
           model: modelHidden.value.trim() || undefined,
-          agent: form.agent.value.trim() || undefined,
-          reasoningEffort: form.reasoningEffort.value || undefined,
-          contextStrategy: form.contextStrategy.value || undefined,
-          maxRounds: form.maxRounds.value === "" ? undefined : +form.maxRounds.value,
-          maxSubagentDepth: form.maxSubagentDepth.value === "" ? undefined : +form.maxSubagentDepth.value,
-          noProjectPrompts: form.noProjectPrompts.checked || undefined,
+          agent: fld("agent").value.trim() || undefined,
+          reasoningEffort: fld("reasoningEffort").value || undefined,
+          contextStrategy: fld("contextStrategy").value || undefined,
+          maxRounds: fld("maxRounds").value === "" ? undefined : +fld("maxRounds").value,
+          maxSubagentDepth: fld("maxSubagentDepth").value === "" ? undefined : +fld("maxSubagentDepth").value,
+          noProjectPrompts: fld("noProjectPrompts").checked || undefined,
         };
         try {
           current = await launchconfig.setLayer(cwd, "project", out);
@@ -220,14 +199,13 @@
           render();
         });
       });
-      root.querySelector("#proj-plugins-add").addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const v = e.target.dir.value.trim();
+      root.querySelector("[data-action=add-plugin]").addEventListener("click", async () => {
+        const row = root.querySelector("#proj-plugins-add");
+        const v = row.querySelector("[name=dir]").value.trim();
         if (!v) return;
         const dirs = (current.pluginDirs || []);
         dirs.push(v);
         current = await launchconfig.setLayer(cwd, "project", { ...current, pluginDirs: dirs });
-        e.target.dir.value = "";
         render();
       });
 
@@ -240,14 +218,13 @@
           render();
         });
       });
-      root.querySelector("#proj-skills-add").addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const v = e.target.dir.value.trim();
+      root.querySelector("[data-action=add-skill]").addEventListener("click", async () => {
+        const row = root.querySelector("#proj-skills-add");
+        const v = row.querySelector("[name=dir]").value.trim();
         if (!v) return;
         const dirs = (current.skillsDirs || []);
         dirs.push(v);
         current = await launchconfig.setLayer(cwd, "project", { ...current, skillsDirs: dirs });
-        e.target.dir.value = "";
         render();
       });
 
@@ -260,15 +237,15 @@
           render();
         });
       });
-      root.querySelector("#proj-mcps-add").addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const name = e.target.name.value.trim();
-        const command = e.target.command.value.trim();
-        const args = e.target.args.value.trim().split(/\s+/).filter(Boolean);
+      root.querySelector("[data-action=add-mcp]").addEventListener("click", async () => {
+        const row = root.querySelector("#proj-mcps-add");
+        const name = row.querySelector("[name=name]").value.trim();
+        const command = row.querySelector("[name=command]").value.trim();
+        const args = row.querySelector("[name=args]").value.trim().split(/\s+/).filter(Boolean);
+        if (!name || !command) return;
         const mcps = (current.mcps || []);
         mcps.push({ name, command, args });
         current = await launchconfig.setLayer(cwd, "project", { ...current, mcps });
-        e.target.reset();
         render();
       });
 
@@ -281,14 +258,13 @@
           render();
         });
       });
-      root.querySelector("#proj-mcp-paths-add").addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const v = e.target.path.value.trim();
+      root.querySelector("[data-action=add-mcp-path]").addEventListener("click", async () => {
+        const row = root.querySelector("#proj-mcp-paths-add");
+        const v = row.querySelector("[name=path]").value.trim();
         if (!v) return;
         const paths = (current.mcpConfigPaths || []);
         paths.push(v);
         current = await launchconfig.setLayer(cwd, "project", { ...current, mcpConfigPaths: paths });
-        e.target.path.value = "";
         render();
       });
 
@@ -301,14 +277,13 @@
           render();
         });
       });
-      root.querySelector("#proj-prompt-paths-add").addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const v = e.target.path.value.trim();
+      root.querySelector("[data-action=add-prompt-path]").addEventListener("click", async () => {
+        const row = root.querySelector("#proj-prompt-paths-add");
+        const v = row.querySelector("[name=path]").value.trim();
         if (!v) return;
         const paths = (current.systemPromptAppendPaths || []);
         paths.push(v);
         current = await launchconfig.setLayer(cwd, "project", { ...current, systemPromptAppendPaths: paths });
-        e.target.path.value = "";
         render();
       });
 
@@ -321,14 +296,13 @@
           render();
         });
       });
-      root.querySelector("#proj-env-add").addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const k = e.target.key.value.trim();
-        const v = e.target.value.value;
+      root.querySelector("[data-action=add-env]").addEventListener("click", async () => {
+        const row = root.querySelector("#proj-env-add");
+        const k = row.querySelector("[name=key]").value.trim();
+        const v = row.querySelector("[name=value]").value;
         if (!k) return;
         const env = { ...(current.env || {}), [k]: v };
         current = await launchconfig.setLayer(cwd, "project", { ...current, env });
-        e.target.reset();
         render();
       });
 

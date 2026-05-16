@@ -300,10 +300,10 @@
         htmx.ajax("GET", "/_partials/settings/providers", "#settings-content");
       }
     } else if (method === "serf/launch/updated") {
-      // Reload whatever settings tab is open.
+      // Reload whatever settings tab is open, preserving query params (e.g. ?cwd= on project page).
       const path = window.location.pathname;
       if (path.startsWith("/settings/") && window.htmx && typeof htmx.ajax === "function") {
-        htmx.ajax("GET", "/_partials" + path, "#settings-content");
+        htmx.ajax("GET", "/_partials" + path + window.location.search, "#settings-content");
       }
     }
   });
