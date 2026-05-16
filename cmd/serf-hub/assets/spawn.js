@@ -649,14 +649,24 @@
       timer = setTimeout(() => fetchDirs(input.value), 150);
     });
 
-    // Tab autocompletes to first result + "/"; Enter accepts first result or literal.
+    // Tab autocompletes to first result + "/". Enter prefers an exact
+    // match (typed path == suggested path) and otherwise commits the
+    // typed literal so we don't silently send the wrong directory.
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         e.preventDefault();
-        const first = results.querySelector(".chip-picker-dir-row");
-        if (first) first.click();
-        else if (input.value) {
-          setChipValue("working_dir", input.value);
+        const typed = input.value.trim();
+        if (!typed) return;
+        const rows = results.querySelectorAll(".chip-picker-dir-row");
+        let exact = null;
+        for (const row of rows) {
+          const p = row.querySelector(".chip-picker-dir-path");
+          if (p && p.textContent === typed) { exact = row; break; }
+        }
+        if (exact) {
+          exact.click();
+        } else {
+          setChipValue("working_dir", typed);
           picker.remove();
         }
       } else if (e.key === "Tab") {
