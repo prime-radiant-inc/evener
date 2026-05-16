@@ -25,6 +25,35 @@
     function getField(name) { return root.querySelector(`[name="${name}"]`); }
     function statusEl() { return root.querySelector("#proj-status"); }
 
+    // captureLaunchForm reads in-progress edits to the launch-form fields
+    // back into `current` so the next render() doesn't wipe them.
+    function captureLaunchForm() {
+      const fld = (name) => root.querySelector(`[name="${name}"]`);
+      const mh = root.querySelector("#proj-model-hidden");
+      if (mh) current.model = mh.value.trim() || undefined;
+      if (fld("agent")) current.agent = fld("agent").value.trim() || undefined;
+      if (fld("reasoningEffort")) current.reasoningEffort = fld("reasoningEffort").value || undefined;
+      if (fld("contextStrategy")) current.contextStrategy = fld("contextStrategy").value || undefined;
+      if (fld("maxRounds")) current.maxRounds = fld("maxRounds").value === "" ? undefined : +fld("maxRounds").value;
+      if (fld("maxSubagentDepth")) current.maxSubagentDepth = fld("maxSubagentDepth").value === "" ? undefined : +fld("maxSubagentDepth").value;
+      if (fld("noProjectPrompts")) current.noProjectPrompts = fld("noProjectPrompts").checked || undefined;
+    }
+
+    // Event delegation — survives every render() because root persists.
+    // Captures launch-form edits to `current` on every keystroke / change
+    // so clicking Add (which triggers a re-render) doesn't wipe pending
+    // typed values.
+    root.addEventListener("input", (ev) => {
+      if (ev.target && ev.target.closest && ev.target.closest("#proj-launch-form")) {
+        captureLaunchForm();
+      }
+    });
+    root.addEventListener("change", (ev) => {
+      if (ev.target && ev.target.closest && ev.target.closest("#proj-launch-form")) {
+        captureLaunchForm();
+      }
+    });
+
     function render() {
       const launch = current;
       const pluginDirs = launch.pluginDirs || [];
@@ -172,16 +201,11 @@
 
       // Launch form save
       root.querySelector("#proj-launch-save").addEventListener("click", async () => {
-        const fld = (name) => root.querySelector(`[name="${name}"]`);
-        const out = { ...current,
-          model: modelHidden.value.trim() || undefined,
-          agent: fld("agent").value.trim() || undefined,
-          reasoningEffort: fld("reasoningEffort").value || undefined,
-          contextStrategy: fld("contextStrategy").value || undefined,
-          maxRounds: fld("maxRounds").value === "" ? undefined : +fld("maxRounds").value,
-          maxSubagentDepth: fld("maxSubagentDepth").value === "" ? undefined : +fld("maxSubagentDepth").value,
-          noProjectPrompts: fld("noProjectPrompts").checked || undefined,
-        };
+        // captureLaunchForm() already runs on input/change; this is a
+        // belt-and-suspenders call in case the user clicks Save without
+        // ever moving focus out of a field.
+        captureLaunchForm();
+        const out = { ...current };
         try {
           current = await launchconfig.setLayer(cwd, "project", out);
           statusEl().textContent = "Saved at " + new Date().toLocaleTimeString();
