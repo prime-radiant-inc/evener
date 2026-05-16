@@ -329,8 +329,10 @@ var hubCommandRegistry = []hubCommandDefinition{
 		PaletteDetail: "edit hub launch configuration layers",
 		Scopes:        hubCommandDashboard,
 		Run: func(m *hubModel, _ string) tea.Cmd {
-			// TODO(task-5): wire in newLaunchSettingsPanel when Task 5 builds it.
-			return nil
+			cwd := m.spawnWorkingDir()
+			p := newLaunchSettingsPanel(m.client, cwd)
+			m.launchSettingsPanel = &p
+			return p.initialCmd()
 		},
 	},
 }

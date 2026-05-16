@@ -122,8 +122,9 @@ type hubModel struct {
 	authLoginProvider string
 	authLoginFlowID   string
 
-	credentialsPanel *credentialsPanel
-	followupModal    *textInputModal
+	credentialsPanel     *credentialsPanel
+	launchSettingsPanel  *launchSettingsPanel
+	followupModal        *textInputModal
 
 	lastCtrlC       time.Time
 	postQuitMessage string
@@ -596,6 +597,14 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmdAuthList(m.client)
 		}
 		return m, nil
+	case launchLayerResultMsg, launchResolveResultMsg, launchSetLayerResultMsg, launchTrustResultMsg:
+		if m.launchSettingsPanel != nil {
+			updated, cmd := m.launchSettingsPanel.Update(msg)
+			p := updated.(launchSettingsPanel)
+			m.launchSettingsPanel = &p
+			return m, cmd
+		}
+		return m, nil
 	}
 	return m, nil
 }
@@ -643,6 +652,16 @@ func (m hubModel) updateDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.credentialsPanel = &panel
 		if panel.done {
 			m.credentialsPanel = nil
+		}
+		return m, cmd
+	}
+	if m.launchSettingsPanel != nil {
+		updated, cmd := m.launchSettingsPanel.Update(msg)
+		p := updated.(launchSettingsPanel)
+		m.launchSettingsPanel = &p
+		if p.done {
+			m.launchSettingsPanel = nil
+			return m, nil
 		}
 		return m, cmd
 	}
@@ -1367,6 +1386,7 @@ func (m *hubModel) returnToDashboard() {
 	m.forkDraft = nil
 	m.spawnModelPicker = nil
 	m.credentialsPanel = nil
+	m.launchSettingsPanel = nil
 	m.followupModal = nil
 	m.session.scrollMode = false
 	m.session.focusedToolIdx = -1
@@ -2427,6 +2447,15 @@ func (m hubModel) dashboardView() string {
 			Body:    b.String(),
 			Overlay: m.credentialsPanel.View(),
 			Footer:  "[Enter] set api key  [O] OAuth sign-in  [C] clear  [Esc] close",
+			Height:  m.height,
+		}.View()
+	}
+	if m.launchSettingsPanel != nil {
+		return appShell{
+			TopBar:  topBar,
+			Body:    b.String(),
+			Overlay: m.launchSettingsPanel.View(),
+			Footer:  "[←/→] tab  [↑/↓] field  [Enter] edit  [Esc] close",
 			Height:  m.height,
 		}.View()
 	}
