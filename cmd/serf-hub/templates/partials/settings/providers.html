@@ -11,16 +11,20 @@
 <script>
   (async function () {
     const rows = document.getElementById("providers-rows");
-    const data = await launchconfig.authList();
-    rows.innerHTML = data.providers.map(p => `
-      <div class="settings-row">
-        <div class="settings-row-title">${p.provider}
-          <span class="status-pill status-${p.activeSource}">${p.activeSource}</span>
+    try {
+      const data = await launchconfig.authList();
+      rows.innerHTML = data.providers.map(p => `
+        <div class="settings-row">
+          <div class="settings-row-title">${p.provider}
+            <span class="status-pill status-${p.activeSource}">${p.activeSource}</span>
+          </div>
+          <div class="settings-row-meta">auth modes: ${(p.authModes || []).join(", ") || "—"}</div>
         </div>
-        <div class="settings-row-meta">auth modes: ${(p.authModes || []).join(", ") || "—"}</div>
-      </div>
-    `).join("");
-    rows.dataset.loaded = "true";
+      `).join("");
+      rows.dataset.loaded = "true";
+    } catch (err) {
+      rows.innerHTML = `<p class="settings-error">Failed to load: ${err && err.message ? err.message : err}</p>`;
+    }
   })();
 </script>
 {{end}}

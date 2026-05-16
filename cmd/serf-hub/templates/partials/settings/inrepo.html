@@ -15,7 +15,13 @@
     async function refresh() {
       const cwd = cwdInput.value.trim();
       if (!cwd) { status.innerHTML = "<p>Enter a working directory.</p>"; return; }
-      const r = await launchconfig.resolve(cwd);
+      let r;
+      try {
+        r = await launchconfig.resolve(cwd);
+      } catch (err) {
+        status.innerHTML = `<p class="settings-error">Failed to load: ${err && err.message ? err.message : err}</p>`;
+        return;
+      }
       const repo = r.repo || { trust: "absent" };
       if (repo.trust === "absent") {
         status.innerHTML = `<p>No <code>.serf/launch.toml</code> in <code>${escapeHtml(cwd)}</code>.</p>`;

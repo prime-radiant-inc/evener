@@ -9,39 +9,43 @@
 <script>
   (async function () {
     const root = document.getElementById("plugins-form");
-    const current = await launchconfig.getLayer("/", "global");
-    const dirs = current.pluginDirs || [];
-    function render() {
-      root.innerHTML = `
-        <ul class="settings-list">
-          ${dirs.map((d, i) => `
-            <li><code>${d}</code> <button data-i="${i}" data-action="rm">remove</button></li>
-          `).join("")}
-        </ul>
-        <form id="plugins-add">
-          <input type="text" name="dir" placeholder="/absolute/path" required>
-          <button type="submit">Add</button>
-        </form>
-      `;
-      root.querySelectorAll("button[data-action=rm]").forEach(b => {
-        b.addEventListener("click", async () => {
-          dirs.splice(+b.dataset.i, 1);
+    try {
+      const current = await launchconfig.getLayer("/", "global");
+      const dirs = current.pluginDirs || [];
+      function render() {
+        root.innerHTML = `
+          <ul class="settings-list">
+            ${dirs.map((d, i) => `
+              <li><code>${d}</code> <button data-i="${i}" data-action="rm">remove</button></li>
+            `).join("")}
+          </ul>
+          <form id="plugins-add">
+            <input type="text" name="dir" placeholder="/absolute/path" required>
+            <button type="submit">Add</button>
+          </form>
+        `;
+        root.querySelectorAll("button[data-action=rm]").forEach(b => {
+          b.addEventListener("click", async () => {
+            dirs.splice(+b.dataset.i, 1);
+            await launchconfig.setLayer("/", "global", { ...current, pluginDirs: dirs });
+            render();
+          });
+        });
+        root.querySelector("#plugins-add").addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const v = e.target.dir.value.trim();
+          if (!v) return;
+          dirs.push(v);
           await launchconfig.setLayer("/", "global", { ...current, pluginDirs: dirs });
+          e.target.dir.value = "";
           render();
         });
-      });
-      root.querySelector("#plugins-add").addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const v = e.target.dir.value.trim();
-        if (!v) return;
-        dirs.push(v);
-        await launchconfig.setLayer("/", "global", { ...current, pluginDirs: dirs });
-        e.target.dir.value = "";
-        render();
-      });
+      }
+      render();
+      root.dataset.loaded = "true";
+    } catch (err) {
+      root.innerHTML = `<p class="settings-error">Failed to load: ${err && err.message ? err.message : err}</p>`;
     }
-    render();
-    root.dataset.loaded = "true";
   })();
 </script>
 <h3 class="settings-h3">Project overrides</h3>
@@ -57,9 +61,13 @@
     async function refresh() {
       const cwd = cwdIn.value.trim();
       if (!cwd) { root.innerHTML = "<p>Enter a working dir above.</p>"; return; }
-      current = await launchconfig.getLayer(cwd, "project");
-      dirs = current.pluginDirs || [];
-      render(cwd);
+      try {
+        current = await launchconfig.getLayer(cwd, "project");
+        dirs = current.pluginDirs || [];
+        render(cwd);
+      } catch (err) {
+        root.innerHTML = `<p class="settings-error">Failed to load: ${err && err.message ? err.message : err}</p>`;
+      }
     }
     function render(cwd) {
       root.innerHTML = `

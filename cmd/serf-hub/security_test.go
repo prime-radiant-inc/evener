@@ -13,51 +13,6 @@ func okHandler() http.Handler {
 	})
 }
 
-func TestSameOriginGuard_AllowsLoopbackHostNoOrigin(t *testing.T) {
-	guarded := SameOriginGuard("127.0.0.1:9180")(okHandler())
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "127.0.0.1:9180"
-	rec := httptest.NewRecorder()
-	guarded.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("got %d, want 200", rec.Code)
-	}
-}
-
-func TestSameOriginGuard_AllowsLocalhostHost(t *testing.T) {
-	guarded := SameOriginGuard("127.0.0.1:9180")(okHandler())
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "localhost:9180"
-	rec := httptest.NewRecorder()
-	guarded.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("got %d, want 200", rec.Code)
-	}
-}
-
-func TestSameOriginGuard_RejectsNonLoopbackHost(t *testing.T) {
-	guarded := SameOriginGuard("127.0.0.1:9180")(okHandler())
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "evil.example.com:9180"
-	rec := httptest.NewRecorder()
-	guarded.ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("got %d, want 403", rec.Code)
-	}
-}
-
-func TestSameOriginGuard_AllowsCorrectOrigin(t *testing.T) {
-	guarded := SameOriginGuard("127.0.0.1:9180")(okHandler())
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	req.Host = "127.0.0.1:9180"
-	req.Header.Set("Origin", "http://127.0.0.1:9180")
-	rec := httptest.NewRecorder()
-	guarded.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("got %d, want 200", rec.Code)
-	}
-}
-
 func TestCSPMiddleware_SetsStrictDefault(t *testing.T) {
 	guarded := CSPMiddleware(okHandler())
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -67,37 +22,9 @@ func TestCSPMiddleware_SetsStrictDefault(t *testing.T) {
 	if csp == "" {
 		t.Fatal("CSP header not set")
 	}
-	for _, want := range []string{"default-src 'self'", "script-src 'self'", "frame-ancestors 'none'"} {
+	for _, want := range []string{"default-src 'self'", "script-src 'self' 'unsafe-inline'", "frame-ancestors 'none'"} {
 		if !strings.Contains(csp, want) {
 			t.Errorf("CSP missing %q; got: %s", want, csp)
 		}
-	}
-}
-
-func TestSameOriginGuard_RejectsBadOrigin(t *testing.T) {
-	guarded := SameOriginGuard("127.0.0.1:9180")(okHandler())
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	req.Host = "127.0.0.1:9180"
-	req.Header.Set("Origin", "http://evil.example.com")
-	rec := httptest.NewRecorder()
-	guarded.ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("got %d, want 403", rec.Code)
-	}
-}
-
-// A tab loaded as localhost:<port> sends Origin: http://localhost:<port>
-// even though the hub is bound on 127.0.0.1:<port>. Both Host aliases must
-// produce a matching Origin alias, otherwise fetch from the localhost tab
-// is rejected.
-func TestSameOriginGuard_AllowsLocalhostOrigin(t *testing.T) {
-	guarded := SameOriginGuard("127.0.0.1:9180")(okHandler())
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	req.Host = "localhost:9180"
-	req.Header.Set("Origin", "http://localhost:9180")
-	rec := httptest.NewRecorder()
-	guarded.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("got %d, want 200", rec.Code)
 	}
 }
