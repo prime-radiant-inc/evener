@@ -32,8 +32,9 @@ schema is rewritten cleanly.
   remote operation and provides false comfort.
 - **Keyring backends.** The storage layer is small and pluggable; revisit if a
   user asks.
-- **MCP-mediated OAuth.** Reserved shape (`mcps.startOAuth`, `mcps/updated`)
-  documented in §5.3 but not implemented in v1.
+- **MCP-mediated OAuth.** Reserved shape `mcpServer/oauth/login` and
+  `mcpServer/oauthLogin/completed` documented in §5.3 (mirroring Codex's
+  names exactly), not implemented in v1.
 - **Raw TOML editing in the UI.** Both UIs render form-based editors.
 - **Auto-walking parent directories** to find a project layer. A project layer
   applies if and only if `cwd` exactly matches a registered project.
@@ -86,15 +87,17 @@ Layer precedence, most-general to most-specific:
 4. **Per-launch overrides**: passed in `ThreadStartParams.launchOverrides`.
    Ephemeral; never written to disk.
 
-Three RPCs in `cmd/serf-hub/app_rpc.go` expose this:
+RPCs in `cmd/serf-hub/app_rpc.go` are added under the existing `serf/` prefix
+that already houses serf-specific extensions to the Codex-shaped baseline
+(see `2026-05-12-codex-app-server-protocol-and-serf-extensions.md`). Launch
+config gets a new sub-namespace `serf/launch/...`; credentials reuse and
+extend the existing `serf/auth/...` family (already provider-aware in
+`internal/appwire/types.go:439` but wired for OpenAI only today).
 
-- `launchConfig.resolve(cwd)` — for "show me what would happen."
-- `launchConfig.getLayer(cwd, layer)` / `launchConfig.setLayer(cwd, layer, config)` —
-  for editing the writable layers.
-- `launchConfig.trustRepo(cwd, hash)` — record TOFU consent.
-
-Credentials are a deliberately separate namespace with their own RPCs and
-file. They don't layer like launch config — they're hub-global.
+Credentials are a separate concern from launch config — they don't layer,
+they're hub-global, and the protocol family for them already exists. Launch
+config and credentials are deliberately *not* unified into a single
+namespace.
 
 Per-project state lives at:
 
@@ -169,7 +172,7 @@ The credential-key blocklist (`*_API_KEY`, `*_TOKEN`, `*_SECRET`,
   `LaunchConfigDiagnostic` on the response, layer omitted from contributing.
 - During `SetLayer()`: rejected with `appwire.InvalidParams`.
 
-Forces credentials through the `credentials.*` API instead of leaking into a
+Forces credentials through the `serf/auth/*` API instead of leaking into a
 file someone might commit.
 
 ### 4.4 Path resolution
@@ -270,50 +273,78 @@ zero." This is required for layering semantics.
 
 ### 5.2 RPC methods
 
-| Method                    | Params                                   | Result                          |
-|---------------------------|------------------------------------------|---------------------------------|
-| `launchConfig.resolve`    | `{cwd}`                                  | `LaunchConfigResolved`          |
-| `launchConfig.getLayer`   | `{cwd, layer}` where `layer ∈ {global, project}` | `LaunchConfigLayer`     |
-| `launchConfig.setLayer`   | `{cwd, layer, config}`                   | `LaunchConfigResolved`          |
-| `launchConfig.trustRepo`  | `{cwd, hash}`                            | `LaunchConfigResolved`          |
-| `credentials.list`        | `{}`                                     | `CredentialsList`               |
-| `credentials.set`         | `{provider, value}`                      | `CredentialProvider`            |
-| `credentials.clear`       | `{provider}`                             | `CredentialProvider`            |
-| `credentials.startOAuth`  | `{provider}`                             | `CredentialOAuthStart`          |
+**Launch configuration** — new sub-namespace `serf/launch/`:
+
+| Method                  | Params                                   | Result                  |
+|-------------------------|------------------------------------------|-------------------------|
+| `serf/launch/resolve`   | `{cwd}`                                  | `LaunchConfigResolved`  |
+| `serf/launch/getLayer`  | `{cwd, layer}` where `layer ∈ {global, project}` | `LaunchConfigLayer` |
+| `serf/launch/setLayer`  | `{cwd, layer, config}`                   | `LaunchConfigResolved`  |
+| `serf/launch/trustRepo` | `{cwd, hash}`                            | `LaunchConfigResolved`  |
+
+**Credentials** — extends the existing `serf/auth/*` family. New methods are
+marked **(new)**; existing methods are extended (gradually wired up beyond
+OpenAI):
+
+| Method                   | Params                            | Result                       | Status |
+|--------------------------|-----------------------------------|------------------------------|--------|
+| `serf/auth/list`         | `{}`                              | `AuthListResponse`           | new    |
+| `serf/auth/status`       | `{provider}`                      | `AuthStatusResponse`         | existing |
+| `serf/auth/login/start`  | `{provider}` (OAuth flow)         | `AuthLoginStartResponse`     | existing |
+| `serf/auth/login/complete` | `{provider, flowId, redirectUrl}` | `AuthLoginCompleteResponse` | existing |
+| `serf/auth/apiKey/set`   | `{provider, value}`               | `AuthStatusResponse`         | new    |
+| `serf/auth/logout`       | `{provider}`                      | `AuthLogoutResponse`         | existing |
 
 ```go
-type CredentialsList struct {
-    Providers []CredentialProvider `json:"providers"`
+type AuthListResponse struct {
+    Providers []AuthStatusResponse `json:"providers"`
 }
 
-type CredentialProvider struct {
-    Name      string    `json:"name"`
-    AuthModes []string  `json:"authModes"`        // subset of ["apiKey","oauth","none"]
-    Source    string    `json:"source"`           // "file" | "env" | "oauth" | "absent" | "none"
-    Configured bool     `json:"configured"`
-    Expiry    *string   `json:"expiry,omitempty"` // RFC3339, OAuth-only
+// AuthStatusResponse already exists in types.go:443 — extended with one
+// field. The rest of the shape (Provider, Supported, SignedIn,
+// ActiveSource, HasStoredOAuth, Email, NeedsRefresh, NeedsLogin, Error)
+// stays as-is.
+type AuthStatusResponse struct {
+    // ...existing fields...
+    AuthModes []string `json:"authModes"` // subset of ["apiKey","oauth","none"]
 }
 
-type CredentialOAuthStart struct {
+type AuthApiKeySetParams struct {
     Provider string `json:"provider"`
-    AuthURL  string `json:"authUrl"`
+    Value    string `json:"value"`
 }
 ```
+
+`serf/auth/list` returns one `AuthStatusResponse` per supported provider so
+the UI can render the credentials page from a single call.
+
+`serf/auth/apiKey/set` writes to `~/.serf/credentials.toml`. Returns the
+new `AuthStatusResponse` for the provider — same shape the UI already
+parses from `serf/auth/status` — so the client can update state without a
+second call.
+
+`serf/auth/login/start` and `serf/auth/login/complete` remain the OAuth
+path. Together with `serf/auth/apiKey/set`, this matches Codex's
+`account/login/start` with discriminated `type: "apiKey" | "chatgpt"`
+semantically, while keeping Go-friendly distinct methods and preserving
+the existing OAuth wire shape.
 
 ### 5.3 Notifications
 
 Emitted over the existing SSE event stream:
 
-- `credentials/updated`: `{provider, source}` — fired on any successful
-  `credentials.set`, `credentials.clear`, or OAuth completion.
-- `launchConfig/updated`: `{cwd, layer}` — fired on `launchConfig.setLayer`
-  and `launchConfig.trustRepo`. Listeners refetch via `resolve`.
+- `serf/auth/updated`: `{provider, activeSource}` — fired on any successful
+  `serf/auth/apiKey/set`, `serf/auth/logout`, or OAuth completion. Mirrors
+  Codex's `account/updated`.
+- `serf/launch/updated`: `{cwd, layer}` — fired on `serf/launch/setLayer`
+  and `serf/launch/trustRepo`. Listeners refetch via `serf/launch/resolve`.
 
 **Reserved but not implemented in v1** (forward compatibility for MCP
-OAuth — Codex parallel):
+OAuth — mirror of Codex's `mcpServer/oauth/login`):
 
-- `mcps.startOAuth(name, cwd)` → `{name, authUrl}`
-- `mcps/updated` notification: `{name}`
+- `mcpServer/oauth/login` (top-level, matching Codex's name) →
+  `{name, authUrl, flowId}`
+- `mcpServer/oauthLogin/completed` notification — `{name, success, error?}`
 
 ### 5.4 `ThreadStartParams` extension
 
@@ -362,7 +393,7 @@ spawn.
 
 When expanded, the Advanced section shows form inputs for every
 `LaunchConfigLayer` field except `sse_ring_size`. A "Show resolved config"
-toggle calls `launchConfig.resolve(cwd)` and renders the layer-by-layer
+toggle calls `serf/launch/resolve` and renders the layer-by-layer
 breakdown with provenance.
 
 **`/settings`** (new route):
@@ -372,7 +403,7 @@ breakdown with provenance.
   when a project is selected. Form-based.
 - **In-repo tab**: read-only view of `.serf/launch.toml`. Banner appears
   when `trust ∈ {untrusted, changed}` with a preview and an "Apply and
-  trust" button calling `launchConfig.trustRepo`. When `trust = rejected`,
+  trust" button calling `serf/launch/trustRepo`. When `trust = rejected`,
   the tab is reachable but quiet — the preview shows with a muted
   "previously rejected; trust to apply" note instead of a banner. Tab
   hidden when `trust = absent`.
@@ -395,7 +426,7 @@ breakdown with provenance.
 ```
 
 Source labels (`env`, `file`, `oauth`, `absent`, `none`) come straight from
-`credentials.list`. The UI never displays the key value. A
+`serf/auth/list`. The UI never displays the key value. A
 `credentials/updated` SSE event reloads the panel.
 
 ### 6.2 TUI
@@ -447,12 +478,12 @@ semantic changes do.
 - `rejected`: user explicitly said no; layer skipped on every spawn until
   re-trusted via `/settings`.
 
-`launchConfig.trustRepo(cwd, hash)` requires the client to echo the hash
+`serf/launch/trustRepo` requires the client to echo the hash
 it saw, preventing a TOCTOU race where the file changes between display and
 approval. A hash mismatch returns `appwire.Conflict("file changed since
 review")`.
 
-Hub re-reads `.serf/launch.toml` and rehashes on each `launchConfig.resolve`
+Hub re-reads `.serf/launch.toml` and rehashes on each `serf/launch/resolve`
 call and on each spawn. Cheap; avoids fs watchers in v1.
 
 ## 8. Testing
@@ -484,8 +515,8 @@ call and on each spawn. Cheap; avoids fs watchers in v1.
 
 - "Where do plugin dirs / skills / MCPs / max-rounds / etc. come from?" →
   Layered launch config; resolver merges into `serf serve` argv.
-- "How does the UI configure provider credentials?" → `credentials.*` RPCs
-  backed by `~/.serf/credentials.toml`.
+- "How does the UI configure provider credentials?" → extensions to the
+  existing `serf/auth/*` family, backed by `~/.serf/credentials.toml`.
 - "Can a repo ship a launch config?" → Yes, via `.serf/launch.toml`,
   TOFU-gated.
 - "How do power users still hand-edit?" → Files are plain TOML; UI is just
