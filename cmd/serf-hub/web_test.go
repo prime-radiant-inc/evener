@@ -4355,19 +4355,17 @@ func writeFakePlugin(t *testing.T, root, name, version, skillName, skillDesc str
 	return dir
 }
 
-// TestWeb_Settings_PluginsPane_RendersDiscoveredPlugins seeds a fake
-// plugin dir and asserts the rendered HTML contains its name and path.
-func TestWeb_Settings_PluginsPane_RendersDiscoveredPlugins(t *testing.T) {
-	root := t.TempDir()
-	pluginDir := writeFakePlugin(t, root, "demo-plugin", "1.2.3", "", "")
+// TestWeb_Settings_PluginsPane_RendersClientScaffolding asserts that the
+// plugins tab renders the client-side container and launchconfig script hook
+// rather than SSR content. The actual list is populated by the browser.
+func TestWeb_Settings_PluginsPane_RendersClientScaffolding(t *testing.T) {
 	web := NewWebServer(WebConfig{
-		HubAddr:    "127.0.0.1:9180",
-		Roster:     NewRoster(t.TempDir(), nil),
-		Past:       NewPastIndex(""),
-		PluginDirs: []string{pluginDir},
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    NewPastIndex(""),
 	})
 	body := settingsRequest(t, web, "plugins")
-	for _, want := range []string{"demo-plugin", "1.2.3", pluginDir, "open in editor"} {
+	for _, want := range []string{"plugins-form", "launchconfig.getLayer", "pluginDirs"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q: %q", want, body)
 		}
@@ -4384,25 +4382,22 @@ func TestWeb_Settings_PluginsPane_EmptyState(t *testing.T) {
 		Past:    NewPastIndex(""),
 	})
 	body := settingsRequest(t, web, "plugins")
-	if !strings.Contains(body, "No plugins found") {
-		t.Errorf("expected empty-state copy in body: %q", body)
+	if !strings.Contains(body, "plugins-form") {
+		t.Errorf("expected plugins-form container in body: %q", body)
 	}
 }
 
-// TestWeb_Settings_SkillsPane_RendersDiscoveredSkills seeds a plugin
-// containing one skill and asserts the rendered HTML contains the skill's
-// name and description.
-func TestWeb_Settings_SkillsPane_RendersDiscoveredSkills(t *testing.T) {
-	root := t.TempDir()
-	pluginDir := writeFakePlugin(t, root, "demo-plugin", "0.1.0", "frobnicate", "Use this when you need to frobnicate widgets.")
+// TestWeb_Settings_SkillsPane_RendersClientScaffolding asserts that the
+// skills tab renders the client-side container and launchconfig script hook
+// rather than SSR content. The actual list is populated by the browser.
+func TestWeb_Settings_SkillsPane_RendersClientScaffolding(t *testing.T) {
 	web := NewWebServer(WebConfig{
-		HubAddr:    "127.0.0.1:9180",
-		Roster:     NewRoster(t.TempDir(), nil),
-		Past:       NewPastIndex(""),
-		PluginDirs: []string{pluginDir},
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    NewPastIndex(""),
 	})
 	body := settingsRequest(t, web, "skills")
-	for _, want := range []string{"frobnicate", "demo-plugin", "frobnicate widgets"} {
+	for _, want := range []string{"skills-form", "launchconfig.getLayer", "skillsDirs"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q: %q", want, body)
 		}
@@ -4419,40 +4414,25 @@ func TestWeb_Settings_SkillsPane_EmptyState(t *testing.T) {
 		Past:    NewPastIndex(""),
 	})
 	body := settingsRequest(t, web, "skills")
-	if !strings.Contains(body, "No skills discovered") {
-		t.Errorf("expected empty-state copy in body: %q", body)
+	if !strings.Contains(body, "skills-form") {
+		t.Errorf("expected skills-form container in body: %q", body)
 	}
 }
 
-// TestWeb_Settings_McpPane_RendersConfiguredServers writes a small mcp.json
-// and asserts the server name + command appear in the rendered HTML.
-func TestWeb_Settings_McpPane_RendersConfiguredServers(t *testing.T) {
-	dir := t.TempDir()
-	mcpPath := filepath.Join(dir, "mcp.json")
-	cfg := `{"mcpServers":{"linear":{"command":"npx","args":["-y","@linear/mcp"]}}}`
-	if err := os.WriteFile(mcpPath, []byte(cfg), 0o644); err != nil {
-		t.Fatal(err)
-	}
+// TestWeb_Settings_McpPane_RendersClientScaffolding asserts that the MCP tab
+// renders the client-side container and launchconfig script hook rather than
+// SSR content. The actual list is populated by the browser.
+func TestWeb_Settings_McpPane_RendersClientScaffolding(t *testing.T) {
 	web := NewWebServer(WebConfig{
-		HubAddr:       "127.0.0.1:9180",
-		Roster:        NewRoster(t.TempDir(), nil),
-		Past:          NewPastIndex(""),
-		MCPConfigPath: mcpPath,
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    NewPastIndex(""),
 	})
 	body := settingsRequest(t, web, "mcp")
-	// "available" because npx is normally on PATH; if not, "missing" is fine.
-	// Either way, the status pill must NOT say "unknown" — that was the old
-	// placeholder before #22.
-	for _, want := range []string{"linear", "npx", "open in editor"} {
+	for _, want := range []string{"mcps-form", "launchconfig.getLayer", "mcps-add"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q: %q", want, body)
 		}
-	}
-	if !strings.Contains(body, "status-available") && !strings.Contains(body, "status-missing") {
-		t.Errorf("expected status-available or status-missing pill, got: %q", body)
-	}
-	if strings.Contains(body, "status-unknown") {
-		t.Errorf("status-unknown pill should not appear for stdio configs: %q", body)
 	}
 }
 
@@ -4466,8 +4446,8 @@ func TestWeb_Settings_McpPane_EmptyState(t *testing.T) {
 		MCPConfigPath: filepath.Join(t.TempDir(), "does-not-exist.json"),
 	})
 	body := settingsRequest(t, web, "mcp")
-	if !strings.Contains(body, "No MCP servers configured") {
-		t.Errorf("expected empty-state copy in body: %q", body)
+	if !strings.Contains(body, "mcps-form") {
+		t.Errorf("expected mcps-form container in body: %q", body)
 	}
 }
 

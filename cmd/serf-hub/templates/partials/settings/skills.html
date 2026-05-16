@@ -1,21 +1,47 @@
 {{define "settings-content"}}
-<h2 class="settings-h2">Skills</h2>
-{{if .Skills}}
-<div class="settings-rows">
-  {{range .Skills}}
-  <div class="settings-row">
-    <div class="settings-row-title">
-      {{.Name}}
-      <span class="model-chip">{{.Plugin}}</span>
-    </div>
-    <div class="settings-row-meta settings-row-desc">{{.Description}}</div>
-    <div class="settings-row-detail">
-      <a class="settings-open-link" href="{{.EditPath}}" target="_blank" rel="noopener">open in editor ↗</a>
-    </div>
-  </div>
-  {{end}}
+<h2 class="settings-h2">Skill directories</h2>
+<p class="settings-help">
+  Directories serf scans for skills at launch. Applied to every spawn.
+</p>
+<div id="skills-form" data-loaded="false">
+  <p>Loading…</p>
 </div>
-{{else}}
-<p class="settings-help">No skills discovered. Skills live under <code>&lt;plugin&gt;/skills/&lt;name&gt;/SKILL.md</code> with <code>name</code> and <code>description</code> in YAML frontmatter.</p>
-{{end}}
+<script>
+  (async function () {
+    const root = document.getElementById("skills-form");
+    const current = await launchconfig.getLayer("/", "global");
+    const dirs = current.skillsDirs || [];
+    function render() {
+      root.innerHTML = `
+        <ul class="settings-list">
+          ${dirs.map((d, i) => `
+            <li><code>${d}</code> <button data-i="${i}" data-action="rm">remove</button></li>
+          `).join("")}
+        </ul>
+        <form id="skills-add">
+          <input type="text" name="dir" placeholder="/absolute/path" required>
+          <button type="submit">Add</button>
+        </form>
+      `;
+      root.querySelectorAll("button[data-action=rm]").forEach(b => {
+        b.addEventListener("click", async () => {
+          dirs.splice(+b.dataset.i, 1);
+          await launchconfig.setLayer("/", "global", { ...current, skillsDirs: dirs });
+          render();
+        });
+      });
+      root.querySelector("#skills-add").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const v = e.target.dir.value.trim();
+        if (!v) return;
+        dirs.push(v);
+        await launchconfig.setLayer("/", "global", { ...current, skillsDirs: dirs });
+        e.target.dir.value = "";
+        render();
+      });
+    }
+    render();
+    root.dataset.loaded = "true";
+  })();
+</script>
 {{end}}
