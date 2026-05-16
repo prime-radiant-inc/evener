@@ -34,6 +34,7 @@ import (
 // WebConfig is everything the web server needs.
 type WebConfig struct {
 	HubAddr       string
+	AuthToken     string // capability token gating every non-exempt route
 	HubStateRoot  string // root of hub-level state; defaults to $HOME/.serf
 	RunDir        string // run directory where rendezvous files live
 	Roster        *Roster
@@ -99,7 +100,7 @@ func NewWebServer(cfg WebConfig) *WebServer {
 	credsTmpl := template.Must(template.ParseFS(templatesFS,
 		"templates/partials/credentials.html",
 	))
-	settingsSections := []string{"general", "theme", "notifications", "providers", "agents", "launch", "inrepo", "plugins", "skills", "mcp", "hub", "storage"}
+	settingsSections := []string{"general", "theme", "notifications", "providers", "agents", "launch-serf", "launch-codex", "inrepo", "plugins", "skills", "mcp", "hub", "storage", "project"}
 	settingsTmpls := make(map[string]*template.Template, len(settingsSections))
 	for _, sec := range settingsSections {
 		settingsTmpls[sec] = template.Must(template.ParseFS(templatesFS,
@@ -179,8 +180,10 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/api/spawn-schema", s.handleAPISpawnSchema)
 	mux.HandleFunc("/api/sessions/", s.handleAPISession)
 
-	guard := SameOriginGuard(s.cfg.HubAddr)
-	return guard(CSPMiddleware(mux))
+	mux.HandleFunc("/auth", HandleAuth(s.cfg.AuthToken))
+
+	auth := AuthGuard(s.cfg.AuthToken)
+	return auth(CSPMiddleware(mux))
 }
 
 func (s *WebServer) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -1630,6 +1633,8 @@ type settingsData struct {
 	McpsError        string
 	McpConfigPath    string
 	PastCount        int
+	CodexLaunches    []CodexLaunchConfig
+	ProjectCWD       string // canonical cwd for the per-project settings page
 }
 
 // providerDisplay groups model descriptors by provider for the providers page.
@@ -1648,13 +1653,30 @@ func (s *WebServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 	if section == "" {
 		section = "general"
 	}
+	// Redirect the legacy /settings/launch URL to the serf-specific tab.
+	if section == "launch" {
+		http.Redirect(w, r, "/settings/launch-serf", http.StatusFound)
+		return
+	}
+	partialURL := "/_partials/settings/" + section
+	// For the per-project settings page, forward the cwd query param.
+	if section == "project" {
+		if cwd := strings.TrimSpace(r.URL.Query().Get("cwd")); cwd != "" {
+			partialURL += "?cwd=" + url.QueryEscape(cwd)
+		}
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.appTmpl.ExecuteTemplate(w, "app", map[string]string{"WorkspaceURL": "/_partials/settings/" + section}); err != nil {
+	if err := s.appTmpl.ExecuteTemplate(w, "app", map[string]string{"WorkspaceURL": partialURL}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
 
 func (s *WebServer) renderSettingsPartial(w http.ResponseWriter, r *http.Request, section string) {
+	// Redirect the legacy "launch" section to the serf-specific tab.
+	if section == "launch" {
+		http.Redirect(w, r, "/_partials/settings/launch-serf", http.StatusFound)
+		return
+	}
 	settingsTmpl, ok := s.settingsTmpls[section]
 	if !ok {
 		http.NotFound(w, r)
@@ -1698,6 +1720,18 @@ func (s *WebServer) renderSettingsPartial(w http.ResponseWriter, r *http.Request
 	mcpPath := s.mcpConfigPathForSettings()
 	mcps, mcpsErr := s.discoverMCPsForSettings(mcpPath)
 
+	// Resolve canonical project cwd for the per-project settings page.
+	var projectCWD string
+	if section == "project" {
+		if cwd := strings.TrimSpace(r.URL.Query().Get("cwd")); cwd != "" {
+			if abs, err := filepath.Abs(cwd); err == nil {
+				projectCWD = abs
+			} else {
+				projectCWD = cwd
+			}
+		}
+	}
+
 	data := settingsData{
 		Active:           section,
 		HubAddr:          s.cfg.HubAddr,
@@ -1715,6 +1749,8 @@ func (s *WebServer) renderSettingsPartial(w http.ResponseWriter, r *http.Request
 		McpsError:        errString(mcpsErr),
 		McpConfigPath:    mcpPath,
 		PastCount:        pastCount,
+		CodexLaunches:    s.cfg.CodexLaunches,
+		ProjectCWD:       projectCWD,
 	}
 
 	// Render just the inner settings-content partial when htmx is targeting

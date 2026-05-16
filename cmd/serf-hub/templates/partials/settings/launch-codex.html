@@ -1,0 +1,41 @@
+{{define "settings-content"}}
+<h2 class="settings-h2">Codex launch config</h2>
+<p class="settings-help">
+  Codex launch entries are defined in <code>hub.toml</code> under
+  <code>[[codex_launches]]</code>. This page shows the current configuration
+  (read-only).
+</p>
+{{if .CodexLaunches}}
+  {{range .CodexLaunches}}
+  <div class="settings-card">
+    <h3 class="settings-h3">{{.ID}}</h3>
+    <table class="settings-table">
+      <tr><th>Binary</th><td><code>{{if .Binary}}{{.Binary}}{{else}}codex{{end}}</code></td></tr>
+      <tr><th>Working dir</th><td><code>{{if .WorkingDir}}{{.WorkingDir}}{{else}}(inherited){{end}}</code></td></tr>
+      <tr><th>Listen</th><td><code>{{if .Listen}}{{.Listen}}{{else}}ws://127.0.0.1:0{{end}}</code></td></tr>
+      <tr><th>Timeout</th><td>{{if .Timeout}}{{.Timeout}}{{else}}30s{{end}}</td></tr>
+      {{if .Env}}
+      <tr><th>Env</th><td>
+        {{range $k, $v := .Env}}<code>{{$k}}=…</code> {{end}}
+      </td></tr>
+      {{end}}
+    </table>
+  </div>
+  {{end}}
+{{else}}
+<div class="settings-empty">
+  <p>No codex launch entries configured.</p>
+  <p class="settings-help">
+    To add one, edit <code>hub.toml</code> and add a
+    <code>[[codex_launches]]</code> section, for example:
+  </p>
+  <pre class="settings-pre">[[codex_launches]]
+id          = "my-codex"
+binary      = "/usr/local/bin/codex"
+working_dir = "/path/to/project"
+listen      = "ws://127.0.0.1:9190"
+timeout     = "30s"</pre>
+  <p class="settings-help">Restart the hub after editing hub.toml.</p>
+</div>
+{{end}}
+{{end}}
