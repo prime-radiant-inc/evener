@@ -99,7 +99,7 @@ func NewWebServer(cfg WebConfig) *WebServer {
 	credsTmpl := template.Must(template.ParseFS(templatesFS,
 		"templates/partials/credentials.html",
 	))
-	settingsSections := []string{"general", "theme", "notifications", "providers", "agents", "launch", "plugins", "skills", "mcp", "hub", "storage"}
+	settingsSections := []string{"general", "theme", "notifications", "providers", "agents", "launch", "inrepo", "plugins", "skills", "mcp", "hub", "storage"}
 	settingsTmpls := make(map[string]*template.Template, len(settingsSections))
 	for _, sec := range settingsSections {
 		settingsTmpls[sec] = template.Must(template.ParseFS(templatesFS,
