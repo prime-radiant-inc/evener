@@ -889,6 +889,14 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 /* Credentials pane */
 .credentials-pane { padding: 1rem 1.25rem; }
 .credentials-help { color: var(--muted-fg, #888); }
-.credentials-row { display: grid; grid-template-columns: 8rem 1fr auto; align-items: center; gap: 1rem; padding: .5rem 0; border-bottom: 1px solid var(--border-subtle, #2a2a2a); }
+.credentials-row { display: block; padding: .5rem 0; border-bottom: 1px solid var(--border-subtle, var(--rule, #2a2a2a)); }
+.credentials-row-main { display: grid; grid-template-columns: 8rem 1fr auto; align-items: center; gap: 1rem; }
 .credentials-row-name { font-weight: 600; }
+.credentials-row-status { color: var(--text-muted, #888); font-size: 12px; }
 .credentials-row-actions button { margin-left: .25rem; }
+.credentials-clear-btn { color: var(--state-awaiting, var(--error, #c43755)); }
+.credentials-editor { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding: 8px 12px; background: var(--bg-raised, var(--panel-2, #1c1c24)); border-radius: 6px; }
+.credentials-editor-label { font-size: 12px; color: var(--text-muted, #888); }
+.credentials-editor-label a { color: var(--accent, #7aa2f7); }
+.credentials-editor-input { padding: 6px 8px; font-family: inherit; font-size: 13px; }
+.credentials-editor-actions { display: flex; gap: 6px; }
