@@ -3154,6 +3154,12 @@ func (m hubModel) spawnView() string {
 	if m.spawnModelPicker != nil {
 		overlay = m.spawnModelPicker.View()
 	}
+	if m.launchOverridesModal != nil {
+		overlay = m.launchOverridesModal.View()
+	}
+	if m.followupModal != nil {
+		overlay = m.followupModal.View()
+	}
 	model := m.spawnModel
 	models := m.spawnSelectableModels()
 	if !m.spawnHarnessUsesSerfModels() {
@@ -3393,6 +3399,14 @@ func (m hubModel) sessionView() string {
 	}
 	if m.commandPalette != nil {
 		overlay.WriteString(m.commandPalette.View())
+		overlay.WriteString("\n\n")
+	}
+	if m.launchOverridesModal != nil {
+		overlay.WriteString(m.launchOverridesModal.View())
+		overlay.WriteString("\n\n")
+	}
+	if m.followupModal != nil {
+		overlay.WriteString(m.followupModal.View())
 		overlay.WriteString("\n\n")
 	}
 	var footer string
