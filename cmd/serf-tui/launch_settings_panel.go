@@ -74,11 +74,19 @@ func (p launchSettingsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			p.statusMessage = "resolve error: " + m.Err.Error()
 		}
 	case launchSetLayerResultMsg:
-		p.statusMessage = "saved " + m.Layer
-		p.resolved = m.Resolved
+		if m.Err != nil {
+			p.statusMessage = "save error: " + m.Err.Error()
+		} else {
+			p.statusMessage = "saved " + m.Layer
+			p.resolved = m.Resolved
+		}
 	case launchTrustResultMsg:
-		p.resolved = m.Resolved
-		p.statusMessage = "trust recorded"
+		if m.Err != nil {
+			p.statusMessage = "trust error: " + m.Err.Error()
+		} else {
+			p.resolved = m.Resolved
+			p.statusMessage = "trust recorded"
+		}
 	case tea.KeyMsg:
 		switch m.Type {
 		case tea.KeyEsc, tea.KeyCtrlC:
