@@ -277,6 +277,7 @@ func TestHubRPCAuthLogoutRemovesUserScopedOpenAIAuth(t *testing.T) {
 }
 
 func TestHubAuthControllerManualPastebackSavesOpenAIAuth(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
 	ctrl := newHubAuthController()
 	ctrl.stateDir = t.TempDir()
 	ctrl.cfg = authopenai.Config{IssuerBaseURL: "https://auth.example.test"}
