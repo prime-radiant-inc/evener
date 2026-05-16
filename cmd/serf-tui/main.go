@@ -17,12 +17,15 @@ func main() {
 		os.Exit(2)
 	}
 
+	authToken := resolveAuthToken(startupOpts.AuthToken, startupOpts.StateDir)
+
 	ctx := context.Background()
 	runtime, err := startHubClient(ctx, hubStartConfig{
 		RawAddr:           startupOpts.HubAddr,
 		HubBin:            startupOpts.HubBin,
 		StateDir:          startupOpts.StateDir,
 		LogFile:           startupOpts.LogFile,
+		AuthToken:         authToken,
 		CurrentExecutable: os.Args[0],
 		AutoStart:         startupOpts.AutoStartHub,
 		HealthTimeout:     5 * time.Second,

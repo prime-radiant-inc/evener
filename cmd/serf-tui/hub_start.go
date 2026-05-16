@@ -34,6 +34,7 @@ type hubStartConfig struct {
 	HubBin              string
 	StateDir            string
 	LogFile             string
+	AuthToken           string
 	CurrentExecutable   string
 	AutoStart           bool
 	HealthTimeout       time.Duration
@@ -54,6 +55,7 @@ type tuiStartupOptions struct {
 	HubBin       string
 	StateDir     string
 	LogFile      string
+	AuthToken    string
 	AutoStartHub bool
 	Debug        bool
 }
@@ -67,6 +69,7 @@ func parseTUIStartupOptions(args []string, getenv func(string) string) (tuiStart
 		HubBin:       getenv("SERF_HUB_BIN"),
 		StateDir:     getenv("SERF_STATE_DIR"),
 		LogFile:      getenv("SERF_TUI_LOG_FILE"),
+		AuthToken:    getenv("SERF_HUB_AUTH_TOKEN"),
 		AutoStartHub: true,
 	}
 	fs := flag.NewFlagSet("serf-tui", flag.ContinueOnError)
@@ -77,6 +80,7 @@ func parseTUIStartupOptions(args []string, getenv func(string) string) (tuiStart
 	fs.BoolVar(&noAutoStartHub, "no-auto-start-hub", false, "do not start a local hub when unreachable")
 	fs.StringVar(&opts.StateDir, "state-dir", opts.StateDir, "override Serf state directory")
 	fs.StringVar(&opts.LogFile, "log-file", opts.LogFile, "write startup diagnostics to this file")
+	fs.StringVar(&opts.AuthToken, "auth-token", opts.AuthToken, "hub capability token (overrides SERF_HUB_AUTH_TOKEN and token file)")
 	fs.BoolVar(&opts.Debug, "debug", opts.Debug, "disable alternate screen")
 	if err := fs.Parse(args); err != nil {
 		return tuiStartupOptions{}, err
@@ -85,6 +89,70 @@ func parseTUIStartupOptions(args []string, getenv func(string) string) (tuiStart
 		opts.AutoStartHub = false
 	}
 	return opts, nil
+}
+
+// resolveAuthToken determines the hub auth token using the resolution order:
+// explicit value (from flag or env) → token file → empty (with warning).
+// The stateDir is used to locate the token file; if empty, $HOME/.serf is used.
+func resolveAuthToken(explicit, stateDir string) string {
+	if explicit != "" {
+		return explicit
+	}
+	tokenFile := authTokenFilePath(stateDir)
+	data, err := os.ReadFile(tokenFile)
+	if err == nil {
+		if tok := strings.TrimSpace(string(data)); tok != "" {
+			return tok
+		}
+	}
+	fmt.Fprintf(os.Stderr, "serf-tui: warning: no hub auth token found (checked %s); proceeding without auth\n", tokenFile)
+	return ""
+}
+
+// authTokenFilePath returns the path to the hub auth-token file.
+func authTokenFilePath(stateDir string) string {
+	if stateDir != "" {
+		return filepath.Join(filepath.Clean(stateDir), "auth-token")
+	}
+	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
+		return filepath.Join(xdg, "serf", "auth-token")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".serf", "auth-token")
+	}
+	return filepath.Join(home, ".serf", "auth-token")
+}
+
+// bearerTransport is an http.RoundTripper that injects an Authorization header.
+type bearerTransport struct {
+	base  http.RoundTripper
+	token string
+}
+
+func (t *bearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.token == "" {
+		return t.base.RoundTrip(req)
+	}
+	clone := req.Clone(req.Context())
+	clone.Header.Set("Authorization", "Bearer "+t.token)
+	return t.base.RoundTrip(clone)
+}
+
+// httpClientWithBearer returns an *http.Client that attaches an Authorization
+// bearer token to every request. If token is empty the original client is
+// returned unchanged.
+func httpClientWithBearer(base *http.Client, token string) *http.Client {
+	if token == "" {
+		return base
+	}
+	inner := base.Transport
+	if inner == nil {
+		inner = http.DefaultTransport
+	}
+	clone := *base
+	clone.Transport = &bearerTransport{base: inner, token: token}
+	return &clone
 }
 
 func envDefault(getenv func(string) string, key, fallback string) string {
@@ -200,6 +268,12 @@ func startHubClient(ctx context.Context, cfg hubStartConfig) (hubRuntime, error)
 	}
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = &http.Client{}
+	}
+	// Wrap the HTTP client to inject the bearer token on every request.
+	// This covers both the WebSocket upgrade (nhooyr/websocket uses HTTPClient)
+	// and any plain HTTP calls made via hubapi.Client.
+	if cfg.AuthToken != "" {
+		cfg.HTTPClient = httpClientWithBearer(cfg.HTTPClient, cfg.AuthToken)
 	}
 	if cfg.HealthTimeout == 0 {
 		cfg.HealthTimeout = 5 * time.Second
