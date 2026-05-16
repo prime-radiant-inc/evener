@@ -40,7 +40,7 @@
     <input type="checkbox" name="noProjectPrompts"> Suppress .serf/prompts loading
   </label>
   <div class="form-actions">
-    <button type="submit">Save</button>
+    <button type="submit">Save launch defaults</button>
     <p id="launch-form-status" class="settings-help" style="margin:0"></p>
   </div>
 </form>
@@ -87,6 +87,7 @@
         try {
           await launchconfig.setLayer("/", "global", out);
           status.textContent = "Saved at " + new Date().toLocaleTimeString();
+          setTimeout(() => { status.textContent = ""; }, 5000);
         } catch (err) {
           status.textContent = "Error: " + err.message;
         }

@@ -185,6 +185,7 @@
         try {
           current = await launchconfig.setLayer(cwd, "project", out);
           statusEl().textContent = "Saved at " + new Date().toLocaleTimeString();
+          setTimeout(() => { const el = statusEl(); if (el) el.textContent = ""; }, 5000);
         } catch (err) {
           statusEl().textContent = "Error: " + (err && err.message ? err.message : err);
         }

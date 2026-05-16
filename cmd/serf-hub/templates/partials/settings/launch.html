@@ -22,7 +22,7 @@
   <label>Max rounds <input type="number" name="maxRounds" min="0" step="1"></label>
   <label>Max subagent depth <input type="number" name="maxSubagentDepth" min="0" step="1"></label>
   <label><input type="checkbox" name="noProjectPrompts"> Suppress .serf/prompts loading</label>
-  <button type="submit">Save</button>
+  <button type="submit">Save launch defaults</button>
   <p id="launch-form-status" class="settings-help"></p>
 </form>
 <script>
@@ -54,6 +54,7 @@
         try {
           await launchconfig.setLayer("/", "global", out);
           status.textContent = "Saved at " + new Date().toLocaleTimeString();
+          setTimeout(() => { status.textContent = ""; }, 5000);
         } catch (err) {
           status.textContent = "Error: " + err.message;
         }
