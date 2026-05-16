@@ -9,6 +9,7 @@ import (
 )
 
 func TestAuthControllerStatusSignedOut(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
 	controller := newAuthController(t.TempDir())
 
 	status, err := controller.Status("openai")
@@ -27,6 +28,7 @@ func TestAuthControllerStatusSignedOut(t *testing.T) {
 }
 
 func TestAuthControllerStatusOAuthWithEmail(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
 	stateDir := t.TempDir()
 	if err := authopenai.SaveAuth(stateDir, testOpenAIAuthRecord("bot@example.com")); err != nil {
 		t.Fatalf("SaveAuth() error = %v", err)
