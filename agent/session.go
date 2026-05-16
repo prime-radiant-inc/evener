@@ -478,6 +478,9 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		Model:             profile.Model(),
 		ContextWindowSize: profile.ContextWindowSize(),
 	}, promptSources)
+	// Write the initial meta.json so the hub's past index can discover this
+	// session immediately (without waiting for the first completed turn).
+	s.maybeAutoSave()
 	return s, nil
 }
 

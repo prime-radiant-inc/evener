@@ -518,12 +518,14 @@ func TestSession_AutoSave_DoesNotPersistMidToolRound(t *testing.T) {
 		t.Fatalf("tool did not start: %v", ctx.Err())
 	}
 
+	// NewSession writes the initial meta so the hub can discover the session
+	// before any turn completes. No additional saves should happen mid-tool-round.
 	list, err := ListSessionMetas(dir)
 	if err != nil {
 		t.Fatalf("ListSessionMetas: %v", err)
 	}
-	if len(list) != 0 {
-		t.Fatalf("expected no meta before tool result, got %d", len(list))
+	if len(list) != 1 {
+		t.Fatalf("expected 1 meta (from session creation) before tool result, got %d", len(list))
 	}
 
 	close(release)
