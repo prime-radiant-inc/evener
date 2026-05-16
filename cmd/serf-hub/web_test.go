@@ -4451,6 +4451,28 @@ func TestWeb_Settings_McpPane_EmptyState(t *testing.T) {
 	}
 }
 
+// TestWeb_Settings_NavPresentForAllSections is a regression test for kata
+// 3j2y: the settings shell (nav + header) must be included in the full-page
+// response for plugins, skills, and mcp — not just for general/theme/etc.
+// The full shell is rendered when HX-Target is anything other than
+// "settings-content" (i.e. on initial workspace load or direct navigation).
+func TestWeb_Settings_NavPresentForAllSections(t *testing.T) {
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    NewPastIndex(""),
+	})
+	for _, sec := range []string{"general", "plugins", "skills", "mcp", "theme", "hub"} {
+		body := settingsRequest(t, web, sec)
+		if !strings.Contains(body, "settings-nav") {
+			t.Errorf("section %q: settings-nav missing from full-shell response", sec)
+		}
+		if !strings.Contains(body, "settings-content") {
+			t.Errorf("section %q: settings-content missing from full-shell response", sec)
+		}
+	}
+}
+
 func TestWeb_APIHealth(t *testing.T) {
 	web := NewWebServer(WebConfig{
 		HubAddr: "127.0.0.1:9180",
