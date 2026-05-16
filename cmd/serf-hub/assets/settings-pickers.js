@@ -138,17 +138,33 @@
       picker.style.left = anchorBtn.offsetLeft + "px";
       search.focus();
 
-      setTimeout(() => {
-        const offClick = (e) => {
-          const path = (e.composedPath && e.composedPath()) || [];
-          if (!path.includes(picker)) {
-            picker.remove();
-            document.removeEventListener("click", offClick);
-          }
-        };
-        document.addEventListener("click", offClick);
-      }, 0);
+      attachDismiss(picker);
     });
+  }
+
+  // attachDismiss adds click-outside and Escape handlers that close the
+  // given picker element. composedPath handles clicks inside elements
+  // that get re-rendered out from under the event (e.g. provider tabs).
+  function attachDismiss(picker) {
+    function dismiss() {
+      picker.remove();
+      document.removeEventListener("click", offClick);
+      document.removeEventListener("keydown", onKey);
+    }
+    function offClick(e) {
+      const path = (e.composedPath && e.composedPath()) || [];
+      if (!path.includes(picker)) dismiss();
+    }
+    function onKey(e) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        dismiss();
+      }
+    }
+    setTimeout(() => {
+      document.addEventListener("click", offClick);
+      document.addEventListener("keydown", onKey);
+    }, 0);
   }
 
   // ---------- dir picker ----------
@@ -240,16 +256,7 @@
     picker.style.left = anchorBtn.offsetLeft + "px";
     search.focus();
     fetchDirs(search.value);
-
-    setTimeout(() => {
-      const offClick = (e) => {
-        if (!picker.contains(e.target)) {
-          picker.remove();
-          document.removeEventListener("click", offClick);
-        }
-      };
-      document.addEventListener("click", offClick);
-    }, 0);
+    attachDismiss(picker);
   }
 
   // ---------- inline dir autocomplete ----------

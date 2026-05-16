@@ -366,6 +366,7 @@
     picker.style.top = (chip.offsetTop + chip.offsetHeight + 4) + "px";
     picker.style.left = chip.offsetLeft + "px";
     picker.style.zIndex = "50";
+    attachPickerDismiss(picker);
   }
 
   function openModelPicker(chip) {
@@ -500,25 +501,38 @@
 
       search.focus();
 
-      setTimeout(() => {
-        const offClick = (e) => {
-          // Use composedPath, not picker.contains(e.target) — the click
-          // target may have already been removed from the DOM by the
-          // picker's own re-render (e.g., clicking a provider re-renders
-          // the column), and a stale target reads as "outside the picker".
-          const path = (e.composedPath && e.composedPath()) || [];
-          if (!path.includes(picker)) {
-            picker.remove();
-            document.removeEventListener("click", offClick);
-          }
-        };
-        document.addEventListener("click", offClick);
-      }, 0);
+      attachPickerDismiss(picker);
     }).catch(() => {
       if (!harnessUsesSerfModels(harness)) {
         openHarnessDefaultModelPicker(chip);
       }
     });
+  }
+
+  // attachPickerDismiss adds click-outside and Escape handlers that close
+  // the given picker element. Use composedPath so clicks inside the
+  // picker (including on elements that get re-rendered out from under
+  // the event) are reliably detected as "inside".
+  function attachPickerDismiss(picker) {
+    function dismiss() {
+      picker.remove();
+      document.removeEventListener("click", offClick);
+      document.removeEventListener("keydown", onKey);
+    }
+    function offClick(e) {
+      const path = (e.composedPath && e.composedPath()) || [];
+      if (!path.includes(picker)) dismiss();
+    }
+    function onKey(e) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        dismiss();
+      }
+    }
+    setTimeout(() => {
+      document.addEventListener("click", offClick);
+      document.addEventListener("keydown", onKey);
+    }, 0);
   }
 
   function listModelsForHarness(harness) {
