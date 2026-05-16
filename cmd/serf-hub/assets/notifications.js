@@ -272,3 +272,39 @@
     _prevState: prevState,
   };
 })();
+
+// Hub-wide launch-config and credentials notifications.
+// Refresh visible panels when their underlying state changes.
+(function () {
+  "use strict";
+
+  if (!window.SerfAppwire || typeof window.SerfAppwire.onNotification !== "function") {
+    return;
+  }
+
+  SerfAppwire.onNotification(function (method) {
+    if (method === "serf/auth/updated") {
+      // Reload credentials panel if it is currently rendered.
+      const credsRows = document.getElementById("credentials-rows");
+      if (credsRows && window.launchconfig && typeof launchconfig.authList === "function") {
+        launchconfig.authList().then(function (list) {
+          credsRows.dispatchEvent(new CustomEvent("credentials-reload", { detail: list }));
+        });
+      }
+      // Refresh providers settings tab if it is the active settings pane.
+      if (
+        window.location.pathname === "/settings/providers" &&
+        window.htmx &&
+        typeof htmx.ajax === "function"
+      ) {
+        htmx.ajax("GET", "/_partials/settings/providers", "#settings-content");
+      }
+    } else if (method === "serf/launch/updated") {
+      // Reload whatever settings tab is open.
+      const path = window.location.pathname;
+      if (path.startsWith("/settings/") && window.htmx && typeof htmx.ajax === "function") {
+        htmx.ajax("GET", "/_partials" + path, "#settings-content");
+      }
+    }
+  });
+})();
