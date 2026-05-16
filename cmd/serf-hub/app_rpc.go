@@ -97,6 +97,14 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 			Auth:              true,
 		},
 	})
+	hubStateRoot := cfg.HubStateRoot
+	if hubStateRoot == "" {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			hubStateRoot = filepath.Join(home, ".serf")
+		} else {
+			hubStateRoot = ".serf"
+		}
+	}
 	authController := newHubAuthController(cfg.SerfLaunchEnv)
 	var relayMu sync.Mutex
 	relayedThreads := map[string]*hubRelayHandle{}
@@ -402,10 +410,49 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		return authController.LoginStart(params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthLoginComplete, func(ctx context.Context, params appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
-		return authController.LoginComplete(ctx, params)
+		resp, err := authController.LoginComplete(ctx, params)
+		if err == nil {
+			notifyAuthUpdated(ctx, resp.Status.Provider, resp.Status.ActiveSource)
+		}
+		return resp, err
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthLogout, func(_ context.Context, params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
-		return authController.Logout(params)
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthLogout, func(ctx context.Context, params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
+		resp, err := authController.Logout(params)
+		if err == nil {
+			notifyAuthUpdated(ctx, resp.Status.Provider, resp.Status.ActiveSource)
+		}
+		return resp, err
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthList, func(_ context.Context, params appwire.EmptyParams) (appwire.AuthListResponse, error) {
+		return authController.List(params)
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthApiKeySet, func(ctx context.Context, params appwire.AuthApiKeySetParams) (appwire.AuthStatusResponse, error) {
+		resp, err := authController.ApiKeySet(params)
+		if err == nil {
+			notifyAuthUpdated(ctx, resp.Provider, resp.ActiveSource)
+		}
+		return resp, err
+	})
+	launchController := newHubLaunchController(hubStateRoot)
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfLaunchResolve, func(ctx context.Context, params appwire.LaunchConfigResolveParams) (appwire.LaunchConfigResolved, error) {
+		return launchController.Resolve(ctx, params)
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfLaunchGetLayer, func(ctx context.Context, params appwire.LaunchConfigGetLayerParams) (appwire.LaunchConfigLayer, error) {
+		return launchController.GetLayer(ctx, params)
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfLaunchSetLayer, func(ctx context.Context, params appwire.LaunchConfigSetLayerParams) (appwire.LaunchConfigResolved, error) {
+		resp, err := launchController.SetLayer(ctx, params)
+		if err == nil {
+			notifyLaunchUpdated(ctx, params.CWD, params.Layer)
+		}
+		return resp, err
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfLaunchTrustRepo, func(ctx context.Context, params appwire.LaunchConfigTrustRepoParams) (appwire.LaunchConfigResolved, error) {
+		resp, err := launchController.TrustRepo(ctx, params)
+		if err == nil {
+			notifyLaunchUpdated(ctx, params.CWD, "repo")
+		}
+		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodModelList, func(ctx context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
 		return hubModelList(ctx, cfg, sources, params)
@@ -1689,4 +1736,20 @@ func completeDirs(params appwire.DirsCompleteParams) (appwire.DirsCompleteRespon
 	}
 	sort.Strings(results)
 	return appwire.DirsCompleteResponse{Data: results}, nil
+}
+
+// notifyAuthUpdated sends a serf/auth/updated notification to the caller's connection.
+func notifyAuthUpdated(ctx context.Context, provider, activeSource string) {
+	appserver.Notify(ctx, appwire.NotifySerfAuthUpdated, map[string]string{
+		"provider":     provider,
+		"activeSource": activeSource,
+	})
+}
+
+// notifyLaunchUpdated sends a serf/launch/updated notification to the caller's connection.
+func notifyLaunchUpdated(ctx context.Context, cwd, layer string) {
+	appserver.Notify(ctx, appwire.NotifySerfLaunchUpdated, map[string]string{
+		"cwd":   cwd,
+		"layer": layer,
+	})
 }

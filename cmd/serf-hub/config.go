@@ -26,6 +26,7 @@ type SerfLaunchConfig struct {
 // Config is the hub's runtime configuration loaded from ~/.serf/hub.toml.
 type Config struct {
 	Addr               string                        `toml:"addr"`
+	HubStateRoot       string                        `toml:"hub_state_root"`
 	StateGlob          string                        `toml:"state_glob"`
 	RunDir             string                        `toml:"run_dir"`
 	PastIndexDB        string                        `toml:"past_index_db"`
@@ -110,6 +111,13 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if cfg.PastResultsPerPage == 0 {
 		cfg.PastResultsPerPage = 50
+	}
+	if cfg.HubStateRoot == "" {
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			home = "."
+		}
+		cfg.HubStateRoot = filepath.Join(home, ".serf")
 	}
 	return cfg, nil
 }

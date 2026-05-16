@@ -33,6 +33,7 @@ import (
 // WebConfig is everything the web server needs.
 type WebConfig struct {
 	HubAddr       string
+	HubStateRoot  string // root of hub-level state; defaults to $HOME/.serf
 	RunDir        string // run directory where rendezvous files live
 	Roster        *Roster
 	Past          *PastIndex
