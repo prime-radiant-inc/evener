@@ -30,8 +30,8 @@
       const pluginDirs = launch.pluginDirs || [];
       const skillsDirs = launch.skillsDirs || [];
       const mcps = launch.mcps || [];
-      const mcpConfigPaths = launch.mcpConfigPaths || [];
-      const systemPromptAppendPaths = launch.systemPromptAppendPaths || [];
+      const mcpConfigs = launch.mcpConfigs || [];
+      const systemPromptAppend = launch.systemPromptAppend || [];
       const env = launch.env || {};
       const modelVal = escapeHtml(launch.model || "");
 
@@ -126,7 +126,7 @@
 
         <h3 class="settings-h3">MCP config paths</h3>
         <ul class="settings-items-list" id="proj-mcp-paths">
-          ${mcpConfigPaths.map((p, i) => `
+          ${mcpConfigs.map((p, i) => `
             <li><code>${escapeHtml(p)}</code> <button data-i="${i}" data-action="rm-mcp-path" class="danger">remove</button></li>
           `).join("")}
         </ul>
@@ -137,7 +137,7 @@
 
         <h3 class="settings-h3">System prompt append paths</h3>
         <ul class="settings-items-list" id="proj-prompt-paths">
-          ${systemPromptAppendPaths.map((p, i) => `
+          ${systemPromptAppend.map((p, i) => `
             <li><code>${escapeHtml(p)}</code> <button data-i="${i}" data-action="rm-prompt-path" class="danger">remove</button></li>
           `).join("")}
         </ul>
@@ -253,9 +253,9 @@
       // MCP config paths
       root.querySelectorAll("button[data-action=rm-mcp-path]").forEach(b => {
         b.addEventListener("click", async () => {
-          const paths = (current.mcpConfigPaths || []);
+          const paths = (current.mcpConfigs || []);
           paths.splice(+b.dataset.i, 1);
-          current = await launchconfig.setLayer(cwd, "project", { ...current, mcpConfigPaths: paths });
+          current = await launchconfig.setLayer(cwd, "project", { ...current, mcpConfigs: paths });
           render();
         });
       });
@@ -263,18 +263,18 @@
         const row = root.querySelector("#proj-mcp-paths-add");
         const v = row.querySelector("[name=path]").value.trim();
         if (!v) return;
-        const paths = (current.mcpConfigPaths || []);
+        const paths = (current.mcpConfigs || []);
         paths.push(v);
-        current = await launchconfig.setLayer(cwd, "project", { ...current, mcpConfigPaths: paths });
+        current = await launchconfig.setLayer(cwd, "project", { ...current, mcpConfigs: paths });
         render();
       });
 
       // System prompt append paths
       root.querySelectorAll("button[data-action=rm-prompt-path]").forEach(b => {
         b.addEventListener("click", async () => {
-          const paths = (current.systemPromptAppendPaths || []);
+          const paths = (current.systemPromptAppend || []);
           paths.splice(+b.dataset.i, 1);
-          current = await launchconfig.setLayer(cwd, "project", { ...current, systemPromptAppendPaths: paths });
+          current = await launchconfig.setLayer(cwd, "project", { ...current, systemPromptAppend: paths });
           render();
         });
       });
@@ -282,9 +282,9 @@
         const row = root.querySelector("#proj-prompt-paths-add");
         const v = row.querySelector("[name=path]").value.trim();
         if (!v) return;
-        const paths = (current.systemPromptAppendPaths || []);
+        const paths = (current.systemPromptAppend || []);
         paths.push(v);
-        current = await launchconfig.setLayer(cwd, "project", { ...current, systemPromptAppendPaths: paths });
+        current = await launchconfig.setLayer(cwd, "project", { ...current, systemPromptAppend: paths });
         render();
       });
 
