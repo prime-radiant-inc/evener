@@ -93,11 +93,15 @@ func SaveMeta(path string, meta Meta) error {
 	if err := f.Sync(); err != nil {
 		f.Close()
 		os.Remove(tmp)
-		return err
+		return fmt.Errorf("launchconfig: sync %s: %w", tmp, err)
 	}
 	if err := f.Close(); err != nil {
 		os.Remove(tmp)
-		return err
+		return fmt.Errorf("launchconfig: close %s: %w", tmp, err)
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("launchconfig: rename %s -> %s: %w", tmp, path, err)
+	}
+	return nil
 }

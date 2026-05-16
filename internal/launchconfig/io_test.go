@@ -57,3 +57,28 @@ func TestSaveLayer_AtomicAndPermissions(t *testing.T) {
 		t.Errorf("round-trip Model = %q", got.Model)
 	}
 }
+
+func TestSaveMeta_AtomicAndPermissions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "meta.toml")
+	if err := SaveMeta(path, Meta{Schema: 1, CWD: "/cwd"}); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("mode = %o, want 600", info.Mode().Perm())
+	}
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf("temp file still present")
+	}
+	got, err := LoadMeta(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CWD != "/cwd" {
+		t.Errorf("round-trip CWD = %q", got.CWD)
+	}
+}
