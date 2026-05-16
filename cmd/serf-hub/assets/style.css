@@ -346,6 +346,10 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .header-action-danger { color: var(--state-awaiting); }
 .header-action-danger:hover:not([disabled]) { color: var(--state-awaiting); background: rgba(247, 118, 142, 0.1); }
 .header-action[disabled] { opacity: 0.4; cursor: not-allowed; }
+/* Disabled danger buttons should not look "active red" — drop the
+   danger tint and use the neutral muted color so an ended session's
+   shutdown button doesn't read as an inviting action. */
+.header-action-danger[disabled] { color: var(--text-muted); }
 .workspace-meta .branch,
 .workspace-meta .source-label { font-family: ui-monospace, "SFMono-Regular", monospace; }
 .rule-dot { color: var(--text-dim); }
