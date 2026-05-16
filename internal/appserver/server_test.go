@@ -107,6 +107,36 @@ func TestConnectionEnqueueAfterUnregisterDoesNotPanic(t *testing.T) {
 	conn.enqueue(appwire.NotificationMessage("notice", nil))
 }
 
+func TestServer_BroadcastAll(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	conn1 := server.NewConnection("conn-1")
+	conn2 := server.NewConnection("conn-2")
+	server.registerConnection(conn1)
+	server.registerConnection(conn2)
+
+	server.BroadcastAll("test/notify", map[string]string{"key": "value"})
+
+	for _, tc := range []struct {
+		name string
+		conn *Connection
+	}{
+		{"conn-1", conn1},
+		{"conn-2", conn2},
+	} {
+		select {
+		case msg := <-tc.conn.send:
+			if msg.Notification == nil {
+				t.Fatalf("%s: expected notification, got %+v", tc.name, msg)
+			}
+			if msg.Notification.Method != "test/notify" {
+				t.Fatalf("%s: method=%q, want %q", tc.name, msg.Notification.Method, "test/notify")
+			}
+		default:
+			t.Fatalf("%s: no message received", tc.name)
+		}
+	}
+}
+
 func TestBroadcastDisconnectsSlowSubscriberInsteadOfDroppingNotification(t *testing.T) {
 	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
 	conn := server.NewConnection("conn-1")

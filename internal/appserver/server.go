@@ -73,6 +73,24 @@ func (s *Server) Broadcast(threadID, method string, params any) {
 	}
 }
 
+// BroadcastAll sends a notification to every currently-connected client,
+// regardless of thread subscription. Used for hub-wide state-change
+// notifications such as serf/auth/updated and serf/launch/updated.
+func (s *Server) BroadcastAll(method string, params any) {
+	msg := appwire.NotificationMessage(method, params)
+	s.mu.RLock()
+	conns := make([]*Connection, 0, len(s.conns))
+	for _, c := range s.conns {
+		conns = append(conns, c)
+	}
+	s.mu.RUnlock()
+	for _, conn := range conns {
+		if !conn.enqueue(msg) {
+			s.unregisterConnection(conn.id)
+		}
+	}
+}
+
 func (s *Server) SubscriberCount(threadID string) int {
 	return s.subs.ConnectionCount(threadID)
 }

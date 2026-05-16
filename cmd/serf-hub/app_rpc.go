@@ -413,14 +413,14 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthLoginComplete, func(ctx context.Context, params appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
 		resp, err := authController.LoginComplete(ctx, params)
 		if err == nil {
-			notifyAuthUpdated(ctx, resp.Status.Provider, resp.Status.ActiveSource)
+			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource)
 		}
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthLogout, func(ctx context.Context, params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
 		resp, err := authController.Logout(params)
 		if err == nil {
-			notifyAuthUpdated(ctx, resp.Status.Provider, resp.Status.ActiveSource)
+			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource)
 		}
 		return resp, err
 	})
@@ -430,7 +430,7 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthApiKeySet, func(ctx context.Context, params appwire.AuthApiKeySetParams) (appwire.AuthStatusResponse, error) {
 		resp, err := authController.ApiKeySet(params)
 		if err == nil {
-			notifyAuthUpdated(ctx, resp.Provider, resp.ActiveSource)
+			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource)
 		}
 		return resp, err
 	})
@@ -444,14 +444,14 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfLaunchSetLayer, func(ctx context.Context, params appwire.LaunchConfigSetLayerParams) (appwire.LaunchConfigResolved, error) {
 		resp, err := launchController.SetLayer(ctx, params)
 		if err == nil {
-			notifyLaunchUpdated(ctx, params.CWD, params.Layer)
+			notifyLaunchUpdated(server, params.CWD, params.Layer)
 		}
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfLaunchTrustRepo, func(ctx context.Context, params appwire.LaunchConfigTrustRepoParams) (appwire.LaunchConfigResolved, error) {
 		resp, err := launchController.TrustRepo(ctx, params)
 		if err == nil {
-			notifyLaunchUpdated(ctx, params.CWD, "repo")
+			notifyLaunchUpdated(server, params.CWD, "repo")
 		}
 		return resp, err
 	})
@@ -1760,17 +1760,17 @@ func completeDirs(params appwire.DirsCompleteParams) (appwire.DirsCompleteRespon
 	return appwire.DirsCompleteResponse{Data: results}, nil
 }
 
-// notifyAuthUpdated sends a serf/auth/updated notification to the caller's connection.
-func notifyAuthUpdated(ctx context.Context, provider, activeSource string) {
-	appserver.Notify(ctx, appwire.NotifySerfAuthUpdated, map[string]string{
+// notifyAuthUpdated broadcasts a serf/auth/updated notification to all connected clients.
+func notifyAuthUpdated(server *appserver.Server, provider, activeSource string) {
+	server.BroadcastAll(appwire.NotifySerfAuthUpdated, map[string]string{
 		"provider":     provider,
 		"activeSource": activeSource,
 	})
 }
 
-// notifyLaunchUpdated sends a serf/launch/updated notification to the caller's connection.
-func notifyLaunchUpdated(ctx context.Context, cwd, layer string) {
-	appserver.Notify(ctx, appwire.NotifySerfLaunchUpdated, map[string]string{
+// notifyLaunchUpdated broadcasts a serf/launch/updated notification to all connected clients.
+func notifyLaunchUpdated(server *appserver.Server, cwd, layer string) {
+	server.BroadcastAll(appwire.NotifySerfLaunchUpdated, map[string]string{
 		"cwd":   cwd,
 		"layer": layer,
 	})
