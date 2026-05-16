@@ -43,6 +43,9 @@
     localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
   }
 
+  // Shared section-label map. Exposed as window.SerfSectionLabels so
+  // renderer.js (which loads later) can read the same source rather
+  // than maintaining a parallel copy.
   const SECTION_LABELS = {
     "general": "general", "theme": "theme", "notifications": "notifications",
     "providers": "providers", "agents": "agents",
@@ -51,6 +54,7 @@
     "plugins": "plugins", "skills": "skills", "mcp": "mcp servers",
     "hub": "hub", "storage": "storage", "project": "project",
   };
+  window.SerfSectionLabels = SECTION_LABELS;
 
   function activeSection() {
     // Within settings, prefer the URL after htmx pushes new section URL.

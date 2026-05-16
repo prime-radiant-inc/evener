@@ -1766,7 +1766,10 @@
   // Tab title — track sessions awaiting reply for the title-count notification
   // (off by default; opt-in via Settings → Notifications).
   // Pattern: "<section> · serf hub" for named pages; "serf hub" for the root.
-  const SETTINGS_SECTION_LABELS = {
+  // Use the shared map from notifications.js if loaded; fall back to a
+  // local copy so renderer.js still works if the asset load order ever
+  // changes.
+  const SETTINGS_SECTION_LABELS = window.SerfSectionLabels || {
     "general": "general", "theme": "theme", "notifications": "notifications",
     "providers": "providers", "agents": "agents",
     "launch-serf": "serf launch", "launch-codex": "codex launch",
