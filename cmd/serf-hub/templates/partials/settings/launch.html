@@ -1,0 +1,62 @@
+{{define "settings-content"}}
+<h2 class="settings-h2">Launch defaults</h2>
+<p class="settings-help">
+  These values are applied to every spawn unless overridden by a project
+  layer or per-launch.
+</p>
+<form id="launch-form" data-loaded="false">
+  <label>Model <input type="text" name="model" placeholder="openai/gpt-5"></label>
+  <label>Agent <input type="text" name="agent" placeholder="default"></label>
+  <label>Reasoning effort
+    <select name="reasoningEffort">
+      <option value="">(default)</option>
+      <option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>none</option>
+    </select>
+  </label>
+  <label>Context strategy
+    <select name="contextStrategy">
+      <option value="">(default)</option>
+      <option>compact</option><option>recall</option><option>session-log</option><option>ooda</option>
+    </select>
+  </label>
+  <label>Max rounds <input type="number" name="maxRounds" min="0" step="1"></label>
+  <label>Max subagent depth <input type="number" name="maxSubagentDepth" min="0" step="1"></label>
+  <label><input type="checkbox" name="noProjectPrompts"> Suppress .serf/prompts loading</label>
+  <button type="submit">Save</button>
+  <p id="launch-form-status" class="settings-help"></p>
+</form>
+<script>
+  (async function () {
+    const form = document.getElementById("launch-form");
+    const status = document.getElementById("launch-form-status");
+    const current = await launchconfig.getLayer("/", "global");
+    form.model.value = current.model || "";
+    form.agent.value = current.agent || "";
+    form.reasoningEffort.value = current.reasoningEffort || "";
+    form.contextStrategy.value = current.contextStrategy || "";
+    form.maxRounds.value = current.maxRounds ?? "";
+    form.maxSubagentDepth.value = current.maxSubagentDepth ?? "";
+    form.noProjectPrompts.checked = !!current.noProjectPrompts;
+    form.dataset.loaded = "true";
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const out = { ...current,
+        model: form.model.value.trim(),
+        agent: form.agent.value.trim(),
+        reasoningEffort: form.reasoningEffort.value || undefined,
+        contextStrategy: form.contextStrategy.value || undefined,
+        maxRounds: form.maxRounds.value === "" ? undefined : +form.maxRounds.value,
+        maxSubagentDepth: form.maxSubagentDepth.value === "" ? undefined : +form.maxSubagentDepth.value,
+        noProjectPrompts: form.noProjectPrompts.checked || undefined,
+      };
+      try {
+        await launchconfig.setLayer("/", "global", out);
+        status.textContent = "Saved at " + new Date().toLocaleTimeString();
+      } catch (err) {
+        status.textContent = "Error: " + err.message;
+      }
+    });
+  })();
+</script>
+{{end}}
