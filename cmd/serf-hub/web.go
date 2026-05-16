@@ -24,6 +24,7 @@ import (
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appsource"
 	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/internal/credentials"
 	"primeradiant.com/serf/internal/diagnostic"
 	"primeradiant.com/serf/internal/hubapi"
 	"primeradiant.com/serf/llm"
@@ -41,8 +42,8 @@ type WebConfig struct {
 	Models        []modelDescriptor // available models for the spawn chip
 	PastPerPage   int               // results per page for /past; defaults to 50 when zero
 	StateDir      string            // root of the projects/<sha> state directory; needed for ForkSession
-	SerfLaunchEnv map[string]string // environment overrides used by Hub-owned serf launches
-	PluginDirs    []string          // explicit plugin dirs; when empty, default to ~/.config/serf/plugins/*
+	CredsStore    *credentials.Store // credentials store; passed to auth controller
+	PluginDirs    []string           // explicit plugin dirs; when empty, default to ~/.config/serf/plugins/*
 	MCPConfigPath string            // MCP config file path; when empty, default to ~/.config/serf/mcp.json
 	CodexSources  []appsource.CodexSourceConfig
 	CodexLaunches []CodexLaunchConfig

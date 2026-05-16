@@ -17,12 +17,6 @@ type ProviderConfig struct {
 	Models []string `toml:"models"`
 }
 
-// SerfLaunchConfig controls Hub-owned serf serve subprocesses.
-type SerfLaunchConfig struct {
-	SSERingSize int               `toml:"sse_ring_size"`
-	Env         map[string]string `toml:"env"`
-}
-
 // Config is the hub's runtime configuration loaded from ~/.serf/hub.toml.
 type Config struct {
 	Addr               string                        `toml:"addr"`
@@ -37,7 +31,6 @@ type Config struct {
 	Providers          []ProviderConfig              `toml:"providers"`
 	CodexSources       []appsource.CodexSourceConfig `toml:"codex_sources"`
 	CodexLaunches      []CodexLaunchConfig           `toml:"codex_launches"`
-	SerfLaunch         SerfLaunchConfig              `toml:"serf_launch"`
 }
 
 // DefaultConfig returns a Config populated with sensible defaults.

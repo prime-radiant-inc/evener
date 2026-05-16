@@ -75,9 +75,9 @@ func (h *HubSpawner) ListLaunchModels(ctx context.Context) ([]appwire.ModelDescr
 }
 
 func (h *HubSpawner) ListLaunchModelContract(ctx context.Context) (appwire.ModelListResponse, error) {
-	stateDir := resolveSerfLaunchStateDir("", h.Cfg.SerfLaunch.Env)
+	stateDir := resolveSerfLaunchStateDir("", nil)
 	env := launchconfig.ToEnv(launchconfig.EnvInputs{
-		Resolved:  launchconfig.Resolved{Effective: launchconfig.Layer{Env: h.Cfg.SerfLaunch.Env}},
+		Resolved:  launchconfig.Resolved{},
 		RunDir:    h.RunDir,
 		StateDir:  stateDir,
 		HubToken:  h.HubToken,
@@ -88,9 +88,9 @@ func (h *HubSpawner) ListLaunchModelContract(ctx context.Context) (appwire.Model
 }
 
 func (h *HubSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, workingDir string) (appwire.ModelListResponse, error) {
-	stateDir := resolveSerfLaunchStateDir(workingDir, h.Cfg.SerfLaunch.Env)
+	stateDir := resolveSerfLaunchStateDir(workingDir, nil)
 	env := launchconfig.ToEnv(launchconfig.EnvInputs{
-		Resolved:  launchconfig.Resolved{Effective: launchconfig.Layer{Env: h.Cfg.SerfLaunch.Env}},
+		Resolved:  launchconfig.Resolved{},
 		RunDir:    h.RunDir,
 		StateDir:  stateDir,
 		HubToken:  h.HubToken,

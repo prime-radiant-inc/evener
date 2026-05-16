@@ -58,12 +58,14 @@ func newHubAuthController(launchEnv ...map[string]string) *hubAuthController {
 	}
 }
 
-// newHubAuthControllerWithStore creates a controller with an explicit stateDir and credentials store.
-// This is the primary constructor used in tests and contexts where the caller owns the store.
-func newHubAuthControllerWithStore(stateDir string, store *credentials.Store) *hubAuthController {
+// newHubAuthControllerWithStore creates a controller backed by an explicit credentials store.
+// The OpenAI OAuth state directory is resolved from the process environment (XDG_STATE_HOME / HOME),
+// matching the behaviour of the default constructor but without launch-env overrides.
+func newHubAuthControllerWithStore(_ string, store *credentials.Store) *hubAuthController {
 	authEnv := effectiveHubAuthEnv(nil)
 	cfg := authopenai.DefaultConfig()
 	client := &http.Client{Timeout: cfg.HTTPTimeout}
+	stateDir := openAIStateDirFromEnv(authEnv)
 	return &hubAuthController{
 		stateDir:     stateDir,
 		authEnv:      authEnv,

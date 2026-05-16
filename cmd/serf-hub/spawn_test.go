@@ -321,7 +321,6 @@ exit 2
 	cfg := DefaultConfig()
 	cfg.SpawnTimeout = 2 * time.Second
 	cfg.StateGlob = filepath.Join(stateHome, "serf", "projects", "*")
-	cfg.SerfLaunch.Env = map[string]string{"XDG_STATE_HOME": stateHome}
 	spawner := HubSpawner{Cfg: cfg, SerfBinary: bin, RunDir: runDir, HubToken: "generated-token"}
 
 	if _, err := spawner.Spawn(context.Background(), SpawnRequest{

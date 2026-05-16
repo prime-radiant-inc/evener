@@ -59,13 +59,6 @@ args = ["app-server"]
 
 [codex_launches.env]
 CODEX_HOME = "/tmp/codex-home"
-
-[serf_launch]
-sse_ring_size = 4096
-
-[serf_launch.env]
-OPENROUTER_API_KEY = "configured-openrouter-key"
-SERF_STATE_DIR = "/tmp/serf-state"
 `
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
@@ -110,12 +103,6 @@ SERF_STATE_DIR = "/tmp/serf-state"
 	}
 	if launch.Env["CODEX_HOME"] != "/tmp/codex-home" {
 		t.Errorf("codex launch env mismatch: %+v", launch.Env)
-	}
-	if cfg.SerfLaunch.Env["OPENROUTER_API_KEY"] != "configured-openrouter-key" || cfg.SerfLaunch.Env["SERF_STATE_DIR"] != "/tmp/serf-state" {
-		t.Errorf("serf launch env mismatch: %+v", cfg.SerfLaunch.Env)
-	}
-	if cfg.SerfLaunch.SSERingSize != 4096 {
-		t.Errorf("serf launch sse_ring_size: got %d, want 4096", cfg.SerfLaunch.SSERingSize)
 	}
 }
 
