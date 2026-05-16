@@ -43,24 +43,35 @@
     localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
   }
 
-  function activeTitle() {
+  const SECTION_LABELS = {
+    "general": "general", "theme": "theme", "notifications": "notifications",
+    "providers": "providers", "agents": "agents",
+    "launch-serf": "serf launch", "launch-codex": "codex launch",
+    "inrepo": "in-repo config",
+    "plugins": "plugins", "skills": "skills", "mcp": "mcp servers",
+    "hub": "hub", "storage": "storage", "project": "project",
+  };
+
+  function activeSection() {
+    // Within settings, prefer the URL after htmx pushes new section URL.
+    if (document.querySelector(".workspace-header .workspace-title .title[data-settings-section]")) {
+      const urlMatch = location.pathname.match(/^\/settings\/([^/?]+)/);
+      if (urlMatch) return SECTION_LABELS[urlMatch[1]] || urlMatch[1];
+    }
     const header = document.querySelector(".workspace-header .workspace-title .title");
     if (header && header.textContent) return header.textContent.trim();
-    return "serf";
+    return "";
   }
 
   function applyTitle(prefs, live) {
-    const title = activeTitle();
+    const section = activeSection();
+    const base = section ? section + " \xb7 serf hub" : "serf hub";
     if (!prefs.title) {
-      document.title = title === "serf" ? "serf" : title;
+      document.title = base;
       return;
     }
     const awaitingCount = (live || []).filter((s) => s.state === "awaiting").length;
-    if (awaitingCount > 0) {
-      document.title = "(" + awaitingCount + ") serf — " + title;
-    } else {
-      document.title = "serf — " + title;
-    }
+    document.title = awaitingCount > 0 ? "(" + awaitingCount + ") " + base : base;
   }
 
   // Pick the highest-priority state across live sessions.
@@ -257,6 +268,17 @@
   }
 
   document.addEventListener("serf-hub:notifications-changed", onPrefsChanged);
+
+  // Re-apply title/favicon immediately after HTMX swaps the workspace
+  // (e.g., navigating between settings sections). Otherwise the title
+  // stays stale until the next poll cycle.
+  document.body.addEventListener("htmx:afterSettle", () => {
+    if (!initialized) return;
+    const prefs = readPrefs();
+    // Use the current live state without re-fetching — the existing
+    // prevState is good enough for the title.
+    applyTitle(prefs, []);
+  });
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init);
