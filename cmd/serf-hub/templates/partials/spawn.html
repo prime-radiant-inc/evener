@@ -52,6 +52,36 @@
         <label>max turns <input type="number" name="max_turns" placeholder="200"></label>
       </div>
     </details>
+    <details class="spawn-advanced">
+      <summary>Advanced (per-launch overrides)</summary>
+      <p class="settings-help">
+        Tweaks applied to this launch only. Defaults come from
+        <a href="/settings/launch">Launch defaults</a> and any per-project layers.
+      </p>
+      <div>
+        <label>Add skill dir <input type="text" id="ovr-skill"></label>
+        <button type="button" id="ovr-skill-add">Add</button>
+        <ul id="ovr-skill-list"></ul>
+      </div>
+      <div>
+        <label>Add plugin dir <input type="text" id="ovr-plugin"></label>
+        <button type="button" id="ovr-plugin-add">Add</button>
+        <ul id="ovr-plugin-list"></ul>
+      </div>
+      <div>
+        <label>Max rounds <input type="number" id="ovr-max-rounds" min="0" step="1"></label>
+      </div>
+      <div>
+        <label>Context strategy
+          <select id="ovr-ctx">
+            <option value="">(use defaults)</option>
+            <option>compact</option><option>recall</option><option>session-log</option><option>ooda</option>
+          </select>
+        </label>
+      </div>
+      <button type="button" id="ovr-show-resolved">Show resolved config</button>
+      <pre id="ovr-resolved-out" class="settings-code"></pre>
+    </details>
     <div class="spawn-actions">
       <button class="spawn-btn" type="submit">spawn <kbd>⌘↵</kbd></button>
     </div>

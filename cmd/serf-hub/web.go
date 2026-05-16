@@ -2350,14 +2350,15 @@ func launchHarnessIDs(cfg WebConfig) []string {
 // spawnRequest is the JSON body for POST /api/spawn. The prompt field is
 // current; task is accepted by UnmarshalJSON for legacy callers.
 type spawnRequest struct {
-	Prompt          string `json:"prompt"`
-	Harness         string `json:"harness"`
-	Model           string `json:"model"`
-	WorkingDir      string `json:"working_dir"`
-	Branch          string `json:"branch"`
-	AccessMode      string `json:"access_mode"`
-	Agent           string `json:"agent"`
-	ReasoningEffort string `json:"reasoning_effort"`
+	Prompt          string                     `json:"prompt"`
+	Harness         string                     `json:"harness"`
+	Model           string                     `json:"model"`
+	WorkingDir      string                     `json:"working_dir"`
+	Branch          string                     `json:"branch"`
+	AccessMode      string                     `json:"access_mode"`
+	Agent           string                     `json:"agent"`
+	ReasoningEffort string                     `json:"reasoning_effort"`
+	LaunchOverrides *appwire.LaunchConfigLayer `json:"launch_overrides,omitempty"`
 }
 
 func (r *spawnRequest) UnmarshalJSON(data []byte) error {
@@ -2398,6 +2399,7 @@ func (s *WebServer) handleApiSpawn(w http.ResponseWriter, r *http.Request) {
 		Model:           req.Model,
 		Profile:         req.Agent,
 		ReasoningEffort: req.ReasoningEffort,
+		LaunchOverrides: req.LaunchOverrides,
 	})
 	if err != nil {
 		writeSpawnError(w, err)

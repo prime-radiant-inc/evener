@@ -143,6 +143,39 @@
     form.insertBefore(el, actions || null);
   }
 
+  function collectAdvancedOverrides() {
+    const skillsDirs = Array.from(document.querySelectorAll("#ovr-skill-list li")).map(li => li.dataset.value);
+    const pluginDirs = Array.from(document.querySelectorAll("#ovr-plugin-list li")).map(li => li.dataset.value);
+    const maxRoundsRaw = document.getElementById("ovr-max-rounds");
+    const ctxEl = document.getElementById("ovr-ctx");
+    const overrides = {};
+    if (skillsDirs.length) overrides.skillsDirs = skillsDirs;
+    if (pluginDirs.length) overrides.pluginDirs = pluginDirs;
+    if (maxRoundsRaw && maxRoundsRaw.value !== "") overrides.maxRounds = +maxRoundsRaw.value;
+    if (ctxEl && ctxEl.value) overrides.contextStrategy = ctxEl.value;
+    return Object.keys(overrides).length ? overrides : undefined;
+  }
+
+  function attachListAdd(inputId, addBtnId, listId) {
+    const addBtn = document.getElementById(addBtnId);
+    if (!addBtn) return;
+    addBtn.addEventListener("click", () => {
+      const input = document.getElementById(inputId);
+      const v = input.value.trim();
+      if (!v) return;
+      const li = document.createElement("li");
+      li.dataset.value = v;
+      li.textContent = v;
+      const rm = document.createElement("button");
+      rm.type = "button";
+      rm.textContent = "remove";
+      rm.addEventListener("click", () => li.remove());
+      li.appendChild(rm);
+      document.getElementById(listId).appendChild(li);
+      input.value = "";
+    });
+  }
+
   function init() {
     const form = document.querySelector("[data-spawn-form]");
     if (!form) return;
@@ -156,6 +189,21 @@
       setChipValue("model", defaults.model);
     } else {
       applyHarnessModelPolicy(currentHarness());
+    }
+
+    // Per-launch override list adds
+    attachListAdd("ovr-skill", "ovr-skill-add", "ovr-skill-list");
+    attachListAdd("ovr-plugin", "ovr-plugin-add", "ovr-plugin-list");
+
+    // Show resolved config
+    const showResolvedBtn = document.getElementById("ovr-show-resolved");
+    if (showResolvedBtn) {
+      showResolvedBtn.addEventListener("click", async () => {
+        const cwd = document.querySelector("[name=working_dir]").value;
+        const overrides = collectAdvancedOverrides();
+        const r = await launchconfig.resolve(cwd, overrides);
+        document.getElementById("ovr-resolved-out").textContent = JSON.stringify(r, null, 2);
+      });
     }
 
     // Chip pickers
@@ -192,6 +240,7 @@
         access_mode: fd.get("access_mode") || "full",
         agent: fd.get("agent_override") || fd.get("agent") || "default",
         reasoning_effort: fd.get("reasoning_effort_override") || fd.get("reasoning_effort") || "",
+        launch_overrides: collectAdvancedOverrides(),
       };
       // Persist sticky defaults (excluding the prompt override)
       saveDefaults({
