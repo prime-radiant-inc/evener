@@ -71,6 +71,7 @@ type WebServer struct {
 	workspaceTmpl  *template.Template
 	spawnTmpl      *template.Template
 	inputStripTmpl *template.Template
+	credsTmpl      *template.Template
 	settingsTmpls  map[string]*template.Template
 	sse            *SSEProxy
 	appRPC         *appserver.Server
@@ -95,7 +96,10 @@ func NewWebServer(cfg WebConfig) *WebServer {
 	inputStripTmpl := template.Must(template.ParseFS(templatesFS,
 		"templates/partials/input_strip.html",
 	))
-	settingsSections := []string{"general", "theme", "notifications", "providers", "agents", "plugins", "skills", "mcp", "hub", "storage"}
+	credsTmpl := template.Must(template.ParseFS(templatesFS,
+		"templates/partials/credentials.html",
+	))
+	settingsSections := []string{"general", "theme", "notifications", "providers", "agents", "launch", "inrepo", "plugins", "skills", "mcp", "hub", "storage"}
 	settingsTmpls := make(map[string]*template.Template, len(settingsSections))
 	for _, sec := range settingsSections {
 		settingsTmpls[sec] = template.Must(template.ParseFS(templatesFS,
@@ -114,6 +118,7 @@ func NewWebServer(cfg WebConfig) *WebServer {
 	web := &WebServer{
 		cfg: cfg, appTmpl: appTmpl, sidebarTmpl: sidebarTmpl,
 		workspaceTmpl: workspaceTmpl, spawnTmpl: spawnTmpl, inputStripTmpl: inputStripTmpl,
+		credsTmpl:     credsTmpl,
 		settingsTmpls: settingsTmpls,
 		sse:           sse,
 		sources:       sources,
@@ -159,6 +164,10 @@ func (s *WebServer) Handler() http.Handler {
 	// Settings
 	mux.HandleFunc("/settings", s.handleSettings)
 	mux.HandleFunc("/settings/", s.handleSettings)
+
+	// Credentials
+	mux.HandleFunc("/credentials", s.handleCredentials)
+	mux.HandleFunc("/_partials/credentials", s.handleCredentialsPartial)
 
 	// API
 	mux.HandleFunc("/api/spawn", s.handleApiSpawn)
@@ -2341,14 +2350,15 @@ func launchHarnessIDs(cfg WebConfig) []string {
 // spawnRequest is the JSON body for POST /api/spawn. The prompt field is
 // current; task is accepted by UnmarshalJSON for legacy callers.
 type spawnRequest struct {
-	Prompt          string `json:"prompt"`
-	Harness         string `json:"harness"`
-	Model           string `json:"model"`
-	WorkingDir      string `json:"working_dir"`
-	Branch          string `json:"branch"`
-	AccessMode      string `json:"access_mode"`
-	Agent           string `json:"agent"`
-	ReasoningEffort string `json:"reasoning_effort"`
+	Prompt          string                     `json:"prompt"`
+	Harness         string                     `json:"harness"`
+	Model           string                     `json:"model"`
+	WorkingDir      string                     `json:"working_dir"`
+	Branch          string                     `json:"branch"`
+	AccessMode      string                     `json:"access_mode"`
+	Agent           string                     `json:"agent"`
+	ReasoningEffort string                     `json:"reasoning_effort"`
+	LaunchOverrides *appwire.LaunchConfigLayer `json:"launch_overrides,omitempty"`
 }
 
 func (r *spawnRequest) UnmarshalJSON(data []byte) error {
@@ -2389,6 +2399,7 @@ func (s *WebServer) handleApiSpawn(w http.ResponseWriter, r *http.Request) {
 		Model:           req.Model,
 		Profile:         req.Agent,
 		ReasoningEffort: req.ReasoningEffort,
+		LaunchOverrides: req.LaunchOverrides,
 	})
 	if err != nil {
 		writeSpawnError(w, err)

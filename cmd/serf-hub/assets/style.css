@@ -836,3 +836,10 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
   .conversation { padding: 12px 14px; }
   .diagnostic { margin-left: 0; max-width: none; }
 }
+
+/* Credentials pane */
+.credentials-pane { padding: 1rem 1.25rem; }
+.credentials-help { color: var(--muted-fg, #888); }
+.credentials-row { display: grid; grid-template-columns: 8rem 1fr auto; align-items: center; gap: 1rem; padding: .5rem 0; border-bottom: 1px solid var(--border-subtle, #2a2a2a); }
+.credentials-row-name { font-weight: 600; }
+.credentials-row-actions button { margin-left: .25rem; }

@@ -1,27 +1,26 @@
 {{define "settings-content"}}
 <h2 class="settings-h2">Providers</h2>
-{{if .Providers}}
-<div class="settings-rows">
-  {{range .Providers}}
-  <div class="settings-row">
-    <div class="settings-row-title">{{.Name}}</div>
-    <div class="settings-row-meta">{{len .Models}} model{{if ne (len .Models) 1}}s{{end}}</div>
-    <div class="settings-row-detail">{{range .Models}}<span class="model-chip">{{.}}</span>{{end}}</div>
-  </div>
-  {{end}}
+<p class="settings-help">
+  Credentials for each model provider. Edit on the
+  <a href="/credentials" hx-get="/_partials/credentials" hx-target="#workspace" hx-push-url="/credentials">credentials</a>
+  page.
+</p>
+<div id="providers-rows" data-loaded="false">
+  <p>Loading…</p>
 </div>
-{{else}}
-<p class="settings-help">No launch models reported by the Serf harness. Check provider credentials in the hub environment or <code>[serf_launch.env]</code>.</p>
-{{end}}
-{{if .ModelDiagnostics}}
-<div class="settings-rows">
-  {{range .ModelDiagnostics}}
-  <div class="settings-row">
-    <div class="settings-row-title">{{if .Provider}}{{.Provider}}{{else}}model list{{end}}</div>
-    <div class="settings-row-meta">{{if .Title}}{{.Title}}{{else}}Model list unavailable{{end}}</div>
-    <div class="settings-row-detail">{{.Message}}</div>
-  </div>
-  {{end}}
-</div>
-{{end}}
+<script>
+  (async function () {
+    const rows = document.getElementById("providers-rows");
+    const data = await launchconfig.authList();
+    rows.innerHTML = data.providers.map(p => `
+      <div class="settings-row">
+        <div class="settings-row-title">${p.provider}
+          <span class="status-pill status-${p.activeSource}">${p.activeSource}</span>
+        </div>
+        <div class="settings-row-meta">auth modes: ${(p.authModes || []).join(", ") || "—"}</div>
+      </div>
+    `).join("");
+    rows.dataset.loaded = "true";
+  })();
+</script>
 {{end}}

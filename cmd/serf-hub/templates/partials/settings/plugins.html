@@ -1,28 +1,98 @@
 {{define "settings-content"}}
-<h2 class="settings-h2">Plugins</h2>
-{{if .PluginsError}}
-<p class="settings-help settings-error">Plugin discovery failed: <code>{{.PluginsError}}</code></p>
-{{end}}
-{{if .Plugins}}
-<div class="settings-rows">
-  {{range .Plugins}}
-  <div class="settings-row">
-    <div class="settings-row-title">
-      {{.Name}}
-      {{if .Version}}<span class="settings-row-version">{{.Version}}</span>{{end}}
-    </div>
-    <div class="settings-row-meta settings-row-path">{{.Path}}</div>
-    <div class="settings-row-detail">
-      <span class="model-chip">{{.Counts.Skills}} skill{{if ne .Counts.Skills 1}}s{{end}}</span>
-      <span class="model-chip">{{.Counts.Agents}} agent{{if ne .Counts.Agents 1}}s{{end}}</span>
-      <span class="model-chip">{{.Counts.Mcps}} mcp</span>
-      <span class="model-chip">{{.Counts.Hooks}} hook{{if ne .Counts.Hooks 1}}s{{end}}</span>
-      <a class="settings-open-link" href="{{.EditPath}}" target="_blank" rel="noopener">open in editor ↗</a>
-    </div>
-  </div>
-  {{end}}
+<h2 class="settings-h2">Plugin directories</h2>
+<p class="settings-help">
+  Directories serf scans for plugins at launch. Applied to every spawn.
+</p>
+<div id="plugins-form" data-loaded="false">
+  <p>Loading…</p>
 </div>
-{{else if not .PluginsError}}
-<p class="settings-help">No plugins found. Drop plugin directories into <code>~/.config/serf/plugins/</code> (each must contain a <code>.claude-plugin/plugin.json</code> manifest).</p>
-{{end}}
+<script>
+  (async function () {
+    const root = document.getElementById("plugins-form");
+    const current = await launchconfig.getLayer("/", "global");
+    const dirs = current.pluginDirs || [];
+    function render() {
+      root.innerHTML = `
+        <ul class="settings-list">
+          ${dirs.map((d, i) => `
+            <li><code>${d}</code> <button data-i="${i}" data-action="rm">remove</button></li>
+          `).join("")}
+        </ul>
+        <form id="plugins-add">
+          <input type="text" name="dir" placeholder="/absolute/path" required>
+          <button type="submit">Add</button>
+        </form>
+      `;
+      root.querySelectorAll("button[data-action=rm]").forEach(b => {
+        b.addEventListener("click", async () => {
+          dirs.splice(+b.dataset.i, 1);
+          await launchconfig.setLayer("/", "global", { ...current, pluginDirs: dirs });
+          render();
+        });
+      });
+      root.querySelector("#plugins-add").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const v = e.target.dir.value.trim();
+        if (!v) return;
+        dirs.push(v);
+        await launchconfig.setLayer("/", "global", { ...current, pluginDirs: dirs });
+        e.target.dir.value = "";
+        render();
+      });
+    }
+    render();
+    root.dataset.loaded = "true";
+  })();
+</script>
+<h3 class="settings-h3">Project overrides</h3>
+<label>Working dir <input type="text" id="proj-plugins-cwd" placeholder="/path/to/project"></label>
+<div id="project-plugins-form" data-loaded="false"><p>Enter a working dir above.</p></div>
+<script>
+  (function () {
+    const cwdIn = document.getElementById("proj-plugins-cwd");
+    const root = document.getElementById("project-plugins-form");
+    cwdIn.value = localStorage.getItem("lastCwd") || "";
+    let current = null;
+    let dirs = [];
+    async function refresh() {
+      const cwd = cwdIn.value.trim();
+      if (!cwd) { root.innerHTML = "<p>Enter a working dir above.</p>"; return; }
+      current = await launchconfig.getLayer(cwd, "project");
+      dirs = current.pluginDirs || [];
+      render(cwd);
+    }
+    function render(cwd) {
+      root.innerHTML = `
+        <ul class="settings-list">
+          ${dirs.map((d, i) => `
+            <li><code>${d}</code> <button data-i="${i}" data-action="rm">remove</button></li>
+          `).join("")}
+        </ul>
+        <form id="proj-plugins-add">
+          <input type="text" name="dir" placeholder="/absolute/path" required>
+          <button type="submit">Add</button>
+        </form>
+      `;
+      root.querySelectorAll("button[data-action=rm]").forEach(b => {
+        b.addEventListener("click", async () => {
+          dirs.splice(+b.dataset.i, 1);
+          await launchconfig.setLayer(cwd, "project", { ...current, pluginDirs: dirs });
+          await refresh();
+        });
+      });
+      root.querySelector("#proj-plugins-add").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const v = e.target.dir.value.trim();
+        if (!v) return;
+        dirs.push(v);
+        await launchconfig.setLayer(cwd, "project", { ...current, pluginDirs: dirs });
+        e.target.dir.value = "";
+        await refresh();
+      });
+      root.dataset.loaded = "true";
+    }
+    cwdIn.addEventListener("change", refresh);
+    refresh();
+  })();
+</script>
 {{end}}
