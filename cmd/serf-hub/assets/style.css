@@ -903,4 +903,5 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .credentials-editor-label { font-size: 12px; color: var(--text-muted, #888); }
 .credentials-editor-label a { color: var(--accent, #7aa2f7); }
 .credentials-editor-input { padding: 6px 8px; font-family: inherit; font-size: 13px; }
+.credentials-editor-error { margin: 0; color: var(--state-awaiting, var(--error, #c43755)); font-size: 12px; }
 .credentials-editor-actions { display: flex; gap: 6px; }
