@@ -307,6 +307,34 @@ var hubCommandRegistry = []hubCommandDefinition{
 			return nil
 		},
 	},
+	{
+		Name:          "credentials",
+		Summary:       "Manage provider API keys and OAuth sign-in",
+		PaletteLabel:  "/credentials",
+		PaletteDetail: "manage provider API keys and OAuth sign-in",
+		Scopes:        hubCommandDashboard,
+		Run: func(m *hubModel, _ string) tea.Cmd {
+			panel := newCredentialsPanel()
+			m.credentialsPanel = &panel
+			if m.client != nil {
+				return cmdAuthList(m.client)
+			}
+			return nil
+		},
+	},
+	{
+		Name:          "settings",
+		Summary:       "Edit hub launch configuration layers",
+		PaletteLabel:  "/settings",
+		PaletteDetail: "edit hub launch configuration layers",
+		Scopes:        hubCommandDashboard,
+		Run: func(m *hubModel, _ string) tea.Cmd {
+			cwd := m.spawnWorkingDir()
+			p := newLaunchSettingsPanel(m.client, cwd)
+			m.launchSettingsPanel = &p
+			return p.initialCmd()
+		},
+	},
 }
 
 func capabilityAvailable(check func(hubSessionCapabilities) bool, reason string) func(hubCommandContext) (bool, string) {

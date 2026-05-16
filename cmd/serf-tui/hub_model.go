@@ -122,6 +122,13 @@ type hubModel struct {
 	authLoginProvider string
 	authLoginFlowID   string
 
+	credentialsPanel     *credentialsPanel
+	launchSettingsPanel  *launchSettingsPanel
+	followupModal        *textInputModal
+	launchOverridesModal *launchOverridesModal
+
+	spawnLaunchOverrides *appwire.LaunchConfigLayer
+
 	lastCtrlC       time.Time
 	postQuitMessage string
 }
@@ -514,6 +521,172 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addSessionSystem("OpenAI auth was already signed out. " + formatAuthStatusSummary(m.authStatus))
 		}
 		return m, nil
+	case authListResultMsg:
+		if m.credentialsPanel != nil {
+			updated, cmd := m.credentialsPanel.Update(msg)
+			panel := updated.(credentialsPanel)
+			m.credentialsPanel = &panel
+			return m, cmd
+		}
+		return m, nil
+	case credentialsActionMsg:
+		switch msg.Action {
+		case "set":
+			modal := newTextInputModalMasked(fmt.Sprintf("API key for %s:", msg.Provider), "credential-set:"+msg.Provider)
+			m.followupModal = &modal
+			return m, nil
+		case "logout":
+			if m.client != nil {
+				return m, cmdAuthLogout(m.client, msg.Provider)
+			}
+			return m, nil
+		case "oauth":
+			if m.client != nil {
+				return m, cmdAuthLoginStart(m.client, msg.Provider)
+			}
+			return m, nil
+		}
+		return m, nil
+	case launchOverridesOpenMsg:
+		var modal launchOverridesModal
+		if msg.Initial != nil {
+			modal = newLaunchOverridesModalWith(*msg.Initial)
+		} else {
+			modal = newLaunchOverridesModal()
+		}
+		m.launchOverridesModal = &modal
+		return m, nil
+	case launchOverridesResultMsg:
+		m.launchOverridesModal = nil
+		if !msg.Cancelled {
+			m.spawnLaunchOverrides = msg.Overrides
+		}
+		return m, nil
+	case launchSettingsEditRequestMsg:
+		if msg.Layer == "launch" {
+			modal := newTextInputModal(
+				fmt.Sprintf("Edit %s (current: %s):", msg.Field, msg.CurrentValue),
+				"launch-override:"+msg.Field,
+			)
+			m.followupModal = &modal
+			return m, nil
+		}
+		modal := newTextInputModal(
+			fmt.Sprintf("Edit %s.%s (current: %s):", msg.Layer, msg.Field, msg.CurrentValue),
+			fmt.Sprintf("settings-edit:%s:%s", msg.Layer, msg.Field),
+		)
+		m.followupModal = &modal
+		return m, nil
+	case textInputResultMsg:
+		if strings.HasPrefix(msg.Tag, "credential-set:") {
+			provider := strings.TrimPrefix(msg.Tag, "credential-set:")
+			m.followupModal = nil
+			if msg.Cancelled || msg.Value == "" {
+				return m, nil
+			}
+			if m.client != nil {
+				return m, cmdAuthApiKeySet(m.client, provider, msg.Value)
+			}
+			return m, nil
+		}
+		if strings.HasPrefix(msg.Tag, "oauth-redirect:") {
+			parts := strings.SplitN(strings.TrimPrefix(msg.Tag, "oauth-redirect:"), ":", 2)
+			m.followupModal = nil
+			if msg.Cancelled || msg.Value == "" {
+				return m, nil
+			}
+			if len(parts) == 2 && m.client != nil {
+				return m, cmdAuthLoginComplete(m.client, parts[0], parts[1], msg.Value)
+			}
+			return m, nil
+		}
+		if strings.HasPrefix(msg.Tag, "launch-override:") {
+			field := strings.TrimPrefix(msg.Tag, "launch-override:")
+			m.followupModal = nil
+			if msg.Cancelled {
+				return m, nil
+			}
+			if m.launchOverridesModal != nil {
+				updated, err := m.launchOverridesModal.ApplyEdit(field, msg.Value)
+				if err != nil {
+					m.err = err
+					return m, nil
+				}
+				m.launchOverridesModal = &updated
+			}
+			return m, nil
+		}
+		if strings.HasPrefix(msg.Tag, "settings-edit:") {
+			parts := strings.SplitN(strings.TrimPrefix(msg.Tag, "settings-edit:"), ":", 2)
+			if len(parts) != 2 {
+				return m, nil
+			}
+			layer, field := parts[0], parts[1]
+			m.followupModal = nil
+			if msg.Cancelled {
+				return m, nil
+			}
+			if m.launchSettingsPanel == nil {
+				return m, nil
+			}
+			panel, updatedLayer, err := m.launchSettingsPanel.ApplyEdit(field, msg.Value)
+			if err != nil {
+				m.err = err
+				return m, nil
+			}
+			m.launchSettingsPanel = &panel
+			return m, cmdSetLayer(m.client, panel.cwd, layer, updatedLayer)
+		}
+		return m, nil
+	case authApiKeySetResultMsg:
+		if msg.Err != nil {
+			m.err = msg.Err
+			return m, nil
+		}
+		m.err = nil
+		if m.credentialsPanel != nil && m.client != nil {
+			return m, cmdAuthList(m.client)
+		}
+		return m, nil
+	case authLoginStartResultMsg:
+		if msg.Err != nil {
+			m.err = msg.Err
+			return m, nil
+		}
+		m.err = nil
+		modal := newTextInputModal("Paste full redirect URL after sign-in:\n"+msg.URL, "oauth-redirect:"+msg.Provider+":"+msg.FlowID)
+		m.followupModal = &modal
+		return m, nil
+	case authLoginCompleteResultMsg:
+		if msg.Err != nil {
+			m.err = msg.Err
+			return m, nil
+		}
+		m.err = nil
+		if m.credentialsPanel != nil && m.client != nil {
+			return m, cmdAuthList(m.client)
+		}
+		return m, nil
+	case launchSetLayerResultMsg:
+		if m.launchSettingsPanel != nil {
+			updated, cmd := m.launchSettingsPanel.Update(msg)
+			p := updated.(launchSettingsPanel)
+			m.launchSettingsPanel = &p
+			if msg.Err == nil && m.client != nil {
+				// Refresh the just-saved layer from disk.
+				return m, tea.Batch(cmd, cmdGetLayer(m.client, msg.CWD, msg.Layer))
+			}
+			return m, cmd
+		}
+		return m, nil
+	case launchLayerResultMsg, launchResolveResultMsg, launchTrustResultMsg:
+		if m.launchSettingsPanel != nil {
+			updated, cmd := m.launchSettingsPanel.Update(msg)
+			p := updated.(launchSettingsPanel)
+			m.launchSettingsPanel = &p
+			return m, cmd
+		}
+		return m, nil
 	}
 	return m, nil
 }
@@ -546,6 +719,34 @@ func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m hubModel) updateDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.followupModal != nil {
+		updated, cmd := m.followupModal.Update(msg)
+		modal := updated.(textInputModal)
+		m.followupModal = &modal
+		if modal.done {
+			m.followupModal = nil
+		}
+		return m, cmd
+	}
+	if m.credentialsPanel != nil {
+		updated, cmd := m.credentialsPanel.Update(msg)
+		panel := updated.(credentialsPanel)
+		m.credentialsPanel = &panel
+		if panel.done {
+			m.credentialsPanel = nil
+		}
+		return m, cmd
+	}
+	if m.launchSettingsPanel != nil {
+		updated, cmd := m.launchSettingsPanel.Update(msg)
+		p := updated.(launchSettingsPanel)
+		m.launchSettingsPanel = &p
+		if p.done {
+			m.launchSettingsPanel = nil
+			return m, nil
+		}
+		return m, cmd
+	}
 	if m.dashboardFilterActive {
 		return m.updateHubFilterKey(msg)
 	}
@@ -698,6 +899,26 @@ func (m hubModel) runCommandPaletteCommand(command string) (tea.Model, tea.Cmd) 
 }
 
 func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.followupModal != nil && m.launchOverridesModal != nil {
+		updated, cmd := m.followupModal.Update(msg)
+		modal := updated.(textInputModal)
+		m.followupModal = &modal
+		if modal.done {
+			m.followupModal = nil
+		}
+		return m, cmd
+	}
+
+	if m.launchOverridesModal != nil {
+		updated, cmd := m.launchOverridesModal.Update(msg)
+		p := updated.(launchOverridesModal)
+		m.launchOverridesModal = &p
+		if p.done {
+			m.launchOverridesModal = nil
+		}
+		return m, cmd
+	}
+
 	if m.spawnModelPicker != nil {
 		updated, cmd := m.spawnModelPicker.Update(msg)
 		picker := updated.(modelPicker)
@@ -709,6 +930,15 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, cmd
+	}
+
+	if msg.Type == tea.KeyCtrlL {
+		var initial *appwire.LaunchConfigLayer
+		if m.spawnLaunchOverrides != nil {
+			cp := *m.spawnLaunchOverrides
+			initial = &cp
+		}
+		return m, func() tea.Msg { return launchOverridesOpenMsg{Initial: initial} }
 	}
 
 	switch msg.String() {
@@ -820,13 +1050,15 @@ func (m hubModel) submitSpawnForm() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	req := hubSpawnRequest{
-		Prompt:     prompt,
-		Harness:    strings.TrimSpace(m.spawnHarness),
-		Model:      strings.TrimSpace(m.spawnModel),
-		WorkingDir: strings.TrimSpace(m.spawnDir),
+		Prompt:          prompt,
+		Harness:         strings.TrimSpace(m.spawnHarness),
+		Model:           strings.TrimSpace(m.spawnModel),
+		WorkingDir:      strings.TrimSpace(m.spawnDir),
+		LaunchOverrides: m.spawnLaunchOverrides,
 	}
 	m.err = nil
 	m.spawnSubmitting = true
+	m.spawnLaunchOverrides = nil // one-shot: clear after use
 	return m, sendHubSpawn(m.client, req)
 }
 
@@ -916,6 +1148,27 @@ func (m hubModel) spawnFieldHint() string {
 }
 
 func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.followupModal != nil && m.launchOverridesModal != nil {
+		// followupModal is open for a launch-override edit — route to it
+		updated, cmd := m.followupModal.Update(msg)
+		modal := updated.(textInputModal)
+		m.followupModal = &modal
+		if modal.done {
+			m.followupModal = nil
+		}
+		return m, cmd
+	}
+
+	if m.launchOverridesModal != nil {
+		updated, cmd := m.launchOverridesModal.Update(msg)
+		p := updated.(launchOverridesModal)
+		m.launchOverridesModal = &p
+		if p.done {
+			m.launchOverridesModal = nil
+		}
+		return m, cmd
+	}
+
 	if m.sessionThemePicker != nil {
 		picker, cmd := m.sessionThemePicker.Update(msg)
 		m.sessionThemePicker = &picker
@@ -1099,6 +1352,14 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.openCommandPalette()
 		return m, nil
 	}
+	if msg.Type == tea.KeyCtrlL {
+		var initial *appwire.LaunchConfigLayer
+		if m.spawnLaunchOverrides != nil {
+			cp := *m.spawnLaunchOverrides
+			initial = &cp
+		}
+		return m, func() tea.Msg { return launchOverridesOpenMsg{Initial: initial} }
+	}
 
 	switch msg.String() {
 	case "ctrl+c":
@@ -1266,6 +1527,9 @@ func (m *hubModel) returnToDashboard() {
 	m.transcriptView = nil
 	m.forkDraft = nil
 	m.spawnModelPicker = nil
+	m.credentialsPanel = nil
+	m.launchSettingsPanel = nil
+	m.followupModal = nil
 	m.session.scrollMode = false
 	m.session.focusedToolIdx = -1
 	m.browseSelected = -1
@@ -1674,6 +1938,20 @@ func (m hubModel) currentRef() (appwire.Ref, bool) {
 }
 
 func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.Cmd {
+	// Panel-refresh notifications fire regardless of current mode.
+	switch notification.Method {
+	case appwire.NotifySerfAuthUpdated:
+		if m.credentialsPanel != nil && m.client != nil {
+			return cmdAuthList(m.client)
+		}
+		return nil
+	case appwire.NotifySerfLaunchUpdated:
+		if m.launchSettingsPanel != nil {
+			return m.launchSettingsPanel.initialCmd()
+		}
+		return nil
+	}
+
 	if m.mode != hubModeSession {
 		return nil
 	}
@@ -2310,6 +2588,33 @@ func (m hubModel) dashboardView() string {
 			Height:  m.height,
 		}.View()
 	}
+	if m.followupModal != nil {
+		return appShell{
+			TopBar:  topBar,
+			Body:    b.String(),
+			Overlay: m.followupModal.View(),
+			Footer:  "[Enter] confirm  [Esc] cancel",
+			Height:  m.height,
+		}.View()
+	}
+	if m.credentialsPanel != nil {
+		return appShell{
+			TopBar:  topBar,
+			Body:    b.String(),
+			Overlay: m.credentialsPanel.View(),
+			Footer:  "[Enter] set api key  [O] OAuth sign-in  [C] clear  [Esc] close",
+			Height:  m.height,
+		}.View()
+	}
+	if m.launchSettingsPanel != nil {
+		return appShell{
+			TopBar:  topBar,
+			Body:    b.String(),
+			Overlay: m.launchSettingsPanel.View(),
+			Footer:  "[←/→] tab  [↑/↓] field  [Enter] edit  [Esc] close",
+			Height:  m.height,
+		}.View()
+	}
 	if m.dashboardFilterActive || strings.TrimSpace(m.dashboardFilter.Value()) != "" {
 		b.WriteString(m.dashboardFilter.View())
 		b.WriteString("\n\n")
@@ -2849,6 +3154,12 @@ func (m hubModel) spawnView() string {
 	if m.spawnModelPicker != nil {
 		overlay = m.spawnModelPicker.View()
 	}
+	if m.launchOverridesModal != nil {
+		overlay = m.launchOverridesModal.View()
+	}
+	if m.followupModal != nil {
+		overlay = m.followupModal.View()
+	}
 	model := m.spawnModel
 	models := m.spawnSelectableModels()
 	if !m.spawnHarnessUsesSerfModels() {
@@ -3088,6 +3399,14 @@ func (m hubModel) sessionView() string {
 	}
 	if m.commandPalette != nil {
 		overlay.WriteString(m.commandPalette.View())
+		overlay.WriteString("\n\n")
+	}
+	if m.launchOverridesModal != nil {
+		overlay.WriteString(m.launchOverridesModal.View())
+		overlay.WriteString("\n\n")
+	}
+	if m.followupModal != nil {
+		overlay.WriteString(m.followupModal.View())
 		overlay.WriteString("\n\n")
 	}
 	var footer string

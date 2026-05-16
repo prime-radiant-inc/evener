@@ -176,10 +176,11 @@ func fetchHubTranscript(client *appwire.Client, target appwire.ThreadTranscriptT
 func sendHubSpawn(client *appwire.Client, req hubSpawnRequest) tea.Cmd {
 	return func() tea.Msg {
 		resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
-			Harness: req.Harness,
-			CWD:     req.WorkingDir,
-			Prompt:  req.Prompt,
-			Model:   strings.TrimSpace(req.Model),
+			Harness:         req.Harness,
+			CWD:             req.WorkingDir,
+			Prompt:          req.Prompt,
+			Model:           strings.TrimSpace(req.Model),
+			LaunchOverrides: req.LaunchOverrides,
 		})
 		return hubSpawnMsg{resp: hubSpawnResponse{Ref: resp.Thread.Serf.Ref}, err: err}
 	}

@@ -79,10 +79,11 @@ type hubSpawnResponse struct {
 }
 
 type hubSpawnRequest struct {
-	Prompt     string
-	Harness    string
-	Model      string
-	WorkingDir string
+	Prompt          string
+	Harness         string
+	Model           string
+	WorkingDir      string
+	LaunchOverrides *appwire.LaunchConfigLayer
 }
 
 type hubForkRequest struct {
