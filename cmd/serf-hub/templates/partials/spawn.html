@@ -47,40 +47,43 @@
     <details class="spawn-advanced">
       <summary>advanced</summary>
       <div class="spawn-advanced-body">
-        <label>agent <input type="text" name="agent_override" placeholder="default"></label>
-        <label>reasoning effort <select name="reasoning_effort_override"><option value="">(default)</option><option>low</option><option>medium</option><option>high</option></select></label>
-        <label>max turns <input type="number" name="max_turns" placeholder="200"></label>
+        <p class="settings-help spawn-advanced-note">
+          Per-launch overrides for this thread only. Defaults come from
+          <a href="/settings/launch">Launch defaults</a> and any per-project layers.
+        </p>
+
+        <fieldset class="spawn-advanced-group">
+          <legend>persona</legend>
+          <label>agent <input type="text" name="agent_override" placeholder="default"></label>
+          <label>reasoning effort <select name="reasoning_effort_override"><option value="">(default)</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>none</option></select></label>
+        </fieldset>
+
+        <fieldset class="spawn-advanced-group">
+          <legend>limits</legend>
+          <label>max rounds <input type="number" id="ovr-max-rounds" name="max_turns" min="0" step="1" placeholder="200"></label>
+          <label>context strategy
+            <select id="ovr-ctx">
+              <option value="">(use defaults)</option>
+              <option>compact</option><option>recall</option><option>session-log</option><option>ooda</option>
+            </select>
+          </label>
+        </fieldset>
+
+        <fieldset class="spawn-advanced-group">
+          <legend>resources</legend>
+          <label>add skill dir <input type="text" id="ovr-skill"></label>
+          <button type="button" id="ovr-skill-add">add</button>
+          <ul id="ovr-skill-list" class="spawn-advanced-chips"></ul>
+          <label>add plugin dir <input type="text" id="ovr-plugin"></label>
+          <button type="button" id="ovr-plugin-add">add</button>
+          <ul id="ovr-plugin-list" class="spawn-advanced-chips"></ul>
+        </fieldset>
+
+        <div class="spawn-advanced-actions">
+          <button type="button" id="ovr-show-resolved">show resolved config</button>
+        </div>
+        <pre id="ovr-resolved-out" class="settings-code"></pre>
       </div>
-    </details>
-    <details class="spawn-advanced">
-      <summary>Advanced (per-launch overrides)</summary>
-      <p class="settings-help">
-        Tweaks applied to this launch only. Defaults come from
-        <a href="/settings/launch">Launch defaults</a> and any per-project layers.
-      </p>
-      <div>
-        <label>Add skill dir <input type="text" id="ovr-skill"></label>
-        <button type="button" id="ovr-skill-add">Add</button>
-        <ul id="ovr-skill-list"></ul>
-      </div>
-      <div>
-        <label>Add plugin dir <input type="text" id="ovr-plugin"></label>
-        <button type="button" id="ovr-plugin-add">Add</button>
-        <ul id="ovr-plugin-list"></ul>
-      </div>
-      <div>
-        <label>Max rounds <input type="number" id="ovr-max-rounds" min="0" step="1"></label>
-      </div>
-      <div>
-        <label>Context strategy
-          <select id="ovr-ctx">
-            <option value="">(use defaults)</option>
-            <option>compact</option><option>recall</option><option>session-log</option><option>ooda</option>
-          </select>
-        </label>
-      </div>
-      <button type="button" id="ovr-show-resolved">Show resolved config</button>
-      <pre id="ovr-resolved-out" class="settings-code"></pre>
     </details>
     <div class="spawn-actions">
       <button class="spawn-btn" type="submit">spawn <kbd>⌘↵</kbd></button>

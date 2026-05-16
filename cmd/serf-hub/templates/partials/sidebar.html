@@ -38,6 +38,13 @@
       <span class="row-meta project-count">{{len .Sessions}}</span>
       <span class="project-rollup-dot" data-state="{{.RollupState}}"></span>
       {{if .WorkingDir}}
+      <a class="project-gear-btn"
+         title="project settings for {{.Name}}"
+         href="/settings/project?cwd={{.WorkingDir}}"
+         hx-get="/_partials/settings/project?cwd={{.WorkingDir}}"
+         hx-target="#workspace"
+         hx-swap="innerHTML"
+         hx-push-url="/settings/project?cwd={{.WorkingDir}}">⚙</a>
       <a class="project-new-btn"
          title="new session in {{.Name}}"
          href="/new?dir={{.WorkingDir}}"

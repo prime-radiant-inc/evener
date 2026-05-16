@@ -93,6 +93,11 @@ func main() {
 		os.Exit(1)
 	}
 	hubStateRoot := cfg.HubStateRoot
+	authToken, err := LoadOrCreateAuthToken(hubStateRoot)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[hub] auth token: %v\n", err)
+		os.Exit(1)
+	}
 	credsStore, _ := credentials.LoadStore(filepath.Join(hubStateRoot, "credentials.toml"))
 	spawner := &HubSpawner{
 		Cfg:        cfg,
@@ -123,6 +128,7 @@ func main() {
 	// Web
 	web := NewWebServer(WebConfig{
 		HubAddr:       cfg.Addr,
+		AuthToken:     authToken,
 		HubStateRoot:  cfg.HubStateRoot,
 		RunDir:        runDir,
 		Roster:        roster,
@@ -176,6 +182,19 @@ func main() {
 	}()
 
 	fmt.Fprintf(os.Stderr, "[hub] serf-hub %s listening on %s (run_dir=%s)\n", Version, cfg.Addr, runDir)
+	// Build a usable auth URL. If the bind addr is 0.0.0.0 or ::, replace
+	// it with a hostname the operator can reach the hub at.
+	authHost := cfg.Addr
+	if strings.HasPrefix(authHost, "0.0.0.0:") || strings.HasPrefix(authHost, "[::]:") {
+		port := authHost[strings.LastIndex(authHost, ":"):]
+		host, _ := os.Hostname()
+		if host == "" {
+			host = "localhost"
+		}
+		authHost = host + port
+	}
+	fmt.Fprintf(os.Stderr, "[hub] auth URL (visit once per browser): http://%s/auth?token=%s\n", authHost, authToken)
+	fmt.Fprintf(os.Stderr, "[hub] auth token also at %s (use as Authorization: Bearer ... for scripted clients)\n", filepath.Join(hubStateRoot, authTokenFile))
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		fmt.Fprintf(os.Stderr, "[hub] %v\n", err)
 		os.Exit(1)
