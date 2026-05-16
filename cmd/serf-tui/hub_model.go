@@ -125,6 +125,9 @@ type hubModel struct {
 	credentialsPanel     *credentialsPanel
 	launchSettingsPanel  *launchSettingsPanel
 	followupModal        *textInputModal
+	launchOverridesModal *launchOverridesModal
+
+	spawnLaunchOverrides *appwire.LaunchConfigLayer
 
 	lastCtrlC       time.Time
 	postQuitMessage string
@@ -544,7 +547,30 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, nil
+	case launchOverridesOpenMsg:
+		var modal launchOverridesModal
+		if msg.Initial != nil {
+			modal = newLaunchOverridesModalWith(*msg.Initial)
+		} else {
+			modal = newLaunchOverridesModal()
+		}
+		m.launchOverridesModal = &modal
+		return m, nil
+	case launchOverridesResultMsg:
+		m.launchOverridesModal = nil
+		if !msg.Cancelled {
+			m.spawnLaunchOverrides = msg.Overrides
+		}
+		return m, nil
 	case launchSettingsEditRequestMsg:
+		if msg.Layer == "launch" {
+			modal := newTextInputModal(
+				fmt.Sprintf("Edit %s (current: %s):", msg.Field, msg.CurrentValue),
+				"launch-override:"+msg.Field,
+			)
+			m.followupModal = &modal
+			return m, nil
+		}
 		modal := newTextInputModal(
 			fmt.Sprintf("Edit %s.%s (current: %s):", msg.Layer, msg.Field, msg.CurrentValue),
 			fmt.Sprintf("settings-edit:%s:%s", msg.Layer, msg.Field),
@@ -571,6 +597,22 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if len(parts) == 2 && m.client != nil {
 				return m, cmdAuthLoginComplete(m.client, parts[0], parts[1], msg.Value)
+			}
+			return m, nil
+		}
+		if strings.HasPrefix(msg.Tag, "launch-override:") {
+			field := strings.TrimPrefix(msg.Tag, "launch-override:")
+			m.followupModal = nil
+			if msg.Cancelled {
+				return m, nil
+			}
+			if m.launchOverridesModal != nil {
+				updated, err := m.launchOverridesModal.ApplyEdit(field, msg.Value)
+				if err != nil {
+					m.err = err
+					return m, nil
+				}
+				m.launchOverridesModal = &updated
 			}
 			return m, nil
 		}
@@ -857,6 +899,26 @@ func (m hubModel) runCommandPaletteCommand(command string) (tea.Model, tea.Cmd) 
 }
 
 func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.followupModal != nil && m.launchOverridesModal != nil {
+		updated, cmd := m.followupModal.Update(msg)
+		modal := updated.(textInputModal)
+		m.followupModal = &modal
+		if modal.done {
+			m.followupModal = nil
+		}
+		return m, cmd
+	}
+
+	if m.launchOverridesModal != nil {
+		updated, cmd := m.launchOverridesModal.Update(msg)
+		p := updated.(launchOverridesModal)
+		m.launchOverridesModal = &p
+		if p.done {
+			m.launchOverridesModal = nil
+		}
+		return m, cmd
+	}
+
 	if m.spawnModelPicker != nil {
 		updated, cmd := m.spawnModelPicker.Update(msg)
 		picker := updated.(modelPicker)
@@ -868,6 +930,15 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, cmd
+	}
+
+	if msg.Type == tea.KeyCtrlL {
+		var initial *appwire.LaunchConfigLayer
+		if m.spawnLaunchOverrides != nil {
+			cp := *m.spawnLaunchOverrides
+			initial = &cp
+		}
+		return m, func() tea.Msg { return launchOverridesOpenMsg{Initial: initial} }
 	}
 
 	switch msg.String() {
@@ -979,13 +1050,15 @@ func (m hubModel) submitSpawnForm() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	req := hubSpawnRequest{
-		Prompt:     prompt,
-		Harness:    strings.TrimSpace(m.spawnHarness),
-		Model:      strings.TrimSpace(m.spawnModel),
-		WorkingDir: strings.TrimSpace(m.spawnDir),
+		Prompt:          prompt,
+		Harness:         strings.TrimSpace(m.spawnHarness),
+		Model:           strings.TrimSpace(m.spawnModel),
+		WorkingDir:      strings.TrimSpace(m.spawnDir),
+		LaunchOverrides: m.spawnLaunchOverrides,
 	}
 	m.err = nil
 	m.spawnSubmitting = true
+	m.spawnLaunchOverrides = nil // one-shot: clear after use
 	return m, sendHubSpawn(m.client, req)
 }
 
@@ -1075,6 +1148,27 @@ func (m hubModel) spawnFieldHint() string {
 }
 
 func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.followupModal != nil && m.launchOverridesModal != nil {
+		// followupModal is open for a launch-override edit — route to it
+		updated, cmd := m.followupModal.Update(msg)
+		modal := updated.(textInputModal)
+		m.followupModal = &modal
+		if modal.done {
+			m.followupModal = nil
+		}
+		return m, cmd
+	}
+
+	if m.launchOverridesModal != nil {
+		updated, cmd := m.launchOverridesModal.Update(msg)
+		p := updated.(launchOverridesModal)
+		m.launchOverridesModal = &p
+		if p.done {
+			m.launchOverridesModal = nil
+		}
+		return m, cmd
+	}
+
 	if m.sessionThemePicker != nil {
 		picker, cmd := m.sessionThemePicker.Update(msg)
 		m.sessionThemePicker = &picker
@@ -1257,6 +1351,14 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.Type == tea.KeyCtrlP || msg.String() == "ctrl+p" {
 		m.openCommandPalette()
 		return m, nil
+	}
+	if msg.Type == tea.KeyCtrlL {
+		var initial *appwire.LaunchConfigLayer
+		if m.spawnLaunchOverrides != nil {
+			cp := *m.spawnLaunchOverrides
+			initial = &cp
+		}
+		return m, func() tea.Msg { return launchOverridesOpenMsg{Initial: initial} }
 	}
 
 	switch msg.String() {
