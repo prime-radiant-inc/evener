@@ -1795,6 +1795,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				apiCall.Error = err.Error()
 				setAPICallDiagnostic(&apiCall, err)
 			} else {
+				var endpoint string
+				if resp.Raw != nil {
+					if v, ok := resp.Raw["endpoint_url"].(string); ok {
+						endpoint = v
+					}
+				}
 				apiCall.Response = &llm.APILogResponse{
 					ID:            resp.ID,
 					Model:         resp.Model,
@@ -1802,6 +1808,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 					TextLength:    len(resp.Text()),
 					ToolCallCount: len(resp.ToolCalls()),
 					Usage:         resp.Usage,
+					EndpointURL:   endpoint,
 					Raw:           resp.Raw,
 				}
 			}
