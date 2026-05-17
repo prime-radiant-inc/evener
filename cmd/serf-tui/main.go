@@ -68,7 +68,7 @@ func postQuitMessageFromModel(model tea.Model) string {
 // currentExecutable returns the absolute path of the running serf-tui
 // binary. It prefers os.Executable() (always absolute on supported
 // platforms) and falls back to os.Args[0] when the OS cannot report a
-// path. Returning the absolute path lets resolveHubBinary locate a
+// path. Returning the absolute path lets binresolve.Resolve locate a
 // sibling serf-hub even when serf-tui was launched via a relative path
 // like "./serf-tui" — which would otherwise be rejected by exec.ErrDot.
 func currentExecutable() string {

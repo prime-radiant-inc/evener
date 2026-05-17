@@ -13,11 +13,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
 	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/internal/binresolve"
 	"primeradiant.com/serf/internal/hubapi"
 )
 
@@ -322,7 +322,7 @@ func startHubClient(ctx context.Context, cfg hubStartConfig) (hubRuntime, error)
 	if cfg.LookPath == nil {
 		cfg.LookPath = exec.LookPath
 	}
-	bin, err := resolveHubBinary(cfg.HubBin, cfg.CurrentExecutable, cfg.LookPath)
+	bin, err := binresolve.Resolve("serf-hub", cfg.HubBin, cfg.CurrentExecutable, cfg.LookPath)
 	if err != nil {
 		return fail(startupError{Kind: startupErrorMissingHubBinary, Addr: addr.BaseURL, Err: err})
 	}
@@ -411,79 +411,6 @@ func hubRPCURL(addr hubAddress) string {
 	default:
 		return base + "/rpc"
 	}
-}
-
-// resolveHubBinary returns the path to serf-hub. Resolution order:
-//  1. explicit path (from --hub-bin or SERF_HUB_BIN)
-//  2. sibling next to the currently running serf-tui binary
-//  3. PATH lookup via lookPath
-//
-// The sibling-resolution step canonicalises currentExecutable via
-// filepath.Abs + filepath.EvalSymlinks so that an invocation like
-// "./serf-tui" (or a symlink such as /usr/local/bin/serf-tui ->
-// /opt/serf/serf-tui) still finds the binary that sits next to the real
-// file. Returning an absolute path also avoids exec.ErrDot when the
-// caller hands the path off to exec.Command.
-func resolveHubBinary(explicitPath, currentExecutable string, lookPath func(string) (string, error)) (string, error) {
-	if explicitPath != "" {
-		if !isExecutable(explicitPath) {
-			return "", fmt.Errorf("hub binary is not executable: %s", explicitPath)
-		}
-		return explicitPath, nil
-	}
-	name := "serf-hub"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
-	if dir, ok := siblingDir(currentExecutable); ok {
-		sibling := filepath.Join(dir, name)
-		if isExecutable(sibling) {
-			return sibling, nil
-		}
-	}
-	if lookPath == nil {
-		lookPath = exec.LookPath
-	}
-	path, err := lookPath(name)
-	if err != nil {
-		return "", fmt.Errorf("find serf-hub: %w", err)
-	}
-	return path, nil
-}
-
-// siblingDir returns the directory of the running serf-tui binary as an
-// absolute, symlink-resolved path. The currentExecutable argument is
-// typically obtained from os.Executable() in main(); callers may pass a
-// fixture path in tests. The path is canonicalised via filepath.Abs and
-// filepath.EvalSymlinks so that a relative invocation like "./serf-tui"
-// (which would trip exec.ErrDot) or a symlink such as
-// /usr/local/bin/serf-tui -> /opt/serf/serf-tui still resolves to the
-// directory that actually holds the binary. Returns ok=false when no
-// usable path can be derived.
-func siblingDir(currentExecutable string) (string, bool) {
-	candidate := strings.TrimSpace(currentExecutable)
-	if candidate == "" {
-		return "", false
-	}
-	abs, err := filepath.Abs(candidate)
-	if err != nil {
-		return "", false
-	}
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		abs = resolved
-	}
-	return filepath.Dir(abs), true
-}
-
-func isExecutable(path string) bool {
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
-		return false
-	}
-	if runtime.GOOS == "windows" {
-		return true
-	}
-	return info.Mode()&0o111 != 0
 }
 
 func startLocalHub(req hubStartRequest) error {

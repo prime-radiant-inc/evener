@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
+	"primeradiant.com/serf/internal/binresolve"
 	"primeradiant.com/serf/internal/credentials"
 	"primeradiant.com/serf/rendezvous"
 
@@ -99,9 +101,13 @@ func main() {
 		os.Exit(1)
 	}
 	credsStore, _ := credentials.LoadStore(filepath.Join(hubStateRoot, "credentials.toml"))
+	resolvedSerfBinary := resolveSerfBinaryPath(*serfBinary, currentExecutable(), exec.LookPath)
+	if *serfBinary == "" && resolvedSerfBinary != "" && resolvedSerfBinary != "serf" {
+		fmt.Fprintf(os.Stderr, "[hub] resolved serf at %s\n", resolvedSerfBinary)
+	}
 	spawner := &HubSpawner{
 		Cfg:        cfg,
-		SerfBinary: *serfBinary,
+		SerfBinary: resolvedSerfBinary,
 		RunDir:     runDir,
 		HubToken:   hubToken,
 		Creds:      credsStore,
@@ -199,4 +205,45 @@ func main() {
 		fmt.Fprintf(os.Stderr, "[hub] %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// currentExecutable returns the path of the running serf-hub binary,
+// preferring os.Executable() (always absolute on supported platforms)
+// and falling back to os.Args[0]. The absolute path is what
+// binresolve.Resolve needs to find a sibling "serf" binary even when
+// serf-hub was launched via a relative path like "./serf-hub".
+func currentExecutable() string {
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		return exe
+	}
+	if len(os.Args) > 0 {
+		return os.Args[0]
+	}
+	return ""
+}
+
+// resolveSerfBinaryPath determines which "serf" binary the hub should
+// invoke for launch-check + spawning. Resolution order is:
+//  1. explicit (--serf flag): always wins.
+//  2. sibling next to the running serf-hub binary.
+//  3. lookup of "serf" on $PATH.
+//
+// When none of those succeed, "" is returned so HubSpawner falls back
+// to its built-in default of running "serf" — which lets exec.Command
+// do its own runtime PATH search (matching pre-kata behaviour).
+func resolveSerfBinaryPath(explicit, currentExecutable string, lookPath func(string) (string, error)) string {
+	if explicit != "" {
+		return explicit
+	}
+	if lookPath == nil {
+		lookPath = exec.LookPath
+	}
+	path, err := binresolve.Resolve("serf", "", currentExecutable, lookPath)
+	if err != nil {
+		// Neither a sibling nor a PATH lookup succeeded. Fall back to
+		// the empty default; HubSpawner will invoke "serf" and let
+		// exec.Command surface a friendly error if it is unavailable.
+		return ""
+	}
+	return path
 }
