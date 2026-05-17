@@ -278,15 +278,25 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 }
 
 func (c *hubAuthController) openAIStatus() (appwire.AuthStatusResponse, error) {
+	// Prefer a stored OAuth record over OPENAI_API_KEY: once a user explicitly
+	// signs in via `serf openai login`, that intent should win over an env
+	// fallback that may have been set globally. Mirrors the daemon-side
+	// Service.Status priority.
 	active := authopenai.AuthStatus{Source: authopenai.AuthSourceSignedOut}
-	if strings.TrimSpace(c.authEnv["OPENAI_API_KEY"]) != "" {
-		active = authopenai.AuthStatus{
-			SignedIn: true,
-			Source:   authopenai.AuthSourceEnv,
-		}
-	} else if record, err := authopenai.LoadAuth(c.stateDir); err == nil {
+	record, err := authopenai.LoadAuth(c.stateDir)
+	hasRecord := false
+	switch {
+	case err == nil:
+		hasRecord = true
 		active = openAIStatusFromRecord(c.now(), record)
-	} else if !errors.Is(err, authopenai.ErrAuthNotFound) {
+	case errors.Is(err, authopenai.ErrAuthNotFound):
+		if strings.TrimSpace(c.authEnv["OPENAI_API_KEY"]) != "" {
+			active = authopenai.AuthStatus{
+				SignedIn: true,
+				Source:   authopenai.AuthSourceEnv,
+			}
+		}
+	default:
 		return appwire.AuthStatusResponse{}, err
 	}
 
@@ -302,9 +312,7 @@ func (c *hubAuthController) openAIStatus() (appwire.AuthStatusResponse, error) {
 		NeedsLogin:   active.NeedsLogin,
 	}
 
-	record, err := authopenai.LoadAuth(c.stateDir)
-	switch {
-	case err == nil:
+	if hasRecord {
 		status.HasStoredOAuth = true
 		status.StoredEmail = record.Email
 		if status.ActiveSource == authopenai.AuthSourceOAuth {
@@ -312,10 +320,6 @@ func (c *hubAuthController) openAIStatus() (appwire.AuthStatusResponse, error) {
 			status.AccountID = firstNonEmpty(status.AccountID, record.AccountID)
 			status.WorkspaceID = firstNonEmpty(status.WorkspaceID, record.WorkspaceID)
 		}
-	case errors.Is(err, authopenai.ErrAuthNotFound):
-		return status, nil
-	default:
-		return appwire.AuthStatusResponse{}, err
 	}
 
 	return status, nil

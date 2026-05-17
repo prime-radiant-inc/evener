@@ -60,7 +60,7 @@ func TestHubRPCAuthStatusUsesUserScopedOpenAIAuth(t *testing.T) {
 	}
 }
 
-func TestHubRPCAuthStatusReportsEnvAndStoredOAuth(t *testing.T) {
+func TestHubRPCAuthStatusPrefersStoredOAuthOverEnv(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "env-token")
 	xdgStateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", xdgStateHome)
@@ -91,8 +91,30 @@ func TestHubRPCAuthStatusReportsEnvAndStoredOAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AuthStatus: %v", err)
 	}
-	if !status.SignedIn || status.ActiveSource != authopenai.AuthSourceEnv || !status.HasStoredOAuth || status.StoredEmail != "stored@example.com" {
-		t.Fatalf("status=%+v, want env with stored oauth metadata", status)
+	if !status.SignedIn || status.ActiveSource != authopenai.AuthSourceOAuth || !status.HasStoredOAuth || status.StoredEmail != "stored@example.com" || status.Email != "stored@example.com" {
+		t.Fatalf("status=%+v, want stored OAuth to win over env-token", status)
+	}
+}
+
+func TestHubRPCAuthStatusFallsBackToEnvWhenNoStoredOAuth(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "env-token")
+	xdgStateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", xdgStateHome)
+
+	hub := newHubRPCTestServer(t, WebConfig{Past: NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	status, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai"})
+	if err != nil {
+		t.Fatalf("AuthStatus: %v", err)
+	}
+	if !status.SignedIn || status.ActiveSource != authopenai.AuthSourceEnv || status.HasStoredOAuth {
+		t.Fatalf("status=%+v, want env-token to be active with no stored OAuth", status)
 	}
 }
 
