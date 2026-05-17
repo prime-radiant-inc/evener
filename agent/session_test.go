@@ -146,6 +146,42 @@ func TestSession_StreamOpenFailureHonorsRetryBudget(t *testing.T) {
 	}
 }
 
+// kata r6y9: after the LLM call returns a retryable stream error and the retry
+// policy is exhausted, the session must NOT be left in PROCESSING. Otherwise
+// the daemon's /status keeps reporting PROCESSING forever, the hub disables
+// steer/send, and the user has no recovery path.
+func TestSession_StreamErrorReturnsSessionToIdle(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &streamingAdapter{
+		name: "openai",
+		streamScript: func(st *llm.ChanStream) {
+			// Send nothing and close: callModel sees the channel close
+			// before any finish event and surfaces a retryable StreamError
+			// ("stream ended without finish event").
+		},
+	}
+	c.Register(f)
+
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		LLMRetryPolicy: &policy,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hi", nil); err == nil {
+		t.Fatal("expected stream-ended error")
+	}
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after stream error: got %q want %q", got, SessionIdle)
+	}
+}
+
 // fakeErrAdapter is like fakeAdapter but supports steps that return errors.
 type fakeErrAdapter struct {
 	name string

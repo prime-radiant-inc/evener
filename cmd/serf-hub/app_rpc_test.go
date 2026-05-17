@@ -654,6 +654,186 @@ func TestHubRPCThreadReadUsesStructuredAPICallDiagnostic(t *testing.T) {
 	}
 }
 
+func TestSanitizeStaleProcessingStatusFlipsFailedAPICallToError(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "stuck")
+	sessionID := buildRPCFailedSession(t, stateDir) // tail = api_call with Error
+	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	thread := appwire.Thread{
+		ID:        sessionID,
+		SessionID: sessionID,
+		Source:    "local",
+		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusProcessing},
+		Serf:      appwire.SerfThread{Ref: "local:" + sessionID},
+	}
+	out := sanitizeStaleProcessingStatus(WebConfig{Past: past}, thread)
+	if out.Status.Type != appwire.ThreadStatusError {
+		t.Fatalf("status=%q want=%q", out.Status.Type, appwire.ThreadStatusError)
+	}
+}
+
+func TestSanitizeStaleProcessingStatusLeavesCompletedAssistantTailAlone(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "midflight")
+	sessionID := buildRPCParentSession(t, stateDir)
+	// buildRPCParentSession's tail is a USER_INPUT entry. Append an
+	// ASSISTANT turn so the tail is a successful assistant message.
+	transcriptPath := filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl")
+	appendAssistantToTranscript(t, transcriptPath)
+	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	thread := appwire.Thread{
+		ID:        sessionID,
+		SessionID: sessionID,
+		Source:    "local",
+		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusProcessing},
+		Serf:      appwire.SerfThread{Ref: "local:" + sessionID},
+	}
+	out := sanitizeStaleProcessingStatus(WebConfig{Past: past}, thread)
+	if out.Status.Type != appwire.ThreadStatusProcessing {
+		t.Fatalf("status=%q want=%q (mid-tool processing must be preserved)", out.Status.Type, appwire.ThreadStatusProcessing)
+	}
+}
+
+func TestSanitizeStaleProcessingStatusLeavesUserInputTailAlone(t *testing.T) {
+	// USER_INPUT with no api_call yet could mean the agent is genuinely
+	// preparing the first LLM call. Conservatively leave processing as-is.
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "userin")
+	sessionID := buildRPCParentSession(t, stateDir) // tail is USER_INPUT
+	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	thread := appwire.Thread{
+		ID:        sessionID,
+		SessionID: sessionID,
+		Source:    "local",
+		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusProcessing},
+		Serf:      appwire.SerfThread{Ref: "local:" + sessionID},
+	}
+	out := sanitizeStaleProcessingStatus(WebConfig{Past: past}, thread)
+	if out.Status.Type != appwire.ThreadStatusProcessing {
+		t.Fatalf("status=%q want=%q (USER_INPUT tail is not a stuck signal)", out.Status.Type, appwire.ThreadStatusProcessing)
+	}
+}
+
+func TestSanitizeStaleProcessingStatusIgnoresNonLocalSources(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "codex")
+	sessionID := buildRPCFailedSession(t, stateDir)
+	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	thread := appwire.Thread{
+		ID:        sessionID,
+		SessionID: sessionID,
+		Source:    "codex",
+		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusProcessing},
+		Serf:      appwire.SerfThread{Ref: "codex:" + sessionID},
+	}
+	out := sanitizeStaleProcessingStatus(WebConfig{Past: past}, thread)
+	if out.Status.Type != appwire.ThreadStatusProcessing {
+		t.Fatalf("status=%q want=%q (only local sessions get the override)", out.Status.Type, appwire.ThreadStatusProcessing)
+	}
+}
+
+func TestSanitizeStaleProcessingStatusLeavesNonProcessingAlone(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "idle")
+	sessionID := buildRPCFailedSession(t, stateDir)
+	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	// Daemon legitimately reports idle / awaiting / error — we must not
+	// rewrite those.
+	for _, status := range []string{appwire.ThreadStatusIdle, appwire.ThreadStatusAwaiting, appwire.ThreadStatusError, appwire.ThreadStatusEnded} {
+		thread := appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			Source:    "local",
+			Status:    appwire.ThreadStatus{Type: status},
+			Serf:      appwire.SerfThread{Ref: "local:" + sessionID},
+		}
+		out := sanitizeStaleProcessingStatus(WebConfig{Past: past}, thread)
+		if out.Status.Type != status {
+			t.Fatalf("status %q overwritten to %q", status, out.Status.Type)
+		}
+	}
+}
+
+func TestHubRPCThreadReadFlipsStuckProcessingToError(t *testing.T) {
+	// End-to-end: daemon claims PROCESSING, transcript tail is a failed
+	// api_call. MethodThreadRead must report error so the hub UI doesn't
+	// disable steer/send forever (kata r6y9).
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "stuck")
+	sessionID := buildRPCFailedSession(t, stateDir)
+	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusProcessing},
+			Source:    "local",
+			Serf:      appwire.SerfThread{Ref: params.Ref},
+		}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       17 * 1000,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+		SourceID:  "local",
+		ThreadID:  sessionID,
+		SessionID: sessionID,
+	})
+	roster := NewRoster(runDir, nil)
+	roster.Refresh()
+
+	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Roster: roster, Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID})
+	if err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	if resp.Thread.Status.Type != appwire.ThreadStatusError {
+		t.Fatalf("status=%q want=%q", resp.Thread.Status.Type, appwire.ThreadStatusError)
+	}
+}
+
+func appendAssistantToTranscript(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(`{"kind":"entry","seq":99,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"text","text":"hi back"}]}}}` + "\n"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestHubRPCThreadReadMergesPastTurnsForLiveDaemon(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "past")

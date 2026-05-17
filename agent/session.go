@@ -1807,6 +1807,17 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			if errors.As(err, &le) && !le.Retryable() {
 				s.Close()
 			}
+			// Recoverable LLM errors (retry policy exhausted, stream-ended,
+			// timeouts, etc.) bail out of the run loop without compacting or
+			// closing — but we still need to leave PROCESSING. Without this
+			// flip the session sits in PROCESSING forever from the daemon's
+			// /status endpoint, the hub disables steer/send, and the user has
+			// no recovery path short of restarting the daemon (kata r6y9).
+			s.mu.Lock()
+			if s.state == SessionProcessing {
+				s.state = SessionIdle
+			}
+			s.mu.Unlock()
 			return "", err
 		}
 

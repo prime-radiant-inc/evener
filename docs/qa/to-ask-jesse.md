@@ -62,3 +62,12 @@ The Reconnect & retry button has two paths: `window.SerfAppwire.startTurn` (work
 Options:
 - (a) Drop the `/send` legacy fallback entirely from `makeRetryTurnHandler`. Appwire is the default; the fallback path is dead code for any modern client.
 - (b) Detect `SerfAppwire` absence and hide the Reconnect button (but keep Retry) when the source is hub. Lets the legacy path survive for provider errors where auto-resume isn't strictly needed.
+
+### meta.json `turn_count` drifts behind transcript reality (kata adjacent to r6y9)
+Session `01KRSCTTEY3176G22YNWQW847Z` (2026-05-16) shows `turn_count: 0` in meta.json even though the transcript records two USER_INPUTs (both followed by failed api_calls). `agent.maybeAutoSave` only fires from happy-path turn boundaries; if the LLM call errors out before the assistant turn is appended, `turn_count` never advances. The past-index hubapi surface backfills from meta.TurnCount when the live count is 0, so the UI ends up showing 0 turns for sessions that have user input but no committed assistant exchange — same condition as kata k5t4 but on the persistence side, not the projection side.
+
+Two paths to consider:
+- (a) Bump `turn_count` from `s.turns` (post-increment in session.go line 1575) so a USER_INPUT alone counts. Aligns with the live-view interpretation but conflicts with k5t4's "completed exchanges only" answer.
+- (b) Define turn_count consistently as "completed exchanges" and ensure meta.json is flushed in the error exit paths so the count never lags transcript reality. Requires a SaveSessionMeta call alongside the SessionIdle flip in session.go.
+
+Open. Not blocking the r6y9 fix; filed for triage.

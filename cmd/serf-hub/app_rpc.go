@@ -278,6 +278,7 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 			return appwire.ThreadReadResponse{}, err
 		}
 		resp.Thread = mergePastThreadForRead(cfg, params, resp.Thread)
+		resp.Thread = sanitizeStaleProcessingStatus(cfg, resp.Thread)
 		if params.Subscribe || relayOnThreadRead(source) {
 			if err := startRelay(ctx, source, params, resp.Thread); err != nil {
 				return appwire.ThreadReadResponse{}, err
@@ -707,6 +708,7 @@ func hubThreadList(ctx context.Context, cfg WebConfig, sources *appsource.Regist
 				}
 			}
 			thread = mergePastMetadataForList(cfg, source.ID(), thread)
+			thread = sanitizeStaleProcessingStatus(cfg, thread)
 			if appThreadMatches(thread, params) {
 				threads = append(threads, thread)
 			}
@@ -905,6 +907,83 @@ func normalizeThreadListStatusFilter(status string) string {
 	default:
 		return strings.ToLower(strings.TrimSpace(status))
 	}
+}
+
+// sanitizeStaleProcessingStatus rewrites a thread's status when the live source
+// claims the session is processing but the on-disk transcript shows the last
+// thing recorded was a failed LLM call. The agent loop has a known gap where a
+// retryable stream error (e.g. "stream ended without finish event") returns
+// from session.Input without flipping the in-memory state back to IDLE; the
+// daemon then keeps answering /status with PROCESSING forever, even though
+// nothing is in flight. Hub readers conclude "processing" and the workspace UI
+// disables steer/send. We catch the discrepancy here by consulting the past
+// index for the same thread: if the last transcript line is an api_call whose
+// Error field is non-empty, the session is wedged and the correct status is
+// error (kata r6y9). All other tail shapes — completed assistant turns, bare
+// USER_INPUT entries with no api_call yet, successful api_calls mid-round — are
+// left alone because the daemon may legitimately still be processing them.
+func sanitizeStaleProcessingStatus(cfg WebConfig, thread appwire.Thread) appwire.Thread {
+	if cfg.Past == nil {
+		return thread
+	}
+	if thread.Status.Type != appwire.ThreadStatusProcessing {
+		return thread
+	}
+	threadID := firstNonEmpty(thread.ID, thread.SessionID)
+	if threadID == "" {
+		return thread
+	}
+	if thread.Serf.Ref != "" {
+		ref, err := appwire.ParseRef(thread.Serf.Ref)
+		if err == nil && ref.SourceID != "" && ref.SourceID != "local" {
+			return thread
+		}
+	} else if thread.Source != "" && thread.Source != "local" {
+		return thread
+	}
+	entry, ok := cfg.Past.Find(threadID)
+	if !ok {
+		return thread
+	}
+	transcriptPath := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
+	tailKind, tailHasError := transcriptTailSummary(transcriptPath)
+	if tailKind == "api_call" && tailHasError {
+		thread.Status = appwire.ThreadStatus{Type: appwire.ThreadStatusError}
+	}
+	return thread
+}
+
+// transcriptTailSummary returns the kind ("entry" | "api_call" | "") of the
+// final non-empty line of the transcript at path, and whether that api_call
+// recorded a non-empty Error field. Returns ("", false) on read failures so the
+// caller leaves the thread status unchanged when it cannot inspect the tail.
+func transcriptTailSummary(path string) (kind string, hasError bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	var lastLine []byte
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		lastLine = append(lastLine[:0], line...)
+	}
+	if scanner.Err() != nil || len(lastLine) == 0 {
+		return "", false
+	}
+	var head struct {
+		Kind  string `json:"kind"`
+		Error string `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(lastLine, &head); err != nil {
+		return "", false
+	}
+	return head.Kind, strings.TrimSpace(head.Error) != ""
 }
 
 func pastThreadForRead(cfg WebConfig, params appwire.ThreadReadParams) (appwire.Thread, bool) {
