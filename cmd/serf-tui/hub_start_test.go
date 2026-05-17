@@ -109,6 +109,92 @@ func TestResolveHubBinaryFallsBackToPath(t *testing.T) {
 	}
 }
 
+func TestResolveHubBinaryResolvesRelativeCurrentExecutable(t *testing.T) {
+	// Reproduces the kata: serf-tui launched as "./serf-tui" must still
+	// locate a sibling serf-hub by an absolute path, otherwise exec.Command
+	// will reject it with exec.ErrDot.
+	dir := t.TempDir()
+	sibling := filepath.Join(dir, "serf-hub")
+	writeExecutable(t, sibling)
+
+	prevWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(prevWD); err != nil {
+			t.Fatalf("restore wd: %v", err)
+		}
+	})
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	got, err := resolveHubBinary("", "./serf-tui", func(string) (string, error) {
+		return "", errors.New("should not search PATH")
+	})
+	if err != nil {
+		t.Fatalf("resolveHubBinary: %v", err)
+	}
+	if !filepath.IsAbs(got) {
+		t.Fatalf("got %q, want absolute path", got)
+	}
+	if got != sibling {
+		// EvalSymlinks may canonicalise the temp dir (e.g. /var -> /private/var on macOS).
+		gotResolved, _ := filepath.EvalSymlinks(got)
+		siblingResolved, _ := filepath.EvalSymlinks(sibling)
+		if gotResolved != siblingResolved {
+			t.Fatalf("got %q, want %q (resolved %q vs %q)", got, sibling, gotResolved, siblingResolved)
+		}
+	}
+}
+
+func TestResolveHubBinaryFollowsSymlinkedExecutable(t *testing.T) {
+	// /usr/local/bin/serf-tui -> /opt/serf/serf-tui style layout: the
+	// sibling serf-hub lives next to the real binary, not the symlink.
+	realDir := t.TempDir()
+	realTUI := filepath.Join(realDir, "serf-tui")
+	writeExecutable(t, realTUI)
+	sibling := filepath.Join(realDir, "serf-hub")
+	writeExecutable(t, sibling)
+
+	linkDir := t.TempDir()
+	linkTUI := filepath.Join(linkDir, "serf-tui")
+	if err := os.Symlink(realTUI, linkTUI); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	got, err := resolveHubBinary("", linkTUI, func(string) (string, error) {
+		return "", errors.New("should not search PATH")
+	})
+	if err != nil {
+		t.Fatalf("resolveHubBinary: %v", err)
+	}
+	gotResolved, _ := filepath.EvalSymlinks(got)
+	siblingResolved, _ := filepath.EvalSymlinks(sibling)
+	if gotResolved != siblingResolved {
+		t.Fatalf("got %q (resolved %q), want sibling at %q (resolved %q)", got, gotResolved, sibling, siblingResolved)
+	}
+}
+
+func TestSiblingDirHandlesEmptyAndMissing(t *testing.T) {
+	if _, ok := siblingDir(""); ok {
+		t.Fatal("siblingDir(\"\") returned ok=true")
+	}
+	if _, ok := siblingDir("   "); ok {
+		t.Fatal("siblingDir whitespace returned ok=true")
+	}
+	// A path that does not exist still yields a usable directory (Abs
+	// succeeds; EvalSymlinks is best-effort).
+	dir, ok := siblingDir(filepath.Join(t.TempDir(), "nonexistent", "serf-tui"))
+	if !ok {
+		t.Fatal("siblingDir(missing) returned ok=false")
+	}
+	if !filepath.IsAbs(dir) {
+		t.Fatalf("siblingDir returned non-absolute %q", dir)
+	}
+}
+
 func TestStartHubClientDoesNotAutoStartRemoteHub(t *testing.T) {
 	started := false
 	_, err := startHubClient(context.Background(), hubStartConfig{
