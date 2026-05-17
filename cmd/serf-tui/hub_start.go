@@ -73,7 +73,7 @@ func parseTUIStartupOptions(args []string, getenv func(string) string) (tuiStart
 		AutoStartHub: true,
 	}
 	fs := flag.NewFlagSet("serf-tui", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
+	fs.SetOutput(os.Stderr)
 	fs.StringVar(&opts.HubAddr, "hub-addr", opts.HubAddr, "serf hub address")
 	fs.StringVar(&opts.HubBin, "hub-bin", opts.HubBin, "path to serf-hub binary")
 	noAutoStartHub := false
@@ -82,6 +82,25 @@ func parseTUIStartupOptions(args []string, getenv func(string) string) (tuiStart
 	fs.StringVar(&opts.LogFile, "log-file", opts.LogFile, "write startup diagnostics to this file")
 	fs.StringVar(&opts.AuthToken, "auth-token", opts.AuthToken, "hub capability token (overrides SERF_HUB_AUTH_TOKEN and token file)")
 	fs.BoolVar(&opts.Debug, "debug", opts.Debug, "disable alternate screen")
+	fs.Usage = func() {
+		w := fs.Output()
+		fmt.Fprintf(w, "Usage: serf-tui [flags]\n\n")
+		fmt.Fprintf(w, "Serf TUI — interactive terminal UI for serf-hub.\n\n")
+		fmt.Fprintf(w, "Flags:\n")
+		fmt.Fprintf(w, "  --hub-addr <addr>        serf hub address (default: %s)\n", defaultHubAddr)
+		fmt.Fprintf(w, "  --hub-bin <path>         path to serf-hub binary\n")
+		fmt.Fprintf(w, "  --no-auto-start-hub      do not start a local hub when unreachable\n")
+		fmt.Fprintf(w, "  --state-dir <path>       override Serf state directory\n")
+		fmt.Fprintf(w, "  --log-file <path>        write startup diagnostics to this file\n")
+		fmt.Fprintf(w, "  --auth-token <token>     hub capability token (overrides SERF_HUB_AUTH_TOKEN and token file)\n")
+		fmt.Fprintf(w, "  --debug                  disable alternate screen\n\n")
+		fmt.Fprintf(w, "Environment variables:\n")
+		fmt.Fprintf(w, "  SERF_HUB_ADDR            default value for --hub-addr\n")
+		fmt.Fprintf(w, "  SERF_HUB_BIN             default value for --hub-bin\n")
+		fmt.Fprintf(w, "  SERF_STATE_DIR           default value for --state-dir\n")
+		fmt.Fprintf(w, "  SERF_TUI_LOG_FILE        default value for --log-file\n")
+		fmt.Fprintf(w, "  SERF_HUB_AUTH_TOKEN      default value for --auth-token\n")
+	}
 	if err := fs.Parse(args); err != nil {
 		return tuiStartupOptions{}, err
 	}
@@ -394,6 +413,17 @@ func hubRPCURL(addr hubAddress) string {
 	}
 }
 
+// resolveHubBinary returns the path to serf-hub. Resolution order:
+//  1. explicit path (from --hub-bin or SERF_HUB_BIN)
+//  2. sibling next to the currently running serf-tui binary
+//  3. PATH lookup via lookPath
+//
+// The sibling-resolution step canonicalises currentExecutable via
+// filepath.Abs + filepath.EvalSymlinks so that an invocation like
+// "./serf-tui" (or a symlink such as /usr/local/bin/serf-tui ->
+// /opt/serf/serf-tui) still finds the binary that sits next to the real
+// file. Returning an absolute path also avoids exec.ErrDot when the
+// caller hands the path off to exec.Command.
 func resolveHubBinary(explicitPath, currentExecutable string, lookPath func(string) (string, error)) (string, error) {
 	if explicitPath != "" {
 		if !isExecutable(explicitPath) {
@@ -405,8 +435,8 @@ func resolveHubBinary(explicitPath, currentExecutable string, lookPath func(stri
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}
-	if currentExecutable != "" {
-		sibling := filepath.Join(filepath.Dir(currentExecutable), name)
+	if dir, ok := siblingDir(currentExecutable); ok {
+		sibling := filepath.Join(dir, name)
 		if isExecutable(sibling) {
 			return sibling, nil
 		}
@@ -419,6 +449,30 @@ func resolveHubBinary(explicitPath, currentExecutable string, lookPath func(stri
 		return "", fmt.Errorf("find serf-hub: %w", err)
 	}
 	return path, nil
+}
+
+// siblingDir returns the directory of the running serf-tui binary as an
+// absolute, symlink-resolved path. The currentExecutable argument is
+// typically obtained from os.Executable() in main(); callers may pass a
+// fixture path in tests. The path is canonicalised via filepath.Abs and
+// filepath.EvalSymlinks so that a relative invocation like "./serf-tui"
+// (which would trip exec.ErrDot) or a symlink such as
+// /usr/local/bin/serf-tui -> /opt/serf/serf-tui still resolves to the
+// directory that actually holds the binary. Returns ok=false when no
+// usable path can be derived.
+func siblingDir(currentExecutable string) (string, bool) {
+	candidate := strings.TrimSpace(currentExecutable)
+	if candidate == "" {
+		return "", false
+	}
+	abs, err := filepath.Abs(candidate)
+	if err != nil {
+		return "", false
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = resolved
+	}
+	return filepath.Dir(abs), true
 }
 
 func isExecutable(path string) bool {

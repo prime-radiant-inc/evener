@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"strings"
@@ -13,6 +15,10 @@ import (
 func main() {
 	startupOpts, err := parseTUIStartupOptions(os.Args[1:], os.Getenv)
 	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			// Usage has already been printed by the flag package via fs.Usage.
+			return
+		}
 		fmt.Fprintf(os.Stderr, "serf-tui: %v\n", err)
 		os.Exit(2)
 	}
@@ -26,7 +32,7 @@ func main() {
 		StateDir:          startupOpts.StateDir,
 		LogFile:           startupOpts.LogFile,
 		AuthToken:         authToken,
-		CurrentExecutable: os.Args[0],
+		CurrentExecutable: currentExecutable(),
 		AutoStart:         startupOpts.AutoStartHub,
 		HealthTimeout:     5 * time.Second,
 	})
@@ -57,4 +63,20 @@ func postQuitMessageFromModel(model tea.Model) string {
 		return ""
 	}
 	return strings.TrimSpace(m.postQuitMessage)
+}
+
+// currentExecutable returns the absolute path of the running serf-tui
+// binary. It prefers os.Executable() (always absolute on supported
+// platforms) and falls back to os.Args[0] when the OS cannot report a
+// path. Returning the absolute path lets resolveHubBinary locate a
+// sibling serf-hub even when serf-tui was launched via a relative path
+// like "./serf-tui" — which would otherwise be rejected by exec.ErrDot.
+func currentExecutable() string {
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		return exe
+	}
+	if len(os.Args) > 0 {
+		return os.Args[0]
+	}
+	return ""
 }

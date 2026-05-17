@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"flag"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -64,6 +66,13 @@ func TestParseTUIStartupOptionsFlagsOverrideEnvironment(t *testing.T) {
 	}
 	if !opts.Debug {
 		t.Fatal("Debug=false, want true")
+	}
+}
+
+func TestParseTUIStartupOptionsHelpReturnsErrHelp(t *testing.T) {
+	_, err := parseTUIStartupOptions([]string{"--help"}, func(string) string { return "" })
+	if !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("parseTUIStartupOptions(--help) err = %v, want flag.ErrHelp", err)
 	}
 }
 

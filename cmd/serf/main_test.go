@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"os"
 	"os/exec"
@@ -168,6 +169,33 @@ func TestOpenAIHelpShowsCommands(t *testing.T) {
 	}
 	if !strings.Contains(usage, "login") || !strings.Contains(usage, "logout") || !strings.Contains(usage, "status") {
 		t.Fatalf("usage = %q, want listed commands", usage)
+	}
+}
+
+// TestOpenAISubcommandHelpReturnsErrHelp verifies that each openai subcommand
+// prints its own usage and returns flag.ErrHelp when invoked with --help, so
+// main can detect it and exit 0 without a "flag: help requested" error line.
+func TestOpenAISubcommandHelpReturnsErrHelp(t *testing.T) {
+	cases := []struct {
+		name        string
+		args        []string
+		usagePrefix string
+	}{
+		{name: "login", args: []string{"login", "--help"}, usagePrefix: "Usage: serf openai login"},
+		{name: "logout", args: []string{"logout", "--help"}, usagePrefix: "Usage: serf openai logout"},
+		{name: "status", args: []string{"status", "--help"}, usagePrefix: "Usage: serf openai status"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			err := runOpenAI(tc.args, strings.NewReader(""), &stdout, &stderr)
+			if !errors.Is(err, flag.ErrHelp) {
+				t.Fatalf("runOpenAI(%v) err = %v, want flag.ErrHelp", tc.args, err)
+			}
+			if !strings.Contains(stderr.String(), tc.usagePrefix) {
+				t.Fatalf("stderr = %q, want prefix %q", stderr.String(), tc.usagePrefix)
+			}
+		})
 	}
 }
 

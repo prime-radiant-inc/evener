@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -56,6 +57,10 @@ func main() {
 	// Subcommand dispatch — before flag.Parse() so subcommands get their own flag sets.
 	if handled, label, err := dispatchCLICommand(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); handled {
 		if err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				// Subcommand printed usage via fs.Usage; exit cleanly.
+				return
+			}
 			fmt.Fprintf(os.Stderr, "%s: %v\n", label, err)
 			os.Exit(1)
 		}
