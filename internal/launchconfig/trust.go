@@ -26,22 +26,66 @@ func CanonicalHashTOML(data []byte) (string, error) {
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
+// trustHashes returns the effective set of recorded hashes from a MetaTrust.
+// It merges the deprecated singular Hash field into the Hashes slice so that
+// old single-hash entries are handled transparently.
+func trustHashes(t MetaTrust) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, h := range t.Hashes {
+		if h != "" && !seen[h] {
+			seen[h] = true
+			out = append(out, h)
+		}
+	}
+	// Migrate the deprecated singular Hash field.
+	if t.Hash != "" && !seen[t.Hash] {
+		out = append(out, t.Hash)
+	}
+	return out
+}
+
+// TrustHashSet returns the deduplicated set of hashes from a MetaTrust,
+// including migration of the deprecated singular Hash field.
+// This is the canonical way for callers to read the hash set before appending.
+func TrustHashSet(t MetaTrust) []string {
+	return trustHashes(t)
+}
+
+// HashInSet reports whether hash appears in the given set.
+func HashInSet(hash string, set []string) bool {
+	for _, h := range set {
+		if h == hash {
+			return true
+		}
+	}
+	return false
+}
+
 // ComputeTrustState evaluates the current TrustState from the on-disk
 // hash and the recorded Meta.
 //
-//   - hash == ""  → file is absent
-//   - hash != "", Meta.Trust.Hash == ""      → untrusted (first contact)
-//   - hash != "", Meta.Trust.Decision rejected and matches → rejected
-//   - hash != "", Meta.Trust.Decision trusted and matches  → trusted
-//   - hash != "", Meta.Trust.Hash differs                  → changed
+//   - hash == ""                              → file is absent
+//   - hash != "", no recorded hashes          → untrusted (first contact)
+//   - hash != "", hash in set, decision trusted  → trusted
+//   - hash != "", hash in set, decision rejected → rejected
+//   - hash != "", hash not in set             → changed (new content)
 func ComputeTrustState(hash string, meta Meta) TrustState {
 	if hash == "" {
 		return TrustAbsent
 	}
-	if meta.Trust.Hash == "" {
+	hashes := trustHashes(meta.Trust)
+	if len(hashes) == 0 {
 		return TrustUntrusted
 	}
-	if meta.Trust.Hash != hash {
+	inSet := false
+	for _, h := range hashes {
+		if h == hash {
+			inSet = true
+			break
+		}
+	}
+	if !inSet {
 		return TrustChanged
 	}
 	switch meta.Trust.Decision {

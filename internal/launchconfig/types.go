@@ -91,6 +91,13 @@ type Meta struct {
 
 // MetaTrust records the TOFU decision for the in-repo file.
 type MetaTrust struct {
+	// Hashes is the set of content hashes that have been explicitly trusted or
+	// rejected. New trust decisions append to this set so that branch-switching
+	// with different .serf/launch.toml content does not require re-prompting.
+	Hashes []string `toml:"hashes,omitempty"`
+	// Hash is the singular trusted hash from the original TOFU implementation.
+	// Deprecated: new code reads Hashes; old single-hash entries are migrated
+	// to Hashes on first write.
 	Hash      string    `toml:"hash,omitempty"`
 	Decision  string    `toml:"decision,omitempty"`  // "trusted" | "rejected"
 	DecidedAt time.Time `toml:"decided_at,omitempty"`
