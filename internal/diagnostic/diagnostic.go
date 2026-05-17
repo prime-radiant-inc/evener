@@ -114,7 +114,7 @@ func providerFailure() Info {
 	return Info{
 		Source: SourceProvider,
 		Title:  "Provider error",
-		Hint:   "The model provider failed to complete the response. Check the selected model, credentials, account access, and rate limits. The daemon is fine — retrying the turn or switching models may help.",
+		Hint:   "The model provider failed to complete the response. Check the selected model, credentials, account access, and rate limits. The daemon is fine — retrying the turn or switching models may help. Note: if an OpenAI model does not support the Responses API (/v1/responses), Serf automatically falls back to Chat Completions (/v1/chat/completions). If both fail, the error message names the model and both endpoints.",
 	}
 }
 

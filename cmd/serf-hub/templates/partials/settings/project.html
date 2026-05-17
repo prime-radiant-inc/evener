@@ -338,6 +338,20 @@
   })();
 </script>
 {{else}}
-<p class="settings-help">No project selected. Open this page via the ⚙ icon next to a project in the sidebar.</p>
+<p class="settings-help">No project selected. Open this page via the ⚙ icon next to a project in the sidebar, or choose one below.</p>
+{{if .AvailableProjects}}
+<ul class="settings-project-list">
+  {{range .AvailableProjects}}
+  <li class="settings-project-list-item">
+    <a href="/settings/project?cwd={{.CWD}}" hx-get="/_partials/settings/project?cwd={{.CWD}}" hx-target="#settings-content" hx-push-url="/settings/project?cwd={{.CWD}}">
+      <span class="settings-project-name">{{.Name}}</span>
+      <span class="settings-project-cwd">{{.CWD}}</span>
+    </a>
+  </li>
+  {{end}}
+</ul>
+{{else}}
+<p class="settings-help">No known projects yet. Spawn a session to register a project.</p>
+{{end}}
 {{end}}
 {{end}}

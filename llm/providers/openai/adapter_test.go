@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1394,6 +1395,254 @@ func TestNewFromEnv_UsesStoredOAuthTransportWhenAPIKeyAbsent(t *testing.T) {
 	}
 	if a.ChatGPTAccountID != "acct_123" {
 		t.Fatalf("ChatGPTAccountID = %q", a.ChatGPTAccountID)
+	}
+}
+
+// TestStream_EmptyResponsesStream_FallsBackToChatCompletions verifies that when
+// the Responses API returns 200 OK but closes the stream with zero events (the
+// silent failure mode for models that don't support /v1/responses), the adapter
+// automatically falls back to /v1/chat/completions and returns the response.
+func TestStream_EmptyResponsesStream_FallsBackToChatCompletions(t *testing.T) {
+	// Responses endpoint: returns 200 then closes immediately with no SSE events.
+	// Chat completions endpoint: returns a proper streaming response.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			// 200 OK but empty body (simulates silent failure for unsupported models).
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			// Write nothing — stream closes immediately.
+		case "/v1/chat/completions":
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			// Proper streaming response.
+			chunks := []string{
+				`data: {"id":"cc1","model":"gpt-4.1-mini","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":null}]}`,
+				`data: {"id":"cc1","model":"gpt-4.1-mini","choices":[{"index":0,"delta":{"content":" world"},"finish_reason":null}]}`,
+				`data: {"id":"cc1","model":"gpt-4.1-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`,
+				`data: [DONE]`,
+			}
+			for _, c := range chunks {
+				_, _ = fmt.Fprintln(w, c)
+				_, _ = fmt.Fprintln(w)
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := a.Stream(ctx, llm.Request{
+		Model:    "gpt-4.1-mini",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	var gotText strings.Builder
+	var gotFinish bool
+	for ev := range stream.Events() {
+		switch ev.Type {
+		case llm.StreamEventError:
+			t.Fatalf("unexpected error event: %v", ev.Err)
+		case llm.StreamEventTextDelta:
+			gotText.WriteString(ev.Delta)
+		case llm.StreamEventFinish:
+			gotFinish = true
+		}
+	}
+
+	if !gotFinish {
+		t.Fatal("expected finish event, got none")
+	}
+	if gotText.String() != "Hello world" {
+		t.Fatalf("text: got %q want %q", gotText.String(), "Hello world")
+	}
+}
+
+// TestStream_SuccessfulResponsesStream_NoFallback verifies that when the
+// Responses API works correctly, the fallback path is never triggered.
+func TestStream_SuccessfulResponsesStream_NoFallback(t *testing.T) {
+	chatCompletionsCalled := false
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			events := []string{
+				`event: response.output_text.delta` + "\ndata: " + `{"type":"response.output_text.delta","delta":"Hi there"}`,
+				`event: response.completed` + "\ndata: " + `{"type":"response.completed","response":{"id":"r1","model":"gpt-5","output":[{"type":"message","content":[{"type":"output_text","text":"Hi there"}]}],"status":"completed","usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}}`,
+			}
+			for _, e := range events {
+				_, _ = fmt.Fprintln(w, e)
+				_, _ = fmt.Fprintln(w)
+			}
+		case "/v1/chat/completions":
+			chatCompletionsCalled = true
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := a.Stream(ctx, llm.Request{
+		Model:    "gpt-5",
+		Messages: []llm.Message{llm.User("hello")},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	var gotFinish bool
+	var gotText strings.Builder
+	for ev := range stream.Events() {
+		if ev.Type == llm.StreamEventError {
+			t.Fatalf("unexpected error: %v", ev.Err)
+		}
+		if ev.Type == llm.StreamEventTextDelta {
+			gotText.WriteString(ev.Delta)
+		}
+		if ev.Type == llm.StreamEventFinish {
+			gotFinish = true
+		}
+	}
+
+	if !gotFinish {
+		t.Fatal("expected finish event")
+	}
+	if chatCompletionsCalled {
+		t.Fatal("chat completions should not be called when Responses API succeeds")
+	}
+}
+
+// TestStream_BothEndpointsFail_ClearCombinedError verifies that when both the
+// Responses API (empty stream) and Chat Completions fail, the error message
+// names the model and both endpoints — never silent.
+func TestStream_BothEndpointsFail_ClearCombinedError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			// Empty stream — silent failure.
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+		case "/v1/chat/completions":
+			// Chat completions also fails.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"error":{"message":"model not supported on this endpoint","code":"unsupported_model","type":"invalid_request_error"}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := a.Stream(ctx, llm.Request{
+		Model:    "gpt-4.1-mini",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	var gotErr error
+	for ev := range stream.Events() {
+		if ev.Type == llm.StreamEventError {
+			gotErr = ev.Err
+		}
+	}
+
+	if gotErr == nil {
+		t.Fatal("expected combined error, got nil")
+	}
+	errMsg := gotErr.Error()
+	if !strings.Contains(errMsg, "gpt-4.1-mini") {
+		t.Errorf("error should mention model name, got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "/v1/responses") {
+		t.Errorf("error should mention /v1/responses, got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "/v1/chat/completions") {
+		t.Errorf("error should mention /v1/chat/completions, got: %s", errMsg)
+	}
+}
+
+// TestStream_ResponsesAPI_404_FallsBackToChatCompletions verifies that a 404
+// from the Responses API (model-not-found on this endpoint) triggers fallback.
+func TestStream_ResponsesAPI_404_FallsBackToChatCompletions(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"message":"This model is only supported in v1/responses and not in v1/chat/completions","code":"model_not_found","type":"invalid_request_error"}}`))
+		case "/v1/chat/completions":
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			chunks := []string{
+				`data: {"id":"cc2","model":"gpt-4.1-mini","choices":[{"index":0,"delta":{"content":"fallback response"},"finish_reason":null}]}`,
+				`data: {"id":"cc2","model":"gpt-4.1-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`,
+				`data: [DONE]`,
+			}
+			for _, c := range chunks {
+				_, _ = fmt.Fprintln(w, c)
+				_, _ = fmt.Fprintln(w)
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := a.Stream(ctx, llm.Request{
+		Model:    "gpt-4.1-mini",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	var gotText strings.Builder
+	var gotFinish bool
+	for ev := range stream.Events() {
+		if ev.Type == llm.StreamEventError {
+			t.Fatalf("unexpected error: %v", ev.Err)
+		}
+		if ev.Type == llm.StreamEventTextDelta {
+			gotText.WriteString(ev.Delta)
+		}
+		if ev.Type == llm.StreamEventFinish {
+			gotFinish = true
+		}
+	}
+
+	if !gotFinish {
+		t.Fatal("expected finish event from fallback")
+	}
+	if gotText.String() != "fallback response" {
+		t.Fatalf("text from fallback: got %q want %q", gotText.String(), "fallback response")
 	}
 }
 
