@@ -2944,3 +2944,192 @@ func contentKinds(parts []llm.ContentPart) []string {
 	}
 	return kinds
 }
+
+// TestAdapter_Complete_StampsEndpointURL_ResponsesPath verifies that the
+// /v1/responses URL the adapter actually dialed is stashed on resp.Raw so the
+// APILogger can promote it to the api_call transcript.
+func TestAdapter_Complete_StampsEndpointURL_ResponsesPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "resp_1",
+  "model": "gpt-5.2",
+  "output": [
+    {"type": "message", "content": [{"type":"output_text", "text":"ok"}]}
+  ],
+  "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	resp, err := a.Complete(ctx, llm.Request{
+		Model:    "gpt-5.2",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	want := srv.URL + "/v1/responses"
+	got, _ := resp.Raw["endpoint_url"].(string)
+	if got != want {
+		t.Fatalf("Raw[endpoint_url] = %q, want %q", got, want)
+	}
+}
+
+// TestAdapter_Stream_StampsEndpointURL_ResponsesPath verifies that the SSE
+// streaming responses path also stamps the dialed URL onto the terminal
+// Response carried by the Finish event.
+func TestAdapter_Stream_StampsEndpointURL_ResponsesPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		events := []string{
+			`event: response.output_text.delta` + "\ndata: " + `{"type":"response.output_text.delta","delta":"Hi"}`,
+			`event: response.completed` + "\ndata: " + `{"type":"response.completed","response":{"id":"r1","model":"gpt-5","output":[{"type":"message","content":[{"type":"output_text","text":"Hi"}]}],"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+		}
+		for _, e := range events {
+			_, _ = fmt.Fprintln(w, e)
+			_, _ = fmt.Fprintln(w)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	stream, err := a.Stream(ctx, llm.Request{Model: "gpt-5", Messages: []llm.Message{llm.User("hi")}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	var finalResp *llm.Response
+	for ev := range stream.Events() {
+		if ev.Type == llm.StreamEventFinish && ev.Response != nil {
+			finalResp = ev.Response
+		}
+	}
+	if finalResp == nil {
+		t.Fatal("no finish-with-response event")
+	}
+	want := srv.URL + "/v1/responses"
+	got, _ := finalResp.Raw["endpoint_url"].(string)
+	if got != want {
+		t.Fatalf("Raw[endpoint_url] = %q, want %q", got, want)
+	}
+}
+
+// TestAdapter_Stream_StampsEndpointURL_ChatCompletionsFallback verifies that
+// when the Responses API returns no events and the adapter falls back to
+// /v1/chat/completions, the stamped URL reflects the chat-completions path
+// (the one actually used), not the failed primary path.
+func TestAdapter_Stream_StampsEndpointURL_ChatCompletionsFallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			// Empty stream — triggers fallback.
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+		case "/v1/chat/completions":
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			chunks := []string{
+				`data: {"id":"cc1","model":"gpt-4.1-mini","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"},"finish_reason":null}]}`,
+				`data: {"id":"cc1","model":"gpt-4.1-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}`,
+				`data: [DONE]`,
+			}
+			for _, c := range chunks {
+				_, _ = fmt.Fprintln(w, c)
+				_, _ = fmt.Fprintln(w)
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := a.Stream(ctx, llm.Request{Model: "gpt-4.1-mini", Messages: []llm.Message{llm.User("hi")}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	var finalResp *llm.Response
+	for ev := range stream.Events() {
+		if ev.Type == llm.StreamEventError {
+			t.Fatalf("unexpected error: %v", ev.Err)
+		}
+		if ev.Type == llm.StreamEventFinish && ev.Response != nil {
+			finalResp = ev.Response
+		}
+	}
+	if finalResp == nil {
+		t.Fatal("no finish-with-response event")
+	}
+	want := srv.URL + "/v1/chat/completions"
+	got, _ := finalResp.Raw["endpoint_url"].(string)
+	if got != want {
+		t.Fatalf("Raw[endpoint_url] = %q, want %q (must be chat completions, not failed responses path)", got, want)
+	}
+}
+
+// TestAdapter_Complete_StampsEndpointURL_CodexBackend verifies that when the
+// adapter is configured for the ChatGPT OAuth/Codex backend, the stamped URL
+// reflects the codex responses path so QA can distinguish OAuth-routed
+// traffic from /v1/responses API-key traffic.
+func TestAdapter_Complete_StampsEndpointURL_CodexBackend(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/codex/responses" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		events := []string{
+			`event: response.output_text.delta` + "\ndata: " + `{"type":"response.output_text.delta","delta":"Hi"}`,
+			`event: response.completed` + "\ndata: " + `{"type":"response.completed","response":{"id":"r1","model":"gpt-5","output":[{"type":"message","content":[{"type":"output_text","text":"Hi"}]}],"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+		}
+		for _, e := range events {
+			_, _ = fmt.Fprintln(w, e)
+			_, _ = fmt.Fprintln(w)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey:           "oauth-token",
+		BaseURL:          srv.URL,
+		ResponsesPath:    "/backend-api/codex/responses",
+		ChatGPTAccountID: "acct-1",
+		Client:           srv.Client(),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	resp, err := a.Complete(ctx, llm.Request{Model: "gpt-5", Messages: []llm.Message{llm.User("hi")}})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	want := srv.URL + "/backend-api/codex/responses"
+	got, _ := resp.Raw["endpoint_url"].(string)
+	if got != want {
+		t.Fatalf("Raw[endpoint_url] = %q, want %q", got, want)
+	}
+}

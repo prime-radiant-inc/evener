@@ -268,12 +268,27 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	}
 
 	r := fromResponses(raw, req.Model)
+	stampEndpointURL(&r, a.responsesURL())
 	r.RateLimit = llm.ParseRateLimitHeaders(resp.Header)
 	if llm.RawBodyEnabled() {
 		r.RawRequestBody = string(b)
 		r.RawResponseBody = string(rawBytes)
 	}
 	return r, nil
+}
+
+// stampEndpointURL records the full URL the adapter dialed onto resp.Raw so the
+// APILogger can promote it to a top-level field in the api_call transcript.
+// Initialises Raw if it is nil so downstream callers don't have to special-case
+// adapters that build responses incrementally.
+func stampEndpointURL(resp *llm.Response, endpoint string) {
+	if resp == nil || endpoint == "" {
+		return
+	}
+	if resp.Raw == nil {
+		resp.Raw = map[string]any{}
+	}
+	resp.Raw["endpoint_url"] = endpoint
 }
 
 func (a *Adapter) completeViaStream(ctx context.Context, req llm.Request) (llm.Response, error) {
@@ -708,6 +723,7 @@ func (a *Adapter) streamResponses(ctx context.Context, req llm.Request) (llm.Str
 					rawResp = payload
 				}
 				r := fromResponses(rawResp, req.Model)
+				stampEndpointURL(&r, a.responsesURL())
 				// Ensure text segment is closed.
 				if textStarted {
 					s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: textID})
@@ -881,6 +897,7 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 				if usage != nil {
 					finalResp.Usage = *usage
 				}
+				stampEndpointURL(finalResp, a.chatCompletionsURL())
 				if sseBuf != nil {
 					finalResp.RawRequestBody = rawReqBody
 					finalResp.RawResponseBody = sseBuf.String()

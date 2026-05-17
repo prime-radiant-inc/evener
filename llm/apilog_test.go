@@ -292,6 +292,96 @@ func TestAPILoggerReasoningEffort(t *testing.T) {
 
 // --- Periodic sync tests ---
 
+// TestBuildLogResponse_EndpointURL covers the promotion of Raw["endpoint_url"]
+// to APILogResponse.EndpointURL. Adapters stash the dialed URL in Raw so QA
+// can disambiguate, e.g., OpenAI API-key (/v1/responses) vs ChatGPT OAuth
+// (/backend-api/codex/responses) calls from the transcript alone.
+func TestBuildLogResponse_EndpointURL(t *testing.T) {
+	cases := []struct {
+		name     string
+		raw      map[string]any
+		expected string
+	}{
+		{
+			name:     "string value is promoted",
+			raw:      map[string]any{"endpoint_url": "https://example.com/api"},
+			expected: "https://example.com/api",
+		},
+		{
+			name:     "missing key yields empty",
+			raw:      map[string]any{"other": 1},
+			expected: "",
+		},
+		{
+			name:     "non-string value is ignored",
+			raw:      map[string]any{"endpoint_url": 42},
+			expected: "",
+		},
+		{
+			name:     "nil raw yields empty",
+			raw:      nil,
+			expected: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := Response{
+				ID:    "r1",
+				Model: "m",
+				Raw:   tc.raw,
+				Finish: FinishReason{Reason: FinishReasonStop},
+			}
+			lr := buildLogResponse(resp)
+			if lr.EndpointURL != tc.expected {
+				t.Fatalf("EndpointURL = %q, want %q", lr.EndpointURL, tc.expected)
+			}
+		})
+	}
+}
+
+// TestAPILogger_EndpointURL_RoundTrip ensures the field appears in the
+// serialized JSONL entry exactly when Raw["endpoint_url"] was populated.
+func TestAPILogger_EndpointURL_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "api.jsonl")
+
+	logger, err := NewAPILogger(path)
+	if err != nil {
+		t.Fatalf("NewAPILogger: %v", err)
+	}
+	defer logger.Close()
+
+	fakeAdapter := func(ctx context.Context, req Request) (Response, error) {
+		return Response{
+			Model:  "m",
+			Finish: FinishReason{Reason: FinishReasonStop},
+			Raw:    map[string]any{"endpoint_url": "https://api.example.com/v1/responses"},
+		}, nil
+	}
+	wrapped := logger.WrapComplete(fakeAdapter)
+	if _, err := wrapped(context.Background(), Request{Model: "m", Provider: "p", Messages: []Message{User("hi")}}); err != nil {
+		t.Fatalf("wrapped: %v", err)
+	}
+	logger.Close()
+
+	data, _ := os.ReadFile(path)
+	var entry APILogEntry
+	if err := json.Unmarshal(data, &entry); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if entry.Response == nil {
+		t.Fatal("response is nil")
+	}
+	if entry.Response.EndpointURL != "https://api.example.com/v1/responses" {
+		t.Errorf("EndpointURL = %q, want %q", entry.Response.EndpointURL, "https://api.example.com/v1/responses")
+	}
+	// And confirm omitempty: a separate entry without the key should not include the field.
+	if !bytes.Contains(data, []byte(`"endpoint_url":"https://api.example.com/v1/responses"`)) {
+		t.Errorf("serialized entry missing endpoint_url field: %s", string(data))
+	}
+}
+
 func TestAPILogger_PeriodicSync_SkipsSyncWithinInterval(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "api.jsonl")

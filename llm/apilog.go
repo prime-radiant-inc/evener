@@ -59,7 +59,12 @@ type APILogResponse struct {
 	TextLength    int            `json:"text_length"`
 	ToolCallCount int            `json:"tool_call_count"`
 	Usage         Usage          `json:"usage"`
-	Raw           map[string]any `json:"raw"`
+	// EndpointURL is the full HTTP URL the adapter dialed for this call.
+	// Promoted from Raw["endpoint_url"] (string) so QA can tell, e.g., whether
+	// an OpenAI call went to /v1/responses (API key) vs /backend-api/codex/responses
+	// (ChatGPT OAuth). Empty when the adapter did not stash it.
+	EndpointURL string         `json:"endpoint_url,omitempty"`
+	Raw         map[string]any `json:"raw"`
 }
 
 // APIRawLogEntry is a JSONL line in the raw HTTP body log.
@@ -258,6 +263,12 @@ func buildLogRequest(req Request) APILogRequest {
 }
 
 func buildLogResponse(resp Response) *APILogResponse {
+	var endpoint string
+	if resp.Raw != nil {
+		if v, ok := resp.Raw["endpoint_url"].(string); ok {
+			endpoint = v
+		}
+	}
 	return &APILogResponse{
 		ID:            resp.ID,
 		Model:         resp.Model,
@@ -265,6 +276,7 @@ func buildLogResponse(resp Response) *APILogResponse {
 		TextLength:    len(resp.Text()),
 		ToolCallCount: len(resp.ToolCalls()),
 		Usage:         resp.Usage,
+		EndpointURL:   endpoint,
 		Raw:           resp.Raw,
 	}
 }
