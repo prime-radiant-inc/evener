@@ -929,38 +929,56 @@
 
     // buildDiagnosticActions returns an array of action descriptors for the
     // given diagnostic payload, or null if no actions apply.
+    //
+    // Two diagnostic sources get a retry button:
+    //   - source=provider → "Retry turn"  (model/API failed mid-turn)
+    //   - source=hub      → "Reconnect & retry"  (daemon connection died)
+    // Both share the same onclick body: re-issue the last user turn against
+    // the same session.  The hub's auto-resume layer transparently relaunches
+    // a fresh daemon when the original one is gone, so this button works
+    // uniformly across both failure shapes.
     buildDiagnosticActions(payload) {
       const classified = window.SerfDiagnostics ? window.SerfDiagnostics.classify(payload) : null;
-      if (!classified || classified.source !== "provider") return null;
+      if (!classified) return null;
+      const source = classified.source;
+      if (source !== "provider" && source !== "hub") return null;
       const lastText = this.lastUserText;
       if (!lastText) return null;
+      const label = source === "hub" ? "Reconnect & retry" : "Retry turn";
+      const failPrefix = source === "hub" ? "reconnect failed: " : "retry failed: ";
+      const errTitle = source === "hub" ? "Reconnect error" : "Retry error";
+      return [{ label, onclick: this.makeRetryTurnHandler(lastText, failPrefix, errTitle) }];
+    },
+
+    // makeRetryTurnHandler builds the onclick body shared by the
+    // "Retry turn" and "Reconnect & retry" diagnostic action buttons.  The
+    // failure-banner wording is parameterised so it reads naturally for the
+    // originating source (retry vs. reconnect).
+    makeRetryTurnHandler(lastText, failPrefix, errTitle) {
       const sessionId = this.sessionId;
       const appwireRef = this.appwireRef;
       const self = this;
-      return [{
-        label: "Retry turn",
-        onclick: async function() {
-          try {
-            if (window.SerfAppwire) {
-              await window.SerfAppwire.startTurn(appwireRef || sessionId, lastText, []);
-            } else {
-              const resp = await fetch("/s/" + encodeURIComponent(sessionId) + "/send", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ text: lastText, images: [] }),
-              });
-              if (!resp.ok) {
-                const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
-                self.appendBanner("error", "retry failed: " + detail, { source: "hub", title: "Retry error" });
-                return;
-              }
+      return async function() {
+        try {
+          if (window.SerfAppwire) {
+            await window.SerfAppwire.startTurn(appwireRef || sessionId, lastText, []);
+          } else {
+            const resp = await fetch("/s/" + encodeURIComponent(sessionId) + "/send", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ text: lastText, images: [] }),
+            });
+            if (!resp.ok) {
+              const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
+              self.appendBanner("error", failPrefix + detail, { source: "hub", title: errTitle });
+              return;
             }
-            self.ensureLiveStream();
-          } catch (err) {
-            self.appendBanner("error", "retry failed: " + err.message, { source: "hub", title: "Retry error" });
           }
-        },
-      }];
+          self.ensureLiveStream();
+        } catch (err) {
+          self.appendBanner("error", failPrefix + err.message, { source: "hub", title: errTitle });
+        }
+      };
     },
 
     // appendSteeringMessage classifies the injected steering text and routes
