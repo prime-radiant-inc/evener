@@ -855,11 +855,16 @@ func (s *Session) Meta() SessionMeta {
 // Takes effect on the next request (spec).
 func (s *Session) SetReasoningEffort(effort string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.state == SessionClosed {
+		s.mu.Unlock()
 		return
 	}
 	s.cfg.ReasoningEffort = strings.TrimSpace(effort)
+	s.mu.Unlock()
+	// Flush meta.json so a daemon crash before the next happy-path turn
+	// boundary doesn't leave on-disk cfg stale. Kata wnfz. maybeAutoSave
+	// re-acquires s.mu via s.Meta(), so the lock must be released first.
+	s.maybeAutoSave()
 }
 
 // Compact forces context compaction regardless of current pressure.
@@ -919,21 +924,29 @@ func (s *Session) ContextPressure() float64 {
 // Takes effect on the next request.
 func (s *Session) SetModel(model string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.profile = s.profile.WithModel(model)
 	if s.contextMgr != nil {
 		s.contextMgr.SetProfile(s.profile)
 	}
 	s.rebuildToolDefsCache()
 	s.refreshSystemPromptCache()
+	s.mu.Unlock()
+	// Flush meta.json so a daemon crash before the next happy-path turn
+	// boundary doesn't leave on-disk model stale. Kata wnfz. maybeAutoSave
+	// re-acquires s.mu via s.Meta(), so the lock must be released first.
+	s.maybeAutoSave()
 }
 
 // SetTimeout changes the default command timeout for shell tool invocations.
 // Takes effect on the next tool execution.
 func (s *Session) SetTimeout(timeoutMS int) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.cfg.DefaultCommandTimeoutMS = timeoutMS
+	s.mu.Unlock()
+	// Flush meta.json so a daemon crash before the next happy-path turn
+	// boundary doesn't leave on-disk cfg stale. Kata wnfz. maybeAutoSave
+	// re-acquires s.mu via s.Meta(), so the lock must be released first.
+	s.maybeAutoSave()
 }
 
 // RegisterTool registers a custom tool at runtime.

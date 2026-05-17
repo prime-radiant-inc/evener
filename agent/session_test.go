@@ -767,6 +767,104 @@ func (a *fakeErrAdapter) Requests() []llm.Request {
 	return append([]llm.Request{}, a.requests...)
 }
 
+// kata wnfz: SetReasoningEffort mutates s.cfg (which is part of the persisted
+// meta.json payload) but did not flush meta. If the daemon crashed before the
+// next happy-path turn boundary, on-disk meta.json would still reflect the
+// previous effort. The fix calls maybeAutoSave inside the setter (with the
+// session mutex released first, since maybeAutoSave re-acquires it via Meta).
+func TestSession_SetReasoningEffort_FlushesMeta(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir: dir,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+	defer sess.Close()
+
+	sessID := sess.ID()
+	sess.SetReasoningEffort("high")
+
+	meta, err := LoadSessionMeta(dir, sessID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	if meta.Config.ReasoningEffort != "high" {
+		t.Fatalf("meta.Config.ReasoningEffort: got %q want %q", meta.Config.ReasoningEffort, "high")
+	}
+}
+
+// kata wnfz: SetModel mutates s.profile, which Meta() surfaces as the top-level
+// Model field. Without the fix, a daemon crash between SetModel and the next
+// happy-path autosave leaves meta.json reflecting the previous model.
+func TestSession_SetModel_FlushesMeta(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir: dir,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+	defer sess.Close()
+
+	sessID := sess.ID()
+	sess.SetModel("gpt-5.3")
+
+	meta, err := LoadSessionMeta(dir, sessID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	if meta.Model != "gpt-5.3" {
+		t.Fatalf("meta.Model: got %q want %q", meta.Model, "gpt-5.3")
+	}
+}
+
+// kata wnfz: SetTimeout mutates s.cfg.DefaultCommandTimeoutMS. Same crash
+// window: without flushing, on-disk meta.json keeps the previous timeout
+// until the next happy-path autosave.
+func TestSession_SetTimeout_FlushesMeta(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir: dir,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+	defer sess.Close()
+
+	sessID := sess.ID()
+	sess.SetTimeout(45_000)
+
+	meta, err := LoadSessionMeta(dir, sessID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	if meta.Config.DefaultCommandTimeoutMS != 45_000 {
+		t.Fatalf("meta.Config.DefaultCommandTimeoutMS: got %d want %d", meta.Config.DefaultCommandTimeoutMS, 45_000)
+	}
+}
+
 func TestStreamUnavailableIgnoresPlainTextUnsupportedMessages(t *testing.T) {
 	if !streamUnavailable(errStreamUnavailable) {
 		t.Fatal("expected internal sentinel to mark stream unavailable")
