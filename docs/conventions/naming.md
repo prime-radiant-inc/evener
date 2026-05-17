@@ -104,6 +104,35 @@ Plus the usual trivial cases: `inspo/codex/**` is skipped entirely
 (vendored reference code), and single-word keys (`model`, `name`,
 `addr`, `version`) are case-invariant.
 
+**One known mixed-casing surface**: `POST /api/spawn` accepts a
+snake_case body at the top level (`prompt`, `working_dir`,
+`access_mode`, `launch_overrides`) BUT the `launch_overrides`
+sub-object is the appwire `LaunchConfigLayer` type, which is
+camelCase (`pluginDirs`, `skillsDirs`, `reasoningEffort`,
+`mcpConfigs`) because it lives under the codex-forced carve-out
+above. So a single request body legitimately contains both casings:
+
+```json
+{
+  "prompt": "...",
+  "working_dir": "/tmp",
+  "launch_overrides": {
+    "pluginDirs": ["..."],
+    "reasoningEffort": "medium"
+  }
+}
+```
+
+This is intentional. Two fixes were considered: duplicating the
+struct as a snake-tagged mirror with translation at the boundary
+(rejected — keeps two source-of-truth structs in sync forever), or
+accepting both casings via custom UnmarshalJSON on the appwire type
+(rejected — adds reader complexity for one endpoint). The cost of
+either fix outweighs the convenience of internal consistency in one
+POST body. If you write `/api/spawn` payloads by hand, expect this
+boundary; the JS spawn form, the TUI, and Toil all handle it
+correctly.
+
 ## Enforcement
 
 `cmd/serf-namingcheck` walks the AST and checks every `json:"..."`
