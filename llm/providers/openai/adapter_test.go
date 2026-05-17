@@ -1358,6 +1358,7 @@ func TestNewFromEnv_ReadsOrgAndProjectID(t *testing.T) {
 }
 
 func TestNewFromEnv_UsesStoredOAuthTransportWhenAPIKeyAbsent(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
 	xdgStateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", xdgStateHome)
 	userStateDir := authopenai.DefaultStateDir()
