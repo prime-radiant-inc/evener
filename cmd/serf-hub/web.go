@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -174,6 +175,7 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/api/spawn", s.handleApiSpawn)
 	mux.HandleFunc("/api/models", s.handleApiModels)
 	mux.HandleFunc("/api/dirs", s.handleApiDirs)
+	mux.HandleFunc("/api/git/head", s.handleApiGitHead)
 	mux.HandleFunc("/api/search", s.handleApiSearch)
 	mux.HandleFunc("/api/health", s.handleAPIHealth)
 	mux.HandleFunc("/api/tree", s.handleAPITree)
@@ -1617,24 +1619,31 @@ type mcpDisplay struct {
 
 // settingsData is the template data passed to all settings section templates.
 type settingsData struct {
-	Active           string
-	HubAddr          string
-	RunDir           string
-	StateDir         string
-	SpawnTimeout     string
-	PastPerPage      int
-	Providers        []providerDisplay
-	ModelDiagnostics []appwire.ModelListDiagnostic
-	Agents           []agentDisplay
-	Plugins          []pluginDisplay
-	PluginsError     string
-	Skills           []skillDisplay
-	Mcps             []mcpDisplay
-	McpsError        string
-	McpConfigPath    string
-	PastCount        int
-	CodexLaunches    []CodexLaunchConfig
-	ProjectCWD       string // canonical cwd for the per-project settings page
+	Active              string
+	HubAddr             string
+	RunDir              string
+	StateDir            string
+	SpawnTimeout        string
+	PastPerPage         int
+	Providers           []providerDisplay
+	ModelDiagnostics    []appwire.ModelListDiagnostic
+	Agents              []agentDisplay
+	Plugins             []pluginDisplay
+	PluginsError        string
+	Skills              []skillDisplay
+	Mcps                []mcpDisplay
+	McpsError           string
+	McpConfigPath       string
+	PastCount           int
+	CodexLaunches       []CodexLaunchConfig
+	ProjectCWD          string             // canonical cwd for the per-project settings page
+	AvailableProjects   []projectListItem  // known projects shown when ProjectCWD is empty
+}
+
+// projectListItem is one row in the project picker on the /settings/project page.
+type projectListItem struct {
+	CWD  string
+	Name string
 }
 
 // providerDisplay groups model descriptors by provider for the providers page.
@@ -1732,25 +1741,46 @@ func (s *WebServer) renderSettingsPartial(w http.ResponseWriter, r *http.Request
 		}
 	}
 
+	// Build a deduplicated list of known projects for the project picker.
+	var availableProjects []projectListItem
+	if section == "project" && projectCWD == "" && s.cfg.Past != nil {
+		seen := map[string]bool{}
+		for _, meta := range s.cfg.Past.AllMetas() {
+			cwd := meta.EnvInfo.WorkingDir
+			if cwd == "" || seen[cwd] {
+				continue
+			}
+			seen[cwd] = true
+			availableProjects = append(availableProjects, projectListItem{
+				CWD:  cwd,
+				Name: filepath.Base(cwd),
+			})
+		}
+		sort.Slice(availableProjects, func(i, j int) bool {
+			return availableProjects[i].Name < availableProjects[j].Name
+		})
+	}
+
 	data := settingsData{
-		Active:           section,
-		HubAddr:          s.cfg.HubAddr,
-		RunDir:           s.cfg.RunDir,
-		StateDir:         s.cfg.StateDir,
-		SpawnTimeout:     "30s",
-		PastPerPage:      s.cfg.PastPerPage,
-		Providers:        providers,
-		ModelDiagnostics: launchModelList.Diagnostics,
-		Agents:           agents,
-		Plugins:          plugins,
-		PluginsError:     errString(pluginsErr),
-		Skills:           skills,
-		Mcps:             mcps,
-		McpsError:        errString(mcpsErr),
-		McpConfigPath:    mcpPath,
-		PastCount:        pastCount,
-		CodexLaunches:    s.cfg.CodexLaunches,
-		ProjectCWD:       projectCWD,
+		Active:            section,
+		HubAddr:           s.cfg.HubAddr,
+		RunDir:            s.cfg.RunDir,
+		StateDir:          s.cfg.StateDir,
+		SpawnTimeout:      "30s",
+		PastPerPage:       s.cfg.PastPerPage,
+		Providers:         providers,
+		ModelDiagnostics:  launchModelList.Diagnostics,
+		Agents:            agents,
+		Plugins:           plugins,
+		PluginsError:      errString(pluginsErr),
+		Skills:            skills,
+		Mcps:              mcps,
+		McpsError:         errString(mcpsErr),
+		McpConfigPath:     mcpPath,
+		PastCount:         pastCount,
+		CodexLaunches:     s.cfg.CodexLaunches,
+		ProjectCWD:        projectCWD,
+		AvailableProjects: availableProjects,
 	}
 
 	// Render just the inner settings-content partial when htmx is targeting
@@ -2718,6 +2748,47 @@ func (s *WebServer) handleApiDirs(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"results": results}) //nolint:errcheck
+}
+
+// gitHeadBranch runs `git rev-parse --abbrev-ref HEAD` in dir and returns
+// the branch name. In detached HEAD state it falls back to the short SHA.
+func gitHeadBranch(dir string) (string, error) {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		return "", err
+	}
+	branch := strings.TrimSpace(string(out))
+	if branch == "HEAD" {
+		// Detached HEAD — return short SHA instead.
+		out2, err2 := exec.Command("git", "-C", dir, "rev-parse", "--short", "HEAD").Output()
+		if err2 != nil {
+			return branch, nil
+		}
+		branch = strings.TrimSpace(string(out2))
+	}
+	return branch, nil
+}
+
+// handleApiGitHead returns the current git HEAD branch name for a given cwd.
+// Query param: cwd=<absolute path>. Returns {"branch": "<name>"} or {"branch": ""} on error.
+func (s *WebServer) handleApiGitHead(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
+		return
+	}
+	cwd := strings.TrimSpace(r.URL.Query().Get("cwd"))
+	branch := ""
+	if cwd != "" {
+		if abs, err := filepath.Abs(cwd); err == nil {
+			cwd = abs
+		}
+		if _, err := os.Stat(cwd); err == nil {
+			if out, err := gitHeadBranch(cwd); err == nil {
+				branch = out
+			}
+		}
+	}
+	writeAPIJSON(w, http.StatusOK, map[string]string{"branch": branch})
 }
 
 // handleSession is the router for public /s/<id>[/<sub>] routes.
