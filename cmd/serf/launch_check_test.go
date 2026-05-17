@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/internal/auth/openai/oaitest"
 	_ "primeradiant.com/serf/llm/providers/openai"
 	_ "primeradiant.com/serf/llm/providers/openrouter"
 )
@@ -104,6 +105,7 @@ func TestLaunchCheckReportsModelEnumerationDiagnostics(t *testing.T) {
 }
 
 func TestLaunchCheckModelDiagnosticRedactsEnvSecrets(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
 	t.Setenv("OPENAI_API_KEY", "sk-launch-secret")
 	diag := launchCheckModelDiagnostic("openai", errors.New("provider rejected credential sk-launch-secret in https://sk-launch-secret@example.test"))
 	if strings.Contains(diag.Message, "sk-launch-secret") {
@@ -217,9 +219,9 @@ func configureLaunchCheckOpenAIModels(t *testing.T, body string) {
 
 func configureLaunchCheckOpenAIModelStatus(t *testing.T, status int, body string) {
 	t.Helper()
-	// Isolate XDG_STATE_HOME so any stored OAuth record on the dev machine
-	// does not take precedence over the test OPENAI_API_KEY.
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// Isolate from any stored OAuth / OpenAI env vars on the dev machine so
+	// the test's OPENAI_API_KEY + OPENAI_BASE_URL win deterministically.
+	oaitest.IsolateOpenAIAuth(t)
 	for _, key := range []string{
 		"ANTHROPIC_API_KEY",
 		"GEMINI_API_KEY",

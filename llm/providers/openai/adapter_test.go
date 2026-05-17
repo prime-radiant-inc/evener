@@ -16,6 +16,7 @@ import (
 	"time"
 
 	authopenai "primeradiant.com/serf/internal/auth/openai"
+	"primeradiant.com/serf/internal/auth/openai/oaitest"
 	"primeradiant.com/serf/llm"
 )
 
@@ -1341,9 +1342,9 @@ func TestComplete_PopulatesRateLimitInfo(t *testing.T) {
 }
 
 func TestNewFromEnv_ReadsOrgAndProjectID(t *testing.T) {
-	// Isolate XDG_STATE_HOME so any stored OAuth record on the dev machine
-	// does not take precedence over OPENAI_API_KEY.
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// Isolate from any stored OAuth / OpenAI env vars on the dev machine so
+	// the test's explicit OPENAI_* values win deterministically.
+	oaitest.IsolateOpenAIAuth(t)
 	t.Setenv("OPENAI_API_KEY", "sk-test")
 	t.Setenv("OPENAI_ORG_ID", "org-123")
 	t.Setenv("OPENAI_PROJECT_ID", "proj-456")
@@ -1364,8 +1365,7 @@ func TestNewFromEnv_ReadsOrgAndProjectID(t *testing.T) {
 // when both OPENAI_API_KEY and a stored OAuth record are present, the adapter
 // uses the OAuth path (ChatGPT/Codex backend), not the env API key.
 func TestNewFromEnv_PrefersStoredOAuthOverAPIKey(t *testing.T) {
-	xdgStateHome := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", xdgStateHome)
+	oaitest.IsolateOpenAIAuth(t)
 	t.Setenv("OPENAI_API_KEY", "sk-env-should-be-ignored")
 	t.Setenv("OPENAI_CHATGPT_BASE_URL", "https://chatgpt.example.test")
 	userStateDir := authopenai.DefaultStateDir()
@@ -1400,9 +1400,8 @@ func TestNewFromEnv_PrefersStoredOAuthOverAPIKey(t *testing.T) {
 }
 
 func TestNewFromEnv_UsesStoredOAuthTransportWhenAPIKeyAbsent(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", "")
-	xdgStateHome := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", xdgStateHome)
+	oaitest.IsolateOpenAIAuth(t)
+	xdgStateHome := os.Getenv("XDG_STATE_HOME")
 	userStateDir := authopenai.DefaultStateDir()
 	projectStateDir := filepath.Join(xdgStateHome, "serf", "projects", "repo")
 	t.Setenv("SERF_STATE_DIR", projectStateDir)

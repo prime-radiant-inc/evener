@@ -13,11 +13,12 @@ import (
 
 	"primeradiant.com/serf/internal/appwire"
 	authopenai "primeradiant.com/serf/internal/auth/openai"
+	"primeradiant.com/serf/internal/auth/openai/oaitest"
 	"primeradiant.com/serf/internal/credentials"
 )
 
 func TestHubRPCAuthStatusUsesUserScopedOpenAIAuth(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", "")
+	oaitest.IsolateOpenAIAuth(t)
 	xdgStateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", xdgStateHome)
 	userStateDir := authopenai.DefaultStateDirWithStateHome(xdgStateHome)
@@ -61,6 +62,7 @@ func TestHubRPCAuthStatusUsesUserScopedOpenAIAuth(t *testing.T) {
 }
 
 func TestHubRPCAuthStatusPrefersStoredOAuthOverEnv(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
 	t.Setenv("OPENAI_API_KEY", "env-token")
 	xdgStateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", xdgStateHome)
@@ -97,6 +99,7 @@ func TestHubRPCAuthStatusPrefersStoredOAuthOverEnv(t *testing.T) {
 }
 
 func TestHubRPCAuthStatusFallsBackToEnvWhenNoStoredOAuth(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
 	t.Setenv("OPENAI_API_KEY", "env-token")
 	xdgStateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", xdgStateHome)
@@ -172,7 +175,7 @@ func TestHubRPCAuthStatusReportsOAuthRefreshAndLoginStates(t *testing.T) {
 }
 
 func TestHubRPCAuthLogoutRemovesUserScopedOpenAIAuth(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", "")
+	oaitest.IsolateOpenAIAuth(t)
 	xdgStateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", xdgStateHome)
 	userStateDir := authopenai.DefaultStateDirWithStateHome(xdgStateHome)
@@ -211,7 +214,7 @@ func TestHubRPCAuthLogoutRemovesUserScopedOpenAIAuth(t *testing.T) {
 }
 
 func TestHubAuthControllerManualPastebackSavesOpenAIAuth(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", "")
+	oaitest.IsolateOpenAIAuth(t)
 	ctrl := newHubAuthController()
 	ctrl.stateDir = t.TempDir()
 	ctrl.cfg = authopenai.Config{IssuerBaseURL: "https://auth.example.test"}

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"primeradiant.com/serf/internal/auth/openai/oaitest"
 )
 
 func TestLoginSucceedsViaCallbackPath(t *testing.T) {
@@ -201,7 +203,7 @@ func TestLoginBrowserOpenFailureIsNonFatal(t *testing.T) {
 }
 
 func TestStatusSignedOutWhenNoEnvOrStoredAuth(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", "")
+	oaitest.IsolateOpenAIAuth(t)
 	svc := newTestService(time.Date(2026, 5, 7, 23, 30, 0, 0, time.UTC))
 
 	status, err := svc.Status(t.TempDir())
@@ -217,6 +219,7 @@ func TestStatusSignedOutWhenNoEnvOrStoredAuth(t *testing.T) {
 }
 
 func TestStatusUsesEnvWhenNoStoredAuth(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
 	t.Setenv("OPENAI_API_KEY", "sk-env")
 	stateDir := t.TempDir()
 
@@ -234,6 +237,7 @@ func TestStatusUsesEnvWhenNoStoredAuth(t *testing.T) {
 }
 
 func TestStatusPrefersStoredOAuthOverEnv(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
 	t.Setenv("OPENAI_API_KEY", "sk-env")
 	stateDir := t.TempDir()
 	if err := SaveAuth(stateDir, sampleAuthRecord()); err != nil {
@@ -296,6 +300,7 @@ func TestLogoutDeletesStoredAuth(t *testing.T) {
 }
 
 func TestRuntimeCredentialsStoredAuthWinsOverEnv(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
 	t.Setenv("OPENAI_API_KEY", "sk-env")
 	stateDir := t.TempDir()
 	record := sampleAuthRecord()
@@ -318,6 +323,7 @@ func TestRuntimeCredentialsStoredAuthWinsOverEnv(t *testing.T) {
 }
 
 func TestRuntimeCredentialsFallsBackToEnvWhenNoStoredAuth(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
 	t.Setenv("OPENAI_API_KEY", "sk-env")
 	stateDir := t.TempDir()
 

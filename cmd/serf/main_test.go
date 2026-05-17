@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/serf/agent"
 	authopenai "primeradiant.com/serf/internal/auth/openai"
+	"primeradiant.com/serf/internal/auth/openai/oaitest"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/openai"
 )
@@ -575,9 +576,9 @@ func TestOpenAIStatusIsCompactAndScriptFriendly(t *testing.T) {
 }
 
 func TestOpenAILogoutDeletesOnlySerfOwnedAuthState(t *testing.T) {
-	// Isolate from any OPENAI_API_KEY set in the dev environment so the
-	// post-logout status reports signed-out, not env-fallback.
-	t.Setenv("OPENAI_API_KEY", "")
+	// Isolate from any OPENAI_API_KEY / stored OAuth in the dev environment
+	// so the post-logout status reports signed-out, not env-fallback.
+	oaitest.IsolateOpenAIAuth(t)
 	stateDir := t.TempDir()
 
 	if err := authopenai.SaveAuth(stateDir, authopenai.AuthRecord{

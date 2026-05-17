@@ -6,10 +6,11 @@ import (
 	"time"
 
 	authopenai "primeradiant.com/serf/internal/auth/openai"
+	"primeradiant.com/serf/internal/auth/openai/oaitest"
 )
 
 func TestAuthControllerStatusSignedOut(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", "")
+	oaitest.IsolateOpenAIAuth(t)
 	controller := newAuthController(t.TempDir())
 
 	status, err := controller.Status("openai")
@@ -28,7 +29,7 @@ func TestAuthControllerStatusSignedOut(t *testing.T) {
 }
 
 func TestAuthControllerStatusOAuthWithEmail(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", "")
+	oaitest.IsolateOpenAIAuth(t)
 	stateDir := t.TempDir()
 	if err := authopenai.SaveAuth(stateDir, testOpenAIAuthRecord("bot@example.com")); err != nil {
 		t.Fatalf("SaveAuth() error = %v", err)
@@ -51,6 +52,7 @@ func TestAuthControllerStatusOAuthWithEmail(t *testing.T) {
 }
 
 func TestAuthControllerStatusPrefersStoredOAuthOverEnv(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
 	t.Setenv("OPENAI_API_KEY", "sk-env")
 	stateDir := t.TempDir()
 	if err := authopenai.SaveAuth(stateDir, testOpenAIAuthRecord("bot@example.com")); err != nil {
