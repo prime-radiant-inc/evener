@@ -53,3 +53,12 @@ Questions for jesse — **Answered 2026-05-17:**
 2. **Discard option?** → **No discard button.** User navigates away manually when reconnect can't recover.
 3. **Label sensitivity:** → **"Reconnect & retry".**
 4. **New appwire method?** → **Investigate first.** Trace startTurn under daemon-death scenarios and report whether reuse is safe before implementing a dedicated `thread/recover` method.
+
+Implementation landed in `aecf225` (xcas), `d02d386` (ws5f), `d2b5102` (t65c), `b46d0de` (e465 UI button).
+
+### Legacy `/send` fallback in Reconnect button (kata 05vb)
+The Reconnect & retry button has two paths: `window.SerfAppwire.startTurn` (works — hub auto-resumes) and `fetch /s/<id>/send` (does NOT trigger hub auto-resume, so for source=hub errors it re-issues against a dead daemon and fails the same way).
+
+Options:
+- (a) Drop the `/send` legacy fallback entirely from `makeRetryTurnHandler`. Appwire is the default; the fallback path is dead code for any modern client.
+- (b) Detect `SerfAppwire` absence and hide the Reconnect button (but keep Retry) when the source is hub. Lets the legacy path survive for provider errors where auto-resume isn't strictly needed.
