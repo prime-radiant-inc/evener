@@ -124,6 +124,11 @@ function pass(cond, msg) { if (!cond) failures.push("FAIL: " + msg); }
   //    Confirms the factored helper threads parameters through unchanged.
   // ------------------------------------------------------------------
   const startTurnCalls = [];
+  let fetchCalls = 0;
+  window.fetch = (...args) => {
+    fetchCalls++;
+    return Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
+  };
   window.SerfAppwire = {
     startTurn: (ref, text, images) => {
       startTurnCalls.push({ ref, text, images });
@@ -143,8 +148,10 @@ function pass(cond, msg) { if (!cond) failures.push("FAIL: " + msg); }
   const hubActionsLive = renderer.buildDiagnosticActions({
     severity: "error", source: "hub", message: "daemon spawn timed out",
   });
+  fetchCalls = 0;
   await hubActionsLive[0].onclick();
   pass(startTurnCalls.length === 1, "hub onclick should call startTurn once, got " + startTurnCalls.length);
+  pass(fetchCalls === 0, "hub onclick should NOT call fetch when SerfAppwire is present, got " + fetchCalls);
   if (startTurnCalls.length) {
     pass(startTurnCalls[0].ref === "ref:01TEST", "hub onclick: wrong ref " + startTurnCalls[0].ref);
     pass(startTurnCalls[0].text === "say hello", "hub onclick: wrong text " + startTurnCalls[0].text);
@@ -186,6 +193,48 @@ function pass(cond, msg) { if (!cond) failures.push("FAIL: " + msg); }
     pass(banners[0].diagnostic && banners[0].diagnostic.title === "Retry error",
       "provider failure title should be 'Retry error', got " + (banners[0].diagnostic && banners[0].diagnostic.title));
   }
+
+  renderer.appendBanner = origAppendBanner;
+
+  // ------------------------------------------------------------------
+  // 7. SerfAppwire absent at click time → diagnostic banner, no fetch.
+  //    Kata 05vb dropped the /send legacy fallback: the retry path now
+  //    requires appwire because /send doesn't trigger hub auto-resume.
+  // ------------------------------------------------------------------
+  const fallbackBanners = [];
+  renderer.appendBanner = (kind, text, diagnostic) => {
+    fallbackBanners.push({ kind, text, diagnostic });
+  };
+  delete window.SerfAppwire;
+  fetchCalls = 0;
+  const hubActionsNoAppwire = renderer.buildDiagnosticActions({
+    severity: "error", source: "hub", message: "daemon spawn timed out",
+  });
+  await hubActionsNoAppwire[0].onclick();
+  pass(fetchCalls === 0,
+    "no-appwire onclick must NOT call fetch (dead /send fallback), got " + fetchCalls + " calls");
+  pass(fallbackBanners.length === 1,
+    "no-appwire onclick should surface a diagnostic banner, got " + fallbackBanners.length);
+  if (fallbackBanners.length) {
+    pass(fallbackBanners[0].text.indexOf("reconnect failed:") === 0,
+      "no-appwire banner should start with 'reconnect failed:', got " + fallbackBanners[0].text);
+    pass(fallbackBanners[0].text.toLowerCase().indexOf("appwire unavailable") !== -1,
+      "no-appwire banner should mention 'appwire unavailable', got " + fallbackBanners[0].text);
+    pass(fallbackBanners[0].diagnostic && fallbackBanners[0].diagnostic.title === "Reconnect error",
+      "no-appwire banner title should be 'Reconnect error', got " + (fallbackBanners[0].diagnostic && fallbackBanners[0].diagnostic.title));
+  }
+
+  // And provider-source with no appwire uses the retry-flavoured wording.
+  fallbackBanners.length = 0;
+  fetchCalls = 0;
+  const providerActionsNoAppwire = renderer.buildDiagnosticActions({
+    severity: "error", source: "provider", message: "stream ended without finish event",
+  });
+  await providerActionsNoAppwire[0].onclick();
+  pass(fetchCalls === 0,
+    "no-appwire provider onclick must NOT call fetch, got " + fetchCalls + " calls");
+  pass(fallbackBanners.length === 1 && fallbackBanners[0].text.indexOf("retry failed:") === 0,
+    "no-appwire provider banner should start with 'retry failed:', got " + (fallbackBanners[0] && fallbackBanners[0].text));
 
   renderer.appendBanner = origAppendBanner;
 

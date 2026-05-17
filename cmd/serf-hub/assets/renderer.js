@@ -954,26 +954,23 @@
     // "Retry turn" and "Reconnect & retry" diagnostic action buttons.  The
     // failure-banner wording is parameterised so it reads naturally for the
     // originating source (retry vs. reconnect).
+    //
+    // SerfAppwire.startTurn is the only supported path: the hub's auto-resume
+    // layer (katas t65c / ws5f / xcas) hangs off MethodTurnStart, so a fetch
+    // against /s/<id>/send would re-issue against a dead daemon for the same
+    // hub-source error that surfaced the button. If SerfAppwire is missing at
+    // click time we surface that as a diagnostic — there is no useful fallback.
     makeRetryTurnHandler(lastText, failPrefix, errTitle) {
       const sessionId = this.sessionId;
       const appwireRef = this.appwireRef;
       const self = this;
       return async function() {
+        if (!window.SerfAppwire) {
+          self.appendBanner("error", failPrefix + "appwire unavailable", { source: "hub", title: errTitle });
+          return;
+        }
         try {
-          if (window.SerfAppwire) {
-            await window.SerfAppwire.startTurn(appwireRef || sessionId, lastText, []);
-          } else {
-            const resp = await fetch("/s/" + encodeURIComponent(sessionId) + "/send", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ text: lastText, images: [] }),
-            });
-            if (!resp.ok) {
-              const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
-              self.appendBanner("error", failPrefix + detail, { source: "hub", title: errTitle });
-              return;
-            }
-          }
+          await window.SerfAppwire.startTurn(appwireRef || sessionId, lastText, []);
           self.ensureLiveStream();
         } catch (err) {
           self.appendBanner("error", failPrefix + err.message, { source: "hub", title: errTitle });
