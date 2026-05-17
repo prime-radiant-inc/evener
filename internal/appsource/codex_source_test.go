@@ -3,9 +3,14 @@ package appsource
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -908,6 +913,21 @@ func assertDelta(t *testing.T, notifications <-chan appwire.Notification, want s
 	}
 }
 
+func assertSessionUnavailable(t *testing.T, err error, label string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s: expected error, got nil", label)
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("%s: error %T=%v, want appwire.WireError", label, err, err)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok || wire.Code != appwire.CodeUnavailable || data.SerfErrorInfo != appwire.ErrorSessionUnavailable {
+		t.Fatalf("%s: wire=%+v, want SessionUnavailable", label, wire)
+	}
+}
+
 func assertNoNotification(t *testing.T, notifications <-chan appwire.Notification, label string) {
 	t.Helper()
 	select {
@@ -1063,4 +1083,202 @@ func codexThreadMap(id string) map[string]any {
 
 func wsURL(server *httptest.Server) string {
 	return "ws" + strings.TrimPrefix(server.URL, "http")
+}
+
+func TestCodexSourceDialErrorMapsTransportFailures(t *testing.T) {
+	// Direct unit-level coverage of the error classifier. Goes alongside the
+	// integration tests below that exercise the StartTurn / ListThreads code
+	// paths end-to-end.
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"ECONNREFUSED", &net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}},
+		{"ECONNRESET", &net.OpError{Op: "read", Err: syscall.ECONNRESET}},
+		{"EPIPE", &net.OpError{Op: "write", Err: syscall.EPIPE}},
+		{"io.EOF", io.EOF},
+		{"io.ErrUnexpectedEOF wrapped", fmt.Errorf("recv: %w", io.ErrUnexpectedEOF)},
+		{"context.DeadlineExceeded (transport-level)", context.DeadlineExceeded},
+		{"websocket close error", websocket.CloseError{Code: websocket.StatusAbnormalClosure, Reason: "dropped"}},
+		{"connection reset string match", errors.New("read tcp 127.0.0.1:1->127.0.0.1:2: connection reset by peer")},
+		{"broken pipe string match", errors.New("write tcp: broken pipe")},
+		{"use of closed network connection", errors.New("use of closed network connection")},
+		{"i/o timeout string match", errors.New("dial tcp: i/o timeout")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := codexSourceDialError(tc.err)
+			assertSessionUnavailable(t, got, tc.name)
+		})
+	}
+}
+
+func TestCodexSourceDialErrorPassesThroughApplicationErrors(t *testing.T) {
+	// JSON-RPC application-level error: must not be remapped, since the
+	// daemon is alive and the error has semantic meaning (e.g. a malformed
+	// codex parameter).
+	app := appwire.InvalidParams("missing ref")
+	got := codexSourceDialError(app)
+	var wire appwire.WireError
+	if !errors.As(got, &wire) {
+		t.Fatalf("got %T=%v, want WireError", got, got)
+	}
+	if wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("wire=%+v, want InvalidParams code preserved", wire)
+	}
+
+	plain := errors.New("some codex-side problem")
+	if got := codexSourceDialError(plain); !errors.Is(got, plain) {
+		t.Fatalf("plain error rewritten: %v", got)
+	}
+}
+
+func TestCodexSourceDialErrorIgnoresNil(t *testing.T) {
+	if got := codexSourceDialError(nil); got != nil {
+		t.Fatalf("nil mapped to %v, want nil", got)
+	}
+}
+
+func TestCodexSourceCallErrorMapsTransportFailures(t *testing.T) {
+	// The appwire client surfaces transport-level mid-RPC failures as
+	// CodeInternalError wrapping the underlying message; codexSourceCallError
+	// promotes those to SessionUnavailable while leaving genuine internal
+	// errors (and other codes) untouched.
+	cases := []struct {
+		name string
+		msg  string
+	}{
+		{"websocket failed to get reader", "appwire turn/start: failed to get reader: websocket"},
+		{"eof", "appwire turn/start: EOF"},
+		{"connection reset", "appwire turn/start: read tcp: connection reset by peer"},
+		{"broken pipe", "appwire turn/start: write: broken pipe"},
+		{"use of closed network connection", "appwire turn/start: use of closed network connection"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := appwire.InternalError(tc.msg)
+			got := codexSourceCallError(in)
+			assertSessionUnavailable(t, got, tc.name)
+		})
+	}
+}
+
+func TestCodexSourceCallErrorPassesThroughApplicationErrors(t *testing.T) {
+	// A 400-style application error from codex must survive intact so the
+	// caller can surface the real failure to the user.
+	app := appwire.InvalidParams("400 bad request: invalid model id")
+	got := codexSourceCallError(app)
+	var wire appwire.WireError
+	if !errors.As(got, &wire) {
+		t.Fatalf("got %T=%v, want WireError", got, got)
+	}
+	if wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("wire=%+v, want InvalidParams code preserved", wire)
+	}
+
+	// An InternalError without a transport-shaped message also passes
+	// through — only daemon-dead patterns get promoted.
+	semantic := appwire.InternalError("appwire turn/start: model token quota exceeded")
+	if got := codexSourceCallError(semantic); !errors.Is(got, semantic) {
+		var w appwire.WireError
+		if errors.As(got, &w) && w.Code == appwire.CodeUnavailable {
+			t.Fatalf("non-transport internal error remapped: %+v", w)
+		}
+	}
+}
+
+func TestCodexSourceStartTurnMapsDialRefusedToSessionUnavailable(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	endpoint := "ws://" + listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+
+	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: endpoint}, nil)
+	_, err = source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Prompt: "hi"})
+	assertSessionUnavailable(t, err, t.Name())
+}
+
+func TestCodexSourceStartTurnMapsDroppedTransportToSessionUnavailable(t *testing.T) {
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("accept websocket: %v", err)
+			return
+		}
+		transport := appwire.NewWSTransport(conn)
+		// Reply to initialize so connect() succeeds, then drop the connection
+		// mid-call to simulate the codex daemon dying.
+		for {
+			msg, err := transport.Recv(r.Context())
+			if err != nil {
+				return
+			}
+			if msg.Request == nil {
+				continue
+			}
+			req := *msg.Request
+			switch req.Method {
+			case appwire.MethodInitialize:
+				_ = transport.Send(r.Context(), appwire.ResponseMessage(req.ID, appwire.InitializeResponse{
+					ServerInfo:      appwire.ServerInfo{Name: "codex-test"},
+					ProtocolVersion: appwire.ProtocolVersion,
+					SourceID:        "codex",
+				}))
+			default:
+				_ = conn.Close(websocket.StatusAbnormalClosure, "dropped")
+				return
+			}
+		}
+	}))
+	defer httpServer.Close()
+
+	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
+	_, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Prompt: "hi"})
+	assertSessionUnavailable(t, err, t.Name())
+}
+
+func TestCodexSourceStartTurnPassesThroughApplicationErrors(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadResume, func(_ context.Context, _ struct {
+		ThreadID string `json:"threadId"`
+	}) (map[string]any, error) {
+		return nil, appwire.InvalidParams("400 bad request: malformed threadId")
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+
+	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
+	_, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Prompt: "hi"})
+	if err == nil {
+		t.Fatal("StartTurn unexpectedly succeeded")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("StartTurn error %T=%v, want WireError", err, err)
+	}
+	if wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("wire code=%d, want CodeInvalidParams (application error must not be remapped)", wire.Code)
+	}
+	if data, ok := wire.Data.(appwire.ErrorData); ok && data.SerfErrorInfo == appwire.ErrorSessionUnavailable {
+		t.Fatalf("application error was remapped to SessionUnavailable: %+v", wire)
+	}
+}
+
+func TestCodexSourceListThreadsMapsDialRefusedToSessionUnavailable(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	endpoint := "ws://" + listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+
+	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: endpoint}, nil)
+	_, err = source.ListThreads(context.Background(), appwire.ThreadListParams{})
+	assertSessionUnavailable(t, err, t.Name())
 }

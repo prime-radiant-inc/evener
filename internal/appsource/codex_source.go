@@ -4,13 +4,18 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
+	"nhooyr.io/websocket"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -149,7 +154,7 @@ func (s *CodexSource) StartThread(ctx context.Context, params appwire.ThreadStar
 		"threadSource":  "user",
 	}, &out); err != nil {
 		_ = closeClient()
-		return appwire.ThreadStartResponse{}, err
+		return appwire.ThreadStartResponse{}, codexSourceCallError(err)
 	}
 	thread := s.mapLifecycleThread(out.Thread, out.Model, out.ModelProvider)
 	live := s.newLiveThread(thread.ID, client, closeClient)
@@ -216,7 +221,7 @@ func (s *CodexSource) StartTurn(ctx context.Context, params appwire.TurnStartPar
 	var out codexTurnStartResponse
 	if live := s.liveThread(threadID); live != nil {
 		if err := codexTurnStart(ctx, live.client, threadID, input, &out); err != nil {
-			return appwire.TurnStartResponse{}, err
+			return appwire.TurnStartResponse{}, codexSourceCallError(err)
 		}
 		return appwire.TurnStartResponse{Turn: mapCodexTurn(out.Turn)}, nil
 	}
@@ -227,14 +232,14 @@ func (s *CodexSource) StartTurn(ctx context.Context, params appwire.TurnStartPar
 	var resume codexThreadResumeResponse
 	if err := codexThreadResume(ctx, client, threadID, &resume); err != nil {
 		_ = closeClient()
-		return appwire.TurnStartResponse{}, err
+		return appwire.TurnStartResponse{}, codexSourceCallError(err)
 	}
 	live := s.newLiveThread(threadID, client, closeClient)
 	s.setLiveThread(threadID, live)
 	if err := codexTurnStart(ctx, client, threadID, input, &out); err != nil {
 		s.removeLiveThread(threadID, live)
 		live.retire()
-		return appwire.TurnStartResponse{}, err
+		return appwire.TurnStartResponse{}, codexSourceCallError(err)
 	}
 	return appwire.TurnStartResponse{Turn: mapCodexTurn(out.Turn)}, nil
 }
@@ -250,7 +255,7 @@ func (s *CodexSource) startTurnWithClient(ctx context.Context, client *appwire.C
 	}
 	var out codexTurnStartResponse
 	if err := codexTurnStart(ctx, client, threadID, input, &out); err != nil {
-		return appwire.TurnStartResponse{}, err
+		return appwire.TurnStartResponse{}, codexSourceCallError(err)
 	}
 	return appwire.TurnStartResponse{Turn: mapCodexTurn(out.Turn)}, nil
 }
@@ -358,7 +363,7 @@ func (s *CodexSource) SubscribeThread(ctx context.Context, params appwire.Thread
 			close(notifications)
 			return notifications, nil
 		}
-		return nil, err
+		return nil, codexSourceCallError(err)
 	}
 	live := s.newLiveThread(threadID, client, closeClient)
 	s.setLiveThread(threadID, live)
@@ -539,7 +544,89 @@ func (s *CodexSource) withClient(ctx context.Context, fn func(*appwire.Client) e
 		return err
 	}
 	defer closeClient()
-	return fn(client)
+	return codexSourceCallError(fn(client))
+}
+
+// codexSourceDialError maps transport-level failures observed during the
+// websocket dial or Initialize handshake against the codex app-server to a
+// SessionUnavailable wire error, so the hub's auto-resume gate can fire. It
+// does NOT map application-level JSON-RPC error responses (which retain
+// semantic meaning) or caller context cancellation.
+func codexSourceDialError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	// syscall-level signals that the daemon process is gone or the kernel
+	// tore down the socket mid-handshake.
+	if errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE) {
+		return appwire.SessionUnavailable("codex daemon unavailable: " + err.Error())
+	}
+
+	// Daemon accepted the connection then immediately closed it (process died
+	// mid-handshake, or the websocket library surfaced an EOF during the
+	// Initialize round trip).
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return appwire.SessionUnavailable("codex daemon unavailable: " + err.Error())
+	}
+
+	// Transport-level timeouts: hung daemon, slow loopback, or network filter
+	// holding the SYN.
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return appwire.SessionUnavailable("codex daemon unavailable: " + err.Error())
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return appwire.SessionUnavailable("codex daemon unavailable: " + err.Error())
+	}
+
+	// Websocket close error during the handshake: the daemon answered the
+	// HTTP upgrade but the connection died before Initialize completed.
+	var closeErr websocket.CloseError
+	if errors.As(err, &closeErr) {
+		return appwire.SessionUnavailable("codex daemon unavailable: " + err.Error())
+	}
+
+	// Fallback string match for transport-shaped errors that the underlying
+	// library wraps without exposing a typed sentinel.
+	lower := strings.ToLower(err.Error())
+	if strings.Contains(lower, "connection refused") ||
+		strings.Contains(lower, "connection reset") ||
+		strings.Contains(lower, "broken pipe") ||
+		strings.Contains(lower, "use of closed network connection") ||
+		strings.Contains(lower, "i/o timeout") {
+		return appwire.SessionUnavailable("codex daemon unavailable: " + err.Error())
+	}
+
+	return err
+}
+
+// codexSourceCallError wraps in-flight RPC failures where the codex
+// app-server's websocket transport dropped (process died, connection reset,
+// websocket closed) in a SessionUnavailable wire error. The appwire client
+// surfaces such failures as CodeInternalError wrapping the underlying
+// transport message; application-level errors (invalidParams,
+// methodNotFound, etc.) keep their codes and pass through unchanged.
+func codexSourceCallError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
+		return err
+	}
+	msg := strings.ToLower(wire.Message)
+	if strings.Contains(msg, "failed to get reader") ||
+		strings.Contains(msg, "websocket") ||
+		strings.Contains(msg, "eof") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "use of closed network connection") {
+		return appwire.SessionUnavailable("codex daemon unavailable: " + wire.Message)
+	}
+	return err
 }
 
 func (s *CodexSource) connect(ctx context.Context) (*appwire.Client, func() error, error) {
@@ -552,7 +639,10 @@ func (s *CodexSource) connect(ctx context.Context) (*appwire.Client, func() erro
 	}
 	transport, err := appwire.DialWebSocketWithHeaders(ctx, s.endpoint, s.client, header)
 	if err != nil {
-		return nil, nil, err
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, nil, cerr
+		}
+		return nil, nil, codexSourceDialError(err)
 	}
 	client := appwire.NewClient(transport)
 	client.Start(context.WithoutCancel(ctx))
@@ -561,11 +651,17 @@ func (s *CodexSource) connect(ctx context.Context) (*appwire.Client, func() erro
 		Capabilities: appwire.Capabilities{ExperimentalAPI: true},
 	}); err != nil {
 		_ = transport.Close()
-		return nil, nil, err
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, nil, cerr
+		}
+		return nil, nil, codexSourceDialError(codexSourceCallError(err))
 	}
 	if err := client.Notify(ctx, "initialized", nil); err != nil {
 		_ = transport.Close()
-		return nil, nil, err
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, nil, cerr
+		}
+		return nil, nil, codexSourceDialError(err)
 	}
 	return client, transport.Close, nil
 }
