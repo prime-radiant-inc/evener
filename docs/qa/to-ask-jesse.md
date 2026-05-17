@@ -34,4 +34,6 @@ bottom with date + context.
 
 ## 2026-05-17 — Open
 
-(none yet)
+### Turn count semantics for failed turns (kata k5t4)
+For a turn that failed before any assistant response (e.g. stream-ended): should the turn count show 1 (user messages sent) or 0 (completed exchanges)?
+Today live shows 1, ended shows 0. Pick one definition and apply consistently across live + persisted/past-index paths.
