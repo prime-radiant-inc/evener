@@ -537,6 +537,26 @@ type AgentMessageDeltaParams struct {
 	Delta    string `json:"delta"`
 }
 
+// ToolOutputDeltaParams is the params shape for the item/toolOutput/delta
+// notification. ItemID identifies the tool-call item; CallID is the legacy
+// alias kept for clients that still key on it.
+type ToolOutputDeltaParams struct {
+	ThreadID string `json:"threadId,omitempty"`
+	Ref      string `json:"ref,omitempty"`
+	TurnID   string `json:"turnId,omitempty"`
+	ItemID   string `json:"itemId"`
+	CallID   string `json:"callId"`
+	Delta    string `json:"delta"`
+}
+
+// NotificationRef carries just the routing fields shared by most
+// notifications (ref + threadId). Use it when you only need to know which
+// session a notification belongs to.
+type NotificationRef struct {
+	Ref      string `json:"ref,omitempty"`
+	ThreadID string `json:"threadId,omitempty"`
+}
+
 // EmptyParams is the typed-empty params shape used by methods that take none.
 type EmptyParams struct{}
 

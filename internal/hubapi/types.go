@@ -154,5 +154,5 @@ type ForkRequest struct {
 type ErrorResponse struct {
 	Error         string `json:"error"`
 	Code          int    `json:"code,omitempty"`
-	SerfErrorInfo string `json:"serfErrorInfo,omitempty"`
+	SerfErrorInfo string `json:"serf_error_info,omitempty"`
 }

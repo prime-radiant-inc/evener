@@ -42,7 +42,7 @@ outnumber codex. This rev backs off.
 
 | Surface | Where | Casing |
 |---|---|---|
-| Codex AppWire protocol | `internal/appwire/`, `internal/appserver/`, `internal/appsource/` | camelCase (codex requirement) |
+| Codex AppWire protocol | `internal/appwire/`, `internal/appsource/`, `internal/appserver/`, `server/appwire_*.go` | camelCase (codex requirement) |
 | Provider request/response shapes | `llm/providers/*/` | per provider (snake_case for OpenAI/Anthropic/Ollama/OpenRouter; camelCase for Google) |
 | Hub REST/SSE JSON | `cmd/serf-hub/`, `internal/hubapi/`, `server/` | snake_case |
 | Rendezvous files (`~/.serf/run/*.json`) | `rendezvous/` | snake_case |
@@ -81,13 +81,20 @@ it reads naturally in both surfaces.
 
 Two carve-outs, each forced by an upstream we don't own:
 
-- **`internal/appwire/` (plus `internal/appserver/` and
-  `internal/appsource/`) is camelCase.** These packages speak the
-  Codex app-server protocol over JSON-RPC (`clientInfo`,
-  `protocolVersion`, `turnId`, `itemId`). Casing is non-negotiable:
-  changing it breaks wire compatibility with codex clients. AppWire
-  fields surfaced through hub REST endpoints keep their camelCase
-  spellings end-to-end so consumers don't have to translate.
+- **Codex/appwire wire protocol code is camelCase.** Any code that
+  participates in the codex/appwire wire protocol uses camelCase,
+  matching the protocol definition under `internal/appwire/`. That
+  covers:
+  - `internal/appwire/` — the protocol definition itself
+    (`clientInfo`, `protocolVersion`, `turnId`, `itemId`).
+  - `internal/appsource/` — clients of the appwire/codex protocol;
+    `CodexSource` serializes the codex wire format.
+  - `internal/appserver/` — the appwire server implementation, which
+    speaks the same wire format back to clients.
+  - `server/appwire_*.go` — the hub's appwire runtime glue, which
+    threads appwire payloads through the hub.
+  Casing here is non-negotiable: changing it breaks wire compatibility
+  with codex clients.
 - **`llm/providers/*/` follows each provider's wire format.** OpenAI,
   Anthropic, Ollama, and OpenRouter use snake_case (`finish_reason`,
   `display_name`, `has_more`). Google Gemini uses camelCase
@@ -102,11 +109,12 @@ Plus the usual trivial cases: `inspo/codex/**` is skipped entirely
 `cmd/serf-namingcheck` walks the AST and checks every `json:"..."`
 and `toml:"..."` struct tag plus every TOML key. The linter enforces
 the snake-default rule and applies the path carve-outs above
-(`internal/appwire/` requires camelCase; `llm/providers/*/` is skipped
-entirely). A single field can opt out with a
-`// serf:naming-ignore` (Go) or `# serf:naming-ignore` (TOML) marker
-on the immediately preceding line; pair every opt-out with a comment
-explaining why.
+(appwire-adjacent code — `internal/appwire/`, `internal/appsource/`,
+`internal/appserver/`, `server/appwire_*.go` — requires camelCase;
+`llm/providers/*/` is skipped entirely). A single field can opt out
+with a `// serf:naming-ignore` (Go) or `# serf:naming-ignore` (TOML)
+marker on the immediately preceding line; pair every opt-out with a
+comment explaining why.
 
 Run locally:
 
@@ -143,16 +151,15 @@ When you add a new TOML config file, JSON payload, or CLI flag:
 
 ## Migration status
 
-The tree mostly matches the new rule. About 14 camelCase JSON tags
-remain outside the carve-out paths, and all of them mirror an upstream
-format:
+The tree matches the rule end-to-end. Only two JSON tags outside the
+appwire/providers carve-outs intentionally stay camelCase:
 
-- `turnId`, `itemId`, `callId`, `threadId` in
-  `server/appwire_runtime.go`, `cmd/serf-hub/web.go`,
-  `cmd/serf-tui/hub_model.go`, `internal/hubapi/types.go` — AppWire
-  fields surfaced end-to-end through hub APIs.
 - `mcpServers` in `agent/mcp_config.go` and `agent/plugin.go` —
-  mirrors the Claude `.mcp.json` format.
+  mirrors the Claude `.mcp.json` format. Marked
+  `// serf:naming-ignore` with a pointer back to the upstream format.
 
-Keep these camelCase and mark them `// serf:naming-ignore` with a
-pointer back to the upstream type. No bulk rename needed.
+Hub REST/SSE shapes and TUI-internal types that previously leaked
+camelCase have all migrated: REST request bodies use `turn_id`, the
+TUI now reuses the appwire-defined `ToolOutputDeltaParams` and
+`NotificationRef` types directly instead of locally redeclaring the
+wire shape with camelCase tags.

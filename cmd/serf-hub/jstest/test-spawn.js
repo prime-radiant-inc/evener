@@ -257,7 +257,7 @@ formDom.window.fetch = (_url, opts) => {
     text: () => Promise.resolve(JSON.stringify({
       error: "start codex app-server: no such file or directory",
       code: -32014,
-      serfErrorInfo: "hubLaunch",
+      serf_error_info: "hubLaunch",
     })),
   });
 };

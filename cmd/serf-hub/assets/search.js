@@ -162,7 +162,9 @@
     return fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/" + action, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: action === "interrupt" ? JSON.stringify({ turnId }) : undefined,
+      // REST shim uses snake_case; the appwire path above keeps the
+      // protocol's camelCase `turnId`.
+      body: action === "interrupt" ? JSON.stringify({ turn_id: turnId }) : undefined,
     });
   }
 
@@ -249,7 +251,8 @@
             }
             return window.SerfAppwire ? window.SerfAppwire.steer(ctx.sessionId, turnId, text) : fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/steer", {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: text, turnId: turnId }),
+            // REST shim uses snake_case; appwire path above keeps `turnId`.
+            body: JSON.stringify({ text: text, turn_id: turnId }),
           });
           } } },
       // /fork omitted: fork requires an edited message and the palette has

@@ -1149,7 +1149,8 @@
               const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/steer", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ text, turnId: this.activeTurnId || "" }),
+                // REST shim uses snake_case; the appwire path above keeps `turnId`.
+                body: JSON.stringify({ text, turn_id: this.activeTurnId || "" }),
               });
               if (!resp.ok) {
                 const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
@@ -1924,7 +1925,9 @@
       : fetch("/s/" + encodeURIComponent(sessionId) + "/" + action, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: action === "interrupt" ? JSON.stringify({ turnId }) : undefined,
+        // REST shim is snake_case; the appwire path above keeps the
+        // protocol's camelCase `turnId`.
+        body: action === "interrupt" ? JSON.stringify({ turn_id: turnId }) : undefined,
       });
     actionPromise
       .then((resp) => {

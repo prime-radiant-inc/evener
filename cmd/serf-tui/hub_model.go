@@ -1998,10 +1998,7 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			m.applyAgentMessageDelta(params.ItemID, params.Delta)
 		}
 	case appwire.NotifyToolOutputDelta:
-		var params struct {
-			ItemID string `json:"itemId"`
-			Delta  string `json:"delta"`
-		}
+		var params appwire.ToolOutputDeltaParams
 		if json.Unmarshal(notification.Params, &params) == nil {
 			reducer := m.sessionTranscriptReducer()
 			reducer.applyToolOutputDelta(params.ItemID, params.Delta)
@@ -2045,10 +2042,7 @@ func (m *hubModel) setActiveTurnID(turnID string) {
 }
 
 func (m hubModel) notificationMatchesCurrentSession(notification appwire.Notification) bool {
-	var params struct {
-		Ref      string `json:"ref"`
-		ThreadID string `json:"threadId"`
-	}
+	var params appwire.NotificationRef
 	if json.Unmarshal(notification.Params, &params) != nil {
 		return true
 	}

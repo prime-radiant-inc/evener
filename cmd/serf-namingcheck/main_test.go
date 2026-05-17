@@ -253,8 +253,11 @@ type TomlBad struct {
 }
 
 // TestCheckJSONTag_AppwireCarveOut verifies that the camelCase regime is
-// enforced inside internal/appwire/ (codex protocol requires it) and that
-// snake_case tags in that tree become violations.
+// enforced inside every appwire-adjacent tree (codex protocol requires it)
+// and that snake_case tags in those trees become violations. The carve-out
+// covers internal/appwire/ (the protocol definition), internal/appsource/
+// and internal/appserver/ (its clients and server-side implementation), and
+// server/appwire_*.go (the hub runtime glue).
 func TestCheckJSONTag_AppwireCarveOut(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -262,9 +265,30 @@ func TestCheckJSONTag_AppwireCarveOut(t *testing.T) {
 		tag     string
 		wantMsg bool
 	}{
+		// internal/appwire/ — the protocol definition itself.
 		{"appwire camelCase ok", "internal/appwire/types.go", "workingDir", false},
 		{"appwire snake bad", "internal/appwire/types.go", "working_dir", true},
 		{"appwire single word ok", "internal/appwire/types.go", "id", false},
+
+		// internal/appsource/ — codex protocol clients.
+		{"appsource camelCase ok", "internal/appsource/codex_source.go", "threadId", false},
+		{"appsource snake bad", "internal/appsource/codex_source.go", "thread_id", true},
+
+		// internal/appserver/ — server-side implementation.
+		{"appserver camelCase ok", "internal/appserver/notifier.go", "threadId", false},
+		{"appserver snake bad", "internal/appserver/notifier.go", "thread_id", true},
+
+		// server/appwire_*.go — hub runtime glue.
+		{"server appwire_runtime camelCase ok", "server/appwire_runtime.go", "turnId", false},
+		{"server appwire_projection camelCase ok", "server/appwire_projection.go", "itemId", false},
+		{"server appwire_runtime snake bad", "server/appwire_runtime.go", "turn_id", true},
+
+		// Other files under server/ are NOT carved out; they remain on
+		// the snake-default rule.
+		{"server non-appwire camel bad", "server/something.go", "turnId", true},
+		{"server non-appwire snake ok", "server/something.go", "turn_id", false},
+
+		// Ordinary files are unaffected.
 		{"ordinary file camel bad", "internal/runner/run.go", "workingDir", true},
 		{"ordinary file snake ok", "internal/runner/run.go", "working_dir", false},
 		{"ordinary file single word ok", "internal/runner/run.go", "id", false},

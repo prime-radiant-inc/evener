@@ -1230,11 +1230,7 @@ func (sw *notificationSSEWriter) write(notification appwire.Notification) {
 			writeSSE(sw.w, sw.flusher, "ASSISTANT_TEXT_DELTA", map[string]any{"delta": params.Delta})
 		}
 	case appwire.NotifyToolOutputDelta:
-		var params struct {
-			ItemID string `json:"itemId"`
-			CallID string `json:"callId"`
-			Delta  string `json:"delta"`
-		}
+		var params appwire.ToolOutputDeltaParams
 		if json.Unmarshal(notification.Params, &params) == nil {
 			callID := firstNonEmpty(params.CallID, params.ItemID)
 			sw.markOutputDelta(params.ItemID, params.CallID, params.Delta)
@@ -3451,11 +3447,11 @@ func (s *WebServer) resumeRequestFor(id string) ResumeRequest {
 // steerRequest is the JSON body for POST /s/<id>/steer.
 type steerRequest struct {
 	Text   string `json:"text"`
-	TurnID string `json:"turnId"`
+	TurnID string `json:"turn_id"`
 }
 
 type sessionActionRequest struct {
-	TurnID string `json:"turnId"`
+	TurnID string `json:"turn_id"`
 }
 
 // handleSteer forwards a steering message to the live daemon for the given

@@ -4,11 +4,18 @@
 //	TOML tags  -> snake_case
 //	(CLI flags are kebab-case; that's enforced where flags are registered.)
 //
-// Path carve-outs:
+// Path carve-outs (all of these speak the codex/appwire wire protocol and
+// therefore require camelCase JSON tags):
 //
-//	internal/appwire/   — camelCase JSON tags are required (codex interop).
-//	llm/providers/*/    — JSON tags are exempt entirely (each provider has its
-//	                       own upstream wire format we must match verbatim).
+//	internal/appwire/        — the protocol definition itself.
+//	internal/appsource/      — clients of the codex/appwire protocol.
+//	internal/appserver/      — server-side implementation of the protocol.
+//	server/appwire_*.go      — the hub's appwire runtime glue.
+//
+// Plus one fully-exempt tree, where each provider's upstream wire format
+// owns the casing:
+//
+//	llm/providers/*/         — JSON tags are exempt entirely.
 //
 // It scans every Go file for struct tags and every TOML file for keys, and
 // prints one violation per line in `path:line: message` format. Exits non-zero
@@ -65,10 +72,26 @@ var excludeSuffixes = []string{
 	"/.git/",
 }
 
-// appwirePrefix marks files that interop with codex over JSON-RPC. Codex's
-// wire format is camelCase, so JSON tags in this tree MUST be camelCase and
-// the snake_case-default rule does not apply.
-const appwirePrefix = "internal/appwire/"
+// appwirePrefixes marks files that participate in the codex/appwire wire
+// protocol. Codex's wire format is camelCase, so JSON tags in any of these
+// trees MUST be camelCase and the snake_case-default rule does not apply.
+//
+//   - internal/appwire/   is the protocol definition itself.
+//   - internal/appsource/ contains clients of the protocol (CodexSource
+//     serializes/deserializes the codex wire format).
+//   - internal/appserver/ contains the server-side implementation that
+//     speaks the same wire format back to clients.
+var appwirePrefixes = []string{
+	"internal/appwire/",
+	"internal/appsource/",
+	"internal/appserver/",
+}
+
+// appwireServerPrefix matches the hub's appwire runtime glue files
+// (server/appwire_runtime.go, server/appwire_projection.go, ...). These
+// files thread appwire payloads through the hub and carry the camelCase
+// requirement with them.
+const appwireServerPrefix = "server/appwire_"
 
 // providersPrefix marks per-provider client code. Each upstream provider has
 // its own wire format (OpenAI uses snake_case, Anthropic uses snake_case,
@@ -76,11 +99,24 @@ const appwirePrefix = "internal/appwire/"
 // must match what the upstream API expects, not our project default.
 const providersPrefix = "llm/providers/"
 
-// isAppwirePath reports whether rel points inside internal/appwire/. JSON tags
-// in this tree are exempt from the snake_case rule (they're forced camelCase
-// by the codex protocol).
+// isAppwirePath reports whether rel points at code that speaks the
+// codex/appwire wire protocol. JSON tags in any of these trees are exempt
+// from the snake_case rule (they're forced camelCase by the codex protocol).
 func isAppwirePath(rel string) bool {
-	return strings.HasPrefix(rel, appwirePrefix)
+	for _, p := range appwirePrefixes {
+		if strings.HasPrefix(rel, p) {
+			return true
+		}
+	}
+	// server/appwire_*.go — the hub's appwire runtime glue. Match by file
+	// prefix so unrelated files under server/ remain on snake_case.
+	if strings.HasPrefix(rel, "server/") {
+		base := rel[len("server/"):]
+		if strings.HasPrefix(base, "appwire_") {
+			return true
+		}
+	}
+	return false
 }
 
 // isProvidersPath reports whether rel points inside llm/providers/. JSON tags
@@ -274,8 +310,11 @@ func tagKey(v string) (key string, skip bool) {
 
 // checkJSONTag enforces snake_case JSON tags, with two path-based carve-outs:
 //
-//   - Files under internal/appwire/ are exempt because codex's wire protocol
-//     forces camelCase.
+//   - Files that speak the codex/appwire wire protocol are exempt because the
+//     protocol forces camelCase. That covers internal/appwire/ (the protocol
+//     definition itself), internal/appsource/ and internal/appserver/ (its
+//     clients and server-side implementation), and server/appwire_*.go (the
+//     hub runtime glue that threads appwire payloads through the hub).
 //   - Files under llm/providers/ are exempt entirely; each provider's tag
 //     spelling has to match its upstream API verbatim.
 //
@@ -292,7 +331,7 @@ func checkJSONTag(v, rel string) string {
 	if isAppwirePath(rel) {
 		// Appwire is the inverted regime: camelCase is mandatory there.
 		if !isCamelCase(key) {
-			return fmt.Sprintf("json tag %q must be camelCase in internal/appwire/ (suggest %q)", key, toCamelCase(key))
+			return fmt.Sprintf("json tag %q must be camelCase in appwire-adjacent code (suggest %q)", key, toCamelCase(key))
 		}
 		return ""
 	}
