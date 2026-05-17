@@ -69,6 +69,11 @@ output by running it.
 - `dev-fix-broken-script.md` — agent reads, edits, and re-runs a
   syntactically-broken Python script. Exercises the
   read→edit→exec→verify flow that most real serf use looks like.
+- `dev-plugin-superpowers-brainstorming.md` — clones
+  `obra/superpowers` into a tmpdir, points serf at it via
+  `launch_overrides.pluginDirs`, and confirms the `brainstorming`
+  skill loads into the agent's catalog. Plugin-discovery smoke
+  test; doesn't run brainstorming.
 
 ## Coverage gaps (worth writing)
 
