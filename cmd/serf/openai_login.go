@@ -22,8 +22,9 @@ var openAILoginAction = func(ctx context.Context, stateDir string, openBrowser f
 	return service.Login(ctx, stateDir)
 }
 
-var openAIDeviceLoginAction = func(ctx context.Context, stateDir string, showPrompt func(authopenai.DeviceCode)) (authopenai.AuthStatus, error) {
-	service := authopenai.NewService(authopenai.DefaultConfig(), nil)
+var openAIDeviceLoginAction = func(ctx context.Context, stateDir string, showPrompt func(authopenai.DeviceCode), notifyConcurrentLogin func()) (authopenai.AuthStatus, error) {
+	service := authopenai.NewService(authopenai.DefaultConfig(), nil).
+		WithConcurrentLoginNotifier(notifyConcurrentLogin)
 	return service.LoginWithDevice(ctx, stateDir, showPrompt)
 }
 
@@ -191,7 +192,14 @@ func runOpenAIDeviceLogin(ctx context.Context, stateDir string, stdout, stderr i
 		fmt.Fprintln(stderr, "Waiting for authorization (this command will exit automatically)...")
 	}
 
-	status, err := openAIDeviceLoginAction(ctx, stateDir, prompt)
+	notifyConcurrentLogin := func() {
+		// Machine-readable signal first so scripts can branch on it,
+		// then a human-readable explanation on stderr.
+		fmt.Fprintln(stdout, "concurrent_login=detected")
+		fmt.Fprintln(stderr, "Detected concurrent login; using existing OAuth state.")
+	}
+
+	status, err := openAIDeviceLoginAction(ctx, stateDir, prompt, notifyConcurrentLogin)
 	if err != nil {
 		return err
 	}

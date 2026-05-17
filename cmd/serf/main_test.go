@@ -305,12 +305,15 @@ func TestOpenAIDeviceLoginPrintsCodeAndStatus(t *testing.T) {
 	origDevice := openAIDeviceLoginAction
 	t.Cleanup(func() { openAIDeviceLoginAction = origDevice })
 
-	openAIDeviceLoginAction = func(ctx context.Context, gotStateDir string, showPrompt func(authopenai.DeviceCode)) (authopenai.AuthStatus, error) {
+	openAIDeviceLoginAction = func(ctx context.Context, gotStateDir string, showPrompt func(authopenai.DeviceCode), notifyConcurrentLogin func()) (authopenai.AuthStatus, error) {
 		if gotStateDir != stateDir {
 			t.Fatalf("stateDir = %q, want %q", gotStateDir, stateDir)
 		}
 		if showPrompt == nil {
 			t.Fatal("showPrompt = nil, want CLI prompt callback")
+		}
+		if notifyConcurrentLogin == nil {
+			t.Fatal("notifyConcurrentLogin = nil, want CLI concurrent-login callback")
 		}
 		showPrompt(authopenai.DeviceCode{
 			VerificationURL: "https://auth.openai.com/codex/device",
@@ -496,7 +499,7 @@ func TestOpenAILoginAutoSelectsDeviceWhenHeadless(t *testing.T) {
 	})
 
 	deviceCalled := false
-	openAIDeviceLoginAction = func(ctx context.Context, gotStateDir string, showPrompt func(authopenai.DeviceCode)) (authopenai.AuthStatus, error) {
+	openAIDeviceLoginAction = func(ctx context.Context, gotStateDir string, showPrompt func(authopenai.DeviceCode), _ func()) (authopenai.AuthStatus, error) {
 		deviceCalled = true
 		if gotStateDir != stateDir {
 			t.Fatalf("stateDir = %q, want %q", gotStateDir, stateDir)

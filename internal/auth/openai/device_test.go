@@ -441,3 +441,145 @@ func TestLoginWithDeviceUsercodeFailureLeavesNoAuth(t *testing.T) {
 	}
 }
 
+// TestLoginWithDeviceDetectsConcurrentSuccess covers the kata 24p1 scenario:
+// the device-code poll never naturally succeeds (the token endpoint always
+// returns 403), but a parallel `serf openai login` writes fresh OAuth state
+// to disk. LoginWithDevice should detect that state and return the on-disk
+// status without waiting for the 15-minute device-code timeout.
+func TestLoginWithDeviceDetectsConcurrentSuccess(t *testing.T) {
+	m := newDeviceMockServer(t)
+	stateDir := t.TempDir()
+
+	m.usercode = func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"device_auth_id": "dev-parallel",
+			"user_code":      "PAR-CODE",
+			"interval":       "0",
+		})
+	}
+	m.token = func(w http.ResponseWriter, r *http.Request) {
+		// 403 forever — the user never enters the code on this device.
+		w.WriteHeader(http.StatusForbidden)
+	}
+
+	svc := NewService(m.cfg(), m.server.Client())
+	svc.concurrentLoginWatchInterval = 20 * time.Millisecond
+	notified := make(chan struct{}, 1)
+	svc.notifyConcurrentLogin = func() {
+		select {
+		case notified <- struct{}{}:
+		default:
+		}
+	}
+
+	// Write the "parallel login" record from a separate goroutine a beat
+	// after LoginWithDevice begins. ObtainedAt is "now" — after startedAt,
+	// since startedAt is captured synchronously before this goroutine runs.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		record := AuthRecord{
+			Version:      1,
+			Provider:     "openai",
+			Source:       AuthSourceOAuth,
+			ObtainedAt:   time.Now(),
+			TokenType:    "Bearer",
+			Scope:        "openid profile email offline_access",
+			AccessToken:  "parallel-access-token",
+			RefreshToken: "parallel-refresh-token",
+			Expiry:       time.Now().Add(time.Hour),
+			Email:        "parallel@example.com",
+		}
+		if err := SaveAuth(stateDir, record); err != nil {
+			t.Errorf("SaveAuth(parallel record): %v", err)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	status, err := svc.LoginWithDevice(ctx, stateDir, func(DeviceCode) {})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("LoginWithDevice() error = %v, want nil", err)
+	}
+	if !status.SignedIn {
+		t.Fatalf("status.SignedIn = false, want true (status = %+v)", status)
+	}
+	if status.Source != AuthSourceOAuth {
+		t.Fatalf("status.Source = %q, want %q", status.Source, AuthSourceOAuth)
+	}
+	if status.Email != "parallel@example.com" {
+		t.Fatalf("status.Email = %q, want %q", status.Email, "parallel@example.com")
+	}
+	if elapsed > time.Second {
+		t.Fatalf("LoginWithDevice took %v, want sub-second exit on concurrent login", elapsed)
+	}
+	select {
+	case <-notified:
+	default:
+		t.Fatal("notifyConcurrentLogin was not invoked")
+	}
+}
+
+// TestLoginWithDeviceIgnoresPreExistingState confirms the watcher does NOT
+// fire on auth state that pre-dates the current login attempt. A user who
+// explicitly invokes `serf openai login` while a stale record sits on disk
+// expects the flow to proceed (and ultimately overwrite the stale state) —
+// not to exit immediately just because some old file exists.
+func TestLoginWithDeviceIgnoresPreExistingState(t *testing.T) {
+	m := newDeviceMockServer(t)
+	stateDir := t.TempDir()
+
+	// Pre-existing record on disk, obtained well before this test starts.
+	preExisting := AuthRecord{
+		Version:      1,
+		Provider:     "openai",
+		Source:       AuthSourceOAuth,
+		ObtainedAt:   time.Now().Add(-time.Hour),
+		TokenType:    "Bearer",
+		Scope:        "openid profile email offline_access",
+		AccessToken:  "stale-access-token",
+		RefreshToken: "stale-refresh-token",
+		Expiry:       time.Now().Add(time.Hour),
+		Email:        "stale@example.com",
+	}
+	if err := SaveAuth(stateDir, preExisting); err != nil {
+		t.Fatalf("SaveAuth(pre-existing) error = %v", err)
+	}
+
+	m.usercode = func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"device_auth_id": "dev-stale",
+			"user_code":      "STA-CODE",
+			"interval":       "0",
+		})
+	}
+	m.token = func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}
+
+	svc := NewService(m.cfg(), m.server.Client())
+	svc.concurrentLoginWatchInterval = 20 * time.Millisecond
+	notified := false
+	svc.notifyConcurrentLogin = func() { notified = true }
+
+	// Short deadline so the test does not wait the full 15-minute device
+	// window. We expect LoginWithDevice to keep polling until this fires.
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	status, err := svc.LoginWithDevice(ctx, stateDir, func(DeviceCode) {})
+	if err == nil {
+		t.Fatalf("LoginWithDevice() error = nil, want context cancellation; status = %+v", status)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+		t.Fatalf("LoginWithDevice() error = %v, want context.DeadlineExceeded or context.Canceled", err)
+	}
+	if status.SignedIn {
+		t.Fatalf("status.SignedIn = true, want false (pre-existing state must not trigger early exit)")
+	}
+	if notified {
+		t.Fatal("notifyConcurrentLogin was invoked for pre-existing state")
+	}
+}

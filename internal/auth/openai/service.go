@@ -9,10 +9,17 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
 const refreshSkew = 5 * time.Minute
+
+// defaultConcurrentLoginWatchInterval is how often LoginWithDevice polls the
+// on-disk auth file to detect that a parallel `serf openai login` succeeded.
+// One second is well below the 5-second device-code poll interval and still
+// imperceptible to a user waiting on the device flow.
+const defaultConcurrentLoginWatchInterval = time.Second
 
 const (
 	AuthSourceSignedOut = "signed-out"
@@ -57,6 +64,17 @@ type Service struct {
 	requestDeviceCode   func(context.Context, *http.Client, Config) (DeviceCode, error)
 	pollDeviceAuth      func(context.Context, *http.Client, Config, DeviceCode) (DeviceCodeSuccess, error)
 	exchangeDeviceCode  func(context.Context, *http.Client, Config, string, string) (TokenSet, error)
+
+	// concurrentLoginWatchInterval controls how often LoginWithDevice's
+	// watcher goroutine polls the on-disk auth file. Tests override this to
+	// sub-second values; production stays at one second.
+	concurrentLoginWatchInterval time.Duration
+
+	// notifyConcurrentLogin is invoked once when the watcher detects that a
+	// parallel login wrote fresh OAuth state, so callers can surface a
+	// message to the user explaining why the command is exiting before the
+	// device code was entered. Nil by default.
+	notifyConcurrentLogin func()
 }
 
 func NewService(cfg Config, client *http.Client) *Service {
@@ -77,12 +95,23 @@ func NewService(cfg Config, client *http.Client) *Service {
 		startCallbackServer: func(cfg Config, port int, expectedState string) (callbackServer, error) {
 			return StartCallbackServer(cfg, port, expectedState)
 		},
-		exchangeCode:       ExchangeCode,
-		refreshToken:       RefreshToken,
-		requestDeviceCode:  RequestDeviceCode,
-		pollDeviceAuth:     PollDeviceAuth,
-		exchangeDeviceCode: ExchangeDeviceCode,
+		exchangeCode:                 ExchangeCode,
+		refreshToken:                 RefreshToken,
+		requestDeviceCode:            RequestDeviceCode,
+		pollDeviceAuth:               PollDeviceAuth,
+		exchangeDeviceCode:           ExchangeDeviceCode,
+		concurrentLoginWatchInterval: defaultConcurrentLoginWatchInterval,
 	}
+}
+
+// WithConcurrentLoginNotifier registers a callback that LoginWithDevice
+// invokes once if it exits early because a parallel `serf openai login`
+// wrote fresh OAuth state to disk. Callers typically use this to print a
+// "Detected concurrent login; using existing OAuth state." line so the user
+// understands why the CLI exited without authorizing the device code.
+func (s *Service) WithConcurrentLoginNotifier(notify func()) *Service {
+	s.notifyConcurrentLogin = notify
+	return s
 }
 
 func (s *Service) WithBrowserOpener(openBrowser func(string) error) *Service {
@@ -205,9 +234,59 @@ func (s *Service) LoginWithDevice(ctx context.Context, stateDir string, showProm
 		showPrompt(dc)
 	}
 
-	success, err := s.pollDeviceAuth(ctx, s.client, s.config(), dc)
-	if err != nil {
-		return AuthStatus{}, err
+	// Mark when this login started so the watcher can distinguish a fresh
+	// parallel-login record from pre-existing state the user explicitly
+	// chose to re-issue.
+	startedAt := s.now()
+
+	// Wrap the parent context so a parallel-login detection can cancel the
+	// poll without disturbing the caller's context. A separate flag tells
+	// LoginWithDevice why the context ended — ctx.Err() alone cannot
+	// distinguish user-cancel from watcher-cancel.
+	pollCtx, cancelPoll := context.WithCancel(ctx)
+	defer cancelPoll()
+
+	var (
+		parallelMu       sync.Mutex
+		parallelDetected bool
+		parallelRecord   AuthRecord
+	)
+	markParallel := func(r AuthRecord) {
+		parallelMu.Lock()
+		defer parallelMu.Unlock()
+		if !parallelDetected {
+			parallelDetected = true
+			parallelRecord = r
+		}
+	}
+	readParallel := func() (bool, AuthRecord) {
+		parallelMu.Lock()
+		defer parallelMu.Unlock()
+		return parallelDetected, parallelRecord
+	}
+
+	watcherDone := make(chan struct{})
+	go func() {
+		defer close(watcherDone)
+		s.watchForConcurrentLogin(pollCtx, stateDir, startedAt, func(r AuthRecord) {
+			markParallel(r)
+			cancelPoll()
+		})
+	}()
+
+	success, pollErr := s.pollDeviceAuth(pollCtx, s.client, s.config(), dc)
+	cancelPoll()
+	<-watcherDone
+
+	if detected, record := readParallel(); detected {
+		if s.notifyConcurrentLogin != nil {
+			s.notifyConcurrentLogin()
+		}
+		return s.statusFromRecord(record), nil
+	}
+
+	if pollErr != nil {
+		return AuthStatus{}, pollErr
 	}
 
 	tokens, err := s.exchangeDeviceCode(ctx, s.client, s.config(), success.AuthorizationCode, success.CodeVerifier)
@@ -224,6 +303,48 @@ func (s *Service) LoginWithDevice(ctx context.Context, stateDir string, showProm
 		return AuthStatus{}, err
 	}
 	return s.statusFromRecord(record), nil
+}
+
+// watchForConcurrentLogin polls the auth state file every
+// concurrentLoginWatchInterval and invokes onDetected exactly when a parallel
+// `serf openai login` has written a fresh OAuth record — that is, the record
+// is parseable, was sourced from OAuth (not the env fallback), and was
+// obtained at or after the device-code flow began. Pre-existing records are
+// intentionally ignored: the user explicitly invoked the command and likely
+// wants to overwrite stale state.
+//
+// LoadAuth is used (rather than os.Stat + ModTime) so a half-written file
+// caught mid-rename simply fails validation and the watcher keeps polling.
+func (s *Service) watchForConcurrentLogin(ctx context.Context, stateDir string, startedAt time.Time, onDetected func(AuthRecord)) {
+	interval := s.concurrentLoginWatchInterval
+	if interval <= 0 {
+		interval = defaultConcurrentLoginWatchInterval
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			record, err := LoadAuth(stateDir)
+			if err != nil {
+				// Missing, corrupt, or mid-write — nothing to do; the next
+				// tick will retry.
+				continue
+			}
+			if record.Source != AuthSourceOAuth {
+				continue
+			}
+			if record.ObtainedAt.Before(startedAt) {
+				continue
+			}
+			onDetected(record)
+			return
+		}
+	}
 }
 
 func (s *Service) Status(stateDir string) (AuthStatus, error) {
