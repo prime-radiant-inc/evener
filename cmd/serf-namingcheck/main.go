@@ -1,8 +1,14 @@
 // serf-namingcheck enforces the project's wire-format naming convention:
 //
-//	JSON tags  -> camelCase
-//	TOML tags  -> kebab-case
-//	(CLI flags are also kebab-case; that's enforced where flags are registered.)
+//	JSON tags  -> snake_case
+//	TOML tags  -> snake_case
+//	(CLI flags are kebab-case; that's enforced where flags are registered.)
+//
+// Path carve-outs:
+//
+//	internal/appwire/   — camelCase JSON tags are required (codex interop).
+//	llm/providers/*/    — JSON tags are exempt entirely (each provider has its
+//	                       own upstream wire format we must match verbatim).
 //
 // It scans every Go file for struct tags and every TOML file for keys, and
 // prints one violation per line in `path:line: message` format. Exits non-zero
@@ -57,6 +63,30 @@ var defaultExcludes = []string{
 var excludeSuffixes = []string{
 	"/testdata/",
 	"/.git/",
+}
+
+// appwirePrefix marks files that interop with codex over JSON-RPC. Codex's
+// wire format is camelCase, so JSON tags in this tree MUST be camelCase and
+// the snake_case-default rule does not apply.
+const appwirePrefix = "internal/appwire/"
+
+// providersPrefix marks per-provider client code. Each upstream provider has
+// its own wire format (OpenAI uses snake_case, Anthropic uses snake_case,
+// Google uses camelCase, etc.) so JSON tags here are completely exempt — they
+// must match what the upstream API expects, not our project default.
+const providersPrefix = "llm/providers/"
+
+// isAppwirePath reports whether rel points inside internal/appwire/. JSON tags
+// in this tree are exempt from the snake_case rule (they're forced camelCase
+// by the codex protocol).
+func isAppwirePath(rel string) bool {
+	return strings.HasPrefix(rel, appwirePrefix)
+}
+
+// isProvidersPath reports whether rel points inside llm/providers/. JSON tags
+// in this tree are exempt from naming checks entirely.
+func isProvidersPath(rel string) bool {
+	return strings.HasPrefix(rel, providersPrefix)
 }
 
 func main() {
@@ -212,7 +242,7 @@ func checkGoFile(path, rel string) ([]Violation, error) {
 			}
 			tag := reflect.StructTag(raw[1 : len(raw)-1])
 			if v, ok := tag.Lookup("json"); ok {
-				if msg := checkJSONTag(v); msg != "" {
+				if msg := checkJSONTag(v, rel); msg != "" {
 					out = append(out, Violation{File: rel, Line: fieldLine, Message: msg})
 				}
 			}
@@ -242,13 +272,32 @@ func tagKey(v string) (key string, skip bool) {
 	return v, false
 }
 
-func checkJSONTag(v string) string {
+// checkJSONTag enforces snake_case JSON tags, with two path-based carve-outs:
+//
+//   - Files under internal/appwire/ are exempt because codex's wire protocol
+//     forces camelCase.
+//   - Files under llm/providers/ are exempt entirely; each provider's tag
+//     spelling has to match its upstream API verbatim.
+//
+// Pure-lowercase single-word keys (e.g. "model", "id") satisfy both
+// snake_case and camelCase, so they pass everywhere.
+func checkJSONTag(v, rel string) string {
 	key, skip := tagKey(v)
 	if skip {
 		return ""
 	}
-	if !isCamelCase(key) {
-		return fmt.Sprintf("json tag %q must be camelCase (suggest %q)", key, toCamelCase(key))
+	if isProvidersPath(rel) {
+		return ""
+	}
+	if isAppwirePath(rel) {
+		// Appwire is the inverted regime: camelCase is mandatory there.
+		if !isCamelCase(key) {
+			return fmt.Sprintf("json tag %q must be camelCase in internal/appwire/ (suggest %q)", key, toCamelCase(key))
+		}
+		return ""
+	}
+	if !isSnakeCase(key) {
+		return fmt.Sprintf("json tag %q must be snake_case (suggest %q)", key, toSnakeCase(key))
 	}
 	return ""
 }
@@ -258,8 +307,8 @@ func checkTOMLTag(v string) string {
 	if skip {
 		return ""
 	}
-	if !isKebabCase(key) {
-		return fmt.Sprintf("toml tag %q must be kebab-case (suggest %q)", key, toKebabCase(key))
+	if !isSnakeCase(key) {
+		return fmt.Sprintf("toml tag %q must be snake_case (suggest %q)", key, toSnakeCase(key))
 	}
 	return ""
 }
@@ -275,10 +324,15 @@ var (
 	// kebab-case: lowercase letters/digits, optionally separated by single
 	// hyphens. Pure digits aren't valid keys but we treat them as OK.
 	kebabRe = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+
+	// snake_case: lowercase letters/digits, optionally separated by single
+	// underscores. A single-word lowercase key (e.g. "model") matches.
+	snakeRe = regexp.MustCompile(`^[a-z0-9]+(_[a-z0-9]+)*$`)
 )
 
 func isCamelCase(s string) bool { return camelRe.MatchString(s) }
 func isKebabCase(s string) bool { return kebabRe.MatchString(s) }
+func isSnakeCase(s string) bool { return snakeRe.MatchString(s) }
 
 // toCamelCase produces a best-effort camelCase suggestion. It splits on
 // underscores or hyphens and uppercases each non-leading segment's first letter.
@@ -307,6 +361,16 @@ func toKebabCase(s string) string {
 		parts[i] = strings.ToLower(parts[i])
 	}
 	return strings.Join(parts, "-")
+}
+
+// toSnakeCase produces a best-effort snake_case suggestion. CamelCase is split
+// on case boundaries; hyphens become underscores; result is lowercased.
+func toSnakeCase(s string) string {
+	parts := splitWords(s)
+	for i := range parts {
+		parts[i] = strings.ToLower(parts[i])
+	}
+	return strings.Join(parts, "_")
 }
 
 // splitWords decomposes a name into word parts. Recognises underscores,
@@ -391,11 +455,11 @@ func checkTOMLFile(path, rel string) ([]Violation, error) {
 				if strings.HasPrefix(key, `"`) || strings.HasPrefix(key, `'`) {
 					continue
 				}
-				if !prevIgnore && !isKebabCase(key) {
+				if !prevIgnore && !isSnakeCase(key) {
 					out = append(out, Violation{
 						File:    rel,
 						Line:    lineNo,
-						Message: fmt.Sprintf("toml table key %q must be kebab-case (suggest %q)", key, toKebabCase(key)),
+						Message: fmt.Sprintf("toml table key %q must be snake_case (suggest %q)", key, toSnakeCase(key)),
 					})
 				}
 			}
@@ -406,11 +470,11 @@ func checkTOMLFile(path, rel string) ([]Violation, error) {
 		// Plain key = value lines.
 		if m := tomlKeyLineRe.FindStringSubmatch(line); m != nil {
 			key := m[1]
-			if !prevIgnore && !isKebabCase(key) {
+			if !prevIgnore && !isSnakeCase(key) {
 				out = append(out, Violation{
 					File:    rel,
 					Line:    lineNo,
-					Message: fmt.Sprintf("toml key %q must be kebab-case (suggest %q)", key, toKebabCase(key)),
+					Message: fmt.Sprintf("toml key %q must be snake_case (suggest %q)", key, toSnakeCase(key)),
 				})
 			}
 			// Watch for the start of a triple-quoted string so we don't
