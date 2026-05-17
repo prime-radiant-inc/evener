@@ -667,6 +667,22 @@
         renderModels(q);
       });
 
+      // Without an explicit keydown handler, pressing Enter inside the
+      // search box triggers the enclosing form's implicit submit — and
+      // since the picker lives inside <form data-spawn-form>, the user
+      // ends up spawning whatever's in the textarea (often empty).
+      // Enter selects the first visible model; Escape dismisses.
+      search.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          const first = modelCol.querySelector(".chip-picker-model");
+          if (first) first.click();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          picker.remove();
+        }
+      });
+
       renderProviders("");
       renderModels("");
 
