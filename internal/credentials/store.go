@@ -120,6 +120,22 @@ func (s *Store) Get(provider string) (string, Source) {
 	return "", SourceAbsent
 }
 
+// Layers returns the individual file and env sources for a provider,
+// independently of priority. Used to display all active sources to the user.
+func (s *Store) Layers(provider string) (hasFile bool, envVar string) {
+	provider = strings.ToLower(provider)
+	if p, ok := s.data.Providers[provider]; ok && strings.TrimSpace(p.APIKey) != "" {
+		hasFile = true
+	}
+	for _, env := range providerEnvVars[provider] {
+		if v := strings.TrimSpace(os.Getenv(env)); v != "" {
+			envVar = env
+			break
+		}
+	}
+	return hasFile, envVar
+}
+
 // Set writes a provider API key into the in-memory store and persists.
 func (s *Store) Set(provider, value string) error {
 	provider = strings.ToLower(provider)

@@ -456,6 +456,10 @@ type AuthStatusResponse struct {
 	ActiveSource   string   `json:"activeSource"`
 	AuthModes      []string `json:"authModes,omitempty"`
 	HasStoredOAuth bool     `json:"hasStoredOAuth"`
+	// HasStoredFile is true when a key exists in credentials.toml.
+	HasStoredFile bool `json:"hasStoredFile,omitempty"`
+	// EnvVar is the name of the env var that supplies a key, when present.
+	EnvVar string `json:"envVar,omitempty"`
 	Email          string `json:"email,omitempty"`
 	StoredEmail    string `json:"storedEmail,omitempty"`
 	AccountID      string `json:"accountId,omitempty"`

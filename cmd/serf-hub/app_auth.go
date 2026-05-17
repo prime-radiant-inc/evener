@@ -93,12 +93,15 @@ func (c *hubAuthController) Status(params appwire.AuthStatusParams) (appwire.Aut
 		return appwire.AuthStatusResponse{Provider: provider, Supported: false, ActiveSource: string(credentials.SourceAbsent)}, nil
 	}
 	v, src := c.creds.Get(provider)
+	hasFile, envVar := c.creds.Layers(provider)
 	return appwire.AuthStatusResponse{
-		Provider:     provider,
-		Supported:    true,
-		SignedIn:     v != "",
-		ActiveSource: string(src),
-		AuthModes:    modes,
+		Provider:      provider,
+		Supported:     true,
+		SignedIn:      v != "",
+		ActiveSource:  string(src),
+		AuthModes:     modes,
+		HasStoredFile: hasFile,
+		EnvVar:        envVar,
 	}, nil
 }
 
@@ -246,12 +249,15 @@ func (c *hubAuthController) List(_ appwire.EmptyParams) (appwire.AuthListRespons
 		if p.Name == "openai" {
 			continue
 		}
+		hasFile, envVar := c.creds.Layers(p.Name)
 		out.Providers = append(out.Providers, appwire.AuthStatusResponse{
-			Provider:     p.Name,
-			Supported:    true,
-			SignedIn:     p.Source == credentials.SourceFile || p.Source == credentials.SourceEnv,
-			ActiveSource: string(p.Source),
-			AuthModes:    p.AuthModes,
+			Provider:      p.Name,
+			Supported:     true,
+			SignedIn:      p.Source == credentials.SourceFile || p.Source == credentials.SourceEnv,
+			ActiveSource:  string(p.Source),
+			AuthModes:     p.AuthModes,
+			HasStoredFile: hasFile,
+			EnvVar:        envVar,
 		})
 	}
 	return out, nil
