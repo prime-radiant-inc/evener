@@ -1818,6 +1818,14 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				s.state = SessionIdle
 			}
 			s.mu.Unlock()
+			// Flush meta.json so on-disk turn_count reflects in-memory
+			// modelResponses. Happy-path autosaves only fire after a
+			// completed tool round (line ~2074), so an LLM call that
+			// errors after an intervening modelResponses++ — e.g. a
+			// pause_turn round that continues, or an empty-response
+			// retry that exhausts — would otherwise leave meta.json
+			// stale (e.g. 0 when modelResponses is 1+). Kata 3tgv.
+			s.maybeAutoSave()
 			return "", err
 		}
 

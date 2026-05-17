@@ -182,6 +182,229 @@ func TestSession_StreamErrorReturnsSessionToIdle(t *testing.T) {
 	}
 }
 
+// kata 3tgv: when the agent loop bails out of session.Input via a recoverable
+// LLM error (retry policy exhausted, stream-ended, etc.), the in-memory
+// turn_count was not being flushed to meta.json. The fix adds a maybeAutoSave
+// call alongside the SessionIdle flip in the error exit path.
+//
+// This test exercises the gap directly: a pause_turn response bumps
+// modelResponses without triggering the happy-path autosave (which fires
+// only after a completed tool round), then the next LLM call streams empty
+// and surfaces a retryable StreamError. Without the fix, meta.json still
+// shows the initial-save turn_count of 0 even though modelResponses is 1.
+func TestSession_StreamErrorFlushesMetaJSON_AfterPauseTurnGap(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	var streamCallCount int
+	var streamMu sync.Mutex
+	f := &streamingAdapter{
+		name: "openai",
+		streamScript: func(st *llm.ChanStream) {
+			streamMu.Lock()
+			n := streamCallCount
+			streamCallCount++
+			streamMu.Unlock()
+			if n == 0 {
+				// Call 1: pause_turn. Bumps modelResponses to 1 in-memory
+				// but does NOT trigger happy-path autosave (autosave fires
+				// only after the tool round at line ~2074).
+				st.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
+				st.Send(llm.StreamEvent{
+					Type:   llm.StreamEventTextStart,
+					TextID: "t1",
+				})
+				st.Send(llm.StreamEvent{
+					Type:   llm.StreamEventTextDelta,
+					TextID: "t1",
+					Delta:  "thinking...",
+				})
+				st.Send(llm.StreamEvent{
+					Type:   llm.StreamEventTextEnd,
+					TextID: "t1",
+				})
+				finish := llm.FinishReason{Reason: llm.FinishReasonPauseTurn, Raw: "pause_turn"}
+				st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &finish})
+				return
+			}
+			// Call 2: send nothing → stream-ended error.
+		},
+	}
+	c.Register(f)
+
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:       dir,
+		LLMRetryPolicy: &policy,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hi", nil); err == nil {
+		t.Fatal("expected stream-ended error after pause_turn")
+	}
+	sessID := sess.ID()
+	sess.Close()
+
+	meta, err := LoadSessionMeta(dir, sessID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	// Pre-fix: meta.json on disk still shows turn_count=0 (initial save
+	// value), even though in-memory modelResponses is 1 (the pause_turn
+	// bump).  Post-fix: error path flushes, so meta.json reflects 1.
+	if meta.TurnCount != 1 {
+		t.Fatalf("turn_count after pause_turn + stream error: got %d want 1 (the pause_turn round must be persisted)", meta.TurnCount)
+	}
+}
+
+// kata 3tgv: a session that errors out on the very first LLM call (before
+// any assistant turn lands) must still leave a meta.json on disk with the
+// correct (zero) turn_count — file must be current, not missing or stale.
+// This is the simpler shape from the kata report: USER_INPUT in transcript,
+// no completed assistant exchanges, turn_count=0 on disk.
+func TestSession_StreamErrorFlushesMetaJSON_FirstTurn(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &streamingAdapter{
+		name: "openai",
+		streamScript: func(st *llm.ChanStream) {
+			// Send nothing and close: surfaces a retryable StreamError.
+		},
+	}
+	c.Register(f)
+
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:       dir,
+		LLMRetryPolicy: &policy,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hi", nil); err == nil {
+		t.Fatal("expected stream-ended error")
+	}
+	sessID := sess.ID()
+	sess.Close()
+
+	meta, err := LoadSessionMeta(dir, sessID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	if meta.TurnCount != 0 {
+		t.Fatalf("turn_count after first-turn stream error: got %d want 0", meta.TurnCount)
+	}
+}
+
+// kata 3tgv: after one successful turn (turn_count=1) followed by a turn that
+// errors out, meta.json must reflect turn_count=1, not 0 and not a stale
+// missing-file. This covers the case where modelResponses has already been
+// bumped by happy-path autosaves and the error path must preserve that.
+func TestSession_StreamErrorFlushesMetaJSON_AfterHappyTurn(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	var streamCallCount int
+	var streamMu sync.Mutex
+	commCall := communicateCall("c1", "first reply")
+	f := &streamingAdapter{
+		name: "openai",
+		streamScript: func(st *llm.ChanStream) {
+			streamMu.Lock()
+			n := streamCallCount
+			streamCallCount++
+			streamMu.Unlock()
+			if n == 0 {
+				// Turn 1: model calls communicate (await_reply=false) and finishes.
+				st.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
+				st.Send(llm.StreamEvent{
+					Type: llm.StreamEventToolCallStart,
+					ToolCall: &llm.ToolCallData{
+						ID:   commCall.ID,
+						Name: commCall.Name,
+						Type: "function",
+					},
+				})
+				st.Send(llm.StreamEvent{
+					Type: llm.StreamEventToolCallDelta,
+					ToolCall: &llm.ToolCallData{
+						ID:        commCall.ID,
+						Arguments: commCall.Arguments,
+					},
+				})
+				st.Send(llm.StreamEvent{
+					Type:     llm.StreamEventToolCallEnd,
+					ToolCall: &commCall,
+				})
+				finish := llm.FinishReason{Reason: llm.FinishReasonToolCalls}
+				st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &finish})
+				return
+			}
+			// Turn 2: send nothing → stream-ended error.
+		},
+	}
+	c.Register(f)
+
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:       dir,
+		LLMRetryPolicy: &policy,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Turn 1: happy path → completed assistant turn, turn_count → 1.
+	if _, err := sess.ProcessInput(ctx, "hi", nil); err != nil {
+		t.Fatalf("turn 1 ProcessInput: %v", err)
+	}
+	sessID := sess.ID()
+	meta, err := LoadSessionMeta(dir, sessID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta after turn 1: %v", err)
+	}
+	if meta.TurnCount != 1 {
+		t.Fatalf("turn_count after happy turn 1: got %d want 1", meta.TurnCount)
+	}
+
+	// Turn 2: stream-ended error. meta.json must remain at 1 (the prior
+	// completed exchange), not stale-zero, not missing.
+	if _, err := sess.ProcessInput(ctx, "and again", nil); err == nil {
+		t.Fatal("turn 2: expected stream-ended error")
+	}
+	sess.Close()
+
+	meta, err = LoadSessionMeta(dir, sessID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta after error turn: %v", err)
+	}
+	if meta.TurnCount != 1 {
+		t.Fatalf("turn_count after error turn: got %d want 1 (prior happy turn must be preserved)", meta.TurnCount)
+	}
+}
+
 // fakeErrAdapter is like fakeAdapter but supports steps that return errors.
 type fakeErrAdapter struct {
 	name string
