@@ -36,6 +36,108 @@
     if (d.working_dir) localStorage.setItem("serf-hub.spawn-defaults.global.working_dir", d.working_dir);
   }
 
+  // clearStoredModelDefault removes the global model pre-fill and any
+  // per-project entry whose model matches `value`. The per-project key is
+  // a JSON blob, so we mutate it in place rather than dropping the whole
+  // record (working_dir / branch / access_mode defaults stay intact).
+  function clearStoredModelDefault(value) {
+    try {
+      localStorage.removeItem("serf-hub.spawn-defaults.global.model");
+    } catch (e) { /* ignore quota / privacy mode */ }
+    try {
+      const wd = currentWorkingDir();
+      const key = projectKey(wd);
+      const raw = localStorage.getItem(key);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.model && parsed.model === value) {
+        delete parsed.model;
+        if (Object.keys(parsed).length === 0) {
+          localStorage.removeItem(key);
+        } else {
+          localStorage.setItem(key, JSON.stringify(parsed));
+        }
+      }
+    } catch (e) { /* malformed JSON — leave it for the user to notice */ }
+  }
+
+  function clearModelPrefillNotice() {
+    const existing = document.querySelector("[data-model-prefill-notice]");
+    if (existing) existing.remove();
+  }
+
+  function showModelPrefillNotice(form, discardedValue) {
+    clearModelPrefillNotice();
+    const message = "Discarded last-used model `" + discardedValue + "` — no longer offered by this hub.";
+    const el = window.SerfDiagnostics && window.SerfDiagnostics.render
+      ? window.SerfDiagnostics.render({ severity: "note", source: "hub", title: "Model default cleared", message })
+      : (function () {
+          const div = document.createElement("div");
+          div.className = "diagnostic diagnostic-note diagnostic-source-hub";
+          div.setAttribute("role", "status");
+          div.textContent = message;
+          return div;
+        })();
+    el.dataset.modelPrefillNotice = "true";
+    // Anchor just above the prompt textarea so the user sees the notice
+    // beside the chips that changed.
+    const anchor = form.querySelector("textarea[name=prompt]") || form.querySelector(".spawn-actions");
+    form.insertBefore(el, anchor || null);
+  }
+
+  // validatePrefilledModel checks that the chip's current value still
+  // appears in the harness model list and discards it inline when the
+  // provider IS enumerated but the specific model is gone. Providers that
+  // aren't enumerated at all (OAuth-only anthropic, openrouter-anthropic,
+  // etc.) are left untouched — we don't know whether the value is valid.
+  function validatePrefilledModel(form) {
+    if (!harnessUsesSerfModels(currentHarness())) return;
+    const hidden = form.querySelector('input[type=hidden][name="model"]');
+    const current = hidden ? hidden.value.trim() : "";
+    if (!current) return;
+
+    // Legacy malformed entry (no provider prefix). The picker always
+    // stores `provider/model`, so a bare model name is stale data.
+    if (!current.includes("/")) {
+      clearStoredModelDefault(current);
+      setChipValue("model", "");
+      showModelPrefillNotice(form, current);
+      return;
+    }
+
+    const slash = current.indexOf("/");
+    const provider = current.slice(0, slash);
+    const modelName = current.slice(slash + 1);
+
+    listModelsForHarness(currentHarness()).then(function (models) {
+      if (!Array.isArray(models) || models.length === 0) return;
+      // Confirm the chip still has the same value we're validating —
+      // the user could have picked something else while the fetch was
+      // in flight.
+      const hiddenNow = form.querySelector('input[type=hidden][name="model"]');
+      if (!hiddenNow || hiddenNow.value.trim() !== current) return;
+
+      let providerEnumerated = false;
+      let modelMatches = false;
+      for (let i = 0; i < models.length; i++) {
+        const m = models[i];
+        if (!m || m.provider !== provider) continue;
+        providerEnumerated = true;
+        if (m.model === modelName) { modelMatches = true; break; }
+      }
+      if (modelMatches) return;
+      if (!providerEnumerated) return; // can't tell — leave the pre-fill alone
+
+      clearStoredModelDefault(current);
+      setChipValue("model", "");
+      showModelPrefillNotice(form, current);
+    }).catch(function () {
+      // Network/parse error — without the list we can't tell whether the
+      // value is valid. Leave the pre-fill alone; the server-side 503
+      // path will still surface the truth on submit.
+    });
+  }
+
   function currentHarness() {
     const el = document.querySelector('input[type=hidden][name="harness"]');
     return (el && el.value) || "serf";
@@ -60,6 +162,9 @@
   function setChipValue(name, value) {
     if (name === "model") {
       setModelValue(value);
+      // When the user picks a non-empty model, dismiss any stale
+      // "discarded last-used model" notice — they've answered the prompt.
+      if (value) clearModelPrefillNotice();
       return;
     }
     const display = document.querySelector('[data-chip-value-' + name + ']');
@@ -235,6 +340,11 @@
     } else {
       applyHarnessModelPolicy(currentHarness());
     }
+
+    // Validate the pre-filled model against the harness model list.
+    // Drops stale localStorage entries (e.g. `openai/gpt-5-mini` after the
+    // harness retires it) before the user submits and hits a 503.
+    validatePrefilledModel(form);
 
     // Per-launch override list adds
     attachListAdd("ovr-skill", "ovr-skill-add", "ovr-skill-list");
