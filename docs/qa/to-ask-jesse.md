@@ -48,8 +48,8 @@ Today (`cmd/serf-hub/assets/renderer.js:932+`):
 
 Proposed default (if no objection): extend `buildDiagnosticActions` to ALSO show an action for `source=hub` errors, labelled **"Reconnect & retry"** when we have `lastUserText` (or **"Reconnect"** with no payload when we don't). Action: identical to Retry — call `startTurn` with `lastUserText`. The hub already does the spawn-fresh-daemon work transparently; the UI just needs to expose the button.
 
-Questions for jesse:
-1. **Single button or two?** Keep one button per diagnostic (Retry for provider, Reconnect & retry for hub) — or always show both when applicable?
-2. **Discard option?** If Reconnect fails too (daemon won't come up), the user is currently stuck on a dead session with no graceful exit. Should we add a "Discard session" button after N failed reconnects?
-3. **Label sensitivity:** Is "Reconnect & retry" clear enough, or would something more explicit like "Spawn fresh daemon & retry" land better?
-4. **New appwire method?** Today everything funnels through `startTurn`. The kata speculates a new method may be needed — but as far as I can tell, the existing path is sufficient. Confirm we don't need a dedicated `thread/recover` or similar?
+Questions for jesse — **Answered 2026-05-17:**
+1. **Single button or two?** → **Single button, label depends on source.** Provider error → "Retry turn"; hub error → "Reconnect & retry". Each diagnostic offers one action.
+2. **Discard option?** → **No discard button.** User navigates away manually when reconnect can't recover.
+3. **Label sensitivity:** → **"Reconnect & retry".**
+4. **New appwire method?** → **Investigate first.** Trace startTurn under daemon-death scenarios and report whether reuse is safe before implementing a dedicated `thread/recover` method.
