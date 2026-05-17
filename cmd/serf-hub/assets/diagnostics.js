@@ -139,7 +139,14 @@
     return "Check the Serf session log and daemon state.";
   }
 
-  function render(input) {
+  // render builds a diagnostic card element.
+  //
+  // The optional `actions` array (on the input object or overridden by the
+  // caller) may contain objects of the form { label: string, onclick: fn }.
+  // Each action is rendered as a button inside the diagnostic footer.
+  // This is used by the renderer to attach a "Retry turn" button when the
+  // provider fails and a retry is possible.
+  function render(input, actions) {
     const diagnostic = classify(input);
     const el = document.createElement("div");
     el.className = "diagnostic diagnostic-" + diagnostic.severity + " diagnostic-source-" + diagnostic.source;
@@ -171,6 +178,23 @@
       hint.className = "diagnostic-hint";
       hint.textContent = diagnostic.hint;
       el.appendChild(hint);
+    }
+
+    // Render action buttons (e.g. "Retry turn") when the caller supplies them.
+    const resolvedActions = actions || (input && Array.isArray(input.actions) ? input.actions : null);
+    if (resolvedActions && resolvedActions.length > 0) {
+      const footer = document.createElement("div");
+      footer.className = "diagnostic-actions";
+      for (const action of resolvedActions) {
+        const btn = document.createElement("button");
+        btn.className = "diagnostic-action-btn";
+        btn.textContent = String(action.label || "");
+        if (typeof action.onclick === "function") {
+          btn.addEventListener("click", action.onclick);
+        }
+        footer.appendChild(btn);
+      }
+      el.appendChild(footer);
     }
 
     return el;

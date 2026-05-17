@@ -530,6 +530,203 @@ func TestStreamGenerate_DoesNotRetryAfterPartialDataDelivered(t *testing.T) {
 	}
 }
 
+// TestStreamGenerate_RetriesStreamTruncation verifies that when a stream ends
+// without a finish event and no partial output has been delivered, the
+// StreamGenerate loop retries the full open+consume cycle with exponential
+// backoff — matching the Codex run_with_retry pattern.
+func TestStreamGenerate_RetriesStreamTruncation(t *testing.T) {
+	c := NewClient()
+	var sleepCalls []time.Duration
+	sleepMu := sync.Mutex{}
+	a := &scriptedStreamAdapter{
+		name: "openai",
+		scripts: []func(ctx context.Context, req Request) (Stream, error){
+			// Attempt 1: stream opens but closes without a finish event (truncated).
+			func(ctx context.Context, req Request) (Stream, error) {
+				_ = req
+				sctx, cancel := context.WithCancel(ctx)
+				st := NewChanStream(cancel)
+				go func() {
+					defer st.CloseSend()
+					st.Send(StreamEvent{Type: StreamEventStreamStart})
+					// No finish event — stream truncated.
+				}()
+				_ = sctx
+				return st, nil
+			},
+			// Attempt 2: stream opens but truncates again.
+			func(ctx context.Context, req Request) (Stream, error) {
+				_ = req
+				sctx, cancel := context.WithCancel(ctx)
+				st := NewChanStream(cancel)
+				go func() {
+					defer st.CloseSend()
+					// Nothing at all.
+				}()
+				_ = sctx
+				return st, nil
+			},
+			// Attempt 3: success.
+			func(ctx context.Context, req Request) (Stream, error) {
+				_ = req
+				sctx, cancel := context.WithCancel(ctx)
+				st := NewChanStream(cancel)
+				go func() {
+					defer st.CloseSend()
+					st.Send(StreamEvent{Type: StreamEventStreamStart})
+					st.Send(StreamEvent{Type: StreamEventTextStart, TextID: "t0"})
+					st.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "t0", Delta: "hello"})
+					fr := FinishReason{Reason: FinishReasonStop}
+					st.Send(StreamEvent{
+						Type:         StreamEventFinish,
+						FinishReason: &fr,
+						Response: &Response{
+							Provider: "openai",
+							Model:    "m",
+							Message:  Assistant("hello"),
+						},
+					})
+				}()
+				_ = sctx
+				return st, nil
+			},
+		},
+	}
+	c.Register(a)
+
+	prompt := "hi"
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	res, err := StreamGenerate(ctx, GenerateOptions{
+		Client:   c,
+		Model:    "m",
+		Provider: "openai",
+		Prompt:   &prompt,
+		RetryPolicy: &RetryPolicy{
+			MaxRetries:        3,
+			BaseDelay:         1 * time.Millisecond,
+			MaxDelay:          10 * time.Millisecond,
+			BackoffMultiplier: 2.0,
+			Jitter:            false,
+		},
+		Sleep: func(ctx context.Context, d time.Duration) error {
+			sleepMu.Lock()
+			sleepCalls = append(sleepCalls, d)
+			sleepMu.Unlock()
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamGenerate: %v", err)
+	}
+	defer res.Close() //nolint:errcheck
+
+	var gotText string
+	for ev := range res.Events() {
+		if ev.Type == StreamEventTextDelta {
+			gotText += ev.Delta
+		}
+		if ev.Type == StreamEventError {
+			t.Fatalf("unexpected ERROR event: %v", ev.Err)
+		}
+	}
+	if got, want := gotText, "hello"; got != want {
+		t.Fatalf("text: got %q want %q", got, want)
+	}
+	if got := len(a.Requests()); got != 3 {
+		t.Fatalf("expected 3 stream attempts (2 retries); got %d", got)
+	}
+	sleepMu.Lock()
+	sleepCount := len(sleepCalls)
+	sleepMu.Unlock()
+	if sleepCount != 2 {
+		t.Fatalf("expected 2 backoff sleeps; got %d", sleepCount)
+	}
+	// Verify exponential backoff: 1ms × 2^0 = 1ms, 1ms × 2^1 = 2ms.
+	if sleepCalls[0] != 1*time.Millisecond {
+		t.Fatalf("sleep[0]: got %s want 1ms", sleepCalls[0])
+	}
+	if sleepCalls[1] != 2*time.Millisecond {
+		t.Fatalf("sleep[1]: got %s want 2ms", sleepCalls[1])
+	}
+}
+
+// TestStreamGenerate_TruncationAfterPartialOutput_NoRetry confirms that once
+// text has been delivered to the caller, a subsequent stream truncation is
+// surfaced immediately — no retry, no second attempt.
+func TestStreamGenerate_TruncationAfterPartialOutput_NoRetry(t *testing.T) {
+	c := NewClient()
+	a := &scriptedStreamAdapter{
+		name: "openai",
+		scripts: []func(ctx context.Context, req Request) (Stream, error){
+			func(ctx context.Context, req Request) (Stream, error) {
+				_ = req
+				sctx, cancel := context.WithCancel(ctx)
+				st := NewChanStream(cancel)
+				go func() {
+					defer st.CloseSend()
+					st.Send(StreamEvent{Type: StreamEventStreamStart})
+					st.Send(StreamEvent{Type: StreamEventTextStart, TextID: "t0"})
+					st.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "t0", Delta: "partial"})
+					// No finish event — truncated after delivering partial text.
+				}()
+				_ = sctx
+				return st, nil
+			},
+		},
+	}
+	c.Register(a)
+
+	prompt := "hi"
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	res, err := StreamGenerate(ctx, GenerateOptions{
+		Client:   c,
+		Model:    "m",
+		Provider: "openai",
+		Prompt:   &prompt,
+		RetryPolicy: &RetryPolicy{
+			MaxRetries:        3,
+			BaseDelay:         1 * time.Millisecond,
+			MaxDelay:          10 * time.Millisecond,
+			BackoffMultiplier: 2.0,
+			Jitter:            false,
+		},
+		Sleep: func(ctx context.Context, d time.Duration) error {
+			t.Fatalf("unexpected sleep call after partial output")
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamGenerate: %v", err)
+	}
+	defer res.Close() //nolint:errcheck
+
+	var sawError bool
+	for ev := range res.Events() {
+		if ev.Type == StreamEventError {
+			sawError = true
+		}
+	}
+	if !sawError {
+		t.Fatalf("expected ERROR event after partial-output truncation")
+	}
+	// Only one stream attempt — no retry after partial output.
+	if got := len(a.Requests()); got != 1 {
+		t.Fatalf("expected exactly 1 stream attempt; got %d", got)
+	}
+	_, rerr := res.Response()
+	if rerr == nil {
+		t.Fatalf("expected Response() error")
+	}
+	var se *StreamError
+	if !errors.As(rerr, &se) {
+		t.Fatalf("expected StreamError, got %T (%v)", rerr, rerr)
+	}
+}
+
 func TestStreamGenerate_Cancellation_EmitsAbortError(t *testing.T) {
 	c := NewClient()
 	a := &scriptedStreamAdapter{

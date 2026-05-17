@@ -67,6 +67,7 @@
       this.entryIndex = 0;               // counts ALL entries rendered (matches transcript entry index)
       this.cheapToolCluster = null;      // current cluster div for batching cheap reads
       this.pendingAttachments = [];      // queued image attachments awaiting send
+      this.lastUserText = "";            // most-recent user turn text (for "Retry turn")
 
       this.conversation.innerHTML = "";
 
@@ -366,6 +367,7 @@
           }
           break;
         case "USER_INPUT":
+          this.lastUserText = data.text || "";
           if (this.promoteLocalUserMessage(data)) break;
           this.userTurnIndex++;
           if (typeof data.turn === "number" && data.turn > 0) {
@@ -539,6 +541,7 @@
 
     appendLocalUserMessage(text, images, turnId, previousUserCount) {
       if (this.userMessageCount() > previousUserCount) return;
+      this.lastUserText = text || "";
       this.userTurnIndex++;
       this.entryIndex++;
       const wrap = this.appendUserMessage(text || "", this.entryIndex, images || []);
@@ -910,13 +913,54 @@
           severity: kind,
           message: text || (diagnostic && (diagnostic.message || diagnostic.error)) || "",
         });
-        this.conversation.appendChild(window.SerfDiagnostics.render(payload));
+        // Build action buttons for the diagnostic card.
+        // "Retry turn" is offered when the error comes from the provider and
+        // we have a user turn to replay.  Clicking it re-issues the last user
+        // turn against the same daemon — the hub auto-resumes if needed.
+        const actions = this.buildDiagnosticActions(payload);
+        this.conversation.appendChild(window.SerfDiagnostics.render(payload, actions));
         return;
       }
       const el = document.createElement("div");
       el.className = "banner " + kind;
       el.textContent = "[" + kind + "] " + text;
       this.conversation.appendChild(el);
+    },
+
+    // buildDiagnosticActions returns an array of action descriptors for the
+    // given diagnostic payload, or null if no actions apply.
+    buildDiagnosticActions(payload) {
+      const classified = window.SerfDiagnostics ? window.SerfDiagnostics.classify(payload) : null;
+      if (!classified || classified.source !== "provider") return null;
+      const lastText = this.lastUserText;
+      if (!lastText) return null;
+      const sessionId = this.sessionId;
+      const appwireRef = this.appwireRef;
+      const self = this;
+      return [{
+        label: "Retry turn",
+        onclick: async function() {
+          try {
+            if (window.SerfAppwire) {
+              await window.SerfAppwire.startTurn(appwireRef || sessionId, lastText, []);
+            } else {
+              const resp = await fetch("/s/" + encodeURIComponent(sessionId) + "/send", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ text: lastText, images: [] }),
+              });
+              if (!resp.ok) {
+                const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
+                self.appendBanner("error", "retry failed: " + detail, { source: "hub", title: "Retry error" });
+                return;
+              }
+            }
+            self.ensureLiveStream();
+          } catch (err) {
+            self.appendBanner("error", "retry failed: " + err.message, { source: "hub", title: "Retry error" });
+          }
+        },
+      }];
     },
 
     // appendSteeringMessage classifies the injected steering text and routes
