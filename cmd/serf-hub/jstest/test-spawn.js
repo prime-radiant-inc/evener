@@ -95,12 +95,15 @@ formDom.window.localStorage.setItem("serf-hub.spawn-defaults.global.model", "ope
 //   - malformed blob: bare model name → `.model` dropped, rest kept
 //   - valid blob: `.model` still offered by the hub → untouched
 //   - unknown-provider blob: provider not enumerated → untouched
+// Per-project keys live at `serf-hub.spawn-defaults.<workingDir>` — see
+// projectKey() in spawn.js. Match that scheme exactly so the sweep
+// actually touches them.
 const projectKeys = {
-  staleOnly: "serf-hub.spawn-defaults.project./tmp/retired-stale",
-  mixed: "serf-hub.spawn-defaults.project./tmp/retired-mixed",
-  malformed: "serf-hub.spawn-defaults.project./tmp/legacy-bare",
-  valid: "serf-hub.spawn-defaults.project./tmp/still-good",
-  unknown: "serf-hub.spawn-defaults.project./tmp/oauth-anthropic",
+  staleOnly: "serf-hub.spawn-defaults./tmp/retired-stale",
+  mixed: "serf-hub.spawn-defaults./tmp/retired-mixed",
+  malformed: "serf-hub.spawn-defaults./tmp/legacy-bare",
+  valid: "serf-hub.spawn-defaults./tmp/still-good",
+  unknown: "serf-hub.spawn-defaults./tmp/oauth-anthropic",
 };
 formDom.window.localStorage.setItem(projectKeys.staleOnly,
   JSON.stringify({ model: "openai/gpt-5-mini" }));
@@ -112,11 +115,19 @@ formDom.window.localStorage.setItem(projectKeys.valid,
   JSON.stringify({ model: "openai/gpt-5.2", working_dir: "/tmp/still-good" }));
 formDom.window.localStorage.setItem(projectKeys.unknown,
   JSON.stringify({ model: "anthropic/claude-mystery", working_dir: "/tmp/oauth-anthropic" }));
-// Unrelated key with the same suffix pattern but a different prefix —
-// the sweep should not touch this.
-const unrelatedKey = "serf-hub.spawn-defaults.unrelated";
+// Unrelated key with a different prefix — the sweep should not touch
+// this.
+const unrelatedKey = "some-other-app.spawn-defaults./tmp/retired";
 formDom.window.localStorage.setItem(unrelatedKey,
   JSON.stringify({ model: "openai/gpt-5-mini" }));
+// Global scalar keys: the sweep handles `global.model` explicitly but
+// must NOT JSON.parse `global.working_dir` / `global.last-working-dir`
+// (those are plain strings, not blobs). Seed `global.working_dir`
+// matching the form's existing value so loadDefaults doesn't override
+// the test fixture; the assertion below verifies the key survives the
+// sweep untouched.
+formDom.window.localStorage.setItem("serf-hub.spawn-defaults.global.working_dir", "/tmp/project-with-oauth");
+formDom.window.localStorage.setItem("serf-hub.spawn-defaults.global.last-working-dir", "/tmp/some-other-dir");
 
 formDom.window.eval(spawnSrc);
 formDom.window.document.dispatchEvent(new formDom.window.Event("DOMContentLoaded", { bubbles: true }));
@@ -139,7 +150,12 @@ assert(unknownAfter && unknownAfter.model === "anthropic/claude-mystery",
   "sweep should leave models from unenumerated providers alone, got " + JSON.stringify(unknownAfter));
 const unrelatedAfter = JSON.parse(formDom.window.localStorage.getItem(unrelatedKey) || "null");
 assert(unrelatedAfter && unrelatedAfter.model === "openai/gpt-5-mini",
-  "sweep must only match keys with the `serf-hub.spawn-defaults.project.` prefix, got " + JSON.stringify(unrelatedAfter));
+  "sweep must only match keys with the `serf-hub.spawn-defaults.` prefix, got " + JSON.stringify(unrelatedAfter));
+// Global scalar keys must survive the sweep untouched.
+assert(formDom.window.localStorage.getItem("serf-hub.spawn-defaults.global.working_dir") === "/tmp/project-with-oauth",
+  "sweep must not touch global.working_dir scalar");
+assert(formDom.window.localStorage.getItem("serf-hub.spawn-defaults.global.last-working-dir") === "/tmp/some-other-dir",
+  "sweep must not touch global.last-working-dir scalar");
 
 const modelDisplay = () => formDom.window.document.querySelector("[data-chip-value-model]").textContent.trim();
 const modelValue = () => formDom.window.document.querySelector('input[name="model"]').value;

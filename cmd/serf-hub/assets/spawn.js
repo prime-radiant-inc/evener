@@ -108,12 +108,16 @@
     return providerEnumerated ? "stale" : "unknown";
   }
 
-  // sweepStaleModelDefaults walks every `serf-hub.spawn-defaults.project.*`
-  // localStorage blob plus the `serf-hub.spawn-defaults.global.model` key
-  // and removes stored models that the harness no longer offers. Other
-  // fields in each per-project blob (working_dir, branch, access_mode) are
+  // sweepStaleModelDefaults walks every per-project spawn-defaults blob in
+  // localStorage and the `serf-hub.spawn-defaults.global.model` key, and
+  // removes stored models that the harness no longer offers. Other fields
+  // in each per-project blob (working_dir, branch, access_mode) are
   // preserved; only stale `.model` entries are stripped (and the wrapping
   // blob is removed when emptied).
+  //
+  // Per-project keys live at `serf-hub.spawn-defaults.<workingDir>` (see
+  // projectKey above). We match the broader prefix and explicitly skip the
+  // known global scalar keys so we don't try to JSON.parse them.
   //
   // Returns the number of cleanup actions performed so the caller can log
   // it. Failures from a read-only / quota-bound localStorage are swallowed
@@ -126,10 +130,16 @@
     } catch (e) {
       return 0;
     }
-    const prefix = "serf-hub.spawn-defaults.project.";
+    const prefix = "serf-hub.spawn-defaults.";
+    const globalScalars = new Set([
+      "serf-hub.spawn-defaults.global.model",
+      "serf-hub.spawn-defaults.global.working_dir",
+      "serf-hub.spawn-defaults.global.last-working-dir",
+    ]);
     for (let i = 0; i < keys.length; i++) {
       const key = keys[i];
       if (key.indexOf(prefix) !== 0) continue;
+      if (globalScalars.has(key)) continue;
       let raw;
       try { raw = localStorage.getItem(key); } catch (e) { continue; }
       if (!raw) continue;
