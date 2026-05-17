@@ -25,5 +25,8 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Naming check (JSON=camelCase, TOML=kebab-case)
+        run: go run ./cmd/serf-namingcheck
+
       - name: Test
         run: go test -short -count=1 ./...

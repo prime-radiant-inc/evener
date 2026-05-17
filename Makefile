@@ -1,4 +1,4 @@
-.PHONY: build build-hub build-tui build-all build-linux test test-short vet lint clean
+.PHONY: build build-hub build-tui build-all build-linux build-namingcheck test test-short vet lint lint-naming clean
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
@@ -33,8 +33,17 @@ test-short:
 vet:
 	go vet ./...
 
-lint:
+# lint-naming enforces JSON=camelCase, TOML=kebab-case across every Go
+# struct tag and TOML file in the repo. Fast (well under a second) and
+# safe to run as a separate `go vet`-style gate.
+lint-naming:
+	go run ./cmd/serf-namingcheck
+
+build-namingcheck:
+	go build -o serf-namingcheck ./cmd/serf-namingcheck/
+
+lint: lint-naming
 	golangci-lint run ./...
 
 clean:
-	rm -f serf serf-hub serf-tui llmcall
+	rm -f serf serf-hub serf-tui llmcall serf-namingcheck

@@ -271,6 +271,16 @@ Daemons are loopback-only. Each writes a private rendezvous file to `~/.serf/run
 
 Design spec, plans, and notes live under `docs/superpowers/`.
 
+## Linting
+
+The repo enforces a single naming rule across wire formats:
+
+- **JSON tags** must be `camelCase`.
+- **TOML tags and keys** must be `kebab-case`.
+- **CLI flags** are `kebab-case` (enforced at the flag registry).
+
+Run the linter via `make lint-naming` or directly with `go run ./cmd/serf-namingcheck`. CI runs it after `go vet`. The check is fast (< 1s on this tree) and exits non-zero on violations. A single field/key can opt out with a `// serf:naming-ignore` (Go) or `# serf:naming-ignore` (TOML) marker on the preceding line — use sparingly, and explain why.
+
 ## Acknowledgments
 
 Serf is forked from [Kilroy](https://github.com/danshapiro/kilroy) by Dan Shapiro, originally built as part of the [StrongDM Attractor](https://github.com/strongdm/attractor) project. The unified LLM client, provider adapters, and agentic tool-calling loop all trace their lineage to that work. Kilroy is licensed under the MIT License (see `LICENSE-kilroy`).
