@@ -87,6 +87,12 @@ const modelDisplay = () => formDom.window.document.querySelector("[data-chip-val
 const modelValue = () => formDom.window.document.querySelector('input[name="model"]').value;
 assert(modelDisplay() === "openai/gpt-5.2", "serf spawn should apply stored serf model default");
 
+// validatePrefilledModel calls listModels at init when the chip has a
+// pre-filled value; reset the counter so subsequent picker-open assertions
+// measure user-triggered fetches, not init-time validation.
+listModelsCalls = 0;
+listModelsParams = null;
+
 formDom.window.document.querySelector('button[data-chip="model"]').click();
 assert(listModelsCalls === 1, "serf model picker should fetch launch-scoped model list");
 assert(listModelsParams.cwd === "/tmp/project-with-oauth", "serf model picker should pass selected working directory");
