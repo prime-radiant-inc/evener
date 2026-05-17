@@ -1506,6 +1506,19 @@ func (s *Session) hookInput(event HookEvent) HookInput {
 }
 
 func (s *Session) processOneInput(ctx context.Context, input string, images []ImageAttachment) (string, error) {
+	// Flush meta.json on every exit from this function — normal return, error
+	// return, ctx cancellation, retry-budget exhaustion, or panic. Without
+	// this, in-memory modelResponses bumps that happen between happy-path
+	// autosaves (e.g. pause_turn, empty-response retries that exhaust) stay
+	// stranded if any exit path is taken before the next tool round. Kata ztne.
+	defer func() {
+		if r := recover(); r != nil {
+			s.maybeAutoSave()
+			panic(r)
+		}
+		s.maybeAutoSave()
+	}()
+
 	// Derive a context that cancels when either the caller's ctx or the session ctx cancels.
 	ctx, cancel := context.WithCancel(ctx)
 	go func() {
@@ -1813,19 +1826,13 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			// flip the session sits in PROCESSING forever from the daemon's
 			// /status endpoint, the hub disables steer/send, and the user has
 			// no recovery path short of restarting the daemon (kata r6y9).
+			// meta.json flush happens via the deferred flush at the top of
+			// processOneInput (kata ztne).
 			s.mu.Lock()
 			if s.state == SessionProcessing {
 				s.state = SessionIdle
 			}
 			s.mu.Unlock()
-			// Flush meta.json so on-disk turn_count reflects in-memory
-			// modelResponses. Happy-path autosaves only fire after a
-			// completed tool round (line ~2074), so an LLM call that
-			// errors after an intervening modelResponses++ — e.g. a
-			// pause_turn round that continues, or an empty-response
-			// retry that exhausts — would otherwise leave meta.json
-			// stale (e.g. 0 when modelResponses is 1+). Kata 3tgv.
-			s.maybeAutoSave()
 			return "", err
 		}
 

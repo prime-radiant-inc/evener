@@ -405,6 +405,326 @@ func TestSession_StreamErrorFlushesMetaJSON_AfterHappyTurn(t *testing.T) {
 	}
 }
 
+// kata ztne: when the model returns empty responses repeatedly until the
+// retry budget exhausts, processOneInput returns an emptyResponseExhaustedError.
+// The deferred flush at the top of processOneInput must flush meta.json so
+// turn_count reflects the in-memory modelResponses bumps from each empty
+// retry.
+func TestSession_EmptyResponseExhaustedFlushesMeta(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	// Each empty response increments modelResponses (the loop bumps it before
+	// retrying). After maxEmptyRetries=3 consecutive empties, the loop returns
+	// emptyResponseExhaustedError. modelResponses ends at 4 (1 initial + 3 retries).
+	emptyStep := func(req llm.Request) llm.Response {
+		return llm.Response{
+			Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{}},
+		}
+	}
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			emptyStep, emptyStep, emptyStep, emptyStep, emptyStep, emptyStep,
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir: dir,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "hi", nil)
+	if err == nil || !errors.Is(err, errEmptyResponseExhausted) {
+		t.Fatalf("expected emptyResponseExhaustedError, got %v", err)
+	}
+	sessID := sess.ID()
+	sess.Close()
+
+	meta, err := LoadSessionMeta(dir, sessID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	// Each empty response (initial + 3 retries) bumps modelResponses, then
+	// the loop hits the exhausted exit. meta.json must reflect that — non-zero.
+	if meta.TurnCount == 0 {
+		t.Fatalf("turn_count after empty-response exhaustion: got 0, want >0 (deferred flush should persist modelResponses)")
+	}
+}
+
+// kata ztne: when the model returns bare text (no tool call) repeatedly until
+// the retry budget exhausts, processOneInput returns a
+// bareTextWithoutResultToolError. The deferred flush must persist meta.json.
+func TestSession_BareTextWithoutResultToolFlushesMeta(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	bareStep := func(req llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("bare text without tool")}
+	}
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			bareStep, bareStep, bareStep, bareStep, bareStep,
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir: dir,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "hi", nil)
+	if err == nil || !errors.Is(err, errBareTextWithoutResultTool) {
+		t.Fatalf("expected bareTextWithoutResultToolError, got %v", err)
+	}
+	sessID := sess.ID()
+	sess.Close()
+
+	meta, err := LoadSessionMeta(dir, sessID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	if meta.TurnCount == 0 {
+		t.Fatalf("turn_count after bare-text exhaustion: got 0, want >0 (deferred flush should persist modelResponses)")
+	}
+}
+
+// kata ztne: when MaxToolRoundsPerInput is reached, processOneInput falls
+// out of the run loop and returns nil error. The deferred flush must run.
+// With MaxToolRoundsPerInput=1, after one round the loop exits without ever
+// hitting the happy-path autosave at the end of the round (no communicate
+// delivery). meta.json must still reflect the bumped modelResponses.
+func TestSession_MaxToolRoundsExitFlushesMeta(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	// Always return a non-communicate tool call — the model never delivers,
+	// so the loop runs until MaxToolRoundsPerInput is hit.
+	toolStep := func(req llm.Request) llm.Response {
+		return llm.Response{
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+						ID:        "t1",
+						Name:      "my_loop_tool",
+						Arguments: json.RawMessage(`{}`),
+						Type:      "function",
+					}},
+				},
+			},
+		}
+	}
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			toolStep, toolStep, toolStep,
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:              dir,
+		MaxToolRoundsPerInput: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	sess.RegisterTool("my_loop_tool", "loops forever", map[string]any{"type": "object"}, func(ctx context.Context, args any) (any, error) {
+		return "ok", nil
+	})
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hi", nil); err != nil {
+		t.Fatalf("ProcessInput (max-rounds exit): %v", err)
+	}
+	sessID := sess.ID()
+	sess.Close()
+
+	meta, err := LoadSessionMeta(dir, sessID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	if meta.TurnCount == 0 {
+		t.Fatalf("turn_count after MaxToolRoundsPerInput exit: got 0, want >0 (deferred flush should persist modelResponses)")
+	}
+}
+
+// kata ztne: when ctx is cancelled mid-turn, processOneInput returns
+// ctx.Err(). The deferred flush must persist meta.json. We trigger
+// cancellation by passing a ctx that's already cancelled before the LLM
+// call — the per-round ctx.Done() check on line ~1607 returns first.
+// modelResponses stays at 0, but meta.json must still be written so a
+// resumed-session reader sees a current snapshot, not a stale one.
+func TestSession_CtxCancellationFlushesMeta(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	// First turn: completes happily, bumping modelResponses to 1 and writing
+	// meta.json. Second turn: ctx is cancelled before the LLM call, exit via
+	// ctx.Done(). Without the deferred flush this exit path skips
+	// maybeAutoSave entirely.
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("hi back") },
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir: dir,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	// Happy turn 1.
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel1()
+	if _, err := sess.ProcessInput(ctx1, "hi", nil); err != nil {
+		t.Fatalf("turn 1: %v", err)
+	}
+	sessID := sess.ID()
+
+	// Delete meta.json so we can detect whether the cancellation path
+	// re-writes it. (If it doesn't, LoadSessionMeta will fail.)
+	metaPath := filepath.Join(dir, "sessions", sessID+".meta.json")
+	if err := os.Remove(metaPath); err != nil {
+		t.Fatalf("remove meta.json: %v", err)
+	}
+
+	// Turn 2: pre-cancelled ctx.
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	cancel2()
+	if _, err := sess.ProcessInput(ctx2, "again", nil); err == nil {
+		t.Fatal("expected ctx.Canceled error")
+	}
+	sess.Close()
+
+	// Deferred flush must have re-created meta.json.
+	if _, err := os.Stat(metaPath); err != nil {
+		t.Fatalf("meta.json missing after ctx cancellation: %v", err)
+	}
+	meta, err := LoadSessionMeta(dir, sessID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	// Must reflect turn 1's completed exchange (modelResponses=1), not be
+	// missing.
+	if meta.TurnCount != 1 {
+		t.Fatalf("turn_count after ctx cancel: got %d want 1", meta.TurnCount)
+	}
+}
+
+// kata ztne: when a tool handler panics, processOneInput must (a) flush
+// meta.json via the deferred recover, and (b) let the panic propagate.
+func TestSession_PanicFlushesMeta(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	// Model issues one tool call to a panicking tool. The panic propagates
+	// up through execTool → processOneInput, where our recover catches it,
+	// flushes meta.json, and re-panics.
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Message: llm.Message{
+						Role: llm.RoleAssistant,
+						Content: []llm.ContentPart{
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+								ID:        "p1",
+								Name:      "boom_tool",
+								Arguments: json.RawMessage(`{}`),
+								Type:      "function",
+							}},
+						},
+					},
+				}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir: dir,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	sess.RegisterTool("boom_tool", "panics on call", map[string]any{"type": "object"}, func(ctx context.Context, args any) (any, error) {
+		panic("ztne kata test panic")
+	})
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	sessID := sess.ID()
+	// Delete the initial meta.json so we can detect the panic-path flush.
+	metaPath := filepath.Join(dir, "sessions", sessID+".meta.json")
+	if err := os.Remove(metaPath); err != nil {
+		t.Fatalf("remove meta.json: %v", err)
+	}
+
+	// Call ProcessInput inside a recover to catch the re-panic.
+	var panicked any
+	func() {
+		defer func() {
+			panicked = recover()
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = sess.ProcessInput(ctx, "hi", nil)
+	}()
+	if panicked == nil {
+		t.Fatal("expected panic to propagate through ProcessInput")
+	}
+	if !strings.Contains(fmt.Sprint(panicked), "ztne kata test panic") {
+		t.Fatalf("unexpected panic value: %v", panicked)
+	}
+	sess.Close()
+
+	// Deferred recover must have flushed meta.json before re-panicking.
+	if _, err := os.Stat(metaPath); err != nil {
+		t.Fatalf("meta.json missing after panic: %v", err)
+	}
+	meta, err := LoadSessionMeta(dir, sessID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	// modelResponses bumps after the LLM response is processed (before
+	// tool exec, which is where the panic happens). turn_count >= 1.
+	if meta.TurnCount < 1 {
+		t.Fatalf("turn_count after panic: got %d want >=1", meta.TurnCount)
+	}
+}
+
 // fakeErrAdapter is like fakeAdapter but supports steps that return errors.
 type fakeErrAdapter struct {
 	name string
