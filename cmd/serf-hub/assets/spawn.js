@@ -17,6 +17,11 @@
       // Layer the global model default underneath the per-project value
       const globalModel = localStorage.getItem("serf-hub.spawn-defaults.global.model") || "";
       if (!perProject.model && globalModel) perProject.model = globalModel;
+      // Layer the global working_dir default when visiting /new without a pre-filled dir
+      if (!perProject.working_dir) {
+        const globalWorkingDir = localStorage.getItem("serf-hub.spawn-defaults.global.working_dir") || "";
+        if (globalWorkingDir) perProject.working_dir = globalWorkingDir;
+      }
       return perProject;
     } catch (e) { return {}; }
   }
@@ -27,6 +32,8 @@
     localStorage.setItem(projectKey(wd), JSON.stringify(saved));
     // Persist model globally across projects
     if (harnessUsesSerfModels(d.harness) && d.model) localStorage.setItem("serf-hub.spawn-defaults.global.model", d.model);
+    // Persist working_dir globally so it is restored on /new visits
+    if (d.working_dir) localStorage.setItem("serf-hub.spawn-defaults.global.working_dir", d.working_dir);
   }
 
   function currentHarness() {
@@ -59,6 +66,35 @@
     const hidden = document.querySelector('input[type=hidden][name="' + name + '"]');
     if (display) display.textContent = value || "(default)";
     if (hidden) hidden.value = value || "";
+    // When working_dir changes, resolve and display the git HEAD branch
+    // in the branch chip if no explicit branch has been chosen.
+    if (name === "working_dir" && value) {
+      resolveAndSetHeadBranch(value);
+    }
+  }
+
+  // resolveAndSetHeadBranch fetches the HEAD branch for cwd and updates the
+  // branch chip display text when the chip value is still empty (default).
+  function resolveAndSetHeadBranch(cwd) {
+    const branchHidden = document.querySelector('input[type=hidden][name="branch"]');
+    // Only resolve when no explicit branch has been set.
+    if (branchHidden && branchHidden.value) return;
+    const url = window.SerfAppwire
+      ? null // appwire doesn't expose git/head yet; fall through to fetch
+      : "/api/git/head?cwd=" + encodeURIComponent(cwd);
+    if (!url) return;
+    fetch(url).then(r => r.json()).then(data => {
+      const branch = (data && data.branch) ? data.branch : "";
+      const display = document.querySelector("[data-chip-value-branch]");
+      // Only update if the user still hasn't chosen an explicit branch.
+      const hiddenNow = document.querySelector('input[type=hidden][name="branch"]');
+      if (display && hiddenNow && !hiddenNow.value) {
+        display.textContent = branch || "(default)";
+        // Store the resolved head in a data attribute so the chip can tell
+        // the user what "(default)" actually means.
+        display.dataset.resolvedHead = branch;
+      }
+    }).catch(() => {});
   }
 
   function applyHarnessModelPolicy(harness) {
@@ -182,9 +218,18 @@
 
     // Apply sticky defaults on top of server-provided defaults
     const defaults = loadDefaults();
-    ["harness", "working_dir", "branch", "access_mode"].forEach(k => {
+    // Apply branch before working_dir so the HEAD-resolution triggered by
+    // setChipValue("working_dir") can check whether a branch is already set.
+    ["harness", "branch", "access_mode"].forEach(k => {
       if (defaults[k]) setChipValue(k, defaults[k]);
     });
+    if (defaults.working_dir) setChipValue("working_dir", defaults.working_dir);
+    // If the server pre-filled working_dir (via ?dir= param) and no defaults
+    // override it, still resolve the HEAD branch for the pre-filled value.
+    if (!defaults.working_dir) {
+      const prefilledDir = currentWorkingDir();
+      if (prefilledDir) resolveAndSetHeadBranch(prefilledDir);
+    }
     if (harnessUsesSerfModels(currentHarness()) && defaults.model) {
       setChipValue("model", defaults.model);
     } else {
