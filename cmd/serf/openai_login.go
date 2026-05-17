@@ -68,14 +68,22 @@ func runOpenAILogin(args []string, stdin io.Reader, stdout, stderr io.Writer) er
 
 	workDir := fs.String("dir", "", "working directory hint")
 	stateDir := fs.String("state-dir", "", "override OpenAI auth state directory")
-	device := fs.Bool("device", false, "use device-code flow (headless / remote sessions)")
+	device := fs.Bool("device", false, "force device-code flow")
+	noDevice := fs.Bool("no-device", false, "force browser flow")
 	fs.Usage = func() {
 		fmt.Fprintf(stderr, "Usage: serf openai login [flags]\n\n")
 		fmt.Fprintf(stderr, "Start the OpenAI OAuth login flow.\n\n")
+		fmt.Fprintf(stderr, "By default, serf picks between the browser flow and the device-code flow\n")
+		fmt.Fprintf(stderr, "automatically. It uses device-code when it looks like there is no graphical\n")
+		fmt.Fprintf(stderr, "session: when $SSH_CONNECTION or $SSH_TTY is set, or on Linux/BSD when\n")
+		fmt.Fprintf(stderr, "neither $DISPLAY nor $WAYLAND_DISPLAY is set. macOS and Windows default to\n")
+		fmt.Fprintf(stderr, "the browser flow unless an SSH session is detected. Setting\n")
+		fmt.Fprintf(stderr, "SERF_LOGIN_HEADLESS=1 (or 0) overrides the detection.\n\n")
 		fmt.Fprintf(stderr, "Flags:\n")
 		fmt.Fprintf(stderr, "  --dir <path>         Working directory hint\n")
 		fmt.Fprintf(stderr, "  --state-dir <path>   Override OpenAI auth state directory\n")
-		fmt.Fprintf(stderr, "  --device             Use device-code flow for headless / remote sessions\n")
+		fmt.Fprintf(stderr, "  --device             Force device-code flow (headless / remote sessions)\n")
+		fmt.Fprintf(stderr, "  --no-device          Force browser flow (overrides auto-detection)\n")
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -83,6 +91,9 @@ func runOpenAILogin(args []string, stdin io.Reader, stdout, stderr io.Writer) er
 	}
 	if fs.NArg() != 0 {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	if *device && *noDevice {
+		return fmt.Errorf("conflicting flags: --device and --no-device cannot both be set")
 	}
 
 	resolvedStateDir, err := resolveOpenAIStateDir(*workDir, *stateDir)
@@ -93,7 +104,10 @@ func runOpenAILogin(args []string, stdin io.Reader, stdout, stderr io.Writer) er
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	if *device {
+	mode, reason := chooseLoginMode(*device, *noDevice)
+	fmt.Fprintf(stdout, "auth_mode=%s%s\n", mode, reason)
+
+	if mode == "device" {
 		return runOpenAIDeviceLogin(ctx, resolvedStateDir, stdout, stderr)
 	}
 
@@ -112,6 +126,54 @@ func runOpenAILogin(args []string, stdin io.Reader, stdout, stderr io.Writer) er
 
 	fmt.Fprintln(stdout, formatOpenAIStatus(status))
 	return nil
+}
+
+// chooseLoginMode picks "device" or "browser" given the flag state. The
+// returned reason is a parenthesised suffix suitable for direct append to
+// the `auth_mode=` line (empty when the user picked the mode explicitly).
+func chooseLoginMode(forceDevice, forceBrowser bool) (mode, reason string) {
+	switch {
+	case forceDevice:
+		return "device", " (forced)"
+	case forceBrowser:
+		return "browser", " (forced)"
+	}
+	if isHeadlessLogin() {
+		return "device", " (auto: no display)"
+	}
+	return "browser", " (auto)"
+}
+
+// isHeadlessLogin reports whether the current session looks unable to open
+// a browser. It is best-effort: env-var inspection only.
+func isHeadlessLogin() bool {
+	return isHeadlessLoginFor(runtime.GOOS, os.Getenv)
+}
+
+// isHeadlessLoginFor is the testable core of isHeadlessLogin. Pass a goos
+// string ("linux", "darwin", "windows", ...) and an env lookup function.
+func isHeadlessLoginFor(goos string, getenv func(string) string) bool {
+	if v := strings.TrimSpace(getenv("SERF_LOGIN_HEADLESS")); v != "" {
+		switch strings.ToLower(v) {
+		case "1", "true", "yes", "on":
+			return true
+		case "0", "false", "no", "off":
+			return false
+		}
+	}
+	if strings.TrimSpace(getenv("SSH_CONNECTION")) != "" || strings.TrimSpace(getenv("SSH_TTY")) != "" {
+		return true
+	}
+	switch goos {
+	case "darwin", "windows":
+		return false
+	default:
+		// Linux, BSDs, and anything else unix-y: need a display server.
+		if strings.TrimSpace(getenv("DISPLAY")) == "" && strings.TrimSpace(getenv("WAYLAND_DISPLAY")) == "" {
+			return true
+		}
+		return false
+	}
 }
 
 func runOpenAIDeviceLogin(ctx context.Context, stateDir string, stdout, stderr io.Writer) error {
