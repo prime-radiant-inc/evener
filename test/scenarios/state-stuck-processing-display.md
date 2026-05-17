@@ -51,13 +51,14 @@ non-empty `Error` field.
 
 ## Sharp edges
 
-- **Legacy diagnostic classification (kata `96pr`)**: even after the
-  state ribbon flips to ended/error, the historical "Stream ended
-  without finish event" diagnostics were classified at emission time
-  with `source: "serf"`, so the e465 Reconnect & retry button does
-  NOT appear for them. This is a separate sharp edge — see
-  `state-reconnect-button.md` for the test that exercises the NEW
-  diagnostic path (where source classifies correctly).
+- **Legacy diagnostic classification (kata `96pr`, FIXED in `16e44e0`)**:
+  historical "Stream ended without finish event" diagnostics were
+  classified at emission time with `source: "serf"`. The 96pr fix
+  added a reader-side override in `diagnostics.js::classify()` that
+  re-promotes these to `source: "provider"` when the message matches
+  the now-broader provider-failure patterns. So on this session, you
+  should see TWO `Retry turn` action buttons (one per legacy
+  diagnostic) — falsification means 96pr regressed.
 - The agent-side fix (A) only affects daemons spawned AFTER the
   commit. Daemons running pre-fix would persist `processing` in
   /status until killed; the reader-side override (B) is what saves
