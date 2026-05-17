@@ -67,21 +67,79 @@ const formDom = new JSDOM(`<!DOCTYPE html><html><body>
 
 let listModelsCalls = 0;
 let listModelsParams = null;
+// The validate-prefilled-model fetch resolves with a list whose serf
+// provider enumerates `openai/gpt-5.2`. That keeps the current cwd's
+// chip valid while still exercising the sweep against retired models
+// like `openai/gpt-5-mini` seeded in other per-project blobs below.
 formDom.window.SerfAppwire = {
   listModels(params) {
     listModelsCalls++;
     listModelsParams = params || {};
     return {
       then(resolve) {
-        resolve([{ provider: "codex", model: "gpt-5.3-codex" }]);
+        resolve([
+          { provider: "openai", model: "gpt-5.2" },
+          { provider: "codex", model: "gpt-5.3-codex" },
+        ]);
         return { catch() {} };
       },
     };
   },
 };
 formDom.window.localStorage.setItem("serf-hub.spawn-defaults.global.model", "openai/gpt-5.2");
+
+// Seed a mix of stored per-project blobs to exercise the init-time
+// sweep introduced for kata hnvv:
+//   - stale-only blob: only `.model`, retired → whole key removed
+//   - mixed blob: `.model` retired but `.working_dir`/`.branch` intact
+//   - malformed blob: bare model name → `.model` dropped, rest kept
+//   - valid blob: `.model` still offered by the hub → untouched
+//   - unknown-provider blob: provider not enumerated → untouched
+const projectKeys = {
+  staleOnly: "serf-hub.spawn-defaults.project./tmp/retired-stale",
+  mixed: "serf-hub.spawn-defaults.project./tmp/retired-mixed",
+  malformed: "serf-hub.spawn-defaults.project./tmp/legacy-bare",
+  valid: "serf-hub.spawn-defaults.project./tmp/still-good",
+  unknown: "serf-hub.spawn-defaults.project./tmp/oauth-anthropic",
+};
+formDom.window.localStorage.setItem(projectKeys.staleOnly,
+  JSON.stringify({ model: "openai/gpt-5-mini" }));
+formDom.window.localStorage.setItem(projectKeys.mixed,
+  JSON.stringify({ model: "openai/gpt-5-mini", working_dir: "/tmp/retired-mixed", branch: "main" }));
+formDom.window.localStorage.setItem(projectKeys.malformed,
+  JSON.stringify({ model: "gpt-5-bare", working_dir: "/tmp/legacy-bare" }));
+formDom.window.localStorage.setItem(projectKeys.valid,
+  JSON.stringify({ model: "openai/gpt-5.2", working_dir: "/tmp/still-good" }));
+formDom.window.localStorage.setItem(projectKeys.unknown,
+  JSON.stringify({ model: "anthropic/claude-mystery", working_dir: "/tmp/oauth-anthropic" }));
+// Unrelated key with the same suffix pattern but a different prefix —
+// the sweep should not touch this.
+const unrelatedKey = "serf-hub.spawn-defaults.unrelated";
+formDom.window.localStorage.setItem(unrelatedKey,
+  JSON.stringify({ model: "openai/gpt-5-mini" }));
+
 formDom.window.eval(spawnSrc);
 formDom.window.document.dispatchEvent(new formDom.window.Event("DOMContentLoaded", { bubbles: true }));
+
+// Sweep runs inside the listModels promise; the stub above resolves
+// synchronously so the asserts can be checked immediately after init.
+assert(formDom.window.localStorage.getItem(projectKeys.staleOnly) === null,
+  "sweep should remove the entire blob when only the stale .model field remained");
+const mixedAfter = JSON.parse(formDom.window.localStorage.getItem(projectKeys.mixed) || "null");
+assert(mixedAfter && !("model" in mixedAfter) && mixedAfter.working_dir === "/tmp/retired-mixed" && mixedAfter.branch === "main",
+  "sweep should drop stale .model but preserve sibling defaults in mixed blob, got " + JSON.stringify(mixedAfter));
+const malformedAfter = JSON.parse(formDom.window.localStorage.getItem(projectKeys.malformed) || "null");
+assert(malformedAfter && !("model" in malformedAfter) && malformedAfter.working_dir === "/tmp/legacy-bare",
+  "sweep should drop malformed bare-model entry but keep siblings, got " + JSON.stringify(malformedAfter));
+const validAfter = JSON.parse(formDom.window.localStorage.getItem(projectKeys.valid) || "null");
+assert(validAfter && validAfter.model === "openai/gpt-5.2",
+  "sweep should leave valid stored models alone, got " + JSON.stringify(validAfter));
+const unknownAfter = JSON.parse(formDom.window.localStorage.getItem(projectKeys.unknown) || "null");
+assert(unknownAfter && unknownAfter.model === "anthropic/claude-mystery",
+  "sweep should leave models from unenumerated providers alone, got " + JSON.stringify(unknownAfter));
+const unrelatedAfter = JSON.parse(formDom.window.localStorage.getItem(unrelatedKey) || "null");
+assert(unrelatedAfter && unrelatedAfter.model === "openai/gpt-5-mini",
+  "sweep must only match keys with the `serf-hub.spawn-defaults.project.` prefix, got " + JSON.stringify(unrelatedAfter));
 
 const modelDisplay = () => formDom.window.document.querySelector("[data-chip-value-model]").textContent.trim();
 const modelValue = () => formDom.window.document.querySelector('input[name="model"]').value;

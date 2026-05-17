@@ -85,52 +85,140 @@
     form.insertBefore(el, anchor || null);
   }
 
+  // modelValidityAgainstList classifies a stored `provider/model` string
+  // against the harness model list. Returns one of:
+  //   "malformed"  — no `/` separator (legacy bare model name)
+  //   "stale"      — provider IS enumerated but the model is gone
+  //   "unknown"    — provider not enumerated (OAuth-only, openrouter-anthropic, …)
+  //   "valid"      — exact match in the list
+  function modelValidityAgainstList(value, models) {
+    if (typeof value !== "string" || value === "") return "valid";
+    if (!value.includes("/")) return "malformed";
+    if (!Array.isArray(models) || models.length === 0) return "unknown";
+    const slash = value.indexOf("/");
+    const provider = value.slice(0, slash);
+    const modelName = value.slice(slash + 1);
+    let providerEnumerated = false;
+    for (let i = 0; i < models.length; i++) {
+      const m = models[i];
+      if (!m || m.provider !== provider) continue;
+      providerEnumerated = true;
+      if (m.model === modelName) return "valid";
+    }
+    return providerEnumerated ? "stale" : "unknown";
+  }
+
+  // sweepStaleModelDefaults walks every `serf-hub.spawn-defaults.project.*`
+  // localStorage blob plus the `serf-hub.spawn-defaults.global.model` key
+  // and removes stored models that the harness no longer offers. Other
+  // fields in each per-project blob (working_dir, branch, access_mode) are
+  // preserved; only stale `.model` entries are stripped (and the wrapping
+  // blob is removed when emptied).
+  //
+  // Returns the number of cleanup actions performed so the caller can log
+  // it. Failures from a read-only / quota-bound localStorage are swallowed
+  // so init never breaks because the sweep can't write.
+  function sweepStaleModelDefaults(models) {
+    let cleaned = 0;
+    let keys;
+    try {
+      keys = Object.keys(localStorage);
+    } catch (e) {
+      return 0;
+    }
+    const prefix = "serf-hub.spawn-defaults.project.";
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      if (key.indexOf(prefix) !== 0) continue;
+      let raw;
+      try { raw = localStorage.getItem(key); } catch (e) { continue; }
+      if (!raw) continue;
+      let parsed;
+      try {
+        parsed = JSON.parse(raw);
+      } catch (e) {
+        // Malformed JSON — leave alone, the user can sort it out.
+        continue;
+      }
+      if (!parsed || typeof parsed !== "object" || !("model" in parsed)) continue;
+      const verdict = modelValidityAgainstList(parsed.model, models);
+      if (verdict !== "malformed" && verdict !== "stale") continue;
+      delete parsed.model;
+      try {
+        if (Object.keys(parsed).length === 0) {
+          localStorage.removeItem(key);
+        } else {
+          localStorage.setItem(key, JSON.stringify(parsed));
+        }
+        cleaned++;
+      } catch (e) { /* ignore quota / privacy mode */ }
+    }
+    // Idempotent global-model check (validatePrefilledModel handles the
+    // chip-bound case for the current cwd; this catches the standalone key
+    // when no per-project blob covers it).
+    try {
+      const globalModel = localStorage.getItem("serf-hub.spawn-defaults.global.model");
+      if (globalModel) {
+        const verdict = modelValidityAgainstList(globalModel, models);
+        if (verdict === "malformed" || verdict === "stale") {
+          localStorage.removeItem("serf-hub.spawn-defaults.global.model");
+          cleaned++;
+        }
+      }
+    } catch (e) { /* ignore */ }
+    return cleaned;
+  }
+
   // validatePrefilledModel checks that the chip's current value still
   // appears in the harness model list and discards it inline when the
   // provider IS enumerated but the specific model is gone. Providers that
   // aren't enumerated at all (OAuth-only anthropic, openrouter-anthropic,
   // etc.) are left untouched — we don't know whether the value is valid.
+  //
+  // Before per-cwd validation runs, sweep ALL stored project blobs so a
+  // user with many per-project entries pointing at a retired model gets
+  // every entry cleaned in a single /new visit (kata hnvv).
   function validatePrefilledModel(form) {
     if (!harnessUsesSerfModels(currentHarness())) return;
     const hidden = form.querySelector('input[type=hidden][name="model"]');
     const current = hidden ? hidden.value.trim() : "";
-    if (!current) return;
 
     // Legacy malformed entry (no provider prefix). The picker always
-    // stores `provider/model`, so a bare model name is stale data.
-    if (!current.includes("/")) {
+    // stores `provider/model`, so a bare model name is stale data. We
+    // still handle this synchronously to drop the chip before the user
+    // can submit, even if listModels hasn't resolved yet.
+    if (current && !current.includes("/")) {
       clearStoredModelDefault(current);
       setChipValue("model", "");
       showModelPrefillNotice(form, current);
-      return;
     }
-
-    const slash = current.indexOf("/");
-    const provider = current.slice(0, slash);
-    const modelName = current.slice(slash + 1);
 
     listModelsForHarness(currentHarness()).then(function (models) {
       if (!Array.isArray(models) || models.length === 0) return;
+
+      // Sweep every stored project blob + the standalone global-model
+      // key. Idempotent and covers projects the user isn't viewing right
+      // now (the original chip-bound flow only touched the current cwd).
+      const cleaned = sweepStaleModelDefaults(models);
+      if (cleaned > 0) {
+        try {
+          console.info("Cleared " + cleaned + " stale spawn-form model default(s).");
+        } catch (e) { /* ignore */ }
+      }
+
       // Confirm the chip still has the same value we're validating —
       // the user could have picked something else while the fetch was
       // in flight.
       const hiddenNow = form.querySelector('input[type=hidden][name="model"]');
-      if (!hiddenNow || hiddenNow.value.trim() !== current) return;
+      const chipValue = hiddenNow ? hiddenNow.value.trim() : "";
+      if (!chipValue || chipValue !== current) return;
 
-      let providerEnumerated = false;
-      let modelMatches = false;
-      for (let i = 0; i < models.length; i++) {
-        const m = models[i];
-        if (!m || m.provider !== provider) continue;
-        providerEnumerated = true;
-        if (m.model === modelName) { modelMatches = true; break; }
-      }
-      if (modelMatches) return;
-      if (!providerEnumerated) return; // can't tell — leave the pre-fill alone
-
-      clearStoredModelDefault(current);
+      const verdict = modelValidityAgainstList(chipValue, models);
+      if (verdict === "valid" || verdict === "unknown") return;
+      // "malformed" and "stale" both need to clear the chip + notice.
+      clearStoredModelDefault(chipValue);
       setChipValue("model", "");
-      showModelPrefillNotice(form, current);
+      showModelPrefillNotice(form, chipValue);
     }).catch(function () {
       // Network/parse error — without the list we can't tell whether the
       // value is valid. Leave the pre-fill alone; the server-side 503
