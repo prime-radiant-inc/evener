@@ -57,6 +57,19 @@ the area they exercise.
 - `search-finds-content-across-sessions.md` — `⌘K` overlay
   searches transcripts.
 
+## End-to-end software development
+
+These are the lightweight "does serf actually build software"
+smoke tests. They spawn a real session against a real model,
+use a run-specific `mktemp -d` for hermeticity, and verify the
+output by running it.
+
+- `dev-hello-script.md` — agent writes hello.py + runs it. Most
+  basic write+exec loop. Verified live against `openai/gpt-5.5`.
+- `dev-fix-broken-script.md` — agent reads, edits, and re-runs a
+  syntactically-broken Python script. Exercises the
+  read→edit→exec→verify flow that most real serf use looks like.
+
 ## Coverage gaps (worth writing)
 
 - `reconnect-button-source-hub.md` — when a real source=hub
