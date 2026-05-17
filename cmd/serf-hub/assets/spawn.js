@@ -397,8 +397,20 @@
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const fd = new FormData(form);
+      // Guard against empty-prompt submissions. The picker search input
+      // and other inner inputs can trigger implicit form submission via
+      // Enter; without this check the user would land on a 0-turn session
+      // and not know why. Trim only for the *check* — preserve newlines
+      // and leading whitespace in the payload itself.
+      const rawPrompt = (fd.get("prompt") || "").toString();
+      if (!rawPrompt.trim()) {
+        renderSpawnError(form, new Error("Prompt is empty. Type something before spawning."));
+        const ta = form.querySelector('textarea[name=prompt]');
+        if (ta) ta.focus();
+        return;
+      }
       const body = {
-        prompt: fd.get("prompt") || "",
+        prompt: rawPrompt,
         harness: fd.get("harness") || "serf",
         model: fd.get("model") || "",
         working_dir: fd.get("working_dir") || "",

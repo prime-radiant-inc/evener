@@ -137,6 +137,29 @@ assert(
   "branch input should update chip text",
 );
 
+// Submitting with an empty prompt should be blocked by the defensive
+// guard and surface an in-page diagnostic rather than firing a request.
+let blockedFetchCalled = false;
+formDom.window.fetch = () => {
+  blockedFetchCalled = true;
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+};
+const savedAppwire = formDom.window.SerfAppwire;
+formDom.window.SerfAppwire = null;
+formDom.window.document.querySelector('textarea[name="prompt"]').value = "   \n  ";
+formDom.window.document.querySelector("[data-spawn-form]").dispatchEvent(new formDom.window.Event("submit", {
+  bubbles: true,
+  cancelable: true,
+}));
+assert(!blockedFetchCalled, "empty/whitespace-only prompt should not trigger a spawn request");
+const emptyDiagnostic = formDom.window.document.querySelector("[data-spawn-error]");
+assert(emptyDiagnostic, "empty-prompt submit should render an in-page diagnostic");
+assert(
+  emptyDiagnostic.textContent.toLowerCase().includes("prompt is empty"),
+  "empty-prompt diagnostic should explain the issue, got " + emptyDiagnostic.textContent,
+);
+formDom.window.SerfAppwire = savedAppwire;
+
 formDom.window.document.querySelector("[data-recent-prompt]").click();
 assert(
   formDom.window.document.querySelector('textarea[name="prompt"]').value === "ship the rename",
