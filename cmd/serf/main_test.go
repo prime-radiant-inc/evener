@@ -294,6 +294,50 @@ func TestOpenAILoginPrintsURLAndSupportsManualFallback(t *testing.T) {
 	}
 }
 
+func TestOpenAIDeviceLoginPrintsCodeAndStatus(t *testing.T) {
+	stateDir := t.TempDir()
+
+	origDevice := openAIDeviceLoginAction
+	t.Cleanup(func() { openAIDeviceLoginAction = origDevice })
+
+	openAIDeviceLoginAction = func(ctx context.Context, gotStateDir string, showPrompt func(authopenai.DeviceCode)) (authopenai.AuthStatus, error) {
+		if gotStateDir != stateDir {
+			t.Fatalf("stateDir = %q, want %q", gotStateDir, stateDir)
+		}
+		if showPrompt == nil {
+			t.Fatal("showPrompt = nil, want CLI prompt callback")
+		}
+		showPrompt(authopenai.DeviceCode{
+			VerificationURL: "https://auth.openai.com/codex/device",
+			UserCode:        "ABC-1234",
+		})
+		return authopenai.AuthStatus{
+			SignedIn: true,
+			Source:   authopenai.AuthSourceOAuth,
+			Email:    "headless@example.com",
+		}, nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := runOpenAI([]string{"login", "--device", "--state-dir", stateDir}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("runOpenAI() error = %v", err)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, "device_code_url=https://auth.openai.com/codex/device") {
+		t.Fatalf("stdout = %q, want device_code_url line", out)
+	}
+	if !strings.Contains(out, "device_code=ABC-1234") {
+		t.Fatalf("stdout = %q, want device_code line", out)
+	}
+	if !strings.Contains(out, "state=signed-in source=oauth email=headless@example.com") {
+		t.Fatalf("stdout = %q, want signed-in status line", out)
+	}
+	if !strings.Contains(stderr.String(), "ABC-1234") {
+		t.Fatalf("stderr = %q, want human-readable code", stderr.String())
+	}
+}
+
 func TestOpenAIStatusIsCompactAndScriptFriendly(t *testing.T) {
 	stateDir := t.TempDir()
 

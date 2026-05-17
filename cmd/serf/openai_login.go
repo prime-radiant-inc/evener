@@ -22,6 +22,11 @@ var openAILoginAction = func(ctx context.Context, stateDir string, openBrowser f
 	return service.Login(ctx, stateDir)
 }
 
+var openAIDeviceLoginAction = func(ctx context.Context, stateDir string, showPrompt func(authopenai.DeviceCode)) (authopenai.AuthStatus, error) {
+	service := authopenai.NewService(authopenai.DefaultConfig(), nil)
+	return service.LoginWithDevice(ctx, stateDir, showPrompt)
+}
+
 var openAIBrowserOpener = func(rawURL string) error {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
@@ -63,12 +68,14 @@ func runOpenAILogin(args []string, stdin io.Reader, stdout, stderr io.Writer) er
 
 	workDir := fs.String("dir", "", "working directory hint")
 	stateDir := fs.String("state-dir", "", "override OpenAI auth state directory")
+	device := fs.Bool("device", false, "use device-code flow (headless / remote sessions)")
 	fs.Usage = func() {
 		fmt.Fprintf(stderr, "Usage: serf openai login [flags]\n\n")
 		fmt.Fprintf(stderr, "Start the OpenAI OAuth login flow.\n\n")
 		fmt.Fprintf(stderr, "Flags:\n")
 		fmt.Fprintf(stderr, "  --dir <path>         Working directory hint\n")
 		fmt.Fprintf(stderr, "  --state-dir <path>   Override OpenAI auth state directory\n")
+		fmt.Fprintf(stderr, "  --device             Use device-code flow for headless / remote sessions\n")
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -83,6 +90,13 @@ func runOpenAILogin(args []string, stdin io.Reader, stdout, stderr io.Writer) er
 		return err
 	}
 
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	if *device {
+		return runOpenAIDeviceLogin(ctx, resolvedStateDir, stdout, stderr)
+	}
+
 	openBrowser := func(rawURL string) error {
 		fmt.Fprintf(stdout, "url=%s\n", rawURL)
 		if err := openAIBrowserOpener(rawURL); err != nil {
@@ -91,10 +105,31 @@ func runOpenAILogin(args []string, stdin io.Reader, stdout, stderr io.Writer) er
 		return nil
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer cancel()
-
 	status, err := openAILoginAction(ctx, resolvedStateDir, openBrowser, makeRedirectURLReader(stdin, stderr))
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintln(stdout, formatOpenAIStatus(status))
+	return nil
+}
+
+func runOpenAIDeviceLogin(ctx context.Context, stateDir string, stdout, stderr io.Writer) error {
+	prompt := func(dc authopenai.DeviceCode) {
+		// Machine-readable lines first, mirroring the browser flow's
+		// `url=` convention so scripts can parse stdout uniformly.
+		fmt.Fprintf(stdout, "device_code_url=%s\n", dc.VerificationURL)
+		fmt.Fprintf(stdout, "device_code=%s\n", dc.UserCode)
+		// Human-readable guidance on stderr — keeps stdout pristine for
+		// pipelines that only want the key=value pairs and the final
+		// status line.
+		fmt.Fprintf(stderr, "\nTo sign in, open this URL on any device:\n  %s\n", dc.VerificationURL)
+		fmt.Fprintf(stderr, "and enter the code:\n  %s\n", dc.UserCode)
+		fmt.Fprintln(stderr, "\nDevice codes are a common phishing target. Never share this code.")
+		fmt.Fprintln(stderr, "Waiting for authorization (this command will exit automatically)...")
+	}
+
+	status, err := openAIDeviceLoginAction(ctx, stateDir, prompt)
 	if err != nil {
 		return err
 	}

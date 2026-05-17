@@ -54,6 +54,9 @@ type Service struct {
 	startCallbackServer func(Config, int, string) (callbackServer, error)
 	exchangeCode        func(context.Context, *http.Client, Config, TokenExchangeRequest) (TokenSet, error)
 	refreshToken        func(context.Context, *http.Client, Config, RefreshTokenRequest) (TokenSet, error)
+	requestDeviceCode   func(context.Context, *http.Client, Config) (DeviceCode, error)
+	pollDeviceAuth      func(context.Context, *http.Client, Config, DeviceCode) (DeviceCodeSuccess, error)
+	exchangeDeviceCode  func(context.Context, *http.Client, Config, string, string) (TokenSet, error)
 }
 
 func NewService(cfg Config, client *http.Client) *Service {
@@ -74,8 +77,11 @@ func NewService(cfg Config, client *http.Client) *Service {
 		startCallbackServer: func(cfg Config, port int, expectedState string) (callbackServer, error) {
 			return StartCallbackServer(cfg, port, expectedState)
 		},
-		exchangeCode: ExchangeCode,
-		refreshToken: RefreshToken,
+		exchangeCode:       ExchangeCode,
+		refreshToken:       RefreshToken,
+		requestDeviceCode:  RequestDeviceCode,
+		pollDeviceAuth:     PollDeviceAuth,
+		exchangeDeviceCode: ExchangeDeviceCode,
 	}
 }
 
@@ -165,6 +171,46 @@ func (s *Service) Login(ctx context.Context, stateDir string) (AuthStatus, error
 		RedirectURI:  redirectURI,
 		CodeVerifier: verifier,
 	})
+	if err != nil {
+		return AuthStatus{}, err
+	}
+
+	record := authRecordFromTokens(s.now(), tokens)
+	if claims, err := ParseIDTokenClaims(tokens.IDToken); err == nil {
+		applyClaims(&record, claims)
+	}
+
+	if err := SaveAuth(stateDir, record); err != nil {
+		return AuthStatus{}, err
+	}
+	return s.statusFromRecord(record), nil
+}
+
+// LoginWithDevice runs the OpenAI device-code flow. It is the headless
+// counterpart to Login: the caller's showPrompt is invoked once with the
+// verification URL and short user code that the user must enter on a separate
+// device. PollDeviceAuth then blocks until the user completes the flow or the
+// 15-minute window expires.
+func (s *Service) LoginWithDevice(ctx context.Context, stateDir string, showPrompt func(DeviceCode)) (AuthStatus, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	dc, err := s.requestDeviceCode(ctx, s.client, s.config())
+	if err != nil {
+		return AuthStatus{}, err
+	}
+
+	if showPrompt != nil {
+		showPrompt(dc)
+	}
+
+	success, err := s.pollDeviceAuth(ctx, s.client, s.config(), dc)
+	if err != nil {
+		return AuthStatus{}, err
+	}
+
+	tokens, err := s.exchangeDeviceCode(ctx, s.client, s.config(), success.AuthorizationCode, success.CodeVerifier)
 	if err != nil {
 		return AuthStatus{}, err
 	}
