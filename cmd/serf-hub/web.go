@@ -751,7 +751,7 @@ func hubDetailFromAppThread(thread appwire.Thread) hubapi.SessionDetail {
 		WorkingDir:      thread.CWD,
 		Model:           thread.ModelProvider,
 		Profile:         thread.Serf.Profile,
-		TurnCount:       len(thread.Turns),
+		TurnCount:       completedTurnCount(thread.Turns),
 		ActiveTurnID:    activeTurnIDFromAppwireThread(thread),
 		ContextPressure: thread.Serf.ContextPressure,
 		Capabilities:    hubCapabilitiesFromAppwire(thread.Serf.Capabilities),
@@ -3137,7 +3137,7 @@ func workspaceDataFromAppThread(thread appwire.Thread) WorkspaceData {
 		Title:        title,
 		State:        state,
 		StateLabel:   stateLabel(state),
-		TurnCount:    len(thread.Turns),
+		TurnCount:    completedTurnCount(thread.Turns),
 		ActiveTurnID: activeTurnIDFromAppwireThread(thread),
 		Model:        thread.ModelProvider,
 		WorkingDir:   thread.CWD,
@@ -3153,6 +3153,19 @@ func activeTurnIDFromAppwireThread(thread appwire.Thread) string {
 		}
 	}
 	return ""
+}
+
+// completedTurnCount counts only turns whose Status is "completed" — kata
+// k5t4. Failed / canceled / in-flight turns don't count. Keeps the live
+// status and the past-index display consistent.
+func completedTurnCount(turns []appwire.Turn) int {
+	n := 0
+	for _, t := range turns {
+		if t.Status == appwire.TurnStatusCompleted {
+			n++
+		}
+	}
+	return n
 }
 
 func (s *WebServer) liveWorkspaceCapabilities(id string, fallback hubapi.SessionCapabilities) hubapi.SessionCapabilities {
