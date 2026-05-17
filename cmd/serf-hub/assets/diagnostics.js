@@ -50,6 +50,17 @@
       }
     }
 
+    // Override stored source=serf when the message clearly indicates a
+    // provider or hub failure. Legacy transcripts emitted before the
+    // classifier patterns were broadened (commit 05203e0) keep their
+    // stored source forever; this lets the e465 Reconnect/Retry button
+    // surface for them. Only fires for the literal "serf" source; other
+    // sources (provider, hub, ui) are honored unchanged.
+    if (source === "serf" && !isSerfConfiguration(lower)) {
+      if (isProviderFailure(lower)) source = "provider";
+      else if (isHubFailure(lower)) source = "hub";
+    }
+
     if (!title) title = defaultTitle(source, severity, lower);
     if (!hint) hint = defaultHint(source, lower);
 

@@ -154,4 +154,57 @@ const inlineActions = diagnostics.render({
 const inlineActionsEl = inlineActions.querySelectorByClass("diagnostic-actions");
 assert(inlineActionsEl !== null, "inline actions on input should render diagnostic-actions");
 
+// kata 96pr: stored source="serf" should be re-classified by message pattern
+// when the message clearly matches a provider or hub failure. Legacy
+// transcripts emitted before commit 05203e0 broadened isProviderFailure to
+// cover stream-truncation patterns persisted source="serf" forever; the
+// renderer must override on read so the e465 Reconnect/Retry button surfaces.
+
+// Legacy stream-truncation diagnostic stored as serf → reclassify to provider.
+const legacyStreamTrunc = diagnostics.classify({
+  source: "serf",
+  message: "stream ended without finish event",
+});
+assert(legacyStreamTrunc.source === "provider",
+  "legacy serf-source stream truncation should reclassify to provider, got " + legacyStreamTrunc.source);
+assert(legacyStreamTrunc.title === "Provider error",
+  "reclassified diagnostic should use provider title, got " + legacyStreamTrunc.title);
+assert(legacyStreamTrunc.hint.includes("model provider"),
+  "reclassified diagnostic should use provider hint, got " + legacyStreamTrunc.hint);
+
+// Real serf-source configuration error should stay as serf.
+const realSerfConfig = diagnostics.classify({
+  source: "serf",
+  message: "no model: use --model provider/model",
+});
+assert(realSerfConfig.source === "serf",
+  "real serf configuration error should stay serf, got " + realSerfConfig.source);
+assert(realSerfConfig.title === "Serf configuration error",
+  "real serf configuration error should keep serf title, got " + realSerfConfig.title);
+
+// Non-serf stored sources are honored unchanged (no override of provider).
+const explicitProvider = diagnostics.classify({
+  source: "provider",
+  message: "stream ended without finish event",
+});
+assert(explicitProvider.source === "provider",
+  "explicit provider source should be honored, got " + explicitProvider.source);
+
+// Heuristic fallback (no stored source) still classifies stream truncation as provider.
+const heuristicProvider = diagnostics.classify({
+  message: "stream ended without finish event",
+});
+assert(heuristicProvider.source === "provider",
+  "missing source should still heuristically classify as provider, got " + heuristicProvider.source);
+
+// Legacy hub failure stored as serf → reclassify to hub.
+const legacyHub = diagnostics.classify({
+  source: "serf",
+  message: "rendezvous timeout",
+});
+assert(legacyHub.source === "hub",
+  "legacy serf-source rendezvous failure should reclassify to hub, got " + legacyHub.source);
+assert(legacyHub.title === "Hub error",
+  "reclassified hub diagnostic should use hub title, got " + legacyHub.title);
+
 console.log("PASS: diagnostics taxonomy and render component");
