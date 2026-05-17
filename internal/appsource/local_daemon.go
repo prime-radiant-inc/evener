@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
 
+	"nhooyr.io/websocket"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/rendezvous"
 )
@@ -240,13 +243,24 @@ func (s *LocalDaemonSource) SubscribeThread(ctx context.Context, params appwire.
 func (s *LocalDaemonSource) withClient(ctx context.Context, entry rendezvous.Entry, fn func(*appwire.Client) error) error {
 	transport, err := appwire.DialWebSocketWithHeaders(ctx, entry.Endpoint, s.client, daemonAuthHeader(entry.HubToken))
 	if err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
 		return localDaemonDialError(err)
 	}
 	defer transport.Close()
 	client := appwire.NewClient(transport)
 	client.Start(ctx)
 	if _, err := client.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "serf-hub"}}); err != nil {
-		return err
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
+		// Initialize errors arrive as either a raw transport error (rare) or
+		// as a WireError(CodeInternalError) wrapping the underlying transport
+		// message (the appwire client's failPending path). Run the call-level
+		// unwrap first to handle the wire-wrapped case, then fall through to
+		// the dial-level typed-error match.
+		return localDaemonDialError(localDaemonCallError(err))
 	}
 	if err := fn(client); err != nil {
 		return localDaemonCallError(err)
@@ -254,10 +268,62 @@ func (s *LocalDaemonSource) withClient(ctx context.Context, entry rendezvous.Ent
 	return nil
 }
 
+// localDaemonDialError maps transport-level failures observed during the
+// websocket dial or Initialize handshake to a SessionUnavailable wire error,
+// so the hub's auto-resume gate can fire. It does NOT map application-level
+// JSON-RPC error responses (which retain semantic meaning) or caller context
+// cancellation (which the call site checks separately).
 func localDaemonDialError(err error) error {
-	if errors.Is(err, syscall.ECONNREFUSED) {
+	if err == nil {
+		return nil
+	}
+
+	// syscall-level signals that the daemon process is gone or the kernel
+	// tore down the socket mid-handshake.
+	if errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE) {
 		return appwire.SessionUnavailable("local daemon unavailable: " + err.Error())
 	}
+
+	// Daemon accepted the connection then immediately closed it (process died
+	// mid-handshake, or the websocket library surfaced an EOF during the
+	// Initialize round trip).
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return appwire.SessionUnavailable("local daemon unavailable: " + err.Error())
+	}
+
+	// Transport-level timeouts: hung daemon, slow loopback, or network filter
+	// holding the SYN. These manifest as net.Error.Timeout()==true (e.g.
+	// kernel TCP retransmit timeout, *net.OpError with i/o timeout) or as
+	// context.DeadlineExceeded from a child context inside the dial library
+	// (the caller's ctx was already checked at the call site).
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return appwire.SessionUnavailable("local daemon unavailable: " + err.Error())
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return appwire.SessionUnavailable("local daemon unavailable: " + err.Error())
+	}
+
+	// Websocket close error during the handshake: the daemon answered the
+	// HTTP upgrade but the connection died before Initialize completed.
+	var closeErr websocket.CloseError
+	if errors.As(err, &closeErr) {
+		return appwire.SessionUnavailable("local daemon unavailable: " + err.Error())
+	}
+
+	// Fallback string match for transport-shaped errors that the underlying
+	// library wraps without exposing a typed sentinel (e.g. "use of closed
+	// network connection", "connection reset by peer", "broken pipe").
+	lower := strings.ToLower(err.Error())
+	if strings.Contains(lower, "connection reset") ||
+		strings.Contains(lower, "broken pipe") ||
+		strings.Contains(lower, "use of closed network connection") ||
+		strings.Contains(lower, "i/o timeout") {
+		return appwire.SessionUnavailable("local daemon unavailable: " + err.Error())
+	}
+
 	return err
 }
 

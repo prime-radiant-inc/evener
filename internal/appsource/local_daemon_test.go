@@ -3,9 +3,12 @@ package appsource
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"syscall"
 	"testing"
 	"time"
 
@@ -14,6 +17,184 @@ import (
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/rendezvous"
 )
+
+// fakeTimeoutError implements net.Error with Timeout()==true so we can drive
+// localDaemonDialError without needing real socket timeouts.
+type fakeTimeoutError struct{ msg string }
+
+func (e fakeTimeoutError) Error() string   { return e.msg }
+func (e fakeTimeoutError) Timeout() bool   { return true }
+func (e fakeTimeoutError) Temporary() bool { return true }
+
+func TestLocalDaemonDialErrorMapsTransportFailures(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"ECONNREFUSED", &net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}},
+		{"ECONNRESET", &net.OpError{Op: "read", Err: syscall.ECONNRESET}},
+		{"EPIPE", &net.OpError{Op: "write", Err: syscall.EPIPE}},
+		{"io.EOF", io.EOF},
+		{"io.ErrUnexpectedEOF wrapped", fmt.Errorf("recv: %w", io.ErrUnexpectedEOF)},
+		{"net.Error timeout", fakeTimeoutError{msg: "i/o timeout"}},
+		{"context.DeadlineExceeded (transport-level)", fmt.Errorf("dial failed: %w", context.DeadlineExceeded)},
+		{"websocket close error", websocket.CloseError{Code: websocket.StatusAbnormalClosure, Reason: "dropped"}},
+		{"connection reset string match", errors.New("read tcp 127.0.0.1:1->127.0.0.1:2: connection reset by peer")},
+		{"broken pipe string match", errors.New("write tcp: broken pipe")},
+		{"use of closed network connection", errors.New("use of closed network connection")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := localDaemonDialError(tc.err)
+			assertSessionUnavailable(t, got, tc.name)
+		})
+	}
+}
+
+func TestLocalDaemonDialErrorPassesThroughApplicationErrors(t *testing.T) {
+	// JSON-RPC application-level error: should not be touched, since the
+	// daemon is alive and signalling semantic failure.
+	app := appwire.InvalidParams("missing ref")
+	got := localDaemonDialError(app)
+	var wire appwire.WireError
+	if !errors.As(got, &wire) {
+		t.Fatalf("got %T=%v, want WireError", got, got)
+	}
+	if wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("wire=%+v, want InvalidParams code preserved", wire)
+	}
+
+	// A generic non-transport error should also pass through.
+	plain := errors.New("some daemon-side problem")
+	if got := localDaemonDialError(plain); !errors.Is(got, plain) {
+		t.Fatalf("plain error rewritten: %v", got)
+	}
+}
+
+func TestLocalDaemonDialErrorIgnoresNil(t *testing.T) {
+	if got := localDaemonDialError(nil); got != nil {
+		t.Fatalf("nil mapped to %v, want nil", got)
+	}
+}
+
+func TestLocalDaemonSourceReadThreadMapsIOTimeoutToSessionUnavailable(t *testing.T) {
+	// A listener that accepts TCP but never speaks the HTTP upgrade. The
+	// dial will fail with i/o timeout once the caller's short deadline fires,
+	// surfacing as a net.Error.Timeout()==true wrapped in OpError.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			// Hold the connection open without responding so the websocket
+			// handshake stalls. The caller's ctx deadline ends the dial.
+			go func(c net.Conn) {
+				defer c.Close()
+				time.Sleep(2 * time.Second)
+			}(conn)
+		}
+	}()
+
+	source := NewLocalDaemonSource("local", func() []rendezvous.Entry {
+		return []rendezvous.Entry{{
+			Protocol:  appwire.ProtocolVersion,
+			Endpoint:  "ws://" + listener.Addr().String(),
+			SourceID:  "local",
+			ThreadID:  "th_1",
+			SessionID: "sess_1",
+		}}
+	}, nil)
+
+	// Use a context whose deadline expires while the daemon hangs. Because
+	// ctx.Err() will be DeadlineExceeded at the moment dial returns, the
+	// call site returns ctx.Err() unchanged — this exercises the
+	// ctx-propagation branch.
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_, err = source.ReadThread(ctx, appwire.ThreadReadParams{Ref: "local:th_1"})
+	if err == nil {
+		t.Fatalf("expected error from hung daemon, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error %T=%v, want context.DeadlineExceeded propagated from caller ctx", err, err)
+	}
+}
+
+func TestLocalDaemonSourceReadThreadMapsEOFDuringHandshake(t *testing.T) {
+	// Server accepts the websocket upgrade, then immediately drops the
+	// connection without responding to Initialize. The Initialize call
+	// surfaces an EOF/abnormal-close, which should map to SessionUnavailable.
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("accept: %v", err)
+			return
+		}
+		_ = conn.Close(websocket.StatusAbnormalClosure, "daemon died")
+	}))
+	defer httpServer.Close()
+
+	source := NewLocalDaemonSource("local", func() []rendezvous.Entry {
+		return []rendezvous.Entry{{
+			Protocol:  appwire.ProtocolVersion,
+			Endpoint:  "ws" + httpServer.URL[len("http"):],
+			SourceID:  "local",
+			ThreadID:  "th_1",
+			SessionID: "sess_1",
+		}}
+	}, httpServer.Client())
+
+	_, err := source.ReadThread(context.Background(), appwire.ThreadReadParams{Ref: "local:th_1"})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	assertSessionUnavailable(t, err, "ReadThread (EOF mid-handshake)")
+}
+
+func TestLocalDaemonSourceReadThreadReturnsCallerCtxCancellation(t *testing.T) {
+	// Hang the upgrade indefinitely so the dial blocks until the caller
+	// cancels its context.
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer httpServer.Close()
+
+	source := NewLocalDaemonSource("local", func() []rendezvous.Entry {
+		return []rendezvous.Entry{{
+			Protocol:  appwire.ProtocolVersion,
+			Endpoint:  "ws" + httpServer.URL[len("http"):],
+			SourceID:  "local",
+			ThreadID:  "th_1",
+			SessionID: "sess_1",
+		}}
+	}, httpServer.Client())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	_, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: "local:th_1"})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error %T=%v, want context.Canceled (caller cancellation must not be remapped)", err, err)
+	}
+	// Belt-and-suspenders: must NOT be SessionUnavailable.
+	var wire appwire.WireError
+	if errors.As(err, &wire) && wire.Code == appwire.CodeUnavailable {
+		t.Fatalf("ctx cancellation was remapped to SessionUnavailable: %+v", wire)
+	}
+}
 
 func TestLocalDaemonSourceListsOnlyAppWireRendezvousThreads(t *testing.T) {
 	source := NewLocalDaemonSource("local", func() []rendezvous.Entry {
