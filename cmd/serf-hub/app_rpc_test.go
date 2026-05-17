@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -3585,6 +3586,226 @@ func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) 
 	}
 	if resp.Turn.ID != "turn_recovered" {
 		t.Fatalf("turn=%+v", resp.Turn)
+	}
+}
+
+// TestHubKnowsRefAcceptsManagedLaunchRefWithoutPastEntry guards the kata ws5f
+// fix: the MethodTurnStart resume gate must accept managed-launch refs (e.g.
+// codex:thread_xxx) even when they aren't in the local past index, so that an
+// auto-resume retry fires when the managed daemon dies mid-turn.
+func TestHubKnowsRefAcceptsManagedLaunchRefWithoutPastEntry(t *testing.T) {
+	launcher := NewCodexLauncher([]CodexLaunchConfig{{ID: "codex-managed"}})
+	cfg := WebConfig{Past: NewPastIndex(""), CodexLauncher: launcher}
+	if !hubKnowsRef(cfg, "codex-managed:th_known") {
+		t.Fatal("hubKnowsRef should accept managed-launch ref")
+	}
+	if hubKnowsRef(cfg, "codex-unknown:th_known") {
+		t.Fatal("hubKnowsRef should reject ref whose source is not managed")
+	}
+	if hubKnowsRef(cfg, "local:th_not_in_past") {
+		t.Fatal("hubKnowsRef should reject local ref with no past entry")
+	}
+}
+
+// resumeAfterSessionUnavailableManagedSource simulates a managed codex daemon
+// that returns SessionUnavailable on the first StartTurn (the daemon just
+// died), then succeeds after the hub calls ResumeThread.
+type resumeAfterSessionUnavailableManagedSource struct {
+	relayLifecycleSource
+	id           string
+	mu           sync.Mutex
+	startCalls   int
+	resumeCalls  int
+	thread       appwire.Thread
+	startPrompts []string
+}
+
+func (s *resumeAfterSessionUnavailableManagedSource) ID() string { return s.id }
+
+func (s *resumeAfterSessionUnavailableManagedSource) ReadThread(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	return appwire.ThreadReadResponse{Thread: s.thread}, nil
+}
+
+func (s *resumeAfterSessionUnavailableManagedSource) ResumeThread(_ context.Context, _ appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+	s.mu.Lock()
+	s.resumeCalls++
+	s.mu.Unlock()
+	return appwire.ThreadResumeResponse{Thread: s.thread}, nil
+}
+
+func (s *resumeAfterSessionUnavailableManagedSource) StartTurn(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+	s.mu.Lock()
+	s.startCalls++
+	calls := s.startCalls
+	s.startPrompts = append(s.startPrompts, params.Prompt)
+	s.mu.Unlock()
+	if calls == 1 {
+		return appwire.TurnStartResponse{}, appwire.SessionUnavailable("managed daemon went away")
+	}
+	return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_after_resume"}}, nil
+}
+
+func (s *resumeAfterSessionUnavailableManagedSource) counts() (start, resume int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.startCalls, s.resumeCalls
+}
+
+// seedManagedSource pokes a fake source into the CodexLauncher's caches so
+// that EnsureSource returns it without spawning a real process.
+func seedManagedSource(t *testing.T, launcher *CodexLauncher, sourceID string, source appsource.Source) {
+	t.Helper()
+	launcher.mu.Lock()
+	defer launcher.mu.Unlock()
+	launcher.sources[sourceID] = source
+	launcher.running[sourceID] = &launchedCodex{
+		cmd:    &exec.Cmd{},
+		exited: make(chan error),
+	}
+}
+
+// TestHubRPCTurnStartResumesManagedLaunchRefOnSessionUnavailable verifies that
+// the auto-resume retry fires for a non-local managed-launch ref when the
+// backing daemon returns SessionUnavailable. Previously the past-index gate
+// at MethodTurnStart skipped the retry entirely for any non-local ref (kata
+// ws5f).
+func TestHubRPCTurnStartResumesManagedLaunchRefOnSessionUnavailable(t *testing.T) {
+	launcher := NewCodexLauncher([]CodexLaunchConfig{{ID: "codex-managed"}})
+	fake := &resumeAfterSessionUnavailableManagedSource{
+		relayLifecycleSource: relayLifecycleSource{canceled: make(chan struct{}, 1)},
+		id:                   "codex-managed",
+		thread: appwire.Thread{
+			ID:        "th_managed",
+			SessionID: "th_managed",
+			Source:    "codex-managed",
+			Serf: appwire.SerfThread{
+				Ref:          "codex-managed:th_managed",
+				Capabilities: appwire.ThreadCapabilities{Send: true},
+			},
+		},
+	}
+	seedManagedSource(t, launcher, "codex-managed", fake)
+
+	hub := newHubRPCTestServer(t, WebConfig{
+		Past:          NewPastIndex(""),
+		CodexLaunches: []CodexLaunchConfig{{ID: "codex-managed"}},
+		CodexLauncher: launcher,
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{
+		Ref:    "codex-managed:th_managed",
+		Prompt: "keep going",
+	})
+	if err != nil {
+		t.Fatalf("TurnStart: %v", err)
+	}
+	if resp.Turn.ID != "turn_after_resume" {
+		t.Fatalf("turn=%+v, want turn_after_resume", resp.Turn)
+	}
+	starts, resumes := fake.counts()
+	if starts != 2 {
+		t.Fatalf("StartTurn calls=%d, want 2 (initial + retry after resume)", starts)
+	}
+	if resumes != 1 {
+		t.Fatalf("ResumeThread calls=%d, want 1", resumes)
+	}
+}
+
+// sessionUnavailableOnceSource returns SessionUnavailable on the first
+// StartTurn and tracks ResumeThread calls.
+type sessionUnavailableOnceSource struct {
+	relayLifecycleSource
+	id          string
+	mu          sync.Mutex
+	startCalls  int
+	resumeCalls int
+	thread      appwire.Thread
+}
+
+func (s *sessionUnavailableOnceSource) ID() string { return s.id }
+
+func (s *sessionUnavailableOnceSource) ReadThread(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	return appwire.ThreadReadResponse{Thread: s.thread}, nil
+}
+
+func (s *sessionUnavailableOnceSource) ResumeThread(context.Context, appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+	s.mu.Lock()
+	s.resumeCalls++
+	s.mu.Unlock()
+	return appwire.ThreadResumeResponse{Thread: s.thread}, nil
+}
+
+func (s *sessionUnavailableOnceSource) StartTurn(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+	s.mu.Lock()
+	s.startCalls++
+	calls := s.startCalls
+	s.mu.Unlock()
+	if calls == 1 {
+		return appwire.TurnStartResponse{}, appwire.SessionUnavailable("daemon went away")
+	}
+	return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_recovered"}}, nil
+}
+
+func (s *sessionUnavailableOnceSource) counts() (start, resume int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.startCalls, s.resumeCalls
+}
+
+// TestHubRPCTurnStartDoesNotResumeUnknownNonLocalRef confirms the resume gate
+// still refuses non-local refs the hub does not know about (no managed launch,
+// no past entry) even after widening the gate to include managed-launch
+// sources (kata ws5f). The hub should bubble up the original SessionUnavailable
+// error without attempting a resume.
+func TestHubRPCTurnStartDoesNotResumeUnknownNonLocalRef(t *testing.T) {
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(WebConfig{HubAddr: srv.Listener.Addr().String(), Past: NewPastIndex("")})
+	fake := &sessionUnavailableOnceSource{
+		relayLifecycleSource: relayLifecycleSource{canceled: make(chan struct{}, 1)},
+		id:                   "codex",
+		thread: appwire.Thread{
+			ID:        "th_unknown",
+			SessionID: "th_unknown",
+			Source:    "codex",
+			Serf: appwire.SerfThread{
+				Ref:          "codex:th_unknown",
+				Capabilities: appwire.ThreadCapabilities{Send: true},
+			},
+		},
+	}
+	web.sources.Add(fake)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{
+		Ref:    "codex:th_unknown",
+		Prompt: "should not resume",
+	})
+	if err == nil {
+		t.Fatal("TurnStart succeeded, want SessionUnavailable error")
+	}
+	if !strings.Contains(err.Error(), "daemon went away") {
+		t.Fatalf("err=%v, want daemon went away", err)
+	}
+	starts, resumes := fake.counts()
+	if starts != 1 {
+		t.Fatalf("StartTurn calls=%d, want 1 (no retry for unknown ref)", starts)
+	}
+	if resumes != 0 {
+		t.Fatalf("ResumeThread calls=%d, want 0 (gate must reject unknown non-local ref)", resumes)
 	}
 }
 

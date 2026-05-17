@@ -329,7 +329,7 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		if err == nil {
 			return resp, nil
 		}
-		if _, ok := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: params.Ref}); !ok {
+		if !hubKnowsRef(cfg, params.Ref) {
 			return appwire.TurnStartResponse{}, err
 		}
 		if !shouldResumeAfterTurnStartError(err) {
@@ -1254,6 +1254,19 @@ func managedLaunchSourceIDForRef(cfg WebConfig, ref string) (string, bool) {
 		return "", false
 	}
 	return parsed.SourceID, true
+}
+
+// hubKnowsRef reports whether the hub recognizes ref: either as a
+// managed-launch source (e.g. codex) or as a thread tracked in the local past
+// index. Used to gate auto-resume retries after a TurnStart failure so that
+// non-local refs (which never appear in the local past index) still get the
+// retry when their backing daemon dies.
+func hubKnowsRef(cfg WebConfig, ref string) bool {
+	if _, ok := managedLaunchSourceIDForRef(cfg, ref); ok {
+		return true
+	}
+	_, ok := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: ref})
+	return ok
 }
 
 func hubThreadStart(ctx context.Context, cfg WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
