@@ -50,7 +50,7 @@ func TestAuthControllerStatusOAuthWithEmail(t *testing.T) {
 	}
 }
 
-func TestAuthControllerStatusDistinguishesEnvAndStoredOAuth(t *testing.T) {
+func TestAuthControllerStatusPrefersStoredOAuthOverEnv(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "sk-env")
 	stateDir := t.TempDir()
 	if err := authopenai.SaveAuth(stateDir, testOpenAIAuthRecord("bot@example.com")); err != nil {
@@ -62,14 +62,14 @@ func TestAuthControllerStatusDistinguishesEnvAndStoredOAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
-	if status.ActiveSource != authopenai.AuthSourceEnv {
-		t.Fatalf("ActiveSource = %q, want %q", status.ActiveSource, authopenai.AuthSourceEnv)
+	if status.ActiveSource != authopenai.AuthSourceOAuth {
+		t.Fatalf("ActiveSource = %q, want %q", status.ActiveSource, authopenai.AuthSourceOAuth)
 	}
 	if !status.HasStoredOAuth {
 		t.Fatal("HasStoredOAuth = false, want true")
 	}
-	if status.StoredEmail != "bot@example.com" {
-		t.Fatalf("StoredEmail = %q, want %q", status.StoredEmail, "bot@example.com")
+	if status.Email != "bot@example.com" {
+		t.Fatalf("Email = %q, want %q", status.Email, "bot@example.com")
 	}
 }
 

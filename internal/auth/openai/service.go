@@ -181,6 +181,19 @@ func (s *Service) Login(ctx context.Context, stateDir string) (AuthStatus, error
 }
 
 func (s *Service) Status(stateDir string) (AuthStatus, error) {
+	// Prefer a stored OAuth record over OPENAI_API_KEY: once a user explicitly
+	// signs in via `serf openai login`, that intent should win over an env
+	// fallback that may have been set globally.
+	record, err := LoadAuth(stateDir)
+	switch {
+	case err == nil:
+		return s.statusFromRecord(record), nil
+	case errors.Is(err, ErrAuthNotFound):
+		// fall through to env fallback below
+	default:
+		return AuthStatus{}, err
+	}
+
 	if envToken := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); envToken != "" {
 		return AuthStatus{
 			SignedIn: true,
@@ -188,14 +201,7 @@ func (s *Service) Status(stateDir string) (AuthStatus, error) {
 		}, nil
 	}
 
-	record, err := LoadAuth(stateDir)
-	if err != nil {
-		if errors.Is(err, ErrAuthNotFound) {
-			return AuthStatus{Source: AuthSourceSignedOut}, nil
-		}
-		return AuthStatus{}, err
-	}
-	return s.statusFromRecord(record), nil
+	return AuthStatus{Source: AuthSourceSignedOut}, nil
 }
 
 func (s *Service) Logout(stateDir string) (bool, error) {
@@ -203,16 +209,19 @@ func (s *Service) Logout(stateDir string) (bool, error) {
 }
 
 func (s *Service) ResolveRuntimeCredentials(ctx context.Context, stateDir string) (RuntimeCredentials, error) {
-	if envToken := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); envToken != "" {
-		return RuntimeCredentials{
-			BearerToken: envToken,
-			Source:      AuthSourceEnv,
-		}, nil
-	}
-
+	// Prefer a stored OAuth record over OPENAI_API_KEY. We only fall back to env
+	// when there is no stored auth at all; if a record exists but cannot be
+	// refreshed, surface that error instead of silently routing through env —
+	// the user explicitly signed in and would be surprised otherwise.
 	record, err := LoadAuth(stateDir)
 	if err != nil {
 		if errors.Is(err, ErrAuthNotFound) {
+			if envToken := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); envToken != "" {
+				return RuntimeCredentials{
+					BearerToken: envToken,
+					Source:      AuthSourceEnv,
+				}, nil
+			}
 			return RuntimeCredentials{}, loginRequiredError(err)
 		}
 		return RuntimeCredentials{}, err

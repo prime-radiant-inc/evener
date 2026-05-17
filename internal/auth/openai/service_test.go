@@ -201,6 +201,7 @@ func TestLoginBrowserOpenFailureIsNonFatal(t *testing.T) {
 }
 
 func TestStatusSignedOutWhenNoEnvOrStoredAuth(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
 	svc := newTestService(time.Date(2026, 5, 7, 23, 30, 0, 0, time.UTC))
 
 	status, err := svc.Status(t.TempDir())
@@ -215,7 +216,24 @@ func TestStatusSignedOutWhenNoEnvOrStoredAuth(t *testing.T) {
 	}
 }
 
-func TestStatusPrefersEnvAuth(t *testing.T) {
+func TestStatusUsesEnvWhenNoStoredAuth(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "sk-env")
+	stateDir := t.TempDir()
+
+	svc := newTestService(time.Date(2026, 5, 7, 23, 35, 0, 0, time.UTC))
+	status, err := svc.Status(stateDir)
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if !status.SignedIn {
+		t.Fatal("SignedIn = false, want true")
+	}
+	if status.Source != AuthSourceEnv {
+		t.Fatalf("Source = %q, want %q", status.Source, AuthSourceEnv)
+	}
+}
+
+func TestStatusPrefersStoredOAuthOverEnv(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "sk-env")
 	stateDir := t.TempDir()
 	if err := SaveAuth(stateDir, sampleAuthRecord()); err != nil {
@@ -230,8 +248,8 @@ func TestStatusPrefersEnvAuth(t *testing.T) {
 	if !status.SignedIn {
 		t.Fatal("SignedIn = false, want true")
 	}
-	if status.Source != AuthSourceEnv {
-		t.Fatalf("Source = %q, want %q", status.Source, AuthSourceEnv)
+	if status.Source != AuthSourceOAuth {
+		t.Fatalf("Source = %q, want %q", status.Source, AuthSourceOAuth)
 	}
 }
 
@@ -277,7 +295,7 @@ func TestLogoutDeletesStoredAuth(t *testing.T) {
 	}
 }
 
-func TestRuntimeCredentialsEnvWinsOverStoredAuth(t *testing.T) {
+func TestRuntimeCredentialsStoredAuthWinsOverEnv(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "sk-env")
 	stateDir := t.TempDir()
 	record := sampleAuthRecord()
@@ -285,6 +303,23 @@ func TestRuntimeCredentialsEnvWinsOverStoredAuth(t *testing.T) {
 	if err := SaveAuth(stateDir, record); err != nil {
 		t.Fatalf("SaveAuth() error = %v", err)
 	}
+
+	svc := newTestService(time.Date(2026, 5, 7, 23, 50, 0, 0, time.UTC))
+	creds, err := svc.ResolveRuntimeCredentials(context.Background(), stateDir)
+	if err != nil {
+		t.Fatalf("ResolveRuntimeCredentials() error = %v", err)
+	}
+	if creds.BearerToken != "stored-access-token" {
+		t.Fatalf("BearerToken = %q, want %q", creds.BearerToken, "stored-access-token")
+	}
+	if creds.Source != AuthSourceOAuth {
+		t.Fatalf("Source = %q, want %q", creds.Source, AuthSourceOAuth)
+	}
+}
+
+func TestRuntimeCredentialsFallsBackToEnvWhenNoStoredAuth(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "sk-env")
+	stateDir := t.TempDir()
 
 	svc := newTestService(time.Date(2026, 5, 7, 23, 50, 0, 0, time.UTC))
 	creds, err := svc.ResolveRuntimeCredentials(context.Background(), stateDir)

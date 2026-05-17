@@ -61,6 +61,52 @@ func init() {
 }
 
 func NewFromEnv(cfgs ...Config) (*Adapter, error) {
+	// Prefer stored OAuth over OPENAI_API_KEY: once a user has signed in via
+	// `serf openai login`, route through the ChatGPT/Codex backend instead of
+	// the env-key API. Service.Status reflects the same preference order.
+	authStateDir := authopenai.DefaultStateDir()
+	service := authopenai.NewService(authopenai.DefaultConfig(), nil)
+	status, err := service.Status(authStateDir)
+	if err != nil {
+		return nil, fmt.Errorf("load OpenAI auth: %w", err)
+	}
+	if status.SignedIn && status.Source == authopenai.AuthSourceOAuth {
+		creds, err := service.ResolveRuntimeCredentials(context.Background(), authStateDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve OpenAI auth: %w", err)
+		}
+		status, err = service.Status(authStateDir)
+		if err != nil {
+			return nil, fmt.Errorf("refresh OpenAI auth status: %w", err)
+		}
+		base := strings.TrimSpace(os.Getenv("OPENAI_CHATGPT_BASE_URL"))
+		if base == "" {
+			base = defaultChatGPTBaseURL
+		}
+		accountID := strings.TrimSpace(status.AccountID)
+		if accountID == "" {
+			accountID = strings.TrimSpace(status.WorkspaceID)
+		}
+		if accountID == "" {
+			record, loadErr := authopenai.LoadAuth(authStateDir)
+			if loadErr == nil {
+				if claims, parseErr := authopenai.ParseIDTokenClaims(record.IDToken); parseErr == nil {
+					accountID = strings.TrimSpace(claims.AccountID)
+					if accountID == "" {
+						accountID = strings.TrimSpace(claims.WorkspaceID)
+					}
+				}
+			}
+		}
+		return &Adapter{
+			APIKey:           creds.BearerToken,
+			BaseURL:          strings.TrimRight(base, "/"),
+			ResponsesPath:    defaultCodexResponses,
+			ChatGPTAccountID: accountID,
+			Client:           &http.Client{Timeout: 0},
+		}, nil
+	}
+
 	key := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	if key != "" {
 		base := strings.TrimSpace(os.Getenv("OPENAI_BASE_URL"))
@@ -78,50 +124,7 @@ func NewFromEnv(cfgs ...Config) (*Adapter, error) {
 		}, nil
 	}
 
-	authStateDir := authopenai.DefaultStateDir()
-	service := authopenai.NewService(authopenai.DefaultConfig(), nil)
-	status, err := service.Status(authStateDir)
-	if err != nil {
-		return nil, fmt.Errorf("load OpenAI auth: %w", err)
-	}
-	if !status.SignedIn || status.Source == authopenai.AuthSourceSignedOut {
-		return nil, fmt.Errorf("no OpenAI credentials configured")
-	}
-
-	creds, err := service.ResolveRuntimeCredentials(context.Background(), authStateDir)
-	if err != nil {
-		return nil, fmt.Errorf("resolve OpenAI auth: %w", err)
-	}
-	status, err = service.Status(authStateDir)
-	if err != nil {
-		return nil, fmt.Errorf("refresh OpenAI auth status: %w", err)
-	}
-	base := strings.TrimSpace(os.Getenv("OPENAI_CHATGPT_BASE_URL"))
-	if base == "" {
-		base = defaultChatGPTBaseURL
-	}
-	accountID := strings.TrimSpace(status.AccountID)
-	if accountID == "" {
-		accountID = strings.TrimSpace(status.WorkspaceID)
-	}
-	if accountID == "" {
-		record, loadErr := authopenai.LoadAuth(authStateDir)
-		if loadErr == nil {
-			if claims, parseErr := authopenai.ParseIDTokenClaims(record.IDToken); parseErr == nil {
-				accountID = strings.TrimSpace(claims.AccountID)
-				if accountID == "" {
-					accountID = strings.TrimSpace(claims.WorkspaceID)
-				}
-			}
-		}
-	}
-	return &Adapter{
-		APIKey:           creds.BearerToken,
-		BaseURL:          strings.TrimRight(base, "/"),
-		ResponsesPath:    defaultCodexResponses,
-		ChatGPTAccountID: accountID,
-		Client:           &http.Client{Timeout: 0},
-	}, nil
+	return nil, fmt.Errorf("no OpenAI credentials configured")
 }
 
 func (a *Adapter) Name() string { return "openai" }

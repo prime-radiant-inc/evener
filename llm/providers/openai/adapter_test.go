@@ -1341,6 +1341,9 @@ func TestComplete_PopulatesRateLimitInfo(t *testing.T) {
 }
 
 func TestNewFromEnv_ReadsOrgAndProjectID(t *testing.T) {
+	// Isolate XDG_STATE_HOME so any stored OAuth record on the dev machine
+	// does not take precedence over OPENAI_API_KEY.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("OPENAI_API_KEY", "sk-test")
 	t.Setenv("OPENAI_ORG_ID", "org-123")
 	t.Setenv("OPENAI_PROJECT_ID", "proj-456")
@@ -1354,6 +1357,45 @@ func TestNewFromEnv_ReadsOrgAndProjectID(t *testing.T) {
 	}
 	if a.ProjectID != "proj-456" {
 		t.Fatalf("ProjectID = %q", a.ProjectID)
+	}
+}
+
+// TestNewFromEnv_PrefersStoredOAuthOverAPIKey verifies the new priority order:
+// when both OPENAI_API_KEY and a stored OAuth record are present, the adapter
+// uses the OAuth path (ChatGPT/Codex backend), not the env API key.
+func TestNewFromEnv_PrefersStoredOAuthOverAPIKey(t *testing.T) {
+	xdgStateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", xdgStateHome)
+	t.Setenv("OPENAI_API_KEY", "sk-env-should-be-ignored")
+	t.Setenv("OPENAI_CHATGPT_BASE_URL", "https://chatgpt.example.test")
+	userStateDir := authopenai.DefaultStateDir()
+	if err := authopenai.SaveAuth(userStateDir, authopenai.AuthRecord{
+		Version:      1,
+		Provider:     "openai",
+		Source:       authopenai.AuthSourceOAuth,
+		ObtainedAt:   time.Now().Add(-time.Minute).UTC(),
+		TokenType:    "Bearer",
+		Scope:        "openid profile email offline_access",
+		AccessToken:  "oauth-token",
+		RefreshToken: "refresh-token",
+		Expiry:       time.Now().Add(time.Hour).UTC(),
+		AccountID:    "acct_oauth",
+	}); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+
+	a, err := NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+	if a.APIKey != "oauth-token" {
+		t.Fatalf("APIKey = %q, want OAuth bearer token", a.APIKey)
+	}
+	if a.ResponsesPath != "/backend-api/codex/responses" {
+		t.Fatalf("ResponsesPath = %q, want codex responses path", a.ResponsesPath)
+	}
+	if a.ChatGPTAccountID != "acct_oauth" {
+		t.Fatalf("ChatGPTAccountID = %q, want %q", a.ChatGPTAccountID, "acct_oauth")
 	}
 }
 

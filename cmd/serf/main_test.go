@@ -331,6 +331,9 @@ func TestOpenAIStatusIsCompactAndScriptFriendly(t *testing.T) {
 }
 
 func TestOpenAILogoutDeletesOnlySerfOwnedAuthState(t *testing.T) {
+	// Isolate from any OPENAI_API_KEY set in the dev environment so the
+	// post-logout status reports signed-out, not env-fallback.
+	t.Setenv("OPENAI_API_KEY", "")
 	stateDir := t.TempDir()
 
 	if err := authopenai.SaveAuth(stateDir, authopenai.AuthRecord{

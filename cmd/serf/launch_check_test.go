@@ -217,6 +217,9 @@ func configureLaunchCheckOpenAIModels(t *testing.T, body string) {
 
 func configureLaunchCheckOpenAIModelStatus(t *testing.T, status int, body string) {
 	t.Helper()
+	// Isolate XDG_STATE_HOME so any stored OAuth record on the dev machine
+	// does not take precedence over the test OPENAI_API_KEY.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	for _, key := range []string{
 		"ANTHROPIC_API_KEY",
 		"GEMINI_API_KEY",
