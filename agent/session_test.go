@@ -3489,7 +3489,10 @@ func TestSession_DrainAsSteer_JoinsWithDoubleNewline(t *testing.T) {
 	// The combined message must have landed on the steeringQueue with the
 	// expected join.
 	sess.mu.Lock()
-	steering := append([]string{}, sess.steeringQueue...)
+	steering := make([]string, 0, len(sess.steeringQueue))
+	for _, m := range sess.steeringQueue {
+		steering = append(steering, m.Text)
+	}
 	sess.mu.Unlock()
 	want := "alpha\n\nbravo\n\ncharlie"
 	if len(steering) != 1 || steering[0] != want {

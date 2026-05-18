@@ -2411,7 +2411,9 @@ func launchHarnessIDs(cfg WebConfig) []string {
 }
 
 // spawnRequest is the JSON body for POST /api/spawn. The prompt field is
-// current; task is accepted by UnmarshalJSON for legacy callers.
+// current; task is accepted by UnmarshalJSON for legacy callers. Items
+// carries optional attachments (e.g. image bytes) that the composer wants
+// to include with the initial user turn (kata t5j6).
 type spawnRequest struct {
 	Prompt          string                     `json:"prompt"`
 	Harness         string                     `json:"harness"`
@@ -2422,6 +2424,7 @@ type spawnRequest struct {
 	Agent           string                     `json:"agent"`
 	ReasoningEffort string                     `json:"reasoning_effort"`
 	LaunchOverrides *appwire.LaunchConfigLayer `json:"launch_overrides,omitempty"`
+	Items           []appwire.InputItem        `json:"items,omitempty"`
 }
 
 func (r *spawnRequest) UnmarshalJSON(data []byte) error {
@@ -2463,6 +2466,7 @@ func (s *WebServer) handleApiSpawn(w http.ResponseWriter, r *http.Request) {
 		Profile:         req.Agent,
 		ReasoningEffort: req.ReasoningEffort,
 		LaunchOverrides: req.LaunchOverrides,
+		Items:           req.Items,
 	})
 	if err != nil {
 		writeSpawnError(w, err)

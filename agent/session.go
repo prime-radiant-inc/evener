@@ -235,7 +235,7 @@ type Session struct {
 
 	reg *ToolRegistry
 
-	steeringQueue []string
+	steeringQueue []steeringMessage
 	followups     []string
 
 	// inputQueue holds messages submitted via Enqueue while a turn is in
@@ -243,7 +243,9 @@ type Session struct {
 	// user immediately and is processed as a fresh user turn once the
 	// active turn completes. DrainAsSteer (kata 0bq1) collapses any queued
 	// messages into a single steering message sent to the in-flight turn.
-	inputQueue []string
+	// Each entry carries text plus any attached images (kata t5j6) so the
+	// composer can queue image-bearing messages alongside text.
+	inputQueue []queuedInput
 
 	// communicate tool state (transient, reset each processOneInput call)
 	communicated          bool
@@ -975,17 +977,39 @@ func (s *Session) RegisterTool(name, description string, params map[string]any, 
 	s.refreshSystemPromptCache()
 }
 
-// Steer queues a message to inject after the current tool round completes.
+// steeringMessage is one entry on the steering queue. Text carries the
+// system-reminder body; Images optionally carries attachments that flow
+// alongside the text as additional ContentImage parts when the steering
+// turn is appended to history (kata t5j6).
+type steeringMessage struct {
+	Text   string
+	Images []ImageAttachment
+}
+
+// Steer queues a text-only message to inject after the current tool round
+// completes.
 func (s *Session) Steer(msg string) {
+	s.SteerWithImages(msg, nil)
+}
+
+// SteerWithImages queues a steering message that carries optional image
+// attachments alongside the text. The combined message is appended to
+// session history as a TurnSteering with text + ContentImage parts when
+// the steering queue is drained (kata t5j6).
+func (s *Session) SteerWithImages(msg string, images []ImageAttachment) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.state == SessionClosed {
 		return
 	}
-	if strings.TrimSpace(msg) == "" {
+	if strings.TrimSpace(msg) == "" && len(images) == 0 {
 		return
 	}
-	s.steeringQueue = append(s.steeringQueue, msg)
+	entry := steeringMessage{Text: msg}
+	if len(images) > 0 {
+		entry.Images = append([]ImageAttachment(nil), images...)
+	}
+	s.steeringQueue = append(s.steeringQueue, entry)
 }
 
 // describeImage makes a side-channel API call with no tools to describe an image
@@ -1088,26 +1112,45 @@ func (s *Session) FollowUp(msg string) {
 	s.followups = append(s.followups, msg)
 }
 
-// Enqueue appends a user message to the per-session input queue (kata 111a).
-// Queued messages are processed as fresh user turns once the in-flight
-// ProcessInput finishes its current turn. Enqueueing on an idle session is
-// valid and behaves as a FIFO buffer that will be drained on the next call to
-// ProcessInput's outer loop; callers that want immediate processing on an
-// idle session should call ProcessInput directly. Returns an error if the
-// session is closed or the text is blank.
+// queuedInput is one entry on the per-session input queue. Text and Images
+// are forwarded together when the entry is drained as a fresh user turn.
+type queuedInput struct {
+	Text   string
+	Images []ImageAttachment
+}
+
+// Enqueue appends a text-only user message to the per-session input queue
+// (kata 111a). See EnqueueWithImages for the variant that carries image
+// attachments alongside the text.
 func (s *Session) Enqueue(ctx context.Context, text string) error {
+	return s.EnqueueWithImages(ctx, text, nil)
+}
+
+// EnqueueWithImages appends a user message (text + optional images) to the
+// per-session input queue (kata t5j6 extension of kata 111a). Queued
+// messages are processed as fresh user turns once the in-flight
+// ProcessInput finishes its current turn. Enqueueing on an idle session is
+// valid and behaves as a FIFO buffer that will be drained on the next call
+// to ProcessInput's outer loop; callers that want immediate processing on
+// an idle session should call ProcessInput directly. Returns an error if
+// the session is closed or both text and images are empty.
+func (s *Session) EnqueueWithImages(ctx context.Context, text string, images []ImageAttachment) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if strings.TrimSpace(text) == "" {
-		return fmt.Errorf("queue: text is required")
+	if strings.TrimSpace(text) == "" && len(images) == 0 {
+		return fmt.Errorf("queue: text or images required")
 	}
 	s.mu.Lock()
 	if s.state == SessionClosed {
 		s.mu.Unlock()
 		return fmt.Errorf("queue: session is closed")
 	}
-	s.inputQueue = append(s.inputQueue, text)
+	entry := queuedInput{Text: text}
+	if len(images) > 0 {
+		entry.Images = append([]ImageAttachment(nil), images...)
+	}
+	s.inputQueue = append(s.inputQueue, entry)
 	data := s.queueChangedDataLocked()
 	s.mu.Unlock()
 	s.emit(EventQueueChanged, data)
@@ -1117,7 +1160,9 @@ func (s *Session) Enqueue(ctx context.Context, text string) error {
 // DrainAsSteer pops every queued message, joins them with a blank line, and
 // injects the combined text as a single STEERING message to the in-flight
 // turn (kata 0bq1 force-steer combined action). Returns an error if the
-// queue is empty or the session is closed.
+// queue is empty or the session is closed. Image attachments on any queued
+// entry are forwarded as additional ContentImage parts on the steering
+// message (kata t5j6).
 func (s *Session) DrainAsSteer(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -1131,12 +1176,24 @@ func (s *Session) DrainAsSteer(ctx context.Context) error {
 		s.mu.Unlock()
 		return fmt.Errorf("drain: queue is empty")
 	}
-	msgs := append([]string{}, s.inputQueue...)
+	entries := append([]queuedInput{}, s.inputQueue...)
 	s.inputQueue = nil
 	data := s.queueChangedDataLocked()
 	s.mu.Unlock()
-	combined := strings.Join(msgs, "\n\n")
-	s.Steer(combined)
+	texts := make([]string, 0, len(entries))
+	var images []ImageAttachment
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.Text) != "" {
+			texts = append(texts, entry.Text)
+		}
+		images = append(images, entry.Images...)
+	}
+	combined := strings.Join(texts, "\n\n")
+	if len(images) == 0 {
+		s.Steer(combined)
+	} else {
+		s.SteerWithImages(combined, images)
+	}
 	s.emit(EventQueueChanged, data)
 	return nil
 }
@@ -1152,7 +1209,9 @@ func (s *Session) QueueDepth() int {
 // each entry collapsed to its first line and trimmed of trailing CR. The
 // output is the user-facing preview shape consumed by both UIs via the
 // appwire QueueState (kata r80p); callers that need the raw text should
-// reach into the queue mutators directly.
+// reach into the queue mutators directly. Image-only queue entries surface
+// as a synthetic "[image]" placeholder so the preview row still renders a
+// non-empty line.
 func (s *Session) QueuePreview() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1161,7 +1220,7 @@ func (s *Session) QueuePreview() []string {
 	}
 	out := make([]string, len(s.inputQueue))
 	for i, entry := range s.inputQueue {
-		out[i] = firstQueueLine(entry)
+		out[i] = queuedEntryPreviewLine(entry)
 	}
 	return out
 }
@@ -1176,20 +1235,37 @@ func firstQueueLine(msg string) string {
 	return strings.TrimRight(msg, "\r")
 }
 
-// popQueueHead removes and returns the next queued message. Returns "" when
-// the queue is empty.
-func (s *Session) popQueueHead() string {
+// queuedEntryPreviewLine returns the preview-line representation of a
+// queue entry. Text wins when present; otherwise we surface a synthetic
+// "[image]" placeholder (count-prefixed when more than one) so consumers
+// don't render an empty row for an image-only queued message.
+func queuedEntryPreviewLine(entry queuedInput) string {
+	if line := firstQueueLine(entry.Text); strings.TrimSpace(line) != "" {
+		return line
+	}
+	if len(entry.Images) == 1 {
+		return "[image]"
+	}
+	if len(entry.Images) > 1 {
+		return fmt.Sprintf("[%d images]", len(entry.Images))
+	}
+	return ""
+}
+
+// popQueueHead removes and returns the next queued entry. Returns a zero
+// value when the queue is empty.
+func (s *Session) popQueueHead() queuedInput {
 	s.mu.Lock()
 	if len(s.inputQueue) == 0 {
 		s.mu.Unlock()
-		return ""
+		return queuedInput{}
 	}
-	msg := s.inputQueue[0]
+	entry := s.inputQueue[0]
 	s.inputQueue = s.inputQueue[1:]
 	data := s.queueChangedDataLocked()
 	s.mu.Unlock()
 	s.emit(EventQueueChanged, data)
-	return msg
+	return entry
 }
 
 // queueChangedDataLocked builds a QueueChangedData snapshot from the
@@ -1199,7 +1275,7 @@ func (s *Session) queueChangedDataLocked() QueueChangedData {
 	if len(s.inputQueue) > 0 {
 		data.Preview = make([]string, len(s.inputQueue))
 		for i, entry := range s.inputQueue {
-			data.Preview[i] = firstQueueLine(entry)
+			data.Preview[i] = queuedEntryPreviewLine(entry)
 		}
 	}
 	return data
@@ -1426,9 +1502,12 @@ func (s *Session) ProcessInput(ctx context.Context, input string, images []Image
 		// kata 111a: when the per-turn followup queue is empty, drain the
 		// next user-typed queued message and run it as a fresh user turn.
 		// Each drain consumes exactly one message so each becomes a
-		// distinct user turn in the transcript.
-		if queued := s.popQueueHead(); strings.TrimSpace(queued) != "" {
-			next = queued
+		// distinct user turn in the transcript. Image attachments on the
+		// queued entry are forwarded as ContentImage parts on that turn
+		// (kata t5j6).
+		if queued := s.popQueueHead(); strings.TrimSpace(queued.Text) != "" || len(queued.Images) > 0 {
+			next = queued.Text
+			nextImages = queued.Images
 			continue
 		}
 		s.mu.Lock()
@@ -1776,8 +1855,8 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
 	for _, msg := range s.drainSteering() {
-		s.appendTurn(TurnSteering, llm.User(msg))
-		s.emit(EventSteeringInjected, SteeringInjectedData{Text: msg})
+		s.appendTurn(TurnSteering, steeringMessageToLLM(msg))
+		s.emit(EventSteeringInjected, SteeringInjectedData{Text: msg.Text})
 	}
 
 	var toolSigs []string
@@ -2368,8 +2447,8 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		// Inject any queued steering messages before the next model call.
 		for _, msg := range s.drainSteering() {
-			s.appendTurn(TurnSteering, llm.User(msg))
-			s.emit(EventSteeringInjected, SteeringInjectedData{Text: msg})
+			s.appendTurn(TurnSteering, steeringMessageToLLM(msg))
+			s.emit(EventSteeringInjected, SteeringInjectedData{Text: msg.Text})
 		}
 
 		// Task reminder injection.
@@ -2694,15 +2773,53 @@ func (s *Session) stuckEscalation(count int) string {
 	}
 }
 
-func (s *Session) drainSteering() []string {
+func (s *Session) drainSteering() []steeringMessage {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.steeringQueue) == 0 {
 		return nil
 	}
-	out := append([]string{}, s.steeringQueue...)
+	out := append([]steeringMessage{}, s.steeringQueue...)
 	s.steeringQueue = nil
 	return out
+}
+
+// SteeringEntry is a read-only snapshot of one entry on the steering
+// queue. It exists so callers outside the agent package (notably the
+// server's wire tests for kata t5j6) can observe pending steering
+// messages without reaching into private state. Text + Images are copies;
+// mutating them is safe and has no effect on the queue.
+type SteeringEntry struct {
+	Text   string
+	Images []ImageAttachment
+}
+
+// SteeringQueueSnapshot returns a copy of the session's current steering
+// queue. Used by integration tests; production callers should treat the
+// steering queue as opaque and trigger flushes via Steer / DrainAsSteer.
+func (s *Session) SteeringQueueSnapshot() []SteeringEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.steeringQueue) == 0 {
+		return nil
+	}
+	out := make([]SteeringEntry, len(s.steeringQueue))
+	for i, entry := range s.steeringQueue {
+		copyImages := append([]ImageAttachment(nil), entry.Images...)
+		out[i] = SteeringEntry{Text: entry.Text, Images: copyImages}
+	}
+	return out
+}
+
+// steeringMessageToLLM converts a steeringMessage to an llm.Message
+// (User-role) suitable for appendTurn(TurnSteering, ...). Text-only
+// entries become llm.User(text); image-bearing entries become a
+// multi-part message via buildUserInputMessage.
+func steeringMessageToLLM(entry steeringMessage) llm.Message {
+	if len(entry.Images) == 0 {
+		return llm.User(entry.Text)
+	}
+	return buildUserInputMessage(entry.Text, entry.Images)
 }
 
 func (s *Session) popFollowUp() string {
@@ -3834,8 +3951,18 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 				Message:    message,
 			})
 
-			// Drain steering queue into the inbox.
-			inbox := s.drainSteering()
+			// Drain steering queue into the inbox. The inbox is text-only
+			// in the wire shape; image-bearing steering messages still
+			// surface their text portion here (images are persisted as
+			// ContentImage parts on the appended TurnSteering — they
+			// aren't re-delivered through this tool-response inbox).
+			drained := s.drainSteering()
+			inbox := make([]string, 0, len(drained))
+			for _, msg := range drained {
+				if strings.TrimSpace(msg.Text) != "" {
+					inbox = append(inbox, msg.Text)
+				}
+			}
 
 			s.mu.Lock()
 			s.communicated = true

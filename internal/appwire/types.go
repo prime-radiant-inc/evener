@@ -425,10 +425,13 @@ type TurnInterruptParams struct {
 // TurnQueueParams is the wire shape for turn/queue (kata 111a). Queues a
 // user message during a running turn for processing after the active turn
 // completes. The daemon enqueues immediately and returns; no turn id is
-// reserved or returned.
+// reserved or returned. Items optionally carries attachments (e.g. image
+// bytes — kata t5j6) that flow through to the drained user turn alongside
+// the text.
 type TurnQueueParams struct {
-	Ref  string `json:"ref"`
-	Text string `json:"text"`
+	Ref   string      `json:"ref"`
+	Text  string      `json:"text"`
+	Items []InputItem `json:"items,omitempty"`
 }
 
 // TurnDrainAsSteerParams is the wire shape for turn/drainAsSteer (kata

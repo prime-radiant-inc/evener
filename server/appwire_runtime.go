@@ -364,12 +364,17 @@ func (s *Server) handleAppTurnInterrupt(_ context.Context, params appwire.TurnIn
 // handleAppTurnQueue handles turn/queue (kata 111a). The session must be
 // processing for the call to be meaningful — calling on an idle session is
 // rejected with Conflict so callers fall back to turn/start instead.
+// When params.Items carries image attachments (kata t5j6), the request is
+// routed through queueWithImagesFunc when available so the queued entry
+// preserves the image bytes for the eventual user turn.
 func (s *Server) handleAppTurnQueue(_ context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
-	if strings.TrimSpace(params.Text) == "" {
-		return appwire.EmptyResponse{}, appwire.InvalidParams("text is required")
+	text, images := inputFromItems(params.Text, params.Items)
+	if strings.TrimSpace(text) == "" && len(images) == 0 {
+		return appwire.EmptyResponse{}, appwire.InvalidParams("text or items required")
 	}
 	s.mu.RLock()
 	fn := s.queueFunc
+	imgFn := s.queueWithImagesFunc
 	processing := s.processing
 	closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
 	s.mu.RUnlock()
@@ -379,10 +384,19 @@ func (s *Server) handleAppTurnQueue(_ context.Context, params appwire.TurnQueueP
 	if !processing {
 		return appwire.EmptyResponse{}, appwire.Conflict("no active turn to queue against")
 	}
+	if len(images) > 0 {
+		if imgFn == nil {
+			return appwire.EmptyResponse{}, appwire.Unavailable("image queue not available")
+		}
+		if err := imgFn(text, images); err != nil {
+			return appwire.EmptyResponse{}, err
+		}
+		return appwire.EmptyResponse{}, nil
+	}
 	if fn == nil {
 		return appwire.EmptyResponse{}, appwire.Unavailable("queue not available")
 	}
-	if err := fn(params.Text); err != nil {
+	if err := fn(text); err != nil {
 		return appwire.EmptyResponse{}, err
 	}
 	return appwire.EmptyResponse{}, nil

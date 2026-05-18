@@ -4130,7 +4130,10 @@ func TestSendInput_SteersRunningAgent(t *testing.T) {
 
 	// Verify the steering message was queued.
 	subSess.mu.Lock()
-	queue := append([]string{}, subSess.steeringQueue...)
+	queue := make([]string, 0, len(subSess.steeringQueue))
+	for _, m := range subSess.steeringQueue {
+		queue = append(queue, m.Text)
+	}
 	subSess.mu.Unlock()
 
 	if len(queue) != 1 || queue[0] != "steered message" {

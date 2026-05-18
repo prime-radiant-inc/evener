@@ -1378,7 +1378,10 @@ func TestTaskListTool_UpdateAutoAdvanceFiresSteeringNotOutput(t *testing.T) {
 
 	// Steering queue should carry the current-task SYSTEM-REMINDER for task 2.
 	sess.mu.Lock()
-	queue := append([]string{}, sess.steeringQueue...)
+	queue := make([]string, 0, len(sess.steeringQueue))
+	for _, m := range sess.steeringQueue {
+		queue = append(queue, m.Text)
+	}
 	sess.mu.Unlock()
 	if len(queue) != 1 {
 		t.Fatalf("expected 1 steering message after auto-advance, got %d: %v", len(queue), queue)
@@ -1441,7 +1444,10 @@ func TestTaskListTool_ManualInProgressFiresSteering(t *testing.T) {
 
 	// Steering should include the current-task reminder for task 2.
 	sess.mu.Lock()
-	queue := append([]string{}, sess.steeringQueue...)
+	queue := make([]string, 0, len(sess.steeringQueue))
+	for _, m := range sess.steeringQueue {
+		queue = append(queue, m.Text)
+	}
 	sess.mu.Unlock()
 	if len(queue) != 1 {
 		t.Fatalf("expected 1 steering message after manual in_progress, got %d: %v", len(queue), queue)
@@ -1532,7 +1538,10 @@ func TestTaskListTool_UpdateShowsAllComplete(t *testing.T) {
 
 	// Steering should be a SYSTEM-REMINDER so models treat it like other task steering.
 	sess.mu.Lock()
-	queue := append([]string{}, sess.steeringQueue...)
+	queue := make([]string, 0, len(sess.steeringQueue))
+	for _, m := range sess.steeringQueue {
+		queue = append(queue, m.Text)
+	}
 	sess.mu.Unlock()
 	if len(queue) == 0 {
 		t.Fatal("expected steering message after all tasks complete, got none")

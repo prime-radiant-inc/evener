@@ -111,16 +111,17 @@ type Server struct {
 	appServer   *appserver.Server
 	appNotifier *appserver.Notifier
 
-	mu               sync.RWMutex
-	status           StatusInfo
-	appSourceID      string
-	appThreadID      string
-	appProjector     *AppEventProjector
-	appActiveTurnID  string
-	cancelFunc       context.CancelFunc
-	steerFunc        func(string)
-	queueFunc        func(string) error
-	drainSteerFunc   func() error
+	mu                  sync.RWMutex
+	status              StatusInfo
+	appSourceID         string
+	appThreadID         string
+	appProjector        *AppEventProjector
+	appActiveTurnID     string
+	cancelFunc          context.CancelFunc
+	steerFunc           func(string)
+	queueFunc           func(string) error
+	queueWithImagesFunc func(string, []ImageAttachment) error
+	drainSteerFunc      func() error
 	queueDepthFn     func() int
 	queuePreviewFn   func() []string
 	compactFunc      func(context.Context) error
@@ -285,6 +286,19 @@ func (s *Server) handleSteer(w http.ResponseWriter, r *http.Request) {
 func (s *Server) SetQueueFunc(fn func(string) error) {
 	s.mu.Lock()
 	s.queueFunc = fn
+	s.mu.Unlock()
+}
+
+// SetQueueWithImagesFunc sets the function called when the appwire
+// turn/queue request carries image attachments (kata t5j6). The callback
+// should append a queued entry that pairs the text with the attached
+// images. When unset, image-bearing queue requests fall back to the
+// text-only queueFunc (text portion only — image bytes are dropped). Wire
+// callers must therefore set this function whenever they accept
+// image-bearing queue requests.
+func (s *Server) SetQueueWithImagesFunc(fn func(string, []ImageAttachment) error) {
+	s.mu.Lock()
+	s.queueWithImagesFunc = fn
 	s.mu.Unlock()
 }
 
