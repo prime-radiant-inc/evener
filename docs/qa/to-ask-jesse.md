@@ -81,3 +81,12 @@ While fixing kata 3tgv, found that the LLM-error path is not the only error exit
 - Panic recovery — there is no top-level recover in `processOneInput`, so a panic would skip flush entirely.
 
 None of these are blockers; filed for future cleanup once a single deferred-flush pattern is agreed.
+
+### communicate inbox doesn't show image content from image-bearing steers (kata gnmv)
+After t5j6 + re91 + 65mm, the agent loop persists image-bearing steers correctly: model sees the bytes via TurnSteering, transcript records a ContentImage part. BUT the communicate tool's `inbox` payload that surfaces to the AGENT shows only the text portion — not even an `[image attached]` hint.
+
+Two interpretations:
+- (a) **Intentional**: inbox is the "what new user messages did I miss" pane, and image content can't be summarized as text. Skipping it keeps the pane terse.
+- (b) **Papercut**: agent should know an image was attached, even if it has to look at transcript to see it. A minimal `[1 image attached: photo.png]` hint would be enough.
+
+Refs: agent/session.go after t5j6 (3b9ae14).
