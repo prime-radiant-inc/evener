@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/internal/appwire"
@@ -26,12 +29,19 @@ type hubDrainAsSteerMsg struct {
 }
 
 // sendHubQueue issues turn/queue (kata 111a) to enqueue text for processing
-// after the active turn completes.
-func sendHubQueue(client *appwire.Client, ref appwire.Ref, text, draft string) tea.Cmd {
+// after the active turn completes. When attachments are supplied (kata re91)
+// they are read from disk at submit time and shipped as image InputItems
+// alongside the text.
+func sendHubQueue(client *appwire.Client, ref appwire.Ref, text, draft string, attachments []*PastedImage) tea.Cmd {
 	return func() tea.Msg {
-		err := client.TurnQueue(context.Background(), appwire.TurnQueueParams{
-			Ref:  ref.String(),
-			Text: text,
+		items, err := buildAttachmentItems(attachments)
+		if err != nil {
+			return hubQueueMsg{text: text, draft: draft, err: err}
+		}
+		err = client.TurnQueue(context.Background(), appwire.TurnQueueParams{
+			Ref:   ref.String(),
+			Text:  text,
+			Items: items,
 		})
 		return hubQueueMsg{text: text, draft: draft, err: err}
 	}
@@ -39,26 +49,20 @@ func sendHubQueue(client *appwire.Client, ref appwire.Ref, text, draft string) t
 
 // sendHubDrainAsSteer issues turn/drainAsSteer (kata 0bq1) to drain every
 // queued message into a single STEERING message for the in-flight turn.
-func sendHubDrainAsSteer(client *appwire.Client, ref appwire.Ref, draft string) tea.Cmd {
+// When the composer carries text or attachments (kata re91) they are queued
+// first so the daemon's atomic drain folds them into the same STEERING
+// payload alongside everything already queued.
+func sendHubDrainAsSteer(client *appwire.Client, ref appwire.Ref, text, draft string, attachments []*PastedImage) tea.Cmd {
 	return func() tea.Msg {
-		err := client.TurnDrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{
-			Ref: ref.String(),
-		})
-		return hubDrainAsSteerMsg{draft: draft, err: err}
-	}
-}
-
-// sendHubQueueThenDrain queues `pending` then immediately drains every queued
-// message as a single STEERING entry (kata 0bq1 with composer text). Both
-// appwire calls run inside the same Cmd so the daemon sees them strictly in
-// order; the resulting message reports the drain outcome (which is what the
-// user cares about). On queue failure, the drain is skipped.
-func sendHubQueueThenDrain(client *appwire.Client, ref appwire.Ref, pending, draft string) tea.Cmd {
-	return func() tea.Msg {
-		if pending != "" {
+		if text != "" || len(attachments) > 0 {
+			items, err := buildAttachmentItems(attachments)
+			if err != nil {
+				return hubDrainAsSteerMsg{draft: draft, err: err}
+			}
 			if err := client.TurnQueue(context.Background(), appwire.TurnQueueParams{
-				Ref:  ref.String(),
-				Text: pending,
+				Ref:   ref.String(),
+				Text:  text,
+				Items: items,
 			}); err != nil {
 				return hubDrainAsSteerMsg{draft: draft, err: err}
 			}
@@ -68,4 +72,37 @@ func sendHubQueueThenDrain(client *appwire.Client, ref appwire.Ref, pending, dra
 		})
 		return hubDrainAsSteerMsg{draft: draft, err: err}
 	}
+}
+
+// buildAttachmentItems reads each PastedImage's temp file at submit time
+// and produces wire-ready []appwire.InputItem entries. Reading on submit
+// (rather than caching bytes at paste time) keeps memory low while
+// composer drafts live, and matches the codex reference impl. An error on
+// any file aborts the build — the caller surfaces it through the usual
+// hubSendMsg/hubQueueMsg error path so the user can retry.
+func buildAttachmentItems(attachments []*PastedImage) ([]appwire.InputItem, error) {
+	if len(attachments) == 0 {
+		return nil, nil
+	}
+	items := make([]appwire.InputItem, 0, len(attachments))
+	for _, att := range attachments {
+		if att == nil {
+			continue
+		}
+		data, err := os.ReadFile(att.Path)
+		if err != nil {
+			return nil, fmt.Errorf("read attachment %s: %w", att.Path, err)
+		}
+		media := att.MediaType
+		if media == "" {
+			media = "image/png"
+		}
+		items = append(items, appwire.InputItem{
+			Type:      "image",
+			MediaType: media,
+			Data:      data,
+			Name:      filepath.Base(att.Path),
+		})
+	}
+	return items, nil
 }

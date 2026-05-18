@@ -298,6 +298,8 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmd, waitHubNotification(m.client))
 	case hubSendMsg:
 		if msg.err != nil {
+			// Preserve pendingAttachments on error so the user can retry
+			// without re-pasting (kata re91).
 			m.session.setInputValue(msg.draft)
 			m.addHubErrorNotice("Send failed", "appwire", msg.err, "Check the hub connection and retry the action.")
 			m.recordSessionError("Send failed: " + msg.err.Error())
@@ -305,12 +307,14 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.clearNoticesByCategory("appwire")
 			m.clearSessionError()
 			m.setActiveTurnID(msg.turnID)
+			m.pendingAttachments = nil
 		}
 		return m, nil
 	case hubQueueMsg:
 		if msg.err != nil {
 			// Restore the draft; the wire state will not advance because
-			// the daemon never received the message.
+			// the daemon never received the message. Preserve attachments
+			// (kata re91) so the user can retry.
 			m.session.setInputValue(msg.draft)
 			m.addHubErrorNotice("Queue failed", "appwire", msg.err, "Check the hub connection and retry the action.")
 			m.recordSessionError("Queue failed: " + msg.err.Error())
@@ -318,6 +322,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.clearNoticesByCategory("appwire")
 		m.clearSessionError()
+		m.pendingAttachments = nil
 		// The daemon emits a thread/queueChanged notification with the
 		// new state; applyHubNotification picks it up. No local mirror
 		// (kata r80p).
@@ -333,6 +338,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.clearNoticesByCategory("appwire")
 		m.clearSessionError()
+		m.pendingAttachments = nil
 		// The daemon emits thread/queueChanged with depth=0 after a
 		// successful drain; applyHubNotification clears sessionQueue when
 		// it lands. We don't preemptively wipe here so the preview
@@ -1522,7 +1528,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.session.addHistory(text)
 			m.session.resetInput()
 			m.session.refreshViewport()
-			return m, sendHubQueue(m.client, ref, text, draft)
+			return m, sendHubQueue(m.client, ref, text, draft, m.pendingAttachments)
 		}
 		if composerMode == hubComposerModeReadOnly || !m.sessionCanStartTurn() {
 			reason := m.sessionComposerReadOnlyReason()
@@ -1544,7 +1550,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.session.addHistory(text)
 		m.session.resetInput()
 		m.session.refreshViewport()
-		return m, sendHubInput(m.client, ref, text, draft)
+		return m, sendHubInput(m.client, ref, text, draft, m.pendingAttachments)
 	}
 
 	prevHeight := m.session.input.Height()
@@ -1613,23 +1619,24 @@ func (m hubModel) handleSessionForceSteer() (tea.Model, tea.Cmd) {
 	}
 	draft := m.session.input.Value()
 	pending := strings.TrimSpace(draft)
-	if pending == "" && len(m.sessionQueue) == 0 {
+	attachments := m.pendingAttachments
+	if pending == "" && len(m.sessionQueue) == 0 && len(attachments) == 0 {
 		m.addSessionSystem("Nothing to steer: the queue is empty.")
 		return m, nil
 	}
-	if pending == "" {
+	if pending == "" && len(attachments) == 0 {
 		// Pure drain of the existing queue. Clear nothing on the composer.
-		return m, sendHubDrainAsSteer(m.client, ref, "")
+		return m, sendHubDrainAsSteer(m.client, ref, "", "", nil)
 	}
-	// Composer has text and there may or may not be pending queue
-	// entries. Enqueue the composer first so the drain folds it into the
-	// same STEERING message; sendHubQueueThenDrain serialises the two
-	// appwire calls so the daemon's atomic DrainAsSteer pops the composer
-	// payload alongside everything already queued.
-	m.session.addHistory(pending)
+	// Composer has text and/or attachments. sendHubDrainAsSteer queues the
+	// composer payload first so the daemon's atomic DrainAsSteer pops it
+	// alongside everything already queued into a single STEERING entry.
+	if pending != "" {
+		m.session.addHistory(pending)
+	}
 	m.session.resetInput()
 	m.session.refreshViewport()
-	return m, sendHubQueueThenDrain(m.client, ref, pending, draft)
+	return m, sendHubDrainAsSteer(m.client, ref, pending, draft, attachments)
 }
 
 // isAltVKey reports whether the keypress is Alt+v / Ctrl+Alt+V. WSL

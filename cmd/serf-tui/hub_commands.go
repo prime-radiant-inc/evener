@@ -373,9 +373,13 @@ func modelDiagnosticDisabledReason(diagnostic appwire.ModelListDiagnostic) strin
 	return reason
 }
 
-func sendHubInput(client *appwire.Client, ref appwire.Ref, text string, draft string) tea.Cmd {
+func sendHubInput(client *appwire.Client, ref appwire.Ref, text string, draft string, attachments []*PastedImage) tea.Cmd {
 	return func() tea.Msg {
-		resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: ref.String(), Prompt: text})
+		items, err := buildAttachmentItems(attachments)
+		if err != nil {
+			return hubSendMsg{text: text, draft: draft, err: err}
+		}
+		resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: ref.String(), Prompt: text, Items: items})
 		return hubSendMsg{text: text, draft: draft, turnID: resp.Turn.ID, err: err}
 	}
 }

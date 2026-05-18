@@ -49,7 +49,7 @@ func TestSendHubInputUsesAppWireTurnStart(t *testing.T) {
 	client, cleanup := newTUIAppWireClient(t, app)
 	defer cleanup()
 
-	msg := sendHubInput(client, appwire.Ref{SourceID: "local", ThreadID: "th_1"}, "ship it", "ship it")()
+	msg := sendHubInput(client, appwire.Ref{SourceID: "local", ThreadID: "th_1"}, "ship it", "ship it", nil)()
 	sendMsg, ok := msg.(hubSendMsg)
 	if !ok || sendMsg.err != nil {
 		t.Fatalf("msg=%T err=%v", msg, sendMsg.err)
