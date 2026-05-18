@@ -359,6 +359,21 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 
 .input-attachments { display: flex; gap: 6px; flex-wrap: wrap; padding-bottom: 8px; }
 .input-attachments:empty { display: none; }
+
+/* Queue preview: shows messages typed during a processing turn that will
+   become fresh user turns when the active turn completes (kata 111a). The
+   "send as steer" button (and ⇧↵) drain these into a single STEERING
+   injection (kata 0bq1). Hidden via the [hidden] attribute when empty. */
+.queue-preview { padding: 8px 10px; margin-bottom: 8px; background: var(--bg); border: 1px solid var(--rule); border-radius: 4px; font-size: 11px; }
+.queue-preview-header { display: flex; align-items: baseline; gap: 12px; color: var(--text-muted); margin-bottom: 4px; }
+.queue-preview-label { font-weight: 500; color: var(--text); }
+.queue-preview-label [data-queue-depth] { font-family: ui-monospace, "SFMono-Regular", monospace; }
+.queue-preview-hint { flex: 1; }
+.queue-preview-hint kbd { font-family: ui-monospace, "SFMono-Regular", monospace; padding: 0 3px; background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 3px; }
+.queue-preview-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.queue-preview-item { display: flex; gap: 6px; align-items: baseline; padding: 3px 6px; background: var(--bg-raised); border-radius: 3px; }
+.queue-preview-item .qp-idx { color: var(--text-dim); font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 10px; }
+.queue-preview-item .qp-text { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .attachment-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; background: var(--bg); border: 1px solid var(--rule); border-radius: 4px; font-size: 11px; }
 .attachment-chip .att-thumb { width: 18px; height: 18px; object-fit: cover; border-radius: 2px; }
 .attachment-chip .att-remove { cursor: pointer; color: var(--text-muted); padding: 0 2px; border: none; background: transparent; }

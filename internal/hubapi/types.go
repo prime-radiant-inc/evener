@@ -94,6 +94,10 @@ type SessionCapabilities struct {
 	Resume         bool   `json:"resume"`
 	Shutdown       bool   `json:"shutdown"`
 	ChangeModel    bool   `json:"change_model"`
+	// Queue mirrors appwire.ThreadCapabilities.Queue (kata 111a). True when
+	// the daemon will accept turn/queue while a turn is in flight; gates the
+	// composer's queue affordance on the web UI.
+	Queue          bool   `json:"queue"`
 	ReadOnlyReason string `json:"read_only_reason,omitempty"`
 }
 

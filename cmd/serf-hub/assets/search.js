@@ -265,6 +265,62 @@
             body: JSON.stringify({ text: text, turn_id: turnId }),
           });
           } } },
+      // queue (kata 111a) — enqueue a user message while a turn is in
+      // flight; processed as a fresh user turn after the active turn
+      // completes. Requires an active turn; the daemon returns Conflict
+      // when idle.
+      { id: "queue", title: "Queue message", hint: "process after active turn", keywords: ["enqueue"], scope: "session",
+        args: { kind: "free", placeholder: "queue text…",
+          run: (ctx, text) => {
+            const turnId = activeTurnId();
+            if (!turnId) {
+              const msg = "queue failed: no active turn";
+              showTurnActionUnavailable(msg);
+              return blocked(msg);
+            }
+            const promise = window.SerfAppwire
+              ? window.SerfAppwire.queueTurn(ctx.sessionId, text)
+              : fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/queue", {
+                  method: "POST", headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ text: text }),
+                });
+            return Promise.resolve(promise).then(() => {
+              // Mirror the new entry into the renderer's preview so the
+              // composer chrome reflects it without waiting for a USER_INPUT
+              // echo (which only arrives once the turn ends and the queue
+              // drains).
+              if (window.SerfRenderer && Array.isArray(window.SerfRenderer.pendingQueue)) {
+                window.SerfRenderer.pendingQueue.push({ text: String(text || "").trim() });
+                if (typeof window.SerfRenderer.renderQueuePreview === "function") {
+                  window.SerfRenderer.renderQueuePreview();
+                }
+              }
+            });
+          } } },
+      // drain-as-steer (kata 0bq1) — collapse every queued message into a
+      // single STEERING injection on the active turn. Argless.
+      { id: "drain-as-steer", title: "Drain queue as steering", hint: "force-steer combined action", keywords: ["force-steer", "drain"], scope: "session",
+        run: (ctx) => {
+          const turnId = activeTurnId();
+          if (!turnId) {
+            const msg = "drain failed: no active turn";
+            showTurnActionUnavailable(msg);
+            return blocked(msg);
+          }
+          const promise = window.SerfAppwire
+            ? window.SerfAppwire.drainAsSteer(ctx.sessionId)
+            : fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/drain-as-steer", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+              });
+          return Promise.resolve(promise).then(() => {
+            if (window.SerfRenderer) {
+              window.SerfRenderer.pendingQueue = [];
+              if (typeof window.SerfRenderer.renderQueuePreview === "function") {
+                window.SerfRenderer.renderQueuePreview();
+              }
+            }
+          });
+        } },
       // /fork omitted: fork requires an edited message and the palette has
       // no way to gather one. Use the "edit" affordance on the user-message
       // row in the transcript instead. See kata #34.

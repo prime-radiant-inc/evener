@@ -14,6 +14,8 @@
     turnStart: "turn/start",
     turnSteer: "turn/steer",
     turnInterrupt: "turn/interrupt",
+    turnQueue: "turn/queue",
+    turnDrainAsSteer: "turn/drainAsSteer",
     tasksList: "serf/tasks/list",
     dirsComplete: "serf/dirs/complete",
     modelList: "model/list",
@@ -262,6 +264,20 @@
 
   function steer(sessionId, turnId, text) {
     return request(METHOD.turnSteer, { ref: refForSession(sessionId), turnId: turnId || "", text: text || "" });
+  }
+
+  // queueTurn enqueues a user message while a turn is in flight (kata 111a).
+  // The daemon returns Conflict when no turn is active; callers should fall
+  // back to startTurn in that case.
+  function queueTurn(sessionId, text) {
+    return request(METHOD.turnQueue, { ref: refForSession(sessionId), text: text || "" });
+  }
+
+  // drainAsSteer drains the daemon's input queue into a single STEERING
+  // injection on the active turn (kata 0bq1). Rejected when the queue is
+  // empty or no turn is active.
+  function drainAsSteer(sessionId) {
+    return request(METHOD.turnDrainAsSteer, { ref: refForSession(sessionId) });
   }
 
   function action(sessionId, name, turnId) {
@@ -559,6 +575,8 @@
     tasks,
     startTurn,
     steer,
+    queueTurn,
+    drainAsSteer,
     action,
     setModel,
     forkThread,

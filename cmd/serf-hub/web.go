@@ -719,6 +719,7 @@ func hubCapabilitiesFromAppwire(caps appwire.ThreadCapabilities) hubapi.SessionC
 		Fork:        caps.ForkFromTurn,
 		Shutdown:    caps.Shutdown,
 		ChangeModel: caps.ChangeModel,
+		Queue:       caps.Queue,
 	}
 }
 
@@ -2848,6 +2849,18 @@ func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleSteer(w, r, id)
+	case "queue":
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST required", http.StatusMethodNotAllowed)
+			return
+		}
+		s.handleQueue(w, r, id)
+	case "drain-as-steer":
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST required", http.StatusMethodNotAllowed)
+			return
+		}
+		s.handleDrainAsSteer(w, r, id)
 	case "events":
 		if !s.isLive(id) && s.cfg.Past != nil {
 			if pe, ok := s.cfg.Past.Find(id); ok {
@@ -3490,6 +3503,74 @@ func (s *WebServer) handleSteer(w http.ResponseWriter, r *http.Request, id strin
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// queueRequest is the JSON body for POST /s/<id>/queue (kata 111a). Queues a
+// user message to be drained as a fresh user turn after the active turn
+// completes; the daemon rejects the call when no turn is in flight.
+type queueRequest struct {
+	Text string `json:"text"`
+}
+
+// handleQueue forwards a turn/queue request to the live daemon for the given
+// session. Unlike /send, queueing requires the session to be processing — the
+// daemon returns Conflict when idle, which we surface as 409.
+func (s *WebServer) handleQueue(w http.ResponseWriter, r *http.Request, id string) {
+	var body queueRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	body.Text = strings.TrimSpace(body.Text)
+	if body.Text == "" {
+		http.Error(w, "text required", http.StatusBadRequest)
+		return
+	}
+	if !s.isLive(id) {
+		http.NotFound(w, r)
+		return
+	}
+	if err := s.ensureSessionActionAvailable(id, "queue"); err != nil {
+		writeSessionActionError(w, r, err)
+		return
+	}
+	ref := appRefFromRouteID(id)
+	source, err := sourceForThread(s.sources, ref, "")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if err := source.QueueTurn(r.Context(), appwire.TurnQueueParams{Ref: ref, Text: body.Text}); err != nil {
+		writeSessionActionError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleDrainAsSteer forwards a turn/drainAsSteer request (kata 0bq1 force-
+// steer combined action). Drains the daemon's input queue into a single
+// STEERING injection on the in-flight turn. Rides on the Steer capability;
+// the daemon returns Conflict when idle or when the queue is empty.
+func (s *WebServer) handleDrainAsSteer(w http.ResponseWriter, r *http.Request, id string) {
+	if !s.isLive(id) {
+		http.NotFound(w, r)
+		return
+	}
+	if err := s.ensureSessionActionAvailable(id, "steer"); err != nil {
+		writeSessionActionError(w, r, err)
+		return
+	}
+	ref := appRefFromRouteID(id)
+	source, err := sourceForThread(s.sources, ref, "")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if err := source.DrainAsSteer(r.Context(), appwire.TurnDrainAsSteerParams{Ref: ref}); err != nil {
+		writeSessionActionError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // handleSessionAction forwards an imperative action (interrupt/compact/
 // shutdown) to the live daemon for the given session. Unlike /send, these
 // actions do NOT auto-resume an ended session: if there is no roster entry
@@ -3567,6 +3648,8 @@ func sessionCapabilityAvailable(caps hubapi.SessionCapabilities, action string) 
 		return caps.Shutdown
 	case "model":
 		return caps.ChangeModel
+	case "queue":
+		return caps.Queue
 	default:
 		return false
 	}

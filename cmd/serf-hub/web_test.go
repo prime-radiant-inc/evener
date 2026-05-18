@@ -117,7 +117,7 @@ func TestWeb_CodexSessionRouteReadsConfiguredSource(t *testing.T) {
 			t.Fatalf("codex workspace advertised unsupported control %q:\n%s", unsupported, body)
 		}
 	}
-	for _, disabledUntilTurn := range []string{`data-action-trigger="interrupt" title="cancel the in-flight model call" disabled`, `data-steer-trigger disabled`} {
+	for _, disabledUntilTurn := range []string{`data-action-trigger="interrupt" title="cancel the in-flight model call" disabled`, `data-steer-trigger title="drain the queue as a steering message — or steer with the textarea text when the queue is empty" disabled`} {
 		if !strings.Contains(body, disabledUntilTurn) {
 			t.Fatalf("codex workspace missing disabled turn control %q:\n%s", disabledUntilTurn, body)
 		}

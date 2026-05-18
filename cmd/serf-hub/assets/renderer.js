@@ -68,6 +68,14 @@
       this.cheapToolCluster = null;      // current cluster div for batching cheap reads
       this.pendingAttachments = [];      // queued image attachments awaiting send
       this.lastUserText = "";            // most-recent user turn text (for "Retry turn")
+      // pendingQueue mirrors the daemon's per-session input queue (kata 111a)
+      // for the composer-side preview. Each item is { text, id } where id is a
+      // local-only nonce used to dedupe USER_INPUT echoes back into the
+      // queue (we pop the head when a queued message arrives as a USER_INPUT
+      // event after the active turn settles). On drain-as-steer (kata 0bq1)
+      // we wipe the mirror locally because the daemon collapses the entire
+      // queue into a single STEERING entry.
+      this.pendingQueue = [];
 
       this.conversation.innerHTML = "";
 
@@ -103,6 +111,32 @@
       const ended = state === "ended" || state === "closed";
       if (!this.turnAcceptsActions(state)) this.setActiveTurnId("");
       this.syncTurnActionControls();
+      // Send/queue capabilities flip on the state transition (kata 111a).
+      // The server-rendered workspace template captures the state at request
+      // time; the live stream then has to keep the send button's
+      // data-capability-* attributes in sync as the daemon cycles between
+      // processing (queue=on, send=off) and idle (queue=off, send=on). For
+      // ended/closed sessions both flip off — the button stays disabled
+      // because there is nothing the user can do.
+      const sendBtn = document.querySelector("form[data-input-form] .send-btn");
+      if (sendBtn) {
+        if (ended) {
+          sendBtn.setAttribute("data-capability-send", "false");
+          sendBtn.setAttribute("data-capability-queue", "false");
+          sendBtn.disabled = true;
+          sendBtn.setAttribute("title", "send unavailable");
+        } else if (state === "processing") {
+          sendBtn.setAttribute("data-capability-send", "false");
+          sendBtn.setAttribute("data-capability-queue", "true");
+          sendBtn.disabled = false;
+          sendBtn.removeAttribute("title");
+        } else {
+          sendBtn.setAttribute("data-capability-send", "true");
+          sendBtn.setAttribute("data-capability-queue", "false");
+          sendBtn.disabled = false;
+          sendBtn.removeAttribute("title");
+        }
+      }
       for (const action of ["compact", "shutdown"]) {
         const btn = document.querySelector('[data-action-trigger="' + action + '"]');
         if (btn) btn.disabled = ended;
@@ -121,7 +155,13 @@
       const interrupt = document.querySelector('[data-action-trigger="interrupt"]');
       if (interrupt) interrupt.disabled = !hasActiveTurn || !turnAcceptsActions;
       const steer = document.querySelector("[data-steer-trigger]");
-      if (steer) steer.disabled = !hasActiveTurn || !turnAcceptsActions;
+      if (steer) {
+        // The steer trigger now doubles as the force-steer-drain-queue
+        // button (kata 0bq1). It is meaningful as long as there is an active
+        // turn — whether or not the queue is non-empty — because pressing it
+        // with just textarea text falls back to the classic steer path.
+        steer.disabled = !hasActiveTurn || !turnAcceptsActions;
+      }
     },
 
     turnAcceptsActions(state) {
@@ -364,10 +404,16 @@
             this.entryIndex = 0;
             this.pendingAttachments = [];
             this.renderAttachments();
+            this.pendingQueue = [];
+            this.renderQueuePreview();
           }
           break;
         case "USER_INPUT":
           this.lastUserText = data.text || "";
+          // A queued user message arriving as USER_INPUT means the daemon
+          // popped the head of its input queue to start a fresh turn (kata
+          // 111a). Mirror that pop locally so the queue-preview matches.
+          this.popQueueMatch(data.text || "");
           if (this.promoteLocalUserMessage(data)) break;
           this.userTurnIndex++;
           if (typeof data.turn === "number" && data.turn > 0) {
@@ -1124,43 +1170,94 @@
       ta.addEventListener("input", grow);
       grow();
 
-      // Steer: takes the current textarea content (if any) and posts it to
-      // /s/<id>/steer. Steering injects a system-reminder into the running
-      // model loop without queuing as user input. If the textarea is empty,
-      // focus it instead.
+      // Seed the queue-preview chrome (kata 111a). The pendingQueue starts
+      // empty on init, so this just collapses the container; any earlier
+      // queue from another session is wiped on SESSION_START.
+      this.renderQueuePreview();
+
+      // The steer trigger is now the force-steer-drain-queue button (kata
+      // 0bq1). Semantics by composer state:
+      //   • textarea has text + queue empty → classic /steer with textarea
+      //     content (matches kata a08v behavior).
+      //   • textarea has text + queue non-empty → enqueue the textarea
+      //     first, then drain — preserves the user's typed text.
+      //   • textarea empty + queue non-empty → drain.
+      //   • textarea empty + queue empty → no-op except focus, matches
+      //     the classic empty-steer placeholder.
       const steerBtn = form.querySelector("[data-steer-trigger]");
       if (steerBtn) {
         steerBtn.addEventListener("click", async () => {
           const text = ta.value.trim();
-          if (!text) {
-            ta.placeholder = "type a steering message, then click steer…";
+          const hasQueued = (this.pendingQueue || []).length > 0;
+          if (!text && !hasQueued) {
+            ta.placeholder = "type a steering message, then click send as steer…";
             ta.focus();
             return;
           }
           steerBtn.disabled = true;
           try {
-            if (window.SerfAppwire) {
-              if (!this.activeTurnId) {
-                this.appendBanner("error", "steer failed: no active turn", { source: "hub", title: "Hub steer error" });
-                return;
+            // Path A: classic steer (no queue). Keeps the existing
+            // single-text /steer pipeline so the daemon writes one STEERING
+            // entry with the textarea text.
+            if (!hasQueued) {
+              if (window.SerfAppwire) {
+                if (!this.activeTurnId) {
+                  this.appendBanner("error", "steer failed: no active turn", { source: "hub", title: "Hub steer error" });
+                  return;
+                }
+                await window.SerfAppwire.steer(this.sessionId, this.activeTurnId, text);
+              } else {
+                const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/steer", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  // REST shim uses snake_case; the appwire path above keeps `turnId`.
+                  body: JSON.stringify({ text, turn_id: this.activeTurnId || "" }),
+                });
+                if (!resp.ok) {
+                  const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
+                  this.appendBanner("error", "steer failed: " + detail, { source: "hub", title: "Hub steer error" });
+                  return;
+                }
               }
-              await window.SerfAppwire.steer(this.sessionId, this.activeTurnId, text);
-            } else {
-              const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/steer", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                // REST shim uses snake_case; the appwire path above keeps `turnId`.
-                body: JSON.stringify({ text, turn_id: this.activeTurnId || "" }),
-              });
-              if (!resp.ok) {
-                const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
-                this.appendBanner("error", "steer failed: " + detail, { source: "hub", title: "Hub steer error" });
-                return;
-              }
+              ta.value = "";
+              ta.style.height = "";
+              grow();
+              return;
             }
-            ta.value = "";
-            ta.style.height = "";
-            grow();
+            // Path B: drain. If the textarea has text we enqueue it first
+            // so it joins the rest of the queue in the single STEERING
+            // entry. The drain endpoint pops every queued message on the
+            // daemon and merges them into one steering injection.
+            if (text) {
+              try { await this.queueText(text); } catch (err) {
+                this.appendBanner("error", "queue failed: " + err.message, { source: "hub", title: "Hub queue error" });
+                return;
+              }
+              ta.value = "";
+              ta.style.height = "";
+              grow();
+            }
+            try {
+              if (window.SerfAppwire) {
+                await window.SerfAppwire.drainAsSteer(this.sessionId);
+              } else {
+                const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/drain-as-steer", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                });
+                if (!resp.ok) {
+                  const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
+                  this.appendBanner("error", "drain failed: " + detail, { source: "hub", title: "Hub drain error" });
+                  return;
+                }
+              }
+              // Daemon collapses the whole queue into one STEERING entry;
+              // mirror that locally so the preview hides immediately.
+              this.pendingQueue = [];
+              this.renderQueuePreview();
+            } catch (err) {
+              this.appendBanner("error", "drain failed: " + err.message, { source: "hub", title: "Hub drain error" });
+            }
           } catch (err) {
             this.appendBanner("error", "steer failed: " + err.message, { source: "hub", title: "Hub steer error" });
           } finally {
@@ -1229,6 +1326,33 @@
         if (!text && !hasAttachments) return;
         const sendBtn = form.querySelector(".send-btn");
         const canSend = !sendBtn || sendBtn.getAttribute("data-capability-send") !== "false";
+        const canQueue = sendBtn && sendBtn.getAttribute("data-capability-queue") === "true";
+        // When the session is processing the send capability flips off and
+        // the queue capability flips on (kata 111a). Route Enter ⌘↵ to
+        // turn/queue in that mode so the message is buffered and processed
+        // after the active turn completes.
+        if (!canSend && canQueue) {
+          if (hasAttachments) {
+            // Queue path doesn't carry image attachments today — the daemon
+            // only enqueues text. Surface a clear error rather than dropping
+            // the user's pending images silently.
+            this.appendBanner("error", "queue does not support images yet — wait for idle or remove attachments", { source: "hub", title: "Hub queue error" });
+            return;
+          }
+          if (sendBtn) sendBtn.disabled = true;
+          try {
+            await this.queueText(text);
+            ta.value = "";
+            ta.style.height = "";
+            grow();
+          } catch (err) {
+            this.appendBanner("error", "queue failed: " + err.message, { source: "hub", title: "Hub queue error" });
+          } finally {
+            if (sendBtn) sendBtn.disabled = false;
+            this.syncTurnActionControls();
+          }
+          return;
+        }
         if (!canSend) {
           this.appendBanner("error", "send is not available for this session", { source: "hub", title: "Hub send error" });
           return;
@@ -1383,6 +1507,82 @@
       });
     },
 
+    // queueText POSTs to turn/queue (or /s/<id>/queue) and on success
+    // mirrors the entry in pendingQueue + re-renders the preview. Rejections
+    // bubble up; callers surface them as error banners.
+    async queueText(text) {
+      const trimmed = String(text || "").trim();
+      if (!trimmed) throw new Error("text is required");
+      if (window.SerfAppwire) {
+        await window.SerfAppwire.queueTurn(this.sessionId, trimmed);
+      } else {
+        const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/queue", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: trimmed }),
+        });
+        if (!resp.ok) {
+          const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
+          throw new Error(detail);
+        }
+      }
+      this.pendingQueue = this.pendingQueue || [];
+      this.pendingQueue.push({ text: trimmed });
+      this.renderQueuePreview();
+    },
+
+    // popQueueMatch removes the first queued entry whose text matches the
+    // incoming USER_INPUT. Called from the USER_INPUT handler so the preview
+    // shrinks as the daemon drains queued messages into fresh turns. Exact
+    // text match is sufficient because the daemon stores texts verbatim and
+    // re-emits them as USER_INPUT.
+    popQueueMatch(incoming) {
+      if (!this.pendingQueue || this.pendingQueue.length === 0) return;
+      const target = String(incoming || "").trim();
+      if (!target) return;
+      const idx = this.pendingQueue.findIndex(item => String(item && item.text || "").trim() === target);
+      if (idx < 0) return;
+      this.pendingQueue.splice(idx, 1);
+      this.renderQueuePreview();
+    },
+
+    // renderQueuePreview repopulates the queue-preview container with one
+    // row per pendingQueue entry, truncating each to the first line. The
+    // preview is hidden via the [hidden] attribute when the queue is empty
+    // so the empty-state CSS reads as "no chrome".
+    renderQueuePreview() {
+      const wrap = document.querySelector("[data-queue-preview]");
+      if (!wrap) return;
+      const list = wrap.querySelector("[data-queue-list]");
+      const depthEl = wrap.querySelector("[data-queue-depth]");
+      const queue = this.pendingQueue || [];
+      if (depthEl) depthEl.textContent = String(queue.length);
+      if (queue.length === 0) {
+        wrap.hidden = true;
+        if (list) list.innerHTML = "";
+        return;
+      }
+      wrap.hidden = false;
+      if (!list) return;
+      list.innerHTML = "";
+      queue.forEach((entry, idx) => {
+        const li = document.createElement("li");
+        li.className = "queue-preview-item";
+        li.dataset.idx = String(idx);
+        const idxEl = document.createElement("span");
+        idxEl.className = "qp-idx";
+        idxEl.textContent = "#" + (idx + 1);
+        const textEl = document.createElement("span");
+        textEl.className = "qp-text";
+        // First line, collapsed whitespace, hard-capped at 140 chars.
+        const oneLine = String(entry && entry.text || "").split(/\r?\n/)[0].trim();
+        textEl.textContent = oneLine.length > 140 ? (oneLine.slice(0, 139) + "…") : oneLine;
+        li.appendChild(idxEl);
+        li.appendChild(textEl);
+        list.appendChild(li);
+      });
+    },
+
     bindKeyboard() {
       const ta = document.querySelector(".message-input");
       if (!ta) return;
@@ -1392,6 +1592,18 @@
           const form = ta.closest("form");
           if (form) form.requestSubmit();
           return;
+        }
+        // Shift+Enter is the keybind equivalent of the "send as steer"
+        // button (kata 0bq1): drain whatever's queued (plus anything in
+        // the textarea) as a single STEERING injection. Pre-existing
+        // browser default (newline insertion) is suppressed.
+        if (e.key === "Enter" && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+          const steer = document.querySelector("[data-steer-trigger]");
+          if (steer && !steer.disabled) {
+            e.preventDefault();
+            steer.click();
+            return;
+          }
         }
         // "/" as the first character of an empty textarea opens the command
         // palette. Any other "/" (mid-text, or in a non-empty textarea) is
