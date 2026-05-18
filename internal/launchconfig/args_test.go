@@ -20,6 +20,7 @@ func TestToArgs_AllFields(t *testing.T) {
 		PluginDirs:         []string{"/p"},
 		MCPConfigs:         []string{"/m.json"},
 		SystemPromptAppend: []string{"/sp"},
+		ModelFallbacks:     []string{"openai/gpt-5.4", "anthropic/claude-haiku-4-5"},
 		MCPs: []MCPServerSpec{
 			{Name: "github", Command: "gh-mcp", Args: []string{"--token-from-env", "GITHUB_TOKEN"}},
 		},
@@ -39,6 +40,8 @@ func TestToArgs_AllFields(t *testing.T) {
 		"--plugin-dir", "/p",
 		"--mcp-config", "/m.json",
 		"--system-prompt-append", "/sp",
+		"--model-fallback", "openai/gpt-5.4",
+		"--model-fallback", "anthropic/claude-haiku-4-5",
 		"--mcp", "github:gh-mcp --token-from-env GITHUB_TOKEN",
 	}
 	if !reflect.DeepEqual(got, want) {

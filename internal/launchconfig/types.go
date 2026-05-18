@@ -23,6 +23,7 @@ type Layer struct {
 	PluginDirs         []string          `toml:"plugin_dirs,omitempty"`
 	MCPConfigs         []string          `toml:"mcp_configs,omitempty"`
 	SystemPromptAppend []string          `toml:"system_prompt_append,omitempty"`
+	ModelFallbacks     []string          `toml:"model_fallbacks,omitempty"`
 	MCPs               []MCPServerSpec   `toml:"mcps,omitempty"`
 	Env                map[string]string `toml:"env,omitempty"`
 }

@@ -64,6 +64,8 @@ func runServe(args []string) error {
 	fs.Var(&mcpConfigs, "mcp-config", "path to .mcp.json file (repeatable)")
 	var pluginDirs cmdutil.StringSliceFlag
 	fs.Var(&pluginDirs, "plugin-dir", "plugin directory (repeatable)")
+	var modelFallbacks cmdutil.StringSliceFlag
+	fs.Var(&modelFallbacks, "model-fallback", "fallback model (provider/model) tried on permanent provider errors (repeatable)")
 	cpuProfile := fs.String("cpu-profile", "", "write CPU profile to file")
 	traceFile := fs.String("trace", "", "write execution trace to file")
 
@@ -164,6 +166,7 @@ func runServe(args []string) error {
 		ExportATIFPath:         *exportATIF,
 		NonInteractive:         true,
 		SystemPromptAsUser:     *systemPromptAsUser,
+		ModelFallbacks:         []string(modelFallbacks),
 	}
 	if *maxSubagentDepth >= 0 {
 		sessionCfg.MaxSubagentDepth = *maxSubagentDepth

@@ -144,6 +144,11 @@ type SessionConfig struct {
 	LLMRetryPolicy *llm.RetryPolicy `json:"-"`
 	LLMSleep       llm.SleepFunc    `json:"-"`
 
+	// ModelFallbacks is a literal-order chain of "provider/model" identifiers
+	// to try when the primary model returns a Permanent-class provider error
+	// (403/404/422/etc — see llm.Classify). Empty means no fallback. Kata cxw8.
+	ModelFallbacks []string `json:"model_fallbacks,omitempty"`
+
 	// ContextStrategyOverride, when non-nil, is used instead of creating
 	// a strategy from the ContextStrategy string. For testing.
 	ContextStrategyOverride ContextStrategy `json:"-"`
@@ -2020,6 +2025,29 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 		callCtx := llm.WithAPILogContext(ctx, s.id, round)
 		modelResp, err := s.callModel(callCtx, policy, req)
+		// Fallback chain: when the primary model returns a Permanent-class
+		// provider error (403/404/422/...), try each configured fallback in
+		// literal order. Stops at the first success; if all fallbacks also
+		// fail, the LAST attempt's error is returned to the caller. Retryable
+		// errors (429/5xx) burn the existing retry budget on the same model
+		// and DO NOT trigger the fallback chain — they are handled by the
+		// retry loop inside callModel. Kata cxw8.
+		if err != nil && len(s.cfg.ModelFallbacks) > 0 && llm.Classify(err) == llm.ErrorClassPermanent {
+			for _, fbModel := range s.cfg.ModelFallbacks {
+				fbProfile := s.profile.WithModel(fbModel)
+				fbReq := req
+				fbReq.Model = fbProfile.Model()
+				fbReq.Provider = fbProfile.ID()
+				modelResp, err = s.callModel(callCtx, policy, fbReq)
+				if err == nil {
+					// Reflect the model that actually answered in the
+					// request used for downstream logging (transcript,
+					// EventAssistantTextStart fallback path, etc).
+					req = fbReq
+					break
+				}
+			}
+		}
 		resp := modelResp.Response
 
 		timings.LLMCall = time.Since(tPhaseStart)

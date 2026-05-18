@@ -17,6 +17,7 @@ func FromWire(in appwire.LaunchConfigLayer) Layer {
 		PluginDirs:         in.PluginDirs,
 		MCPConfigs:         in.MCPConfigs,
 		SystemPromptAppend: in.SystemPromptAppend,
+		ModelFallbacks:     in.ModelFallbacks,
 		Env:                in.Env,
 	}
 	if in.Schema != nil {
@@ -43,6 +44,7 @@ func ToWire(in Layer) appwire.LaunchConfigLayer {
 		PluginDirs:         in.PluginDirs,
 		MCPConfigs:         in.MCPConfigs,
 		SystemPromptAppend: in.SystemPromptAppend,
+		ModelFallbacks:     in.ModelFallbacks,
 		Env:                in.Env,
 	}
 	if in.Schema != 0 {
