@@ -18,6 +18,7 @@ type Client struct {
 	pendingMu     sync.Mutex
 	pending       map[string]pendingRequest
 	notifications chan Notification
+	pendingCoord  PendingCoordinator
 }
 
 type pendingRequest struct {
@@ -80,6 +81,13 @@ func (c *Client) Notifications() <-chan Notification {
 
 func (c *Client) Close() error {
 	return c.transport.Close()
+}
+
+// SetPendingCoordinator installs an optimistic-rendering coordinator
+// that observes the four conversation-affecting Turn* methods. Pass
+// nil to disable. Safe to call before Start.
+func (c *Client) SetPendingCoordinator(pc PendingCoordinator) {
+	c.pendingCoord = pc
 }
 
 func (c *Client) request(ctx context.Context, method string, params any, out any) error {
@@ -228,7 +236,15 @@ func (c *Client) TurnStart(ctx context.Context, params TurnStartParams) (TurnSta
 }
 
 func (c *Client) TurnSteer(ctx context.Context, params TurnSteerParams) error {
-	return c.request(ctx, MethodTurnSteer, params, nil)
+	var handle PendingHandle
+	if c.pendingCoord != nil {
+		handle = c.pendingCoord.Register(MethodTurnSteer, params.Text)
+	}
+	err := c.request(ctx, MethodTurnSteer, params, nil)
+	if err != nil && handle != nil {
+		handle.Fail(err.Error())
+	}
+	return err
 }
 
 func (c *Client) TurnInterrupt(ctx context.Context, params TurnInterruptParams) error {
