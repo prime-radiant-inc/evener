@@ -259,6 +259,19 @@ type TurnError struct {
 	Hint    string `json:"hint,omitempty"`
 }
 
+// DiagnosticCause is the wire-level structured cause attached to a
+// warning/error notification. Today the only Kind is "provider" (an HTTP
+// failure from an LLM adapter); consumers can typed-branch on Kind
+// instead of substring-matching the message (kata cmfz). The agent's
+// agent.ErrorCause projects to this shape; absence is signaled by an
+// omitted/nil pointer on the carrying envelope.
+type DiagnosticCause struct {
+	Kind     string `json:"kind"`
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Status   int    `json:"status,omitempty"`
+}
+
 type ThreadItem struct {
 	Type                 string          `json:"type"`
 	ID                   string          `json:"id"`
@@ -637,6 +650,7 @@ type LaunchConfigLayer struct {
 	PluginDirs         []string          `json:"pluginDirs,omitempty"`
 	MCPConfigs         []string          `json:"mcpConfigs,omitempty"`
 	SystemPromptAppend []string          `json:"systemPromptAppend,omitempty"`
+	ModelFallbacks     []string          `json:"modelFallbacks,omitempty"`
 	MCPs               []MCPServerSpec   `json:"mcps,omitempty"`
 	Env                map[string]string `json:"env,omitempty"`
 }

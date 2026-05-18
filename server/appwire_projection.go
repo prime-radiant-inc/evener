@@ -228,6 +228,7 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 			message = "session error"
 		}
 		info := diagnostic.FromFields(data.Source, data.Title, data.Hint, message)
+		cause := projectErrorCause(data.Cause)
 		p.ensureTurn()
 		turnID := p.activeTurnID
 		p.activeTurnID = ""
@@ -243,6 +244,7 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 				"source":   string(info.Source),
 				"title":    info.Title,
 				"hint":     info.Hint,
+				"cause":    cause,
 				"warning": agent.WarningData{
 					Message: message,
 					Source:  string(info.Source),
@@ -408,6 +410,22 @@ func (p *AppEventProjector) matchesLastAssistantMessage(turnID, text string) boo
 	return turnID != "" &&
 		turnID == p.lastAssistantTurnID &&
 		strings.TrimSpace(text) == p.lastAssistantText
+}
+
+// projectErrorCause maps the agent-side structured cause attached to
+// EventError (kata ts0x) to its wire-level appwire shape (kata cmfz).
+// Returns nil when the caller did not attach a cause so the warning
+// envelope's "cause" field stays omitempty-eligible on the wire.
+func projectErrorCause(cause *agent.ErrorCause) *appwire.DiagnosticCause {
+	if cause == nil {
+		return nil
+	}
+	return &appwire.DiagnosticCause{
+		Kind:     cause.Kind,
+		Provider: cause.Provider,
+		Model:    cause.Model,
+		Status:   cause.Status,
+	}
 }
 
 func eventData[T any](data any) T {

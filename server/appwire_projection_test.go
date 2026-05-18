@@ -264,6 +264,150 @@ func TestAppEventProjectorProjectsSteeringInjected(t *testing.T) {
 	}
 }
 
+// TestProjector_ForwardsProviderCause (kata cmfz) verifies that when an
+// EventError carries a structured ErrorCause (populated by agent.Session
+// when the underlying error is a typed llm.Error), the projector forwards
+// the cause into the NotifyWarning envelope so consumers can typed-branch
+// on Cause.Kind instead of substring-matching the message.
+func TestProjector_ForwardsProviderCause(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
+
+	out := projector.Project(agent.SessionEvent{
+		Kind:      agent.EventError,
+		SessionID: "th_1",
+		Data: agent.ErrorData{
+			Error: "anthropic: 503 service unavailable",
+			Cause: &agent.ErrorCause{
+				Kind:     "provider",
+				Provider: "anthropic",
+				Model:    "claude-opus-4-7",
+				Status:   503,
+			},
+		},
+	})
+
+	var warning *AppNotification
+	for i := range out {
+		if out[i].Method == appwire.NotifyWarning {
+			warning = &out[i]
+			break
+		}
+	}
+	if warning == nil {
+		t.Fatalf("no warning notification: %+v", out)
+	}
+	params, ok := warning.Params.(map[string]any)
+	if !ok {
+		t.Fatalf("warning params=%T", warning.Params)
+	}
+	cause, ok := params["cause"].(*appwire.DiagnosticCause)
+	if !ok || cause == nil {
+		t.Fatalf("cause field missing/typed-wrong: got %T (params=%+v)", params["cause"], params)
+	}
+	if cause.Kind != "provider" {
+		t.Fatalf("cause.Kind=%q, want provider", cause.Kind)
+	}
+	if cause.Provider != "anthropic" {
+		t.Fatalf("cause.Provider=%q, want anthropic", cause.Provider)
+	}
+	if cause.Model != "claude-opus-4-7" {
+		t.Fatalf("cause.Model=%q, want claude-opus-4-7", cause.Model)
+	}
+	if cause.Status != 503 {
+		t.Fatalf("cause.Status=%d, want 503", cause.Status)
+	}
+}
+
+// TestProjector_OmitsCauseWhenAbsent (kata cmfz) verifies that when an
+// EventError has no structured cause, the projector does not invent one
+// and the warning envelope's cause field stays absent (or nil).
+func TestProjector_OmitsCauseWhenAbsent(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
+
+	out := projector.Project(agent.SessionEvent{
+		Kind:      agent.EventError,
+		SessionID: "th_1",
+		Data:      agent.ErrorData{Error: "something else broke"},
+	})
+
+	var warning *AppNotification
+	for i := range out {
+		if out[i].Method == appwire.NotifyWarning {
+			warning = &out[i]
+			break
+		}
+	}
+	if warning == nil {
+		t.Fatalf("no warning notification: %+v", out)
+	}
+	params, ok := warning.Params.(map[string]any)
+	if !ok {
+		t.Fatalf("warning params=%T", warning.Params)
+	}
+	raw, present := params["cause"]
+	if present && raw != nil {
+		// A *appwire.DiagnosticCause that is non-nil would be a defect.
+		if cause, ok := raw.(*appwire.DiagnosticCause); !ok || cause != nil {
+			t.Fatalf("expected cause absent or nil, got %T %+v", raw, raw)
+		}
+	}
+}
+
+// TestProjector_BackcompatNonProviderError (kata cmfz) regression-locks
+// the pre-existing warning envelope projection — message, an explicit
+// hub source, title, and hint must still pass through unchanged after
+// the cause field is added.
+func TestProjector_BackcompatNonProviderError(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
+
+	out := projector.Project(agent.SessionEvent{
+		Kind:      agent.EventError,
+		SessionID: "th_1",
+		Data: agent.ErrorData{
+			Error:  "subscribe failed",
+			Source: "hub",
+			Title:  "Live updates unavailable",
+			Hint:   "Retry the action.",
+		},
+	})
+
+	var warning *AppNotification
+	for i := range out {
+		if out[i].Method == appwire.NotifyWarning {
+			warning = &out[i]
+			break
+		}
+	}
+	if warning == nil {
+		t.Fatalf("no warning notification: %+v", out)
+	}
+	params, ok := warning.Params.(map[string]any)
+	if !ok {
+		t.Fatalf("warning params=%T", warning.Params)
+	}
+	if params["message"] != "subscribe failed" {
+		t.Fatalf("message=%v", params["message"])
+	}
+	if params["source"] != "hub" {
+		t.Fatalf("source=%v", params["source"])
+	}
+	if params["title"] != "Live updates unavailable" {
+		t.Fatalf("title=%v", params["title"])
+	}
+	if params["hint"] != "Retry the action." {
+		t.Fatalf("hint=%v", params["hint"])
+	}
+	// Cause should be absent since this EventError did not carry one.
+	if raw, present := params["cause"]; present && raw != nil {
+		if cause, ok := raw.(*appwire.DiagnosticCause); !ok || cause != nil {
+			t.Fatalf("expected cause absent or nil, got %T %+v", raw, raw)
+		}
+	}
+}
+
 func hasAppNotification(items []AppNotification, method string) bool {
 	for _, item := range items {
 		if item.Method == method {
