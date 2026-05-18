@@ -82,7 +82,10 @@ While fixing kata 3tgv, found that the LLM-error path is not the only error exit
 - `ctx.Done()` exit (`session.go:1607`) — Ctrl-C / cancellation returns before any persistence.
 - Panic recovery — there is no top-level recover in `processOneInput`, so a panic would skip flush entirely.
 
-None of these are blockers; filed for future cleanup once a single deferred-flush pattern is agreed.
+**Answered 2026-05-18**: Top-level defer. Landed in kata ztne (`agent/session.go:1779-1785`): a single
+`defer` at the head of `processOneInput` flushes `maybeAutoSave` on every exit including panic recovery,
+covering all five sibling paths. Per-round `maybeAutoSave` inside the for-loop stays as-is so the happy
+path still persists at each tool round; the defer is the safety net for non-happy exits.
 
 ### communicate inbox doesn't show image content from image-bearing steers (kata gnmv)
 After t5j6 + re91 + 65mm, the agent loop persists image-bearing steers correctly: model sees the bytes via TurnSteering, transcript records a ContentImage part. BUT the communicate tool's `inbox` payload that surfaces to the AGENT shows only the text portion — not even an `[image attached]` hint.
@@ -92,3 +95,11 @@ Two interpretations:
 - (b) **Papercut**: agent should know an image was attached, even if it has to look at transcript to see it. A minimal `[1 image attached: photo.png]` hint would be enough.
 
 Refs: agent/session.go after t5j6 (3b9ae14).
+
+**Answered 2026-05-18**: Option (b), but with positional markers. The composer (TUI + web) inserts
+`[image N]` as literal text at the cursor position the moment the image is attached. Marker rides
+through USER_INPUT → transcript → inbox → model prompt — so the agent sees the marker inline at
+the position the user intended, enabling natural references like "in [image 2] it looks right but
+[image 1] looks wrong". Numbering: `N = max(existing markers) + 1`, default 1. Removing a chip
+strips its marker from the text; gaps allowed (numbers never reuse). No server-side change — the
+agent/session/inbox layers render text as-typed.
