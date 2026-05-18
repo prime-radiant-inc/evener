@@ -230,3 +230,321 @@ func TestWeb_Send_ImageAttachmentsForwardedToDaemonStartTurn(t *testing.T) {
 		t.Errorf("Item.Name=%q, want send.png", got.Name)
 	}
 }
+
+// TestWeb_Send_ItemsShapeForwardedToDaemonStartTurn drives the kata v80q
+// shape on /s/<id>/send: the JSON body carries an `items` array (NOT the
+// legacy `images` array) with base64-encoded Data on each image entry.
+// The hub must decode the base64 and forward the bytes as appwire.InputItem
+// entries on the daemon's TurnStart call. This is the canonical wire shape
+// the browser composer-attachments pipeline emits.
+func TestWeb_Send_ItemsShapeForwardedToDaemonStartTurn(t *testing.T) {
+	dir := t.TempDir()
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon-test", SourceID: "local"})
+	gotItems := make(chan []appwire.InputItem, 1)
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+		select {
+		case gotItems <- params.Items:
+		default:
+		}
+		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_items", Status: appwire.TurnStatusRunning}}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodInitialize, func(_ context.Context, _ appwire.InitializeParams) (appwire.InitializeResponse, error) {
+		return appwire.InitializeResponse{ServerInfo: appwire.ServerInfo{Name: "daemon-test"}}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        "01SENDITEMS",
+			SessionID: "01SENDITEMS",
+			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+			Source:    "local",
+			Serf: appwire.SerfThread{
+				Ref:          "local:01SENDITEMS",
+				Capabilities: appwire.ThreadCapabilities{Send: true, Steer: true, Interrupt: true, Queue: true},
+			},
+		}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	writeRendezvous(t, dir, rendezvous.Entry{
+		PID:       101,
+		Address:   strings.TrimPrefix(daemonHTTP.URL, "http://"),
+		Endpoint:  "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"),
+		Protocol:  appwire.ProtocolVersion,
+		SourceID:  "local",
+		ThreadID:  "01SENDITEMS",
+		SessionID: "01SENDITEMS",
+	})
+	r := NewRoster(dir, fakeProber{sessionID: "01SENDITEMS", status: "AWAITING_REPLY"})
+	r.Refresh()
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  r,
+		Past:    NewPastIndex(""),
+	})
+
+	// Build the v80q wire body: prompt as text, plus an image item carrying
+	// base64-encoded bytes. We hand-craft the JSON to match exactly what
+	// the browser composer (appwire.startTurn) emits.
+	reqBody := map[string]any{
+		"text": "examine",
+		"items": []map[string]any{
+			{
+				"type":      "image",
+				"mediaType": "image/png",
+				"data":      base64.StdEncoding.EncodeToString(testImageBytes),
+				"name":      "items-send.png",
+			},
+		},
+	}
+	payload, err := json.Marshal(reqBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/s/01SENDITEMS/send", bytes.NewReader(payload))
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var items []appwire.InputItem
+	select {
+	case items = <-gotItems:
+	default:
+		t.Fatalf("daemon TurnStart was not invoked")
+	}
+	if len(items) != 1 {
+		t.Fatalf("Items: got %d, want 1 (%+v)", len(items), items)
+	}
+	got := items[0]
+	if got.Type != "image" {
+		t.Errorf("Item.Type=%q, want image", got.Type)
+	}
+	if got.MediaType != "image/png" {
+		t.Errorf("Item.MediaType=%q, want image/png", got.MediaType)
+	}
+	if !bytes.Equal(got.Data, testImageBytes) {
+		t.Errorf("Item.Data mismatch: got %x, want %x", got.Data, testImageBytes)
+	}
+	if got.Name != "items-send.png" {
+		t.Errorf("Item.Name=%q, want items-send.png", got.Name)
+	}
+}
+
+// TestWeb_Queue_ItemsShapeForwardedToDaemonQueueTurn drives the kata v80q
+// shape on /s/<id>/queue: POST with `items` carrying base64 image data and
+// assert the daemon's TurnQueue call receives the decoded bytes as
+// appwire.InputItem entries. Queue is a separate code path from /send so
+// it gets its own coverage.
+func TestWeb_Queue_ItemsShapeForwardedToDaemonQueueTurn(t *testing.T) {
+	dir := t.TempDir()
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon-test", SourceID: "local"})
+	gotItems := make(chan []appwire.InputItem, 1)
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnQueue, func(_ context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
+		select {
+		case gotItems <- params.Items:
+		default:
+		}
+		return appwire.EmptyResponse{}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodInitialize, func(_ context.Context, _ appwire.InitializeParams) (appwire.InitializeResponse, error) {
+		return appwire.InitializeResponse{ServerInfo: appwire.ServerInfo{Name: "daemon-test"}}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        "01QUEUEITEMS",
+			SessionID: "01QUEUEITEMS",
+			// Queue requires the session to be processing.
+			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusProcessing},
+			Source: "local",
+			Serf: appwire.SerfThread{
+				Ref:          "local:01QUEUEITEMS",
+				Capabilities: appwire.ThreadCapabilities{Send: false, Steer: true, Interrupt: true, Queue: true},
+			},
+		}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	writeRendezvous(t, dir, rendezvous.Entry{
+		PID:       102,
+		Address:   strings.TrimPrefix(daemonHTTP.URL, "http://"),
+		Endpoint:  "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"),
+		Protocol:  appwire.ProtocolVersion,
+		SourceID:  "local",
+		ThreadID:  "01QUEUEITEMS",
+		SessionID: "01QUEUEITEMS",
+	})
+	r := NewRoster(dir, fakeProber{sessionID: "01QUEUEITEMS", status: "GENERATING"})
+	r.Refresh()
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  r,
+		Past:    NewPastIndex(""),
+	})
+
+	reqBody := map[string]any{
+		"text": "queue with image",
+		"items": []map[string]any{
+			{
+				"type":      "image",
+				"mediaType": "image/png",
+				"data":      base64.StdEncoding.EncodeToString(testImageBytes),
+				"name":      "items-queue.png",
+			},
+		},
+	}
+	payload, err := json.Marshal(reqBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/s/01QUEUEITEMS/queue", bytes.NewReader(payload))
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var items []appwire.InputItem
+	select {
+	case items = <-gotItems:
+	default:
+		t.Fatalf("daemon TurnQueue was not invoked")
+	}
+	if len(items) != 1 {
+		t.Fatalf("Items: got %d, want 1 (%+v)", len(items), items)
+	}
+	got := items[0]
+	if got.Type != "image" {
+		t.Errorf("Item.Type=%q, want image", got.Type)
+	}
+	if got.MediaType != "image/png" {
+		t.Errorf("Item.MediaType=%q, want image/png", got.MediaType)
+	}
+	if !bytes.Equal(got.Data, testImageBytes) {
+		t.Errorf("Item.Data mismatch: got %x, want %x", got.Data, testImageBytes)
+	}
+	if got.Name != "items-queue.png" {
+		t.Errorf("Item.Name=%q, want items-queue.png", got.Name)
+	}
+}
+
+// TestWeb_DrainAsSteer_ItemsShapeQueuesThenDrains drives the kata v80q
+// shape on /s/<id>/drain-as-steer: when the request carries an `items`
+// array, the hub must first queue them (so the daemon's drain pass picks
+// them up) and only then fire the drain-as-steer RPC. The daemon ends up
+// observing a TurnQueue with the items followed by a TurnDrainAsSteer.
+func TestWeb_DrainAsSteer_ItemsShapeQueuesThenDrains(t *testing.T) {
+	dir := t.TempDir()
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon-test", SourceID: "local"})
+	gotItems := make(chan []appwire.InputItem, 1)
+	drained := make(chan struct{}, 1)
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnQueue, func(_ context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
+		select {
+		case gotItems <- params.Items:
+		default:
+		}
+		return appwire.EmptyResponse{}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnDrainAsSteer, func(_ context.Context, _ appwire.TurnDrainAsSteerParams) (appwire.EmptyResponse, error) {
+		select {
+		case drained <- struct{}{}:
+		default:
+		}
+		return appwire.EmptyResponse{}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodInitialize, func(_ context.Context, _ appwire.InitializeParams) (appwire.InitializeResponse, error) {
+		return appwire.InitializeResponse{ServerInfo: appwire.ServerInfo{Name: "daemon-test"}}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        "01DRAINITEMS",
+			SessionID: "01DRAINITEMS",
+			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusProcessing},
+			Source:    "local",
+			Serf: appwire.SerfThread{
+				Ref:          "local:01DRAINITEMS",
+				Capabilities: appwire.ThreadCapabilities{Send: false, Steer: true, Interrupt: true, Queue: true},
+			},
+		}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	writeRendezvous(t, dir, rendezvous.Entry{
+		PID:       103,
+		Address:   strings.TrimPrefix(daemonHTTP.URL, "http://"),
+		Endpoint:  "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"),
+		Protocol:  appwire.ProtocolVersion,
+		SourceID:  "local",
+		ThreadID:  "01DRAINITEMS",
+		SessionID: "01DRAINITEMS",
+	})
+	r := NewRoster(dir, fakeProber{sessionID: "01DRAINITEMS", status: "GENERATING"})
+	r.Refresh()
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  r,
+		Past:    NewPastIndex(""),
+	})
+
+	reqBody := map[string]any{
+		"text": "drain with image",
+		"items": []map[string]any{
+			{
+				"type":      "image",
+				"mediaType": "image/png",
+				"data":      base64.StdEncoding.EncodeToString(testImageBytes),
+				"name":      "items-drain.png",
+			},
+		},
+	}
+	payload, err := json.Marshal(reqBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/s/01DRAINITEMS/drain-as-steer", bytes.NewReader(payload))
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var items []appwire.InputItem
+	select {
+	case items = <-gotItems:
+	default:
+		t.Fatalf("daemon TurnQueue was not invoked before drain")
+	}
+	select {
+	case <-drained:
+	default:
+		t.Fatalf("daemon TurnDrainAsSteer was not invoked")
+	}
+	if len(items) != 1 {
+		t.Fatalf("Items: got %d, want 1 (%+v)", len(items), items)
+	}
+	got := items[0]
+	if got.Type != "image" {
+		t.Errorf("Item.Type=%q, want image", got.Type)
+	}
+	if !bytes.Equal(got.Data, testImageBytes) {
+		t.Errorf("Item.Data mismatch: got %x, want %x", got.Data, testImageBytes)
+	}
+	if got.Name != "items-drain.png" {
+		t.Errorf("Item.Name=%q, want items-drain.png", got.Name)
+	}
+}

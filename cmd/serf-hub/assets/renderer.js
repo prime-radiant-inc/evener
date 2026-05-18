@@ -1,6 +1,36 @@
 (function () {
   "use strict";
 
+  // itemDataToBase64 normalizes composer-attachment payloads for the legacy
+  // /send and /queue REST shapes (used when SerfAppwire isn't installed —
+  // e.g. JSDOM tests, replay-only configurations). The appwire path does
+  // this encoding inline; this is the fallback. Mirrors appwire.js'
+  // encodeAttachmentData duck-typing so cross-realm ArrayBuffer inputs
+  // (test harnesses) still round-trip cleanly.
+  function itemDataToBase64(data) {
+    if (data == null) return "";
+    if (typeof data === "string") return data;
+    let bytes;
+    if (ArrayBuffer.isView(data)) {
+      bytes = data.buffer
+        ? new Uint8Array(data.buffer, data.byteOffset || 0, data.byteLength)
+        : data;
+    } else if (typeof data === "object" && typeof data.byteLength === "number") {
+      bytes = new Uint8Array(data);
+    } else {
+      return "";
+    }
+    const CHUNK = 0x8000;
+    let binary = "";
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      const slice = bytes.subarray(i, i + CHUNK);
+      binary += String.fromCharCode.apply(null, slice);
+    }
+    return (typeof btoa === "function")
+      ? btoa(binary)
+      : Buffer.from(binary, "binary").toString("base64");
+  }
+
   function partialFetch(path, options) {
     options = options || {};
     const headers = new Headers(options.headers || {});
@@ -66,7 +96,12 @@
       this.userTurnIndex = 0;            // counts user turns rendered (for fork divergence)
       this.entryIndex = 0;               // counts ALL entries rendered (matches transcript entry index)
       this.cheapToolCluster = null;      // current cluster div for batching cheap reads
-      this.pendingAttachments = [];      // queued image attachments awaiting send
+      // Image attachments are owned by the SerfComposerAttachments helper
+      // (kata r6a1/65mm — paste/drop/file-picker all funnel through it). The
+      // submit handler reads .items off this state, base64-encodes the bytes
+      // at the wire layer (appwire.js, kata v80q), and clears the bag on
+      // successful response. Preserved on error so the user can retry.
+      this.composerPasteState = { items: [] };
       this.lastUserText = "";            // most-recent user turn text (for "Retry turn")
       // queueState is the wire-sourced authoritative queue (kata r80p):
       // every entry is a first-line-truncated string in FIFO order, sourced
@@ -402,8 +437,10 @@
             this.lastCurrentTaskId = null;
             this.userTurnIndex = 0;
             this.entryIndex = 0;
-            this.pendingAttachments = [];
-            this.renderAttachments();
+            // Drop any pending image attachments and let the composer-
+            // attachments helper repaint the (now empty) chip container.
+            this.composerPasteState = { items: [] };
+            this.renderComposerChips();
             // Reset to empty; the next QUEUE_CHANGED event (cold-load or
             // notification) will fill in authoritative state from the wire.
             this.queueState = { depth: 0, preview: [] };
@@ -1196,18 +1233,22 @@
       if (steerBtn) {
         steerBtn.addEventListener("click", async () => {
           const text = ta.value.trim();
+          const pendingItems = (this.composerPasteState && this.composerPasteState.items) || [];
+          const hasAttachments = pendingItems.length > 0;
           const hasQueued = (this.queueState && this.queueState.depth > 0) || false;
-          if (!text && !hasQueued) {
+          if (!text && !hasQueued && !hasAttachments) {
             ta.placeholder = "type a steering message, then click send as steer…";
             ta.focus();
             return;
           }
           steerBtn.disabled = true;
           try {
-            // Path A: classic steer (no queue). Keeps the existing
-            // single-text /steer pipeline so the daemon writes one STEERING
-            // entry with the textarea text.
-            if (!hasQueued) {
+            // Path A: classic steer (no queue + no attachments). Keeps the
+            // existing single-text /steer pipeline so the daemon writes one
+            // STEERING entry with the textarea text. (When attachments are
+            // present we always go through queue-then-drain so the image
+            // bytes are preserved — /steer is text-only.)
+            if (!hasQueued && !hasAttachments) {
               if (window.SerfAppwire) {
                 if (!this.activeTurnId) {
                   this.appendBanner("error", "steer failed: no active turn", { source: "hub", title: "Hub steer error" });
@@ -1232,18 +1273,22 @@
               grow();
               return;
             }
-            // Path B: drain. If the textarea has text we enqueue it first
-            // so it joins the rest of the queue in the single STEERING
-            // entry. The drain endpoint pops every queued message on the
-            // daemon and merges them into one steering injection.
-            if (text) {
-              try { await this.queueText(text); } catch (err) {
+            // Path B: drain. If the textarea has text and/or attachments we
+            // enqueue them first so the bytes ride along the single STEERING
+            // entry the daemon emits when draining. /drain-as-steer pops
+            // every queued message + merges into one steering injection.
+            if (text || hasAttachments) {
+              try { await this.queueText(text, pendingItems); } catch (err) {
                 this.appendBanner("error", "queue failed: " + err.message, { source: "hub", title: "Hub queue error" });
                 return;
               }
               ta.value = "";
               ta.style.height = "";
               grow();
+              // Successful queue: drop the pending bag so the next compose
+              // doesn't re-queue the same attachments.
+              this.composerPasteState.items = [];
+              this.renderComposerChips();
             }
             try {
               if (window.SerfAppwire) {
@@ -1273,67 +1318,17 @@
         });
       }
 
-      // Attachments: file picker, drag-drop, paste pipelines all funnel
-      // images through addFiles() which validates and pushes onto the queue.
+      // Attachments: paste / drag-drop / file-picker all funnel through
+      // SerfComposerAttachments (kata r6a1 + 65mm). The submit handler below
+      // reads composerPasteState.items at send/queue/drain time and lets
+      // appwire.js base64-encode the ArrayBuffer payloads at the wire
+      // boundary (kata v80q). The legacy addFiles / FileReader / data-URL
+      // pipeline was retired here — chips render via SerfComposerAttachments
+      // into [data-composer-attachments], rejection banners into
+      // [data-attachment-error].
       const filePicker = form.querySelector("[data-file-picker]");
       const attachTrigger = form.querySelector("[data-attach-trigger]");
       const dropZone = form.querySelector("[data-drop-zone]");
-
-      if (attachTrigger && filePicker) {
-        attachTrigger.addEventListener("click", () => filePicker.click());
-      }
-      if (filePicker) {
-        filePicker.addEventListener("change", (e) => {
-          this.addFiles(e.target.files);
-          // Reset so re-selecting the same file fires another change.
-          e.target.value = "";
-        });
-      }
-      if (dropZone) {
-        const stopAndOver = (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          dropZone.classList.add("drag-over");
-        };
-        dropZone.addEventListener("dragenter", stopAndOver);
-        dropZone.addEventListener("dragover", stopAndOver);
-        dropZone.addEventListener("dragleave", (e) => {
-          // Only remove the class when truly leaving the drop zone.
-          if (e.target === dropZone) dropZone.classList.remove("drag-over");
-        });
-        dropZone.addEventListener("drop", (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          dropZone.classList.remove("drag-over");
-          if (e.dataTransfer && e.dataTransfer.files) {
-            this.addFiles(e.dataTransfer.files);
-          }
-        });
-      }
-      ta.addEventListener("paste", (e) => {
-        const items = e.clipboardData && e.clipboardData.items;
-        if (!items) return;
-        const files = [];
-        for (const item of items) {
-          if (item.kind === "file" && item.type && item.type.startsWith("image/")) {
-            const f = item.getAsFile();
-            if (f) files.push(f);
-          }
-        }
-        if (files.length > 0) {
-          e.preventDefault();
-          this.addFiles(files);
-        }
-      });
-
-      // Wire the shared composer-attachments helpers (paste from r6a1; drag-
-      // drop + file picker from 65mm). All three surfaces write into the
-      // same composerPasteState.items bag — the (forthcoming v80q) submit
-      // wiring will read from it and unify with the legacy data-attachments
-      // pipeline above. Until then, the legacy drag-drop / file-picker
-      // wiring earlier in this method continues feeding this.pendingAttachments
-      // so the existing submit/fetch path remains untouched. v80q will
-      // collapse the two stores.
       if (window.SerfComposerAttachments) {
         if (!this.composerPasteState) this.composerPasteState = { items: [] };
         const pasteContainer = form.querySelector("[data-composer-attachments]");
@@ -1352,7 +1347,8 @@
       const submit = async (e) => {
         e.preventDefault();
         const text = ta.value.trim();
-        const hasAttachments = this.pendingAttachments && this.pendingAttachments.length > 0;
+        const items = (this.composerPasteState && this.composerPasteState.items) || [];
+        const hasAttachments = items.length > 0;
         if (!text && !hasAttachments) return;
         const sendBtn = form.querySelector(".send-btn");
         const canSend = !sendBtn || sendBtn.getAttribute("data-capability-send") !== "false";
@@ -1360,21 +1356,20 @@
         // When the session is processing the send capability flips off and
         // the queue capability flips on (kata 111a). Route Enter ⌘↵ to
         // turn/queue in that mode so the message is buffered and processed
-        // after the active turn completes.
+        // after the active turn completes. Attachments ride the same items
+        // bag (kata v80q) — the daemon's TurnQueue handler routes images
+        // through queueWithImagesFunc when present.
         if (!canSend && canQueue) {
-          if (hasAttachments) {
-            // Queue path doesn't carry image attachments today — the daemon
-            // only enqueues text. Surface a clear error rather than dropping
-            // the user's pending images silently.
-            this.appendBanner("error", "queue does not support images yet — wait for idle or remove attachments", { source: "hub", title: "Hub queue error" });
-            return;
-          }
           if (sendBtn) sendBtn.disabled = true;
           try {
-            await this.queueText(text);
+            await this.queueText(text, items);
             ta.value = "";
             ta.style.height = "";
             grow();
+            // Successful queue: drop the pending bag so the next compose
+            // starts clean. Preserved on error so the user can retry.
+            this.composerPasteState.items = [];
+            this.renderComposerChips();
           } catch (err) {
             this.appendBanner("error", "queue failed: " + err.message, { source: "hub", title: "Hub queue error" });
           } finally {
@@ -1389,25 +1384,29 @@
         }
         if (sendBtn) sendBtn.disabled = true;
         try {
-          const body = {
-            text,
-            images: (this.pendingAttachments || []).map((a) => ({
-              media_type: a.mediaType,
-              data: a.dataBase64,
-              name: a.name,
-            })),
-          };
+          // Snapshot the items so a successful response can clear the bag
+          // afterwards without us having lost the references mid-flight.
           const previousUserCount = this.userMessageCount();
           let turnId = "";
           if (window.SerfAppwire) {
-            const resp = await window.SerfAppwire.startTurn(this.appwireRef || this.sessionId, body.text, body.images);
+            const resp = await window.SerfAppwire.startTurn(this.appwireRef || this.sessionId, text, items);
             turnId = resp && resp.turn && resp.turn.id || "";
             this.setActiveTurnId(turnId || this.activeTurnId);
           } else {
+            // Legacy fetch fallback (no appwire). Encode attachments to the
+            // /send REST shape on the fly. /send accepts both legacy `images`
+            // and v80q-style `items`; we send `items` so the shape matches
+            // the appwire path.
+            const fetchItems = items.map((a) => ({
+              type: "image",
+              mediaType: a.mediaType || "",
+              data: itemDataToBase64(a.data),
+              name: a.name || "",
+            }));
             const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/send", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(body),
+              body: JSON.stringify({ text, items: fetchItems }),
             });
             if (!resp.ok) {
               const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
@@ -1415,12 +1414,21 @@
               return;
             }
           }
-          this.appendLocalUserMessage(body.text, body.images, turnId, previousUserCount);
+          // Build the legacy-shaped images list for local echo rendering —
+          // appendUserMessage expects {data: <base64>, media_type, name}.
+          const echoImages = items.map((a) => ({
+            media_type: a.mediaType || "image/png",
+            data: itemDataToBase64(a.data),
+            name: a.name || "",
+          }));
+          this.appendLocalUserMessage(text, echoImages, turnId, previousUserCount);
           ta.value = "";
           ta.style.height = "";
           grow();
-          this.pendingAttachments = [];
-          this.renderAttachments();
+          // Clear the pending bag and repaint the chip container so the
+          // composer is fresh for the next turn.
+          this.composerPasteState.items = [];
+          this.renderComposerChips();
           this.ensureLiveStream();
         } catch (err) {
           this.appendBanner("error", "send failed: " + err.message, { source: "hub", title: "Hub send error" });
@@ -1431,126 +1439,43 @@
       form.addEventListener("submit", submit);
     },
 
-    // addFiles validates and enqueues image files coming from the picker,
-    // drag-drop, or clipboard paste. Errors render as inline error chips.
-    addFiles(fileList) {
-      const allowed = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
-      const maxBytes = 8 * 1024 * 1024;
-      const maxQueue = 10;
-      const files = Array.from(fileList || []);
-      const errors = [];
-      const accepted = [];
-      for (const file of files) {
-        if ((this.pendingAttachments.length + accepted.length) >= maxQueue) {
-          errors.push("max 10 attachments");
-          break;
-        }
-        if (!allowed.has(file.type)) {
-          errors.push("not an image: " + file.name);
-          continue;
-        }
-        if (file.size > maxBytes) {
-          errors.push("too large (>8MB): " + file.name);
-          continue;
-        }
-        accepted.push(file);
+    // renderComposerChips re-renders the chip container from the current
+    // composerPasteState. Used after a successful send/queue/drain or when
+    // the session is cleared. Pulls the container off the form so callers
+    // don't have to thread it through; falls back to a global lookup when
+    // multiple workspaces share the renderer (only one is live at a time).
+    renderComposerChips() {
+      if (!window.SerfComposerAttachments || !this.composerPasteState) return;
+      const container = document.querySelector("[data-composer-attachments]");
+      if (container) {
+        window.SerfComposerAttachments.renderAttachmentChips(container, this.composerPasteState);
       }
-      // Render errors immediately even if reads are in flight.
-      this.attachmentErrors = (this.attachmentErrors || []).concat(errors);
-      if (accepted.length === 0) {
-        this.renderAttachments();
-        return;
-      }
-      // Read each accepted file as a data URL, then queue.
-      const reads = accepted.map((file) => new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const result = reader.result || "";
-          // Strip "data:image/png;base64," prefix to keep just base64.
-          const comma = result.indexOf(",");
-          const dataBase64 = comma >= 0 ? result.slice(comma + 1) : result;
-          this.pendingAttachments.push({
-            name: file.name,
-            mediaType: file.type,
-            dataBase64,
-            thumbnail: result,
-          });
-          resolve();
-        };
-        reader.onerror = () => {
-          this.attachmentErrors = (this.attachmentErrors || []).concat(["read failed: " + file.name]);
-          resolve();
-        };
-        reader.readAsDataURL(file);
-      }));
-      Promise.all(reads).then(() => this.renderAttachments());
-      // Render now too so error chips show up without waiting for reads.
-      this.renderAttachments();
-    },
-
-    renderAttachments() {
-      const container = document.querySelector("[data-attachments]");
-      if (!container) return;
-      container.innerHTML = "";
-      const truncate = (s, n) => (s && s.length > n ? s.slice(0, n - 1) + "…" : s || "");
-      (this.pendingAttachments || []).forEach((att, idx) => {
-        const chip = document.createElement("div");
-        chip.className = "attachment-chip";
-        const img = document.createElement("img");
-        img.className = "att-thumb";
-        img.src = att.thumbnail;
-        img.alt = att.name;
-        chip.appendChild(img);
-        const label = document.createElement("span");
-        label.className = "att-name";
-        label.textContent = truncate(att.name, 24);
-        chip.appendChild(label);
-        const remove = document.createElement("button");
-        remove.type = "button";
-        remove.className = "att-remove";
-        remove.textContent = "×";
-        remove.addEventListener("click", () => {
-          this.pendingAttachments.splice(idx, 1);
-          this.renderAttachments();
-        });
-        chip.appendChild(remove);
-        container.appendChild(chip);
-      });
-      const errors = this.attachmentErrors || [];
-      errors.forEach((msg, idx) => {
-        const chip = document.createElement("div");
-        chip.className = "attachment-chip error";
-        const label = document.createElement("span");
-        label.className = "att-name";
-        label.textContent = msg;
-        chip.appendChild(label);
-        const remove = document.createElement("button");
-        remove.type = "button";
-        remove.className = "att-remove";
-        remove.textContent = "×";
-        remove.addEventListener("click", () => {
-          this.attachmentErrors.splice(idx, 1);
-          this.renderAttachments();
-        });
-        chip.appendChild(remove);
-        container.appendChild(chip);
-      });
     },
 
     // queueText POSTs to turn/queue (or /s/<id>/queue). The daemon emits a
     // thread/queueChanged notification which updates queueState — no local
     // mirroring (kata r80p). Rejections bubble up; callers surface them as
-    // error banners.
-    async queueText(text) {
+    // error banners. Optional attachments (kata v80q) ride alongside the
+    // text in the items array; an empty/whitespace-only text with
+    // attachments is allowed since the daemon's TurnQueue handler accepts
+    // images alone.
+    async queueText(text, attachments) {
       const trimmed = String(text || "").trim();
-      if (!trimmed) throw new Error("text is required");
+      const items = attachments || [];
+      if (!trimmed && items.length === 0) throw new Error("text or attachments required");
       if (window.SerfAppwire) {
-        await window.SerfAppwire.queueTurn(this.sessionId, trimmed);
+        await window.SerfAppwire.queueTurn(this.sessionId, trimmed, items);
       } else {
+        const fetchItems = items.map((a) => ({
+          type: "image",
+          mediaType: a.mediaType || "",
+          data: itemDataToBase64(a.data),
+          name: a.name || "",
+        }));
         const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/queue", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: trimmed }),
+          body: JSON.stringify({ text: trimmed, items: fetchItems }),
         });
         if (!resp.ok) {
           const detail = (await resp.text()).trim() || ("HTTP " + resp.status);

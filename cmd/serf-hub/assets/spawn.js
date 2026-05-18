@@ -1,6 +1,35 @@
 (function () {
   "use strict";
 
+  // spawnEncodeAttachmentData base64-encodes ArrayBuffer-shaped image bytes
+  // for the /api/spawn REST fallback when SerfAppwire isn't installed (kata
+  // v80q). The appwire path uses the same shape via inputItemsFromAttachments
+  // — this is the fetch fallback only. Cross-realm-safe (duck-typed) so
+  // JSDOM-spawned buffers from tests still survive the round-trip.
+  function spawnEncodeAttachmentData(data) {
+    if (data == null) return "";
+    if (typeof data === "string") return data;
+    let bytes;
+    if (ArrayBuffer.isView(data)) {
+      bytes = data.buffer
+        ? new Uint8Array(data.buffer, data.byteOffset || 0, data.byteLength)
+        : data;
+    } else if (typeof data === "object" && typeof data.byteLength === "number") {
+      bytes = new Uint8Array(data);
+    } else {
+      return "";
+    }
+    const CHUNK = 0x8000;
+    let binary = "";
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      const slice = bytes.subarray(i, i + CHUNK);
+      binary += String.fromCharCode.apply(null, slice);
+    }
+    return (typeof btoa === "function")
+      ? btoa(binary)
+      : Buffer.from(binary, "binary").toString("base64");
+  }
+
   function projectKey(workingDir) {
     return "serf-hub.spawn-defaults." + (workingDir || "global");
   }
@@ -529,6 +558,11 @@
         if (ta) ta.focus();
         return;
       }
+      // Pull pending image attachments off the form-attached state set up
+      // earlier in init(). Empty array when none — appwire (and the /api/spawn
+      // REST shim) both treat an empty items list as "no attachments".
+      const pendingState = form.__composerPasteState || { items: [] };
+      const attachments = (pendingState.items || []).slice();
       const body = {
         prompt: rawPrompt,
         harness: fd.get("harness") || "serf",
@@ -539,8 +573,14 @@
         agent: fd.get("agent_override") || fd.get("agent") || "default",
         reasoning_effort: fd.get("reasoning_effort_override") || fd.get("reasoning_effort") || "",
         launch_overrides: collectAdvancedOverrides(),
+        // appwire.startThread reads body.attachments; the REST fallback
+        // below converts the same set to base64-encoded items in the JSON
+        // payload (the wire shape /api/spawn already accepts via
+        // appwire.InputItem.Data).
+        attachments,
       };
-      // Persist sticky defaults (excluding the prompt override)
+      // Persist sticky defaults (excluding the prompt override and the
+      // ephemeral attachments list).
       saveDefaults({
         model: body.model,
         harness: body.harness,
@@ -552,16 +592,34 @@
       const btn = form.querySelector(".spawn-btn");
       if (btn) { btn.disabled = true; btn.textContent = "spawning…"; }
       try {
-        const json = window.SerfAppwire
-          ? await window.SerfAppwire.startThread(body)
-          : await fetch("/api/spawn", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(body),
-            }).then(async (resp) => {
-              if (!resp.ok) throw new Error(spawnErrorMessage(await resp.text()));
-              return resp.json();
-            });
+        let json;
+        if (window.SerfAppwire) {
+          json = await window.SerfAppwire.startThread(body);
+        } else {
+          // No-appwire fallback path. Encode attachments to the items shape
+          // the /api/spawn handler expects (base64-encoded Data field). We
+          // strip the local `attachments` blob from the body so it doesn't
+          // accidentally serialize ArrayBuffer placeholders.
+          const restBody = Object.assign({}, body);
+          delete restBody.attachments;
+          restBody.items = attachments.map((a) => ({
+            type: "image",
+            mediaType: a.mediaType || "",
+            data: spawnEncodeAttachmentData(a.data),
+            name: a.name || "",
+          }));
+          json = await fetch("/api/spawn", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(restBody),
+          }).then(async (resp) => {
+            if (!resp.ok) throw new Error(spawnErrorMessage(await resp.text()));
+            return resp.json();
+          });
+        }
+        // Successful response: clear the pending bag so a back-button
+        // return doesn't double-send the same images on retry.
+        pendingState.items = [];
         window.location.href = sessionPath(json);
       } catch (err) {
         if (btn) { btn.disabled = false; btn.innerHTML = 'spawn <kbd>⌘↵</kbd>'; }

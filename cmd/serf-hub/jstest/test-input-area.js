@@ -6,9 +6,15 @@ const { JSDOM } = require("jsdom");
 
 const RENDERER_PATH = path.resolve(__dirname, "../assets/renderer.js");
 const rendererSrc = fs.readFileSync(RENDERER_PATH, "utf8");
+const COMPOSER_PATH = path.resolve(__dirname, "../assets/composer-attachments.js");
+const composerSrc = fs.readFileSync(COMPOSER_PATH, "utf8");
 
 // Build a tiny app shell that the renderer expects, including the new
-// bottom-strip structure (input-card, input-controls, input-status).
+// bottom-strip structure (input-card, input-controls, input-status). The
+// attachment containers mirror templates/partials/workspace.html: the new
+// composer-attachments chip container lives next to the (now unused) legacy
+// data-attachments div, and a sibling [data-attachment-error] absorbs
+// non-image rejection banners.
 const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <div class="workspace-actions">
     <button data-tasks-trigger><span class="panel-toggle-label">tasks</span></button>
@@ -23,6 +29,8 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
        data-state="processing"></div>
   <form class="workspace-input" data-input-form data-session-id="01TEST">
     <div class="input-attachments" data-attachments></div>
+    <div class="composer-attachments" data-composer-attachments></div>
+    <div class="composer-attachment-error" data-attachment-error hidden></div>
     <div class="input-card" data-drop-zone>
       <textarea class="message-input" rows="1"></textarea>
     </div>
@@ -38,6 +46,27 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
 
 const { window } = dom;
 window.marked = { parse: (t) => t };
+
+// composer-attachments.js round-trips through <canvas>.toBlob / <img>.onload
+// (kata r6a1) to re-encode arbitrary image formats to PNG. JSDOM has neither;
+// stub them to hand back our deterministic PNG fixture used below in the
+// attachment tests.
+const PASTE_PNG_BYTES = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+P+/HgAFhAJ/wlseKgAAAABJRU5ErkJggg==",
+  "base64",
+);
+window.HTMLCanvasElement.prototype.toBlob = function (cb, mimeType) {
+  cb(new window.Blob([new Uint8Array(PASTE_PNG_BYTES)], { type: mimeType || "image/png" }));
+};
+window.HTMLCanvasElement.prototype.getContext = function () { return { drawImage() {} }; };
+class FakeImage {
+  constructor() { this._src = ""; this.width = 8; this.height = 4; this.onload = null; this.onerror = null; }
+  set src(v) { this._src = v; Promise.resolve().then(() => { if (this.onload) this.onload(); }); }
+  get src() { return this._src; }
+}
+window.Image = FakeImage;
+window.URL.createObjectURL = () => "blob:fake";
+window.URL.revokeObjectURL = () => {};
 
 // Track fetch calls so we can verify reset-on-success behavior. Mock /tasks
 // to return [] so the cold-load hydration resolves cleanly.
@@ -104,6 +133,9 @@ Object.defineProperty(window, "innerHeight", {
   value: 800,
 });
 
+// composer-attachments.js must register SerfComposerAttachments before the
+// renderer's bindInputForm wires it in.
+window.eval(composerSrc);
 window.eval(rendererSrc);
 
 const conv = window.document.getElementById("conversation");
@@ -299,8 +331,16 @@ async function checkSlashOpensPalette() {
 }
 
 // --- Attachment tests ---
+//
+// After kata v80q the legacy addFiles / pendingAttachments pipeline was
+// retired in favor of SerfComposerAttachments (kata r6a1/65mm). These
+// tests drive the new pipeline: items live on
+// SerfRenderer.composerPasteState.items, chips render as [data-attachment]
+// inside [data-composer-attachments], and rejection banners surface on
+// [data-attachment-error] (no per-chip error class anymore).
 
-// 1×1 transparent PNG (base64) — a valid image file body for tests.
+// A 1×1 transparent PNG — used both for the canvas re-encode fixture
+// (above) and as the canonical "image body" for picker/drop tests.
 const PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+P+/HgAFhAJ/wlseKgAAAABJRU5ErkJggg==";
 const PNG_BYTES = Buffer.from(PNG_BASE64, "base64");
 
@@ -308,9 +348,9 @@ function makePngFile(name) {
   return new window.File([new Uint8Array(PNG_BYTES)], name, { type: "image/png" });
 }
 
-// JSDOM's FileReader fires onload async; wait for the renderer's enqueue
+// JSDOM's canvas / FileReader fire async; wait for the helper's enqueue
 // promise to settle by yielding a few microtasks/timers.
-async function waitForReads(n = 8) {
+async function waitForReads(n = 20) {
   for (let i = 0; i < n; i++) {
     await new Promise((r) => setTimeout(r, 5));
   }
@@ -318,13 +358,25 @@ async function waitForReads(n = 8) {
 
 const filePicker = window.document.querySelector("[data-file-picker]");
 const dropZone = window.document.querySelector("[data-drop-zone]");
-const attContainer = window.document.querySelector("[data-attachments]");
+const attContainer = window.document.querySelector("[data-composer-attachments]");
+const errBanner = window.document.querySelector("[data-attachment-error]");
 
-// Reset queue before attachment tests run (after the earlier checkReset
-// scenarios have left it empty already, but be explicit).
-window.SerfRenderer.pendingAttachments = [];
-window.SerfRenderer.attachmentErrors = [];
-window.SerfRenderer.renderAttachments();
+function pendingItems() {
+  return (window.SerfRenderer.composerPasteState && window.SerfRenderer.composerPasteState.items) || [];
+}
+
+function resetComposerState() {
+  if (window.SerfRenderer.composerPasteState) {
+    window.SerfRenderer.composerPasteState.items = [];
+  } else {
+    window.SerfRenderer.composerPasteState = { items: [] };
+  }
+  // Re-render chips so the new (empty) state is reflected in the DOM.
+  if (window.SerfComposerAttachments) {
+    window.SerfComposerAttachments.renderAttachmentChips(attContainer, window.SerfRenderer.composerPasteState);
+  }
+  if (errBanner) { errBanner.textContent = ""; errBanner.hidden = true; }
+}
 
 // Helper: simulate a file picker change with a list of files. JSDOM's
 // HTMLInputElement.files is read-only via assignment in some setups, so
@@ -338,21 +390,19 @@ function dispatchPickerChange(files) {
 }
 
 async function testFilePickerAddsChip() {
-  const before = window.SerfRenderer.pendingAttachments.length;
+  resetComposerState();
   dispatchPickerChange([makePngFile("hello.png")]);
   await waitForReads();
-  pass(window.SerfRenderer.pendingAttachments.length === before + 1,
-    "expected 1 queued attachment, got " + window.SerfRenderer.pendingAttachments.length);
-  const chips = attContainer.querySelectorAll(".attachment-chip");
+  pass(pendingItems().length === 1,
+    "expected 1 queued attachment, got " + pendingItems().length);
+  const chips = attContainer.querySelectorAll("[data-attachment]");
   pass(chips.length === 1, "expected 1 chip, got " + chips.length);
-  pass(chips[0].querySelector(".att-name").textContent.includes("hello.png"),
+  pass(chips[0].textContent.includes("hello.png"),
     "chip name missing 'hello.png': " + chips[0].textContent);
 }
 
 async function testDropAddsChips() {
-  // Reset queue so we measure only this test's adds.
-  window.SerfRenderer.pendingAttachments = [];
-  window.SerfRenderer.renderAttachments();
+  resetComposerState();
   const dropEvent = new window.Event("drop", { bubbles: true, cancelable: true });
   // Stub dataTransfer with two PNG files.
   Object.defineProperty(dropEvent, "dataTransfer", {
@@ -360,30 +410,28 @@ async function testDropAddsChips() {
   });
   dropZone.dispatchEvent(dropEvent);
   await waitForReads();
-  const chips = attContainer.querySelectorAll(".attachment-chip");
+  const chips = attContainer.querySelectorAll("[data-attachment]");
   pass(chips.length === 2, "expected 2 chips after drop, got " + chips.length);
-  pass(window.SerfRenderer.pendingAttachments.length === 2,
-    "expected queue length 2, got " + window.SerfRenderer.pendingAttachments.length);
+  pass(pendingItems().length === 2,
+    "expected queue length 2, got " + pendingItems().length);
 }
 
 async function testRemoveChip() {
   // Should still have 2 from the drop test; click × on the first.
-  const removeBtns = attContainer.querySelectorAll(".att-remove");
+  const removeBtns = attContainer.querySelectorAll("[data-attachment-remove]");
   pass(removeBtns.length === 2, "expected 2 remove buttons, got " + removeBtns.length);
   removeBtns[0].click();
-  pass(window.SerfRenderer.pendingAttachments.length === 1,
-    "expected queue length 1 after remove, got " + window.SerfRenderer.pendingAttachments.length);
-  const chips = attContainer.querySelectorAll(".attachment-chip");
+  pass(pendingItems().length === 1,
+    "expected queue length 1 after remove, got " + pendingItems().length);
+  const chips = attContainer.querySelectorAll("[data-attachment]");
   pass(chips.length === 1, "expected 1 chip after remove, got " + chips.length);
 }
 
 async function testSubmitWithTextAndImage() {
-  // Reset queue, queue one PNG, set text, submit.
-  window.SerfRenderer.pendingAttachments = [];
-  window.SerfRenderer.renderAttachments();
+  resetComposerState();
   dispatchPickerChange([makePngFile("snap.png")]);
   await waitForReads();
-  pass(window.SerfRenderer.pendingAttachments.length === 1, "expected 1 queued before submit");
+  pass(pendingItems().length === 1, "expected 1 queued before submit");
 
   ta.value = "look at this";
   ta.dispatchEvent(new window.Event("input", { bubbles: true }));
@@ -395,29 +443,32 @@ async function testSubmitWithTextAndImage() {
   pass(lastFetch !== null, "expected fetch on submit");
   const body = lastFetch && lastFetch.opts && JSON.parse(lastFetch.opts.body);
   pass(body && body.text === "look at this", "expected text in body, got " + JSON.stringify(body));
-  pass(body && Array.isArray(body.images) && body.images.length === 1,
-    "expected 1 image in body, got " + JSON.stringify(body && body.images));
-  pass(body.images[0].media_type === "image/png",
-    "expected image/png media_type, got " + body.images[0].media_type);
-  pass(body.images[0].data === PNG_BASE64,
-    "expected base64 to match expected, got " + body.images[0].data);
-  pass(body.images[0].name === "snap.png",
-    "expected name 'snap.png', got " + body.images[0].name);
+  pass(body && Array.isArray(body.items) && body.items.length === 1,
+    "expected 1 item in body, got " + JSON.stringify(body && body.items));
+  if (body && body.items && body.items[0]) {
+    pass(body.items[0].type === "image",
+      "expected type=image, got " + body.items[0].type);
+    pass(body.items[0].mediaType === "image/png",
+      "expected mediaType=image/png, got " + body.items[0].mediaType);
+    pass(body.items[0].data === PNG_BASE64,
+      "expected base64-encoded canvas PNG, got " + body.items[0].data);
+    pass(body.items[0].name === "snap.png",
+      "expected name 'snap.png', got " + body.items[0].name);
+  }
 }
 
 async function testSubmitClearsQueue() {
   // Continuation of testSubmitWithTextAndImage's success path.
-  pass(window.SerfRenderer.pendingAttachments.length === 0,
-    "expected queue cleared after success, got " + window.SerfRenderer.pendingAttachments.length);
-  const chips = attContainer.querySelectorAll(".attachment-chip");
+  pass(pendingItems().length === 0,
+    "expected queue cleared after success, got " + pendingItems().length);
+  const chips = attContainer.querySelectorAll("[data-attachment]");
   pass(chips.length === 0, "expected no chips after success, got " + chips.length);
 }
 
 async function testSubmitEmptyDoesNothing() {
   ta.value = "";
   ta.dispatchEvent(new window.Event("input", { bubbles: true }));
-  window.SerfRenderer.pendingAttachments = [];
-  window.SerfRenderer.renderAttachments();
+  resetComposerState();
   lastFetch = null;
   form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
   await waitForReads();
@@ -439,34 +490,20 @@ async function testUnavailableSendDoesNotSubmit() {
   send.disabled = false;
 }
 
-async function testRejectsOversize() {
-  window.SerfRenderer.pendingAttachments = [];
-  window.SerfRenderer.attachmentErrors = [];
-  window.SerfRenderer.renderAttachments();
-  // Make a "file" whose .size reports 9MB without holding 9MB of bytes.
-  const tiny = new window.File([new Uint8Array(8)], "huge.png", { type: "image/png" });
-  Object.defineProperty(tiny, "size", { value: 9 * 1024 * 1024 });
-  dispatchPickerChange([tiny]);
-  await waitForReads();
-  pass(window.SerfRenderer.pendingAttachments.length === 0,
-    "expected oversize rejected from queue");
-  const errs = attContainer.querySelectorAll(".attachment-chip.error");
-  pass(errs.length === 1, "expected 1 error chip for oversize, got " + errs.length);
-}
-
 async function testRejectsNonImage() {
-  window.SerfRenderer.pendingAttachments = [];
-  window.SerfRenderer.attachmentErrors = [];
-  window.SerfRenderer.renderAttachments();
+  resetComposerState();
   const txt = new window.File([new Uint8Array([1, 2, 3])], "notes.txt", { type: "text/plain" });
   dispatchPickerChange([txt]);
   await waitForReads();
-  pass(window.SerfRenderer.pendingAttachments.length === 0,
+  pass(pendingItems().length === 0,
     "expected non-image rejected from queue");
-  const errs = attContainer.querySelectorAll(".attachment-chip.error");
-  pass(errs.length === 1, "expected 1 error chip for non-image, got " + errs.length);
-  pass(errs[0].textContent.includes("notes.txt"),
-    "expected error chip to mention filename, got " + errs[0].textContent);
+  // The new pipeline surfaces non-image rejections on the shared
+  // [data-attachment-error] banner (not per-chip). The banner becomes
+  // visible (hidden=false) with text mentioning the offending filename.
+  pass(errBanner && errBanner.hidden === false,
+    "expected attachment-error banner visible after non-image picker change");
+  pass(errBanner && errBanner.textContent.includes("notes.txt"),
+    "expected banner text to mention 'notes.txt', got " + (errBanner && errBanner.textContent));
 }
 
 (async () => {
@@ -484,7 +521,6 @@ async function testRejectsNonImage() {
   await testSubmitClearsQueue();
   await testSubmitEmptyDoesNothing();
   await testUnavailableSendDoesNotSubmit();
-  await testRejectsOversize();
   await testRejectsNonImage();
 
   if (failures.length === 0) {

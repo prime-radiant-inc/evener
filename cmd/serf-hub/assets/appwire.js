@@ -230,6 +230,10 @@
       model: String(body.model || "").trim(),
       profile: body.agent || "",
       reasoningEffort: body.reasoning_effort || "",
+      // Optional initial-turn attachments (kata v80q). Same encoding rules
+      // as turn/start: ArrayBuffer bodies base64-encoded here so the daemon
+      // can ingest them as appwire.InputItem.Data ([]byte).
+      items: inputItemsFromAttachments(body.attachments),
     }).then((resp) => {
       const thread = resp.thread || {};
       return { ref: threadRef(thread), session_id: threadID(thread) };
@@ -244,21 +248,75 @@
     return request(METHOD.tasksList, { ref: refForSession(sessionId) }).then((resp) => resp.data || []);
   }
 
-  function inputItems(images) {
-    return (images || []).map((img) => ({
-      type: "input_image",
-      mediaType: img.media_type || img.mediaType || "",
-      url: img.url || "",
-      data: img.data || "",
-      name: img.name || "",
+  // arrayBufferToBase64 encodes raw image bytes (ArrayBuffer or Uint8Array)
+  // into a base64 ASCII string. We use a chunked btoa(String.fromCharCode(...))
+  // loop rather than FileReader to keep the API synchronous; the chunk size
+  // bounds the apply() call so 8MB images don't overflow the JS argument
+  // stack on V8 (~64k arg limit). For inputs <= the chunk size this is a
+  // single fromCharCode + btoa round-trip.
+  function arrayBufferToBase64(buf) {
+    const bytes = (buf instanceof Uint8Array) ? buf : new Uint8Array(buf);
+    const CHUNK = 0x8000; // 32k bytes per fromCharCode call
+    let binary = "";
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      const slice = bytes.subarray(i, i + CHUNK);
+      // Apply via String.fromCharCode + push.apply pattern is faster than a
+      // per-byte concat for large buffers; the chunk size keeps us under the
+      // engine argument limit.
+      binary += String.fromCharCode.apply(null, slice);
+    }
+    return (typeof btoa === "function") ? btoa(binary) : Buffer.from(binary, "binary").toString("base64");
+  }
+
+  // encodeAttachmentData normalizes the .data field on a wire item. The
+  // composer-attachments pipeline (kata r6a1 / 65mm / v80q) stores image
+  // bytes as ArrayBuffer to avoid a 33% memory blow-up during composition;
+  // here at the submit boundary we base64-encode so the daemon's
+  // appwire.InputItem.Data (which JSON-unmarshals []byte from base64) can
+  // ingest it. Strings (already base64) pass through unchanged so the legacy
+  // FileReader-derived path can still ride the same wire.
+  //
+  // We avoid `instanceof ArrayBuffer` because attachment buffers created in
+  // one realm (e.g. a JSDOM window) won't satisfy an instanceof check from
+  // a different realm. Duck-typing on byteLength + ArrayBuffer.isView
+  // catches both ArrayBuffer and typed-array inputs reliably.
+  function encodeAttachmentData(data) {
+    if (data == null) return "";
+    if (typeof data === "string") return data;
+    if (ArrayBuffer.isView(data)) {
+      const view = (data.buffer)
+        ? new Uint8Array(data.buffer, data.byteOffset || 0, data.byteLength)
+        : data;
+      return arrayBufferToBase64(view);
+    }
+    // Cross-realm ArrayBuffer test: it's not a typed-array view but has a
+    // numeric byteLength and slice/getter shape — treat as bytes.
+    if (typeof data === "object" && typeof data.byteLength === "number") {
+      return arrayBufferToBase64(new Uint8Array(data));
+    }
+    return "";
+  }
+
+  // inputItemsFromAttachments translates the composer's pending attachment
+  // bag into the on-wire `items` array. We always emit Type="image" (the
+  // server treats "image" and "input_image" as equivalent — InputItem schema
+  // is unchanged). When .data is an ArrayBuffer it's base64-encoded here so
+  // the JSON.stringify upstream produces a normal string.
+  function inputItemsFromAttachments(attachments) {
+    return (attachments || []).map((a) => ({
+      type: "image",
+      mediaType: a.mediaType || a.media_type || "",
+      url: a.url || "",
+      data: encodeAttachmentData(a.data),
+      name: a.name || "",
     }));
   }
 
-  function startTurn(sessionId, text, images) {
+  function startTurn(sessionId, text, attachments) {
     return request(METHOD.turnStart, {
       ref: refForSession(sessionId),
       prompt: text || "",
-      items: inputItems(images),
+      items: inputItemsFromAttachments(attachments),
     });
   }
 
@@ -268,15 +326,29 @@
 
   // queueTurn enqueues a user message while a turn is in flight (kata 111a).
   // The daemon returns Conflict when no turn is active; callers should fall
-  // back to startTurn in that case.
-  function queueTurn(sessionId, text) {
-    return request(METHOD.turnQueue, { ref: refForSession(sessionId), text: text || "" });
+  // back to startTurn in that case. Optional attachments (kata v80q) ride
+  // along the queued entry so the eventually-popped user turn still has its
+  // images.
+  function queueTurn(sessionId, text, attachments) {
+    return request(METHOD.turnQueue, {
+      ref: refForSession(sessionId),
+      text: text || "",
+      items: inputItemsFromAttachments(attachments),
+    });
   }
 
   // drainAsSteer drains the daemon's input queue into a single STEERING
-  // injection on the active turn (kata 0bq1). Rejected when the queue is
-  // empty or no turn is active.
-  function drainAsSteer(sessionId) {
+  // injection on the active turn (kata 0bq1). When the caller has extra
+  // text/attachments to merge into the drain (kata v80q), we first queue
+  // them so the daemon's drain pass includes the bytes. Then we issue
+  // turn/drainAsSteer. Rejected when the queue is empty or no turn is
+  // active.
+  async function drainAsSteer(sessionId, text, attachments) {
+    const hasText = !!(text && String(text).trim());
+    const hasAttachments = !!(attachments && attachments.length > 0);
+    if (hasText || hasAttachments) {
+      await queueTurn(sessionId, text || "", attachments || []);
+    }
     return request(METHOD.turnDrainAsSteer, { ref: refForSession(sessionId) });
   }
 

@@ -3308,12 +3308,20 @@ func (s *WebServer) renderInputStrip(w http.ResponseWriter, r *http.Request, id 
 	}
 }
 
-// sendRequest is the JSON body accepted by POST /s/<id>/send. The shape is
-// wire-compatible with the daemon's server.InputRequest, so we forward by
-// re-marshaling this struct directly.
+// sendRequest is the JSON body accepted by POST /s/<id>/send. Two shapes
+// coexist:
+//
+//   - Legacy `images: []`  — agent.ImageAttachment-shaped, base64 in `.data`.
+//   - Canonical `items: []` — appwire.InputItem-shaped (kata v80q), used by
+//     the browser composer-attachments pipeline. Image entries carry their
+//     bytes as a base64-encoded `data` field that Go's json unmarshals into
+//     `[]byte` automatically.
+//
+// Both shapes are merged into the same TurnStart Items list below.
 type sendRequest struct {
 	Text   string                  `json:"text"`
 	Images []agent.ImageAttachment `json:"images,omitempty"`
+	Items  []appwire.InputItem     `json:"items,omitempty"`
 }
 
 // Per-request limits for image attachments. The browser-side cap is 8 MB per
@@ -3332,14 +3340,25 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	// Match the daemon's validation: at least one of text or images is required.
-	if body.Text == "" && len(body.Images) == 0 {
+	// Match the daemon's validation: at least one of text, images, or items
+	// is required. Either of the two attachment shapes (legacy `images` or
+	// kata v80q `items`) counts as content.
+	if body.Text == "" && len(body.Images) == 0 && len(body.Items) == 0 {
 		http.Error(w, "text or images required", http.StatusBadRequest)
 		return
 	}
 	for i, img := range body.Images {
 		if len(img.Data) > sendMaxImageBytes {
 			http.Error(w, fmt.Sprintf("image[%d] %q exceeds %d-byte limit", i, img.Name, sendMaxImageBytes), http.StatusRequestEntityTooLarge)
+			return
+		}
+	}
+	for i, it := range body.Items {
+		// Same per-image size cap applies to the v80q items shape; the
+		// daemon's Data field is []byte and we want a consistent gate
+		// regardless of which wire shape the browser picked.
+		if len(it.Data) > sendMaxImageBytes {
+			http.Error(w, fmt.Sprintf("items[%d] %q exceeds %d-byte limit", i, it.Name, sendMaxImageBytes), http.StatusRequestEntityTooLarge)
 			return
 		}
 	}
@@ -3402,6 +3421,10 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 			Name:      img.Name,
 		})
 	}
+	// Append the v80q items shape directly. Go's json unmarshal already
+	// base64-decoded the `data` field into the []byte we hand to the
+	// daemon, so no further re-encoding is needed here.
+	turnParams.Items = append(turnParams.Items, body.Items...)
 	startTurn := func(forceResume bool) error {
 		if forceResume {
 			if !isLocalRouteID(id) {
@@ -3509,24 +3532,35 @@ func (s *WebServer) handleSteer(w http.ResponseWriter, r *http.Request, id strin
 
 // queueRequest is the JSON body for POST /s/<id>/queue (kata 111a). Queues a
 // user message to be drained as a fresh user turn after the active turn
-// completes; the daemon rejects the call when no turn is in flight.
+// completes; the daemon rejects the call when no turn is in flight. Items
+// (kata v80q) carry optional image attachments alongside the text — the
+// daemon's TurnQueue handler routes them through queueWithImagesFunc so
+// the eventual drained user turn preserves the image bytes.
 type queueRequest struct {
-	Text string `json:"text"`
+	Text  string              `json:"text"`
+	Items []appwire.InputItem `json:"items,omitempty"`
 }
 
 // handleQueue forwards a turn/queue request to the live daemon for the given
 // session. Unlike /send, queueing requires the session to be processing — the
 // daemon returns Conflict when idle, which we surface as 409.
 func (s *WebServer) handleQueue(w http.ResponseWriter, r *http.Request, id string) {
+	r.Body = http.MaxBytesReader(w, r.Body, sendMaxRequestBytes)
 	var body queueRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	body.Text = strings.TrimSpace(body.Text)
-	if body.Text == "" {
-		http.Error(w, "text required", http.StatusBadRequest)
+	if body.Text == "" && len(body.Items) == 0 {
+		http.Error(w, "text or items required", http.StatusBadRequest)
 		return
+	}
+	for i, it := range body.Items {
+		if len(it.Data) > sendMaxImageBytes {
+			http.Error(w, fmt.Sprintf("items[%d] %q exceeds %d-byte limit", i, it.Name, sendMaxImageBytes), http.StatusRequestEntityTooLarge)
+			return
+		}
 	}
 	if !s.isLive(id) {
 		http.NotFound(w, r)
@@ -3542,18 +3576,54 @@ func (s *WebServer) handleQueue(w http.ResponseWriter, r *http.Request, id strin
 		http.NotFound(w, r)
 		return
 	}
-	if err := source.QueueTurn(r.Context(), appwire.TurnQueueParams{Ref: ref, Text: body.Text}); err != nil {
+	if err := source.QueueTurn(r.Context(), appwire.TurnQueueParams{Ref: ref, Text: body.Text, Items: body.Items}); err != nil {
 		writeSessionActionError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// drainAsSteerRequest is the JSON body accepted by POST /s/<id>/drain-as-steer.
+// All fields are optional — a body-less request matches the kata 0bq1
+// classic drain shape. When Text or Items are set (kata v80q), the handler
+// first queues them so the daemon's drain pass picks up the new entries
+// alongside whatever was already queued, then issues the drain-as-steer RPC.
+type drainAsSteerRequest struct {
+	Text  string              `json:"text,omitempty"`
+	Items []appwire.InputItem `json:"items,omitempty"`
+}
+
 // handleDrainAsSteer forwards a turn/drainAsSteer request (kata 0bq1 force-
 // steer combined action). Drains the daemon's input queue into a single
 // STEERING injection on the in-flight turn. Rides on the Steer capability;
 // the daemon returns Conflict when idle or when the queue is empty.
+//
+// When the request body carries Text or Items (kata v80q image-attachment
+// drain), we queue them first via turn/queue so the daemon's drain pass
+// picks up the new bytes along with whatever was already in the queue.
 func (s *WebServer) handleDrainAsSteer(w http.ResponseWriter, r *http.Request, id string) {
+	r.Body = http.MaxBytesReader(w, r.Body, sendMaxRequestBytes)
+	var body drainAsSteerRequest
+	// Empty bodies are valid (legacy classic drain). json.NewDecoder errors
+	// only when the body has content that can't be parsed — silently
+	// tolerate EOF / empty so the no-body path keeps working.
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			// Only reject if the body wasn't empty. io.EOF from a zero
+			// Content-Length-but-present body is normal; surface anything
+			// else as a 400.
+			if err.Error() != "EOF" {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+	}
+	for i, it := range body.Items {
+		if len(it.Data) > sendMaxImageBytes {
+			http.Error(w, fmt.Sprintf("items[%d] %q exceeds %d-byte limit", i, it.Name, sendMaxImageBytes), http.StatusRequestEntityTooLarge)
+			return
+		}
+	}
 	if !s.isLive(id) {
 		http.NotFound(w, r)
 		return
@@ -3567,6 +3637,22 @@ func (s *WebServer) handleDrainAsSteer(w http.ResponseWriter, r *http.Request, i
 	if err != nil {
 		http.NotFound(w, r)
 		return
+	}
+	// Pre-drain queue step: if the caller supplied text/items, push them
+	// onto the queue first so the daemon's drain pass sees them too. This
+	// keeps the wire shape of drain-as-steer itself unchanged (still no
+	// body) while letting the browser submit a single combined drain
+	// request from a composer that has unsent text + image bytes.
+	hasText := strings.TrimSpace(body.Text) != ""
+	if hasText || len(body.Items) > 0 {
+		if err := source.QueueTurn(r.Context(), appwire.TurnQueueParams{
+			Ref:   ref,
+			Text:  strings.TrimSpace(body.Text),
+			Items: body.Items,
+		}); err != nil {
+			writeSessionActionError(w, r, err)
+			return
+		}
 	}
 	if err := source.DrainAsSteer(r.Context(), appwire.TurnDrainAsSteerParams{Ref: ref}); err != nil {
 		writeSessionActionError(w, r, err)
