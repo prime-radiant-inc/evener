@@ -3599,3 +3599,163 @@ func TestSession_QueuePreview_FirstLineTruncated_FIFO(t *testing.T) {
 		}
 	}
 }
+
+// kata 3xbh: when the model API call fails mid-session and retries are
+// exhausted, ProcessInput must return the provider error to the caller
+// rather than swallow it and return ("", nil). Toil and other callers cannot
+// distinguish "agent finished" from "provider died" otherwise.
+func TestSession_ProvideErrorReturnsErrorToCaller(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	// Adapter that returns a non-retryable stream-open error mimicking the
+	// gpt-5.4 "failed on both endpoints" production failure: the provider
+	// stream cannot be opened at all.
+	f := &streamingAdapter{
+		name: "openai",
+		streamErr: llm.NewStreamError("openai",
+			`openai: model "gpt-5.4" failed on both endpoints — `+
+				`/v1/responses: empty stream (model not supported); `+
+				`/v1/chat/completions: openai error (status=403)`),
+	}
+	c.Register(f)
+
+	// Zero retries so the test runs fast: one attempt, fail, propagate.
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		LLMRetryPolicy: &policy,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := sess.ProcessInput(ctx, "hi", nil)
+	if err == nil {
+		t.Fatalf("ProcessInput: got nil error, want provider error (got output %q)", out)
+	}
+	// The caller needs enough context to identify the failure as a provider
+	// error, not an agent-quiescence. The wrapper must mention "provider" so
+	// callers (e.g. toil) can pattern-match without parsing adapter-specific
+	// error message formats.
+	msg := err.Error()
+	if !strings.Contains(strings.ToLower(msg), "provider") {
+		t.Fatalf("ProcessInput error message does not contain \"provider\": %q", msg)
+	}
+	// And the original adapter detail must still be reachable via Unwrap so
+	// callers that want to log the underlying cause can still get it.
+	if !strings.Contains(msg, "failed on both endpoints") && !strings.Contains(msg, "openai") {
+		t.Fatalf("ProcessInput error message does not retain adapter detail: %q", msg)
+	}
+	// The underlying llm.Error must remain reachable via errors.As so callers
+	// inspecting status codes / provider names continue to work.
+	var le llm.Error
+	if !errors.As(err, &le) {
+		t.Fatalf("ProcessInput error does not unwrap to llm.Error: %v", err)
+	}
+}
+
+// kata 3xbh: agent quiescence — the agent calls communicate and finishes
+// its turn — must still return (output, nil). This is the today-success
+// case; do not break it.
+func TestSession_AgentQuiescenceReturnsNilError(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	comm := communicateCall("c1", "done")
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(comm)
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := sess.ProcessInput(ctx, "hi", nil)
+	if err != nil {
+		t.Fatalf("ProcessInput: got error %v (output %q), want nil error", err, out)
+	}
+	if strings.TrimSpace(out) != "done" {
+		t.Fatalf("ProcessInput output: got %q want %q", out, "done")
+	}
+}
+
+// kata 3xbh: when ProcessInput returns the provider error to the caller, the
+// transcript MUST still record the api_call error entry. This preserves the
+// existing observability surface — debug-run, dashboards, the session viewer
+// all rely on the per-round api_call records.
+func TestSession_ProviderErrorStillRecordsTranscriptEntry(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &streamingAdapter{
+		name: "openai",
+		streamErr: llm.NewStreamError("openai",
+			`openai: model "gpt-5.4" failed on both endpoints — `+
+				`/v1/responses: empty stream (model not supported); `+
+				`/v1/chat/completions: openai error (status=403)`),
+	}
+	c.Register(f)
+
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:       dir,
+		LLMRetryPolicy: &policy,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "hi", nil)
+	if err == nil {
+		t.Fatal("ProcessInput: got nil error, want provider error")
+	}
+	tpath := sess.TranscriptPath()
+	sess.Close()
+	if tpath == "" {
+		t.Fatal("TranscriptPath is empty; session lacks state dir")
+	}
+
+	data, rerr := ReadTranscriptFull(tpath)
+	if rerr != nil {
+		t.Fatalf("ReadTranscriptFull: %v", rerr)
+	}
+	// Find the api_call entry that recorded the provider failure.
+	var found *TranscriptAPICall
+	for i := range data.APICalls {
+		if data.APICalls[i].Error != "" {
+			found = &data.APICalls[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("transcript has no api_call entry with Error set; got %d api_calls", len(data.APICalls))
+	}
+	if !strings.Contains(found.Error, "failed on both endpoints") &&
+		!strings.Contains(found.Error, "openai") {
+		t.Fatalf("api_call.Error does not contain provider failure text: %q", found.Error)
+	}
+}

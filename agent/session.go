@@ -2110,7 +2110,13 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				s.state = SessionIdle
 			}
 			s.mu.Unlock()
-			return "", err
+			// Wrap with "provider error" so callers (toil, runners) can
+			// distinguish a provider/LLM failure from agent quiescence
+			// (empty output + nil err) without parsing adapter-specific
+			// error message formats. The original error is preserved via
+			// errors.Unwrap for callers that need the underlying detail
+			// (kata 3xbh).
+			return "", fmt.Errorf("provider error: %w", err)
 		}
 
 		// Accumulate usage and record exact input token count for pressure calculation.
