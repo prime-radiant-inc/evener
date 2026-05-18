@@ -36,7 +36,7 @@ Out of scope:
 One coordinator per renderer, structured as a thin wrapper inside the existing appwire client.
 
 - **Web**: `window.SerfAppwire` (in `cmd/serf-hub/assets/appwire.js`) gains a new internal helper `optimisticCall(method, params, intent)`. Every UI callsite that today calls `SerfAppwire.send` / `queue` / `steer` / `drainAsSteer` is rewritten to go through `optimisticCall`. The four named functions on the public API become thin facades over `optimisticCall`.
-- **TUI**: `internal/appwire.Client` (Go) gains the same shape. The renderer (hub_model + hub_transcript_reducer) consumes a tiny "pending message" interface to plumb the visual state.
+- **TUI**: `internal/appwire.Client` (Go) gains the same shape. The wrapper lives inside `TurnStart`, `TurnSteer`, `TurnQueue`, `TurnDrainAsSteer` — those are the existing public methods, no rename. The renderer (hub_model + hub_transcript_reducer) consumes a tiny "pending message" interface to plumb the visual state.
 
 `optimisticCall` owns the **call lifecycle**, not the event-matching:
 
@@ -49,7 +49,7 @@ Reject and timeout are independent triggers; first to fire wins. No double-fail.
 
 Event matching lives **inside the renderer's existing notification path**, not inside the wrapper and not in a parallel subscriber. The renderer's notification handler already performs session/ref filtering (`notificationMatches`) and hydration buffering (`pendingNotifications` queue replayed after hydration) before applying authoritative updates. Running a second raw subscriber would let a pending entry confirm against a different session's notification, or remove the placeholder *before* the buffered authoritative replay had a chance to render the real item. Both renderers therefore reconcile from the same single notification path:
 
-- **Web**: inside `deliverNotification(method, params)` in `renderer.js`, **after** the authoritative reducer update completes, call `pending.tryReconcile(method, params)`. The hydration-replay loop (`while (pendingNotifications.length > 0)` after hydration) does the same — each replayed notification first goes through `deliverNotification`, then `pending.tryReconcile`. There is no second `onNotification` handler; the wrapper writes nothing to the SerfAppwire bus.
+- **Web**: `pending.tryReconcile(method, params)` is called **inside** `deliverNotification(method, params)` in `renderer.js`, **after** the authoritative reducer update completes — exactly one reconciliation site. The hydration-replay loop (`while (pendingNotifications.length > 0)` after hydration) only calls `deliverNotification`, so each replayed notification gets exactly one `tryReconcile` for free via that single site. There is no second `onNotification` handler; the wrapper writes nothing to the SerfAppwire bus.
 - **TUI**: there is only one consumer of `appwire.Client.Notifications()` — the existing `hubModel.Update` path that pumps notifications into the reducer. After the reducer applies the notification, call `pending.tryReconcile(notification)`. No new subscription.
 
 The pending registry per renderer has four operations: `register`, `confirm`, `fail`, `tryReconcile`. Everything else — rendering, animation, retry-button wiring — is the renderer's own concern.
@@ -151,7 +151,7 @@ Tests must exercise the real `SerfAppwire.steer` (and siblings) facades — thos
 
 `cmd/serf-tui/optimistic_test.go`:
 
-Tests exercise the real `appwire.Client.Steer` (and siblings) — the wrapper logic lives inside those methods. Inject a fake `appwire.Transport` whose `Send` enqueues outgoing requests for assertion and whose `Recv` returns `appwire.Message` values the test produces. Notifications cannot be written to `client.Notifications()` directly — the backing channel is private — so the test delivers notifications by returning an `appwire.NotificationMessage(...)` from `transport.Recv` while `client.Start(ctx)` is running. The client pumps it onto its public notifications channel through the real code path; the TUI consumer reads from there and applies it through the reducer; `pending.tryReconcile` runs afterwards.
+Tests exercise the real `appwire.Client.TurnSteer` (and siblings) — the wrapper logic lives inside those methods. Inject a fake `appwire.Transport` whose `Send` enqueues outgoing requests for assertion and whose `Recv` returns `appwire.Message` values the test produces. Notifications cannot be written to `client.Notifications()` directly — the backing channel is private — so the test delivers notifications by returning an `appwire.NotificationMessage(...)` from `transport.Recv` while `client.Start(ctx)` is running. The client pumps it onto its public notifications channel through the real code path; the TUI consumer reads from there and applies it through the reducer; `pending.tryReconcile` runs afterwards.
 
 - Reject: fake transport replies to the steer request with an `Unavailable` error message. Drive `hubModel` to issue a steer. Assert the reducer produces a chatMessage with `pending=true`, then `failed=true` with a non-empty `failedReason`.
 - Success-then-event: fake transport replies success; the test then enqueues a `STEERING_INJECTED` notification via `transport.Recv` returning `appwire.NotificationMessage(...)`. Assert pending → reconciled (no `pending`, no `failed`).
