@@ -46,6 +46,62 @@
     });
   }
 
+  // nextMarker returns max(existing item.marker, 0) + 1. Monotonic — never
+  // reused. Removing chip 2 from [1,2,3] leaves [1,3]; the next attach gets
+  // 4. The "leave gaps" decision keeps existing marker references stable in
+  // the prose the user has already typed.
+  function nextMarker(pendingState) {
+    let max = 0;
+    for (const it of pendingState.items || []) {
+      if (it && typeof it.marker === "number" && it.marker > max) max = it.marker;
+    }
+    return max + 1;
+  }
+
+  // insertAtCursor splices `str` into textareaEl.value at the current
+  // selection (replacing any selected range) and moves the cursor to just
+  // after the inserted text. No-op if textareaEl is falsy.
+  function insertAtCursor(textareaEl, str) {
+    if (!textareaEl) return;
+    const v = textareaEl.value || "";
+    let s = textareaEl.selectionStart;
+    let e = textareaEl.selectionEnd;
+    if (typeof s !== "number") s = v.length;
+    if (typeof e !== "number") e = s;
+    textareaEl.value = v.slice(0, s) + str + v.slice(e);
+    const pos = s + str.length;
+    try { textareaEl.selectionStart = pos; textareaEl.selectionEnd = pos; } catch (_) {}
+  }
+
+  // stripMarker removes the FIRST literal occurrence of `[image N]` from
+  // textareaEl.value. Literal string search (not regex) avoids escaping
+  // surprises. If the cursor sat past the deletion point, shift it back by
+  // the marker's length so it stays anchored to the same character.
+  function stripMarker(textareaEl, n) {
+    if (!textareaEl) return;
+    const needle = "[image " + n + "]";
+    const v = textareaEl.value || "";
+    const idx = v.indexOf(needle);
+    if (idx < 0) return;
+    textareaEl.value = v.slice(0, idx) + v.slice(idx + needle.length);
+    const cur = textareaEl.selectionStart;
+    if (typeof cur === "number" && cur > idx) {
+      const shifted = Math.max(idx, cur - needle.length);
+      try { textareaEl.selectionStart = shifted; textareaEl.selectionEnd = shifted; } catch (_) {}
+    }
+  }
+
+  // assignMarkerAndInsert is the shared post-push step for paste / drop /
+  // file-picker: stamp item.marker, then insert "[image N]" at the cursor
+  // of pendingState.__textarea (if wired). Skips insertion when __textarea
+  // is unset (e.g. a chip-only consumer) but still stamps the marker so
+  // chip remove can find the substring it would have inserted.
+  function assignMarkerAndInsert(pendingState, item) {
+    const n = nextMarker(pendingState);
+    item.marker = n;
+    insertAtCursor(pendingState.__textarea, "[image " + n + "]");
+  }
+
   // Pull every image File off a ClipboardEvent. Text portions are left for
   // the browser's default paste handler so "see this:" + screenshot still
   // inserts the prose alongside the chip.
@@ -71,6 +127,10 @@
   function attachComposerImageHandlers(textareaEl, pendingState) {
     if (!textareaEl || !pendingState) return;
     if (!Array.isArray(pendingState.items)) pendingState.items = [];
+    // Stash the textarea so drop / file-picker ingest paths (which only
+    // hand us an anchor element) and the chip remove handler can find it
+    // for marker insertion / stripping (kata 2stz).
+    pendingState.__textarea = textareaEl;
     const window = textareaEl.ownerDocument.defaultView;
 
     textareaEl.addEventListener("paste", async (e) => {
@@ -85,14 +145,16 @@
           const { blob, width, height } = await reencodeToPng(window, file);
           const buf = await blob.arrayBuffer();
           const ts = Date.now();
-          pendingState.items.push({
+          const item = {
             type: "image",
             mediaType: "image/png",
             data: buf,
             name: "paste-" + ts + ".png",
             width,
             height,
-          });
+          };
+          pendingState.items.push(item);
+          assignMarkerAndInsert(pendingState, item);
           attached++;
         } catch (err) {
           // Best-effort: drop the failing image silently. The user can
@@ -147,7 +209,10 @@
       remove.setAttribute("data-attachment-remove", "");
       remove.textContent = "×";
       remove.addEventListener("click", () => {
-        pendingState.items.splice(idx, 1);
+        const gone = pendingState.items.splice(idx, 1)[0];
+        if (gone && typeof gone.marker === "number") {
+          stripMarker(pendingState.__textarea, gone.marker);
+        }
         renderAttachmentChips(containerEl, pendingState);
       });
       chip.appendChild(remove);
@@ -182,14 +247,16 @@
         const { blob, width, height } = await reencodeToPng(window, file);
         const buf = await blob.arrayBuffer();
         const ts = Date.now();
-        pendingState.items.push({
+        const item = {
           type: "image",
           mediaType: "image/png",
           data: buf,
           name: file.name || ("attachment-" + ts + ".png"),
           width,
           height,
-        });
+        };
+        pendingState.items.push(item);
+        assignMarkerAndInsert(pendingState, item);
       } catch (err) {
         rejected.push((file && file.name) || "decode-failed");
       }
