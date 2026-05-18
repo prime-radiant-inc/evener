@@ -1326,16 +1326,24 @@
         }
       });
 
-      // Wire the shared paste helper (kata r6a1). It owns its own
-      // pendingState (this.composerPasteState) and renders chips into the
-      // [data-composer-attachments] container, kept separate from the
-      // legacy data-attachments pipeline above so the existing submit/fetch
-      // path is untouched. v80q will unify the two stores when it rewires
-      // submit to read from the new shape.
+      // Wire the shared composer-attachments helpers (paste from r6a1; drag-
+      // drop + file picker from 65mm). All three surfaces write into the
+      // same composerPasteState.items bag — the (forthcoming v80q) submit
+      // wiring will read from it and unify with the legacy data-attachments
+      // pipeline above. Until then, the legacy drag-drop / file-picker
+      // wiring earlier in this method continues feeding this.pendingAttachments
+      // so the existing submit/fetch path remains untouched. v80q will
+      // collapse the two stores.
       if (window.SerfComposerAttachments) {
         if (!this.composerPasteState) this.composerPasteState = { items: [] };
         const pasteContainer = form.querySelector("[data-composer-attachments]");
         window.SerfComposerAttachments.attachComposerImageHandlers(ta, this.composerPasteState);
+        if (dropZone) {
+          window.SerfComposerAttachments.attachComposerDropHandlers(dropZone, this.composerPasteState);
+        }
+        if (attachTrigger && filePicker) {
+          window.SerfComposerAttachments.attachComposerFilePickerHandlers(attachTrigger, filePicker, this.composerPasteState);
+        }
         if (pasteContainer) {
           window.SerfComposerAttachments.renderAttachmentChips(pasteContainer, this.composerPasteState);
         }

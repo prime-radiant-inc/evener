@@ -35,8 +35,15 @@
         <span class="chip-caret">▾</span>
       </button>
     </div>
-    <textarea class="spawn-input" name="prompt" placeholder="describe the prompt…" autofocus>{{.DefaultPrompt}}</textarea>
+    <div class="spawn-input-wrap" data-drop-zone>
+      <textarea class="spawn-input" name="prompt" placeholder="describe the prompt…" autofocus>{{.DefaultPrompt}}</textarea>
+    </div>
+    <div class="spawn-attach-row">
+      <button type="button" class="spawn-attach-btn" data-attach-trigger aria-label="attach image" title="attach image">📎</button>
+      <input type="file" data-file-picker accept="image/*" multiple hidden>
+    </div>
     <div class="composer-attachments" data-composer-attachments></div>
+    <div class="composer-attachment-error" data-attachment-error hidden></div>
     <input type="hidden" name="harness" value="{{.DefaultHarness}}">
     {{range .Harnesses}}<input type="hidden" data-harness-option value="{{.ID}}" data-label="{{.Label}}">{{end}}
     <input type="hidden" name="model" value="{{.DefaultModelValue}}">

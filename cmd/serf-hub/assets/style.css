@@ -392,6 +392,16 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 
 .input-card { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 6px; padding: 12px 14px; min-height: 80px; transition: border-color 0.15s; }
 .input-card.drag-over { border-color: var(--state-processing); background: var(--bg); }
+/* kata 65mm: drop-active is set by the shared composer-attachments helper
+   on dragenter (alongside the legacy drag-over class set by renderer.js's
+   addFiles wiring). Visually subtle so dropping onto the existing
+   .input-card keeps its border style; the dashed outline cues "drop here"
+   without recoloring the whole composer. */
+.input-card.drop-active,
+.spawn-input-wrap.drop-active { outline: 2px dashed var(--accent, var(--state-processing)); outline-offset: -2px; }
+.composer-attachment-error { color: var(--state-danger, #c8553d); font-size: 11px; padding: 4px 0; }
+.composer-attachment-error:empty,
+.composer-attachment-error[hidden] { display: none; }
 .message-input { width: 100%; min-height: 36px; max-height: 50vh; background: transparent; border: none; resize: none; color: var(--text); font: inherit; outline: none; line-height: 1.5; overflow-y: auto; }
 
 .input-controls { display: flex; align-items: center; gap: 8px; padding: 8px 0 0; flex-wrap: wrap; }
@@ -572,8 +582,16 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .chip-picker { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 6px; padding: 4px 0; min-width: 220px; box-shadow: 0 8px 24px rgba(0,0,0,0.2); z-index: 50; }
 .chip-picker-option { padding: 6px 12px; cursor: pointer; color: var(--text); font-size: 12px; font-family: ui-monospace, "SFMono-Regular", monospace; }
 .chip-picker-option:hover { background: var(--rule); }
-.spawn-input { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 8px; padding: 18px; min-height: 160px; color: var(--text); font: inherit; font-size: 14px; line-height: 1.5; outline: none; resize: vertical; }
+.spawn-input-wrap { display: block; }
+.spawn-input { width: 100%; box-sizing: border-box; background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 8px; padding: 18px; min-height: 160px; color: var(--text); font: inherit; font-size: 14px; line-height: 1.5; outline: none; resize: vertical; }
 .spawn-input:focus { border-color: var(--accent); }
+/* kata 65mm: file-picker affordance for the spawn form. Matches the
+   inline send-style button family so "📎" sits visually adjacent to the
+   spawn submit. Keyboard-reachable as a real <button>. */
+.spawn-attach-row { display: flex; gap: 8px; }
+.spawn-attach-btn { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 4px; color: var(--text); font: inherit; font-size: 13px; cursor: pointer; }
+.spawn-attach-btn:hover { background: var(--bg); }
+.spawn-attach-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .spawn-form .diagnostic { margin: 0; max-width: none; }
 .spawn-advanced { color: var(--text-muted); font-size: 12px; }
 .spawn-advanced summary { cursor: pointer; padding: 5px 0; }

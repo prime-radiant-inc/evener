@@ -1,8 +1,9 @@
-// composer-attachments.js — shared paste-to-image helper used by both the
+// composer-attachments.js — shared image-attachment helper used by both the
 // session workspace composer (renderer.js) and the /new spawn form
-// (spawn.js). Owns paste-event handling and chip rendering for a
-// reference-passable pendingState object of the shape {items: []}. Each
-// item: {type:"image", mediaType:"image/png", data:ArrayBuffer, name, width, height}.
+// (spawn.js). Owns paste / drag-drop / file-picker gesture handling and
+// chip rendering for a reference-passable pendingState object of the shape
+// {items: []}. Each item: {type:"image", mediaType:"image/png",
+// data:ArrayBuffer, name, width, height}.
 //
 // Encoding choice: at this layer we keep image bytes as ArrayBuffer (NOT
 // base64). Browsers can read clipboard images straight into ArrayBuffer via
@@ -10,8 +11,10 @@
 // avoids a 33% memory blow-up during composition and a needless re-encode
 // when the same image is dropped and removed without sending.
 //
-// Scope intentionally narrow (kata r6a1): paste only. Drag-drop + file
-// picker live in 65mm. Submit/fetch lives in v80q.
+// Scope: paste (kata r6a1), drag-drop + file picker (kata 65mm). All three
+// surfaces funnel through the same canvas re-encode + pendingState push so
+// the (forthcoming v80q) submit handler can ship one unified bag of bytes.
+// Submit/fetch wiring lives in v80q.
 (function () {
   "use strict";
 
@@ -145,8 +148,143 @@
     });
   }
 
+  // Shared image-file acceptor used by drop + file-picker. Splits a FileList
+  // into images and rejections, re-encodes each image to PNG, and pushes the
+  // resulting {type:"image", ...} entries onto pendingState.items. If any
+  // non-image was present, surfaces ONE banner (text content updated, not
+  // appended) on the first [data-attachment-error] element reachable from
+  // anchorEl — searched as a sibling/descendant of the enclosing form-ish
+  // ancestor. After all images have been re-encoded, runs the same chip
+  // re-render that the paste handler does.
+  async function ingestFiles(anchorEl, pendingState, fileList) {
+    if (!pendingState) return;
+    if (!Array.isArray(pendingState.items)) pendingState.items = [];
+    const window = anchorEl.ownerDocument.defaultView;
+    const files = Array.from(fileList || []);
+    const images = [];
+    const rejected = [];
+    for (const f of files) {
+      if (f && typeof f.type === "string" && f.type.indexOf("image/") === 0) {
+        images.push(f);
+      } else {
+        rejected.push(f && f.name ? f.name : "unknown");
+      }
+    }
+    for (const file of images) {
+      try {
+        const { blob, width, height } = await reencodeToPng(window, file);
+        const buf = await blob.arrayBuffer();
+        const ts = Date.now();
+        pendingState.items.push({
+          type: "image",
+          mediaType: "image/png",
+          data: buf,
+          name: file.name || ("attachment-" + ts + ".png"),
+          width,
+          height,
+        });
+      } catch (err) {
+        rejected.push((file && file.name) || "decode-failed");
+      }
+    }
+    surfaceRejections(anchorEl, rejected);
+    // Re-render any chip containers bound to this state.
+    for (const container of pendingState.__containers || []) {
+      renderAttachmentChips(container, pendingState);
+    }
+  }
+
+  // Locate the [data-attachment-error] banner element nearest to anchorEl.
+  // Walks up ancestors looking for a descendant match — the workspace +
+  // spawn templates place the banner inside the same form/container as the
+  // drop zone / file picker, so a closest+querySelector pair finds it.
+  function findErrorBanner(anchorEl) {
+    if (!anchorEl) return null;
+    const direct = anchorEl.querySelector && anchorEl.querySelector("[data-attachment-error]");
+    if (direct) return direct;
+    let node = anchorEl;
+    while (node && node.parentElement) {
+      node = node.parentElement;
+      const hit = node.querySelector && node.querySelector("[data-attachment-error]");
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  function surfaceRejections(anchorEl, rejected) {
+    const banner = findErrorBanner(anchorEl);
+    if (!banner) return;
+    if (!rejected || rejected.length === 0) {
+      banner.textContent = "";
+      banner.hidden = true;
+      return;
+    }
+    const names = rejected.filter(Boolean).join(", ");
+    const msg = rejected.length === 1
+      ? "Not an image: " + names
+      : "Skipped " + rejected.length + " non-image files: " + names;
+    banner.textContent = msg;
+    banner.hidden = false;
+  }
+
+  // attachComposerDropHandlers wires dragenter / dragover / dragleave / drop
+  // listeners onto dropZoneEl so dropping image files into the composer area
+  // appends them to pendingState.items. dragenter adds a .drop-active class
+  // for visual feedback; dragleave / drop remove it. Non-image files are
+  // rejected with an inline banner via surfaceRejections.
+  function attachComposerDropHandlers(dropZoneEl, pendingState) {
+    if (!dropZoneEl || !pendingState) return;
+    if (!Array.isArray(pendingState.items)) pendingState.items = [];
+
+    // dragover MUST preventDefault for the drop event to fire. dragenter
+    // adds the visual class; dragleave removes it.
+    dropZoneEl.addEventListener("dragenter", (e) => {
+      e.preventDefault();
+      dropZoneEl.classList.add("drop-active");
+    });
+    dropZoneEl.addEventListener("dragover", (e) => {
+      e.preventDefault();
+    });
+    dropZoneEl.addEventListener("dragleave", (e) => {
+      // Only strip the class when truly leaving (e.target === dropZone or
+      // its relatedTarget is outside the zone). For simple JSDOM dispatch
+      // there's no relatedTarget so we just unconditionally remove — the
+      // dragenter handler restores it if the cursor re-enters.
+      dropZoneEl.classList.remove("drop-active");
+    });
+    dropZoneEl.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      dropZoneEl.classList.remove("drop-active");
+      const dt = e.dataTransfer;
+      const fileList = (dt && dt.files) || [];
+      await ingestFiles(dropZoneEl, pendingState, fileList);
+    });
+  }
+
+  // attachComposerFilePickerHandlers wires the visible buttonEl to trigger
+  // the hidden <input type=file> fileInputEl, then handles its change event
+  // to ingest the picked files via the same path as drop. The input is
+  // reset to "" after each change so re-picking the same file re-fires.
+  function attachComposerFilePickerHandlers(buttonEl, fileInputEl, pendingState) {
+    if (!buttonEl || !fileInputEl || !pendingState) return;
+    if (!Array.isArray(pendingState.items)) pendingState.items = [];
+    // Defensive: ensure accept hint is set. The template sets it but if a
+    // caller hands us a bare <input type=file> we still want image/* gating.
+    if (!fileInputEl.getAttribute("accept")) {
+      fileInputEl.setAttribute("accept", "image/*");
+    }
+    buttonEl.addEventListener("click", () => fileInputEl.click());
+    fileInputEl.addEventListener("change", async (e) => {
+      const files = (e.target && e.target.files) || fileInputEl.files || [];
+      await ingestFiles(fileInputEl, pendingState, files);
+      try { fileInputEl.value = ""; } catch (_) { /* JSDOM may resist */ }
+    });
+  }
+
   window.SerfComposerAttachments = {
     attachComposerImageHandlers,
+    attachComposerDropHandlers,
+    attachComposerFilePickerHandlers,
     renderAttachmentChips,
   };
 })();
