@@ -1454,6 +1454,19 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.Type == tea.KeyCtrlV || isAltVKey(msg) {
 		return m.handleClipboardPaste()
 	}
+	// Ctrl+Backspace removes the most recently added attachment chip
+	// (kata 5vxd). The TUI reserves this binding for the chip-remove
+	// affordance whenever the composer is the focused surface — modals
+	// and the command palette are handled earlier in this function so
+	// they still see the key. When no attachments are pending the
+	// binding is a deliberate no-op so the textarea doesn't suddenly
+	// delete a character when the user expected a chip removal.
+	if msg.Type == tea.KeyCtrlH {
+		if len(m.pendingAttachments) > 0 {
+			m.removePendingAttachment(len(m.pendingAttachments) - 1)
+		}
+		return m, nil
+	}
 	if msg.Paste {
 		if cmd, handled := m.handleBracketedPaste(string(msg.Runes)); handled {
 			return m, cmd

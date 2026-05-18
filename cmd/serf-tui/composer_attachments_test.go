@@ -77,6 +77,65 @@ func TestRemoveAttachmentDropsByIndex(t *testing.T) {
 	}
 }
 
+// TestCtrlBackspaceRemovesLastAttachment verifies that pressing
+// Ctrl+Backspace in the composer drops the most-recently-added
+// attachment chip without touching the rest. Kata 5vxd.
+func TestCtrlBackspaceRemovesLastAttachment(t *testing.T) {
+	m := newSessionHubModel(nil)
+	first := &PastedImage{Path: "/tmp/one.png", Width: 320, Height: 240}
+	second := &PastedImage{Path: "/tmp/two.png", Width: 1024, Height: 768}
+	m.pendingAttachments = []*PastedImage{first, second}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlH})
+	got := updated.(hubModel)
+
+	if n := len(got.pendingAttachments); n != 1 {
+		t.Fatalf("after Ctrl+Backspace len = %d, want 1", n)
+	}
+	if got.pendingAttachments[0] != first {
+		t.Fatalf("after Ctrl+Backspace pendingAttachments[0] = %+v, want first", got.pendingAttachments[0])
+	}
+}
+
+// TestCtrlBackspaceWithNoAttachmentsNoOp verifies that Ctrl+Backspace is
+// a no-op when there are no pending attachments and does not leak into
+// the textarea. Kata 5vxd.
+func TestCtrlBackspaceWithNoAttachmentsNoOp(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.session.setInputValue("hello")
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlH})
+	got := updated.(hubModel)
+
+	if n := len(got.pendingAttachments); n != 0 {
+		t.Fatalf("pendingAttachments len = %d, want 0", n)
+	}
+	if got.session.input.Value() != "hello" {
+		t.Fatalf("Ctrl+Backspace mutated textarea: %q, want %q", got.session.input.Value(), "hello")
+	}
+}
+
+// TestCtrlBackspaceDoesNotFireDuringPalette verifies that when the
+// command palette is open Ctrl+Backspace falls through to the palette
+// handler instead of removing an attachment. Kata 5vxd.
+func TestCtrlBackspaceDoesNotFireDuringPalette(t *testing.T) {
+	m := newSessionHubModel(nil)
+	first := &PastedImage{Path: "/tmp/one.png", Width: 320, Height: 240}
+	second := &PastedImage{Path: "/tmp/two.png", Width: 1024, Height: 768}
+	m.pendingAttachments = []*PastedImage{first, second}
+	m.openCommandPalette()
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlH})
+	got := updated.(hubModel)
+
+	if n := len(got.pendingAttachments); n != 2 {
+		t.Fatalf("pendingAttachments len = %d, want 2 (palette swallowed key)", n)
+	}
+	if got.commandPalette == nil {
+		t.Fatalf("commandPalette closed unexpectedly")
+	}
+}
+
 // fakeClipboardSourceForKeybind provides an in-memory image so Ctrl+V
 // pushes a real PastedImage onto pendingAttachments.
 func fakeClipboardSourceForKeybind(t *testing.T) ClipboardSource {

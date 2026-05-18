@@ -165,10 +165,13 @@ func (p composerPanel) View() string {
 
 // renderAttachmentChips renders a row of chips for the staged image
 // attachments. Each chip is "📎 <name> (WxH) [×]" so the user sees
-// what's queued and can remove individual entries by clicking [×].
+// what's queued. The header advertises Ctrl+Backspace as the way to
+// drop the most recent chip (kata 5vxd) — the [×] marker is still
+// rendered to signal the chip is removable.
 func renderAttachmentChips(atts []*PastedImage, styles tuiStyles) string {
 	var b strings.Builder
 	b.WriteString(styles.Section.Render("attachments"))
+	b.WriteString(styles.Muted.Render("  ctrl+backspace: drop last"))
 	b.WriteString("\n")
 	for _, att := range atts {
 		if att == nil {
