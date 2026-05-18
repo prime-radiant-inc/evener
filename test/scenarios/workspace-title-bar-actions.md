@@ -67,6 +67,90 @@ HUB=http://localhost:9180
      -d "{\"turn_id\":\"$turn\"}" "$HUB/s/$SID/interrupt"
    ```
 
+**2b. Interrupt with a queued message** (kata `0bq1` natural
+composition). Re-send a slow turn, queue one user message
+(via `POST /queue`), then interrupt. The queued message must
+survive the interrupt — after the cancelled turn settles back
+to idle, the daemon's outer ProcessInput loop pops the queue
+head and runs it as a fresh user turn:
+
+   ```bash
+   # Re-send a slow turn so we have a window to queue + interrupt.
+   curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
+     -d '{"text":"call exec_command with command=\"bash\" and args=[\"-c\",\"for i in 1 2 3 4 5 6 7 8 9 10; do echo step $i; sleep 2; done\"] then report"}' \
+     "$HUB/s/$SID/send" &
+   for i in $(seq 1 10); do
+     d=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID")
+     state=$(echo "$d" | python3 -c "import json,sys; print(json.load(sys.stdin).get('state'))")
+     turn=$(echo "$d" | python3 -c "import json,sys; print(json.load(sys.stdin).get('active_turn_id',''))")
+     [ "$state" = "processing" ] && break
+     sleep 1
+   done
+
+   # Queue a follow-up. capability check first:
+   curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" \
+     | python3 -c "import json,sys; d=json.load(sys.stdin); print('queue_cap=',d['capabilities'].get('queue'))"
+   # queue_cap= True
+   curl -s -i -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
+     -d '{"text":"after the loop, reply with the single word DONE"}' "$HUB/s/$SID/queue" | head -3
+   # HTTP 204
+
+   # Interrupt the in-flight turn.
+   curl -s -i -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
+     -d "{\"turn_id\":\"$turn\"}" "$HUB/s/$SID/interrupt" | head -3
+
+   # The cancelled turn drops to idle; the queued message should
+   # then run as a fresh user turn. Wait for the second turn to
+   # complete (count incremented by 1 vs the pre-queue baseline).
+   tc_baseline=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" \
+                 | python3 -c "import json,sys; print(json.load(sys.stdin)['turn_count'])")
+   for i in $(seq 1 60); do
+     d=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID")
+     state=$(echo "$d" | python3 -c "import json,sys; print(json.load(sys.stdin).get('state'))")
+     tc=$(echo "$d" | python3 -c "import json,sys; print(json.load(sys.stdin).get('turn_count'))")
+     [ "$state" = "idle" ] && [ "$tc" -gt "$tc_baseline" ] && break
+     sleep 2
+   done
+   echo "post-queue settled state=$state turn_count=$tc baseline=$tc_baseline"
+   # Confirm the queued text appears in the transcript as a USER turn
+   # AFTER the interrupted turn's cancellation marker:
+   TFILE=$(find ~/.local/state/serf/projects -name "$SID.transcript.jsonl")
+   python3 - <<EOF
+   import json
+   kinds = []
+   for line in open("$TFILE"):
+       j = json.loads(line)
+       t = j.get("turn", {})
+       k = t.get("kind", "")
+       if k in ("USER", "STEERING"):
+           texts = []
+           for c in t.get("message", {}).get("content", []):
+               if c.get("kind") == "text":
+                   texts.append(c.get("text", "")[:60])
+           kinds.append((k, " | ".join(texts)))
+   for k in kinds:
+       print(k)
+   EOF
+   # Expect to see a STEERING containing "The user interrupted the
+   # previous turn" followed by a USER entry containing "after the
+   # loop, reply with the single word DONE".
+   ```
+
+   **Expected**: queue POST returns 204 (kata `111a` capability
+   gating ensures `queue_cap=true` mid-turn). Interrupt cancels
+   the in-flight turn (state cycles processing → idle) but does
+   NOT drop the queued message: the daemon's outer ProcessInput
+   loop still pops the queue head on its next iteration and runs
+   it as a fresh user turn. `turn_count` increments by exactly
+   one (the queued message becomes a single new user turn,
+   independent of the cancelled one). The transcript shows the
+   cancellation STEERING immediately followed by the queued
+   USER entry. Falsification: queue POST returns 409 (would mean
+   the daemon dropped the Queue capability during the interrupt),
+   `turn_count` does not advance (queued message lost), or the
+   queued message appears as STEERING (would mean drainAsSteer
+   ran when it shouldn't have).
+
 3. **Wait for the turn to settle** (interrupt should land within
    a few seconds — see Expected). Then **compact**:
    ```bash

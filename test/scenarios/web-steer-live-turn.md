@@ -1,18 +1,25 @@
 # web-steer-live-turn: inject steering via the web UI mid-turn
 
-**What this covers**: kata `a08v`. The workspace exposes two paths to
-inject a steering message into the live model loop: the input-area
-`steer` button (`renderer.js:1131`) and the `/steer` palette command
-(`search.js:244`). Both POST to `/s/<id>/steer` (REST shim) or call
-appwire `turn/steer` and rely on `activeTurnId` being populated by
-the live stream. This scenario drives both paths against a real
-model and verifies the daemon writes a `STEERING` transcript entry,
-the conversation pane renders the steering divider
-(`renderer.js:989` `appendSteeringMessage`), and the model's next
-output is observably influenced. The jstest suite already covers
-button-empty / palette-no-active-turn rejection
-(`test-input-area.js`, `test-search-commands.js`); this is the
-server-side end-to-end counterpart.
+**What this covers**: kata `a08v` plus the post-kata-`111a`/`0bq1`
+button repurposing. The workspace exposes two paths to inject a
+steering message into the live model loop: the input-area
+"send as steer" button (formerly labelled "steer";
+`[data-steer-trigger]` in `renderer.js`) and the `/steer` palette
+command (`search.js`). Both POST to `/s/<id>/steer` (REST shim) or
+call appwire `turn/steer` and rely on `activeTurnId` being
+populated by the live stream.
+
+This scenario covers the **classic single-text steer path**: the
+input queue is empty, the user types into the textarea, and the
+button takes the "no queue, just steer" branch in
+`renderer.js` `bindInputForm`. That branch is unchanged from kata
+`a08v`. The new "drain the queue as steer" branch is covered by
+`web-queue-then-drain-as-steer.md`.
+
+The jstest suite covers the empty/no-active-turn rejections
+(`test-input-area.js`, `test-search-commands.js`,
+`test-queue-and-drain.js`); this is the server-side end-to-end
+counterpart for the classic path.
 
 ## Pre-state
 
@@ -101,17 +108,20 @@ HUB=http://localhost:9180
    ({ state: conv.dataset.state, activeTurnId: conv.dataset.activeTurnId });
    // { state: "processing", activeTurnId: "turn_<n>" }
    ```
-   Confirm the input-area `steer` button is enabled:
+   Confirm the input-area "send as steer" button is enabled:
    ```javascript
    const b = document.querySelector("[data-steer-trigger]");
-   ({ disabled: b.disabled, html: b.outerHTML });
-   // { disabled: false, html: "<button … data-steer-trigger=…>steer</button>" }
+   ({ disabled: b.disabled, text: b.textContent.trim() });
+   // { disabled: false, text: "send as steer ⇧↵" }
    ```
 
-4. **PATH A — direct button click** (`renderer.js:1131`). Type the
-   steer text into the input-area textarea, then click the steer
-   button. This is the canonical UX surfaced in the workspace
-   chrome:
+4. **PATH A — direct button click** (`renderer.js` `bindInputForm`).
+   Type the steer text into the input-area textarea, then click
+   the "send as steer" button. With the queue mirror empty this
+   branch posts a single-text `/steer` and clears the textarea —
+   identical to the kata `a08v` behavior. (When the queue mirror
+   is non-empty the button changes behavior; see
+   `web-queue-then-drain-as-steer.md`.)
    ```javascript
    const ta = document.querySelector("textarea.message-input");
    ta.focus(); ta.value = "Make it 1 paragraph instead of 5. Make it about Go testing specifically.";
@@ -226,14 +236,19 @@ rm -rf "$tmpdir"
   see `state=idle` immediately after sending, the model didn't
   honour the pacing rules — try a stronger reminder or a slower
   model.
-- **Button vs palette discoverability**. The input-area `steer`
-  button is the canonical UX: it sits next to send/attach, becomes
-  active automatically when there's an in-flight turn, and reuses
-  whatever's already in the textarea. The palette command (`/steer`)
-  works but requires three keystroke phases (Cmd+K → `/steer` Enter
-  → body Enter). For typical interactive use prefer the button;
-  the palette is useful for keyboard-only workflows or when the
-  input area is offscreen.
+- **Button vs palette discoverability**. The input-area
+  "send as steer" button is the canonical UX: it sits next to
+  send/attach, becomes active automatically when there's an
+  in-flight turn, and reuses whatever's already in the textarea.
+  The palette command (`/steer`) works but requires three
+  keystroke phases (Cmd+K → `/steer` Enter → body Enter). For
+  typical interactive use prefer the button; the palette is
+  useful for keyboard-only workflows or when the input area is
+  offscreen. Note: the button doubles as the drain-as-steer
+  trigger (kata `0bq1`); when the local queue mirror is empty it
+  behaves exactly as the legacy steer button, but when the queue
+  has entries it drains them instead. ⇧↵ is the keybind
+  equivalent of the button click.
 - **`activeTurnId` is required for both paths**. The button reads
   `this.activeTurnId` (`renderer.js:1143`); the palette reads
   `activeTurnId()` from the conversation `data-active-turn-id`
