@@ -58,6 +58,52 @@ func TestAppEventProjectorCompletesTurnOnSessionEnd(t *testing.T) {
 	}
 }
 
+// TestAppEventProjectorMarksInterruptedTurnCanceled covers kata 0ax1:
+// an interrupted turn keeps the thread alive (status=idle) but the
+// active turn must be reported as canceled, not completed.
+func TestAppEventProjectorMarksInterruptedTurnCanceled(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
+	sessionEnd := projector.Project(agent.SessionEvent{Kind: agent.EventSessionEnd, SessionID: "th_1", Data: agent.SessionEndData{
+		Reason:      "interrupted",
+		State:       "IDLE",
+		Interrupted: true,
+	}})
+
+	var sawCanceled bool
+	var sawIdle bool
+	for _, n := range sessionEnd {
+		switch n.Method {
+		case appwire.NotifyTurnCompleted:
+			params, ok := n.Params.(map[string]any)
+			if !ok {
+				t.Fatalf("turnCompleted params=%T", n.Params)
+			}
+			turn, ok := params["turn"].(appwire.Turn)
+			if !ok {
+				t.Fatalf("turn=%T", params["turn"])
+			}
+			if turn.Status == appwire.TurnStatusCanceled {
+				sawCanceled = true
+			}
+		case appwire.NotifyThreadStatusChanged:
+			params, ok := n.Params.(appwire.ThreadStatusChangedParams)
+			if !ok {
+				t.Fatalf("threadStatus params=%T", n.Params)
+			}
+			if params.Status.Type == appwire.ThreadStatusIdle {
+				sawIdle = true
+			}
+		}
+	}
+	if !sawCanceled {
+		t.Fatalf("interrupted SessionEnd did not mark turn canceled: %+v", sessionEnd)
+	}
+	if !sawIdle {
+		t.Fatalf("interrupted SessionEnd did not flip thread status to idle: %+v", sessionEnd)
+	}
+}
+
 func TestAppEventProjectorKeepsToolEventsInActiveTurnAfterAssistantText(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	started := projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})

@@ -293,7 +293,7 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 		out := []AppNotification{}
 		if p.activeTurnID != "" {
 			turnStatus := appwire.TurnStatusCompleted
-			if state == appwire.ThreadStatusClosed {
+			if state == appwire.ThreadStatusClosed || data.Interrupted {
 				turnStatus = appwire.TurnStatusCanceled
 			}
 			turnID := p.activeTurnID

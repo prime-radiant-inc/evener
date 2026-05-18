@@ -138,19 +138,22 @@ HUB=http://localhost:9180
 - **Step 2 (interrupt)**: while the bash loop is running,
   `capabilities.interrupt=true`. Hub returns `204 No Content` for
   the interrupt POST. Within ~3s the in-flight turn is cancelled
-  and the agent honours its abort-signal spec
-  (`agent/session.go:1257` — "abort signal closes the session and
-  stops the loop"). The session state therefore flips from
-  `processing` to `closed`/`ended` (NOT back to `idle`); the
-  transcript ends with whatever partial output the model had
-  produced before the cancel landed. Because the session is now
-  closed, steps 3-5 below operate on an ended session — compact
-  and shutdown are no-ops/conflicts. To test compact + shutdown
-  end-to-end, run a fresh session without the interrupt step.
-  Falsification of the interrupt fix specifically: state stays
-  `processing` for the full ~25-30s of the bash loop, or
-  `capabilities.interrupt=false` mid-turn, or the hub returns 503
-  on the interrupt POST.
+  and the session flips from `processing` back to `idle` (kata
+  `0ax1`): the abort signal cancels the **turn**, not the session.
+  The transcript records the partial tool output plus a system
+  interrupt marker (a `STEERING` turn whose text contains
+  `The user interrupted the previous turn`). The active turn is
+  reported `status=canceled` on `turn/completed`. The session
+  remains alive — steps 3-5 below still work on the same SID.
+  Send a follow-up `/send` immediately and it must complete
+  normally. Falsification: state stays `processing` for the full
+  ~25-30s of the bash loop, or state flips to `closed`/`ended`
+  (the old pre-`0ax1` semantic — would mean the ProcessInput abort
+  path is still calling `s.Close()`), or `capabilities.interrupt=false`
+  mid-turn, or the hub returns 503 on the interrupt POST. Verify
+  the follow-up: `curl -s -X POST ... "$HUB/s/$SID/send" -d
+  '{"text":"reply with just OK"}'` and confirm state cycles back
+  to `idle` with a new assistant turn.
 - **Step 3 (compact)**: hub returns `204 No Content` essentially
   instantly (compaction here is local re-projection of in-memory
   context; the daemon does not call the model). Transcript grows by
@@ -191,6 +194,17 @@ find ~/.local/state/serf/projects -name "$SID*" -delete
   if no cancel is registered (mirrors the appwire path's
   `Unavailable` semantics) — so a stale "interrupt" click on an
   idle session surfaces an honest error rather than a silent 204.
+- **Interrupt semantics** (kata `0ax1`, fixed). A successful
+  interrupt cancels the in-flight turn but keeps the session
+  alive. State transitions `processing → idle` (NOT `closed`),
+  the outer session loop in `cmd/serf/serve.go` remains ready for
+  the next `/input` POST, and the user can immediately follow up
+  with another message. The transcript records a `STEERING` turn
+  with a `<SYSTEM-REMINDER>` so the model sees on its next turn
+  that the previous round was cut short. If you see state stay at
+  `closed` after the interrupt, the abort path in
+  `agent/session.go` ProcessInput regressed to its pre-`0ax1`
+  behaviour of calling `s.Close()`.
 - The slow-turn prompt depends on the model actually choosing to run
   `exec_command` with a sleep loop. `gpt-5.4-mini` did so reliably in
   testing, but a model that shortcuts (responds with "I'll do that"

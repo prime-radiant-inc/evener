@@ -796,7 +796,13 @@ func TestSession_ContextWindowAwareness_DoesNotWarnUnderThreshold(t *testing.T) 
 	}
 }
 
-func TestSession_AbortSignal_ClosesSessionAndEmitsSessionEnd(t *testing.T) {
+// TestSession_AbortSignal_KeepsSessionAliveAndEmitsInterruptedSessionEnd
+// asserts the kata 0ax1 semantics: aborting an in-flight turn cancels the
+// current LLM/tool round but leaves the session in IDLE so the caller can
+// immediately submit a follow-up. SESSION_END must fire with reason
+// "interrupted" and Interrupted=true so consumers can render the turn as
+// canceled while the thread status returns to idle.
+func TestSession_AbortSignal_KeepsSessionAliveAndEmitsInterruptedSessionEnd(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -834,21 +840,24 @@ func TestSession_AbortSignal_ClosesSessionAndEmitsSessionEnd(t *testing.T) {
 		},
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// Per-turn cancel modeled on cmd/serf/serve.go: outer ctx stays alive,
+	// only the turn ctx is cancelled.
+	outerCtx, outerCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer outerCancel()
+	turnCtx, cancelTurn := context.WithCancel(outerCtx)
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := sess.ProcessInput(ctx, "run", nil)
+		_, err := sess.ProcessInput(turnCtx, "run", nil)
 		done <- err
 	}()
 
 	select {
 	case <-started:
-	case <-ctx.Done():
+	case <-outerCtx.Done():
 		t.Fatalf("timed out waiting for tool to start")
 	}
-	cancel()
+	cancelTurn()
 
 	select {
 	case err := <-done:
@@ -859,33 +868,47 @@ func TestSession_AbortSignal_ClosesSessionAndEmitsSessionEnd(t *testing.T) {
 		t.Fatalf("ProcessInput did not abort promptly")
 	}
 
-	sess.mu.Lock()
-	closed := sess.state == SessionClosed
-	sess.mu.Unlock()
-	if !closed {
-		t.Fatalf("expected session to be closed on abort signal")
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after abort: got %q want %q (session must stay alive)", got, SessionIdle)
 	}
 
-	gotEnd := false
-	gotErr := false
-	gotToolEnd := false
-	errIdx := -1
-	endIdx := -1
-	i := 0
-	for ev := range sess.Events() {
-		if ev.Kind == EventError {
-			gotErr = true
-			errIdx = i
+	// Drain events asynchronously so Close() can complete; we'll inspect
+	// them after the session shuts down.
+	var (
+		evMu              sync.Mutex
+		gotEnd            bool
+		gotErr            bool
+		gotToolEnd        bool
+		gotSteering       bool
+		sawInterruptedEnd bool
+	)
+	evDone := make(chan struct{})
+	go func() {
+		defer close(evDone)
+		for ev := range sess.Events() {
+			evMu.Lock()
+			switch ev.Kind {
+			case EventError:
+				gotErr = true
+			case EventSessionEnd:
+				gotEnd = true
+				if d, ok := ev.Data.(SessionEndData); ok && d.Interrupted && d.Reason == "interrupted" && d.State == string(SessionIdle) {
+					sawInterruptedEnd = true
+				}
+			case EventToolCallEnd:
+				gotToolEnd = true
+			case EventSteeringInjected:
+				gotSteering = true
+			}
+			evMu.Unlock()
 		}
-		if ev.Kind == EventSessionEnd {
-			gotEnd = true
-			endIdx = i
-		}
-		if ev.Kind == EventToolCallEnd {
-			gotToolEnd = true
-		}
-		i++
-	}
+	}()
+
+	sess.Close()
+	<-evDone
+
+	evMu.Lock()
+	defer evMu.Unlock()
 	if !gotEnd {
 		t.Fatalf("expected SESSION_END event")
 	}
@@ -895,8 +918,105 @@ func TestSession_AbortSignal_ClosesSessionAndEmitsSessionEnd(t *testing.T) {
 	if !gotToolEnd {
 		t.Fatalf("expected TOOL_CALL_END event on abort signal")
 	}
-	if errIdx != -1 && endIdx != -1 && errIdx > endIdx {
-		t.Fatalf("expected ERROR event before SESSION_END on abort (err=%d end=%d)", errIdx, endIdx)
+	if !sawInterruptedEnd {
+		t.Fatalf("expected SESSION_END with Reason=interrupted, Interrupted=true, State=IDLE")
+	}
+	if !gotSteering {
+		t.Fatalf("expected STEERING_INJECTED event for the interrupt transcript marker")
+	}
+}
+
+// TestSession_AbortThenFollowup verifies kata 0ax1's primary user-facing
+// promise: after an interrupt the session is immediately ready to accept
+// another ProcessInput, and that follow-up turn runs to completion.
+func TestSession_AbortThenFollowup(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	started := make(chan struct{}, 1)
+
+	// Turn 1: model issues one tool call to "slow" (blocks on ctx).
+	// Turn 2: model finishes with plain text.
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Message: llm.Message{
+						Role: llm.RoleAssistant,
+						Content: []llm.ContentPart{
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "slow", Arguments: json.RawMessage(`{}`)}},
+						},
+					},
+				}
+			},
+			func(req llm.Request) llm.Response {
+				return finalResponse("hello after interrupt")
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	_ = sess.reg.Register(RegisteredTool{
+		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "slow"}},
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			_ = env
+			_ = args
+			started <- struct{}{}
+			<-ctx.Done()
+			return "", ctx.Err()
+		},
+	})
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+	defer sess.Close()
+
+	outerCtx, outerCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer outerCancel()
+
+	// Turn 1: start and interrupt.
+	turn1Ctx, cancel1 := context.WithCancel(outerCtx)
+	done1 := make(chan error, 1)
+	go func() {
+		_, err := sess.ProcessInput(turn1Ctx, "run the slow thing", nil)
+		done1 <- err
+	}()
+	select {
+	case <-started:
+	case <-outerCtx.Done():
+		t.Fatalf("turn 1: timed out waiting for tool to start")
+	}
+	cancel1()
+	select {
+	case err := <-done1:
+		if err == nil {
+			t.Fatalf("turn 1: expected abort error, got nil")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("turn 1: ProcessInput did not abort promptly")
+	}
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after interrupt: got %q want %q", got, SessionIdle)
+	}
+
+	// Turn 2: follow-up runs to completion under a fresh per-turn ctx.
+	turn2Ctx, cancel2 := context.WithCancel(outerCtx)
+	defer cancel2()
+	out, err := sess.ProcessInput(turn2Ctx, "what about now?", nil)
+	if err != nil {
+		t.Fatalf("turn 2: %v", err)
+	}
+	if !strings.Contains(out, "hello after interrupt") {
+		t.Fatalf("turn 2 output: %q (want it to contain follow-up reply)", out)
+	}
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after turn 2: got %q want %q", got, SessionIdle)
 	}
 }
 

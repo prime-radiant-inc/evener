@@ -6,11 +6,13 @@ verified by `workspace-title-bar-actions.md` (kata `gx92` + the
 session command palette exposes `/interrupt` (kata `57be`), but we
 have never driven that entry against a live in-flight turn. This
 scenario does — via `tmux send-keys` / `capture-pane` — and asserts
-the documented post-interrupt behavior: the session transitions to
-`closed` (NOT back to `idle`), the partial tool output is preserved
-on the transcript, and the TUI does not crash. It also surfaces a
-stale-capabilities bug in the TUI (kata `4yvd`) and documents the
-workaround needed to make the palette show `/interrupt` as enabled.
+the post-interrupt behaviour after kata `0ax1`: the session
+transitions back to `idle` (NOT `closed`), the partial tool output
+is preserved on the transcript along with a system interrupt
+marker, the user can immediately send a follow-up message, and the
+TUI does not crash. It also surfaces a stale-capabilities bug in
+the TUI (kata `4yvd`) and documents the workaround needed to make
+the palette show `/interrupt` as enabled.
 
 ## Pre-state
 
@@ -164,18 +166,19 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
    ```
    REST expects:
    ```
-   state= closed
-   live= False
+   state= idle
+   live= True
    active_turn_id= None
    ```
-   TUI pane status line should show `state: ended` (the TUI's
-   normalised name for daemon `closed`), and somewhere on the
-   transcript view: `Serf error: context canceled`.
+   TUI pane status line should show `state: idle` and somewhere on
+   the transcript view: `Serf error: context canceled`. The session
+   stays alive (kata `0ax1`); only the active turn was cancelled.
 
-10. **Verify the transcript preserved the mid-turn state**:
+10. **Verify the transcript preserved the mid-turn state plus the
+    interrupt marker**:
     ```bash
     TFILE=$(find ~/.local/state/serf/projects -name "$SID.transcript.jsonl")
-    tail -2 "$TFILE" | python3 -c "
+    tail -4 "$TFILE" | python3 -c "
     import json, sys
     for line in sys.stdin:
         j = json.loads(line)
@@ -188,28 +191,56 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
                 print(' tool_call', c['tool_call'].get('name'))
             elif k == 'tool_result':
                 print(' tool_result', str(c.get('tool_result', {}).get('content'))[:200])
+            elif k == 'text':
+                print(' text', str(c.get('text',''))[:200])
     "
     ```
-    Expect the final entries to be the `ASSISTANT` tool_call for
-    `exec_command` followed by a `TOOL_RESULTS` whose content shows
-    the partial output (`step 1\nstep 2\n...step 13` or similar,
-    however many steps got through) terminated by
-    `[ERROR: Command was canceled]`. The model never got a chance to
-    issue its final `communicate`, which is exactly the documented
-    behaviour: the cancel closes the session and stops the agent
-    loop. Verify also that the bash loop process is gone:
+    Expect the tail to include the `ASSISTANT` tool_call for
+    `exec_command`, a `TOOL_RESULTS` whose content shows the partial
+    output (`step 1\nstep 2\n...step 13` or similar, however many
+    steps got through) terminated by `[ERROR: Command was canceled]`,
+    and then a final `STEERING` turn whose text contains
+    `The user interrupted the previous turn`. The model never got
+    to issue its final `communicate` for this turn; that's the kata
+    `0ax1` semantic. Verify the bash loop process is gone:
     ```bash
     ps -ef | grep -E 'bash -c.*seq 1 30' | grep -v grep || echo 'loop gone'
     ```
 
-11. **Confirm the TUI did not crash**:
+11. **Send a follow-up message** (the kata `0ax1` promise: the
+    session is immediately usable after an interrupt). Type a quick
+    prompt and confirm it runs to completion:
+    ```bash
+    tmux send-keys -t serf-interrupt-test -l 'reply with only the single word OK'
+    sleep 0.2
+    tmux send-keys -t serf-interrupt-test Enter
+    for i in $(seq 1 30); do
+      state=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" \
+               | python3 -c "import json,sys; print(json.load(sys.stdin).get('state'))")
+      [ "$state" = "idle" ] && break
+      sleep 1
+    done
+    tail -3 "$TFILE" | python3 -c "
+    import json, sys
+    for line in sys.stdin:
+        j = json.loads(line)
+        t = j.get('turn', {})
+        for c in t.get('message', {}).get('content', []):
+            if c.get('kind') == 'tool_call' and c.get('tool_call', {}).get('name') == 'communicate':
+                print('REPLY:', c['tool_call']['arguments'].get('message'))
+    "
+    ```
+    The follow-up reply should appear (typically `OK`), proving the
+    session loop is alive after the interrupt.
+
+12. **Confirm the TUI did not crash**:
     ```bash
     tmux ls | grep serf-interrupt-test
     ps -ef | grep -E 'serf-tui.*--hub-addr' | grep -v grep
     ```
     Both should still report the process alive.
 
-12. **Exit cleanly**. From the session view, `Ctrl+O` to return to
+13. **Exit cleanly**. From the session view, `Ctrl+O` to return to
     the dashboard, then `q`:
     ```bash
     tmux send-keys -t serf-interrupt-test C-o
@@ -239,23 +270,32 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
   is broken, or the daemon stopped advertising `Interrupt: true`
   mid-turn (that would also break the REST path).
 - **Step 8-9**: within ~1-2 s of Enter, session state flips from
-  `processing` to `closed` (`live=false`, `active_turn_id` cleared).
-  TUI status line shows `state: ended`. **This is the documented
-  agent-loop semantic** (`agent/session.go`: abort signal closes the
-  session); it is NOT a regression that state does not return to
-  `idle`. The trade-off was deliberate per kata `0ax1`'s design
-  discussion. **Falsification**: state stays `processing` for the
-  full ~60 s of the bash loop, OR REST returns 503 on the
-  underlying interrupt POST (would mean `cancelFunc` never wired,
-  i.e. k7t8 regressed).
+  `processing` back to `idle` (`live=true`, `active_turn_id`
+  cleared). TUI status line shows `state: idle`. The session stays
+  alive — the abort signal cancels the *turn*, not the *session*
+  (kata `0ax1`). The active turn is reported `status=canceled` on
+  the appwire `turn/completed` notification. **Falsification**:
+  state stays `processing` for the full ~60 s of the bash loop, OR
+  state flips to `closed`/`ended` (the old pre-`0ax1` semantic —
+  would mean ProcessInput's abort path is calling `s.Close()`
+  again), OR REST returns 503 on the underlying interrupt POST
+  (would mean `cancelFunc` never wired, i.e. k7t8 regressed).
 - **Step 10**: transcript ends with the partial loop output plus
   `[ERROR: Command was canceled]` baked into the `TOOL_RESULTS`
-  entry. No `communicate` tool_call from the assistant (model never
-  got to compose one). Bash loop process is gone.
-- **Step 11**: TUI process and tmux session both still alive after
-  the interrupt — the abort signal closes the *session* not the
-  *TUI*.
-- **Step 12**: `q` from the dashboard ends the tmux session
+  entry, followed by a `STEERING` turn carrying the
+  `<SYSTEM-REMINDER>The user interrupted the previous turn ...`
+  marker. No `communicate` tool_call from the assistant for the
+  interrupted turn (model never got to compose one). Bash loop
+  process is gone.
+- **Step 11 (follow-up after interrupt)**: the new prompt sails
+  through. State cycles `idle → processing → idle`; the assistant
+  emits a `communicate` reply (typically `OK`). This is the kata
+  `0ax1` user-facing promise: an interrupt does not lock the user
+  out of the session.
+- **Step 12**: TUI process and tmux session both still alive after
+  the interrupt — the abort signal closes neither the session nor
+  the TUI.
+- **Step 13**: `q` from the dashboard ends the tmux session
   cleanly.
 
 ## Cleanup
@@ -299,22 +339,25 @@ rm -rf "$tmpdir"
   the prompt body. Use the un-flagged form for named keys
   (`Enter`, `Down`, `C-p`, `Escape`). The interrupt prompt mixes
   both: type the body with `-l`, send `Enter` separately.
-- **Interrupt closes the session, not just the turn.** Per the
-  agent-loop spec (`agent/session.go:1257` — "abort signal closes
-  the session and stops the loop"), a successful interrupt
-  transitions the session to `closed` / `ended`, not back to
-  `idle`. This is the intentional behaviour (see kata `0ax1`'s
-  design notes); the scenario verifies it, it does not redefine
-  it. Subsequent `compact` / `send` / `clear` calls on the same
-  SID will return errors; only `shutdown` and `resume` remain
-  meaningful.
+- **Interrupt cancels the turn, not the session** (kata `0ax1`).
+  After kata `k7t8` wired the per-turn cancel, kata `0ax1` changed
+  ProcessInput's abort path in `agent/session.go` to flip state
+  back to `SessionIdle` (and append a `STEERING` interrupt marker
+  to the transcript) instead of calling `s.Close()`. Matches
+  Claude Code / codex: the user clicks interrupt, the in-flight
+  turn dies, the session stays ready for the next message.
+  Subsequent `send`, `compact`, `clear`, `shutdown` all keep
+  working on the same SID. If a regression makes state go to
+  `closed`/`ended` after an interrupt, the abort handling in
+  `ProcessInput` is calling `s.Close()` again.
 - **`q` only exits from the dashboard.** From the session view,
   `q` is treated as composer input (gets typed into the prompt).
   Use `Ctrl+O` to return to the dashboard first, then `q`. Or send
   `C-c C-c` within 1 s (see `tui-workspace-navigation.md`).
-- **TUI state name vs REST state name.** REST `/api/sessions/...`
-  reports `state=closed` while the TUI status line displays
-  `state: ended`. Both refer to the same terminal state; the TUI
-  normalises `closed` → `ended` for display in
-  `hubDetailFromAppThread` / `normalizeState`. Assert on REST for
-  the canonical name and on the TUI for the displayed name.
+- **TUI state name vs REST state name.** Only matters for the
+  terminal `closed` state (e.g. after `shutdown`): REST
+  `/api/sessions/...` reports `state=closed` while the TUI status
+  line displays `state: ended`. The TUI normalises `closed` →
+  `ended` for display in `hubDetailFromAppThread` /
+  `normalizeState`. For `idle` and `processing` both views use the
+  same string.

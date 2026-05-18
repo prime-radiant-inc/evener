@@ -1253,9 +1253,44 @@ func (s *Session) ProcessInput(ctx context.Context, input string, images []Image
 			outputs = append(outputs, out)
 		}
 		if err != nil {
-			// Spec: abort signal closes the session and stops the loop.
+			// Interrupt semantics (kata 0ax1): a cancelled turn cuts the
+			// in-flight LLM/tool round short but keeps the session alive
+			// so the user can send a follow-up immediately. Matches
+			// Claude Code / codex. The transcript records an interrupt
+			// marker so the model sees, on the next turn, that the
+			// previous round was cut short.
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
-				s.Close()
+				s.mu.Lock()
+				// Only flip back to idle when the session isn't already
+				// closed (e.g. daemon shutdown raced the interrupt).
+				if s.state != SessionClosed {
+					s.state = SessionIdle
+				}
+				closed := s.state == SessionClosed
+				turns := s.modelResponses
+				emitEnd := !s.sessionEndEmitted && !closed
+				if emitEnd {
+					s.sessionEndEmitted = true
+				}
+				s.mu.Unlock()
+
+				if !closed {
+					// Append a system-reminder turn so the next request to
+					// the model includes the interrupt notice in history.
+					// This is the user-visible "interrupted here" marker
+					// in the transcript that consumers (TUI / hub) render.
+					interruptMsg := "<SYSTEM-REMINDER>The user interrupted the previous turn before it completed. Any partial tool output above is incomplete. Wait for the user's next message before continuing.</SYSTEM-REMINDER>"
+					s.appendTurn(TurnSteering, llm.User(interruptMsg))
+					s.emit(EventSteeringInjected, SteeringInjectedData{Text: interruptMsg})
+				}
+				if emitEnd {
+					s.emit(EventSessionEnd, SessionEndData{
+						Reason:      "interrupted",
+						State:       string(SessionIdle),
+						Turns:       turns,
+						Interrupted: true,
+					})
+				}
 			}
 			return strings.Join(outputs, "\n"), err
 		}
@@ -1559,6 +1594,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	select {
 	case <-ctx.Done():
 		s.emit(EventError, errorDataFromError(ctx.Err()))
+		s.mu.Lock()
+		if s.state == SessionProcessing {
+			s.state = SessionIdle
+		}
+		s.mu.Unlock()
 		return "", ctx.Err()
 	default:
 	}
@@ -1630,6 +1670,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		select {
 		case <-ctx.Done():
 			s.emit(EventError, errorDataFromError(ctx.Err()))
+			s.mu.Lock()
+			if s.state == SessionProcessing {
+				s.state = SessionIdle
+			}
+			s.mu.Unlock()
 			return "", ctx.Err()
 		default:
 		}
