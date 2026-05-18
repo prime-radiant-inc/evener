@@ -10,9 +10,11 @@ the post-interrupt behaviour after kata `0ax1`: the session
 transitions back to `idle` (NOT `closed`), the partial tool output
 is preserved on the transcript along with a system interrupt
 marker, the user can immediately send a follow-up message, and the
-TUI does not crash. It also surfaces a stale-capabilities bug in
-the TUI (kata `4yvd`) and documents the workaround needed to make
-the palette show `/interrupt` as enabled.
+TUI does not crash. The stale-capabilities bug (kata `4yvd`) that
+used to require running `/status` before opening the palette was
+fixed in `f305d8a`: the TUI now refreshes session detail on the
+idle→processing transition, so `/interrupt` shows enabled in the
+palette as soon as the turn starts.
 
 ## Pre-state
 
@@ -112,25 +114,7 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
    ```
    should show the spawned loop process running.
 
-6. **Refresh the TUI's session detail BEFORE opening the palette**.
-   This is a workaround for kata `4yvd`: the TUI does not auto-refresh
-   capabilities on idle→processing transitions, so the palette will
-   render `/interrupt` as `disabled: source does not advertise
-   interrupt` if you skip this step. Type `/status` + Enter — the
-   palette is gated on stale caps, but typing `/status` directly in
-   the composer is not (its registry entry has no `Available`
-   predicate) and the resulting fetch refreshes `m.detail`:
-   ```bash
-   tmux send-keys -t serf-interrupt-test -l '/status'
-   sleep 0.1
-   tmux send-keys -t serf-interrupt-test Enter
-   sleep 0.5
-   tmux capture-pane -t serf-interrupt-test -p | head -15
-   ```
-   Output overlay shows
-   `Session: <SID> ... Turns: N ... Auth: openai oauth ...`.
-
-7. **Open the session command palette**:
+6. **Open the session command palette**:
    ```bash
    tmux send-keys -t serf-interrupt-test C-p
    sleep 0.3
@@ -142,9 +126,12 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
    ```
    with NO `disabled: ...` suffix. If you see
    `disabled: source does not advertise interrupt`, kata `4yvd` has
-   regressed — the `/status` refresh in step 6 didn't take.
+   regressed — the TUI is no longer refreshing session detail on
+   the idle→processing transition (see `f305d8a`), or the daemon
+   stopped advertising `Interrupt: true` mid-turn (that would also
+   break the REST path).
 
-8. **Filter to interrupt and fire**:
+7. **Filter to interrupt and fire**:
    ```bash
    tmux send-keys -t serf-interrupt-test -l 'interrupt'
    sleep 0.2
@@ -152,7 +139,7 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
    sleep 1.0
    ```
 
-9. **Verify the interrupt landed**:
+8. **Verify the interrupt landed**:
    ```bash
    curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" \
      | python3 -c "
@@ -174,40 +161,40 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
    the transcript view: `Serf error: context canceled`. The session
    stays alive (kata `0ax1`); only the active turn was cancelled.
 
-10. **Verify the transcript preserved the mid-turn state plus the
-    interrupt marker**:
-    ```bash
-    TFILE=$(find ~/.local/state/serf/projects -name "$SID.transcript.jsonl")
-    tail -4 "$TFILE" | python3 -c "
-    import json, sys
-    for line in sys.stdin:
-        j = json.loads(line)
-        t = j.get('turn', {})
-        msg = t.get('message', {})
-        print('kind=', t.get('kind'))
-        for c in msg.get('content', []):
-            k = c.get('kind')
-            if k == 'tool_call':
-                print(' tool_call', c['tool_call'].get('name'))
-            elif k == 'tool_result':
-                print(' tool_result', str(c.get('tool_result', {}).get('content'))[:200])
-            elif k == 'text':
-                print(' text', str(c.get('text',''))[:200])
-    "
-    ```
-    Expect the tail to include the `ASSISTANT` tool_call for
-    `exec_command`, a `TOOL_RESULTS` whose content shows the partial
-    output (`step 1\nstep 2\n...step 13` or similar, however many
-    steps got through) terminated by `[ERROR: Command was canceled]`,
-    and then a final `STEERING` turn whose text contains
-    `The user interrupted the previous turn`. The model never got
-    to issue its final `communicate` for this turn; that's the kata
-    `0ax1` semantic. Verify the bash loop process is gone:
-    ```bash
-    ps -ef | grep -E 'bash -c.*seq 1 30' | grep -v grep || echo 'loop gone'
-    ```
+9. **Verify the transcript preserved the mid-turn state plus the
+   interrupt marker**:
+   ```bash
+   TFILE=$(find ~/.local/state/serf/projects -name "$SID.transcript.jsonl")
+   tail -4 "$TFILE" | python3 -c "
+   import json, sys
+   for line in sys.stdin:
+       j = json.loads(line)
+       t = j.get('turn', {})
+       msg = t.get('message', {})
+       print('kind=', t.get('kind'))
+       for c in msg.get('content', []):
+           k = c.get('kind')
+           if k == 'tool_call':
+               print(' tool_call', c['tool_call'].get('name'))
+           elif k == 'tool_result':
+               print(' tool_result', str(c.get('tool_result', {}).get('content'))[:200])
+           elif k == 'text':
+               print(' text', str(c.get('text',''))[:200])
+   "
+   ```
+   Expect the tail to include the `ASSISTANT` tool_call for
+   `exec_command`, a `TOOL_RESULTS` whose content shows the partial
+   output (`step 1\nstep 2\n...step 13` or similar, however many
+   steps got through) terminated by `[ERROR: Command was canceled]`,
+   and then a final `STEERING` turn whose text contains
+   `The user interrupted the previous turn`. The model never got
+   to issue its final `communicate` for this turn; that's the kata
+   `0ax1` semantic. Verify the bash loop process is gone:
+   ```bash
+   ps -ef | grep -E 'bash -c.*seq 1 30' | grep -v grep || echo 'loop gone'
+   ```
 
-11. **Send a follow-up message** (the kata `0ax1` promise: the
+10. **Send a follow-up message** (the kata `0ax1` promise: the
     session is immediately usable after an interrupt). Type a quick
     prompt and confirm it runs to completion:
     ```bash
@@ -233,14 +220,14 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
     The follow-up reply should appear (typically `OK`), proving the
     session loop is alive after the interrupt.
 
-12. **Confirm the TUI did not crash**:
+11. **Confirm the TUI did not crash**:
     ```bash
     tmux ls | grep serf-interrupt-test
     ps -ef | grep -E 'serf-tui.*--hub-addr' | grep -v grep
     ```
     Both should still report the process alive.
 
-13. **Exit cleanly**. From the session view, `Ctrl+O` to return to
+12. **Exit cleanly**. From the session view, `Ctrl+O` to return to
     the dashboard, then `q`:
     ```bash
     tmux send-keys -t serf-interrupt-test C-o
@@ -262,14 +249,16 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
   ...` row.
 - **Step 5**: REST reports `state=processing`,
   `capabilities.interrupt=true`; bash loop process visible in `ps`.
-- **Step 6**: `/status` overlay renders with current turn count and
-  auth info; behind it, `m.detail.Capabilities` is now fresh.
-- **Step 7**: palette shows `/interrupt` enabled. **Falsification**:
-  if `/interrupt` is `disabled: source does not advertise
-  interrupt`, kata `4yvd` regressed — the cap-refresh on `/status`
-  is broken, or the daemon stopped advertising `Interrupt: true`
-  mid-turn (that would also break the REST path).
-- **Step 8-9**: within ~1-2 s of Enter, session state flips from
+- **Step 6**: palette shows `/interrupt` enabled within ~1 s of the
+  turn starting, with no user intervention needed beyond opening the
+  palette (the TUI auto-refreshed its capability snapshot on the
+  idle→processing transition, fix `f305d8a`). **Falsification**: if
+  `/interrupt` is `disabled: source does not advertise interrupt`,
+  kata `4yvd` regressed — `applyHubNotification` is no longer
+  fetching session detail on the into-processing branch, or the
+  daemon stopped advertising `Interrupt: true` mid-turn (that would
+  also break the REST path).
+- **Step 7-8**: within ~1-2 s of Enter, session state flips from
   `processing` back to `idle` (`live=true`, `active_turn_id`
   cleared). TUI status line shows `state: idle`. The session stays
   alive — the abort signal cancels the *turn*, not the *session*
@@ -280,22 +269,22 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
   would mean ProcessInput's abort path is calling `s.Close()`
   again), OR REST returns 503 on the underlying interrupt POST
   (would mean `cancelFunc` never wired, i.e. k7t8 regressed).
-- **Step 10**: transcript ends with the partial loop output plus
+- **Step 9**: transcript ends with the partial loop output plus
   `[ERROR: Command was canceled]` baked into the `TOOL_RESULTS`
   entry, followed by a `STEERING` turn carrying the
   `<SYSTEM-REMINDER>The user interrupted the previous turn ...`
   marker. No `communicate` tool_call from the assistant for the
   interrupted turn (model never got to compose one). Bash loop
   process is gone.
-- **Step 11 (follow-up after interrupt)**: the new prompt sails
+- **Step 10 (follow-up after interrupt)**: the new prompt sails
   through. State cycles `idle → processing → idle`; the assistant
   emits a `communicate` reply (typically `OK`). This is the kata
   `0ax1` user-facing promise: an interrupt does not lock the user
   out of the session.
-- **Step 12**: TUI process and tmux session both still alive after
+- **Step 11**: TUI process and tmux session both still alive after
   the interrupt — the abort signal closes neither the session nor
   the TUI.
-- **Step 13**: `q` from the dashboard ends the tmux session
+- **Step 12**: `q` from the dashboard ends the tmux session
   cleanly.
 
 ## Cleanup
@@ -310,18 +299,18 @@ rm -rf "$tmpdir"
 
 ## Sharp edges
 
-- **The TUI palette gates `/interrupt` on stale capabilities**
-  (kata `4yvd`). At session-open the TUI fetches the detail (idle,
-  so `Interrupt=false`); on `NotifyThreadStatusChanged` into
-  `processing` it updates `state` and `processing` flags but does
-  **not** re-fetch capabilities. The fetch only happens when status
-  transitions OUT of `processing`. So the palette renders
+- **TUI capability snapshot used to go stale mid-turn** (kata
+  `4yvd`, fixed in `f305d8a`). At session-open the TUI fetched the
+  detail while idle (so `Interrupt=false`). The original
+  `applyHubNotification` only re-fetched when `ThreadStatusChanged`
+  transitioned OUT of `processing`, so the cached idle snapshot
+  stuck around for the entire turn and the palette rendered
   `/interrupt` as disabled even when the daemon and REST API both
-  say it is available. Workaround: invoke `/status` (or `/details`)
-  in the composer first — those run unconditionally and call
-  `fetchHubSession`, which refreshes `m.detail`. After that the
-  palette correctly shows `/interrupt` enabled. **Don't skip
-  step 6** unless you are deliberately testing the regression.
+  said it was available. The fix is to fetch on any status
+  transition (in particular idle→processing), so the palette
+  reflects the source's live capability set as soon as the turn
+  starts. The pre-fix workaround — typing `/status` to force a
+  refresh — is no longer needed.
 - **Slow-turn prompts must force a real tool call.** The model
   loves to shortcut by fabricating the loop output and calling
   `communicate` immediately — turn finishes in <1 s and there is
