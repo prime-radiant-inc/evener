@@ -491,6 +491,19 @@
       }
     });
 
+    // Wire the shared paste-to-image helper (kata r6a1). pendingState lives
+    // on the form element so the (forthcoming v80q) submit wiring can read
+    // it back when serializing the spawn body. Chips render into the
+    // [data-composer-attachments] container just above the textarea.
+    if (window.SerfComposerAttachments) {
+      const promptTa = form.querySelector("textarea[name=prompt]");
+      const pasteContainer = form.querySelector("[data-composer-attachments]");
+      const pendingState = { items: [] };
+      form.__composerPasteState = pendingState;
+      if (promptTa) window.SerfComposerAttachments.attachComposerImageHandlers(promptTa, pendingState);
+      if (pasteContainer) window.SerfComposerAttachments.renderAttachmentChips(pasteContainer, pendingState);
+    }
+
     // Submit handler
     form.addEventListener("submit", async (e) => {
       e.preventDefault();

@@ -36,6 +36,7 @@
       </button>
     </div>
     <textarea class="spawn-input" name="prompt" placeholder="describe the prompt…" autofocus>{{.DefaultPrompt}}</textarea>
+    <div class="composer-attachments" data-composer-attachments></div>
     <input type="hidden" name="harness" value="{{.DefaultHarness}}">
     {{range .Harnesses}}<input type="hidden" data-harness-option value="{{.ID}}" data-label="{{.Label}}">{{end}}
     <input type="hidden" name="model" value="{{.DefaultModelValue}}">

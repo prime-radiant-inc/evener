@@ -1326,6 +1326,21 @@
         }
       });
 
+      // Wire the shared paste helper (kata r6a1). It owns its own
+      // pendingState (this.composerPasteState) and renders chips into the
+      // [data-composer-attachments] container, kept separate from the
+      // legacy data-attachments pipeline above so the existing submit/fetch
+      // path is untouched. v80q will unify the two stores when it rewires
+      // submit to read from the new shape.
+      if (window.SerfComposerAttachments) {
+        if (!this.composerPasteState) this.composerPasteState = { items: [] };
+        const pasteContainer = form.querySelector("[data-composer-attachments]");
+        window.SerfComposerAttachments.attachComposerImageHandlers(ta, this.composerPasteState);
+        if (pasteContainer) {
+          window.SerfComposerAttachments.renderAttachmentChips(pasteContainer, this.composerPasteState);
+        }
+      }
+
       const submit = async (e) => {
         e.preventDefault();
         const text = ta.value.trim();

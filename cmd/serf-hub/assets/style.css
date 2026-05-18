@@ -379,6 +379,17 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .attachment-chip .att-remove { cursor: pointer; color: var(--text-muted); padding: 0 2px; border: none; background: transparent; }
 .attachment-chip .att-remove:hover { color: var(--text); }
 
+/* Composer paste chips (kata r6a1). Separate from .input-attachments above
+   so the shared paste helper can render alongside the legacy file-picker /
+   drag-drop pipeline without stomping its chips. Same visual language —
+   minus the thumbnail — so both rows feel like one strip. */
+.composer-attachments { display: flex; gap: 6px; flex-wrap: wrap; padding-bottom: 8px; }
+.composer-attachments:empty { display: none; }
+.composer-attachment { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; background: var(--bg); border: 1px solid var(--rule); border-radius: 4px; font-size: 11px; color: var(--text); }
+.composer-attachment-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 240px; }
+.composer-attachment-remove { cursor: pointer; color: var(--text-muted); padding: 0 2px; border: none; background: transparent; font-size: 13px; line-height: 1; }
+.composer-attachment-remove:hover { color: var(--text); }
+
 .input-card { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 6px; padding: 12px 14px; min-height: 80px; transition: border-color 0.15s; }
 .input-card.drag-over { border-color: var(--state-processing); background: var(--bg); }
 .message-input { width: 100%; min-height: 36px; max-height: 50vh; background: transparent; border: none; resize: none; color: var(--text); font: inherit; outline: none; line-height: 1.5; overflow-y: auto; }
