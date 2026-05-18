@@ -65,6 +65,11 @@ the area they exercise.
   and the agent receives a `STEERING` transcript entry it
   acts on before the turn ends. Live-tested against
   `anthropic/claude-haiku-4-5-20251001` (kata `mn4z`).
+- `tui-interrupt-live-turn.md` — serf-tui `/interrupt` palette
+  command fires against a real mid-turn session via
+  `tmux send-keys`; verifies state transitions to `closed` and
+  transcript preserves partial output (kata `9sck`; surfaced kata
+  `4yvd` — palette gates on stale capabilities mid-turn).
 
 ## Transcript / debug
 
@@ -109,5 +114,9 @@ output by running it.
 - `k7t8` — workspace interrupt button is non-functional
   (`cancelFunc` never wired in `cmd/serf/serve.go`); covered by
   `workspace-title-bar-actions.md`.
+- `4yvd` — serf-tui palette gates `/interrupt` on stale
+  capabilities cached at session-open; needs a `/status` refresh
+  to unlock mid-turn (workaround documented in
+  `tui-interrupt-live-turn.md`).
 
 All filed via `kata create`; not blocking.
