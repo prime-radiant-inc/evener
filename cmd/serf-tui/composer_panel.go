@@ -14,6 +14,10 @@ type composerPanel struct {
 	// head-first) rendered above the composer when depth > 0. Set by
 	// sessionComposerPanel from the model's local queue.
 	QueuePreview []string
+	// Attachments are the pending image attachments shown as chips
+	// between the composer textarea and the queue preview. Each chip
+	// renders as "📎 <name> (WxH) [×]".
+	Attachments []*PastedImage
 }
 
 type hubComposerMode int
@@ -85,6 +89,7 @@ func (m hubModel) sessionComposerPanel() composerPanel {
 		ShowInput:     true,
 		Width:         m.width,
 		QueuePreview:  m.sessionQueuePreview(),
+		Attachments:   m.pendingAttachments,
 	}
 	switch m.sessionComposerMode() {
 	case hubComposerModeFork:
@@ -148,11 +153,50 @@ func (p composerPanel) View() string {
 	if p.ShowInput {
 		b.WriteString(renderComposerDraft(p.Draft, p.MaxDraftLines))
 	}
+	if len(p.Attachments) > 0 {
+		b.WriteString(renderAttachmentChips(p.Attachments, styles))
+	}
 	if len(p.Keys) > 0 {
 		b.WriteString(styles.Muted.Render(actionBarForWidth(p.Width, p.Keys...)))
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// renderAttachmentChips renders a row of chips for the staged image
+// attachments. Each chip is "📎 <name> (WxH) [×]" so the user sees
+// what's queued and can remove individual entries by clicking [×].
+func renderAttachmentChips(atts []*PastedImage, styles tuiStyles) string {
+	var b strings.Builder
+	b.WriteString(styles.Section.Render("attachments"))
+	b.WriteString("\n")
+	for _, att := range atts {
+		if att == nil {
+			continue
+		}
+		name := filepathBase(att.Path)
+		dims := ""
+		if att.Width > 0 && att.Height > 0 {
+			dims = " (" + itoa(att.Width) + "x" + itoa(att.Height) + ")"
+		}
+		b.WriteString(styles.Muted.Render("📎 " + name + dims + " [×]"))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// filepathBase returns the last path element of p without dragging in
+// filepath here in composer_panel.go. We keep it local so the chip
+// renderer stays a pure-function leaf.
+func filepathBase(p string) string {
+	if p == "" {
+		return ""
+	}
+	idx := strings.LastIndexAny(p, `/\`)
+	if idx < 0 {
+		return p
+	}
+	return p[idx+1:]
 }
 
 // renderQueuePreview formats the locally tracked queue above the composer.

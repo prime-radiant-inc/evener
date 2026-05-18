@@ -142,6 +142,37 @@ type hubModel struct {
 	// navigating away resets it.
 	sessionQueue    []string
 	sessionQueueRef string
+
+	// pendingAttachments holds image attachments staged by Ctrl+V or
+	// pasted-path detection. Each entry has a backing temp file at
+	// PastedImage.Path that the submit flow ships as an InputItem and
+	// cleans up afterwards. The slice is rendered as a row of chips
+	// below the composer textarea.
+	pendingAttachments []*PastedImage
+	// clipboardSource is the production clipboard reader, swappable in
+	// tests via newSessionHubModel + assignment. When nil we lazily
+	// install the platform-specific SystemClipboardSource on first use.
+	clipboardSource ClipboardSource
+}
+
+// addPendingAttachment appends a captured image to the composer's
+// pending-attachment list. Callers own the backing file — the submit
+// flow is responsible for cleanup.
+func (m *hubModel) addPendingAttachment(img *PastedImage) {
+	if img == nil {
+		return
+	}
+	m.pendingAttachments = append(m.pendingAttachments, img)
+}
+
+// removePendingAttachment drops the attachment at the given index. Out
+// of range indices are silently ignored so handler callsites don't need
+// to bounds-check after a re-render race.
+func (m *hubModel) removePendingAttachment(idx int) {
+	if idx < 0 || idx >= len(m.pendingAttachments) {
+		return
+	}
+	m.pendingAttachments = append(m.pendingAttachments[:idx], m.pendingAttachments[idx+1:]...)
 }
 
 const hubCtrlCQuitWindow = time.Second
@@ -1414,6 +1445,14 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.Type == tea.KeyCtrlS {
 		return m.handleSessionForceSteer()
 	}
+	if msg.Type == tea.KeyCtrlV || isAltVKey(msg) {
+		return m.handleClipboardPaste()
+	}
+	if msg.Paste {
+		if cmd, handled := m.handleBracketedPaste(string(msg.Runes)); handled {
+			return m, cmd
+		}
+	}
 
 	switch msg.String() {
 	case "ctrl+c":
@@ -1591,6 +1630,67 @@ func (m hubModel) handleSessionForceSteer() (tea.Model, tea.Cmd) {
 	m.session.resetInput()
 	m.session.refreshViewport()
 	return m, sendHubQueueThenDrain(m.client, ref, pending, draft)
+}
+
+// isAltVKey reports whether the keypress is Alt+v / Ctrl+Alt+V. WSL
+// terminals frequently swallow Ctrl+V on the Windows side, so we accept
+// Alt+v as the equivalent shortcut for clipboard paste.
+func isAltVKey(msg tea.KeyMsg) bool {
+	if !msg.Alt {
+		return false
+	}
+	if msg.Type != tea.KeyRunes {
+		return false
+	}
+	if len(msg.Runes) != 1 {
+		return false
+	}
+	r := msg.Runes[0]
+	return r == 'v' || r == 'V'
+}
+
+// handleClipboardPaste reads an image from the system clipboard and
+// pushes it onto pendingAttachments. On failure the user gets a
+// system-message banner explaining the cause instead of a silent miss.
+func (m hubModel) handleClipboardPaste() (tea.Model, tea.Cmd) {
+	src := m.clipboardSource
+	if src == nil {
+		src = NewSystemClipboardSource()
+		m.clipboardSource = src
+	}
+	img, err := PasteClipboardImage(src)
+	if err != nil {
+		m.addSessionSystem("Clipboard paste failed: " + err.Error())
+		return m, nil
+	}
+	m.addPendingAttachment(img)
+	return m, nil
+}
+
+// handleBracketedPaste inspects bracketed-paste payloads for the
+// "single image path" shape. When the text resolves to an existing
+// image file, the path is attached and the textarea is left alone;
+// otherwise the caller falls through and the textarea receives the
+// paste as normal text.
+func (m *hubModel) handleBracketedPaste(text string) (tea.Cmd, bool) {
+	resolved := NormalizePastedPath(text)
+	if resolved == "" {
+		return nil, false
+	}
+	if !IsImageFile(resolved) {
+		return nil, false
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || info.IsDir() {
+		return nil, false
+	}
+	m.addPendingAttachment(&PastedImage{
+		Path:      resolved,
+		MediaType: mediaTypeForPath(resolved),
+		Size:      int(info.Size()),
+		Origin:    "path",
+	})
+	return nil, true
 }
 
 func (m *hubModel) enterSessionBrowse(pageUp bool) {
