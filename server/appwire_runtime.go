@@ -76,6 +76,8 @@ func (s *Server) registerAppWireHandlers() {
 	appserver.HandleTyped(router, appwire.MethodTurnStart, s.handleAppTurnStart)
 	appserver.HandleTyped(router, appwire.MethodTurnSteer, s.handleAppTurnSteer)
 	appserver.HandleTyped(router, appwire.MethodTurnInterrupt, s.handleAppTurnInterrupt)
+	appserver.HandleTyped(router, appwire.MethodTurnQueue, s.handleAppTurnQueue)
+	appserver.HandleTyped(router, appwire.MethodTurnDrainAsSteer, s.handleAppTurnDrainAsSteer)
 	appserver.HandleTyped(router, appwire.MethodThreadCompactStart, s.handleAppThreadCompactStart)
 	appserver.HandleTyped(router, appwire.MethodThreadShutdown, s.handleAppThreadShutdown)
 	appserver.HandleTyped(router, appwire.MethodThreadClear, s.handleAppThreadClear)
@@ -359,6 +361,59 @@ func (s *Server) handleAppTurnInterrupt(_ context.Context, params appwire.TurnIn
 	return appwire.EmptyResponse{}, nil
 }
 
+// handleAppTurnQueue handles turn/queue (kata 111a). The session must be
+// processing for the call to be meaningful — calling on an idle session is
+// rejected with Conflict so callers fall back to turn/start instead.
+func (s *Server) handleAppTurnQueue(_ context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
+	if strings.TrimSpace(params.Text) == "" {
+		return appwire.EmptyResponse{}, appwire.InvalidParams("text is required")
+	}
+	s.mu.RLock()
+	fn := s.queueFunc
+	processing := s.processing
+	closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
+	s.mu.RUnlock()
+	if closed {
+		return appwire.EmptyResponse{}, appwire.Conflict("session is closed")
+	}
+	if !processing {
+		return appwire.EmptyResponse{}, appwire.Conflict("no active turn to queue against")
+	}
+	if fn == nil {
+		return appwire.EmptyResponse{}, appwire.Unavailable("queue not available")
+	}
+	if err := fn(params.Text); err != nil {
+		return appwire.EmptyResponse{}, err
+	}
+	return appwire.EmptyResponse{}, nil
+}
+
+// handleAppTurnDrainAsSteer handles turn/drainAsSteer (kata 0bq1).
+func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, _ appwire.TurnDrainAsSteerParams) (appwire.EmptyResponse, error) {
+	s.mu.RLock()
+	fn := s.drainSteerFunc
+	depthFn := s.queueDepthFn
+	processing := s.processing
+	closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
+	s.mu.RUnlock()
+	if closed {
+		return appwire.EmptyResponse{}, appwire.Conflict("session is closed")
+	}
+	if !processing {
+		return appwire.EmptyResponse{}, appwire.Conflict("no active turn to steer")
+	}
+	if fn == nil {
+		return appwire.EmptyResponse{}, appwire.Unavailable("drain-as-steer not available")
+	}
+	if depthFn != nil && depthFn() == 0 {
+		return appwire.EmptyResponse{}, appwire.Conflict("queue is empty")
+	}
+	if err := fn(); err != nil {
+		return appwire.EmptyResponse{}, err
+	}
+	return appwire.EmptyResponse{}, nil
+}
+
 func (s *Server) handleAppThreadCompactStart(ctx context.Context, _ appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
 	s.mu.RLock()
 	fn := s.compactFunc
@@ -536,6 +591,9 @@ func (s *Server) appCapabilities(state string, processing bool) appwire.ThreadCa
 		ForkFromTurn: false,
 		Shutdown:     s.shutdownFunc != nil,
 		ChangeModel:  s.modelFunc != nil && !closed,
+		// Queue mirrors Steer's "active turn" gate: only meaningful while
+		// a turn is in flight (kata 111a).
+		Queue: s.queueFunc != nil && processing && !closed,
 	}
 }
 

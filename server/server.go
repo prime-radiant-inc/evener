@@ -93,6 +93,7 @@ type ActionCapabilities struct {
 	Clear          bool   `json:"clear"`
 	Shutdown       bool   `json:"shutdown"`
 	ChangeModel    bool   `json:"change_model"`
+	Queue          bool   `json:"queue"`
 	ReadOnlyReason string `json:"read_only_reason,omitempty"`
 }
 
@@ -118,6 +119,9 @@ type Server struct {
 	appActiveTurnID  string
 	cancelFunc       context.CancelFunc
 	steerFunc        func(string)
+	queueFunc        func(string) error
+	drainSteerFunc   func() error
+	queueDepthFn     func() int
 	compactFunc      func(context.Context) error
 	clearFunc        func(context.Context) error
 	pressureFn       func() float64
@@ -169,6 +173,8 @@ func NewServer(cfg ServerConfig) *Server {
 	s.mux.HandleFunc("/status", s.handleStatus)
 	s.mux.HandleFunc("/interrupt", s.handleInterrupt)
 	s.mux.HandleFunc("/steer", s.handleSteer)
+	s.mux.HandleFunc("/queue", s.handleQueue)
+	s.mux.HandleFunc("/drain-as-steer", s.handleDrainAsSteer)
 	s.mux.HandleFunc("/compact", s.handleCompact)
 	s.mux.HandleFunc("/model", s.handleModel)
 	s.mux.HandleFunc("/models", s.handleModels)
@@ -268,6 +274,106 @@ func (s *Server) handleSteer(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 	if fn != nil {
 		fn(req.Text)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// SetQueueFunc sets the function called by POST /queue (kata 111a). The
+// callback should append the message to the underlying session's input
+// queue. Returns an error when the session refuses the message.
+func (s *Server) SetQueueFunc(fn func(string) error) {
+	s.mu.Lock()
+	s.queueFunc = fn
+	s.mu.Unlock()
+}
+
+// SetDrainAsSteerFunc sets the function called by POST /drain-as-steer
+// (kata 0bq1). The callback should pop every queued message and inject
+// them as a single STEERING message to the in-flight turn.
+func (s *Server) SetDrainAsSteerFunc(fn func() error) {
+	s.mu.Lock()
+	s.drainSteerFunc = fn
+	s.mu.Unlock()
+}
+
+// SetQueueDepthFunc sets a callback returning the current queue depth so
+// capability projection can advertise Queue accurately.
+func (s *Server) SetQueueDepthFunc(fn func() int) {
+	s.mu.Lock()
+	s.queueDepthFn = fn
+	s.mu.Unlock()
+}
+
+func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.mu.RLock()
+	processing := s.processing
+	closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
+	fn := s.queueFunc
+	s.mu.RUnlock()
+	if closed {
+		http.Error(w, "session is closed", http.StatusConflict)
+		return
+	}
+	if !processing {
+		// turn/queue is only meaningful while a turn is in flight; when
+		// the session is idle the caller should use /input instead.
+		http.Error(w, "no active turn to queue against", http.StatusConflict)
+		return
+	}
+	if fn == nil {
+		http.Error(w, "queue not available", http.StatusServiceUnavailable)
+		return
+	}
+	var req InputRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Text) == "" {
+		http.Error(w, "text is required", http.StatusBadRequest)
+		return
+	}
+	if err := fn(req.Text); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (s *Server) handleDrainAsSteer(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.mu.RLock()
+	processing := s.processing
+	closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
+	fn := s.drainSteerFunc
+	depthFn := s.queueDepthFn
+	s.mu.RUnlock()
+	if closed {
+		http.Error(w, "session is closed", http.StatusConflict)
+		return
+	}
+	if !processing {
+		http.Error(w, "no active turn to steer", http.StatusConflict)
+		return
+	}
+	if fn == nil {
+		http.Error(w, "drain-as-steer not available", http.StatusServiceUnavailable)
+		return
+	}
+	if depthFn != nil && depthFn() == 0 {
+		http.Error(w, "queue is empty", http.StatusConflict)
+		return
+	}
+	if err := fn(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -498,6 +604,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Clear:       s.clearFunc != nil && !processing && !closed,
 		Shutdown:    s.shutdownFunc != nil,
 		ChangeModel: s.modelFunc != nil && !closed,
+		Queue:       s.queueFunc != nil && processing && !closed,
 	}
 	s.mu.RUnlock()
 

@@ -365,6 +365,29 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		}
 		return appwire.EmptyResponse{}, source.InterruptTurn(ctx, params)
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodTurnQueue, func(ctx context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
+		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
+		if err != nil {
+			return appwire.EmptyResponse{}, err
+		}
+		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "queue"); err != nil {
+			return appwire.EmptyResponse{}, err
+		}
+		return appwire.EmptyResponse{}, source.QueueTurn(ctx, params)
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodTurnDrainAsSteer, func(ctx context.Context, params appwire.TurnDrainAsSteerParams) (appwire.EmptyResponse, error) {
+		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
+		if err != nil {
+			return appwire.EmptyResponse{}, err
+		}
+		// drainAsSteer rides on the Steer capability — the daemon checks
+		// queue depth separately to return Conflict when there is nothing
+		// to drain.
+		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "steer"); err != nil {
+			return appwire.EmptyResponse{}, err
+		}
+		return appwire.EmptyResponse{}, source.DrainAsSteer(ctx, params)
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadClear, func(ctx context.Context, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
 		if err != nil {
@@ -678,6 +701,8 @@ func threadActionAvailable(caps appwire.ThreadCapabilities, action string) bool 
 		return caps.Shutdown
 	case "model":
 		return caps.ChangeModel
+	case "queue":
+		return caps.Queue
 	default:
 		return false
 	}

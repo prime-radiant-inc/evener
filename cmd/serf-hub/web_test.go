@@ -1710,6 +1710,14 @@ func (s *scriptedAppSource) InterruptTurn(context.Context, appwire.TurnInterrupt
 	return appwire.Unavailable("scripted source does not interrupt turns")
 }
 
+func (s *scriptedAppSource) QueueTurn(context.Context, appwire.TurnQueueParams) error {
+	return appwire.Unavailable("scripted source does not queue turns")
+}
+
+func (s *scriptedAppSource) DrainAsSteer(context.Context, appwire.TurnDrainAsSteerParams) error {
+	return appwire.Unavailable("scripted source does not drain as steer")
+}
+
 func (s *scriptedAppSource) CompactThread(context.Context, appwire.ThreadCompactStartParams) error {
 	return appwire.Unavailable("scripted source does not compact threads")
 }

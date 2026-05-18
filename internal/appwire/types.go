@@ -20,6 +20,8 @@ const (
 	MethodTurnStart                 = "turn/start"
 	MethodTurnSteer                 = "turn/steer"
 	MethodTurnInterrupt             = "turn/interrupt"
+	MethodTurnQueue                 = "turn/queue"
+	MethodTurnDrainAsSteer          = "turn/drainAsSteer"
 	MethodSerfTasksList             = "serf/tasks/list"
 	MethodSerfThreadTranscriptsList = "serf/thread/transcripts/list"
 	MethodSerfDirsComplete          = "serf/dirs/complete"
@@ -168,6 +170,10 @@ type ThreadCapabilities struct {
 	ForkFromTurn bool `json:"forkFromTurn"`
 	Shutdown     bool `json:"shutdown"`
 	ChangeModel  bool `json:"changeModel"`
+	// Queue advertises support for turn/queue (kata 111a). True when a turn
+	// is currently in flight and the session can accept enqueued user
+	// messages for processing after the active turn completes.
+	Queue bool `json:"queue"`
 }
 
 type SerfDiagnostics struct {
@@ -389,6 +395,22 @@ type TurnSteerParams struct {
 type TurnInterruptParams struct {
 	Ref    string `json:"ref"`
 	TurnID string `json:"turnId,omitempty"`
+}
+
+// TurnQueueParams is the wire shape for turn/queue (kata 111a). Queues a
+// user message during a running turn for processing after the active turn
+// completes. The daemon enqueues immediately and returns; no turn id is
+// reserved or returned.
+type TurnQueueParams struct {
+	Ref  string `json:"ref"`
+	Text string `json:"text"`
+}
+
+// TurnDrainAsSteerParams is the wire shape for turn/drainAsSteer (kata
+// 0bq1 force-steer combined action). Pops every queued message and sends
+// them to the in-flight turn as a single STEERING message.
+type TurnDrainAsSteerParams struct {
+	Ref string `json:"ref"`
 }
 
 type ThreadCompactStartParams struct {

@@ -1582,6 +1582,14 @@ func (s *relayLifecycleSource) InterruptTurn(context.Context, appwire.TurnInterr
 	return appwire.Unavailable("relay lifecycle source does not interrupt turns")
 }
 
+func (s *relayLifecycleSource) QueueTurn(context.Context, appwire.TurnQueueParams) error {
+	return appwire.Unavailable("relay lifecycle source does not queue turns")
+}
+
+func (s *relayLifecycleSource) DrainAsSteer(context.Context, appwire.TurnDrainAsSteerParams) error {
+	return appwire.Unavailable("relay lifecycle source does not drain as steer")
+}
+
 func (s *relayLifecycleSource) CompactThread(context.Context, appwire.ThreadCompactStartParams) error {
 	return appwire.Unavailable("relay lifecycle source does not compact threads")
 }

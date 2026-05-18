@@ -713,3 +713,134 @@ func TestServerAppWireThreadReadSubscribesForNotifications(t *testing.T) {
 		t.Fatal("timed out waiting for notification")
 	}
 }
+
+// TestServerAppWireQueueCapabilityFlipsWithProcessing verifies that the
+// appwire Capabilities.queue bit is gated on the session being mid-turn
+// (kata 111a).
+func TestServerAppWireQueueCapabilityFlipsWithProcessing(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetQueueFunc(func(string) error { return nil })
+
+	// Idle: capabilities.queue must be false even with QueueFunc set.
+	srv.SetProcessing(false)
+	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "IDLE"})
+	caps := srv.appCapabilities("IDLE", false)
+	if caps.Queue {
+		t.Fatalf("Queue should be false when idle")
+	}
+
+	// Processing: capabilities.queue flips to true.
+	srv.SetProcessing(true)
+	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "PROCESSING"})
+	caps = srv.appCapabilities("PROCESSING", true)
+	if !caps.Queue {
+		t.Fatalf("Queue should be true mid-turn")
+	}
+
+	// No QueueFunc registered: Queue stays false.
+	srv2 := NewServer(ServerConfig{})
+	srv2.SetAppIdentity("local", "th_2")
+	srv2.SetProcessing(true)
+	if caps2 := srv2.appCapabilities("PROCESSING", true); caps2.Queue {
+		t.Fatalf("Queue should be false without QueueFunc registered")
+	}
+}
+
+// TestServerAppWireTurnQueueAcceptsMidTurnMessage verifies the
+// turn/queue handler dispatches text to the registered QueueFunc when a
+// turn is in flight.
+func TestServerAppWireTurnQueueAcceptsMidTurnMessage(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetProcessing(true)
+	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "PROCESSING"})
+	var got []string
+	srv.SetQueueFunc(func(text string) error {
+		got = append(got, text)
+		return nil
+	})
+
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{
+		Ref:  "local:th_1",
+		Text: "queued",
+	}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("resp=%v error=%+v", resp.Kind(), resp.Error)
+	}
+	if len(got) != 1 || got[0] != "queued" {
+		t.Fatalf("got=%v", got)
+	}
+}
+
+// TestServerAppWireTurnQueueRejectsWhenIdle verifies the handler returns
+// Conflict when the session is not processing.
+func TestServerAppWireTurnQueueRejectsWhenIdle(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetProcessing(false)
+	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "IDLE"})
+	srv.SetQueueFunc(func(string) error { return nil })
+
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{
+		Ref:  "local:th_1",
+		Text: "queued",
+	}))
+	if resp.Kind() != appwire.MessageError {
+		t.Fatalf("expected error response, got %v", resp.Kind())
+	}
+	if resp.Error.Error.Code != appwire.CodeConflict {
+		t.Fatalf("error=%+v", resp.Error.Error)
+	}
+}
+
+// TestServerAppWireTurnDrainAsSteerRequiresQueuedMessages verifies the
+// handler returns Conflict when no messages are queued.
+func TestServerAppWireTurnDrainAsSteerRequiresQueuedMessages(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetProcessing(true)
+	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "PROCESSING"})
+	srv.SetDrainAsSteerFunc(func() error { return nil })
+	srv.SetQueueDepthFunc(func() int { return 0 })
+
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{
+		Ref: "local:th_1",
+	}))
+	if resp.Kind() != appwire.MessageError {
+		t.Fatalf("expected error, got %v", resp.Kind())
+	}
+	if resp.Error.Error.Code != appwire.CodeConflict {
+		t.Fatalf("error=%+v", resp.Error.Error)
+	}
+}
+
+// TestServerAppWireTurnDrainAsSteerDispatchesWhenQueued verifies the
+// handler invokes the registered drain callback.
+func TestServerAppWireTurnDrainAsSteerDispatchesWhenQueued(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetProcessing(true)
+	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "PROCESSING"})
+	called := 0
+	srv.SetDrainAsSteerFunc(func() error { called++; return nil })
+	srv.SetQueueDepthFunc(func() int { return 2 })
+
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{
+		Ref: "local:th_1",
+	}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("resp=%v error=%+v", resp.Kind(), resp.Error)
+	}
+	if called != 1 {
+		t.Fatalf("drain called=%d, want 1", called)
+	}
+}

@@ -235,6 +235,20 @@ func (c *Client) TurnInterrupt(ctx context.Context, params TurnInterruptParams) 
 	return c.request(ctx, MethodTurnInterrupt, params, nil)
 }
 
+// TurnQueue calls turn/queue (kata 111a) to enqueue a user message during a
+// running turn. The daemon returns immediately once the text has been
+// recorded; the queued message is processed as a fresh user turn after the
+// active turn completes.
+func (c *Client) TurnQueue(ctx context.Context, params TurnQueueParams) error {
+	return c.request(ctx, MethodTurnQueue, params, nil)
+}
+
+// TurnDrainAsSteer calls turn/drainAsSteer (kata 0bq1) to drain every queued
+// message into a single STEERING message for the in-flight turn.
+func (c *Client) TurnDrainAsSteer(ctx context.Context, params TurnDrainAsSteerParams) error {
+	return c.request(ctx, MethodTurnDrainAsSteer, params, nil)
+}
+
 func (c *Client) TasksList(ctx context.Context, params TaskListParams) (TaskListResponse, error) {
 	var out TaskListResponse
 	err := c.request(ctx, MethodSerfTasksList, params, &out)

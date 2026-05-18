@@ -125,6 +125,26 @@ func (s *LocalDaemonSource) InterruptTurn(ctx context.Context, params appwire.Tu
 	})
 }
 
+func (s *LocalDaemonSource) QueueTurn(ctx context.Context, params appwire.TurnQueueParams) error {
+	entry, err := s.entryForRef(params.Ref, "")
+	if err != nil {
+		return err
+	}
+	return s.withClient(ctx, entry, func(client *appwire.Client) error {
+		return client.TurnQueue(ctx, params)
+	})
+}
+
+func (s *LocalDaemonSource) DrainAsSteer(ctx context.Context, params appwire.TurnDrainAsSteerParams) error {
+	entry, err := s.entryForRef(params.Ref, "")
+	if err != nil {
+		return err
+	}
+	return s.withClient(ctx, entry, func(client *appwire.Client) error {
+		return client.TurnDrainAsSteer(ctx, params)
+	})
+}
+
 func (s *LocalDaemonSource) CompactThread(ctx context.Context, params appwire.ThreadCompactStartParams) error {
 	entry, err := s.entryForRef(params.Ref, "")
 	if err != nil {
@@ -426,6 +446,7 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 				ForkFromTurn: true,
 				Shutdown:     true,
 				ChangeModel:  true,
+				Queue:        true,
 			},
 		},
 		Status: appwire.ThreadStatus{Type: localDaemonThreadStatus(item.Status)},

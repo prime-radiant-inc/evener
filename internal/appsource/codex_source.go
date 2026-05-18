@@ -315,6 +315,14 @@ func (s *CodexSource) ShutdownThread(context.Context, appwire.ThreadShutdownPara
 	return appwire.Unavailable("codex source does not support thread/shutdown")
 }
 
+func (s *CodexSource) QueueTurn(context.Context, appwire.TurnQueueParams) error {
+	return appwire.Unavailable("codex source does not support turn/queue")
+}
+
+func (s *CodexSource) DrainAsSteer(context.Context, appwire.TurnDrainAsSteerParams) error {
+	return appwire.Unavailable("codex source does not support turn/drainAsSteer")
+}
+
 func (s *CodexSource) SetThreadModel(context.Context, appwire.ThreadModelSetParams) error {
 	return appwire.Unavailable("codex source does not support thread/model/set")
 }

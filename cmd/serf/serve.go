@@ -239,6 +239,9 @@ func runServe(args []string) error {
 
 	srv.SetCompactFunc(func(ctx context.Context) error { return getSession().Compact(ctx) })
 	srv.SetSteerFunc(func(text string) { getSession().Steer(text) })
+	srv.SetQueueFunc(func(text string) error { return getSession().Enqueue(ctx, text) })
+	srv.SetDrainAsSteerFunc(func() error { return getSession().DrainAsSteer(ctx) })
+	srv.SetQueueDepthFunc(func() int { return getSession().QueueDepth() })
 	srv.SetContextPressureFunc(func() float64 { return getSession().ContextPressure() })
 	srv.SetModelFunc(func(model string) { getSession().SetModel(model) })
 	srv.SetListModelsFunc(cmdutil.ListModelsFunc(client, profile.ID()))

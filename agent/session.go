@@ -238,6 +238,13 @@ type Session struct {
 	steeringQueue []string
 	followups     []string
 
+	// inputQueue holds messages submitted via Enqueue while a turn is in
+	// flight. Kata 111a: text typed during a running turn returns to the
+	// user immediately and is processed as a fresh user turn once the
+	// active turn completes. DrainAsSteer (kata 0bq1) collapses any queued
+	// messages into a single steering message sent to the in-flight turn.
+	inputQueue []string
+
 	// communicate tool state (transient, reset each processOneInput call)
 	communicated          bool
 	communicateAwaitReply bool
@@ -1081,6 +1088,84 @@ func (s *Session) FollowUp(msg string) {
 	s.followups = append(s.followups, msg)
 }
 
+// Enqueue appends a user message to the per-session input queue (kata 111a).
+// Queued messages are processed as fresh user turns once the in-flight
+// ProcessInput finishes its current turn. Enqueueing on an idle session is
+// valid and behaves as a FIFO buffer that will be drained on the next call to
+// ProcessInput's outer loop; callers that want immediate processing on an
+// idle session should call ProcessInput directly. Returns an error if the
+// session is closed or the text is blank.
+func (s *Session) Enqueue(ctx context.Context, text string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(text) == "" {
+		return fmt.Errorf("queue: text is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state == SessionClosed {
+		return fmt.Errorf("queue: session is closed")
+	}
+	s.inputQueue = append(s.inputQueue, text)
+	return nil
+}
+
+// DrainAsSteer pops every queued message, joins them with a blank line, and
+// injects the combined text as a single STEERING message to the in-flight
+// turn (kata 0bq1 force-steer combined action). Returns an error if the
+// queue is empty or the session is closed.
+func (s *Session) DrainAsSteer(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if s.state == SessionClosed {
+		s.mu.Unlock()
+		return fmt.Errorf("drain: session is closed")
+	}
+	if len(s.inputQueue) == 0 {
+		s.mu.Unlock()
+		return fmt.Errorf("drain: queue is empty")
+	}
+	msgs := append([]string{}, s.inputQueue...)
+	s.inputQueue = nil
+	s.mu.Unlock()
+	combined := strings.Join(msgs, "\n\n")
+	s.Steer(combined)
+	return nil
+}
+
+// QueueDepth returns the number of messages currently in the input queue.
+func (s *Session) QueueDepth() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.inputQueue)
+}
+
+// QueuePreview returns a copy of the queued messages in FIFO order.
+func (s *Session) QueuePreview() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.inputQueue) == 0 {
+		return nil
+	}
+	return append([]string{}, s.inputQueue...)
+}
+
+// popQueueHead removes and returns the next queued message. Returns "" when
+// the queue is empty.
+func (s *Session) popQueueHead() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.inputQueue) == 0 {
+		return ""
+	}
+	msg := s.inputQueue[0]
+	s.inputQueue = s.inputQueue[1:]
+	return msg
+}
+
 // Communicated reports whether communicate was called during the most recent
 // ProcessInput invocation.
 func (s *Session) Communicated() bool {
@@ -1295,24 +1380,33 @@ func (s *Session) ProcessInput(ctx context.Context, input string, images []Image
 			return strings.Join(outputs, "\n"), err
 		}
 		fu := s.popFollowUp()
-		if strings.TrimSpace(fu) == "" {
-			s.mu.Lock()
-			if !s.sessionEndEmitted {
-				s.sessionEndEmitted = true
-				turns := s.modelResponses
-				state := s.state
-				s.mu.Unlock()
-				s.emit(EventSessionEnd, SessionEndData{
-					Reason: "input_complete",
-					State:  string(state),
-					Turns:  turns,
-				})
-			} else {
-				s.mu.Unlock()
-			}
-			return strings.Join(outputs, "\n"), nil
+		if strings.TrimSpace(fu) != "" {
+			next = fu
+			continue
 		}
-		next = fu
+		// kata 111a: when the per-turn followup queue is empty, drain the
+		// next user-typed queued message and run it as a fresh user turn.
+		// Each drain consumes exactly one message so each becomes a
+		// distinct user turn in the transcript.
+		if queued := s.popQueueHead(); strings.TrimSpace(queued) != "" {
+			next = queued
+			continue
+		}
+		s.mu.Lock()
+		if !s.sessionEndEmitted {
+			s.sessionEndEmitted = true
+			turns := s.modelResponses
+			state := s.state
+			s.mu.Unlock()
+			s.emit(EventSessionEnd, SessionEndData{
+				Reason: "input_complete",
+				State:  string(state),
+				Turns:  turns,
+			})
+		} else {
+			s.mu.Unlock()
+		}
+		return strings.Join(outputs, "\n"), nil
 	}
 }
 

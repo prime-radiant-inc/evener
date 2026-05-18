@@ -736,3 +736,149 @@ func TestShutdown_RejectsGET(t *testing.T) {
 		t.Fatalf("status: got %d, want %d", rec.Code, http.StatusMethodNotAllowed)
 	}
 }
+
+func TestQueueEndpoint_Accepted(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetProcessing(true)
+	var received []string
+	srv.SetQueueFunc(func(text string) error {
+		received = append(received, text)
+		return nil
+	})
+
+	body := strings.NewReader(`{"text":"queued msg"}`)
+	req := httptest.NewRequest(http.MethodPost, "/queue", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status: got %d, want 202; body=%q", rec.Code, rec.Body.String())
+	}
+	if len(received) != 1 || received[0] != "queued msg" {
+		t.Fatalf("received=%v", received)
+	}
+}
+
+func TestQueueEndpoint_RejectsWhenIdle(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetProcessing(false)
+	srv.SetQueueFunc(func(string) error { return nil })
+
+	body := strings.NewReader(`{"text":"x"}`)
+	req := httptest.NewRequest(http.MethodPost, "/queue", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status: got %d, want 409; body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestQueueEndpoint_RejectsEmptyText(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetProcessing(true)
+	srv.SetQueueFunc(func(string) error { return nil })
+	body := strings.NewReader(`{"text":""}`)
+	req := httptest.NewRequest(http.MethodPost, "/queue", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want 400; body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestQueueEndpoint_NoFunc(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetProcessing(true)
+	body := strings.NewReader(`{"text":"x"}`)
+	req := httptest.NewRequest(http.MethodPost, "/queue", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status: got %d, want 503; body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDrainAsSteerEndpoint_NoContent(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetProcessing(true)
+	called := 0
+	srv.SetDrainAsSteerFunc(func() error { called++; return nil })
+	srv.SetQueueDepthFunc(func() int { return 2 })
+
+	req := httptest.NewRequest(http.MethodPost, "/drain-as-steer", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status: got %d, want 204; body=%q", rec.Code, rec.Body.String())
+	}
+	if called != 1 {
+		t.Fatalf("called=%d, want 1", called)
+	}
+}
+
+func TestDrainAsSteerEndpoint_RejectsEmpty(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetProcessing(true)
+	srv.SetDrainAsSteerFunc(func() error { return nil })
+	srv.SetQueueDepthFunc(func() int { return 0 })
+
+	req := httptest.NewRequest(http.MethodPost, "/drain-as-steer", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status: got %d, want 409 (empty queue); body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDrainAsSteerEndpoint_RejectsWhenIdle(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetProcessing(false)
+	srv.SetDrainAsSteerFunc(func() error { return nil })
+
+	req := httptest.NewRequest(http.MethodPost, "/drain-as-steer", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status: got %d, want 409 (idle); body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestStatusCapabilities_QueueGatedByProcessing(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetQueueFunc(func(string) error { return nil })
+
+	// Idle: Queue must be false even when QueueFunc is set.
+	srv.SetProcessing(false)
+	srv.SetStatus(StatusInfo{SessionID: "s1", State: "IDLE"})
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code=%d", rec.Code)
+	}
+	var idle StatusInfo
+	if err := json.NewDecoder(rec.Body).Decode(&idle); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if idle.Capabilities.Queue {
+		t.Fatalf("Queue should be false when idle")
+	}
+
+	// Processing: Queue flips to true.
+	srv.SetProcessing(true)
+	srv.SetStatus(StatusInfo{SessionID: "s1", State: "PROCESSING"})
+	req = httptest.NewRequest(http.MethodGet, "/status", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	var processing StatusInfo
+	if err := json.NewDecoder(rec.Body).Decode(&processing); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !processing.Capabilities.Queue {
+		t.Fatalf("Queue should be true while processing")
+	}
+}

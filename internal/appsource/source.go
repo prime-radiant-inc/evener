@@ -16,6 +16,8 @@ type Source interface {
 	StartTurn(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error)
 	SteerTurn(context.Context, appwire.TurnSteerParams) error
 	InterruptTurn(context.Context, appwire.TurnInterruptParams) error
+	QueueTurn(context.Context, appwire.TurnQueueParams) error
+	DrainAsSteer(context.Context, appwire.TurnDrainAsSteerParams) error
 	CompactThread(context.Context, appwire.ThreadCompactStartParams) error
 	ShutdownThread(context.Context, appwire.ThreadShutdownParams) error
 	SetThreadModel(context.Context, appwire.ThreadModelSetParams) error

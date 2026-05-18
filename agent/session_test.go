@@ -3382,3 +3382,178 @@ func TestSession_ProcessInput_ImageOnly_OmitsEmptyTextPart(t *testing.T) {
 		t.Fatalf("part kind: got %q, want %q", parts[0].Kind, llm.ContentImage)
 	}
 }
+
+// TestSession_Enqueue_DrainsAfterTurnCompletes verifies that a message
+// enqueued during an in-flight turn is processed as a fresh user turn once
+// the active turn completes. Kata 111a.
+func TestSession_Enqueue_DrainsAfterTurnCompletes(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	// Two LLM responses: one for the first user input, one for the queued
+	// message. Each finalResponse satisfies the communicate result tool, so
+	// ProcessInput completes one user turn per LLM call.
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("first reply") },
+			func(req llm.Request) llm.Response { return finalResponse("second reply") },
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// Enqueue before ProcessInput so the outer loop drains the queue once
+	// the first user turn finishes naturally.
+	if err := sess.Enqueue(context.Background(), "queued message"); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	if depth := sess.QueueDepth(); depth != 1 {
+		t.Fatalf("QueueDepth after Enqueue: got %d, want 1", depth)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := sess.ProcessInput(ctx, "first user input", nil)
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if !strings.Contains(out, "first reply") || !strings.Contains(out, "second reply") {
+		t.Fatalf("ProcessInput output should contain both replies; got %q", out)
+	}
+	if depth := sess.QueueDepth(); depth != 0 {
+		t.Fatalf("QueueDepth after drain: got %d, want 0", depth)
+	}
+
+	// Two user-input turns must appear in history: the original and the
+	// queued one, in that order.
+	sess.mu.Lock()
+	turns := append([]Turn{}, sess.history...)
+	sess.mu.Unlock()
+	var userTexts []string
+	for _, tr := range turns {
+		if tr.Kind == TurnUserInput {
+			userTexts = append(userTexts, tr.Message.Text())
+		}
+	}
+	if len(userTexts) != 2 {
+		t.Fatalf("user turns: got %d (%v), want 2", len(userTexts), userTexts)
+	}
+	if !strings.Contains(userTexts[0], "first user input") {
+		t.Fatalf("first user turn: got %q", userTexts[0])
+	}
+	if !strings.Contains(userTexts[1], "queued message") {
+		t.Fatalf("second user turn: got %q", userTexts[1])
+	}
+}
+
+// TestSession_DrainAsSteer_JoinsWithDoubleNewline verifies that
+// DrainAsSteer pops every queued message and combines them into a single
+// STEERING message joined by "\n\n". Kata 0bq1.
+func TestSession_DrainAsSteer_JoinsWithDoubleNewline(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai"}
+	c.Register(f)
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	if err := sess.Enqueue(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Enqueue alpha: %v", err)
+	}
+	if err := sess.Enqueue(context.Background(), "bravo"); err != nil {
+		t.Fatalf("Enqueue bravo: %v", err)
+	}
+	if err := sess.Enqueue(context.Background(), "charlie"); err != nil {
+		t.Fatalf("Enqueue charlie: %v", err)
+	}
+	if depth := sess.QueueDepth(); depth != 3 {
+		t.Fatalf("QueueDepth: got %d, want 3", depth)
+	}
+
+	if err := sess.DrainAsSteer(context.Background()); err != nil {
+		t.Fatalf("DrainAsSteer: %v", err)
+	}
+	if depth := sess.QueueDepth(); depth != 0 {
+		t.Fatalf("QueueDepth after drain: got %d, want 0", depth)
+	}
+
+	// The combined message must have landed on the steeringQueue with the
+	// expected join.
+	sess.mu.Lock()
+	steering := append([]string{}, sess.steeringQueue...)
+	sess.mu.Unlock()
+	want := "alpha\n\nbravo\n\ncharlie"
+	if len(steering) != 1 || steering[0] != want {
+		t.Fatalf("steeringQueue: got %#v, want [%q]", steering, want)
+	}
+}
+
+// TestSession_Enqueue_OnEmptyText_ReturnsError verifies that the queue
+// rejects blank input rather than silently dropping it.
+func TestSession_Enqueue_OnEmptyText_ReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai"}
+	c.Register(f)
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	if err := sess.Enqueue(context.Background(), "   "); err == nil {
+		t.Fatalf("Enqueue blank text: want error, got nil")
+	}
+	if depth := sess.QueueDepth(); depth != 0 {
+		t.Fatalf("QueueDepth after blank: got %d, want 0", depth)
+	}
+}
+
+// TestSession_DrainAsSteer_Empty_ReturnsError verifies the no-op case.
+func TestSession_DrainAsSteer_Empty_ReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai"}
+	c.Register(f)
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	if err := sess.DrainAsSteer(context.Background()); err == nil {
+		t.Fatalf("DrainAsSteer empty queue: want error, got nil")
+	}
+}
+
+// TestSession_QueuePreview_ReturnsCopy verifies preview is a defensive copy.
+func TestSession_QueuePreview_ReturnsCopy(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai"}
+	c.Register(f)
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	_ = sess.Enqueue(context.Background(), "first")
+	_ = sess.Enqueue(context.Background(), "second")
+	preview := sess.QueuePreview()
+	if len(preview) != 2 || preview[0] != "first" || preview[1] != "second" {
+		t.Fatalf("preview: %#v", preview)
+	}
+	preview[0] = "mutated"
+	// Underlying queue should not reflect the local mutation.
+	fresh := sess.QueuePreview()
+	if fresh[0] != "first" {
+		t.Fatalf("preview leaked underlying slice: %#v", fresh)
+	}
+}

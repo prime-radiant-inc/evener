@@ -32,6 +32,10 @@ func (f fakeSource) SteerTurn(context.Context, appwire.TurnSteerParams) error { 
 func (f fakeSource) InterruptTurn(context.Context, appwire.TurnInterruptParams) error {
 	return nil
 }
+func (f fakeSource) QueueTurn(context.Context, appwire.TurnQueueParams) error { return nil }
+func (f fakeSource) DrainAsSteer(context.Context, appwire.TurnDrainAsSteerParams) error {
+	return nil
+}
 func (f fakeSource) CompactThread(context.Context, appwire.ThreadCompactStartParams) error {
 	return nil
 }
