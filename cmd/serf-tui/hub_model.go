@@ -154,6 +154,12 @@ type hubModel struct {
 	// tests via newSessionHubModel + assignment. When nil we lazily
 	// install the platform-specific SystemClipboardSource on first use.
 	clipboardSource ClipboardSource
+
+	// pending coordinates optimistic-rendering placeholders for
+	// turn/start, turn/queue, turn/steer, turn/drainAsSteer. Wired
+	// from main.go via setSend after tea.NewProgram constructs the
+	// program reference.
+	pending *pendingCoordinator
 }
 
 // addPendingAttachment appends a captured image to the composer's
@@ -221,7 +227,17 @@ func newHubModel(client *appwire.Client, hubURL string, stateDirs ...string) hub
 	}
 	session := newModel("", "", nil)
 	session.authController = nil
-	return hubModel{client: client, hubURL: hubURL, stateDir: stateDir, session: session, browseSelected: -1, dashboardFilter: newHubFilterInput(), dashboardRecentOpen: map[string]bool{}, dashboardProjectClosed: map[string]bool{}, spawnDirInput: newSpawnDirInput()}
+	model := hubModel{client: client, hubURL: hubURL, stateDir: stateDir, session: session, browseSelected: -1, dashboardFilter: newHubFilterInput(), dashboardRecentOpen: map[string]bool{}, dashboardProjectClosed: map[string]bool{}, spawnDirInput: newSpawnDirInput()}
+	// Construct the pending coordinator with a buffering placeholder
+	// send. main.go calls model.pending.setSend(program.Send) after
+	// tea.NewProgram so coordinator-emitted msgs reach Update. Until
+	// then, msgs are dropped harmlessly (the coordinator only emits
+	// in response to user actions, which can't happen pre-Run).
+	model.pending = newPendingCoordinator(realClock{}, func(tea.Msg) {})
+	if client != nil {
+		client.SetPendingCoordinator(model.pending)
+	}
+	return model
 }
 
 func newHubFilterInput() textinput.Model {
@@ -333,6 +349,40 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmd := m.applyHubNotification(msg.notification)
 		return m, tea.Batch(cmd, waitHubNotification(m.client))
+	case pendingRegisteredMsg:
+		switch msg.entry.Method {
+		case appwire.MethodTurnSteer:
+			m.session.messages = append(m.session.messages, chatMessage{
+				Kind:    msgSteering,
+				Text:    msg.entry.Text,
+				Pending: true,
+			})
+		case appwire.MethodTurnStart:
+			m.session.messages = append(m.session.messages, chatMessage{
+				Kind:    msgUser,
+				Text:    msg.entry.Text,
+				Pending: true,
+			})
+		case appwire.MethodTurnDrainAsSteer:
+			m.session.messages = append(m.session.messages, chatMessage{
+				Kind:    msgSteering,
+				Text:    fmt.Sprintf("draining %d → steering", len(m.sessionQueue)),
+				Pending: true,
+			})
+		case appwire.MethodTurnQueue:
+			// Queue entries surface in the queue-preview chrome, not
+			// the transcript pane. No transcript-side placeholder.
+		}
+		m.session.refreshViewport()
+		return m, nil
+	case pendingFailedMsg:
+		m.markMostRecentPendingFailedInline(msg.entry.Method, msg.reason)
+		m.session.refreshViewport()
+		return m, nil
+	case pendingConfirmedMsg:
+		m.removeMostRecentPendingInline(msg.entry.Method)
+		m.session.refreshViewport()
+		return m, nil
 	case hubSendMsg:
 		if msg.err != nil {
 			// Preserve pendingAttachments on error so the user can retry
@@ -2318,7 +2368,73 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 		}
 	}
 	m.session.refreshViewport()
+	// After the authoritative reducer update has applied, reconcile
+	// any matching pending optimistic placeholder. This is the SINGLE
+	// reconciliation site on the TUI side per the spec.
+	if m.pending != nil {
+		if method, text, ok := pendingReconcileFromNotification(notification); ok {
+			m.pending.TryReconcile(method, text)
+		}
+	}
 	return cmd
+}
+
+// pendingReconcileFromNotification translates an inbound notification
+// into the (wire-method, matchable-text) pair the pending coordinator
+// expects. Returns (_, _, false) for notifications that don't
+// correspond to an optimistic Turn*-style request. Only the steering
+// reconciler is wired today (Task 7); user-input / queueChanged /
+// drain-special matchers are scaffolded for future extension.
+func pendingReconcileFromNotification(n appwire.Notification) (string, string, bool) {
+	switch n.Method {
+	case appwire.NotifySerfSteeringInjected:
+		var p struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(n.Params, &p); err != nil {
+			return "", "", false
+		}
+		return appwire.MethodTurnSteer, p.Text, true
+	}
+	return "", "", false
+}
+
+// markMostRecentPendingFailedInline marks the most-recently-appended
+// pending message of the given method-kind as failed. Used by the
+// hubModel handler for pendingFailedMsg, which cannot easily address
+// a specific PendingID because the coordinator and reducer maintain
+// independent ID spaces (Task 6 stopgap).
+func (m *hubModel) markMostRecentPendingFailedInline(method, reason string) {
+	kind := reducerKindForMethod(method)
+	for i := len(m.session.messages) - 1; i >= 0; i-- {
+		if !m.session.messages[i].Pending {
+			continue
+		}
+		if m.session.messages[i].Kind != kind {
+			continue
+		}
+		m.session.messages[i].Pending = false
+		m.session.messages[i].Failed = true
+		m.session.messages[i].Reason = reason
+		return
+	}
+}
+
+// removeMostRecentPendingInline removes the most-recently-appended
+// pending message of the given method-kind. Used by pendingConfirmedMsg
+// after the authoritative event renders separately.
+func (m *hubModel) removeMostRecentPendingInline(method string) {
+	kind := reducerKindForMethod(method)
+	for i := len(m.session.messages) - 1; i >= 0; i-- {
+		if !m.session.messages[i].Pending {
+			continue
+		}
+		if m.session.messages[i].Kind != kind {
+			continue
+		}
+		m.session.messages = append(m.session.messages[:i], m.session.messages[i+1:]...)
+		return
+	}
 }
 
 func (m *hubModel) setActiveTurnID(turnID string) {

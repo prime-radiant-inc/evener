@@ -320,3 +320,19 @@ func nextPendingMessageID() int64 {
 	pendingMessageIDCounter++
 	return pendingMessageIDCounter
 }
+
+// reducerKindForMethod maps a wire method onto the messageKind used by
+// the optimistic placeholder rendered in the transcript pane. Shared
+// between the reducer's pending helpers and hubModel's inline
+// fail/confirm matchers (Task 7).
+func reducerKindForMethod(method string) messageKind {
+	switch method {
+	case appwire.MethodTurnStart:
+		return msgUser
+	case appwire.MethodTurnSteer, appwire.MethodTurnDrainAsSteer:
+		return msgSteering
+	}
+	// turn/queue isn't shown in the transcript pane; this is a safe
+	// default that won't match any rendered pending placeholder.
+	return msgSystem
+}

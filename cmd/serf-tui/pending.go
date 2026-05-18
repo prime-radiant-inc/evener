@@ -70,6 +70,16 @@ func newPendingCoordinator(clock pendingClock, send func(tea.Msg)) *pendingCoord
 	}
 }
 
+// setSend installs the bubbletea program's Send function. Tests wire
+// a buffered channel; production wires program.Send after NewProgram.
+// Safe to call before or after Register; the new send replaces the
+// old one for subsequent emissions.
+func (p *pendingCoordinator) setSend(fn func(tea.Msg)) {
+	p.mu.Lock()
+	p.send = fn
+	p.mu.Unlock()
+}
+
 type pendingHandleImpl struct {
 	coord *pendingCoordinator
 	id    int64

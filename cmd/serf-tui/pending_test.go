@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/internal/appwire/appwiretest"
 )
 
 // fakeClock implements pendingClock for deterministic timeout tests.
@@ -242,5 +245,45 @@ func TestHubReducer_RemovesPendingOnConfirm(t *testing.T) {
 	r.removePending(id)
 	if len(r.messages) != 0 {
 		t.Fatal("confirmed entries should be removed; authoritative one renders separately")
+	}
+}
+
+func TestHubModel_SteerFailsFastOnRPCUnavailable(t *testing.T) {
+	t.Parallel()
+	transport := appwiretest.NewScriptedTransport()
+	client := appwire.NewClient(transport)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client.Start(ctx)
+
+	msgs := make(chan tea.Msg, 16)
+	pending := newPendingCoordinator(realClock{}, func(msg tea.Msg) { msgs <- msg })
+	client.SetPendingCoordinator(pending)
+
+	go func() {
+		req := <-transport.Sent()
+		transport.DeliverError(req.Request.ID, appwire.CodeUnavailable, "steer is not available for this session")
+	}()
+
+	if err := client.TurnSteer(ctx, appwire.TurnSteerParams{
+		Ref:  appwire.Ref{SourceID: "local", ThreadID: "t1"}.String(),
+		Text: "go check this",
+	}); err == nil {
+		t.Fatal("expected error from TurnSteer")
+	}
+
+	got := drainMessages(msgs, 2, time.Second)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 msgs (Registered+Failed), got %d", len(got))
+	}
+	if _, ok := got[0].(pendingRegisteredMsg); !ok {
+		t.Fatalf("first msg = %T", got[0])
+	}
+	fm, ok := got[1].(pendingFailedMsg)
+	if !ok {
+		t.Fatalf("second msg = %T", got[1])
+	}
+	if !strings.Contains(fm.reason, "not available") {
+		t.Fatalf("reason: %q", fm.reason)
 	}
 }

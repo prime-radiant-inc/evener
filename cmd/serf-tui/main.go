@@ -47,7 +47,11 @@ func main() {
 	if !startupOpts.Debug {
 		programOpts = append(programOpts, tea.WithAltScreen())
 	}
-	finalModel, err := tea.NewProgram(m, programOpts...).Run()
+	program := tea.NewProgram(m, programOpts...)
+	if m.pending != nil {
+		m.pending.setSend(program.Send)
+	}
+	finalModel, err := program.Run()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "serf-tui: %v\n", err)
 		os.Exit(1)
