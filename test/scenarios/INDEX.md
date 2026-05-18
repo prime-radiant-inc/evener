@@ -65,6 +65,13 @@ the area they exercise.
   and the agent receives a `STEERING` transcript entry it
   acts on before the turn ends. Live-tested against
   `anthropic/claude-haiku-4-5-20251001` (kata `mn4z`).
+- `web-steer-live-turn.md` — web-hub counterpart: both the
+  input-area `steer` button and the `/steer` ⌘K palette command
+  inject a STEERING transcript entry mid-turn, the conversation
+  pane renders the steering divider, the model adapts, and the
+  session continues to idle (kata `a08v`; surfaced kata `gsv2` —
+  palette closes silently if the turn ends between opening and
+  submit, masking the no-active-turn error).
 - `tui-interrupt-live-turn.md` — serf-tui `/interrupt` palette
   command fires against a real mid-turn session via
   `tmux send-keys`; verifies state transitions to `closed` and
@@ -118,5 +125,9 @@ output by running it.
   capabilities cached at session-open; needs a `/status` refresh
   to unlock mid-turn (workaround documented in
   `tui-interrupt-live-turn.md`).
+- `gsv2` — web `/steer` palette closes silently when the turn
+  ends between opening and submit; the `no active turn` toast
+  fires but the dialog still closes, so the user thinks the steer
+  went through (surfaced by `web-steer-live-turn.md`).
 
 All filed via `kata create`; not blocking.
