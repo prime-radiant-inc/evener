@@ -475,7 +475,7 @@ func TestLive_Hooks_PromptWithRealLLM(t *testing.T) {
 		t.Fatalf("NewFromEnv: %v", err)
 	}
 
-	runner := NewHookRunner(clientAdapter{client}, "gpt-5-mini-2025-08-07")
+	runner := NewHookRunner(clientAdapter{client}, integrationTestModel)
 	for event, hooks := range lp.Hooks {
 		runner.Add(event, hooks...)
 	}
@@ -516,7 +516,7 @@ func TestLive_Session_WithPlugin(t *testing.T) {
 		t.Fatalf("NewFromEnv: %v", err)
 	}
 
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5-mini-2025-08-07"), NewLocalExecutionEnvironment(workDir), SessionConfig{
+	sess, err := NewSession(client, NewOpenAIProfile(integrationTestModel), NewLocalExecutionEnvironment(workDir), SessionConfig{
 		PluginDirs:            []string{pluginDir},
 		MaxToolRoundsPerInput: 10,
 		MaxTurns:              3,
@@ -635,7 +635,7 @@ func TestLive_Session_MCPToolCall(t *testing.T) {
 		t.Fatalf("NewFromEnv: %v", err)
 	}
 
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5-mini-2025-08-07"), NewLocalExecutionEnvironment(workDir), SessionConfig{
+	sess, err := NewSession(client, NewOpenAIProfile(integrationTestModel), NewLocalExecutionEnvironment(workDir), SessionConfig{
 		PluginDirs:            []string{pluginDir},
 		MaxToolRoundsPerInput: 20,
 		MaxTurns:              5,

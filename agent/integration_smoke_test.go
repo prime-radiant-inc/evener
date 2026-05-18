@@ -15,6 +15,12 @@ import (
 	_ "primeradiant.com/serf/llm/providers/openai"
 )
 
+// integrationTestModel is the OpenAI model used by live integration tests.
+// Codex/ChatGPT-account routes reject pinned snapshot IDs like
+// "gpt-5-mini-2025-08-07" with HTTP 400, so we use the alias that's known to
+// work via OAuth. Update here to retarget all live integration tests at once.
+const integrationTestModel = "gpt-5.4-mini"
+
 func skipWithoutAPIKey(t *testing.T) {
 	t.Helper()
 	if os.Getenv("OPENAI_API_KEY") == "" {
@@ -29,7 +35,7 @@ func integrationSession(t *testing.T) *Session {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5-mini-2025-08-07"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(client, NewOpenAIProfile(integrationTestModel), NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 20,
 		MaxTurns:              5,
 	})
@@ -264,7 +270,7 @@ func TestIntegration_Subagent(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5-mini-2025-08-07"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(client, NewOpenAIProfile(integrationTestModel), NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 40,
 		MaxTurns:              5,
 	})
