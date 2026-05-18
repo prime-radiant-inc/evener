@@ -21,7 +21,8 @@ func TestEmbeddedServer_StartsAndResponds(t *testing.T) {
 	defer cancel()
 
 	embedded, err := startEmbedded(ctx, embeddedConfig{
-		model: "openai/gpt-4o-mini",
+		model:   "openai/gpt-4o-mini",
+		workDir: t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("startEmbedded: %v", err)
@@ -59,7 +60,8 @@ func TestEmbeddedServer_RoundTrip(t *testing.T) {
 	defer cancel()
 
 	embedded, err := startEmbedded(ctx, embeddedConfig{
-		model: "openai/gpt-5.4-mini",
+		model:   "openai/gpt-5.4-mini",
+		workDir: t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("startEmbedded: %v", err)
