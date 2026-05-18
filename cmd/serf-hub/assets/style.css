@@ -613,6 +613,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .search-project { color: var(--text-muted); font-size: 11px; }
 .search-age { color: var(--text-muted); font-size: 11px; }
 .search-empty { padding: 24px; color: var(--text-muted); text-align: center; font-size: 12px; }
+.palette-error { margin: 6px 12px 4px; padding: 8px 12px; border: 1px solid var(--state-error, #f7768e); border-radius: 4px; background: rgba(247, 118, 142, 0.12); color: var(--state-error, #f7768e); font-size: 12px; }
 .search-dialog-footer { padding: 8px 16px; border-top: 1px solid var(--rule); display: flex; gap: 18px; font-size: 11px; color: var(--text-muted); }
 .search-row-insession .search-insession-glyph { flex-shrink: 0; color: var(--text-muted); width: 14px; text-align: center; }
 .search-row-command .search-cmd-glyph { flex-shrink: 0; color: var(--text-muted); width: 14px; text-align: center; font-weight: 600; }

@@ -316,7 +316,46 @@ function tick(ms) { return new Promise(r => setTimeout(r, ms)); }
     pass(/compact/.test(ctx.window.localStorage.getItem("serf.search.recentCommands") || ""), "recent command persisted");
   }
 
-  // -------- Scenario 11: Every command dispatches its declared side effect --------
+  // -------- Scenario 11: /steer with no active turn keeps palette open --------
+  // Repro for kata gsv2: if the in-flight turn ends between when the user
+  // opens /steer and when they press Enter, the dialog used to close
+  // silently with only a flash of toast. It should now stay open, surface
+  // an inline error, and not fire a fetch.
+  {
+    const dom = makeDom(`<div id="conversation" data-session-id="01S" data-state="live" data-active-turn-id=""></div>`,
+      { url: "http://localhost/s/01S" });
+    const ctx = await loadAndOpen(dom);
+    let steerFetches = 0;
+    ctx.window.fetch = (u) => {
+      if (/\/steer$/.test(u)) steerFetches += 1;
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    };
+    const banners = [];
+    ctx.window.SerfRenderer = {
+      activeTurnId: "",
+      appendBanner: (kind, message, opts) => banners.push({ kind, message, opts }),
+    };
+    ctx.window.SerfSearch.open();
+    ctx.input.value = "/steer";
+    ctx.input.dispatchEvent(new ctx.window.Event("input", { bubbles: true }));
+    await tick(20);
+    ctx.input.dispatchEvent(new ctx.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await tick(20);
+    ctx.input.value = "stop being verbose";
+    ctx.input.dispatchEvent(new ctx.window.Event("input", { bubbles: true }));
+    await tick(20);
+    ctx.input.dispatchEvent(new ctx.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await tick(20);
+    pass(ctx.dialog.open === true, "/steer + no active turn keeps dialog open");
+    pass(steerFetches === 0, "/steer + no active turn does not POST");
+    const err = ctx.results.querySelector(".palette-error");
+    pass(!!err, "/steer + no active turn renders inline palette-error");
+    pass(err && /no active turn/.test(err.textContent || ""), "inline error names the cause");
+    pass(ctx.input.value === "stop being verbose", "typed steer text is preserved");
+    pass(banners.some(b => /no active turn/.test(b.message || "")), "page-level banner still appended");
+  }
+
+  // -------- Scenario 12: Every command dispatches its declared side effect --------
   // One row per registered command. Build a fresh JSDOM per case so fetches,
   // clicks, and navigations don't leak.
   await commandSweep();
@@ -357,10 +396,12 @@ async function commandSweep() {
       } },
     { name: "compact", page: "session", query: "/compact",
       expect: (c) => assertCS(c, sawFetchCS(c, "POST", "/s/01S/compact"), "POST /s/01S/compact") },
-    { name: "interrupt-blocked", page: "session", query: "/interrupt",
+    { name: "interrupt-blocked", page: "session", query: "/interrupt", expectStaysOpen: true,
       expect: (c) => {
         assertCS(c, !sawFetchCS(c, "POST", "/s/01S/interrupt"), "no POST /s/01S/interrupt without active turn");
         assertCS(c, c.calls.banners.some(b => /no active turn/.test(b.message || "")), "shows no active turn banner");
+        const err = c.results.querySelector(".palette-error");
+        assertCS(c, !!err && /no active turn/.test(err.textContent || ""), "inline palette error visible");
       } },
     { name: "interrupt", page: "session", query: "/interrupt", activeTurn: "turn_cmd",
       expect: (c) => {
@@ -383,11 +424,14 @@ async function commandSweep() {
         const body = String(hit && hit.opts && hit.opts.body || "");
         assertCS(c, body.indexOf("anthropic/claude-opus-4-7") >= 0, "body carries provider/model id (got " + body + ")");
       } },
-    { name: "steer-blocked", page: "session", query: "/steer", argEntry: "less rambling",
+    { name: "steer-blocked", page: "session", query: "/steer", argEntry: "less rambling", expectStaysOpen: true,
       expect: (c) => {
         const hit = c.calls.fetches.find(f => f.url === "/s/01S/steer");
         assertCS(c, !hit, "no POST /s/01S/steer without active turn");
         assertCS(c, c.calls.banners.some(b => /no active turn/.test(b.message || "")), "shows no active turn banner");
+        const err = c.results.querySelector(".palette-error");
+        assertCS(c, !!err && /no active turn/.test(err.textContent || ""), "inline palette error visible");
+        assertCS(c, c.input.value === "less rambling", "typed args preserved (got " + JSON.stringify(c.input.value) + ")");
       } },
     { name: "steer", page: "session", query: "/steer", argEntry: "less rambling", activeTurn: "turn_cmd",
       expect: (c) => {

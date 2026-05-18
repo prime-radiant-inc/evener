@@ -118,6 +118,9 @@
     items = [];
     active = -1;
     results.innerHTML = "";
+    // results.innerHTML = "" already wiped the strip, but be explicit so
+    // future refactors don't accidentally carry a stale error across opens.
+    clearPaletteError();
   }
 
   function openWith(initialQuery) {
@@ -151,12 +154,18 @@
 
   // -------- command registry --------
 
+  // Sentinel returned by command run handlers when the action is blocked
+  // (e.g. no active turn). runArgless/runWithArg use this to keep the
+  // palette open and surface an inline error instead of closing silently.
+  function blocked(message) { return { paletteBlocked: true, message: message }; }
+
   function postSession(ctx, action) {
     if (!ctx.sessionId) return Promise.resolve();
     const turnId = activeTurnId();
     if (action === "interrupt" && !turnId) {
-      showTurnActionUnavailable("interrupt failed: no active turn");
-      return Promise.resolve();
+      const msg = "interrupt failed: no active turn";
+      showTurnActionUnavailable(msg);
+      return blocked(msg);
     }
     if (window.SerfAppwire) return window.SerfAppwire.action(ctx.sessionId, action, turnId);
     return fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/" + action, {
@@ -246,8 +255,9 @@
           run: (ctx, text) => {
             const turnId = activeTurnId();
             if (!turnId) {
-              showTurnActionUnavailable("steer failed: no active turn");
-              return Promise.resolve();
+              const msg = "steer failed: no active turn";
+              showTurnActionUnavailable(msg);
+              return blocked(msg);
             }
             return window.SerfAppwire ? window.SerfAppwire.steer(ctx.sessionId, turnId, text) : fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/steer", {
             method: "POST", headers: { "Content-Type": "application/json" },
@@ -577,7 +587,16 @@
 
   function runArgless(cmd) {
     const ctx = buildCtx();
-    try { cmd.run(ctx); } catch (_) {}
+    let result;
+    try { result = cmd.run(ctx); } catch (_) {}
+    if (isBlocked(result)) {
+      // Keep the palette open and surface the failure inline. The command
+      // already appended a persistent page-level banner via
+      // showTurnActionUnavailable; the inline error makes the cause obvious
+      // without forcing the user to scan the workspace.
+      showPaletteError(result.message);
+      return;
+    }
     if (!cmd.stayOpen) rememberCommand(cmd.id);
     // Commands flagged stayOpen reroute the palette in-place (search/help)
     // and should keep the modal open.
@@ -586,8 +605,44 @@
 
   function runWithArg(cmd, arg) {
     const ctx = buildCtx();
-    try { cmd.args.run(ctx, arg); } catch (_) {}
+    let result;
+    try { result = cmd.args.run(ctx, arg); } catch (_) {}
+    if (isBlocked(result)) {
+      // Don't close: the user lost no typed text, and the inline error tells
+      // them why their submit didn't go through. They can hit Esc to back
+      // out, edit the args, or wait until the active turn resumes.
+      showPaletteError(result.message);
+      return;
+    }
     close();
+  }
+
+  function isBlocked(result) {
+    return !!(result && typeof result === "object" && result.paletteBlocked);
+  }
+
+  // showPaletteError renders a persistent error strip at the top of the
+  // results pane. The strip survives subsequent renders within the same
+  // mode because every renderer (renderArgsFree, renderArgsEnum,
+  // renderCommands, etc.) writes to results.innerHTML — so callers that
+  // expect the error to clear should clear it explicitly via
+  // clearPaletteError().
+  function showPaletteError(message) {
+    if (!results) return;
+    let bar = results.querySelector(".palette-error");
+    if (!bar) {
+      bar = document.createElement("div");
+      bar.className = "palette-error";
+      bar.setAttribute("role", "alert");
+      results.insertBefore(bar, results.firstChild);
+    }
+    bar.textContent = message;
+  }
+
+  function clearPaletteError() {
+    if (!results) return;
+    const bar = results.querySelector(".palette-error");
+    if (bar) bar.remove();
   }
 
   // -------- existing search-mode behavior --------
