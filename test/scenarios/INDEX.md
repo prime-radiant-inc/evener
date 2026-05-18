@@ -21,6 +21,10 @@ the area they exercise.
   scripts the device-code request + cancellation against the live
   OpenAI endpoint; Part B documents the manual browser-side
   authorization (kata `p16h`).
+- `auth-device-poll-concurrent.md` — `--device` poller detects a
+  parallel login that wrote `auth.json` while the device code was
+  still waiting for a human, and exits cleanly instead of running
+  the 15-minute timeout (kata `24p1`).
 
 ## Spawn form (`/new`)
 
@@ -91,11 +95,6 @@ output by running it.
   skill loads into the agent's catalog. Plugin-discovery smoke
   test; doesn't run brainstorming.
 
-## Coverage gaps (worth writing)
-
-- `auth-device-poll-concurrent.md` — kata `24p1` (concurrent
-  OAuth detection during device-code poll). Requires two
-  parallel logins; need scripted CLI driver.
 ## Open katas surfaced while writing scenarios
 
 - `96pr` — legacy diagnostics with stored source=serf never get
