@@ -112,6 +112,23 @@ func TestInterruptEndpoint(t *testing.T) {
 	}
 }
 
+// TestInterruptEndpoint_NoCancelFunc verifies the daemon's REST
+// /interrupt handler returns 503 (mirroring the appwire path's
+// Unavailable error) instead of silently 204'ing when no cancel
+// function is registered. Without this, callers can't tell whether
+// the turn was actually cancelled. Regression test for kata k7t8.
+func TestInterruptEndpoint_NoCancelFunc(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+
+	req := httptest.NewRequest(http.MethodPost, "/interrupt", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status code: got %d, want 503", w.Code)
+	}
+}
+
 func TestStatusEndpoint_MethodNotAllowed(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 

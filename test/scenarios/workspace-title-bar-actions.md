@@ -10,9 +10,6 @@ server-side counterpart: did the daemon actually stop / compact /
 exit? Without this, a regression in the daemon-side wiring of these
 RPCs would not be caught.
 
-Surfaces also fileable kata `k7t8` (interrupt is not wired in
-production — `cancelFunc` never gets set in `cmd/serf/serve.go`).
-
 ## Pre-state
 
 - Hub running on `0.0.0.0:9180` with `--serf` resolvable (sibling or
@@ -70,8 +67,8 @@ HUB=http://localhost:9180
      -d "{\"turn_id\":\"$turn\"}" "$HUB/s/$SID/interrupt"
    ```
 
-3. **Wait for the turn to settle** (interrupt was a no-op — see
-   Expected). Then **compact**:
+3. **Wait for the turn to settle** (interrupt should land within
+   a few seconds — see Expected). Then **compact**:
    ```bash
    # wait until idle (the slow turn will finish on its own — ~25-30s)
    for i in $(seq 1 90); do
@@ -138,13 +135,22 @@ HUB=http://localhost:9180
 
 - **Step 1**: spawn returns `{ref, host_id, session_id}`; session
   reaches `state=idle` within ~10s; `turn_count=1`.
-- **Step 2 (interrupt)**: hub returns `503 interrupt is not available
-  for this session` — `capabilities.interrupt=false` even mid-turn.
-  The slow turn does NOT stop; state stays `processing` until the
-  bash loop completes. **Falsification (expected today)**: this is a
-  known bug — kata `k7t8`. If the interrupt later succeeds (state
-  flips to `idle` or `error` within ~3s and the transcript shows an
-  interrupt marker / partial output), update this scenario.
+- **Step 2 (interrupt)**: while the bash loop is running,
+  `capabilities.interrupt=true`. Hub returns `204 No Content` for
+  the interrupt POST. Within ~3s the in-flight turn is cancelled
+  and the agent honours its abort-signal spec
+  (`agent/session.go:1257` — "abort signal closes the session and
+  stops the loop"). The session state therefore flips from
+  `processing` to `closed`/`ended` (NOT back to `idle`); the
+  transcript ends with whatever partial output the model had
+  produced before the cancel landed. Because the session is now
+  closed, steps 3-5 below operate on an ended session — compact
+  and shutdown are no-ops/conflicts. To test compact + shutdown
+  end-to-end, run a fresh session without the interrupt step.
+  Falsification of the interrupt fix specifically: state stays
+  `processing` for the full ~25-30s of the bash loop, or
+  `capabilities.interrupt=false` mid-turn, or the hub returns 503
+  on the interrupt POST.
 - **Step 3 (compact)**: hub returns `204 No Content` essentially
   instantly (compaction here is local re-projection of in-memory
   context; the daemon does not call the model). Transcript grows by
@@ -170,31 +176,28 @@ rm -rf "$tmpdir"
 # meta + transcript files under ~/.local/state/serf/projects linger
 # (harmless). Optional:
 find ~/.local/state/serf/projects -name "$SID*" -delete
-# If a daemon was left running (e.g. interrupt didn't stop it and
-# you skipped the shutdown step), kill it:
+# If a daemon was left running (e.g. you skipped the shutdown step),
+# kill it:
 # kill $PID
 ```
 
 ## Sharp edges
 
-- **Interrupt is broken** (kata `k7t8`). `cmd/serf/serve.go` calls
-  `SetCompactFunc`, `SetShutdownFunc`, etc., but never
-  `SetCancelFunc`. The capability flag in `server/server.go` (line
-  ~496) gates on `cancelFunc != nil`, so the hub correctly refuses
-  with 503. The daemon's REST `/interrupt` handler returns 204 even
-  with a nil `cancelFunc`, which is misleading — appwire-side
-  (`appwire_runtime.go:344`) does the same. Until the daemon wires
-  a cancellable turn context into `SetCancelFunc`, this surface is
-  cosmetic only.
+- **Interrupt wiring** (kata `k7t8`, fixed). `cmd/serf/serve.go`
+  wraps each turn in a per-turn `context.WithCancel(ctx)` and
+  registers the cancel via `srv.SetCancelFunc` for the duration of
+  the turn (cleared on completion). This means `capabilities.interrupt`
+  is true only mid-turn. The REST `/interrupt` handler returns 503
+  if no cancel is registered (mirrors the appwire path's
+  `Unavailable` semantics) — so a stale "interrupt" click on an
+  idle session surfaces an honest error rather than a silent 204.
 - The slow-turn prompt depends on the model actually choosing to run
   `exec_command` with a sleep loop. `gpt-5.4-mini` did so reliably in
   testing, but a model that shortcuts (responds with "I'll do that"
   via `communicate` without invoking the tool) will finish in
   seconds. If you see `state=processing` for less than ~5 seconds,
-  inspect the transcript — the model may not have run the loop. The
-  scenario does NOT depend on interrupt working (today), only on the
-  hub correctly returning 503; for a future fix, choose a prompt
-  that forces a multi-second tool call.
+  inspect the transcript — the model may not have run the loop and
+  the interrupt may have raced the natural turn completion.
 - The compact endpoint is synchronous and very fast here (single
   digit ms) because our compact strategy is `session_log` which only
   emits a CHECKPOINT entry — no LLM round-trip. Other strategies

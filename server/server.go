@@ -523,9 +523,14 @@ func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {
 	cancel := s.cancelFunc
 	s.mu.RUnlock()
 
-	if cancel != nil {
-		cancel()
+	if cancel == nil {
+		// Mirror the appwire path's Unavailable semantics so direct
+		// daemon callers aren't misled into thinking the turn was
+		// cancelled when no cancel function is wired up.
+		http.Error(w, "interrupt not available", http.StatusServiceUnavailable)
+		return
 	}
+	cancel()
 	w.WriteHeader(http.StatusNoContent)
 }
 

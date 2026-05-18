@@ -273,7 +273,11 @@ func runServe(args []string) error {
 	// Bridge session events to SSE broadcaster.
 	bridgeSession(sess)
 
-	// Input processing loop.
+	// Input processing loop. Each turn runs under a per-turn cancellable
+	// context that is wired into the server's interrupt handler so POST
+	// /interrupt actually cancels the in-flight turn. The cancel is
+	// cleared after the turn finishes so capabilities.interrupt only
+	// reports true while a turn is in flight.
 	go func() {
 		for {
 			select {
@@ -284,11 +288,15 @@ func runServe(args []string) error {
 					return
 				}
 				sess := getSession()
+				turnCtx, cancelTurn := context.WithCancel(ctx)
+				srv.SetCancelFunc(cancelTurn)
 				srv.SetProcessing(true)
 				srv.SetState("PROCESSING")
-				result, processErr := sess.ProcessInput(ctx, msg.Text, msg.Images)
+				result, processErr := sess.ProcessInput(turnCtx, msg.Text, msg.Images)
 				srv.SetProcessing(false)
 				srv.SetState(string(sess.State()))
+				srv.SetCancelFunc(nil)
+				cancelTurn()
 				if processErr != nil {
 					fmt.Fprintf(os.Stderr, "[serve] error: %v\n", processErr)
 				}
