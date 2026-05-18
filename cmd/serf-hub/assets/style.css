@@ -948,3 +948,37 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .credentials-editor-input { padding: 6px 8px; font-family: inherit; font-size: 13px; }
 .credentials-editor-error { margin: 0; color: var(--state-awaiting, var(--error, #c43755)); font-size: 12px; }
 .credentials-editor-actions { display: flex; gap: 6px; }
+
+/* Optimistic rendering: applied to any conversation entry that has
+   been issued but not yet reconciled with an authoritative event.
+   Reconcile removes .optimistic-pending; failure adds .optimistic-failed. */
+.optimistic-pending {
+  animation: optimistic-pulse 1.4s ease-in-out infinite;
+}
+
+.optimistic-failed {
+  opacity: 1;
+  border-left: 2px solid var(--state-error, #f7768e);
+  padding-left: 8px;
+}
+
+.optimistic-failed-reason {
+  font-size: 11px;
+  color: var(--state-error, #f7768e);
+  margin-top: 4px;
+}
+
+.optimistic-retry {
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  margin-left: 8px;
+  user-select: none;
+}
+
+.optimistic-retry:hover { color: var(--text); }
+
+@keyframes optimistic-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.65; }
+}
