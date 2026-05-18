@@ -113,10 +113,11 @@ func (m hubModel) sessionComposerPanel() composerPanel {
 	return panel
 }
 
-// sessionQueuePreview returns the locally tracked queue (head-first) of
-// user messages enqueued via turn/queue during the current TUI session.
-// The TUI maintains this in-memory because the appwire layer does not yet
-// surface queue depth or contents; see kata 111a's TUI-side notes.
+// sessionQueuePreview returns the wire-sourced queue snapshot
+// (head-first) for the current session. The TUI no longer mirrors local
+// enqueues; entries are populated from thread.Serf.Queue on ReadThread
+// and from thread/queueChanged notifications (kata r80p). Each entry has
+// already been collapsed to its first line by the daemon.
 func (m hubModel) sessionQueuePreview() []string {
 	if len(m.sessionQueue) == 0 {
 		return nil

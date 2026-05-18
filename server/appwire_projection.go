@@ -272,6 +272,13 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 			"ref":      p.ref,
 			"text":     data.Text,
 		})}
+	case agent.EventQueueChanged:
+		data := eventData[agent.QueueChangedData](event.Data)
+		return []AppNotification{p.notification(appwire.NotifyThreadQueueChanged, appwire.ThreadQueueChangedParams{
+			ThreadID: p.threadID,
+			Ref:      p.ref,
+			Queue:    appwire.QueueState{Depth: data.Depth, Preview: append([]string(nil), data.Preview...)},
+		})}
 	case agent.EventSubagentStart:
 		return []AppNotification{p.notification(appwire.NotifySerfSubagentStarted, map[string]any{
 			"threadId": p.threadID,

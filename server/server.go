@@ -122,6 +122,7 @@ type Server struct {
 	queueFunc        func(string) error
 	drainSteerFunc   func() error
 	queueDepthFn     func() int
+	queuePreviewFn   func() []string
 	compactFunc      func(context.Context) error
 	clearFunc        func(context.Context) error
 	pressureFn       func() float64
@@ -301,6 +302,16 @@ func (s *Server) SetDrainAsSteerFunc(fn func() error) {
 func (s *Server) SetQueueDepthFunc(fn func() int) {
 	s.mu.Lock()
 	s.queueDepthFn = fn
+	s.mu.Unlock()
+}
+
+// SetQueuePreviewFunc sets a callback returning a FIFO snapshot of queued
+// user messages (first-line truncated). Used by appwire ReadThread to
+// populate SerfThread.Queue so clients can render the queue preview
+// without maintaining their own mirror (kata r80p).
+func (s *Server) SetQueuePreviewFunc(fn func() []string) {
+	s.mu.Lock()
+	s.queuePreviewFn = fn
 	s.mu.Unlock()
 }
 

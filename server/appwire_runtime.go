@@ -508,6 +508,8 @@ func (s *Server) appThread() appwire.Thread {
 	processing := s.processing
 	pfn := s.pressureFn
 	dfn := s.detailedStatusFn
+	qpfn := s.queuePreviewFn
+	qdfn := s.queueDepthFn
 	s.mu.RUnlock()
 
 	if sourceID == "" {
@@ -526,6 +528,19 @@ func (s *Server) appThread() appwire.Thread {
 		ds := dfn()
 		diagnostics = appDiagnosticsFromDetailedStatus(ds)
 	}
+	queue := appwire.QueueState{}
+	if qpfn != nil {
+		if preview := qpfn(); len(preview) > 0 {
+			queue.Preview = append([]string(nil), preview...)
+			queue.Depth = len(preview)
+		}
+	}
+	// Fall back to depthFn when preview isn't wired (some tests stub only
+	// the depth callback). Without this we'd silently drop authoritative
+	// depth information.
+	if queue.Depth == 0 && qdfn != nil {
+		queue.Depth = qdfn()
+	}
 	return appwire.Thread{
 		ID:            threadID,
 		SessionID:     status.SessionID,
@@ -541,6 +556,7 @@ func (s *Server) appThread() appwire.Thread {
 			ContextPressure: pressure,
 			Capabilities:    s.appCapabilities(status.State, processing),
 			Diagnostics:     diagnostics,
+			Queue:           queue,
 		},
 	}
 }

@@ -184,6 +184,60 @@ func TestHubModelCompletesLiveToolWithoutDuplicateMessage(t *testing.T) {
 	}
 }
 
+// TestHubModelAppliesQueueChangedNotification (kata r80p) verifies the
+// TUI consumes thread/queueChanged as the authoritative source for the
+// composer queue preview. The local sessionQueue field reflects the
+// wire snapshot exactly; consecutive notifications replace state in
+// full rather than appending.
+func TestHubModelAppliesQueueChangedNotification(t *testing.T) {
+	m := newHubModel(nil, "")
+	m.mode = hubModeSession
+	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1"}
+
+	// First mutation: depth=1, one entry.
+	updated, _ := m.Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifyThreadQueueChanged, appwire.ThreadQueueChangedParams{
+			ThreadID: "sess_1",
+			Ref:      "local:th_1",
+			Queue:    appwire.QueueState{Depth: 1, Preview: []string{"first queued"}},
+		}).Notification,
+	})
+	got := updated.(hubModel)
+	if len(got.sessionQueue) != 1 || got.sessionQueue[0] != "first queued" {
+		t.Fatalf("sessionQueue after first notification=%v", got.sessionQueue)
+	}
+	if got.sessionQueueRef != "local:th_1" {
+		t.Fatalf("sessionQueueRef=%q, want local:th_1", got.sessionQueueRef)
+	}
+
+	// Second mutation: depth=2, replacing state fully (head + new tail).
+	updated, _ = got.Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifyThreadQueueChanged, appwire.ThreadQueueChangedParams{
+			Ref:   "local:th_1",
+			Queue: appwire.QueueState{Depth: 2, Preview: []string{"first queued", "second queued"}},
+		}).Notification,
+	})
+	got = updated.(hubModel)
+	if len(got.sessionQueue) != 2 || got.sessionQueue[0] != "first queued" || got.sessionQueue[1] != "second queued" {
+		t.Fatalf("sessionQueue after second notification=%v", got.sessionQueue)
+	}
+
+	// Drain to depth=0: state must be wiped, not retained.
+	updated, _ = got.Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifyThreadQueueChanged, appwire.ThreadQueueChangedParams{
+			Ref:   "local:th_1",
+			Queue: appwire.QueueState{},
+		}).Notification,
+	})
+	got = updated.(hubModel)
+	if len(got.sessionQueue) != 0 {
+		t.Fatalf("sessionQueue after drain=%v, want empty", got.sessionQueue)
+	}
+}
+
 func TestHubModelSurfacesStructuredWarningDiagnostic(t *testing.T) {
 	m := newHubModel(nil, "")
 	m.mode = hubModeSession

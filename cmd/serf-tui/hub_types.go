@@ -72,6 +72,11 @@ type hubSessionDetail struct {
 	Diagnostics     *appwire.SerfDiagnostics
 	Live            bool
 	Capabilities    hubSessionCapabilities
+	// Queue carries the authoritative queue snapshot from
+	// thread.Serf.Queue (kata r80p). hubModel mirrors this into
+	// sessionQueue when entering/refreshing a session so the composer
+	// preview lines up with the daemon truth without local mirroring.
+	Queue appwire.QueueState
 }
 
 type hubRefResponse struct {
@@ -219,6 +224,7 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 		Diagnostics:     thread.Serf.Diagnostics,
 		Live:            node.Live,
 		Capabilities:    capabilities,
+		Queue:           thread.Serf.Queue,
 	}
 }
 

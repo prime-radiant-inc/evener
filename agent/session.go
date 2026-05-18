@@ -1103,11 +1103,14 @@ func (s *Session) Enqueue(ctx context.Context, text string) error {
 		return fmt.Errorf("queue: text is required")
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.state == SessionClosed {
+		s.mu.Unlock()
 		return fmt.Errorf("queue: session is closed")
 	}
 	s.inputQueue = append(s.inputQueue, text)
+	data := s.queueChangedDataLocked()
+	s.mu.Unlock()
+	s.emit(EventQueueChanged, data)
 	return nil
 }
 
@@ -1130,9 +1133,11 @@ func (s *Session) DrainAsSteer(ctx context.Context) error {
 	}
 	msgs := append([]string{}, s.inputQueue...)
 	s.inputQueue = nil
+	data := s.queueChangedDataLocked()
 	s.mu.Unlock()
 	combined := strings.Join(msgs, "\n\n")
 	s.Steer(combined)
+	s.emit(EventQueueChanged, data)
 	return nil
 }
 
@@ -1143,27 +1148,61 @@ func (s *Session) QueueDepth() int {
 	return len(s.inputQueue)
 }
 
-// QueuePreview returns a copy of the queued messages in FIFO order.
+// QueuePreview returns a copy of the queued messages in FIFO order with
+// each entry collapsed to its first line and trimmed of trailing CR. The
+// output is the user-facing preview shape consumed by both UIs via the
+// appwire QueueState (kata r80p); callers that need the raw text should
+// reach into the queue mutators directly.
 func (s *Session) QueuePreview() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.inputQueue) == 0 {
 		return nil
 	}
-	return append([]string{}, s.inputQueue...)
+	out := make([]string, len(s.inputQueue))
+	for i, entry := range s.inputQueue {
+		out[i] = firstQueueLine(entry)
+	}
+	return out
+}
+
+// firstQueueLine returns the first newline-terminated line of msg with a
+// trailing CR trimmed. It does not bound the line length — clients are
+// expected to apply their own visual truncation when rendering.
+func firstQueueLine(msg string) string {
+	if idx := strings.IndexByte(msg, '\n'); idx >= 0 {
+		msg = msg[:idx]
+	}
+	return strings.TrimRight(msg, "\r")
 }
 
 // popQueueHead removes and returns the next queued message. Returns "" when
 // the queue is empty.
 func (s *Session) popQueueHead() string {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if len(s.inputQueue) == 0 {
+		s.mu.Unlock()
 		return ""
 	}
 	msg := s.inputQueue[0]
 	s.inputQueue = s.inputQueue[1:]
+	data := s.queueChangedDataLocked()
+	s.mu.Unlock()
+	s.emit(EventQueueChanged, data)
 	return msg
+}
+
+// queueChangedDataLocked builds a QueueChangedData snapshot from the
+// current inputQueue. The caller must hold s.mu.
+func (s *Session) queueChangedDataLocked() QueueChangedData {
+	data := QueueChangedData{Depth: len(s.inputQueue)}
+	if len(s.inputQueue) > 0 {
+		data.Preview = make([]string, len(s.inputQueue))
+		for i, entry := range s.inputQueue {
+			data.Preview[i] = firstQueueLine(entry)
+		}
+	}
+	return data
 }
 
 // Communicated reports whether communicate was called during the most recent

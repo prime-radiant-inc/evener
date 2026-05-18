@@ -132,13 +132,14 @@ type hubModel struct {
 	lastCtrlC       time.Time
 	postQuitMessage string
 
-	// sessionQueue is the locally tracked queue preview for the current
-	// session — the user-visible "queued" list rendered above the composer
-	// while a turn is in flight. The appwire layer does not yet surface
-	// queue depth/contents (kata 111a backend stayed minimal), so the TUI
-	// mirrors what it enqueued and reconciles on transitions: drop one head
-	// on each TurnCompleted, clear on drainAsSteer success. sessionQueueRef
-	// scopes the queue to a single session ref so navigating away resets it.
+	// sessionQueue is the wire-sourced queue preview for the current
+	// session — populated from thread.Serf.Queue on ReadThread and from
+	// thread/queueChanged notifications (kata r80p). The TUI no longer
+	// mirrors local enqueues; it renders straight from this authoritative
+	// snapshot, so two clients viewing the same session agree on state.
+	// Each entry is a first-line-truncated string in FIFO order.
+	// sessionQueueRef scopes the queue to a single session ref so
+	// navigating away resets it.
 	sessionQueue    []string
 	sessionQueueRef string
 }
@@ -218,6 +219,9 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spawnSubmitting = false
 		if m.mode == hubModeSession && m.detail.Ref == msg.detail.Ref {
 			m.detail = msg.detail
+			// Refresh queue preview from the authoritative read response
+			// (kata r80p) so reloads / status refreshes resync state.
+			m.applyQueueState(msg.detail.Ref, msg.detail.Queue)
 			if m.sessionDetailsRequested {
 				panel := hubSessionPanel{Body: m.renderSessionDetails()}
 				m.sessionPanel = &panel
@@ -249,9 +253,11 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionDetailsRequested = false
 		m.transcriptTargets = nil
 		m.transcriptView = nil
-		// Reset queue scoping when (re)entering a session. The local
-		// queue is best-effort and never survives navigation.
+		// Reset queue scoping when (re)entering a session, then seed from
+		// the wire snapshot so the composer chrome reflects authoritative
+		// state immediately (kata r80p).
 		m.clearSessionQueue()
+		m.applyQueueState(msg.detail.Ref, msg.detail.Queue)
 		return m, nil
 	case hubNotificationMsg:
 		if !msg.ok {
@@ -272,7 +278,8 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case hubQueueMsg:
 		if msg.err != nil {
-			// Restore the draft and the optimistic preview never landed.
+			// Restore the draft; the wire state will not advance because
+			// the daemon never received the message.
 			m.session.setInputValue(msg.draft)
 			m.addHubErrorNotice("Queue failed", "appwire", msg.err, "Check the hub connection and retry the action.")
 			m.recordSessionError("Queue failed: " + msg.err.Error())
@@ -280,7 +287,9 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.clearNoticesByCategory("appwire")
 		m.clearSessionError()
-		m.appendSessionQueue(msg.text)
+		// The daemon emits a thread/queueChanged notification with the
+		// new state; applyHubNotification picks it up. No local mirror
+		// (kata r80p).
 		return m, nil
 	case hubDrainAsSteerMsg:
 		if msg.err != nil {
@@ -293,7 +302,10 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.clearNoticesByCategory("appwire")
 		m.clearSessionError()
-		m.clearSessionQueue()
+		// The daemon emits thread/queueChanged with depth=0 after a
+		// successful drain; applyHubNotification clears sessionQueue when
+		// it lands. We don't preemptively wipe here so the preview
+		// reflects authoritative state at all times (kata r80p).
 		m.addSessionSystem("Force-steer sent.")
 		return m, nil
 	case hubTasksMsg:
@@ -2105,14 +2117,18 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			if params.Turn.Status == appwire.TurnStatusFailed {
 				m.addSessionSystemOnce(formatHubTurnError(params.Turn.Error, "Session error"))
 			}
-			// Mirror the daemon's queue pop (kata 111a): when a turn
-			// completes successfully the next queued message becomes the
-			// next user turn, so the head of our local preview is no
-			// longer "pending". A failed turn leaves the queue intact;
-			// the agent's ProcessInput loop pops only on clean completion.
-			if params.Turn.Status != appwire.TurnStatusFailed {
-				m.popSessionQueueHead()
+			// Queue head pop is now driven by thread/queueChanged from
+			// the daemon (kata r80p); we no longer mirror locally on turn
+			// completion.
+		}
+	case appwire.NotifyThreadQueueChanged:
+		var params appwire.ThreadQueueChangedParams
+		if json.Unmarshal(notification.Params, &params) == nil {
+			ref := strings.TrimSpace(params.Ref)
+			if ref == "" {
+				ref = strings.TrimSpace(m.detail.Ref)
 			}
+			m.applyQueueState(ref, params.Queue)
 		}
 	case appwire.NotifyWarning:
 		var params struct {
@@ -2139,33 +2155,27 @@ func (m *hubModel) setActiveTurnID(turnID string) {
 	m.detail.ActiveTurnID = turnID
 }
 
-// appendSessionQueue records a successfully enqueued user message. The queue
-// is scoped to the current session ref so navigation resets it.
-func (m *hubModel) appendSessionQueue(text string) {
-	ref := strings.TrimSpace(m.detail.Ref)
+// applyQueueState replaces the local preview with the authoritative
+// wire-sourced snapshot (kata r80p). Called from ReadThread responses and
+// from thread/queueChanged notifications. Scoped to the current session
+// ref so a notification routed to a different session can't leak into
+// this view.
+func (m *hubModel) applyQueueState(ref string, queue appwire.QueueState) {
+	ref = strings.TrimSpace(ref)
 	if ref == "" {
 		return
 	}
-	if m.sessionQueueRef != ref {
+	m.sessionQueueRef = ref
+	if queue.Depth == 0 && len(queue.Preview) == 0 {
 		m.sessionQueue = nil
-		m.sessionQueueRef = ref
-	}
-	m.sessionQueue = append(m.sessionQueue, text)
-}
-
-// popSessionQueueHead drops the head of the local queue, mirroring the
-// daemon's behaviour when it pops one queued message after a turn completes
-// (agent/session.go ProcessInput outer loop, kata 111a). No-op if empty.
-func (m *hubModel) popSessionQueueHead() {
-	if len(m.sessionQueue) == 0 {
 		return
 	}
-	m.sessionQueue = m.sessionQueue[1:]
+	m.sessionQueue = append([]string(nil), queue.Preview...)
 }
 
-// clearSessionQueue empties the local queue preview. Called after a
-// successful drainAsSteer (kata 0bq1) and when navigating away from a
-// session so a stale preview never bleeds across views.
+// clearSessionQueue empties the local queue preview. Called when
+// navigating away from a session so a stale preview never bleeds across
+// views; new state arrives via the next ReadThread / queueChanged.
 func (m *hubModel) clearSessionQueue() {
 	m.sessionQueue = nil
 	m.sessionQueueRef = ""

@@ -68,14 +68,14 @@
       this.cheapToolCluster = null;      // current cluster div for batching cheap reads
       this.pendingAttachments = [];      // queued image attachments awaiting send
       this.lastUserText = "";            // most-recent user turn text (for "Retry turn")
-      // pendingQueue mirrors the daemon's per-session input queue (kata 111a)
-      // for the composer-side preview. Each item is { text, id } where id is a
-      // local-only nonce used to dedupe USER_INPUT echoes back into the
-      // queue (we pop the head when a queued message arrives as a USER_INPUT
-      // event after the active turn settles). On drain-as-steer (kata 0bq1)
-      // we wipe the mirror locally because the daemon collapses the entire
-      // queue into a single STEERING entry.
-      this.pendingQueue = [];
+      // queueState is the wire-sourced authoritative queue (kata r80p):
+      // every entry is a first-line-truncated string in FIFO order, sourced
+      // from thread.serf.queue on cold-load and from thread/queueChanged
+      // notifications thereafter. Two browser tabs on the same session see
+      // the same state because they both render this projection of daemon
+      // truth instead of mirroring local POSTs. depth is the authoritative
+      // count, preview is the head-first list.
+      this.queueState = { depth: 0, preview: [] };
 
       this.conversation.innerHTML = "";
 
@@ -404,16 +404,24 @@
             this.entryIndex = 0;
             this.pendingAttachments = [];
             this.renderAttachments();
-            this.pendingQueue = [];
+            // Reset to empty; the next QUEUE_CHANGED event (cold-load or
+            // notification) will fill in authoritative state from the wire.
+            this.queueState = { depth: 0, preview: [] };
             this.renderQueuePreview();
           }
           break;
+        case "QUEUE_CHANGED":
+          // Authoritative queue state from the daemon (kata r80p). The
+          // depth + preview are stored verbatim; renderQueuePreview reads
+          // straight from this.queueState.
+          this.queueState = {
+            depth: typeof data.depth === "number" ? data.depth : (Array.isArray(data.preview) ? data.preview.length : 0),
+            preview: Array.isArray(data.preview) ? data.preview.slice() : [],
+          };
+          this.renderQueuePreview();
+          break;
         case "USER_INPUT":
           this.lastUserText = data.text || "";
-          // A queued user message arriving as USER_INPUT means the daemon
-          // popped the head of its input queue to start a fresh turn (kata
-          // 111a). Mirror that pop locally so the queue-preview matches.
-          this.popQueueMatch(data.text || "");
           if (this.promoteLocalUserMessage(data)) break;
           this.userTurnIndex++;
           if (typeof data.turn === "number" && data.turn > 0) {
@@ -1170,9 +1178,9 @@
       ta.addEventListener("input", grow);
       grow();
 
-      // Seed the queue-preview chrome (kata 111a). The pendingQueue starts
-      // empty on init, so this just collapses the container; any earlier
-      // queue from another session is wiped on SESSION_START.
+      // Seed the queue-preview chrome (kata r80p). queueState starts empty
+      // on init; cold-load eventsFromThread + thread/queueChanged
+      // notifications fill it in from authoritative wire data.
       this.renderQueuePreview();
 
       // The steer trigger is now the force-steer-drain-queue button (kata
@@ -1188,7 +1196,7 @@
       if (steerBtn) {
         steerBtn.addEventListener("click", async () => {
           const text = ta.value.trim();
-          const hasQueued = (this.pendingQueue || []).length > 0;
+          const hasQueued = (this.queueState && this.queueState.depth > 0) || false;
           if (!text && !hasQueued) {
             ta.placeholder = "type a steering message, then click send as steer…";
             ta.focus();
@@ -1251,10 +1259,9 @@
                   return;
                 }
               }
-              // Daemon collapses the whole queue into one STEERING entry;
-              // mirror that locally so the preview hides immediately.
-              this.pendingQueue = [];
-              this.renderQueuePreview();
+              // Daemon collapses the whole queue into one STEERING entry
+              // and emits thread/queueChanged with depth=0; the preview
+              // will hide when that notification lands. No local mirror.
             } catch (err) {
               this.appendBanner("error", "drain failed: " + err.message, { source: "hub", title: "Hub drain error" });
             }
@@ -1507,9 +1514,10 @@
       });
     },
 
-    // queueText POSTs to turn/queue (or /s/<id>/queue) and on success
-    // mirrors the entry in pendingQueue + re-renders the preview. Rejections
-    // bubble up; callers surface them as error banners.
+    // queueText POSTs to turn/queue (or /s/<id>/queue). The daemon emits a
+    // thread/queueChanged notification which updates queueState — no local
+    // mirroring (kata r80p). Rejections bubble up; callers surface them as
+    // error banners.
     async queueText(text) {
       const trimmed = String(text || "").trim();
       if (!trimmed) throw new Error("text is required");
@@ -1526,38 +1534,22 @@
           throw new Error(detail);
         }
       }
-      this.pendingQueue = this.pendingQueue || [];
-      this.pendingQueue.push({ text: trimmed });
-      this.renderQueuePreview();
     },
 
-    // popQueueMatch removes the first queued entry whose text matches the
-    // incoming USER_INPUT. Called from the USER_INPUT handler so the preview
-    // shrinks as the daemon drains queued messages into fresh turns. Exact
-    // text match is sufficient because the daemon stores texts verbatim and
-    // re-emits them as USER_INPUT.
-    popQueueMatch(incoming) {
-      if (!this.pendingQueue || this.pendingQueue.length === 0) return;
-      const target = String(incoming || "").trim();
-      if (!target) return;
-      const idx = this.pendingQueue.findIndex(item => String(item && item.text || "").trim() === target);
-      if (idx < 0) return;
-      this.pendingQueue.splice(idx, 1);
-      this.renderQueuePreview();
-    },
-
-    // renderQueuePreview repopulates the queue-preview container with one
-    // row per pendingQueue entry, truncating each to the first line. The
-    // preview is hidden via the [hidden] attribute when the queue is empty
-    // so the empty-state CSS reads as "no chrome".
+    // renderQueuePreview repopulates the queue-preview container from the
+    // authoritative wire state (kata r80p). Each entry in queueState.preview
+    // is already first-line-truncated by the daemon; we only apply a visual
+    // length cap. Hidden via [hidden] when depth is 0.
     renderQueuePreview() {
       const wrap = document.querySelector("[data-queue-preview]");
       if (!wrap) return;
       const list = wrap.querySelector("[data-queue-list]");
       const depthEl = wrap.querySelector("[data-queue-depth]");
-      const queue = this.pendingQueue || [];
-      if (depthEl) depthEl.textContent = String(queue.length);
-      if (queue.length === 0) {
+      const state = this.queueState || { depth: 0, preview: [] };
+      const depth = state.depth || (state.preview || []).length || 0;
+      const preview = state.preview || [];
+      if (depthEl) depthEl.textContent = String(depth);
+      if (depth === 0) {
         wrap.hidden = true;
         if (list) list.innerHTML = "";
         return;
@@ -1565,7 +1557,7 @@
       wrap.hidden = false;
       if (!list) return;
       list.innerHTML = "";
-      queue.forEach((entry, idx) => {
+      preview.forEach((entry, idx) => {
         const li = document.createElement("li");
         li.className = "queue-preview-item";
         li.dataset.idx = String(idx);
@@ -1574,8 +1566,8 @@
         idxEl.textContent = "#" + (idx + 1);
         const textEl = document.createElement("span");
         textEl.className = "qp-text";
-        // First line, collapsed whitespace, hard-capped at 140 chars.
-        const oneLine = String(entry && entry.text || "").split(/\r?\n/)[0].trim();
+        // Daemon truncates to first line; we cap visual length at 140 chars.
+        const oneLine = String(entry || "").split(/\r?\n/)[0].trim();
         textEl.textContent = oneLine.length > 140 ? (oneLine.slice(0, 139) + "…") : oneLine;
         li.appendChild(idxEl);
         li.appendChild(textEl);

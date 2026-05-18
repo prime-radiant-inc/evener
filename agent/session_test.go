@@ -3557,3 +3557,42 @@ func TestSession_QueuePreview_ReturnsCopy(t *testing.T) {
 		t.Fatalf("preview leaked underlying slice: %#v", fresh)
 	}
 }
+
+// TestSession_QueuePreview_FirstLineTruncated_FIFO verifies that
+// QueuePreview returns each queued entry collapsed to its first line in
+// FIFO order (kata r80p). Multi-line input must surface only the first
+// line so wire consumers can render the preview directly without
+// re-parsing.
+func TestSession_QueuePreview_FirstLineTruncated_FIFO(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai"}
+	c.Register(f)
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	// Single-line, multi-line with LF, and CRLF terminator. The CRLF case
+	// catches an easy bug where we forget to trim the trailing CR after
+	// splitting on the first newline.
+	if err := sess.Enqueue(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Enqueue alpha: %v", err)
+	}
+	if err := sess.Enqueue(context.Background(), "bravo line 1\nbravo line 2\nbravo line 3"); err != nil {
+		t.Fatalf("Enqueue bravo: %v", err)
+	}
+	if err := sess.Enqueue(context.Background(), "charlie\r\nwith CR"); err != nil {
+		t.Fatalf("Enqueue charlie: %v", err)
+	}
+	preview := sess.QueuePreview()
+	want := []string{"alpha", "bravo line 1", "charlie"}
+	if len(preview) != len(want) {
+		t.Fatalf("preview len=%d, want %d (%#v)", len(preview), len(want), preview)
+	}
+	for i, expected := range want {
+		if preview[i] != expected {
+			t.Fatalf("preview[%d]=%q, want %q", i, preview[i], expected)
+		}
+	}
+}

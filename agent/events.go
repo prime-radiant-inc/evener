@@ -20,6 +20,7 @@ const (
 	EventToolCallOutputDelta EventKind = "TOOL_CALL_OUTPUT_DELTA"
 	EventToolCallEnd         EventKind = "TOOL_CALL_END"
 	EventSteeringInjected    EventKind = "STEERING_INJECTED"
+	EventQueueChanged        EventKind = "QUEUE_CHANGED"
 	EventTurnLimit           EventKind = "TURN_LIMIT"
 	EventLoopDetection       EventKind = "LOOP_DETECTION"
 	EventCommunicate         EventKind = "COMMUNICATE"
@@ -180,6 +181,14 @@ type ToolCallEndData struct {
 
 type SteeringInjectedData struct {
 	Text string `json:"text"`
+}
+
+// QueueChangedData carries an authoritative snapshot of the per-session
+// input queue after a mutation (kata r80p). Preview entries are FIFO with
+// the head at index 0 and have been collapsed to a single line.
+type QueueChangedData struct {
+	Depth   int      `json:"depth"`
+	Preview []string `json:"preview,omitempty"`
 }
 
 type TurnLimitData struct {

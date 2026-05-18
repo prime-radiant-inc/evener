@@ -289,6 +289,57 @@ func TestLocalDaemonSourceReadsThreadOverAppWire(t *testing.T) {
 	}
 }
 
+// TestLocalDaemonSourceReadThreadIncludesQueue (kata r80p) covers the
+// authoritative queue-state passthrough: ReadThread must surface the
+// daemon's Queue (depth + first-line-truncated preview) verbatim so the
+// hub/UIs render from wire data instead of mirroring locally.
+func TestLocalDaemonSourceReadThreadIncludesQueue(t *testing.T) {
+	wantQueue := appwire.QueueState{
+		Depth:   2,
+		Preview: []string{"first queued message", "second queued message"},
+	}
+	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        "th_1",
+			SessionID: "sess_1",
+			Serf: appwire.SerfThread{
+				Ref:   "local:th_1",
+				Queue: wantQueue,
+			},
+		}}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
+	defer httpServer.Close()
+
+	source := NewLocalDaemonSource("local", func() []rendezvous.Entry {
+		return []rendezvous.Entry{{
+			Protocol:  appwire.ProtocolVersion,
+			Endpoint:  "ws" + httpServer.URL[len("http"):],
+			SourceID:  "local",
+			ThreadID:  "th_1",
+			SessionID: "sess_1",
+		}}
+	}, httpServer.Client())
+
+	resp, err := source.ReadThread(context.Background(), appwire.ThreadReadParams{Ref: "local:th_1"})
+	if err != nil {
+		t.Fatalf("ReadThread: %v", err)
+	}
+	got := resp.Thread.Serf.Queue
+	if got.Depth != wantQueue.Depth {
+		t.Fatalf("queue depth=%d, want %d", got.Depth, wantQueue.Depth)
+	}
+	if len(got.Preview) != len(wantQueue.Preview) {
+		t.Fatalf("queue preview len=%d, want %d (%+v)", len(got.Preview), len(wantQueue.Preview), got.Preview)
+	}
+	for i, want := range wantQueue.Preview {
+		if got.Preview[i] != want {
+			t.Fatalf("queue preview[%d]=%q, want %q", i, got.Preview[i], want)
+		}
+	}
+}
+
 func TestLocalDaemonSourceSubscribeThreadMapsConnectionRefused(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

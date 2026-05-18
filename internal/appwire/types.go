@@ -42,6 +42,7 @@ const (
 const (
 	NotifyThreadStarted        = "thread/started"
 	NotifyThreadStatusChanged  = "thread/status/changed"
+	NotifyThreadQueueChanged   = "thread/queueChanged"
 	NotifyTurnStarted          = "turn/started"
 	NotifyTurnCompleted        = "turn/completed"
 	NotifyItemStarted          = "item/started"
@@ -159,6 +160,30 @@ type SerfThread struct {
 	ContextPressure float64            `json:"contextPressure,omitempty"`
 	Capabilities    ThreadCapabilities `json:"capabilities"`
 	Diagnostics     *SerfDiagnostics   `json:"diagnostics,omitempty"`
+	// Queue carries authoritative queue depth + preview for the per-session
+	// input queue (kata r80p). Both UIs derive their queue-preview chrome
+	// from this field rather than mirroring queue mutations locally, which
+	// fixes multi-client incoherence and post-reload state. The empty zero
+	// value (Depth==0, Preview==nil) means "no queued messages".
+	Queue QueueState `json:"queue"`
+}
+
+// QueueState is the wire representation of a session's per-input queue
+// (kata r80p). Depth is len(Preview) at projection time; Preview entries
+// are FIFO with the head at index 0 and have been truncated to a single
+// line so the UI can render them without further processing.
+type QueueState struct {
+	Depth   int      `json:"depth,omitempty"`
+	Preview []string `json:"preview,omitempty"`
+}
+
+// ThreadQueueChangedParams is the params shape for thread/queueChanged
+// (kata r80p). It mirrors the queue field on SerfThread so consumers can
+// store it verbatim on the cached thread state.
+type ThreadQueueChangedParams struct {
+	ThreadID string     `json:"threadId,omitempty"`
+	Ref      string     `json:"ref,omitempty"`
+	Queue    QueueState `json:"queue"`
 }
 
 type ThreadCapabilities struct {

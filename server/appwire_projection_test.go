@@ -213,6 +213,38 @@ func TestAppEventProjectorProjectsSubagentEvents(t *testing.T) {
 	}
 }
 
+// TestAppEventProjectorProjectsQueueChanged (kata r80p) verifies the
+// projector wraps QUEUE_CHANGED into a thread/queueChanged appwire
+// notification carrying the authoritative depth + first-line-truncated
+// preview.
+func TestAppEventProjectorProjectsQueueChanged(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	out := projector.Project(agent.SessionEvent{
+		Kind:      agent.EventQueueChanged,
+		SessionID: "th_1",
+		Data: agent.QueueChangedData{
+			Depth:   2,
+			Preview: []string{"first line", "second"},
+		},
+	})
+	if len(out) != 1 || out[0].Method != appwire.NotifyThreadQueueChanged {
+		t.Fatalf("out=%+v", out)
+	}
+	params, ok := out[0].Params.(appwire.ThreadQueueChangedParams)
+	if !ok {
+		t.Fatalf("params=%T", out[0].Params)
+	}
+	if params.ThreadID != "th_1" || params.Ref != "local:th_1" {
+		t.Fatalf("params identity=%+v", params)
+	}
+	if params.Queue.Depth != 2 {
+		t.Fatalf("depth=%d, want 2", params.Queue.Depth)
+	}
+	if len(params.Queue.Preview) != 2 || params.Queue.Preview[0] != "first line" || params.Queue.Preview[1] != "second" {
+		t.Fatalf("preview=%+v", params.Queue.Preview)
+	}
+}
+
 func TestAppEventProjectorProjectsSteeringInjected(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	out := projector.Project(agent.SessionEvent{

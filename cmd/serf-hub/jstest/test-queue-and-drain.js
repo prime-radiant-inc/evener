@@ -1,8 +1,9 @@
 // test-queue-and-drain: verifies the composer routes Enter to turn/queue
 // while the session is processing (kata 111a), and that the steer button
 // (and ⇧↵ shortcut) drains the queue as a single STEERING injection
-// (kata 0bq1). Exercises the renderer's pendingQueue mirror and the
-// queue-preview rendering.
+// (kata 0bq1). Exercises the renderer's wire-sourced queueState (kata
+// r80p) and the queue-preview rendering driven by thread/queueChanged
+// notifications.
 
 const fs = require("fs");
 const path = require("path");
@@ -130,9 +131,14 @@ async function testEnterQueuesWhenProcessing() {
     "expected queue body.text, got " + JSON.stringify(body));
   pass(ta.value === "", "expected textarea cleared after queue, got " + JSON.stringify(ta.value));
 
-  // Mirror should reflect the new entry.
-  pass(window.SerfRenderer.pendingQueue.length === 1,
-    "expected pendingQueue.length=1, got " + window.SerfRenderer.pendingQueue.length);
+  // The renderer no longer mirrors locally (kata r80p). Wire the
+  // authoritative state in by simulating the daemon's thread/queueChanged
+  // notification so the preview re-renders.
+  window.SerfRenderer.handle("QUEUE_CHANGED", {
+    data: JSON.stringify({ depth: 1, preview: ["investigate the failing test"] }),
+  });
+  pass(window.SerfRenderer.queueState.depth === 1,
+    "expected queueState.depth=1, got " + window.SerfRenderer.queueState.depth);
   pass(preview.hidden === false, "expected preview visible after first queue");
   pass(depthEl.textContent === "1", "expected depth=1, got " + depthEl.textContent);
   pass(list.children.length === 1, "expected 1 li, got " + list.children.length);
@@ -147,19 +153,24 @@ async function testQueueTwiceShowsBothEntries() {
   form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
   await wait(15);
 
-  pass(window.SerfRenderer.pendingQueue.length === 2,
-    "expected pendingQueue.length=2 after second queue, got " + window.SerfRenderer.pendingQueue.length);
+  // Drive a second QUEUE_CHANGED with both entries.
+  window.SerfRenderer.handle("QUEUE_CHANGED", {
+    data: JSON.stringify({ depth: 2, preview: ["investigate the failing test", "and then verify the regression"] }),
+  });
+  pass(window.SerfRenderer.queueState.depth === 2,
+    "expected queueState.depth=2 after second queue, got " + window.SerfRenderer.queueState.depth);
   pass(depthEl.textContent === "2", "expected depth=2, got " + depthEl.textContent);
   pass(list.children.length === 2, "expected 2 li, got " + list.children.length);
 }
 
-async function testUserInputEventPopsHead() {
-  // Simulate the daemon draining the head as a fresh user turn.
-  window.SerfRenderer.handle("USER_INPUT", {
-    data: JSON.stringify({ text: "investigate the failing test", turn: 2 }),
+async function testQueueChangedShrinksOnHeadPop() {
+  // Simulate the daemon popping the queue head into a fresh user turn —
+  // it emits thread/queueChanged with depth=1 and the remaining entry.
+  window.SerfRenderer.handle("QUEUE_CHANGED", {
+    data: JSON.stringify({ depth: 1, preview: ["and then verify the regression"] }),
   });
-  pass(window.SerfRenderer.pendingQueue.length === 1,
-    "expected pendingQueue.length=1 after USER_INPUT pop, got " + window.SerfRenderer.pendingQueue.length);
+  pass(window.SerfRenderer.queueState.depth === 1,
+    "expected queueState.depth=1 after head pop, got " + window.SerfRenderer.queueState.depth);
   pass(list.children.length === 1, "expected 1 li after pop, got " + list.children.length);
   pass(list.children[0].textContent.includes("and then verify the regression"),
     "expected remaining entry to be the second message");
@@ -180,8 +191,14 @@ async function testDrainAsSteerClearsQueueAndPosts() {
     "expected an extra /queue call before drain, got " + JSON.stringify(calls));
   pass(calls.some(u => u.includes("/drain-as-steer")),
     "expected /drain-as-steer call from steer button, got " + JSON.stringify(calls));
-  pass(window.SerfRenderer.pendingQueue.length === 0,
-    "expected queue mirror wiped after drain, got " + window.SerfRenderer.pendingQueue.length);
+  // After drain the daemon emits thread/queueChanged with depth=0. The
+  // renderer no longer mirrors locally (kata r80p), so we deliver the
+  // wire event here to verify the preview hides.
+  window.SerfRenderer.handle("QUEUE_CHANGED", {
+    data: JSON.stringify({ depth: 0, preview: [] }),
+  });
+  pass(window.SerfRenderer.queueState.depth === 0,
+    "expected queueState.depth=0 after drain, got " + window.SerfRenderer.queueState.depth);
   pass(preview.hidden === true, "expected preview hidden after drain");
   pass(ta.value === "", "expected textarea cleared after drain, got " + JSON.stringify(ta.value));
 }
@@ -213,13 +230,16 @@ async function testEmptyQueueAndEmptyTextIsNoop() {
 }
 
 async function testShiftEnterTriggersDrain() {
-  // Re-prime: one queued entry.
+  // Re-prime: one queued entry via the daemon's authoritative wire event.
   ta.value = "queued via Enter";
   ta.dispatchEvent(new window.Event("input", { bubbles: true }));
   fetchLog.length = 0;
   form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
   await wait(10);
-  pass(window.SerfRenderer.pendingQueue.length >= 1, "primed queue empty");
+  window.SerfRenderer.handle("QUEUE_CHANGED", {
+    data: JSON.stringify({ depth: 1, preview: ["queued via Enter"] }),
+  });
+  pass(window.SerfRenderer.queueState.depth >= 1, "primed queue empty");
 
   fetchLog.length = 0;
   ta.dispatchEvent(new window.KeyboardEvent("keydown", {
@@ -233,7 +253,7 @@ async function testShiftEnterTriggersDrain() {
 
 async function testQueueFailureSurfaceErrorBanner() {
   // Wipe the queue first so we start clean.
-  window.SerfRenderer.pendingQueue = [];
+  window.SerfRenderer.queueState = { depth: 0, preview: [] };
   window.SerfRenderer.renderQueuePreview();
   ta.value = "will fail";
   ta.dispatchEvent(new window.Event("input", { bubbles: true }));
@@ -241,9 +261,10 @@ async function testQueueFailureSurfaceErrorBanner() {
   fetchLog.length = 0;
   form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
   await wait(15);
-  // Failure path: queue mirror should NOT contain the failed entry.
-  pass(window.SerfRenderer.pendingQueue.length === 0,
-    "expected mirror unchanged on queue failure, got " + window.SerfRenderer.pendingQueue.length);
+  // Failure path: queueState should remain depth=0 (daemon never emitted
+  // a thread/queueChanged because the POST itself failed).
+  pass(window.SerfRenderer.queueState.depth === 0,
+    "expected queue state unchanged on queue failure, got " + window.SerfRenderer.queueState.depth);
   const banners = window.document.querySelectorAll(".banner");
   const last = banners[banners.length - 1];
   pass(last && /queue failed/i.test(last.textContent),
@@ -255,7 +276,7 @@ async function testQueueFailureSurfaceErrorBanner() {
   await testQueuePreviewStartsHidden();
   await testEnterQueuesWhenProcessing();
   await testQueueTwiceShowsBothEntries();
-  await testUserInputEventPopsHead();
+  await testQueueChangedShrinksOnHeadPop();
   await testDrainAsSteerClearsQueueAndPosts();
   await testEmptyQueueButTextActsAsClassicSteer();
   await testEmptyQueueAndEmptyTextIsNoop();

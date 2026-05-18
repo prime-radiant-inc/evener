@@ -132,6 +132,18 @@ func TestHubModelBusyEnterRoutesToQueueAndClearsDraft(t *testing.T) {
 	if queued.session.input.Value() != "" {
 		t.Fatalf("busy queue should clear draft on success, got %q", queued.session.input.Value())
 	}
+	// The hub no longer mirrors locally on success (kata r80p). Simulate
+	// the daemon emitting thread/queueChanged so the wire-sourced preview
+	// state advances.
+	updated2, _ := queued.Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifyThreadQueueChanged, appwire.ThreadQueueChangedParams{
+			ThreadID: queued.detail.SessionID,
+			Ref:      queued.detail.Ref,
+			Queue:    appwire.QueueState{Depth: 1, Preview: []string{"please keep going"}},
+		}).Notification,
+	})
+	queued = updated2.(hubModel)
 	if len(queued.sessionQueue) != 1 || queued.sessionQueue[0] != "please keep going" {
 		t.Fatalf("sessionQueue=%v, want [%q]", queued.sessionQueue, "please keep going")
 	}
@@ -194,8 +206,20 @@ func TestHubModelBusyCtrlSDrainsQueueAsSteer(t *testing.T) {
 	if drained.session.input.Value() != "" {
 		t.Fatalf("force-steer should clear composer, got %q", drained.session.input.Value())
 	}
+	// Wire state advances via thread/queueChanged after the daemon
+	// collapses the queue (kata r80p). Drive that notification so the
+	// preview reflects the post-drain truth (depth=0).
+	updated2, _ := drained.Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifyThreadQueueChanged, appwire.ThreadQueueChangedParams{
+			ThreadID: drained.detail.SessionID,
+			Ref:      drained.detail.Ref,
+			Queue:    appwire.QueueState{},
+		}).Notification,
+	})
+	drained = updated2.(hubModel)
 	if len(drained.sessionQueue) != 0 {
-		t.Fatalf("force-steer should clear local queue, got %v", drained.sessionQueue)
+		t.Fatalf("force-steer should clear local queue after queueChanged, got %v", drained.sessionQueue)
 	}
 	view := drained.View()
 	if !strings.Contains(view, "Force-steer sent.") {
