@@ -648,7 +648,7 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 		"turns: 2",
 		"ctx: 66%",
 		"status: hub connected",
-		"steer: ready",
+		"queue: ready",
 		"busy: turn_active",
 	)
 
@@ -658,10 +658,12 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 	app.TypeText("first line")
 	app.SendKeys("C-j")
 	app.TypeLine("second line")
-	app.WaitFor("Steering sent.")
-	steers := hub.WaitForSteers(t, 1)
-	if steers[0].Text != "first line\nsecond line" {
-		t.Fatalf("steer text=%q, want multiline input", steers[0].Text)
+	// Composer Enter while processing now enqueues via turn/queue and the
+	// line surfaces in the queue preview above the composer.
+	app.WaitFor("queued (1)", "1. first line")
+	queues := hub.WaitForQueues(t, 1)
+	if queues[0].Text != "first line\nsecond line" {
+		t.Fatalf("queue text=%q, want multiline input", queues[0].Text)
 	}
 
 	hub.SetSessionState("01LIVE", appwire.ThreadStatusIdle)
@@ -995,6 +997,8 @@ type tuiE2EHub struct {
 	forks           []appwire.ThreadForkParams
 	resumes         []appwire.ThreadResumeParams
 	steers          []appwire.TurnSteerParams
+	queues          []appwire.TurnQueueParams
+	drains          []appwire.TurnDrainAsSteerParams
 	authCalls       []string
 	authCompletions []appwire.AuthLoginCompleteParams
 	harnesses       []appwire.HarnessDescriptor
@@ -1125,6 +1129,7 @@ func fullTUIE2ECapabilities() appwire.ThreadCapabilities {
 	return appwire.ThreadCapabilities{
 		Send:         true,
 		Steer:        true,
+		Queue:        true,
 		Interrupt:    true,
 		Compact:      true,
 		Clear:        true,
@@ -1143,6 +1148,8 @@ func (h *tuiE2EHub) registerHandlers(app *appserver.Server) {
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadResume, h.handleThreadResume)
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnStart, h.handleTurnStart)
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnSteer, h.handleTurnSteer)
+	appserver.HandleTyped(app.Router(), appwire.MethodTurnQueue, h.handleTurnQueue)
+	appserver.HandleTyped(app.Router(), appwire.MethodTurnDrainAsSteer, h.handleTurnDrainAsSteer)
 	appserver.HandleTyped(app.Router(), appwire.MethodSerfTasksList, h.handleTasksList)
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnInterrupt, h.handleTurnInterrupt)
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadCompactStart, h.handleThreadCompactStart)
@@ -1452,6 +1459,20 @@ func (h *tuiE2EHub) handleTurnSteer(_ context.Context, params appwire.TurnSteerP
 	return appwire.EmptyResponse{}, nil
 }
 
+func (h *tuiE2EHub) handleTurnQueue(_ context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.queues = append(h.queues, params)
+	return appwire.EmptyResponse{}, nil
+}
+
+func (h *tuiE2EHub) handleTurnDrainAsSteer(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.EmptyResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.drains = append(h.drains, params)
+	return appwire.EmptyResponse{}, nil
+}
+
 func (h *tuiE2EHub) handleTasksList(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error) {
 	h.mu.Lock()
 	fail := h.failTasks
@@ -1750,6 +1771,30 @@ func (h *tuiE2EHub) WaitForSteers(t *testing.T, count int) []appwire.TurnSteerPa
 		out = append([]appwire.TurnSteerParams(nil), h.steers...)
 		return len(out) >= count
 	}, fmt.Sprintf("%d steer requests", count))
+	return out
+}
+
+func (h *tuiE2EHub) WaitForQueues(t *testing.T, count int) []appwire.TurnQueueParams {
+	t.Helper()
+	var out []appwire.TurnQueueParams
+	h.waitFor(t, func() bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		out = append([]appwire.TurnQueueParams(nil), h.queues...)
+		return len(out) >= count
+	}, fmt.Sprintf("%d queue requests", count))
+	return out
+}
+
+func (h *tuiE2EHub) WaitForDrains(t *testing.T, count int) []appwire.TurnDrainAsSteerParams {
+	t.Helper()
+	var out []appwire.TurnDrainAsSteerParams
+	h.waitFor(t, func() bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		out = append([]appwire.TurnDrainAsSteerParams(nil), h.drains...)
+		return len(out) >= count
+	}, fmt.Sprintf("%d drain-as-steer requests", count))
 	return out
 }
 

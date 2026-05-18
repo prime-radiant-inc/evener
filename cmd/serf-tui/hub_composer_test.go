@@ -38,35 +38,49 @@ func TestHubModelSessionComposerShowsReadOnlyReasonAndDraft(t *testing.T) {
 	}
 }
 
-func TestHubModelBusyComposerShowsSteerOrReadOnlyMode(t *testing.T) {
+func TestHubModelBusyComposerShowsQueueOrReadOnlyMode(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail.State = "processing"
 	m.detail.Capabilities.Send = true
 	m.detail.Capabilities.Steer = true
+	m.detail.Capabilities.Queue = true
 	m.session.processing = true
 	m.session.setInputValue("nudge the running turn")
 
 	got := m.sessionView()
-	for _, want := range []string{"steer", "enter: steer", "> nudge the running turn"} {
+	for _, want := range []string{"queue", "enter: queue", "ctrl+s: send as steer", "> nudge the running turn"} {
 		if !strings.Contains(got, want) {
-			t.Fatalf("busy steer composer missing %q:\n%s", want, got)
+			t.Fatalf("busy queue composer missing %q:\n%s", want, got)
 		}
 	}
 
+	// Queue without steer: no force-steer hint.
 	m.detail.Capabilities.Steer = false
 	got = m.sessionView()
-	for _, want := range []string{"read-only:", "source does not advertise steer", "> nudge the running turn"} {
+	for _, want := range []string{"queue", "enter: queue"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("queue-without-steer composer missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "ctrl+s: send as steer") {
+		t.Fatalf("queue-without-steer composer must not advertise force-steer:\n%s", got)
+	}
+
+	// Neither queue nor steer: read-only.
+	m.detail.Capabilities.Queue = false
+	got = m.sessionView()
+	for _, want := range []string{"read-only:", "source does not advertise queue", "> nudge the running turn"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("busy read-only composer missing %q:\n%s", want, got)
 		}
 	}
 }
 
-func TestHubModelBusyEnterWithoutSteerPreservesDraftAndExplainsReason(t *testing.T) {
+func TestHubModelBusyEnterWithoutQueuePreservesDraftAndExplainsReason(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail.State = "processing"
 	m.detail.Capabilities.Send = true
-	m.detail.Capabilities.Steer = false
+	m.detail.Capabilities.Queue = false
 	m.session.processing = true
 	m.session.setInputValue("do not drop this")
 
@@ -79,17 +93,17 @@ func TestHubModelBusyEnterWithoutSteerPreservesDraftAndExplainsReason(t *testing
 		t.Fatalf("draft=%q, want preserved", got.session.input.Value())
 	}
 	view := got.sessionView()
-	for _, want := range []string{"Send is not available for this session.", "source does not advertise steer", "> do not drop this"} {
+	for _, want := range []string{"Send is not available for this session.", "source does not advertise queue", "> do not drop this"} {
 		if !strings.Contains(view, want) {
-			t.Fatalf("busy unsupported steer view missing %q:\n%s", want, view)
+			t.Fatalf("busy unsupported queue view missing %q:\n%s", want, view)
 		}
 	}
 }
 
-func TestHubModelBusyEnterRoutesToSteerAndPreservesDraft(t *testing.T) {
-	var got appwire.TurnSteerParams
+func TestHubModelBusyEnterRoutesToQueueAndClearsDraft(t *testing.T) {
+	var got appwire.TurnQueueParams
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
-		appserver.HandleTyped(app.Router(), appwire.MethodTurnSteer, func(_ context.Context, params appwire.TurnSteerParams) (appwire.EmptyResponse, error) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnQueue, func(_ context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
 			got = params
 			return appwire.EmptyResponse{}, nil
 		})
@@ -100,25 +114,111 @@ func TestHubModelBusyEnterRoutesToSteerAndPreservesDraft(t *testing.T) {
 	m.detail.State = "processing"
 	m.detail.Capabilities.Send = false
 	m.detail.Capabilities.Steer = true
+	m.detail.Capabilities.Queue = true
 	m.detail.ActiveTurnID = "turn_busy"
 	m.session.processing = true
 	m.session.setInputValue("please keep going")
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
-		t.Fatal("busy enter should steer through hub")
+		t.Fatal("busy enter should queue through hub")
 	}
 	updated, _ = updated.(hubModel).Update(cmd())
-	steered := updated.(hubModel)
+	queued := updated.(hubModel)
 
-	if got.Ref != "local:01SEND" || got.TurnID != "turn_busy" || got.Text != "please keep going" {
-		t.Fatalf("steer params=%+v", got)
+	if got.Ref != "local:01SEND" || got.Text != "please keep going" {
+		t.Fatalf("queue params=%+v", got)
 	}
-	if steered.session.input.Value() != "please keep going" {
-		t.Fatalf("busy steer should preserve draft, got %q", steered.session.input.Value())
+	if queued.session.input.Value() != "" {
+		t.Fatalf("busy queue should clear draft on success, got %q", queued.session.input.Value())
 	}
-	if view := steered.View(); !strings.Contains(view, "Steering sent.") {
-		t.Fatalf("missing steer confirmation:\n%s", view)
+	if len(queued.sessionQueue) != 1 || queued.sessionQueue[0] != "please keep going" {
+		t.Fatalf("sessionQueue=%v, want [%q]", queued.sessionQueue, "please keep going")
+	}
+	view := queued.View()
+	for _, want := range []string{"queued (1)", "please keep going"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("missing queue preview %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestHubModelBusyCtrlSDrainsQueueAsSteer(t *testing.T) {
+	var queueParams []appwire.TurnQueueParams
+	var drainParams appwire.TurnDrainAsSteerParams
+	var drainCalled bool
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnQueue, func(_ context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
+			queueParams = append(queueParams, params)
+			return appwire.EmptyResponse{}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnDrainAsSteer, func(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.EmptyResponse, error) {
+			drainParams = params
+			drainCalled = true
+			return appwire.EmptyResponse{}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	m.detail.State = "processing"
+	m.detail.Capabilities.Send = false
+	m.detail.Capabilities.Steer = true
+	m.detail.Capabilities.Queue = true
+	m.detail.ActiveTurnID = "turn_busy"
+	m.session.processing = true
+	// Pre-populate the local queue (as if we'd already pressed Enter
+	// once during processing) and have composer text in flight too.
+	m.sessionQueue = []string{"earlier queued line"}
+	m.sessionQueueRef = m.detail.Ref
+	m.session.setInputValue("composer text in flight")
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if cmd == nil {
+		t.Fatal("ctrl+s should issue queue+drain command")
+	}
+	// sendHubQueueThenDrain serialises queue+drain in one Cmd and
+	// returns a hubDrainAsSteerMsg.
+	updated, _ = updated.(hubModel).Update(cmd())
+	drained := updated.(hubModel)
+
+	if !drainCalled {
+		t.Fatal("drainAsSteer never invoked")
+	}
+	if drainParams.Ref != "local:01SEND" {
+		t.Fatalf("drain params=%+v", drainParams)
+	}
+	if len(queueParams) != 1 || queueParams[0].Text != "composer text in flight" {
+		t.Fatalf("queue params=%v, want one entry with composer text", queueParams)
+	}
+	if drained.session.input.Value() != "" {
+		t.Fatalf("force-steer should clear composer, got %q", drained.session.input.Value())
+	}
+	if len(drained.sessionQueue) != 0 {
+		t.Fatalf("force-steer should clear local queue, got %v", drained.sessionQueue)
+	}
+	view := drained.View()
+	if !strings.Contains(view, "Force-steer sent.") {
+		t.Fatalf("missing force-steer confirmation:\n%s", view)
+	}
+}
+
+func TestHubModelBusyCtrlSWithEmptyQueueAndEmptyComposerBanner(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.State = "processing"
+	m.detail.Capabilities.Send = false
+	m.detail.Capabilities.Steer = true
+	m.detail.Capabilities.Queue = true
+	m.detail.ActiveTurnID = "turn_busy"
+	m.session.processing = true
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if cmd != nil {
+		t.Fatal("ctrl+s with empty queue+composer should not call the hub")
+	}
+	got := updated.(hubModel)
+	if view := got.View(); !strings.Contains(view, "Nothing to steer") {
+		t.Fatalf("missing empty-steer banner:\n%s", view)
 	}
 }
 

@@ -48,6 +48,10 @@ type hubSessionCapabilities struct {
 	Resume      bool
 	Shutdown    bool
 	ChangeModel bool
+	// Queue advertises support for turn/queue (kata 111a). True when a turn
+	// is in flight and the source can accept an enqueued user message for
+	// processing after the active turn completes.
+	Queue bool
 }
 
 type hubSessionDetail struct {
@@ -184,6 +188,7 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 		Fork:        caps.ForkFromTurn,
 		Shutdown:    caps.Shutdown,
 		ChangeModel: caps.ChangeModel,
+		Queue:       caps.Queue,
 	}
 	if !node.Live {
 		capabilities.Send = false
@@ -193,6 +198,7 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 		capabilities.Clear = false
 		capabilities.Shutdown = false
 		capabilities.ChangeModel = false
+		capabilities.Queue = false
 		capabilities.Resume = true
 	}
 	return hubSessionDetail{

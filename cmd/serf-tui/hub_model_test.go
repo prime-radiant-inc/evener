@@ -1114,13 +1114,14 @@ func TestHubModelSessionStatusLineReflectsCapabilityChanges(t *testing.T) {
 	m.detail.State = "processing"
 	m.detail.Capabilities.Send = true
 	m.detail.Capabilities.Steer = true
+	m.detail.Capabilities.Queue = true
 	m.detail.ActiveTurnID = "turn_busy"
-	if got := m.sessionView(); !strings.Contains(got, "steer: ready") {
-		t.Fatalf("steer-ready status missing:\n%s", got)
+	if got := m.sessionView(); !strings.Contains(got, "queue: ready") {
+		t.Fatalf("queue-ready status missing:\n%s", got)
 	}
 
-	m.detail.Capabilities.Steer = false
-	if got := m.sessionView(); !strings.Contains(got, "read-only: source does not advertise steer") {
+	m.detail.Capabilities.Queue = false
+	if got := m.sessionView(); !strings.Contains(got, "read-only: source does not advertise queue") {
 		t.Fatalf("read-only status missing:\n%s", got)
 	}
 }

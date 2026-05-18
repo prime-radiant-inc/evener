@@ -131,6 +131,16 @@ type hubModel struct {
 
 	lastCtrlC       time.Time
 	postQuitMessage string
+
+	// sessionQueue is the locally tracked queue preview for the current
+	// session — the user-visible "queued" list rendered above the composer
+	// while a turn is in flight. The appwire layer does not yet surface
+	// queue depth/contents (kata 111a backend stayed minimal), so the TUI
+	// mirrors what it enqueued and reconciles on transitions: drop one head
+	// on each TurnCompleted, clear on drainAsSteer success. sessionQueueRef
+	// scopes the queue to a single session ref so navigating away resets it.
+	sessionQueue    []string
+	sessionQueueRef string
 }
 
 const hubCtrlCQuitWindow = time.Second
@@ -239,6 +249,9 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionDetailsRequested = false
 		m.transcriptTargets = nil
 		m.transcriptView = nil
+		// Reset queue scoping when (re)entering a session. The local
+		// queue is best-effort and never survives navigation.
+		m.clearSessionQueue()
 		return m, nil
 	case hubNotificationMsg:
 		if !msg.ok {
@@ -256,6 +269,32 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.clearSessionError()
 			m.setActiveTurnID(msg.turnID)
 		}
+		return m, nil
+	case hubQueueMsg:
+		if msg.err != nil {
+			// Restore the draft and the optimistic preview never landed.
+			m.session.setInputValue(msg.draft)
+			m.addHubErrorNotice("Queue failed", "appwire", msg.err, "Check the hub connection and retry the action.")
+			m.recordSessionError("Queue failed: " + msg.err.Error())
+			return m, nil
+		}
+		m.clearNoticesByCategory("appwire")
+		m.clearSessionError()
+		m.appendSessionQueue(msg.text)
+		return m, nil
+	case hubDrainAsSteerMsg:
+		if msg.err != nil {
+			if draft := strings.TrimSpace(msg.draft); draft != "" {
+				m.session.setInputValue(msg.draft)
+			}
+			m.addHubErrorNotice("Force-steer failed", "appwire", msg.err, "Check the hub connection and retry the action.")
+			m.recordSessionError("Force-steer failed: " + msg.err.Error())
+			return m, nil
+		}
+		m.clearNoticesByCategory("appwire")
+		m.clearSessionError()
+		m.clearSessionQueue()
+		m.addSessionSystem("Force-steer sent.")
 		return m, nil
 	case hubTasksMsg:
 		if msg.err != nil {
@@ -1360,6 +1399,9 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, func() tea.Msg { return launchOverridesOpenMsg{Initial: initial} }
 	}
+	if msg.Type == tea.KeyCtrlS {
+		return m.handleSessionForceSteer()
+	}
 
 	switch msg.String() {
 	case "ctrl+c":
@@ -1417,17 +1459,19 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, next
 		}
 		composerMode := m.sessionComposerMode()
-		if composerMode == hubComposerModeSteer {
-			if strings.TrimSpace(m.detail.ActiveTurnID) == "" {
-				m.addSessionSystem("Steer is not available until an active turn starts.")
-				return m, nil
-			}
+		if composerMode == hubComposerModeQueue {
 			ref, ok := m.currentRef()
 			if !ok {
 				m.addSessionSystem("Session ref is invalid.")
 				return m, nil
 			}
-			return m, sendHubSteer(m.client, ref, m.detail.ActiveTurnID, text)
+			// Clear the composer optimistically; the queue preview above
+			// the composer will show the enqueued line. On failure the
+			// hubQueueMsg handler restores the draft.
+			m.session.addHistory(text)
+			m.session.resetInput()
+			m.session.refreshViewport()
+			return m, sendHubQueue(m.client, ref, text, draft)
 		}
 		if composerMode == hubComposerModeReadOnly || !m.sessionCanStartTurn() {
 			reason := m.sessionComposerReadOnlyReason()
@@ -1496,6 +1540,47 @@ func (m hubModel) restoreInstructionMessage() string {
 	return fmt.Sprintf("Restore this session: serf-tui --hub-addr %s, then open %s", hubURL, ref)
 }
 
+// handleSessionForceSteer routes the Ctrl+S force-steer keybind: drain
+// every queued message into a single STEERING entry for the in-flight turn
+// (kata 0bq1). If the composer has unsent text, it is queued first so the
+// drain picks it up alongside the existing queue. With nothing to steer,
+// the binding fires a transient banner instead of calling the hub.
+func (m hubModel) handleSessionForceSteer() (tea.Model, tea.Cmd) {
+	if m.sessionComposerMode() != hubComposerModeQueue {
+		// Not in a queue-able state; nothing to do. Silently no-op so the
+		// keybind doesn't fight with idle-state composing.
+		return m, nil
+	}
+	if !m.detail.Capabilities.Steer {
+		m.addSessionSystem("Force-steer is not available: source does not advertise steer.")
+		return m, nil
+	}
+	ref, ok := m.currentRef()
+	if !ok {
+		m.addSessionSystem("Session ref is invalid.")
+		return m, nil
+	}
+	draft := m.session.input.Value()
+	pending := strings.TrimSpace(draft)
+	if pending == "" && len(m.sessionQueue) == 0 {
+		m.addSessionSystem("Nothing to steer: the queue is empty.")
+		return m, nil
+	}
+	if pending == "" {
+		// Pure drain of the existing queue. Clear nothing on the composer.
+		return m, sendHubDrainAsSteer(m.client, ref, "")
+	}
+	// Composer has text and there may or may not be pending queue
+	// entries. Enqueue the composer first so the drain folds it into the
+	// same STEERING message; sendHubQueueThenDrain serialises the two
+	// appwire calls so the daemon's atomic DrainAsSteer pops the composer
+	// payload alongside everything already queued.
+	m.session.addHistory(pending)
+	m.session.resetInput()
+	m.session.refreshViewport()
+	return m, sendHubQueueThenDrain(m.client, ref, pending, draft)
+}
+
 func (m *hubModel) enterSessionBrowse(pageUp bool) {
 	m.session.scrollMode = true
 	m.session.focusedToolIdx = -1
@@ -1535,6 +1620,7 @@ func (m *hubModel) returnToDashboard() {
 	m.browseSelected = -1
 	m.authLoginProvider = ""
 	m.authLoginFlowID = ""
+	m.clearSessionQueue()
 	m.mode = hubModeDashboard
 	m.clampSelection()
 }
@@ -2019,6 +2105,14 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			if params.Turn.Status == appwire.TurnStatusFailed {
 				m.addSessionSystemOnce(formatHubTurnError(params.Turn.Error, "Session error"))
 			}
+			// Mirror the daemon's queue pop (kata 111a): when a turn
+			// completes successfully the next queued message becomes the
+			// next user turn, so the head of our local preview is no
+			// longer "pending". A failed turn leaves the queue intact;
+			// the agent's ProcessInput loop pops only on clean completion.
+			if params.Turn.Status != appwire.TurnStatusFailed {
+				m.popSessionQueueHead()
+			}
 		}
 	case appwire.NotifyWarning:
 		var params struct {
@@ -2043,6 +2137,38 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 
 func (m *hubModel) setActiveTurnID(turnID string) {
 	m.detail.ActiveTurnID = turnID
+}
+
+// appendSessionQueue records a successfully enqueued user message. The queue
+// is scoped to the current session ref so navigation resets it.
+func (m *hubModel) appendSessionQueue(text string) {
+	ref := strings.TrimSpace(m.detail.Ref)
+	if ref == "" {
+		return
+	}
+	if m.sessionQueueRef != ref {
+		m.sessionQueue = nil
+		m.sessionQueueRef = ref
+	}
+	m.sessionQueue = append(m.sessionQueue, text)
+}
+
+// popSessionQueueHead drops the head of the local queue, mirroring the
+// daemon's behaviour when it pops one queued message after a turn completes
+// (agent/session.go ProcessInput outer loop, kata 111a). No-op if empty.
+func (m *hubModel) popSessionQueueHead() {
+	if len(m.sessionQueue) == 0 {
+		return
+	}
+	m.sessionQueue = m.sessionQueue[1:]
+}
+
+// clearSessionQueue empties the local queue preview. Called after a
+// successful drainAsSteer (kata 0bq1) and when navigating away from a
+// session so a stale preview never bleeds across views.
+func (m *hubModel) clearSessionQueue() {
+	m.sessionQueue = nil
+	m.sessionQueueRef = ""
 }
 
 func (m hubModel) notificationMatchesCurrentSession(notification appwire.Notification) bool {
@@ -3315,8 +3441,8 @@ func (m hubModel) sessionAuthReadinessLabel() string {
 
 func (m hubModel) sessionCapabilityStatusLabel() string {
 	switch m.sessionComposerMode() {
-	case hubComposerModeSteer:
-		return "steer: ready"
+	case hubComposerModeQueue:
+		return "queue: ready"
 	case hubComposerModeReadOnly:
 		reason := m.sessionComposerReadOnlyReason()
 		if reason == "" {

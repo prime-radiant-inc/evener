@@ -199,7 +199,7 @@ func sampleSessionDetails() map[string]hubSessionDetail {
 			Project:     "serf",
 			Live:        true,
 			Capabilities: hubSessionCapabilities{
-				Steer: true, Interrupt: true,
+				Steer: true, Interrupt: true, Queue: true,
 			},
 		},
 		"busy-readonly": {
@@ -309,8 +309,8 @@ func sampleRenders() []tuiSampleRender {
 		{name: "dashboard-wide", width: 140, contains: []string{"serf live", "Codex app-server smoke"}},
 		{name: "session-idle", width: 100, contains: []string{"message", "draft stays visible"}},
 		{name: "session-streaming", width: 100, contains: []string{"The running agent harness", "all task steps completed"}},
-		{name: "session-busy-steer", width: 100, contains: []string{"steer", "Please also check"}},
-		{name: "session-busy-readonly", width: 100, contains: []string{"read-only", "source does not advertise steer"}},
+		{name: "session-busy-steer", width: 100, contains: []string{"queue", "ctrl+s: send as steer", "Please also check"}},
+		{name: "session-busy-readonly", width: 100, contains: []string{"read-only", "source does not advertise queue"}},
 		{name: "session-browse", width: 100, contains: []string{"esc/i/q: compose", "f: fork"}},
 		{name: "session-fork", width: 100, contains: []string{"fork draft", "edited prompt"}},
 		{name: "spawn-serf", width: 100, contains: []string{"Harness:  serf", "openai/gpt-5.5"}},
@@ -350,7 +350,8 @@ func sampleInteractions() []tuiInteractionSample {
 		{Name: "prompt-owns-printable-shortcuts", Keys: []string{"m", "h"}, Expected: "focused prompt value becomes mh"},
 		{Name: "picker-owns-filter-navigation", Keys: []string{"/", "g", "p", "t", "down", "enter"}, Expected: "picker filter is gpt and selected row is chosen"},
 		{Name: "composer-draft-survives-overlay", Keys: []string{"type draft", "/model", "esc"}, Expected: "composer still contains draft"},
-		{Name: "busy-send-switches-to-steer", Keys: []string{"enter"}, Expected: "busy draft is preserved and sent through steer when supported"},
+		{Name: "busy-enter-queues-message", Keys: []string{"enter"}, Expected: "busy enter enqueues the composer text via turn/queue and clears the draft"},
+		{Name: "busy-ctrl-s-drains-as-steer", Keys: []string{"ctrl+s"}, Expected: "ctrl+s drains the queue (plus any composer text) as a single STEERING message"},
 		{Name: "unsupported-codex-actions-hidden-or-disabled", Keys: []string{"/help"}, Expected: "Codex clear/shutdown actions are absent or disabled with reasons"},
 	}
 }

@@ -160,7 +160,8 @@ func TestHubTUISampleCorpusHasFocusAndDraftInteractionSamples(t *testing.T) {
 		"prompt-owns-printable-shortcuts",
 		"picker-owns-filter-navigation",
 		"composer-draft-survives-overlay",
-		"busy-send-switches-to-steer",
+		"busy-enter-queues-message",
+		"busy-ctrl-s-drains-as-steer",
 		"unsupported-codex-actions-hidden-or-disabled",
 	}
 	interactions := map[string]tuiInteractionSample{}

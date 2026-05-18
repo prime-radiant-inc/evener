@@ -24,7 +24,11 @@ func TestHubModelDisablesLegacySessionBackends(t *testing.T) {
 }
 
 func TestHubCommandRoutingStaysInsideAppWireClientBoundary(t *testing.T) {
-	source := readSourceFile(t, "hub_commands.go")
+	// Routes can be split across hub_commands.go and the smaller helper
+	// files that grew out of it (queue_send.go for kata 111a/0bq1, etc.).
+	// Concatenate any file that registers `tea.Cmd` helpers and assert
+	// against the combined surface.
+	combined := readSourceFile(t, "hub_commands.go") + "\n" + readSourceFile(t, "queue_send.go")
 	for _, want := range []string{
 		"client.ThreadList(",
 		"client.ThreadRead(",
@@ -43,10 +47,12 @@ func TestHubCommandRoutingStaysInsideAppWireClientBoundary(t *testing.T) {
 		"client.ThreadShutdown(",
 		"client.ThreadModelSet(",
 		"client.TurnSteer(",
+		"client.TurnQueue(",
+		"client.TurnDrainAsSteer(",
 		"client.ThreadFork(",
 	} {
-		if !strings.Contains(source, want) {
-			t.Fatalf("hub_commands.go missing AppWire route %q", want)
+		if !strings.Contains(combined, want) {
+			t.Fatalf("session-action sources missing AppWire route %q", want)
 		}
 	}
 
@@ -64,9 +70,11 @@ func TestHubCommandRoutingStaysInsideAppWireClientBoundary(t *testing.T) {
 		"http.Post(",
 		"\"/input\"",
 		"\"/steer\"",
+		"\"/queue\"",
+		"\"/drain-as-steer\"",
 	} {
-		if strings.Contains(source, forbidden) {
-			t.Fatalf("hub_commands.go must not bypass Hub/AppWire with %q", forbidden)
+		if strings.Contains(combined, forbidden) {
+			t.Fatalf("session-action sources must not bypass Hub/AppWire with %q", forbidden)
 		}
 	}
 }
