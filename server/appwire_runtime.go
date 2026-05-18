@@ -614,7 +614,7 @@ func (s *Server) appCapabilities(state string, processing bool) appwire.ThreadCa
 	closed := appStatus(state, processing) == appwire.ThreadStatusClosed
 	return appwire.ThreadCapabilities{
 		Send:         !processing && !closed,
-		Steer:        s.steerFunc != nil,
+		Steer:        s.steerFunc != nil && processing && !closed,
 		Interrupt:    s.cancelFunc != nil,
 		Compact:      s.compactFunc != nil && !closed,
 		Clear:        s.clearFunc != nil && !processing && !closed,
