@@ -94,10 +94,46 @@
   - Verify the TUI opens the exact SSE URL with the query string preserved.
   - Verify history renders instead of `error: SSE stream returned 404` and `No transcript events yet.`
 
+- [ ] **Rewrite pre-overhaul scenarios against the new dashboard UI**
+  - 15 of 20 `TestTUITmuxE2E_*` cases were written before commits `a7a1d1d`
+    ("Collapse TUI project navigation into dashboard") and `6bbbdc0`
+    ("Remove obsolete TUI project mode"). They still reference the removed
+    `Project: serf` details pane, the `/project` slash command, and the
+    pre-overhaul `openLiveSession` palette flow, so each one times out
+    (~20s) under the current UI. Cumulatively they push `go test ./cmd/serf-tui/...`
+    well past the 90s test-binary timeout.
+  - These tests are gated behind the `SERF_TMUX_E2E_FULL=1` env var (and
+    skipped under `-short`) via `requireFullTmuxE2E` in
+    `cmd/serf-tui/tmux_e2e_test.go`. To run them locally while rewriting:
+
+    ```bash
+    SERF_TMUX_E2E_FULL=1 go test ./cmd/serf-tui -run TestTUITmuxE2E -count=1
+    ```
+
+  - Affected cases (alphabetical): `APIErrorsRenderInPlace`,
+    `BrowseAndFork`, `CapabilityGates`,
+    `CtrlCRequiresDoublePressFromSession`,
+    `CtrlCRestoreMessageSurvivesAltScreenExit`,
+    `DashboardNarrowWideStates`, `DashboardProjectAndSpawn`,
+    `FailedForkPreservesDraft`,
+    `HubStreamingAssistantDeltaBeforeRefresh`,
+    `HubStreamingToolGroupBeforeRefresh`,
+    `ModelPickerShowsAuthRequiredModels`,
+    `SessionCommandPalettePreservesDraft`,
+    `SessionCommandsAndNavigation`, `SessionHeaderStatusAndComposerStates`,
+    `SessionLeadingSlashOpensPalette`.
+  - Rewrite plan: replace `openLiveSession` with a palette-based flow that
+    drills into the live `01LIVE` session via the new flat dashboard, and
+    drop assertions on the removed project details pane / `/project`
+    command. Audit each affected case against the current UI before
+    re-enabling.
+
 ## Commands
 
 ```bash
-go test ./cmd/serf-tui -run TestTUITmuxE2E -count=1
+go test ./cmd/serf-tui -run TestTUITmuxE2E -count=1                      # default: skips pre-overhaul cases
+SERF_TMUX_E2E_FULL=1 go test ./cmd/serf-tui -run TestTUITmuxE2E -count=1 # opt-in: runs everything
+go test -short ./cmd/serf-tui/...                                        # CI-style: skips pre-overhaul cases
 go test ./cmd/serf-tui -count=1
 go test ./...
 ```
