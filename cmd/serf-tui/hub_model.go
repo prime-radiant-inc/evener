@@ -1970,9 +1970,13 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 	case appwire.NotifyThreadStatusChanged:
 		var params appwire.ThreadStatusChangedParams
 		if json.Unmarshal(notification.Params, &params) == nil {
+			previous := m.detail.State
 			m.detail.State = params.Status.Type
 			m.session.processing = params.Status.Type == appwire.ThreadStatusProcessing
-			if params.Status.Type != appwire.ThreadStatusProcessing && m.client != nil {
+			// Refresh on any transition so capabilities (interrupt, steer, send, etc.)
+			// reflect the source's current view. Without this, the cached idle snapshot
+			// keeps Interrupt=false for the entire turn (kata 4yvd).
+			if previous != params.Status.Type && m.client != nil {
 				if ref, ok := m.currentRef(); ok {
 					cmd = fetchHubSession(m.client, ref)
 				}

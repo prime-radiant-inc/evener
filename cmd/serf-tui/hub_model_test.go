@@ -1808,6 +1808,60 @@ func TestHubModelStatusIdleRefreshesSessionCapabilities(t *testing.T) {
 	}
 }
 
+// kata 4yvd: idle→processing must refresh capabilities so /interrupt becomes
+// available mid-turn without the user having to run /status first.
+func TestHubModelStatusProcessingRefreshesSessionCapabilities(t *testing.T) {
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			if params.Ref != "local:01SEND" {
+				t.Fatalf("ref=%q, want local:01SEND", params.Ref)
+			}
+			thread := appwireThread(hubTreeNode{
+				Ref: "local:01SEND", SessionID: "01SEND", Title: "send task", State: "processing", Model: "gpt-5", Project: "serf", Live: true,
+			}, "/tmp/serf")
+			// Source's mid-turn capability snapshot: send/steer flip with state,
+			// but interrupt is freshly advertised.
+			thread.Serf.Capabilities.Send = false
+			thread.Serf.Capabilities.Steer = true
+			thread.Serf.Capabilities.Interrupt = true
+			return appwire.ThreadReadResponse{Thread: thread}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	// Stale idle snapshot: interrupt/steer disabled, as the source advertised them
+	// before the turn started.
+	m.detail.State = appwire.ThreadStatusIdle
+	m.detail.Capabilities.Interrupt = false
+	m.detail.Capabilities.Steer = false
+	m.session.processing = false
+	notification := appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
+		ThreadID: "01SEND",
+		Ref:      "local:01SEND",
+		Status:   appwire.ThreadStatus{Type: appwire.ThreadStatusProcessing},
+	})
+
+	cmd := m.applyHubNotification(*notification.Notification)
+	if cmd == nil {
+		t.Fatal("processing status notification should refresh session detail")
+	}
+	if !m.session.processing {
+		t.Fatal("session.processing should flip to true immediately on status change")
+	}
+	updated, _ := m.Update(cmd())
+	got := updated.(hubModel)
+	if !got.detail.Capabilities.Interrupt {
+		t.Fatalf("interrupt capability was not refreshed: %+v", got.detail.Capabilities)
+	}
+	if !got.detail.Capabilities.Steer {
+		t.Fatalf("steer capability was not refreshed: %+v", got.detail.Capabilities)
+	}
+	if got.detail.Capabilities.Send {
+		t.Fatalf("send should reflect the source's mid-turn snapshot (false): %+v", got.detail.Capabilities)
+	}
+}
+
 func TestHubModelSendUsesAppWireTurnStart(t *testing.T) {
 	var got appwire.TurnStartParams
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
