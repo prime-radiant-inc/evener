@@ -59,7 +59,7 @@ func TestEmbeddedServer_RoundTrip(t *testing.T) {
 	defer cancel()
 
 	embedded, err := startEmbedded(ctx, embeddedConfig{
-		model: "openai/gpt-4o-mini",
+		model: "openai/gpt-5.4-mini",
 	})
 	if err != nil {
 		t.Fatalf("startEmbedded: %v", err)
@@ -90,9 +90,12 @@ func TestEmbeddedServer_RoundTrip(t *testing.T) {
 		t.Fatalf("POST /input: %d", inputResp.StatusCode)
 	}
 
-	// Read SSE events until we see ASSISTANT_TEXT_END or timeout.
-	// The agent may make tool calls before responding with text, so allow enough time.
-	events, err := readSSEUntil(sseResp.Body, "ASSISTANT_TEXT_END", 45*time.Second)
+	// Read SSE events until we see COMMUNICATE (the canonical
+	// turn-terminal event — agent loop forces all user-facing
+	// messages through the communicate tool, so ASSISTANT_TEXT_END
+	// is not a reliable terminator when the model goes straight to
+	// a tool call).
+	events, err := readSSEUntil(sseResp.Body, "COMMUNICATE", 45*time.Second)
 	if err != nil {
 		t.Fatalf("readSSE: %v", err)
 	}

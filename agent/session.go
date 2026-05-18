@@ -2022,15 +2022,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				s.mu.Unlock()
 				return "", err
 			}
-
-			s.mu.Lock()
-			s.state = SessionIdle
-			s.mu.Unlock()
-			s.maybeAutoSave()
-			timings.TotalRound = time.Since(roundStart)
-			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
-			s.emit(EventRoundTimings, timings)
-			return txt, nil
 		}
 
 		// Model produced tool calls — reset retry counters.
