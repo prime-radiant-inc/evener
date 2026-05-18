@@ -158,8 +158,10 @@ func TestCtrlVKeybindAttachesClipboardImage(t *testing.T) {
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlV})
 	got := updated.(hubModel)
 
-	if got.session.input.Value() != "" {
-		t.Fatalf("Ctrl+V leaked into textarea: %q", got.session.input.Value())
+	// Composer inserts an "[image N]" marker at the cursor on attach
+	// (kata 2stz). It is no longer empty after Ctrl+V.
+	if got.session.input.Value() != "[image 1]" {
+		t.Fatalf("Ctrl+V textarea = %q, want %q", got.session.input.Value(), "[image 1]")
 	}
 	if len(got.pendingAttachments) != 1 {
 		t.Fatalf("Ctrl+V attachments len = %d, want 1", len(got.pendingAttachments))
@@ -180,8 +182,10 @@ func TestCtrlAltVKeybindAttachesClipboardImage(t *testing.T) {
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v"), Alt: true})
 	got := updated.(hubModel)
 
-	if got.session.input.Value() != "" {
-		t.Fatalf("Ctrl+Alt+V leaked into textarea: %q", got.session.input.Value())
+	// Composer inserts an "[image N]" marker at the cursor on attach
+	// (kata 2stz). It is no longer empty after Ctrl+Alt+V.
+	if got.session.input.Value() != "[image 1]" {
+		t.Fatalf("Ctrl+Alt+V textarea = %q, want %q", got.session.input.Value(), "[image 1]")
 	}
 	if len(got.pendingAttachments) != 1 {
 		t.Fatalf("Ctrl+Alt+V attachments len = %d, want 1", len(got.pendingAttachments))
@@ -213,8 +217,11 @@ func TestPastedPathAttachesImage(t *testing.T) {
 	})
 	got := updated.(hubModel)
 
-	if got.session.input.Value() != "before" {
-		t.Fatalf("pasted path leaked into textarea: %q (want %q)", got.session.input.Value(), "before")
+	// Pasted path attaches as an image AND inserts an "[image N]" marker
+	// at the cursor (kata 2stz). With setInputValue("before") the cursor
+	// ends up at end-of-text, so the marker appends after "before".
+	if got.session.input.Value() != "before[image 1]" {
+		t.Fatalf("pasted path textarea = %q (want %q)", got.session.input.Value(), "before[image 1]")
 	}
 	if len(got.pendingAttachments) != 1 {
 		t.Fatalf("attachments len = %d, want 1", len(got.pendingAttachments))

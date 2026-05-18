@@ -58,6 +58,12 @@ type PastedImage struct {
 	Height    int    // pixel height if known, 0 otherwise
 	Size      int    // byte length of the file at Path
 	Origin    string // "clipboard-file" | "clipboard-image" | "wsl"
+	// MarkerN is the number embedded in the "[image N]" literal inserted
+	// at the composer cursor when this attachment was added. Assigned at
+	// attach time and never reused; 0 means unassigned (e.g. a legacy or
+	// directly-constructed attachment that did not flow through
+	// addPendingAttachment).
+	MarkerN int
 }
 
 // ClipboardSource abstracts the three clipboard reads the paste flow

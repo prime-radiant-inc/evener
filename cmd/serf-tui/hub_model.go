@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -158,21 +159,57 @@ type hubModel struct {
 // addPendingAttachment appends a captured image to the composer's
 // pending-attachment list. Callers own the backing file — the submit
 // flow is responsible for cleanup.
+//
+// The image is assigned a monotonically-increasing MarkerN and the
+// literal "[image N]" token is inserted at the textarea's current
+// cursor position so the user can reposition or delete it inline. Kata
+// 2stz.
 func (m *hubModel) addPendingAttachment(img *PastedImage) {
 	if img == nil {
 		return
 	}
+	n := nextMarker(m.pendingAttachments)
+	img.MarkerN = n
+	m.session.input.InsertString("[image " + strconv.Itoa(n) + "]")
 	m.pendingAttachments = append(m.pendingAttachments, img)
 }
 
 // removePendingAttachment drops the attachment at the given index. Out
 // of range indices are silently ignored so handler callsites don't need
 // to bounds-check after a re-render race.
+//
+// If the removed attachment carries a marker, the first occurrence of
+// its "[image N]" token is stripped from the textarea. Numbering is not
+// renumbered; gaps in the surviving markers are intentional. Kata 2stz.
 func (m *hubModel) removePendingAttachment(idx int) {
 	if idx < 0 || idx >= len(m.pendingAttachments) {
 		return
 	}
+	removed := m.pendingAttachments[idx]
+	if removed != nil && removed.MarkerN > 0 {
+		tok := "[image " + strconv.Itoa(removed.MarkerN) + "]"
+		text := m.session.input.Value()
+		if i := strings.Index(text, tok); i >= 0 {
+			m.session.input.SetValue(text[:i] + text[i+len(tok):])
+		}
+	}
 	m.pendingAttachments = append(m.pendingAttachments[:idx], m.pendingAttachments[idx+1:]...)
+}
+
+// nextMarker returns the next monotonic marker number for a new
+// attachment: max(existing.MarkerN) + 1, or 1 when none exist. Removed
+// attachments' numbers are not reused, so gaps are possible.
+func nextMarker(atts []*PastedImage) int {
+	max := 0
+	for _, a := range atts {
+		if a == nil {
+			continue
+		}
+		if a.MarkerN > max {
+			max = a.MarkerN
+		}
+	}
+	return max + 1
 }
 
 const hubCtrlCQuitWindow = time.Second
