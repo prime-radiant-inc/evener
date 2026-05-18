@@ -158,6 +158,9 @@ func TestTurnStart_RegistersPending_AndFailsOnRPCError(t *testing.T) {
 	if !coord.entries[0].failed {
 		t.Fatal("expected failed")
 	}
+	if coord.entries[0].text != "first message" {
+		t.Fatalf("text = %q, want %q", coord.entries[0].text, "first message")
+	}
 }
 
 func TestTurnQueue_RegistersPending(t *testing.T) {
