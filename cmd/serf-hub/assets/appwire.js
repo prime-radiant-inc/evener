@@ -97,6 +97,28 @@
     return connect().then(send);
   }
 
+  // Optimistic-rendering hook. The renderer registers a registry via
+  // setPendingRegistry; if absent, optimisticCall passes through as a
+  // bare request().
+  let pendingRegistry = null;
+  function setPendingRegistry(reg) { pendingRegistry = reg; }
+
+  async function optimisticCall(method, params, intent) {
+    let handle = null;
+    if (pendingRegistry) {
+      handle = pendingRegistry.register({ method, text: (intent && intent.text) || "" });
+    }
+    try {
+      return await request(method, params);
+    } catch (err) {
+      if (handle && pendingRegistry) {
+        const msg = (err && err.message) ? err.message : String(err);
+        pendingRegistry.fail(handle, msg);
+      }
+      throw err;
+    }
+  }
+
   function handleMessage(raw) {
     let msg;
     try { msg = JSON.parse(raw); } catch (_) { return; }
@@ -313,15 +335,17 @@
   }
 
   function startTurn(sessionId, text, attachments) {
-    return request(METHOD.turnStart, {
+    return optimisticCall(METHOD.turnStart, {
       ref: refForSession(sessionId),
       prompt: text || "",
       items: inputItemsFromAttachments(attachments),
-    });
+    }, { text });
   }
 
   function steer(sessionId, turnId, text) {
-    return request(METHOD.turnSteer, { ref: refForSession(sessionId), turnId: turnId || "", text: text || "" });
+    return optimisticCall(METHOD.turnSteer, {
+      ref: refForSession(sessionId), turnId: turnId || "", text: text || "",
+    }, { text });
   }
 
   // queueTurn enqueues a user message while a turn is in flight (kata 111a).
@@ -330,11 +354,11 @@
   // along the queued entry so the eventually-popped user turn still has its
   // images.
   function queueTurn(sessionId, text, attachments) {
-    return request(METHOD.turnQueue, {
+    return optimisticCall(METHOD.turnQueue, {
       ref: refForSession(sessionId),
       text: text || "",
       items: inputItemsFromAttachments(attachments),
-    });
+    }, { text });
   }
 
   // drainAsSteer drains the daemon's input queue into a single STEERING
@@ -349,7 +373,9 @@
     if (hasText || hasAttachments) {
       await queueTurn(sessionId, text || "", attachments || []);
     }
-    return request(METHOD.turnDrainAsSteer, { ref: refForSession(sessionId) });
+    return optimisticCall(METHOD.turnDrainAsSteer, {
+      ref: refForSession(sessionId),
+    }, { text: "" });
   }
 
   function action(sessionId, name, turnId) {
@@ -673,5 +699,6 @@
     activeTurnIDFromThread,
     eventsFromNotification,
     liveItemStateSize() { return liveItemState.size; },
+    setPendingRegistry,
   };
 })();
