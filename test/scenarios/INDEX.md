@@ -78,6 +78,38 @@ the area they exercise.
   transcript preserves partial output (kata `9sck`; surfaced kata
   `4yvd` — palette gates on stale capabilities mid-turn).
 
+## Image attachments
+
+End-to-end coverage for the composer image-attachment surfaces (kata
+`2frx`; the implementation chain was katas
+`t5j6 → c7pv/r6a1 → xy3t/65mm → re91/v80q`). Each scenario builds a
+tiny PNG fixture, drives the gesture through the live UI, spawns or
+sends through the live hub against
+`anthropic/claude-haiku-4-5-20251001`, and confirms the transcript
+contains a `ContentImage` part on the `USER_INPUT` message and the
+assistant references the image content.
+
+- `web-paste-image-from-clipboard.md` — synthetic `ClipboardEvent`
+  with a DataTransfer holding a 64×64 PNG; the `attachComposerImage
+  Handlers` paste listener canvas-re-encodes and pushes onto the
+  pending bag. Verified live 2026-05-18.
+- `web-drag-drop-image.md` — full dragenter/dragover/drop sequence
+  on `[data-drop-zone]` with a synthetic DataTransfer; visual
+  `.drop-active` toggles, chip renders, spawn ships bytes. Verified
+  live 2026-05-18.
+- `web-file-picker-image.md` — CDP `file_upload` (or
+  `input.files = dt.files`) on the hidden `[data-file-picker]`
+  fires the change event; the helper ingests and re-encodes.
+  Verified live 2026-05-18.
+- `tui-paste-image-from-clipboard.md` — Xvfb + xclip seeds the
+  clipboard, TUI Ctrl+V runs the multi-source clipboard read
+  (`clipboard_system.go`) and pushes a `serf-clipboard-*.png` chip
+  onto pendingAttachments. Verified live 2026-05-18.
+- `tui-paste-image-path.md` — `tmux load-buffer` +
+  `tmux paste-buffer -p` delivers a bracketed-paste containing an
+  on-disk PNG path; `handleBracketedPaste` attaches instead of
+  inserting text. Verified live 2026-05-18.
+
 ## Transcript / debug
 
 - `transcript-endpoint-url.md` — api_call entries record
@@ -129,5 +161,13 @@ output by running it.
   ends between opening and submit; the `no active turn` toast
   fires but the dialog still closes, so the user thinks the steer
   went through (surfaced by `web-steer-live-turn.md`).
+- `1pgw` — production CSP `img-src 'self' data:` blocks the
+  `blob:` URL the composer-attachments helper creates in
+  `reencodeToPng`; every web paste / drop / file-picker rendered
+  "Not an image: <name>" until the fix. Discovered while writing
+  the `web-*-image.md` scenarios (kata `2frx`). Fix: add `blob:`
+  to `cmd/serf-hub/security.go:CSPMiddleware`. The jstest harness
+  stubs `Image` so unit tests miss this; only live browser
+  verification catches it.
 
 All filed via `kata create`; not blocking.
