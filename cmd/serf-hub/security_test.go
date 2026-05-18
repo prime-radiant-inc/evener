@@ -22,7 +22,14 @@ func TestCSPMiddleware_SetsStrictDefault(t *testing.T) {
 	if csp == "" {
 		t.Fatal("CSP header not set")
 	}
-	for _, want := range []string{"default-src 'self'", "script-src 'self' 'unsafe-inline'", "frame-ancestors 'none'"} {
+	for _, want := range []string{
+		"default-src 'self'",
+		"script-src 'self' 'unsafe-inline'",
+		// img-src must include data: (transcript-inline base64 thumbnails) and
+		// blob: (composer-attachments reencodeToPng pipeline; kata 1pgw).
+		"img-src 'self' data: blob:",
+		"frame-ancestors 'none'",
+	} {
 		if !strings.Contains(csp, want) {
 			t.Errorf("CSP missing %q; got: %s", want, csp)
 		}
