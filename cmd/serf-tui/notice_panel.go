@@ -106,6 +106,28 @@ func noticeKey(notice noticePanel) string {
 	}, "\x00")
 }
 
+// classifyWarningCategory returns the notice category for a NotifyWarning
+// payload (kata 5q3p). It prefers the typed Cause when present so we
+// stop substring-matching the message in the common case; cause-less
+// legacy payloads still fall back to a message-prefix match so existing
+// behavior is preserved.
+func classifyWarningCategory(message string, cause *appwire.DiagnosticCause) string {
+	if cause != nil {
+		switch cause.Kind {
+		case "provider":
+			return "provider"
+		}
+	}
+	trimmed := strings.ToLower(strings.TrimSpace(message))
+	switch {
+	case strings.HasPrefix(trimmed, "provider error"):
+		return "provider"
+	case strings.HasPrefix(trimmed, "serf error"):
+		return "serf"
+	}
+	return "serf"
+}
+
 func noticeCategoryForError(err error, fallback string) string {
 	var wire appwire.WireError
 	if errors.As(err, &wire) {

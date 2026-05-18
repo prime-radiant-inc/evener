@@ -2251,10 +2251,16 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			m.applyQueueState(ref, params.Queue)
 		}
 	case appwire.NotifyWarning:
+		// Cause is decoded as a pointer so its absence (legacy payloads)
+		// stays distinguishable from kind=="" (kata 5q3p). When present,
+		// classifyWarningCategory uses the typed Cause; otherwise it falls
+		// back to the message-substring path so legacy NotifyWarning
+		// payloads still classify correctly.
 		var params struct {
-			Message string `json:"message"`
-			Source  string `json:"source"`
-			Title   string `json:"title"`
+			Message string                   `json:"message"`
+			Source  string                   `json:"source"`
+			Title   string                   `json:"title"`
+			Cause   *appwire.DiagnosticCause `json:"cause"`
 			Warning struct {
 				Message string `json:"message"`
 			} `json:"warning"`
@@ -2264,7 +2270,14 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			if strings.TrimSpace(message) == "" {
 				message = params.Warning.Message
 			}
-			m.addSessionSystemOnce(formatHubDiagnostic(params.Title, params.Source, message, "Session warning"))
+			title := params.Title
+			source := params.Source
+			if strings.TrimSpace(title) == "" && strings.TrimSpace(source) == "" {
+				if classifyWarningCategory(message, params.Cause) == "provider" {
+					source = "provider"
+				}
+			}
+			m.addSessionSystemOnce(formatHubDiagnostic(title, source, message, "Session warning"))
 		}
 	}
 	m.session.refreshViewport()

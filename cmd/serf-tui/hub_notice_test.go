@@ -123,6 +123,38 @@ func TestHubModelAuthErrorsRenderStructuredNoticeAndClearOnSuccess(t *testing.T)
 	}
 }
 
+// TestNoticePanel_CauseProviderClassifiesProvider (kata 5q3p) verifies
+// that classifyWarningCategory prefers the typed Cause.Kind when present
+// and returns "provider" without inspecting the message.
+func TestNoticePanel_CauseProviderClassifiesProvider(t *testing.T) {
+	cause := &appwire.DiagnosticCause{Kind: "provider", Provider: "openai", Status: 429}
+	got := classifyWarningCategory("some unrelated text", cause)
+	if got != "provider" {
+		t.Fatalf("classifyWarningCategory with provider cause: got %q, want %q", got, "provider")
+	}
+}
+
+// TestNoticePanel_NoCauseFallsBackToMessageMatch (kata 5q3p) verifies the
+// substring fallback path: with no Cause, a "provider error: ..." message
+// is still classified as provider so legacy NotifyWarning payloads keep
+// working.
+func TestNoticePanel_NoCauseFallsBackToMessageMatch(t *testing.T) {
+	got := classifyWarningCategory("provider error: openai rate limited", nil)
+	if got != "provider" {
+		t.Fatalf("classifyWarningCategory message fallback: got %q, want %q", got, "provider")
+	}
+}
+
+// TestNoticePanel_NoCauseNonProviderMessage (kata 5q3p) regression-locks
+// the non-provider branch of the substring fallback path: a "serf error:"
+// message with no Cause must classify as serf, never as provider.
+func TestNoticePanel_NoCauseNonProviderMessage(t *testing.T) {
+	got := classifyWarningCategory("serf error: configuration", nil)
+	if got != "serf" {
+		t.Fatalf("classifyWarningCategory serf-message fallback: got %q, want %q", got, "serf")
+	}
+}
+
 func TestHubModelAppWireAndProviderErrorsRenderStructuredNotices(t *testing.T) {
 	tests := []struct {
 		name string
