@@ -93,6 +93,7 @@ const (
 	msgCommunicate             // agent's communicate output (the actual response)
 	msgTool
 	msgSystem
+	msgSteering // user-initiated steering placeholder + authoritative steering chip
 )
 
 type toolCallInfo struct {
@@ -114,9 +115,25 @@ func renderMessage(msg chatMessage, width int, focused bool) string {
 	if focused {
 		messageWidth = max(1, width-2)
 	}
+
+	// Pending / failed prefix. Applied uniformly across all message
+	// kinds so the optimistic-rendering visual is consistent.
+	prefix := ""
+	suffix := ""
+	if msg.Pending {
+		prefix = lipgloss.NewStyle().Faint(true).Render("⠋ ")
+	}
+	if msg.Failed {
+		prefix = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("✗ ")
+		if msg.Reason != "" {
+			suffix = lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("9")).Render(" (failed: " + msg.Reason + ")")
+		}
+	}
+	body := prefix + msg.Text + suffix
+
 	switch msg.Kind {
 	case msgUser:
-		return renderSelectedMessage(userBlockStyle.Width(messageWidth).Render("> "+msg.Text), focused)
+		return renderSelectedMessage(userBlockStyle.Width(messageWidth).Render("> "+body), focused)
 	case msgAssistant:
 		text := strings.TrimSpace(msg.Text)
 		if text == "" {
@@ -131,7 +148,11 @@ func renderMessage(msg chatMessage, width int, focused bool) string {
 		}
 		return renderToolCall(*msg.Tool, width, focused)
 	case msgSystem:
-		return renderSelectedMessage(systemStyle.Width(messageWidth).Render(msg.Text), focused)
+		return renderSelectedMessage(systemStyle.Width(messageWidth).Render(body), focused)
+	case msgSteering:
+		// Steering placeholder or authoritative chip. systemStyle is the
+		// closest existing style; refine later if needed.
+		return renderSelectedMessage(systemStyle.Width(messageWidth).Render("↻ "+body), focused)
 	}
 	return ""
 }
@@ -264,6 +285,20 @@ type chatMessage struct {
 	ItemID     string
 	ToolCallID string
 	Tool       *toolCallInfo
+
+	// PendingID is non-zero when this message is an optimistic placeholder
+	// created in response to a user click before the authoritative event
+	// arrives. It matches the pendingEntry.ID from pendingCoordinator.
+	PendingID int64
+	// Pending is true while the optimistic call is in flight. The renderer
+	// prefixes the row with a spinner glyph and dims the color while true.
+	Pending bool
+	// Failed is true if the optimistic call rejected or timed out without
+	// reconciling. Mutually exclusive with Pending. Renderer shows a red
+	// ✗ prefix and the Reason.
+	Failed bool
+	// Reason is the failure message when Failed is true.
+	Reason string
 }
 
 // historyToMessages converts session history turns into TUI chat messages

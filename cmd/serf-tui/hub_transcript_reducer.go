@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 
 	"primeradiant.com/serf/internal/appwire"
@@ -246,4 +247,76 @@ func (r *hubTranscriptReducer) clearActiveTool(item appwire.ThreadItem) {
 	if item.CallID != "" {
 		delete(r.activeTools, item.CallID)
 	}
+}
+
+// appendPendingSteering renders an optimistic STEERING placeholder
+// while the daemon's STEERING_INJECTED event is in flight. Returns
+// the PendingID for later mark/remove operations.
+func (r *hubTranscriptReducer) appendPendingSteering(text string) int64 {
+	id := nextPendingMessageID()
+	r.messages = append(r.messages, chatMessage{
+		Kind:      msgSteering,
+		Text:      text,
+		Pending:   true,
+		PendingID: id,
+	})
+	return id
+}
+
+// appendPendingUser renders an optimistic USER_INPUT placeholder.
+// Today the renderer already does silent user-message echo via
+// applyUserMessageEcho; this helper extends that to set Pending so
+// the spinner prefix renders.
+func (r *hubTranscriptReducer) appendPendingUser(text string) int64 {
+	id := nextPendingMessageID()
+	r.messages = append(r.messages, chatMessage{
+		Kind:      msgUser,
+		Text:      text,
+		Pending:   true,
+		PendingID: id,
+	})
+	return id
+}
+
+// appendPendingDrain renders the single transient drain-as-steer chip
+// that collapses queued entries while the daemon merges them into one
+// STEERING_INJECTED event.
+func (r *hubTranscriptReducer) appendPendingDrain(queuedCount int) int64 {
+	id := nextPendingMessageID()
+	r.messages = append(r.messages, chatMessage{
+		Kind:      msgSteering,
+		Text:      fmt.Sprintf("draining %d → steering", queuedCount),
+		Pending:   true,
+		PendingID: id,
+	})
+	return id
+}
+
+func (r *hubTranscriptReducer) markPendingFailed(id int64, reason string) {
+	for i := range r.messages {
+		if r.messages[i].PendingID != id {
+			continue
+		}
+		r.messages[i].Pending = false
+		r.messages[i].Failed = true
+		r.messages[i].Reason = reason
+		return
+	}
+}
+
+func (r *hubTranscriptReducer) removePending(id int64) {
+	for i := range r.messages {
+		if r.messages[i].PendingID != id {
+			continue
+		}
+		r.messages = append(r.messages[:i], r.messages[i+1:]...)
+		return
+	}
+}
+
+var pendingMessageIDCounter int64
+
+func nextPendingMessageID() int64 {
+	pendingMessageIDCounter++
+	return pendingMessageIDCounter
 }

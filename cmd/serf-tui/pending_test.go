@@ -197,3 +197,50 @@ func TestPendingCoordinator_FailIsIdempotent(t *testing.T) {
 		t.Fatalf("expected 1 failed msg (idempotent), got %d", len(got))
 	}
 }
+
+func TestHubReducer_RendersPendingChatMessage(t *testing.T) {
+	r := newHubTranscriptReducer(nil, nil, nil)
+
+	r.appendPendingSteering("look at this")
+
+	if len(r.messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(r.messages))
+	}
+	got := r.messages[0]
+	if got.Kind != msgSteering {
+		t.Fatalf("kind = %v, want msgSteering", got.Kind)
+	}
+	if !got.Pending {
+		t.Fatal("Pending should be true")
+	}
+	if got.Text != "look at this" {
+		t.Fatalf("text = %q", got.Text)
+	}
+}
+
+func TestHubReducer_MarksFailed(t *testing.T) {
+	r := newHubTranscriptReducer(nil, nil, nil)
+	r.appendPendingSteering("look at this")
+	r.markPendingFailed(r.messages[0].PendingID, "boom")
+
+	got := r.messages[0]
+	if got.Pending {
+		t.Fatal("Pending should be false after fail")
+	}
+	if !got.Failed {
+		t.Fatal("Failed should be true")
+	}
+	if got.Reason != "boom" {
+		t.Fatalf("Reason = %q", got.Reason)
+	}
+}
+
+func TestHubReducer_RemovesPendingOnConfirm(t *testing.T) {
+	r := newHubTranscriptReducer(nil, nil, nil)
+	r.appendPendingSteering("look at this")
+	id := r.messages[0].PendingID
+	r.removePending(id)
+	if len(r.messages) != 0 {
+		t.Fatal("confirmed entries should be removed; authoritative one renders separately")
+	}
+}
