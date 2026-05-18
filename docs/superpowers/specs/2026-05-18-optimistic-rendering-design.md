@@ -38,18 +38,21 @@ One coordinator per renderer, structured as a thin wrapper inside the existing a
 - **Web**: `window.SerfAppwire` (in `cmd/serf-hub/assets/appwire.js`) gains a new internal helper `optimisticCall(method, params, intent)`. Every UI callsite that today calls `SerfAppwire.send` / `queue` / `steer` / `drainAsSteer` is rewritten to go through `optimisticCall`. The four named functions on the public API become thin facades over `optimisticCall`.
 - **TUI**: `internal/appwire.Client` (Go) gains the same shape. The renderer (hub_model + hub_transcript_reducer) consumes a tiny "pending message" interface to plumb the visual state.
 
-`optimisticCall` owns the lifecycle:
+`optimisticCall` owns the **call lifecycle**, not the event-matching:
 
 1. **Register** an optimistic entry via the renderer's pending registry: `pending.register({method, text, ...}) → handle`. Renderer draws it.
 2. **Issue** the JSON-RPC call.
 3. **On reject** (RPC error, hub `Unavailable`, network drop) → `handle.fail(reason)`. Visual flips to failed.
-4. **On success** → keep pending; arm a 10s event-arrival timeout via `setTimeout` / `time.AfterFunc`.
-5. **Subscribe once** at client construction to the inbound event stream. When a matching event arrives (per-method matcher in §Per-action matrix), the wrapper calls `handle.confirm()`; pending visual is replaced by the authoritative item; timeout is canceled.
-6. **If timeout fires** before a matching event → `handle.fail("server did not confirm")`.
+4. **On success** → keep pending; arm a 10s event-arrival timeout via `setTimeout` / `time.AfterFunc`. If the timeout fires before a matching event → `handle.fail("server did not confirm")`.
 
 Reject and timeout are independent triggers; first to fire wins. No double-fail.
 
-The pending registry per renderer has three operations: `register`, `confirm`, `fail`. Everything else — rendering, animation, retry-button wiring — is the renderer's own concern.
+Event matching lives in the renderer's **existing** notification dispatcher, not inside the wrapper. The renderer owns the pending registry and is the natural place to fan-out a notification both to the reducer (which updates the authoritative transcript) and to `pending.tryReconcile(notification)` (which removes the matching pending entry). This avoids two distinct subscribers competing for the same channel — critical on the TUI side where `internal/appwire.Client` exposes a single `Notifications()` channel and a second consumer would race with the reducer.
+
+- **Web**: `SerfAppwire.onNotification(handler)` already supports multiple handlers via a `Set` fan-out. The renderer registers one handler today (the reducer); after this change it registers a second handler that calls `pending.tryReconcile(...)`. The order is deterministic — reducer first, then reconcile — so the authoritative transcript update always happens before the pending entry is removed.
+- **TUI**: there is **only one** consumer of `appwire.Client.Notifications()`. The existing `hubModel.Update` path that pumps notifications into the reducer gains one additional step after applying the notification — `pending.tryReconcile(notification)`. No new subscription, no fan-out refactor, no race.
+
+The pending registry per renderer has four operations: `register`, `confirm`, `fail`, `tryReconcile`. Everything else — rendering, animation, retry-button wiring — is the renderer's own concern.
 
 ## Per-action matrix
 
@@ -137,18 +140,22 @@ Write the test, confirm it fails on the current code (Steer is always `true`), a
 
 `cmd/serf-hub/jstest/test-optimistic-rendering.js`:
 
-- Reject path: mock `SerfAppwire.steer` to reject with `Unavailable`. Click steer. Assert pending chip rendered, then `.optimistic-failed` class within one microtask, retry link present.
-- Success-then-event path: mock RPC resolves; emit `STEERING_INJECTED` matching the text after 50ms. Assert pending chip transitions to confirmed (placeholder removed, authoritative entry rendered).
-- Timeout path: mock RPC resolves; never emit the event; advance fake timers past 10s. Assert pending chip transitions to failed with reason "server did not confirm".
-- drainAsSteer matching: queue three optimistic entries. Click drain. Resolve RPC. Emit one `STEERING_INJECTED` with text `q1\n\nq2\n\nq3`. Assert the three pending queue entries collapse and the transient drain chip is replaced.
+Tests must exercise the real `SerfAppwire.steer` (and siblings) facades — those facades are where the wrapper logic lives. Mocking the facade itself defeats the test. Instead, inject a fake transport at the lower-level RPC layer (the WebSocket `send` plus `onNotification` event bus) so the wrapper's full lifecycle runs end-to-end while we control the wire-level reply and the notification stream.
+
+- Reject path: fake transport replies to the steer JSON-RPC with an `Unavailable` error. Click steer through the renderer. Assert pending chip is rendered first, then `.optimistic-failed` class within one microtask, retry link present.
+- Success-then-event path: fake transport replies with success; harness then synthesizes a `STEERING_INJECTED` notification matching the text after 50ms. Assert pending chip transitions to confirmed (placeholder removed, authoritative entry rendered).
+- Timeout path: fake transport replies with success; no notification ever fires; advance fake timers past 10s. Assert pending chip transitions to failed with reason "server did not confirm".
+- drainAsSteer matching: queue three optimistic entries (three RPC calls through the wrapper). Click drain. Fake transport replies success. Harness emits one `STEERING_INJECTED` with text `q1\n\nq2\n\nq3`. Assert the three pending queue entries collapse and the transient drain chip is replaced.
 
 ### TUI wrapper unit
 
 `cmd/serf-tui/optimistic_test.go`:
 
-- Drive a `hubModel` with a stubbed `appwire.Client` whose `Steer` errors with `Unavailable`. Assert the reducer produces a chatMessage with `pending=true` then `failed=true` and a non-empty `failedReason`.
-- Stubbed `Steer` succeeds; emit `STEERING_INJECTED` event into the model; assert pending → reconciled (no `pending`, no `failed`).
-- Stubbed `Steer` succeeds; no event; advance simulated time 10s; assert pending → `failed=true` with reason "server did not confirm".
+Tests exercise the real `appwire.Client.Steer` (and siblings) — the wrapper logic lives inside those methods. Inject a fake RPC transport at the level of the JSON-RPC writer, then drive the matching `Notifications()` channel from the test to simulate authoritative events. This keeps the wrapper under test while controlling its inputs.
+
+- Reject: fake transport returns `appwire.Unavailable` for the steer request. Drive `hubModel` to issue a steer. Assert the reducer produces a chatMessage with `pending=true`, then `failed=true` with a non-empty `failedReason`.
+- Success-then-event: fake transport returns success; harness writes a `STEERING_INJECTED` notification onto the channel; assert pending → reconciled (no `pending`, no `failed`).
+- Timeout: fake transport returns success; no notification; advance the fake clock 10s; assert pending → `failed=true` with reason "server did not confirm".
 
 ### Live scenarios
 
