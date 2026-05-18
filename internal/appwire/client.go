@@ -230,8 +230,15 @@ func (c *Client) ThreadShutdown(ctx context.Context, params ThreadShutdownParams
 }
 
 func (c *Client) TurnStart(ctx context.Context, params TurnStartParams) (TurnStartResponse, error) {
+	var handle PendingHandle
+	if c.pendingCoord != nil {
+		handle = c.pendingCoord.Register(MethodTurnStart, params.Prompt)
+	}
 	var out TurnStartResponse
 	err := c.request(ctx, MethodTurnStart, params, &out)
+	if err != nil && handle != nil {
+		handle.Fail(err.Error())
+	}
 	return out, err
 }
 
@@ -256,13 +263,29 @@ func (c *Client) TurnInterrupt(ctx context.Context, params TurnInterruptParams) 
 // recorded; the queued message is processed as a fresh user turn after the
 // active turn completes.
 func (c *Client) TurnQueue(ctx context.Context, params TurnQueueParams) error {
-	return c.request(ctx, MethodTurnQueue, params, nil)
+	var handle PendingHandle
+	if c.pendingCoord != nil {
+		handle = c.pendingCoord.Register(MethodTurnQueue, params.Text)
+	}
+	err := c.request(ctx, MethodTurnQueue, params, nil)
+	if err != nil && handle != nil {
+		handle.Fail(err.Error())
+	}
+	return err
 }
 
 // TurnDrainAsSteer calls turn/drainAsSteer (kata 0bq1) to drain every queued
 // message into a single STEERING message for the in-flight turn.
 func (c *Client) TurnDrainAsSteer(ctx context.Context, params TurnDrainAsSteerParams) error {
-	return c.request(ctx, MethodTurnDrainAsSteer, params, nil)
+	var handle PendingHandle
+	if c.pendingCoord != nil {
+		handle = c.pendingCoord.Register(MethodTurnDrainAsSteer, "")
+	}
+	err := c.request(ctx, MethodTurnDrainAsSteer, params, nil)
+	if err != nil && handle != nil {
+		handle.Fail(err.Error())
+	}
+	return err
 }
 
 func (c *Client) TasksList(ctx context.Context, params TaskListParams) (TaskListResponse, error) {

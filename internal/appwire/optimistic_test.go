@@ -130,4 +130,90 @@ func TestTurnSteer_NoCoordinator_PassThrough(t *testing.T) {
 	}
 }
 
+func TestTurnStart_RegistersPending_AndFailsOnRPCError(t *testing.T) {
+	t.Parallel()
+	transport := appwiretest.NewScriptedTransport()
+	client := appwire.NewClient(transport)
+	coord := &fakeCoordinator{}
+	client.SetPendingCoordinator(coord)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client.Start(ctx)
+	go func() {
+		req := <-transport.Sent()
+		transport.DeliverError(req.Request.ID, appwire.CodeInternalError, "boom")
+	}()
+	_, err := client.TurnStart(ctx, appwire.TurnStartParams{
+		Ref:    appwire.Ref{SourceID: "local", ThreadID: "t1"}.String(),
+		Prompt: "first message",
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	coord.mu.Lock()
+	defer coord.mu.Unlock()
+	if len(coord.entries) != 1 || coord.entries[0].method != "turn/start" {
+		t.Fatalf("entry: %+v", coord.entries)
+	}
+	if !coord.entries[0].failed {
+		t.Fatal("expected failed")
+	}
+}
+
+func TestTurnQueue_RegistersPending(t *testing.T) {
+	t.Parallel()
+	transport := appwiretest.NewScriptedTransport()
+	client := appwire.NewClient(transport)
+	coord := &fakeCoordinator{}
+	client.SetPendingCoordinator(coord)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client.Start(ctx)
+	go func() {
+		req := <-transport.Sent()
+		transport.DeliverResponse(req.Request.ID, struct{}{})
+	}()
+	if err := client.TurnQueue(ctx, appwire.TurnQueueParams{
+		Ref:  appwire.Ref{SourceID: "local", ThreadID: "t1"}.String(),
+		Text: "queued msg",
+	}); err != nil {
+		t.Fatalf("TurnQueue: %v", err)
+	}
+	coord.mu.Lock()
+	defer coord.mu.Unlock()
+	if len(coord.entries) != 1 || coord.entries[0].method != "turn/queue" {
+		t.Fatalf("entry: %+v", coord.entries)
+	}
+	if coord.entries[0].text != "queued msg" {
+		t.Fatalf("text mismatch: %q", coord.entries[0].text)
+	}
+}
+
+func TestTurnDrainAsSteer_RegistersPending_TextEmpty(t *testing.T) {
+	// Drain has no text intent — the wrapper still registers with text=""
+	// so the coordinator can render the drain-special chip.
+	t.Parallel()
+	transport := appwiretest.NewScriptedTransport()
+	client := appwire.NewClient(transport)
+	coord := &fakeCoordinator{}
+	client.SetPendingCoordinator(coord)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client.Start(ctx)
+	go func() {
+		req := <-transport.Sent()
+		transport.DeliverResponse(req.Request.ID, struct{}{})
+	}()
+	if err := client.TurnDrainAsSteer(ctx, appwire.TurnDrainAsSteerParams{
+		Ref: appwire.Ref{SourceID: "local", ThreadID: "t1"}.String(),
+	}); err != nil {
+		t.Fatalf("TurnDrainAsSteer: %v", err)
+	}
+	coord.mu.Lock()
+	defer coord.mu.Unlock()
+	if len(coord.entries) != 1 || coord.entries[0].method != "turn/drainAsSteer" {
+		t.Fatalf("entry: %+v", coord.entries)
+	}
+}
+
 var _ = fmt.Sprintf
