@@ -60,6 +60,11 @@ the area they exercise.
   shutdown title-bar actions hit the daemon end-to-end (kata
   `gx92`; surfaced kata `k7t8` — interrupt is unwired in
   production).
+- `tui-steer-live-turn.md` — composer auto-switches to `steer`
+  mode while a turn is processing; Enter fires `turn/steer`
+  and the agent receives a `STEERING` transcript entry it
+  acts on before the turn ends. Live-tested against
+  `anthropic/claude-haiku-4-5-20251001` (kata `mn4z`).
 
 ## Transcript / debug
 
