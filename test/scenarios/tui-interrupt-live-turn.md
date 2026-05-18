@@ -227,7 +227,66 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
     ```
     Both should still report the process alive.
 
-12. **Exit cleanly**. From the session view, `Ctrl+O` to return to
+12. **Interrupt-with-queue (kata `0bq1` natural composition).**
+    The session is idle again; start a fresh slow turn, then
+    while it's processing queue a follow-up via Enter and
+    interrupt the turn via the palette. The queued line should
+    survive the interrupt and run as the next user turn.
+    ```bash
+    tmux send-keys -t serf-interrupt-test -l 'You MUST call exec_command with command=bash args=["-c","for i in $(seq 1 15); do echo loop $i; sleep 2; done"]. Do not fabricate output.'
+    tmux send-keys -t serf-interrupt-test Enter
+    sleep 3
+    tmux capture-pane -t serf-interrupt-test -p | head -25
+    ```
+    Composer label should now read `queue` with footer `enter:
+    queue  ctrl+s: send as steer …`. Queue the follow-up:
+    ```bash
+    tmux send-keys -t serf-interrupt-test -l 'after that loop, reply with the single word DONE'
+    tmux send-keys -t serf-interrupt-test Enter
+    sleep 0.5
+    tmux capture-pane -t serf-interrupt-test -p | head -30
+    ```
+    `queued (1)` block above the composer. Now interrupt:
+    ```bash
+    tmux send-keys -t serf-interrupt-test C-p
+    sleep 0.3
+    tmux send-keys -t serf-interrupt-test -l 'interrupt'
+    sleep 0.2
+    tmux send-keys -t serf-interrupt-test Enter
+    sleep 1.5
+    tmux capture-pane -t serf-interrupt-test -p | head -30
+    ```
+    After the interrupt, the session goes idle and the daemon's
+    queue (already populated by step 12's Enter) immediately
+    drains into a new user turn. The `queued (...)` preview row
+    is gone (popped on `turn/completed` from the cancelled
+    turn) and a fresh processing turn for the `DONE` follow-up
+    starts. Wait for it to finish:
+    ```bash
+    for i in $(seq 1 30); do
+      state=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" \
+               | python3 -c "import json,sys; print(json.load(sys.stdin).get('state'))")
+      [ "$state" = "idle" ] && break
+      sleep 1
+    done
+    tail -3 "$TFILE" | python3 -c "
+    import json, sys
+    for line in sys.stdin:
+        j = json.loads(line)
+        t = j.get('turn', {})
+        for c in t.get('message', {}).get('content', []):
+            if c.get('kind') == 'tool_call' and c.get('tool_call', {}).get('name') == 'communicate':
+                print('REPLY:', c['tool_call']['arguments'].get('message'))
+    "
+    ```
+    Reply text should contain `DONE`. Falsification: the queued
+    follow-up is dropped (means the daemon's interrupt path
+    cleared the queue — file a regression against
+    `agent/session.go` ProcessInput abort handling) or the
+    queue preview persists in the TUI past the interrupt (means
+    `popSessionQueueHead` regressed on the cancelled completion).
+
+13. **Exit cleanly**. From the session view, `Ctrl+O` to return to
     the dashboard, then `q`:
     ```bash
     tmux send-keys -t serf-interrupt-test C-o
@@ -284,7 +343,18 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
 - **Step 11**: TUI process and tmux session both still alive after
   the interrupt — the abort signal closes neither the session nor
   the TUI.
-- **Step 12**: `q` from the dashboard ends the tmux session
+- **Step 12 (interrupt-with-queue, kata `0bq1` composition)**:
+  the queued follow-up runs as a new user turn immediately after
+  the interrupt. The `queued (N)` preview row clears the moment
+  the cancelled turn's `turn/completed` notification arrives
+  (the TUI's `popSessionQueueHead` runs on non-failed
+  completion). The agent's `communicate` reply for the new turn
+  contains `DONE`. Falsification: queue persists past the
+  interrupt, OR no new turn starts despite the queue having
+  been populated (the daemon dropped the queue when handling
+  the interrupt — file a regression against
+  `agent/session.go`).
+- **Step 13**: `q` from the dashboard ends the tmux session
   cleanly.
 
 ## Cleanup
