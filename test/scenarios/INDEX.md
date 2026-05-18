@@ -36,6 +36,10 @@ the area they exercise.
 
 ## Session workspace
 
+- `tui-workspace-navigation.md` — serf-tui dashboard + session
+  keyboard navigation via tmux send-keys / capture-pane: arrow
+  movement, project collapse/expand, command palette, browse vs
+  compose mode, double-Ctrl+C exit (kata `57be`).
 - `state-stuck-processing-display.md` — past session whose last
   turn errored shows `ended`/`error` not `processing` (kata `r6y9`).
 - `reconnect-auto-resume.md` — killing the daemon and sending a
@@ -90,8 +94,6 @@ output by running it.
 - `auth-device-poll-concurrent.md` — kata `24p1` (concurrent
   OAuth detection during device-code poll). Requires two
   parallel logins; need scripted CLI driver.
-- `tui-workspace-navigation.md` — serf-tui keyboard navigation
-  + status display. Requires tmux fixturing.
 - `compact-and-shutdown.md` — workspace compact + shutdown
   actions hit their RPC handlers cleanly. Worth a smoke test.
 
