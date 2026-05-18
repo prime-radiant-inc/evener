@@ -72,6 +72,17 @@ the area they exercise.
   session continues to idle (kata `a08v`; surfaced kata `gsv2` —
   palette closes silently if the turn ends between opening and
   submit, masking the no-active-turn error).
+- `tui-queue-then-completes.md` — typing during a processing turn
+  queues the message; the current turn finishes and the queued
+  message processes as the next user turn (kata `111a/0bq1` TUI).
+- `tui-queue-then-drain-as-steer.md` — Ctrl+S drains all queued
+  messages as a single STEERING joined by `\n\n`; the agent
+  receives them mid-turn (kata `111a/0bq1` TUI).
+- `web-queue-then-completes.md` — web counterpart of the
+  queue-then-completes scenario.
+- `web-queue-then-drain-as-steer.md` — web counterpart: Shift+Enter
+  (or the `send as steer` button) drains the pending queue as a
+  steer event.
 - `tui-interrupt-live-turn.md` — serf-tui `/interrupt` palette
   command fires against a real mid-turn session via
   `tmux send-keys`; verifies state transitions to `closed` and

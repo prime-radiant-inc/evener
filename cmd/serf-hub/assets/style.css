@@ -391,12 +391,10 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .composer-attachment-remove:hover { color: var(--text); }
 
 .input-card { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 6px; padding: 12px 14px; min-height: 80px; transition: border-color 0.15s; }
-.input-card.drag-over { border-color: var(--state-processing); background: var(--bg); }
 /* kata 65mm: drop-active is set by the shared composer-attachments helper
-   on dragenter (alongside the legacy drag-over class set by renderer.js's
-   addFiles wiring). Visually subtle so dropping onto the existing
-   .input-card keeps its border style; the dashed outline cues "drop here"
-   without recoloring the whole composer. */
+   on dragenter. Visually subtle so dropping onto the existing .input-card
+   keeps its border style; the dashed outline cues "drop here" without
+   recoloring the whole composer. */
 .input-card.drop-active,
 .spawn-input-wrap.drop-active { outline: 2px dashed var(--accent, var(--state-processing)); outline-offset: -2px; }
 .composer-attachment-error { color: var(--state-danger, #c8553d); font-size: 11px; padding: 4px 0; }
