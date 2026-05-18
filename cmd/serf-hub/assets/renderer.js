@@ -300,10 +300,70 @@
       this.eventSource = {
         close: () => this.clearAppwireStream(),
       };
+      // Optimistic-rendering registry. SerfAppwire's optimisticCall
+      // registers pending entries against this on every turn/start /
+      // turn/steer / turn/queue / turn/drainAsSteer; deliverNotification
+      // below calls tryReconcile after the authoritative reducer update.
+      if (window.SerfAppwirePending && typeof window.SerfAppwirePending.create === "function") {
+        this.pending = window.SerfAppwirePending.create({
+          conversation: this.conversation,
+          onRetry: (intent) => {
+            // Re-issue the optimistic call. Errors propagate normally;
+            // a new pending entry will be created by the wrapper.
+            switch (intent.method) {
+              case "turn/steer":
+                return window.SerfAppwire.steer(this.sessionId, this.activeTurnId, intent.text);
+              case "turn/start":
+                return window.SerfAppwire.startTurn(this.appwireRef || this.sessionId, intent.text, []);
+              case "turn/queue":
+                return window.SerfAppwire.queueTurn(this.sessionId, intent.text, []);
+              case "turn/drainAsSteer":
+                return window.SerfAppwire.drainAsSteer(this.sessionId);
+            }
+          },
+        });
+        if (typeof window.SerfAppwire.setPendingRegistry === "function") {
+          window.SerfAppwire.setPendingRegistry(this.pending);
+        }
+      }
+      // reconcilePendingFromNotification translates an inbound daemon
+      // notification into the wire-method name the optimisticCall wrapper
+      // registered under, then calls pending.tryReconcile. Returns nothing;
+      // unmatched notifications are silently ignored.
+      //
+      // Drain-special: serf/steering/injected ALSO consumes any in-flight
+      // turn/drainAsSteer placeholder (first-come-first-served, regardless
+      // of text), because the daemon collapses the queue into one STEERING
+      // and the placeholder doesn't know the joined text in advance.
+      const reconcilePendingFromNotification = (pending, method, params) => {
+        switch (method) {
+          case "serf/steering/injected":
+            pending.tryReconcile("turn/steer", params || {});
+            pending.tryReconcile("turn/drainAsSteer", params || {});
+            return;
+          case "thread/queueChanged":
+            pending.tryReconcile("turn/queue", params || {});
+            return;
+          case "item/started":
+          case "item/completed":
+            if (params && params.item && params.item.type === "user_message") {
+              pending.tryReconcile("turn/start", { text: params.item.text || "" });
+            }
+            return;
+        }
+      };
       const pendingNotifications = [];
       const deliverNotification = (method, params) => {
         for (const [kind, data] of window.SerfAppwire.eventsFromNotification(method, params)) {
           this.handleData(kind, data);
+        }
+        // Single reconciliation site: after the authoritative reducer
+        // update has applied, give the pending registry a chance to
+        // find a matching placeholder and remove it. The hydration
+        // replay loop below also runs through deliverNotification, so
+        // replayed notifications get exactly one reconcile pass.
+        if (this.pending) {
+          reconcilePendingFromNotification(this.pending, method, params);
         }
       };
       const notificationMatches = (params) => {

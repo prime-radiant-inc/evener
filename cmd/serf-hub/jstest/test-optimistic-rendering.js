@@ -139,6 +139,36 @@ async function runTests() {
     console.log("ok no_registry_passes_through");
   }
 
+  // Test 4: steer success then matching STEERING_INJECTED event reconciles
+  // and removes the pending chip via registry.tryReconcile.
+  {
+    const { window, getSock } = build();
+    await new Promise(r => setTimeout(r, 5));
+    const conv = window.document.getElementById("conv");
+    const pending = window.SerfAppwirePending.create({ conversation: conv });
+    window.SerfAppwire.setPendingRegistry(pending);
+
+    const promise = window.SerfAppwire.steer("sess-1", "turn-1", "look at this");
+    const sock = getSock();
+    await settleInit(sock);
+    const steerMsg = await waitForMethod(sock, "turn/steer");
+    respondOK(sock, steerMsg.id, {});
+    await promise;
+    await new Promise(r => setTimeout(r, 5));
+
+    // Pending chip should still be there (RPC success doesn't reconcile).
+    assert.ok(conv.querySelector(".optimistic-pending"), "pending chip should remain after RPC success");
+
+    // Simulate the daemon's STEERING_INJECTED notification by calling
+    // tryReconcile directly — the renderer-side hook in Task 11 will
+    // forward this from deliverNotification. The boundary test just
+    // confirms the registry's tryReconcile removes the placeholder.
+    const matched = pending.tryReconcile("turn/steer", { text: "look at this" });
+    assert.equal(matched, true);
+    assert.equal(conv.querySelectorAll(".optimistic-pending").length, 0);
+    console.log("ok pending_reconciles_after_steering_injected_event");
+  }
+
   console.log("PASS test-optimistic-rendering.js");
 }
 
