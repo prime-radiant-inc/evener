@@ -214,6 +214,10 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 			// errors from the initial connection AND stream-level truncations
 			// (stream ended without finish event) — but only when no partial
 			// output has been forwarded to the caller yet.
+			//
+			// Permanent provider errors (403 auth, 404 model-not-found, 400
+			// bad-request) short-circuit the chain after a single attempt
+			// instead of burning the full budget (kata xgzz).
 			maxRetries := gs.policy.MaxRetries
 			if maxRetries < 0 {
 				maxRetries = 0
@@ -242,7 +246,10 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 					// data delivered).
 					break
 				}
-				if !retryableError(stepErr) || attempt == maxRetries {
+				// Permanent (and Fallback — handled inside the adapter) errors
+				// don't get the rest of the retry budget. Only ErrorClassRetryable
+				// proceeds; the budget cap is checked next.
+				if Classify(stepErr) != ErrorClassRetryable || attempt == maxRetries {
 					break
 				}
 				delay, ok := retryDelay(gs.policy, rand.Float64, stepErr, attempt)

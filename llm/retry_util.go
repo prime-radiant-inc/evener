@@ -28,15 +28,17 @@ func retryableError(err error) bool {
 	if err == nil {
 		return false
 	}
+	// Bare context cancellation / deadline at this level means the overall
+	// budget is exhausted — don't retry even though Classify would label
+	// DeadlineExceeded as Retryable (that's a signal classification, not a
+	// budget decision).
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
-	var e Error
-	if errors.As(err, &e) {
-		return e.Retryable()
-	}
-	// Spec: unknown errors default to retryable.
-	return true
+	// Delegate to the classifier so retry decisions are made in exactly one
+	// place. Anything other than ErrorClassRetryable short-circuits the
+	// retry budget (kata xgzz).
+	return Classify(err) == ErrorClassRetryable
 }
 
 // Retry runs fn and retries retryable errors with exponential backoff and jitter.
