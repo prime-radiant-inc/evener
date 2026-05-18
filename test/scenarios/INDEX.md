@@ -17,6 +17,10 @@ the area they exercise.
 - `auth-device-autodetect.md` — `serf openai login` auto-picks
   device vs browser flow based on env / platform (katas `4f93712`,
   `8b7762c`).
+- `cli-device-code-flow.md` — full `--device` round trip: Part A
+  scripts the device-code request + cancellation against the live
+  OpenAI endpoint; Part B documents the manual browser-side
+  authorization (kata `p16h`).
 
 ## Spawn form (`/new`)
 
@@ -86,10 +90,6 @@ output by running it.
 - `auth-device-poll-concurrent.md` — kata `24p1` (concurrent
   OAuth detection during device-code poll). Requires two
   parallel logins; need scripted CLI driver.
-- `cli-device-code-flow.md` — full device-code login round trip
-  with browser side. Requires browser action against
-  `auth.openai.com` outside the hub. Worth scripting but separate
-  from the hub surface.
 - `tui-workspace-navigation.md` — serf-tui keyboard navigation
   + status display. Requires tmux fixturing.
 - `compact-and-shutdown.md` — workspace compact + shutdown
