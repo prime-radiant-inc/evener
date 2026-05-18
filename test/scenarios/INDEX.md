@@ -88,6 +88,17 @@ the area they exercise.
   `tmux send-keys`; verifies state transitions to `closed` and
   transcript preserves partial output (kata `9sck`; surfaced kata
   `4yvd` — palette gates on stale capabilities mid-turn).
+- `web-steer-in-idle-fails-fast.md` — verifies optimistic-rendering
+  reject path (kata wymv): clicking "send as steer" in IDLE returns
+  Unavailable; pending chip flips to .optimistic-failed with retry
+  link.
+- `web-steer-success-reconciles.md` — happy path: pending pulse
+  appears on click, replaced by authoritative STEERING divider when
+  the daemon's serf/steering/injected notification arrives.
+- `tui-steer-in-idle-fails-fast.md` — TUI counterpart of
+  web-steer-in-idle-fails-fast; Ctrl+S keybind in IDLE.
+- `tui-steer-success-reconciles.md` — TUI counterpart of the success
+  reconcile; spinner prefix replaced by authoritative steering.
 
 ## Image attachments
 
