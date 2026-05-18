@@ -48,6 +48,10 @@ the area they exercise.
 - `meta-flush-on-completion.md` — `meta.json` `turn_count` tracks
   committed exchanges across happy + error exits (katas `3tgv`,
   `ztne`, `wnfz`).
+- `workspace-title-bar-actions.md` — interrupt / compact /
+  shutdown title-bar actions hit the daemon end-to-end (kata
+  `gx92`; surfaced kata `k7t8` — interrupt is unwired in
+  production).
 
 ## Transcript / debug
 
@@ -94,14 +98,14 @@ output by running it.
 - `auth-device-poll-concurrent.md` — kata `24p1` (concurrent
   OAuth detection during device-code poll). Requires two
   parallel logins; need scripted CLI driver.
-- `compact-and-shutdown.md` — workspace compact + shutdown
-  actions hit their RPC handlers cleanly. Worth a smoke test.
-
 ## Open katas surfaced while writing scenarios
 
 - `96pr` — legacy diagnostics with stored source=serf never get
   reclassified (sharp edge).
 - `6bdb` — serf-hub doesn't find sibling serf binary either
   (same shape as a4w6, sharp edge).
+- `k7t8` — workspace interrupt button is non-functional
+  (`cancelFunc` never wired in `cmd/serf/serve.go`); covered by
+  `workspace-title-bar-actions.md`.
 
-Both filed via `kata create`; not blocking.
+All filed via `kata create`; not blocking.
