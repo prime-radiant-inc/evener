@@ -326,6 +326,118 @@ function pass(cond, msg) { if (!cond) failures.push("FAIL: " + msg); }
     pass(ok, "expected button to be keyboard-reachable (tagName=BUTTON or tabindex), got tag=" + btn.tagName);
   }
 
+  // ---------- Assertion 18 (kata xpnk): banner auto-clears when a paste succeeds after a rejecting drop ----------
+  // Paste shares pendingState with drop via the renderer's composerPasteState
+  // wiring. When the user drops PNG+TXT (banner appears) and then pastes a
+  // clean image, the stale rejection banner must clear — otherwise the user
+  // sees a spurious "Not an image: notes.txt" sitting above a successful
+  // paste chip.
+  {
+    const w = buildDom();
+    const dropZone = w.document.getElementById("drop");
+    const ta = w.document.getElementById("ta");
+    const errBox = w.document.getElementById("errors");
+    const pending = { items: [] };
+    w.SerfComposerAttachments.attachComposerDropHandlers(dropZone, pending);
+    w.SerfComposerAttachments.attachComposerImageHandlers(ta, pending);
+
+    // Step 1: dirty drop sets banner.
+    const first = [
+      makeFile(w, PNG_BYTES, "ok.png", "image/png"),
+      makeFile(w, Buffer.from("hi"), "notes.txt", "text/plain"),
+    ];
+    dropZone.dispatchEvent(buildDropEvent(w, "drop", first));
+    await waitMicrotasks();
+    pass(!errBox.hidden, "precondition: banner visible after mixed drop");
+
+    // Step 2: clean paste should clear the stale banner.
+    const file = makeFile(w, PNG_BYTES, "shot.png", "image/png");
+    const ev = new w.Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, "clipboardData", {
+      value: {
+        items: [{
+          kind: "file",
+          type: "image/png",
+          getAsFile() { return file; },
+          getAsString(cb) { cb && cb(""); },
+        }],
+        getData() { return ""; },
+      },
+    });
+    ta.dispatchEvent(ev);
+    await waitMicrotasks();
+
+    pass(pending.items.length === 2,
+      "expected 2 items (1 dropped + 1 pasted), got " + pending.items.length);
+    pass(errBox.hidden, "expected banner hidden after clean paste, hidden=" + errBox.hidden);
+    pass(!errBox.textContent || errBox.textContent.length === 0,
+      "expected banner text cleared after clean paste, got: " + errBox.textContent);
+  }
+
+  // ---------- Assertion 16 (kata xpnk): banner auto-clears on subsequent clean drop ----------
+  // First drop mixes PNG+TXT → banner appears. A follow-up drop with only a
+  // PNG must clear the stale banner — otherwise the user sees an obsolete
+  // rejection message from a previous gesture lingering over a successful
+  // attach.
+  {
+    const w = buildDom();
+    const dropZone = w.document.getElementById("drop");
+    const errBox = w.document.getElementById("errors");
+    const pending = { items: [] };
+    w.SerfComposerAttachments.attachComposerDropHandlers(dropZone, pending);
+
+    // First batch: mixed → banner appears.
+    const first = [
+      makeFile(w, PNG_BYTES, "ok.png", "image/png"),
+      makeFile(w, Buffer.from("hi"), "notes.txt", "text/plain"),
+    ];
+    dropZone.dispatchEvent(buildDropEvent(w, "drop", first));
+    await waitMicrotasks();
+    pass(!errBox.hidden, "precondition: banner visible after first mixed drop");
+
+    // Second batch: clean → banner should clear.
+    const second = [makeFile(w, PNG_BYTES, "clean.png", "image/png")];
+    dropZone.dispatchEvent(buildDropEvent(w, "drop", second));
+    await waitMicrotasks();
+    pass(errBox.hidden, "expected banner hidden after clean follow-up drop");
+    pass(!errBox.textContent || errBox.textContent.length === 0,
+      "expected banner text cleared after clean drop, got: " + errBox.textContent);
+  }
+
+  // ---------- Assertion 17 (kata xpnk): banner replaces message on subsequent rejecting drop ----------
+  // First drop: PNG+TXT (1 rejection → "Not an image: notes.txt"). Second
+  // drop: TXT+PDF (2 rejections → "Skipped 2 non-image files: ..."). The
+  // message must reflect the LATEST event, not the earlier single-file text.
+  {
+    const w = buildDom();
+    const dropZone = w.document.getElementById("drop");
+    const errBox = w.document.getElementById("errors");
+    const pending = { items: [] };
+    w.SerfComposerAttachments.attachComposerDropHandlers(dropZone, pending);
+
+    const first = [
+      makeFile(w, PNG_BYTES, "ok.png", "image/png"),
+      makeFile(w, Buffer.from("hi"), "notes.txt", "text/plain"),
+    ];
+    dropZone.dispatchEvent(buildDropEvent(w, "drop", first));
+    await waitMicrotasks();
+    const firstMsg = errBox.textContent;
+    pass(!errBox.hidden && firstMsg && firstMsg.length > 0,
+      "precondition: banner visible after first mixed drop");
+
+    const second = [
+      makeFile(w, Buffer.from("a"), "a.txt", "text/plain"),
+      makeFile(w, Buffer.from("b"), "b.pdf", "application/pdf"),
+    ];
+    dropZone.dispatchEvent(buildDropEvent(w, "drop", second));
+    await waitMicrotasks();
+    pass(!errBox.hidden, "expected banner still visible after second rejecting drop");
+    pass(errBox.textContent && errBox.textContent !== firstMsg,
+      "expected banner text to be replaced by latest rejection, still: " + errBox.textContent);
+    pass(errBox.textContent.indexOf("a.txt") >= 0 && errBox.textContent.indexOf("b.pdf") >= 0,
+      "expected latest rejection names in banner, got: " + errBox.textContent);
+  }
+
   // ---------- Assertion 15: only ONE banner surfaced even when multiple non-images rejected ----------
   {
     const w = buildDom();

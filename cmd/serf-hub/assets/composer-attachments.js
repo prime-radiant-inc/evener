@@ -79,6 +79,7 @@
       // We deliberately DO NOT preventDefault when text is also present,
       // so any accompanying text portion still gets inserted into the
       // textarea by the default handler. (preventDefault would block both.)
+      let attached = 0;
       for (const file of files) {
         try {
           const { blob, width, height } = await reencodeToPng(window, file);
@@ -92,11 +93,17 @@
             width,
             height,
           });
+          attached++;
         } catch (err) {
           // Best-effort: drop the failing image silently. The user can
           // re-paste; we don't have a banner channel from this helper.
         }
       }
+      // Auto-clear any stale rejection banner left over from a previous
+      // drop / file-picker gesture (kata xpnk). A successful paste counts
+      // as the user moving on — leaving an obsolete "Not an image: …"
+      // message above a freshly-attached chip is misleading.
+      if (attached > 0) surfaceRejections(textareaEl, []);
       // Re-render any chip containers that were bound to this state.
       for (const container of pendingState.__containers || []) {
         renderAttachmentChips(container, pendingState);
