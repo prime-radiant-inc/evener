@@ -233,6 +233,17 @@ func startEmbedded(ctx context.Context, cfg embeddedConfig) (*embeddedServer, er
 func (e *embeddedServer) wireSession(sess *agent.Session) {
 	e.srv.SetCompactFunc(sess.Compact)
 	e.srv.SetSteerFunc(sess.Steer)
+	e.srv.SetQueueFunc(func(text string) error {
+		return sess.Enqueue(context.Background(), text)
+	})
+	e.srv.SetQueueWithImagesFunc(func(text string, images []server.ImageAttachment) error {
+		return sess.EnqueueWithImages(context.Background(), text, images)
+	})
+	e.srv.SetDrainAsSteerFunc(func() error {
+		return sess.DrainAsSteer(context.Background())
+	})
+	e.srv.SetQueueDepthFunc(sess.QueueDepth)
+	e.srv.SetQueuePreviewFunc(sess.QueuePreview)
 	e.srv.SetContextPressureFunc(sess.ContextPressure)
 	e.srv.SetModelFunc(sess.SetModel)
 	e.srv.SetClearFunc(e.clearSession)
