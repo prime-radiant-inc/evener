@@ -35,6 +35,7 @@
     let title = String(raw.title || "").trim();
     let hint = String(raw.hint || "").trim();
     const lower = message.toLowerCase();
+    const typedCauseKind = raw.cause && typeof raw.cause === "object" ? String(raw.cause.kind || "").toLowerCase() : "";
 
     if (!source) {
       if (isSerfConfiguration(lower)) {
@@ -59,6 +60,17 @@
     if (source === "serf" && !isSerfConfiguration(lower)) {
       if (isProviderFailure(lower)) source = "provider";
       else if (isHubFailure(lower)) source = "hub";
+    }
+
+    // Typed-cause override (kata 9476): appwire NotifyWarning carries
+    // cause.{kind,provider,model,status} when the underlying error was a
+    // typed llm.Error (kata cmfz). When cause.kind === "provider" trust it
+    // unconditionally — typed wins over both the stored source and the
+    // substring-match heuristics, which remain as the safety net for
+    // envelopes that pre-date this field (legacy transcripts, non-LLM
+    // warnings, etc).
+    if (typedCauseKind === "provider") {
+      source = "provider";
     }
 
     if (!title) title = defaultTitle(source, severity, lower);

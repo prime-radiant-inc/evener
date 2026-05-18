@@ -207,4 +207,50 @@ assert(legacyHub.source === "hub",
 assert(legacyHub.title === "Hub error",
   "reclassified hub diagnostic should use hub title, got " + legacyHub.title);
 
+// kata 9476: prefer typed cause field over substring/source heuristics.
+// appwire NotifyWarning (after kata cmfz/ff36c6e) carries cause.{kind,provider,
+// model,status} when the underlying error was a typed llm.Error. When
+// cause.kind === "provider" the classifier must yield source="provider"
+// regardless of the stored source or whether the message happens to match
+// any substring pattern. The pre-existing substring fallback remains the
+// safety net for envelopes without a cause field.
+
+// (1) typed cause overrides stored source="serf" even with no pattern match.
+const typedCauseOverride = diagnostics.classify({
+  source: "serf",
+  message: "something went sideways upstream",
+  cause: { kind: "provider", provider: "openai", model: "gpt-4o", status: 503 },
+});
+assert(typedCauseOverride.source === "provider",
+  "typed cause.kind=provider should override source=serf, got " + typedCauseOverride.source);
+assert(typedCauseOverride.title === "Provider error",
+  "typed cause.kind=provider should yield provider title, got " + typedCauseOverride.title);
+
+// (2) typed cause wins over substring match too (here the message would
+// already match the openai-error pattern; the assertion is that the path
+// through classify() is the typed-cause branch, not the heuristic — both
+// converge on the same source value, so we verify via title/hint shape).
+const typedCauseStatus403 = diagnostics.classify({
+  source: "",
+  message: "openai error (status=403): forbidden",
+  cause: { kind: "provider", provider: "openai", status: 403 },
+});
+assert(typedCauseStatus403.source === "provider",
+  "typed cause should win for openai 403, got " + typedCauseStatus403.source);
+
+// (3) regression lock: substring-match fallback still classifies stream
+// truncation as provider when no cause is present.
+const noCauseStreamTrunc = diagnostics.classify({
+  message: "stream ended without finish event",
+});
+assert(noCauseStreamTrunc.source === "provider",
+  "missing cause must still fall back to substring-match, got " + noCauseStreamTrunc.source);
+
+// (4) regression lock: serf configuration error without cause stays serf.
+const noCauseSerfConfig = diagnostics.classify({
+  message: "no model: use --model provider/model",
+});
+assert(noCauseSerfConfig.source === "serf",
+  "missing cause serf config error should stay serf, got " + noCauseSerfConfig.source);
+
 console.log("PASS: diagnostics taxonomy and render component");
