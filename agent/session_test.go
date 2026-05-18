@@ -3759,3 +3759,185 @@ func TestSession_ProviderErrorStillRecordsTranscriptEntry(t *testing.T) {
 		t.Fatalf("api_call.Error does not contain provider failure text: %q", found.Error)
 	}
 }
+
+// kata ts0x: when the agent loop terminates a turn because of a provider
+// failure (HTTP error from an adapter), the EventError it emits must carry a
+// structured Cause field. Downstream consumers (toil, hub, debug-run) today
+// substring-match the error message; a typed Cause lets them dispatch
+// reliably on provider/model/status.
+func TestProviderErrorEmitsStructuredCause(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &streamingAdapter{
+		name:      "openai",
+		streamErr: llm.ErrorFromHTTPStatus("openai", 403, "access denied", nil, nil),
+	}
+	c.Register(f)
+
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		LLMRetryPolicy: &policy,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	var events []SessionEvent
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range sess.Events() {
+			events = append(events, ev)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hi", nil); err == nil {
+		t.Fatal("expected provider error from ProcessInput")
+	}
+	sess.Close()
+	<-done
+
+	var found *SessionEvent
+	for i, ev := range events {
+		if ev.Kind == EventError {
+			found = &events[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("no EventError emitted for provider failure")
+	}
+	d, ok := found.Data.(ErrorData)
+	if !ok {
+		t.Fatalf("EventError data: got %T, want ErrorData", found.Data)
+	}
+	if d.Cause == nil {
+		t.Fatal("ErrorData.Cause is nil; expected structured provider cause")
+	}
+	if got, want := d.Cause.Kind, "provider"; got != want {
+		t.Errorf("Cause.Kind: got %q want %q", got, want)
+	}
+	if got, want := d.Cause.Provider, "openai"; got != want {
+		t.Errorf("Cause.Provider: got %q want %q", got, want)
+	}
+	if got, want := d.Cause.Model, "gpt-5.2"; got != want {
+		t.Errorf("Cause.Model: got %q want %q", got, want)
+	}
+	if got, want := d.Cause.Status, 403; got != want {
+		t.Errorf("Cause.Status: got %d want %d", got, want)
+	}
+}
+
+// kata ts0x (regression lock): the structured Cause on EventError must NOT
+// suppress the existing transcript api_call entry. Consumers that already
+// rely on the api_call.Error field (debug-run, dashboards, session viewer)
+// must continue to see the raw adapter error text.
+func TestProviderErrorTranscriptEntryStillRecorded(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &streamingAdapter{
+		name:      "openai",
+		streamErr: llm.ErrorFromHTTPStatus("openai", 403, "access denied", nil, nil),
+	}
+	c.Register(f)
+
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:       dir,
+		LLMRetryPolicy: &policy,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hi", nil); err == nil {
+		t.Fatal("expected provider error from ProcessInput")
+	}
+	tpath := sess.TranscriptPath()
+	sess.Close()
+	if tpath == "" {
+		t.Fatal("TranscriptPath is empty; session lacks state dir")
+	}
+
+	data, rerr := ReadTranscriptFull(tpath)
+	if rerr != nil {
+		t.Fatalf("ReadTranscriptFull: %v", rerr)
+	}
+	var found *TranscriptAPICall
+	for i := range data.APICalls {
+		if data.APICalls[i].Error != "" {
+			found = &data.APICalls[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("transcript has no api_call entry with Error set; got %d api_calls", len(data.APICalls))
+	}
+	if !strings.Contains(found.Error, "openai") {
+		t.Fatalf("api_call.Error does not retain raw adapter detail: %q", found.Error)
+	}
+}
+
+// kata ts0x: non-provider errors (anything that does not unwrap to llm.Error
+// with a non-empty Provider) must leave ErrorData.Cause nil. Back-compat: a
+// nil Cause is the explicit signal that the failure source is unknown.
+func TestNonProviderErrorOmitsCause(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &streamingAdapter{
+		name:      "openai",
+		streamErr: errors.New("opaque non-llm failure"),
+	}
+	c.Register(f)
+
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		LLMRetryPolicy: &policy,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	var events []SessionEvent
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range sess.Events() {
+			events = append(events, ev)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hi", nil); err == nil {
+		t.Fatal("expected non-nil error from ProcessInput")
+	}
+	sess.Close()
+	<-done
+
+	var found *SessionEvent
+	for i, ev := range events {
+		if ev.Kind == EventError {
+			found = &events[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("no EventError emitted for non-provider failure")
+	}
+	d, ok := found.Data.(ErrorData)
+	if !ok {
+		t.Fatalf("EventError data: got %T, want ErrorData", found.Data)
+	}
+	if d.Cause != nil {
+		t.Fatalf("ErrorData.Cause: got %+v, want nil for non-provider error", d.Cause)
+	}
+}

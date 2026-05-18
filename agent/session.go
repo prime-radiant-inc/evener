@@ -2073,7 +2073,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 
 		if err != nil {
-			s.emit(EventError, errorDataFromError(err))
+			errData := errorDataFromError(err)
+			errData.Cause = providerCauseFromError(err, req.Model)
+			s.emit(EventError, errData)
 
 			// Content filter recovery: compaction often removes the offending
 			// content, allowing the next request to succeed. Try once.

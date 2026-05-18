@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"errors"
 	"strings"
 
 	"primeradiant.com/serf/internal/diagnostic"
+	"primeradiant.com/serf/llm"
 )
 
 func errorDataFromError(err error) ErrorData {
@@ -72,6 +74,29 @@ func enrichErrorData(data ErrorData) ErrorData {
 	data.Title = info.Title
 	data.Hint = info.Hint
 	return data
+}
+
+// providerCauseFromError returns a structured ErrorCause for an err that
+// unwraps to an llm.Error with a non-empty Provider. Returns nil otherwise
+// — consumers treat a nil Cause as "source unknown" (kata ts0x).
+func providerCauseFromError(err error, model string) *ErrorCause {
+	if err == nil {
+		return nil
+	}
+	var le llm.Error
+	if !errors.As(err, &le) {
+		return nil
+	}
+	provider := strings.TrimSpace(le.Provider())
+	if provider == "" {
+		return nil
+	}
+	return &ErrorCause{
+		Kind:     "provider",
+		Provider: provider,
+		Model:    model,
+		Status:   le.StatusCode(),
+	}
 }
 
 func setAPICallDiagnostic(call *TranscriptAPICall, err error) {

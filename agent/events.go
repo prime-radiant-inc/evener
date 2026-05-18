@@ -232,6 +232,21 @@ type ErrorData struct {
 	Source string `json:"source,omitempty"`
 	Title  string `json:"title,omitempty"`
 	Hint   string `json:"hint,omitempty"`
+	// Cause is an optional structured classifier. Today only provider
+	// failures populate it; consumers can typed-branch on Cause.Kind
+	// instead of substring-matching the Error message (kata ts0x). A nil
+	// Cause means the failure source is unknown (back-compat default).
+	Cause *ErrorCause `json:"cause,omitempty"`
+}
+
+// ErrorCause describes a structured root cause for an EventError. Today the
+// only Kind is "provider" (HTTP failure from an LLM adapter); additional
+// kinds can be added as further consumers need typed dispatch (kata ts0x).
+type ErrorCause struct {
+	Kind     string `json:"kind"`
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Status   int    `json:"status,omitempty"`
 }
 
 type SubagentStartData struct {
