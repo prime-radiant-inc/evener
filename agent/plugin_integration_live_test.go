@@ -696,7 +696,10 @@ func TestLive_Session_PluginAgentsInSystemPrompt(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				// Check system prompt for plugin agents section.
+				// Check system prompt for plugin agents section. Return PASS/FAIL
+				// via a synthetic communicate tool_call so the session intercept
+				// fires and ProcessInput returns the message (the agent loop
+				// rejects bare text responses).
 				sysPrompt := ""
 				for _, msg := range req.Messages {
 					if msg.Role == llm.RoleSystem {
@@ -704,16 +707,16 @@ func TestLive_Session_PluginAgentsInSystemPrompt(t *testing.T) {
 						break
 					}
 				}
-				if !strings.Contains(sysPrompt, "<plugin_agents>") {
-					return llm.Response{Message: llm.Assistant("FAIL: no <plugin_agents> in system prompt")}
+				if !strings.Contains(sysPrompt, "<available_agents>") {
+					return finalResponse("FAIL: no <available_agents> in system prompt")
 				}
 				if !strings.Contains(sysPrompt, "live-test:analyzer") {
-					return llm.Response{Message: llm.Assistant("FAIL: missing live-test:analyzer")}
+					return finalResponse("FAIL: missing live-test:analyzer")
 				}
 				if !strings.Contains(sysPrompt, "live-test:writer") {
-					return llm.Response{Message: llm.Assistant("FAIL: missing live-test:writer")}
+					return finalResponse("FAIL: missing live-test:writer")
 				}
-				return llm.Response{Message: llm.Assistant("PASS: plugin agents in system prompt")}
+				return finalResponse("PASS: plugin agents in system prompt")
 			},
 		},
 	}
