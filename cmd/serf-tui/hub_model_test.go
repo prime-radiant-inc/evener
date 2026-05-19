@@ -2085,6 +2085,30 @@ func TestFetchHubSessionSubscribesToLiveThread(t *testing.T) {
 	}
 }
 
+func TestFetchHubSessionStatusRefreshDoesNotReplaceLiveSubscription(t *testing.T) {
+	var got appwire.ThreadReadParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			got = params
+			return appwire.ThreadReadResponse{Thread: appwireThread(hubTreeNode{
+				Ref: "local:01SEND", SessionID: "01SEND", Title: "send task", State: "idle", Project: "details", Live: true,
+			}, "/tmp/details")}, nil
+		})
+	})
+	defer cleanup()
+
+	msg := fetchHubSessionExpectingStateToken(client, appwire.Ref{SourceID: "local", ThreadID: "01SEND"}, "idle", 1)()
+	if gotMsg, ok := msg.(hubSessionMsg); !ok || gotMsg.err != nil {
+		t.Fatalf("msg=%T %+v", msg, msg)
+	}
+	if got.Subscribe {
+		t.Fatalf("ThreadRead Subscribe=true, want false")
+	}
+	if got.ReplaceSubscription {
+		t.Fatalf("ThreadRead ReplaceSubscription=true, want false")
+	}
+}
+
 func TestHubModelStatusUsesHubThreadTasksAndAuth(t *testing.T) {
 	var methods []string
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {

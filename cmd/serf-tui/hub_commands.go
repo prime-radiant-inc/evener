@@ -136,7 +136,7 @@ func fetchHubTree(client *appwire.Client) tea.Cmd {
 }
 
 func fetchHubSession(client *appwire.Client, ref appwire.Ref) tea.Cmd {
-	return fetchHubSessionExpectingState(client, ref, "")
+	return fetchHubSessionRead(client, ref, "", 0, true, true)
 }
 
 func fetchHubSessionExpectingState(client *appwire.Client, ref appwire.Ref, expectedState string) tea.Cmd {
@@ -144,8 +144,12 @@ func fetchHubSessionExpectingState(client *appwire.Client, ref appwire.Ref, expe
 }
 
 func fetchHubSessionExpectingStateToken(client *appwire.Client, ref appwire.Ref, expectedState string, expectedRefreshToken int) tea.Cmd {
+	return fetchHubSessionRead(client, ref, expectedState, expectedRefreshToken, false, false)
+}
+
+func fetchHubSessionRead(client *appwire.Client, ref appwire.Ref, expectedState string, expectedRefreshToken int, subscribe bool, replaceSubscription bool) tea.Cmd {
 	return func() tea.Msg {
-		resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: ref.String(), IncludeTurns: true, ItemsView: "full", Subscribe: true, ReplaceSubscription: true})
+		resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: ref.String(), IncludeTurns: true, ItemsView: "full", Subscribe: subscribe, ReplaceSubscription: replaceSubscription})
 		if err != nil {
 			return hubSessionMsg{ref: ref.String(), expectedState: expectedState, expectedRefreshToken: expectedRefreshToken, err: err}
 		}
