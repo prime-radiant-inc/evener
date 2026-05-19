@@ -87,6 +87,7 @@
       this.liveSendCap = null;
       this.liveQueueCap = null;
       this.liveCapabilitiesStatus = "";
+      this.statusUpdateSeq = 0;
 
       this.activeMessages = new Map();   // messageId -> {el, textBuf, markdownTimer}
       this.activeTools = new Map();      // callId -> {el, outputBuf}
@@ -145,7 +146,7 @@
       this.startTaskBadgePoller();
     },
 
-    refreshCapabilitiesForStatus(status) {
+    refreshCapabilitiesForStatus(status, seq) {
       status = String(status || "").trim();
       if (!status || !this.sessionId || this.liveCapabilitiesStatus === status) return false;
       if (!window.SerfAppwire || typeof window.SerfAppwire.readThread !== "function") return false;
@@ -154,16 +155,19 @@
       window.SerfAppwire.readThread(sessionId, false, false)
         .then((resp) => {
           if (this.sessionId !== sessionId || this.conversation !== conversation) return;
+          if (seq !== this.statusUpdateSeq) return;
           const thread = (resp && resp.thread) || {};
           const caps = thread.serf && thread.serf.capabilities;
+          const refreshedStatus = (thread.status && thread.status.type) || status;
           if (caps) {
             if (typeof caps.send === "boolean") this.liveSendCap = caps.send;
             if (typeof caps.queue === "boolean") this.liveQueueCap = caps.queue;
-            this.liveCapabilitiesStatus = (thread.status && thread.status.type) || status;
+            this.liveCapabilitiesStatus = refreshedStatus;
           }
-          this.updateThreadState(status);
+          this.updateThreadState(refreshedStatus);
         })
         .catch(() => {
+          if (seq !== this.statusUpdateSeq) return;
           this.updateThreadState(status);
         });
       return true;
@@ -508,8 +512,12 @@
       try { data = JSON.parse(ev.data); } catch (e) {}
       switch (kind) {
         case "THREAD_STATUS_CHANGED":
-          if (this.refreshCapabilitiesForStatus(data.status || "")) break;
-          this.updateThreadState(data.status || "");
+          {
+            const status = data.status || "";
+            const seq = ++this.statusUpdateSeq;
+            if (this.refreshCapabilitiesForStatus(status, seq)) break;
+            this.updateThreadState(status);
+          }
           break;
         case "TURN_STARTED":
           this.setActiveTurnId(data.turnId || "");
@@ -523,6 +531,7 @@
 	            this.liveSendCap = null;
 	            this.liveQueueCap = null;
 	            this.liveCapabilitiesStatus = "";
+	            this.statusUpdateSeq++;
 	            history.replaceState(null, "", "/s/" + encodeURIComponent(data.session_id));
             this.conversation.innerHTML = "";
             this.activeMessages.clear();

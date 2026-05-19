@@ -217,6 +217,27 @@ async function checkProcessingSendCapabilityKeepsSendMode() {
   await new Promise(r => setTimeout(r, 10));
   pass(send.getAttribute("data-capability-send") === "false", "fresh processing send capability should replace idle send capability");
   pass(send.getAttribute("data-capability-queue") === "true", "fresh processing queue capability should replace idle queue capability");
+
+  let resolveRead;
+  window.SerfAppwire = {
+    readThread: () => new Promise((resolve) => { resolveRead = resolve; }),
+  };
+  window.SerfRenderer.handleData("SESSION_START", {
+    session_id: "01TEST",
+    status: "idle",
+    capabilities: { send: true, queue: false },
+  });
+  window.SerfRenderer.handleData("THREAD_STATUS_CHANGED", { status: "processing" });
+  window.SerfRenderer.handleData("THREAD_STATUS_CHANGED", { status: "idle" });
+  resolveRead({
+    thread: {
+      status: { type: "processing" },
+      serf: { capabilities: { send: false, queue: true } },
+    },
+  });
+  await new Promise(r => setTimeout(r, 10));
+  pass(send.getAttribute("data-capability-send") === "true", "stale processing refresh should not overwrite newer idle send state");
+  pass(send.getAttribute("data-capability-queue") === "false", "stale processing refresh should not overwrite newer idle queue state");
 }
 
 // 5b. Replying to an ended session with no open stream must reconnect
