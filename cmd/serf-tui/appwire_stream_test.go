@@ -212,6 +212,47 @@ func TestStreamEventsFromTurnCompletedSkipsAlreadyCompletedItems(t *testing.T) {
 	}
 }
 
+func TestStreamEventsFromTurnCompletedSkipsAlreadyRenderedUserInput(t *testing.T) {
+	translator := newAppwireStreamTranslator()
+	itemStarted := appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{
+		"threadId": "th_1",
+		"ref":      "local:th_1",
+		"item": appwire.ThreadItem{
+			Type:   "user_message",
+			ID:     "item_user",
+			TurnID: "turn_1",
+			Text:   "hello",
+			Status: "running",
+		},
+	})
+	startEvents := translator.eventsFromNotification(*itemStarted.Notification)
+	if len(startEvents) != 1 || startEvents[0].Event != "USER_INPUT" {
+		t.Fatalf("start events=%+v", startEvents)
+	}
+
+	turnCompleted := appwire.NotificationMessage(appwire.NotifyTurnCompleted, map[string]any{
+		"threadId": "th_1",
+		"ref":      "local:th_1",
+		"turn": appwire.Turn{
+			ID:     "turn_1",
+			Status: appwire.TurnStatusCompleted,
+			Items: []appwire.ThreadItem{{
+				Type:   "user_message",
+				ID:     "item_user",
+				TurnID: "turn_1",
+				Text:   "hello",
+				Status: appwire.TurnStatusCompleted,
+			}},
+		},
+	})
+	turnEvents := translator.eventsFromNotification(*turnCompleted.Notification)
+	for _, ev := range turnEvents {
+		if ev.Event == "USER_INPUT" {
+			t.Fatalf("turn completed replayed already rendered user input: %+v", turnEvents)
+		}
+	}
+}
+
 func TestStreamEventsFromNotificationMapsSubagentLifecycle(t *testing.T) {
 	start := appwire.NotificationMessage(appwire.NotifySerfSubagentStarted, map[string]any{
 		"threadId": "th_1",

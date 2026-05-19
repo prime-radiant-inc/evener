@@ -247,9 +247,7 @@ func (t *appwireStreamTranslator) eventsFromHydratedItem(item appwire.ThreadItem
 func (t *appwireStreamTranslator) eventsFromItem(item appwire.ThreadItem, completed bool) []streamEvent {
 	switch item.Type {
 	case "user_message":
-		if completed {
-			t.markItemCompleted(item)
-		}
+		t.markItemCompleted(item)
 		return []streamEvent{newStreamEvent("USER_INPUT", map[string]any{"text": item.Text, "turn": item.TranscriptEntryIndex})}
 	case "agent_message":
 		if completed {
