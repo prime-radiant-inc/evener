@@ -349,6 +349,30 @@ func TestProjector_ForwardsProviderCause(t *testing.T) {
 	if cause.Status != 503 {
 		t.Fatalf("cause.Status=%d, want 503", cause.Status)
 	}
+	var completed *AppNotification
+	for i := range out {
+		if out[i].Method == appwire.NotifyTurnCompleted {
+			completed = &out[i]
+			break
+		}
+	}
+	if completed == nil {
+		t.Fatalf("no turn/completed notification: %+v", out)
+	}
+	completedParams, ok := completed.Params.(map[string]any)
+	if !ok {
+		t.Fatalf("completed params=%T", completed.Params)
+	}
+	turn, ok := completedParams["turn"].(appwire.Turn)
+	if !ok {
+		t.Fatalf("completed turn=%T", completedParams["turn"])
+	}
+	if turn.Error == nil || turn.Error.Cause == nil {
+		t.Fatalf("turn error cause missing: %+v", turn.Error)
+	}
+	if turn.Error.Cause.Provider != "anthropic" || turn.Error.Cause.Model != "claude-opus-4-7" || turn.Error.Cause.Status != 503 {
+		t.Fatalf("turn error cause=%+v", turn.Error.Cause)
+	}
 }
 
 // TestProjector_OmitsCauseWhenAbsent (kata cmfz) verifies that when an

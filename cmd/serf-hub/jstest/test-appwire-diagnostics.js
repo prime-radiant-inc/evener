@@ -48,9 +48,11 @@ const warningEvents = context.window.SerfAppwire.eventsFromNotification("warning
   source: "serf",
   title: "Serf configuration error",
   hint: "Hub launched Serf with provider configuration this Serf runtime does not recognize.",
+  cause: { kind: "provider", provider: "openai", model: "gpt-5", status: 503 },
 });
 assert(warningEvents.length === 1 && warningEvents[0][0] === "WARNING", "warning event missing");
 assert(warningEvents[0][1].source === "serf", "warning source missing");
 assert(warningEvents[0][1].hint.includes("Hub launched Serf"), "warning hint missing");
+assert(warningEvents[0][1].cause && warningEvents[0][1].cause.kind === "provider", "warning cause missing");
 
 console.log("PASS: appwire diagnostic fields");

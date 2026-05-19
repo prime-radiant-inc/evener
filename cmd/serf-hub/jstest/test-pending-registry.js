@@ -152,6 +152,25 @@ function build() {
   console.log("ok queue_reconcile_leaves_chips_not_in_preview");
 })();
 
+// Duplicate queue texts reconcile one-for-one. A single authoritative preview
+// row should not confirm every pending chip with the same text.
+(function test_queue_reconcile_consumes_duplicate_texts_once() {
+  const window = build();
+  const conv = window.document.getElementById("conversation");
+  const queueList = window.document.querySelector("[data-queue-list]");
+  const reg = window.SerfAppwirePending.create({ conversation: conv, queueList });
+
+  reg.register({ method: "turn/queue", text: "same" });
+  reg.register({ method: "turn/queue", text: "same" });
+
+  const removed = reg.tryReconcileQueue(["same"]);
+  assert.equal(removed, 1);
+  const remaining = queueList.querySelectorAll(".optimistic-pending");
+  assert.equal(remaining.length, 1);
+  assert.match(remaining[0].textContent, /same/);
+  console.log("ok queue_reconcile_consumes_duplicate_texts_once");
+})();
+
 // Backward-compat: callers without queueList still get queue chips
 // (they fall back to the conversation pane rather than crashing).
 (function test_queue_chip_falls_back_to_conversation_without_queue_list() {

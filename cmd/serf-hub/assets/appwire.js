@@ -105,8 +105,9 @@
 
   async function optimisticCall(method, params, intent) {
     let handle = null;
-    if (pendingRegistry) {
-      handle = pendingRegistry.register({
+    const registry = pendingRegistry;
+    if (registry) {
+      handle = registry.register({
         method,
         text: (intent && intent.text) || "",
         items: (intent && intent.items) || [],
@@ -115,9 +116,9 @@
     try {
       return await request(method, params);
     } catch (err) {
-      if (handle && pendingRegistry) {
+      if (handle && registry) {
         const msg = (err && err.message) ? err.message : String(err);
-        pendingRegistry.fail(handle, msg);
+        registry.fail(handle, msg);
       }
       throw err;
     }
@@ -687,6 +688,7 @@
       if (params.source) payload.source = params.source;
       if (params.title) payload.title = params.title;
       if (params.hint) payload.hint = params.hint;
+      if (params.cause) payload.cause = params.cause;
       return [["WARNING", payload]];
     }
     if (method === "serf/steering/injected") return [["STEERING_INJECTED", { text: params.text || "" }]];

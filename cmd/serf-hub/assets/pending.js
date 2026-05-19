@@ -137,16 +137,17 @@
     // tryReconcileQueue reconciles pending turn/queue entries against the
     // authoritative queue-preview list emitted by thread/queueChanged.
     // Each entry in previewTexts is the .text field of a queue preview
-    // entry. For every pending turn/queue chip whose normalized text
-    // appears in the preview, the chip is removed. Chips whose text isn't
-    // in the preview are left in flight (still pending, will time out if
-    // never confirmed). Returns the number of chips reconciled.
+    // entry. For every pending turn/queue chip matched by a preview entry,
+    // the chip is removed. Duplicate texts are consumed one-for-one so a
+    // single preview entry cannot confirm multiple pending chips. Chips
+    // whose text isn't in the preview are left in flight (still pending,
+    // will time out if never confirmed). Returns the number reconciled.
     function tryReconcileQueue(previewTexts) {
-      const wanted = new Set();
+      const wanted = new Map();
       if (Array.isArray(previewTexts)) {
         for (const t of previewTexts) {
           const n = normalizeText(t);
-          if (n) wanted.add(n);
+          if (n) wanted.set(n, (wanted.get(n) || 0) + 1);
         }
       }
       let removed = 0;
@@ -154,7 +155,15 @@
       const ids = [];
       for (const [id, ent] of entries) {
         if (ent.method !== "turn/queue") continue;
-        if (wanted.has(normalizeText(ent.text))) ids.push(id);
+        const n = normalizeText(ent.text);
+        const count = wanted.get(n) || 0;
+        if (count <= 0) continue;
+        ids.push(id);
+        if (count === 1) {
+          wanted.delete(n);
+        } else {
+          wanted.set(n, count - 1);
+        }
       }
       for (const id of ids) {
         removeEntry(id);

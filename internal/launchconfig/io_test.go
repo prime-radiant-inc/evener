@@ -3,6 +3,7 @@ package launchconfig
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -75,6 +76,30 @@ func TestSaveLayer_AtomicAndPermissions(t *testing.T) {
 	}
 	if got.Model != "openai/gpt-5" {
 		t.Errorf("round-trip Model = %q", got.Model)
+	}
+}
+
+func TestSaveLayer_PersistsExplicitEmptyModelFallbacks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "launch.toml")
+	if err := SaveLayer(path, Layer{ModelFallbacksSet: true, ModelFallbacks: []string{}}); err != nil {
+		t.Fatalf("SaveLayer: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "model_fallbacks = []") {
+		t.Fatalf("saved layer missing explicit empty model_fallbacks:\n%s", data)
+	}
+	got, err := LoadLayer(path)
+	if err != nil {
+		t.Fatalf("LoadLayer: %v", err)
+	}
+	if !got.ModelFallbacksSet {
+		t.Fatal("ModelFallbacksSet = false, want true")
+	}
+	if got.ModelFallbacks == nil || len(got.ModelFallbacks) != 0 {
+		t.Fatalf("ModelFallbacks = %#v, want explicit empty slice", got.ModelFallbacks)
 	}
 }
 

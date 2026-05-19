@@ -254,10 +254,11 @@ type Turn struct {
 }
 
 type TurnError struct {
-	Message string `json:"message"`
-	Source  string `json:"source,omitempty"`
-	Title   string `json:"title,omitempty"`
-	Hint    string `json:"hint,omitempty"`
+	Message string           `json:"message"`
+	Source  string           `json:"source,omitempty"`
+	Title   string           `json:"title,omitempty"`
+	Hint    string           `json:"hint,omitempty"`
+	Cause   *DiagnosticCause `json:"cause,omitempty"`
 }
 
 // DiagnosticCause is the wire-level structured cause attached to a

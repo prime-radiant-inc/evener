@@ -1,10 +1,12 @@
 package launchconfig
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -37,11 +39,20 @@ func SaveLayer(path string, layer Layer) error {
 	if err != nil {
 		return fmt.Errorf("launchconfig: open %s: %w", tmp, err)
 	}
-	enc := toml.NewEncoder(f)
-	if err := enc.Encode(layer); err != nil {
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(layer); err != nil {
 		f.Close()
 		os.Remove(tmp)
 		return fmt.Errorf("launchconfig: encode %s: %w", tmp, err)
+	}
+	data := buf.String()
+	if layer.ModelFallbacksSet && len(layer.ModelFallbacks) == 0 && !strings.Contains(data, "model_fallbacks") {
+		data = "model_fallbacks = []\n" + data
+	}
+	if _, err := f.WriteString(data); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return fmt.Errorf("launchconfig: write %s: %w", tmp, err)
 	}
 	if err := f.Sync(); err != nil {
 		f.Close()

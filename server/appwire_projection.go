@@ -281,6 +281,7 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 						Source:  string(info.Source),
 						Title:   info.Title,
 						Hint:    info.Hint,
+						Cause:   cause,
 					},
 				},
 			}),

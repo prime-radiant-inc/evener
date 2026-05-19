@@ -43,6 +43,18 @@ class FakeWebSocket {
         });
         return;
       }
+      if (msg.method === "turn/start" && msg.params.prompt === "FAIL_REGISTRY_SWITCH") {
+        this.dispatch("message", {
+          data: JSON.stringify({
+            id: msg.id,
+            error: {
+              code: -32000,
+              message: "turn start failed",
+            },
+          }),
+        });
+        return;
+      }
       const result = msg.method === "thread/start"
         ? msg.params.harness === "serf"
           ? { thread: { id: "01LOCAL", session_id: "01LOCAL", serf: { ref: "local:01LOCAL" } } }
@@ -185,6 +197,26 @@ vm.runInContext(SRC, context);
   assert(structuredError.code === -32004, "browser appwire should preserve error code");
   assert(structuredError.data && structuredError.data.serfErrorInfo === "actionUnavailable", "browser appwire should preserve structured error data");
   assert(structuredError.serfErrorInfo === "actionUnavailable", "browser appwire should expose serfErrorInfo directly");
+  const registryOneFailures = [];
+  const registryTwoFailures = [];
+  context.window.SerfAppwire.setPendingRegistry({
+    register(intent) { return { id: "one", intent }; },
+    fail(handle, msg) { registryOneFailures.push({ handle, msg }); },
+  });
+  const failedTurn = context.window.SerfAppwire.startTurn("01LOCAL", "FAIL_REGISTRY_SWITCH", []);
+  context.window.SerfAppwire.setPendingRegistry({
+    register(intent) { return { id: "two", intent }; },
+    fail(handle, msg) { registryTwoFailures.push({ handle, msg }); },
+  });
+  try {
+    await failedTurn;
+  } catch (_err) {
+    // Expected failure from the fake server above.
+  }
+  context.window.SerfAppwire.setPendingRegistry(null);
+  assert(registryOneFailures.length === 1, "failed optimistic call should fail the registry that registered the chip");
+  assert(registryOneFailures[0].handle.id === "one", "failed optimistic call should preserve the original handle");
+  assert(registryTwoFailures.length === 0, "failed optimistic call should not fail the current global registry after it changes");
   context.window.SerfAppwire.eventsFromNotification("item/started", {
     threadId: "th_codex",
     turnId: "turn_dedupe",
