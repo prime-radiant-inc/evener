@@ -2737,16 +2737,20 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// Pass s.history directly — no copy needed since the loop is single-
 		// threaded and nothing else modifies history until AfterAction returns.
 		if s.strategy != nil {
-			var afterActionErr error
-			if abortErr := s.withResponseSideEffects(ctx, func() {
-				s.mu.Lock()
-				hist := s.history
-				s.mu.Unlock()
-				afterActionErr = s.strategy.AfterAction(ctx, hist, s.client)
-				if afterActionErr != nil {
-					s.emit(EventWarning, WarningData{Message: "strategy AfterAction error: " + afterActionErr.Error()})
+			if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
+				return "", abortErr
+			}
+			s.mu.Lock()
+			hist := s.history
+			s.mu.Unlock()
+			if err := s.strategy.AfterAction(ctx, hist, s.client); err != nil {
+				if abortErr := s.withResponseSideEffects(ctx, func() {
+					s.emit(EventWarning, WarningData{Message: "strategy AfterAction error: " + err.Error()})
+				}); abortErr != nil {
+					return "", abortErr
 				}
-			}); abortErr != nil {
+			}
+			if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
 				return "", abortErr
 			}
 		}
