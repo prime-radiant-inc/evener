@@ -75,10 +75,14 @@ func streamEventsFromNotification(notification appwire.Notification) []streamEve
 
 type appwireStreamTranslator struct {
 	activeToolCalls map[string]bool
+	completedItems  map[string]bool
 }
 
 func newAppwireStreamTranslator() *appwireStreamTranslator {
-	return &appwireStreamTranslator{activeToolCalls: make(map[string]bool)}
+	return &appwireStreamTranslator{
+		activeToolCalls: make(map[string]bool),
+		completedItems:  make(map[string]bool),
+	}
 }
 
 func (t *appwireStreamTranslator) eventsFromThread(thread appwire.Thread) []streamEvent {
@@ -130,7 +134,7 @@ func (t *appwireStreamTranslator) eventsFromNotification(notification appwire.No
 			Turn appwire.Turn `json:"turn"`
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
-			events := t.eventsFromItems(params.Turn.Items)
+			events := t.eventsFromTurnCompletedItems(params.Turn.Items)
 			if params.Turn.Status == appwire.TurnStatusFailed {
 				message := "turn failed"
 				if params.Turn.Error != nil && params.Turn.Error.Message != "" {
@@ -211,6 +215,17 @@ func (t *appwireStreamTranslator) eventsFromItems(items []appwire.ThreadItem) []
 	return events
 }
 
+func (t *appwireStreamTranslator) eventsFromTurnCompletedItems(items []appwire.ThreadItem) []streamEvent {
+	var events []streamEvent
+	for _, item := range items {
+		if t.itemAlreadyCompleted(item) {
+			continue
+		}
+		events = append(events, t.eventsFromHydratedItem(item)...)
+	}
+	return events
+}
+
 func (t *appwireStreamTranslator) eventsFromHydratedItem(item appwire.ThreadItem) []streamEvent {
 	if item.Type == "tool_call" {
 		callID := firstNonEmptyString(item.CallID, item.ID)
@@ -232,9 +247,13 @@ func (t *appwireStreamTranslator) eventsFromHydratedItem(item appwire.ThreadItem
 func (t *appwireStreamTranslator) eventsFromItem(item appwire.ThreadItem, completed bool) []streamEvent {
 	switch item.Type {
 	case "user_message":
+		if completed {
+			t.markItemCompleted(item)
+		}
 		return []streamEvent{newStreamEvent("USER_INPUT", map[string]any{"text": item.Text, "turn": item.TranscriptEntryIndex})}
 	case "agent_message":
 		if completed {
+			t.markItemCompleted(item)
 			return []streamEvent{newStreamEvent("ASSISTANT_TEXT_END", map[string]any{"text": item.Text})}
 		}
 		return []streamEvent{newStreamEvent("ASSISTANT_TEXT_START", map[string]any{})}
@@ -242,6 +261,7 @@ func (t *appwireStreamTranslator) eventsFromItem(item appwire.ThreadItem, comple
 		callID := firstNonEmptyString(item.CallID, item.ID)
 		if completed {
 			delete(t.activeToolCalls, callID)
+			t.markItemCompleted(item)
 			return []streamEvent{newStreamEvent("TOOL_CALL_END", map[string]any{
 				"call_id":        callID,
 				"tool_name":      item.ToolName,
@@ -258,6 +278,32 @@ func (t *appwireStreamTranslator) eventsFromItem(item appwire.ThreadItem, comple
 		})}
 	}
 	return nil
+}
+
+func (t *appwireStreamTranslator) markItemCompleted(item appwire.ThreadItem) {
+	for _, key := range itemCompletionKeys(item) {
+		t.completedItems[key] = true
+	}
+}
+
+func (t *appwireStreamTranslator) itemAlreadyCompleted(item appwire.ThreadItem) bool {
+	for _, key := range itemCompletionKeys(item) {
+		if t.completedItems[key] {
+			return true
+		}
+	}
+	return false
+}
+
+func itemCompletionKeys(item appwire.ThreadItem) []string {
+	keys := make([]string, 0, 2)
+	if item.ID != "" {
+		keys = append(keys, "item:"+item.ID)
+	}
+	if item.Type == "tool_call" && item.CallID != "" {
+		keys = append(keys, "call:"+item.CallID)
+	}
+	return keys
 }
 
 func toolItemTerminal(item appwire.ThreadItem) bool {
