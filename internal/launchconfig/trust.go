@@ -15,12 +15,19 @@ import (
 // changes break it.
 func CanonicalHashTOML(data []byte) (string, error) {
 	var l Layer
-	if _, err := toml.Decode(string(data), &l); err != nil {
+	meta, err := toml.Decode(string(data), &l)
+	if err != nil {
 		return "", fmt.Errorf("canonical hash: parse: %w", err)
 	}
+	l.ModelFallbacksSet = meta.IsDefined("model_fallbacks")
 	var buf bytes.Buffer
 	if err := toml.NewEncoder(&buf).Encode(l); err != nil {
 		return "", fmt.Errorf("canonical hash: encode: %w", err)
+	}
+	if l.ModelFallbacksSet && len(l.ModelFallbacks) == 0 {
+		canonical := append([]byte("model_fallbacks = []\n"), buf.Bytes()...)
+		sum := sha256.Sum256(canonical)
+		return "sha256:" + hex.EncodeToString(sum[:]), nil
 	}
 	sum := sha256.Sum256(buf.Bytes())
 	return "sha256:" + hex.EncodeToString(sum[:]), nil

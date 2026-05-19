@@ -512,6 +512,9 @@
 	          if (data.capabilities && typeof data.capabilities.queue === "boolean") {
 	            this.processingQueueCap = data.capabilities.queue;
 	          }
+	          if (data.status) {
+	            this.updateThreadState(data.status);
+	          }
 	          break;
         case "QUEUE_CHANGED":
           // Authoritative queue state from the daemon (kata r80p). The

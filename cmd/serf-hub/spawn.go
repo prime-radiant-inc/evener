@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/internal/appwire"
+	authopenai "primeradiant.com/serf/internal/auth/openai"
 	"primeradiant.com/serf/internal/credentials"
 	"primeradiant.com/serf/internal/launchconfig"
 	"primeradiant.com/serf/rendezvous"
@@ -353,6 +354,9 @@ func validateProviderCredentials(provider string, store *credentials.Store) erro
 	if provider == "" || store == nil {
 		return nil
 	}
+	if strings.EqualFold(strings.TrimSpace(provider), "openai") && openAIStoredOAuthActive() {
+		return nil
+	}
 	// Use List() so providers that need no credentials (e.g. ollama) are
 	// correctly identified via their SourceNone status.
 	for _, p := range store.List() {
@@ -369,6 +373,14 @@ func validateProviderCredentials(provider string, store *credentials.Store) erro
 	}
 	// Unknown provider — don't block launch.
 	return nil
+}
+
+func openAIStoredOAuthActive() bool {
+	status, err := authopenai.NewService(authopenai.DefaultConfig(), nil).Status(authopenai.DefaultStateDirWithStateHome(""))
+	if err != nil {
+		return false
+	}
+	return status.SignedIn && status.Source == authopenai.AuthSourceOAuth && !status.NeedsLogin
 }
 
 func envToMap(env []string) map[string]string {

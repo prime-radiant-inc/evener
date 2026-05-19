@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	authopenai "primeradiant.com/serf/internal/auth/openai"
+	"primeradiant.com/serf/internal/auth/openai/oaitest"
 	"primeradiant.com/serf/internal/credentials"
 	"primeradiant.com/serf/internal/launchconfig"
 	"primeradiant.com/serf/rendezvous"
@@ -407,6 +409,34 @@ func TestProviderCredentialPreflightAcceptsConfiguredOpenRouterKey(t *testing.T)
 	err := validateProviderCredentials("openrouter", store)
 	if err != nil {
 		t.Fatalf("validateProviderCredentials: %v", err)
+	}
+}
+
+func TestProviderCredentialPreflightAcceptsStoredOpenAIOAuth(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	xdgStateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", xdgStateHome)
+	t.Setenv("OPENAI_API_KEY", "")
+	stateDir := authopenai.DefaultStateDirWithStateHome(xdgStateHome)
+	if err := authopenai.SaveAuth(stateDir, authopenai.AuthRecord{
+		Version:      1,
+		Provider:     "openai",
+		Source:       authopenai.AuthSourceOAuth,
+		ObtainedAt:   time.Now().Add(-time.Minute),
+		TokenType:    "Bearer",
+		Scope:        "openid profile email offline_access",
+		AccessToken:  "oauth-access-token",
+		RefreshToken: "oauth-refresh-token",
+		Expiry:       time.Now().Add(time.Hour),
+		Email:        "oauth@example.com",
+	}); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+
+	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+	err := validateProviderCredentials("openai", store)
+	if err != nil {
+		t.Fatalf("validateProviderCredentials(openai) with stored OAuth: %v", err)
 	}
 }
 

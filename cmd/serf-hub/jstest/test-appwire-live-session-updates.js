@@ -90,6 +90,7 @@ async function run() {
 
   const failures = [];
   const pass = (condition, message) => { if (!condition) failures.push("FAIL: " + message); };
+  pass(conv.dataset.state === "processing", "SESSION_START status should hydrate conversation state");
   pass(window.document.querySelector('[data-action-trigger="interrupt"]').disabled, "interrupt should start disabled without an active turn");
 
   pass(startTurnTarget === "local:thread-live", "send should target canonical AppWire ref, got " + startTurnTarget);

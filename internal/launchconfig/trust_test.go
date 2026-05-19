@@ -38,6 +38,24 @@ func TestCanonicalHash_DetectsSemanticChange(t *testing.T) {
 	}
 }
 
+func TestCanonicalHash_DistinguishesExplicitEmptyModelFallbacks(t *testing.T) {
+	absent := `model = "openai/gpt-5.2"`
+	explicitEmpty := `model = "openai/gpt-5.2"
+model_fallbacks = []
+`
+	ha, err := CanonicalHashTOML([]byte(absent))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hb, err := CanonicalHashTOML([]byte(explicitEmpty))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ha == hb {
+		t.Fatalf("hashes should differ when model_fallbacks is explicitly empty: %q", ha)
+	}
+}
+
 func TestComputeTrustState(t *testing.T) {
 	// File absent.
 	if got := ComputeTrustState("", Meta{}); got != TrustAbsent {
