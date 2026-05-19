@@ -25,6 +25,7 @@ func (s *Server) SetAppIdentity(sourceID, threadID string) {
 	s.appThreadID = threadID
 	s.appProjector = NewAppEventProjector(threadID, ref)
 	s.appActiveTurnID = ""
+	s.appReservedTurnID = ""
 	s.mu.Unlock()
 }
 
@@ -332,9 +333,14 @@ func (s *Server) handleAppTurnSteer(_ context.Context, params appwire.TurnSteerP
 	s.mu.RLock()
 	fn := s.steerFunc
 	activeTurnID := s.appActiveTurnID
+	reservedTurnID := s.appReservedTurnID
+	processing := s.processing
 	s.mu.RUnlock()
 	if fn == nil {
 		return appwire.EmptyResponse{}, appwire.Unavailable("steer not available")
+	}
+	if !processing && strings.TrimSpace(reservedTurnID) == "" {
+		return appwire.EmptyResponse{}, appwire.Conflict("turn is not active")
 	}
 	if turnID != activeTurnID {
 		return appwire.EmptyResponse{}, appwire.Conflict("turn is not active")
@@ -376,13 +382,13 @@ func (s *Server) handleAppTurnQueue(_ context.Context, params appwire.TurnQueueP
 	fn := s.queueFunc
 	imgFn := s.queueWithImagesFunc
 	processing := s.processing
-	activeTurnID := s.appActiveTurnID
+	reservedTurnID := s.appReservedTurnID
 	closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
 	s.mu.RUnlock()
 	if closed {
 		return appwire.EmptyResponse{}, appwire.Conflict("session is closed")
 	}
-	if !processing && strings.TrimSpace(activeTurnID) == "" {
+	if !processing && strings.TrimSpace(reservedTurnID) == "" {
 		return appwire.EmptyResponse{}, appwire.Conflict("no active turn to queue against")
 	}
 	if len(images) > 0 {
@@ -409,13 +415,13 @@ func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, _ appwire.TurnDrai
 	fn := s.drainSteerFunc
 	depthFn := s.queueDepthFn
 	processing := s.processing
-	activeTurnID := s.appActiveTurnID
+	reservedTurnID := s.appReservedTurnID
 	closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
 	s.mu.RUnlock()
 	if closed {
 		return appwire.EmptyResponse{}, appwire.Conflict("session is closed")
 	}
-	if !processing && strings.TrimSpace(activeTurnID) == "" {
+	if !processing && strings.TrimSpace(reservedTurnID) == "" {
 		return appwire.EmptyResponse{}, appwire.Conflict("no active turn to steer")
 	}
 	if fn == nil {
@@ -614,7 +620,7 @@ func (s *Server) appCapabilities(state string, processing bool) appwire.ThreadCa
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	closed := appStatus(state, processing) == appwire.ThreadStatusClosed
-	active := processing || strings.TrimSpace(s.appActiveTurnID) != ""
+	active := processing || strings.TrimSpace(s.appReservedTurnID) != ""
 	return appwire.ThreadCapabilities{
 		Send:         !processing && !closed,
 		Steer:        s.steerFunc != nil && active && !closed,
@@ -647,6 +653,7 @@ func (s *Server) reserveAppTurnID() string {
 	s.ensureAppProjectorLocked("")
 	turnID := s.appProjector.ReserveTurnID()
 	s.appActiveTurnID = turnID
+	s.appReservedTurnID = turnID
 	return turnID
 }
 
@@ -656,6 +663,9 @@ func (s *Server) releaseAppTurnID(turnID string) {
 	if s.appProjector != nil {
 		s.appProjector.ReleaseReservedTurnID(turnID)
 		s.appActiveTurnID = s.appProjector.ActiveTurnID()
+	}
+	if s.appReservedTurnID == turnID {
+		s.appReservedTurnID = ""
 	}
 }
 

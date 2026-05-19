@@ -743,6 +743,7 @@ func TestServerAppWireQueueCapabilityFlipsWithProcessing(t *testing.T) {
 	srv.SetProcessing(false)
 	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "IDLE"})
 	srv.appActiveTurnID = "turn_reserved"
+	srv.appReservedTurnID = "turn_reserved"
 	caps = srv.appCapabilities("IDLE", false)
 	if !caps.Queue {
 		t.Fatalf("Queue should be true while an active turn is reserved")
@@ -791,6 +792,7 @@ func TestServerAppWireTurnQueueAcceptsReservedActiveTurn(t *testing.T) {
 	srv.SetProcessing(false)
 	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "IDLE"})
 	srv.appActiveTurnID = "turn_reserved"
+	srv.appReservedTurnID = "turn_reserved"
 	var got []string
 	srv.SetQueueFunc(func(text string) error {
 		got = append(got, text)
@@ -808,6 +810,25 @@ func TestServerAppWireTurnQueueAcceptsReservedActiveTurn(t *testing.T) {
 	}
 	if len(got) != 1 || got[0] != "queued" {
 		t.Fatalf("got=%v", got)
+	}
+}
+
+func TestServerAppWireTurnQueueRejectsStaleProjectedActiveTurn(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetProcessing(false)
+	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "IDLE"})
+	srv.appActiveTurnID = "turn_stale"
+	srv.SetQueueFunc(func(string) error { return nil })
+
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{
+		Ref:  "local:th_1",
+		Text: "queued",
+	}))
+	if resp.Kind() != appwire.MessageError {
+		t.Fatalf("expected error response, got %v", resp.Kind())
 	}
 }
 

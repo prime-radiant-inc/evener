@@ -115,6 +115,7 @@ type Server struct {
 	appThreadID         string
 	appProjector        *AppEventProjector
 	appActiveTurnID     string
+	appReservedTurnID   string
 	cancelFunc          context.CancelFunc
 	steerFunc           func(string)
 	queueFunc           func(string) error
@@ -672,6 +673,9 @@ type InputRequest struct {
 func (s *Server) SetProcessing(processing bool) {
 	s.mu.Lock()
 	s.processing = processing
+	if processing {
+		s.appReservedTurnID = ""
+	}
 	s.mu.Unlock()
 }
 
