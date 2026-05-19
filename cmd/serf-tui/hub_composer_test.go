@@ -404,6 +404,41 @@ func TestHubModelBusyCtrlSDrainFailureRestoresDraft(t *testing.T) {
 	}
 }
 
+func TestHubModelBusyCtrlSQueuedDrainPartialDoesNotRestoreDraft(t *testing.T) {
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnDrainAsSteer, func(_ context.Context, _ appwire.TurnDrainAsSteerParams) (appwire.EmptyResponse, error) {
+			return appwire.EmptyResponse{}, appwire.QueuedDrainPartial("composer payload queued but drain failed")
+		})
+	})
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	m.detail.State = "processing"
+	m.detail.Capabilities.Send = false
+	m.detail.Capabilities.Steer = true
+	m.detail.Capabilities.Queue = true
+	m.detail.ActiveTurnID = "turn_busy"
+	m.session.processing = true
+	m.session.setInputValue("queued before failed drain")
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if cmd == nil {
+		t.Fatal("ctrl+s should issue drain command")
+	}
+	updated, _ = updated.(hubModel).Update(cmd())
+	got := updated.(hubModel)
+
+	if got.session.input.Value() != "" {
+		t.Fatalf("draft was restored after queued partial: %q", got.session.input.Value())
+	}
+	if len(got.sessionQueue) != 1 || got.sessionQueue[0] != "queued before failed drain" {
+		t.Fatalf("sessionQueue=%v, want queued payload preview", got.sessionQueue)
+	}
+	if !strings.Contains(got.View(), "Force-steer failed after queueing") {
+		t.Fatalf("missing queued partial notice:\n%s", got.View())
+	}
+}
+
 func TestHubModelBusyCtrlSWithEmptyQueueAndEmptyComposerBanner(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail.State = "processing"

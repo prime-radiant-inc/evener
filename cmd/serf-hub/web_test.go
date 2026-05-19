@@ -50,6 +50,18 @@ func TestWeb_Landing_Renders(t *testing.T) {
 	}
 }
 
+func TestWriteSessionActionErrorSetsSerfErrorInfoHeader(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/s/01TEST/drain-as-steer", nil)
+	rec := httptest.NewRecorder()
+	writeSessionActionError(rec, req, appwire.QueuedDrainPartial("queued but drain failed"))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Serf-Error-Info"); got != string(appwire.ErrorQueuedDrainPartial) {
+		t.Fatalf("X-Serf-Error-Info=%q", got)
+	}
+}
+
 func TestHubDetailFromAppThreadTreatsClosedAsNotLive(t *testing.T) {
 	detail := hubDetailFromAppThread(appwire.Thread{
 		ID:        "th_closed",

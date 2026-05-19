@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -547,7 +548,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.finishAttachmentSubmit()
 		}
 		if msg.err != nil {
-			if msg.queued {
+			if msg.queued || isQueuedDrainPartial(msg.err) {
 				m.clearSubmittedAttachments(msg.submittedAttachments, true)
 				preview := strings.TrimSpace(msg.text)
 				if preview == "" && msg.hadAttachment {
@@ -1890,6 +1891,21 @@ func (m hubModel) handleSessionForceSteer() (tea.Model, tea.Cmd) {
 	m.session.refreshViewport()
 	attachments := m.snapshotPendingAttachmentsForSubmit()
 	return m, sendHubDrainAsSteer(m.client, ref, pending, draft, attachments, len(m.sessionQueue))
+}
+
+func isQueuedDrainPartial(err error) bool {
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		return false
+	}
+	switch data := wire.Data.(type) {
+	case appwire.ErrorData:
+		return data.SerfErrorInfo == appwire.ErrorQueuedDrainPartial
+	case map[string]any:
+		return data["serfErrorInfo"] == string(appwire.ErrorQueuedDrainPartial)
+	default:
+		return false
+	}
 }
 
 // isAltVKey reports whether the keypress is Alt+v / Ctrl+Alt+V. WSL

@@ -1506,6 +1506,15 @@
                 });
                 if (!resp.ok) {
                   const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
+                  const info = resp.headers && resp.headers.get ? resp.headers.get("x-serf-error-info") : "";
+                  if (info === "queuedDrainPartial") {
+                    ta.value = "";
+                    ta.style.height = "";
+                    grow();
+                    clearSubmittedComposerItems(pendingItems);
+                    this.appendBanner("error", "drain failed after queueing: " + detail, { source: "hub", title: "Hub drain error" });
+                    return;
+                  }
                   this.appendBanner("error", "drain failed: " + detail, { source: "hub", title: "Hub drain error" });
                   return;
                 }

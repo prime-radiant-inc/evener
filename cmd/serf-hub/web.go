@@ -3063,6 +3063,9 @@ func writeSessionActionError(w http.ResponseWriter, r *http.Request, err error) 
 	status := http.StatusBadGateway
 	if wire, ok := wireErrorFromError(err); ok {
 		status = statusForWireError(wire, status)
+		if info := serfErrorInfoFromData(wire.Data); info != "" {
+			w.Header().Set("X-Serf-Error-Info", info)
+		}
 	}
 	http.Error(w, err.Error(), status)
 }
