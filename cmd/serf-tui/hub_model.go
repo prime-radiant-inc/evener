@@ -2594,11 +2594,7 @@ func reconcilePendingFromNotification(pending *pendingCoordinator, n appwire.Not
 		// user_message item carries the user's text. Match against
 		// any turn/start pending entry.
 		var p struct {
-			Item struct {
-				Type   string              `json:"type"`
-				Text   string              `json:"text"`
-				Images []appwire.InputItem `json:"images"`
-			} `json:"item"`
+			Item appwire.ThreadItem `json:"item"`
 		}
 		if err := json.Unmarshal(n.Params, &p); err != nil {
 			return

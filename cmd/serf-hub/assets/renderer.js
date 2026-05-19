@@ -382,13 +382,13 @@
           }
           case "item/started":
           case "item/completed":
-            if (params && params.item && params.item.type === "user_message") {
+            if (params && params.item && (params.item.type === "user_message" || params.item.type === "userMessage")) {
               pending.tryReconcile("turn/start", { text: params.item.text || "", items: params.item.images || [] });
             }
             return;
           case "turn/completed":
             for (const item of (params && params.turn && params.turn.items) || []) {
-              if (item && item.type === "user_message") {
+              if (item && (item.type === "user_message" || item.type === "userMessage")) {
                 pending.tryReconcile("turn/start", { text: item.text || "", items: item.images || [] });
               }
             }

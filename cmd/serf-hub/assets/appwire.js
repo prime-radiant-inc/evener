@@ -471,25 +471,33 @@
     return status;
   }
 
+  function internalItemType(type) {
+    if (type === "userMessage") return "user_message";
+    if (type === "agentMessage") return "agent_message";
+    if (type === "commandExecution" || type === "mcpToolCall" || type === "dynamicToolCall" || type === "collabToolCall") return "tool_call";
+    return type;
+  }
+
   function eventsFromItem(item, turnStatus) {
     if (!item) return [];
-    if (item.type === "user_message") {
+    const type = internalItemType(item.type);
+    if (type === "user_message") {
       const event = { text: item.text || "", images: imagesForUserItem(item) };
       const entryIndex = transcriptEntryIndex(item);
       if (entryIndex > 0) event.turn = entryIndex;
       return [["USER_INPUT", event]];
     }
-    if (item.type === "steering") {
+    if (type === "steering") {
       return [["STEERING_INJECTED", { text: item.text || "", images: item.images || [] }]];
     }
-    if (item.type === "agent_message") {
+    if (type === "agent_message") {
       if (!item.text) return [];
       if (terminalStatus(turnStatus) || terminalStatus(item.status) || (!runningStatus(turnStatus) && !runningStatus(item.status))) {
         return [["ASSISTANT_TEXT_START", {}], ["ASSISTANT_TEXT_END", { text: item.text }]];
       }
       return [["ASSISTANT_TEXT_START", {}], ["ASSISTANT_TEXT_DELTA", { delta: item.text }]];
     }
-    if (item.type === "tool_call") {
+    if (type === "tool_call") {
       const callID = firstNonEmpty(item.callId, item.id);
       const itemID = item.id || "";
       const completed = terminalStatus(item.status) || (!runningStatus(item.status) && (!!item.output || !!item.error));
@@ -542,8 +550,9 @@
     const state = key ? liveItemState.get(key) : null;
     if (!state) return eventsFromItem(item, "completed");
     if (state.completed) return [];
-    if (item.type === "agent_message") return [["ASSISTANT_TEXT_END", { text: item.text || "" }]];
-    if (item.type === "tool_call") {
+    const type = internalItemType(item.type);
+    if (type === "agent_message") return [["ASSISTANT_TEXT_END", { text: item.text || "" }]];
+    if (type === "tool_call") {
       const callID = firstNonEmpty(item.callId, item.id);
       const itemID = item.id || "";
       const out = [];
@@ -590,7 +599,7 @@
     const activeToolCalls = new Set();
     for (const turn of thread.turns || []) {
       for (const item of turn.items || []) {
-        if (item && item.type === "tool_call") {
+        if (item && internalItemType(item.type) === "tool_call") {
           const callID = firstNonEmpty(item.callId, item.id);
           const itemID = item.id || "";
           const completed = terminalStatus(item.status) || (!runningStatus(item.status) && (!!item.output || !!item.error));
@@ -669,9 +678,10 @@
     }
     if (method === "item/started") {
       markLiveItem(params, item, { started: true });
-      if (item.type === "user_message") return eventsFromItem(item);
-      if (item.type === "agent_message") return [["ASSISTANT_TEXT_START", {}]];
-      if (item.type === "tool_call") return [["TOOL_CALL_START", {
+      const type = internalItemType(item.type);
+      if (type === "user_message") return eventsFromItem(item);
+      if (type === "agent_message") return [["ASSISTANT_TEXT_START", {}]];
+      if (type === "tool_call") return [["TOOL_CALL_START", {
         call_id: firstNonEmpty(item.callId, item.id),
         item_id: item.id || "",
         tool_name: item.toolName || "",
@@ -681,8 +691,9 @@
     }
     if (method === "item/completed") {
       markLiveItem(params, item, { completed: true });
-      if (item.type === "user_message") return eventsFromItem(item);
-      if (item.type === "tool_call") return [["TOOL_CALL_END", {
+      const type = internalItemType(item.type);
+      if (type === "user_message") return eventsFromItem(item);
+      if (type === "tool_call") return [["TOOL_CALL_END", {
         call_id: firstNonEmpty(item.callId, item.id),
         item_id: item.id || "",
         tool_name: item.toolName || "",
@@ -691,7 +702,7 @@
         error: item.error || "",
         tool_state: item.raw || "",
       }]];
-      if (item.type === "agent_message") return [["ASSISTANT_TEXT_END", { text: item.text || "" }]];
+      if (type === "agent_message") return [["ASSISTANT_TEXT_END", { text: item.text || "" }]];
       return eventsFromItem(item);
     }
     if (method === "item/agentMessage/delta") {
