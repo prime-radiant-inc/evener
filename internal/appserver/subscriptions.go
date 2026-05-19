@@ -28,6 +28,29 @@ func (s *Subscriptions) Subscribe(connID, threadID string) {
 	s.byThread[threadID][connID] = struct{}{}
 }
 
+func (s *Subscriptions) ReplaceConnectionSubscriptions(connID, threadID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for existingThreadID := range s.byConn[connID] {
+		delete(s.byThread[existingThreadID], connID)
+		if len(s.byThread[existingThreadID]) == 0 {
+			delete(s.byThread, existingThreadID)
+		}
+	}
+	delete(s.byConn, connID)
+	if threadID == "" {
+		return
+	}
+	if s.byConn[connID] == nil {
+		s.byConn[connID] = map[string]struct{}{}
+	}
+	if s.byThread[threadID] == nil {
+		s.byThread[threadID] = map[string]struct{}{}
+	}
+	s.byConn[connID][threadID] = struct{}{}
+	s.byThread[threadID][connID] = struct{}{}
+}
+
 func (s *Subscriptions) IsSubscribed(connID, threadID string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

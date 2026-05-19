@@ -158,3 +158,25 @@ func TestBroadcastDisconnectsSlowSubscriberInsteadOfDroppingNotification(t *test
 		t.Fatal("slow subscriber connection remained registered after overflow")
 	}
 }
+
+func TestReplaceSubscriptionsScopesConnectionToLatestThread(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-1")
+	server.registerConnection(conn)
+	conn.Subscribe("th_old")
+
+	conn.ReplaceSubscriptions("th_new")
+
+	if got := server.SubscriberCount("th_old"); got != 0 {
+		t.Fatalf("old subscriber count=%d, want 0", got)
+	}
+	if got := server.SubscriberCount("th_new"); got != 1 {
+		t.Fatalf("new subscriber count=%d, want 1", got)
+	}
+	if conn.server.subs.IsSubscribed(conn.ID(), "th_old") {
+		t.Fatal("connection remained subscribed to old thread")
+	}
+	if !conn.server.subs.IsSubscribed(conn.ID(), "th_new") {
+		t.Fatal("connection was not subscribed to new thread")
+	}
+}

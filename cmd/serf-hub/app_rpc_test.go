@@ -1171,6 +1171,94 @@ func TestHubRPCThreadReadSubscribeOverridesSourceReadRelayPolicy(t *testing.T) {
 	}
 }
 
+func TestHubRPCThreadReadReplaceSubscriptionDropsPreviousRelaySubscriber(t *testing.T) {
+	sourceA := &relayBroadcastSource{
+		id: "codex-a",
+		thread: appwire.Thread{
+			ID:        "th_a",
+			SessionID: "th_a",
+			Source:    "codex-a",
+			Serf:      appwire.SerfThread{Ref: "codex-a:th_a", Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	sourceB := &relayBroadcastSource{
+		id: "codex-b",
+		thread: appwire.Thread{
+			ID:        "th_b",
+			SessionID: "th_b",
+			Source:    "codex-b",
+			Serf:      appwire.SerfThread{Ref: "codex-b:th_b", Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(WebConfig{HubAddr: srv.Listener.Addr().String(), Past: NewPastIndex("")})
+	web.sources.Add(sourceA)
+	web.sources.Add(sourceB)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex-a:th_a", Subscribe: true, ReplaceSubscription: true}); err != nil {
+		t.Fatalf("ThreadRead sourceA: %v", err)
+	}
+	expectRelaySubscription(t, sourceA.subscribed)
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex-b:th_b", Subscribe: true, ReplaceSubscription: true}); err != nil {
+		t.Fatalf("ThreadRead sourceB: %v", err)
+	}
+	expectRelaySubscription(t, sourceB.subscribed)
+
+	sourceA.notifications <- appwire.Notification{
+		Method: appwire.NotifyAgentMessageDelta,
+		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			ThreadID: "th_a",
+			Ref:      "codex-a:th_a",
+			TurnID:   "turn_a",
+			ItemID:   "item_a",
+			Delta:    "from source a",
+		}),
+	}
+	select {
+	case got := <-client.Notifications():
+		t.Fatalf("client received notification for replaced subscription: %+v", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	sourceB.notifications <- appwire.Notification{
+		Method: appwire.NotifyAgentMessageDelta,
+		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			ThreadID: "th_b",
+			Ref:      "codex-b:th_b",
+			TurnID:   "turn_b",
+			ItemID:   "item_b",
+			Delta:    "from source b",
+		}),
+	}
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifyAgentMessageDelta {
+			t.Fatalf("notification method=%q", got.Method)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for active replacement subscription notification")
+	}
+	select {
+	case <-sourceA.canceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("replaced relay subscriber did not retire the old source relay")
+	}
+}
+
 func TestHubRPCThreadReadRetiresRelayWhenClientDisconnects(t *testing.T) {
 	source := &relayLifecycleSource{
 		thread: appwire.Thread{

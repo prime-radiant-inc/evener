@@ -2080,6 +2080,9 @@ func TestFetchHubSessionSubscribesToLiveThread(t *testing.T) {
 	if !got.Subscribe {
 		t.Fatalf("ThreadRead Subscribe=false, want true")
 	}
+	if !got.ReplaceSubscription {
+		t.Fatalf("ThreadRead ReplaceSubscription=false, want true")
+	}
 }
 
 func TestHubModelStatusUsesHubThreadTasksAndAuth(t *testing.T) {

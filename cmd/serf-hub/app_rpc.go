@@ -148,7 +148,11 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 			err := existing.err
 			relayMu.Unlock()
 			if active && err == nil {
-				appserver.Subscribe(ctx, relayKey)
+				if subscribeParams.ReplaceSubscription {
+					appserver.ReplaceSubscriptions(ctx, relayKey)
+				} else {
+					appserver.Subscribe(ctx, relayKey)
+				}
 				return nil
 			}
 			if err != nil {
@@ -169,7 +173,11 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 			relayMu.Unlock()
 			return err
 		}
-		appserver.Subscribe(ctx, relayKey)
+		if subscribeParams.ReplaceSubscription {
+			appserver.ReplaceSubscriptions(ctx, relayKey)
+		} else {
+			appserver.Subscribe(ctx, relayKey)
+		}
 		relayMu.Lock()
 		close(relayHandle.ready)
 		relayMu.Unlock()

@@ -123,6 +123,10 @@ func (c *Connection) Subscribe(threadID string) {
 	c.server.subs.Subscribe(c.id, threadID)
 }
 
+func (c *Connection) ReplaceSubscriptions(threadID string) {
+	c.server.subs.ReplaceConnectionSubscriptions(c.id, threadID)
+}
+
 func (c *Connection) setCancel(cancel context.CancelFunc) {
 	c.mu.Lock()
 	c.cancel = cancel
@@ -202,6 +206,14 @@ func Subscribe(ctx context.Context, threadID string) {
 		return
 	}
 	conn.Subscribe(threadID)
+}
+
+func ReplaceSubscriptions(ctx context.Context, threadID string) {
+	conn, ok := ctx.Value(connectionContextKey{}).(*Connection)
+	if !ok || conn == nil {
+		return
+	}
+	conn.ReplaceSubscriptions(threadID)
 }
 
 func Notify(ctx context.Context, method string, params any) {

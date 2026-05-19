@@ -322,11 +322,12 @@ type ThreadListResponse struct {
 }
 
 type ThreadReadParams struct {
-	ThreadID     string `json:"threadId,omitempty"`
-	Ref          string `json:"ref,omitempty"`
-	IncludeTurns bool   `json:"includeTurns"`
-	ItemsView    string `json:"itemsView,omitempty"`
-	Subscribe    bool   `json:"subscribe,omitempty"`
+	ThreadID            string `json:"threadId,omitempty"`
+	Ref                 string `json:"ref,omitempty"`
+	IncludeTurns        bool   `json:"includeTurns"`
+	ItemsView           string `json:"itemsView,omitempty"`
+	Subscribe           bool   `json:"subscribe,omitempty"`
+	ReplaceSubscription bool   `json:"replaceSubscription,omitempty"`
 }
 
 type ThreadReadResponse struct {
