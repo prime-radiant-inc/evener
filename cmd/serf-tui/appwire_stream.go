@@ -73,7 +73,7 @@ func streamEventsFromThread(thread appwire.Thread) []streamEvent {
 	})}
 	for _, turn := range thread.Turns {
 		for _, item := range turn.Items {
-			events = append(events, streamEventsFromItem(item, true)...)
+			events = append(events, streamEventsFromHydratedItem(item)...)
 		}
 	}
 	return events
@@ -151,8 +151,52 @@ func streamEventsFromNotification(notification appwire.Notification) []streamEve
 		if json.Unmarshal(notification.Params, &params) == nil {
 			return []streamEvent{newStreamEvent("STEERING_INJECTED", map[string]any{"text": params.Text})}
 		}
+	case appwire.NotifySerfSubagentStarted:
+		var params struct {
+			Subagent struct {
+				AgentID string `json:"agent_id"`
+			} `json:"subagent"`
+		}
+		if json.Unmarshal(notification.Params, &params) == nil && params.Subagent.AgentID != "" {
+			return []streamEvent{newStreamEvent("SUBAGENT_START", map[string]any{"agent_id": params.Subagent.AgentID})}
+		}
+	case appwire.NotifySerfSubagentEnded:
+		var params struct {
+			Subagent struct {
+				AgentID   string `json:"agent_id"`
+				Status    string `json:"status"`
+				TurnsUsed int    `json:"turns_used"`
+			} `json:"subagent"`
+		}
+		if json.Unmarshal(notification.Params, &params) == nil && params.Subagent.AgentID != "" {
+			return []streamEvent{newStreamEvent("SUBAGENT_END", map[string]any{
+				"agent_id":   params.Subagent.AgentID,
+				"status":     params.Subagent.Status,
+				"turns_used": params.Subagent.TurnsUsed,
+			})}
+		}
 	}
 	return nil
+}
+
+func streamEventsFromHydratedItem(item appwire.ThreadItem) []streamEvent {
+	if item.Type == "tool_call" && item.Status == appwire.TurnStatusCompleted {
+		return []streamEvent{
+			newStreamEvent("TOOL_CALL_START", map[string]any{
+				"call_id":        firstNonEmptyString(item.CallID, item.ID),
+				"tool_name":      item.ToolName,
+				"arguments_json": item.ArgumentsJSON,
+			}),
+			newStreamEvent("TOOL_CALL_END", map[string]any{
+				"call_id":        firstNonEmptyString(item.CallID, item.ID),
+				"tool_name":      item.ToolName,
+				"arguments_json": item.ArgumentsJSON,
+				"output":         item.Output,
+				"error":          item.Error,
+			}),
+		}
+	}
+	return streamEventsFromItem(item, item.Status == appwire.TurnStatusCompleted)
 }
 
 func streamEventsFromItem(item appwire.ThreadItem, completed bool) []streamEvent {
