@@ -209,7 +209,7 @@ func TestTurnQueue_RegistersPending(t *testing.T) {
 	}()
 	if err := client.TurnQueue(ctx, appwire.TurnQueueParams{
 		Ref:  appwire.Ref{SourceID: "local", ThreadID: "t1"}.String(),
-		Text: "queued msg",
+		Input: []appwire.InputItem{{Type: "text", Text: "queued msg"}},
 	}); err != nil {
 		t.Fatalf("TurnQueue: %v", err)
 	}

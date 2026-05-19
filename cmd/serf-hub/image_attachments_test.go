@@ -20,7 +20,6 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appsource"
 	"primeradiant.com/serf/internal/appwire"
@@ -153,7 +152,7 @@ func TestWeb_Send_ImageAttachmentsForwardedToDaemonStartTurn(t *testing.T) {
 	daemon := appserver.NewServer(appserver.ServerConfig{
 		ServerName: "daemon-test",
 		SourceID:   "local",
-		Features:   appwire.FeatureSet{TurnDrainAsSteerInput: true},
+		Features:   appwire.FeatureSet{},
 	})
 	gotItems := make(chan []appwire.InputItem, 1)
 	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
@@ -166,7 +165,7 @@ func TestWeb_Send_ImageAttachmentsForwardedToDaemonStartTurn(t *testing.T) {
 	appserver.HandleTyped(daemon.Router(), appwire.MethodInitialize, func(_ context.Context, _ appwire.InitializeParams) (appwire.InitializeResponse, error) {
 		return appwire.InitializeResponse{
 			ServerInfo: appwire.ServerInfo{Name: "daemon-test"},
-			Features:   appwire.FeatureSet{TurnDrainAsSteerInput: true},
+			Features:   appwire.FeatureSet{},
 		}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
@@ -204,7 +203,8 @@ func TestWeb_Send_ImageAttachmentsForwardedToDaemonStartTurn(t *testing.T) {
 
 	body := sendRequest{
 		Text: "look at this",
-		Images: []agent.ImageAttachment{{
+		Items: []appwire.InputItem{{
+			Type:      "image",
 			MediaType: "image/png",
 			Data:      testImageBytes,
 			Name:      "send.png",
@@ -248,9 +248,9 @@ func TestWeb_Send_ImageAttachmentsForwardedToDaemonStartTurn(t *testing.T) {
 	}
 }
 
-// TestWeb_Send_ItemsShapeForwardedToDaemonStartTurn drives the kata v80q
-// shape on /s/<id>/send: the JSON body carries an `items` array (NOT the
-// legacy `images` array) with base64-encoded Data on each image entry.
+// TestWeb_Send_ItemsShapeForwardedToDaemonStartTurn drives the Codex input
+// shape on /s/<id>/send: the JSON body carries an `items` array with
+// base64-encoded Data on each image entry.
 // The hub must decode the base64 and forward the bytes as appwire.InputItem
 // entries on the daemon's TurnStart call. This is the canonical wire shape
 // the browser composer-attachments pipeline emits.
@@ -259,7 +259,7 @@ func TestWeb_Send_ItemsShapeForwardedToDaemonStartTurn(t *testing.T) {
 	daemon := appserver.NewServer(appserver.ServerConfig{
 		ServerName: "daemon-test",
 		SourceID:   "local",
-		Features:   appwire.FeatureSet{TurnDrainAsSteerInput: true},
+		Features:   appwire.FeatureSet{},
 	})
 	gotItems := make(chan []appwire.InputItem, 1)
 	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
@@ -368,7 +368,7 @@ func TestWeb_Queue_ItemsShapeForwardedToDaemonQueueTurn(t *testing.T) {
 	gotItems := make(chan []appwire.InputItem, 1)
 	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnQueue, func(_ context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
 		select {
-		case gotItems <- params.Items:
+		case gotItems <- imageInputItems(params.Input):
 		default:
 		}
 		return appwire.EmptyResponse{}, nil
@@ -468,7 +468,7 @@ func TestWeb_DrainAsSteer_ItemsShapeSendsAtomicDrain(t *testing.T) {
 	daemon := appserver.NewServer(appserver.ServerConfig{
 		ServerName: "daemon-test",
 		SourceID:   "local",
-		Features:   appwire.FeatureSet{TurnDrainAsSteerInput: true},
+		Features:   appwire.FeatureSet{},
 	})
 	queued := make(chan struct{}, 1)
 	drained := make(chan appwire.TurnDrainAsSteerParams, 1)
@@ -489,7 +489,7 @@ func TestWeb_DrainAsSteer_ItemsShapeSendsAtomicDrain(t *testing.T) {
 	appserver.HandleTyped(daemon.Router(), appwire.MethodInitialize, func(_ context.Context, _ appwire.InitializeParams) (appwire.InitializeResponse, error) {
 		return appwire.InitializeResponse{
 			ServerInfo: appwire.ServerInfo{Name: "daemon-test"},
-			Features:   appwire.FeatureSet{TurnDrainAsSteerInput: true},
+			Features:   appwire.FeatureSet{},
 		}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
@@ -561,10 +561,10 @@ func TestWeb_DrainAsSteer_ItemsShapeSendsAtomicDrain(t *testing.T) {
 	default:
 		t.Fatalf("daemon TurnDrainAsSteer was not invoked")
 	}
-	if params.Text != "drain with image" {
-		t.Fatalf("Text=%q, want drain with image", params.Text)
+	if inputTextForTest(params.Input) != "drain with image" {
+		t.Fatalf("Input=%+v, want drain with image", params.Input)
 	}
-	items := params.Items
+	items := imageInputItems(params.Input)
 	if len(items) != 1 {
 		t.Fatalf("Items: got %d, want 1 (%+v)", len(items), items)
 	}

@@ -57,9 +57,9 @@ const runningAssistantEvents = context.window.SerfAppwire.eventsFromThread({
   id: "01RUN",
   turns: [{
     id: "turn_running",
-    status: "running",
+    status: "inProgress",
     items: [{
-      type: "agent_message",
+      type: "agentMessage",
       id: "item_agent",
       text: "partial answer",
     }],
@@ -76,14 +76,14 @@ const splitToolEvents = context.window.SerfAppwire.eventsFromThread({
     id: "turn_done",
     status: "completed",
     items: [{
-      type: "tool_call",
+      type: "commandExecution",
       id: "item_tool_start",
       callId: "call_tool",
       toolName: "shell",
       argumentsJson: "{\"command\":\"printf ok\"}",
-      status: "running",
+      status: "inProgress",
     }, {
-      type: "tool_call",
+      type: "commandExecution",
       id: "item_tool_result",
       callId: "call_tool",
       toolName: "shell",

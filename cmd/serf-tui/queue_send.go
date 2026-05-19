@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/internal/appwire"
@@ -47,8 +46,7 @@ func sendHubQueue(client *appwire.Client, ref appwire.Ref, text, draft string, a
 		}
 		err = client.TurnQueue(context.Background(), appwire.TurnQueueParams{
 			Ref:   ref.String(),
-			Text:  text,
-			Items: items,
+			Input: appendTextInput(text, items),
 		})
 		return hubQueueMsg{text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 	}
@@ -69,22 +67,9 @@ func sendHubDrainAsSteer(client *appwire.Client, ref appwire.Ref, text, draft st
 		if err != nil {
 			return hubDrainAsSteerMsg{text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(attachments) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 		}
-		hasInput := strings.TrimSpace(text) != "" || len(items) > 0
-		if hasInput && !client.SupportsTurnDrainAsSteerInput() {
-			if err := client.TurnQueue(context.Background(), appwire.TurnQueueParams{
-				Ref:   ref.String(),
-				Text:  text,
-				Items: items,
-			}); err != nil {
-				return hubDrainAsSteerMsg{text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(items) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
-			}
-			err = client.TurnDrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{Ref: ref.String()})
-			return hubDrainAsSteerMsg{text: text, draft: draft, queued: true, preQueueDepth: depth, hadAttachment: len(items) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
-		}
 		err = client.TurnDrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{
 			Ref:   ref.String(),
-			Text:  text,
-			Items: items,
+			Input: appendTextInput(text, items),
 		})
 		return hubDrainAsSteerMsg{text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(items) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 	}

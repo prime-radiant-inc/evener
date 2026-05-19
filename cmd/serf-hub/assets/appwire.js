@@ -369,30 +369,17 @@
   function queueTurn(sessionId, text, attachments) {
     return optimisticCall(METHOD.turnQueue, {
       ref: refForSession(sessionId),
-      text: text || "",
-      items: inputItemsFromAttachments(attachments),
+      input: inputItemsForTextAndAttachments(text || "", attachments),
     }, { text, items: attachments || [] });
   }
 
   // drainAsSteer drains the daemon's input queue into a single STEERING
   // injection on the active turn (kata 0bq1). Text/attachments ride on the
   // drain request so the daemon appends and drains them atomically.
-  async function drainAsSteer(sessionId, text, attachments) {
-    const hasText = !!(text && String(text).trim());
-    const hasAttachments = !!(attachments && attachments.length > 0);
-    if (hasText || hasAttachments) {
-      await connect();
-      if (!serverFeatures.turnDrainAsSteerInput) {
-        await queueTurn(sessionId, text || "", attachments || []);
-        return optimisticCall(METHOD.turnDrainAsSteer, {
-          ref: refForSession(sessionId),
-        }, { text: "" });
-      }
-    }
+  function drainAsSteer(sessionId, text, attachments) {
     return optimisticCall(METHOD.turnDrainAsSteer, {
       ref: refForSession(sessionId),
-      text: text || "",
-      items: inputItemsFromAttachments(attachments),
+      input: inputItemsForTextAndAttachments(text || "", attachments),
     }, { text: "" });
   }
 

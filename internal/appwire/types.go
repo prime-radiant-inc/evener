@@ -118,9 +118,6 @@ type FeatureSet struct {
 	ModelList         bool `json:"modelList"`
 	DirectoryComplete bool `json:"directoryComplete"`
 	Auth              bool `json:"auth"`
-	// TurnDrainAsSteerInput means turn/drainAsSteer accepts Text/Items and
-	// atomically appends them before draining.
-	TurnDrainAsSteerInput bool `json:"turnDrainAsSteerInput"`
 }
 
 type Thread struct {
@@ -445,26 +442,21 @@ type TurnInterruptParams struct {
 	ExpectedTurnID string `json:"expectedTurnId,omitempty"`
 }
 
-// TurnQueueParams is the wire shape for turn/queue (kata 111a). Queues a
-// user message during a running turn for processing after the active turn
-// completes. The daemon enqueues immediately and returns; no turn id is
-// reserved or returned. Items optionally carries attachments (e.g. image
-// bytes — kata t5j6) that flow through to the drained user turn alongside
-// the text.
+// TurnQueueParams queues a user message during a running turn for processing
+// after the active turn completes. The daemon enqueues immediately and returns;
+// no turn id is reserved or returned.
 type TurnQueueParams struct {
 	Ref   string      `json:"ref"`
-	Text  string      `json:"text"`
-	Items []InputItem `json:"items,omitempty"`
+	Input []InputItem `json:"input,omitempty"`
 }
 
 // TurnDrainAsSteerParams is the wire shape for turn/drainAsSteer (kata
 // 0bq1 force-steer combined action). Pops every queued message and sends
-// them to the in-flight turn as a single STEERING message. Text/Items let
-// clients atomically append the current composer payload before the drain.
+// them to the in-flight turn as a single STEERING message. Input lets clients
+// atomically append the current composer payload before the drain.
 type TurnDrainAsSteerParams struct {
 	Ref   string      `json:"ref"`
-	Text  string      `json:"text,omitempty"`
-	Items []InputItem `json:"items,omitempty"`
+	Input []InputItem `json:"input,omitempty"`
 }
 
 type ThreadCompactStartParams struct {

@@ -1,5 +1,5 @@
 // test-queue-and-drain: verifies the composer routes Enter to turn/queue
-// while the session is processing (kata 111a), and that the steer button
+// while the session is active (kata 111a), and that the steer button
 // (and ⇧↵ shortcut) drains the queue as a single STEERING injection
 // (kata 0bq1). Exercises the renderer's wire-sourced queueState (kata
 // r80p) and the queue-preview rendering driven by thread/queueChanged
@@ -14,13 +14,13 @@ const rendererSrc = fs.readFileSync(RENDERER_PATH, "utf8");
 
 // Composer template mirrors templates/partials/workspace.html: queue is
 // advertised as available (data-capability-queue=true) while send is OFF
-// (data-capability-send=false) — the processing-turn state shape.
+// (data-capability-send=false) — the active-turn state shape.
 const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <header class="workspace-header" data-session-id="01TEST"></header>
   <div id="conversation"
        data-session-id="01TEST"
        data-active-turn-id="turn_live"
-       data-state="processing"></div>
+       data-state="active"></div>
   <form class="workspace-input" data-input-form data-session-id="01TEST">
     <div class="input-attachments" data-attachments></div>
     <div class="queue-preview" data-queue-preview hidden>
@@ -100,7 +100,7 @@ async function testQueuePreviewStartsHidden() {
   pass(list.children.length === 0, "expected empty list on init");
 }
 
-async function testEnterQueuesWhenProcessing() {
+async function testEnterQueuesWhenActive() {
   // Send capability is off + queue is on → submit posts to /queue.
   ta.value = "investigate the failing test";
   ta.dispatchEvent(new window.Event("input", { bubbles: true }));
@@ -261,7 +261,7 @@ async function testQueueFailureSurfaceErrorBanner() {
 
 (async () => {
   await testQueuePreviewStartsHidden();
-  await testEnterQueuesWhenProcessing();
+  await testEnterQueuesWhenActive();
   await testQueueTwiceShowsBothEntries();
   await testQueueChangedShrinksOnHeadPop();
   await testDrainAsSteerClearsQueueAndPosts();

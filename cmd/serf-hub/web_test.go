@@ -3087,10 +3087,11 @@ func TestWeb_Send_ForwardsTextAndImages(t *testing.T) {
 	imgBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a} // PNG header
 	reqBody, err := json.Marshal(map[string]any{
 		"text": "caption",
-		"images": []map[string]any{{
-			"media_type": "image/png",
-			"data":       imgBytes,
-			"name":       "x.png",
+		"items": []map[string]any{{
+			"type":      "image",
+			"mediaType": "image/png",
+			"data":      imgBytes,
+			"name":      "x.png",
 		}},
 	})
 	if err != nil {
@@ -3148,10 +3149,11 @@ func TestWeb_Send_ImageOnly_Forwards(t *testing.T) {
 	imgBytes := []byte{0xff, 0xd8, 0xff, 0xe0} // JPEG header bytes
 	reqBody, err := json.Marshal(map[string]any{
 		"text": "",
-		"images": []map[string]any{{
-			"media_type": "image/jpeg",
-			"data":       imgBytes,
-			"name":       "y.jpg",
+		"items": []map[string]any{{
+			"type":      "image",
+			"mediaType": "image/jpeg",
+			"data":      imgBytes,
+			"name":      "y.jpg",
 		}},
 	})
 	if err != nil {
@@ -3185,9 +3187,9 @@ func TestWeb_Send_ImageOnly_Forwards(t *testing.T) {
 	}
 }
 
-// TestWeb_Send_RejectsEmptyTextAndNoImages verifies that the hub returns 400
-// when neither text nor images are supplied — matching the daemon's rule.
-func TestWeb_Send_RejectsEmptyTextAndNoImages(t *testing.T) {
+// TestWeb_Send_RejectsEmptyTextAndNoItems verifies that the hub returns 400
+// when neither text nor input items are supplied, matching the daemon's rule.
+func TestWeb_Send_RejectsEmptyTextAndNoItems(t *testing.T) {
 	dir := t.TempDir()
 	writeRendezvous(t, dir, rendezvous.Entry{PID: 23, Address: "127.0.0.1:55557"})
 	r := NewRoster(dir, fakeProber{sessionID: "01NOEMPTY", status: "idle"})
@@ -3199,7 +3201,7 @@ func TestWeb_Send_RejectsEmptyTextAndNoImages(t *testing.T) {
 		Past:    NewPastIndex(""),
 	})
 
-	cases := []string{`{}`, `{"text":""}`, `{"text":"","images":[]}`}
+	cases := []string{`{}`, `{"text":""}`, `{"text":"","items":[]}`}
 	for _, payload := range cases {
 		req := httptest.NewRequest(http.MethodPost, "/s/01NOEMPTY/send", strings.NewReader(payload))
 		req.Host = "127.0.0.1:9180"
@@ -3214,7 +3216,7 @@ func TestWeb_Send_RejectsEmptyTextAndNoImages(t *testing.T) {
 }
 
 // TestWeb_Send_RejectsOversizeImage verifies that the hub-side accept cap
-// rejects images larger than sendMaxImageBytes with 413, before forwarding
+// rejects image input items larger than sendMaxImageBytes with 413, before forwarding
 // to the daemon.
 func TestWeb_Send_RejectsOversizeImage(t *testing.T) {
 	dir := t.TempDir()
@@ -3232,8 +3234,8 @@ func TestWeb_Send_RejectsOversizeImage(t *testing.T) {
 	bigData := make([]byte, sendMaxImageBytes+1)
 	body := sendRequest{
 		Text: "look",
-		Images: []agent.ImageAttachment{{
-			MediaType: "image/png", Data: bigData, Name: "big.png",
+		Items: []appwire.InputItem{{
+			Type: "image", MediaType: "image/png", Data: bigData, Name: "big.png",
 		}},
 	}
 	payload, err := json.Marshal(body)

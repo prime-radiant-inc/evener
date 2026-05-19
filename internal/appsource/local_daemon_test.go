@@ -349,15 +349,12 @@ func TestLocalDaemonSourceReadsThreadOverAppWire(t *testing.T) {
 	}
 }
 
-func TestLocalDaemonSourceDrainFallbackReportsQueuedPartial(t *testing.T) {
+func TestLocalDaemonSourceDrainUsesInputShapeDirectly(t *testing.T) {
 	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
-	var queued appwire.TurnQueueParams
-	appserver.HandleTyped(app.Router(), appwire.MethodTurnQueue, func(_ context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
-		queued = params
+	var drained appwire.TurnDrainAsSteerParams
+	appserver.HandleTyped(app.Router(), appwire.MethodTurnDrainAsSteer, func(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.EmptyResponse, error) {
+		drained = params
 		return appwire.EmptyResponse{}, nil
-	})
-	appserver.HandleTyped(app.Router(), appwire.MethodTurnDrainAsSteer, func(_ context.Context, _ appwire.TurnDrainAsSteerParams) (appwire.EmptyResponse, error) {
-		return appwire.EmptyResponse{}, appwire.Conflict("queue is empty")
 	})
 	httpServer := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
 	defer httpServer.Close()
@@ -372,17 +369,12 @@ func TestLocalDaemonSourceDrainFallbackReportsQueuedPartial(t *testing.T) {
 		}}
 	}, httpServer.Client())
 
-	err := source.DrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{Ref: "local:th_1", Text: "composer payload"})
-	if queued.Text != "composer payload" {
-		t.Fatalf("queued=%+v", queued)
+	err := source.DrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{Ref: "local:th_1", Input: []appwire.InputItem{{Type: "text", Text: "composer payload"}}})
+	if err != nil {
+		t.Fatalf("DrainAsSteer: %v", err)
 	}
-	var wire appwire.WireError
-	if !errors.As(err, &wire) {
-		t.Fatalf("error %T=%v, want WireError", err, err)
-	}
-	data, ok := wire.Data.(appwire.ErrorData)
-	if !ok || data.SerfErrorInfo != appwire.ErrorQueuedDrainPartial {
-		t.Fatalf("wire=%+v data=%+v", wire, wire.Data)
+	if drained.Ref != "local:th_1" || len(drained.Input) != 1 || drained.Input[0].Text != "composer payload" {
+		t.Fatalf("drained=%+v", drained)
 	}
 }
 

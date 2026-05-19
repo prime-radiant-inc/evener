@@ -44,9 +44,8 @@ func TestServerAppWireTurnQueueImageItemReachesQueueFunc(t *testing.T) {
 		t.Fatalf("init=%v", init.Kind())
 	}
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{
-		Ref:  "local:th_qimg",
-		Text: "queued describe",
-		Items: []appwire.InputItem{{
+		Ref: "local:th_qimg",
+		Input: []appwire.InputItem{{Type: "text", Text: "queued describe"}, {
 			Type:      "image",
 			MediaType: "image/png",
 			Data:      pngSig,
@@ -106,9 +105,8 @@ func TestServerAppWireTurnDrainAsSteerThroughSessionProducesImageBearingSteer(t 
 		t.Fatalf("init=%v", init.Kind())
 	}
 	if r := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{
-		Ref:  "local:" + sess.ID(),
-		Text: "drain me",
-		Items: []appwire.InputItem{{
+		Ref: "local:" + sess.ID(),
+		Input: []appwire.InputItem{{Type: "text", Text: "drain me"}, {
 			Type:      "image",
 			MediaType: "image/png",
 			Data:      pngSig,

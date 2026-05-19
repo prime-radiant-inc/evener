@@ -43,7 +43,7 @@ class FakeWebSocket {
         });
         return;
       }
-      if (msg.method === "turn/start" && msg.params.prompt === "FAIL_REGISTRY_SWITCH") {
+      if (msg.method === "turn/start" && msg.params.input && msg.params.input[0] && msg.params.input[0].text === "FAIL_REGISTRY_SWITCH") {
         this.dispatch("message", {
           data: JSON.stringify({
             id: msg.id,
@@ -126,7 +126,7 @@ vm.runInContext(SRC, context);
   assert(start.params.reasoningEffort === "high", "browser appwire start should pass reasoning effort");
   assert(start.params.launchOverrides && start.params.launchOverrides.maxRounds === 4, "browser appwire start should pass launch overrides");
   assert(start.params.launchOverrides.appReplaySize === 128, "browser appwire start should preserve launch override fields");
-  assert(start.params.prompt === "hello codex", "browser appwire start should pass prompt");
+  assert(start.params.input && start.params.input[0] && start.params.input[0].text === "hello codex", "browser appwire start should pass input");
   const results = await context.window.SerfAppwire.search("codex");
   assert(results.live.length === 1, "browser appwire search did not return live Codex result");
   assert(results.live[0].id === "codex:th_codex", "browser appwire search should navigate by canonical ref");
@@ -147,7 +147,7 @@ vm.runInContext(SRC, context);
     id: "th_codex",
     sessionId: "th_codex",
     serf: { ref: "codex:th_codex" },
-    turns: [{ items: [{ type: "agent_message", text: "CODEX_REPLAY_OK" }] }],
+    turns: [{ items: [{ type: "agentMessage", text: "CODEX_REPLAY_OK" }] }],
   });
   const replayAssistantStart = replayedAssistantEvents.findIndex(([kind]) => kind === "ASSISTANT_TEXT_START");
   const replayAssistantEnd = replayedAssistantEvents.findIndex(([kind, data]) => kind === "ASSISTANT_TEXT_END" && data.text === "CODEX_REPLAY_OK");
@@ -158,8 +158,8 @@ vm.runInContext(SRC, context);
       id: "turn_codex",
       status: "completed",
       items: [
-        { type: "user_message", text: "hello codex", turnId: "turn_codex" },
-        { type: "agent_message", text: "CODEX_LIVE_OK" },
+        { type: "userMessage", text: "hello codex", turnId: "turn_codex" },
+        { type: "agentMessage", text: "CODEX_LIVE_OK" },
       ],
     },
   });
@@ -170,7 +170,7 @@ vm.runInContext(SRC, context);
     turn: {
       id: "turn_2",
       status: "completed",
-      items: [{ type: "user_message", text: "numeric app turn", turnId: "turn_2" }],
+      items: [{ type: "userMessage", text: "numeric app turn", turnId: "turn_2" }],
     },
   });
   const appTurnUser = appTurnUserEvents.find(([kind]) => kind === "USER_INPUT");
@@ -180,7 +180,7 @@ vm.runInContext(SRC, context);
     turn: {
       id: "turn_2",
       status: "completed",
-      items: [{ type: "user_message", text: "indexed user", turnId: "turn_2", transcriptEntryIndex: 3 }],
+      items: [{ type: "userMessage", text: "indexed user", turnId: "turn_2", transcriptEntryIndex: 3 }],
     },
   });
   const transcriptIndexedUser = transcriptIndexedUserEvents.find(([kind]) => kind === "USER_INPUT");
@@ -192,7 +192,7 @@ vm.runInContext(SRC, context);
     structuredError = err;
   }
   const interrupt = sent.filter((msg) => msg.method === "turn/interrupt").pop();
-  assert(interrupt && interrupt.params.turnId === "turn_web", "browser appwire interrupt should include active turn id");
+  assert(interrupt && interrupt.params.expectedTurnId === "turn_web", "browser appwire interrupt should include active turn id");
   assert(structuredError, "browser appwire should reject failed RPC requests");
   assert(structuredError.message === "interrupt is not available", "browser appwire should preserve error message");
   assert(structuredError.code === -32004, "browser appwire should preserve error code");
@@ -221,7 +221,7 @@ vm.runInContext(SRC, context);
   context.window.SerfAppwire.eventsFromNotification("item/started", {
     threadId: "th_codex",
     turnId: "turn_dedupe",
-    item: { id: "msg_dedupe", type: "agent_message" },
+    item: { id: "msg_dedupe", type: "agentMessage" },
   });
   context.window.SerfAppwire.eventsFromNotification("item/agentMessage/delta", {
     threadId: "th_codex",
@@ -232,7 +232,7 @@ vm.runInContext(SRC, context);
   context.window.SerfAppwire.eventsFromNotification("item/completed", {
     threadId: "th_codex",
     turnId: "turn_dedupe",
-    item: { id: "msg_dedupe", turnId: "turn_dedupe", type: "agent_message", text: "CODEX_DEDUPE_OK" },
+    item: { id: "msg_dedupe", turnId: "turn_dedupe", type: "agentMessage", text: "CODEX_DEDUPE_OK" },
   });
   assert(typeof context.window.SerfAppwire.liveItemStateSize === "function", "browser appwire should expose live item state size for regression coverage");
   const liveStateBeforeCompletedTurn = context.window.SerfAppwire.liveItemStateSize();
@@ -241,7 +241,7 @@ vm.runInContext(SRC, context);
     turn: {
       id: "turn_dedupe",
       status: "completed",
-      items: [{ id: "msg_dedupe", turnId: "turn_dedupe", type: "agent_message", text: "CODEX_DEDUPE_OK" }],
+      items: [{ id: "msg_dedupe", turnId: "turn_dedupe", type: "agentMessage", text: "CODEX_DEDUPE_OK" }],
     },
   });
   assert(!dedupedCompletedTurnEvents.some(([kind, data]) => kind === "ASSISTANT_TEXT_END" && data.text === "CODEX_DEDUPE_OK"), "completed turn should not replay already completed assistant item");
@@ -249,7 +249,7 @@ vm.runInContext(SRC, context);
   context.window.SerfAppwire.eventsFromNotification("item/started", {
     threadId: "th_failed",
     turnId: "turn_failed",
-    item: { id: "msg_failed", type: "agent_message" },
+    item: { id: "msg_failed", type: "agentMessage" },
   });
   context.window.SerfAppwire.eventsFromNotification("item/agentMessage/delta", {
     threadId: "th_failed",
@@ -270,7 +270,7 @@ vm.runInContext(SRC, context);
         hint: "Check launch config.",
         cause: { kind: "provider", provider: "openai", model: "gpt-5", status: 503 },
       },
-      items: [{ id: "msg_failed", turnId: "turn_failed", type: "agent_message", text: "final failure" }],
+      items: [{ id: "msg_failed", turnId: "turn_failed", type: "agentMessage", text: "final failure" }],
     },
   });
   const failedTurnAssistant = failedTurnEvents.find(([kind]) => kind === "ASSISTANT_TEXT_END");
@@ -288,7 +288,7 @@ vm.runInContext(SRC, context);
     turn: {
       id: "turn_reused",
       status: "completed",
-      items: [{ id: "msg_dedupe", turnId: "turn_reused", type: "agent_message", text: "CODEX_REUSED_TURN_OK" }],
+      items: [{ id: "msg_dedupe", turnId: "turn_reused", type: "agentMessage", text: "CODEX_REUSED_TURN_OK" }],
     },
   });
   assert(reusedItemNextTurnEvents.some(([kind, data]) => kind === "ASSISTANT_TEXT_END" && data.text === "CODEX_REUSED_TURN_OK"), "completed turn should render same item id reused in a later turn");
@@ -297,7 +297,7 @@ vm.runInContext(SRC, context);
     turn: {
       id: "turn_other",
       status: "completed",
-      items: [{ id: "msg_dedupe", type: "agent_message", text: "CODEX_OTHER_OK" }],
+      items: [{ id: "msg_dedupe", type: "agentMessage", text: "CODEX_OTHER_OK" }],
     },
   });
   assert(reusedItemOtherThreadEvents.some(([kind, data]) => kind === "ASSISTANT_TEXT_END" && data.text === "CODEX_OTHER_OK"), "completed turn should render same item id in a different thread");
@@ -315,7 +315,7 @@ vm.runInContext(SRC, context);
       items: [{
         id: "tool_delta_only",
         callId: "call_delta_only",
-        type: "tool_call",
+        type: "commandExecution",
         toolName: "shell",
         output: "partial output",
         status: "completed",

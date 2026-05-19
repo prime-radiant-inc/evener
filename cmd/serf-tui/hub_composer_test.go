@@ -140,7 +140,7 @@ func TestHubModelBusyEnterRoutesToQueueAndClearsDraft(t *testing.T) {
 	updated, _ = updated.(hubModel).Update(cmd())
 	queued := updated.(hubModel)
 
-	if got.Ref != "local:01SEND" || got.Text != "please keep going" {
+	if got.Ref != "local:01SEND" || testInputText(got.Input) != "please keep going" {
 		t.Fatalf("queue params=%+v", got)
 	}
 	if queued.session.input.Value() != "" {
@@ -243,11 +243,11 @@ func TestHubModelBusyEnterQueuesImageOnlySubmission(t *testing.T) {
 	updated, _ = inFlight.Update(cmd())
 	queued := updated.(hubModel)
 
-	if got.Ref != "local:01SEND" || got.Text != "" {
+	if got.Ref != "local:01SEND" || testInputText(got.Input) != "" {
 		t.Fatalf("params=%+v, want image-only turn/queue", got)
 	}
-	if len(got.Items) != 1 || got.Items[0].Type != "image" || string(got.Items[0].Data) != "queued-image-only" {
-		t.Fatalf("items=%+v, want one image item", got.Items)
+	if len(got.Input) != 1 || got.Input[0].Type != "image" || string(got.Input[0].Data) != "queued-image-only" {
+		t.Fatalf("input=%+v, want one image item", got.Input)
 	}
 	if len(queued.pendingAttachments) != 0 {
 		t.Fatalf("pendingAttachments len=%d, want cleared after success", len(queued.pendingAttachments))
@@ -336,8 +336,8 @@ func TestHubModelBusyCtrlSDrainsQueueAsSteer(t *testing.T) {
 	if drainParams.Ref != "local:01SEND" {
 		t.Fatalf("drain params=%+v", drainParams)
 	}
-	if drainParams.Text != "composer text in flight" {
-		t.Fatalf("drain text=%q, want composer text in flight", drainParams.Text)
+	if testInputText(drainParams.Input) != "composer text in flight" {
+		t.Fatalf("drain input=%+v, want composer text in flight", drainParams.Input)
 	}
 	if drained.session.input.Value() != "" {
 		t.Fatalf("force-steer should clear composer, got %q", drained.session.input.Value())

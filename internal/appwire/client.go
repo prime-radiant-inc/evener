@@ -171,12 +171,6 @@ func (c *Client) Initialize(ctx context.Context, params InitializeParams) (Initi
 	return out, err
 }
 
-func (c *Client) SupportsTurnDrainAsSteerInput() bool {
-	c.featuresMu.RLock()
-	defer c.featuresMu.RUnlock()
-	return c.features.TurnDrainAsSteerInput
-}
-
 func (c *Client) ThreadList(ctx context.Context, params ThreadListParams) (ThreadListResponse, error) {
 	var out ThreadListResponse
 	err := c.request(ctx, MethodThreadList, params, &out)
@@ -309,7 +303,7 @@ func (c *Client) TurnInterrupt(ctx context.Context, params TurnInterruptParams) 
 func (c *Client) TurnQueue(ctx context.Context, params TurnQueueParams) error {
 	var handle PendingHandle
 	if c.pendingCoord != nil {
-		handle = c.pendingCoord.Register(MethodTurnQueue, params.Text)
+		handle = c.pendingCoord.Register(MethodTurnQueue, inputText(params.Input))
 	}
 	err := c.request(ctx, MethodTurnQueue, params, nil)
 	if err != nil && handle != nil {

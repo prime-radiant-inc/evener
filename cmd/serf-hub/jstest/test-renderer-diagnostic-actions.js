@@ -113,7 +113,7 @@ function pass(cond, msg) { if (!cond) failures.push("FAIL: " + msg); }
   });
   pass(localHubActions === null, "local hub action failures should not get reconnect retry, got " + JSON.stringify(localHubActions));
 
-  renderer.handle("USER_INPUT", {
+  renderer.handleData("USER_INPUT", {
     text: "replayed sha image",
     images: [{ type: "image", media_type: "image/png", sha256: "sha-only", name: "replay.png" }],
   });

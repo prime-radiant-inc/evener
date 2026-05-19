@@ -2602,20 +2602,12 @@ func (s *WebServer) renderInputStrip(w http.ResponseWriter, r *http.Request, id 
 	}
 }
 
-// sendRequest is the JSON body accepted by POST /s/<id>/send. Two shapes
-// coexist:
-//
-//   - Legacy `images: []`  — agent.ImageAttachment-shaped, base64 in `.data`.
-//   - Canonical `items: []` — appwire.InputItem-shaped (kata v80q), used by
-//     the browser composer-attachments pipeline. Image entries carry their
-//     bytes as a base64-encoded `data` field that Go's json unmarshals into
-//     `[]byte` automatically.
-//
-// Both shapes are merged into the same TurnStart Items list below.
+// sendRequest is the JSON body accepted by POST /s/<id>/send. Items carries
+// Codex-style input parts; image entries carry their bytes as a base64-encoded
+// `data` field that Go's json unmarshals into `[]byte` automatically.
 type sendRequest struct {
-	Text   string                  `json:"text"`
-	Images []agent.ImageAttachment `json:"images,omitempty"`
-	Items  []appwire.InputItem     `json:"items,omitempty"`
+	Text  string              `json:"text"`
+	Items []appwire.InputItem `json:"items,omitempty"`
 }
 
 // Per-request limits for image attachments. Match the browser-side cap so
@@ -2633,31 +2625,15 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	// Match the daemon's validation: at least one of text, images, or items
-	// is required. Either of the two attachment shapes (legacy `images` or
-	// kata v80q `items`) counts as content.
-	if body.Text == "" && len(body.Images) == 0 && len(body.Items) == 0 {
-		http.Error(w, "text or images required", http.StatusBadRequest)
+	if body.Text == "" && len(body.Items) == 0 {
+		http.Error(w, "text or items required", http.StatusBadRequest)
 		return
 	}
-	if len(body.Images) > sendMaxImageItems {
-		http.Error(w, fmt.Sprintf("images exceeds %d-image limit", sendMaxImageItems), http.StatusRequestEntityTooLarge)
-		return
-	}
-	for i, img := range body.Images {
-		if len(img.Data) > sendMaxImageBytes {
-			http.Error(w, fmt.Sprintf("image[%d] %q exceeds %d-byte limit", i, img.Name, sendMaxImageBytes), http.StatusRequestEntityTooLarge)
-			return
-		}
-	}
-	if err := validateAppWireInputItemsWithExisting(body.Items, len(body.Images)); err != nil {
+	if err := validateAppWireInputItems(body.Items); err != nil {
 		http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
 		return
 	}
 	for i, it := range body.Items {
-		// Same per-image size cap applies to the v80q items shape; the
-		// daemon's Data field is []byte and we want a consistent gate
-		// regardless of which wire shape the browser picked.
 		if len(it.Data) > sendMaxImageBytes {
 			http.Error(w, fmt.Sprintf("items[%d] %q exceeds %d-byte limit", i, it.Name, sendMaxImageBytes), http.StatusRequestEntityTooLarge)
 			return
@@ -2714,17 +2690,6 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 	}
 
 	turnParams := appwire.TurnStartParams{Ref: ref, Input: inputItemsForText(body.Text)}
-	for _, img := range body.Images {
-		turnParams.Input = append(turnParams.Input, appwire.InputItem{
-			Type:      "image",
-			MediaType: img.MediaType,
-			Data:      img.Data,
-			Name:      img.Name,
-		})
-	}
-	// Append the v80q items shape directly. Go's json unmarshal already
-	// base64-decoded the `data` field into the []byte we hand to the
-	// daemon, so no further re-encoding is needed here.
 	turnParams.Input = append(turnParams.Input, body.Items...)
 	startTurn := func(forceResume bool) error {
 		if forceResume {
@@ -2888,7 +2853,7 @@ func (s *WebServer) handleQueue(w http.ResponseWriter, r *http.Request, id strin
 		http.NotFound(w, r)
 		return
 	}
-	if err := source.QueueTurn(r.Context(), appwire.TurnQueueParams{Ref: ref, Text: body.Text, Items: body.Items}); err != nil {
+	if err := source.QueueTurn(r.Context(), appwire.TurnQueueParams{Ref: ref, Input: append(inputItemsForText(body.Text), body.Items...)}); err != nil {
 		writeSessionActionError(w, r, err)
 		return
 	}
@@ -2951,8 +2916,7 @@ func (s *WebServer) handleDrainAsSteer(w http.ResponseWriter, r *http.Request, i
 	}
 	if err := source.DrainAsSteer(r.Context(), appwire.TurnDrainAsSteerParams{
 		Ref:   ref,
-		Text:  strings.TrimSpace(body.Text),
-		Items: body.Items,
+		Input: append(inputItemsForText(strings.TrimSpace(body.Text)), body.Items...),
 	}); err != nil {
 		writeSessionActionError(w, r, err)
 		return

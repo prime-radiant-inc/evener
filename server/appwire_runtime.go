@@ -365,13 +365,13 @@ func (s *Server) handleAppTurnInterrupt(_ context.Context, params appwire.TurnIn
 // handleAppTurnQueue handles turn/queue (kata 111a). The session must be
 // processing for the call to be meaningful — calling on an idle session is
 // rejected with Conflict so callers fall back to turn/start instead.
-// When params.Items carries image attachments (kata t5j6), the request is
+// When params.Input carries image attachments (kata t5j6), the request is
 // routed through queueWithImagesFunc when available so the queued entry
 // preserves the image bytes for the eventual user turn.
 func (s *Server) handleAppTurnQueue(_ context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
-	text, images := inputFromItems(params.Text, params.Items)
+	text, images := inputFromItems("", params.Input)
 	if strings.TrimSpace(text) == "" && len(images) == 0 {
-		return appwire.EmptyResponse{}, appwire.InvalidParams("text or items required")
+		return appwire.EmptyResponse{}, appwire.InvalidParams("input required")
 	}
 	s.mu.RLock()
 	fn := s.queueFunc
@@ -406,7 +406,7 @@ func (s *Server) handleAppTurnQueue(_ context.Context, params appwire.TurnQueueP
 
 // handleAppTurnDrainAsSteer handles turn/drainAsSteer (kata 0bq1).
 func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.EmptyResponse, error) {
-	text, images := inputFromItems(params.Text, params.Items)
+	text, images := inputFromItems("", params.Input)
 	hasInput := strings.TrimSpace(text) != "" || len(images) > 0
 	s.mu.RLock()
 	fn := s.drainSteerFunc

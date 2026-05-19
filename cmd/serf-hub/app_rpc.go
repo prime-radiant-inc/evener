@@ -84,19 +84,18 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		Version:    Version,
 		SourceID:   "local",
 		Features: appwire.FeatureSet{
-			ThreadList:            true,
-			ThreadTurnsList:       false,
-			TurnStart:             true,
-			TurnSteer:             true,
-			ThreadClear:           true,
-			ThreadShutdown:        true,
-			ForkFromTurn:          true,
-			Tasks:                 true,
-			TranscriptList:        true,
-			ModelList:             true,
-			DirectoryComplete:     true,
-			Auth:                  true,
-			TurnDrainAsSteerInput: true,
+			ThreadList:        true,
+			ThreadTurnsList:   false,
+			TurnStart:         true,
+			TurnSteer:         true,
+			ThreadClear:       true,
+			ThreadShutdown:    true,
+			ForkFromTurn:      true,
+			Tasks:             true,
+			TranscriptList:    true,
+			ModelList:         true,
+			DirectoryComplete: true,
+			Auth:              true,
 		},
 	})
 	hubStateRoot := cfg.HubStateRoot
@@ -378,7 +377,7 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		return appwire.EmptyResponse{}, source.InterruptTurn(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnQueue, func(ctx context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
-		if err := validateAppWireInputItems(params.Items); err != nil {
+		if err := validateAppWireInputItems(params.Input); err != nil {
 			return appwire.EmptyResponse{}, appwire.InvalidParams(err.Error())
 		}
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
@@ -391,7 +390,7 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		return appwire.EmptyResponse{}, source.QueueTurn(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnDrainAsSteer, func(ctx context.Context, params appwire.TurnDrainAsSteerParams) (appwire.EmptyResponse, error) {
-		if err := validateAppWireInputItems(params.Items); err != nil {
+		if err := validateAppWireInputItems(params.Input); err != nil {
 			return appwire.EmptyResponse{}, appwire.InvalidParams(err.Error())
 		}
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")

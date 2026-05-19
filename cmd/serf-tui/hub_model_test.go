@@ -1671,7 +1671,7 @@ func TestHubDashboardSpawnWaitsForSlowHubSpawn(t *testing.T) {
 	app := appserver.NewServer(appserver.ServerConfig{
 		ServerName: "serf-hub",
 		SourceID:   "local",
-		Features:   appwire.FeatureSet{TurnDrainAsSteerInput: true},
+		Features:   appwire.FeatureSet{},
 	})
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		return threadListResponse(hubTreeResponse{Projects: []hubTreeProject{{
@@ -3490,7 +3490,7 @@ func newTestHubClient(t *testing.T, register func(*appserver.Server)) (*appwire.
 	app := appserver.NewServer(appserver.ServerConfig{
 		ServerName: "serf-hub",
 		SourceID:   "local",
-		Features:   appwire.FeatureSet{TurnDrainAsSteerInput: true},
+		Features:   appwire.FeatureSet{},
 	})
 	appserver.HandleTyped(app.Router(), appwire.MethodSerfHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
 		return appwire.HarnessListResponse{Data: []appwire.HarnessDescriptor{{ID: "serf", Label: "serf", Kind: "serf"}}}, nil

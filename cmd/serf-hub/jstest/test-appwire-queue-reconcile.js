@@ -8,7 +8,7 @@ const rendererSrc = fs.readFileSync(path.resolve(__dirname, "../assets/renderer.
 
 const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <header class="workspace-header" data-session-id="01TEST"></header>
-  <div id="conversation" data-session-id="01TEST" data-state="processing"></div>
+  <div id="conversation" data-session-id="01TEST" data-state="active"></div>
   <form class="workspace-input" data-input-form data-session-id="01TEST">
     <div class="queue-preview" data-queue-preview hidden>
       <span data-queue-depth>0</span>
@@ -79,7 +79,7 @@ window.eval(rendererSrc);
   assert.equal(conv.querySelectorAll(".optimistic-pending").length, 1, "expected image-only pending user chip");
   notify("item/completed", {
     threadId: "01TEST",
-    item: { type: "user_message", text: "", images: [{ type: "image", name: "shot.png" }] },
+    item: { type: "userMessage", text: "", images: [{ type: "image", name: "shot.png" }] },
   });
   assert.equal(conv.querySelectorAll(".optimistic-pending").length, 0,
     "image-only authoritative user items should reconcile pending turn/start chips");

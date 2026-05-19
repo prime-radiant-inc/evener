@@ -261,7 +261,7 @@ await scenario("auto-advance steering becomes 'now on X'", [
 	    status: "idle",
 	    capabilities: { queue: false },
 	  });
-	  window.SerfRenderer.handleData("THREAD_STATUS_CHANGED", { status: "processing" });
+	  window.SerfRenderer.handleData("THREAD_STATUS_CHANGED", { status: "active" });
 	  const ok = btn.getAttribute("data-capability-queue") === "false";
 	  console.log((ok ? "PASS" : "FAIL") + " — idle SESSION_START queue=false survives processing transition");
 	  if (!ok) {

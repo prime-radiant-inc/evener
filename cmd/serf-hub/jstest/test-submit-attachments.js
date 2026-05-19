@@ -103,12 +103,11 @@ async function testAppwireStartTurnEncodesAttachments() {
   if (!sentJSON) return;
   pass(sentJSON.method === "turn/start",
     "expected method=turn/start, got " + sentJSON.method);
-  pass(sentJSON.params && Array.isArray(sentJSON.params.items),
-    "expected params.items to be an array, got " + JSON.stringify(sentJSON.params));
-  const items = (sentJSON.params && sentJSON.params.items) || [];
-  // We expect the text portion to land as a text item at items[0] (or as
-  // params.prompt — daemon accepts either). For the v80q contract we want
-  // items[N] to include the image entry with base64-encoded data.
+  pass(sentJSON.params && Array.isArray(sentJSON.params.input),
+    "expected params.input to be an array, got " + JSON.stringify(sentJSON.params));
+  const items = (sentJSON.params && sentJSON.params.input) || [];
+  // We expect the text portion to land as a text input at input[0], and the
+  // image entry to follow with base64-encoded data.
   const imageEntries = items.filter((it) => it && it.type === "image");
   pass(imageEntries.length === 1,
     "expected exactly 1 image entry in items, got " + JSON.stringify(items));
@@ -143,7 +142,7 @@ async function testMultiAttachmentEntries() {
     send(body) {
       const msg = JSON.parse(body);
       if (msg.method === "initialize") {
-        setTimeout(() => { if (this.listeners.message) this.listeners.message[0]({ data: JSON.stringify({ id: msg.id, result: { features: { turnDrainAsSteerInput: true } } }) }); }, 0);
+        setTimeout(() => { if (this.listeners.message) this.listeners.message[0]({ data: JSON.stringify({ id: msg.id, result: { features: {} } }) }); }, 0);
         return;
       }
       sentJSON = msg;
@@ -161,7 +160,7 @@ async function testMultiAttachmentEntries() {
   ];
   await window.SerfAppwire.startTurn("local:01TEST", "two pics", attachments);
   pass(sentJSON !== null, "multi: startTurn should have sent JSON-RPC");
-  const items = (sentJSON && sentJSON.params && sentJSON.params.items) || [];
+  const items = (sentJSON && sentJSON.params && sentJSON.params.input) || [];
   const imgs = items.filter((it) => it && it.type === "image");
   pass(imgs.length === 2, "multi: expected 2 image entries, got " + imgs.length);
   if (imgs.length === 2) {
@@ -189,7 +188,7 @@ async function testEmptyAttachmentsSendsNoImageItems() {
     send(body) {
       const msg = JSON.parse(body);
       if (msg.method === "initialize") {
-        setTimeout(() => { if (this.listeners.message) this.listeners.message[0]({ data: JSON.stringify({ id: msg.id, result: { features: { turnDrainAsSteerInput: true } } }) }); }, 0);
+        setTimeout(() => { if (this.listeners.message) this.listeners.message[0]({ data: JSON.stringify({ id: msg.id, result: { features: {} } }) }); }, 0);
         return;
       }
       sentJSON = msg;
@@ -203,7 +202,7 @@ async function testEmptyAttachmentsSendsNoImageItems() {
 
   await window.SerfAppwire.startTurn("local:01TEST", "just text", []);
   pass(sentJSON !== null, "empty: startTurn should have sent JSON-RPC");
-  const items = (sentJSON && sentJSON.params && sentJSON.params.items) || [];
+  const items = (sentJSON && sentJSON.params && sentJSON.params.input) || [];
   const imgs = items.filter((it) => it && it.type === "image");
   pass(imgs.length === 0, "empty: expected 0 image entries, got " + imgs.length);
 }
@@ -227,7 +226,7 @@ async function testQueueTurnEncodesAttachments() {
     send(body) {
       const msg = JSON.parse(body);
       if (msg.method === "initialize") {
-        setTimeout(() => { if (this.listeners.message) this.listeners.message[0]({ data: JSON.stringify({ id: msg.id, result: { features: { turnDrainAsSteerInput: true } } }) }); }, 0);
+        setTimeout(() => { if (this.listeners.message) this.listeners.message[0]({ data: JSON.stringify({ id: msg.id, result: { features: {} } }) }); }, 0);
         return;
       }
       sentJSON = msg;
@@ -244,7 +243,7 @@ async function testQueueTurnEncodesAttachments() {
   pass(sentJSON !== null, "queue: should have sent JSON-RPC");
   pass(sentJSON && sentJSON.method === "turn/queue",
     "queue: expected method=turn/queue, got " + (sentJSON && sentJSON.method));
-  const items = (sentJSON && sentJSON.params && sentJSON.params.items) || [];
+  const items = (sentJSON && sentJSON.params && sentJSON.params.input) || [];
   const imgs = items.filter((it) => it && it.type === "image");
   pass(imgs.length === 1, "queue: expected 1 image entry, got " + imgs.length);
   if (imgs.length === 1) {
@@ -272,7 +271,7 @@ async function testDrainAsSteerWithAttachmentsQueuesThenDrains() {
     send(body) {
       const msg = JSON.parse(body);
       if (msg.method === "initialize") {
-        setTimeout(() => { if (this.listeners.message) this.listeners.message[0]({ data: JSON.stringify({ id: msg.id, result: { features: { turnDrainAsSteerInput: true } } }) }); }, 0);
+        setTimeout(() => { if (this.listeners.message) this.listeners.message[0]({ data: JSON.stringify({ id: msg.id, result: { features: {} } }) }); }, 0);
         return;
       }
       sentJSONs.push(msg);
@@ -291,12 +290,12 @@ async function testDrainAsSteerWithAttachmentsQueuesThenDrains() {
     "drain: expected one turn/drainAsSteer call, got " + JSON.stringify(methods));
   const drainCall = sentJSONs.find((m) => m.method === "turn/drainAsSteer");
   if (drainCall) {
-    pass(drainCall.params && drainCall.params.text === "drain text",
+    pass(drainCall.params && drainCall.params.input && drainCall.params.input[0] && drainCall.params.input[0].text === "drain text",
       "drain: params should carry text, got " + JSON.stringify(drainCall.params));
-    const items = (drainCall.params && drainCall.params.items) || [];
+    const items = (drainCall.params && drainCall.params.input) || [];
     const imgs = items.filter((it) => it && it.type === "image");
     pass(imgs.length === 1 && imgs[0].data === PNG_B64,
-      "drain: params items should carry the base64 image, got " + JSON.stringify(items));
+      "drain: params input should carry the base64 image, got " + JSON.stringify(items));
   }
 }
 

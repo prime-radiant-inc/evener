@@ -697,8 +697,8 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 	// line surfaces in the queue preview above the composer.
 	app.WaitFor("queued (1)", "1. first line")
 	queues := hub.WaitForQueues(t, 1)
-	if queues[0].Text != "first line\nsecond line" {
-		t.Fatalf("queue text=%q, want multiline input", queues[0].Text)
+	if testInputText(queues[0].Input) != "first line\nsecond line" {
+		t.Fatalf("queue input=%+v, want multiline input", queues[0].Input)
 	}
 
 	hub.SetSessionState("01LIVE", appwire.ThreadStatusIdle)

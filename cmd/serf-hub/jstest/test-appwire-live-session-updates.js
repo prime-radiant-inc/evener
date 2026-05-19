@@ -53,8 +53,8 @@ window.SerfAppwire = {
   }),
   eventsFromThread: (thread) => [["SESSION_START", {
     session_id: thread.sessionId,
-    status: "processing",
-    capabilities: { queue: false },
+    status: "idle",
+    capabilities: { send: true, queue: false },
     restored: true,
   }]],
   eventsFromNotification: (method, params) => {
@@ -63,14 +63,14 @@ window.SerfAppwire = {
     if (method === "turn/completed") return [["TURN_COMPLETED", { turnId: params.turn && params.turn.id || "" }]];
     if (method === "item/started") return [["ASSISTANT_TEXT_START", {}]];
     if (method === "item/agentMessage/delta") return [["ASSISTANT_TEXT_DELTA", { delta: params.delta || "" }]];
-    if (method === "item/completed" && params.item && params.item.type === "user_message") {
+    if (method === "item/completed" && params.item && params.item.type === "userMessage") {
       return [["USER_INPUT", { text: params.item.text || "", images: params.item.images || [] }]];
     }
     return [];
   },
   startTurn: (sessionIdOrRef) => {
     startTurnTarget = sessionIdOrRef;
-    return Promise.resolve({ turn: { id: "turn_1", status: "running" } });
+    return Promise.resolve({ turn: { id: "turn_1", status: "inProgress" } });
   },
 };
 
@@ -90,7 +90,7 @@ async function run() {
 
   const failures = [];
   const pass = (condition, message) => { if (!condition) failures.push("FAIL: " + message); };
-  pass(conv.dataset.state === "processing", "SESSION_START status should hydrate conversation state");
+  pass(conv.dataset.state === "idle", "SESSION_START status should hydrate conversation state");
   pass(window.document.querySelector('[data-action-trigger="interrupt"]').disabled, "interrupt should start disabled without an active turn");
 
   pass(startTurnTarget === "local:thread-live", "send should target canonical AppWire ref, got " + startTurnTarget);
@@ -103,14 +103,14 @@ async function run() {
     threadId: "thread-live",
     ref: "local:thread-live",
     turnId: "turn_1",
-    item: { type: "user_message", id: "item_user_1", turnId: "turn_1", text: "ping", status: "completed" },
+    item: { type: "userMessage", id: "item_user_1", turnId: "turn_1", text: "ping", status: "completed" },
   });
   pass(userMessages().filter((text) => text === "ping").length === 1, "AppWire user-message notification should not duplicate the sent prompt");
 
   notificationHandler("item/started", {
     threadId: "thread-live",
     ref: "local:thread-live",
-    item: { type: "agent_message", id: "item_1", turnId: "turn_1" },
+    item: { type: "agentMessage", id: "item_1", turnId: "turn_1" },
   });
   notificationHandler("item/agentMessage/delta", {
     threadId: "thread-live",
@@ -127,9 +127,10 @@ async function run() {
   notificationHandler("thread/status/changed", {
     threadId: "thread-live",
     ref: "local:thread-live",
-    status: { type: "processing" },
+    status: { type: "active" },
   });
-  pass(conv.dataset.state === "processing", "processing status did not update conversation state");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  pass(conv.dataset.state === "active", "active status did not update conversation state");
   pass(window.document.querySelector(".send-btn").getAttribute("data-capability-queue") === "false",
     "processing status should not enable queue when source did not advertise queue");
   pass(!window.document.querySelector('[data-action-trigger="interrupt"]').disabled, "interrupt should enable while processing after turn/start returns an id");
@@ -137,8 +138,9 @@ async function run() {
   notificationHandler("turn/started", {
     threadId: "thread-live",
     ref: "local:thread-live",
-    turn: { id: "turn_1", status: "running" },
+    turn: { id: "turn_1", status: "inProgress" },
   });
+  await new Promise((resolve) => setTimeout(resolve, 10));
   pass(!window.document.querySelector('[data-action-trigger="interrupt"]').disabled, "interrupt should enable when a turn starts");
 
   notificationHandler("thread/status/changed", {
@@ -146,6 +148,7 @@ async function run() {
     ref: "local:thread-live",
     status: { type: "active" },
   });
+  await new Promise((resolve) => setTimeout(resolve, 10));
   pass(conv.dataset.state === "active", "active status did not update conversation state");
   pass(!window.document.querySelector('[data-action-trigger="interrupt"]').disabled, "active status should keep interrupt enabled while a turn is active");
 

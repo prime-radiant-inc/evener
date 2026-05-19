@@ -316,9 +316,8 @@ func TestEmbeddedDaemon_QueueWithImagesRoundTrip(t *testing.T) {
 		t.Fatalf("initialize: %s", raw)
 	}
 	if r := conn.HandleMessage(ctx, appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{
-		Ref:  "local:" + sess.ID(),
-		Text: "drain me",
-		Items: []appwire.InputItem{{
+		Ref: "local:" + sess.ID(),
+		Input: []appwire.InputItem{{Type: "text", Text: "drain me"}, {
 			Type:      "image",
 			MediaType: "image/png",
 			Data:      embeddedPNGSig,

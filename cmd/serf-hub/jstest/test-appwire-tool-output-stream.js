@@ -58,13 +58,13 @@ async function run() {
     threadId: "01TEST",
     ref: "local:01TEST",
     turnId: "turn_1",
-    item: { type: "agent_message", id: "item_empty_1", turnId: "turn_1", status: "running" },
+    item: { type: "agentMessage", id: "item_empty_1", turnId: "turn_1", status: "inProgress" },
   });
   deliver("item/completed", {
     threadId: "01TEST",
     ref: "local:01TEST",
     turnId: "turn_1",
-    item: { type: "agent_message", id: "item_empty_1", turnId: "turn_1", status: "completed" },
+    item: { type: "agentMessage", id: "item_empty_1", turnId: "turn_1", status: "completed" },
   });
 
   deliver("item/started", {
@@ -72,13 +72,13 @@ async function run() {
     ref: "local:01TEST",
     turnId: "turn_1",
     item: {
-      type: "tool_call",
+      type: "commandExecution",
       id: "item_tool_start_1",
       callId: "call_1",
       turnId: "turn_1",
       toolName: "shell",
       argumentsJson: JSON.stringify({ command: "printf 'one\\ntwo\\n'" }),
-      status: "running",
+      status: "inProgress",
     },
   });
   deliver("item/toolOutput/delta", {
@@ -113,7 +113,7 @@ async function run() {
       id: "turn_1",
       status: "completed",
       items: [{
-        type: "tool_call",
+        type: "commandExecution",
         id: "item_tool_result_1",
         callId: "call_1",
         turnId: "turn_1",
@@ -128,7 +128,7 @@ async function run() {
     threadId: "01TEST",
     ref: "local:01TEST",
     turnId: "turn_1",
-    item: { type: "agent_message", id: "item_msg_1", turnId: "turn_1", status: "running" },
+    item: { type: "agentMessage", id: "item_msg_1", turnId: "turn_1", status: "inProgress" },
   });
   deliver("item/agentMessage/delta", {
     threadId: "01TEST",
@@ -142,12 +142,12 @@ async function run() {
     ref: "local:01TEST",
     turnId: "turn_1",
     item: {
-      type: "tool_call",
+      type: "commandExecution",
       id: "item_tool_2",
       callId: "call_2",
       turnId: "turn_1",
       toolName: "communicate",
-      status: "running",
+      status: "inProgress",
     },
   });
   deliver("item/completed", {
@@ -155,7 +155,7 @@ async function run() {
     ref: "local:01TEST",
     turnId: "turn_1",
     item: {
-      type: "tool_call",
+      type: "commandExecution",
       id: "item_tool_2",
       callId: "call_2",
       turnId: "turn_1",

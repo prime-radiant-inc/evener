@@ -46,7 +46,7 @@ func TestSendHubInputIncludesAttachments(t *testing.T) {
 	app := appserver.NewServer(appserver.ServerConfig{
 		ServerName: "hub",
 		SourceID:   "local",
-		Features:   appwire.FeatureSet{TurnDrainAsSteerInput: true},
+		Features:   appwire.FeatureSet{},
 	})
 	var got appwire.TurnStartParams
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
@@ -104,7 +104,7 @@ func TestSendHubQueueIncludesAttachments(t *testing.T) {
 	app := appserver.NewServer(appserver.ServerConfig{
 		ServerName: "hub",
 		SourceID:   "local",
-		Features:   appwire.FeatureSet{TurnDrainAsSteerInput: true},
+		Features:   appwire.FeatureSet{},
 	})
 	var got appwire.TurnQueueParams
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnQueue, func(_ context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
@@ -121,13 +121,13 @@ func TestSendHubQueueIncludesAttachments(t *testing.T) {
 	if !ok || queueMsg.err != nil {
 		t.Fatalf("msg=%T err=%v", msg, queueMsg.err)
 	}
-	if got.Ref != "local:th_q" || got.Text != "queue me" {
+	if got.Ref != "local:th_q" || testInputText(got.Input) != "queue me" {
 		t.Fatalf("params=%+v, want ref=local:th_q text=queue me", got)
 	}
-	if len(got.Items) != 1 {
-		t.Fatalf("items len=%d, want 1: %+v", len(got.Items), got.Items)
+	if len(got.Input) != 2 {
+		t.Fatalf("input len=%d, want text + image: %+v", len(got.Input), got.Input)
 	}
-	item := got.Items[0]
+	item := got.Input[1]
 	if item.Type != "image" || item.MediaType != "image/png" {
 		t.Errorf("item=%+v, want type=image mediaType=image/png", item)
 	}
@@ -148,7 +148,7 @@ func TestSendHubDrainAsSteerIncludesAttachments(t *testing.T) {
 	app := appserver.NewServer(appserver.ServerConfig{
 		ServerName: "hub",
 		SourceID:   "local",
-		Features:   appwire.FeatureSet{TurnDrainAsSteerInput: true},
+		Features:   appwire.FeatureSet{},
 	})
 	var drainParams appwire.TurnDrainAsSteerParams
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnQueue, func(_ context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
@@ -172,13 +172,13 @@ func TestSendHubDrainAsSteerIncludesAttachments(t *testing.T) {
 	if drainParams.Ref == "" {
 		t.Fatal("drainAsSteer never invoked")
 	}
-	if drainParams.Ref != "local:th_s" || drainParams.Text != "steer me" {
+	if drainParams.Ref != "local:th_s" || testInputText(drainParams.Input) != "steer me" {
 		t.Fatalf("drain params=%+v, want ref=local:th_s text=steer me", drainParams)
 	}
-	if len(drainParams.Items) != 1 {
-		t.Fatalf("drain items len=%d, want 1: %+v", len(drainParams.Items), drainParams.Items)
+	if len(drainParams.Input) != 2 {
+		t.Fatalf("drain input len=%d, want text + image: %+v", len(drainParams.Input), drainParams.Input)
 	}
-	item := drainParams.Items[0]
+	item := drainParams.Input[1]
 	if item.Type != "image" || item.MediaType != "image/png" {
 		t.Errorf("item=%+v, want type=image mediaType=image/png", item)
 	}
@@ -187,12 +187,11 @@ func TestSendHubDrainAsSteerIncludesAttachments(t *testing.T) {
 	}
 }
 
-func TestSendHubDrainAsSteerFallsBackWithoutAtomicFeature(t *testing.T) {
+func TestSendHubDrainAsSteerAlwaysUsesInputShape(t *testing.T) {
 	app := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", SourceID: "local"})
-	var queueParams []appwire.TurnQueueParams
 	var drainParams appwire.TurnDrainAsSteerParams
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnQueue, func(_ context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
-		queueParams = append(queueParams, params)
+		t.Fatalf("turn/queue should not be called for input-bearing drain: %+v", params)
 		return appwire.EmptyResponse{}, nil
 	})
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnDrainAsSteer, func(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.EmptyResponse, error) {
@@ -207,10 +206,7 @@ func TestSendHubDrainAsSteerFallsBackWithoutAtomicFeature(t *testing.T) {
 	if !ok || drainMsg.err != nil {
 		t.Fatalf("msg=%T err=%v", msg, drainMsg.err)
 	}
-	if len(queueParams) != 1 || queueParams[0].Text != "steer me" {
-		t.Fatalf("queueParams=%+v", queueParams)
-	}
-	if drainParams.Ref != "local:th_s" || drainParams.Text != "" || len(drainParams.Items) != 0 {
+	if drainParams.Ref != "local:th_s" || testInputText(drainParams.Input) != "steer me" {
 		t.Fatalf("drainParams=%+v", drainParams)
 	}
 }

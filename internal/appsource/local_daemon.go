@@ -141,20 +141,6 @@ func (s *LocalDaemonSource) DrainAsSteer(ctx context.Context, params appwire.Tur
 		return err
 	}
 	return s.withClient(ctx, entry, func(client *appwire.Client) error {
-		hasInput := strings.TrimSpace(params.Text) != "" || len(params.Items) > 0
-		if hasInput && !client.SupportsTurnDrainAsSteerInput() {
-			if err := client.TurnQueue(ctx, appwire.TurnQueueParams{
-				Ref:   params.Ref,
-				Text:  params.Text,
-				Items: params.Items,
-			}); err != nil {
-				return err
-			}
-			if err := client.TurnDrainAsSteer(ctx, appwire.TurnDrainAsSteerParams{Ref: params.Ref}); err != nil {
-				return appwire.QueuedDrainPartial("composer payload queued but drain failed: " + err.Error())
-			}
-			return nil
-		}
 		return client.TurnDrainAsSteer(ctx, params)
 	})
 }

@@ -805,8 +805,8 @@ func TestServerAppWireTurnQueueAcceptsMidTurnMessage(t *testing.T) {
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{
-		Ref:  "local:th_1",
-		Text: "queued",
+		Ref:   "local:th_1",
+		Input: []appwire.InputItem{{Type: "text", Text: "queued"}},
 	}))
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v error=%+v", resp.Kind(), resp.Error)
@@ -832,8 +832,8 @@ func TestServerAppWireTurnQueueAcceptsReservedActiveTurn(t *testing.T) {
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{
-		Ref:  "local:th_1",
-		Text: "queued",
+		Ref:   "local:th_1",
+		Input: []appwire.InputItem{{Type: "text", Text: "queued"}},
 	}))
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v error=%+v", resp.Kind(), resp.Error)
@@ -911,8 +911,8 @@ func TestServerAppWireTurnQueueRejectsStaleProjectedActiveTurn(t *testing.T) {
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{
-		Ref:  "local:th_1",
-		Text: "queued",
+		Ref:   "local:th_1",
+		Input: []appwire.InputItem{{Type: "text", Text: "queued"}},
 	}))
 	if resp.Kind() != appwire.MessageError {
 		t.Fatalf("expected error response, got %v", resp.Kind())
@@ -931,8 +931,8 @@ func TestServerAppWireTurnQueueRejectsWhenIdle(t *testing.T) {
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{
-		Ref:  "local:th_1",
-		Text: "queued",
+		Ref:   "local:th_1",
+		Input: []appwire.InputItem{{Type: "text", Text: "queued"}},
 	}))
 	if resp.Kind() != appwire.MessageError {
 		t.Fatalf("expected error response, got %v", resp.Kind())
@@ -1010,9 +1010,8 @@ func TestServerAppWireTurnDrainAsSteerDispatchesInputAtomically(t *testing.T) {
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{
-		Ref:  "local:th_1",
-		Text: "composer payload",
-		Items: []appwire.InputItem{{
+		Ref: "local:th_1",
+		Input: []appwire.InputItem{{Type: "text", Text: "composer payload"}, {
 			Type:      "image",
 			MediaType: "image/png",
 			Data:      []byte("png"),

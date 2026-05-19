@@ -24,7 +24,7 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <div id="conversation"
        data-session-id="01TEST"
        data-active-turn-id="turn_steer"
-       data-state="processing"></div>
+       data-state="active"></div>
   <form class="workspace-input" data-input-form data-session-id="01TEST">
     <div class="input-attachments" data-attachments></div>
     <div class="composer-attachments" data-composer-attachments></div>
@@ -175,7 +175,7 @@ async function checkProcessingSendCapabilityKeepsSendMode() {
   const send = form.querySelector(".send-btn");
   window.SerfRenderer.handleData("SESSION_START", {
     session_id: "01TEST",
-    status: "processing",
+    status: "active",
     capabilities: { send: true, queue: false },
   });
   pass(send.getAttribute("data-capability-send") === "true", "processing send capability should stay true");
@@ -196,7 +196,7 @@ async function checkProcessingSendCapabilityKeepsSendMode() {
     status: "idle",
     capabilities: { send: true, queue: false },
   });
-  window.SerfRenderer.handleData("THREAD_STATUS_CHANGED", { status: "processing" });
+  window.SerfRenderer.handleData("THREAD_STATUS_CHANGED", { status: "active" });
   pass(send.getAttribute("data-capability-send") === "true", "cached source send capability should stay true when queue is unsupported");
   pass(send.getAttribute("data-capability-queue") === "false", "cached source queue=false should not become queue=true without fresh caps");
 
@@ -213,7 +213,7 @@ async function checkProcessingSendCapabilityKeepsSendMode() {
     status: "idle",
     capabilities: { send: true, queue: false },
   });
-  window.SerfRenderer.handleData("THREAD_STATUS_CHANGED", { status: "processing" });
+  window.SerfRenderer.handleData("THREAD_STATUS_CHANGED", { status: "active" });
   await new Promise(r => setTimeout(r, 10));
   pass(send.getAttribute("data-capability-send") === "false", "fresh processing send capability should replace idle send capability");
   pass(send.getAttribute("data-capability-queue") === "true", "fresh processing queue capability should replace idle queue capability");
@@ -227,7 +227,7 @@ async function checkProcessingSendCapabilityKeepsSendMode() {
     status: "idle",
     capabilities: { send: true, queue: false },
   });
-  window.SerfRenderer.handleData("THREAD_STATUS_CHANGED", { status: "processing" });
+  window.SerfRenderer.handleData("THREAD_STATUS_CHANGED", { status: "active" });
   window.SerfRenderer.handleData("THREAD_STATUS_CHANGED", { status: "idle" });
   resolveRead({
     thread: {
@@ -242,7 +242,7 @@ async function checkProcessingSendCapabilityKeepsSendMode() {
   window.SerfAppwire = {
     readThread: () => new Promise((resolve) => { resolveRead = resolve; }),
   };
-  window.SerfRenderer.handleData("THREAD_STATUS_CHANGED", { status: "processing" });
+  window.SerfRenderer.handleData("THREAD_STATUS_CHANGED", { status: "active" });
   window.SerfRenderer.handleData("SESSION_START", {
     session_id: "01TEST",
     status: "idle",
@@ -282,16 +282,16 @@ async function checkReconnectsLiveAfterSendOnEndedSession() {
     }),
     eventsFromThread: () => [],
     eventsFromNotification: (method, params) => {
-      if (method === "item/completed" && params.item && params.item.type === "user_message") {
+      if (method === "item/completed" && params.item && params.item.type === "userMessage") {
         return [["USER_INPUT", { text: params.item.text || "", turn: 4 }]];
       }
-      if (method === "item/started" && params.item && params.item.type === "agent_message") {
+      if (method === "item/started" && params.item && params.item.type === "agentMessage") {
         return [["ASSISTANT_TEXT_START", { message_id: params.item.id }]];
       }
       if (method === "item/agentMessage/delta") {
         return [["ASSISTANT_TEXT_DELTA", { message_id: params.itemId, delta: params.delta || "" }]];
       }
-      if (method === "item/completed" && params.item && params.item.type === "agent_message") {
+      if (method === "item/completed" && params.item && params.item.type === "agentMessage") {
         return [["ASSISTANT_TEXT_END", { message_id: params.item.id }]];
       }
       return [];
@@ -314,12 +314,12 @@ async function checkReconnectsLiveAfterSendOnEndedSession() {
   notificationHandler("item/completed", {
     threadId: "01TEST",
     ref: "local:01TEST",
-    item: { type: "user_message", id: "item_user_resume", text: "resume me" },
+    item: { type: "userMessage", id: "item_user_resume", text: "resume me" },
   });
   notificationHandler("item/started", {
     threadId: "01TEST",
     ref: "local:01TEST",
-    item: { type: "agent_message", id: "msg_resume" },
+    item: { type: "agentMessage", id: "msg_resume" },
   });
   notificationHandler("item/agentMessage/delta", {
     threadId: "01TEST",
@@ -330,7 +330,7 @@ async function checkReconnectsLiveAfterSendOnEndedSession() {
   notificationHandler("item/completed", {
     threadId: "01TEST",
     ref: "local:01TEST",
-    item: { type: "agent_message", id: "msg_resume" },
+    item: { type: "agentMessage", id: "msg_resume" },
   });
   await new Promise(r => setTimeout(r, 10));
 
@@ -383,6 +383,8 @@ async function checkSteerWired() {
   pass(!posted, "expected no /steer POST when textarea is empty");
 
   // With text: click should POST and clear the textarea.
+  window.SerfRenderer.updateThreadState("active");
+  window.SerfRenderer.setActiveTurnId("turn_steer");
   ta.value = "stop using mocks";
   ta.dispatchEvent(new window.Event("input", { bubbles: true }));
   fetchResponseOk = true;
@@ -393,6 +395,7 @@ async function checkSteerWired() {
 
   // If the active turn ends while steer is in flight, the button must stay
   // disabled after the request settles.
+  window.SerfRenderer.updateThreadState("active");
   window.SerfRenderer.setActiveTurnId("turn_steer");
   ta.value = "race the turn end";
   ta.dispatchEvent(new window.Event("input", { bubbles: true }));
@@ -412,8 +415,9 @@ async function checkSteerWired() {
   };
   steer.click();
   await new Promise(r => setTimeout(r, 5));
+  pass(typeof settleSteer === "function", "expected /steer POST while active turn exists");
   window.SerfRenderer.setActiveTurnId("");
-  settleSteer();
+  if (typeof settleSteer === "function") settleSteer();
   await new Promise(r => setTimeout(r, 10));
   pass(steer.disabled, "expected steer to remain disabled after active turn cleared during request");
 

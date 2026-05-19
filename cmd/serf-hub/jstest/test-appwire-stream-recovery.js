@@ -154,8 +154,8 @@ async function testReconnectDoesNotDuplicateReplay() {
             id: "turn_1",
             status: "completed",
             items: [
-              { type: "user_message", id: "user_1", turnId: "turn_1", text: "hello" },
-              { type: "agent_message", id: "msg_1", turnId: "turn_1", text: "hi there" },
+              { type: "userMessage", id: "user_1", turnId: "turn_1", text: "hello" },
+              { type: "agentMessage", id: "msg_1", turnId: "turn_1", text: "hi there" },
             ],
           }],
         },
@@ -165,8 +165,8 @@ async function testReconnectDoesNotDuplicateReplay() {
       const events = [["SESSION_START", { session_id: "local:thread-live", restored: true }]];
       for (const turn of thread.turns || []) {
         for (const item of turn.items || []) {
-          if (item.type === "user_message") events.push(["USER_INPUT", { text: item.text || "" }]);
-          if (item.type === "agent_message") events.push(["ASSISTANT_TEXT_START", {}], ["ASSISTANT_TEXT_END", { text: item.text || "" }]);
+          if (item.type === "userMessage") events.push(["USER_INPUT", { text: item.text || "" }]);
+          if (item.type === "agentMessage") events.push(["ASSISTANT_TEXT_START", {}], ["ASSISTANT_TEXT_END", { text: item.text || "" }]);
         }
       }
       return events;

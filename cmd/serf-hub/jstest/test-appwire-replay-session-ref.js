@@ -23,7 +23,7 @@ const events = window.SerfAppwire.eventsFromThread({
     id: "turn_1",
     status: "completed",
     items: [{
-      type: "user_message",
+      type: "userMessage",
       text: "look",
       images: [
         { type: "input_image", mediaType: "image/png", data: "aW1n", name: "data-url.png" },
